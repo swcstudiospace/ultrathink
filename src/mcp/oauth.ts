@@ -42,6 +42,8 @@ function refused(field: string, code: string): void {
 export interface AuthDeps {
 	fetch?: typeof fetch;
 	now?: () => number;
+	/** Poll wait for the credential store lock; defaults to the real wait. */
+	sleep?: (ms: number) => Promise<void>;
 	storePath: string;
 	/** Lock tuning passed to withStoreLock (tests use small values). */
 	lock?: { staleMs?: number; waitMs?: number; pollMs?: number };
@@ -127,7 +129,7 @@ async function mutateStore<T>(
 			writeStore(deps.storePath, store);
 			return result;
 		},
-		deps.lock,
+		{ ...deps.lock, now: deps.now, sleep: deps.sleep },
 	);
 }
 

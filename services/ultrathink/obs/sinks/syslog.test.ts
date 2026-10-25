@@ -2,8 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterEach, describe, expect, test } from "bun:test";
-import net from "node:net";
-import { createSyslogTransport, encodeSyslogFrame } from "./syslog.ts";
+import { createSyslogTransport, encodeSyslogFrame, type SyslogTransportOptions } from "./syslog.ts";
 import type { SinkEnvelope } from "./types.ts";
 
 interface Listener {
@@ -84,51 +83,6 @@ function freePort(): number {
 	const port = probe.port;
 	probe.stop(true);
 	return port;
-}
-
-interface PausedReceiver {
-	readonly port: number;
-	resume(): void;
-	waitForBytes(count: number): Promise<void>;
-	received(): Uint8Array;
-}
-
-/** A TCP receiver that reads nothing until resume(), so the sender's socket buffers fill and its writes come back partial. */
-async function startPausedReceiver(): Promise<PausedReceiver> {
-	const chunks: Buffer[] = [];
-	let total = 0;
-	let onData: (() => void) | undefined;
-	let reader: net.Socket | undefined;
-	const server = net.createServer((sock) => {
-		reader = sock;
-		sock.on("error", () => {
-			// reason: test double, a client reset during the paused test is expected and not asserted
-		});
-		sock.on("data", (chunk: Buffer) => {
-			chunks.push(chunk);
-			total += chunk.byteLength;
-			onData?.();
-		});
-		sock.pause();
-	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-	stops.push(() => {
-		reader?.destroy();
-		server.close();
-	});
-	const { port } = server.address() as net.AddressInfo;
-	return {
-		port,
-		resume: () => reader?.resume(),
-		async waitForBytes(count) {
-			while (total < count) {
-				await new Promise<void>((resolve) => {
-					onData = resolve;
-				});
-			}
-		},
-		received: () => Buffer.concat(chunks),
-	};
 }
 
 interface ParsedFrame {
@@ -298,26 +252,49 @@ describe("createSyslogTransport", () => {
 	});
 
 	test("a partial write waits for the socket to drain, so every byte of a batch larger than the socket buffers arrives", async () => {
-		const receiver = await startPausedReceiver();
+		// The socket is a test double. Its first write accepts only half the offered bytes, so the send has to wait for
+		// drain; the test fires drain itself once the first write has come back. No receiver, kernel buffer or delay.
+		const firstWrite = Promise.withResolvers<void>();
+		const written: Uint8Array[] = [];
+		const socket = {
+			data: { alive: true } as { alive: boolean },
+			write: writeHalfThenAll,
+			end() {
+				// reason: the socket double has nothing to flush; the test asserts on the bytes already written.
+			},
+		};
+		let writes = 0;
+		function writeHalfThenAll(bytes: Uint8Array, offset: number, length: number): number {
+			writes += 1;
+			const accepted = writes === 1 ? Math.floor(length / 2) : length;
+			written.push(bytes.subarray(offset, offset + accepted));
+			if (writes === 1) firstWrite.resolve();
+			return accepted;
+		}
+		let drain: ((socket: never) => void) | undefined;
+		const connect: NonNullable<SyslogTransportOptions["socket"]> = (options) => {
+			// reason: the transport hands the double its Link, which the double only stores; the test reads it as its own shape.
+			socket.data = options.data as unknown as { alive: boolean };
+			drain = options.socket?.drain;
+			return Promise.resolve(socket as never);
+		};
 		const transport = createSyslogTransport({
 			host: "127.0.0.1",
-			port: receiver.port,
+			port: 5514,
 			hostname: "host.test",
 			appName: "ultrathink",
+			socket: connect,
 		});
-		// 32 envelopes of 1 MiB: the first write accepts only a few MiB, so the rest of the batch must wait for drain.
+		// 32 envelopes of 1 MiB: the first write accepts only half of the first frame, so the rest must wait for drain.
 		const batch = Array.from({ length: 32 }, (_, seq) =>
 			envelope(seq, "audit", { pad: "x".repeat(1024 * 1024) }),
 		);
 		const sending = transport.send(batch, new AbortController().signal);
-		// Kernel socket buffers cannot be observed from here, so the receiver stays paused briefly to let the
-		// sender's first write come back partial. No event marks that point.
-		await Bun.sleep(100);
-		receiver.resume();
+		await firstWrite.promise;
+		drain?.(socket as never);
 		expect(await sending).toEqual({ ok: true });
-		await receiver.waitForBytes(batch.reduce((sum, env) => sum + frameLength(env), 0));
 		expect(
-			parseFrames(receiver.received())
+			parseFrames(Buffer.concat(written))
 				.map(parseMessage)
 				.map((msg) => msg.body),
 		).toEqual(batch);

@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls, { type TLSSocket } from "node:tls";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { Server } from "bun";
 import {
 	type HttpFetch,
@@ -149,6 +149,29 @@ describe("httpTarget", () => {
 		await expect(target.close()).resolves.toBeUndefined();
 	});
 
+	/** Replaces AbortSignal.timeout with controllers the test aborts, so the request deadline never runs on the real clock. */
+	function manualDeadlines() {
+		const queued: AbortController[] = [];
+		const waiting: Array<(controller: AbortController) => void> = [];
+		const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+			const controller = new AbortController();
+			const waiter = waiting.shift();
+			if (waiter) waiter(controller);
+			else queued.push(controller);
+			return controller.signal;
+		});
+		return {
+			next(): Promise<AbortController> {
+				const controller = queued.shift();
+				if (controller) return Promise.resolve(controller);
+				const { promise, resolve } = Promise.withResolvers<AbortController>();
+				waiting.push(resolve);
+				return promise;
+			},
+			restore: () => spy.mockRestore(),
+		};
+	}
+
 	describe("against a live server that stalls", () => {
 		let stalled: Server<undefined> | undefined;
 		beforeAll(() => {
@@ -175,15 +198,18 @@ describe("httpTarget", () => {
 		});
 
 		test("a stalled header or body fails the request at the deadline", async () => {
-			const target = httpTarget(`http://127.0.0.1:${stalled?.port}`, { timeoutMs: 200 });
-			const started = Date.now();
-			await expect(target.request("GET", "/headers")).rejects.toThrow(
-				"no complete response within 200 ms",
-			);
-			await expect(target.request("GET", "/body")).rejects.toThrow(
-				"no complete response within 200 ms",
-			);
-			expect(Date.now() - started).toBeLessThan(5000);
+			const deadlines = manualDeadlines();
+			try {
+				const target = httpTarget(`http://127.0.0.1:${stalled?.port}`, { timeoutMs: 200 });
+				const headers = target.request("GET", "/headers");
+				(await deadlines.next()).abort();
+				await expect(headers).rejects.toThrow("no complete response within 200 ms");
+				const body = target.request("GET", "/body");
+				(await deadlines.next()).abort();
+				await expect(body).rejects.toThrow("no complete response within 200 ms");
+			} finally {
+				deadlines.restore();
+			}
 		});
 	});
 

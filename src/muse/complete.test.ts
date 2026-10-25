@@ -188,19 +188,31 @@ describe("museComplete (fake bin)", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-muse-cli-"));
 		dirs.push(dir);
 		const bin = join(dir, "muse");
-		writeFileSync(bin, `#!${process.execPath}\nawait Bun.sleep(5000);\n`, { mode: 0o755 });
-		const error = await museComplete("SYS", "USER", { bin, timeoutMs: 20 }).then(
+		// The child never exits on its own: the kill timer is the only thing that ends it.
+		writeFileSync(bin, `#!${process.execPath}\nawait new Promise(() => {});\n`, { mode: 0o755 });
+		// The kill timer is armed on a test-held port, so the test fires it by hand rather than waiting for timeoutMs.
+		const armed = Promise.withResolvers<() => void>();
+		const timers = {
+			setTimeout: (fn: () => void) => {
+				armed.resolve(fn);
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		};
+		const pending = museComplete("SYS", "USER", { bin, timeoutMs: 20, timers }).then(
 			() => new Error("should have thrown"),
 			(error: Error) => error,
 		);
-		expect(error.message).toBe("muse timed out after 20ms");
+		const fire = await armed.promise;
+		fire();
+		expect((await pending).message).toBe("muse timed out after 20ms");
 	});
 
 	test("abort rejects with AbortError", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-muse-cli-"));
 		dirs.push(dir);
 		const bin = join(dir, "muse");
-		writeFileSync(bin, `#!${process.execPath}\nawait Bun.sleep(5000);\n`, { mode: 0o755 });
+		writeFileSync(bin, `#!${process.execPath}\nawait new Promise(() => {});\n`, { mode: 0o755 });
 		const controller = new AbortController();
 		const pending = museComplete("SYS", "USER", { bin, signal: controller.signal }).then(
 			() => "resolved",

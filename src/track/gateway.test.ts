@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,11 +12,17 @@ import type { TrackPlan } from "./types.ts";
 
 let dir: string;
 let path: string;
+// Fixed wall clock: fixtures and expiry checks read the same instant on every run.
+const FIXED = 1_700_000_000_000;
 beforeEach(() => {
+	setSystemTime(FIXED);
 	dir = mkdtempSync(join(tmpdir(), "ut-gateway-"));
 	path = join(dir, "creds.json");
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+	setSystemTime();
+	rmSync(dir, { recursive: true, force: true });
+});
 
 // Never reached by these cases: the tracker must bail before creation.
 const plan = { graphId: "g1" } as TrackPlan;
@@ -136,11 +142,21 @@ describe("createGatewayTracker", () => {
 		}) as typeof fetch;
 		const config = configured();
 		config.track.budgetMs = 50;
-		const tracker = createGatewayTracker(config, { storePath: path, fetch: fakeFetch })!;
-		const started = Date.now();
-		const result = await tracker({ plan });
+		// The budget timer is armed on a test-held port: the test fires it by hand instead of waiting for budgetMs.
+		const armed = Promise.withResolvers<() => void>();
+		const timers = {
+			setTimeout: (fn: () => void) => {
+				armed.resolve(fn);
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		};
+		const tracker = createGatewayTracker(config, { storePath: path, fetch: fakeFetch, timers })!;
+		const tracking = tracker({ plan });
+		const fireBudget = await armed.promise;
+		fireBudget();
+		const result = await tracking;
 		expect(result).toBeUndefined();
-		expect(Date.now() - started).toBeLessThan(1_000);
 		expect(urls).toEqual(["https://mcp.notion.com/token"]);
 		// Let the pending refresh settle before the temp dir is removed: a second resolve
 		// waits on the store lock the first refresh still holds.
@@ -153,15 +169,16 @@ describe("createGatewayTracker", () => {
 			version: 1,
 			providers: { notion: expiredOauth("https://mcp.notion.com", Date.now()) },
 		});
+		const entered = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
 		const urls: string[] = [];
 		const fakeFetch = (async (input: string | URL | Request) => {
 			const url = String(input);
 			urls.push(url);
 			if (!url.endsWith("/token")) return new Response("{}", { status: 500 });
-			// Real delay on purpose: the auth wait races a real setTimeout, which the budget-0 path must not arm.
-			const { promise, resolve } = Promise.withResolvers<void>();
-			setTimeout(resolve, 80);
-			await promise;
+			// Held on a gate the test opens once the refresh has started, so the auth wait is never timed.
+			entered.resolve();
+			await gate.promise;
 			return new Response(JSON.stringify({ access_token: "fresh", expires_in: 3600 }), {
 				status: 200,
 			});
@@ -176,7 +193,10 @@ describe("createGatewayTracker", () => {
 			linearIssues: [],
 			linearSubIssues: [],
 		};
-		const result = await tracker({ plan: emptyPlan });
+		const tracking = tracker({ plan: emptyPlan });
+		await entered.promise;
+		gate.resolve();
+		const result = await tracking;
 		expect(urls).toContain("https://mcp.notion.com/token");
 		expect(result).toBeDefined();
 	});

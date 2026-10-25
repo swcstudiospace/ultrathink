@@ -1,13 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { MAX_RESPONSE_CHARS, requestJson } from "./http.ts";
 
 function respond(body: string, status = 200): typeof fetch {
 	return (async () => new Response(body, { status })) as unknown as typeof fetch;
 }
 
+/** Controller-driven AbortSignal.timeout: each request budget requestJson arms is a signal the test aborts. */
+type ControlledTimeouts = { armed: AbortController[]; restore: () => void };
+
+function controlledTimeouts(): ControlledTimeouts {
+	const armed: AbortController[] = [];
+	const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+		const controller = new AbortController();
+		armed.push(controller);
+		return controller.signal;
+	});
+	return { armed, restore: () => spy.mockRestore() };
+}
+
 describe("requestJson", () => {
+	let timeouts: ControlledTimeouts = { armed: [], restore: () => undefined };
+	beforeEach(() => {
+		timeouts = controlledTimeouts();
+	});
+	afterEach(() => {
+		timeouts.restore();
+	});
+
 	test("returns status, parsed JSON and raw text", async () => {
 		const out = await requestJson("https://svc.test/x", {
 			timeoutMs: 1000,
@@ -64,10 +85,13 @@ describe("requestJson", () => {
 	});
 
 	test("times out even when fetch ignores the abort signal", async () => {
-		const hang = (() =>
-			new Promise<Response>(() => {
+		const hang = (() => {
+			// The budget fires while the fetch is in flight; this fetch never observes its signal.
+			timeouts.armed.at(-1)?.abort(new DOMException("timed out", "TimeoutError"));
+			return new Promise<Response>(() => {
 				// reason: the request must hang; the timeout under test ends it
-			})) as unknown as typeof fetch;
+			});
+		}) as unknown as typeof fetch;
 		const out = await requestJson("https://svc.test/slow", { timeoutMs: 30, fetch: hang });
 		expect(out.kind).toBe("timeout");
 	});
@@ -76,10 +100,13 @@ describe("requestJson", () => {
 		const stall = (async () =>
 			new Response(
 				new ReadableStream<Uint8Array>({
-					pull: () =>
-						new Promise<void>(() => {
+					pull: () => {
+						// The budget fires while the body is being read; the stream never produces a chunk.
+						timeouts.armed.at(-1)?.abort(new DOMException("timed out", "TimeoutError"));
+						return new Promise<void>(() => {
 							// reason: the stream stalls on purpose; the timeout under test ends it
-						}),
+						});
+					},
 				}),
 			)) as unknown as typeof fetch;
 		const out = await requestJson("https://svc.test/slow-body", { timeoutMs: 30, fetch: stall });
@@ -137,13 +164,11 @@ describe("requestJson", () => {
 					},
 				}),
 			)) as unknown as typeof fetch;
-		const started = Date.now();
 		const out = await requestJson("https://svc.test/endless", {
 			timeoutMs: 10_000,
 			fetch: endless,
 		});
 		expect(out).toMatchObject({ kind: "network", message: "response too large" });
-		expect(Date.now() - started).toBeLessThan(5000);
 		expect(cancelled).toBe(true);
 		expect(pulled).toBeLessThan(MAX_RESPONSE_CHARS / (1024 * 1024) + 3);
 	});

@@ -950,7 +950,7 @@ describe("active file checks", () => {
 		const out = lines(path);
 		out[1] = (out[1] as string).replace('"user2"', '"user9"');
 		rewrite(path, out);
-		const later = new Date(Date.now() + 60_000);
+		const later = new Date("2026-01-01T00:01:00Z");
 		utimesSync(path, later, later);
 		log.record("logout", { n: 4 });
 		expect(notices.map((n) => n.kind)).toEqual(["moved_to"]);

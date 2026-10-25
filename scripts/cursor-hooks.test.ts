@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	existsSync,
@@ -46,6 +46,7 @@ const SUBSTRATE = {
 	command: "bun /root/src/repos/agent-substrate/packages/cli/src/index.ts brief --surface cursor",
 	"substrate-managed": true,
 };
+const FIXED = new Date("2026-01-01T00:00:00Z");
 const FOREIGN = { type: "command", command: "echo keep me" };
 const OURS_OLD = {
 	type: "command",
@@ -502,10 +503,15 @@ describe("main", () => {
 			mkdirSync(box.cursor, { recursive: true });
 			const lock = join(box.cursor, HOOK_LOCK_FILE);
 			writeFileSync(lock, "");
-			const old = (Date.now() - (HOOK_LOCK_EMPTY_GRACE_MS + 1_500)) / 1000;
-			utimesSync(lock, old, old);
-			expect(box.run(["install"], { lockWaitMs: 0 })).toBe(0);
-			expect(existsSync(lock)).toBe(false);
+			setSystemTime(FIXED);
+			try {
+				const old = (FIXED.getTime() - (HOOK_LOCK_EMPTY_GRACE_MS + 1_500)) / 1000;
+				utimesSync(lock, old, old);
+				expect(box.run(["install"], { lockWaitMs: 0 })).toBe(0);
+				expect(existsSync(lock)).toBe(false);
+			} finally {
+				setSystemTime();
+			}
 			expect(readFileSync(box.staged, "utf8")).toBe(readFileSync(box.source, "utf8"));
 		});
 	});

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -80,6 +80,57 @@ function trackedConfig(): UltrathinkConfig {
 	config.linear.team = "Team";
 	config.notion.dataSourceUrl = "collection://ds";
 	return config;
+}
+
+/** Timers the test fires by hand: each timeout the code arms is held here instead of on the real clock. */
+type ManualTimers = {
+	timers: NonNullable<HookDeps["timers"]>;
+	/** Runs the oldest pending timer of `ms`, waiting until the code has armed one. */
+	fire: (ms: number) => Promise<void>;
+};
+
+function manualTimers(): ManualTimers {
+	const armed: Array<{ ms: number; run: () => void; handle: NodeJS.Timeout }> = [];
+	const pending = new Set<NodeJS.Timeout>();
+	const waiting: Array<() => void> = [];
+	const timers: NonNullable<HookDeps["timers"]> = {
+		setTimeout: (run, ms) => {
+			// reason: the port's handle is opaque; the test tracks it by identity and never reads it
+			const handle = {} as NodeJS.Timeout;
+			armed.push({ ms, run, handle });
+			pending.add(handle);
+			for (const wake of waiting.splice(0)) wake();
+			return handle;
+		},
+		clearTimeout: (handle) => {
+			if (handle) pending.delete(handle);
+		},
+	};
+	const fire = async (ms: number): Promise<void> => {
+		const entry = armed.find((candidate) => pending.has(candidate.handle) && candidate.ms === ms);
+		if (!entry) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+			return fire(ms);
+		}
+		pending.delete(entry.handle);
+		entry.run();
+	};
+	return { timers, fire };
+}
+
+/** Controller-driven AbortSignal.timeout: each per-attempt budget the decisions client arms is a signal the test aborts. */
+type ControlledTimeouts = { armed: AbortController[]; restore: () => void };
+
+function controlledTimeouts(): ControlledTimeouts {
+	const armed: AbortController[] = [];
+	const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+		const controller = new AbortController();
+		armed.push(controller);
+		return controller.signal;
+	});
+	return { armed, restore: () => spy.mockRestore() };
 }
 
 function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup: () => void } {
@@ -899,21 +950,28 @@ describe("substrate plan event", () => {
 
 	test("a run whose planning budget is already spent sends no event, but still persists the record", async () => {
 		const { emit, sent } = recorder();
+		const manual = manualTimers();
+		const tracking = Promise.withResolvers<void>();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
 			clarify: async () => [],
 			emit,
+			timers: manual.timers,
 			// The tracker waits for the budget to fire, so the plan is finished only after the controller aborted.
 			track: async ({ signal }) => {
 				const { promise, resolve } = Promise.withResolvers<void>();
 				signal?.addEventListener("abort", () => resolve());
+				tracking.resolve();
 				await promise;
 				return undefined;
 			},
 		});
 		deps.config.claude.budgetMs = 20;
 		try {
-			const result = await runPromptSubmit(input, deps);
+			const running = runPromptSubmit(input, deps);
+			await tracking.promise;
+			await manual.fire(20);
+			const result = await running;
 			expect(result.record?.plan?.graphId).toBeDefined();
 			expect(readSession(deps.stateDir, "s1")?.plan?.graphId).toBe(result.record?.plan?.graphId);
 			expect(sent).toEqual([]);
@@ -924,22 +982,27 @@ describe("substrate plan event", () => {
 
 	test("the event is handed the planning signal, and a budget that fires mid-request ends the wait promptly", async () => {
 		let seen: AbortSignal | undefined;
+		const manual = manualTimers();
+		const emitted = Promise.withResolvers<void>();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
 			clarify: async () => [],
+			timers: manual.timers,
 			emit: (_event, signal) => {
 				const { promise, resolve } = Promise.withResolvers<boolean>();
 				seen = signal;
 				// A substrate that never answers: only the budget can end the wait.
 				signal?.addEventListener("abort", () => resolve(false));
+				emitted.resolve();
 				return promise;
 			},
 		});
 		deps.config.claude.budgetMs = 80;
 		try {
-			const started = performance.now();
-			const result = await runPromptSubmit(input, deps);
-			expect(performance.now() - started).toBeLessThan(1_000);
+			const running = runPromptSubmit(input, deps);
+			await emitted.promise;
+			await manual.fire(80);
+			const result = await running;
 			expect(seen).toBeDefined();
 			expect(seen?.aborted).toBe(true);
 			expect(result.record?.plan?.graphId).toBeDefined();
@@ -1741,14 +1804,20 @@ const FAILURES: ReadonlyArray<{
 ];
 
 /**
- * R for one failure: a recording fetch that repeats it, or a hanging fetch. The hanging case needs a real clock: the
- * client's per-attempt budget is an AbortSignal.timeout, so it gets the shortest budget that still proves `timeout`.
+ * R for one failure: a recording fetch that repeats it, or a hanging fetch. The hanging fetch aborts the per-attempt
+ * budget the decisions client arms with AbortSignal.timeout, so that attempt times out without a real clock.
  */
 function failureFetch(
 	failure: (typeof FAILURES)[number],
 	key: string,
+	timeouts: ControlledTimeouts,
 ): { fetch: typeof fetch; timeoutMs: number } {
-	if (!failure.respond) return { fetch: hangingFetch(), timeoutMs: 50 };
+	if (!failure.respond) {
+		const fetchImpl = hangingFetch(() => {
+			timeouts.armed.at(-1)?.abort(new DOMException("timed out", "TimeoutError"));
+		});
+		return { fetch: fetchImpl, timeoutMs: 50 };
+	}
 	return { fetch: recordingFetch([failure.respond(key)]).fetch, timeoutMs: 3000 };
 }
 
@@ -2104,7 +2173,8 @@ describe("Jev plan gate", () => {
 
 	test("every plan failure kind plans exactly as today and reports the kind (AC-4.11)", async () => {
 		for (const failure of FAILURES) {
-			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "plan_worthy");
+			const timeouts = controlledTimeouts();
+			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "plan_worthy", timeouts);
 			const h = jevHarness(onConfig({ points: ["plan"], timeoutMs }), fetchImpl);
 			try {
 				const base = await runPromptSubmit({ ...input, prompt: ACK }, offDeps(h.deps));
@@ -2123,6 +2193,7 @@ describe("Jev plan gate", () => {
 				expect(readSession(h.deps.stateDir, "s1")?.decisions).toEqual(jev.decisions);
 				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
 			} finally {
+				timeouts.restore();
 				h.cleanup();
 			}
 		}
@@ -2222,7 +2293,8 @@ describe("Jev knowledge and blocking points through the hook", () => {
 
 	test("every knowledge failure kind keeps both claims settled and reports the kind (AC-4.13)", async () => {
 		for (const failure of FAILURES) {
-			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "supported");
+			const timeouts = controlledTimeouts();
+			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "supported", timeouts);
 			const h = jevHarness(onConfig({ points: ["knowledge"], timeoutMs }), fetchImpl, {
 				knowledge: usedReader,
 			});
@@ -2246,6 +2318,7 @@ describe("Jev knowledge and blocking points through the hook", () => {
 				}
 				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
 			} finally {
+				timeouts.restore();
 				h.cleanup();
 			}
 		}
@@ -2253,7 +2326,8 @@ describe("Jev knowledge and blocking points through the hook", () => {
 
 	test("every blocking failure kind keeps both questions non-blocking and reports the kind (AC-4.14)", async () => {
 		for (const failure of FAILURES) {
-			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "risky");
+			const timeouts = controlledTimeouts();
+			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "risky", timeouts);
 			const h = jevHarness(onConfig({ points: ["blocking"], timeoutMs }), fetchImpl);
 			const deps = { ...h.deps, complete: clarifying(OPEN) };
 			try {
@@ -2273,6 +2347,7 @@ describe("Jev knowledge and blocking points through the hook", () => {
 				}
 				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
 			} finally {
+				timeouts.restore();
 				h.cleanup();
 			}
 		}
@@ -2520,16 +2595,21 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const config = echoConfig();
 		config.teach.timeoutMs = 20;
 		config.ragflow.timeoutMs = 20;
+		const manual = manualTimers();
 		const { deps, cleanup } = baseDeps({
 			config,
 			complete: smartComplete(),
 			clarify: async () => [],
+			timers: manual.timers,
 		});
 		try {
 			const base = await runPromptSubmit(input, deps);
-			const started = Date.now();
-			const hung = await runPromptSubmit(input, { ...deps, recall: never, ground: never });
-			expect(Date.now() - started).toBeLessThan(2_000);
+			// A lookup aborts at its 20 ms timeout and its deadline falls 150 ms later. The hung seams ignore the abort,
+			// so only each deadline ends its wait.
+			const hungRun = runPromptSubmit(input, { ...deps, recall: never, ground: never });
+			await manual.fire(170);
+			await manual.fire(170);
+			const hung = await hungRun;
 			expect(plannedContext(hung)).toEqual(plannedContext(base));
 			expect(hung.record?.lessons).toMatchObject({ outcome: "error", reason: "timeout" });
 			expect(hung.record?.docs).toMatchObject({ status: "error", reason: "timeout" });
@@ -2541,11 +2621,15 @@ describe("lessons and RAGFlow documents in the plan", () => {
 				signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
 				return promise;
 			};
-			const aborted = await runPromptSubmit(input, {
+			const abortingRun = runPromptSubmit(input, {
 				...deps,
 				recall: ({ signal }) => abortable(signal),
 				ground: ({ signal }) => abortable(signal),
 			});
+			// Each seam rejects on its lookup's abort, which fires at the 20 ms timeout.
+			await manual.fire(20);
+			await manual.fire(20);
+			const aborted = await abortingRun;
 			expect(signals).toHaveLength(2);
 			expect(signals.every((signal) => signal.aborted)).toBe(true);
 			expect(plannedContext(aborted)).toEqual(plannedContext(base));
@@ -3070,7 +3154,8 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				const caught = await running;
 				// A late success from an ignoring provider must not release its worker to start n3.
 				sibling.resolve("<node><rationale>step</rationale><conclusion>late</conclusion></node>");
-				await new Promise<void>((resolve) => setImmediate(resolve));
+				// The late settlement is promise-driven: a bounded microtask flush delivers it, no macrotask needed.
+				for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
 				expect(caught instanceof Error ? caught.name : caught).toBe("AbortError");
 				expect(controller.signal.aborted).toBe(false);
 				expect(siblingSignal?.aborted).toBe(true);
@@ -3240,16 +3325,19 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 
 	test("the hook budget alone is not cancellation: it still delivers the plan built so far", async () => {
 		const config = trackedConfig();
-		// Real timer: the budget is a platform setTimeout inside runPromptSubmit with no clock seam; 30 ms keeps it short.
 		config.claude = { ...config.claude, budgetMs: 30 };
 		const complete = smartComplete();
+		const manual = manualTimers();
+		const graphStarted = Promise.withResolvers<void>();
 		const { deps, cleanup } = baseDeps({
 			config,
+			timers: manual.timers,
 			signal: new AbortController().signal,
 			modelResolution: RESOLUTION,
 			clarify: async () => [],
 			complete: async (system, user, signal) => {
 				if (phaseOf(user) !== "graph") return complete(system, user);
+				graphStarted.resolve();
 				// The graph call outlives the budget and honours its signal.
 				return new Promise<string>((_resolve, reject) =>
 					signal?.addEventListener("abort", () =>
@@ -3259,7 +3347,11 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			},
 		});
 		try {
-			const result = await runPromptSubmit(input, deps);
+			const running = runPromptSubmit(input, deps);
+			// The budget fires only once the graph call is in flight, so only the budget can end it.
+			await graphStarted.promise;
+			await manual.fire(30);
+			const result = await running;
 			expect(result.skipped).toBeUndefined();
 			expect(result.output).toBeDefined();
 			expect(result.record?.graph).toBeUndefined();
@@ -3276,13 +3368,17 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			const controller = new AbortController();
 			const complete = smartComplete();
 			const phases: Phase[] = [];
+			const manual = manualTimers();
+			const reached = Promise.withResolvers<void>();
 			const { deps, cleanup } = baseDeps({
 				config,
 				signal: controller.signal,
+				timers: manual.timers,
 				complete: async (system, user, signal) => {
 					const phase = phaseOf(user);
 					phases.push(phase);
 					if (phase !== at) return complete(system, user);
+					reached.resolve();
 					return new Promise<string>((_resolve, reject) => {
 						const abort = (): void => reject(new DOMException("budget expired", "AbortError"));
 						if (signal?.aborted) abort();
@@ -3291,7 +3387,11 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				},
 			});
 			try {
-				const result = await runPromptSubmit(input, deps);
+				const running = runPromptSubmit(input, deps);
+				// The budget fires once the phase under test is in flight, so only the budget can end it.
+				await reached.promise;
+				await manual.fire(30);
+				const result = await running;
 				expect(controller.signal.aborted).toBe(false);
 				expect(phases.at(-1)).toBe(at);
 				if (at === "uplift") {
@@ -3363,7 +3463,10 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 });
 
 describe("scheduled session retention", () => {
-	/** A record 90 days old, written straight to disk so its mtime (not a fake clock) is what ages it. */
+	/** The fixed clock the sweep reads through setSystemTime; the seeded record ages relative to it. */
+	const FIXED_NOW = Date.UTC(2026, 9, 25);
+
+	/** A record 90 days before FIXED_NOW, written straight to disk: its mtime, set from the fixed clock, ages it. */
 	function seedOldSession(stateDir: string): string {
 		const sessions = join(stateDir, "sessions");
 		mkdirSync(sessions, { recursive: true });
@@ -3376,7 +3479,7 @@ describe("scheduled session retention", () => {
 				result: { xml: "", original: "old", root: "", source: "llm" },
 			}),
 		);
-		const aged = (Date.now() - 90 * 86_400_000) / 1000;
+		const aged = (FIXED_NOW - 90 * 86_400_000) / 1000;
 		utimesSync(path, aged, aged);
 		return path;
 	}
@@ -3386,12 +3489,14 @@ describe("scheduled session retention", () => {
 		config.state.retentionDays = 30;
 		const { deps, cleanup } = baseDeps({ config });
 		try {
+			setSystemTime(FIXED_NOW);
 			const old = seedOldSession(deps.stateDir);
 			const result = await runPromptSubmit(input, deps);
 			expect(result.record).toBeDefined();
 			expect(existsSync(old)).toBe(false);
 			expect(readSession(deps.stateDir, "s1")).toBeDefined();
 		} finally {
+			setSystemTime();
 			cleanup();
 		}
 	});

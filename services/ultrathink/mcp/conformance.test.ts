@@ -34,7 +34,6 @@ interface Opened {
 const STDIO_MAIN = join(import.meta.dir, "..", "stdio", "main.ts");
 const ORIGIN = "https://ultrathink.test";
 const PLAN_SESSION = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
-const STEP_TIMEOUT_MS = 15_000;
 const EXPECTED_TOOLS = [
 	"ultrathink_answer",
 	"ultrathink_command",
@@ -86,18 +85,6 @@ function resultOf(reply: Json): Json {
 function errorCodeOf(reply: Json): unknown {
 	expect(reply.result).toBeUndefined();
 	return obj(reply.error).code;
-}
-
-/**
- * Bounds a wait on a spawned process so a hung child fails the test with a name instead of hanging the run. A real
- * timer is the only option here: the child's clock is not ours to fake.
- */
-function withTimeout<T>(promise: Promise<T>, what: string, ms = STEP_TIMEOUT_MS): Promise<T> {
-	let timer: NodeJS.Timeout | undefined;
-	const timeout = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(`timed out: ${what}`)), ms);
-	});
-	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function envelope(id: number, method: string, params?: Json): Json {
@@ -311,7 +298,7 @@ async function openStdio(): Promise<Opened> {
 		async rpc(method, params) {
 			id += 1;
 			child.send(JSON.stringify(envelope(id, method, params)));
-			const reply = obj(JSON.parse(await withTimeout(child.nextLine(), method)));
+			const reply = obj(JSON.parse(await child.nextLine()));
 			expect(reply.id).toBe(id);
 			return reply;
 		},
@@ -323,8 +310,8 @@ async function openStdio(): Promise<Opened> {
 }
 
 /** The one line of `child`'s next reply, parsed. */
-async function replyOf(child: StdioProcess, what: string): Promise<Json> {
-	return obj(JSON.parse(await withTimeout(child.nextLine(), what)));
+async function replyOf(child: StdioProcess): Promise<Json> {
+	return obj(JSON.parse(await child.nextLine()));
 }
 
 // -- the shared assertions ------------------------------------------------------------------------------------------
@@ -552,11 +539,11 @@ conformance("stdio", openStdio, () => {
 	test("answers a line that is not JSON with -32700 and id null, and keeps serving", async () => {
 		const child = stdioProcess();
 		child.send("this is not json");
-		const reply = await replyOf(child, "parse error");
+		const reply = await replyOf(child);
 		expect(reply.id).toBeNull();
 		expect(obj(reply.error).code).toBe(-32700);
 		child.send(JSON.stringify(envelope(900, "ping")));
-		expect((await replyOf(child, "ping")).id).toBe(900);
+		expect((await replyOf(child)).id).toBe(900);
 	});
 
 	test("every stdout line so far is one JSON-RPC message", () => {
@@ -582,8 +569,8 @@ describe("stdio process lifecycle", () => {
 		try {
 			child.send(JSON.stringify(envelope(1, "ping")));
 			child.proc.stdin.end();
-			expect((await replyOf(child, "ping")).id).toBe(1);
-			expect(await withTimeout(child.exited, "exit after stdin close")).toBe(0);
+			expect((await replyOf(child)).id).toBe(1);
+			expect(await child.exited).toBe(0);
 		} finally {
 			await stop(child);
 		}
@@ -596,9 +583,9 @@ describe("stdio process lifecycle", () => {
 			try {
 				child.send(JSON.stringify(envelope(1, "ping")));
 				// The reply proves the handlers are installed and the loop is waiting for input.
-				await replyOf(child, "ping");
+				await replyOf(child);
 				child.proc.kill("SIGTERM");
-				expect(await withTimeout(child.exited, "exit after SIGTERM", 5000)).toBe(0);
+				expect(await child.exited).toBe(0);
 			} finally {
 				await stop(child);
 			}
@@ -609,9 +596,9 @@ describe("stdio process lifecycle", () => {
 		const child = spawnStdio(tmp());
 		try {
 			child.send(`{"pad":"${"x".repeat(1024 * 1024 + 16)}"}`);
-			expect(obj((await replyOf(child, "oversized line")).error).code).toBe(-32600);
+			expect(obj((await replyOf(child)).error).code).toBe(-32600);
 			child.send(JSON.stringify(envelope(2, "ping")));
-			expect((await replyOf(child, "ping")).id).toBe(2);
+			expect((await replyOf(child)).id).toBe(2);
 		} finally {
 			await stop(child);
 		}

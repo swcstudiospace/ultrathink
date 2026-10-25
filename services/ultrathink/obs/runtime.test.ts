@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import {
 	createDrainState,
 	createInflight,
@@ -128,11 +128,15 @@ describe("createDrainState", () => {
 	});
 
 	test("defaults to Date.now", () => {
-		const before = Date.now();
-		const drain = createDrainState();
-		drain.begin();
-		expect(drain.since).toBeGreaterThanOrEqual(before);
-		expect(drain.since).toBeLessThanOrEqual(Date.now());
+		const FIXED = new Date("2026-01-01T00:00:00Z");
+		setSystemTime(FIXED);
+		try {
+			const drain = createDrainState();
+			drain.begin();
+			expect(drain.since).toBe(FIXED.getTime());
+		} finally {
+			setSystemTime();
+		}
 	});
 
 	test("rejects a non-function clock", () => {

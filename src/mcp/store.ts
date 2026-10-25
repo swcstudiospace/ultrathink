@@ -114,15 +114,25 @@ function breakStaleLock(lock: string, owner: string | undefined, mtimeMs: number
 export async function withStoreLock<T>(
 	path: string,
 	fn: () => Promise<T>,
-	opts: { staleMs?: number; waitMs?: number; pollMs?: number } = {},
+	opts: {
+		staleMs?: number;
+		waitMs?: number;
+		pollMs?: number;
+		/** Clock for the lock deadline and staleness; defaults to `Date.now`. */
+		now?: () => number;
+		/** Wait between acquire attempts; defaults to `Bun.sleep`. */
+		sleep?: (ms: number) => Promise<void>;
+	} = {},
 ): Promise<T> {
 	const staleMs = opts.staleMs ?? 60_000;
 	const waitMs = opts.waitMs ?? 30_000;
 	const pollMs = opts.pollMs ?? 100;
+	const now = opts.now ?? Date.now;
+	const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
 	const lock = `${path}.lock`;
 	const nonce = randomBytes(16).toString("hex");
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	const deadline = Date.now() + waitMs;
+	const deadline = now() + waitMs;
 	for (;;) {
 		try {
 			mkdirSync(lock);
@@ -134,7 +144,7 @@ export async function withStoreLock<T>(
 		let judged: { owner: string | undefined; mtimeMs: number } | undefined;
 		try {
 			const mtimeMs = statSync(lock).mtimeMs;
-			if (Date.now() - mtimeMs > staleMs) judged = { owner: readOwner(lock), mtimeMs };
+			if (now() - mtimeMs > staleMs) judged = { owner: readOwner(lock), mtimeMs };
 		} catch {
 			// reason: the lock vanished between the mkdir and the stat; the loop retries the acquire
 			continue;
@@ -143,9 +153,8 @@ export async function withStoreLock<T>(
 			breakStaleLock(lock, judged.owner, judged.mtimeMs);
 			continue;
 		}
-		if (Date.now() >= deadline)
-			throw new Error(`timed out waiting for credential store lock ${lock}`);
-		await Bun.sleep(pollMs);
+		if (now() >= deadline) throw new Error(`timed out waiting for credential store lock ${lock}`);
+		await sleep(pollMs);
 	}
 	const heartbeat = setInterval(
 		() => {

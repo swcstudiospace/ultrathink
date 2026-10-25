@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { USER_AGENT } from "../mcp/providers.ts";
 import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
 import {
@@ -22,6 +22,24 @@ const realFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = realFetch;
 });
+
+/** Controller-driven AbortSignal.timeout: each per-attempt budget the client arms is a signal the test aborts. */
+type ControlledTimeouts = { armed: AbortController[]; restore: () => void };
+
+function controlledTimeouts(): ControlledTimeouts {
+	const armed: AbortController[] = [];
+	const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+		const controller = new AbortController();
+		armed.push(controller);
+		return controller.signal;
+	});
+	return { armed, restore: () => spy.mockRestore() };
+}
+
+/** Aborts the budget armed for the attempt in flight, as its timeout would. */
+function timeOutAttempt(timeouts: ControlledTimeouts): void {
+	timeouts.armed.at(-1)?.abort(new DOMException("timed out", "TimeoutError"));
+}
 
 const ERR = (s: number, headers?: Record<string, string>) => () =>
 	Response.json(
@@ -256,32 +274,40 @@ describe("decide: failures are classified and redacted (D6)", () => {
 		expect(r.calls).toHaveLength(2);
 	});
 
-	// Real timers (rule T7): the budget is enforced by AbortSignal.timeout, which fake clocks do not drive.
 	test("AC-4.6: a hanging request maps to timeout within the budget", async () => {
 		let calls = 0;
-		const started = performance.now();
-		const outcome = await failure(
-			hangingFetch(() => calls++),
-			{ timeoutMs: 400 },
-		);
-		const elapsed = performance.now() - started;
-		expect(outcome.error.kind).toBe("timeout");
-		expect(outcome.error.message).toBe("decisions timeout: no answer within 400 ms");
-		expect(outcome.attempts).toBe(1);
-		expect(calls).toBe(1);
-		expect(elapsed).toBeLessThanOrEqual(400 + 250);
+		const timeouts = controlledTimeouts();
+		try {
+			const outcome = await failure(
+				hangingFetch(() => {
+					calls++;
+					timeOutAttempt(timeouts);
+				}),
+				{ timeoutMs: 400 },
+			);
+			expect(outcome.error.kind).toBe("timeout");
+			expect(outcome.error.message).toBe("decisions timeout: no answer within 400 ms");
+			expect(outcome.attempts).toBe(1);
+			expect(calls).toBe(1);
+		} finally {
+			timeouts.restore();
+		}
 	});
 
-	// Real timers: proves the budget holds even when a fetch never observes its abort signal.
 	test("a fetch that ignores its signal still times out", async () => {
-		const ignoring = (() =>
-			new Promise<Response>(() => {
-				// reason: the executor never settles, so only the timeout ends the call
-			})) as unknown as typeof fetch;
-		const started = performance.now();
-		const outcome = await failure(ignoring, { timeoutMs: 300 });
-		expect(outcome.error.kind).toBe("timeout");
-		expect(performance.now() - started).toBeLessThanOrEqual(300 + 250);
+		const timeouts = controlledTimeouts();
+		try {
+			const ignoring = (() => {
+				timeOutAttempt(timeouts);
+				return new Promise<Response>(() => {
+					// reason: the executor never settles, so only the timeout ends the call
+				});
+			}) as unknown as typeof fetch;
+			const outcome = await failure(ignoring, { timeoutMs: 300 });
+			expect(outcome.error.kind).toBe("timeout");
+		} finally {
+			timeouts.restore();
+		}
 	});
 
 	test("the upstream detail falls back to the body text, then the status text", async () => {
@@ -691,27 +717,38 @@ describe("decide: retry (D6)", () => {
 		expect(sleeps).toEqual([2000]);
 	});
 
-	// Real timers (rule T7): the retry wait and the second attempt's timeout run on the platform clock.
-	test("AC-5.8: the total budget covers the retry on real timers", async () => {
+	test("AC-5.8: the total budget covers the retry", async () => {
 		let calls = 0;
-		const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) => {
-			calls++;
-			if (calls === 1) return Bun.sleep(200).then(() => ERR(503)());
-			return new Promise<Response>((_resolve, reject) => {
-				init?.signal?.addEventListener("abort", () =>
-					reject(new DOMException("aborted", "AbortError")),
-				);
+		const sleeps: number[] = [];
+		const timeouts = controlledTimeouts();
+		try {
+			const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) => {
+				calls++;
+				if (calls === 1) return Promise.resolve(ERR(503)());
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () =>
+						reject(new DOMException("aborted", "AbortError")),
+					);
+					timeOutAttempt(timeouts);
+				});
+			}) as typeof fetch;
+			const outcome = await decide(REQUEST, {
+				apiKey: K,
+				timeoutMs: 1200,
+				fetch: fetchImpl,
+				random: () => 0.5,
+				sleep: async (ms) => void sleeps.push(ms),
 			});
-		}) as typeof fetch;
-		const started = performance.now();
-		const outcome = await decide(REQUEST, { apiKey: K, timeoutMs: 1200, fetch: fetchImpl });
-		const elapsed = performance.now() - started;
-		if (outcome.ok) throw new Error("expected a timeout");
-		expectSafe(outcome.error);
-		expect(outcome.error.kind).toBe("timeout");
-		expect(outcome.attempts).toBe(2);
-		expect(calls).toBe(2);
-		expect(elapsed).toBeLessThanOrEqual(1200 + 250);
+			if (outcome.ok) throw new Error("expected a timeout");
+			expectSafe(outcome.error);
+			expect(outcome.error.kind).toBe("timeout");
+			expect(outcome.attempts).toBe(2);
+			expect(calls).toBe(2);
+			// The retry wait is the jittered 250 ms, taken through the injected sleep seam.
+			expect(sleeps).toEqual([250]);
+		} finally {
+			timeouts.restore();
+		}
 	});
 });
 

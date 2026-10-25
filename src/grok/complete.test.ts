@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -28,6 +28,15 @@ afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+/** The clock every auth fixture ages from and the expiry check reads: pinned so token lifetimes are deterministic. */
+const FIXED_NOW = Date.UTC(2026, 9, 25, 12, 0, 0);
+beforeEach(() => {
+	setSystemTime(FIXED_NOW);
+});
+afterEach(() => {
+	setSystemTime();
+});
+
 const TOKEN =
 	"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTk5OX0.Sflkxw_RJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c";
 const FRESH_TOKEN = "fresh.tok.en";
@@ -47,7 +56,7 @@ function writeAuth(home: string, opts: { expiresAt?: string; token?: string } = 
 		JSON.stringify({
 			"https://auth.x.ai::client-abc": {
 				key: opts.token ?? TOKEN,
-				expires_at: opts.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+				expires_at: opts.expiresAt ?? new Date(FIXED_NOW + 3_600_000).toISOString(),
 				email: "dev@example.com",
 			},
 		}),
@@ -225,7 +234,7 @@ describe("grokComplete (http)", () => {
 	test("does not retry when the forced refresh yields nothing usable", async () => {
 		const home = tempHome();
 		const { refresh } = fakeRefresh(home, () =>
-			writeAuth(home, { expiresAt: new Date(Date.now() - 1_000).toISOString() }),
+			writeAuth(home, { expiresAt: new Date(FIXED_NOW - 1_000).toISOString() }),
 		);
 		const { fetch, calls } = fakeFetch(() => new Response("unauthorized", { status: 401 }));
 		const error = await rejection(grokComplete("S", "U", { home, fetch, refresh }));
@@ -248,7 +257,7 @@ describe("grokComplete (http)", () => {
 
 	test("expired login fails before any request", async () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("never"));
-		const home = tempHome({ expiresAt: new Date(Date.now() - 1000).toISOString() });
+		const home = tempHome({ expiresAt: new Date(FIXED_NOW - 1000).toISOString() });
 		const error = await rejection(grokComplete("S", "U", { home, fetch }));
 		expect(error).toBeInstanceOf(GrokAuthError);
 		expect(error.message).toBe("Grok login expired: run `grok login`");

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setSystemTime, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
 	existsSync,
@@ -283,10 +283,15 @@ describe("sweepStateDir", () => {
 		const stateDir = tmp();
 		const stale = randomUUID();
 		const live = randomUUID();
-		writeRecord(stateDir, stale, Date.now() - 30 * DAY);
-		writeRecord(stateDir, live, Date.now());
-		expect(sweepStateDir({ stateDir, retentionDays: 7 }).removed.sessions).toBe(1);
-		expect(existsSync(join(stateDir, "sessions", `${live}.json`))).toBe(true);
+		setSystemTime(new Date(NOW));
+		try {
+			writeRecord(stateDir, stale, NOW - 30 * DAY);
+			writeRecord(stateDir, live, NOW);
+			expect(sweepStateDir({ stateDir, retentionDays: 7 }).removed.sessions).toBe(1);
+			expect(existsSync(join(stateDir, "sessions", `${live}.json`))).toBe(true);
+		} finally {
+			setSystemTime();
+		}
 	});
 
 	test("invalid options are rejected before anything is read", () => {

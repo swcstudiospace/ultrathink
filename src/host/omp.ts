@@ -1056,12 +1056,24 @@ const MODEL_CHANGED = "superseded: the session model changed";
 const THINKING_CHANGED = "superseded: the session thinking level changed";
 const SESSION_ENDED = "cancelled: the session ended or switched";
 
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
+
 export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
 		raceMs?: number;
 		maxRunMs?: number;
 		now?: () => number;
+		/** Timer port for the remount, flight deadline and race timers; defaults to the platform timers. */
+		timers?: TimerPort;
 		ui?: boolean;
 		/** MCP readiness source; defaults to the local credential store. */
 		mcp?: () => McpState;
@@ -1086,6 +1098,7 @@ export function createOmpExtension(
 	// 0 (the default) means no outer limit: no flight timer and no retry deadline.
 	const maxRunMs = options.maxRunMs ?? 0;
 	const now = options.now ?? Date.now;
+	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
 	const readMcp = options.mcp ?? readMcpState;
 	const exists = options.exists ?? existsSync;
@@ -1116,7 +1129,7 @@ export function createOmpExtension(
 			/** Settles the existing outcome and clears the optional outer handle; cancellation releases through this. */
 			finishFlight: (result: OmpPlan) => void;
 			/** The outer deadline handle, present only for a strictly positive maxRunMs. */
-			deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+			deadlineTimer: NodeJS.Timeout | undefined;
 			/** Pending was returned; the aside is the only delivery. */
 			deferred: boolean;
 			/** Start order; only the latest flight writes to the bar store. */
@@ -1210,7 +1223,7 @@ export function createOmpExtension(
 			if (!ui || mountQueued) return;
 			mountQueued = true;
 			try {
-				setTimeout(() => {
+				timers.setTimeout(() => {
 					try {
 						mountQueued = false;
 						mountBar();
@@ -2104,7 +2117,7 @@ export function createOmpExtension(
 				finishFlight: (result) => {
 					const timer = flight.deadlineTimer;
 					if (timer !== undefined) {
-						clearTimeout(timer);
+						timers.clearTimeout(timer);
 						flight.deadlineTimer = undefined;
 					}
 					outcome.resolve(result);
@@ -2154,13 +2167,13 @@ export function createOmpExtension(
 			// The outer deadline exists only for an explicit positive maxRunMs; omitted and zero leave planning unbounded.
 			// A positive deadline still settles independently of provider cooperation; only the inline race keeps the flight running.
 			if (maxRunMs > 0) {
-				const timer = setTimeout(() => {
+				const timer = timers.setTimeout(() => {
 					flight.timedOut = true;
 					flight.finishFlight({ context: "" });
 					guard(() => flight.controller.abort());
 				}, maxRunMs);
 				// Like the AbortSignal.timeout it replaces, the limit alone never keeps a process alive.
-				timer.unref?.();
+				(timer as { unref?: () => void } | undefined)?.unref?.();
 				flight.deadlineTimer = timer;
 			}
 			try {
@@ -2350,12 +2363,12 @@ export function createOmpExtension(
 						captured,
 					);
 				const timeout = Promise.withResolvers<null>();
-				const timer = setTimeout(() => timeout.resolve(null), raceMs);
+				const timer = timers.setTimeout(() => timeout.resolve(null), raceMs);
 				let result: OmpPlan | null;
 				try {
 					result = await Promise.race([flight.result, timeout.promise]);
 				} finally {
-					clearTimeout(timer);
+					timers.clearTimeout(timer);
 				}
 				if (flight.cancelled) return;
 				if (result === null) {

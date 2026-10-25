@@ -242,10 +242,21 @@ async function findLessons(
 		: { lessons: [], source: "none", error };
 }
 
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
+
 export const recallLessons = async (
 	request: RecallRequest,
 	ctx: TeachContext,
-	options: { countUse?: boolean } = {},
+	options: { countUse?: boolean; timers?: TimerPort } = {},
 ): Promise<RecallOutcome> => {
 	const started = nowOf(ctx);
 	const outcome = (
@@ -264,8 +275,9 @@ export const recallLessons = async (
 	if (typeof request.query !== "string" || request.query.trim() === "") return outcome("none");
 
 	const budgetMs = Math.max(1, ctx.config.teach.timeoutMs);
+	const timers = options.timers ?? platformTimers;
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), budgetMs);
+	const timer = timers.setTimeout(() => controller.abort(), budgetMs);
 	const onAbort = () => controller.abort();
 	ctx.signal?.addEventListener("abort", onAbort, { once: true });
 	if (ctx.signal?.aborted) controller.abort();
@@ -294,7 +306,7 @@ export const recallLessons = async (
 			reason: redactLine(error instanceof Error ? error.message : String(error)),
 		});
 	} finally {
-		clearTimeout(timer);
+		timers.clearTimeout(timer);
 		ctx.signal?.removeEventListener("abort", onAbort);
 	}
 };

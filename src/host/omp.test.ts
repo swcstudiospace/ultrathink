@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,49 @@ import {
 import type { ProgressEvent } from "./progress.ts";
 import type { PlanView } from "./view.ts";
 
+/** Timers the test fires by hand: the remount, race and flight-limit timers arm here instead of on the real clock. */
+type ManualTimers = {
+	timers: {
+		setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+		clearTimeout(handle: NodeJS.Timeout | undefined): void;
+	};
+	/** Runs the oldest pending timer of `ms`, waiting until the code has armed one. */
+	fire: (ms: number) => Promise<void>;
+	/** Timers armed and neither fired nor cleared. */
+	pending: () => number;
+};
+
+function manualTimers(): ManualTimers {
+	const armed: Array<{ ms: number; run: () => void; handle: NodeJS.Timeout }> = [];
+	const live = new Set<NodeJS.Timeout>();
+	const waiting: Array<() => void> = [];
+	const timers: ManualTimers["timers"] = {
+		setTimeout: (run, ms) => {
+			// reason: the port's handle is opaque; the test tracks it by identity and never reads it
+			const handle = {} as NodeJS.Timeout;
+			armed.push({ ms, run, handle });
+			live.add(handle);
+			for (const wake of waiting.splice(0)) wake();
+			return handle;
+		},
+		clearTimeout: (handle) => {
+			if (handle) live.delete(handle);
+		},
+	};
+	const fire = async (ms: number): Promise<void> => {
+		const entry = armed.find((candidate) => live.has(candidate.handle) && candidate.ms === ms);
+		if (!entry) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+			return fire(ms);
+		}
+		live.delete(entry.handle);
+		entry.run();
+	};
+	return { timers, fire, pending: () => live.size };
+}
+
 describe("omp extension", () => {
 	test("fast plan is returned inline", async () => {
 		const { run, sent } = setup(async () => "PLAN");
@@ -62,16 +105,16 @@ describe("omp extension", () => {
 		expect(await run()).toBeUndefined();
 	});
 
-	test("with default options a plan that resolves after 60 ms is returned inline, not the fallback", async () => {
-		// Real wall-clock delay on purpose: the race is a platform setTimeout with no clock seam to drive it.
-		// The race window is the shipped 25 s default, passed explicitly because the harness always sets it; maxRunMs is left unset.
+	test("with default options a plan released after the call starts is returned inline, not the fallback", async () => {
+		// The race is the shipped 25 s default, passed explicitly because the harness always sets it; maxRunMs is left unset.
+		const gate = Promise.withResolvers<void>();
 		const { run, sent } = setup(async () => {
-			const { promise, resolve } = Promise.withResolvers<void>();
-			setTimeout(resolve, 60);
-			await promise;
+			await gate.promise;
 			return "PLAN";
 		}, 25_000);
-		expect(await run()).toEqual({
+		const result = run();
+		gate.resolve();
+		expect(await result).toEqual({
 			message: {
 				customType: "ultrathink-plan",
 				content: "PLAN",
@@ -89,6 +132,7 @@ describe("omp extension", () => {
 			signal: AbortSignal;
 			gate: PromiseWithResolvers<string>;
 		}[] = [];
+		const manual = manualTimers();
 		const { run, sent } = setup(
 			(request, signal) => {
 				const gate = Promise.withResolvers<string>();
@@ -96,15 +140,16 @@ describe("omp extension", () => {
 				return gate.promise;
 			},
 			1,
-			{ maxRunMs: 0 },
+			{ maxRunMs: 0, timers: manual.timers },
 		);
-		expect(await run()).toEqual({
+		// The race limit is 1 ms: its timer fires by hand, and the pending message follows.
+		const running = run();
+		await manual.fire(1);
+		expect(await running).toEqual({
 			message: expect.objectContaining({ customType: "ultrathink-pending" }),
 		});
-		// Real wall-clock pass on purpose: a zero-delay limit timer would fire during it, so only real time shows none was armed.
-		const { promise, resolve } = Promise.withResolvers<void>();
-		setTimeout(resolve, 30);
-		await promise;
+		// With maxRunMs 0 the flight arms no limit timer, so none is pending once the race has ended.
+		expect(manual.pending()).toBe(0);
 		expect(runs[0]?.signal.aborted).toBe(false);
 		expect(runs[0]?.request.isCurrent?.()).toBe(true);
 		expect(runs[0]?.request.deadline).toBeUndefined();
@@ -263,15 +308,16 @@ describe("omp extension", () => {
 
 	test("tui session mounts the bar above the editor, then re-mounts once per tick after other handlers", async () => {
 		const t = tuiCtx();
-		const { emit } = setup(async () => "", 1_000, {}, t.ctx);
+		const manual = manualTimers();
+		const { emit } = setup(async () => "", 1_000, { timers: manual.timers }, t.ctx);
 		emit("session_start");
 		expect(t.widgets).toHaveLength(1);
 		expect(t.widgets[0]!.key).toBe("ultrathink");
 		expect(t.widgets[0]!.options).toEqual({ placement: "aboveEditor" });
 		emit("agent_start");
 		expect(t.widgets).toHaveLength(1);
-		// The remount is a setTimeout(0) macrotask by design (after every other extension's handler); wait one.
-		await Bun.sleep(1);
+		// The remount is a zero-delay timer by design (after every other extension's handler); fire it by hand.
+		await manual.fire(0);
 		expect(t.widgets).toHaveLength(2);
 		expect(t.widgets[1]!.factory).toBe(t.widgets[0]!.factory);
 		expect(emit("input")).toBeUndefined();
@@ -279,7 +325,7 @@ describe("omp extension", () => {
 		emit("tool_execution_start");
 		emit("turn_end");
 		expect(t.widgets).toHaveLength(2);
-		await Bun.sleep(1);
+		await manual.fire(0);
 		expect(t.widgets).toHaveLength(3);
 		expect(t.widgets[2]!.factory).toBe(t.widgets[0]!.factory);
 		expect(t.widgets[2]!.options).toEqual({ placement: "aboveEditor" });
@@ -288,11 +334,18 @@ describe("omp extension", () => {
 	test("non-tui or no-UI sessions mount no bar", async () => {
 		for (const extra of [{ mode: "rpc" }, { hasUI: false }]) {
 			const t = tuiCtx();
-			const { emit } = setup(async () => "", 1_000, {}, { ...t.ctx, ...extra });
+			const manual = manualTimers();
+			const { emit } = setup(
+				async () => "",
+				1_000,
+				{ timers: manual.timers },
+				{ ...t.ctx, ...extra },
+			);
 			emit("session_start");
 			emit("agent_start");
 			emit("input");
-			await Bun.sleep(1);
+			// Without a UI no remount is armed, so no timer is pending and no bar mounts.
+			expect(manual.pending()).toBe(0);
 			expect(t.widgets).toHaveLength(0);
 		}
 	});
@@ -324,9 +377,13 @@ describe("omp extension", () => {
 	test("slow plan shows pending then delivers the view via aside", async () => {
 		const t = tuiCtx();
 		const gate = Promise.withResolvers<OmpPlan>();
-		const { run, sent, emit } = setup(() => gate.promise, 1, {}, t.ctx);
+		const manual = manualTimers();
+		const { run, sent, emit } = setup(() => gate.promise, 1, { timers: manual.timers }, t.ctx);
 		emit("session_start");
-		await run();
+		const running = run();
+		// The race limit is 1 ms: its timer fires by hand while the plan is still held.
+		await manual.fire(1);
+		await running;
 		const pendingLine = t.line();
 		gate.resolve({ context: "PLAN", view: VIEW });
 		await flush();
@@ -340,11 +397,13 @@ describe("omp extension", () => {
 		const t = tuiCtx(() => {
 			throw new Error("boom");
 		});
-		const { run, emit } = setup(async () => "PLAN", 1_000, {}, t.ctx);
+		const manual = manualTimers();
+		const { run, emit } = setup(async () => "PLAN", 1_000, { timers: manual.timers }, t.ctx);
 		emit("session_start");
 		emit("agent_start");
 		expect(await run()).toEqual({ message: PLAN_MSG });
-		await Bun.sleep(1);
+		// The deferred remount runs by hand; its throw is swallowed by the mount guard.
+		await manual.fire(0);
 	});
 
 	test("the frame timer renders while animating and once more after it stops", async () => {
@@ -1438,23 +1497,28 @@ describe("native binding (D-01, D-02, §7)", () => {
 		});
 	});
 
-	// Real timers on purpose: the default backoff is a wall-clock wait, and the abort must cut it short, which a fake clock cannot show.
 	test("an abort during backoff stops with no further call", async () => {
 		const live = fakeModel("acme", "sol-1");
 		const { runtime } = fakeRuntime([live]);
-		// Aborts 10 ms into the real backoff; no injected sleep, so the production wait is what gets interrupted.
 		const flight = new AbortController();
-		const rec = recorder(() => {
-			setTimeout(() => flight.abort(), 10);
-			return reply([], { stopReason: "error", errorStatus: 429 });
-		});
+		const rec = recorder(() => reply([], { stopReason: "error", errorStatus: 429 }));
+		// The backoff wait holds until its signal aborts; the flight is aborted while that wait is in progress.
+		const backoff: number[] = [];
+		const sleep = (ms: number, signal: AbortSignal): Promise<void> => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			signal.addEventListener("abort", () => resolve(), { once: true });
+			backoff.push(ms);
+			flight.abort();
+			return promise;
+		};
 		const engine = await engineFor(
 			flightOf(live, runtime),
-			{ completeSimple: rec.complete, providerDefaults: {} },
+			{ completeSimple: rec.complete, providerDefaults: {}, sleep },
 			INTENT,
 			flight,
 		);
 		expect(await outcome(engine.complete("s", "u"))).toBe("AbortError");
+		expect(backoff).toHaveLength(1);
 		expect(rec.calls).toHaveLength(1);
 	});
 
@@ -1491,24 +1555,31 @@ describe("native binding (D-01, D-02, §7)", () => {
 		const { runtime } = fakeRuntime([live]);
 		const delays: number[] = [];
 		const rec = recorder(() => reply([], { stopReason: "error", errorStatus: 429 }));
-		const request: OmpPlanRequest = { ...flightOf(live, runtime), deadline: Date.now() + 500 };
-		const engine = await engineFor(request, {
-			completeSimple: rec.complete,
-			providerDefaults: {},
-			sleep: instantSleep(delays),
-		});
-		const uplift = await runUplift({
-			original: "add a widget",
-			complete: engine.complete,
-			report: engine.report,
-		});
-		expect(uplift).toMatchObject({
-			source: "fallback",
-			fallbackReason: "provider_error:429",
-			attempts: 1,
-		});
-		expect(rec.calls).toHaveLength(1);
-		expect(delays).toHaveLength(0);
+		// The clock is pinned, so the deadline 500 ms ahead is a fixed point the backoff cannot fit inside.
+		const FIXED_NOW = Date.UTC(2026, 9, 25);
+		setSystemTime(FIXED_NOW);
+		try {
+			const request: OmpPlanRequest = { ...flightOf(live, runtime), deadline: FIXED_NOW + 500 };
+			const engine = await engineFor(request, {
+				completeSimple: rec.complete,
+				providerDefaults: {},
+				sleep: instantSleep(delays),
+			});
+			const uplift = await runUplift({
+				original: "add a widget",
+				complete: engine.complete,
+				report: engine.report,
+			});
+			expect(uplift).toMatchObject({
+				source: "fallback",
+				fallbackReason: "provider_error:429",
+				attempts: 1,
+			});
+			expect(rec.calls).toHaveLength(1);
+			expect(delays).toHaveLength(0);
+		} finally {
+			setSystemTime();
+		}
 	});
 
 	test("flight validity is checked before dispatch and after the answer", async () => {

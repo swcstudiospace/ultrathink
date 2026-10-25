@@ -28,12 +28,13 @@ describe("claimTurn", () => {
 
 	test("a claim older than 24h is pruned so the key can be claimed again", () => {
 		const stateDir = tempDir();
-		expect(claimTurn(stateDir, "s1:p1")).toBe(true);
+		const now = Date.UTC(2026, 0, 1);
+		expect(claimTurn(stateDir, "s1:p1", now)).toBe(true);
 		const claims = join(stateDir, "claims");
-		const stale = (Date.now() - 25 * 60 * 60 * 1000) / 1000;
+		const stale = (now - 25 * 60 * 60 * 1000) / 1000;
 		for (const name of readdirSync(claims)) utimesSync(join(claims, name), stale, stale);
-		expect(claimTurn(stateDir, "s1:p1")).toBe(true);
-		expect(claimTurn(stateDir, "s1:p1")).toBe(false);
+		expect(claimTurn(stateDir, "s1:p1", now)).toBe(true);
+		expect(claimTurn(stateDir, "s1:p1", now)).toBe(false);
 	});
 
 	test("an unwritable state dir fails open", () => {

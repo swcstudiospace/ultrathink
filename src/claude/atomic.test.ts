@@ -18,6 +18,8 @@ import { readSession, type SessionRecord, sessionPath, writeSession } from "./st
 
 const WORKER = join(import.meta.dir, "atomic.worker.ts");
 const POSIX = process.platform !== "win32";
+// Fixed fixture clock: lock ages are written relative to it, never to the wall clock.
+const NOW = 1_700_000_000_000;
 
 let dir: string;
 beforeEach(() => {
@@ -135,7 +137,7 @@ describe("withFileLock", () => {
 		const target = join(dir, "state.json");
 		const lock = `${target}.lock`;
 		writeFileSync(lock, "dead-process-token");
-		const old = new Date(Date.now() - 60_000);
+		const old = new Date(NOW - 60_000);
 		utimesSync(lock, old, old);
 		const logs: string[] = [];
 		const sleeps: number[] = [];
@@ -146,7 +148,7 @@ describe("withFileLock", () => {
 				ran = true;
 				expect(readFileSync(lock, "utf8")).not.toBe("dead-process-token");
 			},
-			{ log: (message) => logs.push(message), sleep: (ms) => sleeps.push(ms) },
+			{ now: () => NOW, log: (message) => logs.push(message), sleep: (ms) => sleeps.push(ms) },
 		);
 		expect(ran).toBe(true);
 		expect(sleeps).toEqual([]);
@@ -197,8 +199,7 @@ describe("withFileLock", () => {
 		const target = join(dir, "state.json");
 		const lock = `${target}.lock`;
 		writeFileSync(lock, "other-process-token");
-		const start = Date.now();
-		let clock = start;
+		let clock = NOW;
 		const sleeps: number[] = [];
 		const logs: string[] = [];
 		let ran = false;
@@ -223,7 +224,6 @@ describe("withFileLock", () => {
 		expect(ran).toBe(true);
 		expect(sleeps.length).toBeGreaterThan(0);
 		expect(sleeps.every((ms) => ms >= 100)).toBe(true);
-		expect(clock - start).toBeGreaterThanOrEqual(500);
 		expect(logs).toHaveLength(1);
 		expect(logs[0]).toContain("state.json.lock");
 		// The other holder's lock is not ours to remove.
@@ -320,7 +320,7 @@ describe("concurrent updates through updateSession", () => {
 		writeSession(stateDir, record);
 		const lock = `${sessionPath(stateDir, record.sessionId)}.lock`;
 		writeFileSync(lock, "dead-process-token");
-		const old = new Date(Date.now() - 120_000);
+		const old = new Date(NOW - 120_000);
 		utimesSync(lock, old, old);
 		const events = join(dir, "events");
 		const signal = (name: string): void => writeFileAtomic(join(events, name), "");

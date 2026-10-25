@@ -29,6 +29,49 @@ import { planPrompt } from "./plan.ts";
 import type { PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 
+/** Timers the test fires by hand: the race and flight-limit timers arm here instead of on the real clock. */
+type ManualTimers = {
+	timers: {
+		setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+		clearTimeout(handle: NodeJS.Timeout | undefined): void;
+	};
+	/** Runs the oldest pending timer of `ms`, waiting until the code has armed one. */
+	fire: (ms: number) => Promise<void>;
+	/** Timers armed and neither fired nor cleared. */
+	pending: () => number;
+};
+
+function manualTimers(): ManualTimers {
+	const armed: Array<{ ms: number; run: () => void; handle: NodeJS.Timeout }> = [];
+	const live = new Set<NodeJS.Timeout>();
+	const waiting: Array<() => void> = [];
+	const timers: ManualTimers["timers"] = {
+		setTimeout: (run, ms) => {
+			// reason: the port's handle is opaque; the test tracks it by identity and never reads it
+			const handle = {} as NodeJS.Timeout;
+			armed.push({ ms, run, handle });
+			live.add(handle);
+			for (const wake of waiting.splice(0)) wake();
+			return handle;
+		},
+		clearTimeout: (handle) => {
+			if (handle) live.delete(handle);
+		},
+	};
+	const fire = async (ms: number): Promise<void> => {
+		const entry = armed.find((candidate) => live.has(candidate.handle) && candidate.ms === ms);
+		if (!entry) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+			return fire(ms);
+		}
+		live.delete(entry.handle);
+		entry.run();
+	};
+	return { timers, fire, pending: () => live.size };
+}
+
 describe("flight lifecycle (D-12)", () => {
 	const PENDING_RESULT = { message: expect.objectContaining({ customType: "ultrathink-pending" }) };
 	const aside = (content: string) => ({
@@ -630,7 +673,6 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				const planner = gated();
 				const h = setup(planner.plan, 1_000, outer.extra, {}, {}, true);
-				const startedAt = Date.now();
 				const oldPromise = h.run("A");
 				await untilStarted(planner);
 				let oldGateSettled = false;
@@ -640,7 +682,6 @@ describe("flight lifecycle (D-12)", () => {
 				h.emit("turn_start");
 				const nextPromise = h.run("B");
 				expect(await oldPromise).toBeUndefined();
-				expect(Date.now() - startedAt).toBeLessThan(10_000);
 				expect(oldGateSettled).toBe(false);
 				expect(planner.runs[0]?.signal.aborted).toBe(true);
 				expect(planner.runs[0]?.request.isCurrent?.()).toBe(false);
@@ -1087,6 +1128,7 @@ describe("flight lifecycle (D-12)", () => {
 
 	test("cancel-matrix reentrant abort events admit no new planner and schedule no later no-plan", async () => {
 		const planner = gated();
+		const manual = manualTimers();
 		const h = setup(
 			(request, signal, onEvent) => {
 				if (request.prompt === "A") {
@@ -1105,7 +1147,7 @@ describe("flight lifecycle (D-12)", () => {
 				return planner.plan(request, signal);
 			},
 			5,
-			{ maxRunMs: 40 },
+			{ maxRunMs: 40, timers: manual.timers },
 		);
 		const oldPromise = h.run("A");
 		await untilStarted(planner);
@@ -1119,11 +1161,10 @@ describe("flight lifecycle (D-12)", () => {
 		expect(planner.runs[1]?.signal.aborted).toBe(false);
 		expect(planner.runs[1]?.request.isCurrent?.()).toBe(false);
 		planner.runs[0]?.gate.resolve("LATE A");
-		// Real delay: both flights carry the product deadline as a real timer, so only wall-clock
-		// time proves no stray timer admits a new planner or delivers a later no-plan note.
-		await Bun.sleep(100);
 		await flush();
 		expect(await oldPromise).toBeUndefined();
+		// No flight deadline or race timer is left armed, so no stray timer can admit a planner or deliver a note.
+		expect(manual.pending()).toBe(0);
 		expect(h.sent).toEqual([]);
 		expect(planner.runs).toHaveLength(2);
 		expect(planner.runs[1]?.signal.aborted).toBe(false);
@@ -1135,6 +1176,7 @@ describe("flight lifecycle (D-12)", () => {
 		for (const event of ["session_switch", "session_shutdown"] as const) {
 			let h!: OmpTestHarness;
 			const planner = gated();
+			const manual = manualTimers();
 			h = setup(
 				(request, signal) => {
 					if (request.prompt === "A") {
@@ -1151,7 +1193,7 @@ describe("flight lifecycle (D-12)", () => {
 					return planner.plan(request, signal);
 				},
 				5,
-				{ maxRunMs: 40 },
+				{ maxRunMs: 40, timers: manual.timers },
 			);
 			const oldPromise = h.run("A");
 			await untilStarted(planner);
@@ -1167,11 +1209,10 @@ describe("flight lifecycle (D-12)", () => {
 			expect(planner.runs[0]?.signal.aborted).toBe(true);
 			expect(planner.runs[0]?.request.isCurrent?.()).toBe(false);
 			expect(planner.runs).toHaveLength(1);
-			// Real delay: the product deadline is a real timer, so only wall-clock time proves
-			// the cancelled new flight scheduled no timer that admits a planner or delivers NO_PLAN.
-			await Bun.sleep(100);
 			await flush();
 			expect(planner.runs).toHaveLength(1);
+			// The cancelled new flight left no deadline or race timer armed, so none can admit a planner later.
+			expect(manual.pending()).toBe(0);
 			expect(h.sent).toEqual([]);
 			h.emit("session_shutdown");
 			await flush();
@@ -1199,10 +1240,10 @@ describe("flight lifecycle (D-12)", () => {
 			let tracks = 0;
 			const events: ProgressEvent[] = [];
 			const oldCompleted = Promise.withResolvers<PlanResponse>();
-			// The race window is wall-clock time and decides only what a still-running prompt returns. This test pins
-			// cancellation, so the window is set past its budget: cancel settles the race first, and the timer is then cleared.
-			// At 10 ms a slow macOS run lets the race return the pending note before turn_start, which is valid but not this
-			// test's outcome.
+			// The race is held on the manual timer port and never fired: this test pins cancellation, and the flight's
+			// outcome (or the cancel) settles the race first, which clears the timer. Firing it by hand would return the
+			// pending note before turn_start, which is valid but not this test's outcome.
+			const manual = manualTimers();
 			const h = setup(
 				async (request, signal, onEvent) => {
 					if (request.prompt === "add a widget immediately") return { context: "PLAN B" };
@@ -1239,7 +1280,7 @@ describe("flight lifecycle (D-12)", () => {
 					return response;
 				},
 				60_000,
-				{ stateDir, config: () => config },
+				{ stateDir, config: () => config, timers: manual.timers },
 				{ cwd: root, model: live, ...runtime },
 			);
 			const oldPromise = h.run("add a widget");
@@ -1413,6 +1454,7 @@ describe("flight lifecycle (D-12)", () => {
 		const t = tuiCtx();
 		let calls = 0;
 		let signal: AbortSignal | undefined;
+		const manual = manualTimers();
 		const h = setup(
 			(_request, captured) => {
 				calls++;
@@ -1420,15 +1462,16 @@ describe("flight lifecycle (D-12)", () => {
 				return Promise.resolve("PLAN");
 			},
 			5,
-			{ maxRunMs: 40 },
+			{ maxRunMs: 40, timers: manual.timers },
 			t.ctx,
 		);
 		h.emit("session_start");
 		expect(await h.run()).toMatchObject({ message: { content: "PLAN" } });
 		expect(calls).toBe(1);
 		const line = t.line();
-		// Real delay: the product deadline is a real timer, so only wall-clock time proves it was cleaned up.
-		await Bun.sleep(100);
+		// The bar's remount, armed by session_start, is the only timer left: fire it so the count isolates the deadline.
+		await manual.fire(0);
+		expect(manual.pending()).toBe(0);
 		await flush();
 		expect(t.line()).toBe(line);
 		expect(h.sent).toEqual([]);
@@ -1443,6 +1486,7 @@ describe("flight lifecycle (D-12)", () => {
 		const t = tuiCtx();
 		let calls = 0;
 		let signal: AbortSignal | undefined;
+		const manual = manualTimers();
 		const h = setup(
 			(_request, captured) => {
 				calls++;
@@ -1450,15 +1494,16 @@ describe("flight lifecycle (D-12)", () => {
 				return Promise.reject(new Error("boom"));
 			},
 			5,
-			{ maxRunMs: 40 },
+			{ maxRunMs: 40, timers: manual.timers },
 			t.ctx,
 		);
 		h.emit("session_start");
 		expect(await h.run()).toBeUndefined();
 		expect(calls).toBe(1);
 		const line = t.line();
-		// Real delay: the product deadline is a real timer, so only wall-clock time proves it was cleaned up.
-		await Bun.sleep(100);
+		// The bar's remount, armed by session_start, is the only timer left: fire it so the count isolates the deadline.
+		await manual.fire(0);
+		expect(manual.pending()).toBe(0);
 		await flush();
 		expect(t.line()).toBe(line);
 		expect(h.sent).toEqual([]);
@@ -1471,18 +1516,18 @@ describe("flight lifecycle (D-12)", () => {
 
 	test("positive deadline early cancellation survives advancement unchanged", async () => {
 		const planner = gated();
-		const h = setup(planner.plan, 5, { maxRunMs: 40 });
+		const manual = manualTimers();
+		const h = setup(planner.plan, 5, { maxRunMs: 40, timers: manual.timers });
 		const oldPromise = h.run("A");
 		await untilStarted(planner);
 		h.emit("turn_start");
 		const nextPromise = h.run("B");
 		planner.runs[1]?.gate.resolve("PLAN B");
 		expect(await nextPromise).toMatchObject({ message: { content: "PLAN B" } });
-		// Real delay: the superseded flight's product deadline is real, so wall-clock time proves it stays silent.
-		await Bun.sleep(100);
 		planner.runs[0]?.gate.resolve("LATE A");
 		await flush();
 		expect(await oldPromise).toBeUndefined();
+		expect(manual.pending()).toBe(0);
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
 		expect(planner.runs[1]?.signal.aborted).toBe(false);
 		expect(h.sent).toEqual([]);
@@ -1492,14 +1537,14 @@ describe("flight lifecycle (D-12)", () => {
 
 	test("positive deadline provider winning before expiry delivers once with no late no-plan", async () => {
 		const planner = gated();
-		const h = setup(planner.plan, 1_000, { maxRunMs: 60 });
+		const manual = manualTimers();
+		const h = setup(planner.plan, 1_000, { maxRunMs: 60, timers: manual.timers });
 		const promise = h.run();
 		await untilStarted(planner);
 		planner.runs[0]?.gate.resolve("PLAN");
 		expect(await promise).toMatchObject({ message: { content: "PLAN" } });
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
-		// Real delay: the product deadline is a real timer, so only wall-clock time proves it was cleaned up.
-		await Bun.sleep(120);
+		expect(manual.pending()).toBe(0);
 		await flush();
 		expect(h.sent).toEqual([]);
 		expect(planner.runs[0]?.signal.aborted).toBe(false);

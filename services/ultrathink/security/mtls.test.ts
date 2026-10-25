@@ -175,6 +175,45 @@ function serverOptions(idleTimeoutSec: number) {
 	};
 }
 
+/** Timers the test fires by hand: the request deadline arms here instead of on the platform clock. */
+type ManualTimers = {
+	timers: {
+		setTimeout(fn: () => void): NodeJS.Timeout;
+		clearTimeout(handle: NodeJS.Timeout | undefined): void;
+	};
+	/** Runs the oldest pending timer, waiting until the server has armed one. */
+	fireNext: () => Promise<void>;
+};
+
+function manualTimers(): ManualTimers {
+	const pending: Array<{ run: () => void; handle: NodeJS.Timeout }> = [];
+	const waiting: Array<() => void> = [];
+	const timers: ManualTimers["timers"] = {
+		setTimeout: (run) => {
+			// reason: the port's handle is opaque; the test removes it by identity and never reads it
+			const handle = {} as NodeJS.Timeout;
+			pending.push({ run, handle });
+			for (const wake of waiting.splice(0)) wake();
+			return handle;
+		},
+		clearTimeout: (handle) => {
+			const index = pending.findIndex((entry) => entry.handle === handle);
+			if (index >= 0) pending.splice(index, 1);
+		},
+	};
+	const fireNext = async (): Promise<void> => {
+		const next = pending.shift();
+		if (!next) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+			return fireNext();
+		}
+		next.run();
+	};
+	return { timers, fireNext };
+}
+
 /** The TCP port a listener bound to, failing the test if it is not a TCP listener. */
 function boundPort(listener: net.Server): number {
 	const address = listener.address();
@@ -422,19 +461,19 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	});
 
 	test("closes a request that trickles past the per-request deadline", async () => {
-		// Bytes keep arriving every 20 ms, well inside the 300 ms window, so only the absolute deadline can close it.
-		const slow = await startMtlsServer(serverOptions(0.3), async () => new Response("unused"));
+		// One partial request and then silence: only the deadline its first byte armed can close it. The test fires
+		// that deadline by hand instead of waiting on the platform clock.
+		const manual = manualTimers();
+		const slow = await startMtlsServer(
+			{ ...serverOptions(0.3), timers: manual.timers },
+			async () => new Response("unused"),
+		);
 		try {
-			await new Promise<void>((resolve) => {
-				const client = edgeClient(slow.port);
-				let trickle: NodeJS.Timeout | undefined;
-				client.on("close", () => {
-					clearInterval(trickle);
-					resolve();
-				});
-				client.write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: ");
-				trickle = setInterval(() => client.write("a"), 20);
-			});
+			const client = edgeClient(slow.port);
+			const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
+			client.write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: ");
+			await manual.fireNext();
+			await closed;
 		} finally {
 			await slow.stop();
 		}

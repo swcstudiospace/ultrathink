@@ -440,14 +440,24 @@ describe("createTracking", () => {
 				return promise;
 			},
 		};
-		const started = performance.now();
-		const refs = await createTracking(
+		// The budget timer is armed on a test-held port: the test fires it by hand instead of waiting for budgetMs.
+		const armed = Promise.withResolvers<() => void>();
+		const timers = {
+			setTimeout: (fn: () => void) => {
+				armed.resolve(fn);
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		};
+		const tracking = createTracking(
 			makePlan(),
 			GRAPH,
 			undefined,
-			deps({ linear, notion: fakeNotion(), budgetMs: 20 }),
+			deps({ linear, notion: fakeNotion(), budgetMs: 20, timers }),
 		);
-		expect(performance.now() - started).toBeLessThan(1000);
+		const fireBudget = await armed.promise;
+		fireBudget();
+		const refs = await tracking;
 		expect(refs.status).toBe("partial");
 		expect(refs.linear.nodes.n1?.identifier).toBe("ENG-1");
 		expect(refs.errors.some((error) => error.includes("budget exhausted"))).toBe(true);
@@ -455,21 +465,25 @@ describe("createTracking", () => {
 
 	test("budgetMs 0 means no limit: a slow client still completes every row without a budget error", async () => {
 		const fast = fakeLinear();
+		// Each row stays in flight until the test opens the gate after the first call has entered.
+		const entered = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
 		const linear: ToolCaller = {
 			async call(name, args, signal) {
-				// Real delay on purpose: the abort timer under test is a real setTimeout, which fake timers would not exercise.
-				const { promise, resolve } = Promise.withResolvers<void>();
-				setTimeout(resolve, 40);
-				await promise;
+				entered.resolve();
+				await gate.promise;
 				return fast.call(name, args, signal);
 			},
 		};
-		const refs = await createTracking(
+		const tracking = createTracking(
 			makePlan(),
 			GRAPH,
 			undefined,
 			deps({ linear, notion: fakeNotion(), budgetMs: 0 }),
 		);
+		await entered.promise;
+		gate.resolve();
+		const refs = await tracking;
 		expect(refs.status).toBe("complete");
 		expect(refs.errors).toEqual([]);
 		expect(Object.keys(refs.linear.nodes).sort()).toEqual(["n1", "n2", "n3"]);

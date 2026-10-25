@@ -20,15 +20,13 @@ describe("request context", () => {
 		expect(currentRequestContext()).toBeUndefined();
 	});
 
-	test("is visible in a timer callback started inside the run", async () => {
-		// A real zero-delay timer on purpose: the point is that AsyncLocalStorage follows a native timer callback,
-		// which fake timers would not exercise. The promise resolves from the callback itself, so no duration is guessed.
-		const seen = await runWithRequestContext(
-			OUTER,
-			() =>
-				new Promise<RequestContext | undefined>((resolve) =>
-					setTimeout(() => resolve(currentRequestContext()), 0),
-				),
+	test("is visible in a native I/O callback started inside the run", async () => {
+		// The point is that AsyncLocalStorage follows a native callback. A file read's completion is that callback, so no
+		// timer is needed and no duration is guessed.
+		const seen = await runWithRequestContext(OUTER, () =>
+			Bun.file(import.meta.path)
+				.text()
+				.then(() => currentRequestContext()),
 		);
 		expect(seen).toEqual(OUTER);
 	});

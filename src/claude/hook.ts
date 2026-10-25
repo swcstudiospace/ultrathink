@@ -130,6 +130,8 @@ export interface HookDeps {
 	/** Host that asked for the brief and is named on the plan event. Defaults to Claude so existing callers stay stable. */
 	surface?: string;
 	now?: () => number;
+	/** Timer port for the budget and lookup deadlines; defaults to the platform timers. */
+	timers?: TimerPort;
 	log?: (message: string) => void;
 	/** Creates tracker rows through the MCP gateway before the prompt goes out; fail-open. */
 	track?: Tracker;
@@ -307,6 +309,17 @@ interface LookupInput {
 	now: () => number;
 }
 
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
+
 /**
  * Runs one evidence lookup with a hard deadline: the signal aborts at `timeoutMs` and the plan stops waiting shortly
  * after, so a seam that ignores its signal still cannot hold the prompt. A parent abort releases the waiter at once,
@@ -318,6 +331,7 @@ async function bounded<T>(
 	timeoutMs: number,
 	parent: AbortSignal,
 	fallback: (reason: string) => T,
+	timers: TimerPort,
 ): Promise<T> {
 	if (parent.aborted) return fallback("AbortError");
 	const local = new AbortController();
@@ -328,15 +342,18 @@ async function bounded<T>(
 		resolve(fallback("AbortError"));
 	};
 	parent.addEventListener("abort", release, { once: true });
-	const abortTimer = setTimeout(abort, timeoutMs);
-	const deadlineTimer = setTimeout(() => resolve(fallback("timeout")), timeoutMs + LOOKUP_GRACE_MS);
+	const abortTimer = timers.setTimeout(abort, timeoutMs);
+	const deadlineTimer = timers.setTimeout(
+		() => resolve(fallback("timeout")),
+		timeoutMs + LOOKUP_GRACE_MS,
+	);
 	try {
 		return await Promise.race([run(local.signal), deadline]);
 	} catch (error) {
 		return fallback(error instanceof Error && error.name !== "Error" ? error.name : "error");
 	} finally {
-		clearTimeout(abortTimer);
-		clearTimeout(deadlineTimer);
+		timers.clearTimeout(abortTimer);
+		timers.clearTimeout(deadlineTimer);
 		parent.removeEventListener("abort", release);
 	}
 }
@@ -385,6 +402,7 @@ function startRecall(
 			ms: input.now() - started,
 			reason,
 		}),
+		deps.timers ?? platformTimers,
 	);
 }
 
@@ -418,6 +436,7 @@ function startGround(deps: HookDeps, input: LookupInput): Promise<GroundOutcome>
 			datasets: 0,
 			reason,
 		}),
+		deps.timers ?? platformTimers,
 	);
 }
 
@@ -462,6 +481,7 @@ function startSkills(
 		teach.timeoutMs,
 		input.parent,
 		(reason) => ({ status: "error", skills: [], chars: 0, ms: input.now() - started, reason }),
+		deps.timers ?? platformTimers,
 	);
 }
 
@@ -525,6 +545,7 @@ export async function runPromptSubmit(
 	deps: HookDeps,
 ): Promise<PromptSubmitResult> {
 	const now = deps.now ?? Date.now;
+	const timers = deps.timers ?? platformTimers;
 	const emit = (event: ProgressEvent): void => {
 		try {
 			deps.progress?.(event);
@@ -651,7 +672,7 @@ export async function runPromptSubmit(
 	let session: KnowledgeSession | undefined;
 	const budget =
 		deps.config.claude.budgetMs > 0
-			? setTimeout(() => budgetController.abort(), deps.config.claude.budgetMs)
+			? timers.setTimeout(() => budgetController.abort(), deps.config.claude.budgetMs)
 			: undefined;
 	try {
 		const original = decision.text;
@@ -1230,7 +1251,7 @@ export async function runPromptSubmit(
 		throw error;
 	} finally {
 		session?.close();
-		clearTimeout(budget);
+		timers.clearTimeout(budget);
 		emit({
 			type: "end",
 			at: now(),

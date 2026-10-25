@@ -108,7 +108,7 @@ describe("writeRunState", () => {
 					{ label: "postgres", tradeoff: "scales out, more ops" },
 				]),
 				"sqlite",
-				Date.now(),
+				Date.UTC(2026, 9, 25, 12),
 			);
 
 		writeRunState({ store, runId: run.id, artifactDir });

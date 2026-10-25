@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	closeSync,
@@ -75,6 +75,7 @@ const tmp = (): string => {
 };
 afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+	setSystemTime();
 });
 
 const testEnv = (root: string): Record<string, string | undefined> => ({
@@ -1348,9 +1349,11 @@ describe("grok-bot answers", () => {
 		const lastPath = join(stateDir, "last.json");
 		const before = readFileSync(lastPath, "utf8");
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
-		const old = new Date(Date.now() - 60_000);
+		const FIXED = new Date("2026-01-01T00:00:00Z");
+		const old = new Date(FIXED.getTime() - 60_000);
 		utimesSync(`${lastPath}.lock`, old, old);
 		const lockMtime = statSync(`${lastPath}.lock`).mtimeMs;
+		setSystemTime(FIXED);
 		try {
 			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(
 				/could not refresh/,
@@ -1376,10 +1379,12 @@ describe("grok-bot answers", () => {
 		writeSession(stateDir, record);
 		const lastPath = join(stateDir, "last.json");
 		writeFileSync(`${lastPath}.lock`, "");
+		const FIXED = new Date("2026-01-01T00:00:00Z");
+		setSystemTime(FIXED);
 		expect(writeSession(stateDir, { ...record, at: 2 })).toMatch(/could not refresh/);
 		expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
 		expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe("");
-		const stale = new Date(Date.now() - 6_000);
+		const stale = new Date(FIXED.getTime() - 6_000);
 		utimesSync(`${lastPath}.lock`, stale, stale);
 		expect(writeSession(stateDir, { ...record, at: 4 })).toBeUndefined();
 		expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(4);

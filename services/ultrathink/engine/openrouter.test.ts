@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { runWithRequestContext } from "../obs/context.ts";
 import type { FinishedSpan, SpanSink } from "../obs/otel.ts";
 import { createCircuitBreaker } from "./breaker.ts";
@@ -266,14 +266,20 @@ describe("status handling", () => {
 	});
 
 	test("Retry-After accepts an HTTP date, clamped to the 0..20 s range", async () => {
-		const past = new Date(Date.now() - 60_000).toUTCString();
-		const future = new Date(Date.now() + 3_600_000).toUTCString();
-		const first = setup([status(429, { "retry-after": past }), completion("ok")]);
-		await first.complete("s", "u");
-		expect(first.sleeps).toEqual([0]);
-		const second = setup([status(503, { "retry-after": future }), completion("ok")]);
-		await second.complete("s", "u");
-		expect(second.sleeps).toEqual([20000]);
+		const FIXED = new Date("2026-01-01T00:00:00Z");
+		setSystemTime(FIXED);
+		try {
+			const past = new Date(FIXED.getTime() - 60_000).toUTCString();
+			const future = new Date(FIXED.getTime() + 3_600_000).toUTCString();
+			const first = setup([status(429, { "retry-after": past }), completion("ok")]);
+			await first.complete("s", "u");
+			expect(first.sleeps).toEqual([0]);
+			const second = setup([status(503, { "retry-after": future }), completion("ok")]);
+			await second.complete("s", "u");
+			expect(second.sleeps).toEqual([20000]);
+		} finally {
+			setSystemTime();
+		}
 	});
 
 	test("an unparseable Retry-After falls back to exponential backoff with jitter", async () => {

@@ -572,7 +572,7 @@ describe("worker", () => {
 			if (index === 0) {
 				env.store.db
 					.query("UPDATE run_leases SET holder = 'thief', expires_at = ? WHERE run_id = ?")
-					.run(Date.now() + 60_000, run.id);
+					.run(Date.UTC(2100, 0, 1), run.id);
 			}
 			return { text: "stolen output", tokensUsed: 10 };
 		});
@@ -598,7 +598,7 @@ describe("worker", () => {
 				// The new holder takes the expired lease and finishes the run while this call is in flight.
 				env.store.db
 					.query("UPDATE run_leases SET holder = 'thief', expires_at = ? WHERE run_id = ?")
-					.run(Date.now() + 60_000, run.id);
+					.run(Date.UTC(2100, 0, 1), run.id);
 				env.store.updateRun(run.id, { status: "complete", currentPhase: null });
 				throw new Error("provider unavailable");
 			}

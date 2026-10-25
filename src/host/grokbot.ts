@@ -210,6 +210,12 @@ function abortError(): Error {
 	return error;
 }
 
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): unknown;
+	clearTimeout(handle: unknown): void;
+};
+
 /**
  * On a journal hit returns the stored answer. On a miss writes the pending request, schedules `controller.abort()`
  * after `debounceMs` (so sibling requests of the same dependency level are collected in one pass) and rejects with an
@@ -219,9 +225,12 @@ export function createJournalCompleter(opts: {
 	dir: string;
 	controller?: AbortController;
 	debounceMs?: number;
+	/** Timer port for the debounce; defaults to the platform timers. */
+	timers?: TimerPort;
 	now?: () => number;
 }): JournalCompleter {
 	const missed: PendingRequest[] = [];
+	const timers = opts.timers ?? { setTimeout, clearTimeout };
 	let replayed = 0;
 	let scheduled = false;
 	const complete = async (system: string, user: string, signal?: AbortSignal): Promise<string> => {
@@ -238,7 +247,7 @@ export function createJournalCompleter(opts: {
 		if (!controller) throw abortError();
 		if (!scheduled) {
 			scheduled = true;
-			setTimeout(() => controller.abort(), opts.debounceMs ?? 250);
+			timers.setTimeout(() => controller.abort(), opts.debounceMs ?? 250);
 		}
 		const lifetime = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
 		if (lifetime.aborted) throw abortError();
@@ -628,6 +637,8 @@ export interface GrokbotPlanInput {
 	stateDir?: string;
 	env?: Record<string, string | undefined>;
 	debounceMs?: number;
+	/** Timer port for the debounce; defaults to the platform timers. */
+	timers?: TimerPort;
 	/** Re-run a planned session (after `answer --replace`); mints a new graph id. Without it a planned session is returned as is. */
 	replan?: boolean;
 	/** Plugin entry point; defaults to `planPrompt`. A test seam, never a behavior switch. */
@@ -682,7 +693,12 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 	});
 	rmSync(join(dir, "pending"), { recursive: true, force: true });
 	const controller = new AbortController();
-	const journal = createJournalCompleter({ dir, controller, debounceMs: input.debounceMs });
+	const journal = createJournalCompleter({
+		dir,
+		controller,
+		debounceMs: input.debounceMs,
+		timers: input.timers,
+	});
 	const restore = installDecisionsJournal(dir);
 	const resolution = hostResolution();
 	let response: PlanResponse;

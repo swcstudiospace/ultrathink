@@ -46,10 +46,11 @@ describe("isOmpSubagentSessionId", () => {
 
 	test("ignores nested sessions older than maxAgeMs", () => {
 		const path = writeSession("-proj/2026_parent/Worker.jsonl", "abc-1");
-		const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+		const now = Date.UTC(2026, 0, 1);
+		const old = new Date(now - 2 * 60 * 60 * 1000);
 		utimesSync(path, old, old);
-		expect(isOmpSubagentSessionId("abc-1", { root, maxAgeMs: 60 * 60 * 1000 })).toBe(false);
-		expect(isOmpSubagentSessionId("abc-1", { root, maxAgeMs: 3 * 60 * 60 * 1000 })).toBe(true);
+		expect(isOmpSubagentSessionId("abc-1", { root, maxAgeMs: 60 * 60 * 1000, now })).toBe(false);
+		expect(isOmpSubagentSessionId("abc-1", { root, maxAgeMs: 3 * 60 * 60 * 1000, now })).toBe(true);
 	});
 
 	test("a malformed session line is skipped without throwing", () => {

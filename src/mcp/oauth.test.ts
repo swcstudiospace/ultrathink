@@ -97,6 +97,18 @@ function seedOAuth(expiresAt: number, refreshToken = "rt-old") {
 	});
 }
 
+/** A lock clock that starts at the real time. Each injected wait advances it, so staleness is judged with no real delay. */
+function lockClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+	let clock = Date.now();
+	return {
+		now: () => clock,
+		sleep: (ms) => {
+			clock += ms;
+			return Promise.resolve();
+		},
+	};
+}
+
 describe("store", () => {
 	test("round trip, 0600 mode, corrupt reads empty", () => {
 		const store = {
@@ -141,57 +153,79 @@ describe("store", () => {
 
 	test("stale lock dir is removed", async () => {
 		mkdirSync(`${path}.lock`);
-		const old = new Date(Date.now() - 120_000);
+		const old = new Date(NOW - 120_000);
 		utimesSync(`${path}.lock`, old, old);
-		expect(await withStoreLock(path, async () => 42, { waitMs: 200, pollMs: 5 })).toBe(42);
+		expect(
+			await withStoreLock(path, async () => 42, { waitMs: 200, pollMs: 5, now: () => NOW }),
+		).toBe(42);
 	});
 
-	// Lock staleness is judged from real filesystem mtimes, so these lock tests need genuine (short) delays.
+	// Staleness is judged from the lock directory's real mtime against the injected clock, and waits go through the
+	// injected sleep. Each wait advances the clock, so the test reaches "stale" with no real delay.
 	test("a broken stale lock is never released by its previous holder", async () => {
 		const lock = `${path}.lock`;
+		const clock = lockClock();
 		const events: string[] = [];
+		const aRelease = Promise.withResolvers<void>();
+		const bStarted = Promise.withResolvers<void>();
+		const aDone = Promise.withResolvers<void>();
 		const a = withStoreLock(
 			path,
 			async () => {
 				events.push("a-start");
-				await Bun.sleep(1_200);
+				await aRelease.promise;
 				events.push("a-end");
 			},
 			{ staleMs: 60_000, pollMs: 5 },
 		);
-		await Bun.sleep(5);
-		const { promise: aDone, resolve: markADone } = Promise.withResolvers<void>();
 		const b = withStoreLock(
 			path,
 			async () => {
 				events.push("b-start");
-				await aDone;
-				await Bun.sleep(5);
+				bStarted.resolve();
+				await aDone.promise;
 				events.push(statSync(lock, { throwIfNoEntry: false }) ? "lock-held" : "lock-lost");
 			},
-			{ staleMs: 100, pollMs: 5, waitMs: 5_000 },
+			{ staleMs: 100, pollMs: 5, waitMs: 5_000, ...clock },
 		);
+		await bStarted.promise;
+		aRelease.resolve();
 		await a;
-		markADone();
+		aDone.resolve();
 		await b;
 		expect(events).toEqual(["a-start", "b-start", "a-end", "lock-held"]);
 		expect(statSync(lock, { throwIfNoEntry: false })).toBeUndefined();
 	});
 
-	test("heartbeat keeps a long-running holder from being judged stale", async () => {
+	test("a live holder is not judged stale while a waiter polls", async () => {
 		const events: string[] = [];
-		const opts = { staleMs: 500, pollMs: 10, waitMs: 10_000 };
+		const release = Promise.withResolvers<void>();
+		const polled = Promise.withResolvers<void>();
+		const frozen = Date.now();
+		let polls = 0;
+		const opts = {
+			staleMs: 500,
+			pollMs: 10,
+			waitMs: 10_000,
+			now: () => frozen,
+			sleep: () => {
+				polls += 1;
+				if (polls === 3) polled.resolve();
+				return Promise.resolve();
+			},
+		};
 		const a = withStoreLock(
 			path,
 			async () => {
 				events.push("a-start");
-				await Bun.sleep(1_200);
+				await release.promise;
 				events.push("a-end");
 			},
 			opts,
 		);
-		await Bun.sleep(5);
 		const b = withStoreLock(path, async () => void events.push("b-start"), opts);
+		await polled.promise;
+		release.resolve();
 		await Promise.all([a, b]);
 		expect(events).toEqual(["a-start", "a-end", "b-start"]);
 	});
@@ -539,15 +573,18 @@ describe("resolveAuthHeader", () => {
 		expect(fake.calls).toHaveLength(1);
 	});
 
-	test("refresh slower than staleMs still happens exactly once (heartbeat)", async () => {
+	test("a waiter on a slow refresh does not refresh a second time", async () => {
 		seedOAuth(NOW + 10_000);
 		let tokenCalls = 0;
-		// Real time on purpose: the lock's staleness compares Date.now() with the lock directory's filesystem
-		// mtime, which fake timers cannot advance. The refresh outlasts staleMs, so only the heartbeat
-		// (every staleMs / 3) stops the second caller from stealing the lock; the margins tolerate slow CI runners.
+		// The refresh is held on a gate and the waiter's lock polls go through an injected sleep, so no real time passes.
+		// The clock is fixed at NOW: the first caller's lock is never judged stale, so the waiter must read the token the
+		// first caller stored instead of stealing the lock.
+		const refreshed = Promise.withResolvers<void>();
+		const waiterPolled = Promise.withResolvers<void>();
+		let polls = 0;
 		const slowFetch = (async () => {
 			tokenCalls++;
-			await Bun.sleep(1_200);
+			await refreshed.promise;
 			return json({ access_token: "at-new", refresh_token: "rt-new", expires_in: 28_800 });
 		}) as unknown as typeof fetch;
 		const deps = {
@@ -555,12 +592,19 @@ describe("resolveAuthHeader", () => {
 			now: () => NOW,
 			storePath: path,
 			lock: { staleMs: 500, pollMs: 10, waitMs: 10_000 },
+			sleep: () => {
+				polls += 1;
+				if (polls === 3) waiterPolled.resolve();
+				return Promise.resolve();
+			},
 		};
-		const results = await Promise.all([
+		const results = Promise.all([
 			resolveAuthHeader("notion", deps),
 			resolveAuthHeader("notion", deps),
 		]);
-		expect(results).toEqual(["Bearer at-new", "Bearer at-new"]);
+		await waiterPolled.promise;
+		refreshed.resolve();
+		expect(await results).toEqual(["Bearer at-new", "Bearer at-new"]);
 		expect(tokenCalls).toBe(1);
 	});
 });

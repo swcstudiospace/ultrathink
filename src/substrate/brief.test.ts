@@ -1,12 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { emitEvent, fetchBrief } from "./brief.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = realFetch;
 });
+
+/** Controller-driven AbortSignal.timeout: each request budget the brief and event calls arm is a signal the test aborts. */
+type ControlledTimeouts = { armed: AbortController[]; restore: () => void };
+
+function controlledTimeouts(): ControlledTimeouts {
+	const armed: AbortController[] = [];
+	const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+		const controller = new AbortController();
+		armed.push(controller);
+		return controller.signal;
+	});
+	return { armed, restore: () => spy.mockRestore() };
+}
 
 function stubFetch(
 	handler: (url: string, init: RequestInit) => Response | Promise<Response>,
@@ -121,22 +134,26 @@ describe("fetchBrief", () => {
 	});
 
 	test("the request timeout still applies when the caller never aborts", async () => {
-		// Real timer: the request timeout is the platform AbortSignal.timeout, which a fake clock does not drive; 20 ms keeps it short.
-		globalThis.fetch = ((_url: string, init: RequestInit) =>
-			new Promise<Response>((_resolve, reject) => {
-				init.signal?.addEventListener("abort", () =>
-					reject(new DOMException("timed out", "TimeoutError")),
-				);
-			})) as unknown as typeof fetch;
-		const started = Date.now();
-		expect(
-			await fetchBrief(
-				{ repo: "a/b", signal: new AbortController().signal },
-				{ SUBSTRATE_TIMEOUT_MS: "20" },
-				URL_,
-			),
-		).toBe("");
-		expect(Date.now() - started).toBeLessThan(2_000);
+		// The request timeout is AbortSignal.timeout; the test swaps in a signal it aborts, so no platform clock runs.
+		const timeouts = controlledTimeouts();
+		try {
+			globalThis.fetch = ((_url: string, init: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					init.signal?.addEventListener("abort", () =>
+						reject(new DOMException("timed out", "TimeoutError")),
+					);
+					timeouts.armed.at(-1)?.abort(new DOMException("timed out", "TimeoutError"));
+				})) as unknown as typeof fetch;
+			expect(
+				await fetchBrief(
+					{ repo: "a/b", signal: new AbortController().signal },
+					{ SUBSTRATE_TIMEOUT_MS: "20" },
+					URL_,
+				),
+			).toBe("");
+		} finally {
+			timeouts.restore();
+		}
 	});
 
 	test("an already cancelled caller sends no request", async () => {
@@ -260,7 +277,6 @@ describe("emitEvent", () => {
 			return promise;
 		}) as unknown as typeof fetch;
 		const controller = new AbortController();
-		const started = performance.now();
 		const pending = emitEvent(
 			{ kind: "note", summary: "s" },
 			{ SUBSTRATE_TIMEOUT_MS: "30000" },
@@ -269,7 +285,6 @@ describe("emitEvent", () => {
 		);
 		controller.abort();
 		expect(await pending).toBe(false);
-		expect(performance.now() - started).toBeLessThan(5_000);
 	});
 
 	test("a live signal leaves the request unchanged", async () => {

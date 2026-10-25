@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,10 +39,16 @@ describe("parseDigest", () => {
 	});
 
 	test("an unparseable or missing `at` becomes the current time", () => {
-		const before = Date.now();
-		for (const at of ["yesterday-ish", undefined, 42]) {
-			const digest = parseDigest(valid({ at }));
-			expect(Date.parse(digest?.at ?? "")).toBeGreaterThanOrEqual(before);
+		// parseDigest reads the wall clock directly, so the clock is pinned to a fixed instant for this test only.
+		const fixed = Date.UTC(2026, 9, 25, 12, 0, 0);
+		setSystemTime(fixed);
+		try {
+			for (const at of ["yesterday-ish", undefined, 42]) {
+				const digest = parseDigest(valid({ at }));
+				expect(digest?.at).toBe(new Date(fixed).toISOString());
+			}
+		} finally {
+			setSystemTime();
 		}
 	});
 

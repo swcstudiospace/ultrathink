@@ -6,7 +6,7 @@
 // write waits for the socket to drain. The transport does not wait for a server acknowledgement, because
 // syslog over TCP has none.
 
-import type { Socket } from "bun";
+import type { Socket, TCPSocketConnectOptions } from "bun";
 import { networkFailure } from "./http.ts";
 import type { SendResult, SinkEnvelope, SinkKind, SinkTransport } from "./types.ts";
 
@@ -15,6 +15,8 @@ export interface SyslogTransportOptions {
 	readonly port: number;
 	readonly hostname: string;
 	readonly appName: string;
+	/** Opens the TCP connection; defaults to `Bun.connect`. A test double scripts the socket's writes and events. */
+	readonly socket?: ConnectFn;
 }
 
 interface Link {
@@ -22,6 +24,8 @@ interface Link {
 	/** Set while a send waits for a partial write to drain. Called with false when the link dies first. */
 	onDrain?: (drained: boolean) => void;
 }
+
+type ConnectFn = (options: TCPSocketConnectOptions<Link>) => Promise<Socket<Link>>;
 
 // local0 facility. audit is info (134), security is warning (132), alert is critical (130).
 const PRI: Readonly<Record<SinkKind, number>> = { audit: 134, security: 132, alert: 130 };
@@ -96,7 +100,12 @@ function awaitDrain(socket: Socket<Link>, signal: AbortSignal): Promise<boolean>
 }
 
 /** Opens a TCP connection. An abort rejects at once; a connection that completes after the abort is closed. */
-function connectLink(host: string, port: number, signal: AbortSignal): Promise<Socket<Link>> {
+function connectLink(
+	host: string,
+	port: number,
+	signal: AbortSignal,
+	connect: ConnectFn,
+): Promise<Socket<Link>> {
 	return new Promise<Socket<Link>>((resolve, reject) => {
 		let settled = false;
 		const onAbort = (): void => {
@@ -105,7 +114,7 @@ function connectLink(host: string, port: number, signal: AbortSignal): Promise<S
 			reject(new DOMException("syslog connect aborted", "AbortError"));
 		};
 		signal.addEventListener("abort", onAbort, { once: true });
-		Bun.connect<Link>({
+		connect({
 			hostname: host,
 			port,
 			data: { alive: true },
@@ -150,6 +159,7 @@ export function createSyslogTransport(opts: SyslogTransportOptions): SinkTranspo
 	assertHeaderField(opts.hostname, HOSTNAME_PATTERN, "hostname");
 	assertHeaderField(opts.appName, APP_NAME_PATTERN, "appName");
 	const { host, port, hostname, appName } = opts;
+	const connect: ConnectFn = opts.socket ?? ((options) => Bun.connect(options));
 	let live: Socket<Link> | undefined;
 
 	function dropLink(): void {
@@ -159,7 +169,7 @@ export function createSyslogTransport(opts: SyslogTransportOptions): SinkTranspo
 
 	async function socketFor(signal: AbortSignal): Promise<Socket<Link>> {
 		if (live?.data.alive) return live;
-		const fresh = await connectLink(host, port, signal);
+		const fresh = await connectLink(host, port, signal, connect);
 		// A concurrent send may have reconnected while this one was connecting; keep that link.
 		if (live?.data.alive) {
 			fresh.end();

@@ -49,7 +49,20 @@ const DROPPED_REQUEST_HEADERS: Record<string, true> = {
 	upgrade: true,
 };
 
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
+
 export interface MtlsServerOptions {
+	/** Timer port for the data-driven request deadline; defaults to the platform timers. */
+	timers?: TimerPort;
 	port: number;
 	certFile: string;
 	keyFile: string;
@@ -269,6 +282,7 @@ export async function startMtlsServer(
 	}
 	const idleMs = options.idleTimeoutSec * 1000;
 	const maxBodyBytes = options.maxBodyBytes;
+	const timers = options.timers ?? platformTimers;
 
 	/** Clears the request deadline of a socket once its response has finished. */
 	const disarmDeadline = new WeakMap<TLSSocket, () => void>();
@@ -300,12 +314,12 @@ export async function startMtlsServer(
 			socket.on("timeout", () => socket.destroy());
 			let deadline: NodeJS.Timeout | undefined;
 			const disarm = () => {
-				clearTimeout(deadline);
+				timers.clearTimeout(deadline);
 				deadline = undefined;
 			};
 			// The first byte of a request arms its deadline; the response finishing disarms it.
 			socket.on("data", () => {
-				deadline ??= setTimeout(() => socket.destroy(), idleMs);
+				deadline ??= timers.setTimeout(() => socket.destroy(), idleMs);
 			});
 			socket.once("close", disarm);
 			disarmDeadline.set(socket, disarm);

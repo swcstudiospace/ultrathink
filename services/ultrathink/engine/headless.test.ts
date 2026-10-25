@@ -183,12 +183,10 @@ function fakeClock(): FakeClock {
 	};
 }
 
+// The planner's chain is promise-driven: its job files are written with sync fs calls and its waits go through the fake
+// clock. A fixed run of microtask turns therefore settles every step the tests await, with no macrotask involved.
 const flush = async (): Promise<void> => {
-	for (let i = 0; i < 6; i++) {
-		const { promise, resolve } = Promise.withResolvers<void>();
-		setImmediate(resolve);
-		await promise;
-	}
+	for (let i = 0; i < 64; i++) await Promise.resolve();
 };
 
 interface Harness {

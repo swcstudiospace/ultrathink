@@ -393,21 +393,39 @@ function never(): Promise<HindsightResult<RecallHit[]>> {
 	return Promise.withResolvers<HindsightResult<RecallHit[]>>().promise;
 }
 
+/** Timers the test fires by hand: the budget is armed on this port, so no real time passes. */
+function manualTimers() {
+	const armed = Promise.withResolvers<() => void>();
+	return {
+		armed: armed.promise,
+		timers: {
+			setTimeout: (fn: () => void) => {
+				armed.resolve(fn);
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		},
+	};
+}
+
 describe("recallLessons: time budget", () => {
 	test("a Hindsight call that never answers is cut at config.teach.timeoutMs and the local match is used", async () => {
 		const { client } = fakeClient(never);
 		const { ctx, store } = setup({ client, teach: { timeoutMs: 40 } });
 		store.put(moment("local", { name: "flaky fetch retries" }));
-		const started = Date.now();
-		const outcome = await recallLessons({ query: "flaky fetch" }, ctx);
-		expect(Date.now() - started).toBeLessThan(1500);
-		expect(outcome).toMatchObject({ status: "used", source: "local" });
+		const { armed, timers } = manualTimers();
+		const outcome = recallLessons({ query: "flaky fetch" }, ctx, { timers });
+		(await armed)();
+		expect(await outcome).toMatchObject({ status: "used", source: "local" });
 	});
 
 	test("with nothing local, a timeout is an error that says so", async () => {
 		const { client } = fakeClient(never);
 		const { ctx } = setup({ client, teach: { timeoutMs: 40 } });
-		expect(await recallLessons({ query: "flaky fetch" }, ctx)).toMatchObject({
+		const { armed, timers } = manualTimers();
+		const outcome = recallLessons({ query: "flaky fetch" }, ctx, { timers });
+		(await armed)();
+		expect(await outcome).toMatchObject({
 			status: "error",
 			reason: "hindsight recall timed out",
 		});
@@ -419,12 +437,10 @@ describe("recallLessons: time budget", () => {
 		const controller = new AbortController();
 		controller.abort();
 		ctx.signal = controller.signal;
-		const started = Date.now();
 		expect(await recallLessons({ query: "flaky fetch" }, ctx)).toMatchObject({
 			status: "error",
 			reason: "hindsight recall timed out",
 		});
-		expect(Date.now() - started).toBeLessThan(500);
 	});
 });
 

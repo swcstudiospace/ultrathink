@@ -25,6 +25,17 @@ function trackingMap<T>(entries: Readonly<Record<string, T>> | undefined): Recor
 	return out;
 }
 
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
+
 export interface CreateTrackingDeps {
 	linear?: ToolCaller;
 	notion?: ToolCaller;
@@ -36,6 +47,8 @@ export interface CreateTrackingDeps {
 	/** Whole creation budget in ms; 0 = no limit (no abort timer is created). */
 	budgetMs: number;
 	now?: () => number;
+	/** Timer port for the creation budget; defaults to the platform timers. */
+	timers?: TimerPort;
 	log?: (message: string) => void;
 	/** Receives a `track` event after every creation, adoption pass and failure; errors thrown by it are ignored. */
 	progress?: ProgressSink;
@@ -339,6 +352,7 @@ export async function createTracking(
 	deps: CreateTrackingDeps,
 ): Promise<TrackingRefs> {
 	const now = deps.now ?? Date.now;
+	const timers = deps.timers ?? platformTimers;
 	const refs: TrackingRefs = {
 		graphId: plan.graphId,
 		status: "failed",
@@ -358,7 +372,8 @@ export async function createTracking(
 	if (refs.notion.taskUrl === undefined) delete refs.notion.taskUrl;
 	const controller = new AbortController();
 	const signal = controller.signal;
-	const timer = deps.budgetMs > 0 ? setTimeout(() => controller.abort(), deps.budgetMs) : undefined;
+	const timer =
+		deps.budgetMs > 0 ? timers.setTimeout(() => controller.abort(), deps.budgetMs) : undefined;
 	const emit = (error?: string) => {
 		if (!deps.progress) return;
 		try {
@@ -425,7 +440,7 @@ export async function createTracking(
 		// reason: the failure is recorded through fail() as a tracking error; the run continues to the status below
 		fail(`tracking: ${shortError(error)}`);
 	} finally {
-		clearTimeout(timer);
+		timers.clearTimeout(timer);
 	}
 	if (signal.aborted) fail("tracking: budget exhausted");
 	refs.status = trackingStatus(plan, refs, !!deps.linearTeam, !!deps.notionDataSource);

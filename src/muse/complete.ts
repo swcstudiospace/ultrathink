@@ -21,6 +21,17 @@ import type { MuseEffort } from "./types.ts";
 
 type MuseProvider = "meta" | "echo";
 
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
+
 export interface MuseCompleteOptions {
 	bin?: string;
 	/** Empty/whitespace omits `--model`: the CLI session default answers. */
@@ -30,6 +41,8 @@ export interface MuseCompleteOptions {
 	provider?: MuseProvider;
 	cwd?: string;
 	timeoutMs?: number;
+	/** Timer port for the timeout kill timer; defaults to the platform timers. */
+	timers?: TimerPort;
 	signal?: AbortSignal;
 	env?: Record<string, string | undefined>;
 }
@@ -123,9 +136,10 @@ export async function museComplete(
 
 	let timedOut = false;
 	let aborted = false;
+	const timers = opts.timers ?? platformTimers;
 	const timer =
 		opts.timeoutMs && opts.timeoutMs > 0
-			? setTimeout(() => {
+			? timers.setTimeout(() => {
 					timedOut = true;
 					proc.kill();
 				}, opts.timeoutMs)
@@ -146,7 +160,7 @@ export async function museComplete(
 		if (timedOut) throw new Error(`muse timed out after ${opts.timeoutMs}ms`);
 		return parseMuseJsonl(stdout, stderr, code);
 	} finally {
-		if (timer) clearTimeout(timer);
+		if (timer) timers.clearTimeout(timer);
 		opts.signal?.removeEventListener("abort", onAbort);
 		rmSync(dir, { recursive: true, force: true });
 	}

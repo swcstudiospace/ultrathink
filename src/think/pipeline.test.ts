@@ -133,6 +133,7 @@ describe("runThink concurrency", () => {
 		let active = 0;
 		let peak = 0;
 		const order: string[] = [];
+		const overlap = Promise.withResolvers<void>();
 		const result = await runThink({
 			uplift,
 			concurrency: 4,
@@ -142,7 +143,9 @@ describe("runThink concurrency", () => {
 				const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "?";
 				active++;
 				peak = Math.max(peak, active);
-				await new Promise((resolve) => setTimeout(resolve, 5));
+				// The siblings hold until both are running, so the overlap is reached by events, not by a stand-in duration.
+				if (active === 2) overlap.resolve();
+				if (id !== "n1") await overlap.promise;
 				order.push(id);
 				active--;
 				return `<node><thinking>t</thinking><conclusion>done ${id}</conclusion></node>`;

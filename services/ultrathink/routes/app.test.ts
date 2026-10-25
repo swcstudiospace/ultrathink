@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -932,6 +932,10 @@ describe("end to end with the real planner", () => {
 });
 
 describe("command surface", () => {
+	const FIXED = new Date("2026-10-19T12:00:00Z");
+	beforeEach(() => setSystemTime(FIXED));
+	afterEach(() => setSystemTime());
+
 	const GRAPH = {
 		goal: "Ship the CSV converter",
 		nodes: [
@@ -975,7 +979,7 @@ describe("command surface", () => {
 		});
 		writeSession(h.dir, {
 			sessionId,
-			at: Date.now(),
+			at: FIXED.getTime(),
 			result: {
 				xml: "<BUILD_PROMPT><ORIGINAL>Build the converter</ORIGINAL></BUILD_PROMPT>",
 				original: "Build the converter",
