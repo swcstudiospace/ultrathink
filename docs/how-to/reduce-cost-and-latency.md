@@ -43,7 +43,7 @@ To plan one message while planning is off, or a short reply, start it with `upli
 
 `bin/ultrathink` changes the host it detects, and Claude Code from a plain shell. Set `ULTRATHINK_HOST` (`claude-code`, `grok-build`, `hermes`, `muse` or `omp`) to change another host. See [Commands](../commands.md#skip-and-control-commands) for how each host shows the commands.
 
-A prompt longer than `uplift.maxChars` (20,000 characters) skips the spec call: it gets the minimal fallback spec and creates no rows. The Graph of Thought and the questions still run unless they are off.
+By default `uplift.maxChars` is `0`, so no prompt is cut short and every spec call runs. Set a positive value to cap the spec call: a longer prompt skips it, gets the minimal fallback spec and creates no rows. The Graph of Thought and the questions still run unless they are off.
 
 ## Make each plan smaller
 
@@ -93,7 +93,7 @@ Tracking creates the Linear and Notion rows before the agent sees the plan, so i
 
 | Key | Default | Effect |
 |---|---|---|
-| `track.budgetMs` | `60000` | Longest the planner spends creating rows. Rows it did not finish are left to the `ultrathink-kickoff` skill, which the agent runs. |
+| `track.budgetMs` | `0` | Longest the planner spends creating rows; `0` means no limit. Rows it did not finish are left to the `ultrathink-kickoff` skill, which the agent runs. |
 | `track.concurrency` | `6` | Tracker calls at once. |
 | `track.enabled` | `true` | `false`, or `ULTRATHINK_TRACK=0`, stops the planner creating rows. The kickoff skill still creates them in the agent's turn, which costs agent tokens instead. |
 | `/ultrathink-track off` | | Stops all row creation for this host, the kickoff skill included. |

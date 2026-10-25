@@ -390,6 +390,19 @@ describe("headless planner: limits and lifecycle", () => {
 		}
 	});
 
+	test("with output cap 0, a run ceiling with no headroom for the input refuses before any model call", async () => {
+		let requests = 0;
+		const counting: OpenRouterFetch = async () => {
+			requests += 1;
+			return new Response(JSON.stringify({ choices: [{ message: { content: "unreachable" } }] }), { status: 200 });
+		};
+		const h = setup({ runTokenCeiling: 10, modelMaxOutputTokens: 0 }, { completer: undefined, fetch: counting });
+		const sessionId = randomUUID();
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "failed", error: "budget_exceeded" } });
+		expect(requests).toBe(0);
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "budget_exceeded" });
+	});
+
 	test("a response without usage, or with only some counts, keeps the estimate in the ledger so the ceiling still ends the job", async () => {
 		const shapes: Array<Record<string, unknown> | undefined> = [undefined, { prompt_tokens: 10 }, { completion_tokens: 5, cost: 0.001 }, { prompt_tokens: "x", completion_tokens: -1 }];
 		for (const usage of shapes) {
@@ -607,6 +620,44 @@ describe("headless planner: limits and lifecycle", () => {
 		gate.resolve();
 		await h.planner.result({ sessionId, waitSeconds: 30 });
 	});
+
+	test("a plan timeout of 0 starts no timer, so a zero-length wait never aborts the plan", async () => {
+		const gate = Promise.withResolvers<void>();
+		const model = fakeModel(gate.promise);
+		const h = setup({ planTimeoutMs: 0 }, { completer: model.complete });
+		const sessionId = randomUUID();
+		await startRunning(h, sessionId);
+		h.clock.fire(0);
+		gate.resolve();
+		const result = await h.planner.result({ sessionId, waitSeconds: 30 });
+		expect(result).toMatchObject({ ok: true, data: { status: "planned" } });
+	});
+
+	test("a reply cut at the output limit ends the job as failed with truncated", async () => {
+		const cut: OpenRouterFetch = async () =>
+			new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "1. Partial step" } }] }), { status: 200 });
+		const h = setup({}, { completer: undefined, fetch: cut });
+		const sessionId = randomUUID();
+		const started = await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
+	});
+
+	test("a clarify call cut at the output limit fails the job as truncated, even though the record still passes", async () => {
+		const script = scriptedModel();
+		const cutClarify: OpenRouterFetch = async (_url, init) => {
+			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+			const system = body.messages[0]?.content ?? "";
+			if (stageOf(system) === "clarify") {
+				return new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "{" } }] }), { status: 200 });
+			}
+			const content = script(system, body.messages[1]?.content ?? "");
+			return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+		};
+		const h = setup({}, { completer: undefined, fetch: cutClarify });
+		const sessionId = randomUUID();
+		const started = await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
+	});
 });
 
 describe("headless planner: client-mode fallback", () => {
@@ -704,6 +755,33 @@ describe("headless planner: call telemetry", () => {
 			expect("costUsd" in call).toBe(false);
 		}
 	});
+
+	test("a call cut at the output limit is billed: its usage reaches telemetry, the job totals and the ledger", async () => {
+		const seen: string[] = [];
+		const cut: OpenRouterFetch = async (url) => {
+			seen.push(url);
+			return new Response(
+				JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "partial" } }], usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 } }),
+				{ status: 200 },
+			);
+		};
+		const calls: PlannerCall[] = [];
+		const h = setup({}, { completer: undefined, fetch: cut, onCall: (call) => calls.push(call) });
+		const sessionId = randomUUID();
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
+		expect(seen.length).toBeGreaterThanOrEqual(1);
+		expect(calls).toHaveLength(seen.length);
+		for (const call of calls) {
+			expect(call.outcome).toBe("truncated");
+			expect(call.inputTokens).toBe(100);
+			expect(call.outputTokens).toBe(50);
+			expect(call.costUsd).toBeCloseTo(0.002, 6);
+		}
+		expect(jobFile(h.stateDir, sessionId).usage).toMatchObject({ calls: seen.length, inputTokens: 100 * seen.length, outputTokens: 50 * seen.length });
+		const runId = String(jobFile(h.stateDir, sessionId).runId);
+		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
+		expect(ledger.spentForRun(runId)).toBe(150 * seen.length);
+	});
 });
 
 describe("headless planner: upstream breaker", () => {
@@ -786,6 +864,37 @@ describe("headless planner: reasoning effort", () => {
 		const unset = await bodiesFor({});
 		expect(unset.length).toBeGreaterThanOrEqual(8);
 		for (const body of unset) expect("reasoning" in body).toBe(false);
+	});
+
+	test("sends no max_tokens key when the output cap is 0 and no ceiling applies", async () => {
+		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: 0, dailyTokenCeiling: 0 });
+		expect(bodies.length).toBeGreaterThanOrEqual(8);
+		for (const body of bodies) expect("max_tokens" in body).toBe(false);
+	});
+
+	test("with a ceiling and output cap 0, max_tokens is capped to the budget left and to 16000", async () => {
+		const ceiling = 100_000;
+		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: ceiling, dailyTokenCeiling: 0 });
+		expect(bodies.length).toBeGreaterThanOrEqual(8);
+		const inputEstimates = bodies.map((body) => {
+			const messages = body.messages as Array<{ content: string }>;
+			return Math.ceil(((messages[0]?.content.length ?? 0) + (messages[1]?.content.length ?? 0)) / 3);
+		});
+		bodies.forEach((body, index) => {
+			const maxTokens = body.max_tokens as number;
+			expect(Number.isInteger(maxTokens)).toBe(true);
+			expect(maxTokens).toBeGreaterThan(0);
+			expect(maxTokens).toBeLessThanOrEqual(16_000);
+			expect(maxTokens + (inputEstimates[index] ?? 0)).toBeLessThanOrEqual(ceiling);
+		});
+		// The first call runs alone against an empty ledger, so its cap is exact.
+		expect(bodies[0]?.max_tokens).toBe(Math.min(ceiling - (inputEstimates[0] ?? 0), 16_000));
+	});
+
+	test("a ceiling above the output bound still caps max_tokens at 16000", async () => {
+		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: 5_000_000, dailyTokenCeiling: 0 });
+		expect(bodies.length).toBeGreaterThanOrEqual(8);
+		for (const body of bodies) expect(body.max_tokens).toBe(16_000);
 	});
 });
 

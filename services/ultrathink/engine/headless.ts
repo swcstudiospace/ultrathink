@@ -135,6 +135,8 @@ interface Job extends JobFile {
 	finish: () => void;
 	/** Releases the plan slot taken from the fair-share pool; absent for starts without an admission. */
 	slotRelease?: () => void;
+	/** A model call was cut at its output limit, so the job cannot finish as planned. */
+	truncated?: boolean;
 }
 
 interface Outcome {
@@ -150,6 +152,11 @@ const POLL_AFTER_SEC = 5;
 const CHARS_PER_TOKEN = 3;
 const MAX_ERROR_CHARS = 300;
 const PLANNER_OWNER = "ultrathink-server-planner";
+/**
+ * Accounting allowance reserved for the reply when the output cap is unlimited (0). It is an estimate, not an output
+ * cap: a completion call without a cap sends no max_tokens.
+ */
+const RESERVATION_ALLOWANCE_TOKENS = 16000;
 /** Settled jobs whose file could not be written stay readable in memory up to this many; the oldest are dropped. */
 export const UNPERSISTED_JOBS_MAX = 50;
 const JOB_STATUSES: Record<string, true> = { running: true, planned: true, failed: true, invalid: true, skipped: true };
@@ -328,9 +335,20 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 	function meteredCompleter(job: Job, model: string): ClaudeCompleter {
 		return async (system, user, signal) => {
 			if (signal?.aborted || job.controller.signal.aborted) throw new DOMException("plan aborted", "AbortError");
-			const estimated = Math.ceil((system.length + user.length) / CHARS_PER_TOKEN) + config.modelMaxOutputTokens;
+			const inputEstimate = Math.ceil((system.length + user.length) / CHARS_PER_TOKEN);
+			let outputCap: number | undefined;
+			let estimated = 0;
 			let reservationId: number;
 			try {
+				const budget = ledger.headroom(job.runId);
+				if (config.modelMaxOutputTokens > 0) {
+					outputCap = config.modelMaxOutputTokens;
+				} else if (budget !== undefined) {
+					const derived = Math.min(budget.tokens - inputEstimate, RESERVATION_ALLOWANCE_TOKENS);
+					if (derived < 1) throw new CeilingError(budget.reason);
+					outputCap = derived;
+				}
+				estimated = inputEstimate + (outputCap ?? RESERVATION_ALLOWANCE_TOKENS);
 				reservationId = ledger.reserve({ runId: job.runId, phase: `model-${++job.seq}`, attempt: 1, estimatedTokens: estimated }).reservationId;
 			} catch (error) {
 				job.reason ??= error instanceof CeilingError ? "budget_exceeded" : "ledger_unavailable";
@@ -357,6 +375,25 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					// telemetry must never affect the job
 				}
 			};
+
+			/** Books one model call: its usage joins the job totals and the reservation settles to the actual tokens. */
+			const bill = (usage: OpenRouterUsage | undefined, reservation: number): void => {
+				job.usage.calls += 1;
+				if (usage) {
+					job.usage.inputTokens += usage.promptTokens ?? 0;
+					job.usage.outputTokens += usage.completionTokens ?? 0;
+					if (usage.costUsd !== undefined) job.usage.costUsd = (job.usage.costUsd ?? 0) + usage.costUsd;
+				}
+				const known = (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0);
+				// An endpoint that omits a count has not said the call was free: the reservation (the worst-case estimate) stays, so the ceilings keep counting.
+				const countsKnown = usage?.promptTokens !== undefined && usage.completionTokens !== undefined;
+				const actual = countsKnown ? known : Math.max(known, estimated);
+				try {
+					ledger.settle(reservation, Math.max(0, Math.round(actual)));
+				} catch {
+					// the reservation keeps counting, which only errs on the safe side
+				}
+			};
 			try {
 				const complete =
 					opts.completer ??
@@ -364,7 +401,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						apiKey: config.openRouterApiKey ?? "",
 						baseUrl: config.openRouterBaseUrl,
 						model,
-						maxOutputTokens: config.modelMaxOutputTokens,
+						maxOutputTokens: outputCap,
 						timeoutMs: config.modelTimeoutMs,
 						referer: config.publicOrigin,
 						...(config.modelReasoningEffort === undefined ? {} : { reasoningEffort: config.modelReasoningEffort }),
@@ -380,32 +417,25 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						},
 					});
 				const text = await complete(system, user, signal);
-				job.usage.calls += 1;
 				const { usage } = reported;
 				emit("ok", usage);
-				const known = (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0);
-				if (usage) {
-					job.usage.inputTokens += usage.promptTokens ?? 0;
-					job.usage.outputTokens += usage.completionTokens ?? 0;
-					if (usage.costUsd !== undefined) job.usage.costUsd = (job.usage.costUsd ?? 0) + usage.costUsd;
-				}
-				// An endpoint that omits a count has not said the call was free: the reservation (the worst-case estimate) stays, so the ceilings keep counting.
-				const countsKnown = usage?.promptTokens !== undefined && usage.completionTokens !== undefined;
-				const actual = countsKnown ? known : Math.max(known, estimated);
-				try {
-					ledger.settle(reservationId, Math.max(0, Math.round(actual)));
-				} catch {
-					// the reservation keeps counting, which only errs on the safe side
-				}
+				bill(usage, reservationId);
 				return text;
 			} catch (error) {
 				const failure = error instanceof OpenRouterError ? error.code : error instanceof Error && error.name === "AbortError" ? "aborted" : "engine_error";
-				emit(failure);
-				try {
-					ledger.abandon(reservationId);
-				} catch {
-					// as above
+				// A reply cut at its output limit reports what it cost, so that call is billed like a completed one.
+				const cut = error instanceof OpenRouterError ? error.usage : undefined;
+				emit(failure, cut);
+				if (cut) {
+					bill(cut, reservationId);
+				} else {
+					try {
+						ledger.abandon(reservationId);
+					} catch {
+						// as above
+					}
 				}
+				if (error instanceof OpenRouterError && error.code === "truncated") job.truncated = true;
 				const aborted = error instanceof OpenRouterError ? error.code === "aborted" : error instanceof Error && error.name === "AbortError";
 				if (!aborted) job.firstError ??= error instanceof OpenRouterError ? error.code : "engine_error";
 				throw error;
@@ -430,6 +460,8 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 
 	function judge(job: Job, response: PlanResponse): Outcome {
 		if (job.reason !== undefined || response.skipped === "aborted") return abortOutcome(job);
+		// A reply cut at its output limit is never a plan: runClarify swallows a cut clarify call, so the record can still pass.
+		if (job.truncated === true) return { status: "failed", error: "truncated" };
 		if (response.skipped !== undefined && !Object.hasOwn(ENGINE_SKIPS, response.skipped)) return { status: "skipped", error: response.skipped };
 		if (response.skipped !== undefined || response.statePath === undefined) return { status: "failed", error: job.firstError ?? response.skipped ?? "engine_error" };
 		const record = readSession(stateDir, job.sessionId);
@@ -484,13 +516,15 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 
 	async function execute(job: Job, prompt: string, model: string): Promise<void> {
 		const timer = new AbortController();
-		sleep(config.planTimeoutMs, timer.signal)
-			.then(() => {
-				if (timer.signal.aborted || job.settled) return;
-				job.reason ??= "timeout";
-				job.controller.abort();
-			})
-			.catch(() => {});
+		if (config.planTimeoutMs > 0) {
+			sleep(config.planTimeoutMs, timer.signal)
+				.then(() => {
+					if (timer.signal.aborted || job.settled) return;
+					job.reason ??= "timeout";
+					job.controller.abort();
+				})
+				.catch(() => {});
+		}
 		let outcome: Outcome;
 		try {
 			const response = await plan({ host: GROKBOT_ENGINE_HOST, session_id: job.sessionId, prompt, cwd }, plannerEnv(), {
@@ -544,7 +578,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (!isSessionId(sessionId)) return fail("invalid_session_id");
 			if (typeof input.prompt !== "string") return fail("invalid_input");
 			const prompt = cleanText(input.prompt);
-			if (prompt.length === 0 || prompt.length > config.maxInputChars) return fail("invalid_input");
+			if (prompt.length === 0 || (config.maxInputChars > 0 && prompt.length > config.maxInputChars)) return fail("invalid_input");
 			if (!enabled) return fail("disabled");
 			if (closed) return fail("not_ready");
 			const model = config.planningModel;

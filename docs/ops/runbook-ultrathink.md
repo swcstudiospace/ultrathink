@@ -137,9 +137,9 @@ These are read by `services/ultrathink/config/config.ts` and are not in the item
 | Variable | Default | Meaning |
 |---|---|---|
 | `ULTRATHINK_PORT` | `8795` | Listen port, 1024 to 65535. |
-| `ULTRATHINK_MAX_INPUT_CHARS` | `8000` | Longest request, 1 to 20000 characters. |
+| `ULTRATHINK_MAX_INPUT_CHARS` | `4000000` | Longest request in characters; `0` means no limit. The 1 MB request body limit applies first over HTTP. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | `20000` | Longest client-driven answer, 1 to 20000 characters. |
-| `ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` | `8000` | Output token limit for one model call, 256 to 32000. |
+| `ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` | `0` | Output token limit for one model call. `0` sends no configured cap: with no token ceiling set, the provider's own maximum applies; with `ULTRATHINK_RUN_TOKEN_CEILING` or `ULTRATHINK_DAILY_TOKEN_CEILING` set, each call's reply is capped to the tokens the ceilings still allow after its input, and never above 16000. A positive value is always sent as the cap; it must be 256 to 32000. |
 | `ULTRATHINK_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base. https only, no credentials, query or fragment. |
 | `ULTRATHINK_SERVER_PLANNING` | unset | `0` turns server-side planning off. `1` requires `OPENROUTER_API_KEY` and `ULTRATHINK_PLANNING_MODEL`, or the service refuses to start. Unset means on when both are set. |
 | `ULTRATHINK_SESSION_SECRET_PREVIOUS` | unset | Comma list of up to 4 earlier session secrets, each at least 32 characters, for sessions signed before a rotation. |
@@ -464,7 +464,7 @@ Common symptoms:
 | 503 with `{"error":"unavailable"}` and `Retry-After: 60` | nginx: the upstream is down, restarting or timing out (it saw a 502 or 504). | `systemctl status ultrathink-web`, `journalctl -u ultrathink-web`, and the release (section 4). |
 | 503 with any other body | The app itself (nginx does not rewrite it): not ready (`/readyz` lists the failing check), persistence unavailable (the body carries a `correlationId`), or the planner is busy (`maxConcurrentPlans` jobs running). | Check `journalctl`, `/readyz`, and wait for running plans; raise `ULTRATHINK_MAX_CONCURRENT_PLANS` (1 to 8) if busy is routine. |
 | `planner failed` (result status `failed`) | OpenRouter rejected or timed out: bad or exhausted key, unknown model id, 429 or 5xx from the provider, model timeout, plan timeout. | The result's `error` field and the error log say which. Check the key and credit in the OpenRouter dashboard, `ULTRATHINK_PLANNING_MODEL`, and `ULTRATHINK_MODEL_TIMEOUT_MS` and `ULTRATHINK_PLAN_TIMEOUT_MS`. A plan interrupted by a restart reports `interrupted`. |
-| `budget_exceeded` | The per-run or daily token ceiling was reached (`ULTRATHINK_RUN_TOKEN_CEILING`, `ULTRATHINK_DAILY_TOKEN_CEILING`). The day is a UTC calendar day. | Wait for the next UTC day, or raise the ceiling and restart. The ledger keeps abandoned reservations counted against the ceiling. |
+| `budget_exceeded` | The per-run or daily token ceiling was reached, or a call's input alone does not fit the budget left (`ULTRATHINK_RUN_TOKEN_CEILING`, `ULTRATHINK_DAILY_TOKEN_CEILING`). The day is a UTC calendar day. | Wait for the next UTC day, or raise the ceiling and restart. The ledger keeps abandoned reservations counted against the ceiling. |
 | `ultrathink-maintenance.service` fails with `status=226/NAMESPACE` ("Failed to set up mount namespacing: /var/backups/ultrathink: No such file or directory") | The backup directory does not exist. systemd builds the `ReadWritePaths=` mount namespace before any `ExecStartPre=` runs, so the unit cannot create it itself. | `install -m 0644 deploy/ultrathink-tmpfiles.conf /etc/tmpfiles.d/ultrathink.conf && systemd-tmpfiles --create /etc/tmpfiles.d/ultrathink.conf`, then start the unit again. |
 | Service flapping | Bad env file, port in use, failed sandbox call. | `systemctl status` shows the start limit (5 starts in 60 seconds). A `SIGSYS` kill means the syscall filter blocked a call: `journalctl -k \| grep -i seccomp`. Roll back the release (section 4). |
 | A client connects, then lists no tools or never calls any | The probe was refused and the client did not fall back, the tool list is stale (Grok caches it), or the rate limit fired. | Read the first connection in the request log (section 13). Grok only refreshes its tool list on re-authentication. |
@@ -557,7 +557,7 @@ Known gaps that are accepted for now. Each has an owner decision pending.
 - **Cookie name has no `__Host-` prefix (S6).** The cookie has `HttpOnly`, `SameSite=Strict` and `Secure`, but a sibling subdomain could still set a cookie with the same name.
 - **The in-memory limiter refuses new keys when full (S8).** At 10,000 tracked keys with nothing expired, new keys are rejected. A rotating-source attacker could therefore cause 429 for new addresses until entries expire; nginx limits and Cloudflare rules reduce the chance.
 - **Client ID Metadata Documents are not implemented.** Clients that identify themselves by a metadata URL instead of dynamic registration cannot connect. Dynamic client registration (RFC 7591) is the supported path.
-- **`POST /ultrathink` run API has no worker.** The web run API queues runs but nothing executes them (there is no worker entrypoint and no worker unit is shipped). Server-side planning for chat clients runs inside `ultrathink-web` instead; do not tell users the run API works.
+- **`POST /ultrathink` run API has no worker.** The web run API queues runs but nothing executes them (there is no worker entrypoint: `services/ultrathink/worker/main.ts` does not exist, and `deploy/ultrathink-worker.service` is a draft that is not installed and cannot start). Server-side planning for chat clients runs inside `ultrathink-web` instead; do not tell users the run API works.
 - **Abandoned ledger reservations count until pruned.** A run that never finished keeps its reserved tokens against the per-run and daily ceilings of its own day; the daily job removes the rows after the retention window.
 - **Smoke tests run unsandboxed.** The release script's smoke start uses the production secrets as the service user without the systemd sandbox, on loopback port 8796 for a few seconds, over TLS with the production leaves.
 - **Internal CA key on the host (phase 69).** The intermediate key that issues the 24 hour internal leaves stays on the VPS, so the renewal timer needs no person. A host compromise can mint leaves for the internal trust domain. Section 17 gives the scope and the recovery limits.
@@ -576,21 +576,21 @@ Measured on this VPS on 2026-10-18, one prompt, reasoning effort low:
 | claude-haiku-4.5 | 111 s | 0.089 USD |
 | grok-4.7 | 138 s | 0.153 USD |
 
-At the provider's default reasoning effort, grok-4.7 did not finish in 6 minutes. One prompt on one day is an indication, not a benchmark: re-measure after a model or prompt change. Keep the effort low unless plan quality demands more and the timeouts below are raised with it.
+At the provider's default reasoning effort, grok-4.7 did not finish in 6 minutes. One prompt on one day is an indication, not a benchmark: re-measure after a model or prompt change. The effort now defaults to `auto`, which omits the parameter so the provider's own default applies, with no timeout and no token ceiling, so a plan runs until it completes; set `ULTRATHINK_MODEL_REASONING_EFFORT` lower, or a positive timeout or ceiling, only when you want a limit.
 
 | Variable | Default | Effect |
 |---|---|---|
 | `ULTRATHINK_PLANNING_MODEL` | none (planning off without it) | OpenRouter model id used for every stage |
-| `ULTRATHINK_MODEL_REASONING_EFFORT` | `low` | Reasoning effort sent with each call; the main lever on latency and cost |
-| `ULTRATHINK_MODEL_TIMEOUT_MS` | 240000 | Per model call. A call that exceeds it is not retried: it fails with `timeout` and the whole plan ends as `failed`. Only 429, 5xx and network errors are retried (up to 2 times) |
-| `ULTRATHINK_PLAN_TIMEOUT_MS` | 600000 | Whole plan; a plan over this ends as `failed` |
+| `ULTRATHINK_MODEL_REASONING_EFFORT` | `auto` | Reasoning effort sent with each call; `auto` (the default) omits the parameter so the provider decides. The main lever on latency and cost |
+| `ULTRATHINK_MODEL_TIMEOUT_MS` | 0 (no timeout) | Per model call, when set above 0. A call that exceeds it is not retried: it fails with `timeout` and the whole plan ends as `failed`. Only 429, 5xx and network errors are retried (up to 2 times) |
+| `ULTRATHINK_PLAN_TIMEOUT_MS` | 0 (no timeout) | Whole plan, when set above 0; a plan over this ends as `failed` |
 | `ULTRATHINK_MAX_CONCURRENT_PLANS` | 2 | Plans running at once; further starts are refused as busy |
-| `ULTRATHINK_RUN_TOKEN_CEILING` | see `config.ts` | Token ceiling for one run |
-| `ULTRATHINK_DAILY_TOKEN_CEILING` | see `config.ts` | Token ceiling per UTC day |
+| `ULTRATHINK_RUN_TOKEN_CEILING` | 0 (no ceiling) | Token ceiling for one run, when set above 0. With no output cap configured, each model reply is capped to the tokens this ceiling still allows |
+| `ULTRATHINK_DAILY_TOKEN_CEILING` | 0 (no ceiling) | Token ceiling per UTC day, when set above 0. With no output cap configured, each model reply is capped to the tokens this ceiling still allows |
 
-The default per-call timeout is 240 s because grok-4.7 writes about 45 tokens per second, so its single large specification call takes 110 to 120 s; a timeout close to that would fail healthy plans. Every model call is logged as a `planner_call` event (fields `sessionId`, `model`, `ms`, `outcome`, `attempts`, `usage`) and counted in `ultrathink_planner_calls_total{outcome}` and `ultrathink_planner_call_duration_seconds`; use them to see which stage is slow before raising a timeout.
+The per-call timeout is off by default. grok-4.7 writes about 45 tokens per second, so its single large specification call takes 110 to 120 s at low effort; a positive timeout close to that would fail healthy plans. Every model call is logged as a `planner_call` event (fields `sessionId`, `model`, `ms`, `outcome`, `attempts`, `usage`) and counted in `ultrathink_planner_calls_total{outcome}` and `ultrathink_planner_call_duration_seconds`; use them to see which stage is slow before raising a timeout.
 
-Chat clients wait through long polling (`ultrathink_result` waits up to 40 s per poll), so a plan of a few minutes is normal; a plan that needs more than the 10 minute limit will never complete.
+Chat clients wait through long polling (`ultrathink_result` waits up to 40 s per poll), so a plan of a few minutes is normal; with no plan timeout a plan runs until it completes.
 
 Switching models safely:
 

@@ -15,6 +15,7 @@ export class CeilingError extends Error {
 
 export class LedgerWriteError extends Error {}
 
+/** A ceiling of 0 means unlimited; a positive ceiling refuses any reservation that would exceed it. */
 export interface LedgerLimits {
 	runTokenCeiling: number;
 	dailyTokenCeiling: number;
@@ -33,6 +34,12 @@ export interface Ledger {
 	spentForRun(runId: string): number;
 	/** `day` is a UTC "YYYY-MM-DD" string. */
 	spentForDay(day: string): number;
+	/**
+	 * Tokens left before the run or UTC-day ceiling binds, whichever is smaller; `reason` names it.
+	 * undefined when neither ceiling is enabled (a ceiling is enabled when > 0). Tokens may be zero
+	 * or negative when spend has reached or passed a ceiling. Spend is summed as reserve sums it.
+	 */
+	headroom(runId: string): { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY } | undefined;
 }
 
 const CREATE_TOKEN_LEDGER = `
@@ -116,12 +123,12 @@ export function createLedger(
 						const day = new Date(at).toISOString().slice(0, 10);
 
 						const runSpent = sumSpent(db, SPENT_FOR_RUN, input.runId);
-						if (runSpent + estimate > limits.runTokenCeiling) {
+						if (limits.runTokenCeiling > 0 && runSpent + estimate > limits.runTokenCeiling) {
 							throw new CeilingError(CEILING_RUN);
 						}
 
 						const daySpent = sumSpent(db, SPENT_FOR_DAY, day);
-						if (daySpent + estimate > limits.dailyTokenCeiling) {
+						if (limits.dailyTokenCeiling > 0 && daySpent + estimate > limits.dailyTokenCeiling) {
 							throw new CeilingError(CEILING_DAY);
 						}
 
@@ -166,6 +173,35 @@ export function createLedger(
 			} catch (error) {
 				throw new LedgerWriteError("token ledger read failed", { cause: error });
 			}
+		},
+
+		headroom(runId) {
+			let budget: { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY } | undefined;
+			try {
+				const at = now();
+				const day = new Date(at).toISOString().slice(0, 10);
+				const candidates: { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY }[] = [];
+				if (limits.runTokenCeiling > 0) {
+					candidates.push({
+						tokens: limits.runTokenCeiling - sumSpent(db, SPENT_FOR_RUN, runId),
+						reason: CEILING_RUN,
+					});
+				}
+				if (limits.dailyTokenCeiling > 0) {
+					candidates.push({
+						tokens: limits.dailyTokenCeiling - sumSpent(db, SPENT_FOR_DAY, day),
+						reason: CEILING_DAY,
+					});
+				}
+				for (const candidate of candidates) {
+					if (budget === undefined || candidate.tokens < budget.tokens) {
+						budget = candidate;
+					}
+				}
+			} catch (error) {
+				throw new LedgerWriteError("token ledger read failed", { cause: error });
+			}
+			return budget;
 		},
 	};
 }

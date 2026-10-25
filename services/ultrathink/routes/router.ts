@@ -413,6 +413,7 @@ function lazyLedger(store: Store, config: UltrathinkConfig, now: (() => number) 
 		abandon: (id) => ledger().abandon(id),
 		spentForRun: (runId) => ledger().spentForRun(runId),
 		spentForDay: (day) => ledger().spentForDay(day),
+		headroom: (runId) => ledger().headroom(runId),
 	};
 }
 
@@ -888,7 +889,8 @@ export function createApp(deps: RouterDeps): App {
 		const body = validateBody(parsed.value, {});
 		if (body === null) return fail(400, "invalid_input");
 
-		const input = sanitizeInput(body.input, config.maxInputChars);
+		// 0 means no input limit, as it does in headless.ts.
+		const input = sanitizeInput(body.input, config.maxInputChars > 0 ? config.maxInputChars : Number.MAX_SAFE_INTEGER);
 		if (!input.ok) {
 			if (input.code === "empty") return respond(200, USAGE);
 			if (input.code === "too_long") {

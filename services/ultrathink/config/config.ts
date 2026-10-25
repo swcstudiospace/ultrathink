@@ -125,19 +125,13 @@ export interface UltrathinkConfig {
 
 const DEFAULT_STATE_DIR = "/var/lib/ultrathink";
 const DEFAULT_PORT = 8795;
-const DEFAULT_MAX_INPUT_CHARS = 8000;
+// Far above any model context. 0 means no limit; MAX_BODY_BYTES still bounds a request.
+const DEFAULT_MAX_INPUT_CHARS = 4000000;
 const DEFAULT_MAX_ANSWER_CHARS = 20000;
-const MAX_BODY_BYTES = 65536;
-// Prompts and answers travel inside a JSON request body that Bun caps at MAX_BODY_BYTES, so both
-// char limits must fit it or Bun answers 413 before the app can say input_too_long/answer_too_long.
-// A length counts UTF-16 code units; each encodes to at most 3 UTF-8 bytes (an astral code point is
-// two units for four bytes). The rest is the allowance for the JSON-RPC envelope and JSON escaping,
-// sized so the ceiling is 20000 chars: the documented maximum, and the default answer limit.
-const MAX_UTF8_BYTES_PER_CHAR = 3;
-const BODY_ENVELOPE_BYTES = 5536;
-const MAX_BODY_CHARS = Math.floor((MAX_BODY_BYTES - BODY_ENVELOPE_BYTES) / MAX_UTF8_BYTES_PER_CHAR);
-const DEFAULT_RUN_TOKEN_CEILING = 150000;
-const DEFAULT_DAILY_TOKEN_CEILING = 1000000;
+const MAX_BODY_BYTES = 1048576;
+// 0 means unlimited for both token ceilings.
+const DEFAULT_RUN_TOKEN_CEILING = 0;
+const DEFAULT_DAILY_TOKEN_CEILING = 0;
 const MIN_SESSION_SECRET_LENGTH = 32;
 const MIN_CONNECTOR_KEY_LENGTH = 32;
 const MAX_PREVIOUS_SESSION_SECRETS = 4;
@@ -146,11 +140,12 @@ const PLANNING_MODEL_PATTERN = /^[A-Za-z0-9._:\/-]{1,80}$/;
 const MIN_OPENROUTER_KEY_LENGTH = 20;
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_MAX_CONCURRENT_PLANS = 2;
-const DEFAULT_MODEL_TIMEOUT_MS = 240000;
-const DEFAULT_PLAN_TIMEOUT_MS = 600000;
-const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8000;
+// 0 means unlimited; a positive value is an explicit cap.
+const DEFAULT_MODEL_TIMEOUT_MS = 0;
+const DEFAULT_PLAN_TIMEOUT_MS = 0;
+// 0 means no configured cap; with a token ceiling set, each call is capped to the budget left, and to at most 16000 tokens.
+const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 0;
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["minimal", "low", "medium", "high"];
-const DEFAULT_REASONING_EFFORT: ReasoningEffort = "low";
 // The formats Bun.password.verify accepts: PHC argon2 strings and modular-crypt bcrypt strings.
 const OWNER_HASH_FORMAT =
 	/^(?:\$argon2(?:id|i|d)\$v=\d+\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/]+\$[A-Za-z0-9+/]+|\$2[abxy]\$\d{2}\$[./A-Za-z0-9]{53})$/;
@@ -205,6 +200,21 @@ function readInteger(
 		throw new ConfigError(message);
 	}
 	return value;
+}
+
+/** Like readInteger, but `0` is accepted and means unlimited; any other value must lie in min..max. */
+function readLimit(
+	env: Record<string, string | undefined>,
+	name: string,
+	fallback: number,
+	min: number,
+	max: number,
+): number {
+	const raw = readOptional(env, name);
+	if (raw !== undefined && INTEGER_PATTERN.test(raw) && Number(raw) === 0) {
+		return 0;
+	}
+	return readInteger(env, name, fallback, min, max);
 }
 
 function readPublicOrigin(env: Record<string, string | undefined>): string {
@@ -297,18 +307,15 @@ function readConnectorKey(env: Record<string, string | undefined>): string | und
 	return key;
 }
 
-/** Unset means `low`: the pipeline already writes its reasoning out, so hidden reasoning only adds latency. `default` omits the parameter. */
+/** Unset and `auto` omit the `reasoning` parameter, so the provider chooses; `default` is an older alias of `auto`. */
 function readReasoningEffort(env: Record<string, string | undefined>): ReasoningEffort | undefined {
 	const name = "ULTRATHINK_MODEL_REASONING_EFFORT";
 	const raw = readOptional(env, name);
-	if (raw === undefined) {
-		return DEFAULT_REASONING_EFFORT;
-	}
-	if (raw === "default") {
+	if (raw === undefined || raw === "auto" || raw === "default") {
 		return undefined;
 	}
 	if (!REASONING_EFFORTS.includes(raw as ReasoningEffort)) {
-		throw new ConfigError(`${name} must be one of minimal, low, medium, high or default`);
+		throw new ConfigError(`${name} must be one of minimal, low, medium, high, auto or default`);
 	}
 	return raw as ReasoningEffort;
 }
@@ -659,29 +666,29 @@ export function loadConfig(
 		stateDir,
 		dbPath: `${stateDir}/ultrathink.sqlite`,
 		port: readInteger(env, "ULTRATHINK_PORT", DEFAULT_PORT, 1024, 65535),
-		maxInputChars: readInteger(
+		maxInputChars: readLimit(
 			env,
 			"ULTRATHINK_MAX_INPUT_CHARS",
 			DEFAULT_MAX_INPUT_CHARS,
 			1,
-			MAX_BODY_CHARS,
+			Number.MAX_SAFE_INTEGER,
 		),
 		maxAnswerChars: readInteger(
 			env,
 			"ULTRATHINK_MAX_ANSWER_CHARS",
 			DEFAULT_MAX_ANSWER_CHARS,
 			1,
-			MAX_BODY_CHARS,
+			200000,
 		),
 		maxBodyBytes: MAX_BODY_BYTES,
-		runTokenCeiling: readInteger(
+		runTokenCeiling: readLimit(
 			env,
 			"ULTRATHINK_RUN_TOKEN_CEILING",
 			DEFAULT_RUN_TOKEN_CEILING,
 			1,
 			Number.MAX_SAFE_INTEGER,
 		),
-		dailyTokenCeiling: readInteger(
+		dailyTokenCeiling: readLimit(
 			env,
 			"ULTRATHINK_DAILY_TOKEN_CEILING",
 			DEFAULT_DAILY_TOKEN_CEILING,
@@ -702,21 +709,21 @@ export function loadConfig(
 			1,
 			8,
 		),
-		modelTimeoutMs: readInteger(
+		modelTimeoutMs: readLimit(
 			env,
 			"ULTRATHINK_MODEL_TIMEOUT_MS",
 			DEFAULT_MODEL_TIMEOUT_MS,
 			5000,
 			600000,
 		),
-		planTimeoutMs: readInteger(
+		planTimeoutMs: readLimit(
 			env,
 			"ULTRATHINK_PLAN_TIMEOUT_MS",
 			DEFAULT_PLAN_TIMEOUT_MS,
 			30000,
 			1800000,
 		),
-		modelMaxOutputTokens: readInteger(
+		modelMaxOutputTokens: readLimit(
 			env,
 			"ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS",
 			DEFAULT_MODEL_MAX_OUTPUT_TOKENS,

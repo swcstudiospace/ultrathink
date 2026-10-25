@@ -14,6 +14,7 @@ import {
 	type OpenRouterCompleterOptions,
 	type OpenRouterErrorCode,
 	type OpenRouterUsage,
+	type OpenRouterTimers,
 } from "./openrouter.ts";
 
 const KEY = "sk-or-test-SECRETKEY-0123456789";
@@ -908,5 +909,91 @@ describe("client span", () => {
 		const { complete } = setup([completion("ok")], { spans: sink });
 		expect(await runWithRequestContext(CTX, () => complete("s", "u"))).toBe("ok");
 		expect(spans).toHaveLength(1);
+	});
+});
+
+/** Timers the test fires by hand: a scheduled callback runs only when fireAll is called, with no real or fake clock. */
+function manualTimers(): OpenRouterTimers & { fireAll(): void } {
+	const scheduled = new Set<() => void>();
+	return {
+		schedule(callback) {
+			scheduled.add(callback);
+			return () => {
+				scheduled.delete(callback);
+			};
+		},
+		fireAll() {
+			for (const callback of [...scheduled]) {
+				scheduled.delete(callback);
+				callback();
+			}
+		},
+	};
+}
+
+describe("unlimited limits and truncation", () => {
+	test("timeoutMs 0 sets no timer: a reply still pending after every timer has fired is not aborted", async () => {
+		const timers = manualTimers();
+		const gate = Promise.withResolvers<void>();
+		const held: Step = async (init) => {
+			await gate.promise;
+			return completion("late")(init);
+		};
+		const { complete, calls } = setup([held], { timeoutMs: 0, timers });
+		const pending = complete("s", "u");
+		for (let i = 0; calls.length === 0 && i < 100; i++) await Promise.resolve();
+		expect(calls).toHaveLength(1);
+		timers.fireAll();
+		expect((calls[0] as Call).init.signal?.aborted).toBe(false);
+		gate.resolve();
+		expect(await pending).toBe("late");
+	});
+
+	test("a positive timeoutMs aborts the pending reply when its timer fires", async () => {
+		const timers = manualTimers();
+		const { complete, calls } = setup([pendingUntilAbort], { timeoutMs: 10, timers });
+		const pending = complete("s", "u");
+		for (let i = 0; calls.length === 0 && i < 100; i++) await Promise.resolve();
+		expect(calls).toHaveLength(1);
+		timers.fireAll();
+		expect((await failure(pending)).code).toBe("timeout");
+	});
+
+	test("without maxOutputTokens (undefined or 0) the body has no max_tokens key", async () => {
+		for (const maxOutputTokens of [undefined, 0]) {
+			const { complete, calls } = setup([completion("ok")], { maxOutputTokens });
+			await complete("s", "u");
+			expect("max_tokens" in JSON.parse((calls[0] as Call).init.body as string)).toBe(false);
+		}
+	});
+
+	test("finish_reason length throws truncated, never returns the partial text, and is not retried", async () => {
+		const cut: Step = () =>
+			new Response(
+				JSON.stringify({ choices: [{ finish_reason: "length", message: { role: "assistant", content: "PARTIAL-TEXT" } }] }),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		const { complete, calls } = setup([cut, completion("never")]);
+		const error = await failure(complete("s", "u"));
+		expect(error.code).toBe("truncated");
+		expect(error.message).not.toContain("PARTIAL-TEXT");
+		expect(calls).toHaveLength(1);
+		expectNoLeak(error);
+	});
+
+	test("a cut reply carries its billed usage on the truncated error and is not retried", async () => {
+		const cut: Step = () =>
+			new Response(
+				JSON.stringify({
+					choices: [{ finish_reason: "length", message: { role: "assistant", content: "partial" } }],
+					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		const { complete, calls } = setup([cut, completion("never")]);
+		const error = await failure(complete("s", "u"));
+		expect(error.code).toBe("truncated");
+		expect(error.usage).toEqual({ promptTokens: 100, completionTokens: 50, costUsd: 0.002 });
+		expect(calls).toHaveLength(1);
 	});
 });

@@ -28,20 +28,25 @@ export type OpenRouterErrorCode =
 	| "bad_response"
 	| "empty"
 	/** The circuit breaker refused the call; no request was sent. `retryAfterMs` says when to try again. */
-	| "upstream_unavailable";
+	| "upstream_unavailable"
+	/** The reply was cut at the output limit (`finish_reason` length); stored as incomplete, never as a plan. */
+	| "truncated";
 
 export class OpenRouterError extends Error {
 	readonly code: OpenRouterErrorCode;
 	readonly status: number | undefined;
 	/** Set on `upstream_unavailable`: ms until the breaker hands out a slot again. */
 	readonly retryAfterMs: number | undefined;
+	/** Set on `truncated` only: the billed usage of a reply cut at its output limit. */
+	readonly usage: OpenRouterUsage | undefined;
 
-	constructor(code: OpenRouterErrorCode, status?: number, retryAfterMs?: number) {
+	constructor(code: OpenRouterErrorCode, status?: number, retryAfterMs?: number, usage?: OpenRouterUsage) {
 		super(status === undefined ? `openrouter ${code}` : `openrouter ${code} (HTTP ${status})`);
 		this.name = "OpenRouterError";
 		this.code = code;
 		this.status = status;
 		this.retryAfterMs = retryAfterMs;
+		this.usage = usage;
 	}
 }
 
@@ -58,19 +63,27 @@ export type OpenRouterFetch = (input: string, init: RequestInit) => Promise<Resp
 /** Same shape as `Completer` in src/grok/complete.ts. */
 export type OpenRouterCompleter = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 
+export interface OpenRouterTimers {
+	/** Runs callback after ms; the returned function cancels it. */
+	schedule(callback: () => void, ms: number): () => void;
+}
+
 export interface OpenRouterCompleterOptions {
 	apiKey: string;
 	/** Without a trailing slash, for example https://openrouter.ai/api/v1. */
 	baseUrl: string;
 	model: string;
-	maxOutputTokens: number;
+	/** Sent as `max_tokens`; unset or 0 omits the key (no output cap). */
+	maxOutputTokens?: number;
 	/** Sent as `reasoning: { effort }`; unset omits the parameter. */
 	reasoningEffort?: ReasoningEffort;
-	/** Applies to each HTTP attempt, not to the whole call including retries. */
+	/** Applies to each HTTP attempt, not to the whole call including retries; 0 means no timer. */
 	timeoutMs: number;
 	/** Sent as HTTP-Referer; pass the service origin. */
 	referer?: string;
 	fetch?: OpenRouterFetch;
+	/** Schedules each attempt's timeout; defaults to the global timers. Tests inject a manual scheduler instead of a fake clock. */
+	timers?: OpenRouterTimers;
 	/** Backoff wait; must resolve early (or the caller must re-check the signal) when `signal` aborts. */
 	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	/** Called once per successful completion; a throwing callback is ignored. */
@@ -114,7 +127,7 @@ export const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
-	if (signal?.aborted === true) {
+	if (signal?.aborted === true || ms <= 0) {
 		resolve();
 		return promise;
 	}
@@ -177,7 +190,7 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
 
 /** Upstream JSON; every field is checked where it is used. Optional chaining is safe on any JSON value. */
 interface CompletionReply {
-	choices?: Array<{ message?: { content?: unknown } | null } | null> | null;
+	choices?: Array<{ finish_reason?: unknown; message?: { content?: unknown } | null } | null> | null;
 	usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown } | null;
 }
 
@@ -213,6 +226,18 @@ function releaseOutcome(result: Attempt): ReleaseOutcome {
 	}
 }
 
+/** Billed usage a reply reports; each count is kept only when it is a valid number, since unknown is not zero. */
+function usageOf(reply: CompletionReply | null): OpenRouterUsage {
+	const cost = reply?.usage?.cost;
+	const promptTokens = count(reply?.usage?.prompt_tokens);
+	const completionTokens = count(reply?.usage?.completion_tokens);
+	return {
+		...(promptTokens === undefined ? {} : { promptTokens }),
+		...(completionTokens === undefined ? {} : { completionTokens }),
+		...(typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? { costUsd: cost } : {}),
+	};
+}
+
 /** Validates a 200 body; `null` content (tool call, refusal) counts as empty, a missing message or content as malformed. */
 function parseCompletion(raw: string): Attempt {
 	let reply: CompletionReply | null;
@@ -221,7 +246,11 @@ function parseCompletion(raw: string): Attempt {
 	} catch {
 		return { ok: false, error: new OpenRouterError("bad_response"), retry: false };
 	}
-	const content = reply?.choices?.[0]?.message?.content;
+	const choice = reply?.choices?.[0];
+	if (choice?.finish_reason === "length") {
+		return { ok: false, error: new OpenRouterError("truncated", undefined, undefined, usageOf(reply)), retry: false };
+	}
+	const content = choice?.message?.content;
 	const text = content === null ? "" : contentText(content);
 	if (text === undefined) {
 		return { ok: false, error: new OpenRouterError("bad_response"), retry: false };
@@ -229,18 +258,7 @@ function parseCompletion(raw: string): Attempt {
 	if (text.trim() === "") {
 		return { ok: false, error: new OpenRouterError("empty"), retry: false };
 	}
-	const cost = reply?.usage?.cost;
-	const promptTokens = count(reply?.usage?.prompt_tokens);
-	const completionTokens = count(reply?.usage?.completion_tokens);
-	return {
-		ok: true,
-		text,
-		usage: {
-			...(promptTokens === undefined ? {} : { promptTokens }),
-			...(completionTokens === undefined ? {} : { completionTokens }),
-			...(typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? { costUsd: cost } : {}),
-		},
-	};
+	return { ok: true, text, usage: usageOf(reply) };
 }
 
 /** Host of the endpoint URL, the only part of it a span may carry; undefined when the URL does not parse. */
@@ -252,11 +270,20 @@ function hostOf(baseUrl: string): string | undefined {
 	}
 }
 
+/** Global timers: the cancel function closes over its own handle, so no handle type is named or cast. */
+const globalTimers: OpenRouterTimers = {
+	schedule: (callback, ms) => {
+		const handle = setTimeout(callback, ms);
+		return () => clearTimeout(handle);
+	},
+};
+
 export function createOpenRouterCompleter(
 	opts: OpenRouterCompleterOptions,
 ): OpenRouterCompleter {
 	const fetchImpl: OpenRouterFetch = opts.fetch ?? ((input, init) => fetch(input, init));
 	const sleep = opts.sleep ?? defaultSleep;
+	const timers = opts.timers ?? globalTimers;
 	const spans = opts.spans;
 	const serverAddress = hostOf(opts.baseUrl);
 	const url = `${opts.baseUrl.replace(/\/+$/, "")}/chat/completions`;
@@ -277,10 +304,13 @@ export function createOpenRouterCompleter(
 		let timedOut = false;
 		const onCallerAbort = (): void => controller.abort();
 		caller?.addEventListener("abort", onCallerAbort, { once: true });
-		const timer = setTimeout(() => {
-			timedOut = true;
-			controller.abort();
-		}, opts.timeoutMs);
+		const cancelTimeout =
+			opts.timeoutMs > 0
+				? timers.schedule(() => {
+						timedOut = true;
+						controller.abort();
+					}, opts.timeoutMs)
+				: undefined;
 		const interrupted = (): Attempt | undefined => {
 			if (caller?.aborted === true) {
 				return { ok: false, error: new OpenRouterError("aborted"), retry: false };
@@ -342,7 +372,7 @@ export function createOpenRouterCompleter(
 			const code = status === 401 || status === 403 ? "auth" : "upstream";
 			return { ok: false, error: new OpenRouterError(code, status), retry: false };
 		} finally {
-			clearTimeout(timer);
+			cancelTimeout?.();
 			caller?.removeEventListener("abort", onCallerAbort);
 		}
 	}
@@ -392,7 +422,7 @@ export function createOpenRouterCompleter(
 				{ role: "system", content: system },
 				{ role: "user", content: user },
 			],
-			max_tokens: opts.maxOutputTokens,
+			...((opts.maxOutputTokens ?? 0) > 0 ? { max_tokens: opts.maxOutputTokens } : {}),
 			usage: { include: true },
 			...(opts.reasoningEffort === undefined ? {} : { reasoning: { effort: opts.reasoningEffort } }),
 		});

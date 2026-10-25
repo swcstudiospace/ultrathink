@@ -14,6 +14,7 @@ const REDACTED_STATE = "[state]";
 
 export interface JournalOptions {
 	stateDir: string;
+	/** The longest accepted prompt in characters; 0 means no limit. */
 	maxPromptChars: number;
 	maxAnswerChars: number;
 	/** Plugin entry point; defaults to `planPrompt`. A test seam, never a behavior switch. */
@@ -127,7 +128,7 @@ export async function startPlan(opts: JournalOptions, input: { prompt: unknown; 
 	if (!isSessionId(sessionId)) return fail("invalid_session_id");
 	if (typeof input.prompt !== "string") return fail("invalid_input");
 	const prompt = cleanText(input.prompt);
-	if (prompt.length === 0 || prompt.length > opts.maxPromptChars) return fail("invalid_input");
+	if (prompt.length === 0 || (opts.maxPromptChars > 0 && prompt.length > opts.maxPromptChars)) return fail("invalid_input");
 	const key = journalDir(opts.stateDir, sessionId);
 	const live = inFlight.get(key);
 	if (live) return live.prompt === prompt ? live.result : fail("session_conflict");
