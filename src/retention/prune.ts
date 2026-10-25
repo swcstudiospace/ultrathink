@@ -201,7 +201,7 @@ function writeCursor(stateDir: string, last: string): void {
 	try {
 		writeFileSync(join(stateDir, CURSOR_NAME), last, { mode: 0o600 });
 	} catch {
-		// hint only; the next run starts over
+		// reason: hint only; the next run starts over
 	}
 }
 
@@ -239,6 +239,7 @@ function sweepOrphans(sweep: Sweep, dir: string, names: string[], lastLockPath?:
 				sweep.result.orphans.push({ name, bytes: stat.size });
 				sweep.result.bytes += stat.size;
 			} catch (error) {
+				// reason: the failure is recorded on the sweep through fail(); the sweep goes on
 				fail(sweep, name, error);
 			}
 			continue;
@@ -257,6 +258,7 @@ function sweepOrphans(sweep: Sweep, dir: string, names: string[], lastLockPath?:
 			try {
 				withLockMutation(path, remove);
 			} catch (error) {
+				// reason: the failure is recorded on the sweep through fail(); the sweep goes on
 				fail(sweep, name, error);
 			}
 		}
@@ -533,6 +535,7 @@ export function pruneSessions(options: PruneOptions): PruneResult {
 			if (last !== undefined) writeCursor(options.stateDir, last);
 		}
 	} catch (error) {
+		// reason: the failure is recorded on the result through fail(); the prune returns what it did
 		fail(sweep, "prune", error);
 	}
 	return result;
@@ -553,7 +556,7 @@ export function pruneSessionsBestEffort(options: BestEffortOptions): PruneResult
 			try {
 				if (now - statSync(marker).mtimeMs < DAY_MS) return false;
 			} catch {
-				// no marker yet: first run
+				// reason: no marker yet: first run
 			}
 			writeFileSync(marker, "", { mode: 0o600 });
 			utimesSync(marker, now / 1000, now / 1000);

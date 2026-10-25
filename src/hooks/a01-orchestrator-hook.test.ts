@@ -34,7 +34,9 @@ function logOf(stateDir: string): string {
 }
 
 beforeEach(() => {
-	warn = spyOn(console, "warn").mockImplementation(() => {});
+	warn = spyOn(console, "warn").mockImplementation(() => {
+		// reason: console warnings are silenced in this suite
+	});
 });
 
 afterEach(() => {
@@ -48,7 +50,10 @@ afterEach(() => {
 describe("a01 orchestrator hook failure log", () => {
 	test("timeout appends a line to <stateDir>/a01-failures.log", async () => {
 		const stateDir = join(tempDir(), "state");
-		const out = await withA01OrchestratorTimeout(() => new Promise<string>(() => {}), {
+		const never = new Promise<string>(() => {
+			// reason: never settles; the timeout is what the test exercises
+		});
+		const out = await withA01OrchestratorTimeout(() => never, {
 			timeoutMs: 20,
 			stateDir,
 		});

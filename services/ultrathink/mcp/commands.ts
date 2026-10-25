@@ -417,7 +417,7 @@ function unquote(value: string): string {
 			const parsed: unknown = JSON.parse(value);
 			if (typeof parsed === "string") return parsed;
 		} catch {
-			// Not valid JSON: keep the text between the quotes.
+			// reason: Not valid JSON: keep the text between the quotes.
 		}
 		return value.slice(1, -1);
 	}

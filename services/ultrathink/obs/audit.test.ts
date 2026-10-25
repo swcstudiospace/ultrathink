@@ -41,7 +41,7 @@ afterEach(() => {
 		try {
 			chmodSync(dir, 0o700);
 		} catch {
-			// Already writable or gone.
+			// reason: already writable or gone; the cleanup below removes what is left
 		}
 		rmSync(dir, { recursive: true, force: true });
 	}

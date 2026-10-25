@@ -98,6 +98,7 @@ function serializeFields(
 		try {
 			raw = fields[key];
 		} catch {
+			// reason: an unreadable field is logged as "[unreadable]", so the field shows without its value
 			raw = "[unreadable]";
 		}
 		const value = serialize(raw, depth, seen, withStack);
@@ -140,7 +141,7 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
 			const line = JSON.stringify({ ...body, ts: stamp(now), level, event: clip(String(event)) });
 			write(line);
 		} catch {
-			// Logging must never take a request down.
+			// reason: Logging must never take a request down.
 		}
 	}
 

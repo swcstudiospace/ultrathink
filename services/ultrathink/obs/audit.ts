@@ -230,7 +230,10 @@ function cleanString(value: string): string {
 	return stripped.length > MAX_STRING ? `${stripped.slice(0, MAX_STRING - 1)}\u2026` : stripped;
 }
 
-function sanitizeFields(fields: Record<string, unknown> | undefined): Record<string, Primitive> {
+function sanitizeFields(
+	fields: Record<string, unknown> | undefined,
+	report?: (error: Error) => void,
+): Record<string, Primitive> {
 	const out: Record<string, Primitive> = {};
 	if (fields === null || typeof fields !== "object") return out;
 	let kept = 0;
@@ -243,6 +246,8 @@ function sanitizeFields(fields: Record<string, unknown> | undefined): Record<str
 		try {
 			raw = fields[rawKey];
 		} catch {
+			// reason: a getter that throws is skipped so the other fields are still written; the drop is reported
+			report?.(new Error("sanitizeFields: a field could not be read and was dropped"));
 			continue;
 		}
 		let value: Primitive;
@@ -281,7 +286,7 @@ function stamp(now: () => number): string {
 		const ms = now();
 		if (Number.isFinite(ms)) return new Date(ms).toISOString();
 	} catch {
-		// Fall through to the wall clock.
+		// reason: Fall through to the wall clock.
 	}
 	return new Date().toISOString();
 }
@@ -474,7 +479,7 @@ function eachLine(
 		try {
 			fs.closeSync(fd);
 		} catch {
-			// Nothing left to release.
+			// reason: Nothing left to release.
 		}
 	}
 }
@@ -901,7 +906,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 		try {
 			onError(error);
 		} catch {
-			// The error sink is best effort.
+			// reason: a throwing error sink must not change the append result or the log's state.
 		}
 	};
 
@@ -910,7 +915,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 		try {
 			onNotice({ kind, message });
 		} catch {
-			// The notice sink is best effort.
+			// reason: a throwing notice sink must not change the log's state.
 		}
 	};
 
@@ -983,7 +988,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 				try {
 					fs.renameSync(quarantine, path);
 				} catch {
-					// Stays at the quarantine path; the next start reports the missing boundary.
+					// reason: the file stays at the quarantine path; the next start reports the missing boundary.
 				}
 				expected = undefined;
 				return `the boundary the sealed segments need could not be written to ${path}; the damaged file was left in place`;
@@ -1023,7 +1028,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 	try {
 		fs.fchmodSync(probe, 0o600);
 	} catch {
-		// Not the owner: the mode set at creation stands.
+		// reason: Not the owner: the mode set at creation stands.
 	} finally {
 		fs.closeSync(probe);
 	}
@@ -1174,6 +1179,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 			try {
 				fs.truncateSync(path, before);
 			} catch {
+				// reason: a failed truncate is carried in `truncated`, which makes the next append re-read the file.
 				truncated = false;
 			}
 			refreshFingerprint();
@@ -1184,7 +1190,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 				try {
 					fs.closeSync(fd);
 				} catch {
-					// The data is already synced.
+					// reason: The data is already synced.
 				}
 			}
 		}
@@ -1314,7 +1320,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 				report(new Error(`audit log: ${event} is written by the log only; record dropped`));
 				return;
 			}
-			const line = appendLine(event, sanitizeFields(fields), "record");
+			const line = appendLine(event, sanitizeFields(fields, report), "record");
 			if (line === undefined) return;
 			commit(line);
 		},

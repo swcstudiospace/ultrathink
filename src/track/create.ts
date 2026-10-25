@@ -200,7 +200,7 @@ function collectSchemaNames(result: unknown): Set<string> {
 			try {
 				walk(JSON.parse(block), 0);
 			} catch {
-				// not JSON
+				// reason: not JSON
 			}
 		}
 	}
@@ -388,7 +388,7 @@ export async function createTracking(
 				...(error === undefined ? {} : { error }),
 			});
 		} catch {
-			// a broken progress sink must never affect tracking
+			// reason: a broken progress sink must never affect tracking
 		}
 	};
 	const emitIssue: IssueEmitter = (provider, nodeId, step, ref) => {
@@ -404,7 +404,7 @@ export async function createTracking(
 				url: ref.url,
 			});
 		} catch {
-			// a broken progress sink must never affect tracking
+			// reason: a broken progress sink must never affect tracking
 		}
 	};
 	const fail = (message: string) => {
@@ -425,6 +425,7 @@ export async function createTracking(
 		if (deps.linearTeam) await createLinear(plan, graph, refs, deps, signal, fail, emit, emitIssue);
 		if (deps.notionDataSource) await createNotion(plan, refs, deps, signal, fail, emit, emitIssue);
 	} catch (error) {
+		// reason: the failure is recorded through fail() as a tracking error; the run continues to the status below
 		fail(`tracking: ${shortError(error)}`);
 	} finally {
 		clearTimeout(timer);

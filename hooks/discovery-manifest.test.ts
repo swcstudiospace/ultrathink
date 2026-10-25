@@ -688,7 +688,13 @@ describe("bounded resource reading in a disposable checkout", () => {
 	);
 
 	test.each<[string, (root: string, outside: string) => void, string]>([
-		["a missing descriptor", () => {}, `containment: ${DESCRIPTOR_FILE} is missing`],
+		[
+			"a missing descriptor",
+			() => {
+				// reason: no fixture change; the descriptor is absent by default, which is the case under test
+			},
+			`containment: ${DESCRIPTOR_FILE} is missing`,
+		],
 		[
 			"a descriptor symlinked outside the checkout",
 			(root, outside) => {

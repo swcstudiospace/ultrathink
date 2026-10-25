@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { redactText } from "../../../src/teach/redact.ts";
 import { type Ledger, type LedgerLimits, LedgerWriteError, createLedger } from "../cost/ledger.ts";
 import { OpenRouterError } from "../engine/openrouter.ts";
 import { type Run, type Store, openStore } from "../store/store.ts";
@@ -712,5 +713,40 @@ describe("worker", () => {
 		await worker.runUntilAborted(controller.signal);
 		expect(sleeps).toEqual([500]);
 		expect(model.calls.length).toBe(0);
+	});
+
+	test("an untyped ledger failure is named by its operation and class, with no secret text", async () => {
+		const FIXTURE_SECRET = "sk-test-FIXTURE0000000000000000";
+		const env = makeEnv();
+		newRun(env);
+		const original = new Error(`ledger refused ${FIXTURE_SECRET}`);
+		const failing: Ledger = {
+			...env.ledger,
+			headroom: () => {
+				throw original;
+			},
+		};
+		const worker = createWorker({
+			store: env.store,
+			ledger: failing,
+			model: fakeModel(() => ({ text: "unused", tokensUsed: 1 })),
+			artifactDir: env.artifactDir,
+			holderId: "worker-a",
+			sleep: async () => {
+				// reason: tickOnce fails before any backoff, so sleep is never reached; the test must not wait.
+			},
+		});
+		let caught: unknown;
+		try {
+			await worker.tickOnce();
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toBeInstanceOf(Error);
+		const message = (caught as Error).message;
+		expect(message.startsWith("runPhase: ")).toBe(true);
+		expect(message).not.toContain(FIXTURE_SECRET);
+		expect(redactText(message, { home: "" })).toBe(message);
+		expect((caught as Error).cause).toBe(original);
 	});
 });

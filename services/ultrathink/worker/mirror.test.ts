@@ -230,7 +230,9 @@ describe("worker artifacts and abandon", () => {
 			artifactDir,
 			holderId: "worker-a",
 			maxModelAttempts,
-			sleep: async () => {},
+			sleep: async () => {
+				// reason: test double, the retry backoff is skipped so the test stays fast
+			},
 		});
 	}
 

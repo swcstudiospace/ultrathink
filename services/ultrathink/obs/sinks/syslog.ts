@@ -110,8 +110,9 @@ function connectLink(host: string, port: number, signal: AbortSignal): Promise<S
 			port,
 			data: { alive: true },
 			socket: {
-				// Syslog receivers do not reply, so inbound bytes are ignored. Bun requires a data callback.
-				data() {},
+				data() {
+					// reason: syslog receivers do not reply, so inbound bytes are ignored; Bun requires a data callback
+				},
 				// The socket accepts more bytes: resume a send that is waiting on a partial write.
 				drain(socket) {
 					const resume = socket.data.onDrain;

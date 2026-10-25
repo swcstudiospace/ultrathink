@@ -290,6 +290,7 @@ export function sanitizeInsightText(value: unknown, options: SanitizeOptions = {
 	try {
 		redacted = redactText(text, { home: options.home, repoRoot: options.repoRoot });
 	} catch {
+		// reason: a redaction failure falls back to a fixed placeholder so no raw text is emitted
 		redacted = "[redacted]";
 	}
 	return capCodePoints(redacted, Math.max(0, Math.floor(max)));
@@ -588,7 +589,7 @@ export async function readInsightSnapshot(
 				).length;
 			} catch (error) {
 				candidates = 0;
-				// A missing moments directory is an honestly empty store; any other read
+				// reason: A missing moments directory is an honestly empty store; any other read
 				// failure is disclosed instead of passing as an empty store.
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 					markPartial(
@@ -619,6 +620,7 @@ export async function readInsightSnapshot(
 			}
 		}
 	} catch {
+		// reason: the failure is disclosed through the partial marker; lessons are reset to empty
 		markPartial(PARTIAL_NOTE);
 		lessons = [];
 	}

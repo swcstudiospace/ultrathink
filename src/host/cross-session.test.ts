@@ -123,7 +123,9 @@ function baseDeps(): HookDeps {
 		clarify: async () => [],
 		emit: async () => true,
 		now: () => 1_000,
-		log: () => {},
+		log: () => {
+			// reason: test log sink; assertions read the emitted events, not this line
+		},
 		// Jev is always on in the hook; this suite has no ambient key and must not reach the network.
 		decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0" } },
 	};

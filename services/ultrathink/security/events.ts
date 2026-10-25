@@ -151,7 +151,7 @@ export class StreamingSecurityEventLogger extends ConsoleSecurityEventLogger {
 		try {
 			this.onEvent(event);
 		} catch {
-			// A stream failure must not change what the request sees.
+			// reason: A stream failure must not change what the request sees.
 		}
 	}
 }

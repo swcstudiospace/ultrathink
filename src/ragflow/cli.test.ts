@@ -125,7 +125,12 @@ describe("ragflow check", () => {
 	});
 
 	test("a timeout names the kind, exits 1 and never prints the key", async () => {
-		const { fetch } = fakeFetch(() => new Promise<Response>(() => {}));
+		const { fetch } = fakeFetch(
+			() =>
+				new Promise<Response>(() => {
+					// reason: the request must hang; the timeout under test ends it
+				}),
+		);
 		const result = await runRagflowCommand(
 			["check"],
 			deps(fetch, { config: config({ timeoutMs: 25 }) }),
@@ -253,7 +258,12 @@ describe("ragflow datasets", () => {
 		expect(auth.text).toContain("RAGFlow datasets: error (auth)");
 		expect(auth.text).not.toContain(KEY);
 
-		const hanging = fakeFetch(() => new Promise<Response>(() => {}));
+		const hanging = fakeFetch(
+			() =>
+				new Promise<Response>(() => {
+					// reason: the request must hang; the timeout under test ends it
+				}),
+		);
 		const timeout = await runRagflowCommand(
 			["datasets"],
 			deps(hanging.fetch, { config: config({ timeoutMs: 25 }) }),
@@ -385,7 +395,12 @@ describe("ragflow search", () => {
 	});
 
 	test("timeout and API failures exit 1 without the key or the question", async () => {
-		const hanging = fakeFetch(() => new Promise<Response>(() => {}));
+		const hanging = fakeFetch(
+			() =>
+				new Promise<Response>(() => {
+					// reason: the request must hang; the timeout under test ends it
+				}),
+		);
 		const timeout = await runRagflowCommand(
 			["search", QUESTION, "--dataset", "a"],
 			deps(hanging.fetch, { config: config({ datasetIds: ["a"], timeoutMs: 25 }) }),

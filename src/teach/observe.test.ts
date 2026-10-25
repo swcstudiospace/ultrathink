@@ -438,7 +438,10 @@ describe("observeDigest never throws", () => {
 			async (): Promise<string> => {
 				throw new Error("rejected");
 			},
-			(): Promise<string> => new Promise(() => {}),
+			(): Promise<string> =>
+				new Promise(() => {
+					// reason: the distiller must hang; the timeout under test ends it
+				}),
 		]) {
 			const h = harness();
 			h.ctx.complete = complete;
@@ -461,7 +464,10 @@ describe("observeDigest never throws", () => {
 		const h = harness();
 		const controller = new AbortController();
 		h.ctx.signal = controller.signal;
-		h.ctx.complete = () => new Promise(() => {});
+		h.ctx.complete = () =>
+			new Promise(() => {
+				// reason: the distiller must hang; the abort under test ends it
+			});
 		const pending = observeDigest(digest(), h.ctx, { capture: h.capture });
 		controller.abort();
 		expect((await pending).skipped).toBe("distiller failed");

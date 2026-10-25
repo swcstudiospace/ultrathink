@@ -170,7 +170,9 @@ describe("main", () => {
 				{
 					env: { SUBSTRATE_ROOT: substrate, SWARM_ROOT: swarm },
 					root,
-					log: () => {},
+					log: () => {
+						// reason: install output is not asserted here; the file state and the ran list are
+					},
 					nodeCandidates: [process.execPath],
 					run: (argv) => {
 						ran.push(argv);
@@ -210,7 +212,9 @@ describe("main", () => {
 			const code = main(["install", "--cursor-dir", cursorDir, "--target", target], {
 				env: { SUBSTRATE_ROOT: substrate, SWARM_ROOT: swarm },
 				root,
-				log: () => {},
+				log: () => {
+					// reason: install output is not asserted here; the exit code and the ran list are
+				},
 				nodeCandidates: [process.execPath],
 				run: (argv) => {
 					ran.push(argv);
@@ -268,7 +272,9 @@ describe("main", () => {
 				main(["remove", "--cursor-dir", cursorDir], {
 					env: {},
 					root,
-					log: () => {},
+					log: () => {
+						// reason: remove output is not asserted here; the foreign file check is
+					},
 					nodeCandidates: [process.execPath],
 				}),
 			).toBe(0);
@@ -400,7 +406,9 @@ describe("installer restores and locks", () => {
 			const deps = {
 				env: {},
 				root,
-				log: () => {},
+				log: () => {
+					// reason: install output is not asserted here; the lock behaviour is checked through the files
+				},
 				nodeCandidates: [process.execPath],
 				lockWaitMs: 0,
 			};
@@ -463,7 +471,9 @@ describe("installed planner hook", () => {
 				main(["install", "--cursor-dir", cursorDir], {
 					env: {},
 					root: checkout,
-					log: () => {},
+					log: () => {
+						// reason: install output is not asserted here; the staged hook is run next
+					},
 					nodeCandidates: [node],
 				}),
 			).toBe(0);

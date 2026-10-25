@@ -386,7 +386,9 @@ export async function runChildLifetimeScenario(scenario: {
 			timedOut = true;
 			try {
 				proc.kill("SIGKILL");
-			} catch {}
+			} catch {
+				// reason: the process may already have exited; the kill is best effort
+			}
 		}, 90_000);
 		let exited = false;
 		try {
@@ -510,7 +512,9 @@ export async function runChildLifetimeScenario(scenario: {
 			if (!exited) {
 				try {
 					proc.kill("SIGKILL");
-				} catch {}
+				} catch {
+					// reason: the process may already have exited; the kill is best effort
+				}
 			}
 		}
 	} finally {

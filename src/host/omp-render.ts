@@ -105,6 +105,7 @@ function card(rows: (room: number) => string[], p: Paint, options: FrameOptions)
 			try {
 				cached = frame(rows, width, p, options);
 			} catch {
+				// reason: a frame that cannot be drawn renders as no rows rather than throwing into the host
 				cached = [];
 			}
 			return cached;

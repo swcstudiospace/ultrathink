@@ -90,7 +90,10 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 /** A transport that never settles and ignores the abort signal. */
-const hangingResult = (): Promise<SendResult> => new Promise<SendResult>(() => {});
+const hangingResult = (): Promise<SendResult> =>
+	new Promise<SendResult>(() => {
+		// reason: test double, a transport that never settles
+	});
 
 const envelope = (n: number): SinkEnvelope => ({
 	kind: "audit",
@@ -392,7 +395,9 @@ describe("createSinkQueue", () => {
 			transport,
 			backoffMs: () => BACKOFF_MS,
 			requestTimeoutMs: REQUEST_TIMEOUT_MS,
-			onEvent: () => {},
+			onEvent: () => {
+				// reason: test double, no events are asserted in this test
+			},
 			setTimer: timers.setTimer,
 			clearTimer: timers.clearTimer,
 		};

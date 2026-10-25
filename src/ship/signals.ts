@@ -96,6 +96,7 @@ function latestVerification(cwd: string): GsdSignals["verification"] {
 			try {
 				files = readdirSync(join(phasesDir, phase));
 			} catch {
+				// reason: an unreadable phase directory yields no verification, the same as a phase without one
 				continue;
 			}
 			const file = files
@@ -159,6 +160,7 @@ export function latestMilestone(cwd: string): MilestoneEvidence | undefined {
 			try {
 				files = readdirSync(join(phasesDir, phase));
 			} catch {
+				// reason: an unreadable phase directory counts as missing, never as passed (see the comment below)
 				continue;
 			}
 			// A phase without a readable, status-bearing verification counts as "missing", never as silently passed.
@@ -279,6 +281,7 @@ function collectGsd(run: Run, cwd: string, tools: GsdToolsLookup): GsdSignals | 
 	try {
 		state = frontmatterStatus(readFileSync(join(cwd, ".planning", "STATE.md"), "utf8"));
 	} catch {
+		// reason: an unreadable STATE.md is carried as an undefined state, which the gate reads as no state
 		state = undefined;
 	}
 	// Roadmap counts fail open to 0/0; trust and state still gate shipping. Tools or node that are not installed are a gap.
@@ -324,6 +327,7 @@ function collectGsd(run: Run, cwd: string, tools: GsdToolsLookup): GsdSignals | 
 		if (typeof parsed.phase_count === "number") phaseCount = parsed.phase_count;
 		if (typeof parsed.completed_phases === "number") completedPhases = parsed.completed_phases;
 	} catch {
+		// reason: unparseable roadmap output keeps the 0/0 counts documented above; the gate reads trust and state
 		phaseCount = 0;
 	}
 	return { phaseCount, completedPhases, trusted, state, verification, ...archived, ...skipped };

@@ -420,7 +420,9 @@ describe("createSweeper", () => {
 				throw new Error("hook broke harder");
 			},
 			setTimer: () => ({}),
-			clearTimer: () => {},
+			clearTimer: () => {
+				// reason: test double, setTimer returns an inert handle so nothing needs clearing
+			},
 		});
 		expect(sweeper.runNow()).toBeUndefined();
 		expect(errors.map((error) => error.message)).toEqual(["hook broke"]);

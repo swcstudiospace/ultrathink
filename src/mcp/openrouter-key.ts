@@ -52,6 +52,7 @@ export async function verifyOpenRouterKey(key: string, deps: VerifyDeps = {}): P
 				signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
 			});
 		} catch {
+			// reason: a network error is retried; after the last attempt the loop falls through to the unreachable result
 			continue;
 		}
 		if (response.status === 401 || response.status === 403) {

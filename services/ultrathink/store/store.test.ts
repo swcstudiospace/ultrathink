@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
+import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { closeSync, mkdtempSync, openSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DuplicatePhaseError, openStore, type Store } from "./store.ts";
+import { redactText } from "../../../src/teach/redact.ts";
 
 const tempDirs: string[] = [];
 
@@ -194,5 +196,73 @@ describe("ultrathink store", () => {
 			closeSync(fd);
 		}
 		expect(() => openStore(path)).toThrow(/^sqlite quick_check failed: /);
+	});
+
+	test("a failed phase insert is wrapped under recordPhase without the echoed secret", () => {
+		const FIXTURE_SECRET = "sk-test-FIXTURE0000000000000000";
+		const realQuery = Database.prototype.query;
+		const failing = spyOn(Database.prototype, "query").mockImplementation(function (
+			this: Database,
+			sql: string,
+		) {
+			if (sql.includes("INSERT INTO phases")) {
+				return {
+					run: () => {
+						throw new Error(`driver echoed ${FIXTURE_SECRET}`);
+					},
+				} as never;
+			}
+			// reason: the spy forwards to the real statement; the generic query signature cannot be re-inferred inside a spy.
+			return realQuery.call(this, sql) as never;
+		});
+		let caught: unknown;
+		const store = openStore(tempDbPath());
+		try {
+			const run = store.createRun({ ownerId: "owner", request: "r", route: "default" });
+			store.recordPhase({
+				runId: run.id,
+				phase: "discover",
+				attempt: 1,
+				status: "complete",
+				output: "x",
+			});
+		} catch (error) {
+			caught = error;
+		} finally {
+			failing.mockRestore();
+			store.close();
+		}
+		expect(caught).toBeInstanceOf(Error);
+		const message = caught instanceof Error ? caught.message : "";
+		expect(message.startsWith("recordPhase: ")).toBe(true);
+		expect(message).not.toContain(FIXTURE_SECRET);
+		expect(redactText(message, { home: "" })).toBe(message);
+	});
+
+	test("a failed migration at open is wrapped under openStore without the echoed secret", () => {
+		const FIXTURE_SECRET = "sk-test-FIXTURE0000000000000000";
+		const realExec = Database.prototype.exec;
+		const failing = spyOn(Database.prototype, "exec").mockImplementation(function (
+			this: Database,
+			sql: string,
+		) {
+			if (sql.includes("CREATE TABLE IF NOT EXISTS runs")) {
+				throw new Error(`migration echoed ${FIXTURE_SECRET}`);
+			}
+			return realExec.call(this, sql);
+		});
+		let caught: unknown;
+		try {
+			openStore(tempDbPath());
+		} catch (error) {
+			caught = error;
+		} finally {
+			failing.mockRestore();
+		}
+		expect(caught).toBeInstanceOf(Error);
+		const message = caught instanceof Error ? caught.message : "";
+		expect(message.startsWith("openStore: ")).toBe(true);
+		expect(message).not.toContain(FIXTURE_SECRET);
+		expect(redactText(message, { home: "" })).toBe(message);
 	});
 });

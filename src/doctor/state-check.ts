@@ -137,7 +137,7 @@ export function checkState(deps: DoctorDeps): Finding[] {
 				try {
 					names = readdirSync(sessionsDir);
 				} catch (error) {
-					// A missing sessions directory is healthy and empty; any other listing failure means planning
+					// reason: A missing sessions directory is healthy and empty; any other listing failure means planning
 					// cannot save records, so it is an error.
 					const code =
 						typeof error === "object" &&
@@ -191,7 +191,7 @@ export function checkState(deps: DoctorDeps): Finding[] {
 			if (stats?.isFile() && now - stats.mtimeMs > ORPHAN_AGE_MS) orphans++;
 		}
 	} catch {
-		// Metadata-only diagnosis stays best-effort when the state root cannot be listed.
+		// reason: Metadata-only diagnosis stays best-effort when the state root cannot be listed.
 	}
 
 	// When the sessions directory itself is broken an error above already explains why nothing could be counted.

@@ -134,7 +134,7 @@ export function writeControl(dir: string, patch: ControlState): ControlState {
 	try {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 	} catch {
-		// writeJson reports the same failure below
+		// reason: writeJson reports the same failure below
 	}
 	return withFileLock(controlPath(dir), () => {
 		const next = { ...readControl(dir), ...patch };
@@ -325,7 +325,7 @@ export function withLastLock(lastPath: string, body: () => void): boolean {
 			// A live host PID must not keep a finished writer held, and a successor inode is untouched.
 			writeSync(ownedFd, "!", 0, "utf8");
 		} catch {
-			// Still attempt guarded removal when the completion marker could not be written.
+			// reason: Still attempt guarded removal when the completion marker could not be written.
 		}
 		try {
 			withLockMutation(lockPath, () => {
@@ -334,12 +334,12 @@ export function withLastLock(lastPath: string, body: () => void): boolean {
 				if (current.dev === owned.dev && current.ino === owned.ino) unlinkSync(lockPath);
 			});
 		} catch {
-			// The next acquisition or orphan sweep can remove the completed marker under the guard.
+			// reason: The next acquisition or orphan sweep can remove the completed marker under the guard.
 		} finally {
 			try {
 				closeSync(ownedFd);
 			} catch {
-				/* do not replace a body error with a cleanup error */
+				/* reason: do not replace a body error with a cleanup error */
 			}
 		}
 	}

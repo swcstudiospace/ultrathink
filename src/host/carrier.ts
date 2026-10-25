@@ -34,7 +34,7 @@ export function clearPlanCarrier(stateDir: string): void {
 	try {
 		unlinkSync(carrierPath(stateDir));
 	} catch {
-		// missing is the goal; any other failure must not block the prompt
+		// reason: missing is the goal; any other failure must not block the prompt
 	}
 }
 

@@ -95,6 +95,7 @@ describe("runThink", () => {
 				},
 			});
 		} catch (caught) {
+			// reason: the caught error is asserted below, so the rethrow is checked rather than hidden
 			reached = true;
 			expect(caught).toBe(err);
 		}

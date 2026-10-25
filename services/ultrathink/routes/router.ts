@@ -399,6 +399,14 @@ async function readJson(req: Request, maxBytes: number): Promise<JsonRead> {
 	}
 }
 
+/** The class or code of a failure, never its message: a driver message can echo a request body or a ledger row. */
+function failureLabel(error: unknown): string {
+	if (!(error instanceof Error)) return "non-error value";
+	const code = "code" in error ? error.code : undefined;
+	if (typeof code === "string") return code;
+	return error.name === "Error" ? error.constructor.name : error.name;
+}
+
 /**
  * Passes a body through unchanged and records whether its bytes are valid UTF-8. The body reader decodes leniently;
  * this keeps the strict decoding, so an invalid body is still refused with invalid_json.
@@ -416,6 +424,7 @@ function utf8Checked(body: ReadableStream<Uint8Array> | null): {
 				try {
 					decoder.decode(chunk, { stream: true });
 				} catch {
+					// reason: an invalid byte marks the body invalid; valid() reports it to the caller.
 					valid = false;
 				}
 			}
@@ -426,6 +435,7 @@ function utf8Checked(body: ReadableStream<Uint8Array> | null): {
 			try {
 				decoder.decode();
 			} catch {
+				// reason: an invalid byte marks the body invalid; valid() reports it to the caller.
 				valid = false;
 			}
 		},
@@ -586,7 +596,7 @@ function saveHistory(history: LoadHistory, path: string, logger: Logger): void {
 		try {
 			rmSync(temp, { force: true });
 		} catch {
-			// The temporary file stays; the next save writes under a new name.
+			// reason: The temporary file stays; the next save writes under a new name.
 		}
 	}
 }
@@ -961,6 +971,7 @@ export function createApp(deps: RouterDeps): App {
 		try {
 			integrityOk = store.quickCheck().ok;
 		} catch {
+			// reason: a failed check reports the store as not ok; integrityOk carries it to readiness.
 			integrityOk = false;
 		}
 	}
@@ -1120,12 +1131,14 @@ export function createApp(deps: RouterDeps): App {
 		try {
 			storeOk = store.ping();
 		} catch {
+			// reason: a store that cannot answer is reported as not ok in the readiness checks.
 			storeOk = false;
 		}
 		let stateDirOk = true;
 		try {
 			accessSync(config.stateDir, constants.W_OK | constants.X_OK);
 		} catch {
+			// reason: an unwritable state directory is reported as not ok in the readiness checks.
 			stateDirOk = false;
 		}
 		// A missing file is a fresh install; a file that exists must be readable.
@@ -1133,6 +1146,7 @@ export function createApp(deps: RouterDeps): App {
 		try {
 			accessSync(join(config.stateDir, OAUTH_STATE_FILE), constants.R_OK);
 		} catch (error) {
+			// reason: a missing OAuth state file is a fresh install; any other failure is reported as not ok.
 			const code = error instanceof Error && "code" in error ? error.code : undefined;
 			oauthOk = code === "ENOENT" && stateDirOk;
 		}
@@ -1191,8 +1205,9 @@ export function createApp(deps: RouterDeps): App {
 			usedTodayTokens = ledger.spentForDay(
 				new Date((deps.now ?? Date.now)()).toISOString().slice(0, 10),
 			);
-		} catch {
-			// A ledger that cannot answer leaves the usage out instead of hiding the rest.
+		} catch (error) {
+			// reason: A ledger that cannot answer leaves the usage out instead of hiding the rest.
+			logger.warn(`planningInfo: ${failureLabel(error)}`);
 		}
 		return {
 			serverPlanning: true,
@@ -1621,6 +1636,7 @@ export function createApp(deps: RouterDeps): App {
 		try {
 			onSweepResult(sweepTimed());
 		} catch (error) {
+			// reason: onSweepError logs the failure and counts it; the test hook has no caller to rethrow to.
 			onSweepError(error instanceof Error ? error : new Error(String(error)));
 		}
 	}

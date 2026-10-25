@@ -909,11 +909,15 @@ function observeLive(ctx: ExtensionContext | undefined): LiveTarget | undefined 
 	try {
 		const model = ctx?.model;
 		if (isModel(model)) return { model, source: "ctx.model" };
-	} catch {}
+	} catch {
+		// reason: a host model getter that throws means no live model from this source; the next source is tried
+	}
 	try {
 		const current = ctx?.models?.current?.();
 		if (isModel(current)) return { model: current, source: "ctx.models.current" };
-	} catch {}
+	} catch {
+		// reason: a host models getter that throws means no live model from this source; the result is undefined
+	}
 	return undefined;
 }
 
@@ -973,6 +977,7 @@ function trackQuery(models: OmpNativeRuntime["models"]): TrackedQuery {
 				try {
 					now = current.resolve(spec);
 				} catch {
+					// reason: a spec that cannot be resolved is treated as no current model, so the comparison reports a change
 					now = undefined;
 				}
 				if (!sameData(model, isModel(now) ? now : undefined)) return true;
@@ -1155,7 +1160,9 @@ export function createOmpExtension(
 				if (substrate !== undefined) store.setSubstrate(substrate);
 			});
 			pi.events?.emit("substrate:status-request", {});
-		} catch {}
+		} catch {
+			// reason: the substrate status channel is optional; a host without it shows no substrate state
+		}
 		try {
 			const live = join(homedir(), ".omp", "agent", "token-opt", "live.json");
 			if (existsSync(live)) {
@@ -1163,14 +1170,16 @@ export function createOmpExtension(
 				if (savings !== undefined) store.setSavings(savings);
 			}
 		} catch {
-			// a missing or unreadable snapshot must not block planning
+			// reason: a missing or unreadable snapshot must not block planning
 		}
 		try {
 			pi.events?.on("token-opt:savings", (data) => {
 				const savings = parseTokenSavings(data);
 				if (savings !== undefined) store.setSavings(savings);
 			});
-		} catch {}
+		} catch {
+			// reason: the savings channel is optional; a host without it keeps the file snapshot
+		}
 		let ui: ExtensionUI | undefined;
 		let tuiRef: TuiLike | undefined;
 		let timerStarted = false;
@@ -1183,7 +1192,9 @@ export function createOmpExtension(
 		const guard = (fn: () => void): void => {
 			try {
 				fn();
-			} catch {}
+			} catch {
+				// reason: a failing UI or store update must never break the host hook; the error is dropped by design
+			}
 		};
 		const refreshMcp = () => guard(() => store.setMcp(readMcp()));
 		const factory: WidgetFactory = (tui, theme) => {
@@ -1210,9 +1221,12 @@ export function createOmpExtension(
 					try {
 						mountQueued = false;
 						mountBar();
-					} catch {}
+					} catch {
+						// reason: the deferred mount is best effort; a failed mount leaves the bar unmounted until the next event
+					}
 				}, 0);
 			} catch {
+				// reason: a scheduler that cannot be armed clears the queued flag so the next event retries
 				mountQueued = false;
 			}
 		};
@@ -1365,6 +1379,7 @@ export function createOmpExtension(
 					gateway: full.gateway,
 				};
 			} catch {
+				// reason: an unreadable config yields no config snapshot; the card renders without config details
 				config = undefined;
 			}
 			return (options.teachContext ?? teachContext)({
@@ -1433,6 +1448,7 @@ export function createOmpExtension(
 			try {
 				details = toInsightCardSnapshot(snapshot);
 			} catch {
+				// reason: a snapshot that cannot be converted renders without card details
 				details = undefined;
 			}
 			const label = uiOneLine(
@@ -1462,6 +1478,7 @@ export function createOmpExtension(
 			try {
 				if (snapshot) text = formatInsightText(snapshot);
 			} catch {
+				// reason: a snapshot that cannot be formatted falls back to the fixed unsupported copy
 				text = "";
 			}
 			sendInsightText(text ? clampUiFallback(text, UI_UNSUPPORTED_COPY) : UI_UNSUPPORTED_COPY);
@@ -1475,7 +1492,9 @@ export function createOmpExtension(
 			teardownInsight(previous);
 			try {
 				ctx?.ui?.notify?.(UI_STALE_COPY, "info");
-			} catch {}
+			} catch {
+				// reason: the stale notice is advisory; the old dashboard is already closed
+			}
 		};
 
 		const openInsightUi = async (
@@ -1622,7 +1641,9 @@ export function createOmpExtension(
 							requestRender: () => {
 								try {
 									tui.requestRender();
-								} catch {}
+								} catch {
+									// reason: a host redraw failure is best effort; the dashboard state is already updated
+								}
 							},
 							rows: () => {
 								try {
@@ -1639,7 +1660,7 @@ export function createOmpExtension(
 					{ signal: lifetime.controller.signal },
 				);
 			} catch {
-				// Live host failures degrade to text; stale/aborted closes stay silent.
+				// reason: Live host failures degrade to text; stale/aborted closes stay silent.
 				if (isCurrent()) sendSnapshotFallback(lifetime.lastSnapshot ?? snapshot, lifetime);
 			} finally {
 				teardownInsight(lifetime);
@@ -1686,7 +1707,7 @@ export function createOmpExtension(
 			try {
 				for (const row of readActivity(dir)) activitySeen.add(row.id);
 			} catch {
-				// fail-open: a missing or unreadable receipt log must not block the poller
+				// reason: fail-open: the poller must not block on a missing or unreadable receipt log
 			}
 			const timer = setInterval(() => {
 				if (shutDown) return;
@@ -1713,7 +1734,7 @@ export function createOmpExtension(
 						);
 					}
 				} catch {
-					// fail-open: a receipt is display only
+					// reason: fail-open: a receipt is display only
 				}
 			}, 2_000);
 			timer.unref?.();
@@ -1935,6 +1956,7 @@ export function createOmpExtension(
 									try {
 										pi.sendUserMessage(text);
 									} catch {
+										// reason: a failed sendUserMessage clears the quick reply so the verb is not reported as sent
 										quick = undefined;
 									}
 									return;
@@ -1950,7 +1972,9 @@ export function createOmpExtension(
 									sessionId: ctx?.sessionManager?.getSessionId?.() || undefined,
 								});
 								ctx?.ui?.notify?.(reply, "info");
-							} catch {}
+							} catch {
+								// reason: a rejected verb must not throw into the host command runner; the reply is best effort
+							}
 						},
 					}),
 				);
@@ -1972,7 +1996,9 @@ export function createOmpExtension(
 					handler: async (args, ctx) => {
 						try {
 							await openInsightUi(args, ctx);
-						} catch {}
+						} catch {
+							// reason: a failed dashboard open must not reject into the host command runner
+						}
 					},
 				}),
 			);
@@ -2032,7 +2058,9 @@ export function createOmpExtension(
 									toSwarmSpawnCard(handles, plan),
 								);
 							else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
-						} catch {}
+						} catch {
+							// reason: a failed swarm card must not reject into the host command runner
+						}
 					},
 				}),
 			);
@@ -2153,6 +2181,7 @@ export function createOmpExtension(
 					onEvent,
 				).then(flight.finishFlight, () => flight.finishFlight({ context: "" }));
 			} catch {
+				// reason: a planner that cannot start finishes the flight with empty context so the prompt proceeds unplanned
 				flight.finishFlight({ context: "" });
 			}
 			return flight;
@@ -2171,6 +2200,7 @@ export function createOmpExtension(
 			try {
 				snapshot = live && { model: snapshotModel(live.model), source: live.source };
 			} catch {
+				// reason: a model that cannot be snapshotted launches without a model snapshot
 				snapshot = undefined;
 			}
 			const runtime = nativeRuntime(ctx);
@@ -2288,7 +2318,7 @@ export function createOmpExtension(
 					const control = readControl(dir);
 					captured = { config, control, intent: intentOf(config, control) };
 				} catch {
-					// fail-open: the planner loads its own config and control
+					// reason: fail-open: the planner loads its own config and control
 				}
 				// Named legacy routes retain their own effort settings; only native planning inherits the session level.
 				const namedEngine = captured.intent && captured.intent.engine !== "auto";

@@ -191,7 +191,9 @@ function edgeClient(port: number): tls.TLSSocket {
 		cert: edgeCreds.cert,
 		key: edgeCreds.key,
 	});
-	client.on("error", () => {});
+	client.on("error", () => {
+		// reason: test double, an error after the test is over is expected and not asserted
+	});
 	return client;
 }
 
@@ -443,7 +445,9 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 		try {
 			await new Promise<void>((resolve) => {
 				const raw = net.connect(stalled.port, "127.0.0.1");
-				raw.on("error", () => {});
+				raw.on("error", () => {
+					// reason: test double, the error of a stalled handshake is expected and not asserted
+				});
 				raw.on("close", () => resolve());
 			});
 		} finally {
@@ -458,7 +462,9 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 			const firstClose = new Promise<void>((resolve) => {
 				for (let i = 0; i <= MAX_CONNECTIONS; i++) {
 					const raw = net.connect(full.port, "127.0.0.1");
-					raw.on("error", () => {});
+					raw.on("error", () => {
+						// reason: test double, the error of a refused connection is expected and not asserted
+					});
 					raw.on("close", () => resolve());
 					held.push(raw);
 				}
@@ -496,7 +502,9 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 		// Sends no ClientHello, so the handshake never finishes. The idle timeout is long, so only stop() can close it.
 		const pending = await startMtlsServer(serverOptions(30), async () => new Response("unused"));
 		const raw = net.connect(pending.port, "127.0.0.1");
-		raw.on("error", () => {});
+		raw.on("error", () => {
+			// reason: test double, the error of the stalled handshake is expected and not asserted
+		});
 		const closed = new Promise<void>((resolve) => raw.on("close", () => resolve()));
 		await new Promise<void>((resolve) => raw.once("connect", () => resolve()));
 		// The TCP accept happens in the kernel and no event reaches this test, so a short pause lets it land before stop().

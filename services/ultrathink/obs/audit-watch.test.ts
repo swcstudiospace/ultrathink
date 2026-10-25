@@ -434,7 +434,9 @@ describe("timer and interval", () => {
 			stat: () => undefined,
 			acknowledged: () => ({ fingerprint: undefined, seq: 0, hash: GENESIS }),
 			scan: async () => ({ ok: true as const, records: 0, lastHash: GENESIS }),
-			onAlert: () => {},
+			onAlert: () => {
+				// reason: test double, no alert is asserted in this test
+			},
 		};
 		expect(() => createAuditWatch({ ...base, intervalMs: 99 })).toThrow(RangeError);
 		expect(() => createAuditWatch({ ...base, intervalMs: 1001 })).toThrow(RangeError);
@@ -459,12 +461,16 @@ describe("timer and interval", () => {
 			stat: () => undefined,
 			acknowledged: () => ({ fingerprint: undefined, seq: 0, hash: GENESIS }),
 			scan: async () => ({ ok: true, records: 0, lastHash: GENESIS }),
-			onAlert: () => {},
+			onAlert: () => {
+				// reason: test double, no alert is asserted in this test
+			},
 			setTimer: () => {
 				scheduled += 1;
 				return {};
 			},
-			clearTimer: () => {},
+			clearTimer: () => {
+				// reason: test double, no timer is armed so there is nothing to clear
+			},
 		});
 
 		watch.start();

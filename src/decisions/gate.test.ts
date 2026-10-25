@@ -127,7 +127,9 @@ function runtime(fetchImpl: typeof fetch, overrides: Partial<DecisionsInput> = {
 		storePath: tempStore(),
 		fetch: fetchImpl,
 		now: () => 1000,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: no real delay in the fixture; retries run immediately
+		},
 		random: () => 0.5,
 		debug: (line) => lines.push(line),
 		...overrides,
@@ -314,6 +316,7 @@ describe("Decisions.run", () => {
 		try {
 			await decisions.run("plan", PLAN_STATE, { ...PLAN_OPTS, signal: controller.signal });
 		} catch (caught) {
+			// reason: the error is captured and asserted by the caller
 			error = caught as { name?: string };
 		}
 		expect(error?.name).toBe("AbortError");
@@ -410,7 +413,9 @@ describe("debug line (AC-3.14, §5.8)", () => {
 				storePath: tempStore(),
 				fetch: recordingFetch([respond]).fetch,
 				now: () => 1000,
-				sleep: async () => {},
+				sleep: async () => {
+					// reason: no real delay in the fixture; retries run immediately
+				},
 			});
 			await decisions.run("plan", PLAN_STATE, PLAN_OPTS);
 		} finally {

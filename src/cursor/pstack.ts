@@ -118,6 +118,7 @@ export function resolvePstack(cursorDir: string, fs: PstackFs = defaultFs): Psta
 					version?: unknown;
 				} | null;
 			} catch {
+				// reason: an unreadable manifest is skipped so a valid sibling entry is still found
 				continue;
 			}
 			// `null` (and any other non-object) must not throw and abandon a valid sibling entry.

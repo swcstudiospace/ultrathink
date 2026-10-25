@@ -10,7 +10,7 @@ import {
 	type Ledger,
 	LedgerWriteError,
 } from "../cost/ledger.ts";
-import type { RunStatus, Store } from "../store/store.ts";
+import { DuplicatePhaseError, type RunStatus, type Store } from "../store/store.ts";
 import { writeAtomic } from "./atomic.ts";
 
 export const PHASES = ["discover", "discuss", "plan", "execute"] as const;
@@ -53,6 +53,28 @@ export class LeaseLostError extends Error {
 		super(`lease lost for run ${runId}`);
 		this.name = "LeaseLostError";
 	}
+}
+
+/** Errors this module has already named, so an outer rethrow does not wrap them twice. */
+const namedErrors = new WeakSet<object>();
+
+/**
+ * D-05: an untyped error becomes `<operation>: <class or code>` with the underlying error in `cause`, so no message
+ * text or input value is copied. Typed errors (D-13) and already-named errors are returned unchanged.
+ */
+function boundaryError(operation: string, error: unknown): unknown {
+	const typed =
+		error instanceof LeaseLostError ||
+		error instanceof CeilingError ||
+		error instanceof LedgerWriteError ||
+		error instanceof DuplicatePhaseError;
+	if (typed || (typeof error === "object" && error !== null && namedErrors.has(error)))
+		return error;
+	const code = error instanceof Error && "code" in error ? error.code : undefined;
+	const detail = typeof code === "string" ? code : error instanceof Error ? error.name : "NonError";
+	const named = new Error(`${operation}: ${detail}`, { cause: error });
+	namedErrors.add(named);
+	return named;
 }
 
 export type AnswerResult =
@@ -375,7 +397,9 @@ export function createWorker(options: WorkerOptions): Worker {
 	async function callModel(runId: string, input: ModelInput): Promise<ModelOutcome> {
 		const heartbeat = { error: null as unknown };
 		const { promise: lease, reject: rejectLease } = Promise.withResolvers<never>();
-		lease.catch(() => {});
+		lease.catch(() => {
+			// reason: the next attempt's Promise.race observes this rejection and rethrows heartbeat.error; this handler only stops an unhandled rejection during the backoff sleep
+		});
 
 		const timer = setInterval(() => {
 			try {
@@ -392,7 +416,7 @@ export function createWorker(options: WorkerOptions): Worker {
 				try {
 					return { kind: "reply", reply: await Promise.race([model.complete(input), lease]) };
 				} catch (error) {
-					if (heartbeat.error !== null) throw heartbeat.error;
+					if (heartbeat.error !== null) throw boundaryError("callModel", heartbeat.error);
 					// The adapter reports a reply cut at its own output limit with error code `truncated`.
 					if (
 						typeof error === "object" &&
@@ -462,7 +486,7 @@ export function createWorker(options: WorkerOptions): Worker {
 				setTerminalStatus(run.id, { status: "paused-for-blocker", reason: "ledger_unavailable" });
 				return { done: false, result: "paused" };
 			}
-			throw error;
+			throw boundaryError("runPhase", error);
 		}
 		state.reservationId = reservationId;
 		store.updateRun(run.id, { status: PHASE_STATUS[phase], currentPhase: phase });
@@ -549,13 +573,13 @@ export function createWorker(options: WorkerOptions): Worker {
 					try {
 						abandonReservation(state.reservationId);
 					} catch {
-						// abandonReservation is a no-op for a row the new holder already settled or abandoned, so only
+						// reason: abandonReservation is a no-op for a row the new holder already settled or abandoned, so only
 						// a ledger write error reaches here; the new holder's claim-time sweep covers that case.
 					}
 				}
 				return "idle";
 			}
-			throw error;
+			throw boundaryError("tickOnce", error);
 		} finally {
 			db.query("DELETE FROM run_leases WHERE run_id = ? AND holder = ?").run(run.id, holderId);
 		}

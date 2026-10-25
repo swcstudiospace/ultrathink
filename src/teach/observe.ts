@@ -131,6 +131,7 @@ function firstJsonObject(text: string): unknown {
 				try {
 					return JSON.parse(text.slice(start, i + 1));
 				} catch {
+					// reason: a balanced span that is not valid JSON is skipped; the scan moves on to the next "{"
 					break;
 				}
 			}
@@ -328,12 +329,14 @@ export async function observeDigest(
 					digest.sessionId,
 				);
 			} catch {
+				// reason: the failure is logged through ctx.log; the lesson is skipped and the others still count
 				ctx.log?.("teach observe: a lesson could not be captured");
 			}
 		}
 		try {
 			await promoteDue(ctx);
 		} catch {
+			// reason: the failure is logged through ctx.log; the report still returns the captured lessons
 			ctx.log?.("teach observe: due promotions failed");
 		}
 		return done(captured);

@@ -84,14 +84,18 @@ describe("createSseParser", () => {
 	});
 
 	test("an unterminated line beyond the cap throws instead of growing the buffer", () => {
-		const parser = createSseParser(() => {}, 8);
+		const parser = createSseParser(() => {
+			// reason: no events are needed; only the line cap is under test
+		}, 8);
 		parser.push("data: ok\n");
 		parser.push("data: 12");
 		expect(() => parser.push("3")).toThrow("SSE line too long");
 	});
 
 	test("an event whose data outgrows the cap is refused, even when each line is short", () => {
-		const parser = createSseParser(() => {}, 8);
+		const parser = createSseParser(() => {
+			// reason: no events are needed; only the event cap is under test
+		}, 8);
 		parser.push("data: 1234\n");
 		expect(() => parser.push("data: 5678\n")).toThrow("SSE event too large");
 	});
@@ -461,7 +465,10 @@ describe("createRelay", () => {
 					return json({ jsonrpc: "2.0", id: 0, result: {} }, { "mcp-session-id": "s1" });
 				if (call.body.method === "initialize") {
 					const stream = new ReadableStream<Uint8Array>({
-						pull: () => new Promise<void>(() => {}),
+						pull: () =>
+							new Promise<void>(() => {
+								// reason: the stream is meant to stall; cancel() is what the test checks
+							}),
 						cancel() {
 							cancelled = true;
 						},
@@ -492,7 +499,10 @@ describe("createRelay", () => {
 			() =>
 				new Response(
 					new ReadableStream<Uint8Array>({
-						pull: () => new Promise<void>(() => {}),
+						pull: () =>
+							new Promise<void>(() => {
+								// reason: the stream is meant to stall; cancel() is what the test checks
+							}),
 						cancel() {
 							cancelled = true;
 						},
@@ -596,13 +606,21 @@ describe("runStdioRelay", () => {
 /** Keeps each validation refusal the logger seam reports, and writes nothing. */
 class RecordingLogger implements SecurityEventLogger {
 	readonly validation: Partial<SecurityEvent>[] = [];
-	log(): void {}
-	logAuthFailure(): void {}
+	log(): void {
+		// reason: test double, no-op by design
+	}
+	logAuthFailure(): void {
+		// reason: test double, no-op by design
+	}
 	logValidationFailure(details: Partial<SecurityEvent>): void {
 		this.validation.push(details);
 	}
-	logRateLimitExceeded(): void {}
-	logSuspiciousActivity(): void {}
+	logRateLimitExceeded(): void {
+		// reason: test double, no-op by design
+	}
+	logSuspiciousActivity(): void {
+		// reason: test double, no-op by design
+	}
 }
 
 describe("refused stdin", () => {

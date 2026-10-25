@@ -270,7 +270,7 @@ async function retainOne(
 		store.put(retained);
 		dropRetainOps(store, moment.id);
 	} catch {
-		// Hindsight has it; the next sync re-retains the same document id, which is idempotent.
+		// reason: Hindsight has it; the next sync re-retains the same document id, which is idempotent.
 	}
 	return { ok: true, moment: retained };
 }
@@ -302,7 +302,7 @@ async function settle(
 	try {
 		store.enqueue({ op: "retain", momentId: moment.id }, nowOf(ctx));
 	} catch {
-		// the moment is stored; syncOutbox backfills unretained confirmed moments anyway
+		// reason: the moment is stored; syncOutbox backfills unretained confirmed moments anyway
 	}
 	return { moment, retain: "queued", reason: result.message };
 }

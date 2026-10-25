@@ -47,7 +47,9 @@ function startDetached(
 		stdio: "ignore",
 	});
 	// A missing launcher is reported asynchronously as an 'error' event; without a listener it would crash the host.
-	child.on("error", () => {});
+	child.on("error", () => {
+		// reason: a missing launcher only surfaces here; without a listener the host would crash, so the caller still sees spawned:true (flagged in the SUMMARY)
+	});
 	child.unref();
 }
 
@@ -60,7 +62,7 @@ function pruneInbox(dir: string, now: number): void {
 				rmSync(join(dir, name), { force: true });
 		}
 	} catch {
-		// best effort: no inbox yet, or unreadable
+		// reason: best effort: no inbox yet, or unreadable
 	}
 }
 
@@ -74,7 +76,7 @@ export function writeInbox(
 	try {
 		chmodSync(dir, 0o700);
 	} catch {
-		// a directory we do not own keeps its mode
+		// reason: a directory we do not own keeps its mode
 	}
 	const path = join(dir, `${now()}-${randomBytes(4).toString("hex")}.json`);
 	const tmp = `${path}.tmp`;
@@ -110,7 +112,7 @@ export function spawnObserveDetached(
 			try {
 				rmSync(path, { force: true });
 			} catch {
-				// the 24 hour prune collects it
+				// reason: the 24 hour prune collects it
 			}
 		}
 		return {

@@ -321,7 +321,9 @@ export async function startMtlsServer(
 		raw.setTimeout(idleMs, () => raw.destroy());
 		// A refused handshake emits its error on this raw socket. Bun 1.2.23 does not route it to tlsClientError, so
 		// without a listener it escalates as an unhandled error. The failed handshake already closes the socket.
-		raw.on("error", () => {});
+		raw.on("error", () => {
+			// reason: a refused handshake's error is expected here, and the failed handshake already closes the socket
+		});
 	});
 
 	const { promise, resolve, reject } = Promise.withResolvers<MtlsServer>();
@@ -345,7 +347,9 @@ export async function startMtlsServer(
 			errorLogged = true;
 			console.error("mtls listener error", error);
 		}
-		stop().catch(() => {});
+		stop().catch(() => {
+			// reason: stop after a listener error; that error is logged above and a failed close has nothing further to report
+		});
 	});
 	tlsServer.listen(options.port, LOOPBACK, () => {
 		listening = true;

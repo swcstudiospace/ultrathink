@@ -453,7 +453,9 @@ async function readRequestBytes(request: Request, maxSize: number): Promise<Uint
 			if (done) break;
 			total += value.byteLength;
 			if (total > maxSize) {
-				await reader.cancel().catch(() => {});
+				await reader.cancel().catch(() => {
+					// reason: the body is already over its limit and is refused; a failed cancel has no further effect
+				});
 				return null;
 			}
 			chunks.push(value);

@@ -119,7 +119,10 @@ describe("httpTarget", () => {
 	});
 
 	test("a response that never arrives fails at the request deadline", async () => {
-		const stalled: HttpFetch = () => new Promise<Response>(() => {});
+		const stalled: HttpFetch = () =>
+			new Promise<Response>(() => {
+				// reason: test double, a response that never arrives
+			});
 		const target = httpTarget("http://127.0.0.1:9", { fetch: stalled, timeoutMs: 30 });
 		await expect(target.request("GET", "/readyz")).rejects.toThrow(
 			"GET /readyz got no complete response within 30 ms",
@@ -127,7 +130,14 @@ describe("httpTarget", () => {
 	});
 
 	test("a body that never finishes fails at the same deadline", async () => {
-		const stalledBody: HttpFetch = async () => new Response(new ReadableStream({ start() {} }));
+		const stalledBody: HttpFetch = async () =>
+			new Response(
+				new ReadableStream({
+					start() {
+						// reason: test double, the body never enqueues a chunk
+					},
+				}),
+			);
 		const target = httpTarget("http://127.0.0.1:9", { fetch: stalledBody, timeoutMs: 30 });
 		await expect(target.request("GET", "/metrics")).rejects.toThrow(
 			"GET /metrics got no complete response within 30 ms",
@@ -146,7 +156,10 @@ describe("httpTarget", () => {
 				port: 0,
 				hostname: "127.0.0.1",
 				fetch(req) {
-					if (new URL(req.url).pathname === "/headers") return new Promise<Response>(() => {});
+					if (new URL(req.url).pathname === "/headers")
+						return new Promise<Response>(() => {
+							// reason: test double, a stalled header never resolves
+						});
 					return new Response(
 						new ReadableStream({
 							start(controller) {
@@ -215,7 +228,11 @@ describe("httpTarget", () => {
 				},
 			);
 			// A refused handshake is expected here; its error arrives on the raw socket, so it is swallowed.
-			endpoint.on("connection", (raw) => raw.on("error", () => {}));
+			endpoint.on("connection", (raw) =>
+				raw.on("error", () => {
+					// reason: test double, a refused handshake is expected here
+				}),
+			);
 			const { promise, resolve, reject } = Promise.withResolvers<number>();
 			endpoint.once("error", reject);
 			endpoint.listen(0, "127.0.0.1", () => {

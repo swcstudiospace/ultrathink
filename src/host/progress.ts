@@ -107,7 +107,7 @@ export function createFdProgressSink(
 		try {
 			writeSync(fd, `${JSON.stringify(event)}\n`);
 		} catch {
-			// Parent gone (EPIPE) or fd closed: progress is best-effort.
+			// reason: Parent gone (EPIPE) or fd closed: progress is best-effort.
 		}
 	};
 }

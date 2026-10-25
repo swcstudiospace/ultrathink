@@ -93,7 +93,9 @@ function runtime(
 		env,
 		storePath: join(dir, "mcp-credentials.json"),
 		fetch: fetchImpl,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: no real delay in the fixture; retries run immediately
+		},
 	});
 }
 
@@ -258,6 +260,7 @@ describe("planGate", () => {
 		try {
 			await planGate(ACK, runtime(fetchImpl), controller.signal);
 		} catch (error) {
+			// reason: the error is captured and asserted by the caller
 			caught = error;
 		}
 		expect((caught as Error | undefined)?.name).toBe("AbortError");

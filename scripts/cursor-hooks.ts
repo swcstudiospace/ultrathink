@@ -308,7 +308,7 @@ function releaseHookLock(file: string, payload: string): void {
 				try {
 					if (readFileSync(file, "utf8") === payload) rmSync(file, { force: true });
 				} catch {
-					// Already gone, or no longer ours.
+					// reason: Already gone, or no longer ours.
 				}
 				return true;
 			});

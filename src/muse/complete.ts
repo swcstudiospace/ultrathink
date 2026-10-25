@@ -80,6 +80,7 @@ export function parseMuseJsonl(stdout: string, stderr: string, code: number): st
 		try {
 			event = JSON.parse(trimmed);
 		} catch {
+			// reason: a line that is not JSON is skipped; a missing terminal event is reported after the loop
 			continue;
 		}
 		if (!event || typeof event !== "object") continue;

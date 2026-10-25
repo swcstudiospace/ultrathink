@@ -212,7 +212,9 @@ export function savePlanRecord(
 	stateDir: string,
 	sessionId: string,
 	record: SessionRecord,
-	log: (message: string) => void = () => {},
+	log: (message: string) => void = () => {
+		// reason: no logger was injected; the default is a silent sink
+	},
 ): { record: SessionRecord; specPath: string; statePath: string; lastNote?: string } {
 	const statePath = sessionPath(stateDir, sessionId);
 	const specPath = specFile(stateDir, sessionId);
@@ -514,7 +516,7 @@ async function announcePlan(
 			input.signal,
 		);
 	} catch {
-		// fail-open: the substrate records a plan, it never gates one
+		// reason: fail-open: the substrate records a plan, it never gates one
 	}
 }
 
@@ -527,7 +529,7 @@ export async function runPromptSubmit(
 		try {
 			deps.progress?.(event);
 		} catch {
-			// fail-open: progress is display only
+			// reason: fail-open: progress is display only
 		}
 	};
 	const emitActivity = (notice: ActivityNotice): void => {
@@ -537,7 +539,7 @@ export async function runPromptSubmit(
 			if (!clean) return;
 			deps.progress({ type: "activity", at: now(), notice: clean });
 		} catch {
-			// fail-open: a card never blocks planning
+			// reason: fail-open: a card never blocks planning
 		}
 	};
 	const stage = (name: StageName, phase: "start" | "end", ok?: boolean, detail?: string): void =>
@@ -550,7 +552,11 @@ export async function runPromptSubmit(
 			...(detail ? { detail } : {}),
 		});
 	const started = now();
-	const log = deps.log ?? (() => {});
+	const log =
+		deps.log ??
+		(() => {
+			// reason: no logger was injected; the hook runs silently
+		});
 	const cwd = input.cwd?.trim() || process.cwd();
 	const sessionId = hostSessionId(input.session_id) ?? newTurnSessionId();
 
@@ -568,7 +574,7 @@ export async function runPromptSubmit(
 		try {
 			clearSkipOnce(deps.stateDir, sessionId);
 		} catch {
-			// fail-open
+			// reason: fail-open: a skip-once marker that cannot be removed only skips one later planning pass; the prompt must not block on it
 		}
 	}
 	if (decision.action !== "uplift") return { skipped: decision.action };
@@ -777,7 +783,7 @@ export async function runPromptSubmit(
 				});
 			}
 		} catch {
-			// fail-open
+			// reason: fail-open: the activity card is display only; a failed card never blocks planning
 		}
 
 		// Settled before anything is formatted so the record says what happened; all are bounded and never reject.
@@ -824,7 +830,7 @@ export async function runPromptSubmit(
 						names: recalled.lessons.map((lesson) => lesson.name),
 					});
 				} catch {
-					// fail-open
+					// reason: fail-open: the activity card is display only; a failed card never blocks planning
 				}
 			}
 		}
@@ -860,7 +866,7 @@ export async function runPromptSubmit(
 						detail: docs.status === "error" ? (docs.reason ?? "error") : `${docs.count} excerpts`,
 					});
 				} catch {
-					// fail-open
+					// reason: fail-open: the activity card is display only; a failed card never blocks planning
 				}
 			}
 		}
@@ -895,7 +901,7 @@ export async function runPromptSubmit(
 						names: skilled.skills.map((skill) => skill.name),
 					});
 				} catch {
-					// fail-open
+					// reason: fail-open: the activity card is display only; a failed card never blocks planning
 				}
 			}
 		}
@@ -965,7 +971,7 @@ export async function runPromptSubmit(
 						count: lookup.docs.length,
 					});
 				} catch {
-					// fail-open
+					// reason: fail-open: the activity card is display only; a failed card never blocks planning
 				}
 			}
 		}

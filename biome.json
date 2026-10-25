@@ -26,6 +26,7 @@
 			"correctness": { "noUnsafeOptionalChaining": "off" },
 			"suspicious": {
 				"noExplicitAny": "error",
+				"noEmptyBlockStatements": "error",
 				"noAssignInExpressions": "off",
 				"noConfusingVoidType": "off",
 				"noControlCharactersInRegex": "off",

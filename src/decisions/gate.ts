@@ -54,7 +54,7 @@ function resolveStoreKey(
 				: "";
 		if (stored) return { key: stored, source: "store" };
 	} catch {
-		// unreadable store: fall back to the environment
+		// reason: unreadable store falls back to the environment; the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
 	const fromEnv = env[envVar]?.trim();
 	return fromEnv ? { key: fromEnv, source: envVar } : undefined;
@@ -269,7 +269,7 @@ export function createDecisions(input: DecisionsInput): Decisions {
 			try {
 				debug(formatDebugLine(result.record));
 			} catch {
-				// a failing debug sink never changes the decision
+				// reason: a failing debug sink never changes the decision
 			}
 			return result;
 		},

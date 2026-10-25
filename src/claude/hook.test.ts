@@ -105,7 +105,9 @@ function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup:
 		brief: async () => "",
 		emit: async () => true,
 		now: () => 1_000,
-		log: () => {},
+		log: () => {
+			// reason: test log sink; assertions read the emitted events, not this line
+		},
 		// Jev is always on, so tests that do not exercise the gate kill it: no ambient key, no network.
 		decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0" } },
 		...overrides,
@@ -1499,7 +1501,9 @@ describe("Greptile knowledge base before clarify", () => {
 					topics.push(topic);
 					return { lookup: { outcome: "none", docs: [], chars: 0, ms: 1 }, digest: "" };
 				},
-				close: () => {},
+				close: () => {
+					// reason: the fixture holds no resource to release
+				},
 			}),
 		};
 		const { deps, cleanup } = baseDeps({
@@ -1681,7 +1685,9 @@ function jevHarness(
 						lookup: { outcome: "none", docs: [], chars: 0, ms: 1 },
 						digest: "",
 					}),
-					close: () => {},
+					close: () => {
+						// reason: the fixture holds no resource to release
+					},
 				};
 			},
 		},
@@ -1693,7 +1699,9 @@ function jevHarness(
 			env: { OPENROUTER_API_KEY: K },
 			storePath: tempStore(),
 			fetch: fetchImpl,
-			sleep: async () => {},
+			sleep: async () => {
+				// reason: no real delay in the fixture; retries run immediately
+			},
 		},
 		...overrides,
 	});
@@ -2178,6 +2186,7 @@ describe("Jev plan gate", () => {
 			try {
 				await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
 			} catch (error) {
+				// reason: the error is captured and asserted by the caller
 				caught = error;
 			}
 			expect((caught as Error | undefined)?.name).toBe("AbortError");
@@ -2207,7 +2216,9 @@ describe("Jev knowledge and blocking points through the hook", () => {
 				},
 				digest: DIGEST,
 			}),
-			close: () => {},
+			close: () => {
+				// reason: the fixture holds no resource to release
+			},
 		}),
 	};
 	/** Two claims the knowledge base settles. */
@@ -3161,7 +3172,9 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 								controller.abort();
 								return noneKnowledge;
 							},
-							close: () => {},
+							close: () => {
+								// reason: the fixture holds no resource to release
+							},
 						}),
 					},
 				}),
@@ -3246,7 +3259,12 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			knowledge: {
 				start: ({ signal }) => {
 					seen.knowledge = signal;
-					return { read: async () => noneKnowledge, close: () => {} };
+					return {
+						read: async () => noneKnowledge,
+						close: () => {
+							// reason: the fixture holds no resource to release
+						},
+					};
 				},
 			},
 			track: async ({ signal }) => {

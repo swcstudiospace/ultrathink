@@ -42,6 +42,9 @@ export interface PhaseRecord {
 
 export class DuplicatePhaseError extends Error {}
 
+/** Thrown when `PRAGMA quick_check` reports problems; the message names them and passes through `openStore` unchanged. */
+class QuickCheckError extends Error {}
+
 export interface Store {
 	readonly db: Database;
 	ping(): boolean;
@@ -160,6 +163,14 @@ function isUniqueViolation(error: unknown): boolean {
 	return error.message.includes("UNIQUE constraint failed");
 }
 
+/** The class or code of a failure, never its message: SQLite and driver messages can echo input values. */
+function failureLabel(error: unknown): string {
+	if (!(error instanceof Error)) return "non-error value";
+	const code = "code" in error ? error.code : undefined;
+	if (typeof code === "string") return code;
+	return error.name === "Error" ? error.constructor.name : error.name;
+}
+
 /** Size of the WAL file after a checkpoint; SQLite truncates it back to this when it has grown past it. */
 const JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
 /** Problem rows `quick_check` is asked for, and the character cap on the detail built from them. */
@@ -186,7 +197,7 @@ function quickCheck(db: Database): { ok: true } | { ok: false; detail: string } 
 				? "quick_check returned no rows"
 				: rows.map((row) => String(row.quick_check)).join("; ");
 	} catch (error) {
-		detail = error instanceof Error ? error.message : String(error);
+		detail = failureLabel(error);
 	}
 	return {
 		ok: false,
@@ -292,7 +303,7 @@ function createStore(db: Database): Store {
 						`phase ${input.phase} attempt ${input.attempt} already recorded for run ${input.runId}`,
 					);
 				}
-				throw error;
+				throw new Error(`recordPhase: ${failureLabel(error)}`, { cause: error });
 			}
 		},
 
@@ -322,7 +333,7 @@ function createStore(db: Database): Store {
 			try {
 				db.exec("PRAGMA optimize;");
 			} catch {
-				// Statistics are a hint; a failed optimize must not keep the handle open.
+				// reason: Statistics are a hint; a failed optimize must not keep the handle open.
 			}
 			db.close();
 		},
@@ -343,11 +354,12 @@ export function openStore(dbPath: string): Store {
 		db.exec("PRAGMA busy_timeout = 5000;");
 		db.exec("PRAGMA foreign_keys = ON;");
 		const check = quickCheck(db);
-		if (!check.ok) throw new Error(`sqlite quick_check failed: ${check.detail}`);
+		if (!check.ok) throw new QuickCheckError(`sqlite quick_check failed: ${check.detail}`);
 		db.exec(MIGRATIONS);
 	} catch (error) {
 		db.close();
-		throw error;
+		if (error instanceof QuickCheckError) throw error;
+		throw new Error(`openStore: ${failureLabel(error)}`, { cause: error });
 	}
 	return createStore(db);
 }

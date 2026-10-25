@@ -101,7 +101,9 @@ function setup(
 		storePath,
 		fetch: r.fetch,
 		now: () => 5000,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: no real delay in the fixture; retries run immediately
+		},
 		random: () => 0.5,
 	};
 }

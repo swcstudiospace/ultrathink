@@ -221,6 +221,7 @@ export function linkDir(target: string, path: string): LinkResult {
 	try {
 		current = lstatSync(path);
 	} catch {
+		// reason: lstat fails when the path is absent; any other failure resurfaces at mkdirSync or symlinkSync
 		current = undefined;
 	}
 	if (current?.isSymbolicLink()) {

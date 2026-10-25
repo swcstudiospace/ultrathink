@@ -10,6 +10,7 @@ import type { SessionRecord } from "../../../src/claude/state.ts";
 import { type JournalMeta, journalDir, writeMeta } from "../../../src/host/grokbot.ts";
 import { FALLBACK_GRAPH } from "../../../src/think/types.ts";
 import type { ThoughtGraph } from "../../../src/think/types.ts";
+import { redactText } from "../../../src/teach/redact.ts";
 import { GOAL_MAX_CHARS, listSessions, newestPlannedSessionId } from "./sessions.ts";
 
 const dirs: string[] = [];
@@ -524,5 +525,48 @@ describe("newestPlannedSessionId", () => {
 		writeJob(state, randomUUID(), "failed", NOW - 1);
 		writeClient(state, randomUUID(), "needs-model", NOW - 2);
 		expect(newestPlannedSessionId(state)).toBeUndefined();
+	});
+});
+
+describe("sessions boundary failures", () => {
+	test("an unreadable listing is logged under listNames without the echoed secret", () => {
+		const SECRET = "sk-test-FIXTURE0000000000000000";
+		const state = tmp();
+		writeFileSync(join(state, "jobs"), `token=${SECRET}`);
+		const lines: string[] = [];
+		const logger = {
+			info: () => {
+				// reason: info logs are irrelevant to the redaction assertion; only error lines are collected
+			},
+			warn: () => {
+				// reason: warn logs are irrelevant to the redaction assertion; only error lines are collected
+			},
+			error: (event: string) => {
+				lines.push(event);
+			},
+		};
+		expect(listSessions(state, { logger })).toEqual([]);
+		expect(lines).toEqual(["listNames: ENOTDIR"]);
+		for (const line of lines) {
+			expect(line).not.toContain(SECRET);
+			expect(redactText(line, { home: "" })).toBe(line);
+		}
+	});
+
+	test("a missing state directory is listed as empty without a log line", () => {
+		const lines: string[] = [];
+		const logger = {
+			info: () => {
+				// reason: info logs are irrelevant to the redaction assertion; only error lines are collected
+			},
+			warn: () => {
+				// reason: warn logs are irrelevant to the redaction assertion; only error lines are collected
+			},
+			error: (event: string) => {
+				lines.push(event);
+			},
+		};
+		expect(listSessions(join(tmp(), "absent"), { logger })).toEqual([]);
+		expect(lines).toEqual([]);
 	});
 });

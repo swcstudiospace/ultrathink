@@ -13,6 +13,7 @@ import { chmodSync, existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { type ApprovalProof, type Auth, MAX_PASSWORD_CHARS } from "../auth/auth.ts";
 import type { AuditEvent } from "../obs/audit.ts";
+import { createLogger, type Logger } from "../obs/log.ts";
 import { encodeHtml, encodeHtmlAttribute } from "../security/encoding.ts";
 import { getSecurityLogger } from "../security/events.ts";
 import {
@@ -205,6 +206,8 @@ export interface OAuthOptions {
 	schedule?: (run: () => void, intervalMs: number) => () => void;
 	/** Receives one call per security event. A throwing sink never changes an OAuth response. */
 	audit?: (event: AuditEvent, fields: Record<string, string | number | boolean>) => void;
+	/** Receives one line per disk failure this module records without rethrowing. Defaults to the process logger. */
+	logger?: Logger;
 }
 
 export interface OAuth {
@@ -396,7 +399,7 @@ function normalizeOrigins(origins: readonly string[]): string[] {
 			const url = new URL(raw);
 			if (url.protocol === "https:") out.add(url.origin);
 		} catch {
-			// An unparsable entry grants nothing.
+			// reason: An unparsable entry grants nothing.
 		}
 	}
 	return [...out];
@@ -490,6 +493,13 @@ function createLimiter(limit: { max: number; windowMs: number }, now: () => numb
 	};
 }
 
+function failureLabel(error: unknown): string {
+	if (!(error instanceof Error)) return "non-error value";
+	const code = "code" in error ? error.code : undefined;
+	if (typeof code === "string") return code;
+	return error.name === "Error" ? error.constructor.name : error.name;
+}
+
 function emptyStore(): StoreShape {
 	return { clients: {}, grants: {}, codes: {}, tokens: {}, pending: {} };
 }
@@ -497,21 +507,21 @@ function emptyStore(): StoreShape {
 function section<T>(value: unknown): Record<string, T> {
 	if (value === undefined) return {};
 	if (typeof value !== "object" || value === null || Array.isArray(value))
-		throw new Error("malformed store section");
+		throw new Error("section: malformed store section");
 	return value as Record<string, T>;
 }
 
-function loadStore(path: string, stamp: number): StoreShape {
+function loadStore(path: string, stamp: number, logger: Logger): StoreShape {
 	if (!existsSync(path)) return emptyStore();
 	try {
 		chmodSync(path, 0o600);
 	} catch {
-		// Not the owner or a read-only mount: reading still works.
+		// reason: Not the owner or a read-only mount: reading still works.
 	}
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-			throw new Error("malformed store");
+			throw new Error("loadStore: malformed store");
 		const record = parsed as Record<string, unknown>;
 		return {
 			clients: section(record.clients),
@@ -524,8 +534,9 @@ function loadStore(path: string, stamp: number): StoreShape {
 		// Never silently wipe: keep the bad file for the operator and start empty. Users re-consent.
 		try {
 			renameSync(path, `${path}.corrupt-${stamp}`);
-		} catch {
-			// The move failed; the next save replaces the file.
+		} catch (error) {
+			// reason: The move failed; the next save replaces the file.
+			logger.error(`loadStore: ${failureLabel(error)}`);
 		}
 		return emptyStore();
 	}
@@ -563,7 +574,7 @@ export function writeFileDurably(
 			io.closeSync(fd);
 			io.unlinkSync(tmp);
 		} catch {
-			// Best effort cleanup of the temp file.
+			// reason: Best effort cleanup of the temp file.
 		}
 		throw error;
 	}
@@ -574,7 +585,7 @@ export function writeFileDurably(
 		dirFd = io.openSync(dir, "r");
 		io.fsyncSync(dirFd);
 	} catch {
-		// Some filesystems refuse to open or sync a directory. The rename is still atomic.
+		// reason: Some filesystems refuse to open or sync a directory. The rename is still atomic.
 	} finally {
 		if (dirFd !== undefined) io.closeSync(dirFd);
 	}
@@ -591,6 +602,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	const resource = `${origin}/mcp`;
 	const resourceMetadataUrl = `${origin}/.well-known/oauth-protected-resource/mcp`;
 	const now = options.now ?? Date.now;
+	const logger = options.logger ?? createLogger();
 	const path = join(options.stateDir, STATE_FILE);
 	const redirectOrigins = normalizeOrigins(options.redirectOrigins ?? DEFAULT_REDIRECT_ORIGINS);
 	const allowedRedirectOrigins = new Set(redirectOrigins);
@@ -598,7 +610,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	const maxClients = options.maxClients ?? MAX_CLIENTS;
 	// A fake clock means a test. Wall-clock polling would race that clock, so only production arms it.
 	const schedule = options.schedule ?? (options.now === undefined ? realSchedule : undefined);
-	const data = loadStore(path, now());
+	const data = loadStore(path, now(), logger);
 	const pending = new Map<string, PendingRequest>();
 	const approving = new Set<string>();
 	const registerLimiter = createLimiter(REGISTER_LIMIT, now);
@@ -704,8 +716,9 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	function sweep(): void {
 		try {
 			if (prune()) flush();
-		} catch {
-			// A disk error must not take down consent. The in-memory state stays authoritative.
+		} catch (error) {
+			// reason: A disk error must not take down consent. The in-memory state stays authoritative.
+			logger.error(`sweep: ${failureLabel(error)}`);
 		}
 		if (pending.size === 0 && cancelSweep !== null) {
 			cancelSweep();
@@ -840,7 +853,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		try {
 			options.audit?.(event, fields);
 		} catch {
-			// The decision is already made; the sink owns its own failures.
+			// reason: The decision is already made; the sink owns its own failures.
 		}
 	}
 

@@ -65,7 +65,7 @@ export function resolveGatewayToken(
 			if (token) return { token, source: "store" };
 		}
 	} catch {
-		// unreadable store: fall back to the environment
+		// reason: unreadable store falls back to the environment; the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
 	const fromEnv = env[GATEWAY_TOKEN_ENV]?.trim();
 	return fromEnv ? { token: fromEnv, source: GATEWAY_TOKEN_ENV } : undefined;

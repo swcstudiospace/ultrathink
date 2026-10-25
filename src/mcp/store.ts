@@ -65,7 +65,7 @@ export function readStore(path: string): CredentialStore {
 			return { version: 1, providers: parsed.providers };
 		}
 	} catch {
-		// missing or corrupt: fall through
+		// reason: a missing or corrupt store reads as empty, so a corrupt credential file looks like no credentials. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
 	return { version: 1, providers: {} };
 }
@@ -107,7 +107,7 @@ function breakStaleLock(lock: string, owner: string | undefined, mtimeMs: number
 			rmSync(aside, { recursive: true, force: true });
 		}
 	} catch {
-		// already gone
+		// reason: already gone
 	}
 }
 
@@ -136,6 +136,7 @@ export async function withStoreLock<T>(
 			const mtimeMs = statSync(lock).mtimeMs;
 			if (Date.now() - mtimeMs > staleMs) judged = { owner: readOwner(lock), mtimeMs };
 		} catch {
+			// reason: the lock vanished between the mkdir and the stat; the loop retries the acquire
 			continue;
 		}
 		if (judged) {
@@ -153,7 +154,7 @@ export async function withStoreLock<T>(
 				const now = new Date();
 				utimesSync(lock, now, now);
 			} catch {
-				// lock vanished; release below handles it
+				// reason: lock vanished; release below handles it
 			}
 		},
 		Math.max(1, Math.floor(staleMs / 3)),

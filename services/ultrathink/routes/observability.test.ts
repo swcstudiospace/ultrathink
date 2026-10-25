@@ -37,7 +37,7 @@ afterAll(() => {
 		try {
 			store.close();
 		} catch {
-			// already closed
+			// reason: already closed
 		}
 	}
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });

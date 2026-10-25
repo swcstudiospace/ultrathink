@@ -15,6 +15,9 @@ import * as nodeFs from "node:fs";
 import { verifyAuditFile } from "./audit.ts";
 import { listSegments } from "./audit-segments.ts";
 import type { ScanReply } from "./audit-watch.ts";
+import { createLogger } from "./log.ts";
+
+const logger = createLogger();
 
 /**
  * One observed state of the audit file. `activeBytes` and `activeIno` are the active file as the watch stat'd it; `identity`
@@ -32,8 +35,11 @@ export function chainIdentity(path: string): string {
 	let ino = "missing";
 	try {
 		ino = String(nodeFs.statSync(path).ino);
-	} catch {
-		// Absent: the identity records that, and it never matches an observed active file.
+	} catch (error) {
+		// reason: Absent: the identity records that, and it never matches an observed file. Only a failure other than
+		// ENOENT is logged, because nothing downstream reports a discarded scan.
+		const code = error instanceof Error && "code" in error ? error.code : undefined;
+		if (code !== "ENOENT") logger.error("chainIdentity: stat failed", { code: String(code) });
 	}
 	return `${ino}\n${listSegments(path, nodeFs)
 		.map((segment) => segment.name)

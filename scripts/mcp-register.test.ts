@@ -478,7 +478,12 @@ describe("applyCliPlan", () => {
 			}
 			return { code: 0, stdout: JSON.stringify(servers), stderr: "" };
 		};
-		const options = { mode: "remove" as const, log: () => {} };
+		const options = {
+			mode: "remove" as const,
+			log: () => {
+				// reason: planner log lines are not asserted here; the removal result is
+			},
+		};
 		expect(applyCliPlan("grok", run, linear, planGrok(run, linear, options), options)).toEqual([
 			{ id: "linear", action: "removed" },
 		]);

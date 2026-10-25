@@ -116,7 +116,9 @@ function run(
 		apiKey: K,
 		timeoutMs: 3000,
 		fetch: fetchImpl,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: no real delay in the fixture; retries run immediately
+		},
 		random: () => 0.5,
 		...extra,
 	});
@@ -192,7 +194,9 @@ describe("decide: request", () => {
 				timeoutMs: 3000,
 				url: `http://127.0.0.1:${origin.port}/decisions`,
 				fetch: realFetch,
-				sleep: async () => {},
+				sleep: async () => {
+					// reason: no real delay in the fixture; retries run immediately
+				},
 			});
 			if (outcome.ok) throw new Error("expected the redirect to fail");
 			expectSafe(outcome.error);
@@ -318,7 +322,10 @@ describe("decide: failures are classified and redacted (D6)", () => {
 
 	// Real timers: proves the budget holds even when a fetch never observes its abort signal.
 	test("a fetch that ignores its signal still times out", async () => {
-		const ignoring = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+		const ignoring = (() =>
+			new Promise<Response>(() => {
+				// reason: the executor never settles, so only the timeout ends the call
+			})) as unknown as typeof fetch;
 		const started = performance.now();
 		const outcome = await failure(ignoring, { timeoutMs: 300 });
 		expect(outcome.error.kind).toBe("timeout");
@@ -794,7 +801,9 @@ describe("decide: caller abort (AC-5.6)", () => {
 				signal: controller.signal,
 				sleep: () => {
 					controller.abort();
-					return new Promise<void>(() => {});
+					return new Promise<void>(() => {
+						// reason: never resolves; the abort above is what settles the race
+					});
 				},
 			}),
 		);

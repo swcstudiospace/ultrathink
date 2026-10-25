@@ -102,7 +102,7 @@ export function createSinkQueue(options: SinkQueueOptions): SinkQueue {
 		try {
 			onEvent(event);
 		} catch {
-			// An observer failure must never reach the record path.
+			// reason: An observer failure must never reach the record path.
 		}
 	};
 

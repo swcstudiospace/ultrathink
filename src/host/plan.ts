@@ -121,7 +121,7 @@ export async function planPrompt(
 				...withResolution,
 			});
 		} catch {
-			// fail-open: progress is display only
+			// reason: fail-open: progress is display only
 		}
 		return { context: "", skipped: reason, ...withResolution };
 	};
@@ -166,7 +166,7 @@ export async function planPrompt(
 			if (isOmpSubagentSessionId(request.session_id ?? "", { root: join(agentDir, "sessions") }))
 				return skip("subagent");
 		} catch {
-			// fail-open: a throwing guard means "not a subagent"
+			// reason: fail-open: a throwing guard means "not a subagent"
 		}
 	}
 	let text = request.prompt ?? "";
@@ -194,7 +194,7 @@ export async function planPrompt(
 		)
 			return skip("skill-preamble");
 	} catch {
-		// fail-open: a throwing skill parser plans the prompt as written
+		// reason: fail-open: a throwing skill parser plans the prompt as written
 	}
 	let resolution: ModelResolution | undefined;
 	try {
@@ -212,7 +212,7 @@ export async function planPrompt(
 			try {
 				clearSkipOnce(stateDir, sessionId);
 			} catch {
-				// fail-open: the skip still applies to this prompt
+				// reason: fail-open: the skip still applies to this prompt
 			}
 		}
 		if (decision.action !== "uplift") return skip(`precheck-${decision.action}`);
@@ -299,7 +299,7 @@ export async function planPrompt(
 				context,
 			});
 		} catch {
-			// fail-open: the carrier is a pointer for hosts that drop context; the plan still stands
+			// reason: fail-open: the carrier is a pointer for hosts that drop context; the plan still stands
 		}
 		return {
 			context,

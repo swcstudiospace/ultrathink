@@ -213,6 +213,6 @@ export function unmountTailscale(mount: NonNullable<RedirectPlan["mount"]>, run:
 			10_000,
 		);
 	} catch {
-		// Best effort: a leftover handler only proxies to a closed local port.
+		// reason: Best effort: a leftover handler only proxies to a closed local port.
 	}
 }

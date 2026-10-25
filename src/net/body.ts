@@ -23,7 +23,9 @@ async function readPrefix(
 	if (!response.body) return { text: "", complete: true };
 	const reader = response.body.getReader();
 	const onAbort = (): void => {
-		reader.cancel(signal?.reason).catch(() => {});
+		reader.cancel(signal?.reason).catch(() => {
+			// reason: the abort is already in progress; a failed cancel adds nothing the caller can act on
+		});
 	};
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const decoder = new TextDecoder();
@@ -51,7 +53,9 @@ async function readPrefix(
 		return { text: text + decoder.decode(), complete };
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
-		await reader.cancel().catch(() => {});
+		await reader.cancel().catch(() => {
+			// reason: releasing the reader in finally; a cancel failure must not replace the read result
+		});
 		reader.releaseLock();
 	}
 }

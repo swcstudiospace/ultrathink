@@ -31,7 +31,9 @@ function fakeTarget(handle: (method: string, path: string) => ChaosResponse): {
 			calls.push({ method, path, body });
 			return handle(method, path);
 		},
-		async close() {},
+		async close() {
+			// reason: test double, there is no connection to close
+		},
 	};
 	return { target, calls };
 }
@@ -65,7 +67,9 @@ function template(overrides: Partial<ExperimentTemplate> = {}): ExperimentTempla
 	};
 }
 
-const noSleep = async (): Promise<void> => {};
+const noSleep = async (): Promise<void> => {
+	// reason: test double, the retry pause is skipped so tests stay fast
+};
 
 function baseOptions(target: ChaosTarget, extra: Partial<RunOptions> = {}): RunOptions {
 	return {

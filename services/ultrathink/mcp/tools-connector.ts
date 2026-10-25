@@ -21,6 +21,7 @@ import {
 import type { HeadlessPlanner, ResultView } from "../engine/headless.ts";
 import { isSessionId } from "../engine/journal.ts";
 import { listSessions, newestPlannedSessionId, type SessionSummary } from "../engine/sessions.ts";
+import { createLogger } from "../obs/log.ts";
 import { GRAPH_APP_URI } from "../ui/graph-app.ts";
 import {
 	type CatalogCommand,
@@ -31,6 +32,9 @@ import {
 	resolveCommand,
 } from "./commands.ts";
 import type { ToolDefinition, ToolOutcome } from "./mcp.ts";
+
+// Connector diagnostics go to stderr: over stdio, stdout carries the JSON-RPC protocol.
+const connectorLogger = createLogger({ write: (line) => void process.stderr.write(`${line}\n`) });
 
 // idempotentHint only means something for a tool that writes; the read-only tools carry it too so every tool states it.
 export const READ_ONLY = {
@@ -352,7 +356,7 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 		if (!given.ok) return { ok: false, code: "invalid_session_id" };
 		let sessionId = given.value;
 		if (sessionId === undefined) {
-			sessionId = newestPlannedSessionId(stateDir);
+			sessionId = newestPlannedSessionId(stateDir, connectorLogger);
 			if (sessionId === undefined) return textOutcome({ status: "none" }, NO_PLANNED_SESSION);
 		} else if (!isSessionId(sessionId)) {
 			return { ok: false, code: "invalid_session_id" };
@@ -395,7 +399,10 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 		) {
 			return invalid("limit must be a number; it is clamped to 1..20");
 		}
-		const list = listSessions(stateDir, typeof limit === "number" ? { limit } : {});
+		const list = listSessions(stateDir, {
+			...(typeof limit === "number" ? { limit } : {}),
+			logger: connectorLogger,
+		});
 		const info = planning();
 		return textOutcome({ sessions: list, planning: info }, sessionsText(list, info));
 	}

@@ -108,7 +108,7 @@ function closeScan(dir: string): void {
 	try {
 		handle?.closeSync();
 	} catch {
-		// Nothing left to release.
+		// reason: Nothing left to release.
 	}
 }
 
@@ -182,6 +182,7 @@ function removeFile(path: string, tally: Tally, place: "jobs" | "sessions"): voi
 		unlinkSync(path);
 		tally.removed[place] += 1;
 	} catch {
+		// reason: the failure is counted in tally.errors, which the sweep returns
 		tally.errors += 1;
 	}
 }
@@ -312,6 +313,7 @@ function sweepJournals(stateDir: string, walk: Walk): void {
 			rmSync(dir, { recursive: true, force: true });
 			tally.removed.journals += 1;
 		} catch {
+			// reason: the failure is counted in tally.errors, which the sweep returns
 			tally.errors += 1;
 		}
 	}
@@ -377,7 +379,7 @@ export function createSweeper<T = SweepResult>(options: SweeperOptions<T>): Swee
 		try {
 			options.onError?.(error instanceof Error ? error : new Error(String(error)));
 		} catch {
-			// An error hook that throws has nowhere further to report.
+			// reason: An error hook that throws has nowhere further to report.
 		}
 	};
 

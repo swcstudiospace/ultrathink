@@ -140,6 +140,7 @@ function hookState(cursorDir: string): { installed: boolean; detail: string } {
 			);
 		}
 	} catch {
+		// reason: an unparseable hooks file is reported as not installed, with its path in the detail
 		unreadable = true;
 	}
 	if (unreadable) return { installed: false, detail: `${hooksFile} is not valid JSON` };

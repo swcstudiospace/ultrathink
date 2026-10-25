@@ -188,13 +188,14 @@ export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 			try {
 				sample = sampleOnce();
 			} catch {
+				// reason: a failing sample is skipped and the timer keeps its schedule; a direct sampleOnce caller gets the error
 				sample = undefined;
 			}
 			if (sample !== undefined) {
 				try {
 					onSample(sample);
 				} catch {
-					// Observers must never break the sampler.
+					// reason: Observers must never break the sampler.
 				}
 			}
 			if (gen === generation) schedule(gen);
@@ -217,7 +218,7 @@ export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 					try {
 						clearTimer(pending);
 					} catch {
-						// A failing clearTimer leaves a dead timer; the generation guard ignores it.
+						// reason: A failing clearTimer leaves a dead timer; the generation guard ignores it.
 					}
 				}
 			};

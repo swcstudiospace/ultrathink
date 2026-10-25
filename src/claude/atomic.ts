@@ -86,13 +86,13 @@ export function writeFileAtomic(
 			try {
 				fs.closeSync(fd);
 			} catch {
-				// the original error is the one to report
+				// reason: the original error is the one to report
 			}
 		}
 		try {
 			fs.unlinkSync(tmp);
 		} catch {
-			// the temporary file may not exist yet
+			// reason: the temporary file may not exist yet
 		}
 		throw error;
 	}
@@ -136,7 +136,7 @@ function discardGuard(path: string, owner: string): void {
 	try {
 		rmdirSync(path);
 	} catch {
-		// A successor may already have atomically replaced the now-empty directory.
+		// reason: A successor may already have atomically replaced the now-empty directory.
 	}
 }
 
@@ -159,7 +159,7 @@ function reclaimDeadGuard(path: string): void {
 		if (owners.length !== 1 || !owner || !deadGuardOwner(owner)) return;
 		discardGuard(path, owner);
 	} catch {
-		// An unverifiable owner remains held.
+		// reason: An unverifiable owner remains held.
 	}
 }
 
@@ -224,7 +224,7 @@ export function withLockMutation<T>(lockPath: string, fn: () => T): T | undefine
 			try {
 				closeSync(fd);
 			} catch {
-				/* best effort after a preparation error */
+				/* reason: best effort after a preparation error */
 			}
 		}
 		if (claimed) discardGuard(guard, owner);
@@ -232,12 +232,12 @@ export function withLockMutation<T>(lockPath: string, fn: () => T): T | undefine
 			try {
 				unlinkSync(join(candidate, owner));
 			} catch {
-				/* preparation may not have reached the file */
+				/* reason: preparation may not have reached the file */
 			}
 			try {
 				rmdirSync(candidate);
 			} catch {
-				/* orphan pruning can reclaim the dead owner's prepared candidate */
+				/* reason: orphan pruning can reclaim the dead owner's prepared candidate */
 			}
 		}
 	}
@@ -277,7 +277,7 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 						try {
 							unlinkSync(lockPath);
 						} catch {
-							/* best effort */
+							/* reason: the lock file may already be gone; the original write error is rethrown */
 						}
 						throw error;
 					} finally {
@@ -319,7 +319,7 @@ function release(lockPath: string, token: string, options: LockOptions): void {
 					try {
 						if (readFileSync(lockPath, "utf8") === token) unlinkSync(lockPath);
 					} catch {
-						// The lock is already gone or no longer ours.
+						// reason: The lock is already gone or no longer ours.
 					}
 					return true;
 				})

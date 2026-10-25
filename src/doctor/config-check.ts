@@ -88,7 +88,7 @@ function describeValue(value: unknown): string {
 				display = url.toString();
 			}
 		} catch {
-			// Non-URL effective values still use the shared secret redactor below.
+			// reason: Non-URL effective values still use the shared secret redactor below.
 		}
 	}
 	// Redact before truncation so a long credential cannot leave a visible prefix.

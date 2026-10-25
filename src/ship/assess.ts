@@ -140,6 +140,7 @@ export function parseJudge(text: string): JudgeVerdict | undefined {
 							: [],
 					};
 				} catch {
+					// reason: a balanced span that is not valid JSON is skipped; the scan moves on to the next "{"
 					break;
 				}
 			}
@@ -224,7 +225,9 @@ function startShipDecision(input: AssessInput): ShipDecision | undefined {
 		action: () => "none",
 	});
 	// An early exit must never leave an unhandled rejection; assessDone still awaits (and so re-throws) the outcome.
-	outcome.catch(() => {});
+	outcome.catch(() => {
+		// reason: the rejection is re-thrown by assessDone, which awaits the outcome
+	});
 	return { outcome, truncated, veto, approve };
 }
 
@@ -364,6 +367,7 @@ async function judgeGate(input: AssessInput, at: number): Promise<GateJudgement>
 		}
 		reason = "judge reply was not parseable JSON";
 	} catch (error) {
+		// reason: the failure is kept as the judge reason and returned in the assessment
 		reason = error instanceof Error ? error.message : String(error);
 	}
 	const gap = `assessment unavailable: ${reason}`;
@@ -411,6 +415,7 @@ async function assessAdvisory(input: AssessInput, at: number): Promise<Assessmen
 			};
 		reason = "judge reply was not parseable JSON";
 	} catch (error) {
+		// reason: the failure is kept as the judge error and returned in the assessment
 		reason = error instanceof Error ? error.message : String(error);
 	}
 	return {

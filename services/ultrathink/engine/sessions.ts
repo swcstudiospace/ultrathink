@@ -10,6 +10,7 @@
  */
 import { type Dir, lstatSync, opendirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createLogger, type Logger } from "../obs/log.ts";
 import { isFallbackGraph } from "../../../src/think/graph.ts";
 import type { ThoughtGraph } from "../../../src/think/types.ts";
 import { isSessionId } from "./journal.ts";
@@ -93,8 +94,16 @@ function oneLine(value: unknown): string {
 	return "";
 }
 
+/** The class or code of a failure, never its message: a path or a parse error can echo file content. */
+function failureLabel(error: unknown): string {
+	if (!(error instanceof Error)) return "non-error value";
+	const code = "code" in error ? error.code : undefined;
+	if (typeof code === "string") return code;
+	return error.name === "Error" ? error.constructor.name : error.name;
+}
+
 /** Names of a directory, at most MAX_DIR_ENTRIES of them; empty when the directory is missing or unreadable. */
-function listNames(dir: string): string[] {
+function listNames(dir: string, logger: Logger): string[] {
 	const names: string[] = [];
 	let handle: Dir | undefined;
 	try {
@@ -105,13 +114,15 @@ function listNames(dir: string): string[] {
 			entry = handle.readSync()
 		)
 			names.push(entry.name);
-	} catch {
-		// A partial listing is still a valid listing.
+	} catch (error) {
+		// reason: A partial listing is still a valid listing; a missing directory is simply empty.
+		const label = failureLabel(error);
+		if (label !== "ENOENT") logger.error(`listNames: ${label}`);
 	} finally {
 		try {
 			handle?.closeSync();
 		} catch {
-			// Nothing left to release.
+			// reason: Nothing left to release.
 		}
 	}
 	return names;
@@ -145,7 +156,7 @@ function readJson(path: string): unknown {
 }
 
 /** Every session id found in any of the three places, with the modification time of each file it was found in. */
-function scan(stateDir: string): Sources[] {
+function scan(stateDir: string, logger: Logger): Sources[] {
 	const found = new Map<string, Sources>();
 	const entry = (id: string): Sources => {
 		let sources = found.get(id);
@@ -157,7 +168,7 @@ function scan(stateDir: string): Sources[] {
 	};
 
 	const jobsDir = join(stateDir, "jobs");
-	for (const name of listNames(jobsDir)) {
+	for (const name of listNames(jobsDir, logger)) {
 		if (!name.endsWith(JSON_SUFFIX)) continue;
 		const id = name.slice(0, -JSON_SUFFIX.length);
 		if (!isSessionId(id)) continue;
@@ -166,7 +177,7 @@ function scan(stateDir: string): Sources[] {
 	}
 
 	const journalRoot = join(stateDir, "journal");
-	for (const name of listNames(journalRoot)) {
+	for (const name of listNames(journalRoot, logger)) {
 		if (!isSessionId(name)) continue;
 		const dir = join(journalRoot, name);
 		if (!isRealDirectory(dir)) continue;
@@ -175,7 +186,7 @@ function scan(stateDir: string): Sources[] {
 	}
 
 	const recordsDir = join(stateDir, "sessions");
-	for (const name of listNames(recordsDir)) {
+	for (const name of listNames(recordsDir, logger)) {
 		if (!name.endsWith(JSON_SUFFIX)) continue;
 		const id = name.slice(0, -JSON_SUFFIX.length);
 		if (!isSessionId(id)) continue;
@@ -281,8 +292,9 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 function newestSources(
 	stateDir: string,
 	candidates: number,
+	logger: Logger,
 ): Array<{ id: string; time: number; sources: Sources }> {
-	return scan(stateDir)
+	return scan(stateDir, logger)
 		.map((sources) => ({
 			id: sources.id,
 			time: Math.max(sources.jobMtime ?? 0, sources.metaMtime ?? 0, sources.recordMtime ?? 0),
@@ -293,15 +305,16 @@ function newestSources(
 }
 
 /** Summaries of the `candidates` most recently touched sessions, newest first by their own timestamp. */
-function collect(stateDir: string, candidates: number): SessionSummary[] {
-	const newest = newestSources(stateDir, candidates);
+function collect(stateDir: string, candidates: number, logger: Logger): SessionSummary[] {
+	const newest = newestSources(stateDir, candidates, logger);
 	const summaries: SessionSummary[] = [];
 	for (const { sources } of newest) {
 		try {
 			const summary = summarize(stateDir, sources);
 			if (summary) summaries.push(summary);
-		} catch {
-			// One unreadable session never hides the others.
+		} catch (error) {
+			// reason: One unreadable session never hides the others.
+			logger.error(`collect: ${failureLabel(error)}`);
 		}
 	}
 	return summaries
@@ -315,10 +328,17 @@ function collect(stateDir: string, candidates: number): SessionSummary[] {
  * malformed file and a name that is not a session id are all skipped. `limit` is clamped to 1..20 (default 5); at
  * most min(200, limit * 4) sessions are parsed, chosen by file modification time.
  */
-export function listSessions(stateDir: string, options: { limit?: number } = {}): SessionSummary[] {
+export function listSessions(
+	stateDir: string,
+	options: { limit?: number; logger?: Logger } = {},
+): SessionSummary[] {
 	try {
 		const limit = clampLimit(options.limit);
-		return collect(stateDir, Math.min(MAX_CANDIDATES, limit * 4)).slice(0, limit);
+		return collect(
+			stateDir,
+			Math.min(MAX_CANDIDATES, limit * 4),
+			options.logger ?? createLogger(),
+		).slice(0, limit);
 	} catch {
 		return [];
 	}
@@ -329,14 +349,18 @@ export function listSessions(stateDir: string, options: { limit?: number } = {})
  * visited newest first and the walk stops at the first planned one, so a state directory full of unfinished sessions
  * costs reads only until that session.
  */
-export function newestPlannedSessionId(stateDir: string): string | undefined {
+export function newestPlannedSessionId(
+	stateDir: string,
+	logger: Logger = createLogger(),
+): string | undefined {
 	try {
-		for (const { sources } of newestSources(stateDir, MAX_CANDIDATES)) {
+		for (const { sources } of newestSources(stateDir, MAX_CANDIDATES, logger)) {
 			try {
 				const summary = summarize(stateDir, sources);
 				if (summary?.status === "planned") return summary.sessionId;
-			} catch {
-				// One unreadable session never hides the others.
+			} catch (error) {
+				// reason: One unreadable session never hides the others.
+				logger.error(`newestPlannedSessionId: ${failureLabel(error)}`);
 			}
 		}
 		return undefined;

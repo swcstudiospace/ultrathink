@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
 	existsSync,
@@ -19,6 +19,7 @@ import { readSession, writeSession } from "../../../src/claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../../../src/config.ts";
 import { stageOf } from "../../../src/host/grokbot.ts";
 import { planPrompt } from "../../../src/host/plan.ts";
+import { redactText } from "../../../src/teach/redact.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../../../src/think/prompts.ts";
 import { FALLBACK_GRAPH } from "../../../src/think/types.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../../../src/uplift/prompt.ts";
@@ -55,7 +56,7 @@ afterAll(() => {
 		try {
 			store.close();
 		} catch {
-			// already closed
+			// reason: already closed
 		}
 	}
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -1769,5 +1770,40 @@ describe("headless planner: client span threading", () => {
 				error: false,
 			});
 		}
+	});
+});
+
+describe("headless planner: boundary failures", () => {
+	test("a run-row write that fails is logged under finalize without the echoed secret", async () => {
+		const SECRET = "sk-test-FIXTURE0000000000000000";
+		const gate = Promise.withResolvers<void>();
+		const completer: ClaudeCompleter = async (_system, _user, signal) => {
+			await (signal ? Promise.race([gate.promise, aborted(signal)]) : gate.promise);
+			throw new Error(`upstream echoed ${SECRET}`);
+		};
+		const lines: string[] = [];
+		const logger = {
+			info: () => {
+				// reason: headless tests do not assert on info-level logs; only error lines are collected
+			},
+			warn: () => {
+				// reason: warnings are not part of the redaction contract under test; only error lines are collected
+			},
+			error: (event: string) => {
+				lines.push(event);
+			},
+		};
+		const h = setup({}, { completer, logger });
+		const sessionId = randomUUID();
+		await startRunning(h, sessionId);
+		spyOn(h.store, "updateRun").mockImplementation(() => {
+			throw new Error(`row write echoed ${SECRET}`);
+		});
+		gate.resolve();
+		await h.planner.result({ sessionId, waitSeconds: 30 });
+		const line = lines.find((entry) => entry.startsWith("finalize: ")) ?? "";
+		expect(line).toBe("finalize: Error");
+		expect(line).not.toContain(SECRET);
+		expect(redactText(line, { home: "" })).toBe(line);
 	});
 });

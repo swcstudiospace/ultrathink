@@ -61,7 +61,7 @@ export function isOmpSubagentSessionId(
 				if (now - statSync(path).mtimeMs > maxAgeMs) continue;
 				if (headSessionId(path) === sessionId) return true;
 			} catch {
-				// fail-open: an unreadable or malformed session file is skipped
+				// reason: fail-open: an unreadable or malformed session file is skipped
 			}
 		}
 		return false;

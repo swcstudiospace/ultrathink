@@ -405,7 +405,12 @@ describe("error mapping", () => {
 	});
 
 	test("no answer within the budget is a timeout", async () => {
-		const { fetch } = fakeFetch(() => new Promise<Response>(() => {}));
+		const { fetch } = fakeFetch(
+			() =>
+				new Promise<Response>(() => {
+					// reason: the request must hang; the timeout under test ends it
+				}),
+		);
 		const result = await clientWith(fetch, { timeoutMs: 25 }).retrieve({
 			question: QUESTION,
 			datasetIds: ["d"],

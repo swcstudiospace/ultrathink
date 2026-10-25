@@ -394,7 +394,7 @@ export function createInsightDashboard(
 		try {
 			options.requestRender?.();
 		} catch {
-			// Host redraw is best-effort; state already advanced.
+			// reason: Host redraw is best-effort; state already advanced.
 		}
 	};
 	const touch = (): void => {
@@ -2223,6 +2223,7 @@ export function createInsightDashboard(
 			try {
 				rows = renderInto(safeWidth);
 			} catch {
+				// reason: the dashboard shows a fixed error row; a render failure changes no lesson state
 				rows = [
 					fitRow(
 						"Ultrathink dashboard hit an error; no lesson changes were made. Press r to refresh or Esc to close.",
@@ -2322,7 +2323,7 @@ export function createInsightDashboard(
 				try {
 					callbacks.close();
 				} catch {
-					// Host close is best-effort.
+					// reason: Host close is best-effort.
 				}
 				return;
 			}

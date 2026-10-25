@@ -439,7 +439,7 @@ export function createOpenRouterCompleter(opts: OpenRouterCompleterOptions): Ope
 						error: result !== undefined && releaseOutcome(result) === "failure",
 					});
 				} catch {
-					// A throwing sink must not change the attempt's result.
+					// reason: A throwing sink must not change the attempt's result.
 				}
 			}
 		}
@@ -469,7 +469,7 @@ export function createOpenRouterCompleter(opts: OpenRouterCompleterOptions): Ope
 					attempts,
 				});
 			} catch {
-				// Telemetry must not change the result of the call.
+				// reason: Telemetry must not change the result of the call.
 			}
 		};
 		for (let retry = 0; ; retry += 1) {
@@ -496,7 +496,7 @@ export function createOpenRouterCompleter(opts: OpenRouterCompleterOptions): Ope
 				try {
 					opts.onUsage?.(result.usage);
 				} catch {
-					// Accounting must not fail a completion that already succeeded.
+					// reason: Accounting must not fail a completion that already succeeded.
 				}
 				report("ok");
 				return result.text;

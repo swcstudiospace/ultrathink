@@ -234,7 +234,7 @@ export async function listRecentMoments(
 			if (stat.isFile() && stat.size <= options.maxBytes)
 				entries.push({ id, mtimeMs: stat.mtimeMs });
 		} catch {
-			// removed meanwhile
+			// reason: removed meanwhile
 		}
 	}
 	entries.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.id < b.id ? -1 : 1));
@@ -311,7 +311,7 @@ export function openStore(dir: string): TeachStore {
 				try {
 					put({ ...moment, recalled: moment.recalled + 1 });
 				} catch {
-					// a counter is not worth failing a plan for
+					// reason: a counter is not worth failing a plan for
 				}
 			}
 		},

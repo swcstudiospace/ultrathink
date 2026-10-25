@@ -144,7 +144,9 @@ describe("spawnObserveDetached", () => {
 			env: {},
 			stateDir: join(root, "blocker"),
 			host: "omp",
-			spawn: () => {},
+			spawn: () => {
+				// reason: test double; the detached launch is not wanted here
+			},
 		});
 		expect(result.spawned).toBe(false);
 		expect(result.reason).toBeTruthy();
@@ -157,7 +159,15 @@ describe("spawnObserveDetached", () => {
 		const fresh = join(inbox(), `${Date.now() - 60_000}-cccccccc.json`);
 		const foreign = join(inbox(), "notes.txt");
 		for (const path of [old, oldTmp, fresh, foreign]) writeFileSync(path, "{}");
-		spawnObserveDetached(digest(), { repoRoot, env: {}, stateDir, host: "omp", spawn: () => {} });
+		spawnObserveDetached(digest(), {
+			repoRoot,
+			env: {},
+			stateDir,
+			host: "omp",
+			spawn: () => {
+				// reason: test double; only the inbox prune is under test, so no process is started
+			},
+		});
 		expect(existsSync(old)).toBe(false);
 		expect(existsSync(oldTmp)).toBe(false);
 		expect(existsSync(fresh)).toBe(true);

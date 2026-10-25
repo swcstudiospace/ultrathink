@@ -380,7 +380,7 @@ export function createBarStore(): BarStore {
 			try {
 				listener();
 			} catch {
-				// a broken listener must never break planning
+				// reason: a broken listener must never break planning
 			}
 		}
 	};
@@ -905,6 +905,7 @@ export function createBarComponent(
 						maxRows,
 					});
 				} catch {
+					// reason: a graph that fails to render leaves the panel empty; the bar line still shows the state
 					panel = [];
 				}
 			}

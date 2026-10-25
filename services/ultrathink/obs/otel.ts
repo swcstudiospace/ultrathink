@@ -119,7 +119,7 @@ function notify(callback: (() => void) | undefined): void {
 	try {
 		callback?.();
 	} catch {
-		// Deliberately ignored: telemetry hooks are not allowed to affect the request path.
+		// reason: Deliberately ignored: telemetry hooks are not allowed to affect the request path.
 	}
 }
 

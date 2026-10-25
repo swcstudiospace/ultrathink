@@ -108,7 +108,9 @@ function stubPlanner(
 			if (!stub.serverIds.has(sessionId)) return null;
 			return { ok: true, data: { sessionId, status: "running", pendingCount: 0, pending: [] } };
 		},
-		async shutdown() {},
+		async shutdown() {
+			// reason: test double, the stub planner holds no state to release
+		},
 	};
 	return stub;
 }

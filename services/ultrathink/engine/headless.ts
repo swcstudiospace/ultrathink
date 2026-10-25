@@ -23,7 +23,7 @@ import {
 } from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
-import { CeilingError, type Ledger } from "../cost/ledger.ts";
+import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
 import { createFairShare } from "../obs/fair-share.ts";
 import type { Logger } from "../obs/log.ts";
@@ -210,6 +210,14 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> => {
 	return promise;
 };
 
+/** The class or code of a failure, never its message: a driver or provider message can echo a key or a prompt. */
+function failureLabel(error: unknown): string {
+	if (!(error instanceof Error)) return "non-error value";
+	const code = "code" in error ? error.code : undefined;
+	if (typeof code === "string") return code;
+	return error.name === "Error" ? error.constructor.name : error.name;
+}
+
 /** The plugin config a server plan runs with: planning on, everything that reaches outside the model off. */
 function pluginConfig(): PluginConfig {
 	const config = defaultConfig();
@@ -313,13 +321,16 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (file?.status !== "running") continue;
 			try {
 				persist({ ...file, status: "failed", error: "interrupted", updatedAt: now() });
-			} catch {
+			} catch (error) {
+				// reason: the file keeps its running status; the other jobs are still recovered.
+				opts.logger?.error(`recoverInterrupted: ${failureLabel(error)}`);
 				continue;
 			}
 			try {
 				store.updateRun(file.runId, { status: "failed", reason: "interrupted" });
-			} catch {
-				// the run row is bookkeeping only
+			} catch (error) {
+				// reason: the run row is bookkeeping only.
+				opts.logger?.error(`recoverInterrupted: ${failureLabel(error)}`);
 			}
 		}
 	}
@@ -386,7 +397,8 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			} catch (error) {
 				job.reason ??= error instanceof CeilingError ? "budget_exceeded" : "ledger_unavailable";
 				job.controller.abort();
-				throw error;
+				if (error instanceof CeilingError || error instanceof LedgerWriteError) throw error;
+				throw new Error(`meteredCompleter: ${failureLabel(error)}`, { cause: error });
 			}
 			const reported: {
 				usage?: OpenRouterUsage;
@@ -408,7 +420,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						...(usage?.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
 					});
 				} catch {
-					// telemetry must never affect the job
+					// reason: telemetry must never affect the job.
 				}
 			};
 
@@ -429,7 +441,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				try {
 					ledger.settle(reservation, Math.max(0, Math.round(actual)));
 				} catch {
-					// the reservation keeps counting, which only errs on the safe side
+					// reason: the reservation keeps counting, which only errs on the safe side.
 				}
 			};
 			try {
@@ -477,7 +489,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					try {
 						ledger.abandon(reservationId);
 					} catch {
-						// as above
+						// reason: the reservation keeps counting, which only errs on the safe side.
 					}
 				}
 				if (error instanceof OpenRouterError && error.code === "truncated") job.truncated = true;
@@ -487,6 +499,8 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						: error instanceof Error && error.name === "AbortError";
 				if (!aborted)
 					job.firstError ??= error instanceof OpenRouterError ? error.code : "engine_error";
+				if (!aborted && !(error instanceof OpenRouterError))
+					throw new Error(`meteredCompleter: ${failureLabel(error)}`, { cause: error });
 				throw error;
 			}
 		};
@@ -537,7 +551,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				error,
 			});
 		} catch {
-			// logging must never affect the job
+			// reason: logging must never affect the job.
 		}
 		unpersisted.push(job.sessionId);
 		while (unpersisted.length > UNPERSISTED_JOBS_MAX) {
@@ -559,6 +573,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		try {
 			persist(job);
 		} catch (error) {
+			// reason: the error is kept and logged by retainUnpersisted (job_persist_failed); the job stays in memory.
 			written = false;
 			persistError = error;
 		}
@@ -569,8 +584,9 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					? { status: "complete", reason: null }
 					: { status: "failed", reason: outcome.error ?? outcome.status },
 			);
-		} catch {
-			// bookkeeping only
+		} catch (error) {
+			// reason: the run row is bookkeeping only; the job outcome is already set above.
+			opts.logger?.error(`finalize: ${failureLabel(error)}`);
 		}
 		if (written) jobs.delete(job.sessionId);
 		else retainUnpersisted(job, persistError);
@@ -586,7 +602,9 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					job.reason ??= "timeout";
 					job.controller.abort();
 				})
-				.catch(() => {});
+				.catch(() => {
+					// reason: sleep rejects only on abort, which is the intended cancellation.
+				});
 		}
 		let outcome: Outcome;
 		try {
@@ -609,6 +627,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			);
 			outcome = judge(job, response);
 		} catch {
+			// reason: a plan failure is carried by job.firstError (set when the completer fails) or by job.reason (set on abort).
 			outcome =
 				job.reason === undefined
 					? { status: "failed", error: job.firstError ?? "engine_error" }

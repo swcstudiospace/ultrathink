@@ -53,6 +53,7 @@ async function main(): Promise<void> {
 	try {
 		raw = await new Response(Bun.stdin.stream()).text();
 	} catch {
+		// reason: an unreadable stdin is treated as an empty request, which the planner answers with no context
 		raw = "";
 	}
 	let parsed: unknown = {};
@@ -60,6 +61,7 @@ async function main(): Promise<void> {
 		try {
 			parsed = JSON.parse(raw);
 		} catch {
+			// reason: unparseable stdin is treated as an empty envelope, which the planner answers with no context
 			parsed = {};
 		}
 	}
@@ -84,7 +86,7 @@ if (import.meta.main) {
 	main()
 		.catch(() => emit({ context: "", skipped: "engine-error" }))
 		.catch(() => {
-			// fail-open: nothing left to say
+			// reason: fail-open: nothing left to say
 		})
 		.finally(() => {
 			process.exit(0);

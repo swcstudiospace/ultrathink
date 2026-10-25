@@ -94,7 +94,7 @@ function frontmatterField(lines: string[], key: string): string {
 				const parsed: unknown = JSON.parse(raw);
 				if (typeof parsed === "string") return parsed;
 			} catch {
-				// fall through to the raw text
+				// reason: fall through to the raw text
 			}
 		}
 		return raw;
@@ -125,7 +125,7 @@ async function draftFiles(draftsDir: string, signal: AbortSignal | undefined): P
 			if (stat.isSymbolicLink() || !stat.isFile() || stat.size > CONTENT_MAX_BYTES) continue;
 			files.push({ path, mtimeMs: stat.mtimeMs });
 		} catch {
-			// not a draft directory, or removed meanwhile
+			// reason: not a draft directory, or removed meanwhile
 		}
 	}
 	files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : 1));

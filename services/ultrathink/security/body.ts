@@ -24,7 +24,9 @@ function readChunk(reader: ChunkReader, signal?: AbortSignal): Promise<ChunkResu
 	if (signal.aborted) return Promise.reject(signal.reason);
 	const { promise, resolve, reject } = Promise.withResolvers<ChunkResult>();
 	const onAbort = () => {
-		reader.cancel(signal.reason).catch(() => {});
+		reader.cancel(signal.reason).catch(() => {
+			// reason: the abort has already rejected the read; a failed cancel of a stream being discarded changes nothing.
+		});
 		reject(signal.reason);
 	};
 	signal.addEventListener("abort", onAbort, { once: true });
@@ -75,7 +77,9 @@ export async function readBodyPrefix(
 		}
 		return { text: text + decoder.decode(), complete };
 	} finally {
-		await reader.cancel().catch(() => {});
+		await reader.cancel().catch(() => {
+			// reason: the body is discarded here; a failed cancel leaves nothing to release, and the lock is released next.
+		});
 		reader.releaseLock();
 	}
 }
@@ -91,7 +95,7 @@ export async function readBodyText(
 ): Promise<string> {
 	const result = await readBodyPrefix(response, limit, signal);
 	if (!result.complete) {
-		throw new Error(`Response body exceeds limit of ${limit} bytes`);
+		throw new Error(`readBodyText: exceeds limit of ${limit} bytes`);
 	}
 	return result.text;
 }
@@ -107,12 +111,12 @@ export async function readJsonBody<T = unknown>(
 ): Promise<T> {
 	const result = await readBodyPrefix(response, limit, signal);
 	if (!result.complete) {
-		throw new Error(`Response body exceeds limit of ${limit} bytes`);
+		throw new Error(`readJsonBody: exceeds limit of ${limit} bytes`);
 	}
 	try {
 		return JSON.parse(result.text) as T;
-	} catch {
-		throw new Error("Response body is not valid JSON");
+	} catch (error) {
+		throw new Error("readJsonBody: invalid JSON (SyntaxError)", { cause: error });
 	}
 }
 

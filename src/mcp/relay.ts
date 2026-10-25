@@ -118,7 +118,11 @@ export function createRelay(options: RelayOptions): {
 	handle(message: unknown, signal?: AbortSignal): Promise<void>;
 } {
 	const doFetch = options.fetch ?? fetch;
-	const log = options.log ?? ((): void => {});
+	const log =
+		options.log ??
+		((): void => {
+			// reason: no log sink was given, so relay messages are dropped by design
+		});
 	const host = new URL(options.url).host;
 	let sessionId: string | undefined;
 	let protocolVersion: string | undefined;
@@ -189,7 +193,9 @@ export function createRelay(options: RelayOptions): {
 		signal?: AbortSignal,
 	): Promise<void> => {
 		if (response.status === 202 || !response.body) {
-			await response.body?.cancel().catch(() => {});
+			await response.body?.cancel().catch(() => {
+				// reason: the body is discarded; a failed cancel leaves nothing the caller can use
+			});
 			return;
 		}
 		const type = response.headers.get("content-type") ?? "";
@@ -206,7 +212,9 @@ export function createRelay(options: RelayOptions): {
 			}, MAX_BODY_BYTES);
 			const reader = response.body.getReader();
 			const onAbort = (): void => {
-				reader.cancel(signal?.reason).catch(() => {});
+				reader.cancel(signal?.reason).catch(() => {
+					// reason: the abort is already in progress; a failed cancel adds nothing the caller can act on
+				});
 			};
 			signal?.addEventListener("abort", onAbort, { once: true });
 			const decoder = new TextDecoder();
@@ -219,7 +227,9 @@ export function createRelay(options: RelayOptions): {
 				}
 			} finally {
 				signal?.removeEventListener("abort", onAbort);
-				await reader.cancel().catch(() => {});
+				await reader.cancel().catch(() => {
+					// reason: releasing the reader in finally; a cancel failure must not replace the read result
+				});
 				reader.releaseLock();
 			}
 			parser.push(decoder.decode());
@@ -250,13 +260,22 @@ export function createRelay(options: RelayOptions): {
 			log(
 				`re-initialize failed: ${posted.response ? `HTTP ${posted.response.status}` : "unreachable"}`,
 			);
-			await posted.response?.body?.cancel().catch(() => {});
+			await posted.response?.body?.cancel().catch(() => {
+				// reason: the failed response body is discarded; the failure is logged above
+			});
 			sessionId = undefined;
 			return;
 		}
 		sessionId = posted.response.headers.get("mcp-session-id") ?? undefined;
 		try {
-			await consume(posted.response, asRpc(initMessage).id, () => {}, signal);
+			await consume(
+				posted.response,
+				asRpc(initMessage).id,
+				() => {
+					// reason: replayed re-initialize messages are not forwarded; only the session id is kept
+				},
+				signal,
+			);
 		} catch {
 			log(`re-initialize failed: ${signal.aborted ? "timed out" : "stream failed"}`);
 			sessionId = undefined;
@@ -267,7 +286,9 @@ export function createRelay(options: RelayOptions): {
 			true,
 			signal,
 		);
-		await notified.response?.body?.cancel().catch(() => {});
+		await notified.response?.body?.cancel().catch(() => {
+			// reason: the notification has no reply; its response body is discarded
+		});
 	};
 
 	const writeError = (id: unknown, code: number, message: string): void => {
@@ -287,7 +308,9 @@ export function createRelay(options: RelayOptions): {
 		else if (reinitializing) await reinitializing;
 		let posted = await postWithAuth(message, true, signal);
 		if (posted.response?.status === 404 && posted.sessionUsed !== undefined && !isInitialize) {
-			await posted.response.body?.cancel().catch(() => {});
+			await posted.response.body?.cancel().catch(() => {
+				// reason: the 404 body is discarded; the retry below sends the request again
+			});
 			if (posted.sessionUsed === sessionId) {
 				reinitializing ??= reinitialize().finally(() => {
 					reinitializing = undefined;
@@ -320,7 +343,9 @@ export function createRelay(options: RelayOptions): {
 			return;
 		}
 		if (!response.ok) {
-			await response.body?.cancel().catch(() => {});
+			await response.body?.cancel().catch(() => {
+				// reason: the error body is discarded; the HTTP status is logged and reported below
+			});
 			log(`upstream HTTP ${response.status}`);
 			if (isRequest) writeError(rpc.id, -32000, `upstream HTTP ${response.status}`);
 			return;

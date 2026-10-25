@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +15,7 @@ import { createMetrics, type Metrics } from "../obs/metrics.ts";
 import type { RuntimeSample } from "../obs/runtime.ts";
 import { type App, SECURITY_HEADERS, createApp, createHandler } from "./router.ts";
 import { getSecurityLogger } from "../security/events.ts";
+import { redactText } from "../../../src/teach/redact.ts";
 
 /** A header the security module sets, read from the exported constant. A missing one is a broken build, not a value to compare. */
 function requiredHeader(name: string): string {
@@ -870,7 +871,9 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				throw new Error("the stub planner is not asked for results in this test");
 			},
 			status: () => null,
-			async shutdown() {},
+			async shutdown() {
+				// reason: the stub holds no resources to release.
+			},
 			upstream: () => undefined,
 		};
 		// maxInflight 4 with a 50 % reserve: the reserve is 2, so non-owner classes may hold 2 slots.
@@ -924,7 +927,9 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				throw new Error("the stub planner is not asked for results in this test");
 			},
 			status: () => null,
-			async shutdown() {},
+			async shutdown() {
+				// reason: the stub holds no resources to release.
+			},
 			upstream: () => undefined,
 		};
 		// maxInflight 4 with a 50 % reserve, and no queue: the third connector is refused at once.
@@ -979,7 +984,9 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				throw new Error("the stub planner is not asked for results in this test");
 			},
 			status: () => null,
-			async shutdown() {},
+			async shutdown() {
+				// reason: the stub holds no resources to release.
+			},
 			upstream: () => undefined,
 		};
 		// maxInflight 4 with a 50 % reserve: non-owner classes hold 2 pool slots, so the next two connectors queue.
@@ -1047,7 +1054,9 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				throw new Error("the stub planner is not asked for results in this test");
 			},
 			status: () => null,
-			async shutdown() {},
+			async shutdown() {
+				// reason: the stub holds no resources to release.
+			},
 			upstream: () => undefined,
 		};
 		// /login calls from the held IPs block inside auth, holding an outer slot each; every other caller is unaffected.
@@ -1157,5 +1166,81 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		expect(gaugeValue(second.metrics, "ultrathink_load_forecast_rps")).toBe(before);
 		expect(logLines.some((line) => line.includes("load_history"))).toBe(false);
 		await second.app.shutdown();
+	});
+});
+
+describe("router boundary failures", () => {
+	test("a ledger that cannot answer is logged under planningInfo without the echoed secret", async () => {
+		const SECRET = "sk-test-FIXTURE0000000000000000";
+		const CONNECTOR = randomBytes(24).toString("hex");
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-router-boundary-"));
+		const store = openStore(join(dir, "ultrathink.sqlite"));
+		const logLines: string[] = [];
+		const realQuery = store.db.query.bind(store.db);
+		const failing = spyOn(store.db, "query").mockImplementation((sql: string) => {
+			if (sql.includes("FROM token_ledger WHERE day")) throw new Error(`ledger echoed ${SECRET}`);
+			return realQuery(sql);
+		});
+		const planner: HeadlessPlanner = {
+			enabled: true,
+			async start() {
+				throw new Error("the stub planner is not asked to start in this test");
+			},
+			async result() {
+				throw new Error("the stub planner is not asked for results in this test");
+			},
+			status: () => null,
+			async shutdown() {
+				// reason: the stub holds no resources to release.
+			},
+			upstream: () => undefined,
+		};
+		try {
+			const app = createApp({
+				config: { ...config, connectorKey: CONNECTOR, stateDir: dir },
+				store,
+				auth: createAuth({
+					ownerPasswordHash: config.ownerPasswordHash,
+					sessionSecret: config.sessionSecret,
+					cookieSecure: true,
+				}),
+				logger: createLogger({ write: (line) => logLines.push(line) }),
+				metrics: createMetrics(),
+				planner,
+			});
+			const response = await app.handle(
+				new Request(`${PUBLIC_ORIGIN}/mcp`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR },
+					body: JSON.stringify({
+						jsonrpc: "2.0",
+						id: 1,
+						method: "tools/call",
+						params: { name: "ultrathink_sessions", arguments: {} },
+					}),
+				}),
+				PEER_IP,
+			);
+			const text = await response.text();
+			expect(text).not.toContain(SECRET);
+			const events = logLines
+				.map((line) => {
+					const parsed: unknown = JSON.parse(line);
+					return typeof parsed === "object" && parsed !== null && "event" in parsed
+						? parsed.event
+						: undefined;
+				})
+				.filter((event): event is string => typeof event === "string")
+				.filter((event) => event.startsWith("planningInfo: "));
+			expect(events).toEqual(["planningInfo: LedgerWriteError"]);
+			for (const event of events) {
+				expect(event).not.toContain(SECRET);
+				expect(redactText(event, { home: "" })).toBe(event);
+			}
+		} finally {
+			failing.mockRestore();
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

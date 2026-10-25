@@ -72,7 +72,15 @@ function startListener(port: number): Listener {
 }
 
 function freePort(): number {
-	const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+	const probe = Bun.listen({
+		hostname: "127.0.0.1",
+		port: 0,
+		socket: {
+			data() {
+				// reason: test double, the probe only reserves a port and never receives data
+			},
+		},
+	});
 	const port = probe.port;
 	probe.stop(true);
 	return port;
@@ -93,7 +101,9 @@ async function startPausedReceiver(): Promise<PausedReceiver> {
 	let reader: net.Socket | undefined;
 	const server = net.createServer((sock) => {
 		reader = sock;
-		sock.on("error", () => {});
+		sock.on("error", () => {
+			// reason: test double, a client reset during the paused test is expected and not asserted
+		});
 		sock.on("data", (chunk: Buffer) => {
 			chunks.push(chunk);
 			total += chunk.byteLength;

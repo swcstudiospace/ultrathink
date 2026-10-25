@@ -123,7 +123,9 @@ interface Deadline {
 function deadline(ms: number, caller: AbortSignal): Deadline {
 	const signal = AbortSignal.any([caller, AbortSignal.timeout(ms)]);
 	const stop = Promise.withResolvers<never>();
-	stop.promise.catch(() => {});
+	stop.promise.catch(() => {
+		// reason: the stop promise only exists to be raced; its rejection is observed elsewhere
+	});
 	let expired = false;
 	const fail = () => {
 		expired = true;
@@ -281,6 +283,7 @@ export function createKnowledgeReader(opts: {
 			try {
 				client = opts.client();
 			} catch (error) {
+				// reason: the client error is kept and reported when the call runs
 				clientError = error;
 			}
 			const call = (dl: Deadline, caller: Caller, name: string, args: Obj) =>

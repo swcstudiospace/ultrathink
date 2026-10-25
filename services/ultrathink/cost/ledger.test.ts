@@ -24,7 +24,7 @@ afterAll(() => {
 		try {
 			store.close();
 		} catch {
-			// already closed by the test
+			// reason: already closed by the test
 		}
 	}
 	rmSync(root, { recursive: true, force: true });

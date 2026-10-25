@@ -528,7 +528,7 @@ export async function promoteDue(
 				markPromoted([moment.id], { skill: draft.name, target, path: outcome.path }, ctx);
 			}
 		} catch {
-			// One unrenderable lesson must not stop the others.
+			// reason: an unrenderable lesson is dropped with no signal, so the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 		}
 	}
 	return result;

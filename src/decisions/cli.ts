@@ -218,6 +218,7 @@ function parseCases(point: DecisionPoint, file: string, text: string): ProbeCase
 	try {
 		parsed = JSON.parse(text);
 	} catch {
+		// reason: an unparseable file is reported by the caller as not a JSON array
 		parsed = undefined;
 	}
 	if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > MAX_CASES) {

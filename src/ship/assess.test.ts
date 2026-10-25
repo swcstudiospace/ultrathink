@@ -911,7 +911,9 @@ function jevRuntime(
 		env: { OPENROUTER_API_KEY: K },
 		storePath: join(decisionsDir(), "mcp-credentials.json"),
 		fetch: fetchImpl,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: test double, no backoff delay is wanted
+		},
 		random: () => 0.5,
 		debug: (line) => lines.push(line),
 	});

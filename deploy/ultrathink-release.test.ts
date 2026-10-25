@@ -202,7 +202,11 @@ async function serveMtls(
 		},
 	);
 	// A refused handshake is the expected outcome here; Bun 1.2.23 emits its error on the raw TCP socket, not the TLS one.
-	listener.on("connection", (raw) => raw.on("error", () => {}));
+	listener.on("connection", (raw) =>
+		raw.on("error", () => {
+			// reason: the refused handshake's error is expected on the raw socket; the test asserts on the TLS outcome
+		}),
+	);
 	const { promise, resolve, reject } = Promise.withResolvers<number>();
 	listener.once("error", reject);
 	listener.listen(0, "127.0.0.1", () => {

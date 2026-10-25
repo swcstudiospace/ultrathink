@@ -39,7 +39,7 @@ export function gitRootsOf(cwd: string): GitRoots | undefined {
 			if (info.isDirectory()) return { worktree: dir, primary: dir };
 			if (info.isFile()) return { worktree: dir, primary: primaryFromGitFile(dir, dotGit) };
 		} catch {
-			// no .git here: keep walking
+			// reason: no .git here: keep walking
 		}
 		const parent = dirname(dir);
 		if (parent === dir) return undefined;

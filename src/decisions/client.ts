@@ -85,7 +85,7 @@ export function resolveDecisionsUrl(env: Env): DecisionsUrl {
 			return { url: `${parsed.origin}${parsed.pathname}`, source: "ULTRATHINK_DECISIONS_URL" };
 		}
 	} catch {
-		// not a URL: the default endpoint
+		// reason: not a URL: the default endpoint
 	}
 	return { url: DEFAULT_DECISIONS_URL, source: "default", ignored: true };
 }
@@ -330,7 +330,9 @@ export function abortError(signal: AbortSignal): Error {
 /** Settles with `work`, or rejects as soon as `signal` aborts, even if `work` ignores the signal. */
 function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) {
-		work.catch(() => {});
+		work.catch(() => {
+			// reason: the aborted work's own rejection is discarded; the caller gets signal.reason
+		});
 		return Promise.reject(signal.reason);
 	}
 	return new Promise<T>((resolve, reject) => {
@@ -370,7 +372,7 @@ function upstreamDetail(text: string, statusText: string): string {
 			return parsed.error.message;
 		}
 	} catch {
-		// not JSON: use the text
+		// reason: not JSON: use the text
 	}
 	return text.trim() ? text.slice(0, MAX_ERROR_CHARS) : statusText;
 }
@@ -508,7 +510,9 @@ export async function postDecision(
 			: Math.round(125 + random() * 250);
 	// A failing sleep seam only shortens the wait; a caller abort during it is re-thrown.
 	const pause = Promise.resolve().then(() => sleep(wait));
-	await (caller ? raceAbort(pause, caller) : pause).catch(() => {});
+	await (caller ? raceAbort(pause, caller) : pause).catch(() => {
+		// reason: a failing sleep seam only shortens the wait; the abort check below decides
+	});
 	if (caller?.aborted) throw abortError(caller);
 
 	const second = await attempt();

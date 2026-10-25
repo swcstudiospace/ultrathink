@@ -925,7 +925,11 @@ describe("insight card delivery", () => {
 		const { ctx: ctxCard } = sessionCtx({
 			cwd: suite.fixture.cwd,
 			sessionId: "sA",
-			ui: { notify: () => {} },
+			ui: {
+				notify: () => {
+					// reason: the notice text is not asserted in this scenario
+				},
+			},
 		});
 		await uiCommand(suite)("card", ctxCard);
 		const staleInput = suite.teachInputs[0];

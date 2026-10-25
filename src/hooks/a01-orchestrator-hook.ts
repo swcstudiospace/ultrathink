@@ -62,7 +62,7 @@ function markA01FailureInState(logMsg: string, stateDir?: string): void {
 		const line = `${new Date().toISOString()} ${redactForLog(logMsg).replace(/\s+/g, " ").trim().slice(0, A01_LOG_MESSAGE_MAX)}\n`;
 		appendFileSync(join(base, "a01-failures.log"), line, { encoding: "utf8", mode: 0o600 });
 	} catch {
-		// fail-open: never block caller
+		// reason: fail-open: never block caller
 	}
 }
 

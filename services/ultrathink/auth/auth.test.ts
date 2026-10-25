@@ -742,13 +742,21 @@ describe("clientIpFrom", () => {
 /** Keeps each validation refusal the logger seam reports, and writes nothing. */
 class RecordingLogger implements SecurityEventLogger {
 	readonly validation: Partial<SecurityEvent>[] = [];
-	log(): void {}
-	logAuthFailure(): void {}
+	log(): void {
+		// reason: test double, no-op by design
+	}
+	logAuthFailure(): void {
+		// reason: test double, no-op by design
+	}
 	logValidationFailure(details: Partial<SecurityEvent>): void {
 		this.validation.push(details);
 	}
-	logRateLimitExceeded(): void {}
-	logSuspiciousActivity(): void {}
+	logRateLimitExceeded(): void {
+		// reason: test double, no-op by design
+	}
+	logSuspiciousActivity(): void {
+		// reason: test double, no-op by design
+	}
 }
 
 describe("refused input", () => {

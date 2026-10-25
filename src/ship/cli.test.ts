@@ -1508,7 +1508,9 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 					env: o.env ?? { OPENROUTER_API_KEY: K },
 					storePath: join(dir, "mcp-credentials.json"),
 					fetch: o.fetch,
-					sleep: async () => {},
+					sleep: async () => {
+						// reason: test double, no backoff delay is wanted
+					},
 					random: () => 0.5,
 					debug: (line) => debug.push(line),
 				}),

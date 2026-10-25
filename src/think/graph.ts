@@ -20,7 +20,7 @@ export function extractJsonObject(text: string): unknown {
 	try {
 		return JSON.parse(raw);
 	} catch {
-		// fall through
+		// reason: fall through
 	}
 	const start = raw.indexOf("{");
 	const end = raw.lastIndexOf("}");

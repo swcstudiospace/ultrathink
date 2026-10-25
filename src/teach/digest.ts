@@ -134,6 +134,7 @@ function summarizeInput(input: unknown): string {
 			try {
 				text = JSON.stringify(input) ?? "";
 			} catch {
+				// reason: unserialisable input gives an empty summary; the tool name is still shown
 				text = "";
 			}
 		}
@@ -171,7 +172,7 @@ function readTail(path: string): string | undefined {
 			try {
 				closeSync(fd);
 			} catch {
-				// nothing to release
+				// reason: nothing to release
 			}
 		}
 	}
@@ -217,6 +218,7 @@ export function digestFromClaudeTranscript(
 		try {
 			entry = JSON.parse(trimmed);
 		} catch {
+			// reason: a line that is not JSON is skipped; the other lines still count
 			continue;
 		}
 		if (!entry || typeof entry !== "object") continue;

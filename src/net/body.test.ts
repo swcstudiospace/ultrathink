@@ -87,7 +87,10 @@ describe("readBodyPrefix", () => {
 	test("an abort cancels a stalled read and rejects with the reason", async () => {
 		let cancelled = false;
 		const stream = new ReadableStream<Uint8Array>({
-			pull: () => new Promise<void>(() => {}),
+			pull: () =>
+				new Promise<void>(() => {
+					// reason: the stream stalls on purpose; the abort under test ends the read
+				}),
 			cancel() {
 				cancelled = true;
 			},

@@ -38,7 +38,7 @@ export function resolveRagflowKey(
 				: "";
 		if (stored) return { key: stored, source: "store" };
 	} catch {
-		// unreadable store: fall back to the environment
+		// reason: an unreadable store falls back to the environment, so the store failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
 	const fromEnv = env[RAGFLOW_KEY_ENV]?.trim();
 	return fromEnv ? { key: fromEnv, source: RAGFLOW_KEY_ENV } : undefined;

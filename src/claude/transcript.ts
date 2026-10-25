@@ -44,6 +44,7 @@ export function conversationFromJsonl(
 		try {
 			entry = JSON.parse(line);
 		} catch {
+			// reason: a malformed transcript line is skipped; the other lines still count
 			continue;
 		}
 		if (!entry || typeof entry !== "object") continue;
@@ -94,7 +95,7 @@ export function recentConversationFromTranscript(
 			try {
 				closeSync(fd);
 			} catch {
-				// already closed or never opened
+				// reason: already closed or never opened
 			}
 		}
 	}

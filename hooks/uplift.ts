@@ -107,7 +107,7 @@ async function main(): Promise<void> {
 		}
 		if (target.skill) input = { ...raw, prompt: target.text, skill: target.skill };
 	} catch {
-		// fail-open: a throwing skill parser plans the prompt as written
+		// reason: fail-open: a throwing skill parser plans the prompt as written
 	}
 	if (grok) {
 		// Grok may dispatch this hook twice per turn (global hook file plus plugin hooks); only the

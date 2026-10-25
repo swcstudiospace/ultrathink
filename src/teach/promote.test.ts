@@ -247,6 +247,7 @@ describe("renderSkillDraft names and descriptions", () => {
 			try {
 				attempt();
 			} catch (error) {
+				// reason: the error text is captured for the assertions below, so the failure is checked rather than hidden
 				message = (error as Error).message;
 			}
 			expect(message).not.toBe("");

@@ -64,7 +64,10 @@ describe("requestJson", () => {
 	});
 
 	test("times out even when fetch ignores the abort signal", async () => {
-		const hang = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+		const hang = (() =>
+			new Promise<Response>(() => {
+				// reason: the request must hang; the timeout under test ends it
+			})) as unknown as typeof fetch;
 		const out = await requestJson("https://svc.test/slow", { timeoutMs: 30, fetch: hang });
 		expect(out.kind).toBe("timeout");
 	});
@@ -72,7 +75,12 @@ describe("requestJson", () => {
 	test("times out while the body is still streaming", async () => {
 		const stall = (async () =>
 			new Response(
-				new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => {}) }),
+				new ReadableStream<Uint8Array>({
+					pull: () =>
+						new Promise<void>(() => {
+							// reason: the stream stalls on purpose; the timeout under test ends it
+						}),
+				}),
 			)) as unknown as typeof fetch;
 		const out = await requestJson("https://svc.test/slow-body", { timeoutMs: 30, fetch: stall });
 		expect(out.kind).toBe("timeout");
@@ -93,7 +101,10 @@ describe("requestJson", () => {
 
 	test("rejects with the abort error when the caller aborts", async () => {
 		const controller = new AbortController();
-		const hang = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+		const hang = (() =>
+			new Promise<Response>(() => {
+				// reason: the request must hang; the abort under test ends it
+			})) as unknown as typeof fetch;
 		const pending = requestJson("https://svc.test/x", {
 			timeoutMs: 5000,
 			fetch: hang,

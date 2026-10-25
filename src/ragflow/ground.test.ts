@@ -236,7 +236,12 @@ describe("groundDocs", () => {
 	});
 
 	test("one total budget bounds the whole lookup", async () => {
-		const { fetch } = fakeFetch(() => new Promise<Response>(() => {}));
+		const { fetch } = fakeFetch(
+			() =>
+				new Promise<Response>(() => {
+					// reason: the request must hang; the budget under test ends it
+				}),
+		);
 		const outcome = await ground(config({ datasetIds: ["d"], timeoutMs: 30 }), fetch);
 		expect(outcome.status).toBe("error");
 		expect(outcome.reason).toMatch(/timeout/);

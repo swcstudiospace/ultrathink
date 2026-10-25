@@ -108,6 +108,7 @@ export function grokbotDigest(
 		try {
 			entry = asRecord(JSON.parse(trimmed));
 		} catch {
+			// reason: a malformed transcript line is skipped; the other lines still count
 			continue;
 		}
 		if (!entry) continue;

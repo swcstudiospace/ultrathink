@@ -127,7 +127,7 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 			try {
 				onTransition(from, to);
 			} catch {
-				// Hooks must not affect the request path.
+				// reason: Hooks must not affect the request path.
 			}
 		}
 	}

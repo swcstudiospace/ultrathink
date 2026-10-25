@@ -230,6 +230,7 @@ async function findLessons(
 				if (lessons.length > 0) return { lessons: lessons.slice(0, limit), source: "hindsight" };
 			}
 		} catch (caught) {
+			// reason: the failure is kept as the outcome reason, so the caller sees it
 			error = `hindsight recall failed: ${redactLine(caught instanceof Error ? caught.message : String(caught))}`;
 		}
 	}
@@ -280,7 +281,7 @@ export const recallLessons = async (
 			try {
 				tryStore(ctx)?.bumpRecalled(fit.used.map((lesson) => lesson.id));
 			} catch {
-				// a counter must never fail a plan
+				// reason: a counter must never fail a plan
 			}
 		}
 		return outcome("used", {

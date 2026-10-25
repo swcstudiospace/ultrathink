@@ -142,7 +142,9 @@ describe("createDrainState", () => {
 
 describe("createRuntimeProbe", () => {
 	test("rejects an invalid interval or onSample", () => {
-		const onSample = () => {};
+		const onSample = () => {
+			// reason: test double, the samples are not asserted in this test
+		};
 		for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
 			expect(() => createRuntimeProbe({ intervalMs: bad, onSample })).toThrow(RangeError);
 		}
@@ -267,7 +269,9 @@ describe("createRuntimeProbe", () => {
 				tick = run;
 				return {};
 			},
-			clearTimer: () => {},
+			clearTimer: () => {
+				// reason: test double, no timer is armed so there is nothing to clear
+			},
 		});
 		expect(() => probe.sampleOnce()).toThrow("no memory");
 		const stop = probe.start();
@@ -287,7 +291,12 @@ describe("createRuntimeProbe", () => {
 	});
 
 	test("default timer works end to end and samples real process memory", () => {
-		const probe = createRuntimeProbe({ intervalMs: 60_000, onSample: () => {} });
+		const probe = createRuntimeProbe({
+			intervalMs: 60_000,
+			onSample: () => {
+				// reason: test double, the samples are not asserted in this test
+			},
+		});
 		const stop = probe.start();
 		stop();
 		const sample = probe.sampleOnce();

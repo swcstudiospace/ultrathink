@@ -190,7 +190,7 @@ export async function ensureFreshGrokAuth(
 		if (opts.spawn) await opts.spawn(cmd, env);
 		else await spawnGrok(cmd, env, opts.timeoutMs ?? 20_000);
 	} catch {
-		// The CLI is optional here: fall through and report whatever auth.json holds now.
+		// reason: The CLI is optional here: fall through and report whatever auth.json holds now.
 	}
 	return readGrokAuth(opts.home);
 }

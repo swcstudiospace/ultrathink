@@ -41,7 +41,7 @@ export function resolveHindsightKey(
 				: "";
 		if (stored) return { key: stored, source: "store" };
 	} catch {
-		// unreadable store: fall back to the environment
+		// reason: unreadable store falls back to the environment; the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
 	for (const name of HINDSIGHT_KEY_ENVS) {
 		const value = env[name]?.trim();

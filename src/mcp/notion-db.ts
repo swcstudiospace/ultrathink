@@ -183,6 +183,7 @@ export async function initTaskGraphDatabase(
 			statements: `ADD COLUMN "Parent Item" RELATION('${id}', DUAL 'Sub-Items' 'subitems'); ADD COLUMN "Sub-Items" RELATION('${id}', DUAL 'Parent Item' 'parentitem')`,
 		});
 	} catch (error) {
+		// reason: the failure is kept in relationError and returned to the caller; the relation is optional.
 		relationError = error instanceof Error ? error.message : String(error);
 	}
 	return { dataSourceUrl: `collection://${id}`, url, relationError };
@@ -199,6 +200,7 @@ export function writeNotionConfig(path: string, dataSourceUrl: string): void {
 		try {
 			config = JSON.parse(text);
 		} catch {
+			// reason: unparsable text is not an object; the throw below reports the file, not the parse error text.
 			config = undefined;
 		}
 	}

@@ -404,6 +404,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 					thinkOff: thinkingOff(stateDir, cwd),
 				});
 			} catch {
+				// reason: an unreadable record yields no check result; the status output reports it as absent
 				check = undefined;
 			}
 			return {

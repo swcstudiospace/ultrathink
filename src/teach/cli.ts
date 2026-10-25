@@ -208,6 +208,7 @@ function oneLine(message: string): string {
 	try {
 		text = redactText(message);
 	} catch {
+		// reason: a redaction failure is replaced by a fixed word, so no unredacted text is printed
 		text = "failed";
 	}
 	const line = (text.split(/\r?\n/)[0] ?? "").trim();

@@ -498,7 +498,9 @@ describe("laneDirs", () => {
 		entries["abcd1234-2-mzz"] = { mtimeMs: 999 };
 		const fakeFs: TeamsFs = {
 			existsSync: () => false,
-			mkdirSync: () => {},
+			mkdirSync: () => {
+				// reason: test double, the fake directory needs no creation
+			},
 			openSync: () => 0,
 			closeSync,
 			readdirSync: () => Object.keys(entries),

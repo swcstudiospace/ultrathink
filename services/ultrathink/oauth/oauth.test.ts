@@ -17,6 +17,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAuth } from "../auth/auth.ts";
+import type { Logger } from "../obs/log.ts";
+import { redactText } from "../../../src/teach/redact.ts";
 import {
 	DEFAULT_REDIRECT_ORIGINS,
 	type DurableFs,
@@ -1422,13 +1424,21 @@ describe("OAuth consent page and CSP", () => {
 /** Keeps each validation refusal the logger seam reports, and writes nothing. */
 class RecordingLogger implements SecurityEventLogger {
 	readonly validation: Partial<SecurityEvent>[] = [];
-	log(): void {}
-	logAuthFailure(): void {}
+	log(): void {
+		// reason: the refusal test reads only validation events; other security events are not captured here.
+	}
+	logAuthFailure(): void {
+		// reason: the refusal test reads only validation events; auth failures are not captured here.
+	}
 	logValidationFailure(details: Partial<SecurityEvent>): void {
 		this.validation.push(details);
 	}
-	logRateLimitExceeded(): void {}
-	logSuspiciousActivity(): void {}
+	logRateLimitExceeded(): void {
+		// reason: the refusal test reads only validation events; rate-limit events are not captured here.
+	}
+	logSuspiciousActivity(): void {
+		// reason: the refusal test reads only validation events; suspicious-activity events are not captured here.
+	}
 }
 
 describe("OAuth refused requests", () => {
@@ -2080,5 +2090,34 @@ describe("OAuth token rollback when the state save fails", () => {
 		const rotated = await bodyOf(retry);
 		expect(typeof rotated.access_token).toBe("string");
 		expect(h.oauth.verifyAccessToken(rotated.access_token as string)).toBe(true);
+	});
+});
+
+describe("OAuth boundary failures", () => {
+	test("a quarantine rename that fails is logged under loadStore without the echoed token", async () => {
+		const TOKEN_FIXTURE = "tok-test-FIXTURE0000000000000000";
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-boundary-"));
+		harnessDirs.push(dir);
+		const statePath = join(dir, "oauth.json");
+		writeFileSync(statePath, `{"tokens": {"${TOKEN_FIXTURE}": `);
+		nodeFs.mkdirSync(`${statePath}.corrupt-${HARNESS_START}`);
+		const lines: string[] = [];
+		const logger: Logger = {
+			info() {
+				// reason: info logs are not asserted by the OAuth test; only error lines are collected
+			},
+			warn() {
+				// reason: warn logs are not asserted by the OAuth test; only error lines are collected
+			},
+			error: (event) => {
+				lines.push(event);
+			},
+		};
+		await makeHarness({ logger }, { dir, clock: { now: HARNESS_START } });
+		expect(lines).toHaveLength(1);
+		const line = lines[0] ?? "";
+		expect(line.startsWith("loadStore: ")).toBe(true);
+		expect(line).not.toContain(TOKEN_FIXTURE);
+		expect(redactText(line, { home: "" })).toBe(line);
 	});
 });

@@ -308,7 +308,9 @@ function startLaneDetached(
 		stdio: opts.stdio as ["ignore", number, number],
 	});
 	// A missing launcher reports asynchronously as an 'error' event; without a listener it would crash the host.
-	child.on("error", () => {});
+	child.on("error", () => {
+		// reason: the launch failure is seen by the caller through the missing pid; the listener only stops the crash
+	});
 	child.unref();
 	return { pid: child.pid };
 }
@@ -346,7 +348,7 @@ export function spawnLanes(
 				try {
 					fs.closeSync(log);
 				} catch {
-					// the fd is the OS's to reap either way
+					// reason: the fd is the OS's to reap either way
 				}
 			}
 		} catch (error) {
@@ -393,7 +395,7 @@ export function laneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneDiscove
 		try {
 			mtimeMs = fs.statSync(full).mtimeMs;
 		} catch {
-			// an entry that vanished mid-scan still counts, just as the oldest
+			// reason: an entry that vanished mid-scan still counts, just as the oldest
 		}
 		lanes.push({
 			laneId: name,

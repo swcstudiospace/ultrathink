@@ -200,7 +200,9 @@ export function httpTarget(baseUrl: string, options: HttpTargetOptions = {}): Ch
 			const text = await untilAborted(response.text(), signal, deadlineMessage);
 			return { status: response.status, headers: response.headers, text };
 		},
-		async close() {},
+		async close() {
+			// reason: each request is its own fetch with a deadline; no connection is held open
+		},
 	};
 }
 

@@ -128,7 +128,14 @@ async function readLine(
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
-	signal.addEventListener("abort", () => void reader.cancel().catch(() => {}), { once: true });
+	signal.addEventListener(
+		"abort",
+		() =>
+			void reader.cancel().catch(() => {
+				// reason: the cancel rejection is irrelevant once the signal has aborted
+			}),
+		{ once: true },
+	);
 	try {
 		while (!signal.aborted) {
 			const { value, done } = await reader.read();
@@ -243,7 +250,9 @@ async function login(id: McpProviderId, args: string[], deps: AuthDeps): Promise
 				if (line) received.resolve(line);
 				else if (!listen) received.reject(new Error("no callback URL provided"));
 			},
-			() => {},
+			() => {
+				// reason: a failed stdin read is not fatal here; the callback path still completes the login
+			},
 		);
 		const input = await received.promise;
 		await completeLogin(pending, input, deps);
@@ -401,7 +410,7 @@ function readRecord(statePath: string): SessionRecord | undefined {
 			return record as SessionRecord;
 		}
 	} catch {
-		// Reported below.
+		// reason: Reported below.
 	}
 	err(`ultrathink-mcp: cannot read session record: ${statePath}`);
 	return undefined;
@@ -511,6 +520,7 @@ export async function main(argv: string[], seams: CliSeams = {}): Promise<number
 				try {
 					out(`${id}: OK ${await check(id, deps)} tools`);
 				} catch (error) {
+					// reason: the failure is printed as FAIL and sets the exit status; the loop continues to the next server
 					failed = true;
 					out(`${id}: FAIL ${error instanceof Error ? error.message : String(error)}`);
 				}

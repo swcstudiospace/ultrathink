@@ -303,6 +303,7 @@ export function planClaude(run: Run, entries: Entry[], options: PlanOptions = {}
 				const parsed: unknown = JSON.parse(options.claudeConfig?.() ?? "");
 				if (isObject(parsed)) servers = isObject(parsed.mcpServers) ? parsed.mcpServers : {};
 			} catch {
+				// reason: unparseable claude config is reported as UNKNOWN, not as an absent entry
 				servers = undefined;
 			}
 			if (servers === undefined) return { ...UNKNOWN, note };
@@ -331,6 +332,7 @@ export function planGrok(run: Run, entries: Entry[], options: PlanOptions = {}):
 		const parsed: unknown = JSON.parse(listed.stdout);
 		if (Array.isArray(parsed)) servers = parsed.filter(isObject);
 	} catch {
+		// reason: unparseable grok list output is reported as UNKNOWN, not as an absent entry
 		servers = undefined;
 	}
 	return planFrom(
@@ -426,6 +428,7 @@ export function hermesConfigFile(
 	try {
 		active = readFileSync(join(root, "active_profile"), "utf8").trim().toLowerCase();
 	} catch {
+		// reason: a missing active_profile file is the normal case and selects the default profile
 		active = "";
 	}
 	if (!active || active === "default") return join(base, "config.yaml");

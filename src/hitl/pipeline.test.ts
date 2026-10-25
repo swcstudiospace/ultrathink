@@ -543,7 +543,9 @@ function heldFetch(respond: (call: Recorded) => Response): {
 	release(): void;
 } {
 	const calls: Recorded[] = [];
-	let release = () => {};
+	let release = () => {
+		// reason: replaced by the promise executor below before any caller can invoke it
+	};
 	const released = new Promise<void>((resolve) => {
 		release = () => resolve();
 	});
@@ -669,7 +671,9 @@ function jev(
 		storePath: tempStore(),
 		fetch: fetchImpl,
 		now: () => 1000,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: no real delay in the fixture; retries run immediately
+		},
 		random: () => 0.5,
 		debug: (line) => lines.push(line),
 	});
@@ -685,7 +689,9 @@ function jevOff(fetchImpl: typeof fetch, points: DecisionPoint[]) {
 		storePath: tempStore(),
 		fetch: fetchImpl,
 		now: () => 1000,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: no real delay in the fixture; retries run immediately
+		},
 		random: () => 0.5,
 		debug: (line) => lines.push(line),
 	});
@@ -729,7 +735,9 @@ function countingFetch(
 	n: number,
 ): { fetch: typeof fetch; reached: Promise<void> } {
 	let made = 0;
-	let resolve = () => {};
+	let resolve = () => {
+		// reason: replaced by the promise executor below before any caller can invoke it
+	};
 	const reached = new Promise<void>((done) => {
 		resolve = () => done();
 	});
@@ -803,7 +811,10 @@ function failures(key: string): Failure[] {
 		{
 			name: "a hanging request",
 			kind: "timeout",
-			respond: () => new Promise<Response>(() => {}),
+			respond: () =>
+				new Promise<Response>(() => {
+					// reason: never settles; the timeout ends the attempt
+				}),
 			attempts: 1,
 			timeoutMs: 40,
 		},

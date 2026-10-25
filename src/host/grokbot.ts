@@ -581,6 +581,7 @@ export function normalizeTranscript(source: string, dir: string): string {
 	try {
 		text = readFileSync(source, "utf8");
 	} catch {
+		// reason: an unreadable transcript normalizes to empty text; the caller reports no content
 		text = "";
 	}
 	const out: string[] = [];
@@ -591,6 +592,7 @@ export function normalizeTranscript(source: string, dir: string): string {
 		try {
 			entry = JSON.parse(trimmed);
 		} catch {
+			// reason: a malformed transcript line is skipped; the other lines still count
 			continue;
 		}
 		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;

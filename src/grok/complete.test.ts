@@ -357,6 +357,7 @@ describe("parseShuntText", () => {
 				error: { type: "overloaded_error", message: `busy Bearer ${TOKEN}` },
 			});
 		} catch (caught) {
+			// reason: the error is captured and asserted by the caller
 			error = caught;
 		}
 		expect(error).toBeInstanceOf(GrokHttpError);

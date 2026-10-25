@@ -121,7 +121,9 @@ async function openDirect(): Promise<Opened> {
 			expect(reply).not.toBeNull();
 			return obj(reply?.body);
 		},
-		async close() {},
+		async close() {
+			// reason: test double, the direct transport holds no connection
+		},
 	};
 }
 
