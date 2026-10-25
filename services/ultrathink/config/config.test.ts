@@ -3,17 +3,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { randomHash } from "../../../src/test.helpers.ts";
 import { ConfigError, loadConfig, requirePlanningModel, type ReasoningEffort } from "./config.ts";
 
 function randomSecret(): string {
 	return randomBytes(24).toString("base64url");
-}
-
-function randomHash(): string {
-	// PHC strings use standard base64 without padding, as Bun.password.hash writes them.
-	const salt = randomBytes(16).toString("base64").replace(/=+$/, "");
-	const digest = randomBytes(16).toString("base64").replace(/=+$/, "");
-	return `$argon2id$v=19$m=65536,t=2,p=1$${salt}$${digest}`;
 }
 
 function baseEnv(): Record<string, string | undefined> {

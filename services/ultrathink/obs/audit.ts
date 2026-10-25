@@ -35,6 +35,7 @@ import {
 } from "./audit-merkle.ts";
 import { listSegments, sealedName } from "./audit-segments.ts";
 import type { Fingerprint } from "./audit-watch.ts";
+import { isRecord } from "../../../src/shared.ts";
 
 /** Security events the service records. New events append here; verification accepts any string event so old files still verify. */
 export type AuditEvent =
@@ -89,7 +90,7 @@ export interface AuditRecord {
 }
 
 /** A change that loses nothing, or a routine retention prune, reported through `onNotice`. */
-export type AuditNoticeKind = "moved_to" | "changed_outside" | "pruned";
+type AuditNoticeKind = "moved_to" | "changed_outside" | "pruned";
 
 /** A notice from the audit log. Branch on `kind`; `message` is text for logs and its wording may change. */
 export interface AuditNotice {
@@ -295,10 +296,6 @@ function errorOf(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 // Parses one line against the expected position in the chain; returns the reason it does not belong there.
 function checkLine(
 	line: string,
@@ -313,7 +310,7 @@ function checkLine(
 	} catch {
 		return { reason: "not valid JSON" };
 	}
-	if (!isPlainObject(parsed)) return { reason: "record is not an object" };
+	if (!isRecord(parsed)) return { reason: "record is not an object" };
 	const keys = Object.keys(parsed).sort();
 	if (keys.length !== RECORD_KEYS.length || keys.some((key, i) => key !== RECORD_KEYS[i]))
 		return {
@@ -335,7 +332,7 @@ function checkLine(
 	if (prev !== expectedPrev) return { reason: "prev does not match the previous record's hash" };
 	if (typeof hash !== "string" || !HEX64.test(hash))
 		return { reason: "hash is not a sha256 hex digest" };
-	if (!isPlainObject(fields)) return { reason: "fields is not an object" };
+	if (!isRecord(fields)) return { reason: "fields is not an object" };
 	const flat: Record<string, Primitive> = {};
 	for (const key of Object.keys(fields)) {
 		const value = fields[key];
@@ -361,7 +358,7 @@ function peekHead(line: string): { seq: number; prev: string } | undefined {
 	} catch {
 		return undefined;
 	}
-	if (!isPlainObject(parsed)) return undefined;
+	if (!isRecord(parsed)) return undefined;
 	const { seq, prev } = parsed;
 	if (typeof seq !== "number" || !Number.isInteger(seq) || typeof prev !== "string")
 		return undefined;
@@ -506,11 +503,7 @@ function findBoundaryRecord(
 				} catch {
 					return undefined;
 				}
-				if (
-					isPlainObject(parsed) &&
-					parsed.event === RETENTION_EVENT &&
-					isPlainObject(parsed.fields)
-				) {
+				if (isRecord(parsed) && parsed.event === RETENTION_EVENT && isRecord(parsed.fields)) {
 					if (parsed.fields.throughSeq === throughSeq && parsed.fields.throughHash === throughHash)
 						found.fields = parsed.fields;
 				}

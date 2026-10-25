@@ -160,3 +160,11 @@ export function sanitizeRequestId(raw: string | null): string | null {
 export function newRequestId(): string {
 	return randomUUID();
 }
+
+/** The class or code of a failure, never its message: messages can echo input values. */
+export function failureLabel(error: unknown): string {
+	if (!(error instanceof Error)) return "non-error value";
+	const code = "code" in error ? error.code : undefined;
+	if (typeof code === "string") return code;
+	return error.name === "Error" ? error.constructor.name : error.name;
+}

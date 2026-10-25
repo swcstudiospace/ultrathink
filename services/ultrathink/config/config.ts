@@ -14,7 +14,7 @@ export class ConfigError extends Error {
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 /** `host:port` of the syslog audit sink. */
-export interface AuditSyslogTarget {
+interface AuditSyslogTarget {
 	readonly host: string;
 	readonly port: number;
 }

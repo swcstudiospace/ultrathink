@@ -8,14 +8,15 @@
  * so it only enriches the goal and counts of a session found elsewhere. Only summaries leave this module: a one-line
  * goal, counts and a status. Prompts, specifications, answers and error text stay on disk.
  */
-import { type Dir, lstatSync, opendirSync, readFileSync } from "node:fs";
+import { type Dir, lstatSync, opendirSync } from "node:fs";
 import { join } from "node:path";
-import { createLogger, type Logger } from "../obs/log.ts";
+import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { isFallbackGraph } from "../../../src/think/graph.ts";
 import type { ThoughtGraph } from "../../../src/think/types.ts";
+import { readJson } from "../../../src/shared.ts";
 import { isSessionId } from "./journal.ts";
 
-export type SessionStatus = "running" | "planned" | "failed" | "invalid" | "skipped";
+type SessionStatus = "running" | "planned" | "failed" | "invalid" | "skipped";
 
 export interface SessionSummary {
 	sessionId: string;
@@ -32,8 +33,8 @@ export interface SessionSummary {
 }
 
 export const GOAL_MAX_CHARS = 120;
-export const DEFAULT_LIMIT = 5;
-export const MAX_LIMIT = 20;
+const DEFAULT_LIMIT = 5;
+const MAX_LIMIT = 20;
 
 /** Directory entries read per directory; a hostile or runaway directory cannot make a listing unbounded. */
 const MAX_DIR_ENTRIES = 5000;
@@ -94,14 +95,6 @@ function oneLine(value: unknown): string {
 	return "";
 }
 
-/** The class or code of a failure, never its message: a path or a parse error can echo file content. */
-function failureLabel(error: unknown): string {
-	if (!(error instanceof Error)) return "non-error value";
-	const code = "code" in error ? error.code : undefined;
-	if (typeof code === "string") return code;
-	return error.name === "Error" ? error.constructor.name : error.name;
-}
-
 /** Names of a directory, at most MAX_DIR_ENTRIES of them; empty when the directory is missing or unreadable. */
 function listNames(dir: string, logger: Logger): string[] {
 	const names: string[] = [];
@@ -144,14 +137,6 @@ function isRealDirectory(path: string): boolean {
 		return lstatSync(path).isDirectory();
 	} catch {
 		return false;
-	}
-}
-
-function readJson(path: string): unknown {
-	try {
-		return JSON.parse(readFileSync(path, "utf8")) as unknown;
-	} catch {
-		return undefined;
 	}
 }
 

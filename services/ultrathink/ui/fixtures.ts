@@ -10,7 +10,7 @@ import type { NodeKind } from "../../../src/think/types.ts";
 import type { GraphView, GraphViewNode } from "../engine/graph-view.ts";
 import type { ResultView, StartView } from "../engine/headless.ts";
 
-export interface ToolResult {
+interface ToolResult {
 	content: { type: "text"; text: string }[];
 	structuredContent: ResultView | StartView;
 	isError?: boolean;

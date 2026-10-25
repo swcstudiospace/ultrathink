@@ -64,7 +64,7 @@ export interface ApprovalProof {
 }
 
 /** Which window refused a request. */
-export type RequestLimitScope = "ip" | "principal" | "owner";
+type RequestLimitScope = "ip" | "principal" | "owner";
 
 export interface Auth {
 	login(input: {

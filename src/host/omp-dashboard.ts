@@ -11,7 +11,7 @@ import type {
 	SkillPreview,
 } from "./omp-insights.ts";
 export type InsightPanel = "overview" | "jev" | "moments" | "skills";
-export const PANELS: readonly InsightPanel[] = ["overview", "jev", "moments", "skills"];
+const PANELS: readonly InsightPanel[] = ["overview", "jev", "moments", "skills"];
 
 export interface InsightDashboardCallbacks {
 	refresh(): Promise<InsightSnapshot>;

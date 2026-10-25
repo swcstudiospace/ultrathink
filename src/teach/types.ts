@@ -7,9 +7,9 @@
  *
  *   store.ts    openStore(dir): TeachStore
  *   capture.ts  captureMoment: CaptureFn, syncOutbox(ctx): Promise<SyncOutcome>
- *   recall.ts   recallLessons: RecallFn, formatLessonsSection(outcome, maxChars): string, lessonsLookup(outcome): LessonsLookup
+ *   recall.ts   recallLessons(request, ctx): Promise<RecallOutcome>, formatLessonsSection(outcome, maxChars): string, lessonsLookup(outcome): LessonsLookup
  *   skills.ts   recallSkills, formatSkillsSection(outcome, maxChars): string, skillsLookup(outcome): SkillsLookup
- *   observe.ts  observeDigest: ObserveFn
+ *   observe.ts  observeDigest(digest, ctx): Promise<ObserveOutcome>
  *   promote.ts  promotionCandidates(ctx), renderSkillDraft(moments, ctx), installSkill(draft, target, ctx)
  *   cli.ts      runTeachCommand(argv, deps): Promise<CliResult>
  *   status.ts   teachStatusLine(config, env, storePath?, stateDir?): string
@@ -212,7 +212,7 @@ export interface RecalledLesson {
 	source: "hindsight" | "local";
 }
 
-export type RecallStatus = "used" | "none" | "off" | "error";
+type RecallStatus = "used" | "none" | "off" | "error";
 
 export interface RecallOutcome {
 	status: RecallStatus;
@@ -362,5 +362,3 @@ export interface CliResult {
 }
 
 export type CaptureFn = (input: CaptureInput, ctx: TeachContext) => Promise<CaptureOutcome>;
-export type RecallFn = (request: RecallRequest, ctx: TeachContext) => Promise<RecallOutcome>;
-export type ObserveFn = (digest: TeachDigest, ctx: TeachContext) => Promise<ObserveOutcome>;

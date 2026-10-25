@@ -77,7 +77,7 @@ function indent(text: string, prefix = INDENT): string {
 }
 
 /** The uplifted specification without the original prompt (shown separately) and the injected graph and question blocks. */
-export function specificationText(xml: string): string {
+function specificationText(xml: string): string {
 	let body = xml
 		.replace(ORIGINAL_RE, "")
 		.replace(GRAPH_RE, "")

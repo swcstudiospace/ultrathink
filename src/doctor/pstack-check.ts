@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MAPPING, resolvePstack, skillPath, type PstackStage } from "../cursor/pstack.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
+import { isRecord } from "../shared.ts";
 
 type StageKey = Exclude<PstackStage, "orchestrate">;
 
@@ -27,10 +28,6 @@ interface Decision {
 	forcedOff: boolean;
 	cursorDir?: string | undefined;
 	mapping?: Partial<Record<StageKey, string[]>> | undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readObject(file: string): Record<string, unknown> | undefined {
@@ -53,7 +50,7 @@ function readConfigValue(file: string): { status: "skip" } | { status: "parsed";
 }
 
 /** The hook's search order. `ULTRATHINK_CONFIG_DIR` replaces it; a project file is never a candidate. */
-export function hookConfigCandidates(env: Env): string[] {
+function hookConfigCandidates(env: Env): string[] {
 	const override = env.ULTRATHINK_CONFIG_DIR?.trim();
 	if (override) return [join(override, "config.json")];
 	const home = env.HOME?.trim() || homedir();

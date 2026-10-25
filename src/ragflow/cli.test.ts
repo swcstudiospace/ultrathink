@@ -4,18 +4,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fakeFetch } from "../test.helpers.ts";
 import { type CommandDeps, runRagflowCommand } from "./cli.ts";
 import { DEFAULT_RAGFLOW_CONFIG, type RagflowConfig } from "./types.ts";
 
 const KEY = "rf-CLI-KEY-0123456789abcdef";
 const QUESTION = "how to rotate the zebra credentials";
 const URL_BASE = "https://rag.example.com";
-
-interface Call {
-	url: string;
-	method: string;
-	body: unknown;
-}
 
 let dir = "";
 let noStore = "";
@@ -28,23 +23,6 @@ beforeAll(() => {
 afterAll(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
-
-function fakeFetch(handler: (call: Call) => Response | Promise<Response>): {
-	fetch: typeof fetch;
-	calls: Call[];
-} {
-	const calls: Call[] = [];
-	const impl = (async (input: string | URL | Request, init?: RequestInit) => {
-		const call: Call = {
-			url: String(input),
-			method: init?.method ?? "GET",
-			body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined,
-		};
-		calls.push(call);
-		return handler(call);
-	}) as typeof fetch;
-	return { fetch: impl, calls };
-}
 
 function config(overrides: Partial<RagflowConfig> = {}): RagflowConfig {
 	return {

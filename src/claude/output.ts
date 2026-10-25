@@ -31,7 +31,7 @@ import type { DocsLookup } from "../ragflow/types.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
 
 /** Ceiling for the injected specification; 0 means no truncation. A positive value is an explicit cap: RATIONALE bodies go first, then the tail. */
-export const DEFAULT_CONTEXT_CHARS = 0;
+const DEFAULT_CONTEXT_CHARS = 0;
 /**
  * Ceiling for a handoff. Hermes spills a hook context piece over 10,000 characters to a file and keeps only its first
  * and last 500, which could hide the kickoff instruction in the middle.
@@ -55,7 +55,7 @@ const SHIP_SKILL_FILE = join(SKILLS_DIR, "ultrathink-ship", "SKILL.md");
  * How the context names one of this plugin's skills. With `hints` (a host that does not list
  * plugin skills to the model, i.e. Hermes) it adds Hermes' load call and the absolute SKILL.md path.
  */
-export function skillReference(name: string, hints = false): string {
+function skillReference(name: string, hints = false): string {
 	if (!hints) return `the ${name} skill`;
 	return `the ${name} skill (load it with skill_view name="ultrathink:${name}", or read ${join(SKILLS_DIR, name, "SKILL.md")})`;
 }
@@ -72,12 +72,12 @@ The user installed the Ultrathink plugin and invoked the "${name}" skill with th
 }
 
 /** Handoff header: the specification stays in its file and the model reads it there before working. */
-export const HANDOFF_CONTEXT_HEADER = `## Prompt Uplift
+const HANDOFF_CONTEXT_HEADER = `## Prompt Uplift
 
 The user installed the Ultrathink plugin. It expanded the user's message into a specification saved in the specification file named below: the ORIGINAL element holds the user's verbatim words, followed by the elaborated intent, the Graph of Thought and its WORKFLOW. Read that file in full before starting, treat it as the user's own elaborated intent and execute it. Do not reprint the XML. Prefer repository evidence over inferred assumptions. Completing this rewrite is not the end of the turn.`;
 
 /** Handoff header for a skill invocation: the plan in the specification file fills in WHAT, the skill still owns HOW. */
-export function SKILL_HANDOFF_CONTEXT_HEADER(name: string): string {
+function SKILL_HANDOFF_CONTEXT_HEADER(name: string): string {
 	return `## Prompt Uplift
 
 The user installed the Ultrathink plugin and invoked the "${name}" skill with this message; ultrathink planned the request before the skill runs and saved the plan in the specification file named below (ORIGINAL holds the user's verbatim words, followed by the elaborated intent, the Graph of Thought and its WORKFLOW). Read that file in full before starting. The skill's instructions stay authoritative for HOW to work: follow its workflow, using the specification as the plan for WHAT to do inside it. Prefer repository evidence over inferred assumptions. Do not reprint the XML. Completing this rewrite is not the end of the turn.`;

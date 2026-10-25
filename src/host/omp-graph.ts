@@ -3,14 +3,14 @@
 /** Pure Graph-of-Thought renderer for the Omp TUI: wave columns of node cards with sub-issues dropping down beneath each card. */
 import { type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
 
-export type NodeStatus = "pending" | "running" | "done" | "fallback";
+type NodeStatus = "pending" | "running" | "done" | "fallback";
 export interface GraphIssue {
 	identifier?: string;
 	url: string;
 	/** ms timestamp the row appeared; drives the flash */
 	at?: number;
 }
-export interface GraphStepModel {
+interface GraphStepModel {
 	step: number;
 	title: string;
 	/** drop-down start (ms); undefined = already shown */
@@ -42,11 +42,11 @@ export interface GraphRenderOptions {
 	animate: boolean;
 }
 
-export const POP_MS = 450;
+const POP_MS = 450;
 export const NODE_STAGGER_MS = 90;
 export const STEP_STAGGER_MS = 70;
-export const FLASH_MS = 700;
-export const ACTIVE_MS = 4000;
+const FLASH_MS = 700;
+const ACTIVE_MS = 4000;
 
 const GAP = 5;
 const MIN_COLUMN = 22;

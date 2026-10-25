@@ -8,8 +8,6 @@ export const ROOT_TAGS = [
 	"UPLIFTED_PROMPT",
 ] as const;
 
-export type RootTag = (typeof ROOT_TAGS)[number];
-
 export interface UpliftResult {
 	xml: string;
 	original: string;

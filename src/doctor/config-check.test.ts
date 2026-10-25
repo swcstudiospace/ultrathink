@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeConfigPaths, defaultConfig, loadConfig } from "../config.ts";
+import { byId } from "../test.helpers.ts";
 import { checkConfig, suggestName } from "./config-check.ts";
 import { buildReport, formatReport, reportJson } from "./report.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
@@ -30,13 +31,6 @@ describe("checkConfig", () => {
 
 	function aboveInfo(findings: Finding[]): Finding[] {
 		return findings.filter((finding) => finding.level === "warn" || finding.level === "error");
-	}
-
-	function byId(findings: Finding[], id: string): Finding {
-		const found = findings.find((finding) => finding.id === id);
-		if (!found)
-			throw new Error(`no finding ${id} in ${findings.map((finding) => finding.id).join(", ")}`);
-		return found;
 	}
 
 	/** `defaultConfig()` as a user would write it: everything except the in-memory model provenance. */

@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { bulk } from "../../../src/test.helpers.ts";
 import { auditPath, createAuditLog, verifyAuditFile } from "./audit.ts";
 import { chainIdentity, createAuditVerifier, verifyObserved } from "./audit-verify.ts";
 import { type ScanReply, type WatchAlert, createAuditWatch } from "./audit-watch.ts";
@@ -90,12 +91,6 @@ describe("observed scans", () => {
 
 describe("a prune between the observation and the worker", () => {
 	const MIB = 1024 * 1024;
-
-	function bulk(i: number): Record<string, string | number> {
-		const fields: Record<string, string | number> = { n: i };
-		for (let k = 0; k < 31; k += 1) fields[`k${k}`] = "x".repeat(250);
-		return fields;
-	}
 
 	test("is raced, not reported as a broken chain, when the sealed list changed before the worker read the chain", async () => {
 		const dir = tempDir();

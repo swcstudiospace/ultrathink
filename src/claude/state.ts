@@ -28,6 +28,7 @@ import type { SkillInvocation } from "../uplift/skill.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { resolveStateDir } from "../host/paths.ts";
 import type { ShipState } from "../ship/types.ts";
+import { readJson } from "../shared.ts";
 import type { KnowledgeLookup } from "../greptile/knowledge.ts";
 import type { DocsLookup } from "../ragflow/types.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
@@ -95,15 +96,6 @@ export interface SessionRecord {
 
 export function defaultStateDir(env: Record<string, string | undefined> = process.env): string {
 	return resolveStateDir(env);
-}
-
-function readJson(path: string): unknown {
-	try {
-		if (!existsSync(path)) return undefined;
-		return JSON.parse(readFileSync(path, "utf8")) as unknown;
-	} catch {
-		return undefined;
-	}
 }
 
 /** Owner-only and atomic: a crash mid-write leaves the previous file, never a truncated one. */

@@ -6,7 +6,7 @@ import { UPLIFT_SYSTEM_PROMPT } from "./prompt.ts";
 import { sanitizeUpliftXml } from "./xml.ts";
 
 /** Input gate in characters; 0 means no gate. A positive value is an explicit cap. */
-export const DEFAULT_MAX_CHARS = 0;
+const DEFAULT_MAX_CHARS = 0;
 
 function isAbortError(error: unknown): boolean {
 	return error instanceof Error && error.name === "AbortError";

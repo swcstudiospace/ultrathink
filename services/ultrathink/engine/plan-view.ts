@@ -24,7 +24,7 @@ type Detail = "brief" | "full";
 /** A client-driven session only moves when the chat model answers, so a poller has nothing to gain from asking sooner. */
 const CLIENT_POLL_AFTER_SEC = 10;
 
-export function statusLine(status: JobStatus, error?: string): string {
+function statusLine(status: JobStatus, error?: string): string {
 	switch (status) {
 		case "running":
 			return "The plan is still being prepared. Call ultrathink_result again with the same sessionId; no other work is needed meanwhile.";
@@ -40,7 +40,7 @@ export function statusLine(status: JobStatus, error?: string): string {
 }
 
 /** The planned view of a session record: chat text, open questions and the structured graph when there is one. */
-export function renderPlanView(
+function renderPlanView(
 	sessionId: string,
 	mode: "server" | "client",
 	detail: Detail,

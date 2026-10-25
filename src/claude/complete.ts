@@ -77,13 +77,13 @@ export function parseClaudeJson(stdout: string): string {
 	return result;
 }
 
-function abortError(): Error {
+export function abortError(): Error {
 	const error = new Error("Aborted");
 	error.name = "AbortError";
 	return error;
 }
 
-export async function claudeComplete(
+async function claudeComplete(
 	system: string,
 	user: string,
 	opts: ClaudeCompleteOptions = {},

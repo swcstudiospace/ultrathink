@@ -15,11 +15,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redactSecrets } from "../grok/auth.ts";
-import { CHILD_ENV } from "../claude/complete.ts";
+import { abortError, CHILD_ENV } from "../claude/complete.ts";
 import { CHILD_PROMPT_SENTINEL } from "../uplift/skill.ts";
 import type { MuseEffort } from "./types.ts";
 
-export type MuseProvider = "meta" | "echo";
+type MuseProvider = "meta" | "echo";
 
 export interface MuseCompleteOptions {
 	bin?: string;
@@ -62,12 +62,6 @@ export function buildMuseArgs(
 
 export function buildMusePrompt(system: string, user: string): string {
 	return `${CHILD_PROMPT_SENTINEL}\n<system>\n${system}\n</system>\n\n<user_request>\n${user}\n</user_request>`;
-}
-
-function abortError(): Error {
-	const error = new Error("Aborted");
-	error.name = "AbortError";
-	return error;
 }
 
 /** Extracts the assistant text from `muse exec --json` JSONL: the last `run.terminal.completed` line's text. */

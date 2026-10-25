@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { yieldTurn } from "../../../../src/test.helpers.ts";
 import {
 	type ClearTimer,
 	createSinkQueue,
@@ -104,13 +105,6 @@ const envelope = (n: number): SinkEnvelope => ({
 const numbersOf = (batch: readonly SinkEnvelope[]): number[] =>
 	batch.map((item) => item.body.n as number);
 
-/** Yields to the event loop so every queued microtask runs. This is not a timer. */
-function yieldToEventLoop(): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	setImmediate(resolve);
-	return promise;
-}
-
 /** Starts a flush, then fires backoff timers until the queue goes idle. */
 async function drain(queue: SinkQueue, timers: Timers): Promise<boolean> {
 	const outcome: { value?: boolean } = {};
@@ -118,7 +112,7 @@ async function drain(queue: SinkQueue, timers: Timers): Promise<boolean> {
 		outcome.value = value;
 	});
 	for (let round = 0; round < 100; round++) {
-		await yieldToEventLoop();
+		await yieldTurn();
 		if (outcome.value !== undefined) return outcome.value;
 		timers.fire(BACKOFF_MS);
 	}
@@ -235,7 +229,7 @@ describe("createSinkQueue", () => {
 
 		queue.enqueue(envelope(1));
 		queue.enqueue(envelope(2));
-		await yieldToEventLoop();
+		await yieldTurn();
 		expect(calls.length).toBe(1);
 
 		queue.enqueue(envelope(3));
@@ -296,7 +290,7 @@ describe("createSinkQueue", () => {
 		const { queue, events } = makeQueue(transport, timers, { maxAttempts: 2 });
 
 		queue.enqueue(envelope(1));
-		await yieldToEventLoop();
+		await yieldTurn();
 		expect(calls.length).toBe(1);
 		expect(timers.count(REQUEST_TIMEOUT_MS)).toBe(1);
 
@@ -355,13 +349,13 @@ describe("createSinkQueue", () => {
 		queue.enqueue(envelope(1));
 		queue.enqueue(envelope(2));
 		queue.enqueue(envelope(3));
-		await yieldToEventLoop();
+		await yieldTurn();
 		expect(calls.length).toBe(1);
 
 		queue.close();
 		expect(events).toEqual([{ type: "dropped", sink: SINK, count: 1, reason: "closed" }]);
 
-		await yieldToEventLoop();
+		await yieldTurn();
 		expect(calls[0]?.signal.aborted).toBe(true);
 		expect(events).toEqual([
 			{ type: "dropped", sink: SINK, count: 1, reason: "closed" },

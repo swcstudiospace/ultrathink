@@ -8,10 +8,10 @@
  * and error messages are redacted.
  */
 
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { GROK_CLIENT_VERSION_FALLBACK } from "./types.ts";
+import { readJson } from "../shared.ts";
 
 export interface GrokAuth {
 	token: string;
@@ -55,14 +55,6 @@ export function grokHome(
 	env: Record<string, string | undefined> = process.env,
 ): string {
 	return home?.trim() || env.GROK_HOME?.trim() || join(homedir(), ".grok");
-}
-
-function readJson(path: string): unknown {
-	try {
-		return JSON.parse(readFileSync(path, "utf8")) as unknown;
-	} catch {
-		return undefined;
-	}
 }
 
 function optionalString(value: unknown): string | undefined {

@@ -14,6 +14,7 @@
  * Compile once per tool at startup, then call the returned validator per request: it never throws, and its reasons
  * are short, stable and never echo the argument value, so they are safe to return to clients. Refs SPE-17437.
  */
+import { isRecord } from "../../../src/shared.ts";
 
 /** The outcome of validating one argument value. The path points at the offending value, `arguments` for the root. */
 export type ValidationResult = { ok: true } | { ok: false; path: string; reason: string };
@@ -89,10 +90,6 @@ interface Node {
 	/** `true` (or absent) allows extra keys, `false` refuses them, a Node validates their values. */
 	additional: boolean | Node;
 	items: Node | undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isFiniteNumber(value: unknown): value is number {

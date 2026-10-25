@@ -19,13 +19,13 @@ export interface SloDefinition {
 }
 
 /** `at` is a wall-clock time in ms. `good` and `total` are cumulative counters. */
-export interface SloSample {
+interface SloSample {
 	at: number;
 	good: number;
 	total: number;
 }
 
-export interface SloBudget {
+interface SloBudget {
 	/** Span in ms actually covered by the answer; less than the requested window when history is short. */
 	observedMs: number;
 	total: number;

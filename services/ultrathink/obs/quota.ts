@@ -10,7 +10,7 @@
 // Pure: no clock, no I/O. Invalid samples (non-finite or negative) are ignored.
 
 /** One load observation from the runtime probe. `utilisation` is `inflight.count / inflight.max`. */
-export interface QuotaSample {
+interface QuotaSample {
 	lagMs: number;
 	utilisation: number;
 }

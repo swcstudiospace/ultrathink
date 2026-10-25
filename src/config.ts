@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { PstackStage } from "./cursor/pstack.ts";
@@ -53,8 +52,9 @@ import {
 } from "./think/types.ts";
 import { type HostId, isHostId } from "./host/types.ts";
 import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
+import { readJson } from "./shared.ts";
 
-export interface ClaudeConfig {
+interface ClaudeConfig {
 	/** `claude` binary used for headless completions. A project file cannot set this. */
 	bin: string;
 	/** Model alias/name for the uplift and thinking calls; empty inherits the user default. */
@@ -73,14 +73,7 @@ export interface ClaudeConfig {
 	echo: boolean;
 }
 
-/**
- * Claude Code UserPromptSubmit timeout in seconds (`hooks/hooks.json`).
- * The host discards hook stdout if we exceed this. 0 is not unlimited there —
- * Claude Code would fall back to the 30s UserPromptSubmit default.
- */
-export const CLAUDE_USER_PROMPT_HOOK_TIMEOUT_SEC = 86_400;
-
-export const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
+const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	bin: "claude",
 	model: ROUTE_DEFAULT_MODELS.claude,
 	thinking: false,
@@ -91,25 +84,25 @@ export const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	echo: true,
 };
 
-export interface NotionConfig {
+interface NotionConfig {
 	/** Data source URL for the "Agent Task Graph" database (`collection://<id>`); "" = Notion tracking not configured. */
 	dataSourceUrl: string;
 }
 
-export const DEFAULT_NOTION_CONFIG: NotionConfig = {
+const DEFAULT_NOTION_CONFIG: NotionConfig = {
 	dataSourceUrl: "",
 };
 
-export interface LinearConfig {
+interface LinearConfig {
 	/** Linear team name that Issues/Sub-Issues are created under; "" = Linear tracking not configured. */
 	team: string;
 }
 
-export const DEFAULT_LINEAR_CONFIG: LinearConfig = {
+const DEFAULT_LINEAR_CONFIG: LinearConfig = {
 	team: "",
 };
 
-export interface TrackConfig {
+interface TrackConfig {
 	/** Create Linear/Notion rows from the hook before the agent sees the prompt. */
 	enabled: boolean;
 	/** Whole tracker-creation budget in ms. 0 = no limit: no timer is created and the run waits for every row. Capped at `MAX_TIMER_MS`. */
@@ -118,13 +111,13 @@ export interface TrackConfig {
 	concurrency: number;
 }
 
-export const DEFAULT_TRACK_CONFIG: TrackConfig = {
+const DEFAULT_TRACK_CONFIG: TrackConfig = {
 	enabled: true,
 	budgetMs: 0,
 	concurrency: 6,
 };
 
-export interface SubstrateConfig {
+interface SubstrateConfig {
 	/** Agent Substrate service base URL (`POST <url>/brief`); "" = never contacted. `SUBSTRATE_URL` overrides it. */
 	url: string;
 	/**
@@ -134,16 +127,16 @@ export interface SubstrateConfig {
 	backend?: "direct" | "gateway";
 }
 
-export const DEFAULT_SUBSTRATE_CONFIG: SubstrateConfig = {
+const DEFAULT_SUBSTRATE_CONFIG: SubstrateConfig = {
 	url: "",
 };
 
-export interface StateConfig {
+interface StateConfig {
 	/** Days a session record is kept before the scheduled prune may remove it; 0 = keep forever. User files only. */
 	retentionDays: number;
 }
 
-export const DEFAULT_STATE_CONFIG: StateConfig = {
+const DEFAULT_STATE_CONFIG: StateConfig = {
 	retentionDays: 0,
 };
 
@@ -154,7 +147,7 @@ type PstackMappingStage = Exclude<PstackStage, "orchestrate">;
  * Cursor pstack bridge (`src/cursor/pstack.ts`): `/gsd-*` slash commands detected in Cursor's beforeSubmitPrompt
  * hook. Opt-in and user-only — every key comes from user files; a project layer is ignored entirely.
  */
-export interface PstackConfig {
+interface PstackConfig {
 	/** Whether the bridge injects pstack skill instructions; only a user file can turn this on. */
 	enabled: boolean;
 	/** Absolute Cursor directory to resolve pstack from; absent uses the hook's own resolution. */
@@ -165,7 +158,7 @@ export interface PstackConfig {
 	contextCapChars?: number;
 }
 
-export const DEFAULT_PSTACK_CONFIG: PstackConfig = {
+const DEFAULT_PSTACK_CONFIG: PstackConfig = {
 	enabled: false,
 	contextCapChars: 2000,
 };
@@ -175,12 +168,12 @@ export const DEFAULT_PSTACK_CONFIG: PstackConfig = {
  * explicit `/ultrathink-swarm` command. Opt-in and user-only — every key comes from user files; a project layer is
  * ignored entirely, so a cloned repository cannot turn auto-spawning on.
  */
-export interface SwarmConfig {
+interface SwarmConfig {
 	/** Whether SDLC-sounding prompts auto-spawn swarm lanes; only a user file can turn this on. */
 	autoRun: boolean;
 }
 
-export const DEFAULT_SWARM_CONFIG: SwarmConfig = {
+const DEFAULT_SWARM_CONFIG: SwarmConfig = {
 	autoRun: false,
 };
 
@@ -197,7 +190,7 @@ export interface HostModelOverride {
  * exact credential provider id to the selector native Omp planning uses when the live model is unusable. Neither can
  * define endpoints, headers or credentials, and no legacy CLI route consumes `providerDefaults` (its eligible set is empty).
  */
-export interface ModelsConfig {
+interface ModelsConfig {
 	hosts: Partial<Record<HostId, HostModelOverride>>;
 	providerDefaults: Record<string, string>;
 }
@@ -281,15 +274,6 @@ export function defaultConfig(): UltrathinkConfig {
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
 	return value as Record<string, unknown>;
-}
-
-function readJson(path: string): unknown {
-	try {
-		if (!existsSync(path)) return undefined;
-		return JSON.parse(readFileSync(path, "utf8")) as unknown;
-	} catch {
-		return undefined;
-	}
 }
 
 function mergeUplift(
@@ -666,7 +650,7 @@ function mergeGateway(
 			? gateway.seat
 			: defaults.seat;
 	return {
-		url: urlAsWritten(gateway.url, defaults.url),
+		url: nonEmpty(gateway.url, defaults.url),
 		seat,
 		timeoutMs: intInRange(gateway.timeoutMs, 1, MAX_SERVICE_TIMEOUT_MS, defaults.timeoutMs),
 	};
@@ -740,11 +724,6 @@ function intInRange(value: unknown, min: number, max: number, fallback: number):
 		: fallback;
 }
 
-/** A URL is kept as written (trimmed): the resolver validates it and reports a bad one, so a typo is visible, not silent. */
-function urlAsWritten(value: unknown, fallback: string): string {
-	return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
 function booleanOr(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
 }
@@ -769,7 +748,7 @@ function mergeHindsight(
 	const backend = backendField(hindsight.backend, defaults.backend);
 	const merged: HindsightConfig = {
 		enabled,
-		url: urlAsWritten(hindsight.url, defaults.url),
+		url: nonEmpty(hindsight.url, defaults.url),
 		bank:
 			typeof hindsight.bank === "string" && HINDSIGHT_BANK.test(hindsight.bank)
 				? hindsight.bank
@@ -808,7 +787,7 @@ function mergeRagflow(
 	const backend = backendField(ragflow.backend, defaults.backend);
 	const merged: RagflowConfig = {
 		enabled,
-		url: urlAsWritten(ragflow.url, defaults.url),
+		url: nonEmpty(ragflow.url, defaults.url),
 		datasetIds,
 		topK: intInRange(ragflow.topK, 1, 20, defaults.topK),
 		similarityThreshold: unitInterval(ragflow.similarityThreshold, defaults.similarityThreshold),

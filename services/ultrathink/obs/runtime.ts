@@ -100,7 +100,7 @@ export interface RuntimeSample {
 }
 
 /** Timer handle as returned by `setTimer`; `unref` is optional for injected timers. */
-export type RuntimeTimerHandle = { unref?: () => void } & object;
+type RuntimeTimerHandle = { unref?: () => void } & object;
 
 export interface RuntimeProbeOptions {
 	/** Sampling period in milliseconds; must be a positive finite number. */

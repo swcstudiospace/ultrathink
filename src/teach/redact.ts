@@ -13,7 +13,7 @@
  * or one of its ancestors exempts nothing, so a session started in `~` still hides `~/.ssh/...`.
  */
 
-export const REDACTED = "[redacted]";
+const REDACTED = "[redacted]";
 
 export interface RedactOptions {
 	/** Home directory whose absolute paths are hidden; default `process.env.HOME`. */

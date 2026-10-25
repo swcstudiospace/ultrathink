@@ -16,6 +16,7 @@ import {
 	SKILL_SECTION_CHARS,
 } from "./skills.ts";
 import { openStore, storeDir } from "./store.ts";
+import { moment } from "../test.helpers.ts";
 import {
 	DEFAULT_TEACH_CONFIG,
 	type RecalledSkill,
@@ -35,32 +36,6 @@ function tempDir(): string {
 afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-
-function moment(id: string, overrides: Partial<TeachableMoment> = {}): TeachableMoment {
-	return {
-		id,
-		name: `lesson ${id}`,
-		description: "",
-		body: "",
-		sourcePhase: "",
-		sourceArtifacts: [],
-		createdAt: "2026-01-01T00:00:00.000Z",
-		tags: [],
-		relatedIds: [],
-		schema: 2,
-		kind: "pitfall",
-		status: "confirmed",
-		origin: "explicit",
-		project: "proj",
-		host: "omp",
-		confidence: 1,
-		occurrences: 1,
-		lastSeenAt: "2026-01-01T00:00:00.000Z",
-		dedupeKey: `key-${id}`,
-		recalled: 0,
-		...overrides,
-	};
-}
 
 /** A promoted moment whose install path is a real SKILL.md: a record recalls only while its file is there. */
 function promoted(

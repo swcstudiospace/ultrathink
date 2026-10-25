@@ -24,6 +24,7 @@ import {
 	writeSession,
 } from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
+import { graphJson } from "../test.helpers.ts";
 import type { TrackPlan } from "../track/types.ts";
 import { runControl, takeSessionFlag } from "../uplift/commands.ts";
 import { editTargets, recordEditAttribution } from "./omp.ts";
@@ -81,19 +82,6 @@ function plannedRecord(sessionId: string, labelled: string | undefined): Session
 		result: { xml: "<SPEC/>", original: "add a widget", root: "SPEC", source: "llm" },
 		plan,
 	};
-}
-
-function graphJson(count = 5): string {
-	return JSON.stringify({
-		goal: "Ship it",
-		nodes: Array.from({ length: count }, (_, i) => ({
-			id: `n${i + 1}`,
-			title: `T${i + 1}`,
-			kind: i === 0 ? "understand" : i === count - 1 ? "synthesize" : "generate",
-			question: `Q${i + 1}`,
-			depends_on: i === 0 ? [] : [`n${i}`],
-		})),
-	});
 }
 
 /** Dispatches by payload content so one fake handles uplift, graph, CoT, and clarify calls. */

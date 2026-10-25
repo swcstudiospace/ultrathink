@@ -16,7 +16,7 @@ import {
 	toPromptName,
 } from "./commands.ts";
 
-export interface PromptArgument {
+interface PromptArgument {
 	name: string;
 	description: string;
 	required: boolean;
@@ -29,7 +29,7 @@ export interface PromptDefinition {
 	arguments: PromptArgument[];
 }
 
-export interface PromptMessage {
+interface PromptMessage {
 	role: "user";
 	content: { type: "text"; text: string };
 }

@@ -19,7 +19,7 @@ import { teachEnabled, tryStore } from "./context.ts";
 import { projectOf } from "./mapping.ts";
 import { CONTENT_MAX_BYTES, markerIds } from "./promote.ts";
 import { redactLine } from "./redact.ts";
-import { queryTokens, tokenOverlap } from "./recall.ts";
+import { clean, queryTokens, tokenOverlap } from "./recall.ts";
 import { listRecentMoments, readMoment, storeDir } from "./store.ts";
 import type {
 	RecalledSkill,
@@ -52,16 +52,6 @@ const UNSAFE_PATH = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|<\//;
 
 function nowOf(ctx: TeachContext): number {
 	return (ctx.now ?? Date.now)();
-}
-
-function clean(text: string, max: number): string {
-	return text
-		.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
-		.replace(/<\//g, "< /")
-		.replace(/\s+/g, " ")
-		.trim()
-		.slice(0, max)
-		.trimEnd();
 }
 
 function asTarget(value: unknown): SkillTarget {

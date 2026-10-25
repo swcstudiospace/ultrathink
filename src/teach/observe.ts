@@ -21,6 +21,7 @@ import {
 	summarizeDecision,
 	teachEnabled,
 } from "./context.ts";
+import { clip } from "./digest.ts";
 import { promoteDue } from "./promote.ts";
 import { redactLine, redactText } from "./redact.ts";
 import {
@@ -35,8 +36,8 @@ import {
 	type TeachDigest,
 } from "./types.ts";
 
-export const OBSERVE_TIMEOUT_MS = 90_000;
-export const MAX_LESSONS = 3;
+const OBSERVE_TIMEOUT_MS = 90_000;
+const MAX_LESSONS = 3;
 const NAME_CHARS = 120;
 const DESCRIPTION_CHARS = 300;
 const BODY_CHARS = 1_200;
@@ -76,10 +77,6 @@ export interface ObserveDeps {
 export interface ObserveReport extends ObserveOutcome {
 	dropped: number;
 	decisions: DecisionSummary[];
-}
-
-function clip(text: string, max: number): string {
-	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 /** At least one of: a recovery, a user correction after the first prompt, or a failed/interrupted run with tool errors. */

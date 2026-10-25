@@ -4,6 +4,7 @@ import { readBodyPrefix, readBodyText } from "../net/body.ts";
 import { createSseParser } from "./sse.ts";
 import { getSecurityLogger } from "../../services/ultrathink/security/events.ts";
 import { StringValidator } from "../../services/ultrathink/security/validation.ts";
+import { isRecord } from "../shared.ts";
 
 export interface RelayAuth {
 	header(): Promise<string | undefined>;
@@ -57,13 +58,9 @@ const NO_CONTROL = /^[^\x00-\x1f\x7f]*$/;
 const ID_TEXT = new StringValidator({ allowEmpty: true, maxLength: 256, pattern: NO_CONTROL });
 const METHOD_TEXT = new StringValidator({ allowEmpty: true, maxLength: 128, pattern: NO_CONTROL });
 
-function isObjectMessage(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** The first refused field of one JSON-RPC 2.0 object, or null. A request, a notification and a response are all accepted. */
 function refusedEnvelope(message: unknown): { field: string; code: string } | null {
-	if (!isObjectMessage(message)) return { field: "message", code: "TYPE_MISMATCH" };
+	if (!isRecord(message)) return { field: "message", code: "TYPE_MISMATCH" };
 	if (message.jsonrpc !== "2.0") return { field: "jsonrpc", code: "INVALID_VALUE" };
 	if (message.method !== undefined) {
 		const method = METHOD_TEXT.validate(message.method);
@@ -80,14 +77,14 @@ function refusedEnvelope(message: unknown): { field: string; code: string } | nu
 
 /** A refused message is answered with -32600 only when it awaits an answer: a request, or any value that is not an object. A notification (no id) and a response (result or error) never are. */
 function awaitsAnswer(message: unknown): boolean {
-	if (!isObjectMessage(message)) return true;
+	if (!isRecord(message)) return true;
 	if ("result" in message || "error" in message) return false;
 	return message.id !== undefined;
 }
 
 /** The id a -32600 answer echoes: the message's own id when it is a string or a number, otherwise null. */
 function answerId(message: unknown): string | number | null {
-	if (!isObjectMessage(message)) return null;
+	if (!isRecord(message)) return null;
 	return typeof message.id === "string" || typeof message.id === "number" ? message.id : null;
 }
 

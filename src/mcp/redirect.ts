@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { isIP } from "node:net";
 
-export type RedirectMode = "loopback" | "tailscale" | "override";
+type RedirectMode = "loopback" | "tailscale" | "override";
 
 export interface RedirectPlan {
 	mode: RedirectMode;

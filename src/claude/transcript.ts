@@ -12,7 +12,7 @@ const MAX_SNIPPETS = 8;
 const MAX_MESSAGE_CHARS = 600;
 const TAIL_BYTES = 256 * 1024;
 
-function textParts(content: unknown): string {
+export function textParts(content: unknown): string {
 	if (typeof content === "string") return content.trim();
 	if (!Array.isArray(content)) return "";
 	const parts: string[] = [];

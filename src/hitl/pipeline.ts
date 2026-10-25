@@ -11,6 +11,7 @@ import type { DecisionRecord } from "../decisions/types.ts";
 import { extractJsonObject } from "../think/graph.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
+import { isAbortError } from "../shared.ts";
 import { clarifySystemPrompt } from "./prompts.ts";
 import {
 	type Clarification,
@@ -21,7 +22,7 @@ import {
 } from "./types.ts";
 
 /** Same shape as `Completer` in src/grok/complete.ts and `ClaudeCompleter` in src/claude/complete.ts. */
-export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
+type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 
 export interface RunClarifyOptions {
 	uplift: UpliftResult;
@@ -45,12 +46,6 @@ const MAX_OPTIONS = 4;
 const MAX_KNOWLEDGE_ANSWER_CHARS = 500;
 /** Longest claimed answer shown as the "As stated" option description of a rejected knowledge claim. */
 const MAX_CLAIMED_DESCRIPTION_CHARS = 200;
-
-function isAbortError(error: unknown): boolean {
-	if (error instanceof Error) return error.name === "AbortError";
-	if (!error || typeof error !== "object" || !("name" in error)) return false;
-	return error.name === "AbortError";
-}
 
 function asString(value: unknown): string {
 	return typeof value === "string" ? value.trim() : "";
@@ -317,7 +312,7 @@ function activeKnowledge(opts: RunClarifyOptions): { digest: string; docs: strin
 	return digest ? { digest, docs: opts.knowledge!.docs } : undefined;
 }
 
-export function clarifyUserPayload(opts: RunClarifyOptions, maxQuestions: number): string {
+function clarifyUserPayload(opts: RunClarifyOptions, maxQuestions: number): string {
 	const parts = ["<spec>", opts.uplift.xml.trim(), "</spec>"];
 
 	const conclusions = opts.graph ? graphConclusions(opts.graph) : "";

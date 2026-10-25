@@ -11,6 +11,7 @@ import type { Decisions } from "../decisions/gate.ts";
 import { QUESTIONS } from "../decisions/questions.ts";
 import { DEFAULT_DECISIONS_CONFIG, DecisionsError } from "../decisions/types.ts";
 import type { DecisionsConfig, DecisionsErrorKind } from "../decisions/types.ts";
+import { type Recorded, hangingFetch, JEV, recorded } from "../test.helpers.ts";
 import { assessDecisionJson, assessDone } from "./assess.ts";
 import { collectSignals, gatherDiff, gsdToolsCandidates, resolveGsdTools } from "./signals.ts";
 import type { ShipDiff } from "./signals.ts";
@@ -796,22 +797,6 @@ describe("assessDone modes", () => {
 // Jev ship decision point (DP-SHIP). Canonical Decisions fixtures, defined per test file.
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-interface Recorded {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body: unknown;
-}
-
-function toRecorded(input: string | URL | Request, init?: RequestInit): Recorded {
-	const headers: Record<string, string> = {};
-	new Headers(init?.headers).forEach((value, key) => {
-		headers[key] = value;
-	});
-	const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body;
-	return { url: String(input), method: init?.method ?? "GET", headers, body };
-}
-
 /** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
 function recordingFetch(queue: Array<() => Response | Promise<Response>>): {
 	fetch: typeof fetch;
@@ -819,7 +804,7 @@ function recordingFetch(queue: Array<() => Response | Promise<Response>>): {
 } {
 	const calls: Recorded[] = [];
 	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-		calls.push(toRecorded(input, init));
+		calls.push(recorded(input, init));
 		const next = queue[Math.min(calls.length, queue.length) - 1];
 		if (!next) throw new Error("empty queue");
 		return next();
@@ -828,32 +813,11 @@ function recordingFetch(queue: Array<() => Response | Promise<Response>>): {
 	return { fetch: fetchImpl, calls };
 }
 
-const JEV =
-	(p: number, key = "plan_worthy") =>
-	() =>
-		Response.json({
-			id: "gen-dec-test",
-			model: "typesafe/jev-1.13-20260917",
-			provider: "TypeSafe",
-			answers: { [key]: { type: "noul", noul: p } },
-			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
-		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
 	Response.json(
 		{ error: { code: s, message: `upstream said no for ${K}` } },
 		{ status: s, headers },
 	);
-
-/** Never resolves; rejects with an AbortError when its signal fires (as src/grok/complete.test.ts hangingFetch). */
-function hangingFetch(onCall?: () => void): typeof fetch {
-	return ((_input: string | URL | Request, init?: RequestInit) =>
-		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () =>
-				reject(new DOMException("aborted", "AbortError")),
-			);
-			onCall?.();
-		})) as typeof fetch;
-}
 
 /** Holds every response until `release()`; for "N requests before any response". Installed as globalThis.fetch too. */
 function heldFetch(respond: (call: Recorded) => Response): {
@@ -865,7 +829,7 @@ function heldFetch(respond: (call: Recorded) => Response): {
 	const waiting: Array<() => void> = [];
 	let released = false;
 	const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => {
-		const call = toRecorded(input, init);
+		const call = recorded(input, init);
 		calls.push(call);
 		return new Promise<Response>((resolve) => {
 			const answer = () => resolve(respond(call));

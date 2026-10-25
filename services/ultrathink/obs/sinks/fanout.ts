@@ -15,7 +15,7 @@ import type { AuditRecord } from "../audit.ts";
 import { type SinkEvent, type SinkQueue, createSinkQueue } from "./queue.ts";
 import type { SinkEnvelope, SinkTransport } from "./types.ts";
 
-export type AlertKind = "audit_tamper_detected" | "anomaly_detected";
+type AlertKind = "audit_tamper_detected" | "anomaly_detected";
 
 export interface AuditStreamsOptions {
 	readonly transports: readonly SinkTransport[];

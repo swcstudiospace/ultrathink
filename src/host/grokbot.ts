@@ -50,7 +50,7 @@ import { type PlanResponse, planPrompt } from "./plan.ts";
 export const GROKBOT_LABEL = "host:grok-bot";
 /** The no-hook engine family the adapter plans under (state dir is always explicit). */
 export const GROKBOT_ENGINE_HOST = "prime-agent" as const;
-export const DENSITY_BAND: Readonly<Record<string, readonly [number, number]>> = {
+const DENSITY_BAND: Readonly<Record<string, readonly [number, number]>> = {
 	BUILD_PROMPT: [40, 64],
 	CHANGE_PROMPT: [40, 64],
 };
@@ -112,7 +112,7 @@ export interface JournalMeta {
 	updatedAt?: number;
 }
 
-export function sanitizeId(value: string): string {
+function sanitizeId(value: string): string {
 	return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "unknown";
 }
 
@@ -120,7 +120,7 @@ export function journalDir(stateDir: string, sessionId: string): string {
 	return join(stateDir, "journal", sanitizeId(sessionId));
 }
 
-export function requestKey(system: string, user: string): string {
+function requestKey(system: string, user: string): string {
 	return createHash("sha256")
 		.update(system)
 		.update("\u0000")
@@ -162,7 +162,7 @@ export function stageOf(system: string): Stage {
 
 const CURRENT_NODE_RE = /<current_node id="([^"]+)" kind="([^"]+)" title="([^"]*)">/;
 
-export function describeRequest(system: string, user: string, now = Date.now()): PendingRequest {
+function describeRequest(system: string, user: string, now = Date.now()): PendingRequest {
 	const stage = stageOf(system);
 	const request: PendingRequest = {
 		key: requestKey(system, user),
@@ -191,7 +191,7 @@ export function listPending(dir: string): PendingRequest[] {
 		.sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
 }
 
-export function readAnswer(dir: string, key: string): string | undefined {
+function readAnswer(dir: string, key: string): string | undefined {
 	const path = join(dir, "answers", `${key}.txt`);
 	return existsSync(path) ? readFileSync(path, "utf8") : undefined;
 }
@@ -447,14 +447,14 @@ export function validateClarify(raw: string, maxQuestions = 4): Validation {
 	return { ok: errors.length === 0, errors, info: { questions: questions.length } };
 }
 
-export function validateDistill(raw: string): Validation {
+function validateDistill(raw: string): Validation {
 	const parsed = extractJsonObject(raw);
 	return parsed && typeof parsed === "object"
 		? { ok: true, errors: [] }
 		: { ok: false, errors: ["distill answer must be JSON"] };
 }
 
-export function validateAnswer(
+function validateAnswer(
 	request: PendingRequest,
 	raw: string,
 	original: string | undefined,

@@ -142,7 +142,7 @@ function modelFromView(view: PlanView): GraphModel {
 const SUBSTRATE_STATES = ["checking", "ok", "error", "access-denied"] as const;
 const SAVINGS_SOURCES = ["provider", "compress", "graph"] as const;
 
-export interface TokenSavingsPoint {
+interface TokenSavingsPoint {
 	at: number;
 	source: "provider" | "compress" | "graph";
 	baseline: number;

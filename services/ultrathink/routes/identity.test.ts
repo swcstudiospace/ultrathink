@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomHash } from "../../../src/test.helpers.ts";
 import { createAuth } from "../auth/auth.ts";
 import { loadConfig } from "../config/config.ts";
 import { createLogger } from "../obs/log.ts";
@@ -42,20 +43,13 @@ afterAll(async () => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-// loadConfig checks only the PHC shape of the owner hash; no test logs in with it.
-function passwordHash(): string {
-	const salt = randomBytes(16).toString("base64").replace(/=+$/, "");
-	const digest = randomBytes(16).toString("base64").replace(/=+$/, "");
-	return `$argon2id$v=19$m=65536,t=2,p=1$${salt}$${digest}`;
-}
-
 // The router never reads the TLS files; the listener does. So absolute paths are enough here.
 function build(tls: boolean): { app: App; logs: LogLine[] } {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-identity-"));
 	dirs.push(dir);
 	const env: Record<string, string | undefined> = {
 		ULTRATHINK_PUBLIC_ORIGIN: ORIGIN,
-		ULTRATHINK_OWNER_PASSWORD_HASH: passwordHash(),
+		ULTRATHINK_OWNER_PASSWORD_HASH: randomHash(),
 		ULTRATHINK_SESSION_SECRET: randomBytes(32).toString("hex"),
 		ULTRATHINK_STATE_DIR: dir,
 		...(tls

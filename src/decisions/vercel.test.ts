@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import { VEV } from "../test.helpers.ts";
 import { QUESTIONS } from "./questions.ts";
 import type { DecisionQuestion, DecisionsRequest } from "./types.ts";
 import { VERCEL_DECISIONS_URL } from "./types.ts";
@@ -203,11 +204,6 @@ describe("decideVercel", () => {
 		}) as typeof fetch;
 		return { fetch: fetchImpl, calls };
 	}
-	const VEV = (p: number) => () =>
-		Response.json({
-			answers: { plan_worthy: { type: "boolean", probability: p } },
-			usage: { inputTokens: 100, outputTokens: 5 },
-		});
 	const ERR = (s: number) => () =>
 		Response.json({ error: { message: `no for ${K}` } }, { status: s });
 

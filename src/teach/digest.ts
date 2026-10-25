@@ -7,7 +7,7 @@
  * or truncated file can never feed unbounded text to the distiller. Nothing is redacted here: `observe` does that.
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { isNoise } from "../claude/transcript.ts";
+import { isNoise, textParts } from "../claude/transcript.ts";
 import {
 	DIGEST_MAX_CHARS,
 	DIGEST_MAX_TURNS,
@@ -45,11 +45,11 @@ export interface DigestMeta {
 	now?: () => number;
 }
 
-function clip(text: string, max: number): string {
+export function clip(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-function nonEmpty(value: unknown): string | undefined {
+export function nonEmpty(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
@@ -109,18 +109,6 @@ export function parseDigest(raw: unknown): TeachDigest | undefined {
 		toolCalls: rec.toolCalls,
 		...(outcome ? { outcome } : {}),
 	};
-}
-
-function partsText(content: unknown): string {
-	if (typeof content === "string") return content.trim();
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const part of content) {
-		if (!part || typeof part !== "object") continue;
-		const rec = part as { type?: unknown; text?: unknown };
-		if (rec.type === "text" && typeof rec.text === "string") parts.push(rec.text);
-	}
-	return parts.join("\n").trim();
 }
 
 function summarizeInput(input: unknown): string {
@@ -257,7 +245,7 @@ export function digestFromClaudeTranscript(
 			} else if (p.type === "tool_result") {
 				flush();
 				const tool = typeof p.tool_use_id === "string" ? toolNames.get(p.tool_use_id) : undefined;
-				const turn: DigestTurn = { role: "tool", text: partsText(p.content) || "(no output)" };
+				const turn: DigestTurn = { role: "tool", text: textParts(p.content) || "(no output)" };
 				if (tool) turn.tool = tool;
 				if (p.is_error === true) turn.isError = true;
 				turns.push(turn);
@@ -280,7 +268,7 @@ export function digestFromAgentMessages(
 		const rec = message as Record<string, unknown>;
 		if (rec.role === "user") {
 			if (rec.synthetic === true) continue;
-			const text = partsText(rec.content);
+			const text = textParts(rec.content);
 			if (text && !isNoise(text)) turns.push({ role: "user", text });
 		} else if (rec.role === "assistant") {
 			lastStop = rec.stopReason;
@@ -308,7 +296,7 @@ export function digestFromAgentMessages(
 			}
 			flush();
 		} else if (rec.role === "toolResult") {
-			const turn: DigestTurn = { role: "tool", text: partsText(rec.content) || "(no output)" };
+			const turn: DigestTurn = { role: "tool", text: textParts(rec.content) || "(no output)" };
 			const tool = nonEmpty(rec.toolName);
 			if (tool) turn.tool = clip(tool, TOOL_NAME_CHARS);
 			if (rec.isError === true) turn.isError = true;

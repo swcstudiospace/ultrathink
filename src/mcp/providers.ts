@@ -6,7 +6,7 @@
  * evaluation-model endpoint, the Hindsight and RAGFlow HTTP APIs) and are never served or connected.
  */
 export type McpProviderId = "notion" | "linear" | "greptile";
-export type KeyProviderId = "openrouter" | "vercel" | "hindsight" | "ragflow";
+type KeyProviderId = "openrouter" | "vercel" | "hindsight" | "ragflow";
 export type ProviderId = McpProviderId | KeyProviderId;
 
 export interface McpProvider {
@@ -21,7 +21,7 @@ export interface McpProvider {
 	scopes: string[];
 }
 
-export interface KeyProvider {
+interface KeyProvider {
 	kind: "key";
 	id: KeyProviderId;
 	label: string;
@@ -69,7 +69,7 @@ export const MCP_PROVIDERS: Record<McpProviderId, McpProvider> = {
 	},
 };
 
-export const KEY_PROVIDERS: Record<KeyProviderId, KeyProvider> = {
+const KEY_PROVIDERS: Record<KeyProviderId, KeyProvider> = {
 	openrouter: {
 		kind: "key",
 		id: "openrouter",

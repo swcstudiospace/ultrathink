@@ -20,10 +20,7 @@ import type {
 } from "../hindsight/types.ts";
 import { createGatewayClient, type GatewayClientOptions } from "./client.ts";
 import { GRAPH_ID_PATTERN, type GatewayFailure } from "./types.ts";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "../shared.ts";
 
 function asError(failure: GatewayFailure): HindsightResult<never> {
 	const kind = failure.reason.includes("timeout")

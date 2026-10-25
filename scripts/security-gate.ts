@@ -30,6 +30,15 @@ import { join, resolve } from "node:path";
 
 import { isPlainObject } from "../src/decisions/client.ts";
 
+// Local copy: this script runs in a harness tree without src/ (see deploy/ultrathink-release.test.ts), so it cannot import src/shared.ts.
+function isDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 export const SEVERITIES = ["low", "moderate", "high", "critical"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
@@ -451,14 +460,6 @@ function readPackage(file: string): InstalledPackage {
 	const problem =
 		name === undefined || version === undefined ? "package.json has no name or version" : undefined;
 	return { file, name, version, license: manifest.license, problem };
-}
-
-function isDirectory(path: string): boolean {
-	try {
-		return statSync(path).isDirectory();
-	} catch {
-		return false;
-	}
 }
 
 function visitNodeModules(dir: string, found: InstalledPackage[], seen: Set<string>): void {

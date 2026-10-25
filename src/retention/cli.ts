@@ -7,6 +7,7 @@
  */
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { resolveStateDir } from "../host/paths.ts";
+import { formatBytes } from "../shared.ts";
 import { type PruneResult, pruneSessions } from "./prune.ts";
 
 export interface PruneCommandResult {
@@ -56,12 +57,6 @@ function parseDays(value: string): number | undefined {
 	if (!match) return undefined;
 	const days = Number(match[1]);
 	return days >= 1 && days <= MAX_DAYS ? days : undefined;
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function plural(count: number, noun: string): string {

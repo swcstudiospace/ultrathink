@@ -15,7 +15,7 @@ export const GRAPH_APP_MIME = "text/html;profile=mcp-app";
  * The default CSP of the MCP Apps spec, plus the directives its construction example adds. A conforming host injects
  * it; the document also carries it as a meta tag so a host that renders the text as-is (or a srcdoc frame) gets it too.
  */
-export const APP_CSP = [
+const APP_CSP = [
 	"default-src 'none'",
 	"script-src 'self' 'unsafe-inline'",
 	"style-src 'self' 'unsafe-inline'",

@@ -40,19 +40,19 @@ export const MAX_ERROR_CHARS = 200;
 
 // Thresholds: the §5 defaults, probed on typesafe/jev-1.13-20260917 (brief §2). Each comment names both mistakes.
 /** Plan gate: skip planning when P(plan_worthy) < this. False skip → the prompt reaches the agent unplanned (resend with `uplift:`); false plan → today's cost. */
-export const PLAN_SKIP_BELOW = 0.2;
+const PLAN_SKIP_BELOW = 0.2;
 /** Ship veto: an LLM "done" becomes not done when P(complete) <= this on an untruncated patch. False veto → PR not opened (gate mode hands back); false keep → today's behaviour. */
-export const SHIP_VETO_AT_OR_BELOW = 0.2;
+const SHIP_VETO_AT_OR_BELOW = 0.2;
 /** Ship verdict without a usable LLM verdict: done iff P(complete) >= this. False approve → a PR opens and still faces the unchanged Greptile merge gate; false reject → not done, the user re-runs. */
-export const SHIP_APPROVE_AT = 0.7;
+const SHIP_APPROVE_AT = 0.7;
 /** KB claim kept when P(supported) >= this. False reject → one extra question; false keep → today's behaviour. */
-export const GROUNDED_AT = 0.8;
+const GROUNDED_AT = 0.8;
 /** Promote to blocking when P(risky) >= this. False promote → one extra question before work; missed promote → today's behaviour. */
-export const BLOCKING_AT = 0.5;
+const BLOCKING_AT = 0.5;
 /** Teachable lesson: dropped before it is stored when P(teachable) < this. False drop → a lesson is lost (the next session can rediscover it); false keep → one more candidate to review. */
-export const TEACHABLE_BELOW = 0.3;
+const TEACHABLE_BELOW = 0.3;
 /** Auto capture confirms a candidate only when P(teachable) >= this as well as confidence >= 0.8. False hold → a human confirms it; false confirm → today's auto behaviour. */
-export const TEACHABLE_AUTO_AT = 0.8;
+const TEACHABLE_AUTO_AT = 0.8;
 /** Promote a lesson to a skill (`promote --due`, `promoteDue`) only when P(skillworthy) >= this. False skip → promoted by hand later; false keep → today's behaviour. */
 export const SKILLWORTHY_AT = 0.5;
 
@@ -97,23 +97,23 @@ export interface NoulQuestion {
 	instructions: string;
 	criteria?: { true: string; false: string };
 }
-export interface ChoiceQuestion {
+interface ChoiceQuestion {
 	type: "choice";
 	instructions: string;
 	criteria: Record<string, string>;
 }
-export interface ScoreQuestion {
+interface ScoreQuestion {
 	type: "score";
 	instructions: string;
 	criteria: string[];
 }
 export type DecisionQuestion = NoulQuestion | ChoiceQuestion | ScoreQuestion;
-export type DecisionState = string | Record<string, unknown> | unknown[];
-export interface ProviderPreferences {
+type DecisionState = string | Record<string, unknown> | unknown[];
+interface ProviderPreferences {
 	zdr?: boolean;
 	data_collection?: "allow" | "deny";
 }
-export interface DecisionsTrace {
+interface DecisionsTrace {
 	trace_id?: string;
 	trace_name?: string;
 	span_name?: string;
@@ -127,7 +127,7 @@ export interface DecisionsRequest {
 	trace?: DecisionsTrace;
 	user?: string;
 }
-export interface NoulAnswer {
+interface NoulAnswer {
 	type: "noul";
 	noul: number;
 }
@@ -137,7 +137,7 @@ export interface ChoiceAnswer {
 	probabilities?: Record<string, number>;
 	confidence?: number;
 }
-export interface ScoreAnswer {
+interface ScoreAnswer {
 	type: "score";
 	score: number;
 	probabilities?: Record<string, number>;

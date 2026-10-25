@@ -27,7 +27,7 @@ export interface SkillLookup {
 }
 
 /** Ultrathink's own skills; a user typing one of them must never re-plan (duplicate tracker rows). */
-export const ULTRATHINK_SKILLS: readonly string[] = [
+const ULTRATHINK_SKILLS: readonly string[] = [
 	"ultrathink-kickoff",
 	"ultrathink-sync",
 	"ultrathink-plan",
@@ -71,7 +71,7 @@ const ULTRATHINK_COMMAND_RE = /^ultrathink(?::|$)/i;
 const GSD_COMMAND_RE = /^gsd-[a-z0-9][a-z0-9-]*$/i;
 
 /** Bare `gsd-*` name, or undefined when `name` is not a GSD command. */
-export function gsdCommandBareName(name: string): string | undefined {
+function gsdCommandBareName(name: string): string | undefined {
 	const bare = name.includes(":") ? name.slice(name.lastIndexOf(":") + 1) : name;
 	return GSD_COMMAND_RE.test(bare) ? bare.toLowerCase() : undefined;
 }

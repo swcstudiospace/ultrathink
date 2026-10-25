@@ -36,20 +36,20 @@ import type {
 } from "../teach/types.ts";
 
 /** Rows kept per collection; anything beyond is disclosed, never silently dropped. */
-export const INSIGHT_MAX_ROWS = 100;
+const INSIGHT_MAX_ROWS = 100;
 /** Newest store files examined per snapshot (by file mtime), mirroring the skills lookup window. */
-export const INSIGHT_SCAN_WINDOW = 500;
+const INSIGHT_SCAN_WINDOW = 500;
 /** One moment file read per snapshot; anything larger was not written by the store. */
-export const INSIGHT_MOMENT_BYTES = 64 * 1024;
+const INSIGHT_MOMENT_BYTES = 64 * 1024;
 /** Probability rows kept per decision. */
-export const INSIGHT_MAX_QUESTIONS = 32;
+const INSIGHT_MAX_QUESTIONS = 32;
 /** Bounded collection sizes inside one lesson row. */
-export const INSIGHT_MAX_LIST_ITEMS = 32;
+const INSIGHT_MAX_LIST_ITEMS = 32;
 /** Rows and columns of the plain-text fallback. */
-export const INSIGHT_TEXT_MAX_ROWS = 24;
-export const INSIGHT_TEXT_MAX_COLS = 120;
+const INSIGHT_TEXT_MAX_ROWS = 24;
+const INSIGHT_TEXT_MAX_COLS = 120;
 /** Card snapshots keep at most this many rows per collection (transcript-persisted). */
-export const INSIGHT_CARD_MAX_ROWS = 24;
+const INSIGHT_CARD_MAX_ROWS = 24;
 
 /** Private runtime identity of the owning session; never serialized into message details. */
 export interface InsightScope {
@@ -65,7 +65,7 @@ export interface LessonSelection {
 	revision: string;
 }
 
-export interface InsightQuestionProbability {
+interface InsightQuestionProbability {
 	key: string;
 	p: number;
 }
@@ -87,7 +87,7 @@ export interface InsightDecision {
 	questions: InsightQuestionProbability[];
 }
 
-export interface InsightPromotion {
+interface InsightPromotion {
 	at: string;
 	skill: string;
 	target: SkillTarget;
@@ -120,7 +120,7 @@ export interface InsightLesson {
 	promoted?: InsightPromotion;
 }
 
-export interface InsightPolicy {
+interface InsightPolicy {
 	enabled: boolean;
 	capture: CaptureMode;
 	recall: boolean;
@@ -147,7 +147,7 @@ export interface InsightSnapshot {
 	limitations: string[];
 }
 
-export interface InsightCardLessonSummary {
+interface InsightCardLessonSummary {
 	id: string;
 	name: string;
 	status: MomentStatus;
@@ -186,7 +186,7 @@ export interface SkillPreview {
 	warnings: string[];
 }
 
-export interface InsightInstallResult {
+interface InsightInstallResult {
 	action: string;
 	skill?: string;
 	path?: string;

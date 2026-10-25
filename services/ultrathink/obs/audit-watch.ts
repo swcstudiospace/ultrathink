@@ -21,7 +21,7 @@ export interface Fingerprint {
 	readonly ino: number;
 }
 
-export type ScanOutcome =
+type ScanOutcome =
 	| { readonly ok: true; readonly records: number; readonly lastHash: string }
 	| {
 			readonly ok: false;

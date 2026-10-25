@@ -175,9 +175,9 @@ export interface PrStatus {
 	url: string;
 }
 
-export type ShipPhase = "not-done" | "pr-open" | "needs-fixes" | "ready" | "merged" | "blocked";
+type ShipPhase = "not-done" | "pr-open" | "needs-fixes" | "ready" | "merged" | "blocked";
 
-export type ShipAttemptOutcome =
+type ShipAttemptOutcome =
 	| "passed"
 	| "needs-fixes"
 	| "failed"
@@ -203,7 +203,7 @@ export interface ShipAttempt {
 export const MAX_ATTEMPTS = 50;
 
 /** A finished ship of this session, kept in ShipState.history. */
-export type ShipHistoryEntry = Omit<ShipState, "history">;
+type ShipHistoryEntry = Omit<ShipState, "history">;
 
 /** Most finished ships kept per session; older ones are dropped. */
 export const MAX_SHIP_HISTORY = 10;

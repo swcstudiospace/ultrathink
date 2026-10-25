@@ -14,7 +14,7 @@ import { escapeXml } from "../uplift/xml.ts";
 import { stripTrackingXml } from "../track/render.ts";
 import { MAX_STEPS, MIN_STEPS } from "../think/types.ts";
 
-export const MAX_DESK_RULES = 10;
+const MAX_DESK_RULES = 10;
 
 export const DEFAULT_DESK_RULES: readonly string[] = [
 	"Never merge, enable auto-merge or delete branches; the PR stays a draft until Ming approves the merge.",

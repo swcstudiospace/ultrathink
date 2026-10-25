@@ -28,15 +28,15 @@ import type { HostId } from "./types.ts";
 import { MAX_ENGINE_ERROR_CHARS } from "./display-limits.ts";
 import type { CompletionReport } from "../types.ts";
 
-export type ModelResolutionState = "override" | "detected" | "default" | "unresolved";
-export type PlanningTransport =
+type ModelResolutionState = "override" | "detected" | "default" | "unresolved";
+type PlanningTransport =
 	| "omp-native"
 	| "claude-cli"
 	| "muse-cli"
 	| "grok-http"
 	| "grok-cli"
 	| "grok-shunt";
-export type ModelResolutionSource =
+type ModelResolutionSource =
 	| "host-override"
 	| "provider-override"
 	| "engine-model"
@@ -49,7 +49,7 @@ export type ModelResolutionSource =
 	| "none"
 	| "route-default"
 	| "configured-fallback";
-export type ModelResolutionReason =
+type ModelResolutionReason =
 	| "explicit-model"
 	| "explicit-provider"
 	| "live-model"
@@ -70,7 +70,7 @@ export type ModelResolutionReason =
 	| "grok-unavailable";
 
 /** The engine request and where it came from, independent of the model resolution state. */
-export interface EngineSelectionProvenance {
+interface EngineSelectionProvenance {
 	/** Effective request (`state.engine ?? config.think.engine`), never a detected family. */
 	engine: "auto" | "claude" | "grok" | "muse";
 	/** "control" iff `state.engine` is present, explicit `auto` included. */

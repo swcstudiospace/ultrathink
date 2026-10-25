@@ -58,7 +58,7 @@ export type Acquire =
 	| { ok: true; release: (outcome: ReleaseOutcome) => void }
 	| { ok: false; state: "open"; retryAfterMs: number };
 
-export interface CircuitBreakerSnapshot {
+interface CircuitBreakerSnapshot {
 	state: BreakerState;
 	/**
 	 * Failures in the current window while closed; frozen at the count that

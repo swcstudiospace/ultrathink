@@ -25,6 +25,7 @@ import {
 	redactSecrets,
 } from "./auth.ts";
 import { DEFAULT_GROK_CONFIG, type GrokEffort, type GrokTransport } from "./types.ts";
+import { abortError } from "../claude/complete.ts";
 
 export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 
@@ -50,7 +51,7 @@ export interface GrokCompleteOptions {
 	shuntMaxTokens?: number;
 }
 
-export const SHUNT_ANTHROPIC_VERSION = "2023-06-01";
+const SHUNT_ANTHROPIC_VERSION = "2023-06-01";
 
 const LOGIN_HINT = "run `grok login`";
 
@@ -101,12 +102,6 @@ export function parseResponsesText(json: unknown): string {
 	const text = parts.join("\n");
 	if (!text.trim()) throw new Error("grok returned no text");
 	return text;
-}
-
-function abortError(): Error {
-	const error = new Error("Aborted");
-	error.name = "AbortError";
-	return error;
 }
 
 /** Anthropic Messages body for the shunt gateway. No `thinking` param: the route pins the effort. */

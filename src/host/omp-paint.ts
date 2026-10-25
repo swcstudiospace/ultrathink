@@ -45,7 +45,7 @@ interface ThemeLike {
 	getSpinnerFrames(kind: string): string[];
 }
 
-export interface BoxChars {
+interface BoxChars {
 	topLeft: string;
 	topRight: string;
 	bottomLeft: string;

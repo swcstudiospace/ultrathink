@@ -19,7 +19,7 @@ import {
 import { join } from "node:path";
 import type { TeachDigest } from "./types.ts";
 
-export const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const INBOX_FILE = /^(\d+)-[0-9a-f]{8}\.json(?:\.tmp)?$/;
 
 export interface SpawnObserveOptions {

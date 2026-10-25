@@ -20,7 +20,7 @@ import { mirrorLast } from "./grokbot-hitl.ts";
 import type { IssueRef, TrackingRefs } from "../track/types.ts";
 
 /** Notion Agent Task Graph columns (docs/tracking.md); the dry run reports every one so no property is dropped. */
-export const NOTION_COLUMNS = [
+const NOTION_COLUMNS = [
 	"Item",
 	"Level",
 	"Status",
@@ -45,7 +45,7 @@ export const NOTION_COLUMNS = [
 	"Sub-Items",
 ] as const;
 
-export interface RecordedCall {
+interface RecordedCall {
 	seq: number;
 	provider: "linear" | "notion";
 	tool: string;

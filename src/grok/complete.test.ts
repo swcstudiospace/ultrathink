@@ -21,6 +21,7 @@ import {
 	parseShuntText,
 } from "./complete.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
+import { hangingFetch } from "../test.helpers.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -79,17 +80,6 @@ function fakeFetch(respond: () => Response): { fetch: typeof fetch; calls: Captu
 		return respond();
 	}) as typeof fetch;
 	return { fetch: fetchImpl, calls };
-}
-
-/** Fake fetch that never resolves; rejects with AbortError when its signal fires. */
-function hangingFetch(onCall?: () => void): typeof fetch {
-	return ((_input: string | URL | Request, init?: RequestInit) =>
-		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () =>
-				reject(new DOMException("aborted", "AbortError")),
-			);
-			onCall?.();
-		})) as typeof fetch;
 }
 
 async function rejection(promise: Promise<unknown>): Promise<Error> {

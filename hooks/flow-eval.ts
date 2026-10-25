@@ -18,7 +18,7 @@ import {
 	openRouterKey,
 	type FlowRecord,
 } from "../src/decisions/flow.ts";
-import { parseEnvelope } from "../src/host/envelope.ts";
+import { parseEnvelope, responseText } from "../src/host/envelope.ts";
 import { storePath as defaultStorePath } from "../src/mcp/store.ts";
 
 interface HookInput {
@@ -33,15 +33,6 @@ function commandOf(input: HookInput): string {
 	const skill = input.tool_input?.skill;
 	if (skill) return `${skill} ${input.tool_input?.args ?? ""}`.trim();
 	return input.tool_input?.command ?? input.tool_input?.cmd ?? "";
-}
-
-function textOf(response: unknown): string {
-	if (typeof response === "string") return response;
-	try {
-		return JSON.stringify(response ?? "");
-	} catch {
-		return "";
-	}
 }
 
 export function formatFlowNote(record: FlowRecord): string {
@@ -64,7 +55,7 @@ async function main(): Promise<void> {
 	const input = raw as HookInput;
 	const command = commandOf(input);
 	if (!isGsdFlowCommand(input.tool_name, command)) return;
-	const output = textOf(input.tool_response);
+	const output = responseText(input.tool_response);
 	const subject = `${input.session_id ?? "unknown"}:${command}`;
 	const stateDir = defaultStateDir();
 	const logPath = join(stateDir, "flow-decisions.jsonl");

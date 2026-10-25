@@ -10,6 +10,7 @@
 // Type-only import: mcp.ts and the entry points import this module, a runtime import would be a cycle.
 import type { ToolDefinition } from "./mcp.ts";
 import { compileSchema, SchemaCompileError } from "./validate.ts";
+import { isRecord } from "../../../src/shared.ts";
 
 export interface ToolDefinitionViolation {
 	tool: string;
@@ -76,10 +77,6 @@ const BOUND_PAIRS = [
 	["minimum", "maximum"],
 	["minLength", "maxLength"],
 ] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isFiniteNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);

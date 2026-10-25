@@ -109,7 +109,7 @@ function recallLocal(
 	}));
 }
 
-function clean(text: string, max: number): string {
+export function clean(text: string, max: number): string {
 	return text
 		.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
 		.replace(/<\//g, "< /")

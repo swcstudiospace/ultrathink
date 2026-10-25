@@ -6,20 +6,13 @@
  */
 import { stepKey } from "./create.ts";
 import type { IssueRef, SubIssueRow, TrackingRefs, TrackPlan } from "./types.ts";
+import { escapeXml } from "../uplift/xml.ts";
 
 const NODE_TAG_RE = /<NODE\b([^>]*?)(\s*\/?)>/g;
 const ID_ATTR_RE = /\sid="([^"]*)"/;
 const TRACK_ATTR_RE = /\s(?:issue|issueUrl|notionUrl)="[^"]*"/g;
 const ISSUES_BLOCK_RE = /\n?[ \t]*<ISSUES graphId="[^"]*"[\s\S]*?<\/ISSUES>/g;
 const GRAPH_CLOSE = "</GRAPH_OF_THOUGHT>";
-
-export function escapeXml(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
-}
 
 /** "[n1] Step 3: …" -> "Step 3: …"; leaves other items untouched. */
 function stripNodePrefix(item: string, nodeId: string): string {

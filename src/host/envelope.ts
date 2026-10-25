@@ -85,3 +85,13 @@ export function isSubagentEnvelope(input: Record<string, unknown>): boolean {
 		return typeof value === "string" && value.trim() !== "";
 	});
 }
+
+/** A hook's tool response as text: a string as-is, anything else as JSON (empty when it cannot be encoded). */
+export function responseText(response: unknown): string {
+	if (typeof response === "string") return response;
+	try {
+		return JSON.stringify(response ?? "");
+	} catch {
+		return "";
+	}
+}

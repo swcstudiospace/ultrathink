@@ -183,7 +183,7 @@ function invalid(rule: string): DecisionsError {
 }
 
 /** `probabilities` keyed exactly by `keys`, every value in [0, 1]. */
-function checkProbabilities(
+export function checkProbabilities(
 	value: unknown,
 	keys: readonly string[],
 	at: string,

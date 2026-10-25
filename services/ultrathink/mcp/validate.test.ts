@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { thrownBy } from "../../../src/test.helpers.ts";
 import { TOOL_DEFINITIONS } from "./mcp.ts";
 import { compileSchema, SchemaCompileError, validateAgainst } from "./validate.ts";
 
@@ -50,15 +51,6 @@ const NESTED_SCHEMA = {
 	},
 	additionalProperties: false,
 };
-
-function thrownBy(run: () => void): unknown {
-	try {
-		run();
-	} catch (error) {
-		return error;
-	}
-	return undefined;
-}
 
 describe("the real tool schemas", () => {
 	test("every served tool schema compiles", () => {

@@ -44,7 +44,7 @@ export const GRAPH_ID_PATTERN = /^ut-[a-z0-9]+-[0-9a-f]{8}$/;
 
 export type GatewayTokenSource = "store" | typeof GATEWAY_TOKEN_ENV;
 
-export type GatewayFailureState = "unready" | "degraded";
+type GatewayFailureState = "unready" | "degraded";
 
 export interface GatewayFailure {
 	state: GatewayFailureState;

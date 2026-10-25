@@ -10,6 +10,7 @@
  *
  * Pure: the clock is injected and nothing here writes to disk.
  */
+import { isRecord, isScalar } from "../../../src/shared.ts";
 
 type Primitive = string | number | boolean;
 
@@ -75,14 +76,6 @@ const MAX_WINDOW_SEC = 86_400;
 const MAX_KEYS_PER_RULE = 10_000;
 const UNGROUPED_KEY = "*";
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isPrimitive(value: unknown): value is Primitive {
-	return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
-}
-
 function isIntegerIn(value: unknown, min: number, max: number): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 }
@@ -93,10 +86,10 @@ function ruleFailure(index: number, name: unknown, problem: string): RangeError 
 }
 
 function parseWhere(raw: unknown, index: number, name: unknown): Record<string, Primitive> {
-	if (!isPlainObject(raw)) throw ruleFailure(index, name, "where must be an object");
+	if (!isRecord(raw)) throw ruleFailure(index, name, "where must be an object");
 	const where: Record<string, Primitive> = {};
 	for (const [field, value] of Object.entries(raw)) {
-		if (!isPrimitive(value))
+		if (!isScalar(value))
 			throw ruleFailure(index, name, `where.${field} must be a string, number or boolean`);
 		where[field] = value;
 	}
@@ -104,7 +97,7 @@ function parseWhere(raw: unknown, index: number, name: unknown): Record<string, 
 }
 
 function parseRule(raw: unknown, index: number, names: Set<string>): AnomalyRule {
-	if (!isPlainObject(raw)) throw ruleFailure(index, undefined, "must be an object");
+	if (!isRecord(raw)) throw ruleFailure(index, undefined, "must be an object");
 	const name = raw.name;
 	for (const field of Object.keys(raw)) {
 		if (RULE_FIELDS[field] !== true) throw ruleFailure(index, name, `unknown field "${field}"`);

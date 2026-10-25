@@ -79,7 +79,7 @@ export interface MtlsServer {
 }
 
 /** URI SAN values of the verified peer certificate on `socket`, without the `URI:` label. */
-export function uriSansFromSocket(socket: TLSSocket): string[] {
+function uriSansFromSocket(socket: TLSSocket): string[] {
 	const san = socket.getPeerCertificate(true).subjectaltname;
 	if (typeof san !== "string" || san.length === 0) return [];
 	const uris: string[] = [];

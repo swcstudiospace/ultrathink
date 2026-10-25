@@ -31,7 +31,7 @@ export interface GraphViewNode {
 	fallback?: true;
 }
 
-export interface GraphViewWave {
+interface GraphViewWave {
 	wave: number;
 	parallel: boolean;
 	ids: string[];
@@ -394,7 +394,7 @@ export function fenced(text: string, info = ""): string {
 }
 
 /** Shown when the caps cut the view, so a client that displays only text can tell it is incomplete. */
-export const TRUNCATED_NOTE =
+const TRUNCATED_NOTE =
 	'Note: this view is shortened (some nodes or steps were left out). Call ultrathink_result with detail "full" for the whole plan.';
 
 /** The plan-text block: heading, one instruction for the chat model, the wave tree first and the diagram second. */

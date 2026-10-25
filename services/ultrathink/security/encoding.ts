@@ -339,27 +339,3 @@ export function encodeObjectForContext<T extends Record<string, unknown>>(
 	}
 	return result as T;
 }
-
-export default {
-	encodeHtml,
-	encodeHtmlAttribute,
-	encodeJavaScript,
-	encodeJson,
-	encodeUrl,
-	encodeFormUrl,
-	encodeCss,
-	quoteSqlIdentifier,
-	escapeShellArg,
-	escapeLdapDn,
-	escapeLdapFilter,
-	escapeXPath,
-	encodeCsvField,
-	encodeCsvRow,
-	sanitizeInput,
-	stripHtmlTags,
-	truncateString,
-	safeForLogging,
-	OutputContext,
-	encodeForContext,
-	encodeObjectForContext,
-};

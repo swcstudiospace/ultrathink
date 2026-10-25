@@ -16,7 +16,7 @@ import {
 } from "./types.ts";
 
 /** Hindsight's `chunks` mode stores content up to this many characters as one unit. */
-export const MAX_CONTENT_CHARS = 3_000;
+const MAX_CONTENT_CHARS = 3_000;
 const MAX_TAG_CHARS = 40;
 /** Tag namespaces the mapping owns; a moment's own tags cannot claim them (a `status:superseded` tag would hide a lesson). */
 const RESERVED_PREFIXES = ["project:", "host:", "kind:", "status:"];

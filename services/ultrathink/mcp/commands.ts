@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** native: the connector implements it; alias: same as another command; passthrough: the model answers directly; unsupported: needs a plugin host. */
-export type CommandState = "native" | "alias" | "passthrough" | "unsupported";
+type CommandState = "native" | "alias" | "passthrough" | "unsupported";
 
 export interface CommandArgument {
 	name: string;
@@ -231,7 +231,7 @@ export function overlayEntry(
 }
 
 /** Where a command name was found, relative to the repository root. */
-export interface CommandSource {
+interface CommandSource {
 	kind: "command" | "skill" | "host-skill";
 	path: string;
 }

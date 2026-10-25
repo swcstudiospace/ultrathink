@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { flush } from "../../../src/host/omp-test.helpers.ts";
 import { ConsoleSecurityEventLogger } from "../security/events.ts";
 import {
 	type Admission,
@@ -191,11 +192,6 @@ function capture() {
 	const events = () =>
 		lines.map((line) => JSON.parse(line) as { event: string; details: Record<string, unknown> });
 	return { security, events };
-}
-
-/** Lets resolved promises and their continuations run. */
-async function flush(): Promise<void> {
-	for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 
 const bearer = (principal: string): Admission => ({ principal, class: "bearer" });

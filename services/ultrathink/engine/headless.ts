@@ -26,18 +26,18 @@ import type { UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
 import { createFairShare } from "../obs/fair-share.ts";
-import type { Logger } from "../obs/log.ts";
+import { failureLabel, type Logger } from "../obs/log.ts";
 import type { SpanSink } from "../obs/otel.ts";
 import type { Store } from "../store/store.ts";
 import type { BreakerState, CircuitBreaker } from "./breaker.ts";
 import type { GraphView } from "./graph-view.ts";
 import {
-	type JournalErrorCode,
 	type JournalResult,
 	type SessionView,
 	cleanText,
 	isSessionId,
 	isolatedConfigEnv,
+	fail,
 } from "./journal.ts";
 import {
 	OpenRouterError,
@@ -192,9 +192,6 @@ const ENGINE_SKIPS: Record<string, true> = { "uplift-failed": true, "engine-erro
 /** Variables with no secret and no config meaning that a plan may inherit. */
 const PASS_THROUGH_ENV = ["PATH", "TZ", "LANG", "LC_ALL", "TMPDIR"] as const;
 
-const fail = (code: JournalErrorCode, errors?: string[]): JournalResult<never> =>
-	errors ? { ok: false, code, errors } : { ok: false, code };
-
 const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> => {
 	const { promise, resolve } = Promise.withResolvers<void>();
 	if (signal?.aborted) return Promise.resolve();
@@ -209,14 +206,6 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> => {
 	);
 	return promise;
 };
-
-/** The class or code of a failure, never its message: a driver or provider message can echo a key or a prompt. */
-function failureLabel(error: unknown): string {
-	if (!(error instanceof Error)) return "non-error value";
-	const code = "code" in error ? error.code : undefined;
-	if (typeof code === "string") return code;
-	return error.name === "Error" ? error.constructor.name : error.name;
-}
 
 /** The plugin config a server plan runs with: planning on, everything that reaches outside the model off. */
 function pluginConfig(): PluginConfig {

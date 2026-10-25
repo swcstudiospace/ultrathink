@@ -189,11 +189,3 @@ export const ULTRATHINK_SECURITY_HEADERS: SecurityHeadersConfig = {
 	corp: "same-origin",
 	coep: "require-corp",
 };
-
-export default {
-	buildSecurityHeaders,
-	createSecurityHeadersMiddleware,
-	createCspWithNonce,
-	generateNonce,
-	ULTRATHINK_SECURITY_HEADERS,
-};

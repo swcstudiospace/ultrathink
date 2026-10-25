@@ -10,10 +10,12 @@ import {
 	type ScanReply,
 	type WatchAlert,
 } from "./audit-watch.ts";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { auditPath, createAuditLog } from "./audit.ts";
+import { diskFingerprint } from "../../../src/shared.ts";
+import { bulk } from "../../../src/test.helpers.ts";
 
 const GENESIS = "0".repeat(64);
 const HEAD_HASH = "a".repeat(64);
@@ -497,21 +499,6 @@ describe("timer and interval", () => {
 describe("pruned chain", () => {
 	const MIB = 1024 * 1024;
 
-	function bulk(i: number): Record<string, string | number> {
-		const fields: Record<string, string | number> = { n: i };
-		for (let k = 0; k < 31; k += 1) fields[`k${k}`] = "x".repeat(250);
-		return fields;
-	}
-
-	function diskOf(path: string): Fingerprint | undefined {
-		try {
-			const stat = statSync(path);
-			return { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino };
-		} catch {
-			return undefined;
-		}
-	}
-
 	test("a full scan of a pruned chain raises no tamper alert, and dropping its boundary record alerts", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-watch-"));
 		try {
@@ -525,7 +512,7 @@ describe("pruned chain", () => {
 			const watch = createAuditWatch({
 				intervalMs: 1000,
 				fullScanEveryTicks: 1,
-				stat: () => diskOf(path),
+				stat: () => diskFingerprint(path),
 				acknowledged: () => {
 					const head = log.head();
 					return { fingerprint: log.fingerprint(), seq: head.seq, hash: head.hash };

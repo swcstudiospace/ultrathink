@@ -41,6 +41,7 @@ import { planPrompt, type PlanOptions, type PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 import type { GroundOutcome } from "../ragflow/types.ts";
 import type { RecallOutcome } from "../teach/types.ts";
+import { JEV, recordingFetch } from "../test.helpers.ts";
 
 describe("detectHost", () => {
 	test("Grok markers win over Claude aliases, and an explicit host wins over both", () => {
@@ -699,49 +700,11 @@ describe("planPrompt", () => {
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-interface Recorded {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body: unknown;
-}
-
 const realFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = realFetch;
 });
 
-/** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): {
-	fetch: typeof fetch;
-	calls: Recorded[];
-} {
-	const calls: Recorded[] = [];
-	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-		const headers: Record<string, string> = {};
-		new Headers(init?.headers).forEach((value, key) => {
-			headers[key] = value;
-		});
-		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body;
-		calls.push({ url: String(input), method: init?.method ?? "GET", headers, body });
-		const next = queue[Math.min(calls.length, queue.length) - 1];
-		if (!next) throw new Error("empty queue");
-		return next();
-	}) as typeof fetch;
-	globalThis.fetch = fetchImpl;
-	return { fetch: fetchImpl, calls };
-}
-
-const JEV =
-	(p: number, key = "plan_worthy") =>
-	() =>
-		Response.json({
-			id: "gen-dec-test",
-			model: "typesafe/jev-1.13-20260917",
-			provider: "TypeSafe",
-			answers: { [key]: { type: "noul", noul: p } },
-			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
-		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
 	Response.json(
 		{ error: { code: s, message: `upstream said no for ${K}` } },

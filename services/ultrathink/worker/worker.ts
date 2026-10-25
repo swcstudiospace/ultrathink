@@ -14,7 +14,7 @@ import { DuplicatePhaseError, type RunStatus, type Store } from "../store/store.
 import { writeAtomic } from "./atomic.ts";
 
 export const PHASES = ["discover", "discuss", "plan", "execute"] as const;
-export type Phase = (typeof PHASES)[number];
+type Phase = (typeof PHASES)[number];
 
 export interface PlanningModel {
 	complete(input: {
@@ -25,7 +25,7 @@ export interface PlanningModel {
 	}): Promise<{ text: string; tokensUsed: number }>;
 }
 
-export type TickResult = "idle" | "paused" | "complete" | "failed";
+type TickResult = "idle" | "paused" | "complete" | "failed";
 
 export interface WorkerOptions {
 	store: Store;
@@ -48,7 +48,7 @@ export interface Worker {
 	runUntilAborted(signal: AbortSignal): Promise<void>;
 }
 
-export class LeaseLostError extends Error {
+class LeaseLostError extends Error {
 	constructor(runId: string) {
 		super(`lease lost for run ${runId}`);
 		this.name = "LeaseLostError";

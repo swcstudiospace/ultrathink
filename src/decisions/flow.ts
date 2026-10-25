@@ -19,9 +19,9 @@ import {
 } from "./types.ts";
 
 export const FLOW_OUTPUT_MAX = 12_000;
-export const FLOW_DECISIONS = ["approve", "reject", "needs-human"] as const;
-export type FlowDecision = (typeof FLOW_DECISIONS)[number];
-export type FlowState = "success" | "empty" | "error";
+const FLOW_DECISIONS = ["approve", "reject", "needs-human"] as const;
+type FlowDecision = (typeof FLOW_DECISIONS)[number];
+type FlowState = "success" | "empty" | "error";
 
 export interface FlowRecord {
 	version: 1;

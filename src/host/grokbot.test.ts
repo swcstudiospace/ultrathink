@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type SessionRecord, writeControl, writeSession } from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
+import { NODE, UPLIFT } from "../test.helpers.ts";
 import type { TrackingRefs } from "../track/types.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import { planPrompt } from "./plan.ts";
@@ -83,9 +84,6 @@ const testEnv = (root: string): Record<string, string | undefined> => ({
 	PATH: process.env.PATH,
 });
 
-const UPLIFT = (original: string) =>
-	`<BUILD_PROMPT><ORIGINAL>${escapeXml(original)}</ORIGINAL><SYSTEM_ROLE>Senior TypeScript engineer.</SYSTEM_ROLE><APP_CONTEXT>A standalone CLI.</APP_CONTEXT><SCOPE>CSV to JSON with streaming.</SCOPE><CONSTRAINTS>Do not invent repo facts.</CONSTRAINTS><ACCEPTANCE_CRITERIA>Converts a 1 GB file in bounded memory.</ACCEPTANCE_CRITERIA><OUT_OF_SCOPE>XLSX input.</OUT_OF_SCOPE></BUILD_PROMPT>`;
-
 const GRAPH = JSON.stringify({
 	goal: "Ship a streaming CSV to JSON CLI",
 	nodes: [
@@ -126,22 +124,6 @@ const GRAPH = JSON.stringify({
 		},
 	],
 });
-
-const steps = (n: number, id: string) =>
-	Array.from(
-		{ length: n },
-		(_, i) => `${i + 1}. Step ${i + 1} of ${id}: a discrete, self-contained action.`,
-	).join("\n");
-
-const NODE = (id: string, kind: string, n: number) => {
-	let conclusion = `Answer for ${id}.`;
-	if (kind === "critique")
-		conclusion += "\nOpen questions:\n- Output as JSON lines or array? Default: array.";
-	if (kind === "synthesize")
-		conclusion +=
-			"\nWORKFLOW\nWave 1 (parallel): parser — files: src/parse.ts — done when: unit tests pass\nWave 1 (parallel): cli — files: src/cli.ts — done when: --help prints\nWave 2: docs — files: README.md — done when: README lists flags\nVerify: bun test";
-	return `<node><rationale>\n${steps(n, id)}\n</rationale><conclusion>${conclusion}</conclusion></node>`;
-};
 
 const CLARIFY = JSON.stringify({
 	questions: [

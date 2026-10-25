@@ -5,9 +5,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Credential, type CredentialStore, writeStore } from "../mcp/store.ts";
+import { byId } from "../test.helpers.ts";
 import { checkCredentials, checkRuntime } from "./env-check.ts";
 import { buildReport, formatReport, reportJson } from "./report.ts";
-import type { DoctorDeps, Finding } from "./types.ts";
+import type { DoctorDeps } from "./types.ts";
 
 const FAKE_KEY = "sk-test-not-a-real-key-4242424242";
 
@@ -33,13 +34,6 @@ describe("env checks", () => {
 
 	function apiKey(): Credential {
 		return { kind: "api_key", apiKey: FAKE_KEY, updatedAt: 0 };
-	}
-
-	function byId(findings: Finding[], id: string): Finding {
-		const found = findings.find((finding) => finding.id === id);
-		if (!found)
-			throw new Error(`no finding ${id} in ${findings.map((finding) => finding.id).join(", ")}`);
-		return found;
 	}
 
 	beforeEach(() => {

@@ -30,7 +30,7 @@ function out(run: Run, argv: string[], cwd: string, timeoutMs?: number): string 
 	return text || undefined;
 }
 
-export function parseRemote(url: string): string | undefined {
+function parseRemote(url: string): string | undefined {
 	const match = url.trim().match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/);
 	return match ? `${match[1]}/${match[2]}` : undefined;
 }
@@ -144,7 +144,7 @@ function compareVersions(a: string, b: string): number {
  * The newest milestone archived under `.planning/milestones/` (what `gsd-autonomous` leaves behind once the active
  * phases are gone): its phase verifications and audit. Fails open to undefined.
  */
-export function latestMilestone(cwd: string): MilestoneEvidence | undefined {
+function latestMilestone(cwd: string): MilestoneEvidence | undefined {
 	try {
 		const milestonesDir = join(cwd, ".planning", "milestones");
 		const version = readdirSync(milestonesDir)

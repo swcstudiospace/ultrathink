@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { failureLabel } from "../obs/log.ts";
+
 export type RunStatus =
 	| "queued"
 	| "discovering"
@@ -29,7 +31,7 @@ export interface Run {
 	updatedAt: number;
 }
 
-export type PhaseStatus = "complete" | "failed";
+type PhaseStatus = "complete" | "failed";
 
 export interface PhaseRecord {
 	runId: string;
@@ -161,14 +163,6 @@ function isUniqueViolation(error: unknown): boolean {
 		return true;
 	}
 	return error.message.includes("UNIQUE constraint failed");
-}
-
-/** The class or code of a failure, never its message: SQLite and driver messages can echo input values. */
-function failureLabel(error: unknown): string {
-	if (!(error instanceof Error)) return "non-error value";
-	const code = "code" in error ? error.code : undefined;
-	if (typeof code === "string") return code;
-	return error.name === "Error" ? error.constructor.name : error.name;
 }
 
 /** Size of the WAL file after a checkpoint; SQLite truncates it back to this when it has grown past it. */

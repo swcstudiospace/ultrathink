@@ -72,6 +72,11 @@ jobs:
         if: matrix.bun == 'latest'
         run: bun run lint
 
+      # Phase 80: the dead-code gate (knip, exports and types). It runs on the latest-Bun leg with the Biome step.
+      - name: Dead-code check (knip)
+        if: matrix.bun == 'latest'
+        run: bun run deadcode
+
       # The runner has no git identity and git refuses to commit without one; set it in case a test shells out to git.
       - name: Configure git identity
         run: |

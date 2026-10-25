@@ -25,7 +25,7 @@ import {
 import { basename, dirname, join } from "node:path";
 
 /** The synchronous file calls `writeFileAtomic` needs, so a test can make one of them fail. */
-export interface AtomicFs {
+interface AtomicFs {
 	mkdirSync(path: string, options: { recursive: true; mode: number }): unknown;
 	openSync(path: string, flags: string, mode: number): number;
 	writeSync(fd: number, data: Uint8Array): number;
@@ -118,7 +118,7 @@ function blockingSleep(ms: number): void {
 	Atomics.wait(SLEEP_WORD, 0, 0, ms);
 }
 
-function errorCode(error: unknown): string | undefined {
+export function errorCode(error: unknown): string | undefined {
 	return typeof error === "object" &&
 		error !== null &&
 		"code" in error &&

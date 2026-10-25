@@ -5,7 +5,7 @@
 // `openStore` (SQLite in WAL mode) and `createAuditLog`, so every consumer test runs against real SQLite and a real
 // audit chain. Nothing here mocks the store or the file system. Callers pass a temp base; nothing is written elsewhere.
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { auditPath, createAuditLog } from "./obs/audit.ts";
@@ -136,28 +136,6 @@ export function runDr(
 		stdout: proc.stdout.toString(),
 		stderr: proc.stderr.toString(),
 	};
-}
-
-/**
- * Writes `base/systemctl`: an executable that appends its argv to `base/systemctl.log` and exits 0. For
- * `is-active` it exits 0 when `active` is true and 3 otherwise. The log is truncated on every call.
- */
-export function stubSystemctl(base: string, opts: { active: boolean }): SystemctlStub {
-	mkdirSync(base, { recursive: true });
-	const path = join(base, "systemctl");
-	const log = join(base, "systemctl.log");
-	writeFileSync(log, "");
-	const activeExit = opts.active ? 0 : 3;
-	const script = [
-		"#!/bin/sh",
-		`printf '%s\\n' "$*" >> '${log.replace(/'/g, "'\\''")}'`,
-		`if [ "$1" = is-active ]; then exit ${activeExit}; fi`,
-		"exit 0",
-		"",
-	].join("\n");
-	writeFileSync(path, script);
-	chmodSync(path, 0o755);
-	return { path, log };
 }
 
 /** True when `name` resolves on PATH. */

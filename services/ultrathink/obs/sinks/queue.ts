@@ -16,7 +16,7 @@
 
 import type { SendResult, SinkEnvelope, SinkTransport } from "./types.ts";
 
-export type SinkEventType = "sent" | "failed" | "dropped";
+type SinkEventType = "sent" | "failed" | "dropped";
 
 export interface SinkEvent {
 	readonly type: SinkEventType;

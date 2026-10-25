@@ -19,6 +19,19 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+// Local copy: this script runs in a harness tree without src/ (see policy/check.test.ts or deploy/ultrathink-release.test.ts), so it cannot import src/shared.ts.
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Local copy: this script runs in a harness tree without src/ (see policy/check.test.ts or deploy/ultrathink-release.test.ts), so it cannot import src/shared.ts.
+function isDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
 
 const DEFAULT_ROOT = resolve(import.meta.dir, "..");
 const DEFAULT_CONTROLS = join(import.meta.dir, "controls.json");
@@ -74,10 +87,6 @@ export class SchemaError extends Error {}
 
 type Obj = Record<string, unknown>;
 
-function isObject(value: unknown): value is Obj {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function requireString(obj: Obj, key: string, where: string): string {
 	const value = obj[key];
 	if (typeof value !== "string" || value.trim() === "") {
@@ -110,18 +119,18 @@ function parseFindings(value: unknown, where: string): Finding[] {
 	if (!Array.isArray(value)) throw new SchemaError(`${where}: expected an array`);
 	return value.map((item, index) => {
 		const at = `${where}[${index}]`;
-		if (!isObject(item)) throw new SchemaError(`${at}: expected an object`);
+		if (!isRecord(item)) throw new SchemaError(`${at}: expected an object`);
 		return { id: requireString(item, "id", at), summary: requireString(item, "summary", at) };
 	});
 }
 
 function parseControl(value: unknown, where: string): Control {
-	if (!isObject(value)) throw new SchemaError(`${where}: expected an object`);
+	if (!isRecord(value)) throw new SchemaError(`${where}: expected an object`);
 	const id = requireString(value, "id", where);
 	const at = `${where} (${id})`;
 	const title = requireString(value, "title", at);
 	const refsValue = value.refs;
-	if (!isObject(refsValue)) throw new SchemaError(`${at}.refs: expected an object`);
+	if (!isRecord(refsValue)) throw new SchemaError(`${at}.refs: expected an object`);
 	const refs: Record<Framework, string[]> = {
 		soc2: stringArray(refsValue.soc2, `${at}.refs.soc2`),
 		iso27001: stringArray(refsValue.iso27001, `${at}.refs.iso27001`),
@@ -261,14 +270,6 @@ export function renderMarkdown(report: Report): string {
 
 export function hasFail(report: Report): boolean {
 	return report.controls.some((item) => item.status === "FAIL");
-}
-
-function isDirectory(path: string): boolean {
-	try {
-		return statSync(path).isDirectory();
-	} catch {
-		return false;
-	}
 }
 
 function errorMessage(error: unknown): string {

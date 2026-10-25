@@ -19,6 +19,7 @@ import type {
 	DecisionsConfig,
 	DecisionsErrorKind,
 } from "../decisions/types.ts";
+import { JEV, recordingFetch } from "../test.helpers.ts";
 import type { Clarification } from "../hitl/types.ts";
 import type { KnowledgeReader, KnowledgeResult } from "../greptile/knowledge.ts";
 import type { RunClarifyOptions } from "../hitl/pipeline.ts";
@@ -48,6 +49,7 @@ import type {
 	RecalledSkill,
 	SkillRecallOutcome,
 } from "../teach/types.ts";
+import { graphJson } from "../test.helpers.ts";
 
 function tempStateDir(): { dir: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-hook-"));
@@ -55,19 +57,6 @@ function tempStateDir(): { dir: string; cleanup: () => void } {
 		dir: join(dir, "ultrathink"),
 		cleanup: () => rmSync(dir, { recursive: true, force: true }),
 	};
-}
-
-function graphJson(count = 3): string {
-	return JSON.stringify({
-		goal: "Ship it",
-		nodes: Array.from({ length: count }, (_, i) => ({
-			id: `n${i + 1}`,
-			title: `T${i + 1}`,
-			kind: i === 0 ? "understand" : i === count - 1 ? "synthesize" : "generate",
-			question: `Q${i + 1}`,
-			depends_on: i === 0 ? [] : [`n${i}`],
-		})),
-	});
 }
 
 /** Dispatches by payload content so one fake handles uplift, graph, CoT, and clarify calls correctly. */
@@ -1548,13 +1537,6 @@ describe("Greptile knowledge base before clarify", () => {
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-interface Recorded {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body: unknown;
-}
-
 const realFetch = globalThis.fetch;
 const jevDirs: string[] = [];
 afterEach(() => {
@@ -1562,37 +1544,6 @@ afterEach(() => {
 	for (const dir of jevDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): {
-	fetch: typeof fetch;
-	calls: Recorded[];
-} {
-	const calls: Recorded[] = [];
-	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-		const headers: Record<string, string> = {};
-		new Headers(init?.headers).forEach((value, key) => {
-			headers[key] = value;
-		});
-		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body;
-		calls.push({ url: String(input), method: init?.method ?? "GET", headers, body });
-		const next = queue[Math.min(calls.length, queue.length) - 1];
-		if (!next) throw new Error("empty queue");
-		return next();
-	}) as typeof fetch;
-	globalThis.fetch = fetchImpl;
-	return { fetch: fetchImpl, calls };
-}
-
-const JEV =
-	(p: number, key = "plan_worthy") =>
-	() =>
-		Response.json({
-			id: "gen-dec-test",
-			model: "typesafe/jev-1.13-20260917",
-			provider: "TypeSafe",
-			answers: { [key]: { type: "noul", noul: p } },
-			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
-		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
 	Response.json(
 		{ error: { code: s, message: `upstream said no for ${K}` } },

@@ -3,6 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import type { OpenRouterFetch } from "../engine/openrouter.ts";
+import { isRecord } from "../../../src/shared.ts";
 
 /**
  * Fault plans for the upstream seam. A plan is ordered steps; each call through the faulty fetch consumes one unit of
@@ -13,7 +14,7 @@ import type { OpenRouterFetch } from "../engine/openrouter.ts";
  * contents into a log line.
  */
 
-export type Fault =
+type Fault =
 	| { kind: "pass" }
 	| { kind: "status"; status: number; retryAfterSec?: number }
 	| { kind: "reset" }
@@ -68,10 +69,6 @@ function untilAborted(signal: AbortSignal): Promise<never> {
 	}
 	signal.addEventListener("abort", () => reject(abortError()), { once: true });
 	return promise;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function expectRecord(value: unknown, path: string): Record<string, unknown> {

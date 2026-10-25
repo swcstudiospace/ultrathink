@@ -25,7 +25,7 @@
 		"lint": "biome check --error-on-warnings .",
 		"format": "biome format --write .",
 		"deadcode": "knip --include exports,types",
-		"verify": "bun run check && bun run lint && bun test && python3 hosts/hermes/bridge_test.py && python3 hosts/prime-agent/bridge_test.py",
+		"verify": "bun run check && bun run lint && bun run deadcode && bun test && python3 hosts/hermes/bridge_test.py && python3 hosts/prime-agent/bridge_test.py",
 		"hook:uplift": "bun hooks/uplift.ts",
 		"uplift": "bun hooks/uplift.ts --ctl",
 		"setup": "bun scripts/setup.ts",

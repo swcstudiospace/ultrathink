@@ -9,6 +9,7 @@ import {
 	type Run,
 	type ShipConfig,
 } from "./types.ts";
+import { asObj } from "../shared.ts";
 
 export interface ToolCaller {
 	call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
@@ -26,8 +27,6 @@ export type ListedGreptileRepo = GreptileRepo & { reviewsEnabled?: boolean };
 
 type Obj = Record<string, unknown>;
 
-const asObj = (value: unknown): Obj | undefined =>
-	typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Obj) : undefined;
 const asStr = (value: unknown): string | undefined =>
 	typeof value === "string" ? value : undefined;
 const asNum = (value: unknown): number | undefined =>

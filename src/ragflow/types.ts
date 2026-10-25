@@ -137,7 +137,7 @@ export interface RagflowResolution {
 	client?: RagflowClient;
 }
 
-export type GroundStatus = "used" | "none" | "off" | "error";
+type GroundStatus = "used" | "none" | "off" | "error";
 
 /** What one planner-grounding lookup did; recorded on the session like the Greptile knowledge lookup. */
 export interface GroundOutcome {

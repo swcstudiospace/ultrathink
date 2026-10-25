@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { bulk } from "../../../src/test.helpers.ts";
 import {
 	type AuditFs,
 	type AuditNotice,
@@ -71,13 +72,6 @@ function rehash(r: AuditRecord): AuditRecord {
 	const fields = Object.fromEntries(Object.entries(r.fields).sort(([a], [b]) => (a < b ? -1 : 1)));
 	const canonical = JSON.stringify({ event: r.event, fields, prev: r.prev, seq: r.seq, ts: r.ts });
 	return { ...r, hash: createHash("sha256").update(`${r.prev}\n${canonical}`).digest("hex") };
-}
-
-/** About 8 KB of primitives per record (32 keys, 250 characters each), so a 1 MiB segment holds about 125 records. */
-function bulk(i: number): Record<string, string | number> {
-	const fields: Record<string, string | number> = { n: i };
-	for (let k = 0; k < 31; k += 1) fields[`k${k}`] = "x".repeat(250);
-	return fields;
 }
 
 function fill(

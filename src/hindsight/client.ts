@@ -10,6 +10,7 @@
 import { redactSecrets } from "../grok/auth.ts";
 import { requestJson } from "../net/http.ts";
 import { checkServiceUrl } from "../net/safe-url.ts";
+import { isRecord } from "../shared.ts";
 import type {
 	BankState,
 	DocumentInfo,
@@ -47,10 +48,6 @@ function statusKind(status: number): HindsightErrorKind {
 	if (status >= 500) return "server";
 	if (status >= 400) return "bad-request";
 	return "invalid-response";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function strings(value: unknown): string[] {

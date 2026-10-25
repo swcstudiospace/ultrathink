@@ -322,7 +322,7 @@ export async function beginLogin(
 	return { provider, url: url.toString(), state, verifier, redirectUri: deps.redirectUri, client };
 }
 
-export function parseCallback(input: string): {
+function parseCallback(input: string): {
 	code?: string;
 	state?: string;
 	error?: string;

@@ -7,17 +7,11 @@ import { join } from "node:path";
 import { createDecisions, type Decisions } from "../decisions/gate.ts";
 import { QUESTIONS } from "../decisions/questions.ts";
 import { DEFAULT_DECISIONS_CONFIG, type DecisionsConfig } from "../decisions/types.ts";
+import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
 import { type PlanGateInput, planGate } from "./plan-gate.ts";
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-interface Recorded {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body: unknown;
-}
-
 const realFetch = globalThis.fetch;
 const dirs: string[] = [];
 afterEach(() => {
@@ -25,53 +19,11 @@ afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): {
-	fetch: typeof fetch;
-	calls: Recorded[];
-} {
-	const calls: Recorded[] = [];
-	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-		const headers: Record<string, string> = {};
-		new Headers(init?.headers).forEach((value, key) => {
-			headers[key] = value;
-		});
-		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body;
-		calls.push({ url: String(input), method: init?.method ?? "GET", headers, body });
-		const next = queue[Math.min(calls.length, queue.length) - 1];
-		if (!next) throw new Error("empty queue");
-		return next();
-	}) as typeof fetch;
-	globalThis.fetch = fetchImpl;
-	return { fetch: fetchImpl, calls };
-}
-
-const JEV =
-	(p: number, key = "plan_worthy") =>
-	() =>
-		Response.json({
-			id: "gen-dec-test",
-			model: "typesafe/jev-1.13-20260917",
-			provider: "TypeSafe",
-			answers: { [key]: { type: "noul", noul: p } },
-			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
-		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
 	Response.json(
 		{ error: { code: s, message: `upstream said no for ${K}` } },
 		{ status: s, headers },
 	);
-
-/** Never resolves; rejects with an AbortError when its signal fires (as src/grok/complete.test.ts hangingFetch). */
-function hangingFetch(onCall?: () => void): typeof fetch {
-	return ((_input: string | URL | Request, init?: RequestInit) =>
-		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () =>
-				reject(new DOMException("aborted", "AbortError")),
-			);
-			onCall?.();
-		})) as typeof fetch;
-}
 
 /** The Decisions runtime with `ON` defaults: key K in the injected env, an empty temp store, no real sleeps. */
 function runtime(

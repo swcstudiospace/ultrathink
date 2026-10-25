@@ -5,13 +5,6 @@
  * Provides safe reading of HTTP response/request bodies with size limits
  */
 
-export interface BodyPrefix {
-	/** The first `limit` bytes decoded as UTF-8. */
-	text: string;
-	/** True when the stream ended within `limit` bytes; false when the body is longer (the rest was cancelled). */
-	complete: boolean;
-}
-
 type ChunkResult = { done: false; value: Uint8Array } | { done: true; value?: Uint8Array };
 type ChunkReader = Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "cancel" | "releaseLock">;
 
@@ -119,9 +112,3 @@ export async function readJsonBody<T = unknown>(
 		throw new Error("readJsonBody: invalid JSON (SyntaxError)", { cause: error });
 	}
 }
-
-export default {
-	readBodyPrefix,
-	readBodyText,
-	readJsonBody,
-};

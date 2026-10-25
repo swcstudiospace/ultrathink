@@ -9,7 +9,7 @@
 
 /** MIME type MCP Apps hosts require for an embeddable HTML resource. */
 export const UI_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
-export const UI_URI_PREFIX = "ui://";
+const UI_URI_PREFIX = "ui://";
 /** Largest document served, in UTF-8 bytes. */
 export const MAX_UI_HTML_BYTES = 512 * 1024;
 const MAX_URI_CHARS = 2048;
@@ -26,11 +26,11 @@ export interface UiResourceDescriptor {
 	meta: Record<string, unknown>;
 }
 
-export interface UiResourceMeta {
+interface UiResourceMeta {
 	ui: Record<string, unknown>;
 }
 
-export interface UiResourceListing {
+interface UiResourceListing {
 	uri: string;
 	name: string;
 	title?: string;
@@ -39,14 +39,14 @@ export interface UiResourceListing {
 	_meta: UiResourceMeta;
 }
 
-export interface UiResourceContents {
+interface UiResourceContents {
 	uri: string;
 	mimeType: string;
 	text: string;
 	_meta: UiResourceMeta;
 }
 
-export type ResourceReadResult =
+type ResourceReadResult =
 	| { ok: true; contents: [UiResourceContents] }
 	| { ok: false; code: "not_found" | "invalid_uri" };
 

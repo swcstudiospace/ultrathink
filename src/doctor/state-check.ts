@@ -9,6 +9,7 @@ import { accessSync, constants, lstatSync, readdirSync, statSync, type Stats } f
 import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
+import { formatBytes } from "../shared.ts";
 
 const MAX_SESSIONS = 500;
 const MAX_SESSION_BYTES = 100 * 1024 * 1024;
@@ -38,12 +39,6 @@ function statFollowOrUndefined(path: string): Stats | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-function formatSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatAge(ms: number): string {
@@ -199,7 +194,7 @@ export function checkState(deps: DoctorDeps): Finding[] {
 		add({ id: "state.sessions", level: "info", title: "No session records yet" });
 	} else if (sessionsUsable) {
 		const age = oldest === undefined ? "" : `, oldest ${formatAge(now - oldest)} old`;
-		const summary = `${plural(sessions, "session record")}, ${formatSize(bytes)}${age}`;
+		const summary = `${plural(sessions, "session record")}, ${formatBytes(bytes)}${age}`;
 		if (sessions > MAX_SESSIONS || bytes > MAX_SESSION_BYTES) {
 			add({
 				id: "state.sessions",

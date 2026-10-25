@@ -21,10 +21,10 @@ const MAX_PATH_LENGTH = 256;
 const PATH_GRAMMAR = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
 const TRUST_DOMAIN_GRAMMAR = /^[a-z0-9._-]+$/;
 
-export const EDGE_PATH = "/edge/nginx";
-export const PROBE_PATH = "/ops/probe";
+const EDGE_PATH = "/edge/nginx";
+const PROBE_PATH = "/ops/probe";
 
-export const ROUTE_GROUPS = ["proxied", "health", "metrics"] as const;
+const ROUTE_GROUPS = ["proxied", "health", "metrics"] as const;
 export type RouteGroup = (typeof ROUTE_GROUPS)[number];
 
 /** Path of the verified identity to the route groups it may reach. Unlisted identities reach nothing. */
@@ -33,7 +33,7 @@ const ROUTE_POLICY = {
 	[PROBE_PATH]: ["health", "metrics"],
 } as const satisfies Readonly<Record<string, readonly RouteGroup[]>>;
 
-export type IdentityRejectionReason = "absent" | "ambiguous" | "malformed" | "foreign_trust_domain";
+type IdentityRejectionReason = "absent" | "ambiguous" | "malformed" | "foreign_trust_domain";
 
 export type IdentityResult =
 	| { ok: true; spiffeId: string; path: string }

@@ -7,6 +7,7 @@
 import type { ThoughtGraph } from "../think/types.ts";
 import type { ProgressSink } from "../host/progress.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "./types.ts";
+import { nonEmpty } from "../teach/digest.ts";
 
 export interface ToolCaller {
 	/** Resolves structuredContent, else JSON-parsed first text content, else the raw text; throws on isError/transport error. */
@@ -52,10 +53,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
-function str(value: unknown): string | undefined {
-	return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function toText(value: unknown): string {
 	if (typeof value === "string") return value;
 	try {
@@ -66,7 +63,7 @@ function toText(value: unknown): string {
 }
 
 /** Pulls id/identifier/url out of a save_issue result; undefined when identifier or url is missing. */
-export function extractIssueRef(result: unknown, title: string): IssueRef | undefined {
+function extractIssueRef(result: unknown, title: string): IssueRef | undefined {
 	let record = asRecord(result);
 	if (!record && typeof result === "string") {
 		try {
@@ -82,9 +79,9 @@ export function extractIssueRef(result: unknown, title: string): IssueRef | unde
 	let identifier: string | undefined;
 	let url: string | undefined;
 	for (const candidate of candidates) {
-		identifier ??= str(candidate.identifier);
-		url ??= str(candidate.url);
-		id ??= str(candidate.id);
+		identifier ??= nonEmpty(candidate.identifier);
+		url ??= nonEmpty(candidate.url);
+		id ??= nonEmpty(candidate.id);
 	}
 	const text = toText(result);
 	url ??= text.match(LINEAR_URL_RE)?.[0];
@@ -179,7 +176,7 @@ function collectSchemaNames(result: unknown): Set<string> {
 				if (props) for (const name of Object.keys(props)) names.add(name);
 				if (Array.isArray(child)) {
 					for (const entry of child) {
-						const name = str(asRecord(entry)?.name);
+						const name = nonEmpty(asRecord(entry)?.name);
 						if (name) names.add(name);
 					}
 				}
@@ -216,7 +213,7 @@ function notionUrls(result: unknown): string[] {
 			? (record.pages as unknown[])
 			: undefined;
 	if (structured && structured.length > 0) {
-		const urls = structured.map((entry) => str(asRecord(entry)?.url));
+		const urls = structured.map((entry) => nonEmpty(asRecord(entry)?.url));
 		if (urls.every((url) => url !== undefined)) return urls as string[];
 	}
 	const seen = new Set<string>();
@@ -274,10 +271,10 @@ async function adoptLinear(
 		"m",
 	);
 	for (const issue of listEntries(result)) {
-		const match = str(issue.description)?.match(re);
+		const match = nonEmpty(issue.description)?.match(re);
 		if (!match) continue;
 		const nodeId = match[1] as string;
-		const title = str(issue.title) ?? "";
+		const title = nonEmpty(issue.title) ?? "";
 		const ref = extractIssueRef(issue, title);
 		if (!ref) continue;
 		if (match[2] === undefined) {
@@ -318,14 +315,14 @@ async function adoptNotion(
 		signal,
 	);
 	for (const row of listEntries(result)) {
-		const url = str(row.url);
-		const level = str(row.Level);
+		const url = nonEmpty(row.url);
+		const level = nonEmpty(row.Level);
 		if (!url || !level) continue;
 		if (level === "Task") {
 			refs.notion.taskUrl ??= url;
 			continue;
 		}
-		const nodeId = str(row.Item)?.match(/^\[([^\]]+)\]/)?.[1];
+		const nodeId = nonEmpty(row.Item)?.match(/^\[([^\]]+)\]/)?.[1];
 		if (!nodeId) continue;
 		if (level === "Issue") refs.notion.nodes[nodeId] ??= url;
 		else if (level === "Sub-Issue") {

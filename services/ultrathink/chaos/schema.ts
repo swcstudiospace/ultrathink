@@ -16,7 +16,7 @@ export const FAILURE_MODES = [
 	"stale_journal",
 ] as const;
 
-export type FailureMode = (typeof FAILURE_MODES)[number];
+type FailureMode = (typeof FAILURE_MODES)[number];
 
 export type Hypothesis =
 	| { id: string; name: string; check: "status"; path: string; equals: number }

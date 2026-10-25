@@ -14,6 +14,7 @@ import {
 } from "./graph.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "./prompts.ts";
 import { MAX_NODES, MIN_NODES, type ThoughtGraph, type ThoughtNode } from "./types.ts";
+import { isAbortError } from "../shared.ts";
 
 export interface ThinkResult extends UpliftResult {
 	graph: ThoughtGraph;
@@ -34,7 +35,7 @@ export interface RunThinkOptions {
 	onEvent?: (event: ThinkEvent) => void;
 }
 
-export type ThinkEvent =
+type ThinkEvent =
 	| {
 			type: "graph";
 			total: number;
@@ -51,12 +52,6 @@ export type ThinkEvent =
 			fallback?: boolean;
 			steps?: string[];
 	  };
-
-function isAbortError(error: unknown): boolean {
-	if (error instanceof Error) return error.name === "AbortError";
-	if (!error || typeof error !== "object" || !("name" in error)) return false;
-	return error.name === "AbortError";
-}
 
 function predecessorBlock(graph: ThoughtGraph, node: ThoughtNode): string {
 	const byId = new Map(graph.nodes.map((item) => [item.id, item]));

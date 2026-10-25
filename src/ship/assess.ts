@@ -21,7 +21,7 @@ import type {
 	ShipSignals,
 } from "./types.ts";
 
-export const JUDGE_SYSTEM_PROMPT = `You are a strict release reviewer. You are given the user's original request, the uplifted spec summary, the Graph-of-Thought goal and WORKFLOW, the clarifications with any recorded answers, GSD roadmap/verification signals, the branch diff stat, commit log and the (possibly truncated) patch.
+const JUDGE_SYSTEM_PROMPT = `You are a strict release reviewer. You are given the user's original request, the uplifted spec summary, the Graph-of-Thought goal and WORKFLOW, the clarifications with any recorded answers, GSD roadmap/verification signals, the branch diff stat, commit log and the (possibly truncated) patch.
 Decide whether the requested work is complete enough to merge: check the patch against every stated requirement. Missing features, TODO/stub markers, failing verification or unanswered blocking clarifications mean NOT done.
 You run before the ship flow, which then pushes the branch, opens the PR into the default branch and gates it on CI and a Greptile review; the flow or a person then merges it and may delete the branch. Requirements to push, open a PR, merge into the main/default branch or delete the branch are handled after you: treat them as satisfied, never as gaps. Also never count as gaps: repository settings a person applies after the merge (such as visibility), a truncated patch, or not seeing logs of commands being run. Judge the delivered changes; CI and the review gate verify the code after you.
 List in gaps only concrete missing or broken work; leave gaps empty when done.
@@ -116,7 +116,7 @@ function judgePrompt(record: SessionRecord, signals: ShipSignals, diff: ShipDiff
 }
 
 /** Extracts the first balanced JSON object from free text. */
-export function parseJudge(text: string): JudgeVerdict | undefined {
+function parseJudge(text: string): JudgeVerdict | undefined {
 	for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
 		let depth = 0;
 		let inString = false;

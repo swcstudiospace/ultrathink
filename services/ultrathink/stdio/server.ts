@@ -11,7 +11,7 @@ import { type McpToolHost, handleMcpPayload } from "../mcp/mcp.ts";
 import type { Logger } from "../obs/log.ts";
 
 /** A line longer than this is refused and discarded, so one runaway message cannot grow memory without bound. */
-export const MAX_LINE_BYTES = 1024 * 1024;
+const MAX_LINE_BYTES = 1024 * 1024;
 
 const NEWLINE = 0x0a;
 const CARRIAGE_RETURN = 0x0d;

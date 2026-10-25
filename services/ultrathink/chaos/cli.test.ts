@@ -5,6 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { yieldTurn } from "../../../src/test.helpers.ts";
 import { type CliDeps, runCli } from "./cli.ts";
 import { appendHistory } from "./history.ts";
 import type { HttpFetch, HttpRequestInit } from "./observe.ts";
@@ -13,13 +14,6 @@ import type { RunResult } from "./run.ts";
 const EXPERIMENTS = join(import.meta.dir, "experiments");
 const ROLLBACK = ["deploy/ultrathink-release.sh", "rollback"];
 const roots: string[] = [];
-
-// The runner's settle poll waits between polls; one event-loop turn is enough, since the planner progresses on the app's own promises.
-function yieldTurn(): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	setImmediate(resolve);
-	return promise;
-}
 
 afterAll(() => {
 	for (const root of roots) rmSync(root, { recursive: true, force: true });

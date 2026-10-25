@@ -2,15 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import {
-	accessSync,
-	constants,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { accessSync, constants, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import pkg from "../../../package.json";
@@ -31,13 +23,14 @@ import { defaultGraphResources, loadCatalogWithFallback } from "../mcp/connector
 import { type McpToolHost, type ToolOutcome, handleMcpPayload } from "../mcp/mcp.ts";
 import { createToolHost } from "../mcp/tool-host.ts";
 import type { PlanningInfo } from "../mcp/tools-connector.ts";
+import { diskFingerprint } from "../../../src/shared.ts";
 import {
 	DEFAULT_ALLOWED_ORIGINS,
 	originAllowed,
 	resolveProtocolVersion,
 } from "../mcp/transport.ts";
 import { type AnomalyAlert, DEFAULT_ANOMALY_RULES, createAnomalyDetector } from "../obs/anomaly.ts";
-import { type Fingerprint, createAuditWatch } from "../obs/audit-watch.ts";
+import { createAuditWatch } from "../obs/audit-watch.ts";
 import { chainIdentity, createAuditVerifier } from "../obs/audit-verify.ts";
 import { type AuditEvent, type AuditLog, auditPath, createAuditLog } from "../obs/audit.ts";
 import { currentRequestContext, runWithRequestContext } from "../obs/context.ts";
@@ -48,7 +41,13 @@ import {
 	loadLoadHistory,
 	recommendedReplicas,
 } from "../obs/forecast.ts";
-import { type Logger, createLogger, newRequestId, sanitizeRequestId } from "../obs/log.ts";
+import {
+	type Logger,
+	createLogger,
+	failureLabel,
+	newRequestId,
+	sanitizeRequestId,
+} from "../obs/log.ts";
 import { type Metrics, createMetrics } from "../obs/metrics.ts";
 import { type SpanSink, createSpanExporter } from "../obs/otel.ts";
 import { createAdaptiveQuota } from "../obs/quota.ts";
@@ -399,14 +398,6 @@ async function readJson(req: Request, maxBytes: number): Promise<JsonRead> {
 	}
 }
 
-/** The class or code of a failure, never its message: a driver message can echo a request body or a ledger row. */
-function failureLabel(error: unknown): string {
-	if (!(error instanceof Error)) return "non-error value";
-	const code = "code" in error ? error.code : undefined;
-	if (typeof code === "string") return code;
-	return error.name === "Error" ? error.constructor.name : error.name;
-}
-
 /**
  * Passes a body through unchanged and records whether its bytes are valid UTF-8. The body reader decodes leniently;
  * this keeps the strict decoding, so an invalid body is still refused with invalid_json.
@@ -550,16 +541,6 @@ function waitUpTo(
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
-}
-
-/** The audit file's identity on disk, read the way the log reads it, so the watch sees a change made outside the service. */
-function diskFingerprint(path: string): Fingerprint | undefined {
-	try {
-		const stat = statSync(path);
-		return { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino };
-	} catch {
-		return undefined;
-	}
 }
 
 /**

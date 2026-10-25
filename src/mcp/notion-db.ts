@@ -23,7 +23,7 @@ type OptionColor =
 	| "pink"
 	| "red";
 
-export interface TaskGraphColumn {
+interface TaskGraphColumn {
 	name: string;
 	type: "TITLE" | "RICH_TEXT" | "SELECT" | "NUMBER" | "URL" | "DATE";
 	/** SELECT options in display order. */
@@ -37,7 +37,7 @@ export interface TaskGraphColumn {
  * The self-relation `Parent Item` (synced as `Sub-Items`) needs the new data source id, so
  * initTaskGraphDatabase adds it after the create.
  */
-export const TASK_GRAPH_COLUMNS: readonly TaskGraphColumn[] = [
+const TASK_GRAPH_COLUMNS: readonly TaskGraphColumn[] = [
 	{ name: "Item", type: "TITLE" },
 	{
 		name: "Level",

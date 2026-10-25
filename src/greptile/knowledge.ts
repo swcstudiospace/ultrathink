@@ -10,10 +10,11 @@ import type { UltrathinkConfig } from "../config.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
 import { tenantReason } from "../ship/greptile.ts";
+import { asObj } from "../shared.ts";
 import type { ToolCaller } from "../track/create.ts";
 
 /** `used`: a digest was built; `none`: nothing to read; `off`: no Greptile credential; `error`: the lookup failed. */
-export type KnowledgeOutcome = "used" | "none" | "off" | "error";
+type KnowledgeOutcome = "used" | "none" | "off" | "error";
 
 /** What one knowledge-base lookup did, for the session record, the summary, and the debug log. */
 export interface KnowledgeLookup {
@@ -58,11 +59,11 @@ export interface KnowledgeReader {
 }
 
 /** Most routed documents read per lookup (index.md not counted). */
-export const KNOWLEDGE_MAX_DOCS = 3;
+const KNOWLEDGE_MAX_DOCS = 3;
 /** Most digest characters handed to the clarifier. */
-export const KNOWLEDGE_MAX_CHARS = 24_000;
+const KNOWLEDGE_MAX_CHARS = 24_000;
 /** Budget of each stage: the prefetch from start(), the document reads from read(). */
-export const KNOWLEDGE_TIMEOUT_MS = 20_000;
+const KNOWLEDGE_TIMEOUT_MS = 20_000;
 
 const INDEX = "index.md";
 const NAMESPACE_PAGES = 20;
@@ -84,8 +85,6 @@ const STOPWORDS = new Set(
 type Obj = Record<string, unknown>;
 type Caller = ToolCaller & { close?(): void };
 
-const asObj = (value: unknown): Obj | undefined =>
-	typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Obj) : undefined;
 const asStr = (value: unknown): string | undefined =>
 	typeof value === "string" ? value : undefined;
 const asNum = (value: unknown): number | undefined =>

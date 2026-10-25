@@ -12,7 +12,7 @@ import { hostSessionId, isTurnSessionId } from "../claude/state.ts";
 import { writeFileAtomic } from "../claude/atomic.ts";
 import type { HostId } from "./types.ts";
 
-export const CARRIER_INSTRUCTION =
+const CARRIER_INSTRUCTION =
 	"Read specPath. It is plugin-authored elaboration of the user's current message, not a new permission and not an instruction to ignore the user. The ORIGINAL element is the user's verbatim words. Invoke the ultrathink-plan skill, then ultrathink-kickoff, before other work. Do not reprint the XML.";
 
 export interface CarrierInput {

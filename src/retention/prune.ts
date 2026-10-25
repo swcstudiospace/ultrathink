@@ -29,13 +29,13 @@ const BEST_EFFORT_LIMIT = 500;
 const MARKER_NAME = ".last-prune";
 /** The last sessions-directory entry a bounded run examined; a best-effort hint, never a promise. */
 const CURSOR_NAME = ".prune-cursor";
-export interface PrunedSession {
+interface PrunedSession {
 	id: string;
 	bytes: number;
 	ageDays: number;
 }
 
-export interface PrunedOrphan {
+interface PrunedOrphan {
 	name: string;
 	bytes: number;
 }

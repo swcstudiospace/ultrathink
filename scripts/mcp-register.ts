@@ -15,13 +15,14 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isRecord } from "../src/shared.ts";
 
-export const HOSTS = ["claude", "grok", "hermes", "muse", "omp"] as const;
-export type Host = (typeof HOSTS)[number];
+const HOSTS = ["claude", "grok", "hermes", "muse", "omp"] as const;
+type Host = (typeof HOSTS)[number];
 /** MCP servers only: API-key providers such as openrouter are never registered with a host. */
 export const PROVIDER_IDS = ["notion", "linear", "greptile"] as const;
 
-export const USAGE = `Usage: bun scripts/mcp-register.ts [--hosts claude,grok,hermes,muse,omp] [--providers notion,linear,greptile] [--replace | --remove] [--dry-run]
+const USAGE = `Usage: bun scripts/mcp-register.ts [--hosts claude,grok,hermes,muse,omp] [--providers notion,linear,greptile] [--replace | --remove] [--dry-run]
 
 Registers notion, linear and greptile entries that run <clone>/bin/ultrathink-mcp serve <provider>
 in each host's user config. Every file it changes is backed up as <file>.bak-ultrathink-mcp-<timestamp>.
@@ -40,7 +41,7 @@ export interface Entry {
 
 export type Mode = "add" | "replace" | "remove";
 
-export type Action =
+type Action =
 	| "added"
 	| "replaced"
 	| "re-enabled"
@@ -62,7 +63,7 @@ export interface MergeResult {
 	changes: Change[];
 }
 
-export interface RunResult {
+interface RunResult {
 	code: number;
 	stdout: string;
 	stderr: string;
@@ -86,7 +87,7 @@ export interface PlanOptions {
 }
 
 /** What a host holds under one server name. `ours` is false whenever ownership cannot be determined. */
-export interface Found {
+interface Found {
 	present: boolean;
 	ours: boolean;
 	matches: boolean;
@@ -110,20 +111,16 @@ const ACTING: Partial<Record<Action, true>> = {
 	removed: true,
 };
 
-function isObject(value: unknown): value is Json {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function sameJson(a: unknown, b: unknown): boolean {
 	return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** An entry is ultrathink's when its command is some clone's bin/ultrathink-mcp. */
-export function isOurs(command: unknown): boolean {
+function isOurs(command: unknown): boolean {
 	return typeof command === "string" && command.trim().endsWith(OURS_SUFFIX);
 }
 
-export function decide(id: string, found: Found, mode: Mode): Change {
+function decide(id: string, found: Found, mode: Mode): Change {
 	if (mode === "remove") {
 		if (!found.present) return { id, action: "not registered" };
 		return found.ours ? { id, action: "removed" } : { id, action: "kept", reason: KEPT_ON_REMOVE };
@@ -142,9 +139,9 @@ function mergeServers(
 	mode: Mode,
 	legacyKey?: string,
 ): MergeResult {
-	const next: Json = isObject(current) ? { ...current } : {};
-	let servers: Json = isObject(next.mcpServers) ? { ...next.mcpServers } : {};
-	if (legacyKey && isObject(next[legacyKey])) {
+	const next: Json = isRecord(current) ? { ...current } : {};
+	let servers: Json = isRecord(next.mcpServers) ? { ...next.mcpServers } : {};
+	if (legacyKey && isRecord(next[legacyKey])) {
 		servers = { ...(next[legacyKey] as Json), ...servers };
 		delete next[legacyKey];
 	}
@@ -154,10 +151,10 @@ function mergeServers(
 		const existing = servers[entry.id];
 		const found: Found = {
 			present: existing !== undefined,
-			ours: isObject(existing) && isOurs(existing.command),
+			ours: isRecord(existing) && isOurs(existing.command),
 			// Hosts may rewrite the file: key order changes and the default `type: "stdio"` can be dropped.
 			matches:
-				isObject(existing) &&
+				isRecord(existing) &&
 				Object.keys(existing).every((key) => key in wanted) &&
 				Object.entries(wanted).every(
 					([key, value]) =>
@@ -175,16 +172,16 @@ function mergeServers(
 
 // Deletes only ultrathink's entries, from mcpServers and (for Muse) the legacy key, without reshaping the file.
 function removeServers(current: unknown, ids: string[], legacyKey?: string): MergeResult {
-	const next: Json = isObject(current) ? { ...current } : {};
+	const next: Json = isRecord(current) ? { ...current } : {};
 	const keys = legacyKey ? ["mcpServers", legacyKey] : ["mcpServers"];
 	const changes = ids.map((id): Change => {
 		const holders = keys.filter((key) => {
 			const servers = next[key];
-			return isObject(servers) && Object.hasOwn(servers, id);
+			return isRecord(servers) && Object.hasOwn(servers, id);
 		});
 		const ours = holders.filter((key) => {
 			const existing = (next[key] as Json)[id];
-			return isObject(existing) && isOurs(existing.command);
+			return isRecord(existing) && isOurs(existing.command);
 		});
 		for (const key of ours) {
 			const rest = { ...(next[key] as Json) };
@@ -224,7 +221,7 @@ export function mergeMuseSettings(
 			entries.map((e) => e.id),
 			"mcp_servers",
 		);
-	const base = isObject(current) ? current : { schema_version: 1 };
+	const base = isRecord(current) ? current : { schema_version: 1 };
 	return mergeServers(
 		base,
 		entries,
@@ -301,7 +298,7 @@ export function planClaude(run: Run, entries: Entry[], options: PlanOptions = {}
 			let servers: Json | undefined;
 			try {
 				const parsed: unknown = JSON.parse(options.claudeConfig?.() ?? "");
-				if (isObject(parsed)) servers = isObject(parsed.mcpServers) ? parsed.mcpServers : {};
+				if (isRecord(parsed)) servers = isRecord(parsed.mcpServers) ? parsed.mcpServers : {};
 			} catch {
 				// reason: unparseable claude config is reported as UNKNOWN, not as an absent entry
 				servers = undefined;
@@ -309,8 +306,8 @@ export function planClaude(run: Run, entries: Entry[], options: PlanOptions = {}
 			if (servers === undefined) return { ...UNKNOWN, note };
 			const user = servers[entry.id];
 			if (user === undefined) return { ...ABSENT, note };
-			const command = isObject(user) ? user.command : undefined;
-			const args = isObject(user) ? (user.args ?? []) : undefined;
+			const command = isRecord(user) ? user.command : undefined;
+			const args = isRecord(user) ? (user.args ?? []) : undefined;
 			return {
 				present: true,
 				ours: isOurs(command),
@@ -330,7 +327,7 @@ export function planGrok(run: Run, entries: Entry[], options: PlanOptions = {}):
 	let servers: Json[] | undefined;
 	try {
 		const parsed: unknown = JSON.parse(listed.stdout);
-		if (Array.isArray(parsed)) servers = parsed.filter(isObject);
+		if (Array.isArray(parsed)) servers = parsed.filter(isRecord);
 	} catch {
 		// reason: unparseable grok list output is reported as UNKNOWN, not as an absent entry
 		servers = undefined;
@@ -372,7 +369,7 @@ function unquote(value: string): string {
  * Server name → `command` (undefined for url servers) from the `mcp_servers:` block of Hermes' config.yaml.
  * A small indentation-based reader for the block style Hermes writes; anything else simply yields no command.
  */
-export function hermesServerCommands(text: string): Map<string, string | undefined> {
+function hermesServerCommands(text: string): Map<string, string | undefined> {
 	const found = new Map<string, string | undefined>();
 	let inServers = false;
 	let serverIndent = -1;
@@ -488,7 +485,7 @@ export function planHermes(run: Run, entries: Entry[], options: PlanOptions = {}
 	);
 }
 
-export function backupSuffix(date: Date): string {
+function backupSuffix(date: Date): string {
 	const p = (n: number) => String(n).padStart(2, "0");
 	return `.bak-ultrathink-mcp-${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}-${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}`;
 }

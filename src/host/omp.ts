@@ -9,10 +9,11 @@
  * each flight owns its own cancellation and outer time limit. A tool result that opens a PR for a planned session gets
  * an ultrathink-sync aside. `/ultrathink-<verb>` commands toggle control state or send one unplanned message.
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDirectory } from "../shared.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -762,14 +763,6 @@ export function editTargets(
 		if (path) files.push(resolve(cwd, path));
 	}
 	return files;
-}
-
-function isDirectory(path: string): boolean {
-	try {
-		return statSync(path).isDirectory();
-	} catch {
-		return false;
-	}
 }
 
 /** Repo slug of the nearest existing directory at or above `file`; undefined outside a git repo with an origin. */

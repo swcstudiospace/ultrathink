@@ -6,7 +6,7 @@
 // `record` queues a finished span synchronously; `flush` posts the queue in batches.
 // A failed batch is dropped and never retried, so export cannot grow memory or stall shutdown.
 
-export type SpanKind = 1 | 2 | 3; // 1 INTERNAL, 2 SERVER, 3 CLIENT
+type SpanKind = 1 | 2 | 3; // 1 INTERNAL, 2 SERVER, 3 CLIENT
 
 export interface FinishedSpan {
 	traceId: string; // 32 lowercase hex

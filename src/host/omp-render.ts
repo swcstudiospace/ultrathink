@@ -13,6 +13,7 @@ import { sanitizeInsightText } from "./omp-insights.ts";
 import { type ActivityNotice, toActivityNotice } from "./activity-notice.ts";
 import { formatElapsed, type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
 import { type PlanView, projectResolution } from "./view.ts";
+import { isRecord } from "../shared.ts";
 
 export const PLAN_TYPE = "ultrathink-plan";
 export const PENDING_TYPE = "ultrathink-pending";
@@ -114,7 +115,7 @@ function card(rows: (room: number) => string[], p: Paint, options: FrameOptions)
 }
 
 /** The plan's final Graph of Thought: every node done, linked issues attached, no animation timestamps. */
-export function planViewToGraph(view: PlanView): GraphModel {
+function planViewToGraph(view: PlanView): GraphModel {
 	return {
 		nodes: view.nodes.map((node) => ({
 			id: node.id,
@@ -254,10 +255,6 @@ const INSIGHT_STATUSES = ["candidate", "confirmed", "promoted", "superseded"] as
 const INSIGHT_KINDS = ["bug", "pitfall", "pattern", "decision", "playbook"] as const;
 const INSIGHT_CAPTURES = ["explicit", "observe", "auto"] as const;
 const INSIGHT_TARGETS = ["hermes", "omp", "claude", "prime-agent", "drafts"] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isLiteral<T extends string>(list: readonly T[], value: unknown): value is T {
 	return typeof value === "string" && (list as readonly string[]).includes(value);

@@ -7,6 +7,7 @@
 import { createGatewayClient } from "./client.ts";
 import type { ResolvedGateway } from "./settings.ts";
 import { GRAPH_ID_PATTERN } from "./types.ts";
+import { isRecord } from "../shared.ts";
 
 export interface GatewayBriefInput {
 	graphId?: string;
@@ -18,10 +19,6 @@ export interface GatewayEmitInput {
 	summary: string;
 	graphId?: string;
 	payload?: Record<string, unknown>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 const KIND_PATTERN = /^[a-z][a-z0-9_.]{2,60}$/;

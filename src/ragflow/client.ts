@@ -20,6 +20,7 @@ import type {
 	RagflowResult,
 	RetrieveQuery,
 } from "./types.ts";
+import { isRecord } from "../shared.ts";
 
 const MAX_MESSAGE_CHARS = 200;
 const PAGE_SIZE = 100;
@@ -28,10 +29,6 @@ const DEFAULT_TOP_K = 5;
 const DEFAULT_SIMILARITY = 0.2;
 
 type Body = Record<string, unknown>;
-
-function isRecord(value: unknown): value is Body {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);

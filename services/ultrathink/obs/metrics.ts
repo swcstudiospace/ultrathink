@@ -16,7 +16,7 @@ export interface MetricsOptions {
 	maxSeriesPerMetric?: number;
 }
 
-export const DROPPED_METRIC = "ultrathink_metrics_dropped_total";
+const DROPPED_METRIC = "ultrathink_metrics_dropped_total";
 export const DEFAULT_BUCKETS: readonly number[] = [
 	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60,
 ];
@@ -47,7 +47,7 @@ function labelName(raw: string): string {
 	return /^[a-zA-Z_]/.test(cleaned) ? cleaned : `_${cleaned}`;
 }
 
-export function escapeLabelValue(value: string): string {
+function escapeLabelValue(value: string): string {
 	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
 }
 

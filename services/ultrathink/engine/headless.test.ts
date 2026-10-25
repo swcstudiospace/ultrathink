@@ -20,10 +20,10 @@ import { claudeConfigPaths, loadConfig } from "../../../src/config.ts";
 import { stageOf } from "../../../src/host/grokbot.ts";
 import { planPrompt } from "../../../src/host/plan.ts";
 import { redactText } from "../../../src/teach/redact.ts";
+import { NODE, UPLIFT } from "../../../src/test.helpers.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../../../src/think/prompts.ts";
 import { FALLBACK_GRAPH } from "../../../src/think/types.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../../../src/uplift/prompt.ts";
-import { escapeXml } from "../../../src/uplift/xml.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { createLedger } from "../cost/ledger.ts";
 import { type RequestContext, runWithRequestContext } from "../obs/context.ts";
@@ -61,9 +61,6 @@ afterAll(() => {
 	}
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-
-const UPLIFT = (original: string) =>
-	`<BUILD_PROMPT><ORIGINAL>${escapeXml(original)}</ORIGINAL><SYSTEM_ROLE>Senior TypeScript engineer.</SYSTEM_ROLE><APP_CONTEXT>A standalone CLI.</APP_CONTEXT><SCOPE>CSV to JSON with streaming.</SCOPE><CONSTRAINTS>Do not invent repo facts.</CONSTRAINTS><ACCEPTANCE_CRITERIA>Converts a 1 GB file in bounded memory.</ACCEPTANCE_CRITERIA><OUT_OF_SCOPE>XLSX input.</OUT_OF_SCOPE></BUILD_PROMPT>`;
 
 const GRAPH = JSON.stringify({
 	goal: "Ship a streaming CSV to JSON CLI",
@@ -105,22 +102,6 @@ const GRAPH = JSON.stringify({
 		},
 	],
 });
-
-const steps = (n: number, id: string) =>
-	Array.from(
-		{ length: n },
-		(_, i) => `${i + 1}. Step ${i + 1} of ${id}: a discrete, self-contained action.`,
-	).join("\n");
-
-const NODE = (id: string, kind: string, n: number) => {
-	let conclusion = `Answer for ${id}.`;
-	if (kind === "critique")
-		conclusion += "\nOpen questions:\n- Output as JSON lines or array? Default: array.";
-	if (kind === "synthesize")
-		conclusion +=
-			"\nWORKFLOW\nWave 1 (parallel): parser — files: src/parse.ts — done when: unit tests pass\nWave 1 (parallel): cli — files: src/cli.ts — done when: --help prints\nWave 2: docs — files: README.md — done when: README lists flags\nVerify: bun test";
-	return `<node><rationale>\n${steps(n, id)}\n</rationale><conclusion>${conclusion}</conclusion></node>`;
-};
 
 const CLARIFY = JSON.stringify({
 	questions: [

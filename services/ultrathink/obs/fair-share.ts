@@ -17,7 +17,7 @@
 import type { SecurityEventLogger } from "../security/events.ts";
 
 /** Priority class of an admitted request. `owner` > `connector` > `bearer`. */
-export type AdmissionClass = "owner" | "connector" | "bearer";
+type AdmissionClass = "owner" | "connector" | "bearer";
 
 /** Who is asking for a slot and at which priority. */
 export interface Admission {
@@ -31,7 +31,7 @@ export interface FairShareTimers {
 	clearTimeout(handle: unknown): void;
 }
 
-export interface FairShareQueue {
+interface FairShareQueue {
 	/** Waiting admissions per class. Integer `>= 0`; 0 refuses at once. */
 	depth: number;
 	/** Longest wait before the admission expires, in ms. Positive safe integer. */
@@ -54,7 +54,7 @@ export interface FairShareOptions {
 }
 
 /** Why a slot was refused. Checked in this order. */
-export type FairShareRefusal = "capacity" | "reserved" | "principal";
+type FairShareRefusal = "capacity" | "reserved" | "principal";
 
 /**
  * Outcome of `admit`. `queue_full`: over budget with no room to wait. `expired`: the wait ran out.
@@ -66,7 +66,7 @@ export type AdmitResult =
 	| { ok: false; cause: "aborted" };
 
 /** Options for `admit`. `onWait` runs once, just before an admission joins its queue; it must not release pool slots. */
-export interface AdmitOptions {
+interface AdmitOptions {
 	signal?: AbortSignal;
 	onWait?: () => void;
 }

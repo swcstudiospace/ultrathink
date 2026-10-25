@@ -15,10 +15,7 @@ import type {
 } from "../ragflow/types.ts";
 import { createGatewayClient, type GatewayClientOptions } from "./client.ts";
 import type { GatewayFailure } from "./types.ts";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "../shared.ts";
 
 function asError(failure: GatewayFailure): RagflowResult<never> {
 	const kind = failure.reason.includes("timeout")

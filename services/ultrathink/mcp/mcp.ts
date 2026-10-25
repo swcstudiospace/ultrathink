@@ -13,6 +13,7 @@ import {
 import { compileSchema, type Validator } from "./validate.ts";
 import { getSecurityLogger } from "../security/events.ts";
 import { StringValidator } from "../security/validation.ts";
+import { isRecord } from "../../../src/shared.ts";
 
 /** Newest first: initialize answers with the requested version when listed here, otherwise the first. */
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
@@ -551,10 +552,6 @@ function toolResult(outcome: unknown): ToolResult {
 		structuredContent: { error: code, ...(errors !== undefined ? { errors } : {}) },
 		isError: true,
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isStringArray(value: unknown): value is string[] {

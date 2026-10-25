@@ -14,6 +14,7 @@ import {
 import { contentFor, documentIdFor, metadataFor, tagsFor } from "./mapping.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "./recall.ts";
 import { openStore, storeDir } from "./store.ts";
+import { moment } from "../test.helpers.ts";
 import {
 	DEFAULT_TEACH_CONFIG,
 	type RecalledLesson,
@@ -56,32 +57,6 @@ function fakeClient(recall: (query: RecallQuery) => Promise<HindsightResult<Reca
 		deleteBank: async () => ok(true as const),
 	};
 	return { client, calls };
-}
-
-function moment(id: string, overrides: Partial<TeachableMoment> = {}): TeachableMoment {
-	return {
-		id,
-		name: `lesson ${id}`,
-		description: "",
-		body: "",
-		sourcePhase: "",
-		sourceArtifacts: [],
-		createdAt: "2026-01-01T00:00:00.000Z",
-		tags: [],
-		relatedIds: [],
-		schema: 2,
-		kind: "pitfall",
-		status: "confirmed",
-		origin: "explicit",
-		project: "proj",
-		host: "omp",
-		confidence: 1,
-		occurrences: 1,
-		lastSeenAt: "2026-01-01T00:00:00.000Z",
-		dedupeKey: `key-${id}`,
-		recalled: 0,
-		...overrides,
-	};
 }
 
 function hitFor(m: TeachableMoment, overrides: Partial<RecallHit> = {}): RecallHit {

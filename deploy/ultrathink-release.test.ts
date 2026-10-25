@@ -21,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import tls from "node:tls";
+import { run } from "../src/test.helpers.ts";
 
 const SCRIPT = resolve(import.meta.dir, "ultrathink-release.sh");
 const OPS_URI = "spiffe://ultrathink.internal/ops/probe";
@@ -45,19 +46,6 @@ function scrubbedEnv(extra: Record<string, string>): Record<string, string> {
 		if (value !== undefined && !key.startsWith("ULTRATHINK_")) env[key] = value;
 	}
 	return { ...env, ...extra };
-}
-
-async function run(
-	cmd: string[],
-	env: Record<string, string>,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	const proc = Bun.spawn({ cmd, env, stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	return { exitCode, stdout, stderr };
 }
 
 async function openssl(args: string[]): Promise<void> {
@@ -466,6 +454,7 @@ describe.skipIf(process.platform !== "linux")("release ancestry gate (do_release
 		"src/grok/types.ts",
 		"src/mcp/providers.ts",
 		"src/route-defaults.ts",
+		"src/shared.ts",
 	];
 	const RELEASE_STUBS: Record<string, string> = {
 		id: "#!/bin/sh\necho 0\n",

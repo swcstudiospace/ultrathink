@@ -78,14 +78,14 @@ export const QUESTIONS: { readonly [P in DecisionPoint]: NoulQuestion } = {
 	},
 };
 
-export const PLAN_MESSAGE_MAX = 4000;
-export const PLAN_CONVERSATION_MAX = 2000;
-export const SHIP_CRITERIA_MAX_ITEMS = 20;
-export const SHIP_CRITERION_MAX_CHARS = 500;
-export const SHIP_PATCH_MAX = 24_000;
-export const KNOWLEDGE_DOCUMENT_MAX = 12_000;
-export const BLOCKING_TASK_MAX = 4000;
-export const LESSON_BODY_MAX = 800;
+const PLAN_MESSAGE_MAX = 4000;
+const PLAN_CONVERSATION_MAX = 2000;
+const SHIP_CRITERIA_MAX_ITEMS = 20;
+const SHIP_CRITERION_MAX_CHARS = 500;
+const SHIP_PATCH_MAX = 24_000;
+const KNOWLEDGE_DOCUMENT_MAX = 12_000;
+const BLOCKING_TASK_MAX = 4000;
+const LESSON_BODY_MAX = 800;
 /** Same list as src/ship/signals.ts LOCKFILES. */
 export const LOCKFILE_PATTERNS: readonly RegExp[] = [
 	/\.lock$/,

@@ -20,6 +20,7 @@ import {
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isPlanningPath } from "../host/paths.ts";
+import { isRecord } from "../shared.ts";
 import { redactLine } from "./redact.ts";
 import {
 	MOMENT_KINDS,
@@ -56,10 +57,6 @@ function str(value: unknown, fallback = ""): string {
 
 function num(value: unknown, fallback: number): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** A moment from untrusted JSON: undefined unless it is a schema-2 moment whose id is the file's id. */

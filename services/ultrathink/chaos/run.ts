@@ -4,15 +4,16 @@
 import { type ChaosTarget, parsePrometheusValue } from "./observe.ts";
 import type { ExperimentTemplate, Hypothesis } from "./schema.ts";
 import { scoreRun } from "./score.ts";
+import { isScalar } from "../../../src/shared.ts";
 
-export interface HypothesisResult {
+interface HypothesisResult {
 	id: string;
 	passed: boolean;
 	observed?: string | number;
 	reason?: string;
 }
 
-export type RollbackStatus =
+type RollbackStatus =
 	| "not_needed"
 	| "invoked"
 	| "failed"
@@ -221,10 +222,6 @@ function compare(observed: number, op: "gte" | "lte" | "eq", expected: number): 
 		case "eq":
 			return observed === expected;
 	}
-}
-
-function isScalar(value: unknown): value is string | number | boolean {
-	return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
 }
 
 // Rollback runs only for a failed run, on an http driver, against a staging environment, when requested by both the

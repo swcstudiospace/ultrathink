@@ -83,7 +83,7 @@ export interface PromptSubmitInput {
 	skill?: SkillInvocation;
 }
 
-export interface HookOutput {
+interface HookOutput {
 	hookSpecificOutput: { hookEventName: "UserPromptSubmit"; additionalContext: string };
 	systemMessage?: string;
 }

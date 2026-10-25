@@ -22,7 +22,8 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withLockMutation } from "../src/claude/atomic.ts";
+import { errorCode, withLockMutation } from "../src/claude/atomic.ts";
+import { isRecord } from "../src/shared.ts";
 
 /** The staged hook file name inside <cursorDir>/hooks. */
 export const HOOK_FILE = "ultrathink-cursor-pstack.js";
@@ -35,9 +36,9 @@ export const HOOK_LOCK_EMPTY_GRACE_MS = 1_000;
 /** The hooks.json event ultrathink registers the staged hook under. */
 export const EVENT = "beforeSubmitPrompt";
 /** Marker that makes a hooks.json entry ultrathink's; gsd-managed, substrate-managed and markerless entries never match. */
-export const OUR_MARKER = "ultrathink-managed";
+const OUR_MARKER = "ultrathink-managed";
 
-export const USAGE = `Usage: bun scripts/cursor-hooks.ts install|remove [--cursor-dir <dir>]
+const USAGE = `Usage: bun scripts/cursor-hooks.ts install|remove [--cursor-dir <dir>]
 
   install             stage hosts/cursor/${HOOK_FILE} into <cursorDir>/hooks and register it in
                       <cursorDir>/hooks.json under hooks.${EVENT} with ${OUR_MARKER}: true
@@ -48,16 +49,12 @@ Entries without the ${OUR_MARKER} marker whose command does not name ${HOOK_FILE
 (gsd-managed, substrate-managed, foreign) are never modified, reordered or removed.`;
 
 type Json = Record<string, unknown>;
-export type HookAction = "added" | "replaced" | "unchanged" | "removed" | "not present";
+type HookAction = "added" | "replaced" | "unchanged" | "removed" | "not present";
 export interface HookChange {
 	/** The new hooks.json value to write; absent when nothing should be written. */
 	next?: Json;
 	action?: HookAction;
 	reason?: string;
-}
-
-function isObject(value: unknown): value is Json {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function executable(path: string): boolean {
@@ -97,7 +94,7 @@ export function hookCommand(node: string, script: string): string {
 /** An entry is ultrathink's when it carries the marker or its command names the staged hook file. */
 export function isOwned(entry: unknown): boolean {
 	return (
-		isObject(entry) &&
+		isRecord(entry) &&
 		(entry[OUR_MARKER] === true ||
 			(typeof entry.command === "string" && entry.command.includes(HOOK_FILE)))
 	);
@@ -107,10 +104,10 @@ export function isOwned(entry: unknown): boolean {
 function prepare(
 	current: unknown,
 ): { top: Json; hooks: Json; list: unknown[] } | { reason: string } {
-	if (current !== undefined && !isObject(current))
+	if (current !== undefined && !isRecord(current))
 		return { reason: "hooks.json top-level value is not an object" };
 	const top: Json = current === undefined ? {} : { ...current };
-	if (top.hooks !== undefined && !isObject(top.hooks))
+	if (top.hooks !== undefined && !isRecord(top.hooks))
 		return { reason: 'hooks.json: "hooks" is not an object' };
 	const hooks: Json = top.hooks === undefined ? {} : { ...top.hooks };
 	const existing = hooks[EVENT];
@@ -253,15 +250,6 @@ function processAlive(pid: number): boolean {
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code !== "ESRCH";
 	}
-}
-
-function errorCode(error: unknown): string | undefined {
-	return typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		typeof error.code === "string"
-		? error.code
-		: undefined;
 }
 
 /** First field of the lock file. A bare pid (`123\n`) and `pid token` both count; anything else is unidentified. */

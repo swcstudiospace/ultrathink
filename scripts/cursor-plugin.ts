@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectStage, gsdCommandNames } from "../src/cursor/pstack.ts";
+import { isRecord } from "../src/shared.ts";
 import {
 	EVENT,
 	HOOK_LOCK_WAIT_MS,
@@ -101,14 +102,10 @@ export interface ExternalStep {
 	script: string;
 }
 
-function isObject(value: unknown): value is Json {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** An entry is this installer's when it carries the planner marker or names the planner hook file. */
 export function isPlanOwned(entry: unknown): boolean {
 	return (
-		isObject(entry) &&
+		isRecord(entry) &&
 		(entry[PLAN_MARKER] === true ||
 			(typeof entry.command === "string" && entry.command.includes(PLAN_HOOK_FILE)))
 	);
@@ -117,10 +114,10 @@ export function isPlanOwned(entry: unknown): boolean {
 function prepare(
 	current: unknown,
 ): { top: Json; hooks: Json; list: unknown[] } | { reason: string } {
-	if (current !== undefined && !isObject(current))
+	if (current !== undefined && !isRecord(current))
 		return { reason: "hooks.json top-level value is not an object" };
 	const top: Json = current === undefined ? {} : { ...current };
-	if (top.hooks !== undefined && !isObject(top.hooks))
+	if (top.hooks !== undefined && !isRecord(top.hooks))
 		return { reason: 'hooks.json: "hooks" is not an object' };
 	const hooks: Json = top.hooks === undefined ? {} : { ...top.hooks };
 	const existing = hooks[EVENT];

@@ -9,6 +9,7 @@
 import { redactSecrets } from "../grok/auth.ts";
 import { requestJson } from "../net/http.ts";
 import type { GatewayCallResult, GatewayFailure } from "./types.ts";
+import { isRecord } from "../shared.ts";
 
 const MAX_REASON = 200;
 
@@ -33,10 +34,6 @@ function oneLine(text: string, token: string): string {
 		.replace(/\s+/g, " ")
 		.trim();
 	return out.length > MAX_REASON ? `${out.slice(0, MAX_REASON - 3)}...` : out;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function jsonRecord(text: string): Record<string, unknown> | undefined {

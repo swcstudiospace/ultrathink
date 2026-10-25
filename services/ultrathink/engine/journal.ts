@@ -13,7 +13,7 @@ import {
 } from "../../../src/host/grokbot.ts";
 import type { planPrompt } from "../../../src/host/plan.ts";
 
-export const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const SESSION_CONFLICT_MESSAGE =
 	"session already holds a different original prompt; use a new session id";
@@ -78,7 +78,7 @@ type PendingFields = Pick<PendingRequest, "key" | "stage" | "nodeId" | "nodeKind
 
 const ok = <T>(data: T): JournalResult<T> => ({ ok: true, data });
 
-const fail = (code: JournalErrorCode, errors?: string[]): JournalResult<never> =>
+export const fail = (code: JournalErrorCode, errors?: string[]): JournalResult<never> =>
 	errors ? { ok: false, code, errors } : { ok: false, code };
 
 export function isSessionId(value: unknown): value is string {

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { thrownBy } from "../../../src/test.helpers.ts";
 import {
 	assertToolDefinitions,
 	ToolDefinitionError,
@@ -32,15 +33,6 @@ function tool(name: string, patch: Partial<ToolDefinition> = {}): ToolDefinition
 
 function withSchema(name: string, patch: Record<string, unknown>): ToolDefinition {
 	return tool(name, { inputSchema: { ...GOOD_SCHEMA, ...patch } });
-}
-
-function thrownBy(run: () => void): unknown {
-	try {
-		run();
-	} catch (error) {
-		return error;
-	}
-	return undefined;
 }
 
 // Built at runtime so this file holds no secret-shaped literal.

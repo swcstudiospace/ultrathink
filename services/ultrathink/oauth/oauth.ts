@@ -13,7 +13,7 @@ import { chmodSync, existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { type ApprovalProof, type Auth, MAX_PASSWORD_CHARS } from "../auth/auth.ts";
 import type { AuditEvent } from "../obs/audit.ts";
-import { createLogger, type Logger } from "../obs/log.ts";
+import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { encodeHtml, encodeHtmlAttribute } from "../security/encoding.ts";
 import { getSecurityLogger } from "../security/events.ts";
 import {
@@ -491,13 +491,6 @@ function createLimiter(limit: { max: number; windowMs: number }, now: () => numb
 			return { ok: true };
 		},
 	};
-}
-
-function failureLabel(error: unknown): string {
-	if (!(error instanceof Error)) return "non-error value";
-	const code = "code" in error ? error.code : undefined;
-	if (typeof code === "string") return code;
-	return error.name === "Error" ? error.constructor.name : error.name;
 }
 
 function emptyStore(): StoreShape {

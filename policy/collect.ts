@@ -11,6 +11,10 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { parse as parseYaml } from "yaml";
 import { SECURITY_HEADERS } from "../services/ultrathink/routes/router.ts";
+// Local copy: this script runs in a harness tree without src/ (see policy/check.test.ts or deploy/ultrathink-release.test.ts), so it cannot import src/shared.ts.
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 const LIVE_TIMEOUT_MS = 10_000;
 const DEFAULT_ROOT = resolve(import.meta.dir, "..");
@@ -58,12 +62,6 @@ export interface CollectOptions {
 	liveTls?: LiveTlsFiles;
 }
 
-type Obj = Record<string, unknown>;
-
-function isObject(value: unknown): value is Obj {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function expectString(value: unknown, where: string): string {
 	if (typeof value !== "string") throw new Error(`${where}: expected a string`);
 	return value;
@@ -72,7 +70,7 @@ function expectString(value: unknown, where: string): string {
 function normalizePermissions(value: unknown, where: string): Permissions {
 	if (value === undefined || value === null) return null;
 	if (typeof value === "string") return value;
-	if (isObject(value)) {
+	if (isRecord(value)) {
 		const scopes: Record<string, string> = {};
 		for (const [scope, level] of Object.entries(value))
 			scopes[scope] = expectString(level, `${where}.${scope}`);
@@ -86,7 +84,7 @@ function normalizeEvents(value: unknown, where: string): string[] {
 	if (typeof value === "string") return [value];
 	if (Array.isArray(value))
 		return value.map((event, index) => expectString(event, `${where}[${index}]`));
-	if (isObject(value)) return Object.keys(value);
+	if (isRecord(value)) return Object.keys(value);
 	throw new Error(`${where}: on must be an event name, a list or a map`);
 }
 
@@ -97,20 +95,20 @@ export function parseWorkflow(text: string, file: string): Workflow {
 	} catch (error) {
 		throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	if (!isObject(doc)) throw new Error(`${file}: workflow must be a mapping`);
+	if (!isRecord(doc)) throw new Error(`${file}: workflow must be a mapping`);
 	const jobsRaw = doc.jobs ?? {};
-	if (!isObject(jobsRaw)) throw new Error(`${file}: jobs must be a mapping`);
+	if (!isRecord(jobsRaw)) throw new Error(`${file}: jobs must be a mapping`);
 
 	const jobs: Record<string, WorkflowJob> = {};
 	for (const [id, job] of Object.entries(jobsRaw)) {
 		const where = `${file} job ${id}`;
-		if (!isObject(job)) throw new Error(`${where}: job must be a mapping`);
+		if (!isRecord(job)) throw new Error(`${where}: job must be a mapping`);
 		const uses: string[] = [];
 		if (job.uses !== undefined) uses.push(expectString(job.uses, `${where}.uses`));
 		if (job.steps !== undefined) {
 			if (!Array.isArray(job.steps)) throw new Error(`${where}: steps must be a list`);
 			for (const step of job.steps) {
-				if (isObject(step) && step.uses !== undefined)
+				if (isRecord(step) && step.uses !== undefined)
 					uses.push(expectString(step.uses, `${where} step uses`));
 			}
 		}

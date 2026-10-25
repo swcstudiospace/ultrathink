@@ -23,6 +23,7 @@ import { isSessionId } from "../engine/journal.ts";
 import { listSessions, newestPlannedSessionId, type SessionSummary } from "../engine/sessions.ts";
 import { createLogger } from "../obs/log.ts";
 import { GRAPH_APP_URI } from "../ui/graph-app.ts";
+import { isRecord } from "../../../src/shared.ts";
 import {
 	type CatalogCommand,
 	COMMAND_OVERLAY,
@@ -532,8 +533,4 @@ function wrapped(
 		{ command, support, message, result, ...extra },
 		typeof text === "string" ? text : message,
 	);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

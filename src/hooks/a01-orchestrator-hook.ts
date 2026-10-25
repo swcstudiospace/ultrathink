@@ -19,8 +19,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { resolveStateDir } from "../host/paths.ts";
 
-export const ORCHESTRATOR_TIMEOUT_MS = 120_000;
-export const A01_ORCHESTRATOR_ENABLED =
+const ORCHESTRATOR_TIMEOUT_MS = 120_000;
+const A01_ORCHESTRATOR_ENABLED =
 	(process.env.A01_ORCHESTRATOR_ENABLED ?? "true").toLowerCase() !== "false";
 
 export interface A01HookOptions {
@@ -37,7 +37,7 @@ export interface A01RunResult<T> {
 }
 
 /** Simple redaction for logs/state (shared pattern with teachable hooks). */
-export function redactForLog(input: string): string {
+function redactForLog(input: string): string {
 	let s = String(input);
 	s = s.replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-REDACTED");
 	s = s.replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer REDACTED");
@@ -52,7 +52,7 @@ export function redactForLog(input: string): string {
 }
 
 /** Maximum failure text per event: one event must never grow the log without bound. */
-export const A01_LOG_MESSAGE_MAX = 500;
+const A01_LOG_MESSAGE_MAX = 500;
 
 /** Append a redacted failure line to `<stateDir>/a01-failures.log` (dir 0700, file 0600; best effort, never throws). One event is one line, however long or broken the failure text is. */
 function markA01FailureInState(logMsg: string, stateDir?: string): void {
@@ -155,9 +155,3 @@ export function __injectFaultForTest(
 	setTimeout(() => resolve("a01-ok"), delayMs);
 	return () => promise;
 }
-export default {
-	withA01OrchestratorTimeout,
-	invokeA01OrchestratorWithGraceful,
-	ORCHESTRATOR_TIMEOUT_MS,
-	A01_ORCHESTRATOR_ENABLED,
-};

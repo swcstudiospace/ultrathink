@@ -5,6 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { yieldTurn } from "../../../src/test.helpers.ts";
 import { createInProcessTarget } from "./inprocess.ts";
 import { parsePrometheusValue } from "./observe.ts";
 import { type RunResult, runTemplate } from "./run.ts";
@@ -16,14 +17,6 @@ const roots: string[] = [];
 afterAll(() => {
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
-
-// The runner's settle poll waits between polls; here one event-loop turn is enough, because the planner's progress is
-// driven by the app's own promises and the poll count is bounded by the runner, not by this value.
-function yieldTurn(): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	setImmediate(resolve);
-	return promise;
-}
 
 function template(id: string): ExperimentTemplate {
 	const found = loadTemplates(EXPERIMENTS).find((candidate) => candidate.id === id);

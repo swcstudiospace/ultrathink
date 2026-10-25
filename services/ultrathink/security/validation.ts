@@ -11,7 +11,7 @@ export interface ValidationResult<T> {
 	errors: ValidationError[];
 }
 
-export interface ValidationError {
+interface ValidationError {
 	field: string;
 	code: string;
 	message: string;
@@ -25,7 +25,7 @@ export interface Validator<T> {
 /**
  * Base validator class
  */
-export abstract class BaseValidator<T> implements Validator<T> {
+abstract class BaseValidator<T> implements Validator<T> {
 	abstract validate(value: unknown): ValidationResult<T>;
 
 	protected success(value: T): ValidationResult<T> {
@@ -524,7 +524,7 @@ export function validateOrThrow<T>(value: unknown, validator: Validator<T>): T {
 	return result.value!;
 }
 
-export class ValidationException extends Error {
+class ValidationException extends Error {
 	constructor(
 		message: string,
 		public readonly errors: ValidationError[],
@@ -533,19 +533,3 @@ export class ValidationException extends Error {
 		this.name = "ValidationException";
 	}
 }
-
-export default {
-	BaseValidator,
-	StringValidator,
-	NumberValidator,
-	BooleanValidator,
-	EmailValidator,
-	UrlValidator,
-	UuidValidator,
-	ObjectValidator,
-	ArrayValidator,
-	validateRequestBody,
-	commonValidators,
-	validateOrThrow,
-	ValidationException,
-};

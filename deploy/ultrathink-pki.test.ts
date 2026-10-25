@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { run } from "../src/test.helpers.ts";
 
 const SCRIPT = resolve(import.meta.dir, "ultrathink-pki.sh");
 const SPIFFE_APP = "spiffe://ultrathink.internal/app";
@@ -27,16 +28,6 @@ interface Result {
 let work = "";
 let root = "";
 let tls = "";
-
-async function run(cmd: string[], env?: Record<string, string>): Promise<Result> {
-	const proc = Bun.spawn({ cmd, env, stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	return { exitCode, stdout, stderr };
-}
 
 function pki(args: string[], env?: Record<string, string>): Promise<Result> {
 	return run(["/bin/sh", SCRIPT, ...args], env);
