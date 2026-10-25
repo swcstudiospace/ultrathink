@@ -213,7 +213,7 @@ Two optional ceilings bound the spend, both counted in tokens by a ledger in the
 - `ULTRATHINK_RUN_TOKEN_CEILING` (default 0, no limit) for one plan.
 - `ULTRATHINK_DAILY_TOKEN_CEILING` (default 0, no limit) for one UTC day, across all plans.
 
-A plan that would pass a ceiling stops with `budget_exceeded`. Abandoned reservations keep counting, so the ledger errs toward stopping early.
+A plan that would pass a ceiling stops with `budget_exceeded`. With no output cap set (`ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` at 0), each model call's reply is also capped to the tokens the ceilings still allow after its input, and a call whose input alone does not fit is refused with `budget_exceeded`. Abandoned reservations keep counting, so the ledger errs toward stopping early.
 
 The server runs at most `ULTRATHINK_MAX_CONCURRENT_PLANS` plans at once (default 2). It cancels a model call after `ULTRATHINK_MODEL_TIMEOUT_MS` and a whole plan after `ULTRATHINK_PLAN_TIMEOUT_MS` when those are set above 0; both are off by default.
 
@@ -277,8 +277,8 @@ The operator sets these in `/etc/ultrathink/ultrathink.env` and restarts the ser
 | `ULTRATHINK_PORT` | `8795` | Listen port, 1024 to 65535. |
 | `ULTRATHINK_MAX_INPUT_CHARS` | `4000000` | Longest request in characters; `0` means no limit. The 1 MB request body limit applies first over HTTP. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | `20000` | Longest client-driven answer, 1 to 20000 characters. |
-| `ULTRATHINK_RUN_TOKEN_CEILING` | `0` | Token limit for one plan; `0` means no limit. A plan over a positive limit stops with `budget_exceeded`. |
-| `ULTRATHINK_DAILY_TOKEN_CEILING` | `0` | Token limit per UTC day across all plans; `0` means no limit. |
+| `ULTRATHINK_RUN_TOKEN_CEILING` | `0` | Token limit for one plan; `0` means no limit. A plan over a positive limit stops with `budget_exceeded`. With no output cap set, each model reply is capped to the tokens this limit still allows, and to at most 32000. |
+| `ULTRATHINK_DAILY_TOKEN_CEILING` | `0` | Token limit per UTC day across all plans; `0` means no limit. With no output cap set, each model reply is capped to the tokens this limit still allows, and to at most 32000. |
 | `ULTRATHINK_PLANNING_MODEL` | unset | OpenRouter model id for server-side planning, for example `x-ai/grok-4.7`. Server-side mode needs it. |
 | `OPENROUTER_API_KEY` | unset | OpenRouter key, at least 20 characters. Server-side mode needs it. |
 | `ULTRATHINK_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base. https only, no credentials, query or fragment. |
@@ -286,7 +286,7 @@ The operator sets these in `/etc/ultrathink/ultrathink.env` and restarts the ser
 | `ULTRATHINK_MAX_CONCURRENT_PLANS` | `2` | Plans that run at once, 1 to 8. More starts return `busy`. |
 | `ULTRATHINK_MODEL_TIMEOUT_MS` | `0` | Timeout for one model call; `0` means no timeout. A positive value must be 5000 to 600000. A call that times out is not retried. |
 | `ULTRATHINK_PLAN_TIMEOUT_MS` | `0` | Timeout for one whole plan; `0` means no timeout. A positive value must be 30000 to 1800000. |
-| `ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` | `0` | Output token limit for one model call; `0` sends no limit, so the provider's own maximum applies. A positive value must be 256 to 32000. |
+| `ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` | `0` | Output token limit for one model call. `0` sends no configured cap: with no token ceiling set, the provider's own maximum applies; with a token ceiling set, each reply is capped to the tokens the ceilings still allow after its input, and never above 32000. A positive value is always sent as the cap; it must be 256 to 32000. |
 | `ULTRATHINK_MODEL_REASONING_EFFORT` | `auto` | `minimal`, `low`, `medium` or `high`. `auto` (the default) and `default` (an older alias) omit the parameter, so the provider's own default applies. Lower it to `low` for lower latency and cost; the pipeline already asks the model to write its reasoning steps. |
 | Server-side Jev decisions | off | Off until their spend is metered. Server-side plans never receive the OpenRouter key. |
 | `ULTRATHINK_CONNECTOR_KEY` | unset | Key for the `x-connector-key` header (Grok Bot), at least 32 characters. |
