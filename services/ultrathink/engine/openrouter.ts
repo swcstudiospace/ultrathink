@@ -60,6 +60,11 @@ export type OpenRouterFetch = (input: string, init: RequestInit) => Promise<Resp
 /** Same shape as `Completer` in src/grok/complete.ts. */
 export type OpenRouterCompleter = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 
+export interface OpenRouterTimers {
+	/** Runs callback after ms; the returned function cancels it. */
+	schedule(callback: () => void, ms: number): () => void;
+}
+
 export interface OpenRouterCompleterOptions {
 	apiKey: string;
 	/** Without a trailing slash, for example https://openrouter.ai/api/v1. */
@@ -74,6 +79,8 @@ export interface OpenRouterCompleterOptions {
 	/** Sent as HTTP-Referer; pass the service origin. */
 	referer?: string;
 	fetch?: OpenRouterFetch;
+	/** Schedules each attempt's timeout; defaults to the global timers. Tests inject a manual scheduler instead of a fake clock. */
+	timers?: OpenRouterTimers;
 	/** Backoff wait; must resolve early (or the caller must re-check the signal) when `signal` aborts. */
 	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	/** Called once per successful completion; a throwing callback is ignored. */
@@ -259,11 +266,20 @@ function hostOf(baseUrl: string): string | undefined {
 	}
 }
 
+/** Global timers: the cancel function closes over its own handle, so no handle type is named or cast. */
+const globalTimers: OpenRouterTimers = {
+	schedule: (callback, ms) => {
+		const handle = setTimeout(callback, ms);
+		return () => clearTimeout(handle);
+	},
+};
+
 export function createOpenRouterCompleter(
 	opts: OpenRouterCompleterOptions,
 ): OpenRouterCompleter {
 	const fetchImpl: OpenRouterFetch = opts.fetch ?? ((input, init) => fetch(input, init));
 	const sleep = opts.sleep ?? defaultSleep;
+	const timers = opts.timers ?? globalTimers;
 	const spans = opts.spans;
 	const serverAddress = hostOf(opts.baseUrl);
 	const url = `${opts.baseUrl.replace(/\/+$/, "")}/chat/completions`;
@@ -284,9 +300,9 @@ export function createOpenRouterCompleter(
 		let timedOut = false;
 		const onCallerAbort = (): void => controller.abort();
 		caller?.addEventListener("abort", onCallerAbort, { once: true });
-		const timer =
+		const cancelTimeout =
 			opts.timeoutMs > 0
-				? setTimeout(() => {
+				? timers.schedule(() => {
 						timedOut = true;
 						controller.abort();
 					}, opts.timeoutMs)
@@ -352,7 +368,7 @@ export function createOpenRouterCompleter(
 			const code = status === 401 || status === 403 ? "auth" : "upstream";
 			return { ok: false, error: new OpenRouterError(code, status), retry: false };
 		} finally {
-			clearTimeout(timer);
+			cancelTimeout?.();
 			caller?.removeEventListener("abort", onCallerAbort);
 		}
 	}

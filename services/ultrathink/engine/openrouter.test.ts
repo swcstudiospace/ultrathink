@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { describe, expect, test, vi } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { runWithRequestContext } from "../obs/context.ts";
 import type { FinishedSpan, SpanSink } from "../obs/otel.ts";
 import { createCircuitBreaker } from "./breaker.ts";
@@ -14,6 +14,7 @@ import {
 	type OpenRouterCompleterOptions,
 	type OpenRouterErrorCode,
 	type OpenRouterUsage,
+	type OpenRouterTimers,
 } from "./openrouter.ts";
 
 const KEY = "sk-or-test-SECRETKEY-0123456789";
@@ -911,26 +912,51 @@ describe("client span", () => {
 	});
 });
 
-describe("unlimited limits and truncation", () => {
-	test("timeoutMs 0 sets no timer: a reply still pending after a long wait is not aborted", async () => {
-		vi.useFakeTimers();
-		try {
-			const gate = Promise.withResolvers<void>();
-			const held: Step = async (init) => {
-				await gate.promise;
-				return completion("late")(init);
+/** Timers the test fires by hand: a scheduled callback runs only when fireAll is called, with no real or fake clock. */
+function manualTimers(): OpenRouterTimers & { fireAll(): void } {
+	const scheduled = new Set<() => void>();
+	return {
+		schedule(callback) {
+			scheduled.add(callback);
+			return () => {
+				scheduled.delete(callback);
 			};
-			const { complete, calls } = setup([held], { timeoutMs: 0 });
-			const pending = complete("s", "u");
-			for (let i = 0; calls.length === 0 && i < 100; i++) await Promise.resolve();
-			expect(calls).toHaveLength(1);
-			vi.advanceTimersByTime(60_000);
-			expect((calls[0] as Call).init.signal?.aborted).toBe(false);
-			gate.resolve();
-			expect(await pending).toBe("late");
-		} finally {
-			vi.useRealTimers();
-		}
+		},
+		fireAll() {
+			for (const callback of [...scheduled]) {
+				scheduled.delete(callback);
+				callback();
+			}
+		},
+	};
+}
+
+describe("unlimited limits and truncation", () => {
+	test("timeoutMs 0 sets no timer: a reply still pending after every timer has fired is not aborted", async () => {
+		const timers = manualTimers();
+		const gate = Promise.withResolvers<void>();
+		const held: Step = async (init) => {
+			await gate.promise;
+			return completion("late")(init);
+		};
+		const { complete, calls } = setup([held], { timeoutMs: 0, timers });
+		const pending = complete("s", "u");
+		for (let i = 0; calls.length === 0 && i < 100; i++) await Promise.resolve();
+		expect(calls).toHaveLength(1);
+		timers.fireAll();
+		expect((calls[0] as Call).init.signal?.aborted).toBe(false);
+		gate.resolve();
+		expect(await pending).toBe("late");
+	});
+
+	test("a positive timeoutMs aborts the pending reply when its timer fires", async () => {
+		const timers = manualTimers();
+		const { complete, calls } = setup([pendingUntilAbort], { timeoutMs: 10, timers });
+		const pending = complete("s", "u");
+		for (let i = 0; calls.length === 0 && i < 100; i++) await Promise.resolve();
+		expect(calls).toHaveLength(1);
+		timers.fireAll();
+		expect((await failure(pending)).code).toBe("timeout");
 	});
 
 	test("without maxOutputTokens (undefined or 0) the body has no max_tokens key", async () => {
