@@ -980,4 +980,20 @@ describe("unlimited limits and truncation", () => {
 		expect(calls).toHaveLength(1);
 		expectNoLeak(error);
 	});
+
+	test("a cut reply carries its billed usage on the truncated error and is not retried", async () => {
+		const cut: Step = () =>
+			new Response(
+				JSON.stringify({
+					choices: [{ finish_reason: "length", message: { role: "assistant", content: "partial" } }],
+					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		const { complete, calls } = setup([cut, completion("never")]);
+		const error = await failure(complete("s", "u"));
+		expect(error.code).toBe("truncated");
+		expect(error.usage).toEqual({ promptTokens: 100, completionTokens: 50, costUsd: 0.002 });
+		expect(calls).toHaveLength(1);
+	});
 });

@@ -135,6 +135,8 @@ interface Job extends JobFile {
 	finish: () => void;
 	/** Releases the plan slot taken from the fair-share pool; absent for starts without an admission. */
 	slotRelease?: () => void;
+	/** A model call was cut at its output limit, so the job cannot finish as planned. */
+	truncated?: boolean;
 }
 
 interface Outcome {
@@ -364,6 +366,25 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					// telemetry must never affect the job
 				}
 			};
+
+			/** Books one model call: its usage joins the job totals and the reservation settles to the actual tokens. */
+			const bill = (usage: OpenRouterUsage | undefined, reservation: number): void => {
+				job.usage.calls += 1;
+				if (usage) {
+					job.usage.inputTokens += usage.promptTokens ?? 0;
+					job.usage.outputTokens += usage.completionTokens ?? 0;
+					if (usage.costUsd !== undefined) job.usage.costUsd = (job.usage.costUsd ?? 0) + usage.costUsd;
+				}
+				const known = (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0);
+				// An endpoint that omits a count has not said the call was free: the reservation (the worst-case estimate) stays, so the ceilings keep counting.
+				const countsKnown = usage?.promptTokens !== undefined && usage.completionTokens !== undefined;
+				const actual = countsKnown ? known : Math.max(known, estimated);
+				try {
+					ledger.settle(reservation, Math.max(0, Math.round(actual)));
+				} catch {
+					// the reservation keeps counting, which only errs on the safe side
+				}
+			};
 			try {
 				const complete =
 					opts.completer ??
@@ -387,32 +408,25 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						},
 					});
 				const text = await complete(system, user, signal);
-				job.usage.calls += 1;
 				const { usage } = reported;
 				emit("ok", usage);
-				const known = (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0);
-				if (usage) {
-					job.usage.inputTokens += usage.promptTokens ?? 0;
-					job.usage.outputTokens += usage.completionTokens ?? 0;
-					if (usage.costUsd !== undefined) job.usage.costUsd = (job.usage.costUsd ?? 0) + usage.costUsd;
-				}
-				// An endpoint that omits a count has not said the call was free: the reservation (the worst-case estimate) stays, so the ceilings keep counting.
-				const countsKnown = usage?.promptTokens !== undefined && usage.completionTokens !== undefined;
-				const actual = countsKnown ? known : Math.max(known, estimated);
-				try {
-					ledger.settle(reservationId, Math.max(0, Math.round(actual)));
-				} catch {
-					// the reservation keeps counting, which only errs on the safe side
-				}
+				bill(usage, reservationId);
 				return text;
 			} catch (error) {
 				const failure = error instanceof OpenRouterError ? error.code : error instanceof Error && error.name === "AbortError" ? "aborted" : "engine_error";
-				emit(failure);
-				try {
-					ledger.abandon(reservationId);
-				} catch {
-					// as above
+				// A reply cut at its output limit reports what it cost, so that call is billed like a completed one.
+				const cut = error instanceof OpenRouterError ? error.usage : undefined;
+				emit(failure, cut);
+				if (cut) {
+					bill(cut, reservationId);
+				} else {
+					try {
+						ledger.abandon(reservationId);
+					} catch {
+						// as above
+					}
 				}
+				if (error instanceof OpenRouterError && error.code === "truncated") job.truncated = true;
 				const aborted = error instanceof OpenRouterError ? error.code === "aborted" : error instanceof Error && error.name === "AbortError";
 				if (!aborted) job.firstError ??= error instanceof OpenRouterError ? error.code : "engine_error";
 				throw error;
@@ -437,6 +451,8 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 
 	function judge(job: Job, response: PlanResponse): Outcome {
 		if (job.reason !== undefined || response.skipped === "aborted") return abortOutcome(job);
+		// A reply cut at its output limit is never a plan: runClarify swallows a cut clarify call, so the record can still pass.
+		if (job.truncated === true) return { status: "failed", error: "truncated" };
 		if (response.skipped !== undefined && !Object.hasOwn(ENGINE_SKIPS, response.skipped)) return { status: "skipped", error: response.skipped };
 		if (response.skipped !== undefined || response.statePath === undefined) return { status: "failed", error: job.firstError ?? response.skipped ?? "engine_error" };
 		const record = readSession(stateDir, job.sessionId);

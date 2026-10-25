@@ -625,6 +625,23 @@ describe("headless planner: limits and lifecycle", () => {
 		const started = await h.planner.start({ prompt: PROMPT, sessionId });
 		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
 	});
+
+	test("a clarify call cut at the output limit fails the job as truncated, even though the record still passes", async () => {
+		const script = scriptedModel();
+		const cutClarify: OpenRouterFetch = async (_url, init) => {
+			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+			const system = body.messages[0]?.content ?? "";
+			if (stageOf(system) === "clarify") {
+				return new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "{" } }] }), { status: 200 });
+			}
+			const content = script(system, body.messages[1]?.content ?? "");
+			return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+		};
+		const h = setup({}, { completer: undefined, fetch: cutClarify });
+		const sessionId = randomUUID();
+		const started = await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
+	});
 });
 
 describe("headless planner: client-mode fallback", () => {
@@ -721,6 +738,33 @@ describe("headless planner: call telemetry", () => {
 			expect(call.outputTokens).toBe(0);
 			expect("costUsd" in call).toBe(false);
 		}
+	});
+
+	test("a call cut at the output limit is billed: its usage reaches telemetry, the job totals and the ledger", async () => {
+		const seen: string[] = [];
+		const cut: OpenRouterFetch = async (url) => {
+			seen.push(url);
+			return new Response(
+				JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "partial" } }], usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 } }),
+				{ status: 200 },
+			);
+		};
+		const calls: PlannerCall[] = [];
+		const h = setup({}, { completer: undefined, fetch: cut, onCall: (call) => calls.push(call) });
+		const sessionId = randomUUID();
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
+		expect(seen.length).toBeGreaterThanOrEqual(1);
+		expect(calls).toHaveLength(seen.length);
+		for (const call of calls) {
+			expect(call.outcome).toBe("truncated");
+			expect(call.inputTokens).toBe(100);
+			expect(call.outputTokens).toBe(50);
+			expect(call.costUsd).toBeCloseTo(0.002, 6);
+		}
+		expect(jobFile(h.stateDir, sessionId).usage).toMatchObject({ calls: seen.length, inputTokens: 100 * seen.length, outputTokens: 50 * seen.length });
+		const runId = String(jobFile(h.stateDir, sessionId).runId);
+		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
+		expect(ledger.spentForRun(runId)).toBe(150 * seen.length);
 	});
 });
 

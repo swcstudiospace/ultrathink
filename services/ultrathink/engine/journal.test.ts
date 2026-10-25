@@ -291,6 +291,14 @@ describe("grok-bot journal service", () => {
 		const cleaned = await startPlan(o, { prompt: "\u0007Build a CLI\u0000 now" });
 		expect(cleaned).toMatchObject({ ok: true, data: { status: "needs-model" } });
 	});
+
+	test("maxPromptChars 0 means no limit: a 10000-character prompt is accepted", async () => {
+		const { plan, open } = gatedPlan();
+		const o = { ...opts(newState()), maxPromptChars: 0, plan };
+		const started = startPlan(o, { prompt: "x".repeat(10000), sessionId: randomUUID() });
+		open();
+		expect(await started).toMatchObject({ ok: true, data: { status: "needs-model" } });
+	});
 });
 
 describe("journal config isolation", () => {

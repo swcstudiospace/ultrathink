@@ -37,13 +37,16 @@ export class OpenRouterError extends Error {
 	readonly status: number | undefined;
 	/** Set on `upstream_unavailable`: ms until the breaker hands out a slot again. */
 	readonly retryAfterMs: number | undefined;
+	/** Set on `truncated` only: the billed usage of a reply cut at its output limit. */
+	readonly usage: OpenRouterUsage | undefined;
 
-	constructor(code: OpenRouterErrorCode, status?: number, retryAfterMs?: number) {
+	constructor(code: OpenRouterErrorCode, status?: number, retryAfterMs?: number, usage?: OpenRouterUsage) {
 		super(status === undefined ? `openrouter ${code}` : `openrouter ${code} (HTTP ${status})`);
 		this.name = "OpenRouterError";
 		this.code = code;
 		this.status = status;
 		this.retryAfterMs = retryAfterMs;
+		this.usage = usage;
 	}
 }
 
@@ -223,6 +226,18 @@ function releaseOutcome(result: Attempt): ReleaseOutcome {
 	}
 }
 
+/** Billed usage a reply reports; each count is kept only when it is a valid number, since unknown is not zero. */
+function usageOf(reply: CompletionReply | null): OpenRouterUsage {
+	const cost = reply?.usage?.cost;
+	const promptTokens = count(reply?.usage?.prompt_tokens);
+	const completionTokens = count(reply?.usage?.completion_tokens);
+	return {
+		...(promptTokens === undefined ? {} : { promptTokens }),
+		...(completionTokens === undefined ? {} : { completionTokens }),
+		...(typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? { costUsd: cost } : {}),
+	};
+}
+
 /** Validates a 200 body; `null` content (tool call, refusal) counts as empty, a missing message or content as malformed. */
 function parseCompletion(raw: string): Attempt {
 	let reply: CompletionReply | null;
@@ -233,7 +248,7 @@ function parseCompletion(raw: string): Attempt {
 	}
 	const choice = reply?.choices?.[0];
 	if (choice?.finish_reason === "length") {
-		return { ok: false, error: new OpenRouterError("truncated"), retry: false };
+		return { ok: false, error: new OpenRouterError("truncated", undefined, undefined, usageOf(reply)), retry: false };
 	}
 	const content = choice?.message?.content;
 	const text = content === null ? "" : contentText(content);
@@ -243,18 +258,7 @@ function parseCompletion(raw: string): Attempt {
 	if (text.trim() === "") {
 		return { ok: false, error: new OpenRouterError("empty"), retry: false };
 	}
-	const cost = reply?.usage?.cost;
-	const promptTokens = count(reply?.usage?.prompt_tokens);
-	const completionTokens = count(reply?.usage?.completion_tokens);
-	return {
-		ok: true,
-		text,
-		usage: {
-			...(promptTokens === undefined ? {} : { promptTokens }),
-			...(completionTokens === undefined ? {} : { completionTokens }),
-			...(typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? { costUsd: cost } : {}),
-		},
-	};
+	return { ok: true, text, usage: usageOf(reply) };
 }
 
 /** Host of the endpoint URL, the only part of it a span may carry; undefined when the URL does not parse. */
