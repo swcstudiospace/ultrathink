@@ -143,9 +143,7 @@ const DEFAULT_MAX_CONCURRENT_PLANS = 2;
 // 0 means unlimited; a positive value is an explicit cap.
 const DEFAULT_MODEL_TIMEOUT_MS = 0;
 const DEFAULT_PLAN_TIMEOUT_MS = 0;
-/** The largest output limit the config accepts; a cap derived from a token ceiling never exceeds it. */
-export const MAX_MODEL_OUTPUT_TOKENS = 32000;
-// 0 means no configured cap; with a token ceiling set, each call is capped to the budget left, up to MAX_MODEL_OUTPUT_TOKENS.
+// 0 means no configured cap; with a token ceiling set, each call is capped to the budget left, and to at most 16000 tokens.
 const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 0;
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["minimal", "low", "medium", "high"];
 // The formats Bun.password.verify accepts: PHC argon2 strings and modular-crypt bcrypt strings.
@@ -730,7 +728,7 @@ export function loadConfig(
 			"ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS",
 			DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
 			256,
-			MAX_MODEL_OUTPUT_TOKENS,
+			32000,
 		),
 		modelReasoningEffort: readReasoningEffort(env),
 		breakerFailures: readInteger(env, "ULTRATHINK_BREAKER_FAILURES", 5, 0, 100),

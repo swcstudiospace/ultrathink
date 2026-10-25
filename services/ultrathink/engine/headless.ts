@@ -17,7 +17,7 @@ import { defaultConfig, type UltrathinkConfig as PluginConfig } from "../../../s
 import type { ModelResolution, SelectedEngine } from "../../../src/host/engine.ts";
 import { GROKBOT_ENGINE_HOST, checkRecord, journalDir, readMeta } from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
-import { MAX_MODEL_OUTPUT_TOKENS, type UltrathinkConfig } from "../config/config.ts";
+import type { UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
 import { createFairShare } from "../obs/fair-share.ts";
@@ -344,7 +344,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				if (config.modelMaxOutputTokens > 0) {
 					outputCap = config.modelMaxOutputTokens;
 				} else if (budget !== undefined) {
-					const derived = Math.min(budget.tokens - inputEstimate, MAX_MODEL_OUTPUT_TOKENS);
+					const derived = Math.min(budget.tokens - inputEstimate, RESERVATION_ALLOWANCE_TOKENS);
 					if (derived < 1) throw new CeilingError(budget.reason);
 					outputCap = derived;
 				}

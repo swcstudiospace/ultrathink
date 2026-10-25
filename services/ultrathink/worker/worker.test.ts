@@ -444,14 +444,14 @@ describe("worker", () => {
 		expect(reserved?.reserved).toBe(1000);
 	});
 
-	test("a large ceiling caps the reply at the output bound", async () => {
+	test("a large ceiling caps the reply at the reply allowance", async () => {
 		const env = makeEnv({ runTokenCeiling: 1_000_000, dailyTokenCeiling: 10_000_000 });
 		newRun(env);
 		const model = fakeModel(() => ({ text: "output", tokensUsed: 10 }));
 		const { worker } = makeWorker(env, model);
 
 		expect(await worker.tickOnce()).toBe("complete");
-		for (const call of model.calls) expect(call.maxOutputTokens).toBe(32_000);
+		for (const call of model.calls) expect(call.maxOutputTokens).toBe(16_000);
 	});
 
 	test("zero ceilings are unlimited: the run completes", async () => {

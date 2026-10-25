@@ -869,7 +869,7 @@ describe("headless planner: reasoning effort", () => {
 		for (const body of bodies) expect("max_tokens" in body).toBe(false);
 	});
 
-	test("with a ceiling and output cap 0, max_tokens is capped to the budget left and to 32000", async () => {
+	test("with a ceiling and output cap 0, max_tokens is capped to the budget left and to 16000", async () => {
 		const ceiling = 100_000;
 		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: ceiling, dailyTokenCeiling: 0 });
 		expect(bodies.length).toBeGreaterThanOrEqual(8);
@@ -881,17 +881,17 @@ describe("headless planner: reasoning effort", () => {
 			const maxTokens = body.max_tokens as number;
 			expect(Number.isInteger(maxTokens)).toBe(true);
 			expect(maxTokens).toBeGreaterThan(0);
-			expect(maxTokens).toBeLessThanOrEqual(32_000);
+			expect(maxTokens).toBeLessThanOrEqual(16_000);
 			expect(maxTokens + (inputEstimates[index] ?? 0)).toBeLessThanOrEqual(ceiling);
 		});
 		// The first call runs alone against an empty ledger, so its cap is exact.
-		expect(bodies[0]?.max_tokens).toBe(Math.min(ceiling - (inputEstimates[0] ?? 0), 32_000));
+		expect(bodies[0]?.max_tokens).toBe(Math.min(ceiling - (inputEstimates[0] ?? 0), 16_000));
 	});
 
-	test("a ceiling above the output bound still caps max_tokens at 32000", async () => {
+	test("a ceiling above the output bound still caps max_tokens at 16000", async () => {
 		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: 5_000_000, dailyTokenCeiling: 0 });
 		expect(bodies.length).toBeGreaterThanOrEqual(8);
-		for (const body of bodies) expect(body.max_tokens).toBe(32_000);
+		for (const body of bodies) expect(body.max_tokens).toBe(16_000);
 	});
 });
 

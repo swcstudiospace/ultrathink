@@ -3,7 +3,6 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MAX_MODEL_OUTPUT_TOKENS } from "../config/config.ts";
 import { CEILING_DAY, CEILING_RUN, CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import type { RunStatus, Store } from "../store/store.ts";
 import { writeAtomic } from "./atomic.ts";
@@ -56,8 +55,8 @@ export type AnswerResult =
 
 /**
  * Accounting allowance added to each reservation when no token ceiling applies. It is an estimate: with no
- * ceiling the completion call sends no max_tokens. Under a ceiling the reservation is the worst case from the
- * budget left, and the reply is capped at that budget.
+ * ceiling the completion call sends no max_tokens. Under a ceiling each reply is capped to the budget left and to
+ * this allowance, so a reservation never exceeds input plus the allowance and concurrent calls share the budget.
  */
 const RESERVATION_ALLOWANCE_TOKENS = 16000;
 const CHARS_PER_TOKEN = 3;
@@ -423,7 +422,7 @@ export function createWorker(options: WorkerOptions): Worker {
 			const budget = ledger.headroom(run.id);
 			let estimatedTokens = inputEstimate + RESERVATION_ALLOWANCE_TOKENS;
 			if (budget !== undefined) {
-				const derived = Math.min(budget.tokens - inputEstimate, MAX_MODEL_OUTPUT_TOKENS);
+				const derived = Math.min(budget.tokens - inputEstimate, RESERVATION_ALLOWANCE_TOKENS);
 				if (derived < 1) throw new CeilingError(budget.reason);
 				maxOutputTokens = derived;
 				estimatedTokens = inputEstimate + derived;
