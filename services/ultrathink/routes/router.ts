@@ -413,6 +413,7 @@ function lazyLedger(store: Store, config: UltrathinkConfig, now: (() => number) 
 		abandon: (id) => ledger().abandon(id),
 		spentForRun: (runId) => ledger().spentForRun(runId),
 		spentForDay: (day) => ledger().spentForDay(day),
+		headroom: (runId) => ledger().headroom(runId),
 	};
 }
 

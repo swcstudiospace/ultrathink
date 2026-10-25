@@ -3,6 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { MAX_MODEL_OUTPUT_TOKENS } from "../config/config.ts";
 import { CEILING_DAY, CEILING_RUN, CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import type { RunStatus, Store } from "../store/store.ts";
 import { writeAtomic } from "./atomic.ts";
@@ -14,6 +15,8 @@ export interface PlanningModel {
 	complete(input: {
 		system: string;
 		prompt: string;
+		/** The reply's output limit in tokens. Present only when a token ceiling bounds the reply. */
+		maxOutputTokens?: number;
 	}): Promise<{ text: string; tokensUsed: number }>;
 }
 
@@ -52,8 +55,9 @@ export type AnswerResult =
 	| { ok: false; code: "not_found" | "not_waiting" | "invalid_answer" };
 
 /**
- * Accounting allowance added to each reservation for the reply. It is an estimate, not an output cap:
- * the completion call sends no max_tokens.
+ * Accounting allowance added to each reservation when no token ceiling applies. It is an estimate: with no
+ * ceiling the completion call sends no max_tokens. Under a ceiling the reservation is the worst case from the
+ * budget left, and the reply is capped at that budget.
  */
 const RESERVATION_ALLOWANCE_TOKENS = 16000;
 const CHARS_PER_TOKEN = 3;
@@ -118,6 +122,7 @@ interface OwnerAnswer {
 interface ModelInput {
 	system: string;
 	prompt: string;
+	maxOutputTokens?: number;
 }
 
 interface ModelReply {
@@ -410,10 +415,19 @@ export function createWorker(options: WorkerOptions): Worker {
 		const attempt = nextAttempt(run.id, phase);
 		const system = SYSTEM_PROMPTS[phase];
 		const prompt = buildPrompt(run.request, phase, outputs, latestAnswer(run.id, phase));
-		const estimatedTokens = Math.ceil((system.length + prompt.length) / CHARS_PER_TOKEN) + RESERVATION_ALLOWANCE_TOKENS;
+		const inputEstimate = Math.ceil((system.length + prompt.length) / CHARS_PER_TOKEN);
 
 		let reservationId: number;
+		let maxOutputTokens: number | undefined;
 		try {
+			const budget = ledger.headroom(run.id);
+			let estimatedTokens = inputEstimate + RESERVATION_ALLOWANCE_TOKENS;
+			if (budget !== undefined) {
+				const derived = Math.min(budget.tokens - inputEstimate, MAX_MODEL_OUTPUT_TOKENS);
+				if (derived < 1) throw new CeilingError(budget.reason);
+				maxOutputTokens = derived;
+				estimatedTokens = inputEstimate + derived;
+			}
 			reservationId = ledger.reserve({ runId: run.id, phase, attempt, estimatedTokens }).reservationId;
 		} catch (error) {
 			if (error instanceof CeilingError) {
@@ -433,7 +447,9 @@ export function createWorker(options: WorkerOptions): Worker {
 		state.reservationId = reservationId;
 		store.updateRun(run.id, { status: PHASE_STATUS[phase], currentPhase: phase });
 
-		const outcome = await callModel(run.id, { system, prompt });
+		const input: ModelInput = { system, prompt };
+		if (maxOutputTokens !== undefined) input.maxOutputTokens = maxOutputTokens;
+		const outcome = await callModel(run.id, input);
 		if (outcome.kind !== "reply") {
 			// The fenced status write goes first, so a lost lease leaves the reservation for tickOnce to abandon.
 			const reason = outcome.kind === "truncated" ? "output_truncated" : "model_unavailable";

@@ -44,6 +44,7 @@ function makeEnv(limits: LedgerLimits = { runTokenCeiling: 1_000_000, dailyToken
 interface ModelCall {
 	system: string;
 	prompt: string;
+	maxOutputTokens?: number;
 }
 
 interface Reply {
@@ -412,7 +413,7 @@ describe("worker", () => {
 	});
 
 	test("completion calls send no output cap", async () => {
-		const env = makeEnv();
+		const env = makeEnv({ runTokenCeiling: 0, dailyTokenCeiling: 0 });
 		newRun(env);
 		const model = fakeModel((_call, index) => ({ text: `output ${index + 1}`, tokensUsed: 10 }));
 		const { worker } = makeWorker(env, model);
@@ -420,6 +421,37 @@ describe("worker", () => {
 		expect(await worker.tickOnce()).toBe("complete");
 		expect(model.calls.length).toBe(4);
 		expect(model.calls.every((call) => !("maxOutputTokens" in call))).toBe(true);
+	});
+
+	test("a token ceiling caps each reply at the budget left and reserves input plus that cap", async () => {
+		const env = makeEnv({ runTokenCeiling: 1000, dailyTokenCeiling: 10_000_000 });
+		const run = newRun(env);
+		// The first reply spends the whole ceiling, so the next phase is refused before its model call.
+		const model = fakeModel(() => ({ text: "output 1", tokensUsed: 1000 }));
+		const { worker } = makeWorker(env, model);
+
+		expect(await worker.tickOnce()).toBe("failed");
+		expect(model.calls.length).toBe(1);
+		const first = model.calls[0];
+		if (!first) throw new Error("no model call");
+		const inputEstimate = Math.ceil((first.system.length + first.prompt.length) / 3);
+		expect(first.maxOutputTokens).toBe(1000 - inputEstimate);
+		const reserved = env.store.db
+			.query<{ reserved: number }, [string]>(
+				"SELECT reserved_tokens AS reserved FROM token_ledger WHERE run_id = ? ORDER BY id LIMIT 1",
+			)
+			.get(run.id);
+		expect(reserved?.reserved).toBe(1000);
+	});
+
+	test("a large ceiling caps the reply at the output bound", async () => {
+		const env = makeEnv({ runTokenCeiling: 1_000_000, dailyTokenCeiling: 10_000_000 });
+		newRun(env);
+		const model = fakeModel(() => ({ text: "output", tokensUsed: 10 }));
+		const { worker } = makeWorker(env, model);
+
+		expect(await worker.tickOnce()).toBe("complete");
+		for (const call of model.calls) expect(call.maxOutputTokens).toBe(32_000);
 	});
 
 	test("zero ceilings are unlimited: the run completes", async () => {

@@ -17,7 +17,7 @@ import { defaultConfig, type UltrathinkConfig as PluginConfig } from "../../../s
 import type { ModelResolution, SelectedEngine } from "../../../src/host/engine.ts";
 import { GROKBOT_ENGINE_HOST, checkRecord, journalDir, readMeta } from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
-import type { UltrathinkConfig } from "../config/config.ts";
+import { MAX_MODEL_OUTPUT_TOKENS, type UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
 import { createFairShare } from "../obs/fair-share.ts";
@@ -335,11 +335,20 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 	function meteredCompleter(job: Job, model: string): ClaudeCompleter {
 		return async (system, user, signal) => {
 			if (signal?.aborted || job.controller.signal.aborted) throw new DOMException("plan aborted", "AbortError");
-			const estimated =
-				Math.ceil((system.length + user.length) / CHARS_PER_TOKEN) +
-				(config.modelMaxOutputTokens > 0 ? config.modelMaxOutputTokens : RESERVATION_ALLOWANCE_TOKENS);
+			const inputEstimate = Math.ceil((system.length + user.length) / CHARS_PER_TOKEN);
+			let outputCap: number | undefined;
+			let estimated = 0;
 			let reservationId: number;
 			try {
+				const budget = ledger.headroom(job.runId);
+				if (config.modelMaxOutputTokens > 0) {
+					outputCap = config.modelMaxOutputTokens;
+				} else if (budget !== undefined) {
+					const derived = Math.min(budget.tokens - inputEstimate, MAX_MODEL_OUTPUT_TOKENS);
+					if (derived < 1) throw new CeilingError(budget.reason);
+					outputCap = derived;
+				}
+				estimated = inputEstimate + (outputCap ?? RESERVATION_ALLOWANCE_TOKENS);
 				reservationId = ledger.reserve({ runId: job.runId, phase: `model-${++job.seq}`, attempt: 1, estimatedTokens: estimated }).reservationId;
 			} catch (error) {
 				job.reason ??= error instanceof CeilingError ? "budget_exceeded" : "ledger_unavailable";
@@ -392,7 +401,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						apiKey: config.openRouterApiKey ?? "",
 						baseUrl: config.openRouterBaseUrl,
 						model,
-						maxOutputTokens: config.modelMaxOutputTokens === 0 ? undefined : config.modelMaxOutputTokens,
+						maxOutputTokens: outputCap,
 						timeoutMs: config.modelTimeoutMs,
 						referer: config.publicOrigin,
 						...(config.modelReasoningEffort === undefined ? {} : { reasoningEffort: config.modelReasoningEffort }),

@@ -387,6 +387,19 @@ describe("headless planner: limits and lifecycle", () => {
 		}
 	});
 
+	test("with output cap 0, a run ceiling with no headroom for the input refuses before any model call", async () => {
+		let requests = 0;
+		const counting: OpenRouterFetch = async () => {
+			requests += 1;
+			return new Response(JSON.stringify({ choices: [{ message: { content: "unreachable" } }] }), { status: 200 });
+		};
+		const h = setup({ runTokenCeiling: 10, modelMaxOutputTokens: 0 }, { completer: undefined, fetch: counting });
+		const sessionId = randomUUID();
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "failed", error: "budget_exceeded" } });
+		expect(requests).toBe(0);
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "budget_exceeded" });
+	});
+
 	test("a response without usage, or with only some counts, keeps the estimate in the ledger so the ceiling still ends the job", async () => {
 		const shapes: Array<Record<string, unknown> | undefined> = [undefined, { prompt_tokens: 10 }, { completion_tokens: 5, cost: 0.001 }, { prompt_tokens: "x", completion_tokens: -1 }];
 		for (const usage of shapes) {
@@ -850,10 +863,35 @@ describe("headless planner: reasoning effort", () => {
 		for (const body of unset) expect("reasoning" in body).toBe(false);
 	});
 
-	test("sends no max_tokens key when the output cap is 0", async () => {
-		const bodies = await bodiesFor({ modelMaxOutputTokens: 0 });
+	test("sends no max_tokens key when the output cap is 0 and no ceiling applies", async () => {
+		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: 0, dailyTokenCeiling: 0 });
 		expect(bodies.length).toBeGreaterThanOrEqual(8);
 		for (const body of bodies) expect("max_tokens" in body).toBe(false);
+	});
+
+	test("with a ceiling and output cap 0, max_tokens is capped to the budget left and to 32000", async () => {
+		const ceiling = 100_000;
+		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: ceiling, dailyTokenCeiling: 0 });
+		expect(bodies.length).toBeGreaterThanOrEqual(8);
+		const inputEstimates = bodies.map((body) => {
+			const messages = body.messages as Array<{ content: string }>;
+			return Math.ceil(((messages[0]?.content.length ?? 0) + (messages[1]?.content.length ?? 0)) / 3);
+		});
+		bodies.forEach((body, index) => {
+			const maxTokens = body.max_tokens as number;
+			expect(Number.isInteger(maxTokens)).toBe(true);
+			expect(maxTokens).toBeGreaterThan(0);
+			expect(maxTokens).toBeLessThanOrEqual(32_000);
+			expect(maxTokens + (inputEstimates[index] ?? 0)).toBeLessThanOrEqual(ceiling);
+		});
+		// The first call runs alone against an empty ledger, so its cap is exact.
+		expect(bodies[0]?.max_tokens).toBe(Math.min(ceiling - (inputEstimates[0] ?? 0), 32_000));
+	});
+
+	test("a ceiling above the output bound still caps max_tokens at 32000", async () => {
+		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: 5_000_000, dailyTokenCeiling: 0 });
+		expect(bodies.length).toBeGreaterThanOrEqual(8);
+		for (const body of bodies) expect(body.max_tokens).toBe(32_000);
 	});
 });
 
