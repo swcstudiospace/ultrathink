@@ -37,7 +37,8 @@ describe("env checks", () => {
 
 	function byId(findings: Finding[], id: string): Finding {
 		const found = findings.find((finding) => finding.id === id);
-		if (!found) throw new Error(`no finding ${id} in ${findings.map((finding) => finding.id).join(", ")}`);
+		if (!found)
+			throw new Error(`no finding ${id} in ${findings.map((finding) => finding.id).join(", ")}`);
 		return found;
 	}
 
@@ -82,7 +83,10 @@ describe("env checks", () => {
 
 		test("Bun below 1.2 is an error; 1.10 is not below 1.2", () => {
 			deps = { ...deps, bunVersion: "1.1.45" };
-			expect(byId(checkRuntime(deps), "runtime.bun")).toMatchObject({ level: "error", fix: "Install Bun 1.2 or later (https://bun.sh)." });
+			expect(byId(checkRuntime(deps), "runtime.bun")).toMatchObject({
+				level: "error",
+				fix: "Install Bun 1.2 or later (https://bun.sh).",
+			});
 			deps = { ...deps, bunVersion: "1.10.0" };
 			expect(byId(checkRuntime(deps), "runtime.bun").level).toBe("ok");
 			deps = { ...deps, bunVersion: "2.0.0" };
@@ -100,7 +104,10 @@ describe("env checks", () => {
 			expect(checkRuntime(deps).some((finding) => finding.id === "runtime.gh-auth")).toBe(false);
 
 			userConfig({ ship: { enabled: true } });
-			expect(byId(checkRuntime(deps), "runtime.gh")).toMatchObject({ level: "warn", title: "gh not found on PATH, but ship.enabled is on" });
+			expect(byId(checkRuntime(deps), "runtime.gh")).toMatchObject({
+				level: "warn",
+				title: "gh not found on PATH, but ship.enabled is on",
+			});
 
 			setEnv({ ULTRATHINK_SHIP: "0" });
 			expect(byId(checkRuntime(deps), "runtime.gh").level).toBe("info");
@@ -120,25 +127,39 @@ describe("env checks", () => {
 			deps = { ...deps, env: { ...deps.env, GITHUB_TOKEN: undefined } };
 			mkdirSync(join(dir, "gh"), { recursive: true });
 			writeFileSync(join(dir, "gh", "hosts.yml"), "github.com:\n    user: someone\n");
-			expect(byId(checkRuntime(deps), "runtime.gh-auth").title).toBe("gh credentials: a gh hosts file exists");
+			expect(byId(checkRuntime(deps), "runtime.gh-auth").title).toBe(
+				"gh credentials: a gh hosts file exists",
+			);
 		});
 
 		test("no gh credentials is a warning only when ship is enabled", () => {
 			userConfig({ ship: { enabled: true } });
-			expect(byId(checkRuntime(deps), "runtime.gh-auth")).toMatchObject({ level: "warn", fix: "Run `gh auth login`, or set GH_TOKEN." });
+			expect(byId(checkRuntime(deps), "runtime.gh-auth")).toMatchObject({
+				level: "warn",
+				fix: "Run `gh auth login`, or set GH_TOKEN.",
+			});
 		});
 
 		test("Python is info only: absent, old and current", () => {
 			installed = ["git", "gh"];
-			expect(byId(checkRuntime(deps), "runtime.python")).toMatchObject({ level: "info", title: "Python not found" });
+			expect(byId(checkRuntime(deps), "runtime.python")).toMatchObject({
+				level: "info",
+				title: "Python not found",
+			});
 
 			installed = ["git", "gh", "python3"];
 			versions.python3 = "Python 3.9.2";
-			expect(byId(checkRuntime(deps), "runtime.python")).toMatchObject({ level: "info", title: "Python 3.9 is older than 3.10" });
+			expect(byId(checkRuntime(deps), "runtime.python")).toMatchObject({
+				level: "info",
+				title: "Python 3.9 is older than 3.10",
+			});
 
 			installed = ["git", "gh", "python"];
 			versions.python = "Python 3.11.4";
-			expect(byId(checkRuntime(deps), "runtime.python")).toMatchObject({ level: "ok", title: "Python 3.11" });
+			expect(byId(checkRuntime(deps), "runtime.python")).toMatchObject({
+				level: "ok",
+				title: "Python 3.11",
+			});
 
 			versions.python = "unparseable";
 			expect(byId(checkRuntime(deps), "runtime.python").title).toBe("Python not found");
@@ -166,7 +187,10 @@ describe("env checks", () => {
 		test("a Jev key from the environment or the store is present, named by source, never shown", () => {
 			setEnv({ OPENROUTER_API_KEY: FAKE_KEY });
 			let jev = byId(checkCredentials(deps), "credentials.jev");
-			expect(jev).toMatchObject({ level: "ok", title: "Jev decisions: OpenRouter key present (OPENROUTER_API_KEY)" });
+			expect(jev).toMatchObject({
+				level: "ok",
+				title: "Jev decisions: OpenRouter key present (OPENROUTER_API_KEY)",
+			});
 
 			deps = { ...deps, env: { ...deps.env, OPENROUTER_API_KEY: undefined } };
 			store({ vercel: apiKey() });
@@ -176,13 +200,19 @@ describe("env checks", () => {
 
 		test("ULTRATHINK_DECISIONS=0 reports Jev as off", () => {
 			setEnv({ ULTRATHINK_DECISIONS: "0" });
-			expect(byId(checkCredentials(deps), "credentials.jev").title).toBe("Jev decisions: off (ULTRATHINK_DECISIONS=0)");
+			expect(byId(checkCredentials(deps), "credentials.jev").title).toBe(
+				"Jev decisions: off (ULTRATHINK_DECISIONS=0)",
+			);
 		});
 
 		test("ship and the knowledge base need Greptile; one finding names both", () => {
 			userConfig({ ship: { enabled: true }, hitl: { knowledgeBase: true } });
 			const greptile = byId(checkCredentials(deps), "credentials.greptile");
-			expect(greptile).toMatchObject({ level: "warn", title: "Greptile: no credential", detail: "needed for ship and knowledge base" });
+			expect(greptile).toMatchObject({
+				level: "warn",
+				title: "Greptile: no credential",
+				detail: "needed for ship and knowledge base",
+			});
 			expect(greptile.fix).toContain("bin/ultrathink-mcp auth set-key greptile --stdin");
 			expect(greptile.fix).toContain("bin/ultrathink-mcp auth login greptile");
 
@@ -196,7 +226,9 @@ describe("env checks", () => {
 		test("the knowledge base alone needs Greptile, and ULTRATHINK_SHIP=0 drops the ship need", () => {
 			userConfig({ ship: { enabled: true }, hitl: { knowledgeBase: true } });
 			setEnv({ ULTRATHINK_SHIP: "0" });
-			expect(byId(checkCredentials(deps), "credentials.greptile").detail).toBe("needed for knowledge base");
+			expect(byId(checkCredentials(deps), "credentials.greptile").detail).toBe(
+				"needed for knowledge base",
+			);
 		});
 
 		test("a stored OAuth credential that needs a new login is not present", () => {
@@ -204,7 +236,14 @@ describe("env checks", () => {
 			store({
 				greptile: {
 					kind: "oauth",
-					client: { clientId: "c", redirectUri: "r", issuer: "i", authorizationEndpoint: "a", tokenEndpoint: "t", registeredAt: 0 },
+					client: {
+						clientId: "c",
+						redirectUri: "r",
+						issuer: "i",
+						authorizationEndpoint: "a",
+						tokenEndpoint: "t",
+						registeredAt: 0,
+					},
 					needsLogin: "refresh token revoked",
 					updatedAt: 0,
 				},
@@ -218,7 +257,10 @@ describe("env checks", () => {
 		test("tracking needs Notion and Linear only for what is configured", () => {
 			userConfig({ notion: { dataSourceUrl: "collection://abc" } });
 			let findings = checkCredentials(deps);
-			expect(byId(findings, "credentials.notion")).toMatchObject({ level: "warn", fix: "bin/ultrathink-mcp auth login notion" });
+			expect(byId(findings, "credentials.notion")).toMatchObject({
+				level: "warn",
+				fix: "bin/ultrathink-mcp auth login notion",
+			});
 			expect(findings.some((finding) => finding.id === "credentials.linear")).toBe(false);
 
 			userConfig({ notion: { dataSourceUrl: "collection://abc" }, linear: { team: "Acme" } });
@@ -231,24 +273,46 @@ describe("env checks", () => {
 		test("Hindsight and RAGFlow, when enabled, need their key from the store or the environment", () => {
 			userConfig({ hindsight: { enabled: true }, ragflow: { enabled: true } });
 			let findings = checkCredentials(deps);
-			expect(byId(findings, "credentials.hindsight")).toMatchObject({ level: "warn", fix: "bin/ultrathink-mcp auth set-key hindsight --stdin" });
-			expect(byId(findings, "credentials.ragflow")).toMatchObject({ level: "warn", fix: "bin/ultrathink-mcp auth set-key ragflow --stdin" });
+			expect(byId(findings, "credentials.hindsight")).toMatchObject({
+				level: "warn",
+				fix: "bin/ultrathink-mcp auth set-key hindsight --stdin",
+			});
+			expect(byId(findings, "credentials.ragflow")).toMatchObject({
+				level: "warn",
+				fix: "bin/ultrathink-mcp auth set-key ragflow --stdin",
+			});
 
 			setEnv({ HINDSIGHT_API_TOKEN: FAKE_KEY });
 			store({ ragflow: apiKey() });
 			findings = checkCredentials(deps);
-			expect(byId(findings, "credentials.hindsight").title).toBe("Hindsight: credential present (HINDSIGHT_API_TOKEN)");
-			expect(byId(findings, "credentials.ragflow").title).toBe("RAGFlow: credential present (credential store)");
+			expect(byId(findings, "credentials.hindsight").title).toBe(
+				"Hindsight: credential present (HINDSIGHT_API_TOKEN)",
+			);
+			expect(byId(findings, "credentials.ragflow").title).toBe(
+				"RAGFlow: credential present (credential store)",
+			);
 		});
 
 		test("gateway-backed features need only one desk-gateway token and never inspect direct keys", () => {
-			userConfig({ hindsight: { enabled: true, backend: "gateway" }, ragflow: { enabled: true, backend: "gateway" }, substrate: { backend: "gateway" } });
+			userConfig({
+				hindsight: { enabled: true, backend: "gateway" },
+				ragflow: { enabled: true, backend: "gateway" },
+				substrate: { backend: "gateway" },
+			});
 			setEnv({ DESK_GATEWAY_URL: "https://gateway.example", DESK_GATEWAY_TOKEN: FAKE_KEY });
 			for (const name of ["HINDSIGHT_API_KEY", "HINDSIGHT_API_TOKEN", "RAGFLOW_API_KEY"]) {
-				Object.defineProperty(deps.env, name, { get: () => { throw new Error(`unexpected direct credential read: ${name}`); }, configurable: true });
+				Object.defineProperty(deps.env, name, {
+					get: () => {
+						throw new Error(`unexpected direct credential read: ${name}`);
+					},
+					configurable: true,
+				});
 			}
 			const findings = checkCredentials(deps);
-			expect(findings.map((finding) => finding.id)).toEqual(["credentials.desk-gateway", "credentials.jev"]);
+			expect(findings.map((finding) => finding.id)).toEqual([
+				"credentials.desk-gateway",
+				"credentials.jev",
+			]);
 			expect(byId(findings, "credentials.desk-gateway")).toMatchObject({
 				level: "ok",
 				title: "Desk gateway: credential present (DESK_GATEWAY_TOKEN)",
@@ -264,8 +328,16 @@ describe("env checks", () => {
 		});
 
 		test("a missing gateway token is not satisfied by direct service credentials", () => {
-			userConfig({ hindsight: { enabled: true, backend: "gateway" }, ragflow: { enabled: true, backend: "gateway" } });
-			setEnv({ DESK_GATEWAY_URL: "https://gateway.example", HINDSIGHT_API_KEY: FAKE_KEY, RAGFLOW_API_KEY: FAKE_KEY, DESK_GATEWAY_TOKEN: "  " });
+			userConfig({
+				hindsight: { enabled: true, backend: "gateway" },
+				ragflow: { enabled: true, backend: "gateway" },
+			});
+			setEnv({
+				DESK_GATEWAY_URL: "https://gateway.example",
+				HINDSIGHT_API_KEY: FAKE_KEY,
+				RAGFLOW_API_KEY: FAKE_KEY,
+				DESK_GATEWAY_TOKEN: "  ",
+			});
 			store({ hindsight: apiKey(), ragflow: apiKey() });
 			const findings = checkCredentials(deps);
 			expect(byId(findings, "credentials.desk-gateway")).toMatchObject({
@@ -274,41 +346,85 @@ describe("env checks", () => {
 				detail: "needed for Hindsight and RAGFlow",
 			});
 			expect(byId(findings, "credentials.desk-gateway").fix).toContain("DESK_GATEWAY_TOKEN");
-			expect(findings.some((finding) => finding.id === "credentials.hindsight" || finding.id === "credentials.ragflow")).toBe(false);
+			expect(
+				findings.some(
+					(finding) =>
+						finding.id === "credentials.hindsight" || finding.id === "credentials.ragflow",
+				),
+			).toBe(false);
 		});
 
-		test.each(["api_key", "oauth"] as const)("gateway %s store credentials precede environment tokens", (kind) => {
-			userConfig({ hindsight: { enabled: true, backend: "gateway" }, gateway: { url: "https://gateway.example" } });
-			setEnv({ DESK_GATEWAY_TOKEN: FAKE_KEY });
-			const credential: Credential = kind === "api_key" ? apiKey() : {
-				kind: "oauth",
-				client: { clientId: "c", redirectUri: "r", issuer: "i", authorizationEndpoint: "a", tokenEndpoint: "t", registeredAt: 0 },
-				tokens: { accessToken: FAKE_KEY },
-				updatedAt: 0,
-			};
-			store({ "desk-gateway": credential } as CredentialStore["providers"]);
-			const finding = byId(checkCredentials(deps), "credentials.desk-gateway");
-			expect(finding).toMatchObject({ level: "ok", title: "Desk gateway: credential present (credential store)" });
-			expect(JSON.stringify(finding)).not.toContain(FAKE_KEY);
-			store({ "desk-gateway": { kind: "api_key", apiKey: " ", updatedAt: 0 } } as CredentialStore["providers"]);
-			expect(byId(checkCredentials(deps), "credentials.desk-gateway").title).toContain("(DESK_GATEWAY_TOKEN)");
-		});
+		test.each(["api_key", "oauth"] as const)(
+			"gateway %s store credentials precede environment tokens",
+			(kind) => {
+				userConfig({
+					hindsight: { enabled: true, backend: "gateway" },
+					gateway: { url: "https://gateway.example" },
+				});
+				setEnv({ DESK_GATEWAY_TOKEN: FAKE_KEY });
+				const credential: Credential =
+					kind === "api_key"
+						? apiKey()
+						: {
+								kind: "oauth",
+								client: {
+									clientId: "c",
+									redirectUri: "r",
+									issuer: "i",
+									authorizationEndpoint: "a",
+									tokenEndpoint: "t",
+									registeredAt: 0,
+								},
+								tokens: { accessToken: FAKE_KEY },
+								updatedAt: 0,
+							};
+				store({ "desk-gateway": credential } as CredentialStore["providers"]);
+				const finding = byId(checkCredentials(deps), "credentials.desk-gateway");
+				expect(finding).toMatchObject({
+					level: "ok",
+					title: "Desk gateway: credential present (credential store)",
+				});
+				expect(JSON.stringify(finding)).not.toContain(FAKE_KEY);
+				store({
+					"desk-gateway": { kind: "api_key", apiKey: " ", updatedAt: 0 },
+				} as CredentialStore["providers"]);
+				expect(byId(checkCredentials(deps), "credentials.desk-gateway").title).toContain(
+					"(DESK_GATEWAY_TOKEN)",
+				);
+			},
+		);
 
-		test.each(["", "not a service URL"])("gateway token presence is independent of target URL %s", (url) => {
-			userConfig({ hindsight: { enabled: true, backend: "gateway" }, gateway: { url } });
-			setEnv({ DESK_GATEWAY_TOKEN: FAKE_KEY });
-			expect(byId(checkCredentials(deps), "credentials.desk-gateway").level).toBe("ok");
-			store({ "desk-gateway": apiKey() } as CredentialStore["providers"]);
-			expect(byId(checkCredentials(deps), "credentials.desk-gateway").title).toContain("(credential store)");
-			expect(JSON.stringify(checkCredentials(deps))).not.toContain(FAKE_KEY);
-		});
+		test.each(["", "not a service URL"])(
+			"gateway token presence is independent of target URL %s",
+			(url) => {
+				userConfig({ hindsight: { enabled: true, backend: "gateway" }, gateway: { url } });
+				setEnv({ DESK_GATEWAY_TOKEN: FAKE_KEY });
+				expect(byId(checkCredentials(deps), "credentials.desk-gateway").level).toBe("ok");
+				store({ "desk-gateway": apiKey() } as CredentialStore["providers"]);
+				expect(byId(checkCredentials(deps), "credentials.desk-gateway").title).toContain(
+					"(credential store)",
+				);
+				expect(JSON.stringify(checkCredentials(deps))).not.toContain(FAKE_KEY);
+			},
+		);
 
 		test("backend overrides select gateway or direct credentials and the global gateway kill switch wins", () => {
-			userConfig({ hindsight: { enabled: true, backend: "gateway" }, ragflow: { enabled: true, backend: "direct" } });
-			setEnv({ ULTRATHINK_HINDSIGHT_BACKEND: "direct", ULTRATHINK_RAGFLOW_BACKEND: "gateway", DESK_GATEWAY_TOKEN: FAKE_KEY, HINDSIGHT_API_KEY: FAKE_KEY });
+			userConfig({
+				hindsight: { enabled: true, backend: "gateway" },
+				ragflow: { enabled: true, backend: "direct" },
+			});
+			setEnv({
+				ULTRATHINK_HINDSIGHT_BACKEND: "direct",
+				ULTRATHINK_RAGFLOW_BACKEND: "gateway",
+				DESK_GATEWAY_TOKEN: FAKE_KEY,
+				HINDSIGHT_API_KEY: FAKE_KEY,
+			});
 			let findings = checkCredentials(deps);
 			expect(byId(findings, "credentials.hindsight").level).toBe("ok");
-			expect(byId(findings, "credentials.desk-gateway")).toMatchObject({ level: "ok", detail: "needed for RAGFlow" });
+			expect(byId(findings, "credentials.desk-gateway")).toMatchObject({
+				level: "ok",
+				detail: "needed for RAGFlow",
+			});
 			expect(findings.some((finding) => finding.id === "credentials.ragflow")).toBe(false);
 			setEnv({ ULTRATHINK_GATEWAY: "0" });
 			findings = checkCredentials(deps);
@@ -318,7 +434,11 @@ describe("env checks", () => {
 		});
 
 		test("disabled gateway features remove their token need, and direct substrate adds none", () => {
-			userConfig({ hindsight: { enabled: true, backend: "gateway" }, ragflow: { enabled: true, backend: "gateway" }, substrate: { backend: "gateway" } });
+			userConfig({
+				hindsight: { enabled: true, backend: "gateway" },
+				ragflow: { enabled: true, backend: "gateway" },
+				substrate: { backend: "gateway" },
+			});
 			setEnv({ ULTRATHINK_HINDSIGHT: "0", ULTRATHINK_RAGFLOW: "0", SUBSTRATE_DISABLED: "1" });
 			expect(checkCredentials(deps).map((finding) => finding.id)).toEqual(["credentials.jev"]);
 			userConfig({ substrate: { url: "https://substrate.example", backend: "direct" } });
@@ -338,7 +458,12 @@ describe("env checks", () => {
 		});
 
 		test("no key, prefix or length reaches the text or the JSON output", () => {
-			userConfig({ ship: { enabled: true }, hindsight: { enabled: true }, ragflow: { enabled: true }, linear: { team: "Acme" } });
+			userConfig({
+				ship: { enabled: true },
+				hindsight: { enabled: true },
+				ragflow: { enabled: true },
+				linear: { team: "Acme" },
+			});
 			setEnv({ OPENROUTER_API_KEY: FAKE_KEY, HINDSIGHT_API_KEY: FAKE_KEY, GH_TOKEN: FAKE_KEY });
 			store({ greptile: apiKey(), ragflow: apiKey(), vercel: apiKey() });
 			const report = buildReport([...checkRuntime(deps), ...checkCredentials(deps)]);

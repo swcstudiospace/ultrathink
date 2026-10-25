@@ -4,7 +4,15 @@ import { randomUUID } from "node:crypto";
 import type { Clarification } from "../hitl/types.ts";
 import type { ThoughtGraph, ThoughtNode } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
-import type { HitlPlan, IssueRow, LinearIssuePlan, LinearSubIssuePlan, SubIssueRow, TaskRow, TrackPlan } from "./types.ts";
+import type {
+	HitlPlan,
+	IssueRow,
+	LinearIssuePlan,
+	LinearSubIssuePlan,
+	SubIssueRow,
+	TaskRow,
+	TrackPlan,
+} from "./types.ts";
 
 const MAX_TITLE_CHARS = 120;
 /** Step titles carry a snippet of the step text; the full text lives in the row's thought/description. */
@@ -111,7 +119,9 @@ function nodeSteps(node: ThoughtNode): string[] {
 function stepTitle(step: number, text: string): string {
 	const oneLine = text.replace(/\s+/g, " ").trim();
 	const snippet =
-		oneLine.length > MAX_STEP_TITLE_CHARS ? `${oneLine.slice(0, MAX_STEP_TITLE_CHARS - 1).trimEnd()}…` : oneLine;
+		oneLine.length > MAX_STEP_TITLE_CHARS
+			? `${oneLine.slice(0, MAX_STEP_TITLE_CHARS - 1).trimEnd()}…`
+			: oneLine;
 	return `Step ${step}: ${snippet}`;
 }
 

@@ -199,7 +199,10 @@ async function openHttp(): Promise<HttpOpened> {
 	const auth = createAuth({ ownerPasswordHash, sessionSecret, cookieSecure: true });
 	const app = createApp({ config, store, auth, logger: createLogger({ write: () => undefined }) });
 
-	function post(body: unknown, headers: Record<string, string> = { "x-connector-key": CONNECTOR_KEY }): Promise<Response> {
+	function post(
+		body: unknown,
+		headers: Record<string, string> = { "x-connector-key": CONNECTOR_KEY },
+	): Promise<Response> {
 		return app.handle(
 			new Request(`${ORIGIN}/mcp`, {
 				method: "POST",
@@ -213,7 +216,8 @@ async function openHttp(): Promise<HttpOpened> {
 	let id = 0;
 	const opened: HttpOpened = {
 		post,
-		get: (headers = { "x-connector-key": CONNECTOR_KEY }) => app.handle(new Request(`${ORIGIN}/mcp`, { method: "GET", headers }), "127.0.0.1"),
+		get: (headers = { "x-connector-key": CONNECTOR_KEY }) =>
+			app.handle(new Request(`${ORIGIN}/mcp`, { method: "GET", headers }), "127.0.0.1"),
 		async rpc(method, params) {
 			id += 1;
 			const response = await post(envelope(id, method, params));
@@ -331,7 +335,8 @@ function conformance(name: string, open: () => Promise<Opened>, extras?: () => v
 		let t: Opened;
 		const seen = new Map<string, string>();
 		observed.set(name, seen);
-		const record = (label: string, value: unknown): void => void seen.set(label, JSON.stringify(value));
+		const record = (label: string, value: unknown): void =>
+			void seen.set(label, JSON.stringify(value));
 
 		beforeAll(async () => {
 			t = await open();
@@ -341,9 +346,20 @@ function conformance(name: string, open: () => Promise<Opened>, extras?: () => v
 		});
 
 		test("initialize negotiates the requested version and announces the surface", async () => {
-			const result = resultOf(await t.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "conformance", version: "0" } }));
+			const result = resultOf(
+				await t.rpc("initialize", {
+					protocolVersion: "2025-06-18",
+					capabilities: {},
+					clientInfo: { name: "conformance", version: "0" },
+				}),
+			);
 			expect(result.protocolVersion).toBe("2025-06-18");
-			expect(Object.keys(obj(result.capabilities)).sort()).toEqual(["extensions", "prompts", "resources", "tools"]);
+			expect(Object.keys(obj(result.capabilities)).sort()).toEqual([
+				"extensions",
+				"prompts",
+				"resources",
+				"tools",
+			]);
 			expect(typeof obj(result.serverInfo).name).toBe("string");
 			expect(typeof result.instructions).toBe("string");
 			expect(str(result.instructions).length).toBeGreaterThan(0);
@@ -371,7 +387,12 @@ function conformance(name: string, open: () => Promise<Opened>, extras?: () => v
 		});
 
 		test("prompts/get renders ultrathink-quick with the user's text last", async () => {
-			const result = resultOf(await t.rpc("prompts/get", { name: "ultrathink-quick", arguments: { message: "hello conformance" } }));
+			const result = resultOf(
+				await t.rpc("prompts/get", {
+					name: "ultrathink-quick",
+					arguments: { message: "hello conformance" },
+				}),
+			);
 			const [message] = list(result.messages);
 			const content = obj(obj(message).content);
 			expect(obj(message).role).toBe("user");
@@ -406,12 +427,24 @@ function conformance(name: string, open: () => Promise<Opened>, extras?: () => v
 		});
 
 		test("resources/read refuses a missing resource with -32002 and a malformed uri with -32602", async () => {
-			expect(errorCodeOf(await t.rpc("resources/read", { uri: "ui://ultrathink/missing" }))).toBe(-32002);
-			expect(errorCodeOf(await t.rpc("resources/read", { uri: "https://example.test/x" }))).toBe(-32602);
+			expect(errorCodeOf(await t.rpc("resources/read", { uri: "ui://ultrathink/missing" }))).toBe(
+				-32002,
+			);
+			expect(errorCodeOf(await t.rpc("resources/read", { uri: "https://example.test/x" }))).toBe(
+				-32602,
+			);
 		});
 
 		test("ultrathink_plan starts a client-driven session that needs the model", async () => {
-			const result = resultOf(await t.rpc("tools/call", { name: "ultrathink_plan", arguments: { prompt: "plan the rollout of the conformance suite", sessionId: PLAN_SESSION } }));
+			const result = resultOf(
+				await t.rpc("tools/call", {
+					name: "ultrathink_plan",
+					arguments: {
+						prompt: "plan the rollout of the conformance suite",
+						sessionId: PLAN_SESSION,
+					},
+				}),
+			);
 			expect(result.isError).toBe(false);
 			const structured = obj(result.structuredContent);
 			expect(structured.sessionId).toBe(PLAN_SESSION);
@@ -420,14 +453,18 @@ function conformance(name: string, open: () => Promise<Opened>, extras?: () => v
 		});
 
 		test("ultrathink_sessions lists that session", async () => {
-			const result = resultOf(await t.rpc("tools/call", { name: "ultrathink_sessions", arguments: {} }));
+			const result = resultOf(
+				await t.rpc("tools/call", { name: "ultrathink_sessions", arguments: {} }),
+			);
 			expect(result.isError).toBe(false);
 			const sessions = list(obj(result.structuredContent).sessions);
 			expect(sessions.map((session) => obj(session).sessionId)).toContain(PLAN_SESSION);
 		});
 
 		test("ultrathink_command help lists the commands", async () => {
-			const result = resultOf(await t.rpc("tools/call", { name: "ultrathink_command", arguments: { command: "help" } }));
+			const result = resultOf(
+				await t.rpc("tools/call", { name: "ultrathink_command", arguments: { command: "help" } }),
+			);
 			expect(result.isError).toBe(false);
 			const structured = obj(result.structuredContent);
 			expect(structured.command).toBe("help");
@@ -436,22 +473,35 @@ function conformance(name: string, open: () => Promise<Opened>, extras?: () => v
 		});
 
 		test("ultrathink_graph answers status none while no session is planned", async () => {
-			const result = resultOf(await t.rpc("tools/call", { name: "ultrathink_graph", arguments: {} }));
+			const result = resultOf(
+				await t.rpc("tools/call", { name: "ultrathink_graph", arguments: {} }),
+			);
 			expect(result.isError).toBe(false);
 			expect(obj(result.structuredContent).status).toBe("none");
 			record("tools/call graph none", result);
 		});
 
 		test("a refused request is a tool result with isError, not a protocol error", async () => {
-			const result = resultOf(await t.rpc("tools/call", { name: "ultrathink_show", arguments: { sessionId: "not-a-session", key: "k" } }));
+			const result = resultOf(
+				await t.rpc("tools/call", {
+					name: "ultrathink_show",
+					arguments: { sessionId: "not-a-session", key: "k" },
+				}),
+			);
 			expect(result.isError).toBe(true);
 			expect(obj(result.structuredContent).error).toBe("invalid_session_id");
 			record("tools/call show invalid", result);
 		});
 
 		test("an unknown tool and ultrathink_uplift are refused with -32602", async () => {
-			expect(errorCodeOf(await t.rpc("tools/call", { name: "no_such_tool", arguments: {} }))).toBe(-32602);
-			expect(errorCodeOf(await t.rpc("tools/call", { name: "ultrathink_uplift", arguments: { prompt: "x" } }))).toBe(-32602);
+			expect(errorCodeOf(await t.rpc("tools/call", { name: "no_such_tool", arguments: {} }))).toBe(
+				-32602,
+			);
+			expect(
+				errorCodeOf(
+					await t.rpc("tools/call", { name: "ultrathink_uplift", arguments: { prompt: "x" } }),
+				),
+			).toBe(-32602);
 		});
 
 		test("an unknown method is refused with -32601", async () => {
@@ -476,7 +526,9 @@ conformance(
 			for (const method of ["prompts/list", "resources/list", "tools/list"]) {
 				const body = envelope(1, method);
 				expect((await server.post(body, {})).status).toBe(401);
-				expect((await server.post(body, { "x-connector-key": randomBytes(24).toString("hex") })).status).toBe(401);
+				expect(
+					(await server.post(body, { "x-connector-key": randomBytes(24).toString("hex") })).status,
+				).toBe(401);
 			}
 			const get = await server.get();
 			expect(get.status).toBe(405);
@@ -484,7 +536,10 @@ conformance(
 		});
 
 		test("answers a notification with 202 and no body", async () => {
-			const response = await httpServer().post({ jsonrpc: "2.0", method: "notifications/initialized" });
+			const response = await httpServer().post({
+				jsonrpc: "2.0",
+				method: "notifications/initialized",
+			});
 			expect(response.status).toBe(202);
 			expect(await response.text()).toBe("");
 		});
@@ -532,18 +587,21 @@ describe("stdio process lifecycle", () => {
 		}
 	});
 
-	test.skipIf(process.platform === "win32")("SIGTERM ends the process with exit code 0", async () => {
-		const child = spawnStdio(tmp());
-		try {
-			child.send(JSON.stringify(envelope(1, "ping")));
-			// The reply proves the handlers are installed and the loop is waiting for input.
-			await replyOf(child, "ping");
-			child.proc.kill("SIGTERM");
-			expect(await withTimeout(child.exited, "exit after SIGTERM", 5000)).toBe(0);
-		} finally {
-			await stop(child);
-		}
-	});
+	test.skipIf(process.platform === "win32")(
+		"SIGTERM ends the process with exit code 0",
+		async () => {
+			const child = spawnStdio(tmp());
+			try {
+				child.send(JSON.stringify(envelope(1, "ping")));
+				// The reply proves the handlers are installed and the loop is waiting for input.
+				await replyOf(child, "ping");
+				child.proc.kill("SIGTERM");
+				expect(await withTimeout(child.exited, "exit after SIGTERM", 5000)).toBe(0);
+			} finally {
+				await stop(child);
+			}
+		},
+	);
 
 	test("a line over 1 MiB is refused with -32600 and the process keeps serving", async () => {
 		const child = spawnStdio(tmp());
@@ -565,7 +623,8 @@ describe("the transports agree", () => {
 		for (const name of ["HTTP", "stdio"]) {
 			const other = observed.get(name);
 			expect(other?.size).toBe(reference?.size);
-			for (const [label, value] of reference ?? []) expect([name, label, other?.get(label)]).toEqual([name, label, value]);
+			for (const [label, value] of reference ?? [])
+				expect([name, label, other?.get(label)]).toEqual([name, label, value]);
 		}
 	});
 });

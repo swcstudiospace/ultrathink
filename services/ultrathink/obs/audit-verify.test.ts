@@ -44,7 +44,9 @@ describe("observed scans", () => {
 		log.record("login_ok", { n: 3 });
 		log.record("login_ok", { n: 4 });
 
-		expect(verifyObserved({ path, activeBytes: observed.size, activeIno: observed.ino, identity })).toEqual({ ok: true, records: 2, lastHash: head.hash });
+		expect(
+			verifyObserved({ path, activeBytes: observed.size, activeIno: observed.ino, identity }),
+		).toEqual({ ok: true, records: 2, lastHash: head.hash });
 		expect(verifyAuditFile(path).ok).toBe(true);
 	});
 
@@ -55,7 +57,9 @@ describe("observed scans", () => {
 		const observed = statSync(path);
 		const identity = chainIdentity(path);
 
-		expect(verifyObserved({ path, activeBytes: observed.size, activeIno: observed.ino + 1, identity })).toBe("raced");
+		expect(
+			verifyObserved({ path, activeBytes: observed.size, activeIno: observed.ino + 1, identity }),
+		).toBe("raced");
 	});
 
 	test("the worker verifier judges a tampered chain as broken, and answers raced once closed", async () => {
@@ -64,7 +68,12 @@ describe("observed scans", () => {
 		log.record("login_ok", { n: 1 });
 		log.record("login_ok", { n: 2 });
 		const observed = statSync(path);
-		const request = { path, activeBytes: observed.size, activeIno: observed.ino, identity: chainIdentity(path) };
+		const request = {
+			path,
+			activeBytes: observed.size,
+			activeIno: observed.ino,
+			identity: chainIdentity(path),
+		};
 		const verifier = createAuditVerifier();
 
 		expect(await verifier.verify(request)).toMatchObject({ ok: true, records: 2 });
@@ -95,7 +104,12 @@ describe("a prune between the observation and the worker", () => {
 		for (let i = 1; i <= 300; i += 1) log.record("login_ok", bulk(i));
 		// The watch observes the active bytes and the chain together, then asks for a scan.
 		const observed = statSync(path);
-		const request = { path, activeBytes: observed.size, activeIno: observed.ino, identity: chainIdentity(path) };
+		const request = {
+			path,
+			activeBytes: observed.size,
+			activeIno: observed.ino,
+			identity: chainIdentity(path),
+		};
 		const verifier = createAuditVerifier();
 		const pending = verifier.verify(request);
 		// The prune lands before the worker runs. It deletes the sealed segments and writes its boundary past the observed bytes.
@@ -108,7 +122,6 @@ describe("a prune between the observation and the worker", () => {
 		log.close();
 	}, 60_000);
 });
-
 
 describe("a worker that does not answer", () => {
 	test("fails the scan at the deadline, and the next tick scans again on a fresh worker", async () => {
@@ -143,7 +156,13 @@ self.onmessage = (event) => {
 				return { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino };
 			},
 			acknowledged: () => ({ fingerprint: undefined, seq: head.seq, hash: head.hash }),
-			scan: (observed) => verifier.verify({ path, activeBytes: observed.size, activeIno: observed.ino, identity: chainIdentity(path) }),
+			scan: (observed) =>
+				verifier.verify({
+					path,
+					activeBytes: observed.size,
+					activeIno: observed.ino,
+					identity: chainIdentity(path),
+				}),
 			onAlert: (alert) => alerts.push(alert),
 			onRecover: () => {
 				recovers += 1;
@@ -151,7 +170,9 @@ self.onmessage = (event) => {
 		});
 
 		await watch.tick();
-		expect(alerts).toEqual([{ kind: "chain_broken", reason: "verifier failed: timed out after 500 ms" }]);
+		expect(alerts).toEqual([
+			{ kind: "chain_broken", reason: "verifier failed: timed out after 500 ms" },
+		]);
 
 		// The hold lifts. The next tick scans again on a fresh worker, and its verdict matches the acknowledged head.
 		rmSync(hold);

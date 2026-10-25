@@ -39,7 +39,15 @@ export class SchemaCompileError extends Error {
 
 type SchemaType = "string" | "number" | "integer" | "boolean" | "object" | "array" | "null";
 
-const SCHEMA_TYPES: readonly SchemaType[] = ["string", "number", "integer", "boolean", "object", "array", "null"];
+const SCHEMA_TYPES: readonly SchemaType[] = [
+	"string",
+	"number",
+	"integer",
+	"boolean",
+	"object",
+	"array",
+	"null",
+];
 const SCHEMA_KEYWORDS: readonly string[] = [
 	"type",
 	"properties",
@@ -92,7 +100,12 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function isPrimitive(value: unknown): value is Primitive {
-	return value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+	return (
+		value === null ||
+		typeof value === "string" ||
+		typeof value === "number" ||
+		typeof value === "boolean"
+	);
 }
 
 function matchesType(type: SchemaType, value: unknown): boolean {
@@ -120,10 +133,15 @@ function keyPath(parent: string, key: string): string {
 	return IDENTIFIER.test(shown) ? `${parent}.${shown}` : `${parent}[${JSON.stringify(shown)}]`;
 }
 
-function compileTypes(node: Record<string, unknown>, path: string): readonly SchemaType[] | undefined {
+function compileTypes(
+	node: Record<string, unknown>,
+	path: string,
+): readonly SchemaType[] | undefined {
 	if (!Object.hasOwn(node, "type")) return undefined;
 	const list: unknown[] = Array.isArray(node.type) ? node.type : [node.type];
-	const valid = list.length > 0 && list.every((type) => typeof type === "string" && SCHEMA_TYPES.includes(type as SchemaType));
+	const valid =
+		list.length > 0 &&
+		list.every((type) => typeof type === "string" && SCHEMA_TYPES.includes(type as SchemaType));
 	if (!valid) {
 		throw new SchemaCompileError(
 			`${path}.type`,
@@ -134,42 +152,72 @@ function compileTypes(node: Record<string, unknown>, path: string): readonly Sch
 	return list as SchemaType[];
 }
 
-function compileBound(node: Record<string, unknown>, path: string, keyword: string, integer: boolean): number | undefined {
+function compileBound(
+	node: Record<string, unknown>,
+	path: string,
+	keyword: string,
+	integer: boolean,
+): number | undefined {
 	if (!Object.hasOwn(node, keyword)) return undefined;
 	const value = node[keyword];
-	if (!isFiniteNumber(value)) throw new SchemaCompileError(`${path}.${keyword}`, `${keyword} must be a finite number`, keyword);
+	if (!isFiniteNumber(value))
+		throw new SchemaCompileError(
+			`${path}.${keyword}`,
+			`${keyword} must be a finite number`,
+			keyword,
+		);
 	if (integer && (!Number.isInteger(value) || value < 0)) {
-		throw new SchemaCompileError(`${path}.${keyword}`, `${keyword} must be a non-negative integer`, keyword);
+		throw new SchemaCompileError(
+			`${path}.${keyword}`,
+			`${keyword} must be a non-negative integer`,
+			keyword,
+		);
 	}
 	return value;
 }
 
-function compileEnum(node: Record<string, unknown>, path: string): readonly Primitive[] | undefined {
+function compileEnum(
+	node: Record<string, unknown>,
+	path: string,
+): readonly Primitive[] | undefined {
 	if (!Object.hasOwn(node, "enum")) return undefined;
 	const values = node.enum;
 	if (!Array.isArray(values) || values.length === 0) {
 		throw new SchemaCompileError(`${path}.enum`, "enum must be a non-empty array", "enum");
 	}
 	if (!values.every(isPrimitive)) {
-		throw new SchemaCompileError(`${path}.enum`, "enum members must be strings, numbers, booleans or null", "enum");
+		throw new SchemaCompileError(
+			`${path}.enum`,
+			"enum members must be strings, numbers, booleans or null",
+			"enum",
+		);
 	}
 	return values;
 }
 
-function compileRequired(node: Record<string, unknown>, path: string): readonly string[] | undefined {
+function compileRequired(
+	node: Record<string, unknown>,
+	path: string,
+): readonly string[] | undefined {
 	if (!Object.hasOwn(node, "required")) return undefined;
 	const { required } = node;
 	if (!Array.isArray(required) || !required.every((entry) => typeof entry === "string")) {
-		throw new SchemaCompileError(`${path}.required`, "required must be an array of strings", "required");
+		throw new SchemaCompileError(
+			`${path}.required`,
+			"required must be an array of strings",
+			"required",
+		);
 	}
 	return [...new Set(required as string[])];
 }
 
 function compileNode(schema: unknown, path: string, depth: number): Node {
 	if (!isRecord(schema)) throw new SchemaCompileError(path, "schema must be an object");
-	if (depth > MAX_SCHEMA_DEPTH) throw new SchemaCompileError(path, `schema nested deeper than ${MAX_SCHEMA_DEPTH} levels`);
+	if (depth > MAX_SCHEMA_DEPTH)
+		throw new SchemaCompileError(path, `schema nested deeper than ${MAX_SCHEMA_DEPTH} levels`);
 	for (const key of Object.keys(schema)) {
-		if (!SCHEMA_KEYWORDS.includes(key)) throw new SchemaCompileError(path, `unsupported keyword ${JSON.stringify(key)}`, key);
+		if (!SCHEMA_KEYWORDS.includes(key))
+			throw new SchemaCompileError(path, `unsupported keyword ${JSON.stringify(key)}`, key);
 	}
 	const types = compileTypes(schema, path);
 	const minimum = compileBound(schema, path, "minimum", false);
@@ -180,13 +228,21 @@ function compileNode(schema: unknown, path: string, depth: number): Node {
 	const minLength = compileBound(schema, path, "minLength", true);
 	const maxLength = compileBound(schema, path, "maxLength", true);
 	if (minLength !== undefined && maxLength !== undefined && minLength > maxLength) {
-		throw new SchemaCompileError(`${path}.minLength`, "minLength is greater than maxLength", "minLength");
+		throw new SchemaCompileError(
+			`${path}.minLength`,
+			"minLength is greater than maxLength",
+			"minLength",
+		);
 	}
 
 	let properties: Map<string, Node> | undefined;
 	if (Object.hasOwn(schema, "properties")) {
 		if (!isRecord(schema.properties)) {
-			throw new SchemaCompileError(`${path}.properties`, "properties must be an object", "properties");
+			throw new SchemaCompileError(
+				`${path}.properties`,
+				"properties must be an object",
+				"properties",
+			);
 		}
 		properties = new Map();
 		for (const [key, child] of Object.entries(schema.properties)) {
@@ -196,7 +252,11 @@ function compileNode(schema: unknown, path: string, depth: number): Node {
 	const required = compileRequired(schema, path);
 	for (const entry of required ?? []) {
 		if (!properties?.has(entry)) {
-			throw new SchemaCompileError(`${path}.required`, `required names ${JSON.stringify(entry)}, which is not in properties`, "required");
+			throw new SchemaCompileError(
+				`${path}.required`,
+				`required names ${JSON.stringify(entry)}, which is not in properties`,
+				"required",
+			);
 		}
 	}
 
@@ -204,7 +264,8 @@ function compileNode(schema: unknown, path: string, depth: number): Node {
 	if (Object.hasOwn(schema, "additionalProperties")) {
 		const extra = schema.additionalProperties;
 		if (typeof extra === "boolean") additional = extra;
-		else if (isRecord(extra)) additional = compileNode(extra, `${path}.additionalProperties`, depth + 1);
+		else if (isRecord(extra))
+			additional = compileNode(extra, `${path}.additionalProperties`, depth + 1);
 		else {
 			throw new SchemaCompileError(
 				`${path}.additionalProperties`,
@@ -213,9 +274,22 @@ function compileNode(schema: unknown, path: string, depth: number): Node {
 			);
 		}
 	}
-	const items = Object.hasOwn(schema, "items") ? compileNode(schema.items, `${path}.items`, depth + 1) : undefined;
+	const items = Object.hasOwn(schema, "items")
+		? compileNode(schema.items, `${path}.items`, depth + 1)
+		: undefined;
 
-	return { types, enumValues: compileEnum(schema, path), minimum, maximum, minLength, maxLength, properties, required, additional, items };
+	return {
+		types,
+		enumValues: compileEnum(schema, path),
+		minimum,
+		maximum,
+		minLength,
+		maxLength,
+		properties,
+		required,
+		additional,
+		items,
+	};
 }
 
 function fail(path: string, reason: string): ValidationResult {
@@ -224,7 +298,11 @@ function fail(path: string, reason: string): ValidationResult {
 
 const OK: ValidationResult = { ok: true };
 
-function validateObject(node: Node, value: Record<string, unknown>, path: string): ValidationResult {
+function validateObject(
+	node: Node,
+	value: Record<string, unknown>,
+	path: string,
+): ValidationResult {
 	for (const key of node.required ?? []) {
 		if (!Object.hasOwn(value, key)) return fail(keyPath(path, key), "missing required property");
 	}
@@ -251,10 +329,13 @@ function validateNode(node: Node, value: unknown, path: string): ValidationResul
 	if (node.types && !node.types.some((type) => matchesType(type, value))) {
 		return fail(path, `expected ${node.types.join(" or ")}`);
 	}
-	if (node.enumValues && !node.enumValues.includes(value as Primitive)) return fail(path, "not one of the allowed values");
+	if (node.enumValues && !node.enumValues.includes(value as Primitive))
+		return fail(path, "not one of the allowed values");
 	if (typeof value === "number") {
-		if (node.minimum !== undefined && !(value >= node.minimum)) return fail(path, `below minimum ${node.minimum}`);
-		if (node.maximum !== undefined && !(value <= node.maximum)) return fail(path, `above maximum ${node.maximum}`);
+		if (node.minimum !== undefined && !(value >= node.minimum))
+			return fail(path, `below minimum ${node.minimum}`);
+		if (node.maximum !== undefined && !(value <= node.maximum))
+			return fail(path, `above maximum ${node.maximum}`);
 	} else if (typeof value === "string") {
 		// Lengths are UTF-16 code units, the size a string occupies in the process, not Unicode code points.
 		if (node.minLength !== undefined && value.length < node.minLength) {

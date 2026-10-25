@@ -166,7 +166,9 @@ describe("ultrathink store", () => {
 	test("journal_size_limit is 64 MiB and WAL mode is on", () => {
 		const store = openStore(tempDbPath());
 		try {
-			const limit = store.db.query<{ journal_size_limit: number }, []>("PRAGMA journal_size_limit").get();
+			const limit = store.db
+				.query<{ journal_size_limit: number }, []>("PRAGMA journal_size_limit")
+				.get();
 			expect(limit?.journal_size_limit).toBe(67108864);
 			const mode = store.db.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get();
 			expect(mode?.journal_mode).toBe("wal");
@@ -178,7 +180,8 @@ describe("ultrathink store", () => {
 	test("a corrupt database fails fast at open with the quick_check detail", () => {
 		const path = tempDbPath();
 		const store = openStore(path);
-		for (let i = 0; i < 40; i += 1) store.createRun({ ownerId: `owner-${i}`, request: "x".repeat(400), route: "default" });
+		for (let i = 0; i < 40; i += 1)
+			store.createRun({ ownerId: `owner-${i}`, request: "x".repeat(400), route: "default" });
 		expect(store.checkpoint()).toEqual({ ok: true });
 		store.close();
 

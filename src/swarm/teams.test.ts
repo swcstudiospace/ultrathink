@@ -6,7 +6,17 @@
 // No test spawns a real process, no real wall-clock timers, and real fs touches only tmpdirs.
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -35,7 +45,8 @@ import {
 	toSwarmStatusCard,
 } from "./teams.ts";
 
-const sha8 = (brief: string): string => createHash("sha256").update(brief, "utf8").digest("hex").slice(0, 8);
+const sha8 = (brief: string): string =>
+	createHash("sha256").update(brief, "utf8").digest("hex").slice(0, 8);
 
 /** A fs seam over real syscalls; tests only ever point it at tmpdir paths. */
 const realFs: TeamsFs = { existsSync, mkdirSync, openSync, closeSync, readdirSync, statSync };
@@ -49,9 +60,32 @@ const baseOpts = (stateDir: string, env: NodeJS.ProcessEnv = {}): PlanLanesOptio
 
 /** Spawner that records every start request; optionally fails one lane (the one whose dir is `…-2-<nonce>`). */
 function recordingSpawner(failLane2: boolean) {
-	const calls: Array<{ cmd: string; args: readonly string[]; env: Record<string, string>; detached: boolean; stdio: readonly unknown[]; cwd: string }> = [];
-	const fn = (cmd: string, args: readonly string[], opts: { cwd: string; env: Record<string, string>; detached: true; stdio: readonly ["ignore", number, number] }) => {
-		calls.push({ cmd, args, env: opts.env, detached: opts.detached, stdio: opts.stdio, cwd: opts.cwd });
+	const calls: Array<{
+		cmd: string;
+		args: readonly string[];
+		env: Record<string, string>;
+		detached: boolean;
+		stdio: readonly unknown[];
+		cwd: string;
+	}> = [];
+	const fn = (
+		cmd: string,
+		args: readonly string[],
+		opts: {
+			cwd: string;
+			env: Record<string, string>;
+			detached: true;
+			stdio: readonly ["ignore", number, number];
+		},
+	) => {
+		calls.push({
+			cmd,
+			args,
+			env: opts.env,
+			detached: opts.detached,
+			stdio: opts.stdio,
+			cwd: opts.cwd,
+		});
 		if (failLane2 && /-2-[0-9a-z]+$/.test(opts.env.SWARM_DIR ?? "")) throw new Error("boom");
 		return { pid: 1000 + calls.length };
 	};
@@ -87,7 +121,10 @@ describe("parseLaneArgs", () => {
 	});
 
 	test("empty input is a usage with a reason", () => {
-		expect(parseLaneArgs("   ")).toEqual({ kind: "usage", reason: expect.stringContaining("no lane briefs") });
+		expect(parseLaneArgs("   ")).toEqual({
+			kind: "usage",
+			reason: expect.stringContaining("no lane briefs"),
+		});
 	});
 
 	test("splits briefs on |, trims each, drops empties", () => {
@@ -102,7 +139,10 @@ describe("parseLaneArgs", () => {
 		expect(parseLaneArgs(seven).kind).toBe("usage");
 		// The default limit is 3; raising it admits more, but never past the hard cap.
 		expect(parseLaneArgs("a|b|c|d").kind).toBe("usage");
-		expect(parseLaneArgs("a|b|c|d", { maxLanes: 4 })).toEqual({ kind: "spawn", briefs: ["a", "b", "c", "d"] });
+		expect(parseLaneArgs("a|b|c|d", { maxLanes: 4 })).toEqual({
+			kind: "spawn",
+			briefs: ["a", "b", "c", "d"],
+		});
 		expect(parseLaneArgs("a|b|c|d|e|f", { maxLanes: TEAMS_MAX_LANES }).kind).toBe("spawn");
 		expect(parseLaneArgs(seven, { maxLanes: TEAMS_MAX_LANES }).kind).toBe("usage");
 	});
@@ -143,11 +183,19 @@ describe("planLanes", () => {
 	test("the nonce carries the injected clock", () => {
 		const [lane] = planLanes(["same brief"], { ...baseOpts("/state/host"), now: () => 12345 });
 		const stamp = (12345).toString(36);
-		expect(dirName(lane!.stateDir)).toMatch(new RegExp(`^${sha8("same brief")}-1-${stamp}[0-9a-f]{4}$`));
+		expect(dirName(lane!.stateDir)).toMatch(
+			new RegExp(`^${sha8("same brief")}-1-${stamp}[0-9a-f]{4}$`),
+		);
 	});
 
 	test("lane env merges the parent environment; lane keys win", () => {
-		const parent = { PATH: "/usr/bin:/bin", HOME: "/root", SWARM_DIR: "/parent/dir", SWARM_AUTONOMOUS_RUN_CAP_S: "45", EMPTY: undefined };
+		const parent = {
+			PATH: "/usr/bin:/bin",
+			HOME: "/root",
+			SWARM_DIR: "/parent/dir",
+			SWARM_AUTONOMOUS_RUN_CAP_S: "45",
+			EMPTY: undefined,
+		};
 		const [lane] = planLanes(["do it"], baseOpts("/state/host", parent));
 		// Parent basics survive into the lane.
 		expect(lane!.env.PATH).toBe("/usr/bin:/bin");
@@ -180,7 +228,10 @@ describe("planLanes", () => {
 	});
 
 	test("passes SWARM_AUTONOMOUS_RUN_CAP_S through when set", () => {
-		const [lane] = planLanes(["do it"], baseOpts("/state/host", { SWARM_AUTONOMOUS_RUN_CAP_S: "1800" }));
+		const [lane] = planLanes(
+			["do it"],
+			baseOpts("/state/host", { SWARM_AUTONOMOUS_RUN_CAP_S: "1800" }),
+		);
 		expect(lane!.env.SWARM_AUTONOMOUS_RUN_CAP_S).toBe("1800");
 	});
 
@@ -194,7 +245,10 @@ describe("planLanes", () => {
 		expect(withSkills!.laneBrief).toContain("build it");
 		expect(withSkills!.laneBrief).toContain("pstack alongside GSD (orchestrate");
 		expect(withSkills!.argv.at(-1)).toBe(withSkills!.laneBrief);
-		const [unresolved] = planLanes(["build it"], { ...baseOpts("/s"), pstack: { reason: "no cache" } });
+		const [unresolved] = planLanes(["build it"], {
+			...baseOpts("/s"),
+			pstack: { reason: "no cache" },
+		});
 		expect(unresolved!.laneBrief).toBe("build it");
 		const [noPstack] = planLanes(["build it"], baseOpts("/s"));
 		expect(noPstack!.laneBrief).toBe("build it");
@@ -249,11 +303,15 @@ describe("laneStatus", () => {
 
 	test("aggregates task counts and a summary per lane, accepting id or task_id rows", async () => {
 		const probes: Record<string, { stdout: string } | { error: string }> = {
-			"/s/x-1": { stdout: JSON.stringify({ tasks: [
-				{ id: "T-1", state: "DONE" },
-				{ task_id: "T-2", state: "RUNNING" },
-				{ id: "T-3", state: "DONE" },
-			] }) },
+			"/s/x-1": {
+				stdout: JSON.stringify({
+					tasks: [
+						{ id: "T-1", state: "DONE" },
+						{ task_id: "T-2", state: "RUNNING" },
+						{ id: "T-3", state: "DONE" },
+					],
+				}),
+			},
 			"/s/x-2": { error: "timed out" },
 		};
 		const results = await laneStatus([lane("/s/x-1"), lane("/s/x-2")], async (stateDir) => {
@@ -280,19 +338,41 @@ describe("laneStatus", () => {
 			"/s/y-1": { stdout: "not json {" },
 			"/s/y-2": { stdout: JSON.stringify({ nope: true }) },
 		};
-		const results = await laneStatus([lane("/s/y-1"), lane("/s/y-2"), lane("/s/y-3")], async (stateDir) => {
-			const probe = probes[stateDir];
-			if (!probe) throw new Error("probe exploded");
-			return probe;
+		const results = await laneStatus(
+			[lane("/s/y-1"), lane("/s/y-2"), lane("/s/y-3")],
+			async (stateDir) => {
+				const probe = probes[stateDir];
+				if (!probe) throw new Error("probe exploded");
+				return probe;
+			},
+		);
+		expect(results[0]).toEqual({
+			laneId: "y-1",
+			logPath: "/s/y-1/run.log",
+			error: expect.stringContaining("not JSON"),
 		});
-		expect(results[0]).toEqual({ laneId: "y-1", logPath: "/s/y-1/run.log", error: expect.stringContaining("not JSON") });
-		expect(results[1]).toEqual({ laneId: "y-2", logPath: "/s/y-2/run.log", error: expect.stringContaining("no task list") });
-		expect(results[2]).toEqual({ laneId: "y-3", logPath: "/s/y-3/run.log", error: "probe exploded" });
+		expect(results[1]).toEqual({
+			laneId: "y-2",
+			logPath: "/s/y-2/run.log",
+			error: expect.stringContaining("no task list"),
+		});
+		expect(results[2]).toEqual({
+			laneId: "y-3",
+			logPath: "/s/y-3/run.log",
+			error: "probe exploded",
+		});
 	});
 
 	test("an empty task store is a lane with nothing to do, not an error", async () => {
-		const results = await laneStatus([lane("/s/z-1")], async () => ({ stdout: JSON.stringify({ tasks: [] }) }));
-		expect(results[0]).toMatchObject({ laneId: "z-1", logPath: "/s/z-1/run.log", total: 0, done: 0 });
+		const results = await laneStatus([lane("/s/z-1")], async () => ({
+			stdout: JSON.stringify({ tasks: [] }),
+		}));
+		expect(results[0]).toMatchObject({
+			laneId: "z-1",
+			logPath: "/s/z-1/run.log",
+			total: 0,
+			done: 0,
+		});
 		const row = results[0]!;
 		if ("error" in row) throw new Error("expected an aggregate row");
 		expect(row.summary).toContain("no tasks yet");
@@ -302,7 +382,10 @@ describe("laneStatus", () => {
 		let inFlight = 0;
 		let maxInFlight = 0;
 		let started = 0;
-		const lanes = Array.from({ length: 8 }, (_, index) => ({ laneId: `lane-${index + 1}`, stateDir: `/s/lane-${index + 1}` }));
+		const lanes = Array.from({ length: 8 }, (_, index) => ({
+			laneId: `lane-${index + 1}`,
+			stateDir: `/s/lane-${index + 1}`,
+		}));
 		// Each probe parks on its own gate; the test releases them — no real timers anywhere.
 		const gates = lanes.map(() => Promise.withResolvers<void>());
 		const rows = laneStatus(lanes, async (stateDir) => {
@@ -326,14 +409,26 @@ describe("laneStatus", () => {
 
 describe("orchStatusRunner", () => {
 	test("probes orch_status.py with the lane SWARM_DIR and a 10s cap", async () => {
-		const seen: Array<{ cmd: string; args: readonly string[]; opts: { env: NodeJS.ProcessEnv; timeout: number } }> = [];
-		const runner = orchStatusRunner({ swarmRoot: "/opt/agent-swarm", cwd: "/repo", env: { ULTRATHINK_HOST: "omp" } }, async (cmd, args, opts) => {
-			seen.push({ cmd, args, opts });
-			return { stdout: JSON.stringify({ tasks: [] }) };
-		});
+		const seen: Array<{
+			cmd: string;
+			args: readonly string[];
+			opts: { env: NodeJS.ProcessEnv; timeout: number };
+		}> = [];
+		const runner = orchStatusRunner(
+			{ swarmRoot: "/opt/agent-swarm", cwd: "/repo", env: { ULTRATHINK_HOST: "omp" } },
+			async (cmd, args, opts) => {
+				seen.push({ cmd, args, opts });
+				return { stdout: JSON.stringify({ tasks: [] }) };
+			},
+		);
 		expect(await runner("/lane/dir")).toEqual({ stdout: JSON.stringify({ tasks: [] }) });
 		expect(seen[0]!.cmd).toBe("python3");
-		expect(seen[0]!.args).toEqual([join("/opt/agent-swarm", "scripts", "orch_status.py"), "--json", "--repo", "/repo"]);
+		expect(seen[0]!.args).toEqual([
+			join("/opt/agent-swarm", "scripts", "orch_status.py"),
+			"--json",
+			"--repo",
+			"/repo",
+		]);
 		expect(seen[0]!.opts.env.SWARM_DIR).toBe("/lane/dir");
 		expect(seen[0]!.opts.env.ULTRATHINK_HOST).toBe("omp");
 		expect(seen[0]!.opts.timeout).toBe(ORCH_STATUS_TIMEOUT_MS);
@@ -348,15 +443,21 @@ describe("orchStatusRunner", () => {
 	});
 
 	test("missing stdout is an error carrying the failure detail", async () => {
-		const stderrProbe = orchStatusRunner({ swarmRoot: "/opt/agent-swarm", cwd: "/repo" }, async () => ({
-			stdout: "",
-			stderr: "traceback (line 1)\n    boom",
-		}));
+		const stderrProbe = orchStatusRunner(
+			{ swarmRoot: "/opt/agent-swarm", cwd: "/repo" },
+			async () => ({
+				stdout: "",
+				stderr: "traceback (line 1)\n    boom",
+			}),
+		);
 		const stderrResult = await stderrProbe("/lane/dir");
 		expect("error" in stderrResult && stderrResult.error).toContain("boom");
-		const errorProbe = orchStatusRunner({ swarmRoot: "/opt/agent-swarm", cwd: "/repo" }, async () => ({
-			error: new Error("spawn python3 ENOENT"),
-		}));
+		const errorProbe = orchStatusRunner(
+			{ swarmRoot: "/opt/agent-swarm", cwd: "/repo" },
+			async () => ({
+				error: new Error("spawn python3 ENOENT"),
+			}),
+		);
 		const errorResult = await errorProbe("/lane/dir");
 		expect("error" in errorResult && errorResult.error).toContain("ENOENT");
 	});
@@ -380,7 +481,10 @@ describe("laneDirs", () => {
 		mkdirSync(join(stateDir, "swarm", "zzzzzzzz-3-m0c"), { recursive: true });
 		writeFileSync(join(stateDir, "swarm", "stray.txt"), "x");
 		const lanes = laneDirs(stateDir, realFs).lanes;
-		expect(lanes.map((entry) => entry.laneId)).toEqual([`${sha8("a")}-1-m0a`, `${sha8("b")}-2-m0b`]);
+		expect(lanes.map((entry) => entry.laneId)).toEqual([
+			`${sha8("a")}-1-m0a`,
+			`${sha8("b")}-2-m0b`,
+		]);
 		expect(lanes[0]!.stateDir).toBe(join(stateDir, "swarm", `${sha8("a")}-1-m0a`));
 		// A state directory without swarm lanes discovers nothing.
 		expect(laneDirs(join(stateDir, "empty"), realFs)).toEqual({ lanes: [], omitted: 0 });
@@ -421,7 +525,8 @@ describe("laneDirs", () => {
 		});
 		for (let i = 1; i < keys.length; i += 1) {
 			expect(keys[i]!.index).toBeGreaterThanOrEqual(keys[i - 1]!.index);
-			if (keys[i]!.index === keys[i - 1]!.index) expect(keys[i]!.nonce >= keys[i - 1]!.nonce).toBe(true);
+			if (keys[i]!.index === keys[i - 1]!.index)
+				expect(keys[i]!.nonce >= keys[i - 1]!.nonce).toBe(true);
 		}
 	});
 });
@@ -474,7 +579,9 @@ describe("display formatting", () => {
 		const text = formatLaneStatusText(rows, 3);
 		expect(text).toContain("abcd1234-1-m9x: 1 task — 1 RUNNING · 0 done");
 		// The omitted count is a final line, after every probed lane.
-		expect(text.split("\n").at(-1)).toMatch(/^3 older lanes not shown — raise .* prune <stateDir>\/swarm$/);
+		expect(text.split("\n").at(-1)).toMatch(
+			/^3 older lanes not shown — raise .* prune <stateDir>\/swarm$/,
+		);
 		// Singular lanes read naturally, and no bound means no trailing line.
 		expect(formatLaneStatusText(rows, 1)).toContain("1 older lane not shown");
 		expect(formatLaneStatusText(rows)).not.toContain("not shown");
@@ -512,8 +619,18 @@ describe("toSwarmSpawnCard", () => {
 		},
 	];
 	const handles: LaneHandle[] = [
-		{ laneId: "aa11bb22-1-x1", pid: 4242, stateDir: "/s/aa11bb22-1-x1", logPath: "/s/aa11bb22-1-x1/run.log" },
-		{ laneId: "cc33dd44-2-x2", stateDir: "/s/cc33dd44-2-x2", logPath: "/s/cc33dd44-2-x2/run.log", error: "boom" },
+		{
+			laneId: "aa11bb22-1-x1",
+			pid: 4242,
+			stateDir: "/s/aa11bb22-1-x1",
+			logPath: "/s/aa11bb22-1-x1/run.log",
+		},
+		{
+			laneId: "cc33dd44-2-x2",
+			stateDir: "/s/cc33dd44-2-x2",
+			logPath: "/s/cc33dd44-2-x2/run.log",
+			error: "boom",
+		},
 	];
 
 	test("joins briefs by position and carries each handle's pid, log, and start error", () => {
@@ -536,19 +653,45 @@ describe("toSwarmSpawnCard", () => {
 			},
 		]);
 		// Cards carry exactly the frozen keys: no pid on a failed lane, no error on a started one.
-		expect(Object.keys(card.lanes[0]!).sort()).toEqual(["brief", "laneId", "logPath", "pid", "stateDir"]);
-		expect(Object.keys(card.lanes[1]!).sort()).toEqual(["brief", "error", "laneId", "logPath", "stateDir"]);
+		expect(Object.keys(card.lanes[0]!).sort()).toEqual([
+			"brief",
+			"laneId",
+			"logPath",
+			"pid",
+			"stateDir",
+		]);
+		expect(Object.keys(card.lanes[1]!).sort()).toEqual([
+			"brief",
+			"error",
+			"laneId",
+			"logPath",
+			"stateDir",
+		]);
 	});
 
 	test("spawned counts only lanes that actually started", () => {
 		expect(toSwarmSpawnCard(handles, plans).spawned).toBe(1);
 		const started = toSwarmSpawnCard(
-			[{ laneId: "aa11bb22-1-x1", pid: 7, stateDir: "/s/aa11bb22-1-x1", logPath: "/s/aa11bb22-1-x1/run.log" }],
+			[
+				{
+					laneId: "aa11bb22-1-x1",
+					pid: 7,
+					stateDir: "/s/aa11bb22-1-x1",
+					logPath: "/s/aa11bb22-1-x1/run.log",
+				},
+			],
 			plans,
 		);
 		expect(started.spawned).toBe(1);
 		const failed = toSwarmSpawnCard(
-			[{ laneId: "aa11bb22-1-x1", stateDir: "/s/aa11bb22-1-x1", logPath: "/s/aa11bb22-1-x1/run.log", error: "no pid" }],
+			[
+				{
+					laneId: "aa11bb22-1-x1",
+					stateDir: "/s/aa11bb22-1-x1",
+					logPath: "/s/aa11bb22-1-x1/run.log",
+					error: "no pid",
+				},
+			],
 			plans,
 		);
 		expect(failed.spawned).toBe(0);
@@ -592,8 +735,19 @@ describe("toSwarmStatusCard", () => {
 		const card = toSwarmStatusCard(rows, 2);
 		expect(card.omitted).toBe(2);
 		expect(card.lanes).toEqual([
-			{ laneId: "aa11bb22-1-x1", summary: "aa11bb22-1-x1: 3 tasks — 2 done", logPath: "/s/aa11bb22-1-x1/run.log", done: 2, total: 3 },
-			{ laneId: "cc33dd44-2-x2", summary: "", logPath: "/s/cc33dd44-2-x2/run.log", error: "probe timed out" },
+			{
+				laneId: "aa11bb22-1-x1",
+				summary: "aa11bb22-1-x1: 3 tasks — 2 done",
+				logPath: "/s/aa11bb22-1-x1/run.log",
+				done: 2,
+				total: 3,
+			},
+			{
+				laneId: "cc33dd44-2-x2",
+				summary: "",
+				logPath: "/s/cc33dd44-2-x2/run.log",
+				error: "probe timed out",
+			},
 		]);
 		// A probed lane carries no error key; a failed probe lane carries none of the counts.
 		expect("error" in card.lanes[0]!).toBe(false);

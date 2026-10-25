@@ -7,7 +7,16 @@
  * reported (names, sizes and counts only); every failure is recorded and the sweep carries on; nothing here throws.
  * Nothing calls this unless the operator runs `ultrathink prune` or opts in with `state.retentionDays`.
  */
-import { lstatSync, readdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync, type Stats } from "node:fs";
+import {
+	lstatSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	utimesSync,
+	writeFileSync,
+	type Stats,
+} from "node:fs";
 import { basename, join } from "node:path";
 import { removeDeadLockCandidate, withFileLock, withLockMutation } from "../claude/atomic.ts";
 import { lastLockHeld, legacySessionPath, sessionPath } from "../claude/state.ts";
@@ -130,7 +139,12 @@ function sessionStem(name: string): string | undefined {
  * the same first entries. The first group is always taken while any budget remains, so a pair wider than a tiny
  * budget still makes progress; the slice may then exceed the budget by one entry.
  */
-function listSessionEntries(sweep: Sweep, dir: string, label: string, cursor: string | undefined): string[] {
+function listSessionEntries(
+	sweep: Sweep,
+	dir: string,
+	label: string,
+	cursor: string | undefined,
+): string[] {
 	let all: string[];
 	try {
 		all = readdirSync(dir).sort();
@@ -252,7 +266,9 @@ function sweepOrphans(sweep: Sweep, dir: string, names: string[], lastLockPath?:
 function readRecord(path: string): Record<string, unknown> | undefined {
 	try {
 		const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
-		return raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined;
+		return raw !== null && typeof raw === "object" && !Array.isArray(raw)
+			? (raw as Record<string, unknown>)
+			: undefined;
 	} catch {
 		return undefined;
 	}
@@ -263,7 +279,13 @@ function readRecord(path: string): Record<string, unknown> | undefined {
  * whose record is gone or older than the cutoff. A flag armed just now is kept even when its session has no record yet.
  * A `.skip` file never belongs to a session group, so without this sweep abandoned flags would accumulate.
  */
-function sweepSkipFlags(sweep: Sweep, stateDir: string, dir: string, names: string[], olderThanMs: number): void {
+function sweepSkipFlags(
+	sweep: Sweep,
+	stateDir: string,
+	dir: string,
+	names: string[],
+	olderThanMs: number,
+): void {
 	const keep = protectedStems(stateDir);
 	const suffix = ".skip";
 	for (const name of names) {
@@ -297,7 +319,12 @@ function sweepSkipFlags(sweep: Sweep, stateDir: string, dir: string, names: stri
 				if (locked) attempt();
 				else sweep.result.kept++;
 			},
-			{ timeoutMs: 0, log: () => { locked = false; } },
+			{
+				timeoutMs: 0,
+				log: () => {
+					locked = false;
+				},
+			},
 		);
 	}
 }
@@ -375,7 +402,13 @@ function readSessionGroup(sweep: Sweep, dir: string, stem: string): SessionGroup
  * held by a live writer means the session is being written: keep it rather than wait on a prompt path. Dry runs
  * take no lock: they must touch nothing, not even a lock file.
  */
-function deleteSession(sweep: Sweep, stateDir: string, dir: string, stem: string, olderThanMs: number): void {
+function deleteSession(
+	sweep: Sweep,
+	stateDir: string,
+	dir: string,
+	stem: string,
+	olderThanMs: number,
+): void {
 	const attempt = (): void => {
 		const { result } = sweep;
 		const current = readSessionGroup(sweep, dir, stem);
@@ -410,13 +443,28 @@ function deleteSession(sweep: Sweep, stateDir: string, dir: string, stem: string
 			if (locked) attempt();
 			else sweep.result.kept++;
 		},
-		{ timeoutMs: 0, log: () => { locked = false; } },
+		{
+			timeoutMs: 0,
+			log: () => {
+				locked = false;
+			},
+		},
 	);
 }
 
-function sweepSessions(sweep: Sweep, stateDir: string, dir: string, names: string[], olderThanMs: number): void {
+function sweepSessions(
+	sweep: Sweep,
+	stateDir: string,
+	dir: string,
+	names: string[],
+	olderThanMs: number,
+): void {
 	const groups = [...groupSessions(sweep, dir, names)]
-		.map(([stem, group]) => ({ stem, group, newest: Math.max(0, ...group.files.map((file) => file.mtimeMs)) }))
+		.map(([stem, group]) => ({
+			stem,
+			group,
+			newest: Math.max(0, ...group.files.map((file) => file.mtimeMs)),
+		}))
 		.sort((a, b) => a.newest - b.newest);
 	const keep = protectedStems(stateDir);
 	const { result } = sweep;
@@ -443,7 +491,16 @@ function sweepSessions(sweep: Sweep, stateDir: string, dir: string, names: strin
  */
 export function pruneSessions(options: PruneOptions): PruneResult {
 	const dryRun = options.dryRun === true;
-	const result: PruneResult = { dryRun, scanned: 0, kept: 0, keptActive: 0, pruned: [], orphans: [], bytes: 0, errors: [] };
+	const result: PruneResult = {
+		dryRun,
+		scanned: 0,
+		kept: 0,
+		keptActive: 0,
+		pruned: [],
+		orphans: [],
+		bytes: 0,
+		errors: [],
+	};
 	const sweep: Sweep = {
 		now: (options.now ?? Date.now)(),
 		dryRun,
@@ -458,7 +515,12 @@ export function pruneSessions(options: PruneOptions): PruneResult {
 			return result;
 		}
 		const sessionsDir = join(options.stateDir, "sessions");
-		sweepOrphans(sweep, options.stateDir, listEntries(sweep, options.stateDir, "state directory"), join(options.stateDir, "last.json.lock"));
+		sweepOrphans(
+			sweep,
+			options.stateDir,
+			listEntries(sweep, options.stateDir, "state directory"),
+			join(options.stateDir, "last.json.lock"),
+		);
 		const bounded = options.limit !== undefined;
 		const names = bounded
 			? listSessionEntries(sweep, sessionsDir, "sessions", readCursor(options.stateDir))

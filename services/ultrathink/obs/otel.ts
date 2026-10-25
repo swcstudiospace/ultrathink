@@ -30,7 +30,10 @@ export interface SpanExporterOptions {
 	endpoint: string; // base URL, already validated; "/v1/traces" is appended
 	serviceName: string;
 	serviceVersion: string;
-	fetch?: (url: string, init: { method: "POST"; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ ok: boolean; status: number }>;
+	fetch?: (
+		url: string,
+		init: { method: "POST"; headers: Record<string, string>; body: string; signal: AbortSignal },
+	) => Promise<{ ok: boolean; status: number }>;
 	maxQueue?: number; // default 2048
 	maxBatch?: number; // default 512
 	timeoutMs?: number; // default 5000
@@ -51,7 +54,11 @@ const SCOPE_NAME = "ultrathink";
 const STATUS_UNSET = 0;
 const STATUS_ERROR = 2;
 
-type OtlpAnyValue = { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean };
+type OtlpAnyValue =
+	| { stringValue: string }
+	| { intValue: string }
+	| { doubleValue: number }
+	| { boolValue: boolean };
 
 /** Encode one attribute value: integers as decimal strings (OTLP/JSON int64), BigInt keeps large magnitudes out of exponent form. */
 function encodeValue(value: string | number | boolean): OtlpAnyValue {
@@ -62,7 +69,10 @@ function encodeValue(value: string | number | boolean): OtlpAnyValue {
 }
 
 /** Encode finished spans as one OTLP/JSON `ExportTraceServiceRequest`. */
-export function encodeOtlpTraces(spans: readonly FinishedSpan[], resource: { serviceName: string; serviceVersion: string }): unknown {
+export function encodeOtlpTraces(
+	spans: readonly FinishedSpan[],
+	resource: { serviceName: string; serviceVersion: string },
+): unknown {
 	return {
 		resourceSpans: [
 			{
@@ -84,7 +94,10 @@ export function encodeOtlpTraces(spans: readonly FinishedSpan[], resource: { ser
 							kind: span.kind,
 							startTimeUnixNano: span.startUnixNano.toString(),
 							endTimeUnixNano: span.endUnixNano.toString(),
-							attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: encodeValue(value) })),
+							attributes: Object.entries(span.attributes).map(([key, value]) => ({
+								key,
+								value: encodeValue(value),
+							})),
 							status: { code: span.error ? STATUS_ERROR : STATUS_UNSET },
 						})),
 					},
@@ -96,7 +109,8 @@ export function encodeOtlpTraces(spans: readonly FinishedSpan[], resource: { ser
 
 function positiveInteger(name: string, value: number): number {
 	// A zero batch size would make the drain loop spin forever, so reject it at construction.
-	if (!Number.isInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
+	if (!Number.isInteger(value) || value < 1)
+		throw new RangeError(`${name} must be a positive integer`);
 	return value;
 }
 

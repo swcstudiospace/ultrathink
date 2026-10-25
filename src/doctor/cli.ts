@@ -18,7 +18,12 @@ const VERSION_TIMEOUT_MS = 3_000;
 /** First line of `<command> --version` (Python 2 prints it on stderr), or undefined when the command cannot run. */
 function runVersion(command: PythonCommand): string | undefined {
 	try {
-		const proc = Bun.spawnSync([command, "--version"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: VERSION_TIMEOUT_MS });
+		const proc = Bun.spawnSync([command, "--version"], {
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+			timeout: VERSION_TIMEOUT_MS,
+		});
 		if (proc.exitCode !== 0) return undefined;
 		const text = proc.stdout.toString().trim() || proc.stderr.toString().trim();
 		return text.split("\n")[0] || undefined;
@@ -39,17 +44,32 @@ function productionDeps(): DoctorDeps {
 }
 
 /** A check that throws is itself a finding, so one bad probe never hides the others. */
-function guarded(section: DoctorSection, check: (deps: DoctorDeps) => Finding[], deps: DoctorDeps): Finding[] {
+function guarded(
+	section: DoctorSection,
+	check: (deps: DoctorDeps) => Finding[],
+	deps: DoctorDeps,
+): Finding[] {
 	try {
 		return check(deps);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return [{ id: `${section}.internal`, section, level: "error", title: `the ${section} check failed to run`, detail: message }];
+		return [
+			{
+				id: `${section}.internal`,
+				section,
+				level: "error",
+				title: `the ${section} check failed to run`,
+				detail: message,
+			},
+		];
 	}
 }
 
 /** Never rejects. exitCode 0 when no finding is an error, 1 when one is, 2 for a usage error. `output` has no trailing newline. */
-export async function runDoctorCommand(args: string[], overrides: Partial<DoctorDeps> = {}): Promise<{ output: string; exitCode: number }> {
+export async function runDoctorCommand(
+	args: string[],
+	overrides: Partial<DoctorDeps> = {},
+): Promise<{ output: string; exitCode: number }> {
 	let json = false;
 	for (const arg of args) {
 		if (arg === "--json") json = true;

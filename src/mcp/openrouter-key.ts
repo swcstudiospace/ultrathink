@@ -55,11 +55,19 @@ export async function verifyOpenRouterKey(key: string, deps: VerifyDeps = {}): P
 			continue;
 		}
 		if (response.status === 401 || response.status === 403) {
-			return { ok: false, reason: "rejected", message: `OpenRouter rejected the key (HTTP ${response.status})` };
+			return {
+				ok: false,
+				reason: "rejected",
+				message: `OpenRouter rejected the key (HTTP ${response.status})`,
+			};
 		}
 		if (response.ok) return { ok: true };
 		if (response.status < 500) {
-			return { ok: false, reason: "unreachable", message: `OpenRouter answered HTTP ${response.status} while verifying the key` };
+			return {
+				ok: false,
+				reason: "unreachable",
+				message: `OpenRouter answered HTTP ${response.status} while verifying the key`,
+			};
 		}
 	}
 	return { ok: false, reason: "unreachable", message: UNREACHABLE };

@@ -23,7 +23,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { hasTool, makeStateDir, runDr, type StateDirSpec, type SystemctlStub } from "./dr-fixtures.ts";
+import {
+	hasTool,
+	makeStateDir,
+	runDr,
+	type StateDirSpec,
+	type SystemctlStub,
+} from "./dr-fixtures.ts";
 import { createAuditLog, verifyAuditFile } from "./obs/audit.ts";
 import { formatStamp } from "./store/snapshots.ts";
 import { openStore } from "./store/store.ts";
@@ -58,13 +64,19 @@ interface Scenario {
 const DEFAULT_TIMERS = ["ultrathink-snapshot.timer", "ultrathink-maintenance.timer"];
 
 /** A fresh case: a state directory from the real store (database closed), a stub systemctl and empty ring and backup. */
-function scenario(spec: StateDirSpec = {}, opts: { webActive?: boolean; timers?: string[] } = {}): Scenario {
+function scenario(
+	spec: StateDirSpec = {},
+	opts: { webActive?: boolean; timers?: string[] } = {},
+): Scenario {
 	const base = mkdtempSync(join(work, "case-"));
 	const { dir, db } = makeStateDir(base, spec);
 	db.close();
 	const tmp = join(base, "tmp");
 	mkdirSync(tmp);
-	const active = [...(opts.webActive ? ["ultrathink-web"] : []), ...(opts.timers ?? DEFAULT_TIMERS)];
+	const active = [
+		...(opts.webActive ? ["ultrathink-web"] : []),
+		...(opts.timers ?? DEFAULT_TIMERS),
+	];
 	return {
 		base,
 		state: dir,
@@ -105,7 +117,12 @@ function curlStub(base: string): { dir: string; log: string } {
 	mkdirSync(dir, { recursive: true });
 	const log = join(base, "curl.log");
 	const path = join(dir, "curl");
-	writeFileSync(path, ["#!/bin/sh", `for a in "$@"; do printf '%s\\n' "$a" >> '${log}'; done`, "exit 0", ""].join("\n"));
+	writeFileSync(
+		path,
+		["#!/bin/sh", `for a in "$@"; do printf '%s\\n' "$a" >> '${log}'; done`, "exit 0", ""].join(
+			"\n",
+		),
+	);
 	chmodSync(path, 0o755);
 	return { dir, log };
 }
@@ -150,7 +167,8 @@ function snapshot(s: Scenario, ms: number, opts: { tree?: boolean } = {}): strin
 			if (existsSync(join(s.state, file))) cpSync(join(s.state, file), join(tree, file));
 		}
 		for (const dir of ["jobs", "sessions", "journal"]) {
-			if (existsSync(join(s.state, dir))) cpSync(join(s.state, dir), join(tree, dir), { recursive: true });
+			if (existsSync(join(s.state, dir)))
+				cpSync(join(s.state, dir), join(tree, dir), { recursive: true });
 		}
 	}
 	return name;
@@ -202,7 +220,8 @@ function fileSums(root: string): Record<string, string> {
 		for (const name of readdirSync(dir).sort()) {
 			const path = join(dir, name);
 			if (statSync(path).isDirectory()) walk(path);
-			else out[relative(root, path)] = createHash("sha256").update(readFileSync(path)).digest("hex");
+			else
+				out[relative(root, path)] = createHash("sha256").update(readFileSync(path)).digest("hex");
 		}
 	};
 	walk(root);
@@ -235,7 +254,8 @@ function sealedAuditChain(dir: string): void {
 	} finally {
 		log.close();
 	}
-	if (!readdirSync(dir).some((name) => SEALED_RE.test(name))) throw new Error("no sealed segment was written");
+	if (!readdirSync(dir).some((name) => SEALED_RE.test(name)))
+		throw new Error("no sealed segment was written");
 }
 
 /** Writes an archive in the layout W1-B produces under s.backup and returns its path. */
@@ -285,7 +305,7 @@ function stubAge(base: string): string {
 			"out=''; in=''",
 			"while [ $# -gt 0 ]; do",
 			'  case "$1" in',
-			"    -o) out=\"$2\"; shift 2 ;;",
+			'    -o) out="$2"; shift 2 ;;',
 			"    -i|-r|-R) shift 2 ;;",
 			"    --decrypt|--encrypt) shift ;;",
 			'    *) in="$1"; shift ;;',
@@ -379,9 +399,14 @@ describe.skipIf(process.platform !== "linux")("restore", () => {
 		() => {
 			const s = scenario({ runs: 2 });
 			sealedAuditChain(s.state);
-			const chain = readdirSync(s.state).filter((name) => name === "audit.jsonl" || SEALED_RE.test(name));
+			const chain = readdirSync(s.state).filter(
+				(name) => name === "audit.jsonl" || SEALED_RE.test(name),
+			);
 			expect(chain.some((name) => SEALED_RE.test(name))).toBe(true);
-			const expected = chain.map((name) => ({ name, text: readFileSync(join(s.state, name), "utf8") }));
+			const expected = chain.map((name) => ({
+				name,
+				text: readFileSync(join(s.state, name), "utf8"),
+			}));
 			const arch = archive(s, T1);
 			// A stale host segment the archive does not hold: restore moves it aside with the rest of the chain.
 			writeFileSync(join(s.state, "audit-1-2.jsonl"), "stale host segment");
@@ -396,7 +421,9 @@ describe.skipIf(process.platform !== "linux")("restore", () => {
 				expect(statSync(join(s.state, name)).mode & 0o777).toBe(0o400);
 			}
 			expect(existsSync(join(s.state, "audit-1-2.jsonl"))).toBe(false);
-			expect(readFileSync(join(preRestoreDir(s), "audit-1-2.jsonl"), "utf8")).toBe("stale host segment");
+			expect(readFileSync(join(preRestoreDir(s), "audit-1-2.jsonl"), "utf8")).toBe(
+				"stale host segment",
+			);
 			expect(verifyAuditFile(join(s.state, "audit.jsonl")).ok).toBe(true);
 		},
 		SLOW,
@@ -654,7 +681,8 @@ describe.skipIf(process.platform !== "linux")("restore timers and readiness prob
 			snapshot(s, T1);
 			const tls = join(s.base, "tls");
 			mkdirSync(join(tls, "ops"), { recursive: true });
-			for (const file of ["ca.pem", "ops/cert.pem", "ops/key.pem"]) writeFileSync(join(tls, file), "fixture\n");
+			for (const file of ["ca.pem", "ops/cert.pem", "ops/key.pem"])
+				writeFileSync(join(tls, file), "fixture\n");
 			const curl = curlStub(s.base);
 
 			const r = restore(s, ["--db-only"], {
@@ -666,10 +694,10 @@ describe.skipIf(process.platform !== "linux")("restore timers and readiness prob
 			expect(r.code).toBe(0);
 			expect(r.stdout).toMatch(/^step probe \d+ms$/m);
 			const args = readFileSync(curl.log, "utf8").split("\n").filter(Boolean);
-			const valueOf = (flag: string) => args[args.indexOf(flag) + 1];
-			expect(valueOf("--cacert")).toBe(join(tls, "ca.pem"));
-			expect(valueOf("--cert")).toBe(join(tls, "ops", "cert.pem"));
-			expect(valueOf("--key")).toBe(join(tls, "ops", "key.pem"));
+			const value = (flag: string) => args[args.indexOf(flag) + 1];
+			expect(value("--cacert")).toBe(join(tls, "ca.pem"));
+			expect(value("--cert")).toBe(join(tls, "ops", "cert.pem"));
+			expect(value("--key")).toBe(join(tls, "ops", "key.pem"));
 			expect(args).not.toContain("-k");
 			expect(args).not.toContain("--insecure");
 			expect(args.at(-1)).toBe("https://127.0.0.1:8795/readyz");

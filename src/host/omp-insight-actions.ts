@@ -23,7 +23,12 @@ import { redactLine } from "../teach/redact.ts";
 import { isValidId, openStore, storeDir } from "../teach/store.ts";
 import type { TeachableMoment, TeachContext } from "../teach/types.ts";
 import { insightLessonRevision } from "./omp-insights.ts";
-import type { InsightActionResult, InsightScope, LessonSelection, SkillPreview } from "./omp-insights.ts";
+import type {
+	InsightActionResult,
+	InsightScope,
+	LessonSelection,
+	SkillPreview,
+} from "./omp-insights.ts";
 
 /** Host-owned lifetime handle for one dashboard session. The host owns the epoch behind `isCurrent`. */
 export interface InsightActionRuntime {
@@ -37,9 +42,11 @@ export interface InsightActionRuntime {
  * flag is the whole single-flight domain. Always released in a `finally`. */
 let mutationInFlight = false;
 
-const CANCELLED_MESSAGE = "Action cancelled before it started. No lesson change or installation was requested.";
+const CANCELLED_MESSAGE =
+	"Action cancelled before it started. No lesson change or installation was requested.";
 
-const BUSY_MESSAGE = "Another action is already running. Wait for it to finish before starting a new one.";
+const BUSY_MESSAGE =
+	"Another action is already running. Wait for it to finish before starting a new one.";
 
 function refused(message: string): InsightActionResult {
 	return { status: "refused", message };
@@ -76,8 +83,10 @@ function readExact(ctx: TeachContext, id: string): TeachableMoment | undefined {
 
 /** Why an eligible-draft action cannot proceed, or undefined when the lesson is preview/install-ready. */
 function eligibilityRefusal(moment: TeachableMoment, ctx: TeachContext): string | undefined {
-	if (moment.status === "candidate") return "This lesson is still a candidate. Confirm it before previewing a skill draft.";
-	if (moment.status === "superseded") return "This lesson was superseded and is read-only. Choose another lesson.";
+	if (moment.status === "candidate")
+		return "This lesson is still a candidate. Confirm it before previewing a skill draft.";
+	if (moment.status === "superseded")
+		return "This lesson was superseded and is read-only. Choose another lesson.";
 	if (moment.status !== "confirmed" || moment.promoted) {
 		return "A promotion is already recorded for this lesson. Promotion recorded — current installation not verified.";
 	}
@@ -99,28 +108,38 @@ function admitSelection(
 ): InsightActionResult | Admitted {
 	if (runtime.signal.aborted) return { status: "cancelled", message: CANCELLED_MESSAGE };
 	if (!runtime.isCurrent()) {
-		return refused("Session changed. Dashboard closed; no further action was started for the old selection.");
+		return refused(
+			"Session changed. Dashboard closed; no further action was started for the old selection.",
+		);
 	}
 	if (!selection || typeof selection.id !== "string" || !isValidId(selection.id)) {
 		return refused("Selected record is no longer in this snapshot. Choose another record.");
 	}
 	if (typeof selection.revision !== "string" || selection.revision === "") {
-		return refused("Lesson or preview changed. No new action was started; refresh and preview again.");
+		return refused(
+			"Lesson or preview changed. No new action was started; refresh and preview again.",
+		);
 	}
 	const ctx = runtime.getContext();
 	if (!teachEnabled(ctx)) return refused(offReason(ctx));
 	if (ctx.stateDir !== runtime.scope.stateDir) {
-		return refused("Session changed. Dashboard closed; no further action was started for the old selection.");
+		return refused(
+			"Session changed. Dashboard closed; no further action was started for the old selection.",
+		);
 	}
 	const moment = readExact(ctx, selection.id);
 	if (!moment) {
 		return refused("Selected record is no longer in this snapshot. Choose another record.");
 	}
 	if (moment.project !== projectOf(runtime.scope.cwd)) {
-		return refused("Lesson or preview changed. No new action was started; refresh and preview again.");
+		return refused(
+			"Lesson or preview changed. No new action was started; refresh and preview again.",
+		);
 	}
 	if (insightLessonRevision(moment) !== selection.revision) {
-		return refused("Lesson or preview changed. No new action was started; refresh and preview again.");
+		return refused(
+			"Lesson or preview changed. No new action was started; refresh and preview again.",
+		);
 	}
 	if (mode === "confirm") {
 		if (moment.status !== "candidate") {
@@ -160,7 +179,8 @@ function depsFor(ctx: TeachContext, runtime: InsightActionRuntime): CommandDeps 
 function parseResultJson(text: string): Record<string, unknown> | undefined {
 	try {
 		const value: unknown = JSON.parse(text);
-		if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+		if (value && typeof value === "object" && !Array.isArray(value))
+			return value as Record<string, unknown>;
 		return undefined;
 	} catch {
 		return undefined;
@@ -185,15 +205,22 @@ function normalizeConfirm(text: string, admitted: Admitted): InsightActionResult
 	const retain = body?.retain;
 	const reason = body?.reason;
 	if (body?.ok !== true || body.id !== admitted.moment.id || typeof status !== "string") {
-		return failed("Candidate was not confirmed: the command did not return a readable result. Refresh the lesson before trying again.");
+		return failed(
+			"Candidate was not confirmed: the command did not return a readable result. Refresh the lesson before trying again.",
+		);
 	}
 	const fresh = readExact(admitted.ctx, admitted.moment.id);
 	if (status !== "confirmed" || fresh?.status !== "confirmed") {
-		const detail = typeof reason === "string" && reason !== "" ? redactLine(reason) : "no reason was returned";
-		return refused(`Candidate was not confirmed: ${detail}. Refresh the lesson before trying again.`);
+		const detail =
+			typeof reason === "string" && reason !== "" ? redactLine(reason) : "no reason was returned";
+		return refused(
+			`Candidate was not confirmed: ${detail}. Refresh the lesson before trying again.`,
+		);
 	}
 	if (typeof retain !== "string" || !Object.hasOwn(CONFIRM_RETAINS, retain)) {
-		return failed("Candidate was not confirmed: the command did not return a readable result. Refresh the lesson before trying again.");
+		return failed(
+			"Candidate was not confirmed: the command did not return a readable result. Refresh the lesson before trying again.",
+		);
 	}
 	const suffix = typeof reason === "string" && reason.trim() !== "" ? ` ${redactLine(reason)}` : "";
 	return { status: "ok", message: `Candidate confirmed. Retention: ${retain}.${suffix}` };
@@ -207,10 +234,16 @@ function normalizeConfirm(text: string, admitted: Admitted): InsightActionResult
  * partial error, never a collapsed success.
  */
 function installFailure(detail: string): InsightActionResult {
-	return failed(`Installation did not return a successful Omp result: ${detail}. Refresh actual lesson state before trying again; no rollback is claimed.`);
+	return failed(
+		`Installation did not return a successful Omp result: ${detail}. Refresh actual lesson state before trying again; no rollback is claimed.`,
+	);
 }
 
-function normalizeInstall(text: string, admitted: Admitted, draftName: string): InsightActionResult {
+function normalizeInstall(
+	text: string,
+	admitted: Admitted,
+	draftName: string,
+): InsightActionResult {
 	const body = parseResultJson(text);
 	const rawOutcome = body?.outcome;
 	const outcomeRecord =
@@ -228,7 +261,11 @@ function normalizeInstall(text: string, admitted: Admitted, draftName: string): 
 		);
 	}
 	if (action !== "created" && action !== "updated") {
-		return installFailure(typeof action === "string" ? `installer reported ${redactLine(action, 40)}` : "the installer outcome is unreadable");
+		return installFailure(
+			typeof action === "string"
+				? `installer reported ${redactLine(action, 40)}`
+				: "the installer outcome is unreadable",
+		);
 	}
 	if (outcomeRecord.target !== "omp") {
 		return installFailure("the installer outcome names a different target");
@@ -242,11 +279,16 @@ function normalizeInstall(text: string, admitted: Admitted, draftName: string): 
 		fresh.promoted?.skill === draftName &&
 		fresh.promoted?.target === "omp";
 	if (!recorded) {
-		return failed("Partial action result — installation and promotion metadata did not both complete. Refresh actual state before repeating the action.");
+		return failed(
+			"Partial action result — installation and promotion metadata did not both complete. Refresh actual state before repeating the action.",
+		);
 	}
 	const past = action === "created" ? "created" : "updated";
 	const destination = path !== "" ? ` Installed to ${redactLine(path)}.` : "";
-	const recordedAt = fresh?.promoted && typeof fresh.promoted.at === "string" ? ` Promotion recorded at ${fresh.promoted.at}.` : "";
+	const recordedAt =
+		fresh?.promoted && typeof fresh.promoted.at === "string"
+			? ` Promotion recorded at ${fresh.promoted.at}.`
+			: "";
 	return { status: "ok", message: `Skill ${past} in Omp.${destination}${recordedAt}` };
 }
 
@@ -260,7 +302,10 @@ export async function confirmInsightLesson(
 	if (mutationInFlight) return refused(BUSY_MESSAGE);
 	mutationInFlight = true;
 	try {
-		const raw = await runTeachCommand(["confirm", admitted.moment.id, "--json"], depsFor(admitted.ctx, runtime));
+		const raw = await runTeachCommand(
+			["confirm", admitted.moment.id, "--json"],
+			depsFor(admitted.ctx, runtime),
+		);
 		return normalizeConfirm(raw.text, admitted);
 	} finally {
 		mutationInFlight = false;
@@ -279,7 +324,13 @@ export async function previewInsightSkill(
 ): Promise<InsightActionResult> {
 	const admitted = admitSelection(selection, runtime, "eligible");
 	if (!isAdmitted(admitted)) return admitted;
-	let draft: { name: string; description: string; content: string; sourceIds: string[]; warnings: string[] };
+	let draft: {
+		name: string;
+		description: string;
+		content: string;
+		sourceIds: string[];
+		warnings: string[];
+	};
 	try {
 		draft = renderSkillDraft([admitted.moment], admitted.ctx);
 	} catch (error) {
@@ -288,10 +339,14 @@ export async function previewInsightSkill(
 		);
 	}
 	if (Buffer.byteLength(draft.content, "utf8") > CONTENT_MAX_BYTES || draft.content.trim() === "") {
-		return failed("Could not build a preview: the deterministic draft exceeds the supported bounds. Refresh the lesson before trying again.");
+		return failed(
+			"Could not build a preview: the deterministic draft exceeds the supported bounds. Refresh the lesson before trying again.",
+		);
 	}
 	if (!draft.sourceIds.includes(admitted.moment.id)) {
-		return failed("Could not build a preview: the deterministic draft does not cover the selected lesson. Refresh the lesson before trying again.");
+		return failed(
+			"Could not build a preview: the deterministic draft does not cover the selected lesson. Refresh the lesson before trying again.",
+		);
 	}
 	const preview: SkillPreview = {
 		selection: { id: admitted.moment.id, revision: insightLessonRevision(admitted.moment) },
@@ -320,15 +375,30 @@ export async function installInsightSkill(
 	confirmed: boolean,
 	runtime: InsightActionRuntime,
 ): Promise<InsightActionResult> {
-	if (!preview || typeof preview !== "object" || !preview.selection || typeof preview.fingerprint !== "string") {
-		return refused("Lesson or preview changed. No new action was started; refresh and preview again.");
+	if (
+		!preview ||
+		typeof preview !== "object" ||
+		!preview.selection ||
+		typeof preview.fingerprint !== "string"
+	) {
+		return refused(
+			"Lesson or preview changed. No new action was started; refresh and preview again.",
+		);
 	}
 	if (confirmed !== true) {
-		return refused("Install into Omp needs a separate confirmation. Review the preview, then confirm the installation.");
+		return refused(
+			"Install into Omp needs a separate confirmation. Review the preview, then confirm the installation.",
+		);
 	}
 	const admitted = admitSelection(preview.selection, runtime, "eligible");
 	if (!isAdmitted(admitted)) return admitted;
-	let draft: { name: string; description: string; content: string; sourceIds: string[]; warnings: string[] };
+	let draft: {
+		name: string;
+		description: string;
+		content: string;
+		sourceIds: string[];
+		warnings: string[];
+	};
 	try {
 		draft = renderSkillDraft([admitted.moment], admitted.ctx);
 	} catch (error) {
@@ -337,7 +407,9 @@ export async function installInsightSkill(
 		);
 	}
 	if (fingerprintOf(draft.content) !== preview.fingerprint) {
-		return refused("Lesson or preview changed. No new action was started; refresh and preview again.");
+		return refused(
+			"Lesson or preview changed. No new action was started; refresh and preview again.",
+		);
 	}
 	if (mutationInFlight) return refused(BUSY_MESSAGE);
 	mutationInFlight = true;

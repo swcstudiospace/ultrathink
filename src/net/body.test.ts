@@ -5,7 +5,11 @@ import { readBodyPrefix, readBodyText } from "./body.ts";
 
 const encoder = new TextEncoder();
 
-function chunked(chunks: string[]): { response: Response; cancelled: () => boolean; pulled: () => number } {
+function chunked(chunks: string[]): {
+	response: Response;
+	cancelled: () => boolean;
+	pulled: () => number;
+} {
 	let cancelled = false;
 	let pulled = 0;
 	const stream = new ReadableStream<Uint8Array>({
@@ -37,9 +41,18 @@ describe("readBodyPrefix", () => {
 	});
 
 	test("a body of exactly the limit is complete, and one byte more is incomplete", async () => {
-		expect(await readBodyPrefix(chunked(["abcd"]).response, 4)).toEqual({ text: "abcd", complete: true });
-		expect(await readBodyPrefix(chunked(["abc"]).response, 4)).toEqual({ text: "abc", complete: true });
-		expect(await readBodyPrefix(chunked(["abcde"]).response, 4)).toEqual({ text: "abcd", complete: false });
+		expect(await readBodyPrefix(chunked(["abcd"]).response, 4)).toEqual({
+			text: "abcd",
+			complete: true,
+		});
+		expect(await readBodyPrefix(chunked(["abc"]).response, 4)).toEqual({
+			text: "abc",
+			complete: true,
+		});
+		expect(await readBodyPrefix(chunked(["abcde"]).response, 4)).toEqual({
+			text: "abcd",
+			complete: false,
+		});
 	});
 
 	test("the text-only read returns at the limit without waiting for a stream that never ends", async () => {
@@ -61,7 +74,10 @@ describe("readBodyPrefix", () => {
 				controller.close();
 			},
 		});
-		expect(await readBodyPrefix(new Response(stream), 100)).toEqual({ text: "héllo", complete: true });
+		expect(await readBodyPrefix(new Response(stream), 100)).toEqual({
+			text: "héllo",
+			complete: true,
+		});
 	});
 
 	test("an empty body is complete", async () => {

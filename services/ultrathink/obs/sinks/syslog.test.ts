@@ -20,7 +20,11 @@ afterEach(() => {
 	for (const stop of stops.splice(0)) stop();
 });
 
-function envelope(seq: number, kind: SinkEnvelope["kind"] = "audit", body: Record<string, unknown> = {}): SinkEnvelope {
+function envelope(
+	seq: number,
+	kind: SinkEnvelope["kind"] = "audit",
+	body: Record<string, unknown> = {},
+): SinkEnvelope {
 	return { kind, at: "2026-01-01T00:00:00.000Z", body: { seq, ...body } };
 }
 
@@ -174,7 +178,9 @@ describe("encodeSyslogFrame", () => {
 
 	test("the severity maps audit to 134, security to 132 and alert to 130", () => {
 		const pri = (kind: SinkEnvelope["kind"]): number =>
-			parseMessage(parseFrames(encodeSyslogFrame(envelope(1, kind), "host.test", "ultrathink"))[0] ?? "").pri;
+			parseMessage(
+				parseFrames(encodeSyslogFrame(envelope(1, kind), "host.test", "ultrathink"))[0] ?? "",
+			).pri;
 
 		expect(pri("audit")).toBe(134);
 		expect(pri("security")).toBe(132);
@@ -182,7 +188,11 @@ describe("encodeSyslogFrame", () => {
 	});
 
 	test("the JSON after the header parses back to the same envelope", () => {
-		const env = envelope(9, "security", { ip: "203.0.113.7", tags: ["a", "b"], quote: 'say "hi"\\' });
+		const env = envelope(9, "security", {
+			ip: "203.0.113.7",
+			tags: ["a", "b"],
+			quote: 'say "hi"\\',
+		});
 		const [message] = parseFrames(encodeSyslogFrame(env, "host.test", "ultrathink"));
 		const parsed = parseMessage(message ?? "");
 
@@ -218,8 +228,12 @@ describe("createSyslogTransport", () => {
 		const batch = [envelope(1), envelope(2, "alert", { note: "é 🎉" }), envelope(3, "security")];
 		const expected = batch.reduce((sum, env) => sum + frameLength(env), 0);
 
-		expect(await transport.send(batch.slice(0, 2), new AbortController().signal)).toEqual({ ok: true });
-		expect(await transport.send(batch.slice(2), new AbortController().signal)).toEqual({ ok: true });
+		expect(await transport.send(batch.slice(0, 2), new AbortController().signal)).toEqual({
+			ok: true,
+		});
+		expect(await transport.send(batch.slice(2), new AbortController().signal)).toEqual({
+			ok: true,
+		});
 		await listener.waitForBytes(expected);
 
 		const messages = parseFrames(listener.received()).map(parseMessage);
@@ -230,7 +244,12 @@ describe("createSyslogTransport", () => {
 
 	test("a closed port is retryable, and the next send succeeds once a listener is up", async () => {
 		const port = freePort();
-		const transport = createSyslogTransport({ host: "127.0.0.1", port, hostname: "host.test", appName: "ultrathink" });
+		const transport = createSyslogTransport({
+			host: "127.0.0.1",
+			port,
+			hostname: "host.test",
+			appName: "ultrathink",
+		});
 		const env = envelope(5, "alert");
 
 		const first = await transport.send([env], new AbortController().signal);
@@ -242,7 +261,11 @@ describe("createSyslogTransport", () => {
 		const listener = startListener(port);
 		expect(await transport.send([env], new AbortController().signal)).toEqual({ ok: true });
 		await listener.waitForBytes(frameLength(env));
-		expect(parseFrames(listener.received()).map(parseMessage).map((msg) => msg.body)).toEqual([env]);
+		expect(
+			parseFrames(listener.received())
+				.map(parseMessage)
+				.map((msg) => msg.body),
+		).toEqual([env]);
 	});
 
 	test("an already-aborted signal is retryable and opens no connection", async () => {
@@ -266,9 +289,16 @@ describe("createSyslogTransport", () => {
 
 	test("a partial write waits for the socket to drain, so every byte of a batch larger than the socket buffers arrives", async () => {
 		const receiver = await startPausedReceiver();
-		const transport = createSyslogTransport({ host: "127.0.0.1", port: receiver.port, hostname: "host.test", appName: "ultrathink" });
+		const transport = createSyslogTransport({
+			host: "127.0.0.1",
+			port: receiver.port,
+			hostname: "host.test",
+			appName: "ultrathink",
+		});
 		// 32 envelopes of 1 MiB: the first write accepts only a few MiB, so the rest of the batch must wait for drain.
-		const batch = Array.from({ length: 32 }, (_, seq) => envelope(seq, "audit", { pad: "x".repeat(1024 * 1024) }));
+		const batch = Array.from({ length: 32 }, (_, seq) =>
+			envelope(seq, "audit", { pad: "x".repeat(1024 * 1024) }),
+		);
 		const sending = transport.send(batch, new AbortController().signal);
 		// Kernel socket buffers cannot be observed from here, so the receiver stays paused briefly to let the
 		// sender's first write come back partial. No event marks that point.
@@ -276,7 +306,11 @@ describe("createSyslogTransport", () => {
 		receiver.resume();
 		expect(await sending).toEqual({ ok: true });
 		await receiver.waitForBytes(batch.reduce((sum, env) => sum + frameLength(env), 0));
-		expect(parseFrames(receiver.received()).map(parseMessage).map((msg) => msg.body)).toEqual(batch);
+		expect(
+			parseFrames(receiver.received())
+				.map(parseMessage)
+				.map((msg) => msg.body),
+		).toEqual(batch);
 	});
 
 	test("an empty batch is ok and sends nothing", async () => {

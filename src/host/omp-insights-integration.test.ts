@@ -16,7 +16,15 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { type Dirent, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	type Dirent,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UltrathinkConfig } from "../config.ts";
@@ -25,10 +33,19 @@ import { teachContext as realTeachContext } from "../teach/context.ts";
 import { projectOf } from "../teach/mapping.ts";
 import { storeDir } from "../teach/store.ts";
 import type { TeachContext } from "../teach/types.ts";
-import { createInsightDashboard, type InsightDashboard, type InsightDashboardCallbacks } from "./omp-dashboard.ts";
+import {
+	createInsightDashboard,
+	type InsightDashboard,
+	type InsightDashboardCallbacks,
+} from "./omp-dashboard.ts";
 import type { OmpPlan, OmpPlanRequest, OmpPlanner } from "./omp.ts";
 import { INSIGHT_TYPE } from "./omp-render.ts";
-import { readInsightSnapshot, type InsightActionResult, type InsightScope, type InsightSnapshot } from "./omp-insights.ts";
+import {
+	readInsightSnapshot,
+	type InsightActionResult,
+	type InsightScope,
+	type InsightSnapshot,
+} from "./omp-insights.ts";
 import { controlled, flush, quietConfig, setup } from "./omp-test.helpers.ts";
 
 // --- Raw terminal wire keys: the host delivers opaque bytes and the dashboard
@@ -46,7 +63,11 @@ const K_RIGHT = "[C";
 // Zero-duration yield only: the awaited condition is the real signal (recorded
 // call, rendered text, resolved promise). Real fs reads need event-loop turns
 // that microtask-only spins would starve, so deterministic time control cannot apply.
-const until = async (condition: () => boolean, label: string, timeoutMs = 10_000): Promise<void> => {
+const until = async (
+	condition: () => boolean,
+	label: string,
+	timeoutMs = 10_000,
+): Promise<void> => {
 	const start = Date.now();
 	for (;;) {
 		if (condition()) return;
@@ -85,7 +106,10 @@ function freshFixture(): Fixture {
 }
 
 function seedMoment(fixture: Fixture, overrides: Record<string, unknown> = {}): string {
-	const id = typeof overrides.id === "string" ? overrides.id : `mom-${Math.random().toString(36).slice(2, 10)}`;
+	const id =
+		typeof overrides.id === "string"
+			? overrides.id
+			: `mom-${Math.random().toString(36).slice(2, 10)}`;
 	const moment = {
 		schema: 2,
 		name: "Seed lesson",
@@ -145,7 +169,12 @@ function hasControls(text: string): boolean {
 }
 
 /** A mounted copy is calm when no owned async run (refresh/preview/confirm/install) is in flight. */
-const BUSY_LABELS = ["Refreshing local snapshot", "Building deterministic preview", "Confirming candidate", "Installing into Omp"];
+const BUSY_LABELS = [
+	"Refreshing local snapshot",
+	"Building deterministic preview",
+	"Confirming candidate",
+	"Installing into Omp",
+];
 const settledView = (mounted: CustomMount): boolean => {
 	const visible = render(mounted.component);
 	return BUSY_LABELS.every((label) => !visible.includes(label));
@@ -177,7 +206,10 @@ type CustomFactory = (
 
 function uiHost() {
 	const calls: CustomCall[] = [];
-	const custom = (factory: CustomFactory, options?: { signal?: AbortSignal; overlay?: boolean }): Promise<unknown> => {
+	const custom = (
+		factory: CustomFactory,
+		options?: { signal?: AbortSignal; overlay?: boolean },
+	): Promise<unknown> => {
 		const record: CustomCall = { factory, options, mounts: [] };
 		calls.push(record);
 		return new Promise<unknown>((resolve, reject) => {
@@ -238,9 +270,20 @@ function sessionCtx(options: {
 interface Harness {
 	run: (prompt?: string) => Promise<unknown>;
 	sent: { message: unknown; options: unknown }[];
-	emit: (event: string, payload?: Record<string, unknown>, context?: Record<string, unknown>) => unknown;
+	emit: (
+		event: string,
+		payload?: Record<string, unknown>,
+		context?: Record<string, unknown>,
+	) => unknown;
 	renderers: string[];
-	commands: Map<string, { description?: string; getArgumentCompletions?: (prefix: string) => unknown; handler: (args: unknown, ctx: unknown) => unknown }>;
+	commands: Map<
+		string,
+		{
+			description?: string;
+			getArgumentCompletions?: (prefix: string) => unknown;
+			handler: (args: unknown, ctx: unknown) => unknown;
+		}
+	>;
 	command: (name: string, args?: string) => Promise<unknown>;
 	userMessages: string[];
 	notices: string[];
@@ -251,12 +294,16 @@ type SuitePlan = (...args: Parameters<OmpPlanner>) => Promise<string | OmpPlan>;
 interface Suite {
 	harness: Harness;
 	fixture: Fixture;
-	teachInputs: (Pick<TeachContextOptions, "sessionId" | "stateDir" | "signal"> & { hasConfig: boolean })[];
+	teachInputs: (Pick<TeachContextOptions, "sessionId" | "stateDir" | "signal"> & {
+		hasConfig: boolean;
+	})[];
 	teachContexts: TeachContext[];
 	mcpReads: () => number;
 }
 
-function buildSuite(options: { ui?: boolean; teach?: (config: UltrathinkConfig) => void; plan?: SuitePlan } = {}): Suite {
+function buildSuite(
+	options: { ui?: boolean; teach?: (config: UltrathinkConfig) => void; plan?: SuitePlan } = {},
+): Suite {
 	const fixture = freshFixture();
 	const teachInputs: Suite["teachInputs"] = [];
 	const teachContexts: TeachContext[] = [];
@@ -267,7 +314,12 @@ function buildSuite(options: { ui?: boolean; teach?: (config: UltrathinkConfig) 
 		stateDir: fixture.stateDir,
 		config: () => config,
 		teachContext: (input: TeachContextOptions) => {
-			teachInputs.push({ sessionId: input.sessionId, stateDir: input.stateDir, signal: input.signal, hasConfig: input.config !== undefined });
+			teachInputs.push({
+				sessionId: input.sessionId,
+				stateDir: input.stateDir,
+				signal: input.signal,
+				hasConfig: input.config !== undefined,
+			});
 			const built = realTeachContext(input);
 			teachContexts.push(built);
 			return built;
@@ -292,17 +344,21 @@ function uiCommand(suite: Suite): UiCommand {
 }
 
 function textOf(message: unknown): string {
-	const content = message !== null && typeof message === "object" && "content" in message ? Reflect.get(message, "content") : undefined;
+	const content =
+		message !== null && typeof message === "object" && "content" in message
+			? Reflect.get(message, "content")
+			: undefined;
 	return typeof content === "string" ? content : "";
 }
 
 function propOf(value: unknown, name: string): unknown {
-	return value !== null && typeof value === "object" && name in value ? Reflect.get(value, name) : undefined;
+	return value !== null && typeof value === "object" && name in value
+		? Reflect.get(value, name)
+		: undefined;
 }
 
-const render = (component: InsightDashboard): string => Bun.stripANSI(component.render(80).join("\n"));
-
-
+const render = (component: InsightDashboard): string =>
+	Bun.stripANSI(component.render(80).join("\n"));
 
 // --- Capability matrix: every refused cell shows its copy and mounts nothing ---
 
@@ -346,7 +402,11 @@ describe("capability guards", () => {
 	test("missing session id refuses with the scope copy before any read or mount", async () => {
 		const suite = buildSuite();
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "",
+			ui: { custom: host.custom },
+		});
 		await uiCommand(suite)("", ctx);
 		expect(suite.harness.sent).toHaveLength(1);
 		const missingSent = suite.harness.sent[0];
@@ -362,7 +422,12 @@ describe("capability guards", () => {
 describe("unsupported host fallback", () => {
 	test("TUI host without ui.custom receives the real snapshot text plus the TUI-only explanation", async () => {
 		const suite = buildSuite();
-		seedMoment(suite.fixture, { id: "mom-plain", name: "Fallback lesson", status: "confirmed", kind: "playbook" });
+		seedMoment(suite.fixture, {
+			id: "mom-plain",
+			name: "Fallback lesson",
+			status: "confirmed",
+			kind: "playbook",
+		});
 		const host = uiHost();
 		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "s1", ui: {} });
 		await uiCommand(suite)("", ctx);
@@ -396,10 +461,12 @@ describe("unsupported host fallback", () => {
 			const before = fingerprint(suite.fixture.stateDir);
 			const { ctx } = sessionCtx({
 				cwd: suite.fixture.cwd,
-				ui: { custom: () => {
-					if (rejectsAsync) return Promise.reject(new Error("native mount rejected"));
-					throw new Error("native mount threw");
-				} },
+				ui: {
+					custom: () => {
+						if (rejectsAsync) return Promise.reject(new Error("native mount rejected"));
+						throw new Error("native mount threw");
+					},
+				},
 			});
 			await uiCommand(suite)("", ctx);
 			expect(suite.harness.sent).toHaveLength(1);
@@ -459,11 +526,14 @@ describe("unsupported host fallback", () => {
 // --- Native TUI lifetime: identity, mount, refresh, interleavings ---
 
 describe("native dashboard lifetime", () => {
-
 	test("argv selects the initial panel: explicit jev mounts Jev, unknown argv falls back to Overview", async () => {
 		const suite = buildSuite();
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: host.custom },
+		});
 		const jev = uiCommand(suite)("jev", ctx);
 		await awaitMountable(host);
 		expect(host.calls).toHaveLength(1);
@@ -488,7 +558,11 @@ describe("native dashboard lifetime", () => {
 		const suite = buildSuite();
 		seedMoment(suite.fixture, { id: "mom-first", name: "First seeded" });
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: host.custom },
+		});
 		const pending = uiCommand(suite)("moments", ctx);
 		await awaitMountable(host);
 		const mounted = host.mount();
@@ -516,7 +590,12 @@ describe("native dashboard lifetime", () => {
 		const fixture = freshFixture();
 		seedMoment(fixture, { id: "mom-a", name: "Interleaved lesson" });
 		const gate = new AbortController();
-		const scope: InsightScope = { sessionId: "sA", cwd: fixture.cwd, stateDir: fixture.stateDir, epoch: 1 };
+		const scope: InsightScope = {
+			sessionId: "sA",
+			cwd: fixture.cwd,
+			stateDir: fixture.stateDir,
+			epoch: 1,
+		};
 		const liveCtx = (): TeachContext =>
 			realTeachContext({
 				host: "omp",
@@ -537,9 +616,11 @@ describe("native dashboard lifetime", () => {
 			() => lateGate.promise,
 		];
 		let closed = false;
-		const offDuty = (): Promise<InsightActionResult> => Promise.resolve({ status: "refused", message: "not under test" });
+		const offDuty = (): Promise<InsightActionResult> =>
+			Promise.resolve({ status: "refused", message: "not under test" });
 		const callbacks: InsightDashboardCallbacks = {
-			refresh: () => (behaviors.shift() ?? (() => Promise.reject(new Error("unexpected refresh"))))(),
+			refresh: () =>
+				(behaviors.shift() ?? (() => Promise.reject(new Error("unexpected refresh"))))(),
 			confirmCandidate: () => offDuty(),
 			previewSkill: () => offDuty(),
 			installPreview: () => offDuty(),
@@ -555,7 +636,10 @@ describe("native dashboard lifetime", () => {
 		// Refresh #1 is held inside the host boundary; Escape detaches it, and the
 		// next refresh alone publishes, leaving no busy and no error behind.
 		mounted.component.handleInput("r");
-		await until(() => render(mounted.component).includes("Refreshing local snapshot"), "held refresh shows busy");
+		await until(
+			() => render(mounted.component).includes("Refreshing local snapshot"),
+			"held refresh shows busy",
+		);
 		mounted.component.handleInput(K_ESC);
 		await until(() => settledView(mounted), "detached refresh clears busy without publishing");
 		seedMoment(fixture, { id: "mom-b", name: "Second wave" });
@@ -587,7 +671,10 @@ describe("native dashboard lifetime", () => {
 
 		// A detached failing run stays silent: no late error, no busy, no publish.
 		mounted.component.handleInput("r");
-		await until(() => render(mounted.component).includes("Refreshing local snapshot"), "late refresh shows busy");
+		await until(
+			() => render(mounted.component).includes("Refreshing local snapshot"),
+			"late refresh shows busy",
+		);
 		mounted.component.handleInput(K_ESC);
 		await until(() => settledView(mounted), "late refresh detaches and clears busy");
 		lateGate.reject(new Error("late boom"));
@@ -674,7 +761,11 @@ describe("session switch and shutdown", () => {
 	test("session_shutdown aborts the lifetime; reopen starts a fresh lifetime", async () => {
 		const suite = buildSuite();
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: host.custom },
+		});
 		const open = uiCommand(suite)("", ctx);
 		await awaitMountable(host);
 		host.mount();
@@ -704,13 +795,19 @@ describe("session switch and shutdown", () => {
 			return "PLANNED CONTEXT";
 		};
 		const suite = buildSuite({ plan });
-		const raced = (await suite.harness.run("plan this while the dashboard is open")) as { message?: unknown };
+		const raced = (await suite.harness.run("plan this while the dashboard is open")) as {
+			message?: unknown;
+		};
 		expect(flightSignals).toHaveLength(1);
 		// The pending note is the inline race delivery, not a transcript send.
 		expect(textOf(raced.message)).toContain("still planning");
 
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "s1", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "s1",
+			ui: { custom: host.custom },
+		});
 		const open = uiCommand(suite)("", ctx);
 		await awaitMountable(host);
 		const mounted = host.mount();
@@ -722,7 +819,10 @@ describe("session switch and shutdown", () => {
 
 		flightGate.resolve();
 		await until(
-			() => suite.harness.sent.some((entry) => propOf(entry.message, "customType") === "ultrathink-plan"),
+			() =>
+				suite.harness.sent.some(
+					(entry) => propOf(entry.message, "customType") === "ultrathink-plan",
+				),
 			"in-flight planner delivers its aside after the display closes",
 		);
 	});
@@ -733,9 +833,18 @@ describe("session switch and shutdown", () => {
 describe("insight card delivery", () => {
 	test("card publishes a real card DTO through default sendMessage with triggerTurn:false and no mount", async () => {
 		const suite = buildSuite({ teach: (config) => void (config.teach.enabled = true) });
-		seedMoment(suite.fixture, { id: "mom-card", name: "Card lesson", status: "confirmed", kind: "playbook" });
+		seedMoment(suite.fixture, {
+			id: "mom-card",
+			name: "Card lesson",
+			status: "confirmed",
+			kind: "playbook",
+		});
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: host.custom },
+		});
 		await uiCommand(suite)("card", ctx);
 		expect(suite.harness.sent).toHaveLength(1);
 		const entry = suite.harness.sent[0];
@@ -773,13 +882,25 @@ describe("insight card delivery", () => {
 	test("registration is the only entry: turn and tool events never open a dashboard or send a card", async () => {
 		const suite = buildSuite();
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: host.custom },
+		});
 		const open = uiCommand(suite)("", ctx);
 		await awaitMountable(host);
 		const mounted = host.mount();
 		mounted.component.handleInput(K_ESC);
 		await open;
-		for (const event of ["session_start", "agent_start", "agent_end", "turn_start", "turn_end", "tool_execution_start", "tool_execution_end"]) {
+		for (const event of [
+			"session_start",
+			"agent_start",
+			"agent_end",
+			"turn_start",
+			"turn_end",
+			"tool_execution_start",
+			"tool_execution_end",
+		]) {
 			suite.harness.emit(event, {}, ctx);
 		}
 		// Turn and tool events run no reads and send nothing: only the explicit
@@ -792,12 +913,20 @@ describe("insight card delivery", () => {
 	test("a stale lifetime cannot publish a card into the replaced session", async () => {
 		const suite = buildSuite();
 		const hostA = uiHost();
-		const { ctx: ctxA } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: hostA.custom } });
+		const { ctx: ctxA } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: hostA.custom },
+		});
 		const openA = uiCommand(suite)("", ctxA);
 		await awaitMountable(hostA);
 
 		// The replacing card command tears lifetime 1 down before any card of it could fire.
-		const { ctx: ctxCard } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { notify: () => {} } });
+		const { ctx: ctxCard } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { notify: () => {} },
+		});
 		await uiCommand(suite)("card", ctxCard);
 		const staleInput = suite.teachInputs[0];
 		if (!staleInput) throw new Error("expected one teach input");
@@ -835,7 +964,11 @@ describe("SAFEUI-01 browsing purity", () => {
 		try {
 			const before = fingerprint(suite.fixture.root);
 			const host = uiHost();
-			const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+			const { ctx } = sessionCtx({
+				cwd: suite.fixture.cwd,
+				sessionId: "sA",
+				ui: { custom: host.custom },
+			});
 			const open = uiCommand(suite)("", ctx);
 			await awaitMountable(host);
 			const mounted = host.mount();
@@ -871,7 +1004,11 @@ describe("SAFEUI-01 browsing purity", () => {
 		const suite = buildSuite();
 		const before = fingerprint(suite.fixture.root);
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: host.custom },
+		});
 		const open = uiCommand(suite)("moments", ctx);
 		await awaitMountable(host);
 		const mounted = host.mount();
@@ -888,7 +1025,11 @@ describe("SAFEUI-01 browsing purity", () => {
 		const suite = buildSuite({ teach: (config) => void (config.teach.enabled = true) });
 		seedMoment(suite.fixture, { id: "mom-confirm", name: "Confirmable lesson", kind: "playbook" });
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: host.custom },
+		});
 		const open = uiCommand(suite)("moments", ctx);
 		await awaitMountable(host);
 		const mounted = host.mount();
@@ -918,7 +1059,10 @@ describe("SAFEUI-01 browsing purity", () => {
 		await until(() => {
 			if (!settledView(mounted)) return false;
 			try {
-				return (JSON.parse(readFileSync(momentPath, "utf8")) as { status: string }).status === "confirmed";
+				return (
+					(JSON.parse(readFileSync(momentPath, "utf8")) as { status: string }).status ===
+					"confirmed"
+				);
 			} catch {
 				return false;
 			}
@@ -968,7 +1112,11 @@ describe("SAFEUI-01 browsing purity", () => {
 		seedMoment(suite.fixture, { id: "mom-off", name: "Teaching-off lesson" });
 		const before = fingerprint(suite.fixture.root);
 		const host = uiHost();
-		const { ctx } = sessionCtx({ cwd: suite.fixture.cwd, sessionId: "sA", ui: { custom: host.custom } });
+		const { ctx } = sessionCtx({
+			cwd: suite.fixture.cwd,
+			sessionId: "sA",
+			ui: { custom: host.custom },
+		});
 		const open = uiCommand(suite)("moments", ctx);
 		await awaitMountable(host);
 		const mounted = host.mount();
@@ -1011,7 +1159,10 @@ describe("existing behavior preserved", () => {
 			sessionFile: join(suite.fixture.root, "omp-task-1", "Agent.json"),
 			hasUI: false,
 		});
-		await (suite.harness.commands.get("ultrathink-quick")?.handler as unknown as UiCommand)("hello", ctx);
+		await (suite.harness.commands.get("ultrathink-quick")?.handler as unknown as UiCommand)(
+			"hello",
+			ctx,
+		);
 		expect(suite.harness.userMessages).toEqual(["/ultrathink-quick hello"]);
 		// The UI command path forwards nothing to the model in the same child shape.
 		await uiCommand(suite)("", ctx);
@@ -1026,7 +1177,8 @@ describe("existing behavior preserved", () => {
 		expect(textOf(result.message)).toContain("still planning");
 		flight.resolve("ASYNC PLAN");
 		await flush();
-		expect(suite.harness.sent.some((entry) => propOf(entry.message, "customType") === "ultrathink-plan")).toBe(true);
+		expect(
+			suite.harness.sent.some((entry) => propOf(entry.message, "customType") === "ultrathink-plan"),
+		).toBe(true);
 	});
 });
-

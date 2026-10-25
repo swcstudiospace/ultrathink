@@ -81,7 +81,11 @@ function expectRecord(value: unknown, path: string): Record<string, unknown> {
 	return value;
 }
 
-function rejectUnknownKeys(record: Record<string, unknown>, path: string, allowed: readonly string[]): void {
+function rejectUnknownKeys(
+	record: Record<string, unknown>,
+	path: string,
+	allowed: readonly string[],
+): void {
 	for (const key of Object.keys(record)) {
 		if (!allowed.includes(key)) {
 			throw new TypeError(`${path}.${key} is not a known field`);
@@ -174,7 +178,9 @@ export function parseFaultPlan(json: unknown): FaultPlan {
 	if (entries.length < 1 || entries.length > MAX_STEPS) {
 		throw new RangeError(`steps must hold between 1 and ${MAX_STEPS} entries`);
 	}
-	const steps = entries.map((entry, index) => parseStep(entry, `steps[${index}]`, index === entries.length - 1));
+	const steps = entries.map((entry, index) =>
+		parseStep(entry, `steps[${index}]`, index === entries.length - 1),
+	);
 	return { steps };
 }
 
@@ -191,7 +197,11 @@ function statusResponse(status: number, retryAfterSec: number | undefined): Resp
  * object has no effect. Consumption happens synchronously when the call is made, so concurrent calls take units in
  * call order.
  */
-export function createFaultyFetch(plan: FaultPlan, inner: OpenRouterFetch, sleep: Sleep = waitFor): OpenRouterFetch {
+export function createFaultyFetch(
+	plan: FaultPlan,
+	inner: OpenRouterFetch,
+	sleep: Sleep = waitFor,
+): OpenRouterFetch {
 	const steps: FaultStep[] = plan.steps.map((step) => ({ count: step.count, fault: step.fault }));
 	let index = 0;
 	let used = 0;
@@ -279,7 +289,9 @@ export function loadChaosFetch(
 	try {
 		plan = parseFaultPlan(json);
 	} catch (error) {
-		throw new Error(`chaos fault plan ${path} is invalid: ${error instanceof Error ? error.message : "unknown error"}`);
+		throw new Error(
+			`chaos fault plan ${path} is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
+		);
 	}
 	return createFaultyFetch(plan, (input, init) => fetch(input, init));
 }

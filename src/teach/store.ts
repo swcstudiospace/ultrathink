@@ -8,7 +8,15 @@
  * bounded readers for plan-time lookups that must stay responsive. Corrupt or foreign files are skipped, never thrown.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isPlanningPath } from "../host/paths.ts";
@@ -37,7 +45,9 @@ export function isValidId(id: unknown): id is string {
 }
 
 function strings(value: unknown): string[] {
-	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === "string")
+		: [];
 }
 
 function str(value: unknown, fallback = ""): string {
@@ -56,7 +66,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseMoment(raw: unknown, id: string): TeachableMoment | undefined {
 	if (!isRecord(raw) || raw.id !== id || raw.schema !== 2) return undefined;
 	const { name, body, kind, status, origin, dedupeKey, createdAt, lastSeenAt } = raw;
-	if (typeof name !== "string" || typeof body !== "string" || typeof dedupeKey !== "string") return undefined;
+	if (typeof name !== "string" || typeof body !== "string" || typeof dedupeKey !== "string")
+		return undefined;
 	if (typeof createdAt !== "string" || typeof lastSeenAt !== "string") return undefined;
 	if (!MOMENT_KINDS.includes(kind as TeachableMoment["kind"])) return undefined;
 	if (!MOMENT_STATUSES.includes(status as TeachableMoment["status"])) return undefined;
@@ -85,12 +96,26 @@ function parseMoment(raw: unknown, id: string): TeachableMoment | undefined {
 	};
 	if (typeof raw.supersedes === "string") moment.supersedes = raw.supersedes;
 	const retained = raw.retained;
-	if (isRecord(retained) && typeof retained.at === "string" && typeof retained.bank === "string" && typeof retained.documentId === "string") {
+	if (
+		isRecord(retained) &&
+		typeof retained.at === "string" &&
+		typeof retained.bank === "string" &&
+		typeof retained.documentId === "string"
+	) {
 		moment.retained = { at: retained.at, bank: retained.bank, documentId: retained.documentId };
 	}
 	const promoted = raw.promoted;
-	if (isRecord(promoted) && typeof promoted.at === "string" && typeof promoted.skill === "string" && typeof promoted.target === "string") {
-		moment.promoted = { at: promoted.at, skill: promoted.skill, target: promoted.target as NonNullable<TeachableMoment["promoted"]>["target"] };
+	if (
+		isRecord(promoted) &&
+		typeof promoted.at === "string" &&
+		typeof promoted.skill === "string" &&
+		typeof promoted.target === "string"
+	) {
+		moment.promoted = {
+			at: promoted.at,
+			skill: promoted.skill,
+			target: promoted.target as NonNullable<TeachableMoment["promoted"]>["target"],
+		};
 		if (typeof promoted.path === "string") moment.promoted.path = promoted.path;
 	}
 	return moment;
@@ -98,8 +123,10 @@ function parseMoment(raw: unknown, id: string): TeachableMoment | undefined {
 
 function parseOp(raw: unknown): OutboxOp | undefined {
 	if (!isRecord(raw)) return undefined;
-	if (raw.op === "retain" && isValidId(raw.momentId)) return { op: "retain", momentId: raw.momentId };
-	if (raw.op === "delete" && typeof raw.documentId === "string") return { op: "delete", documentId: raw.documentId };
+	if (raw.op === "retain" && isValidId(raw.momentId))
+		return { op: "retain", momentId: raw.momentId };
+	if (raw.op === "delete" && typeof raw.documentId === "string")
+		return { op: "delete", documentId: raw.documentId };
 	if (raw.op === "tags" && typeof raw.documentId === "string" && Array.isArray(raw.tags)) {
 		return { op: "tags", documentId: raw.documentId, tags: strings(raw.tags) };
 	}
@@ -154,7 +181,11 @@ function recordIds(dir: string): string[] {
 }
 
 /** One moment file read asynchronously; undefined when it is missing, not a regular file, larger than `maxBytes` or invalid. */
-async function readMomentFile(momentsDir: string, id: string, maxBytes: number): Promise<TeachableMoment | undefined> {
+async function readMomentFile(
+	momentsDir: string,
+	id: string,
+	maxBytes: number,
+): Promise<TeachableMoment | undefined> {
 	try {
 		const path = join(momentsDir, `${id}.json`);
 		const stat = await lstat(path);
@@ -168,7 +199,11 @@ async function readMomentFile(momentsDir: string, id: string, maxBytes: number):
 }
 
 /** One moment of the store at `dir` (`<stateDir>/teach`), read asynchronously with a size cap. */
-export async function readMoment(dir: string, id: string, maxBytes: number): Promise<TeachableMoment | undefined> {
+export async function readMoment(
+	dir: string,
+	id: string,
+	maxBytes: number,
+): Promise<TeachableMoment | undefined> {
 	return isValidId(id) ? readMomentFile(join(dir, "moments"), id, maxBytes) : undefined;
 }
 
@@ -196,7 +231,8 @@ export async function listRecentMoments(
 		if (!isValidId(id)) continue;
 		try {
 			const stat = await lstat(join(momentsDir, file));
-			if (stat.isFile() && stat.size <= options.maxBytes) entries.push({ id, mtimeMs: stat.mtimeMs });
+			if (stat.isFile() && stat.size <= options.maxBytes)
+				entries.push({ id, mtimeMs: stat.mtimeMs });
 		} catch {
 			// removed meanwhile
 		}
@@ -220,9 +256,11 @@ export function openStore(dir: string): TeachStore {
 	const momentsDir = join(dir, "moments");
 	const outboxDir = join(dir, "outbox");
 
-	const read = (id: string): TeachableMoment | undefined => (isValidId(id) ? parseMoment(readJson(join(momentsDir, `${id}.json`)), id) : undefined);
+	const read = (id: string): TeachableMoment | undefined =>
+		isValidId(id) ? parseMoment(readJson(join(momentsDir, `${id}.json`)), id) : undefined;
 
-	const readEntry = (id: string): OutboxEntry | undefined => (isValidId(id) ? parseEntry(readJson(join(outboxDir, `${id}.json`)), id) : undefined);
+	const readEntry = (id: string): OutboxEntry | undefined =>
+		isValidId(id) ? parseEntry(readJson(join(outboxDir, `${id}.json`)), id) : undefined;
 
 	function list(): TeachableMoment[] {
 		const moments: TeachableMoment[] = [];
@@ -231,7 +269,10 @@ export function openStore(dir: string): TeachStore {
 			if (moment) moments.push(moment);
 		}
 		return moments.sort(
-			(a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt) || Date.parse(b.createdAt) - Date.parse(a.createdAt) || (a.id < b.id ? -1 : 1),
+			(a, b) =>
+				Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt) ||
+				Date.parse(b.createdAt) - Date.parse(a.createdAt) ||
+				(a.id < b.id ? -1 : 1),
 		);
 	}
 

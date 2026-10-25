@@ -21,7 +21,10 @@ export interface MomentCounts {
 
 /** Counts per status and the outbox size from `<stateDir>/teach`; zeros when the store does not exist or cannot be read. */
 export function momentCounts(stateDir: string): MomentCounts {
-	const moments = Object.fromEntries(MOMENT_STATUSES.map((status) => [status, 0])) as Record<MomentStatus, number>;
+	const moments = Object.fromEntries(MOMENT_STATUSES.map((status) => [status, 0])) as Record<
+		MomentStatus,
+		number
+	>;
 	const dir = storeDir(stateDir);
 	if (!existsSync(dir)) return { moments, outbox: 0 };
 	try {
@@ -39,12 +42,21 @@ export function hindsightReadiness(
 	storePath?: string,
 	gateway?: GatewayConfig,
 ): HindsightReadiness {
-	return resolveHindsight(config, env, storePath === undefined ? { gateway } : { storePath, gateway }).readiness;
+	return resolveHindsight(
+		config,
+		env,
+		storePath === undefined ? { gateway } : { storePath, gateway },
+	).readiness;
 }
 
 function hindsightWord(readiness: HindsightReadiness): string {
 	if (readiness.state !== "unready") return readiness.state;
-	const words = { "no-url": "no URL", "bad-url": "bad URL", "no-key": "no key", "no-token": "no token" } as const;
+	const words = {
+		"no-url": "no URL",
+		"bad-url": "bad URL",
+		"no-key": "no key",
+		"no-token": "no token",
+	} as const;
 	return words[readiness.reason];
 }
 
@@ -68,7 +80,9 @@ export function teachStatusLine(
 		parts.push(`${counts.moments.confirmed} confirmed, ${counts.moments.candidate} candidate`);
 		outbox = counts.outbox;
 	}
-	parts.push(`Hindsight ${hindsightWord(hindsightReadiness(config.hindsight, env, storePath, config.gateway))}`);
+	parts.push(
+		`Hindsight ${hindsightWord(hindsightReadiness(config.hindsight, env, storePath, config.gateway))}`,
+	);
 	if (outbox !== undefined) parts.push(`outbox ${outbox}`);
 	return parts.join(" · ");
 }

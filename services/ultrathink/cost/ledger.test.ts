@@ -160,8 +160,12 @@ describe("token ledger", () => {
 			runTokenCeiling: 0,
 			dailyTokenCeiling: 0,
 		});
-		expect(() => ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10_000_000 })).not.toThrow();
-		expect(() => ledger.reserve({ runId, phase: "b", attempt: 1, estimatedTokens: 10_000_000 })).not.toThrow();
+		expect(() =>
+			ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10_000_000 }),
+		).not.toThrow();
+		expect(() =>
+			ledger.reserve({ runId, phase: "b", attempt: 1, estimatedTokens: 10_000_000 }),
+		).not.toThrow();
 		expect(ledger.spentForRun(runId)).toBe(20_000_000);
 	});
 
@@ -191,7 +195,9 @@ describe("token ledger", () => {
 		});
 		ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 60 });
 
-		const error = captureError(() => ledger.reserve({ runId, phase: "b", attempt: 1, estimatedTokens: 50 }));
+		const error = captureError(() =>
+			ledger.reserve({ runId, phase: "b", attempt: 1, estimatedTokens: 50 }),
+		);
 		expect(error).toBeInstanceOf(CeilingError);
 		expect((error as CeilingError).reason).toBe(CEILING_RUN);
 	});
@@ -284,9 +290,9 @@ describe("token ledger", () => {
 			dailyTokenCeiling: 1_000,
 		});
 		store.close();
-		expect(() =>
-			ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 }),
-		).toThrow(LedgerWriteError);
+		expect(() => ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 })).toThrow(
+			LedgerWriteError,
+		);
 	});
 
 	test("a duplicate (run, phase, attempt) reservation throws LedgerWriteError", () => {
@@ -295,9 +301,9 @@ describe("token ledger", () => {
 			dailyTokenCeiling: 1_000,
 		});
 		ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 });
-		expect(() =>
-			ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 }),
-		).toThrow(LedgerWriteError);
+		expect(() => ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 })).toThrow(
+			LedgerWriteError,
+		);
 		expect(ledger.spentForRun(runId)).toBe(10);
 	});
 

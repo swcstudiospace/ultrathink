@@ -2,7 +2,14 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
-import { type ClearTimer, createSinkQueue, type SetTimer, type SinkEvent, type SinkQueue, type SinkQueueOptions } from "./queue.ts";
+import {
+	type ClearTimer,
+	createSinkQueue,
+	type SetTimer,
+	type SinkEvent,
+	type SinkQueue,
+	type SinkQueueOptions,
+} from "./queue.ts";
 import type { SendResult, SinkEnvelope, SinkTransport } from "./types.ts";
 
 const SINK = "test-sink";
@@ -36,7 +43,8 @@ function fakeTimers(): Timers {
 	const clearTimer: ClearTimer = (handle) => {
 		pending.delete(handle as number);
 	};
-	const count = (ms: number): number => [...pending.values()].filter((timer) => timer.ms === ms).length;
+	const count = (ms: number): number =>
+		[...pending.values()].filter((timer) => timer.ms === ms).length;
 	const fire = (ms: number): number => {
 		let fired = 0;
 		for (const [id, timer] of [...pending]) {
@@ -73,7 +81,8 @@ function scriptedTransport(respond: Responder): { transport: SinkTransport; call
 
 const okResult = (): Promise<SendResult> => Promise.resolve({ ok: true });
 
-const failResult = (retryable: boolean, reason: string): Promise<SendResult> => Promise.resolve({ ok: false, retryable, reason });
+const failResult = (retryable: boolean, reason: string): Promise<SendResult> =>
+	Promise.resolve({ ok: false, retryable, reason });
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 	const { promise, resolve } = Promise.withResolvers<T>();
@@ -83,9 +92,14 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 /** A transport that never settles and ignores the abort signal. */
 const hangingResult = (): Promise<SendResult> => new Promise<SendResult>(() => {});
 
-const envelope = (n: number): SinkEnvelope => ({ kind: "audit", at: "2026-01-01T00:00:00.000Z", body: { n } });
+const envelope = (n: number): SinkEnvelope => ({
+	kind: "audit",
+	at: "2026-01-01T00:00:00.000Z",
+	body: { n },
+});
 
-const numbersOf = (batch: readonly SinkEnvelope[]): number[] => batch.map((item) => item.body.n as number);
+const numbersOf = (batch: readonly SinkEnvelope[]): number[] =>
+	batch.map((item) => item.body.n as number);
 
 /** Yields to the event loop so every queued microtask runs. This is not a timer. */
 function yieldToEventLoop(): Promise<void> {
@@ -226,7 +240,10 @@ describe("createSinkQueue", () => {
 		firstBatchGate.resolve({ ok: true });
 
 		expect(await drain(queue, timers)).toBe(true);
-		expect(calls.map((call) => numbersOf(call.batch))).toEqual([[1, 2], [3, 4]]);
+		expect(calls.map((call) => numbersOf(call.batch))).toEqual([
+			[1, 2],
+			[3, 4],
+		]);
 	});
 
 	test("a transport that throws synchronously or rejects is a retryable failure and does not escape", async () => {
@@ -255,12 +272,17 @@ describe("createSinkQueue", () => {
 
 	test("a malformed transport result is a retryable failure and does not crash the pump", async () => {
 		const timers = fakeTimers();
-		const { transport } = scriptedTransport(() => Promise.resolve(undefined as unknown as SendResult));
+		const { transport } = scriptedTransport(() =>
+			Promise.resolve(undefined as unknown as SendResult),
+		);
 		const { queue, events } = makeQueue(transport, timers, { maxAttempts: 1 });
 
 		queue.enqueue(envelope(1));
 		expect(await drain(queue, timers)).toBe(true);
-		expect(events.map((event) => event.reason)).toEqual(["malformed transport result", "malformed transport result"]);
+		expect(events.map((event) => event.reason)).toEqual([
+			"malformed transport result",
+			"malformed transport result",
+		]);
 	});
 
 	test("a send that outlives requestTimeoutMs is aborted and retried", async () => {
@@ -366,9 +388,22 @@ describe("createSinkQueue", () => {
 	test("invalid sizing is rejected with RangeError at construction", () => {
 		const timers = fakeTimers();
 		const { transport } = scriptedTransport(okResult);
-		const base = { transport, backoffMs: () => BACKOFF_MS, requestTimeoutMs: REQUEST_TIMEOUT_MS, onEvent: () => {}, setTimer: timers.setTimer, clearTimer: timers.clearTimer };
-		expect(() => createSinkQueue({ ...base, capacity: 0, maxBatch: 1, maxAttempts: 1 })).toThrow(RangeError);
-		expect(() => createSinkQueue({ ...base, capacity: 1, maxBatch: 1.5, maxAttempts: 1 })).toThrow(RangeError);
-		expect(() => createSinkQueue({ ...base, capacity: 1, maxBatch: 1, maxAttempts: 0 })).toThrow(RangeError);
+		const base = {
+			transport,
+			backoffMs: () => BACKOFF_MS,
+			requestTimeoutMs: REQUEST_TIMEOUT_MS,
+			onEvent: () => {},
+			setTimer: timers.setTimer,
+			clearTimer: timers.clearTimer,
+		};
+		expect(() => createSinkQueue({ ...base, capacity: 0, maxBatch: 1, maxAttempts: 1 })).toThrow(
+			RangeError,
+		);
+		expect(() => createSinkQueue({ ...base, capacity: 1, maxBatch: 1.5, maxAttempts: 1 })).toThrow(
+			RangeError,
+		);
+		expect(() => createSinkQueue({ ...base, capacity: 1, maxBatch: 1, maxAttempts: 0 })).toThrow(
+			RangeError,
+		);
 	});
 });

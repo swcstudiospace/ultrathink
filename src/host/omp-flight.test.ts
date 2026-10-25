@@ -10,7 +10,20 @@ import type { GroundOutcome } from "../ragflow/types.ts";
 import { createNativeEngineSelector, NO_PLAN } from "./omp.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
 import type { ModelResolution } from "./engine.ts";
-import { fakeModel, fakeRuntime, flush, isolatedPlanEnv, quietConfig, recorder, reply, runChildLifetimeScenario, setup, stageAnswer, tuiCtx, userText } from "./omp-test.helpers.ts";
+import {
+	fakeModel,
+	fakeRuntime,
+	flush,
+	isolatedPlanEnv,
+	quietConfig,
+	recorder,
+	reply,
+	runChildLifetimeScenario,
+	setup,
+	stageAnswer,
+	tuiCtx,
+	userText,
+} from "./omp-test.helpers.ts";
 import type { OmpTestHarness } from "./omp-test.helpers.ts";
 import { planPrompt } from "./plan.ts";
 import type { PlanResponse } from "./plan.ts";
@@ -18,11 +31,18 @@ import type { ProgressEvent } from "./progress.ts";
 
 describe("flight lifecycle (D-12)", () => {
 	const PENDING_RESULT = { message: expect.objectContaining({ customType: "ultrathink-pending" }) };
-	const aside = (content: string) => ({ message: { customType: "ultrathink-plan", content, display: true, attribution: "agent" }, options: { deliverAs: "aside" } });
+	const aside = (content: string) => ({
+		message: { customType: "ultrathink-plan", content, display: true, attribution: "agent" },
+		options: { deliverAs: "aside" },
+	});
 
 	/** A planner whose every flight waits on its own gate and keeps its request and lifetime. */
 	function gated() {
-		const runs: Array<{ request: OmpPlanRequest; signal: AbortSignal; gate: PromiseWithResolvers<string> }> = [];
+		const runs: Array<{
+			request: OmpPlanRequest;
+			signal: AbortSignal;
+			gate: PromiseWithResolvers<string>;
+		}> = [];
 		const plan = (request: OmpPlanRequest, signal: AbortSignal) => {
 			const gate = Promise.withResolvers<string>();
 			runs.push({ request, signal, gate });
@@ -51,11 +71,25 @@ describe("flight lifecycle (D-12)", () => {
 			return gate.promise;
 		}, 1);
 		expect(await run()).toEqual(PENDING_RESULT);
-		progress?.({ type: "activity", at: 2, notice: { v: 1, kind: "resource", title: "RAGFlow", source: "ragflow", outcome: "none", count: 0 } });
+		progress?.({
+			type: "activity",
+			at: 2,
+			notice: {
+				v: 1,
+				kind: "resource",
+				title: "RAGFlow",
+				source: "ragflow",
+				outcome: "none",
+				count: 0,
+			},
+		});
 		gate.resolve("PLAN");
 		await flush();
 		expect(sent).toEqual([
-			{ message: expect.objectContaining({ customType: "ultrathink-activity" }), options: { deliverAs: "nextTurn", triggerTurn: false } },
+			{
+				message: expect.objectContaining({ customType: "ultrathink-activity" }),
+				options: { deliverAs: "nextTurn", triggerTurn: false },
+			},
 			aside("PLAN"),
 		]);
 	});
@@ -77,12 +111,15 @@ describe("flight lifecycle (D-12)", () => {
 					completeSimple: rec.complete,
 					providerDefaults: {},
 					...(flightRequest.isCurrent ? { isCurrent: flightRequest.isCurrent } : {}),
-				})({
-					host: "omp",
-					override: { provider: "", model: "" },
-					providerDefaults: {},
-					engineSelection: { engine: "auto", source: "config", nativeOptOut: false },
-				}, flightSignal);
+				})(
+					{
+						host: "omp",
+						override: { provider: "", model: "" },
+						providerDefaults: {},
+						engineSelection: { engine: "auto", source: "config", nativeOptOut: false },
+					},
+					flightSignal,
+				);
 				if ("skipped" in selected) throw new Error(`unexpected skip: ${selected.skipped}`);
 				return { context: await selected.complete("SYSTEM", "USER", flightSignal) };
 			},
@@ -111,10 +148,14 @@ describe("flight lifecycle (D-12)", () => {
 			(_request, signal, onEvent) => {
 				progress = onEvent;
 				onEvent?.({ type: "begin", at: 1, sessionId: "s1", engine: "initial" });
-				signal.addEventListener("abort", () => {
-					onEvent?.({ type: "end", at: 2, outcome: "planned" });
-					stopped.resolve();
-				}, { once: true });
+				signal.addEventListener(
+					"abort",
+					() => {
+						onEvent?.({ type: "end", at: 2, outcome: "planned" });
+						stopped.resolve();
+					},
+					{ once: true },
+				);
 				return gate.promise;
 			},
 			1,
@@ -160,7 +201,10 @@ describe("flight lifecycle (D-12)", () => {
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
 		const current = planner.runs[1]!;
 		// The newer flight's deadline follows the old one, without a sleep or polling loop.
-		if (!current.signal.aborted) await new Promise<void>((resolve) => current.signal.addEventListener("abort", () => resolve(), { once: true }));
+		if (!current.signal.aborted)
+			await new Promise<void>((resolve) =>
+				current.signal.addEventListener("abort", () => resolve(), { once: true }),
+			);
 		await flush();
 		expect(sent).toEqual([aside(NO_PLAN)]);
 		for (const entry of planner.runs) entry.gate.resolve(`LATE ${entry.request.prompt}`);
@@ -198,7 +242,11 @@ describe("flight lifecycle (D-12)", () => {
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
 	});
 
-	for (const [before, after] of [["low" as Effort, "high" as Effort], ["off", undefined], [undefined, "low" as Effort]] as const) {
+	for (const [before, after] of [
+		["low" as Effort, "high" as Effort],
+		["off", undefined],
+		[undefined, "low" as Effort],
+	] as const) {
 		test(`thinking-level reentry ${before} to ${after} cancels and suppresses the old flight`, async () => {
 			let level: OmpPlanRequest["thinkingLevel"] = before;
 			const planner = gated();
@@ -241,7 +289,10 @@ describe("flight lifecycle (D-12)", () => {
 		expect(await run()).toMatchObject({ message: { content: "PLAN low" } });
 		level = "high" as Effort;
 		expect(await run()).toMatchObject({ message: { content: "PLAN high" } });
-		expect(requests.map((request) => request.thinkingLevel)).toEqual(["low" as Effort, "high" as Effort]);
+		expect(requests.map((request) => request.thinkingLevel)).toEqual([
+			"low" as Effort,
+			"high" as Effort,
+		]);
 		expect(sent).toEqual([]);
 	});
 
@@ -253,7 +304,9 @@ describe("flight lifecycle (D-12)", () => {
 		await run();
 		live = fakeModel("anthropic", "opus-x");
 		expect(await run()).toEqual(PENDING_RESULT);
-		expect(planner.runs.map((entry) => [entry.request.model?.provider, entry.signal.aborted])).toEqual([
+		expect(
+			planner.runs.map((entry) => [entry.request.model?.provider, entry.signal.aborted]),
+		).toEqual([
 			["acme", true],
 			["anthropic", false],
 		]);
@@ -317,7 +370,10 @@ describe("flight lifecycle (D-12)", () => {
 	test("an alias the flight resolved is revalidated at reentry: a new target replans", async () => {
 		const live = fakeModel("acme", "sol-1");
 		let slow = fakeModel("acme", "slow-1");
-		const { runtime } = fakeRuntime([live], { current: () => live, aliases: { "@slow": () => slow } });
+		const { runtime } = fakeRuntime([live], {
+			current: () => live,
+			aliases: { "@slow": () => slow },
+		});
 		const signals: AbortSignal[] = [];
 		const gate = Promise.withResolvers<string>();
 		const { run } = setup(
@@ -389,7 +445,14 @@ describe("flight lifecycle (D-12)", () => {
 		expect(second?.()).toBe(false);
 	});
 
-	for (const event of ["agent_start", "agent_end", "turn_start", "turn_end", "tool_execution_start", "tool_execution_end"] as const) {
+	for (const event of [
+		"agent_start",
+		"agent_end",
+		"turn_start",
+		"turn_end",
+		"tool_execution_start",
+		"tool_execution_end",
+	] as const) {
 		for (const change of ["model", "session", "unchanged"] as const) {
 			test(`${event} observes ${change} during an uplift-only flight paused on evidence after its final completion (REV15-006)`, async () => {
 				const root = mkdtempSync(join(tmpdir(), "ut-omp-observe-"));
@@ -405,35 +468,65 @@ describe("flight lifecycle (D-12)", () => {
 				const uplifted = Promise.withResolvers<void>();
 				const completed = Promise.withResolvers<PlanResponse>();
 				const empty: GroundOutcome = { status: "none", chunks: [], chars: 0, ms: 0, datasets: 0 };
-				const rec = recorder((call) => reply([{ type: "text", text: stageAnswer(userText(call)).text }]));
+				const rec = recorder((call) =>
+					reply([{ type: "text", text: stageAnswer(userText(call)).text }]),
+				);
 				let lifetime: AbortSignal | undefined;
 				let lookupSignal: AbortSignal | undefined;
 				let tracks = 0;
 				let level = "low" as Effort;
 				let levelReads = 0;
 				const events: ProgressEvent[] = [];
-				const { run, emit, sent } = setup(async (request, signal, onEvent) => {
-					lifetime = signal;
-					const response = await planPrompt(
-						{ host: "omp", session_id: request.sessionId, prompt: request.prompt, cwd: request.cwd },
-						isolatedPlanEnv(root),
-						{
-							config: request.config!, control: request.control!, stateDir, signal,
-							native: createNativeEngineSelector(request, signal, { completeSimple: rec.complete, providerDefaults: {}, isCurrent: request.isCurrent! }),
-							ground: ({ signal: evidenceSignal }) => { lookupSignal = evidenceSignal; return lookup.promise; },
-							createTracker: () => async () => { tracks++; return undefined; },
-							progress: (entry) => {
-								events.push(entry);
-								onEvent?.(entry);
-								if (entry.type === "stage" && entry.stage === "uplift" && entry.phase === "end") uplifted.resolve();
+				const { run, emit, sent } = setup(
+					async (request, signal, onEvent) => {
+						lifetime = signal;
+						const response = await planPrompt(
+							{
+								host: "omp",
+								session_id: request.sessionId,
+								prompt: request.prompt,
+								cwd: request.cwd,
 							},
+							isolatedPlanEnv(root),
+							{
+								config: request.config!,
+								control: request.control!,
+								stateDir,
+								signal,
+								native: createNativeEngineSelector(request, signal, {
+									completeSimple: rec.complete,
+									providerDefaults: {},
+									isCurrent: request.isCurrent!,
+								}),
+								ground: ({ signal: evidenceSignal }) => {
+									lookupSignal = evidenceSignal;
+									return lookup.promise;
+								},
+								createTracker: () => async () => {
+									tracks++;
+									return undefined;
+								},
+								progress: (entry) => {
+									events.push(entry);
+									onEvent?.(entry);
+									if (entry.type === "stage" && entry.stage === "uplift" && entry.phase === "end")
+										uplifted.resolve();
+								},
+							},
+						);
+						completed.resolve(response);
+						return response;
+					},
+					1,
+					{ stateDir, config: () => config },
+					{ cwd: root, model: live, ...runtime },
+					{
+						getThinkingLevel: () => {
+							levelReads++;
+							return level;
 						},
-					);
-					completed.resolve(response);
-					return response;
-				}, 1, { stateDir, config: () => config }, { cwd: root, model: live, ...runtime }, {
-					getThinkingLevel: () => { levelReads++; return level; },
-				});
+					},
+				);
 				try {
 					expect(await run("add a widget")).toEqual(PENDING_RESULT);
 					await uplifted.promise;
@@ -444,11 +537,16 @@ describe("flight lifecycle (D-12)", () => {
 					// A real lifecycle observation has a fresh context; its Model beats the older runtime.current().
 					// Thinking is intentionally changed too: AD-5 observes that setting only at reentry.
 					level = "high" as Effort;
-					emit(event, {}, {
-						cwd: root, ...runtime,
-						model: change === "model" ? fakeModel("acme", "sol-2") : { ...live },
-						sessionManager: { getSessionId: () => change === "session" ? "s2" : "s1" },
-					});
+					emit(
+						event,
+						{},
+						{
+							cwd: root,
+							...runtime,
+							model: change === "model" ? fakeModel("acme", "sol-2") : { ...live },
+							sessionManager: { getSessionId: () => (change === "session" ? "s2" : "s1") },
+						},
+					);
 					const abortedAtObservation = lifetime?.aborted;
 					const lookupAbortedAtObservation = lookupSignal?.aborted;
 					lookup.resolve(empty);
@@ -464,7 +562,12 @@ describe("flight lifecycle (D-12)", () => {
 						expect(existsSync(join(stateDir, path))).toBe(!invalid);
 					if (invalid) {
 						expect(response).toMatchObject({ context: "", skipped: "aborted" });
-						expect(events.filter((entry) => entry.type === "stage" && (entry.stage === "track" || entry.stage === "state"))).toEqual([]);
+						expect(
+							events.filter(
+								(entry) =>
+									entry.type === "stage" && (entry.stage === "track" || entry.stage === "state"),
+							),
+						).toEqual([]);
 						expect(sent).toEqual([]);
 					} else {
 						expect(response.skipped).toBeUndefined();
@@ -472,7 +575,10 @@ describe("flight lifecycle (D-12)", () => {
 						expect(readSession(stateDir, "s1")?.modelResolution?.modelId).toBe("sol-1");
 						expect(sent).toHaveLength(2);
 						expect(sent[0]).toMatchObject({ message: { customType: "ultrathink-activity" } });
-						expect(sent[1]).toMatchObject({ message: { content: response.context, customType: "ultrathink-plan" }, options: { deliverAs: "aside" } });
+						expect(sent[1]).toMatchObject({
+							message: { content: response.context, customType: "ultrathink-plan" },
+							options: { deliverAs: "aside" },
+						});
 					}
 				} finally {
 					lookup.resolve(empty);
@@ -508,7 +614,10 @@ describe("flight lifecycle (D-12)", () => {
 	}
 
 	test("unbounded omitted outer survives fired 600001ms with one real plan aside", async () => {
-		expect(await runChildLifetimeScenario({ cancelHung: false })).toEqual({ planAsides: 1, nativeCalls: 8 });
+		expect(await runChildLifetimeScenario({ cancelHung: false })).toEqual({
+			planAsides: 1,
+			nativeCalls: 8,
+		});
 	}, 120_000);
 	const OUTER_CASES: Array<{ name: string; extra: { maxRunMs?: number } }> = [
 		{ name: "omitted", extra: {} },
@@ -525,7 +634,9 @@ describe("flight lifecycle (D-12)", () => {
 				const oldPromise = h.run("A");
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				h.emit("turn_start");
 				const nextPromise = h.run("B");
 				expect(await oldPromise).toBeUndefined();
@@ -547,7 +658,9 @@ describe("flight lifecycle (D-12)", () => {
 				const oldPromise = h.run("A");
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				h.emit("turn_start");
 				const nextPromise = h.run("A");
 				expect(await oldPromise).toBeUndefined();
@@ -567,7 +680,9 @@ describe("flight lifecycle (D-12)", () => {
 				const oldPromise = h.run("hello");
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				h.command("ultrathink-quick", "hello");
 				expect(h.userMessages).toEqual(["hello"]);
 				expect(planner.runs[0]?.signal.aborted).toBe(false);
@@ -589,8 +704,13 @@ describe("flight lifecycle (D-12)", () => {
 				const oldPromise = h.run();
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
-				live = label === "whole-model" ? fakeModel("acme", "sol-2") : { ...live, baseUrl: "https://SECRET-OTHER.invalid/v1" };
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
+				live =
+					label === "whole-model"
+						? fakeModel("acme", "sol-2")
+						: { ...live, baseUrl: "https://SECRET-OTHER.invalid/v1" };
 				if (label === "header-resolver") live = { ...live, resolveHeaders: async () => ({}) };
 				const nextPromise = h.run();
 				expect(await oldPromise).toBeUndefined();
@@ -605,13 +725,22 @@ describe("flight lifecycle (D-12)", () => {
 			}
 			// Thinking-level change.
 			{
-			let level: OmpPlanRequest["thinkingLevel"] = "low" as Effort;
+				let level: OmpPlanRequest["thinkingLevel"] = "low" as Effort;
 				const planner = gated();
-				const h = setup(planner.plan, 1_000, outer.extra, {}, { getThinkingLevel: () => level }, true);
+				const h = setup(
+					planner.plan,
+					1_000,
+					outer.extra,
+					{},
+					{ getThinkingLevel: () => level },
+					true,
+				);
 				const oldPromise = h.run();
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				level = "high" as Effort;
 				const nextPromise = h.run();
 				expect(await oldPromise).toBeUndefined();
@@ -627,11 +756,26 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				let override = { provider: "", model: "" };
 				const planner = gated();
-				const h = setup(planner.plan, 1_000, { ...outer.extra, config: () => quietConfig((config) => { config.models.hosts.omp = override; }) }, {}, {}, true);
+				const h = setup(
+					planner.plan,
+					1_000,
+					{
+						...outer.extra,
+						config: () =>
+							quietConfig((config) => {
+								config.models.hosts.omp = override;
+							}),
+					},
+					{},
+					{},
+					true,
+				);
 				const oldPromise = h.run();
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				override = { provider: "acme", model: "opus" };
 				const nextPromise = h.run();
 				expect(await oldPromise).toBeUndefined();
@@ -648,11 +792,26 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				let engine: "auto" | "claude" = "auto";
 				const planner = gated();
-				const h = setup(planner.plan, 1_000, { ...outer.extra, config: () => quietConfig((config) => { config.think.engine = engine; }) }, {}, {}, true);
+				const h = setup(
+					planner.plan,
+					1_000,
+					{
+						...outer.extra,
+						config: () =>
+							quietConfig((config) => {
+								config.think.engine = engine;
+							}),
+					},
+					{},
+					{},
+					true,
+				);
 				const oldPromise = h.run();
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				engine = "claude";
 				const nextPromise = h.run();
 				expect(await oldPromise).toBeUndefined();
@@ -668,11 +827,27 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				let model = "m1";
 				const planner = gated();
-				const h = setup(planner.plan, 1_000, { ...outer.extra, config: () => quietConfig((config) => { config.think.engine = "claude"; config.claude.model = model; }) }, {}, {}, true);
+				const h = setup(
+					planner.plan,
+					1_000,
+					{
+						...outer.extra,
+						config: () =>
+							quietConfig((config) => {
+								config.think.engine = "claude";
+								config.claude.model = model;
+							}),
+					},
+					{},
+					{},
+					true,
+				);
 				const oldPromise = h.run();
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				model = "m2";
 				const nextPromise = h.run();
 				expect(await oldPromise).toBeUndefined();
@@ -688,21 +863,33 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				const live = fakeModel("acme", "sol-1");
 				let slow = fakeModel("acme", "slow-1");
-				const { runtime } = fakeRuntime([live], { current: () => live, aliases: { "@slow": () => slow } });
+				const { runtime } = fakeRuntime([live], {
+					current: () => live,
+					aliases: { "@slow": () => slow },
+				});
 				const signals: AbortSignal[] = [];
 				let calls = 0;
 				const gate = Promise.withResolvers<string>();
-				const h = setup((request, signal) => {
-					signals.push(signal);
-					calls++;
-					request.native?.models.resolve("@slow");
-					return gate.promise;
-				}, 1_000, outer.extra, { ...runtime }, {}, true);
+				const h = setup(
+					(request, signal) => {
+						signals.push(signal);
+						calls++;
+						request.native?.models.resolve("@slow");
+						return gate.promise;
+					},
+					1_000,
+					outer.extra,
+					{ ...runtime },
+					{},
+					true,
+				);
 				const oldPromise = h.run();
 				for (let i = 0; i < 200 && calls === 0; i++) await Promise.resolve();
 				expect(calls).toBe(1);
 				let oldGateSettled = false;
-				void gate.promise.then(() => { oldGateSettled = true; });
+				void gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				slow = fakeModel("acme", "slow-2");
 				const nextPromise = h.run();
 				expect(await oldPromise).toBeUndefined();
@@ -722,7 +909,9 @@ describe("flight lifecycle (D-12)", () => {
 				const oldPromise = h.run();
 				await untilStarted(planner);
 				let oldGateSettled = false;
-				void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+				void planner.runs[0]?.gate.promise.then(() => {
+					oldGateSettled = true;
+				});
 				h.emit(event);
 				expect(await oldPromise).toBeUndefined();
 				expect(oldGateSettled).toBe(false);
@@ -777,14 +966,28 @@ describe("flight lifecycle (D-12)", () => {
 				const { runtime } = fakeRuntime([], { current: () => live });
 				const seen: Array<((event: ProgressEvent) => void) | undefined> = [];
 				const planner = gated();
-				const h = setup((request, signal, onEvent) => { seen.push(onEvent); return planner.plan(request, signal); }, 10, outer.extra, { ...runtime });
+				const h = setup(
+					(request, signal, onEvent) => {
+						seen.push(onEvent);
+						return planner.plan(request, signal);
+					},
+					10,
+					outer.extra,
+					{ ...runtime },
+				);
 				expect(await h.run()).toEqual(PENDING_RESULT);
 				live = fakeModel("acme", "sol-2");
 				const nextPromise = h.run();
 				await flush();
 				expect(planner.runs[0]?.signal.aborted).toBe(true);
 				expect(seen).toHaveLength(2);
-				seen[0]?.({ type: "begin", at: 3, sessionId: "s1", engine: "late", modelResolution: STALE_RESOLUTION });
+				seen[0]?.({
+					type: "begin",
+					at: 3,
+					sessionId: "s1",
+					engine: "late",
+					modelResolution: STALE_RESOLUTION,
+				});
 				seen[0]?.({ type: "stage", at: 4, stage: "think", phase: "start" });
 				seen[0]?.({ type: "end", at: 5, outcome: "planned", modelResolution: STALE_RESOLUTION });
 				planner.runs[0]?.gate.resolve("LATE PLAN");
@@ -824,7 +1027,14 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				const gate = Promise.withResolvers<string>();
 				let progress: ((event: ProgressEvent) => void) | undefined;
-				const h = setup((_request, _signal, onEvent) => { progress = onEvent; return gate.promise; }, 10, outer.extra);
+				const h = setup(
+					(_request, _signal, onEvent) => {
+						progress = onEvent;
+						return gate.promise;
+					},
+					10,
+					outer.extra,
+				);
 				expect(await h.run()).toEqual(PENDING_RESULT);
 				h.emit("session_shutdown");
 				progress?.({ type: "stage", at: 9, stage: "think", phase: "start" });
@@ -838,7 +1048,15 @@ describe("flight lifecycle (D-12)", () => {
 		const t = tuiCtx();
 		const planner = gated();
 		const seen: Array<((event: ProgressEvent) => void) | undefined> = [];
-		const h = setup((request, signal, onEvent) => { seen.push(onEvent); return planner.plan(request, signal); }, 10, {}, t.ctx);
+		const h = setup(
+			(request, signal, onEvent) => {
+				seen.push(onEvent);
+				return planner.plan(request, signal);
+			},
+			10,
+			{},
+			t.ctx,
+		);
 		h.emit("session_start");
 		expect(await h.run("A")).toEqual(PENDING_RESULT);
 		h.emit("turn_start");
@@ -847,7 +1065,13 @@ describe("flight lifecycle (D-12)", () => {
 		const successorLine = t.line();
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
 		expect(seen).toHaveLength(2);
-		seen[0]?.({ type: "begin", at: 3, sessionId: "s1", engine: "late", modelResolution: STALE_RESOLUTION });
+		seen[0]?.({
+			type: "begin",
+			at: 3,
+			sessionId: "s1",
+			engine: "late",
+			modelResolution: STALE_RESOLUTION,
+		});
 		seen[0]?.({ type: "stage", at: 4, stage: "think", phase: "start" });
 		seen[0]?.({ type: "end", at: 5, outcome: "planned", modelResolution: STALE_RESOLUTION });
 		planner.runs[0]?.gate.resolve("LATE A");
@@ -863,18 +1087,26 @@ describe("flight lifecycle (D-12)", () => {
 
 	test("cancel-matrix reentrant abort events admit no new planner and schedule no later no-plan", async () => {
 		const planner = gated();
-		const h = setup((request, signal, onEvent) => {
-			if (request.prompt === "A") {
-				// Noncooperative old flight: its abort listener synchronously replays its own
-				// begin/stage/end through its own sink while its provider gate never settles.
-				signal.addEventListener("abort", () => {
-					onEvent?.({ type: "begin", at: 1, sessionId: "s1", engine: "old" });
-					onEvent?.({ type: "stage", at: 2, stage: "think", phase: "start" });
-					onEvent?.({ type: "end", at: 3, outcome: "planned" });
-				}, { once: true });
-			}
-			return planner.plan(request, signal);
-		}, 5, { maxRunMs: 40 });
+		const h = setup(
+			(request, signal, onEvent) => {
+				if (request.prompt === "A") {
+					// Noncooperative old flight: its abort listener synchronously replays its own
+					// begin/stage/end through its own sink while its provider gate never settles.
+					signal.addEventListener(
+						"abort",
+						() => {
+							onEvent?.({ type: "begin", at: 1, sessionId: "s1", engine: "old" });
+							onEvent?.({ type: "stage", at: 2, stage: "think", phase: "start" });
+							onEvent?.({ type: "end", at: 3, outcome: "planned" });
+						},
+						{ once: true },
+					);
+				}
+				return planner.plan(request, signal);
+			},
+			5,
+			{ maxRunMs: 40 },
+		);
 		const oldPromise = h.run("A");
 		await untilStarted(planner);
 		h.emit("turn_start");
@@ -903,20 +1135,30 @@ describe("flight lifecycle (D-12)", () => {
 		for (const event of ["session_switch", "session_shutdown"] as const) {
 			let h!: OmpTestHarness;
 			const planner = gated();
-			h = setup((request, signal) => {
-				if (request.prompt === "A") {
-					// Reentrant startup guard (G2): cancelling A runs this listener synchronously
-					// inside B's start, so the host cancel below hits B before its planner/timer.
-					signal.addEventListener("abort", () => {
-						h.emit(event);
-					}, { once: true });
-				}
-				return planner.plan(request, signal);
-			}, 5, { maxRunMs: 40 });
+			h = setup(
+				(request, signal) => {
+					if (request.prompt === "A") {
+						// Reentrant startup guard (G2): cancelling A runs this listener synchronously
+						// inside B's start, so the host cancel below hits B before its planner/timer.
+						signal.addEventListener(
+							"abort",
+							() => {
+								h.emit(event);
+							},
+							{ once: true },
+						);
+					}
+					return planner.plan(request, signal);
+				},
+				5,
+				{ maxRunMs: 40 },
+			);
 			const oldPromise = h.run("A");
 			await untilStarted(planner);
 			let oldGateSettled = false;
-			void planner.runs[0]?.gate.promise.then(() => { oldGateSettled = true; });
+			void planner.runs[0]?.gate.promise.then(() => {
+				oldGateSettled = true;
+			});
 			h.emit("turn_start");
 			const nextPromise = h.run("B");
 			expect(await oldPromise).toBeUndefined();
@@ -961,28 +1203,45 @@ describe("flight lifecycle (D-12)", () => {
 			// cancellation, so the window is set past its budget: cancel settles the race first, and the timer is then cleared.
 			// At 10 ms a slow macOS run lets the race return the pending note before turn_start, which is valid but not this
 			// test's outcome.
-			const h = setup(async (request, signal, onEvent) => {
-				if (request.prompt === "add a widget immediately") return { context: "PLAN B" };
-				const response = await planPrompt(
-					{ host: "omp", session_id: request.sessionId, prompt: request.prompt, cwd: request.cwd },
-					isolatedPlanEnv(root),
-					{
-						config: request.config!,
-						control: request.control!,
-						stateDir,
-						signal,
-						native: createNativeEngineSelector(request, signal, { completeSimple: rec.complete, providerDefaults: {}, isCurrent: request.isCurrent! }),
-						ground: () => lookup.promise,
-						createTracker: () => async () => { tracks++; return undefined; },
-						progress: (entry) => {
-							events.push(entry);
-							onEvent?.(entry);
+			const h = setup(
+				async (request, signal, onEvent) => {
+					if (request.prompt === "add a widget immediately") return { context: "PLAN B" };
+					const response = await planPrompt(
+						{
+							host: "omp",
+							session_id: request.sessionId,
+							prompt: request.prompt,
+							cwd: request.cwd,
 						},
-					},
-				);
-				oldCompleted.resolve(response);
-				return response;
-			}, 60_000, { stateDir, config: () => config }, { cwd: root, model: live, ...runtime });
+						isolatedPlanEnv(root),
+						{
+							config: request.config!,
+							control: request.control!,
+							stateDir,
+							signal,
+							native: createNativeEngineSelector(request, signal, {
+								completeSimple: rec.complete,
+								providerDefaults: {},
+								isCurrent: request.isCurrent!,
+							}),
+							ground: () => lookup.promise,
+							createTracker: () => async () => {
+								tracks++;
+								return undefined;
+							},
+							progress: (entry) => {
+								events.push(entry);
+								onEvent?.(entry);
+							},
+						},
+					);
+					oldCompleted.resolve(response);
+					return response;
+				},
+				60_000,
+				{ stateDir, config: () => config },
+				{ cwd: root, model: live, ...runtime },
+			);
 			const oldPromise = h.run("add a widget");
 			// The planner reaches its first model call only after a real event-loop turn on Bun 1.2, so await that call itself.
 			await firstCall.promise;
@@ -995,8 +1254,13 @@ describe("flight lifecycle (D-12)", () => {
 			expect(await oldPromise).toBeUndefined();
 			await flush();
 			expect(tracks).toBe(0);
-			expect(events.filter((entry) => entry.type === "stage" && (entry.stage === "track" || entry.stage === "state"))).toEqual([]);
-			for (const path of ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.json"]) expect(existsSync(join(stateDir, path))).toBe(false);
+			expect(
+				events.filter(
+					(entry) => entry.type === "stage" && (entry.stage === "track" || entry.stage === "state"),
+				),
+			).toEqual([]);
+			for (const path of ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.json"])
+				expect(existsSync(join(stateDir, path))).toBe(false);
 			expect(h.sent).toEqual([]);
 			h.emit("session_shutdown");
 			await flush();
@@ -1008,7 +1272,14 @@ describe("flight lifecycle (D-12)", () => {
 	test("cancel-matrix empty results stay quiet before the handoff and send one no-plan aside after", async () => {
 		{
 			let calls = 0;
-			const h = setup(async () => { calls++; return ""; }, 50, {});
+			const h = setup(
+				async () => {
+					calls++;
+					return "";
+				},
+				50,
+				{},
+			);
 			expect(await h.run()).toBeUndefined();
 			expect(calls).toBe(1);
 			expect(h.sent).toEqual([]);
@@ -1060,7 +1331,10 @@ describe("flight lifecycle (D-12)", () => {
 	}, 10_000);
 
 	test("handoff-ordering coincident provider-first clears race and returns inline with no aside", async () => {
-		const result = await runChildLifetimeScenario({ cancelHung: false, handoffOrder: "provider-first" });
+		const result = await runChildLifetimeScenario({
+			cancelHung: false,
+			handoffOrder: "provider-first",
+		});
 		expect(result.planAsides).toBe(0);
 		expect(result.nativeCalls).toBe(0);
 		const handoff = result.handoff;
@@ -1082,7 +1356,10 @@ describe("flight lifecycle (D-12)", () => {
 	}, 120_000);
 
 	test("handoff-ordering coincident race-first dispatches race then delivers one aside", async () => {
-		const result = await runChildLifetimeScenario({ cancelHung: false, handoffOrder: "race-first" });
+		const result = await runChildLifetimeScenario({
+			cancelHung: false,
+			handoffOrder: "race-first",
+		});
 		expect(result.planAsides).toBe(1);
 		expect(result.nativeCalls).toBe(0);
 		const handoff = result.handoff;
@@ -1136,7 +1413,16 @@ describe("flight lifecycle (D-12)", () => {
 		const t = tuiCtx();
 		let calls = 0;
 		let signal: AbortSignal | undefined;
-		const h = setup((_request, captured) => { calls++; signal = captured; return Promise.resolve("PLAN"); }, 5, { maxRunMs: 40 }, t.ctx);
+		const h = setup(
+			(_request, captured) => {
+				calls++;
+				signal = captured;
+				return Promise.resolve("PLAN");
+			},
+			5,
+			{ maxRunMs: 40 },
+			t.ctx,
+		);
 		h.emit("session_start");
 		expect(await h.run()).toMatchObject({ message: { content: "PLAN" } });
 		expect(calls).toBe(1);
@@ -1157,11 +1443,16 @@ describe("flight lifecycle (D-12)", () => {
 		const t = tuiCtx();
 		let calls = 0;
 		let signal: AbortSignal | undefined;
-		const h = setup((_request, captured) => {
-			calls++;
-			signal = captured;
-			return Promise.reject(new Error("boom"));
-		}, 5, { maxRunMs: 40 }, t.ctx);
+		const h = setup(
+			(_request, captured) => {
+				calls++;
+				signal = captured;
+				return Promise.reject(new Error("boom"));
+			},
+			5,
+			{ maxRunMs: 40 },
+			t.ctx,
+		);
 		h.emit("session_start");
 		expect(await h.run()).toBeUndefined();
 		expect(calls).toBe(1);
@@ -1219,13 +1510,20 @@ describe("flight lifecycle (D-12)", () => {
 	}, 10_000);
 
 	test("explicit zero mirrors omitted beyond cutoff", async () => {
-		expect(await runChildLifetimeScenario({ maxRunMs: 0, cancelHung: false })).toEqual({ planAsides: 1, nativeCalls: 8 });
+		expect(await runChildLifetimeScenario({ maxRunMs: 0, cancelHung: false })).toEqual({
+			planAsides: 1,
+			nativeCalls: 8,
+		});
 	}, 120_000);
 
 	test("local native lifetime smoke", async () => {
-		expect(await runChildLifetimeScenario({ cancelHung: false })).toEqual({ planAsides: 1, nativeCalls: 8 });
-		expect(await runChildLifetimeScenario({ cancelHung: true })).toEqual({ planAsides: 0, nativeCalls: 1 });
+		expect(await runChildLifetimeScenario({ cancelHung: false })).toEqual({
+			planAsides: 1,
+			nativeCalls: 8,
+		});
+		expect(await runChildLifetimeScenario({ cancelHung: true })).toEqual({
+			planAsides: 0,
+			nativeCalls: 1,
+		});
 	}, 180_000);
 });
-
-

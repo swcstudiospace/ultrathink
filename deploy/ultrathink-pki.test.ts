@@ -43,13 +43,15 @@ function pki(args: string[], env?: Record<string, string>): Promise<Result> {
 }
 
 function ok(result: Result): Result {
-	if (result.exitCode !== 0) throw new Error(`pki exited ${result.exitCode}: ${result.stderr.trim()}`);
+	if (result.exitCode !== 0)
+		throw new Error(`pki exited ${result.exitCode}: ${result.stderr.trim()}`);
 	return result;
 }
 
 // checkend exits 1 when the certificate expires within the given seconds, 0 when it is still valid after them.
 async function checkendExit(cert: string, seconds: number): Promise<number> {
-	return (await run(["openssl", "x509", "-noout", "-checkend", String(seconds), "-in", cert])).exitCode;
+	return (await run(["openssl", "x509", "-noout", "-checkend", String(seconds), "-in", cert]))
+		.exitCode;
 }
 
 function modeOf(path: string): number {
@@ -84,10 +86,24 @@ describe.skipIf(process.platform !== "linux")("ultrathink-pki.sh", () => {
 	test(
 		"root and intermediate carry the path length limits, and no ca.pem exists before the first issue",
 		async () => {
-			const rootInfo = await run(["openssl", "x509", "-noout", "-ext", "basicConstraints", "-in", join(root, "root.pem")]);
+			const rootInfo = await run([
+				"openssl",
+				"x509",
+				"-noout",
+				"-ext",
+				"basicConstraints",
+				"-in",
+				join(root, "root.pem"),
+			]);
 			expect(rootInfo.stdout).toContain("CA:TRUE, pathlen:1");
 			const intermediateInfo = await run([
-				"openssl", "x509", "-noout", "-ext", "basicConstraints", "-in", join(tls, "intermediate", "intermediate.pem"),
+				"openssl",
+				"x509",
+				"-noout",
+				"-ext",
+				"basicConstraints",
+				"-in",
+				join(tls, "intermediate", "intermediate.pem"),
 			]);
 			expect(intermediateInfo.stdout).toContain("CA:TRUE, pathlen:0");
 			expect(existsSync(join(tls, "ca.pem"))).toBe(false);
@@ -100,7 +116,9 @@ describe.skipIf(process.platform !== "linux")("ultrathink-pki.sh", () => {
 		async () => {
 			ok(await pki(["issue", tls, "app", SPIFFE_APP, "--ip", "127.0.0.1"]));
 			const cert = join(tls, "app", "cert.pem");
-			expect((await run(["openssl", "verify", "-CAfile", join(tls, "ca.pem"), cert])).exitCode).toBe(0);
+			expect(
+				(await run(["openssl", "verify", "-CAfile", join(tls, "ca.pem"), cert])).exitCode,
+			).toBe(0);
 			const san = await run(["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", cert]);
 			expect(san.stdout).toContain(`URI:${SPIFFE_APP}`);
 			expect(san.stdout).toContain("IP Address:127.0.0.1");
@@ -122,11 +140,17 @@ describe.skipIf(process.platform !== "linux")("ultrathink-pki.sh", () => {
 
 			ok(await pki(["issue", tls, "edge", SPIFFE_EDGE, "--hours", "6"]));
 			const cert = join(tls, "edge", "cert.pem");
-			const oldSerial = (await run(["openssl", "x509", "-noout", "-serial", "-in", cert])).stdout.trim();
+			const oldSerial = (
+				await run(["openssl", "x509", "-noout", "-serial", "-in", cert])
+			).stdout.trim();
 			expect(ok(await pki(["renew-if-due", tls, "edge"])).stdout.trim()).toBe("renewed edge");
-			const newSerial = (await run(["openssl", "x509", "-noout", "-serial", "-in", cert])).stdout.trim();
+			const newSerial = (
+				await run(["openssl", "x509", "-noout", "-serial", "-in", cert])
+			).stdout.trim();
 			expect(newSerial).not.toBe(oldSerial);
-			expect((await run(["openssl", "verify", "-CAfile", join(tls, "ca.pem"), cert])).exitCode).toBe(0);
+			expect(
+				(await run(["openssl", "verify", "-CAfile", join(tls, "ca.pem"), cert])).exitCode,
+			).toBe(0);
 			const san = await run(["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", cert]);
 			expect(san.stdout).toContain(`URI:${SPIFFE_EDGE}`);
 			// The renewed leaf has the full default lifetime, so it is still valid at now + 23 h.
@@ -211,7 +235,10 @@ describe.skipIf(process.platform !== "linux")("ultrathink-pki.sh", () => {
 		async () => {
 			const cases: Array<{ args: string[]; name: string }> = [
 				{ args: ["issue", tls, "bad-td", "spiffe://Ultrathink.internal/app"], name: "bad-td" },
-				{ args: ["issue", tls, "bad-query", "spiffe://ultrathink.internal/app?x=1"], name: "bad-query" },
+				{
+					args: ["issue", tls, "bad-query", "spiffe://ultrathink.internal/app?x=1"],
+					name: "bad-query",
+				},
 				{ args: ["issue", tls, "bad-hours", SPIFFE_APP, "--hours", "25"], name: "bad-hours" },
 			];
 			for (const { args, name } of cases) {

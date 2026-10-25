@@ -9,7 +9,15 @@
 import { join } from "node:path";
 import { isChildInvocation } from "../src/claude/complete.ts";
 import { defaultStateDir } from "../src/claude/state.ts";
-import { appendFlowScore, evaluateFlowOutput, flowHash, isGsdFlowCommand, lookupFlowScore, openRouterKey, type FlowRecord } from "../src/decisions/flow.ts";
+import {
+	appendFlowScore,
+	evaluateFlowOutput,
+	flowHash,
+	isGsdFlowCommand,
+	lookupFlowScore,
+	openRouterKey,
+	type FlowRecord,
+} from "../src/decisions/flow.ts";
 import { parseEnvelope } from "../src/host/envelope.ts";
 import { storePath as defaultStorePath } from "../src/mcp/store.ts";
 
@@ -62,12 +70,14 @@ async function main(): Promise<void> {
 	const logPath = join(stateDir, "flow-decisions.jsonl");
 	const hash = flowHash(output);
 	const cached = lookupFlowScore(logPath, hash);
-	const record = cached ?? (await evaluateFlowOutput({
-		subject,
-		output,
-		command,
-		apiKey: openRouterKey(defaultStorePath(process.env), process.env),
-	}));
+	const record =
+		cached ??
+		(await evaluateFlowOutput({
+			subject,
+			output,
+			command,
+			apiKey: openRouterKey(defaultStorePath(process.env), process.env),
+		}));
 	if (!cached) appendFlowScore(logPath, record);
 	console.log(JSON.stringify({ additionalContext: formatFlowNote(record) }));
 }

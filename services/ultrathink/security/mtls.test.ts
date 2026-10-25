@@ -8,12 +8,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
 import { identityFromUriSans, type IdentityResult } from "./identity.ts";
-import { bunAtLeast, MAX_CONNECTIONS, MTLS_MIN_BUN, type MtlsPeer, type MtlsServer, peerIdentity, startMtlsServer } from "./mtls.ts";
+import {
+	bunAtLeast,
+	MAX_CONNECTIONS,
+	MTLS_MIN_BUN,
+	type MtlsPeer,
+	type MtlsServer,
+	peerIdentity,
+	startMtlsServer,
+} from "./mtls.ts";
 
 const TRUST_DOMAIN = "ultrathink.test";
 const EDGE_URI = "spiffe://ultrathink.test/edge/nginx";
 const MAX_BODY_BYTES = 1024;
-const EXT_LEAF = "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\n";
+const EXT_LEAF =
+	"basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\n";
 
 interface Credentials {
 	cert: string;
@@ -38,15 +47,52 @@ function openssl(args: string[]): void {
 }
 
 /** Writes a key and a CSR for `name`, then signs it with the given CA. The leaf gets `sanLine` as its SAN. */
-function issueLeaf(name: string, sanLine: string, signerCert: string, signerKey: string): Credentials {
+function issueLeaf(
+	name: string,
+	sanLine: string,
+	signerCert: string,
+	signerKey: string,
+): Credentials {
 	writeFileSync(join(dir, `${name}.ext`), `${EXT_LEAF}subjectAltName=${sanLine}\n`);
-	openssl(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", `${name}.key`, "-out", `${name}.csr`, "-subj", `/CN=${name}`]);
-	openssl(["x509", "-req", "-in", `${name}.csr`, "-CA", signerCert, "-CAkey", signerKey, "-CAcreateserial", "-out", `${name}.pem`, "-days", "2", "-extfile", `${name}.ext`]);
+	openssl([
+		"req",
+		"-newkey",
+		"ec",
+		"-pkeyopt",
+		"ec_paramgen_curve:P-256",
+		"-nodes",
+		"-keyout",
+		`${name}.key`,
+		"-out",
+		`${name}.csr`,
+		"-subj",
+		`/CN=${name}`,
+	]);
+	openssl([
+		"x509",
+		"-req",
+		"-in",
+		`${name}.csr`,
+		"-CA",
+		signerCert,
+		"-CAkey",
+		signerKey,
+		"-CAcreateserial",
+		"-out",
+		`${name}.pem`,
+		"-days",
+		"2",
+		"-extfile",
+		`${name}.ext`,
+	]);
 	return credentialsOf(name);
 }
 
 function credentialsOf(name: string): Credentials {
-	return { cert: readFileSync(join(dir, `${name}.pem`), "utf8"), key: readFileSync(join(dir, `${name}.key`), "utf8") };
+	return {
+		cert: readFileSync(join(dir, `${name}.pem`), "utf8"),
+		key: readFileSync(join(dir, `${name}.key`), "utf8"),
+	};
 }
 
 /** Issues a leaf whose validity window lies in the past, through `openssl ca` with explicit dates. */
@@ -76,16 +122,46 @@ function issueExpiredLeaf(name: string, sanLine: string): Credentials {
 		].join("\n"),
 	);
 	writeFileSync(join(dir, `${name}.ext`), `${EXT_LEAF}subjectAltName=${sanLine}\n`);
-	openssl(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", `${name}.key`, "-out", `${name}.csr`, "-subj", `/CN=${name}`]);
 	openssl([
-		"ca", "-batch", "-config", join(dir, "ca.cnf"), "-in", `${name}.csr`, "-out", `${name}.pem`,
-		"-extfile", `${name}.ext`, "-startdate", "20200101000000Z", "-enddate", "20200102000000Z", "-notext",
+		"req",
+		"-newkey",
+		"ec",
+		"-pkeyopt",
+		"ec_paramgen_curve:P-256",
+		"-nodes",
+		"-keyout",
+		`${name}.key`,
+		"-out",
+		`${name}.csr`,
+		"-subj",
+		`/CN=${name}`,
+	]);
+	openssl([
+		"ca",
+		"-batch",
+		"-config",
+		join(dir, "ca.cnf"),
+		"-in",
+		`${name}.csr`,
+		"-out",
+		`${name}.pem`,
+		"-extfile",
+		`${name}.ext`,
+		"-startdate",
+		"20200101000000Z",
+		"-enddate",
+		"20200102000000Z",
+		"-notext",
 	]);
 	return credentialsOf(name);
 }
 
 function fetchWith(port: number, init: Partial<TlsFetchInit>): Promise<Response> {
-	return fetch(`https://127.0.0.1:${port}/`, { method: "POST", tls: { ca }, ...init } as TlsFetchInit);
+	return fetch(`https://127.0.0.1:${port}/`, {
+		method: "POST",
+		tls: { ca },
+		...init,
+	} as TlsFetchInit);
 }
 
 function serverOptions(idleTimeoutSec: number) {
@@ -108,14 +184,22 @@ function boundPort(listener: net.Server): number {
 
 /** Opens a TLS client with the edge certificate, so the test controls the bytes written after the handshake. */
 function edgeClient(port: number): tls.TLSSocket {
-	const client = tls.connect({ port, host: "127.0.0.1", ca, cert: edgeCreds.cert, key: edgeCreds.key });
+	const client = tls.connect({
+		port,
+		host: "127.0.0.1",
+		ca,
+		cert: edgeCreds.cert,
+		key: edgeCreds.key,
+	});
 	client.on("error", () => {});
 	return client;
 }
 
 const ADAPTER_SKIP_REASON = "Bun below 1.4.0: requests through the adapter hang";
 const ADAPTER_SUPPORTED = bunAtLeast(Bun.version, MTLS_MIN_BUN);
-const ADAPTER_TITLE = ADAPTER_SUPPORTED ? "mTLS server adapter" : `mTLS server adapter (skipped: ${ADAPTER_SKIP_REASON})`;
+const ADAPTER_TITLE = ADAPTER_SUPPORTED
+	? "mTLS server adapter"
+	: `mTLS server adapter (skipped: ${ADAPTER_SKIP_REASON})`;
 
 test("bunAtLeast compares semantic versions and fails closed on malformed input", () => {
 	expect(bunAtLeast("1.2.23", MTLS_MIN_BUN)).toBe(false);
@@ -128,15 +212,70 @@ test("bunAtLeast compares semantic versions and fails closed on malformed input"
 describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	beforeAll(async () => {
 		dir = mkdtempSync(join(tmpdir(), "mtls-test-"));
-		openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2", "-subj", "/CN=ultrathink-test-ca", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);
-		openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "ca2.key", "-out", "ca2.pem", "-days", "2", "-subj", "/CN=other-test-ca", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);
+		openssl([
+			"req",
+			"-x509",
+			"-newkey",
+			"ec",
+			"-pkeyopt",
+			"ec_paramgen_curve:P-256",
+			"-nodes",
+			"-keyout",
+			"ca.key",
+			"-out",
+			"ca.pem",
+			"-days",
+			"2",
+			"-subj",
+			"/CN=ultrathink-test-ca",
+			"-addext",
+			"basicConstraints=critical,CA:TRUE",
+			"-addext",
+			"keyUsage=critical,keyCertSign,cRLSign",
+		]);
+		openssl([
+			"req",
+			"-x509",
+			"-newkey",
+			"ec",
+			"-pkeyopt",
+			"ec_paramgen_curve:P-256",
+			"-nodes",
+			"-keyout",
+			"ca2.key",
+			"-out",
+			"ca2.pem",
+			"-days",
+			"2",
+			"-subj",
+			"/CN=other-test-ca",
+			"-addext",
+			"basicConstraints=critical,CA:TRUE",
+			"-addext",
+			"keyUsage=critical,keyCertSign,cRLSign",
+		]);
 		ca = readFileSync(join(dir, "ca.pem"), "utf8");
 		serverCreds = issueLeaf("srv", "IP:127.0.0.1", join(dir, "ca.pem"), join(dir, "ca.key"));
 		writeFileSync(join(dir, "srv.key"), serverCreds.key);
 		writeFileSync(join(dir, "srv.pem"), serverCreds.cert);
-		edgeCreds = issueLeaf("edge", `URI:${EDGE_URI},DNS:edge.test`, join(dir, "ca.pem"), join(dir, "ca.key"));
-		edgeNewCreds = issueLeaf("edge-new", `URI:${EDGE_URI}`, join(dir, "ca.pem"), join(dir, "ca.key"));
-		foreignCreds = issueLeaf("foreign", `URI:${EDGE_URI}`, join(dir, "ca2.pem"), join(dir, "ca2.key"));
+		edgeCreds = issueLeaf(
+			"edge",
+			`URI:${EDGE_URI},DNS:edge.test`,
+			join(dir, "ca.pem"),
+			join(dir, "ca.key"),
+		);
+		edgeNewCreds = issueLeaf(
+			"edge-new",
+			`URI:${EDGE_URI}`,
+			join(dir, "ca.pem"),
+			join(dir, "ca.key"),
+		);
+		foreignCreds = issueLeaf(
+			"foreign",
+			`URI:${EDGE_URI}`,
+			join(dir, "ca2.pem"),
+			join(dir, "ca2.key"),
+		);
 		expiredCreds = issueExpiredLeaf("expired", `URI:${EDGE_URI}`);
 		server = await startMtlsServer(serverOptions(30), async (req, peer) => {
 			calls++;
@@ -152,7 +291,10 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 
 	test("admits a verified edge client and reports its SPIFFE identity", async () => {
 		calls = 0;
-		const response = await fetchWith(server.port, { body: "hi", tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key } });
+		const response = await fetchWith(server.port, {
+			body: "hi",
+			tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key },
+		});
 		expect(response.status).toBe(200);
 		expect(await response.text()).toBe("hi");
 		expect(calls).toBe(1);
@@ -170,19 +312,26 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 
 	test("refuses a client certificate issued by another CA", async () => {
 		calls = 0;
-		await expect(fetchWith(server.port, { tls: { ca, cert: foreignCreds.cert, key: foreignCreds.key } })).rejects.toThrow();
+		await expect(
+			fetchWith(server.port, { tls: { ca, cert: foreignCreds.cert, key: foreignCreds.key } }),
+		).rejects.toThrow();
 		expect(calls).toBe(0);
 	});
 
 	test("refuses an expired leaf from the client CA", async () => {
 		calls = 0;
-		await expect(fetchWith(server.port, { tls: { ca, cert: expiredCreds.cert, key: expiredCreds.key } })).rejects.toThrow();
+		await expect(
+			fetchWith(server.port, { tls: { ca, cert: expiredCreds.cert, key: expiredCreds.key } }),
+		).rejects.toThrow();
 		expect(calls).toBe(0);
 	});
 
 	test("admits the current and the rotation-overlap leaf from the same CA", async () => {
 		for (const creds of [edgeCreds, edgeNewCreds]) {
-			const response = await fetchWith(server.port, { body: "x", tls: { ca, cert: creds.cert, key: creds.key } });
+			const response = await fetchWith(server.port, {
+				body: "x",
+				tls: { ca, cert: creds.cert, key: creds.key },
+			});
 			expect(response.status).toBe(200);
 			await response.text();
 		}
@@ -191,7 +340,10 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	test("answers 413 to a body over maxBodyBytes and never calls the handler", async () => {
 		calls = 0;
 		const client = { ca, cert: edgeCreds.cert, key: edgeCreds.key };
-		const sized = await fetchWith(server.port, { body: new Uint8Array(MAX_BODY_BYTES * 2), tls: client });
+		const sized = await fetchWith(server.port, {
+			body: new Uint8Array(MAX_BODY_BYTES * 2),
+			tls: client,
+		});
 		expect(sized.status).toBe(413);
 		await sized.text();
 		const chunked = new ReadableStream<Uint8Array>({
@@ -200,7 +352,11 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 				controller.close();
 			},
 		});
-		const streamed = await fetchWith(server.port, { body: chunked, duplex: "half", tls: client } as Partial<TlsFetchInit>);
+		const streamed = await fetchWith(server.port, {
+			body: chunked,
+			duplex: "half",
+			tls: client,
+		} as Partial<TlsFetchInit>);
 		expect(streamed.status).toBe(413);
 		await streamed.text();
 		expect(calls).toBe(0);
@@ -209,7 +365,10 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	test("passes a body of exactly maxBodyBytes to the handler", async () => {
 		calls = 0;
 		const body = new Uint8Array(MAX_BODY_BYTES).fill(0x61);
-		const response = await fetchWith(server.port, { body, tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key } });
+		const response = await fetchWith(server.port, {
+			body,
+			tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key },
+		});
 		expect(response.status).toBe(200);
 		expect((await response.arrayBuffer()).byteLength).toBe(MAX_BODY_BYTES);
 		expect(calls).toBe(1);
@@ -217,13 +376,28 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 
 	test("reads the verified identity from the TLS socket through peerIdentity", async () => {
 		const identity = await new Promise<IdentityResult>((resolve, reject) => {
-			const probe = tls.createServer({ cert: serverCreds.cert, key: serverCreds.key, ca, requestCert: true, rejectUnauthorized: true }, (socket) => {
-				resolve(peerIdentity(socket, TRUST_DOMAIN));
-				socket.end();
-			});
+			const probe = tls.createServer(
+				{
+					cert: serverCreds.cert,
+					key: serverCreds.key,
+					ca,
+					requestCert: true,
+					rejectUnauthorized: true,
+				},
+				(socket) => {
+					resolve(peerIdentity(socket, TRUST_DOMAIN));
+					socket.end();
+				},
+			);
 			probe.once("error", reject);
 			probe.listen(0, "127.0.0.1", () => {
-				const client = tls.connect({ port: boundPort(probe), host: "127.0.0.1", ca, cert: edgeCreds.cert, key: edgeCreds.key });
+				const client = tls.connect({
+					port: boundPort(probe),
+					host: "127.0.0.1",
+					ca,
+					cert: edgeCreds.cert,
+					key: edgeCreds.key,
+				});
 				client.on("error", reject);
 				client.on("close", () => probe.close());
 			});
@@ -302,12 +476,17 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 			const client = edgeClient(server.port);
 			client.on("secureConnect", () => {
 				// Declares 100 body bytes, sends 3, and drops the connection once those bytes are flushed.
-				client.write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\nabc", () => client.destroy());
+				client.write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\nabc", () =>
+					client.destroy(),
+				);
 			});
 			client.on("close", () => resolve());
 		});
 		await aborted;
-		const response = await fetchWith(server.port, { body: "ok", tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key } });
+		const response = await fetchWith(server.port, {
+			body: "ok",
+			tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key },
+		});
 		expect(response.status).toBe(200);
 		expect(await response.text()).toBe("ok");
 		expect(calls).toBe(1);
@@ -330,13 +509,20 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 		const holder = net.createServer();
 		await new Promise<void>((resolve) => holder.listen(0, "127.0.0.1", () => resolve()));
 		try {
-			await expect(startMtlsServer({ ...serverOptions(30), port: boundPort(holder) }, async () => new Response())).rejects.toThrow();
+			await expect(
+				startMtlsServer(
+					{ ...serverOptions(30), port: boundPort(holder) },
+					async () => new Response(),
+				),
+			).rejects.toThrow();
 		} finally {
 			await new Promise<void>((resolve) => holder.close(() => resolve()));
 		}
 	});
 
 	test("refuses to bind any address other than 127.0.0.1", async () => {
-		await expect(startMtlsServer({ ...serverOptions(30), hostname: "0.0.0.0" }, async () => new Response())).rejects.toThrow(RangeError);
+		await expect(
+			startMtlsServer({ ...serverOptions(30), hostname: "0.0.0.0" }, async () => new Response()),
+		).rejects.toThrow(RangeError);
 	});
 });

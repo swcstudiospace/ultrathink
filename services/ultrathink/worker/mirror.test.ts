@@ -54,7 +54,11 @@ function readState(runId: string): string {
 describe("writeRunState", () => {
 	test("writes status and route lines", () => {
 		const run = store.createRun({ ownerId: "owner-a", request: REQUEST_TEXT, route: "deep" });
-		store.updateRun(run.id, { status: "planning", currentPhase: "plan", reason: "waiting on model" });
+		store.updateRun(run.id, {
+			status: "planning",
+			currentPhase: "plan",
+			reason: "waiting on model",
+		});
 
 		writeRunState({ store, runId: run.id, artifactDir });
 
@@ -70,7 +74,13 @@ describe("writeRunState", () => {
 
 	test("lists complete phases with an artifact link and omits the link for incomplete phases", () => {
 		const run = store.createRun({ ownerId: "owner-a", request: REQUEST_TEXT, route: "deep" });
-		store.recordPhase({ runId: run.id, phase: "discover", attempt: 1, status: "complete", output: PHASE_OUTPUT });
+		store.recordPhase({
+			runId: run.id,
+			phase: "discover",
+			attempt: 1,
+			status: "complete",
+			output: PHASE_OUTPUT,
+		});
 		store.recordPhase({ runId: run.id, phase: "plan", attempt: 1, status: "failed", output: null });
 
 		writeRunState({ store, runId: run.id, artifactDir });
@@ -133,7 +143,13 @@ describe("writeRunState", () => {
 
 	test("does not write the request text or phase output", () => {
 		const run = store.createRun({ ownerId: "owner-a", request: REQUEST_TEXT, route: "deep" });
-		store.recordPhase({ runId: run.id, phase: "discover", attempt: 1, status: "complete", output: PHASE_OUTPUT });
+		store.recordPhase({
+			runId: run.id,
+			phase: "discover",
+			attempt: 1,
+			status: "complete",
+			output: PHASE_OUTPUT,
+		});
 
 		writeRunState({ store, runId: run.id, artifactDir });
 
@@ -155,12 +171,16 @@ describe("writeRunState", () => {
 
 		writeRunState({ store, runId: run.id, artifactDir });
 
-		const entries = Array.from(new Bun.Glob("*").scanSync({ cwd: join(artifactDir, run.id), dot: true }));
+		const entries = Array.from(
+			new Bun.Glob("*").scanSync({ cwd: join(artifactDir, run.id), dot: true }),
+		);
 		expect(entries).toEqual(["STATE.md"]);
 	});
 
 	test("throws a plain error for an unknown run without leaking details", () => {
-		expect(() => writeRunState({ store, runId: "missing-run", artifactDir })).toThrow("run not found");
+		expect(() => writeRunState({ store, runId: "missing-run", artifactDir })).toThrow(
+			"run not found",
+		);
 		expect(existsSync(join(artifactDir, "missing-run", "STATE.md"))).toBe(false);
 	});
 });
@@ -216,7 +236,9 @@ describe("worker artifacts and abandon", () => {
 
 	function reservedId(runId: string): number {
 		const row = store.db
-			.query<{ id: number }, [string]>("SELECT id FROM token_ledger WHERE run_id = ? AND state = 'reserved'")
+			.query<{ id: number }, [string]>(
+				"SELECT id FROM token_ledger WHERE run_id = ? AND state = 'reserved'",
+			)
 			.get(runId);
 		if (!row) throw new Error(`no reserved row for ${runId}`);
 		return row.id;

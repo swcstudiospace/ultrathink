@@ -5,7 +5,18 @@
  * processes, so this lives under ~/.claude/ultrathink instead of in-session.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	fstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { type LockOptions, withFileLock, writeFileAtomic, withLockMutation } from "./atomic.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
@@ -143,7 +154,9 @@ const PLAIN_SESSION_ID_RE = /^[a-z0-9_.-]{1,120}$/;
  */
 function safeSessionId(id: string): string {
 	if (PLAIN_SESSION_ID_RE.test(id)) return id;
-	const slug = Array.from(id, (char) => (/[A-Za-z0-9_.-]/.test(char) ? char.toLowerCase() : "_")).join("").slice(0, 80);
+	const slug = Array.from(id, (char) => (/[A-Za-z0-9_.-]/.test(char) ? char.toLowerCase() : "_"))
+		.join("")
+		.slice(0, 80);
 	return `${slug}~${createHash("sha256").update(id).digest("hex").slice(0, 16)}`;
 }
 
@@ -166,7 +179,11 @@ export function sessionPath(dir: string, sessionId: string): string {
  * case-insensitive file system `Claude-A.json` is also `claude-a.json`.
  */
 export function legacySessionPath(dir: string, sessionId: string): string {
-	return join(dir, "sessions", `${sessionId.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120) || "unknown"}.json`);
+	return join(
+		dir,
+		"sessions",
+		`${sessionId.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120) || "unknown"}.json`,
+	);
 }
 
 /**
@@ -210,7 +227,9 @@ export function readSkipOnce(dir: string, sessionId: string): boolean {
 export function armSkipOnce(dir: string, sessionId: string): void {
 	// The session's record lock, which prune holds while it decides on and deletes a stale flag: an arm never lands between
 	// that decision and its delete. A lock that cannot be taken runs unlocked, as every session write does.
-	withFileLock(sessionPath(dir, sessionId), () => writeFileAtomic(skipOncePath(dir, sessionId), "skip\n"));
+	withFileLock(sessionPath(dir, sessionId), () =>
+		writeFileAtomic(skipOncePath(dir, sessionId), "skip\n"),
+	);
 }
 
 /** Clears the session's armed skip; an already clear session is left as it is. */
@@ -227,7 +246,8 @@ export function readSession(dir: string, sessionId: string): SessionRecord | und
 	if (!raw || typeof raw !== "object") return undefined;
 	const rec = raw as Partial<SessionRecord>;
 	// A file names its session: on a case-insensitive file system another id's record can share this file's name.
-	if (rec.sessionId !== sessionId || !rec.result || typeof rec.result !== "object") return undefined;
+	if (rec.sessionId !== sessionId || !rec.result || typeof rec.result !== "object")
+		return undefined;
 	return rec as SessionRecord;
 }
 
@@ -316,7 +336,11 @@ export function withLastLock(lastPath: string, body: () => void): boolean {
 		} catch {
 			// The next acquisition or orphan sweep can remove the completed marker under the guard.
 		} finally {
-			try { closeSync(ownedFd); } catch { /* do not replace a body error with a cleanup error */ }
+			try {
+				closeSync(ownedFd);
+			} catch {
+				/* do not replace a body error with a cleanup error */
+			}
 		}
 	}
 }

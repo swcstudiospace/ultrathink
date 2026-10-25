@@ -9,14 +9,23 @@ function respond(body: string, status = 200): typeof fetch {
 
 describe("requestJson", () => {
 	test("returns status, parsed JSON and raw text", async () => {
-		const out = await requestJson("https://svc.test/x", { timeoutMs: 1000, fetch: respond('{"a":1}', 201) });
+		const out = await requestJson("https://svc.test/x", {
+			timeoutMs: 1000,
+			fetch: respond('{"a":1}', 201),
+		});
 		expect(out).toMatchObject({ kind: "response", status: 201, json: { a: 1 }, text: '{"a":1}' });
 	});
 
 	test("keeps the raw text and leaves json undefined for a non-JSON or empty body", async () => {
-		const html = await requestJson("https://svc.test/x", { timeoutMs: 1000, fetch: respond("<html>", 502) });
+		const html = await requestJson("https://svc.test/x", {
+			timeoutMs: 1000,
+			fetch: respond("<html>", 502),
+		});
 		expect(html).toMatchObject({ kind: "response", status: 502, json: undefined, text: "<html>" });
-		const empty = await requestJson("https://svc.test/x", { timeoutMs: 1000, fetch: respond("", 204) });
+		const empty = await requestJson("https://svc.test/x", {
+			timeoutMs: 1000,
+			fetch: respond("", 204),
+		});
 		expect(empty).toMatchObject({ kind: "response", status: 204, json: undefined, text: "" });
 	});
 
@@ -26,7 +35,13 @@ describe("requestJson", () => {
 			seen = { url, init };
 			return new Response("{}");
 		}) as unknown as typeof fetch;
-		await requestJson("https://svc.test/p", { method: "PUT", headers: { Authorization: "Bearer k" }, body: { q: 1 }, timeoutMs: 1000, fetch: spy });
+		await requestJson("https://svc.test/p", {
+			method: "PUT",
+			headers: { Authorization: "Bearer k" },
+			body: { q: 1 },
+			timeoutMs: 1000,
+			fetch: spy,
+		});
 		const headers = seen?.init.headers as Record<string, string>;
 		expect(seen?.url).toBe("https://svc.test/p");
 		expect(seen?.init.method).toBe("PUT");
@@ -55,7 +70,10 @@ describe("requestJson", () => {
 	});
 
 	test("times out while the body is still streaming", async () => {
-		const stall = (async () => new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => {}) }))) as unknown as typeof fetch;
+		const stall = (async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => {}) }),
+			)) as unknown as typeof fetch;
 		const out = await requestJson("https://svc.test/slow-body", { timeoutMs: 30, fetch: stall });
 		expect(out.kind).toBe("timeout");
 	});
@@ -76,13 +94,20 @@ describe("requestJson", () => {
 	test("rejects with the abort error when the caller aborts", async () => {
 		const controller = new AbortController();
 		const hang = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
-		const pending = requestJson("https://svc.test/x", { timeoutMs: 5000, fetch: hang, signal: controller.signal });
+		const pending = requestJson("https://svc.test/x", {
+			timeoutMs: 5000,
+			fetch: hang,
+			signal: controller.signal,
+		});
 		controller.abort();
 		await expect(pending).rejects.toBeDefined();
 	});
 
 	test("refuses an oversized response", async () => {
-		const out = await requestJson("https://svc.test/big", { timeoutMs: 1000, fetch: respond("x".repeat(MAX_RESPONSE_CHARS + 1)) });
+		const out = await requestJson("https://svc.test/big", {
+			timeoutMs: 1000,
+			fetch: respond("x".repeat(MAX_RESPONSE_CHARS + 1)),
+		});
 		expect(out).toMatchObject({ kind: "network", message: "response too large" });
 	});
 
@@ -102,7 +127,10 @@ describe("requestJson", () => {
 				}),
 			)) as unknown as typeof fetch;
 		const started = Date.now();
-		const out = await requestJson("https://svc.test/endless", { timeoutMs: 10_000, fetch: endless });
+		const out = await requestJson("https://svc.test/endless", {
+			timeoutMs: 10_000,
+			fetch: endless,
+		});
 		expect(out).toMatchObject({ kind: "network", message: "response too large" });
 		expect(Date.now() - started).toBeLessThan(5000);
 		expect(cancelled).toBe(true);

@@ -70,10 +70,38 @@ export const MCP_PROVIDERS: Record<McpProviderId, McpProvider> = {
 };
 
 export const KEY_PROVIDERS: Record<KeyProviderId, KeyProvider> = {
-	openrouter: { kind: "key", id: "openrouter", label: "OpenRouter", apiKey: true, oauth: false, envVar: "OPENROUTER_API_KEY" },
-	vercel: { kind: "key", id: "vercel", label: "Vercel AI Gateway", apiKey: true, oauth: false, envVar: "AI_GATEWAY_API_KEY" },
-	hindsight: { kind: "key", id: "hindsight", label: "Hindsight", apiKey: true, oauth: false, envVar: "HINDSIGHT_API_KEY" },
-	ragflow: { kind: "key", id: "ragflow", label: "RAGFlow", apiKey: true, oauth: false, envVar: "RAGFLOW_API_KEY" },
+	openrouter: {
+		kind: "key",
+		id: "openrouter",
+		label: "OpenRouter",
+		apiKey: true,
+		oauth: false,
+		envVar: "OPENROUTER_API_KEY",
+	},
+	vercel: {
+		kind: "key",
+		id: "vercel",
+		label: "Vercel AI Gateway",
+		apiKey: true,
+		oauth: false,
+		envVar: "AI_GATEWAY_API_KEY",
+	},
+	hindsight: {
+		kind: "key",
+		id: "hindsight",
+		label: "Hindsight",
+		apiKey: true,
+		oauth: false,
+		envVar: "HINDSIGHT_API_KEY",
+	},
+	ragflow: {
+		kind: "key",
+		id: "ragflow",
+		label: "RAGFlow",
+		apiKey: true,
+		oauth: false,
+		envVar: "RAGFLOW_API_KEY",
+	},
 };
 
 /** Every provider in table order: the MCP servers first, then the API-key-only providers. */

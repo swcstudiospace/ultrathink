@@ -8,16 +8,16 @@
 import { type Logger, createLogger } from "../obs/log.ts";
 
 export enum SecurityEventType {
-	AUTH_FAILURE = 'auth_failure',
-	AUTH_SUCCESS = 'auth_success',
-	VALIDATION_FAILURE = 'validation_failure',
-	RATE_LIMIT_EXCEEDED = 'rate_limit_exceeded',
-	SUSPICIOUS_ACTIVITY = 'suspicious_activity',
-	UNAUTHORIZED_ACCESS = 'unauthorized_access',
-	PRIVILEGE_ESCALATION = 'privilege_escalation',
-	DATA_ACCESS = 'data_access',
-	CONFIG_CHANGE = 'config_change',
-	SECURITY_SCAN = 'security_scan',
+	AUTH_FAILURE = "auth_failure",
+	AUTH_SUCCESS = "auth_success",
+	VALIDATION_FAILURE = "validation_failure",
+	RATE_LIMIT_EXCEEDED = "rate_limit_exceeded",
+	SUSPICIOUS_ACTIVITY = "suspicious_activity",
+	UNAUTHORIZED_ACCESS = "unauthorized_access",
+	PRIVILEGE_ESCALATION = "privilege_escalation",
+	DATA_ACCESS = "data_access",
+	CONFIG_CHANGE = "config_change",
+	SECURITY_SCAN = "security_scan",
 }
 
 export interface SecurityEvent {
@@ -25,7 +25,7 @@ export interface SecurityEvent {
 	/** Structured log event name, such as auth.login_failed. Without it, the log event is security.<type>. */
 	name?: string;
 	timestamp: number;
-	severity: 'low' | 'medium' | 'high' | 'critical';
+	severity: "low" | "medium" | "high" | "critical";
 	source: string;
 	userId?: string;
 	ip?: string;
@@ -47,7 +47,7 @@ export interface SecurityEventLogger {
 function generateCorrelationId(): string {
 	const array = new Uint8Array(16);
 	crypto.getRandomValues(array);
-	return Array.from(array, (byte) => byte.toString(16).padStart(2, '0')).join('');
+	return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function getCurrentTimestamp(): number {
@@ -63,7 +63,7 @@ function writeLineToStderr(line: string): void {
 
 export class ConsoleSecurityEventLogger implements SecurityEventLogger {
 	private severityOrder = { low: 0, medium: 1, high: 2, critical: 3 };
-	private minSeverity: 'low' | 'medium' | 'high' | 'critical' = 'low';
+	private minSeverity: "low" | "medium" | "high" | "critical" = "low";
 	private readonly logger: Logger;
 
 	/**
@@ -74,7 +74,7 @@ export class ConsoleSecurityEventLogger implements SecurityEventLogger {
 		this.logger = logger;
 	}
 
-	setMinSeverity(severity: 'low' | 'medium' | 'high' | 'critical'): void {
+	setMinSeverity(severity: "low" | "medium" | "high" | "critical"): void {
 		this.minSeverity = severity;
 	}
 
@@ -96,40 +96,40 @@ export class ConsoleSecurityEventLogger implements SecurityEventLogger {
 	logAuthFailure(details: Partial<SecurityEvent>): void {
 		this.log({
 			type: SecurityEventType.AUTH_FAILURE,
-			severity: 'medium',
-			source: 'auth',
+			severity: "medium",
+			source: "auth",
 			...details,
-			details: { ...details.details, eventType: 'auth_failure' },
+			details: { ...details.details, eventType: "auth_failure" },
 		} as SecurityEvent);
 	}
 
 	logValidationFailure(details: Partial<SecurityEvent>): void {
 		this.log({
 			type: SecurityEventType.VALIDATION_FAILURE,
-			severity: 'low',
-			source: 'validation',
+			severity: "low",
+			source: "validation",
 			...details,
-			details: { ...details.details, eventType: 'validation_failure' },
+			details: { ...details.details, eventType: "validation_failure" },
 		} as SecurityEvent);
 	}
 
 	logRateLimitExceeded(details: Partial<SecurityEvent>): void {
 		this.log({
 			type: SecurityEventType.RATE_LIMIT_EXCEEDED,
-			severity: 'medium',
-			source: 'rate_limit',
+			severity: "medium",
+			source: "rate_limit",
 			...details,
-			details: { ...details.details, eventType: 'rate_limit_exceeded' },
+			details: { ...details.details, eventType: "rate_limit_exceeded" },
 		} as SecurityEvent);
 	}
 
 	logSuspiciousActivity(details: Partial<SecurityEvent>): void {
 		this.log({
 			type: SecurityEventType.SUSPICIOUS_ACTIVITY,
-			severity: 'high',
-			source: 'security_monitor',
+			severity: "high",
+			source: "security_monitor",
 			...details,
-			details: { ...details.details, eventType: 'suspicious_activity' },
+			details: { ...details.details, eventType: "suspicious_activity" },
 		} as SecurityEvent);
 	}
 }
@@ -168,13 +168,13 @@ export function setSecurityLogger(logger: SecurityEventLogger): void {
 
 export function createSecurityEvent(
 	type: SecurityEventType,
-	details: Partial<SecurityEvent> = {}
+	details: Partial<SecurityEvent> = {},
 ): SecurityEvent {
 	return {
 		type,
 		timestamp: Date.now(),
-		severity: 'medium',
-		source: 'application',
+		severity: "medium",
+		source: "application",
 		details: {},
 		...details,
 	} as SecurityEvent;

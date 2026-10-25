@@ -32,7 +32,8 @@ export function shipNudge(input: {
 	const skill = record.skill?.name;
 	if (!skill || !shipApplies(input.config, skill, input.env ?? process.env)) return undefined;
 	const ship = record.ship;
-	if (ship?.phase === "merged" || ship?.phase === "blocked" || ship?.nudgedAt !== undefined) return undefined;
+	if (ship?.phase === "merged" || ship?.phase === "blocked" || ship?.nudgedAt !== undefined)
+		return undefined;
 	if (!precheck.ok || !precheck.branch || !precheck.base) return undefined;
 	const autoMerge = input.config.autoMerge;
 	const merge = autoMerge

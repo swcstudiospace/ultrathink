@@ -21,7 +21,12 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 // Never reached by these cases: the tracker must bail before creation.
 const plan = { graphId: "g1" } as TrackPlan;
 
-function configured(over: { team?: string; dataSourceUrl?: string } = { team: "Team", dataSourceUrl: "collection://ds" }): UltrathinkConfig {
+function configured(
+	over: { team?: string; dataSourceUrl?: string } = {
+		team: "Team",
+		dataSourceUrl: "collection://ds",
+	},
+): UltrathinkConfig {
 	const config = defaultConfig();
 	config.linear.team = over.team ?? "";
 	config.notion.dataSourceUrl = over.dataSourceUrl ?? "";
@@ -54,11 +59,15 @@ function recordingFetch(urls: string[]): typeof fetch {
 
 describe("trackCommand", () => {
 	test("a plain clone path is printed as-is", () => {
-		expect(trackCommand("/opt/ultrathink")).toBe("/opt/ultrathink/bin/ultrathink-mcp track complete");
+		expect(trackCommand("/opt/ultrathink")).toBe(
+			"/opt/ultrathink/bin/ultrathink-mcp track complete",
+		);
 	});
 
 	test("a clone path with a space or a quote is single-quoted so the command still runs", () => {
-		expect(trackCommand("/Users/Jane Doe/ultrathink")).toBe("'/Users/Jane Doe/ultrathink/bin/ultrathink-mcp' track complete");
+		expect(trackCommand("/Users/Jane Doe/ultrathink")).toBe(
+			"'/Users/Jane Doe/ultrathink/bin/ultrathink-mcp' track complete",
+		);
 		expect(shellArg("/Users/o'neil/x")).toBe(`'/Users/o'\\''neil/x'`);
 	});
 });
@@ -70,23 +79,38 @@ describe("createGatewayTracker", () => {
 	});
 
 	test("Linear-only config never contacts Notion", async () => {
-		writeStore(path, { version: 1, providers: { notion: expiredOauth("https://mcp.notion.com", Date.now()) } });
+		writeStore(path, {
+			version: 1,
+			providers: { notion: expiredOauth("https://mcp.notion.com", Date.now()) },
+		});
 		const urls: string[] = [];
-		const tracker = createGatewayTracker(configured({ team: "Team" }), { storePath: path, fetch: recordingFetch(urls) })!;
+		const tracker = createGatewayTracker(configured({ team: "Team" }), {
+			storePath: path,
+			fetch: recordingFetch(urls),
+		})!;
 		expect(await tracker({ plan })).toBeUndefined();
 		expect(urls).toEqual([]);
 	});
 
 	test("Notion-only config never contacts Linear", async () => {
-		writeStore(path, { version: 1, providers: { linear: expiredOauth("https://mcp.linear.app", Date.now()) } });
+		writeStore(path, {
+			version: 1,
+			providers: { linear: expiredOauth("https://mcp.linear.app", Date.now()) },
+		});
 		const urls: string[] = [];
-		const tracker = createGatewayTracker(configured({ dataSourceUrl: "collection://ds" }), { storePath: path, fetch: recordingFetch(urls) })!;
+		const tracker = createGatewayTracker(configured({ dataSourceUrl: "collection://ds" }), {
+			storePath: path,
+			fetch: recordingFetch(urls),
+		})!;
 		expect(await tracker({ plan })).toBeUndefined();
 		expect(urls).toEqual([]);
 	});
 
 	test("already-aborted signal returns undefined without any request", async () => {
-		writeStore(path, { version: 1, providers: { linear: { kind: "api_key", apiKey: "k", updatedAt: 1 } } });
+		writeStore(path, {
+			version: 1,
+			providers: { linear: { kind: "api_key", apiKey: "k", updatedAt: 1 } },
+		});
 		const urls: string[] = [];
 		const fakeFetch = (async (input: string | URL | Request) => {
 			urls.push(String(input));
@@ -100,7 +124,10 @@ describe("createGatewayTracker", () => {
 
 	test("auth resolution slower than the budget returns undefined", async () => {
 		const now = Date.now();
-		writeStore(path, { version: 1, providers: { notion: expiredOauth("https://mcp.notion.com", now) } });
+		writeStore(path, {
+			version: 1,
+			providers: { notion: expiredOauth("https://mcp.notion.com", now) },
+		});
 		const hang = Promise.withResolvers<Response>();
 		const urls: string[] = [];
 		const fakeFetch = (async (input: string | URL | Request) => {
@@ -122,7 +149,10 @@ describe("createGatewayTracker", () => {
 	});
 
 	test("budgetMs 0 means no limit: a slow auth refresh is not cut and tracking proceeds", async () => {
-		writeStore(path, { version: 1, providers: { notion: expiredOauth("https://mcp.notion.com", Date.now()) } });
+		writeStore(path, {
+			version: 1,
+			providers: { notion: expiredOauth("https://mcp.notion.com", Date.now()) },
+		});
 		const urls: string[] = [];
 		const fakeFetch = (async (input: string | URL | Request) => {
 			const url = String(input);
@@ -132,12 +162,20 @@ describe("createGatewayTracker", () => {
 			const { promise, resolve } = Promise.withResolvers<void>();
 			setTimeout(resolve, 80);
 			await promise;
-			return new Response(JSON.stringify({ access_token: "fresh", expires_in: 3600 }), { status: 200 });
+			return new Response(JSON.stringify({ access_token: "fresh", expires_in: 3600 }), {
+				status: 200,
+			});
 		}) as typeof fetch;
 		const config = configured({ dataSourceUrl: "collection://ds" });
 		config.track.budgetMs = 0;
 		const tracker = createGatewayTracker(config, { storePath: path, fetch: fakeFetch })!;
-		const emptyPlan: TrackPlan = { ...plan, issues: [], subIssues: [], linearIssues: [], linearSubIssues: [] };
+		const emptyPlan: TrackPlan = {
+			...plan,
+			issues: [],
+			subIssues: [],
+			linearIssues: [],
+			linearSubIssues: [],
+		};
 		const result = await tracker({ plan: emptyPlan });
 		expect(urls).toContain("https://mcp.notion.com/token");
 		expect(result).toBeDefined();

@@ -65,11 +65,15 @@ describe("teachStatusLine", () => {
 	});
 
 	test("the kill switch wins over an enabled config", () => {
-		expect(teachStatusLine(config(), { ULTRATHINK_TEACH: "0" }, storePath)).toBe("Teach: off (ULTRATHINK_TEACH=0)");
+		expect(teachStatusLine(config(), { ULTRATHINK_TEACH: "0" }, storePath)).toBe(
+			"Teach: off (ULTRATHINK_TEACH=0)",
+		);
 	});
 
 	test("on without a state directory omits the counts and the outbox", () => {
-		expect(teachStatusLine(config(), {}, storePath)).toBe("Teach: on · capture auto · recall on · Hindsight off");
+		expect(teachStatusLine(config(), {}, storePath)).toBe(
+			"Teach: on · capture auto · recall on · Hindsight off",
+		);
 	});
 
 	test("shows the capture mode and recall switch", () => {
@@ -84,13 +88,22 @@ describe("teachStatusLine", () => {
 		store.put(moment("aaaa0003", "candidate"));
 		store.put(moment("aaaa0004", "promoted"));
 		store.enqueue({ op: "retain", momentId: "aaaa0001" }, 0);
-		const line = teachStatusLine(config({ capture: "observe", recall: false }), {}, storePath, stateDir);
-		expect(line).toBe("Teach: on · capture observe · recall off · 2 confirmed, 1 candidate · Hindsight off · outbox 1");
+		const line = teachStatusLine(
+			config({ capture: "observe", recall: false }),
+			{},
+			storePath,
+			stateDir,
+		);
+		expect(line).toBe(
+			"Teach: on · capture observe · recall off · 2 confirmed, 1 candidate · Hindsight off · outbox 1",
+		);
 	});
 
 	test("an absent store reads as zero and is not created", () => {
 		const line = teachStatusLine(config(), {}, storePath, stateDir);
-		expect(line).toBe("Teach: on · capture auto · recall on · 0 confirmed, 0 candidate · Hindsight off · outbox 0");
+		expect(line).toBe(
+			"Teach: on · capture auto · recall on · 0 confirmed, 0 candidate · Hindsight off · outbox 0",
+		);
 		expect(existsSync(storeDir(stateDir))).toBe(false);
 	});
 
@@ -101,9 +114,18 @@ describe("teachStatusLine", () => {
 		expect(word({ enabled: true, url: "ftp://example.com" })).toBe("bad URL");
 		expect(word({ enabled: true, url: "http://example.com" })).toBe("bad URL");
 		expect(word({ enabled: true, url: "http://127.0.0.1:8888" })).toBe("no key");
-		expect(word({ enabled: true, url: "http://127.0.0.1:8888" }, { HINDSIGHT_API_KEY: "k" })).toBe("ready");
-		expect(word({ enabled: false, url: "http://127.0.0.1:8888" }, { HINDSIGHT_API_KEY: "k" })).toBe("off");
-		expect(word({ enabled: true, url: "http://127.0.0.1:8888" }, { HINDSIGHT_API_KEY: "k", ULTRATHINK_HINDSIGHT: "0" })).toBe("off");
+		expect(word({ enabled: true, url: "http://127.0.0.1:8888" }, { HINDSIGHT_API_KEY: "k" })).toBe(
+			"ready",
+		);
+		expect(word({ enabled: false, url: "http://127.0.0.1:8888" }, { HINDSIGHT_API_KEY: "k" })).toBe(
+			"off",
+		);
+		expect(
+			word(
+				{ enabled: true, url: "http://127.0.0.1:8888" },
+				{ HINDSIGHT_API_KEY: "k", ULTRATHINK_HINDSIGHT: "0" },
+			),
+		).toBe("off");
 	});
 
 	test("never contains the key", () => {
@@ -129,6 +151,11 @@ describe("momentCounts", () => {
 		store.put(moment("bbbb0001", "superseded"));
 		store.put(moment("bbbb0002", "promoted"));
 		store.put(moment("bbbb0003", "promoted"));
-		expect(momentCounts(stateDir).moments).toEqual({ candidate: 0, confirmed: 0, promoted: 2, superseded: 1 });
+		expect(momentCounts(stateDir).moments).toEqual({
+			candidate: 0,
+			confirmed: 0,
+			promoted: 2,
+			superseded: 1,
+		});
 	});
 });

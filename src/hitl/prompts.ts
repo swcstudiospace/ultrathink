@@ -73,7 +73,10 @@ export interface ClarifySystemPromptOptions {
 }
 
 /** The clarifier system prompt for `maxQuestions`; knowledge-base rules only when `opts.knowledge` is true. */
-export function clarifySystemPrompt(maxQuestions: number, opts: ClarifySystemPromptOptions = {}): string {
+export function clarifySystemPrompt(
+	maxQuestions: number,
+	opts: ClarifySystemPromptOptions = {},
+): string {
 	const max = Math.max(1, Math.floor(maxQuestions));
 	const base = CLARIFY_SYSTEM_PROMPT.replaceAll(MAX_PLACEHOLDER, String(max));
 	return opts.knowledge ? `${base}${KNOWLEDGE_SECTION}` : base;

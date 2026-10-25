@@ -14,7 +14,11 @@ const ISSUES_BLOCK_RE = /\n?[ \t]*<ISSUES graphId="[^"]*"[\s\S]*?<\/ISSUES>/g;
 const GRAPH_CLOSE = "</GRAPH_OF_THOUGHT>";
 
 export function escapeXml(value: string): string {
-	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }
 
 /** "[n1] Step 3: …" -> "Step 3: …"; leaves other items untouched. */
@@ -70,14 +74,16 @@ export function injectTrackingXml(xml: string, plan: TrackPlan, tracking: Tracki
 		const openAt = stripped.lastIndexOf("<GRAPH_OF_THOUGHT", graphEnd);
 		const start = openAt >= 0 ? openAt : graphEnd;
 		const at = graphEnd + GRAPH_CLOSE.length;
-		const graph = stripped.slice(start, at).replace(NODE_TAG_RE, (whole, attrs: string, close: string) => {
-			const id = ID_ATTR_RE.exec(attrs)?.[1];
-			if (id === undefined) return whole;
-			const ref = tracking.linear.nodes[id];
-			const notionUrl = tracking.notion.nodes[id];
-			const extra = `${attr("issue", ref?.identifier)}${attr("issueUrl", ref?.url)}${attr("notionUrl", notionUrl)}`;
-			return `<NODE${attrs.replace(TRACK_ATTR_RE, "")}${extra}${close}>`;
-		});
+		const graph = stripped
+			.slice(start, at)
+			.replace(NODE_TAG_RE, (whole, attrs: string, close: string) => {
+				const id = ID_ATTR_RE.exec(attrs)?.[1];
+				if (id === undefined) return whole;
+				const ref = tracking.linear.nodes[id];
+				const notionUrl = tracking.notion.nodes[id];
+				const extra = `${attr("issue", ref?.identifier)}${attr("issueUrl", ref?.url)}${attr("notionUrl", notionUrl)}`;
+				return `<NODE${attrs.replace(TRACK_ATTR_RE, "")}${extra}${close}>`;
+			});
 		return `${stripped.slice(0, start)}${graph}\n${block}${stripped.slice(at)}`;
 	}
 	const rootClose = stripped.lastIndexOf("</");
@@ -97,13 +103,21 @@ export function stripTrackingXml(xml: string): string {
 	const openAt = stripped.lastIndexOf("<GRAPH_OF_THOUGHT", graphEnd);
 	const start = openAt >= 0 ? openAt : graphEnd;
 	const at = graphEnd + GRAPH_CLOSE.length;
-	const graph = stripped.slice(start, at).replace(NODE_TAG_RE, (whole, attrs: string, close: string) =>
-		ID_ATTR_RE.test(attrs) ? `<NODE${attrs.replace(TRACK_ATTR_RE, "")}${close}>` : whole,
-	);
+	const graph = stripped
+		.slice(start, at)
+		.replace(NODE_TAG_RE, (whole, attrs: string, close: string) =>
+			ID_ATTR_RE.test(attrs) ? `<NODE${attrs.replace(TRACK_ATTR_RE, "")}${close}>` : whole,
+		);
 	return `${stripped.slice(0, start)}${graph}${stripped.slice(at)}`;
 }
 
-function todoLine(indent: string, id: string, ref: IssueRef | undefined, title: string, notionUrl: string | undefined): string {
+function todoLine(
+	indent: string,
+	id: string,
+	ref: IssueRef | undefined,
+	title: string,
+	notionUrl: string | undefined,
+): string {
 	const notion = notionUrl ? ` · notion: ${notionUrl}` : "";
 	return `${indent}- [ ] ${id} · ${ref ? `[${ref.identifier}](${ref.url})` : "(pending)"} · ${title}${notion}`;
 }
@@ -124,7 +138,13 @@ export function formatTrackingTodos(plan: TrackPlan, tracking: TrackingRefs): st
 		for (const sub of stepsOf(plan, issue.nodeId)) {
 			const key = stepKey(sub.nodeId, sub.step);
 			lines.push(
-				todoLine("  ", key, tracking.linear.steps[key], stripNodePrefix(sub.item, sub.nodeId), tracking.notion.steps[key]),
+				todoLine(
+					"  ",
+					key,
+					tracking.linear.steps[key],
+					stripNodePrefix(sub.item, sub.nodeId),
+					tracking.notion.steps[key],
+				),
 			);
 		}
 	}

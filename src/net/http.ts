@@ -57,7 +57,11 @@ export async function requestJson(url: string, request: HttpRequest): Promise<Ht
 	const budget = Math.min(Math.max(1, request.timeoutMs), MAX_TIMEOUT_MS);
 	const timeout = AbortSignal.timeout(budget);
 	const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
-	const headers: Record<string, string> = { "User-Agent": USER_AGENT, Accept: "application/json", ...request.headers };
+	const headers: Record<string, string> = {
+		"User-Agent": USER_AGENT,
+		Accept: "application/json",
+		...request.headers,
+	};
 	if (request.body !== undefined) headers["Content-Type"] = "application/json";
 	try {
 		const response = await abortable(
@@ -73,7 +77,13 @@ export async function requestJson(url: string, request: HttpRequest): Promise<Ht
 		const body = await abortable(readBodyPrefix(response, MAX_RESPONSE_CHARS, signal), signal);
 		const ms = Date.now() - started;
 		if (!body.complete) return { kind: "network", message: "response too large", ms };
-		return { kind: "response", status: response.status, json: parseJson(body.text), text: body.text, ms };
+		return {
+			kind: "response",
+			status: response.status,
+			json: parseJson(body.text),
+			text: body.text,
+			ms,
+		};
 	} catch (error) {
 		if (request.signal?.aborted) throw error;
 		const ms = Date.now() - started;

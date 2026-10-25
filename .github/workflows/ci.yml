@@ -67,6 +67,11 @@ jobs:
         if: matrix.bun == 'latest'
         run: bun run check:services
 
+      # Phase 77: Biome is the one lint and format tool. It is a dev dependency, so only the latest-Bun leg installs it.
+      - name: Lint and format check (Biome)
+        if: matrix.bun == 'latest'
+        run: bun run lint
+
       # The runner has no git identity and git refuses to commit without one; set it in case a test shells out to git.
       - name: Configure git identity
         run: |

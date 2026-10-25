@@ -7,7 +7,16 @@
  * The first hook to create the claim file wins. Fail-open: a broken claim store
  * must never block planning.
  */
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, opendirSync, statSync, unlinkSync } from "node:fs";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	opendirSync,
+	statSync,
+	unlinkSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 

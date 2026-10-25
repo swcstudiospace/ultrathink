@@ -74,7 +74,9 @@ function writeStubOpa(evalOutput: string): string {
 }
 
 function evalResult(value: unknown[]): string {
-	return JSON.stringify({ result: [{ expressions: [{ value, text: "data.ultrathink.policy.violations" }] }] });
+	return JSON.stringify({
+		result: [{ expressions: [{ value, text: "data.ultrathink.policy.violations" }] }],
+	});
 }
 
 // A policy tree of its own: a copy of policy/ whose pin names `binary` by its real sha256 and a file:// url. check.sh
@@ -96,7 +98,11 @@ function pinnedTree(binary: string): string {
 }
 
 // Runs check.sh from a pinned tree with --root set to this repository, unless `args` names another root.
-function runVerified(binary: string, args: string[] = [], extraEnv: Record<string, string> = {}): Promise<RunResult> {
+function runVerified(
+	binary: string,
+	args: string[] = [],
+	extraEnv: Record<string, string> = {},
+): Promise<RunResult> {
 	return run(["bash", pinnedTree(binary), "--root", REPO, ...args], scrubbedEnv(extraEnv), REPO);
 }
 
@@ -179,8 +185,15 @@ test("an unverified OPA_BIN never runs: with no verified pin the run stops befor
 	cpSync(join(REPO, "policy"), join(unpinned, "policy"), { recursive: true });
 	symlinkSync(join(REPO, "services"), join(unpinned, "services"));
 	symlinkSync(join(REPO, "node_modules"), join(unpinned, "node_modules"));
-	writeFileSync(join(unpinned, "policy", "opa-pin.json"), JSON.stringify({ version: null, asset: "opa_linux_amd64_static", sha256: null, url: null }));
-	const result = await run(["bash", join(unpinned, "policy", "check.sh"), "--root", REPO], scrubbedEnv({ OPA_BIN: fixture }), REPO);
+	writeFileSync(
+		join(unpinned, "policy", "opa-pin.json"),
+		JSON.stringify({ version: null, asset: "opa_linux_amd64_static", sha256: null, url: null }),
+	);
+	const result = await run(
+		["bash", join(unpinned, "policy", "check.sh"), "--root", REPO],
+		scrubbedEnv({ OPA_BIN: fixture }),
+		REPO,
+	);
 
 	expect(result.exitCode).toBe(1);
 	expect(result.stderr).toContain("no verified OPA pin");
@@ -205,7 +218,10 @@ test("OPA_BIN has no effect: the pinned binary that passed verification decides 
 });
 
 test("an unknown --root writes nothing to stdout and exits non-zero", async () => {
-	const result = await runVerified(writeStubOpa(evalResult([])), ["--root", join(scratch, "does-not-exist")]);
+	const result = await runVerified(writeStubOpa(evalResult([])), [
+		"--root",
+		join(scratch, "does-not-exist"),
+	]);
 
 	expect(result.exitCode).toBe(2);
 	expect(result.stdout).toBe("");
@@ -214,8 +230,14 @@ test("an unknown --root writes nothing to stdout and exits non-zero", async () =
 test("an empty --live-ca, --live-cert or --live-key is refused with its flag named, before any download", async () => {
 	const refusals: Array<[string[], string]> = [
 		[["--live", "https://127.0.0.1:1/", "--live-ca", ""], "--live-ca needs a non-empty file"],
-		[["--live", "https://127.0.0.1:1/", "--live-cert", "", "--live-key", "key.pem"], "--live-cert needs a non-empty file"],
-		[["--live", "https://127.0.0.1:1/", "--live-cert", "cert.pem", "--live-key", ""], "--live-key needs a non-empty file"],
+		[
+			["--live", "https://127.0.0.1:1/", "--live-cert", "", "--live-key", "key.pem"],
+			"--live-cert needs a non-empty file",
+		],
+		[
+			["--live", "https://127.0.0.1:1/", "--live-cert", "cert.pem", "--live-key", ""],
+			"--live-key needs a non-empty file",
+		],
 	];
 	for (const [args, message] of refusals) {
 		const result = await runVerified(writeStubOpa(evalResult([])), args);
@@ -259,17 +281,22 @@ test.skipIf(!REAL_OPA)("the baseline repository passes with the real OPA binary"
 	expect(result.exitCode).toBe(0);
 });
 
-test.skipIf(!REAL_OPA)("a seeded unpinned uses ref in a copied workflow tree fails W-R1", async () => {
-	const dir = join(scratch, "seeded");
-	cpSync(join(REPO, ".github", "workflows"), join(dir, ".github", "workflows"), { recursive: true });
-	const ci = join(dir, ".github", "workflows", "ci.yml");
-	const original = readFileSync(ci, "utf8");
-	const seeded = original.replace(/actions\/checkout@[0-9a-f]{40}/, "actions/checkout@v4");
-	expect(seeded).not.toBe(original);
-	writeFileSync(ci, seeded);
+test.skipIf(!REAL_OPA)(
+	"a seeded unpinned uses ref in a copied workflow tree fails W-R1",
+	async () => {
+		const dir = join(scratch, "seeded");
+		cpSync(join(REPO, ".github", "workflows"), join(dir, ".github", "workflows"), {
+			recursive: true,
+		});
+		const ci = join(dir, ".github", "workflows", "ci.yml");
+		const original = readFileSync(ci, "utf8");
+		const seeded = original.replace(/actions\/checkout@[0-9a-f]{40}/, "actions/checkout@v4");
+		expect(seeded).not.toBe(original);
+		writeFileSync(ci, seeded);
 
-	const result = await runVerified(REAL_OPA ?? "", ["--root", dir]);
+		const result = await runVerified(REAL_OPA ?? "", ["--root", dir]);
 
-	expect(result.exitCode).toBe(1);
-	expect(result.stdout).toContain("W-R1");
-});
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toContain("W-R1");
+	},
+);

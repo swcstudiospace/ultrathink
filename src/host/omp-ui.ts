@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { type GraphIssue, type GraphModel, type GraphNodeModel, NODE_STAGGER_MS, renderGraph } from "./omp-graph.ts";
+import {
+	type GraphIssue,
+	type GraphModel,
+	type GraphNodeModel,
+	NODE_STAGGER_MS,
+	renderGraph,
+} from "./omp-graph.ts";
 import { formatElapsed, type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
 import type { ModelResolution } from "./engine.ts";
 import type { ProgressEvent, StageName } from "./progress.ts";
@@ -31,10 +37,23 @@ export interface BarState {
 	stages: Partial<Record<StageName, "running" | "done" | "failed">>;
 	graph?: { total: number; done: number; current?: string };
 	/** Only configured providers are present. */
-	track?: { linear?: { nodes: Counts; steps: Counts }; notion?: { task: boolean; nodes: Counts; steps: Counts }; errors: number };
+	track?: {
+		linear?: { nodes: Counts; steps: Counts };
+		notion?: { task: boolean; nodes: Counts; steps: Counts };
+		errors: number;
+	};
 	delivery?: "inline" | "aside" | "pending";
 	mcp?: { linear: Readiness; notion: Readiness; greptile: Readiness };
-	last?: { root: string; nodes: number; issues: number; subIssues: number; firstIssue?: string; trackingStatus?: string; elapsedMs: number; skill?: string };
+	last?: {
+		root: string;
+		nodes: number;
+		issues: number;
+		subIssues: number;
+		firstIssue?: string;
+		trackingStatus?: string;
+		elapsedMs: number;
+		skill?: string;
+	};
 	/** Planner-side tracking will run this turn (from the `begin` event); false hides the track stage. */
 	tracking?: boolean;
 	note?: string;
@@ -81,11 +100,14 @@ function attachIssue(model: GraphModel, event: IssueEvent): GraphModel {
 		nodes: model.nodes.map((node) => {
 			if (node.id !== event.nodeId) return node;
 			const notion = node.notion || !linear;
-			if (event.step === undefined) return { ...node, notion, issue: linear || !node.issue ? issue : node.issue };
+			if (event.step === undefined)
+				return { ...node, notion, issue: linear || !node.issue ? issue : node.issue };
 			const step = event.step;
 			const existing = node.steps.find((s) => s.step === step);
 			const steps = existing
-				? node.steps.map((s) => (s.step === step ? { ...s, issue: linear || !s.issue ? issue : s.issue } : s))
+				? node.steps.map((s) =>
+						s.step === step ? { ...s, issue: linear || !s.issue ? issue : s.issue } : s,
+					)
 				: [...node.steps, { step, title: `Step ${step}`, issue }].sort((a, b) => a.step - b.step);
 			return { ...node, notion, steps };
 		}),
@@ -101,7 +123,11 @@ function modelFromView(view: PlanView): GraphModel {
 				kind: node.kind,
 				dependsOn: node.dependsOn ?? [],
 				status: "done",
-				issue: node.issue ? { identifier: node.issue.identifier, url: node.issue.url } : node.notionUrl ? { url: node.notionUrl } : undefined,
+				issue: node.issue
+					? { identifier: node.issue.identifier, url: node.issue.url }
+					: node.notionUrl
+						? { url: node.notionUrl }
+						: undefined,
 				notion: node.notionUrl !== undefined || undefined,
 				steps: node.steps.map((step) => ({
 					step: step.step,
@@ -166,22 +192,36 @@ export interface TokenSavingsSnapshot {
 }
 
 function isSessionId(value: unknown): value is string {
-	return typeof value === "string" && value.length >= 1 && value.length <= 128 && !value.includes("/");
+	return (
+		typeof value === "string" && value.length >= 1 && value.length <= 128 && !value.includes("/")
+	);
 }
 
 function parseSavingsPoint(value: unknown): TokenSavingsPoint | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const { at, source, baseline, current, saved } = value as Record<string, unknown>;
-	if (!isCount(at) || !oneOf(SAVINGS_SOURCES, source) || !isCount(baseline) || !isCount(current) || !isCount(saved)) return undefined;
+	if (
+		!isCount(at) ||
+		!oneOf(SAVINGS_SOURCES, source) ||
+		!isCount(baseline) ||
+		!isCount(current) ||
+		!isCount(saved)
+	)
+		return undefined;
 	if (saved !== baseline - current) return undefined;
 	return { at, source, baseline, current, saved };
 }
 
 /** Absent → undefined. Present but not a safe integer in `0..max` → null, which rejects the snapshot. */
-function optionalPerf(data: Record<string, unknown>, key: string, max = Number.MAX_SAFE_INTEGER): number | undefined | null {
+function optionalPerf(
+	data: Record<string, unknown>,
+	key: string,
+	max = Number.MAX_SAFE_INTEGER,
+): number | undefined | null {
 	if (!Object.hasOwn(data, key)) return undefined;
 	const value = data[key];
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max) return null;
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max)
+		return null;
 	return value;
 }
 
@@ -192,7 +232,8 @@ export function parseTokenSavings(data: unknown): TokenSavingsSnapshot | undefin
 		const record = data as Record<string, unknown>;
 		const { v, sessionId, updatedAt, baselineTokens, currentTokens, savedTokens, points } = record;
 		if (v !== 1 || !isSessionId(sessionId) || !isCount(updatedAt)) return undefined;
-		if (!isCount(baselineTokens) || !isCount(currentTokens) || !isCount(savedTokens)) return undefined;
+		if (!isCount(baselineTokens) || !isCount(currentTokens) || !isCount(savedTokens))
+			return undefined;
 		if (savedTokens !== baselineTokens - currentTokens) return undefined;
 		if (!Array.isArray(points) || points.length > 200) return undefined;
 		const lastTurnMs = optionalPerf(record, "lastTurnMs");
@@ -210,9 +251,23 @@ export function parseTokenSavings(data: unknown): TokenSavingsSnapshot | undefin
 		const prefixChanged = optionalPerf(record, "prefixChanged", 1);
 		const toolsChanged = optionalPerf(record, "toolsChanged", 1);
 		const graphReady = optionalPerf(record, "graphReady", 1);
-		if (lastTurnMs === null || cacheHitPct === null || lastQueryMs === null || rtkSavedTokens === null || lastPayloadChars === null || ttftMs === null) return undefined;
+		if (
+			lastTurnMs === null ||
+			cacheHitPct === null ||
+			lastQueryMs === null ||
+			rtkSavedTokens === null ||
+			lastPayloadChars === null ||
+			ttftMs === null
+		)
+			return undefined;
 		if (lastIdleMs === null || costCents === null) return undefined;
-		if (providerInput === null || providerOutput === null || providerCacheRead === null || providerCacheWrite === null) return undefined;
+		if (
+			providerInput === null ||
+			providerOutput === null ||
+			providerCacheRead === null ||
+			providerCacheWrite === null
+		)
+			return undefined;
 		if (prefixChanged === null || toolsChanged === null || graphReady === null) return undefined;
 		const parsed: TokenSavingsPoint[] = [];
 		for (const point of points) {
@@ -220,7 +275,15 @@ export function parseTokenSavings(data: unknown): TokenSavingsSnapshot | undefin
 			if (!next) return undefined;
 			parsed.push(next);
 		}
-		const snapshot: TokenSavingsSnapshot = { v: 1, sessionId, updatedAt, baselineTokens, currentTokens, savedTokens, points: parsed };
+		const snapshot: TokenSavingsSnapshot = {
+			v: 1,
+			sessionId,
+			updatedAt,
+			baselineTokens,
+			currentTokens,
+			savedTokens,
+			points: parsed,
+		};
 		if (lastTurnMs !== undefined) snapshot.lastTurnMs = lastTurnMs;
 		if (cacheHitPct !== undefined) snapshot.cacheHitPct = cacheHitPct;
 		if (lastQueryMs !== undefined) snapshot.lastQueryMs = lastQueryMs;
@@ -253,7 +316,6 @@ function formatTokens(n: number): string {
 	return `${Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)}${suffix}`;
 }
 const SUBSTRATE_USAGES = ["IN_USE", "NOT_OBSERVED_IN_WINDOW", "UNKNOWN"] as const;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: bus text loses terminal control characters
 const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/g;
 
 function oneOf<T extends string>(values: readonly T[], value: unknown): value is T {
@@ -279,14 +341,31 @@ function parseCoverage(value: unknown): SubstrateSegment["coverage"] | undefined
 export function parseSubstrateStatus(data: unknown): SubstrateSegment | undefined {
 	try {
 		if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
-		const { v, state, usage, coverage, planesDown, updatedAt, reason } = data as Record<string, unknown>;
-		if (v !== 1 || !oneOf(SUBSTRATE_STATES, state) || !oneOf(SUBSTRATE_USAGES, usage)) return undefined;
+		const { v, state, usage, coverage, planesDown, updatedAt, reason } = data as Record<
+			string,
+			unknown
+		>;
+		if (v !== 1 || !oneOf(SUBSTRATE_STATES, state) || !oneOf(SUBSTRATE_USAGES, usage))
+			return undefined;
 		const counts = parseCoverage(coverage);
 		const planes = planesDown === null ? null : isCount(planesDown) ? planesDown : undefined;
-		if (counts === undefined || planes === undefined || typeof updatedAt !== "string") return undefined;
-		const why = reason === null ? null : typeof reason === "string" ? Array.from(reason.replace(CONTROL_CHARS, "")).slice(0, 40).join("") : undefined;
+		if (counts === undefined || planes === undefined || typeof updatedAt !== "string")
+			return undefined;
+		const why =
+			reason === null
+				? null
+				: typeof reason === "string"
+					? Array.from(reason.replace(CONTROL_CHARS, "")).slice(0, 40).join("")
+					: undefined;
 		if (why === undefined) return undefined;
-		return { state, usage, coverage: counts, planesDown: planes, updatedAt: Array.from(updatedAt.replace(CONTROL_CHARS, "")).slice(0, 8).join(""), reason: why };
+		return {
+			state,
+			usage,
+			coverage: counts,
+			planesDown: planes,
+			updatedAt: Array.from(updatedAt.replace(CONTROL_CHARS, "")).slice(0, 8).join(""),
+			reason: why,
+		};
 	} catch {
 		return undefined;
 	}
@@ -310,7 +389,17 @@ export function createBarStore(): BarStore {
 	return {
 		get: () => state,
 		begin(now) {
-			set({ phase: "planning", startedAt: now, stages: {}, engine: state.engine, mcp: state.mcp, last: state.last, substrate: state.substrate, savings: state.savings, liveSessionId: state.liveSessionId });
+			set({
+				phase: "planning",
+				startedAt: now,
+				stages: {},
+				engine: state.engine,
+				mcp: state.mcp,
+				last: state.last,
+				substrate: state.substrate,
+				savings: state.savings,
+				liveSessionId: state.liveSessionId,
+			});
 		},
 		apply(event) {
 			switch (event.type) {
@@ -327,7 +416,8 @@ export function createBarStore(): BarStore {
 					});
 					return;
 				case "stage": {
-					const status = event.phase === "start" ? "running" : event.ok === false ? "failed" : "done";
+					const status =
+						event.phase === "start" ? "running" : event.ok === false ? "failed" : "done";
 					set({ ...state, stages: { ...state.stages, [event.stage]: status } });
 					return;
 				}
@@ -356,7 +446,12 @@ export function createBarStore(): BarStore {
 							if (event.phase === "start") return { ...node, status: "running" };
 							const issues = new Map(node.steps.map((step) => [step.step, step.issue]));
 							const steps = event.steps
-								? event.steps.map((title, j) => ({ step: j + 1, title, appearedAt: event.at, issue: issues.get(j + 1) }))
+								? event.steps.map((title, j) => ({
+										step: j + 1,
+										title,
+										appearedAt: event.at,
+										issue: issues.get(j + 1),
+									}))
 								: node.steps;
 							return { ...node, status: event.fallback ? "fallback" : "done", steps };
 						}),
@@ -364,9 +459,10 @@ export function createBarStore(): BarStore {
 					set({
 						...state,
 						model,
-						graph: event.phase === "start"
-							? { total: event.total, done, current: event.title }
-							: { total: event.total, done: Math.min(done + 1, event.total) },
+						graph:
+							event.phase === "start"
+								? { total: event.total, done, current: event.title }
+								: { total: event.total, done: Math.min(done + 1, event.total) },
 					});
 					return;
 				}
@@ -402,18 +498,41 @@ export function createBarStore(): BarStore {
 						root: view.root,
 						nodes: view.nodes.length,
 						issues: view.tracking?.issues ?? view.nodes.filter((node) => node.issue).length,
-						subIssues: view.tracking?.subIssues ?? view.nodes.reduce((sum, node) => sum + node.steps.filter((step) => step.identifier).length, 0),
+						subIssues:
+							view.tracking?.subIssues ??
+							view.nodes.reduce(
+								(sum, node) => sum + node.steps.filter((step) => step.identifier).length,
+								0,
+							),
 						firstIssue: view.nodes.find((node) => node.issue)?.issue?.identifier,
 						trackingStatus: view.tracking?.status,
 						elapsedMs: view.elapsedMs,
 						skill: view.skill ?? state.skill,
 					}
 				: state.last;
-			const base = state.model?.nodes.length ? state.model : view ? modelFromView(view) : state.model;
+			const base = state.model?.nodes.length
+				? state.model
+				: view
+					? modelFromView(view)
+					: state.model;
 			// a stage aborted mid-fill never emits `done`; a finished plan must not keep a spinner
-			const model = base && { nodes: base.nodes.map((node): GraphNodeModel => (node.status === "running" ? { ...node, status: "fallback" } : node)) };
+			const model = base && {
+				nodes: base.nodes.map(
+					(node): GraphNodeModel =>
+						node.status === "running" ? { ...node, status: "fallback" } : node,
+				),
+			};
 			const resolution = projectResolution(view?.modelResolution) ?? state.resolution;
-			set({ ...state, phase: "delivered", delivery: how, finishedAt: now, last, model, engine: view?.engine ?? state.engine, resolution });
+			set({
+				...state,
+				phase: "delivered",
+				delivery: how,
+				finishedAt: now,
+				last,
+				model,
+				engine: view?.engine ?? state.engine,
+				resolution,
+			});
 		},
 		pending() {
 			set({ ...state, delivery: "pending" });
@@ -445,12 +564,20 @@ export function createBarStore(): BarStore {
 		},
 		animating(now) {
 			if (state.phase === "planning") return true;
-			return state.phase === "delivered" && state.finishedAt !== undefined && now - state.finishedAt < LINGER_MS;
+			return (
+				state.phase === "delivered" &&
+				state.finishedAt !== undefined &&
+				now - state.finishedAt < LINGER_MS
+			);
 		},
 	};
 }
 
-function stageGlyph(p: Paint, status: "running" | "done" | "failed" | undefined, now: number): string {
+function stageGlyph(
+	p: Paint,
+	status: "running" | "done" | "failed" | undefined,
+	now: number,
+): string {
 	if (status === "running") return p.fg("accent", p.spinner(now));
 	if (status === "done") return p.fg("success", p.glyph("success"));
 	if (status === "failed") return p.fg("error", p.glyph("error"));
@@ -460,7 +587,11 @@ function stageGlyph(p: Paint, status: "running" | "done" | "failed" | undefined,
 function mcpSegment(p: Paint, mcp: BarState["mcp"]): string | undefined {
 	if (!mcp) return undefined;
 	const mark = (value: Readiness) =>
-		value === "ready" ? p.fg("success", p.glyph("success")) : value === "login" ? p.fg("warning", p.glyph("warning")) : p.fg("dim", p.glyph("pending"));
+		value === "ready"
+			? p.fg("success", p.glyph("success"))
+			: value === "login"
+				? p.fg("warning", p.glyph("warning"))
+				: p.fg("dim", p.glyph("pending"));
 	return `linear ${mark(mcp.linear)} notion ${mark(mcp.notion)} greptile ${mark(mcp.greptile)}`;
 }
 
@@ -469,15 +600,29 @@ function substrateSegment(p: Paint, substrate: SubstrateSegment): string {
 	if (substrate.state === "checking") return p.fg("dim", "substrate: checking");
 	if (substrate.state === "access-denied") return p.fg("error", "substrate ACCESS_DENIED");
 	if (substrate.state === "error") {
-		const failed = p.fg("error", `substrate ERROR${substrate.reason ? ` (${substrate.reason})` : ""}`);
-		return substrate.updatedAt ? `${failed} · ${p.fg("dim", `last good ${substrate.updatedAt}`)}` : failed;
+		const failed = p.fg(
+			"error",
+			`substrate ERROR${substrate.reason ? ` (${substrate.reason})` : ""}`,
+		);
+		return substrate.updatedAt
+			? `${failed} · ${p.fg("dim", `last good ${substrate.updatedAt}`)}`
+			: failed;
 	}
-	const color = substrate.usage === "IN_USE" ? "success" : substrate.usage === "NOT_OBSERVED_IN_WINDOW" ? "warning" : "dim";
+	const color =
+		substrate.usage === "IN_USE"
+			? "success"
+			: substrate.usage === "NOT_OBSERVED_IN_WINDOW"
+				? "warning"
+				: "dim";
 	const details: string[] = [];
-	if (substrate.coverage) details.push(`${substrate.coverage.observed}/${substrate.coverage.known} observed`);
+	if (substrate.coverage)
+		details.push(`${substrate.coverage.observed}/${substrate.coverage.known} observed`);
 	if (substrate.planesDown === 0) details.push("planes ok");
 	else if (substrate.planesDown !== null) details.push(`${substrate.planesDown} planes down`);
-	return [p.fg(color, `substrate ${substrate.usage}`), ...details.map((detail) => p.fg("dim", detail))].join(" · ");
+	return [
+		p.fg(color, `substrate ${substrate.usage}`),
+		...details.map((detail) => p.fg("dim", detail)),
+	].join(" · ");
 }
 
 /** The substrate segment list: empty until a status has been published, so the bar is unchanged until then. */
@@ -488,12 +633,20 @@ function substrateSegments(state: BarState, p: Paint): string[] {
 function shownSavings(state: BarState): TokenSavingsSnapshot | undefined {
 	const savings = state.savings;
 	if (!savings) return undefined;
-	if (state.liveSessionId !== undefined && savings.sessionId !== state.liveSessionId) return undefined;
+	if (state.liveSessionId !== undefined && savings.sessionId !== state.liveSessionId)
+		return undefined;
 	return savings;
 }
 
 /** Saved stays in the name chip. Turn time and TTFT share that chip when requested. Prefix, tools and graph-ready share it only when the flag is 1. `before`/`now` follows the name, with cache, query, RTK delta, payload size, idle time, cost, bill and output on that segment. Those extras drop before planning's protected stage or saved. Provider cache tokens are never folded into savedTokens. Another session's snapshot adds neither the chip nor that segment. */
-function withSavings(state: BarState, p: Paint, segments: string[], includeTurn: boolean, includeTtft = true, includeStability = true): string[] {
+function withSavings(
+	state: BarState,
+	p: Paint,
+	segments: string[],
+	includeTurn: boolean,
+	includeTtft = true,
+	includeStability = true,
+): string[] {
 	const savings = shownSavings(state);
 	if (!savings || segments.length === 0) return segments;
 	const saved = `saved ${formatTokens(savings.savedTokens)}`;
@@ -507,15 +660,19 @@ function withSavings(state: BarState, p: Paint, segments: string[], includeTurn:
 	let detail = `before ${formatTokens(savings.baselineTokens)} · now ${formatTokens(savings.currentTokens)}`;
 	if (savings.cacheHitPct !== undefined) detail += ` · cache ${savings.cacheHitPct}%`;
 	if (savings.lastQueryMs !== undefined) detail += ` · query ${savings.lastQueryMs}ms`;
-	if (savings.rtkSavedTokens !== undefined) detail += ` · rtk +${formatTokens(savings.rtkSavedTokens)}`;
+	if (savings.rtkSavedTokens !== undefined)
+		detail += ` · rtk +${formatTokens(savings.rtkSavedTokens)}`;
 	if (savings.lastPayloadChars !== undefined) detail += ` · payload ${savings.lastPayloadChars}c`;
 	if (savings.lastIdleMs !== undefined) detail += ` · idle ${savings.lastIdleMs}ms`;
 	if (savings.costCents !== undefined) detail += ` · cost ${savings.costCents}c`;
-	if (includeStability && savings.providerInput !== undefined) detail += ` · bill ${formatTokens(savings.providerInput)}`;
-	if (includeStability && savings.providerOutput !== undefined) detail += ` · out ${formatTokens(savings.providerOutput)}`;
+	if (includeStability && savings.providerInput !== undefined)
+		detail += ` · bill ${formatTokens(savings.providerInput)}`;
+	if (includeStability && savings.providerOutput !== undefined)
+		detail += ` · out ${formatTokens(savings.providerOutput)}`;
 	const compare = p.fg("dim", detail);
 	const rest = segments.slice(1);
-	if (state.phase === "planning" && rest.length > 0) return [named, rest[0] ?? "", compare, ...rest.slice(1)];
+	if (state.phase === "planning" && rest.length > 0)
+		return [named, rest[0] ?? "", compare, ...rest.slice(1)];
 	return [named, compare, ...rest];
 }
 
@@ -524,21 +681,33 @@ function planningSegments(state: BarState, p: Paint, now: number): string[] {
 	const segments = [`${p.fg("accent", p.spinner(now))} ${p.bold(name)}`];
 	const current: string[] = [];
 	const rest: string[] = [];
-	const push = (running: boolean, text: string) => (running && current.length === 0 ? current : rest).push(text);
+	const push = (running: boolean, text: string) =>
+		(running && current.length === 0 ? current : rest).push(text);
 	push(state.stages.uplift === "running", `uplift ${stageGlyph(p, state.stages.uplift, now)}`);
 	const graph = state.graph
 		? `graph ${state.graph.done}/${state.graph.total}${state.graph.current ? ` · ${state.graph.current}` : ""}`
 		: "graph";
 	push(state.stages.think === "running", `${graph} ${stageGlyph(p, state.stages.think, now)}`);
-	if (state.stages.knowledge) push(state.stages.knowledge === "running", `kb ${stageGlyph(p, state.stages.knowledge, now)}`);
+	if (state.stages.knowledge)
+		push(state.stages.knowledge === "running", `kb ${stageGlyph(p, state.stages.knowledge, now)}`);
 	push(state.stages.clarify === "running", `clarify ${stageGlyph(p, state.stages.clarify, now)}`);
 	if (state.tracking !== false) {
 		let track = "track";
 		if (state.track) {
 			const { linear, notion } = state.track;
 			const shown: string[] = [];
-			if (linear) shown.push(`linear ${linear.nodes[0]}/${linear.nodes[1]} · steps ${linear.steps[0]}/${linear.steps[1]}`);
-			if (notion && state.stages.track && state.stages.track !== "running" && !notion.task && notion.nodes[0] === 0 && notion.steps[0] === 0) {
+			if (linear)
+				shown.push(
+					`linear ${linear.nodes[0]}/${linear.nodes[1]} · steps ${linear.steps[0]}/${linear.steps[1]}`,
+				);
+			if (
+				notion &&
+				state.stages.track &&
+				state.stages.track !== "running" &&
+				!notion.task &&
+				notion.nodes[0] === 0 &&
+				notion.steps[0] === 0
+			) {
 				shown.push(`notion ${p.fg("error", p.glyph("error"))}`);
 			} else if (notion?.task) shown.push(`notion ${notion.nodes[0]}/${notion.nodes[1]}`);
 			if (shown.length > 0) track += ` ${shown.join(" · ")}`;
@@ -560,7 +729,9 @@ function planningSegments(state: BarState, p: Paint, now: number): string[] {
 function modelText(state: BarState): string | undefined {
 	const record = state.resolution;
 	if (!record) return state.engine;
-	return record.label.includes(`[${record.reason}]`) ? record.label : `${record.label} · ${record.reason}`;
+	return record.label.includes(`[${record.reason}]`)
+		? record.label
+		: `${record.label} · ${record.reason}`;
 }
 
 /** Last delivered plan: root, tracker rows (or the kickoff hint when the planner tracked nothing), elapsed. */
@@ -569,7 +740,10 @@ function lastPlanSegments(last: NonNullable<BarState["last"]>, p: Paint): string
 	if (last.trackingStatus !== undefined) {
 		issues = `${last.issues} issues · ${last.subIssues} sub-issues${last.firstIssue ? ` (${last.firstIssue})` : ""}`;
 		if (last.trackingStatus !== "complete") {
-			issues += p.fg(last.trackingStatus === "failed" ? "error" : "warning", ` · ${last.trackingStatus}`);
+			issues += p.fg(
+				last.trackingStatus === "failed" ? "error" : "warning",
+				` · ${last.trackingStatus}`,
+			);
 		}
 	}
 	const root = `${last.root} · ${last.nodes} nodes`;
@@ -607,15 +781,26 @@ function segmentsFor(state: BarState, p: Paint, now: number): string[] {
 				...readinessSegments(state, p),
 			];
 		default: {
-			const name = state.phase === "delivered" && state.last ? `${p.fg("success", p.glyph("success"))} ${p.bold("ultrathink")}` : p.bold("ultrathink");
-			return [name, ...substrateSegments(state, p), ...(state.last ? lastPlanSegments(state.last, p) : [p.fg("dim", "idle")]), ...readinessSegments(state, p)];
+			const name =
+				state.phase === "delivered" && state.last
+					? `${p.fg("success", p.glyph("success"))} ${p.bold("ultrathink")}`
+					: p.bold("ultrathink");
+			return [
+				name,
+				...substrateSegments(state, p),
+				...(state.last ? lastPlanSegments(state.last, p) : [p.fg("dim", "idle")]),
+				...readinessSegments(state, p),
+			];
 		}
 	}
 }
 
 /** Drop a leading spinner token so a savings chip can share a narrow planning line with the stage. */
 function dropLeadingToken(segment: string): string {
-	const compact = segment.replace(/^(?:\x1b\[[0-9;]*m)*(?:<[A-Za-z]+>)?\S+(?:\x1b\[[0-9;]*m)*\s+/, "");
+	const compact = segment.replace(
+		/^(?:\x1b\[[0-9;]*m)*(?:<[A-Za-z]+>)?\S+(?:\x1b\[[0-9;]*m)*\s+/,
+		"",
+	);
 	return compact.length > 0 && compact !== segment ? compact : segment;
 }
 
@@ -632,29 +817,52 @@ export function renderBarLine(state: BarState, theme: unknown, width: number, no
 	const minimum = state.phase === "planning" ? 2 : 1;
 	const sizeOf = (parts: string[]) => {
 		const band = p.band(parts);
-		return parts.reduce((sum, segment) => sum + visibleWidth(segment), 0) + band.overhead(parts.length);
+		return (
+			parts.reduce((sum, segment) => sum + visibleWidth(segment), 0) + band.overhead(parts.length)
+		);
 	};
 	// Prefix, tools, graph-ready, bill and out drop before the stage or saved when they would overflow the protected span.
-	if (includeStability && segments.length >= minimum && sizeOf(segments.slice(0, minimum)) > width) {
+	if (
+		includeStability &&
+		segments.length >= minimum &&
+		sizeOf(segments.slice(0, minimum)) > width
+	) {
 		includeStability = false;
 		segments = withSavings(state, p, base, includeTurn, includeTtft, includeStability);
 	}
 	// TTFT shares the name chip unless it pushes planning's protected pair over the width. RTK, payload, idle and cost stay on before/now, never the name, so they cannot displace the stage.
-	if (state.phase === "planning" && savings?.ttftMs !== undefined && segments.length >= 2 && sizeOf(segments.slice(0, 2)) > width) {
+	if (
+		state.phase === "planning" &&
+		savings?.ttftMs !== undefined &&
+		segments.length >= 2 &&
+		sizeOf(segments.slice(0, 2)) > width
+	) {
 		includeTtft = false;
 		segments = withSavings(state, p, base, includeTurn, includeTtft, includeStability);
 	}
 	// Turn milliseconds share the saved chip unless they push planning's protected pair over the width.
-	if (state.phase === "planning" && savings?.lastTurnMs !== undefined && segments.length >= 2 && sizeOf(segments.slice(0, 2)) > width) {
+	if (
+		state.phase === "planning" &&
+		savings?.lastTurnMs !== undefined &&
+		segments.length >= 2 &&
+		sizeOf(segments.slice(0, 2)) > width
+	) {
 		includeTurn = false;
 		segments = withSavings(state, p, base, includeTurn, includeTtft, includeStability);
 	}
-	if (state.phase === "planning" && savings && segments.length >= 2 && sizeOf(segments.slice(0, 2)) > width) {
+	if (
+		state.phase === "planning" &&
+		savings &&
+		segments.length >= 2 &&
+		sizeOf(segments.slice(0, 2)) > width
+	) {
 		segments = [dropLeadingToken(segments[0] ?? ""), ...segments.slice(1)];
 	}
 	for (;;) {
 		if (sizeOf(segments) <= width || segments.length <= minimum) {
-			return sizeOf(segments) <= width ? p.band(segments).text : truncateToWidth(p.band(segments).text, width);
+			return sizeOf(segments) <= width
+				? p.band(segments).text
+				: truncateToWidth(p.band(segments).text, width);
 		}
 		segments = segments.slice(0, -1);
 	}
@@ -663,7 +871,11 @@ export function renderBarLine(state: BarState, theme: unknown, width: number, no
 function panelVisible(state: BarState, now: number): boolean {
 	if (!state.model?.nodes.length) return false;
 	if (state.phase === "planning") return true;
-	return state.phase === "delivered" && state.finishedAt !== undefined && now - state.finishedAt < LINGER_MS;
+	return (
+		state.phase === "delivered" &&
+		state.finishedAt !== undefined &&
+		now - state.finishedAt < LINGER_MS
+	);
 }
 
 export function createBarComponent(
@@ -682,8 +894,16 @@ export function createBarComponent(
 			if (panelVisible(state, at) && state.model) {
 				try {
 					const height = rows();
-					const maxRows = Math.min(24, Math.max(6, Math.floor((Number.isFinite(height) && height > 0 ? height : 40) * 0.45)));
-					panel = renderGraph(state.model, theme, width, { now: at, steps: "active", animate: true, maxRows });
+					const maxRows = Math.min(
+						24,
+						Math.max(6, Math.floor((Number.isFinite(height) && height > 0 ? height : 40) * 0.45)),
+					);
+					panel = renderGraph(state.model, theme, width, {
+						now: at,
+						steps: "active",
+						animate: true,
+						maxRows,
+					});
 				} catch {
 					panel = [];
 				}

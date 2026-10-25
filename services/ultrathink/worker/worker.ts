@@ -3,7 +3,13 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CEILING_DAY, CEILING_RUN, CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
+import {
+	CEILING_DAY,
+	CEILING_RUN,
+	CeilingError,
+	type Ledger,
+	LedgerWriteError,
+} from "../cost/ledger.ts";
 import type { RunStatus, Store } from "../store/store.ts";
 import { writeAtomic } from "./atomic.ts";
 
@@ -130,7 +136,10 @@ interface ModelReply {
 }
 
 /** Outcome of one model call after retries. A truncated reply is a definitive failure, not retried. */
-type ModelOutcome = { kind: "reply"; reply: ModelReply } | { kind: "truncated" } | { kind: "unavailable" };
+type ModelOutcome =
+	| { kind: "reply"; reply: ModelReply }
+	| { kind: "truncated" }
+	| { kind: "unavailable" };
 
 interface DecisionOption {
 	label: string;
@@ -256,7 +265,9 @@ export function createWorker(options: WorkerOptions): Worker {
 	const db = store.db;
 
 	if (!(leaseMs > 0) || !(heartbeatMs > 0) || !(maxModelAttempts >= 1)) {
-		throw new RangeError("leaseMs and heartbeatMs must be positive; maxModelAttempts must be at least 1");
+		throw new RangeError(
+			"leaseMs and heartbeatMs must be positive; maxModelAttempts must be at least 1",
+		);
 	}
 
 	db.exec(WORKER_SCHEMA);
@@ -383,7 +394,12 @@ export function createWorker(options: WorkerOptions): Worker {
 				} catch (error) {
 					if (heartbeat.error !== null) throw heartbeat.error;
 					// The adapter reports a reply cut at its own output limit with error code `truncated`.
-					if (typeof error === "object" && error !== null && "code" in error && error.code === "truncated") {
+					if (
+						typeof error === "object" &&
+						error !== null &&
+						"code" in error &&
+						error.code === "truncated"
+					) {
 						return { kind: "truncated" };
 					}
 					if (attempt >= maxModelAttempts) return { kind: "unavailable" };
@@ -427,7 +443,12 @@ export function createWorker(options: WorkerOptions): Worker {
 				maxOutputTokens = derived;
 				estimatedTokens = inputEstimate + derived;
 			}
-			reservationId = ledger.reserve({ runId: run.id, phase, attempt, estimatedTokens }).reservationId;
+			reservationId = ledger.reserve({
+				runId: run.id,
+				phase,
+				attempt,
+				estimatedTokens,
+			}).reservationId;
 		} catch (error) {
 			if (error instanceof CeilingError) {
 				if (error.reason === CEILING_RUN) {

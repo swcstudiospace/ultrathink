@@ -42,11 +42,14 @@ export interface CreateTrackingDeps {
 
 const LINEAR_URL_RE = /https:\/\/linear\.app\/\S+?\/issue\/[A-Z][A-Z0-9]*-\d+[^\s"')\]]*/;
 const IDENTIFIER_RE = /\b[A-Z][A-Z0-9]*-\d+\b/;
-const NOTION_URL_RE = /https:\/\/(?:(?:www\.)?notion\.(?:so|site)|app\.notion\.com)\/[^\s"')\]<>]+/g;
+const NOTION_URL_RE =
+	/https:\/\/(?:(?:www\.)?notion\.(?:so|site)|app\.notion\.com)\/[^\s"')\]<>]+/g;
 const NOTION_BATCH = 25;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
 }
 
 function str(value: unknown): string | undefined {
@@ -72,7 +75,9 @@ export function extractIssueRef(result: unknown, title: string): IssueRef | unde
 			record = undefined;
 		}
 	}
-	const candidates = [record, asRecord(record?.issue)].filter((entry): entry is Record<string, unknown> => !!entry);
+	const candidates = [record, asRecord(record?.issue)].filter(
+		(entry): entry is Record<string, unknown> => !!entry,
+	);
 	let id: string | undefined;
 	let identifier: string | undefined;
 	let url: string | undefined;
@@ -103,7 +108,12 @@ function withSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 	return raced;
 }
 
-async function runPool<T>(items: T[], limit: number, signal: AbortSignal, work: (item: T) => Promise<void>): Promise<void> {
+async function runPool<T>(
+	items: T[],
+	limit: number,
+	signal: AbortSignal,
+	work: (item: T) => Promise<void>,
+): Promise<void> {
 	let next = 0;
 	const worker = async () => {
 		while (next < items.length && !signal.aborted) {
@@ -123,7 +133,11 @@ function footer(graphId: string, nodeId: string, step?: number): string {
 function nodeLevels(nodeIds: string[], graph: ThoughtGraph | undefined): string[][] {
 	const inPlan = new Set(nodeIds);
 	const deps = new Map<string, string[]>();
-	for (const node of graph?.nodes ?? []) deps.set(node.id, node.dependsOn.filter((dep) => inPlan.has(dep) && dep !== node.id));
+	for (const node of graph?.nodes ?? [])
+		deps.set(
+			node.id,
+			node.dependsOn.filter((dep) => inPlan.has(dep) && dep !== node.id),
+		);
 	const level = new Map<string, number>();
 	const visiting = new Set<string>();
 	const depth = (id: string): number => {
@@ -177,8 +191,11 @@ function collectSchemaNames(result: unknown): Set<string> {
 	// A text payload carries the schema as JSON inside markup, e.g. `{ text: "…<data-source-state>{…}</data-source-state>…" }`.
 	// Scan each string leaf itself: stringifying the whole result would escape the quotes the patterns rely on.
 	for (const text of [...texts]) {
-		for (const match of text.matchAll(/"([^"\\\n]{1,80})"\s*:\s*\{[^{}]*?"type"\s*:/g)) names.add(match[1] as string);
-		const blocks = [...text.matchAll(/<([\w-]+)>\s*(\{[\s\S]*?\})\s*<\/\1>/g)].map((match) => match[2] as string);
+		for (const match of text.matchAll(/"([^"\\\n]{1,80})"\s*:\s*\{[^{}]*?"type"\s*:/g))
+			names.add(match[1] as string);
+		const blocks = [...text.matchAll(/<([\w-]+)>\s*(\{[\s\S]*?\})\s*<\/\1>/g)].map(
+			(match) => match[2] as string,
+		);
 		for (const block of [...blocks, ...(text.match(/\{[\s\S]*\}/g) ?? [])]) {
 			try {
 				walk(JSON.parse(block), 0);
@@ -193,7 +210,11 @@ function collectSchemaNames(result: unknown): Set<string> {
 
 function notionUrls(result: unknown): string[] {
 	const record = asRecord(result);
-	const structured = Array.isArray(result) ? result : Array.isArray(record?.pages) ? (record.pages as unknown[]) : undefined;
+	const structured = Array.isArray(result)
+		? result
+		: Array.isArray(record?.pages)
+			? (record.pages as unknown[])
+			: undefined;
 	if (structured && structured.length > 0) {
 		const urls = structured.map((entry) => str(asRecord(entry)?.url));
 		if (urls.every((url) => url !== undefined)) return urls as string[];
@@ -222,7 +243,9 @@ function listEntries(result: unknown): Record<string, unknown>[] {
 	const record = asRecord(value);
 	const list = Array.isArray(value)
 		? value
-		: (["issues", "nodes", "results", "rows", "pages", "data"].map((key) => record?.[key]).find(Array.isArray) as unknown[] | undefined);
+		: (["issues", "nodes", "results", "rows", "pages", "data"]
+				.map((key) => record?.[key])
+				.find(Array.isArray) as unknown[] | undefined);
 	return (list ?? []).map(asRecord).filter((entry): entry is Record<string, unknown> => !!entry);
 }
 
@@ -241,9 +264,15 @@ async function adoptLinear(
 	signal: AbortSignal,
 	emitIssue: IssueEmitter,
 ): Promise<void> {
-	const result = await withSignal(linear.call("list_issues", { query: `ultrathink graph ${plan.graphId}`, limit: 250 }, signal), signal);
+	const result = await withSignal(
+		linear.call("list_issues", { query: `ultrathink graph ${plan.graphId}`, limit: 250 }, signal),
+		signal,
+	);
 	const graphPattern = plan.graphId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const re = new RegExp(`ultrathink graph ${graphPattern} · node (\\S+?)(?: · step (\\d+))?\\s*$`, "m");
+	const re = new RegExp(
+		`ultrathink graph ${graphPattern} · node (\\S+?)(?: · step (\\d+))?\\s*$`,
+		"m",
+	);
 	for (const issue of listEntries(result)) {
 		const match = str(issue.description)?.match(re);
 		if (!match) continue;
@@ -266,7 +295,13 @@ async function adoptLinear(
 }
 
 /** Re-run only: adopts Notion rows already tagged with this graph's Graph ID. Non-fatal. */
-async function adoptNotion(plan: TrackPlan, refs: TrackingRefs, notion: ToolCaller, dataSource: string, signal: AbortSignal): Promise<void> {
+async function adoptNotion(
+	plan: TrackPlan,
+	refs: TrackingRefs,
+	notion: ToolCaller,
+	dataSource: string,
+	signal: AbortSignal,
+): Promise<void> {
 	const collection = `collection://${dataSource}`;
 	const result = await withSignal(
 		notion.call(
@@ -311,8 +346,15 @@ export async function createTracking(
 		graphId: plan.graphId,
 		status: "failed",
 		...(deps.linearTeam ? { linearTeam: deps.linearTeam } : {}),
-		linear: { nodes: trackingMap(existing?.linear.nodes), steps: trackingMap(existing?.linear.steps) },
-		notion: { taskUrl: existing?.notion.taskUrl, nodes: trackingMap(existing?.notion.nodes), steps: trackingMap(existing?.notion.steps) },
+		linear: {
+			nodes: trackingMap(existing?.linear.nodes),
+			steps: trackingMap(existing?.linear.steps),
+		},
+		notion: {
+			taskUrl: existing?.notion.taskUrl,
+			nodes: trackingMap(existing?.notion.nodes),
+			steps: trackingMap(existing?.notion.steps),
+		},
 		errors: [],
 		updatedAt: now(),
 	};
@@ -372,8 +414,12 @@ export async function createTracking(
 	};
 	try {
 		if (existing) {
-			if (deps.linear && deps.linearTeam) await adoptLinear(plan, refs, deps.linear, signal, emitIssue).catch(() => undefined);
-			if (deps.notion && deps.notionDataSource) await adoptNotion(plan, refs, deps.notion, deps.notionDataSource, signal).catch(() => undefined);
+			if (deps.linear && deps.linearTeam)
+				await adoptLinear(plan, refs, deps.linear, signal, emitIssue).catch(() => undefined);
+			if (deps.notion && deps.notionDataSource)
+				await adoptNotion(plan, refs, deps.notion, deps.notionDataSource, signal).catch(
+					() => undefined,
+				);
 			emit();
 		}
 		if (deps.linearTeam) await createLinear(plan, graph, refs, deps, signal, fail, emit, emitIssue);
@@ -390,7 +436,12 @@ export async function createTracking(
 }
 
 /** Unconfigured providers count as done: their rows are never created, so they are not missing. */
-function trackingStatus(plan: TrackPlan, refs: TrackingRefs, linearConfigured: boolean, notionConfigured: boolean): TrackingRefs["status"] {
+function trackingStatus(
+	plan: TrackPlan,
+	refs: TrackingRefs,
+	linearConfigured: boolean,
+	notionConfigured: boolean,
+): TrackingRefs["status"] {
 	const linearDone =
 		!linearConfigured ||
 		(plan.linearIssues.every((issue) => refs.linear.nodes[issue.nodeId]) &&
@@ -421,7 +472,9 @@ async function createLinear(
 	emitIssue: IssueEmitter,
 ): Promise<void> {
 	const pendingNodes = plan.linearIssues.filter((issue) => !refs.linear.nodes[issue.nodeId]);
-	const pendingSteps = plan.linearSubIssues.filter((sub) => !refs.linear.steps[stepKey(sub.nodeId, sub.step)]);
+	const pendingSteps = plan.linearSubIssues.filter(
+		(sub) => !refs.linear.steps[stepKey(sub.nodeId, sub.step)],
+	);
 	if (pendingNodes.length === 0 && pendingSteps.length === 0) return;
 	const linear = deps.linear;
 	if (!linear) {
@@ -429,8 +482,17 @@ async function createLinear(
 		return;
 	}
 	const byNode = new Map(plan.linearIssues.map((issue) => [issue.nodeId, issue]));
-	const dependsOn = new Map((graph?.nodes ?? []).map((node) => [node.id, node.dependsOn.filter((dep) => dep !== node.id && byNode.has(dep))]));
-	const save = async (label: string, title: string, args: Record<string, unknown>): Promise<IssueRef | undefined> => {
+	const dependsOn = new Map(
+		(graph?.nodes ?? []).map((node) => [
+			node.id,
+			node.dependsOn.filter((dep) => dep !== node.id && byNode.has(dep)),
+		]),
+	);
+	const save = async (
+		label: string,
+		title: string,
+		args: Record<string, unknown>,
+	): Promise<IssueRef | undefined> => {
 		try {
 			const result = await withSignal(linear.call("save_issue", args, signal), signal);
 			const ref = extractIssueRef(result, title);
@@ -442,13 +504,18 @@ async function createLinear(
 		}
 	};
 
-	for (const level of nodeLevels(plan.linearIssues.map((issue) => issue.nodeId), graph)) {
+	for (const level of nodeLevels(
+		plan.linearIssues.map((issue) => issue.nodeId),
+		graph,
+	)) {
 		if (signal.aborted) return;
 		const todo = level.filter((id) => !refs.linear.nodes[id]);
 		await runPool(todo, deps.concurrency, signal, async (nodeId) => {
 			const issue = byNode.get(nodeId);
 			if (!issue) return;
-			const title = issue.title.startsWith(`[${nodeId}]`) ? issue.title : `[${nodeId}] ${issue.title}`;
+			const title = issue.title.startsWith(`[${nodeId}]`)
+				? issue.title
+				: `[${nodeId}] ${issue.title}`;
 			const nodeDeps = dependsOn.get(nodeId) ?? [];
 			if (nodeDeps.some((dep) => !refs.linear.nodes[dep])) {
 				fail(`linear ${nodeId}: dependency missing`);
@@ -503,7 +570,9 @@ async function createNotion(
 	emitIssue: IssueEmitter,
 ): Promise<void> {
 	const nodeRows = plan.issues.filter((row) => !refs.notion.nodes[row.nodeId]);
-	const stepRows = plan.subIssues.filter((row) => !refs.notion.steps[stepKey(row.nodeId, row.step)]);
+	const stepRows = plan.subIssues.filter(
+		(row) => !refs.notion.steps[stepKey(row.nodeId, row.step)],
+	);
 	if (refs.notion.taskUrl && nodeRows.length === 0 && stepRows.length === 0) return;
 	const notion = deps.notion;
 	if (!notion) {
@@ -511,11 +580,14 @@ async function createNotion(
 		return;
 	}
 	if (signal.aborted) return;
-	const call = (name: string, args: Record<string, unknown>) => withSignal(notion.call(name, args, signal), signal);
+	const call = (name: string, args: Record<string, unknown>) =>
+		withSignal(notion.call(name, args, signal), signal);
 
 	let names: Set<string>;
 	try {
-		names = collectSchemaNames(await call("notion-fetch", { id: `collection://${deps.notionDataSource}` }));
+		names = collectSchemaNames(
+			await call("notion-fetch", { id: `collection://${deps.notionDataSource}` }),
+		);
 	} catch (error) {
 		fail(`notion schema: ${shortError(error)}`);
 		return;
@@ -532,10 +604,17 @@ async function createNotion(
 		}
 		return out;
 	};
-	const create = async (label: string, pages: Array<{ properties: Record<string, unknown>; content?: string }>): Promise<string[] | undefined> => {
+	const create = async (
+		label: string,
+		pages: Array<{ properties: Record<string, unknown>; content?: string }>,
+	): Promise<string[] | undefined> => {
 		try {
 			const urls = notionUrls(
-				await call("notion-create-pages", { parent: { data_source_id: deps.notionDataSource }, pages, allow_async: false }),
+				await call("notion-create-pages", {
+					parent: { data_source_id: deps.notionDataSource },
+					pages,
+					allow_async: false,
+				}),
 			);
 			if (urls.length !== pages.length) {
 				fail(`notion ${label}: expected ${pages.length} page urls, got ${urls.length}`);
@@ -607,7 +686,8 @@ async function createNotion(
 		return false;
 	});
 	const batches: (typeof ready)[] = [];
-	for (let index = 0; index < ready.length; index += NOTION_BATCH) batches.push(ready.slice(index, index + NOTION_BATCH));
+	for (let index = 0; index < ready.length; index += NOTION_BATCH)
+		batches.push(ready.slice(index, index + NOTION_BATCH));
 	await runPool(batches, deps.concurrency, signal, async (batch) => {
 		const pages = batch.map((row) => {
 			const linear = refs.linear.steps[stepKey(row.nodeId, row.step)];

@@ -55,7 +55,10 @@ interface Counts {
 	bad: number;
 }
 
-export function createSloTracker(definition: SloDefinition, options: { maxSamples: number }): SloTracker {
+export function createSloTracker(
+	definition: SloDefinition,
+	options: { maxSamples: number },
+): SloTracker {
 	const { objective } = definition;
 	const definedWindowMs = definition.windowMs;
 	const capacity = options.maxSamples;
@@ -63,7 +66,8 @@ export function createSloTracker(definition: SloDefinition, options: { maxSample
 		throw new RangeError("slo objective must be a number in (0, 1)");
 	}
 	if (!(definedWindowMs > 0)) throw new RangeError("slo windowMs must be greater than 0");
-	if (!(Number.isInteger(capacity) && capacity >= 2)) throw new RangeError("slo maxSamples must be an integer of at least 2");
+	if (!(Number.isInteger(capacity) && capacity >= 2))
+		throw new RangeError("slo maxSamples must be an integer of at least 2");
 
 	const ring = new Array<Entry | undefined>(capacity);
 	let head = 0;
@@ -156,8 +160,9 @@ export function createSloTracker(definition: SloDefinition, options: { maxSample
 			const requested = countsOver(now, windowMs);
 			const defined = countsOver(now, definedWindowMs);
 			const errorBudgetRemaining =
-				defined.total > 0 ? 1 - (defined.bad / defined.total) / (1 - objective) : undefined;
-			const burnRate = requested.total > 0 ? (requested.bad / requested.total) / (1 - objective) : undefined;
+				defined.total > 0 ? 1 - defined.bad / defined.total / (1 - objective) : undefined;
+			const burnRate =
+				requested.total > 0 ? requested.bad / requested.total / (1 - objective) : undefined;
 
 			return {
 				observedMs: requested.observedMs,

@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnObserveDetached, writeInbox } from "./spawn.ts";
@@ -64,7 +75,12 @@ describe("writeInbox", () => {
 describe("spawnObserveDetached", () => {
 	test("starts `bin/ultrathink teach observe --file <inbox file>` with host and state dir in the environment", () => {
 		const calls: { cmd: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
-		const env = { PATH: "/usr/bin", KEEP: "1", ULTRATHINK_HOST: "stale", ULTRATHINK_STATE_DIR: "/stale" };
+		const env = {
+			PATH: "/usr/bin",
+			KEEP: "1",
+			ULTRATHINK_HOST: "stale",
+			ULTRATHINK_STATE_DIR: "/stale",
+		};
 		const result = spawnObserveDetached(digest(), {
 			repoRoot,
 			env,
@@ -82,7 +98,12 @@ describe("spawnObserveDetached", () => {
 		const file = call?.args[3] ?? "";
 		expect(file.startsWith(`${inbox()}/`)).toBe(true);
 		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(digest());
-		expect(call?.env).toMatchObject({ PATH: "/usr/bin", KEEP: "1", ULTRATHINK_HOST: "omp", ULTRATHINK_STATE_DIR: stateDir });
+		expect(call?.env).toMatchObject({
+			PATH: "/usr/bin",
+			KEEP: "1",
+			ULTRATHINK_HOST: "omp",
+			ULTRATHINK_STATE_DIR: stateDir,
+		});
 		expect(call?.cwd).toBe(sessionCwd);
 		expect(env.ULTRATHINK_HOST).toBe("stale");
 	});
@@ -118,7 +139,13 @@ describe("spawnObserveDetached", () => {
 
 	test("an unwritable state directory reports spawned:false", () => {
 		writeFileSync(join(root, "blocker"), "");
-		const result = spawnObserveDetached(digest(), { repoRoot, env: {}, stateDir: join(root, "blocker"), host: "omp", spawn: () => {} });
+		const result = spawnObserveDetached(digest(), {
+			repoRoot,
+			env: {},
+			stateDir: join(root, "blocker"),
+			host: "omp",
+			spawn: () => {},
+		});
 		expect(result.spawned).toBe(false);
 		expect(result.reason).toBeTruthy();
 	});
@@ -142,9 +169,17 @@ describe("spawnObserveDetached", () => {
 		const marker = join(root, "marker.txt");
 		mkdirSync(join(repoRoot, "bin"));
 		const launcher = join(repoRoot, "bin", "ultrathink");
-		writeFileSync(launcher, `#!/bin/sh\nprintf '%s|%s|%s|%s' "$1 $2 $3" "$ULTRATHINK_HOST" "$ULTRATHINK_STATE_DIR" "$(pwd -P)" > "${marker}.tmp" && mv "${marker}.tmp" "${marker}"\n`);
+		writeFileSync(
+			launcher,
+			`#!/bin/sh\nprintf '%s|%s|%s|%s' "$1 $2 $3" "$ULTRATHINK_HOST" "$ULTRATHINK_STATE_DIR" "$(pwd -P)" > "${marker}.tmp" && mv "${marker}.tmp" "${marker}"\n`,
+		);
 		chmodSync(launcher, 0o755);
-		const result = spawnObserveDetached(digest(), { repoRoot, env: { ...process.env }, stateDir, host: "omp" });
+		const result = spawnObserveDetached(digest(), {
+			repoRoot,
+			env: { ...process.env },
+			stateDir,
+			host: "omp",
+		});
 		expect(result).toEqual({ spawned: true });
 		// The launcher runs detached, so there is no handle to await: poll for its (atomically renamed) marker file.
 		for (let i = 0; i < 250 && !existsSync(marker); i++) await Bun.sleep(20);

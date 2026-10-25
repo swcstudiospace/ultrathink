@@ -2,7 +2,13 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { ROOT_TAGS, type UpliftState } from "../types.ts";
-import { decideUplift, isAlreadyUplifted, isCommandPrompt, isTrivial, stripPrefix } from "./detect.ts";
+import {
+	decideUplift,
+	isAlreadyUplifted,
+	isCommandPrompt,
+	isTrivial,
+	stripPrefix,
+} from "./detect.ts";
 
 function state(overrides?: Partial<UpliftState>): UpliftState {
 	return { enabled: true, skipOnce: false, skipTrivial: true, ...overrides };
@@ -10,12 +16,20 @@ function state(overrides?: Partial<UpliftState>): UpliftState {
 
 describe("stripPrefix", () => {
 	test("strips raw: case-insensitively", () => {
-		expect(stripPrefix("raw: do this exactly")).toEqual({ text: "do this exactly", force: false, raw: true });
+		expect(stripPrefix("raw: do this exactly")).toEqual({
+			text: "do this exactly",
+			force: false,
+			raw: true,
+		});
 		expect(stripPrefix("RAW:hello")).toEqual({ text: "hello", force: false, raw: true });
 	});
 
 	test("strips uplift: case-insensitively and sets force", () => {
-		expect(stripPrefix("uplift: build a form")).toEqual({ text: "build a form", force: true, raw: false });
+		expect(stripPrefix("uplift: build a form")).toEqual({
+			text: "build a form",
+			force: true,
+			raw: false,
+		});
 		expect(stripPrefix("Uplift: ok")).toEqual({ text: "ok", force: true, raw: false });
 	});
 
@@ -103,7 +117,9 @@ describe("decideUplift", () => {
 	});
 
 	test("uplift: forces even when disabled", () => {
-		expect(decideUplift({ text: "uplift: build a form", source: "user" }, state({ enabled: false }))).toEqual({
+		expect(
+			decideUplift({ text: "uplift: build a form", source: "user" }, state({ enabled: false })),
+		).toEqual({
 			action: "uplift",
 			text: "build a form",
 		});
@@ -118,13 +134,19 @@ describe("decideUplift", () => {
 
 	test("skips trivial acknowledgements", () => {
 		expect(decideUplift({ text: "lgtm", source: "user" }, state())).toEqual({ action: "skip" });
-		expect(decideUplift({ text: "go ahead!", source: "user" }, state())).toEqual({ action: "skip" });
+		expect(decideUplift({ text: "go ahead!", source: "user" }, state())).toEqual({
+			action: "skip",
+		});
 	});
 
 	test("skips slash commands", () => {
 		expect(decideUplift({ text: "/help", source: "user" }, state())).toEqual({ action: "skip" });
-		expect(decideUplift({ text: "/uplift on", source: "user" }, state())).toEqual({ action: "skip" });
-		expect(decideUplift({ text: "/all-in-one:issues list", source: "user" }, state())).toEqual({ action: "skip" });
+		expect(decideUplift({ text: "/uplift on", source: "user" }, state())).toEqual({
+			action: "skip",
+		});
+		expect(decideUplift({ text: "/all-in-one:issues list", source: "user" }, state())).toEqual({
+			action: "skip",
+		});
 		expect(isCommandPrompt("/all-in-one:grok status")).toBe(true);
 		expect(
 			decideUplift(
@@ -144,7 +166,9 @@ describe("decideUplift", () => {
 				state(),
 			),
 		).toEqual({ action: "skip" });
-		expect(decideUplift({ text: "<local-command>compact</local-command>", source: "user" }, state())).toEqual({
+		expect(
+			decideUplift({ text: "<local-command>compact</local-command>", source: "user" }, state()),
+		).toEqual({
 			action: "skip",
 		});
 		expect(isCommandPrompt("please run /help later")).toBe(false);
@@ -156,7 +180,9 @@ describe("decideUplift", () => {
 
 	test("skips already-uplifted roots", () => {
 		for (const tag of [...ROOT_TAGS, "uplifted", "ultrathink"]) {
-			expect(decideUplift({ text: `<${tag}>x</${tag}>`, source: "user" }, state())).toEqual({ action: "skip" });
+			expect(decideUplift({ text: `<${tag}>x</${tag}>`, source: "user" }, state())).toEqual({
+				action: "skip",
+			});
 			expect(decideUplift({ text: tag, source: "user" }, state())).toEqual({ action: "skip" });
 		}
 	});
@@ -184,7 +210,9 @@ describe("decideUplift", () => {
 
 	test("skipOnce skips then clears", () => {
 		const current = state({ skipOnce: true });
-		expect(decideUplift({ text: "build a form", source: "user" }, current)).toEqual({ action: "skip" });
+		expect(decideUplift({ text: "build a form", source: "user" }, current)).toEqual({
+			action: "skip",
+		});
 		expect(current.skipOnce).toBe(false);
 		expect(decideUplift({ text: "build a form", source: "user" }, current)).toEqual({
 			action: "uplift",
@@ -194,7 +222,9 @@ describe("decideUplift", () => {
 
 	test("disabled skips unless force prefix", () => {
 		const current = state({ enabled: false });
-		expect(decideUplift({ text: "build a form", source: "user" }, current)).toEqual({ action: "skip" });
+		expect(decideUplift({ text: "build a form", source: "user" }, current)).toEqual({
+			action: "skip",
+		});
 		expect(decideUplift({ text: "uplift: build a form", source: "user" }, current)).toEqual({
 			action: "uplift",
 			text: "build a form",
@@ -202,19 +232,27 @@ describe("decideUplift", () => {
 	});
 
 	test("skips extension source", () => {
-		expect(decideUplift({ text: "build a form", source: "extension" }, state())).toEqual({ action: "skip" });
-		expect(decideUplift({ text: "uplift: build a form", source: "extension" }, state())).toEqual({ action: "skip" });
+		expect(decideUplift({ text: "build a form", source: "extension" }, state())).toEqual({
+			action: "skip",
+		});
+		expect(decideUplift({ text: "uplift: build a form", source: "extension" }, state())).toEqual({
+			action: "skip",
+		});
 	});
 
 	test("skips steer streaming behavior", () => {
-		expect(decideUplift({ text: "build a form", source: "user", streamingBehavior: "steer" }, state())).toEqual({
+		expect(
+			decideUplift({ text: "build a form", source: "user", streamingBehavior: "steer" }, state()),
+		).toEqual({
 			action: "skip",
 		});
 	});
 
 	test("skips empty after strip", () => {
 		expect(decideUplift({ text: "   ", source: "user" }, state())).toEqual({ action: "skip" });
-		expect(decideUplift({ text: "uplift:  ", source: "user" }, state())).toEqual({ action: "skip" });
+		expect(decideUplift({ text: "uplift:  ", source: "user" }, state())).toEqual({
+			action: "skip",
+		});
 		expect(decideUplift({ text: "raw:", source: "user" }, state())).toEqual({ action: "skip" });
 		expect(decideUplift({ text: "raw:   ", source: "user" }, state())).toEqual({ action: "skip" });
 	});
@@ -236,7 +274,10 @@ describe("decideUplift", () => {
 	test("uplifts ultrathink prose that is not a tag", () => {
 		expect(isAlreadyUplifted("ultrathink implement the clients list")).toBe(false);
 		expect(
-			decideUplift({ text: "ultrathink implement the clients list", source: "interactive" }, state()),
+			decideUplift(
+				{ text: "ultrathink implement the clients list", source: "interactive" },
+				state(),
+			),
 		).toEqual({
 			action: "uplift",
 			text: "ultrathink implement the clients list",
@@ -244,13 +285,17 @@ describe("decideUplift", () => {
 	});
 
 	test("skips when session is not idle", () => {
-		expect(decideUplift({ text: "also fix the button", source: "interactive", idle: false }, state())).toEqual({
+		expect(
+			decideUplift({ text: "also fix the button", source: "interactive", idle: false }, state()),
+		).toEqual({
 			action: "skip",
 		});
 	});
 
 	test("uplifts when idle is true or undefined", () => {
-		expect(decideUplift({ text: "also fix the button", source: "interactive", idle: true }, state())).toEqual({
+		expect(
+			decideUplift({ text: "also fix the button", source: "interactive", idle: true }, state()),
+		).toEqual({
 			action: "uplift",
 			text: "also fix the button",
 		});

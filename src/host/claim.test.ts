@@ -43,19 +43,22 @@ describe("claimTurn", () => {
 		expect(claimTurn(join(blocker, "state"), "s1:p1")).toBe(true);
 	});
 
-	test.skipIf(process.platform === "win32")("a fresh state dir, its claims dir and claim files are 0700/0700/0600 regardless of umask", () => {
-		const previous = process.umask(0o022);
-		try {
-			const stateDir = join(tempDir(), "state");
-			expect(claimTurn(stateDir, "s1:p1")).toBe(true);
-			const claims = join(stateDir, "claims");
-			expect(statSync(stateDir).mode & 0o777).toBe(0o700);
-			expect(statSync(claims).mode & 0o777).toBe(0o700);
-			const [name] = readdirSync(claims);
-			expect(name).toBeDefined();
-			expect(statSync(join(claims, name as string)).mode & 0o777).toBe(0o600);
-		} finally {
-			process.umask(previous);
-		}
-	});
+	test.skipIf(process.platform === "win32")(
+		"a fresh state dir, its claims dir and claim files are 0700/0700/0600 regardless of umask",
+		() => {
+			const previous = process.umask(0o022);
+			try {
+				const stateDir = join(tempDir(), "state");
+				expect(claimTurn(stateDir, "s1:p1")).toBe(true);
+				const claims = join(stateDir, "claims");
+				expect(statSync(stateDir).mode & 0o777).toBe(0o700);
+				expect(statSync(claims).mode & 0o777).toBe(0o700);
+				const [name] = readdirSync(claims);
+				expect(name).toBeDefined();
+				expect(statSync(join(claims, name as string)).mode & 0o777).toBe(0o600);
+			} finally {
+				process.umask(previous);
+			}
+		},
+	);
 });

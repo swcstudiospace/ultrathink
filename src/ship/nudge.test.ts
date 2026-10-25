@@ -15,13 +15,26 @@ const record: SessionRecord = {
 	skill: { name: "gsd-execute-phase", source: "slash" },
 };
 const precheck = { ok: true, reason: "ok", branch: "feat/x", base: "master", ahead: 3 };
-const base = { record, config: { ...DEFAULT_SHIP_CONFIG, enabled: true }, precheck, statePath: "/s/s1.json", env: {} };
+const base = {
+	record,
+	config: { ...DEFAULT_SHIP_CONFIG, enabled: true },
+	precheck,
+	statePath: "/s/s1.json",
+	env: {},
+};
 
 describe("shipNudge", () => {
 	test("blocks with everything the agent needs to run the skill", () => {
 		const nudge = shipNudge(base);
 		expect(nudge?.decision).toBe("block");
-		for (const part of ["gsd-execute-phase", "feat/x", "master", "stateFile=/s/s1.json", `CLI: ${shellArg(SHIP_CLI)}`, "ultrathink-ship"]) {
+		for (const part of [
+			"gsd-execute-phase",
+			"feat/x",
+			"master",
+			"stateFile=/s/s1.json",
+			`CLI: ${shellArg(SHIP_CLI)}`,
+			"ultrathink-ship",
+		]) {
 			expect(nudge?.reason).toContain(part);
 		}
 		expect(SHIP_CLI.endsWith("/bin/ultrathink-ship")).toBe(true);
@@ -41,9 +54,21 @@ describe("shipNudge", () => {
 
 	test("stays silent when already nudged, merged, blocked, re-entered, off-skill, disabled (the default) or precheck fails", () => {
 		const cases = [
-			{ ...base, record: { ...record, ship: { phase: "pr-open" as const, rounds: [], nudgedAt: 5, updatedAt: 5 } } },
-			{ ...base, record: { ...record, ship: { phase: "merged" as const, rounds: [], updatedAt: 5 } } },
-			{ ...base, record: { ...record, ship: { phase: "blocked" as const, rounds: [], updatedAt: 5 } } },
+			{
+				...base,
+				record: {
+					...record,
+					ship: { phase: "pr-open" as const, rounds: [], nudgedAt: 5, updatedAt: 5 },
+				},
+			},
+			{
+				...base,
+				record: { ...record, ship: { phase: "merged" as const, rounds: [], updatedAt: 5 } },
+			},
+			{
+				...base,
+				record: { ...record, ship: { phase: "blocked" as const, rounds: [], updatedAt: 5 } },
+			},
 			{ ...base, stopHookActive: true },
 			{ ...base, record: { ...record, skill: { name: "docx", source: "slash" as const } } },
 			{ ...base, record: { ...record, skill: undefined } },
@@ -56,7 +81,10 @@ describe("shipNudge", () => {
 	});
 
 	test("an unfinished earlier ship phase without a nudge still fires", () => {
-		const input = { ...base, record: { ...record, ship: { phase: "needs-fixes" as const, rounds: [], updatedAt: 5 } } };
+		const input = {
+			...base,
+			record: { ...record, ship: { phase: "needs-fixes" as const, rounds: [], updatedAt: 5 } },
+		};
 		expect(shipNudge(input)?.decision).toBe("block");
 	});
 });

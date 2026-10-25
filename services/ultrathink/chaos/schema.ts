@@ -20,8 +20,23 @@ export type FailureMode = (typeof FAILURE_MODES)[number];
 
 export type Hypothesis =
 	| { id: string; name: string; check: "status"; path: string; equals: number }
-	| { id: string; name: string; check: "body"; path: string; field: string; equals: string | number | boolean }
-	| { id: string; name: string; check: "metric"; metric: string; labels?: Record<string, string>; op: "gte" | "lte" | "eq"; value: number };
+	| {
+			id: string;
+			name: string;
+			check: "body";
+			path: string;
+			field: string;
+			equals: string | number | boolean;
+	  }
+	| {
+			id: string;
+			name: string;
+			check: "metric";
+			metric: string;
+			labels?: Record<string, string>;
+			op: "gte" | "lte" | "eq";
+			value: number;
+	  };
 
 export interface ExperimentTemplate {
 	id: string;
@@ -31,8 +46,19 @@ export interface ExperimentTemplate {
 	plan?: FaultPlan;
 	operatorStep?: string;
 	notes?: string;
-	config?: { breakerFailures?: number; breakerOpenMs?: number; maxInflight?: number; timeoutMs?: number };
-	load: { method: "GET" | "POST"; path: string; body?: unknown; requests: number; concurrency: number };
+	config?: {
+		breakerFailures?: number;
+		breakerOpenMs?: number;
+		maxInflight?: number;
+		timeoutMs?: number;
+	};
+	load: {
+		method: "GET" | "POST";
+		path: string;
+		body?: unknown;
+		requests: number;
+		concurrency: number;
+	};
 	settle?: { metric: string; labels?: Record<string, string>; atLeast: number };
 	hypotheses: Hypothesis[];
 	rollbackOnFail: boolean;
@@ -94,7 +120,13 @@ function rejectUnknown(fields: Fields, path: string, allowed: readonly string[])
 	}
 }
 
-function asString(value: unknown, path: string, min: number, max: number, pattern?: RegExp): string {
+function asString(
+	value: unknown,
+	path: string,
+	min: number,
+	max: number,
+	pattern?: RegExp,
+): string {
 	if (typeof value !== "string") {
 		throw new TypeError(`${path} must be a string`);
 	}
@@ -210,7 +242,9 @@ function parseHypothesis(value: unknown, path: string): Hypothesis {
 				op: asEnum(fields.op, `${path}.op`, OPS),
 				value: asFiniteNumber(fields.value, `${path}.value`),
 			};
-			return fields.labels === undefined ? hypothesis : { ...hypothesis, labels: asLabels(fields.labels, `${path}.labels`) };
+			return fields.labels === undefined
+				? hypothesis
+				: { ...hypothesis, labels: asLabels(fields.labels, `${path}.labels`) };
 		}
 	}
 }
@@ -254,7 +288,9 @@ function parseSettle(value: unknown): NonNullable<ExperimentTemplate["settle"]> 
 		metric: asString(fields.metric, "settle.metric", 1, 200, METRIC_PATTERN),
 		atLeast: asInteger(fields.atLeast, "settle.atLeast", 0, Number.MAX_SAFE_INTEGER),
 	};
-	return fields.labels === undefined ? settle : { ...settle, labels: asLabels(fields.labels, "settle.labels") };
+	return fields.labels === undefined
+		? settle
+		: { ...settle, labels: asLabels(fields.labels, "settle.labels") };
 }
 
 function parseConfig(value: unknown): NonNullable<ExperimentTemplate["config"]> {
@@ -299,7 +335,8 @@ function buildTemplate(json: unknown): ExperimentTemplate {
 	const load = parseLoad(fields.load);
 	const hypotheses = parseHypotheses(fields.hypotheses);
 	const rollbackOnFail = asBoolean(fields.rollbackOnFail, "rollbackOnFail");
-	const notes = fields.notes === undefined ? undefined : asString(fields.notes, "notes", 1, MAX_TEXT);
+	const notes =
+		fields.notes === undefined ? undefined : asString(fields.notes, "notes", 1, MAX_TEXT);
 	const settle = fields.settle === undefined ? undefined : parseSettle(fields.settle);
 	const shared = {
 		id,

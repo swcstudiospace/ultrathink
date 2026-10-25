@@ -186,7 +186,7 @@ describe("Encoding", () => {
 		});
 
 		test("handles both quotes", () => {
-			expect(escapeXPath(`"test'`)).toBe('concat(\'"\', \'test\', "\'")');
+			expect(escapeXPath(`"test'`)).toBe("concat('\"', 'test', \"'\")");
 		});
 	});
 
@@ -244,7 +244,15 @@ describe("Encoding", () => {
 		});
 
 		test("output never contains angle brackets", () => {
-			const inputs = ["<<<>>>", "<<", ">>", "<a<b>c", "<<script>script>", "x<y>z>w<", "<\u0000<b>>"];
+			const inputs = [
+				"<<<>>>",
+				"<<",
+				">>",
+				"<a<b>c",
+				"<<script>script>",
+				"x<y>z>w<",
+				"<\u0000<b>>",
+			];
 			for (const input of inputs) {
 				const output = stripHtmlTags(input);
 				expect(output).not.toContain("<");

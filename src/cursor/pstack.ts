@@ -22,7 +22,9 @@ export type PstackStage = "discuss" | "plan" | "execute" | "review" | "orchestra
 type StageKey = Exclude<PstackStage, "orchestrate">;
 
 /** A resolved pstack cache, or the failure to resolve one. */
-export type PstackResolution = { root: string; version: string; skillsDir: string } | { reason: string };
+export type PstackResolution =
+	| { root: string; version: string; skillsDir: string }
+	| { reason: string };
 
 /** Anything {@link skillPath} and {@link buildBlock} accept: a resolution, a failure, or a stand-in context. */
 export type PstackInput = { skillsDir?: string | undefined; reason?: string | undefined };
@@ -86,7 +88,10 @@ const cacheComplete = (dir: string, fs: PstackFs): boolean => {
 	}
 };
 
-const semver = (version: string): number[] => String(version).split(".").map((part) => Number.parseInt(part, 10) || 0);
+const semver = (version: string): number[] =>
+	String(version)
+		.split(".")
+		.map((part) => Number.parseInt(part, 10) || 0);
 
 /**
  * Find the newest completed pstack plugin under
@@ -108,7 +113,10 @@ export function resolvePstack(cursorDir: string, fs: PstackFs = defaultFs): Psta
 			if (!cacheComplete(dir, fs)) continue;
 			let manifest: { name?: unknown; version?: unknown } | null;
 			try {
-				manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { name?: unknown; version?: unknown } | null;
+				manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+					name?: unknown;
+					version?: unknown;
+				} | null;
 			} catch {
 				continue;
 			}
@@ -134,7 +142,9 @@ export function resolvePstack(cursorDir: string, fs: PstackFs = defaultFs): Psta
 		const winner = candidates[0]!;
 		return { root: winner.dir, version: winner.version, skillsDir: join(winner.dir, "skills") };
 	} catch (error) {
-		return { reason: `resolution failed: ${error instanceof Error ? error.message : String(error)}` };
+		return {
+			reason: `resolution failed: ${error instanceof Error ? error.message : String(error)}`,
+		};
 	}
 }
 
@@ -142,7 +152,10 @@ export function resolvePstack(cursorDir: string, fs: PstackFs = defaultFs): Psta
  * The SKILL.md path for a skill inside a resolved cache, or why it is unusable.
  * Only an existing regular file resolves; anything else is a `reason`, never a throw.
  */
-export function skillPath(resolved: PstackInput | undefined, name: string): { path: string } | { reason: string } {
+export function skillPath(
+	resolved: PstackInput | undefined,
+	name: string,
+): { path: string } | { reason: string } {
 	if (!resolved?.skillsDir) return { reason: resolved?.reason ?? "pstack not resolved" };
 	const path = join(resolved.skillsDir, name, "SKILL.md");
 	try {
@@ -262,9 +275,13 @@ export function detectStage(prompt: unknown): StageDetection {
 		}
 	}
 	if (stages.length === 0) {
-		return { stage: null, reason: matched ? `unmapped gsd command ${matched}` : "no gsd command in prompt" };
+		return {
+			stage: null,
+			reason: matched ? `unmapped gsd command ${matched}` : "no gsd command in prompt",
+		};
 	}
-	if (stages.includes("orchestrate")) return { stage: "orchestrate", command: matched, router: ALL_STAGES };
+	if (stages.includes("orchestrate"))
+		return { stage: "orchestrate", command: matched, router: ALL_STAGES };
 	const stage = stages[0] ?? null;
 	return { stage, command: matched };
 }
@@ -283,7 +300,8 @@ const PURPOSES: Record<string, string> = {
 	arena: "run parallel alternative attempts and keep the best parts before committing to a design",
 	tdd: "write the failing test first, then the fix, while executing",
 	interrogate: "have different models try to break the diff during verification or review",
-	"no-comments": "strip comments before review and fix accepted findings during verification or review",
+	"no-comments":
+		"strip comments before review and fix accepted findings during verification or review",
 };
 
 const MOMENTS: Record<StageKey, string> = {
@@ -319,7 +337,12 @@ export function buildBlock(
 				dropped.push(`${s}/${name}: ${skill.reason}`);
 				continue;
 			}
-			entries.push({ stage: s, name, path: skill.path, purpose: PURPOSES[name] ?? `pstack ${name} skill` });
+			entries.push({
+				stage: s,
+				name,
+				path: skill.path,
+				purpose: PURPOSES[name] ?? `pstack ${name} skill`,
+			});
 		}
 	}
 	if (entries.length === 0) {
@@ -327,13 +350,19 @@ export function buildBlock(
 	}
 	const header = `pstack alongside GSD (${stage === "orchestrate" ? "orchestrate: apply each at its moment" : stage})`;
 	const skippedFull = dropped.length > 0 ? `- skipped: ${dropped.join("; ")}` : undefined;
-	const skippedShort = dropped.length > 0 ? `- skipped: ${dropped.length} missing skill(s)` : undefined;
-	const render = (list: typeof entries, skipped: string | undefined, truncation: string | undefined): string => {
+	const skippedShort =
+		dropped.length > 0 ? `- skipped: ${dropped.length} missing skill(s)` : undefined;
+	const render = (
+		list: typeof entries,
+		skipped: string | undefined,
+		truncation: string | undefined,
+	): string => {
 		const lines = [
 			header,
 			"Run these pstack skills alongside the GSD step, by reading each SKILL.md, then continue the GSD workflow unchanged:",
 		];
-		for (const e of list) lines.push(`- [${e.stage}] ${e.name} — read ${e.path} — ${e.purpose} (${MOMENTS[e.stage]})`);
+		for (const e of list)
+			lines.push(`- [${e.stage}] ${e.name} — read ${e.path} — ${e.purpose} (${MOMENTS[e.stage]})`);
 		if (skipped) lines.push(skipped);
 		if (truncation) lines.push(truncation);
 		return lines.join("\n");
@@ -342,7 +371,8 @@ export function buildBlock(
 	let list = entries;
 	let detail: 0 | 1 | 2 = skippedFull ? 0 : 2;
 	let truncation: string | undefined;
-	const skippedText = (): string | undefined => (detail === 0 ? skippedFull : detail === 1 ? skippedShort : undefined);
+	const skippedText = (): string | undefined =>
+		detail === 0 ? skippedFull : detail === 1 ? skippedShort : undefined;
 	let block = render(list, skippedText(), truncation);
 	while (block.length > cap) {
 		if (detail < 2) detail = detail === 0 ? 1 : 2;

@@ -24,12 +24,18 @@ type Env = Record<string, string | undefined>;
 export type KeySource = "store" | "OPENROUTER_API_KEY" | "AI_GATEWAY_API_KEY";
 
 /** Stored openrouter api_key (trimmed, non-empty) wins; else trimmed non-empty env.OPENROUTER_API_KEY; else undefined. Never throws. */
-export function resolveOpenRouterKey(storePath: string, env: Env): { key: string; source: KeySource } | undefined {
+export function resolveOpenRouterKey(
+	storePath: string,
+	env: Env,
+): { key: string; source: KeySource } | undefined {
 	return resolveStoreKey(storePath, env, "openrouter", "OPENROUTER_API_KEY");
 }
 
 /** Stored vercel api_key (trimmed, non-empty) wins; else trimmed non-empty env.AI_GATEWAY_API_KEY; else undefined. Never throws. */
-export function resolveVercelKey(storePath: string, env: Env): { key: string; source: KeySource } | undefined {
+export function resolveVercelKey(
+	storePath: string,
+	env: Env,
+): { key: string; source: KeySource } | undefined {
 	return resolveStoreKey(storePath, env, "vercel", "AI_GATEWAY_API_KEY");
 }
 
@@ -42,7 +48,10 @@ function resolveStoreKey(
 	try {
 		const providers = readStore(storePath).providers as Record<string, unknown>;
 		const credential = providers[provider] as { kind?: unknown; apiKey?: unknown } | undefined;
-		const stored = credential?.kind === "api_key" && typeof credential.apiKey === "string" ? credential.apiKey.trim() : "";
+		const stored =
+			credential?.kind === "api_key" && typeof credential.apiKey === "string"
+				? credential.apiKey.trim()
+				: "";
 		if (stored) return { key: stored, source: "store" };
 	} catch {
 		// unreadable store: fall back to the environment
@@ -60,11 +69,21 @@ export interface ResolvedDecisionsKeys {
 }
 
 /** The one rail + key picker, shared by the runtime, the CLI and the status line. Never throws. */
-export function resolveDecisionsKeys(config: DecisionsConfig, storePath: string, env: Env): ResolvedDecisionsKeys {
+export function resolveDecisionsKeys(
+	config: DecisionsConfig,
+	storePath: string,
+	env: Env,
+): ResolvedDecisionsKeys {
 	const vercel = resolveVercelKey(storePath, env);
 	const openrouter = resolveOpenRouterKey(storePath, env);
 	const provider: ResolvedProvider =
-		config.provider === "vercel" ? "vercel" : config.provider === "openrouter" ? "openrouter" : vercel ? "vercel" : "openrouter";
+		config.provider === "vercel"
+			? "vercel"
+			: config.provider === "openrouter"
+				? "openrouter"
+				: vercel
+					? "vercel"
+					: "openrouter";
 	const key = provider === "vercel" ? vercel : openrouter;
 	return { provider, ...(key ? { key } : {}) };
 }
@@ -107,7 +126,11 @@ export interface Decisions {
 	 *  key at most once per runtime (lazily). */
 	active(point: DecisionPoint): boolean;
 	/** One decision. Never rejects except with an AbortError (caller abort). */
-	run<P extends DecisionPoint>(point: P, state: DecisionStates[P], opts: RunDecisionOptions): Promise<DecisionOutcome>;
+	run<P extends DecisionPoint>(
+		point: P,
+		state: DecisionStates[P],
+		opts: RunDecisionOptions,
+	): Promise<DecisionOutcome>;
 }
 
 /** The body run() and the CLI send. */
@@ -131,7 +154,8 @@ export function buildDecisionsRequest<P extends DecisionPoint>(
 /** Debug line text (no prefix): never the message, state, error message or key. */
 export function formatDebugLine(record: DecisionRecord): string {
 	const tail = `${Math.round(record.latencyMs)}ms · attempts ${record.attempts}`;
-	if (record.outcome === "error") return `decisions ${record.point} · error (${record.error}) · ${tail}`;
+	if (record.outcome === "error")
+		return `decisions ${record.point} · error (${record.error}) · ${tail}`;
 	const cost = record.cost !== undefined ? ` · cost ${record.cost}` : "";
 	return `decisions ${record.point} · p ${formatP(record.p ?? 0)} · ${record.model} · ${tail}${cost}`;
 }
@@ -173,7 +197,11 @@ export function createDecisions(input: DecisionsInput): Decisions {
 				// The Vercel rail has a fixed endpoint; only the OpenRouter rail honors ULTRATHINK_DECISIONS_URL.
 				const rail = picked.provider === "vercel" ? decideVercel : decide;
 				outcome = await rail(
-					buildDecisionsRequest(point, state, { model: config.model, zdr: config.zdr, sessionId: input.sessionId }),
+					buildDecisionsRequest(point, state, {
+						model: config.model,
+						zdr: config.zdr,
+						sessionId: input.sessionId,
+					}),
 					{
 						apiKey: apiKeyNow,
 						timeoutMs: config.timeoutMs,
@@ -193,13 +221,21 @@ export function createDecisions(input: DecisionsInput): Decisions {
 					ok: false,
 					error: new DecisionsError(
 						"network",
-						redact(`decisions network: ${redact(message || "unexpected error", apiKeyNow)}`, apiKeyNow),
+						redact(
+							`decisions network: ${redact(message || "unexpected error", apiKeyNow)}`,
+							apiKeyNow,
+						),
 					),
 					attempts: 0,
 					latencyMs: Math.max(0, now() - start),
 				};
 			}
-			const base = { point, threshold: opts.threshold, latencyMs: outcome.latencyMs, attempts: outcome.attempts };
+			const base = {
+				point,
+				threshold: opts.threshold,
+				latencyMs: outcome.latencyMs,
+				attempts: outcome.attempts,
+			};
 			let result: Exclude<DecisionOutcome, { status: "inactive" }>;
 			if (outcome.ok) {
 				const { response } = outcome;

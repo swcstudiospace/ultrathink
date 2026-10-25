@@ -14,7 +14,8 @@ import { SECURITY_HEADERS } from "../services/ultrathink/routes/router.ts";
 
 const LIVE_TIMEOUT_MS = 10_000;
 const DEFAULT_ROOT = resolve(import.meta.dir, "..");
-const USAGE = "usage: bun policy/collect.ts [--root <dir>] [--live <url> [--live-ca <file>] [--live-cert <file> --live-key <file>]]";
+const USAGE =
+	"usage: bun policy/collect.ts [--root <dir>] [--live <url> [--live-ca <file>] [--live-cert <file> --live-key <file>]]";
 
 /** `permissions` as written: the shorthand string, a scope map, or null when the key is absent. */
 export type Permissions = string | Record<string, string> | null;
@@ -73,7 +74,8 @@ function normalizePermissions(value: unknown, where: string): Permissions {
 	if (typeof value === "string") return value;
 	if (isObject(value)) {
 		const scopes: Record<string, string> = {};
-		for (const [scope, level] of Object.entries(value)) scopes[scope] = expectString(level, `${where}.${scope}`);
+		for (const [scope, level] of Object.entries(value))
+			scopes[scope] = expectString(level, `${where}.${scope}`);
 		return scopes;
 	}
 	throw new Error(`${where}: permissions must be a string or a map`);
@@ -82,7 +84,8 @@ function normalizePermissions(value: unknown, where: string): Permissions {
 function normalizeEvents(value: unknown, where: string): string[] {
 	if (value === undefined || value === null) return [];
 	if (typeof value === "string") return [value];
-	if (Array.isArray(value)) return value.map((event, index) => expectString(event, `${where}[${index}]`));
+	if (Array.isArray(value))
+		return value.map((event, index) => expectString(event, `${where}[${index}]`));
 	if (isObject(value)) return Object.keys(value);
 	throw new Error(`${where}: on must be an event name, a list or a map`);
 }
@@ -107,7 +110,8 @@ export function parseWorkflow(text: string, file: string): Workflow {
 		if (job.steps !== undefined) {
 			if (!Array.isArray(job.steps)) throw new Error(`${where}: steps must be a list`);
 			for (const step of job.steps) {
-				if (isObject(step) && step.uses !== undefined) uses.push(expectString(step.uses, `${where} step uses`));
+				if (isObject(step) && step.uses !== undefined)
+					uses.push(expectString(step.uses, `${where} step uses`));
 			}
 		}
 		jobs[id] = { permissions: normalizePermissions(job.permissions, `${where}.permissions`), uses };
@@ -163,7 +167,8 @@ export function parseUnitFile(text: string, file: string): UnitSections {
 		}
 		const eq = content.indexOf("=");
 		if (eq <= 0) throw new Error(`${file}:${line}: expected [Section] or Key=Value`);
-		if (current === undefined) throw new Error(`${file}:${line}: setting appears before any [Section]`);
+		if (current === undefined)
+			throw new Error(`${file}:${line}: setting appears before any [Section]`);
 		const key = content.slice(0, eq).trim();
 		const value = content.slice(eq + 1).trim();
 		const entries = value === "" ? [""] : value.split(/\s+/);
@@ -201,7 +206,10 @@ function liveTlsOptions(files: LiveTlsFiles): { ca?: string; cert?: string; key?
  * `files.ca` and presents `files.cert` and `files.key`; without them, the system trust store applies. TLS files are
  * refused for an http URL, where they would be silently ignored.
  */
-export async function fetchLiveHeaders(url: string, files: LiveTlsFiles = {}): Promise<Record<string, string>> {
+export async function fetchLiveHeaders(
+	url: string,
+	files: LiveTlsFiles = {},
+): Promise<Record<string, string>> {
 	let parsed: URL;
 	try {
 		parsed = new URL(url);
@@ -216,7 +224,11 @@ export async function fetchLiveHeaders(url: string, files: LiveTlsFiles = {}): P
 		throw new Error(`--live-ca, --live-cert and --live-key need an https --live URL: ${url}`);
 	}
 	const tls = parsed.protocol === "https:" ? liveTlsOptions(files) : undefined;
-	const response = await fetch(parsed, { method: "GET", signal: AbortSignal.timeout(LIVE_TIMEOUT_MS), tls });
+	const response = await fetch(parsed, {
+		method: "GET",
+		signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
+		tls,
+	});
 	await response.body?.cancel();
 	const headers: Record<string, string> = {};
 	response.headers.forEach((value, name) => {
@@ -284,7 +296,9 @@ export async function main(argv: readonly string[]): Promise<number> {
 			allowPositionals: false,
 		}));
 	} catch (error) {
-		process.stderr.write(`collect: ${error instanceof Error ? error.message : String(error)}\n${USAGE}\n`);
+		process.stderr.write(
+			`collect: ${error instanceof Error ? error.message : String(error)}\n${USAGE}\n`,
+		);
 		return 2;
 	}
 	if (values.help) {

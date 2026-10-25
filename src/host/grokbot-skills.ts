@@ -18,9 +18,13 @@ export interface SkillDrift {
 	installed?: string;
 }
 
-const sha = (path: string): string => createHash("sha256").update(readFileSync(path)).digest("hex").slice(0, 12);
+const sha = (path: string): string =>
+	createHash("sha256").update(readFileSync(path)).digest("hex").slice(0, 12);
 
-export function skillsStatus(stagedRoot: string, installedRoot = DEFAULT_INSTALLED_SKILLS): { skills: SkillDrift[]; counts: Record<SkillDrift["state"], number> } {
+export function skillsStatus(
+	stagedRoot: string,
+	installedRoot = DEFAULT_INSTALLED_SKILLS,
+): { skills: SkillDrift[]; counts: Record<SkillDrift["state"], number> } {
 	const names = readdirSync(stagedRoot, { withFileTypes: true })
 		.filter((d) => d.isDirectory() && existsSync(join(stagedRoot, d.name, "SKILL.md")))
 		.map((d) => d.name)

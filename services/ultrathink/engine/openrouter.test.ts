@@ -29,7 +29,10 @@ interface Call {
 
 type Step = (init: RequestInit) => Response | Promise<Response>;
 
-function scripted(steps: Step[]): { fetch: (input: string, init: RequestInit) => Promise<Response>; calls: Call[] } {
+function scripted(steps: Step[]): {
+	fetch: (input: string, init: RequestInit) => Promise<Response>;
+	calls: Call[];
+} {
 	const calls: Call[] = [];
 	return {
 		calls,
@@ -46,10 +49,16 @@ function scripted(steps: Step[]): { fetch: (input: string, init: RequestInit) =>
 
 function completion(content: unknown, usage?: Record<string, unknown>): Step {
 	return () =>
-		new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content } }], ...(usage ? { usage } : {}) }), {
-			status: 200,
-			headers: { "content-type": "application/json" },
-		});
+		new Response(
+			JSON.stringify({
+				choices: [{ message: { role: "assistant", content } }],
+				...(usage ? { usage } : {}),
+			}),
+			{
+				status: 200,
+				headers: { "content-type": "application/json" },
+			},
+		);
 }
 
 function status(code: number, headers: Record<string, string> = {}, body = BODY_MARK): Step {
@@ -58,7 +67,9 @@ function status(code: number, headers: Record<string, string> = {}, body = BODY_
 
 function pendingUntilAbort(init: RequestInit): Promise<Response> {
 	const { promise, reject } = Promise.withResolvers<Response>();
-	init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+	init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+		once: true,
+	});
 	return promise;
 }
 
@@ -126,7 +137,9 @@ describe("request shape", () => {
 		});
 		expect(call.init.body as string).not.toContain(KEY);
 		expect(call.url).not.toContain(KEY);
-		const others = Object.entries(call.init.headers as Record<string, string>).filter(([name]) => name !== "Authorization");
+		const others = Object.entries(call.init.headers as Record<string, string>).filter(
+			([name]) => name !== "Authorization",
+		);
 		for (const [, value] of others) {
 			expect(value).not.toContain(KEY);
 		}
@@ -151,9 +164,12 @@ describe("request shape", () => {
 describe("usage", () => {
 	test("onUsage receives prompt tokens, completion tokens and cost", async () => {
 		const seen: OpenRouterUsage[] = [];
-		const { complete } = setup([completion("hi", { prompt_tokens: 11, completion_tokens: 7, cost: 0.0021 })], {
-			onUsage: (usage) => seen.push(usage),
-		});
+		const { complete } = setup(
+			[completion("hi", { prompt_tokens: 11, completion_tokens: 7, cost: 0.0021 })],
+			{
+				onUsage: (usage) => seen.push(usage),
+			},
+		);
 		await complete("s", "u");
 		expect(seen).toEqual([{ promptTokens: 11, completionTokens: 7, costUsd: 0.0021 }]);
 	});
@@ -179,9 +195,12 @@ describe("usage", () => {
 
 	test("only the successful attempt is reported", async () => {
 		const seen: OpenRouterUsage[] = [];
-		const { complete } = setup([status(503), completion("fine", { prompt_tokens: 1, completion_tokens: 2 })], {
-			onUsage: (usage) => seen.push(usage),
-		});
+		const { complete } = setup(
+			[status(503), completion("fine", { prompt_tokens: 1, completion_tokens: 2 })],
+			{
+				onUsage: (usage) => seen.push(usage),
+			},
+		);
 		await complete("s", "u");
 		expect(seen).toHaveLength(1);
 	});
@@ -228,14 +247,20 @@ describe("status handling", () => {
 	});
 
 	test("429 honors Retry-After seconds and then succeeds", async () => {
-		const { complete, calls, sleeps } = setup([status(429, { "retry-after": "3" }), completion("after")]);
+		const { complete, calls, sleeps } = setup([
+			status(429, { "retry-after": "3" }),
+			completion("after"),
+		]);
 		expect(await complete("s", "u")).toBe("after");
 		expect(calls).toHaveLength(2);
 		expect(sleeps).toEqual([3000]);
 	});
 
 	test("Retry-After is clamped to 20 seconds", async () => {
-		const { complete, sleeps } = setup([status(429, { "retry-after": "120" }), completion("after")]);
+		const { complete, sleeps } = setup([
+			status(429, { "retry-after": "120" }),
+			completion("after"),
+		]);
 		await complete("s", "u");
 		expect(sleeps).toEqual([20000]);
 	});
@@ -252,7 +277,11 @@ describe("status handling", () => {
 	});
 
 	test("an unparseable Retry-After falls back to exponential backoff with jitter", async () => {
-		const { complete, sleeps } = setup([status(429, { "retry-after": "soon" }), status(429), completion("ok")]);
+		const { complete, sleeps } = setup([
+			status(429, { "retry-after": "soon" }),
+			status(429),
+			completion("ok"),
+		]);
 		await complete("s", "u");
 		expect(sleeps).toHaveLength(2);
 		expect(sleeps[0] as number).toBeGreaterThanOrEqual(500);
@@ -262,7 +291,12 @@ describe("status handling", () => {
 	});
 
 	test("429 that never clears ends as rate_limited after three attempts", async () => {
-		const { complete, calls, sleeps } = setup([status(429), status(429), status(429), completion("never")]);
+		const { complete, calls, sleeps } = setup([
+			status(429),
+			status(429),
+			status(429),
+			completion("never"),
+		]);
 		const error = await failure(complete("s", "u"));
 		expect(error.code).toBe("rate_limited");
 		expect(calls).toHaveLength(3);
@@ -271,7 +305,12 @@ describe("status handling", () => {
 	});
 
 	test("5xx is retried twice and then reported as upstream", async () => {
-		const { complete, calls, sleeps } = setup([status(500), status(502), status(503), completion("never")]);
+		const { complete, calls, sleeps } = setup([
+			status(500),
+			status(502),
+			status(503),
+			completion("never"),
+		]);
 		const error = await failure(complete("s", "u"));
 		expect(error.code).toBe("upstream");
 		expect(error.status).toBe(503);
@@ -334,9 +373,14 @@ describe("network errors", () => {
 	test("a text() that rejects after a 200 is bad_response and is not retried", async () => {
 		const { complete, calls, sleeps } = setup([
 			() => {
-				const response = new Response(BODY_MARK, { status: 200, headers: { "content-type": "application/json" } });
+				const response = new Response(BODY_MARK, {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
 				Object.defineProperty(response, "body", { value: null });
-				Object.defineProperty(response, "text", { value: () => Promise.reject(new TypeError(`socket closed ${KEY}`)) });
+				Object.defineProperty(response, "text", {
+					value: () => Promise.reject(new TypeError(`socket closed ${KEY}`)),
+				});
 				return response;
 			},
 			completion("never"),
@@ -351,7 +395,9 @@ describe("network errors", () => {
 
 describe("timeout and abort", () => {
 	test("the per-call timeout cancels the request and is not retried", async () => {
-		const { complete, calls, sleeps } = setup([pendingUntilAbort, completion("never")], { timeoutMs: 10 });
+		const { complete, calls, sleeps } = setup([pendingUntilAbort, completion("never")], {
+			timeoutMs: 10,
+		});
 		const error = await failure(complete("s", "u"));
 		expect(error.code).toBe("timeout");
 		expect(calls).toHaveLength(1);
@@ -412,7 +458,11 @@ describe("timeout and abort", () => {
 			(init) => {
 				const stream = new ReadableStream<Uint8Array>({
 					start(streamController) {
-						init.signal?.addEventListener("abort", () => streamController.error(new DOMException("aborted", "AbortError")), { once: true });
+						init.signal?.addEventListener(
+							"abort",
+							() => streamController.error(new DOMException("aborted", "AbortError")),
+							{ once: true },
+						);
 						queueMicrotask(() => controller.abort());
 					},
 				});
@@ -426,7 +476,10 @@ describe("timeout and abort", () => {
 
 describe("response validation", () => {
 	test("malformed JSON gives bad_response without a retry", async () => {
-		const { complete, calls } = setup([status(200, {}, `{"choices": [ ${BODY_MARK} ${KEY}`), completion("never")]);
+		const { complete, calls } = setup([
+			status(200, {}, `{"choices": [ ${BODY_MARK} ${KEY}`),
+			completion("never"),
+		]);
 		const error = await failure(complete("s", "u"));
 		expect(error.code).toBe("bad_response");
 		expect(calls).toHaveLength(1);
@@ -464,13 +517,25 @@ describe("response validation", () => {
 	});
 
 	test("content parts are joined into text", async () => {
-		const { complete } = setup([completion([{ type: "text", text: "one " }, { type: "image" }, { type: "text", text: "two" }])]);
+		const { complete } = setup([
+			completion([
+				{ type: "text", text: "one " },
+				{ type: "image" },
+				{ type: "text", text: "two" },
+			]),
+		]);
 		expect(await complete("s", "u")).toBe("one two");
 	});
 
 	test("every failure carries one of the documented codes", async () => {
 		const codes: OpenRouterErrorCode[] = [];
-		for (const step of [status(401), status(429), status(500), status(200, {}, "not json"), completion("")]) {
+		for (const step of [
+			status(401),
+			status(429),
+			status(500),
+			status(200, {}, "not json"),
+			completion(""),
+		]) {
 			const { complete } = setup([step, step, step]);
 			codes.push((await failure(complete("s", "u"))).code);
 		}
@@ -478,7 +543,8 @@ describe("response validation", () => {
 	});
 
 	test("a body at the byte cap is still parsed", async () => {
-		const frame = (pad: string): string => JSON.stringify({ choices: [{ message: { content: "fits" } }], pad });
+		const frame = (pad: string): string =>
+			JSON.stringify({ choices: [{ message: { content: "fits" } }], pad });
 		const body = frame("x".repeat(MAX_RESPONSE_BYTES - frame("").length));
 		expect(new TextEncoder().encode(body).byteLength).toBe(MAX_RESPONSE_BYTES);
 		const { complete } = setup([status(200, {}, body)]);
@@ -487,7 +553,9 @@ describe("response validation", () => {
 
 	test("a streamed body over the byte cap is bad_response, cancelled early and not retried", async () => {
 		// About 1 MiB per chunk; sixteen caps' worth are available, so a full read would show in the pull count.
-		const chunk = new TextEncoder().encode(`{"choices":[{"message":{"content":"${BODY_MARK.repeat(Math.floor((1024 * 1024) / BODY_MARK.length))}`);
+		const chunk = new TextEncoder().encode(
+			`{"choices":[{"message":{"content":"${BODY_MARK.repeat(Math.floor((1024 * 1024) / BODY_MARK.length))}`,
+		);
 		const available = Math.ceil((MAX_RESPONSE_BYTES / chunk.byteLength) * 16);
 		let pulls = 0;
 		let cancelled = false;
@@ -642,7 +710,11 @@ describe("onCall", () => {
 		const { complete, infos } = recorded([status(500), completion("secret answer")]);
 		await complete("s", "u");
 		const json = JSON.stringify(infos);
-		expect(Object.keys(infos[0] as OpenRouterCallInfo).sort()).toEqual(["attempts", "ms", "outcome"]);
+		expect(Object.keys(infos[0] as OpenRouterCallInfo).sort()).toEqual([
+			"attempts",
+			"ms",
+			"outcome",
+		]);
 		expect(json).not.toContain(KEY);
 		expect(json).not.toContain(BODY_MARK);
 		expect(json).not.toContain("secret answer");
@@ -674,7 +746,12 @@ describe("circuit breaker", () => {
 
 	function tripped(steps: Step[]) {
 		const clock = { t: 1_000_000 };
-		const breaker = createCircuitBreaker({ failureThreshold: 2, windowMs: 60000, openMs: OPEN_MS, now: () => clock.t });
+		const breaker = createCircuitBreaker({
+			failureThreshold: 2,
+			windowMs: 60000,
+			openMs: OPEN_MS,
+			now: () => clock.t,
+		});
 		const infos: OpenRouterCallInfo[] = [];
 		const harness = setup(steps, { breaker, onCall: (info) => infos.push(info) });
 		return { ...harness, breaker, clock, infos };
@@ -721,7 +798,11 @@ describe("circuit breaker", () => {
 	});
 
 	test("caller aborts do not count toward opening", async () => {
-		const { complete, breaker } = tripped([pendingUntilAbort, pendingUntilAbort, completion("fine")]);
+		const { complete, breaker } = tripped([
+			pendingUntilAbort,
+			pendingUntilAbort,
+			completion("fine"),
+		]);
 		for (let i = 0; i < 2; i += 1) {
 			const controller = new AbortController();
 			const pending = complete("s", "u", controller.signal);
@@ -735,8 +816,16 @@ describe("circuit breaker", () => {
 
 	test("timeouts count toward opening", async () => {
 		const clock = { t: 0 };
-		const breaker = createCircuitBreaker({ failureThreshold: 2, windowMs: 60000, openMs: OPEN_MS, now: () => clock.t });
-		const { complete, calls } = setup([pendingUntilAbort, pendingUntilAbort, completion("never")], { breaker, timeoutMs: 10 });
+		const breaker = createCircuitBreaker({
+			failureThreshold: 2,
+			windowMs: 60000,
+			openMs: OPEN_MS,
+			now: () => clock.t,
+		});
+		const { complete, calls } = setup([pendingUntilAbort, pendingUntilAbort, completion("never")], {
+			breaker,
+			timeoutMs: 10,
+		});
 		expect((await failure(complete("s", "u"))).code).toBe("timeout");
 		expect((await failure(complete("s", "u"))).code).toBe("timeout");
 		expect(breaker.state()).toBe("open");
@@ -745,7 +834,12 @@ describe("circuit breaker", () => {
 	});
 
 	test("a success after the open period closes the breaker again", async () => {
-		const { complete, calls, breaker, clock, infos } = tripped([status(503), status(503), completion("fine"), completion("again")]);
+		const { complete, calls, breaker, clock, infos } = tripped([
+			status(503),
+			status(503),
+			completion("fine"),
+			completion("again"),
+		]);
 		await failure(complete("s", "u"));
 		clock.t += OPEN_MS - 1;
 		expect((await failure(complete("s", "u"))).code).toBe("upstream_unavailable");
@@ -756,7 +850,12 @@ describe("circuit breaker", () => {
 		expect(breaker.snapshot().failures).toBe(0);
 		expect(await complete("s", "u")).toBe("again");
 		expect(calls).toHaveLength(4);
-		expect(infos.map((info) => info.outcome)).toEqual(["upstream_unavailable", "upstream_unavailable", "ok", "ok"]);
+		expect(infos.map((info) => info.outcome)).toEqual([
+			"upstream_unavailable",
+			"upstream_unavailable",
+			"ok",
+			"ok",
+		]);
 	});
 
 	test("a failed probe re-opens the breaker", async () => {
@@ -771,7 +870,10 @@ describe("circuit breaker", () => {
 	});
 
 	test("a parse failure after a 200 releases the slot as ignored and the breaker stays closed", async () => {
-		const { complete, breaker } = tripped([status(503), status(200, { "content-type": "application/json" }, "{not json")]);
+		const { complete, breaker } = tripped([
+			status(503),
+			status(200, { "content-type": "application/json" }, "{not json"),
+		]);
 		const error = await failure(complete("s", "u"));
 		expect(error.code).toBe("bad_response");
 		expect(breaker.state()).toBe("closed");
@@ -787,7 +889,11 @@ describe("circuit breaker", () => {
 });
 
 describe("trace propagation", () => {
-	const CTX = { reqId: "req-trace-1", traceId: "4bf92f3577b34da6a3ce929d0e0e4736", spanId: "00f067aa0ba902b7" };
+	const CTX = {
+		reqId: "req-trace-1",
+		traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+		spanId: "00f067aa0ba902b7",
+	};
 	const TRACEPARENT = /^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-01$/;
 
 	function traceparentOf(call: Call): string | undefined {
@@ -824,13 +930,17 @@ describe("trace propagation", () => {
 	test("sends no traceparent outside a request context", async () => {
 		const { complete, calls } = setup([completion("ok")]);
 		await complete("s", "u");
-		expect(Object.keys((calls[0] as Call).init.headers as Record<string, string>)).not.toContain("traceparent");
+		expect(Object.keys((calls[0] as Call).init.headers as Record<string, string>)).not.toContain(
+			"traceparent",
+		);
 	});
 
 	test("an unsampled inbound trace stays unsampled upstream", async () => {
 		const { complete, calls } = setup([completion("ok")]);
 		await runWithRequestContext({ ...CTX, sampled: false }, () => complete("s", "u"));
-		expect(traceparentOf(calls[0] as Call)).toMatch(/^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-00$/);
+		expect(traceparentOf(calls[0] as Call)).toMatch(
+			/^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-00$/,
+		);
 	});
 
 	test("a sampled or undefined inbound trace is sent sampled upstream", async () => {
@@ -843,7 +953,11 @@ describe("trace propagation", () => {
 });
 
 describe("client span", () => {
-	const CTX = { reqId: "req-span-1", traceId: "4bf92f3577b34da6a3ce929d0e0e4736", spanId: "00f067aa0ba902b7" };
+	const CTX = {
+		reqId: "req-span-1",
+		traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+		spanId: "00f067aa0ba902b7",
+	};
 
 	/** A sink that keeps every span it is handed; with `throws`, it also throws after keeping it. */
 	function recorder(throws = false): { sink: SpanSink; spans: FinishedSpan[] } {
@@ -876,7 +990,9 @@ describe("client span", () => {
 		const { sink, spans } = recorder();
 		const { complete, calls } = setup([status(500), completion("ok")], { spans: sink });
 		await runWithRequestContext(CTX, () => complete("s", "u"));
-		const sentIds = calls.map((call) => (call.init.headers as Record<string, string>).traceparent?.split("-")[2] ?? "");
+		const sentIds = calls.map(
+			(call) => (call.init.headers as Record<string, string>).traceparent?.split("-")[2] ?? "",
+		);
 		expect(spans.map((span) => span.error)).toEqual([true, false]);
 		expect(spans.map((span) => span.spanId)).toEqual(sentIds);
 		expect(spans.map((span) => span.attributes["ultrathink.attempt"])).toEqual([1, 2]);
@@ -892,7 +1008,10 @@ describe("client span", () => {
 
 	test("attributes name the method and the host only, never the key, path, query or headers", async () => {
 		const { sink, spans } = recorder();
-		const { complete } = setup([completion("ok")], { spans: sink, baseUrl: "https://openrouter.test/api/v1?x=1" });
+		const { complete } = setup([completion("ok")], {
+			spans: sink,
+			baseUrl: "https://openrouter.test/api/v1?x=1",
+		});
 		await runWithRequestContext(CTX, () => complete("s", "u"));
 		const span = spans[0] as FinishedSpan;
 		expect(span.attributes).toEqual({
@@ -970,7 +1089,11 @@ describe("unlimited limits and truncation", () => {
 	test("finish_reason length throws truncated, never returns the partial text, and is not retried", async () => {
 		const cut: Step = () =>
 			new Response(
-				JSON.stringify({ choices: [{ finish_reason: "length", message: { role: "assistant", content: "PARTIAL-TEXT" } }] }),
+				JSON.stringify({
+					choices: [
+						{ finish_reason: "length", message: { role: "assistant", content: "PARTIAL-TEXT" } },
+					],
+				}),
 				{ status: 200, headers: { "content-type": "application/json" } },
 			);
 		const { complete, calls } = setup([cut, completion("never")]);
@@ -985,7 +1108,9 @@ describe("unlimited limits and truncation", () => {
 		const cut: Step = () =>
 			new Response(
 				JSON.stringify({
-					choices: [{ finish_reason: "length", message: { role: "assistant", content: "partial" } }],
+					choices: [
+						{ finish_reason: "length", message: { role: "assistant", content: "partial" } },
+					],
 					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 },
 				}),
 				{ status: 200, headers: { "content-type": "application/json" } },

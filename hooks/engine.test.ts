@@ -14,7 +14,9 @@ describe("requestFrom", () => {
 		expect(requestFrom({ host: "omp", model: "muse-code/muse-spark-1.3-contributor" }).model).toBe(
 			"muse-code/muse-spark-1.3-contributor",
 		);
-		expect(requestFrom({ host: "hermes", model: "xai-oauth/grok-4.7" }).model).toBe("xai-oauth/grok-4.7");
+		expect(requestFrom({ host: "hermes", model: "xai-oauth/grok-4.7" }).model).toBe(
+			"xai-oauth/grok-4.7",
+		);
 	});
 
 	test("omits the model when absent or not a string", () => {
@@ -52,13 +54,26 @@ describe("requestFrom", () => {
 	});
 
 	test("non-objects become an empty request", () => {
-		for (const value of [null, undefined, "model", 42, true, [], [{ host: "omp", prompt: "hi" }]]) expect(requestFrom(value)).toEqual({});
+		for (const value of [null, undefined, "model", 42, true, [], [{ host: "omp", prompt: "hi" }]])
+			expect(requestFrom(value)).toEqual({});
 	});
 
 	test("the Prime Agent kernel skill's request is a supported host with the session and platform it sends", () => {
 		expect(isHostId("prime-agent")).toBe(true);
-		const request = requestFrom({ host: "prime-agent", session_id: "01a1-session", prompt: "plan this", cwd: "/repo", platform: "prime-agent" });
-		expect(request).toMatchObject({ host: "prime-agent", session_id: "01a1-session", prompt: "plan this", cwd: "/repo", platform: "prime-agent" });
+		const request = requestFrom({
+			host: "prime-agent",
+			session_id: "01a1-session",
+			prompt: "plan this",
+			cwd: "/repo",
+			platform: "prime-agent",
+		});
+		expect(request).toMatchObject({
+			host: "prime-agent",
+			session_id: "01a1-session",
+			prompt: "plan this",
+			cwd: "/repo",
+			platform: "prime-agent",
+		});
 		expect(request.invalidHost).toBeUndefined();
 		expect(request.model).toBeUndefined();
 	});
@@ -80,10 +95,21 @@ describe("requestFrom", () => {
 	test("bot hosts are not a HostId: grok-bot and gpt-dot are omitted, never a fail-closed request (§7.2)", () => {
 		for (const host of ["grok-bot", "gpt-dot"]) {
 			expect(isHostId(host)).toBe(false);
-			const request = requestFrom({ host, session_id: "s1", prompt: "plan this", cwd: "/repo", model: "Opaque-Model/X" });
+			const request = requestFrom({
+				host,
+				session_id: "s1",
+				prompt: "plan this",
+				cwd: "/repo",
+				model: "Opaque-Model/X",
+			});
 			expect(request.host).toBeUndefined();
 			expect(request.invalidHost).toBe(true);
-			expect(request).toMatchObject({ session_id: "s1", prompt: "plan this", cwd: "/repo", model: "Opaque-Model/X" });
+			expect(request).toMatchObject({
+				session_id: "s1",
+				prompt: "plan this",
+				cwd: "/repo",
+				model: "Opaque-Model/X",
+			});
 		}
 	});
 
@@ -93,7 +119,12 @@ describe("requestFrom", () => {
 			expect(request.host).toBeUndefined();
 			expect(request.invalidHost).toBe(true);
 		}
-		for (const value of [{ prompt: "hi" }, { host: null, prompt: "hi" }, { host: "", prompt: "hi" }, { host: "  ", prompt: "hi" }]) {
+		for (const value of [
+			{ prompt: "hi" },
+			{ host: null, prompt: "hi" },
+			{ host: "", prompt: "hi" },
+			{ host: "  ", prompt: "hi" },
+		]) {
 			expect(requestFrom(value)).not.toHaveProperty("invalidHost");
 		}
 		expect(requestFrom({ host: "omp", invalidHost: true })).not.toHaveProperty("invalidHost");
@@ -106,7 +137,9 @@ describe("requestFrom", () => {
 
 	test("an optional provider is an opaque legacy declaration: trimmed, case kept, blank or non-string omitted", () => {
 		expect(requestFrom({ host: "hermes", provider: "xai-oauth" }).provider).toBe("xai-oauth");
-		expect(requestFrom({ host: "hermes", provider: "  Custom-Gateway/Team_A " }).provider).toBe("Custom-Gateway/Team_A");
+		expect(requestFrom({ host: "hermes", provider: "  Custom-Gateway/Team_A " }).provider).toBe(
+			"Custom-Gateway/Team_A",
+		);
 		for (const provider of [undefined, null, "", "   ", 7, { id: "anthropic" }, ["anthropic"]]) {
 			expect(requestFrom({ host: "hermes", provider }).provider).toBeUndefined();
 		}
@@ -118,7 +151,12 @@ describe("requestFrom", () => {
 		const request = requestFrom({
 			host: "hermes",
 			prompt: "add a widget",
-			model: { id: "m", provider: "p", baseUrl: "https://gateway.example/v1", headers: { authorization: sentinel } },
+			model: {
+				id: "m",
+				provider: "p",
+				baseUrl: "https://gateway.example/v1",
+				headers: { authorization: sentinel },
+			},
 			provider: { apiKey: sentinel },
 			auth: { token: sentinel },
 			apiKey: sentinel,
@@ -128,7 +166,17 @@ describe("requestFrom", () => {
 		});
 		expect(request).toEqual({ host: "hermes", prompt: "add a widget" });
 		expect(Object.keys(request).sort()).toEqual(
-			["cwd", "host", "model", "parent_session_id", "platform", "prompt", "provider", "session_id", "transcript_path"].sort(),
+			[
+				"cwd",
+				"host",
+				"model",
+				"parent_session_id",
+				"platform",
+				"prompt",
+				"provider",
+				"session_id",
+				"transcript_path",
+			].sort(),
 		);
 		expect(JSON.stringify(request)).not.toContain(sentinel);
 		expect(JSON.stringify(request)).not.toContain("gateway.example");
@@ -142,11 +190,19 @@ describe("Claude Code transport under the hook entries' selection context (D-10,
 	});
 
 	/** A claude binary that records its argv (one per line) and stdin, then answers like `claude -p --output-format json`. */
-	function recordingClaude(): { bin: string; cwd: string; argv: () => string[]; stdin: () => string } {
+	function recordingClaude(): {
+		bin: string;
+		cwd: string;
+		argv: () => string[];
+		stdin: () => string;
+	} {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-hook-transport-"));
 		dirs.push(dir);
 		const bin = join(dir, "claude.sh");
-		writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(dir, "argv")}'\ncat > '${join(dir, "stdin")}'\nprintf '{"result":"ok"}'\n`);
+		writeFileSync(
+			bin,
+			`#!/bin/sh\nprintf '%s\\n' "$@" > '${join(dir, "argv")}'\ncat > '${join(dir, "stdin")}'\nprintf '{"result":"ok"}'\n`,
+		);
 		chmodSync(bin, 0o755);
 		return {
 			bin,
@@ -172,17 +228,31 @@ describe("Claude Code transport under the hook entries' selection context (D-10,
 	];
 
 	/** Plans one call on the Claude Code route with the given context and returns what the child received. */
-	async function transport(claudeModel: string | undefined, context: EngineSelectionContext): Promise<{ argv: string[]; stdin: string }> {
+	async function transport(
+		claudeModel: string | undefined,
+		context: EngineSelectionContext,
+	): Promise<{ argv: string[]; stdin: string }> {
 		const claude = recordingClaude();
-		const config = mergeConfig({ claude: { bin: claude.bin, ...(claudeModel === undefined ? {} : { model: claudeModel }) } }, defaultConfig());
-		const engine = await selectEngine(config, {}, claude.cwd, { host: "claude-code", purpose: "planning", ...context });
-		if ("skipped" in engine) throw new Error(`expected the Claude route, got the skip ${engine.skipped}`);
+		const config = mergeConfig(
+			{ claude: { bin: claude.bin, ...(claudeModel === undefined ? {} : { model: claudeModel }) } },
+			defaultConfig(),
+		);
+		const engine = await selectEngine(config, {}, claude.cwd, {
+			host: "claude-code",
+			purpose: "planning",
+			...context,
+		});
+		if ("skipped" in engine)
+			throw new Error(`expected the Claude route, got the skip ${engine.skipped}`);
 		expect(await engine.complete("SYS", "USER payload")).toBe("ok");
 		return { argv: claude.argv(), stdin: claude.stdin() };
 	}
 
 	test("route default, explicit pin and explicit blank keep today's argv and stdin, whatever envelope evidence is passed", async () => {
-		const evidence: EngineSelectionContext = { sessionModel: "claude-opus-x", provider: "anthropic" };
+		const evidence: EngineSelectionContext = {
+			sessionModel: "claude-opus-x",
+			provider: "anthropic",
+		};
 		for (const [model, tail] of [
 			[undefined, ["--model", "sonnet"]],
 			["opus", ["--model", "opus"]],
@@ -207,7 +277,11 @@ describe("emit", () => {
 				`import { emit } from ${JSON.stringify(join(import.meta.dir, "engine.ts"))};\n` +
 					`emit({ context: "x".repeat(300_000) }).finally(() => process.exit(0));\n`,
 			);
-			const proc = Bun.spawn(["bun", "--no-env-file", script], { stdout: "pipe", stderr: "pipe", env: { ...process.env, ULTRATHINK_HOST: "prime-agent" } });
+			const proc = Bun.spawn(["bun", "--no-env-file", script], {
+				stdout: "pipe",
+				stderr: "pipe",
+				env: { ...process.env, ULTRATHINK_HOST: "prime-agent" },
+			});
 			const out = await new Response(proc.stdout).text();
 			expect(await proc.exited).toBe(0);
 			expect(out.endsWith("\n")).toBe(true);

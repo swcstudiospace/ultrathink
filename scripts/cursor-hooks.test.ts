@@ -2,7 +2,17 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import {
@@ -26,14 +36,22 @@ const WANTED = {
 	command: `/usr/bin/node /home/u/.cursor/hooks/${HOOK_FILE}`,
 	"ultrathink-managed": true,
 };
-const GSD = { type: "command", command: "/usr/bin/node /root/.cursor/hooks/gsd-cursor-session-start.js", "gsd-managed": true };
+const GSD = {
+	type: "command",
+	command: "/usr/bin/node /root/.cursor/hooks/gsd-cursor-session-start.js",
+	"gsd-managed": true,
+};
 const SUBSTRATE = {
 	type: "command",
 	command: "bun /root/src/repos/agent-substrate/packages/cli/src/index.ts brief --surface cursor",
 	"substrate-managed": true,
 };
 const FOREIGN = { type: "command", command: "echo keep me" };
-const OURS_OLD = { type: "command", command: `/opt/old/node /old/.cursor/hooks/${HOOK_FILE}`, "ultrathink-managed": true };
+const OURS_OLD = {
+	type: "command",
+	command: `/opt/old/node /old/.cursor/hooks/${HOOK_FILE}`,
+	"ultrathink-managed": true,
+};
 
 function entries(value: unknown): unknown[] {
 	if (typeof value !== "object" || value === null || !("hooks" in value)) return [];
@@ -56,7 +74,10 @@ describe("isOwned", () => {
 
 describe("upsertHook", () => {
 	test("adds into an empty config", () => {
-		expect(upsertHook(undefined, WANTED)).toEqual({ next: { hooks: { [EVENT]: [WANTED] } }, action: "added" });
+		expect(upsertHook(undefined, WANTED)).toEqual({
+			next: { hooks: { [EVENT]: [WANTED] } },
+			action: "added",
+		});
 	});
 
 	test("appends after foreign entries without touching them", () => {
@@ -84,7 +105,9 @@ describe("upsertHook", () => {
 	test("refuses malformed shapes with a reason", () => {
 		expect(upsertHook([], WANTED).reason).toContain("top-level value is not an object");
 		expect(upsertHook({ hooks: [] }, WANTED).reason).toContain('"hooks" is not an object');
-		expect(upsertHook({ hooks: { [EVENT]: {} } }, WANTED).reason).toContain(`"hooks.${EVENT}" is not an array`);
+		expect(upsertHook({ hooks: { [EVENT]: {} } }, WANTED).reason).toContain(
+			`"hooks.${EVENT}" is not an array`,
+		);
 	});
 });
 
@@ -102,7 +125,9 @@ describe("removeHook", () => {
 
 	test("refuses the same malformed shapes as upsertHook", () => {
 		expect(removeHook([]).reason).toContain("top-level value is not an object");
-		expect(removeHook({ hooks: { [EVENT]: "no" } }).reason).toContain(`"hooks.${EVENT}" is not an array`);
+		expect(removeHook({ hooks: { [EVENT]: "no" } }).reason).toContain(
+			`"hooks.${EVENT}" is not an array`,
+		);
 	});
 });
 
@@ -180,7 +205,10 @@ interface Sandbox {
 	node: string;
 	lines: string[];
 	/** Runs main with hermetic env/root; `over` swaps the repo root, node candidates, or the pre-write seam. */
-	run: (args: string[], over?: { root?: string; candidates?: string[]; beforeCommit?: () => void; lockWaitMs?: number }) => number;
+	run: (
+		args: string[],
+		over?: { root?: string; candidates?: string[]; beforeCommit?: () => void; lockWaitMs?: number },
+	) => number;
 	hooksJson: () => unknown;
 	list: () => unknown[];
 }
@@ -197,7 +225,10 @@ function sandbox(fn: (box: Sandbox) => void): void {
 	writeFileSync(node, "#!/bin/sh\n", { mode: 0o755 });
 	const lines: string[] = [];
 	const cursor = join(home, ".cursor");
-	const run = (args: string[], over?: { root?: string; candidates?: string[]; beforeCommit?: () => void; lockWaitMs?: number }) =>
+	const run = (
+		args: string[],
+		over?: { root?: string; candidates?: string[]; beforeCommit?: () => void; lockWaitMs?: number },
+	) =>
 		main(args, {
 			env: { HOME: home },
 			root: over?.root ?? repo,
@@ -228,7 +259,9 @@ describe("main", () => {
 	test("install into an empty dir creates the entry and stages the hook", () => {
 		sandbox((box) => {
 			expect(box.run(["install"])).toBe(0);
-			expect(box.hooksJson()).toEqual({ hooks: { [EVENT]: [{ ...WANTED, command: hookCommand(box.node, box.staged) }] } });
+			expect(box.hooksJson()).toEqual({
+				hooks: { [EVENT]: [{ ...WANTED, command: hookCommand(box.node, box.staged) }] },
+			});
 			expect(readFileSync(box.staged, "utf8")).toBe(readFileSync(box.source, "utf8"));
 			expect(statSync(box.cursor).mode & 0o777).toBe(0o700);
 			expect(statSync(join(box.cursor, "hooks")).mode & 0o777).toBe(0o755);
@@ -327,7 +360,9 @@ describe("main", () => {
 			mkdirSync(join(repo, "hosts", "cursor"), { recursive: true });
 			writeFileSync(join(repo, "hosts", "cursor", HOOK_FILE), "// hook\n");
 			box.lines.length = 0;
-			expect(box.run(["install"], { root: repo, candidates: [join(box.home, "not-node")] })).toBe(1);
+			expect(box.run(["install"], { root: repo, candidates: [join(box.home, "not-node")] })).toBe(
+				1,
+			);
 			expect(box.lines.join("\n")).toContain("no executable node");
 			expect(existsSync(box.cursor)).toBe(false);
 		});
@@ -367,11 +402,17 @@ describe("main", () => {
 					beforeCommit: () => {
 						if (raced) return;
 						raced = true;
-						writeFileSync(join(box.cursor, "hooks.json"), JSON.stringify({ hooks: { [EVENT]: [FOREIGN] } }));
+						writeFileSync(
+							join(box.cursor, "hooks.json"),
+							JSON.stringify({ hooks: { [EVENT]: [FOREIGN] } }),
+						);
 					},
 				}),
 			).toBe(0);
-			expect(box.list()).toEqual([FOREIGN, { ...WANTED, command: hookCommand(box.node, box.staged) }]);
+			expect(box.list()).toEqual([
+				FOREIGN,
+				{ ...WANTED, command: hookCommand(box.node, box.staged) },
+			]);
 		});
 	});
 
@@ -414,7 +455,10 @@ describe("main", () => {
 			mkdirSync(dirname(box.staged), { recursive: true });
 			writeFileSync(box.staged, "winner\n");
 			const entry = { ...WANTED, command: hookCommand(box.node, box.staged) };
-			writeFileSync(join(box.cursor, "hooks.json"), `${JSON.stringify({ hooks: { [EVENT]: [entry] } })}\n`);
+			writeFileSync(
+				join(box.cursor, "hooks.json"),
+				`${JSON.stringify({ hooks: { [EVENT]: [entry] } })}\n`,
+			);
 			const lock = join(box.cursor, HOOK_LOCK_FILE);
 			writeFileSync(lock, `${process.pid}\n`);
 			expect(box.run(["install"], { lockWaitMs: 0 })).toBe(1);
@@ -496,7 +540,10 @@ describe("main", () => {
 				box.run(["install"], {
 					beforeCommit: () => {
 						stamp += 1;
-						writeFileSync(join(box.cursor, "hooks.json"), JSON.stringify({ hooks: { [EVENT]: [FOREIGN] }, stamp }));
+						writeFileSync(
+							join(box.cursor, "hooks.json"),
+							JSON.stringify({ hooks: { [EVENT]: [FOREIGN] }, stamp }),
+						);
 					},
 				}),
 			).toBe(1);

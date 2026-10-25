@@ -123,7 +123,10 @@ describe("createShutdown", () => {
 		expect(r.steps).toEqual(["drain", "stop", "app", "close", "exit"]);
 		expect(r.exits).toEqual([1]);
 		const failure = r.logs.find((line) => line.event === "shutdown_error");
-		expect(failure).toMatchObject({ step: "planner", error: { name: "Error", message: "planner would not stop" } });
+		expect(failure).toMatchObject({
+			step: "planner",
+			error: { name: "Error", message: "planner would not stop" },
+		});
 	});
 
 	test("a failing store close is logged and does not stop the exit", async () => {
@@ -134,7 +137,9 @@ describe("createShutdown", () => {
 		});
 		await r.shutdown("SIGTERM");
 		expect(r.exits).toEqual([1]);
-		expect(r.logs.some((line) => line.event === "shutdown_error" && line.step === "store")).toBe(true);
+		expect(r.logs.some((line) => line.event === "shutdown_error" && line.step === "store")).toBe(
+			true,
+		);
 	});
 
 	test("a shutdown that hangs is cut off by the timeout guard, once", async () => {
@@ -193,7 +198,11 @@ describe("createShutdown", () => {
 });
 
 describe("installProcessHandlers", () => {
-	function handlers(): { source: EventEmitter; calls: Array<[string, number | undefined]>; logs: LogLine[] } {
+	function handlers(): {
+		source: EventEmitter;
+		calls: Array<[string, number | undefined]>;
+		logs: LogLine[];
+	} {
 		const source = new EventEmitter();
 		const calls: Array<[string, number | undefined]> = [];
 		const logs: LogLine[] = [];
@@ -227,7 +236,10 @@ describe("installProcessHandlers", () => {
 			["uncaughtException", 1],
 		]);
 		expect(logs.map((line) => line.event)).toEqual(["unhandled_rejection", "uncaught_exception"]);
-		expect(logs[0]).toMatchObject({ level: "error", error: { name: "Error", message: "lost promise" } });
+		expect(logs[0]).toMatchObject({
+			level: "error",
+			error: { name: "Error", message: "lost promise" },
+		});
 		expect(logs[1]).toMatchObject({ level: "error", error: { name: "Error", message: "thrown" } });
 	});
 

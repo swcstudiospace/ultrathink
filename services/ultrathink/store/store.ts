@@ -151,7 +151,10 @@ function clampLimit(limit: number): number {
 
 function isUniqueViolation(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
-	if ("code" in error && (error.code === "SQLITE_CONSTRAINT_PRIMARYKEY" || error.code === "SQLITE_CONSTRAINT_UNIQUE")) {
+	if (
+		"code" in error &&
+		(error.code === "SQLITE_CONSTRAINT_PRIMARYKEY" || error.code === "SQLITE_CONSTRAINT_UNIQUE")
+	) {
 		return true;
 	}
 	return error.message.includes("UNIQUE constraint failed");
@@ -178,11 +181,20 @@ function quickCheck(db: Database): { ok: true } | { ok: false; detail: string } 
 	try {
 		const rows = db.query<QuickCheckRow, []>(`PRAGMA quick_check(${QUICK_CHECK_MAX_ROWS})`).all();
 		if (rows.length === 1 && rows[0]?.quick_check === "ok") return { ok: true };
-		detail = rows.length === 0 ? "quick_check returned no rows" : rows.map((row) => String(row.quick_check)).join("; ");
+		detail =
+			rows.length === 0
+				? "quick_check returned no rows"
+				: rows.map((row) => String(row.quick_check)).join("; ");
 	} catch (error) {
 		detail = error instanceof Error ? error.message : String(error);
 	}
-	return { ok: false, detail: detail.length > QUICK_CHECK_DETAIL_CHARS ? `${detail.slice(0, QUICK_CHECK_DETAIL_CHARS - 1)}…` : detail };
+	return {
+		ok: false,
+		detail:
+			detail.length > QUICK_CHECK_DETAIL_CHARS
+				? `${detail.slice(0, QUICK_CHECK_DETAIL_CHARS - 1)}…`
+				: detail,
+	};
 }
 
 function createStore(db: Database): Store {

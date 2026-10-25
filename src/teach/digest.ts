@@ -8,14 +8,33 @@
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { isNoise } from "../claude/transcript.ts";
-import { DIGEST_MAX_CHARS, DIGEST_MAX_TURNS, DIGEST_TURN_CHARS, type DigestTurn, type TeachDigest } from "./types.ts";
+import {
+	DIGEST_MAX_CHARS,
+	DIGEST_MAX_TURNS,
+	DIGEST_TURN_CHARS,
+	type DigestTurn,
+	type TeachDigest,
+} from "./types.ts";
 
 const TAIL_BYTES = 512 * 1024;
 const TOOL_SUMMARY_CHARS = 200;
 const TOOL_NAME_CHARS = 80;
-const SUMMARY_KEYS = ["command", "file_path", "path", "pattern", "url", "query", "description", "prompt"] as const;
+const SUMMARY_KEYS = [
+	"command",
+	"file_path",
+	"path",
+	"pattern",
+	"url",
+	"query",
+	"description",
+	"prompt",
+] as const;
 const ROLES: Record<DigestTurn["role"], true> = { user: true, assistant: true, tool: true };
-const OUTCOMES: Record<NonNullable<TeachDigest["outcome"]>, true> = { completed: true, failed: true, interrupted: true };
+const OUTCOMES: Record<NonNullable<TeachDigest["outcome"]>, true> = {
+	completed: true,
+	failed: true,
+	interrupted: true,
+};
 const INTERRUPTED = /^\[Request interrupted by user/i;
 
 export interface DigestMeta {
@@ -57,7 +76,8 @@ export function parseDigest(raw: unknown): TeachDigest | undefined {
 	const cwd = nonEmpty(rec.cwd);
 	if (!host || !sessionId || !cwd) return undefined;
 	if (!Array.isArray(rec.turns)) return undefined;
-	if (typeof rec.toolCalls !== "number" || !Number.isInteger(rec.toolCalls) || rec.toolCalls < 0) return undefined;
+	if (typeof rec.toolCalls !== "number" || !Number.isInteger(rec.toolCalls) || rec.toolCalls < 0)
+		return undefined;
 	let outcome: TeachDigest["outcome"];
 	if (rec.outcome !== undefined) {
 		if (typeof rec.outcome !== "string" || !Object.hasOwn(OUTCOMES, rec.outcome)) return undefined;
@@ -67,7 +87,12 @@ export function parseDigest(raw: unknown): TeachDigest | undefined {
 	for (const item of rec.turns) {
 		if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
 		const turn = item as Record<string, unknown>;
-		if (typeof turn.role !== "string" || !Object.hasOwn(ROLES, turn.role) || typeof turn.text !== "string") return undefined;
+		if (
+			typeof turn.role !== "string" ||
+			!Object.hasOwn(ROLES, turn.role) ||
+			typeof turn.text !== "string"
+		)
+			return undefined;
 		const parsed: DigestTurn = { role: turn.role as DigestTurn["role"], text: turn.text };
 		const tool = nonEmpty(turn.tool);
 		if (tool) parsed.tool = clip(tool, TOOL_NAME_CHARS);
@@ -152,8 +177,17 @@ function readTail(path: string): string | undefined {
 	}
 }
 
-function finish(turns: DigestTurn[], toolCalls: number, meta: DigestMeta, outcome: TeachDigest["outcome"]): TeachDigest | undefined {
-	if (!turns.some((turn) => turn.role === "user") || !turns.some((turn) => turn.role === "assistant")) return undefined;
+function finish(
+	turns: DigestTurn[],
+	toolCalls: number,
+	meta: DigestMeta,
+	outcome: TeachDigest["outcome"],
+): TeachDigest | undefined {
+	if (
+		!turns.some((turn) => turn.role === "user") ||
+		!turns.some((turn) => turn.role === "assistant")
+	)
+		return undefined;
 	const resolved = meta.outcome ?? outcome;
 	return {
 		host: meta.host,
@@ -166,7 +200,10 @@ function finish(turns: DigestTurn[], toolCalls: number, meta: DigestMeta, outcom
 	};
 }
 
-export function digestFromClaudeTranscript(path: string, meta: DigestMeta): TeachDigest | undefined {
+export function digestFromClaudeTranscript(
+	path: string,
+	meta: DigestMeta,
+): TeachDigest | undefined {
 	const jsonl = readTail(path);
 	if (!jsonl) return undefined;
 	const turns: DigestTurn[] = [];
@@ -212,7 +249,8 @@ export function digestFromClaudeTranscript(path: string, meta: DigestMeta): Teac
 			} else if (p.type === "tool_use") {
 				flush();
 				toolCalls++;
-				if (typeof p.id === "string") toolNames.set(p.id, clip(nonEmpty(p.name) ?? "tool", TOOL_NAME_CHARS));
+				if (typeof p.id === "string")
+					toolNames.set(p.id, clip(nonEmpty(p.name) ?? "tool", TOOL_NAME_CHARS));
 				turns.push(toolCallTurn(p.name, p.input));
 			} else if (p.type === "tool_result") {
 				flush();
@@ -228,7 +266,10 @@ export function digestFromClaudeTranscript(path: string, meta: DigestMeta): Teac
 	return finish(turns, toolCalls, meta, interrupted ? "interrupted" : undefined);
 }
 
-export function digestFromAgentMessages(messages: readonly unknown[], meta: DigestMeta): TeachDigest | undefined {
+export function digestFromAgentMessages(
+	messages: readonly unknown[],
+	meta: DigestMeta,
+): TeachDigest | undefined {
 	const turns: DigestTurn[] = [];
 	let toolCalls = 0;
 	let lastStop: unknown;
@@ -241,7 +282,11 @@ export function digestFromAgentMessages(messages: readonly unknown[], meta: Dige
 			if (text && !isNoise(text)) turns.push({ role: "user", text });
 		} else if (rec.role === "assistant") {
 			lastStop = rec.stopReason;
-			const content = Array.isArray(rec.content) ? rec.content : typeof rec.content === "string" ? [{ type: "text", text: rec.content }] : [];
+			const content = Array.isArray(rec.content)
+				? rec.content
+				: typeof rec.content === "string"
+					? [{ type: "text", text: rec.content }]
+					: [];
 			let pending: string[] = [];
 			const flush = (): void => {
 				const text = pending.join("\n").trim();
@@ -268,5 +313,10 @@ export function digestFromAgentMessages(messages: readonly unknown[], meta: Dige
 			turns.push(turn);
 		}
 	}
-	return finish(turns, toolCalls, meta, lastStop === "aborted" ? "interrupted" : lastStop === "error" ? "failed" : undefined);
+	return finish(
+		turns,
+		toolCalls,
+		meta,
+		lastStop === "aborted" ? "interrupted" : lastStop === "error" ? "failed" : undefined,
+	);
 }

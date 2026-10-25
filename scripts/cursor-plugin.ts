@@ -4,7 +4,16 @@
 // Install or remove the Cursor planner hook, and optionally wire substrate and swarm.
 // Usage: see USAGE below (`bun scripts/cursor-plugin.ts --help`).
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,17 +109,23 @@ function isObject(value: unknown): value is Json {
 export function isPlanOwned(entry: unknown): boolean {
 	return (
 		isObject(entry) &&
-		(entry[PLAN_MARKER] === true || (typeof entry.command === "string" && entry.command.includes(PLAN_HOOK_FILE)))
+		(entry[PLAN_MARKER] === true ||
+			(typeof entry.command === "string" && entry.command.includes(PLAN_HOOK_FILE)))
 	);
 }
 
-function prepare(current: unknown): { top: Json; hooks: Json; list: unknown[] } | { reason: string } {
-	if (current !== undefined && !isObject(current)) return { reason: "hooks.json top-level value is not an object" };
+function prepare(
+	current: unknown,
+): { top: Json; hooks: Json; list: unknown[] } | { reason: string } {
+	if (current !== undefined && !isObject(current))
+		return { reason: "hooks.json top-level value is not an object" };
 	const top: Json = current === undefined ? {} : { ...current };
-	if (top.hooks !== undefined && !isObject(top.hooks)) return { reason: 'hooks.json: "hooks" is not an object' };
+	if (top.hooks !== undefined && !isObject(top.hooks))
+		return { reason: 'hooks.json: "hooks" is not an object' };
 	const hooks: Json = top.hooks === undefined ? {} : { ...top.hooks };
 	const existing = hooks[EVENT];
-	if (existing !== undefined && !Array.isArray(existing)) return { reason: `hooks.json: "hooks.${EVENT}" is not an array` };
+	if (existing !== undefined && !Array.isArray(existing))
+		return { reason: `hooks.json: "hooks.${EVENT}" is not an array` };
 	const list: unknown[] = existing === undefined ? [] : [...existing];
 	top.hooks = hooks;
 	hooks[EVENT] = list;
@@ -118,7 +133,10 @@ function prepare(current: unknown): { top: Json; hooks: Json; list: unknown[] } 
 }
 
 /** Adds or refreshes the planner entry. Pstack, substrate, and other entries keep their slots. */
-export function upsertPlanHook(current: unknown, wanted: Json): { next?: Json; action?: HookAction; reason?: string } {
+export function upsertPlanHook(
+	current: unknown,
+	wanted: Json,
+): { next?: Json; action?: HookAction; reason?: string } {
 	const shaped = prepare(current);
 	if ("reason" in shaped) return { reason: shaped.reason };
 	const { top, hooks, list } = shaped;
@@ -128,13 +146,20 @@ export function upsertPlanHook(current: unknown, wanted: Json): { next?: Json; a
 		return { next: top, action: "added" };
 	}
 	const duplicates = list.some((entry, index) => index > first && isPlanOwned(entry));
-	if (!duplicates && JSON.stringify(list[first]) === JSON.stringify(wanted)) return { action: "unchanged" };
-	hooks[EVENT] = list.flatMap((entry, index) => (index === first ? [wanted] : isPlanOwned(entry) ? [] : [entry]));
+	if (!duplicates && JSON.stringify(list[first]) === JSON.stringify(wanted))
+		return { action: "unchanged" };
+	hooks[EVENT] = list.flatMap((entry, index) =>
+		index === first ? [wanted] : isPlanOwned(entry) ? [] : [entry],
+	);
 	return { next: top, action: "replaced" };
 }
 
 /** Deletes planner entries only. */
-export function removePlanHook(current: unknown): { next?: Json; action?: HookAction; reason?: string } {
+export function removePlanHook(current: unknown): {
+	next?: Json;
+	action?: HookAction;
+	reason?: string;
+} {
 	const shaped = prepare(current);
 	if ("reason" in shaped) return { reason: shaped.reason };
 	const { top, hooks, list } = shaped;
@@ -148,7 +173,10 @@ export function removePlanHook(current: unknown): { next?: Json; action?: HookAc
  * `--target` is required before the swarm installer is included.
  * No step runs `swarm_run.py` or `autonomous_run.py`.
  */
-export function externalSteps(env: Record<string, string | undefined>, target: string | undefined): ExternalStep[] {
+export function externalSteps(
+	env: Record<string, string | undefined>,
+	target: string | undefined,
+): ExternalStep[] {
 	const steps: ExternalStep[] = [];
 	const substrate = env.SUBSTRATE_ROOT?.trim();
 	if (substrate) {
@@ -213,8 +241,10 @@ function commit(
 		if ("reason" in parsed) return { code: fail(log, parsed.reason) };
 		const merged = merge(parsed.config);
 		if (merged.reason) return { code: fail(log, merged.reason) };
-		if (merged.next === undefined) return { code: 0, ...(merged.action ? { action: merged.action } : {}) };
-		if (writeHooksFile(file, merged.next, parsed.raw)) return { code: 0, ...(merged.action ? { action: merged.action } : {}) };
+		if (merged.next === undefined)
+			return { code: 0, ...(merged.action ? { action: merged.action } : {}) };
+		if (writeHooksFile(file, merged.next, parsed.raw))
+			return { code: 0, ...(merged.action ? { action: merged.action } : {}) };
 	}
 	return { code: fail(log, "hooks.json changed while it was being updated; re-run the command") };
 }
@@ -251,7 +281,9 @@ function commandsDirIsWritable(dir: string, log: (line: string) => void): boolea
 			return false;
 		}
 	} catch (error) {
-		log(`commands: skipped, ${dir} could not be read (${error instanceof Error ? error.message : String(error)})`);
+		log(
+			`commands: skipped, ${dir} could not be read (${error instanceof Error ? error.message : String(error)})`,
+		);
 		return false;
 	}
 	return true;
@@ -269,7 +301,9 @@ export function installGsdCommands(cursorDir: string, log: (line: string) => voi
 	try {
 		ensureDir(dir, 0o755);
 	} catch (error) {
-		log(`commands: skipped, ${dir} could not be created (${error instanceof Error ? error.message : String(error)})`);
+		log(
+			`commands: skipped, ${dir} could not be created (${error instanceof Error ? error.message : String(error)})`,
+		);
 		return 0;
 	}
 	for (const name of gsdCommandNames()) {
@@ -296,7 +330,9 @@ export function installGsdCommands(cursorDir: string, log: (line: string) => voi
 			written += 1;
 			log(`commands: ${name}.md written`);
 		} catch (error) {
-			log(`commands: ${name}.md skipped (${error instanceof Error ? error.message : String(error)})`);
+			log(
+				`commands: ${name}.md skipped (${error instanceof Error ? error.message : String(error)})`,
+			);
 		}
 	}
 	return written;
@@ -317,7 +353,9 @@ export function removeGsdCommands(cursorDir: string, log: (line: string) => void
 			removed += 1;
 			log(`commands: removed ${name}.md`);
 		} catch (error) {
-			log(`commands: ${name}.md not removed (${error instanceof Error ? error.message : String(error)})`);
+			log(
+				`commands: ${name}.md not removed (${error instanceof Error ? error.message : String(error)})`,
+			);
 		}
 	}
 	return removed;
@@ -336,7 +374,8 @@ export function runExternal(
 		}
 		const status = run(step.argv);
 		if (status === null) log(`${step.name}: skipped, ${step.argv[0]} could not start`);
-		else if (status !== 0) log(`${step.name}: exited ${status}; the Cursor planner hook is still installed`);
+		else if (status !== 0)
+			log(`${step.name}: exited ${status}; the Cursor planner hook is still installed`);
 		else log(`${step.name}: ok`);
 	}
 }
@@ -364,7 +403,10 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 		else return usage(log, `unexpected argument: ${arg}`);
 	}
 	if (command !== "install" && command !== "remove") {
-		return usage(log, command ? `unknown command: ${command}` : "missing command (install or remove)");
+		return usage(
+			log,
+			command ? `unknown command: ${command}` : "missing command (install or remove)",
+		);
 	}
 	if (target !== undefined && !isAbsolute(target)) target = resolve(target);
 	const cursorDir = resolve(cursorArg ?? join(env.HOME?.trim() || homedir(), ".cursor"));
@@ -415,7 +457,8 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 	if (!existsSync(source)) return fail(log, `hook source not found: ${source}`);
 	const candidates = deps.nodeCandidates ?? nodeCandidates(env);
 	const node = resolveNode(candidates);
-	if (node === undefined) return fail(log, `no executable node found (tried ${candidates.join(", ")})`);
+	if (node === undefined)
+		return fail(log, `no executable node found (tried ${candidates.join(", ")})`);
 	const wanted: Json = { type: "command", command: hookCommand(node, staged), [PLAN_MARKER]: true };
 	const preview = upsertPlanHook(initial.config, wanted);
 	if (preview.reason) return fail(log, preview.reason);
@@ -432,7 +475,9 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 			if (previousRoot === undefined) rmSync(rootFile, { force: true });
 			else writeFileSync(rootFile, previousRoot);
 		} catch (error) {
-			log(`could not restore the previous planner files (${error instanceof Error ? error.message : String(error)})`);
+			log(
+				`could not restore the previous planner files (${error instanceof Error ? error.message : String(error)})`,
+			);
 		}
 	};
 	try {
@@ -448,7 +493,10 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 			committed = commit(file, (current) => upsertPlanHook(current, wanted), log);
 		} catch (error) {
 			restore();
-			return fail(log, `could not install the planner hook: ${error instanceof Error ? error.message : String(error)}`);
+			return fail(
+				log,
+				`could not install the planner hook: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		if (committed.code !== 0) {
 			restore();

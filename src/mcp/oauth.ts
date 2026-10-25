@@ -11,11 +11,20 @@ import { StringValidator } from "../../services/ultrathink/security/validation.t
 
 const NO_CONTROL = /^[^\x00-\x1f\x7f]*$/;
 /** A callback as the user pasted it: trimmed, bounded, free of control characters. An empty one is allowed and carries no code. */
-const CALLBACK_TEXT = new StringValidator({ allowEmpty: true, trim: true, maxLength: 8192, pattern: NO_CONTROL });
+const CALLBACK_TEXT = new StringValidator({
+	allowEmpty: true,
+	trim: true,
+	maxLength: 8192,
+	pattern: NO_CONTROL,
+});
 /** The longest access token accepted, sent or recovered. One limit covers all three, so a token that is accepted can always be recovered. */
 const MAX_ACCESS_TOKEN_CHARS = 8192;
 /** An authorization header carrying a token: "Bearer " plus the token, free of control characters. */
-const AUTH_HEADER = new StringValidator({ allowEmpty: true, maxLength: "Bearer ".length + MAX_ACCESS_TOKEN_CHARS, pattern: NO_CONTROL });
+const AUTH_HEADER = new StringValidator({
+	allowEmpty: true,
+	maxLength: "Bearer ".length + MAX_ACCESS_TOKEN_CHARS,
+	pattern: NO_CONTROL,
+});
 /** A callback parameter once decoded: a percent-encoded control character is only visible at this point. */
 const DECODED_TEXT = new StringValidator({ allowEmpty: true, pattern: NO_CONTROL });
 /** A provider id must be one the MCP provider table names. */
@@ -23,7 +32,11 @@ const PROVIDER_ID = new StringValidator({ allowedValues: Object.keys(MCP_PROVIDE
 
 /** Records a refused input on the security feed with its field and validator code. The value is never recorded. */
 function refused(field: string, code: string): void {
-	getSecurityLogger().logValidationFailure({ source: "mcp_oauth", resource: "oauth", details: { field, code } });
+	getSecurityLogger().logValidationFailure({
+		source: "mcp_oauth",
+		resource: "oauth",
+		details: { field, code },
+	});
 }
 
 export interface AuthDeps {
@@ -83,7 +96,9 @@ async function readJsonObject(response: Response): Promise<Record<string, unknow
 		const prefix = await readBodyPrefix(response, MAX_AUTH_BODY_BYTES);
 		if (!prefix.complete) return undefined;
 		const value: unknown = JSON.parse(prefix.text);
-		return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+		return typeof value === "object" && value !== null && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: undefined;
 	} catch {
 		return undefined;
 	}
@@ -100,7 +115,10 @@ async function getJson(url: string, deps: AuthDeps): Promise<Record<string, unkn
 }
 
 /** Store mutations always re-read inside the lock so a stale snapshot is never written. */
-async function mutateStore<T>(deps: AuthDeps, fn: (store: CredentialStore) => Promise<T> | T): Promise<T> {
+async function mutateStore<T>(
+	deps: AuthDeps,
+	fn: (store: CredentialStore) => Promise<T> | T,
+): Promise<T> {
 	return withStoreLock(
 		deps.storePath,
 		async () => {
@@ -113,7 +131,11 @@ async function mutateStore<T>(deps: AuthDeps, fn: (store: CredentialStore) => Pr
 	);
 }
 
-async function tokenRequest(client: OAuthClient, params: Record<string, string>, deps: AuthDeps): Promise<OAuthTokens> {
+async function tokenRequest(
+	client: OAuthClient,
+	params: Record<string, string>,
+	deps: AuthDeps,
+): Promise<OAuthTokens> {
 	const body = new URLSearchParams({ ...params, client_id: client.clientId });
 	if (client.clientSecret) body.set("client_secret", client.clientSecret);
 	const response = await (deps.fetch ?? fetch)(client.tokenEndpoint, {
@@ -130,7 +152,10 @@ async function tokenRequest(client: OAuthClient, params: Record<string, string>,
 	// A body that is not a JSON object, or is longer than the cap, leaves json empty: the status decides.
 	const json = (await readJsonObject(response)) ?? {};
 	if (!response.ok || typeof json.access_token !== "string") {
-		throw new TokenEndpointError(response.status, typeof json.error === "string" ? json.error : undefined);
+		throw new TokenEndpointError(
+			response.status,
+			typeof json.error === "string" ? json.error : undefined,
+		);
 	}
 	// The token must fit the header limit that recovery applies, or a token could be accepted and then never recovered.
 	const header = AUTH_HEADER.validate(`Bearer ${json.access_token}`);
@@ -141,14 +166,19 @@ async function tokenRequest(client: OAuthClient, params: Record<string, string>,
 	const now = (deps.now ?? Date.now)();
 	return {
 		accessToken: json.access_token,
-		refreshToken: typeof json.refresh_token === "string" ? json.refresh_token : params.refresh_token,
+		refreshToken:
+			typeof json.refresh_token === "string" ? json.refresh_token : params.refresh_token,
 		expiresAt: typeof json.expires_in === "number" ? now + json.expires_in * 1000 : undefined,
 		scope: typeof json.scope === "string" ? json.scope : undefined,
 	};
 }
 
 /** Refresh inside an already-held lock; mutates `store` (caller persists). */
-async function refreshLocked(provider: McpProviderId, store: CredentialStore, deps: AuthDeps): Promise<string | undefined> {
+async function refreshLocked(
+	provider: McpProviderId,
+	store: CredentialStore,
+	deps: AuthDeps,
+): Promise<string | undefined> {
 	const credential = store.providers[provider];
 	if (credential?.kind !== "oauth" || !credential.tokens?.refreshToken) return undefined;
 	try {
@@ -175,7 +205,10 @@ async function refreshLocked(provider: McpProviderId, store: CredentialStore, de
 	}
 }
 
-export async function beginLogin(provider: McpProviderId, deps: AuthDeps & { redirectUri: string }): Promise<PendingLogin> {
+export async function beginLogin(
+	provider: McpProviderId,
+	deps: AuthDeps & { redirectUri: string },
+): Promise<PendingLogin> {
 	const providerCheck = PROVIDER_ID.validate(provider);
 	if (!providerCheck.valid) {
 		refused("provider", providerCheck.errors[0]?.code ?? "INVALID");
@@ -186,13 +219,16 @@ export async function beginLogin(provider: McpProviderId, deps: AuthDeps & { red
 	const prm = await getJson(info.protectedResourceMetadata, deps);
 	const servers = prm?.authorization_servers;
 	const issuer = (
-		Array.isArray(servers) && typeof servers[0] === "string" ? servers[0] : new URL(info.resource).origin
+		Array.isArray(servers) && typeof servers[0] === "string"
+			? servers[0]
+			: new URL(info.resource).origin
 	).replace(/\/$/, "");
 	const scopes =
 		Array.isArray(prm?.scopes_supported) && prm.scopes_supported.length > 0
 			? (prm.scopes_supported as string[])
 			: info.scopes;
-	if (!isHttps(issuer)) throw new Error(`${provider}: authorization server ${issuer} must use https`);
+	if (!isHttps(issuer))
+		throw new Error(`${provider}: authorization server ${issuer} must use https`);
 	const asMeta =
 		(await getJson(`${issuer}/.well-known/oauth-authorization-server`, deps)) ??
 		(await getJson(`${issuer}/.well-known/openid-configuration`, deps));
@@ -218,7 +254,7 @@ export async function beginLogin(provider: McpProviderId, deps: AuthDeps & { red
 		throw new Error(`${provider}: authorization server metadata issuer mismatch at ${issuer}`);
 	}
 
-	const client = await mutateStore(deps, async store => {
+	const client = await mutateStore(deps, async (store) => {
 		const existing = store.providers[provider];
 		if (
 			existing?.kind === "oauth" &&
@@ -229,11 +265,17 @@ export async function beginLogin(provider: McpProviderId, deps: AuthDeps & { red
 			return existing.client;
 		}
 		if (typeof registrationEndpoint !== "string") {
-			throw new Error(`${provider}: authorization server does not support dynamic client registration`);
+			throw new Error(
+				`${provider}: authorization server does not support dynamic client registration`,
+			);
 		}
 		const response = await (deps.fetch ?? fetch)(registrationEndpoint, {
 			method: "POST",
-			headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": USER_AGENT },
+			headers: {
+				Accept: "application/json",
+				"Content-Type": "application/json",
+				"User-Agent": USER_AGENT,
+			},
 			body: JSON.stringify({
 				client_name: "ultrathink",
 				redirect_uris: [deps.redirectUri],
@@ -280,7 +322,12 @@ export async function beginLogin(provider: McpProviderId, deps: AuthDeps & { red
 	return { provider, url: url.toString(), state, verifier, redirectUri: deps.redirectUri, client };
 }
 
-export function parseCallback(input: string): { code?: string; state?: string; error?: string; bare?: boolean } {
+export function parseCallback(input: string): {
+	code?: string;
+	state?: string;
+	error?: string;
+	bare?: boolean;
+} {
 	const verdict = CALLBACK_TEXT.validate(input);
 	if (!verdict.valid) {
 		refused("callback", verdict.errors[0]?.code ?? "INVALID");
@@ -315,7 +362,11 @@ export function parseCallback(input: string): { code?: string; state?: string; e
 	return parsed;
 }
 
-export async function completeLogin(pending: PendingLogin, input: string, deps: AuthDeps): Promise<void> {
+export async function completeLogin(
+	pending: PendingLogin,
+	input: string,
+	deps: AuthDeps,
+): Promise<void> {
 	const parsed = parseCallback(input);
 	if (parsed.error) throw new Error(`${pending.provider}: authorization denied (${parsed.error})`);
 	if (!parsed.bare && parsed.state !== pending.state) {
@@ -333,7 +384,7 @@ export async function completeLogin(pending: PendingLogin, input: string, deps: 
 		},
 		deps,
 	);
-	await mutateStore(deps, store => {
+	await mutateStore(deps, (store) => {
 		store.providers[pending.provider] = {
 			kind: "oauth",
 			client: pending.client,
@@ -343,22 +394,34 @@ export async function completeLogin(pending: PendingLogin, input: string, deps: 
 	});
 }
 
-export async function setApiKey(provider: ProviderId, apiKey: string, deps: AuthDeps): Promise<void> {
-	if (!PROVIDERS[provider].apiKey) throw new Error(`${provider} does not accept API keys; use OAuth login`);
+export async function setApiKey(
+	provider: ProviderId,
+	apiKey: string,
+	deps: AuthDeps,
+): Promise<void> {
+	if (!PROVIDERS[provider].apiKey)
+		throw new Error(`${provider} does not accept API keys; use OAuth login`);
 	const key = apiKey.trim();
 	if (!key) throw new Error("API key is empty");
-	await mutateStore(deps, store => {
-		store.providers[provider] = { kind: "api_key", apiKey: key, updatedAt: (deps.now ?? Date.now)() };
+	await mutateStore(deps, (store) => {
+		store.providers[provider] = {
+			kind: "api_key",
+			apiKey: key,
+			updatedAt: (deps.now ?? Date.now)(),
+		};
 	});
 }
 
 export async function logout(provider: ProviderId, deps: AuthDeps): Promise<void> {
-	await mutateStore(deps, store => {
+	await mutateStore(deps, (store) => {
 		delete store.providers[provider];
 	});
 }
 
-export async function resolveAuthHeader(provider: McpProviderId, deps: AuthDeps): Promise<string | undefined> {
+export async function resolveAuthHeader(
+	provider: McpProviderId,
+	deps: AuthDeps,
+): Promise<string | undefined> {
 	const providerCheck = PROVIDER_ID.validate(provider);
 	if (!providerCheck.valid) {
 		refused("provider", providerCheck.errors[0]?.code ?? "INVALID");
@@ -373,14 +436,15 @@ export async function resolveAuthHeader(provider: McpProviderId, deps: AuthDeps)
 	if (tokens.expiresAt === undefined || tokens.expiresAt - now() > REFRESH_SKEW_MS) {
 		return `Bearer ${tokens.accessToken}`;
 	}
-	return mutateStore(deps, async store => {
+	return mutateStore(deps, async (store) => {
 		const current = store.providers[provider];
 		if (current?.kind !== "oauth" || current.needsLogin || !current.tokens) return undefined;
 		const fresh = current.tokens;
 		if (fresh.expiresAt === undefined || fresh.expiresAt - now() > REFRESH_SKEW_MS) {
 			return `Bearer ${fresh.accessToken}`;
 		}
-		if (!fresh.refreshToken) return fresh.expiresAt > now() ? `Bearer ${fresh.accessToken}` : undefined;
+		if (!fresh.refreshToken)
+			return fresh.expiresAt > now() ? `Bearer ${fresh.accessToken}` : undefined;
 		return refreshLocked(provider, store, deps);
 	});
 }
@@ -402,7 +466,7 @@ export async function recoverUnauthorized(
 	}
 	const initial = readStore(deps.storePath).providers[provider];
 	if (initial?.kind !== "oauth") return false;
-	return mutateStore(deps, async store => {
+	return mutateStore(deps, async (store) => {
 		const credential = store.providers[provider];
 		if (credential?.kind !== "oauth" || credential.needsLogin || !credential.tokens) return false;
 		if (`Bearer ${credential.tokens.accessToken}` !== failedHeader) return true;
@@ -424,27 +488,46 @@ function formatDuration(ms: number): string {
 export function status(deps: AuthDeps): ProviderStatus[] {
 	const store = readStore(deps.storePath);
 	const now = (deps.now ?? Date.now)();
-	return (Object.keys(PROVIDERS) as ProviderId[]).map(provider => {
+	return (Object.keys(PROVIDERS) as ProviderId[]).map((provider) => {
 		const credential = store.providers[provider];
 		if (!credential) return { provider, kind: "none", ready: false, detail: "not configured" };
 		if (credential.kind === "api_key") {
-			return { provider, kind: "api_key", ready: true, detail: `api key set (${credential.apiKey.length} chars)` };
+			return {
+				provider,
+				kind: "api_key",
+				ready: true,
+				detail: `api key set (${credential.apiKey.length} chars)`,
+			};
 		}
 		if (credential.needsLogin) {
-			return { provider, kind: "oauth", ready: false, detail: `login required: ${credential.needsLogin}` };
+			return {
+				provider,
+				kind: "oauth",
+				ready: false,
+				detail: `login required: ${credential.needsLogin}`,
+			};
 		}
 		const tokens = credential.tokens;
-		if (!tokens) return { provider, kind: "oauth", ready: false, detail: "client registered; login required" };
-		if (tokens.expiresAt === undefined) return { provider, kind: "oauth", ready: true, detail: "oauth token (no expiry)" };
+		if (!tokens)
+			return { provider, kind: "oauth", ready: false, detail: "client registered; login required" };
+		if (tokens.expiresAt === undefined)
+			return { provider, kind: "oauth", ready: true, detail: "oauth token (no expiry)" };
 		const remaining = tokens.expiresAt - now;
 		if (remaining > 0) {
-			return { provider, kind: "oauth", ready: true, detail: `oauth token expires in ${formatDuration(remaining)}` };
+			return {
+				provider,
+				kind: "oauth",
+				ready: true,
+				detail: `oauth token expires in ${formatDuration(remaining)}`,
+			};
 		}
 		return {
 			provider,
 			kind: "oauth",
 			ready: Boolean(tokens.refreshToken),
-			detail: tokens.refreshToken ? "oauth token expired; will refresh" : "oauth token expired; login required",
+			detail: tokens.refreshToken
+				? "oauth token expired; will refresh"
+				: "oauth token expired; login required",
 		};
 	});
 }

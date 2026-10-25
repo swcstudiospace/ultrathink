@@ -75,7 +75,12 @@ export function checkState(deps: DoctorDeps): Finding[] {
 		return findings;
 	}
 	if (!dirStat.isDirectory()) {
-		add({ id: "state.dir", level: "error", title: `State path is not a directory: ${dir}`, fix: "Remove it or point ULTRATHINK_STATE_DIR elsewhere." });
+		add({
+			id: "state.dir",
+			level: "error",
+			title: `State path is not a directory: ${dir}`,
+			fix: "Remove it or point ULTRATHINK_STATE_DIR elsewhere.",
+		});
 		return findings;
 	}
 	try {
@@ -135,7 +140,10 @@ export function checkState(deps: DoctorDeps): Finding[] {
 					// A missing sessions directory is healthy and empty; any other listing failure means planning
 					// cannot save records, so it is an error.
 					const code =
-						typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+						typeof error === "object" &&
+						error !== null &&
+						"code" in error &&
+						typeof error.code === "string"
 							? error.code
 							: undefined;
 					if (code !== "ENOENT") {
@@ -210,7 +218,8 @@ export function checkState(deps: DoctorDeps): Finding[] {
 			id: "state.permissions",
 			level: "warn",
 			title: `${plural(loose, "session, carrier or control file")} readable by group or others`,
-			detail: "They hold your prompts, plans and control settings. New files are written with mode 0600.",
+			detail:
+				"They hold your prompts, plans and control settings. New files are written with mode 0600.",
 			fix: `chmod -R go-rwx ${dir}`,
 		});
 	}

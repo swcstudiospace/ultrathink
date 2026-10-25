@@ -79,8 +79,14 @@ export function readActivity(stateDir: string): ActivityReceipt[] {
 			try {
 				const value: unknown = JSON.parse(line);
 				if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-				const id = "id" in value && typeof value.id === "string" && /^[0-9a-f]{8}$/.test(value.id) ? value.id : undefined;
-				const sessionId = "sessionId" in value && typeof value.sessionId === "string" && value.sessionId !== "" ? value.sessionId : undefined;
+				const id =
+					"id" in value && typeof value.id === "string" && /^[0-9a-f]{8}$/.test(value.id)
+						? value.id
+						: undefined;
+				const sessionId =
+					"sessionId" in value && typeof value.sessionId === "string" && value.sessionId !== ""
+						? value.sessionId
+						: undefined;
 				const notice = toActivityNotice(value);
 				if (!id || !notice) continue;
 				receipts.push({ id, ...(sessionId ? { sessionId } : {}), ...notice });

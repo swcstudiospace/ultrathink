@@ -29,7 +29,13 @@ import { MAX_ENGINE_ERROR_CHARS } from "./display-limits.ts";
 import type { CompletionReport } from "../types.ts";
 
 export type ModelResolutionState = "override" | "detected" | "default" | "unresolved";
-export type PlanningTransport = "omp-native" | "claude-cli" | "muse-cli" | "grok-http" | "grok-cli" | "grok-shunt";
+export type PlanningTransport =
+	| "omp-native"
+	| "claude-cli"
+	| "muse-cli"
+	| "grok-http"
+	| "grok-cli"
+	| "grok-shunt";
 export type ModelResolutionSource =
 	| "host-override"
 	| "provider-override"
@@ -126,7 +132,10 @@ export interface ModelIntent {
 	engineSelection: EngineSelectionProvenance;
 }
 
-export type NativeEngineSelector = (intent: ModelIntent, signal?: AbortSignal) => Promise<EngineSelection>;
+export type NativeEngineSelector = (
+	intent: ModelIntent,
+	signal?: AbortSignal,
+) => Promise<EngineSelection>;
 
 export interface EngineSelectionContext {
 	host?: HostId;
@@ -142,7 +151,8 @@ export interface EngineSelectionContext {
 	purpose?: "planning" | "auxiliary";
 }
 
-export const GROK_LOGIN_REQUIRED = "Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)";
+export const GROK_LOGIN_REQUIRED =
+	"Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)";
 
 /**
  * Legacy route per host under `think.engine: auto`. Omp planning resolves natively and never reads this; the Omp entry
@@ -160,7 +170,11 @@ export const HOST_DEFAULT_ENGINES: Record<HostId, LegacyRoute> = {
 	cursor: "claude",
 };
 
-export function captureFirstError(label: string, complete: ClaudeCompleter, resolution: ModelResolution): SelectedEngine {
+export function captureFirstError(
+	label: string,
+	complete: ClaudeCompleter,
+	resolution: ModelResolution,
+): SelectedEngine {
 	let first: string | undefined;
 	return {
 		label,
@@ -170,7 +184,12 @@ export function captureFirstError(label: string, complete: ClaudeCompleter, reso
 			} catch (error) {
 				// redactLine keeps short Bearer [REDACTED] as prose; engine stderr is diagnostics, not prose,
 				// so mask every remaining Bearer [REDACTED] too before the error is persisted and shown.
-				first ??= redactSecrets(redactLine(error instanceof Error ? error.message : String(error), MAX_ENGINE_ERROR_CHARS));
+				first ??= redactSecrets(
+					redactLine(
+						error instanceof Error ? error.message : String(error),
+						MAX_ENGINE_ERROR_CHARS,
+					),
+				);
 				throw error;
 			}
 		},
@@ -188,7 +207,11 @@ const TRANSPORT_ROUTE: Record<PlanningTransport, string> = {
 	"grok-shunt": "grok",
 };
 
-const GROK_TRANSPORT: Record<GrokTransport, PlanningTransport> = { http: "grok-http", cli: "grok-cli", shunt: "grok-shunt" };
+const GROK_TRANSPORT: Record<GrokTransport, PlanningTransport> = {
+	http: "grok-http",
+	cli: "grok-cli",
+	shunt: "grok-shunt",
+};
 
 /** Bracket tag of a `default` label per source; a CLI default names itself instead. */
 const DEFAULT_TAG: Partial<Record<ModelResolutionSource, string>> = {
@@ -215,10 +238,14 @@ interface ResolutionFields {
 /** The allowlisted record (§9): fixed vocabulary, display-safe ids (none on an unresolved target), and a generated label. */
 function resolutionRecord(fields: ResolutionFields): ModelResolution {
 	const selected = fields.state !== "unresolved";
-	const modelId = selected && fields.modelId ? displayId(fields.modelId, "<opaque-model>") : undefined;
+	const modelId =
+		selected && fields.modelId ? displayId(fields.modelId, "<opaque-model>") : undefined;
 	const provider = fields.provider ? displayId(fields.provider, "<opaque-provider>") : undefined;
 	const api = selected && fields.api ? displayId(fields.api, "<opaque-provider>") : undefined;
-	const providerType = selected && fields.providerType ? displayId(fields.providerType, "<opaque-provider>") : undefined;
+	const providerType =
+		selected && fields.providerType
+			? displayId(fields.providerType, "<opaque-provider>")
+			: undefined;
 	const route = TRANSPORT_ROUTE[fields.transport];
 	let label: string;
 	if (!selected) label = `${route}:unresolved [${fields.reason}]`;
@@ -259,7 +286,11 @@ function resolutionRecord(fields: ResolutionFields): ModelResolution {
 
 /** A visible unresolved skip: stable reason code, safe notice and the record; the original prompt continues. */
 function unresolvedSkip(resolution: ModelResolution): EngineSkip {
-	return { skipped: resolution.reason, resolution, notice: `Prompt Uplift skipped · ${resolution.label}` };
+	return {
+		skipped: resolution.reason,
+		resolution,
+		notice: `Prompt Uplift skipped · ${resolution.label}`,
+	};
 }
 
 /** A legacy route's wire choice before any availability check; `model: ""` omits `--model` (Claude/Muse CLI default). */
@@ -272,7 +303,8 @@ interface WireChoice {
 function engineModel(config: UltrathinkConfig, route: LegacyRoute): WireChoice {
 	const model = config[route].model;
 	if (!model.trim()) return { model: "", source: "cli-default" };
-	const pinned = config.modelProvenance[route] === "file-pin" || model !== ROUTE_DEFAULT_MODELS[route];
+	const pinned =
+		config.modelProvenance[route] === "file-pin" || model !== ROUTE_DEFAULT_MODELS[route];
 	return { model, source: pinned ? "engine-model" : "route-default" };
 }
 
@@ -283,10 +315,24 @@ function shuntModel(config: UltrathinkConfig, route: LegacyRoute): string {
 }
 
 /** State, source, reason and wire id a selected legacy choice records. */
-function legacyFields(choice: WireChoice): Pick<ResolutionFields, "state" | "source" | "reason" | "modelId"> {
-	if (choice.source === "route-default") return { state: "default", source: "route-default", reason: "route-default-model", modelId: choice.model };
-	if (choice.source === "cli-default") return { state: "default", source: "cli-default", reason: "cli-delegation" };
-	return { state: "override", source: choice.source, reason: "explicit-model", modelId: choice.model };
+function legacyFields(
+	choice: WireChoice,
+): Pick<ResolutionFields, "state" | "source" | "reason" | "modelId"> {
+	if (choice.source === "route-default")
+		return {
+			state: "default",
+			source: "route-default",
+			reason: "route-default-model",
+			modelId: choice.model,
+		};
+	if (choice.source === "cli-default")
+		return { state: "default", source: "cli-default", reason: "cli-delegation" };
+	return {
+		state: "override",
+		source: choice.source,
+		reason: "explicit-model",
+		modelId: choice.model,
+	};
 }
 
 type SelectionBase = Pick<ResolutionFields, "host" | "engineSelection">;
@@ -296,9 +342,24 @@ type SelectionBase = Pick<ResolutionFields, "host" | "engineSelection">;
  * user configuration (`grok.enabled: false` or `grok.fallbackToClaude: true`, AD-2a): the choice is then Claude's own
  * effective model, never the Grok or host wire selector, and the record says configured fallback.
  */
-function claudeRoute(config: UltrathinkConfig, cwd: string, base: SelectionBase, choice: WireChoice, suffix: string, fallback: boolean): EngineSelection {
+function claudeRoute(
+	config: UltrathinkConfig,
+	cwd: string,
+	base: SelectionBase,
+	choice: WireChoice,
+	suffix: string,
+	fallback: boolean,
+): EngineSelection {
 	if (hasControlCharacter(choice.model))
-		return unresolvedSkip(resolutionRecord({ ...base, transport: "claude-cli", state: "unresolved", source: choice.source, reason: "selector-invalid" }));
+		return unresolvedSkip(
+			resolutionRecord({
+				...base,
+				transport: "claude-cli",
+				state: "unresolved",
+				source: choice.source,
+				reason: "selector-invalid",
+			}),
+		);
 	const fields = legacyFields(choice);
 	const resolution = resolutionRecord({
 		...base,
@@ -359,7 +420,15 @@ export async function selectEngine(
 	if (ompAuto && (context.purpose ?? "planning") === "planning") {
 		// Native: the live model decides. Neither family mapping nor the route-default map is consulted (D-06, D-09).
 		if (!context.native)
-			return unresolvedSkip(resolutionRecord({ ...base, transport: "omp-native", state: "unresolved", source: "none", reason: "native-unavailable" }));
+			return unresolvedSkip(
+				resolutionRecord({
+					...base,
+					transport: "omp-native",
+					state: "unresolved",
+					source: "none",
+					reason: "native-unavailable",
+				}),
+			);
 		const intent: ModelIntent = {
 			host,
 			override: config.models.hosts.omp ?? { provider: "", model: "" },
@@ -377,7 +446,12 @@ export async function selectEngine(
 				: HOST_DEFAULT_ENGINES[host];
 	// The Omp override names a native target; an auxiliary helper on the Omp auto route never hands it to a CLI.
 	const override = (ompAuto ? undefined : config.models.hosts[host]) ?? { provider: "", model: "" };
-	const transport: PlanningTransport = route === "claude" ? "claude-cli" : route === "muse" ? "muse-cli" : GROK_TRANSPORT[config.grok.transport];
+	const transport: PlanningTransport =
+		route === "claude"
+			? "claude-cli"
+			: route === "muse"
+				? "muse-cli"
+				: GROK_TRANSPORT[config.grok.transport];
 	if (override.provider) {
 		// No current legacy route binds an exact credential provider (§5.2): the constraint is visible, never ignored.
 		const invalid = hasControlCharacter(override.provider) || hasControlCharacter(override.model);
@@ -392,7 +466,8 @@ export async function selectEngine(
 		);
 	}
 	// `grok.enabled: false` is the documented switch that forces Claude even when Grok is selected (AD-2a).
-	if (route === "grok" && !config.grok.enabled) return claudeRoute(config, cwd, base, engineModel(config, "claude"), "", true);
+	if (route === "grok" && !config.grok.enabled)
+		return claudeRoute(config, cwd, base, engineModel(config, "claude"), "", true);
 	// Wire precedence: a nonblank shunt alias on shunt, then the host wire override, then the engine model.
 	const shuntAlias = shuntModel(config, route);
 	const choice: WireChoice = shuntAlias
@@ -401,7 +476,15 @@ export async function selectEngine(
 			? { model: override.model, source: "host-override" }
 			: engineModel(config, route);
 	if (hasControlCharacter(choice.model))
-		return unresolvedSkip(resolutionRecord({ ...base, transport, state: "unresolved", source: choice.source, reason: "selector-invalid" }));
+		return unresolvedSkip(
+			resolutionRecord({
+				...base,
+				transport,
+				state: "unresolved",
+				source: choice.source,
+				reason: "selector-invalid",
+			}),
+		);
 	if (route === "claude") return claudeRoute(config, cwd, base, choice, "", false);
 	if (route === "muse") {
 		const resolution = resolutionRecord({ ...base, transport, ...legacyFields(choice) });
@@ -419,26 +502,63 @@ export async function selectEngine(
 	}
 	// Grok has no omitted-model contract on any transport: a concrete wire model is required.
 	if (!choice.model)
-		return unresolvedSkip(resolutionRecord({ ...base, transport, state: "unresolved", source: "none", reason: "concrete-model-required" }));
+		return unresolvedSkip(
+			resolutionRecord({
+				...base,
+				transport,
+				state: "unresolved",
+				source: "none",
+				reason: "concrete-model-required",
+			}),
+		);
 	if (config.grok.transport === "shunt") {
 		if (!config.grok.shuntBaseUrl.trim())
-			return unresolvedSkip(resolutionRecord({ ...base, transport, state: "unresolved", source: choice.source, reason: "transport-incompatible" }));
+			return unresolvedSkip(
+				resolutionRecord({
+					...base,
+					transport,
+					state: "unresolved",
+					source: choice.source,
+					reason: "transport-incompatible",
+				}),
+			);
 	} else {
-		const auth = await grokAuthStatusFresh({ home: config.grok.home || undefined, bin: config.grok.bin });
+		const auth = await grokAuthStatusFresh({
+			home: config.grok.home || undefined,
+			bin: config.grok.bin,
+		});
 		if (!auth.loggedIn || auth.expired) {
-			if (config.grok.fallbackToClaude) return claudeRoute(config, cwd, base, engineModel(config, "claude"), " (grok fallback)", true);
+			if (config.grok.fallbackToClaude)
+				return claudeRoute(
+					config,
+					cwd,
+					base,
+					engineModel(config, "claude"),
+					" (grok fallback)",
+					true,
+				);
 			// Auto and named Grok alike: the visible skip, with zero Claude and native calls (AD-2, AD-2a).
 			return {
 				skipped: GROK_LOGIN_REQUIRED,
 				notice: GROK_LOGIN_REQUIRED,
-				resolution: resolutionRecord({ ...base, transport, state: "unresolved", source: choice.source, reason: "grok-unavailable" }),
+				resolution: resolutionRecord({
+					...base,
+					transport,
+					state: "unresolved",
+					source: choice.source,
+					reason: "grok-unavailable",
+				}),
 			};
 		}
 	}
 	const model = override.model || config.grok.model;
 	const resolution = resolutionRecord({ ...base, transport, ...legacyFields(choice) });
 	return captureFirstError(
-		grokEngineLabel({ ...config.grok, model: resolution.modelId ?? "<opaque-model>", shuntModel: "" }),
+		grokEngineLabel({
+			...config.grok,
+			model: resolution.modelId ?? "<opaque-model>",
+			shuntModel: "",
+		}),
 		createGrokCompleter({
 			baseUrl: config.grok.baseUrl,
 			model,
@@ -491,17 +611,24 @@ async function nativeDefault<M extends NativeModelIdentity>(
 	query: NativeModelQuery<M>,
 	provider: string,
 ): Promise<{ tier: DefaultTier; model: M } | { tier: DefaultTier; reason: ModelResolutionReason }> {
-	const configured = Object.hasOwn(intent.providerDefaults, provider) ? intent.providerDefaults[provider] : undefined;
+	const configured = Object.hasOwn(intent.providerDefaults, provider)
+		? intent.providerDefaults[provider]
+		: undefined;
 	const tier: DefaultTier = configured?.trim() ? "configured-default" : "host-catalog";
-	const selector = tier === "configured-default" ? (configured ?? "") : (query.catalogDefault(provider)?.trim() ?? "");
+	const selector =
+		tier === "configured-default"
+			? (configured ?? "")
+			: (query.catalogDefault(provider)?.trim() ?? "");
 	if (!selector) return { tier, reason: "mapping-missing" };
 	if (hasControlCharacter(selector)) return { tier, reason: "selector-invalid" };
 	const model = await query.resolve(selector, provider);
 	if (!model) return { tier, reason: "selector-unresolved" };
 	if (model.provider !== provider) return { tier, reason: "provider-mismatch" };
-	if (tier === "host-catalog" && model.id !== selector) return { tier, reason: "selector-unresolved" };
+	if (tier === "host-catalog" && model.id !== selector)
+		return { tier, reason: "selector-unresolved" };
 	const usable = query.check(model);
-	if (usable !== "usable") return { tier, reason: usable === "unsupported" ? "unsupported-model" : "selector-unresolved" };
+	if (usable !== "usable")
+		return { tier, reason: usable === "unsupported" ? "unsupported-model" : "selector-unresolved" };
 	return { tier, model };
 }
 
@@ -518,9 +645,25 @@ export async function selectNativeEngine<M extends NativeModelIdentity>(
 	bind: (model: M) => ClaudeCompleter,
 ): Promise<EngineSelection> {
 	const base: SelectionBase = { host: intent.host, engineSelection: intent.engineSelection };
-	const unresolved = (source: ModelResolutionSource, reason: ModelResolutionReason, provider?: string): EngineSkip =>
-		unresolvedSkip(resolutionRecord({ ...base, transport: "omp-native", state: "unresolved", source, reason, provider }));
-	const selected = (model: M, fields: Pick<ResolutionFields, "state" | "source" | "reason" | "defaultSource">): SelectedEngine => {
+	const unresolved = (
+		source: ModelResolutionSource,
+		reason: ModelResolutionReason,
+		provider?: string,
+	): EngineSkip =>
+		unresolvedSkip(
+			resolutionRecord({
+				...base,
+				transport: "omp-native",
+				state: "unresolved",
+				source,
+				reason,
+				provider,
+			}),
+		);
+	const selected = (
+		model: M,
+		fields: Pick<ResolutionFields, "state" | "source" | "reason" | "defaultSource">,
+	): SelectedEngine => {
 		const resolution = resolutionRecord({
 			...base,
 			transport: "omp-native",
@@ -533,26 +676,50 @@ export async function selectNativeEngine<M extends NativeModelIdentity>(
 		return captureFirstError(resolution.label, bind(model), resolution);
 	};
 	const { provider: constraint, model: selector } = intent.override;
-	if (hasControlCharacter(selector) || hasControlCharacter(constraint)) return unresolved(selector ? "host-override" : "provider-override", "selector-invalid");
+	if (hasControlCharacter(selector) || hasControlCharacter(constraint))
+		return unresolved(selector ? "host-override" : "provider-override", "selector-invalid");
 	if (selector) {
 		const model = await query.resolve(selector, constraint || undefined);
 		if (!model) return unresolved("host-override", "selector-unresolved");
-		if (constraint && model.provider !== constraint) return unresolved("host-override", "provider-mismatch");
+		if (constraint && model.provider !== constraint)
+			return unresolved("host-override", "provider-mismatch");
 		const usable = query.check(model);
-		if (usable !== "usable") return unresolved("host-override", usable === "unsupported" ? "unsupported-model" : "selector-unresolved");
-		return selected(model, { state: "override", source: "host-override", reason: "explicit-model" });
+		if (usable !== "usable")
+			return unresolved(
+				"host-override",
+				usable === "unsupported" ? "unsupported-model" : "selector-unresolved",
+			);
+		return selected(model, {
+			state: "override",
+			source: "host-override",
+			reason: "explicit-model",
+		});
 	}
 	const live = query.live;
-	if (live && query.check(live.model) === "usable" && (!constraint || live.model.provider === constraint))
+	if (
+		live &&
+		query.check(live.model) === "usable" &&
+		(!constraint || live.model.provider === constraint)
+	)
 		return selected(live.model, { state: "detected", source: live.source, reason: "live-model" });
 	// The provider comes only from the constraint or the observed (even unusable) live Model; nothing else establishes it.
 	const provider = constraint || live?.model.provider || "";
 	if (!provider) return unresolved("none", "provider-unknown");
 	const fallback = await nativeDefault(intent, query, provider);
-	if (!("model" in fallback)) return unresolved(constraint ? "provider-override" : fallback.tier, fallback.reason, provider);
+	if (!("model" in fallback))
+		return unresolved(constraint ? "provider-override" : fallback.tier, fallback.reason, provider);
 	return constraint
-		? selected(fallback.model, { state: "override", source: "provider-override", reason: "explicit-provider", defaultSource: fallback.tier })
-		: selected(fallback.model, { state: "default", source: fallback.tier, reason: "active-unavailable" });
+		? selected(fallback.model, {
+				state: "override",
+				source: "provider-override",
+				reason: "explicit-provider",
+				defaultSource: fallback.tier,
+			})
+		: selected(fallback.model, {
+				state: "default",
+				source: fallback.tier,
+				reason: "active-unavailable",
+			});
 }
 
 /**
@@ -563,11 +730,18 @@ export async function selectNativeEngine<M extends NativeModelIdentity>(
  * and a provider constraint, which no legacy route can bind (§5.2), shows unresolved as selection reports it. Hermes
  * routes by session-model family under `auto` (AD-3), which a static label cannot show, so it names the default route.
  */
-export function engineLabel(config: UltrathinkConfig, state: ControlState, host?: HostId, observed?: ModelResolution): string {
+export function engineLabel(
+	config: UltrathinkConfig,
+	state: ControlState,
+	host?: HostId,
+	observed?: ModelResolution,
+): string {
 	const requested = state.engine ?? config.think.engine;
 	const resolvedHost = host ?? detectHost();
-	if (observed?.host === resolvedHost && observed.engineSelection?.engine === requested) return displayLabel(observed.label);
-	if (requested === "auto" && resolvedHost === "omp") return "omp-native:auto (live model not observed)";
+	if (observed?.host === resolvedHost && observed.engineSelection?.engine === requested)
+		return displayLabel(observed.label);
+	if (requested === "auto" && resolvedHost === "omp")
+		return "omp-native:auto (live model not observed)";
 	const engine = requested === "auto" ? HOST_DEFAULT_ENGINES[resolvedHost] : requested;
 	const override = config.models.hosts[resolvedHost] ?? { provider: "", model: "" };
 	let label: string;
@@ -578,10 +752,15 @@ export function engineLabel(config: UltrathinkConfig, state: ControlState, host?
 		// A disabled Grok route runs Claude on Claude's own model, never the host's wire selector.
 		const route = engine === "grok" && !config.grok.enabled ? "claude" : engine;
 		const shuntAlias = shuntModel(config, route);
-		const model = shuntAlias || (route === engine && override.model) || engineModel(config, route).model;
+		const model =
+			shuntAlias || (route === engine && override.model) || engineModel(config, route).model;
 		if (hasControlCharacter(model)) label = `${route}:unresolved [selector-invalid]`;
 		else if (route === "grok") {
-			label = grokEngineLabel({ ...config.grok, model: model ? displayId(model, "<opaque-model>") : "", shuntModel: "" });
+			label = grokEngineLabel({
+				...config.grok,
+				model: model ? displayId(model, "<opaque-model>") : "",
+				shuntModel: "",
+			});
 		} else {
 			label = `${route}:${model ? displayId(model, "<opaque-model>") : "session default"}`;
 		}

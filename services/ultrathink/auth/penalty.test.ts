@@ -46,7 +46,12 @@ describe("createPenaltyLadder", () => {
 		const ladder = ladderAt(clock);
 
 		for (let i = 0; i < 3; i++) {
-			expect(ladder.fail("ip")).toEqual({ blockedSec: 0, escalated: false, level: 0, tracked: true });
+			expect(ladder.fail("ip")).toEqual({
+				blockedSec: 0,
+				escalated: false,
+				level: 0,
+				tracked: true,
+			});
 		}
 		expect(ladder.blockedSec("ip")).toBe(0);
 
@@ -62,7 +67,12 @@ describe("createPenaltyLadder", () => {
 
 		expected.forEach((seconds, index) => {
 			const result = failTimes(ladder, "ip", 4);
-			expect(result).toEqual({ blockedSec: seconds, escalated: true, level: index + 1, tracked: true });
+			expect(result).toEqual({
+				blockedSec: seconds,
+				escalated: true,
+				level: index + 1,
+				tracked: true,
+			});
 			expect(result.blockedSec).toBeLessThanOrEqual(3600);
 			clock.t += seconds * 1000;
 		});
@@ -74,10 +84,19 @@ describe("createPenaltyLadder", () => {
 
 		expect(failTimes(ladder, "ip", 4).level).toBe(1);
 		clock.t += 60_000;
-		expect(failTimes(ladder, "ip", 4)).toMatchObject({ escalated: true, level: 2, blockedSec: 120 });
+		expect(failTimes(ladder, "ip", 4)).toMatchObject({
+			escalated: true,
+			level: 2,
+			blockedSec: 120,
+		});
 
 		clock.t = START + 60_000 + 120_000 + DECAY_MS + 1;
-		expect(failTimes(ladder, "ip", 4)).toEqual({ blockedSec: 60, escalated: true, level: 1, tracked: true });
+		expect(failTimes(ladder, "ip", 4)).toEqual({
+			blockedSec: 60,
+			escalated: true,
+			level: 1,
+			tracked: true,
+		});
 	});
 
 	test("escalates level by level at defaults until the maxSec cap", () => {
@@ -87,7 +106,12 @@ describe("createPenaltyLadder", () => {
 
 		expected.forEach((seconds, index) => {
 			const result = failTimes(ladder, "ip", 4);
-			expect(result).toEqual({ blockedSec: seconds, escalated: true, level: index + 1, tracked: true });
+			expect(result).toEqual({
+				blockedSec: seconds,
+				escalated: true,
+				level: index + 1,
+				tracked: true,
+			});
 			clock.t += seconds * 1000;
 		});
 	});
@@ -98,7 +122,12 @@ describe("createPenaltyLadder", () => {
 		escalateThrough(ladder, clock, 5);
 
 		clock.t += DECAY_MS - 1_000;
-		expect(failTimes(ladder, "ip", 4)).toEqual({ blockedSec: 1920, escalated: true, level: 6, tracked: true });
+		expect(failTimes(ladder, "ip", 4)).toEqual({
+			blockedSec: 1920,
+			escalated: true,
+			level: 6,
+			tracked: true,
+		});
 	});
 
 	test("quiet for more than the decay period after a block resets the level to one", () => {
@@ -107,7 +136,12 @@ describe("createPenaltyLadder", () => {
 		escalateThrough(ladder, clock, 5);
 
 		clock.t += DECAY_MS + 1;
-		expect(failTimes(ladder, "ip", 4)).toEqual({ blockedSec: 60, escalated: true, level: 1, tracked: true });
+		expect(failTimes(ladder, "ip", 4)).toEqual({
+			blockedSec: 60,
+			escalated: true,
+			level: 1,
+			tracked: true,
+		});
 	});
 
 	test("failures during an active block change neither level nor block end", () => {
@@ -118,7 +152,12 @@ describe("createPenaltyLadder", () => {
 		clock.t = START + 10_000;
 		expect(ladder.blockedSec("ip")).toBe(50);
 		for (let i = 0; i < 10; i++) {
-			expect(ladder.fail("ip")).toEqual({ blockedSec: 50, escalated: false, level: 1, tracked: true });
+			expect(ladder.fail("ip")).toEqual({
+				blockedSec: 50,
+				escalated: false,
+				level: 1,
+				tracked: true,
+			});
 		}
 		expect(ladder.blockedSec("ip")).toBe(50);
 
@@ -186,7 +225,9 @@ describe("createPenaltyLadder security events", () => {
 	/** Parsed log lines of the security logger, in emission order. */
 	function capture() {
 		const lines: string[] = [];
-		const security = new ConsoleSecurityEventLogger(createLogger({ write: (line) => lines.push(line) }));
+		const security = new ConsoleSecurityEventLogger(
+			createLogger({ write: (line) => lines.push(line) }),
+		);
 		const events = () => lines.map((line) => JSON.parse(line) as Record<string, unknown>);
 		return { security, events };
 	}
@@ -201,7 +242,13 @@ describe("createPenaltyLadder security events", () => {
 
 		expect(ladder.fail("ip")).toMatchObject({ escalated: true, level: 1, blockedSec: 60 });
 		expect(log.events()).toMatchObject([
-			{ event: "abuse.penalty_escalated", type: "suspicious_activity", severity: "high", ip: "ip", details: { level: 1, blockedSec: 60 } },
+			{
+				event: "abuse.penalty_escalated",
+				type: "suspicious_activity",
+				severity: "high",
+				ip: "ip",
+				details: { level: 1, blockedSec: 60 },
+			},
 		]);
 
 		for (let i = 0; i < 5; i++) ladder.fail("ip");
@@ -210,7 +257,11 @@ describe("createPenaltyLadder security events", () => {
 		clock.t += 60_000;
 		failTimes(ladder, "ip", 4);
 		expect(log.events()).toHaveLength(2);
-		expect(log.events()[1]).toMatchObject({ event: "abuse.penalty_escalated", ip: "ip", details: { level: 2, blockedSec: 120 } });
+		expect(log.events()[1]).toMatchObject({
+			event: "abuse.penalty_escalated",
+			ip: "ip",
+			details: { level: 2, blockedSec: 120 },
+		});
 	});
 
 	test("the event carries only the key, the level, the block and the fixed event fields", () => {
@@ -220,7 +271,22 @@ describe("createPenaltyLadder security events", () => {
 		failTimes(ladder, "ip", 4);
 
 		const [event] = log.events();
-		expect(Object.keys(event ?? {}).sort()).toEqual(["correlationId", "details", "event", "ip", "level", "severity", "source", "timestamp", "ts", "type"]);
-		expect(Object.keys((event?.details ?? {}) as Record<string, unknown>).sort()).toEqual(["blockedSec", "eventType", "level"]);
+		expect(Object.keys(event ?? {}).sort()).toEqual([
+			"correlationId",
+			"details",
+			"event",
+			"ip",
+			"level",
+			"severity",
+			"source",
+			"timestamp",
+			"ts",
+			"type",
+		]);
+		expect(Object.keys((event?.details ?? {}) as Record<string, unknown>).sort()).toEqual([
+			"blockedSec",
+			"eventType",
+			"level",
+		]);
 	});
 });

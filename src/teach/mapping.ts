@@ -8,7 +8,12 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { RecallHit } from "../hindsight/types.ts";
-import { MOMENT_KINDS, type MomentKind, type RecalledLesson, type TeachableMoment } from "./types.ts";
+import {
+	MOMENT_KINDS,
+	type MomentKind,
+	type RecalledLesson,
+	type TeachableMoment,
+} from "./types.ts";
 
 /** Hindsight's `chunks` mode stores content up to this many characters as one unit. */
 export const MAX_CONTENT_CHARS = 3_000;
@@ -62,17 +67,25 @@ function primaryFromGitFile(dir: string, dotGit: string): string {
 /** Lowercase basename of the primary checkout (linked worktrees collapse onto it), else of `cwd`, else "unknown". */
 export function projectOf(cwd: string): string {
 	const roots = gitRootsOf(cwd);
-	const name = basename(roots ? roots.primary : resolve(cwd)).replace(/\.git$/, "").toLowerCase();
+	const name = basename(roots ? roots.primary : resolve(cwd))
+		.replace(/\.git$/, "")
+		.toLowerCase();
 	return name === "" ? "unknown" : name;
 }
 
 function normalizeName(name: string): string {
-	return name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+	return name
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, " ")
+		.trim();
 }
 
 /** sha256 of `project|kind|normalized name`, first 32 hex characters: the same lesson captured twice merges. */
 export function dedupeKeyFor(project: string, kind: MomentKind, name: string): string {
-	return createHash("sha256").update(`${project}|${kind}|${normalizeName(name)}`).digest("hex").slice(0, 32);
+	return createHash("sha256")
+		.update(`${project}|${kind}|${normalizeName(name)}`)
+		.digest("hex")
+		.slice(0, 32);
 }
 
 export function documentIdFor(momentId: string): string {
@@ -91,7 +104,14 @@ export function sanitizeTag(tag: string): string {
 
 export function tagsFor(moment: TeachableMoment): string[] {
 	const tags = new Set<string>();
-	const base = ["ultrathink", "teachable", `project:${moment.project}`, `host:${moment.host}`, `kind:${moment.kind}`, `status:${moment.status}`];
+	const base = [
+		"ultrathink",
+		"teachable",
+		`project:${moment.project}`,
+		`host:${moment.host}`,
+		`kind:${moment.kind}`,
+		`status:${moment.status}`,
+	];
 	for (const tag of base) {
 		const clean = sanitizeTag(tag);
 		if (clean) tags.add(clean);
@@ -145,7 +165,11 @@ function parseContent(text: string): { name?: string; description: string; body:
 	const rest = header[2] ?? "";
 	const split = rest.indexOf("\n\n");
 	if (split === -1) return { name: header[1]?.trim(), description: "", body: rest.trim() };
-	return { name: header[1]?.trim(), description: rest.slice(0, split).trim(), body: rest.slice(split + 2).trim() };
+	return {
+		name: header[1]?.trim(),
+		description: rest.slice(0, split).trim(),
+		body: rest.slice(split + 2).trim(),
+	};
 }
 
 /** The lesson a Hindsight hit stands for; undefined for hits that are not ultrathink lessons or are superseded. */
@@ -159,7 +183,9 @@ export function lessonFromHit(hit: RecallHit): RecalledLesson | undefined {
 	const parsed = parseContent(typeof hit.text === "string" ? hit.text : "");
 	const name = (meta.name || parsed.name || "").trim();
 	if (name === "") return undefined;
-	const kind = [meta.kind, tagValue(tags, "kind:")].find((candidate): candidate is MomentKind => MOMENT_KINDS.includes(candidate as MomentKind));
+	const kind = [meta.kind, tagValue(tags, "kind:")].find((candidate): candidate is MomentKind =>
+		MOMENT_KINDS.includes(candidate as MomentKind),
+	);
 	const occurrences = Number.parseInt(meta.occurrences ?? "", 10);
 	return {
 		id,

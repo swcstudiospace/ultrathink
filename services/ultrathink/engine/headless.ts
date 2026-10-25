@@ -15,7 +15,12 @@ import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
 import { readSession } from "../../../src/claude/state.ts";
 import { defaultConfig, type UltrathinkConfig as PluginConfig } from "../../../src/config.ts";
 import type { ModelResolution, SelectedEngine } from "../../../src/host/engine.ts";
-import { GROKBOT_ENGINE_HOST, checkRecord, journalDir, readMeta } from "../../../src/host/grokbot.ts";
+import {
+	GROKBOT_ENGINE_HOST,
+	checkRecord,
+	journalDir,
+	readMeta,
+} from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger } from "../cost/ledger.ts";
@@ -26,8 +31,20 @@ import type { SpanSink } from "../obs/otel.ts";
 import type { Store } from "../store/store.ts";
 import type { BreakerState, CircuitBreaker } from "./breaker.ts";
 import type { GraphView } from "./graph-view.ts";
-import { type JournalErrorCode, type JournalResult, type SessionView, cleanText, isSessionId, isolatedConfigEnv } from "./journal.ts";
-import { OpenRouterError, type OpenRouterFetch, type OpenRouterUsage, createOpenRouterCompleter } from "./openrouter.ts";
+import {
+	type JournalErrorCode,
+	type JournalResult,
+	type SessionView,
+	cleanText,
+	isSessionId,
+	isolatedConfigEnv,
+} from "./journal.ts";
+import {
+	OpenRouterError,
+	type OpenRouterFetch,
+	type OpenRouterUsage,
+	createOpenRouterCompleter,
+} from "./openrouter.ts";
 import { clientPlanView, serverPlanView } from "./plan-view.ts";
 import type { ChatQuestion } from "./render.ts";
 
@@ -67,7 +84,11 @@ export interface HeadlessPlanner {
 	/** `config.serverPlanning`. */
 	readonly enabled: boolean;
 	start(input: { prompt: unknown; sessionId?: unknown }): Promise<JournalResult<StartView>>;
-	result(input: { sessionId: unknown; waitSeconds?: unknown; detail?: unknown }): Promise<JournalResult<ResultView>>;
+	result(input: {
+		sessionId: unknown;
+		waitSeconds?: unknown;
+		detail?: unknown;
+	}): Promise<JournalResult<ResultView>>;
 	/** Null when the session is not a server job (including malformed ids, which the journal reports). */
 	status(input: { sessionId: unknown }): JournalResult<SessionView> | null;
 	/** Aborts running jobs, waits up to 5 s, then marks what is left failed with error "interrupted". */
@@ -159,7 +180,13 @@ const PLANNER_OWNER = "ultrathink-server-planner";
 const RESERVATION_ALLOWANCE_TOKENS = 16000;
 /** Settled jobs whose file could not be written stay readable in memory up to this many; the oldest are dropped. */
 export const UNPERSISTED_JOBS_MAX = 50;
-const JOB_STATUSES: Record<string, true> = { running: true, planned: true, failed: true, invalid: true, skipped: true };
+const JOB_STATUSES: Record<string, true> = {
+	running: true,
+	planned: true,
+	failed: true,
+	invalid: true,
+	skipped: true,
+};
 /** Skips that mean the engine failed rather than that the request was declined. */
 const ENGINE_SKIPS: Record<string, true> = { "uplift-failed": true, "engine-error": true };
 /** Variables with no secret and no config meaning that a plan may inherit. */
@@ -334,7 +361,8 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 	/** One model call, reserved before and settled after in the ledger; a ceiling ends the whole job. */
 	function meteredCompleter(job: Job, model: string): ClaudeCompleter {
 		return async (system, user, signal) => {
-			if (signal?.aborted || job.controller.signal.aborted) throw new DOMException("plan aborted", "AbortError");
+			if (signal?.aborted || job.controller.signal.aborted)
+				throw new DOMException("plan aborted", "AbortError");
 			const inputEstimate = Math.ceil((system.length + user.length) / CHARS_PER_TOKEN);
 			let outputCap: number | undefined;
 			let estimated = 0;
@@ -349,13 +377,21 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					outputCap = derived;
 				}
 				estimated = inputEstimate + (outputCap ?? RESERVATION_ALLOWANCE_TOKENS);
-				reservationId = ledger.reserve({ runId: job.runId, phase: `model-${++job.seq}`, attempt: 1, estimatedTokens: estimated }).reservationId;
+				reservationId = ledger.reserve({
+					runId: job.runId,
+					phase: `model-${++job.seq}`,
+					attempt: 1,
+					estimatedTokens: estimated,
+				}).reservationId;
 			} catch (error) {
 				job.reason ??= error instanceof CeilingError ? "budget_exceeded" : "ledger_unavailable";
 				job.controller.abort();
 				throw error;
 			}
-			const reported: { usage?: OpenRouterUsage; call?: { ms: number; outcome: string; attempts: number } } = {};
+			const reported: {
+				usage?: OpenRouterUsage;
+				call?: { ms: number; outcome: string; attempts: number };
+			} = {};
 			const startedAt = now();
 			const emit = (outcome: string, usage?: OpenRouterUsage): void => {
 				if (!opts.onCall) return;
@@ -382,11 +418,13 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				if (usage) {
 					job.usage.inputTokens += usage.promptTokens ?? 0;
 					job.usage.outputTokens += usage.completionTokens ?? 0;
-					if (usage.costUsd !== undefined) job.usage.costUsd = (job.usage.costUsd ?? 0) + usage.costUsd;
+					if (usage.costUsd !== undefined)
+						job.usage.costUsd = (job.usage.costUsd ?? 0) + usage.costUsd;
 				}
 				const known = (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0);
 				// An endpoint that omits a count has not said the call was free: the reservation (the worst-case estimate) stays, so the ceilings keep counting.
-				const countsKnown = usage?.promptTokens !== undefined && usage.completionTokens !== undefined;
+				const countsKnown =
+					usage?.promptTokens !== undefined && usage.completionTokens !== undefined;
 				const actual = countsKnown ? known : Math.max(known, estimated);
 				try {
 					ledger.settle(reservation, Math.max(0, Math.round(actual)));
@@ -404,7 +442,9 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						maxOutputTokens: outputCap,
 						timeoutMs: config.modelTimeoutMs,
 						referer: config.publicOrigin,
-						...(config.modelReasoningEffort === undefined ? {} : { reasoningEffort: config.modelReasoningEffort }),
+						...(config.modelReasoningEffort === undefined
+							? {}
+							: { reasoningEffort: config.modelReasoningEffort }),
 						sleep,
 						...(opts.fetch ? { fetch: opts.fetch } : {}),
 						...(opts.breaker ? { breaker: opts.breaker } : {}),
@@ -422,7 +462,12 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				bill(usage, reservationId);
 				return text;
 			} catch (error) {
-				const failure = error instanceof OpenRouterError ? error.code : error instanceof Error && error.name === "AbortError" ? "aborted" : "engine_error";
+				const failure =
+					error instanceof OpenRouterError
+						? error.code
+						: error instanceof Error && error.name === "AbortError"
+							? "aborted"
+							: "engine_error";
 				// A reply cut at its output limit reports what it cost, so that call is billed like a completed one.
 				const cut = error instanceof OpenRouterError ? error.usage : undefined;
 				emit(failure, cut);
@@ -436,8 +481,12 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					}
 				}
 				if (error instanceof OpenRouterError && error.code === "truncated") job.truncated = true;
-				const aborted = error instanceof OpenRouterError ? error.code === "aborted" : error instanceof Error && error.name === "AbortError";
-				if (!aborted) job.firstError ??= error instanceof OpenRouterError ? error.code : "engine_error";
+				const aborted =
+					error instanceof OpenRouterError
+						? error.code === "aborted"
+						: error instanceof Error && error.name === "AbortError";
+				if (!aborted)
+					job.firstError ??= error instanceof OpenRouterError ? error.code : "engine_error";
 				throw error;
 			}
 		};
@@ -462,8 +511,10 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		if (job.reason !== undefined || response.skipped === "aborted") return abortOutcome(job);
 		// A reply cut at its output limit is never a plan: runClarify swallows a cut clarify call, so the record can still pass.
 		if (job.truncated === true) return { status: "failed", error: "truncated" };
-		if (response.skipped !== undefined && !Object.hasOwn(ENGINE_SKIPS, response.skipped)) return { status: "skipped", error: response.skipped };
-		if (response.skipped !== undefined || response.statePath === undefined) return { status: "failed", error: job.firstError ?? response.skipped ?? "engine_error" };
+		if (response.skipped !== undefined && !Object.hasOwn(ENGINE_SKIPS, response.skipped))
+			return { status: "skipped", error: response.skipped };
+		if (response.skipped !== undefined || response.statePath === undefined)
+			return { status: "failed", error: job.firstError ?? response.skipped ?? "engine_error" };
 		const record = readSession(stateDir, job.sessionId);
 		if (!record) return { status: "failed", error: job.firstError ?? "engine_error" };
 		const check = checkRecord(record, { thinkOff: false });
@@ -471,13 +522,20 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		// The engine's own failure explains a degraded record better than the degradation does.
 		if (job.firstError !== undefined) return { status: "failed", error: job.firstError };
 		const detail = check.errors.join("; ");
-		return { status: "invalid", error: detail.length > MAX_ERROR_CHARS ? `${detail.slice(0, MAX_ERROR_CHARS)}...` : detail };
+		return {
+			status: "invalid",
+			error: detail.length > MAX_ERROR_CHARS ? `${detail.slice(0, MAX_ERROR_CHARS)}...` : detail,
+		};
 	}
 
 	/** A settled job without a file is served from memory for a while; the map must not grow for the process lifetime. */
 	function retainUnpersisted(job: Job, error: unknown): void {
 		try {
-			opts.logger?.error("job_persist_failed", { sessionId: job.sessionId, status: job.status, error });
+			opts.logger?.error("job_persist_failed", {
+				sessionId: job.sessionId,
+				status: job.status,
+				error,
+			});
 		} catch {
 			// logging must never affect the job
 		}
@@ -505,7 +563,12 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			persistError = error;
 		}
 		try {
-			store.updateRun(job.runId, outcome.status === "planned" ? { status: "complete", reason: null } : { status: "failed", reason: outcome.error ?? outcome.status });
+			store.updateRun(
+				job.runId,
+				outcome.status === "planned"
+					? { status: "complete", reason: null }
+					: { status: "failed", reason: outcome.error ?? outcome.status },
+			);
 		} catch {
 			// bookkeeping only
 		}
@@ -527,22 +590,29 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		}
 		let outcome: Outcome;
 		try {
-			const response = await plan({ host: GROKBOT_ENGINE_HOST, session_id: job.sessionId, prompt, cwd }, plannerEnv(), {
-				stateDir,
-				signal: job.controller.signal,
-				config: pluginConfig(),
-				control: { enabled: true },
-				createTracker: () => undefined,
-				selectEngine: async (): Promise<SelectedEngine> => ({
-					label: `openrouter:${model}`,
-					complete: meteredCompleter(job, model),
-					error: () => job.firstError,
-					resolution: resolutionFor(model),
-				}),
-			});
+			const response = await plan(
+				{ host: GROKBOT_ENGINE_HOST, session_id: job.sessionId, prompt, cwd },
+				plannerEnv(),
+				{
+					stateDir,
+					signal: job.controller.signal,
+					config: pluginConfig(),
+					control: { enabled: true },
+					createTracker: () => undefined,
+					selectEngine: async (): Promise<SelectedEngine> => ({
+						label: `openrouter:${model}`,
+						complete: meteredCompleter(job, model),
+						error: () => job.firstError,
+						resolution: resolutionFor(model),
+					}),
+				},
+			);
 			outcome = judge(job, response);
 		} catch {
-			outcome = job.reason === undefined ? { status: "failed", error: job.firstError ?? "engine_error" } : abortOutcome(job);
+			outcome =
+				job.reason === undefined
+					? { status: "failed", error: job.firstError ?? "engine_error" }
+					: abortOutcome(job);
 		} finally {
 			timer.abort();
 		}
@@ -578,11 +648,16 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (!isSessionId(sessionId)) return fail("invalid_session_id");
 			if (typeof input.prompt !== "string") return fail("invalid_input");
 			const prompt = cleanText(input.prompt);
-			if (prompt.length === 0 || (config.maxInputChars > 0 && prompt.length > config.maxInputChars)) return fail("invalid_input");
+			if (prompt.length === 0 || (config.maxInputChars > 0 && prompt.length > config.maxInputChars))
+				return fail("invalid_input");
 			if (!enabled) return fail("disabled");
 			if (closed) return fail("not_ready");
 			const model = config.planningModel;
-			if (opts.completer === undefined && (config.openRouterApiKey === undefined || model === undefined)) return fail("not_ready");
+			if (
+				opts.completer === undefined &&
+				(config.openRouterApiKey === undefined || model === undefined)
+			)
+				return fail("not_ready");
 
 			const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 			const existing = jobs.get(sessionId) ?? readJobFile(sessionId);
@@ -612,8 +687,16 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				// A claimable status would let a queue worker adopt the row; paused-for-blocker is never claimed.
 				const run = store.db
 					.transaction(() => {
-						const created = store.createRun({ ownerId: PLANNER_OWNER, request: `server plan ${sessionId}`, route: "server-planning" });
-						store.updateRun(created.id, { status: "paused-for-blocker", reason: "server_planning", currentPhase: "plan" });
+						const created = store.createRun({
+							ownerId: PLANNER_OWNER,
+							request: `server plan ${sessionId}`,
+							route: "server-planning",
+						});
+						store.updateRun(created.id, {
+							status: "paused-for-blocker",
+							reason: "server_planning",
+							currentPhase: "plan",
+						});
 						return created;
 					})
 					.immediate();
@@ -649,16 +732,20 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (!isSessionId(sessionId)) return fail("invalid_session_id");
 			let waitSeconds = DEFAULT_WAIT_SECONDS;
 			if (input.waitSeconds !== undefined) {
-				if (typeof input.waitSeconds !== "number" || Number.isNaN(input.waitSeconds)) return fail("invalid_input");
+				if (typeof input.waitSeconds !== "number" || Number.isNaN(input.waitSeconds))
+					return fail("invalid_input");
 				waitSeconds = Math.min(MAX_WAIT_SECONDS, Math.max(0, Math.floor(input.waitSeconds)));
 			}
-			if (input.detail !== undefined && input.detail !== "brief" && input.detail !== "full") return fail("invalid_input");
+			if (input.detail !== undefined && input.detail !== "brief" && input.detail !== "full")
+				return fail("invalid_input");
 			const detail: "brief" | "full" = input.detail === "full" ? "full" : "brief";
 			try {
 				const live = jobs.get(sessionId);
 				if (live) await waitFor(live, waitSeconds * 1000);
 				const file = live ?? readJobFile(sessionId);
-				return file ? serverPlanView(stateDir, file, detail) : clientPlanView(stateDir, sessionId, detail);
+				return file
+					? serverPlanView(stateDir, file, detail)
+					: clientPlanView(stateDir, sessionId, detail);
 			} catch {
 				return fail("engine_error");
 			}
@@ -688,7 +775,10 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			}
 			const wait = new AbortController();
 			try {
-				await Promise.race([Promise.all(running.map((job) => job.done)), sleep(SHUTDOWN_WAIT_MS, wait.signal)]);
+				await Promise.race([
+					Promise.all(running.map((job) => job.done)),
+					sleep(SHUTDOWN_WAIT_MS, wait.signal),
+				]);
 			} finally {
 				wait.abort();
 			}

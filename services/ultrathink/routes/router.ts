@@ -2,7 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { accessSync, constants, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	accessSync,
+	constants,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import pkg from "../../../package.json";
@@ -11,7 +19,11 @@ import { createPenaltyLadder } from "../auth/penalty.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { type Ledger, createLedger } from "../cost/ledger.ts";
 import { type BreakerState, createCircuitBreaker } from "../engine/breaker.ts";
-import { type HeadlessPlanner, type ResultView, createHeadlessPlanner } from "../engine/headless.ts";
+import {
+	type HeadlessPlanner,
+	type ResultView,
+	createHeadlessPlanner,
+} from "../engine/headless.ts";
 import type { JournalOptions } from "../engine/journal.ts";
 import type { OpenRouterFetch } from "../engine/openrouter.ts";
 import { type SweepResult, createSweeper, sweepStateDir } from "../engine/retention.ts";
@@ -19,19 +31,33 @@ import { defaultGraphResources, loadCatalogWithFallback } from "../mcp/connector
 import { type McpToolHost, type ToolOutcome, handleMcpPayload } from "../mcp/mcp.ts";
 import { createToolHost } from "../mcp/tool-host.ts";
 import type { PlanningInfo } from "../mcp/tools-connector.ts";
-import { DEFAULT_ALLOWED_ORIGINS, originAllowed, resolveProtocolVersion } from "../mcp/transport.ts";
+import {
+	DEFAULT_ALLOWED_ORIGINS,
+	originAllowed,
+	resolveProtocolVersion,
+} from "../mcp/transport.ts";
 import { type AnomalyAlert, DEFAULT_ANOMALY_RULES, createAnomalyDetector } from "../obs/anomaly.ts";
 import { type Fingerprint, createAuditWatch } from "../obs/audit-watch.ts";
 import { chainIdentity, createAuditVerifier } from "../obs/audit-verify.ts";
 import { type AuditEvent, type AuditLog, auditPath, createAuditLog } from "../obs/audit.ts";
 import { currentRequestContext, runWithRequestContext } from "../obs/context.ts";
 import { type Admission, createFairShare } from "../obs/fair-share.ts";
-import { type LoadHistory, createLoadHistory, loadLoadHistory, recommendedReplicas } from "../obs/forecast.ts";
+import {
+	type LoadHistory,
+	createLoadHistory,
+	loadLoadHistory,
+	recommendedReplicas,
+} from "../obs/forecast.ts";
 import { type Logger, createLogger, newRequestId, sanitizeRequestId } from "../obs/log.ts";
 import { type Metrics, createMetrics } from "../obs/metrics.ts";
 import { type SpanSink, createSpanExporter } from "../obs/otel.ts";
 import { createAdaptiveQuota } from "../obs/quota.ts";
-import { type RuntimeSample, createDrainState, createInflight, createRuntimeProbe } from "../obs/runtime.ts";
+import {
+	type RuntimeSample,
+	createDrainState,
+	createInflight,
+	createRuntimeProbe,
+} from "../obs/runtime.ts";
 import { createAnomalyDetector as createSignalDetector } from "../obs/signal-anomaly.ts";
 import { createAuditStreams } from "../obs/sinks/fanout.ts";
 import { createHttpTransport, createKafkaRestTransport } from "../obs/sinks/http.ts";
@@ -200,7 +226,11 @@ const SLO_BURN_WINDOWS: ReadonlyArray<{ label: string; ms: number }> = [
 const SLO_MAX_SAMPLES = Math.ceil(SLO_WINDOW_MS / RUNTIME_SAMPLE_MS) + 2;
 const NS_PER_MS = 1_000_000n;
 
-const LOOPBACK_PEERS: Record<string, true> = { "127.0.0.1": true, "::1": true, "::ffff:127.0.0.1": true };
+const LOOPBACK_PEERS: Record<string, true> = {
+	"127.0.0.1": true,
+	"::1": true,
+	"::ffff:127.0.0.1": true,
+};
 
 const LOG_VALUE_MAX = 64;
 
@@ -208,7 +238,9 @@ const OAUTH_STATE_FILE = "oauth.json";
 const LOAD_HISTORY_FILE = "load-history.json";
 
 // Any string reaches the authenticator, an empty one included, as before; the authenticator refuses it.
-const LOGIN_BODY: Record<string, Validator<unknown>> = { password: new StringValidator({ allowEmpty: true }) };
+const LOGIN_BODY: Record<string, Validator<unknown>> = {
+	password: new StringValidator({ allowEmpty: true }),
+};
 
 /**
  * The headers on every JSON, metrics and 202 response, built by the security module. OAuth HTML pages keep their own
@@ -231,7 +263,10 @@ const API_HEADER_CONFIG: SecurityHeadersConfig = {
 	corp: "",
 	coep: "",
 };
-export const SECURITY_HEADERS: Record<string, string> = { "Cache-Control": "no-store", ...buildSecurityHeaders(API_HEADER_CONFIG) };
+export const SECURITY_HEADERS: Record<string, string> = {
+	"Cache-Control": "no-store",
+	...buildSecurityHeaders(API_HEADER_CONFIG),
+};
 
 const USAGE = {
 	usage:
@@ -266,7 +301,11 @@ function runView(run: Run, phases: PhaseRecord[]): Record<string, unknown> {
 		createdAt: run.createdAt,
 		updatedAt: run.updatedAt,
 		elapsedMs: Date.now() - run.createdAt,
-		phases: phases.map((phase) => ({ phase: phase.phase, attempt: phase.attempt, status: phase.status })),
+		phases: phases.map((phase) => ({
+			phase: phase.phase,
+			attempt: phase.attempt,
+			status: phase.status,
+		})),
 	};
 }
 
@@ -290,10 +329,16 @@ function matchPath(pathname: string): Target | null {
 	if (pathname === "/healthz") return { endpoint: "healthz" };
 	if (pathname === "/readyz") return { endpoint: "readyz" };
 	if (pathname === "/metrics") return { endpoint: "metrics" };
-	if (pathname === "/.well-known/oauth-protected-resource" || pathname === "/.well-known/oauth-protected-resource/mcp") {
+	if (
+		pathname === "/.well-known/oauth-protected-resource" ||
+		pathname === "/.well-known/oauth-protected-resource/mcp"
+	) {
 		return { endpoint: "oauth_protected_resource" };
 	}
-	if (pathname === "/.well-known/oauth-authorization-server" || pathname === "/.well-known/openid-configuration") {
+	if (
+		pathname === "/.well-known/oauth-authorization-server" ||
+		pathname === "/.well-known/openid-configuration"
+	) {
 		return { endpoint: "oauth_authorization_server" };
 	}
 	if (pathname === "/oauth/authorize") return { endpoint: "oauth_authorize" };
@@ -335,7 +380,8 @@ function isJsonRequest(req: Request): boolean {
  */
 async function readJson(req: Request, maxBytes: number): Promise<JsonRead> {
 	const declared = req.headers.get("content-length");
-	if (declared !== null && Number(declared) > maxBytes) return { ok: false, response: fail(413, "body_too_large") };
+	if (declared !== null && Number(declared) > maxBytes)
+		return { ok: false, response: fail(413, "body_too_large") };
 
 	const utf8 = utf8Checked(req.body);
 	let read: { text: string; complete: boolean };
@@ -357,7 +403,10 @@ async function readJson(req: Request, maxBytes: number): Promise<JsonRead> {
  * Passes a body through unchanged and records whether its bytes are valid UTF-8. The body reader decodes leniently;
  * this keeps the strict decoding, so an invalid body is still refused with invalid_json.
  */
-function utf8Checked(body: ReadableStream<Uint8Array> | null): { body: ReadableStream<Uint8Array> | null; valid: () => boolean } {
+function utf8Checked(body: ReadableStream<Uint8Array> | null): {
+	body: ReadableStream<Uint8Array> | null;
+	valid: () => boolean;
+} {
 	if (body === null) return { body, valid: () => true };
 	const decoder = new TextDecoder("utf-8", { fatal: true });
 	let valid = true;
@@ -385,15 +434,25 @@ function utf8Checked(body: ReadableStream<Uint8Array> | null): { body: ReadableS
 }
 
 /** The parsed body as an object whose schema fields pass; unknown fields are allowed. Null when the shape is wrong. */
-function validateBody(value: unknown, schema: Record<string, Validator<unknown>>): Record<string, unknown> | null {
-	const result = new ObjectValidator<Record<string, unknown>>(schema, { allowExtraKeys: true, strict: true }).validate(value);
+function validateBody(
+	value: unknown,
+	schema: Record<string, Validator<unknown>>,
+): Record<string, unknown> | null {
+	const result = new ObjectValidator<Record<string, unknown>>(schema, {
+		allowExtraKeys: true,
+		strict: true,
+	}).validate(value);
 	return result.valid && result.value !== undefined ? result.value : null;
 }
 
 /** The OAuth error code of a refused response (invalid_grant and the like). Anything else is "unknown"; the body is never logged. */
 async function oauthErrorCode(response: Response): Promise<string> {
-	const body: unknown = await response.clone().json().catch(() => null);
-	const code = typeof body === "object" && body !== null && "error" in body ? body.error : undefined;
+	const body: unknown = await response
+		.clone()
+		.json()
+		.catch(() => null);
+	const code =
+		typeof body === "object" && body !== null && "error" in body ? body.error : undefined;
 	return typeof code === "string" && /^[a-z_]{1,64}$/.test(code) ? code : "unknown";
 }
 
@@ -401,10 +460,18 @@ async function oauthErrorCode(response: Response): Promise<string> {
  * Ledger whose schema is created on first use. Building the app then never touches the database, so an
  * unavailable store shows up in /readyz and per-request 503s instead of failing startup.
  */
-function lazyLedger(store: Store, config: UltrathinkConfig, now: (() => number) | undefined): Ledger {
+function lazyLedger(
+	store: Store,
+	config: UltrathinkConfig,
+	now: (() => number) | undefined,
+): Ledger {
 	let real: Ledger | undefined;
 	const ledger = (): Ledger => {
-		real ??= createLedger(store, { runTokenCeiling: config.runTokenCeiling, dailyTokenCeiling: config.dailyTokenCeiling }, now);
+		real ??= createLedger(
+			store,
+			{ runTokenCeiling: config.runTokenCeiling, dailyTokenCeiling: config.dailyTokenCeiling },
+			now,
+		);
 		return real;
 	};
 	return {
@@ -421,19 +488,40 @@ function lazyLedger(store: Store, config: UltrathinkConfig, now: (() => number) 
 function transportsFromConfig(config: UltrathinkConfig): SinkTransport[] {
 	const transports: SinkTransport[] = [];
 	if (config.auditHttpUrl !== undefined) {
-		transports.push(createHttpTransport({ url: config.auditHttpUrl, ...(config.auditHttpToken === undefined ? {} : { token: config.auditHttpToken }) }));
+		transports.push(
+			createHttpTransport({
+				url: config.auditHttpUrl,
+				...(config.auditHttpToken === undefined ? {} : { token: config.auditHttpToken }),
+			}),
+		);
 	}
 	if (config.auditKafkaRestUrl !== undefined && config.auditKafkaTopic !== undefined) {
-		transports.push(createKafkaRestTransport({ baseUrl: config.auditKafkaRestUrl, topic: config.auditKafkaTopic }));
+		transports.push(
+			createKafkaRestTransport({
+				baseUrl: config.auditKafkaRestUrl,
+				topic: config.auditKafkaTopic,
+			}),
+		);
 	}
 	if (config.auditSyslog !== undefined) {
-		transports.push(createSyslogTransport({ host: config.auditSyslog.host, port: config.auditSyslog.port, hostname: hostname(), appName: "ultrathink" }));
+		transports.push(
+			createSyslogTransport({
+				host: config.auditSyslog.host,
+				port: config.auditSyslog.port,
+				hostname: hostname(),
+				appName: "ultrathink",
+			}),
+		);
 	}
 	return transports;
 }
 
 /** Resolves when `wait` settles or after `ms`, whichever is first; never rejects, and `onFailure` sees a rejection. */
-function waitUpTo(wait: Promise<void>, ms: number, onFailure: (error: unknown) => void): Promise<void> {
+function waitUpTo(
+	wait: Promise<void>,
+	ms: number,
+	onFailure: (error: unknown) => void,
+): Promise<void> {
 	return new Promise<void>((resolve) => {
 		const timer = setTimeout(resolve, ms);
 		wait.then(
@@ -473,8 +561,11 @@ function restoreHistory(path: string, logger: Logger): LoadHistory {
 	try {
 		text = readFileSync(path, "utf8");
 	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "ENOENT") return createLoadHistory();
-		logger.warn("load_history_unreadable", { error: error instanceof Error ? error.name : "UnknownError" });
+		if (error instanceof Error && "code" in error && error.code === "ENOENT")
+			return createLoadHistory();
+		logger.warn("load_history_unreadable", {
+			error: error instanceof Error ? error.name : "UnknownError",
+		});
 		return createLoadHistory();
 	}
 	const restored = loadLoadHistory(text);
@@ -489,7 +580,9 @@ function saveHistory(history: LoadHistory, path: string, logger: Logger): void {
 		writeFileSync(temp, history.toJSON(), { mode: 0o600 });
 		renameSync(temp, path);
 	} catch (error) {
-		logger.warn("load_history_save_failed", { error: error instanceof Error ? error.name : "UnknownError" });
+		logger.warn("load_history_save_failed", {
+			error: error instanceof Error ? error.name : "UnknownError",
+		});
 		try {
 			rmSync(temp, { force: true });
 		} catch {
@@ -518,11 +611,16 @@ export function createApp(deps: RouterDeps): App {
 		capacity: config.auditSinkQueue,
 		onEvent: (event) => onSinkEvent(event),
 	});
-	const securityEvents = new StreamingSecurityEventLogger(logger, (event) => streams.security(event));
+	const securityEvents = new StreamingSecurityEventLogger(logger, (event) =>
+		streams.security(event),
+	);
 	// Installed process-wide so the validation modules and every other caller reach the same SIEM-backed sink (phase 67 gap 3).
 	setSecurityLogger(securityEvents);
 	// Anomaly alerts raised while a record is being appended wait here until that record has returned.
-	const detector = createAnomalyDetector({ rules: config.auditRules ?? DEFAULT_ANOMALY_RULES, now: deps.now });
+	const detector = createAnomalyDetector({
+		rules: config.auditRules ?? DEFAULT_ANOMALY_RULES,
+		now: deps.now,
+	});
 	const pendingAlerts: AnomalyAlert[] = [];
 	let appending = 0;
 	let raising = false;
@@ -559,7 +657,8 @@ export function createApp(deps: RouterDeps): App {
 					},
 					onAppend: (appended) => {
 						streams.audit(appended);
-						for (const alert of detector.observe(appended.event, appended.fields)) pendingAlerts.push(alert);
+						for (const alert of detector.observe(appended.event, appended.fields))
+							pendingAlerts.push(alert);
 					},
 				})
 			: undefined);
@@ -577,7 +676,11 @@ export function createApp(deps: RouterDeps): App {
 	}
 
 	function onSinkEvent(event: SinkEvent): void {
-		metrics.inc("ultrathink_audit_sink_events_total", { sink: event.sink, outcome: event.type }, event.count);
+		metrics.inc(
+			"ultrathink_audit_sink_events_total",
+			{ sink: event.sink, outcome: event.type },
+			event.count,
+		);
 		if (event.type === "sent") {
 			sinkFailureLogged = undefined;
 			return;
@@ -585,7 +688,12 @@ export function createApp(deps: RouterDeps): App {
 		const key = `${event.sink}:${event.type}:${event.reason ?? ""}`;
 		if (key === sinkFailureLogged) return;
 		sinkFailureLogged = key;
-		logger.warn("audit_sink_failed", { sink: event.sink, outcome: event.type, count: event.count, reason: event.reason ?? "unknown" });
+		logger.warn("audit_sink_failed", {
+			sink: event.sink,
+			outcome: event.type,
+			count: event.count,
+			reason: event.reason ?? "unknown",
+		});
 	}
 
 	/** Raises every anomaly that arrived with the record just returned, in arrival order. Re-entry is a no-op. */
@@ -594,7 +702,12 @@ export function createApp(deps: RouterDeps): App {
 		raising = true;
 		try {
 			for (let alert = pendingAlerts.shift(); alert !== undefined; alert = pendingAlerts.shift()) {
-				const fields = { rule: alert.rule, key: alert.key, count: alert.count, windowSec: alert.windowSec };
+				const fields = {
+					rule: alert.rule,
+					key: alert.key,
+					count: alert.count,
+					windowSec: alert.windowSec,
+				};
 				record("anomaly_detected", fields);
 				metrics.inc("ultrathink_audit_anomalies_total", { rule: alert.rule });
 				streams.alert("anomaly_detected", fields);
@@ -642,7 +755,10 @@ export function createApp(deps: RouterDeps): App {
 		queue: { depth: config.fairQueueDepth, waitMs: config.fairQueueWaitMs },
 		security: securityEvents,
 	});
-	const quota = createAdaptiveQuota({ minFactor: config.adaptiveQuotaMinPct / 100, lagTargetMs: config.lagTargetMs });
+	const quota = createAdaptiveQuota({
+		minFactor: config.adaptiveQuotaMinPct / 100,
+		lagTargetMs: config.lagTargetMs,
+	});
 	const clock = deps.now ?? Date.now;
 	const penalty = createPenaltyLadder({
 		windowMs: PENALTY_WINDOW_MS,
@@ -665,7 +781,10 @@ export function createApp(deps: RouterDeps): App {
 		rss: createSignalDetector(),
 		heap_used: createSignalDetector(),
 	};
-	const sloTracker = createSloTracker({ name: SLO_NAME, objective: SLO_OBJECTIVE, windowMs: SLO_WINDOW_MS }, { maxSamples: SLO_MAX_SAMPLES });
+	const sloTracker = createSloTracker(
+		{ name: SLO_NAME, objective: SLO_OBJECTIVE, windowMs: SLO_WINDOW_MS },
+		{ maxSamples: SLO_MAX_SAMPLES },
+	);
 	// Spans are exported only when a collector is configured; a caller may inject a sink instead.
 	const spans: SpanSink | undefined =
 		deps.spans ??
@@ -675,7 +794,8 @@ export function createApp(deps: RouterDeps): App {
 					endpoint: config.otlpEndpoint,
 					serviceName: "ultrathink",
 					serviceVersion: pkg.version,
-					onDrop: () => metrics.inc("ultrathink_otel_spans_dropped_total", { reason: "queue_full" }),
+					onDrop: () =>
+						metrics.inc("ultrathink_otel_spans_dropped_total", { reason: "queue_full" }),
 					onFailure: () => metrics.inc("ultrathink_otel_export_failures_total"),
 				}));
 	const planner =
@@ -692,7 +812,9 @@ export function createApp(deps: RouterDeps): App {
 			...(spans === undefined ? {} : { spans }),
 			onCall: (call) => {
 				metrics.inc("ultrathink_planner_calls_total", { outcome: call.outcome });
-				metrics.observe("ultrathink_planner_call_duration_seconds", call.ms / 1000, { outcome: call.outcome });
+				metrics.observe("ultrathink_planner_call_duration_seconds", call.ms / 1000, {
+					outcome: call.outcome,
+				});
 				// The logger drops every key containing "token", so the counts travel under `usage`.
 				logger.info("planner_call", {
 					sessionId: call.sessionId,
@@ -700,11 +822,19 @@ export function createApp(deps: RouterDeps): App {
 					ms: call.ms,
 					outcome: call.outcome,
 					attempts: call.attempts,
-					usage: { input: call.inputTokens, output: call.outputTokens, ...(call.costUsd === undefined ? {} : { costUsd: call.costUsd }) },
+					usage: {
+						input: call.inputTokens,
+						output: call.outputTokens,
+						...(call.costUsd === undefined ? {} : { costUsd: call.costUsd }),
+					},
 				});
 			},
 		});
-	const allowedOrigins = [config.publicOrigin, ...DEFAULT_ALLOWED_ORIGINS, ...config.allowedOrigins];
+	const allowedOrigins = [
+		config.publicOrigin,
+		...DEFAULT_ALLOWED_ORIGINS,
+		...config.allowedOrigins,
+	];
 
 	metrics.gauge("ultrathink_planner_enabled", planner.enabled ? 1 : 0);
 	if (breaker) publishBreakerState(breaker.state());
@@ -712,7 +842,11 @@ export function createApp(deps: RouterDeps): App {
 
 	function persistenceUnavailable(ctx: RequestCtx, error?: unknown): Response {
 		const correlationId = randomUUID();
-		logger.error("persistence_unavailable", { reqId: ctx.reqId, correlationId, ...(error === undefined ? {} : { error }) });
+		logger.error("persistence_unavailable", {
+			reqId: ctx.reqId,
+			correlationId,
+			...(error === undefined ? {} : { error }),
+		});
 		return respond(503, { error: "persistence_unavailable", correlationId });
 	}
 
@@ -744,7 +878,12 @@ export function createApp(deps: RouterDeps): App {
 	 * nothing. While `work` runs, the admission sits on the request context, so planner work it starts takes a plan slot
 	 * under the same class and principal.
 	 */
-	async function admitted(admission: Admission, ctx: RequestCtx, signal: AbortSignal, work: () => Promise<Response>): Promise<Response> {
+	async function admitted(
+		admission: Admission,
+		ctx: RequestCtx,
+		signal: AbortSignal,
+		work: () => Promise<Response>,
+	): Promise<Response> {
 		let waited = false;
 		deps.onPoolEntry?.();
 		const slot = await httpShare.admit(admission, {
@@ -755,7 +894,11 @@ export function createApp(deps: RouterDeps): App {
 			},
 		});
 		if (!slot.ok) {
-			if ("reason" in slot) metrics.inc("ultrathink_fair_share_refused_total", { class: admission.class, reason: slot.reason });
+			if ("reason" in slot)
+				metrics.inc("ultrathink_fair_share_refused_total", {
+					class: admission.class,
+					reason: slot.reason,
+				});
 			return fail(429, "rate_limited", { "Retry-After": "1" });
 		}
 		if (waited) {
@@ -810,7 +953,8 @@ export function createApp(deps: RouterDeps): App {
 	}
 
 	function publishBreakerState(state: BreakerState): void {
-		for (const name of BREAKER_STATES) metrics.gauge("ultrathink_upstream_breaker_state", name === state ? 1 : 0, { state: name });
+		for (const name of BREAKER_STATES)
+			metrics.gauge("ultrathink_upstream_breaker_state", name === state ? 1 : 0, { state: name });
 	}
 
 	function refreshIntegrity(): void {
@@ -834,11 +978,21 @@ export function createApp(deps: RouterDeps): App {
 			record("login_ok", { ip: ctx.ip });
 			return respond(200, { ok: true }, { "Set-Cookie": result.setCookie });
 		}
-		if (result.reason === "rate_limited") return rateLimited(ctx, "login", result.retryAfterSec ?? 60);
+		if (result.reason === "rate_limited")
+			return rateLimited(ctx, "login", result.retryAfterSec ?? 60);
 		authFailed("login");
 		logger.warn("login_failed", { reqId: ctx.reqId, ip: ctx.ip });
 		record("login_failed", { ip: ctx.ip });
-		securityEvents.log(createSecurityEvent(SecurityEventType.AUTH_FAILURE, { name: "auth.login_failed", source: "auth", severity: "medium", ip: ctx.ip, resource: ctx.endpoint, details: { reqId: ctx.reqId } }));
+		securityEvents.log(
+			createSecurityEvent(SecurityEventType.AUTH_FAILURE, {
+				name: "auth.login_failed",
+				source: "auth",
+				severity: "medium",
+				ip: ctx.ip,
+				resource: ctx.endpoint,
+				details: { reqId: ctx.reqId },
+			}),
+		);
 		return fail(401, "invalid_credentials");
 	}
 
@@ -872,14 +1026,24 @@ export function createApp(deps: RouterDeps): App {
 		const session = sessionFor(req, ctx);
 		if (!session) return fail(401, "unauthenticated");
 
-		const limit = auth.allowRequest({ clientIp: ctx.ip, ownerId: session.ownerId, scale: quota.factor() });
+		const limit = auth.allowRequest({
+			clientIp: ctx.ip,
+			ownerId: session.ownerId,
+			scale: quota.factor(),
+		});
 		if (!limit.ok) return rateLimited(ctx, "run", limit.retryAfterSec);
 
-		return await admitted({ principal: "owner", class: "owner" }, ctx, req.signal, () => startRun(req, ctx, session));
+		return await admitted({ principal: "owner", class: "owner" }, ctx, req.signal, () =>
+			startRun(req, ctx, session),
+		);
 	}
 
 	/** Origin, envelope, input and flags, then the run is queued. Runs only while the owner holds a pool slot. */
-	async function startRun(req: Request, ctx: RequestCtx, session: { ownerId: "owner" }): Promise<Response> {
+	async function startRun(
+		req: Request,
+		ctx: RequestCtx,
+		session: { ownerId: "owner" },
+	): Promise<Response> {
 		if (req.headers.get("origin") !== config.publicOrigin) return fail(403, "forbidden");
 		if (!isJsonRequest(req)) return fail(415, "unsupported_media_type");
 
@@ -890,7 +1054,10 @@ export function createApp(deps: RouterDeps): App {
 		if (body === null) return fail(400, "invalid_input");
 
 		// 0 means no input limit, as it does in headless.ts.
-		const input = sanitizeInput(body.input, config.maxInputChars > 0 ? config.maxInputChars : Number.MAX_SAFE_INTEGER);
+		const input = sanitizeInput(
+			body.input,
+			config.maxInputChars > 0 ? config.maxInputChars : Number.MAX_SAFE_INTEGER,
+		);
 		if (!input.ok) {
 			if (input.code === "empty") return respond(200, USAGE);
 			if (input.code === "too_long") {
@@ -969,7 +1136,9 @@ export function createApp(deps: RouterDeps): App {
 			const code = error instanceof Error && "code" in error ? error.code : undefined;
 			oauthOk = code === "ENOENT" && stateDirOk;
 		}
-		const plannerOk = !planner.enabled || (config.openRouterApiKey !== undefined && config.planningModel !== undefined);
+		const plannerOk =
+			!planner.enabled ||
+			(config.openRouterApiKey !== undefined && config.planningModel !== undefined);
 		const checks = {
 			store: storeOk,
 			stateDir: stateDirOk,
@@ -990,7 +1159,11 @@ export function createApp(deps: RouterDeps): App {
 
 	function metricsRoute(req: Request, ctx: RequestCtx): Response {
 		// Loopback only, and never when a proxy has put a client address on the request.
-		if (LOOPBACK_PEERS[ctx.peerIp] !== true || req.headers.has("x-forwarded-for") || req.headers.has("x-real-ip")) {
+		if (
+			LOOPBACK_PEERS[ctx.peerIp] !== true ||
+			req.headers.has("x-forwarded-for") ||
+			req.headers.has("x-real-ip")
+		) {
 			return fail(404, "not_found");
 		}
 		return new Response(metrics.render(), {
@@ -1006,14 +1179,18 @@ export function createApp(deps: RouterDeps): App {
 	};
 
 	// A release without its commands/ and skills/ directories still serves the static overlay instead of failing to start.
-	const catalog = loadCatalogWithFallback((error) => logger.warn("command_catalog_fallback", { error }));
+	const catalog = loadCatalogWithFallback((error) =>
+		logger.warn("command_catalog_fallback", { error }),
+	);
 	const resources = defaultGraphResources();
 
 	function planningInfo(): PlanningInfo {
 		if (!planner.enabled) return { serverPlanning: false };
 		let usedTodayTokens: number | undefined;
 		try {
-			usedTodayTokens = ledger.spentForDay(new Date((deps.now ?? Date.now)()).toISOString().slice(0, 10));
+			usedTodayTokens = ledger.spentForDay(
+				new Date((deps.now ?? Date.now)()).toISOString().slice(0, 10),
+			);
 		} catch {
 			// A ledger that cannot answer leaves the usage out instead of hiding the rest.
 		}
@@ -1032,12 +1209,22 @@ export function createApp(deps: RouterDeps): App {
 		metrics.inc("ultrathink_plan_jobs_total", { status: view.status });
 		const { usage } = view;
 		if (!usage) return;
-		if (usage.inputTokens > 0) metrics.inc("ultrathink_plan_tokens_total", { direction: "input" }, usage.inputTokens);
-		if (usage.outputTokens > 0) metrics.inc("ultrathink_plan_tokens_total", { direction: "output" }, usage.outputTokens);
-		if (usage.costUsd !== undefined && usage.costUsd > 0) metrics.inc("ultrathink_plan_cost_usd_total", undefined, usage.costUsd);
+		if (usage.inputTokens > 0)
+			metrics.inc("ultrathink_plan_tokens_total", { direction: "input" }, usage.inputTokens);
+		if (usage.outputTokens > 0)
+			metrics.inc("ultrathink_plan_tokens_total", { direction: "output" }, usage.outputTokens);
+		if (usage.costUsd !== undefined && usage.costUsd > 0)
+			metrics.inc("ultrathink_plan_cost_usd_total", undefined, usage.costUsd);
 	}
 
-	const toolHost = createToolHost({ journalOpts, planner, catalog, resources, planningInfo, onPlanFinished: recordFinished });
+	const toolHost = createToolHost({
+		journalOpts,
+		planner,
+		catalog,
+		resources,
+		planningInfo,
+		onPlanFinished: recordFinished,
+	});
 
 	const mcpHost: McpToolHost = {
 		capabilities: toolHost.capabilities,
@@ -1049,10 +1236,17 @@ export function createApp(deps: RouterDeps): App {
 			} catch (error) {
 				// The class only: a message may quote arguments.
 				const correlationId = randomUUID();
-				logger.error("tool_error", { tool: name, error: error instanceof Error ? error.name : "UnknownError", correlationId });
+				logger.error("tool_error", {
+					tool: name,
+					error: error instanceof Error ? error.name : "UnknownError",
+					correlationId,
+				});
 				outcome = { ok: false, code: "engine_error" };
 			}
-			metrics.inc("ultrathink_mcp_tool_calls_total", { tool: name, outcome: outcome.ok ? "ok" : "error" });
+			metrics.inc("ultrathink_mcp_tool_calls_total", {
+				tool: name,
+				outcome: outcome.ok ? "ok" : "error",
+			});
 			return outcome;
 		},
 	};
@@ -1078,7 +1272,8 @@ export function createApp(deps: RouterDeps): App {
 		if (versionHeader !== null) ctx.mcpVersion = versionHeader.slice(0, LOG_VALUE_MAX);
 
 		// A browser always sends an Origin; native and server-side clients send none.
-		if (!originAllowed(req.headers.get("origin"), allowedOrigins)) return fail(403, "forbidden_origin");
+		if (!originAllowed(req.headers.get("origin"), allowedOrigins))
+			return fail(403, "forbidden_origin");
 
 		const presented = bearerFrom(req);
 		const bearer = oauth.classifyBearer(presented === "" ? null : presented);
@@ -1094,7 +1289,9 @@ export function createApp(deps: RouterDeps): App {
 			ctx.authKind = "bearer";
 			principal = `bearer:${createHash("sha256").update(presented).digest("hex").slice(0, 16)}`;
 		} else {
-			authFailed(bearer === "invalid" ? "bearer" : presentedKey !== null ? "connector_key" : "missing");
+			authFailed(
+				bearer === "invalid" ? "bearer" : presentedKey !== null ? "connector_key" : "missing",
+			);
 			if (bearer === "invalid") tokenRejected(ctx, "bearer", 401, "invalid_token");
 			else if (presentedKey !== null) tokenRejected(ctx, "connector_key", 401, "invalid_key");
 			const challenge = `Bearer resource_metadata="${oauth.resourceMetadataUrl}"${bearer === "invalid" ? ', error="invalid_token"' : ""}`;
@@ -1102,7 +1299,13 @@ export function createApp(deps: RouterDeps): App {
 			return fail(401, "unauthenticated", { "WWW-Authenticate": challenge });
 		}
 
-		const limit = auth.allowRequest({ clientIp: ctx.ip, ownerId: CONNECTOR_RATE_OWNER, principal, ownerLimit: CONNECTOR_OWNER_LIMIT, scale: quota.factor() });
+		const limit = auth.allowRequest({
+			clientIp: ctx.ip,
+			ownerId: CONNECTOR_RATE_OWNER,
+			principal,
+			ownerLimit: CONNECTOR_OWNER_LIMIT,
+			scale: quota.factor(),
+		});
 		if (!limit.ok) {
 			logger.warn("rate_limit_window", { reqId: ctx.reqId, window: limit.scope });
 			return rateLimited(ctx, "mcp", limit.retryAfterSec);
@@ -1124,13 +1327,20 @@ export function createApp(deps: RouterDeps): App {
 		describeRpc(parsed.value, ctx);
 
 		const answer = async (): Promise<Response> => {
-			const reply = await handleMcpPayload(mcpHost, parsed.value, { protocolVersion: version.version });
+			const reply = await handleMcpPayload(mcpHost, parsed.value, {
+				protocolVersion: version.version,
+			});
 			if (reply === null) return new Response(null, { status: 202, headers: SECURITY_HEADERS });
 			return respond(reply.status ?? 200, reply.body);
 		};
 		// Discovery and initialize are not pooled; a tool call or a batch holds one slot while it runs.
 		if (ctx.rpcMethod !== "tools/call" && ctx.rpcMethod !== "batch") return await answer();
-		return await admitted({ principal, class: ctx.authKind === "connector-key" ? "connector" : "bearer" }, ctx, req.signal, answer);
+		return await admitted(
+			{ principal, class: ctx.authKind === "connector-key" ? "connector" : "bearer" },
+			ctx,
+			req.signal,
+			answer,
+		);
 	}
 
 	async function dispatch(req: Request, ctx: RequestCtx, target: Target | null): Promise<Response> {
@@ -1143,7 +1353,11 @@ export function createApp(deps: RouterDeps): App {
 		if (req.method !== "HEAD") return await route(req, ctx, target);
 
 		// Answered as the GET it stands for: that status and those headers, without the body.
-		const response = await route(new Request(req.url, { method: "GET", headers: req.headers }), ctx, target);
+		const response = await route(
+			new Request(req.url, { method: "GET", headers: req.headers }),
+			ctx,
+			target,
+		);
 		return new Response(null, { status: response.status, headers: response.headers });
 	}
 
@@ -1161,7 +1375,8 @@ export function createApp(deps: RouterDeps): App {
 				return await oauth.authorize(req, ctx.ip);
 			case "oauth_token": {
 				const response = await oauth.token(req, ctx.ip);
-				if (response.status >= 400) tokenRejected(ctx, "oauth_token", response.status, await oauthErrorCode(response));
+				if (response.status >= 400)
+					tokenRejected(ctx, "oauth_token", response.status, await oauthErrorCode(response));
 				return response;
 			}
 			case "oauth_revoke":
@@ -1195,12 +1410,17 @@ export function createApp(deps: RouterDeps): App {
 		}
 	}
 
-	async function handle(req: Request, peerIp: string, peer?: { spiffeId: string | null }): Promise<Response> {
+	async function handle(
+		req: Request,
+		peerIp: string,
+		peer?: { spiffeId: string | null },
+	): Promise<Response> {
 		const started = performance.now();
 		const startedWall = Date.now();
 		// Only the edge identity may vouch for X-Real-IP. Without TLS there is no identity, so undefined keeps the loopback rule.
 		const spiffeId = peer?.spiffeId ?? null;
-		const trustForwarded = config.tls === undefined ? undefined : isEdgeIdentity(spiffeId, config.spiffeTrustDomain);
+		const trustForwarded =
+			config.tls === undefined ? undefined : isEdgeIdentity(spiffeId, config.spiffeTrustDomain);
 		// A valid inbound traceparent is continued under a new span; anything else starts a fresh trace.
 		const inbound = traceContextFor(req.headers.get("traceparent"));
 		const server = inbound.inherited ? childSpan(inbound.ctx) : inbound.ctx;
@@ -1212,82 +1432,97 @@ export function createApp(deps: RouterDeps): App {
 			authKind: "none",
 			outer: {},
 		};
-		return runWithRequestContext({ reqId: ctx.reqId, traceId: server.traceId, spanId: server.spanId, sampled: server.sampled }, async () => {
-			let response: Response;
-			try {
-				const target = matchPath(new URL(req.url).pathname);
-				if (target) ctx.endpoint = target.endpoint;
-				const ungated = target !== null && UNGATED[target.endpoint] === true;
-				const blockedSec = ungated ? 0 : penalty.blockedSec(ctx.ip);
-				const group = routeGroupOf(target);
-				if (config.tls !== undefined && !authorize(spiffeId, group, config.spiffeTrustDomain)) {
-					logger.warn("identity_denied", { reqId: ctx.reqId, group, reason: spiffeId === null ? "absent" : "not_authorized" });
-					response = fail(403, "forbidden_identity");
-				} else if (blockedSec > 0) {
-					metrics.inc("ultrathink_rate_limited_total", { scope: "penalty" });
-					response = fail(429, "rate_limited", { "Retry-After": String(blockedSec) });
-				} else {
-					const slot = ungated ? undefined : inflight.enter();
-					if (slot === null) {
-						metrics.inc("ultrathink_overload_total");
-						response = fail(503, "overloaded", { "Retry-After": "1" });
+		return runWithRequestContext(
+			{ reqId: ctx.reqId, traceId: server.traceId, spanId: server.spanId, sampled: server.sampled },
+			async () => {
+				let response: Response;
+				try {
+					const target = matchPath(new URL(req.url).pathname);
+					if (target) ctx.endpoint = target.endpoint;
+					const ungated = target !== null && UNGATED[target.endpoint] === true;
+					const blockedSec = ungated ? 0 : penalty.blockedSec(ctx.ip);
+					const group = routeGroupOf(target);
+					if (config.tls !== undefined && !authorize(spiffeId, group, config.spiffeTrustDomain)) {
+						logger.warn("identity_denied", {
+							reqId: ctx.reqId,
+							group,
+							reason: spiffeId === null ? "absent" : "not_authorized",
+						});
+						response = fail(403, "forbidden_identity");
+					} else if (blockedSec > 0) {
+						metrics.inc("ultrathink_rate_limited_total", { scope: "penalty" });
+						response = fail(429, "rate_limited", { "Retry-After": String(blockedSec) });
 					} else {
-						ctx.outer.release = slot;
-						if (!ungated) history.record(clock());
-						metrics.gauge("ultrathink_http_inflight", inflight.count);
-						response = await dispatch(req, ctx, target);
+						const slot = ungated ? undefined : inflight.enter();
+						if (slot === null) {
+							metrics.inc("ultrathink_overload_total");
+							response = fail(503, "overloaded", { "Retry-After": "1" });
+						} else {
+							ctx.outer.release = slot;
+							if (!ungated) history.record(clock());
+							metrics.gauge("ultrathink_http_inflight", inflight.count);
+							response = await dispatch(req, ctx, target);
+						}
 					}
+				} catch (error) {
+					const correlationId = randomUUID();
+					logger.error("request_error", { reqId: ctx.reqId, correlationId, error, stack: true });
+					response = respond(500, { error: "internal_error", correlationId });
+				} finally {
+					releaseOuter(ctx);
 				}
-			} catch (error) {
-				const correlationId = randomUUID();
-				logger.error("request_error", { reqId: ctx.reqId, correlationId, error, stack: true });
-				response = respond(500, { error: "internal_error", correlationId });
-			} finally {
-				releaseOuter(ctx);
-			}
-			response = withHeaders(response, { "X-Request-Id": ctx.reqId, traceparent: formatTraceparent(server) });
-
-			const elapsedMs = performance.now() - started;
-			if (server.sampled && spans !== undefined) {
-				// Method, status and endpoint only: never the path, query, headers, peer IP or any credential.
-				const startUnixNano = BigInt(startedWall) * NS_PER_MS;
-				spans.record({
-					traceId: server.traceId,
-					spanId: server.spanId,
-					...(inbound.inherited ? { parentSpanId: inbound.ctx.spanId } : {}),
-					name: `${req.method} ${ctx.endpoint}`,
-					kind: 2,
-					startUnixNano,
-					endUnixNano: startUnixNano + BigInt(Math.round(elapsedMs * 1_000_000)),
-					attributes: {
-						"http.request.method": req.method,
-						"http.response.status_code": response.status,
-						"ultrathink.endpoint": ctx.endpoint,
-						"ultrathink.req_id": ctx.reqId,
-					},
-					error: response.status >= 500,
+				response = withHeaders(response, {
+					"X-Request-Id": ctx.reqId,
+					traceparent: formatTraceparent(server),
 				});
-			}
-			metrics.inc("ultrathink_http_requests_total", { endpoint: ctx.endpoint, status_class: `${Math.floor(response.status / 100)}xx` });
-			metrics.observe("ultrathink_http_request_duration_seconds", elapsedMs / 1000, { endpoint: ctx.endpoint });
-			const fields = {
-				reqId: ctx.reqId,
-				traceId: server.traceId,
-				method: req.method,
-				path: new URL(req.url).pathname,
-				endpoint: ctx.endpoint,
-				status: response.status,
-				ms: Math.round(elapsedMs),
-				...(ctx.rpcMethod === undefined ? {} : { rpcMethod: ctx.rpcMethod }),
-				...(ctx.mcpVersion === undefined ? {} : { mcpVersion: ctx.mcpVersion }),
-				...(ctx.tool === undefined ? {} : { tool: ctx.tool }),
-				authKind: ctx.authKind,
-				ip: ctx.ip,
-			};
-			if (response.status >= 500) logger.warn("request", fields);
-			else logger.info("request", fields);
-			return response;
-		});
+
+				const elapsedMs = performance.now() - started;
+				if (server.sampled && spans !== undefined) {
+					// Method, status and endpoint only: never the path, query, headers, peer IP or any credential.
+					const startUnixNano = BigInt(startedWall) * NS_PER_MS;
+					spans.record({
+						traceId: server.traceId,
+						spanId: server.spanId,
+						...(inbound.inherited ? { parentSpanId: inbound.ctx.spanId } : {}),
+						name: `${req.method} ${ctx.endpoint}`,
+						kind: 2,
+						startUnixNano,
+						endUnixNano: startUnixNano + BigInt(Math.round(elapsedMs * 1_000_000)),
+						attributes: {
+							"http.request.method": req.method,
+							"http.response.status_code": response.status,
+							"ultrathink.endpoint": ctx.endpoint,
+							"ultrathink.req_id": ctx.reqId,
+						},
+						error: response.status >= 500,
+					});
+				}
+				metrics.inc("ultrathink_http_requests_total", {
+					endpoint: ctx.endpoint,
+					status_class: `${Math.floor(response.status / 100)}xx`,
+				});
+				metrics.observe("ultrathink_http_request_duration_seconds", elapsedMs / 1000, {
+					endpoint: ctx.endpoint,
+				});
+				const fields = {
+					reqId: ctx.reqId,
+					traceId: server.traceId,
+					method: req.method,
+					path: new URL(req.url).pathname,
+					endpoint: ctx.endpoint,
+					status: response.status,
+					ms: Math.round(elapsedMs),
+					...(ctx.rpcMethod === undefined ? {} : { rpcMethod: ctx.rpcMethod }),
+					...(ctx.mcpVersion === undefined ? {} : { mcpVersion: ctx.mcpVersion }),
+					...(ctx.tool === undefined ? {} : { tool: ctx.tool }),
+					authKind: ctx.authKind,
+					ip: ctx.ip,
+				};
+				if (response.status >= 500) logger.warn("request", fields);
+				else logger.info("request", fields);
+				return response;
+			},
+		);
 	}
 
 	/**
@@ -1299,7 +1534,10 @@ export function createApp(deps: RouterDeps): App {
 		const { rps } = history.forecast(clock());
 		metrics.gauge("ultrathink_adaptive_quota_factor", quota.factor());
 		metrics.gauge("ultrathink_load_forecast_rps", rps);
-		metrics.gauge("ultrathink_recommended_replicas", recommendedReplicas(rps, config.replicaCapacityRps));
+		metrics.gauge(
+			"ultrathink_recommended_replicas",
+			recommendedReplicas(rps, config.replicaCapacityRps),
+		);
 		observeSignals(sample);
 		observeSlo(clock());
 		// Flush is single-flight and the sink never rejects, so the runtime sample does not wait for the export.
@@ -1330,12 +1568,18 @@ export function createApp(deps: RouterDeps): App {
 		sloTracker.observe({ at: now, good: total - bad, total });
 		const budget = sloTracker.budget(now);
 		if (budget.errorBudgetRemaining !== undefined) {
-			metrics.gauge("ultrathink_slo_error_budget_remaining_ratio", budget.errorBudgetRemaining, { slo: SLO_NAME });
+			metrics.gauge("ultrathink_slo_error_budget_remaining_ratio", budget.errorBudgetRemaining, {
+				slo: SLO_NAME,
+			});
 		}
 		metrics.gauge("ultrathink_slo_observed_seconds", budget.observedMs / 1000, { slo: SLO_NAME });
 		for (const burnWindow of SLO_BURN_WINDOWS) {
 			const burnRate = sloTracker.budget(now, burnWindow.ms).burnRate;
-			if (burnRate !== undefined) metrics.gauge("ultrathink_slo_burn_rate", burnRate, { slo: SLO_NAME, window: burnWindow.label });
+			if (burnRate !== undefined)
+				metrics.gauge("ultrathink_slo_burn_rate", burnRate, {
+					slo: SLO_NAME,
+					window: burnWindow.label,
+				});
 		}
 	}
 
@@ -1343,9 +1587,16 @@ export function createApp(deps: RouterDeps): App {
 	function sweepTimed(): SweepResult {
 		const began = performance.now();
 		try {
-			return sweepStateDir({ stateDir: config.stateDir, retentionDays: config.retentionDays, now: deps.now });
+			return sweepStateDir({
+				stateDir: config.stateDir,
+				retentionDays: config.retentionDays,
+				now: deps.now,
+			});
 		} finally {
-			metrics.observe("ultrathink_retention_sweep_duration_seconds", (performance.now() - began) / 1000);
+			metrics.observe(
+				"ultrathink_retention_sweep_duration_seconds",
+				(performance.now() - began) / 1000,
+			);
 		}
 	}
 
@@ -1430,7 +1681,13 @@ export function createApp(deps: RouterDeps): App {
 					return { fingerprint: log.fingerprint(), seq: head.seq, hash: head.hash };
 				},
 				// Called from the watch's tick, in the same synchronous step as `stat`, so the identity and the bytes describe one moment.
-				scan: (observed) => verifier.verify({ path: log.path, activeBytes: observed.size, activeIno: observed.ino, identity: chainIdentity(log.path) }),
+				scan: (observed) =>
+					verifier.verify({
+						path: log.path,
+						activeBytes: observed.size,
+						activeIno: observed.ino,
+						identity: chainIdentity(log.path),
+					}),
 				onAlert: (alert) => raiseTamper(alert.reason),
 				onRecover: () => logger.info("audit_tamper_cleared", {}),
 				onError: (error) => logger.error("audit_watch_failed", { error: errorMessage(error) }),
@@ -1445,7 +1702,8 @@ export function createApp(deps: RouterDeps): App {
 					sweep: () => log.prune(now() - config.auditRetentionDays * DAY_MS),
 					intervalMs: RETENTION_SWEEP_MS,
 					onResult: (result) => {
-						if (result.segments > 0) logger.info("audit_segments_pruned", { segments: result.segments });
+						if (result.segments > 0)
+							logger.info("audit_segments_pruned", { segments: result.segments });
 					},
 					onError: (error) => logger.error("audit_prune_failed", { error: error.message }),
 					...timerSeams,
@@ -1471,7 +1729,9 @@ export function createApp(deps: RouterDeps): App {
 			// Waits at most the flush window for a scan in flight. A verdict that lands in that window is judged and its alert is
 			// queued before the sinks flush. A scan still running after it is abandoned unjudged; the next start checks the chain
 			// again and reports a broken file through a moved_to notice.
-			await waitUpTo(watchIdle?.() ?? Promise.resolve(), AUDIT_FLUSH_MS, (error) => logger.error("audit_watch_wait_failed", { error: errorMessage(error) }));
+			await waitUpTo(watchIdle?.() ?? Promise.resolve(), AUDIT_FLUSH_MS, (error) =>
+				logger.error("audit_watch_wait_failed", { error: errorMessage(error) }),
+			);
 			closeVerifier?.();
 			stopPrune?.();
 			stopHistorySave?.();
@@ -1491,6 +1751,8 @@ export function createApp(deps: RouterDeps): App {
 	};
 }
 
-export function createHandler(deps: RouterDeps): (req: Request, peerIp: string) => Promise<Response> {
+export function createHandler(
+	deps: RouterDeps,
+): (req: Request, peerIp: string) => Promise<Response> {
 	return createApp(deps).handle;
 }

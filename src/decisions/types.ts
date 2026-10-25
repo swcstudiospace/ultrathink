@@ -5,8 +5,21 @@
  * thresholds, error kinds and the per-call `DecisionRecord`. Imports nothing, so every layer can depend on it.
  */
 
-export type DecisionPoint = "plan" | "ship" | "knowledge" | "blocking" | "teachable" | "skillworthy";
-export const DECISION_POINTS: readonly DecisionPoint[] = ["plan", "ship", "knowledge", "blocking", "teachable", "skillworthy"];
+export type DecisionPoint =
+	| "plan"
+	| "ship"
+	| "knowledge"
+	| "blocking"
+	| "teachable"
+	| "skillworthy";
+export const DECISION_POINTS: readonly DecisionPoint[] = [
+	"plan",
+	"ship",
+	"knowledge",
+	"blocking",
+	"teachable",
+	"skillworthy",
+];
 
 export const DEFAULT_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions";
 export const DEFAULT_DECISIONS_MODEL = "~typesafe/jev-latest";

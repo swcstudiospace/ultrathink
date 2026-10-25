@@ -42,7 +42,11 @@ interface Outcome {
 
 // Runs `script` after sourcing the lib. Positional arguments reach the script as $1, $2, ... so no path is spliced
 // into shell text. The environment is clean apart from PATH, a temp HOME, a missing env file and the Bun binary.
-async function lib(script: string, args: string[] = [], env: Record<string, string> = {}): Promise<Outcome> {
+async function lib(
+	script: string,
+	args: string[] = [],
+	env: Record<string, string> = {},
+): Promise<Outcome> {
 	const home = mkdtempSync(join(work, "home-"));
 	const proc = Bun.spawn({
 		cmd: ["bash", "-c", `source "$0"\n${script}`, LIB, ...args],
@@ -85,11 +89,15 @@ describe("dr_setting", () => {
 		expect(fromEnv.code).toBe(0);
 		expect(fromEnv.stdout).toBe("3");
 
-		const fromFile = await lib("dr_setting ULTRATHINK_BACKUP_KEEP 14", [], { ULTRATHINK_ENV_FILE: envFile });
+		const fromFile = await lib("dr_setting ULTRATHINK_BACKUP_KEEP 14", [], {
+			ULTRATHINK_ENV_FILE: envFile,
+		});
 		expect(fromFile.code).toBe(0);
 		expect(fromFile.stdout).toBe("7");
 
-		const literal = await lib("dr_setting ULTRATHINK_SNAPSHOT_TREE fallback", [], { ULTRATHINK_ENV_FILE: envFile });
+		const literal = await lib("dr_setting ULTRATHINK_SNAPSHOT_TREE fallback", [], {
+			ULTRATHINK_ENV_FILE: envFile,
+		});
 		expect(literal.code).toBe(0);
 		expect(literal.stdout).toBe("/srv/$HOME/tree");
 	});

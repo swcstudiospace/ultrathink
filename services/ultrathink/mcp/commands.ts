@@ -43,7 +43,11 @@ export interface OverlayEntry {
 /** The longest text argument any prompt or tool accepts, in characters. */
 export const MAX_ARGUMENT_CHARS = 20_000;
 
-const REQUEST_ARGUMENT: CommandArgument = { name: "request", description: "What to plan.", required: true };
+const REQUEST_ARGUMENT: CommandArgument = {
+	name: "request",
+	description: "What to plan.",
+	required: true,
+};
 const PLUGIN_HOST = "use it in a plugin host";
 const HOSTS_WITH_PLUGIN = "run it in Claude Code, Omp, Grok Build, Hermes or Muse with the plugin";
 const NO_AUTOMATIC_PLANNING =
@@ -53,7 +57,11 @@ const TEACH_STATE = "Teachable Moments state lives on the host";
 const OPERATOR_CONTROL = "it is an operator control for a plugin host's own planner";
 
 /** Native names that exist on the connector even when no plugin file defines them. */
-export const CONNECTOR_NATIVE_NAMES: readonly string[] = ["ultrathink", "ultrathink-think", "ultrathink-last"];
+export const CONNECTOR_NATIVE_NAMES: readonly string[] = [
+	"ultrathink",
+	"ultrathink-think",
+	"ultrathink-last",
+];
 
 export const COMMAND_OVERLAY: Readonly<Record<string, OverlayEntry>> = {
 	ultrathink: {
@@ -81,7 +89,11 @@ export const COMMAND_OVERLAY: Readonly<Record<string, OverlayEntry>> = {
 				description: "Session id of the plan to show. Omit for the newest planned session.",
 				required: false,
 			},
-			{ name: "node", description: "Id of one node to show with its steps and conclusion.", required: false },
+			{
+				name: "node",
+				description: "Id of one node to show with its steps and conclusion.",
+				required: false,
+			},
 		],
 		description: "Show the Graph of Thought of a plan",
 	},
@@ -102,7 +114,9 @@ export const COMMAND_OVERLAY: Readonly<Record<string, OverlayEntry>> = {
 		state: "passthrough",
 		summary: "the model answers the message directly and calls no ultrathink tool",
 		tools: [],
-		arguments: [{ name: "message", description: "The message to answer directly.", required: true }],
+		arguments: [
+			{ name: "message", description: "The message to answer directly.", required: true },
+		],
 	},
 	"ultrathink-skip": {
 		state: "unsupported",
@@ -146,14 +160,54 @@ export const COMMAND_OVERLAY: Readonly<Record<string, OverlayEntry>> = {
 		reason: "it needs git, a shell and the user's tracker or pull-request credentials",
 		instead: HOSTS_WITH_PLUGIN,
 	},
-	"ultrathink-teach": { state: "unsupported", tools: [], reason: TEACH_STATE, instead: PLUGIN_HOST },
-	"ultrathink-teach-admin": { state: "unsupported", tools: [], reason: TEACH_STATE, instead: PLUGIN_HOST },
-	"ultrathink-learn": { state: "unsupported", tools: [], reason: TEACH_STATE, instead: PLUGIN_HOST },
-	"ultrathink-lessons": { state: "unsupported", tools: [], reason: TEACH_STATE, instead: PLUGIN_HOST },
-	"ultrathink-decisions": { state: "unsupported", tools: [], reason: OPERATOR_CONTROL, instead: PLUGIN_HOST },
-	"ultrathink-hindsight": { state: "unsupported", tools: [], reason: OPERATOR_CONTROL, instead: PLUGIN_HOST },
-	"ultrathink-engine": { state: "unsupported", tools: [], reason: OPERATOR_CONTROL, instead: PLUGIN_HOST },
-	"ultrathink-protocol": { state: "unsupported", tools: [], reason: OPERATOR_CONTROL, instead: PLUGIN_HOST },
+	"ultrathink-teach": {
+		state: "unsupported",
+		tools: [],
+		reason: TEACH_STATE,
+		instead: PLUGIN_HOST,
+	},
+	"ultrathink-teach-admin": {
+		state: "unsupported",
+		tools: [],
+		reason: TEACH_STATE,
+		instead: PLUGIN_HOST,
+	},
+	"ultrathink-learn": {
+		state: "unsupported",
+		tools: [],
+		reason: TEACH_STATE,
+		instead: PLUGIN_HOST,
+	},
+	"ultrathink-lessons": {
+		state: "unsupported",
+		tools: [],
+		reason: TEACH_STATE,
+		instead: PLUGIN_HOST,
+	},
+	"ultrathink-decisions": {
+		state: "unsupported",
+		tools: [],
+		reason: OPERATOR_CONTROL,
+		instead: PLUGIN_HOST,
+	},
+	"ultrathink-hindsight": {
+		state: "unsupported",
+		tools: [],
+		reason: OPERATOR_CONTROL,
+		instead: PLUGIN_HOST,
+	},
+	"ultrathink-engine": {
+		state: "unsupported",
+		tools: [],
+		reason: OPERATOR_CONTROL,
+		instead: PLUGIN_HOST,
+	},
+	"ultrathink-protocol": {
+		state: "unsupported",
+		tools: [],
+		reason: OPERATOR_CONTROL,
+		instead: PLUGIN_HOST,
+	},
 	"ultrathink-hitl": {
 		state: "unsupported",
 		tools: [],
@@ -169,7 +223,10 @@ export const COMMAND_OVERLAY: Readonly<Record<string, OverlayEntry>> = {
 };
 
 /** The overlay entry of a name, own properties only: a name such as "constructor" is not a command. */
-export function overlayEntry(overlay: Readonly<Record<string, OverlayEntry>>, name: string): OverlayEntry | undefined {
+export function overlayEntry(
+	overlay: Readonly<Record<string, OverlayEntry>>,
+	name: string,
+): OverlayEntry | undefined {
 	return Object.hasOwn(overlay, name) ? overlay[name] : undefined;
 }
 
@@ -253,7 +310,9 @@ function editDistance(a: string, b: string): number {
 		const row = [i];
 		for (let j = 1; j <= b.length; j++) {
 			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-			row.push(Math.min((previous[j] ?? 0) + 1, (row[j - 1] ?? 0) + 1, (previous[j - 1] ?? 0) + cost));
+			row.push(
+				Math.min((previous[j] ?? 0) + 1, (row[j - 1] ?? 0) + 1, (previous[j - 1] ?? 0) + cost),
+			);
 		}
 		previous = row;
 	}
@@ -266,7 +325,8 @@ function suggest(key: string, overlay: Readonly<Record<string, OverlayEntry>>): 
 	const short = shortForm(key);
 	const supported = names.filter((name) => overlayEntry(overlay, name)?.state !== "unsupported");
 	if (short === "") return supported;
-	const contained = short.length >= 2 ? names.filter((name) => shortForm(name).includes(short)) : [];
+	const contained =
+		short.length >= 2 ? names.filter((name) => shortForm(name).includes(short)) : [];
 	if (contained.length > 0) return contained.slice(0, 5);
 	const near = names
 		.map((name) => ({ name, distance: editDistance(short, shortForm(name)) }))
@@ -281,7 +341,10 @@ function suggest(key: string, overlay: Readonly<Record<string, OverlayEntry>>): 
  * `ultrathink:ultrathink-think`, any case; `help` asks for the command list. Anything else is unknown, with the closest names.
  * Works on the overlay alone, so it never touches the filesystem.
  */
-export function resolveCommand(input: unknown, overlay: Readonly<Record<string, OverlayEntry>> = COMMAND_OVERLAY): CommandResolution {
+export function resolveCommand(
+	input: unknown,
+	overlay: Readonly<Record<string, OverlayEntry>> = COMMAND_OVERLAY,
+): CommandResolution {
 	if (typeof input !== "string" || input.length > MAX_COMMAND_INPUT_CHARS) {
 		return { kind: "unknown", suggestions: suggest("", overlay) };
 	}
@@ -300,11 +363,15 @@ export function resolveCommand(input: unknown, overlay: Readonly<Record<string, 
 }
 
 /** Lists every command with its connector state, from the overlay alone. */
-export function helpText(overlay: Readonly<Record<string, OverlayEntry>> = COMMAND_OVERLAY): string {
+export function helpText(
+	overlay: Readonly<Record<string, OverlayEntry>> = COMMAND_OVERLAY,
+): string {
 	const lines = ["ultrathink commands on this connector:"];
 	for (const [name, entry] of Object.entries(overlay)) {
 		if (entry.state === "unsupported") {
-			lines.push(`/${name} - unsupported here: ${entry.reason ?? ""}; instead: ${entry.instead ?? ""}`);
+			lines.push(
+				`/${name} - unsupported here: ${entry.reason ?? ""}; instead: ${entry.instead ?? ""}`,
+			);
 		} else {
 			lines.push(`/${name} - ${entry.state}: ${entry.summary ?? ""}`);
 		}
@@ -333,7 +400,10 @@ export function parseFrontmatter(text: string): Record<string, string> {
 		}
 		while (continuation.at(-1) === "") continuation.pop();
 		if (/^[>|][+-]?$/.test(head)) {
-			fields[key] = continuation.join(head.startsWith(">") ? " " : "\n").replace(/ {2,}/g, " ").trim();
+			fields[key] = continuation
+				.join(head.startsWith(">") ? " " : "\n")
+				.replace(/ {2,}/g, " ")
+				.trim();
 		} else {
 			fields[key] = unquote([head, ...continuation].filter((part) => part !== "").join(" "));
 		}
@@ -351,7 +421,8 @@ function unquote(value: string): string {
 		}
 		return value.slice(1, -1);
 	}
-	if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replaceAll("''", "'");
+	if (value.length >= 2 && value.startsWith("'") && value.endsWith("'"))
+		return value.slice(1, -1).replaceAll("''", "'");
 	return value;
 }
 
@@ -381,11 +452,15 @@ function readFound(root: string, relative: string, kind: CommandSource["kind"]):
 	}
 	const fields = parseFrontmatter(text);
 	const name = fields.name;
-	if (name === undefined || name === "") throw new Error(`command file has no frontmatter name: ${relative}`);
+	if (name === undefined || name === "")
+		throw new Error(`command file has no frontmatter name: ${relative}`);
 	return {
 		name,
 		description: fields.description ?? "",
-		argumentHint: fields["argument-hint"] === undefined || fields["argument-hint"] === "" ? undefined : fields["argument-hint"],
+		argumentHint:
+			fields["argument-hint"] === undefined || fields["argument-hint"] === ""
+				? undefined
+				: fields["argument-hint"],
 		source: { kind, path: relative },
 	};
 }
@@ -409,7 +484,11 @@ function scanSources(root: string): Found[] {
 	return found;
 }
 
-function validateEntry(name: string, entry: OverlayEntry, overlay: Readonly<Record<string, OverlayEntry>>): string[] {
+function validateEntry(
+	name: string,
+	entry: OverlayEntry,
+	overlay: Readonly<Record<string, OverlayEntry>>,
+): string[] {
 	const problems: string[] = [];
 	if (entry.state === "unsupported") {
 		if (!entry.reason) problems.push(`${name}: unsupported without a reason`);
@@ -418,11 +497,14 @@ function validateEntry(name: string, entry: OverlayEntry, overlay: Readonly<Reco
 		return problems;
 	}
 	if (!entry.summary) problems.push(`${name}: ${entry.state} without a summary`);
-	if (entry.arguments === undefined) problems.push(`${name}: ${entry.state} without a prompt argument list`);
+	if (entry.arguments === undefined)
+		problems.push(`${name}: ${entry.state} without a prompt argument list`);
 	if (entry.state === "alias") {
 		const target = entry.aliasOf === undefined ? undefined : overlayEntry(overlay, entry.aliasOf);
 		if (target === undefined || target.state === "alias" || target.state === "unsupported") {
-			problems.push(`${name}: alias target ${entry.aliasOf ?? "(none)"} is not a native or passthrough command`);
+			problems.push(
+				`${name}: alias target ${entry.aliasOf ?? "(none)"} is not a native or passthrough command`,
+			);
 		}
 	} else if (entry.aliasOf !== undefined) {
 		problems.push(`${name}: aliasOf on a ${entry.state} command`);
@@ -461,7 +543,9 @@ export function loadCommandCatalog(
 		}
 		const first = rawNames.get(key);
 		if (first !== undefined && first !== entry.name) {
-			problems.push(`names ${JSON.stringify(first)} and ${JSON.stringify(entry.name)} map to the prompt name ${key}`);
+			problems.push(
+				`names ${JSON.stringify(first)} and ${JSON.stringify(entry.name)} map to the prompt name ${key}`,
+			);
 		}
 		rawNames.set(key, first ?? entry.name);
 		byName.set(key, [...(byName.get(key) ?? []), entry]);
@@ -470,7 +554,8 @@ export function loadCommandCatalog(
 	const missing = [...universe].filter((name) => overlayEntry(overlay, name) === undefined);
 	if (missing.length > 0) problems.push(`commands without an overlay entry: ${missing.join(", ")}`);
 	const orphaned = Object.keys(overlay).filter((name) => !universe.has(name));
-	if (orphaned.length > 0) problems.push(`overlay entries without a source: ${orphaned.join(", ")}`);
+	if (orphaned.length > 0)
+		problems.push(`overlay entries without a source: ${orphaned.join(", ")}`);
 
 	const toolNames = new Map<string, string>();
 	for (const name of Object.keys(overlay)) {
@@ -481,10 +566,12 @@ export function loadCommandCatalog(
 			problems.push(`overlay key ${JSON.stringify(name)} is not a valid command name`);
 			continue;
 		}
-		if (promptName !== name) problems.push(`overlay key ${JSON.stringify(name)} is not canonical (${promptName})`);
+		if (promptName !== name)
+			problems.push(`overlay key ${JSON.stringify(name)} is not canonical (${promptName})`);
 		const tool = toToolName(name);
 		const other = toolNames.get(tool);
-		if (other !== undefined) problems.push(`names ${other} and ${name} map to the tool name ${tool}`);
+		if (other !== undefined)
+			problems.push(`names ${other} and ${name} map to the tool name ${tool}`);
 		toolNames.set(tool, name);
 		const entry = overlay[name];
 		if (entry !== undefined) problems.push(...validateEntry(name, entry, overlay));
@@ -494,7 +581,8 @@ export function loadCommandCatalog(
 	const commands: CatalogCommand[] = [];
 	for (const [name, entry] of Object.entries(overlay)) {
 		const sources = byName.get(name) ?? [];
-		const description = sources.find((source) => source.description !== "")?.description ?? entry.description ?? "";
+		const description =
+			sources.find((source) => source.description !== "")?.description ?? entry.description ?? "";
 		const argumentHint = sources.find((source) => source.argumentHint !== undefined)?.argumentHint;
 		const command: CatalogCommand = {
 			name,

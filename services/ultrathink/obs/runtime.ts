@@ -150,11 +150,15 @@ function nonNegative(value: number): number {
 export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 	const { intervalMs, onSample } = options;
 	if (typeof intervalMs !== "number" || !Number.isFinite(intervalMs) || intervalMs <= 0) {
-		throw new RangeError(`createRuntimeProbe: intervalMs must be a positive finite number, got ${String(intervalMs)}`);
+		throw new RangeError(
+			`createRuntimeProbe: intervalMs must be a positive finite number, got ${String(intervalMs)}`,
+		);
 	}
-	if (typeof onSample !== "function") throw new TypeError("createRuntimeProbe: onSample must be a function");
+	if (typeof onSample !== "function")
+		throw new TypeError("createRuntimeProbe: onSample must be a function");
 	const setTimer = options.setTimer ?? ((run: () => void, ms: number) => setTimeout(run, ms));
-	const clearTimer = options.clearTimer ?? ((handle: object) => clearTimeout(handle as NodeJS.Timeout));
+	const clearTimer =
+		options.clearTimer ?? ((handle: object) => clearTimeout(handle as NodeJS.Timeout));
 	const now = options.now ?? (() => performance.now());
 	const memory = options.memory ?? (() => process.memoryUsage());
 	const uptime = options.uptime ?? (() => process.uptime());

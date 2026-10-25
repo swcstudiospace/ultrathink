@@ -78,7 +78,11 @@ function invalid(rule: string): DecisionsError {
 }
 
 /** `probabilities` keyed exactly by `keys`, every value in [0, 1]. */
-function checkVercelProbabilities(value: unknown, keys: readonly string[], at: string): Record<string, number> {
+function checkVercelProbabilities(
+	value: unknown,
+	keys: readonly string[],
+	at: string,
+): Record<string, number> {
 	if (!isPlainObject(value)) throw invalid(`${at} must be an object`);
 	const got = Object.keys(value);
 	if (got.length !== keys.length || !keys.every((key) => Object.hasOwn(value, key))) {
@@ -128,7 +132,13 @@ function checkVercelAnswer(
 			type: "choice",
 			choice,
 			...(value.probabilities !== undefined
-				? { probabilities: checkVercelProbabilities(value.probabilities, options, `${at}.probabilities`) }
+				? {
+						probabilities: checkVercelProbabilities(
+							value.probabilities,
+							options,
+							`${at}.probabilities`,
+						),
+					}
 				: {}),
 			...(confidence !== undefined ? { confidence } : {}),
 		};
@@ -144,7 +154,13 @@ function checkVercelAnswer(
 		type: "score",
 		score,
 		...(value.probabilities !== undefined
-			? { probabilities: checkVercelProbabilities(value.probabilities, levels, `${at}.probabilities`) }
+			? {
+					probabilities: checkVercelProbabilities(
+						value.probabilities,
+						levels,
+						`${at}.probabilities`,
+					),
+				}
 			: {}),
 		...(confidence !== undefined ? { confidence } : {}),
 	};
@@ -168,7 +184,12 @@ export function parseVercelResponse(
 	const parsed: Record<string, DecisionAnswer> = {};
 	for (const [key, question] of Object.entries(questions)) {
 		if (!Object.hasOwn(answers, key)) throw invalid(`answers.${key} is missing`);
-		parsed[key] = checkVercelAnswer(answers[key], question, `answers.${key}`, vercelConfidence(providerMetadata, key));
+		parsed[key] = checkVercelAnswer(
+			answers[key],
+			question,
+			`answers.${key}`,
+			vercelConfidence(providerMetadata, key),
+		);
 	}
 	let inputTokens = 0;
 	let outputTokens = 0;
@@ -184,7 +205,11 @@ export function parseVercelResponse(
 			outputTokens = output;
 		}
 	}
-	return { model: modelId, answers: parsed, usage: { input_tokens: inputTokens, output_tokens: outputTokens } };
+	return {
+		model: modelId,
+		answers: parsed,
+		usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+	};
 }
 
 /**
@@ -192,7 +217,10 @@ export function parseVercelResponse(
  * evaluation-model endpoint. `opts.url` overrides the endpoint (tests). Never rejects except with an AbortError when
  * opts.signal aborts.
  */
-export async function decideVercel(request: DecisionsRequest, opts: DecideOptions): Promise<DecideOutcome> {
+export async function decideVercel(
+	request: DecisionsRequest,
+	opts: DecideOptions,
+): Promise<DecideOutcome> {
 	const now = opts.now ?? Date.now;
 	const start = now();
 	if (opts.signal?.aborted) throw abortError(opts.signal);

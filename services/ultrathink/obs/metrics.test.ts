@@ -61,7 +61,8 @@ describe("histogram", () => {
 		m.observe("ultrathink_duration_seconds", 100, { route: "/mcp" });
 		const out = linesOf(m.render());
 		expect(out).toContain("# TYPE ultrathink_duration_seconds histogram");
-		const bucket = (le: string) => out.find((l) => l.startsWith(`ultrathink_duration_seconds_bucket{route="/mcp",le="${le}"}`));
+		const bucket = (le: string) =>
+			out.find((l) => l.startsWith(`ultrathink_duration_seconds_bucket{route="/mcp",le="${le}"}`));
 		expect(bucket("0.1")?.endsWith(" 0")).toBe(true);
 		expect(bucket("0.25")?.endsWith(" 1")).toBe(true);
 		expect(bucket("0.5")?.endsWith(" 3")).toBe(true);
@@ -77,7 +78,8 @@ describe("histogram", () => {
 		const out = linesOf(m.render());
 		const counts = out.filter((l) => l.startsWith("h_bucket")).map((l) => Number(l.split(" ")[1]));
 		expect(counts).toHaveLength(DEFAULT_BUCKETS.length + 1);
-		for (let i = 1; i < counts.length; i++) expect(counts[i] ?? 0).toBeGreaterThanOrEqual(counts[i - 1] ?? 0);
+		for (let i = 1; i < counts.length; i++)
+			expect(counts[i] ?? 0).toBeGreaterThanOrEqual(counts[i - 1] ?? 0);
 		expect(counts[0]).toBe(1);
 		expect(counts.at(-1)).toBe(7);
 		expect(out).toContain("h_count 7");
@@ -107,7 +109,12 @@ describe("exposition", () => {
 		m.inc("c_total", { path: 'a\\b"c\nd' });
 		const line = linesOf(m.render()).find((l) => l.startsWith("c_total{"));
 		expect(line).toBe('c_total{path="a\\\\b\\"c\\nd"} 1');
-		expect(m.render().split("\n").filter((l) => l.startsWith("c_total{"))).toHaveLength(1);
+		expect(
+			m
+				.render()
+				.split("\n")
+				.filter((l) => l.startsWith("c_total{")),
+		).toHaveLength(1);
 	});
 
 	test("orders metrics and series deterministically regardless of insertion order", () => {
@@ -298,7 +305,8 @@ describe("exposition conformance", () => {
 		}
 		expect(buckets.size).toBe(2);
 		for (const [key, series] of buckets) {
-			for (let i = 1; i < series.length; i++) expect(series[i]).toBeGreaterThanOrEqual(series[i - 1] ?? 0);
+			for (let i = 1; i < series.length; i++)
+				expect(series[i]).toBeGreaterThanOrEqual(series[i - 1] ?? 0);
 			expect(series[series.length - 1]).toBe(counts.get(key));
 		}
 	});

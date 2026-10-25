@@ -17,7 +17,9 @@ export interface MetricsOptions {
 }
 
 export const DROPPED_METRIC = "ultrathink_metrics_dropped_total";
-export const DEFAULT_BUCKETS: readonly number[] = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];
+export const DEFAULT_BUCKETS: readonly number[] = [
+	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60,
+];
 const DEFAULT_MAX_SERIES = 200;
 
 type Kind = "counter" | "gauge" | "histogram";
@@ -58,7 +60,10 @@ export function createMetrics(opts: MetricsOptions = {}): Metrics {
 	const maxSeries = Math.max(1, Math.floor(opts.maxSeriesPerMetric ?? DEFAULT_MAX_SERIES));
 	const families = new Map<string, Family>();
 
-	function normalizeLabels(labels: Record<string, string> | undefined, reserved?: string): Array<[string, string]> {
+	function normalizeLabels(
+		labels: Record<string, string> | undefined,
+		reserved?: string,
+	): Array<[string, string]> {
 		const merged = new Map<string, string>();
 		for (const key of Object.keys(labels ?? {})) {
 			const name = labelName(key);
@@ -145,7 +150,8 @@ export function createMetrics(opts: MetricsOptions = {}): Metrics {
 			const pairs = Object.entries(match ?? {}).map(([k, v]) => [labelName(k), String(v)] as const);
 			let total = 0;
 			for (const series of family.series.values()) {
-				if (pairs.every(([k, v]) => series.labels.some(([lk, lv]) => lk === k && lv === v))) total += series.value;
+				if (pairs.every(([k, v]) => series.labels.some(([lk, lv]) => lk === k && lv === v)))
+					total += series.value;
 			}
 			return total;
 		},
@@ -166,9 +172,13 @@ export function createMetrics(opts: MetricsOptions = {}): Metrics {
 					let cumulative = 0;
 					DEFAULT_BUCKETS.forEach((bound, i) => {
 						cumulative += series.buckets?.[i] ?? 0;
-						lines.push(`${name}_bucket${formatLabels([...series.labels, ["le", String(bound)]])} ${cumulative}`);
+						lines.push(
+							`${name}_bucket${formatLabels([...series.labels, ["le", String(bound)]])} ${cumulative}`,
+						);
 					});
-					lines.push(`${name}_bucket${formatLabels([...series.labels, ["le", "+Inf"]])} ${series.value}`);
+					lines.push(
+						`${name}_bucket${formatLabels([...series.labels, ["le", "+Inf"]])} ${series.value}`,
+					);
 					lines.push(`${name}_sum${formatLabels(series.labels)} ${series.sum ?? 0}`);
 					lines.push(`${name}_count${formatLabels(series.labels)} ${series.value}`);
 				}

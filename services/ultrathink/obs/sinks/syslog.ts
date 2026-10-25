@@ -33,7 +33,9 @@ const encoder = new TextEncoder();
 
 function assertHeaderField(value: string, pattern: RegExp, label: string): void {
 	if (!pattern.test(value)) {
-		throw new RangeError(`${label} must be printable ASCII without spaces, within RFC 5424 length limits`);
+		throw new RangeError(
+			`${label} must be printable ASCII without spaces, within RFC 5424 length limits`,
+		);
 	}
 }
 
@@ -52,7 +54,11 @@ function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
  * One RFC 5424 message wrapped in an RFC 6587 octet-counting frame: `<byteLength> <message>`.
  * The length counts UTF-8 bytes, not characters. The message body is the envelope as JSON.
  */
-export function encodeSyslogFrame(env: SinkEnvelope, hostname: string, appName: string): Uint8Array {
+export function encodeSyslogFrame(
+	env: SinkEnvelope,
+	hostname: string,
+	appName: string,
+): Uint8Array {
 	assertHeaderField(hostname, HOSTNAME_PATTERN, "hostname");
 	assertHeaderField(appName, APP_NAME_PATTERN, "appName");
 	const timestamp = RFC3339_PATTERN.test(env.at) ? env.at : NIL;

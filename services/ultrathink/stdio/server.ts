@@ -111,10 +111,16 @@ export async function serveStdio(options: StdioServerOptions): Promise<void> {
 		}
 		let reply: McpReply | null;
 		try {
-			reply = await handleMcpPayload(host, payload, protocolVersion === undefined ? undefined : { protocolVersion });
+			reply = await handleMcpPayload(
+				host,
+				payload,
+				protocolVersion === undefined ? undefined : { protocolVersion },
+			);
 		} catch (error) {
 			// Only the error class is kept: the message may quote request content.
-			logger?.error("handler_error", { error: error instanceof Error ? error.name : "UnknownError" });
+			logger?.error("handler_error", {
+				error: error instanceof Error ? error.name : "UnknownError",
+			});
 			await write(errorLine(requestId(payload), INTERNAL_ERROR, "internal error"));
 			return;
 		}

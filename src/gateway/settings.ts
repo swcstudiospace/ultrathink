@@ -30,10 +30,16 @@ export interface ResolvedGateway {
 	timeoutMs: number;
 }
 
-export type GatewayResolution = { ok: true; gateway: ResolvedGateway } | { ok: false; reason: "no-url" | "bad-url" | "no-token"; detail?: string };
+export type GatewayResolution =
+	| { ok: true; gateway: ResolvedGateway }
+	| { ok: false; reason: "no-url" | "bad-url" | "no-token"; detail?: string };
 
 /** `ULTRATHINK_GATEWAY=0` forces direct. A `direct`/`gateway` env override wins over the file. */
-export function serviceBackend(configured: ServiceBackend | undefined, env: Record<string, string | undefined>, envName: string): ServiceBackend {
+export function serviceBackend(
+	configured: ServiceBackend | undefined,
+	env: Record<string, string | undefined>,
+	envName: string,
+): ServiceBackend {
 	if (env[GATEWAY_KILL_ENV] === "0") return "direct";
 	const override = env[envName];
 	if (override === "direct" || override === "gateway") return override;
@@ -41,9 +47,14 @@ export function serviceBackend(configured: ServiceBackend | undefined, env: Reco
 }
 
 /** Credential selection is independent of URL/seat readiness and uses the same store-first rule on every path. */
-export function resolveGatewayToken(storePath: string | undefined, env: Record<string, string | undefined>): { token: string; source: GatewayTokenSource } | undefined {
+export function resolveGatewayToken(
+	storePath: string | undefined,
+	env: Record<string, string | undefined>,
+): { token: string; source: GatewayTokenSource } | undefined {
 	try {
-		const providers = readStore(storePath ?? defaultStorePath(env)).providers as Partial<Record<string, Credential>>;
+		const providers = readStore(storePath ?? defaultStorePath(env)).providers as Partial<
+			Record<string, Credential>
+		>;
 		const credential = providers[GATEWAY_STORE_PROVIDER];
 		if (credential?.kind === "api_key") {
 			const token = credential.apiKey.trim();
@@ -67,7 +78,11 @@ function timeoutMs(config: GatewayConfig, env: Record<string, string | undefined
 }
 
 /** Never throws and sends nothing. Does not read Hindsight or RAGFlow key variables. */
-export function resolveGateway(config: GatewayConfig, env: Record<string, string | undefined>, deps: { storePath?: string } = {}): GatewayResolution {
+export function resolveGateway(
+	config: GatewayConfig,
+	env: Record<string, string | undefined>,
+	deps: { storePath?: string } = {},
+): GatewayResolution {
 	const rawUrl = env[GATEWAY_URL_ENV]?.trim() || config.url.trim();
 	if (rawUrl === "") return { ok: false, reason: "no-url" };
 	const url = checkServiceUrl(rawUrl);
@@ -75,20 +90,29 @@ export function resolveGateway(config: GatewayConfig, env: Record<string, string
 	const configuredSeat = config.seat.trim() || DEFAULT_GATEWAY_CONFIG.seat;
 	const override = env[GATEWAY_SEAT_ENV]?.trim();
 	const requestedSeat = override && SEAT_PATTERN.test(override) ? override : configuredSeat;
-	if (!SEAT_PATTERN.test(requestedSeat)) return { ok: false, reason: "bad-url", detail: "seat must match [a-z][a-z0-9-]{0,31}" };
+	if (!SEAT_PATTERN.test(requestedSeat))
+		return { ok: false, reason: "bad-url", detail: "seat must match [a-z][a-z0-9-]{0,31}" };
 	const token = resolveGatewayToken(deps.storePath, env);
 	if (!token) return { ok: false, reason: "no-token" };
 	return {
 		ok: true,
-		gateway: { url: url.url, seat: requestedSeat, token: token.token, tokenSource: token.source, timeoutMs: timeoutMs(config, env) },
+		gateway: {
+			url: url.url,
+			seat: requestedSeat,
+			token: token.token,
+			tokenSource: token.source,
+			timeoutMs: timeoutMs(config, env),
+		},
 	};
 }
 
 /** Origin, seat and token source. Never the token or a URL path. */
 export function gatewayStatus(resolution: GatewayResolution): string {
 	if (!resolution.ok) {
-		if (resolution.reason === "no-url") return "unready · no URL (set gateway.url or DESK_GATEWAY_URL)";
-		if (resolution.reason === "bad-url") return `unready · bad URL (${resolution.detail ?? "refused"})`;
+		if (resolution.reason === "no-url")
+			return "unready · no URL (set gateway.url or DESK_GATEWAY_URL)";
+		if (resolution.reason === "bad-url")
+			return `unready · bad URL (${resolution.detail ?? "refused"})`;
 		return "unready · no token (set DESK_GATEWAY_TOKEN or store a desk-gateway credential)";
 	}
 	const { gateway } = resolution;

@@ -78,17 +78,24 @@ function render(result: PruneResult, days: number, stateDir: string): string {
 		for (const session of result.pruned.slice(0, LISTED_SESSIONS)) {
 			lines.push(`  ${session.id}  ${formatBytes(session.bytes)}  ${session.ageDays}d`);
 		}
-		if (result.pruned.length > LISTED_SESSIONS) lines.push(`  and ${result.pruned.length - LISTED_SESSIONS} more`);
+		if (result.pruned.length > LISTED_SESSIONS)
+			lines.push(`  and ${result.pruned.length - LISTED_SESSIONS} more`);
 	}
 	lines.push(`Kept ${result.kept} (${plural(result.keptActive, "active ship")})`);
-	lines.push(`${result.dryRun ? "Would remove" : "Removed"} ${plural(result.orphans.length, "leftover temporary or lock item")}`);
+	lines.push(
+		`${result.dryRun ? "Would remove" : "Removed"} ${plural(result.orphans.length, "leftover temporary or lock item")}`,
+	);
 	for (const error of result.errors.slice(0, LISTED_ERRORS)) lines.push(`error: ${error}`);
-	if (result.errors.length > LISTED_ERRORS) lines.push(`and ${result.errors.length - LISTED_ERRORS} more errors`);
+	if (result.errors.length > LISTED_ERRORS)
+		lines.push(`and ${result.errors.length - LISTED_ERRORS} more errors`);
 	return lines.join("\n");
 }
 
 /** `ultrathink prune`. Exit 0 ok, 1 when a file could not be removed, 2 for a usage error or a refused cutoff. */
-export async function runPruneCommand(args: string[], deps: PruneCommandDeps = {}): Promise<PruneCommandResult> {
+export async function runPruneCommand(
+	args: string[],
+	deps: PruneCommandDeps = {},
+): Promise<PruneCommandResult> {
 	const parsed = parseArgs(args);
 	if (!parsed.ok) return { output: USAGE, exitCode: 2 };
 	const env = deps.env ?? process.env;
@@ -97,7 +104,9 @@ export async function runPruneCommand(args: string[], deps: PruneCommandDeps = {
 		days = parseDays(parsed.olderThan);
 		if (days === undefined) return { output: REFUSED, exitCode: 2 };
 	} else {
-		const configured = deps.retentionDays ?? loadConfig(claudeConfigPaths(deps.cwd ?? process.cwd(), env)).state.retentionDays;
+		const configured =
+			deps.retentionDays ??
+			loadConfig(claudeConfigPaths(deps.cwd ?? process.cwd(), env)).state.retentionDays;
 		if (configured > 0) days = configured;
 	}
 	if (days === undefined) return { output: NO_CUTOFF, exitCode: 2 };

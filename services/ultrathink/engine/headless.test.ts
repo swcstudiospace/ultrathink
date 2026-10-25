@@ -2,7 +2,16 @@
 // Copyright (C) 2026 SWC Studio
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
@@ -21,11 +30,18 @@ import type { Admission } from "../obs/fair-share.ts";
 import type { FinishedSpan, SpanSink } from "../obs/otel.ts";
 import { openStore, type Store } from "../store/store.ts";
 import { createCircuitBreaker } from "./breaker.ts";
-import { createHeadlessPlanner, type HeadlessOptions, type HeadlessPlanner, type PlannerCall, UNPERSISTED_JOBS_MAX } from "./headless.ts";
+import {
+	createHeadlessPlanner,
+	type HeadlessOptions,
+	type HeadlessPlanner,
+	type PlannerCall,
+	UNPERSISTED_JOBS_MAX,
+} from "./headless.ts";
 import { answerRequest, listPendingRequests, showRequest, startPlan } from "./journal.ts";
 import type { OpenRouterFetch } from "./openrouter.ts";
 
-const PROMPT = "Build a small TypeScript CLI that converts CSV files to JSON with streaming support, tests and a README.";
+const PROMPT =
+	"Build a small TypeScript CLI that converts CSV files to JSON with streaming support, tests and a README.";
 const FAKE_KEY = "sk-or-fake-key-0123456789abcdef";
 const dirs: string[] = [];
 const stores: Store[] = [];
@@ -51,25 +67,75 @@ const UPLIFT = (original: string) =>
 const GRAPH = JSON.stringify({
 	goal: "Ship a streaming CSV to JSON CLI",
 	nodes: [
-		{ id: "n1", title: "Understand the request", kind: "understand", question: "What exactly must the CLI do?", depends_on: [] },
-		{ id: "n2", title: "Parser design", kind: "decompose", question: "How is CSV parsed as a stream?", depends_on: ["n1"] },
-		{ id: "n3", title: "CLI surface", kind: "generate", question: "What flags and outputs does the CLI expose?", depends_on: ["n1"] },
-		{ id: "n4", title: "Gaps and risks", kind: "critique", question: "What is missing or ambiguous?", depends_on: ["n2", "n3"] },
-		{ id: "n5", title: "Execution plan", kind: "synthesize", question: "What is the ordered wave plan?", depends_on: ["n4"] },
+		{
+			id: "n1",
+			title: "Understand the request",
+			kind: "understand",
+			question: "What exactly must the CLI do?",
+			depends_on: [],
+		},
+		{
+			id: "n2",
+			title: "Parser design",
+			kind: "decompose",
+			question: "How is CSV parsed as a stream?",
+			depends_on: ["n1"],
+		},
+		{
+			id: "n3",
+			title: "CLI surface",
+			kind: "generate",
+			question: "What flags and outputs does the CLI expose?",
+			depends_on: ["n1"],
+		},
+		{
+			id: "n4",
+			title: "Gaps and risks",
+			kind: "critique",
+			question: "What is missing or ambiguous?",
+			depends_on: ["n2", "n3"],
+		},
+		{
+			id: "n5",
+			title: "Execution plan",
+			kind: "synthesize",
+			question: "What is the ordered wave plan?",
+			depends_on: ["n4"],
+		},
 	],
 });
 
-const steps = (n: number, id: string) => Array.from({ length: n }, (_, i) => `${i + 1}. Step ${i + 1} of ${id}: a discrete, self-contained action.`).join("\n");
+const steps = (n: number, id: string) =>
+	Array.from(
+		{ length: n },
+		(_, i) => `${i + 1}. Step ${i + 1} of ${id}: a discrete, self-contained action.`,
+	).join("\n");
 
 const NODE = (id: string, kind: string, n: number) => {
 	let conclusion = `Answer for ${id}.`;
-	if (kind === "critique") conclusion += "\nOpen questions:\n- Output as JSON lines or array? Default: array.";
-	if (kind === "synthesize") conclusion += "\nWORKFLOW\nWave 1 (parallel): parser — files: src/parse.ts — done when: unit tests pass\nWave 1 (parallel): cli — files: src/cli.ts — done when: --help prints\nWave 2: docs — files: README.md — done when: README lists flags\nVerify: bun test";
+	if (kind === "critique")
+		conclusion += "\nOpen questions:\n- Output as JSON lines or array? Default: array.";
+	if (kind === "synthesize")
+		conclusion +=
+			"\nWORKFLOW\nWave 1 (parallel): parser — files: src/parse.ts — done when: unit tests pass\nWave 1 (parallel): cli — files: src/cli.ts — done when: --help prints\nWave 2: docs — files: README.md — done when: README lists flags\nVerify: bun test";
 	return `<node><rationale>\n${steps(n, id)}\n</rationale><conclusion>${conclusion}</conclusion></node>`;
 };
 
 const CLARIFY = JSON.stringify({
-	questions: [{ id: "q1", question: "Should output be a JSON array or JSON lines?", header: "Output", why: "Changes the writer.", options: [{ label: "JSON array", description: "Standard" }, { label: "JSON lines", description: "Streamable" }], default: "JSON array", blocking: false }],
+	questions: [
+		{
+			id: "q1",
+			question: "Should output be a JSON array or JSON lines?",
+			header: "Output",
+			why: "Changes the writer.",
+			options: [
+				{ label: "JSON array", description: "Standard" },
+				{ label: "JSON lines", description: "Streamable" },
+			],
+			default: "JSON array",
+			blocking: false,
+		},
+	],
 });
 
 /** The scripted model: answers each plugin request by its system prompt. */
@@ -89,7 +155,9 @@ function scriptedModel(): (system: string, user: string) => string {
 const aborted = (signal: AbortSignal): Promise<never> => {
 	const { promise, reject } = Promise.withResolvers<never>();
 	if (signal.aborted) reject(new DOMException("aborted", "AbortError"));
-	signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+	signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+		once: true,
+	});
 	return promise;
 };
 
@@ -149,7 +217,10 @@ interface Harness {
 	clock: FakeClock;
 }
 
-function setup(overrides: Partial<UltrathinkConfig> = {}, options: Partial<HeadlessOptions> = {}): Harness {
+function setup(
+	overrides: Partial<UltrathinkConfig> = {},
+	options: Partial<HeadlessOptions> = {},
+): Harness {
 	const stateDir = join(tmp(), "state");
 	const config: UltrathinkConfig = {
 		publicOrigin: "https://ultrathink.example.test",
@@ -204,14 +275,27 @@ function setup(overrides: Partial<UltrathinkConfig> = {}, options: Partial<Headl
 	};
 	const store = openStore(config.dbPath);
 	stores.push(store);
-	const ledger = createLedger(store, { runTokenCeiling: config.runTokenCeiling, dailyTokenCeiling: config.dailyTokenCeiling });
+	const ledger = createLedger(store, {
+		runTokenCeiling: config.runTokenCeiling,
+		dailyTokenCeiling: config.dailyTokenCeiling,
+	});
 	const clock = fakeClock();
-	const planner = createHeadlessPlanner({ config, store, ledger, sleep: clock.sleep, completer: fakeModel().complete, ...options });
+	const planner = createHeadlessPlanner({
+		config,
+		store,
+		ledger,
+		sleep: clock.sleep,
+		completer: fakeModel().complete,
+		...options,
+	});
 	return { planner, config, stateDir, store, clock };
 }
 
 const jobFile = (stateDir: string, sessionId: string): Record<string, unknown> =>
-	JSON.parse(readFileSync(join(stateDir, "jobs", `${sessionId}.json`), "utf8")) as Record<string, unknown>;
+	JSON.parse(readFileSync(join(stateDir, "jobs", `${sessionId}.json`), "utf8")) as Record<
+		string,
+		unknown
+	>;
 
 /** Starts a job that waits for the gate, leaving it running after the start window. */
 async function startRunning(h: Harness, sessionId: string, prompt = PROMPT) {
@@ -228,7 +312,10 @@ describe("headless planner: start and result", () => {
 		const h = setup({}, { completer: model.complete });
 		const sessionId = randomUUID();
 		const started = await startRunning(h, sessionId);
-		expect(started).toEqual({ ok: true, data: { sessionId, status: "running", pollAfterSec: expect.any(Number) } });
+		expect(started).toEqual({
+			ok: true,
+			data: { sessionId, status: "running", pollAfterSec: expect.any(Number) },
+		});
 
 		const pending = h.planner.result({ sessionId, waitSeconds: 30 });
 		let settled = false;
@@ -247,15 +334,23 @@ describe("headless planner: start and result", () => {
 		expect(result.data.text).not.toMatch(/TodoWrite|Linear|Notion/);
 		expect(result.data.usage?.calls).toBeGreaterThanOrEqual(8);
 		expect(result.data.questions?.[0]?.question).toContain("JSON");
-		expect(h.planner.status({ sessionId })).toEqual({ ok: true, data: { sessionId, status: "planned", pendingCount: 0, pending: [] } });
+		expect(h.planner.status({ sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "planned", pendingCount: 0, pending: [] },
+		});
 
 		const file = join(h.stateDir, "jobs", `${sessionId}.json`);
 		expect(statSync(file).mode & 0o777).toBe(0o600);
-		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "planned", usage: { calls: result.data.usage?.calls } });
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({
+			status: "planned",
+			usage: { calls: result.data.usage?.calls },
+		});
 		const runId = String(jobFile(h.stateDir, sessionId).runId);
 		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
 		expect(ledger.spentForRun(runId)).toBeGreaterThan(0);
-		expect(readdirSync(join(h.stateDir, "jobs")).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+		expect(readdirSync(join(h.stateDir, "jobs")).filter((name) => name.endsWith(".tmp"))).toEqual(
+			[],
+		);
 	});
 
 	test("start returns planned directly when the plan finishes inside the start window", async () => {
@@ -271,7 +366,10 @@ describe("headless planner: start and result", () => {
 		const h = setup();
 		const started = await h.planner.start({ prompt: PROMPT });
 		expect(started.ok).toBe(true);
-		if (started.ok) expect(started.data.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		if (started.ok)
+			expect(started.data.sessionId).toMatch(
+				/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+			);
 	});
 
 	test("a repeated start is idempotent: no second job, no second model call", async () => {
@@ -301,17 +399,35 @@ describe("headless planner: start and result", () => {
 		expect(await again).toMatchObject({ ok: true, data: { sessionId, status: "running" } });
 		expect(model.stages.length).toBe(calls);
 		gate.resolve();
-		expect(await h.planner.result({ sessionId, waitSeconds: 30 })).toMatchObject({ ok: true, data: { status: "planned" } });
+		expect(await h.planner.result({ sessionId, waitSeconds: 30 })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
 	});
 
 	test("the same session id with a different prompt is session_conflict, also across restarts", async () => {
 		const h = setup();
 		const sessionId = randomUUID();
 		await h.planner.start({ prompt: PROMPT, sessionId });
-		expect(await h.planner.start({ prompt: `${PROMPT} Also add a man page.`, sessionId })).toEqual({ ok: false, code: "session_conflict" });
-		const reborn = createHeadlessPlanner({ config: h.config, store: h.store, ledger: createLedger(h.store, { runTokenCeiling: 1e9, dailyTokenCeiling: 1e9 }), sleep: h.clock.sleep, completer: fakeModel().complete });
-		expect(await reborn.start({ prompt: "Something else entirely", sessionId })).toEqual({ ok: false, code: "session_conflict" });
-		expect(await reborn.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "planned" } });
+		expect(await h.planner.start({ prompt: `${PROMPT} Also add a man page.`, sessionId })).toEqual({
+			ok: false,
+			code: "session_conflict",
+		});
+		const reborn = createHeadlessPlanner({
+			config: h.config,
+			store: h.store,
+			ledger: createLedger(h.store, { runTokenCeiling: 1e9, dailyTokenCeiling: 1e9 }),
+			sleep: h.clock.sleep,
+			completer: fakeModel().complete,
+		});
+		expect(await reborn.start({ prompt: "Something else entirely", sessionId })).toEqual({
+			ok: false,
+			code: "session_conflict",
+		});
+		expect(await reborn.start({ prompt: PROMPT, sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "planned" },
+		});
 	});
 
 	test("a session id that belongs to the client-driven loop is session_conflict", async () => {
@@ -319,7 +435,10 @@ describe("headless planner: start and result", () => {
 		const sessionId = randomUUID();
 		const o = { stateDir: h.stateDir, maxPromptChars: 4000, maxAnswerChars: 200_000 };
 		expect((await startPlan(o, { prompt: PROMPT, sessionId })).ok).toBe(true);
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: false, code: "session_conflict" });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
+			ok: false,
+			code: "session_conflict",
+		});
 	});
 
 	test("busy at the concurrency cap, and free again once a job ends", async () => {
@@ -328,10 +447,16 @@ describe("headless planner: start and result", () => {
 		const h = setup({ maxConcurrentPlans: 1 }, { completer: model.complete });
 		const first = randomUUID();
 		await startRunning(h, first);
-		expect(await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() })).toEqual({ ok: false, code: "busy" });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() })).toEqual({
+			ok: false,
+			code: "busy",
+		});
 		gate.resolve();
 		await h.planner.result({ sessionId: first, waitSeconds: 30 });
-		expect(await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() })).toMatchObject({ ok: true, data: { status: "planned" } });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
 	});
 
 	test("disabled when server planning is off, not_ready without a key or model", async () => {
@@ -340,21 +465,48 @@ describe("headless planner: start and result", () => {
 		expect(await off.planner.start({ prompt: PROMPT })).toEqual({ ok: false, code: "disabled" });
 		const keyless = setup({ openRouterApiKey: undefined }, { completer: undefined });
 		expect(keyless.planner.enabled).toBe(true);
-		expect(await keyless.planner.start({ prompt: PROMPT })).toEqual({ ok: false, code: "not_ready" });
+		expect(await keyless.planner.start({ prompt: PROMPT })).toEqual({
+			ok: false,
+			code: "not_ready",
+		});
 	});
 
 	test("rejects invalid ids, prompts and result arguments", async () => {
 		const h = setup({ maxInputChars: 100 });
-		expect(await h.planner.start({ prompt: PROMPT, sessionId: "nope" })).toEqual({ ok: false, code: "invalid_session_id" });
-		expect(await h.planner.start({ prompt: PROMPT, sessionId: 7 })).toEqual({ ok: false, code: "invalid_session_id" });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId: "nope" })).toEqual({
+			ok: false,
+			code: "invalid_session_id",
+		});
+		expect(await h.planner.start({ prompt: PROMPT, sessionId: 7 })).toEqual({
+			ok: false,
+			code: "invalid_session_id",
+		});
 		expect(await h.planner.start({ prompt: 42 })).toEqual({ ok: false, code: "invalid_input" });
-		expect(await h.planner.start({ prompt: " \u0001\n\t " })).toEqual({ ok: false, code: "invalid_input" });
-		expect(await h.planner.start({ prompt: "x".repeat(101) })).toEqual({ ok: false, code: "invalid_input" });
-		expect(await h.planner.result({ sessionId: "nope" })).toEqual({ ok: false, code: "invalid_session_id" });
+		expect(await h.planner.start({ prompt: " \u0001\n\t " })).toEqual({
+			ok: false,
+			code: "invalid_input",
+		});
+		expect(await h.planner.start({ prompt: "x".repeat(101) })).toEqual({
+			ok: false,
+			code: "invalid_input",
+		});
+		expect(await h.planner.result({ sessionId: "nope" })).toEqual({
+			ok: false,
+			code: "invalid_session_id",
+		});
 		const sessionId = randomUUID();
-		expect(await h.planner.result({ sessionId, waitSeconds: "5" })).toEqual({ ok: false, code: "invalid_input" });
-		expect(await h.planner.result({ sessionId, detail: "everything" })).toEqual({ ok: false, code: "invalid_input" });
-		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toEqual({ ok: false, code: "not_found" });
+		expect(await h.planner.result({ sessionId, waitSeconds: "5" })).toEqual({
+			ok: false,
+			code: "invalid_input",
+		});
+		expect(await h.planner.result({ sessionId, detail: "everything" })).toEqual({
+			ok: false,
+			code: "invalid_input",
+		});
+		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toEqual({
+			ok: false,
+			code: "not_found",
+		});
 		expect(h.planner.status({ sessionId: "nope" })).toBeNull();
 		expect(h.planner.status({ sessionId })).toBeNull();
 	});
@@ -369,10 +521,21 @@ describe("headless planner: start and result", () => {
 		const g = setup({}, { completer: declined.complete });
 		const sessionId = randomUUID();
 		const started = await g.planner.start({ prompt: "raw: leave this alone", sessionId });
-		expect(started).toMatchObject({ ok: true, data: { sessionId, status: "skipped", error: expect.any(String) } });
+		expect(started).toMatchObject({
+			ok: true,
+			data: { sessionId, status: "skipped", error: expect.any(String) },
+		});
 		expect(declined.stages).toEqual([]);
 		const result = await g.planner.result({ sessionId, waitSeconds: 0 });
-		expect(result).toMatchObject({ ok: true, data: { status: "skipped", mode: "server", text: expect.any(String), error: expect.any(String) } });
+		expect(result).toMatchObject({
+			ok: true,
+			data: {
+				status: "skipped",
+				mode: "server",
+				text: expect.any(String),
+				error: expect.any(String),
+			},
+		});
 	});
 });
 
@@ -383,10 +546,19 @@ describe("headless planner: limits and lifecycle", () => {
 			const h = setup(ceiling, { completer: model.complete });
 			const sessionId = randomUUID();
 			const started = await h.planner.start({ prompt: PROMPT, sessionId });
-			expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "budget_exceeded" } });
+			expect(started).toEqual({
+				ok: true,
+				data: { sessionId, status: "failed", error: "budget_exceeded" },
+			});
 			expect(model.stages).toEqual([]);
-			expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({ ok: true, data: { status: "failed", error: "budget_exceeded" } });
-			expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "budget_exceeded" });
+			expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({
+				ok: true,
+				data: { status: "failed", error: "budget_exceeded" },
+			});
+			expect(jobFile(h.stateDir, sessionId)).toMatchObject({
+				status: "failed",
+				error: "budget_exceeded",
+			});
 		}
 	});
 
@@ -394,17 +566,33 @@ describe("headless planner: limits and lifecycle", () => {
 		let requests = 0;
 		const counting: OpenRouterFetch = async () => {
 			requests += 1;
-			return new Response(JSON.stringify({ choices: [{ message: { content: "unreachable" } }] }), { status: 200 });
+			return new Response(JSON.stringify({ choices: [{ message: { content: "unreachable" } }] }), {
+				status: 200,
+			});
 		};
-		const h = setup({ runTokenCeiling: 10, modelMaxOutputTokens: 0 }, { completer: undefined, fetch: counting });
+		const h = setup(
+			{ runTokenCeiling: 10, modelMaxOutputTokens: 0 },
+			{ completer: undefined, fetch: counting },
+		);
 		const sessionId = randomUUID();
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "failed", error: "budget_exceeded" } });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", error: "budget_exceeded" },
+		});
 		expect(requests).toBe(0);
-		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "budget_exceeded" });
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({
+			status: "failed",
+			error: "budget_exceeded",
+		});
 	});
 
 	test("a response without usage, or with only some counts, keeps the estimate in the ledger so the ceiling still ends the job", async () => {
-		const shapes: Array<Record<string, unknown> | undefined> = [undefined, { prompt_tokens: 10 }, { completion_tokens: 5, cost: 0.001 }, { prompt_tokens: "x", completion_tokens: -1 }];
+		const shapes: Array<Record<string, unknown> | undefined> = [
+			undefined,
+			{ prompt_tokens: 10 },
+			{ completion_tokens: 5, cost: 0.001 },
+			{ prompt_tokens: "x", completion_tokens: -1 },
+		];
 		for (const usage of shapes) {
 			const model = scriptedModel();
 			let seen = 0;
@@ -412,17 +600,25 @@ describe("headless planner: limits and lifecycle", () => {
 				seen += 1;
 				const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
 				const content = model(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-				return new Response(JSON.stringify({ choices: [{ message: { content } }], ...(usage ? { usage } : {}) }), { status: 200 });
+				return new Response(
+					JSON.stringify({ choices: [{ message: { content } }], ...(usage ? { usage } : {}) }),
+					{ status: 200 },
+				);
 			};
 			const h = setup({ runTokenCeiling: 6000 }, { completer: undefined, fetch: openRouter });
 			const sessionId = randomUUID();
 			const started = await h.planner.start({ prompt: PROMPT, sessionId });
-			expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "budget_exceeded" } });
+			expect(started).toEqual({
+				ok: true,
+				data: { sessionId, status: "failed", error: "budget_exceeded" },
+			});
 			// A plan needs at least eight calls; zero-settled calls would have let them all through.
 			expect(seen).toBeGreaterThanOrEqual(1);
 			expect(seen).toBeLessThan(8);
 			const runId = String(jobFile(h.stateDir, sessionId).runId);
-			const spent = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 }).spentForRun(runId);
+			const spent = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 }).spentForRun(
+				runId,
+			);
 			// Each call held at least its max output tokens (1000) and none was settled to zero.
 			expect(spent).toBeGreaterThanOrEqual(1000 * seen);
 			expect(spent).toBeLessThanOrEqual(6000);
@@ -443,7 +639,8 @@ describe("headless planner: limits and lifecycle", () => {
 	});
 
 	test("an engine failure ends the job as failed with the code, never the response body", async () => {
-		const failing: OpenRouterFetch = async () => new Response("secret upstream body", { status: 401 });
+		const failing: OpenRouterFetch = async () =>
+			new Response("secret upstream body", { status: 401 });
 		const h = setup({}, { completer: undefined, fetch: failing });
 		const sessionId = randomUUID();
 		const started = await h.planner.start({ prompt: PROMPT, sessionId });
@@ -484,7 +681,10 @@ describe("headless planner: limits and lifecycle", () => {
 			},
 		);
 		const sessionId = randomUUID();
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "planned" } });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "planned" },
+		});
 		expect(jobFile(h.stateDir, sessionId).error).toBeUndefined();
 	});
 
@@ -506,7 +706,10 @@ describe("headless planner: limits and lifecycle", () => {
 		expect(typeof error).toBe("string");
 		expect(error).toContain("steps");
 		expect((error ?? "").length).toBeLessThanOrEqual(303);
-		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({ ok: true, data: { status: "invalid", mode: "server" } });
+		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({
+			ok: true,
+			data: { status: "invalid", mode: "server" },
+		});
 	});
 
 	test("shutdown aborts running jobs and marks them failed interrupted, even when the model ignores the abort", async () => {
@@ -519,12 +722,21 @@ describe("headless planner: limits and lifecycle", () => {
 		await flush();
 		h.clock.fire(5_000);
 		await closing;
-		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "interrupted" });
-		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({ ok: true, data: { status: "failed", error: "interrupted" } });
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({
+			status: "failed",
+			error: "interrupted",
+		});
+		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({
+			ok: true,
+			data: { status: "failed", error: "interrupted" },
+		});
 		expect(await h.planner.start({ prompt: PROMPT })).toEqual({ ok: false, code: "not_ready" });
 		gate.resolve();
 		await flush();
-		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "interrupted" });
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({
+			status: "failed",
+			error: "interrupted",
+		});
 	});
 
 	test("shutdown ends a job that honors the abort without waiting for the deadline", async () => {
@@ -533,7 +745,10 @@ describe("headless planner: limits and lifecycle", () => {
 		const sessionId = randomUUID();
 		await startRunning(h, sessionId);
 		await h.planner.shutdown();
-		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "interrupted" });
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({
+			status: "failed",
+			error: "interrupted",
+		});
 	});
 
 	test("a job left running by a previous process becomes failed interrupted on startup", async () => {
@@ -541,12 +756,42 @@ describe("headless planner: limits and lifecycle", () => {
 		const sessionId = randomUUID();
 		const run = h.store.createRun({ ownerId: "x", request: "x", route: "x" });
 		mkdirSync(join(h.stateDir, "jobs"), { recursive: true });
-		writeFileSync(join(h.stateDir, "jobs", `${sessionId}.json`), JSON.stringify({ sessionId, runId: run.id, status: "running", createdAt: 1, updatedAt: 1, usage: { calls: 0, inputTokens: 0, outputTokens: 0 }, promptSha256: "0".repeat(64) }));
-		const reborn = createHeadlessPlanner({ config: h.config, store: h.store, ledger: createLedger(h.store, { runTokenCeiling: 1e9, dailyTokenCeiling: 1e9 }), sleep: h.clock.sleep, completer: fakeModel().complete });
-		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "interrupted" });
-		expect(await reborn.result({ sessionId, waitSeconds: 0 })).toMatchObject({ ok: true, data: { status: "failed", mode: "server", error: "interrupted" } });
-		expect(reborn.status({ sessionId })).toEqual({ ok: true, data: { sessionId, status: "failed", pendingCount: 0, pending: [] } });
-		expect(h.store.db.query<{ status: string }, [string]>("SELECT status FROM runs WHERE id = ?").get(run.id)?.status).toBe("failed");
+		writeFileSync(
+			join(h.stateDir, "jobs", `${sessionId}.json`),
+			JSON.stringify({
+				sessionId,
+				runId: run.id,
+				status: "running",
+				createdAt: 1,
+				updatedAt: 1,
+				usage: { calls: 0, inputTokens: 0, outputTokens: 0 },
+				promptSha256: "0".repeat(64),
+			}),
+		);
+		const reborn = createHeadlessPlanner({
+			config: h.config,
+			store: h.store,
+			ledger: createLedger(h.store, { runTokenCeiling: 1e9, dailyTokenCeiling: 1e9 }),
+			sleep: h.clock.sleep,
+			completer: fakeModel().complete,
+		});
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({
+			status: "failed",
+			error: "interrupted",
+		});
+		expect(await reborn.result({ sessionId, waitSeconds: 0 })).toMatchObject({
+			ok: true,
+			data: { status: "failed", mode: "server", error: "interrupted" },
+		});
+		expect(reborn.status({ sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", pendingCount: 0, pending: [] },
+		});
+		expect(
+			h.store.db
+				.query<{ status: string }, [string]>("SELECT status FROM runs WHERE id = ?")
+				.get(run.id)?.status,
+		).toBe("failed");
 	});
 
 	test("a job file without a runId is ignored", async () => {
@@ -554,12 +799,31 @@ describe("headless planner: limits and lifecycle", () => {
 		const sessionId = randomUUID();
 		mkdirSync(join(h.stateDir, "jobs"), { recursive: true });
 		const file = join(h.stateDir, "jobs", `${sessionId}.json`);
-		writeFileSync(file, JSON.stringify({ sessionId, status: "running", createdAt: 1, updatedAt: 1, usage: { calls: 0, inputTokens: 0, outputTokens: 0 }, promptSha256: "0".repeat(64) }));
-		const reborn = createHeadlessPlanner({ config: h.config, store: h.store, ledger: createLedger(h.store, { runTokenCeiling: 1e9, dailyTokenCeiling: 1e9 }), sleep: h.clock.sleep, completer: fakeModel().complete });
+		writeFileSync(
+			file,
+			JSON.stringify({
+				sessionId,
+				status: "running",
+				createdAt: 1,
+				updatedAt: 1,
+				usage: { calls: 0, inputTokens: 0, outputTokens: 0 },
+				promptSha256: "0".repeat(64),
+			}),
+		);
+		const reborn = createHeadlessPlanner({
+			config: h.config,
+			store: h.store,
+			ledger: createLedger(h.store, { runTokenCeiling: 1e9, dailyTokenCeiling: 1e9 }),
+			sleep: h.clock.sleep,
+			completer: fakeModel().complete,
+		});
 		// Not recovered on startup, not a server job, not a client session.
 		expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ status: "running" });
 		expect(reborn.status({ sessionId })).toBeNull();
-		expect(await reborn.result({ sessionId, waitSeconds: 0 })).toEqual({ ok: false, code: "not_found" });
+		expect(await reborn.result({ sessionId, waitSeconds: 0 })).toEqual({
+			ok: false,
+			code: "not_found",
+		});
 	});
 
 	test("settled jobs whose file cannot be written are kept in memory only up to the cap, and each failure is logged once", async () => {
@@ -571,17 +835,24 @@ describe("headless planner: limits and lifecycle", () => {
 		};
 		const events: Array<{ level: string; event: string; fields?: Record<string, unknown> }> = [];
 		const logger = {
-			info: (event: string, fields?: Record<string, unknown>) => events.push({ level: "info", event, fields }),
-			warn: (event: string, fields?: Record<string, unknown>) => events.push({ level: "warn", event, fields }),
-			error: (event: string, fields?: Record<string, unknown>) => events.push({ level: "error", event, fields }),
+			info: (event: string, fields?: Record<string, unknown>) =>
+				events.push({ level: "info", event, fields }),
+			warn: (event: string, fields?: Record<string, unknown>) =>
+				events.push({ level: "warn", event, fields }),
+			error: (event: string, fields?: Record<string, unknown>) =>
+				events.push({ level: "error", event, fields }),
 		};
 		const h = setup({ maxConcurrentPlans: total + 1 }, { completer, logger });
 		const ids = Array.from({ length: total }, () => randomUUID());
 		for (const sessionId of ids) {
-			expect(await startRunning(h, sessionId)).toEqual({ ok: true, data: { sessionId, status: "running", pollAfterSec: expect.any(Number) } });
+			expect(await startRunning(h, sessionId)).toEqual({
+				ok: true,
+				data: { sessionId, status: "running", pollAfterSec: expect.any(Number) },
+			});
 		}
 		// The running file is on disk; the settled write fails because its temp path is now a directory.
-		for (const sessionId of ids) mkdirSync(join(h.stateDir, "jobs", `${sessionId}.json.${process.pid}.tmp`));
+		for (const sessionId of ids)
+			mkdirSync(join(h.stateDir, "jobs", `${sessionId}.json.${process.pid}.tmp`));
 		gate.resolve();
 		for (const sessionId of ids) await h.planner.result({ sessionId, waitSeconds: 30 });
 
@@ -596,7 +867,12 @@ describe("headless planner: limits and lifecycle", () => {
 		expect(seen).toEqual({ failed: UNPERSISTED_JOBS_MAX, running: total - UNPERSISTED_JOBS_MAX });
 		expect(events).toHaveLength(total);
 		expect(new Set(events.map((e) => e.fields?.sessionId)).size).toBe(total);
-		for (const entry of events) expect(entry).toMatchObject({ level: "error", event: "job_persist_failed", fields: { status: "failed", error: expect.any(Error) } });
+		for (const entry of events)
+			expect(entry).toMatchObject({
+				level: "error",
+				event: "job_persist_failed",
+				fields: { status: "failed", error: expect.any(Error) },
+			});
 		expect(JSON.stringify(events)).not.toContain(FAKE_KEY);
 		expect(JSON.stringify(events)).not.toContain(PROMPT);
 	});
@@ -611,11 +887,20 @@ describe("headless planner: limits and lifecycle", () => {
 		await flush();
 		expect(h.clock.has(45_000)).toBe(true);
 		h.clock.fire(45_000);
-		expect(await huge).toMatchObject({ ok: true, data: { status: "running", mode: "server", text: expect.any(String) } });
+		expect(await huge).toMatchObject({
+			ok: true,
+			data: { status: "running", mode: "server", text: expect.any(String) },
+		});
 
 		const before = h.clock.waits.length;
-		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({ ok: true, data: { status: "running" } });
-		expect(await h.planner.result({ sessionId, waitSeconds: -5 })).toMatchObject({ ok: true, data: { status: "running" } });
+		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({
+			ok: true,
+			data: { status: "running" },
+		});
+		expect(await h.planner.result({ sessionId, waitSeconds: -5 })).toMatchObject({
+			ok: true,
+			data: { status: "running" },
+		});
 		expect(h.clock.waits.length).toBe(before);
 		gate.resolve();
 		await h.planner.result({ sessionId, waitSeconds: 30 });
@@ -635,11 +920,19 @@ describe("headless planner: limits and lifecycle", () => {
 
 	test("a reply cut at the output limit ends the job as failed with truncated", async () => {
 		const cut: OpenRouterFetch = async () =>
-			new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "1. Partial step" } }] }), { status: 200 });
+			new Response(
+				JSON.stringify({
+					choices: [{ finish_reason: "length", message: { content: "1. Partial step" } }],
+				}),
+				{ status: 200 },
+			);
 		const h = setup({}, { completer: undefined, fetch: cut });
 		const sessionId = randomUUID();
 		const started = await h.planner.start({ prompt: PROMPT, sessionId });
-		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
+		expect(started).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", error: "truncated" },
+		});
 	});
 
 	test("a clarify call cut at the output limit fails the job as truncated, even though the record still passes", async () => {
@@ -648,7 +941,10 @@ describe("headless planner: limits and lifecycle", () => {
 			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
 			const system = body.messages[0]?.content ?? "";
 			if (stageOf(system) === "clarify") {
-				return new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "{" } }] }), { status: 200 });
+				return new Response(
+					JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "{" } }] }),
+					{ status: 200 },
+				);
 			}
 			const content = script(system, body.messages[1]?.content ?? "");
 			return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
@@ -656,7 +952,10 @@ describe("headless planner: limits and lifecycle", () => {
 		const h = setup({}, { completer: undefined, fetch: cutClarify });
 		const sessionId = randomUUID();
 		const started = await h.planner.start({ prompt: PROMPT, sessionId });
-		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
+		expect(started).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", error: "truncated" },
+		});
 	});
 });
 
@@ -678,13 +977,20 @@ describe("headless planner: client-mode fallback", () => {
 				const system = showRequest(o, { sessionId, key: entry.key, part: "system" });
 				const user = showRequest(o, { sessionId, key: entry.key, part: "user" });
 				if (!system.ok || !user.ok) throw new Error("show failed");
-				const answered = answerRequest(o, { sessionId, key: entry.key, answer: model(system.data.system ?? "", user.data.user ?? "") });
+				const answered = answerRequest(o, {
+					sessionId,
+					key: entry.key,
+					answer: model(system.data.system ?? "", user.data.user ?? ""),
+				});
 				expect(answered.ok).toBe(true);
 			}
 		}
 		expect(status).toBe("planned");
 		const result = await h.planner.result({ sessionId, waitSeconds: 0 });
-		expect(result).toMatchObject({ ok: true, data: { sessionId, status: "planned", mode: "client" } });
+		expect(result).toMatchObject({
+			ok: true,
+			data: { sessionId, status: "planned", mode: "client" },
+		});
 		if (result.ok) expect(result.data.text).toContain(PROMPT);
 		expect(h.planner.status({ sessionId })).toBeNull();
 	});
@@ -693,9 +999,18 @@ describe("headless planner: client-mode fallback", () => {
 		const h = setup();
 		const sessionId = randomUUID();
 		const o = { stateDir: h.stateDir, maxPromptChars: 4000, maxAnswerChars: 200_000 };
-		expect(await startPlan(o, { prompt: PROMPT, sessionId })).toMatchObject({ ok: true, data: { status: "needs-model" } });
-		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({ ok: true, data: { status: "running", mode: "client", pollAfterSec: 10 } });
-		expect(await h.planner.result({ sessionId: randomUUID(), waitSeconds: 0 })).toEqual({ ok: false, code: "not_found" });
+		expect(await startPlan(o, { prompt: PROMPT, sessionId })).toMatchObject({
+			ok: true,
+			data: { status: "needs-model" },
+		});
+		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({
+			ok: true,
+			data: { status: "running", mode: "client", pollAfterSec: 10 },
+		});
+		expect(await h.planner.result({ sessionId: randomUUID(), waitSeconds: 0 })).toEqual({
+			ok: false,
+			code: "not_found",
+		});
 	});
 });
 
@@ -707,12 +1022,24 @@ describe("headless planner: call telemetry", () => {
 			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
 			requests.push("x");
 			const content = script(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-			return new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 } }), { status: 200 });
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content } }],
+					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 },
+				}),
+				{ status: 200 },
+			);
 		};
 		const calls: PlannerCall[] = [];
-		const h = setup({}, { completer: undefined, fetch: openRouter, onCall: (call) => calls.push(call) });
+		const h = setup(
+			{},
+			{ completer: undefined, fetch: openRouter, onCall: (call) => calls.push(call) },
+		);
 		const sessionId = randomUUID();
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({ ok: true, data: { status: "planned" } });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
 		expect(calls.length).toBe(requests.length);
 		expect(calls.length).toBeGreaterThanOrEqual(8);
 		for (const call of calls) {
@@ -761,14 +1088,20 @@ describe("headless planner: call telemetry", () => {
 		const cut: OpenRouterFetch = async (url) => {
 			seen.push(url);
 			return new Response(
-				JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "partial" } }], usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 } }),
+				JSON.stringify({
+					choices: [{ finish_reason: "length", message: { content: "partial" } }],
+					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 },
+				}),
 				{ status: 200 },
 			);
 		};
 		const calls: PlannerCall[] = [];
 		const h = setup({}, { completer: undefined, fetch: cut, onCall: (call) => calls.push(call) });
 		const sessionId = randomUUID();
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "failed", error: "truncated" } });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", error: "truncated" },
+		});
 		expect(seen.length).toBeGreaterThanOrEqual(1);
 		expect(calls).toHaveLength(seen.length);
 		for (const call of calls) {
@@ -777,7 +1110,11 @@ describe("headless planner: call telemetry", () => {
 			expect(call.outputTokens).toBe(50);
 			expect(call.costUsd).toBeCloseTo(0.002, 6);
 		}
-		expect(jobFile(h.stateDir, sessionId).usage).toMatchObject({ calls: seen.length, inputTokens: 100 * seen.length, outputTokens: 50 * seen.length });
+		expect(jobFile(h.stateDir, sessionId).usage).toMatchObject({
+			calls: seen.length,
+			inputTokens: 100 * seen.length,
+			outputTokens: 50 * seen.length,
+		});
 		const runId = String(jobFile(h.stateDir, sessionId).runId);
 		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
 		expect(ledger.spentForRun(runId)).toBe(150 * seen.length);
@@ -794,22 +1131,49 @@ describe("headless planner: upstream breaker", () => {
 		let requests = 0;
 		const never: OpenRouterFetch = async () => {
 			requests += 1;
-			return new Response(JSON.stringify({ choices: [{ message: { content: "unreachable" } }] }), { status: 200 });
+			return new Response(JSON.stringify({ choices: [{ message: { content: "unreachable" } }] }), {
+				status: 200,
+			});
 		};
 		const calls: PlannerCall[] = [];
-		const h = setup({}, { completer: undefined, fetch: never, breaker, onCall: (call) => calls.push(call) });
+		const h = setup(
+			{},
+			{ completer: undefined, fetch: never, breaker, onCall: (call) => calls.push(call) },
+		);
 		const sessionId = randomUUID();
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({ ok: true, data: { sessionId, status: "failed", error: "upstream_unavailable" } });
-		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({ ok: true, data: { status: "failed", mode: "server", error: "upstream_unavailable" } });
-		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "upstream_unavailable", usage: { calls: 0 } });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", error: "upstream_unavailable" },
+		});
+		expect(await h.planner.result({ sessionId, waitSeconds: 0 })).toMatchObject({
+			ok: true,
+			data: { status: "failed", mode: "server", error: "upstream_unavailable" },
+		});
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({
+			status: "failed",
+			error: "upstream_unavailable",
+			usage: { calls: 0 },
+		});
 		expect(requests).toBe(0);
 		expect(calls.length).toBeGreaterThanOrEqual(1);
-		for (const call of calls) expect(call).toMatchObject({ outcome: "upstream_unavailable", attempts: 0, inputTokens: 0, outputTokens: 0 });
+		for (const call of calls)
+			expect(call).toMatchObject({
+				outcome: "upstream_unavailable",
+				attempts: 0,
+				inputTokens: 0,
+				outputTokens: 0,
+			});
 		expect(h.planner.upstream()).toEqual({ state: "open", failures: 1 });
 		// Every reservation made for the refused calls was abandoned, none left reserved or settled.
-		const states = h.store.db.query<{ state: string; n: number }, []>("SELECT state, COUNT(*) AS n FROM token_ledger GROUP BY state").all();
+		const states = h.store.db
+			.query<{ state: string; n: number }, []>(
+				"SELECT state, COUNT(*) AS n FROM token_ledger GROUP BY state",
+			)
+			.all();
 		expect(states).toEqual([{ state: "abandoned", n: calls.length }]);
-		const run = h.store.db.query<{ status: string; reason: string | null }, []>("SELECT status, reason FROM runs").get();
+		const run = h.store.db
+			.query<{ status: string; reason: string | null }, []>("SELECT status, reason FROM runs")
+			.get();
 		expect(run).toEqual({ status: "failed", reason: "upstream_unavailable" });
 	});
 
@@ -827,7 +1191,10 @@ describe("headless planner: upstream breaker", () => {
 		for (let i = 0; i < 20 && !h.clock.has(1000); i++) await flush();
 		expect(h.clock.has(1000)).toBe(true);
 		h.clock.fire(1000);
-		expect(await started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "upstream_unavailable" } });
+		expect(await started).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", error: "upstream_unavailable" },
+		});
 		// Two 503s open the breaker; the completer then stops retrying and no later call reaches the upstream.
 		expect(requests).toBe(2);
 		expect(h.planner.upstream()).toEqual({ state: "open", failures: 2 });
@@ -837,23 +1204,37 @@ describe("headless planner: upstream breaker", () => {
 		const h = setup();
 		expect(h.planner.upstream()).toBeUndefined();
 		const sessionId = randomUUID();
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({ ok: true, data: { sessionId, status: "planned" } });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({
+			ok: true,
+			data: { sessionId, status: "planned" },
+		});
 		expect(h.planner.upstream()).toBeUndefined();
 	});
 });
 
 describe("headless planner: reasoning effort", () => {
-	async function bodiesFor(overrides: Partial<UltrathinkConfig>): Promise<Array<Record<string, unknown>>> {
+	async function bodiesFor(
+		overrides: Partial<UltrathinkConfig>,
+	): Promise<Array<Record<string, unknown>>> {
 		const script = scriptedModel();
 		const bodies: Array<Record<string, unknown>> = [];
 		const openRouter: OpenRouterFetch = async (_url, init) => {
 			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
 			bodies.push(body as unknown as Record<string, unknown>);
 			const content = script(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-			return new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }), { status: 200 });
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content } }],
+					usage: { prompt_tokens: 10, completion_tokens: 5 },
+				}),
+				{ status: 200 },
+			);
 		};
 		const h = setup(overrides, { completer: undefined, fetch: openRouter });
-		expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({ ok: true, data: { status: "planned" } });
+		expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
 		return bodies;
 	}
 
@@ -867,18 +1248,28 @@ describe("headless planner: reasoning effort", () => {
 	});
 
 	test("sends no max_tokens key when the output cap is 0 and no ceiling applies", async () => {
-		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: 0, dailyTokenCeiling: 0 });
+		const bodies = await bodiesFor({
+			modelMaxOutputTokens: 0,
+			runTokenCeiling: 0,
+			dailyTokenCeiling: 0,
+		});
 		expect(bodies.length).toBeGreaterThanOrEqual(8);
 		for (const body of bodies) expect("max_tokens" in body).toBe(false);
 	});
 
 	test("with a ceiling and output cap 0, max_tokens is capped to the budget left and to 16000", async () => {
 		const ceiling = 100_000;
-		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: ceiling, dailyTokenCeiling: 0 });
+		const bodies = await bodiesFor({
+			modelMaxOutputTokens: 0,
+			runTokenCeiling: ceiling,
+			dailyTokenCeiling: 0,
+		});
 		expect(bodies.length).toBeGreaterThanOrEqual(8);
 		const inputEstimates = bodies.map((body) => {
 			const messages = body.messages as Array<{ content: string }>;
-			return Math.ceil(((messages[0]?.content.length ?? 0) + (messages[1]?.content.length ?? 0)) / 3);
+			return Math.ceil(
+				((messages[0]?.content.length ?? 0) + (messages[1]?.content.length ?? 0)) / 3,
+			);
 		});
 		bodies.forEach((body, index) => {
 			const maxTokens = body.max_tokens as number;
@@ -892,7 +1283,11 @@ describe("headless planner: reasoning effort", () => {
 	});
 
 	test("a ceiling above the output bound still caps max_tokens at 16000", async () => {
-		const bodies = await bodiesFor({ modelMaxOutputTokens: 0, runTokenCeiling: 5_000_000, dailyTokenCeiling: 0 });
+		const bodies = await bodiesFor({
+			modelMaxOutputTokens: 0,
+			runTokenCeiling: 5_000_000,
+			dailyTokenCeiling: 0,
+		});
 		expect(bodies.length).toBeGreaterThanOrEqual(8);
 		for (const body of bodies) expect(body.max_tokens).toBe(16_000);
 	});
@@ -900,8 +1295,22 @@ describe("headless planner: reasoning effort", () => {
 
 describe("headless planner: isolation", () => {
 	test("the env and options given to planPrompt carry the kill switches and none of the operator's state", async () => {
-		const captured: { call?: { request: Parameters<typeof planPrompt>[0]; env: Record<string, string | undefined>; options: NonNullable<Parameters<typeof planPrompt>[2]> } } = {};
-		const hostile = { ULTRATHINK_CHILD: "1", ULTRATHINK_UPLIFT: "0", ULTRATHINK_SHIP: "1", ULTRATHINK_DECISIONS: "1", OPENROUTER_API_KEY: FAKE_KEY, GITHUB_TOKEN: "ghp_fake", PATH: "/usr/bin" };
+		const captured: {
+			call?: {
+				request: Parameters<typeof planPrompt>[0];
+				env: Record<string, string | undefined>;
+				options: NonNullable<Parameters<typeof planPrompt>[2]>;
+			};
+		} = {};
+		const hostile = {
+			ULTRATHINK_CHILD: "1",
+			ULTRATHINK_UPLIFT: "0",
+			ULTRATHINK_SHIP: "1",
+			ULTRATHINK_DECISIONS: "1",
+			OPENROUTER_API_KEY: FAKE_KEY,
+			GITHUB_TOKEN: "ghp_fake",
+			PATH: "/usr/bin",
+		};
 		const h = setup(
 			{},
 			{
@@ -917,18 +1326,38 @@ describe("headless planner: isolation", () => {
 		expect(started).toMatchObject({ ok: true, data: { status: "planned" } });
 		if (!captured.call) throw new Error("planPrompt was not called");
 		const { request, env, options } = captured.call;
-		expect(request).toMatchObject({ host: "prime-agent", session_id: sessionId, prompt: PROMPT, cwd: join(h.stateDir, "cwd") });
-		expect(env).toMatchObject({ ULTRATHINK_SHIP: "0", ULTRATHINK_HINDSIGHT: "0", ULTRATHINK_RAGFLOW: "0", SUBSTRATE_DISABLED: "1", ULTRATHINK_DECISIONS: "0" });
+		expect(request).toMatchObject({
+			host: "prime-agent",
+			session_id: sessionId,
+			prompt: PROMPT,
+			cwd: join(h.stateDir, "cwd"),
+		});
+		expect(env).toMatchObject({
+			ULTRATHINK_SHIP: "0",
+			ULTRATHINK_HINDSIGHT: "0",
+			ULTRATHINK_RAGFLOW: "0",
+			SUBSTRATE_DISABLED: "1",
+			ULTRATHINK_DECISIONS: "0",
+		});
 		expect("ULTRATHINK_CHILD" in env).toBe(false);
 		expect("ULTRATHINK_UPLIFT" in env).toBe(false);
 		expect(env.OPENROUTER_API_KEY).toBeUndefined();
 		expect(env.GITHUB_TOKEN).toBeUndefined();
-		for (const key of ["HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"]) expect(env[key]?.startsWith(h.stateDir)).toBe(true);
+		for (const key of ["HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"])
+			expect(env[key]?.startsWith(h.stateDir)).toBe(true);
 		expect(options.stateDir).toBe(h.stateDir);
 		expect(options.control).toEqual({ enabled: true });
 		expect(options.createTracker?.(options.config as never)).toBeUndefined();
 		expect(options.signal).toBeInstanceOf(AbortSignal);
-		expect(options.config).toMatchObject({ track: { enabled: false }, ship: { enabled: false }, hindsight: { enabled: false }, ragflow: { enabled: false }, teach: { enabled: false }, decisions: { enabled: false }, hitl: { knowledgeBase: false } });
+		expect(options.config).toMatchObject({
+			track: { enabled: false },
+			ship: { enabled: false },
+			hindsight: { enabled: false },
+			ragflow: { enabled: false },
+			teach: { enabled: false },
+			decisions: { enabled: false },
+			hitl: { knowledgeBase: false },
+		});
 	});
 
 	test("ULTRATHINK_SERVER_DECISIONS in the environment never gives a server plan the OpenRouter key or Jev", async () => {
@@ -938,7 +1367,11 @@ describe("headless planner: isolation", () => {
 			{},
 			{
 				// The operator's environment asks for decisions and holds the key; neither reaches the plan.
-				env: { PATH: process.env.PATH, ULTRATHINK_SERVER_DECISIONS: "1", OPENROUTER_API_KEY: FAKE_KEY },
+				env: {
+					PATH: process.env.PATH,
+					ULTRATHINK_SERVER_DECISIONS: "1",
+					OPENROUTER_API_KEY: FAKE_KEY,
+				},
 				// Not the real planPrompt: a live Jev gate would call out.
 				plan: async (_request, given, options) => {
 					if (!options?.config) throw new Error("planPrompt was called without a config");
@@ -968,7 +1401,11 @@ describe("headless planner: isolation", () => {
 			substrate: { url: "https://substrate.invalid" },
 			gateway: { url: "https://gateway.invalid" },
 		});
-		for (const file of [join(hostileRoot, "xdg", "ultrathink", "config.json"), join(hostileRoot, "claude", "ultrathink.json"), join(hostileRoot, "home", ".config", "ultrathink", "config.json")]) {
+		for (const file of [
+			join(hostileRoot, "xdg", "ultrathink", "config.json"),
+			join(hostileRoot, "claude", "ultrathink.json"),
+			join(hostileRoot, "home", ".config", "ultrathink", "config.json"),
+		]) {
 			mkdirSync(dirname(file), { recursive: true });
 			writeFileSync(file, hostileConfig);
 		}
@@ -990,7 +1427,13 @@ describe("headless planner: isolation", () => {
 			seen.push({ url, headers: init.headers as Record<string, string> });
 			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
 			const content = script(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-			return new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.001 } }), { status: 200 });
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content } }],
+					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.001 },
+				}),
+				{ status: 200 },
+			);
 		};
 		try {
 			// The fixture is hostile: read the way the plugin reads it, it would switch everything on and planning off.
@@ -1012,7 +1455,11 @@ describe("headless planner: isolation", () => {
 				expect(call.url).toBe("https://openrouter.test/api/v1/chat/completions");
 				expect(call.headers["HTTP-Referer"]).toBe("https://ultrathink.example.test");
 			}
-			expect(result.data.usage).toMatchObject({ calls: seen.length, inputTokens: 100 * seen.length, outputTokens: 50 * seen.length });
+			expect(result.data.usage).toMatchObject({
+				calls: seen.length,
+				inputTokens: 100 * seen.length,
+				outputTokens: 50 * seen.length,
+			});
 			expect(result.data.usage?.costUsd).toBeCloseTo(0.001 * seen.length, 6);
 			const runId = String(jobFile(h.stateDir, sessionId).runId);
 			const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
@@ -1051,7 +1498,13 @@ async function finishClientSession(stateDir: string, sessionId: string): Promise
 			const system = showRequest(o, { sessionId, key: entry.key, part: "system" });
 			const user = showRequest(o, { sessionId, key: entry.key, part: "user" });
 			if (!system.ok || !user.ok) throw new Error("show failed");
-			expect(answerRequest(o, { sessionId, key: entry.key, answer: model(system.data.system ?? "", user.data.user ?? "") }).ok).toBe(true);
+			expect(
+				answerRequest(o, {
+					sessionId,
+					key: entry.key,
+					answer: model(system.data.system ?? "", user.data.user ?? ""),
+				}).ok,
+			).toBe(true);
 		}
 	}
 	expect(status).toBe("planned");
@@ -1061,7 +1514,10 @@ describe("headless planner: graph view", () => {
 	test("a server-planned session carries the structured graph and the diagram in its text", async () => {
 		const h = setup();
 		const sessionId = randomUUID();
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({ ok: true, data: { status: "planned" } });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
 		for (const detail of ["brief", "full"] as const) {
 			const result = await h.planner.result({ sessionId, detail, waitSeconds: 0 });
 			expect(result.ok).toBe(true);
@@ -1081,7 +1537,9 @@ describe("headless planner: graph view", () => {
 			expect(JSON.parse(JSON.stringify(result.data)).graph).toEqual(graph);
 			expect(result.data.text).toContain("## Graph of Thought x Chain of Thought");
 			expect(result.data.text).toContain("```mermaid\nflowchart TD\n");
-			expect(result.data.text.indexOf("## Graph of Thought x Chain of Thought")).toBeLessThan(result.data.text.indexOf("## Request"));
+			expect(result.data.text.indexOf("## Graph of Thought x Chain of Thought")).toBeLessThan(
+				result.data.text.indexOf("## Request"),
+			);
 		}
 	});
 
@@ -1102,7 +1560,13 @@ describe("headless planner: graph view", () => {
 		await h.planner.start({ prompt: PROMPT, sessionId });
 		const record = readSession(h.stateDir, sessionId);
 		if (!record) throw new Error("no session record");
-		writeSession(h.stateDir, { ...record, graph: { goal: FALLBACK_GRAPH.goal, nodes: FALLBACK_GRAPH.nodes.map((n) => ({ ...n, dependsOn: [...n.dependsOn] })) } });
+		writeSession(h.stateDir, {
+			...record,
+			graph: {
+				goal: FALLBACK_GRAPH.goal,
+				nodes: FALLBACK_GRAPH.nodes.map((n) => ({ ...n, dependsOn: [...n.dependsOn] })),
+			},
+		});
 		const result = await h.planner.result({ sessionId, waitSeconds: 0 });
 		expect(result).toMatchObject({ ok: true, data: { status: "planned", mode: "server" } });
 		if (!result.ok) return;
@@ -1119,7 +1583,13 @@ describe("headless planner: graph view", () => {
 		const pending = await running.planner.result({ sessionId: runningId, waitSeconds: 0 });
 		expect(pending).toEqual({
 			ok: true,
-			data: { sessionId: runningId, status: "running", mode: "server", text: expect.stringContaining("still being prepared"), usage: expect.any(Object) },
+			data: {
+				sessionId: runningId,
+				status: "running",
+				mode: "server",
+				text: expect.stringContaining("still being prepared"),
+				usage: expect.any(Object),
+			},
 		});
 		gate.resolve();
 		await running.planner.result({ sessionId: runningId, waitSeconds: 30 });
@@ -1130,7 +1600,14 @@ describe("headless planner: graph view", () => {
 		await h.planner.start({ prompt: PROMPT, sessionId: failedId });
 		expect(await h.planner.result({ sessionId: failedId, waitSeconds: 0 })).toEqual({
 			ok: true,
-			data: { sessionId: failedId, status: "failed", mode: "server", text: expect.stringContaining("Planning failed (auth)"), usage: expect.any(Object), error: "auth" },
+			data: {
+				sessionId: failedId,
+				status: "failed",
+				mode: "server",
+				text: expect.stringContaining("Planning failed (auth)"),
+				usage: expect.any(Object),
+				error: "auth",
+			},
 		});
 
 		const client = setup();
@@ -1139,7 +1616,13 @@ describe("headless planner: graph view", () => {
 		await startPlan(o, { prompt: PROMPT, sessionId: clientId });
 		expect(await client.planner.result({ sessionId: clientId, waitSeconds: 0 })).toEqual({
 			ok: true,
-			data: { sessionId: clientId, status: "running", mode: "client", text: expect.stringContaining("driven by the chat model"), pollAfterSec: 10 },
+			data: {
+				sessionId: clientId,
+				status: "running",
+				mode: "client",
+				text: expect.stringContaining("driven by the chat model"),
+				pollAfterSec: 10,
+			},
 		});
 	});
 });
@@ -1157,7 +1640,8 @@ describe("headless planner: plan-slot fairness", () => {
 	/** Starts a plan inside an admitted request (or none); a started plan waits out the start window, so fire it. */
 	async function startAs(h: Harness, admission: Admission | undefined, sessionId: string) {
 		const call = () => h.planner.start({ prompt: PROMPT, sessionId });
-		const started = admission === undefined ? call() : runWithRequestContext(admittedAs(admission), call);
+		const started =
+			admission === undefined ? call() : runWithRequestContext(admittedAs(admission), call);
 		await flush();
 		h.clock.fire(15_000);
 		return started;
@@ -1168,12 +1652,19 @@ describe("headless planner: plan-slot fairness", () => {
 		const h = setup({ maxConcurrentPlans: 2 }, { completer: fakeModel(gate.promise).complete });
 		const connectorPlan = randomUUID();
 		const ownerPlan = randomUUID();
-		expect(await startAs(h, connector("key-a"), connectorPlan)).toMatchObject({ ok: true, data: { sessionId: connectorPlan, status: "running" } });
+		expect(await startAs(h, connector("key-a"), connectorPlan)).toMatchObject({
+			ok: true,
+			data: { sessionId: connectorPlan, status: "running" },
+		});
 		expect(await startAs(h, connector("key-b"), randomUUID())).toEqual({ ok: false, code: "busy" });
-		expect(await startAs(h, owner, ownerPlan)).toMatchObject({ ok: true, data: { sessionId: ownerPlan, status: "running" } });
+		expect(await startAs(h, owner, ownerPlan)).toMatchObject({
+			ok: true,
+			data: { sessionId: ownerPlan, status: "running" },
+		});
 		expect(await startAs(h, owner, randomUUID())).toEqual({ ok: false, code: "busy" });
 		gate.resolve();
-		for (const sessionId of [connectorPlan, ownerPlan]) await h.planner.result({ sessionId, waitSeconds: 30 });
+		for (const sessionId of [connectorPlan, ownerPlan])
+			await h.planner.result({ sessionId, waitSeconds: 30 });
 	});
 
 	test("one connector principal is capped at its share while another principal is still admitted", async () => {
@@ -1183,12 +1674,18 @@ describe("headless planner: plan-slot fairness", () => {
 		for (let i = 0; i < 2; i++) {
 			const sessionId = randomUUID();
 			started.push(sessionId);
-			expect(await startAs(h, connector("key-a"), sessionId)).toMatchObject({ ok: true, data: { status: "running" } });
+			expect(await startAs(h, connector("key-a"), sessionId)).toMatchObject({
+				ok: true,
+				data: { status: "running" },
+			});
 		}
 		expect(await startAs(h, connector("key-a"), randomUUID())).toEqual({ ok: false, code: "busy" });
 		const other = randomUUID();
 		started.push(other);
-		expect(await startAs(h, connector("key-b"), other)).toMatchObject({ ok: true, data: { status: "running" } });
+		expect(await startAs(h, connector("key-b"), other)).toMatchObject({
+			ok: true,
+			data: { status: "running" },
+		});
 		gate.resolve();
 		for (const sessionId of started) await h.planner.result({ sessionId, waitSeconds: 30 });
 	});
@@ -1210,8 +1707,14 @@ describe("headless planner: plan-slot fairness", () => {
 		const gate = Promise.withResolvers<void>();
 		const h = setup({ maxConcurrentPlans: 2 }, { completer: fakeModel(gate.promise).complete });
 		const plans = [randomUUID(), randomUUID()] as const;
-		expect(await startAs(h, undefined, plans[0])).toMatchObject({ ok: true, data: { status: "running" } });
-		expect(await startAs(h, undefined, plans[1])).toMatchObject({ ok: true, data: { status: "running" } });
+		expect(await startAs(h, undefined, plans[0])).toMatchObject({
+			ok: true,
+			data: { status: "running" },
+		});
+		expect(await startAs(h, undefined, plans[1])).toMatchObject({
+			ok: true,
+			data: { status: "running" },
+		});
 		expect(await startAs(h, undefined, randomUUID())).toEqual({ ok: false, code: "busy" });
 		gate.resolve();
 		for (const sessionId of plans) await h.planner.result({ sessionId, waitSeconds: 30 });
@@ -1223,7 +1726,10 @@ describe("headless planner: plan-slot fairness", () => {
 		const sessionId = randomUUID();
 		await startAs(h, connector("key-a"), sessionId);
 		expect(await startAs(h, connector("key-b"), randomUUID())).toEqual({ ok: false, code: "busy" });
-		expect(await startAs(h, connector("key-b"), sessionId)).toMatchObject({ ok: true, data: { sessionId, status: "running" } });
+		expect(await startAs(h, connector("key-b"), sessionId)).toMatchObject({
+			ok: true,
+			data: { sessionId, status: "running" },
+		});
 		gate.resolve();
 		await h.planner.result({ sessionId, waitSeconds: 30 });
 	});
@@ -1231,7 +1737,11 @@ describe("headless planner: plan-slot fairness", () => {
 
 describe("headless planner: client span threading", () => {
 	test("a planner call started inside a request context records its hop span parented by that context", async () => {
-		const CTX: RequestContext = { reqId: "req-plan-span", traceId: "4bf92f3577b34da6a3ce929d0e0e4736", spanId: "00f067aa0ba902b7" };
+		const CTX: RequestContext = {
+			reqId: "req-plan-span",
+			traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+			spanId: "00f067aa0ba902b7",
+		};
 		const spans: FinishedSpan[] = [];
 		const sink: SpanSink = {
 			record: (span) => {
@@ -1245,12 +1755,19 @@ describe("headless planner: client span threading", () => {
 		};
 		const h = setup({}, { completer: undefined, fetch: rejected, spans: sink });
 		const sessionId = randomUUID();
-		const started = await runWithRequestContext(CTX, () => h.planner.start({ prompt: PROMPT, sessionId }));
+		const started = await runWithRequestContext(CTX, () =>
+			h.planner.start({ prompt: PROMPT, sessionId }),
+		);
 		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "auth" } });
 		expect(spans.length).toBeGreaterThanOrEqual(1);
 		expect(spans.map((span) => span.spanId)).toEqual(sentParents);
 		for (const span of spans) {
-			expect(span).toMatchObject({ traceId: CTX.traceId, parentSpanId: CTX.spanId, kind: 3, error: false });
+			expect(span).toMatchObject({
+				traceId: CTX.traceId,
+				parentSpanId: CTX.spanId,
+				kind: 3,
+				error: false,
+			});
 		}
 	});
 });

@@ -30,7 +30,10 @@ afterEach(() => {
 });
 
 /** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): { fetch: typeof fetch; calls: Recorded[] } {
+function recordingFetch(queue: Array<() => Response | Promise<Response>>): {
+	fetch: typeof fetch;
+	calls: Recorded[];
+} {
 	const calls: Recorded[] = [];
 	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
 		const headers: Record<string, string> = {};
@@ -58,14 +61,19 @@ const JEV =
 			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
 		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
-	Response.json({ error: { code: s, message: `upstream said no for ${K}` } }, { status: s, headers });
+	Response.json(
+		{ error: { code: s, message: `upstream said no for ${K}` } },
+		{ status: s, headers },
+	);
 const OK = (body: unknown) => () => Response.json(body);
 
 /** Never resolves; rejects with an AbortError when its signal fires (as src/grok/complete.test.ts hangingFetch). */
 function hangingFetch(onCall?: () => void): typeof fetch {
 	return ((_input: string | URL | Request, init?: RequestInit) =>
 		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+			init?.signal?.addEventListener("abort", () =>
+				reject(new DOMException("aborted", "AbortError")),
+			);
 			onCall?.();
 		})) as typeof fetch;
 }
@@ -87,16 +95,31 @@ const REQUEST: DecisionsRequest = {
 const CHOICE_REQUEST: DecisionsRequest = {
 	model: "~typesafe/jev-latest",
 	state: "state",
-	questions: { pick: { type: "choice", instructions: "Pick one", criteria: { a: "first", b: "second" } } },
+	questions: {
+		pick: { type: "choice", instructions: "Pick one", criteria: { a: "first", b: "second" } },
+	},
 };
 const SCORE_REQUEST: DecisionsRequest = {
 	model: "~typesafe/jev-latest",
 	state: ["state"],
-	questions: { level: { type: "score", instructions: "Rate it", criteria: ["low", "mid", "high"] } },
+	questions: {
+		level: { type: "score", instructions: "Rate it", criteria: ["low", "mid", "high"] },
+	},
 };
 
-function run(fetchImpl: typeof fetch, extra: Partial<DecideOptions> = {}, request: DecisionsRequest = REQUEST) {
-	return decide(request, { apiKey: K, timeoutMs: 3000, fetch: fetchImpl, sleep: async () => {}, random: () => 0.5, ...extra });
+function run(
+	fetchImpl: typeof fetch,
+	extra: Partial<DecideOptions> = {},
+	request: DecisionsRequest = REQUEST,
+) {
+	return decide(request, {
+		apiKey: K,
+		timeoutMs: 3000,
+		fetch: fetchImpl,
+		sleep: async () => {},
+		random: () => 0.5,
+		...extra,
+	});
 }
 
 /** Rule T6: every error message is redacted and short. */
@@ -109,7 +132,11 @@ function expectSafe(error: DecisionsError): void {
 	expect(error.message).not.toContain("\n");
 }
 
-async function failure(fetchImpl: typeof fetch, extra: Partial<DecideOptions> = {}, request: DecisionsRequest = REQUEST) {
+async function failure(
+	fetchImpl: typeof fetch,
+	extra: Partial<DecideOptions> = {},
+	request: DecisionsRequest = REQUEST,
+) {
 	const outcome = await run(fetchImpl, extra, request);
 	if (outcome.ok) throw new Error("expected a failed decision");
 	expectSafe(outcome.error);
@@ -125,7 +152,11 @@ describe("decide: request", () => {
 		expect(r.calls[0]).toEqual({
 			url: ENDPOINT,
 			method: "POST",
-			headers: { authorization: `Bearer ${K}`, "content-type": "application/json", "user-agent": USER_AGENT },
+			headers: {
+				authorization: `Bearer ${K}`,
+				"content-type": "application/json",
+				"user-agent": USER_AGENT,
+			},
 			body: REQUEST,
 		});
 	});
@@ -149,7 +180,11 @@ describe("decide: request", () => {
 		const origin = Bun.serve({
 			port: 0,
 			hostname: "127.0.0.1",
-			fetch: () => new Response(null, { status: 307, headers: { Location: `http://127.0.0.1:${evil.port}/decisions` } }),
+			fetch: () =>
+				new Response(null, {
+					status: 307,
+					headers: { Location: `http://127.0.0.1:${evil.port}/decisions` },
+				}),
 		});
 		try {
 			const outcome = await decide(REQUEST, {
@@ -234,13 +269,16 @@ describe("decide: failures are classified and redacted (D6)", () => {
 		expect(r.calls).toHaveLength(2);
 	});
 
-	test.each([500, 502, 503, 524, 529])("AC-4.5: %d twice maps to upstream after two requests", async (status) => {
-		const r = recordingFetch([ERR(status)]);
-		const outcome = await failure(r.fetch);
-		expect(outcome.error.kind).toBe("upstream");
-		expect(outcome.attempts).toBe(2);
-		expect(r.calls).toHaveLength(2);
-	});
+	test.each([500, 502, 503, 524, 529])(
+		"AC-4.5: %d twice maps to upstream after two requests",
+		async (status) => {
+			const r = recordingFetch([ERR(status)]);
+			const outcome = await failure(r.fetch);
+			expect(outcome.error.kind).toBe("upstream");
+			expect(outcome.attempts).toBe(2);
+			expect(r.calls).toHaveLength(2);
+		},
+	);
 
 	test("A15: a final 408 maps to timeout after the retry", async () => {
 		const r = recordingFetch([ERR(408)]);
@@ -266,7 +304,10 @@ describe("decide: failures are classified and redacted (D6)", () => {
 	test("AC-4.6: a hanging request maps to timeout within the budget", async () => {
 		let calls = 0;
 		const started = performance.now();
-		const outcome = await failure(hangingFetch(() => calls++), { timeoutMs: 400 });
+		const outcome = await failure(
+			hangingFetch(() => calls++),
+			{ timeoutMs: 400 },
+		);
 		const elapsed = performance.now() - started;
 		expect(outcome.error.kind).toBe("timeout");
 		expect(outcome.error.message).toBe("decisions timeout: no answer within 400 ms");
@@ -285,16 +326,24 @@ describe("decide: failures are classified and redacted (D6)", () => {
 	});
 
 	test("the upstream detail falls back to the body text, then the status text", async () => {
-		const text = await failure(recordingFetch([() => new Response(`gateway broke ${K}`, { status: 400 })]).fetch);
+		const text = await failure(
+			recordingFetch([() => new Response(`gateway broke ${K}`, { status: 400 })]).fetch,
+		);
 		expect(text.error.message).toBe("decisions bad-request: HTTP 400: gateway broke [redacted]");
-		const empty = await failure(recordingFetch([() => new Response("", { status: 404, statusText: "Not Found" })]).fetch);
+		const empty = await failure(
+			recordingFetch([() => new Response("", { status: 404, statusText: "Not Found" })]).fetch,
+		);
 		expect(empty.error.message).toBe("decisions bad-request: HTTP 404: Not Found");
 	});
 
 	test("AC-4.15: a key echoed in a long, multi-line upstream error never reaches the message", async () => {
 		const noisy = () =>
 			Response.json(
-				{ error: { message: `bad\nkey ${K} Authorization: Bearer ${K} other sk-or-v1-OTHER-KEY ${"x".repeat(400)}` } },
+				{
+					error: {
+						message: `bad\nkey ${K} Authorization: Bearer ${K} other sk-or-v1-OTHER-KEY ${"x".repeat(400)}`,
+					},
+				},
 				{ status: 401 },
 			);
 		const outcome = await failure(recordingFetch([noisy]).fetch);
@@ -314,47 +363,119 @@ describe("decide: strict response validation (D7)", () => {
 	});
 
 	test("AC-4.8: a missing answer key maps to invalid-response", async () => {
-		const outcome = await failure(recordingFetch([OK({ model: "m", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } })]).fetch);
+		const outcome = await failure(
+			recordingFetch([
+				OK({ model: "m", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }),
+			]).fetch,
+		);
 		expect(outcome.error.kind).toBe("invalid-response");
-		expect(outcome.error.message).toBe("decisions invalid-response: answers.plan_worthy is missing");
+		expect(outcome.error.message).toBe(
+			"decisions invalid-response: answers.plan_worthy is missing",
+		);
 	});
 
 	test("AC-4.9: noul 1.5 maps to invalid-response and no probability is returned", async () => {
 		const outcome = await failure(recordingFetch([JEV(1.5)]).fetch);
 		expect(outcome.error.kind).toBe("invalid-response");
-		expect(outcome.error.message).toBe("decisions invalid-response: answers.plan_worthy.noul must be a finite number in [0, 1]");
+		expect(outcome.error.message).toBe(
+			"decisions invalid-response: answers.plan_worthy.noul must be a finite number in [0, 1]",
+		);
 		expect(outcome).not.toHaveProperty("response");
 	});
 
 	test("AC-4.10: a choice outside the criteria maps to invalid-response", async () => {
-		const body = { model: "m", answers: { pick: { type: "choice", choice: "c" } }, usage: { input_tokens: 1, output_tokens: 0 } };
+		const body = {
+			model: "m",
+			answers: { pick: { type: "choice", choice: "c" } },
+			usage: { input_tokens: 1, output_tokens: 0 },
+		};
 		const outcome = await failure(recordingFetch([OK(body)]).fetch, {}, CHOICE_REQUEST);
 		expect(outcome.error.kind).toBe("invalid-response");
 	});
 
 	const usage = { input_tokens: 450, output_tokens: 0, cost: 0.000019 };
 	test.each([
-		["an extra answer key", REQUEST, { model: "m", answers: { plan_worthy: { type: "noul", noul: 0.5 }, extra: { type: "noul", noul: 0.5 } }, usage }],
-		["type score for a noul question", REQUEST, { model: "m", answers: { plan_worthy: { type: "score", score: 1 } }, usage }],
-		["noul NaN encoded as null", REQUEST, { model: "m", answers: { plan_worthy: { type: "noul", noul: null } }, usage }],
-		["a noul given as a string", REQUEST, { model: "m", answers: { plan_worthy: { type: "noul", noul: "0.5" } }, usage }],
-		["a score one past the top level", SCORE_REQUEST, { model: "m", answers: { level: { type: "score", score: 3 } }, usage }],
-		["confidence 1.2", CHOICE_REQUEST, { model: "m", answers: { pick: { type: "choice", choice: "a", confidence: 1.2 } }, usage }],
+		[
+			"an extra answer key",
+			REQUEST,
+			{
+				model: "m",
+				answers: { plan_worthy: { type: "noul", noul: 0.5 }, extra: { type: "noul", noul: 0.5 } },
+				usage,
+			},
+		],
+		[
+			"type score for a noul question",
+			REQUEST,
+			{ model: "m", answers: { plan_worthy: { type: "score", score: 1 } }, usage },
+		],
+		[
+			"noul NaN encoded as null",
+			REQUEST,
+			{ model: "m", answers: { plan_worthy: { type: "noul", noul: null } }, usage },
+		],
+		[
+			"a noul given as a string",
+			REQUEST,
+			{ model: "m", answers: { plan_worthy: { type: "noul", noul: "0.5" } }, usage },
+		],
+		[
+			"a score one past the top level",
+			SCORE_REQUEST,
+			{ model: "m", answers: { level: { type: "score", score: 3 } }, usage },
+		],
+		[
+			"confidence 1.2",
+			CHOICE_REQUEST,
+			{ model: "m", answers: { pick: { type: "choice", choice: "a", confidence: 1.2 } }, usage },
+		],
 		[
 			"probabilities keyed by a non-option",
 			CHOICE_REQUEST,
-			{ model: "m", answers: { pick: { type: "choice", choice: "a", probabilities: { a: 0.5, c: 0.5 } } }, usage },
+			{
+				model: "m",
+				answers: { pick: { type: "choice", choice: "a", probabilities: { a: 0.5, c: 0.5 } } },
+				usage,
+			},
 		],
 		[
 			"score probabilities missing a level",
 			SCORE_REQUEST,
-			{ model: "m", answers: { level: { type: "score", score: 1, probabilities: { "0": 0.5, "1": 0.5 } } }, usage },
+			{
+				model: "m",
+				answers: { level: { type: "score", score: 1, probabilities: { "0": 0.5, "1": 0.5 } } },
+				usage,
+			},
 		],
-		["usage.input_tokens as a string", REQUEST, { model: "m", answers: { plan_worthy: { type: "noul", noul: 0.5 } }, usage: { ...usage, input_tokens: "450" } }],
-		["usage.cost as a string", REQUEST, { model: "m", answers: { plan_worthy: { type: "noul", noul: 0.5 } }, usage: { ...usage, cost: "x" } }],
+		[
+			"usage.input_tokens as a string",
+			REQUEST,
+			{
+				model: "m",
+				answers: { plan_worthy: { type: "noul", noul: 0.5 } },
+				usage: { ...usage, input_tokens: "450" },
+			},
+		],
+		[
+			"usage.cost as a string",
+			REQUEST,
+			{
+				model: "m",
+				answers: { plan_worthy: { type: "noul", noul: 0.5 } },
+				usage: { ...usage, cost: "x" },
+			},
+		],
 		["a missing model", REQUEST, { answers: { plan_worthy: { type: "noul", noul: 0.5 } }, usage }],
-		["an id that is not a string", REQUEST, { id: 7, model: "m", answers: { plan_worthy: { type: "noul", noul: 0.5 } }, usage }],
-		["a missing usage", REQUEST, { model: "m", answers: { plan_worthy: { type: "noul", noul: 0.5 } } }],
+		[
+			"an id that is not a string",
+			REQUEST,
+			{ id: 7, model: "m", answers: { plan_worthy: { type: "noul", noul: 0.5 } }, usage },
+		],
+		[
+			"a missing usage",
+			REQUEST,
+			{ model: "m", answers: { plan_worthy: { type: "noul", noul: 0.5 } } },
+		],
 		["a body that is an array", REQUEST, [1, 2]],
 	] as const)("AC-4.18: %s maps to invalid-response", async (_name, request, body) => {
 		const r = recordingFetch([OK(body)]);
@@ -379,20 +500,43 @@ describe("decide: strict response validation (D7)", () => {
 		const usage = { input_tokens: 1, output_tokens: 2, cost: 0, extra: true };
 		expect(
 			parseDecisionsResponse(
-				{ model: "m", surprise: 1, answers: { pick: { type: "choice", choice: "b", probabilities: { a: 0.1, b: 0.9 }, confidence: 0.8, note: "x" } }, usage },
+				{
+					model: "m",
+					surprise: 1,
+					answers: {
+						pick: {
+							type: "choice",
+							choice: "b",
+							probabilities: { a: 0.1, b: 0.9 },
+							confidence: 0.8,
+							note: "x",
+						},
+					},
+					usage,
+				},
 				CHOICE_REQUEST.questions,
 			),
 		).toEqual({
 			model: "m",
-			answers: { pick: { type: "choice", choice: "b", probabilities: { a: 0.1, b: 0.9 }, confidence: 0.8 } },
+			answers: {
+				pick: { type: "choice", choice: "b", probabilities: { a: 0.1, b: 0.9 }, confidence: 0.8 },
+			},
 			usage: { input_tokens: 1, output_tokens: 2, cost: 0 },
 		});
 		expect(
 			parseDecisionsResponse(
-				{ model: "m", answers: { level: { type: "score", score: 2, probabilities: { "0": 0, "1": 0.2, "2": 0.8 } } }, usage },
+				{
+					model: "m",
+					answers: {
+						level: { type: "score", score: 2, probabilities: { "0": 0, "1": 0.2, "2": 0.8 } },
+					},
+					usage,
+				},
 				SCORE_REQUEST.questions,
 			).answers,
-		).toEqual({ level: { type: "score", score: 2, probabilities: { "0": 0, "1": 0.2, "2": 0.8 } } });
+		).toEqual({
+			level: { type: "score", score: 2, probabilities: { "0": 0, "1": 0.2, "2": 0.8 } },
+		});
 	});
 });
 
@@ -402,7 +546,9 @@ describe("decide: local request validation (D7)", () => {
 		const big = { ...REQUEST, state: "x".repeat(120_000) };
 		const outcome = await failure(r.fetch, {}, big);
 		expect(outcome.error.kind).toBe("too-large");
-		expect(outcome.error.message).toBe(`decisions too-large: request is about ${estimateTokens(big)} tokens (limit 28000)`);
+		expect(outcome.error.message).toBe(
+			`decisions too-large: request is about ${estimateTokens(big)} tokens (limit 28000)`,
+		);
 		expect(outcome.attempts).toBe(0);
 		expect(r.calls).toHaveLength(0);
 		const fits = await run(r.fetch, {}, { ...REQUEST, state: "x".repeat(100_000) });
@@ -412,15 +558,33 @@ describe("decide: local request validation (D7)", () => {
 
 	test.each([
 		["empty questions", { ...REQUEST, questions: {} }],
-		["noul criteria with only true", { ...REQUEST, questions: { q: { type: "noul", instructions: "i", criteria: { true: "yes" } } } }],
-		["a choice with 1 option", { ...REQUEST, questions: { q: { type: "choice", instructions: "i", criteria: { a: "only" } } } }],
-		["a score with 1 level", { ...REQUEST, questions: { q: { type: "score", instructions: "i", criteria: ["only"] } } }],
+		[
+			"noul criteria with only true",
+			{
+				...REQUEST,
+				questions: { q: { type: "noul", instructions: "i", criteria: { true: "yes" } } },
+			},
+		],
+		[
+			"a choice with 1 option",
+			{
+				...REQUEST,
+				questions: { q: { type: "choice", instructions: "i", criteria: { a: "only" } } },
+			},
+		],
+		[
+			"a score with 1 level",
+			{ ...REQUEST, questions: { q: { type: "score", instructions: "i", criteria: ["only"] } } },
+		],
 		["state 42", { ...REQUEST, state: 42 }],
 		["state null", { ...REQUEST, state: null }],
 		["state true", { ...REQUEST, state: true }],
 		["an empty model", { ...REQUEST, model: "" }],
 		["instructions that are not a string", { ...REQUEST, questions: { q: { type: "noul" } } }],
-		["an unknown question type", { ...REQUEST, questions: { q: { type: "text", instructions: "i" } } }],
+		[
+			"an unknown question type",
+			{ ...REQUEST, questions: { q: { type: "text", instructions: "i" } } },
+		],
 	])("AC-4.17: %s fails locally as bad-request with zero requests", async (_name, request) => {
 		const r = recordingFetch([JEV(0.5)]);
 		const outcome = await failure(r.fetch, {}, request as unknown as DecisionsRequest);
@@ -444,7 +608,8 @@ describe("decide: retry (D6)", () => {
 		const r = recordingFetch([ERR(503), JEV(0.97)]);
 		const outcome = await run(r.fetch);
 		expect(outcome).toMatchObject({ ok: true, attempts: 2 });
-		if (outcome.ok) expect(outcome.response.answers.plan_worthy).toEqual({ type: "noul", noul: 0.97 });
+		if (outcome.ok)
+			expect(outcome.response.answers.plan_worthy).toEqual({ type: "noul", noul: 0.97 });
 		expect(r.calls).toHaveLength(2);
 	});
 
@@ -458,7 +623,10 @@ describe("decide: retry (D6)", () => {
 			JEV(0.97),
 		]);
 		const sleeps: number[] = [];
-		const outcome = await failure(r.fetch, { now: () => clock, sleep: async (ms) => void sleeps.push(ms) });
+		const outcome = await failure(r.fetch, {
+			now: () => clock,
+			sleep: async (ms) => void sleeps.push(ms),
+		});
 		expect(outcome.error.kind).toBe("upstream");
 		expect(outcome.attempts).toBe(1);
 		expect(outcome.latencyMs).toBe(2600);
@@ -487,12 +655,15 @@ describe("decide: retry (D6)", () => {
 		["503", ERR(503)],
 		["524", ERR(524)],
 		["529", ERR(529)],
-	])("AC-5.4: a transient first failure (%s) is retried once and succeeds", async (_name, first) => {
-		const r = recordingFetch([first, JEV(0.5)]);
-		const outcome = await run(r.fetch);
-		expect(outcome).toMatchObject({ ok: true, attempts: 2 });
-		expect(r.calls).toHaveLength(2);
-	});
+	])(
+		"AC-5.4: a transient first failure (%s) is retried once and succeeds",
+		async (_name, first) => {
+			const r = recordingFetch([first, JEV(0.5)]);
+			const outcome = await run(r.fetch);
+			expect(outcome).toMatchObject({ ok: true, attempts: 2 });
+			expect(r.calls).toHaveLength(2);
+		},
+	);
 
 	test.each([
 		[400, "bad-request"],
@@ -500,12 +671,15 @@ describe("decide: retry (D6)", () => {
 		[403, "auth"],
 		[404, "bad-request"],
 		[413, "too-large"],
-	] as const)("AC-5.4: a non-transient first failure (%d) returns %s after one request", async (status, kind) => {
-		const r = recordingFetch([ERR(status), JEV(0.5)]);
-		const outcome = await failure(r.fetch);
-		expect(outcome.error.kind).toBe(kind);
-		expect(r.calls).toHaveLength(1);
-	});
+	] as const)(
+		"AC-5.4: a non-transient first failure (%d) returns %s after one request",
+		async (status, kind) => {
+			const r = recordingFetch([ERR(status), JEV(0.5)]);
+			const outcome = await failure(r.fetch);
+			expect(outcome.error.kind).toBe(kind);
+			expect(r.calls).toHaveLength(1);
+		},
+	);
 
 	test("AC-5.5: Retry-After is honoured when it fits the budget", async () => {
 		const r = recordingFetch([ERR(429, { "Retry-After": "1" }), JEV(0.5)]);
@@ -519,7 +693,11 @@ describe("decide: retry (D6)", () => {
 	test("AC-5.5: a Retry-After that does not fit is replaced by one jittered wait under 500 ms", async () => {
 		const r = recordingFetch([ERR(429, { "Retry-After": "10" }), JEV(0.5)]);
 		const sleeps: number[] = [];
-		const outcome = await run(r.fetch, { now: () => 0, sleep: async (ms) => void sleeps.push(ms), random: Math.random });
+		const outcome = await run(r.fetch, {
+			now: () => 0,
+			sleep: async (ms) => void sleeps.push(ms),
+			random: Math.random,
+		});
 		expect(outcome).toMatchObject({ ok: true, attempts: 2 });
 		expect(sleeps).toHaveLength(1);
 		expect(sleeps[0]).toBeGreaterThan(0);
@@ -534,7 +712,10 @@ describe("decide: retry (D6)", () => {
 			[0.999999, 375],
 		] as const) {
 			const sleeps: number[] = [];
-			await run(recordingFetch([ERR(503), JEV(0.5)]).fetch, { random: () => random, sleep: async (ms) => void sleeps.push(ms) });
+			await run(recordingFetch([ERR(503), JEV(0.5)]).fetch, {
+				random: () => random,
+				sleep: async (ms) => void sleeps.push(ms),
+			});
 			expect(sleeps).toEqual([expected]);
 		}
 	});
@@ -558,7 +739,9 @@ describe("decide: retry (D6)", () => {
 			calls++;
 			if (calls === 1) return Bun.sleep(200).then(() => ERR(503)());
 			return new Promise<Response>((_resolve, reject) => {
-				init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+				init?.signal?.addEventListener("abort", () =>
+					reject(new DOMException("aborted", "AbortError")),
+				);
 			});
 		}) as typeof fetch;
 		const started = performance.now();

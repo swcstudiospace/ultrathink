@@ -2,7 +2,6 @@
 // Copyright (C) 2026 SWC Studio
 /** Theme access and terminal-width helpers shared by the Omp bar, graph and message cards. */
 // Capturing split: even parts are text runs, odd parts are ANSI CSI/OSC escapes.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape matching
 const ANSI_SPLIT = /(\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))/;
 const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -69,7 +68,14 @@ export interface Paint {
 }
 
 const PLAIN_GLYPHS = { success: "✓", error: "✗", warning: "!", pending: "○", running: "●" };
-const PLAIN_BOX: BoxChars = { topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯", horizontal: "─", vertical: "│" };
+const PLAIN_BOX: BoxChars = {
+	topLeft: "╭",
+	topRight: "╮",
+	bottomLeft: "╰",
+	bottomRight: "╯",
+	horizontal: "─",
+	vertical: "│",
+};
 
 /** Theme adapter: every access is guarded; any failure falls back to plain text. */
 export function paint(theme: unknown): Paint {
@@ -102,7 +108,11 @@ export function paint(theme: unknown): Paint {
 				return { topLeft, topRight, bottomLeft, bottomRight, horizontal, vertical };
 			}, PLAIN_BOX),
 		icon: (name) => guard(() => (typeof t.icon[name] === "string" ? t.icon[name] : ""), ""),
-		glyph: (name) => guard(() => (typeof t.status[name] === "string" ? t.status[name] : PLAIN_GLYPHS[name]), PLAIN_GLYPHS[name]),
+		glyph: (name) =>
+			guard(
+				() => (typeof t.status[name] === "string" ? t.status[name] : PLAIN_GLYPHS[name]),
+				PLAIN_GLYPHS[name],
+			),
 		spinner(now) {
 			const frames = guard(() => t.getSpinnerFrames("activity"), [] as string[]);
 			if (!Array.isArray(frames) || frames.length === 0) return PLAIN_GLYPHS.running;
@@ -114,16 +124,30 @@ export function paint(theme: unknown): Paint {
 				const fg = t.getFgAnsi("text");
 				const thin = t.sep.powerlineThinLeft;
 				const sepColor = t.getFgAnsi("statusLineSep");
-				if (typeof bg !== "string" || typeof fg !== "string" || typeof thin !== "string" || typeof sepColor !== "string") return undefined;
+				if (
+					typeof bg !== "string" ||
+					typeof fg !== "string" ||
+					typeof thin !== "string" ||
+					typeof sepColor !== "string"
+				)
+					return undefined;
 				// parts may reset colors; re-apply band colors after each part
 				const body = `${bg}${fg} ${parts.map((part) => `${part}${bg}${fg}`).join(` ${sepColor}${thin}${fg} `)} \x1b[0m`;
 				if (bg === "\x1b[49m") return { text: body, caps: 0, sep: visibleWidth(thin) + 2 };
 				const capColor = bg.replace("\x1b[48;", "\x1b[38;");
 				const open = t.sep.powerlineCapLeft ?? "";
 				const close = t.sep.powerlineLeft ?? "";
-				return { text: `${capColor}${open}\x1b[0m${body}${capColor}${close}\x1b[0m`, caps: visibleWidth(open) + visibleWidth(close), sep: visibleWidth(thin) + 2 };
+				return {
+					text: `${capColor}${open}\x1b[0m${body}${capColor}${close}\x1b[0m`,
+					caps: visibleWidth(open) + visibleWidth(close),
+					sep: visibleWidth(thin) + 2,
+				};
 			}, undefined);
-			if (styled) return { text: styled.text, overhead: (count) => styled.caps + 2 + Math.max(0, count - 1) * styled.sep };
+			if (styled)
+				return {
+					text: styled.text,
+					overhead: (count) => styled.caps + 2 + Math.max(0, count - 1) * styled.sep,
+				};
 			return { text: parts.join(" │ "), overhead: (count) => Math.max(0, count - 1) * 3 };
 		},
 	};
@@ -133,4 +157,3 @@ export function formatElapsed(ms: number): string {
 	const total = Math.max(0, Math.floor(ms / 1000));
 	return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
-

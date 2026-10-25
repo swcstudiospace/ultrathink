@@ -23,7 +23,8 @@ export const QUESTIONS: { readonly [P in DecisionPoint]: NoulQuestion } = {
 			"Does `message`, read together with `recent_conversation`, ask the coding agent to start new engineering work that takes several steps, files or decisions, so that writing a plan first would help?",
 		criteria: {
 			true: "The message asks for new work such as building a feature, fixing or investigating a bug, refactoring, migrating, or researching and writing up a design, or it approves a new multi-step proposal that the agent made in `recent_conversation`.",
-			false: "The message acknowledges, thanks or greets; tells the agent to keep going with work already under way; asks a question that needs only an answer or an explanation; asks to show, run or repeat something; or asks for one small edit such as fixing a typo.",
+			false:
+				"The message acknowledges, thanks or greets; tells the agent to keep going with work already under way; asks a question that needs only an answer or an explanation; asks to show, run or repeat something; or asks for one small edit such as fixing a typo.",
 		},
 	},
 	ship: {
@@ -32,7 +33,8 @@ export const QUESTIONS: { readonly [P in DecisionPoint]: NoulQuestion } = {
 			"Does the change in `patch` fully deliver the work that `request` asks for, meeting every item in `acceptance_criteria`, with no part left missing, stubbed or marked TODO?",
 		criteria: {
 			true: "Every requirement in `request` and every item in `acceptance_criteria` is implemented by real code in `patch`.",
-			false: "At least one requirement is missing, only partly done, stubbed, left as a TODO or placeholder, or `patch` changes something unrelated to `request`.",
+			false:
+				"At least one requirement is missing, only partly done, stubbed, left as a TODO or placeholder, or `patch` changes something unrelated to `request`.",
 		},
 	},
 	knowledge: {
@@ -40,7 +42,8 @@ export const QUESTIONS: { readonly [P in DecisionPoint]: NoulQuestion } = {
 		instructions: "Is `answer` a correct answer to `question` according to `document`?",
 		criteria: {
 			true: "`document` contains information that directly supports `answer` as the answer to `question`.",
-			false: "`document` does not cover `question`, contradicts `answer`, supports a different answer, or supports only part of `answer`.",
+			false:
+				"`document` does not cover `question`, contradicts `answer`, supports a different answer, or supports only part of `answer`.",
 		},
 	},
 	blocking: {
@@ -49,7 +52,8 @@ export const QUESTIONS: { readonly [P in DecisionPoint]: NoulQuestion } = {
 			"If `default` turns out to be the wrong answer to `question`, would going ahead with it while doing `task` cause damage that is hard to undo?",
 		criteria: {
 			true: "Acting on a wrong `default` would lose or corrupt data, break callers of a public API, run a migration that cannot be reversed, or change the wrong system.",
-			false: "Acting on a wrong `default` only produces code or settings that are easy to change in a later edit.",
+			false:
+				"Acting on a wrong `default` only produces code or settings that are easy to change in a later edit.",
 		},
 	},
 	teachable: {
@@ -58,15 +62,18 @@ export const QUESTIONS: { readonly [P in DecisionPoint]: NoulQuestion } = {
 			"Is this candidate a reusable lesson that a future agent on this repository would otherwise have to rediscover?",
 		criteria: {
 			true: "The candidate states a specific pitfall, bug and its fix, convention, decision and its reason, or repeatable procedure about this repository, its tooling or its workflow, and a future agent could act on it.",
-			false: "The candidate restates the task, summarizes a session, describes a one-off event, gives generic advice that holds for any project, or is too vague to act on.",
+			false:
+				"The candidate restates the task, summarizes a session, describes a one-off event, gives generic advice that holds for any project, or is too vague to act on.",
 		},
 	},
 	skillworthy: {
 		type: "noul",
-		instructions: "Does this lesson describe a repeatable procedure or rule worth a standing skill?",
+		instructions:
+			"Does this lesson describe a repeatable procedure or rule worth a standing skill?",
 		criteria: {
 			true: "The lesson gives steps or a rule that an agent would follow again and again on this repository, and its `occurrences` show it keeps coming up.",
-			false: "The lesson records a one-time fix, a fact that is not a procedure or rule, or advice too narrow or too vague to be worth a skill.",
+			false:
+				"The lesson records a one-time fix, a fact that is not a procedure or rule, or advice too narrow or too vague to be worth a skill.",
 		},
 	},
 };
@@ -127,7 +134,10 @@ export interface DecisionStates {
 }
 
 /** The message head and the conversation tail (the proposal a "go ahead" answers is at the end). */
-export function buildPlanState(input: { message: string; recentConversation: string }): PlanDecisionState {
+export function buildPlanState(input: {
+	message: string;
+	recentConversation: string;
+}): PlanDecisionState {
 	return {
 		message: input.message.slice(0, PLAN_MESSAGE_MAX),
 		recent_conversation: input.recentConversation.slice(-PLAN_CONVERSATION_MAX),
@@ -165,7 +175,9 @@ function itemText(raw: string): string {
 
 /** Items of the spec's first ACCEPTANCE_CRITERIA element: one per child element, else one per non-empty line. */
 export function extractAcceptanceCriteria(specXml: string): string[] {
-	const inner = /<ACCEPTANCE_CRITERIA\b[^>]*>([\s\S]*?)<\/ACCEPTANCE_CRITERIA\s*>/i.exec(specXml)?.[1];
+	const inner = /<ACCEPTANCE_CRITERIA\b[^>]*>([\s\S]*?)<\/ACCEPTANCE_CRITERIA\s*>/i.exec(
+		specXml,
+	)?.[1];
 	if (inner === undefined) return [];
 	const children = [...inner.matchAll(/<([A-Za-z_][\w.-]*)\b[^>]*>([\s\S]*?)<\/\1\s*>/g)];
 	const raw =
@@ -179,7 +191,9 @@ export function extractAcceptanceCriteria(specXml: string): string[] {
 function isLockfileSection(section: string): boolean {
 	const header = /^diff --git a\/(.*?) b\/(.*)$/m.exec(section);
 	if (!header) return false;
-	return [header[1] ?? "", header[2] ?? ""].some((path) => LOCKFILE_PATTERNS.some((pattern) => pattern.test(path)));
+	return [header[1] ?? "", header[2] ?? ""].some((path) =>
+		LOCKFILE_PATTERNS.some((pattern) => pattern.test(path)),
+	);
 }
 
 /** The patch without lockfile sections (same exclusions as the judge's `git diff`). */
@@ -221,7 +235,11 @@ export function buildShipState(input: {
  * The text of `path`'s `### <path>` section in a knowledge digest, up to the next listed document's heading or the
  * end; trimmed. "" when the heading is missing.
  */
-export function extractDigestDocument(digest: string, path: string, docs: readonly string[]): string {
+export function extractDigestDocument(
+	digest: string,
+	path: string,
+	docs: readonly string[],
+): string {
 	const heading = `\n\n### ${path}\n\n`;
 	const at = digest.indexOf(heading);
 	if (at < 0) return "";
@@ -235,8 +253,16 @@ export function extractDigestDocument(digest: string, path: string, docs: readon
 	return digest.slice(start, end).trim();
 }
 
-export function buildKnowledgeState(input: { question: string; answer: string; document: string }): KnowledgeDecisionState {
-	return { question: input.question, answer: input.answer, document: input.document.slice(0, KNOWLEDGE_DOCUMENT_MAX) };
+export function buildKnowledgeState(input: {
+	question: string;
+	answer: string;
+	document: string;
+}): KnowledgeDecisionState {
+	return {
+		question: input.question,
+		answer: input.answer,
+		document: input.document.slice(0, KNOWLEDGE_DOCUMENT_MAX),
+	};
 }
 
 /** The default option as `<label>: <description>` (or `<label>`); falls back to the first option, then the bare label. */
@@ -249,13 +275,31 @@ export function formatDefaultOption(
 	return option.description ? `${option.label}: ${option.description}` : option.label;
 }
 
-export function buildBlockingState(input: { task: string; question: string; defaultText: string }): BlockingDecisionState {
-	return { task: input.task.slice(0, BLOCKING_TASK_MAX), question: input.question, default: input.defaultText };
+export function buildBlockingState(input: {
+	task: string;
+	question: string;
+	defaultText: string;
+}): BlockingDecisionState {
+	return {
+		task: input.task.slice(0, BLOCKING_TASK_MAX),
+		question: input.question,
+		default: input.defaultText,
+	};
 }
 
 /** Name, description, the first 800 characters of the body and the kind; no ids, paths or project names. */
-export function buildTeachableState(input: { name: string; description: string; body: string; kind: string }): TeachableDecisionState {
-	return { name: input.name, description: input.description, body: input.body.slice(0, LESSON_BODY_MAX), kind: input.kind };
+export function buildTeachableState(input: {
+	name: string;
+	description: string;
+	body: string;
+	kind: string;
+}): TeachableDecisionState {
+	return {
+		name: input.name,
+		description: input.description,
+		body: input.body.slice(0, LESSON_BODY_MAX),
+		kind: input.kind,
+	};
 }
 
 export function buildSkillworthyState(input: {

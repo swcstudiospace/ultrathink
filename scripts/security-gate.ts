@@ -16,7 +16,16 @@
  * and `report` counts a missing evidence file as a failure, so a stale pass cannot survive.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 
 import { isPlainObject } from "../src/decisions/client.ts";
@@ -25,7 +34,13 @@ export const SEVERITIES = ["low", "moderate", "high", "critical"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
 export type AuditAllow = { advisory: string; reason: string; expires: string };
-export type LicenseException = { name: string; version: string; license: string; reason: string; expires: string };
+export type LicenseException = {
+	name: string;
+	version: string;
+	license: string;
+	reason: string;
+	expires: string;
+};
 export type Policy = {
 	audit: { level: Severity; allow: AuditAllow[] };
 	licenses: { allow: string[]; exceptions: LicenseException[] };
@@ -53,8 +68,20 @@ export type AuditResult = {
 
 export type AuditRun = { exitCode: number; stdout: string; stderr: string };
 
-export type InstalledPackage = { file: string; name?: string; version?: string; license?: unknown; problem?: string };
-export type LicenseFailure = { file: string; name?: string; version?: string; license?: string; reason: string };
+export type InstalledPackage = {
+	file: string;
+	name?: string;
+	version?: string;
+	license?: unknown;
+	problem?: string;
+};
+export type LicenseFailure = {
+	file: string;
+	name?: string;
+	version?: string;
+	license?: string;
+	reason: string;
+};
 export type LicenseWaiver = { name: string; version: string; license: string; reason: string };
 export type LicenseResult = {
 	status: "pass" | "fail";
@@ -109,7 +136,6 @@ const USAGE = [
 
 // ---------- shared helpers ----------
 
-
 function isSeverity(value: unknown): value is Severity {
 	return typeof value === "string" && (SEVERITIES as readonly string[]).includes(value);
 }
@@ -151,7 +177,8 @@ function list(value: unknown, path: string): unknown[] {
 }
 
 function text(value: unknown, path: string): string {
-	if (typeof value !== "string" || value.trim() === "") throw new Error(`policy: ${path} must be a non-empty string`);
+	if (typeof value !== "string" || value.trim() === "")
+		throw new Error(`policy: ${path} must be a non-empty string`);
 	return value;
 }
 
@@ -165,7 +192,8 @@ export function parsePolicy(value: unknown): Policy {
 	const root = record(value, "root");
 	const audit = record(root.audit, "audit");
 	const licenses = record(root.licenses, "licenses");
-	if (!isSeverity(audit.level)) throw new Error(`policy: audit.level must be one of ${SEVERITIES.join(", ")}`);
+	if (!isSeverity(audit.level))
+		throw new Error(`policy: audit.level must be one of ${SEVERITIES.join(", ")}`);
 	const requiredChecks = list(root.requiredChecks, "requiredChecks").map((name, index) =>
 		text(name, `requiredChecks[${index}]`),
 	);
@@ -183,7 +211,9 @@ export function parsePolicy(value: unknown): Policy {
 			}),
 		},
 		licenses: {
-			allow: list(licenses.allow, "licenses.allow").map((id, index) => text(id, `licenses.allow[${index}]`)),
+			allow: list(licenses.allow, "licenses.allow").map((id, index) =>
+				text(id, `licenses.allow[${index}]`),
+			),
 			exceptions: list(licenses.exceptions, "licenses.exceptions").map((entry, index) => {
 				const item = record(entry, `licenses.exceptions[${index}]`);
 				return {
@@ -215,14 +245,16 @@ export function parseAuditOutput(raw: string): Advisory[] {
 	if (!isPlainObject(value)) throw new Error("bun audit output is not a JSON object");
 	const advisories: Advisory[] = [];
 	for (const [pkg, items] of Object.entries(value)) {
-		if (!Array.isArray(items)) throw new Error(`bun audit output: "${pkg}" is not an array of advisories`);
+		if (!Array.isArray(items))
+			throw new Error(`bun audit output: "${pkg}" is not an array of advisories`);
 		for (const item of items) advisories.push(parseAdvisory(pkg, item));
 	}
 	return advisories;
 }
 
 function parseAdvisory(pkg: string, value: unknown): Advisory {
-	const shape = (reason: string): Error => new Error(`bun audit output: advisory for "${pkg}" ${reason}`);
+	const shape = (reason: string): Error =>
+		new Error(`bun audit output: advisory for "${pkg}" ${reason}`);
 	if (!isPlainObject(value)) throw shape("is not an object");
 	const { id, url, title, severity, vulnerable_versions: vulnerable } = value;
 	if (typeof id !== "number" || !Number.isInteger(id)) throw shape("has no integer id");
@@ -234,7 +266,11 @@ function parseAdvisory(pkg: string, value: unknown): Advisory {
 }
 
 /** Every advisory at or above the policy level blocks unless an unexpired allow entry names its URL or numeric id. */
-export function evaluateAudit(advisories: readonly Advisory[], policy: Policy, today: string): AuditResult {
+export function evaluateAudit(
+	advisories: readonly Advisory[],
+	policy: Policy,
+	today: string,
+): AuditResult {
 	const level = policy.audit.level;
 	const threshold = SEVERITIES.indexOf(level);
 	const blocking: AuditResult["blocking"] = [];
@@ -243,10 +279,16 @@ export function evaluateAudit(advisories: readonly Advisory[], policy: Policy, t
 	for (const advisory of advisories) {
 		if (SEVERITIES.indexOf(advisory.severity) < threshold) continue;
 		atOrAboveLevel++;
-		const matches = policy.audit.allow.filter((entry) => entry.advisory === advisory.url || entry.advisory === String(advisory.id));
+		const matches = policy.audit.allow.filter(
+			(entry) => entry.advisory === advisory.url || entry.advisory === String(advisory.id),
+		);
 		const live = matches.find((entry) => !expired(entry.expires, today));
 		if (live !== undefined) waived.push({ ...advisory, allow: live });
-		else blocking.push({ ...advisory, reason: matches.length === 0 ? "no allow entry" : "allow entry expired" });
+		else
+			blocking.push({
+				...advisory,
+				reason: matches.length === 0 ? "no allow entry" : "allow entry expired",
+			});
 	}
 	// A stale exception fails the gate even when no current advisory matches it, so it gets removed.
 	const expiredAllow = policy.audit.allow.filter((entry) => expired(entry.expires, today));
@@ -315,7 +357,8 @@ export function parseSpdx(expression: string): SpdxNode {
 			pos++;
 			return inner;
 		}
-		if (token === ")" || isOperator(token)) throw new Error(`unexpected "${token}" in license expression`);
+		if (token === ")" || isOperator(token))
+			throw new Error(`unexpected "${token}" in license expression`);
 		pos++;
 		return { op: "id", id: token };
 	}
@@ -326,7 +369,12 @@ export function parseSpdx(expression: string): SpdxNode {
 		if (node.op !== "id") throw new Error("WITH must follow a single license identifier");
 		pos++;
 		const exception = peek();
-		if (exception === undefined || exception === "(" || exception === ")" || isOperator(exception)) {
+		if (
+			exception === undefined ||
+			exception === "(" ||
+			exception === ")" ||
+			isOperator(exception)
+		) {
 			throw new Error("WITH needs an exception identifier");
 		}
 		pos++;
@@ -352,7 +400,8 @@ export function parseSpdx(expression: string): SpdxNode {
 	}
 
 	const tree = orExpr();
-	if (pos !== tokens.length) throw new Error(`unexpected "${tokens[pos] ?? ""}" in license expression`);
+	if (pos !== tokens.length)
+		throw new Error(`unexpected "${tokens[pos] ?? ""}" in license expression`);
 	return tree;
 }
 
@@ -399,7 +448,8 @@ function readPackage(file: string): InstalledPackage {
 	if (!isPlainObject(manifest)) return { file, problem: "package.json is not an object" };
 	const name = typeof manifest.name === "string" ? manifest.name : undefined;
 	const version = typeof manifest.version === "string" ? manifest.version : undefined;
-	const problem = name === undefined || version === undefined ? "package.json has no name or version" : undefined;
+	const problem =
+		name === undefined || version === undefined ? "package.json has no name or version" : undefined;
 	return { file, name, version, license: manifest.license, problem };
 }
 
@@ -445,13 +495,16 @@ export function collectLicenses(roots: readonly string[]): InstalledPackage[] {
 	for (const root of roots) {
 		const nodeModules = join(root, "node_modules");
 		if (!isDirectory(nodeModules)) {
-			throw new Error(`${nodeModules} not found; run bun install --frozen-lockfile in ${root} first`);
+			throw new Error(
+				`${nodeModules} not found; run bun install --frozen-lockfile in ${root} first`,
+			);
 		}
 		visitNodeModules(nodeModules, found, seen);
 	}
 	const byKey = new Map<string, InstalledPackage>();
 	for (const pkg of found) {
-		const key = pkg.name !== undefined && pkg.version !== undefined ? `${pkg.name}@${pkg.version}` : pkg.file;
+		const key =
+			pkg.name !== undefined && pkg.version !== undefined ? `${pkg.name}@${pkg.version}` : pkg.file;
 		if (!byKey.has(key)) byKey.set(key, pkg);
 	}
 	return [...byKey.values()];
@@ -461,7 +514,11 @@ export function collectLicenses(roots: readonly string[]): InstalledPackage[] {
  * Each package's license must satisfy the allow list. A failing one is waived only by an exception that matches its
  * exact name, exact version and exact license expression, and only through its expiry day. Expired exceptions fail the gate.
  */
-export function evaluateLicenses(packages: readonly InstalledPackage[], policy: Policy, today: string): LicenseResult {
+export function evaluateLicenses(
+	packages: readonly InstalledPackage[],
+	policy: Policy,
+	today: string,
+): LicenseResult {
 	const failures: LicenseFailure[] = [];
 	const excepted: LicenseWaiver[] = [];
 	for (const pkg of packages) {
@@ -481,7 +538,11 @@ export function evaluateLicenses(packages: readonly InstalledPackage[], policy: 
 		try {
 			allowed = spdxAllowed(expression, policy.licenses.allow);
 		} catch (error) {
-			failures.push({ ...place, license: expression, reason: `unparseable license expression: ${messageOf(error)}` });
+			failures.push({
+				...place,
+				license: expression,
+				reason: `unparseable license expression: ${messageOf(error)}`,
+			});
 			continue;
 		}
 		if (allowed) continue;
@@ -493,12 +554,19 @@ export function evaluateLicenses(packages: readonly InstalledPackage[], policy: 
 				!expired(entry.expires, today),
 		);
 		if (waiver !== undefined) {
-			excepted.push({ name: waiver.name, version: waiver.version, license: expression, reason: waiver.reason });
+			excepted.push({
+				name: waiver.name,
+				version: waiver.version,
+				license: expression,
+				reason: waiver.reason,
+			});
 		} else {
 			failures.push({ ...place, license: expression, reason: "license is not on the allow list" });
 		}
 	}
-	const expiredExceptions = policy.licenses.exceptions.filter((entry) => expired(entry.expires, today));
+	const expiredExceptions = policy.licenses.exceptions.filter((entry) =>
+		expired(entry.expires, today),
+	);
 	return {
 		status: failures.length === 0 && expiredExceptions.length === 0 ? "pass" : "fail",
 		packageCount: packages.length,
@@ -523,7 +591,8 @@ function parseCheckRun(line: string, lineNumber: number): CheckRun {
 	if (typeof id !== "number" || !Number.isInteger(id)) throw shape("has no integer id");
 	if (typeof name !== "string") throw shape("has no name");
 	if (typeof status !== "string") throw shape("has no status");
-	if (conclusion !== undefined && conclusion !== null && typeof conclusion !== "string") throw shape("has a non-string conclusion");
+	if (conclusion !== undefined && conclusion !== null && typeof conclusion !== "string")
+		throw shape("has a non-string conclusion");
 	return { id, name, status, conclusion: typeof conclusion === "string" ? conclusion : null };
 }
 
@@ -540,13 +609,17 @@ export function latestChecks(ndjson: string): Map<string, CheckRun> {
 }
 
 /** Every required check name must have a completed run with conclusion success. Absent or in-flight runs fail. */
-export function evaluateChecks(latest: ReadonlyMap<string, CheckRun>, policy: Policy): ChecksResult {
+export function evaluateChecks(
+	latest: ReadonlyMap<string, CheckRun>,
+	policy: Policy,
+): ChecksResult {
 	const checks = policy.requiredChecks.map((name): CheckOutcome => {
 		const run = latest.get(name);
 		let problem: string | undefined;
 		if (run === undefined) problem = "no check run with this name";
 		else if (run.status !== "completed") problem = `status is ${run.status}, not completed`;
-		else if (run.conclusion !== "success") problem = `conclusion is ${run.conclusion ?? "null"}, not success`;
+		else if (run.conclusion !== "success")
+			problem = `conclusion is ${run.conclusion ?? "null"}, not success`;
 		return {
 			name,
 			status: problem === undefined ? "pass" : "fail",
@@ -574,12 +647,19 @@ export function isOnMain(
 	sha: string,
 	spawn: SpawnSync = (cmd, options) => Bun.spawnSync(cmd, options),
 ): boolean {
-	if (!FULL_SHA.test(sha)) throw new Error(`--sha must be a full lowercase 40-hex commit id, got "${sha}"`);
-	const result = spawn(["git", "merge-base", "--is-ancestor", sha, MAIN_REF], { cwd: root, stdout: "pipe", stderr: "pipe" });
+	if (!FULL_SHA.test(sha))
+		throw new Error(`--sha must be a full lowercase 40-hex commit id, got "${sha}"`);
+	const result = spawn(["git", "merge-base", "--is-ancestor", sha, MAIN_REF], {
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	if (result.exitCode === 0) return true;
 	if (result.exitCode === 1) return false;
 	const detail = new TextDecoder().decode(result.stderr).trim();
-	throw new Error(`git merge-base exited ${result.exitCode ?? "without a code"}${detail === "" ? "" : `: ${detail}`}`);
+	throw new Error(
+		`git merge-base exited ${result.exitCode ?? "without a code"}${detail === "" ? "" : `: ${detail}`}`,
+	);
 }
 
 // ---------- report ----------
@@ -591,7 +671,8 @@ export function readEvidence(out: string, gate: Gate): EvidenceInput {
 	if (!existsSync(path)) return { gate, file, present: false, status: "fail" };
 	const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 	const status = isPlainObject(parsed) && parsed.gate === gate ? parsed.status : undefined;
-	if (status !== "pass" && status !== "fail") throw new Error(`${file}: not a ${gate} evidence file with status pass or fail`);
+	if (status !== "pass" && status !== "fail")
+		throw new Error(`${file}: not a ${gate} evidence file with status pass or fail`);
 	return { gate, file, present: true, status };
 }
 
@@ -601,7 +682,10 @@ export function buildManifest(
 ): Manifest {
 	const failures = inputs
 		.filter((input) => input.status !== "pass")
-		.map((input) => `${input.gate}: ${input.present ? `status ${input.status}` : `${input.file} missing`}`);
+		.map(
+			(input) =>
+				`${input.gate}: ${input.present ? `status ${input.status}` : `${input.file} missing`}`,
+		);
 	return {
 		schema: SCHEMA,
 		status: failures.length === 0 ? "pass" : "fail",
@@ -655,7 +739,8 @@ export function parseArgs(argv: readonly string[]): { mode: Mode; options: Optio
 	while (index < rest.length) {
 		const flag = rest[index] ?? "";
 		const value = rest[index + 1];
-		if (!ALLOWED_FLAGS[mode].includes(flag)) throw new Error(`unknown option "${flag}" for ${mode}`);
+		if (!ALLOWED_FLAGS[mode].includes(flag))
+			throw new Error(`unknown option "${flag}" for ${mode}`);
 		if (value === undefined || value.startsWith("--")) throw new Error(`${flag} needs a value`);
 		if (flag !== "--root" && values.has(flag)) throw new Error(`${flag} given more than once`);
 		values.set(flag, [...(values.get(flag) ?? []), value]);
@@ -666,7 +751,8 @@ export function parseArgs(argv: readonly string[]): { mode: Mode; options: Optio
 	}
 	const first = (flag: string): string | undefined => values.get(flag)?.[0];
 	const today = first("--today");
-	if (today !== undefined && !isIsoDate(today)) throw new Error(`--today must be a real YYYY-MM-DD date, got "${today}"`);
+	if (today !== undefined && !isIsoDate(today))
+		throw new Error(`--today must be a real YYYY-MM-DD date, got "${today}"`);
 	const roots = values.get("--root") ?? [];
 	if (first("--input") !== undefined && mode === "audit" && roots.length !== 1) {
 		throw new Error("--input needs exactly one --root");
@@ -721,7 +807,12 @@ function runAudit(options: Options, io: CliIo): number {
 			run = { exitCode: 0, stdout: readFileSync(options.input, "utf8"), stderr: "" };
 		}
 		const result = evaluateAudit(parseAuditOutput(run.stdout), policy, today);
-		results.push({ ...result, root, source: options.input === undefined ? "bun audit" : "input", exitCode: run.exitCode });
+		results.push({
+			...result,
+			root,
+			source: options.input === undefined ? "bun audit" : "input",
+			exitCode: run.exitCode,
+		});
 	}
 	const status = results.every((result) => result.status === "pass") ? "pass" : "fail";
 	const file = writeEvidence(out, "audit.json", {
@@ -735,11 +826,16 @@ function runAudit(options: Options, io: CliIo): number {
 	});
 	for (const result of results) {
 		for (const item of result.blocking) {
-			io.err(`audit: ${result.root}: ${item.package} ${item.id} ${item.severity} ${item.url}: ${item.reason}`);
+			io.err(
+				`audit: ${result.root}: ${item.package} ${item.id} ${item.severity} ${item.url}: ${item.reason}`,
+			);
 		}
-		for (const entry of result.expiredAllow) io.err(`audit: ${result.root}: allow entry for ${entry.advisory} expired ${entry.expires}`);
+		for (const entry of result.expiredAllow)
+			io.err(`audit: ${result.root}: allow entry for ${entry.advisory} expired ${entry.expires}`);
 	}
-	io.out(`security-gate audit: ${status} (${results.length} root${results.length === 1 ? "" : "s"}) -> ${file}`);
+	io.out(
+		`security-gate audit: ${status} (${results.length} root${results.length === 1 ? "" : "s"}) -> ${file}`,
+	);
 	return status === "pass" ? 0 : 1;
 }
 
@@ -760,13 +856,18 @@ function runLicenses(options: Options, io: CliIo): number {
 		...result,
 	});
 	for (const failure of result.failures) {
-		const label = failure.name === undefined ? failure.file : `${failure.name}@${failure.version ?? "?"}`;
-		io.err(`licenses: ${label}${failure.license === undefined ? "" : ` (${failure.license})`}: ${failure.reason}`);
+		const label =
+			failure.name === undefined ? failure.file : `${failure.name}@${failure.version ?? "?"}`;
+		io.err(
+			`licenses: ${label}${failure.license === undefined ? "" : ` (${failure.license})`}: ${failure.reason}`,
+		);
 	}
 	for (const entry of result.expiredExceptions) {
 		io.err(`licenses: exception for ${entry.name}@${entry.version} expired ${entry.expires}`);
 	}
-	io.out(`security-gate licenses: ${result.status} (${result.packageCount} packages, ${result.excepted.length} excepted) -> ${file}`);
+	io.out(
+		`security-gate licenses: ${result.status} (${result.packageCount} packages, ${result.excepted.length} excepted) -> ${file}`,
+	);
 	return result.status === "pass" ? 0 : 1;
 }
 
@@ -789,7 +890,9 @@ function runChecks(options: Options, io: CliIo): number {
 		if (check.status === "fail") io.err(`checks: ${check.name}: ${check.reason}`);
 	}
 	const passed = result.checks.filter((check) => check.status === "pass").length;
-	io.out(`security-gate checks: ${result.status} (${passed}/${result.checks.length} required checks) -> ${file}`);
+	io.out(
+		`security-gate checks: ${result.status} (${passed}/${result.checks.length} required checks) -> ${file}`,
+	);
 	return result.status === "pass" ? 0 : 1;
 }
 

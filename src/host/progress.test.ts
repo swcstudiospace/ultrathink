@@ -5,7 +5,12 @@ import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelResolution } from "./engine.ts";
-import { createFdProgressSink, createLineSplitter, type ProgressEvent, parseProgressLine } from "./progress.ts";
+import {
+	createFdProgressSink,
+	createLineSplitter,
+	type ProgressEvent,
+	parseProgressLine,
+} from "./progress.ts";
 
 const detected: ModelResolution = {
 	version: "1.0.0",
@@ -38,7 +43,17 @@ const events: ProgressEvent[] = [
 	{ type: "begin", at: 1, sessionId: "s", engine: "grok" },
 	{ type: "stage", at: 2, stage: "uplift", phase: "end", ok: true, detail: "BUILD_PROMPT · llm" },
 	{ type: "graph", at: 3, total: 1, nodes: [{ id: "n1", title: "A", kind: "understand" }] },
-	{ type: "node", at: 4, phase: "done", id: "n1", title: "A", kind: "understand", index: 0, total: 1, fallback: true },
+	{
+		type: "node",
+		at: 4,
+		phase: "done",
+		id: "n1",
+		title: "A",
+		kind: "understand",
+		index: 0,
+		total: 1,
+		fallback: true,
+	},
 	{
 		type: "track",
 		at: 5,
@@ -47,14 +62,58 @@ const events: ProgressEvent[] = [
 		error: "boom",
 	},
 	{ type: "begin", at: 6, sessionId: "s", engine: "grok", skill: "gsd-plan-phase" },
-	{ type: "graph", at: 6, total: 2, nodes: [{ id: "n1", title: "A", kind: "understand", dependsOn: [] }, { id: "n2", title: "B", kind: "generate", dependsOn: ["n1"] }] },
-	{ type: "node", at: 6, phase: "done", id: "n1", title: "A", kind: "understand", index: 0, total: 2, steps: ["Step 1: read"] },
-	{ type: "issue", at: 6, provider: "linear", nodeId: "n1", step: 2, identifier: "ENG-1", url: "https://linear.app/o/issue/ENG-1" },
-	{ type: "activity", at: 6, notice: { v: 1, kind: "teachable-recalled", title: "Lesson recalled", source: "hindsight", outcome: "used", count: 2, names: ["Retry the fetch"] } },
+	{
+		type: "graph",
+		at: 6,
+		total: 2,
+		nodes: [
+			{ id: "n1", title: "A", kind: "understand", dependsOn: [] },
+			{ id: "n2", title: "B", kind: "generate", dependsOn: ["n1"] },
+		],
+	},
+	{
+		type: "node",
+		at: 6,
+		phase: "done",
+		id: "n1",
+		title: "A",
+		kind: "understand",
+		index: 0,
+		total: 2,
+		steps: ["Step 1: read"],
+	},
+	{
+		type: "issue",
+		at: 6,
+		provider: "linear",
+		nodeId: "n1",
+		step: 2,
+		identifier: "ENG-1",
+		url: "https://linear.app/o/issue/ENG-1",
+	},
+	{
+		type: "activity",
+		at: 6,
+		notice: {
+			v: 1,
+			kind: "teachable-recalled",
+			title: "Lesson recalled",
+			source: "hindsight",
+			outcome: "used",
+			count: 2,
+			names: ["Retry the fetch"],
+		},
+	},
 	{ type: "end", at: 6, outcome: "planned" },
 	{ type: "begin", at: 7, sessionId: "s", engine: detected.label, modelResolution: detected },
 	{ type: "end", at: 8, outcome: "planned", modelResolution: detected },
-	{ type: "end", at: 9, outcome: "skipped", detail: "native-unavailable", modelResolution: unresolved },
+	{
+		type: "end",
+		at: 9,
+		outcome: "skipped",
+		detail: "native-unavailable",
+		modelResolution: unresolved,
+	},
 ];
 
 describe("createFdProgressSink", () => {
@@ -95,20 +154,50 @@ describe("parseProgressLine", () => {
 		expect(parseProgressLine("{broken")).toBeUndefined();
 		expect(parseProgressLine("[1,2]")).toBeUndefined();
 		expect(parseProgressLine(JSON.stringify({ type: "mystery", at: 1 }))).toBeUndefined();
-		expect(parseProgressLine(JSON.stringify({ type: "issue", provider: "linear", nodeId: "n1", url: "u" }))).toBeUndefined();
+		expect(
+			parseProgressLine(
+				JSON.stringify({ type: "issue", provider: "linear", nodeId: "n1", url: "u" }),
+			),
+		).toBeUndefined();
 		expect(parseProgressLine(JSON.stringify({ type: "toString", at: 1 }))).toBeUndefined();
 		expect(parseProgressLine(JSON.stringify({ type: "end", outcome: "planned" }))).toBeUndefined();
 		expect(parseProgressLine(JSON.stringify({ type: "end", at: "1" }))).toBeUndefined();
 	});
 
 	test("the safe record rides on begin and end only: no new event kind, and an unresolved end needs no begin", () => {
-		const end = parseProgressLine(JSON.stringify({ type: "end", at: 9, outcome: "skipped", detail: "native-unavailable", modelResolution: unresolved }));
-		expect(end).toEqual({ type: "end", at: 9, outcome: "skipped", detail: "native-unavailable", modelResolution: unresolved });
-		expect(end?.type === "end" ? end.modelResolution?.label : undefined).toBe("omp-native:unresolved [native-unavailable]");
-		const begin = parseProgressLine(JSON.stringify({ type: "begin", at: 7, sessionId: "s", engine: detected.label, modelResolution: detected }));
+		const end = parseProgressLine(
+			JSON.stringify({
+				type: "end",
+				at: 9,
+				outcome: "skipped",
+				detail: "native-unavailable",
+				modelResolution: unresolved,
+			}),
+		);
+		expect(end).toEqual({
+			type: "end",
+			at: 9,
+			outcome: "skipped",
+			detail: "native-unavailable",
+			modelResolution: unresolved,
+		});
+		expect(end?.type === "end" ? end.modelResolution?.label : undefined).toBe(
+			"omp-native:unresolved [native-unavailable]",
+		);
+		const begin = parseProgressLine(
+			JSON.stringify({
+				type: "begin",
+				at: 7,
+				sessionId: "s",
+				engine: detected.label,
+				modelResolution: detected,
+			}),
+		);
 		expect(begin?.type === "begin" ? begin.modelResolution : undefined).toEqual(detected);
 		for (const type of ["resolution", "modelResolution", "model"]) {
-			expect(parseProgressLine(JSON.stringify({ type, at: 1, modelResolution: detected }))).toBeUndefined();
+			expect(
+				parseProgressLine(JSON.stringify({ type, at: 1, modelResolution: detected })),
+			).toBeUndefined();
 		}
 	});
 });

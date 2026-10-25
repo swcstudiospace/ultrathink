@@ -24,13 +24,20 @@ export interface ClaudeCompleteOptions {
 	env?: Record<string, string | undefined>;
 }
 
-export type ClaudeCompleter = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
+export type ClaudeCompleter = (
+	system: string,
+	user: string,
+	signal?: AbortSignal,
+) => Promise<string>;
 
 export function isChildInvocation(env: Record<string, string | undefined> = process.env): boolean {
 	return env[CHILD_ENV] === "1";
 }
 
-export function buildClaudeArgs(system: string, opts: Pick<ClaudeCompleteOptions, "model" | "settingSources"> = {}): string[] {
+export function buildClaudeArgs(
+	system: string,
+	opts: Pick<ClaudeCompleteOptions, "model" | "settingSources"> = {},
+): string[] {
 	const args = [
 		"-p",
 		"--tools",
@@ -65,7 +72,8 @@ export function parseClaudeJson(stdout: string): string {
 	if (!parsed || typeof parsed !== "object") throw new Error("claude output is not an object");
 	const rec = parsed as { result?: unknown; is_error?: unknown; subtype?: unknown };
 	const result = typeof rec.result === "string" ? rec.result : "";
-	if (rec.is_error === true) throw new Error(result || `claude error (${String(rec.subtype ?? "unknown")})`);
+	if (rec.is_error === true)
+		throw new Error(result || `claude error (${String(rec.subtype ?? "unknown")})`);
 	return result;
 }
 
@@ -75,10 +83,17 @@ function abortError(): Error {
 	return error;
 }
 
-export async function claudeComplete(system: string, user: string, opts: ClaudeCompleteOptions = {}): Promise<string> {
+export async function claudeComplete(
+	system: string,
+	user: string,
+	opts: ClaudeCompleteOptions = {},
+): Promise<string> {
 	if (opts.signal?.aborted) throw abortError();
 	const bin = opts.bin?.trim() || "claude";
-	const env: Record<string, string | undefined> = { ...(opts.env ?? process.env), [CHILD_ENV]: "1" };
+	const env: Record<string, string | undefined> = {
+		...(opts.env ?? process.env),
+		[CHILD_ENV]: "1",
+	};
 	if (!opts.thinking) env.MAX_THINKING_TOKENS = "0";
 	const proc = Bun.spawn([bin, ...buildClaudeArgs(system, opts)], {
 		cwd: opts.cwd,
@@ -90,12 +105,13 @@ export async function claudeComplete(system: string, user: string, opts: ClaudeC
 
 	let timedOut = false;
 	let aborted = false;
-	const timer = opts.timeoutMs && opts.timeoutMs > 0
-		? setTimeout(() => {
-				timedOut = true;
-				proc.kill();
-			}, opts.timeoutMs)
-		: undefined;
+	const timer =
+		opts.timeoutMs && opts.timeoutMs > 0
+			? setTimeout(() => {
+					timedOut = true;
+					proc.kill();
+				}, opts.timeoutMs)
+			: undefined;
 	const onAbort = (): void => {
 		aborted = true;
 		proc.kill();
@@ -118,6 +134,8 @@ export async function claudeComplete(system: string, user: string, opts: ClaudeC
 	}
 }
 
-export function createClaudeCompleter(opts: Omit<ClaudeCompleteOptions, "signal">): ClaudeCompleter {
+export function createClaudeCompleter(
+	opts: Omit<ClaudeCompleteOptions, "signal">,
+): ClaudeCompleter {
 	return (system, user, signal) => claudeComplete(system, user, { ...opts, signal });
 }

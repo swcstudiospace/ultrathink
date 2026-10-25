@@ -32,4 +32,8 @@ export const MAX_HEADER_CHARS = 12;
 /** Most knowledge-base-settled questions one clarify pass records. */
 export const MAX_SETTLED = 4;
 
-export const DEFAULT_HITL_CONFIG: HitlConfig = { enabled: true, maxQuestions: MAX_QUESTIONS, knowledgeBase: false };
+export const DEFAULT_HITL_CONFIG: HitlConfig = {
+	enabled: true,
+	maxQuestions: MAX_QUESTIONS,
+	knowledgeBase: false,
+};

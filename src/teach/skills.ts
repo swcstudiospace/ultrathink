@@ -65,7 +65,9 @@ function clean(text: string, max: number): string {
 }
 
 function asTarget(value: unknown): SkillTarget {
-	return typeof value === "string" && (SKILL_TARGETS as readonly string[]).includes(value) ? (value as SkillTarget) : "drafts";
+	return typeof value === "string" && (SKILL_TARGETS as readonly string[]).includes(value)
+		? (value as SkillTarget)
+		: "drafts";
 }
 
 function positiveInt(text: string | undefined, fallback: number): number {
@@ -199,7 +201,11 @@ function promotedCandidates(moments: TeachableMoment[]): Candidate[] {
  * Entries in rank order while they fit `maxChars`, at most `limit`. An entry whose path is unsafe to print, or that
  * does not fit, is left out whole: the pointer either names the real SKILL.md exactly or is not shown.
  */
-function fitSkills(skills: readonly RecalledSkill[], maxChars: number, limit = skills.length): { text: string; used: RecalledSkill[] } {
+function fitSkills(
+	skills: readonly RecalledSkill[],
+	maxChars: number,
+	limit = skills.length,
+): { text: string; used: RecalledSkill[] } {
 	const prefix = `${HEADER}\n\n${FRAMING}\n\n`;
 	const used: RecalledSkill[] = [];
 	let text = "";
@@ -234,9 +240,15 @@ export function skillsLookup(outcome: SkillRecallOutcome): SkillsLookup {
 	return lookup;
 }
 
-export const recallSkills = async (request: RecallRequest, ctx: TeachContext): Promise<SkillRecallOutcome> => {
+export const recallSkills = async (
+	request: RecallRequest,
+	ctx: TeachContext,
+): Promise<SkillRecallOutcome> => {
 	const started = nowOf(ctx);
-	const outcome = (status: SkillRecallOutcome["status"], rest: Partial<SkillRecallOutcome> = {}): SkillRecallOutcome => ({
+	const outcome = (
+		status: SkillRecallOutcome["status"],
+		rest: Partial<SkillRecallOutcome> = {},
+	): SkillRecallOutcome => ({
 		status,
 		skills: [],
 		chars: 0,
@@ -253,7 +265,10 @@ export const recallSkills = async (request: RecallRequest, ctx: TeachContext): P
 		if (ctx.signal?.aborted) return aborted();
 		const query = request.query.trim().slice(0, MAX_QUERY_CHARS);
 		const project = request.project?.trim() || projectOf(ctx.cwd);
-		const limit = Math.min(MAX_SKILLS, Math.max(1, Math.floor(request.limit ?? ctx.config.teach.recallLimit)));
+		const limit = Math.min(
+			MAX_SKILLS,
+			Math.max(1, Math.floor(request.limit ?? ctx.config.teach.recallLimit)),
+		);
 		const wanted = queryTokens(query);
 		if (wanted.length === 0) return outcome("none");
 
@@ -277,7 +292,10 @@ export const recallSkills = async (request: RecallRequest, ctx: TeachContext): P
 				return;
 			}
 			held.rank = Math.max(held.rank, score);
-			if ((candidate.promoted && !held.promoted) || (candidate.promoted === held.promoted && score > held.score)) {
+			if (
+				(candidate.promoted && !held.promoted) ||
+				(candidate.promoted === held.promoted && score > held.score)
+			) {
 				held.skill = candidate.skill;
 				held.score = score;
 				held.promoted = candidate.promoted;
@@ -285,7 +303,13 @@ export const recallSkills = async (request: RecallRequest, ctx: TeachContext): P
 		};
 
 		const store = tryStore(ctx);
-		const moments = store ? await listRecentMoments(store.dir, { max: MAX_SCANNED_MOMENTS, maxBytes: MOMENT_MAX_BYTES, signal: ctx.signal }) : [];
+		const moments = store
+			? await listRecentMoments(store.dir, {
+					max: MAX_SCANNED_MOMENTS,
+					maxBytes: MOMENT_MAX_BYTES,
+					signal: ctx.signal,
+				})
+			: [];
 		if (ctx.signal?.aborted) return aborted();
 		// A promotion record points at its install only while that is still a regular file (lstat: a symlink does not
 		// count); a removed or moved skill drops the record, and the live draft of the same skill takes its place.
@@ -310,7 +334,9 @@ export const recallSkills = async (request: RecallRequest, ctx: TeachContext): P
 		}
 
 		// A forgotten moment's file is gone and a superseded one keeps its file: either way its drafts stop counting.
-		const known = new Map<string, TeachableMoment | undefined>(moments.map((moment) => [moment.id, moment] as const));
+		const known = new Map<string, TeachableMoment | undefined>(
+			moments.map((moment) => [moment.id, moment] as const),
+		);
 		let lookups = 0;
 		const drafts = await draftFiles(join(storeDir(ctx.stateDir), "skill-drafts"), ctx.signal);
 		for (const path of drafts) {
@@ -353,16 +379,21 @@ export const recallSkills = async (request: RecallRequest, ctx: TeachContext): P
 		if (ctx.signal?.aborted) return aborted();
 
 		// Equal ranks put a promotion record first; Array.prototype.sort is stable, so then newest-scanned first.
-		const ranked = [...best.values()].sort((a, b) => b.rank - a.rank || Number(b.promoted) - Number(a.promoted));
+		const ranked = [...best.values()].sort(
+			(a, b) => b.rank - a.rank || Number(b.promoted) - Number(a.promoted),
+		);
 		if (ranked.length === 0) return outcome("none");
 		const fit = fitSkills(
 			ranked.map(({ skill }) => skill),
 			request.chars ?? SKILL_SECTION_CHARS,
 			limit,
 		);
-		if (fit.used.length === 0) return outcome("none", { reason: "skills do not fit the character budget" });
+		if (fit.used.length === 0)
+			return outcome("none", { reason: "skills do not fit the character budget" });
 		return outcome("used", { skills: fit.used, chars: fit.text.length });
 	} catch (error) {
-		return outcome("error", { reason: redactLine(error instanceof Error ? error.message : String(error)) });
+		return outcome("error", {
+			reason: redactLine(error instanceof Error ? error.message : String(error)),
+		});
 	}
 };

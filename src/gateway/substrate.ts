@@ -28,12 +28,17 @@ const KIND_PATTERN = /^[a-z][a-z0-9_.]{2,60}$/;
 
 function briefText(payload: Record<string, unknown>): string {
 	const substrate = isRecord(payload.substrate) ? payload.substrate : undefined;
-	if (substrate && typeof substrate.brief === "string" && substrate.brief.trim()) return substrate.brief.trim();
+	if (substrate && typeof substrate.brief === "string" && substrate.brief.trim())
+		return substrate.brief.trim();
 	if (typeof payload.brief === "string") return payload.brief.trim();
 	return "";
 }
 
-export async function gatewayBrief(gateway: ResolvedGateway, input: GatewayBriefInput, fetchImpl?: typeof fetch): Promise<string> {
+export async function gatewayBrief(
+	gateway: ResolvedGateway,
+	input: GatewayBriefInput,
+	fetchImpl?: typeof fetch,
+): Promise<string> {
 	if (input.signal?.aborted) return "";
 	const client = createGatewayClient({ ...gateway, fetch: fetchImpl, signal: input.signal });
 	const args: Record<string, unknown> = {};

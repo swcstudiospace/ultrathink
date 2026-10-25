@@ -2,7 +2,14 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
-import { type Acknowledged, type AuditWatch, createAuditWatch, type Fingerprint, type ScanReply, type WatchAlert } from "./audit-watch.ts";
+import {
+	type Acknowledged,
+	type AuditWatch,
+	createAuditWatch,
+	type Fingerprint,
+	type ScanReply,
+	type WatchAlert,
+} from "./audit-watch.ts";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +40,11 @@ function harness(options: { intervalMs?: number; fullScanEveryTicks?: number } =
 		scans: 0,
 	};
 	const alerts: WatchAlert[] = [];
-	const timers = { scheduled: undefined as (() => void) | undefined, handle: {} as object, cleared: 0 };
+	const timers = {
+		scheduled: undefined as (() => void) | undefined,
+		handle: {} as object,
+		cleared: 0,
+	};
 	let recovers = 0;
 
 	const watch: AuditWatch = createAuditWatch({
@@ -419,7 +430,12 @@ describe("off the request path", () => {
 
 describe("timer and interval", () => {
 	test("intervalMs 99 and 1001 throw RangeError; the 100 and 1000 bounds are accepted", () => {
-		const base = { stat: () => undefined, acknowledged: () => ({ fingerprint: undefined, seq: 0, hash: GENESIS }), scan: async () => ({ ok: true as const, records: 0, lastHash: GENESIS }), onAlert: () => {} };
+		const base = {
+			stat: () => undefined,
+			acknowledged: () => ({ fingerprint: undefined, seq: 0, hash: GENESIS }),
+			scan: async () => ({ ok: true as const, records: 0, lastHash: GENESIS }),
+			onAlert: () => {},
+		};
 		expect(() => createAuditWatch({ ...base, intervalMs: 99 })).toThrow(RangeError);
 		expect(() => createAuditWatch({ ...base, intervalMs: 1001 })).toThrow(RangeError);
 		expect(() => createAuditWatch({ ...base, intervalMs: 100 })).not.toThrow();
@@ -515,7 +531,10 @@ describe("pruned chain", () => {
 			expect(alerts).toEqual([]);
 
 			// Drop the boundary record at the end of the file: the pruned chain no longer verifies, so the full scan alerts.
-			const kept = readFileSync(path, "utf8").split("\n").filter((l) => l.length > 0).slice(0, -1);
+			const kept = readFileSync(path, "utf8")
+				.split("\n")
+				.filter((l) => l.length > 0)
+				.slice(0, -1);
 			writeFileSync(path, kept.map((l) => `${l}\n`).join(""));
 			await watch.tick();
 			expect(alerts.map((alert) => alert.kind)).toEqual(["chain_broken"]);

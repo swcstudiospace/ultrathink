@@ -46,7 +46,11 @@ function readChunk(reader: ChunkReader, signal?: AbortSignal): Promise<ChunkResu
  * An abort of `signal` cancels a pending read and rejects with the signal's reason;
  * a stream error is rethrown. The reader lock is always released.
  */
-export async function readBodyPrefix(response: Response, limit: number, signal?: AbortSignal): Promise<{ text: string; complete: boolean }> {
+export async function readBodyPrefix(
+	response: Response,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<{ text: string; complete: boolean }> {
 	signal?.throwIfAborted();
 	if (!response.body) return { text: "", complete: true };
 	const reader: ChunkReader = response.body.getReader();
@@ -80,7 +84,11 @@ export async function readBodyPrefix(response: Response, limit: number, signal?:
  * Reads the full body as text with a size limit.
  * Returns the body text or throws if the body exceeds the limit.
  */
-export async function readBodyText(response: Response, limit: number, signal?: AbortSignal): Promise<string> {
+export async function readBodyText(
+	response: Response,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<string> {
 	const result = await readBodyPrefix(response, limit, signal);
 	if (!result.complete) {
 		throw new Error(`Response body exceeds limit of ${limit} bytes`);
@@ -92,7 +100,11 @@ export async function readBodyText(response: Response, limit: number, signal?: A
  * Reads and parses JSON with a size limit.
  * Returns the parsed object or throws if the body exceeds the limit or is not valid JSON.
  */
-export async function readJsonBody<T = unknown>(response: Response, limit: number, signal?: AbortSignal): Promise<T> {
+export async function readJsonBody<T = unknown>(
+	response: Response,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<T> {
 	const result = await readBodyPrefix(response, limit, signal);
 	if (!result.complete) {
 		throw new Error(`Response body exceeds limit of ${limit} bytes`);
@@ -100,7 +112,7 @@ export async function readJsonBody<T = unknown>(response: Response, limit: numbe
 	try {
 		return JSON.parse(result.text) as T;
 	} catch {
-		throw new Error('Response body is not valid JSON');
+		throw new Error("Response body is not valid JSON");
 	}
 }
 

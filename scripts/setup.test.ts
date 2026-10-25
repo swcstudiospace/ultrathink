@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -41,8 +50,13 @@ function writeRepo(root: string): void {
 		mkdirSync(join(root, "skills", name), { recursive: true });
 		writeFileSync(join(root, "skills", name, "SKILL.md"), `---\nname: ${name}\n---\n`);
 	}
-	mkdirSync(join(root, "hosts", "prime-agent", "commands", "ultrathink-status"), { recursive: true });
-	writeFileSync(join(root, "hosts", "prime-agent", "commands", "ultrathink-status", "SKILL.md"), "---\nname: ultrathink-status\n---\n");
+	mkdirSync(join(root, "hosts", "prime-agent", "commands", "ultrathink-status"), {
+		recursive: true,
+	});
+	writeFileSync(
+		join(root, "hosts", "prime-agent", "commands", "ultrathink-status", "SKILL.md"),
+		"---\nname: ultrathink-status\n---\n",
+	);
 	const handler = (script: string, timeout: number) => ({
 		type: "command",
 		command: `"\${CLAUDE_PLUGIN_ROOT}/bin/run-bun" "\${CLAUDE_PLUGIN_ROOT}/hooks/${script}"`,
@@ -79,7 +93,12 @@ function tempSetup(): {
 	const agentSkills = join(dir, "agent-skills");
 	return {
 		// Every host directory is scoped to the temp dir, so a test never links into the real ~/.prime or ~/.agents.
-		env: { CLAUDE_CONFIG_DIR: join(dir, "claude"), GROK_HOME: grok, PRIME_AGENT_CODING_AGENT_DIR: prime, ULTRATHINK_AGENT_SKILLS_DIR: agentSkills },
+		env: {
+			CLAUDE_CONFIG_DIR: join(dir, "claude"),
+			GROK_HOME: grok,
+			PRIME_AGENT_CODING_AGENT_DIR: prime,
+			ULTRATHINK_AGENT_SKILLS_DIR: agentSkills,
+		},
 		repo,
 		rulePath: join(grok, "rules", "ultrathink.md"),
 		hooksPath: join(grok, "hooks", "ultrathink.json"),
@@ -90,9 +109,13 @@ function tempSetup(): {
 }
 
 const noClaude = (cmd: string[]) =>
-	cmd[0] === "claude" ? { stdout: "", stderr: "claude: not found", code: 127 } : { stdout: "", stderr: "", code: 0 };
+	cmd[0] === "claude"
+		? { stdout: "", stderr: "claude: not found", code: 127 }
+		: { stdout: "", stderr: "", code: 0 };
 
-function fakeRun(script: (cmd: string[]) => { stdout: string; stderr: string; code: number }): Run & { calls: string[][] } {
+function fakeRun(
+	script: (cmd: string[]) => { stdout: string; stderr: string; code: number },
+): Run & { calls: string[][] } {
 	const calls: string[][] = [];
 	const run: Run = (cmd) => {
 		calls.push(cmd);
@@ -104,7 +127,8 @@ function fakeRun(script: (cmd: string[]) => { stdout: string; stderr: string; co
 /** `claude mcp get` finds nothing (exit 1), `claude mcp list` prints `list`, every other claude call succeeds. */
 function mcpRun(list: string): Run & { calls: string[][] } {
 	return fakeRun((cmd) => {
-		if (cmd[1] === "mcp" && cmd[2] === "get") return { stdout: "", stderr: `No MCP server named "${cmd[3]}".`, code: 1 };
+		if (cmd[1] === "mcp" && cmd[2] === "get")
+			return { stdout: "", stderr: `No MCP server named "${cmd[3]}".`, code: 1 };
 		if (cmd[1] === "mcp" && cmd[2] === "list") return { stdout: list, stderr: "", code: 0 };
 		return { stdout: "", stderr: "", code: 0 };
 	});
@@ -129,10 +153,17 @@ function setupEntry(name: string): Reply {
 }
 
 /** Rollback-time claude: `get` shows setup's own entry and every other call succeeds, unless `script` answers first. */
-function ownedRun(script: (cmd: string[]) => Reply | undefined = () => undefined): Run & { calls: string[][] } {
+function ownedRun(
+	script: (cmd: string[]) => Reply | undefined = () => undefined,
+): Run & { calls: string[][] } {
 	return fakeRun((cmd) => {
 		const name = cmd[3];
-		return script(cmd) ?? (cmd[2] === "get" && name !== undefined ? setupEntry(name) : { stdout: "", stderr: "", code: 0 });
+		return (
+			script(cmd) ??
+			(cmd[2] === "get" && name !== undefined
+				? setupEntry(name)
+				: { stdout: "", stderr: "", code: 0 })
+		);
 	});
 }
 
@@ -177,18 +208,42 @@ describe("ensureMcpServer", () => {
 		const run = mcpRun(LOOKALIKES);
 		expect(ensureMcpServer("notion", "https://mcp.notion.com/mcp", run).added).toBe(true);
 		expect(ensureMcpServer("linear", "https://mcp.linear.app/mcp", run).added).toBe(true);
-		expect(run.calls).toContainEqual(["claude", "mcp", "add", "--transport", "http", "--scope", "user", "notion", "https://mcp.notion.com/mcp"]);
+		expect(run.calls).toContainEqual([
+			"claude",
+			"mcp",
+			"add",
+			"--transport",
+			"http",
+			"--scope",
+			"user",
+			"notion",
+			"https://mcp.notion.com/mcp",
+		]);
 	});
 
 	test("adds when missing", () => {
 		const run = mcpRun("");
 		const result = ensureMcpServer("linear", "https://mcp.linear.app/mcp", run);
 		expect(result.added).toBe(true);
-		expect(run.calls.at(-1)).toEqual(["claude", "mcp", "add", "--transport", "http", "--scope", "user", "linear", "https://mcp.linear.app/mcp"]);
+		expect(run.calls.at(-1)).toEqual([
+			"claude",
+			"mcp",
+			"add",
+			"--transport",
+			"http",
+			"--scope",
+			"user",
+			"linear",
+			"https://mcp.linear.app/mcp",
+		]);
 	});
 
 	test("reports failure without throwing", () => {
-		const run = fakeRun((cmd) => (cmd[2] === "add" ? { stdout: "", stderr: "network down", code: 1 } : { stdout: "", stderr: "", code: 1 }));
+		const run = fakeRun((cmd) =>
+			cmd[2] === "add"
+				? { stdout: "", stderr: "network down", code: 1 }
+				: { stdout: "", stderr: "", code: 1 },
+		);
 		const result = ensureMcpServer("notion", "https://mcp.notion.com/mcp", run);
 		expect(result.added).toBe(false);
 		expect(result.message).toContain("network down");
@@ -198,7 +253,9 @@ describe("ensureMcpServer", () => {
 describe("ensurePluginInstalled", () => {
 	test("adds the marketplace then installs, tolerating already-installed", () => {
 		const run = fakeRun((cmd) =>
-			cmd[2] === "install" ? { stdout: "", stderr: "already installed", code: 1 } : { stdout: "", stderr: "", code: 0 },
+			cmd[2] === "install"
+				? { stdout: "", stderr: "already installed", code: 1 }
+				: { stdout: "", stderr: "", code: 0 },
 		);
 		const result = ensurePluginInstalled("/repo", run);
 		expect(result.installed).toBe(true);
@@ -213,7 +270,10 @@ describe("apply / status / rollback", () => {
 		try {
 			const applied = apply(repo, run, env);
 			expect(applied.claude?.claudeMd.changed).toBe(true);
-			expect(applied.grok).toEqual({ rule: { path: rulePath, changed: true }, hooks: { path: hooksPath, changed: true } });
+			expect(applied.grok).toEqual({
+				rule: { path: rulePath, changed: true },
+				hooks: { path: hooksPath, changed: true },
+			});
 			expect(readFileSync(claudeMdPath(env), "utf8")).toContain("<!-- ultrathink:start -->");
 			expect(readFileSync(rulePath, "utf8")).toBe(RULE);
 
@@ -227,19 +287,28 @@ describe("apply / status / rollback", () => {
 
 			const rolledBack = rollback(env, run);
 			expect(rolledBack.claudeMd.changed).toBe(true);
-			expect(rolledBack.grok).toEqual({ rule: { path: rulePath, removed: true }, hooks: { path: hooksPath, removed: true } });
+			expect(rolledBack.grok).toEqual({
+				rule: { path: rulePath, removed: true },
+				hooks: { path: hooksPath, removed: true },
+			});
 			expect(rolledBack.state).toEqual({ path: setupStatePath(env), status: "removed" });
 			expect(readFileSync(claudeMdPath(env), "utf8")).not.toContain("<!-- ultrathink:start -->");
 			expect(existsSync(rulePath)).toBe(false);
 			expect(existsSync(hooksPath)).toBe(false);
 			expect(existsSync(setupStatePath(env))).toBe(false);
-			expect(status(env, statusRun)).toContain(`Grok rule: missing — run: bun scripts/setup.ts apply (${rulePath})`);
+			expect(status(env, statusRun)).toContain(
+				`Grok rule: missing — run: bun scripts/setup.ts apply (${rulePath})`,
+			);
 
 			// The plugin itself is only named for the user to remove; rollback never runs the uninstall.
 			const report = rollbackReport(rolledBack).join("\n");
 			expect(report).toContain("claude plugin uninstall ultrathink@ultrathink");
 			expect(report).toContain("claude plugin marketplace remove ultrathink");
-			expect(run.calls.some((cmd) => cmd[1] === "plugin" && (cmd[2] === "uninstall" || cmd[3] === "remove"))).toBe(false);
+			expect(
+				run.calls.some(
+					(cmd) => cmd[1] === "plugin" && (cmd[2] === "uninstall" || cmd[3] === "remove"),
+				),
+			).toBe(false);
 		} finally {
 			cleanup();
 		}
@@ -263,7 +332,11 @@ describe("apply / status / rollback", () => {
 	test("the CLAUDE.md block defers to the configured Notion database and Linear team and tells the agent how to check", () => {
 		const { env, repo, cleanup } = tempSetup();
 		try {
-			apply(repo, fakeRun(() => ({ stdout: "", stderr: "", code: 0 })), env);
+			apply(
+				repo,
+				fakeRun(() => ({ stdout: "", stderr: "", code: 0 })),
+				env,
+			);
 			const text = readFileSync(claudeMdPath(env), "utf8");
 			expect(text).toContain("notion.dataSourceUrl");
 			expect(text).toContain("linear.team");
@@ -281,7 +354,10 @@ describe("apply / status / rollback", () => {
 	test("status decides MCP presence by exact server name", () => {
 		const { env, cleanup } = tempSetup();
 		try {
-			const text = status(env, mcpRun(`${LOOKALIKES}\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n`));
+			const text = status(
+				env,
+				mcpRun(`${LOOKALIKES}\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n`),
+			);
 			expect(text).toContain("Notion MCP: missing — run: claude mcp add");
 			expect(text).toContain("Linear MCP: configured");
 		} finally {
@@ -358,8 +434,22 @@ describe("apply / status / rollback", () => {
 			const result = rollback(env, rollbackRun);
 			expect(result.notion.removed).toBe(true);
 			expect(result.linear.removed).toBe(true);
-			expect(rollbackRun.calls).toContainEqual(["claude", "mcp", "remove", "--scope", "user", "notion"]);
-			expect(rollbackRun.calls).toContainEqual(["claude", "mcp", "remove", "--scope", "user", "linear"]);
+			expect(rollbackRun.calls).toContainEqual([
+				"claude",
+				"mcp",
+				"remove",
+				"--scope",
+				"user",
+				"notion",
+			]);
+			expect(rollbackRun.calls).toContainEqual([
+				"claude",
+				"mcp",
+				"remove",
+				"--scope",
+				"user",
+				"linear",
+			]);
 		} finally {
 			cleanup();
 		}
@@ -370,7 +460,9 @@ describe("apply / status / rollback", () => {
 		try {
 			apply(repo, mcpRun(""), env);
 			// The second run finds both servers present (added by the first run) and adds nothing.
-			const rerun = mcpRun("notion: https://mcp.notion.com/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n");
+			const rerun = mcpRun(
+				"notion: https://mcp.notion.com/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n",
+			);
 			const again = apply(repo, rerun, env);
 			expect(again.claude?.notion.added).toBe(false);
 			expect(again.claude?.linear.added).toBe(false);
@@ -380,8 +472,22 @@ describe("apply / status / rollback", () => {
 			const result = rollback(env, rollbackRun);
 			expect(result.notion.removed).toBe(true);
 			expect(result.linear.removed).toBe(true);
-			expect(rollbackRun.calls).toContainEqual(["claude", "mcp", "remove", "--scope", "user", "notion"]);
-			expect(rollbackRun.calls).toContainEqual(["claude", "mcp", "remove", "--scope", "user", "linear"]);
+			expect(rollbackRun.calls).toContainEqual([
+				"claude",
+				"mcp",
+				"remove",
+				"--scope",
+				"user",
+				"notion",
+			]);
+			expect(rollbackRun.calls).toContainEqual([
+				"claude",
+				"mcp",
+				"remove",
+				"--scope",
+				"user",
+				"linear",
+			]);
 		} finally {
 			cleanup();
 		}
@@ -390,7 +496,9 @@ describe("apply / status / rollback", () => {
 	test("apply records added:false for a server that was already configured; rollback does not remove it", () => {
 		const { env, repo, cleanup } = tempSetup();
 		// `claude mcp list` shows both servers already configured, so ensureMcpServer skips both.
-		const applyRun = mcpRun("notion: https://mcp.notion.com/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n");
+		const applyRun = mcpRun(
+			"notion: https://mcp.notion.com/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n",
+		);
 		try {
 			apply(repo, applyRun, env);
 			const state = readSetupState(env);
@@ -402,7 +510,9 @@ describe("apply / status / rollback", () => {
 			expect(result.notion.removed).toBe(false);
 			expect(result.linear.removed).toBe(false);
 			expect(rollbackRun.calls.some((cmd) => cmd[2] === "remove")).toBe(false);
-			expect(rollbackReport(result).join("\n")).toContain("Notion MCP: left in place (setup did not add it)");
+			expect(rollbackReport(result).join("\n")).toContain(
+				"Notion MCP: left in place (setup did not add it)",
+			);
 		} finally {
 			cleanup();
 		}
@@ -446,7 +556,9 @@ describe("apply / status / rollback", () => {
 		try {
 			apply(repo, mcpRun(""), env);
 			const failing = ownedRun((cmd) =>
-				cmd[2] === "remove" && cmd.at(-1) === "notion" ? { stdout: "", stderr: "claude: not found", code: 127 } : undefined,
+				cmd[2] === "remove" && cmd.at(-1) === "notion"
+					? { stdout: "", stderr: "claude: not found", code: 127 }
+					: undefined,
 			);
 			const first = rollback(env, failing);
 			expect(first.notion).toEqual({ removed: false, error: "exit 127: claude: not found" });
@@ -477,17 +589,29 @@ describe("apply / status / rollback", () => {
 			apply(repo, mcpRun(""), env);
 			// notion now points at a gateway the user registered in place of setup's hosted server.
 			const gateway: Reply = {
-				stdout: "notion:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: /opt/tools/bin/ultrathink-mcp\n  Args: serve notion\n",
+				stdout:
+					"notion:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: /opt/tools/bin/ultrathink-mcp\n  Args: serve notion\n",
 				stderr: "",
 				code: 0,
 			};
-			const run = ownedRun((cmd) => (cmd[2] === "get" && cmd[3] === "notion" ? gateway : undefined));
+			const run = ownedRun((cmd) =>
+				cmd[2] === "get" && cmd[3] === "notion" ? gateway : undefined,
+			);
 			const result = rollback(env, run);
 			expect(result.notion).toEqual({ removed: false, kept: "changed" });
 			expect(result.linear.removed).toBe(true);
-			expect(run.calls).not.toContainEqual(["claude", "mcp", "remove", "--scope", "user", "notion"]);
+			expect(run.calls).not.toContainEqual([
+				"claude",
+				"mcp",
+				"remove",
+				"--scope",
+				"user",
+				"notion",
+			]);
 			expect(run.calls).toContainEqual(["claude", "mcp", "remove", "--scope", "user", "linear"]);
-			expect(rollbackReport(result).join("\n")).toContain("left in place: notion was changed since setup added it");
+			expect(rollbackReport(result).join("\n")).toContain(
+				"left in place: notion was changed since setup added it",
+			);
 			expect(result.state.status).toBe("removed");
 			expect(existsSync(setupStatePath(env))).toBe(false);
 		} finally {
@@ -500,11 +624,23 @@ describe("apply / status / rollback", () => {
 		try {
 			apply(repo, mcpRun(""), env);
 			const otherUrl = setupEntry("notion");
-			otherUrl.stdout = otherUrl.stdout.replace("https://mcp.notion.com/mcp", "https://notion.example.com/mcp");
-			const run = ownedRun((cmd) => (cmd[2] === "get" && cmd[3] === "notion" ? otherUrl : undefined));
+			otherUrl.stdout = otherUrl.stdout.replace(
+				"https://mcp.notion.com/mcp",
+				"https://notion.example.com/mcp",
+			);
+			const run = ownedRun((cmd) =>
+				cmd[2] === "get" && cmd[3] === "notion" ? otherUrl : undefined,
+			);
 			const result = rollback(env, run);
 			expect(result.notion.kept).toBe("changed");
-			expect(run.calls).not.toContainEqual(["claude", "mcp", "remove", "--scope", "user", "notion"]);
+			expect(run.calls).not.toContainEqual([
+				"claude",
+				"mcp",
+				"remove",
+				"--scope",
+				"user",
+				"notion",
+			]);
 		} finally {
 			cleanup();
 		}
@@ -514,7 +650,11 @@ describe("apply / status / rollback", () => {
 		/** `claude mcp get` shows a project-scope entry with the same name, which wins over the user scope. */
 		const shadowed = (cmd: string[]): Reply | undefined =>
 			cmd[2] === "get"
-				? { stdout: `${cmd[3]}:\n  Scope: Project config (shared via .mcp.json)\n  Type: stdio\n  Command: npx other-mcp\n`, stderr: "", code: 0 }
+				? {
+						stdout: `${cmd[3]}:\n  Scope: Project config (shared via .mcp.json)\n  Type: stdio\n  Command: npx other-mcp\n`,
+						stderr: "",
+						code: 0,
+					}
 				: undefined;
 		const claudeJson = (env: Record<string, string>) => {
 			const dir = env.CLAUDE_CONFIG_DIR;
@@ -611,7 +751,11 @@ describe("any checkout path", () => {
 				PRIME_AGENT_CODING_AGENT_DIR: join(dir, "prime agent"),
 				ULTRATHINK_AGENT_SKILLS_DIR: join(dir, "agent skills"),
 			};
-			const result = apply(repo, fakeRun(() => ({ stdout: "", stderr: "", code: 0 })), env);
+			const result = apply(
+				repo,
+				fakeRun(() => ({ stdout: "", stderr: "", code: 0 })),
+				env,
+			);
 			expect(readlinkSync(result.primeAgent.skill.path)).toBe(`${repo}/hosts/prime-agent`);
 			const hooks = readFileSync(result.grok.hooks.path, "utf8");
 			expect(hooks).toContain(`${repo}/hooks/uplift.ts`);
@@ -636,7 +780,9 @@ describe("hermesHint", () => {
 		expect(hint).toContain("global Hermes setting");
 		expect(hint).toContain("disable any other prompt-planning plugin");
 		expect(hint).not.toContain("prompt-uplift");
-		expect(hermesHint("/src/ultrathink", {})).toContain(`${join(".hermes", "plugins", "ultrathink")}'`);
+		expect(hermesHint("/src/ultrathink", {})).toContain(
+			`${join(".hermes", "plugins", "ultrathink")}'`,
+		);
 	});
 });
 
@@ -652,7 +798,13 @@ describe("grok global hooks", () => {
 		try {
 			// A root given with a trailing slash must not produce `//` paths.
 			const config = grokHooksConfig(`${root}/`) as {
-				hooks: Record<string, { matcher?: string; hooks: { command: string; timeout: number; env: Record<string, string> }[] }[]>;
+				hooks: Record<
+					string,
+					{
+						matcher?: string;
+						hooks: { command: string; timeout: number; env: Record<string, string> }[];
+					}[]
+				>;
 			};
 			expect(Object.keys(config.hooks)).toEqual(["UserPromptSubmit", "PostToolUse", "Stop"]);
 			const prompt = config.hooks.UserPromptSubmit?.[0]?.hooks[0];
@@ -700,12 +852,16 @@ describe("installGrokRule", () => {
 		const { repo, rulePath, cleanup } = tempSetup();
 		try {
 			// As a String.replace replacement string, `$&` and `$'` would expand instead of landing verbatim.
-			const packaged = "<!-- ultrathink:start -->\nRead $GROK_PLUGIN_DATA/ultrathink/last-plan.json; keep $& and $' as written.\n<!-- ultrathink:end -->\n";
+			const packaged =
+				"<!-- ultrathink:start -->\nRead $GROK_PLUGIN_DATA/ultrathink/last-plan.json; keep $& and $' as written.\n<!-- ultrathink:end -->\n";
 			writeFileSync(join(repo, "hosts", "grok", "ultrathink.md"), packaged);
 			const above = "# My Grok rules\n\n\nPrefer small diffs.  \n\n";
 			const below = "\n\n\n## Notes\nNo trailing newline";
 			mkdirSync(dirname(rulePath), { recursive: true });
-			writeFileSync(rulePath, `${above}<!-- ultrathink:start -->\nAn older rule.\n<!-- ultrathink:end -->${below}`);
+			writeFileSync(
+				rulePath,
+				`${above}<!-- ultrathink:start -->\nAn older rule.\n<!-- ultrathink:end -->${below}`,
+			);
 			const updated = `${above}${packaged.trimEnd()}${below}`;
 
 			expect(installGrokRule(repo, dirname(rulePath))).toEqual({ path: rulePath, changed: true });
@@ -723,7 +879,9 @@ describe("installGrokRule", () => {
 			mkdirSync(dirname(rulePath), { recursive: true });
 			writeFileSync(rulePath, "# My Grok rules\nAlways answer in English.\n");
 			expect(installGrokRule(repo, dirname(rulePath))).toEqual({ path: rulePath, changed: true });
-			expect(readFileSync(rulePath, "utf8")).toBe(`# My Grok rules\nAlways answer in English.\n\n${RULE}`);
+			expect(readFileSync(rulePath, "utf8")).toBe(
+				`# My Grok rules\nAlways answer in English.\n\n${RULE}`,
+			);
 			expect(installGrokRule(repo, dirname(rulePath)).changed).toBe(false);
 		} finally {
 			cleanup();
@@ -748,17 +906,25 @@ describe("prime agent host", () => {
 		const run = fakeRun(noClaude);
 		try {
 			const applied = apply(repo, run, env);
-			expect(applied.primeAgent.skill).toEqual({ path: primeSkillPath, target: join(repo, "hosts", "prime-agent"), status: "linked" });
+			expect(applied.primeAgent.skill).toEqual({
+				path: primeSkillPath,
+				target: join(repo, "hosts", "prime-agent"),
+				status: "linked",
+			});
 			expect(applied.primeAgent.agentSkills.map((l) => [l.path, l.status])).toEqual([
 				[join(agentSkillsDir, "ultrathink-kickoff"), "linked"],
 				[join(agentSkillsDir, "ultrathink-sync"), "linked"],
 				[join(agentSkillsDir, "ultrathink-status"), "linked"],
 			]);
-			expect(readlinkSync(join(agentSkillsDir, "ultrathink-status"))).toBe(join(repo, "hosts", "prime-agent", "commands", "ultrathink-status"));
+			expect(readlinkSync(join(agentSkillsDir, "ultrathink-status"))).toBe(
+				join(repo, "hosts", "prime-agent", "commands", "ultrathink-status"),
+			);
 			expect(readlinkSync(primeSkillPath)).toBe(join(repo, "hosts", "prime-agent"));
 			expect(existsSync(join(primeSkillPath, "SKILL.md"))).toBe(true);
 			const report = applyReport(repo, applied, env).join("\n");
-			expect(report).toContain(`Prime Agent skill: linked (${primeSkillPath} -> ${join(repo, "hosts", "prime-agent")})`);
+			expect(report).toContain(
+				`Prime Agent skill: linked (${primeSkillPath} -> ${join(repo, "hosts", "prime-agent")})`,
+			);
 			expect(report).toContain(`Prime Agent agent skills: 3/3 linked into ${agentSkillsDir}`);
 			expect(report).toContain("start a new session (or /reload)");
 

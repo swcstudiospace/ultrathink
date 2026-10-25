@@ -35,7 +35,9 @@ export function chainIdentity(path: string): string {
 	} catch {
 		// Absent: the identity records that, and it never matches an observed active file.
 	}
-	return `${ino}\n${listSegments(path, nodeFs).map((segment) => segment.name).join("\n")}`;
+	return `${ino}\n${listSegments(path, nodeFs)
+		.map((segment) => segment.name)
+		.join("\n")}`;
 }
 
 /**
@@ -88,7 +90,8 @@ export function createAuditVerifier(options: AuditVerifierOptions = {}): AuditVe
 	const deadlineMs = options.deadlineMs ?? DEFAULT_VERIFY_DEADLINE_MS;
 	const createWorker = options.createWorker ?? ((url: URL) => new Worker(url));
 	const setTimer = options.setTimer ?? ((run: () => void, ms: number) => setTimeout(run, ms));
-	const clearTimer = options.clearTimer ?? ((handle: object) => clearTimeout(handle as NodeJS.Timeout));
+	const clearTimer =
+		options.clearTimer ?? ((handle: object) => clearTimeout(handle as NodeJS.Timeout));
 	let worker: Worker | undefined;
 	let closed = false;
 	/** Settles the request in flight; undefined when none is in flight. */

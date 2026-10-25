@@ -11,7 +11,17 @@ import type { ToolCaller } from "../track/create.ts";
 
 export const DEFAULT_TASK_GRAPH_TITLE = "Agent Task Graph";
 
-type OptionColor = "default" | "gray" | "brown" | "orange" | "yellow" | "green" | "blue" | "purple" | "pink" | "red";
+type OptionColor =
+	| "default"
+	| "gray"
+	| "brown"
+	| "orange"
+	| "yellow"
+	| "green"
+	| "blue"
+	| "purple"
+	| "pink"
+	| "red";
 
 export interface TaskGraphColumn {
 	name: string;
@@ -29,16 +39,38 @@ export interface TaskGraphColumn {
  */
 export const TASK_GRAPH_COLUMNS: readonly TaskGraphColumn[] = [
 	{ name: "Item", type: "TITLE" },
-	{ name: "Level", type: "SELECT", options: [["Task", "blue"], ["Issue", "purple"], ["Sub-Issue", "gray"]] },
+	{
+		name: "Level",
+		type: "SELECT",
+		options: [
+			["Task", "blue"],
+			["Issue", "purple"],
+			["Sub-Issue", "gray"],
+		],
+	},
 	{
 		name: "Status",
 		type: "SELECT",
-		options: [["Planning", "gray"], ["Implementing", "blue"], ["Blocked", "orange"], ["Failed", "red"], ["Done", "green"], ["Merged", "purple"]],
+		options: [
+			["Planning", "gray"],
+			["Implementing", "blue"],
+			["Blocked", "orange"],
+			["Failed", "red"],
+			["Done", "green"],
+			["Merged", "purple"],
+		],
 	},
 	{
 		name: "Linear State",
 		type: "SELECT",
-		options: [["Backlog", "gray"], ["Todo", "blue"], ["In Progress", "yellow"], ["In Review", "orange"], ["Done", "green"], ["Canceled", "red"]],
+		options: [
+			["Backlog", "gray"],
+			["Todo", "blue"],
+			["In Progress", "yellow"],
+			["In Review", "orange"],
+			["Done", "green"],
+			["Canceled", "red"],
+		],
 	},
 	{ name: "Graph ID", type: "RICH_TEXT" },
 	{ name: "Description", type: "RICH_TEXT" },
@@ -52,8 +84,25 @@ export const TASK_GRAPH_COLUMNS: readonly TaskGraphColumn[] = [
 	{ name: "Branch", type: "RICH_TEXT" },
 	{ name: "PR URL", type: "URL" },
 	{ name: "PR #", type: "NUMBER" },
-	{ name: "PR State", type: "SELECT", options: [["Open", "blue"], ["Approved", "green"], ["Merged", "purple"]] },
-	{ name: "Checks", type: "SELECT", options: [["Pending", "gray"], ["Passing", "green"], ["Failing", "red"], ["Blocked", "orange"]] },
+	{
+		name: "PR State",
+		type: "SELECT",
+		options: [
+			["Open", "blue"],
+			["Approved", "green"],
+			["Merged", "purple"],
+		],
+	},
+	{
+		name: "Checks",
+		type: "SELECT",
+		options: [
+			["Pending", "gray"],
+			["Passing", "green"],
+			["Failing", "red"],
+			["Blocked", "orange"],
+		],
+	},
 	{ name: "Reviewers", type: "RICH_TEXT" },
 	{ name: "Completed", type: "DATE" },
 ];
@@ -80,7 +129,13 @@ function dashed(id: string): string {
 
 /** The dashed page id in a Notion page URL (notion.so, notion.site, app.notion.com) or bare id; undefined when there is none. */
 export function notionPageId(input: string): string | undefined {
-	const segment = input.trim().replace(/[?#].*$/, "").split("/").filter(Boolean).at(-1) ?? "";
+	const segment =
+		input
+			.trim()
+			.replace(/[?#].*$/, "")
+			.split("/")
+			.filter(Boolean)
+			.at(-1) ?? "";
 	const id = segment.match(PAGE_ID_RE)?.[1];
 	return id === undefined ? undefined : dashed(id);
 }
@@ -98,17 +153,27 @@ export interface TaskGraphDatabase {
  * Creates the database under `parent` (page URL or id), then adds the two-way `Parent Item` ⇄
  * `Sub-Items` self-relation in the tool's documented form: both sides in one call, each naming the other.
  */
-export async function initTaskGraphDatabase(client: ToolCaller, input: { parent: string; title: string }): Promise<TaskGraphDatabase> {
+export async function initTaskGraphDatabase(
+	client: ToolCaller,
+	input: { parent: string; title: string },
+): Promise<TaskGraphDatabase> {
 	const pageId = notionPageId(input.parent);
 	if (pageId === undefined) throw new Error(`not a Notion page url or id: ${input.parent}`);
-	const reply = await client.call("notion-create-database", { parent: { page_id: pageId }, title: input.title, schema: taskGraphDdl() });
+	const reply = await client.call("notion-create-database", {
+		parent: { page_id: pageId },
+		title: input.title,
+		schema: taskGraphDdl(),
+	});
 	// The reply is Markdown (or JSON wrapping it) naming the new data source as `<data-source url="{{collection://…}}">`.
 	const text = typeof reply === "string" ? reply : (JSON.stringify(reply) ?? "");
 	const top = typeof reply === "object" && reply !== null && "url" in reply ? reply.url : undefined;
-	const url = typeof top === "string" && top.startsWith("https://") ? top : text.match(DATABASE_URL_RE)?.[1];
+	const url =
+		typeof top === "string" && top.startsWith("https://") ? top : text.match(DATABASE_URL_RE)?.[1];
 	const found = text.match(DATA_SOURCE_RE)?.[1];
 	if (found === undefined) {
-		throw new Error(`notion-create-database: the reply names no collection:// data source${url ? ` (database ${url})` : ""}`);
+		throw new Error(
+			`notion-create-database: the reply names no collection:// data source${url ? ` (database ${url})` : ""}`,
+		);
 	}
 	const id = dashed(found);
 	let relationError: string | undefined;
@@ -143,7 +208,10 @@ export function writeNotionConfig(path: string, dataSourceUrl: string): void {
 	const { notion } = config as { notion?: unknown };
 	const next = {
 		...config,
-		notion: { ...(typeof notion === "object" && notion !== null && !Array.isArray(notion) ? notion : {}), dataSourceUrl },
+		notion: {
+			...(typeof notion === "object" && notion !== null && !Array.isArray(notion) ? notion : {}),
+			dataSourceUrl,
+		},
 	};
 	mkdirSync(dirname(path), { recursive: true });
 	const tmp = `${path}.${process.pid}.tmp`;

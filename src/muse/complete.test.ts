@@ -16,7 +16,10 @@ afterEach(() => {
 });
 
 function terminalLine(text: string, terminal = "completed", reason: string | null = null): string {
-	return JSON.stringify({ payload_type: "run.terminal.completed", payload: { terminal, reason, text } });
+	return JSON.stringify({
+		payload_type: "run.terminal.completed",
+		payload: { terminal, reason, text },
+	});
 }
 
 function noiseLine(): string {
@@ -25,7 +28,9 @@ function noiseLine(): string {
 
 describe("buildMuseArgs", () => {
 	test("neuters tools, asks for json, passes model/effort/prompt file", () => {
-		expect(buildMuseArgs("/tmp/p.txt", { model: "muse-spark-1.3-contributor", reasoningEffort: "low" })).toEqual([
+		expect(
+			buildMuseArgs("/tmp/p.txt", { model: "muse-spark-1.3-contributor", reasoningEffort: "low" }),
+		).toEqual([
 			"exec",
 			"--json",
 			"--disable-shell",
@@ -44,7 +49,10 @@ describe("buildMuseArgs", () => {
 
 	test("the unpinned default sends the Muse route default from the central map (muse-spark-1.3-contributor)", () => {
 		expect(MUSE_MODEL_DEFAULT).toBe(ROUTE_DEFAULT_MODELS.muse);
-		const args = buildMuseArgs("/tmp/p.txt", { model: DEFAULT_MUSE_CONFIG.model, reasoningEffort: DEFAULT_MUSE_CONFIG.reasoningEffort });
+		const args = buildMuseArgs("/tmp/p.txt", {
+			model: DEFAULT_MUSE_CONFIG.model,
+			reasoningEffort: DEFAULT_MUSE_CONFIG.reasoningEffort,
+		});
 		expect(args[args.indexOf("--model") + 1]).toBe(ROUTE_DEFAULT_MODELS.muse);
 		expect(args[args.indexOf("--model") + 1]).toBe("muse-spark-1.3-contributor");
 	});
@@ -58,7 +66,11 @@ describe("buildMuseArgs", () => {
 	});
 
 	test("echo provider omits model/effort (the echo provider rejects both)", () => {
-		const args = buildMuseArgs("/tmp/p.txt", { provider: "echo", model: "muse-spark-1.3-contributor", reasoningEffort: "low" });
+		const args = buildMuseArgs("/tmp/p.txt", {
+			provider: "echo",
+			model: "muse-spark-1.3-contributor",
+			reasoningEffort: "low",
+		});
 		expect(args).toContain("--provider");
 		expect(args).not.toContain("--model");
 		expect(args).not.toContain("--reasoning-effort");
@@ -75,13 +87,17 @@ describe("buildMusePrompt", () => {
 		expect(buildMusePrompt("SYS", "USER").startsWith(`${CHILD_PROMPT_SENTINEL}\n`)).toBe(true);
 	});
 	test("a built child prompt plans to a nested-child skip", () => {
-		expect(planningTarget(buildMusePrompt("SYS", "USER"), { cwd: "/nonexistent" })).toEqual({ skip: "nested-child" });
+		expect(planningTarget(buildMusePrompt("SYS", "USER"), { cwd: "/nonexistent" })).toEqual({
+			skip: "nested-child",
+		});
 	});
 });
 
 describe("parseMuseJsonl", () => {
 	test("returns the last terminal text", () => {
-		const stdout = [noiseLine(), terminalLine("first"), noiseLine(), terminalLine("<X/>")].join("\n");
+		const stdout = [noiseLine(), terminalLine("first"), noiseLine(), terminalLine("<X/>")].join(
+			"\n",
+		);
 		expect(parseMuseJsonl(stdout, "", 0)).toBe("<X/>");
 	});
 
@@ -91,7 +107,9 @@ describe("parseMuseJsonl", () => {
 	});
 
 	test("missing terminal throws with the stderr excerpt", () => {
-		expect(() => parseMuseJsonl(`${noiseLine()}\n`, "muse: something broke", 1)).toThrow("muse: something broke");
+		expect(() => parseMuseJsonl(`${noiseLine()}\n`, "muse: something broke", 1)).toThrow(
+			"muse: something broke",
+		);
 	});
 
 	test("empty output falls back to the exit code", () => {
@@ -122,7 +140,9 @@ describe("museComplete (fake bin)", () => {
 		return { bin, seenPath };
 	}
 
-	async function seen(seenPath: string): Promise<{ args: string[]; prompt: string; child?: string }> {
+	async function seen(
+		seenPath: string,
+	): Promise<{ args: string[]; prompt: string; child?: string }> {
 		return (await Bun.file(seenPath).json()) as { args: string[]; prompt: string; child?: string };
 	}
 
@@ -133,7 +153,15 @@ describe("museComplete (fake bin)", () => {
 		const got = await seen(seenPath);
 		expect(got.prompt).toBe(buildMusePrompt("SYS", "USER"));
 		expect(got.child).toBe("1");
-		expect(got.args.slice(0, 7)).toEqual(["exec", "--json", "--disable-shell", "--disable-write", "--disable-web-tools", "--max-model-steps", "1"]);
+		expect(got.args.slice(0, 7)).toEqual([
+			"exec",
+			"--json",
+			"--disable-shell",
+			"--disable-write",
+			"--disable-web-tools",
+			"--max-model-steps",
+			"1",
+		]);
 		expect(got.args).toContain("--model");
 		expect(got.args).toContain("m1");
 	});

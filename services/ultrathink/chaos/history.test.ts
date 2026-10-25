@@ -94,7 +94,14 @@ describe("appendHistory", () => {
 		const path = join(root, "after-corrupt.jsonl");
 		writeFileSync(path, `${validLine(1)}\nnot json\n${validLine(2)}\nnot json either\n`);
 		expect(appendHistory(path, run("orders", 50)).seq).toBe(3);
-		expect(readHistory(path)).toEqual({ records: [{ ...run("orders", 50), seq: 1 }, { ...run("orders", 50), seq: 2 }, { ...run("orders", 50), seq: 3 }], skipped: 2 });
+		expect(readHistory(path)).toEqual({
+			records: [
+				{ ...run("orders", 50), seq: 1 },
+				{ ...run("orders", 50), seq: 2 },
+				{ ...run("orders", 50), seq: 3 },
+			],
+			skipped: 2,
+		});
 	});
 
 	test("a torn last line is terminated before the new record, which stays readable", () => {

@@ -22,7 +22,8 @@ export interface RedactOptions {
 	repoRoot?: string;
 }
 
-const PEM_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+const PEM_BLOCK =
+	/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
 /** A block cut off by a length cap has no END line: everything after BEGIN goes. */
 const PEM_OPEN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*$/g;
 const URL_USERINFO = /\b([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/]+@/g;
@@ -41,7 +42,8 @@ const TOKEN_PATTERNS: RegExp[] = [
 	/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
 	/\bAIza[0-9A-Za-z_-]{30,}/g,
 ];
-const ASSIGNMENT = /(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1([ \t]*[:=][ \t]*)(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"',;&|]+))/g;
+const ASSIGNMENT =
+	/(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1([ \t]*[:=][ \t]*)(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"',;&|]+))/g;
 const SECRET_WORDS = ["key", "token", "secret", "password", "passwd"];
 
 /** Name tokens (split on non-alphanumerics and camelCase) that end in a secret word: API_KEY, apiKey, client-secret. "keyboard" is not. */
@@ -51,7 +53,9 @@ function isSecretName(name: string): boolean {
 		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
 		.toLowerCase()
 		.split(/[^a-z0-9]+/);
-	return tokens.some((token) => SECRET_WORDS.some((word) => token.endsWith(word) || token.endsWith(`${word}s`)));
+	return tokens.some((token) =>
+		SECRET_WORDS.some((word) => token.endsWith(word) || token.endsWith(`${word}s`)),
+	);
 }
 
 /** A value is credential-shaped when it is long or carries a digit: "abcdef123456" is, "key" and "rotation" are not. */
@@ -72,12 +76,27 @@ function redactBearer(text: string): string {
 function redactAssignments(text: string): string {
 	return text.replace(
 		ASSIGNMENT,
-		(match, quote: string, name: string, sep: string, dq: string | undefined, sq: string | undefined, bare: string | undefined, offset: number) => {
+		(
+			match,
+			quote: string,
+			name: string,
+			sep: string,
+			dq: string | undefined,
+			sq: string | undefined,
+			bare: string | undefined,
+			offset: number,
+		) => {
 			if (!isSecretName(name)) return match;
 			// `the password: is required` and `Key: use import type` are prose: a plain-word name (not an env or header name
 			// like `API_KEY`, `X-API-Key`, `db.password`), an unquoted `:`, an unquoted value that neither fills the rest of
 			// the line (YAML, header and .env lines do) nor looks like a credential. `password: hunter2` is redacted.
-			if (sep.includes(":") && quote === "" && bare !== undefined && !/[-_.]/.test(name) && name !== name.toUpperCase()) {
+			if (
+				sep.includes(":") &&
+				quote === "" &&
+				bare !== undefined &&
+				!/[-_.]/.test(name) &&
+				name !== name.toUpperCase()
+			) {
 				const fillsLine = /^[ \t]*(?:\r?\n|$)/.test(text.slice(offset + match.length));
 				if (!fillsLine && !isCredentialShaped(bare.replace(/[.,:;!?]+$/, ""))) return match;
 			}
@@ -96,9 +115,13 @@ function redactPaths(text: string, home: string, repoRoot: string | undefined): 
 	if (!base.startsWith("/") || base === "") return text;
 	// An exemption that covers the whole home directory would keep `~/.ssh` readable.
 	const keep = repoRoot?.replace(/\/+$/, "");
-	const exempt = keep?.startsWith("/") && base !== keep && !base.startsWith(`${keep}/`) ? keep : undefined;
+	const exempt =
+		keep?.startsWith("/") && base !== keep && !base.startsWith(`${keep}/`) ? keep : undefined;
 	const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const pattern = new RegExp(`(?<![\\w.~-])${escaped}(?:/[^\\s"'\`<>()\\[\\]{},;|\\\\]*)?(?![\\w-])`, "g");
+	const pattern = new RegExp(
+		`(?<![\\w.~-])${escaped}(?:/[^\\s"'\`<>()\\[\\]{},;|\\\\]*)?(?![\\w-])`,
+		"g",
+	);
 	return text.replace(pattern, (match) => {
 		const trailing = /[.:]+$/.exec(match)?.[0] ?? "";
 		const path = trailing ? match.slice(0, -trailing.length) : match;

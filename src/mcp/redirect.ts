@@ -28,8 +28,17 @@ const DNS_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z
 
 export const defaultRun: Run = (argv, timeoutMs) => {
 	try {
-		const result = Bun.spawnSync({ cmd: argv, timeout: timeoutMs, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-		return { exitCode: result.success ? 0 : result.exitCode || 1, stdout: result.stdout.toString() };
+		const result = Bun.spawnSync({
+			cmd: argv,
+			timeout: timeoutMs,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		return {
+			exitCode: result.success ? 0 : result.exitCode || 1,
+			stdout: result.stdout.toString(),
+		};
 	} catch {
 		return { exitCode: 127, stdout: "" };
 	}
@@ -49,16 +58,22 @@ export function parseSshConnection(
 }
 
 export function isRemoteSession(env: Record<string, string | undefined>): boolean {
-	return parseSshConnection(env.SSH_CONNECTION) !== undefined || Boolean(env.SSH_CLIENT) || Boolean(env.SSH_TTY);
+	return (
+		parseSshConnection(env.SSH_CONNECTION) !== undefined ||
+		Boolean(env.SSH_CLIENT) ||
+		Boolean(env.SSH_TTY)
+	);
 }
 
 export function readTailscaleDns(run: Run): string | undefined {
 	try {
 		const { exitCode, stdout } = run(["tailscale", "status", "--json"], 3000);
 		if (exitCode !== 0) return undefined;
-		const status = JSON.parse(stdout) as
-			| { BackendState?: unknown; Self?: { DNSName?: unknown } | null; CertDomains?: unknown }
-			| null;
+		const status = JSON.parse(stdout) as {
+			BackendState?: unknown;
+			Self?: { DNSName?: unknown } | null;
+			CertDomains?: unknown;
+		} | null;
 		if (status?.BackendState !== "Running") return undefined;
 		const raw = status.Self?.DNSName;
 		if (typeof raw !== "string") return undefined;
@@ -77,8 +92,13 @@ function overridePlan(raw: string, port: number, remote: boolean): RedirectPlan 
 	} catch {
 		throw new Error(`invalid redirect URL: ${raw}`);
 	}
-	if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)) {
-		throw new Error(`invalid redirect URL: ${raw} (use https, or http only for 127.0.0.1, localhost or [::1])`);
+	if (
+		url.protocol !== "https:" &&
+		!(url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)
+	) {
+		throw new Error(
+			`invalid redirect URL: ${raw} (use https, or http only for 127.0.0.1, localhost or [::1])`,
+		);
 	}
 	return {
 		mode: "override",
@@ -99,7 +119,14 @@ function loopbackPlan(
 	suggestTailscale: boolean,
 ): RedirectPlan {
 	const redirectUri = `http://127.0.0.1:${port}/callback`;
-	const plan: RedirectPlan = { mode: "loopback", redirectUri, port, callbackPaths: ["/callback"], remote, hint: [] };
+	const plan: RedirectPlan = {
+		mode: "loopback",
+		redirectUri,
+		port,
+		callbackPaths: ["/callback"],
+		remote,
+		hint: [],
+	};
 	if (!remote) {
 		plan.hint.push(
 			"If this machine has no browser: open it elsewhere, approve, then copy the full URL of the page you are redirected to (it may fail to load) and paste it here.",
@@ -115,7 +142,9 @@ function loopbackPlan(
 		const user = env.USER || env.LOGNAME || "<user>";
 		plan.hint.push(`  OpenSSH: ssh -L ${port}:127.0.0.1:${port} ${user}@${serverIp}`);
 	}
-	plan.hint.push("Without forwarding, pasting the redirected URL (the page may fail to load) still works.");
+	plan.hint.push(
+		"Without forwarding, pasting the redirected URL (the page may fail to load) still works.",
+	);
 	if (suggestTailscale) {
 		plan.hint.push(
 			"On a tailnet host you can pass --tailscale (or set ULTRATHINK_OAUTH_TAILSCALE=1) to receive the callback over `tailscale serve`.",
@@ -159,8 +188,19 @@ export function planRedirect(input: {
 
 export function mountTailscale(mount: NonNullable<RedirectPlan["mount"]>, run: Run): boolean {
 	try {
-		return run(["tailscale", "serve", "--bg", `--https=${mount.https}`, `--set-path=${mount.path}`, mount.target], 10_000)
-			.exitCode === 0;
+		return (
+			run(
+				[
+					"tailscale",
+					"serve",
+					"--bg",
+					`--https=${mount.https}`,
+					`--set-path=${mount.path}`,
+					mount.target,
+				],
+				10_000,
+			).exitCode === 0
+		);
 	} catch {
 		return false;
 	}
@@ -168,7 +208,10 @@ export function mountTailscale(mount: NonNullable<RedirectPlan["mount"]>, run: R
 
 export function unmountTailscale(mount: NonNullable<RedirectPlan["mount"]>, run: Run): void {
 	try {
-		run(["tailscale", "serve", `--https=${mount.https}`, `--set-path=${mount.path}`, "off"], 10_000);
+		run(
+			["tailscale", "serve", `--https=${mount.https}`, `--set-path=${mount.path}`, "off"],
+			10_000,
+		);
 	} catch {
 		// Best effort: a leftover handler only proxies to a closed local port.
 	}

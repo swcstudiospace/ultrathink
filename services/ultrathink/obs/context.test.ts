@@ -4,8 +4,16 @@
 import { describe, expect, test } from "bun:test";
 import { currentRequestContext, type RequestContext, runWithRequestContext } from "./context.ts";
 
-const OUTER: RequestContext = { reqId: "req-outer", traceId: "a".repeat(32), spanId: "b".repeat(16) };
-const INNER: RequestContext = { reqId: "req-inner", traceId: "c".repeat(32), spanId: "d".repeat(16) };
+const OUTER: RequestContext = {
+	reqId: "req-outer",
+	traceId: "a".repeat(32),
+	spanId: "b".repeat(16),
+};
+const INNER: RequestContext = {
+	reqId: "req-inner",
+	traceId: "c".repeat(32),
+	spanId: "d".repeat(16),
+};
 
 describe("request context", () => {
 	test("is undefined outside any run", () => {
@@ -17,7 +25,10 @@ describe("request context", () => {
 		// which fake timers would not exercise. The promise resolves from the callback itself, so no duration is guessed.
 		const seen = await runWithRequestContext(
 			OUTER,
-			() => new Promise<RequestContext | undefined>((resolve) => setTimeout(() => resolve(currentRequestContext()), 0)),
+			() =>
+				new Promise<RequestContext | undefined>((resolve) =>
+					setTimeout(() => resolve(currentRequestContext()), 0),
+				),
 		);
 		expect(seen).toEqual(OUTER);
 	});

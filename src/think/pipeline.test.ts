@@ -57,7 +57,9 @@ describe("runThink", () => {
 		expect(result.xml).toContain("done n1");
 		expect(result.xml).toContain("<WORKFLOW>");
 		expect(result.xml).toContain('<WAVE n="1" parallel="false">n1</WAVE>');
-		expect(result.xml.indexOf("<WORKFLOW>")).toBeLessThan(result.xml.indexOf("</GRAPH_OF_THOUGHT>"));
+		expect(result.xml.indexOf("<WORKFLOW>")).toBeLessThan(
+			result.xml.indexOf("</GRAPH_OF_THOUGHT>"),
+		);
 	});
 
 	test("graph throw uses FALLBACK_GRAPH still fills 5 CoTs", async () => {
@@ -72,7 +74,9 @@ describe("runThink", () => {
 		});
 		expect(n).toBe(1 + FALLBACK_GRAPH.nodes.length);
 		expect(result.graph.nodes).toHaveLength(5);
-		expect(result.graph.nodes.map((node) => node.id)).toEqual(FALLBACK_GRAPH.nodes.map((node) => node.id));
+		expect(result.graph.nodes.map((node) => node.id)).toEqual(
+			FALLBACK_GRAPH.nodes.map((node) => node.id),
+		);
 		expect(result.graph.nodes.every((node) => Boolean(node.conclusion))).toBe(true);
 		expect(result.graph.nodes[0]?.conclusion).toBe("c2");
 	});
@@ -102,7 +106,7 @@ describe("runThink", () => {
 		const result = await runThink({
 			uplift,
 			complete: async (_system, user) => {
-				if (user.includes("current_node id=\"n2\"")) throw new Error("node boom");
+				if (user.includes('current_node id="n2"')) throw new Error("node boom");
 				if (!user.includes("current_node")) return graphJson(5);
 				const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
 				return `<node><thinking>t ${id}</thinking><conclusion>c ${id}</conclusion></node>`;
@@ -147,24 +151,27 @@ describe("runThink concurrency", () => {
 		expect(order[0]).toBe("n1");
 		expect(order[3]).toBe("n4");
 		expect(new Set(order.slice(1, 3))).toEqual(new Set(["n2", "n3"]));
-		expect(dependencyLevels(result.graph.nodes).map((level) => level.map((node) => node.id))).toEqual([
-			["n1"],
-			["n2", "n3"],
-			["n4"],
-		]);
+		expect(
+			dependencyLevels(result.graph.nodes).map((level) => level.map((node) => node.id)),
+		).toEqual([["n1"], ["n2", "n3"], ["n4"]]);
 	});
 });
 
 describe("runThink onEvent", () => {
 	const fillFor = async (_system: string, user: string): Promise<string> => {
 		if (!user.includes("current_node")) return graphJson(5);
-		if (user.includes("current_node id=\"n3\"")) throw new Error("node boom");
+		if (user.includes('current_node id="n3"')) throw new Error("node boom");
 		return "<node><thinking>t</thinking><conclusion>c</conclusion></node>";
 	};
 	for (const concurrency of [1, 3]) {
 		test(`graph once then start/done per node (concurrency ${concurrency})`, async () => {
 			const events: Array<Record<string, unknown>> = [];
-			await runThink({ uplift, concurrency, complete: fillFor, onEvent: (event) => events.push(event) });
+			await runThink({
+				uplift,
+				concurrency,
+				complete: fillFor,
+				onEvent: (event) => events.push(event),
+			});
 			expect(events[0]).toMatchObject({ type: "graph", total: 5 });
 			expect(events[0]?.nodes).toHaveLength(5);
 			expect(events.filter((event) => event.type === "graph")).toHaveLength(1);
@@ -203,9 +210,17 @@ describe("runThink onEvent", () => {
 			const node = result.graph.nodes.find((candidate) => candidate.id === event.id)!;
 			expect(event.steps).toEqual(nodeStepTitles(node));
 		}
-		expect(done.find((event) => event.id === "n1")?.steps).toEqual(["Step 1: read it", "Step 2: write it"]);
-		expect(done.find((event) => event.id === "n2")).toMatchObject({ fallback: true, steps: ["Step 1: Q2"] });
-		expect(events.filter((event) => event.phase === "start").every((event) => event.steps === undefined)).toBe(true);
+		expect(done.find((event) => event.id === "n1")?.steps).toEqual([
+			"Step 1: read it",
+			"Step 2: write it",
+		]);
+		expect(done.find((event) => event.id === "n2")).toMatchObject({
+			fallback: true,
+			steps: ["Step 1: Q2"],
+		});
+		expect(
+			events.filter((event) => event.phase === "start").every((event) => event.steps === undefined),
+		).toBe(true);
 	});
 
 	test("reports which think stages fell back: graph, failed fills, empty fills", async () => {

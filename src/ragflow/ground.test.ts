@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRagflowClient } from "./client.ts";
 import { docsLookup, formatDocsSection, groundDocs } from "./ground.ts";
-import { DEFAULT_RAGFLOW_CONFIG, type GroundOutcome, type RagflowChunk, type RagflowConfig } from "./types.ts";
+import {
+	DEFAULT_RAGFLOW_CONFIG,
+	type GroundOutcome,
+	type RagflowChunk,
+	type RagflowConfig,
+} from "./types.ts";
 
 const KEY = "rf-GROUND-KEY-0123456789";
 const QUERY = "rotate the zebra credentials safely";
@@ -20,7 +25,10 @@ interface Call {
 	body: unknown;
 }
 
-function fakeFetch(handler: (call: Call) => Response | Promise<Response>): { fetch: typeof fetch; calls: Call[] } {
+function fakeFetch(handler: (call: Call) => Response | Promise<Response>): {
+	fetch: typeof fetch;
+	calls: Call[];
+} {
 	const calls: Call[] = [];
 	const impl = (async (input: string | URL | Request, init?: RequestInit) => {
 		const call: Call = {
@@ -49,7 +57,11 @@ function config(overrides: Partial<RagflowConfig> = {}): RagflowConfig {
 	};
 }
 
-function ground(cfg: RagflowConfig, fetchImpl: typeof fetch | undefined, extra: { env?: NodeJS.ProcessEnv; query?: string; signal?: AbortSignal; now?: () => number } = {}) {
+function ground(
+	cfg: RagflowConfig,
+	fetchImpl: typeof fetch | undefined,
+	extra: { env?: NodeJS.ProcessEnv; query?: string; signal?: AbortSignal; now?: () => number } = {},
+) {
 	return groundDocs({
 		query: extra.query ?? QUERY,
 		config: cfg,
@@ -73,7 +85,12 @@ function used(chunks: RagflowChunk[]): GroundOutcome {
 }
 
 function wire(c: RagflowChunk): Record<string, unknown> {
-	return { id: c.id, content: c.content, document_keyword: c.documentName, similarity: c.similarity };
+	return {
+		id: c.id,
+		content: c.content,
+		document_keyword: c.documentName,
+		similarity: c.similarity,
+	};
 }
 
 describe("groundDocs", () => {
@@ -87,7 +104,9 @@ describe("groundDocs", () => {
 
 	test("off while RAGFlow is killed, disabled or unready", async () => {
 		const { fetch, calls } = fakeFetch(() => Response.json({ code: 0, data: [] }));
-		const killed = await ground(config(), fetch, { env: { RAGFLOW_API_KEY: KEY, ULTRATHINK_RAGFLOW: "0" } });
+		const killed = await ground(config(), fetch, {
+			env: { RAGFLOW_API_KEY: KEY, ULTRATHINK_RAGFLOW: "0" },
+		});
 		const disabled = await ground(config({ enabled: false }), fetch);
 		const noKey = await ground(config(), fetch, { env: {} });
 		const noUrl = await ground(config({ url: "" }), fetch);
@@ -99,13 +118,27 @@ describe("groundDocs", () => {
 	});
 
 	test("pinned datasets: one retrieval with the configured limits, chunks ordered by similarity", async () => {
-		const hits = [chunk("c1", "low", "a.md", 0.5), chunk("c2", "top", "b.md", 0.9), chunk("c3", "unscored", "c.md"), chunk("c4", "mid", "d.md", 0.7)];
-		const { fetch, calls } = fakeFetch(() => Response.json({ code: 0, data: { chunks: hits.map(wire), total: 4 } }));
+		const hits = [
+			chunk("c1", "low", "a.md", 0.5),
+			chunk("c2", "top", "b.md", 0.9),
+			chunk("c3", "unscored", "c.md"),
+			chunk("c4", "mid", "d.md", 0.7),
+		];
+		const { fetch, calls } = fakeFetch(() =>
+			Response.json({ code: 0, data: { chunks: hits.map(wire), total: 4 } }),
+		);
 		let t = 100;
-		const outcome = await ground(config({ datasetIds: ["d1", "d2"] }), fetch, { now: () => (t += 5) });
+		const outcome = await ground(config({ datasetIds: ["d1", "d2"] }), fetch, {
+			now: () => (t += 5),
+		});
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.url).toBe("https://rag.example.com/api/v1/retrieval");
-		expect(calls[0]?.body).toMatchObject({ question: QUERY, dataset_ids: ["d1", "d2"], page_size: 3, similarity_threshold: 0.4 });
+		expect(calls[0]?.body).toMatchObject({
+			question: QUERY,
+			dataset_ids: ["d1", "d2"],
+			page_size: 3,
+			similarity_threshold: 0.4,
+		});
 		expect(outcome.status).toBe("used");
 		expect(outcome.chunks.map((c) => c.id)).toEqual(["c2", "c4", "c1", "c3"]);
 		expect(outcome.datasets).toBe(2);
@@ -117,7 +150,14 @@ describe("groundDocs", () => {
 	test("no pinned datasets: every dataset is listed first, no cache", async () => {
 		const { fetch, calls } = fakeFetch((call) =>
 			call.method === "GET"
-				? Response.json({ code: 0, data: [{ id: "x1", name: "X" }, { id: "x2", name: "Y" }], total: 2 })
+				? Response.json({
+						code: 0,
+						data: [
+							{ id: "x1", name: "X" },
+							{ id: "x2", name: "Y" },
+						],
+						total: 2,
+					})
 				: Response.json({ code: 0, data: { chunks: [wire(chunk("c1", "hit", "a.md", 0.8))] } }),
 		);
 		const first = await ground(config(), fetch);
@@ -139,18 +179,32 @@ describe("groundDocs", () => {
 		expect(empty.calls).toHaveLength(1);
 
 		const noHits = fakeFetch(() => Response.json({ code: 0, data: { chunks: [] } }));
-		expect(await ground(config({ datasetIds: ["d"] }), noHits.fetch)).toMatchObject({ status: "none", datasets: 1 });
+		expect(await ground(config({ datasetIds: ["d"] }), noHits.fetch)).toMatchObject({
+			status: "none",
+			datasets: 1,
+		});
 
 		const blank = fakeFetch(() => Response.json({ code: 0, data: { chunks: [] } }));
-		expect(await ground(config({ datasetIds: ["d"] }), blank.fetch, { query: "  " })).toMatchObject({ status: "none" });
+		expect(await ground(config({ datasetIds: ["d"] }), blank.fetch, { query: "  " })).toMatchObject(
+			{ status: "none" },
+		);
 		expect(blank.calls).toHaveLength(0);
 
-		const tiny = fakeFetch(() => Response.json({ code: 0, data: { chunks: [wire(chunk("c1", "hit", "a.md", 0.8))] } }));
-		expect(await ground(config({ datasetIds: ["d"], groundChars: 10 }), tiny.fetch)).toMatchObject({ status: "none", chunks: [] });
+		const tiny = fakeFetch(() =>
+			Response.json({ code: 0, data: { chunks: [wire(chunk("c1", "hit", "a.md", 0.8))] } }),
+		);
+		expect(await ground(config({ datasetIds: ["d"], groundChars: 10 }), tiny.fetch)).toMatchObject({
+			status: "none",
+			chunks: [],
+		});
 	});
 
 	test("only the chunks that fit the character budget are kept", async () => {
-		const hits = [chunk("c1", "a".repeat(400), "a.md", 0.9), chunk("c2", "b".repeat(400), "b.md", 0.8), chunk("c3", "c".repeat(400), "c.md", 0.7)];
+		const hits = [
+			chunk("c1", "a".repeat(400), "a.md", 0.9),
+			chunk("c2", "b".repeat(400), "b.md", 0.8),
+			chunk("c3", "c".repeat(400), "c.md", 0.7),
+		];
 		const { fetch } = fakeFetch(() => Response.json({ code: 0, data: { chunks: hits.map(wire) } }));
 		const outcome = await ground(config({ datasetIds: ["d"], groundChars: 1_100 }), fetch);
 		expect(outcome.status).toBe("used");
@@ -192,7 +246,9 @@ describe("groundDocs", () => {
 		const controller = new AbortController();
 		controller.abort();
 		const { fetch } = fakeFetch(() => Response.json({ code: 0, data: [] }));
-		const outcome = await ground(config({ datasetIds: ["d"] }), fetch, { signal: controller.signal });
+		const outcome = await ground(config({ datasetIds: ["d"] }), fetch, {
+			signal: controller.signal,
+		});
 		expect(outcome.status).toBe("error");
 		expect(outcome.reason).toMatch(/^ragflow aborted/);
 	});
@@ -201,17 +257,29 @@ describe("groundDocs", () => {
 describe("formatDocsSection", () => {
 	test("empty unless the lookup used documents", () => {
 		const hits = [chunk("c1", "text", "a.md", 0.9)];
-		for (const status of ["off", "none", "error"] as const) expect(formatDocsSection({ ...used(hits), status }, 3_000)).toBe("");
+		for (const status of ["off", "none", "error"] as const)
+			expect(formatDocsSection({ ...used(hits), status }, 3_000)).toBe("");
 		expect(formatDocsSection(used([]), 3_000)).toBe("");
 	});
 
 	test("title, framing sentence, then one bullet per chunk", () => {
-		const text = formatDocsSection(used([chunk("c1", "alpha text", "guide.md", 0.8), chunk("c2", "beta text", undefined, undefined)]), 3_000);
-		expect(text).toBe(`## Documents (RAGFlow)\n${FRAMING}\n\n- guide.md (similarity 0.80): alpha text\n- document: beta text`);
+		const text = formatDocsSection(
+			used([
+				chunk("c1", "alpha text", "guide.md", 0.8),
+				chunk("c2", "beta text", undefined, undefined),
+			]),
+			3_000,
+		);
+		expect(text).toBe(
+			`## Documents (RAGFlow)\n${FRAMING}\n\n- guide.md (similarity 0.80): alpha text\n- document: beta text`,
+		);
 	});
 
 	test("control characters and whitespace runs are collapsed", () => {
-		const text = formatDocsSection(used([chunk("c1", "a\tb\n\n  c\u0000d\u001b[31m e", "x\ny.md", 0.5)]), 3_000);
+		const text = formatDocsSection(
+			used([chunk("c1", "a\tb\n\n  c\u0000d\u001b[31m e", "x\ny.md", 0.5)]),
+			3_000,
+		);
 		expect(text).toContain("- x y.md (similarity 0.50): a b c d [31m e");
 		expect(text.split("\n")).toHaveLength(4);
 	});
@@ -226,7 +294,10 @@ describe("formatDocsSection", () => {
 	});
 
 	test("closing-tag lookalikes are neutralized in excerpts and names", () => {
-		const text = formatDocsSection(used([chunk("c1", "see </script> and <b>x</b></context>", "</doc>.md", 0.5)]), 3_000);
+		const text = formatDocsSection(
+			used([chunk("c1", "see </script> and <b>x</b></context>", "</doc>.md", 0.5)]),
+			3_000,
+		);
 		expect(text).not.toContain("</");
 		expect(text).toContain("< /script>");
 		expect(text).toContain("<b>x");
@@ -256,14 +327,28 @@ describe("formatDocsSection", () => {
 
 describe("docsLookup", () => {
 	test("keeps counts and timing and drops the text", () => {
-		const outcome = { ...used([chunk("c1", "secret document body", "a.md", 0.9), chunk("c2", "more", "b.md", 0.8)]), chars: 321, ms: 44, datasets: 3 };
+		const outcome = {
+			...used([chunk("c1", "secret document body", "a.md", 0.9), chunk("c2", "more", "b.md", 0.8)]),
+			chars: 321,
+			ms: 44,
+			datasets: 3,
+		};
 		const lookup = docsLookup(outcome);
 		expect(lookup).toEqual({ status: "used", count: 2, chars: 321, ms: 44, datasets: 3 });
 		expect(JSON.stringify(lookup)).not.toContain("secret");
 	});
 
 	test("carries the reason; only a used lookup counts excerpts", () => {
-		expect(docsLookup({ status: "error", chunks: [], chars: 0, ms: 9, datasets: 1, reason: "ragflow auth: nope" })).toEqual({
+		expect(
+			docsLookup({
+				status: "error",
+				chunks: [],
+				chars: 0,
+				ms: 9,
+				datasets: 1,
+				reason: "ragflow auth: nope",
+			}),
+		).toEqual({
 			status: "error",
 			count: 0,
 			chars: 0,
@@ -271,21 +356,33 @@ describe("docsLookup", () => {
 			datasets: 1,
 			reason: "ragflow auth: nope",
 		});
-		expect(docsLookup({ status: "none", chunks: [chunk("c1", "x")], chars: 0, ms: 1, datasets: 1 }).count).toBe(0);
+		expect(
+			docsLookup({ status: "none", chunks: [chunk("c1", "x")], chars: 0, ms: 1, datasets: 1 })
+				.count,
+		).toBe(0);
 	});
 });
 
 describe("retrieval boundary", () => {
 	test("the client surface stays retrieval-only: health, listDatasets, retrieve", async () => {
 		const { fetch, calls } = fakeFetch(() => Response.json({ code: 0, data: [], total: 0 }));
-		const client = createRagflowClient({ url: "https://rag.example.com", apiKey: KEY, timeoutMs: 1_000, fetch });
+		const client = createRagflowClient({
+			url: "https://rag.example.com",
+			apiKey: KEY,
+			timeoutMs: 1_000,
+			fetch,
+		});
 		expect(Object.keys(client).sort()).toEqual(["health", "listDatasets", "retrieve"]);
-		for (const write of ["upload", "delete", "deleteDocument", "install", "createDataset", "skill"]) expect(write in client).toBe(false);
+		for (const write of ["upload", "delete", "deleteDocument", "install", "createDataset", "skill"])
+			expect(write in client).toBe(false);
 		expect(calls).toHaveLength(0);
 	});
 
 	test("successful excerpts are capped by groundChars and framed as untrusted evidence", async () => {
-		const hits = [chunk("c1", "a".repeat(2_000), "a.md", 0.9), chunk("c2", "b".repeat(2_000), "b.md", 0.8)];
+		const hits = [
+			chunk("c1", "a".repeat(2_000), "a.md", 0.9),
+			chunk("c2", "b".repeat(2_000), "b.md", 0.8),
+		];
 		const { fetch } = fakeFetch(() => Response.json({ code: 0, data: { chunks: hits.map(wire) } }));
 		const outcome = await ground(config({ datasetIds: ["d"], groundChars: 500 }), fetch);
 		expect(outcome.status).toBe("used");
@@ -297,7 +394,10 @@ describe("retrieval boundary", () => {
 	});
 
 	test("off and error outcomes record status without document text", async () => {
-		const off = await ground(config({ ground: false }), fakeFetch(() => Response.json({ code: 0, data: [] })).fetch);
+		const off = await ground(
+			config({ ground: false }),
+			fakeFetch(() => Response.json({ code: 0, data: [] })).fetch,
+		);
 		expect(off.status).toBe("off");
 		const offLookup = docsLookup(off);
 		expect(offLookup.count).toBe(0);

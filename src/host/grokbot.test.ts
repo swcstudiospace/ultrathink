@@ -2,7 +2,19 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdtempSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+	utimesSync,
+	writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type SessionRecord, writeControl, writeSession } from "../claude/state.ts";
@@ -30,7 +42,14 @@ import {
 	validateUplift,
 } from "./grokbot.ts";
 import { buildTrackPayloads, graphRegisterPayload, recordRefs } from "./grokbot-track.ts";
-import { buildCloudPrompt, DEFAULT_DESK_RULES, unitSubissueCount, untrackedSpec, validateCloudPrompt, wellFormed } from "./grokbot-prompts.ts";
+import {
+	buildCloudPrompt,
+	DEFAULT_DESK_RULES,
+	unitSubissueCount,
+	untrackedSpec,
+	validateCloudPrompt,
+	wellFormed,
+} from "./grokbot-prompts.ts";
 import { dirFetcher, grokbotStatusLines, main, promoteGuard, reviewRead } from "./grokbot-cli.ts";
 import { normalizeTranscript } from "./grokbot.ts";
 import { mirrorLast, parseAnswersInput, recordAnswers } from "./grokbot-hitl.ts";
@@ -45,7 +64,8 @@ import { writeFileSync } from "node:fs";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../think/prompts.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../uplift/prompt.ts";
 
-const PROMPT = "Build a small TypeScript CLI that converts CSV files to JSON with streaming support, tests and a README.";
+const PROMPT =
+	"Build a small TypeScript CLI that converts CSV files to JSON with streaming support, tests and a README.";
 const dirs: string[] = [];
 const tmp = (): string => {
 	const dir = mkdtempSync(join(tmpdir(), "ut-grokbot-"));
@@ -69,25 +89,75 @@ const UPLIFT = (original: string) =>
 const GRAPH = JSON.stringify({
 	goal: "Ship a streaming CSV to JSON CLI",
 	nodes: [
-		{ id: "n1", title: "Understand the request", kind: "understand", question: "What exactly must the CLI do?", depends_on: [] },
-		{ id: "n2", title: "Parser design", kind: "decompose", question: "How is CSV parsed as a stream?", depends_on: ["n1"] },
-		{ id: "n3", title: "CLI surface", kind: "generate", question: "What flags and outputs does the CLI expose?", depends_on: ["n1"] },
-		{ id: "n4", title: "Gaps and risks", kind: "critique", question: "What is missing or ambiguous?", depends_on: ["n2", "n3"] },
-		{ id: "n5", title: "Execution plan", kind: "synthesize", question: "What is the ordered wave plan?", depends_on: ["n4"] },
+		{
+			id: "n1",
+			title: "Understand the request",
+			kind: "understand",
+			question: "What exactly must the CLI do?",
+			depends_on: [],
+		},
+		{
+			id: "n2",
+			title: "Parser design",
+			kind: "decompose",
+			question: "How is CSV parsed as a stream?",
+			depends_on: ["n1"],
+		},
+		{
+			id: "n3",
+			title: "CLI surface",
+			kind: "generate",
+			question: "What flags and outputs does the CLI expose?",
+			depends_on: ["n1"],
+		},
+		{
+			id: "n4",
+			title: "Gaps and risks",
+			kind: "critique",
+			question: "What is missing or ambiguous?",
+			depends_on: ["n2", "n3"],
+		},
+		{
+			id: "n5",
+			title: "Execution plan",
+			kind: "synthesize",
+			question: "What is the ordered wave plan?",
+			depends_on: ["n4"],
+		},
 	],
 });
 
-const steps = (n: number, id: string) => Array.from({ length: n }, (_, i) => `${i + 1}. Step ${i + 1} of ${id}: a discrete, self-contained action.`).join("\n");
+const steps = (n: number, id: string) =>
+	Array.from(
+		{ length: n },
+		(_, i) => `${i + 1}. Step ${i + 1} of ${id}: a discrete, self-contained action.`,
+	).join("\n");
 
 const NODE = (id: string, kind: string, n: number) => {
 	let conclusion = `Answer for ${id}.`;
-	if (kind === "critique") conclusion += "\nOpen questions:\n- Output as JSON lines or array? Default: array.";
-	if (kind === "synthesize") conclusion += "\nWORKFLOW\nWave 1 (parallel): parser — files: src/parse.ts — done when: unit tests pass\nWave 1 (parallel): cli — files: src/cli.ts — done when: --help prints\nWave 2: docs — files: README.md — done when: README lists flags\nVerify: bun test";
+	if (kind === "critique")
+		conclusion += "\nOpen questions:\n- Output as JSON lines or array? Default: array.";
+	if (kind === "synthesize")
+		conclusion +=
+			"\nWORKFLOW\nWave 1 (parallel): parser — files: src/parse.ts — done when: unit tests pass\nWave 1 (parallel): cli — files: src/cli.ts — done when: --help prints\nWave 2: docs — files: README.md — done when: README lists flags\nVerify: bun test";
 	return `<node><rationale>\n${steps(n, id)}\n</rationale><conclusion>${conclusion}</conclusion></node>`;
 };
 
 const CLARIFY = JSON.stringify({
-	questions: [{ id: "q1", question: "Should output be a JSON array or JSON lines?", header: "Output", why: "Changes the writer.", options: [{ label: "JSON array", description: "Standard" }, { label: "JSON lines", description: "Streamable" }], default: "JSON array", blocking: false }],
+	questions: [
+		{
+			id: "q1",
+			question: "Should output be a JSON array or JSON lines?",
+			header: "Output",
+			why: "Changes the writer.",
+			options: [
+				{ label: "JSON array", description: "Standard" },
+				{ label: "JSON lines", description: "Streamable" },
+			],
+			default: "JSON array",
+			blocking: false,
+		},
+	],
 });
 
 /** The scripted host model: answers each plugin request by its system prompt. */
@@ -104,10 +174,22 @@ function hostModel(stepsPerNode = 8) {
 	};
 }
 
-async function drive(stateDir: string, cwd: string, model: (s: string, u: string) => string, sessionId = "s1") {
+async function drive(
+	stateDir: string,
+	cwd: string,
+	model: (s: string, u: string) => string,
+	sessionId = "s1",
+) {
 	const passes: Array<Array<Pick<PendingRequest, "stage" | "nodeId">>> = [];
 	for (let pass = 0; pass < 12; pass++) {
-		const result = await runGrokbotPlan({ sessionId, prompt: PROMPT, cwd, stateDir, env: testEnv(cwd), debounceMs: 20 });
+		const result = await runGrokbotPlan({
+			sessionId,
+			prompt: PROMPT,
+			cwd,
+			stateDir,
+			env: testEnv(cwd),
+			debounceMs: 20,
+		});
 		if (result.status !== "needs-model") return { result, passes };
 		passes.push(result.pending.map(({ stage, nodeId }) => ({ stage, nodeId })));
 		const dir = journalDir(stateDir, sessionId);
@@ -133,7 +215,9 @@ describe("grok-bot journal driver", () => {
 		expect(result.check?.totalSteps).toBe(40);
 		expect(result.check?.belowBand).toBe(false);
 		expect(result.check?.degraded).toEqual([]);
-		const record = JSON.parse(readFileSync(result.response?.statePath as string, "utf8")) as SessionRecord;
+		const record = JSON.parse(
+			readFileSync(result.response?.statePath as string, "utf8"),
+		) as SessionRecord;
 		expect(record.engine).toBe(GROKBOT_LABEL);
 		expect(record.result.source).toBe("llm");
 		expect(record.kickedOff).toBeFalsy();
@@ -148,11 +232,24 @@ describe("grok-bot journal driver", () => {
 		const direct = await planPrompt(
 			{ host: "prime-agent", session_id: "s1", prompt: PROMPT, cwd: root },
 			{ ...testEnv(root), ULTRATHINK_SHIP: "0" },
-			{ stateDir: join(root, "b"), selectEngine: async () => ({ label: GROKBOT_LABEL, complete: async (s, u) => model(s, u), error: () => undefined, resolution: hostResolution() }), createTracker: () => undefined },
+			{
+				stateDir: join(root, "b"),
+				selectEngine: async () => ({
+					label: GROKBOT_LABEL,
+					complete: async (s, u) => model(s, u),
+					error: () => undefined,
+					resolution: hostResolution(),
+				}),
+				createTracker: () => undefined,
+			},
 		);
-		const a = JSON.parse(readFileSync(result.response?.statePath as string, "utf8")) as SessionRecord;
+		const a = JSON.parse(
+			readFileSync(result.response?.statePath as string, "utf8"),
+		) as SessionRecord;
 		const b = JSON.parse(readFileSync(direct.statePath as string, "utf8")) as SessionRecord;
-		expect(a.graph?.nodes.map((n) => [n.id, n.thinking, n.conclusion])).toEqual(b.graph?.nodes.map((n) => [n.id, n.thinking, n.conclusion]) as never);
+		expect(a.graph?.nodes.map((n) => [n.id, n.thinking, n.conclusion])).toEqual(
+			b.graph?.nodes.map((n) => [n.id, n.thinking, n.conclusion]) as never,
+		);
 		expect(a.clarifications).toEqual(b.clarifications);
 		expect(a.result.root).toBe(b.result.root);
 	});
@@ -165,10 +262,25 @@ describe("grok-bot journal driver", () => {
 		expect(result.check?.totalSteps).toBe(25);
 		expect(result.check?.belowBand).toBe(true);
 		expect(deepenTargets(result.check!)).toHaveLength(5);
-		const cached = await runGrokbotPlan({ sessionId: "s1", prompt: PROMPT, cwd: root, stateDir, env: testEnv(root), debounceMs: 20 });
+		const cached = await runGrokbotPlan({
+			sessionId: "s1",
+			prompt: PROMPT,
+			cwd: root,
+			stateDir,
+			env: testEnv(root),
+			debounceMs: 20,
+		});
 		expect(cached.replayed).toBe(0);
 		expect(cached.response?.statePath).toBe(result.response?.statePath);
-		const again = await runGrokbotPlan({ sessionId: "s1", prompt: PROMPT, cwd: root, stateDir, env: testEnv(root), debounceMs: 20, replan: true });
+		const again = await runGrokbotPlan({
+			sessionId: "s1",
+			prompt: PROMPT,
+			cwd: root,
+			stateDir,
+			env: testEnv(root),
+			debounceMs: 20,
+			replan: true,
+		});
 		expect(again.status).toBe("planned");
 		expect(again.pending).toEqual([]);
 		expect(again.replayed).toBeGreaterThanOrEqual(7);
@@ -177,14 +289,36 @@ describe("grok-bot journal driver", () => {
 	test("refuses a different original for the same session", async () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
-		await runGrokbotPlan({ sessionId: "s1", prompt: PROMPT, cwd: root, stateDir, env: testEnv(root), debounceMs: 5 });
-		await expect(runGrokbotPlan({ sessionId: "s1", prompt: "something else entirely, build a thing", cwd: root, stateDir, env: testEnv(root) })).rejects.toThrow(/different original/);
+		await runGrokbotPlan({
+			sessionId: "s1",
+			prompt: PROMPT,
+			cwd: root,
+			stateDir,
+			env: testEnv(root),
+			debounceMs: 5,
+		});
+		await expect(
+			runGrokbotPlan({
+				sessionId: "s1",
+				prompt: "something else entirely, build a thing",
+				cwd: root,
+				stateDir,
+				env: testEnv(root),
+			}),
+		).rejects.toThrow(/different original/);
 	});
 
 	test("an invalid answer is never stored", async () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
-		await runGrokbotPlan({ sessionId: "s1", prompt: PROMPT, cwd: root, stateDir, env: testEnv(root), debounceMs: 5 });
+		await runGrokbotPlan({
+			sessionId: "s1",
+			prompt: PROMPT,
+			cwd: root,
+			stateDir,
+			env: testEnv(root),
+			debounceMs: 5,
+		});
 		const dir = journalDir(stateDir, "s1");
 		const [request] = listPending(dir);
 		const bad = storeAnswer(dir, request!.key, UPLIFT("a paraphrase of the request"));
@@ -197,7 +331,12 @@ describe("grok-bot journal driver", () => {
 describe("grok-bot validators", () => {
 	test("uplift needs a known root, verbatim ORIGINAL and every required section", () => {
 		expect(validateUplift(UPLIFT(PROMPT), PROMPT).ok).toBe(true);
-		expect(validateUplift(UPLIFT(PROMPT).replace(/<OUT_OF_SCOPE>.*<\/OUT_OF_SCOPE>/, ""), PROMPT).errors.join()).toMatch(/OUT_OF_SCOPE/);
+		expect(
+			validateUplift(
+				UPLIFT(PROMPT).replace(/<OUT_OF_SCOPE>.*<\/OUT_OF_SCOPE>/, ""),
+				PROMPT,
+			).errors.join(),
+		).toMatch(/OUT_OF_SCOPE/);
 		expect(validateUplift("plain prose", PROMPT).ok).toBe(false);
 	});
 	test("graph needs 5-8 nodes, understand first, synthesize last and a critique", () => {
@@ -213,16 +352,31 @@ describe("grok-bot validators", () => {
 		expect(validateNodeFill(NODE("n2", "decompose", 5), "decompose").ok).toBe(true);
 		expect(validateNodeFill(NODE("n2", "decompose", 4), "decompose").ok).toBe(false);
 		expect(validateNodeFill(NODE("n2", "decompose", 9), "decompose").ok).toBe(false);
-		expect(validateNodeFill(NODE("n4", "decompose", 6), "critique").errors.join()).toMatch(/Open questions/);
-		expect(validateNodeFill(NODE("n5", "decompose", 6), "synthesize").errors.join()).toMatch(/WORKFLOW/);
+		expect(validateNodeFill(NODE("n4", "decompose", 6), "critique").errors.join()).toMatch(
+			/Open questions/,
+		);
+		expect(validateNodeFill(NODE("n5", "decompose", 6), "synthesize").errors.join()).toMatch(
+			/WORKFLOW/,
+		);
 		expect(validateNodeFill(NODE("n5", "synthesize", 6), "synthesize").ok).toBe(true);
-		expect(validateNodeFill(NODE("n2", "decompose", 6).replace("Step 1 of n2", "footer &lt;id&gt;"), "decompose").errors.join()).toMatch(/XML-escape/);
+		expect(
+			validateNodeFill(
+				NODE("n2", "decompose", 6).replace("Step 1 of n2", "footer &lt;id&gt;"),
+				"decompose",
+			).errors.join(),
+		).toMatch(/XML-escape/);
 	});
 	test("clarify allows at most 4 questions", () => {
 		expect(validateClarify(CLARIFY).ok).toBe(true);
 		expect(validateClarify('{"questions":[]}').ok).toBe(true);
 		const q = JSON.parse(CLARIFY).questions[0];
-		const five = { questions: [1, 2, 3, 4, 5].map((i) => ({ ...q, id: `q${i}`, question: `Question number ${i}?` })) };
+		const five = {
+			questions: [1, 2, 3, 4, 5].map((i) => ({
+				...q,
+				id: `q${i}`,
+				question: `Question number ${i}?`,
+			})),
+		};
 		expect(validateClarify(JSON.stringify(five)).ok).toBe(false);
 	});
 });
@@ -237,7 +391,11 @@ describe("grok-bot Jev journal", () => {
 		}) as unknown as typeof fetch;
 		const restore = installDecisionsJournal(root, base);
 		try {
-			const init = { method: "POST", body: '{"x":1}', headers: { authorization: "Bearer sk-test-should-not-persist" } };
+			const init = {
+				method: "POST",
+				body: '{"x":1}',
+				headers: { authorization: "Bearer sk-test-should-not-persist" },
+			};
 			const first = await fetch("https://openrouter.ai/api/alpha/decisions", init);
 			const second = await fetch("https://openrouter.ai/api/alpha/decisions", init);
 			expect(await first.text()).toBe('{"p":0.9}');
@@ -298,7 +456,10 @@ describe("grok-bot Jev journal", () => {
 		const restoreA = installDecisionsJournal(dirA);
 		const restoreB = installDecisionsJournal(dirB);
 		try {
-			const response = await fetch("https://openrouter.ai/api/alpha/decisions", { method: "POST", body: '{"y":2}' });
+			const response = await fetch("https://openrouter.ai/api/alpha/decisions", {
+				method: "POST",
+				body: '{"y":2}',
+			});
 			expect(await response.text()).toBe('{"p":0.5}');
 		} finally {
 			restoreA();
@@ -324,28 +485,54 @@ describe("grok-bot track bridge", () => {
 		const { result } = await drive(stateDir, root, hostModel(8));
 		const statePath = result.response?.statePath as string;
 		const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
-		const payloads = await buildTrackPayloads(record, { linearTeam: "Team", notionDataSource: "collection://abc", project: "Kanban", agent: "grok-bot" });
-		const pages = payloads.calls.filter((c) => c.tool === "notion-create-pages").flatMap((c) => c.args.pages as Array<{ properties: Record<string, unknown> }>);
+		const payloads = await buildTrackPayloads(record, {
+			linearTeam: "Team",
+			notionDataSource: "collection://abc",
+			project: "Kanban",
+			agent: "grok-bot",
+		});
+		const pages = payloads.calls
+			.filter((c) => c.tool === "notion-create-pages")
+			.flatMap((c) => c.args.pages as Array<{ properties: Record<string, unknown> }>);
 		expect(pages.every((page) => page.properties.Agent === "grok-bot")).toBe(true);
-		expect(payloads.counts).toEqual({ linearIssues: 5, linearSubIssues: 40, notionTask: 1, notionIssues: 5, notionSubIssues: 40 });
+		expect(payloads.counts).toEqual({
+			linearIssues: 5,
+			linearSubIssues: 40,
+			notionTask: 1,
+			notionIssues: 5,
+			notionSubIssues: 40,
+		});
 		const saves = payloads.calls.filter((c) => c.tool === "save_issue");
 		expect(saves.every((c) => c.args.project === "Kanban" && c.args.team === "Team")).toBe(true);
 		const defined = new Set<string>();
 		for (const call of payloads.calls) {
 			const parent = call.args.parentId as string | undefined;
 			if (parent) expect(defined.has(parent)).toBe(true);
-			for (const dep of (call.args.blockedBy as string[] | undefined) ?? []) expect(defined.has(dep)).toBe(true);
+			for (const dep of (call.args.blockedBy as string[] | undefined) ?? [])
+				expect(defined.has(dep)).toBe(true);
 			for (const id of call.defines) defined.add(id);
 		}
 		const n4 = saves.find((c) => c.keys[0] === "n4");
 		expect((n4?.args.blockedBy as string[]).length).toBe(2);
 
-		const linear: Record<string, { id: string; identifier: string; url: string; title: string }> = {};
+		const linear: Record<string, { id: string; identifier: string; url: string; title: string }> =
+			{};
 		saves.forEach((c, i) => {
-			linear[c.keys[0] as string] = { id: `id${i}`, identifier: `SPE-${9000 + i}`, url: `https://linear.app/x/issue/SPE-${9000 + i}/t`, title: String(c.args.title) };
+			linear[c.keys[0] as string] = {
+				id: `id${i}`,
+				identifier: `SPE-${9000 + i}`,
+				url: `https://linear.app/x/issue/SPE-${9000 + i}/t`,
+				title: String(c.args.title),
+			};
 		});
 		const notion: Record<string, string> = {};
-		payloads.calls.filter((c) => c.tool === "notion-create-pages").forEach((c) => c.keys.forEach((k, i) => (notion[k] = `https://www.notion.so/real-${k}-${i}`)));
+		payloads.calls
+			.filter((c) => c.tool === "notion-create-pages")
+			.forEach((c) => {
+				c.keys.forEach((k, i) => {
+					notion[k] = `https://www.notion.so/real-${k}-${i}`;
+				});
+			});
 		const first = recordRefs(statePath, { linear, notion });
 		expect(first.tracking.status).toBe("complete");
 		const once = readFileSync(statePath.replace(/\.json$/, ".xml"), "utf8");
@@ -360,30 +547,67 @@ describe("grok-bot track bridge", () => {
 		const { result } = await drive(stateDir, root, hostModel(5));
 		const statePath = result.response?.statePath as string;
 		const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
-		const options = { linearTeam: "Team", notionDataSource: "collection://abc", project: "Kanban", agent: "grok-bot" };
+		const options = {
+			linearTeam: "Team",
+			notionDataSource: "collection://abc",
+			project: "Kanban",
+			agent: "grok-bot",
+		};
 		const first = await buildTrackPayloads(record, options);
-		const issue = first.calls.find((call) => call.tool === "save_issue" && !String(call.keys[0]).includes("."));
+		const issue = first.calls.find(
+			(call) => call.tool === "save_issue" && !String(call.keys[0]).includes("."),
+		);
 		const key = String(issue?.keys[0]);
 		const linear = {
-			[key]: { id: "id0", identifier: "SPE-1", url: "https://linear.app/x/issue/SPE-1/t", title: "t" },
+			[key]: {
+				id: "id0",
+				identifier: "SPE-1",
+				url: "https://linear.app/x/issue/SPE-1/t",
+				title: "t",
+			},
 		};
 		const partial = recordRefs(statePath, { linear });
 		expect(partial.tracking.status).toBe("partial");
-		const again = await buildTrackPayloads(JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord, options);
-		expect(again.calls.filter((call) => call.tool === "save_issue").some((call) => call.keys[0] === key)).toBe(false);
-		expect(again.calls.some((call) => call.tool === "list_issues" || call.tool === "notion-query-data-sources")).toBe(false);
+		const again = await buildTrackPayloads(
+			JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord,
+			options,
+		);
+		expect(
+			again.calls.filter((call) => call.tool === "save_issue").some((call) => call.keys[0] === key),
+		).toBe(false);
+		expect(
+			again.calls.some(
+				(call) => call.tool === "list_issues" || call.tool === "notion-query-data-sources",
+			),
+		).toBe(false);
 		expect(again.counts.linearIssues).toBe(first.counts.linearIssues - 1);
 
 		const other = tmp();
 		const otherDir = join(other, "state");
 		const planned = await drive(otherDir, other, hostModel(5));
 		const otherPath = planned.result.response?.statePath as string;
-		const payloads = await buildTrackPayloads(JSON.parse(readFileSync(otherPath, "utf8")) as SessionRecord, options);
-		const allLinear: Record<string, { id: string; identifier: string; url: string; title: string }> = {};
-		payloads.calls.filter((call) => call.tool === "save_issue").forEach((call, i) => {
-			allLinear[String(call.keys[0])] = { id: `id${i}`, identifier: `SPE-${i}`, url: `https://linear.app/x/issue/SPE-${i}/t`, title: "t" };
+		const payloads = await buildTrackPayloads(
+			JSON.parse(readFileSync(otherPath, "utf8")) as SessionRecord,
+			options,
+		);
+		const allLinear: Record<
+			string,
+			{ id: string; identifier: string; url: string; title: string }
+		> = {};
+		payloads.calls
+			.filter((call) => call.tool === "save_issue")
+			.forEach((call, i) => {
+				allLinear[String(call.keys[0])] = {
+					id: `id${i}`,
+					identifier: `SPE-${i}`,
+					url: `https://linear.app/x/issue/SPE-${i}/t`,
+					title: "t",
+				};
+			});
+		const linearOnly = recordRefs(otherPath, {
+			linear: allLinear,
+			trackers: { linear: true, notion: false },
 		});
-		const linearOnly = recordRefs(otherPath, { linear: allLinear, trackers: { linear: true, notion: false } });
 		expect(linearOnly.tracking.status).toBe("complete");
 		expect(linearOnly.tracking.notion.taskUrl).toBeUndefined();
 
@@ -394,11 +618,17 @@ describe("grok-bot track bridge", () => {
 		expect(off.text).toContain('"calls": []');
 		const stale = join(root, "payloads.json");
 		writeFileSync(stale, '{"calls":[{"tool":"save_issue"}]}\n');
-		const replaced = await main(["track", "payloads", "--session", "s1", "--cwd", root, "--out", stale], env);
+		const replaced = await main(
+			["track", "payloads", "--session", "s1", "--cwd", root, "--out", stale],
+			env,
+		);
 		expect(replaced.code).toBe(0);
 		expect(JSON.parse(readFileSync(stale, "utf8")).calls).toEqual([]);
 		mkdirSync(join(root, "xdg", "ultrathink"), { recursive: true });
-		writeFileSync(join(root, "xdg", "ultrathink", "config.json"), JSON.stringify({ linear: { team: "Team" }, notion: { dataSourceUrl: "collection://abc" } }));
+		writeFileSync(
+			join(root, "xdg", "ultrathink", "config.json"),
+			JSON.stringify({ linear: { team: "Team" }, notion: { dataSourceUrl: "collection://abc" } }),
+		);
 		writeControl(stateDir, { trackEnabled: false });
 		const forced = await main(["track", "payloads", "--session", "s1", "--cwd", root], env);
 		expect(forced.text).toContain('"tracking": "off"');
@@ -419,30 +649,77 @@ describe("grok-bot review read", () => {
 	test("reads the score from the PR description and counts Greptile threads on the head commit", async () => {
 		const root = tmp();
 		const bot = { login: "greptile-apps[bot]" };
-		writeFileSync(join(root, "pull.json"), JSON.stringify({ state: "open", draft: true, head: { sha: "abc" }, body: "<h3>Confidence Score: 3/5</h3>" }));
+		writeFileSync(
+			join(root, "pull.json"),
+			JSON.stringify({
+				state: "open",
+				draft: true,
+				head: { sha: "abc" },
+				body: "<h3>Confidence Score: 3/5</h3>",
+			}),
+		);
 		writeFileSync(join(root, "issue-comments.json"), "[]");
-		writeFileSync(join(root, "reviews.json"), JSON.stringify([{ user: bot, commit_id: "old" }, { user: bot, commit_id: "abc" }]));
-		writeFileSync(join(root, "review-comments.json"), JSON.stringify([
-			{ id: 1, user: bot, commit_id: "old", path: "a.ts", line: 1, body: '<img alt="P2"> **Old**' },
-			{ id: 2, user: bot, commit_id: "abc", path: "b.ts", line: 2, body: '<img alt="P1"> **New**' },
-			{ id: 3, user: { login: "someone" }, commit_id: "abc", in_reply_to_id: 1, body: "fixed" },
-		]));
-		writeFileSync(join(root, "check-runs.json"), JSON.stringify({ check_runs: [{ name: "Greptile Review", status: "completed", conclusion: "success" }] }));
+		writeFileSync(
+			join(root, "reviews.json"),
+			JSON.stringify([
+				{ user: bot, commit_id: "old" },
+				{ user: bot, commit_id: "abc" },
+			]),
+		);
+		writeFileSync(
+			join(root, "review-comments.json"),
+			JSON.stringify([
+				{
+					id: 1,
+					user: bot,
+					commit_id: "old",
+					path: "a.ts",
+					line: 1,
+					body: '<img alt="P2"> **Old**',
+				},
+				{
+					id: 2,
+					user: bot,
+					commit_id: "abc",
+					path: "b.ts",
+					line: 2,
+					body: '<img alt="P1"> **New**',
+				},
+				{ id: 3, user: { login: "someone" }, commit_id: "abc", in_reply_to_id: 1, body: "fixed" },
+			]),
+		);
+		writeFileSync(
+			join(root, "check-runs.json"),
+			JSON.stringify({
+				check_runs: [{ name: "Greptile Review", status: "completed", conclusion: "success" }],
+			}),
+		);
 		const read = await reviewRead("o/r", "21", dirFetcher(root));
 		expect(read.score).toBe(3);
 		expect(read.reviewedHead).toBe(true);
 		expect(read.greptileThreadsTotal).toBe(2);
 		expect(read.greptileThreadsOnHead).toBe(1);
-		expect(read.greptileCheckRuns).toEqual([{ name: "Greptile Review", status: "completed", conclusion: "success" }]);
+		expect(read.greptileCheckRuns).toEqual([
+			{ name: "Greptile Review", status: "completed", conclusion: "success" },
+		]);
 		expect(read.scoreSource).toBe("pr-description");
 	});
 
 	test("prefers the current head review score and follows a next page", async () => {
 		const root = tmp();
 		const bot = { login: "greptile-apps[bot]" };
-		writeFileSync(join(root, "pull.json"), JSON.stringify({ state: "open", draft: true, head: { sha: "abc" }, body: "" }));
-		writeFileSync(join(root, "issue-comments.json"), JSON.stringify([{ user: bot, body: "Confidence Score: 5/5" }]));
-		writeFileSync(join(root, "reviews.json"), JSON.stringify([{ user: bot, commit_id: "abc", body: "Confidence Score: 2/5" }]));
+		writeFileSync(
+			join(root, "pull.json"),
+			JSON.stringify({ state: "open", draft: true, head: { sha: "abc" }, body: "" }),
+		);
+		writeFileSync(
+			join(root, "issue-comments.json"),
+			JSON.stringify([{ user: bot, body: "Confidence Score: 5/5" }]),
+		);
+		writeFileSync(
+			join(root, "reviews.json"),
+			JSON.stringify([{ user: bot, commit_id: "abc", body: "Confidence Score: 2/5" }]),
+		);
 		writeFileSync(join(root, "review-comments.json"), "[]");
 		writeFileSync(join(root, "check-runs.json"), JSON.stringify({ check_runs: [] }));
 		const read = await reviewRead("o/r", "21", dirFetcher(root));
@@ -452,17 +729,28 @@ describe("grok-bot review read", () => {
 		let reviewPage = 0;
 		const paged = (async (input: Parameters<typeof fetch>[0]) => {
 			const url = String(input).split("?")[0] ?? "";
-			if (url.endsWith("/pulls/21")) return new Response(readFileSync(join(root, "pull.json"), "utf8"), { status: 200 });
+			if (url.endsWith("/pulls/21"))
+				return new Response(readFileSync(join(root, "pull.json"), "utf8"), { status: 200 });
 			if (url.endsWith("/reviews")) {
 				reviewPage++;
 				if (reviewPage === 1) {
-					const filler = Array.from({ length: 100 }, (_, i) => ({ id: i, user: { login: "someone" }, body: "" }));
-					return new Response(JSON.stringify(filler), { status: 200, headers: { link: '<https://api.github.com/repos/o/r/pulls/21/reviews?page=2>; rel="next"' } });
+					const filler = Array.from({ length: 100 }, (_, i) => ({
+						id: i,
+						user: { login: "someone" },
+						body: "",
+					}));
+					return new Response(JSON.stringify(filler), {
+						status: 200,
+						headers: {
+							link: '<https://api.github.com/repos/o/r/pulls/21/reviews?page=2>; rel="next"',
+						},
+					});
 				}
 				return new Response(readFileSync(join(root, "reviews.json"), "utf8"), { status: 200 });
 			}
 			if (url.includes("/comments")) return new Response("[]", { status: 200 });
-			if (url.includes("/check-runs")) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+			if (url.includes("/check-runs"))
+				return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
 			return new Response("{}", { status: 404 });
 		}) as typeof fetch;
 		const pagedRead = await reviewRead("o/r", "21", paged);
@@ -474,17 +762,50 @@ describe("grok-bot review read", () => {
 	test("the fallback score is the newest comment or review by time, not by list order", async () => {
 		const root = tmp();
 		const bot = { login: "greptile-apps[bot]" };
-		writeFileSync(join(root, "pull.json"), JSON.stringify({ state: "open", draft: true, head: { sha: "abc" }, body: "" }));
-		writeFileSync(join(root, "issue-comments.json"), JSON.stringify([{ user: bot, body: "Confidence Score: 2/5", created_at: "2026-10-09T00:00:00Z" }]));
-		writeFileSync(join(root, "reviews.json"), JSON.stringify([{ user: bot, commit_id: "old", body: "Confidence Score: 5/5", submitted_at: "2026-10-01T00:00:00Z" }]));
+		writeFileSync(
+			join(root, "pull.json"),
+			JSON.stringify({ state: "open", draft: true, head: { sha: "abc" }, body: "" }),
+		);
+		writeFileSync(
+			join(root, "issue-comments.json"),
+			JSON.stringify([
+				{ user: bot, body: "Confidence Score: 2/5", created_at: "2026-10-09T00:00:00Z" },
+			]),
+		);
+		writeFileSync(
+			join(root, "reviews.json"),
+			JSON.stringify([
+				{
+					user: bot,
+					commit_id: "old",
+					body: "Confidence Score: 5/5",
+					submitted_at: "2026-10-01T00:00:00Z",
+				},
+			]),
+		);
 		writeFileSync(join(root, "review-comments.json"), "[]");
 		writeFileSync(join(root, "check-runs.json"), JSON.stringify({ check_runs: [] }));
 		const read = await reviewRead("o/r", "23", dirFetcher(root));
 		expect(read.score).toBe(2);
 		expect(read.scoreSource).toBe("latest-comment");
 
-		writeFileSync(join(root, "issue-comments.json"), JSON.stringify([{ user: bot, body: "Confidence Score: 1/5", created_at: "2026-10-01T00:00:00Z" }]));
-		writeFileSync(join(root, "reviews.json"), JSON.stringify([{ user: bot, commit_id: "old", body: "Confidence Score: 4/5", submitted_at: "2026-10-09T00:00:00Z" }]));
+		writeFileSync(
+			join(root, "issue-comments.json"),
+			JSON.stringify([
+				{ user: bot, body: "Confidence Score: 1/5", created_at: "2026-10-01T00:00:00Z" },
+			]),
+		);
+		writeFileSync(
+			join(root, "reviews.json"),
+			JSON.stringify([
+				{
+					user: bot,
+					commit_id: "old",
+					body: "Confidence Score: 4/5",
+					submitted_at: "2026-10-09T00:00:00Z",
+				},
+			]),
+		);
 		const newerReview = await reviewRead("o/r", "23", dirFetcher(root));
 		expect(newerReview.score).toBe(4);
 		expect(newerReview.scoreSource).toBe("latest-comment");
@@ -495,8 +816,18 @@ describe("grok-bot prompts build", () => {
 	test("builds a validated follow-up prompt from a planned node", async () => {
 		const root = tmp();
 		const { result } = await drive(join(root, "state"), root, hostModel(6));
-		const record = JSON.parse(readFileSync(result.response?.statePath as string, "utf8")) as SessionRecord;
-		const dispatch = { unit: "n2", mode: "followup" as const, agentId: "bc-test", repo: "o/r", pr: 14, branch: "grokbot/fix-a & b", notes: ["keep <fixture> rule"] };
+		const record = JSON.parse(
+			readFileSync(result.response?.statePath as string, "utf8"),
+		) as SessionRecord;
+		const dispatch = {
+			unit: "n2",
+			mode: "followup" as const,
+			agentId: "bc-test",
+			repo: "o/r",
+			pr: 14,
+			branch: "grokbot/fix-a & b",
+			notes: ["keep <fixture> rule"],
+		};
 		const xml = buildCloudPrompt(record, dispatch);
 		const check = validateCloudPrompt(xml, dispatch, PROMPT);
 		expect(check.errors).toEqual([]);
@@ -512,21 +843,44 @@ describe("grok-bot prompts build", () => {
 		expect(wellFormed("<A/><B/>").join()).toMatch(/one root/);
 		const root = tmp();
 		const { result } = await drive(join(root, "state"), root, hostModel(5));
-		const record = JSON.parse(readFileSync(result.response?.statePath as string, "utf8")) as SessionRecord;
-		const many = { unit: "n3", mode: "new" as const, repo: "o/r", branch: "b", rules: Array.from({ length: 11 }, (_, i) => `rule ${i}`) };
+		const record = JSON.parse(
+			readFileSync(result.response?.statePath as string, "utf8"),
+		) as SessionRecord;
+		const many = {
+			unit: "n3",
+			mode: "new" as const,
+			repo: "o/r",
+			branch: "b",
+			rules: Array.from({ length: 11 }, (_, i) => `rule ${i}`),
+		};
 		expect(validateCloudPrompt(buildCloudPrompt(record, many), many, PROMPT).ok).toBe(true);
-		const injected = buildCloudPrompt(record, many).replace("<RULE>rule 0</RULE>", "<RULE>rule 0</RULE><RULE>x</RULE>".repeat(6));
+		const injected = buildCloudPrompt(record, many).replace(
+			"<RULE>rule 0</RULE>",
+			"<RULE>rule 0</RULE><RULE>x</RULE>".repeat(6),
+		);
 		expect(validateCloudPrompt(injected, many, PROMPT).errors.join()).toMatch(/DESK_RULES/);
 		const follow = { unit: "n3", mode: "followup" as const, repo: "o/r", branch: "b" };
-		expect(validateCloudPrompt(buildCloudPrompt(record, follow), follow, PROMPT).errors.join()).toMatch(/agent id/);
-		const leaky = { unit: "n3", mode: "new" as const, repo: "o/r", branch: "b", notes: ["key sk-or-abcdefghijklmnop"] };
-		expect(validateCloudPrompt(buildCloudPrompt(record, leaky), leaky, PROMPT).errors.join()).toMatch(/secret-like/);
+		expect(
+			validateCloudPrompt(buildCloudPrompt(record, follow), follow, PROMPT).errors.join(),
+		).toMatch(/agent id/);
+		const leaky = {
+			unit: "n3",
+			mode: "new" as const,
+			repo: "o/r",
+			branch: "b",
+			notes: ["key sk-or-abcdefghijklmnop"],
+		};
+		expect(
+			validateCloudPrompt(buildCloudPrompt(record, leaky), leaky, PROMPT).errors.join(),
+		).toMatch(/secret-like/);
 	});
 
 	test("placeholder text inside ORIGINAL is kept and a placeholder outside still fails", async () => {
 		const root = tmp();
 		const { result } = await drive(join(root, "state"), root, hostModel(5));
-		const record = JSON.parse(readFileSync(result.response?.statePath as string, "utf8")) as SessionRecord;
+		const record = JSON.parse(
+			readFileSync(result.response?.statePath as string, "utf8"),
+		) as SessionRecord;
 		const dispatch = { unit: "n3", mode: "new" as const, repo: "o/r", branch: "b" };
 		const original = `${PROMPT} TODO in the request`;
 		const xml = buildCloudPrompt(record, dispatch).replace(
@@ -537,14 +891,18 @@ describe("grok-bot prompts build", () => {
 		const outside = xml.replace("<VERIFY>", "<VERIFY>TODO ");
 		expect(validateCloudPrompt(outside, dispatch, original).errors.join()).toMatch(/placeholder/);
 		const leaked = xml.replace("</ORIGINAL>", " sk-or-abcdefghijklmnop</ORIGINAL>");
-		expect(validateCloudPrompt(leaked, dispatch, `${original} sk-or-abcdefghijklmnop`).errors.join()).toMatch(/secret-like/);
+		expect(
+			validateCloudPrompt(leaked, dispatch, `${original} sk-or-abcdefghijklmnop`).errors.join(),
+		).toMatch(/secret-like/);
 	});
 
 	test("a graph-free plan is valid only when thinking is off", async () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
 		const { result } = await drive(stateDir, root, hostModel(5));
-		const record = JSON.parse(readFileSync(result.response?.statePath as string, "utf8")) as SessionRecord;
+		const record = JSON.parse(
+			readFileSync(result.response?.statePath as string, "utf8"),
+		) as SessionRecord;
 		const empty = structuredClone(record);
 		if (empty.graph) empty.graph = { ...empty.graph, nodes: [] };
 		expect(checkRecord(empty).ok).toBe(false);
@@ -562,13 +920,31 @@ describe("grok-bot prompts build", () => {
 /** Fake connector results for every recorded create, keyed like Desk Lead's refs.json. */
 async function kickoff(statePath: string) {
 	const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
-	const payloads = await buildTrackPayloads(record, { linearTeam: "Team", notionDataSource: "collection://abc", project: "Kanban", agent: "grok-bot" });
-	const linear: Record<string, { id: string; identifier: string; url: string; title: string }> = {};
-	payloads.calls.filter((c) => c.tool === "save_issue").forEach((c, i) => {
-		linear[c.keys[0] as string] = { id: `id${i}`, identifier: `SPE-${9000 + i}`, url: `https://linear.app/x/issue/SPE-${9000 + i}/t`, title: String(c.args.title) };
+	const payloads = await buildTrackPayloads(record, {
+		linearTeam: "Team",
+		notionDataSource: "collection://abc",
+		project: "Kanban",
+		agent: "grok-bot",
 	});
+	const linear: Record<string, { id: string; identifier: string; url: string; title: string }> = {};
+	payloads.calls
+		.filter((c) => c.tool === "save_issue")
+		.forEach((c, i) => {
+			linear[c.keys[0] as string] = {
+				id: `id${i}`,
+				identifier: `SPE-${9000 + i}`,
+				url: `https://linear.app/x/issue/SPE-${9000 + i}/t`,
+				title: String(c.args.title),
+			};
+		});
 	const notion: Record<string, string> = {};
-	payloads.calls.filter((c) => c.tool === "notion-create-pages").forEach((c) => c.keys.forEach((k, i) => (notion[k] = `https://www.notion.so/real${k.replace(/\W/g, "")}${i}`)));
+	payloads.calls
+		.filter((c) => c.tool === "notion-create-pages")
+		.forEach((c) => {
+			c.keys.forEach((k, i) => {
+				notion[k] = `https://www.notion.so/real${k.replace(/\W/g, "")}${i}`;
+			});
+		});
 	recordRefs(statePath, { linear, notion });
 	return JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
 }
@@ -579,7 +955,14 @@ describe("grok-bot prompts build after kickoff", () => {
 		const { result } = await drive(join(root, "state"), root, hostModel(7));
 		const statePath = result.response?.statePath as string;
 		const before = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
-		const dispatch = { unit: "n2", mode: "followup" as const, agentId: "bc-test", repo: "o/r", pr: 14, branch: "b" };
+		const dispatch = {
+			unit: "n2",
+			mode: "followup" as const,
+			agentId: "bc-test",
+			repo: "o/r",
+			pr: 14,
+			branch: "b",
+		};
 		const pre = buildCloudPrompt(before, dispatch);
 		expect(validateCloudPrompt(pre, dispatch, PROMPT).errors).toEqual([]);
 
@@ -595,9 +978,15 @@ describe("grok-bot prompts build after kickoff", () => {
 		expect(validateCloudPrompt(tracked, dispatch, PROMPT).errors).toEqual([]);
 
 		const n2 = after.tracking?.linear.nodes.n2;
-		expect(post).toContain(`<UNIT id="n2" kind="decompose" title="Parser design" issue="${n2?.identifier}" url="${n2?.url}" notion="${after.tracking?.notion.nodes.n2}">`);
-		expect(post).toContain(`<SUBISSUE step="3" issue="${after.tracking?.linear.steps["n2.3"]?.identifier}" url="${after.tracking?.linear.steps["n2.3"]?.url}" notion="${after.tracking?.notion.steps["n2.3"]}" title=`);
-		expect(post).toContain(`<ISSUE node="n2" ref="${n2?.identifier}" url="${n2?.url}" notion="${after.tracking?.notion.nodes.n2}">`);
+		expect(post).toContain(
+			`<UNIT id="n2" kind="decompose" title="Parser design" issue="${n2?.identifier}" url="${n2?.url}" notion="${after.tracking?.notion.nodes.n2}">`,
+		);
+		expect(post).toContain(
+			`<SUBISSUE step="3" issue="${after.tracking?.linear.steps["n2.3"]?.identifier}" url="${after.tracking?.linear.steps["n2.3"]?.url}" notion="${after.tracking?.notion.steps["n2.3"]}" title=`,
+		);
+		expect(post).toContain(
+			`<ISSUE node="n2" ref="${n2?.identifier}" url="${n2?.url}" notion="${after.tracking?.notion.nodes.n2}">`,
+		);
 		// Same content: dropping the ref attributes gives back the pre-kickoff prompt byte for byte.
 		const unref = post
 			.replace(/ issue="SPE-\d+" url="[^"]*" notion="[^"]*"/g, ' issue="pending kickoff"')
@@ -614,7 +1003,11 @@ describe("grok-bot prompts build after kickoff", () => {
 		expect(after.result.xml).toContain("<ISSUES graphId=");
 		expect(stripTrackingXml(after.result.xml)).toBe(before.result.xml);
 		expect(untrackedSpec(before.result.xml)).toBe(before.result.xml);
-		const again = injectTrackingXml(stripTrackingXml(after.result.xml), after.plan!, after.tracking!);
+		const again = injectTrackingXml(
+			stripTrackingXml(after.result.xml),
+			after.plan!,
+			after.tracking!,
+		);
 		expect(again).toBe(after.result.xml);
 	});
 });
@@ -623,18 +1016,28 @@ describe("grok-bot transcript", () => {
 	test("simple role/content lines reach the planner's transcript reader", () => {
 		const root = tmp();
 		const src = join(root, "t.jsonl");
-		writeFileSync(src, [
-			JSON.stringify({ role: "user", content: "We use pnpm and Vitest in this repo." }),
-			"not json",
-			JSON.stringify({ role: "assistant", content: [{ type: "text", text: "Noted: pnpm + Vitest." }] }),
-			JSON.stringify({ type: "user", message: { role: "user", content: "Claude-shaped line" } }),
-			JSON.stringify({ role: "system", content: "ignored" }),
-		].join("\n"));
+		writeFileSync(
+			src,
+			[
+				JSON.stringify({ role: "user", content: "We use pnpm and Vitest in this repo." }),
+				"not json",
+				JSON.stringify({
+					role: "assistant",
+					content: [{ type: "text", text: "Noted: pnpm + Vitest." }],
+				}),
+				JSON.stringify({ type: "user", message: { role: "user", content: "Claude-shaped line" } }),
+				JSON.stringify({ role: "system", content: "ignored" }),
+			].join("\n"),
+		);
 		// The plugin's reader ignores the simple shape on its own.
 		expect(conversationFromJsonl(readFileSync(src, "utf8"))).toBe("User: Claude-shaped line");
 		const path = normalizeTranscript(src, join(root, "journal"));
-		expect(conversationFromJsonl(readFileSync(path, "utf8"))).toBe("User: We use pnpm and Vitest in this repo.\n\nAssistant: Noted: pnpm + Vitest.\n\nUser: Claude-shaped line");
-		expect(readFileSync(normalizeTranscript(join(root, "missing.jsonl"), join(root, "journal")), "utf8")).toBe("");
+		expect(conversationFromJsonl(readFileSync(path, "utf8"))).toBe(
+			"User: We use pnpm and Vitest in this repo.\n\nAssistant: Noted: pnpm + Vitest.\n\nUser: Claude-shaped line",
+		);
+		expect(
+			readFileSync(normalizeTranscript(join(root, "missing.jsonl"), join(root, "journal")), "utf8"),
+		).toBe("");
 	});
 });
 
@@ -646,13 +1049,34 @@ describe("grok-bot answers", () => {
 		const xmlPath = statePath.replace(/\.json$/, ".xml");
 		const lastPath = join(root, "state", "last.json");
 		const paths = [statePath, xmlPath, lastPath];
-		const before = paths.map((path) => ({ text: readFileSync(path, "utf8"), mtime: statSync(path).mtimeMs }));
-		expect(recordAnswers(statePath, parseAnswersInput({ answers: { q1: "must not apply", q9: "x" }, response: "must not append" })).unknownIds).toEqual(["q9"]);
-		expect(paths.map((path) => ({ text: readFileSync(path, "utf8"), mtime: statSync(path).mtimeMs }))).toEqual(before);
-		const outcome = recordAnswers(statePath, parseAnswersInput({ q1: "JSON lines" }), 1_700_000_000_000);
+		const before = paths.map((path) => ({
+			text: readFileSync(path, "utf8"),
+			mtime: statSync(path).mtimeMs,
+		}));
+		expect(
+			recordAnswers(
+				statePath,
+				parseAnswersInput({
+					answers: { q1: "must not apply", q9: "x" },
+					response: "must not append",
+				}),
+			).unknownIds,
+		).toEqual(["q9"]);
+		expect(
+			paths.map((path) => ({ text: readFileSync(path, "utf8"), mtime: statSync(path).mtimeMs })),
+		).toEqual(before);
+		const outcome = recordAnswers(
+			statePath,
+			parseAnswersInput({ q1: "JSON lines" }),
+			1_700_000_000_000,
+		);
 		expect(outcome.matched.map((c) => c.id)).toEqual(["q1"]);
 		const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
-		expect(record.clarifications?.[0]).toMatchObject({ answer: "JSON lines", source: "user", answeredAt: 1_700_000_000_000 });
+		expect(record.clarifications?.[0]).toMatchObject({
+			answer: "JSON lines",
+			source: "user",
+			answeredAt: 1_700_000_000_000,
+		});
 		expect(readFileSync(statePath.replace(/\.json$/, ".xml"), "utf8")).toContain("JSON lines");
 		const dispatch = { unit: "n3", mode: "new" as const, repo: "o/r", branch: "b" };
 		expect(buildCloudPrompt(record, dispatch)).toContain("answered: JSON lines");
@@ -676,11 +1100,22 @@ describe("grok-bot answers", () => {
 		const lastPath = join(stateDir, "last.json");
 		const before = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
 		const refs = {
-			linear: { n1: { id: "real-linear-id", identifier: "SPE-901", url: "https://linear.app/x/issue/SPE-901" } },
+			linear: {
+				n1: {
+					id: "real-linear-id",
+					identifier: "SPE-901",
+					url: "https://linear.app/x/issue/SPE-901",
+				},
+			},
 			notion: { task: "https://www.notion.so/real-task", n1: "https://www.notion.so/real-node" },
 		};
-		for (const path of [statePath, xmlPath]) writeFileSync(`${path}.tmp`, "another writer's pending data");
-		const child = spawnSync(process.execPath, ["-e", `
+		for (const path of [statePath, xmlPath])
+			writeFileSync(`${path}.tmp`, "another writer's pending data");
+		const child = spawnSync(
+			process.execPath,
+			[
+				"-e",
+				`
 			import { statSync } from "node:fs";
 			import { recordAnswers, parseAnswersInput } from ${JSON.stringify(join(import.meta.dir, "grokbot-hitl.ts"))};
 			import { recordRefs } from ${JSON.stringify(join(import.meta.dir, "grokbot-track.ts"))};
@@ -690,7 +1125,10 @@ describe("grok-bot answers", () => {
 			const answerModes = paths.map(path => statSync(path).mode & 0o777);
 			const refs = recordRefs(paths[0], ${JSON.stringify(refs)}, 102);
 			console.log(JSON.stringify({ answer, answerModes, refModes: paths.map(path => statSync(path).mode & 0o777), refs }));
-		`], { encoding: "utf8", env: testEnv(root) });
+		`,
+			],
+			{ encoding: "utf8", env: testEnv(root) },
+		);
 		expect(child.status).toBe(0);
 		expect(child.stderr).toBe("");
 		const output = JSON.parse(child.stdout) as {
@@ -699,12 +1137,19 @@ describe("grok-bot answers", () => {
 			refModes: number[];
 			refs: { tracking: TrackingRefs; todos: string };
 		};
-		expect(output.answer.matched).toEqual([expect.objectContaining({ answer: "confirmed", source: "user", answeredAt: 101 })]);
+		expect(output.answer.matched).toEqual([
+			expect.objectContaining({ answer: "confirmed", source: "user", answeredAt: 101 }),
+		]);
 		if (process.platform !== "win32") {
 			expect(output.answerModes).toEqual([0o600, 0o600, 0o600]);
 			expect(output.refModes).toEqual([0o600, 0o600, 0o600]);
 		}
-		expect(output.refs.tracking).toMatchObject({ status: "partial", updatedAt: 102, linear: { nodes: refs.linear }, notion: { taskUrl: refs.notion.task, nodes: { n1: refs.notion.n1 } } });
+		expect(output.refs.tracking).toMatchObject({
+			status: "partial",
+			updatedAt: 102,
+			linear: { nodes: refs.linear },
+			notion: { taskUrl: refs.notion.task, nodes: { n1: refs.notion.n1 } },
+		});
 		const saved = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
 		expect(saved.plan).toEqual(before.plan);
 		expect(saved.graph).toEqual(before.graph);
@@ -715,9 +1160,17 @@ describe("grok-bot answers", () => {
 		expect(saved.result.xml).toContain("SPE-901");
 		expect(readFileSync(xmlPath, "utf8").trimEnd()).toBe(saved.result.xml);
 		expect(JSON.parse(readFileSync(lastPath, "utf8"))).toEqual(saved);
-		for (const path of [statePath, xmlPath]) expect(readFileSync(`${path}.tmp`, "utf8")).toBe("another writer's pending data");
-		expect(readdirSync(join(stateDir, "sessions")).sort()).toEqual(["s1.json", "s1.json.tmp", "s1.xml", "s1.xml.tmp"]);
-		expect(readdirSync(stateDir).filter((name) => name.endsWith(".lock") || name.endsWith(".tmp"))).toEqual([]);
+		for (const path of [statePath, xmlPath])
+			expect(readFileSync(`${path}.tmp`, "utf8")).toBe("another writer's pending data");
+		expect(readdirSync(join(stateDir, "sessions")).sort()).toEqual([
+			"s1.json",
+			"s1.json.tmp",
+			"s1.xml",
+			"s1.xml.tmp",
+		]);
+		expect(
+			readdirSync(stateDir).filter((name) => name.endsWith(".lock") || name.endsWith(".tmp")),
+		).toEqual([]);
 	});
 
 	test("answers and refs wait for an independent session mutation and retain concurrent marks", async () => {
@@ -728,8 +1181,17 @@ describe("grok-bot answers", () => {
 		const before = readFileSync(statePath, "utf8");
 		const xmlPath = statePath.replace(/\.json$/, ".xml");
 		const beforeXml = readFileSync(xmlPath, "utf8");
-		const ref = { id: "concurrent-id", identifier: "SPE-902", url: "https://linear.app/x/issue/SPE-902", title: "Concurrent tracking" };
-		const holder = Bun.spawn([process.execPath, "-e", `
+		const ref = {
+			id: "concurrent-id",
+			identifier: "SPE-902",
+			url: "https://linear.app/x/issue/SPE-902",
+			title: "Concurrent tracking",
+		};
+		const holder = Bun.spawn(
+			[
+				process.execPath,
+				"-e",
+				`
 			import { readSync } from "node:fs";
 			import { updateSession } from ${JSON.stringify(join(import.meta.dir, "../claude/state.ts"))};
 			updateSession(${JSON.stringify(stateDir)}, "s1", record => {
@@ -737,7 +1199,10 @@ describe("grok-bot answers", () => {
 				readSync(0, new Uint8Array(1), 0, 1, null);
 				return { ...record, engine: "independent-session-mutation" };
 			});
-		`], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: testEnv(root) });
+		`,
+			],
+			{ stdin: "pipe", stdout: "pipe", stderr: "pipe", env: testEnv(root) },
+		);
 		const signal = async (stdout: ReadableStream<Uint8Array>, expected: string) => {
 			const reader = stdout.getReader();
 			let message = "";
@@ -764,13 +1229,23 @@ describe("grok-bot answers", () => {
 		const workers: Bun.Subprocess<"ignore", "pipe", "pipe">[] = [];
 		try {
 			await signal(holder.stdout, "ready");
-			workers.push(...[
-				`import { recordAnswers } from ${JSON.stringify(join(import.meta.dir, "grokbot-hitl.ts"))}; ${observeWait} recordAnswers(${JSON.stringify(statePath)}, { answers: { q1: "JSON lines" } }, 201);`,
-				`import { recordRefs } from ${JSON.stringify(join(import.meta.dir, "grokbot-track.ts"))}; ${observeWait} recordRefs(${JSON.stringify(statePath)}, { linear: { n1: ${JSON.stringify(ref)} } }, 202);`,
-				...["kicked-off", "synced"].map((mark) =>
-					`import { main } from ${JSON.stringify(join(import.meta.dir, "../mcp/cli.ts"))}; ${observeWait} process.exit(await main(["session", "mark", "--state", ${JSON.stringify(statePath)}, ${JSON.stringify(mark)}]));`,
+			workers.push(
+				...[
+					`import { recordAnswers } from ${JSON.stringify(join(import.meta.dir, "grokbot-hitl.ts"))}; ${observeWait} recordAnswers(${JSON.stringify(statePath)}, { answers: { q1: "JSON lines" } }, 201);`,
+					`import { recordRefs } from ${JSON.stringify(join(import.meta.dir, "grokbot-track.ts"))}; ${observeWait} recordRefs(${JSON.stringify(statePath)}, { linear: { n1: ${JSON.stringify(ref)} } }, 202);`,
+					...["kicked-off", "synced"].map(
+						(mark) =>
+							`import { main } from ${JSON.stringify(join(import.meta.dir, "../mcp/cli.ts"))}; ${observeWait} process.exit(await main(["session", "mark", "--state", ${JSON.stringify(statePath)}, ${JSON.stringify(mark)}]));`,
+					),
+				].map((code) =>
+					Bun.spawn([process.execPath, "-e", code], {
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+						env: testEnv(root),
+					}),
 				),
-			].map((code) => Bun.spawn([process.execPath, "-e", code], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: testEnv(root) })));
+			);
 			await Promise.all(workers.map((worker) => signal(worker.stdout, "waiting")));
 			expect(readFileSync(statePath, "utf8")).toBe(before);
 			expect(readFileSync(xmlPath, "utf8")).toBe(beforeXml);
@@ -794,7 +1269,9 @@ describe("grok-bot answers", () => {
 		expect(saved.tracking?.linear.nodes.n1).toEqual(ref);
 		expect(saved.result.xml).toContain("JSON lines");
 		expect(saved.result.xml).toContain("SPE-902");
-		expect(readFileSync(statePath.replace(/\.json$/, ".xml"), "utf8").trimEnd()).toBe(saved.result.xml);
+		expect(readFileSync(statePath.replace(/\.json$/, ".xml"), "utf8").trimEnd()).toBe(
+			saved.result.xml,
+		);
 		// Marks intentionally write only the session. Subsequent consumer updates must keep both marks and refresh last.
 		recordRefs(statePath, { linear: { n1: ref } }, 202);
 		recordAnswers(statePath, { answers: { q1: "JSON lines" } }, 201);
@@ -811,12 +1288,18 @@ describe("grok-bot answers", () => {
 		const before = readFileSync(lastPath, "utf8");
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
 		try {
-			expect(() => recordAnswers(statePath, { answers: { q1: "JSON lines" } }, 301)).toThrow(/could not refresh/);
-			expect(() => recordRefs(statePath, { notion: { task: "https://www.notion.so/saved-task" } }, 302)).toThrow(/could not refresh/);
+			expect(() => recordAnswers(statePath, { answers: { q1: "JSON lines" } }, 301)).toThrow(
+				/could not refresh/,
+			);
+			expect(() =>
+				recordRefs(statePath, { notion: { task: "https://www.notion.so/saved-task" } }, 302),
+			).toThrow(/could not refresh/);
 			const saved = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
 			expect(saved.clarifications?.[0]?.answer).toBe("JSON lines");
 			expect(saved.tracking?.notion.taskUrl).toBe("https://www.notion.so/saved-task");
-			expect(readFileSync(statePath.replace(/\.json$/, ".xml"), "utf8").trimEnd()).toBe(saved.result.xml);
+			expect(readFileSync(statePath.replace(/\.json$/, ".xml"), "utf8").trimEnd()).toBe(
+				saved.result.xml,
+			);
 			expect(readFileSync(lastPath, "utf8")).toBe(before);
 			expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe(String(process.pid));
 			expect(existsSync(`${statePath}.lock`)).toBe(false);
@@ -831,7 +1314,10 @@ describe("grok-bot answers", () => {
 		const { result } = await drive(stateDir, root, hostModel(6));
 		const statePath = result.response?.statePath as string;
 		const lastPath = join(stateDir, "last.json");
-		for (const last of ['{"sessionId":"other","result":{"xml":"other spec"}}\n', "unreadable last\n"]) {
+		for (const last of [
+			'{"sessionId":"other","result":{"xml":"other spec"}}\n',
+			"unreadable last\n",
+		]) {
 			writeFileSync(lastPath, last);
 			recordRefs(statePath, { notion: { task: "https://www.notion.so/preserved-last" } });
 			recordAnswers(statePath, { answers: { q1: "JSON lines" } });
@@ -842,13 +1328,19 @@ describe("grok-bot answers", () => {
 	test("a held last.json lock keeps the current plan in place", () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
-		const record = { sessionId: "s1", at: 1, result: { xml: "<x/>", original: "o", root: "BUILD_PROMPT", source: "llm" } } as SessionRecord;
+		const record = {
+			sessionId: "s1",
+			at: 1,
+			result: { xml: "<x/>", original: "o", root: "BUILD_PROMPT", source: "llm" },
+		} as SessionRecord;
 		writeSession(stateDir, record);
 		const lastPath = join(stateDir, "last.json");
 		const fd = openSync(`${lastPath}.lock`, "wx");
 		writeSync(fd, String(process.pid));
 		try {
-			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(/could not refresh/);
+			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(
+				/could not refresh/,
+			);
 			expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
 			expect(writeSession(stateDir, { ...record, at: 3 })).toMatch(/could not refresh/);
 			expect(JSON.parse(readFileSync(join(stateDir, "sessions", "s1.json"), "utf8")).at).toBe(3);
@@ -865,7 +1357,11 @@ describe("grok-bot answers", () => {
 	test("an aged lock held by a live PID is never reclaimed", () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
-		const record = { sessionId: "s1", at: 1, result: { xml: "<x/>", original: "o", root: "BUILD_PROMPT", source: "llm" } } as SessionRecord;
+		const record = {
+			sessionId: "s1",
+			at: 1,
+			result: { xml: "<x/>", original: "o", root: "BUILD_PROMPT", source: "llm" },
+		} as SessionRecord;
 		writeSession(stateDir, record);
 		const lastPath = join(stateDir, "last.json");
 		const before = readFileSync(lastPath, "utf8");
@@ -874,7 +1370,9 @@ describe("grok-bot answers", () => {
 		utimesSync(`${lastPath}.lock`, old, old);
 		const lockMtime = statSync(`${lastPath}.lock`).mtimeMs;
 		try {
-			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(/could not refresh/);
+			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(
+				/could not refresh/,
+			);
 			expect(writeSession(stateDir, { ...record, at: 3 })).toMatch(/could not refresh/);
 			expect(readFileSync(lastPath, "utf8")).toBe(before);
 			expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe(String(process.pid));
@@ -888,7 +1386,11 @@ describe("grok-bot answers", () => {
 	test("a fresh empty last.json lock stays held", () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
-		const record = { sessionId: "s1", at: 1, result: { xml: "<x/>", original: "o", root: "BUILD_PROMPT", source: "llm" } } as SessionRecord;
+		const record = {
+			sessionId: "s1",
+			at: 1,
+			result: { xml: "<x/>", original: "o", root: "BUILD_PROMPT", source: "llm" },
+		} as SessionRecord;
 		writeSession(stateDir, record);
 		const lastPath = join(stateDir, "last.json");
 		writeFileSync(`${lastPath}.lock`, "");
@@ -905,7 +1407,11 @@ describe("grok-bot answers", () => {
 	test("a lock left by a dead planner is reclaimed", () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
-		const record = { sessionId: "s1", at: 1, result: { xml: "<x/>", original: "o", root: "BUILD_PROMPT", source: "llm" } } as SessionRecord;
+		const record = {
+			sessionId: "s1",
+			at: 1,
+			result: { xml: "<x/>", original: "o", root: "BUILD_PROMPT", source: "llm" },
+		} as SessionRecord;
 		writeSession(stateDir, record);
 		const lastPath = join(stateDir, "last.json");
 		const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
@@ -924,47 +1430,140 @@ describe("grok-bot teach digest and host", () => {
 	test("builds a valid TeachDigest from Grok Bot turns", () => {
 		const root = tmp();
 		const src = join(root, "run.jsonl");
-		writeFileSync(src, [
-			JSON.stringify({ role: "user", content: "Fix the flaky fetch test." }),
-			JSON.stringify({ role: "assistant", content: "The test raced the mock server; awaiting listen() fixed it." }),
-		].join("\n"));
-		const digest = grokbotDigest(src, { sessionId: "s1", cwd: root, outcome: "completed", now: () => 0 });
+		writeFileSync(
+			src,
+			[
+				JSON.stringify({ role: "user", content: "Fix the flaky fetch test." }),
+				JSON.stringify({
+					role: "assistant",
+					content: "The test raced the mock server; awaiting listen() fixed it.",
+				}),
+			].join("\n"),
+		);
+		const digest = grokbotDigest(src, {
+			sessionId: "s1",
+			cwd: root,
+			outcome: "completed",
+			now: () => 0,
+		});
 		expect(digest?.host).toBe("grok-bot");
 		expect(digest?.turns.map((t) => t.role)).toEqual(["user", "assistant"]);
 		expect(parseDigest(JSON.parse(JSON.stringify(digest)))).toBeDefined();
-		writeFileSync(src, [
-			JSON.stringify({ role: "user", content: "Fix it." }),
-			JSON.stringify({ role: "tool", name: "Shell", input: { command: "bun test" }, content: "1 fail", isError: true }),
-			JSON.stringify({ role: "tool", name: "Shell", input: { command: "bun test" }, content: "3 pass" }),
-		].join("\n"));
+		writeFileSync(
+			src,
+			[
+				JSON.stringify({ role: "user", content: "Fix it." }),
+				JSON.stringify({
+					role: "tool",
+					name: "Shell",
+					input: { command: "bun test" },
+					content: "1 fail",
+					isError: true,
+				}),
+				JSON.stringify({
+					role: "tool",
+					name: "Shell",
+					input: { command: "bun test" },
+					content: "3 pass",
+				}),
+			].join("\n"),
+		);
 		const tools = grokbotDigest(src, { sessionId: "s2", cwd: root });
 		expect(tools?.toolCalls).toBe(2);
-		expect(tools?.turns.filter((t) => t.role === "tool").map((t) => [t.tool, t.isError ?? false])).toEqual([["Shell", true], ["Shell", false]]);
-		writeFileSync(src, [
-			JSON.stringify({ type: "user", message: { role: "user", content: "Keep the user line." } }),
-			JSON.stringify({ role: "tool", name: "Shell", input: { command: "bun test" }, content: "1 fail", isError: true }),
-		].join("\n"));
+		expect(
+			tools?.turns.filter((t) => t.role === "tool").map((t) => [t.tool, t.isError ?? false]),
+		).toEqual([
+			["Shell", true],
+			["Shell", false],
+		]);
+		writeFileSync(
+			src,
+			[
+				JSON.stringify({ type: "user", message: { role: "user", content: "Keep the user line." } }),
+				JSON.stringify({
+					role: "tool",
+					name: "Shell",
+					input: { command: "bun test" },
+					content: "1 fail",
+					isError: true,
+				}),
+			].join("\n"),
+		);
 		const mixed = grokbotDigest(src, { sessionId: "s3", cwd: root });
 		expect(mixed?.toolCalls).toBeGreaterThanOrEqual(1);
-		expect(mixed?.turns.some((turn) => turn.role === "user" && turn.text === "Keep the user line.")).toBe(true);
-		writeFileSync(src, [
-			JSON.stringify({ type: "user", message: { role: "user", content: "Fix the fetch." } }),
-			JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Shell", input: { command: "bun test" } }] } }),
-			JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "1 fail", is_error: true }] } }),
-			JSON.stringify({ type: "user", isMeta: true, message: { role: "user", content: "do not do that, do this instead" } }),
-			JSON.stringify({ type: "user", message: { role: "user", content: "[Request interrupted by user]" } }),
-		].join("\n"));
+		expect(
+			mixed?.turns.some((turn) => turn.role === "user" && turn.text === "Keep the user line."),
+		).toBe(true);
+		writeFileSync(
+			src,
+			[
+				JSON.stringify({ type: "user", message: { role: "user", content: "Fix the fetch." } }),
+				JSON.stringify({
+					type: "assistant",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "tool_use", id: "tu1", name: "Shell", input: { command: "bun test" } },
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "user",
+					message: {
+						role: "user",
+						content: [
+							{ type: "tool_result", tool_use_id: "tu1", content: "1 fail", is_error: true },
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "user",
+					isMeta: true,
+					message: { role: "user", content: "do not do that, do this instead" },
+				}),
+				JSON.stringify({
+					type: "user",
+					message: { role: "user", content: "[Request interrupted by user]" },
+				}),
+			].join("\n"),
+		);
 		const claude = grokbotDigest(src, { sessionId: "s4", cwd: root, now: () => 0 });
 		expect(claude?.outcome).toBe("interrupted");
-		expect(claude?.turns.some((turn) => turn.role === "tool" && turn.tool === "Shell" && turn.isError === true)).toBe(true);
-		expect(claude?.turns.some((turn) => turn.text.includes("do not") || turn.text.includes("interrupted"))).toBe(false);
-		expect(grokbotDigest(src, { sessionId: "s4", cwd: root, outcome: "completed", now: () => 0 })?.outcome).toBe("completed");
+		expect(
+			claude?.turns.some(
+				(turn) => turn.role === "tool" && turn.tool === "Shell" && turn.isError === true,
+			),
+		).toBe(true);
+		expect(
+			claude?.turns.some(
+				(turn) => turn.text.includes("do not") || turn.text.includes("interrupted"),
+			),
+		).toBe(false);
+		expect(
+			grokbotDigest(src, { sessionId: "s4", cwd: root, outcome: "completed", now: () => 0 })
+				?.outcome,
+		).toBe("completed");
 	});
 
 	test("teach captures are host grok-bot", async () => {
 		const root = tmp();
-		const env = { ...testEnv(root), ULTRATHINK_STATE_DIR: join(root, "state"), ULTRATHINK_HINDSIGHT: "0" } as NodeJS.ProcessEnv;
-		const captured = await main(["teach", "capture", "--name", "await listen", "--body", "Await server.listen() before fetch in tests.", "--json"], env);
+		const env = {
+			...testEnv(root),
+			ULTRATHINK_STATE_DIR: join(root, "state"),
+			ULTRATHINK_HINDSIGHT: "0",
+		} as NodeJS.ProcessEnv;
+		const captured = await main(
+			[
+				"teach",
+				"capture",
+				"--name",
+				"await listen",
+				"--body",
+				"Await server.listen() before fetch in tests.",
+				"--json",
+			],
+			env,
+		);
 		expect(captured.text).toContain('"ok"');
 		expect(captured.code).toBe(0);
 		const listed = await main(["teach", "list", "--json"], env);
@@ -977,18 +1576,31 @@ describe("grok-bot skills status and status lines", () => {
 		const root = tmp();
 		const staged = join(root, "staged");
 		const installed = join(root, "installed");
-		for (const [dir, name, body] of [[staged, "a", "x"], [staged, "b", "y"], [staged, "c", "z"], [installed, "a", "x"], [installed, "b", "changed"]] as const) {
+		for (const [dir, name, body] of [
+			[staged, "a", "x"],
+			[staged, "b", "y"],
+			[staged, "c", "z"],
+			[installed, "a", "x"],
+			[installed, "b", "changed"],
+		] as const) {
 			mkdirSync(join(dir, name), { recursive: true });
 			writeFileSync(join(dir, name, "SKILL.md"), body);
 		}
 		const report = skillsStatus(staged, installed);
-		expect(report.skills.map((s) => [s.name, s.state])).toEqual([["a", "in-sync"], ["b", "drift"], ["c", "not-installed"]]);
+		expect(report.skills.map((s) => [s.name, s.state])).toEqual([
+			["a", "in-sync"],
+			["b", "drift"],
+			["c", "not-installed"],
+		]);
 		expect(existsSync(join(installed, "c"))).toBe(false);
 	});
 
 	test("replaces the Grok CLI lines in ctl status", () => {
-		const text = "Prompt Uplift on\nGrok: grok-4.7 @ xhigh · transport http\nSuperGrok OAuth: not logged in (run grok login)\nGraph of Thought on";
-		expect(grokbotStatusLines(text)).toBe("Prompt Uplift on\nGrok CLI: not used (grok-bot host: Desk Lead answers every planner request)\nGraph of Thought on");
+		const text =
+			"Prompt Uplift on\nGrok: grok-4.7 @ xhigh · transport http\nSuperGrok OAuth: not logged in (run grok login)\nGraph of Thought on";
+		expect(grokbotStatusLines(text)).toBe(
+			"Prompt Uplift on\nGrok CLI: not used (grok-bot host: Desk Lead answers every planner request)\nGraph of Thought on",
+		);
 		expect(grokbotStatusLines("HITL on")).toBe("HITL on");
 	});
 });
@@ -999,15 +1611,27 @@ describe("grok-bot graph_register payload", () => {
 		const { result } = await drive(join(root, "state"), root, hostModel(5));
 		const statePath = result.response?.statePath as string;
 		const pre = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
-		expect(graphRegisterPayload(pre)).toEqual(expect.objectContaining({ graph_id: pre.plan?.graphId, surface: "grok-bot" }));
+		expect(graphRegisterPayload(pre)).toEqual(
+			expect.objectContaining({ graph_id: pre.plan?.graphId, surface: "grok-bot" }),
+		);
 		expect(graphRegisterPayload(pre).notion_task_page).toBeUndefined();
 		const after = await kickoff(statePath);
 		const bare = graphRegisterPayload(after);
 		expect(bare.notion_task_page).toBe(after.tracking?.notion.taskUrl);
 		expect(bare.nodes).toBeUndefined();
-		const full = graphRegisterPayload(after, { withNodes: true }) as { nodes: Array<Record<string, unknown>>; steps: Array<Record<string, unknown>> };
+		const full = graphRegisterPayload(after, { withNodes: true }) as {
+			nodes: Array<Record<string, unknown>>;
+			steps: Array<Record<string, unknown>>;
+		};
 		expect(full.nodes).toHaveLength(5);
 		expect(full.steps).toHaveLength(25);
-		expect(full.steps[0]).toEqual({ node_id: "n1", step: 1, linear_sub_issue_id: expect.any(String), linear_identifier: expect.stringMatching(/^SPE-/), linear_url: expect.any(String), notion_page: expect.any(String) });
+		expect(full.steps[0]).toEqual({
+			node_id: "n1",
+			step: 1,
+			linear_sub_issue_id: expect.any(String),
+			linear_identifier: expect.stringMatching(/^SPE-/),
+			linear_url: expect.any(String),
+			notion_page: expect.any(String),
+		});
 	});
 });

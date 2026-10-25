@@ -2,7 +2,12 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
-import { createLoadHistory, loadLoadHistory, recommendedReplicas, type LoadHistory } from "./forecast.ts";
+import {
+	createLoadHistory,
+	loadLoadHistory,
+	recommendedReplicas,
+	type LoadHistory,
+} from "./forecast.ts";
 
 const MINUTE_MS = 60_000;
 const MINUTES_PER_DAY = 1440;
@@ -41,7 +46,8 @@ describe("createLoadHistory forecast", () => {
 		const spikeMinute = 100;
 		const spike = 600;
 		recordRequests(history, spikeMinute, spike);
-		for (let minute = spikeMinute + 1; minute <= spikeMinute + 4; minute++) recordRequests(history, minute, 1);
+		for (let minute = spikeMinute + 1; minute <= spikeMinute + 4; minute++)
+			recordRequests(history, minute, 1);
 
 		// Current minute is 1439 minutes after the spike: nothing was recorded in the
 		// current minute, and the next 15 minutes include spikeMinute + 1440.
@@ -97,7 +103,13 @@ describe("createLoadHistory forecast", () => {
 		const negativeCount = JSON.parse(valid.toJSON()) as { last: number; counts: number[] };
 		negativeCount.counts[5] = -1;
 
-		const inputs = ["not json", "{}", "[-1]", JSON.stringify(negativeCount), JSON.stringify({ last: 3, counts: [1, 2] })];
+		const inputs = [
+			"not json",
+			"{}",
+			"[-1]",
+			JSON.stringify(negativeCount),
+			JSON.stringify({ last: 3, counts: [1, 2] }),
+		];
 		for (const text of inputs) {
 			const history = loadLoadHistory(text);
 			expect(history.forecast(at(9))).toEqual({ rps: 0, source: "cold" });

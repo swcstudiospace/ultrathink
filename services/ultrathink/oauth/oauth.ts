@@ -15,9 +15,19 @@ import { type ApprovalProof, type Auth, MAX_PASSWORD_CHARS } from "../auth/auth.
 import type { AuditEvent } from "../obs/audit.ts";
 import { encodeHtml, encodeHtmlAttribute } from "../security/encoding.ts";
 import { getSecurityLogger } from "../security/events.ts";
-import { ArrayValidator, ObjectValidator, StringValidator, type Validator } from "../security/validation.ts";
+import {
+	ArrayValidator,
+	ObjectValidator,
+	StringValidator,
+	type Validator,
+} from "../security/validation.ts";
 
-export const DEFAULT_REDIRECT_ORIGINS: readonly string[] = ["https://claude.ai", "https://claude.com", "https://grok.com", "https://console.x.ai"];
+export const DEFAULT_REDIRECT_ORIGINS: readonly string[] = [
+	"https://claude.ai",
+	"https://claude.com",
+	"https://grok.com",
+	"https://console.x.ai",
+];
 
 const ACCESS_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -28,7 +38,8 @@ const PENDING_TTL_MS = 10 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 30 * 1000;
 const MAX_PENDING = 200;
 const MAX_PENDING_PER_CLIENT = 5;
-const EXPIRED_MESSAGE = "This authorization request expired. Start the connection again from your client.";
+const EXPIRED_MESSAGE =
+	"This authorization request expired. Start the connection again from your client.";
 const MAX_CLIENTS = 200;
 const UNGRANTED_CLIENT_TTL_MS = 24 * 60 * 60 * 1000;
 const GRANTED_CLIENT_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -56,12 +67,23 @@ const MAX_CLIENT_NAME_INPUT_CHARS = 1024;
 /** No C0 control characters and no DEL: a text parameter carrying one is refused. */
 const NO_CONTROL = /^[^\x00-\x1f\x7f]*$/;
 /** What the registration schema yields once every field has passed. */
-type RegisterFields = { redirect_uris: string[]; token_endpoint_auth_method: string; grant_types: string[]; response_types: string[]; client_name: string };
+type RegisterFields = {
+	redirect_uris: string[];
+	token_endpoint_auth_method: string;
+	grant_types: string[];
+	response_types: string[];
+	client_name: string;
+};
 /** The parameters each endpoint reads. Each one is checked before its handler runs. */
 const REGISTER_BODY: Record<string, Validator<unknown>> = {
-	redirect_uris: new ArrayValidator(formText(MAX_REDIRECT_URI_CHARS), { minLength: 1, maxLength: MAX_REDIRECT_URIS }),
+	redirect_uris: new ArrayValidator(formText(MAX_REDIRECT_URI_CHARS), {
+		minLength: 1,
+		maxLength: MAX_REDIRECT_URIS,
+	}),
 	token_endpoint_auth_method: new StringValidator({ allowedValues: ["none"] }),
-	grant_types: new ArrayValidator(new StringValidator({ allowedValues: [...SUPPORTED_GRANTS] }), { minLength: 1 }),
+	grant_types: new ArrayValidator(new StringValidator({ allowedValues: [...SUPPORTED_GRANTS] }), {
+		minLength: 1,
+	}),
 	response_types: new ArrayValidator(new StringValidator({ allowedValues: ["code"] })),
 	client_name: formText(MAX_CLIENT_NAME_INPUT_CHARS),
 };
@@ -225,14 +247,23 @@ function htmlHeaders(formAction: string): Record<string, string> {
 	};
 }
 
-function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+function jsonResponse(
+	status: number,
+	body: unknown,
+	headers: Record<string, string> = {},
+): Response {
 	return new Response(JSON.stringify(body), {
 		status,
 		headers: { ...API_HEADERS, "Content-Type": "application/json; charset=utf-8", ...headers },
 	});
 }
 
-function oauthError(status: number, error: string, description: string, headers: Record<string, string> = {}): Response {
+function oauthError(
+	status: number,
+	error: string,
+	description: string,
+	headers: Record<string, string> = {},
+): Response {
 	return jsonResponse(status, { error, error_description: description }, headers);
 }
 
@@ -241,15 +272,31 @@ function invalidGrant(description = "The authorization is invalid or expired."):
 }
 
 function invalidClient(): Response {
-	return oauthError(401, "invalid_client", "Unknown client. Register the client again.", { "WWW-Authenticate": 'Basic realm="ultrathink"' });
+	return oauthError(401, "invalid_client", "Unknown client. Register the client again.", {
+		"WWW-Authenticate": 'Basic realm="ultrathink"',
+	});
 }
 
-function htmlPage(status: number, body: string, formAction = "'self'", headers: Record<string, string> = {}): Response {
+function htmlPage(
+	status: number,
+	body: string,
+	formAction = "'self'",
+	headers: Record<string, string> = {},
+): Response {
 	return new Response(body, { status, headers: { ...htmlHeaders(formAction), ...headers } });
 }
 
-function errorPage(status: number, message: string, headers: Record<string, string> = {}): Response {
-	return htmlPage(status, page("Authorization failed", `<p class="err">${encodeHtml(message)}</p>`), "'self'", headers);
+function errorPage(
+	status: number,
+	message: string,
+	headers: Record<string, string> = {},
+): Response {
+	return htmlPage(
+		status,
+		page("Authorization failed", `<p class="err">${encodeHtml(message)}</p>`),
+		"'self'",
+		headers,
+	);
 }
 
 function page(title: string, content: string): string {
@@ -262,8 +309,13 @@ function formText(max: number): StringValidator {
 }
 
 /** The schema's verdict: the typed value when every field passes, else the first refused field and its validator code. */
-function checkedFields<T extends Record<string, unknown>>(schema: Record<string, Validator<unknown>>, values: Record<string, unknown>): { value: T } | { refused: { field: string; code: string } } {
-	const verdict = new ObjectValidator<T>(schema, { allowExtraKeys: true, strict: true }).validate(values);
+function checkedFields<T extends Record<string, unknown>>(
+	schema: Record<string, Validator<unknown>>,
+	values: Record<string, unknown>,
+): { value: T } | { refused: { field: string; code: string } } {
+	const verdict = new ObjectValidator<T>(schema, { allowExtraKeys: true, strict: true }).validate(
+		values,
+	);
 	if (verdict.valid && verdict.value !== undefined) return { value: verdict.value };
 	// ObjectValidator reports a value's type rather than its key, so the refused field is found by checking each one.
 	for (const [field, validator] of Object.entries(schema)) {
@@ -274,7 +326,10 @@ function checkedFields<T extends Record<string, unknown>>(schema: Record<string,
 }
 
 /** Form parameters checked against their schema. A name sent twice is refused first: RFC 6749 section 3.1 forbids it. */
-function formRefusal(form: URLSearchParams, schema: Record<string, Validator<unknown>>): { field: string; code: string } | null {
+function formRefusal(
+	form: URLSearchParams,
+	schema: Record<string, Validator<unknown>>,
+): { field: string; code: string } | null {
 	for (const name of Object.keys(schema)) {
 		if (form.getAll(name).length > 1) return { field: name, code: "DUPLICATE" };
 	}
@@ -286,13 +341,25 @@ function formRefusal(form: URLSearchParams, schema: Record<string, Validator<unk
 
 /** Records a refused request on the security feed: the endpoint, the field and the validator code, never the value. */
 function refusedInput(endpoint: string, field: string, code: string, ip?: string): void {
-	getSecurityLogger().logValidationFailure({ source: "oauth", resource: endpoint, ip, details: { field, code } });
+	getSecurityLogger().logValidationFailure({
+		source: "oauth",
+		resource: endpoint,
+		ip,
+		details: { field, code },
+	});
 }
 
 /** Logs a refused form and answers with the 400 shape the endpoint already returns for a bad request. */
-function refuseForm(endpoint: string, refused: { field: string; code: string }, ip: string): Response {
+function refuseForm(
+	endpoint: string,
+	refused: { field: string; code: string },
+	ip: string,
+): Response {
 	refusedInput(endpoint, refused.field, refused.code, ip);
-	const description = refused.code === "DUPLICATE" ? `${refused.field} must appear once.` : `${refused.field} is not valid.`;
+	const description =
+		refused.code === "DUPLICATE"
+			? `${refused.field} must appear once.`
+			: `${refused.field} is not valid.`;
 	return oauthError(400, "invalid_request", description);
 }
 
@@ -310,7 +377,9 @@ function own<T>(record: Record<string, T>, key: string): T | undefined {
 
 function isJsonRequest(req: Request): boolean {
 	const contentType = req.headers.get("content-type");
-	return contentType !== null && contentType.split(";")[0]?.trim().toLowerCase() === "application/json";
+	return (
+		contentType !== null && contentType.split(";")[0]?.trim().toLowerCase() === "application/json"
+	);
 }
 
 async function readBodyText(req: Request, maxBytes: number): Promise<string | null> {
@@ -338,7 +407,8 @@ function isLoopbackHttp(url: URL): boolean {
 }
 
 function parseRedirect(raw: unknown): URL | null {
-	if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_REDIRECT_URI_CHARS) return null;
+	if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_REDIRECT_URI_CHARS)
+		return null;
 	let url: URL;
 	try {
 		url = new URL(raw);
@@ -362,7 +432,13 @@ function redirectMatches(registered: string, requested: string): boolean {
 	const a = parseRedirect(registered);
 	const b = parseRedirect(requested);
 	if (a === null || b === null) return false;
-	return isLoopbackHttp(a) && isLoopbackHttp(b) && a.hostname === b.hostname && a.pathname === b.pathname && a.search === b.search;
+	return (
+		isLoopbackHttp(a) &&
+		isLoopbackHttp(b) &&
+		a.hostname === b.hostname &&
+		a.pathname === b.pathname &&
+		a.search === b.search
+	);
 }
 
 function cleanScope(raw: string | null): string | null {
@@ -407,7 +483,8 @@ function createLimiter(limit: { max: number; windowMs: number }, now: () => numb
 				windows.set(key, entry);
 			}
 			entry.count += 1;
-			if (entry.count > limit.max) return { ok: false, retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - t) / 1000)) };
+			if (entry.count > limit.max)
+				return { ok: false, retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - t) / 1000)) };
 			return { ok: true };
 		},
 	};
@@ -419,7 +496,8 @@ function emptyStore(): StoreShape {
 
 function section<T>(value: unknown): Record<string, T> {
 	if (value === undefined) return {};
-	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("malformed store section");
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		throw new Error("malformed store section");
 	return value as Record<string, T>;
 }
 
@@ -432,7 +510,8 @@ function loadStore(path: string, stamp: number): StoreShape {
 	}
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("malformed store");
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+			throw new Error("malformed store");
 		const record = parsed as Record<string, unknown>;
 		return {
 			clients: section(record.clients),
@@ -452,11 +531,26 @@ function loadStore(path: string, stamp: number): StoreShape {
 	}
 }
 
-export type DurableFs = Pick<typeof nodeFs, "mkdirSync" | "openSync" | "fchmodSync" | "writeFileSync" | "fsyncSync" | "closeSync" | "renameSync" | "unlinkSync">;
+export type DurableFs = Pick<
+	typeof nodeFs,
+	| "mkdirSync"
+	| "openSync"
+	| "fchmodSync"
+	| "writeFileSync"
+	| "fsyncSync"
+	| "closeSync"
+	| "renameSync"
+	| "unlinkSync"
+>;
 
 // Write to a temp file, fsync it, rename over the target, then fsync the directory so a
 // power loss cannot leave an empty state file that reads as "no clients".
-export function writeFileDurably(dir: string, path: string, content: string, io: DurableFs = nodeFs): void {
+export function writeFileDurably(
+	dir: string,
+	path: string,
+	content: string,
+	io: DurableFs = nodeFs,
+): void {
 	io.mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const tmp = `${path}.${process.pid}.tmp`;
 	const fd = io.openSync(tmp, "w", 0o600);
@@ -644,9 +738,24 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	}
 
 	function trustedPending(record: PendingRequest, key: string): boolean {
-		if (typeof record?.nonce !== "string" || typeof record.signature !== "string" || typeof record.clientId !== "string") return false;
-		if (record.approvalState !== "PENDING_APPROVAL" && record.approvalState !== "APPROVED" && record.approvalState !== "EXPIRED") return false;
-		if (!Number.isSafeInteger(record.createdAt) || !Number.isSafeInteger(record.expiresAt) || !Number.isSafeInteger(record.refreshedAt)) return false;
+		if (
+			typeof record?.nonce !== "string" ||
+			typeof record.signature !== "string" ||
+			typeof record.clientId !== "string"
+		)
+			return false;
+		if (
+			record.approvalState !== "PENDING_APPROVAL" &&
+			record.approvalState !== "APPROVED" &&
+			record.approvalState !== "EXPIRED"
+		)
+			return false;
+		if (
+			!Number.isSafeInteger(record.createdAt) ||
+			!Number.isSafeInteger(record.expiresAt) ||
+			!Number.isSafeInteger(record.refreshedAt)
+		)
+			return false;
 		if (record.expiresAt !== record.createdAt + PENDING_TTL_MS) return false;
 		return options.auth.verifyApproval(proofOf(key, record), record.signature);
 	}
@@ -657,7 +766,10 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	}
 	if (pending.size > 0) ensureSweeper();
 
-	function findPending(requestId: string, nonce: string): { key: string; request: PendingRequest } | null {
+	function findPending(
+		requestId: string,
+		nonce: string,
+	): { key: string; request: PendingRequest } | null {
 		if (requestId === "" || nonce === "") return null;
 		const key = digest(requestId);
 		const request = pending.get(key);
@@ -671,20 +783,43 @@ export function createOAuth(options: OAuthOptions): OAuth {
 
 	function revokeGrant(grantId: string): void {
 		delete data.grants[grantId];
-		for (const [key, record] of Object.entries(data.tokens)) if (record.grantId === grantId) delete data.tokens[key];
-		for (const [key, record] of Object.entries(data.codes)) if (record.grantId === grantId) delete data.codes[key];
+		for (const [key, record] of Object.entries(data.tokens))
+			if (record.grantId === grantId) delete data.tokens[key];
+		for (const [key, record] of Object.entries(data.codes))
+			if (record.grantId === grantId) delete data.codes[key];
 	}
 
 	function sameResource(value: string | null): boolean {
 		return value === resource || value === `${resource}/`;
 	}
 
-	function issueTokens(grantId: string, clientId: string, grantResource: string, scope: string | null): Record<string, unknown> {
+	function issueTokens(
+		grantId: string,
+		clientId: string,
+		grantResource: string,
+		scope: string | null,
+	): Record<string, unknown> {
 		const t = now();
 		const access = secret("ut_at_");
 		const refresh = secret("ut_rt_");
-		data.tokens[digest(access)] = { kind: "access", grantId, clientId, resource: grantResource, scope, expiresAt: t + ACCESS_TTL_MS, used: false };
-		data.tokens[digest(refresh)] = { kind: "refresh", grantId, clientId, resource: grantResource, scope, expiresAt: t + REFRESH_TTL_MS, used: false };
+		data.tokens[digest(access)] = {
+			kind: "access",
+			grantId,
+			clientId,
+			resource: grantResource,
+			scope,
+			expiresAt: t + ACCESS_TTL_MS,
+			used: false,
+		};
+		data.tokens[digest(refresh)] = {
+			kind: "refresh",
+			grantId,
+			clientId,
+			resource: grantResource,
+			scope,
+			expiresAt: t + REFRESH_TTL_MS,
+			used: false,
+		};
 		const grant = own(data.grants, grantId);
 		if (grant !== undefined) grant.lastUsedAt = t;
 		const body: Record<string, unknown> = {
@@ -709,7 +844,14 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 	}
 
-	function consentPage(requestId: string, nonce: string, clientName: string, redirectUri: string, message: string, status: number): Response {
+	function consentPage(
+		requestId: string,
+		nonce: string,
+		clientName: string,
+		redirectUri: string,
+		message: string,
+		status: number,
+	): Response {
 		const redirectOrigin = new URL(redirectUri).origin;
 		const alert = message === "" ? "" : `<p class="err">${encodeHtml(message)}</p>`;
 		const content =
@@ -719,7 +861,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		return htmlPage(status, page("Authorize ultrathink", content), `'self' ${redirectOrigin}`);
 	}
 
-	function redirectWith(redirectUri: string, params: Record<string, string>, state: string | null): Response {
+	function redirectWith(
+		redirectUri: string,
+		params: Record<string, string>,
+		state: string | null,
+	): Response {
 		const url = new URL(redirectUri);
 		for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 		if (state !== null) url.searchParams.set("state", state);
@@ -731,7 +877,10 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		const refused = formRefusal(params, AUTHORIZE_QUERY);
 		if (refused !== null) {
 			refusedInput("/oauth/authorize", refused.field, refused.code);
-			return errorPage(400, "This authorization request is not valid. Start the connection again from your client.");
+			return errorPage(
+				400,
+				"This authorization request is not valid. Start the connection again from your client.",
+			);
 		}
 		prune();
 		const clientId = params.get("client_id") ?? "";
@@ -744,22 +893,44 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		client.lastUsedAt = now();
 		const state = params.get("state");
 		if (params.get("response_type") !== "code") {
-			return redirectWith(redirectUri, { error: "unsupported_response_type", error_description: "response_type must be code." }, state);
+			return redirectWith(
+				redirectUri,
+				{ error: "unsupported_response_type", error_description: "response_type must be code." },
+				state,
+			);
 		}
 		const challenge = params.get("code_challenge") ?? "";
 		if (params.get("code_challenge_method") !== "S256" || !CHALLENGE_PATTERN.test(challenge)) {
-			return redirectWith(redirectUri, { error: "invalid_request", error_description: "PKCE with S256 is required." }, state);
+			return redirectWith(
+				redirectUri,
+				{ error: "invalid_request", error_description: "PKCE with S256 is required." },
+				state,
+			);
 		}
 		if (!sameResource(params.get("resource"))) {
-			return redirectWith(redirectUri, { error: "invalid_target", error_description: "resource must be the ultrathink MCP endpoint." }, state);
+			return redirectWith(
+				redirectUri,
+				{
+					error: "invalid_target",
+					error_description: "resource must be the ultrathink MCP endpoint.",
+				},
+				state,
+			);
 		}
 		let forClient = 0;
 		for (const request of pending.values()) if (request.clientId === clientId) forClient += 1;
 		if (forClient >= MAX_PENDING_PER_CLIENT) {
-			return errorPage(429, "This client already has several authorizations waiting. Finish one or wait and try again.", rateLimited(60));
+			return errorPage(
+				429,
+				"This client already has several authorizations waiting. Finish one or wait and try again.",
+				rateLimited(60),
+			);
 		}
 		if (pending.size >= MAX_PENDING) {
-			return errorPage(503, "Authorization is temporarily unavailable. Start the connection again from your client.");
+			return errorPage(
+				503,
+				"Authorization is temporarily unavailable. Start the connection again from your client.",
+			);
 		}
 		const requestId = secret("ut_req_");
 		const key = digest(requestId);
@@ -797,7 +968,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (refused !== null) {
 			refusedInput("/oauth/authorize", refused.field, refused.code);
 			// A malformed req or nonce names no pending request, so it gets the answer an unknown one gets.
-			if (refused.field === "password") return errorPage(400, "This request is not valid. Start the connection again from your client.");
+			if (refused.field === "password")
+				return errorPage(
+					400,
+					"This request is not valid. Start the connection again from your client.",
+				);
 			return expiredResponse(form.get("action") === "poll");
 		}
 		const requestId = form.get("req") ?? "";
@@ -815,19 +990,33 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			// an unauthenticated poll must not cost a full fsync unless pruning removed something.
 			if (prune()) flush();
 			const remaining = Math.max(0, Math.ceil((found.request.expiresAt - now()) / 1000));
-			return jsonResponse(200, { state: "PENDING_APPROVAL", expires_in: remaining, refreshed_at: found.request.refreshedAt });
+			return jsonResponse(200, {
+				state: "PENDING_APPROVAL",
+				expires_in: remaining,
+				refreshed_at: found.request.refreshedAt,
+			});
 		}
 		persist();
 		const clientName = own(data.clients, found.request.clientId)?.name ?? "MCP client";
 		const redirectUri = found.request.redirectUri;
 		if (approving.has(found.key)) {
-			return consentPage(requestId, found.request.nonce, clientName, redirectUri, "This approval is already being checked. Wait for the result.", 200);
+			return consentPage(
+				requestId,
+				found.request.nonce,
+				clientName,
+				redirectUri,
+				"This approval is already being checked. Wait for the result.",
+				200,
+			);
 		}
 		const attempt = options.auth.allowApprovalAttempt(ip);
 		if (!attempt.ok) return errorPage(429, "Too many attempts. Wait and try again.");
 		approving.add(found.key);
 		try {
-			const login = await options.auth.login({ password: form.get("password") ?? "", clientIp: ip });
+			const login = await options.auth.login({
+				password: form.get("password") ?? "",
+				clientIp: ip,
+			});
 			if (!login.ok) {
 				if (login.reason === "rate_limited") {
 					audit("rate_limited", { scope: "login", ip });
@@ -835,11 +1024,22 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				}
 				audit("login_failed", { ip });
 				if (found.request.approvalState !== "PENDING_APPROVAL") return expiredResponse(false);
-				return consentPage(requestId, found.request.nonce, clientName, redirectUri, "Incorrect password.", 200);
+				return consentPage(
+					requestId,
+					found.request.nonce,
+					clientName,
+					redirectUri,
+					"Incorrect password.",
+					200,
+				);
 			}
 			audit("login_ok", { ip });
 			// Registration or pruning may have dropped the client or its pending entry while the password was checked; a code for a missing client could never be redeemed.
-			if (found.request.approvalState !== "PENDING_APPROVAL" || pending.get(found.key) !== found.request || own(data.clients, found.request.clientId) === undefined) {
+			if (
+				found.request.approvalState !== "PENDING_APPROVAL" ||
+				pending.get(found.key) !== found.request ||
+				own(data.clients, found.request.clientId) === undefined
+			) {
 				return expiredResponse(false);
 			}
 			found.request.approvalState = "APPROVED";
@@ -847,7 +1047,12 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			const t = now();
 			const grantId = randomBytes(16).toString("base64url");
 			const code = secret("ut_code_");
-			data.grants[grantId] = { clientId: found.request.clientId, resource: found.request.resource, createdAt: t, lastUsedAt: t };
+			data.grants[grantId] = {
+				clientId: found.request.clientId,
+				resource: found.request.resource,
+				createdAt: t,
+				lastUsedAt: t,
+			};
 			const client = own(data.clients, found.request.clientId);
 			if (client !== undefined && client.grantedAt === undefined) client.grantedAt = t;
 			data.codes[digest(code)] = {
@@ -891,7 +1096,12 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 		const snapshot = snapshotStore();
 		record.used = true;
-		const body = issueTokens(record.grantId, record.clientId, record.resource, record.scope ?? null);
+		const body = issueTokens(
+			record.grantId,
+			record.clientId,
+			record.resource,
+			record.scope ?? null,
+		);
 		try {
 			persist();
 		} catch {
@@ -905,7 +1115,8 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	function refreshGrant(form: URLSearchParams, clientId: string): Response {
 		const record = own(data.tokens, digest(form.get("refresh_token") ?? ""));
 		if (!record || record.kind !== "refresh") return invalidGrant("The refresh token is unknown.");
-		if (record.clientId !== clientId) return invalidGrant("The refresh token belongs to another client.");
+		if (record.clientId !== clientId)
+			return invalidGrant("The refresh token belongs to another client.");
 		if (record.used) {
 			// Refresh rotation: presenting a spent refresh token revokes the whole grant.
 			revokeGrant(record.grantId);
@@ -923,7 +1134,12 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		record.used = true;
 		// Keep the spent token only for the reuse-detection window so prune() reclaims it.
 		record.expiresAt = Math.min(record.expiresAt, now() + SPENT_REFRESH_TTL_MS);
-		const body = issueTokens(record.grantId, record.clientId, record.resource, record.scope ?? null);
+		const body = issueTokens(
+			record.grantId,
+			record.clientId,
+			record.resource,
+			record.scope ?? null,
+		);
 		try {
 			persist();
 		} catch {
@@ -946,7 +1162,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		let victim: string | null = null;
 		let oldest = Number.POSITIVE_INFINITY;
 		for (const [id, client] of Object.entries(data.clients)) {
-			if (client.grantedAt === undefined && !approvingClients.has(id) && client.createdAt < oldest) {
+			if (
+				client.grantedAt === undefined &&
+				!approvingClients.has(id) &&
+				client.createdAt < oldest
+			) {
 				oldest = client.createdAt;
 				victim = id;
 			}
@@ -959,7 +1179,13 @@ export function createOAuth(options: OAuthOptions): OAuth {
 
 	async function register(req: Request, ip = UNKNOWN_IP): Promise<Response> {
 		const limit = registerLimiter.hit(ip);
-		if (!limit.ok) return oauthError(429, "temporarily_unavailable", "Too many registrations. Try again later.", rateLimited(limit.retryAfterSec));
+		if (!limit.ok)
+			return oauthError(
+				429,
+				"temporarily_unavailable",
+				"Too many registrations. Try again later.",
+				rateLimited(limit.retryAfterSec),
+			);
 		if (!isJsonRequest(req)) {
 			refusedInput("/oauth/register", "content-type", "UNSUPPORTED_MEDIA_TYPE", ip);
 			return oauthError(415, "invalid_client_metadata", "Content-Type must be application/json.");
@@ -972,7 +1198,8 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		let body: Record<string, unknown>;
 		try {
 			const parsed: unknown = JSON.parse(text);
-			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+				throw new Error("not an object");
 			body = parsed as Record<string, unknown>;
 		} catch {
 			refusedInput("/oauth/register", "body", "INVALID_JSON", ip);
@@ -980,7 +1207,8 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 		const values: Record<string, unknown> = {
 			redirect_uris: body.redirect_uris,
-			token_endpoint_auth_method: body.token_endpoint_auth_method === undefined ? "none" : body.token_endpoint_auth_method,
+			token_endpoint_auth_method:
+				body.token_endpoint_auth_method === undefined ? "none" : body.token_endpoint_auth_method,
 			grant_types: body.grant_types ?? [...DEFAULT_GRANT_TYPES],
 			response_types: body.response_types ?? ["code"],
 			client_name: body.client_name ?? "",
@@ -990,11 +1218,26 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			const { field, code } = checked.refused;
 			refusedInput("/oauth/register", field, code, ip);
 			if (field === "token_endpoint_auth_method") {
-				return oauthError(400, "invalid_client_metadata", "Only token_endpoint_auth_method none is supported (PKCE public clients).");
+				return oauthError(
+					400,
+					"invalid_client_metadata",
+					"Only token_endpoint_auth_method none is supported (PKCE public clients).",
+				);
 			}
-			if (field === "grant_types") return oauthError(400, "invalid_client_metadata", "Supported grant types: authorization_code, refresh_token.");
-			if (field === "response_types") return oauthError(400, "invalid_client_metadata", "Only response_type code is supported.");
-			if (field === "client_name") return oauthError(400, "invalid_client_metadata", "client_name must be text without control characters.");
+			if (field === "grant_types")
+				return oauthError(
+					400,
+					"invalid_client_metadata",
+					"Supported grant types: authorization_code, refresh_token.",
+				);
+			if (field === "response_types")
+				return oauthError(400, "invalid_client_metadata", "Only response_type code is supported.");
+			if (field === "client_name")
+				return oauthError(
+					400,
+					"invalid_client_metadata",
+					"client_name must be text without control characters.",
+				);
 			return oauthError(400, "invalid_redirect_uri", redirectHelp);
 		}
 		const fields = checked.value;
@@ -1011,7 +1254,13 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		const name = rawName.trim() === "" ? "MCP client" : rawName.trim();
 		const clientId = `ut_client_${randomBytes(16).toString("base64url")}`;
 		const issuedAt = now();
-		data.clients[clientId] = { name, redirectUris, grantTypes, createdAt: issuedAt, lastUsedAt: issuedAt };
+		data.clients[clientId] = {
+			name,
+			redirectUris,
+			grantTypes,
+			createdAt: issuedAt,
+			lastUsedAt: issuedAt,
+		};
 		persist();
 		audit("client_registered", { clientId });
 		return jsonResponse(201, {
@@ -1027,7 +1276,13 @@ export function createOAuth(options: OAuthOptions): OAuth {
 
 	async function token(req: Request, ip = UNKNOWN_IP): Promise<Response> {
 		const limit = tokenLimiter.hit(ip);
-		if (!limit.ok) return oauthError(429, "temporarily_unavailable", "Too many token requests. Try again later.", rateLimited(limit.retryAfterSec));
+		if (!limit.ok)
+			return oauthError(
+				429,
+				"temporarily_unavailable",
+				"Too many token requests. Try again later.",
+				rateLimited(limit.retryAfterSec),
+			);
 		const text = await readBodyText(req, MAX_FORM_BYTES);
 		if (text === null) {
 			refusedInput("/oauth/token", "body", "TOO_LARGE", ip);
@@ -1040,7 +1295,13 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		const clientId = form.get("client_id") ?? "";
 		if (clientId !== "") {
 			const clientLimit = tokenClientLimiter.hit(`client:${clientId}`);
-			if (!clientLimit.ok) return oauthError(429, "temporarily_unavailable", "Too many token requests. Try again later.", rateLimited(clientLimit.retryAfterSec));
+			if (!clientLimit.ok)
+				return oauthError(
+					429,
+					"temporarily_unavailable",
+					"Too many token requests. Try again later.",
+					rateLimited(clientLimit.retryAfterSec),
+				);
 		}
 		const grantType = form.get("grant_type");
 		if (grantType !== "authorization_code" && grantType !== "refresh_token") {
@@ -1051,7 +1312,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (!client) return invalidClient();
 		client.lastUsedAt = now();
 		if (!client.grantTypes.includes(grantType)) {
-			return oauthError(400, "unauthorized_client", `The client was not registered for grant_type ${grantType}.`);
+			return oauthError(
+				400,
+				"unauthorized_client",
+				`The client was not registered for grant_type ${grantType}.`,
+			);
 		}
 		if (grantType === "authorization_code") return await exchangeCode(form, clientId);
 		return refreshGrant(form, clientId);
@@ -1059,7 +1324,13 @@ export function createOAuth(options: OAuthOptions): OAuth {
 
 	async function revoke(req: Request, ip = UNKNOWN_IP): Promise<Response> {
 		const limit = revokeLimiter.hit(ip);
-		if (!limit.ok) return oauthError(429, "temporarily_unavailable", "Too many revocation requests. Try again later.", rateLimited(limit.retryAfterSec));
+		if (!limit.ok)
+			return oauthError(
+				429,
+				"temporarily_unavailable",
+				"Too many revocation requests. Try again later.",
+				rateLimited(limit.retryAfterSec),
+			);
 		const text = await readBodyText(req, MAX_FORM_BYTES);
 		if (text === null) {
 			refusedInput("/oauth/revoke", "body", "TOO_LARGE", ip);
@@ -1099,7 +1370,12 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		protectedResourceMetadata() {
 			return jsonResponse(
 				200,
-				{ resource, authorization_servers: [origin], bearer_methods_supported: ["header"], resource_name: "ultrathink" },
+				{
+					resource,
+					authorization_servers: [origin],
+					bearer_methods_supported: ["header"],
+					resource_name: "ultrathink",
+				},
 				{ "Cache-Control": "public, max-age=3600" },
 			);
 		},
@@ -1127,7 +1403,12 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		async authorize(req, ip) {
 			// GET and POST (approve or poll) share one budget: every hit reaches the consent machinery.
 			const limit = authorizeLimiter.hit(ip);
-			if (!limit.ok) return errorPage(429, "Too many requests. Wait and try again.", rateLimited(limit.retryAfterSec));
+			if (!limit.ok)
+				return errorPage(
+					429,
+					"Too many requests. Wait and try again.",
+					rateLimited(limit.retryAfterSec),
+				);
 			if (req.method === "GET") return authorizeGet(new URL(req.url).searchParams);
 			return await authorizePost(req, ip);
 		},

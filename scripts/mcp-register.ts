@@ -2,7 +2,16 @@
 // Copyright (C) 2026 SWC Studio
 // Register the central ultrathink MCP gateway (notion, linear, greptile) in every host's user config.
 // Usage: see USAGE below (`bun scripts/mcp-register.ts --help`).
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,7 +103,12 @@ const KEPT_ON_REMOVE = "existing entry is not ultrathink's; left in place";
 const ABSENT: Found = { present: false, ours: false, matches: false, disabled: false };
 const UNKNOWN: Found = { present: true, ours: false, matches: false, disabled: false };
 // Actions that run host commands (and are verified afterwards).
-const ACTING: Partial<Record<Action, true>> = { added: true, replaced: true, "re-enabled": true, removed: true };
+const ACTING: Partial<Record<Action, true>> = {
+	added: true,
+	replaced: true,
+	"re-enabled": true,
+	removed: true,
+};
 
 function isObject(value: unknown): value is Json {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -115,7 +129,8 @@ export function decide(id: string, found: Found, mode: Mode): Change {
 		return found.ours ? { id, action: "removed" } : { id, action: "kept", reason: KEPT_ON_REMOVE };
 	}
 	if (found.matches && !found.disabled) return { id, action: "unchanged" };
-	if (found.present && !found.ours && mode !== "replace") return { id, action: "kept", reason: KEPT_ON_ADD };
+	if (found.present && !found.ours && mode !== "replace")
+		return { id, action: "kept", reason: KEPT_ON_ADD };
 	if (found.disabled) return { id, action: "re-enabled", reason: "was disabled" };
 	return { id, action: found.present ? "replaced" : "added" };
 }
@@ -145,7 +160,8 @@ function mergeServers(
 				isObject(existing) &&
 				Object.keys(existing).every((key) => key in wanted) &&
 				Object.entries(wanted).every(
-					([key, value]) => sameJson(existing[key], value) || (key === "type" && existing[key] === undefined),
+					([key, value]) =>
+						sameJson(existing[key], value) || (key === "type" && existing[key] === undefined),
 				),
 			disabled: false,
 		};
@@ -176,18 +192,38 @@ function removeServers(current: unknown, ids: string[], legacyKey?: string): Mer
 			next[key] = rest;
 		}
 		if (ours.length) return { id, action: "removed" };
-		return holders.length ? { id, action: "kept", reason: KEPT_ON_REMOVE } : { id, action: "not registered" };
+		return holders.length
+			? { id, action: "kept", reason: KEPT_ON_REMOVE }
+			: { id, action: "not registered" };
 	});
 	return { next, changes };
 }
 
 export function mergeOmpMcp(current: unknown, entries: Entry[], mode: Mode = "add"): MergeResult {
-	if (mode === "remove") return removeServers(current, entries.map((e) => e.id));
-	return mergeServers(current, entries, (e) => ({ type: "stdio", command: e.command, args: e.args }), mode);
+	if (mode === "remove")
+		return removeServers(
+			current,
+			entries.map((e) => e.id),
+		);
+	return mergeServers(
+		current,
+		entries,
+		(e) => ({ type: "stdio", command: e.command, args: e.args }),
+		mode,
+	);
 }
 
-export function mergeMuseSettings(current: unknown, entries: Entry[], mode: Mode = "add"): MergeResult {
-	if (mode === "remove") return removeServers(current, entries.map((e) => e.id), "mcp_servers");
+export function mergeMuseSettings(
+	current: unknown,
+	entries: Entry[],
+	mode: Mode = "add",
+): MergeResult {
+	if (mode === "remove")
+		return removeServers(
+			current,
+			entries.map((e) => e.id),
+			"mcp_servers",
+		);
 	const base = isObject(current) ? current : { schema_version: 1 };
 	return mergeServers(
 		base,
@@ -198,7 +234,10 @@ export function mergeMuseSettings(current: unknown, entries: Entry[], mode: Mode
 	);
 }
 
-const CLI_COMMANDS: Record<CliHost, { add: (entry: Entry) => string[][]; remove: (id: string) => string[][] }> = {
+const CLI_COMMANDS: Record<
+	CliHost,
+	{ add: (entry: Entry) => string[][]; remove: (id: string) => string[][] }
+> = {
 	claude: {
 		add: (e) => [
 			["claude", "mcp", "remove", "--scope", "user", e.id],
@@ -219,7 +258,12 @@ const CLI_COMMANDS: Record<CliHost, { add: (entry: Entry) => string[][]; remove:
 	},
 };
 
-function planFrom(host: CliHost, entries: Entry[], find: (entry: Entry) => Found, mode: Mode): Plan {
+function planFrom(
+	host: CliHost,
+	entries: Entry[],
+	find: (entry: Entry) => Found,
+	mode: Mode,
+): Plan {
 	const plan: Plan = { commands: [], changes: [] };
 	for (const entry of entries) {
 		const found = find(entry);
@@ -249,7 +293,8 @@ export function planClaude(run: Run, entries: Entry[], options: PlanOptions = {}
 				const command = /^\s*Command:\s*(.+?)\s*$/m.exec(text)?.[1];
 				const matches =
 					text.includes([entry.command, ...entry.args].join(" ")) ||
-					(text.includes(`Command: ${entry.command}`) && text.includes(`Args: ${entry.args.join(" ")}`));
+					(text.includes(`Command: ${entry.command}`) &&
+						text.includes(`Args: ${entry.args.join(" ")}`));
 				return { present: true, ours: matches || isOurs(command), matches, disabled: false };
 			}
 			const note = `${scope.split(" (")[0]?.toLowerCase()} entry with this name is left alone`;
@@ -295,13 +340,19 @@ export function planGrok(run: Run, entries: Entry[], options: PlanOptions = {}):
 			if (!servers) return UNKNOWN;
 			const named = servers.filter((s) => s.name === entry.id);
 			const user = named.filter((s) => s.scope === undefined || s.scope === "user");
-			const others = [...new Set(named.filter((s) => !user.includes(s)).map((s) => String(s.scope)))];
-			const note = others.length ? `${others.join(", ")}-scope entry with this name is left alone` : undefined;
+			const others = [
+				...new Set(named.filter((s) => !user.includes(s)).map((s) => String(s.scope))),
+			];
+			const note = others.length
+				? `${others.join(", ")}-scope entry with this name is left alone`
+				: undefined;
 			if (!user.length) return { ...ABSENT, note };
 			return {
 				present: true,
 				ours: user.every((s) => isOurs(s.command)),
-				matches: user.some((s) => s.command === entry.command && sameJson(s.args ?? [], entry.args)),
+				matches: user.some(
+					(s) => s.command === entry.command && sameJson(s.args ?? [], entry.args),
+				),
 				disabled: false,
 				note,
 			};
@@ -348,7 +399,8 @@ export function hermesServerCommands(text: string): Map<string, string | undefin
 		if (childIndent < 0) childIndent = indent;
 		if (indent !== childIndent) continue;
 		const command = /^command:\s*(.+?)\s*$/.exec(line)?.[1];
-		if (command !== undefined && found.get(current) === undefined) found.set(current, unquote(command));
+		if (command !== undefined && found.get(current) === undefined)
+			found.set(current, unquote(command));
 	}
 	return found;
 }
@@ -359,13 +411,17 @@ export function hermesServerCommands(text: string): Map<string, string | undefin
  * selects `profiles/<name>` under HERMES_HOME (or ~/.hermes). Undefined when that profile cannot be resolved,
  * which Hermes itself refuses to run with.
  */
-export function hermesConfigFile(env: Record<string, string | undefined>, home: string): string | undefined {
+export function hermesConfigFile(
+	env: Record<string, string | undefined>,
+	home: string,
+): string | undefined {
 	const native = resolve(home, ".hermes");
 	const envHome = env.HERMES_HOME?.trim() || undefined;
 	if (envHome && basename(dirname(envHome)) === "profiles") return join(envHome, "config.yaml");
 	const base = envHome ?? native;
 	const envPath = envHome === undefined ? undefined : resolve(envHome);
-	const root = envPath === undefined || envPath === native || envPath.startsWith(`${native}/`) ? native : base;
+	const root =
+		envPath === undefined || envPath === native || envPath.startsWith(`${native}/`) ? native : base;
 	let active = "";
 	try {
 		active = readFileSync(join(root, "active_profile"), "utf8").trim().toLowerCase();
@@ -382,7 +438,9 @@ export function hermesConfigFile(env: Record<string, string | undefined>, home: 
 // A row's command is trusted only when config.yaml agrees with it (or, without a config entry, when the row is
 // untruncated); a missing row, a url server or any disagreement between the two makes the entry foreign.
 export function planHermes(run: Run, entries: Entry[], options: PlanOptions = {}): Plan {
-	const lines = run(["hermes", "mcp", "list"]).stdout.split("\n").map((line) => line.trim());
+	const lines = run(["hermes", "mcp", "list"])
+		.stdout.split("\n")
+		.map((line) => line.trim());
 	const config = options.hermesConfig?.();
 	const commands = config === undefined ? undefined : hermesServerCommands(config);
 	return planFrom(
@@ -391,10 +449,18 @@ export function planHermes(run: Run, entries: Entry[], options: PlanOptions = {}
 		(entry) => {
 			const full = [entry.command, ...entry.args].join(" ");
 			const named = lines.filter((line) => line.split(/\s+/)[0] === entry.id);
-			const transports = named.map((line) => line.slice(entry.id.length).trim().split(/\s{2,}/)[0] ?? "");
+			const transports = named.map(
+				(line) =>
+					line
+						.slice(entry.id.length)
+						.trim()
+						.split(/\s{2,}/)[0] ?? "",
+			);
 			const shown = named.filter((_, i) => {
 				const transport = transports[i] ?? "";
-				return transport.endsWith("...") ? full.startsWith(transport.slice(0, -3)) : transport === full;
+				return transport.endsWith("...")
+					? full.startsWith(transport.slice(0, -3))
+					: transport === full;
 			});
 			// Status column is `✓ enabled` or `✗ disabled`; Hermes saves failed connection tests disabled.
 			const disabled = shown.length > 0 && shown.every((line) => /\bdisabled\s*$/.test(line));
@@ -408,7 +474,9 @@ export function planHermes(run: Run, entries: Entry[], options: PlanOptions = {}
 					const text = truncated ? t.slice(0, -3) : t;
 					if (configured === undefined) return !truncated && isOurs(text.split(/\s+/)[0]);
 					const agrees =
-						text === configured || text.startsWith(`${configured} `) || (truncated && configured.startsWith(text));
+						text === configured ||
+						text.startsWith(`${configured} `) ||
+						(truncated && configured.startsWith(text));
 					return agrees && isOurs(configured);
 				});
 			return { present: named.length > 0 || inConfig, ours, matches: shown.length > 0, disabled };
@@ -457,7 +525,11 @@ function report(host: Host, changes: Change[], log: (line: string) => void): voi
 const spawnRun: Run = (cmd, options) => {
 	const stdin = options?.stdin === undefined ? "ignore" : Buffer.from(options.stdin);
 	const proc = Bun.spawnSync(cmd, { stdin, stdout: "pipe", stderr: "pipe" });
-	return { code: proc.exitCode ?? 1, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
+	return {
+		code: proc.exitCode ?? 1,
+		stdout: proc.stdout.toString(),
+		stderr: proc.stderr.toString(),
+	};
 };
 
 const PLANNERS: Record<CliHost, (run: Run, entries: Entry[], options?: PlanOptions) => Plan> = {
@@ -472,7 +544,13 @@ export interface ApplyOptions extends PlanOptions {
 
 // Runs the plan's commands, then re-plans to confirm every changed entry is now registered (or gone, for --remove).
 // `hermes mcp add|remove` prompt (connection test / confirm); feeding "y\n" saves even when auth is pending.
-export function applyCliPlan(host: CliHost, run: Run, entries: Entry[], plan: Plan, options: ApplyOptions = {}): Change[] {
+export function applyCliPlan(
+	host: CliHost,
+	run: Run,
+	entries: Entry[],
+	plan: Plan,
+	options: ApplyOptions = {},
+): Change[] {
 	const log = options.log ?? console.log;
 	const removing = options.mode === "remove";
 	const stdin = host === "hermes" ? "y\n" : undefined;
@@ -496,15 +574,21 @@ export function applyCliPlan(host: CliHost, run: Run, entries: Entry[], plan: Pl
 		if (!removing && host === "hermes" && next === "re-enabled") {
 			return { id: c.id, action: "saved disabled", reason: `${c.id} not authenticated yet` };
 		}
-		const fallback = removing ? `still registered after ${host} mcp remove` : `not registered after ${host} mcp add`;
+		const fallback = removing
+			? `still registered after ${host} mcp remove`
+			: `not registered after ${host} mcp add`;
 		return { id: c.id, action: "FAILED", reason: errors.get(c.id) ?? fallback };
 	});
 }
 
 function list(value: string | undefined, allowed: readonly string[], name: string): string[] {
 	if (!value) return [...allowed];
-	const items = value.split(",").map((s) => s.trim()).filter(Boolean);
-	for (const item of items) if (!allowed.includes(item)) throw new Error(`unknown ${name}: ${item}`);
+	const items = value
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+	for (const item of items)
+		if (!allowed.includes(item)) throw new Error(`unknown ${name}: ${item}`);
 	return items;
 }
 
@@ -531,8 +615,13 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 		log(USAGE);
 		return 0;
 	}
-	if (argv.includes("--replace") && argv.includes("--remove")) throw new Error("--replace and --remove cannot be combined");
-	const mode: Mode = argv.includes("--remove") ? "remove" : argv.includes("--replace") ? "replace" : "add";
+	if (argv.includes("--replace") && argv.includes("--remove"))
+		throw new Error("--replace and --remove cannot be combined");
+	const mode: Mode = argv.includes("--remove")
+		? "remove"
+		: argv.includes("--replace")
+			? "replace"
+			: "add";
 	const dryRun = argv.includes("--dry-run");
 	const hosts = list(argValue(argv, "--hosts"), HOSTS, "host") as Host[];
 	const providers = list(argValue(argv, "--providers"), PROVIDER_IDS, "provider");
@@ -550,7 +639,10 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 		claudeConfig: () => readText(claudeFile),
 	};
 	let failed = false;
-	if (dryRun) log("dry run: no file is written and no host is changed; read-only list/get commands still run");
+	if (dryRun)
+		log(
+			"dry run: no file is written and no host is changed; read-only list/get commands still run",
+		);
 	if (mode !== "remove" && `${root}/`.includes("/plugins/cache/")) {
 		log(
 			`warning: ${root} is a plugin cache that the next plugin update replaces, which would break the registered commands; clone the repository to a stable directory and rerun mcp-register from there`,
@@ -565,10 +657,15 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 					? join(env.PI_CODING_AGENT_DIR?.trim() || join(home, ".omp", "agent"), "mcp.json")
 					: join(config, "muse", "settings.json");
 			const current = readJson(file);
-			const merged = host === "omp" ? mergeOmpMcp(current, entries, mode) : mergeMuseSettings(current, entries, mode);
+			const merged =
+				host === "omp"
+					? mergeOmpMcp(current, entries, mode)
+					: mergeMuseSettings(current, entries, mode);
 			report(host, merged.changes, log);
 			const dirty =
-				mode === "remove" ? merged.changes.some((c) => c.action === "removed") : !sameJson(current, merged.next);
+				mode === "remove"
+					? merged.changes.some((c) => c.action === "removed")
+					: !sameJson(current, merged.next);
 			if (!dirty) continue;
 			backup(file, stamp, dryRun, log);
 			log(`  write ${file}`);
@@ -589,7 +686,9 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 					? join(env.GROK_HOME?.trim() || join(home, ".grok"), "config.toml")
 					: hermesFile;
 		if (configFile === undefined) {
-			log("  hermes: the active Hermes profile could not be resolved (check `hermes profile list`); config.yaml not backed up");
+			log(
+				"  hermes: the active Hermes profile could not be resolved (check `hermes profile list`); config.yaml not backed up",
+			);
 		} else backup(configFile, stamp, dryRun, log);
 		if (dryRun) {
 			for (const cmd of plan.commands) log(`  $ ${cmd.join(" ")}`);

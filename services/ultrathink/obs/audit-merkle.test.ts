@@ -3,11 +3,20 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { createFrontier, EMPTY_ROOT, type FrontierPeak, type FrontierState, leafHash, nodeHash, seedFrontier } from "./audit-merkle.ts";
+import {
+	createFrontier,
+	EMPTY_ROOT,
+	type FrontierPeak,
+	type FrontierState,
+	leafHash,
+	nodeHash,
+	seedFrontier,
+} from "./audit-merkle.ts";
 
 const hashOf = (label: string): string => createHash("sha256").update(label).digest("hex");
 
-const leavesOf = (count: number): string[] => Array.from({ length: count }, (_, index) => hashOf(`leaf-${index}`));
+const leavesOf = (count: number): string[] =>
+	Array.from({ length: count }, (_, index) => hashOf(`leaf-${index}`));
 
 function rootOf(hashes: readonly string[]): string {
 	const frontier = createFrontier();
@@ -63,10 +72,22 @@ describe("createFrontier", () => {
 
 	test("small sizes bag their peaks as the RFC 6962 structure dictates", () => {
 		const [a, b, c, d, e] = leavesOf(5);
-		if (a === undefined || b === undefined || c === undefined || d === undefined || e === undefined) {
+		if (
+			a === undefined ||
+			b === undefined ||
+			c === undefined ||
+			d === undefined ||
+			e === undefined
+		) {
 			throw new Error("fixture");
 		}
-		const [la, lb, lc, ld, le] = [a, b, c, d, e].map(leafHash) as [string, string, string, string, string];
+		const [la, lb, lc, ld, le] = [a, b, c, d, e].map(leafHash) as [
+			string,
+			string,
+			string,
+			string,
+			string,
+		];
 		const ab = nodeHash(la, lb);
 		const cd = nodeHash(lc, ld);
 		expect(rootOf([a, b])).toBe(ab);
@@ -180,7 +201,14 @@ describe("snapshot and seedFrontier", () => {
 		const hashes = leavesOf(6);
 		const reference = rootOf(hashes);
 		const [a, b, c, d, e, f] = hashes;
-		if (a === undefined || b === undefined || c === undefined || d === undefined || e === undefined || f === undefined) {
+		if (
+			a === undefined ||
+			b === undefined ||
+			c === undefined ||
+			d === undefined ||
+			e === undefined ||
+			f === undefined
+		) {
 			throw new Error("fixture");
 		}
 		const ab = nodeHash(leafHash(a), leafHash(b));

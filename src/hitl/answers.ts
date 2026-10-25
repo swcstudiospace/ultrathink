@@ -51,7 +51,13 @@ function findMatch(list: Clarification[], key: string): Clarification | undefine
 	});
 }
 
-function newClarification(id: string, asked: AskedQuestion | undefined, question: string, answer: string, now: number): Clarification {
+function newClarification(
+	id: string,
+	asked: AskedQuestion | undefined,
+	question: string,
+	answer: string,
+	now: number,
+): Clarification {
 	return {
 		id,
 		question,
@@ -75,7 +81,10 @@ export function applyAnswers(
 	response: AskUserQuestionResponse | string | undefined,
 	now: number,
 ): { list: Clarification[]; matched: Clarification[] } {
-	const next = list.map((item) => ({ ...item, options: item.options.map((option) => ({ ...option })) }));
+	const next = list.map((item) => ({
+		...item,
+		options: item.options.map((option) => ({ ...option })),
+	}));
 	const matched: Clarification[] = [];
 	const asked = askedQuestions(input);
 
@@ -101,7 +110,9 @@ export function applyAnswers(
 			record(target, text);
 			return;
 		}
-		const askedItem = asked.find((item) => normalizeQuestion(item.question) === normalizeQuestion(key));
+		const askedItem = asked.find(
+			(item) => normalizeQuestion(item.question) === normalizeQuestion(key),
+		);
 		append(askedItem, askedItem?.question ?? key.trim(), text);
 	};
 

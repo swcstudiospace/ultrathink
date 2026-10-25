@@ -98,15 +98,20 @@ export function hookCommand(node: string, script: string): string {
 export function isOwned(entry: unknown): boolean {
 	return (
 		isObject(entry) &&
-		(entry[OUR_MARKER] === true || (typeof entry.command === "string" && entry.command.includes(HOOK_FILE)))
+		(entry[OUR_MARKER] === true ||
+			(typeof entry.command === "string" && entry.command.includes(HOOK_FILE)))
 	);
 }
 
 /** A fresh hooks.json value with hooks.EVENT as an array, or a reason the file cannot be shaped safely. */
-function prepare(current: unknown): { top: Json; hooks: Json; list: unknown[] } | { reason: string } {
-	if (current !== undefined && !isObject(current)) return { reason: "hooks.json top-level value is not an object" };
+function prepare(
+	current: unknown,
+): { top: Json; hooks: Json; list: unknown[] } | { reason: string } {
+	if (current !== undefined && !isObject(current))
+		return { reason: "hooks.json top-level value is not an object" };
 	const top: Json = current === undefined ? {} : { ...current };
-	if (top.hooks !== undefined && !isObject(top.hooks)) return { reason: 'hooks.json: "hooks" is not an object' };
+	if (top.hooks !== undefined && !isObject(top.hooks))
+		return { reason: 'hooks.json: "hooks" is not an object' };
 	const hooks: Json = top.hooks === undefined ? {} : { ...top.hooks };
 	const existing = hooks[EVENT];
 	if (existing !== undefined && !Array.isArray(existing)) {
@@ -129,9 +134,12 @@ export function upsertHook(current: unknown, wanted: Json): HookChange {
 		return { next: top, action: "added" };
 	}
 	const duplicates = list.some((entry, index) => index > first && isOwned(entry));
-	if (!duplicates && JSON.stringify(list[first]) === JSON.stringify(wanted)) return { action: "unchanged" };
+	if (!duplicates && JSON.stringify(list[first]) === JSON.stringify(wanted))
+		return { action: "unchanged" };
 	// Foreign entries keep their slots; owned ones collapse into `wanted` at the first owned slot.
-	hooks[EVENT] = list.flatMap((entry, index) => (index === first ? [wanted] : isOwned(entry) ? [] : [entry]));
+	hooks[EVENT] = list.flatMap((entry, index) =>
+		index === first ? [wanted] : isOwned(entry) ? [] : [entry],
+	);
 	return { next: top, action: "replaced" };
 }
 
@@ -146,13 +154,17 @@ export function removeHook(current: unknown): HookChange {
 }
 
 /** Reads hooks.json; a missing file is an empty config, an unparseable one is a hard error. `raw` is the bytes a later write must still find. */
-export function readHooksFile(file: string): { config?: unknown; raw?: string } | { reason: string } {
+export function readHooksFile(
+	file: string,
+): { config?: unknown; raw?: string } | { reason: string } {
 	if (!existsSync(file)) return { config: undefined };
 	try {
 		const raw = readFileSync(file, "utf8");
 		return { config: JSON.parse(raw), raw };
 	} catch (error) {
-		return { reason: `hooks.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}` };
+		return {
+			reason: `hooks.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		};
 	}
 }
 
@@ -162,7 +174,8 @@ export function readHooksFile(file: string): { config?: unknown; raw?: string } 
  * concurrent edit is not replaced with the snapshot from before that edit. Returns false when it refuses.
  */
 export function writeHooksFile(file: string, value: unknown, expectedRaw?: string): boolean {
-	const current = (): string | undefined => (existsSync(file) ? readFileSync(file, "utf8") : undefined);
+	const current = (): string | undefined =>
+		existsSync(file) ? readFileSync(file, "utf8") : undefined;
 	let seen: string | undefined;
 	try {
 		seen = current();
@@ -201,9 +214,11 @@ function commitHooks(
 		if ("reason" in parsed) return { code: fail(log, parsed.reason) };
 		const merged = merge(parsed.config);
 		if (merged.reason) return { code: fail(log, merged.reason) };
-		if (merged.next === undefined) return { code: 0, ...(merged.action ? { action: merged.action } : {}) };
+		if (merged.next === undefined)
+			return { code: 0, ...(merged.action ? { action: merged.action } : {}) };
 		beforeCommit?.();
-		if (writeHooksFile(file, merged.next, parsed.raw)) return { code: 0, ...(merged.action ? { action: merged.action } : {}) };
+		if (writeHooksFile(file, merged.next, parsed.raw))
+			return { code: 0, ...(merged.action ? { action: merged.action } : {}) };
 	}
 	return { code: fail(log, "hooks.json changed while it was being updated; re-run the command") };
 }
@@ -241,7 +256,12 @@ function processAlive(pid: number): boolean {
 }
 
 function errorCode(error: unknown): string | undefined {
-	return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+	return typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		typeof error.code === "string"
+		? error.code
+		: undefined;
 }
 
 /** First field of the lock file. A bare pid (`123\n`) and `pid token` both count; anything else is unidentified. */
@@ -268,7 +288,8 @@ function lockIsFree(file: string): boolean {
 		return errorCode(error) === "ENOENT";
 	}
 	const pid = lockPid(raw);
-	const dead = pid !== undefined ? !processAlive(pid) : Date.now() - mtimeMs >= HOOK_LOCK_EMPTY_GRACE_MS;
+	const dead =
+		pid !== undefined ? !processAlive(pid) : Date.now() - mtimeMs >= HOOK_LOCK_EMPTY_GRACE_MS;
 	if (!dead) return false;
 	try {
 		if (readFileSync(file, "utf8") !== raw) return false;
@@ -337,11 +358,15 @@ export function acquireHookLock(
 				}
 			});
 		} catch (error) {
-			return { reason: `could not lock the Cursor hook update: ${error instanceof Error ? error.message : String(error)}` };
+			return {
+				reason: `could not lock the Cursor hook update: ${error instanceof Error ? error.message : String(error)}`,
+			};
 		}
 		if (outcome === "acquired") return { release: () => releaseHookLock(file, payload) };
 		if (Date.now() >= deadline) {
-			return { reason: "another install or remove is updating the Cursor hook; re-run the command" };
+			return {
+				reason: "another install or remove is updating the Cursor hook; re-run the command",
+			};
 		}
 		sleepMs(Math.min(50, Math.max(1, deadline - Date.now())));
 	}
@@ -405,7 +430,10 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 		else return usage(log, `unexpected argument: ${argv[i]}`);
 	}
 	if (command !== "install" && command !== "remove") {
-		return usage(log, command ? `unknown command: ${command}` : "missing command (install or remove)");
+		return usage(
+			log,
+			command ? `unknown command: ${command}` : "missing command (install or remove)",
+		);
 	}
 	// Relative --cursor-dir values are resolved now. Cursor does not launch the hook from the installer's cwd.
 	const cursorDir = resolve(cursorArg ?? join(env.HOME?.trim() || homedir(), ".cursor"));
@@ -420,8 +448,13 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 		if (!existsSync(source)) return fail(log, `hook source not found: ${source}`);
 		const candidates = deps.nodeCandidates ?? nodeCandidates(env);
 		const node = resolveNode(candidates);
-		if (node === undefined) return fail(log, `no executable node found (tried ${candidates.join(", ")})`);
-		const wanted: Json = { type: "command", command: hookCommand(node, staged), [OUR_MARKER]: true };
+		if (node === undefined)
+			return fail(log, `no executable node found (tried ${candidates.join(", ")})`);
+		const wanted: Json = {
+			type: "command",
+			command: hookCommand(node, staged),
+			[OUR_MARKER]: true,
+		};
 		// Refuse a parseable but unusable hooks.json before copying the script.
 		// {"hooks":[]} is valid JSON and would otherwise replace a staged hook that never gets registered.
 		const preview = upsertHook(initial.config, wanted);
@@ -444,7 +477,12 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 				throw error;
 			}
 			log(`staged ${staged}`);
-			const committed = commitHooks(file, (current) => upsertHook(current, wanted), log, deps.beforeCommit);
+			const committed = commitHooks(
+				file,
+				(current) => upsertHook(current, wanted),
+				log,
+				deps.beforeCommit,
+			);
 			if (committed.code !== 0) {
 				restoreStaged(staged, previous);
 				return committed.code;

@@ -48,7 +48,10 @@ interface Harness {
 	logs: LogLine[];
 }
 
-function harness(configOverrides: Partial<UltrathinkConfig> = {}, deps: Partial<RouterDeps> = {}): Harness {
+function harness(
+	configOverrides: Partial<UltrathinkConfig> = {},
+	deps: Partial<RouterDeps> = {},
+): Harness {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-obs-"));
 	dirs.push(dir);
 	const config: UltrathinkConfig = {
@@ -104,7 +107,11 @@ function harness(configOverrides: Partial<UltrathinkConfig> = {}, deps: Partial<
 	};
 	const store = openStore(config.dbPath);
 	stores.push(store);
-	const auth = createAuth({ ownerPasswordHash: OWNER_HASH, sessionSecret: SESSION_SECRET, cookieSecure: true });
+	const auth = createAuth({
+		ownerPasswordHash: OWNER_HASH,
+		sessionSecret: SESSION_SECRET,
+		cookieSecure: true,
+	});
 	const logs: LogLine[] = [];
 	const logger = createLogger({ write: (line) => logs.push(JSON.parse(line) as LogLine) });
 	const app = createApp({ config, store, auth, logger, ...deps });
@@ -174,7 +181,9 @@ describe("request spans and correlation", () => {
 		const sink = recordingSink();
 		const h = harness({}, { spans: sink });
 		const response = await h.app.handle(
-			new Request(`${ORIGIN}/healthz`, { headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-01`, tracestate: "vendor=x" } }),
+			new Request(`${ORIGIN}/healthz`, {
+				headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-01`, tracestate: "vendor=x" },
+			}),
 			PEER,
 		);
 		const echoed = response.headers.get("traceparent") ?? "";
@@ -189,24 +198,44 @@ describe("request spans and correlation", () => {
 			name: "GET healthz",
 			kind: 2,
 			error: false,
-			attributes: { "http.request.method": "GET", "http.response.status_code": 200, "ultrathink.endpoint": "healthz" },
+			attributes: {
+				"http.request.method": "GET",
+				"http.response.status_code": 200,
+				"ultrathink.endpoint": "healthz",
+			},
 		});
 	});
 
 	test("the request log line carries the reqId, traceId and spanId that the response headers carry", async () => {
 		const h = harness();
-		const response = await h.app.handle(new Request(`${ORIGIN}/healthz`, { headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-01` } }), PEER);
+		const response = await h.app.handle(
+			new Request(`${ORIGIN}/healthz`, {
+				headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-01` },
+			}),
+			PEER,
+		);
 		const reqId = response.headers.get("x-request-id");
 		const line = logsOf(h, "request").find((entry) => entry.reqId === reqId);
 		expect(line).toBeDefined();
-		expect(line).toMatchObject({ traceId: TRACE_ID, spanId: response.headers.get("traceparent")?.split("-")[2], status: 200 });
+		expect(line).toMatchObject({
+			traceId: TRACE_ID,
+			spanId: response.headers.get("traceparent")?.split("-")[2],
+			status: 200,
+		});
 	});
 
 	test("an unsampled inbound traceparent records no span and answers with flags 00", async () => {
 		const sink = recordingSink();
 		const h = harness({}, { spans: sink });
-		const response = await h.app.handle(new Request(`${ORIGIN}/healthz`, { headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-00` } }), PEER);
-		expect(response.headers.get("traceparent")).toMatch(new RegExp(`^00-${TRACE_ID}-[0-9a-f]{16}-00$`));
+		const response = await h.app.handle(
+			new Request(`${ORIGIN}/healthz`, {
+				headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-00` },
+			}),
+			PEER,
+		);
+		expect(response.headers.get("traceparent")).toMatch(
+			new RegExp(`^00-${TRACE_ID}-[0-9a-f]{16}-00$`),
+		);
 		expect(sink.recorded).toHaveLength(0);
 	});
 
@@ -215,12 +244,17 @@ describe("request spans and correlation", () => {
 		const h = harness({}, { spans: sink });
 		const token = `bt_${randomBytes(16).toString("hex")}`;
 		const peerIp = "203.0.113.77";
-		const response = await h.app.handle(new Request(`${ORIGIN}/ultrathink`, { headers: { Authorization: `Bearer ${token}` } }), peerIp);
+		const response = await h.app.handle(
+			new Request(`${ORIGIN}/ultrathink`, { headers: { Authorization: `Bearer ${token}` } }),
+			peerIp,
+		);
 		expect(response.status).toBe(401);
 
 		expect(sink.recorded).toHaveLength(1);
 		// Span times are bigints, which JSON cannot encode; they are written out as decimal strings for the search.
-		const exported = JSON.stringify(sink.recorded, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value));
+		const exported = JSON.stringify(sink.recorded, (_key, value: unknown) =>
+			typeof value === "bigint" ? value.toString() : value,
+		);
 		expect(exported).not.toContain(token);
 		expect(exported).not.toContain(peerIp);
 	});
@@ -230,7 +264,12 @@ describe("runtime-fed signals", () => {
 	test("upstream failures past breakerFailures are counted as one closed-to-open transition on /metrics", async () => {
 		const failing: OpenRouterFetch = async () => new Response("upstream down", { status: 500 });
 		const h = harness(
-			{ serverPlanning: true, planningModel: "x-ai/grok-test", openRouterApiKey: FAKE_KEY, breakerFailures: 3 },
+			{
+				serverPlanning: true,
+				planningModel: "x-ai/grok-test",
+				openRouterApiKey: FAKE_KEY,
+				breakerFailures: 3,
+			},
 			{ fetch: failing, sleep: instantBackoff },
 		);
 		await h.app.handle(
@@ -241,7 +280,10 @@ describe("runtime-fed signals", () => {
 					jsonrpc: "2.0",
 					id: 1,
 					method: "tools/call",
-					params: { name: "ultrathink_uplift", arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() } },
+					params: {
+						name: "ultrathink_uplift",
+						arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() },
+					},
 				}),
 			}),
 			PEER,
@@ -249,7 +291,9 @@ describe("runtime-fed signals", () => {
 
 		const scrape = await h.app.handle(new Request(`${ORIGIN}/metrics`), PEER);
 		expect(scrape.status).toBe(200);
-		expect(sample(h, "ultrathink_upstream_breaker_transitions_total", { from: "closed", to: "open" })).toBe(1);
+		expect(
+			sample(h, "ultrathink_upstream_breaker_transitions_total", { from: "closed", to: "open" }),
+		).toBe(1);
 		expect(sample(h, "ultrathink_upstream_breaker_state", { state: "open" })).toBe(1);
 		await h.app.shutdown();
 	});
@@ -261,7 +305,9 @@ describe("runtime-fed signals", () => {
 
 		for (let i = 0; i < 5; i += 1) h.app.observeRuntime(runtime(30));
 		expect(sample(h, "ultrathink_anomaly_active", { signal: "event_loop_lag" })).toBe(1);
-		expect(sample(h, "ultrathink_anomaly_transitions_total", { signal: "event_loop_lag", to: "raised" })).toBe(1);
+		expect(
+			sample(h, "ultrathink_anomaly_transitions_total", { signal: "event_loop_lag", to: "raised" }),
+		).toBe(1);
 
 		const lines = logsOf(h, "anomaly");
 		expect(lines).toHaveLength(1);
@@ -282,9 +328,15 @@ describe("runtime-fed signals", () => {
 
 		// Three requests so far, one of them 5xx: the bad share is 1/3 against a 1 % allowance.
 		const badShare = 1 / 3;
-		expect(sample(h, "ultrathink_slo_error_budget_remaining_ratio", { slo: "http_availability" })).toBeCloseTo(1 - badShare / 0.01, 4);
-		expect(sample(h, "ultrathink_slo_burn_rate", { slo: "http_availability", window: "5m" })).toBeCloseTo(badShare / 0.01, 4);
-		expect(sample(h, "ultrathink_slo_observed_seconds", { slo: "http_availability" })).toBeDefined();
+		expect(
+			sample(h, "ultrathink_slo_error_budget_remaining_ratio", { slo: "http_availability" }),
+		).toBeCloseTo(1 - badShare / 0.01, 4);
+		expect(
+			sample(h, "ultrathink_slo_burn_rate", { slo: "http_availability", window: "5m" }),
+		).toBeCloseTo(badShare / 0.01, 4);
+		expect(
+			sample(h, "ultrathink_slo_observed_seconds", { slo: "http_availability" }),
+		).toBeDefined();
 	});
 });
 
@@ -304,12 +356,19 @@ describe("retention sweep, planner correlation and shutdown", () => {
 		const started = await h.app.handle(
 			new Request(`${ORIGIN}/mcp`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY, "x-request-id": "req-plan-0001" },
+				headers: {
+					"Content-Type": "application/json",
+					"x-connector-key": CONNECTOR_KEY,
+					"x-request-id": "req-plan-0001",
+				},
 				body: JSON.stringify({
 					jsonrpc: "2.0",
 					id: 1,
 					method: "tools/call",
-					params: { name: "ultrathink_uplift", arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() } },
+					params: {
+						name: "ultrathink_uplift",
+						arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() },
+					},
 				}),
 			}),
 			PEER,

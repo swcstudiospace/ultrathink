@@ -11,7 +11,11 @@ import {
 	HALF_OPEN_RETRY_MS,
 } from "./breaker.ts";
 
-function clock(start = 1_000_000): { now: () => number; advance: (ms: number) => void; set: (t: number) => void } {
+function clock(start = 1_000_000): {
+	now: () => number;
+	advance: (ms: number) => void;
+	set: (t: number) => void;
+} {
 	let t = start;
 	return { now: () => t, advance: (ms) => (t += ms), set: (v) => (t = v) };
 }
@@ -51,14 +55,30 @@ function fail(breaker: CircuitBreaker): void {
 describe("createCircuitBreaker options", () => {
 	test("rejects non positive-integer thresholds and durations", () => {
 		const base: CircuitBreakerOptions = { failureThreshold: 1, windowMs: 1, openMs: 1 };
-		for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, "3"]) {
-			expect(() => createCircuitBreaker({ ...base, failureThreshold: bad as number })).toThrow(RangeError);
+		for (const bad of [
+			0,
+			-1,
+			1.5,
+			Number.NaN,
+			Number.POSITIVE_INFINITY,
+			Number.MAX_SAFE_INTEGER + 1,
+			"3",
+		]) {
+			expect(() => createCircuitBreaker({ ...base, failureThreshold: bad as number })).toThrow(
+				RangeError,
+			);
 			expect(() => createCircuitBreaker({ ...base, windowMs: bad as number })).toThrow(RangeError);
 			expect(() => createCircuitBreaker({ ...base, openMs: bad as number })).toThrow(RangeError);
-			expect(() => createCircuitBreaker({ ...base, halfOpenMaxCalls: bad as number })).toThrow(RangeError);
+			expect(() => createCircuitBreaker({ ...base, halfOpenMaxCalls: bad as number })).toThrow(
+				RangeError,
+			);
 		}
-		expect(() => createCircuitBreaker({ ...base, now: 5 as unknown as () => number })).toThrow(RangeError);
-		expect(() => createCircuitBreaker({ ...base, onTransition: "x" as unknown as () => void })).toThrow(RangeError);
+		expect(() => createCircuitBreaker({ ...base, now: 5 as unknown as () => number })).toThrow(
+			RangeError,
+		);
+		expect(() =>
+			createCircuitBreaker({ ...base, onTransition: "x" as unknown as () => void }),
+		).toThrow(RangeError);
 	});
 
 	test("defaults: starts closed with zero counters and halfOpenMaxCalls 1", () => {
@@ -80,7 +100,12 @@ describe("closed state", () => {
 		c.advance(1_000);
 		fail(breaker);
 		expect(breaker.state()).toBe("open");
-		expect(breaker.snapshot()).toEqual({ state: "open", failures: 3, openedAt: c.now(), transitions: 1 });
+		expect(breaker.snapshot()).toEqual({
+			state: "open",
+			failures: 3,
+			openedAt: c.now(),
+			transitions: 1,
+		});
 		expect(transitions).toEqual([["closed", "open"]]);
 	});
 
@@ -127,7 +152,11 @@ describe("closed state", () => {
 describe("closed slot generations", () => {
 	test("a slot admitted before the breaker opened and closed again does not count", () => {
 		const { breaker, clock: c } = harness({ failureThreshold: 2, openMs: 5_000 });
-		const stale = [acquired(breaker.tryAcquire()), acquired(breaker.tryAcquire()), acquired(breaker.tryAcquire())];
+		const stale = [
+			acquired(breaker.tryAcquire()),
+			acquired(breaker.tryAcquire()),
+			acquired(breaker.tryAcquire()),
+		];
 		fail(breaker);
 		fail(breaker);
 		expect(breaker.state()).toBe("open");
@@ -143,7 +172,11 @@ describe("open state", () => {
 	test("refuses with decreasing retryAfterMs until openMs elapses", () => {
 		const { breaker, clock: c } = harness({ failureThreshold: 1, openMs: 5_000 });
 		fail(breaker);
-		expect(refused(breaker.tryAcquire())).toEqual({ ok: false, state: "open", retryAfterMs: 5_000 });
+		expect(refused(breaker.tryAcquire())).toEqual({
+			ok: false,
+			state: "open",
+			retryAfterMs: 5_000,
+		});
 		c.advance(1_000);
 		expect(refused(breaker.tryAcquire()).retryAfterMs).toBe(4_000);
 		c.advance(3_999);
@@ -197,14 +230,22 @@ describe("half-open state", () => {
 		c.advance(5_000);
 		const probe = acquired(breaker.tryAcquire());
 		expect(breaker.state()).toBe("half_open");
-		expect(refused(breaker.tryAcquire())).toEqual({ ok: false, state: "open", retryAfterMs: HALF_OPEN_RETRY_MS });
+		expect(refused(breaker.tryAcquire())).toEqual({
+			ok: false,
+			state: "open",
+			retryAfterMs: HALF_OPEN_RETRY_MS,
+		});
 		expect(HALF_OPEN_RETRY_MS).toBeGreaterThan(0);
 		probe.release("ignored");
 		expect(acquired(breaker.tryAcquire()).ok).toBe(true);
 	});
 
 	test("halfOpenMaxCalls bounds probes in flight", () => {
-		const { breaker, clock: c } = harness({ failureThreshold: 1, openMs: 5_000, halfOpenMaxCalls: 2 });
+		const { breaker, clock: c } = harness({
+			failureThreshold: 1,
+			openMs: 5_000,
+			halfOpenMaxCalls: 2,
+		});
 		fail(breaker);
 		c.advance(5_000);
 		const first = acquired(breaker.tryAcquire());
@@ -242,7 +283,12 @@ describe("half-open state", () => {
 		c.advance(5_000);
 		acquired(breaker.tryAcquire()).release("failure");
 		expect(breaker.state()).toBe("open");
-		expect(breaker.snapshot()).toEqual({ state: "open", failures: 2, openedAt: firstOpenedAt + 5_000, transitions: 3 });
+		expect(breaker.snapshot()).toEqual({
+			state: "open",
+			failures: 2,
+			openedAt: firstOpenedAt + 5_000,
+			transitions: 3,
+		});
 		expect(refused(breaker.tryAcquire()).retryAfterMs).toBe(5_000);
 		expect(transitions).toEqual([
 			["closed", "open"],
@@ -281,7 +327,11 @@ describe("half-open state", () => {
 	});
 
 	test("a stale probe cannot move the breaker after another probe decided", () => {
-		const { breaker, clock: c } = harness({ failureThreshold: 1, openMs: 5_000, halfOpenMaxCalls: 2 });
+		const { breaker, clock: c } = harness({
+			failureThreshold: 1,
+			openMs: 5_000,
+			halfOpenMaxCalls: 2,
+		});
 		fail(breaker);
 		c.advance(5_000);
 		const a = acquired(breaker.tryAcquire());
@@ -310,7 +360,13 @@ describe("transitions", () => {
 		acquired(breaker.tryAcquire()).release("failure");
 		c.advance(5_000);
 		acquired(breaker.tryAcquire()).release("success");
-		expect(seen).toEqual(["closed>open", "open>half_open", "half_open>open", "open>half_open", "half_open>closed"]);
+		expect(seen).toEqual([
+			"closed>open",
+			"open>half_open",
+			"half_open>open",
+			"open>half_open",
+			"half_open>closed",
+		]);
 		expect(breaker.snapshot().transitions).toBe(5);
 		expect(breaker.state()).toBe("closed");
 	});

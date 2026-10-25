@@ -178,7 +178,10 @@ describe("router", () => {
 
 	test("logged-in POST creates exactly one planning run with its route and reason", async () => {
 		const before = runCount();
-		const res = await handler(ultrathinkPost(JSON.stringify({ input: "plan the billing rollout" })), PEER_IP);
+		const res = await handler(
+			ultrathinkPost(JSON.stringify({ input: "plan the billing rollout" })),
+			PEER_IP,
+		);
 		expect(res.status).toBe(202);
 		const body = (await res.json()) as {
 			runId: string;
@@ -198,7 +201,11 @@ describe("router", () => {
 		const before = runCount();
 		const res = await handler(ultrathinkPost(JSON.stringify({ input: " \t \u0007 " })), PEER_IP);
 		expect(res.status).toBe(200);
-		const body = (await res.json()) as { usage: string; routes: string[]; flags: { route: string[] } };
+		const body = (await res.json()) as {
+			usage: string;
+			routes: string[];
+			flags: { route: string[] };
+		};
 		expect(body.routes).toEqual(["planning", "research", "build-plan"]);
 		expect(body.flags.route).toContain("auto");
 		expect(runCount()).toBe(before);
@@ -251,7 +258,9 @@ describe("router", () => {
 	test("wrong Origin is refused with 403 and creates no run", async () => {
 		const before = runCount();
 		const res = await handler(
-			ultrathinkPost(JSON.stringify({ input: "plan the rollout" }), { Origin: "https://evil.test" }),
+			ultrathinkPost(JSON.stringify({ input: "plan the rollout" }), {
+				Origin: "https://evil.test",
+			}),
 			PEER_IP,
 		);
 		expect(res.status).toBe(403);
@@ -260,13 +269,21 @@ describe("router", () => {
 	});
 
 	test("a run owned by another owner returns the same 404 as a missing run", async () => {
-		const foreign = store.createRun({ ownerId: "someone-else", request: "private text", route: "planning" });
+		const foreign = store.createRun({
+			ownerId: "someone-else",
+			request: "private text",
+			route: "planning",
+		});
 		const foreignRes = await handler(
-			new Request(`${PUBLIC_ORIGIN}/ultrathink/runs/${foreign.id}`, { headers: { Cookie: cookie } }),
+			new Request(`${PUBLIC_ORIGIN}/ultrathink/runs/${foreign.id}`, {
+				headers: { Cookie: cookie },
+			}),
 			PEER_IP,
 		);
 		const missingRes = await handler(
-			new Request(`${PUBLIC_ORIGIN}/ultrathink/runs/does-not-exist`, { headers: { Cookie: cookie } }),
+			new Request(`${PUBLIC_ORIGIN}/ultrathink/runs/does-not-exist`, {
+				headers: { Cookie: cookie },
+			}),
 			PEER_IP,
 		);
 		expect(foreignRes.status).toBe(404);
@@ -275,7 +292,11 @@ describe("router", () => {
 	});
 
 	test("GET returns the owner's run status and phase list but never phase output or request text", async () => {
-		const run = store.createRun({ ownerId: OWNER_ID, request: "plan the rollout", route: "planning" });
+		const run = store.createRun({
+			ownerId: OWNER_ID,
+			request: "plan the rollout",
+			route: "planning",
+		});
 		store.recordPhase({
 			runId: run.id,
 			phase: "discover",
@@ -303,7 +324,10 @@ describe("router", () => {
 	});
 
 	test("known path with the wrong method returns 405 with Allow, and unknown path returns 404", async () => {
-		const wrongMethod = await handler(new Request(`${PUBLIC_ORIGIN}/login`, { method: "GET" }), PEER_IP);
+		const wrongMethod = await handler(
+			new Request(`${PUBLIC_ORIGIN}/login`, { method: "GET" }),
+			PEER_IP,
+		);
 		expect(wrongMethod.status).toBe(405);
 		expect(wrongMethod.headers.get("allow")).toBe("POST");
 
@@ -314,18 +338,38 @@ describe("router", () => {
 
 	test("HEAD is answered like the GET it stands for without a body, and refused where GET is", async () => {
 		const get = await handler(new Request(`${PUBLIC_ORIGIN}/healthz`), PEER_IP);
-		const head = await handler(new Request(`${PUBLIC_ORIGIN}/healthz`, { method: "HEAD" }), PEER_IP);
+		const head = await handler(
+			new Request(`${PUBLIC_ORIGIN}/healthz`, { method: "HEAD" }),
+			PEER_IP,
+		);
 		expect(head.status).toBe(200);
 		expect(await head.text()).toBe("");
-		for (const name of ["content-type", "cache-control", "x-content-type-options", "referrer-policy", "x-frame-options", "content-security-policy", "permissions-policy"]) {
-			expect({ name, value: head.headers.get(name) }).toEqual({ name, value: get.headers.get(name) });
+		for (const name of [
+			"content-type",
+			"cache-control",
+			"x-content-type-options",
+			"referrer-policy",
+			"x-frame-options",
+			"content-security-policy",
+			"permissions-policy",
+		]) {
+			expect({ name, value: head.headers.get(name) }).toEqual({
+				name,
+				value: get.headers.get(name),
+			});
 		}
 
 		// The GET handler sees the request headers: the session cookie still authenticates.
-		const usage = await handler(new Request(`${PUBLIC_ORIGIN}/ultrathink`, { method: "HEAD", headers: { Cookie: cookie } }), PEER_IP);
+		const usage = await handler(
+			new Request(`${PUBLIC_ORIGIN}/ultrathink`, { method: "HEAD", headers: { Cookie: cookie } }),
+			PEER_IP,
+		);
 		expect(usage.status).toBe(200);
 		expect(await usage.text()).toBe("");
-		const anonymous = await handler(new Request(`${PUBLIC_ORIGIN}/ultrathink`, { method: "HEAD" }), PEER_IP);
+		const anonymous = await handler(
+			new Request(`${PUBLIC_ORIGIN}/ultrathink`, { method: "HEAD" }),
+			PEER_IP,
+		);
 		expect(anonymous.status).toBe(401);
 		expect(await anonymous.text()).toBe("");
 
@@ -335,7 +379,10 @@ describe("router", () => {
 		const login = await handler(new Request(`${PUBLIC_ORIGIN}/login`, { method: "HEAD" }), PEER_IP);
 		expect(login.status).toBe(405);
 		expect(login.headers.get("allow")).toBe("POST");
-		const post = await handler(new Request(`${PUBLIC_ORIGIN}/healthz`, { method: "POST" }), PEER_IP);
+		const post = await handler(
+			new Request(`${PUBLIC_ORIGIN}/healthz`, { method: "POST" }),
+			PEER_IP,
+		);
 		expect(post.status).toBe(405);
 		expect(post.headers.get("allow")).toBe("GET, HEAD");
 	});
@@ -343,7 +390,11 @@ describe("router", () => {
 	test("login and POST /ultrathink check the Origin before the content type: 403 for a foreign origin, 415 for a form body", async () => {
 		const FORM = "application/x-www-form-urlencoded";
 		const loginForm = (headers: Record<string, string>): Request =>
-			new Request(`${PUBLIC_ORIGIN}/login`, { method: "POST", headers: { "Content-Type": FORM, ...headers }, body: `password=${password}` });
+			new Request(`${PUBLIC_ORIGIN}/login`, {
+				method: "POST",
+				headers: { "Content-Type": FORM, ...headers },
+				body: `password=${password}`,
+			});
 
 		const formLogin = await handler(loginForm({ Origin: PUBLIC_ORIGIN }), PEER_IP);
 		expect(formLogin.status).toBe(415);
@@ -357,10 +408,19 @@ describe("router", () => {
 		expect(originlessLogin.status).toBe(403);
 
 		const before = runCount();
-		const formRun = await handler(ultrathinkPost("input=plan+the+rollout", { "Content-Type": FORM }), PEER_IP);
+		const formRun = await handler(
+			ultrathinkPost("input=plan+the+rollout", { "Content-Type": FORM }),
+			PEER_IP,
+		);
 		expect(formRun.status).toBe(415);
 		expect(await formRun.json()).toEqual({ error: "unsupported_media_type" });
-		const foreignRun = await handler(ultrathinkPost("input=plan+the+rollout", { "Content-Type": FORM, Origin: "https://evil.test" }), PEER_IP);
+		const foreignRun = await handler(
+			ultrathinkPost("input=plan+the+rollout", {
+				"Content-Type": FORM,
+				Origin: "https://evil.test",
+			}),
+			PEER_IP,
+		);
 		expect(foreignRun.status).toBe(403);
 		expect(await foreignRun.json()).toEqual({ error: "forbidden" });
 		expect(runCount()).toBe(before);
@@ -378,7 +438,9 @@ describe("router", () => {
 		expect(responses.map((res) => res.status)).toEqual([200, 200, 404, 405, 401, 202]);
 		for (const res of responses) {
 			expect(res.headers.get("x-frame-options")).toBe("DENY");
-			expect(res.headers.get("content-security-policy")).toBe("default-src 'none'; frame-ancestors 'none'");
+			expect(res.headers.get("content-security-policy")).toBe(
+				"default-src 'none'; frame-ancestors 'none'",
+			);
 			expect(res.headers.get("permissions-policy")).toBe(PERMISSIONS_POLICY);
 			expect(res.headers.get("cache-control")).toBe("no-store");
 		}
@@ -395,7 +457,10 @@ describe("router", () => {
 			const healthBody = (await health.json()) as { error: string };
 			expect(healthBody.error).toBe("persistence_unavailable");
 
-			const post = await closedHandler(ultrathinkPost(JSON.stringify({ input: "plan the rollout" })), PEER_IP);
+			const post = await closedHandler(
+				ultrathinkPost(JSON.stringify({ input: "plan the rollout" })),
+				PEER_IP,
+			);
 			expect(post.status).toBe(503);
 			const body = (await post.json()) as { error: string; correlationId?: string };
 			expect(body.error).toBe("persistence_unavailable");
@@ -412,7 +477,12 @@ describe("MCP endpoint", () => {
 	let planKey = "";
 
 	beforeAll(() => {
-		mcp = createHandler({ config: { ...config, connectorKey: CONNECTOR_KEY }, store, auth, logger: silent });
+		mcp = createHandler({
+			config: { ...config, connectorKey: CONNECTOR_KEY },
+			store,
+			auth,
+			logger: silent,
+		});
 	});
 
 	function rpc(body: unknown, headers: Record<string, string> = {}): Request {
@@ -436,7 +506,9 @@ describe("MCP endpoint", () => {
 	test("challenges with OAuth metadata when no connector key is configured", async () => {
 		const response = await handler(rpc({ jsonrpc: "2.0", id: 1, method: "ping" }), PEER_IP);
 		expect(response.status).toBe(401);
-		expect(response.headers.get("www-authenticate")).toContain(`${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource/mcp`);
+		expect(response.headers.get("www-authenticate")).toContain(
+			`${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource/mcp`,
+		);
 	});
 
 	test("refuses a missing or wrong connector key", async () => {
@@ -449,13 +521,19 @@ describe("MCP endpoint", () => {
 			PEER_IP,
 		);
 		expect(missing.status).toBe(401);
-		const wrong = await mcp(rpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { "x-connector-key": "x".repeat(32) }), PEER_IP);
+		const wrong = await mcp(
+			rpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { "x-connector-key": "x".repeat(32) }),
+			PEER_IP,
+		);
 		expect(wrong.status).toBe(401);
 	});
 
 	test("GET is refused and advertises POST", async () => {
 		const response = await mcp(
-			new Request(`${PUBLIC_ORIGIN}/mcp`, { method: "GET", headers: { "x-connector-key": CONNECTOR_KEY } }),
+			new Request(`${PUBLIC_ORIGIN}/mcp`, {
+				method: "GET",
+				headers: { "x-connector-key": CONNECTOR_KEY },
+			}),
 			PEER_IP,
 		);
 		expect(response.status).toBe(405);
@@ -464,7 +542,12 @@ describe("MCP endpoint", () => {
 
 	test("initialize answers with protocol version 2025-06-18 when requested", async () => {
 		const init = await mcp(
-			rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }),
+			rpc({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "initialize",
+				params: { protocolVersion: "2025-06-18" },
+			}),
 			PEER_IP,
 		);
 		expect(init.status).toBe(200);
@@ -473,16 +556,24 @@ describe("MCP endpoint", () => {
 	});
 
 	test("a notification returns 202 with no body", async () => {
-		const response = await mcp(rpc({ jsonrpc: "2.0", method: "notifications/initialized" }), PEER_IP);
+		const response = await mcp(
+			rpc({ jsonrpc: "2.0", method: "notifications/initialized" }),
+			PEER_IP,
+		);
 		expect(response.status).toBe(202);
 		expect(await response.text()).toBe("");
 	});
 
 	test("the 202 notification answer carries the security headers", async () => {
-		const response = await mcp(rpc({ jsonrpc: "2.0", method: "notifications/initialized" }), PEER_IP);
+		const response = await mcp(
+			rpc({ jsonrpc: "2.0", method: "notifications/initialized" }),
+			PEER_IP,
+		);
 		expect(response.status).toBe(202);
 		expect(response.headers.get("x-frame-options")).toBe("DENY");
-		expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; frame-ancestors 'none'");
+		expect(response.headers.get("content-security-policy")).toBe(
+			"default-src 'none'; frame-ancestors 'none'",
+		);
 		expect(response.headers.get("permissions-policy")).toBe(PERMISSIONS_POLICY);
 		expect(response.headers.get("x-content-type-options")).toBe("nosniff");
 	});
@@ -531,26 +622,38 @@ describe("MCP endpoint", () => {
 	});
 
 	test("ultrathink_plan refuses a path-like sessionId", async () => {
-		const result = await callTool("ultrathink_plan", { prompt: "plan escape", sessionId: "../etc" });
+		const result = await callTool("ultrathink_plan", {
+			prompt: "plan escape",
+			sessionId: "../etc",
+		});
 		expect(result.isError).toBe(true);
 		expect(result.structuredContent.error).toBe("invalid_session_id");
 	});
 
 	test("ultrathink_show refuses an unknown key", async () => {
-		const result = await callTool("ultrathink_show", { sessionId: planSessionId, key: "no-such-key" });
+		const result = await callTool("ultrathink_show", {
+			sessionId: planSessionId,
+			key: "no-such-key",
+		});
 		expect(result.isError).toBe(true);
 		expect(result.structuredContent.error).toBe("not_found");
 	});
 
 	test("ultrathink_answer refuses an invalid answer and keeps the prompt pending", async () => {
-		const answer = await callTool("ultrathink_answer", { sessionId: planSessionId, key: planKey, answer: "not an answer" });
+		const answer = await callTool("ultrathink_answer", {
+			sessionId: planSessionId,
+			key: planKey,
+			answer: "not an answer",
+		});
 		expect(answer.isError).toBe(true);
 		expect(answer.structuredContent.error).toBe("invalid_answer");
 
 		const pending = await callTool("ultrathink_pending", { sessionId: planSessionId });
 		expect(pending.isError).toBe(false);
 		expect(pending.structuredContent).toEqual(
-			expect.objectContaining({ pending: expect.arrayContaining([expect.objectContaining({ key: planKey })]) }),
+			expect.objectContaining({
+				pending: expect.arrayContaining([expect.objectContaining({ key: planKey })]),
+			}),
 		);
 	});
 
@@ -568,7 +671,10 @@ function sample(eventLoopLagMs: number): RuntimeSample {
 
 /** The value of one unlabelled gauge as the metrics render it. */
 function gaugeValue(metrics: Metrics, name: string): number {
-	const line = metrics.render().split("\n").find((text) => text.startsWith(`${name} `));
+	const line = metrics
+		.render()
+		.split("\n")
+		.find((text) => text.startsWith(`${name} `));
 	if (line === undefined) throw new Error(`${name} is not rendered`);
 	return Number(line.slice(name.length + 1));
 }
@@ -600,12 +706,27 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 	/** A fresh app over its own state directory: its own penalty table, pools, load history and auth windows. */
 	function build(
 		overrides: Partial<UltrathinkConfig> = {},
-		extras: { stateDir?: string; planner?: HeadlessPlanner; onPoolEntry?: () => void; auth?: Auth } = {},
+		extras: {
+			stateDir?: string;
+			planner?: HeadlessPlanner;
+			onPoolEntry?: () => void;
+			auth?: Auth;
+		} = {},
 	): { app: App; metrics: Metrics } {
 		const metrics = createMetrics();
-		const auth = extras.auth ?? createAuth({ ownerPasswordHash: config.ownerPasswordHash, sessionSecret: config.sessionSecret, cookieSecure: true });
+		const auth =
+			extras.auth ??
+			createAuth({
+				ownerPasswordHash: config.ownerPasswordHash,
+				sessionSecret: config.sessionSecret,
+				cookieSecure: true,
+			});
 		const app = createApp({
-			config: { ...config, stateDir: extras.stateDir ?? mkdtempSync(join(root, "app-")), ...overrides },
+			config: {
+				...config,
+				stateDir: extras.stateDir ?? mkdtempSync(join(root, "app-")),
+				...overrides,
+			},
 			store,
 			auth,
 			logger: createLogger({ write: (line) => logLines.push(line) }),
@@ -632,7 +753,11 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 
 	async function ownerCookie(app: App): Promise<string> {
 		const login = await app.handle(
-			new Request(`${PUBLIC_ORIGIN}/login`, { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ password }) }),
+			new Request(`${PUBLIC_ORIGIN}/login`, {
+				method: "POST",
+				headers: jsonHeaders(),
+				body: JSON.stringify({ password }),
+			}),
 			OWNER_IP,
 		);
 		expect(login.status).toBe(200);
@@ -655,7 +780,12 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		return new Request(`${PUBLIC_ORIGIN}/mcp`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY },
-			body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "ultrathink_uplift", arguments: { prompt: "plan it" } } }),
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id,
+				method: "tools/call",
+				params: { name: "ultrathink_uplift", arguments: { prompt: "plan it" } },
+			}),
 		});
 	}
 
@@ -704,14 +834,16 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		const cookie = await ownerCookie(pressured);
 		// One lag sample above the 100 ms target steps the factor to its 0.5 floor.
 		pressured.observeRuntime(sample(1000));
-		for (let i = 0; i < 30; i++) expect((await ownerRun(pressured, cookie, "https://evil.test")).status).toBe(403);
+		for (let i = 0; i < 30; i++)
+			expect((await ownerRun(pressured, cookie, "https://evil.test")).status).toBe(403);
 		const limited = await ownerRun(pressured, cookie, "https://evil.test");
 		expect(limited.status).toBe(429);
 		expect(await limited.json()).toEqual({ error: "rate_limited" });
 
 		const calm = build().app;
 		const calmCookie = await ownerCookie(calm);
-		for (let i = 0; i < 60; i++) expect((await ownerRun(calm, calmCookie, "https://evil.test")).status).toBe(403);
+		for (let i = 0; i < 60; i++)
+			expect((await ownerRun(calm, calmCookie, "https://evil.test")).status).toBe(403);
 		expect((await ownerRun(calm, calmCookie, "https://evil.test")).status).toBe(429);
 	});
 
@@ -725,7 +857,14 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				entered += 1;
 				if (entered === 2) reached.resolve();
 				await gate.promise;
-				return { ok: true, data: { sessionId: String(input.sessionId ?? "held"), status: "running", pollAfterSec: 5 } };
+				return {
+					ok: true,
+					data: {
+						sessionId: String(input.sessionId ?? "held"),
+						status: "running",
+						pollAfterSec: 5,
+					},
+				};
 			},
 			async result() {
 				throw new Error("the stub planner is not asked for results in this test");
@@ -735,7 +874,10 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 			upstream: () => undefined,
 		};
 		// maxInflight 4 with a 50 % reserve: the reserve is 2, so non-owner classes may hold 2 slots.
-		const { app, metrics } = build({ connectorKey: CONNECTOR_KEY, maxInflight: 4, priorityReservePct: 50, fairQueueDepth: 0 }, { planner });
+		const { app, metrics } = build(
+			{ connectorKey: CONNECTOR_KEY, maxInflight: 4, priorityReservePct: 50, fairQueueDepth: 0 },
+			{ planner },
+		);
 		const cookie = await ownerCookie(app);
 
 		const holdA = app.handle(connectorUplift(1), "198.51.100.1");
@@ -746,7 +888,9 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		expect(refused.status).toBe(429);
 		expect(refused.headers.get("retry-after")).toBe("1");
 		expect(await refused.json()).toEqual({ error: "rate_limited" });
-		expect(metrics.render()).toContain('ultrathink_fair_share_refused_total{class="connector",reason="reserved"} 1');
+		expect(metrics.render()).toContain(
+			'ultrathink_fair_share_refused_total{class="connector",reason="reserved"} 1',
+		);
 
 		expect((await ownerRun(app, cookie)).status).toBe(202);
 
@@ -767,7 +911,14 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				entered += 1;
 				if (entered === 2) reached.resolve();
 				await gate.promise;
-				return { ok: true, data: { sessionId: String(input.sessionId ?? "held"), status: "running", pollAfterSec: 5 } };
+				return {
+					ok: true,
+					data: {
+						sessionId: String(input.sessionId ?? "held"),
+						status: "running",
+						pollAfterSec: 5,
+					},
+				};
 			},
 			async result() {
 				throw new Error("the stub planner is not asked for results in this test");
@@ -777,11 +928,16 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 			upstream: () => undefined,
 		};
 		// maxInflight 4 with a 50 % reserve, and no queue: the third connector is refused at once.
-		const { app } = build({ connectorKey: CONNECTOR_KEY, maxInflight: 4, priorityReservePct: 50, fairQueueDepth: 0 }, { planner });
+		const { app } = build(
+			{ connectorKey: CONNECTOR_KEY, maxInflight: 4, priorityReservePct: 50, fairQueueDepth: 0 },
+			{ planner },
+		);
 		const eventNames = () =>
 			logLines.map((line) => {
 				const parsed: unknown = JSON.parse(line);
-				return typeof parsed === "object" && parsed !== null && "event" in parsed ? parsed.event : undefined;
+				return typeof parsed === "object" && parsed !== null && "event" in parsed
+					? parsed.event
+					: undefined;
 			});
 
 		getSecurityLogger().logRateLimitExceeded({ name: "test.installed", details: {} });
@@ -810,7 +966,14 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				entered += 1;
 				if (entered === 2) reached.resolve();
 				await gate.promise;
-				return { ok: true, data: { sessionId: String(input.sessionId ?? "held"), status: "running", pollAfterSec: 5 } };
+				return {
+					ok: true,
+					data: {
+						sessionId: String(input.sessionId ?? "held"),
+						status: "running",
+						pollAfterSec: 5,
+					},
+				};
 			},
 			async result() {
 				throw new Error("the stub planner is not asked for results in this test");
@@ -871,7 +1034,14 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				// The third connector, admitted from the queue, is not gated.
 				const gate = gates[entered - 1];
 				if (gate !== undefined) await gate.promise;
-				return { ok: true, data: { sessionId: String(input.sessionId ?? "held"), status: "running", pollAfterSec: 5 } };
+				return {
+					ok: true,
+					data: {
+						sessionId: String(input.sessionId ?? "held"),
+						status: "running",
+						pollAfterSec: 5,
+					},
+				};
 			},
 			async result() {
 				throw new Error("the stub planner is not asked for results in this test");
@@ -881,7 +1051,11 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 			upstream: () => undefined,
 		};
 		// /login calls from the held IPs block inside auth, holding an outer slot each; every other caller is unaffected.
-		const realAuth = createAuth({ ownerPasswordHash: config.ownerPasswordHash, sessionSecret: config.sessionSecret, cookieSecure: true });
+		const realAuth = createAuth({
+			ownerPasswordHash: config.ownerPasswordHash,
+			sessionSecret: config.sessionSecret,
+			cookieSecure: true,
+		});
 		const gatedAuth: Auth = {
 			...realAuth,
 			async login(input) {
@@ -906,7 +1080,14 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 			},
 		);
 		const loginFrom = (ip: string): Promise<Response> =>
-			app.handle(new Request(`${PUBLIC_ORIGIN}/login`, { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ password: "not-the-owner-password" }) }), ip);
+			app.handle(
+				new Request(`${PUBLIC_ORIGIN}/login`, {
+					method: "POST",
+					headers: jsonHeaders(),
+					body: JSON.stringify({ password: "not-the-owner-password" }),
+				}),
+				ip,
+			);
 
 		const holdA = app.handle(connectorUplift(1), "198.51.100.1");
 		const holdB = app.handle(connectorUplift(2), "198.51.100.2");
@@ -936,8 +1117,12 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		app.start();
 		try {
 			expect(logLines.some((line) => line.includes("load_history_malformed"))).toBe(true);
-			expect((await app.handle(new Request(`${PUBLIC_ORIGIN}/readyz`), "127.0.0.1")).status).toBe(200);
-			expect((await app.handle(new Request(`${PUBLIC_ORIGIN}/metrics`), "127.0.0.1")).status).toBe(200);
+			expect((await app.handle(new Request(`${PUBLIC_ORIGIN}/readyz`), "127.0.0.1")).status).toBe(
+				200,
+			);
+			expect((await app.handle(new Request(`${PUBLIC_ORIGIN}/metrics`), "127.0.0.1")).status).toBe(
+				200,
+			);
 			app.observeRuntime(sample(0));
 			expect(gaugeValue(metrics, "ultrathink_load_forecast_rps")).toBe(0);
 		} finally {
@@ -950,7 +1135,14 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		const first = build({}, { stateDir });
 		first.app.start();
 		for (let i = 0; i < 30; i++) {
-			expect((await first.app.handle(new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource`), "127.0.0.1")).status).toBe(200);
+			expect(
+				(
+					await first.app.handle(
+						new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource`),
+						"127.0.0.1",
+					)
+				).status,
+			).toBe(200);
 		}
 		first.app.observeRuntime(sample(0));
 		// Thirty requests in the current minute, fewer than five minutes recorded: the cold forecast is 30 / 60.

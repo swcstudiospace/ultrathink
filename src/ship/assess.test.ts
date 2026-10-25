@@ -30,7 +30,9 @@ function tempDir(): string {
 function fakeRun(table: Record<string, string | undefined>): Run {
 	return (argv) => {
 		const out = table[argv.join(" ")];
-		return out === undefined ? { exitCode: 1, stdout: "", stderr: "no" } : { exitCode: 0, stdout: out, stderr: "" };
+		return out === undefined
+			? { exitCode: 1, stdout: "", stderr: "no" }
+			: { exitCode: 0, stdout: out, stderr: "" };
 	};
 }
 
@@ -67,7 +69,12 @@ const GIT: Record<string, string> = {
 
 describe("collectSignals", () => {
 	test("parses git state and https remote; no GSD without ROADMAP", () => {
-		const s = collectSignals({ cwd: tempDir(), record: RECORD, run: fakeRun(GIT), gsdTools: "g.cjs" });
+		const s = collectSignals({
+			cwd: tempDir(),
+			record: RECORD,
+			run: fakeRun(GIT),
+			gsdTools: "g.cjs",
+		});
 		expect(s.git).toEqual({
 			branch: "feat/x",
 			base: "master",
@@ -91,7 +98,11 @@ describe("collectSignals", () => {
 		table["gh repo view --json defaultBranchRef -q .defaultBranchRef.name"] = undefined;
 		table["git symbolic-ref --short refs/remotes/origin/HEAD"] = "origin/main";
 		table["git rev-list --count origin/main..HEAD"] = "0";
-		const s = collectSignals({ cwd: tempDir(), record: { ...RECORD, graph: undefined }, run: fakeRun(table) });
+		const s = collectSignals({
+			cwd: tempDir(),
+			record: { ...RECORD, graph: undefined },
+			run: fakeRun(table),
+		});
 		expect(s.git.repo).toBe("acme/tool");
 		expect(s.git.base).toBe("main");
 		expect(s.git.ahead).toBe(0);
@@ -105,12 +116,21 @@ describe("collectSignals", () => {
 		mkdirSync(join(cwd, ".planning", "phases", "02-b"), { recursive: true });
 		writeFileSync(join(cwd, ".planning", "ROADMAP.md"), "# r");
 		writeFileSync(join(cwd, ".planning", "STATE.md"), "---\nstatus: 'executing'\n---\n");
-		writeFileSync(join(cwd, ".planning", "phases", "01-a", "01-VERIFICATION.md"), "---\nstatus: passed\n---\n");
-		writeFileSync(join(cwd, ".planning", "phases", "02-b", "02-VERIFICATION.md"), '---\nphase: 2\nstatus: "gaps_found"\n---\nbody');
+		writeFileSync(
+			join(cwd, ".planning", "phases", "01-a", "01-VERIFICATION.md"),
+			"---\nstatus: passed\n---\n",
+		);
+		writeFileSync(
+			join(cwd, ".planning", "phases", "02-b", "02-VERIFICATION.md"),
+			'---\nphase: 2\nstatus: "gaps_found"\n---\nbody',
+		);
 		const run = fakeRun({
 			...GIT,
 			"git ls-files --error-unmatch .planning/ROADMAP.md": ".planning/ROADMAP.md",
-			[`node g.cjs query roadmap.analyze --cwd ${cwd}`]: JSON.stringify({ phase_count: 3, completed_phases: 2 }),
+			[`node g.cjs query roadmap.analyze --cwd ${cwd}`]: JSON.stringify({
+				phase_count: 3,
+				completed_phases: 2,
+			}),
 		});
 		const s = collectSignals({ cwd, record: RECORD, run, gsdTools: "g.cjs" });
 		expect(s.gsd).toEqual({
@@ -126,7 +146,9 @@ describe("collectSignals", () => {
 		const cwd = tempDir();
 		mkdirSync(join(cwd, ".planning"), { recursive: true });
 		writeFileSync(join(cwd, ".planning", "ROADMAP.md"), "# r");
-		expect(collectSignals({ cwd, record: RECORD, run: fakeRun(GIT), gsdTools: "g.cjs" }).gsd).toEqual({
+		expect(
+			collectSignals({ cwd, record: RECORD, run: fakeRun(GIT), gsdTools: "g.cjs" }).gsd,
+		).toEqual({
 			phaseCount: 0,
 			completedPhases: 0,
 			trusted: false,
@@ -134,7 +156,9 @@ describe("collectSignals", () => {
 			verification: undefined,
 		});
 		const ignored = fakeRun({ ...GIT, "git check-ignore -q .planning": "" });
-		expect(collectSignals({ cwd, record: RECORD, run: ignored, gsdTools: "g.cjs" }).gsd?.trusted).toBe(true);
+		expect(
+			collectSignals({ cwd, record: RECORD, run: ignored, gsdTools: "g.cjs" }).gsd?.trusted,
+		).toBe(true);
 	});
 
 	test("a roadmap with gsd-tools.cjs installed nowhere is flagged tools-missing without running node", () => {
@@ -142,10 +166,18 @@ describe("collectSignals", () => {
 		mkdirSync(join(cwd, ".planning"), { recursive: true });
 		writeFileSync(join(cwd, ".planning", "ROADMAP.md"), "# r");
 		const argvs: string[][] = [];
-		const base = fakeRun({ ...GIT, "git ls-files --error-unmatch .planning/ROADMAP.md": ".planning/ROADMAP.md" });
+		const base = fakeRun({
+			...GIT,
+			"git ls-files --error-unmatch .planning/ROADMAP.md": ".planning/ROADMAP.md",
+		});
 		const run: Run = (argv, opts) => (argvs.push(argv), base(argv, opts));
 		const s = collectSignals({ cwd, record: RECORD, run, env: {}, home: tempDir() });
-		expect(s.gsd).toMatchObject({ phaseCount: 0, completedPhases: 0, trusted: true, toolsMissing: true });
+		expect(s.gsd).toMatchObject({
+			phaseCount: 0,
+			completedPhases: 0,
+			trusted: true,
+			toolsMissing: true,
+		});
 		expect(argvs.some((argv) => argv[0] === "node")).toBe(false);
 	});
 
@@ -157,7 +189,13 @@ describe("collectSignals", () => {
 		const tool = join(home, ".agents", "gsd-core", "bin", "gsd-tools.cjs");
 		mkdirSync(join(home, ".agents", "gsd-core", "bin"), { recursive: true });
 		writeFileSync(tool, "");
-		const run = fakeRun({ ...GIT, [`node ${tool} query roadmap.analyze --cwd ${cwd}`]: JSON.stringify({ phase_count: 2, completed_phases: 2 }) });
+		const run = fakeRun({
+			...GIT,
+			[`node ${tool} query roadmap.analyze --cwd ${cwd}`]: JSON.stringify({
+				phase_count: 2,
+				completed_phases: 2,
+			}),
+		});
 		const s = collectSignals({ cwd, record: RECORD, run, env: {}, home });
 		expect(s.gsd).toMatchObject({ phaseCount: 2, completedPhases: 2 });
 		expect(s.gsd?.toolsMissing).toBeUndefined();
@@ -171,11 +209,19 @@ describe("collectSignals", () => {
 			const git = fakeRun(GIT);
 			return (argv, opts) => (argv[0] === "node" ? { stdout: "", ...reply } : git(argv, opts));
 		};
-		for (const reply of [{ exitCode: 127, stderr: "" }, { exitCode: 1, stderr: "Executable not found in $PATH: \"node\" (ENOENT)" }]) {
+		for (const reply of [
+			{ exitCode: 127, stderr: "" },
+			{ exitCode: 1, stderr: 'Executable not found in $PATH: "node" (ENOENT)' },
+		]) {
 			const s = collectSignals({ cwd, record: RECORD, run: withNode(reply), gsdTools: "g.cjs" });
 			expect(s.gsd).toMatchObject({ phaseCount: 0, completedPhases: 0, nodeMissing: true });
 		}
-		const crashed = collectSignals({ cwd, record: RECORD, run: withNode({ exitCode: 1, stderr: "TypeError: boom" }), gsdTools: "g.cjs" });
+		const crashed = collectSignals({
+			cwd,
+			record: RECORD,
+			run: withNode({ exitCode: 1, stderr: "TypeError: boom" }),
+			gsdTools: "g.cjs",
+		});
 		expect(crashed.gsd).toMatchObject({ phaseCount: 0, completedPhases: 0 });
 		expect(crashed.gsd?.nodeMissing).toBeUndefined();
 		expect(crashed.gsd?.toolsMissing).toBeUndefined();
@@ -190,7 +236,11 @@ describe("collectSignals", () => {
 			for (const [phase, status] of Object.entries(phases)) {
 				const phaseDir = join(cwd, ".planning", "milestones", `${version}-phases`, phase);
 				mkdirSync(phaseDir, { recursive: true });
-				if (status) writeFileSync(join(phaseDir, `${phase.slice(0, 2)}-VERIFICATION.md`), `---\nstatus: ${status}\n---\n`);
+				if (status)
+					writeFileSync(
+						join(phaseDir, `${phase.slice(0, 2)}-VERIFICATION.md`),
+						`---\nstatus: ${status}\n---\n`,
+					);
 			}
 		}
 		return cwd;
@@ -199,11 +249,16 @@ describe("collectSignals", () => {
 		fakeRun({
 			...GIT,
 			"git ls-files --error-unmatch .planning/ROADMAP.md": ".planning/ROADMAP.md",
-			[`node g.cjs query roadmap.analyze --cwd ${cwd}`]: JSON.stringify({ phase_count: 0, completed_phases: 0 }),
+			[`node g.cjs query roadmap.analyze --cwd ${cwd}`]: JSON.stringify({
+				phase_count: 0,
+				completed_phases: 0,
+			}),
 		});
 
 	test("with no active verification the archived milestone's phase verifications and audit are collected", () => {
-		const cwd = archivedRepo({ "v2.0": { "02-b": "gaps_found", "01-a": "passed", "03-c": undefined } });
+		const cwd = archivedRepo({
+			"v2.0": { "02-b": "gaps_found", "01-a": "passed", "03-c": undefined },
+		});
 		writeFileSync(
 			join(cwd, ".planning", "milestones", "v2.0-MILESTONE-AUDIT.md"),
 			"---\nmilestone: v2.0\nstatus: tech_debt\nscores:\n  requirements: 12/12\n  phases: \"2/3\"\n  nyquist: '0.9'\ngaps: []\n---\n# Audit\n",
@@ -216,18 +271,37 @@ describe("collectSignals", () => {
 				{ phase: "02-b", status: "gaps_found" },
 				{ phase: "03-c", status: "missing" },
 			],
-			audit: { status: "tech_debt", scores: { requirements: "12/12", phases: "2/3", nyquist: "0.9" } },
+			audit: {
+				status: "tech_debt",
+				scores: { requirements: "12/12", phases: "2/3", nyquist: "0.9" },
+			},
 		};
-		expect(collectSignals({ cwd, record: RECORD, run: trustedRun(cwd), gsdTools: "g.cjs" }).gsd?.milestone).toEqual(milestone);
+		expect(
+			collectSignals({ cwd, record: RECORD, run: trustedRun(cwd), gsdTools: "g.cjs" }).gsd
+				?.milestone,
+		).toEqual(milestone);
 		// The tools-missing early return carries it too.
-		const missing = collectSignals({ cwd, record: RECORD, run: trustedRun(cwd), env: {}, home: tempDir() }).gsd;
+		const missing = collectSignals({
+			cwd,
+			record: RECORD,
+			run: trustedRun(cwd),
+			env: {},
+			home: tempDir(),
+		}).gsd;
 		expect(missing).toMatchObject({ toolsMissing: true, milestone });
 	});
 
 	test("the highest archived version wins by numeric compare (v1.10 over v1.9); no audit file means no audit", () => {
-		const cwd = archivedRepo({ "v1.9": { "01-a": "passed" }, "v1.10": { "01-x": "human_needed" }, "v1.2.3": { "01-z": "passed" } });
+		const cwd = archivedRepo({
+			"v1.9": { "01-a": "passed" },
+			"v1.10": { "01-x": "human_needed" },
+			"v1.2.3": { "01-z": "passed" },
+		});
 		mkdirSync(join(cwd, ".planning", "milestones", "v9-notes"), { recursive: true });
-		expect(collectSignals({ cwd, record: RECORD, run: trustedRun(cwd), gsdTools: "g.cjs" }).gsd?.milestone).toEqual({
+		expect(
+			collectSignals({ cwd, record: RECORD, run: trustedRun(cwd), gsdTools: "g.cjs" }).gsd
+				?.milestone,
+		).toEqual({
 			version: "v1.10",
 			verifications: [{ phase: "01-x", status: "human_needed" }],
 		});
@@ -235,7 +309,12 @@ describe("collectSignals", () => {
 
 	test("no milestones dir fails open: no milestone key", () => {
 		const cwd = archivedRepo({});
-		const gsd = collectSignals({ cwd, record: RECORD, run: trustedRun(cwd), gsdTools: "g.cjs" }).gsd;
+		const gsd = collectSignals({
+			cwd,
+			record: RECORD,
+			run: trustedRun(cwd),
+			gsdTools: "g.cjs",
+		}).gsd;
 		expect(gsd).toMatchObject({ phaseCount: 0, trusted: true });
 		expect(gsd && "milestone" in gsd).toBe(false);
 	});
@@ -243,8 +322,16 @@ describe("collectSignals", () => {
 	test("an active phase verification takes precedence: the archived milestone is not collected", () => {
 		const cwd = archivedRepo({ "v1.0": { "01-a": "passed" } });
 		mkdirSync(join(cwd, ".planning", "phases", "04-d"), { recursive: true });
-		writeFileSync(join(cwd, ".planning", "phases", "04-d", "04-VERIFICATION.md"), "---\nstatus: gaps_found\n---\n");
-		const gsd = collectSignals({ cwd, record: RECORD, run: trustedRun(cwd), gsdTools: "g.cjs" }).gsd;
+		writeFileSync(
+			join(cwd, ".planning", "phases", "04-d", "04-VERIFICATION.md"),
+			"---\nstatus: gaps_found\n---\n",
+		);
+		const gsd = collectSignals({
+			cwd,
+			record: RECORD,
+			run: trustedRun(cwd),
+			gsdTools: "g.cjs",
+		}).gsd;
 		expect(gsd?.verification).toEqual({ phase: "04-d", status: "gaps_found" });
 		expect(gsd && "milestone" in gsd).toBe(false);
 	});
@@ -255,7 +342,9 @@ describe("resolveGsdTools", () => {
 	const home = "/home/u";
 
 	test("GSD_TOOLS wins even over an installed copy", () => {
-		expect(resolveGsdTools({ cwd, home, env: { GSD_TOOLS: "/opt/gsd.cjs" }, exists: () => true })).toBe("/opt/gsd.cjs");
+		expect(
+			resolveGsdTools({ cwd, home, env: { GSD_TOOLS: "/opt/gsd.cjs" }, exists: () => true }),
+		).toBe("/opt/gsd.cjs");
 	});
 
 	test("the first existing location wins: project-local before host config dirs", () => {
@@ -301,10 +390,20 @@ describe("resolveGsdTools", () => {
 	test("the legacy get-shit-done install resolves project-local before home, home last; nothing installed is undefined", () => {
 		const projectLegacy = "/work/app/.claude/get-shit-done/bin/gsd-tools.cjs";
 		const homeLegacy = "/home/u/.claude/get-shit-done/bin/gsd-tools.cjs";
-		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === projectLegacy })).toBe(projectLegacy);
-		const bothLegacy = new Set([projectLegacy, homeLegacy, "/home/u/.claude/gsd-core/bin/gsd-tools.cjs"]);
-		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => bothLegacy.has(p) })).toBe(projectLegacy);
-		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === homeLegacy })).toBe(homeLegacy);
+		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === projectLegacy })).toBe(
+			projectLegacy,
+		);
+		const bothLegacy = new Set([
+			projectLegacy,
+			homeLegacy,
+			"/home/u/.claude/gsd-core/bin/gsd-tools.cjs",
+		]);
+		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => bothLegacy.has(p) })).toBe(
+			projectLegacy,
+		);
+		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === homeLegacy })).toBe(
+			homeLegacy,
+		);
 		expect(resolveGsdTools({ cwd, home, env: {}, exists: () => false })).toBeUndefined();
 	});
 });
@@ -314,7 +413,10 @@ test("gatherDiff caps output at 8000 chars", () => {
 	const d = gatherDiff({
 		cwd: "/",
 		base: "master",
-		run: fakeRun({ "git diff --stat origin/master...HEAD": big, "git log --oneline origin/master..HEAD": "abc feat" }),
+		run: fakeRun({
+			"git diff --stat origin/master...HEAD": big,
+			"git log --oneline origin/master..HEAD": "abc feat",
+		}),
 	});
 	expect(d.stat.length).toBeLessThan(8100);
 	expect(d.stat.startsWith("x".repeat(8000))).toBe(true);
@@ -324,17 +426,34 @@ test("gatherDiff caps output at 8000 chars", () => {
 test("gatherDiff flags patchTruncated only when it cut the patch at 24,000 chars", () => {
 	const patchCommand =
 		"git diff origin/master...HEAD -- . :(exclude)*.lock :(exclude)*.lockb :(exclude)package-lock.json :(exclude)pnpm-lock.yaml";
-	const exact = gatherDiff({ cwd: "/", base: "master", run: fakeRun({ [patchCommand]: "p".repeat(24_000) }) });
+	const exact = gatherDiff({
+		cwd: "/",
+		base: "master",
+		run: fakeRun({ [patchCommand]: "p".repeat(24_000) }),
+	});
 	expect(exact.patch).toBe("p".repeat(24_000));
 	expect("patchTruncated" in exact).toBe(false);
-	const over = gatherDiff({ cwd: "/", base: "master", run: fakeRun({ [patchCommand]: "p".repeat(24_001) }) });
+	const over = gatherDiff({
+		cwd: "/",
+		base: "master",
+		run: fakeRun({ [patchCommand]: "p".repeat(24_001) }),
+	});
 	expect(over.patchTruncated).toBe(true);
 	expect(over.patch).toBe(`${"p".repeat(24_000)}\n…[truncated]`);
 });
 
 function signals(git: Partial<ShipSignals["git"]> = {}, gsd?: ShipSignals["gsd"]): ShipSignals {
 	return {
-		git: { branch: "feat", base: "master", onBase: false, ahead: 2, dirty: [], untracked: 0, pushed: true, ...git },
+		git: {
+			branch: "feat",
+			base: "master",
+			onBase: false,
+			ahead: 2,
+			dirty: [],
+			untracked: 0,
+			pushed: true,
+			...git,
+		},
 		gsd,
 	};
 }
@@ -367,7 +486,16 @@ describe("assessDone rules", () => {
 		],
 		[
 			"gsd tools tracked by the repository",
-			signals({}, { phaseCount: 0, completedPhases: 0, trusted: true, toolsMissing: true, toolsTracked: true }),
+			signals(
+				{},
+				{
+					phaseCount: 0,
+					completedPhases: 0,
+					trusted: true,
+					toolsMissing: true,
+					toolsTracked: true,
+				},
+			),
 			"a gsd-tools.cjs committed in this repository was not run (repository code is never executed); install GSD outside the repository or set GSD_TOOLS",
 		],
 		[
@@ -377,7 +505,15 @@ describe("assessDone rules", () => {
 		],
 		[
 			"verification",
-			signals({}, { phaseCount: 1, completedPhases: 1, trusted: true, verification: { phase: "01", status: "human_needed" } }),
+			signals(
+				{},
+				{
+					phaseCount: 1,
+					completedPhases: 1,
+					trusted: true,
+					verification: { phase: "01", status: "human_needed" },
+				},
+			),
 			"latest GSD verification is human_needed",
 		],
 	];
@@ -403,7 +539,10 @@ describe("assessDone rules", () => {
 	test("a tracked local copy with a working install reports no tools gap", async () => {
 		const a = await assessDone({
 			record: RECORD,
-			signals: signals({}, { phaseCount: 0, completedPhases: 0, trusted: true, toolsTracked: true }),
+			signals: signals(
+				{},
+				{ phaseCount: 0, completedPhases: 0, trusted: true, toolsTracked: true },
+			),
 			diff: DIFF,
 		});
 		expect(a.gaps.some((g) => g.startsWith("a gsd-tools.cjs committed"))).toBe(false);
@@ -421,7 +560,8 @@ describe("assessDone judge", () => {
 			record: RECORD,
 			signals: signals(),
 			diff: DIFF,
-			complete: async () => 'Sure: {"done": true, "confidence": 0.9, "summary": "all {good}", "gaps": []} thanks',
+			complete: async () =>
+				'Sure: {"done": true, "confidence": 0.9, "summary": "all {good}", "gaps": []} thanks',
 		});
 		expect(a).toMatchObject({ done: true, confidence: 0.9, summary: "all {good}", source: "llm" });
 	});
@@ -446,11 +586,20 @@ describe("assessDone judge", () => {
 				throw new Error("offline");
 			},
 		});
-		expect(a).toMatchObject({ done: false, source: "llm", gaps: ["assessment unavailable: offline"] });
+		expect(a).toMatchObject({
+			done: false,
+			source: "llm",
+			gaps: ["assessment unavailable: offline"],
+		});
 	});
 
 	test("unparsable reply -> not done", async () => {
-		const a = await assessDone({ record: RECORD, signals: signals(), diff: DIFF, complete: async () => "yes!" });
+		const a = await assessDone({
+			record: RECORD,
+			signals: signals(),
+			diff: DIFF,
+			complete: async () => "yes!",
+		});
 		expect(a.done).toBe(false);
 		expect(a.gaps[0]).toStartWith("assessment unavailable:");
 	});
@@ -491,7 +640,14 @@ describe("assessDone modes", () => {
 			mode: "advisory",
 			complete: judge({ done: true, confidence: 0.6, summary: "maybe", gaps: [] }),
 		});
-		expect(a).toMatchObject({ done: true, confidence: 0.6, summary: "maybe", gaps: [], mode: "advisory", source: "llm" });
+		expect(a).toMatchObject({
+			done: true,
+			confidence: 0.6,
+			summary: "maybe",
+			gaps: [],
+			mode: "advisory",
+			source: "llm",
+		});
 		expect(a.judge).toEqual({ done: true, confidence: 0.6, summary: "maybe", gaps: [] });
 	});
 
@@ -501,7 +657,12 @@ describe("assessDone modes", () => {
 			signals: signals(),
 			diff: DIFF,
 			mode: "advisory",
-			complete: judge({ done: false, confidence: 0.9, summary: "missing docs", gaps: ["docs", "tests"] }),
+			complete: judge({
+				done: false,
+				confidence: 0.9,
+				summary: "missing docs",
+				gaps: ["docs", "tests"],
+			}),
 		});
 		expect(a).toMatchObject({ done: true, gaps: [], mode: "advisory" });
 		expect(a.judge).toMatchObject({ done: false, gaps: ["docs", "tests"] });
@@ -518,18 +679,41 @@ describe("assessDone modes", () => {
 			},
 		});
 		expect(a).toMatchObject({ done: true, confidence: 0, gaps: [], mode: "advisory" });
-		expect(a.judge).toEqual({ done: false, confidence: 0, summary: "", gaps: [], error: "offline" });
+		expect(a.judge).toEqual({
+			done: false,
+			confidence: 0,
+			summary: "",
+			gaps: [],
+			error: "offline",
+		});
 	});
 
 	test("advisory: unparsable reply -> done with judge error", async () => {
-		const a = await assessDone({ record: RECORD, signals: signals(), diff: DIFF, mode: "advisory", complete: async () => "yes!" });
+		const a = await assessDone({
+			record: RECORD,
+			signals: signals(),
+			diff: DIFF,
+			mode: "advisory",
+			complete: async () => "yes!",
+		});
 		expect(a).toMatchObject({ done: true, gaps: [], mode: "advisory" });
 		expect(a.judge?.error).toBeDefined();
 	});
 
 	test("advisory without judge -> done at 0.5 from rules", async () => {
-		const a = await assessDone({ record: RECORD, signals: signals(), diff: DIFF, mode: "advisory" });
-		expect(a).toMatchObject({ done: true, confidence: 0.5, gaps: [], source: "rules", mode: "advisory" });
+		const a = await assessDone({
+			record: RECORD,
+			signals: signals(),
+			diff: DIFF,
+			mode: "advisory",
+		});
+		expect(a).toMatchObject({
+			done: true,
+			confidence: 0.5,
+			gaps: [],
+			source: "rules",
+			mode: "advisory",
+		});
 		expect(a.judge?.error).toBeDefined();
 	});
 
@@ -566,7 +750,10 @@ describe("assessDone modes", () => {
 	test("archived milestone with no phase verifications is a rule gap", async () => {
 		const a = await assessDone({
 			record: RECORD,
-			signals: signals({}, { ...MILESTONE_GSD, milestone: { version: "v2.0", verifications: [] } } as ShipSignals["gsd"]),
+			signals: signals({}, {
+				...MILESTONE_GSD,
+				milestone: { version: "v2.0", verifications: [] },
+			} as ShipSignals["gsd"]),
 			diff: DIFF,
 			mode: "advisory",
 			complete: judge({ done: true, confidence: 1, summary: "", gaps: [] }),
@@ -626,7 +813,10 @@ function toRecorded(input: string | URL | Request, init?: RequestInit): Recorded
 }
 
 /** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): { fetch: typeof fetch; calls: Recorded[] } {
+function recordingFetch(queue: Array<() => Response | Promise<Response>>): {
+	fetch: typeof fetch;
+	calls: Recorded[];
+} {
 	const calls: Recorded[] = [];
 	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
 		calls.push(toRecorded(input, init));
@@ -649,19 +839,28 @@ const JEV =
 			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
 		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
-	Response.json({ error: { code: s, message: `upstream said no for ${K}` } }, { status: s, headers });
+	Response.json(
+		{ error: { code: s, message: `upstream said no for ${K}` } },
+		{ status: s, headers },
+	);
 
 /** Never resolves; rejects with an AbortError when its signal fires (as src/grok/complete.test.ts hangingFetch). */
 function hangingFetch(onCall?: () => void): typeof fetch {
 	return ((_input: string | URL | Request, init?: RequestInit) =>
 		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+			init?.signal?.addEventListener("abort", () =>
+				reject(new DOMException("aborted", "AbortError")),
+			);
 			onCall?.();
 		})) as typeof fetch;
 }
 
 /** Holds every response until `release()`; for "N requests before any response". Installed as globalThis.fetch too. */
-function heldFetch(respond: (call: Recorded) => Response): { fetch: typeof fetch; calls: Recorded[]; release(): void } {
+function heldFetch(respond: (call: Recorded) => Response): {
+	fetch: typeof fetch;
+	calls: Recorded[];
+	release(): void;
+} {
 	const calls: Recorded[] = [];
 	const waiting: Array<() => void> = [];
 	let released = false;
@@ -687,7 +886,11 @@ function heldFetch(respond: (call: Recorded) => Response): { fetch: typeof fetch
 
 const COMPLETE = "complete";
 const MODEL = "typesafe/jev-1.13-20260917";
-const ON: DecisionsConfig = { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: [...DEFAULT_DECISIONS_CONFIG.points] };
+const ON: DecisionsConfig = {
+	...DEFAULT_DECISIONS_CONFIG,
+	enabled: true,
+	points: [...DEFAULT_DECISIONS_CONFIG.points],
+};
 const realFetch = globalThis.fetch;
 
 function decisionsDir(): string {
@@ -697,7 +900,10 @@ function decisionsDir(): string {
 }
 
 /** The Jev runtime: ON (overridable), K in the injected env only, an empty temp store, no real waits, debug lines kept. */
-function jevRuntime(fetchImpl: typeof fetch, config: Partial<DecisionsConfig> = {}): { decisions: Decisions; lines: string[] } {
+function jevRuntime(
+	fetchImpl: typeof fetch,
+	config: Partial<DecisionsConfig> = {},
+): { decisions: Decisions; lines: string[] } {
 	const lines: string[] = [];
 	const decisions = createDecisions({
 		config: { ...ON, ...config },
@@ -732,13 +938,19 @@ const reply =
 	async () =>
 		JSON.stringify(verdict);
 const DONE_09 = reply({ done: true, confidence: 0.9, summary: "ok", gaps: [] });
-const PATCH = "diff --git a/src/flag.ts b/src/flag.ts\n--- a/src/flag.ts\n+++ b/src/flag.ts\n@@ -1 +1,2 @@\n+export const verbose = true;\n";
+const PATCH =
+	"diff --git a/src/flag.ts b/src/flag.ts\n--- a/src/flag.ts\n+++ b/src/flag.ts\n@@ -1 +1,2 @@\n+export const verbose = true;\n";
 const FULL_DIFF: ShipDiff = { stat: "1 file", log: "abc x", patch: PATCH };
 const vetoGap = (p: string) => `Jev judged the change incomplete (P(complete) ${p})`;
 const now = () => 7;
 
 /** Every failure of AC-4.1–4.9, as a fresh fetch per run. */
-const FAILURES: { name: string; kind: DecisionsErrorKind; fetch: () => typeof fetch; timeoutMs?: number }[] = [
+const FAILURES: {
+	name: string;
+	kind: DecisionsErrorKind;
+	fetch: () => typeof fetch;
+	timeoutMs?: number;
+}[] = [
 	{ name: "401", kind: "auth", fetch: () => recordingFetch([ERR(401)]).fetch },
 	{ name: "402", kind: "credits", fetch: () => recordingFetch([ERR(402)]).fetch },
 	{ name: "400", kind: "bad-request", fetch: () => recordingFetch([ERR(400)]).fetch },
@@ -749,16 +961,29 @@ const FAILURES: { name: string; kind: DecisionsErrorKind; fetch: () => typeof fe
 		fetch: () => recordingFetch([ERR(status)]).fetch,
 	})),
 	{ name: "a hanging request", kind: "timeout", fetch: () => hangingFetch(), timeoutMs: 50 },
-	{ name: "a body that is not JSON", kind: "invalid-response", fetch: () => recordingFetch([() => new Response("{not json")]).fetch },
+	{
+		name: "a body that is not JSON",
+		kind: "invalid-response",
+		fetch: () => recordingFetch([() => new Response("{not json")]).fetch,
+	},
 	{
 		name: "a missing answer key",
 		kind: "invalid-response",
 		fetch: () =>
 			recordingFetch([
-				() => Response.json({ model: MODEL, answers: {}, usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 } }),
+				() =>
+					Response.json({
+						model: MODEL,
+						answers: {},
+						usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
+					}),
 			]).fetch,
 	},
-	{ name: "a noul out of range", kind: "invalid-response", fetch: () => recordingFetch([JEV(1.5, COMPLETE)]).fetch },
+	{
+		name: "a noul out of range",
+		kind: "invalid-response",
+		fetch: () => recordingFetch([JEV(1.5, COMPLETE)]).fetch,
+	},
 ];
 
 describe("assessDone with Jev (DP-SHIP)", () => {
@@ -779,7 +1004,11 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 		const runs: { mode: JudgeMode; complete?: ClaudeCompleter; expected: Partial<Assessment> }[] = [
 			{ mode: "gate", complete: DONE_09, expected: { done: true, source: "llm" } },
 			{ mode: "gate", expected: { done: true, confidence: 0.5, source: "rules" } },
-			{ mode: "advisory", complete: DONE_09, expected: { done: true, source: "llm", mode: "advisory" } },
+			{
+				mode: "advisory",
+				complete: DONE_09,
+				expected: { done: true, source: "llm", mode: "advisory" },
+			},
 		];
 		for (const { mode, complete, expected } of runs) {
 			const input = { record: RECORD, signals: clean, diff: FULL_DIFF, complete, now, mode };
@@ -802,16 +1031,40 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			storePath: store,
 			fetch: r2.fetch,
 		});
-		const vetoed = await assessDone({ record: RECORD, signals: clean, diff: FULL_DIFF, complete: DONE_09, now, mode: "gate", decisions: keyed });
-		expect(vetoed).toMatchObject({ done: false, decision: { point: "ship", p: 0.03, action: "veto" } });
+		const vetoed = await assessDone({
+			record: RECORD,
+			signals: clean,
+			diff: FULL_DIFF,
+			complete: DONE_09,
+			now,
+			mode: "gate",
+			decisions: keyed,
+		});
+		expect(vetoed).toMatchObject({
+			done: false,
+			decision: { point: "ship", p: 0.03, action: "veto" },
+		});
 		expect(r2.calls).toHaveLength(1);
 	});
 
 	test("Jev vetoes a confident LLM done on a full patch, after the judge's own gaps (AC-6.1)", async () => {
 		const r = recordingFetch([JEV(0.03, COMPLETE)]);
 		const { decisions, lines } = jevRuntime(r.fetch);
-		const a = await assessDone({ record: RECORD, signals: clean, diff: FULL_DIFF, complete: DONE_09, now, decisions });
-		expect(a).toMatchObject({ done: false, confidence: 0.9, summary: vetoGap("0.03"), gaps: [vetoGap("0.03")], source: "llm" });
+		const a = await assessDone({
+			record: RECORD,
+			signals: clean,
+			diff: FULL_DIFF,
+			complete: DONE_09,
+			now,
+			decisions,
+		});
+		expect(a).toMatchObject({
+			done: false,
+			confidence: 0.9,
+			summary: vetoGap("0.03"),
+			gaps: [vetoGap("0.03")],
+			source: "llm",
+		});
 		expect(a.decision).toMatchObject({
 			point: "ship",
 			outcome: "ok",
@@ -821,12 +1074,23 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			action: "veto",
 			threshold: 0.2,
 		});
-		expect(a.decision && assessDecisionJson(a.decision)).toEqual({ p: 0.03, model: MODEL, action: "veto" });
+		expect(a.decision && assessDecisionJson(a.decision)).toEqual({
+			p: 0.03,
+			model: MODEL,
+			action: "veto",
+		});
 		expect(r.calls.map((call) => call.url)).toEqual([ENDPOINT]);
 		expectNoKey(a, lines);
 
 		const noted = reply({ done: true, confidence: 0.9, summary: "ok", gaps: ["follow-up: docs"] });
-		const withGaps = await assessDone({ record: RECORD, signals: clean, diff: FULL_DIFF, complete: noted, now, decisions });
+		const withGaps = await assessDone({
+			record: RECORD,
+			signals: clean,
+			diff: FULL_DIFF,
+			complete: noted,
+			now,
+			decisions,
+		});
 		expect(withGaps.gaps).toEqual(["follow-up: docs", vetoGap("0.03")]);
 	});
 
@@ -839,7 +1103,14 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 		];
 		for (const diff of diffs) {
 			const { decisions } = jevRuntime(recordingFetch([JEV(0.03, COMPLETE)]).fetch);
-			const a = await assessDone({ record: RECORD, signals: clean, diff, complete: DONE_09, now, decisions });
+			const a = await assessDone({
+				record: RECORD,
+				signals: clean,
+				diff,
+				complete: DONE_09,
+				now,
+				decisions,
+			});
 			expect(a).toMatchObject({ done: true, source: "llm", gaps: [] });
 			expect(a.gaps.some((gap) => gap.startsWith("Jev "))).toBe(false);
 			expect(a.decision).toMatchObject({ outcome: "ok", p: 0.03, action: "none", threshold: 0.2 });
@@ -858,7 +1129,13 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			source: "jev",
 			mode: "gate",
 			at: 7,
-			decision: expect.objectContaining({ outcome: "ok", p: 0.79, model: MODEL, action: "approve", threshold: 0.7 }),
+			decision: expect.objectContaining({
+				outcome: "ok",
+				p: 0.79,
+				model: MODEL,
+				action: "approve",
+				threshold: 0.7,
+			}),
 		});
 	});
 
@@ -866,7 +1143,14 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 		const { decisions } = jevRuntime(recordingFetch([JEV(0.3, COMPLETE)]).fetch);
 		const a = await assessDone({ record: RECORD, signals: clean, diff: FULL_DIFF, now, decisions });
 		const gap = "Jev P(complete) 0.30 is below 0.7";
-		expect(a).toMatchObject({ done: false, confidence: 0.3, summary: gap, gaps: [gap], source: "jev", mode: "gate" });
+		expect(a).toMatchObject({
+			done: false,
+			confidence: 0.3,
+			summary: gap,
+			gaps: [gap],
+			source: "jev",
+			mode: "gate",
+		});
 		expect(a.decision).toMatchObject({ outcome: "ok", p: 0.3, action: "reject", threshold: 0.7 });
 	});
 
@@ -880,32 +1164,67 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			const baseline = await assessDone(input);
 			expect(baseline.gaps[0]).toStartWith("assessment unavailable: ");
 
-			const approved = await assessDone({ ...input, decisions: jevRuntime(recordingFetch([JEV(0.79, COMPLETE)]).fetch).decisions });
+			const approved = await assessDone({
+				...input,
+				decisions: jevRuntime(recordingFetch([JEV(0.79, COMPLETE)]).fetch).decisions,
+			});
 			expect(approved).toMatchObject({ done: true, source: "jev", gaps: [] });
 			expect(approved.decision?.action).toBe("approve");
 
-			const rejected = await assessDone({ ...input, decisions: jevRuntime(recordingFetch([JEV(0.3, COMPLETE)]).fetch).decisions });
-			expect(rejected).toMatchObject({ done: false, source: "jev", gaps: ["Jev P(complete) 0.30 is below 0.7"] });
+			const rejected = await assessDone({
+				...input,
+				decisions: jevRuntime(recordingFetch([JEV(0.3, COMPLETE)]).fetch).decisions,
+			});
+			expect(rejected).toMatchObject({
+				done: false,
+				source: "jev",
+				gaps: ["Jev P(complete) 0.30 is below 0.7"],
+			});
 			expect(rejected.decision?.action).toBe("reject");
 
 			const r = recordingFetch([ERR(503)]);
 			const { decisions, lines } = jevRuntime(r.fetch);
 			const failed = await assessDone({ ...input, decisions });
 			expect(withoutDecision(failed)).toEqual(baseline);
-			expect(failed.decision).toMatchObject({ outcome: "error", error: "upstream", action: "fail-open", threshold: 0.7, attempts: 2 });
+			expect(failed.decision).toMatchObject({
+				outcome: "error",
+				error: "upstream",
+				action: "fail-open",
+				threshold: 0.7,
+				attempts: 2,
+			});
 			expect(r.calls).toHaveLength(2);
 			expectNoKey(failed, lines);
 		}
 	});
 
 	test("a rule gap returns before any request, in gate and advisory mode (AC-6.7)", async () => {
-		const unverified = signals({}, { phaseCount: 1, completedPhases: 1, trusted: true, verification: { phase: "01", status: "gaps_found" } });
+		const unverified = signals(
+			{},
+			{
+				phaseCount: 1,
+				completedPhases: 1,
+				trusted: true,
+				verification: { phase: "01", status: "gaps_found" },
+			},
+		);
 		for (const mode of ["gate", "advisory"] as const) {
 			const r = recordingFetch([JEV(0.95, COMPLETE)]);
-			const input = { record: RECORD, signals: unverified, diff: FULL_DIFF, complete: DONE_09, now, mode };
+			const input = {
+				record: RECORD,
+				signals: unverified,
+				diff: FULL_DIFF,
+				complete: DONE_09,
+				now,
+				mode,
+			};
 			const a = await assessDone({ ...input, decisions: jevRuntime(r.fetch).decisions });
 			expect(a).toEqual(await assessDone(input));
-			expect(a).toMatchObject({ done: false, source: "rules", gaps: ["latest GSD verification is gaps_found"] });
+			expect(a).toMatchObject({
+				done: false,
+				source: "rules",
+				gaps: ["latest GSD verification is gaps_found"],
+			});
 			expect(r.calls).toHaveLength(0);
 		}
 	});
@@ -916,7 +1235,13 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			[{ done: true, confidence: 0.6, summary: "", gaps: [] }, ["judge confidence 0.6 below 0.7"]],
 		];
 		for (const [verdict, gaps] of cases) {
-			const input = { record: RECORD, signals: clean, diff: FULL_DIFF, complete: reply(verdict), now };
+			const input = {
+				record: RECORD,
+				signals: clean,
+				diff: FULL_DIFF,
+				complete: reply(verdict),
+				now,
+			};
 			const { decisions } = jevRuntime(recordingFetch([JEV(0.95, COMPLETE)]).fetch);
 			const a = await assessDone({ ...input, decisions });
 			expect(withoutDecision(a)).toEqual(await assessDone(input));
@@ -935,9 +1260,21 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 				now,
 				decisions: jevRuntime(recordingFetch([JEV(p, COMPLETE)]).fetch, config).decisions,
 			});
-		expect(await run(0.2, DONE_09)).toMatchObject({ done: false, gaps: [vetoGap("0.20")], decision: { action: "veto" } });
-		expect(await run(0.21, DONE_09)).toMatchObject({ done: true, gaps: [], decision: { action: "none" } });
-		expect(await run(0.7)).toMatchObject({ done: true, source: "jev", decision: { action: "approve" } });
+		expect(await run(0.2, DONE_09)).toMatchObject({
+			done: false,
+			gaps: [vetoGap("0.20")],
+			decision: { action: "veto" },
+		});
+		expect(await run(0.21, DONE_09)).toMatchObject({
+			done: true,
+			gaps: [],
+			decision: { action: "none" },
+		});
+		expect(await run(0.7)).toMatchObject({
+			done: true,
+			source: "jev",
+			decision: { action: "approve" },
+		});
 		expect(await run(0.69)).toMatchObject({
 			done: false,
 			source: "jev",
@@ -945,7 +1282,10 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			decision: { action: "reject" },
 		});
 		const strict = { shipVetoAtOrBelow: 0.5, shipApproveAt: 0.9 };
-		expect(await run(0.45, DONE_09, strict)).toMatchObject({ done: false, decision: { action: "veto", threshold: 0.5 } });
+		expect(await run(0.45, DONE_09, strict)).toMatchObject({
+			done: false,
+			decision: { action: "veto", threshold: 0.5 },
+		});
 		expect(await run(0.85, undefined, strict)).toMatchObject({
 			done: false,
 			gaps: ["Jev P(complete) 0.85 is below 0.9"],
@@ -960,7 +1300,14 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			[0.94, FULL_DIFF, "none"],
 		];
 		for (const [p, diff, action] of cases) {
-			const input = { record: RECORD, signals: clean, diff, complete: DONE_09, now, mode: "advisory" as const };
+			const input = {
+				record: RECORD,
+				signals: clean,
+				diff,
+				complete: DONE_09,
+				now,
+				mode: "advisory" as const,
+			};
 			const { decisions } = jevRuntime(recordingFetch([JEV(p, COMPLETE)]).fetch);
 			const a = await assessDone({ ...input, decisions });
 			expect(withoutDecision(a)).toEqual(await assessDone(input));
@@ -974,10 +1321,18 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			throw new Error("offline");
 		};
 		const notJson: ClaudeCompleter = async () => "not json";
-		const run = (jev: () => Response, complete: ClaudeCompleter | undefined, autoMerge: boolean) => {
+		const run = (
+			jev: () => Response,
+			complete: ClaudeCompleter | undefined,
+			autoMerge: boolean,
+		) => {
 			const r = recordingFetch([jev]);
 			const input = { record: RECORD, signals: clean, diff: FULL_DIFF, complete, now, autoMerge };
-			return { calls: r.calls, input, result: assessDone({ ...input, decisions: jevRuntime(r.fetch).decisions }) };
+			return {
+				calls: r.calls,
+				input,
+				result: assessDone({ ...input, decisions: jevRuntime(r.fetch).decisions }),
+			};
 		};
 		// Jev at 0.95 is ignored: exactly the result without Jev, the decision recorded as "none".
 		for (const complete of [undefined, offline, notJson]) {
@@ -989,7 +1344,11 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			expect(calls).toHaveLength(1);
 		}
 		// No completer: the rules-only result that ship's cli turns into "no judge available".
-		expect(await run(JEV(0.95, COMPLETE), undefined, true).result).toMatchObject({ done: true, confidence: 0.5, source: "rules" });
+		expect(await run(JEV(0.95, COMPLETE), undefined, true).result).toMatchObject({
+			done: true,
+			confidence: 0.5,
+			source: "rules",
+		});
 		expect(await run(JEV(0.95, COMPLETE), offline, true).result).toMatchObject({
 			done: false,
 			source: "llm",
@@ -1016,7 +1375,10 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 	});
 
 	test("the ship state holds only request, capped criteria and the lockfile-free capped patch (AC-6.12)", async () => {
-		const items = Array.from({ length: 25 }, (_, i) => `<item>${`AC-${String(i + 1).padStart(2, "0")} `.padEnd(800, "x")}</item>`);
+		const items = Array.from(
+			{ length: 25 },
+			(_, i) => `<item>${`AC-${String(i + 1).padStart(2, "0")} `.padEnd(800, "x")}</item>`,
+		);
 		const spec = `<UPLIFTED_PROMPT><ACCEPTANCE_CRITERIA>\n${items.join("\n")}\n</ACCEPTANCE_CRITERIA></UPLIFTED_PROMPT>`;
 		const lockHunk =
 			"diff --git a/bun.lock b/bun.lock\nindex 1111111..2222222 100644\n--- a/bun.lock\n+++ b/bun.lock\n@@ -1 +1 @@\n+LOCK-MARKER-2d4\n";
@@ -1028,7 +1390,11 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			state: "GSD-MARKER-7f3",
 			verification: { phase: "01-GSD-MARKER-7f3", status: "passed" },
 		};
-		const diff: ShipDiff = { stat: "src/app.ts | 1250 +++ STAT-MARKER-9c1", log: "abc1234 add app", patch: `${lockHunk}${source}` };
+		const diff: ShipDiff = {
+			stat: "src/app.ts | 1250 +++ STAT-MARKER-9c1",
+			log: "abc1234 add app",
+			patch: `${lockHunk}${source}`,
+		};
 		let judgePrompt = "";
 		const complete: ClaudeCompleter = async (_system, user) => {
 			judgePrompt = user;
@@ -1044,7 +1410,11 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 		expect(judgePrompt).toContain("GSD-MARKER-7f3");
 		expect(judgePrompt).toContain("STAT-MARKER-9c1");
 		expect(r.calls).toHaveLength(2);
-		type Body = { state: { request: string; acceptance_criteria: string[]; patch: string }; questions: object; trace: object };
+		type Body = {
+			state: { request: string; acceptance_criteria: string[]; patch: string };
+			questions: object;
+			trace: object;
+		};
 		const [first, second] = r.calls.map((call) => call.body as Body);
 		if (!first || !second) throw new Error("expected two requests");
 		expect(Object.keys(first.state).sort()).toEqual(["acceptance_criteria", "patch", "request"]);
@@ -1083,7 +1453,14 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 				answer = resolve;
 			});
 		};
-		const pending = assessDone({ record: RECORD, signals: clean, diff: FULL_DIFF, complete, now, decisions });
+		const pending = assessDone({
+			record: RECORD,
+			signals: clean,
+			diff: FULL_DIFF,
+			complete,
+			now,
+			decisions,
+		});
 		await judging;
 		expect(requestsWhenJudged).toBe(1);
 		expect(held.calls).toHaveLength(1);
@@ -1110,7 +1487,16 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 				requested = resolve;
 			});
 			const { decisions, lines } = jevRuntime(hangingFetch(() => requested()));
-			const pending = assessDone({ record: RECORD, signals: clean, diff: FULL_DIFF, complete, now, mode, signal: controller.signal, decisions });
+			const pending = assessDone({
+				record: RECORD,
+				signals: clean,
+				diff: FULL_DIFF,
+				complete,
+				now,
+				mode,
+				signal: controller.signal,
+				decisions,
+			});
 			await started;
 			controller.abort();
 			const error = await pending.then(
@@ -1132,7 +1518,10 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			];
 			for (const [mode, complete, threshold] of runs) {
 				const input = { record: RECORD, signals: clean, diff: FULL_DIFF, complete, now, mode };
-				const config: Partial<DecisionsConfig> = { points: ["ship"], ...(failure.timeoutMs ? { timeoutMs: failure.timeoutMs } : {}) };
+				const config: Partial<DecisionsConfig> = {
+					points: ["ship"],
+					...(failure.timeoutMs ? { timeoutMs: failure.timeoutMs } : {}),
+				};
 				const { decisions, lines } = jevRuntime(failure.fetch(), config);
 				const a = await assessDone({ ...input, decisions });
 				expect(withoutDecision(a)).toEqual(await assessDone(input));
@@ -1145,7 +1534,10 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 					action: "fail-open",
 					threshold,
 				});
-				expect(a.decision && assessDecisionJson(a.decision)).toEqual({ action: "fail-open", error: failure.kind });
+				expect(a.decision && assessDecisionJson(a.decision)).toEqual({
+					action: "fail-open",
+					error: failure.kind,
+				});
 				expect(lines).toHaveLength(1);
 				expectNoKey(a, lines);
 			}

@@ -2,7 +2,13 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
-import { childSpan, formatTraceparent, newTraceContext, parseTraceparent, traceContextFor } from "./trace.ts";
+import {
+	childSpan,
+	formatTraceparent,
+	newTraceContext,
+	parseTraceparent,
+	traceContextFor,
+} from "./trace.ts";
 
 const TRACE = "4bf92f3577b34da6a3ce929d0e0e4736";
 const SPAN = "00f067aa0ba902b7";
@@ -27,7 +33,9 @@ describe("parseTraceparent", () => {
 		expect(ctx).not.toBeNull();
 		expect(formatTraceparent(ctx as NonNullable<typeof ctx>)).toBe(VALID);
 		const unsampled = `00-${TRACE}-${SPAN}-00`;
-		expect(formatTraceparent(parseTraceparent(unsampled) as NonNullable<typeof ctx>)).toBe(unsampled);
+		expect(formatTraceparent(parseTraceparent(unsampled) as NonNullable<typeof ctx>)).toBe(
+			unsampled,
+		);
 	});
 
 	test("returns null for missing or non-string input", () => {
@@ -108,7 +116,15 @@ describe("parseTraceparent", () => {
 	});
 
 	test("never throws on hostile input", () => {
-		for (const input of ["-", "--", "---", "----", "\u0000", "00-\u0000-\u0000-\u0000", "00--".repeat(300)]) {
+		for (const input of [
+			"-",
+			"--",
+			"---",
+			"----",
+			"\u0000",
+			"00-\u0000-\u0000-\u0000",
+			"00--".repeat(300),
+		]) {
 			expect(() => parseTraceparent(input)).not.toThrow();
 			expect(parseTraceparent(input)).toBeNull();
 		}
@@ -166,7 +182,9 @@ describe("childSpan", () => {
 describe("formatTraceparent", () => {
 	test("renders version 00 with the sampled flag as 01 or 00", () => {
 		expect(formatTraceparent({ traceId: TRACE, spanId: SPAN, sampled: true })).toBe(VALID);
-		expect(formatTraceparent({ traceId: TRACE, spanId: SPAN, sampled: false })).toBe(`00-${TRACE}-${SPAN}-00`);
+		expect(formatTraceparent({ traceId: TRACE, spanId: SPAN, sampled: false })).toBe(
+			`00-${TRACE}-${SPAN}-00`,
+		);
 	});
 });
 

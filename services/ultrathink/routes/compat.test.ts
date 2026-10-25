@@ -27,7 +27,12 @@ const SESSION_SECRET = randomBytes(32).toString("hex");
 
 type Json = Record<string, unknown>;
 type LogLine = Record<string, unknown>;
-type RpcBody = { jsonrpc?: string; id?: unknown; result?: Json; error?: { code: number; message: string } };
+type RpcBody = {
+	jsonrpc?: string;
+	id?: unknown;
+	result?: Json;
+	error?: { code: number; message: string };
+};
 
 const dirs: string[] = [];
 const stores: Store[] = [];
@@ -104,14 +109,22 @@ function harness(overrides: Partial<UltrathinkConfig> = {}): Harness {
 	};
 	const store = openStore(config.dbPath);
 	stores.push(store);
-	const auth = createAuth({ ownerPasswordHash: OWNER_HASH, sessionSecret: SESSION_SECRET, cookieSecure: true });
+	const auth = createAuth({
+		ownerPasswordHash: OWNER_HASH,
+		sessionSecret: SESSION_SECRET,
+		cookieSecure: true,
+	});
 	const logs: LogLine[] = [];
 	const logger = createLogger({ write: (line) => logs.push(JSON.parse(line) as LogLine) });
 	return { app: createApp({ config, store, auth, logger }), logs };
 }
 
 /** A /mcp POST whose body is sent exactly as given, so a test can send something that is not JSON. */
-function post(h: Harness, rawBody: string, headers: Record<string, string> = {}): Promise<Response> {
+function post(
+	h: Harness,
+	rawBody: string,
+	headers: Record<string, string> = {},
+): Promise<Response> {
 	return h.app.handle(
 		new Request(RESOURCE, {
 			method: "POST",
@@ -127,7 +140,12 @@ function rpc(h: Harness, body: unknown, headers: Record<string, string> = {}): P
 }
 
 function initialize(protocolVersion: string): Json {
-	return { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion, capabilities: {}, clientInfo: { name: "probe", version: "0" } } };
+	return {
+		jsonrpc: "2.0",
+		id: 1,
+		method: "initialize",
+		params: { protocolVersion, capabilities: {}, clientInfo: { name: "probe", version: "0" } },
+	};
 }
 
 async function body(response: Response): Promise<RpcBody> {
@@ -162,7 +180,10 @@ function registerBody(h: Harness, fields: Json): Promise<Response> {
 }
 
 async function issueAccessToken(h: Harness): Promise<string> {
-	const registered = await registerBody(h, { client_name: "Test client", redirect_uris: [REDIRECT] });
+	const registered = await registerBody(h, {
+		client_name: "Test client",
+		redirect_uris: [REDIRECT],
+	});
 	expect(registered.status).toBe(201);
 	const registeredBody = await jsonOf(registered);
 	const clientId = String(registeredBody.client_id);
@@ -177,7 +198,10 @@ async function issueAccessToken(h: Harness): Promise<string> {
 		resource: RESOURCE,
 		state: "state-1",
 	});
-	const consent = await h.app.handle(new Request(`${ORIGIN}/oauth/authorize?${params.toString()}`), freshIp());
+	const consent = await h.app.handle(
+		new Request(`${ORIGIN}/oauth/authorize?${params.toString()}`),
+		freshIp(),
+	);
 	expect(consent.status).toBe(200);
 	const html = await consent.text();
 	const requestId = /name="req" value="([^"]+)"/.exec(html)?.[1] ?? "";
@@ -214,18 +238,30 @@ async function issueAccessToken(h: Harness): Promise<string> {
 }
 
 describe("protocol version header", () => {
-	const WIRE_BODY = { jsonrpc: "2.0", error: { code: -32600, message: "unsupported MCP-Protocol-Version" }, id: null };
+	const WIRE_BODY = {
+		jsonrpc: "2.0",
+		error: { code: -32600, message: "unsupported MCP-Protocol-Version" },
+		id: null,
+	};
 
 	test("an unsupported MCP-Protocol-Version is answered 400 / -32600, never -32022, whatever the method", async () => {
 		const h = harness();
 		const probes = [
-			{ jsonrpc: "2.0", id: "server-discover-probe-1", method: "server/discover", params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } } },
+			{
+				jsonrpc: "2.0",
+				id: "server-discover-probe-1",
+				method: "server/discover",
+				params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } },
+			},
 			initialize("2026-07-28"),
 			{ jsonrpc: "2.0", id: 2, method: "tools/list" },
 		];
 		for (const version of ["2026-07-28", "2024-11-05", "2025-12-01"]) {
 			for (const probe of probes) {
-				const response = await rpc(h, probe, { "MCP-Protocol-Version": version, "Mcp-Method": "server/discover" });
+				const response = await rpc(h, probe, {
+					"MCP-Protocol-Version": version,
+					"Mcp-Method": "server/discover",
+				});
 				expect(response.status).toBe(400);
 				const answer = await body(response);
 				expect(answer).toEqual(WIRE_BODY);
@@ -238,7 +274,11 @@ describe("protocol version header", () => {
 	test("the answer is the same when the body is not JSON or is larger than the body limit", async () => {
 		const h = harness({ maxBodyBytes: 256 });
 		const headers = { "MCP-Protocol-Version": "2026-07-28" };
-		for (const raw of ["not json {", "", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { pad: "x".repeat(2048) } })]) {
+		for (const raw of [
+			"not json {",
+			"",
+			JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { pad: "x".repeat(2048) } }),
+		]) {
 			const response = await post(h, raw, headers);
 			expect(response.status).toBe(400);
 			expect(await body(response)).toEqual(WIRE_BODY);
@@ -259,7 +299,12 @@ describe("protocol version header", () => {
 
 	test("server/discover without a version header is a 200 -32601 that echoes the id and names no protocol revision", async () => {
 		const h = harness();
-		const response = await rpc(h, { jsonrpc: "2.0", id: "server-discover-probe-1", method: "server/discover", params: {} });
+		const response = await rpc(h, {
+			jsonrpc: "2.0",
+			id: "server-discover-probe-1",
+			method: "server/discover",
+			params: {},
+		});
 		expect(response.status).toBe(200);
 		const answer = await body(response);
 		expect(answer.id).toBe("server-discover-probe-1");
@@ -291,12 +336,20 @@ describe("credentials and media type", () => {
 		);
 		expect(viaBearer.status).toBe(200);
 		expect((await body(viaBearer)).result?.protocolVersion).toBe("2025-11-25");
-		expect(requestLogs(bearerOnly).some((line) => line.authKind === "bearer" && line.rpcMethod === "initialize")).toBe(true);
+		expect(
+			requestLogs(bearerOnly).some(
+				(line) => line.authKind === "bearer" && line.rpcMethod === "initialize",
+			),
+		).toBe(true);
 	});
 
 	test("Accept is not enforced: application/json alone, event-stream alone and the SDK's pair all get JSON", async () => {
 		const h = harness();
-		for (const accept of ["application/json", "text/event-stream", "application/json, text/event-stream"]) {
+		for (const accept of [
+			"application/json",
+			"text/event-stream",
+			"application/json, text/event-stream",
+		]) {
 			const response = await rpc(h, { jsonrpc: "2.0", id: 1, method: "ping" }, { Accept: accept });
 			expect(response.status).toBe(200);
 			expect(response.headers.get("content-type") ?? "").toContain("application/json");
@@ -311,12 +364,23 @@ describe("request log diagnostics", () => {
 		const argumentText = "PRIVATE-PROMPT-TEXT-4711";
 		const response = await rpc(
 			h,
-			{ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "ultrathink_plan", arguments: { prompt: argumentText } } },
+			{
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "ultrathink_plan", arguments: { prompt: argumentText } },
+			},
 			{ "MCP-Protocol-Version": "2026-07-28" },
 		);
 		expect(response.status).toBe(400);
 		const [line] = requestLogs(h);
-		expect(line).toMatchObject({ endpoint: "mcp", status: 400, mcpVersion: "2026-07-28", rpcMethod: "tools/call", authKind: "connector-key" });
+		expect(line).toMatchObject({
+			endpoint: "mcp",
+			status: 400,
+			mcpVersion: "2026-07-28",
+			rpcMethod: "tools/call",
+			authKind: "connector-key",
+		});
 		// The tool name is a body field too; only the method is read on this path.
 		expect(line).not.toHaveProperty("tool");
 		const text = JSON.stringify(h.logs);
@@ -328,7 +392,10 @@ describe("request log diagnostics", () => {
 		const h = harness();
 		const response = await post(h, "{ this is not json", { "MCP-Protocol-Version": "2024-11-05" });
 		expect(response.status).toBe(400);
-		expect((await body(response)).error).toEqual({ code: -32600, message: "unsupported MCP-Protocol-Version" });
+		expect((await body(response)).error).toEqual({
+			code: -32600,
+			message: "unsupported MCP-Protocol-Version",
+		});
 		const [line] = requestLogs(h);
 		expect(line).toMatchObject({ status: 400, mcpVersion: "2024-11-05" });
 		expect(line).not.toHaveProperty("rpcMethod");
@@ -336,7 +403,12 @@ describe("request log diagnostics", () => {
 
 	test("a rejected probe with an oversized body logs the version only", async () => {
 		const h = harness({ maxBodyBytes: 256 });
-		const big = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "server/discover", params: { pad: "x".repeat(2048) } });
+		const big = JSON.stringify({
+			jsonrpc: "2.0",
+			id: 1,
+			method: "server/discover",
+			params: { pad: "x".repeat(2048) },
+		});
 		const response = await post(h, big, { "MCP-Protocol-Version": "2026-07-28" });
 		expect(response.status).toBe(400);
 		const [line] = requestLogs(h);
@@ -346,14 +418,26 @@ describe("request log diagnostics", () => {
 
 	test("the logged header value is cut to the log value limit", async () => {
 		const h = harness();
-		await rpc(h, { jsonrpc: "2.0", id: 1, method: "ping" }, { "MCP-Protocol-Version": "v".repeat(300) });
+		await rpc(
+			h,
+			{ jsonrpc: "2.0", id: 1, method: "ping" },
+			{ "MCP-Protocol-Version": "v".repeat(300) },
+		);
 		const [line] = requestLogs(h);
 		expect(line?.mcpVersion).toBe("v".repeat(64));
 	});
 
 	test("an accepted request logs mcpVersion when the header is present and omits it when absent", async () => {
 		const h = harness();
-		expect((await rpc(h, { jsonrpc: "2.0", id: 1, method: "ping" }, { "MCP-Protocol-Version": "2025-11-25" })).status).toBe(200);
+		expect(
+			(
+				await rpc(
+					h,
+					{ jsonrpc: "2.0", id: 1, method: "ping" },
+					{ "MCP-Protocol-Version": "2025-11-25" },
+				)
+			).status,
+		).toBe(200);
 		expect((await rpc(h, { jsonrpc: "2.0", id: 2, method: "tools/list" })).status).toBe(200);
 		const [withHeader, withoutHeader] = requestLogs(h);
 		expect(withHeader).toMatchObject({ status: 200, mcpVersion: "2025-11-25", rpcMethod: "ping" });
@@ -363,7 +447,10 @@ describe("request log diagnostics", () => {
 
 	test("a request that is not a /mcp request never carries mcpVersion", async () => {
 		const h = harness();
-		await h.app.handle(new Request(`${ORIGIN}/healthz`, { headers: { "MCP-Protocol-Version": "2026-07-28" } }), PEER);
+		await h.app.handle(
+			new Request(`${ORIGIN}/healthz`, { headers: { "MCP-Protocol-Version": "2026-07-28" } }),
+			PEER,
+		);
 		const [line] = requestLogs(h);
 		expect(line).not.toHaveProperty("mcpVersion");
 	});
@@ -393,7 +480,15 @@ describe("dynamic client registration", () => {
 		expect(registered.redirect_uris).toEqual([REDIRECT]);
 		expect(registered.token_endpoint_auth_method).toBe("none");
 		expect(registered.grant_types).toEqual(["authorization_code", "refresh_token"]);
-		for (const field of ["application_type", "scope", "software_id", "contacts", "logo_uri", "client_uri", "tos_uri"]) {
+		for (const field of [
+			"application_type",
+			"scope",
+			"software_id",
+			"contacts",
+			"logo_uri",
+			"client_uri",
+			"tos_uri",
+		]) {
 			expect(registered).not.toHaveProperty(field);
 		}
 		expect(text).not.toContain("sentinel");
@@ -408,7 +503,11 @@ describe("dynamic client registration", () => {
 			"http://127.0.0.1:33418/callback",
 		];
 		for (const redirect of redirects) {
-			const response = await registerBody(h, { client_name: "Hosted client", redirect_uris: [redirect], token_endpoint_auth_method: "none" });
+			const response = await registerBody(h, {
+				client_name: "Hosted client",
+				redirect_uris: [redirect],
+				token_endpoint_auth_method: "none",
+			});
 			expect(response.status).toBe(201);
 			const registeredBody = await jsonOf(response);
 			expect(registeredBody.redirect_uris).toEqual([redirect]);
@@ -417,12 +516,20 @@ describe("dynamic client registration", () => {
 
 	test("rejects client_secret_post and a redirect outside the allow list", async () => {
 		const h = harness();
-		const secret = await registerBody(h, { client_name: "Confidential", redirect_uris: [REDIRECT], token_endpoint_auth_method: "client_secret_post" });
+		const secret = await registerBody(h, {
+			client_name: "Confidential",
+			redirect_uris: [REDIRECT],
+			token_endpoint_auth_method: "client_secret_post",
+		});
 		expect(secret.status).toBe(400);
 		const secretBody = await jsonOf(secret);
 		expect(secretBody.error).toBe("invalid_client_metadata");
 
-		const evil = await registerBody(h, { client_name: "Evil", redirect_uris: ["https://evil.example/cb"], token_endpoint_auth_method: "none" });
+		const evil = await registerBody(h, {
+			client_name: "Evil",
+			redirect_uris: ["https://evil.example/cb"],
+			token_endpoint_auth_method: "none",
+		});
 		expect(evil.status).toBe(400);
 		const evilBody = await jsonOf(evil);
 		expect(evilBody.error).toBe("invalid_redirect_uri");

@@ -75,7 +75,9 @@ export async function runTemplate(options: RunOptions): Promise<RunResult> {
 
 	await issueLoad(target, template.load);
 
-	const settled = template.settle ? await settleMetric(target, template.settle, sleep) : "not_configured";
+	const settled = template.settle
+		? await settleMetric(target, template.settle, sleep)
+		: "not_configured";
 
 	const hypotheses: HypothesisResult[] = [];
 	for (const hypothesis of template.hypotheses) hypotheses.push(await evaluate(target, hypothesis));
@@ -113,7 +115,11 @@ async function issueLoad(target: ChaosTarget, load: ExperimentTemplate["load"]):
 }
 
 // Polls /metrics at most SETTLE_POLLS times. A poll that cannot read the metric counts as not yet reached.
-async function settleMetric(target: ChaosTarget, settle: Settle, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+async function settleMetric(
+	target: ChaosTarget,
+	settle: Settle,
+	sleep: (ms: number) => Promise<void>,
+): Promise<boolean> {
 	for (let poll = 0; poll < SETTLE_POLLS; poll += 1) {
 		if (poll > 0) await sleep(SETTLE_INTERVAL_MS);
 		const value = await readMetric(target, settle.metric, settle.labels).catch(() => undefined);
@@ -122,7 +128,11 @@ async function settleMetric(target: ChaosTarget, settle: Settle, sleep: (ms: num
 	return false;
 }
 
-async function readMetric(target: ChaosTarget, metric: string, labels?: Record<string, string>): Promise<number | undefined> {
+async function readMetric(
+	target: ChaosTarget,
+	metric: string,
+	labels?: Record<string, string>,
+): Promise<number | undefined> {
 	const response = await target.request("GET", "/metrics");
 	return parsePrometheusValue(response.text, metric, labels);
 }
@@ -137,7 +147,10 @@ async function evaluate(target: ChaosTarget, hypothesis: Hypothesis): Promise<Hy
 	}
 }
 
-async function checkHypothesis(target: ChaosTarget, hypothesis: Hypothesis): Promise<HypothesisResult> {
+async function checkHypothesis(
+	target: ChaosTarget,
+	hypothesis: Hypothesis,
+): Promise<HypothesisResult> {
 	switch (hypothesis.check) {
 		case "status": {
 			const response = await target.request("GET", hypothesis.path);
@@ -163,7 +176,10 @@ async function checkHypothesis(target: ChaosTarget, hypothesis: Hypothesis): Pro
 	}
 }
 
-async function checkBody(target: ChaosTarget, hypothesis: Extract<Hypothesis, { check: "body" }>): Promise<HypothesisResult> {
+async function checkBody(
+	target: ChaosTarget,
+	hypothesis: Extract<Hypothesis, { check: "body" }>,
+): Promise<HypothesisResult> {
 	const { id, path, field, equals } = hypothesis;
 	const response = await target.request("GET", path);
 	let body: unknown;
@@ -178,11 +194,21 @@ async function checkBody(target: ChaosTarget, hypothesis: Extract<Hypothesis, { 
 	const value: unknown = Reflect.get(body, field);
 	if (!isScalar(value)) return verdict(id, false, undefined, `field ${field} is not a scalar`);
 	const observed = typeof value === "boolean" ? String(value) : value;
-	return verdict(id, value === equals, observed, `field ${field} is ${String(value)}, expected ${String(equals)}`);
+	return verdict(
+		id,
+		value === equals,
+		observed,
+		`field ${field} is ${String(value)}, expected ${String(equals)}`,
+	);
 }
 
 // A passing result carries what was observed; a failing one also carries the reason.
-function verdict(id: string, passed: boolean, observed: string | number | undefined, failure: string): HypothesisResult {
+function verdict(
+	id: string,
+	passed: boolean,
+	observed: string | number | undefined,
+	failure: string,
+): HypothesisResult {
 	return passed ? { id, passed, observed } : { id, passed, observed, reason: failure };
 }
 

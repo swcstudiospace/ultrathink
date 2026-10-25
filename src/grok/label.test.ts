@@ -12,16 +12,40 @@ describe("grokEngineLabel", () => {
 	});
 
 	test("cli transport uses model@effort too", () => {
-		expect(grokEngineLabel({ ...DEFAULT_GROK_CONFIG, transport: "cli", reasoningEffort: "high" })).toBe(`${ROUTE_DEFAULT_MODELS.grok}@high`);
+		expect(
+			grokEngineLabel({ ...DEFAULT_GROK_CONFIG, transport: "cli", reasoningEffort: "high" }),
+		).toBe(`${ROUTE_DEFAULT_MODELS.grok}@high`);
 	});
 
 	test("shunt transport yields <shuntModel>@shunt", () => {
-		expect(grokEngineLabel({ ...DEFAULT_GROK_CONFIG, transport: "shunt", shuntModel: "grok-shunt-route" })).toBe("grok-shunt-route@shunt");
-		expect(grokEngineLabel({ ...DEFAULT_GROK_CONFIG, transport: "shunt", model: "grok-4.6", shuntModel: "grok-4.7" })).toBe("grok-4.7@shunt");
+		expect(
+			grokEngineLabel({
+				...DEFAULT_GROK_CONFIG,
+				transport: "shunt",
+				shuntModel: "grok-shunt-route",
+			}),
+		).toBe("grok-shunt-route@shunt");
+		expect(
+			grokEngineLabel({
+				...DEFAULT_GROK_CONFIG,
+				transport: "shunt",
+				model: "grok-4.6",
+				shuntModel: "grok-4.7",
+			}),
+		).toBe("grok-4.7@shunt");
 	});
 
 	test("shunt transport with no shuntModel falls back to model", () => {
-		expect(grokEngineLabel({ ...DEFAULT_GROK_CONFIG, transport: "shunt" })).toBe(`${ROUTE_DEFAULT_MODELS.grok}@shunt`);
-		expect(grokEngineLabel({ ...DEFAULT_GROK_CONFIG, transport: "shunt", model: "grok-4.6", shuntModel: "  " })).toBe("grok-4.6@shunt");
+		expect(grokEngineLabel({ ...DEFAULT_GROK_CONFIG, transport: "shunt" })).toBe(
+			`${ROUTE_DEFAULT_MODELS.grok}@shunt`,
+		);
+		expect(
+			grokEngineLabel({
+				...DEFAULT_GROK_CONFIG,
+				transport: "shunt",
+				model: "grok-4.6",
+				shuntModel: "  ",
+			}),
+		).toBe("grok-4.6@shunt");
 	});
 });

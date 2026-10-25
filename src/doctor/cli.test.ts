@@ -35,7 +35,8 @@ describe("runDoctorCommand", () => {
 			},
 			cwd: join(dir, "project"),
 			now: () => 1_800_000_000_000,
-			which: (command) => (["git", "gh", "python3"].includes(command) ? `/usr/bin/${command}` : undefined),
+			which: (command) =>
+				["git", "gh", "python3"].includes(command) ? `/usr/bin/${command}` : undefined,
 			bunVersion: "1.2.0",
 			runVersion: () => "Python 3.12.1",
 		};
@@ -50,7 +51,13 @@ describe("runDoctorCommand", () => {
 		expect(exitCode).toBe(0);
 		const lines = output.split("\n");
 		expect(lines[0]).toBe("ultrathink doctor");
-		expect(lines.filter((line) => /^[a-z]+$/.test(line))).toEqual(["runtime", "config", "credentials", "state", "pstack"]);
+		expect(lines.filter((line) => /^[a-z]+$/.test(line))).toEqual([
+			"runtime",
+			"config",
+			"credentials",
+			"state",
+			"pstack",
+		]);
 		expect(lines.at(-1)).toBe("0 errors, 0 warnings");
 		expect(output).not.toEndWith("\n");
 	});
@@ -101,10 +108,14 @@ describe("runDoctorCommand", () => {
 		expect(report.summary).toMatchObject({ error: 0, warn: 1 });
 		expect(report.findings.map((finding) => finding.section)).toEqual(
 			[...report.findings.map((finding) => finding.section)].sort(
-				(a, b) => ["runtime", "config", "credentials", "state", "pstack"].indexOf(a) - ["runtime", "config", "credentials", "state", "pstack"].indexOf(b),
+				(a, b) =>
+					["runtime", "config", "credentials", "state", "pstack"].indexOf(a) -
+					["runtime", "config", "credentials", "state", "pstack"].indexOf(b),
 			),
 		);
-		const typo = report.findings.find((finding) => finding.id === "config.project.unknown-section.shipp");
+		const typo = report.findings.find(
+			(finding) => finding.id === "config.project.unknown-section.shipp",
+		);
 		expect(typo).toMatchObject({ section: "config", level: "warn", fix: "Did you mean ship?" });
 
 		projectConfig("[");
@@ -116,14 +127,28 @@ describe("runDoctorCommand", () => {
 	test("fake keys in the environment and the credential store never appear in text or JSON", async () => {
 		writeStore(join(dir, "mcp-credentials.json"), {
 			version: 1,
-			providers: { greptile: { kind: "api_key", apiKey: FAKE_KEY, updatedAt: 0 }, ragflow: { kind: "api_key", apiKey: FAKE_KEY, updatedAt: 0 } },
+			providers: {
+				greptile: { kind: "api_key", apiKey: FAKE_KEY, updatedAt: 0 },
+				ragflow: { kind: "api_key", apiKey: FAKE_KEY, updatedAt: 0 },
+			},
 		});
 		mkdirSync(join(dir, "xdg", "ultrathink"), { recursive: true });
 		writeFileSync(
 			join(dir, "xdg", "ultrathink", "config.json"),
-			JSON.stringify({ ship: { enabled: true }, hitl: { knowledgeBase: true }, ragflow: { enabled: true }, hindsight: { enabled: true } }),
+			JSON.stringify({
+				ship: { enabled: true },
+				hitl: { knowledgeBase: true },
+				ragflow: { enabled: true },
+				hindsight: { enabled: true },
+			}),
 		);
-		const env = { ...deps.env, OPENROUTER_API_KEY: FAKE_KEY, HINDSIGHT_API_KEY: FAKE_KEY, GH_TOKEN: FAKE_KEY, AI_GATEWAY_API_KEY: FAKE_KEY };
+		const env = {
+			...deps.env,
+			OPENROUTER_API_KEY: FAKE_KEY,
+			HINDSIGHT_API_KEY: FAKE_KEY,
+			GH_TOKEN: FAKE_KEY,
+			AI_GATEWAY_API_KEY: FAKE_KEY,
+		};
 		for (const args of [[], ["--json"]]) {
 			const { output } = await runDoctorCommand(args, { ...deps, env });
 			expect(output).not.toContain(FAKE_KEY);

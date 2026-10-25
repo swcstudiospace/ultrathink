@@ -18,11 +18,17 @@ function bodyOf(chunks: string[]): Response {
 
 describe("body readers", () => {
 	test("reads a body within the limit completely", async () => {
-		expect(await readBodyPrefix(bodyOf(["hel", "lo"]), 10)).toEqual({ text: "hello", complete: true });
+		expect(await readBodyPrefix(bodyOf(["hel", "lo"]), 10)).toEqual({
+			text: "hello",
+			complete: true,
+		});
 	});
 
 	test("keeps only the prefix when the body exceeds the limit", async () => {
-		expect(await readBodyPrefix(bodyOf(["hello", "world"]), 7)).toEqual({ text: "hellowo", complete: false });
+		expect(await readBodyPrefix(bodyOf(["hello", "world"]), 7)).toEqual({
+			text: "hellowo",
+			complete: false,
+		});
 	});
 
 	test("readBodyText throws when the body exceeds the limit", async () => {

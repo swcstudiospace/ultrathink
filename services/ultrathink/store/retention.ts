@@ -37,7 +37,9 @@ function columnsOf(db: Database, table: string): Set<string> {
 /** Child tables are found through their foreign keys to runs, so a new table that references runs is covered. */
 function childTables(db: Database): Array<{ table: string; column: string }> {
 	const tables = db
-		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'runs' ORDER BY name")
+		.query(
+			"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'runs' ORDER BY name",
+		)
 		.all() as NameRow[];
 	const children: Array<{ table: string; column: string }> = [];
 	for (const { name } of tables) {
@@ -61,11 +63,15 @@ export function pruneRuns(db: Database, options: PruneOptions): PruneResult {
 	const prune = db.transaction((): PruneResult => {
 		const ledger = columnsOf(db, "token_ledger");
 		const guard =
-			ledger.has("run_id") && ledger.has("day") ? " AND id NOT IN (SELECT run_id FROM token_ledger WHERE day >= ?)" : "";
+			ledger.has("run_id") && ledger.has("day")
+				? " AND id NOT IN (SELECT run_id FROM token_ledger WHERE day >= ?)"
+				: "";
 		db.run("CREATE TEMP TABLE ut_doomed (id PRIMARY KEY)");
 		const params: Array<number | string> = [options.cutoffMs];
 		if (guard) params.push(options.today);
-		db.query(`INSERT OR IGNORE INTO ut_doomed SELECT id FROM runs WHERE updated_at < ?${guard}`).run(...params);
+		db.query(
+			`INSERT OR IGNORE INTO ut_doomed SELECT id FROM runs WHERE updated_at < ?${guard}`,
+		).run(...params);
 
 		const rows: Record<string, number> = {};
 		for (const { table, column } of childTables(db)) {
@@ -74,7 +80,9 @@ export function pruneRuns(db: Database, options: PruneOptions): PruneResult {
 				.run();
 			rows[table] = (rows[table] ?? 0) + changes;
 		}
-		const { changes: runs } = db.query("DELETE FROM runs WHERE id IN (SELECT id FROM ut_doomed)").run();
+		const { changes: runs } = db
+			.query("DELETE FROM runs WHERE id IN (SELECT id FROM ut_doomed)")
+			.run();
 		db.run("DROP TABLE ut_doomed");
 		return { runs, rows };
 	});

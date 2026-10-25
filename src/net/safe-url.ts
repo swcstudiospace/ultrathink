@@ -28,12 +28,17 @@ export function checkServiceUrl(raw: unknown): UrlCheck {
 	} catch {
 		return { ok: false, reason: "not a valid URL" };
 	}
-	if (parsed.username !== "" || parsed.password !== "") return { ok: false, reason: "must not contain a user name or password" };
-	if (parsed.search !== "" || parsed.hash !== "") return { ok: false, reason: "must not contain a query or fragment" };
+	if (parsed.username !== "" || parsed.password !== "")
+		return { ok: false, reason: "must not contain a user name or password" };
+	if (parsed.search !== "" || parsed.hash !== "")
+		return { ok: false, reason: "must not contain a query or fragment" };
 	if (parsed.protocol === "http:") {
 		const host = parsed.hostname;
 		if (!Object.hasOwn(LOOPBACK_HOSTS, host) && !host.endsWith(".ts.net") && !isCgnat(host)) {
-			return { ok: false, reason: "http is allowed only for localhost, *.ts.net and 100.64.0.0/10; use https" };
+			return {
+				ok: false,
+				reason: "http is allowed only for localhost, *.ts.net and 100.64.0.0/10; use https",
+			};
 		}
 	} else if (parsed.protocol !== "https:") {
 		return { ok: false, reason: "must be an http(s) URL" };

@@ -4,7 +4,15 @@ import { writeSync } from "node:fs";
 import type { ModelResolution } from "./engine.ts";
 import type { ActivityNotice } from "./activity-notice.ts";
 
-export type StageName = "brief" | "uplift" | "think" | "knowledge" | "clarify" | "plan" | "track" | "state";
+export type StageName =
+	| "brief"
+	| "uplift"
+	| "think"
+	| "knowledge"
+	| "clarify"
+	| "plan"
+	| "track"
+	| "state";
 
 /**
  * `modelResolution` on `begin` and `end` is the selection's safe record (§9 path 4), not a new event kind: begin names
@@ -12,9 +20,29 @@ export type StageName = "brief" | "uplift" | "think" | "knowledge" | "clarify" |
  */
 export type ProgressEvent =
 	/** `track`: planner-side tracking will run this turn. */
-	| { type: "begin"; at: number; sessionId: string; engine: string; track?: boolean; skill?: string; modelResolution?: ModelResolution }
-	| { type: "stage"; at: number; stage: StageName; phase: "start" | "end"; ok?: boolean; detail?: string }
-	| { type: "graph"; at: number; total: number; nodes: Array<{ id: string; title: string; kind: string; dependsOn?: string[] }> }
+	| {
+			type: "begin";
+			at: number;
+			sessionId: string;
+			engine: string;
+			track?: boolean;
+			skill?: string;
+			modelResolution?: ModelResolution;
+	  }
+	| {
+			type: "stage";
+			at: number;
+			stage: StageName;
+			phase: "start" | "end";
+			ok?: boolean;
+			detail?: string;
+	  }
+	| {
+			type: "graph";
+			at: number;
+			total: number;
+			nodes: Array<{ id: string; title: string; kind: string; dependsOn?: string[] }>;
+	  }
 	| {
 			type: "node";
 			at: number;
@@ -37,15 +65,40 @@ export type ProgressEvent =
 			error?: string;
 	  }
 	/** One per created or adopted tracker row; `step` absent for the node's own issue. */
-	| { type: "issue"; at: number; provider: "linear" | "notion"; nodeId: string; step?: number; identifier?: string; url: string }
+	| {
+			type: "issue";
+			at: number;
+			provider: "linear" | "notion";
+			nodeId: string;
+			step?: number;
+			identifier?: string;
+			url: string;
+	  }
 	| { type: "activity"; at: number; notice: ActivityNotice }
-	| { type: "end"; at: number; outcome: "planned" | "skipped" | "failed"; detail?: string; modelResolution?: ModelResolution };
+	| {
+			type: "end";
+			at: number;
+			outcome: "planned" | "skipped" | "failed";
+			detail?: string;
+			modelResolution?: ModelResolution;
+	  };
 
 export type ProgressSink = (event: ProgressEvent) => void;
 
-const EVENT_TYPES: Record<string, true> = { begin: true, stage: true, graph: true, node: true, track: true, issue: true, activity: true, end: true };
+const EVENT_TYPES: Record<string, true> = {
+	begin: true,
+	stage: true,
+	graph: true,
+	node: true,
+	track: true,
+	issue: true,
+	activity: true,
+	end: true,
+};
 /** Sink writing JSON lines to the fd named by ULTRATHINK_PROGRESS_FD (>= 3). Never touches stdout; swallows errors. */
-export function createFdProgressSink(env: Record<string, string | undefined> = process.env): ProgressSink | undefined {
+export function createFdProgressSink(
+	env: Record<string, string | undefined> = process.env,
+): ProgressSink | undefined {
 	const raw = env.ULTRATHINK_PROGRESS_FD?.trim();
 	if (!raw || !/^\d+$/.test(raw)) return undefined;
 	const fd = Number(raw);
@@ -68,7 +121,8 @@ export function parseProgressLine(line: string): ProgressEvent | undefined {
 	} catch {
 		return undefined;
 	}
-	if (!value || typeof value !== "object" || !("type" in value) || !("at" in value)) return undefined;
+	if (!value || typeof value !== "object" || !("type" in value) || !("at" in value))
+		return undefined;
 	if (typeof value.type !== "string" || EVENT_TYPES[value.type] !== true) return undefined;
 	if (typeof value.at !== "number" || !Number.isFinite(value.at)) return undefined;
 	// Trusted child-process boundary: type + timestamp validated above.
@@ -76,7 +130,10 @@ export function parseProgressLine(line: string): ProgressEvent | undefined {
 	return event;
 }
 
-export function createLineSplitter(onLine: (line: string) => void): { push(chunk: string): void; end(): void } {
+export function createLineSplitter(onLine: (line: string) => void): {
+	push(chunk: string): void;
+	end(): void;
+} {
 	let buffer = "";
 	return {
 		push(chunk) {

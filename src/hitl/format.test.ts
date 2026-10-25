@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { clarificationsToXml, formatHitlAddendum, formatHitlEcho, injectClarificationsXml } from "./format.ts";
+import {
+	clarificationsToXml,
+	formatHitlAddendum,
+	formatHitlEcho,
+	injectClarificationsXml,
+} from "./format.ts";
 import type { Clarification } from "./types.ts";
 
 const open: Clarification = {
 	id: "q1",
-	question: "Use <Postgres> or \"SQLite\"?",
+	question: 'Use <Postgres> or "SQLite"?',
 	header: "Database",
 	why: "changes the schema & migrations",
 	options: [{ label: "Postgres", description: "durable" }, { label: "SQLite" }],
@@ -24,7 +29,14 @@ const soft: Clarification = {
 	blocking: false,
 };
 
-const answered: Clarification = { ...soft, id: "q3", question: "Which color?", answer: "blue", source: "user", answeredAt: 1 };
+const answered: Clarification = {
+	...soft,
+	id: "q3",
+	question: "Which color?",
+	answer: "blue",
+	source: "user",
+	answeredAt: 1,
+};
 
 const settled: Clarification = {
 	id: "k1",
@@ -54,8 +66,14 @@ describe("clarificationsToXml", () => {
 	});
 
 	test("a knowledge answer carries its escaped evidence document; other answers do not, even with stale evidence", () => {
-		const xml = clarificationsToXml([settled, answered, { ...settled, id: "k2", source: "user", answer: "Postgres" }]);
-		expect(xml).toContain('<ANSWER source="knowledge" evidence="docs/a&amp;b &quot;store&quot;.md">In SQLite.</ANSWER>');
+		const xml = clarificationsToXml([
+			settled,
+			answered,
+			{ ...settled, id: "k2", source: "user", answer: "Postgres" },
+		]);
+		expect(xml).toContain(
+			'<ANSWER source="knowledge" evidence="docs/a&amp;b &quot;store&quot;.md">In SQLite.</ANSWER>',
+		);
 		expect(xml).toContain('<ANSWER source="user">blue</ANSWER>');
 		expect(xml).toContain('<ANSWER source="user">Postgres</ANSWER>');
 		expect(xml.match(/evidence=/g)).toHaveLength(1);
@@ -85,7 +103,9 @@ describe("injectClarificationsXml", () => {
 	});
 
 	test("appends when there is no root close", () => {
-		expect(injectClarificationsXml("plain text", [soft])).toBe(`plain text\n${clarificationsToXml([soft])}`);
+		expect(injectClarificationsXml("plain text", [soft])).toBe(
+			`plain text\n${clarificationsToXml([soft])}`,
+		);
 	});
 });
 
@@ -96,7 +116,9 @@ describe("formatHitlAddendum", () => {
 		expect(out.startsWith("## Clarifications (HITL)")).toBe(true);
 		expect(out).toContain("`AskUserQuestion` tool ONCE");
 		expect(out).toContain("### Open (blocking)");
-		expect(out).toContain('- [q1] Use <Postgres> or "SQLite"? — options: Postgres | SQLite (recommended: Postgres)');
+		expect(out).toContain(
+			'- [q1] Use <Postgres> or "SQLite"? — options: Postgres | SQLite (recommended: Postgres)',
+		);
 		expect(out).toContain("### Open (non-blocking)");
 		expect(out).toContain("- [q2] Add tests? — options: Yes | No (recommended: Yes)");
 		expect(out).toContain("### Answered");
@@ -116,18 +138,26 @@ describe("formatHitlAddendum", () => {
 		const claude = formatHitlAddendum([open, soft, answered]);
 		const out = formatHitlAddendum([open, soft, answered], { questionTool: "clarify" });
 		expect(out).not.toContain("AskUserQuestion");
-		expect(out).toContain('call Hermes\' `clarify` tool ONCE with `{"questions": [{"question": "...", "choices": ["..."]}]}`');
-		expect(out).toContain("at most 5 questions, at most 4 choices each, with the recommended default as the first choice");
+		expect(out).toContain(
+			'call Hermes\' `clarify` tool ONCE with `{"questions": [{"question": "...", "choices": ["..."]}]}`',
+		);
+		expect(out).toContain(
+			"at most 5 questions, at most 4 choices each, with the recommended default as the first choice",
+		);
 		expect(out).toContain("If `clarify` is unavailable or answers that no user is available");
 		// Only steps 2 and 5 differ; the open/answered lists are the same.
-		expect(out.slice(out.indexOf("### Open (blocking)"))).toBe(claude.slice(claude.indexOf("### Open (blocking)")));
+		expect(out.slice(out.indexOf("### Open (blocking)"))).toBe(
+			claude.slice(claude.indexOf("### Open (blocking)")),
+		);
 	});
 
 	test("knowledge answers get their own untrusted-evidence section after Answered, not the Answered list", () => {
 		const out = formatHitlAddendum([soft, settled, answered]);
 		const answeredAt = out.indexOf("### Answered");
 		const settledAt = out.indexOf("### Settled from the Greptile knowledge base");
-		const entry = out.indexOf('- [k1] Where are records stored? → In SQLite. (Greptile knowledge base: docs/a&b "store".md)');
+		const entry = out.indexOf(
+			'- [k1] Where are records stored? → In SQLite. (Greptile knowledge base: docs/a&b "store".md)',
+		);
 		expect(answeredAt).toBeGreaterThan(-1);
 		expect(settledAt).toBeGreaterThan(answeredAt);
 		expect(entry).toBeGreaterThan(settledAt);
@@ -143,7 +173,9 @@ describe("formatHitlAddendum", () => {
 		const out = formatHitlAddendum([soft, settled]);
 		expect(out).not.toContain("### Answered");
 		expect(out).toContain("### Settled from the Greptile knowledge base");
-		expect(out.indexOf("### Open (non-blocking)")).toBeLessThan(out.indexOf("### Settled from the Greptile knowledge base"));
+		expect(out.indexOf("### Open (non-blocking)")).toBeLessThan(
+			out.indexOf("### Settled from the Greptile knowledge base"),
+		);
 	});
 });
 
@@ -151,8 +183,12 @@ describe("formatHitlEcho", () => {
 	test("renders one entry per clarification with answer lines only when answered", () => {
 		expect(formatHitlEcho([])).toBe("No clarifications recorded");
 		const out = formatHitlEcho([open, answered]);
-		expect(out).toContain('q1 [blocking] Database: Use <Postgres> or "SQLite"?\n   options: Postgres | SQLite (default: Postgres)');
-		expect(out).toContain("q3 Tests: Which color?\n   options: Yes | No (default: Yes)\n   answer: blue");
+		expect(out).toContain(
+			'q1 [blocking] Database: Use <Postgres> or "SQLite"?\n   options: Postgres | SQLite (default: Postgres)',
+		);
+		expect(out).toContain(
+			"q3 Tests: Which color?\n   options: Yes | No (default: Yes)\n   answer: blue",
+		);
 		expect(out.match(/answer:/g)).toHaveLength(1);
 	});
 

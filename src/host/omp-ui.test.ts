@@ -3,7 +3,17 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelResolution } from "./engine.ts";
 import { paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
-import { type BarState, createBarComponent, createBarStore, LINGER_MS, parseSubstrateStatus, parseTokenSavings, renderBarLine, type SubstrateSegment, type TokenSavingsSnapshot } from "./omp-ui.ts";
+import {
+	type BarState,
+	createBarComponent,
+	createBarStore,
+	LINGER_MS,
+	parseSubstrateStatus,
+	parseTokenSavings,
+	renderBarLine,
+	type SubstrateSegment,
+	type TokenSavingsSnapshot,
+} from "./omp-ui.ts";
 import type { PlanView } from "./view.ts";
 import type { ProgressEvent } from "./progress.ts";
 
@@ -14,7 +24,15 @@ function fakeTheme(bg = "\x1b[48;5;236m") {
 		bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
 		getFgAnsi: () => "\x1b[38;5;7m",
 		getBgAnsi: () => bg,
-		sep: { powerlineThinLeft: "›", powerlineLeft: "▶", powerlineCapLeft: "◀", powerlineThinRight: "‹", powerlineRight: "◀", dot: "·", pipe: "|" },
+		sep: {
+			powerlineThinLeft: "›",
+			powerlineLeft: "▶",
+			powerlineCapLeft: "◀",
+			powerlineThinRight: "‹",
+			powerlineRight: "◀",
+			dot: "·",
+			pipe: "|",
+		},
 		status: { success: "OK", error: "XX", warning: "WW", pending: "..", running: "RR", done: "DD" },
 		getSpinnerFrames: () => ["S1", "S2"],
 	};
@@ -48,7 +66,15 @@ const view: PlanView = {
 	engine: "grok",
 	elapsedMs: 34_000,
 	nodes: [
-		{ id: "n1", title: "Design", kind: "analysis", wave: 0, dependsOn: [], issue: { identifier: "ENG-12", url: "https://l/ENG-12" }, steps: [{ step: 1, title: "a", identifier: "ENG-13" }] },
+		{
+			id: "n1",
+			title: "Design",
+			kind: "analysis",
+			wave: 0,
+			dependsOn: [],
+			issue: { identifier: "ENG-12", url: "https://l/ENG-12" },
+			steps: [{ step: 1, title: "a", identifier: "ENG-13" }],
+		},
 		{ id: "n2", title: "Build", kind: "task", wave: 1, dependsOn: ["n1"], steps: [] },
 	],
 	waves: [["n1"], ["n2"]],
@@ -65,10 +91,37 @@ function planningState(): BarState {
 	store.apply({ type: "stage", at: 1_300, stage: "think", phase: "start" });
 	store.apply({ type: "graph", at: 1_400, total: 5, nodes: [] });
 	for (let i = 0; i < 3; i++) {
-		store.apply({ type: "node", at: 1_500, phase: "start", id: `n${i}`, title: `Node ${i}`, kind: "task", index: i, total: 5 });
-		store.apply({ type: "node", at: 1_600, phase: "done", id: `n${i}`, title: `Node ${i}`, kind: "task", index: i, total: 5 });
+		store.apply({
+			type: "node",
+			at: 1_500,
+			phase: "start",
+			id: `n${i}`,
+			title: `Node ${i}`,
+			kind: "task",
+			index: i,
+			total: 5,
+		});
+		store.apply({
+			type: "node",
+			at: 1_600,
+			phase: "done",
+			id: `n${i}`,
+			title: `Node ${i}`,
+			kind: "task",
+			index: i,
+			total: 5,
+		});
 	}
-	store.apply({ type: "node", at: 1_700, phase: "start", id: "n3", title: "Wire bar", kind: "task", index: 3, total: 5 });
+	store.apply({
+		type: "node",
+		at: 1_700,
+		phase: "start",
+		id: "n3",
+		title: "Wire bar",
+		kind: "task",
+		index: 3,
+		total: 5,
+	});
 	return store.get();
 }
 
@@ -84,15 +137,34 @@ describe("bar store", () => {
 		expect(state.graph).toEqual({ total: 5, done: 3, current: "Wire bar" });
 
 		store.begin(0);
-		store.apply({ type: "track", at: 1, linear: { nodes: [2, 5], steps: [3, 9] }, notion: { task: true, nodes: [0, 5], steps: [0, 9] } });
-		store.apply({ type: "track", at: 2, linear: { nodes: [5, 5], steps: [9, 9] }, notion: { task: false, nodes: [0, 5], steps: [0, 9] }, error: "boom" });
+		store.apply({
+			type: "track",
+			at: 1,
+			linear: { nodes: [2, 5], steps: [3, 9] },
+			notion: { task: true, nodes: [0, 5], steps: [0, 9] },
+		});
+		store.apply({
+			type: "track",
+			at: 2,
+			linear: { nodes: [5, 5], steps: [9, 9] },
+			notion: { task: false, nodes: [0, 5], steps: [0, 9] },
+			error: "boom",
+		});
 		expect(store.get().track?.linear?.nodes).toEqual([5, 5]);
 		expect(store.get().track?.errors).toBe(1);
 		store.pending();
 		expect(store.get().delivery).toBe("pending");
 		store.delivered("aside", view, 5);
 		expect(store.get().phase).toBe("delivered");
-		expect(store.get().last).toEqual({ root: "BUILD_PROMPT", nodes: 2, issues: 2, subIssues: 1, firstIssue: "ENG-12", trackingStatus: "complete", elapsedMs: 34_000 });
+		expect(store.get().last).toEqual({
+			root: "BUILD_PROMPT",
+			nodes: 2,
+			issues: 2,
+			subIssues: 1,
+			firstIssue: "ENG-12",
+			trackingStatus: "complete",
+			elapsedMs: 34_000,
+		});
 		expect(notified).toBe(5);
 	});
 
@@ -138,7 +210,8 @@ function phaseStates(): Record<string, BarState> {
 describe("renderBarLine", () => {
 	test("each phase shows its content", () => {
 		const states = phaseStates();
-		const line = (key: string) => plain(renderBarLine(states[key] as BarState, fakeTheme(), 300, 35_000));
+		const line = (key: string) =>
+			plain(renderBarLine(states[key] as BarState, fakeTheme(), 300, 35_000));
 		expect(line("planning")).toContain("ultrathink");
 		expect(line("planning")).toContain("uplift OK");
 		expect(line("planning")).toContain("graph 3/5 · Wire bar");
@@ -158,7 +231,13 @@ describe("renderBarLine", () => {
 		const store = createBarStore();
 		store.begin(0);
 		store.apply({ type: "stage", at: 1, stage: "track", phase: "start" });
-		store.apply({ type: "track", at: 2, linear: { nodes: [5, 5], steps: [12, 25] }, notion: { task: false, nodes: [0, 5], steps: [0, 25] }, error: "x" });
+		store.apply({
+			type: "track",
+			at: 2,
+			linear: { nodes: [5, 5], steps: [12, 25] },
+			notion: { task: false, nodes: [0, 5], steps: [0, 25] },
+			error: "x",
+		});
 		store.apply({ type: "stage", at: 3, stage: "track", phase: "end", ok: false });
 		const line = plain(renderBarLine(store.get(), fakeTheme(), 300, 10));
 		expect(line).toContain("track linear 5/5 · steps 12/25 · notion XX");
@@ -176,7 +255,11 @@ describe("renderBarLine", () => {
 		const linearOnly = render({ type: "track", at: 2, linear: { nodes: [5, 5], steps: [25, 25] } });
 		expect(linearOnly).toContain("track linear 5/5 · steps 25/25 OK");
 		expect(linearOnly).not.toContain("notion");
-		const notionOnly = render({ type: "track", at: 2, notion: { task: true, nodes: [5, 5], steps: [25, 25] } });
+		const notionOnly = render({
+			type: "track",
+			at: 2,
+			notion: { task: true, nodes: [5, 5], steps: [25, 25] },
+		});
 		expect(notionOnly).toContain("track notion 5/5 OK");
 		expect(notionOnly).not.toContain("linear");
 	});
@@ -186,7 +269,11 @@ describe("renderBarLine", () => {
 			for (const width of [20, 40, 80, 200]) {
 				for (const theme of [fakeTheme(), fakeTheme("\x1b[49m"), throwingTheme]) {
 					const line = renderBarLine(state, theme, width, 35_000);
-					expect({ name, width, ok: visibleWidth(line) <= width }).toEqual({ name, width, ok: true });
+					expect({ name, width, ok: visibleWidth(line) <= width }).toEqual({
+						name,
+						width,
+						ok: true,
+					});
 					expect(line).not.toContain("\n");
 				}
 			}
@@ -238,13 +325,21 @@ describe("renderBarLine", () => {
 		expect(hint).not.toContain("sub-issues");
 
 		const partial = createBarStore();
-		partial.delivered("inline", { ...view, tracking: { status: "partial", errors: ["x"], issues: 1, subIssues: 0 } }, 1);
+		partial.delivered(
+			"inline",
+			{ ...view, tracking: { status: "partial", errors: ["x"], issues: 1, subIssues: 0 } },
+			1,
+		);
 		const raw = renderBarLine(partial.get(), fakeTheme(), 300, 1);
 		expect(plain(raw)).toContain("1 issues · 0 sub-issues (ENG-12) · partial");
 		expect(raw).toContain("<warning> · partial");
 
 		const failed = createBarStore();
-		failed.delivered("inline", { ...view, tracking: { status: "failed", errors: ["x"], issues: 0, subIssues: 0 } }, 1);
+		failed.delivered(
+			"inline",
+			{ ...view, tracking: { status: "failed", errors: ["x"], issues: 0, subIssues: 0 } },
+			1,
+		);
 		expect(renderBarLine(failed.get(), fakeTheme(), 300, 1)).toContain("<error> · failed");
 	});
 
@@ -295,8 +390,22 @@ describe("terminal width", () => {
 
 describe("paint box and icon", () => {
 	test("uses theme box chars only when all are strings, else the rounded fallback", () => {
-		const fallback = { topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯", horizontal: "─", vertical: "│" };
-		const full = { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", horizontal: "-", vertical: "|" };
+		const fallback = {
+			topLeft: "╭",
+			topRight: "╮",
+			bottomLeft: "╰",
+			bottomRight: "╯",
+			horizontal: "─",
+			vertical: "│",
+		};
+		const full = {
+			topLeft: "┌",
+			topRight: "┐",
+			bottomLeft: "└",
+			bottomRight: "┘",
+			horizontal: "-",
+			vertical: "|",
+		};
 		expect(paint({ boxRound: full }).boxChars()).toEqual(full);
 		expect(paint({ boxRound: { ...full, vertical: 1 } }).boxChars()).toEqual(fallback);
 		expect(paint(throwingTheme).boxChars()).toEqual(fallback);
@@ -347,31 +456,89 @@ describe("live graph", () => {
 
 	test("node start runs, done fills steps and merges issues attached earlier", () => {
 		const store = liveStore();
-		store.apply({ type: "node", at: 2_500, phase: "start", id: "a", title: "Design the schema", kind: "analysis", index: 0, total: 3 });
+		store.apply({
+			type: "node",
+			at: 2_500,
+			phase: "start",
+			id: "a",
+			title: "Design the schema",
+			kind: "analysis",
+			index: 0,
+			total: 3,
+		});
 		expect(store.get().model?.nodes[0]?.status).toBe("running");
-		store.apply({ type: "issue", at: 2_600, provider: "linear", nodeId: "a", step: 2, identifier: "ENG-2", url: "https://l/2" });
-		expect(store.get().model?.nodes[0]?.steps).toEqual([{ step: 2, title: "Step 2", issue: { identifier: "ENG-2", url: "https://l/2", at: 2_600 } }]);
-		store.apply({ type: "node", at: 3_000, phase: "done", id: "a", title: "Design the schema", kind: "analysis", index: 0, total: 3, steps: ["Step 1: x", "Step 2: y"] });
+		store.apply({
+			type: "issue",
+			at: 2_600,
+			provider: "linear",
+			nodeId: "a",
+			step: 2,
+			identifier: "ENG-2",
+			url: "https://l/2",
+		});
+		expect(store.get().model?.nodes[0]?.steps).toEqual([
+			{ step: 2, title: "Step 2", issue: { identifier: "ENG-2", url: "https://l/2", at: 2_600 } },
+		]);
+		store.apply({
+			type: "node",
+			at: 3_000,
+			phase: "done",
+			id: "a",
+			title: "Design the schema",
+			kind: "analysis",
+			index: 0,
+			total: 3,
+			steps: ["Step 1: x", "Step 2: y"],
+		});
 		const node = store.get().model?.nodes[0];
 		expect(node?.status).toBe("done");
 		expect(node?.steps).toEqual([
 			{ step: 1, title: "Step 1: x", appearedAt: 3_000, issue: undefined },
-			{ step: 2, title: "Step 2: y", appearedAt: 3_000, issue: { identifier: "ENG-2", url: "https://l/2", at: 2_600 } },
+			{
+				step: 2,
+				title: "Step 2: y",
+				appearedAt: 3_000,
+				issue: { identifier: "ENG-2", url: "https://l/2", at: 2_600 },
+			},
 		]);
-		store.apply({ type: "node", at: 3_100, phase: "done", id: "b", title: "Build the API", kind: "task", index: 1, total: 3, fallback: true });
+		store.apply({
+			type: "node",
+			at: 3_100,
+			phase: "done",
+			id: "b",
+			title: "Build the API",
+			kind: "task",
+			index: 1,
+			total: 3,
+			fallback: true,
+		});
 		expect(store.get().model?.nodes[1]?.status).toBe("fallback");
 	});
 
 	test("notion refs mark the node and never replace a linear ref", () => {
 		const store = liveStore();
-		store.apply({ type: "issue", at: 2_100, provider: "linear", nodeId: "a", identifier: "ENG-1", url: "https://l/1" });
+		store.apply({
+			type: "issue",
+			at: 2_100,
+			provider: "linear",
+			nodeId: "a",
+			identifier: "ENG-1",
+			url: "https://l/1",
+		});
 		store.apply({ type: "issue", at: 2_200, provider: "notion", nodeId: "a", url: "https://n/1" });
 		store.apply({ type: "issue", at: 2_300, provider: "notion", nodeId: "b", url: "https://n/2" });
 		const [a, b] = store.get().model?.nodes ?? [];
 		expect(a?.notion).toBe(true);
 		expect(a?.issue?.identifier).toBe("ENG-1");
 		expect(b?.issue?.url).toBe("https://n/2");
-		store.apply({ type: "issue", at: 2_400, provider: "linear", nodeId: "b", identifier: "ENG-3", url: "https://l/3" });
+		store.apply({
+			type: "issue",
+			at: 2_400,
+			provider: "linear",
+			nodeId: "b",
+			identifier: "ENG-3",
+			url: "https://l/3",
+		});
 		expect(store.get().model?.nodes[1]?.issue?.identifier).toBe("ENG-3");
 	});
 
@@ -380,7 +547,9 @@ describe("live graph", () => {
 		store.begin(1_000);
 		store.delivered("inline", view, 5_000);
 		const model = store.get().model;
-		expect(model?.nodes.map((node) => [node.id, node.status, node.appearedAt, node.dependsOn])).toEqual([
+		expect(
+			model?.nodes.map((node) => [node.id, node.status, node.appearedAt, node.dependsOn]),
+		).toEqual([
 			["n1", "done", undefined, []],
 			["n2", "done", undefined, ["n1"]],
 		]);
@@ -389,9 +558,22 @@ describe("live graph", () => {
 
 	test("delivery settles a node aborted mid-fill and stops animating after the linger window", () => {
 		const store = liveStore();
-		store.apply({ type: "node", at: 2_500, phase: "start", id: "a", title: "Design the schema", kind: "analysis", index: 0, total: 3 });
+		store.apply({
+			type: "node",
+			at: 2_500,
+			phase: "start",
+			id: "a",
+			title: "Design the schema",
+			kind: "analysis",
+			index: 0,
+			total: 3,
+		});
 		store.delivered("inline", view, 6_000);
-		expect(store.get().model?.nodes.map((node) => node.status)).toEqual(["fallback", "pending", "pending"]);
+		expect(store.get().model?.nodes.map((node) => node.status)).toEqual([
+			"fallback",
+			"pending",
+			"pending",
+		]);
 		expect(store.animating(6_000 + LINGER_MS - 1)).toBe(true);
 		expect(store.animating(6_000 + LINGER_MS + 1)).toBe(false);
 	});
@@ -405,7 +587,12 @@ describe("live graph", () => {
 	test("panel shows above the bar while planning and collapses after the linger window", () => {
 		const store = liveStore();
 		let clock = 5_000;
-		const component = createBarComponent(store, fakeTheme(), () => clock, () => 40);
+		const component = createBarComponent(
+			store,
+			fakeTheme(),
+			() => clock,
+			() => 40,
+		);
 		const planning = component.render(80);
 		expect(planning.length).toBeGreaterThan(1);
 		expect(plain(planning[planning.length - 1] ?? "")).toContain("ultrathink · gsd-quick");
@@ -422,8 +609,18 @@ describe("live graph", () => {
 	test("only the bar shows before the first node pops up", () => {
 		const store = createBarStore();
 		store.begin(1_000);
-		store.apply({ type: "graph", at: 10_000, total: 1, nodes: [graphNodes[0] ?? { id: "x", title: "x", kind: "task" }] });
-		const rows = createBarComponent(store, fakeTheme(), () => 5_000, () => 40).render(80);
+		store.apply({
+			type: "graph",
+			at: 10_000,
+			total: 1,
+			nodes: [graphNodes[0] ?? { id: "x", title: "x", kind: "task" }],
+		});
+		const rows = createBarComponent(
+			store,
+			fakeTheme(),
+			() => 5_000,
+			() => 40,
+		).render(80);
 		expect(rows.filter((row) => plain(row).includes("Design the schema"))).toHaveLength(0);
 		expect(plain(rows[rows.length - 1] ?? "")).toContain("ultrathink");
 	});
@@ -431,25 +628,57 @@ describe("live graph", () => {
 	test("skipped shows only the bar", () => {
 		const store = liveStore();
 		store.skipped("trivial", 3_000);
-		expect(createBarComponent(store, fakeTheme(), () => 3_000, () => 40).render(80)).toHaveLength(1);
+		expect(
+			createBarComponent(
+				store,
+				fakeTheme(),
+				() => 3_000,
+				() => 40,
+			).render(80),
+		).toHaveLength(1);
 		expect(store.animating(3_000)).toBe(false);
 	});
 
 	test("row count respects the terminal-derived cap", () => {
 		const store = createBarStore();
 		store.begin(1_000);
-		const many = Array.from({ length: 30 }, (_, i) => ({ id: `n${i}`, title: `Node ${i}`, kind: "task", dependsOn: [] }));
+		const many = Array.from({ length: 30 }, (_, i) => ({
+			id: `n${i}`,
+			title: `Node ${i}`,
+			kind: "task",
+			dependsOn: [],
+		}));
 		store.apply({ type: "graph", at: 0, total: many.length, nodes: many });
 		for (const node of many) {
-			store.apply({ type: "node", at: 1, phase: "done", id: node.id, title: node.title, kind: "task", index: 0, total: 30, steps: ["Step 1: a", "Step 2: b"] });
+			store.apply({
+				type: "node",
+				at: 1,
+				phase: "done",
+				id: node.id,
+				title: node.title,
+				kind: "task",
+				index: 0,
+				total: 30,
+				steps: ["Step 1: a", "Step 2: b"],
+			});
 		}
-		const rows = createBarComponent(store, fakeTheme(), () => 2, () => 20).render(80);
+		const rows = createBarComponent(
+			store,
+			fakeTheme(),
+			() => 2,
+			() => 20,
+		).render(80);
 		expect(rows.length).toBeLessThanOrEqual(Math.max(6, Math.floor(20 * 0.45)) + 1);
 	});
 
 	test("returns the same array while nothing changes", () => {
 		const store = liveStore();
-		const component = createBarComponent(store, fakeTheme(), () => 60_000, () => 40);
+		const component = createBarComponent(
+			store,
+			fakeTheme(),
+			() => 60_000,
+			() => 40,
+		);
 		const first = component.render(80);
 		expect(component.render(80)).toBe(first);
 	});
@@ -468,7 +697,11 @@ describe("model resolution on the bar (§9 path 4)", () => {
 		label: "",
 		...fields,
 	});
-	const DETECTED = record({ provider: "acme", modelId: "sol-1", label: "omp-native:acme/sol-1 [detected]" });
+	const DETECTED = record({
+		provider: "acme",
+		modelId: "sol-1",
+		label: "omp-native:acme/sol-1 [detected]",
+	});
 	const DEFAULTED = record({
 		state: "default",
 		source: "host-catalog",
@@ -477,14 +710,33 @@ describe("model resolution on the bar (§9 path 4)", () => {
 		modelId: "def-1",
 		label: "omp-native:acme/def-1 [host-catalog default]",
 	});
-	const OVERRIDE = record({ state: "override", source: "host-override", reason: "explicit-model", provider: "anthropic", modelId: "opus", label: "omp-native:anthropic/opus [override]" });
-	const UNRESOLVED = record({ state: "unresolved", source: "none", reason: "provider-unknown", modelKnown: false, label: "omp-native:unresolved [provider-unknown]" });
+	const OVERRIDE = record({
+		state: "override",
+		source: "host-override",
+		reason: "explicit-model",
+		provider: "anthropic",
+		modelId: "opus",
+		label: "omp-native:anthropic/opus [override]",
+	});
+	const UNRESOLVED = record({
+		state: "unresolved",
+		source: "none",
+		reason: "provider-unknown",
+		modelKnown: false,
+		label: "omp-native:unresolved [provider-unknown]",
+	});
 	const line = (state: BarState) => plain(renderBarLine(state, fakeTheme(), 400, 2_000));
 
 	test("begin names the planning model with its reason while planning; delivery keeps it", () => {
 		const store = createBarStore();
 		store.begin(1_000);
-		store.apply({ type: "begin", at: 1_000, sessionId: "s", engine: DETECTED.label, modelResolution: DETECTED });
+		store.apply({
+			type: "begin",
+			at: 1_000,
+			sessionId: "s",
+			engine: DETECTED.label,
+			modelResolution: DETECTED,
+		});
 		expect(store.get().resolution).toEqual(DETECTED);
 		expect(line(store.get())).toContain("omp-native:acme/sol-1 [detected] · live-model");
 		store.delivered("inline", view, 1_500);
@@ -498,13 +750,25 @@ describe("model resolution on the bar (§9 path 4)", () => {
 		] as const) {
 			const store = createBarStore();
 			store.begin(0);
-			store.apply({ type: "begin", at: 0, sessionId: "s", engine: resolution.label, modelResolution: resolution });
+			store.apply({
+				type: "begin",
+				at: 0,
+				sessionId: "s",
+				engine: resolution.label,
+				modelResolution: resolution,
+			});
 			store.delivered("aside", view, 1);
 			expect(line(store.get())).toContain(text);
 		}
 		const store = createBarStore();
 		store.begin(0);
-		store.apply({ type: "end", at: 1, outcome: "skipped", detail: "provider-unknown", modelResolution: UNRESOLVED });
+		store.apply({
+			type: "end",
+			at: 1,
+			outcome: "skipped",
+			detail: "provider-unknown",
+			modelResolution: UNRESOLVED,
+		});
 		const skipped = line(store.get());
 		expect(skipped).toContain("skipped · provider-unknown");
 		expect(skipped).toContain("omp-native:unresolved [provider-unknown]");
@@ -514,7 +778,13 @@ describe("model resolution on the bar (§9 path 4)", () => {
 	test("an unsafe record never reaches the bar: its label shows the opaque marker", () => {
 		const store = createBarStore();
 		store.begin(0);
-		store.apply({ type: "begin", at: 0, sessionId: "s", engine: "x", modelResolution: { ...DETECTED, label: "omp-native:https://SECRET.invalid/model [detected]" } });
+		store.apply({
+			type: "begin",
+			at: 0,
+			sessionId: "s",
+			engine: "x",
+			modelResolution: { ...DETECTED, label: "omp-native:https://SECRET.invalid/model [detected]" },
+		});
 		const text = line(store.get());
 		expect(text).toContain("<opaque-model> · live-model");
 		expect(text).not.toContain("SECRET");
@@ -522,7 +792,13 @@ describe("model resolution on the bar (§9 path 4)", () => {
 
 	test("a new planning drops the previous record until its own begin names one", () => {
 		const store = createBarStore();
-		store.apply({ type: "begin", at: 0, sessionId: "s", engine: DETECTED.label, modelResolution: DETECTED });
+		store.apply({
+			type: "begin",
+			at: 0,
+			sessionId: "s",
+			engine: DETECTED.label,
+			modelResolution: DETECTED,
+		});
 		store.delivered("inline", view, 1);
 		store.begin(2);
 		expect(store.get().resolution).toBeUndefined();
@@ -532,16 +808,36 @@ describe("model resolution on the bar (§9 path 4)", () => {
 	test("width holds with a resolution in every phase and theme", () => {
 		const planning = createBarStore();
 		planning.begin(0);
-		planning.apply({ type: "begin", at: 0, sessionId: "s", engine: OVERRIDE.label, modelResolution: OVERRIDE });
+		planning.apply({
+			type: "begin",
+			at: 0,
+			sessionId: "s",
+			engine: OVERRIDE.label,
+			modelResolution: OVERRIDE,
+		});
 		const delivered = createBarStore();
-		delivered.apply({ type: "begin", at: 0, sessionId: "s", engine: DEFAULTED.label, modelResolution: DEFAULTED });
+		delivered.apply({
+			type: "begin",
+			at: 0,
+			sessionId: "s",
+			engine: DEFAULTED.label,
+			modelResolution: DEFAULTED,
+		});
 		delivered.delivered("inline", view, 1);
 		const skipped = createBarStore();
-		skipped.apply({ type: "end", at: 1, outcome: "skipped", detail: "provider-unknown", modelResolution: UNRESOLVED });
+		skipped.apply({
+			type: "end",
+			at: 1,
+			outcome: "skipped",
+			detail: "provider-unknown",
+			modelResolution: UNRESOLVED,
+		});
 		for (const state of [planning.get(), delivered.get(), skipped.get()]) {
 			for (const width of [20, 40, 80, 200]) {
 				for (const theme of [fakeTheme(), throwingTheme]) {
-					expect(visibleWidth(renderBarLine(state, theme, width, 1_000))).toBeLessThanOrEqual(width);
+					expect(visibleWidth(renderBarLine(state, theme, width, 1_000))).toBeLessThanOrEqual(
+						width,
+					);
 				}
 			}
 		}
@@ -549,9 +845,31 @@ describe("model resolution on the bar (§9 path 4)", () => {
 });
 
 describe("substrate segment", () => {
-	const ok: SubstrateSegment = { state: "ok", usage: "IN_USE", coverage: { observed: 6, known: 10 }, planesDown: 0, updatedAt: "10:42", reason: null };
-	const payload = { v: 1, state: "ok", usage: "IN_USE", omp: { req: 3, emit: 4, tool: 5 }, coverage: { observed: 6, known: 10 }, planesDown: 0, updatedAt: "10:42", reason: null };
-	const quiet: Omit<SubstrateSegment, "state"> = { usage: "UNKNOWN", coverage: null, planesDown: null, updatedAt: "", reason: null };
+	const ok: SubstrateSegment = {
+		state: "ok",
+		usage: "IN_USE",
+		coverage: { observed: 6, known: 10 },
+		planesDown: 0,
+		updatedAt: "10:42",
+		reason: null,
+	};
+	const payload = {
+		v: 1,
+		state: "ok",
+		usage: "IN_USE",
+		omp: { req: 3, emit: 4, tool: 5 },
+		coverage: { observed: 6, known: 10 },
+		planesDown: 0,
+		updatedAt: "10:42",
+		reason: null,
+	};
+	const quiet: Omit<SubstrateSegment, "state"> = {
+		usage: "UNKNOWN",
+		coverage: null,
+		planesDown: null,
+		updatedAt: "",
+		reason: null,
+	};
 	const render = (substrate: SubstrateSegment | undefined, width = 300) => {
 		const store = createBarStore();
 		store.setSubstrate(substrate);
@@ -566,15 +884,25 @@ describe("substrate segment", () => {
 		expect(parseSubstrateStatus({ ...payload, v: 2 })).toBeUndefined();
 		expect(parseSubstrateStatus({ ...payload, state: "weird" })).toBeUndefined();
 		expect(parseSubstrateStatus({ ...payload, usage: "MAYBE" })).toBeUndefined();
-		expect(parseSubstrateStatus({ ...payload, coverage: { observed: 11, known: 10 } })).toBeUndefined();
-		expect(parseSubstrateStatus({ ...payload, coverage: { observed: 1.5, known: 10 } })).toBeUndefined();
+		expect(
+			parseSubstrateStatus({ ...payload, coverage: { observed: 11, known: 10 } }),
+		).toBeUndefined();
+		expect(
+			parseSubstrateStatus({ ...payload, coverage: { observed: 1.5, known: 10 } }),
+		).toBeUndefined();
 		expect(parseSubstrateStatus({ ...payload, planesDown: -1 })).toBeUndefined();
 		expect(parseSubstrateStatus({ ...payload, updatedAt: 1020 })).toBeUndefined();
-		for (const value of ["ok", 42, null, undefined, [payload]]) expect(parseSubstrateStatus(value)).toBeUndefined();
+		for (const value of ["ok", 42, null, undefined, [payload]])
+			expect(parseSubstrateStatus(value)).toBeUndefined();
 	});
 
 	test("parseSubstrateStatus strips ESC and BEL, then caps reason at 40 and updatedAt at 8", () => {
-		const parsed = parseSubstrateStatus({ ...payload, state: "error", reason: `\x1bdown\x07 ${"x".repeat(60)}`, updatedAt: "10:42:00:99" });
+		const parsed = parseSubstrateStatus({
+			...payload,
+			state: "error",
+			reason: `\x1bdown\x07 ${"x".repeat(60)}`,
+			updatedAt: "10:42:00:99",
+		});
 		expect(parsed?.reason).toBe(`down ${"x".repeat(35)}`);
 		expect(parsed?.updatedAt).toBe("10:42:00");
 	});
@@ -589,12 +917,19 @@ describe("substrate segment", () => {
 	test("every state names itself in text", () => {
 		expect(render({ ...quiet, state: "checking" })).toContain("substrate: checking");
 		expect(render({ ...quiet, state: "access-denied" })).toContain("substrate ACCESS_DENIED");
-		expect(render({ ...quiet, state: "error", reason: "timeout", updatedAt: "10:42" })).toContain("substrate ERROR (timeout) · last good 10:42");
+		expect(render({ ...quiet, state: "error", reason: "timeout", updatedAt: "10:42" })).toContain(
+			"substrate ERROR (timeout) · last good 10:42",
+		);
 		expect(render({ ...quiet, state: "error", reason: null })).toContain("substrate ERROR");
 		expect(render({ ...quiet, state: "error", reason: null })).not.toContain("ERROR (");
-		expect(render({ ...ok, usage: "NOT_OBSERVED_IN_WINDOW", coverage: { observed: 0, known: 10 }, planesDown: 2 })).toContain(
-			"substrate NOT_OBSERVED_IN_WINDOW · 0/10 observed · 2 planes down",
-		);
+		expect(
+			render({
+				...ok,
+				usage: "NOT_OBSERVED_IN_WINDOW",
+				coverage: { observed: 0, known: 10 },
+				planesDown: 2,
+			}),
+		).toContain("substrate NOT_OBSERVED_IN_WINDOW · 0/10 observed · 2 planes down");
 	});
 
 	test("the label survives a width that drops the readiness segments", () => {
@@ -622,7 +957,9 @@ describe("substrate segment", () => {
 	test("without a substrate status the bar renders as before", () => {
 		for (const state of Object.values(phaseStates())) {
 			for (const width of [40, 200]) {
-				expect(renderBarLine({ ...state, substrate: undefined }, fakeTheme(), width, 35_000)).toBe(renderBarLine(state, fakeTheme(), width, 35_000));
+				expect(renderBarLine({ ...state, substrate: undefined }, fakeTheme(), width, 35_000)).toBe(
+					renderBarLine(state, fakeTheme(), width, 35_000),
+				);
 			}
 		}
 	});
@@ -631,7 +968,9 @@ describe("substrate segment", () => {
 		for (const state of Object.values(phaseStates())) {
 			for (const width of [20, 40, 80, 200]) {
 				for (const theme of [fakeTheme(), fakeTheme("\x1b[49m"), throwingTheme]) {
-					expect(visibleWidth(renderBarLine({ ...state, substrate: ok }, theme, width, 35_000))).toBeLessThanOrEqual(width);
+					expect(
+						visibleWidth(renderBarLine({ ...state, substrate: ok }, theme, width, 35_000)),
+					).toBeLessThanOrEqual(width);
 				}
 			}
 		}
@@ -672,7 +1011,10 @@ describe("token savings", () => {
 	});
 
 	test("a 50-column planning line keeps the current stage and saved", () => {
-		const state: BarState = { ...planningState(), savings: { ...snapshot, baselineTokens: 20, currentTokens: 8, savedTokens: 12, points: [] } };
+		const state: BarState = {
+			...planningState(),
+			savings: { ...snapshot, baselineTokens: 20, currentTokens: 8, savedTokens: 12, points: [] },
+		};
 		const line = plain(renderBarLine(state, fakeTheme(), 50, 35_000));
 		expect(line).toContain("graph 3/5");
 		expect(line).toContain("saved 12");
@@ -688,17 +1030,32 @@ describe("token savings", () => {
 	});
 
 	test("parseTokenSavings rejects negatives and accepts a minimal valid object", () => {
-		const minimal: TokenSavingsSnapshot = { v: 1, sessionId: "s", updatedAt: 1, baselineTokens: 0, currentTokens: 0, savedTokens: 0, points: [] };
+		const minimal: TokenSavingsSnapshot = {
+			v: 1,
+			sessionId: "s",
+			updatedAt: 1,
+			baselineTokens: 0,
+			currentTokens: 0,
+			savedTokens: 0,
+			points: [],
+		};
 		expect(parseTokenSavings(minimal)).toEqual(minimal);
 		expect(parseTokenSavings({ ...minimal, savedTokens: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, baselineTokens: -1, savedTokens: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, currentTokens: -1 })).toBeUndefined();
-		expect(parseTokenSavings({ ...snapshot, points: [{ at: -1, source: "graph", baseline: 1, current: 0, saved: 1 }] })).toBeUndefined();
+		expect(
+			parseTokenSavings({
+				...snapshot,
+				points: [{ at: -1, source: "graph", baseline: 1, current: 0, saved: 1 }],
+			}),
+		).toBeUndefined();
 	});
 
 	test("idle, skipped, failed and delivered lines keep the saved chip", () => {
 		for (const key of ["idle", "skipped", "failed", "delivered"] as const) {
-			const line = plain(renderBarLine({ ...phaseStates()[key]!, savings: snapshot }, fakeTheme(), 300, 35_000));
+			const line = plain(
+				renderBarLine({ ...phaseStates()[key]!, savings: snapshot }, fakeTheme(), 300, 35_000),
+			);
 			expect(line).toContain("saved 1.2M");
 			expect(line).toContain("before 1.2M");
 			expect(line).toContain("now 1.2k");
@@ -720,7 +1077,16 @@ describe("token savings", () => {
 	test("a narrow planning line keeps the stage and saved when turn time does not fit", () => {
 		const state: BarState = {
 			...planningState(),
-			savings: { ...snapshot, baselineTokens: 20, currentTokens: 8, savedTokens: 12, points: [], lastTurnMs: 840, cacheHitPct: 72, lastQueryMs: 15 },
+			savings: {
+				...snapshot,
+				baselineTokens: 20,
+				currentTokens: 8,
+				savedTokens: 12,
+				points: [],
+				lastTurnMs: 840,
+				cacheHitPct: 72,
+				lastQueryMs: 15,
+			},
 		};
 		const line = plain(renderBarLine(state, fakeTheme(), 50, 35_000));
 		expect(line).toContain("graph 3/5");
@@ -729,27 +1095,44 @@ describe("token savings", () => {
 	});
 
 	test("parseTokenSavings rejects lastTurnMs below zero and copies valid perf fields", () => {
-		const minimal: TokenSavingsSnapshot = { v: 1, sessionId: "s", updatedAt: 1, baselineTokens: 0, currentTokens: 0, savedTokens: 0, points: [] };
+		const minimal: TokenSavingsSnapshot = {
+			v: 1,
+			sessionId: "s",
+			updatedAt: 1,
+			baselineTokens: 0,
+			currentTokens: 0,
+			savedTokens: 0,
+			points: [],
+		};
 		expect(parseTokenSavings({ ...minimal, lastTurnMs: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, lastTurnMs: 840, cacheHitPct: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, cacheHitPct: 101 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, lastQueryMs: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, lastTurnMs: 1.5 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, cacheHitPct: "72" })).toBeUndefined();
-		expect(parseTokenSavings({ ...minimal, lastQueryMs: Number.MAX_SAFE_INTEGER + 1 })).toBeUndefined();
-		expect(parseTokenSavings({ ...minimal, lastTurnMs: 840, cacheHitPct: 72, lastQueryMs: 15 })).toEqual({
+		expect(
+			parseTokenSavings({ ...minimal, lastQueryMs: Number.MAX_SAFE_INTEGER + 1 }),
+		).toBeUndefined();
+		expect(
+			parseTokenSavings({ ...minimal, lastTurnMs: 840, cacheHitPct: 72, lastQueryMs: 15 }),
+		).toEqual({
 			...minimal,
 			lastTurnMs: 840,
 			cacheHitPct: 72,
 			lastQueryMs: 15,
 		});
-		expect(parseTokenSavings({ ...minimal, lastTurnMs: 0, cacheHitPct: 100, lastQueryMs: 0 })).toEqual({
+		expect(
+			parseTokenSavings({ ...minimal, lastTurnMs: 0, cacheHitPct: 100, lastQueryMs: 0 }),
+		).toEqual({
 			...minimal,
 			lastTurnMs: 0,
 			cacheHitPct: 100,
 			lastQueryMs: 0,
 		});
-		expect(parseTokenSavings({ ...minimal, cacheHitPct: 72 })).toEqual({ ...minimal, cacheHitPct: 72 });
+		expect(parseTokenSavings({ ...minimal, cacheHitPct: 72 })).toEqual({
+			...minimal,
+			cacheHitPct: 72,
+		});
 	});
 
 	test("a snapshot without perf fields still renders saved and before/now", () => {
@@ -758,7 +1141,9 @@ describe("token savings", () => {
 		expect(parsed !== undefined && Object.hasOwn(parsed, "lastTurnMs")).toBe(false);
 		expect(parsed !== undefined && Object.hasOwn(parsed, "cacheHitPct")).toBe(false);
 		expect(parsed !== undefined && Object.hasOwn(parsed, "lastQueryMs")).toBe(false);
-		const line = plain(renderBarLine({ phase: "idle", stages: {}, savings: parsed }, fakeTheme(), 300, 0));
+		const line = plain(
+			renderBarLine({ phase: "idle", stages: {}, savings: parsed }, fakeTheme(), 300, 0),
+		);
 		expect(line).toContain("saved 1.2M");
 		expect(line).toContain("before 1.2M");
 		expect(line).toContain("now 1.2k");
@@ -789,18 +1174,37 @@ describe("token savings", () => {
 	});
 
 	test("ttftMs -1 rejects the snapshot", () => {
-		const minimal: TokenSavingsSnapshot = { v: 1, sessionId: "s", updatedAt: 1, baselineTokens: 0, currentTokens: 0, savedTokens: 0, points: [] };
+		const minimal: TokenSavingsSnapshot = {
+			v: 1,
+			sessionId: "s",
+			updatedAt: 1,
+			baselineTokens: 0,
+			currentTokens: 0,
+			savedTokens: 0,
+			points: [],
+		};
 		expect(parseTokenSavings({ ...minimal, ttftMs: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, rtkSavedTokens: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, lastPayloadChars: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, ttftMs: 1.5 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, rtkSavedTokens: "10" })).toBeUndefined();
-		expect(parseTokenSavings({ ...minimal, lastPayloadChars: Number.MAX_SAFE_INTEGER + 1 })).toBeUndefined();
-		expect(parseTokenSavings({ ...minimal, ttftMs: -1, rtkSavedTokens: 10, lastPayloadChars: 4 })).toBeUndefined();
-		const copied = parseTokenSavings({ ...minimal, rtkSavedTokens: 10, lastPayloadChars: 4096, ttftMs: 120 });
+		expect(
+			parseTokenSavings({ ...minimal, lastPayloadChars: Number.MAX_SAFE_INTEGER + 1 }),
+		).toBeUndefined();
+		expect(
+			parseTokenSavings({ ...minimal, ttftMs: -1, rtkSavedTokens: 10, lastPayloadChars: 4 }),
+		).toBeUndefined();
+		const copied = parseTokenSavings({
+			...minimal,
+			rtkSavedTokens: 10,
+			lastPayloadChars: 4096,
+			ttftMs: 120,
+		});
 		expect(copied).toEqual({ ...minimal, rtkSavedTokens: 10, lastPayloadChars: 4096, ttftMs: 120 });
 		expect(copied?.savedTokens).toBe(0);
-		expect(parseTokenSavings({ ...minimal, rtkSavedTokens: 0, lastPayloadChars: 0, ttftMs: 0 })).toEqual({
+		expect(
+			parseTokenSavings({ ...minimal, rtkSavedTokens: 0, lastPayloadChars: 0, ttftMs: 0 }),
+		).toEqual({
 			...minimal,
 			rtkSavedTokens: 0,
 			lastPayloadChars: 0,
@@ -818,7 +1222,9 @@ describe("token savings", () => {
 		expect(parsed !== undefined && Object.hasOwn(parsed, "rtkSavedTokens")).toBe(false);
 		expect(parsed !== undefined && Object.hasOwn(parsed, "lastPayloadChars")).toBe(false);
 		expect(parsed !== undefined && Object.hasOwn(parsed, "ttftMs")).toBe(false);
-		const line = plain(renderBarLine({ phase: "idle", stages: {}, savings: parsed }, fakeTheme(), 300, 0));
+		const line = plain(
+			renderBarLine({ phase: "idle", stages: {}, savings: parsed }, fakeTheme(), 300, 0),
+		);
 		expect(line).toContain("saved 1.2M");
 		expect(line).toContain("before 1.2M");
 		expect(line).toContain("now 1.2k");
@@ -905,13 +1311,25 @@ describe("token savings", () => {
 	});
 
 	test("lastIdleMs -1 rejects the snapshot", () => {
-		const minimal: TokenSavingsSnapshot = { v: 1, sessionId: "s", updatedAt: 1, baselineTokens: 0, currentTokens: 0, savedTokens: 0, points: [] };
+		const minimal: TokenSavingsSnapshot = {
+			v: 1,
+			sessionId: "s",
+			updatedAt: 1,
+			baselineTokens: 0,
+			currentTokens: 0,
+			savedTokens: 0,
+			points: [],
+		};
 		expect(parseTokenSavings({ ...minimal, lastIdleMs: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, costCents: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, lastIdleMs: 1.5 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, costCents: "3" })).toBeUndefined();
-		expect(parseTokenSavings({ ...minimal, lastIdleMs: Number.MAX_SAFE_INTEGER + 1 })).toBeUndefined();
-		expect(parseTokenSavings({ ...minimal, costCents: Number.MAX_SAFE_INTEGER + 1 })).toBeUndefined();
+		expect(
+			parseTokenSavings({ ...minimal, lastIdleMs: Number.MAX_SAFE_INTEGER + 1 }),
+		).toBeUndefined();
+		expect(
+			parseTokenSavings({ ...minimal, costCents: Number.MAX_SAFE_INTEGER + 1 }),
+		).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, lastIdleMs: -1, costCents: 3 })).toBeUndefined();
 		const copied = parseTokenSavings({ ...minimal, lastIdleMs: 40, costCents: 3 });
 		expect(copied).toEqual({ ...minimal, lastIdleMs: 40, costCents: 3 });
@@ -988,7 +1406,15 @@ describe("token savings", () => {
 	});
 
 	test("prefixChanged 2 rejects the snapshot", () => {
-		const minimal: TokenSavingsSnapshot = { v: 1, sessionId: "s", updatedAt: 1, baselineTokens: 0, currentTokens: 0, savedTokens: 0, points: [] };
+		const minimal: TokenSavingsSnapshot = {
+			v: 1,
+			sessionId: "s",
+			updatedAt: 1,
+			baselineTokens: 0,
+			currentTokens: 0,
+			savedTokens: 0,
+			points: [],
+		};
 		expect(parseTokenSavings({ ...minimal, prefixChanged: 2 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, toolsChanged: 2 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, graphReady: 2 })).toBeUndefined();
@@ -999,9 +1425,13 @@ describe("token savings", () => {
 		expect(parseTokenSavings({ ...minimal, providerOutput: 1.5 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, providerCacheRead: -1 })).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, providerCacheWrite: "2" })).toBeUndefined();
-		expect(parseTokenSavings({ ...minimal, providerInput: Number.MAX_SAFE_INTEGER + 1 })).toBeUndefined();
+		expect(
+			parseTokenSavings({ ...minimal, providerInput: Number.MAX_SAFE_INTEGER + 1 }),
+		).toBeUndefined();
 		expect(parseTokenSavings({ ...minimal, providerInput: 9, prefixChanged: 2 })).toBeUndefined();
-		expect(parseTokenSavings({ ...minimal, providerCacheRead: -1, prefixChanged: 1 })).toBeUndefined();
+		expect(
+			parseTokenSavings({ ...minimal, providerCacheRead: -1, prefixChanged: 1 }),
+		).toBeUndefined();
 		const copied = parseTokenSavings({
 			...minimal,
 			providerInput: 9,
@@ -1023,7 +1453,18 @@ describe("token savings", () => {
 			graphReady: 1,
 		});
 		expect(copied?.savedTokens).toBe(0);
-		expect(parseTokenSavings({ ...minimal, providerInput: 0, providerOutput: 0, providerCacheRead: 0, providerCacheWrite: 0, prefixChanged: 0, toolsChanged: 0, graphReady: 0 })).toEqual({
+		expect(
+			parseTokenSavings({
+				...minimal,
+				providerInput: 0,
+				providerOutput: 0,
+				providerCacheRead: 0,
+				providerCacheWrite: 0,
+				prefixChanged: 0,
+				toolsChanged: 0,
+				graphReady: 0,
+			}),
+		).toEqual({
 			...minimal,
 			providerInput: 0,
 			providerOutput: 0,
@@ -1055,7 +1496,14 @@ describe("token savings", () => {
 	test("flag 0 and absent stability fields omit the chips", () => {
 		const store = createBarStore();
 		store.setLiveSession(snapshot.sessionId);
-		store.setSavings({ ...snapshot, prefixChanged: 0, toolsChanged: 0, graphReady: 0, providerInput: 0, providerOutput: 0 });
+		store.setSavings({
+			...snapshot,
+			prefixChanged: 0,
+			toolsChanged: 0,
+			graphReady: 0,
+			providerInput: 0,
+			providerOutput: 0,
+		});
 		const line = plain(renderBarLine(store.get(), fakeTheme(), 300, 0));
 		expect(line).toContain("bill 0");
 		expect(line).toContain("out 0");
@@ -1065,7 +1513,14 @@ describe("token savings", () => {
 		expect(line).not.toContain("prefix stable");
 		expect(line).not.toContain("tools stable");
 		expect(store.get().savings?.savedTokens).toBe(snapshot.savedTokens);
-		const bare = plain(renderBarLine({ phase: "idle", stages: {}, liveSessionId: snapshot.sessionId, savings: snapshot }, fakeTheme(), 300, 0));
+		const bare = plain(
+			renderBarLine(
+				{ phase: "idle", stages: {}, liveSessionId: snapshot.sessionId, savings: snapshot },
+				fakeTheme(),
+				300,
+				0,
+			),
+		);
 		expect(bare).not.toContain("bill ");
 		expect(bare).not.toContain("prefix moved");
 		expect(bare).toContain("saved 1.2M");
@@ -1076,7 +1531,14 @@ describe("token savings", () => {
 			phase: "idle",
 			stages: {},
 			liveSessionId: "other-session",
-			savings: { ...snapshot, providerInput: 9, providerOutput: 4, prefixChanged: 1, toolsChanged: 1, graphReady: 1 },
+			savings: {
+				...snapshot,
+				providerInput: 9,
+				providerOutput: 4,
+				prefixChanged: 1,
+				toolsChanged: 1,
+				graphReady: 1,
+			},
 		};
 		const line = plain(renderBarLine(state, fakeTheme(), 300, 0));
 		expect(line).not.toContain("bill");

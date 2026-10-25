@@ -6,7 +6,13 @@
  * the model never reads this, it reads the hook context.
  */
 import type { SessionRecord } from "../claude/state.ts";
-import { displayId, displayLabel, displayToken, OPAQUE_MODEL, OPAQUE_PROVIDER } from "../claude/output.ts";
+import {
+	displayId,
+	displayLabel,
+	displayToken,
+	OPAQUE_MODEL,
+	OPAQUE_PROVIDER,
+} from "../claude/output.ts";
 import { dependencyLevels } from "../think/graph.ts";
 import type { ModelResolution } from "./engine.ts";
 
@@ -34,7 +40,13 @@ export interface PlanView {
 		steps: Array<{ step: number; title: string; identifier?: string; url?: string }>;
 	}>;
 	waves: string[][];
-	clarifications: Array<{ id: string; question: string; blocking: boolean; answer?: string; recommended?: string }>;
+	clarifications: Array<{
+		id: string;
+		question: string;
+		blocking: boolean;
+		answer?: string;
+		recommended?: string;
+	}>;
 	tracking?: {
 		status: "complete" | "partial" | "failed";
 		notionTaskUrl?: string;
@@ -58,7 +70,8 @@ function isFields(value: unknown): value is Record<string, unknown> {
  * a version 1.0.0 record projects to undefined, so a malformed saved record shows nothing instead of failing the surface.
  */
 export function projectResolution(value: unknown): ModelResolution | undefined {
-	if (!isFields(value) || value.version !== "1.0.0" || !isFields(value.engineSelection)) return undefined;
+	if (!isFields(value) || value.version !== "1.0.0" || !isFields(value.engineSelection))
+		return undefined;
 	const selection = value.engineSelection;
 	const state = displayToken(value.state);
 	const host = displayToken(value.host);
@@ -67,13 +80,19 @@ export function projectResolution(value: unknown): ModelResolution | undefined {
 	const engine = displayToken(selection.engine);
 	const requestSource = displayToken(selection.source);
 	if (!state || !host || !source || !reason || !engine || !requestSource) return undefined;
-	if (typeof selection.nativeOptOut !== "boolean" || typeof value.modelKnown !== "boolean") return undefined;
+	if (typeof selection.nativeOptOut !== "boolean" || typeof value.modelKnown !== "boolean")
+		return undefined;
 	const transport = displayToken(value.transport);
 	const defaultSource = displayToken(value.defaultSource);
 	const api = typeof value.api === "string" ? displayId(value.api, OPAQUE_PROVIDER) : undefined;
-	const providerType = typeof value.providerType === "string" ? displayId(value.providerType, OPAQUE_PROVIDER) : undefined;
-	const provider = typeof value.provider === "string" ? displayId(value.provider, OPAQUE_PROVIDER) : undefined;
-	const modelId = typeof value.modelId === "string" ? displayId(value.modelId, OPAQUE_MODEL) : undefined;
+	const providerType =
+		typeof value.providerType === "string"
+			? displayId(value.providerType, OPAQUE_PROVIDER)
+			: undefined;
+	const provider =
+		typeof value.provider === "string" ? displayId(value.provider, OPAQUE_PROVIDER) : undefined;
+	const modelId =
+		typeof value.modelId === "string" ? displayId(value.modelId, OPAQUE_MODEL) : undefined;
 	return {
 		version: "1.0.0",
 		state,
@@ -138,7 +157,11 @@ export function buildPlanView(record: SessionRecord, elapsedMs: number): PlanVie
 	return {
 		root: record.result.root,
 		source: record.result.source,
-		...(modelResolution ? { engine: modelResolution.label, modelResolution } : record.engine ? { engine: displayLabel(record.engine) } : {}),
+		...(modelResolution
+			? { engine: modelResolution.label, modelResolution }
+			: record.engine
+				? { engine: displayLabel(record.engine) }
+				: {}),
 		...(record.skill ? { skill: record.skill.name } : {}),
 		...(plan?.graphId ? { graphId: plan.graphId } : {}),
 		...(graph?.goal ? { goal: graph.goal } : {}),

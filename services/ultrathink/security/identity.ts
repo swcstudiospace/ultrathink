@@ -39,7 +39,9 @@ export type IdentityResult =
 	| { ok: true; spiffeId: string; path: string }
 	| { ok: false; reason: IdentityRejectionReason };
 
-type SpiffeParse = { ok: true; path: string } | { ok: false; reason: "malformed" | "foreign_trust_domain" };
+type SpiffeParse =
+	| { ok: true; path: string }
+	| { ok: false; reason: "malformed" | "foreign_trust_domain" };
 
 /**
  * Returns the SPIFFE candidates among the SAN entries. An entry is a candidate when, after an
@@ -50,7 +52,8 @@ function spiffeCandidates(sans: readonly string[]): string[] {
 	const candidates: string[] = [];
 	for (const san of sans) {
 		const value = san.startsWith(URI_SAN_LABEL) ? san.slice(URI_SAN_LABEL.length) : san;
-		if (value.slice(0, SPIFFE_SCHEME.length).toLowerCase() === SPIFFE_SCHEME) candidates.push(value);
+		if (value.slice(0, SPIFFE_SCHEME.length).toLowerCase() === SPIFFE_SCHEME)
+			candidates.push(value);
 	}
 	return candidates;
 }
@@ -69,9 +72,11 @@ function parseSpiffeId(spiffeId: string, trustDomain: string): SpiffeParse {
 	if (!TRUST_DOMAIN_GRAMMAR.test(authority)) return { ok: false, reason: "malformed" };
 	if (authority !== trustDomain) return { ok: false, reason: "foreign_trust_domain" };
 
-	if (path.length > MAX_PATH_LENGTH || !PATH_GRAMMAR.test(path)) return { ok: false, reason: "malformed" };
+	if (path.length > MAX_PATH_LENGTH || !PATH_GRAMMAR.test(path))
+		return { ok: false, reason: "malformed" };
 	const segments = path.slice(1).split("/");
-	if (segments.some((segment) => segment === "." || segment === "..")) return { ok: false, reason: "malformed" };
+	if (segments.some((segment) => segment === "." || segment === ".."))
+		return { ok: false, reason: "malformed" };
 
 	return { ok: true, path };
 }
@@ -99,7 +104,11 @@ function identityPath(spiffeId: string | null, trustDomain: string): string | un
 }
 
 /** True only when `spiffeId` is in `trustDomain` and its path lists `group` in the policy table. */
-export function authorize(spiffeId: string | null, group: RouteGroup, trustDomain: string): boolean {
+export function authorize(
+	spiffeId: string | null,
+	group: RouteGroup,
+	trustDomain: string,
+): boolean {
 	const path = identityPath(spiffeId, trustDomain);
 	if (path === undefined || !Object.hasOwn(ROUTE_POLICY, path)) return false;
 	const groups: readonly RouteGroup[] = ROUTE_POLICY[path as keyof typeof ROUTE_POLICY];

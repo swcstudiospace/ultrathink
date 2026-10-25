@@ -40,7 +40,9 @@ export function logLevelFrom(env: Env = process.env): LogLevel {
 
 /** The tool host without a planner, behind the same failure handling as the HTTP router's. */
 export function createStdioHost(stateDir: string, logger: Logger): McpToolHost {
-	const catalog = loadCatalogWithFallback((error) => logger.warn("command_catalog_fallback", { error }));
+	const catalog = loadCatalogWithFallback((error) =>
+		logger.warn("command_catalog_fallback", { error }),
+	);
 	const toolHost = createToolHost({
 		journalOpts: { stateDir, maxPromptChars: MAX_PROMPT_CHARS, maxAnswerChars: MAX_ANSWER_CHARS },
 		catalog,
@@ -55,7 +57,10 @@ export function createStdioHost(stateDir: string, logger: Logger): McpToolHost {
 				outcome = await toolHost.call(name, args);
 			} catch (error) {
 				// The class only: a message may quote arguments.
-				logger.error("tool_error", { tool: name, error: error instanceof Error ? error.name : "UnknownError" });
+				logger.error("tool_error", {
+					tool: name,
+					error: error instanceof Error ? error.name : "UnknownError",
+				});
 				outcome = { ok: false, code: "engine_error" };
 			}
 			logger.info("tool_call", { tool: name, outcome: outcome.ok ? "ok" : "error" });
@@ -82,17 +87,24 @@ export async function main(env: Env = process.env): Promise<number> {
 		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 		host = createStdioHost(stateDir, logger);
 	} catch (error) {
-		process.stderr.write(`ultrathink-connector: cannot start: ${error instanceof Error ? error.message : "unknown error"}\n`);
+		process.stderr.write(
+			`ultrathink-connector: cannot start: ${error instanceof Error ? error.message : "unknown error"}\n`,
+		);
 		return 1;
 	}
 
 	process.on("unhandledRejection", (reason) => {
-		logger.error("unhandled_rejection", { error: reason instanceof Error ? reason.name : "UnknownError" });
+		logger.error("unhandled_rejection", {
+			error: reason instanceof Error ? reason.name : "UnknownError",
+		});
 	});
 	process.on("uncaughtException", (error) => {
 		// Exit from the write callback so the line that explains the crash is flushed; the timer covers a stuck stderr.
 		setTimeout(() => process.exit(1), SIGNAL_EXIT_MS);
-		process.stderr.write(`ultrathink-connector: uncaught exception: ${error instanceof Error ? error.name : "UnknownError"}\n`, () => process.exit(1));
+		process.stderr.write(
+			`ultrathink-connector: uncaught exception: ${error instanceof Error ? error.name : "UnknownError"}\n`,
+			() => process.exit(1),
+		);
 	});
 
 	const controller = new AbortController();

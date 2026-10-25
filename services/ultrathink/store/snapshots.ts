@@ -31,7 +31,8 @@ interface Entry {
 }
 
 function requireFinite(value: number, label: string): void {
-	if (!Number.isFinite(value)) throw new RangeError(`${label} must be a finite number, got ${value}`);
+	if (!Number.isFinite(value))
+		throw new RangeError(`${label} must be a finite number, got ${value}`);
 }
 
 /** Orders by time, then by name, so every tie resolves the same way. */
@@ -53,7 +54,8 @@ export function formatStamp(ms: number): string {
 	requireFinite(ms, "snapshot time");
 	const date = new Date(ms);
 	const year = date.getUTCFullYear();
-	if (Number.isNaN(year) || year < 0 || year > 9999) throw new RangeError(`snapshot time out of range: ${ms}`);
+	if (Number.isNaN(year) || year < 0 || year > 9999)
+		throw new RangeError(`snapshot time out of range: ${ms}`);
 	return (
 		pad(year, 4) +
 		pad(date.getUTCMonth() + 1, 2) +
@@ -146,12 +148,17 @@ export function pickAtOrBefore(names: readonly string[], targetMs: number): stri
  * 5. Age > windowMs: deleted.
  * Both lists are sorted oldest first.
  */
-export function retentionPlan(names: readonly string[], nowMs: number, windows: RetentionWindows): RetentionPlan {
+export function retentionPlan(
+	names: readonly string[],
+	nowMs: number,
+	windows: RetentionWindows,
+): RetentionPlan {
 	requireFinite(nowMs, "now");
 	requireFinite(windows.recentMs, "recentMs");
 	requireFinite(windows.windowMs, "windowMs");
 	requireFinite(windows.thinMs, "thinMs");
-	if (windows.recentMs < 0 || windows.windowMs < 0) throw new RangeError("retention windows must not be negative");
+	if (windows.recentMs < 0 || windows.windowMs < 0)
+		throw new RangeError("retention windows must not be negative");
 	if (windows.thinMs <= 0) throw new RangeError("thinMs must be positive");
 
 	const seen = new Set<string>();
@@ -186,7 +193,10 @@ export function retentionPlan(names: readonly string[], nowMs: number, windows: 
 		const age = nowMs - entry.ms;
 		if (age <= windows.recentMs) {
 			keep.push(entry.name);
-		} else if (age <= windows.windowMs && winners.get(Math.floor(entry.ms / windows.thinMs)) === entry) {
+		} else if (
+			age <= windows.windowMs &&
+			winners.get(Math.floor(entry.ms / windows.thinMs)) === entry
+		) {
 			keep.push(entry.name);
 		} else {
 			remove.push(entry.name);

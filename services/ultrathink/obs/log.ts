@@ -32,12 +32,20 @@ function clip(value: string): string {
 }
 
 function serializeError(err: Error, withStack: boolean): Record<string, unknown> {
-	const out: Record<string, unknown> = { name: clip(String(err.name)), message: clip(String(err.message)) };
+	const out: Record<string, unknown> = {
+		name: clip(String(err.name)),
+		message: clip(String(err.message)),
+	};
 	if (withStack && typeof err.stack === "string") out.stack = clip(err.stack);
 	return out;
 }
 
-function serialize(value: unknown, depth: number, seen: WeakSet<object>, withStack: boolean): unknown {
+function serialize(
+	value: unknown,
+	depth: number,
+	seen: WeakSet<object>,
+	withStack: boolean,
+): unknown {
 	switch (typeof value) {
 		case "string":
 			return clip(value);
@@ -56,14 +64,16 @@ function serialize(value: unknown, depth: number, seen: WeakSet<object>, withSta
 	if (value === null) return null;
 	const obj = value as object;
 	if (obj instanceof Error) return serializeError(obj, withStack);
-	if (obj instanceof Date) return Number.isNaN(obj.getTime()) ? "[invalid date]" : obj.toISOString();
+	if (obj instanceof Date)
+		return Number.isNaN(obj.getTime()) ? "[invalid date]" : obj.toISOString();
 	if (seen.has(obj)) return "[circular]";
 	if (depth >= MAX_DEPTH) return "[truncated]";
 	seen.add(obj);
 	try {
 		if (Array.isArray(obj)) {
 			const out: unknown[] = [];
-			for (const item of obj.slice(0, MAX_ARRAY)) out.push(serialize(item, depth + 1, seen, withStack) ?? null);
+			for (const item of obj.slice(0, MAX_ARRAY))
+				out.push(serialize(item, depth + 1, seen, withStack) ?? null);
 			if (obj.length > MAX_ARRAY) out.push(`[${obj.length - MAX_ARRAY} more]`);
 			return out;
 		}

@@ -15,7 +15,13 @@ function writeSession(rel: string, id: string): string {
 	const path = join(root, rel);
 	mkdirSync(join(path, ".."), { recursive: true });
 	const title = JSON.stringify({ type: "title", v: 1, title: "" });
-	const session = JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-09-25T00:00:00.000Z", cwd: "/proj" });
+	const session = JSON.stringify({
+		type: "session",
+		version: 3,
+		id,
+		timestamp: "2026-09-25T00:00:00.000Z",
+		cwd: "/proj",
+	});
 	writeFileSync(path, `${title}\n${session}\n`);
 	return path;
 }
@@ -48,7 +54,10 @@ describe("isOmpSubagentSessionId", () => {
 
 	test("a malformed session line is skipped without throwing", () => {
 		mkdirSync(join(root, "-proj/2026_parent"), { recursive: true });
-		writeFileSync(join(root, "-proj/2026_parent/Broken.jsonl"), '{"type":"title"}\n{"type":"session","id":"abc-1",\n');
+		writeFileSync(
+			join(root, "-proj/2026_parent/Broken.jsonl"),
+			'{"type":"title"}\n{"type":"session","id":"abc-1",\n',
+		);
 		writeSession("-proj/2026_parent/Worker.jsonl", "abc-3");
 		expect(isOmpSubagentSessionId("abc-1", { root })).toBe(false);
 		expect(isOmpSubagentSessionId("abc-3", { root })).toBe(true);
@@ -73,7 +82,8 @@ describe("planPrompt omp subagent guard", () => {
 			{ progress: (e) => events.push(e) },
 		);
 		expect(response).toEqual({ context: "", skipped: "subagent" });
-		expect(events).toEqual([expect.objectContaining({ type: "end", outcome: "skipped", detail: "subagent" })]);
+		expect(events).toEqual([
+			expect.objectContaining({ type: "end", outcome: "skipped", detail: "subagent" }),
+		]);
 	});
 });
-

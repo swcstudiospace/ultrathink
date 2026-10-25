@@ -8,7 +8,12 @@
 
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { GRAPH_APP_MIME, GRAPH_APP_URI, graphAppHtml, graphAppResourceMeta } from "../ui/graph-app.ts";
+import {
+	GRAPH_APP_MIME,
+	GRAPH_APP_URI,
+	graphAppHtml,
+	graphAppResourceMeta,
+} from "../ui/graph-app.ts";
 import { type CommandCatalog, loadCommandCatalog, REPOSITORY_ROOT } from "./commands.ts";
 import { type ResourceRegistry, createResourceRegistry } from "./resources.ts";
 import { catalogFromOverlay } from "./tools-connector.ts";
@@ -20,7 +25,8 @@ export function defaultGraphResources(): ResourceRegistry {
 			uri: GRAPH_APP_URI,
 			name: "ultrathink-graph",
 			title: "UltraThink graph",
-			description: "The Graph of Thought x Chain of Thought of a plan, drawn as an interactive card.",
+			description:
+				"The Graph of Thought x Chain of Thought of a plan, drawn as an interactive card.",
 			mimeType: GRAPH_APP_MIME,
 			html: graphAppHtml,
 			meta: graphAppResourceMeta(),
@@ -45,7 +51,10 @@ function isAbsent(path: string): boolean {
  * Only that absence falls back: drift, a name collision, a malformed entry or an unreadable file throws, so a release
  * never serves silently degraded descriptions.
  */
-export function loadCatalogWithFallback(onFallback: (error: unknown) => void, root: string = REPOSITORY_ROOT): CommandCatalog {
+export function loadCatalogWithFallback(
+	onFallback: (error: unknown) => void,
+	root: string = REPOSITORY_ROOT,
+): CommandCatalog {
 	if (isAbsent(join(root, "commands")) && isAbsent(join(root, "skills"))) {
 		onFallback(new Error(`command sources are absent under ${root}`));
 		return catalogFromOverlay();

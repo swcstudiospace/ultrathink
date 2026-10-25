@@ -20,7 +20,14 @@ const UNKNOWN_PATH = `spiffe://${TRUST_DOMAIN}/edge/other`;
 const FOREIGN_DOMAIN = "spiffe://other.example/edge/nginx";
 const LOOPBACK = "127.0.0.1";
 const FORBIDDEN = "forbidden_identity";
-const EVERY_ROUTE = ["/healthz", "/readyz", "/metrics", "/ultrathink", "/oauth/token", "/no-such-route"];
+const EVERY_ROUTE = [
+	"/healthz",
+	"/readyz",
+	"/metrics",
+	"/ultrathink",
+	"/oauth/token",
+	"/no-such-route",
+];
 
 type LogLine = Record<string, unknown>;
 type Peer = { spiffeId: string | null };
@@ -138,7 +145,9 @@ describe("identity gate with mTLS on", () => {
 
 	test("a refusal is logged with its group and reason, and the identity is not logged", async () => {
 		await get(app, "/metrics", { spiffeId: EDGE });
-		const denied = logs.filter((line) => line.event === "identity_denied" && line.group === "metrics");
+		const denied = logs.filter(
+			(line) => line.event === "identity_denied" && line.group === "metrics",
+		);
 		expect(denied.length).toBeGreaterThan(0);
 		const last = denied[denied.length - 1] ?? {};
 		expect(last.reason).toBe("not_authorized");

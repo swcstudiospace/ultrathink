@@ -18,7 +18,10 @@ const PROTOCOL = join(GROK_ROOT, "ultrathink-protocol/SKILL.md");
  * The folded scalars native skills actually use (`key: >-` plus equally indented lines).
  * Newlines fold to spaces and the clip marker drops the final break. No PyYAML: CI has none.
  */
-function foldedFrontmatter(text: string, file: string): { keys: string[]; values: Record<string, string>; body: string } {
+function foldedFrontmatter(
+	text: string,
+	file: string,
+): { keys: string[]; values: Record<string, string>; body: string } {
 	const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(text);
 	if (!match?.[1] || match[2] === undefined) throw new Error(`${file} is missing YAML frontmatter`);
 	const lines = match[1].split(/\r?\n/);
@@ -27,16 +30,19 @@ function foldedFrontmatter(text: string, file: string): { keys: string[]; values
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i] ?? "";
 		if (line.trim() === "") continue;
-		if (line.startsWith(" ") || line.startsWith("\t")) throw new Error(`${file} has an indented line outside a folded scalar`);
+		if (line.startsWith(" ") || line.startsWith("\t"))
+			throw new Error(`${file} has an indented line outside a folded scalar`);
 		const sep = line.indexOf(":");
 		if (sep <= 0) throw new Error(`${file} has a frontmatter line without a key`);
 		const key = line.slice(0, sep).trim();
-		if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(key)) throw new Error(`${file} frontmatter key ${JSON.stringify(key)} is not a plain name`);
+		if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(key))
+			throw new Error(`${file} frontmatter key ${JSON.stringify(key)} is not a plain name`);
 		if (Object.hasOwn(values, key)) throw new Error(`${file} frontmatter repeats ${key}`);
 		keys.push(key);
 		const raw = line.slice(sep + 1).trim();
 		if (raw !== ">-") {
-			if (raw === "" || raw.startsWith(">") || raw.startsWith("|")) throw new Error(`${file} frontmatter ${key} uses an unsupported block scalar`);
+			if (raw === "" || raw.startsWith(">") || raw.startsWith("|"))
+				throw new Error(`${file} frontmatter ${key} uses an unsupported block scalar`);
 			values[key] = raw;
 			continue;
 		}
@@ -44,11 +50,13 @@ function foldedFrontmatter(text: string, file: string): { keys: string[]; values
 		let indent: number | undefined;
 		while (i + 1 < lines.length) {
 			const next = lines[i + 1] ?? "";
-			if (next.trim() === "") throw new Error(`${file} frontmatter ${key} has a blank line inside >-`);
+			if (next.trim() === "")
+				throw new Error(`${file} frontmatter ${key} has a blank line inside >-`);
 			const lead = /^ */.exec(next)?.[0].length ?? 0;
 			if (lead === 0) break;
 			if (indent === undefined) indent = lead;
-			if (lead !== indent) throw new Error(`${file} frontmatter ${key} changes indentation inside >-`);
+			if (lead !== indent)
+				throw new Error(`${file} frontmatter ${key} changes indentation inside >-`);
 			folded.push(next.slice(indent));
 			i++;
 		}
@@ -58,8 +66,11 @@ function foldedFrontmatter(text: string, file: string): { keys: string[]; values
 	return { keys, values, body: match[2] };
 }
 
-const names = readdirSync(SKILLS).filter((name) => statSync(join(SKILLS, name)).isDirectory()).sort();
-const readNative = (name: string) => foldedFrontmatter(readFileSync(join(SKILLS, name, "SKILL.md"), "utf8"), name);
+const names = readdirSync(SKILLS)
+	.filter((name) => statSync(join(SKILLS, name)).isDirectory())
+	.sort();
+const readNative = (name: string) =>
+	foldedFrontmatter(readFileSync(join(SKILLS, name, "SKILL.md"), "utf8"), name);
 
 /** First word of each USAGE line in grokbot-cli.ts: the CLI's verbs. */
 const VERBS = new Set(
@@ -87,7 +98,9 @@ describe("Grok Bot native skills", () => {
 	});
 
 	test("every plugin command and skill has a Grok Bot skill", () => {
-		const commands = readdirSync(join(ROOT, "commands")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3));
+		const commands = readdirSync(join(ROOT, "commands"))
+			.filter((f) => f.endsWith(".md"))
+			.map((f) => f.slice(0, -3));
 		const skills = readdirSync(join(ROOT, "skills"));
 		for (const name of [...commands, ...skills]) expect(names).toContain(name);
 		expect(names).toContain("ultrathink-protocol");
@@ -106,7 +119,11 @@ describe("Grok Bot native skills", () => {
 		expect(VERBS.has("plan")).toBe(true);
 		for (const name of names) {
 			for (const match of readNative(name).body.matchAll(/`G ([a-z-]+)/g)) {
-				expect({ skill: name, verb: match[1], known: VERBS.has(match[1] as string) }).toEqual({ skill: name, verb: match[1], known: true });
+				expect({ skill: name, verb: match[1], known: VERBS.has(match[1] as string) }).toEqual({
+					skill: name,
+					verb: match[1],
+					known: true,
+				});
 			}
 		}
 	});
@@ -117,15 +134,32 @@ describe("Grok Bot native skills", () => {
 		expect(body).toContain("one-line Ultrathink status");
 		expect(body).toContain("G teach digest");
 		expect(readNative("ultrathink-kickoff").body).toContain("G answers --session S");
-		for (const name of names) expect(readNative(name).body).not.toMatch(/promote[^`\n]*--install|ship merge|gh pr merge|--no-verify/);
+		for (const name of names)
+			expect(readNative(name).body).not.toMatch(
+				/promote[^`\n]*--install|ship merge|gh pr merge|--no-verify/,
+			);
 	});
 
 	test("discovery lists grok-bot as an unverified native adapter whose entrypoints exist", () => {
 		const discovery = JSON.parse(readFileSync(join(ROOT, "ultrathink.discovery.json"), "utf8")) as {
-			externalIntegrations: Record<string, { status: string; adapterPresent: boolean; compatibilityVerified: boolean; delivery?: string; entrypoints?: string[] }>;
+			externalIntegrations: Record<
+				string,
+				{
+					status: string;
+					adapterPresent: boolean;
+					compatibilityVerified: boolean;
+					delivery?: string;
+					entrypoints?: string[];
+				}
+			>;
 		};
 		const grok = discovery.externalIntegrations["grok-bot"];
-		expect(grok).toMatchObject({ status: "native-adapter", adapterPresent: true, compatibilityVerified: false, delivery: "skill-protocol-cli" });
+		expect(grok).toMatchObject({
+			status: "native-adapter",
+			adapterPresent: true,
+			compatibilityVerified: false,
+			delivery: "skill-protocol-cli",
+		});
 		for (const path of grok?.entrypoints ?? []) expect(existsSync(join(ROOT, path))).toBe(true);
 	});
 });
@@ -149,7 +183,8 @@ function parseScalar(raw: string, file: string, key: string): string {
 				continue;
 			}
 			if (ch === '"') {
-				if (i !== raw.length - 1) throw new Error(`${file} frontmatter ${key} has text after its quoted value`);
+				if (i !== raw.length - 1)
+					throw new Error(`${file} frontmatter ${key} has text after its quoted value`);
 				return out;
 			}
 			out += ch;
@@ -165,7 +200,8 @@ function parseScalar(raw: string, file: string, key: string): string {
 				continue;
 			}
 			if (raw[i] === "'") {
-				if (i !== raw.length - 1) throw new Error(`${file} frontmatter ${key} has text after its quoted value`);
+				if (i !== raw.length - 1)
+					throw new Error(`${file} frontmatter ${key} has text after its quoted value`);
 				return out;
 			}
 			out += raw[i];
@@ -186,7 +222,8 @@ function frontmatter(text: string, file: string): Frontmatter {
 		const sep = line.indexOf(":");
 		if (sep <= 0) throw new Error(`${file} has a frontmatter line without a key`);
 		const key = line.slice(0, sep).trim();
-		if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(key)) throw new Error(`${file} frontmatter key ${JSON.stringify(key)} is not a plain name`);
+		if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(key))
+			throw new Error(`${file} frontmatter key ${JSON.stringify(key)} is not a plain name`);
 		if (Object.hasOwn(values, key)) throw new Error(`${file} frontmatter repeats ${key}`);
 		keys.push(key);
 		values[key] = parseScalar(line.slice(sep + 1).trim(), file, key);
@@ -269,15 +306,30 @@ describe("Grok Bot skill-protocol files", () => {
 	});
 
 	test("quoted frontmatter parses and an unquoted colon is rejected", () => {
-		const quoted = frontmatter('---\nname: sample\ndescription: "When to use it: plan the work"\n---\nbody\n', "quoted.md");
-		expect(quoted.values).toEqual({ name: "sample", description: "When to use it: plan the work" });
-		expect(() => frontmatter("---\nname: sample\ndescription: When to use it: plan the work\n---\nbody\n", "unquoted.md")).toThrow(
-			/unquoted colon/,
+		const quoted = frontmatter(
+			'---\nname: sample\ndescription: "When to use it: plan the work"\n---\nbody\n',
+			"quoted.md",
 		);
+		expect(quoted.values).toEqual({ name: "sample", description: "When to use it: plan the work" });
+		expect(() =>
+			frontmatter(
+				"---\nname: sample\ndescription: When to use it: plan the work\n---\nbody\n",
+				"unquoted.md",
+			),
+		).toThrow(/unquoted colon/);
 	});
 
 	test("control skills describe a conversation preference and do not promise engine state", () => {
-		const forbidden = ["bin/ultrathink", "hooks/engine.ts", "hooks/uplift.ts", "UserPromptSubmit", "last-plan.json", "state directory", "state file", "~/"];
+		const forbidden = [
+			"bin/ultrathink",
+			"hooks/engine.ts",
+			"hooks/uplift.ts",
+			"UserPromptSubmit",
+			"last-plan.json",
+			"state directory",
+			"state file",
+			"~/",
+		];
 		for (const file of skillFiles()) {
 			if (file === PROTOCOL) continue;
 			const parsed = frontmatter(readFileSync(file, "utf8"), file);
@@ -288,7 +340,17 @@ describe("Grok Bot skill-protocol files", () => {
 
 	test("discovery records the native host and leaves gpt-dot pending", () => {
 		const discovery = JSON.parse(readFileSync(join(ROOT, "ultrathink.discovery.json"), "utf8")) as {
-			externalIntegrations: Record<string, { identity: string; status: string; adapterPresent: boolean; compatibilityVerified: boolean; delivery?: string; entrypoints?: string[] }>;
+			externalIntegrations: Record<
+				string,
+				{
+					identity: string;
+					status: string;
+					adapterPresent: boolean;
+					compatibilityVerified: boolean;
+					delivery?: string;
+					entrypoints?: string[];
+				}
+			>;
 		};
 		const grok = discovery.externalIntegrations["grok-bot"];
 		expect(grok).toMatchObject({

@@ -41,7 +41,13 @@ const MAX_CANDIDATES = 200;
 const MAX_FILE_BYTES = 1024 * 1024;
 /** Text is cut to this many characters before it is normalised, so a megabyte goal costs nothing. */
 const GOAL_SCAN_CHARS = 2048;
-const JOB_STATUSES: Record<string, true> = { running: true, planned: true, failed: true, invalid: true, skipped: true };
+const JOB_STATUSES: Record<string, true> = {
+	running: true,
+	planned: true,
+	failed: true,
+	invalid: true,
+	skipped: true,
+};
 const JSON_SUFFIX = ".json";
 
 interface Sources {
@@ -59,7 +65,8 @@ interface RecordView {
 	hasGraph: boolean;
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
 
 function clampLimit(limit: unknown): number {
 	if (typeof limit !== "number" || !Number.isFinite(limit)) return DEFAULT_LIMIT;
@@ -71,8 +78,10 @@ function oneLine(value: unknown): string {
 	if (typeof value !== "string") return "";
 	const head = value.slice(0, GOAL_SCAN_CHARS);
 	for (const line of head.split(/[\r\n\u2028\u2029]/)) {
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are exactly what is removed
-		const text = line.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+		const text = line
+			.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+			.replace(/\s+/g, " ")
+			.trim();
 		if (text.length === 0) continue;
 		if (text.length <= GOAL_MAX_CHARS) return text;
 		let cut = text.slice(0, GOAL_MAX_CHARS - 1);
@@ -90,7 +99,12 @@ function listNames(dir: string): string[] {
 	let handle: Dir | undefined;
 	try {
 		handle = opendirSync(dir);
-		for (let entry = handle.readSync(); entry !== null && names.length < MAX_DIR_ENTRIES; entry = handle.readSync()) names.push(entry.name);
+		for (
+			let entry = handle.readSync();
+			entry !== null && names.length < MAX_DIR_ENTRIES;
+			entry = handle.readSync()
+		)
+			names.push(entry.name);
 	} catch {
 		// A partial listing is still a valid listing.
 	} finally {
@@ -182,13 +196,20 @@ function readRecord(path: string): RecordView | undefined {
 	if (!isObject(raw) || !isObject(raw.result)) return undefined;
 	const view: RecordView = {
 		graphGoal: "",
-		original: typeof raw.result.original === "string" ? raw.result.original.slice(0, GOAL_SCAN_CHARS) : "",
+		original:
+			typeof raw.result.original === "string" ? raw.result.original.slice(0, GOAL_SCAN_CHARS) : "",
 		nodeCount: 0,
 		hasGraph: false,
 	};
 	const graph = raw.graph;
 	// Nodes that are not objects mean a hand-edited or foreign file: it has no graph worth summarising.
-	if (isObject(graph) && typeof graph.goal === "string" && Array.isArray(graph.nodes) && graph.nodes.every(isObject) && !isFallbackGraph(graph as unknown as ThoughtGraph)) {
+	if (
+		isObject(graph) &&
+		typeof graph.goal === "string" &&
+		Array.isArray(graph.nodes) &&
+		graph.nodes.every(isObject) &&
+		!isFallbackGraph(graph as unknown as ThoughtGraph)
+	) {
 		view.graphGoal = graph.goal.slice(0, GOAL_SCAN_CHARS);
 		view.hasGraph = graph.nodes.length > 0;
 		view.nodeCount = graph.nodes.length;
@@ -203,7 +224,10 @@ function clientStatus(status: unknown): SessionStatus {
 
 function summarize(stateDir: string, sources: Sources): SessionSummary | undefined {
 	const { id } = sources;
-	const record = sources.recordMtime === undefined ? undefined : readRecord(join(stateDir, "sessions", `${id}${JSON_SUFFIX}`));
+	const record =
+		sources.recordMtime === undefined
+			? undefined
+			: readRecord(join(stateDir, "sessions", `${id}${JSON_SUFFIX}`));
 
 	let status: SessionStatus | undefined;
 	let mode: "server" | "client" = "server";
@@ -213,7 +237,13 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 	if (sources.jobMtime !== undefined) {
 		const job = readJson(join(stateDir, "jobs", `${id}${JSON_SUFFIX}`));
 		// The shape check mirrors the planner's own: a file it would refuse to serve is not listed as a job.
-		if (isObject(job) && typeof job.status === "string" && Object.hasOwn(JOB_STATUSES, job.status) && typeof job.updatedAt === "number" && Number.isFinite(job.updatedAt)) {
+		if (
+			isObject(job) &&
+			typeof job.status === "string" &&
+			Object.hasOwn(JOB_STATUSES, job.status) &&
+			typeof job.updatedAt === "number" &&
+			Number.isFinite(job.updatedAt)
+		) {
 			status = job.status as SessionStatus;
 			updatedAt = job.updatedAt;
 		}
@@ -224,7 +254,10 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 		if (isObject(meta)) {
 			status = clientStatus(meta.status);
 			mode = "client";
-			updatedAt = typeof meta.updatedAt === "number" && Number.isFinite(meta.updatedAt) ? meta.updatedAt : sources.metaMtime;
+			updatedAt =
+				typeof meta.updatedAt === "number" && Number.isFinite(meta.updatedAt)
+					? meta.updatedAt
+					: sources.metaMtime;
 			if (typeof meta.original === "string") metaOriginal = meta.original.slice(0, GOAL_SCAN_CHARS);
 		}
 	}
@@ -233,13 +266,28 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 	if (status === undefined) return undefined;
 
 	const goal = oneLine(record?.graphGoal) || oneLine(record?.original) || oneLine(metaOriginal);
-	return { sessionId: id, status, mode, updatedAt: Math.trunc(updatedAt), goal, nodeCount: record?.nodeCount ?? 0, hasGraph: record?.hasGraph ?? false };
+	return {
+		sessionId: id,
+		status,
+		mode,
+		updatedAt: Math.trunc(updatedAt),
+		goal,
+		nodeCount: record?.nodeCount ?? 0,
+		hasGraph: record?.hasGraph ?? false,
+	};
 }
 
 /** The `candidates` most recently touched sessions, newest first by file modification time. */
-function newestSources(stateDir: string, candidates: number): Array<{ id: string; time: number; sources: Sources }> {
+function newestSources(
+	stateDir: string,
+	candidates: number,
+): Array<{ id: string; time: number; sources: Sources }> {
 	return scan(stateDir)
-		.map((sources) => ({ id: sources.id, time: Math.max(sources.jobMtime ?? 0, sources.metaMtime ?? 0, sources.recordMtime ?? 0), sources }))
+		.map((sources) => ({
+			id: sources.id,
+			time: Math.max(sources.jobMtime ?? 0, sources.metaMtime ?? 0, sources.recordMtime ?? 0),
+			sources,
+		}))
 		.sort(byRecency)
 		.slice(0, candidates);
 }
@@ -256,7 +304,10 @@ function collect(stateDir: string, candidates: number): SessionSummary[] {
 			// One unreadable session never hides the others.
 		}
 	}
-	return summaries.map((summary) => ({ id: summary.sessionId, time: summary.updatedAt, summary })).sort(byRecency).map((item) => item.summary);
+	return summaries
+		.map((summary) => ({ id: summary.sessionId, time: summary.updatedAt, summary }))
+		.sort(byRecency)
+		.map((item) => item.summary);
 }
 
 /**

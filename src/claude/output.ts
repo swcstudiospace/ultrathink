@@ -41,7 +41,8 @@ const BRIEF_CUT = "\n(brief truncated)";
 const LINKED_POINTER =
 	"## Linked issues\n\nThe tracker rows' TODO lines are too long to repeat here: copy them from the ISSUES block of the specification file (or from kickoff's `track complete` output), keeping each identifier and URL.";
 /** Hermes names for the Claude tools the THINK addendum mentions (skill-hint hosts only). */
-const HERMES_TOOL_NAMES = "On Hermes, TodoWrite is the `todo` tool and Task subagents are `delegate_task`.";
+const HERMES_TOOL_NAMES =
+	"On Hermes, TodoWrite is the `todo` tool and Task subagents are `delegate_task`.";
 
 const RATIONALE_RE = /(<RATIONALE>)[\s\S]*?(<\/RATIONALE>)/g;
 const RATIONALE_OMITTED = "(omitted — full text in the specification file)";
@@ -147,7 +148,10 @@ export function displayLabel(value: unknown): string {
  * A provider or model id for display, by the rule the record itself applies: unchanged when plainly safe, else `opaque`.
  * URI, endpoint, user-info and credential-looking ids are suppressed; the id used for inference is untouched.
  */
-export function displayId(value: unknown, opaque: typeof OPAQUE_PROVIDER | typeof OPAQUE_MODEL): string {
+export function displayId(
+	value: unknown,
+	opaque: typeof OPAQUE_PROVIDER | typeof OPAQUE_MODEL,
+): string {
 	if (typeof value !== "string") return opaque;
 	if (value === OPAQUE_PROVIDER || value === OPAQUE_MODEL) return value;
 	const safe =
@@ -172,7 +176,11 @@ export function formatModelSelection(resolution: ModelResolution): string {
 	const reason = displayToken(resolution.reason);
 	const { engine, source, nativeOptOut } = resolution.engineSelection;
 	const request = `engine ${displayToken(engine) ?? "unknown"} (${displayToken(source) ?? "unknown"}${nativeOptOut === true ? ", native opt-out" : ""})`;
-	return [label, ...(reason && !label.includes(`[${reason}]`) ? [`reason ${reason}`] : []), request].join(" · ");
+	return [
+		label,
+		...(reason && !label.includes(`[${reason}]`) ? [`reason ${reason}`] : []),
+		request,
+	].join(" · ");
 }
 
 /** Context section for a knowledge-base lookup that was used; undefined for any other outcome. */
@@ -214,12 +222,19 @@ export function formatDecisionsBit(records: readonly DecisionRecord[]): string |
 	const plan = ok.find((r) => r.point === "plan");
 	if (plan?.p !== undefined) parts.push(`plan ${formatP(plan.p)}`);
 	const knowledge = ok.filter((r) => r.point === "knowledge");
-	if (knowledge.length) parts.push(`knowledge ${knowledge.filter((r) => r.action === "keep").length}/${knowledge.length} kept`);
+	if (knowledge.length)
+		parts.push(
+			`knowledge ${knowledge.filter((r) => r.action === "keep").length}/${knowledge.length} kept`,
+		);
 	const blocking = ok.filter((r) => r.point === "blocking");
 	if (blocking.length) {
-		parts.push(`blocking ${blocking.filter((r) => r.action === "promote").length}/${blocking.length} promoted`);
+		parts.push(
+			`blocking ${blocking.filter((r) => r.action === "promote").length}/${blocking.length} promoted`,
+		);
 	}
-	const kinds = [...new Set(prompt.flatMap((r) => (r.outcome === "error" && r.error ? [r.error] : [])))];
+	const kinds = [
+		...new Set(prompt.flatMap((r) => (r.outcome === "error" && r.error ? [r.error] : []))),
+	];
 	if (kinds.length) parts.push(`error (${kinds.join(", ")})`);
 	return parts.length ? `Decisions · ${parts.join(" · ")}` : undefined;
 }
@@ -306,12 +321,18 @@ export function truncateXml(xml: string, maxChars: number, specPath?: string): s
 }
 
 /** Rows the plan expects from the configured providers but tracking has not recorded yet. */
-function countMissing(tracking: TrackingRefs, plan: TrackPlan | undefined, providers: TrackerProviders): number {
+function countMissing(
+	tracking: TrackingRefs,
+	plan: TrackPlan | undefined,
+	providers: TrackerProviders,
+): number {
 	if (!plan) return Math.max(1, tracking.errors.length);
 	const keys = plan.subIssues.map((s) => stepKey(s.nodeId, s.step));
 	let missing = 0;
 	if (providers.linear) {
-		missing += plan.issues.filter((i) => !tracking.linear.nodes[i.nodeId]).length + keys.filter((k) => !tracking.linear.steps[k]).length;
+		missing +=
+			plan.issues.filter((i) => !tracking.linear.nodes[i.nodeId]).length +
+			keys.filter((k) => !tracking.linear.steps[k]).length;
 	}
 	if (providers.notion) {
 		missing +=
@@ -322,10 +343,16 @@ function countMissing(tracking: TrackingRefs, plan: TrackPlan | undefined, provi
 	return missing;
 }
 
-function formatLinkedIssues(plan: TrackPlan, tracking: TrackingRefs, providers: TrackerProviders): string {
+function formatLinkedIssues(
+	plan: TrackPlan,
+	tracking: TrackingRefs,
+	providers: TrackerProviders,
+): string {
 	const created = [
 		...(providers.linear
-			? [`${Object.keys(tracking.linear.nodes).length} Linear issues, ${Object.keys(tracking.linear.steps).length} sub-issues`]
+			? [
+					`${Object.keys(tracking.linear.nodes).length} Linear issues, ${Object.keys(tracking.linear.steps).length} sub-issues`,
+				]
 			: []),
 		...(providers.notion ? [`Notion task ${tracking.notion.taskUrl ?? "pending"}`] : []),
 	];
@@ -359,12 +386,25 @@ function degradedStageName(token: string): string {
  * recorded engine error), or — under a real spec — the think stages that fell back.
  */
 function degradationNotice(
-	input: Pick<PromptContextInput, "result" | "engine" | "modelResolution" | "engineError" | "degraded" | "tracking" | "trackingOff">,
+	input: Pick<
+		PromptContextInput,
+		| "result"
+		| "engine"
+		| "modelResolution"
+		| "engineError"
+		| "degraded"
+		| "tracking"
+		| "trackingOff"
+	>,
 ): string | undefined {
-	const engine = input.modelResolution ? displayLabel(input.modelResolution.label) : input.engine?.trim() || "thinking engine";
+	const engine = input.modelResolution
+		? displayLabel(input.modelResolution.label)
+		: input.engine?.trim() || "thinking engine";
 	// The capture already bounds this; bound again so a long error can never blow the host context
 	// (the Hermes handoff keeps this notice even past its ceiling).
-	const failure = input.engineError ? ` (${input.engineError.slice(0, MAX_ENGINE_ERROR_CHARS)})` : "";
+	const failure = input.engineError
+		? ` (${input.engineError.slice(0, MAX_ENGINE_ERROR_CHARS)})`
+		: "";
 	if (input.result.source === "fallback") {
 		if (input.engineError) {
 			return [
@@ -416,7 +456,8 @@ export function formatPromptContext(input: PromptContextInput): string {
 	const parts: string[] = [header];
 	if (input.specPath) parts.push(`Specification file: ${input.specPath}`);
 	if (input.lastNote) parts.push(input.lastNote);
-	if (input.modelResolution) parts.push(`Planning model: ${formatModelSelection(input.modelResolution)}`);
+	if (input.modelResolution)
+		parts.push(`Planning model: ${formatModelSelection(input.modelResolution)}`);
 	// A failed engine still delivers boilerplate (fail-open), but the agent must know it is
 	// boilerplate and why: otherwise a dead engine looks like a terse real plan with rows to come.
 	const degradedNotice = degradationNotice(input);
@@ -433,13 +474,21 @@ export function formatPromptContext(input: PromptContextInput): string {
 	const docs = input.docs?.trim() || undefined;
 	const skills = input.skills?.trim() || undefined;
 	// Evidence the plan should see sits after the brief and before the specification; a handoff places it in fitHandoff.
-	if (!input.handoff) parts.push(...briefParts, ...(lessons ? [lessons] : []), ...(docs ? [docs] : []), ...(skills ? [skills] : []));
+	if (!input.handoff)
+		parts.push(
+			...briefParts,
+			...(lessons ? [lessons] : []),
+			...(docs ? [docs] : []),
+			...(skills ? [skills] : []),
+		);
 
 	const tail: string[] = [];
 	if (input.graph) {
 		// Without a track plan no rows exist and none will: the tracked addendum would send the
 		// agent looking for issue links that cannot exist.
-		const think = (input.trackingOff || !input.plan ? THINK_ADDENDUM_UNTRACKED : THINK_ADDENDUM).trim();
+		const think = (
+			input.trackingOff || !input.plan ? THINK_ADDENDUM_UNTRACKED : THINK_ADDENDUM
+		).trim();
 		tail.push(hints ? `${think}\n${HERMES_TOOL_NAMES}` : think);
 		const waves = workflowWaves(input.graph)
 			.map((w) => `${w.wave}: ${w.ids.join(", ")}${w.parallel ? " (parallel)" : ""}`)
@@ -447,12 +496,18 @@ export function formatPromptContext(input: PromptContextInput): string {
 		if (waves) tail.push(`Workflow waves: ${waves}`);
 	}
 	const providers = input.providers ?? BOTH_PROVIDERS;
-	const linked = input.plan && input.tracking && !input.trackingOff ? formatLinkedIssues(input.plan, input.tracking, providers) : undefined;
+	const linked =
+		input.plan && input.tracking && !input.trackingOff
+			? formatLinkedIssues(input.plan, input.tracking, providers)
+			: undefined;
 	if (linked) tail.push(linked);
 	const knowledge = formatKnowledgeSection(input.knowledge);
 	if (knowledge) tail.push(knowledge);
 	if (input.clarifications?.length) {
-		const hitl = formatHitlAddendum(input.clarifications, hints ? { questionTool: "clarify" } : {}).trim();
+		const hitl = formatHitlAddendum(
+			input.clarifications,
+			hints ? { questionTool: "clarify" } : {},
+		).trim();
 		if (hitl) tail.push(hitl);
 	}
 	if (input.trackingOff) tail.push(TRACKING_OFF_NOTE);
@@ -472,7 +527,10 @@ export function formatPromptContext(input: PromptContextInput): string {
 		const finish = input.trackCommand
 			? `, which first runs \`${input.trackCommand} --state ${shellArg(input.statePath)}\` to finish the missing Notion/Linear rows`
 			: ", which first finishes the missing Notion/Linear rows";
-		const where = [...(providers.notion ? ["Notion"] : []), ...(providers.linear ? ["Linear"] : [])].join(" and ") || "the tracker";
+		const where =
+			[...(providers.notion ? ["Notion"] : []), ...(providers.linear ? ["Linear"] : [])].join(
+				" and ",
+			) || "the tracker";
 		const kickoff = skillReference("ultrathink-kickoff", hints);
 		const body = complete
 			? `The Task, its Graph-of-Thought Issues, and one Sub-Issue per Chain-of-Thought step already exist in ${where} (see Linked issues). Before starting work, invoke ${kickoff} with stateFile=${input.statePath} only to resolve any blocking clarifications and set the Task to Implementing; it must not create rows. Do not start coding before it returns.`
@@ -494,9 +552,27 @@ export function formatPromptContext(input: PromptContextInput): string {
 	}
 
 	// 0 means no limit, as on the spec path below.
-	if (input.handoff) return fitHandoff(parts, briefParts, lessons, docs, skills, tail, linked, input.maxChars === undefined ? HANDOFF_MAX_CHARS : input.maxChars > 0 ? input.maxChars : Number.MAX_SAFE_INTEGER);
+	if (input.handoff)
+		return fitHandoff(
+			parts,
+			briefParts,
+			lessons,
+			docs,
+			skills,
+			tail,
+			linked,
+			input.maxChars === undefined
+				? HANDOFF_MAX_CHARS
+				: input.maxChars > 0
+					? input.maxChars
+					: Number.MAX_SAFE_INTEGER,
+		);
 	const fixed = parts.join("\n\n").length + tail.join("\n\n").length + 4;
-	parts.push(maxChars > 0 ? truncateXml(input.result.xml, Math.max(2_000, maxChars - fixed), input.specPath) : input.result.xml);
+	parts.push(
+		maxChars > 0
+			? truncateXml(input.result.xml, Math.max(2_000, maxChars - fixed), input.specPath)
+			: input.result.xml,
+	);
 	return [...parts, ...tail].join("\n\n");
 }
 
@@ -530,16 +606,17 @@ function fitHandoff(
 	limit: number,
 ): string {
 	const join = (sections: string[]): string => sections.join("\n\n");
-	const body = linked ? tail.map((section) => (section === linked ? LINKED_POINTER : section)) : tail;
+	const body = linked
+		? tail.map((section) => (section === linked ? LINKED_POINTER : section))
+		: tail;
 	const compose = (evidence: Array<string | undefined>, rest: string[]): string =>
 		join([...parts, ...evidence.filter((section): section is string => Boolean(section)), ...rest]);
 	const [header, brief] = briefParts;
-	const withEvidence = (l: string | undefined, d: string | undefined, s: string | undefined): Array<string | undefined> => [
-		...briefParts,
-		l,
-		d,
-		s,
-	];
+	const withEvidence = (
+		l: string | undefined,
+		d: string | undefined,
+		s: string | undefined,
+	): Array<string | undefined> => [...briefParts, l, d, s];
 
 	const full = compose(withEvidence(lessons, docs, skills), tail);
 	if (full.length <= limit) return full;
@@ -552,14 +629,19 @@ function fitHandoff(
 	const noDocs = compose(withEvidence(lessons, undefined, undefined), body);
 	if (docs) {
 		const room = limit - noDocs.length - 2;
-		if (room >= DOCS_MIN_CHARS) return compose(withEvidence(lessons, cutSection(docs, room, DOCS_CUT), undefined), body);
+		if (room >= DOCS_MIN_CHARS)
+			return compose(withEvidence(lessons, cutSection(docs, room, DOCS_CUT), undefined), body);
 	}
 	if (noDocs.length <= limit) return noDocs;
 
 	const noLessons = compose(briefParts, body);
 	if (lessons) {
 		const room = limit - noLessons.length - 2;
-		if (room >= LESSONS_MIN_CHARS) return compose(withEvidence(cutSection(lessons, room, LESSONS_CUT), undefined, undefined), body);
+		if (room >= LESSONS_MIN_CHARS)
+			return compose(
+				withEvidence(cutSection(lessons, room, LESSONS_CUT), undefined, undefined),
+				body,
+			);
 	}
 	if (noLessons.length <= limit) return noLessons;
 
@@ -574,21 +656,25 @@ function fitHandoff(
 /** Summary bit for the lessons lookup; undefined when none ran, it was off, or it found nothing. */
 function lessonsBit(lookup: LessonsLookup | undefined): string | undefined {
 	if (lookup?.outcome === "used") return `Lessons · ${lookup.count} recalled (${lookup.source})`;
-	if (lookup?.outcome === "error") return `Lessons · error${lookup.reason ? ` (${lookup.reason})` : ""}`;
+	if (lookup?.outcome === "error")
+		return `Lessons · error${lookup.reason ? ` (${lookup.reason})` : ""}`;
 	return undefined;
 }
 
 /** Summary bit for the RAGFlow grounding lookup; undefined when none ran, it was off, or it found nothing. */
 function docsBit(lookup: DocsLookup | undefined): string | undefined {
-	if (lookup?.status === "used") return `Docs · ${lookup.count} excerpt${lookup.count === 1 ? "" : "s"} (RAGFlow)`;
-	if (lookup?.status === "error") return `Docs · error${lookup.reason ? ` (${lookup.reason})` : ""}`;
+	if (lookup?.status === "used")
+		return `Docs · ${lookup.count} excerpt${lookup.count === 1 ? "" : "s"} (RAGFlow)`;
+	if (lookup?.status === "error")
+		return `Docs · error${lookup.reason ? ` (${lookup.reason})` : ""}`;
 	return undefined;
 }
 
 /** Summary bit for the skills lookup; undefined when none ran, it was off, or it found nothing. */
 function skillsBit(lookup: SkillsLookup | undefined): string | undefined {
 	if (lookup?.outcome === "used") return `Skills · ${lookup.count} recalled`;
-	if (lookup?.outcome === "error") return `Skills · error${lookup.reason ? ` (${lookup.reason})` : ""}`;
+	if (lookup?.outcome === "error")
+		return `Skills · error${lookup.reason ? ` (${lookup.reason})` : ""}`;
 	return undefined;
 }
 
@@ -652,8 +738,12 @@ export function formatSummary(input: {
 		const linked = providers.linear ? t.linear : t.notion;
 		const issues = Object.keys(linked.nodes).length;
 		const steps = Object.keys(linked.steps).length;
-		if (t.status === "complete") bits.push(`Tracking · ${issues} issues · ${steps} sub-issues linked`);
-		else bits.push(`Tracking · partial (${countMissing(t, input.plan, providers)} missing) · kickoff will finish`);
+		if (t.status === "complete")
+			bits.push(`Tracking · ${issues} issues · ${steps} sub-issues linked`);
+		else
+			bits.push(
+				`Tracking · partial (${countMissing(t, input.plan, providers)} missing) · kickoff will finish`,
+			);
 	} else if (input.trackingOff) bits.push("Tracking · off");
 	else if (input.tracked) bits.push("Tracking · ultrathink-kickoff pending");
 	if (input.engineError) bits.push(`Engine error · ${input.engineError}`);

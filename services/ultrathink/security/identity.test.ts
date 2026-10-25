@@ -14,11 +14,18 @@ describe("identityFromUriSans", () => {
 	});
 
 	test("accepts a bare spiffe value without a type label", () => {
-		expect(identityFromUriSans([PROBE], TD)).toEqual({ ok: true, spiffeId: PROBE, path: "/ops/probe" });
+		expect(identityFromUriSans([PROBE], TD)).toEqual({
+			ok: true,
+			spiffeId: PROBE,
+			path: "/ops/probe",
+		});
 	});
 
 	test("ignores a DNS SAN mixed with the SPIFFE URI", () => {
-		const result = identityFromUriSans(["DNS:edge.ultrathink.internal", `URI:${EDGE}`, "IP Address:127.0.0.1"], TD);
+		const result = identityFromUriSans(
+			["DNS:edge.ultrathink.internal", `URI:${EDGE}`, "IP Address:127.0.0.1"],
+			TD,
+		);
 		expect(result).toEqual({ ok: true, spiffeId: EDGE, path: "/edge/nginx" });
 	});
 
@@ -32,7 +39,10 @@ describe("identityFromUriSans", () => {
 	});
 
 	test("reports absent when only DNS, IP and non-SPIFFE URIs are present", () => {
-		const result = identityFromUriSans(["DNS:app.example", "IP Address:127.0.0.1", "URI:https://example.com/edge/nginx"], TD);
+		const result = identityFromUriSans(
+			["DNS:app.example", "IP Address:127.0.0.1", "URI:https://example.com/edge/nginx"],
+			TD,
+		);
 		expect(result).toEqual({ ok: false, reason: "absent" });
 	});
 
@@ -42,12 +52,18 @@ describe("identityFromUriSans", () => {
 	});
 
 	test("refuses a valid SPIFFE URI plus a foreign one as ambiguous", () => {
-		const result = identityFromUriSans([`URI:${EDGE}`, "URI:spiffe://evil.internal/edge/nginx"], TD);
+		const result = identityFromUriSans(
+			[`URI:${EDGE}`, "URI:spiffe://evil.internal/edge/nginx"],
+			TD,
+		);
 		expect(result).toEqual({ ok: false, reason: "ambiguous" });
 	});
 
 	test("refuses the same SPIFFE URI listed twice as ambiguous", () => {
-		expect(identityFromUriSans([`URI:${EDGE}`, `URI:${EDGE}`], TD)).toEqual({ ok: false, reason: "ambiguous" });
+		expect(identityFromUriSans([`URI:${EDGE}`, `URI:${EDGE}`], TD)).toEqual({
+			ok: false,
+			reason: "ambiguous",
+		});
 	});
 
 	test("refuses a SPIFFE URI in another trust domain even when its path is in the policy", () => {
@@ -104,7 +120,10 @@ describe("identityFromUriSans", () => {
 	});
 
 	test("a malformed SPIFFE URI next to a DNS SAN is still malformed, not absent", () => {
-		const result = identityFromUriSans(["DNS:app.example", "URI:spiffe://ultrathink.internal/edge/nginx?x=1"], TD);
+		const result = identityFromUriSans(
+			["DNS:app.example", "URI:spiffe://ultrathink.internal/edge/nginx?x=1"],
+			TD,
+		);
 		expect(result).toEqual({ ok: false, reason: "malformed" });
 	});
 });

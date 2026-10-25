@@ -224,7 +224,8 @@ async function serveRequest(
 
 /** Oldest Bun that serves requests through this adapter. Older runtimes hang on them (see the runtime floor note). */
 export const MTLS_MIN_BUN: readonly [number, number, number] = [1, 4, 0];
-const MTLS_RUNTIME_MESSAGE = "mTLS requires Bun 1.4.0 or newer; on older runtimes requests through the adapter hang.";
+const MTLS_RUNTIME_MESSAGE =
+	"mTLS requires Bun 1.4.0 or newer; on older runtimes requests through the adapter hang.";
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
 
 /**
@@ -250,7 +251,10 @@ export function assertMtlsRuntime(): void {
  * `clientCaFile`, so `handle` runs only for verified peers. `port: 0` binds an ephemeral port.
  * Resolves once the listener is bound; a bind failure rejects with the listener's error.
  */
-export async function startMtlsServer(options: MtlsServerOptions, handle: MtlsHandler): Promise<MtlsServer> {
+export async function startMtlsServer(
+	options: MtlsServerOptions,
+	handle: MtlsHandler,
+): Promise<MtlsServer> {
 	assertMtlsRuntime();
 	const hostname = options.hostname ?? LOOPBACK;
 	if (hostname !== LOOPBACK) throw new RangeError("mTLS listener binds 127.0.0.1 only");

@@ -67,10 +67,15 @@ describe("the catalog over the real repository files", () => {
 	test("every command defined by a file is in the catalog and every catalog command is a file or connector-native", () => {
 		for (const command of catalog.commands) {
 			if (command.sources.length === 0) expect(CONNECTOR_NATIVE_NAMES).toContain(command.name);
-			for (const source of command.sources) expect(source.path).toMatch(/(^commands\/[^/]+\.md|\/SKILL\.md)$/);
+			for (const source of command.sources)
+				expect(source.path).toMatch(/(^commands\/[^/]+\.md|\/SKILL\.md)$/);
 		}
-		expect(catalog.find("ultrathink-quick")?.sources.map((source) => source.kind)).toContain("command");
-		expect(catalog.find("ultrathink-teach-admin")?.sources.map((source) => source.kind)).toEqual(["host-skill"]);
+		expect(catalog.find("ultrathink-quick")?.sources.map((source) => source.kind)).toContain(
+			"command",
+		);
+		expect(catalog.find("ultrathink-teach-admin")?.sources.map((source) => source.kind)).toEqual([
+			"host-skill",
+		]);
 		expect(catalog.find("ultrathink")?.sources).toEqual([]);
 	});
 
@@ -137,9 +142,12 @@ describe("the catalog over the real repository files", () => {
 		expect(state("ultrathink")).toBe("native");
 		expect(state("ultrathink-plan")).toBe("alias");
 		expect(catalog.find("ultrathink-plan")?.aliasOf).toBe("ultrathink");
-		for (const name of ["ultrathink-think", "ultrathink-last", "ultrathink-status"]) expect(state(name)).toBe("native");
+		for (const name of ["ultrathink-think", "ultrathink-last", "ultrathink-status"])
+			expect(state(name)).toBe("native");
 		expect(state("ultrathink-quick")).toBe("passthrough");
-		const unsupported = catalog.commands.filter((command) => command.state === "unsupported").map((command) => command.name);
+		const unsupported = catalog.commands
+			.filter((command) => command.state === "unsupported")
+			.map((command) => command.name);
 		expect(unsupported.sort()).toEqual(
 			[
 				"ultrathink-skip",
@@ -167,21 +175,25 @@ describe("the catalog over the real repository files", () => {
 describe("the catalog loader refuses drift", () => {
 	test("a command file without an overlay entry", () => {
 		const root = fixtureRoot({ "commands/ultrathink-foo.md": frontmatter("ultrathink-foo") });
-		expect(() => loadCommandCatalog(root, nativeOverlay())).toThrow(/without an overlay entry: ultrathink-foo/);
+		expect(() => loadCommandCatalog(root, nativeOverlay())).toThrow(
+			/without an overlay entry: ultrathink-foo/,
+		);
 	});
 
 	test("an overlay key with no source", () => {
 		const root = fixtureRoot({});
-		expect(() => loadCommandCatalog(root, nativeOverlay({ "ultrathink-ghost": UNSUPPORTED }))).toThrow(
-			/without a source: ultrathink-ghost/,
-		);
+		expect(() =>
+			loadCommandCatalog(root, nativeOverlay({ "ultrathink-ghost": UNSUPPORTED })),
+		).toThrow(/without a source: ultrathink-ghost/);
 	});
 
 	test("a missing native entry", () => {
 		const root = fixtureRoot({});
 		const overlay = nativeOverlay();
 		delete overlay["ultrathink-last"];
-		expect(() => loadCommandCatalog(root, overlay)).toThrow(/without an overlay entry: ultrathink-last/);
+		expect(() => loadCommandCatalog(root, overlay)).toThrow(
+			/without an overlay entry: ultrathink-last/,
+		);
 	});
 
 	test("two names that map to one prompt name", () => {
@@ -189,9 +201,9 @@ describe("the catalog loader refuses drift", () => {
 			"skills/a/SKILL.md": frontmatter("Ultrathink-Foo"),
 			"hosts/grok-bot/skills/b/SKILL.md": frontmatter("ultrathink-foo"),
 		});
-		expect(() => loadCommandCatalog(root, nativeOverlay({ "ultrathink-foo": UNSUPPORTED }))).toThrow(
-			/map to the prompt name ultrathink-foo/,
-		);
+		expect(() =>
+			loadCommandCatalog(root, nativeOverlay({ "ultrathink-foo": UNSUPPORTED })),
+		).toThrow(/map to the prompt name ultrathink-foo/);
 	});
 
 	test("two names that map to one tool name", () => {
@@ -205,7 +217,9 @@ describe("the catalog loader refuses drift", () => {
 
 	test("a file without a frontmatter name", () => {
 		const root = fixtureRoot({ "commands/nameless.md": "---\ndescription: x\n---\n" });
-		expect(() => loadCommandCatalog(root, nativeOverlay())).toThrow(/no frontmatter name: commands\/nameless\.md/);
+		expect(() => loadCommandCatalog(root, nativeOverlay())).toThrow(
+			/no frontmatter name: commands\/nameless\.md/,
+		);
 	});
 
 	test("malformed entries: unsupported without reason, alias of an unsupported command, supported without arguments", () => {
@@ -216,7 +230,13 @@ describe("the catalog loader refuses drift", () => {
 		});
 		const overlay = nativeOverlay({
 			"ultrathink-bad": { state: "unsupported", tools: [] },
-			"ultrathink-loop": { state: "alias", aliasOf: "ultrathink-bad", summary: "s", tools: [], arguments: [] },
+			"ultrathink-loop": {
+				state: "alias",
+				aliasOf: "ultrathink-bad",
+				summary: "s",
+				tools: [],
+				arguments: [],
+			},
 			"ultrathink-bare": { state: "passthrough", summary: "s", tools: [] },
 		});
 		expect(() => loadCommandCatalog(root, overlay)).toThrow(
@@ -261,7 +281,9 @@ describe("loadCatalogWithFallback", () => {
 	test("drift is rethrown, not downgraded to the overlay", () => {
 		const root = fixtureRoot({ "commands/ultrathink-foo.md": frontmatter("ultrathink-foo") });
 		const reasons: unknown[] = [];
-		expect(() => loadCatalogWithFallback((error) => reasons.push(error), root)).toThrow(CatalogDriftError);
+		expect(() => loadCatalogWithFallback((error) => reasons.push(error), root)).toThrow(
+			CatalogDriftError,
+		);
 		expect(reasons).toEqual([]);
 	});
 
@@ -275,7 +297,12 @@ describe("loadCatalogWithFallback", () => {
 
 describe("toPromptName and toToolName", () => {
 	test("namespaced, slashed and upper-case forms map to one name", () => {
-		for (const input of ["ultrathink:ultrathink-quick", "/ultrathink-quick", "ULTRATHINK-QUICK", " /Ultrathink:Ultrathink-Quick "]) {
+		for (const input of [
+			"ultrathink:ultrathink-quick",
+			"/ultrathink-quick",
+			"ULTRATHINK-QUICK",
+			" /Ultrathink:Ultrathink-Quick ",
+		]) {
 			expect(toPromptName(input)).toBe("ultrathink-quick");
 		}
 		expect(toPromptName("ultrathink:quick")).toBe("quick");
@@ -303,17 +330,36 @@ describe("toPromptName and toToolName", () => {
 
 describe("resolveCommand", () => {
 	test("accepts the full name, the short name, a slash, a namespace and any case", () => {
-		for (const input of ["ultrathink-think", "think", "/ultrathink-think", "ultrathink:ultrathink-think", "THINK", " /Think "]) {
+		for (const input of [
+			"ultrathink-think",
+			"think",
+			"/ultrathink-think",
+			"ultrathink:ultrathink-think",
+			"THINK",
+			" /Think ",
+		]) {
 			const resolved = resolveCommand(input);
-			expect(resolved).toMatchObject({ kind: "command", name: "ultrathink-think", target: "ultrathink-think" });
+			expect(resolved).toMatchObject({
+				kind: "command",
+				name: "ultrathink-think",
+				target: "ultrathink-think",
+			});
 		}
 		expect(resolveCommand("ultrathink")).toMatchObject({ kind: "command", name: "ultrathink" });
 		expect(resolveCommand("/ULTRATHINK")).toMatchObject({ kind: "command", name: "ultrathink" });
 	});
 
 	test("an alias resolves to its target and a passthrough or unsupported command to itself", () => {
-		expect(resolveCommand("plan")).toMatchObject({ kind: "command", name: "ultrathink-plan", target: "ultrathink" });
-		expect(resolveCommand("quick")).toMatchObject({ kind: "command", name: "ultrathink-quick", target: "ultrathink-quick" });
+		expect(resolveCommand("plan")).toMatchObject({
+			kind: "command",
+			name: "ultrathink-plan",
+			target: "ultrathink",
+		});
+		expect(resolveCommand("quick")).toMatchObject({
+			kind: "command",
+			name: "ultrathink-quick",
+			target: "ultrathink-quick",
+		});
 		const skip = resolveCommand("ultrathink:ultrathink-skip");
 		expect(skip.kind === "command" && skip.entry.state).toBe("unsupported");
 	});
@@ -328,9 +374,15 @@ describe("resolveCommand", () => {
 
 	test("unknown names list the closest commands, or the supported ones when nothing is close", () => {
 		const close = resolveCommand("thnk");
-		expect(close).toEqual({ kind: "unknown", suggestions: expect.arrayContaining(["ultrathink-think"]) });
+		expect(close).toEqual({
+			kind: "unknown",
+			suggestions: expect.arrayContaining(["ultrathink-think"]),
+		});
 		const substring = resolveCommand("teac");
-		expect(substring.kind === "unknown" && substring.suggestions).toEqual(["ultrathink-teach", "ultrathink-teach-admin"]);
+		expect(substring.kind === "unknown" && substring.suggestions).toEqual([
+			"ultrathink-teach",
+			"ultrathink-teach-admin",
+		]);
 		const far = resolveCommand("zzzzzzzzzzzzzzzz");
 		expect(far.kind === "unknown" && far.suggestions).toEqual([
 			"ultrathink",
@@ -398,7 +450,10 @@ describe("parseFrontmatter", () => {
 	});
 
 	test("CRLF files and files without frontmatter", () => {
-		expect(parseFrontmatter("---\r\nname: a\r\ndescription: b c\r\n---\r\n")).toEqual({ name: "a", description: "b c" });
+		expect(parseFrontmatter("---\r\nname: a\r\ndescription: b c\r\n---\r\n")).toEqual({
+			name: "a",
+			description: "b c",
+		});
 		expect(parseFrontmatter("# Title\nname: a\n")).toEqual({});
 		expect(parseFrontmatter("")).toEqual({});
 	});

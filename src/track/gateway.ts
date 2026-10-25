@@ -44,7 +44,9 @@ export function createGatewayTracker(
 			const auth = await Promise.race([
 				Promise.all([
 					linearTeam ? resolveAuthHeader("linear", clientDeps).catch(() => undefined) : undefined,
-					notionDataSource ? resolveAuthHeader("notion", clientDeps).catch(() => undefined) : undefined,
+					notionDataSource
+						? resolveAuthHeader("notion", clientDeps).catch(() => undefined)
+						: undefined,
 				]),
 				stop.promise,
 			]);
@@ -58,7 +60,16 @@ export function createGatewayTracker(
 			const notion = notionAuth === undefined ? undefined : createMcpClient("notion", clientDeps);
 			if (linear) clients.push(linear);
 			if (notion) clients.push(notion);
-			if (signal) signal.addEventListener("abort", () => clients.forEach((client) => client.close()), { once: true });
+			if (signal)
+				signal.addEventListener(
+					"abort",
+					() => {
+						clients.forEach((client) => {
+							client.close();
+						});
+					},
+					{ once: true },
+				);
 			return await createTracking(plan, graph, existing, {
 				linear,
 				notion,
@@ -86,6 +97,8 @@ export function shellArg(value: string): string {
 	return /^[A-Za-z0-9_./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-export function trackCommand(repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")): string {
+export function trackCommand(
+	repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".."),
+): string {
 	return `${shellArg(resolve(repoRoot, "bin", "ultrathink-mcp"))} track complete`;
 }

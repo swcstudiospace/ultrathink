@@ -50,7 +50,8 @@ let scratchHome: string | undefined;
 
 function countOf(value: number | undefined, name: string): number {
 	const n = value ?? 0;
-	if (!Number.isInteger(n) || n < 0) throw new RangeError(`makeStateDir: ${name} must be a non-negative integer`);
+	if (!Number.isInteger(n) || n < 0)
+		throw new RangeError(`makeStateDir: ${name} must be a non-negative integer`);
 	return n;
 }
 
@@ -89,7 +90,9 @@ export function makeStateDir(base: string, spec: StateDirSpec = {}): StateDir {
 			}
 		}
 		if (spec.oauth) {
-			writeFileSync(join(dir, "oauth.json"), `${JSON.stringify({ fixture: "oauth" }, null, 2)}\n`, { mode: 0o600 });
+			writeFileSync(join(dir, "oauth.json"), `${JSON.stringify({ fixture: "oauth" }, null, 2)}\n`, {
+				mode: 0o600,
+			});
 		}
 		db.checkpoint();
 	} catch (error) {
@@ -110,7 +113,11 @@ function fixtureHome(): string {
  * `ULTRATHINK_ENV_FILE=/nonexistent` and `ULTRATHINK_BUN` set to this runtime. `env` overrides any of them.
  * `code` is -1 when the process ended without an exit code (killed by a signal).
  */
-export function runDr(scriptRelPath: string, args: readonly string[], env: Record<string, string> = {}): DrResult {
+export function runDr(
+	scriptRelPath: string,
+	args: readonly string[],
+	env: Record<string, string> = {},
+): DrResult {
 	const proc = Bun.spawnSync({
 		cmd: ["bash", join(REPO_ROOT, scriptRelPath), ...args],
 		env: {
@@ -167,7 +174,8 @@ export function ringNames(dir: string): string[] {
 	const names = new Set<string>();
 	for (const listing of [dir, join(dir, "tree")]) {
 		if (!existsSync(listing)) continue;
-		for (const name of readdirSync(listing)) if (listing !== dir || name !== "tree") names.add(name);
+		for (const name of readdirSync(listing))
+			if (listing !== dir || name !== "tree") names.add(name);
 	}
 	return [...names].sort();
 }

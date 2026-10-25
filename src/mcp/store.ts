@@ -34,7 +34,13 @@ export interface OAuthTokens {
 
 export type Credential =
 	| { kind: "api_key"; apiKey: string; updatedAt: number }
-	| { kind: "oauth"; client: OAuthClient; tokens?: OAuthTokens; needsLogin?: string; updatedAt: number };
+	| {
+			kind: "oauth";
+			client: OAuthClient;
+			tokens?: OAuthTokens;
+			needsLogin?: string;
+			updatedAt: number;
+	  };
 
 export interface CredentialStore {
 	version: 1;
@@ -50,7 +56,12 @@ export function storePath(env: Record<string, string | undefined> = process.env)
 export function readStore(path: string): CredentialStore {
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CredentialStore>;
-		if (parsed && parsed.version === 1 && parsed.providers && typeof parsed.providers === "object") {
+		if (
+			parsed &&
+			parsed.version === 1 &&
+			parsed.providers &&
+			typeof parsed.providers === "object"
+		) {
 			return { version: 1, providers: parsed.providers };
 		}
 	} catch {
@@ -131,7 +142,8 @@ export async function withStoreLock<T>(
 			breakStaleLock(lock, judged.owner, judged.mtimeMs);
 			continue;
 		}
-		if (Date.now() >= deadline) throw new Error(`timed out waiting for credential store lock ${lock}`);
+		if (Date.now() >= deadline)
+			throw new Error(`timed out waiting for credential store lock ${lock}`);
 		await Bun.sleep(pollMs);
 	}
 	const heartbeat = setInterval(

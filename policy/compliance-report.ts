@@ -22,9 +22,14 @@ import { parseArgs } from "node:util";
 
 const DEFAULT_ROOT = resolve(import.meta.dir, "..");
 const DEFAULT_CONTROLS = join(import.meta.dir, "controls.json");
-const USAGE = "usage: bun policy/compliance-report.ts [--root <dir>] [--controls <file>] [--out <file>]";
+const USAGE =
+	"usage: bun policy/compliance-report.ts [--root <dir>] [--controls <file>] [--out <file>]";
 const FRAMEWORKS = ["soc2", "iso27001", "gdpr"] as const;
-const FRAMEWORK_LABEL: Record<Framework, string> = { soc2: "SOC 2", iso27001: "ISO 27001", gdpr: "GDPR" };
+const FRAMEWORK_LABEL: Record<Framework, string> = {
+	soc2: "SOC 2",
+	iso27001: "ISO 27001",
+	gdpr: "GDPR",
+};
 
 type Framework = (typeof FRAMEWORKS)[number];
 export type Status = "PASS" | "FAIL" | "PENDING";
@@ -94,7 +99,9 @@ function stringArray(value: unknown, where: string): string[] {
 /** Evidence is repo-relative: no absolute paths and no parent-directory segments. */
 function checkEvidencePath(path: string, where: string): void {
 	if (isAbsolute(path) || path.split("/").includes("..")) {
-		throw new SchemaError(`${where}: evidence path must be repo-relative with no parent segment: ${path}`);
+		throw new SchemaError(
+			`${where}: evidence path must be repo-relative with no parent segment: ${path}`,
+		);
 	}
 }
 
@@ -129,7 +136,8 @@ function parseControl(value: unknown, where: string): Control {
 	return {
 		id,
 		title,
-		refs_status: value.refs_status === undefined ? undefined : requireString(value, "refs_status", at),
+		refs_status:
+			value.refs_status === undefined ? undefined : requireString(value, "refs_status", at),
 		refs,
 		evidence,
 		pending,
@@ -143,7 +151,9 @@ export function parseControls(text: string): Control[] {
 	try {
 		parsed = JSON.parse(text);
 	} catch (error) {
-		throw new SchemaError(`controls file is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+		throw new SchemaError(
+			`controls file is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 	if (!Array.isArray(parsed)) throw new SchemaError("controls file must be a JSON array");
 	const controls = parsed.map((value, index) => parseControl(value, `controls[${index}]`));
@@ -224,7 +234,9 @@ export function renderMarkdown(report: Report): string {
 	for (const { control, status, evidence } of report.controls) {
 		lines.push("", `## ${control.id}: ${control.title}`, "");
 		lines.push(`- Status: **${status}**`);
-		lines.push(`- Clause references (${control.refs_status ?? "status not stated"}): ${renderRefs(control.refs)}`);
+		lines.push(
+			`- Clause references (${control.refs_status ?? "status not stated"}): ${renderRefs(control.refs)}`,
+		);
 		if (evidence.length === 0) {
 			lines.push("- Evidence: none (pending)");
 		} else {
@@ -240,7 +252,8 @@ export function renderMarkdown(report: Report): string {
 		if (control.pending !== undefined) lines.push(`- Pending: ${control.pending}`);
 		if (control.findings.length > 0) {
 			lines.push("- Findings:");
-			for (const finding of control.findings) lines.push(`  - **${finding.id}**: ${finding.summary}`);
+			for (const finding of control.findings)
+				lines.push(`  - **${finding.id}**: ${finding.summary}`);
 		}
 	}
 	return `${lines.join("\n")}\n`;

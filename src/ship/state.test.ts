@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendAttempts, archiveShip, readShip, writeShip } from "./state.ts";
@@ -19,7 +27,11 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-const BASE = { sessionId: "s1", at: 1, result: { xml: "<X/>", original: "x", root: "X", source: "llm" } };
+const BASE = {
+	sessionId: "s1",
+	at: 1,
+	result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+};
 
 function seed(extra: Record<string, unknown> = {}): void {
 	writeFileSync(statePath, `${JSON.stringify({ ...BASE, ...extra }, null, 2)}\n`);
@@ -30,18 +42,35 @@ function saved(): Record<string, unknown> {
 }
 
 function attempt(n: number, detail?: string): ShipAttempt {
-	return { at: n, step: "review", headSha: `sha${n}`, outcome: "needs-fixes", ...(detail === undefined ? {} : { detail }) };
+	return {
+		at: n,
+		step: "review",
+		headSha: `sha${n}`,
+		outcome: "needs-fixes",
+		...(detail === undefined ? {} : { detail }),
+	};
 }
 
 function strayFiles(): string[] {
-	return readdirSync(dir).filter((name) => name.endsWith(".tmp") || name.endsWith(".lock") || name.endsWith(".stale"));
+	return readdirSync(dir).filter(
+		(name) => name.endsWith(".tmp") || name.endsWith(".lock") || name.endsWith(".stale"),
+	);
 }
 
 describe("writeShip", () => {
 	test("starts a ship with defaults when the record has none, stamping updatedAt", () => {
 		seed();
-		const ship = writeShip(statePath, { pr: { number: 7, url: "https://example.test/pr/7", head: "feat/x", base: "main" } }, 1234);
-		expect(ship).toEqual({ phase: "not-done", rounds: [], pr: { number: 7, url: "https://example.test/pr/7", head: "feat/x", base: "main" }, updatedAt: 1234 });
+		const ship = writeShip(
+			statePath,
+			{ pr: { number: 7, url: "https://example.test/pr/7", head: "feat/x", base: "main" } },
+			1234,
+		);
+		expect(ship).toEqual({
+			phase: "not-done",
+			rounds: [],
+			pr: { number: 7, url: "https://example.test/pr/7", head: "feat/x", base: "main" },
+			updatedAt: 1234,
+		});
 		expect(readShip(statePath)).toEqual(ship);
 	});
 
@@ -89,7 +118,9 @@ describe("writeShip", () => {
 describe("archiveShip", () => {
 	test("moves the current ship, without its own history, to the end of history and starts a fresh one", () => {
 		const earlier = { phase: "merged" as const, rounds: [], updatedAt: 1 };
-		seed({ ship: { phase: "blocked", rounds: [], blockedReason: "x", history: [earlier], updatedAt: 2 } });
+		seed({
+			ship: { phase: "blocked", rounds: [], blockedReason: "x", history: [earlier], updatedAt: 2 },
+		});
 		const ship = archiveShip(statePath, 50);
 		expect(ship).toEqual({
 			phase: "not-done",
@@ -101,7 +132,11 @@ describe("archiveShip", () => {
 	});
 
 	test(`keeps only the newest ${MAX_SHIP_HISTORY} finished ships`, () => {
-		const history = Array.from({ length: MAX_SHIP_HISTORY }, (_, i) => ({ phase: "merged" as const, rounds: [], updatedAt: i }));
+		const history = Array.from({ length: MAX_SHIP_HISTORY }, (_, i) => ({
+			phase: "merged" as const,
+			rounds: [],
+			updatedAt: i,
+		}));
 		seed({ ship: { phase: "pr-open", rounds: [], history, updatedAt: 100 } });
 		const ship = archiveShip(statePath, 200);
 		expect(ship?.history).toHaveLength(MAX_SHIP_HISTORY);
@@ -125,17 +160,30 @@ describe("appendAttempts", () => {
 		expect(ship?.attempts).toEqual([attempt(1), attempt(2)]);
 		expect(ship).toMatchObject({ phase: "needs-fixes", nudgedAt: 4, updatedAt: 77 });
 		expect(readShip(statePath)).toEqual(ship);
-		expect(appendAttempts(statePath, [attempt(3)], 78)?.attempts).toEqual([attempt(1), attempt(2), attempt(3)]);
+		expect(appendAttempts(statePath, [attempt(3)], 78)?.attempts).toEqual([
+			attempt(1),
+			attempt(2),
+			attempt(3),
+		]);
 	});
 
 	test("starts from a not-done ship when the record has none", () => {
 		seed();
-		expect(appendAttempts(statePath, [attempt(1)], 5)).toEqual({ phase: "not-done", rounds: [], attempts: [attempt(1)], updatedAt: 5 });
+		expect(appendAttempts(statePath, [attempt(1)], 5)).toEqual({
+			phase: "not-done",
+			rounds: [],
+			attempts: [attempt(1)],
+			updatedAt: 5,
+		});
 	});
 
 	test(`keeps only the newest ${MAX_ATTEMPTS} attempts`, () => {
 		seed();
-		appendAttempts(statePath, Array.from({ length: MAX_ATTEMPTS }, (_, i) => attempt(i)), 1);
+		appendAttempts(
+			statePath,
+			Array.from({ length: MAX_ATTEMPTS }, (_, i) => attempt(i)),
+			1,
+		);
 		const ship = appendAttempts(statePath, [attempt(1000), attempt(1001)], 2);
 		expect(ship?.attempts).toHaveLength(MAX_ATTEMPTS);
 		expect(ship?.attempts?.[0]?.at).toBe(2);
@@ -144,7 +192,11 @@ describe("appendAttempts", () => {
 
 	test("collapses whitespace in a detail to one line and caps it at 200 characters", () => {
 		seed();
-		const ship = appendAttempts(statePath, [attempt(1, "  first\n\tsecond   third \n"), attempt(2, "y".repeat(500)), attempt(3)], 1);
+		const ship = appendAttempts(
+			statePath,
+			[attempt(1, "  first\n\tsecond   third \n"), attempt(2, "y".repeat(500)), attempt(3)],
+			1,
+		);
 		expect(ship?.attempts?.[0]?.detail).toBe("first second third");
 		expect(ship?.attempts?.[1]?.detail).toBe("y".repeat(200));
 		expect(ship?.attempts?.[2]).not.toHaveProperty("detail");

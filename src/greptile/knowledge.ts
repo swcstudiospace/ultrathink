@@ -86,7 +86,8 @@ type Caller = ToolCaller & { close?(): void };
 
 const asObj = (value: unknown): Obj | undefined =>
 	typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Obj) : undefined;
-const asStr = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+const asStr = (value: unknown): string | undefined =>
+	typeof value === "string" ? value : undefined;
 const asNum = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const asArr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -105,7 +106,9 @@ function asId(value: unknown): string | undefined {
 
 /** Lowercase `[a-z0-9]+` words of `text`, without short words and stopwords. */
 function words(text: string): string[] {
-	return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((word) => word.length >= 3 && !STOPWORDS.has(word));
+	return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+		(word) => word.length >= 3 && !STOPWORDS.has(word),
+	);
 }
 
 /** One stage's deadline: the caller signal plus a timeout, raced by a timer so a call that ignores the signal cannot hang. */
@@ -146,8 +149,22 @@ function deadline(ms: number, caller: AbortSignal): Deadline {
 }
 
 type Prefetch =
-	| { found: false; outcome: Exclude<KnowledgeOutcome, "used">; reason: string; namespaceId?: string; version?: string }
-	| { found: true; caller: Caller; namespaceId: string; repoName: string; version?: string; paths: string[]; index?: string };
+	| {
+			found: false;
+			outcome: Exclude<KnowledgeOutcome, "used">;
+			reason: string;
+			namespaceId?: string;
+			version?: string;
+	  }
+	| {
+			found: true;
+			caller: Caller;
+			namespaceId: string;
+			repoName: string;
+			version?: string;
+			paths: string[];
+			index?: string;
+	  };
 
 /** Parses a get_knowledge_base_document result; undefined unless the content is a string. */
 function documentContent(result: unknown): string | undefined {
@@ -159,27 +176,37 @@ function documentContent(result: unknown): string | undefined {
  * without one, from the listed paths' own words. Rare words weigh more: weight = ln(1 + entries / entries with the word).
  * Only listed paths, never index.md.
  */
-export function selectDocuments(input: { index?: string; paths: string[]; topic: string; maxDocs: number }): string[] {
+export function selectDocuments(input: {
+	index?: string;
+	paths: string[];
+	topic: string;
+	maxDocs: number;
+}): string[] {
 	const listed = new Set(input.paths.filter((path) => path !== INDEX));
 	const entries: Array<{ path: string; words: Set<string> }> = [];
 	for (const line of (input.index ?? "").split("\n")) {
 		const arrow = line.indexOf("->");
 		if (arrow < 0) continue;
-		const match = /`([^`\s]+?\.md)`|\]\(([^()\s]+?\.md)\)|([\w./-]+\.md)/.exec(line.slice(arrow + 2));
+		const match = /`([^`\s]+?\.md)`|\]\(([^()\s]+?\.md)\)|([\w./-]+\.md)/.exec(
+			line.slice(arrow + 2),
+		);
 		const path = (match?.[1] ?? match?.[2] ?? match?.[3])?.replace(/^\.\//, "");
 		if (!path || !listed.has(path)) continue;
 		const description = line.slice(0, arrow).replace(/^\s*[-*]\s+/, "");
 		entries.push({ path, words: new Set([...words(description), ...words(path)]) });
 	}
-	if (entries.length === 0) for (const path of listed) entries.push({ path, words: new Set(words(path)) });
+	if (entries.length === 0)
+		for (const path of listed) entries.push({ path, words: new Set(words(path)) });
 	if (entries.length === 0 || input.maxDocs < 1) return [];
 	const df = new Map<string, number>();
-	for (const entry of entries) for (const word of entry.words) df.set(word, (df.get(word) ?? 0) + 1);
+	for (const entry of entries)
+		for (const word of entry.words) df.set(word, (df.get(word) ?? 0) + 1);
 	const topic = new Set(words(input.topic));
 	const scores = new Map<string, number>();
 	for (const entry of entries) {
 		let score = 0;
-		for (const word of entry.words) if (topic.has(word)) score += Math.log(1 + entries.length / (df.get(word) ?? 1));
+		for (const word of entry.words)
+			if (topic.has(word)) score += Math.log(1 + entries.length / (df.get(word) ?? 1));
 		scores.set(entry.path, Math.max(scores.get(entry.path) ?? 0, score));
 	}
 	// Map iteration keeps first appearance; the sort is stable, so ties stay in that order.
@@ -219,7 +246,9 @@ export function buildDigest(input: {
 		if (content) digest += `${heading}${content}`;
 	};
 	if (index) append(index, Math.min(INDEX_MAX_CHARS, Math.floor(maxChars / 3)));
-	others.forEach((doc, i) => append(doc, Math.floor((maxChars - digest.length) / (others.length - i))));
+	others.forEach((doc, i) => {
+		append(doc, Math.floor((maxChars - digest.length) / (others.length - i)));
+	});
 	// Same length: the swap cannot push the digest past maxChars.
 	return digest.replace(/<\/knowledge_base/gi, "</knowledge-base");
 }
@@ -244,7 +273,9 @@ export function createKnowledgeReader(opts: {
 			const startedAt = now();
 			const repo = input.repo?.trim() || undefined;
 			const lifetime = new AbortController();
-			const signal = input.signal ? AbortSignal.any([input.signal, lifetime.signal]) : lifetime.signal;
+			const signal = input.signal
+				? AbortSignal.any([input.signal, lifetime.signal])
+				: lifetime.signal;
 			let client: Caller | undefined;
 			let clientError: unknown;
 			try {
@@ -258,18 +289,22 @@ export function createKnowledgeReader(opts: {
 			async function findNamespace(dl: Deadline, caller: Caller, wanted: string) {
 				let offset = 0;
 				for (let page = 0; page < NAMESPACE_PAGES; page++) {
-					const result = asObj(await call(dl, caller, "list_knowledge_bases", { limit: PAGE_LIMIT, offset }));
+					const result = asObj(
+						await call(dl, caller, "list_knowledge_bases", { limit: PAGE_LIMIT, offset }),
+					);
 					const repositories = asArr(result?.repositories);
 					for (const entry of repositories) {
 						const item = asObj(entry);
 						const repoName = asId(item?.repoName);
 						const namespaceId = asId(item?.namespaceId);
-						if (repoName && namespaceId && repoName.toLowerCase() === wanted) return { namespaceId, repoName };
+						if (repoName && namespaceId && repoName.toLowerCase() === wanted)
+							return { namespaceId, repoName };
 					}
 					const returned = asNum(result?.returned) ?? repositories.length;
 					const total = asNum(result?.total);
 					offset += returned;
-					if (returned <= 0 || (total !== undefined ? offset >= total : result?.truncated !== true)) return undefined;
+					if (returned <= 0 || (total !== undefined ? offset >= total : result?.truncated !== true))
+						return undefined;
 				}
 				return undefined;
 			}
@@ -281,21 +316,32 @@ export function createKnowledgeReader(opts: {
 				let offset = 0;
 				for (let page = 0; page < DOCUMENT_PAGES; page++) {
 					const result = asObj(
-						await call(dl, caller, "list_knowledge_base_documents", { namespaceId, limit: PAGE_LIMIT, offset }),
+						await call(dl, caller, "list_knowledge_base_documents", {
+							namespaceId,
+							limit: PAGE_LIMIT,
+							offset,
+						}),
 					);
 					if (result?.indexPresent === true) indexPresent = true;
 					version ??= asId(asObj(result?.sectionVersions)?.docs);
 					const listed = asArr(result?.documentPaths);
 					for (const entry of listed) {
 						const path = asStr(entry)?.trim();
-						if (path && DOC_PATH.test(path) && !path.includes("..") && path.length <= MAX_PATH && !paths.includes(path)) {
+						if (
+							path &&
+							DOC_PATH.test(path) &&
+							!path.includes("..") &&
+							path.length <= MAX_PATH &&
+							!paths.includes(path)
+						) {
 							paths.push(path);
 						}
 					}
 					const returned = asNum(result?.returned) ?? listed.length;
 					const total = asNum(result?.total);
 					offset += returned;
-					if (returned <= 0 || (total !== undefined ? offset >= total : result?.truncated !== true)) break;
+					if (returned <= 0 || (total !== undefined ? offset >= total : result?.truncated !== true))
+						break;
 				}
 				return { paths, indexPresent, version };
 			}
@@ -305,25 +351,50 @@ export function createKnowledgeReader(opts: {
 					const message = clientError instanceof Error ? clientError.message : String(clientError);
 					return { found: false, outcome: "error", reason: oneLine(message, MAX_REASON) };
 				}
-				if (!client) return { found: false, outcome: "off", reason: "no Greptile credential stored" };
+				if (!client)
+					return { found: false, outcome: "off", reason: "no Greptile credential stored" };
 				if (!repo) return { found: false, outcome: "none", reason: "no git remote to look up" };
 				const dl = deadline(timeoutMs, signal);
 				let namespaceId: string | undefined;
 				let version: string | undefined;
 				try {
 					const namespace = await findNamespace(dl, client, repo.toLowerCase());
-					if (!namespace) return { found: false, outcome: "none", reason: oneLine(`no Greptile knowledge base for ${repo}`, MAX_REASON) };
+					if (!namespace)
+						return {
+							found: false,
+							outcome: "none",
+							reason: oneLine(`no Greptile knowledge base for ${repo}`, MAX_REASON),
+						};
 					namespaceId = namespace.namespaceId;
 					const listed = await listDocuments(dl, client, namespaceId);
 					version = listed.version;
 					if (listed.paths.length === 0) {
-						return { found: false, outcome: "none", reason: "knowledge base has no published documents", namespaceId, version };
+						return {
+							found: false,
+							outcome: "none",
+							reason: "knowledge base has no published documents",
+							namespaceId,
+							version,
+						};
 					}
 					const index =
 						listed.paths.includes(INDEX) || listed.indexPresent
-							? documentContent(await call(dl, client, "get_knowledge_base_document", { namespaceId, path: INDEX }))
+							? documentContent(
+									await call(dl, client, "get_knowledge_base_document", {
+										namespaceId,
+										path: INDEX,
+									}),
+								)
 							: undefined;
-					return { found: true, caller: client, namespaceId, repoName: namespace.repoName, version, paths: listed.paths, index };
+					return {
+						found: true,
+						caller: client,
+						namespaceId,
+						repoName: namespace.repoName,
+						version,
+						paths: listed.paths,
+						index,
+					};
 				} catch (error) {
 					return { found: false, outcome: "error", reason: dl.reason(error), namespaceId, version };
 				} finally {
@@ -337,7 +408,10 @@ export function createKnowledgeReader(opts: {
 
 			async function read(topic: string): Promise<KnowledgeResult> {
 				const dl = deadline(timeoutMs, signal);
-				const finish = (lookup: Omit<KnowledgeLookup, "ms" | "repo">, digest = ""): KnowledgeResult => ({
+				const finish = (
+					lookup: Omit<KnowledgeLookup, "ms" | "repo">,
+					digest = "",
+				): KnowledgeResult => ({
 					lookup: { ...(repo ? { repo } : {}), ...lookup, ms: Math.max(0, now() - startedAt) },
 					digest,
 				});
@@ -351,30 +425,59 @@ export function createKnowledgeReader(opts: {
 					// Every selected document is read or the lookup is an error: a partial digest would let the clarifier settle
 					// questions from an incomplete picture, so any failed read falls back to the feature-off path.
 					const fetched = await Promise.all(
-						selected.map(async (path): Promise<{ path: string; content: string } | { error: unknown }> => {
-							try {
-								const content = documentContent(
-									await call(dl, pre.caller, "get_knowledge_base_document", { namespaceId: pre.namespaceId, path }),
-								);
-								return content === undefined ? { error: new Error(`${path}: no document content`) } : { path, content };
-							} catch (error) {
-								return { error };
-							}
-						}),
+						selected.map(
+							async (path): Promise<{ path: string; content: string } | { error: unknown }> => {
+								try {
+									const content = documentContent(
+										await call(dl, pre.caller, "get_knowledge_base_document", {
+											namespaceId: pre.namespaceId,
+											path,
+										}),
+									);
+									return content === undefined
+										? { error: new Error(`${path}: no document content`) }
+										: { path, content };
+								} catch (error) {
+									return { error };
+								}
+							},
+						),
 					);
 					const ids = { namespaceId: pre.namespaceId, version: pre.version };
-					if (signal.aborted) return finish({ outcome: "error", ...ids, docs: [], chars: 0, reason: "aborted" });
+					if (signal.aborted)
+						return finish({ outcome: "error", ...ids, docs: [], chars: 0, reason: "aborted" });
 					const failed = fetched.find((doc) => "error" in doc);
-					if (failed && "error" in failed) return finish({ outcome: "error", ...ids, docs: [], chars: 0, reason: dl.reason(failed.error) });
+					if (failed && "error" in failed)
+						return finish({
+							outcome: "error",
+							...ids,
+							docs: [],
+							chars: 0,
+							reason: dl.reason(failed.error),
+						});
 					const docs = [
 						...(pre.index !== undefined ? [{ path: INDEX, content: pre.index }] : []),
 						...fetched.filter((doc): doc is { path: string; content: string } => "content" in doc),
 					];
 					if (docs.length === 0) {
-						return finish({ outcome: "none", ...ids, docs: [], chars: 0, reason: "no knowledge-base document matches the request" });
+						return finish({
+							outcome: "none",
+							...ids,
+							docs: [],
+							chars: 0,
+							reason: "no knowledge-base document matches the request",
+						});
 					}
-					const digest = buildDigest({ repoName: pre.repoName, version: pre.version, docs, maxChars });
-					return finish({ outcome: "used", ...ids, docs: docs.map((doc) => doc.path), chars: digest.length }, digest);
+					const digest = buildDigest({
+						repoName: pre.repoName,
+						version: pre.version,
+						docs,
+						maxChars,
+					});
+					return finish(
+						{ outcome: "used", ...ids, docs: docs.map((doc) => doc.path), chars: digest.length },
+						digest,
+					);
 				} catch (error) {
 					return finish({ outcome: "error", docs: [], chars: 0, reason: dl.reason(error) });
 				} finally {

@@ -41,7 +41,15 @@ export function buildMuseArgs(
 	opts: Pick<MuseCompleteOptions, "model" | "reasoningEffort" | "provider"> = {},
 ): string[] {
 	const echo = opts.provider === "echo";
-	const args = ["exec", "--json", "--disable-shell", "--disable-write", "--disable-web-tools", "--max-model-steps", "1"];
+	const args = [
+		"exec",
+		"--json",
+		"--disable-shell",
+		"--disable-write",
+		"--disable-web-tools",
+		"--max-model-steps",
+		"1",
+	];
 	if (echo) {
 		args.push("--provider", "echo");
 	} else {
@@ -81,7 +89,8 @@ export function parseMuseJsonl(stdout: string, stderr: string, code: number): st
 		terminal = rec.payload as { terminal?: unknown; reason?: unknown; text?: unknown };
 	}
 	if (!terminal || terminal.terminal !== "completed") {
-		const reason = typeof terminal?.reason === "string" && terminal.reason ? `: ${terminal.reason}` : "";
+		const reason =
+			typeof terminal?.reason === "string" && terminal.reason ? `: ${terminal.reason}` : "";
 		const detail = stderr.trim() || `muse exited ${code}`;
 		throw new Error(redactSecrets(`muse completion failed${reason} (${detail.slice(0, 300)})`));
 	}
@@ -89,17 +98,26 @@ export function parseMuseJsonl(stdout: string, stderr: string, code: number): st
 	return terminal.text;
 }
 
-export async function museComplete(system: string, user: string, opts: MuseCompleteOptions = {}): Promise<string> {
+export async function museComplete(
+	system: string,
+	user: string,
+	opts: MuseCompleteOptions = {},
+): Promise<string> {
 	if (opts.signal?.aborted) throw abortError();
 	const bin = opts.bin?.trim() || "muse";
-	const env: Record<string, string | undefined> = { ...(opts.env ?? process.env), [CHILD_ENV]: "1" };
+	const env: Record<string, string | undefined> = {
+		...(opts.env ?? process.env),
+		[CHILD_ENV]: "1",
+	};
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-muse-"));
 	const promptFile = join(dir, "prompt.txt");
 	try {
 		writeFileSync(promptFile, buildMusePrompt(system, user), { encoding: "utf8", mode: 0o600 });
 	} catch (error) {
 		rmSync(dir, { recursive: true, force: true });
-		throw new Error(`muse prompt file failed (${error instanceof Error ? error.message : String(error)})`);
+		throw new Error(
+			`muse prompt file failed (${error instanceof Error ? error.message : String(error)})`,
+		);
 	}
 	const proc = Bun.spawn([bin, ...buildMuseArgs(promptFile, opts)], {
 		cwd: opts.cwd,
@@ -110,12 +128,13 @@ export async function museComplete(system: string, user: string, opts: MuseCompl
 
 	let timedOut = false;
 	let aborted = false;
-	const timer = opts.timeoutMs && opts.timeoutMs > 0
-		? setTimeout(() => {
-			timedOut = true;
-			proc.kill();
-		}, opts.timeoutMs)
-		: undefined;
+	const timer =
+		opts.timeoutMs && opts.timeoutMs > 0
+			? setTimeout(() => {
+					timedOut = true;
+					proc.kill();
+				}, opts.timeoutMs)
+			: undefined;
 	const onAbort = (): void => {
 		aborted = true;
 		proc.kill();

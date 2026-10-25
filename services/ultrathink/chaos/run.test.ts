@@ -21,7 +21,10 @@ function json(status: number, value: unknown): ChaosResponse {
 }
 
 /** A fake target whose answers come from `handle`. Every request is recorded in call order. */
-function fakeTarget(handle: (method: string, path: string) => ChaosResponse): { target: ChaosTarget; calls: Call[] } {
+function fakeTarget(handle: (method: string, path: string) => ChaosResponse): {
+	target: ChaosTarget;
+	calls: Call[];
+} {
 	const calls: Call[] = [];
 	const target: ChaosTarget = {
 		async request(method, path, body) {
@@ -41,7 +44,13 @@ function unhealthy(_method: string, path: string): ChaosResponse {
 	return path === "/healthz" ? respond(503) : respond(404);
 }
 
-const HEALTHZ_200: Hypothesis = { id: "healthz-200", name: "healthz is 200", check: "status", path: "/healthz", equals: 200 };
+const HEALTHZ_200: Hypothesis = {
+	id: "healthz-200",
+	name: "healthz is 200",
+	check: "status",
+	path: "/healthz",
+	equals: 200,
+};
 
 function template(overrides: Partial<ExperimentTemplate> = {}): ExperimentTemplate {
 	return {
@@ -209,19 +218,28 @@ describe("runTemplate rollback", () => {
 });
 
 describe("runTemplate operator confirm", () => {
-	const READYZ_503: Hypothesis = { id: "readyz-503", name: "readyz is 503", check: "status", path: "/readyz", equals: 503 };
+	const READYZ_503: Hypothesis = {
+		id: "readyz-503",
+		name: "readyz is 503",
+		check: "status",
+		path: "/readyz",
+		equals: 503,
+	};
 
 	function operatorTemplate(): ExperimentTemplate {
 		return template({
 			kind: "operator",
-			operatorStep: "Send SIGTERM to the ultrathink main process and do not restart it during the run.",
+			operatorStep:
+				"Send SIGTERM to the ultrathink main process and do not restart it during the run.",
 			load: { method: "GET", path: "/healthz", requests: 1, concurrency: 1 },
 			hypotheses: [READYZ_503],
 		});
 	}
 
 	test("confirm runs before the first load request and receives the operator step", async () => {
-		const { target, calls } = fakeTarget((_method, path) => (path === "/readyz" ? respond(503) : respond(200)));
+		const { target, calls } = fakeTarget((_method, path) =>
+			path === "/readyz" ? respond(503) : respond(200),
+		);
 		const steps: string[] = [];
 		let callsAtConfirm = -1;
 		const result = await runTemplate(
@@ -256,7 +274,9 @@ describe("runTemplate operator confirm", () => {
 
 	test("an operator template without a confirm step is refused before any load", async () => {
 		const { target, calls } = fakeTarget(() => respond(200));
-		await expect(runTemplate(baseOptions(target, { template: operatorTemplate() }))).rejects.toThrow("needs a confirm step");
+		await expect(
+			runTemplate(baseOptions(target, { template: operatorTemplate() })),
+		).rejects.toThrow("needs a confirm step");
 		expect(calls).toHaveLength(0);
 	});
 });
@@ -285,7 +305,11 @@ describe("runTemplate load", () => {
 });
 
 describe("runTemplate settle", () => {
-	const SETTLE = { metric: "ultrathink_planner_calls_total", labels: { outcome: "timeout" }, atLeast: 5 };
+	const SETTLE = {
+		metric: "ultrathink_planner_calls_total",
+		labels: { outcome: "timeout" },
+		atLeast: 5,
+	};
 
 	function metricsWithTimeouts(count: number): ChaosResponse {
 		return respond(200, `ultrathink_planner_calls_total{outcome="timeout"} ${count}\n`);
@@ -355,11 +379,22 @@ describe("runTemplate settle", () => {
 
 describe("runTemplate hypotheses", () => {
 	test("a metric hypothesis on a series that is absent fails with metric absent and no observed value", async () => {
-		const { target } = fakeTarget((_method, path) => (path === "/metrics" ? respond(200, "other_metric 1\n") : respond(200)));
+		const { target } = fakeTarget((_method, path) =>
+			path === "/metrics" ? respond(200, "other_metric 1\n") : respond(200),
+		);
 		const result = await runTemplate(
 			baseOptions(target, {
 				template: template({
-					hypotheses: [{ id: "overload", name: "overload", check: "metric", metric: "ultrathink_overload_total", op: "gte", value: 1 }],
+					hypotheses: [
+						{
+							id: "overload",
+							name: "overload",
+							check: "metric",
+							metric: "ultrathink_overload_total",
+							op: "gte",
+							value: 1,
+						},
+					],
 				}),
 			}),
 		);
@@ -371,13 +406,29 @@ describe("runTemplate hypotheses", () => {
 	});
 
 	test("a metric hypothesis compares the observed value with its operator", async () => {
-		const { target } = fakeTarget((_method, path) => (path === "/metrics" ? respond(200, "ultrathink_overload_total 3\n") : respond(200)));
+		const { target } = fakeTarget((_method, path) =>
+			path === "/metrics" ? respond(200, "ultrathink_overload_total 3\n") : respond(200),
+		);
 		const result = await runTemplate(
 			baseOptions(target, {
 				template: template({
 					hypotheses: [
-						{ id: "gte-ok", name: "", check: "metric", metric: "ultrathink_overload_total", op: "gte", value: 1 },
-						{ id: "eq-bad", name: "", check: "metric", metric: "ultrathink_overload_total", op: "eq", value: 1 },
+						{
+							id: "gte-ok",
+							name: "",
+							check: "metric",
+							metric: "ultrathink_overload_total",
+							op: "gte",
+							value: 1,
+						},
+						{
+							id: "eq-bad",
+							name: "",
+							check: "metric",
+							metric: "ultrathink_overload_total",
+							op: "eq",
+							value: 1,
+						},
 					],
 				}),
 			}),
@@ -397,8 +448,22 @@ describe("runTemplate hypotheses", () => {
 			baseOptions(target, {
 				template: template({
 					hypotheses: [
-						{ id: "breaker-open", name: "", check: "body", path: "/healthz", field: "breaker", equals: "open" },
-						{ id: "live-false", name: "", check: "body", path: "/healthz", field: "live", equals: false },
+						{
+							id: "breaker-open",
+							name: "",
+							check: "body",
+							path: "/healthz",
+							field: "breaker",
+							equals: "open",
+						},
+						{
+							id: "live-false",
+							name: "",
+							check: "body",
+							path: "/healthz",
+							field: "live",
+							equals: false,
+						},
 						{ id: "nope", name: "", check: "body", path: "/healthz", field: "missing", equals: 1 },
 						{ id: "text", name: "", check: "body", path: "/text", field: "x", equals: 1 },
 					],
@@ -425,7 +490,11 @@ describe("runTemplate hypotheses", () => {
 				}),
 			}),
 		);
-		expect(result.hypotheses[0]).toEqual({ id: "boom", passed: false, reason: "request failed: connection refused" });
+		expect(result.hypotheses[0]).toEqual({
+			id: "boom",
+			passed: false,
+			reason: "request failed: connection refused",
+		});
 		expect(result.passed).toBe(false);
 	});
 });

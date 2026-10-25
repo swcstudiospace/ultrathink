@@ -37,14 +37,32 @@ function fake(routes: Record<string, Route>) {
 		};
 		calls.push(call);
 		const route = routes[`${method} ${url.pathname}`];
-		const reply: Reply = route === undefined ? { status: 500, body: { detail: "unrouted" } } : typeof route === "function" ? route(call) : route;
-		return new Response(reply.body === undefined ? "" : JSON.stringify(reply.body), { status: reply.status ?? 200 });
+		const reply: Reply =
+			route === undefined
+				? { status: 500, body: { detail: "unrouted" } }
+				: typeof route === "function"
+					? route(call)
+					: route;
+		return new Response(reply.body === undefined ? "" : JSON.stringify(reply.body), {
+			status: reply.status ?? 200,
+		});
 	}) as unknown as typeof fetch;
 	return { fetch: fetchFn, calls };
 }
 
-function client(fetchFn: typeof fetch, overrides: Partial<HindsightClientOptions> = {}): HindsightClient {
-	return createHindsightClient({ url: URL_BASE, apiKey: KEY, bank: BANK, timeoutMs: 1_000, retainTimeoutMs: 2_000, fetch: fetchFn, ...overrides });
+function client(
+	fetchFn: typeof fetch,
+	overrides: Partial<HindsightClientOptions> = {},
+): HindsightClient {
+	return createHindsightClient({
+		url: URL_BASE,
+		apiKey: KEY,
+		bank: BANK,
+		timeoutMs: 1_000,
+		retainTimeoutMs: 2_000,
+		fetch: fetchFn,
+		...overrides,
+	});
 }
 
 function value<T>(result: HindsightResult<T>): T {
@@ -57,17 +75,29 @@ function error<T>(result: HindsightResult<T>) {
 	return result.error;
 }
 
-const CHUNKS_CONFIG: Reply = { body: { bank_id: BANK, config: { retain_extraction_mode: "chunks" }, overrides: {} } };
+const CHUNKS_CONFIG: Reply = {
+	body: { bank_id: BANK, config: { retain_extraction_mode: "chunks" }, overrides: {} },
+};
 const RETAIN_OK: Route = { body: { success: true, bank_id: BANK, items_count: 1, async: false } };
 
 describe("health", () => {
 	test("asks /health and /version without the key and reports version and features", async () => {
 		const f = fake({
 			"GET /health": { body: { status: "healthy", database: "connected", db_pool_max: 100 } },
-			"GET /version": { body: { api_version: "0.9.1", features: { observations: false, worker: false, mcp: true, note: "x" } } },
+			"GET /version": {
+				body: {
+					api_version: "0.9.1",
+					features: { observations: false, worker: false, mcp: true, note: "x" },
+				},
+			},
 		});
 		const health = value(await client(f.fetch).health());
-		expect(health).toEqual({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: { observations: false, worker: false, mcp: true } });
+		expect(health).toEqual({
+			ok: true,
+			apiVersion: "0.9.1",
+			databaseConnected: true,
+			features: { observations: false, worker: false, mcp: true },
+		});
 		expect(f.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /health", "GET /version"]);
 		for (const call of f.calls) {
 			expect(call.headers.Authorization).toBeUndefined();
@@ -80,7 +110,12 @@ describe("health", () => {
 			"GET /health": { status: 503, body: { detail: "starting" } },
 			"GET /version": { body: { api_version: "0.9.1", features: { worker: false } } },
 		});
-		expect(value(await client(f.fetch).health())).toEqual({ ok: false, apiVersion: "0.9.1", databaseConnected: false, features: { worker: false } });
+		expect(value(await client(f.fetch).health())).toEqual({
+			ok: false,
+			apiVersion: "0.9.1",
+			databaseConnected: false,
+			features: { worker: false },
+		});
 	});
 
 	test("a database that is not connected is not ok", async () => {
@@ -88,7 +123,11 @@ describe("health", () => {
 			"GET /health": { body: { status: "healthy", database: "disconnected" } },
 			"GET /version": { body: { api_version: "0.9.1" } },
 		});
-		expect(value(await client(f.fetch).health())).toMatchObject({ ok: false, databaseConnected: false, apiVersion: "0.9.1" });
+		expect(value(await client(f.fetch).health())).toMatchObject({
+			ok: false,
+			databaseConnected: false,
+			apiVersion: "0.9.1",
+		});
 	});
 
 	test("a status other than healthy is not ok", async () => {
@@ -96,7 +135,10 @@ describe("health", () => {
 			"GET /health": { body: { status: "unhealthy", database: "connected" } },
 			"GET /version": { body: { api_version: "0.9.1" } },
 		});
-		expect(value(await client(f.fetch).health())).toMatchObject({ ok: false, databaseConnected: true });
+		expect(value(await client(f.fetch).health())).toMatchObject({
+			ok: false,
+			databaseConnected: true,
+		});
 	});
 
 	test("both endpoints failing is the /health error", async () => {
@@ -105,8 +147,16 @@ describe("health", () => {
 	});
 
 	test("a missing /version leaves a healthy server ok with an empty version", async () => {
-		const f = fake({ "GET /health": { body: { status: "healthy", database: "connected" } }, "GET /version": { status: 404 } });
-		expect(value(await client(f.fetch).health())).toEqual({ ok: true, apiVersion: "", databaseConnected: true, features: {} });
+		const f = fake({
+			"GET /health": { body: { status: "healthy", database: "connected" } },
+			"GET /version": { status: 404 },
+		});
+		expect(value(await client(f.fetch).health())).toEqual({
+			ok: true,
+			apiVersion: "",
+			databaseConnected: true,
+			features: {},
+		});
 	});
 });
 
@@ -114,19 +164,35 @@ describe("ensureBank", () => {
 	test("a bank already in chunks mode costs one GET and is cached afterwards", async () => {
 		const f = fake({ [`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG });
 		const c = client(f.fetch);
-		expect(value(await c.ensureBank())).toEqual({ bankId: BANK, created: false, extractionMode: "chunks" });
-		expect(value(await c.ensureBank())).toEqual({ bankId: BANK, created: false, extractionMode: "chunks" });
+		expect(value(await c.ensureBank())).toEqual({
+			bankId: BANK,
+			created: false,
+			extractionMode: "chunks",
+		});
+		expect(value(await c.ensureBank())).toEqual({
+			bankId: BANK,
+			created: false,
+			extractionMode: "chunks",
+		});
 		expect(f.calls).toHaveLength(1);
 		expect(f.calls[0]?.headers.Authorization).toBe(`Bearer ${KEY}`);
 	});
 
 	test("another extraction mode is patched to chunks", async () => {
 		const f = fake({
-			[`GET ${BANK_PATH}/config`]: { body: { bank_id: BANK, config: { retain_extraction_mode: "concise" }, overrides: {} } },
+			[`GET ${BANK_PATH}/config`]: {
+				body: { bank_id: BANK, config: { retain_extraction_mode: "concise" }, overrides: {} },
+			},
 			[`PATCH ${BANK_PATH}/config`]: { body: { bank_id: BANK } },
 		});
-		expect(value(await client(f.fetch).ensureBank())).toMatchObject({ created: false, extractionMode: "chunks" });
-		expect(f.calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET ${BANK_PATH}/config`, `PATCH ${BANK_PATH}/config`]);
+		expect(value(await client(f.fetch).ensureBank())).toMatchObject({
+			created: false,
+			extractionMode: "chunks",
+		});
+		expect(f.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+			`GET ${BANK_PATH}/config`,
+			`PATCH ${BANK_PATH}/config`,
+		]);
 		expect(f.calls[1]?.body).toEqual({ updates: { retain_extraction_mode: "chunks" } });
 		expect(f.calls[1]?.headers.Authorization).toBe(`Bearer ${KEY}`);
 	});
@@ -137,8 +203,16 @@ describe("ensureBank", () => {
 			[`PUT ${BANK_PATH}`]: { body: { bank_id: BANK } },
 			[`PATCH ${BANK_PATH}/config`]: { body: {} },
 		});
-		expect(value(await client(f.fetch).ensureBank())).toEqual({ bankId: BANK, created: true, extractionMode: "chunks" });
-		expect(f.calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET ${BANK_PATH}/config`, `PUT ${BANK_PATH}`, `PATCH ${BANK_PATH}/config`]);
+		expect(value(await client(f.fetch).ensureBank())).toEqual({
+			bankId: BANK,
+			created: true,
+			extractionMode: "chunks",
+		});
+		expect(f.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+			`GET ${BANK_PATH}/config`,
+			`PUT ${BANK_PATH}`,
+			`PATCH ${BANK_PATH}/config`,
+		]);
 		expect(f.calls[1]?.body).toEqual({});
 		expect(f.calls[2]?.body).toEqual({ updates: { retain_extraction_mode: "chunks" } });
 	});
@@ -185,11 +259,16 @@ describe("ensureBank", () => {
 
 	test("the bank id is URL-encoded in every path", async () => {
 		const f = fake({ "GET /v1/default/banks/team%2Fa%20b/config": CHUNKS_CONFIG });
-		expect(value(await client(f.fetch, { bank: "team/a b" }).ensureBank())).toMatchObject({ bankId: "team/a b" });
+		expect(value(await client(f.fetch, { bank: "team/a b" }).ensureBank())).toMatchObject({
+			bankId: "team/a b",
+		});
 	});
 
 	test("deleting the bank clears the cache", async () => {
-		const f = fake({ [`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG, [`DELETE ${BANK_PATH}`]: { body: { success: true } } });
+		const f = fake({
+			[`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG,
+			[`DELETE ${BANK_PATH}`]: { body: { success: true } },
+		});
 		const c = client(f.fetch);
 		await c.ensureBank();
 		await c.deleteBank();
@@ -200,7 +279,10 @@ describe("ensureBank", () => {
 
 describe("retain", () => {
 	test("ensures the bank first, then upserts one document synchronously", async () => {
-		const f = fake({ [`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG, [`POST ${BANK_PATH}/memories`]: RETAIN_OK });
+		const f = fake({
+			[`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG,
+			[`POST ${BANK_PATH}/memories`]: RETAIN_OK,
+		});
 		const c = client(f.fetch);
 		const outcome = value(
 			await c.retain({
@@ -213,7 +295,10 @@ describe("retain", () => {
 			}),
 		);
 		expect(outcome).toEqual({ bankId: BANK, documentId: "tm:abc", itemsCount: 1 });
-		expect(f.calls.map((call) => `${call.method} ${call.path}`)).toEqual([`GET ${BANK_PATH}/config`, `POST ${BANK_PATH}/memories`]);
+		expect(f.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+			`GET ${BANK_PATH}/config`,
+			`POST ${BANK_PATH}/memories`,
+		]);
 		expect(f.calls[1]?.body).toEqual({
 			items: [
 				{
@@ -235,32 +320,53 @@ describe("retain", () => {
 	});
 
 	test("optional fields are left out of the item", async () => {
-		const f = fake({ [`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG, [`POST ${BANK_PATH}/memories`]: RETAIN_OK });
+		const f = fake({
+			[`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG,
+			[`POST ${BANK_PATH}/memories`]: RETAIN_OK,
+		});
 		await client(f.fetch).retain({ documentId: "tm:abc", content: "c", tags: ["t"] });
-		const sent: { items: Record<string, unknown>[] } = f.calls[1]?.body as { items: Record<string, unknown>[] };
+		const sent: { items: Record<string, unknown>[] } = f.calls[1]?.body as {
+			items: Record<string, unknown>[];
+		};
 		const item = sent.items[0] ?? {};
 		expect(Object.keys(item).sort()).toEqual(["content", "document_id", "tags", "update_mode"]);
 	});
 
 	test("an ensureBank failure stops before any memory is written", async () => {
 		const f = fake({ [`GET ${BANK_PATH}/config`]: { status: 403 } });
-		expect(error(await client(f.fetch).retain({ documentId: "tm:abc", content: "c", tags: [] }))).toMatchObject({ kind: "auth" });
+		expect(
+			error(await client(f.fetch).retain({ documentId: "tm:abc", content: "c", tags: [] })),
+		).toMatchObject({ kind: "auth" });
 		expect(f.calls).toHaveLength(1);
 	});
 
 	test("a response without success true and a numeric items_count is invalid", async () => {
-		for (const body of [{ success: false, items_count: 1 }, { success: true }, { success: true, items_count: "1" }, "ok"]) {
-			const f = fake({ [`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG, [`POST ${BANK_PATH}/memories`]: { body } });
-			expect(error(await client(f.fetch).retain({ documentId: "tm:abc", content: "c", tags: [] })).kind).toBe("invalid-response");
+		for (const body of [
+			{ success: false, items_count: 1 },
+			{ success: true },
+			{ success: true, items_count: "1" },
+			"ok",
+		]) {
+			const f = fake({
+				[`GET ${BANK_PATH}/config`]: CHUNKS_CONFIG,
+				[`POST ${BANK_PATH}/memories`]: { body },
+			});
+			expect(
+				error(await client(f.fetch).retain({ documentId: "tm:abc", content: "c", tags: [] })).kind,
+			).toBe("invalid-response");
 		}
 	});
 
 	test("uses retainTimeoutMs for the retain and timeoutMs for everything else", async () => {
 		const hang = ((_: string | URL | Request, init?: RequestInit) => {
 			if (new URL(String(_)).pathname.endsWith("/config")) {
-				return Promise.resolve(new Response(JSON.stringify({ config: { retain_extraction_mode: "chunks" } })));
+				return Promise.resolve(
+					new Response(JSON.stringify({ config: { retain_extraction_mode: "chunks" } })),
+				);
 			}
-			return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+			return new Promise<Response>((_resolve, reject) =>
+				init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+			);
 		}) as unknown as typeof fetch;
 		const c = client(hang, { timeoutMs: 5_000, retainTimeoutMs: 30 });
 		const started = Date.now();
@@ -268,7 +374,9 @@ describe("retain", () => {
 		expect(failure.kind).toBe("timeout");
 		expect(failure.message).toContain("30 ms");
 		expect(Date.now() - started).toBeLessThan(2_000);
-		const recallFailure = error(await client(hang, { timeoutMs: 25, retainTimeoutMs: 5_000 }).recall({ query: "q" }));
+		const recallFailure = error(
+			await client(hang, { timeoutMs: 25, retainTimeoutMs: 5_000 }).recall({ query: "q" }),
+		);
 		expect(recallFailure.message).toContain("25 ms");
 	});
 });
@@ -289,7 +397,15 @@ describe("recall", () => {
 	test("passes tags, tag match, tag groups, types, budget and max tokens through", async () => {
 		const f = fake({ [`POST ${BANK_PATH}/memories/recall`]: { body: { results: [] } } });
 		const groups = [{ tags: ["a"], match: "any" }];
-		await client(f.fetch).recall({ query: "q", tags: ["project:x"], tagsMatch: "all_strict", tagGroups: groups, types: ["world"], budget: "high", maxTokens: 300 });
+		await client(f.fetch).recall({
+			query: "q",
+			tags: ["project:x"],
+			tagsMatch: "all_strict",
+			tagGroups: groups,
+			types: ["world"],
+			budget: "high",
+			maxTokens: 300,
+		});
 		expect(f.calls[0]?.body).toEqual({
 			query: "q",
 			types: ["world"],
@@ -316,7 +432,14 @@ describe("recall", () => {
 							tags: ["t1", 7, "t2"],
 							metadata: { tm_id: "a", count: 3, nested: { x: 1 } },
 						},
-						{ id: "m2", text: "lesson two", tags: null, metadata: null, document_id: null, type: null },
+						{
+							id: "m2",
+							text: "lesson two",
+							tags: null,
+							metadata: null,
+							document_id: null,
+							type: null,
+						},
 						{ id: "m3" },
 						{ text: "no id" },
 						"junk",
@@ -351,43 +474,94 @@ describe("documents and banks", () => {
 
 	test("getDocument maps the response and encodes the id", async () => {
 		const f = fake({
-			[`GET ${DOC}`]: { body: { id: "tm:abc", bank_id: BANK, created_at: "c", updated_at: "u", memory_unit_count: 2, tags: ["a", "b"], original_text: "x" } },
+			[`GET ${DOC}`]: {
+				body: {
+					id: "tm:abc",
+					bank_id: BANK,
+					created_at: "c",
+					updated_at: "u",
+					memory_unit_count: 2,
+					tags: ["a", "b"],
+					original_text: "x",
+				},
+			},
 		});
-		expect(value(await client(f.fetch).getDocument("tm:abc"))).toEqual({ id: "tm:abc", tags: ["a", "b"], createdAt: "c", updatedAt: "u", memoryUnitCount: 2 });
+		expect(value(await client(f.fetch).getDocument("tm:abc"))).toEqual({
+			id: "tm:abc",
+			tags: ["a", "b"],
+			createdAt: "c",
+			updatedAt: "u",
+			memoryUnitCount: 2,
+		});
 		expect(f.calls[0]?.headers.Authorization).toBe(`Bearer ${KEY}`);
 	});
 
 	test("getDocument answers null for a missing document and errors on a body without an id", async () => {
-		expect(value(await client(fake({ [`GET ${DOC}`]: { status: 404 } }).fetch).getDocument("tm:abc"))).toBeNull();
-		expect(error(await client(fake({ [`GET ${DOC}`]: { body: { tags: [] } } }).fetch).getDocument("tm:abc")).kind).toBe("invalid-response");
+		expect(
+			value(await client(fake({ [`GET ${DOC}`]: { status: 404 } }).fetch).getDocument("tm:abc")),
+		).toBeNull();
+		expect(
+			error(
+				await client(fake({ [`GET ${DOC}`]: { body: { tags: [] } } }).fetch).getDocument("tm:abc"),
+			).kind,
+		).toBe("invalid-response");
 	});
 
 	test("getDocument still reports a 500 as an error", async () => {
-		expect(error(await client(fake({ [`GET ${DOC}`]: { status: 500 } }).fetch).getDocument("tm:abc")).kind).toBe("server");
+		expect(
+			error(await client(fake({ [`GET ${DOC}`]: { status: 500 } }).fetch).getDocument("tm:abc"))
+				.kind,
+		).toBe("server");
 	});
 
 	test("deleteDocument is true when deleted, false when already gone, an error otherwise", async () => {
-		const f = fake({ [`DELETE ${DOC}`]: { body: { success: true, document_id: "tm:abc", memory_units_deleted: 1 } } });
+		const f = fake({
+			[`DELETE ${DOC}`]: {
+				body: { success: true, document_id: "tm:abc", memory_units_deleted: 1 },
+			},
+		});
 		expect(value(await client(f.fetch).deleteDocument("tm:abc"))).toBe(true);
 		expect(f.calls[0]?.method).toBe("DELETE");
-		expect(value(await client(fake({ [`DELETE ${DOC}`]: { status: 404 } }).fetch).deleteDocument("tm:abc"))).toBe(false);
-		expect(error(await client(fake({ [`DELETE ${DOC}`]: { status: 401 } }).fetch).deleteDocument("tm:abc")).kind).toBe("auth");
+		expect(
+			value(
+				await client(fake({ [`DELETE ${DOC}`]: { status: 404 } }).fetch).deleteDocument("tm:abc"),
+			),
+		).toBe(false);
+		expect(
+			error(
+				await client(fake({ [`DELETE ${DOC}`]: { status: 401 } }).fetch).deleteDocument("tm:abc"),
+			).kind,
+		).toBe("auth");
 	});
 
 	test("setDocumentTags PATCHes the tags", async () => {
 		const f = fake({ [`PATCH ${DOC}`]: { body: { success: true } } });
-		expect(value(await client(f.fetch).setDocumentTags("tm:abc", ["status:superseded"]))).toBe(true);
+		expect(value(await client(f.fetch).setDocumentTags("tm:abc", ["status:superseded"]))).toBe(
+			true,
+		);
 		expect(f.calls[0]?.body).toEqual({ tags: ["status:superseded"] });
 		expect(f.calls[0]?.headers.Authorization).toBe(`Bearer ${KEY}`);
-		expect(error(await client(fake({ [`PATCH ${DOC}`]: { status: 404 } }).fetch).setDocumentTags("tm:abc", [])).kind).toBe("not-found");
+		expect(
+			error(
+				await client(fake({ [`PATCH ${DOC}`]: { status: 404 } }).fetch).setDocumentTags(
+					"tm:abc",
+					[],
+				),
+			).kind,
+		).toBe("not-found");
 	});
 
 	test("deleteBank DELETEs the bank and treats 404 as success", async () => {
 		const f = fake({ [`DELETE ${BANK_PATH}`]: { body: { success: true } } });
 		expect(value(await client(f.fetch).deleteBank())).toBe(true);
 		expect(f.calls[0]).toMatchObject({ method: "DELETE", path: BANK_PATH });
-		expect(value(await client(fake({ [`DELETE ${BANK_PATH}`]: { status: 404 } }).fetch).deleteBank())).toBe(true);
-		expect(error(await client(fake({ [`DELETE ${BANK_PATH}`]: { status: 500 } }).fetch).deleteBank()).kind).toBe("server");
+		expect(
+			value(await client(fake({ [`DELETE ${BANK_PATH}`]: { status: 404 } }).fetch).deleteBank()),
+		).toBe(true);
+		expect(
+			error(await client(fake({ [`DELETE ${BANK_PATH}`]: { status: 500 } }).fetch).deleteBank())
+				.kind,
+		).toBe("server");
 	});
 });
 
@@ -410,7 +584,10 @@ describe("errors", () => {
 			const f = fake({
 				[`POST ${BANK_PATH}/memories/recall`]: {
 					status,
-					body: { detail: [{ loc: ["body", "query"], msg: "bad", input: QUERY }], echo: `${KEY} ${QUERY}` },
+					body: {
+						detail: [{ loc: ["body", "query"], msg: "bad", input: QUERY }],
+						echo: `${KEY} ${QUERY}`,
+					},
 				},
 			});
 			const failure = error(await client(f.fetch).recall({ query: QUERY }));
@@ -425,19 +602,29 @@ describe("errors", () => {
 
 	test("a string detail is shown, with the key redacted, on one line and capped at 200 characters", async () => {
 		const f = fake({
-			[`POST ${BANK_PATH}/memories/recall`]: { status: 401, body: { detail: `invalid key ${KEY}\nnext line ${"x".repeat(400)}` } },
+			[`POST ${BANK_PATH}/memories/recall`]: {
+				status: 401,
+				body: { detail: `invalid key ${KEY}\nnext line ${"x".repeat(400)}` },
+			},
 		});
 		const failure = error(await client(f.fetch).recall({ query: "q" }));
 		expect(failure.message).toContain("invalid key [redacted] next line");
 		expect(failure.message).not.toContain(KEY);
 		expect(failure.message).not.toContain("\n");
 		expect(failure.message.length).toBeLessThanOrEqual(200);
-		const viaMessage = fake({ [`POST ${BANK_PATH}/memories/recall`]: { status: 500, body: { message: "database is down" } } });
-		expect(error(await client(viaMessage.fetch).recall({ query: "q" })).message).toBe("hindsight server: HTTP 500: database is down");
+		const viaMessage = fake({
+			[`POST ${BANK_PATH}/memories/recall`]: { status: 500, body: { message: "database is down" } },
+		});
+		expect(error(await client(viaMessage.fetch).recall({ query: "q" })).message).toBe(
+			"hindsight server: HTTP 500: database is down",
+		);
 	});
 
 	test("a network failure is classified and never shows the key", async () => {
-		const boom = (() => Promise.reject(new Error(`connect ECONNREFUSED while sending Bearer ${KEY}`))) as unknown as typeof fetch;
+		const boom = (() =>
+			Promise.reject(
+				new Error(`connect ECONNREFUSED while sending Bearer ${KEY}`),
+			)) as unknown as typeof fetch;
 		const failure = error(await client(boom).recall({ query: "q" }));
 		expect(failure.kind).toBe("network");
 		expect(failure.message).not.toContain(KEY);
@@ -481,14 +668,19 @@ describe("errors", () => {
 describe("factory", () => {
 	test("refuses an unsafe URL, an empty bank and an empty key", () => {
 		const base = { apiKey: KEY, bank: BANK, timeoutMs: 1, retainTimeoutMs: 1 };
-		expect(() => createHindsightClient({ ...base, url: "http://example.com" })).toThrow(/invalid url/);
+		expect(() => createHindsightClient({ ...base, url: "http://example.com" })).toThrow(
+			/invalid url/,
+		);
 		expect(() => createHindsightClient({ ...base, url: "" })).toThrow(/invalid url/);
 		expect(() => createHindsightClient({ ...base, url: URL_BASE, bank: " " })).toThrow(/bank/);
 		expect(() => createHindsightClient({ ...base, url: URL_BASE, apiKey: "" })).toThrow(/apiKey/);
 	});
 
 	test("a URL path prefix is kept and a trailing slash dropped", async () => {
-		const f = fake({ "GET /api/health": { body: { status: "healthy", database: "connected" } }, "GET /api/version": { body: { api_version: "0.9.1" } } });
+		const f = fake({
+			"GET /api/health": { body: { status: "healthy", database: "connected" } },
+			"GET /api/version": { body: { api_version: "0.9.1" } },
+		});
 		expect(value(await client(f.fetch, { url: `${URL_BASE}/api/` }).health()).ok).toBe(true);
 	});
 

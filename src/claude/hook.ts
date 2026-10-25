@@ -11,7 +11,13 @@
 import type { UltrathinkConfig } from "../config.ts";
 import { createDecisions, type DecisionsDeps } from "../decisions/gate.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
-import { createGreptileKnowledge, type KnowledgeLookup, type KnowledgeReader, type KnowledgeResult, type KnowledgeSession } from "../greptile/knowledge.ts";
+import {
+	createGreptileKnowledge,
+	type KnowledgeLookup,
+	type KnowledgeReader,
+	type KnowledgeResult,
+	type KnowledgeSession,
+} from "../greptile/knowledge.ts";
 import { injectClarificationsXml } from "../hitl/format.ts";
 import { normalizeQuestion, type RunClarifyOptions, runClarify } from "../hitl/pipeline.ts";
 import type { Clarification } from "../hitl/types.ts";
@@ -31,8 +37,18 @@ import { docsLookup, formatDocsSection, groundDocs } from "../ragflow/ground.ts"
 import { teachContext, teachEnabled } from "../teach/context.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "../teach/recall.ts";
 import type { GroundOutcome, DocsLookup } from "../ragflow/types.ts";
-import { formatSkillsSection, recallSkills, skillsLookup, SKILL_SECTION_CHARS } from "../teach/skills.ts";
-import type { LessonsLookup, RecallOutcome, SkillRecallOutcome, SkillsLookup } from "../teach/types.ts";
+import {
+	formatSkillsSection,
+	recallSkills,
+	skillsLookup,
+	SKILL_SECTION_CHARS,
+} from "../teach/skills.ts";
+import type {
+	LessonsLookup,
+	RecallOutcome,
+	SkillRecallOutcome,
+	SkillsLookup,
+} from "../teach/types.ts";
 import { isSubagentEnvelope } from "../host/envelope.ts";
 import { decideUplift } from "../uplift/detect.ts";
 import type { SkillInvocation } from "../uplift/skill.ts";
@@ -44,7 +60,18 @@ import { isChildInvocation } from "./complete.ts";
 import { formatPlanSkipNotice, formatPromptContext, formatSummary } from "./output.ts";
 import { JEV_PLAN_SKIP, planGate } from "./plan-gate.ts";
 import { shipApplies } from "../ship/policy.ts";
-import { clearSkipOnce, type ControlState, hostSessionId, isTurnSessionId, newTurnSessionId, readSession, readSkipOnce, type SessionRecord, sessionPath, writeSession } from "./state.ts";
+import {
+	clearSkipOnce,
+	type ControlState,
+	hostSessionId,
+	isTurnSessionId,
+	newTurnSessionId,
+	readSession,
+	readSkipOnce,
+	type SessionRecord,
+	sessionPath,
+	writeSession,
+} from "./state.ts";
 
 export interface PromptSubmitInput {
 	session_id?: string;
@@ -87,7 +114,12 @@ export interface HookDeps {
 	git?: (cwd: string) => { repo?: string; branch?: string };
 	conversation?: (transcriptPath?: string) => string;
 	/** Test seam for the Agent Substrate brief; defaults to the real fail-open HTTP call against `config.substrate.url`. */
-	brief?: (input: { repo?: string; branch?: string; surface?: string; signal?: AbortSignal }) => Promise<string>;
+	brief?: (input: {
+		repo?: string;
+		branch?: string;
+		surface?: string;
+		signal?: AbortSignal;
+	}) => Promise<string>;
 	/**
 	 * Test seam for the Agent Substrate plan event: the one `note` a planned prompt leaves in the ledger, carrying the
 	 * Graph ID the substrate adopts as its correlation key. Defaults to the real fail-open `emitEvent` against
@@ -128,7 +160,11 @@ export interface HookDeps {
 	 * Promoted-skills lookup (Teachable Moments). Defaults to `recallSkills` when `config.teach.enabled && config.teach.recall`;
 	 * an injected seam always runs. Same query rule as `recall`.
 	 */
-	skills?: (input: { query: string; cwd: string; signal: AbortSignal }) => Promise<SkillRecallOutcome>;
+	skills?: (input: {
+		query: string;
+		cwd: string;
+		signal: AbortSignal;
+	}) => Promise<SkillRecallOutcome>;
 }
 
 export interface PromptSubmitResult {
@@ -149,7 +185,10 @@ function specFile(stateDir: string, sessionId: string): string {
  * A replan keeps the session's edited repos and recalculates its mismatch against the new plan's label, so a session that
  * already edited another repo neither forgets it nor repeats its warning (see recordEditAttribution in host/omp.ts).
  */
-function carryRepoAttribution(prior: SessionRecord | undefined, record: SessionRecord): SessionRecord {
+function carryRepoAttribution(
+	prior: SessionRecord | undefined,
+	record: SessionRecord,
+): SessionRecord {
 	const workRepos = prior?.workRepos;
 	if (workRepos === undefined) return record;
 	if (!record.plan) return { ...record, workRepos };
@@ -188,7 +227,9 @@ export function savePlanRecord(
 			);
 			let merged = carryRepoAttribution(prior, record);
 			if (late.length > 0) {
-				const byQuestion = new Map<string, Clarification>(late.map((c) => [normalizeQuestion(c.question), c]));
+				const byQuestion = new Map<string, Clarification>(
+					late.map((c) => [normalizeQuestion(c.question), c]),
+				);
 				const seen = new Set(base.map((c) => normalizeQuestion(c.question)));
 				const clarifications = base.map((c) => byQuestion.get(normalizeQuestion(c.question)) ?? c);
 				for (const c of late) {
@@ -198,7 +239,10 @@ export function savePlanRecord(
 					merged = {
 						...merged,
 						clarifications,
-						result: { ...record.result, xml: injectClarificationsXml(record.result.xml, clarifications) },
+						result: {
+							...record.result,
+							xml: injectClarificationsXml(record.result.xml, clarifications),
+						},
 					};
 				}
 			}
@@ -221,7 +265,8 @@ function knowledgeTopic(result: UpliftResult, graph: ThoughtGraph | undefined): 
 	const parts = [result.xml.replace(/<[^>]*>/g, " ")];
 	if (graph) {
 		parts.push(graph.goal);
-		for (const node of graph.nodes) parts.push(node.conclusion ? `${node.title}: ${node.conclusion}` : node.title);
+		for (const node of graph.nodes)
+			parts.push(node.conclusion ? `${node.title}: ${node.conclusion}` : node.title);
 	}
 	return parts.filter(Boolean).join("\n");
 }
@@ -231,7 +276,9 @@ async function readKnowledge(session: KnowledgeSession, topic: string): Promise<
 	try {
 		return await session.read(topic);
 	} catch (error) {
-		const reason = (error instanceof Error ? error.message : String(error)).split("\n")[0]?.slice(0, 200) ?? "error";
+		const reason =
+			(error instanceof Error ? error.message : String(error)).split("\n")[0]?.slice(0, 200) ??
+			"error";
 		return { lookup: { outcome: "error", docs: [], chars: 0, ms: 0, reason }, digest: "" };
 	}
 }
@@ -295,7 +342,12 @@ async function bounded<T>(
 /** Lessons lookup; undefined when nothing is configured to run. Never rejects. */
 function startRecall(
 	deps: HookDeps,
-	input: LookupInput & { cwd: string; sessionId: string; host: string; log: (message: string) => void },
+	input: LookupInput & {
+		cwd: string;
+		sessionId: string;
+		host: string;
+		log: (message: string) => void;
+	},
 ): Promise<RecallOutcome> | undefined {
 	const seam = deps.recall;
 	const teach = deps.config.teach;
@@ -315,14 +367,22 @@ function startRecall(
 				now: input.now,
 				log: input.log,
 			});
-			if (!teachEnabled(ctx)) return { status: "off", lessons: [], source: "none", chars: 0, ms: 0, reason: "disabled" };
+			if (!teachEnabled(ctx))
+				return { status: "off", lessons: [], source: "none", chars: 0, ms: 0, reason: "disabled" };
 			return recallLessons({ query: arg.query }, ctx, { countUse: true });
 		});
 	return bounded(
 		(signal) => run({ query: input.query, cwd: input.cwd, signal }),
 		teach.timeoutMs,
 		input.parent,
-		(reason) => ({ status: "error", lessons: [], source: "none", chars: 0, ms: input.now() - started, reason }),
+		(reason) => ({
+			status: "error",
+			lessons: [],
+			source: "none",
+			chars: 0,
+			ms: input.now() - started,
+			reason,
+		}),
 	);
 }
 
@@ -348,14 +408,26 @@ function startGround(deps: HookDeps, input: LookupInput): Promise<GroundOutcome>
 		(signal) => run({ query: input.query, signal }),
 		ragflow.timeoutMs,
 		input.parent,
-		(reason) => ({ status: "error", chunks: [], chars: 0, ms: input.now() - started, datasets: 0, reason }),
+		(reason) => ({
+			status: "error",
+			chunks: [],
+			chars: 0,
+			ms: input.now() - started,
+			datasets: 0,
+			reason,
+		}),
 	);
 }
 
 /** Promoted-skills lookup; undefined when nothing is configured to run. Never rejects. */
 function startSkills(
 	deps: HookDeps,
-	input: LookupInput & { cwd: string; sessionId: string; host: string; log: (message: string) => void },
+	input: LookupInput & {
+		cwd: string;
+		sessionId: string;
+		host: string;
+		log: (message: string) => void;
+	},
 ): Promise<SkillRecallOutcome> | undefined {
 	const seam = deps.skills;
 	const teach = deps.config.teach;
@@ -363,7 +435,11 @@ function startSkills(
 	const started = input.now();
 	const run =
 		seam ??
-		(async (arg: { query: string; cwd: string; signal: AbortSignal }): Promise<SkillRecallOutcome> => {
+		(async (arg: {
+			query: string;
+			cwd: string;
+			signal: AbortSignal;
+		}): Promise<SkillRecallOutcome> => {
 			const ctx = teachContext({
 				host: input.host,
 				cwd: arg.cwd,
@@ -375,7 +451,8 @@ function startSkills(
 				now: input.now,
 				log: input.log,
 			});
-			if (!teachEnabled(ctx)) return { status: "off", skills: [], chars: 0, ms: 0, reason: "disabled" };
+			if (!teachEnabled(ctx))
+				return { status: "off", skills: [], chars: 0, ms: 0, reason: "disabled" };
 			return recallSkills({ query: arg.query }, ctx);
 		});
 	return bounded(
@@ -427,7 +504,12 @@ async function announcePlan(
 				graphId: plan.graphId,
 				repo: input.repo,
 				branch: input.branch,
-				payload: { ultrathink: "plan", nodes, host, ...(input.skill ? { skill: input.skill } : {}) },
+				payload: {
+					ultrathink: "plan",
+					nodes,
+					host,
+					...(input.skill ? { skill: input.skill } : {}),
+				},
 			},
 			input.signal,
 		);
@@ -436,7 +518,10 @@ async function announcePlan(
 	}
 }
 
-export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps): Promise<PromptSubmitResult> {
+export async function runPromptSubmit(
+	input: PromptSubmitInput,
+	deps: HookDeps,
+): Promise<PromptSubmitResult> {
 	const now = deps.now ?? Date.now;
 	const emit = (event: ProgressEvent): void => {
 		try {
@@ -456,7 +541,14 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		}
 	};
 	const stage = (name: StageName, phase: "start" | "end", ok?: boolean, detail?: string): void =>
-		emit({ type: "stage", at: now(), stage: name, phase, ...(ok === undefined ? {} : { ok }), ...(detail ? { detail } : {}) });
+		emit({
+			type: "stage",
+			at: now(),
+			stage: name,
+			phase,
+			...(ok === undefined ? {} : { ok }),
+			...(detail ? { detail } : {}),
+		});
 	const started = now();
 	const log = deps.log ?? (() => {});
 	const cwd = input.cwd?.trim() || process.cwd();
@@ -494,12 +586,21 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 	});
 	// Keep cancellation separate from the hook's partial-result budget, whose timer starts after the gate as before.
 	const controller = new AbortController();
-	const cancellation = deps.signal ? AbortSignal.any([deps.signal, controller.signal]) : controller.signal;
+	const cancellation = deps.signal
+		? AbortSignal.any([deps.signal, controller.signal])
+		: controller.signal;
 	const budgetController = new AbortController();
 	const lifetime = AbortSignal.any([cancellation, budgetController.signal]);
 	const rethrowCancellation = (error: unknown): void => {
 		// A provider can abort while the caller is still live. Only an expired hook budget may fail open with a partial plan.
-		if (!budgetController.signal.aborted && typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") controller.abort();
+		if (
+			!budgetController.signal.aborted &&
+			typeof error === "object" &&
+			error !== null &&
+			"name" in error &&
+			error.name === "AbortError"
+		)
+			controller.abort();
 		throwIfCancelled(cancellation);
 	};
 	const complete: ClaudeCompleter = async (system, user, signal) => {
@@ -514,7 +615,11 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			throw error;
 		}
 	};
-	const gate = await planGate({ prompt: input.prompt ?? "", text: decision.text, skill, history }, decisions, lifetime);
+	const gate = await planGate(
+		{ prompt: input.prompt ?? "", text: decision.text, skill, history },
+		decisions,
+		lifetime,
+	);
 	throwIfCancelled(cancellation);
 	if (!gate.plan) {
 		return {
@@ -539,7 +644,9 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 
 	let session: KnowledgeSession | undefined;
 	const budget =
-		deps.config.claude.budgetMs > 0 ? setTimeout(() => budgetController.abort(), deps.config.claude.budgetMs) : undefined;
+		deps.config.claude.budgetMs > 0
+			? setTimeout(() => budgetController.abort(), deps.config.claude.budgetMs)
+			: undefined;
 	try {
 		const original = decision.text;
 		const skillLine = skill
@@ -581,17 +688,37 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		// conversation history, or anything the engine produced.
 		const lookupQuery = original.trim().slice(0, LOOKUP_QUERY_CHARS);
 		const lookups =
-			lookupQuery !== "" && !isChildInvocation() && !isSubagentEnvelope(input as Record<string, unknown>);
+			lookupQuery !== "" &&
+			!isChildInvocation() &&
+			!isSubagentEnvelope(input as Record<string, unknown>);
 		const lookupEnv = deps.decisionsDeps?.env ?? process.env;
 		const surfaceId = deps.surface ?? "claude-code";
 		const recallPromise = lookups
-			? startRecall(deps, { query: lookupQuery, cwd, sessionId, host: surfaceId, env: lookupEnv, parent: lifetime, now, log })
+			? startRecall(deps, {
+					query: lookupQuery,
+					cwd,
+					sessionId,
+					host: surfaceId,
+					env: lookupEnv,
+					parent: lifetime,
+					now,
+					log,
+				})
 			: undefined;
 		const groundPromise = lookups
 			? startGround(deps, { query: lookupQuery, env: lookupEnv, parent: lifetime, now })
 			: undefined;
 		const skillsPromise = lookups
-			? startSkills(deps, { query: lookupQuery, cwd, sessionId, host: surfaceId, env: lookupEnv, parent: lifetime, now, log })
+			? startSkills(deps, {
+					query: lookupQuery,
+					cwd,
+					sessionId,
+					host: surfaceId,
+					env: lookupEnv,
+					parent: lifetime,
+					now,
+					log,
+				})
 			: undefined;
 
 		// The knowledge-base prefetch (find the repo, list documents, read index.md) overlaps the uplift and the
@@ -602,7 +729,9 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				session = reader.start({ repo: git.repo, signal: lifetime });
 				stage("knowledge", "start");
 			} catch (error) {
-				log(`greptile knowledge base: start failed: ${error instanceof Error ? error.message : String(error)}`);
+				log(
+					`greptile knowledge base: start failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
 			}
 		}
 
@@ -652,7 +781,11 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		}
 
 		// Settled before anything is formatted so the record says what happened; all are bounded and never reject.
-		const [recalled, grounded, skilled] = await Promise.all([recallPromise, groundPromise, skillsPromise]);
+		const [recalled, grounded, skilled] = await Promise.all([
+			recallPromise,
+			groundPromise,
+			skillsPromise,
+		]);
 		throwIfCancelled(cancellation);
 		let lessons: LessonsLookup | undefined;
 		let lessonsText = "";
@@ -662,12 +795,25 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				lessonsText = formatLessonsSection(recalled, deps.config.teach.recallChars);
 			} catch (error) {
 				log(`lessons: format failed: ${error instanceof Error ? error.name : "error"}`);
-				lessons = { outcome: "error", count: 0, ids: [], chars: 0, ms: recalled.ms, source: "none", reason: "format" };
+				lessons = {
+					outcome: "error",
+					count: 0,
+					ids: [],
+					chars: 0,
+					ms: recalled.ms,
+					source: "none",
+					reason: "format",
+				};
 			}
-			log(`lessons: ${lessons.outcome} · ${lessons.count} · ${lessons.source} · ${lessons.ms}ms${lessons.reason ? ` · ${lessons.reason}` : ""}`);
+			log(
+				`lessons: ${lessons.outcome} · ${lessons.count} · ${lessons.source} · ${lessons.ms}ms${lessons.reason ? ` · ${lessons.reason}` : ""}`,
+			);
 			if (lessons.outcome !== "off") {
 				try {
-					const source = lessons.source === "hindsight" || lessons.source === "local" ? lessons.source : undefined;
+					const source =
+						lessons.source === "hindsight" || lessons.source === "local"
+							? lessons.source
+							: undefined;
 					emitActivity({
 						v: 1,
 						kind: "teachable-recalled",
@@ -690,9 +836,18 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				docsText = formatDocsSection(grounded, deps.config.ragflow.groundChars);
 			} catch (error) {
 				log(`docs: format failed: ${error instanceof Error ? error.name : "error"}`);
-				docs = { status: "error", count: 0, chars: 0, ms: grounded.ms, datasets: grounded.datasets, reason: "format" };
+				docs = {
+					status: "error",
+					count: 0,
+					chars: 0,
+					ms: grounded.ms,
+					datasets: grounded.datasets,
+					reason: "format",
+				};
 			}
-			log(`docs (RAGFlow): ${docs.status} · ${docs.count} excerpts · ${docs.datasets} datasets · ${docs.ms}ms${docs.reason ? ` · ${docs.reason}` : ""}`);
+			log(
+				`docs (RAGFlow): ${docs.status} · ${docs.count} excerpts · ${docs.datasets} datasets · ${docs.ms}ms${docs.reason ? ` · ${docs.reason}` : ""}`,
+			);
 			if (docs.status !== "off") {
 				try {
 					emitActivity({
@@ -717,9 +872,18 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				skillsText = formatSkillsSection(skilled, SKILL_SECTION_CHARS);
 			} catch (error) {
 				log(`skills: format failed: ${error instanceof Error ? error.name : "error"}`);
-				skills = { outcome: "error", count: 0, names: [], chars: 0, ms: skilled.ms, reason: "format" };
+				skills = {
+					outcome: "error",
+					count: 0,
+					names: [],
+					chars: 0,
+					ms: skilled.ms,
+					reason: "format",
+				};
 			}
-			log(`skills: ${skills.outcome} · ${skills.count} · ${skills.ms}ms${skills.reason ? ` · ${skills.reason}` : ""}`);
+			log(
+				`skills: ${skills.outcome} · ${skills.count} · ${skills.ms}ms${skills.reason ? ` · ${skills.reason}` : ""}`,
+			);
 			if (skills.outcome !== "off") {
 				try {
 					emitActivity({
@@ -768,9 +932,9 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		}
 
 		/** Answered clarifications from an earlier turn of this session survive; stale open ones are dropped. */
-		let clarifications: Clarification[] = (readSession(deps.stateDir, sessionId)?.clarifications ?? []).filter(
-			(c) => c.answer && c.source !== "knowledge",
-		);
+		let clarifications: Clarification[] = (
+			readSession(deps.stateDir, sessionId)?.clarifications ?? []
+		).filter((c) => c.answer && c.source !== "knowledge");
 
 		// Always awaited once started (it honours the abort signal and never rejects) so the record says what happened.
 		let knowledge: KnowledgeLookup | undefined;
@@ -782,7 +946,12 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			log(
 				`greptile knowledge base: ${lookup.outcome}${lookup.docs.length > 0 ? ` · ${lookup.docs.join(", ")}` : ""}${lookup.reason ? ` · ${lookup.reason}` : ""} · ${lookup.ms}ms`,
 			);
-			stage("knowledge", "end", lookup.outcome !== "error", lookup.outcome === "used" ? `${lookup.docs.length} docs` : lookup.outcome);
+			stage(
+				"knowledge",
+				"end",
+				lookup.outcome !== "error",
+				lookup.outcome === "used" ? `${lookup.docs.length} docs` : lookup.outcome,
+			);
 			knowledge = { ...lookup, settled: 0 };
 			if (lookup.outcome === "used") knowledgeInput = { digest: read.digest, docs: lookup.docs };
 			if (lookup.outcome !== "off") {
@@ -821,8 +990,17 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				const seen = new Set(clarifications.map((c) => normalizeQuestion(c.question)));
 				const kept = fresh.filter((c) => !seen.has(normalizeQuestion(c.question)));
 				clarifications = [...clarifications, ...kept];
-				if (knowledge) knowledge = { ...knowledge, settled: kept.filter((c) => c.source === "knowledge").length };
-				stage("clarify", "end", true, `${clarifications.length} question${clarifications.length === 1 ? "" : "s"}`);
+				if (knowledge)
+					knowledge = {
+						...knowledge,
+						settled: kept.filter((c) => c.source === "knowledge").length,
+					};
+				stage(
+					"clarify",
+					"end",
+					true,
+					`${clarifications.length} question${clarifications.length === 1 ? "" : "s"}`,
+				);
 			} catch (error) {
 				rethrowCancellation(error);
 				log(`clarify failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -849,7 +1027,12 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 					branch: git.branch,
 					agent: deps.surface ?? "claude-code",
 				});
-				stage("plan", "end", true, `${plan.linearIssues.length} issues · ${plan.linearSubIssues.length} steps`);
+				stage(
+					"plan",
+					"end",
+					true,
+					`${plan.linearIssues.length} issues · ${plan.linearSubIssues.length} steps`,
+				);
 			} catch (error) {
 				log(`track plan failed: ${error instanceof Error ? error.message : String(error)}`);
 				stage("plan", "end", false);
@@ -860,17 +1043,26 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		if (plan && deps.track && !deps.trackingOff) {
 			throwIfCancelled(cancellation);
 			stage("track", "start");
-			tracking = await deps.track({ plan, graph, signal: lifetime, progress: deps.progress }).catch((error: unknown) => {
-				rethrowCancellation(error);
-				log(`tracking failed: ${error instanceof Error ? error.message : String(error)}`);
-				return undefined;
-			});
+			tracking = await deps
+				.track({ plan, graph, signal: lifetime, progress: deps.progress })
+				.catch((error: unknown) => {
+					rethrowCancellation(error);
+					log(`tracking failed: ${error instanceof Error ? error.message : String(error)}`);
+					return undefined;
+				});
 			throwIfCancelled(cancellation);
 			if (tracking) {
 				result = { ...result, xml: injectTrackingXml(result.xml, plan, tracking) };
-				log(`tracking ${tracking.status}${tracking.errors.length > 0 ? `: ${tracking.errors.join("; ")}` : ""}`);
+				log(
+					`tracking ${tracking.status}${tracking.errors.length > 0 ? `: ${tracking.errors.join("; ")}` : ""}`,
+				);
 				const issues = Object.keys(tracking.linear.nodes).length;
-				stage("track", "end", tracking.status !== "failed", `${tracking.status} · ${issues}/${plan.linearIssues.length} issues`);
+				stage(
+					"track",
+					"end",
+					tracking.status !== "failed",
+					`${tracking.status} · ${issues}/${plan.linearIssues.length} issues`,
+				);
 			} else {
 				stage("track", "end", false);
 			}
@@ -892,7 +1084,15 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			clarifications,
 			plan,
 			tracking,
-			...(skill ? { skill: { name: skill.name, ...(skill.summary ? { summary: skill.summary } : {}), source: skill.source } } : {}),
+			...(skill
+				? {
+						skill: {
+							name: skill.name,
+							...(skill.summary ? { summary: skill.summary } : {}),
+							source: skill.source,
+						},
+					}
+				: {}),
 			kickedOff: false,
 			synced: false,
 			...(knowledge ? { knowledge } : {}),
@@ -916,8 +1116,13 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			// not enough, since `result`/`clarifications` below still hold the stale
 			// pre-save values. Refresh the derived locals, keeping reference equality
 			// when the merge changed nothing.
-			if (saved.record.clarifications !== undefined && saved.record.clarifications !== clarifications) clarifications = saved.record.clarifications;
-			if (saved.record.result.xml !== result.xml) result = { ...result, xml: saved.record.result.xml };
+			if (
+				saved.record.clarifications !== undefined &&
+				saved.record.clarifications !== clarifications
+			)
+				clarifications = saved.record.clarifications;
+			if (saved.record.result.xml !== result.xml)
+				result = { ...result, xml: saved.record.result.xml };
 			specPath = saved.specPath;
 			statePath = saved.statePath;
 			lastNote = saved.lastNote;
@@ -928,10 +1133,17 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			statePath = undefined;
 			stage("state", "end", false);
 		}
-			// Opt-in retention (state.retentionDays above 0): at most one bounded sweep a day. It never throws and never waits.
-			pruneSessionsBestEffort({ stateDir: deps.stateDir, retentionDays: deps.config.state.retentionDays, log });
+		// Opt-in retention (state.retentionDays above 0): at most one bounded sweep a day. It never throws and never waits.
+		pruneSessionsBestEffort({
+			stateDir: deps.stateDir,
+			retentionDays: deps.config.state.retentionDays,
+			log,
+		});
 
-		const providers = { linear: deps.config.linear.team.trim() !== "", notion: deps.config.notion.dataSourceUrl.trim() !== "" };
+		const providers = {
+			linear: deps.config.linear.team.trim() !== "",
+			notion: deps.config.notion.dataSourceUrl.trim() !== "",
+		};
 		const output: HookOutput = {
 			hookSpecificOutput: {
 				hookEventName: "UserPromptSubmit",
@@ -1013,6 +1225,12 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 	} finally {
 		session?.close();
 		clearTimeout(budget);
-		emit({ type: "end", at: now(), outcome, ...(outcomeDetail ? { detail: outcomeDetail } : {}), ...withResolution });
+		emit({
+			type: "end",
+			at: now(),
+			outcome,
+			...(outcomeDetail ? { detail: outcomeDetail } : {}),
+			...withResolution,
+		});
 	}
 }

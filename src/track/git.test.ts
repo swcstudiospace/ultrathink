@@ -6,7 +6,9 @@ import { parseRepoSlug, resolveBranch, resolveRepoSlug } from "./git.ts";
 describe("parseRepoSlug", () => {
 	test("parses ssh and https remotes", () => {
 		expect(parseRepoSlug("git@github.com:swcstudiospace/plugin.git")).toBe("swcstudiospace/plugin");
-		expect(parseRepoSlug("https://github.com/swcstudiospace/plugin.git")).toBe("swcstudiospace/plugin");
+		expect(parseRepoSlug("https://github.com/swcstudiospace/plugin.git")).toBe(
+			"swcstudiospace/plugin",
+		);
 		expect(parseRepoSlug("https://github.com/swcstudiospace/plugin")).toBe("swcstudiospace/plugin");
 	});
 
@@ -18,7 +20,10 @@ describe("parseRepoSlug", () => {
 
 describe("resolveRepoSlug", () => {
 	test("reads the origin remote via the injected run function", () => {
-		const slug = resolveRepoSlug("/repo", () => ({ stdout: "git@github.com:acme/widgets.git\n", code: 0 }));
+		const slug = resolveRepoSlug("/repo", () => ({
+			stdout: "git@github.com:acme/widgets.git\n",
+			code: 0,
+		}));
 		expect(slug).toBe("acme/widgets");
 	});
 
@@ -34,7 +39,9 @@ describe("resolveRepoSlug", () => {
 
 describe("resolveBranch", () => {
 	test("reads the current branch via the injected run function", () => {
-		expect(resolveBranch("/repo", () => ({ stdout: "feat/widget\n", code: 0 }))).toBe("feat/widget");
+		expect(resolveBranch("/repo", () => ({ stdout: "feat/widget\n", code: 0 }))).toBe(
+			"feat/widget",
+		);
 	});
 
 	test("undefined when detached, git exits non-zero, or it throws", () => {

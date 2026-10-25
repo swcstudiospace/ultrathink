@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, relative, resolve, sep } from "node:path";
 
@@ -100,7 +108,9 @@ describe.skipIf(typeof Bun.YAML === "undefined")("dependabot coverage", () => {
 
 	test("the repository scan finds the plugin lockfile and every entry covers its directory", () => {
 		const scan = scanRepo(REPO_ROOT);
-		expect(scan.lockDirs.map((dir) => toDependabotDirectory(REPO_ROOT, dir))).toContain("/plugins/omp-token-opt");
+		expect(scan.lockDirs.map((dir) => toDependabotDirectory(REPO_ROOT, dir))).toContain(
+			"/plugins/omp-token-opt",
+		);
 
 		expect(coverageGaps(REPO_ROOT, loadRealConfig())).toEqual([]);
 	});
@@ -108,7 +118,9 @@ describe.skipIf(typeof Bun.YAML === "undefined")("dependabot coverage", () => {
 	test("fails when the plugin bun entry is removed", () => {
 		const config = loadRealConfig();
 		const withoutPlugin: DependabotConfig = {
-			updates: (config.updates ?? []).filter((update) => update.directory !== "/plugins/omp-token-opt"),
+			updates: (config.updates ?? []).filter(
+				(update) => update.directory !== "/plugins/omp-token-opt",
+			),
 		};
 		expect(coverageGaps(REPO_ROOT, withoutPlugin)).toEqual(["bun /plugins/omp-token-opt"]);
 	});
@@ -128,7 +140,10 @@ describe.skipIf(typeof Bun.YAML === "undefined")("dependabot coverage", () => {
 				{ "package-ecosystem": "bun", directory: "/services/covered" },
 			],
 		};
-		expect(coverageGaps(root, config)).toEqual(["bun /services/new-thing", "github-actions /tools/x"]);
+		expect(coverageGaps(root, config)).toEqual([
+			"bun /services/new-thing",
+			"github-actions /tools/x",
+		]);
 	});
 
 	test("ignores lockfiles under node_modules", () => {

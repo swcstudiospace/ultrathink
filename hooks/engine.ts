@@ -20,8 +20,12 @@ export function requestFrom(value: unknown): PlanRequest {
 	// A supplied host that is not a supported HostId (a bot label such as grok-bot, or a non-string) is omitted and
 	// flagged instead of being left to host detection, so the planner answers unresolved / unsupported-host with empty
 	// context. An absent, null or blank host keeps the existing detection.
-	const declared = typeof record.host === "string" ? record.host.trim() !== "" : record.host !== undefined && record.host !== null;
-	const text = (key: string): string | undefined => (typeof record[key] === "string" ? (record[key] as string) : undefined);
+	const declared =
+		typeof record.host === "string"
+			? record.host.trim() !== ""
+			: record.host !== undefined && record.host !== null;
+	const text = (key: string): string | undefined =>
+		typeof record[key] === "string" ? (record[key] as string) : undefined;
 	const rawModel = text("model");
 	const model = rawModel?.trim() ? rawModel.trim() : undefined;
 	const rawProvider = text("provider");

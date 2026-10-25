@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileLock, writeFileAtomic } from "./atomic.ts";
@@ -20,7 +29,9 @@ afterEach(() => {
 
 /** Names in `path` that are neither the target nor a lock: temporary files and aside locks must never be left behind. */
 function leftovers(path: string): string[] {
-	return readdirSync(path).filter((name) => name.endsWith(".tmp") || name.endsWith(".lock") || name.endsWith(".stale"));
+	return readdirSync(path).filter(
+		(name) => name.endsWith(".tmp") || name.endsWith(".lock") || name.endsWith(".stale"),
+	);
 }
 
 describe("writeFileAtomic", () => {
@@ -149,9 +160,13 @@ describe("withFileLock", () => {
 		writeFileAtomic(target, "0");
 		writeFileAtomic(join(guard, `2147483647.${"a".repeat(32)}`), "");
 		const logs: string[] = [];
-		withFileLock(target, () => writeFileAtomic(target, String(Number(readFileSync(target, "utf8")) + 1)), {
-			log: (message) => logs.push(message),
-		});
+		withFileLock(
+			target,
+			() => writeFileAtomic(target, String(Number(readFileSync(target, "utf8")) + 1)),
+			{
+				log: (message) => logs.push(message),
+			},
+		);
 		expect(readFileSync(target, "utf8")).toBe("1");
 		expect(logs).toEqual([]);
 		expect(existsSync(guard)).toBe(false);
@@ -165,10 +180,14 @@ describe("withFileLock", () => {
 		writeFileAtomic(target, "0");
 		writeFileAtomic(join(guard, owner), "");
 		const logs: string[] = [];
-		withFileLock(target, () => writeFileAtomic(target, String(Number(readFileSync(target, "utf8")) + 1)), {
-			timeoutMs: 0,
-			log: (message) => logs.push(message),
-		});
+		withFileLock(
+			target,
+			() => writeFileAtomic(target, String(Number(readFileSync(target, "utf8")) + 1)),
+			{
+				timeoutMs: 0,
+				log: (message) => logs.push(message),
+			},
+		);
 		expect(readFileSync(target, "utf8")).toBe("1");
 		expect(readdirSync(guard)).toEqual([owner]);
 		expect(logs).toHaveLength(1);
@@ -273,7 +292,10 @@ describe("concurrent updates through updateSession", () => {
 		};
 		writeSession(stateDir, record);
 		const workers = Array.from({ length: 8 }, () =>
-			Bun.spawn([process.execPath, WORKER, stateDir, "race", "25"], { stdout: "pipe", stderr: "pipe" }),
+			Bun.spawn([process.execPath, WORKER, stateDir, "race", "25"], {
+				stdout: "pipe",
+				stderr: "pipe",
+			}),
 		);
 		const exits = await Promise.all(workers.map((worker) => worker.exited));
 		const errors = await Promise.all(workers.map((worker) => new Response(worker.stderr).text()));
@@ -304,7 +326,11 @@ describe("concurrent updates through updateSession", () => {
 		const signal = (name: string): void => writeFileAtomic(join(events, name), "");
 		signal("start");
 		const observed = new Set<string>();
-		const waiters = new Set<{ names: string[]; resolve: (name: string) => void; reject: (error: Error) => void }>();
+		const waiters = new Set<{
+			names: string[];
+			resolve: (name: string) => void;
+			reject: (error: Error) => void;
+		}>();
 		const readers: Promise<void>[] = [];
 		let failure: Error | undefined;
 		const notify = (): void => {
@@ -316,37 +342,50 @@ describe("concurrent updates through updateSession", () => {
 				}
 			}
 		};
-		const waitFor = (names: string[]): Promise<string> => new Promise((resolve, reject) => {
-			if (failure) return reject(failure);
-			waiters.add({ names, resolve, reject });
-			notify();
-		});
+		const waitFor = (names: string[]): Promise<string> =>
+			new Promise((resolve, reject) => {
+				if (failure) return reject(failure);
+				waiters.add({ names, resolve, reject });
+				notify();
+			});
 		const spawn = (actor: string) => {
 			const worker = Bun.spawn(
-				[process.execPath, join(import.meta.dir, "atomic.recovery.worker.ts"), stateDir, record.sessionId, events, actor],
+				[
+					process.execPath,
+					join(import.meta.dir, "atomic.recovery.worker.ts"),
+					stateDir,
+					record.sessionId,
+					events,
+					actor,
+				],
 				{ stdout: "pipe", stderr: "pipe" },
 			);
 			// Consume explicit worker messages: filesystem notification delivery is not a barrier.
-			readers.push((async () => {
-				try {
-					const decoder = new TextDecoder();
-					let buffer = "";
-					for await (const chunk of worker.stdout) {
-						buffer += decoder.decode(chunk, { stream: true });
-						let end: number;
-						while ((end = buffer.indexOf("\n")) !== -1) {
-							observed.add(buffer.slice(0, end));
-							buffer = buffer.slice(end + 1);
-							notify();
+			readers.push(
+				(async () => {
+					try {
+						const decoder = new TextDecoder();
+						let buffer = "";
+						for await (const chunk of worker.stdout) {
+							buffer += decoder.decode(chunk, { stream: true });
+							let end: number;
+							while ((end = buffer.indexOf("\n")) !== -1) {
+								observed.add(buffer.slice(0, end));
+								buffer = buffer.slice(end + 1);
+								notify();
+							}
 						}
+						if (waiters.size)
+							throw new Error(
+								`${actor} exited before the next barrier; observed: ${[...observed].join(", ")}`,
+							);
+					} catch (error) {
+						failure = error instanceof Error ? error : new Error(String(error));
+						for (const waiter of waiters) waiter.reject(failure);
+						waiters.clear();
 					}
-					if (waiters.size) throw new Error(`${actor} exited before the next barrier; observed: ${[...observed].join(", ")}`);
-				} catch (error) {
-					failure = error instanceof Error ? error : new Error(String(error));
-					for (const waiter of waiters) waiter.reject(failure);
-					waiters.clear();
-				}
-			})());
+				})(),
+			);
 			return worker;
 		};
 		const workers = [spawn("delayed")];
@@ -358,7 +397,7 @@ describe("concurrent updates through updateSession", () => {
 			// Force a successor to claim the now-empty guard before delayed attempts its late rmdir.
 			await waitFor(["first.entered", "second.entered", "first.guarded", "second.guarded"]);
 			signal("snapshot-go");
-			if (await waitFor(["moved", "released-owner"]) === "moved") {
+			if ((await waitFor(["moved", "released-owner"])) === "moved") {
 				await waitFor(["first.overlap", "second.overlap"]);
 			} else {
 				await waitFor(["first.claimed", "second.claimed"]);

@@ -67,7 +67,10 @@ export interface ApprovalProof {
 export type RequestLimitScope = "ip" | "principal" | "owner";
 
 export interface Auth {
-	login(input: { password: string; clientIp: string }): Promise<
+	login(input: {
+		password: string;
+		clientIp: string;
+	}): Promise<
 		| { ok: true; setCookie: string }
 		| { ok: false; reason: "invalid" | "rate_limited"; retryAfterSec?: number }
 	>;
@@ -113,7 +116,11 @@ const KEY_ID = /^[0-9a-f]{8}$/;
 const MAX_TRACKED_KEYS = 10_000;
 const PRUNE_INTERVAL_MS = 60 * 1000;
 const OWNER_KEY = "owner";
-const LOOPBACK_PEERS: Record<string, true> = { "127.0.0.1": true, "::1": true, "::ffff:127.0.0.1": true };
+const LOOPBACK_PEERS: Record<string, true> = {
+	"127.0.0.1": true,
+	"::1": true,
+	"::ffff:127.0.0.1": true,
+};
 const HASH_FORMAT = /^\$(?:argon2(?:id|i|d)|2[abxy]?)\$/;
 const FORWARDED_IP = /^[0-9A-Fa-f:.]{1,45}$/;
 const NO_CONTROL = /^[^\x00-\x1f\x7f]*$/;
@@ -126,7 +133,10 @@ const MAX_SESSION_VALUE_CHARS = 256;
 const MAX_SIGNATURE_CHARS = 128;
 const PASSWORD_INPUT = new StringValidator({ allowEmpty: true, maxLength: MAX_PASSWORD_CHARS });
 const IDENTITY_INPUT = new StringValidator({ maxLength: MAX_IDENTITY_CHARS, pattern: NO_CONTROL });
-const SESSION_VALUE = new StringValidator({ maxLength: MAX_SESSION_VALUE_CHARS, pattern: /^[0-9a-f]{8}\.\d{1,16}\.[A-Za-z0-9_-]+$/ });
+const SESSION_VALUE = new StringValidator({
+	maxLength: MAX_SESSION_VALUE_CHARS,
+	pattern: /^[0-9a-f]{8}\.\d{1,16}\.[A-Za-z0-9_-]+$/,
+});
 
 /**
  * Key id of a session secret: the first 8 hex characters of
@@ -199,7 +209,10 @@ class FixedWindowLimiter {
 			this.windows.set(key, window);
 		}
 		window.count += 1;
-		return { count: window.count, retryAfterSec: Math.max(1, Math.ceil((window.resetAt - t) / 1000)) };
+		return {
+			count: window.count,
+			retryAfterSec: Math.max(1, Math.ceil((window.resetAt - t) / 1000)),
+		};
 	}
 
 	release(key: string): void {
@@ -284,16 +297,23 @@ export function createAuth(options: AuthOptions): Auth {
 	}
 
 	function sessionMac(secret: string, expiresAtMs: number): string {
-		return createHmac("sha256", secret).update(`ut-session|${expiresAtMs}|${passwordBinding}`).digest("base64url");
+		return createHmac("sha256", secret)
+			.update(`ut-session|${expiresAtMs}|${passwordBinding}`)
+			.digest("base64url");
 	}
 
 	function approvalMac(secret: string, proof: ApprovalProof): string | null {
 		const times = [proof.issuedAt, proof.expiresAt, proof.refreshedAt];
-		const timesOk = times.every((value) => Number.isSafeInteger(value) && value >= 0 && value <= 9_999_999_999_999_999);
-		if (!APPROVAL_TOKEN.test(proof.subject) || !APPROVAL_TOKEN.test(proof.nonce) || !timesOk) return null;
+		const timesOk = times.every(
+			(value) => Number.isSafeInteger(value) && value >= 0 && value <= 10_000_000_000_000_000,
+		);
+		if (!APPROVAL_TOKEN.test(proof.subject) || !APPROVAL_TOKEN.test(proof.nonce) || !timesOk)
+			return null;
 		if (proof.expiresAt < proof.issuedAt || proof.refreshedAt < proof.issuedAt) return null;
 		return createHmac("sha256", secret)
-			.update(`ut-approval|${proof.subject}|${proof.nonce}|${proof.issuedAt}|${proof.expiresAt}|${proof.refreshedAt}`)
+			.update(
+				`ut-approval|${proof.subject}|${proof.nonce}|${proof.issuedAt}|${proof.expiresAt}|${proof.refreshedAt}`,
+			)
 			.digest("base64url");
 	}
 
@@ -304,7 +324,13 @@ export function createAuth(options: AuthOptions): Auth {
 	}
 
 	function cookieHeader(value: string, maxAgeSec: number): string {
-		const attributes = [`${cookieName}=${value}`, "Path=/", "HttpOnly", "SameSite=Strict", `Max-Age=${maxAgeSec}`];
+		const attributes = [
+			`${cookieName}=${value}`,
+			"Path=/",
+			"HttpOnly",
+			"SameSite=Strict",
+			`Max-Age=${maxAgeSec}`,
+		];
 		if (cookieSecure) attributes.push("Secure");
 		return attributes.join("; ");
 	}
@@ -338,7 +364,11 @@ export function createAuth(options: AuthOptions): Auth {
 			}
 			const perIp = loginsByIp.hit(clientIp, LOGIN_WINDOW_MS);
 			if (!perIp || perIp.count > LOGIN_ATTEMPTS_PER_IP) {
-				return { ok: false, reason: "rate_limited", retryAfterSec: retryAfterOf(perIp, LOGIN_WINDOW_MS) };
+				return {
+					ok: false,
+					reason: "rate_limited",
+					retryAfterSec: retryAfterOf(perIp, LOGIN_WINDOW_MS),
+				};
 			}
 
 			// Reserve an owner-level slot before verifying so concurrent attempts
@@ -346,7 +376,11 @@ export function createAuth(options: AuthOptions): Auth {
 			// success, so only failures count against either window.
 			const perOwner = ownerFailures.hit(OWNER_KEY, LOGIN_WINDOW_MS);
 			if (!perOwner || perOwner.count > OWNER_FAILURES_PER_WINDOW) {
-				return { ok: false, reason: "rate_limited", retryAfterSec: retryAfterOf(perOwner, LOGIN_WINDOW_MS) };
+				return {
+					ok: false,
+					reason: "rate_limited",
+					retryAfterSec: retryAfterOf(perOwner, LOGIN_WINDOW_MS),
+				};
 			}
 
 			if (!(await passwordMatches(password))) {
@@ -391,7 +425,10 @@ export function createAuth(options: AuthOptions): Auth {
 				refused("limits", "identity", "INVALID");
 				throw new TypeError("request limit needs a client address and an owner id");
 			}
-			if (principal !== undefined && (typeof principal !== "string" || principal.length > MAX_PRINCIPAL_INPUT_CHARS)) {
+			if (
+				principal !== undefined &&
+				(typeof principal !== "string" || principal.length > MAX_PRINCIPAL_INPUT_CHARS)
+			) {
 				refused("limits", "principal", "INVALID");
 				throw new TypeError("request limit principal must be a string of at most 4096 characters");
 			}
@@ -405,12 +442,17 @@ export function createAuth(options: AuthOptions): Auth {
 				return { ok: false, retryAfterSec: retryAfterOf(ip, REQUEST_WINDOW_MS), scope: "ip" };
 			}
 			if (principal !== undefined) {
-				const key = principal.length <= MAX_PRINCIPAL_LENGTH
-					? principal
-					: `sha256:${createHash("sha256").update(principal).digest("hex")}`;
+				const key =
+					principal.length <= MAX_PRINCIPAL_LENGTH
+						? principal
+						: `sha256:${createHash("sha256").update(principal).digest("hex")}`;
 				const hit = requests.hit(`principal:${key}`, REQUEST_WINDOW_MS);
 				if (!hit || hit.count > scaledLimit(PRINCIPAL_REQUESTS_PER_WINDOW, factor)) {
-					return { ok: false, retryAfterSec: retryAfterOf(hit, REQUEST_WINDOW_MS), scope: "principal" };
+					return {
+						ok: false,
+						retryAfterSec: retryAfterOf(hit, REQUEST_WINDOW_MS),
+						scope: "principal",
+					};
 				}
 			}
 			const owner = requests.hit(`owner:${ownerId}`, REQUEST_WINDOW_MS);
@@ -434,7 +476,11 @@ export function createAuth(options: AuthOptions): Auth {
 		},
 
 		verifyApproval(proof, signature) {
-			if (typeof signature !== "string" || signature.length === 0 || signature.length > MAX_SIGNATURE_CHARS) {
+			if (
+				typeof signature !== "string" ||
+				signature.length === 0 ||
+				signature.length > MAX_SIGNATURE_CHARS
+			) {
 				refused("approval", "signature", "INVALID");
 				return false;
 			}
@@ -483,7 +529,11 @@ function limiterKey(address: string): string {
 	const headGroups = head === "" ? [] : head.split(":");
 	const tailGroups = address.includes("::") ? (tail === "" ? [] : tail.split(":")) : [];
 	const groups = address.includes("::")
-		? [...headGroups, ...Array<string>(Math.max(0, 8 - headGroups.length - tailGroups.length)).fill("0"), ...tailGroups]
+		? [
+				...headGroups,
+				...Array<string>(Math.max(0, 8 - headGroups.length - tailGroups.length)).fill("0"),
+				...tailGroups,
+			]
 		: headGroups;
 	return `${groups
 		.slice(0, 4)
@@ -495,10 +545,15 @@ function limiterKey(address: string): string {
  * Address the limiters and logs use. X-Real-IP is read only when `trustForwarded` is true. The default is the
  * plaintext-mode rule (a loopback peer); with mTLS the router passes true only for the verified edge identity.
  */
-export function clientIpFrom(req: Request, peerIp: string, trustForwarded = LOOPBACK_PEERS[peerIp] === true): string {
+export function clientIpFrom(
+	req: Request,
+	peerIp: string,
+	trustForwarded = LOOPBACK_PEERS[peerIp] === true,
+): string {
 	if (!trustForwarded) return limiterKey(peerIp);
 	const forwarded = req.headers.get("x-real-ip")?.trim();
-	if (forwarded && FORWARDED_IP.test(forwarded) && isIP(forwarded) !== 0) return limiterKey(forwarded);
+	if (forwarded && FORWARDED_IP.test(forwarded) && isIP(forwarded) !== 0)
+		return limiterKey(forwarded);
 	if (forwarded) refused("client-ip", "x-real-ip", "PATTERN_MISMATCH");
 	return limiterKey(peerIp);
 }

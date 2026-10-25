@@ -76,7 +76,8 @@ function normalize(value: SendResult | undefined): SendResult {
 }
 
 export function createSinkQueue(options: SinkQueueOptions): SinkQueue {
-	const { transport, capacity, maxBatch, maxAttempts, backoffMs, requestTimeoutMs, onEvent } = options;
+	const { transport, capacity, maxBatch, maxAttempts, backoffMs, requestTimeoutMs, onEvent } =
+		options;
 	const setTimer = options.setTimer ?? defaultSetTimer;
 	const clearTimer = options.clearTimer ?? defaultClearTimer;
 	const sink = transport.name;

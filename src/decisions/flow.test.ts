@@ -4,14 +4,30 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendFlowScore, evaluateFlowOutput, FLOW_OUTPUT_MAX, isGsdFlowCommand, lookupFlowScore } from "./flow.ts";
+import {
+	appendFlowScore,
+	evaluateFlowOutput,
+	FLOW_OUTPUT_MAX,
+	isGsdFlowCommand,
+	lookupFlowScore,
+} from "./flow.ts";
 
 const usage = { input_tokens: 3, output_tokens: 2 };
 function json(body: unknown, status = 200): Response {
-	return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { "content-type": "application/json" },
+	});
 }
 function ok(choice: string, confidence?: number, id = "req_1") {
-	return json({ id, model: "~typesafe/jev-latest", answers: { verdict: { type: "choice", choice, ...(confidence === undefined ? {} : { confidence }) } }, usage });
+	return json({
+		id,
+		model: "~typesafe/jev-latest",
+		answers: {
+			verdict: { type: "choice", choice, ...(confidence === undefined ? {} : { confidence }) },
+		},
+		usage,
+	});
 }
 
 describe("evaluateFlowOutput", () => {
@@ -76,13 +92,25 @@ describe("evaluateFlowOutput", () => {
 	});
 
 	test("empty output is an explicit skip", async () => {
-		const record = await evaluateFlowOutput({ subject: "cleanup", output: "  \n", apiKey: "sk-test", fetch: (async () => { throw new Error("no"); }) as unknown as typeof fetch });
+		const record = await evaluateFlowOutput({
+			subject: "cleanup",
+			output: "  \n",
+			apiKey: "sk-test",
+			fetch: (async () => {
+				throw new Error("no");
+			}) as unknown as typeof fetch,
+		});
 		expect(record.state).toBe("empty");
 		expect(record.confidence).toBeNull();
 	});
 
 	test("oversized output is not scored", async () => {
-		const record = await evaluateFlowOutput({ subject: "summary", output: "x".repeat(FLOW_OUTPUT_MAX + 1), apiKey: "sk-test", fetch: (async () => ok("approve", 1)) as unknown as typeof fetch });
+		const record = await evaluateFlowOutput({
+			subject: "summary",
+			output: "x".repeat(FLOW_OUTPUT_MAX + 1),
+			apiKey: "sk-test",
+			fetch: (async () => ok("approve", 1)) as unknown as typeof fetch,
+		});
 		expect(record.state).toBe("error");
 		expect(record.errorClass).toBe("truncated");
 		expect(record.confidence).toBeNull();
@@ -91,7 +119,21 @@ describe("evaluateFlowOutput", () => {
 	test("identical success bytes are reused", () => {
 		const dir = mkdtempSync(join(tmpdir(), "flow-"));
 		const path = join(dir, "flow-decisions.jsonl");
-		const record = { version: 1 as const, subject: "s", hash: "abc", decision: "approve" as const, confidence: 0.5, rationale: "choice.confidence", model: "m", provider: "OpenRouter" as const, state: "success" as const, retryCount: 0, at: 1, latencyMs: 1, clearsHumanPause: false as const };
+		const record = {
+			version: 1 as const,
+			subject: "s",
+			hash: "abc",
+			decision: "approve" as const,
+			confidence: 0.5,
+			rationale: "choice.confidence",
+			model: "m",
+			provider: "OpenRouter" as const,
+			state: "success" as const,
+			retryCount: 0,
+			at: 1,
+			latencyMs: 1,
+			clearsHumanPause: false as const,
+		};
 		appendFlowScore(path, record);
 		expect(lookupFlowScore(path, "abc")?.confidence).toBe(0.5);
 		expect(lookupFlowScore(path, "nope")).toBeUndefined();

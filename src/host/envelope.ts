@@ -24,7 +24,6 @@ const GROK_EVENT_TO_PASCAL: Record<string, string> = {
 	post_compact: "PostCompact",
 };
 
-
 function pick(record: Record<string, unknown>, snake: string, camel: string): unknown {
 	if (record[snake] !== undefined) return record[snake];
 	if (record[camel] !== undefined) return record[camel];

@@ -46,7 +46,8 @@ async function main(): Promise<void> {
 	if (isSubagentEnvelope(raw)) return;
 	const input = raw as HookInput;
 	if (!input.session_id) return;
-	if (!isPrCreationTool(input.tool_name, input.tool_input?.command ?? input.tool_input?.cmd)) return;
+	if (!isPrCreationTool(input.tool_name, input.tool_input?.command ?? input.tool_input?.cmd))
+		return;
 
 	const stateDir = defaultStateDir();
 	const record = readSession(stateDir, input.session_id);

@@ -5,7 +5,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RecallHit } from "../hindsight/types.ts";
-import { contentFor, dedupeKeyFor, documentIdFor, gitRootsOf, lessonFromHit, metadataFor, projectOf, sanitizeTag, tagsFor } from "./mapping.ts";
+import {
+	contentFor,
+	dedupeKeyFor,
+	documentIdFor,
+	gitRootsOf,
+	lessonFromHit,
+	metadataFor,
+	projectOf,
+	sanitizeTag,
+	tagsFor,
+} from "./mapping.ts";
 import type { TeachableMoment } from "./types.ts";
 
 const dirs: string[] = [];
@@ -129,7 +139,9 @@ describe("documentIdFor, tagsFor, sanitizeTag", () => {
 	});
 
 	test("tags are the six base tags plus sanitized, deduplicated own tags", () => {
-		const tags = tagsFor(moment({ tags: ["Needs Review", "ultrathink", "dup", "dup", "", "!!!", "a".repeat(60)] }));
+		const tags = tagsFor(
+			moment({ tags: ["Needs Review", "ultrathink", "dup", "dup", "", "!!!", "a".repeat(60)] }),
+		);
 		expect(tags).toEqual([
 			"ultrathink",
 			"teachable",
@@ -144,7 +156,9 @@ describe("documentIdFor, tagsFor, sanitizeTag", () => {
 	});
 
 	test("own tags cannot claim a reserved namespace", () => {
-		const tags = tagsFor(moment({ tags: ["status:superseded", "project:evil", "host:x", "kind:bug", "ok:fine"] }));
+		const tags = tagsFor(
+			moment({ tags: ["status:superseded", "project:evil", "host:x", "kind:bug", "ok:fine"] }),
+		);
 		expect(tags).not.toContain("status:superseded");
 		expect(tags).not.toContain("project:evil");
 		expect(tags).toContain("ok:fine");
@@ -166,7 +180,13 @@ describe("contentFor", () => {
 	test("is hard-capped at 3000 characters without splitting a surrogate pair", () => {
 		const long = contentFor(moment({ body: "x".repeat(5000) }));
 		expect(long).toHaveLength(3000);
-		const emoji = contentFor(moment({ name: "N", description: "", body: `${"x".repeat(2990)}\u{1F600}\u{1F600}\u{1F600}` }));
+		const emoji = contentFor(
+			moment({
+				name: "N",
+				description: "",
+				body: `${"x".repeat(2990)}\u{1F600}\u{1F600}\u{1F600}`,
+			}),
+		);
 		expect(emoji).toHaveLength(2999);
 		expect(/[\uD800-\uDBFF]$/.test(emoji)).toBe(false);
 	});
@@ -195,12 +215,26 @@ describe("metadataFor", () => {
 			].sort(),
 		);
 		for (const value of Object.values(meta)) expect(typeof value).toBe("string");
-		expect(meta).toMatchObject({ tm_id: "m1", schema: "tm/2", confidence: "1", occurrences: "3", source_artifacts: '["src/a.ts"]', related_ids: '["m0"]' });
+		expect(meta).toMatchObject({
+			tm_id: "m1",
+			schema: "tm/2",
+			confidence: "1",
+			occurrences: "3",
+			source_artifacts: '["src/a.ts"]',
+			related_ids: '["m0"]',
+		});
 	});
 });
 
 function hitFor(m: TeachableMoment, overrides: Partial<RecallHit> = {}): RecallHit {
-	return { id: "unit-1", text: contentFor(m), documentId: documentIdFor(m.id), tags: tagsFor(m), metadata: metadataFor(m), ...overrides };
+	return {
+		id: "unit-1",
+		text: contentFor(m),
+		documentId: documentIdFor(m.id),
+		tags: tagsFor(m),
+		metadata: metadataFor(m),
+		...overrides,
+	};
 }
 
 describe("lessonFromHit", () => {
@@ -251,21 +285,55 @@ describe("lessonFromHit", () => {
 	});
 
 	test("hits that are not ultrathink lessons are dropped", () => {
-		expect(lessonFromHit({ id: "u", text: "# Something\n\nelse", tags: [], metadata: {} })).toBeUndefined();
-		expect(lessonFromHit({ id: "u", text: "# x\n\ny", documentId: "doc-9", tags: [], metadata: { name: "x" } })).toBeUndefined();
-		expect(lessonFromHit({ id: "u", text: "# x\n\ny", documentId: "tm:../bad", tags: [], metadata: {} })).toBeUndefined();
-		expect(lessonFromHit({ id: "u", text: "", documentId: "tm:nameless", tags: [], metadata: {} })).toBeUndefined();
+		expect(
+			lessonFromHit({ id: "u", text: "# Something\n\nelse", tags: [], metadata: {} }),
+		).toBeUndefined();
+		expect(
+			lessonFromHit({
+				id: "u",
+				text: "# x\n\ny",
+				documentId: "doc-9",
+				tags: [],
+				metadata: { name: "x" },
+			}),
+		).toBeUndefined();
+		expect(
+			lessonFromHit({ id: "u", text: "# x\n\ny", documentId: "tm:../bad", tags: [], metadata: {} }),
+		).toBeUndefined();
+		expect(
+			lessonFromHit({ id: "u", text: "", documentId: "tm:nameless", tags: [], metadata: {} }),
+		).toBeUndefined();
 	});
 
 	test("superseded lessons are dropped, by tag or by metadata", () => {
 		const m = moment();
-		expect(lessonFromHit(hitFor(m, { tags: [...tagsFor(m), "status:superseded"] }))).toBeUndefined();
-		expect(lessonFromHit(hitFor(m, { metadata: { ...metadataFor(m), status: "superseded" } }))).toBeUndefined();
+		expect(
+			lessonFromHit(hitFor(m, { tags: [...tagsFor(m), "status:superseded"] })),
+		).toBeUndefined();
+		expect(
+			lessonFromHit(hitFor(m, { metadata: { ...metadataFor(m), status: "superseded" } })),
+		).toBeUndefined();
 	});
 
 	test("bad numbers and kinds fall back instead of failing", () => {
 		const m = moment();
-		const lesson = lessonFromHit(hitFor(m, { tags: [], metadata: { ...metadataFor(m), occurrences: "many", kind: "mystery", project: "", host: "" } }));
-		expect(lesson).toMatchObject({ occurrences: 1, kind: "pitfall", project: "unknown", host: "unknown" });
+		const lesson = lessonFromHit(
+			hitFor(m, {
+				tags: [],
+				metadata: {
+					...metadataFor(m),
+					occurrences: "many",
+					kind: "mystery",
+					project: "",
+					host: "",
+				},
+			}),
+		);
+		expect(lesson).toMatchObject({
+			occurrences: 1,
+			kind: "pitfall",
+			project: "unknown",
+			host: "unknown",
+		});
 	});
 });

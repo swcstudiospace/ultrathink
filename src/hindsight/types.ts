@@ -162,7 +162,14 @@ export type HindsightKeySource = "store" | (typeof HINDSIGHT_KEY_ENVS)[number];
 
 export type HindsightReadiness =
 	| { state: "ready"; url: string; bank: string; keySource: HindsightKeySource }
-	| { state: "ready"; backend: "gateway"; url: string; bank: string; seat: string; tokenSource: "store" | "DESK_GATEWAY_TOKEN" }
+	| {
+			state: "ready";
+			backend: "gateway";
+			url: string;
+			bank: string;
+			seat: string;
+			tokenSource: "store" | "DESK_GATEWAY_TOKEN";
+	  }
 	| { state: "off"; reason: "disabled" | "killed" }
 	| { state: "unready"; reason: "no-url" | "bad-url" | "no-key" | "no-token"; detail?: string };
 
