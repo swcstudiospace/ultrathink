@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI cancels a superseded pull-request run, bounds each job, checks out without persisting credentials, and pins every action to a commit SHA. Dependabot updates GitHub Actions and Bun weekly. CodeQL scans JavaScript/TypeScript and Python on every pull request, including forks, on `main` and weekly.
 - The Prime Agent bridge test ignores `ULTRATHINK_STATE_DIR` and other host variables from the shell that launches it.
 - `tsconfig.json` enables `noImplicitOverride`, `noFallthroughCasesInSwitch`, `noImplicitReturns`, `noUncheckedSideEffectImports`, `noUnusedLocals`, `noUnusedParameters` and `noUncheckedIndexedAccess`.
-- With a token ceiling set (`ULTRATHINK_RUN_TOKEN_CEILING` or `ULTRATHINK_DAILY_TOKEN_CEILING`) and no output cap (`ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` at 0), each model reply is capped to the tokens the ceilings still allow after its input, and never above 32000 tokens. With no ceiling, nothing changes.
+- With a token ceiling set (`ULTRATHINK_RUN_TOKEN_CEILING` or `ULTRATHINK_DAILY_TOKEN_CEILING`) and no output cap (`ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` at 0), each model reply is capped to the tokens the ceilings still allow after its input, and never above 16000 tokens. With no ceiling, nothing changes.
 
 ### Fixed
 
