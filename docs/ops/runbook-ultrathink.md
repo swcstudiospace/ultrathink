@@ -137,7 +137,7 @@ These are read by `services/ultrathink/config/config.ts` and are not in the item
 | Variable | Default | Meaning |
 |---|---|---|
 | `ULTRATHINK_PORT` | `8795` | Listen port, 1024 to 65535. |
-| `ULTRATHINK_MAX_INPUT_CHARS` | `4000000` | Longest request in characters. The 1 MB request body limit applies first over HTTP. |
+| `ULTRATHINK_MAX_INPUT_CHARS` | `4000000` | Longest request in characters; `0` means no limit. The 1 MB request body limit applies first over HTTP. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | `20000` | Longest client-driven answer, 1 to 20000 characters. |
 | `ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` | `0` | Output token limit for one model call; `0` sends no limit, so the provider's own maximum applies. A positive value must be 256 to 32000. |
 | `ULTRATHINK_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base. https only, no credentials, query or fragment. |
@@ -576,7 +576,7 @@ Measured on this VPS on 2026-10-18, one prompt, reasoning effort low:
 | claude-haiku-4.5 | 111 s | 0.089 USD |
 | grok-4.7 | 138 s | 0.153 USD |
 
-At the provider's default reasoning effort, grok-4.7 did not finish in 6 minutes. One prompt on one day is an indication, not a benchmark: re-measure after a model or prompt change. The effort now defaults to `high`, with no timeout and no token ceiling, so a plan runs until it completes; set `ULTRATHINK_MODEL_REASONING_EFFORT` lower, or a positive timeout or ceiling, only when you want a limit.
+At the provider's default reasoning effort, grok-4.7 did not finish in 6 minutes. One prompt on one day is an indication, not a benchmark: re-measure after a model or prompt change. The effort now defaults to `auto`, which omits the parameter so the provider's own default applies, with no timeout and no token ceiling, so a plan runs until it completes; set `ULTRATHINK_MODEL_REASONING_EFFORT` lower, or a positive timeout or ceiling, only when you want a limit.
 
 | Variable | Default | Effect |
 |---|---|---|

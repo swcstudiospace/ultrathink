@@ -204,7 +204,7 @@ Measured on 2026-10-18 on this VPS with the real planner. Prompt: "Compare three
 | `anthropic/claude-haiku-4.5` | 111 s | 10 | 39.3k / 10.0k | 0.089 USD | 23.9k chars | 7 / 56 |
 | `x-ai/grok-4.7` | 138 s | 10 | 50.9k / 11.7k | 0.153 USD | 23.9k chars | 7 / 56 |
 
-A plan makes 9 to 11 model calls: uplift 1, graph 1, Chain of Thought one per node (5 to 8), clarify 1. `x-ai/grok-4.7` at the provider's default reasoning did not finish in 6 minutes: one call passed the per-call timeout (120 s at the time of the test; the timeout is now off by default), and the 9 calls it made cost 0.167 USD. That is why `low` is the setting to use for this model; the server's default effort is `high`. `x-ai/grok-4.7` writes about 45 tokens per second, so its single large specification call takes 110 to 120 s even at `low`.
+A plan makes 9 to 11 model calls: uplift 1, graph 1, Chain of Thought one per node (5 to 8), clarify 1. `x-ai/grok-4.7` at the provider's default reasoning did not finish in 6 minutes: one call passed the per-call timeout (120 s at the time of the test; the timeout is now off by default), and the 9 calls it made cost 0.167 USD. That is why `low` is the setting to use for this model; the server's default effort is `auto`, which omits the parameter. `x-ai/grok-4.7` writes about 45 tokens per second, so its single large specification call takes 110 to 120 s even at `low`.
 
 The shipped example model stays `x-ai/grok-4.7`, which is the operator's choice. A faster or cheaper model is one `ULTRATHINK_PLANNING_MODEL` change: `google/gemini-3.6-flash` for speed, `openai/gpt-5.6-luna` for price. Model ids are OpenRouter ids. The result's `usage` field reports the real calls, tokens and, when OpenRouter returns it, the cost of each plan. The server logs every model call (`planner_call`) and exposes `ultrathink_planner_calls_total` and `ultrathink_planner_call_duration_seconds`, which show which calls are slow.
 
@@ -275,7 +275,7 @@ The operator sets these in `/etc/ultrathink/ultrathink.env` and restarts the ser
 | `ULTRATHINK_SESSION_SECRET` | none (required) | Secret for web login sessions, at least 32 characters. |
 | `ULTRATHINK_STATE_DIR` | `/var/lib/ultrathink` | State directory: database, `oauth.json`, `journal/`, `sessions/`, `jobs/`. |
 | `ULTRATHINK_PORT` | `8795` | Listen port, 1024 to 65535. |
-| `ULTRATHINK_MAX_INPUT_CHARS` | `4000000` | Longest request in characters. The 1 MB request body limit applies first over HTTP. |
+| `ULTRATHINK_MAX_INPUT_CHARS` | `4000000` | Longest request in characters; `0` means no limit. The 1 MB request body limit applies first over HTTP. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | `20000` | Longest client-driven answer, 1 to 20000 characters. |
 | `ULTRATHINK_RUN_TOKEN_CEILING` | `0` | Token limit for one plan; `0` means no limit. A plan over a positive limit stops with `budget_exceeded`. |
 | `ULTRATHINK_DAILY_TOKEN_CEILING` | `0` | Token limit per UTC day across all plans; `0` means no limit. |
