@@ -161,7 +161,7 @@ describe("authorize", () => {
 	});
 
 	test("rejects an unknown route group at compile time and at runtime", () => {
-		// @ts-expect-error "admin" is not a RouteGroup
+		// @ts-expect-error "admin" is not a RouteGroup. reason: the test asserts a compile-time rejection, and no type-level assertion helper exists in the repo. remove when: the repo gains a type-level assertion helper.
 		expect(authorize(EDGE, "admin", TD)).toBe(false);
 	});
 });

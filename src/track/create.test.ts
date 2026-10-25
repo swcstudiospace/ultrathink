@@ -837,7 +837,7 @@ describe("createTracking", () => {
 			failed,
 			deps({ linear: adopting, notionDataSource: undefined }),
 		);
-		// biome-ignore lint/suspicious/noProto: this test asserts that a node id named __proto__ is stored as an own key, so the literal accessor is the subject under test.
+		// biome-ignore lint/suspicious/noProto: reason: this test asserts that a node id named __proto__ is stored as an own key, so the literal accessor is the subject under test. remove when: the node store no longer keys a plain object by node id.
 		expect(adopted.linear.nodes["__proto__"]?.identifier).toBe("ENG-90");
 		expect(
 			adopting.calls.filter((call) => call.name === "save_issue").map((call) => call.args.title),
