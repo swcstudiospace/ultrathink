@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claimTurn } from "./claim.ts";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-claim-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-claim-", dirs);
 }
 
 afterEach(() => {

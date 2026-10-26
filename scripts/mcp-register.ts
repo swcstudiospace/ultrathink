@@ -407,8 +407,8 @@ function hermesServerCommands(text: string): Map<string, string | undefined> {
 /**
  * The config.yaml that `hermes mcp` edits, resolved the way Hermes' profile override does: a HERMES_HOME that is a
  * `<root>/profiles/<name>` directory is used as is; otherwise a non-default `active_profile` in the Hermes root
- * selects `profiles/<name>` under HERMES_HOME (or ~/.hermes). Undefined when that profile cannot be resolved,
- * which Hermes itself refuses to run with.
+ * selects `profiles/<name>` under HERMES_HOME (or ~/.hermes). Undefined when that profile cannot be resolved, or when
+ * active_profile exists but cannot be read; Hermes itself refuses to run with it.
  */
 export function hermesConfigFile(
 	env: Record<string, string | undefined>,
@@ -424,8 +424,11 @@ export function hermesConfigFile(
 	let active = "";
 	try {
 		active = readFileSync(join(root, "active_profile"), "utf8").trim().toLowerCase();
-	} catch {
-		// reason: a missing active_profile file is the normal case and selects the default profile
+	} catch (error) {
+		// reason: a missing active_profile file is the normal case and selects the default profile; any other read failure
+		// leaves the active profile unknown, so the Hermes target is refused rather than written to the default profile
+		if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT")
+			return undefined;
 		active = "";
 	}
 	if (!active || active === "default") return join(base, "config.yaml");
@@ -687,9 +690,11 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 					: hermesFile;
 		if (configFile === undefined) {
 			log(
-				"  hermes: the active Hermes profile could not be resolved (check `hermes profile list`); config.yaml not backed up",
+				"  hermes: the active Hermes profile could not be resolved (check `hermes profile list`); Hermes is not changed",
 			);
-		} else backup(configFile, stamp, dryRun, log);
+			continue;
+		}
+		backup(configFile, stamp, dryRun, log);
 		if (dryRun) {
 			for (const cmd of plan.commands) log(`  $ ${cmd.join(" ")}`);
 			continue;

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import {
 	DEFAULT_HINDSIGHT_CONFIG,
 	type HindsightClient,
@@ -27,9 +27,7 @@ import {
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-teach-recall-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-teach-recall-", dirs);
 }
 
 afterEach(() => {
@@ -437,10 +435,12 @@ describe("recallLessons: time budget", () => {
 		const controller = new AbortController();
 		controller.abort();
 		ctx.signal = controller.signal;
+		const started = Date.now();
 		expect(await recallLessons({ query: "flaky fetch" }, ctx)).toMatchObject({
 			status: "error",
 			reason: "hindsight recall timed out",
 		});
+		expect(Date.now() - started).toBeLessThan(500);
 	});
 });
 

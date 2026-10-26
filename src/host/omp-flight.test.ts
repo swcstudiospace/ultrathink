@@ -673,6 +673,7 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				const planner = gated();
 				const h = setup(planner.plan, 1_000, outer.extra, {}, {}, true);
+				const startedAt = Date.now();
 				const oldPromise = h.run("A");
 				await untilStarted(planner);
 				let oldGateSettled = false;
@@ -682,6 +683,7 @@ describe("flight lifecycle (D-12)", () => {
 				h.emit("turn_start");
 				const nextPromise = h.run("B");
 				expect(await oldPromise).toBeUndefined();
+				expect(Date.now() - startedAt).toBeLessThan(10_000);
 				expect(oldGateSettled).toBe(false);
 				expect(planner.runs[0]?.signal.aborted).toBe(true);
 				expect(planner.runs[0]?.request.isCurrent?.()).toBe(false);

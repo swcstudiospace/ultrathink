@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterEach, describe, expect, test } from "bun:test";
+import net from "node:net";
 import { createSyslogTransport, encodeSyslogFrame, type SyslogTransportOptions } from "./syslog.ts";
 import type { SinkEnvelope } from "./types.ts";
 
@@ -83,6 +84,75 @@ function freePort(): number {
 	const port = probe.port;
 	probe.stop(true);
 	return port;
+}
+
+interface PausedReceiver {
+	readonly port: number;
+	resume(): void;
+	waitForBytes(count: number): Promise<void>;
+	received(): Uint8Array;
+}
+
+/** A TCP receiver that reads nothing until resume(), so the sender's socket buffers fill and its writes come back partial. */
+async function startPausedReceiver(): Promise<PausedReceiver> {
+	const chunks: Buffer[] = [];
+	let total = 0;
+	let onData: (() => void) | undefined;
+	let reader: net.Socket | undefined;
+	let resumeRequested = false;
+	const server = net.createServer((sock) => {
+		reader = sock;
+		sock.on("error", () => {
+			// reason: a reset after the bytes are read is not under test; the assertions read only what arrived
+		});
+		sock.on("data", (chunk: Buffer) => {
+			chunks.push(chunk);
+			total += chunk.byteLength;
+			onData?.();
+		});
+		sock.pause();
+		if (resumeRequested) sock.resume();
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+	stops.push(() => {
+		reader?.destroy();
+		server.close();
+	});
+	const { port } = server.address() as net.AddressInfo;
+	return {
+		port,
+		resume: () => {
+			resumeRequested = true;
+			reader?.resume();
+		},
+		async waitForBytes(count) {
+			while (total < count) {
+				await new Promise<void>((resolve) => {
+					onData = resolve;
+				});
+			}
+		},
+		received: () => Buffer.concat(chunks),
+	};
+}
+
+/**
+ * The default connect, plus one report: the first write the kernel accepts only in part. The socket is otherwise the
+ * real one, so the transport's own drain handling runs unchanged.
+ */
+function connectReportingPartialWrite(
+	onPartial: () => void,
+): NonNullable<SyslogTransportOptions["socket"]> {
+	return async (options) => {
+		const socket = await Bun.connect(options);
+		const write = socket.write.bind(socket);
+		socket.write = (data, offset, length) => {
+			const written = write(data, offset, length);
+			if (length !== undefined && written < length) onPartial();
+			return written;
+		};
+		return socket;
+	};
 }
 
 interface ParsedFrame {
@@ -295,6 +365,33 @@ describe("createSyslogTransport", () => {
 		expect(await sending).toEqual({ ok: true });
 		expect(
 			parseFrames(Buffer.concat(written))
+				.map(parseMessage)
+				.map((msg) => msg.body),
+		).toEqual(batch);
+	});
+
+	test("a partial write over a real socket to a paused receiver delivers every byte of a batch larger than the socket buffers", async () => {
+		const receiver = await startPausedReceiver();
+		const firstPartial = Promise.withResolvers<void>();
+		const transport = createSyslogTransport({
+			host: "127.0.0.1",
+			port: receiver.port,
+			hostname: "host.test",
+			appName: "ultrathink",
+			socket: connectReportingPartialWrite(() => firstPartial.resolve()),
+		});
+		// 32 envelopes of 1 MiB: the receiver reads nothing, so the kernel buffers fill and a write comes back short.
+		const batch = Array.from({ length: 32 }, (_, seq) =>
+			envelope(seq, "audit", { pad: "x".repeat(1024 * 1024) }),
+		);
+		const sending = transport.send(batch, new AbortController().signal);
+		// The receiver resumes only once a write has come back partial, so the rest of the batch is waiting for drain.
+		await firstPartial.promise;
+		receiver.resume();
+		expect(await sending).toEqual({ ok: true });
+		await receiver.waitForBytes(batch.reduce((sum, env) => sum + frameLength(env), 0));
+		expect(
+			parseFrames(receiver.received())
 				.map(parseMessage)
 				.map((msg) => msg.body),
 		).toEqual(batch);

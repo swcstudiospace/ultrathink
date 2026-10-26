@@ -416,6 +416,16 @@ export function takeSessionFlag(args: readonly string[]): { sessionId?: string; 
 	};
 }
 
+/** `ULTRATHINK_PRUNE_NOW_MS`: a fixed epoch-ms clock for `prune` (tests); unset or not an integer means the wall clock. */
+function pruneClock(env: Record<string, string | undefined>): (() => number) | undefined {
+	const raw = env.ULTRATHINK_PRUNE_NOW_MS?.trim();
+	if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
+	const fixed = Number(raw);
+	// Number() of a long digit string is Infinity, and a value past the Date range is not a clock: both fall back to the wall clock.
+	if (!Number.isSafeInteger(fixed) || fixed > 8.64e15) return undefined;
+	return () => fixed;
+}
+
 // `bin/ultrathink <verb> [args…]`: the host state dir comes from ULTRATHINK_HOST, else the detected host.
 // `decisions`, `hindsight`, `ragflow`, `teach`, `doctor` and `prune` bypass runControl, which lower-cases its args (probe takes a file path).
 if (import.meta.main) {
@@ -436,9 +446,11 @@ if (import.meta.main) {
 									text: output,
 								}))
 							: service === "prune"
-								? runPruneCommand(argv.slice(1), { cwd: process.cwd(), env: process.env }).then(
-										({ output, exitCode }) => ({ code: exitCode, text: output }),
-									)
+								? runPruneCommand(argv.slice(1), {
+										cwd: process.cwd(),
+										env: process.env,
+										now: pruneClock(process.env),
+									}).then(({ output, exitCode }) => ({ code: exitCode, text: output }))
 								: undefined;
 	if (command) {
 		command.then(({ code, text }) => {

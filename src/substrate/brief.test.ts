@@ -277,6 +277,7 @@ describe("emitEvent", () => {
 			return promise;
 		}) as unknown as typeof fetch;
 		const controller = new AbortController();
+		const started = performance.now();
 		const pending = emitEvent(
 			{ kind: "note", summary: "s" },
 			{ SUBSTRATE_TIMEOUT_MS: "30000" },
@@ -285,6 +286,7 @@ describe("emitEvent", () => {
 		);
 		controller.abort();
 		expect(await pending).toBe(false);
+		expect(performance.now() - started).toBeLessThan(5_000);
 	});
 
 	test("a live signal leaves the request unchanged", async () => {

@@ -100,16 +100,35 @@ export function escapeShellArg(input: string): string {
 	return "'" + input.replace(/'/g, "'\\''") + "'";
 }
 
+/** Characters RFC 4514 requires escaping in a DN value; each is written as a backslash before the character. */
+const LDAP_DN_SPECIAL: Readonly<Record<string, true>> = {
+	",": true,
+	"+": true,
+	'"': true,
+	"<": true,
+	">": true,
+	";": true,
+};
+
 /**
  * LDAP DN escaping
  */
 export function escapeLdapDn(input: string): string {
-	return input
-		.replace(/\\/g, "\\5c")
-		.replace(/\*/g, "\\2a")
-		.replace(/\(/g, "\\28")
-		.replace(/\)/g, "\\29")
-		.replace(/\x00/g, "\\00");
+	const chars = [...input];
+	const last = chars.length - 1;
+	return chars
+		.map((ch, i) => {
+			if (ch === "\\") return "\\5c";
+			if (ch === "*") return "\\2a";
+			if (ch === "(") return "\\28";
+			if (ch === ")") return "\\29";
+			if (ch === "\u0000") return "\\00";
+			if (ch === " " && (i === 0 || i === last)) return "\\ ";
+			if (ch === "#" && i === 0) return "\\#";
+			if (LDAP_DN_SPECIAL[ch] === true) return `\\${ch}`;
+			return ch;
+		})
+		.join("");
 }
 
 /**

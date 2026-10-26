@@ -7,16 +7,15 @@ import * as nodeFs from "node:fs";
 import {
 	chmodSync,
 	existsSync,
-	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bulk } from "../../../src/test.helpers.ts";
+import { makeTempDir } from "../test.helpers.ts";
 import {
 	type AuditFs,
 	type AuditNotice,
@@ -39,9 +38,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-audit-seg-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-audit-seg-", dirs);
 }
 
 /** Each record advances the clock one second, so a record's ts identifies it. */

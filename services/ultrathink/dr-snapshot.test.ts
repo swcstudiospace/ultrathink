@@ -13,17 +13,16 @@ import {
 	copyFileSync,
 	existsSync,
 	mkdirSync,
-	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hasTool, makeStateDir, ringNames, runDr } from "./dr-fixtures.ts";
 import { formatStamp } from "./store/snapshots.ts";
+import { makeTempDir } from "./test.helpers.ts";
 
 const SCRIPT = "deploy/ultrathink-snapshot.sh";
 const STORE = resolve(import.meta.dir, "store/store.ts");
@@ -55,9 +54,7 @@ interface Fixture {
 }
 
 function newBase(): string {
-	const base = mkdtempSync(join(tmpdir(), "dr-snapshot-"));
-	bases.push(base);
-	return base;
+	return makeTempDir("dr-snapshot-", bases);
 }
 
 /** A state directory holding `runs` committed runs and `audit` audit records, plus an empty backup directory. */

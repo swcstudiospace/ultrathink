@@ -2,11 +2,11 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { bulk } from "../../../src/test.helpers.ts";
+import { makeTempDir } from "../test.helpers.ts";
 import { auditPath, createAuditLog, verifyAuditFile } from "./audit.ts";
 import { chainIdentity, createAuditVerifier, verifyObserved } from "./audit-verify.ts";
 import { type ScanReply, type WatchAlert, createAuditWatch } from "./audit-watch.ts";
@@ -19,9 +19,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-audit-verify-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-audit-verify-", dirs);
 }
 
 /** Each record advances the clock one second. */

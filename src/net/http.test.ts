@@ -164,11 +164,13 @@ describe("requestJson", () => {
 					},
 				}),
 			)) as unknown as typeof fetch;
+		const started = Date.now();
 		const out = await requestJson("https://svc.test/endless", {
 			timeoutMs: 10_000,
 			fetch: endless,
 		});
 		expect(out).toMatchObject({ kind: "network", message: "response too large" });
+		expect(Date.now() - started).toBeLessThan(5000);
 		expect(cancelled).toBe(true);
 		expect(pulled).toBeLessThan(MAX_RESPONSE_CHARS / (1024 * 1024) + 3);
 	});

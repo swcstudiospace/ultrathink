@@ -2,10 +2,10 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { yieldTurn } from "../../../src/test.helpers.ts";
+import { makeTempDir } from "../test.helpers.ts";
 import { createInProcessTarget } from "./inprocess.ts";
 import { parsePrometheusValue } from "./observe.ts";
 import { type RunResult, runTemplate } from "./run.ts";
@@ -25,9 +25,7 @@ function template(id: string): ExperimentTemplate {
 }
 
 function freshStateDir(): string {
-	const root = mkdtempSync(join(tmpdir(), "chaos-inprocess-"));
-	roots.push(root);
-	return root;
+	return makeTempDir("chaos-inprocess-", roots);
 }
 
 async function runInProcess(id: string): Promise<{ result: RunResult; metrics: string }> {

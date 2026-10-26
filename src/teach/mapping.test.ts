@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import type { RecallHit } from "../hindsight/types.ts";
 import {
 	contentFor,
@@ -21,9 +21,7 @@ import type { TeachableMoment } from "./types.ts";
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-teach-map-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-teach-map-", dirs);
 }
 
 afterEach(() => {

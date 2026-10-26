@@ -783,6 +783,25 @@ describe("main", () => {
 		}, run);
 	});
 
+	test("hermes: an active_profile that cannot be read refuses the Hermes target and writes no profile", () => {
+		const calls: string[][] = [];
+		const run: Run = (cmd) => {
+			calls.push(cmd);
+			return { code: 0, stdout: "", stderr: "" };
+		};
+		sandbox(({ home, lines, deps }) => {
+			const root = join(home, ".hermes");
+			// reason: a directory where the file should be makes the read fail with EISDIR, a non-ENOENT error; as root, chmod cannot provoke EACCES
+			mkdirSync(join(root, "active_profile"), { recursive: true });
+			expect(main(["--hosts", "hermes", "--providers", "linear"], deps())).toBe(0);
+			expect(lines).toContain(
+				"  hermes: the active Hermes profile could not be resolved (check `hermes profile list`); Hermes is not changed",
+			);
+			expect(calls.filter((c) => c[2] === "add" || c[2] === "remove")).toEqual([]);
+			expect(existsSync(join(root, "config.yaml"))).toBe(false);
+		}, run);
+	});
+
 	test("--replace and --remove together are refused", () => {
 		sandbox(({ deps }) => {
 			expect(() => main(["--replace", "--remove"], deps())).toThrow("cannot be combined");

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import type { SessionRecord } from "../claude/state.ts";
 import { collectSignals, lookupGsdTools, resolveGsdTools } from "./signals.ts";
 import type { Run } from "./types.ts";
@@ -14,9 +14,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ship-signals-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ship-signals-", dirs);
 }
 
 /** Replies by joined argv; unknown commands fail (exit 1), so an unlisted `git ls-files --error-unmatch` means untracked. */

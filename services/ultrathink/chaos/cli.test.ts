@@ -2,10 +2,10 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { yieldTurn } from "../../../src/test.helpers.ts";
+import { makeTempDir } from "../test.helpers.ts";
 import { type CliDeps, runCli } from "./cli.ts";
 import { appendHistory } from "./history.ts";
 import type { HttpFetch, HttpRequestInit } from "./observe.ts";
@@ -20,9 +20,7 @@ afterAll(() => {
 });
 
 function freshDir(): string {
-	const root = mkdtempSync(join(tmpdir(), "chaos-cli-"));
-	roots.push(root);
-	return root;
+	return makeTempDir("chaos-cli-", roots);
 }
 
 interface Harness {

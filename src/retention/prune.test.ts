@@ -4,7 +4,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
-	mkdtempSync,
 	readFileSync,
 	readdirSync,
 	rmSync,
@@ -14,7 +13,6 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
 	legacySessionPath,
@@ -26,6 +24,7 @@ import {
 	writeSession,
 } from "../claude/state.ts";
 import { pruneSessions, pruneSessionsBestEffort } from "./prune.ts";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -39,9 +38,7 @@ afterEach(() => {
 });
 
 function makeState(): string {
-	const root = mkdtempSync(join(tmpdir(), "ut-prune-"));
-	roots.push(root);
-	return root;
+	return makeTempDir("ut-prune-", roots);
 }
 
 function put(path: string, body: string, ageMs: number): void {

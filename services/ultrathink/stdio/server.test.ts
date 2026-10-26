@@ -2,9 +2,9 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../test.helpers.ts";
 import type { McpToolHost } from "../mcp/mcp.ts";
 import { createLogger } from "../obs/log.ts";
 import { createStdioHost, logLevelFrom, resolveConnectorStateDir } from "./main.ts";
@@ -19,9 +19,7 @@ afterAll(() => {
 });
 
 function tmp(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-stdio-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-stdio-", dirs);
 }
 
 const encoder = new TextEncoder();

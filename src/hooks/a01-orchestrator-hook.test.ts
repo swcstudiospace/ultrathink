@@ -1,22 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, type Mock, spyOn, test } from "bun:test";
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	statSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
 	__injectFaultForTest,
 	invokeA01OrchestratorWithGraceful,
 	withA01OrchestratorTimeout,
 } from "./a01-orchestrator-hook.ts";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 
 const dirs: string[] = [];
 const originalCwd = process.cwd();
@@ -24,9 +16,7 @@ const originalStateDir = process.env.ULTRATHINK_STATE_DIR;
 let warn: Mock<typeof console.warn>;
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-a01-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-a01-", dirs);
 }
 
 function logOf(stateDir: string): string {

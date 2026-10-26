@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { SessionRecord } from "../claude/state.ts";
 import { resolveOpenRouterKey } from "../decisions/gate.ts";
 import { appendAttempts, writeShip } from "../ship/state.ts";
-import { main, prepareRedirect } from "./cli.ts";
+import { feedLoginInput, main, prepareRedirect } from "./cli.ts";
 import type { McpProviderId } from "./providers.ts";
 import type { Run } from "./redirect.ts";
 import { readStore, writeStore } from "./store.ts";
@@ -646,4 +646,25 @@ describe.each([
 			expect(readFileSync(store(), "utf8")).toBe(before);
 		},
 	);
+});
+
+describe("auth login stdin wait", () => {
+	test("a stdin read error with no callback listener rejects the wait with that error", async () => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("stdin broke"));
+			},
+		});
+		const rejections: unknown[] = [];
+		await feedLoginInput(stream, new AbortController().signal, false, {
+			resolve() {
+				// reason: this test only records rejections; a resolved line is not under test here
+			},
+			reject: (reason) => {
+				rejections.push(reason);
+			},
+		});
+		expect(rejections).toHaveLength(1);
+		expect((rejections[0] as Error).message).toBe("stdin broke");
+	});
 });
