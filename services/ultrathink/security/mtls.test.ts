@@ -181,6 +181,8 @@ type ManualTimers = {
 		setTimeout(fn: () => void): NodeJS.Timeout;
 		clearTimeout(handle: NodeJS.Timeout | undefined): void;
 	};
+	/** Timers armed so far, fired or not. */
+	armCount: () => number;
 	/** Runs the oldest pending timer, waiting until the server has armed one. */
 	fireNext: () => Promise<void>;
 };
@@ -188,8 +190,10 @@ type ManualTimers = {
 function manualTimers(): ManualTimers {
 	const pending: Array<{ run: () => void; handle: NodeJS.Timeout }> = [];
 	const waiting: Array<() => void> = [];
+	let arms = 0;
 	const timers: ManualTimers["timers"] = {
 		setTimeout: (run) => {
+			arms += 1;
 			// reason: the port's handle is opaque; the test removes it by identity and never reads it
 			const handle = {} as NodeJS.Timeout;
 			pending.push({ run, handle });
@@ -211,7 +215,7 @@ function manualTimers(): ManualTimers {
 		}
 		next.run();
 	};
-	return { timers, fireNext };
+	return { timers, armCount: () => arms, fireNext };
 }
 
 /** Socket deadlines the test fires by hand: idle and handshake deadlines arm here instead of on the platform clock. */
@@ -219,13 +223,20 @@ type ManualSocketDeadlines = {
 	port: { arm(socket: net.Socket, ms: number, onTimeout: () => void): void };
 	/** Resolves once the server has armed a deadline; the deadline stays armed. */
 	armed: () => Promise<void>;
+	/** Resolves with the socket of the oldest armed deadline, waiting until one is armed; the deadline stays armed. */
+	armedSocket: () => Promise<net.Socket>;
+	/** Deadlines armed on this socket so far, fired or not. */
+	armCount: (socket: net.Socket) => number;
+	/** Deadlines armed and not yet fired. */
+	pendingCount: () => number;
 	/** Runs the oldest armed deadline, waiting until one is armed. Resolves with that deadline's length in ms. */
 	fireNext: () => Promise<number>;
 };
 
 function manualSocketDeadlines(): ManualSocketDeadlines {
-	const pending: Array<{ ms: number; run: () => void }> = [];
+	const pending: Array<{ socket: net.Socket; ms: number; run: () => void }> = [];
 	const waiting: Array<() => void> = [];
+	const arms = new Map<net.Socket, number>();
 	const armed = async (): Promise<void> => {
 		while (pending.length === 0) {
 			const { promise, resolve } = Promise.withResolvers<void>();
@@ -235,12 +246,21 @@ function manualSocketDeadlines(): ManualSocketDeadlines {
 	};
 	return {
 		port: {
-			arm: (_socket, ms, onTimeout) => {
-				pending.push({ ms, run: onTimeout });
+			arm: (socket, ms, onTimeout) => {
+				arms.set(socket, (arms.get(socket) ?? 0) + 1);
+				pending.push({ socket, ms, run: onTimeout });
 				for (const wake of waiting.splice(0)) wake();
 			},
 		},
 		armed,
+		armedSocket: async () => {
+			await armed();
+			const next = pending[0];
+			if (!next) throw new Error("no socket deadline armed");
+			return next.socket;
+		},
+		armCount: (socket) => arms.get(socket) ?? 0,
+		pendingCount: () => pending.length,
 		fireNext: async () => {
 			await armed();
 			const next = pending.shift();
@@ -503,17 +523,44 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	});
 
 	test("closes a request that trickles past the per-request deadline", async () => {
-		// One partial request and then silence: only the deadline its first byte armed can close it. The test fires
-		// that deadline by hand instead of waiting on the platform clock.
+		// One partial request, a second chunk before the deadline, then silence. The second chunk must not restart the
+		// deadline the first byte armed: the test checks that one deadline is still the only one armed, then fires it
+		// by hand. The idle deadline stays held back and unfired throughout.
 		const manual = manualTimers();
+		const idle = manualSocketDeadlines();
 		const slow = await startMtlsServer(
-			{ ...serverOptions(0.3), timers: manual.timers },
+			{ ...serverOptions(0.3), timers: manual.timers, idleTimers: idle.port },
 			async () => new Response("unused"),
 		);
 		try {
 			const client = edgeClient(slow.port);
 			const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
-			client.write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: ");
+			// The idle deadline is armed once the server verifies the client; the test sends nothing before that.
+			const socket = await idle.armedSocket();
+			// Counts the decrypted bytes the server reads, so the test can wait until a chunk has been processed.
+			let received = 0;
+			const waiting: Array<() => void> = [];
+			socket.on("data", (chunk: Buffer) => {
+				received += chunk.length;
+				for (const wake of waiting.splice(0)) wake();
+			});
+			const receivedAtLeast = async (bytes: number): Promise<void> => {
+				while (received < bytes) {
+					const { promise, resolve } = Promise.withResolvers<void>();
+					waiting.push(resolve);
+					await promise;
+				}
+			};
+			const first = "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: ";
+			const second = "trickle";
+			client.write(first);
+			await receivedAtLeast(first.length);
+			expect(manual.armCount()).toBe(1);
+			client.write(second);
+			await receivedAtLeast(first.length + second.length);
+			expect(manual.armCount()).toBe(1);
+			expect(idle.armCount(socket)).toBe(1);
+			expect(idle.pendingCount()).toBe(1);
 			await manual.fireNext();
 			await closed;
 		} finally {

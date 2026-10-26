@@ -24,16 +24,18 @@ afterEach(() => {
 });
 
 /** Controller-driven AbortSignal.timeout: each per-attempt budget the client arms is a signal the test aborts. */
-type ControlledTimeouts = { armed: AbortController[]; restore: () => void };
+type ControlledTimeouts = { armed: AbortController[]; requested: number[]; restore: () => void };
 
 function controlledTimeouts(): ControlledTimeouts {
 	const armed: AbortController[] = [];
-	const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+	const requested: number[] = [];
+	const spy = spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
 		const controller = new AbortController();
 		armed.push(controller);
+		requested.push(ms);
 		return controller.signal;
 	});
-	return { armed, restore: () => spy.mockRestore() };
+	return { armed, requested, restore: () => spy.mockRestore() };
 }
 
 /** Aborts the budget armed for the attempt in flight, as its timeout would. */
@@ -718,26 +720,34 @@ describe("decide: retry (D6)", () => {
 	});
 
 	test("AC-5.8: the total budget covers the retry", async () => {
+		let clock = 0;
 		let calls = 0;
 		const sleeps: number[] = [];
 		const timeouts = controlledTimeouts();
 		try {
 			const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) => {
 				calls++;
-				if (calls === 1) return Promise.resolve(ERR(503)());
-				return new Promise<Response>((_resolve, reject) => {
-					init?.signal?.addEventListener("abort", () =>
-						reject(new DOMException("aborted", "AbortError")),
-					);
-					timeOutAttempt(timeouts);
-				});
+				if (calls === 1) {
+					clock += 100; // the first attempt spends 100 ms before its 503
+					return Promise.resolve(ERR(503)());
+				}
+				const { promise, reject } = Promise.withResolvers<Response>();
+				init?.signal?.addEventListener("abort", () =>
+					reject(new DOMException("aborted", "AbortError")),
+				);
+				timeOutAttempt(timeouts);
+				return promise;
 			}) as typeof fetch;
 			const outcome = await decide(REQUEST, {
 				apiKey: K,
 				timeoutMs: 1200,
 				fetch: fetchImpl,
 				random: () => 0.5,
-				sleep: async (ms) => void sleeps.push(ms),
+				now: () => clock,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+					clock += ms;
+				},
 			});
 			if (outcome.ok) throw new Error("expected a timeout");
 			expectSafe(outcome.error);
@@ -746,6 +756,8 @@ describe("decide: retry (D6)", () => {
 			expect(calls).toBe(2);
 			// The retry wait is the jittered 250 ms, taken through the injected sleep seam.
 			expect(sleeps).toEqual([250]);
+			// The first arm gets the full 1200 ms; the retry gets the remaining budget, 1200 - 100 - 250 = 850, not a fresh 1200.
+			expect(timeouts.requested).toEqual([1200, 850]);
 		} finally {
 			timeouts.restore();
 		}

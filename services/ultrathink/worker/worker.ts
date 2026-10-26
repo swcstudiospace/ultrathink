@@ -591,8 +591,14 @@ export function createWorker(options: WorkerOptions): Worker {
 			try {
 				result = await tickOnce();
 			} catch (error) {
-				const name = error instanceof Error ? error.name : "UnknownError";
-				console.error(`worker tick failed: ${name}`);
+				// Boundary errors carry only `<operation>: <class or code>` in their message, never raw cause text.
+				const label =
+					error instanceof Error && namedErrors.has(error)
+						? error.message
+						: error instanceof Error
+							? error.name
+							: "UnknownError";
+				console.error(`worker tick failed: ${label}`);
 				await sleep(pollMs);
 				continue;
 			}

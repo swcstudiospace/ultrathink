@@ -109,6 +109,33 @@ function lockClock(): { now: () => number; sleep: (ms: number) => Promise<void> 
 	};
 }
 
+/**
+ * A lock clock the test moves by hand. Heartbeat intervals are captured instead of run: a holder stays fresh only when the
+ * test calls `fireHeartbeats`, so a test that never calls it models a holder that has stopped heartbeating.
+ */
+function manualLockClock() {
+	let clock = NOW;
+	const heartbeats = new Set<() => void>();
+	return {
+		now: () => clock,
+		advance: (ms: number) => {
+			clock += ms;
+		},
+		timers: {
+			setInterval: (fn: () => void) => {
+				heartbeats.add(fn);
+				return fn;
+			},
+			clearInterval: (handle: unknown) => {
+				heartbeats.delete(handle as () => void);
+			},
+		},
+		fireHeartbeats: () => {
+			for (const beat of [...heartbeats]) beat();
+		},
+	};
+}
+
 describe("store", () => {
 	test("round trip, 0600 mode, corrupt reads empty", () => {
 		const store = {
@@ -201,17 +228,22 @@ describe("store", () => {
 	test("a live holder is not judged stale while a waiter polls", async () => {
 		const events: string[] = [];
 		const release = Promise.withResolvers<void>();
-		const polled = Promise.withResolvers<void>();
-		const frozen = NOW;
+		const waiterSettled = Promise.withResolvers<void>();
+		const clock = manualLockClock();
 		let polls = 0;
+		// Each poll moves the clock 200ms, so the clock passes staleMs (500) after three polls. The holder heartbeats
+		// before every judgement, so the lock stays fresh and the waiter stays blocked through all ten polls.
 		const opts = {
 			staleMs: 500,
 			pollMs: 10,
 			waitMs: 10_000,
-			now: () => frozen,
+			now: clock.now,
+			timers: clock.timers,
 			sleep: () => {
 				polls += 1;
-				if (polls === 3) polled.resolve();
+				clock.advance(200);
+				clock.fireHeartbeats();
+				if (polls === 10) waiterSettled.resolve();
 				return Promise.resolve();
 			},
 		};
@@ -219,17 +251,61 @@ describe("store", () => {
 			path,
 			async () => {
 				events.push("a-start");
-				utimesSync(`${path}.lock`, new Date(frozen), new Date(frozen));
+				utimesSync(`${path}.lock`, new Date(NOW), new Date(NOW));
 				await release.promise;
 				events.push("a-end");
 			},
 			opts,
 		);
-		const b = withStoreLock(path, async () => void events.push("b-start"), opts);
-		await polled.promise;
+		// A waiter that gets in early settles the wait too, so a lost heartbeat fails the assertions instead of hanging.
+		const b = withStoreLock(
+			path,
+			async () => {
+				events.push("b-start");
+				waiterSettled.resolve();
+			},
+			opts,
+		);
+		await waiterSettled.promise;
 		release.resolve();
 		await Promise.all([a, b]);
 		expect(events).toEqual(["a-start", "a-end", "b-start"]);
+		expect(clock.now() - NOW).toBeGreaterThan(opts.staleMs);
+	});
+
+	test("a holder that stops heartbeating is taken over once the clock passes staleMs", async () => {
+		const events: string[] = [];
+		const release = Promise.withResolvers<void>();
+		const clock = manualLockClock();
+		// Same clock and poll pacing, but nothing fires the heartbeat. The lock keeps its NOW stamp, and the waiter takes
+		// over on the third poll, when the clock is 600ms past it.
+		const opts = {
+			staleMs: 500,
+			pollMs: 10,
+			waitMs: 10_000,
+			now: clock.now,
+			timers: clock.timers,
+			sleep: () => {
+				clock.advance(200);
+				return Promise.resolve();
+			},
+		};
+		const a = withStoreLock(
+			path,
+			async () => {
+				events.push("a-start");
+				utimesSync(`${path}.lock`, new Date(NOW), new Date(NOW));
+				await release.promise;
+				events.push("a-end");
+			},
+			opts,
+		);
+		await withStoreLock(path, async () => void events.push("b-start"), opts);
+		expect(clock.now() - NOW).toBeGreaterThan(opts.staleMs);
+		release.resolve();
+		await a;
+		expect(events).toEqual(["a-start", "b-start", "a-end"]);
+		expect(statSync(`${path}.lock`, { throwIfNoEntry: false })).toBeUndefined();
 	});
 });
 
@@ -577,25 +653,29 @@ describe("resolveAuthHeader", () => {
 
 	test("a waiter on a slow refresh does not refresh a second time", async () => {
 		seedOAuth(NOW + 10_000);
+		const clock = manualLockClock();
 		let tokenCalls = 0;
 		// The refresh is held on a gate and the waiter's lock polls go through an injected sleep, so no real time passes.
-		// The clock is fixed at NOW: the first caller's lock is never judged stale, so the waiter must read the token the
-		// first caller stored instead of stealing the lock.
+		// The holder stamps its lock on the test clock and heartbeats before every waiter judgement. The clock moves past
+		// staleMs, yet the lock stays fresh, so the waiter must read the token the first caller stored instead of stealing it.
 		const refreshed = Promise.withResolvers<void>();
 		const waiterPolled = Promise.withResolvers<void>();
 		let polls = 0;
 		const slowFetch = (async () => {
 			tokenCalls++;
+			utimesSync(`${path}.lock`, new Date(NOW), new Date(NOW));
 			await refreshed.promise;
 			return json({ access_token: "at-new", refresh_token: "rt-new", expires_in: 28_800 });
 		}) as unknown as typeof fetch;
 		const deps = {
 			fetch: slowFetch,
-			now: () => NOW,
+			now: clock.now,
 			storePath: path,
-			lock: { staleMs: 500, pollMs: 10, waitMs: 10_000 },
+			lock: { staleMs: 500, pollMs: 10, waitMs: 10_000, timers: clock.timers },
 			sleep: () => {
 				polls += 1;
+				clock.advance(200);
+				clock.fireHeartbeats();
 				if (polls === 3) waiterPolled.resolve();
 				return Promise.resolve();
 			},
@@ -608,6 +688,42 @@ describe("resolveAuthHeader", () => {
 		refreshed.resolve();
 		expect(await results).toEqual(["Bearer at-new", "Bearer at-new"]);
 		expect(tokenCalls).toBe(1);
+		expect(clock.now() - NOW).toBeGreaterThan(500);
+	});
+
+	test("a waiter on a slow refresh refreshes again once the holder stops heartbeating", async () => {
+		seedOAuth(NOW + 10_000);
+		const clock = manualLockClock();
+		let tokenCalls = 0;
+		// The holder stamps its lock once and never heartbeats. Each poll moves the clock 200ms, so the waiter judges the
+		// lock stale on the third poll, takes it over and starts a second token refresh.
+		const refreshed = Promise.withResolvers<void>();
+		const takenOver = Promise.withResolvers<void>();
+		const slowFetch = (async () => {
+			tokenCalls++;
+			if (tokenCalls === 1) utimesSync(`${path}.lock`, new Date(NOW), new Date(NOW));
+			else takenOver.resolve();
+			await refreshed.promise;
+			return json({ access_token: "at-new", refresh_token: "rt-new", expires_in: 28_800 });
+		}) as unknown as typeof fetch;
+		const deps = {
+			fetch: slowFetch,
+			now: clock.now,
+			storePath: path,
+			lock: { staleMs: 500, pollMs: 10, waitMs: 10_000, timers: clock.timers },
+			sleep: () => {
+				clock.advance(200);
+				return Promise.resolve();
+			},
+		};
+		const results = Promise.all([
+			resolveAuthHeader("notion", deps),
+			resolveAuthHeader("notion", deps),
+		]);
+		await takenOver.promise;
+		refreshed.resolve();
+		expect(await results).toEqual(["Bearer at-new", "Bearer at-new"]);
+		expect(tokenCalls).toBe(2);
 	});
 });
 

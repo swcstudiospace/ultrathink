@@ -5,7 +5,7 @@ import { MCP_PROVIDERS, PROVIDERS, USER_AGENT } from "./providers.ts";
 import type { McpProviderId, ProviderId } from "./providers.ts";
 import { readStore, withStoreLock, writeStore } from "./store.ts";
 import { readBodyPrefix } from "../net/body.ts";
-import type { CredentialStore, OAuthClient, OAuthTokens } from "./store.ts";
+import type { CredentialStore, LockTimers, OAuthClient, OAuthTokens } from "./store.ts";
 import { getSecurityLogger } from "../../services/ultrathink/security/events.ts";
 import { StringValidator } from "../../services/ultrathink/security/validation.ts";
 
@@ -46,7 +46,7 @@ export interface AuthDeps {
 	sleep?: (ms: number) => Promise<void>;
 	storePath: string;
 	/** Lock tuning passed to withStoreLock (tests use small values). */
-	lock?: { staleMs?: number; waitMs?: number; pollMs?: number };
+	lock?: { staleMs?: number; waitMs?: number; pollMs?: number; timers?: LockTimers };
 }
 
 export interface PendingLogin {

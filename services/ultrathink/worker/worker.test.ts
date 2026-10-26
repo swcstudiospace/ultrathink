@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -748,5 +748,46 @@ describe("worker", () => {
 		expect(message).not.toContain(FIXTURE_SECRET);
 		expect(redactText(message, { home: "" })).toBe(message);
 		expect((caught as Error).cause).toBe(original);
+	});
+
+	test("runUntilAborted logs the boundary label with the error code and never the raw cause", async () => {
+		const FIXTURE_SECRET = "sk-test-FIXTURE1111111111111111";
+		const env = makeEnv();
+		newRun(env);
+		const original = Object.assign(new Error(`ledger refused ${FIXTURE_SECRET}`), {
+			code: "SQLITE_BUSY",
+		});
+		const failing: Ledger = {
+			...env.ledger,
+			headroom: () => {
+				throw original;
+			},
+		};
+		const controller = new AbortController();
+		const sleeps: number[] = [];
+		const worker = createWorker({
+			store: env.store,
+			ledger: failing,
+			model: fakeModel(() => ({ text: "unused", tokensUsed: 1 })),
+			artifactDir: env.artifactDir,
+			holderId: "worker-a",
+			pollMs: 250,
+			sleep: async (ms) => {
+				sleeps.push(ms);
+				controller.abort();
+			},
+		});
+		const logged: string[] = [];
+		const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+			logged.push(args.map(String).join(" "));
+		});
+		try {
+			await worker.runUntilAborted(controller.signal);
+		} finally {
+			errorSpy.mockRestore();
+		}
+		expect(sleeps).toEqual([250]);
+		expect(logged).toEqual(["worker tick failed: runPhase: SQLITE_BUSY"]);
+		expect(logged.join("\n")).not.toContain(FIXTURE_SECRET);
 	});
 });

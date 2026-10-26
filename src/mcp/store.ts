@@ -111,6 +111,12 @@ function breakStaleLock(lock: string, owner: string | undefined, mtimeMs: number
 	}
 }
 
+/** The interval port the lock heartbeat runs on. */
+export interface LockTimers {
+	setInterval(fn: () => void, ms: number): unknown;
+	clearInterval(handle: unknown): void;
+}
+
 export async function withStoreLock<T>(
 	path: string,
 	fn: () => Promise<T>,
@@ -118,10 +124,12 @@ export async function withStoreLock<T>(
 		staleMs?: number;
 		waitMs?: number;
 		pollMs?: number;
-		/** Clock for the lock deadline and staleness; defaults to `Date.now`. */
+		/** Clock for the lock deadline, staleness and heartbeat stamps; defaults to `Date.now`. */
 		now?: () => number;
 		/** Wait between acquire attempts; defaults to `Bun.sleep`. */
 		sleep?: (ms: number) => Promise<void>;
+		/** Interval port for the heartbeat that keeps a held lock fresh; defaults to the platform timers. */
+		timers?: LockTimers;
 	} = {},
 ): Promise<T> {
 	const staleMs = opts.staleMs ?? 60_000;
@@ -129,6 +137,10 @@ export async function withStoreLock<T>(
 	const pollMs = opts.pollMs ?? 100;
 	const now = opts.now ?? Date.now;
 	const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const timers: LockTimers = opts.timers ?? {
+		setInterval: (fn, ms) => setInterval(fn, ms),
+		clearInterval: (handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]),
+	};
 	const lock = `${path}.lock`;
 	const nonce = randomBytes(16).toString("hex");
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -156,12 +168,12 @@ export async function withStoreLock<T>(
 		if (now() >= deadline) throw new Error(`timed out waiting for credential store lock ${lock}`);
 		await sleep(pollMs);
 	}
-	const heartbeat = setInterval(
+	const heartbeat = timers.setInterval(
 		() => {
 			if (readOwner(lock) !== nonce) return;
 			try {
-				const now = new Date();
-				utimesSync(lock, now, now);
+				const stamp = new Date(now());
+				utimesSync(lock, stamp, stamp);
 			} catch {
 				// reason: lock vanished; release below handles it
 			}
@@ -171,7 +183,7 @@ export async function withStoreLock<T>(
 	try {
 		return await fn();
 	} finally {
-		clearInterval(heartbeat);
+		timers.clearInterval(heartbeat);
 		if (readOwner(lock) === nonce) rmSync(lock, { recursive: true, force: true });
 	}
 }
