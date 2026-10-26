@@ -113,7 +113,9 @@ export function createSharedCache(options: SharedCacheOptions = {}): SharedCache
 	async function run<T>(op: (redis: Bun.RedisClient) => Promise<T>, fallback: T): Promise<T> {
 		if (!admit()) return fallback;
 		try {
-			// Constructing the client throws on a malformed URL; that counts as a failure.
+			// Bun 1.4 throws on a malformed URL when the client is built; Bun 1.2 accepts it and fails later.
+			// Checking here makes every version take the same fail-open path.
+			if (!URL.canParse(String(url))) throw new TypeError("malformed redis url");
 			client ??= new Bun.RedisClient(url);
 			const redis = client;
 			const result = await withTimeout(() => op(redis), timeoutMs);
