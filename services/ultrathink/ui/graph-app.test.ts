@@ -7,9 +7,11 @@ import { GRAPH_APP_MIME, GRAPH_APP_URI, graphAppHtml, graphAppResourceMeta } fro
 import { APP_CSP, harnessFetch, startHarness } from "./harness/serve.ts";
 
 const html = graphAppHtml();
-const SCRIPT_RE = /<script>([\s\S]*)<\/script>/;
+const SCRIPT_RE = /<script>([\s\S]*)<\/script>/i;
 const script = SCRIPT_RE.exec(html)?.[1] ?? "";
-const markup = html.replace(/<script>[\s\S]*<\/script>/, "").replace(/<style>[\s\S]*<\/style>/, "");
+const markup = html
+	.replace(/<script>[\s\S]*<\/script>/i, "")
+	.replace(/<style>[\s\S]*<\/style>/, "");
 
 function graphOf(fixture: Fixture): GraphView | undefined {
 	const sc = fixture.initial.structuredContent;
@@ -109,7 +111,7 @@ describe("graph app document", () => {
 		expect(html).toContain('<meta charset="utf-8">');
 		expect(html).toContain('<meta name="viewport" content="width=device-width, initial-scale=1">');
 		expect(html).toContain('<meta name="color-scheme" content="light dark">');
-		expect(html.match(/<script>/g)?.length).toBe(1);
+		expect(html.match(/<script>/gi)?.length).toBe(1);
 		expect(html.match(/<\/script>/g)?.length).toBe(1);
 		expect(html.match(/<style>/g)?.length).toBe(1);
 		expect(graphAppHtml()).toBe(html);

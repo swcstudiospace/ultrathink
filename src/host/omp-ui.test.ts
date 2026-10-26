@@ -58,7 +58,15 @@ const throwingTheme = {
 	},
 };
 
-const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "").replace(/<[a-zA-Z]+>/g, "");
+const plain = (text: string) => {
+	let out = text.replace(/\x1b\[[0-9;]*m/g, "");
+	let prev = "";
+	while (out !== prev) {
+		prev = out;
+		out = out.replace(/<[a-zA-Z]+>/g, "");
+	}
+	return out;
+};
 
 const view: PlanView = {
 	root: "BUILD_PROMPT",

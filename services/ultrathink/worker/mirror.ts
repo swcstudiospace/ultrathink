@@ -77,7 +77,7 @@ function readPendingDecision(store: Store, runId: string): PendingDecision | nul
 function renderPhaseRow(phase: PhaseRecord): string {
 	const artifact =
 		phase.status === "complete" ? `[artifact](${encodeURIComponent(phase.phase)}.md)` : "";
-	return `| ${oneLine(phase.phase).replace(/\|/g, "\\|")} | ${phase.attempt} | ${phase.status} | ${artifact} |`;
+	return `| ${oneLine(phase.phase).replace(/\\/g, "\\\\").replace(/\|/g, "\\|")} | ${phase.attempt} | ${phase.status} | ${artifact} |`;
 }
 
 function renderDecision(decision: PendingDecision | null): string[] {

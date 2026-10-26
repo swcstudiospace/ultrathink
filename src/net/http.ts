@@ -21,7 +21,7 @@ export interface Deadlines {
 	arm(label: DeadlineLabel, ms: number): AbortSignal;
 }
 
-export const platformDeadlines: Deadlines = {
+const platformDeadlines: Deadlines = {
 	arm: (_label, ms) => AbortSignal.timeout(ms),
 };
 
