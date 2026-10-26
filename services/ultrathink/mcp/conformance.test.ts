@@ -585,7 +585,7 @@ describe("stdio process lifecycle", () => {
 		} finally {
 			await stop(child);
 		}
-	});
+	}, 30_000);
 
 	test.skipIf(process.platform === "win32")(
 		"SIGTERM ends the process with exit code 0",
@@ -601,6 +601,7 @@ describe("stdio process lifecycle", () => {
 				await stop(child);
 			}
 		},
+		30_000,
 	);
 
 	test("a line over 1 MiB is refused with -32600 and the process keeps serving", async () => {

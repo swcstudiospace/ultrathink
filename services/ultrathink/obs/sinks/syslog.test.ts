@@ -99,6 +99,7 @@ async function startPausedReceiver(): Promise<PausedReceiver> {
 	let total = 0;
 	let onData: (() => void) | undefined;
 	let reader: net.Socket | undefined;
+	let resumeRequested = false;
 	const server = net.createServer((sock) => {
 		reader = sock;
 		sock.on("error", () => {
@@ -110,6 +111,7 @@ async function startPausedReceiver(): Promise<PausedReceiver> {
 			onData?.();
 		});
 		sock.pause();
+		if (resumeRequested) sock.resume();
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
 	stops.push(() => {
@@ -119,7 +121,10 @@ async function startPausedReceiver(): Promise<PausedReceiver> {
 	const { port } = server.address() as net.AddressInfo;
 	return {
 		port,
-		resume: () => reader?.resume(),
+		resume: () => {
+			resumeRequested = true;
+			reader?.resume();
+		},
 		async waitForBytes(count) {
 			while (total < count) {
 				await new Promise<void>((resolve) => {

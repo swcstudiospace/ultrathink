@@ -421,6 +421,8 @@ function pruneClock(env: Record<string, string | undefined>): (() => number) | u
 	const raw = env.ULTRATHINK_PRUNE_NOW_MS?.trim();
 	if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
 	const fixed = Number(raw);
+	// Number() of a long digit string is Infinity, and a value past the Date range is not a clock: both fall back to the wall clock.
+	if (!Number.isSafeInteger(fixed) || fixed > 8.64e15) return undefined;
 	return () => fixed;
 }
 
