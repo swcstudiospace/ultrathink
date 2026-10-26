@@ -1170,7 +1170,8 @@ describe("headless planner: upstream breaker", () => {
 		const sessionId = randomUUID();
 		const started = h.planner.start({ prompt: PROMPT, sessionId });
 		// The completer backs off (Retry-After: 1 s) through the planner's clock between the two 503s.
-		for (let i = 0; i < 20 && !h.clock.has(1000); i++) await flush();
+		// The cap counts event-loop turns, not time: the planner reaches the backoff only after its I/O settles on a later turn.
+		for (let i = 0; i < 10_000 && !h.clock.has(1000); i++) await flush();
 		expect(h.clock.has(1000)).toBe(true);
 		h.clock.fire(1000);
 		expect(await started).toEqual({

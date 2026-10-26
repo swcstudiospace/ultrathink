@@ -2,18 +2,20 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnObserveDetached, writeInbox } from "./spawn.ts";
+import { spawnObserveDetached, startDetached, writeInbox, type DetachedLaunch } from "./spawn.ts";
 import type { TeachDigest } from "./types.ts";
 
 let root: string;
@@ -202,5 +204,41 @@ describe("spawnObserveDetached", () => {
 			ULTRATHINK_STATE_DIR: stateDir,
 		});
 		expect(call?.cwd).toBe(sessionCwd);
+	});
+
+	test("the real launcher receives the file, host, state dir and session cwd", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "teach-launcher-"));
+		try {
+			const marker = join(dir, "marker.txt");
+			mkdirSync(join(repoRoot, "bin"));
+			const launcher = join(repoRoot, "bin", "ultrathink");
+			writeFileSync(
+				launcher,
+				`#!/bin/sh\nprintf '%s|%s|%s|%s' "$*" "$ULTRATHINK_HOST" "$ULTRATHINK_STATE_DIR" "$(pwd -P)" > "${marker}"\n`,
+			);
+			chmodSync(launcher, 0o755);
+			const files: string[] = [];
+			const launches: DetachedLaunch[] = [];
+			const result = spawnObserveDetached(digest(), {
+				repoRoot,
+				env: { ...process.env },
+				stateDir,
+				host: "omp",
+				spawn: (cmd, args, opts) => {
+					files.push(args[3] ?? "");
+					launches.push(startDetached(cmd, args, opts));
+				},
+			});
+			expect(result).toEqual({ spawned: true });
+			expect(await launches[0]?.exited).toBe(0);
+			const [argv, host, state, cwd] = readFileSync(marker, "utf8").split("|");
+			expect(files[0]?.startsWith(`${inbox()}/`)).toBe(true);
+			expect(argv).toBe(`teach observe --file ${files[0]}`);
+			expect(host).toBe("omp");
+			expect(state).toBe(stateDir);
+			expect(cwd).toBe(realpathSync(sessionCwd));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

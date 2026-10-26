@@ -35,11 +35,17 @@ function inboxDir(stateDir: string): string {
 	return join(stateDir, "teach", "inbox");
 }
 
-function startDetached(
+/** A detached launch. `exited` settles with the child's exit code (null if killed by a signal or never started); it never rejects, so callers can await the launch without polling. */
+export interface DetachedLaunch {
+	pid: number | undefined;
+	exited: Promise<number | null>;
+}
+
+export function startDetached(
 	cmd: string,
 	args: string[],
 	opts: { env: NodeJS.ProcessEnv; cwd: string },
-): void {
+): DetachedLaunch {
 	const child = nodeSpawn(cmd, args, {
 		cwd: opts.cwd,
 		env: opts.env,
@@ -47,10 +53,11 @@ function startDetached(
 		stdio: "ignore",
 	});
 	// A missing launcher is reported asynchronously as an 'error' event; without a listener it would crash the host.
-	child.on("error", () => {
-		// reason: a missing launcher only surfaces here; without a listener the host would crash, so the caller still sees spawned:true (flagged in the SUMMARY)
-	});
+	const { promise: exited, resolve } = Promise.withResolvers<number | null>();
+	child.on("error", () => resolve(null));
+	child.on("exit", (code) => resolve(code));
 	child.unref();
+	return { pid: child.pid, exited };
 }
 
 /** Removes inbox files older than 24 hours. Foreign file names are left alone; failures are ignored. */
