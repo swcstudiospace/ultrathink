@@ -34,7 +34,8 @@ interface Opened {
 const STDIO_MAIN = join(import.meta.dir, "..", "stdio", "main.ts");
 const ORIGIN = "https://ultrathink.test";
 const PLAN_SESSION = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
-const STEP_TIMEOUT_MS = 15_000;
+// Below the runner's 5 s default test timeout, so a stalled step fails with its named error instead of an anonymous timeout.
+const STEP_TIMEOUT_MS = 4_000;
 const EXPECTED_TOOLS = [
 	"ultrathink_answer",
 	"ultrathink_command",
@@ -596,7 +597,7 @@ describe("stdio process lifecycle", () => {
 				// The reply proves the handlers are installed and the loop is waiting for input.
 				await replyOf(child);
 				child.proc.kill("SIGTERM");
-				expect(await withTimeout(child.exited, "exit after SIGTERM", 5000)).toBe(0);
+				expect(await withTimeout(child.exited, "exit after SIGTERM", STEP_TIMEOUT_MS)).toBe(0);
 			} finally {
 				await stop(child);
 			}
