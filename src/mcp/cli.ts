@@ -151,6 +151,27 @@ async function readLine(
 }
 
 /**
+ * Feeds the `auth login` wait from stdin: a pasted line completes it. A stdin read error rejects the wait with that
+ * error only when no callback listener is registered; with one, the callback path still completes the login.
+ */
+export function feedLoginInput(
+	stream: ReadableStream<Uint8Array>,
+	signal: AbortSignal,
+	listen: boolean,
+	received: { resolve(line: string): void; reject(reason: unknown): void },
+): Promise<void> {
+	return readLine(stream, signal).then(
+		(line) => {
+			if (line) received.resolve(line);
+			else if (!listen) received.reject(new Error("no callback URL provided"));
+		},
+		(error: unknown) => {
+			if (!listen) received.reject(error);
+		},
+	);
+}
+
+/**
  * Plans the OAuth callback route for `auth login`. Tailscale is used only when asked for with `--tailscale` or
  * `ULTRATHINK_OAUTH_TAILSCALE=1`; then the `tailscale serve` handler is added, and `mount` is returned only if
  * that worked (the caller removes it). If it fails, the login falls back to the loopback route.
@@ -245,15 +266,7 @@ async function login(id: McpProviderId, args: string[], deps: AuthDeps): Promise
 				},
 			});
 		}
-		readLine(Bun.stdin.stream(), abort.signal).then(
-			(line) => {
-				if (line) received.resolve(line);
-				else if (!listen) received.reject(new Error("no callback URL provided"));
-			},
-			() => {
-				// reason: a failed stdin read is not fatal here; the callback path still completes the login
-			},
-		);
+		feedLoginInput(Bun.stdin.stream(), abort.signal, listen, received);
 		const input = await received.promise;
 		await completeLogin(pending, input, deps);
 	} finally {

@@ -43,9 +43,9 @@ export function appendActivity(stateDir: string, notice: unknown, sessionId: str
 			let prior = "";
 			try {
 				prior = readFileSync(path, "utf8");
-			} catch {
-				// reason: a missing file means no prior receipts. Other read errors also start empty, so the rename below can replace earlier receipts; flagged in the SUMMARY, not changed here.
-				prior = "";
+			} catch (error) {
+				// reason: only a missing file means no prior receipts; any other read error throws before the rename, so receipts already on disk are kept
+				if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw error;
 			}
 			const lines = prior.split("\n").filter((line) => line !== "");
 			const id = randomBytes(4).toString("hex");

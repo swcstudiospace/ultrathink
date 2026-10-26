@@ -615,6 +615,74 @@ describe("quarantine on open", () => {
 		};
 		expect(() => createAuditLog({ path, now, fs })).toThrow(/cannot be quarantined: EROFS/);
 	});
+
+	test("a failed restore of the damaged file names its quarantine path, not the original path", () => {
+		const { log, path, now } = filled(3);
+		log.close();
+		const intact = lines(path);
+		const recs = records(path);
+		const frontier = createFrontier();
+		for (const r of recs) frontier.push(r.hash);
+		const boundary = recs[2] as AuditRecord;
+		// A retention record that covers records 1..3 with a valid frontier, followed by a broken line: the carried
+		// boundary is written back into the new active file, and the failed restore is the case under test.
+		const fields = {
+			segments: 1,
+			fromSeq: 1,
+			throughSeq: 3,
+			throughHash: boundary.hash,
+			frontier: JSON.stringify(frontier.snapshot()),
+		};
+		const sorted = Object.fromEntries(Object.entries(fields).sort(([a], [b]) => (a < b ? -1 : 1)));
+		const hash = createHash("sha256")
+			.update(
+				`${boundary.hash}\n${JSON.stringify({ event: "audit_retention_pruned", fields: sorted, prev: boundary.hash, seq: 4, ts: boundary.ts })}`,
+			)
+			.digest("hex");
+		const retention = JSON.stringify({
+			seq: 4,
+			ts: boundary.ts,
+			event: "audit_retention_pruned",
+			prev: boundary.hash,
+			hash,
+			fields,
+		});
+		const damaged = [...intact, retention, "garbage"];
+		writeFileSync(path, damaged.map((l) => `${l}\n`).join(""));
+		let renames = 0;
+		const fs: AuditFs = {
+			...nodeFs,
+			openSync: ((file: nodeFs.PathLike, flags: nodeFs.OpenMode, mode?: nodeFs.Mode | null) => {
+				if (flags === "a")
+					throw Object.assign(new Error("EACCES: permission denied, open"), { code: "EACCES" });
+				return nodeFs.openSync(file, flags, mode);
+			}) as typeof nodeFs.openSync,
+			renameSync: ((from: nodeFs.PathLike, to: nodeFs.PathLike) => {
+				// The first rename moves the damaged file aside; the second is the restore, which fails.
+				renames += 1;
+				if (renames === 2)
+					throw Object.assign(new Error("EACCES: permission denied, rename"), { code: "EACCES" });
+				nodeFs.renameSync(from, to);
+			}) as typeof nodeFs.renameSync,
+		};
+		let thrown: Error | undefined;
+		try {
+			createAuditLog({ path, now, fs });
+		} catch (error) {
+			thrown = error as Error;
+		}
+		const name = readdirSync(join(path, "..")).find((n) => n.startsWith("audit.jsonl.corrupt-"));
+		expect(name).toBeDefined();
+		const quarantinePath = join(path, "..", name as string);
+		expect(existsSync(path)).toBe(false);
+		expect(readFileSync(quarantinePath, "utf8")).toBe(damaged.map((l) => `${l}\n`).join(""));
+		expect(thrown?.message).toMatch(
+			/^audit log: the boundary the sealed segments need could not be written/,
+		);
+		expect(thrown?.message).toContain(quarantinePath);
+		// The quarantine path begins with the original path, so the original counts only where it stands alone.
+		expect(thrown?.message.split(quarantinePath).join("")).not.toContain(path);
+	});
 });
 
 describe("audit-cli", () => {

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendActivity, readActivity } from "./activity.ts";
@@ -105,5 +106,26 @@ describe("activity receipts", () => {
 		expect(rows).toHaveLength(40);
 		expect(rows.filter((row) => row.sessionId === "session-a")).toHaveLength(20);
 		expect(rows.filter((row) => row.sessionId === "session-b")).toHaveLength(20);
+	});
+
+	test("a read failure other than a missing file keeps the seeded receipts on disk", () => {
+		const dir = stateDir();
+		appendActivity(dir, created, "s1");
+		const path = join(dir, "teach", "activity.ndjson");
+		const seeded = readFileSync(path, "utf8");
+		const original = fs.readFileSync;
+		const failing = spyOn(fs, "readFileSync").mockImplementation(((
+			...args: Parameters<typeof original>
+		) => {
+			if (args[0] === path) throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+			return (original as (...rest: unknown[]) => unknown)(...args);
+		}) as typeof fs.readFileSync);
+		try {
+			appendActivity(dir, { ...created, detail: "later" }, "s1");
+		} finally {
+			failing.mockRestore();
+		}
+		expect(readFileSync(path, "utf8")).toBe(seeded);
+		expect(readActivity(dir).map((row) => row.detail)).toEqual([created.detail]);
 	});
 });

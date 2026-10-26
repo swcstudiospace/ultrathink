@@ -978,13 +978,16 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 		if (carried !== undefined) {
 			if (writeRecord(RETENTION_EVENT, carried, "carried boundary") === undefined) {
 				// Without the boundary the sealed segments would not verify on the next start, so the damaged file goes back.
+				// If it cannot go back, it stays at the quarantine path, and the message names where it actually is.
+				let location = path;
 				try {
 					fs.renameSync(quarantine, path);
 				} catch {
 					// reason: the file stays at the quarantine path; the next start reports the missing boundary.
+					location = quarantine;
 				}
 				expected = undefined;
-				return `the boundary the sealed segments need could not be written to ${path}; the damaged file was left in place`;
+				return `the boundary the sealed segments need could not be written; the damaged file was left at ${location}`;
 			}
 			// The copy is a non-anchor record, so it counts toward the next anchor exactly as it does on a reopen.
 			sinceAnchor += 1;

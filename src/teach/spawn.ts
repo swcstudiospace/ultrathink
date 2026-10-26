@@ -28,7 +28,11 @@ export interface SpawnObserveOptions {
 	stateDir: string;
 	host: string;
 	/** Test seam; defaults to a detached, unref'd `node:child_process` spawn with ignored stdio. */
-	spawn?: (cmd: string, args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => void;
+	spawn?: (
+		cmd: string,
+		args: string[],
+		opts: { env: NodeJS.ProcessEnv; cwd: string },
+	) => DetachedLaunch | void;
 }
 
 function inboxDir(stateDir: string): string {
@@ -101,7 +105,7 @@ export function spawnObserveDetached(
 		pruneInbox(inboxDir(options.stateDir), Date.now());
 		path = writeInbox(digest, options.stateDir);
 		const cwd = existsSync(digest.cwd) ? digest.cwd : options.repoRoot;
-		(options.spawn ?? startDetached)(
+		const launch = (options.spawn ?? startDetached)(
 			join(options.repoRoot, "bin", "ultrathink"),
 			["teach", "observe", "--file", path],
 			{
@@ -113,6 +117,7 @@ export function spawnObserveDetached(
 				cwd,
 			},
 		);
+		if (launch && launch.pid === undefined) throw new Error("launcher did not start");
 		return { spawned: true };
 	} catch (error) {
 		if (path) {

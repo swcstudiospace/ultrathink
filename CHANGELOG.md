@@ -79,6 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A failed read of the teach activity file (EIO, EACCES, anything but a missing file) now fails the write instead of replacing earlier receipts with the new one (`src/teach/activity.ts`).
+- A detached teach observer that cannot start reports `spawned: false` and removes its inbox file, instead of reporting success (`src/teach/spawn.ts`).
+- `ultrathink-mcp auth login` no longer hangs when stdin fails and no callback listener is running; the login reports the stdin error (`src/mcp/cli.ts`).
+- `mcp-register` refuses the Hermes target when the root's `active_profile` exists but cannot be read, instead of writing to the default profile; Hermes is left unchanged (`scripts/mcp-register.ts`).
+- The audit log's rollback message names where the damaged file is when a restore fails (`services/ultrathink/obs/audit.ts`).
+- `escapeLdapDn` escapes the RFC 4514 characters (comma, plus, double quote, angle brackets, semicolon, backslash, NUL, a leading or trailing space and a leading `#`); output changes for those inputs (`services/ultrathink/security/encoding.ts`).
 - CodeQL's `Analyze (javascript-typescript)` job sets up Node 22 before `codeql-action/init`. The Omega CI runner pool has no system Node, so the TypeScript extractor failed with "Could not start Node.js" and the check stayed red on `main`.
 - Prompts no longer share state across sessions. An edit or write in Omp is attributed to the git repo it touched: a session whose edits land in a repo other than its plan's labelled repo records `repoMismatch` on its session record and shows one warning per distinct edited set. The label itself is unchanged.
 - `/ultrathink-skip` arms the skip for the session it is typed in, not for every session on the machine. Claude Code passes its session id (`${CLAUDE_SESSION_ID}`); `bin/ultrathink skip --session <id>` and grok-bot `ctl skip --session <id>` take one explicitly. Without an id it is refused with a message and arms nothing.

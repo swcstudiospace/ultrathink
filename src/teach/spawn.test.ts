@@ -241,4 +241,16 @@ describe("spawnObserveDetached", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("a launcher that cannot start (nonexistent binary) reports spawned:false and removes the inbox file", () => {
+		const result = spawnObserveDetached(digest(), {
+			repoRoot,
+			env: { ...process.env },
+			stateDir,
+			host: "omp",
+		});
+		expect(result.spawned).toBe(false);
+		expect(result.reason).toBeTruthy();
+		expect(readdirSync(inbox())).toEqual([]);
+	});
 });
