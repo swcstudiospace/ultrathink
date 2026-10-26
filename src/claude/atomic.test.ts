@@ -200,6 +200,7 @@ describe("withFileLock", () => {
 		const lock = `${target}.lock`;
 		writeFileSync(lock, "other-process-token");
 		let clock = NOW;
+		const start = clock;
 		const sleeps: number[] = [];
 		const logs: string[] = [];
 		let ran = false;
@@ -224,6 +225,7 @@ describe("withFileLock", () => {
 		expect(ran).toBe(true);
 		expect(sleeps.length).toBeGreaterThan(0);
 		expect(sleeps.every((ms) => ms >= 100)).toBe(true);
+		expect(clock - start).toBeGreaterThanOrEqual(500);
 		expect(logs).toHaveLength(1);
 		expect(logs[0]).toContain("state.json.lock");
 		// The other holder's lock is not ours to remove.

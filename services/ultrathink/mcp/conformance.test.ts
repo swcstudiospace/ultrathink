@@ -34,6 +34,7 @@ interface Opened {
 const STDIO_MAIN = join(import.meta.dir, "..", "stdio", "main.ts");
 const ORIGIN = "https://ultrathink.test";
 const PLAN_SESSION = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+const STEP_TIMEOUT_MS = 15_000;
 const EXPECTED_TOOLS = [
 	"ultrathink_answer",
 	"ultrathink_command",
@@ -85,6 +86,18 @@ function resultOf(reply: Json): Json {
 function errorCodeOf(reply: Json): unknown {
 	expect(reply.result).toBeUndefined();
 	return obj(reply.error).code;
+}
+
+/**
+ * Bounds a wait on a spawned process so a hung child fails the test with a name instead of hanging the run. A real
+ * timer is the only option here: the child's clock is not ours to fake.
+ */
+function withTimeout<T>(promise: Promise<T>, what: string, ms = STEP_TIMEOUT_MS): Promise<T> {
+	let timer: NodeJS.Timeout | undefined;
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`timed out: ${what}`)), ms);
+	});
+	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function envelope(id: number, method: string, params?: Json): Json {
@@ -310,8 +323,8 @@ async function openStdio(): Promise<Opened> {
 }
 
 /** The one line of `child`'s next reply, parsed. */
-async function replyOf(child: StdioProcess): Promise<Json> {
-	return obj(JSON.parse(await child.nextLine()));
+async function replyOf(child: StdioProcess, what = "reply"): Promise<Json> {
+	return obj(JSON.parse(await withTimeout(child.nextLine(), what)));
 }
 
 // -- the shared assertions ------------------------------------------------------------------------------------------
@@ -570,7 +583,7 @@ describe("stdio process lifecycle", () => {
 			child.send(JSON.stringify(envelope(1, "ping")));
 			child.proc.stdin.end();
 			expect((await replyOf(child)).id).toBe(1);
-			expect(await child.exited).toBe(0);
+			expect(await withTimeout(child.exited, "exit after stdin close", STEP_TIMEOUT_MS)).toBe(0);
 		} finally {
 			await stop(child);
 		}
@@ -585,7 +598,7 @@ describe("stdio process lifecycle", () => {
 				// The reply proves the handlers are installed and the loop is waiting for input.
 				await replyOf(child);
 				child.proc.kill("SIGTERM");
-				expect(await child.exited).toBe(0);
+				expect(await withTimeout(child.exited, "exit after SIGTERM", 5000)).toBe(0);
 			} finally {
 				await stop(child);
 			}

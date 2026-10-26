@@ -437,10 +437,12 @@ describe("recallLessons: time budget", () => {
 		const controller = new AbortController();
 		controller.abort();
 		ctx.signal = controller.signal;
+		const started = Date.now();
 		expect(await recallLessons({ query: "flaky fetch" }, ctx)).toMatchObject({
 			status: "error",
 			reason: "hindsight recall timed out",
 		});
+		expect(Date.now() - started).toBeLessThan(500);
 	});
 });
 
