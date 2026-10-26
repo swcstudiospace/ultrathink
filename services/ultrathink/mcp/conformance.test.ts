@@ -10,14 +10,14 @@
 import type { Subprocess } from "bun";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createAuth } from "../auth/auth.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { createLogger } from "../obs/log.ts";
 import { type Store, openStore } from "../store/store.ts";
 import { createApp } from "../routes/router.ts";
+import { makeTempDir } from "../test.helpers.ts";
 import { GRAPH_APP_URI } from "../ui/graph-app.ts";
 import { defaultGraphResources, loadCatalogWithFallback } from "./connector-host.ts";
 import { handleMcpPayload } from "./mcp.ts";
@@ -53,9 +53,7 @@ afterAll(() => {
 });
 
 function tmp(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-conformance-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-conformance-", dirs);
 }
 
 /** Narrows a parsed value to an object, failing the test when it is not one. */

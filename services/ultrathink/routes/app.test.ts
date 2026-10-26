@@ -3,8 +3,7 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import pkg from "../../../package.json";
 import { type SessionRecord, writeSession } from "../../../src/claude/state.ts";
@@ -21,6 +20,7 @@ import { type RequestContext, currentRequestContext } from "../obs/context.ts";
 import { createLogger } from "../obs/log.ts";
 import type { SinkEnvelope, SinkTransport } from "../obs/sinks/types.ts";
 import { type Store, openStore } from "../store/store.ts";
+import { makeTempDir } from "../test.helpers.ts";
 import { type App, type RouterDeps, createApp } from "./router.ts";
 
 const ORIGIN = "https://ultrathink.test";
@@ -57,9 +57,7 @@ afterAll(() => {
 });
 
 function tmp(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-app-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-app-", dirs);
 }
 
 function baseConfig(dir: string, overrides: Partial<UltrathinkConfig> = {}): UltrathinkConfig {

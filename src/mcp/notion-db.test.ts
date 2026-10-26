@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadConfig, userConfigPath } from "../config.ts";
 import {
@@ -11,6 +10,7 @@ import {
 	taskGraphDdl,
 	writeNotionConfig,
 } from "./notion-db.ts";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 
 const PAGE = "0123456789abcdef0123456789abcdef";
 const PAGE_ID = "01234567-89ab-cdef-0123-456789abcdef";
@@ -23,9 +23,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ut-notion-db-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ut-notion-db-", dirs);
 }
 
 function fakeNotion(reply: (name: string) => unknown) {

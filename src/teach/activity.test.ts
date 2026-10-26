@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import { appendActivity, readActivity } from "./activity.ts";
 
 const roots: string[] = [];
@@ -13,9 +13,7 @@ afterEach(() => {
 });
 
 function stateDir(): string {
-	const root = mkdtempSync(join(tmpdir(), "ut-activity-"));
-	roots.push(root);
-	return root;
+	return makeTempDir("ut-activity-", roots);
 }
 
 const created = {

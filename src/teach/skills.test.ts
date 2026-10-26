@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import { DEFAULT_HINDSIGHT_CONFIG } from "../hindsight/types.ts";
 import { captureMoment, forgetMoment } from "./capture.ts";
 import { installSkill, markPromoted, renderSkillDraft } from "./promote.ts";
@@ -28,9 +28,7 @@ import {
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-teach-skills-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-teach-skills-", dirs);
 }
 
 afterEach(() => {

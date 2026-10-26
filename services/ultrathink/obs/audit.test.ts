@@ -7,7 +7,6 @@ import * as nodeFs from "node:fs";
 import {
 	chmodSync,
 	existsSync,
-	mkdtempSync,
 	readFileSync,
 	readdirSync,
 	rmSync,
@@ -15,8 +14,8 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTempDir } from "../test.helpers.ts";
 import { main as cliMain } from "./audit-cli.ts";
 import { createFrontier } from "./audit-merkle.ts";
 import {
@@ -48,9 +47,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-audit-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-audit-", dirs);
 }
 
 function clock(): () => number {

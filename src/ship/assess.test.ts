@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import type { SessionRecord } from "../claude/state.ts";
 import { createDecisions } from "../decisions/gate.ts";
@@ -23,9 +23,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ship-assess-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ship-assess-", dirs);
 }
 
 function fakeRun(table: Record<string, string | undefined>): Run {
@@ -858,9 +856,7 @@ const ON: DecisionsConfig = {
 const realFetch = globalThis.fetch;
 
 function decisionsDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ut-decisions-ship-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ut-decisions-ship-", dirs);
 }
 
 /** The Jev runtime: ON (overridable), K in the injected env only, an empty temp store, no real waits, debug lines kept. */

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { createDecisions } from "../decisions/gate.ts";
@@ -15,6 +14,7 @@ import {
 	type DecisionsErrorKind,
 } from "../decisions/types.ts";
 import { type Recorded, hangingFetch, JEV, recorded } from "../test.helpers.ts";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import type { UpliftResult } from "../types.ts";
 import { normalizeClarifications, type RunClarifyOptions, runClarify } from "./pipeline.ts";
 import { clarifySystemPrompt } from "./prompts.ts";
@@ -607,9 +607,7 @@ const realFetch = globalThis.fetch;
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ut-decisions-hitl-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ut-decisions-hitl-", dirs);
 }
 
 /** A credential store path in a temp dir, holding `key` for openrouter when given. */

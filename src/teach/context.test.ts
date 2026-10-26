@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import { DEFAULT_HINDSIGHT_CONFIG, type HindsightClient } from "../hindsight/types.ts";
 import { hindsightFor, teachContext, teachEnabled, tryStore } from "./context.ts";
 import { DEFAULT_TEACH_CONFIG } from "./types.ts";
@@ -11,9 +11,7 @@ import { DEFAULT_TEACH_CONFIG } from "./types.ts";
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-teach-ctx-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-teach-ctx-", dirs);
 }
 
 afterEach(() => {

@@ -6,8 +6,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultConfig } from "../config.ts";
@@ -29,6 +28,7 @@ import type { TrackPlan } from "../track/types.ts";
 import { runControl, takeSessionFlag } from "../uplift/commands.ts";
 import { editTargets, recordEditAttribution } from "./omp.ts";
 import { main as grokbotMain } from "./grokbot-cli.ts";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 
 const roots: string[] = [];
 
@@ -37,9 +37,7 @@ afterEach(() => {
 });
 
 function tempRoot(): string {
-	const root = mkdtempSync(join(tmpdir(), "ultrathink-cross-"));
-	roots.push(root);
-	return root;
+	return makeTempDir("ultrathink-cross-", roots);
 }
 
 function git(cwd: string, args: string[]): void {
