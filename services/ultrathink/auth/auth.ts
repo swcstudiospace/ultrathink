@@ -272,8 +272,6 @@ export function createAuth(options: AuthOptions): Auth {
 	const now = options.now ?? (() => Date.now());
 	const secretsByKid = buildKeyRing(sessionSecret, options.previousSessionSecrets ?? []);
 	const signingKid = keyIdOf(sessionSecret);
-	// Covered by every session MAC so an owner password change ends all sessions.
-	const passwordBinding = createHash("sha256").update(ownerPasswordHash).digest("hex");
 	const cookieName = sessionCookieName(cookieSecure);
 	const dummyHash = Bun.password.hashSync(randomBytes(32).toString("base64url"));
 	const loginsByIp = new FixedWindowLimiter(now, MAX_TRACKED_KEYS);
@@ -297,8 +295,10 @@ export function createAuth(options: AuthOptions): Auth {
 	}
 
 	function sessionMac(secret: string, expiresAtMs: number): string {
+		// Keyed per session secret, so each key's MACs bind to the current owner password hash.
+		const binding = createHmac("sha256", secret).update(ownerPasswordHash).digest("hex");
 		return createHmac("sha256", secret)
-			.update(`ut-session|${expiresAtMs}|${passwordBinding}`)
+			.update(`ut-session|${expiresAtMs}|${binding}`)
 			.digest("base64url");
 	}
 
