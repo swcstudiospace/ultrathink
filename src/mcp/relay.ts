@@ -11,6 +11,11 @@ export interface RelayAuth {
 	unauthorized(failedHeader: string | undefined): Promise<boolean>;
 }
 
+/** Arms an abort deadline: `reinit` for the shared re-initialize, `request` for a message whose caller passes no signal. */
+export interface RelayDeadlines {
+	arm(label: "reinit" | "request", ms: number): AbortSignal;
+}
+
 export interface RelayOptions {
 	url: string;
 	auth: RelayAuth;
@@ -23,6 +28,8 @@ export interface RelayOptions {
 	requestTimeoutMs?: number;
 	/** Budget for the shared re-initialize after a stale session; default REINIT_TIMEOUT_MS. */
 	reinitTimeoutMs?: number;
+	/** Source of the abort signals for both budgets; default arms `AbortSignal.timeout(ms)`. */
+	deadlines?: RelayDeadlines;
 }
 
 interface RateLimit {
@@ -127,6 +134,9 @@ export function createRelay(options: RelayOptions): {
 	let reinitializing: Promise<void> | undefined;
 	const requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
 	const reinitTimeoutMs = options.reinitTimeoutMs ?? REINIT_TIMEOUT_MS;
+	const deadlines: RelayDeadlines = options.deadlines ?? {
+		arm: (_label, ms) => AbortSignal.timeout(ms),
+	};
 
 	const post = async (
 		message: unknown,
@@ -251,7 +261,7 @@ export function createRelay(options: RelayOptions): {
 			sessionId = undefined;
 			return;
 		}
-		const signal = AbortSignal.timeout(reinitTimeoutMs);
+		const signal = deadlines.arm("reinit", reinitTimeoutMs);
 		const posted = await postWithAuth(initMessage, false, signal);
 		if (!posted.response?.ok) {
 			log(
@@ -391,7 +401,7 @@ export function createRelay(options: RelayOptions): {
 				isRequest,
 				emit,
 				() => replied,
-				signal ?? AbortSignal.timeout(requestTimeoutMs),
+				signal ?? deadlines.arm("request", requestTimeoutMs),
 			);
 		} catch (error) {
 			log("relay error");

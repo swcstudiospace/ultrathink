@@ -1123,6 +1123,7 @@ describe("runControl", () => {
 
 	describe("bin/ultrathink prune", () => {
 		const SECRET_PROMPT = "a prompt that must never be printed";
+		const PRUNE_NOW = Date.UTC(2026, 9, 9, 12);
 
 		function runPrune(args: string[]): { stdout: string; exitCode: number | null } {
 			const proc = Bun.spawnSync(
@@ -1133,6 +1134,7 @@ describe("runControl", () => {
 						...process.env,
 						HOME: join(dir, "home"),
 						ULTRATHINK_STATE_DIR: join(dir, "state"),
+						ULTRATHINK_PRUNE_NOW_MS: String(PRUNE_NOW),
 					},
 					stdin: "ignore",
 					stdout: "pipe",
@@ -1154,7 +1156,7 @@ describe("runControl", () => {
 					result: { xml: "", original: SECRET_PROMPT, root: "", source: "llm" },
 				}),
 			);
-			const aged = (Date.now() - ageDays * 86_400_000) / 1000;
+			const aged = (PRUNE_NOW - ageDays * 86_400_000) / 1000;
 			utimesSync(path, aged, aged);
 			return path;
 		}

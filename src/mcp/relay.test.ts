@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { createRelay, type RelayAuth, runStdioRelay } from "./relay.ts";
+import { createRelay, type RelayAuth, type RelayDeadlines, runStdioRelay } from "./relay.ts";
 import { createSseParser } from "./sse.ts";
 import {
 	getSecurityLogger,
@@ -53,10 +53,44 @@ const staticAuth = (header?: string): RelayAuth => ({
 	unauthorized: async () => false,
 });
 
+interface ArmedDeadline {
+	label: "reinit" | "request";
+	ms: number;
+	controller: AbortController;
+}
+
+/** A deadline port that arms nothing on its own: each arm is recorded, and the test fires it by label. */
+function manualDeadlines(): {
+	arms: ArmedDeadline[];
+	port: RelayDeadlines;
+	fire(label: ArmedDeadline["label"]): void;
+} {
+	const arms: ArmedDeadline[] = [];
+	return {
+		arms,
+		port: {
+			arm(label, ms) {
+				const controller = new AbortController();
+				arms.push({ label, ms, controller });
+				return controller.signal;
+			},
+		},
+		fire(label) {
+			const armed = arms.find((arm) => arm.label === label);
+			if (armed === undefined) throw new Error(`no ${label} deadline was armed`);
+			armed.controller.abort();
+		},
+	};
+}
+
 function setup(
 	respond: (call: Call, index: number) => Response,
 	auth: RelayAuth = staticAuth("Bearer t"),
-	timeouts: { requestTimeoutMs?: number; reinitTimeoutMs?: number } = {},
+	timeouts: {
+		requestTimeoutMs?: number;
+		reinitTimeoutMs?: number;
+		deadlines?: RelayDeadlines;
+	} = {},
 ) {
 	const { fetch, calls } = fakeFetch(respond);
 	const lines: string[] = [];
@@ -459,20 +493,27 @@ describe("createRelay", () => {
 
 	test("re-initialize whose upstream never closes the stream fails within its own budget", async () => {
 		let cancelled = false;
+		const deadlines = manualDeadlines();
+		const { promise: pulled, resolve: onPull } = Promise.withResolvers<void>();
 		const { relay, out } = setup(
 			(call, index) => {
 				if (index === 0)
 					return json({ jsonrpc: "2.0", id: 0, result: {} }, { "mcp-session-id": "s1" });
 				if (call.body.method === "initialize") {
-					const stream = new ReadableStream<Uint8Array>({
-						pull: () =>
-							new Promise<void>(() => {
-								// reason: the stream is meant to stall; cancel() is what the test checks
-							}),
-						cancel() {
-							cancelled = true;
+					const stream = new ReadableStream<Uint8Array>(
+						{
+							pull: () => {
+								onPull();
+								return new Promise<void>(() => {
+									// reason: the stream is meant to stall; cancel() is what the test checks
+								});
+							},
+							cancel() {
+								cancelled = true;
+							},
 						},
-					});
+						{ highWaterMark: 0 },
+					);
 					return new Response(stream, {
 						headers: { "content-type": "text/event-stream", "mcp-session-id": "s2" },
 					});
@@ -480,12 +521,20 @@ describe("createRelay", () => {
 				return new Response("gone", { status: 404 });
 			},
 			staticAuth("Bearer t"),
-			{ reinitTimeoutMs: 50 },
+			{ deadlines: deadlines.port },
 		);
 		await relay.handle({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} });
-		const started = Date.now();
-		await relay.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" }, AbortSignal.timeout(5000));
-		expect(Date.now() - started).toBeLessThan(2000);
+		const pending = relay.handle(
+			{ jsonrpc: "2.0", id: 1, method: "tools/list" },
+			new AbortController().signal,
+		);
+		await pulled;
+		deadlines.fire("reinit");
+		await pending;
+		expect(deadlines.arms.map(({ label, ms }) => ({ label, ms }))).toEqual([
+			{ label: "request", ms: 120000 },
+			{ label: "reinit", ms: 30000 },
+		]);
 		expect(cancelled).toBe(true);
 		expect(out()).toEqual([
 			{ jsonrpc: "2.0", id: 0, result: {} },
@@ -495,26 +544,37 @@ describe("createRelay", () => {
 
 	test("a request without a caller signal gives up on a stalled upstream after the default budget", async () => {
 		let cancelled = false;
+		const deadlines = manualDeadlines();
+		const { promise: pulled, resolve: onPull } = Promise.withResolvers<void>();
 		const { relay, out } = setup(
 			() =>
 				new Response(
-					new ReadableStream<Uint8Array>({
-						pull: () =>
-							new Promise<void>(() => {
-								// reason: the stream is meant to stall; cancel() is what the test checks
-							}),
-						cancel() {
-							cancelled = true;
+					new ReadableStream<Uint8Array>(
+						{
+							pull: () => {
+								onPull();
+								return new Promise<void>(() => {
+									// reason: the stream is meant to stall; cancel() is what the test checks
+								});
+							},
+							cancel() {
+								cancelled = true;
+							},
 						},
-					}),
+						{ highWaterMark: 0 },
+					),
 					{ headers: { "content-type": "text/event-stream" } },
 				),
 			staticAuth("Bearer t"),
-			{ requestTimeoutMs: 50 },
+			{ deadlines: deadlines.port },
 		);
-		const started = Date.now();
-		await relay.handle({ jsonrpc: "2.0", id: 1, method: "tools/call" });
-		expect(Date.now() - started).toBeLessThan(2000);
+		const pending = relay.handle({ jsonrpc: "2.0", id: 1, method: "tools/call" });
+		await pulled;
+		deadlines.fire("request");
+		await pending;
+		expect(deadlines.arms.map(({ label, ms }) => ({ label, ms }))).toEqual([
+			{ label: "request", ms: 120000 },
+		]);
 		expect(cancelled).toBe(true);
 		expect(out()).toEqual([
 			{ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "upstream unreachable" } },
