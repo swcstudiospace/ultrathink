@@ -4,12 +4,33 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main as cliMain } from "./audit-cli.ts";
 import { createFrontier } from "./audit-merkle.ts";
-import { AUDIT_EVENTS, type AuditFs, type AuditLog, type AuditNotice, type AuditRecord, type AuditVerification, auditPath, createAuditLog, GENESIS_HASH, verifyAuditFile } from "./audit.ts";
+import {
+	AUDIT_EVENTS,
+	type AuditFs,
+	type AuditLog,
+	type AuditNotice,
+	type AuditRecord,
+	type AuditVerification,
+	auditPath,
+	createAuditLog,
+	GENESIS_HASH,
+	verifyAuditFile,
+} from "./audit.ts";
 
 const START = 1_700_000_000_000;
 const IS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
@@ -20,7 +41,7 @@ afterEach(() => {
 		try {
 			chmodSync(dir, 0o700);
 		} catch {
-			// Already writable or gone.
+			// reason: already writable or gone; the cleanup below removes what is left
 		}
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -41,7 +62,9 @@ function clock(): () => number {
 }
 
 function lines(path: string): string[] {
-	return readFileSync(path, "utf8").split("\n").filter((l) => l.length > 0);
+	return readFileSync(path, "utf8")
+		.split("\n")
+		.filter((l) => l.length > 0);
 }
 
 function records(path: string): AuditRecord[] {
@@ -53,11 +76,15 @@ function rewrite(path: string, out: string[]): void {
 }
 
 /** A log with `count` records in a fresh directory; returns the log, its path and the collected errors. */
-function filled(count: number, now = clock()): { log: AuditLog; path: string; errors: Error[]; now: () => number } {
+function filled(
+	count: number,
+	now = clock(),
+): { log: AuditLog; path: string; errors: Error[]; now: () => number } {
 	const path = auditPath(tempDir());
 	const errors: Error[] = [];
 	const log = createAuditLog({ path, now, onError: (e) => errors.push(e) });
-	for (let i = 1; i <= count; i += 1) log.record(AUDIT_EVENTS[i % AUDIT_EVENTS.length] as never, { n: i, who: `user${i}` });
+	for (let i = 1; i <= count; i += 1)
+		log.record(AUDIT_EVENTS[i % AUDIT_EVENTS.length] as never, { n: i, who: `user${i}` });
 	return { log, path, errors, now };
 }
 
@@ -80,7 +107,13 @@ describe("chain", () => {
 		expect(recs[1]?.prev).toBe(recs[0]?.hash);
 		expect(recs[2]?.prev).toBe(recs[1]?.hash);
 		for (const r of recs) {
-			const canonical = JSON.stringify({ event: r.event, fields: r.fields, prev: r.prev, seq: r.seq, ts: r.ts });
+			const canonical = JSON.stringify({
+				event: r.event,
+				fields: r.fields,
+				prev: r.prev,
+				seq: r.seq,
+				ts: r.ts,
+			});
 			expect(r.hash).toBe(createHash("sha256").update(`${r.prev}\n${canonical}`).digest("hex"));
 		}
 		expect(log.verify()).toEqual({ ok: true, records: 3, lastHash: recs[2]?.hash as string });
@@ -112,7 +145,14 @@ describe("chain", () => {
 		const { log, path } = filled(2);
 		const out = lines(path);
 		const second = JSON.parse(out[1] as string) as AuditRecord;
-		out[1] = JSON.stringify({ fields: { who: second.fields.who, n: second.fields.n }, hash: second.hash, prev: second.prev, event: second.event, ts: second.ts, seq: second.seq });
+		out[1] = JSON.stringify({
+			fields: { who: second.fields.who, n: second.fields.n },
+			hash: second.hash,
+			prev: second.prev,
+			event: second.event,
+			ts: second.ts,
+			seq: second.seq,
+		});
 		rewrite(path, out);
 		expect(log.verify().ok).toBe(true);
 	});
@@ -120,9 +160,24 @@ describe("chain", () => {
 	test("verifies an event name it does not know, so older files survive new events", () => {
 		const path = auditPath(tempDir());
 		const fields = {};
-		const canonical = JSON.stringify({ event: "future_event", fields, prev: GENESIS_HASH, seq: 1, ts: "2026-01-01T00:00:00.000Z" });
+		const canonical = JSON.stringify({
+			event: "future_event",
+			fields,
+			prev: GENESIS_HASH,
+			seq: 1,
+			ts: "2026-01-01T00:00:00.000Z",
+		});
 		const hash = createHash("sha256").update(`${GENESIS_HASH}\n${canonical}`).digest("hex");
-		rewrite(path, [JSON.stringify({ seq: 1, ts: "2026-01-01T00:00:00.000Z", event: "future_event", prev: GENESIS_HASH, hash, fields })]);
+		rewrite(path, [
+			JSON.stringify({
+				seq: 1,
+				ts: "2026-01-01T00:00:00.000Z",
+				event: "future_event",
+				prev: GENESIS_HASH,
+				hash,
+				fields,
+			}),
+		]);
 		expect(verifyAuditFile(path)).toEqual({ ok: true, records: 1, lastHash: hash });
 	});
 });
@@ -141,7 +196,13 @@ describe("tamper detection", () => {
 		const out = lines(path);
 		const r = JSON.parse(out[2] as string) as AuditRecord;
 		r.fields.who = "mallory";
-		const canonical = JSON.stringify({ event: r.event, fields: { n: r.fields.n, who: r.fields.who }, prev: r.prev, seq: r.seq, ts: r.ts });
+		const canonical = JSON.stringify({
+			event: r.event,
+			fields: { n: r.fields.n, who: r.fields.who },
+			prev: r.prev,
+			seq: r.seq,
+			ts: r.ts,
+		});
 		r.hash = createHash("sha256").update(`${r.prev}\n${canonical}`).digest("hex");
 		out[2] = JSON.stringify(r);
 		rewrite(path, out);
@@ -178,13 +239,19 @@ describe("tamper detection", () => {
 		expectBroken(verifyAuditFile(path), 1, /not valid JSON/);
 		rewrite(path, [(out[0] as string).replace(GENESIS_HASH, "f".repeat(64)), out[1] as string]);
 		expectBroken(verifyAuditFile(path), 1, /prev does not match/);
-		rewrite(path, [...out, JSON.stringify({ seq: 3, ts: "x", event: "logout", prev: "zz", hash: "zz", fields: {} })]);
+		rewrite(path, [
+			...out,
+			JSON.stringify({ seq: 3, ts: "x", event: "logout", prev: "zz", hash: "zz", fields: {} }),
+		]);
 		expectBroken(verifyAuditFile(path), 3, /prev is not a sha256/);
 	});
 
 	test("an oversized line stops the scan instead of buffering it", () => {
 		const { path } = filled(1);
-		writeFileSync(path, `${readFileSync(path, "utf8")}{"seq":2,"pad":"${"x".repeat(1024 * 1024 + 10)}"}\n`);
+		writeFileSync(
+			path,
+			`${readFileSync(path, "utf8")}{"seq":2,"pad":"${"x".repeat(1024 * 1024 + 10)}"}\n`,
+		);
 		expectBroken(verifyAuditFile(path), 2, /maximum line length/);
 	});
 
@@ -201,7 +268,10 @@ describe("tamper detection", () => {
 	test("a line with an extra key breaks at that line", () => {
 		const { path } = filled(2);
 		const out = lines(path);
-		out[1] = JSON.stringify({ ...(JSON.parse(out[1] as string) as Record<string, unknown>), note: "smuggled" });
+		out[1] = JSON.stringify({
+			...(JSON.parse(out[1] as string) as Record<string, unknown>),
+			note: "smuggled",
+		});
 		rewrite(path, out);
 		expectBroken(verifyAuditFile(path), 2, /exactly the keys/);
 	});
@@ -248,7 +318,25 @@ describe("fields", () => {
 		});
 		const [rec] = records(path);
 		const fields = rec?.fields as Record<string, unknown>;
-		for (const dropped of ["password", "access_token", "Authorization", "apiKey", "api_key", "cookie", "connector_id", "clientSecret", "nan", "inf", "nested", "list", "nothing", "undef", "fn", "big", ""]) {
+		for (const dropped of [
+			"password",
+			"access_token",
+			"Authorization",
+			"apiKey",
+			"api_key",
+			"cookie",
+			"connector_id",
+			"clientSecret",
+			"nan",
+			"inf",
+			"nested",
+			"list",
+			"nothing",
+			"undef",
+			"fn",
+			"big",
+			"",
+		]) {
 			expect(fields).not.toHaveProperty(dropped);
 		}
 		expect(fields.ip).toBe("203.0.113.9[31m");
@@ -345,7 +433,12 @@ describe("failure handling", () => {
 		const path = auditPath(tempDir());
 		const errors: Error[] = [];
 		const notices: AuditNotice[] = [];
-		const log = createAuditLog({ path, now: clock(), onError: (e) => errors.push(e), onNotice: (n) => notices.push(n) });
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			onError: (e) => errors.push(e),
+			onNotice: (n) => notices.push(n),
+		});
 		log.record("login_ok", { n: 1 });
 		rmSync(path);
 		log.record("login_ok", { n: 2 });
@@ -357,26 +450,34 @@ describe("failure handling", () => {
 		expect(errors).toEqual([]);
 	});
 
-	test.skipIf(IS_ROOT)("a read-only directory reports every dropped record and the process keeps going", () => {
-		const dir = tempDir();
-		const path = auditPath(dir);
-		const errors: Error[] = [];
-		const notices: AuditNotice[] = [];
-		const log = createAuditLog({ path, now: clock(), onError: (e) => errors.push(e), onNotice: (n) => notices.push(n) });
-		log.record("login_ok", { n: 1 });
-		rmSync(path);
-		chmodSync(dir, 0o500);
-		log.record("login_ok", { n: 2 });
-		log.record("login_ok", { n: 3 });
-		expect(errors.map((e) => e.message.includes("record dropped"))).toEqual([true, true]);
-		expect(notices.length).toBeGreaterThan(0);
-		expect(notices.every((n) => n.kind === "changed_outside")).toBe(true);
-		expect(notices.some((n) => /changed outside the service/.test(n.message))).toBe(true);
-		chmodSync(dir, 0o700);
-		log.record("login_ok", { n: 4 });
-		expect(errors.length).toBe(2);
-		expect(existsSync(path)).toBe(true);
-	});
+	test.skipIf(IS_ROOT)(
+		"a read-only directory reports every dropped record and the process keeps going",
+		() => {
+			const dir = tempDir();
+			const path = auditPath(dir);
+			const errors: Error[] = [];
+			const notices: AuditNotice[] = [];
+			const log = createAuditLog({
+				path,
+				now: clock(),
+				onError: (e) => errors.push(e),
+				onNotice: (n) => notices.push(n),
+			});
+			log.record("login_ok", { n: 1 });
+			rmSync(path);
+			chmodSync(dir, 0o500);
+			log.record("login_ok", { n: 2 });
+			log.record("login_ok", { n: 3 });
+			expect(errors.map((e) => e.message.includes("record dropped"))).toEqual([true, true]);
+			expect(notices.length).toBeGreaterThan(0);
+			expect(notices.every((n) => n.kind === "changed_outside")).toBe(true);
+			expect(notices.some((n) => /changed outside the service/.test(n.message))).toBe(true);
+			chmodSync(dir, 0o700);
+			log.record("login_ok", { n: 4 });
+			expect(errors.length).toBe(2);
+			expect(existsSync(path)).toBe(true);
+		},
+	);
 
 	test("a throwing onError is contained", () => {
 		const path = auditPath(tempDir());
@@ -399,15 +500,22 @@ describe("failure handling", () => {
 		log.record("logout");
 		log.record("logout");
 		expect(records(path).length).toBe(1);
-		expect(errors.map((e) => e.message)).toEqual(["audit log: record after close dropped", "audit log: record after close dropped"]);
+		expect(errors.map((e) => e.message)).toEqual([
+			"audit log: record after close dropped",
+			"audit log: record after close dropped",
+		]);
 	});
 
 	test("a missing directory and invalid options fail at construction", () => {
 		const dir = tempDir();
-		expect(() => createAuditLog({ path: join(dir, "missing", "audit.jsonl") })).toThrow(/cannot open/);
+		expect(() => createAuditLog({ path: join(dir, "missing", "audit.jsonl") })).toThrow(
+			/cannot open/,
+		);
 		expect(() => createAuditLog({ path: "" })).toThrow(/path/);
 		expect(() => createAuditLog({ path: auditPath(dir), now: 5 as never })).toThrow(/now/);
-		expect(() => createAuditLog({ path: auditPath(dir), onError: "x" as never })).toThrow(/onError/);
+		expect(() => createAuditLog({ path: auditPath(dir), onError: "x" as never })).toThrow(
+			/onError/,
+		);
 		expect(() => createAuditLog(null as never)).toThrow(/options/);
 	});
 
@@ -426,15 +534,24 @@ describe("quarantine on open", () => {
 		out.splice(1, 1);
 		rewrite(path, out);
 		const notices: AuditNotice[] = [];
-		const reopened = createAuditLog({ path, now, onError: (e) => errors.push(e), onNotice: (n) => notices.push(n) });
+		const reopened = createAuditLog({
+			path,
+			now,
+			onError: (e) => errors.push(e),
+			onNotice: (n) => notices.push(n),
+		});
 		expect(errors).toEqual([]);
 		expect(notices.length).toBe(1);
 		expect(notices[0]?.kind).toBe("moved_to");
-		expect(notices[0]?.message).toMatch(/broken at record 2 \(seq 3 where 2 was expected\); moved to .*audit\.jsonl\.corrupt-/);
+		expect(notices[0]?.message).toMatch(
+			/broken at record 2 \(seq 3 where 2 was expected\); moved to .*audit\.jsonl\.corrupt-/,
+		);
 		const names = readdirSync(join(path, "..")).sort();
 		expect(names.length).toBe(2);
 		expect(names.some((n) => n.startsWith("audit.jsonl.corrupt-"))).toBe(true);
-		expect(readFileSync(join(path, "..", names.find((n) => n.includes("corrupt")) as string), "utf8")).toBe(out.map((l) => `${l}\n`).join(""));
+		expect(
+			readFileSync(join(path, "..", names.find((n) => n.includes("corrupt")) as string), "utf8"),
+		).toBe(out.map((l) => `${l}\n`).join(""));
 		expect(statSync(path).mode & 0o777).toBe(0o600);
 		expect(reopened.verify()).toEqual({ ok: true, records: 0, lastHash: GENESIS_HASH });
 		reopened.record("login_ok", { n: 1 });
@@ -449,7 +566,12 @@ describe("quarantine on open", () => {
 		const text = readFileSync(path, "utf8");
 		writeFileSync(path, text.slice(0, text.length - 3));
 		const notices: AuditNotice[] = [];
-		const reopened = createAuditLog({ path, now, onError: (e) => errors.push(e), onNotice: (n) => notices.push(n) });
+		const reopened = createAuditLog({
+			path,
+			now,
+			onError: (e) => errors.push(e),
+			onNotice: (n) => notices.push(n),
+		});
 		expect(errors).toEqual([]);
 		expect(notices[0]?.kind).toBe("moved_to");
 		expect(notices[0]?.message).toMatch(/broken at record 2 \(truncated last record/);
@@ -475,7 +597,9 @@ describe("quarantine on open", () => {
 				throw new Error("EIO: input/output error");
 			},
 		};
-		expect(() => createAuditLog({ path, now, fs })).toThrow(/cannot verify .*audit\.jsonl: cannot read: EIO/);
+		expect(() => createAuditLog({ path, now, fs })).toThrow(
+			/cannot verify .*audit\.jsonl: cannot read: EIO/,
+		);
 		expect(readdirSync(join(path, ".."))).toEqual(["audit.jsonl"]);
 	});
 
@@ -494,7 +618,10 @@ describe("quarantine on open", () => {
 });
 
 describe("audit-cli", () => {
-	function run(argv: string[], env: Record<string, string | undefined> = {}): { code: number; out: string[]; err: string[] } {
+	function run(
+		argv: string[],
+		env: Record<string, string | undefined> = {},
+	): { code: number; out: string[]; err: string[] } {
 		const out: string[] = [];
 		const err: string[] = [];
 		const code = cliMain(argv, env, { out: (l) => out.push(l), err: (l) => err.push(l) });
@@ -524,13 +651,19 @@ describe("audit-cli", () => {
 		const dir = tempDir();
 		const { path } = filled(1);
 		const stateDir = join(path, "..");
-		expect(run(["verify"], { ULTRATHINK_STATE_DIR: stateDir }).out[0]).toMatch(/^audit ok: 1 records/);
-		expect(run(["verify"], { ULTRATHINK_STATE_DIR: dir }).out[0]).toBe(`audit ok: 0 records, last ${GENESIS_HASH}`);
+		expect(run(["verify"], { ULTRATHINK_STATE_DIR: stateDir }).out[0]).toMatch(
+			/^audit ok: 1 records/,
+		);
+		expect(run(["verify"], { ULTRATHINK_STATE_DIR: dir }).out[0]).toBe(
+			`audit ok: 0 records, last ${GENESIS_HASH}`,
+		);
 	});
 
 	test("usage and help", () => {
 		expect(run(["--help"]).code).toBe(0);
-		expect(run(["--help"]).out[0]).toMatch(/^usage: bun services\/ultrathink\/obs\/audit-cli\.ts verify/);
+		expect(run(["--help"]).out[0]).toMatch(
+			/^usage: bun services\/ultrathink\/obs\/audit-cli\.ts verify/,
+		);
 		expect(run([]).code).toBe(2);
 		expect(run(["frobnicate"]).code).toBe(2);
 		expect(run(["verify", "a", "b"]).code).toBe(2);
@@ -542,8 +675,16 @@ describe("audit-cli", () => {
 describe("anchors", () => {
 	/** Recomputes a record's hash after an edit, so the chain link is valid and only the edited content is wrong. */
 	function rehash(r: AuditRecord): AuditRecord {
-		const fields = Object.fromEntries(Object.entries(r.fields).sort(([a], [b]) => (a < b ? -1 : 1)));
-		const canonical = JSON.stringify({ event: r.event, fields, prev: r.prev, seq: r.seq, ts: r.ts });
+		const fields = Object.fromEntries(
+			Object.entries(r.fields).sort(([a], [b]) => (a < b ? -1 : 1)),
+		);
+		const canonical = JSON.stringify({
+			event: r.event,
+			fields,
+			prev: r.prev,
+			seq: r.seq,
+			ts: r.ts,
+		});
 		return { ...r, hash: createHash("sha256").update(`${r.prev}\n${canonical}`).digest("hex") };
 	}
 
@@ -552,7 +693,17 @@ describe("anchors", () => {
 		const log = createAuditLog({ path, now: clock(), anchorEvery: 3 });
 		for (let i = 1; i <= 7; i += 1) log.record("login_ok", { n: i });
 		const recs = records(path);
-		expect(recs.map((r) => r.event)).toEqual(["login_ok", "login_ok", "login_ok", "audit_anchor", "login_ok", "login_ok", "login_ok", "audit_anchor", "login_ok"]);
+		expect(recs.map((r) => r.event)).toEqual([
+			"login_ok",
+			"login_ok",
+			"login_ok",
+			"audit_anchor",
+			"login_ok",
+			"login_ok",
+			"login_ok",
+			"audit_anchor",
+			"login_ok",
+		]);
 		for (const at of [3, 7]) {
 			const frontier = createFrontier();
 			for (const r of recs.slice(0, at)) frontier.push(r.hash);
@@ -567,7 +718,12 @@ describe("anchors", () => {
 		log.record("login_ok", { n: 1 });
 		log.record("login_ok", { n: 2 });
 		const out = lines(path);
-		out[2] = JSON.stringify(rehash({ ...(JSON.parse(out[2] as string) as AuditRecord), fields: { through: 2, root: "f".repeat(64) } }));
+		out[2] = JSON.stringify(
+			rehash({
+				...(JSON.parse(out[2] as string) as AuditRecord),
+				fields: { through: 2, root: "f".repeat(64) },
+			}),
+		);
 		rewrite(path, out);
 		expectBroken(verifyAuditFile(path), 3, /anchor root does not match records through 2/);
 	});
@@ -581,7 +737,10 @@ describe("anchors", () => {
 		const rewritten = rehash({ ...first, fields: { ...first.fields, who: "mallory" } });
 		const relinked = rehash({ ...second, prev: rewritten.hash });
 		const relinkedAnchor = rehash({ ...anchor, prev: relinked.hash });
-		rewrite(path, [rewritten, relinked, relinkedAnchor].map((r) => JSON.stringify(r)));
+		rewrite(
+			path,
+			[rewritten, relinked, relinkedAnchor].map((r) => JSON.stringify(r)),
+		);
 		expectBroken(verifyAuditFile(path), 3, /anchor root does not match records through 2/);
 	});
 
@@ -597,7 +756,11 @@ describe("anchors", () => {
 		const second = createAuditLog({ path: split, now: fixed, anchorEvery: 3 });
 		for (let i = 6; i <= 8; i += 1) second.record("login_ok", { n: i });
 		expect(readFileSync(split, "utf8")).toBe(readFileSync(whole, "utf8"));
-		expect(records(split).filter((r) => r.event === "audit_anchor").map((r) => r.seq)).toEqual([4, 8]);
+		expect(
+			records(split)
+				.filter((r) => r.event === "audit_anchor")
+				.map((r) => r.seq),
+		).toEqual([4, 8]);
 	});
 
 	test("anchorEvery must be an integer from 1 to 1000000", () => {
@@ -614,7 +777,9 @@ describe("anchors", () => {
 		const log = createAuditLog({ path, now: clock(), onError: (e) => errors.push(e) });
 		log.record("audit_anchor", { through: 0, root: "0".repeat(64) });
 		expect(records(path)).toEqual([]);
-		expect(errors.map((e) => e.message)).toEqual(["audit log: audit_anchor is written by the log only; record dropped"]);
+		expect(errors.map((e) => e.message)).toEqual([
+			"audit log: audit_anchor is written by the log only; record dropped",
+		]);
 	});
 
 	test("the log rejects a caller-supplied audit_retention_pruned record and the chain is unchanged", () => {
@@ -623,9 +788,17 @@ describe("anchors", () => {
 		const log = createAuditLog({ path, now: clock(), onError: (e) => errors.push(e) });
 		log.record("login_ok", { n: 1 });
 		const before = readFileSync(path, "utf8");
-		log.record("audit_retention_pruned", { segments: 1, fromSeq: 1, throughSeq: 1, throughHash: "f".repeat(64), frontier: "{}" });
+		log.record("audit_retention_pruned", {
+			segments: 1,
+			fromSeq: 1,
+			throughSeq: 1,
+			throughHash: "f".repeat(64),
+			frontier: "{}",
+		});
 		expect(readFileSync(path, "utf8")).toBe(before);
-		expect(errors.map((e) => e.message)).toEqual(["audit log: audit_retention_pruned is written by the log only; record dropped"]);
+		expect(errors.map((e) => e.message)).toEqual([
+			"audit log: audit_retention_pruned is written by the log only; record dropped",
+		]);
 		expect(log.verify().ok).toBe(true);
 	});
 });
@@ -634,7 +807,12 @@ describe("streaming hook", () => {
 	test("onAppend sees each acknowledged record once, in seq order, including anchors", () => {
 		const path = auditPath(tempDir());
 		const seen: AuditRecord[] = [];
-		const log = createAuditLog({ path, now: clock(), anchorEvery: 2, onAppend: (r) => seen.push(r) });
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			anchorEvery: 2,
+			onAppend: (r) => seen.push(r),
+		});
 		for (let i = 1; i <= 5; i += 1) log.record("login_ok", { n: i });
 		expect(seen).toEqual(records(path));
 		expect(seen.filter((r) => r.event === "audit_anchor").length).toBe(2);
@@ -655,7 +833,13 @@ describe("streaming hook", () => {
 				nodeFs.fsyncSync(fd);
 			},
 		};
-		const log = createAuditLog({ path, now: clock(), fs, onError: (e) => errors.push(e), onAppend: (r) => seen.push(r) });
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			fs,
+			onError: (e) => errors.push(e),
+			onAppend: (r) => seen.push(r),
+		});
 		log.record("login_ok", { n: 1 });
 		failNextSync = true;
 		log.record("login_ok", { n: 2 });
@@ -681,7 +865,10 @@ describe("streaming hook", () => {
 		log.record("login_ok", { n: 1 });
 		log.record("logout", { n: 2 });
 		expect(records(path).map((r) => r.seq)).toEqual([1, 2]);
-		expect(errors.map((e) => e.message)).toEqual(["audit log: onAppend failed for record 1: sink down", "audit log: onAppend failed for record 2: sink down"]);
+		expect(errors.map((e) => e.message)).toEqual([
+			"audit log: onAppend failed for record 1: sink down",
+			"audit log: onAppend failed for record 2: sink down",
+		]);
 		expect(log.verify().ok).toBe(true);
 	});
 
@@ -753,12 +940,17 @@ describe("active file checks", () => {
 		const path = auditPath(tempDir());
 		const notices: AuditNotice[] = [];
 		const errors: Error[] = [];
-		const log = createAuditLog({ path, now: clock(), onNotice: (n) => notices.push(n), onError: (e) => errors.push(e) });
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			onNotice: (n) => notices.push(n),
+			onError: (e) => errors.push(e),
+		});
 		for (let i = 1; i <= 3; i += 1) log.record("login_ok", { n: i, who: `user${i}` });
 		const out = lines(path);
 		out[1] = (out[1] as string).replace('"user2"', '"user9"');
 		rewrite(path, out);
-		const later = new Date(Date.now() + 60_000);
+		const later = new Date("2026-01-01T00:01:00Z");
 		utimesSync(path, later, later);
 		log.record("logout", { n: 4 });
 		expect(notices.map((n) => n.kind)).toEqual(["moved_to"]);
@@ -836,14 +1028,25 @@ describe("expectations", () => {
 	test("every expectation must match", () => {
 		const { path } = filled(3);
 		const [r1, , r3] = records(path);
-		expect(runCli(["verify", path, "--expect", `1:${r1?.hash}`, "--expect", `3:${r3?.hash}`]).code).toBe(0);
-		expect(runCli(["verify", path, "--expect", `1:${r1?.hash}`, "--expect", `2:${"f".repeat(64)}`]).code).toBe(1);
+		expect(
+			runCli(["verify", path, "--expect", `1:${r1?.hash}`, "--expect", `3:${r3?.hash}`]).code,
+		).toBe(0);
+		expect(
+			runCli(["verify", path, "--expect", `1:${r1?.hash}`, "--expect", `2:${"f".repeat(64)}`]).code,
+		).toBe(1);
 	});
 
 	test("a malformed expectation exits 2", () => {
 		const { path } = filled(1);
 		const h1 = records(path)[0]?.hash as string;
-		for (const bad of ["1", `0:${h1}`, `x:${h1}`, `01:${h1}`, `1:${h1.toUpperCase()}`, `1:${h1.slice(0, 63)}`]) {
+		for (const bad of [
+			"1",
+			`0:${h1}`,
+			`x:${h1}`,
+			`01:${h1}`,
+			`1:${h1.toUpperCase()}`,
+			`1:${h1.slice(0, 63)}`,
+		]) {
 			expect(runCli(["verify", path, "--expect", bad]).code).toBe(2);
 		}
 		expect(runCli(["verify", path, "--expect"]).code).toBe(2);

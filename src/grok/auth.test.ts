@@ -23,13 +23,15 @@ afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const TOKEN = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTk5OX0.Sflkxw_RJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c";
+const TOKEN =
+	"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTk5OX0.Sflkxw_RJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c";
 const EXPIRES_AT = "2026-09-16T12:00:00.000Z";
 
 function tempHome(auth?: unknown): string {
 	const home = mkdtempSync(join(tmpdir(), "ultrathink-grok-auth-"));
 	dirs.push(home);
-	if (auth !== undefined) writeFileSync(join(home, "auth.json"), typeof auth === "string" ? auth : JSON.stringify(auth));
+	if (auth !== undefined)
+		writeFileSync(join(home, "auth.json"), typeof auth === "string" ? auth : JSON.stringify(auth));
 	return home;
 }
 
@@ -97,7 +99,13 @@ describe("grokAuthStatus", () => {
 	test("reports login and expiry without exposing the token", () => {
 		const home = tempHome(fixture());
 		const status = grokAuthStatus(home, Date.parse(EXPIRES_AT) - 3_600_000);
-		expect(status).toEqual({ loggedIn: true, expired: false, email: "dev@example.com", expiresAt: EXPIRES_AT, home });
+		expect(status).toEqual({
+			loggedIn: true,
+			expired: false,
+			email: "dev@example.com",
+			expiresAt: EXPIRES_AT,
+			home,
+		});
 		expect(JSON.stringify(status)).not.toContain(TOKEN);
 		expect(grokAuthStatus(home, Date.parse(EXPIRES_AT)).expired).toBe(true);
 	});
@@ -113,7 +121,10 @@ describe("ensureFreshGrokAuth", () => {
 	const PAST = "2020-01-01T00:00:00.000Z";
 
 	/** Spawn fake standing in for `grok models`: rewrites auth.json like the CLI would after a refresh. */
-	function fakeSpawn(home: string, next: Record<string, unknown> = fixture({ key: `${TOKEN}x`, expires_at: FUTURE })) {
+	function fakeSpawn(
+		home: string,
+		next: Record<string, unknown> = fixture({ key: `${TOKEN}x`, expires_at: FUTURE }),
+	) {
 		const calls: { cmd: string[]; env: Record<string, string | undefined> }[] = [];
 		const spawn = async (cmd: string[], env: Record<string, string | undefined>) => {
 			calls.push({ cmd, env });
@@ -127,7 +138,9 @@ describe("ensureFreshGrokAuth", () => {
 		const home = tempHome(fixture({ expires_at: PAST }));
 		const { spawn, calls } = fakeSpawn(home);
 		const auth = await ensureFreshGrokAuth({ home, spawn });
-		expect(calls).toEqual([{ cmd: ["grok", "models"], env: expect.objectContaining({ GROK_HOME: home }) }]);
+		expect(calls).toEqual([
+			{ cmd: ["grok", "models"], env: expect.objectContaining({ GROK_HOME: home }) },
+		]);
 		expect(auth?.token).toBe(`${TOKEN}x`);
 		expect(auth && isGrokAuthExpired(auth)).toBe(false);
 	});
@@ -135,7 +148,12 @@ describe("ensureFreshGrokAuth", () => {
 	test("honours bin and leaves a fresh session alone", async () => {
 		const home = tempHome(fixture());
 		const { spawn, calls } = fakeSpawn(home);
-		const auth = await ensureFreshGrokAuth({ home, spawn, bin: "/opt/grok", now: Date.parse(EXPIRES_AT) - 3_600_000 });
+		const auth = await ensureFreshGrokAuth({
+			home,
+			spawn,
+			bin: "/opt/grok",
+			now: Date.parse(EXPIRES_AT) - 3_600_000,
+		});
 		expect(calls).toHaveLength(0);
 		expect(auth?.token).toBe(TOKEN);
 	});
@@ -143,7 +161,13 @@ describe("ensureFreshGrokAuth", () => {
 	test("force runs the CLI even when the session is fresh", async () => {
 		const home = tempHome(fixture());
 		const { spawn, calls } = fakeSpawn(home);
-		const auth = await ensureFreshGrokAuth({ home, spawn, bin: "/opt/grok", force: true, now: Date.parse(EXPIRES_AT) - 3_600_000 });
+		const auth = await ensureFreshGrokAuth({
+			home,
+			spawn,
+			bin: "/opt/grok",
+			force: true,
+			now: Date.parse(EXPIRES_AT) - 3_600_000,
+		});
 		expect(calls.map((c) => c.cmd)).toEqual([["/opt/grok", "models"]]);
 		expect(auth?.token).toBe(`${TOKEN}x`);
 	});
@@ -179,7 +203,13 @@ describe("ensureFreshGrokAuth", () => {
 		const home = tempHome(fixture({ expires_at: PAST }));
 		const { spawn } = fakeSpawn(home);
 		const status = await grokAuthStatusFresh({ home, spawn });
-		expect(status).toEqual({ loggedIn: true, expired: false, email: "dev@example.com", expiresAt: FUTURE, home });
+		expect(status).toEqual({
+			loggedIn: true,
+			expired: false,
+			email: "dev@example.com",
+			expiresAt: FUTURE,
+			home,
+		});
 		expect(JSON.stringify(status)).not.toContain(TOKEN);
 	});
 });

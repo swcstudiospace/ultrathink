@@ -26,12 +26,14 @@ function defaultSetTimer(run: () => void, intervalMs: number): object {
 }
 
 export function createWalCheckpointer(options: WalCheckpointerOptions): WalCheckpointer {
-	if (typeof options.checkpoint !== "function") throw new TypeError("wal checkpoint: checkpoint must be a function");
+	if (typeof options.checkpoint !== "function")
+		throw new TypeError("wal checkpoint: checkpoint must be a function");
 	if (!Number.isFinite(options.intervalMs) || options.intervalMs <= 0) {
 		throw new RangeError("wal checkpoint: intervalMs must be a positive finite number");
 	}
 	const setTimer = options.setTimer ?? defaultSetTimer;
-	const clearTimer = options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
+	const clearTimer =
+		options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
 	let handle: object | undefined;
 	const stop = (): void => {
 		if (handle === undefined) return;

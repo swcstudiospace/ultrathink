@@ -10,6 +10,7 @@
  *
  * Pure: the clock is injected and nothing here writes to disk.
  */
+import { isRecord, isScalar } from "../../../src/shared.ts";
 
 type Primitive = string | number | boolean;
 
@@ -42,7 +43,13 @@ export interface AnomalyDetector {
 /** The three defaults from CONTEXT D8. */
 export const DEFAULT_ANOMALY_RULES: readonly AnomalyRule[] = [
 	{ name: "login_failed", event: "login_failed", count: 10, windowSec: 300, groupBy: "ip" },
-	{ name: "refresh_reuse_detected", event: "refresh_reuse_detected", count: 1, windowSec: 3600, groupBy: "clientId" },
+	{
+		name: "refresh_reuse_detected",
+		event: "refresh_reuse_detected",
+		count: 1,
+		windowSec: 3600,
+		groupBy: "clientId",
+	},
 	{ name: "rate_limited", event: "rate_limited", count: 50, windowSec: 300, groupBy: "ip" },
 ];
 
@@ -69,14 +76,6 @@ const MAX_WINDOW_SEC = 86_400;
 const MAX_KEYS_PER_RULE = 10_000;
 const UNGROUPED_KEY = "*";
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isPrimitive(value: unknown): value is Primitive {
-	return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
-}
-
 function isIntegerIn(value: unknown, min: number, max: number): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 }
@@ -87,40 +86,58 @@ function ruleFailure(index: number, name: unknown, problem: string): RangeError 
 }
 
 function parseWhere(raw: unknown, index: number, name: unknown): Record<string, Primitive> {
-	if (!isPlainObject(raw)) throw ruleFailure(index, name, "where must be an object");
+	if (!isRecord(raw)) throw ruleFailure(index, name, "where must be an object");
 	const where: Record<string, Primitive> = {};
 	for (const [field, value] of Object.entries(raw)) {
-		if (!isPrimitive(value)) throw ruleFailure(index, name, `where.${field} must be a string, number or boolean`);
+		if (!isScalar(value))
+			throw ruleFailure(index, name, `where.${field} must be a string, number or boolean`);
 		where[field] = value;
 	}
 	return where;
 }
 
 function parseRule(raw: unknown, index: number, names: Set<string>): AnomalyRule {
-	if (!isPlainObject(raw)) throw ruleFailure(index, undefined, "must be an object");
+	if (!isRecord(raw)) throw ruleFailure(index, undefined, "must be an object");
 	const name = raw.name;
 	for (const field of Object.keys(raw)) {
 		if (RULE_FIELDS[field] !== true) throw ruleFailure(index, name, `unknown field "${field}"`);
 	}
-	if (typeof name !== "string" || name.length === 0) throw ruleFailure(index, name, "name must be a non-empty string");
+	if (typeof name !== "string" || name.length === 0)
+		throw ruleFailure(index, name, "name must be a non-empty string");
 	if (names.has(name)) throw ruleFailure(index, name, "duplicate name");
 	names.add(name);
 
 	const event = raw.event;
-	if (typeof event !== "string" || event.length === 0) throw ruleFailure(index, name, "event must be a non-empty string");
-	if (AUDIT_OWN_EVENTS[event] === true) throw ruleFailure(index, name, `event "${event}" is written by the audit trail and cannot be counted`);
+	if (typeof event !== "string" || event.length === 0)
+		throw ruleFailure(index, name, "event must be a non-empty string");
+	if (AUDIT_OWN_EVENTS[event] === true)
+		throw ruleFailure(
+			index,
+			name,
+			`event "${event}" is written by the audit trail and cannot be counted`,
+		);
 
-	if (!isIntegerIn(raw.count, 1, MAX_COUNT)) throw ruleFailure(index, name, `count must be an integer 1..${MAX_COUNT}`);
-	if (!isIntegerIn(raw.windowSec, 1, MAX_WINDOW_SEC)) throw ruleFailure(index, name, `windowSec must be an integer 1..${MAX_WINDOW_SEC}`);
+	if (!isIntegerIn(raw.count, 1, MAX_COUNT))
+		throw ruleFailure(index, name, `count must be an integer 1..${MAX_COUNT}`);
+	if (!isIntegerIn(raw.windowSec, 1, MAX_WINDOW_SEC))
+		throw ruleFailure(index, name, `windowSec must be an integer 1..${MAX_WINDOW_SEC}`);
 
-	const rule: { name: string; event: string; count: number; windowSec: number; groupBy?: string; where?: Record<string, Primitive> } = {
+	const rule: {
+		name: string;
+		event: string;
+		count: number;
+		windowSec: number;
+		groupBy?: string;
+		where?: Record<string, Primitive>;
+	} = {
 		name,
 		event,
 		count: raw.count,
 		windowSec: raw.windowSec,
 	};
 	if (raw.groupBy !== undefined) {
-		if (typeof raw.groupBy !== "string" || raw.groupBy.length === 0) throw ruleFailure(index, name, "groupBy must be a non-empty string");
+		if (typeof raw.groupBy !== "string" || raw.groupBy.length === 0)
+			throw ruleFailure(index, name, "groupBy must be a non-empty string");
 		rule.groupBy = raw.groupBy;
 	}
 	if (raw.where !== undefined) rule.where = parseWhere(raw.where, index, name);
@@ -149,7 +166,10 @@ interface RuleState {
 	readonly keys: Map<string, KeyState>;
 }
 
-function matchesWhere(where: Readonly<Record<string, Primitive>> | undefined, fields: Record<string, Primitive>): boolean {
+function matchesWhere(
+	where: Readonly<Record<string, Primitive>> | undefined,
+	fields: Record<string, Primitive>,
+): boolean {
 	if (where === undefined) return true;
 	for (const [field, expected] of Object.entries(where)) {
 		if (fields[field] !== expected) return false;

@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, type Mock, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,7 +34,9 @@ function logOf(stateDir: string): string {
 }
 
 beforeEach(() => {
-	warn = spyOn(console, "warn").mockImplementation(() => {});
+	warn = spyOn(console, "warn").mockImplementation(() => {
+		// reason: console warnings are silenced in this suite
+	});
 });
 
 afterEach(() => {
@@ -40,7 +50,10 @@ afterEach(() => {
 describe("a01 orchestrator hook failure log", () => {
 	test("timeout appends a line to <stateDir>/a01-failures.log", async () => {
 		const stateDir = join(tempDir(), "state");
-		const out = await withA01OrchestratorTimeout(() => new Promise<string>(() => {}), {
+		const never = new Promise<string>(() => {
+			// reason: never settles; the timeout is what the test exercises
+		});
+		const out = await withA01OrchestratorTimeout(() => never, {
 			timeoutMs: 20,
 			stateDir,
 		});
@@ -52,7 +65,10 @@ describe("a01 orchestrator hook failure log", () => {
 
 	test("rejection appends the error message and returns it", async () => {
 		const stateDir = join(tempDir(), "state");
-		const out = await withA01OrchestratorTimeout(__injectFaultForTest("error"), { timeoutMs: 5_000, stateDir });
+		const out = await withA01OrchestratorTimeout(__injectFaultForTest("error"), {
+			timeoutMs: 5_000,
+			stateDir,
+		});
 		expect(out.ok).toBe(false);
 		expect(out.error).toContain("sim-error-in-a01");
 		expect(logOf(stateDir)).toContain("FAILED: sim-error-in-a01");
@@ -61,7 +77,10 @@ describe("a01 orchestrator hook failure log", () => {
 	test("failures accumulate in one file; directory and file are private", async () => {
 		const stateDir = join(tempDir(), "state");
 		for (let i = 0; i < 2; i++) {
-			await withA01OrchestratorTimeout(__injectFaultForTest("error"), { timeoutMs: 5_000, stateDir });
+			await withA01OrchestratorTimeout(__injectFaultForTest("error"), {
+				timeoutMs: 5_000,
+				stateDir,
+			});
 		}
 		expect(logOf(stateDir).trim().split("\n")).toHaveLength(2);
 		expect(statSync(stateDir).mode & 0o777).toBe(0o700);
@@ -70,7 +89,10 @@ describe("a01 orchestrator hook failure log", () => {
 
 	test("success writes nothing", async () => {
 		const stateDir = join(tempDir(), "state");
-		const out = await withA01OrchestratorTimeout(__injectFaultForTest("success", 1), { timeoutMs: 5_000, stateDir });
+		const out = await withA01OrchestratorTimeout(__injectFaultForTest("success", 1), {
+			timeoutMs: 5_000,
+			stateDir,
+		});
 		expect(out).toEqual({ ok: true, result: "a01-ok" });
 		expect(existsSync(stateDir)).toBe(false);
 	});
@@ -108,7 +130,10 @@ describe("a01 orchestrator hook failure log", () => {
 	test("a multi-line oversized failure is one bounded line", async () => {
 		const stateDir = join(tempDir(), "state");
 		const big = `first\nsecond\ttabbed ${"x".repeat(2000)}`;
-		await withA01OrchestratorTimeout(() => Promise.reject(new Error(big)), { timeoutMs: 5_000, stateDir });
+		await withA01OrchestratorTimeout(() => Promise.reject(new Error(big)), {
+			timeoutMs: 5_000,
+			stateDir,
+		});
 		const lines = logOf(stateDir).trim().split("\n");
 		expect(lines).toHaveLength(1);
 		expect(lines[0]?.length).toBeLessThanOrEqual(24 + 1 + 500);

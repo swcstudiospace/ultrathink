@@ -24,7 +24,7 @@ type Detail = "brief" | "full";
 /** A client-driven session only moves when the chat model answers, so a poller has nothing to gain from asking sooner. */
 const CLIENT_POLL_AFTER_SEC = 10;
 
-export function statusLine(status: JobStatus, error?: string): string {
+function statusLine(status: JobStatus, error?: string): string {
 	switch (status) {
 		case "running":
 			return "The plan is still being prepared. Call ultrathink_result again with the same sessionId; no other work is needed meanwhile.";
@@ -40,7 +40,13 @@ export function statusLine(status: JobStatus, error?: string): string {
 }
 
 /** The planned view of a session record: chat text, open questions and the structured graph when there is one. */
-export function renderPlanView(sessionId: string, mode: "server" | "client", detail: Detail, record: SessionRecord, usage?: JobUsage): ResultView {
+function renderPlanView(
+	sessionId: string,
+	mode: "server" | "client",
+	detail: Detail,
+	record: SessionRecord,
+	usage?: JobUsage,
+): ResultView {
 	const rendered = renderChatPlan(record, { detail, maxChars: DEFAULT_MAX_CHARS[detail] });
 	const graph = buildGraphView(record);
 	return {
@@ -56,7 +62,11 @@ export function renderPlanView(sessionId: string, mode: "server" | "client", det
 }
 
 /** The view of a job the server planned: the finished plan, or one status line for any other state. */
-export function serverPlanView(stateDir: string, file: ServerJobSnapshot, detail: Detail): JournalResult<ResultView> {
+export function serverPlanView(
+	stateDir: string,
+	file: ServerJobSnapshot,
+	detail: Detail,
+): JournalResult<ResultView> {
 	if (file.status === "planned") {
 		const record = readSession(stateDir, file.sessionId);
 		if (!record) return { ok: false, code: "engine_error" };
@@ -76,10 +86,17 @@ export function serverPlanView(stateDir: string, file: ServerJobSnapshot, detail
 }
 
 /** A finished session from the client-driven loop: the chat model did the thinking, the record is the same. */
-export function clientPlanView(stateDir: string, sessionId: string, detail: Detail): JournalResult<ResultView> {
+export function clientPlanView(
+	stateDir: string,
+	sessionId: string,
+	detail: Detail,
+): JournalResult<ResultView> {
 	const meta = readMeta(journalDir(stateDir, sessionId));
 	if (!meta) return { ok: false, code: "not_found" };
-	const status: JobStatus = meta.status === "planned" || meta.status === "invalid" || meta.status === "skipped" ? meta.status : "running";
+	const status: JobStatus =
+		meta.status === "planned" || meta.status === "invalid" || meta.status === "skipped"
+			? meta.status
+			: "running";
 	if (status === "planned") {
 		const record = readSession(stateDir, sessionId);
 		if (!record) return { ok: false, code: "engine_error" };
@@ -97,5 +114,13 @@ export function clientPlanView(stateDir: string, sessionId: string, detail: Deta
 			},
 		};
 	}
-	return { ok: true, data: { sessionId, status, mode: "client", text: statusLine(status, status === "skipped" ? "skipped" : undefined) } };
+	return {
+		ok: true,
+		data: {
+			sessionId,
+			status,
+			mode: "client",
+			text: statusLine(status, status === "skipped" ? "skipped" : undefined),
+		},
+	};
 }

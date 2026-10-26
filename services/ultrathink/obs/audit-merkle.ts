@@ -50,7 +50,10 @@ function assertHash(value: unknown): asserts value is string {
 /** RFC 6962 leaf hash of one record hash: SHA-256(0x00 || h), hex encoded. */
 export function leafHash(recordHash: string): string {
 	assertHash(recordHash);
-	return createHash("sha256").update(LEAF_PREFIX).update(Buffer.from(recordHash, "hex")).digest("hex");
+	return createHash("sha256")
+		.update(LEAF_PREFIX)
+		.update(Buffer.from(recordHash, "hex"))
+		.digest("hex");
 }
 
 /** RFC 6962 interior node hash: SHA-256(0x01 || left || right), hex encoded. */
@@ -76,7 +79,8 @@ export function createFrontier(): MerkleFrontier {
  * else throws `TypeError`. The seeded frontier copies the state, so the two frontiers share no state.
  */
 export function seedFrontier(state: FrontierState): MerkleFrontier {
-	if (typeof state !== "object" || state === null) throw new TypeError("frontier state must be an object");
+	if (typeof state !== "object" || state === null)
+		throw new TypeError("frontier state must be an object");
 	const { leafCount, peaks } = state;
 	if (typeof leafCount !== "number" || !Number.isSafeInteger(leafCount) || leafCount < 0) {
 		throw new TypeError("leafCount must be a non-negative safe integer");
@@ -84,21 +88,27 @@ export function seedFrontier(state: FrontierState): MerkleFrontier {
 	if (!Array.isArray(peaks)) throw new TypeError("peaks must be an array");
 	const heights = peakHeightsOf(leafCount);
 	if (peaks.length !== heights.length) {
-		throw new TypeError(`leafCount ${leafCount} needs ${heights.length} peaks, got ${peaks.length}`);
+		throw new TypeError(
+			`leafCount ${leafCount} needs ${heights.length} peaks, got ${peaks.length}`,
+		);
 	}
 	const restored: FrontierPeak[] = [];
 	let previous = Number.POSITIVE_INFINITY;
 	for (let index = 0; index < heights.length; index++) {
 		const peak: unknown = peaks[index];
-		if (typeof peak !== "object" || peak === null) throw new TypeError(`peak ${index} must be an object`);
+		if (typeof peak !== "object" || peak === null)
+			throw new TypeError(`peak ${index} must be an object`);
 		const { height, hash } = peak as Partial<FrontierPeak>;
 		if (typeof height !== "number" || !Number.isSafeInteger(height) || height < 0) {
 			throw new TypeError(`peak ${index} height must be a non-negative safe integer`);
 		}
 		assertHash(hash);
-		if (height >= previous) throw new TypeError(`peak ${index} height ${height} is not strictly decreasing`);
+		if (height >= previous)
+			throw new TypeError(`peak ${index} height ${height} is not strictly decreasing`);
 		if (height !== heights[index]) {
-			throw new TypeError(`peak ${index} height ${height} must be ${heights[index]} for leafCount ${leafCount}`);
+			throw new TypeError(
+				`peak ${index} height ${height} must be ${heights[index]} for leafCount ${leafCount}`,
+			);
 		}
 		previous = height;
 		restored.push({ height, hash });

@@ -16,7 +16,10 @@ const DEPLOY_FILES = [
 	"deploy/observability/dashboards/ultrathink.json",
 ] as const;
 // Files that must reference families; a regex matching nothing there would pass vacuously.
-const REFERENCING_FILES = ["deploy/observability/rules.yml", "deploy/observability/dashboards/ultrathink.json"] as const;
+const REFERENCING_FILES = [
+	"deploy/observability/rules.yml",
+	"deploy/observability/dashboards/ultrathink.json",
+] as const;
 const DASHBOARD_ROWS = ["Service health", "Business flows", "SLO and anomaly"] as const;
 
 interface DashboardPanel {
@@ -37,7 +40,9 @@ describe("observability deploy contract", () => {
 		for (const file of DEPLOY_FILES) {
 			const text = readFileSync(fileURLToPath(new URL(file, REPO_ROOT)), "utf8");
 			// Histogram and summary suffixes are stripped; the family is the base name.
-			const refs = [...text.matchAll(/ultrathink_[a-z0-9_]+/g)].map((match) => match[0].replace(/_(bucket|sum|count)$/, ""));
+			const refs = [...text.matchAll(/ultrathink_[a-z0-9_]+/g)].map((match) =>
+				match[0].replace(/_(bucket|sum|count)$/, ""),
+			);
 			if (REFERENCING_FILES.some((referencing) => referencing === file)) {
 				expect(refs.length, `${file} references at least one family`).toBeGreaterThan(0);
 			}
@@ -54,7 +59,10 @@ describe("observability deploy contract", () => {
 	});
 
 	test("the dashboard parses as JSON, declares DS_PROMETHEUS, and has a panel in each row", () => {
-		const text = readFileSync(fileURLToPath(new URL("deploy/observability/dashboards/ultrathink.json", REPO_ROOT)), "utf8");
+		const text = readFileSync(
+			fileURLToPath(new URL("deploy/observability/dashboards/ultrathink.json", REPO_ROOT)),
+			"utf8",
+		);
 		const dashboard = JSON.parse(text) as Dashboard;
 		expect(dashboard.__inputs?.map((input) => input.name)).toContain("DS_PROMETHEUS");
 
@@ -65,11 +73,15 @@ describe("observability deploy contract", () => {
 			if (panel.type === "row") {
 				currentRow = panel.title;
 				if (currentRow !== undefined) {
-					panelsPerRow.set(currentRow, (panelsPerRow.get(currentRow) ?? 0) + (panel.panels?.length ?? 0));
+					panelsPerRow.set(
+						currentRow,
+						(panelsPerRow.get(currentRow) ?? 0) + (panel.panels?.length ?? 0),
+					);
 				}
 				continue;
 			}
-			if (currentRow !== undefined) panelsPerRow.set(currentRow, (panelsPerRow.get(currentRow) ?? 0) + 1);
+			if (currentRow !== undefined)
+				panelsPerRow.set(currentRow, (panelsPerRow.get(currentRow) ?? 0) + 1);
 		}
 		for (const row of DASHBOARD_ROWS) {
 			expect(panelsPerRow.get(row) ?? 0, `row "${row}" has a panel`).toBeGreaterThan(0);
@@ -79,7 +91,10 @@ describe("observability deploy contract", () => {
 	test("a sustained runtime jump stays active long enough for UltrathinkAnomalyActive to fire", () => {
 		// The runtime sampler feeds each detector every 5 s (RUNTIME_SAMPLE_MS in routes/router.ts).
 		const SAMPLE_SECONDS = 5;
-		const rulesText = readFileSync(fileURLToPath(new URL("deploy/observability/rules.yml", REPO_ROOT)), "utf8");
+		const rulesText = readFileSync(
+			fileURLToPath(new URL("deploy/observability/rules.yml", REPO_ROOT)),
+			"utf8",
+		);
 		const waitSeconds = durationSeconds(alertFor(rulesText, "UltrathinkAnomalyActive"));
 
 		const detector = createAnomalyDetector();

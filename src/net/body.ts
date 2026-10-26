@@ -14,11 +14,18 @@ export interface BodyPrefix {
  * pending read and rejects with the signal's reason; a stream error is rethrown. The reader lock is always released.
  * `needComplete` decides whether a body of exactly `limit` bytes is awaited to its end (complete) or returned at once.
  */
-async function readPrefix(response: Response, limit: number, signal: AbortSignal | undefined, needComplete: boolean): Promise<BodyPrefix> {
+async function readPrefix(
+	response: Response,
+	limit: number,
+	signal: AbortSignal | undefined,
+	needComplete: boolean,
+): Promise<BodyPrefix> {
 	if (!response.body) return { text: "", complete: true };
 	const reader = response.body.getReader();
 	const onAbort = (): void => {
-		reader.cancel(signal?.reason).catch(() => {});
+		reader.cancel(signal?.reason).catch(() => {
+			// reason: the abort is already in progress; a failed cancel adds nothing the caller can act on
+		});
 	};
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const decoder = new TextDecoder();
@@ -46,13 +53,19 @@ async function readPrefix(response: Response, limit: number, signal: AbortSignal
 		return { text: text + decoder.decode(), complete };
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
-		await reader.cancel().catch(() => {});
+		await reader.cancel().catch(() => {
+			// reason: releasing the reader in finally; a cancel failure must not replace the read result
+		});
 		reader.releaseLock();
 	}
 }
 
 /** Reads a body up to `limit` bytes and reports whether the whole body fit (waits for the stream to end at the limit). */
-export function readBodyPrefix(response: Response, limit: number, signal?: AbortSignal): Promise<BodyPrefix> {
+export function readBodyPrefix(
+	response: Response,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<BodyPrefix> {
 	return readPrefix(response, limit, signal, true);
 }
 
@@ -60,6 +73,10 @@ export function readBodyPrefix(response: Response, limit: number, signal?: Abort
  * The first `limit` bytes as text, returned as soon as they are read. Use when only the text matters: a body that
  * ends exactly at the limit is not awaited, so a stalled upstream cannot hold the caller past the first `limit` bytes.
  */
-export async function readBodyText(response: Response, limit: number, signal?: AbortSignal): Promise<string> {
+export async function readBodyText(
+	response: Response,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<string> {
 	return (await readPrefix(response, limit, signal, false)).text;
 }

@@ -1,12 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DECISIONS_CONFIG, type DecisionsConfig } from "../decisions/types.ts";
 import { DEFAULT_HINDSIGHT_CONFIG } from "../hindsight/types.ts";
-import type { HindsightClient, HindsightError, HindsightResult, RecallHit, RetainItem } from "../hindsight/types.ts";
+import type {
+	HindsightClient,
+	HindsightError,
+	HindsightResult,
+	RecallHit,
+	RetainItem,
+} from "../hindsight/types.ts";
 import { runTeachCommand } from "./cli.ts";
 import type { CommandDeps } from "./cli.ts";
 import { contentFor, documentIdFor, metadataFor, projectOf, tagsFor } from "./mapping.ts";
@@ -54,7 +68,8 @@ function fakeHindsight(): FakeHindsight {
 	const ok = <T>(value: T): HindsightResult<T> => ({ ok: true, value });
 	fake.client = {
 		bank: "ultrathink",
-		health: async () => ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
+		health: async () =>
+			ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
 		ensureBank: async () => ok({ bankId: "ultrathink", created: false, extractionMode: "chunks" }),
 		retain: async (item) => {
 			if (fake.failRetain) return { ok: false, error: NETWORK_ERROR };
@@ -79,8 +94,18 @@ function fakeHindsight(): FakeHindsight {
 
 function config(teach: Partial<TeachConfig> = {}, hindsightEnabled = true) {
 	return {
-		teach: { ...DEFAULT_TEACH_CONFIG, enabled: true, capture: "observe" as const, observeMinToolCalls: 4, ...teach },
-		hindsight: { ...DEFAULT_HINDSIGHT_CONFIG, enabled: hindsightEnabled, url: "http://127.0.0.1:8899" },
+		teach: {
+			...DEFAULT_TEACH_CONFIG,
+			enabled: true,
+			capture: "observe" as const,
+			observeMinToolCalls: 4,
+			...teach,
+		},
+		hindsight: {
+			...DEFAULT_HINDSIGHT_CONFIG,
+			enabled: hindsightEnabled,
+			url: "http://127.0.0.1:8899",
+		},
 	};
 }
 
@@ -114,7 +139,10 @@ function run(argv: string[], over: Partial<CommandDeps> = {}): Promise<CliResult
 /** Runs with Teachable Moments explicitly off. */
 function runOff(argv: string[], over: Partial<CommandDeps> = {}): Promise<CliResult> {
 	return run(argv, {
-		config: { teach: { ...DEFAULT_TEACH_CONFIG, enabled: false }, hindsight: { ...DEFAULT_HINDSIGHT_CONFIG } },
+		config: {
+			teach: { ...DEFAULT_TEACH_CONFIG, enabled: false },
+			hindsight: { ...DEFAULT_HINDSIGHT_CONFIG },
+		},
 		...over,
 	});
 }
@@ -179,12 +207,25 @@ function seed(...moments: TeachableMoment[]): void {
 }
 
 function hitFor(item: TeachableMoment): RecallHit {
-	return { id: `hit-${item.id}`, text: contentFor(item), documentId: documentIdFor(item.id), tags: tagsFor(item), metadata: metadataFor(item) };
+	return {
+		id: `hit-${item.id}`,
+		text: contentFor(item),
+		documentId: documentIdFor(item.id),
+		tags: tagsFor(item),
+		metadata: metadataFor(item),
+	};
 }
 
 describe("parsing and usage errors", () => {
 	test("no subcommand, unknown subcommand, unknown flag and extra arguments exit 2 with one line", async () => {
-		for (const argv of [[], ["frobnicate"], ["status", "--bogus"], ["status", "extra"], ["list", "--status"], ["capture", "--name"]]) {
+		for (const argv of [
+			[],
+			["frobnicate"],
+			["status", "--bogus"],
+			["status", "extra"],
+			["list", "--status"],
+			["capture", "--name"],
+		]) {
 			const result = await run(argv);
 			expect(result.code).toBe(2);
 			expect(result.text).toStartWith("teach: ");
@@ -293,7 +334,9 @@ describe("when Teachable Moments is off", () => {
 	});
 
 	test("ULTRATHINK_TEACH=0 turns an enabled config off and names the switch", async () => {
-		const result = await run(["capture", "--name", "N", "--body", "B"], { env: { ...baseEnv(), ULTRATHINK_TEACH: "0" } });
+		const result = await run(["capture", "--name", "N", "--body", "B"], {
+			env: { ...baseEnv(), ULTRATHINK_TEACH: "0" },
+		});
 		expect(result).toEqual({ code: 1, text: "Teachable Moments is off (ULTRATHINK_TEACH=0)" });
 	});
 
@@ -314,7 +357,13 @@ describe("when Teachable Moments is off", () => {
 		expect(text.code).toBe(0);
 		expect(text.text).toBe(`none · 0 lessons · off: ${OFF_MESSAGE}`);
 		const asJson = await runOff(["recall", "anything", "--json"]);
-		expect(json(asJson)).toEqual({ status: "off", source: "none", count: 0, lessons: [], reason: OFF_MESSAGE });
+		expect(json(asJson)).toEqual({
+			status: "off",
+			source: "none",
+			count: 0,
+			lessons: [],
+			reason: OFF_MESSAGE,
+		});
 		expect(fake.queries).toEqual([]);
 	});
 
@@ -328,7 +377,12 @@ describe("when Teachable Moments is off", () => {
 
 describe("status", () => {
 	test("--json has exactly the contract keys and counts", async () => {
-		seed(moment("aaaa0001", { status: "candidate" }), moment("aaaa0002"), moment("aaaa0003"), moment("aaaa0004", { status: "promoted" }));
+		seed(
+			moment("aaaa0001", { status: "candidate" }),
+			moment("aaaa0002"),
+			moment("aaaa0003"),
+			moment("aaaa0004", { status: "promoted" }),
+		);
 		store().enqueue({ op: "retain", momentId: "aaaa0002" }, NOW);
 		const result = await run(["status", "--json"]);
 		expect(result.code).toBe(0);
@@ -343,7 +397,9 @@ describe("status", () => {
 	});
 
 	test("hindsight is off when disabled and unready without a key", async () => {
-		expect(json(await run(["status", "--json"], { config: config({}, false) })).hindsight).toBe("off");
+		expect(json(await run(["status", "--json"], { config: config({}, false) })).hindsight).toBe(
+			"off",
+		);
 		const noKey = await run(["status", "--json"], { env: { HOME: root } });
 		expect(json(noKey).hindsight).toBe("unready");
 	});
@@ -368,8 +424,17 @@ describe("status", () => {
 describe("list and show", () => {
 	test("list prints `<id8> <status> <kind> x<n> <project> <name>`, newest first", async () => {
 		seed(
-			moment("feed0001-old", { createdAt: "2026-01-01T00:00:00.000Z", name: "Older lesson", occurrences: 3, kind: "bug" }),
-			moment("feed0002-new", { createdAt: "2026-02-01T00:00:00.000Z", name: "Newer lesson", status: "candidate" }),
+			moment("feed0001-old", {
+				createdAt: "2026-01-01T00:00:00.000Z",
+				name: "Older lesson",
+				occurrences: 3,
+				kind: "bug",
+			}),
+			moment("feed0002-new", {
+				createdAt: "2026-02-01T00:00:00.000Z",
+				name: "Newer lesson",
+				status: "candidate",
+			}),
 		);
 		const project = projectOf(root);
 		expect((await run(["list"])).text.split("\n")).toEqual([
@@ -382,7 +447,9 @@ describe("list and show", () => {
 		seed(moment("feed0001-a"), moment("feed0002-b", { status: "candidate", project: "other" }));
 		expect((await run(["list", "--status", "candidate"])).text).toStartWith("feed0002");
 		expect((await run(["list", "--project", "OTHER"])).text).toStartWith("feed0002");
-		expect((await run(["list", "--status", "candidate", "--project", projectOf(root)])).text).toBe("No moments.");
+		expect((await run(["list", "--status", "candidate", "--project", projectOf(root)])).text).toBe(
+			"No moments.",
+		);
 		expect((await run(["list", "--status", "weird"])).code).toBe(2);
 	});
 
@@ -395,13 +462,23 @@ describe("list and show", () => {
 	});
 
 	test("show finds by full id and by unique prefix, in text and JSON", async () => {
-		seed(moment("feed0001-a", { name: "Pin the lockfile", body: "Run bun install --frozen-lockfile." }));
+		seed(
+			moment("feed0001-a", {
+				name: "Pin the lockfile",
+				body: "Run bun install --frozen-lockfile.",
+			}),
+		);
 		const text = await run(["show", "feed0001-a"]);
 		expect(text.code).toBe(0);
 		expect(text.text).toContain("Pin the lockfile");
 		expect(text.text).toContain("Run bun install --frozen-lockfile.");
 		expect(json(await run(["show", "feed", "--json"])).id).toBe("feed0001-a");
-		expect(json(await run(["show", "feed0001", "--json"]))).toEqual({ ...moment("feed0001-a", { name: "Pin the lockfile", body: "Run bun install --frozen-lockfile." }) });
+		expect(json(await run(["show", "feed0001", "--json"]))).toEqual({
+			...moment("feed0001-a", {
+				name: "Pin the lockfile",
+				body: "Run bun install --frozen-lockfile.",
+			}),
+		});
 	});
 
 	test("show: unknown id exits 1, ambiguous prefix and invalid ids exit 2", async () => {
@@ -420,14 +497,30 @@ describe("list and show", () => {
 
 describe("capture", () => {
 	test("--name/--body stores a confirmed moment and retains it; --json has exact keys", async () => {
-		const result = await run(["capture", "--name", "Pin the lockfile", "--body", "Use --frozen-lockfile.", "--kind", "pitfall", "--json"]);
+		const result = await run([
+			"capture",
+			"--name",
+			"Pin the lockfile",
+			"--body",
+			"Use --frozen-lockfile.",
+			"--kind",
+			"pitfall",
+			"--json",
+		]);
 		expect(result.code).toBe(0);
 		const body = json(result);
 		expect(Object.keys(body).sort()).toEqual(["created", "id", "ok", "reason", "retain"]);
 		expect(body).toMatchObject({ ok: true, created: true, retain: "retained", reason: null });
 		const saved = store().get(body.id as string);
-		expect(saved).toMatchObject({ name: "Pin the lockfile", kind: "pitfall", status: "confirmed", origin: "explicit" });
-		expect(fake.retained.map((item) => item.documentId)).toEqual([documentIdFor(body.id as string)]);
+		expect(saved).toMatchObject({
+			name: "Pin the lockfile",
+			kind: "pitfall",
+			status: "confirmed",
+			origin: "explicit",
+		});
+		expect(fake.retained.map((item) => item.documentId)).toEqual([
+			documentIdFor(body.id as string),
+		]);
 	});
 
 	test("human output: Captured <id> (created|merged) · retain <state>", async () => {
@@ -451,7 +544,15 @@ describe("capture", () => {
 
 	test("--stdin reads one CaptureInput object", async () => {
 		const stdin = async () =>
-			JSON.stringify({ name: "From stdin", body: "Body text.", description: "A description", kind: "bug", tags: ["x"], sourcePhase: "p1", sourceArtifacts: ["f.ts"] });
+			JSON.stringify({
+				name: "From stdin",
+				body: "Body text.",
+				description: "A description",
+				kind: "bug",
+				tags: ["x"],
+				sourcePhase: "p1",
+				sourceArtifacts: ["f.ts"],
+			});
 		const result = await run(["capture", "--stdin", "--json"], { stdin });
 		expect(result.code).toBe(0);
 		expect(store().get(json(result).id as string)).toMatchObject({
@@ -518,8 +619,23 @@ describe("recall", () => {
 		const body = json(result);
 		expect(body).toMatchObject({ status: "used", source: "hindsight", count: 1 });
 		const first = (body.lessons as Json[])[0] as Json;
-		expect(Object.keys(first).sort()).toEqual(["body", "createdAt", "description", "host", "id", "kind", "name", "occurrences", "project"]);
-		expect(first).toMatchObject({ id: "feed0001-a", name: "Pin the lockfile", kind: "bug", occurrences: 2 });
+		expect(Object.keys(first).sort()).toEqual([
+			"body",
+			"createdAt",
+			"description",
+			"host",
+			"id",
+			"kind",
+			"name",
+			"occurrences",
+			"project",
+		]);
+		expect(first).toMatchObject({
+			id: "feed0001-a",
+			name: "Pin the lockfile",
+			kind: "bug",
+			occurrences: 2,
+		});
 	});
 
 	test("human output: `source · n lesson(s)` then the formatted lessons", async () => {
@@ -532,7 +648,11 @@ describe("recall", () => {
 	});
 
 	test("--limit caps the lessons; --project * is accepted", async () => {
-		fake.hits = [hitFor(moment("feed0001-a")), hitFor(moment("feed0002-b", { name: "Second" })), hitFor(moment("feed0003-c", { name: "Third" }))];
+		fake.hits = [
+			hitFor(moment("feed0001-a")),
+			hitFor(moment("feed0002-b", { name: "Second" })),
+			hitFor(moment("feed0003-c", { name: "Third" })),
+		];
 		const result = await run(["recall", "lockfile", "--limit", "2", "--project", "*", "--json"]);
 		expect(result.code).toBe(0);
 		expect(json(result).count).toBe(2);
@@ -549,7 +669,10 @@ describe("recall", () => {
 		expect((await run(["recall"])).code).toBe(2);
 		expect((await run(["recall", "--json"])).code).toBe(2);
 		for (const limit of ["0", "11", "abc", "-1"]) {
-			expect({ limit, code: (await run(["recall", "q", "--limit", limit])).code }).toEqual({ limit, code: 2 });
+			expect({ limit, code: (await run(["recall", "q", "--limit", limit])).code }).toEqual({
+				limit,
+				code: 2,
+			});
 		}
 	});
 });
@@ -559,7 +682,13 @@ describe("confirm and forget", () => {
 		seed(moment("feed0001-a", { status: "candidate", origin: "observe" }));
 		const result = await run(["confirm", "feed0001", "--json"]);
 		expect(result.code).toBe(0);
-		expect(json(result)).toEqual({ ok: true, id: "feed0001-a", status: "confirmed", retain: "retained", reason: null });
+		expect(json(result)).toEqual({
+			ok: true,
+			id: "feed0001-a",
+			status: "confirmed",
+			retain: "retained",
+			reason: null,
+		});
 		expect(store().get("feed0001-a")?.status).toBe("confirmed");
 		expect(fake.retained).toHaveLength(1);
 		const human = await run(["confirm", "feed0001-a"]);
@@ -574,7 +703,15 @@ describe("confirm and forget", () => {
 	});
 
 	test("forget removes the local moment and deletes the Hindsight document", async () => {
-		seed(moment("feed0001-a", { retained: { at: "2026-01-02T00:00:00.000Z", bank: "ultrathink", documentId: "tm:feed0001-a" } }));
+		seed(
+			moment("feed0001-a", {
+				retained: {
+					at: "2026-01-02T00:00:00.000Z",
+					bank: "ultrathink",
+					documentId: "tm:feed0001-a",
+				},
+			}),
+		);
 		const result = await run(["forget", "feed0001", "--json"]);
 		expect(result.code).toBe(0);
 		expect(json(result)).toEqual({ ok: true, id: "feed0001-a", removed: true, remote: "deleted" });
@@ -584,7 +721,15 @@ describe("confirm and forget", () => {
 
 	test("forget queues the remote delete when Hindsight is unreachable", async () => {
 		fake.failDelete = true;
-		seed(moment("feed0001-a", { retained: { at: "2026-01-02T00:00:00.000Z", bank: "ultrathink", documentId: "tm:feed0001-a" } }));
+		seed(
+			moment("feed0001-a", {
+				retained: {
+					at: "2026-01-02T00:00:00.000Z",
+					bank: "ultrathink",
+					documentId: "tm:feed0001-a",
+				},
+			}),
+		);
 		const result = await run(["forget", "feed0001-a"]);
 		expect(result).toEqual({ code: 0, text: "Forgot feed0001-a · remote queued" });
 		expect(store().get("feed0001-a")).toBeUndefined();
@@ -627,7 +772,12 @@ describe("sync", () => {
 		expect(moments).toHaveLength(1);
 		const entries = store().outbox();
 		expect(entries).toHaveLength(1);
-		expect(entries[0]).toMatchObject({ op: { op: "retain", momentId: moments[0]?.id }, attempts: 0, enqueuedAt: NOW, nextAt: NOW });
+		expect(entries[0]).toMatchObject({
+			op: { op: "retain", momentId: moments[0]?.id },
+			attempts: 0,
+			enqueuedAt: NOW,
+			nextAt: NOW,
+		});
 		fake.failRetain = false;
 		const result = await run(["sync", "--json"]);
 		expect(result.code).toBe(0);
@@ -669,7 +819,15 @@ function digest(over: Json = {}): Json {
 }
 
 const DISTILLED = JSON.stringify({
-	lessons: [{ name: "Refresh the lockfile first", description: "build fails on a stale lockfile", body: "Run bun install before the build.", kind: "pitfall", confidence: 0.7 }],
+	lessons: [
+		{
+			name: "Refresh the lockfile first",
+			description: "build fails on a stale lockfile",
+			body: "Run bun install before the build.",
+			kind: "pitfall",
+			confidence: 0.7,
+		},
+	],
 });
 
 function writeInbox(content: string, name = "d1.json"): string {
@@ -694,12 +852,19 @@ describe("observe", () => {
 		expect(captured).toHaveLength(1);
 		expect(captured[0]).toMatchObject({ created: true, retain: "local-only" });
 		expect(typeof captured[0]?.reason).toBe("string");
-		expect(store().list()[0]).toMatchObject({ status: "candidate", origin: "observe", name: "Refresh the lockfile first" });
+		expect(store().list()[0]).toMatchObject({
+			status: "candidate",
+			origin: "observe",
+			name: "Refresh the lockfile first",
+		});
 		expect(fake.retained).toEqual([]);
 	});
 
 	test("human output lists what was captured", async () => {
-		const result = await run(["observe", "--stdin"], { stdin: async () => JSON.stringify(digest()), complete: async () => DISTILLED });
+		const result = await run(["observe", "--stdin"], {
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => DISTILLED,
+		});
 		const lines = result.text.split("\n");
 		expect(lines[0]).toBe("Observed · 1 captured");
 		expect(lines[1]).toMatch(/^Captured \S+ \(created\) · retain local-only/);
@@ -714,11 +879,22 @@ describe("observe", () => {
 		});
 		expect(result.code).toBe(0);
 		expect(json(result)).toMatchObject({ ok: true, captured: [], skipped: "too few tool calls" });
-		expect((await run(["observe", "--stdin"], { stdin: async () => JSON.stringify(digest({ toolCalls: 1 })) })).text).toBe("Observe skipped: too few tool calls");
+		expect(
+			(
+				await run(["observe", "--stdin"], {
+					stdin: async () => JSON.stringify(digest({ toolCalls: 1 })),
+				})
+			).text,
+		).toBe("Observe skipped: too few tool calls");
 	});
 
 	test("a malformed digest exits 2", async () => {
-		for (const input of ["{oops", "[]", JSON.stringify({ host: "x" }), JSON.stringify(digest({ toolCalls: -1 }))]) {
+		for (const input of [
+			"{oops",
+			"[]",
+			JSON.stringify({ host: "x" }),
+			JSON.stringify(digest({ toolCalls: -1 })),
+		]) {
 			const result = await run(["observe", "--stdin"], { stdin: async () => input });
 			expect({ input, code: result.code }).toEqual({ input, code: 2 });
 		}
@@ -731,7 +907,9 @@ describe("observe", () => {
 
 	test("--file inside the inbox is processed and deleted (relative paths resolve from cwd)", async () => {
 		const file = writeInbox(JSON.stringify(digest()));
-		const result = await run(["observe", "--file", "state/teach/inbox/d1.json", "--json"], { complete: async () => DISTILLED });
+		const result = await run(["observe", "--file", "state/teach/inbox/d1.json", "--json"], {
+			complete: async () => DISTILLED,
+		});
 		expect(result.code).toBe(0);
 		expect((json(result).captured as Json[]).length).toBe(1);
 		expect(existsSync(file)).toBe(false);
@@ -761,7 +939,9 @@ describe("observe", () => {
 		const outside = join(root, "elsewhere.json");
 		writeFileSync(outside, JSON.stringify(digest()));
 		mkdirSync(join(storeDir(stateDir), "inbox"), { recursive: true });
-		const result = await run(["observe", "--file", outside, "--json"], { complete: async () => DISTILLED });
+		const result = await run(["observe", "--file", outside, "--json"], {
+			complete: async () => DISTILLED,
+		});
 		expect(result.code).toBe(2);
 		expect(json(result).ok).toBe(false);
 		expect(readFileSync(outside, "utf8")).toBe(JSON.stringify(digest()));
@@ -791,7 +971,9 @@ describe("observe", () => {
 	});
 
 	test("--file that does not exist, is a directory, or has no inbox exits 2", async () => {
-		expect((await run(["observe", "--file", join(stateDir, "teach", "inbox", "none.json")])).code).toBe(2);
+		expect(
+			(await run(["observe", "--file", join(stateDir, "teach", "inbox", "none.json")])).code,
+		).toBe(2);
 		const dir = join(storeDir(stateDir), "inbox", "sub");
 		mkdirSync(dir, { recursive: true });
 		const result = await run(["observe", "--file", dir]);
@@ -806,7 +988,15 @@ describe("observe", () => {
 			stdin: async () => JSON.stringify(digest()),
 			complete: async () =>
 				JSON.stringify({
-					lessons: [{ name: "Refresh the lockfile first", description: "build fails on a stale lockfile", body, kind: "pitfall", confidence: 0.7 }],
+					lessons: [
+						{
+							name: "Refresh the lockfile first",
+							description: "build fails on a stale lockfile",
+							body,
+							kind: "pitfall",
+							confidence: 0.7,
+						},
+					],
 				}),
 			env: { ...baseEnv(), OPENROUTER_API_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn({ points: ["teachable"] }) },
@@ -875,7 +1065,9 @@ describe("promote", () => {
 		}
 		const name = fields["name"] ?? "";
 		const rawDescription = fields["description"] ?? "";
-		const description = rawDescription.startsWith('"') ? (JSON.parse(rawDescription) as string) : rawDescription;
+		const description = rawDescription.startsWith('"')
+			? (JSON.parse(rawDescription) as string)
+			: rawDescription;
 		expect(name).toMatch(/^[a-z0-9][a-z0-9-]{0,63}$/);
 		expect(description.length).toBeGreaterThan(0);
 		expect(description.length).toBeLessThanOrEqual(60);
@@ -930,10 +1122,17 @@ describe("promote", () => {
 		const body = json(result);
 		const outcome = body.outcome as Json;
 		const name = (body.draft as Json).name as string;
-		expect(outcome).toMatchObject({ target: "claude", action: "created", path: join(root, "claude", "skills", name, "SKILL.md") });
+		expect(outcome).toMatchObject({
+			target: "claude",
+			action: "created",
+			path: join(root, "claude", "skills", name, "SKILL.md"),
+		});
 		expect(existsSync(outcome.path as string)).toBe(true);
 		expect(body.promoted).toEqual(["feed0001-a"]);
-		expect(store().get("feed0001-a")).toMatchObject({ status: "promoted", promoted: { skill: name, target: "claude", path: outcome.path } });
+		expect(store().get("feed0001-a")).toMatchObject({
+			status: "promoted",
+			promoted: { skill: name, target: "claude", path: outcome.path },
+		});
 	});
 
 	test("a draft that cannot be made exits 1 with the reason", async () => {
@@ -945,7 +1144,18 @@ describe("promote", () => {
 
 	test("--mark-promoted records a skill staged elsewhere (Hermes skill_manage)", async () => {
 		seed(playbook());
-		const result = await run(["promote", "feed0001", "--mark-promoted", "--skill", "lesson-pin-lockfile", "--target", "hermes", "--path", "/skills/x", "--json"]);
+		const result = await run([
+			"promote",
+			"feed0001",
+			"--mark-promoted",
+			"--skill",
+			"lesson-pin-lockfile",
+			"--target",
+			"hermes",
+			"--path",
+			"/skills/x",
+			"--json",
+		]);
 		expect(result.code).toBe(0);
 		expect(json(result)).toEqual({ ok: true, promoted: ["feed0001-a"] });
 		expect(store().get("feed0001-a")).toMatchObject({
@@ -953,7 +1163,15 @@ describe("promote", () => {
 			promoted: { skill: "lesson-pin-lockfile", target: "hermes", path: "/skills/x" },
 		});
 		seed(moment("feed0006-f"));
-		const human = await run(["promote", "feed0006-f", "--mark-promoted", "--skill", "other-skill", "--target", "omp"]);
+		const human = await run([
+			"promote",
+			"feed0006-f",
+			"--mark-promoted",
+			"--skill",
+			"other-skill",
+			"--target",
+			"omp",
+		]);
 		expect(human.text).toBe("Marked 1 moment(s) promoted · other-skill (omp)");
 	});
 
@@ -965,7 +1183,16 @@ describe("promote", () => {
 			["promote", "feed0001", "--mark-promoted", "--target", "omp"],
 			["promote", "feed0001", "--mark-promoted", "--skill", "Bad Name", "--target", "omp"],
 			["promote", "feed0001", "--mark-promoted", "--skill", "ok-name"],
-			["promote", "feed0001", "--mark-promoted", "--install", "--skill", "ok-name", "--target", "omp"],
+			[
+				"promote",
+				"feed0001",
+				"--mark-promoted",
+				"--install",
+				"--skill",
+				"ok-name",
+				"--target",
+				"omp",
+			],
 			["promote", "feed0001", "--skill", "ok-name"],
 			["promote", "--due", "--install"],
 			["promote", "--due", "--target", "omp"],

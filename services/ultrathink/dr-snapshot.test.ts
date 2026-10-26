@@ -35,9 +35,11 @@ const NOW_MS = Date.UTC(2026, 9, 21, 12, 0, 0, 0);
 const HAS_RSYNC = hasTool("rsync");
 const HAS_FLOCK = hasTool("flock");
 const HAS_AGE = hasTool("age") && hasTool("age-keygen");
-if (!HAS_RSYNC) console.log("skip: rsync is not on PATH; the file layer and off-host cases are skipped");
+if (!HAS_RSYNC)
+	console.log("skip: rsync is not on PATH; the file layer and off-host cases are skipped");
 if (!HAS_FLOCK) console.log("skip: flock is not on PATH; the busy-lock case is skipped");
-if (!HAS_AGE) console.log("skip: age and age-keygen are not on PATH; the encrypted off-host case is skipped");
+if (!HAS_AGE)
+	console.log("skip: age and age-keygen are not on PATH; the encrypted off-host case is skipped");
 
 const bases: string[] = [];
 
@@ -102,7 +104,9 @@ function treeDirs(ring: string): string[] {
 
 /** Ring and tree entries, and temporaries, that a failed tick must not leave behind. The lock file is not an entry. */
 function leftovers(ring: string): string[] {
-	return ringNames(ring).filter((name) => name.startsWith("ultrathink-") || name.startsWith(".tmp-"));
+	return ringNames(ring).filter(
+		(name) => name.startsWith("ultrathink-") || name.startsWith(".tmp-"),
+	);
 }
 
 /** True when the database at `path` passes the pragma (quick_check or integrity_check). */
@@ -290,16 +294,19 @@ describe.skipIf(process.platform !== "linux")("tick", () => {
 		expect(snapshotFiles(f.ring)).toEqual([future, created].sort());
 	});
 
-	test.skipIf(!HAS_RSYNC)("off-host without a recipient pushes nothing, exits 1 and keeps the local snapshot", () => {
-		const f = fixture(1);
-		const remote = join(f.base, "remote");
-		mkdirSync(join(remote, "ring"), { recursive: true });
-		const r = tick(f, { ULTRATHINK_BACKUP_RSYNC_TARGET: `${remote}/` });
-		expect(r.code).toBe(1);
-		expect(r.stderr).toContain("refusing plaintext off-host");
-		expect(readdirSync(join(remote, "ring"))).toEqual([]);
-		expect(snapshotFiles(f.ring).length).toBe(1);
-	});
+	test.skipIf(!HAS_RSYNC)(
+		"off-host without a recipient pushes nothing, exits 1 and keeps the local snapshot",
+		() => {
+			const f = fixture(1);
+			const remote = join(f.base, "remote");
+			mkdirSync(join(remote, "ring"), { recursive: true });
+			const r = tick(f, { ULTRATHINK_BACKUP_RSYNC_TARGET: `${remote}/` });
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain("refusing plaintext off-host");
+			expect(readdirSync(join(remote, "ring"))).toEqual([]);
+			expect(snapshotFiles(f.ring).length).toBe(1);
+		},
+	);
 
 	test.skipIf(!HAS_RSYNC || !HAS_AGE)(
 		"off-host with a recipient pushes only age ciphertext, and it decrypts to a valid snapshot",
@@ -307,16 +314,23 @@ describe.skipIf(process.platform !== "linux")("tick", () => {
 			const f = fixture(2);
 			const identity = join(f.base, "identity.txt");
 			expect(Bun.spawnSync({ cmd: ["age-keygen", "-o", identity] }).exitCode).toBe(0);
-			const recipient = Bun.spawnSync({ cmd: ["age-keygen", "-y", identity] }).stdout.toString().trim();
+			const recipient = Bun.spawnSync({ cmd: ["age-keygen", "-y", identity] })
+				.stdout.toString()
+				.trim();
 			const remote = join(f.base, "remote");
 			mkdirSync(join(remote, "ring"), { recursive: true });
-			const r = tick(f, { ULTRATHINK_BACKUP_RSYNC_TARGET: `${remote}/`, ULTRATHINK_BACKUP_RECIPIENT: recipient });
+			const r = tick(f, {
+				ULTRATHINK_BACKUP_RSYNC_TARGET: `${remote}/`,
+				ULTRATHINK_BACKUP_RECIPIENT: recipient,
+			});
 			expect(r.code).toBe(0);
 			const pushed = readdirSync(join(remote, "ring"));
 			expect(pushed.length).toBe(1);
 			for (const name of pushed) {
 				expect(name.endsWith(".sqlite.age")).toBe(true);
-				const head = readFileSync(join(remote, "ring", name)).subarray(0, 15).toString();
+				const head = readFileSync(join(remote, "ring", name))
+					.subarray(0, 15)
+					.toString();
 				expect(head).not.toBe("SQLite format 3");
 			}
 			const plain = join(f.base, "decrypted.sqlite");
@@ -329,14 +343,17 @@ describe.skipIf(process.platform !== "linux")("tick", () => {
 		},
 	);
 
-	test.skipIf(!HAS_RSYNC)("the file layer holds audit.jsonl byte for byte as it was at tick time", () => {
-		const f = fixture(1, 3);
-		const before = readFileSync(join(f.state, "audit.jsonl"));
-		expect(tick(f).code).toBe(0);
-		const trees = treeDirs(f.ring);
-		expect(trees.length).toBe(1);
-		expect(readFileSync(join(f.ring, "tree", trees[0]!, "audit.jsonl"))).toEqual(before);
-	});
+	test.skipIf(!HAS_RSYNC)(
+		"the file layer holds audit.jsonl byte for byte as it was at tick time",
+		() => {
+			const f = fixture(1, 3);
+			const before = readFileSync(join(f.state, "audit.jsonl"));
+			expect(tick(f).code).toBe(0);
+			const trees = treeDirs(f.ring);
+			expect(trees.length).toBe(1);
+			expect(readFileSync(join(f.ring, "tree", trees[0]!, "audit.jsonl"))).toEqual(before);
+		},
+	);
 
 	test.skipIf(!HAS_RSYNC)("a file that did not change is hard-linked to the previous tree", () => {
 		const f = fixture(1, 3);
@@ -355,9 +372,9 @@ describe.skipIf(process.platform !== "linux")("tick", () => {
 		writeFileSync(join(f.state, "sessions", "run-1", "plan", "step.json"), '{"step":1}\n');
 		expect(tick(f).code).toBe(0);
 		const [tree] = treeDirs(f.ring);
-		expect(readFileSync(join(f.ring, "tree", tree!, "sessions", "run-1", "plan", "step.json"), "utf8")).toBe(
-			'{"step":1}\n',
-		);
+		expect(
+			readFileSync(join(f.ring, "tree", tree!, "sessions", "run-1", "plan", "step.json"), "utf8"),
+		).toBe('{"step":1}\n');
 	});
 
 	test.skipIf(!HAS_RSYNC)("sealed audit segments are staged next to audit.jsonl", () => {
@@ -365,7 +382,9 @@ describe.skipIf(process.platform !== "linux")("tick", () => {
 		writeFileSync(join(f.state, "audit-1-2.jsonl"), "sealed segment\n");
 		expect(tick(f).code).toBe(0);
 		const [tree] = treeDirs(f.ring);
-		expect(readFileSync(join(f.ring, "tree", tree!, "audit-1-2.jsonl"), "utf8")).toBe("sealed segment\n");
+		expect(readFileSync(join(f.ring, "tree", tree!, "audit-1-2.jsonl"), "utf8")).toBe(
+			"sealed segment\n",
+		);
 	});
 
 	test.skipIf(!HAS_FLOCK)("a busy tick lock makes the tick exit 0 and write nothing", async () => {

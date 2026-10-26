@@ -28,7 +28,10 @@ export function sealedName(first: number, last: number): string {
  * range are listed, so `.corrupt-*` evidence and stray files are never taken for segments. A directory that cannot
  * be read has no segments.
  */
-export function listSegments(activePath: string, fs: { readdirSync(path: string): readonly string[] }): SealedSegment[] {
+export function listSegments(
+	activePath: string,
+	fs: { readdirSync(path: string): readonly string[] },
+): SealedSegment[] {
 	const dir = dirname(activePath);
 	let names: readonly string[];
 	try {
@@ -42,7 +45,13 @@ export function listSegments(activePath: string, fs: { readdirSync(path: string)
 		if (match === null) continue;
 		const first = Number(match[1]);
 		const last = Number(match[2]);
-		if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || last < first || sealedName(first, last) !== name) continue;
+		if (
+			!Number.isSafeInteger(first) ||
+			!Number.isSafeInteger(last) ||
+			last < first ||
+			sealedName(first, last) !== name
+		)
+			continue;
 		segments.push({ path: join(dir, name), name, first, last });
 	}
 	return segments.sort((a, b) => a.first - b.first);

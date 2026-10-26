@@ -23,7 +23,14 @@ import { clientPlanView } from "../engine/plan-view.ts";
 import type { CommandCatalog } from "./commands.ts";
 import type { McpToolHost, ToolOutcome } from "./mcp.ts";
 import type { ResourceRegistry } from "./resources.ts";
-import { COMMAND_TOOL, GRAPH_TOOL, type PlanningInfo, SESSIONS_TOOL, createConnectorHandlers, textOutcome } from "./tools-connector.ts";
+import {
+	COMMAND_TOOL,
+	GRAPH_TOOL,
+	type PlanningInfo,
+	SESSIONS_TOOL,
+	createConnectorHandlers,
+	textOutcome,
+} from "./tools-connector.ts";
 
 /** Finished plans remembered so each is counted once; the oldest are forgotten first. */
 const COUNTED_PLANS_MAX = 2000;
@@ -46,7 +53,11 @@ export interface ToolHost extends McpToolHost {
 
 export function toOutcome(result: JournalResult<unknown>): ToolOutcome {
 	if (result.ok) return { ok: true, data: result.data as Record<string, unknown> };
-	return { ok: false, code: result.code, ...(result.errors !== undefined ? { errors: result.errors } : {}) };
+	return {
+		ok: false,
+		code: result.code,
+		...(result.errors !== undefined ? { errors: result.errors } : {}),
+	};
 }
 
 export function createToolHost(deps: ToolHostDeps): ToolHost {
@@ -55,7 +66,8 @@ export function createToolHost(deps: ToolHostDeps): ToolHost {
 
 	/** Counts a finished server plan once. */
 	function recordFinished(view: ResultView): void {
-		if (view.mode !== "server" || view.status === "running" || countedPlans.has(view.sessionId)) return;
+		if (view.mode !== "server" || view.status === "running" || countedPlans.has(view.sessionId))
+			return;
 		countedPlans.add(view.sessionId);
 		if (countedPlans.size > COUNTED_PLANS_MAX) {
 			const oldest = countedPlans.values().next().value;
@@ -77,10 +89,14 @@ export function createToolHost(deps: ToolHostDeps): ToolHost {
 		const { sessionId, detail, waitSeconds } = args;
 		if (!isSessionId(sessionId)) return { ok: false, code: "invalid_session_id" };
 		// Nothing to wait for without a planner, but a malformed value is refused as the planner would.
-		if (waitSeconds !== undefined && (typeof waitSeconds !== "number" || Number.isNaN(waitSeconds))) {
+		if (
+			waitSeconds !== undefined &&
+			(typeof waitSeconds !== "number" || Number.isNaN(waitSeconds))
+		) {
 			return { ok: false, code: "invalid_input" };
 		}
-		if (detail !== undefined && detail !== "brief" && detail !== "full") return { ok: false, code: "invalid_input" };
+		if (detail !== undefined && detail !== "brief" && detail !== "full")
+			return { ok: false, code: "invalid_input" };
 		return clientPlanView(journalOpts.stateDir, sessionId, detail === "full" ? "full" : "brief");
 	}
 
@@ -88,17 +104,28 @@ export function createToolHost(deps: ToolHostDeps): ToolHost {
 		switch (name) {
 			case "ultrathink_plan": {
 				// A server job and a client-driven plan share one session file; the reverse guard lives in headless start.
-				if (planner?.status({ sessionId: args.sessionId }) != null) return { ok: false, code: "session_conflict" };
-				return toOutcome(await startPlan(journalOpts, { prompt: args.prompt, sessionId: args.sessionId }));
+				if (planner?.status({ sessionId: args.sessionId }) != null)
+					return { ok: false, code: "session_conflict" };
+				return toOutcome(
+					await startPlan(journalOpts, { prompt: args.prompt, sessionId: args.sessionId }),
+				);
 			}
 			case "ultrathink_pending": {
 				const pending = listPendingRequests(journalOpts, { sessionId: args.sessionId });
 				return toOutcome(pending.ok ? { ok: true, data: { pending: pending.data } } : pending);
 			}
 			case "ultrathink_show":
-				return toOutcome(showRequest(journalOpts, { sessionId: args.sessionId, key: args.key, part: args.part }));
+				return toOutcome(
+					showRequest(journalOpts, { sessionId: args.sessionId, key: args.key, part: args.part }),
+				);
 			case "ultrathink_answer":
-				return toOutcome(answerRequest(journalOpts, { sessionId: args.sessionId, key: args.key, answer: args.answer }));
+				return toOutcome(
+					answerRequest(journalOpts, {
+						sessionId: args.sessionId,
+						key: args.key,
+						answer: args.answer,
+					}),
+				);
 			case "ultrathink_status": {
 				const server = planner?.status({ sessionId: args.sessionId });
 				return toOutcome(server ?? sessionStatus(journalOpts, { sessionId: args.sessionId }));
@@ -108,14 +135,21 @@ export function createToolHost(deps: ToolHostDeps): ToolHost {
 				const started = await planner.start({ prompt: args.prompt, sessionId: args.sessionId });
 				if (started.ok && started.data.status !== "running") {
 					// The start view carries no usage; the finished view does.
-					const finished = await planner.result({ sessionId: started.data.sessionId, waitSeconds: 0 });
+					const finished = await planner.result({
+						sessionId: started.data.sessionId,
+						waitSeconds: 0,
+					});
 					if (finished.ok) recordFinished(finished.data);
 				}
 				return toOutcome(started);
 			}
 			case "ultrathink_result": {
 				const result = planner
-					? await planner.result({ sessionId: args.sessionId, waitSeconds: args.waitSeconds, detail: args.detail })
+					? await planner.result({
+							sessionId: args.sessionId,
+							waitSeconds: args.waitSeconds,
+							detail: args.detail,
+						})
 					: clientResult(args);
 				if (!result.ok) return toOutcome(result);
 				recordFinished(result.data);

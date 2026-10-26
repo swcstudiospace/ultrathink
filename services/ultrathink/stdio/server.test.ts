@@ -37,7 +37,11 @@ function realHost(): McpToolHost {
 }
 
 /** Feeds `items` to the loop and returns the lines it wrote, each checked to be one JSON document. */
-async function run(host: McpToolHost, items: readonly Chunk[], maxLineBytes?: number): Promise<Json[]> {
+async function run(
+	host: McpToolHost,
+	items: readonly Chunk[],
+	maxLineBytes?: number,
+): Promise<Json[]> {
 	const lines: string[] = [];
 	await serveStdio({
 		host,
@@ -54,12 +58,21 @@ async function run(host: McpToolHost, items: readonly Chunk[], maxLineBytes?: nu
 }
 
 function request(id: number, method: string, params?: Json): string {
-	return JSON.stringify({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) });
+	return JSON.stringify({
+		jsonrpc: "2.0",
+		id,
+		method,
+		...(params === undefined ? {} : { params }),
+	});
 }
 
 /** `value[keys[0]][keys[1]]...`, undefined where the path breaks off. */
 function at(value: unknown, ...keys: string[]): unknown {
-	return keys.reduce((current, key) => (current === undefined || current === null ? undefined : Reflect.get(Object(current), key)), value);
+	return keys.reduce(
+		(current, key) =>
+			current === undefined || current === null ? undefined : Reflect.get(Object(current), key),
+		value,
+	);
 }
 
 function errorOf(reply: Json | undefined): { code: unknown } {
@@ -78,21 +91,31 @@ describe("framing", () => {
 	});
 
 	test("tolerates CRLF and blank lines", async () => {
-		const replies = await run(realHost(), [`\r\n${request(1, "ping")}\r\n\n  \n${request(2, "ping")}\r\n`]);
+		const replies = await run(realHost(), [
+			`\r\n${request(1, "ping")}\r\n\n  \n${request(2, "ping")}\r\n`,
+		]);
 		expect(replies.map((reply) => reply.id)).toEqual([1, 2]);
 	});
 
 	test("joins a line split across chunks and a multi-byte character split inside a chunk boundary", async () => {
-		const bytes = encoder.encode(`${request(1, "tools/call", { name: "ultrathink_status", arguments: { sessionId: "é" } })}\n`);
+		const bytes = encoder.encode(
+			`${request(1, "tools/call", { name: "ultrathink_status", arguments: { sessionId: "é" } })}\n`,
+		);
 		const cut = bytes.indexOf(0xc3) + 1;
-		const replies = await run(realHost(), [bytes.subarray(0, 10), bytes.subarray(10, cut), bytes.subarray(cut)]);
+		const replies = await run(realHost(), [
+			bytes.subarray(0, 10),
+			bytes.subarray(10, cut),
+			bytes.subarray(cut),
+		]);
 		expect(replies).toHaveLength(1);
 		expect(replies[0]?.id).toBe(1);
 		expect(replies[0]?.error).toBeUndefined();
 	});
 
 	test("handles several lines in one chunk and a final line without a newline", async () => {
-		const replies = await run(realHost(), [`${request(1, "ping")}\n${request(2, "ping")}\n${request(3, "ping")}`]);
+		const replies = await run(realHost(), [
+			`${request(1, "ping")}\n${request(2, "ping")}\n${request(3, "ping")}`,
+		]);
 		expect(replies.map((reply) => reply.id)).toEqual([1, 2, 3]);
 	});
 
@@ -120,8 +143,14 @@ describe("line guard", () => {
 	});
 
 	test("refuses a line that grows over the limit across chunks, once, and resumes after its newline", async () => {
-		const replies = await run(realHost(), ["a".repeat(40), "b".repeat(40), "c".repeat(40), `\n${request(2, "ping")}\n`], 64);
-		expect(replies.map((reply) => (reply.error === undefined ? "ok" : errorOf(reply).code))).toEqual([-32600, "ok"]);
+		const replies = await run(
+			realHost(),
+			["a".repeat(40), "b".repeat(40), "c".repeat(40), `\n${request(2, "ping")}\n`],
+			64,
+		);
+		expect(
+			replies.map((reply) => (reply.error === undefined ? "ok" : errorOf(reply).code)),
+		).toEqual([-32600, "ok"]);
 		expect(replies[1]?.id).toBe(2);
 	});
 
@@ -148,16 +177,25 @@ describe("protocol version", () => {
 	});
 
 	test("the version initialize settled on is applied to later messages", async () => {
-		const modern = await run(realHost(), [`${request(1, "initialize", { protocolVersion: "2025-06-18" })}\n`, `${batch}\n`]);
+		const modern = await run(realHost(), [
+			`${request(1, "initialize", { protocolVersion: "2025-06-18" })}\n`,
+			`${batch}\n`,
+		]);
 		expect(at(modern[0], "result", "protocolVersion")).toBe("2025-06-18");
 		expect(errorOf(modern[1]).code).toBe(-32600);
 
-		const legacy = await run(realHost(), [`${request(1, "initialize", { protocolVersion: "2025-03-26" })}\n`, `${batch}\n`]);
+		const legacy = await run(realHost(), [
+			`${request(1, "initialize", { protocolVersion: "2025-03-26" })}\n`,
+			`${batch}\n`,
+		]);
 		expect(Array.isArray(legacy[1])).toBe(true);
 	});
 
 	test("an unsupported requested version negotiates the newest and remembers that", async () => {
-		const replies = await run(realHost(), [`${request(1, "initialize", { protocolVersion: "1999-01-01" })}\n`, `${batch}\n`]);
+		const replies = await run(realHost(), [
+			`${request(1, "initialize", { protocolVersion: "1999-01-01" })}\n`,
+			`${batch}\n`,
+		]);
 		const settled = at(replies[0], "result", "protocolVersion");
 		expect(settled).toBe("2025-11-25");
 		expect(errorOf(replies[1]).code).toBe(-32600);
@@ -175,7 +213,10 @@ describe("failures", () => {
 		await serveStdio({
 			host,
 			// Arguments must pass the tool's schema (sessionId is required) so the call reaches the throwing host.
-			input: chunked([`${request(7, "tools/call", { name: "ultrathink_status", arguments: { sessionId: "11111111-1111-4111-8111-111111111111" } })}\n`, `${request(8, "ping")}\n`]),
+			input: chunked([
+				`${request(7, "tools/call", { name: "ultrathink_status", arguments: { sessionId: "11111111-1111-4111-8111-111111111111" } })}\n`,
+				`${request(8, "ping")}\n`,
+			]),
 			write: (line) => {
 				lines.push(line);
 			},
@@ -204,7 +245,10 @@ describe("failures", () => {
 		await serveStdio({
 			host,
 			logger,
-			input: chunked(["{not json with a secret-marker\n", `${request(1, "tools/call", { name: "ultrathink_answer", arguments: { sessionId: "secret-marker", key: "k", answer: "secret-marker answer" } })}\n`]),
+			input: chunked([
+				"{not json with a secret-marker\n",
+				`${request(1, "tools/call", { name: "ultrathink_answer", arguments: { sessionId: "secret-marker", key: "k", answer: "secret-marker answer" } })}\n`,
+			]),
 			write: () => undefined,
 		});
 		expect(logged.length).toBeGreaterThan(0);
@@ -220,9 +264,16 @@ describe("shutdown", () => {
 	test("an abort stops a loop that is waiting for input", async () => {
 		const controller = new AbortController();
 		const silentInput: AsyncIterable<Chunk> = {
-			[Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<Chunk>>(() => undefined) }),
+			[Symbol.asyncIterator]: () => ({
+				next: () => new Promise<IteratorResult<Chunk>>(() => undefined),
+			}),
 		};
-		const done = serveStdio({ host: realHost(), input: silentInput, write: () => undefined, signal: controller.signal });
+		const done = serveStdio({
+			host: realHost(),
+			input: silentInput,
+			write: () => undefined,
+			signal: controller.signal,
+		});
 		controller.abort();
 		await done;
 	});
@@ -252,9 +303,14 @@ describe("the stdio host", () => {
 	});
 
 	test("refuses ultrathink_uplift when called, at the protocol and at the host", async () => {
-		const [reply] = await run(realHost(), [`${request(1, "tools/call", { name: "ultrathink_uplift", arguments: { prompt: "x" } })}\n`]);
+		const [reply] = await run(realHost(), [
+			`${request(1, "tools/call", { name: "ultrathink_uplift", arguments: { prompt: "x" } })}\n`,
+		]);
 		expect(errorOf(reply).code).toBe(-32602);
-		expect(await realHost().call("ultrathink_uplift", { prompt: "x" })).toEqual({ ok: false, code: "disabled" });
+		expect(await realHost().call("ultrathink_uplift", { prompt: "x" })).toEqual({
+			ok: false,
+			code: "disabled",
+		});
 	});
 
 	test("announces no server planning", () => {
@@ -265,11 +321,15 @@ describe("the stdio host", () => {
 describe("environment", () => {
 	test("ULTRATHINK_STATE_DIR wins unless it points into a planning tree", () => {
 		const base = { CLAUDE_CONFIG_DIR: join("cfg", "claude") };
-		expect(resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: join("work", "state") })).toBe(join("work", "state"));
+		expect(resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: join("work", "state") })).toBe(
+			join("work", "state"),
+		);
 		const fallback = join("cfg", "claude", "ultrathink", "connector");
 		expect(resolveConnectorStateDir(base)).toBe(fallback);
 		expect(resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: "  " })).toBe(fallback);
-		expect(resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: "/repo/.planning/state" })).toBe(fallback);
+		expect(
+			resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: "/repo/.planning/state" }),
+		).toBe(fallback);
 	});
 
 	test("the log level defaults to warn and accepts info, warn and error", () => {

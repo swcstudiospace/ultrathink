@@ -1,10 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	unlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { legacySessionPath, readLast, readSession, readSkipOnce, sessionPath, withLastLock, writeSession } from "../claude/state.ts";
+import {
+	legacySessionPath,
+	readLast,
+	readSession,
+	readSkipOnce,
+	sessionPath,
+	withLastLock,
+	writeSession,
+} from "../claude/state.ts";
 import { pruneSessions, pruneSessionsBestEffort } from "./prune.ts";
 
 const DAY = 86_400_000;
@@ -41,9 +61,17 @@ interface SeedOptions {
 /** Writes `sessions/<id>.json` and `<id>.xml` aged `ageDays`; the record carries a prompt string. */
 function seed(state: string, id: string, ageDays: number, options: SeedOptions = {}): void {
 	const age = ageDays * DAY;
-	const record = options.body ?? JSON.stringify({ sessionId: id, at: 1, result: { original: `PROMPT-TEXT-${id}` }, ship: options.ship });
+	const record =
+		options.body ??
+		JSON.stringify({
+			sessionId: id,
+			at: 1,
+			result: { original: `PROMPT-TEXT-${id}` },
+			ship: options.ship,
+		});
 	if (options.json !== false) put(join(state, "sessions", `${id}.json`), record, age);
-	if (options.xml !== false) put(join(state, "sessions", `${id}.xml`), `<spec>PROMPT-TEXT-${id}</spec>`, age);
+	if (options.xml !== false)
+		put(join(state, "sessions", `${id}.xml`), `<spec>PROMPT-TEXT-${id}</spec>`, age);
 }
 
 function sessionFiles(state: string): string[] {
@@ -71,7 +99,9 @@ describe("pruneSessions", () => {
 	test("reports bytes as the size of what was removed", () => {
 		const state = makeState();
 		seed(state, "old", 40);
-		const expected = statSync(join(state, "sessions", "old.json")).size + statSync(join(state, "sessions", "old.xml")).size;
+		const expected =
+			statSync(join(state, "sessions", "old.json")).size +
+			statSync(join(state, "sessions", "old.xml")).size;
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
 		expect(result.pruned[0]?.bytes).toBe(expected);
 		expect(result.bytes).toBe(expected);
@@ -126,8 +156,20 @@ describe("pruneSessions", () => {
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
 		expect(result.keptActive).toBe(3);
 		expect(result.kept).toBe(3);
-		expect(result.pruned.map((session) => session.id).sort()).toEqual(["blocked", "merged", "no-pr", "not-done"]);
-		expect(sessionFiles(state)).toEqual(["fixes.json", "fixes.xml", "open.json", "open.xml", "ready.json", "ready.xml"]);
+		expect(result.pruned.map((session) => session.id).sort()).toEqual([
+			"blocked",
+			"merged",
+			"no-pr",
+			"not-done",
+		]);
+		expect(sessionFiles(state)).toEqual([
+			"fixes.json",
+			"fixes.xml",
+			"open.json",
+			"open.xml",
+			"ready.json",
+			"ready.xml",
+		]);
 	});
 
 	test("the sessions last.json and the plan carrier point at are kept", () => {
@@ -139,7 +181,13 @@ describe("pruneSessions", () => {
 		writeFileSync(join(state, "last.json"), JSON.stringify({ sessionId: "last-one", result: {} }));
 		writeFileSync(
 			join(state, "last-plan.json"),
-			JSON.stringify({ host: "omp", sessionId: "carried", specPath: join(state, "sessions", "by-path.xml"), instruction: "x", context: "" }),
+			JSON.stringify({
+				host: "omp",
+				sessionId: "carried",
+				specPath: join(state, "sessions", "by-path.xml"),
+				instruction: "x",
+				context: "",
+			}),
 		);
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
 		expect(result.pruned.map((session) => session.id)).toEqual(["gone"]);
@@ -185,7 +233,13 @@ describe("pruneSessions", () => {
 		expect(result.errors).toEqual([]);
 		expect(result.orphans.map((orphan) => orphan.name).sort()).toEqual(["gone.skip", "stale.skip"]);
 		expect(result.bytes).toBeGreaterThan(0);
-		expect(sessionFiles(state)).toEqual(["busy.json", "busy.skip", "busy.xml", "fresh.skip", "pinned.skip"]);
+		expect(sessionFiles(state)).toEqual([
+			"busy.json",
+			"busy.skip",
+			"busy.xml",
+			"fresh.skip",
+			"pinned.skip",
+		]);
 	});
 
 	test("a guessed earlier name protects only a file that stores the same session id: a/b does not keep a_b's record", () => {
@@ -202,7 +256,11 @@ describe("pruneSessions", () => {
 		const state = makeState();
 		const earlier = legacySessionPath(state, "a/b");
 		expect(basename(earlier)).toBe("a_b.json");
-		put(earlier, JSON.stringify({ sessionId: "a/b", at: 1, result: { original: "old" } }), 300 * DAY);
+		put(
+			earlier,
+			JSON.stringify({ sessionId: "a/b", at: 1, result: { original: "old" } }),
+			300 * DAY,
+		);
 		writeFileSync(join(state, "last.json"), JSON.stringify({ sessionId: "a/b", result: {} }));
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
 		expect(result.pruned).toEqual([]);
@@ -267,7 +325,11 @@ describe("pruneSessions", () => {
 		put(join(state, "young.lock"), "", HOUR / 2);
 		put(join(state, "control.json"), "{}", 5 * HOUR);
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
-		expect(result.orphans.map((orphan) => orphan.name).sort()).toEqual(["last.json.tmp", "x.json.lock", "x.json.tmp"]);
+		expect(result.orphans.map((orphan) => orphan.name).sort()).toEqual([
+			"last.json.tmp",
+			"x.json.lock",
+			"x.json.tmp",
+		]);
 		expect(result.bytes).toBe(8);
 		expect(sessionFiles(state)).toEqual(["young.json.tmp"]);
 		expect(readdirSync(state).sort()).toEqual(["control.json", "sessions", "young.lock"]);
@@ -276,7 +338,12 @@ describe("pruneSessions", () => {
 	for (const dryRun of [true, false]) {
 		test(`reclaims only dead prepared mutation guards (${dryRun ? "dry" : "actual"} prune)`, () => {
 			const state = makeState();
-			const create = (name: string, owner: string | undefined, age: number, extra?: string): string => {
+			const create = (
+				name: string,
+				owner: string | undefined,
+				age: number,
+				extra?: string,
+			): string => {
 				const path = join(state, name);
 				mkdirSync(path, { mode: 0o700 });
 				if (owner) writeFileSync(join(path, owner), "", { mode: 0o600 });
@@ -298,7 +365,10 @@ describe("pruneSessions", () => {
 			const linkedName = `linked.json.lock.guard.${dead}.tmp`;
 			symlinkSync(outside, join(state, linkedName));
 			const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, dryRun, now });
-			expect(result.orphans.map((orphan) => orphan.name).sort()).toEqual([`last.json.lock.guard.${dead}.tmp`, `state.json.lock.guard.${dead}.tmp`]);
+			expect(result.orphans.map((orphan) => orphan.name).sort()).toEqual([
+				`last.json.lock.guard.${dead}.tmp`,
+				`state.json.lock.guard.${dead}.tmp`,
+			]);
 			expect(result.errors).toEqual([]);
 			expect(existsSync(old)).toBe(dryRun);
 			expect(existsSync(empty)).toBe(dryRun);
@@ -319,7 +389,11 @@ describe("pruneSessions", () => {
 			seed(state, "held", 300);
 			const lastPath = join(state, "last.json");
 			const lockPath = `${lastPath}.lock`;
-			const last = JSON.stringify({ sessionId: "held", at: 1, result: { original: "previous plan" } });
+			const last = JSON.stringify({
+				sessionId: "held",
+				at: 1,
+				result: { original: "previous plan" },
+			});
 			const holder = String(process.pid);
 			put(lastPath, last, 300 * DAY);
 			put(lockPath, holder, 3 * HOUR);
@@ -327,14 +401,26 @@ describe("pruneSessions", () => {
 
 			const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, dryRun, now });
 
-			expect(result).toEqual({ dryRun, scanned: 5, kept: 1, keptActive: 0, pruned: [], orphans: [], bytes: 0, errors: [] });
+			expect(result).toEqual({
+				dryRun,
+				scanned: 5,
+				kept: 1,
+				keptActive: 0,
+				pruned: [],
+				orphans: [],
+				bytes: 0,
+				errors: [],
+			});
 			expect(readFileSync(lastPath, "utf8")).toBe(last);
 			expect(readFileSync(lockPath, "utf8")).toBe(holder);
 			expect(statSync(lockPath).mtimeMs).toBe(lockMtime);
 			expect(sessionFiles(state)).toEqual(["held.json", "held.xml"]);
 		});
 
-		for (const [kind, holder] of [["dead", "2147483647"], ["empty", ""]] as const) {
+		for (const [kind, holder] of [
+			["dead", "2147483647"],
+			["empty", ""],
+		] as const) {
 			test(`cleans an aged ${kind} strict-last lock (${dryRun ? "dry" : "actual"} prune)`, () => {
 				const state = makeState();
 				const lastPath = join(state, "last.json");
@@ -347,8 +433,14 @@ describe("pruneSessions", () => {
 				const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, dryRun, now });
 
 				expect(result).toEqual({
-					dryRun, scanned: 2, kept: 0, keptActive: 0, pruned: [],
-					orphans: [{ name: "last.json.lock", bytes: holder.length }], bytes: holder.length, errors: [],
+					dryRun,
+					scanned: 2,
+					kept: 0,
+					keptActive: 0,
+					pruned: [],
+					orphans: [{ name: "last.json.lock", bytes: holder.length }],
+					bytes: holder.length,
+					errors: [],
 				});
 				expect(existsSync(lockPath)).toBe(dryRun);
 				if (dryRun) expect(readFileSync(lockPath, "utf8")).toBe(holder);
@@ -359,7 +451,8 @@ describe("pruneSessions", () => {
 		test(`a session writer cannot replace last while an aged holder survives ${dryRun ? "dry" : "actual"} prune`, () => {
 			const state = makeState();
 			const previous = {
-				sessionId: "previous", at: 1,
+				sessionId: "previous",
+				at: 1,
 				result: { xml: "<X/>", original: "previous plan", root: "X", source: "llm" as const },
 			};
 			const next = { ...previous, sessionId: "next", at: 2 };
@@ -367,18 +460,20 @@ describe("pruneSessions", () => {
 			const lastPath = join(state, "last.json");
 			const before = readFileSync(lastPath, "utf8");
 
-			expect(withLastLock(lastPath, () => {
-				const seconds = (NOW - 3 * HOUR) / 1000;
-				utimesSync(`${lastPath}.lock`, seconds, seconds);
-				const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, dryRun, now });
-				expect(result.orphans).toEqual([]);
-				expect(result.bytes).toBe(0);
-				expect(writeSession(state, next)).toBeDefined();
-				expect(readSession(state, "next")).toEqual(next);
-				expect(readLast(state)).toEqual(previous);
-				expect(readFileSync(lastPath, "utf8")).toBe(before);
-				expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe(String(process.pid));
-			})).toBe(true);
+			expect(
+				withLastLock(lastPath, () => {
+					const seconds = (NOW - 3 * HOUR) / 1000;
+					utimesSync(`${lastPath}.lock`, seconds, seconds);
+					const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, dryRun, now });
+					expect(result.orphans).toEqual([]);
+					expect(result.bytes).toBe(0);
+					expect(writeSession(state, next)).toBeDefined();
+					expect(readSession(state, "next")).toEqual(next);
+					expect(readLast(state)).toEqual(previous);
+					expect(readFileSync(lastPath, "utf8")).toBe(before);
+					expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe(String(process.pid));
+				}),
+			).toBe(true);
 			expect(existsSync(`${lastPath}.lock`)).toBe(false);
 			expect(readFileSync(lastPath, "utf8")).toBe(before);
 		});
@@ -390,7 +485,10 @@ describe("pruneSessions", () => {
 		put(join(state, "control.json.lock"), holder, 3 * HOUR);
 		put(join(state, "sessions", "last.json.lock"), holder, 3 * HOUR);
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
-		expect(result.orphans.map((orphan) => orphan.name)).toEqual(["control.json.lock", "last.json.lock"]);
+		expect(result.orphans.map((orphan) => orphan.name)).toEqual([
+			"control.json.lock",
+			"last.json.lock",
+		]);
 		expect(result.bytes).toBe(2 * holder.length);
 		expect(existsSync(join(state, "control.json.lock"))).toBe(false);
 		expect(sessionFiles(state)).toEqual([]);
@@ -413,14 +511,28 @@ describe("pruneSessions", () => {
 	test("a missing state directory gives an empty result without an error", () => {
 		const state = join(makeState(), "nope");
 		const result = pruneSessions({ stateDir: state, olderThanMs: DAY, now });
-		expect(result).toEqual({ dryRun: false, scanned: 0, kept: 0, keptActive: 0, pruned: [], orphans: [], bytes: 0, errors: [] });
+		expect(result).toEqual({
+			dryRun: false,
+			scanned: 0,
+			kept: 0,
+			keptActive: 0,
+			pruned: [],
+			orphans: [],
+			bytes: 0,
+			errors: [],
+		});
 	});
 
 	test("an unreadable sessions directory gives an empty result and an error line, not a throw", () => {
 		const state = makeState();
 		writeFileSync(join(state, "sessions"), "not a directory");
 		const messages: string[] = [];
-		const result = pruneSessions({ stateDir: state, olderThanMs: DAY, now, log: (message) => messages.push(message) });
+		const result = pruneSessions({
+			stateDir: state,
+			olderThanMs: DAY,
+			now,
+			log: (message) => messages.push(message),
+		});
 		expect(result.pruned).toEqual([]);
 		expect(result.errors).toHaveLength(1);
 		expect(result.errors[0]?.startsWith("sessions: ")).toBe(true);
@@ -433,7 +545,10 @@ describe("pruneSessions", () => {
 		seed(state, "b-older", 60);
 		seed(state, "c-old", 40);
 		const remove = (path: string): void => {
-			if (path.endsWith("a-oldest.json")) throw Object.assign(new Error("EACCES: permission denied, unlink with PROMPT-TEXT"), { code: "EACCES" });
+			if (path.endsWith("a-oldest.json"))
+				throw Object.assign(new Error("EACCES: permission denied, unlink with PROMPT-TEXT"), {
+					code: "EACCES",
+				});
 			unlinkSync(path);
 		};
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now, remove });
@@ -490,13 +605,21 @@ describe("pruneSessions", () => {
 				const seconds = NOW / 1000;
 				utimesSync(join(state, "sessions", "zzz-second.json"), seconds, seconds);
 				utimesSync(join(state, "sessions", "zzz-second.xml"), seconds, seconds);
-				writeFileSync(join(state, "last.json"), JSON.stringify({ sessionId: "mmm-third", result: {} }));
+				writeFileSync(
+					join(state, "last.json"),
+					JSON.stringify({ sessionId: "mmm-third", result: {} }),
+				);
 			}
 		};
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now, remove });
 		expect(result.pruned.map((session) => session.id)).toEqual(["aaa-first"]);
 		expect(result.kept).toBe(2);
-		expect(sessionFiles(state)).toEqual(["mmm-third.json", "mmm-third.xml", "zzz-second.json", "zzz-second.xml"]);
+		expect(sessionFiles(state)).toEqual([
+			"mmm-third.json",
+			"mmm-third.xml",
+			"zzz-second.json",
+			"zzz-second.xml",
+		]);
 	});
 
 	test("the locked re-check sees a sibling added after the first listing", () => {
@@ -536,7 +659,14 @@ describe("pruneSessions", () => {
 		expect(first.kept).toBe(2);
 		const second = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now, limit: 5 });
 		expect(second.pruned.map((session) => session.id)).toEqual(["old-c"]);
-		expect(sessionFiles(state)).toEqual(["keep-a.json", "keep-a.xml", "keep-b.json", "keep-b.xml", "old-d.json", "old-d.xml"]);
+		expect(sessionFiles(state)).toEqual([
+			"keep-a.json",
+			"keep-a.xml",
+			"keep-b.json",
+			"keep-b.xml",
+			"old-d.json",
+			"old-d.xml",
+		]);
 	});
 
 	test("refuses a cutoff that is not above zero instead of removing everything", () => {
@@ -589,9 +719,15 @@ describe("pruneSessionsBestEffort", () => {
 		seed(state, "old", 40);
 		expect(pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now })).toBeDefined();
 		seed(state, "old-again", 40);
-		expect(pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now: () => NOW + 23 * HOUR })).toBeUndefined();
+		expect(
+			pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now: () => NOW + 23 * HOUR }),
+		).toBeUndefined();
 		expect(sessionFiles(state)).toEqual(["old-again.json", "old-again.xml"]);
-		const later = pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now: () => NOW + 25 * HOUR });
+		const later = pruneSessionsBestEffort({
+			stateDir: state,
+			retentionDays: 30,
+			now: () => NOW + 25 * HOUR,
+		});
 		expect(later?.pruned.map((session) => session.id)).toEqual(["old-again"]);
 		expect(sessionFiles(state)).toEqual([]);
 	});
@@ -617,20 +753,30 @@ describe("pruneSessionsBestEffort", () => {
 		writeFileSync(join(state, "sessions"), "not a directory");
 		const first = pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now });
 		expect(first?.errors).toHaveLength(1);
-		expect(pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now: () => NOW + HOUR })).toBeUndefined();
+		expect(
+			pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now: () => NOW + HOUR }),
+		).toBeUndefined();
 	});
 
 	test("never throws on a state directory that does not exist, and does not create it", () => {
 		const state = join(makeState(), "missing");
 		const messages: string[] = [];
-		expect(pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now, log: (message) => messages.push(message) })).toBeUndefined();
+		expect(
+			pruneSessionsBestEffort({
+				stateDir: state,
+				retentionDays: 30,
+				now,
+				log: (message) => messages.push(message),
+			}),
+		).toBeUndefined();
 		expect(existsSync(state)).toBe(false);
 		expect(messages).toHaveLength(1);
 	});
 
 	test("examines at most 500 entries per run", () => {
 		const state = makeState();
-		for (let index = 0; index < 520; index++) seed(state, `s${String(index).padStart(3, "0")}`, 90, { xml: false });
+		for (let index = 0; index < 520; index++)
+			seed(state, `s${String(index).padStart(3, "0")}`, 90, { xml: false });
 		const result = pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now });
 		expect(result?.scanned).toBe(500);
 		expect(sessionFiles(state).length).toBeGreaterThan(20);

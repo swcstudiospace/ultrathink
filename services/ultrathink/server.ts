@@ -67,7 +67,11 @@ interface Listener {
 
 // With TLS configured the listener is mTLS only: the handshake refuses any client that does not chain to the CA, and
 // the verified SPIFFE identity (never a header) is the only identity the router sees.
-async function startTlsListener(tls: TlsFiles, config: UltrathinkConfig, app: App): Promise<Listener> {
+async function startTlsListener(
+	tls: TlsFiles,
+	config: UltrathinkConfig,
+	app: App,
+): Promise<Listener> {
 	assertMtlsRuntime();
 	requireReadableOrExit("ULTRATHINK_TLS_CERT", tls.certFile);
 	requireReadableOrExit("ULTRATHINK_TLS_KEY", tls.keyFile);
@@ -119,10 +123,18 @@ const auth = createAuth({
 	cookieSecure: config.publicOrigin.startsWith("https://"),
 });
 const chaosFetch = loadChaosFetch(config);
-const app = createApp({ config, store, auth, logger, ...(chaosFetch ? { fetch: chaosFetch } : {}) });
+const app = createApp({
+	config,
+	store,
+	auth,
+	logger,
+	...(chaosFetch ? { fetch: chaosFetch } : {}),
+});
 
 const listener: Listener =
-	config.tls === undefined ? startPlaintextListener(config, app) : await startTlsListener(config.tls, config, app);
+	config.tls === undefined
+		? startPlaintextListener(config, app)
+		: await startTlsListener(config.tls, config, app);
 app.start();
 
 const shutdown = createShutdown({

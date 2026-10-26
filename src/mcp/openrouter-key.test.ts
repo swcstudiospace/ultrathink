@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { checkOpenRouterKeyFormat, OPENROUTER_KEY_URL, verifyOpenRouterKey } from "./openrouter-key.ts";
+import {
+	checkOpenRouterKeyFormat,
+	OPENROUTER_KEY_URL,
+	verifyOpenRouterKey,
+} from "./openrouter-key.ts";
 
 // Built at runtime so no key-shaped literal sits in source.
 const KEY = `sk-or-v1-${"Abc123_-".repeat(4)}`;
 
-function fakeFetch(responses: Array<Response | Error>): { fetch: typeof fetch; calls: Array<{ url: string; auth: string | null }> } {
+function fakeFetch(responses: Array<Response | Error>): {
+	fetch: typeof fetch;
+	calls: Array<{ url: string; auth: string | null }>;
+} {
 	const calls: Array<{ url: string; auth: string | null }> = [];
 	let i = 0;
 	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -48,7 +55,10 @@ describe("verifyOpenRouterKey", () => {
 	});
 
 	test("a transient 5xx is retried and succeeds on the next attempt", async () => {
-		const { fetch, calls } = fakeFetch([new Response("", { status: 503 }), new Response("{}", { status: 200 })]);
+		const { fetch, calls } = fakeFetch([
+			new Response("", { status: 503 }),
+			new Response("{}", { status: 200 }),
+		]);
 		expect(await verifyOpenRouterKey(KEY, { fetch, sleep: noSleep })).toEqual({ ok: true });
 		expect(calls).toHaveLength(2);
 	});
@@ -76,7 +86,10 @@ describe("verifyOpenRouterKey", () => {
 
 	test("a malformed key is refused before any request is made", async () => {
 		const { fetch, calls } = fakeFetch([new Response("{}", { status: 200 })]);
-		expect(await verifyOpenRouterKey("nope", { fetch, sleep: noSleep })).toMatchObject({ ok: false, reason: "format" });
+		expect(await verifyOpenRouterKey("nope", { fetch, sleep: noSleep })).toMatchObject({
+			ok: false,
+			reason: "format",
+		});
 		expect(calls).toHaveLength(0);
 	});
 });

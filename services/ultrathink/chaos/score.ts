@@ -45,7 +45,8 @@ export function trend(scores: number[]): Trend | undefined {
 // Resilience of one template over its last `window` runs, taken in seq order.
 // With no runs the mean and trend are undefined rather than NaN.
 export function resilience(records: HistoryRecord[], templateId: string, window = 20): Resilience {
-	if (!Number.isInteger(window) || window < 1) throw new RangeError("resilience window must be a positive integer");
+	if (!Number.isInteger(window) || window < 1)
+		throw new RangeError("resilience window must be a positive integer");
 	const scores = records
 		.filter((record) => record.templateId === templateId)
 		.sort((a, b) => a.seq - b.seq)

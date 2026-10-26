@@ -79,7 +79,8 @@ Orchestrate it:
 
 const THINK_TRACKING = `The Notion Task/Issue/Sub-Issue rows and Linear issues for this graph were created before this turn (or are being finished by ultrathink-kickoff); their identifiers and URLs are in the ISSUES block of the specification and in the Linked issues list. Every WORKFLOW unit you put into TodoWrite should carry the matching issue link(s). Do not create additional Linear issues yourself: ultrathink-kickoff and "ultrathink-mcp track complete" own row creation, and ultrathink-sync updates the tracked rows later.`;
 
-const THINK_CLOSING = "Do not reprint the graph. Prefer repository evidence over the plan when they disagree. Start executing.";
+const THINK_CLOSING =
+	"Do not reprint the graph. Prefer repository evidence over the plan when they disagree. Start executing.";
 
 export const THINK_ADDENDUM = `${THINK_ORCHESTRATION}\n\n${THINK_TRACKING} ${THINK_CLOSING}\n`;
 

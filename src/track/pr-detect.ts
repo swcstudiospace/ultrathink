@@ -9,7 +9,8 @@
 
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
 const PR_URL_RE = /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/(\d+)/;
-const PR_TOOL_RE = /(?:create[_-]?pull[_-]?request|pull[_-]?request[_-]?create|createPullRequest)$/i;
+const PR_TOOL_RE =
+	/(?:create[_-]?pull[_-]?request|pull[_-]?request[_-]?create|createPullRequest)$/i;
 const SHELL_TOOLS: Record<string, true> = {
 	Bash: true,
 	bash: true,
@@ -39,7 +40,10 @@ export function isGhPrCreateCommand(command: string): boolean {
  * True for a shell tool running `gh pr create`, or a tool whose name reads as
  * PR creation (e.g. `mcp__github__create_pull_request`, `createPullRequest`).
  */
-export function isPrCreationTool(toolName: string | undefined, command: string | undefined): boolean {
+export function isPrCreationTool(
+	toolName: string | undefined,
+	command: string | undefined,
+): boolean {
 	if (!toolName) return false;
 	if (SHELL_TOOLS[toolName] === true) return isGhPrCreateCommand(command ?? "");
 	return PR_TOOL_RE.test(toolName);

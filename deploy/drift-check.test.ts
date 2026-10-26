@@ -23,7 +23,12 @@ import { join, resolve } from "node:path";
 
 const SCRIPT = resolve(import.meta.dir, "drift-check.sh");
 const UNIT_BODY = "[Unit]\nDescription=test unit\n\n[Service]\nType=oneshot\n";
-const STUB_CHECK = ["#!/usr/bin/env bash", "printf 'stub check %s\\n' \"$*\"", "exit \"${STUB_EXIT:-0}\"", ""].join("\n");
+const STUB_CHECK = [
+	"#!/usr/bin/env bash",
+	"printf 'stub check %s\\n' \"$*\"",
+	'exit "${STUB_EXIT:-0}"',
+	"",
+].join("\n");
 const LIVE_URL = "http://127.0.0.1:9/";
 
 type UnitEntry = {
@@ -194,7 +199,9 @@ test("all identical units exit 0 with no drift or missing entries", async () => 
 	expect(report.drift_count).toBe(0);
 	expect(report.missing_count).toBe(0);
 	expect(report.units.map((unit) => unit.status)).toEqual(["ok", "ok"]);
-	expect(entry(report, "ultrathink-a.service").installed_sha256).toBe(entry(report, "ultrathink-a.service").source_sha256);
+	expect(entry(report, "ultrathink-a.service").installed_sha256).toBe(
+		entry(report, "ultrathink-a.service").source_sha256,
+	);
 });
 
 test("a failing live check is recorded in the report and fails the run", async () => {
@@ -230,7 +237,14 @@ test("a nonexistent unit dir exits 2 and writes no report", async () => {
 	const f = fixture();
 	const missingUnits = join(f.root, "absent");
 
-	const result = await runScript(["--unit-dir", missingUnits, "--install-dir", f.installDir, "--report", f.report]);
+	const result = await runScript([
+		"--unit-dir",
+		missingUnits,
+		"--install-dir",
+		f.installDir,
+		"--report",
+		f.report,
+	]);
 
 	expect(result.exitCode).toBe(2);
 	expect(result.stderr).toContain("unit dir is not a directory");

@@ -22,12 +22,9 @@ export interface LedgerLimits {
 }
 
 export interface Ledger {
-	reserve(input: {
-		runId: string;
-		phase: string;
-		attempt: number;
-		estimatedTokens: number;
-	}): { reservationId: number };
+	reserve(input: { runId: string; phase: string; attempt: number; estimatedTokens: number }): {
+		reservationId: number;
+	};
 	settle(reservationId: number, actualTokens: number): void;
 	/** Provider outcome unknown: the reserved amount keeps counting. */
 	abandon(reservationId: number): void;
@@ -39,7 +36,9 @@ export interface Ledger {
 	 * undefined when neither ceiling is enabled (a ceiling is enabled when > 0). Tokens may be zero
 	 * or negative when spend has reached or passed a ceiling. Spend is summed as reserve sums it.
 	 */
-	headroom(runId: string): { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY } | undefined;
+	headroom(
+		runId: string,
+	): { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY } | undefined;
 }
 
 const CREATE_TOKEN_LEDGER = `
@@ -180,7 +179,8 @@ export function createLedger(
 			try {
 				const at = now();
 				const day = new Date(at).toISOString().slice(0, 10);
-				const candidates: { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY }[] = [];
+				const candidates: { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY }[] =
+					[];
 				if (limits.runTokenCeiling > 0) {
 					candidates.push({
 						tokens: limits.runTokenCeiling - sumSpent(db, SPENT_FOR_RUN, runId),

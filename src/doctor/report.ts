@@ -11,7 +11,9 @@ const MARKERS: Record<DoctorLevel, string> = { ok: "✓", info: "i", warn: "!", 
 
 /** Findings in section order (stable within a section), the level counts, and `ok` = no error finding. */
 export function buildReport(findings: readonly Finding[]): DoctorReport {
-	const ordered = DOCTOR_SECTIONS.flatMap((section) => findings.filter((finding) => finding.section === section));
+	const ordered = DOCTOR_SECTIONS.flatMap((section) =>
+		findings.filter((finding) => finding.section === section),
+	);
 	const summary: DoctorReport["summary"] = { error: 0, warn: 0, info: 0, ok: 0 };
 	for (const finding of ordered) summary[finding.level]++;
 	return { ok: summary.error === 0, summary, findings: ordered };
@@ -39,7 +41,12 @@ export function formatReport(report: DoctorReport): string {
 export function reportJson(report: DoctorReport): string {
 	return JSON.stringify({
 		ok: report.ok,
-		summary: { error: report.summary.error, warn: report.summary.warn, info: report.summary.info, ok: report.summary.ok },
+		summary: {
+			error: report.summary.error,
+			warn: report.summary.warn,
+			info: report.summary.info,
+			ok: report.summary.ok,
+		},
 		findings: report.findings.map((finding) => ({
 			id: redactSecrets(finding.id),
 			section: finding.section,

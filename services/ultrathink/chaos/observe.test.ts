@@ -6,9 +6,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls, { type TLSSocket } from "node:tls";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { Server } from "bun";
-import { type HttpFetch, type HttpRequestInit, httpTarget, parsePrometheusValue } from "./observe.ts";
+import {
+	type HttpFetch,
+	type HttpRequestInit,
+	httpTarget,
+	parsePrometheusValue,
+} from "./observe.ts";
 
 const METRICS = [
 	"# HELP ultrathink_planner_calls_total Planner calls",
@@ -23,13 +28,22 @@ const METRICS = [
 
 describe("parsePrometheusValue", () => {
 	test("matches the exact label set", () => {
-		expect(parsePrometheusValue(METRICS, "ultrathink_planner_calls_total", { outcome: "timeout" })).toBe(2);
-		expect(parsePrometheusValue(METRICS, "ultrathink_planner_calls_total", { outcome: "ok" })).toBe(4);
+		expect(
+			parsePrometheusValue(METRICS, "ultrathink_planner_calls_total", { outcome: "timeout" }),
+		).toBe(2);
+		expect(parsePrometheusValue(METRICS, "ultrathink_planner_calls_total", { outcome: "ok" })).toBe(
+			4,
+		);
 	});
 
 	test("does not match a subset or superset of the labels", () => {
 		expect(parsePrometheusValue(METRICS, "ultrathink_planner_calls_total")).toBeUndefined();
-		expect(parsePrometheusValue(METRICS, "ultrathink_planner_calls_total", { outcome: "timeout", extra: "x" })).toBeUndefined();
+		expect(
+			parsePrometheusValue(METRICS, "ultrathink_planner_calls_total", {
+				outcome: "timeout",
+				extra: "x",
+			}),
+		).toBeUndefined();
 		expect(parsePrometheusValue(METRICS, "ultrathink_upstream_breaker_state")).toBeUndefined();
 	});
 
@@ -38,9 +52,12 @@ describe("parsePrometheusValue", () => {
 	});
 
 	test("ignores comment lines and does not match on a name prefix", () => {
-		const text = "# ultrathink_overload_total 99\nultrathink_overload_total_extra 9\nultrathink_overload_total 7";
+		const text =
+			"# ultrathink_overload_total 99\nultrathink_overload_total_extra 9\nultrathink_overload_total 7";
 		expect(parsePrometheusValue(text, "ultrathink_overload_total")).toBe(7);
-		expect(parsePrometheusValue("# ultrathink_overload_total 99", "ultrathink_overload_total")).toBeUndefined();
+		expect(
+			parsePrometheusValue("# ultrathink_overload_total 99", "ultrathink_overload_total"),
+		).toBeUndefined();
 	});
 
 	test("an absent series is undefined, never zero", () => {
@@ -48,12 +65,20 @@ describe("parsePrometheusValue", () => {
 	});
 
 	test("parses label values containing braces, spaces and escaped quotes", () => {
-		expect(parsePrometheusValue(METRICS, "ultrathink_path", { path: "/a b}c", note: 'say "hi"' })).toBe(3);
+		expect(
+			parsePrometheusValue(METRICS, "ultrathink_path", { path: "/a b}c", note: 'say "hi"' }),
+		).toBe(3);
 	});
 
 	test("skips malformed sample lines instead of guessing", () => {
-		expect(parsePrometheusValue('ultrathink_overload_total{outcome="x" 5', "ultrathink_overload_total", { outcome: "x" })).toBeUndefined();
-		expect(parsePrometheusValue("ultrathink_overload_total not-a-number", "ultrathink_overload_total")).toBeUndefined();
+		expect(
+			parsePrometheusValue('ultrathink_overload_total{outcome="x" 5', "ultrathink_overload_total", {
+				outcome: "x",
+			}),
+		).toBeUndefined();
+		expect(
+			parsePrometheusValue("ultrathink_overload_total not-a-number", "ultrathink_overload_total"),
+		).toBeUndefined();
 	});
 });
 
@@ -85,27 +110,67 @@ describe("httpTarget", () => {
 			seen.push(init);
 			return new Response("ok");
 		};
-		const target = httpTarget("https://127.0.0.1:9", { fetch: fake, tls: { ca: "CA-PEM", cert: "CERT-PEM", key: "KEY-PEM" } });
+		const target = httpTarget("https://127.0.0.1:9", {
+			fetch: fake,
+			tls: { ca: "CA-PEM", cert: "CERT-PEM", key: "KEY-PEM" },
+		});
 		await target.request("GET", "/readyz");
 		expect(seen[0]?.tls).toEqual({ ca: "CA-PEM", cert: "CERT-PEM", key: "KEY-PEM" });
 	});
 
 	test("a response that never arrives fails at the request deadline", async () => {
-		const stalled: HttpFetch = () => new Promise<Response>(() => {});
+		const stalled: HttpFetch = () =>
+			new Promise<Response>(() => {
+				// reason: test double, a response that never arrives
+			});
 		const target = httpTarget("http://127.0.0.1:9", { fetch: stalled, timeoutMs: 30 });
-		await expect(target.request("GET", "/readyz")).rejects.toThrow("GET /readyz got no complete response within 30 ms");
+		await expect(target.request("GET", "/readyz")).rejects.toThrow(
+			"GET /readyz got no complete response within 30 ms",
+		);
 	});
 
 	test("a body that never finishes fails at the same deadline", async () => {
-		const stalledBody: HttpFetch = async () => new Response(new ReadableStream({ start() {} }));
+		const stalledBody: HttpFetch = async () =>
+			new Response(
+				new ReadableStream({
+					start() {
+						// reason: test double, the body never enqueues a chunk
+					},
+				}),
+			);
 		const target = httpTarget("http://127.0.0.1:9", { fetch: stalledBody, timeoutMs: 30 });
-		await expect(target.request("GET", "/metrics")).rejects.toThrow("GET /metrics got no complete response within 30 ms");
+		await expect(target.request("GET", "/metrics")).rejects.toThrow(
+			"GET /metrics got no complete response within 30 ms",
+		);
 	});
 
 	test("close resolves without a request", async () => {
 		const target = httpTarget("http://127.0.0.1:9", { fetch: async () => new Response("") });
 		await expect(target.close()).resolves.toBeUndefined();
 	});
+
+	/** Replaces AbortSignal.timeout with controllers the test aborts, so the request deadline never runs on the real clock. */
+	function manualDeadlines() {
+		const queued: AbortController[] = [];
+		const waiting: Array<(controller: AbortController) => void> = [];
+		const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+			const controller = new AbortController();
+			const waiter = waiting.shift();
+			if (waiter) waiter(controller);
+			else queued.push(controller);
+			return controller.signal;
+		});
+		return {
+			next(): Promise<AbortController> {
+				const controller = queued.shift();
+				if (controller) return Promise.resolve(controller);
+				const { promise, resolve } = Promise.withResolvers<AbortController>();
+				waiting.push(resolve);
+				return promise;
+			},
+			restore: () => spy.mockRestore(),
+		};
+	}
 
 	describe("against a live server that stalls", () => {
 		let stalled: Server<undefined> | undefined;
@@ -114,8 +179,17 @@ describe("httpTarget", () => {
 				port: 0,
 				hostname: "127.0.0.1",
 				fetch(req) {
-					if (new URL(req.url).pathname === "/headers") return new Promise<Response>(() => {});
-					return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("partial")); } }));
+					if (new URL(req.url).pathname === "/headers")
+						return new Promise<Response>(() => {
+							// reason: test double, a stalled header never resolves
+						});
+					return new Response(
+						new ReadableStream({
+							start(controller) {
+								controller.enqueue(new TextEncoder().encode("partial"));
+							},
+						}),
+					);
 				},
 			});
 		});
@@ -124,17 +198,26 @@ describe("httpTarget", () => {
 		});
 
 		test("a stalled header or body fails the request at the deadline", async () => {
-			const target = httpTarget(`http://127.0.0.1:${stalled?.port}`, { timeoutMs: 200 });
-			const started = Date.now();
-			await expect(target.request("GET", "/headers")).rejects.toThrow("no complete response within 200 ms");
-			await expect(target.request("GET", "/body")).rejects.toThrow("no complete response within 200 ms");
-			expect(Date.now() - started).toBeLessThan(5000);
+			const deadlines = manualDeadlines();
+			try {
+				const target = httpTarget(`http://127.0.0.1:${stalled?.port}`, { timeoutMs: 200 });
+				const headers = target.request("GET", "/headers");
+				(await deadlines.next()).abort();
+				await expect(headers).rejects.toThrow("no complete response within 200 ms");
+				const body = target.request("GET", "/body");
+				(await deadlines.next()).abort();
+				await expect(body).rejects.toThrow("no complete response within 200 ms");
+			} finally {
+				deadlines.restore();
+			}
 		});
 	});
 
 	describe("against an mTLS listener", () => {
-		const SERVER_EXT = "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth\n";
-		const CLIENT_EXT = "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=clientAuth\n";
+		const SERVER_EXT =
+			"subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth\n";
+		const CLIENT_EXT =
+			"basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=clientAuth\n";
 		let dir = "";
 		let ca = "";
 		let server = { cert: "", key: "" };
@@ -153,27 +236,35 @@ describe("httpTarget", () => {
 			intruder = issueLeaf(dir, "intruder", "foreign-ca", CLIENT_EXT);
 			// node:tls, as deploy/ultrathink-release.test.ts does. Bun.serve on Bun 1.2.23 admitted a foreign-CA leaf in some
 			// handshakes; tls.createServer refused every one measured. The handler answers only an authorized socket.
-			const endpoint = tls.createServer({ cert: server.cert, key: server.key, ca, requestCert: true, rejectUnauthorized: true }, (socket) => {
-				if (!socket.authorized) {
-					socket.destroy();
-					return;
-				}
-				sockets.add(socket);
-				socket.once("close", () => sockets.delete(socket));
-				let head = "";
-				socket.on("data", (chunk: Buffer) => {
-					head += chunk.toString("latin1");
-					if (!head.includes("\r\n\r\n")) return;
-					socket.end("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready");
-				});
-			});
+			const endpoint = tls.createServer(
+				{ cert: server.cert, key: server.key, ca, requestCert: true, rejectUnauthorized: true },
+				(socket) => {
+					if (!socket.authorized) {
+						socket.destroy();
+						return;
+					}
+					sockets.add(socket);
+					socket.once("close", () => sockets.delete(socket));
+					let head = "";
+					socket.on("data", (chunk: Buffer) => {
+						head += chunk.toString("latin1");
+						if (!head.includes("\r\n\r\n")) return;
+						socket.end("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready");
+					});
+				},
+			);
 			// A refused handshake is expected here; its error arrives on the raw socket, so it is swallowed.
-			endpoint.on("connection", (raw) => raw.on("error", () => {}));
+			endpoint.on("connection", (raw) =>
+				raw.on("error", () => {
+					// reason: test double, a refused handshake is expected here
+				}),
+			);
 			const { promise, resolve, reject } = Promise.withResolvers<number>();
 			endpoint.once("error", reject);
 			endpoint.listen(0, "127.0.0.1", () => {
 				const address = endpoint.address();
-				if (address === null || typeof address === "string") reject(new Error("no TCP address for the mTLS listener"));
+				if (address === null || typeof address === "string")
+					reject(new Error("no TCP address for the mTLS listener"));
 				else resolve(address.port);
 			});
 			const port = await promise;
@@ -191,7 +282,9 @@ describe("httpTarget", () => {
 		});
 
 		test("a probe presenting the CA-signed identity reads the readiness endpoint", async () => {
-			const target = httpTarget(`https://127.0.0.1:${listener?.port}`, { tls: { ca, cert: probe.cert, key: probe.key } });
+			const target = httpTarget(`https://127.0.0.1:${listener?.port}`, {
+				tls: { ca, cert: probe.cert, key: probe.key },
+			});
 			const response = await target.request("GET", "/readyz");
 			expect(response.status).toBe(200);
 			expect(response.text).toBe("ready");
@@ -203,12 +296,16 @@ describe("httpTarget", () => {
 		});
 
 		test("a client certificate from another CA is refused", async () => {
-			const target = httpTarget(`https://127.0.0.1:${listener?.port}`, { tls: { ca, cert: intruder.cert, key: intruder.key } });
+			const target = httpTarget(`https://127.0.0.1:${listener?.port}`, {
+				tls: { ca, cert: intruder.cert, key: intruder.key },
+			});
 			await expect(target.request("GET", "/readyz")).rejects.toThrow();
 		});
 
 		test("a probe that does not pin the CA refuses the server certificate", async () => {
-			const target = httpTarget(`https://127.0.0.1:${listener?.port}`, { tls: { cert: probe.cert, key: probe.key } });
+			const target = httpTarget(`https://127.0.0.1:${listener?.port}`, {
+				tls: { cert: probe.cert, key: probe.key },
+			});
 			await expect(target.request("GET", "/readyz")).rejects.toThrow();
 		});
 	});
@@ -219,13 +316,70 @@ function openssl(dir: string, args: string[]): void {
 }
 
 function makeCa(dir: string, name: string): string {
-	openssl(dir, ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", `${name}.key`, "-out", `${name}.pem`, "-days", "2", "-subj", `/CN=${name}`, "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);
+	openssl(dir, [
+		"req",
+		"-x509",
+		"-newkey",
+		"ec",
+		"-pkeyopt",
+		"ec_paramgen_curve:P-256",
+		"-nodes",
+		"-keyout",
+		`${name}.key`,
+		"-out",
+		`${name}.pem`,
+		"-days",
+		"2",
+		"-subj",
+		`/CN=${name}`,
+		"-addext",
+		"basicConstraints=critical,CA:TRUE",
+		"-addext",
+		"keyUsage=critical,keyCertSign,cRLSign",
+	]);
 	return readFileSync(join(dir, `${name}.pem`), "utf8");
 }
 
-function issueLeaf(dir: string, name: string, signer: string, extensions: string): { cert: string; key: string } {
+function issueLeaf(
+	dir: string,
+	name: string,
+	signer: string,
+	extensions: string,
+): { cert: string; key: string } {
 	writeFileSync(join(dir, `${name}.ext`), extensions);
-	openssl(dir, ["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", `${name}.key`, "-out", `${name}.csr`, "-subj", `/CN=${name}`]);
-	openssl(dir, ["x509", "-req", "-in", `${name}.csr`, "-CA", `${signer}.pem`, "-CAkey", `${signer}.key`, "-CAcreateserial", "-out", `${name}.pem`, "-days", "2", "-extfile", `${name}.ext`]);
-	return { cert: readFileSync(join(dir, `${name}.pem`), "utf8"), key: readFileSync(join(dir, `${name}.key`), "utf8") };
+	openssl(dir, [
+		"req",
+		"-newkey",
+		"ec",
+		"-pkeyopt",
+		"ec_paramgen_curve:P-256",
+		"-nodes",
+		"-keyout",
+		`${name}.key`,
+		"-out",
+		`${name}.csr`,
+		"-subj",
+		`/CN=${name}`,
+	]);
+	openssl(dir, [
+		"x509",
+		"-req",
+		"-in",
+		`${name}.csr`,
+		"-CA",
+		`${signer}.pem`,
+		"-CAkey",
+		`${signer}.key`,
+		"-CAcreateserial",
+		"-out",
+		`${name}.pem`,
+		"-days",
+		"2",
+		"-extfile",
+		`${name}.ext`,
+	]);
+	return {
+		cert: readFileSync(join(dir, `${name}.pem`), "utf8"),
+		key: readFileSync(join(dir, `${name}.key`), "utf8"),
+	};
 }

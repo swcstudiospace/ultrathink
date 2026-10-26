@@ -30,13 +30,17 @@ function out(run: Run, argv: string[], cwd: string, timeoutMs?: number): string 
 	return text || undefined;
 }
 
-export function parseRemote(url: string): string | undefined {
+function parseRemote(url: string): string | undefined {
 	const match = url.trim().match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/);
 	return match ? `${match[1]}/${match[2]}` : undefined;
 }
 
 function resolveBase(run: Run, cwd: string): string | undefined {
-	const gh = out(run, ["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"], cwd);
+	const gh = out(
+		run,
+		["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
+		cwd,
+	);
 	if (gh) return gh;
 	const ref = out(run, ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd);
 	return ref?.replace(/^origin\//, "");
@@ -92,9 +96,13 @@ function latestVerification(cwd: string): GsdSignals["verification"] {
 			try {
 				files = readdirSync(join(phasesDir, phase));
 			} catch {
+				// reason: an unreadable phase directory yields no verification, the same as a phase without one
 				continue;
 			}
-			const file = files.filter((name) => name.endsWith("-VERIFICATION.md")).sort().at(-1);
+			const file = files
+				.filter((name) => name.endsWith("-VERIFICATION.md"))
+				.sort()
+				.at(-1);
 			if (!file) continue;
 			const status = frontmatterStatus(readFileSync(join(phasesDir, phase, file), "utf8"));
 			if (status) return { phase, status };
@@ -136,7 +144,7 @@ function compareVersions(a: string, b: string): number {
  * The newest milestone archived under `.planning/milestones/` (what `gsd-autonomous` leaves behind once the active
  * phases are gone): its phase verifications and audit. Fails open to undefined.
  */
-export function latestMilestone(cwd: string): MilestoneEvidence | undefined {
+function latestMilestone(cwd: string): MilestoneEvidence | undefined {
 	try {
 		const milestonesDir = join(cwd, ".planning", "milestones");
 		const version = readdirSync(milestonesDir)
@@ -152,11 +160,17 @@ export function latestMilestone(cwd: string): MilestoneEvidence | undefined {
 			try {
 				files = readdirSync(join(phasesDir, phase));
 			} catch {
+				// reason: an unreadable phase directory counts as missing, never as passed (see the comment below)
 				continue;
 			}
 			// A phase without a readable, status-bearing verification counts as "missing", never as silently passed.
-			const file = files.filter((name) => name.endsWith("-VERIFICATION.md")).sort().at(-1);
-			const status = file ? frontmatterStatus(readFileSync(join(phasesDir, phase, file), "utf8")) : undefined;
+			const file = files
+				.filter((name) => name.endsWith("-VERIFICATION.md"))
+				.sort()
+				.at(-1);
+			const status = file
+				? frontmatterStatus(readFileSync(join(phasesDir, phase, file), "utf8"))
+				: undefined;
 			verifications.push({ phase, status: status ?? "missing" });
 		}
 		const auditPath = join(milestonesDir, `${version}-MILESTONE-AUDIT.md`);
@@ -238,7 +252,8 @@ export function lookupGsdTools(input: GsdToolsInput): GsdToolsLookup {
 			// A tracked symlink must not hide the code it leads to, so the check runs on the resolved path.
 			const root = realOrSelf(input.cwd);
 			const target = relative(root, realOrSelf(path));
-			if (target === "" || target === ".." || target.startsWith(`..${sep}`) || isAbsolute(target)) return false;
+			if (target === "" || target === ".." || target.startsWith(`..${sep}`) || isAbsolute(target))
+				return false;
 			return run(["git", "ls-files", "--error-unmatch", target], { cwd: input.cwd }).exitCode === 0;
 		});
 	const tracked: string[] = [];
@@ -266,6 +281,7 @@ function collectGsd(run: Run, cwd: string, tools: GsdToolsLookup): GsdSignals | 
 	try {
 		state = frontmatterStatus(readFileSync(join(cwd, ".planning", "STATE.md"), "utf8"));
 	} catch {
+		// reason: an unreadable STATE.md is carried as an undefined state, which the gate reads as no state
 		state = undefined;
 	}
 	// Roadmap counts fail open to 0/0; trust and state still gate shipping. Tools or node that are not installed are a gap.
@@ -279,18 +295,39 @@ function collectGsd(run: Run, cwd: string, tools: GsdToolsLookup): GsdSignals | 
 	const skipped = tools.tracked.length ? { toolsTracked: true } : {};
 	const gsdTools = tools.path;
 	if (!gsdTools) {
-		return { phaseCount, completedPhases, trusted, state, verification, ...archived, ...skipped, toolsMissing: true };
+		return {
+			phaseCount,
+			completedPhases,
+			trusted,
+			state,
+			verification,
+			...archived,
+			...skipped,
+			toolsMissing: true,
+		};
 	}
 	const analyzed = run(["node", gsdTools, "query", "roadmap.analyze", "--cwd", cwd], { cwd });
 	if (analyzed.exitCode === 127 || /ENOENT/.test(analyzed.stderr)) {
-		return { phaseCount, completedPhases, trusted, state, verification, ...archived, ...skipped, nodeMissing: true };
+		return {
+			phaseCount,
+			completedPhases,
+			trusted,
+			state,
+			verification,
+			...archived,
+			...skipped,
+			nodeMissing: true,
+		};
 	}
 	const text = analyzed.exitCode === 0 ? analyzed.stdout.trim() : "";
 	try {
-		const parsed = text ? (JSON.parse(text) as { phase_count?: unknown; completed_phases?: unknown }) : {};
+		const parsed = text
+			? (JSON.parse(text) as { phase_count?: unknown; completed_phases?: unknown })
+			: {};
 		if (typeof parsed.phase_count === "number") phaseCount = parsed.phase_count;
 		if (typeof parsed.completed_phases === "number") completedPhases = parsed.completed_phases;
 	} catch {
+		// reason: unparseable roadmap output keeps the 0/0 counts documented above; the gate reads trust and state
 		phaseCount = 0;
 	}
 	return { phaseCount, completedPhases, trusted, state, verification, ...archived, ...skipped };
@@ -300,7 +337,9 @@ function collectGraph(record: SessionRecord): ShipSignals["graph"] {
 	const graph = record.graph;
 	if (!graph) return undefined;
 	const conclusion = graph.nodes.find((node) => node.kind === "synthesize")?.conclusion ?? "";
-	const workflowUnits = conclusion.split("\n").filter((line) => /^\s*(?:[-*]\s*)?\**Wave\b/i.test(line)).length;
+	const workflowUnits = conclusion
+		.split("\n")
+		.filter((line) => /^\s*(?:[-*]\s*)?\**Wave\b/i.test(line)).length;
 	return { nodes: graph.nodes.length, workflowUnits };
 }
 
@@ -328,13 +367,25 @@ function cap(text: string, limit = DIFF_CAP): string {
 	return text.length > limit ? `${text.slice(0, limit)}\n…[truncated]` : text;
 }
 
-const LOCKFILES = [":(exclude)*.lock", ":(exclude)*.lockb", ":(exclude)package-lock.json", ":(exclude)pnpm-lock.yaml"];
+const LOCKFILES = [
+	":(exclude)*.lock",
+	":(exclude)*.lockb",
+	":(exclude)package-lock.json",
+	":(exclude)pnpm-lock.yaml",
+];
 
 export function gatherDiff(input: { cwd: string; base: string; run?: Run }): ShipDiff {
 	const run = input.run ?? defaultRun;
 	const range = `origin/${input.base}...HEAD`;
 	const stat = cap(out(run, ["git", "diff", "--stat", range], input.cwd) ?? "");
-	const log = cap(out(run, ["git", "log", "--oneline", `origin/${input.base}..HEAD`], input.cwd) ?? "");
+	const log = cap(
+		out(run, ["git", "log", "--oneline", `origin/${input.base}..HEAD`], input.cwd) ?? "",
+	);
 	const patch = out(run, ["git", "diff", range, "--", ".", ...LOCKFILES], input.cwd) ?? "";
-	return { stat, log, patch: cap(patch, PATCH_CAP), ...(patch.length > PATCH_CAP ? { patchTruncated: true as const } : {}) };
+	return {
+		stat,
+		log,
+		patch: cap(patch, PATCH_CAP),
+		...(patch.length > PATCH_CAP ? { patchTruncated: true as const } : {}),
+	};
 }

@@ -7,9 +7,11 @@ import { GRAPH_APP_MIME, GRAPH_APP_URI, graphAppHtml, graphAppResourceMeta } fro
 import { APP_CSP, harnessFetch, startHarness } from "./harness/serve.ts";
 
 const html = graphAppHtml();
-const SCRIPT_RE = /<script>([\s\S]*)<\/script>/;
+const SCRIPT_RE = /<script>([\s\S]*)<\/script>/i;
 const script = SCRIPT_RE.exec(html)?.[1] ?? "";
-const markup = html.replace(/<script>[\s\S]*<\/script>/, "").replace(/<style>[\s\S]*<\/style>/, "");
+const markup = html
+	.replace(/<script>[\s\S]*<\/script>/i, "")
+	.replace(/<style>[\s\S]*<\/style>/, "");
 
 function graphOf(fixture: Fixture): GraphView | undefined {
 	const sc = fixture.initial.structuredContent;
@@ -57,12 +59,24 @@ interface IngestCalls {
 }
 
 /** Runs the app's `ingest` (with `pollDelay`) against a state object, recording what it asked the poller to do. */
-function runIngest(state: Partial<IngestState>, result: unknown): { S: IngestState; calls: IngestCalls } {
+function runIngest(
+	state: Partial<IngestState>,
+	result: unknown,
+): { S: IngestState; calls: IngestCalls } {
 	const ingestSource = /function ingest\(result\) \{[\s\S]*?\n\t\}/.exec(script)?.[0] ?? "";
 	const delaySource = /function pollDelay\(\) \{[^\n]*\}/.exec(script)?.[0] ?? "";
 	expect(ingestSource).not.toBe("");
 	expect(delaySource).not.toBe("");
-	const S: IngestState = { status: "idle", sessionId: "", pollAfter: 0, canTools: true, gaveUp: false, startedAt: 0, note: "", ...state };
+	const S: IngestState = {
+		status: "idle",
+		sessionId: "",
+		pollAfter: 0,
+		canTools: true,
+		gaveUp: false,
+		startedAt: 0,
+		note: "",
+		...state,
+	};
 	const calls: IngestCalls = { ensure: [], gaveUp: [] };
 	new Function(
 		"S",
@@ -97,7 +111,7 @@ describe("graph app document", () => {
 		expect(html).toContain('<meta charset="utf-8">');
 		expect(html).toContain('<meta name="viewport" content="width=device-width, initial-scale=1">');
 		expect(html).toContain('<meta name="color-scheme" content="light dark">');
-		expect(html.match(/<script>/g)?.length).toBe(1);
+		expect(html.match(/<script>/gi)?.length).toBe(1);
 		expect(html.match(/<\/script>/g)?.length).toBe(1);
 		expect(html.match(/<style>/g)?.length).toBe(1);
 		expect(graphAppHtml()).toBe(html);
@@ -129,7 +143,8 @@ describe("graph app document", () => {
 			["javascript: URL", /javascript:/i],
 			["setTimeout with a string", /setTimeout\s*\(\s*["']/],
 		];
-		for (const [name, re] of forbidden) expect({ name, found: re.test(html) }).toEqual({ name, found: false });
+		for (const [name, re] of forbidden)
+			expect({ name, found: re.test(html) }).toEqual({ name, found: false });
 	});
 
 	test("client-side cuts never leave half of an emoji at the boundary", () => {
@@ -137,7 +152,10 @@ describe("graph app document", () => {
 		const lineSource = /function oneLine\(s, max\) \{[\s\S]*?\n\s*\}/.exec(script)?.[0];
 		expect(cutSource).toBeDefined();
 		expect(lineSource).toBeDefined();
-		const oneLine = new Function(`${cutSource}\n${lineSource}\nreturn oneLine;`)() as (s: string, max: number) => string;
+		const oneLine = new Function(`${cutSource}\n${lineSource}\nreturn oneLine;`)() as (
+			s: string,
+			max: number,
+		) => string;
 		// Max 120 with the ellipsis: the emoji occupies units 118 and 119 and must go whole.
 		expect(oneLine(`${"a".repeat(118)}😀tail`, 120)).toBe(`${"a".repeat(118)}…`);
 		expect(oneLine(`${"a".repeat(117)}😀tail`, 120)).toBe(`${"a".repeat(117)}😀…`);
@@ -168,7 +186,9 @@ describe("graph app document", () => {
 	test("re-polls on the server's hint, clamped to 1..10 s, never on a fixed sub-second delay", () => {
 		expect(/ensurePolling\(\s*\d/.test(script)).toBe(false);
 		expect(script).not.toContain("fromPoll");
-		const running = (pollAfterSec?: number) => ({ structuredContent: { sessionId: "s-1", status: "running", pollAfterSec } });
+		const running = (pollAfterSec?: number) => ({
+			structuredContent: { sessionId: "s-1", status: "running", pollAfterSec },
+		});
 		expect(runIngest({ sessionId: "s-1" }, running()).calls.ensure).toEqual([2000]);
 		expect(runIngest({ sessionId: "s-1" }, running(10)).calls.ensure).toEqual([10_000]);
 		expect(runIngest({ sessionId: "s-1" }, running(60)).calls.ensure).toEqual([10_000]);
@@ -178,7 +198,10 @@ describe("graph app document", () => {
 	});
 
 	test("stops polling a client-mode plan and says the assistant is driving it", () => {
-		const { S, calls } = runIngest({}, { structuredContent: { sessionId: "s-1", status: "running", mode: "client" } });
+		const { S, calls } = runIngest(
+			{},
+			{ structuredContent: { sessionId: "s-1", status: "running", mode: "client" } },
+		);
 		expect(calls.ensure).toEqual([]);
 		expect(calls.gaveUp).toHaveLength(1);
 		expect(S.gaveUp).toBe(true);
@@ -192,7 +215,10 @@ describe("graph app document", () => {
 		expect(noSession.calls.ensure).toEqual([]);
 		expect(noSession.calls.gaveUp).toEqual([undefined]);
 		expect(noSession.S.note).toBe("Stopped checking. Ask the assistant for the result.");
-		const noTools = runIngest({ canTools: false }, { structuredContent: { sessionId: "s-1", status: "running" } });
+		const noTools = runIngest(
+			{ canTools: false },
+			{ structuredContent: { sessionId: "s-1", status: "running" } },
+		);
 		expect(noTools.calls.ensure).toEqual([]);
 		expect(noTools.calls.gaveUp).toEqual([undefined]);
 		// A pollable running result is left to the poller.
@@ -207,9 +233,13 @@ describe("graph app document", () => {
 	test("interprets only messages from the parent window and listens before it initializes", () => {
 		// The sender check runs before any message is interpreted.
 		expect(script.indexOf("event.source !== window.parent")).toBeGreaterThan(-1);
-		expect(script.indexOf("event.source !== window.parent")).toBeLessThan(script.indexOf("onHostRequest(m)"));
+		expect(script.indexOf("event.source !== window.parent")).toBeLessThan(
+			script.indexOf("onHostRequest(m)"),
+		);
 		// The listener is live before ui/initialize is sent.
-		expect(script.indexOf('addEventListener("message"')).toBeLessThan(script.indexOf('request("ui/initialize"'));
+		expect(script.indexOf('addEventListener("message"')).toBeLessThan(
+			script.indexOf('request("ui/initialize"'),
+		);
 	});
 
 	test("stays under 80 KiB", () => {
@@ -220,12 +250,19 @@ describe("graph app document", () => {
 		const source = /function defaultsText\(\) \{[\s\S]*?\n\t\}/.exec(script)?.[0] ?? "";
 		expect(source).not.toBe("");
 		const defaultsText = (sessionId: string): string =>
-			new Function("S", "DEFAULTS_TEXT", `${source}\nreturn defaultsText();`)({ sessionId }, "Use the defaults for all clarifying questions and go ahead.") as string;
+			new Function("S", "DEFAULTS_TEXT", `${source}\nreturn defaultsText();`)(
+				{ sessionId },
+				"Use the defaults for all clarifying questions and go ahead.",
+			) as string;
 		expect(defaultsText("0b9d1c7e-5a2f-4c1d-8e3a-6f7a9b0c1d2e")).toBe(
 			"Use the defaults for all clarifying questions of plan 0b9d1c7e-5a2f-4c1d-8e3a-6f7a9b0c1d2e and go ahead.",
 		);
-		expect(defaultsText("a b/../`$x`\n")).toBe("Use the defaults for all clarifying questions of plan abx and go ahead.");
-		expect(defaultsText(`${"a".repeat(80)}`)).toBe(`Use the defaults for all clarifying questions of plan ${"a".repeat(64)} and go ahead.`);
+		expect(defaultsText("a b/../`$x`\n")).toBe(
+			"Use the defaults for all clarifying questions of plan abx and go ahead.",
+		);
+		expect(defaultsText(`${"a".repeat(80)}`)).toBe(
+			`Use the defaults for all clarifying questions of plan ${"a".repeat(64)} and go ahead.`,
+		);
 		expect(defaultsText("")).toBe("Use the defaults for all clarifying questions and go ahead.");
 	});
 
@@ -238,7 +275,21 @@ describe("graph app document", () => {
 
 describe("fixtures", () => {
 	test("cover the acceptance list", () => {
-		for (const name of ["diamond", "eight", "longtitles", "oversize", "hostile", "degraded", "questions", "running", "failed", "invalid", "skipped", "nograph", "plannedstart"]) {
+		for (const name of [
+			"diamond",
+			"eight",
+			"longtitles",
+			"oversize",
+			"hostile",
+			"degraded",
+			"questions",
+			"running",
+			"failed",
+			"invalid",
+			"skipped",
+			"nograph",
+			"plannedstart",
+		]) {
 			expect(FIXTURE_NAMES).toContain(name);
 		}
 	});
@@ -248,7 +299,12 @@ describe("fixtures", () => {
 		expect(graph.nodes).toHaveLength(6);
 		expect(graph.waves.map((w) => w.parallel)).toEqual([false, true, false]);
 		expect(graph.waves.map((w) => w.ids.length)).toEqual([1, 4, 1]);
-		expect(graph.counts).toEqual({ nodes: 6, edges: 8, waves: 3, steps: graph.nodes.reduce((sum, n) => sum + n.steps.length, 0) });
+		expect(graph.counts).toEqual({
+			nodes: 6,
+			edges: 8,
+			waves: 3,
+			steps: graph.nodes.reduce((sum, n) => sum + n.steps.length, 0),
+		});
 		expect(graphOf(FIXTURES.eight as Fixture)?.nodes).toHaveLength(8);
 	});
 
@@ -268,7 +324,12 @@ describe("fixtures", () => {
 			const waveOf = new Map(graph.nodes.map((n) => [n.id, n.wave]));
 			for (const n of graph.nodes) {
 				for (const dep of n.dependsOn) {
-					expect({ name, node: n.id, dep, known: ids.has(dep) }).toEqual({ name, node: n.id, dep, known: true });
+					expect({ name, node: n.id, dep, known: ids.has(dep) }).toEqual({
+						name,
+						node: n.id,
+						dep,
+						known: true,
+					});
 					expect(waveOf.get(dep) as number).toBeLessThan(n.wave);
 				}
 				expect(n.wave).toBe(1 + Math.max(0, ...n.dependsOn.map((d) => waveOf.get(d) as number)));
@@ -313,11 +374,16 @@ describe("fixtures", () => {
 			const { initial, polls } = fixture;
 			expect(initial.content[0]?.type).toBe("text");
 			expect(uuid.test(initial.structuredContent.sessionId)).toBe(true);
-			for (const poll of polls) expect(poll.structuredContent.sessionId).toBe(initial.structuredContent.sessionId);
+			for (const poll of polls)
+				expect(poll.structuredContent.sessionId).toBe(initial.structuredContent.sessionId);
 		}
 		const running = FIXTURES.running as Fixture;
 		expect(running.initial.structuredContent.status).toBe("running");
-		expect(running.polls.map((p) => p.structuredContent.status)).toEqual(["running", "running", "planned"]);
+		expect(running.polls.map((p) => p.structuredContent.status)).toEqual([
+			"running",
+			"running",
+			"planned",
+		]);
 		expect(FIXTURES.failed?.initial.structuredContent.status).toBe("failed");
 		expect(graphOf(FIXTURES.nograph as Fixture)).toBeUndefined();
 	});
@@ -352,7 +418,10 @@ describe("harness", () => {
 			const page = await fetch(`${base}/`);
 			expect(page.headers.get("content-type")).toContain("text/html");
 			expect(await page.text()).toContain("MCP Apps host harness");
-			const data = (await (await fetch(`${base}/fixtures.json`)).json()) as { names: string[]; fixtures: Record<string, unknown> };
+			const data = (await (await fetch(`${base}/fixtures.json`)).json()) as {
+				names: string[];
+				fixtures: Record<string, unknown>;
+			};
 			expect(data.names).toEqual(FIXTURE_NAMES);
 			expect(Object.keys(data.fixtures)).toEqual(FIXTURE_NAMES);
 			expect((await fetch(`${base}/nope`)).status).toBe(404);

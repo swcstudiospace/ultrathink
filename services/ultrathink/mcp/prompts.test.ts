@@ -34,10 +34,19 @@ const CLIENT_TEXT = [
 	"Request:",
 ].join("\n");
 
-const CLIENT_DESCRIPTION = "Plan a request with ultrathink. The chat model answers each planning prompt.";
-const SERVER_DESCRIPTION = "Plan a request with ultrathink. The server does the thinking and returns the plan.";
-const REQUEST = "Ship the billing change.\nKeep \"quotes\", <tags> and `ticks` as typed.\nRequest:";
-const SUPPORTED = ["ultrathink", "ultrathink-plan", "ultrathink-think", "ultrathink-last", "ultrathink-status", "ultrathink-quick"];
+const CLIENT_DESCRIPTION =
+	"Plan a request with ultrathink. The chat model answers each planning prompt.";
+const SERVER_DESCRIPTION =
+	"Plan a request with ultrathink. The server does the thinking and returns the plan.";
+const REQUEST = 'Ship the billing change.\nKeep "quotes", <tags> and `ticks` as typed.\nRequest:';
+const SUPPORTED = [
+	"ultrathink",
+	"ultrathink-plan",
+	"ultrathink-think",
+	"ultrathink-last",
+	"ultrathink-status",
+	"ultrathink-quick",
+];
 const UNSUPPORTED = Object.entries(COMMAND_OVERLAY)
 	.filter(([, entry]) => entry.state === "unsupported")
 	.map(([name]) => name);
@@ -114,7 +123,9 @@ describe("the ultrathink prompt", () => {
 
 	test("the alias renders the same messages in server mode", () => {
 		const options = { serverPlanning: true };
-		expect(renderPrompt("ultrathink-plan", { request: REQUEST }, options)).toEqual(renderPrompt("ultrathink", { request: REQUEST }, options));
+		expect(renderPrompt("ultrathink-plan", { request: REQUEST }, options)).toEqual(
+			renderPrompt("ultrathink", { request: REQUEST }, options),
+		);
 	});
 
 	test("in client-driven mode the alias adds the graph step that the original prompt does not have", () => {
@@ -132,7 +143,9 @@ describe("the ultrathink prompt", () => {
 
 	test("the name is matched after normalization: slash, namespace and case", () => {
 		for (const name of ["/ultrathink", "ultrathink:ultrathink", "ULTRATHINK"]) {
-			expect(renderPrompt(name, { request: "x" })).toEqual(renderPrompt("ultrathink", { request: "x" }));
+			expect(renderPrompt(name, { request: "x" })).toEqual(
+				renderPrompt("ultrathink", { request: "x" }),
+			);
 		}
 	});
 });
@@ -170,7 +183,7 @@ describe("the new prompts", () => {
 	});
 
 	test("ultrathink-quick tells the model to answer directly with no tool and ends with the message unchanged", () => {
-		const message = "fix the typo in \"README\"\n/ultrathink please";
+		const message = 'fix the typo in "README"\n/ultrathink please';
 		const text = textOf(renderPrompt("ultrathink-quick", { message }));
 		expect(text).toContain("directly");
 		expect(text).toContain("no ultrathink tool");
@@ -194,7 +207,9 @@ describe("the new prompts", () => {
 		for (const name of SUPPORTED) {
 			const args = { request: "x", message: "x" };
 			for (const options of [undefined, { serverPlanning: true }]) {
-				for (const tool of textOf(renderPrompt(name, args, options)).match(/\bultrathink_[a-z]+\b/g) ?? []) {
+				for (const tool of textOf(renderPrompt(name, args, options)).match(
+					/\bultrathink_[a-z]+\b/g,
+				) ?? []) {
 					expect(known.has(tool)).toBe(true);
 				}
 			}
@@ -221,26 +236,58 @@ describe("unsupported commands", () => {
 
 	test("accept arguments without using them, in either mode and under a namespaced name", () => {
 		const bare = renderPrompt("ultrathink-track", {});
-		expect(renderPrompt("ultrathink:ultrathink-track", { anything: 1, args: "off" }, { serverPlanning: true })).toEqual(bare);
-		expect(renderPrompt("/ULTRATHINK-TRACK", undefined as unknown as Record<string, unknown>)).toEqual(bare);
+		expect(
+			renderPrompt(
+				"ultrathink:ultrathink-track",
+				{ anything: 1, args: "off" },
+				{ serverPlanning: true },
+			),
+		).toEqual(bare);
+		expect(
+			renderPrompt("/ULTRATHINK-TRACK", undefined as unknown as Record<string, unknown>),
+		).toEqual(bare);
 	});
 });
 
 describe("refusals", () => {
 	test("an unknown or non-string name is refused as an unknown prompt", () => {
-		for (const name of [undefined, null, 7, {}, "", "other", "ultrathink-nope", "constructor", "__proto__", "//", "ultrathink:"]) {
-			expect(renderPrompt(name, { request: "x" })).toEqual({ ok: false, message: "unknown prompt" });
+		for (const name of [
+			undefined,
+			null,
+			7,
+			{},
+			"",
+			"other",
+			"ultrathink-nope",
+			"constructor",
+			"__proto__",
+			"//",
+			"ultrathink:",
+		]) {
+			expect(renderPrompt(name, { request: "x" })).toEqual({
+				ok: false,
+				message: "unknown prompt",
+			});
 		}
 	});
 
 	test("a missing, blank or non-string required argument is refused", () => {
 		for (const request of [undefined, null, "", "  \n\t", 42, true, ["x"], { a: 1 }]) {
-			expect(renderPrompt("ultrathink", { request })).toEqual({ ok: false, message: "request is required" });
-			expect(renderPrompt("ultrathink-plan", { request })).toEqual({ ok: false, message: "request is required" });
+			expect(renderPrompt("ultrathink", { request })).toEqual({
+				ok: false,
+				message: "request is required",
+			});
+			expect(renderPrompt("ultrathink-plan", { request })).toEqual({
+				ok: false,
+				message: "request is required",
+			});
 		}
 		expect(renderPrompt("ultrathink", {})).toEqual({ ok: false, message: "request is required" });
 		for (const message of [undefined, "", "   ", 3]) {
-			expect(renderPrompt("ultrathink-quick", { message })).toEqual({ ok: false, message: "message is required" });
+			expect(renderPrompt("ultrathink-quick", { message })).toEqual({
+				ok: false,
+				message: "message is required",
+			});
 		}
 	});
 
@@ -269,8 +316,16 @@ describe("refusals", () => {
 	});
 
 	test("an optional argument that is not a string is refused; null and blank are skipped", () => {
-		expect(renderPrompt("ultrathink-think", { sessionId: 5 })).toEqual({ ok: false, message: "sessionId must be a string" });
-		expect(renderPrompt("ultrathink-think", { node: ["n1"] })).toEqual({ ok: false, message: "node must be a string" });
-		expect(renderPrompt("ultrathink-think", { sessionId: null, node: "" })).toEqual(renderPrompt("ultrathink-think", {}));
+		expect(renderPrompt("ultrathink-think", { sessionId: 5 })).toEqual({
+			ok: false,
+			message: "sessionId must be a string",
+		});
+		expect(renderPrompt("ultrathink-think", { node: ["n1"] })).toEqual({
+			ok: false,
+			message: "node must be a string",
+		});
+		expect(renderPrompt("ultrathink-think", { sessionId: null, node: "" })).toEqual(
+			renderPrompt("ultrathink-think", {}),
+		);
 	});
 });

@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,16 +29,27 @@ import {
 import type { CliHost, Entry, Run } from "./mcp-register.ts";
 
 const CMD = "/repo/claude-ultrathink/bin/ultrathink-mcp";
-const entries: Entry[] = ["notion", "linear", "greptile"].map((id) => ({ id, command: CMD, args: ["serve", id] }));
+const entries: Entry[] = ["notion", "linear", "greptile"].map((id) => ({
+	id,
+	command: CMD,
+	args: ["serve", id],
+}));
 
 const OTHER_CLONE = "/home/someone/old-clone/bin/ultrathink-mcp";
-const foreignNotion = { type: "http", url: "https://mcp.notion.com/mcp", headers: { Authorization: "Bearer x" } };
+const foreignNotion = {
+	type: "http",
+	url: "https://mcp.notion.com/mcp",
+	headers: { Authorization: "Bearer x" },
+};
 
 describe("mergeOmpMcp", () => {
 	test("keeps a foreign same-named entry by default and says how to overwrite it", () => {
 		const current = {
 			other: true,
-			mcpServers: { relume: { type: "http", url: "https://relume.example/mcp" }, notion: foreignNotion },
+			mcpServers: {
+				relume: { type: "http", url: "https://relume.example/mcp" },
+				notion: foreignNotion,
+			},
 		};
 		const { next, changes } = mergeOmpMcp(current, entries);
 		expect(next.other).toBe(true);
@@ -44,15 +65,29 @@ describe("mergeOmpMcp", () => {
 	});
 
 	test("--replace overwrites a foreign same-named entry with stdio", () => {
-		const { next, changes } = mergeOmpMcp({ mcpServers: { notion: foreignNotion } }, entries.slice(0, 1), "replace");
-		expect((next.mcpServers as Record<string, unknown>).notion).toEqual({ type: "stdio", command: CMD, args: ["serve", "notion"] });
+		const { next, changes } = mergeOmpMcp(
+			{ mcpServers: { notion: foreignNotion } },
+			entries.slice(0, 1),
+			"replace",
+		);
+		expect((next.mcpServers as Record<string, unknown>).notion).toEqual({
+			type: "stdio",
+			command: CMD,
+			args: ["serve", "notion"],
+		});
 		expect(changes).toEqual([{ id: "notion", action: "replaced" }]);
 	});
 
 	test("an entry from another ultrathink clone is replaced without --replace", () => {
-		const current = { mcpServers: { linear: { type: "stdio", command: OTHER_CLONE, args: ["serve", "linear"] } } };
+		const current = {
+			mcpServers: { linear: { type: "stdio", command: OTHER_CLONE, args: ["serve", "linear"] } },
+		};
 		const { next, changes } = mergeOmpMcp(current, entries.slice(1, 2));
-		expect((next.mcpServers as Record<string, unknown>).linear).toEqual({ type: "stdio", command: CMD, args: ["serve", "linear"] });
+		expect((next.mcpServers as Record<string, unknown>).linear).toEqual({
+			type: "stdio",
+			command: CMD,
+			args: ["serve", "linear"],
+		});
 		expect(changes).toEqual([{ id: "linear", action: "replaced" }]);
 	});
 
@@ -93,24 +128,42 @@ describe("mergeMuseSettings", () => {
 	});
 
 	test("folds legacy mcp_servers into mcpServers", () => {
-		const { next } = mergeMuseSettings({ mcp_servers: { keep: { type: "stdio", command: "/x" } } }, entries);
+		const { next } = mergeMuseSettings(
+			{ mcp_servers: { keep: { type: "stdio", command: "/x" } } },
+			entries,
+		);
 		expect(next.mcp_servers).toBeUndefined();
-		expect((next.mcpServers as Record<string, unknown>).keep).toEqual({ type: "stdio", command: "/x" });
+		expect((next.mcpServers as Record<string, unknown>).keep).toEqual({
+			type: "stdio",
+			command: "/x",
+		});
 	});
 
 	test("remove deletes ultrathink entries from mcpServers and legacy mcp_servers only", () => {
 		const current = {
 			schema_version: 1,
-			mcpServers: { notion: foreignNotion, linear: { type: "stdio", command: CMD, args: ["serve", "linear"] } },
-			mcp_servers: { greptile: { type: "stdio", command: OTHER_CLONE, args: ["serve", "greptile"] } },
+			mcpServers: {
+				notion: foreignNotion,
+				linear: { type: "stdio", command: CMD, args: ["serve", "linear"] },
+			},
+			mcp_servers: {
+				greptile: { type: "stdio", command: OTHER_CLONE, args: ["serve", "greptile"] },
+			},
 		};
 		const { next, changes } = mergeMuseSettings(current, entries, "remove");
-		expect(next).toEqual({ schema_version: 1, mcpServers: { notion: foreignNotion }, mcp_servers: {} });
+		expect(next).toEqual({
+			schema_version: 1,
+			mcpServers: { notion: foreignNotion },
+			mcp_servers: {},
+		});
 		expect(changes.map((c) => c.action)).toEqual(["kept", "removed", "removed"]);
 	});
 
 	test("an entry Muse rewrote without the default type and in another key order is unchanged", () => {
-		const current = { schema_version: 1, mcpServers: { notion: { mode: "optional", command: CMD, args: ["serve", "notion"] } } };
+		const current = {
+			schema_version: 1,
+			mcpServers: { notion: { mode: "optional", command: CMD, args: ["serve", "notion"] } },
+		};
 		const { next, changes } = mergeMuseSettings(current, entries.slice(0, 1));
 		expect(changes).toEqual([{ id: "notion", action: "unchanged" }]);
 		expect(next).toEqual(current);
@@ -130,12 +183,15 @@ function fakeRun(respond: (cmd: string[]) => string): { run: Run; calls: string[
 
 describe("CLI host planners", () => {
 	test("claude: already registered issues no add", () => {
-		const { run } = fakeRun((cmd) => `${cmd[3]}:\n  Type: stdio\n  Command: ${CMD}\n  Args: serve ${cmd[3]}\n`);
+		const { run } = fakeRun(
+			(cmd) => `${cmd[3]}:\n  Type: stdio\n  Command: ${CMD}\n  Args: serve ${cmd[3]}\n`,
+		);
 		const plan = planClaude(run, entries);
 		expect(plan.commands).toEqual([]);
 	});
 
-	const claudeHttp = "notion:\n  Scope: User config\n  Type: http\n  URL: https://mcp.notion.com/mcp\n";
+	const claudeHttp =
+		"notion:\n  Scope: User config\n  Type: http\n  URL: https://mcp.notion.com/mcp\n";
 
 	test("claude: foreign entry is kept by default with a hint naming --replace", () => {
 		const { run } = fakeRun(() => claudeHttp);
@@ -149,17 +205,34 @@ describe("CLI host planners", () => {
 		const { run } = fakeRun(() => claudeHttp);
 		const plan = planClaude(run, entries.slice(0, 1), { mode: "replace" });
 		expect(plan.changes).toEqual([{ id: "notion", action: "replaced" }]);
-		expect(plan.commands.at(-1)).toEqual(["claude", "mcp", "add", "--scope", "user", "notion", "--", CMD, "serve", "notion"]);
+		expect(plan.commands.at(-1)).toEqual([
+			"claude",
+			"mcp",
+			"add",
+			"--scope",
+			"user",
+			"notion",
+			"--",
+			CMD,
+			"serve",
+			"notion",
+		]);
 	});
 
 	test("claude: entry from another ultrathink clone is replaced by default", () => {
-		const { run } = fakeRun(() => `notion:\n  Type: stdio\n  Command: ${OTHER_CLONE}\n  Args: serve notion\n`);
-		expect(planClaude(run, entries.slice(0, 1)).changes).toEqual([{ id: "notion", action: "replaced" }]);
+		const { run } = fakeRun(
+			() => `notion:\n  Type: stdio\n  Command: ${OTHER_CLONE}\n  Args: serve notion\n`,
+		);
+		expect(planClaude(run, entries.slice(0, 1)).changes).toEqual([
+			{ id: "notion", action: "replaced" },
+		]);
 	});
 
 	test("claude: remove deletes only ultrathink entries", () => {
 		const { run } = fakeRun((cmd) =>
-			cmd[3] === "notion" ? claudeHttp : `${cmd[3]}:\n  Type: stdio\n  Command: ${OTHER_CLONE}\n  Args: serve ${cmd[3]}\n`,
+			cmd[3] === "notion"
+				? claudeHttp
+				: `${cmd[3]}:\n  Type: stdio\n  Command: ${OTHER_CLONE}\n  Args: serve ${cmd[3]}\n`,
 		);
 		const plan = planClaude(run, entries.slice(0, 2), { mode: "remove" });
 		expect(plan.changes.map((c) => c.action)).toEqual(["kept", "removed"]);
@@ -172,11 +245,13 @@ describe("CLI host planners", () => {
 			{ name: "linear", command: OTHER_CLONE, args: ["serve", "linear"], scope: "user" },
 		]);
 		const { run } = fakeRun(() => listed);
-		expect(planGrok(run, entries.slice(0, 2)).changes.map((c) => c.action)).toEqual(["kept", "replaced"]);
-		expect(planGrok(run, entries.slice(0, 2), { mode: "replace" }).changes.map((c) => c.action)).toEqual([
-			"replaced",
+		expect(planGrok(run, entries.slice(0, 2)).changes.map((c) => c.action)).toEqual([
+			"kept",
 			"replaced",
 		]);
+		expect(
+			planGrok(run, entries.slice(0, 2), { mode: "replace" }).changes.map((c) => c.action),
+		).toEqual(["replaced", "replaced"]);
 	});
 
 	test("claude: a local-scope entry neither blocks nor gets touched; the user scope decides", () => {
@@ -185,13 +260,21 @@ describe("CLI host planners", () => {
 				`${cmd[3]}:\n  Scope: Local config (private to you in this project)\n  Type: http\n  URL: https://mcp.example/${cmd[3]}\n`,
 		);
 		const userConfig = JSON.stringify({
-			mcpServers: { linear: { type: "stdio", command: OTHER_CLONE, args: ["serve", "linear"] }, greptile: { command: "npx" } },
-			projects: { "/p": { mcpServers: { notion: { type: "http", url: "https://mcp.example/notion" } } } },
+			mcpServers: {
+				linear: { type: "stdio", command: OTHER_CLONE, args: ["serve", "linear"] },
+				greptile: { command: "npx" },
+			},
+			projects: {
+				"/p": { mcpServers: { notion: { type: "http", url: "https://mcp.example/notion" } } },
+			},
 		});
 		const plan = planClaude(run, entries, { claudeConfig: () => userConfig });
 		expect(plan.changes.map((c) => c.action)).toEqual(["added", "replaced", "kept"]);
 		expect(plan.changes[0]?.reason).toContain("local config entry");
-		expect(plan.commands.filter((c) => c[2] === "add").map((c) => c[5])).toEqual(["notion", "linear"]);
+		expect(plan.commands.filter((c) => c[2] === "add").map((c) => c[5])).toEqual([
+			"notion",
+			"linear",
+		]);
 		const removing = planClaude(run, entries, { mode: "remove", claudeConfig: () => userConfig });
 		expect(removing.changes.map((c) => c.action)).toEqual(["not registered", "removed", "kept"]);
 		expect(removing.commands).toEqual([["claude", "mcp", "remove", "--scope", "user", "linear"]]);
@@ -209,7 +292,11 @@ describe("CLI host planners", () => {
 		expect(plan.changes.map((c) => c.action)).toEqual(["added", "kept", "added"]);
 		expect(plan.changes[0]?.reason).toBe("project-scope entry with this name is left alone");
 		const removing = planGrok(run, entries, { mode: "remove" });
-		expect(removing.changes.map((c) => c.action)).toEqual(["not registered", "kept", "not registered"]);
+		expect(removing.changes.map((c) => c.action)).toEqual([
+			"not registered",
+			"kept",
+			"not registered",
+		]);
 		expect(removing.commands).toEqual([]);
 	});
 
@@ -232,19 +319,25 @@ describe("CLI host planners", () => {
 	});
 
 	test("grok: already registered issues no add", () => {
-		const listed = JSON.stringify(entries.map((e) => ({ name: e.id, command: e.command, args: e.args, scope: "user" })));
+		const listed = JSON.stringify(
+			entries.map((e) => ({ name: e.id, command: e.command, args: e.args, scope: "user" })),
+		);
 		const { run } = fakeRun(() => listed);
 		expect(planGrok(run, entries).commands).toEqual([]);
 	});
 
 	test("hermes: truncated list row that matches issues no add", () => {
-		const rows = entries.map((e) => `  ${e.id.padEnd(16)} ${`${CMD} serve ${e.id}`.slice(0, 27)}...   all  ✓ enabled`);
+		const rows = entries.map(
+			(e) => `  ${e.id.padEnd(16)} ${`${CMD} serve ${e.id}`.slice(0, 27)}...   all  ✓ enabled`,
+		);
 		const { run } = fakeRun(() => `  MCP Servers:\n\n${rows.join("\n")}\n`);
 		expect(planHermes(run, entries).commands).toEqual([]);
 	});
 
 	test("hermes: url entry with same name is kept by default and replaced with --replace", () => {
-		const { run } = fakeRun(() => "  linear           https://mcp.linear.app/mcp     all   ✓ enabled\n");
+		const { run } = fakeRun(
+			() => "  linear           https://mcp.linear.app/mcp     all   ✓ enabled\n",
+		);
 		expect(planHermes(run, entries.slice(1, 2)).changes[0]?.action).toBe("kept");
 		const plan = planHermes(run, entries.slice(1, 2), { mode: "replace" });
 		expect(plan.changes).toEqual([{ id: "linear", action: "replaced" }]);
@@ -255,7 +348,8 @@ describe("CLI host planners", () => {
 	});
 
 	test("hermes: truncated rows take ownership from config.yaml", () => {
-		const rows = "  notion           /opt/some/other-server...   all  ✓ enabled\n  linear           /home/someone/old-clo...   all  ✓ enabled\n";
+		const rows =
+			"  notion           /opt/some/other-server...   all  ✓ enabled\n  linear           /home/someone/old-clo...   all  ✓ enabled\n";
 		const config = [
 			"model: x",
 			"mcp_servers:",
@@ -275,9 +369,9 @@ describe("CLI host planners", () => {
 		const { run } = fakeRun(() => rows);
 		const plan = planHermes(run, entries, { hermesConfig: () => config });
 		expect(plan.changes.map((c) => c.action)).toEqual(["kept", "replaced", "added"]);
-		expect(planHermes(run, entries, { mode: "remove", hermesConfig: () => config }).commands).toEqual([
-			["hermes", "mcp", "remove", "linear"],
-		]);
+		expect(
+			planHermes(run, entries, { mode: "remove", hermesConfig: () => config }).commands,
+		).toEqual([["hermes", "mcp", "remove", "linear"]]);
 	});
 
 	test("hermes: a list row that contradicts config.yaml makes the entry foreign", () => {
@@ -286,7 +380,9 @@ describe("CLI host planners", () => {
 		const plan = planHermes(run, entries.slice(0, 1), { hermesConfig: () => config });
 		expect(plan.changes[0]?.action).toBe("kept");
 		expect(plan.commands).toEqual([]);
-		expect(planHermes(run, entries.slice(0, 1), { mode: "remove", hermesConfig: () => config }).commands).toEqual([]);
+		expect(
+			planHermes(run, entries.slice(0, 1), { mode: "remove", hermesConfig: () => config }).commands,
+		).toEqual([]);
 	});
 
 	test("hermes: disabled row is re-added, enabled row stays unchanged", () => {
@@ -310,7 +406,10 @@ describe("applyCliPlan", () => {
 	const linear = entries.slice(1, 2);
 	const hermesRow = `  linear           ${CMD} serve linear   all  ✓ enabled\n`;
 
-	function stateful(listAfterAdd: string, listBefore = ""): { run: Run; stdins: Record<string, string | undefined> } {
+	function stateful(
+		listAfterAdd: string,
+		listBefore = "",
+	): { run: Run; stdins: Record<string, string | undefined> } {
 		const stdins: Record<string, string | undefined> = {};
 		let added = false;
 		const run: Run = (cmd, options) => {
@@ -319,7 +418,11 @@ describe("applyCliPlan", () => {
 				if (cmd[2] === "add") added = true;
 				return { code: 0, stdout: "", stderr: "" };
 			}
-			return { code: added || listBefore ? 0 : 1, stdout: added ? listAfterAdd : listBefore, stderr: "" };
+			return {
+				code: added || listBefore ? 0 : 1,
+				stdout: added ? listAfterAdd : listBefore,
+				stderr: "",
+			};
 		};
 		return { run, stdins };
 	}
@@ -354,9 +457,16 @@ describe("applyCliPlan", () => {
 
 	test("grok entry absent from post-add list is FAILED, present is added", () => {
 		const missing = stateful("[]", "[]");
-		expect(applyCliPlan("grok", missing.run, linear, planGrok(missing.run, linear))[0]?.action).toBe("FAILED");
-		const present = stateful(JSON.stringify([{ name: "linear", command: CMD, args: ["serve", "linear"] }]), "[]");
-		expect(applyCliPlan("grok", present.run, linear, planGrok(present.run, linear))).toEqual([{ id: "linear", action: "added" }]);
+		expect(
+			applyCliPlan("grok", missing.run, linear, planGrok(missing.run, linear))[0]?.action,
+		).toBe("FAILED");
+		const present = stateful(
+			JSON.stringify([{ name: "linear", command: CMD, args: ["serve", "linear"] }]),
+			"[]",
+		);
+		expect(applyCliPlan("grok", present.run, linear, planGrok(present.run, linear))).toEqual([
+			{ id: "linear", action: "added" },
+		]);
 	});
 
 	test("remove is confirmed by a follow-up list; a remove that leaves the entry is FAILED", () => {
@@ -368,8 +478,15 @@ describe("applyCliPlan", () => {
 			}
 			return { code: 0, stdout: JSON.stringify(servers), stderr: "" };
 		};
-		const options = { mode: "remove" as const, log: () => {} };
-		expect(applyCliPlan("grok", run, linear, planGrok(run, linear, options), options)).toEqual([{ id: "linear", action: "removed" }]);
+		const options = {
+			mode: "remove" as const,
+			log: () => {
+				// reason: planner log lines are not asserted here; the removal result is
+			},
+		};
+		expect(applyCliPlan("grok", run, linear, planGrok(run, linear, options), options)).toEqual([
+			{ id: "linear", action: "removed" },
+		]);
 		const stuck: Run = (cmd) =>
 			cmd[2] === "remove"
 				? { code: 1, stdout: "", stderr: "permission denied" }
@@ -394,7 +511,8 @@ function sandbox(fn: (box: Sandbox) => void, run?: Run): void {
 	const bin = join(dir, "bin");
 	mkdirSync(home);
 	mkdirSync(bin);
-	for (const host of ["claude", "grok", "hermes"]) writeFileSync(join(bin, host), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	for (const host of ["claude", "grok", "hermes"])
+		writeFileSync(join(bin, host), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 	const lines: string[] = [];
 	const env: Record<string, string | undefined> = { HOME: home, PATH: bin };
 	const deps = (root = "/stable/clone") => ({
@@ -418,7 +536,10 @@ function readServers(file: string): Record<string, unknown> {
 }
 
 // A fake claude/grok/hermes trio backed by one name → command map per host; Hermes' config.yaml is kept in sync.
-function fakeHosts(servers: Record<CliHost, Record<string, string>>, hermesConfig: string): { run: Run; calls: string[][] } {
+function fakeHosts(
+	servers: Record<CliHost, Record<string, string>>,
+	hermesConfig: string,
+): { run: Run; calls: string[][] } {
 	const calls: string[][] = [];
 	const syncHermes = () => {
 		const body = Object.entries(servers.hermes).map(
@@ -448,7 +569,12 @@ function fakeHosts(servers: Record<CliHost, Record<string, string>>, hermesConfi
 				: { code: 1, stdout: "", stderr: "No MCP server" };
 		}
 		if (host === "grok") {
-			const listed = Object.entries(servers.grok).map(([name, command]) => ({ name, command, args: ["serve", name], scope: "user" }));
+			const listed = Object.entries(servers.grok).map(([name, command]) => ({
+				name,
+				command,
+				args: ["serve", name],
+				scope: "user",
+			}));
 			return ok(JSON.stringify(listed));
 		}
 		const rows = Object.entries(servers.hermes).map(
@@ -464,7 +590,10 @@ describe("main", () => {
 		sandbox(({ home, lines, deps }) => {
 			const file = join(home, ".omp", "agent", "mcp.json");
 			writeJson(file, {
-				mcpServers: { notion: foreignNotion, linear: { type: "stdio", command: OTHER_CLONE, args: ["serve", "linear"] } },
+				mcpServers: {
+					notion: foreignNotion,
+					linear: { type: "stdio", command: OTHER_CLONE, args: ["serve", "linear"] },
+				},
 			});
 			expect(main(["--hosts", "omp"], deps())).toBe(0);
 			expect(lines.find((l) => l.includes("notion kept"))).toContain("--replace");
@@ -487,7 +616,12 @@ describe("main", () => {
 			const file = join(home, ".config", "muse", "settings.json");
 			writeJson(file, { schema_version: 1, mcpServers: { notion: foreignNotion } });
 			expect(main(["--hosts", "muse", "--providers", "notion", "--replace"], deps())).toBe(0);
-			expect(readServers(file).notion).toEqual({ type: "stdio", command: OURS_HERE, args: ["serve", "notion"], mode: "optional" });
+			expect(readServers(file).notion).toEqual({
+				type: "stdio",
+				command: OURS_HERE,
+				args: ["serve", "notion"],
+				mode: "optional",
+			});
 		});
 	});
 
@@ -496,7 +630,9 @@ describe("main", () => {
 			const omp = join(home, ".omp", "agent", "mcp.json");
 			const muse = join(home, ".config", "muse", "settings.json");
 			const ours = (id: string) => ({ type: "stdio", command: OTHER_CLONE, args: ["serve", id] });
-			writeJson(omp, { mcpServers: { notion: foreignNotion, linear: ours("linear"), relume: { url: "u" } } });
+			writeJson(omp, {
+				mcpServers: { notion: foreignNotion, linear: ours("linear"), relume: { url: "u" } },
+			});
 			writeJson(muse, { schema_version: 1, mcpServers: { greptile: ours("greptile") } });
 			const before = readFileSync(omp, "utf8");
 			expect(main(["--hosts", "omp,muse", "--remove", "--dry-run"], deps())).toBe(0);
@@ -581,7 +717,9 @@ describe("main", () => {
 				const backups = () => lines.filter((l) => l.trimStart().startsWith("backup "));
 				env.CLAUDE_CONFIG_DIR = "   ";
 				env.GROK_HOME = " ";
-				expect(main(["--hosts", "claude,grok", "--providers", "linear", "--dry-run"], deps())).toBe(0);
+				expect(main(["--hosts", "claude,grok", "--providers", "linear", "--dry-run"], deps())).toBe(
+					0,
+				);
 				expect(backups()).toEqual([
 					`  backup ${claudeFile} -> ${claudeFile}${STAMP}`,
 					`  backup ${grokFile} -> ${grokFile}${STAMP}`,
@@ -589,7 +727,9 @@ describe("main", () => {
 				lines.length = 0;
 				env.CLAUDE_CONFIG_DIR = ` ${home}\n`;
 				env.GROK_HOME = `  ${join(home, ".grok")} `;
-				expect(main(["--hosts", "claude,grok", "--providers", "linear", "--dry-run"], deps())).toBe(0);
+				expect(main(["--hosts", "claude,grok", "--providers", "linear", "--dry-run"], deps())).toBe(
+					0,
+				);
 				expect(backups()).toHaveLength(2);
 			}, fake.run);
 		} finally {
@@ -599,7 +739,10 @@ describe("main", () => {
 
 	test("warns to rerun from a stable clone only when run from a plugin cache", () => {
 		sandbox(({ lines, deps }) => {
-			main(["--hosts", "omp", "--dry-run"], deps("/home/u/.claude/plugins/cache/ultrathink/ultrathink/1.1.0"));
+			main(
+				["--hosts", "omp", "--dry-run"],
+				deps("/home/u/.claude/plugins/cache/ultrathink/ultrathink/1.1.0"),
+			);
 			expect(lines.find((l) => l.startsWith("warning:"))).toContain("stable directory");
 			lines.length = 0;
 			main(["--hosts", "omp", "--dry-run"], deps());
@@ -612,15 +755,22 @@ describe("main", () => {
 		const calls: string[][] = [];
 		const run: Run = (cmd) => {
 			calls.push(cmd);
-			if (cmd[2] === "add") rows.push(`  ${(cmd[3] ?? "").padEnd(16)} ${cmd[5]} serve ${cmd[3]}   all  ✓ enabled`);
+			if (cmd[2] === "add")
+				rows.push(`  ${(cmd[3] ?? "").padEnd(16)} ${cmd[5]} serve ${cmd[3]}   all  ✓ enabled`);
 			return { code: 0, stdout: cmd[2] === "list" ? rows.join("\n") : "", stderr: "" };
 		};
 		sandbox(({ home, lines, deps }) => {
 			const root = join(home, ".hermes");
 			const profile = join(root, "profiles", "work");
 			mkdirSync(profile, { recursive: true });
-			writeFileSync(join(root, "config.yaml"), `mcp_servers:\n  notion:\n    command: ${OTHER_CLONE}\n`);
-			writeFileSync(join(profile, "config.yaml"), "mcp_servers:\n  notion:\n    command: /opt/other/notion-server\n");
+			writeFileSync(
+				join(root, "config.yaml"),
+				`mcp_servers:\n  notion:\n    command: ${OTHER_CLONE}\n`,
+			);
+			writeFileSync(
+				join(profile, "config.yaml"),
+				"mcp_servers:\n  notion:\n    command: /opt/other/notion-server\n",
+			);
 			writeFileSync(join(root, "active_profile"), "work\n");
 			expect(main(["--hosts", "hermes", "--providers", "notion,linear"], deps())).toBe(0);
 			expect(lines.find((l) => l.includes("notion kept"))).toContain("--replace");
@@ -647,16 +797,27 @@ describe("API-key providers are never registered", () => {
 
 	test("--providers openrouter is a usage error before any host is touched", () => {
 		sandbox(({ deps, lines }) => {
-			expect(() => main(["--providers", "openrouter", "--dry-run"], deps())).toThrow("unknown provider: openrouter");
+			expect(() => main(["--providers", "openrouter", "--dry-run"], deps())).toThrow(
+				"unknown provider: openrouter",
+			);
 			expect(lines).toEqual([]);
 		});
 		const home = mkdtempSync(join(tmpdir(), "mcp-register-api-key-"));
 		try {
-			const proc = Bun.spawnSync([process.execPath, join(import.meta.dir, "mcp-register.ts"), "--providers", "openrouter", "--dry-run"], {
-				env: { HOME: home, PATH: "" },
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			const proc = Bun.spawnSync(
+				[
+					process.execPath,
+					join(import.meta.dir, "mcp-register.ts"),
+					"--providers",
+					"openrouter",
+					"--dry-run",
+				],
+				{
+					env: { HOME: home, PATH: "" },
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
 			expect(proc.exitCode).toBe(2);
 			const stderr = proc.stderr.toString();
 			expect(stderr).toContain("mcp-register: unknown provider: openrouter");
@@ -677,11 +838,13 @@ describe("API-key providers are never registered", () => {
 			sandbox(({ env, lines, deps }) => {
 				env.HERMES_HOME = dir;
 				expect(main(["--dry-run"], deps())).toBe(0);
-				for (const host of ["claude", "grok", "hermes", "muse", "omp"]) expect(lines).toContain(`${host}:`);
+				for (const host of ["claude", "grok", "hermes", "muse", "omp"])
+					expect(lines).toContain(`${host}:`);
 				expect(lines.filter((line) => line.endsWith(" added"))).toHaveLength(15);
 				const adds = lines.filter((line) => line.startsWith("  $ ") && line.includes(" add "));
 				expect(adds).toHaveLength(9);
-				for (const id of PROVIDER_IDS) expect(adds.filter((line) => line.includes(`serve ${id}`))).toHaveLength(3);
+				for (const id of PROVIDER_IDS)
+					expect(adds.filter((line) => line.includes(`serve ${id}`))).toHaveLength(3);
 				// A provider token (`serve openrouter`, an `openrouter:` entry, `add openrouter`), never a path fragment.
 				const token = /(?:^|\s)openrouter(?::|\s|$)/;
 				expect(lines.filter((line) => token.test(line))).toEqual([]);
@@ -702,8 +865,12 @@ describe("hermesConfigFile", () => {
 			expect(hermesConfigFile({}, home)).toBe(join(root, "config.yaml"));
 			writeFileSync(join(root, "active_profile"), "Work\n");
 			expect(hermesConfigFile({}, home)).toBe(join(root, "profiles", "work", "config.yaml"));
-			expect(hermesConfigFile({ HERMES_HOME: root }, home)).toBe(join(root, "profiles", "work", "config.yaml"));
-			expect(hermesConfigFile({ HERMES_HOME: "/srv/h/profiles/ops" }, home)).toBe("/srv/h/profiles/ops/config.yaml");
+			expect(hermesConfigFile({ HERMES_HOME: root }, home)).toBe(
+				join(root, "profiles", "work", "config.yaml"),
+			);
+			expect(hermesConfigFile({ HERMES_HOME: "/srv/h/profiles/ops" }, home)).toBe(
+				"/srv/h/profiles/ops/config.yaml",
+			);
 			writeFileSync(join(root, "active_profile"), "default\n");
 			expect(hermesConfigFile({}, home)).toBe(join(root, "config.yaml"));
 			writeFileSync(join(root, "active_profile"), "gone\n");

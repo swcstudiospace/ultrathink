@@ -3,14 +3,14 @@
 /** Pure Graph-of-Thought renderer for the Omp TUI: wave columns of node cards with sub-issues dropping down beneath each card. */
 import { type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
 
-export type NodeStatus = "pending" | "running" | "done" | "fallback";
+type NodeStatus = "pending" | "running" | "done" | "fallback";
 export interface GraphIssue {
 	identifier?: string;
 	url: string;
 	/** ms timestamp the row appeared; drives the flash */
 	at?: number;
 }
-export interface GraphStepModel {
+interface GraphStepModel {
 	step: number;
 	title: string;
 	/** drop-down start (ms); undefined = already shown */
@@ -42,11 +42,11 @@ export interface GraphRenderOptions {
 	animate: boolean;
 }
 
-export const POP_MS = 450;
+const POP_MS = 450;
 export const NODE_STAGGER_MS = 90;
 export const STEP_STAGGER_MS = 70;
-export const FLASH_MS = 700;
-export const ACTIVE_MS = 4000;
+const FLASH_MS = 700;
+const ACTIVE_MS = 4000;
 
 const GAP = 5;
 const MIN_COLUMN = 22;
@@ -64,7 +64,10 @@ export function waveLayout(nodes: ReadonlyArray<{ id: string; dependsOn: string[
 			if (level.has(node.id)) continue;
 			const deps = node.dependsOn.filter((dep) => known.has(dep) && dep !== node.id);
 			if (!deps.every((dep) => level.has(dep))) continue;
-			level.set(node.id, deps.reduce((max, dep) => Math.max(max, (level.get(dep) ?? 0) + 1), 0));
+			level.set(
+				node.id,
+				deps.reduce((max, dep) => Math.max(max, (level.get(dep) ?? 0) + 1), 0),
+			);
 			progress = true;
 		}
 	}
@@ -91,7 +94,10 @@ function visibleModel(model: GraphModel, options: GraphRenderOptions): GraphNode
 		.filter((node) => node.appearedAt === undefined || now >= node.appearedAt)
 		.map((node) => ({
 			...node,
-			steps: node.steps.filter((step, index) => step.appearedAt === undefined || now >= step.appearedAt + index * STEP_STAGGER_MS),
+			steps: node.steps.filter(
+				(step, index) =>
+					step.appearedAt === undefined || now >= step.appearedAt + index * STEP_STAGGER_MS,
+			),
 		}));
 }
 
@@ -127,7 +133,9 @@ function statusText(node: GraphNodeModel, ctx: Ctx, glyphOnly: boolean): string 
 			const notion = node.notion ? ` ${p.fg("dim", "notion")}` : "";
 			if (glyphOnly) return p.fg("success", p.glyph("success"));
 			const id = node.issue?.identifier;
-			return (id ? issueLabel(node.issue, ctx) : `${p.fg("success", p.glyph("success"))} done`) + notion;
+			return (
+				(id ? issueLabel(node.issue, ctx) : `${p.fg("success", p.glyph("success"))} done`) + notion
+			);
 		}
 		case "fallback":
 			return p.fg("warning", glyphOnly ? p.glyph("warning") : `${p.glyph("warning")} fallback`);
@@ -139,7 +147,8 @@ function statusText(node: GraphNodeModel, ctx: Ctx, glyphOnly: boolean): string 
 function issueLabel(issue: GraphIssue | undefined, ctx: Ctx): string {
 	const id = issue?.identifier;
 	if (!id) return "";
-	if (ctx.animate && within(ctx.now, issue?.at, FLASH_MS)) return ctx.p.bold(ctx.p.fg("accent", id));
+	if (ctx.animate && within(ctx.now, issue?.at, FLASH_MS))
+		return ctx.p.bold(ctx.p.fg("accent", id));
 	return ctx.p.fg("customMessageLabel", id);
 }
 
@@ -152,11 +161,15 @@ function stepText(step: GraphStepModel, ctx: Ctx): string {
 
 function foldText(node: GraphNodeModel, ctx: Ctx): string {
 	const linked = node.steps.filter((step) => step.issue).length;
-	return ctx.p.fg("dim", `${ctx.ascii ? ">" : "▸"} ${node.steps.length} sub-issues${linked ? ` · ${linked} linked` : ""}`);
+	return ctx.p.fg(
+		"dim",
+		`${ctx.ascii ? ">" : "▸"} ${node.steps.length} sub-issues${linked ? ` · ${linked} linked` : ""}`,
+	);
 }
 
 function borderColor(node: GraphNodeModel, ctx: Ctx): string {
-	if ((ctx.animate && within(ctx.now, node.appearedAt, POP_MS)) || node.status === "running") return "borderAccent";
+	if ((ctx.animate && within(ctx.now, node.appearedAt, POP_MS)) || node.status === "running")
+		return "borderAccent";
 	return node.status === "done" ? "success" : "borderMuted";
 }
 
@@ -182,7 +195,11 @@ function card(node: GraphNodeModel, width: number, mode: StepMode, ctx: Ctx): st
 		(kind ? `${p.fg(color, ` ${h} `)}${p.fg("dim", kind)}` : "") +
 		p.fg(color, ` ${h.repeat(Math.max(0, room - labelWidth))}${box.topRight}`);
 
-	const rows = [top, cell(p.fg("customMessageText", node.title)), cell(statusText(node, ctx, false))];
+	const rows = [
+		top,
+		cell(p.fg("customMessageText", node.title)),
+		cell(statusText(node, ctx, false)),
+	];
 	if (node.steps.length > 0) {
 		if (mode === "all" || (mode === "active" && isActive(node, ctx.now))) {
 			node.steps.forEach((step, index) => {
@@ -192,8 +209,16 @@ function card(node: GraphNodeModel, width: number, mode: StepMode, ctx: Ctx): st
 			});
 		} else rows.push(cell(foldText(node, ctx)));
 	}
-	const deps = node.dependsOn.length > 0 ? truncateToWidth(`${h} ${ctx.ascii ? "<-" : "←"} ${node.dependsOn.join(" ")} `, room) : "";
-	rows.push(p.fg(color, `${box.bottomLeft}${deps}${h.repeat(Math.max(0, room - visibleWidth(deps)))}${box.bottomRight}`));
+	const deps =
+		node.dependsOn.length > 0
+			? truncateToWidth(`${h} ${ctx.ascii ? "<-" : "←"} ${node.dependsOn.join(" ")} `, room)
+			: "";
+	rows.push(
+		p.fg(
+			color,
+			`${box.bottomLeft}${deps}${h.repeat(Math.max(0, room - visibleWidth(deps)))}${box.bottomRight}`,
+		),
+	);
 	return rows;
 }
 
@@ -215,7 +240,13 @@ const JUNCTIONS: Record<string, string> = {
 	"1111": "┼",
 };
 
-function junction(up: boolean, down: boolean, left: boolean, right: boolean, ascii: boolean): string {
+function junction(
+	up: boolean,
+	down: boolean,
+	left: boolean,
+	right: boolean,
+	ascii: boolean,
+): string {
 	const key = [up, down, left, right].map(Number).join("");
 	if (key === "0000") return " ";
 	if (!ascii) return JUNCTIONS[key] ?? " ";
@@ -224,7 +255,12 @@ function junction(up: boolean, down: boolean, left: boolean, right: boolean, asc
 	return "+";
 }
 
-function columnLayout(nodes: GraphNodeModel[], width: number, mode: StepMode, ctx: Ctx): string[] | undefined {
+function columnLayout(
+	nodes: GraphNodeModel[],
+	width: number,
+	mode: StepMode,
+	ctx: Ctx,
+): string[] | undefined {
 	const waves = waveLayout(nodes);
 	if (waves.length === 0) return [];
 	const colWidth = Math.floor((width - (waves.length - 1) * GAP) / waves.length);
@@ -253,7 +289,8 @@ function columnLayout(nodes: GraphNodeModel[], width: number, mode: StepMode, ct
 		const c = offset + 1;
 		const sources = new Set<number>();
 		for (const [id, row] of columns[c - 1]?.titleRow ?? []) {
-			if (nodes.some((node) => (columnOf.get(node.id) ?? 0) >= c && node.dependsOn.includes(id))) sources.add(row);
+			if (nodes.some((node) => (columnOf.get(node.id) ?? 0) >= c && node.dependsOn.includes(id)))
+				sources.add(row);
 		}
 		const targets = new Map<number, GraphNodeModel>();
 		for (const [id, row] of column.titleRow) {
@@ -270,13 +307,20 @@ function columnLayout(nodes: GraphNodeModel[], width: number, mode: StepMode, ct
 			const left = sources.has(r);
 			const target = targets.get(r);
 			const bus = junction(r > lo, r < hi, left, target !== undefined, ascii);
-			const arrow = target ? p.fg(target.status === "running" ? "accent" : "borderMuted", `${h}${ascii ? ">" : "▶"}`) : "  ";
+			const arrow = target
+				? p.fg(target.status === "running" ? "accent" : "borderMuted", `${h}${ascii ? ">" : "▶"}`)
+				: "  ";
 			lines[r] = `${p.fg("borderMuted", `${left ? h.repeat(2) : "  "}${bus}`)}${arrow}`;
 		}
 		return lines;
 	});
 	return Array.from({ length: height }, (_, r) =>
-		columns.map((column, c) => `${c > 0 ? (gaps[c - 1]?.[r] ?? "") : ""}${column.rows[r] ? column.rows[r] : blank}`).join(""),
+		columns
+			.map(
+				(column, c) =>
+					`${c > 0 ? (gaps[c - 1]?.[r] ?? "") : ""}${column.rows[r] ? column.rows[r] : blank}`,
+			)
+			.join(""),
 	);
 }
 
@@ -292,14 +336,19 @@ function treeGroups(nodes: GraphNodeModel[], width: number, mode: StepMode, ctx:
 		const branch = p.fg("borderMuted", ascii ? (last ? "`-" : "|-") : last ? "└─" : "├─");
 		const rail = p.fg("borderMuted", last ? "   " : ascii ? "|  " : "│  ");
 		const issue = issueLabel(node.issue, ctx);
-		const deps = node.dependsOn.length > 0 ? p.fg("dim", ` ${ascii ? "<-" : "←"} ${node.dependsOn.join(" ")}`) : "";
+		const deps =
+			node.dependsOn.length > 0
+				? p.fg("dim", ` ${ascii ? "<-" : "←"} ${node.dependsOn.join(" ")}`)
+				: "";
 		const head = `${branch} ${statusText(node, ctx, true)} ${p.bold(p.fg("accent", node.id))} ${p.fg("customMessageText", node.title)}${issue ? ` · ${issue}` : ""}${deps}`;
 		const rows = [head];
 		if (node.steps.length > 0) {
 			if (mode === "all" || (mode === "active" && isActive(node, ctx.now))) {
 				node.steps.forEach((step, j) => {
 					const end = j === node.steps.length - 1;
-					rows.push(`${rail}${p.fg("borderMuted", ascii ? (end ? "`" : "|") : end ? "└" : "├")} ${stepText(step, ctx)}`);
+					rows.push(
+						`${rail}${p.fg("borderMuted", ascii ? (end ? "`" : "|") : end ? "└" : "├")} ${stepText(step, ctx)}`,
+					);
 				});
 			} else rows.push(`${rail}${foldText(node, ctx)}`);
 		}
@@ -307,10 +356,20 @@ function treeGroups(nodes: GraphNodeModel[], width: number, mode: StepMode, ctx:
 	});
 }
 
-export function renderGraph(model: GraphModel, theme: unknown, width: number, options: GraphRenderOptions): string[] {
+export function renderGraph(
+	model: GraphModel,
+	theme: unknown,
+	width: number,
+	options: GraphRenderOptions,
+): string[] {
 	if (width < 10 || model.nodes.length === 0) return [];
 	const p = paint(theme);
-	const ctx: Ctx = { p, ascii: p.boxChars().horizontal === "-", now: options.now, animate: options.animate };
+	const ctx: Ctx = {
+		p,
+		ascii: p.boxChars().horizontal === "-",
+		now: options.now,
+		animate: options.animate,
+	};
 	const nodes = visibleModel(model, options);
 	if (nodes.length === 0) return [];
 	const max = options.maxRows ?? Number.POSITIVE_INFINITY;

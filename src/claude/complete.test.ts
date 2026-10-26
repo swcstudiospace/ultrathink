@@ -36,7 +36,9 @@ describe("parseClaudeJson", () => {
 	});
 
 	test("throws on is_error with the result message", () => {
-		expect(() => parseClaudeJson('{"is_error":true,"result":"Not logged in"}')).toThrow("Not logged in");
+		expect(() => parseClaudeJson('{"is_error":true,"result":"Not logged in"}')).toThrow(
+			"Not logged in",
+		);
 	});
 
 	test("throws on empty or non-json output", () => {

@@ -8,7 +8,17 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { COMMAND_OVERLAY, parseFrontmatter, REPOSITORY_ROOT } from "./commands.ts";
@@ -18,11 +28,20 @@ import { CONNECTOR_TOOL_DEFINITIONS } from "./tools-connector.ts";
 const BUNDLE = join(REPOSITORY_ROOT, "plugins", "ultrathink-connector");
 const COMMANDS_DIRECTORY = join(BUNDLE, "commands");
 
-const supported = Object.entries(COMMAND_OVERLAY).filter(([, entry]) => entry.state !== "unsupported");
-const unsupported = Object.entries(COMMAND_OVERLAY).filter(([, entry]) => entry.state === "unsupported");
+const supported = Object.entries(COMMAND_OVERLAY).filter(
+	([, entry]) => entry.state !== "unsupported",
+);
+const unsupported = Object.entries(COMMAND_OVERLAY).filter(
+	([, entry]) => entry.state === "unsupported",
+);
 
 /** The tool names a plan command spells out for the client-driven path, on top of the catalog's own list. */
-const CLIENT_DRIVEN_TOOLS = ["ultrathink_pending", "ultrathink_show", "ultrathink_answer", "ultrathink_status"];
+const CLIENT_DRIVEN_TOOLS = [
+	"ultrathink_pending",
+	"ultrathink_show",
+	"ultrathink_answer",
+	"ultrathink_status",
+];
 
 function read(relative: string): string {
 	return readFileSync(join(BUNDLE, relative), "utf8");
@@ -63,9 +82,11 @@ describe("plugin bundle commands", () => {
 	test("every command body names the tools the catalog lists for it", () => {
 		for (const [name, entry] of supported) {
 			const body = read(`commands/${name}.md`);
-			for (const tool of entry.tools) expect(body, `${name} names ${tool}`).toContain(`\`${tool}\``);
+			for (const tool of entry.tools)
+				expect(body, `${name} names ${tool}`).toContain(`\`${tool}\``);
 			if (entry.tools.includes("ultrathink_plan")) {
-				for (const tool of CLIENT_DRIVEN_TOOLS) expect(body, `${name} names ${tool}`).toContain(`\`${tool}\``);
+				for (const tool of CLIENT_DRIVEN_TOOLS)
+					expect(body, `${name} names ${tool}`).toContain(`\`${tool}\``);
 			}
 			if (entry.arguments !== undefined && entry.arguments.length > 0) {
 				expect(body, `${name} reads the user's text`).toContain("$ARGUMENTS");
@@ -74,25 +95,38 @@ describe("plugin bundle commands", () => {
 	});
 
 	test("a command only names tools of its own catalog entry", () => {
-		const known = [...Object.values(COMMAND_OVERLAY).flatMap((entry) => entry.tools), ...CLIENT_DRIVEN_TOOLS];
+		const known = [
+			...Object.values(COMMAND_OVERLAY).flatMap((entry) => entry.tools),
+			...CLIENT_DRIVEN_TOOLS,
+		];
 		for (const [name, entry] of supported) {
 			// The client-driven plan flow also draws the card with ultrathink_graph (CLIENT_GRAPH_RULE); the overlay lists the entry tools only.
-			const allowed = entry.tools.includes("ultrathink_plan") ? [...entry.tools, ...CLIENT_DRIVEN_TOOLS, "ultrathink_graph"] : entry.tools;
+			const allowed = entry.tools.includes("ultrathink_plan")
+				? [...entry.tools, ...CLIENT_DRIVEN_TOOLS, "ultrathink_graph"]
+				: entry.tools;
 			for (const tool of read(`commands/${name}.md`).match(/ultrathink_[a-z]+/g) ?? []) {
 				expect(known, `${name} mentions the unknown tool ${tool}`).toContain(tool);
-				expect(allowed, `${name} mentions ${tool}, which its catalog entry does not list`).toContain(tool);
+				expect(
+					allowed,
+					`${name} mentions ${tool}, which its catalog entry does not list`,
+				).toContain(tool);
 			}
 		}
 	});
 
 	test("every statement of how /ultrathink-last resolves the newest planned session agrees", () => {
 		expect(read("commands/ultrathink-last.md")).toContain("`ultrathink_graph` with no arguments");
-		expect(read("skills/ultrathink-connector/SKILL.md")).toContain("`ultrathink_graph` with no arguments");
+		expect(read("skills/ultrathink-connector/SKILL.md")).toContain(
+			"`ultrathink_graph` with no arguments",
+		);
 		const rendered = renderPrompt("ultrathink-last", {});
 		if (!rendered.ok) throw new Error("expected the ultrathink-last prompt");
 		const promptText = rendered.messages.map((message) => message.content.text).join("\n");
 		expect(promptText).toContain("ultrathink_graph with no arguments");
-		const routing = readFileSync(join(REPOSITORY_ROOT, "services", "ultrathink", "mcp", "mcp.ts"), "utf8");
+		const routing = readFileSync(
+			join(REPOSITORY_ROOT, "services", "ultrathink", "mcp", "mcp.ts"),
+			"utf8",
+		);
 		expect(routing).toContain("/ultrathink-last calls ultrathink_graph with no arguments");
 		const graphTool = CONNECTOR_TOOL_DEFINITIONS.find((tool) => tool.name === "ultrathink_graph");
 		expect(graphTool?.description).toContain("/ultrathink-last");
@@ -153,8 +187,16 @@ describe("plugin bundle manifest and connector", () => {
 				writeFileSync(join(copy, "skills", "ultrathink-connector", ".hidden"), "x\n");
 				writeFileSync(join(copy, "skills", "ultrathink-connector", "skill.test.ts"), "x\n");
 
-				const build = Bun.spawn(["sh", "package.sh"], { cwd: copy, stdout: "pipe", stderr: "pipe" });
-				const [built, failure, code] = await Promise.all([new Response(build.stdout).text(), new Response(build.stderr).text(), build.exited]);
+				const build = Bun.spawn(["sh", "package.sh"], {
+					cwd: copy,
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const [built, failure, code] = await Promise.all([
+					new Response(build.stdout).text(),
+					new Response(build.stderr).text(),
+					build.exited,
+				]);
 				expect(code, failure).toBe(0);
 				const archive = built.trim().split("\n").at(-1) ?? "";
 				expect(archive).toMatch(/ultrathink-connector-\d+\.\d+\.\d+\.zip$/);
@@ -162,9 +204,18 @@ describe("plugin bundle manifest and connector", () => {
 				const lister =
 					Bun.which("unzip") !== null
 						? ["unzip", "-Z1", archive]
-						: ["python3", "-c", "import sys, zipfile; print('\\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))", archive];
+						: [
+								"python3",
+								"-c",
+								"import sys, zipfile; print('\\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))",
+								archive,
+							];
 				const list = Bun.spawn(lister, { stdout: "pipe", stderr: "pipe" });
-				const [listed, listFailure, listCode] = await Promise.all([new Response(list.stdout).text(), new Response(list.stderr).text(), list.exited]);
+				const [listed, listFailure, listCode] = await Promise.all([
+					new Response(list.stdout).text(),
+					new Response(list.stderr).text(),
+					list.exited,
+				]);
 				expect(listCode, listFailure).toBe(0);
 				const expected = [
 					".claude-plugin/plugin.json",
@@ -186,9 +237,21 @@ describe("plugin bundle manifest and connector", () => {
 	);
 
 	// The python3 fallback must keep the directory prefixes; `python3 -m zipfile -c` stores bare basenames.
-	const noZipTools = ["dirname", "mkdir", "rm", "find", "sort", "grep", "sed", "printf", "cat", "python3"];
+	const noZipTools = [
+		"dirname",
+		"mkdir",
+		"rm",
+		"find",
+		"sort",
+		"grep",
+		"sed",
+		"printf",
+		"cat",
+		"python3",
+	];
 	const noZipPaths = noZipTools.map((tool) => [tool, Bun.which(tool)] as const);
-	const canRunWithoutZip = noZipPaths.every(([, found]) => found !== null) && Bun.which("python3") !== null;
+	const canRunWithoutZip =
+		noZipPaths.every(([, found]) => found !== null) && Bun.which("python3") !== null;
 	test.skipIf(!canRunWithoutZip)(
 		"package.sh without zip(1) still keeps the .claude-plugin/, commands/ and skills/ prefixes (skipped without python3 or the POSIX tools it calls)",
 		async () => {
@@ -202,18 +265,39 @@ describe("plugin bundle manifest and connector", () => {
 				}
 				expect(existsSync(join(tools, "zip"))).toBe(false);
 
-				const build = Bun.spawn(["/bin/sh", "package.sh"], { cwd: copy, env: { PATH: tools }, stdout: "pipe", stderr: "pipe" });
-				const [built, failure, code] = await Promise.all([new Response(build.stdout).text(), new Response(build.stderr).text(), build.exited]);
+				const build = Bun.spawn(["/bin/sh", "package.sh"], {
+					cwd: copy,
+					env: { PATH: tools },
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const [built, failure, code] = await Promise.all([
+					new Response(build.stdout).text(),
+					new Response(build.stderr).text(),
+					build.exited,
+				]);
 				expect(code, failure).toBe(0);
 				const archive = built.trim().split("\n").at(-1) ?? "";
 				expect(archive).toMatch(/ultrathink-connector-\d+\.\d+\.\d+\.zip$/);
 
 				const python = Bun.which("python3") ?? "python3";
-				const list = Bun.spawn([python, "-c", "import sys, zipfile; print('\\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))", archive], {
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				const [listed, listFailure, listCode] = await Promise.all([new Response(list.stdout).text(), new Response(list.stderr).text(), list.exited]);
+				const list = Bun.spawn(
+					[
+						python,
+						"-c",
+						"import sys, zipfile; print('\\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))",
+						archive,
+					],
+					{
+						stdout: "pipe",
+						stderr: "pipe",
+					},
+				);
+				const [listed, listFailure, listCode] = await Promise.all([
+					new Response(list.stdout).text(),
+					new Response(list.stderr).text(),
+					list.exited,
+				]);
 				expect(listCode, listFailure).toBe(0);
 				const expected = [
 					".claude-plugin/plugin.json",
@@ -258,7 +342,8 @@ describe("plugin bundle skill", () => {
 		const text = skill();
 		for (const [name] of supported) expect(text, name).toContain(`/${name}`);
 		const tools = Object.values(COMMAND_OVERLAY).flatMap((entry) => entry.tools);
-		for (const tool of [...tools, ...CLIENT_DRIVEN_TOOLS, "ultrathink_command"]) expect(text, tool).toContain(tool);
+		for (const tool of [...tools, ...CLIENT_DRIVEN_TOOLS, "ultrathink_command"])
+			expect(text, tool).toContain(tool);
 	});
 
 	test("the skill marks what is not verified", () => {
@@ -281,7 +366,8 @@ describe("plugin bundle hygiene", () => {
 
 	test("the bundle has no test files, no archive and no executable hooks or binaries", () => {
 		for (const file of bundleFiles()) expect(file, file).not.toMatch(/\.test\./);
-		for (const absent of ["bin", "hooks", "agents"]) expect(existsSync(join(BUNDLE, absent)), absent).toBe(false);
+		for (const absent of ["bin", "hooks", "agents"])
+			expect(existsSync(join(BUNDLE, absent)), absent).toBe(false);
 	});
 
 	test("the root plugin does not reference the bundle and its manifest stays the root one", () => {
@@ -291,7 +377,9 @@ describe("plugin bundle hygiene", () => {
 		expect(JSON.parse(rootManifest)).toMatchObject({ name: "ultrathink" });
 		expect(existsSync(join(REPOSITORY_ROOT, ".mcp.json"))).toBe(false);
 		for (const file of readdirSync(join(REPOSITORY_ROOT, "commands"))) {
-			expect(file, "bundle commands live in the bundle, not in the root plugin").not.toBe("ultrathink-connector.md");
+			expect(file, "bundle commands live in the bundle, not in the root plugin").not.toBe(
+				"ultrathink-connector.md",
+			);
 		}
 	});
 });

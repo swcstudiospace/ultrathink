@@ -58,7 +58,7 @@ export type Acquire =
 	| { ok: true; release: (outcome: ReleaseOutcome) => void }
 	| { ok: false; state: "open"; retryAfterMs: number };
 
-export interface CircuitBreakerSnapshot {
+interface CircuitBreakerSnapshot {
 	state: BreakerState;
 	/**
 	 * Failures in the current window while closed; frozen at the count that
@@ -96,7 +96,9 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 	const windowMs = requirePositiveInteger("windowMs", options.windowMs);
 	const openMs = requirePositiveInteger("openMs", options.openMs);
 	const halfOpenMaxCalls =
-		options.halfOpenMaxCalls === undefined ? 1 : requirePositiveInteger("halfOpenMaxCalls", options.halfOpenMaxCalls);
+		options.halfOpenMaxCalls === undefined
+			? 1
+			: requirePositiveInteger("halfOpenMaxCalls", options.halfOpenMaxCalls);
 	if (options.now !== undefined && typeof options.now !== "function") {
 		throw new RangeError("circuit breaker: now must be a function");
 	}
@@ -125,7 +127,7 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 			try {
 				onTransition(from, to);
 			} catch {
-				// Hooks must not affect the request path.
+				// reason: Hooks must not affect the request path.
 			}
 		}
 	}
@@ -201,7 +203,11 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 				const t = now();
 				const elapsed = t - (openedAt as number);
 				if (elapsed < openMs) {
-					return { ok: false, state: "open", retryAfterMs: Math.min(openMs, Math.max(1, openMs - elapsed)) };
+					return {
+						ok: false,
+						state: "open",
+						retryAfterMs: Math.min(openMs, Math.max(1, openMs - elapsed)),
+					};
 				}
 				transition("half_open");
 			}

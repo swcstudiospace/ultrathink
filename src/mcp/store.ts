@@ -34,7 +34,13 @@ export interface OAuthTokens {
 
 export type Credential =
 	| { kind: "api_key"; apiKey: string; updatedAt: number }
-	| { kind: "oauth"; client: OAuthClient; tokens?: OAuthTokens; needsLogin?: string; updatedAt: number };
+	| {
+			kind: "oauth";
+			client: OAuthClient;
+			tokens?: OAuthTokens;
+			needsLogin?: string;
+			updatedAt: number;
+	  };
 
 export interface CredentialStore {
 	version: 1;
@@ -50,11 +56,16 @@ export function storePath(env: Record<string, string | undefined> = process.env)
 export function readStore(path: string): CredentialStore {
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CredentialStore>;
-		if (parsed && parsed.version === 1 && parsed.providers && typeof parsed.providers === "object") {
+		if (
+			parsed &&
+			parsed.version === 1 &&
+			parsed.providers &&
+			typeof parsed.providers === "object"
+		) {
 			return { version: 1, providers: parsed.providers };
 		}
 	} catch {
-		// missing or corrupt: fall through
+		// reason: a missing or corrupt store reads as empty, so a corrupt credential file looks like no credentials. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
 	return { version: 1, providers: {} };
 }
@@ -96,22 +107,44 @@ function breakStaleLock(lock: string, owner: string | undefined, mtimeMs: number
 			rmSync(aside, { recursive: true, force: true });
 		}
 	} catch {
-		// already gone
+		// reason: already gone
 	}
+}
+
+/** The interval port the lock heartbeat runs on. */
+export interface LockTimers {
+	setInterval(fn: () => void, ms: number): unknown;
+	clearInterval(handle: unknown): void;
 }
 
 export async function withStoreLock<T>(
 	path: string,
 	fn: () => Promise<T>,
-	opts: { staleMs?: number; waitMs?: number; pollMs?: number } = {},
+	opts: {
+		staleMs?: number;
+		waitMs?: number;
+		pollMs?: number;
+		/** Clock for the lock deadline, staleness and heartbeat stamps; defaults to `Date.now`. */
+		now?: () => number;
+		/** Wait between acquire attempts; defaults to `Bun.sleep`. */
+		sleep?: (ms: number) => Promise<void>;
+		/** Interval port for the heartbeat that keeps a held lock fresh; defaults to the platform timers. */
+		timers?: LockTimers;
+	} = {},
 ): Promise<T> {
 	const staleMs = opts.staleMs ?? 60_000;
 	const waitMs = opts.waitMs ?? 30_000;
 	const pollMs = opts.pollMs ?? 100;
+	const now = opts.now ?? Date.now;
+	const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const timers: LockTimers = opts.timers ?? {
+		setInterval: (fn, ms) => setInterval(fn, ms),
+		clearInterval: (handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]),
+	};
 	const lock = `${path}.lock`;
 	const nonce = randomBytes(16).toString("hex");
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	const deadline = Date.now() + waitMs;
+	const deadline = now() + waitMs;
 	for (;;) {
 		try {
 			mkdirSync(lock);
@@ -123,25 +156,26 @@ export async function withStoreLock<T>(
 		let judged: { owner: string | undefined; mtimeMs: number } | undefined;
 		try {
 			const mtimeMs = statSync(lock).mtimeMs;
-			if (Date.now() - mtimeMs > staleMs) judged = { owner: readOwner(lock), mtimeMs };
+			if (now() - mtimeMs > staleMs) judged = { owner: readOwner(lock), mtimeMs };
 		} catch {
+			// reason: the lock vanished between the mkdir and the stat; the loop retries the acquire
 			continue;
 		}
 		if (judged) {
 			breakStaleLock(lock, judged.owner, judged.mtimeMs);
 			continue;
 		}
-		if (Date.now() >= deadline) throw new Error(`timed out waiting for credential store lock ${lock}`);
-		await Bun.sleep(pollMs);
+		if (now() >= deadline) throw new Error(`timed out waiting for credential store lock ${lock}`);
+		await sleep(pollMs);
 	}
-	const heartbeat = setInterval(
+	const heartbeat = timers.setInterval(
 		() => {
 			if (readOwner(lock) !== nonce) return;
 			try {
-				const now = new Date();
-				utimesSync(lock, now, now);
+				const stamp = new Date(now());
+				utimesSync(lock, stamp, stamp);
 			} catch {
-				// lock vanished; release below handles it
+				// reason: lock vanished; release below handles it
 			}
 		},
 		Math.max(1, Math.floor(staleMs / 3)),
@@ -149,7 +183,7 @@ export async function withStoreLock<T>(
 	try {
 		return await fn();
 	} finally {
-		clearInterval(heartbeat);
+		timers.clearInterval(heartbeat);
 		if (readOwner(lock) === nonce) rmSync(lock, { recursive: true, force: true });
 	}
 }

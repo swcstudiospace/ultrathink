@@ -92,7 +92,11 @@ function randomHex(bytes: number): string {
  * requests are recorded by downstream collectors.
  */
 export function newTraceContext(sampled = true): TraceContext {
-	return { traceId: randomHex(TRACE_ID_LENGTH / 2), spanId: randomHex(SPAN_ID_LENGTH / 2), sampled };
+	return {
+		traceId: randomHex(TRACE_ID_LENGTH / 2),
+		spanId: randomHex(SPAN_ID_LENGTH / 2),
+		sampled,
+	};
 }
 
 /**
@@ -123,7 +127,10 @@ export function formatTraceparent(ctx: TraceContext): string {
  * call `childSpan` before forwarding `traceparent` upstream so the service's
  * own work gets its own span-id. Never throws.
  */
-export function traceContextFor(header: string | null | undefined): { ctx: TraceContext; inherited: boolean } {
+export function traceContextFor(header: string | null | undefined): {
+	ctx: TraceContext;
+	inherited: boolean;
+} {
 	const parent = parseTraceparent(header);
 	if (parent === null) return { ctx: newTraceContext(true), inherited: false };
 	return { ctx: parent, inherited: true };

@@ -1,22 +1,52 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { MAX_RESPONSE_CHARS, requestJson } from "./http.ts";
 
 function respond(body: string, status = 200): typeof fetch {
 	return (async () => new Response(body, { status })) as unknown as typeof fetch;
 }
 
+/** Controller-driven AbortSignal.timeout: each request budget requestJson arms is a signal the test aborts. */
+type ControlledTimeouts = { armed: AbortController[]; restore: () => void };
+
+function controlledTimeouts(): ControlledTimeouts {
+	const armed: AbortController[] = [];
+	const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+		const controller = new AbortController();
+		armed.push(controller);
+		return controller.signal;
+	});
+	return { armed, restore: () => spy.mockRestore() };
+}
+
 describe("requestJson", () => {
+	let timeouts: ControlledTimeouts = { armed: [], restore: () => undefined };
+	beforeEach(() => {
+		timeouts = controlledTimeouts();
+	});
+	afterEach(() => {
+		timeouts.restore();
+	});
+
 	test("returns status, parsed JSON and raw text", async () => {
-		const out = await requestJson("https://svc.test/x", { timeoutMs: 1000, fetch: respond('{"a":1}', 201) });
+		const out = await requestJson("https://svc.test/x", {
+			timeoutMs: 1000,
+			fetch: respond('{"a":1}', 201),
+		});
 		expect(out).toMatchObject({ kind: "response", status: 201, json: { a: 1 }, text: '{"a":1}' });
 	});
 
 	test("keeps the raw text and leaves json undefined for a non-JSON or empty body", async () => {
-		const html = await requestJson("https://svc.test/x", { timeoutMs: 1000, fetch: respond("<html>", 502) });
+		const html = await requestJson("https://svc.test/x", {
+			timeoutMs: 1000,
+			fetch: respond("<html>", 502),
+		});
 		expect(html).toMatchObject({ kind: "response", status: 502, json: undefined, text: "<html>" });
-		const empty = await requestJson("https://svc.test/x", { timeoutMs: 1000, fetch: respond("", 204) });
+		const empty = await requestJson("https://svc.test/x", {
+			timeoutMs: 1000,
+			fetch: respond("", 204),
+		});
 		expect(empty).toMatchObject({ kind: "response", status: 204, json: undefined, text: "" });
 	});
 
@@ -26,7 +56,13 @@ describe("requestJson", () => {
 			seen = { url, init };
 			return new Response("{}");
 		}) as unknown as typeof fetch;
-		await requestJson("https://svc.test/p", { method: "PUT", headers: { Authorization: "Bearer k" }, body: { q: 1 }, timeoutMs: 1000, fetch: spy });
+		await requestJson("https://svc.test/p", {
+			method: "PUT",
+			headers: { Authorization: "Bearer k" },
+			body: { q: 1 },
+			timeoutMs: 1000,
+			fetch: spy,
+		});
 		const headers = seen?.init.headers as Record<string, string>;
 		expect(seen?.url).toBe("https://svc.test/p");
 		expect(seen?.init.method).toBe("PUT");
@@ -49,13 +85,30 @@ describe("requestJson", () => {
 	});
 
 	test("times out even when fetch ignores the abort signal", async () => {
-		const hang = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+		const hang = (() => {
+			// The budget fires while the fetch is in flight; this fetch never observes its signal.
+			timeouts.armed.at(-1)?.abort(new DOMException("timed out", "TimeoutError"));
+			return new Promise<Response>(() => {
+				// reason: the request must hang; the timeout under test ends it
+			});
+		}) as unknown as typeof fetch;
 		const out = await requestJson("https://svc.test/slow", { timeoutMs: 30, fetch: hang });
 		expect(out.kind).toBe("timeout");
 	});
 
 	test("times out while the body is still streaming", async () => {
-		const stall = (async () => new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => {}) }))) as unknown as typeof fetch;
+		const stall = (async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					pull: () => {
+						// The budget fires while the body is being read; the stream never produces a chunk.
+						timeouts.armed.at(-1)?.abort(new DOMException("timed out", "TimeoutError"));
+						return new Promise<void>(() => {
+							// reason: the stream stalls on purpose; the timeout under test ends it
+						});
+					},
+				}),
+			)) as unknown as typeof fetch;
 		const out = await requestJson("https://svc.test/slow-body", { timeoutMs: 30, fetch: stall });
 		expect(out.kind).toBe("timeout");
 	});
@@ -75,14 +128,24 @@ describe("requestJson", () => {
 
 	test("rejects with the abort error when the caller aborts", async () => {
 		const controller = new AbortController();
-		const hang = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
-		const pending = requestJson("https://svc.test/x", { timeoutMs: 5000, fetch: hang, signal: controller.signal });
+		const hang = (() =>
+			new Promise<Response>(() => {
+				// reason: the request must hang; the abort under test ends it
+			})) as unknown as typeof fetch;
+		const pending = requestJson("https://svc.test/x", {
+			timeoutMs: 5000,
+			fetch: hang,
+			signal: controller.signal,
+		});
 		controller.abort();
 		await expect(pending).rejects.toBeDefined();
 	});
 
 	test("refuses an oversized response", async () => {
-		const out = await requestJson("https://svc.test/big", { timeoutMs: 1000, fetch: respond("x".repeat(MAX_RESPONSE_CHARS + 1)) });
+		const out = await requestJson("https://svc.test/big", {
+			timeoutMs: 1000,
+			fetch: respond("x".repeat(MAX_RESPONSE_CHARS + 1)),
+		});
 		expect(out).toMatchObject({ kind: "network", message: "response too large" });
 	});
 
@@ -101,10 +164,11 @@ describe("requestJson", () => {
 					},
 				}),
 			)) as unknown as typeof fetch;
-		const started = Date.now();
-		const out = await requestJson("https://svc.test/endless", { timeoutMs: 10_000, fetch: endless });
+		const out = await requestJson("https://svc.test/endless", {
+			timeoutMs: 10_000,
+			fetch: endless,
+		});
 		expect(out).toMatchObject({ kind: "network", message: "response too large" });
-		expect(Date.now() - started).toBeLessThan(5000);
 		expect(cancelled).toBe(true);
 		expect(pulled).toBeLessThan(MAX_RESPONSE_CHARS / (1024 * 1024) + 3);
 	});

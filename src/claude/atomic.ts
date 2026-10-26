@@ -8,11 +8,24 @@
  * never block a prompt; a lock that cannot be taken in time degrades to running the callback unlocked.
  */
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmdirSync,
+	statSync,
+	unlinkSync,
+	writeSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 /** The synchronous file calls `writeFileAtomic` needs, so a test can make one of them fail. */
-export interface AtomicFs {
+interface AtomicFs {
 	mkdirSync(path: string, options: { recursive: true; mode: number }): unknown;
 	openSync(path: string, flags: string, mode: number): number;
 	writeSync(fd: number, data: Uint8Array): number;
@@ -31,7 +44,15 @@ export interface AtomicWriteOptions {
 	fs?: Partial<AtomicFs>;
 }
 
-const NODE_FS: AtomicFs = { mkdirSync, openSync, writeSync, fsyncSync, closeSync, renameSync, unlinkSync };
+const NODE_FS: AtomicFs = {
+	mkdirSync,
+	openSync,
+	writeSync,
+	fsyncSync,
+	closeSync,
+	renameSync,
+	unlinkSync,
+};
 
 const TEXT = new TextEncoder();
 
@@ -40,7 +61,11 @@ const TEXT = new TextEncoder();
  * target, so a reader sees the old file or the new one and never a partial one. On failure the temporary file is
  * removed and the original error is rethrown.
  */
-export function writeFileAtomic(path: string, data: string | Uint8Array, options: AtomicWriteOptions = {}): void {
+export function writeFileAtomic(
+	path: string,
+	data: string | Uint8Array,
+	options: AtomicWriteOptions = {},
+): void {
 	const fs: AtomicFs = { ...NODE_FS, ...options.fs };
 	const dir = dirname(path);
 	const tmp = join(dir, `.${basename(path)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
@@ -61,13 +86,13 @@ export function writeFileAtomic(path: string, data: string | Uint8Array, options
 			try {
 				fs.closeSync(fd);
 			} catch {
-				// the original error is the one to report
+				// reason: the original error is the one to report
 			}
 		}
 		try {
 			fs.unlinkSync(tmp);
 		} catch {
-			// the temporary file may not exist yet
+			// reason: the temporary file may not exist yet
 		}
 		throw error;
 	}
@@ -93,8 +118,13 @@ function blockingSleep(ms: number): void {
 	Atomics.wait(SLEEP_WORD, 0, 0, ms);
 }
 
-function errorCode(error: unknown): string | undefined {
-	return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+export function errorCode(error: unknown): string | undefined {
+	return typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		typeof error.code === "string"
+		? error.code
+		: undefined;
 }
 
 function discardGuard(path: string, owner: string): void {
@@ -106,7 +136,7 @@ function discardGuard(path: string, owner: string): void {
 	try {
 		rmdirSync(path);
 	} catch {
-		// A successor may already have atomically replaced the now-empty directory.
+		// reason: A successor may already have atomically replaced the now-empty directory.
 	}
 }
 
@@ -129,7 +159,7 @@ function reclaimDeadGuard(path: string): void {
 		if (owners.length !== 1 || !owner || !deadGuardOwner(owner)) return;
 		discardGuard(path, owner);
 	} catch {
-		// An unverifiable owner remains held.
+		// reason: An unverifiable owner remains held.
 	}
 }
 
@@ -182,7 +212,8 @@ export function withLockMutation<T>(lockPath: string, fn: () => T): T | undefine
 			try {
 				renameSync(candidate, guard);
 			} catch (retryError) {
-				if (errorCode(retryError) === "EEXIST" || errorCode(retryError) === "ENOTEMPTY") return undefined;
+				if (errorCode(retryError) === "EEXIST" || errorCode(retryError) === "ENOTEMPTY")
+					return undefined;
 				throw retryError;
 			}
 		}
@@ -190,12 +221,24 @@ export function withLockMutation<T>(lockPath: string, fn: () => T): T | undefine
 		return fn();
 	} finally {
 		if (fd !== undefined) {
-			try { closeSync(fd); } catch { /* best effort after a preparation error */ }
+			try {
+				closeSync(fd);
+			} catch {
+				/* reason: best effort after a preparation error */
+			}
 		}
 		if (claimed) discardGuard(guard, owner);
 		else if (prepared) {
-			try { unlinkSync(join(candidate, owner)); } catch { /* preparation may not have reached the file */ }
-			try { rmdirSync(candidate); } catch { /* orphan pruning can reclaim the dead owner's prepared candidate */ }
+			try {
+				unlinkSync(join(candidate, owner));
+			} catch {
+				/* reason: preparation may not have reached the file */
+			}
+			try {
+				rmdirSync(candidate);
+			} catch {
+				/* reason: orphan pruning can reclaim the dead owner's prepared candidate */
+			}
 		}
 	}
 }
@@ -231,7 +274,11 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 					try {
 						writeSync(fd, token);
 					} catch (error) {
-						try { unlinkSync(lockPath); } catch { /* best effort */ }
+						try {
+							unlinkSync(lockPath);
+						} catch {
+							/* reason: the lock file may already be gone; the original write error is rethrown */
+						}
 						throw error;
 					} finally {
 						closeSync(fd);
@@ -243,14 +290,18 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 				return reclaimStale(lockPath, staleMs, now) !== "fresh";
 			});
 		} catch (error) {
-			options.log?.(`lock unavailable for ${basename(lockPath)}, writing unlocked: ${error instanceof Error ? error.message : String(error)}`);
+			options.log?.(
+				`lock unavailable for ${basename(lockPath)}, writing unlocked: ${error instanceof Error ? error.message : String(error)}`,
+			);
 			return undefined;
 		}
 		if (typeof retry === "string") return retry;
 		// Reclaimed names retry immediately, but every retry takes the same mutation guard.
 		if (retry === true && attempt < 1_000) continue;
 		if (now() - started >= timeoutMs) {
-			options.log?.(`lock ${basename(lockPath)} still held after ${timeoutMs} ms, writing unlocked`);
+			options.log?.(
+				`lock ${basename(lockPath)} still held after ${timeoutMs} ms, writing unlocked`,
+			);
 			return undefined;
 		}
 		sleep(pollMs + Math.floor(Math.random() * (pollMs + 1)));
@@ -263,14 +314,17 @@ function release(lockPath: string, token: string, options: LockOptions): void {
 	const started = now();
 	for (let attempt = 0; attempt < 1_000; attempt++) {
 		try {
-			if (withLockMutation(lockPath, () => {
-				try {
-					if (readFileSync(lockPath, "utf8") === token) unlinkSync(lockPath);
-				} catch {
-					// The lock is already gone or no longer ours.
-				}
-				return true;
-			})) return;
+			if (
+				withLockMutation(lockPath, () => {
+					try {
+						if (readFileSync(lockPath, "utf8") === token) unlinkSync(lockPath);
+					} catch {
+						// reason: The lock is already gone or no longer ours.
+					}
+					return true;
+				})
+			)
+				return;
 		} catch {
 			return;
 		}

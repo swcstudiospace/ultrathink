@@ -27,12 +27,18 @@ export function resolveRagflowKey(
 	env: NodeJS.ProcessEnv,
 ): { key: string; source: RagflowKeySource } | undefined {
 	try {
-		const providers = readStore(storePath ?? defaultStorePath(env)).providers as Record<string, unknown>;
+		const providers = readStore(storePath ?? defaultStorePath(env)).providers as Record<
+			string,
+			unknown
+		>;
 		const credential = providers.ragflow as { kind?: unknown; apiKey?: unknown } | undefined;
-		const stored = credential?.kind === "api_key" && typeof credential.apiKey === "string" ? credential.apiKey.trim() : "";
+		const stored =
+			credential?.kind === "api_key" && typeof credential.apiKey === "string"
+				? credential.apiKey.trim()
+				: "";
 		if (stored) return { key: stored, source: "store" };
 	} catch {
-		// unreadable store: fall back to the environment
+		// reason: an unreadable store falls back to the environment, so the store failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
 	const fromEnv = env[RAGFLOW_KEY_ENV]?.trim();
 	return fromEnv ? { key: fromEnv, source: RAGFLOW_KEY_ENV } : undefined;
@@ -42,17 +48,36 @@ export function resolveRagflowKey(
 export function resolveRagflow(
 	config: RagflowConfig,
 	env: NodeJS.ProcessEnv,
-	deps: { storePath?: string; fetch?: typeof fetch; signal?: AbortSignal; gateway?: GatewayConfig } = {},
+	deps: {
+		storePath?: string;
+		fetch?: typeof fetch;
+		signal?: AbortSignal;
+		gateway?: GatewayConfig;
+	} = {},
 ): RagflowResolution {
-	if (env[RAGFLOW_KILL_ENV]?.trim() === "0") return { readiness: { state: "off", reason: "killed" } };
+	if (env[RAGFLOW_KILL_ENV]?.trim() === "0")
+		return { readiness: { state: "off", reason: "killed" } };
 	if (!config.enabled) return { readiness: { state: "off", reason: "disabled" } };
 	if (serviceBackend(config.backend, env, RAGFLOW_BACKEND_ENV) === "gateway") {
 		const gatewayConfig = deps.gateway ?? { url: "", seat: "lead", timeoutMs: config.timeoutMs };
 		const resolved = resolveGateway(gatewayConfig, env, { storePath: deps.storePath });
-		if (!resolved.ok) return { readiness: { state: "unready", reason: resolved.reason === "no-token" ? "no-token" : resolved.reason, detail: resolved.detail } };
+		if (!resolved.ok)
+			return {
+				readiness: {
+					state: "unready",
+					reason: resolved.reason === "no-token" ? "no-token" : resolved.reason,
+					detail: resolved.detail,
+				},
+			};
 		const { gateway } = resolved;
 		return {
-			readiness: { state: "ready", backend: "gateway", url: gateway.url, seat: gateway.seat, tokenSource: gateway.tokenSource },
+			readiness: {
+				state: "ready",
+				backend: "gateway",
+				url: gateway.url,
+				seat: gateway.seat,
+				tokenSource: gateway.tokenSource,
+			},
 			client: createGatewayRagflowClient({ ...gateway, fetch: deps.fetch, signal: deps.signal }),
 		};
 	}
@@ -74,21 +99,37 @@ export function resolveRagflow(
 }
 
 /** One line for `ultrathink status`; starts with "RAGFlow: ". Never contains the key. */
-export function ragflowStatusLine(config: RagflowConfig, env: NodeJS.ProcessEnv, storePath?: string, gateway?: GatewayConfig): string {
+export function ragflowStatusLine(
+	config: RagflowConfig,
+	env: NodeJS.ProcessEnv,
+	storePath?: string,
+	gateway?: GatewayConfig,
+): string {
 	const { readiness } = resolveRagflow(config, env, { storePath, gateway });
 	if (readiness.state === "ready" && "backend" in readiness) {
 		return `RAGFlow: gateway · ${gatewayStatus({ ok: true, gateway: { url: readiness.url, seat: readiness.seat, token: "", tokenSource: readiness.tokenSource, timeoutMs: config.timeoutMs } })}`;
 	}
-	if (readiness.state === "unready" && serviceBackend(config.backend, env, RAGFLOW_BACKEND_ENV) === "gateway") {
-		const resolved = resolveGateway(gateway ?? { url: "", seat: "lead", timeoutMs: config.timeoutMs }, env, { storePath });
+	if (
+		readiness.state === "unready" &&
+		serviceBackend(config.backend, env, RAGFLOW_BACKEND_ENV) === "gateway"
+	) {
+		const resolved = resolveGateway(
+			gateway ?? { url: "", seat: "lead", timeoutMs: config.timeoutMs },
+			env,
+			{ storePath },
+		);
 		return `RAGFlow: gateway · ${gatewayStatus(resolved)}`;
 	}
 	if (readiness.state === "off") {
-		return readiness.reason === "killed" ? `RAGFlow: off (${RAGFLOW_KILL_ENV}=0)` : "RAGFlow: off (opt-in: set ragflow.enabled)";
+		return readiness.reason === "killed"
+			? `RAGFlow: off (${RAGFLOW_KILL_ENV}=0)`
+			: "RAGFlow: off (opt-in: set ragflow.enabled)";
 	}
 	if (readiness.state === "unready") {
-		if (readiness.reason === "no-url") return `RAGFlow: on · no URL (set ragflow.url or ${RAGFLOW_URL_ENV})`;
-		if (readiness.reason === "bad-url") return `RAGFlow: on · bad URL (${readiness.detail ?? "refused"})`;
+		if (readiness.reason === "no-url")
+			return `RAGFlow: on · no URL (set ragflow.url or ${RAGFLOW_URL_ENV})`;
+		if (readiness.reason === "bad-url")
+			return `RAGFlow: on · bad URL (${readiness.detail ?? "refused"})`;
 		return `RAGFlow: on · no key (run bin/ultrathink-mcp auth set-key ragflow --stdin, or set ${RAGFLOW_KEY_ENV})`;
 	}
 	const pinned = config.datasetIds.length;

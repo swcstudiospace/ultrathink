@@ -65,7 +65,9 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 function listTemplates(args: string[], deps: CliDeps): number {
 	if (args.length > 0) throw new UsageError("templates takes no arguments");
 	for (const template of loadTemplates(deps.templatesDir)) {
-		deps.stdout(`${template.id}\t${template.failureMode}\t${template.kind}\t${template.hypotheses.length}\n`);
+		deps.stdout(
+			`${template.id}\t${template.failureMode}\t${template.kind}\t${template.hypotheses.length}\n`,
+		);
 	}
 	return 0;
 }
@@ -73,10 +75,12 @@ function listTemplates(args: string[], deps: CliDeps): number {
 async function runCommand(args: string[], deps: CliDeps): Promise<number> {
 	const { positional, flags } = parseArgs(args, RUN_FLAGS);
 	const [id, ...extra] = positional;
-	if (id === undefined || extra.length > 0) throw new UsageError("run needs exactly one template id");
+	if (id === undefined || extra.length > 0)
+		throw new UsageError("run needs exactly one template id");
 
 	const driver = flags.get("--driver");
-	if (driver !== "inprocess" && driver !== "http") throw new UsageError("--driver must be inprocess or http");
+	if (driver !== "inprocess" && driver !== "http")
+		throw new UsageError("--driver must be inprocess or http");
 	const rollbackArgv = parseRollbackArgv(flags.get("--rollback-argv"));
 	const staging = deps.env.ULTRATHINK_CHAOS_ENV === "staging";
 	const baseUrl = flags.get("--base-url");
@@ -85,7 +89,9 @@ async function runCommand(args: string[], deps: CliDeps): Promise<number> {
 		if (baseUrl === undefined) throw new UsageError("--driver http needs --base-url");
 		const host = hostOf(baseUrl);
 		if (!isLoopback(host) && !staging) {
-			throw new UsageError(`refusing to run against ${host}: a non-loopback host needs ULTRATHINK_CHAOS_ENV=staging; no request was sent`);
+			throw new UsageError(
+				`refusing to run against ${host}: a non-loopback host needs ULTRATHINK_CHAOS_ENV=staging; no request was sent`,
+			);
 		}
 	}
 	const template = findTemplate(id, deps);
@@ -93,7 +99,9 @@ async function runCommand(args: string[], deps: CliDeps): Promise<number> {
 		throw new UsageError(`${id} injects its faults in process; run it with --driver inprocess`);
 	}
 	if (template.kind === "operator" && driver !== "http") {
-		throw new UsageError(`${id} needs a human step and observes a running unit; run it with --driver http --base-url URL`);
+		throw new UsageError(
+			`${id} needs a human step and observes a running unit; run it with --driver http --base-url URL`,
+		);
 	}
 
 	const tls = readTlsFlags(flags, driver, baseUrl);
@@ -124,7 +132,9 @@ async function execute(options: ExecuteOptions): Promise<RunResult> {
 		rollbackArgv,
 		exec: deps.exec,
 		now: deps.now,
-		...(template.kind === "operator" ? { confirm: (step: string) => confirmOperatorStep(step, deps) } : {}),
+		...(template.kind === "operator"
+			? { confirm: (step: string) => confirmOperatorStep(step, deps) }
+			: {}),
 	};
 
 	if (driver === "inprocess") {
@@ -147,14 +157,17 @@ async function execute(options: ExecuteOptions): Promise<RunResult> {
 
 // The operator driver prints the step and waits for a human. It never runs the step itself.
 async function confirmOperatorStep(step: string, deps: CliDeps): Promise<void> {
-	deps.stdout(`Operator step, to be performed by hand (the runner does not execute it):\n${step}\n`);
+	deps.stdout(
+		`Operator step, to be performed by hand (the runner does not execute it):\n${step}\n`,
+	);
 	await deps.confirm(step);
 }
 
 function scoreCommand(args: string[], deps: CliDeps): number {
 	const { positional, flags } = parseArgs(args, SCORE_FLAGS);
 	const [id, ...extra] = positional;
-	if (id === undefined || extra.length > 0) throw new UsageError("score needs exactly one template id");
+	if (id === undefined || extra.length > 0)
+		throw new UsageError("score needs exactly one template id");
 
 	const { records, skipped } = readHistory(flags.get("--history") ?? deps.historyPath);
 	if (skipped > 0) deps.stderr(`skipped ${skipped} unreadable history line(s)\n`);
@@ -182,7 +195,9 @@ function printRun(result: RunResult, deps: CliDeps): void {
 			deps.stdout(`  pass ${hypothesis.id}\n`);
 		} else {
 			const observed = hypothesis.observed === undefined ? "none" : String(hypothesis.observed);
-			deps.stdout(`  fail ${hypothesis.id} (${hypothesis.reason ?? "not met"}; observed ${observed})\n`);
+			deps.stdout(
+				`  fail ${hypothesis.id} (${hypothesis.reason ?? "not met"}; observed ${observed})\n`,
+			);
 		}
 	}
 }
@@ -204,7 +219,8 @@ function parseArgs(
 		if (!allowed.includes(name)) throw new UsageError(`unknown option ${name}`);
 		const value = equals === -1 ? args[i + 1] : arg.slice(equals + 1);
 		if (equals === -1) i += 1;
-		if (value === undefined || value === "" || value.startsWith("--")) throw new UsageError(`${name} needs a value`);
+		if (value === undefined || value === "" || value.startsWith("--"))
+			throw new UsageError(`${name} needs a value`);
 		if (flags.has(name)) throw new UsageError(`${name} is given twice`);
 		flags.set(name, value);
 	}
@@ -231,14 +247,22 @@ function parseRollbackArgv(raw: string | undefined): string[] | undefined {
 }
 
 // The PEM files for an https probe. A client identity needs both halves. Nothing is read unless the run is http.
-function readTlsFlags(flags: Map<string, string>, driver: "inprocess" | "http", baseUrl: string | undefined): HttpTlsOptions | undefined {
+function readTlsFlags(
+	flags: Map<string, string>,
+	driver: "inprocess" | "http",
+	baseUrl: string | undefined,
+): HttpTlsOptions | undefined {
 	if (!TLS_FLAGS.some((name) => flags.has(name))) return undefined;
-	if (driver !== "http") throw new UsageError("--ca-file, --client-cert and --client-key apply to --driver http only");
+	if (driver !== "http")
+		throw new UsageError("--ca-file, --client-cert and --client-key apply to --driver http only");
 	const certFile = flags.get("--client-cert");
 	const keyFile = flags.get("--client-key");
-	if ((certFile === undefined) !== (keyFile === undefined)) throw new UsageError("--client-cert and --client-key must be given together");
+	if ((certFile === undefined) !== (keyFile === undefined))
+		throw new UsageError("--client-cert and --client-key must be given together");
 	if (baseUrl === undefined || new URL(baseUrl).protocol !== "https:") {
-		throw new UsageError("--ca-file, --client-cert and --client-key need an https --base-url; no request was sent");
+		throw new UsageError(
+			"--ca-file, --client-cert and --client-key need an https --base-url; no request was sent",
+		);
 	}
 	const tls: HttpTlsOptions = {};
 	const caFile = flags.get("--ca-file");

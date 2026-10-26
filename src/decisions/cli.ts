@@ -9,7 +9,14 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
-import { type DecideOptions, type DecisionsUrl, DECISIONS_URL_IGNORED, decide, redact, resolveDecisionsUrl } from "./client.ts";
+import {
+	type DecideOptions,
+	type DecisionsUrl,
+	DECISIONS_URL_IGNORED,
+	decide,
+	redact,
+	resolveDecisionsUrl,
+} from "./client.ts";
 import {
 	type DecisionsDeps,
 	type KeySource,
@@ -96,16 +103,23 @@ function footer(rt: Runtime, source: KeySource): string {
 async function check(rt: Runtime): Promise<{ code: number; text: string }> {
 	if (rt.killed) return { code: 1, text: `Decisions check: ${KILLED}` };
 	if (!rt.key) return { code: 1, text: `Decisions check: ${NO_KEY}` };
-	const request = buildDecisionsRequest("plan", buildPlanState({ message: CHECK_MESSAGE, recentConversation: "" }), {
-		model: rt.config.model,
-		zdr: rt.config.zdr,
-		spanName: "check",
-	});
+	const request = buildDecisionsRequest(
+		"plan",
+		buildPlanState({ message: CHECK_MESSAGE, recentConversation: "" }),
+		{
+			model: rt.config.model,
+			zdr: rt.config.zdr,
+			spanName: "check",
+		},
+	);
 	const outcome = await rt.rail(request, rt.decideOptions(rt.key.key));
 	const timing = `${Math.round(outcome.latencyMs)} ms · attempts ${outcome.attempts}`;
 	const tail = footer(rt, rt.key.source);
 	if (!outcome.ok) {
-		return { code: 1, text: `Decisions check: error (${outcome.error.kind}) · ${outcome.error.message} · ${timing}${tail}` };
+		return {
+			code: 1,
+			text: `Decisions check: error (${outcome.error.kind}) · ${outcome.error.message} · ${timing}${tail}`,
+		};
 	}
 	const { model, usage } = outcome.response;
 	const cost = usage.cost !== undefined ? String(usage.cost) : "n/a";
@@ -122,41 +136,65 @@ function isNonEmpty(value: unknown): value is string {
 }
 
 /** The case's state through the point's builder, or the reason it is invalid. */
-function probeState(point: DecisionPoint, c: Record<string, unknown>): DecisionStates[DecisionPoint] | string {
+function probeState(
+	point: DecisionPoint,
+	c: Record<string, unknown>,
+): DecisionStates[DecisionPoint] | string {
 	const need = (...fields: string[]) => fields.find((field) => !isNonEmpty(c[field]));
 	switch (point) {
 		case "plan": {
 			if (!isNonEmpty(c.message)) return `"message" must be a non-empty string`;
 			const recent = c.recent_conversation;
-			if (recent !== undefined && typeof recent !== "string") return `"recent_conversation" must be a string`;
-			return buildPlanState({ message: c.message, recentConversation: typeof recent === "string" ? recent : "" });
+			if (recent !== undefined && typeof recent !== "string")
+				return `"recent_conversation" must be a string`;
+			return buildPlanState({
+				message: c.message,
+				recentConversation: typeof recent === "string" ? recent : "",
+			});
 		}
 		case "ship": {
 			if (!isNonEmpty(c.request)) return `"request" must be a non-empty string`;
 			const criteria = c.acceptance_criteria;
-			if (criteria !== undefined && !(Array.isArray(criteria) && criteria.every((item) => typeof item === "string"))) {
+			if (
+				criteria !== undefined &&
+				!(Array.isArray(criteria) && criteria.every((item) => typeof item === "string"))
+			) {
 				return `"acceptance_criteria" must be an array of strings`;
 			}
 			if (typeof c.patch !== "string") return `"patch" must be a string`;
-			return buildShipState({ request: c.request, acceptanceCriteria: (criteria as string[] | undefined) ?? [], patch: c.patch })
-				.state;
+			return buildShipState({
+				request: c.request,
+				acceptanceCriteria: (criteria as string[] | undefined) ?? [],
+				patch: c.patch,
+			}).state;
 		}
 		case "knowledge": {
 			const missing = need("question", "answer", "document");
 			if (missing) return `"${missing}" must be a non-empty string`;
-			return buildKnowledgeState({ question: c.question as string, answer: c.answer as string, document: c.document as string });
+			return buildKnowledgeState({
+				question: c.question as string,
+				answer: c.answer as string,
+				document: c.document as string,
+			});
 		}
 		case "blocking": {
 			const missing = need("task", "question", "default");
 			if (missing) return `"${missing}" must be a non-empty string`;
-			return buildBlockingState({ task: c.task as string, question: c.question as string, defaultText: c.default as string });
+			return buildBlockingState({
+				task: c.task as string,
+				question: c.question as string,
+				defaultText: c.default as string,
+			});
 		}
 		case "teachable":
 		case "skillworthy": {
 			const candidate = c.candidate;
-			if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return `"candidate" must be a JSON object`;
+			if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate))
+				return `"candidate" must be a JSON object`;
 			const fields = candidate as Record<string, unknown>;
-			const missing = ["name", "description", "body", "kind"].find((field) => !isNonEmpty(fields[field]));
+			const missing = ["name", "description", "body", "kind"].find(
+				(field) => !isNonEmpty(fields[field]),
+			);
 			if (missing) return `"candidate.${missing}" must be a non-empty string`;
 			const lesson = {
 				name: fields.name as string,
@@ -180,6 +218,7 @@ function parseCases(point: DecisionPoint, file: string, text: string): ProbeCase
 	try {
 		parsed = JSON.parse(text);
 	} catch {
+		// reason: an unparseable file is reported by the caller as not a JSON array
 		parsed = undefined;
 	}
 	if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > MAX_CASES) {
@@ -188,9 +227,11 @@ function parseCases(point: DecisionPoint, file: string, text: string): ProbeCase
 	const cases: ProbeCase[] = [];
 	for (const [index, item] of parsed.entries()) {
 		const at = `case #${index + 1}`;
-		if (typeof item !== "object" || item === null || Array.isArray(item)) return `${at}: must be a JSON object`;
+		if (typeof item !== "object" || item === null || Array.isArray(item))
+			return `${at}: must be a JSON object`;
 		const c = item as Record<string, unknown>;
-		if (c.label !== undefined && typeof c.label !== "boolean") return `${at}: "label" must be true or false`;
+		if (c.label !== undefined && typeof c.label !== "boolean")
+			return `${at}: "label" must be true or false`;
 		const state = probeState(point, c);
 		if (typeof state === "string") return `${at}: ${state}`;
 		cases.push({ state, ...(typeof c.label === "boolean" ? { label: c.label } : {}) });
@@ -208,9 +249,17 @@ function probeAction(point: DecisionPoint, p: number, config: DecisionsConfig): 
 		case "blocking":
 			return p >= config.blockingAt ? "promote" : "keep";
 		case "ship":
-			return p <= config.shipVetoAtOrBelow ? "veto" : p >= config.shipApproveAt ? "approve" : "pass";
+			return p <= config.shipVetoAtOrBelow
+				? "veto"
+				: p >= config.shipApproveAt
+					? "approve"
+					: "pass";
 		case "teachable":
-			return p < config.teachableBelow ? "drop" : p >= config.teachableAutoAt ? "auto-confirm" : "keep";
+			return p < config.teachableBelow
+				? "drop"
+				: p >= config.teachableAutoAt
+					? "auto-confirm"
+					: "keep";
 		case "skillworthy":
 			return p < config.skillworthyAt ? "skip" : "keep";
 	}
@@ -231,7 +280,11 @@ function agrees(point: DecisionPoint, action: string, label: boolean): boolean {
 	return (action === POSITIVE[point]) === label;
 }
 
-async function probe(rt: Runtime, argv: readonly string[], deps: DecisionsCommandDeps): Promise<{ code: number; text: string }> {
+async function probe(
+	rt: Runtime,
+	argv: readonly string[],
+	deps: DecisionsCommandDeps,
+): Promise<{ code: number; text: string }> {
 	const point = argv[1]?.trim().toLowerCase() as DecisionPoint;
 	const file = argv[2] ?? "";
 	if (!DECISION_POINTS.includes(point) || !file) return { code: 2, text: USAGE };
@@ -255,7 +308,11 @@ async function probe(rt: Runtime, argv: readonly string[], deps: DecisionsComman
 	let errors = 0;
 	for (const [index, c] of cases.entries()) {
 		if (c.label !== undefined) labelled++;
-		const request = buildDecisionsRequest(point, c.state, { model: rt.config.model, zdr: rt.config.zdr, spanName: point });
+		const request = buildDecisionsRequest(point, c.state, {
+			model: rt.config.model,
+			zdr: rt.config.zdr,
+			spanName: point,
+		});
 		const outcome = await rt.rail(request, rt.decideOptions(rt.key.key));
 		if (!outcome.ok) {
 			errors++;

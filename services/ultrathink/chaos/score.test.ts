@@ -22,7 +22,9 @@ function record(seq: number, templateId: string, score: number): HistoryRecord {
 
 describe("scoreRun", () => {
 	test("is 100 times passed over total", () => {
-		expect(scoreRun([{ passed: true }, { passed: true }, { passed: true }, { passed: false }])).toBe(75);
+		expect(
+			scoreRun([{ passed: true }, { passed: true }, { passed: true }, { passed: false }]),
+		).toBe(75);
 	});
 
 	test("is 100 when every hypothesis passed and 0 when none did", () => {
@@ -59,7 +61,9 @@ describe("trend", () => {
 
 describe("resilience", () => {
 	test("uses the last 20 runs by default, in seq order, regardless of array order", () => {
-		const records = Array.from({ length: 25 }, (_, i) => record(i + 1, "orders", i < 5 ? 0 : 100)).reverse();
+		const records = Array.from({ length: 25 }, (_, i) =>
+			record(i + 1, "orders", i < 5 ? 0 : 100),
+		).reverse();
 		const result = resilience(records, "orders");
 		expect(result.runs).toBe(20);
 		expect(result.mean).toBe(100);
@@ -83,7 +87,11 @@ describe("resilience", () => {
 
 	test("reports no runs with undefined mean and trend", () => {
 		expect(resilience([], "orders")).toEqual({ runs: 0, mean: undefined, trend: undefined });
-		expect(resilience([record(1, "cart", 100)], "orders")).toEqual({ runs: 0, mean: undefined, trend: undefined });
+		expect(resilience([record(1, "cart", 100)], "orders")).toEqual({
+			runs: 0,
+			mean: undefined,
+			trend: undefined,
+		});
 	});
 
 	test("rejects a window below 1", () => {

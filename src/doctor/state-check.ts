@@ -9,6 +9,7 @@ import { accessSync, constants, lstatSync, readdirSync, statSync, type Stats } f
 import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
+import { formatBytes } from "../shared.ts";
 
 const MAX_SESSIONS = 500;
 const MAX_SESSION_BYTES = 100 * 1024 * 1024;
@@ -40,12 +41,6 @@ function statFollowOrUndefined(path: string): Stats | undefined {
 	}
 }
 
-function formatSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function formatAge(ms: number): string {
 	if (ms < HOUR_MS) return "under an hour";
 	if (ms < 2 * DAY_MS) return `${Math.floor(ms / HOUR_MS)} hours`;
@@ -75,7 +70,12 @@ export function checkState(deps: DoctorDeps): Finding[] {
 		return findings;
 	}
 	if (!dirStat.isDirectory()) {
-		add({ id: "state.dir", level: "error", title: `State path is not a directory: ${dir}`, fix: "Remove it or point ULTRATHINK_STATE_DIR elsewhere." });
+		add({
+			id: "state.dir",
+			level: "error",
+			title: `State path is not a directory: ${dir}`,
+			fix: "Remove it or point ULTRATHINK_STATE_DIR elsewhere.",
+		});
 		return findings;
 	}
 	try {
@@ -132,10 +132,13 @@ export function checkState(deps: DoctorDeps): Finding[] {
 				try {
 					names = readdirSync(sessionsDir);
 				} catch (error) {
-					// A missing sessions directory is healthy and empty; any other listing failure means planning
+					// reason: A missing sessions directory is healthy and empty; any other listing failure means planning
 					// cannot save records, so it is an error.
 					const code =
-						typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+						typeof error === "object" &&
+						error !== null &&
+						"code" in error &&
+						typeof error.code === "string"
 							? error.code
 							: undefined;
 					if (code !== "ENOENT") {
@@ -183,7 +186,7 @@ export function checkState(deps: DoctorDeps): Finding[] {
 			if (stats?.isFile() && now - stats.mtimeMs > ORPHAN_AGE_MS) orphans++;
 		}
 	} catch {
-		// Metadata-only diagnosis stays best-effort when the state root cannot be listed.
+		// reason: Metadata-only diagnosis stays best-effort when the state root cannot be listed.
 	}
 
 	// When the sessions directory itself is broken an error above already explains why nothing could be counted.
@@ -191,7 +194,7 @@ export function checkState(deps: DoctorDeps): Finding[] {
 		add({ id: "state.sessions", level: "info", title: "No session records yet" });
 	} else if (sessionsUsable) {
 		const age = oldest === undefined ? "" : `, oldest ${formatAge(now - oldest)} old`;
-		const summary = `${plural(sessions, "session record")}, ${formatSize(bytes)}${age}`;
+		const summary = `${plural(sessions, "session record")}, ${formatBytes(bytes)}${age}`;
 		if (sessions > MAX_SESSIONS || bytes > MAX_SESSION_BYTES) {
 			add({
 				id: "state.sessions",
@@ -210,7 +213,8 @@ export function checkState(deps: DoctorDeps): Finding[] {
 			id: "state.permissions",
 			level: "warn",
 			title: `${plural(loose, "session, carrier or control file")} readable by group or others`,
-			detail: "They hold your prompts, plans and control settings. New files are written with mode 0600.",
+			detail:
+				"They hold your prompts, plans and control settings. New files are written with mode 0600.",
 			fix: `chmod -R go-rwx ${dir}`,
 		});
 	}

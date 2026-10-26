@@ -6,7 +6,15 @@
 // case runs the real script against a state directory built through the release's store (dr-fixtures.ts).
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { type StateDirSpec, hasTool, makeStateDir, runDr } from "./dr-fixtures.ts";
@@ -14,7 +22,8 @@ import { type StateDirSpec, hasTool, makeStateDir, runDr } from "./dr-fixtures.t
 const SCRIPT = "deploy/ultrathink-backup.sh";
 const AGE_AVAILABLE = hasTool("age") && hasTool("age-keygen");
 const RSYNC_AVAILABLE = hasTool("rsync");
-if (!AGE_AVAILABLE) console.log("dr-backup: age round trip skipped: age and age-keygen are not on PATH");
+if (!AGE_AVAILABLE)
+	console.log("dr-backup: age round trip skipped: age and age-keygen are not on PATH");
 if (!RSYNC_AVAILABLE) console.log("dr-backup: rsync cases skipped: rsync is not on PATH");
 
 const SERVICE_USER = process.env.ULTRATHINK_SERVICE_USER || "ultrathink";
@@ -49,7 +58,8 @@ function archivesIn(dir: string): string[] {
 
 function onlyArchive(dir: string): string {
 	const archives = archivesIn(dir);
-	if (archives.length !== 1) throw new Error(`expected one archive in ${dir}, found ${archives.length}`);
+	if (archives.length !== 1)
+		throw new Error(`expected one archive in ${dir}, found ${archives.length}`);
 	return join(dir, archives[0] ?? "");
 }
 
@@ -68,7 +78,10 @@ function regenerateSums(top: string): void {
 	const lines = listFiles(top)
 		.filter((file) => file !== "SHA256SUMS")
 		.sort()
-		.map((file) => `${new Bun.CryptoHasher("sha256").update(readFileSync(join(top, file))).digest("hex")}  ./${file}\n`);
+		.map(
+			(file) =>
+				`${new Bun.CryptoHasher("sha256").update(readFileSync(join(top, file))).digest("hex")}  ./${file}\n`,
+		);
 	writeFileSync(join(top, "SHA256SUMS"), lines.join(""));
 }
 
@@ -180,17 +193,24 @@ describe.skipIf(process.platform !== "linux")("ultrathink-backup.sh", () => {
 			expect(keygen.exitCode).toBe(0);
 			const recipient = /^# public key: (age1\S+)$/m.exec(readFileSync(identity, "utf8"))?.[1];
 			if (recipient === undefined) throw new Error("age-keygen wrote no public key");
-			const result = runDr(SCRIPT, ["backup"], { ...s.env, ULTRATHINK_BACKUP_RECIPIENT: recipient });
+			const result = runDr(SCRIPT, ["backup"], {
+				...s.env,
+				ULTRATHINK_BACKUP_RECIPIENT: recipient,
+			});
 			expect(result.code).toBe(0);
 			const entries = entriesIn(s.backups);
 			expect(entries).toHaveLength(1);
 			expect(entries[0]).toMatch(/\.tar\.gz\.age$/);
 			const encrypted = join(s.backups, entries[0] ?? "");
 			const plain = join(base, "age-round-trip", "decrypted.tar.gz");
-			const decrypt = Bun.spawnSync({ cmd: ["age", "--decrypt", "-i", identity, "-o", plain, encrypted] });
+			const decrypt = Bun.spawnSync({
+				cmd: ["age", "--decrypt", "-i", identity, "-o", plain, encrypted],
+			});
 			expect(decrypt.exitCode).toBe(0);
 			expect(runDr(SCRIPT, ["verify", plain], s.env).code).toBe(0);
-			expect(runDr(SCRIPT, ["verify", encrypted], { ...s.env, ULTRATHINK_AGE_IDENTITY: identity }).code).toBe(0);
+			expect(
+				runDr(SCRIPT, ["verify", encrypted], { ...s.env, ULTRATHINK_AGE_IDENTITY: identity }).code,
+			).toBe(0);
 		},
 	);
 
@@ -200,7 +220,10 @@ describe.skipIf(process.platform !== "linux")("ultrathink-backup.sh", () => {
 			const s = scenario("rsync-plaintext", { runs: 1, oauth: true });
 			const remote = join(base, "rsync-plaintext", "remote");
 			mkdirSync(remote, { recursive: true });
-			const result = runDr(SCRIPT, ["backup"], { ...s.env, ULTRATHINK_BACKUP_RSYNC_TARGET: `${remote}/` });
+			const result = runDr(SCRIPT, ["backup"], {
+				...s.env,
+				ULTRATHINK_BACKUP_RSYNC_TARGET: `${remote}/`,
+			});
 			expect(result.code).not.toBe(0);
 			expect(result.stderr).toContain("refusing plaintext off-host");
 			expect(entriesIn(remote)).toEqual([]);

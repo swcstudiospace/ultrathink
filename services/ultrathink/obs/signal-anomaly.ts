@@ -61,17 +61,23 @@ function optionError(name: string, problem: string): RangeError {
 
 function resolveOptions(options: AnomalyOptions): ResolvedOptions {
 	const alpha = options.alpha ?? DEFAULTS.alpha;
-	if (!(Number.isFinite(alpha) && alpha > 0 && alpha <= 1)) throw optionError("alpha", "must be in (0, 1]");
+	if (!(Number.isFinite(alpha) && alpha > 0 && alpha <= 1))
+		throw optionError("alpha", "must be in (0, 1]");
 	const threshold = options.threshold ?? DEFAULTS.threshold;
-	if (!(Number.isFinite(threshold) && threshold > 0)) throw optionError("threshold", "must be a positive number");
+	if (!(Number.isFinite(threshold) && threshold > 0))
+		throw optionError("threshold", "must be a positive number");
 	const warmup = options.warmup ?? DEFAULTS.warmup;
-	if (!(Number.isInteger(warmup) && warmup >= 0)) throw optionError("warmup", "must be a non-negative integer");
+	if (!(Number.isInteger(warmup) && warmup >= 0))
+		throw optionError("warmup", "must be a non-negative integer");
 	const consecutive = options.consecutive ?? DEFAULTS.consecutive;
-	if (!(Number.isInteger(consecutive) && consecutive >= 1)) throw optionError("consecutive", "must be an integer of at least 1");
+	if (!(Number.isInteger(consecutive) && consecutive >= 1))
+		throw optionError("consecutive", "must be an integer of at least 1");
 	const calm = options.calm ?? DEFAULTS.calm;
-	if (!(Number.isInteger(calm) && calm >= 1)) throw optionError("calm", "must be an integer of at least 1");
+	if (!(Number.isInteger(calm) && calm >= 1))
+		throw optionError("calm", "must be an integer of at least 1");
 	const rebaseAfter = options.rebaseAfter ?? DEFAULTS.rebaseAfter;
-	if (!(Number.isInteger(rebaseAfter) && rebaseAfter >= 1)) throw optionError("rebaseAfter", "must be an integer of at least 1");
+	if (!(Number.isInteger(rebaseAfter) && rebaseAfter >= 1))
+		throw optionError("rebaseAfter", "must be an integer of at least 1");
 	if (rebaseAfter < consecutive) throw optionError("rebaseAfter", "must be at least consecutive");
 	return { alpha, threshold, warmup, consecutive, calm, rebaseAfter };
 }
@@ -110,7 +116,11 @@ export function createAnomalyDetector(options: AnomalyOptions = {}): AnomalyDete
 		observe(value: number): AnomalyState {
 			if (!Number.isFinite(value)) return snapshot();
 
-			const sigma = Math.max(Math.sqrt(variance), RELATIVE_SIGMA_FLOOR * Math.abs(mean), ABSOLUTE_SIGMA_FLOOR);
+			const sigma = Math.max(
+				Math.sqrt(variance),
+				RELATIVE_SIGMA_FLOOR * Math.abs(mean),
+				ABSOLUTE_SIGMA_FLOOR,
+			);
 			z = samples === 0 ? 0 : (value - mean) / sigma;
 			const warming = samples < Math.max(1, o.warmup);
 			if (warming) {

@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isValidId, openStore, storeDir } from "./store.ts";
@@ -57,7 +65,12 @@ describe("moments", () => {
 		const full = moment("m1", {
 			supersedes: "m0",
 			retained: { at: "2026-01-02T00:00:00.000Z", bank: "ultrathink", documentId: "tm:m1" },
-			promoted: { at: "2026-01-03T00:00:00.000Z", skill: "my-skill", target: "omp", path: "/x/SKILL.md" },
+			promoted: {
+				at: "2026-01-03T00:00:00.000Z",
+				skill: "my-skill",
+				target: "omp",
+				path: "/x/SKILL.md",
+			},
 		});
 		store.put(full);
 		expect(store.get("m1")).toEqual(full);
@@ -79,7 +92,13 @@ describe("moments", () => {
 
 	test("findByDedupeKey prefers a live moment over a superseded one with the same key", () => {
 		const { store } = openTemp();
-		store.put(moment("replaced", { dedupeKey: "k", status: "superseded", lastSeenAt: "2026-05-01T00:00:00.000Z" }));
+		store.put(
+			moment("replaced", {
+				dedupeKey: "k",
+				status: "superseded",
+				lastSeenAt: "2026-05-01T00:00:00.000Z",
+			}),
+		);
 		store.put(moment("live", { dedupeKey: "k", lastSeenAt: "2026-01-01T00:00:00.000Z" }));
 		expect(store.findByDedupeKey("k")?.id).toBe("live");
 	});
@@ -120,8 +139,14 @@ describe("corruption tolerance", () => {
 		writeFileSync(join(moments, "foreign.json"), JSON.stringify({ hello: "world" }));
 		writeFileSync(join(moments, "array.json"), "[]");
 		writeFileSync(join(moments, "wrong-id.json"), JSON.stringify(moment("another")));
-		writeFileSync(join(moments, "old-schema.json"), JSON.stringify({ ...moment("old-schema"), schema: 1 }));
-		writeFileSync(join(moments, "bad-kind.json"), JSON.stringify({ ...moment("bad-kind"), kind: "weird" }));
+		writeFileSync(
+			join(moments, "old-schema.json"),
+			JSON.stringify({ ...moment("old-schema"), schema: 1 }),
+		);
+		writeFileSync(
+			join(moments, "bad-kind.json"),
+			JSON.stringify({ ...moment("bad-kind"), kind: "weird" }),
+		);
 		writeFileSync(join(moments, "notes.txt"), "text");
 		writeFileSync(join(moments, ".good.1.abcd.tmp"), "partial");
 		expect(store.list().map((m) => m.id)).toEqual(["good"]);
@@ -135,7 +160,16 @@ describe("corruption tolerance", () => {
 		const entry = store.enqueue({ op: "delete", documentId: "tm:x" }, 5);
 		mkdirSync(join(dir, "outbox"), { recursive: true });
 		writeFileSync(join(dir, "outbox", "bad.json"), "nope");
-		writeFileSync(join(dir, "outbox", "unknown-op.json"), JSON.stringify({ id: "unknown-op", op: { op: "explode" }, attempts: 0, nextAt: 0, enqueuedAt: 0 }));
+		writeFileSync(
+			join(dir, "outbox", "unknown-op.json"),
+			JSON.stringify({
+				id: "unknown-op",
+				op: { op: "explode" },
+				attempts: 0,
+				nextAt: 0,
+				enqueuedAt: 0,
+			}),
+		);
 		expect(store.outbox().map((e) => e.id)).toEqual([entry.id]);
 		const empty = openStore(join(tempDir(), "never-created"));
 		expect(empty.list()).toEqual([]);
@@ -161,14 +195,37 @@ describe("corruption tolerance", () => {
 		writeFileSync(join(dir, "moments", "min.json"), JSON.stringify(minimal));
 		const read = store.get("min");
 		expect(read?.tags).toEqual(["ok"]);
-		expect(read).toMatchObject({ description: "", project: "unknown", host: "unknown", occurrences: 1, recalled: 0, confidence: 1, relatedIds: [] });
+		expect(read).toMatchObject({
+			description: "",
+			project: "unknown",
+			host: "unknown",
+			occurrences: 1,
+			recalled: 0,
+			confidence: 1,
+			relatedIds: [],
+		});
 	});
 });
 
 describe("ids", () => {
 	test("only [A-Za-z0-9_.-]{1,80} ids are valid", () => {
-		for (const id of ["a", "tm_1.2-3", "A".repeat(80), "0f8fad5b-d9cb-469f-a165-70867728950e"]) expect(isValidId(id)).toBe(true);
-		for (const id of ["", "../x", "a/b", "a\\b", "a b", ".", "..", "A".repeat(81), "tm:1", "a\0b", 7, undefined]) expect(isValidId(id)).toBe(false);
+		for (const id of ["a", "tm_1.2-3", "A".repeat(80), "0f8fad5b-d9cb-469f-a165-70867728950e"])
+			expect(isValidId(id)).toBe(true);
+		for (const id of [
+			"",
+			"../x",
+			"a/b",
+			"a\\b",
+			"a b",
+			".",
+			"..",
+			"A".repeat(81),
+			"tm:1",
+			"a\0b",
+			7,
+			undefined,
+		])
+			expect(isValidId(id)).toBe(false);
 	});
 
 	test("a hostile id cannot read, write, remove or ack outside the store", () => {

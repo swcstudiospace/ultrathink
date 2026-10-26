@@ -27,7 +27,13 @@ function lessonJson(...items: Record<string, unknown>[]): string {
 	return JSON.stringify({ lessons: items });
 }
 
-const GOOD = { name: "Use import type", description: "tsc rejects value imports of types", body: "Use `import type` for type-only imports.", kind: "pitfall", confidence: 0.9 };
+const GOOD = {
+	name: "Use import type",
+	description: "tsc rejects value imports of types",
+	body: "Use `import type` for type-only imports.",
+	kind: "pitfall",
+	confidence: 0.9,
+};
 
 const RECOVERY_TURNS: DigestTurn[] = [
 	{ role: "user", text: "make the build pass" },
@@ -39,7 +45,15 @@ const RECOVERY_TURNS: DigestTurn[] = [
 ];
 
 function digest(overrides: Partial<TeachDigest> = {}): TeachDigest {
-	return { host: "claude-code", sessionId: "sess-1", cwd: "/work/repo", at: "2026-10-02T10:00:00.000Z", turns: RECOVERY_TURNS, toolCalls: 4, ...overrides };
+	return {
+		host: "claude-code",
+		sessionId: "sess-1",
+		cwd: "/work/repo",
+		at: "2026-10-02T10:00:00.000Z",
+		turns: RECOVERY_TURNS,
+		toolCalls: 4,
+		...overrides,
+	};
 }
 
 interface Harness {
@@ -49,7 +63,13 @@ interface Harness {
 	capture: CaptureFn;
 }
 
-function harness(options: { teach?: Partial<TeachConfig>; env?: NodeJS.ProcessEnv; reply?: string | (() => string | Promise<string>) } = {}): Harness {
+function harness(
+	options: {
+		teach?: Partial<TeachConfig>;
+		env?: NodeJS.ProcessEnv;
+		reply?: string | (() => string | Promise<string>);
+	} = {},
+): Harness {
 	const completions: { system: string; user: string }[] = [];
 	const captured: CaptureInput[] = [];
 	let clock = 1_000;
@@ -58,7 +78,10 @@ function harness(options: { teach?: Partial<TeachConfig>; env?: NodeJS.ProcessEn
 		host: "claude-code",
 		cwd: "/work/repo",
 		sessionId: "sess-1",
-		config: { teach: { ...DEFAULT_TEACH_CONFIG, enabled: true, capture: "observe", ...options.teach }, hindsight: DEFAULT_HINDSIGHT_CONFIG },
+		config: {
+			teach: { ...DEFAULT_TEACH_CONFIG, enabled: true, capture: "observe", ...options.teach },
+			hindsight: DEFAULT_HINDSIGHT_CONFIG,
+		},
 		env: { HOME: "/home/someone", ...options.env },
 		stateDir: "/nonexistent-state",
 		now: () => (clock += 5),
@@ -143,19 +166,74 @@ describe("observeDigest skips", () => {
 describe("observeDigest signal detection", () => {
 	const user = (text: string): DigestTurn => ({ role: "user", text });
 	const assistant = (text: string): DigestTurn => ({ role: "assistant", text });
-	const tool = (text: string, isError = false): DigestTurn => ({ role: "tool", tool: "Bash", text, ...(isError ? { isError } : {}) });
+	const tool = (text: string, isError = false): DigestTurn => ({
+		role: "tool",
+		tool: "Bash",
+		text,
+		...(isError ? { isError } : {}),
+	});
 
 	test.each<[string, DigestTurn[], TeachDigest["outcome"], boolean]>([
-		["a tool error followed by a success", [user("a"), tool("e", true), tool("ok"), assistant("z")], undefined, true],
-		["a tool success before the error only", [user("a"), tool("ok"), tool("e", true), assistant("z")], undefined, false],
-		["a tool error that is never followed by a success", [user("a"), tool("e", true), assistant("z")], "completed", false],
-		["a user correction after the first prompt", [user("build it"), assistant("done"), user("No, that's wrong: use bun")], undefined, true],
-		["a correction word in a later user turn (instead)", [user("build it"), assistant("done"), user("do it with fetch instead")], undefined, true],
-		["a correction phrase only in the first prompt", [user("don't forget to stop the server, actually"), assistant("ok")], undefined, false],
-		["a polite follow-up", [user("build it"), assistant("done"), user("thanks, now add tests")], undefined, false],
-		["a failed run with tool errors", [user("a"), tool("e", true), assistant("gave up")], "failed", true],
-		["an interrupted run with tool errors", [user("a"), tool("e", true), assistant("...")], "interrupted", true],
-		["a failed run without tool errors", [user("a"), tool("ok"), assistant("gave up")], "failed", false],
+		[
+			"a tool error followed by a success",
+			[user("a"), tool("e", true), tool("ok"), assistant("z")],
+			undefined,
+			true,
+		],
+		[
+			"a tool success before the error only",
+			[user("a"), tool("ok"), tool("e", true), assistant("z")],
+			undefined,
+			false,
+		],
+		[
+			"a tool error that is never followed by a success",
+			[user("a"), tool("e", true), assistant("z")],
+			"completed",
+			false,
+		],
+		[
+			"a user correction after the first prompt",
+			[user("build it"), assistant("done"), user("No, that's wrong: use bun")],
+			undefined,
+			true,
+		],
+		[
+			"a correction word in a later user turn (instead)",
+			[user("build it"), assistant("done"), user("do it with fetch instead")],
+			undefined,
+			true,
+		],
+		[
+			"a correction phrase only in the first prompt",
+			[user("don't forget to stop the server, actually"), assistant("ok")],
+			undefined,
+			false,
+		],
+		[
+			"a polite follow-up",
+			[user("build it"), assistant("done"), user("thanks, now add tests")],
+			undefined,
+			false,
+		],
+		[
+			"a failed run with tool errors",
+			[user("a"), tool("e", true), assistant("gave up")],
+			"failed",
+			true,
+		],
+		[
+			"an interrupted run with tool errors",
+			[user("a"), tool("e", true), assistant("...")],
+			"interrupted",
+			true,
+		],
+		[
+			"a failed run without tool errors",
+			[user("a"), tool("ok"), assistant("gave up")],
+			"failed",
+			false,
+		],
 	])("%s", async (_name, turns, outcome, expected) => {
 		const h = harness();
 		const result = await observeDigest(digest({ turns, outcome }), h.ctx, { capture: h.capture });
@@ -166,10 +244,21 @@ describe("observeDigest signal detection", () => {
 
 describe("observeDigest redaction", () => {
 	test("a planted secret never reaches the completer or the captured lesson", async () => {
-		const h = harness({ reply: lessonJson({ ...GOOD, body: `Set the key ${KEY} before running.`, name: `Key ${KEY}`, description: `uses ${KEY}` }) });
+		const h = harness({
+			reply: lessonJson({
+				...GOOD,
+				body: `Set the key ${KEY} before running.`,
+				name: `Key ${KEY}`,
+				description: `uses ${KEY}`,
+			}),
+		});
 		const turns: DigestTurn[] = [
 			{ role: "user", text: `use ${KEY} to call the api` },
-			{ role: "assistant", tool: "Bash", text: `Bash: curl -H "Authorization: Bearer ${KEY}" https://x` },
+			{
+				role: "assistant",
+				tool: "Bash",
+				text: `Bash: curl -H "Authorization: Bearer ${KEY}" https://x`,
+			},
 			{ role: "tool", tool: "Bash", text: `401 for key ${KEY}`, isError: true },
 			{ role: "tool", tool: "Bash", text: "200" },
 		];
@@ -194,7 +283,15 @@ describe("observeDigest redaction", () => {
 
 describe("parseLessons", () => {
 	test("parses valid lessons", () => {
-		expect(parseLessons(lessonJson(GOOD))).toEqual([{ name: GOOD.name, description: GOOD.description, body: GOOD.body, kind: "pitfall", confidence: 0.9 }]);
+		expect(parseLessons(lessonJson(GOOD))).toEqual([
+			{
+				name: GOOD.name,
+				description: GOOD.description,
+				body: GOOD.body,
+				kind: "pitfall",
+				confidence: 0.9,
+			},
+		]);
 	});
 
 	test("finds the JSON object inside prose and code fences", () => {
@@ -204,7 +301,9 @@ describe("parseLessons", () => {
 
 	test("skips an unparseable brace span and balanced braces inside strings", () => {
 		const tricky = lessonJson({ ...GOOD, body: 'Escape "{" and \\"}" carefully: {x}' });
-		expect(parseLessons(`{oops not json} then ${tricky}`)[0]?.body).toBe('Escape "{" and \\"}" carefully: {x}');
+		expect(parseLessons(`{oops not json} then ${tricky}`)[0]?.body).toBe(
+			'Escape "{" and \\"}" carefully: {x}',
+		);
 	});
 
 	test("drops invalid items, keeps the rest", () => {
@@ -226,18 +325,29 @@ describe("parseLessons", () => {
 	});
 
 	test("keeps at most three, in order", () => {
-		const lessons = parseLessons(lessonJson(...[1, 2, 3, 4, 5].map((n) => ({ ...GOOD, name: `lesson ${n}` }))));
+		const lessons = parseLessons(
+			lessonJson(...[1, 2, 3, 4, 5].map((n) => ({ ...GOOD, name: `lesson ${n}` }))),
+		);
 		expect(lessons.map((l) => l.name)).toEqual(["lesson 1", "lesson 2", "lesson 3"]);
 	});
 
 	test("clamps confidence and defaults a missing one", () => {
 		const { confidence: _drop, ...noConfidence } = GOOD;
-		const lessons = parseLessons(lessonJson({ ...GOOD, confidence: 7 }, { ...GOOD, confidence: -2 }, noConfidence));
+		const lessons = parseLessons(
+			lessonJson({ ...GOOD, confidence: 7 }, { ...GOOD, confidence: -2 }, noConfidence),
+		);
 		expect(lessons.map((l) => l.confidence)).toEqual([1, 0, 0.5]);
 	});
 
 	test("clips name, description and body to their limits", () => {
-		const [lesson] = parseLessons(lessonJson({ ...GOOD, name: "n".repeat(500), description: "d".repeat(900), body: "b".repeat(5000) }));
+		const [lesson] = parseLessons(
+			lessonJson({
+				...GOOD,
+				name: "n".repeat(500),
+				description: "d".repeat(900),
+				body: "b".repeat(5000),
+			}),
+		);
 		expect(lesson?.name.length).toBe(120);
 		expect(lesson?.description.length).toBe(300);
 		expect(lesson?.body.length).toBe(1200);
@@ -263,20 +373,32 @@ describe("parseLessons", () => {
 
 describe("observeDigest capture", () => {
 	test("observe mode captures every lesson as a candidate", async () => {
-		const h = harness({ reply: lessonJson(GOOD, { ...GOOD, name: "Second", kind: "bug", confidence: 0.3 }) });
+		const h = harness({
+			reply: lessonJson(GOOD, { ...GOOD, name: "Second", kind: "bug", confidence: 0.3 }),
+		});
 		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
 		expect(outcome.skipped).toBeUndefined();
 		expect(outcome.captured).toHaveLength(2);
 		expect(outcome.ms).toBeGreaterThan(0);
 		expect(h.captured.map((c) => c.status)).toEqual(["candidate", "candidate"]);
-		expect(h.captured[0]).toMatchObject({ name: GOOD.name, kind: "pitfall", origin: "observe", confidence: 0.9, sourcePhase: "session:sess-1" });
+		expect(h.captured[0]).toMatchObject({
+			name: GOOD.name,
+			kind: "pitfall",
+			origin: "observe",
+			confidence: 0.9,
+			sourcePhase: "session:sess-1",
+		});
 		expect(h.captured[1]).toMatchObject({ name: "Second", kind: "bug", confidence: 0.3 });
 	});
 
 	test("auto mode confirms lessons at 0.8 and above, and leaves the rest candidates", async () => {
 		const h = harness({
 			teach: { capture: "auto" },
-			reply: lessonJson({ ...GOOD, name: "high", confidence: 0.95 }, { ...GOOD, name: "edge", confidence: 0.8 }, { ...GOOD, name: "low", confidence: 0.79 }),
+			reply: lessonJson(
+				{ ...GOOD, name: "high", confidence: 0.95 },
+				{ ...GOOD, name: "edge", confidence: 0.8 },
+				{ ...GOOD, name: "low", confidence: 0.79 },
+			),
 		});
 		await observeDigest(digest(), h.ctx, { capture: h.capture });
 		expect(h.captured.map((c) => [c.name, c.status])).toEqual([
@@ -294,7 +416,9 @@ describe("observeDigest capture", () => {
 	});
 
 	test("a failing capture does not stop the other lessons", async () => {
-		const h = harness({ reply: lessonJson({ ...GOOD, name: "first" }, { ...GOOD, name: "second" }) });
+		const h = harness({
+			reply: lessonJson({ ...GOOD, name: "first" }, { ...GOOD, name: "second" }),
+		});
 		let calls = 0;
 		const flaky: CaptureFn = async (input, ctx) => {
 			if (++calls === 1) throw new Error("disk full");
@@ -314,7 +438,10 @@ describe("observeDigest never throws", () => {
 			async (): Promise<string> => {
 				throw new Error("rejected");
 			},
-			(): Promise<string> => new Promise(() => {}),
+			(): Promise<string> =>
+				new Promise(() => {
+					// reason: the distiller must hang; the timeout under test ends it
+				}),
 		]) {
 			const h = harness();
 			h.ctx.complete = complete;
@@ -326,7 +453,9 @@ describe("observeDigest never throws", () => {
 
 	test("a malformed digest yields a skip, not an exception", async () => {
 		const h = harness();
-		const outcome = await observeDigest({} as unknown as TeachDigest, h.ctx, { capture: h.capture });
+		const outcome = await observeDigest({} as unknown as TeachDigest, h.ctx, {
+			capture: h.capture,
+		});
 		expect(outcome.skipped).toBe("error");
 		expect(outcome.captured).toEqual([]);
 	});
@@ -335,7 +464,10 @@ describe("observeDigest never throws", () => {
 		const h = harness();
 		const controller = new AbortController();
 		h.ctx.signal = controller.signal;
-		h.ctx.complete = () => new Promise(() => {});
+		h.ctx.complete = () =>
+			new Promise(() => {
+				// reason: the distiller must hang; the abort under test ends it
+			});
 		const pending = observeDigest(digest(), h.ctx, { capture: h.capture });
 		controller.abort();
 		expect((await pending).skipped).toBe("distiller failed");
@@ -346,7 +478,11 @@ describe("observeDigest with the Jev teachable point", () => {
 	const JEV_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 
 	/** A fake Decisions endpoint: each request is answered with the next P (the last repeats), a Response, or a thrown error. */
-	function jev(h: Harness, answers: Array<number | Response | Error>, config: Partial<DecisionsConfig> = {}) {
+	function jev(
+		h: Harness,
+		answers: Array<number | Response | Error>,
+		config: Partial<DecisionsConfig> = {},
+	) {
 		const bodies: { state: Record<string, unknown>; questions: Record<string, unknown> }[] = [];
 		h.ctx.config = {
 			...h.ctx.config,
@@ -427,7 +563,10 @@ describe("observeDigest with the Jev teachable point", () => {
 		["a 402", Response.json({ error: { message: "no credits" } }, { status: 402 })],
 		["a 401", Response.json({ error: { message: "bad key" } }, { status: 401 })],
 		["a 500", Response.json({ error: { message: "down" } }, { status: 500 })],
-		["an invalid answer", Response.json({ model: "m", answers: { teachable: { type: "noul", noul: 3 } }, usage: {} })],
+		[
+			"an invalid answer",
+			Response.json({ model: "m", answers: { teachable: { type: "noul", noul: 3 } }, usage: {} }),
+		],
 		["a non-JSON body", new Response("<html>")],
 	])("%s behaves exactly like Decisions off (auto mode still confirms)", async (_name, answer) => {
 		const off = harness({ teach: { capture: "auto" } });
@@ -446,7 +585,9 @@ describe("observeDigest with the Jev teachable point", () => {
 		jev(h, [0.0], { timeoutMs: 20 });
 		h.ctx.fetch = ((_url: string | URL | Request, init?: RequestInit) =>
 			new Promise<Response>((_resolve, reject) => {
-				init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+				init?.signal?.addEventListener("abort", () =>
+					reject(new DOMException("aborted", "AbortError")),
+				);
 			})) as typeof fetch;
 		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
 		expect(h.captured.map((c) => c.status)).toEqual(["confirmed"]);
@@ -459,7 +600,10 @@ describe("observeDigest with the Jev teachable point", () => {
 				h.ctx.env = { HOME: "/home/someone" };
 			},
 			(h: Harness) => {
-				h.ctx.config = { ...h.ctx.config, decisions: { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: ["plan"] } };
+				h.ctx.config = {
+					...h.ctx.config,
+					decisions: { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: ["plan"] },
+				};
 			},
 			(h: Harness) => {
 				h.ctx.env = { ...h.ctx.env, ULTRATHINK_DECISIONS: "0" };
@@ -523,7 +667,9 @@ describe("observeDigest auto-promotion (SKILL-03)", () => {
 			expect(h.captured).toHaveLength(1);
 			const names = drafts(stateDir);
 			expect(names).toHaveLength(1);
-			expect(existsSync(join(stateDir, "teach", "skill-drafts", names[0] ?? "", "SKILL.md"))).toBe(true);
+			expect(existsSync(join(stateDir, "teach", "skill-drafts", names[0] ?? "", "SKILL.md"))).toBe(
+				true,
+			);
 		} finally {
 			cleanup();
 		}
@@ -548,7 +694,9 @@ describe("observeDigest auto-promotion (SKILL-03)", () => {
 			const h = harness({ teach: { autoPromote: true } });
 			h.ctx.stateDir = stateDir;
 			h.ctx.host = "muse";
-			const outcome = await observeDigest(digest({ turns: [], toolCalls: 0 }), h.ctx, { capture: h.capture });
+			const outcome = await observeDigest(digest({ turns: [], toolCalls: 0 }), h.ctx, {
+				capture: h.capture,
+			});
 			expect(outcome.skipped).toBeDefined();
 			expect(drafts(stateDir)).toEqual([]);
 		} finally {
@@ -566,12 +714,19 @@ describe("observeDigest receipts", () => {
 			h.ctx.stateDir = stateDir;
 			const capture: CaptureFn = async (input, ctx) => {
 				const outcome = await h.capture(input, ctx);
-				return input.name === "Second" ? { ...outcome, created: false, retain: "off", reason: "teach store is unavailable" } : outcome;
+				return input.name === "Second"
+					? { ...outcome, created: false, retain: "off", reason: "teach store is unavailable" }
+					: outcome;
 			};
 			await observeDigest(digest(), h.ctx, { capture });
 			const rows = readActivity(stateDir);
 			expect(rows).toHaveLength(1);
-			expect(rows[0]).toMatchObject({ sessionId: "sess-1", kind: "teachable-created", outcome: "created", names: [GOOD.name] });
+			expect(rows[0]).toMatchObject({
+				sessionId: "sess-1",
+				kind: "teachable-created",
+				outcome: "created",
+				names: [GOOD.name],
+			});
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

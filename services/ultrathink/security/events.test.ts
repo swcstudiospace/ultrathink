@@ -8,28 +8,51 @@ import { ConsoleSecurityEventLogger, SecurityEventType, createSecurityEvent } fr
 describe("Security events", () => {
 	test("writes an auth failure through the structured logger", () => {
 		const lines: string[] = [];
-		const logger = new ConsoleSecurityEventLogger(createLogger({ write: (line) => lines.push(line) }));
+		const logger = new ConsoleSecurityEventLogger(
+			createLogger({ write: (line) => lines.push(line) }),
+		);
 		logger.logAuthFailure({ ip: "203.0.113.1", resource: "/login" });
 
 		expect(lines).toHaveLength(1);
 		const payload = JSON.parse(lines[0] ?? "");
-		expect(payload).toMatchObject({ level: "warn", event: "security.auth_failure", type: SecurityEventType.AUTH_FAILURE, ip: "203.0.113.1" });
+		expect(payload).toMatchObject({
+			level: "warn",
+			event: "security.auth_failure",
+			type: SecurityEventType.AUTH_FAILURE,
+			ip: "203.0.113.1",
+		});
 		expect(payload.correlationId).toMatch(/^[0-9a-f]{32}$/);
 	});
 
 	test("a named event keeps its name and drops secret-named fields", () => {
 		const lines: string[] = [];
-		const logger = new ConsoleSecurityEventLogger(createLogger({ write: (line) => lines.push(line) }));
-		logger.log(createSecurityEvent(SecurityEventType.AUTH_FAILURE, { name: "auth.login_failed", source: "auth", severity: "medium", ip: "203.0.113.2", details: { reqId: "r1", password: "hunter2" } }));
+		const logger = new ConsoleSecurityEventLogger(
+			createLogger({ write: (line) => lines.push(line) }),
+		);
+		logger.log(
+			createSecurityEvent(SecurityEventType.AUTH_FAILURE, {
+				name: "auth.login_failed",
+				source: "auth",
+				severity: "medium",
+				ip: "203.0.113.2",
+				details: { reqId: "r1", password: "hunter2" },
+			}),
+		);
 
 		expect(lines).toHaveLength(1);
-		expect(JSON.parse(lines[0] ?? "")).toMatchObject({ event: "auth.login_failed", level: "warn", details: { reqId: "r1" } });
+		expect(JSON.parse(lines[0] ?? "")).toMatchObject({
+			event: "auth.login_failed",
+			level: "warn",
+			details: { reqId: "r1" },
+		});
 		expect(lines[0] ?? "").not.toContain("hunter2");
 	});
 
 	test("filters events below minimum severity", () => {
 		const lines: string[] = [];
-		const logger = new ConsoleSecurityEventLogger(createLogger({ write: (line) => lines.push(line) }));
+		const logger = new ConsoleSecurityEventLogger(
+			createLogger({ write: (line) => lines.push(line) }),
+		);
 		logger.setMinSeverity("critical");
 		logger.logValidationFailure({ ip: "127.0.0.1" });
 
@@ -45,12 +68,21 @@ describe("Security events", () => {
   new ConsoleSecurityEventLogger().logValidationFailure({ source: "probe", resource: "/probe", details: { field: "field", code: "PROBE" } });
 })();`;
 		const child = Bun.spawn([process.execPath, "-e", probe], { stdout: "pipe", stderr: "pipe" });
-		const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
 
 		expect(exitCode).toBe(0);
 		expect(stdout).toBe("");
 		const lines = stderr.split("\n").filter((line) => line.startsWith("{"));
 		expect(lines).toHaveLength(1);
-		expect(JSON.parse(lines[0] ?? "")).toMatchObject({ level: "info", event: "security.validation_failure", source: "probe", details: { field: "field", code: "PROBE" } });
+		expect(JSON.parse(lines[0] ?? "")).toMatchObject({
+			level: "info",
+			event: "security.validation_failure",
+			source: "probe",
+			details: { field: "field", code: "PROBE" },
+		});
 	}, 15_000);
 });

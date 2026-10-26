@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { type EnsureFreshOptions, type GrokAuth, GrokAuthError, GrokHttpError, readGrokAuth } from "./auth.ts";
+import {
+	type EnsureFreshOptions,
+	type GrokAuth,
+	GrokAuthError,
+	GrokHttpError,
+	readGrokAuth,
+} from "./auth.ts";
 import {
 	buildResponsesBody,
 	buildShuntBody,
@@ -15,20 +21,32 @@ import {
 	parseShuntText,
 } from "./complete.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
+import { hangingFetch } from "../test.helpers.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const TOKEN = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTk5OX0.Sflkxw_RJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c";
+/** The clock every auth fixture ages from and the expiry check reads: pinned so token lifetimes are deterministic. */
+const FIXED_NOW = Date.UTC(2026, 9, 25, 12, 0, 0);
+beforeEach(() => {
+	setSystemTime(FIXED_NOW);
+});
+afterEach(() => {
+	setSystemTime();
+});
+
+const TOKEN =
+	"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTk5OX0.Sflkxw_RJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c";
 const FRESH_TOKEN = "fresh.tok.en";
 
 function tempHome(opts: { expiresAt?: string; version?: string; token?: string } = {}): string {
 	const home = mkdtempSync(join(tmpdir(), "ultrathink-grok-complete-"));
 	dirs.push(home);
 	writeAuth(home, opts);
-	if (opts.version) writeFileSync(join(home, "version.json"), JSON.stringify({ version: opts.version }));
+	if (opts.version)
+		writeFileSync(join(home, "version.json"), JSON.stringify({ version: opts.version }));
 	return home;
 }
 
@@ -38,7 +56,7 @@ function writeAuth(home: string, opts: { expiresAt?: string; token?: string } = 
 		JSON.stringify({
 			"https://auth.x.ai::client-abc": {
 				key: opts.token ?? TOKEN,
-				expires_at: opts.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+				expires_at: opts.expiresAt ?? new Date(FIXED_NOW + 3_600_000).toISOString(),
 				email: "dev@example.com",
 			},
 		}),
@@ -46,7 +64,10 @@ function writeAuth(home: string, opts: { expiresAt?: string; token?: string } = 
 }
 
 /** Refresh fake: on `force`, rewrites auth.json with a fresh token the way the CLI would. */
-function fakeRefresh(home: string, onForce: () => void = () => writeAuth(home, { token: FRESH_TOKEN })) {
+function fakeRefresh(
+	home: string,
+	onForce: () => void = () => writeAuth(home, { token: FRESH_TOKEN }),
+) {
 	const calls: EnsureFreshOptions[] = [];
 	const refresh = async (opts: EnsureFreshOptions): Promise<GrokAuth | undefined> => {
 		calls.push(opts);
@@ -68,15 +89,6 @@ function fakeFetch(respond: () => Response): { fetch: typeof fetch; calls: Captu
 		return respond();
 	}) as typeof fetch;
 	return { fetch: fetchImpl, calls };
-}
-
-/** Fake fetch that never resolves; rejects with AbortError when its signal fires. */
-function hangingFetch(onCall?: () => void): typeof fetch {
-	return ((_input: string | URL | Request, init?: RequestInit) =>
-		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-			onCall?.();
-		})) as typeof fetch;
 }
 
 async function rejection(promise: Promise<unknown>): Promise<Error> {
@@ -116,7 +128,13 @@ describe("parseResponsesText", () => {
 		const text = parseResponsesText({
 			output: [
 				{ type: "reasoning", content: [{ type: "output_text", text: "ignored" }] },
-				{ type: "message", content: [{ type: "output_text", text: "a" }, { type: "refusal", text: "no" }] },
+				{
+					type: "message",
+					content: [
+						{ type: "output_text", text: "a" },
+						{ type: "refusal", text: "no" },
+					],
+				},
 				{ type: "message", content: [{ type: "output_text", text: "b" }] },
 			],
 		});
@@ -128,7 +146,9 @@ describe("parseResponsesText", () => {
 	});
 
 	test("throws when there is no text", () => {
-		expect(() => parseResponsesText({ output: [{ type: "reasoning" }] })).toThrow("grok returned no text");
+		expect(() => parseResponsesText({ output: [{ type: "reasoning" }] })).toThrow(
+			"grok returned no text",
+		);
 		expect(() => parseResponsesText(null)).toThrow("grok returned no text");
 	});
 });
@@ -155,7 +175,13 @@ describe("grokComplete (http)", () => {
 		expect(headers.get("x-grok-client-version")).toBe("1.0.30");
 		expect(headers.get("content-type")).toBe("application/json");
 		const body = JSON.parse(String(call.init.body));
-		expect(body).toEqual({ model: "grok-4.6", instructions: "SYS", input: "USER", reasoning: { effort: "xhigh" }, stream: false });
+		expect(body).toEqual({
+			model: "grok-4.6",
+			instructions: "SYS",
+			input: "USER",
+			reasoning: { effort: "xhigh" },
+			stream: false,
+		});
 	});
 
 	test("defaults to the Grok route default (grok-4.7) at xhigh via createGrokCompleter", async () => {
@@ -182,7 +208,9 @@ describe("grokComplete (http)", () => {
 		const home = tempHome();
 		const { refresh, calls: refreshCalls } = fakeRefresh(home);
 		const { fetch, calls } = fakeFetch(() =>
-			calls.length === 1 ? new Response("unauthorized", { status: 401 }) : responsesReply("after refresh"),
+			calls.length === 1
+				? new Response("unauthorized", { status: 401 })
+				: responsesReply("after refresh"),
 		);
 		expect(await grokComplete("S", "U", { home, fetch, refresh })).toBe("after refresh");
 		expect(calls).toHaveLength(2);
@@ -205,7 +233,9 @@ describe("grokComplete (http)", () => {
 
 	test("does not retry when the forced refresh yields nothing usable", async () => {
 		const home = tempHome();
-		const { refresh } = fakeRefresh(home, () => writeAuth(home, { expiresAt: new Date(Date.now() - 1_000).toISOString() }));
+		const { refresh } = fakeRefresh(home, () =>
+			writeAuth(home, { expiresAt: new Date(FIXED_NOW - 1_000).toISOString() }),
+		);
 		const { fetch, calls } = fakeFetch(() => new Response("unauthorized", { status: 401 }));
 		const error = await rejection(grokComplete("S", "U", { home, fetch, refresh }));
 		expect(error).toBeInstanceOf(GrokAuthError);
@@ -213,7 +243,9 @@ describe("grokComplete (http)", () => {
 	});
 
 	test("500 becomes a GrokHttpError with a redacted body", async () => {
-		const { fetch } = fakeFetch(() => new Response(`upstream failed for Bearer ${TOKEN}`, { status: 500 }));
+		const { fetch } = fakeFetch(
+			() => new Response(`upstream failed for Bearer ${TOKEN}`, { status: 500 }),
+		);
 		const error = await rejection(grokComplete("S", "U", { home: tempHome(), fetch }));
 		expect(error).toBeInstanceOf(GrokHttpError);
 		if (!(error instanceof GrokHttpError)) return;
@@ -225,7 +257,7 @@ describe("grokComplete (http)", () => {
 
 	test("expired login fails before any request", async () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("never"));
-		const home = tempHome({ expiresAt: new Date(Date.now() - 1000).toISOString() });
+		const home = tempHome({ expiresAt: new Date(FIXED_NOW - 1000).toISOString() });
 		const error = await rejection(grokComplete("S", "U", { home, fetch }));
 		expect(error).toBeInstanceOf(GrokAuthError);
 		expect(error.message).toBe("Grok login expired: run `grok login`");
@@ -246,7 +278,9 @@ describe("grokComplete (http)", () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("never"));
 		const controller = new AbortController();
 		controller.abort();
-		const error = await rejection(grokComplete("S", "U", { home: tempHome(), fetch, signal: controller.signal }));
+		const error = await rejection(
+			grokComplete("S", "U", { home: tempHome(), fetch, signal: controller.signal }),
+		);
 		expect(error.name).toBe("AbortError");
 		expect(calls).toHaveLength(0);
 	});
@@ -254,12 +288,16 @@ describe("grokComplete (http)", () => {
 	test("abort during the request surfaces as AbortError", async () => {
 		const controller = new AbortController();
 		const fetch = hangingFetch(() => controller.abort());
-		const error = await rejection(grokComplete("S", "U", { home: tempHome(), fetch, signal: controller.signal }));
+		const error = await rejection(
+			grokComplete("S", "U", { home: tempHome(), fetch, signal: controller.signal }),
+		);
 		expect(error.name).toBe("AbortError");
 	});
 
 	test("timeout surfaces as a timed-out error", async () => {
-		const error = await rejection(grokComplete("S", "U", { home: tempHome(), fetch: hangingFetch(), timeoutMs: 20 }));
+		const error = await rejection(
+			grokComplete("S", "U", { home: tempHome(), fetch: hangingFetch(), timeoutMs: 20 }),
+		);
 		expect(error.message).toBe("grok timed out after 20ms");
 	});
 });
@@ -271,7 +309,11 @@ function shuntReply(text: string, extra: Record<string, unknown>[] = []): Respon
 		type: "message",
 		role: "assistant",
 		model: "grok-shunt-route",
-		content: [{ type: "thinking", thinking: "hidden reasoning", signature: "sig" }, ...extra, { type: "text", text }],
+		content: [
+			{ type: "thinking", thinking: "hidden reasoning", signature: "sig" },
+			...extra,
+			{ type: "text", text },
+		],
 		stop_reason: "end_turn",
 		usage: { input_tokens: 1, output_tokens: 1 },
 	});
@@ -280,7 +322,12 @@ function shuntReply(text: string, extra: Record<string, unknown>[] = []): Respon
 describe("buildShuntBody", () => {
 	test("produces an Anthropic Messages payload without a thinking param", () => {
 		const body = buildShuntBody("SYS", "USER", "grok-shunt-route", 4096);
-		expect(body).toEqual({ model: "grok-shunt-route", max_tokens: 4096, system: "SYS", messages: [{ role: "user", content: "USER" }] });
+		expect(body).toEqual({
+			model: "grok-shunt-route",
+			max_tokens: 4096,
+			system: "SYS",
+			messages: [{ role: "user", content: "USER" }],
+		});
 		expect("thinking" in body).toBe(false);
 	});
 });
@@ -304,8 +351,12 @@ describe("parseShuntText", () => {
 	test("surfaces an Anthropic error body as a redacted GrokHttpError", () => {
 		let error: unknown;
 		try {
-			parseShuntText({ type: "error", error: { type: "overloaded_error", message: `busy Bearer ${TOKEN}` } });
+			parseShuntText({
+				type: "error",
+				error: { type: "overloaded_error", message: `busy Bearer ${TOKEN}` },
+			});
 		} catch (caught) {
+			// reason: the error is captured and asserted by the caller
 			error = caught;
 		}
 		expect(error).toBeInstanceOf(GrokHttpError);
@@ -316,7 +367,9 @@ describe("parseShuntText", () => {
 	});
 
 	test("throws when there is no text", () => {
-		expect(() => parseShuntText({ type: "message", content: [{ type: "thinking", thinking: "only" }] })).toThrow("grok returned no text");
+		expect(() =>
+			parseShuntText({ type: "message", content: [{ type: "thinking", thinking: "only" }] }),
+		).toThrow("grok returned no text");
 		expect(() => parseShuntText(null)).toThrow("grok returned no text");
 	});
 });
@@ -359,7 +412,15 @@ describe("grokComplete (shunt)", () => {
 		const home = mkdtempSync(join(tmpdir(), "ultrathink-grok-empty-"));
 		dirs.push(home);
 		for (const url of [undefined, "", "  "]) {
-			const error = await rejection(grokComplete("S", "U", { transport: "shunt", shuntBaseUrl: url, shuntModel: "m", home, fetch }));
+			const error = await rejection(
+				grokComplete("S", "U", {
+					transport: "shunt",
+					shuntBaseUrl: url,
+					shuntModel: "m",
+					home,
+					fetch,
+				}),
+			);
 			expect(error.message).toContain("grok.shuntBaseUrl");
 			expect(error.message).toContain("~/.config/ultrathink/config.json");
 			expect(isGrokAuthError(error)).toBe(false);
@@ -371,7 +432,14 @@ describe("grokComplete (shunt)", () => {
 		const { fetch, calls } = fakeFetch(() => shuntReply("ok"));
 		const home = mkdtempSync(join(tmpdir(), "ultrathink-grok-empty-"));
 		dirs.push(home);
-		const complete = createGrokCompleter({ transport: "shunt", shuntBaseUrl, shuntModel: "", model: "grok-4.6", home, fetch });
+		const complete = createGrokCompleter({
+			transport: "shunt",
+			shuntBaseUrl,
+			shuntModel: "",
+			model: "grok-4.6",
+			home,
+			fetch,
+		});
 		expect(await complete("S", "U")).toBe("ok");
 		expect(calls[0]!.url).toBe("http://gateway.test:8080/v1/messages");
 		const body = JSON.parse(String(calls[0]!.init.body));
@@ -381,8 +449,12 @@ describe("grokComplete (shunt)", () => {
 	});
 
 	test("non-2xx becomes a GrokHttpError with a redacted body", async () => {
-		const { fetch } = fakeFetch(() => new Response(`route missing for Bearer ${TOKEN}`, { status: 502 }));
-		const error = await rejection(grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch }));
+		const { fetch } = fakeFetch(
+			() => new Response(`route missing for Bearer ${TOKEN}`, { status: 502 }),
+		);
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch }),
+		);
 		expect(error).toBeInstanceOf(GrokHttpError);
 		if (!(error instanceof GrokHttpError)) return;
 		expect(error.status).toBe(502);
@@ -392,8 +464,12 @@ describe("grokComplete (shunt)", () => {
 	});
 
 	test("a 200 carrying an Anthropic error body is still an error", async () => {
-		const { fetch } = fakeFetch(() => Response.json({ type: "error", error: { type: "api_error", message: "upstream" } }));
-		const error = await rejection(grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch }));
+		const { fetch } = fakeFetch(() =>
+			Response.json({ type: "error", error: { type: "api_error", message: "upstream" } }),
+		);
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch }),
+		);
 		expect(error).toBeInstanceOf(GrokHttpError);
 		expect(error.message).toBe("shunt api_error: upstream");
 	});
@@ -402,7 +478,14 @@ describe("grokComplete (shunt)", () => {
 		const { fetch, calls } = fakeFetch(() => shuntReply("never"));
 		const controller = new AbortController();
 		controller.abort();
-		const error = await rejection(grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch, signal: controller.signal }));
+		const error = await rejection(
+			grokComplete("S", "U", {
+				transport: "shunt",
+				shuntBaseUrl,
+				fetch,
+				signal: controller.signal,
+			}),
+		);
 		expect(error.name).toBe("AbortError");
 		expect(calls).toHaveLength(0);
 	});
@@ -410,12 +493,26 @@ describe("grokComplete (shunt)", () => {
 	test("abort during the request surfaces as AbortError", async () => {
 		const controller = new AbortController();
 		const fetch = hangingFetch(() => controller.abort());
-		const error = await rejection(grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch, signal: controller.signal }));
+		const error = await rejection(
+			grokComplete("S", "U", {
+				transport: "shunt",
+				shuntBaseUrl,
+				fetch,
+				signal: controller.signal,
+			}),
+		);
 		expect(error.name).toBe("AbortError");
 	});
 
 	test("timeout surfaces as a timed-out error", async () => {
-		const error = await rejection(grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch: hangingFetch(), timeoutMs: 20 }));
+		const error = await rejection(
+			grokComplete("S", "U", {
+				transport: "shunt",
+				shuntBaseUrl,
+				fetch: hangingFetch(),
+				timeoutMs: 20,
+			}),
+		);
 		expect(error.message).toBe("grok timed out after 20ms");
 	});
 });
@@ -438,7 +535,14 @@ describe("grokComplete (cli)", () => {
 	test("spawns the grok CLI tool-free in a private per-process scratch cwd and parses .text", async () => {
 		const { bin, argsPath } = fakeGrok('{ text: "<X>" + prompt + "</X>", stopReason: "end_turn" }');
 		const home = tempHome();
-		const text = await grokComplete("SYS", "USER TEXT", { transport: "cli", bin, home, model: "grok-4.6", reasoningEffort: "high", cwd: "/nonexistent" });
+		const text = await grokComplete("SYS", "USER TEXT", {
+			transport: "cli",
+			bin,
+			home,
+			model: "grok-4.6",
+			reasoningEffort: "high",
+			cwd: "/nonexistent",
+		});
 		expect(text).toBe("<X>USER TEXT</X>");
 		const seen = JSON.parse(await Bun.file(argsPath).text()) as {
 			args: string[];
@@ -447,7 +551,12 @@ describe("grokComplete (cli)", () => {
 			env: Record<string, string | undefined>;
 		};
 		expect(seen.prompt).toBe("USER TEXT");
-		expect(seen.env).toEqual({ GROK_HOME: home, GROK_SUBAGENTS: "0", GROK_MEMORY: "0", GROK_WEB_FETCH: "0" });
+		expect(seen.env).toEqual({
+			GROK_HOME: home,
+			GROK_SUBAGENTS: "0",
+			GROK_MEMORY: "0",
+			GROK_WEB_FETCH: "0",
+		});
 		expect(realpathSync(dirname(seen.cwd))).toBe(realpathSync(tmpdir()));
 		expect(basename(seen.cwd)).toMatch(/^ultrathink-grok-.+$/);
 		expect(statSync(seen.cwd).mode & 0o777).toBe(0o700);
@@ -460,7 +569,8 @@ describe("grokComplete (cli)", () => {
 		expect(after("--disallowed-tools")).toContain("run_terminal_cmd");
 		const denied = seen.args.flatMap((arg, i) => (arg === "--deny" ? [seen.args[i + 1]] : []));
 		expect(denied).toEqual(["Bash", "Edit", "Write"]);
-		for (const flag of ["--no-plan", "--no-subagents", "--disable-web-search", "--verbatim"]) expect(seen.args).toContain(flag);
+		for (const flag of ["--no-plan", "--no-subagents", "--disable-web-search", "--verbatim"])
+			expect(seen.args).toContain(flag);
 		expect(after("--system-prompt-override")).toBe("SYS");
 	});
 
@@ -480,13 +590,17 @@ describe("grokComplete (cli)", () => {
 
 	test("a non-end_turn stopReason is an error even when partial text is present", async () => {
 		const { bin } = fakeGrok('{ text: "partial", stopReason: "cancelled" }');
-		const error = await rejection(grokComplete("SYS", "USER", { transport: "cli", bin, home: tempHome() }));
+		const error = await rejection(
+			grokComplete("SYS", "USER", { transport: "cli", bin, home: tempHome() }),
+		);
 		expect(error.message).toBe("grok cli stopped: cancelled");
 	});
 
 	test("output without stopReason (older CLI) is still accepted", async () => {
 		const { bin } = fakeGrok('{ text: "ok" }');
-		expect(await grokComplete("SYS", "USER", { transport: "cli", bin, home: tempHome() })).toBe("ok");
+		expect(await grokComplete("SYS", "USER", { transport: "cli", bin, home: tempHome() })).toBe(
+			"ok",
+		);
 	});
 });
 

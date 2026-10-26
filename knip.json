@@ -1,0 +1,24 @@
+{
+	"project": ["**/*.ts"],
+	"ignore": ["plugins/**", "hosts/**", ".semgrep/**"],
+	"entry": [
+		"src/host/omp.ts",
+		"src/uplift/commands.ts",
+		"src/host/grokbot-cli.ts",
+		"services/ultrathink/stdio/main.ts",
+		"hooks/answers.ts",
+		"hooks/flow-eval.ts",
+		"hooks/pr-sync.ts",
+		"hooks/stop.ts",
+		"hooks/engine.ts",
+		"scripts/cursor-plugin.ts",
+		"services/ultrathink/server.ts",
+		"services/ultrathink/obs/audit-verify.worker.ts",
+		"src/claude/atomic.worker.ts",
+		"src/claude/atomic.recovery.worker.ts",
+		"services/ultrathink/obs/audit-cli.ts",
+		"services/ultrathink/store/snapshots-cli.ts",
+		"services/ultrathink/ui/harness/serve.ts",
+		"**/*.test.ts"
+	]
+}

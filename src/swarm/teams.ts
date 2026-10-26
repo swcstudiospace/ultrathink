@@ -48,7 +48,14 @@ export interface TeamsFs {
 	statSync(path: string): { mtimeMs: number };
 }
 
-const defaultFs = { existsSync, mkdirSync, openSync, closeSync, readdirSync, statSync } satisfies TeamsFs;
+const defaultFs = {
+	existsSync,
+	mkdirSync,
+	openSync,
+	closeSync,
+	readdirSync,
+	statSync,
+} satisfies TeamsFs;
 
 /** A usable swarm checkout, or why lanes cannot run. */
 export type SwarmRoot = { root: string } | { reason: string };
@@ -99,14 +106,26 @@ export interface LaneDiscovery {
 
 /** Per-lane task counts, or why the probe failed. `logPath` always names the lane's run log. */
 export type LaneStatusRow =
-	| { laneId: string; logPath: string; total: number; byState: Record<string, number>; done: number; summary: string }
+	| {
+			laneId: string;
+			logPath: string;
+			total: number;
+			byState: Record<string, number>;
+			done: number;
+			summary: string;
+	  }
 	| { laneId: string; logPath: string; error: string };
 
 /** Process start seam; the default is a detached, unref'd `node:child_process` spawn. */
 export type LaneSpawnFn = (
 	cmd: string,
 	args: readonly string[],
-	opts: { cwd: string; env: Record<string, string>; detached: true; stdio: readonly ["ignore", number, number] },
+	opts: {
+		cwd: string;
+		env: Record<string, string>;
+		detached: true;
+		stdio: readonly ["ignore", number, number];
+	},
 ) => { pid?: number };
 
 /** Async probe seam for `orch_status.py`; injectable so status tests never run python. */
@@ -125,8 +144,12 @@ export type LaneStatusProbe = (stateDir: string) => Promise<{ stdout: string } |
  */
 export function resolveSwarmRoot(env: NodeJS.ProcessEnv, fs: TeamsFs = defaultFs): SwarmRoot {
 	const raw = (env.ULTRATHINK_SWARM_ROOT ?? "").trim();
-	if (!raw) return { reason: "ULTRATHINK_SWARM_ROOT is not set — point it at an absolute agent-swarm checkout" };
-	if (!raw.startsWith("/")) return { reason: `ULTRATHINK_SWARM_ROOT must be an absolute path, got ${raw}` };
+	if (!raw)
+		return {
+			reason: "ULTRATHINK_SWARM_ROOT is not set — point it at an absolute agent-swarm checkout",
+		};
+	if (!raw.startsWith("/"))
+		return { reason: `ULTRATHINK_SWARM_ROOT must be an absolute path, got ${raw}` };
 	const runner = join(raw, "hooks", "autonomous_run.py");
 	if (!fs.existsSync(raw) || !fs.existsSync(runner)) {
 		return { reason: `${raw} is not an agent-swarm checkout (missing ${runner})` };
@@ -205,7 +228,8 @@ export function isSdlcPrompt(prompt: string): boolean {
 }
 
 /** sha256 of the brief, first 8 hex characters: stable per brief, short enough for a directory name. */
-const sha8 = (brief: string): string => createHash("sha256").update(brief, "utf8").digest("hex").slice(0, 8);
+const sha8 = (brief: string): string =>
+	createHash("sha256").update(brief, "utf8").digest("hex").slice(0, 8);
 
 export interface PlanLanesOptions {
 	cwd: string;
@@ -258,7 +282,11 @@ export function planLanes(briefs: readonly string[], opts: PlanLanesOptions): La
 				"--brief",
 				laneBrief,
 			],
-			env: { ...parentEnv, SWARM_DIR: stateDir, ...(cap ? { SWARM_AUTONOMOUS_RUN_CAP_S: cap } : {}) },
+			env: {
+				...parentEnv,
+				SWARM_DIR: stateDir,
+				...(cap ? { SWARM_AUTONOMOUS_RUN_CAP_S: cap } : {}),
+			},
 		};
 	});
 }
@@ -266,11 +294,23 @@ export function planLanes(briefs: readonly string[], opts: PlanLanesOptions): La
 function startLaneDetached(
 	cmd: string,
 	args: readonly string[],
-	opts: { cwd: string; env: Record<string, string>; detached: true; stdio: readonly ["ignore", number, number] },
+	opts: {
+		cwd: string;
+		env: Record<string, string>;
+		detached: true;
+		stdio: readonly ["ignore", number, number];
+	},
 ): { pid?: number } {
-	const child = nodeSpawn(cmd, args, { cwd: opts.cwd, env: opts.env, detached: true, stdio: opts.stdio as ["ignore", number, number] });
+	const child = nodeSpawn(cmd, args, {
+		cwd: opts.cwd,
+		env: opts.env,
+		detached: true,
+		stdio: opts.stdio as ["ignore", number, number],
+	});
 	// A missing launcher reports asynchronously as an 'error' event; without a listener it would crash the host.
-	child.on("error", () => {});
+	child.on("error", () => {
+		// reason: the launch failure is seen by the caller through the missing pid; the listener only stops the crash
+	});
 	child.unref();
 	return { pid: child.pid };
 }
@@ -296,13 +336,19 @@ export function spawnLanes(
 					detached: true,
 					stdio: ["ignore", log, log],
 				});
-				if (!child.pid) return { laneId: lane.id, stateDir: lane.stateDir, logPath, error: "spawned without a pid" };
+				if (!child.pid)
+					return {
+						laneId: lane.id,
+						stateDir: lane.stateDir,
+						logPath,
+						error: "spawned without a pid",
+					};
 				return { laneId: lane.id, pid: child.pid, stateDir: lane.stateDir, logPath };
 			} finally {
 				try {
 					fs.closeSync(log);
 				} catch {
-					// the fd is the OS's to reap either way
+					// reason: the fd is the OS's to reap either way
 				}
 			}
 		} catch (error) {
@@ -334,7 +380,13 @@ export function laneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneDiscove
 	} catch {
 		return { lanes: [], omitted: 0 };
 	}
-	const lanes: Array<{ laneId: string; stateDir: string; index: number; nonce: string; mtimeMs: number }> = [];
+	const lanes: Array<{
+		laneId: string;
+		stateDir: string;
+		index: number;
+		nonce: string;
+		mtimeMs: number;
+	}> = [];
 	for (const name of names) {
 		const match = LANE_DIR_PATTERN.exec(name);
 		if (!match) continue;
@@ -343,9 +395,15 @@ export function laneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneDiscove
 		try {
 			mtimeMs = fs.statSync(full).mtimeMs;
 		} catch {
-			// an entry that vanished mid-scan still counts, just as the oldest
+			// reason: an entry that vanished mid-scan still counts, just as the oldest
 		}
-		lanes.push({ laneId: name, stateDir: full, index: Number.parseInt(match[2]!, 10), nonce: match[3]!, mtimeMs });
+		lanes.push({
+			laneId: name,
+			stateDir: full,
+			index: Number.parseInt(match[2]!, 10),
+			nonce: match[3]!,
+			mtimeMs,
+		});
 	}
 	lanes.sort((a, b) => b.mtimeMs - a.mtimeMs);
 	const kept = lanes.slice(0, MAX_DISCOVERED_LANES);
@@ -363,7 +421,10 @@ export function laneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneDiscove
  * row for that lane alone. Probes run concurrently but at most {@link LANE_STATUS_CONCURRENCY} at a time,
  * and rows come back in input order. `done` follows AgentSwarm's own convention (DONE, APPROVED, CANCELLED).
  */
-export async function laneStatus(lanes: readonly LaneRef[], runFn: LaneStatusProbe): Promise<LaneStatusRow[]> {
+export async function laneStatus(
+	lanes: readonly LaneRef[],
+	runFn: LaneStatusProbe,
+): Promise<LaneStatusRow[]> {
 	const results = new Array<LaneStatusRow>(lanes.length);
 	let next = 0;
 	const worker = async (): Promise<void> => {
@@ -374,7 +435,9 @@ export async function laneStatus(lanes: readonly LaneRef[], runFn: LaneStatusPro
 			results[index] = await probeLane(lanes[index]!, runFn);
 		}
 	};
-	await Promise.all(Array.from({ length: Math.min(LANE_STATUS_CONCURRENCY, lanes.length) }, () => worker()));
+	await Promise.all(
+		Array.from({ length: Math.min(LANE_STATUS_CONCURRENCY, lanes.length) }, () => worker()),
+	);
 	return results;
 }
 
@@ -385,7 +448,11 @@ async function probeLane(lane: LaneRef, runFn: LaneStatusProbe): Promise<LaneSta
 	try {
 		probe = await runFn(lane.stateDir);
 	} catch (error) {
-		return { laneId: lane.laneId, logPath, error: error instanceof Error ? error.message.slice(0, 200) : "status probe failed" };
+		return {
+			laneId: lane.laneId,
+			logPath,
+			error: error instanceof Error ? error.message.slice(0, 200) : "status probe failed",
+		};
 	}
 	if ("error" in probe) return { laneId: lane.laneId, logPath, error: probe.error };
 	let parsed: unknown;
@@ -395,13 +462,15 @@ async function probeLane(lane: LaneRef, runFn: LaneStatusProbe): Promise<LaneSta
 		return { laneId: lane.laneId, logPath, error: "unreadable status output (not JSON)" };
 	}
 	let tasks: unknown[] | undefined;
-	if (parsed && typeof parsed === "object" && "tasks" in parsed && Array.isArray(parsed.tasks)) tasks = parsed.tasks;
+	if (parsed && typeof parsed === "object" && "tasks" in parsed && Array.isArray(parsed.tasks))
+		tasks = parsed.tasks;
 	if (!tasks) return { laneId: lane.laneId, logPath, error: "status output had no task list" };
 	const byState: Record<string, number> = {};
 	let done = 0;
 	for (const task of tasks) {
 		let state = "UNKNOWN";
-		if (task && typeof task === "object" && "state" in task && typeof task.state === "string") state = task.state;
+		if (task && typeof task === "object" && "state" in task && typeof task.state === "string")
+			state = task.state;
 		byState[state] = (byState[state] ?? 0) + 1;
 		if (DONE_STATES[state]) done += 1;
 	}
@@ -425,13 +494,17 @@ const execFileP = promisify(nodeExecFile);
  */
 const defaultStatusSpawn: OrchStatusSpawn = async (cmd, args, opts) => {
 	try {
-		const { stdout, stderr } = await execFileP(cmd, args as string[], { ...opts, encoding: "utf8" });
+		const { stdout, stderr } = await execFileP(cmd, args as string[], {
+			...opts,
+			encoding: "utf8",
+		});
 		return { stdout, stderr };
 	} catch (error) {
 		const err = error as (Error & { stdout?: unknown; stderr?: unknown }) | undefined;
 		return {
 			stdout: typeof err?.stdout === "string" ? err.stdout : "",
-			stderr: (typeof err?.stderr === "string" ? err.stderr : "") || (err?.message ?? String(error)),
+			stderr:
+				(typeof err?.stderr === "string" ? err.stderr : "") || (err?.message ?? String(error)),
 		};
 	}
 };
@@ -451,14 +524,21 @@ export function orchStatusRunner(
 			const result = await spawnFn(
 				"python3",
 				[join(opts.swarmRoot, "scripts", "orch_status.py"), "--json", "--repo", opts.cwd],
-				{ cwd: opts.cwd, env: { ...opts.env, SWARM_DIR: stateDir }, timeout: ORCH_STATUS_TIMEOUT_MS },
+				{
+					cwd: opts.cwd,
+					env: { ...opts.env, SWARM_DIR: stateDir },
+					timeout: ORCH_STATUS_TIMEOUT_MS,
+				},
 			);
-			if (typeof result.stdout === "string" && result.stdout.trim()) return { stdout: result.stdout };
+			if (typeof result.stdout === "string" && result.stdout.trim())
+				return { stdout: result.stdout };
 			const raw = result.error ? result.error.message : (result.stderr ?? "");
 			const detail = raw.replace(/\s+/g, " ").trim().slice(0, 200) || "no output";
 			return { error: `orch_status.py probe failed: ${detail}` };
 		} catch (error) {
-			return { error: `orch_status.py probe failed: ${error instanceof Error ? error.message : String(error)}` };
+			return {
+				error: `orch_status.py probe failed: ${error instanceof Error ? error.message : String(error)}`,
+			};
 		}
 	};
 }
@@ -481,9 +561,11 @@ export function formatLaneHandles(handles: readonly LaneHandle[]): string {
  * omitted count instead of letting running lanes vanish from the report.
  */
 export function formatLaneStatusText(rows: readonly LaneStatusRow[], omitted = 0): string {
-	if (rows.length === 0 && omitted === 0) return "No swarm lanes found under this state directory yet.";
+	if (rows.length === 0 && omitted === 0)
+		return "No swarm lanes found under this state directory yet.";
 	const lines = rows.map(
-		(row) => `${"error" in row ? `${row.laneId}: ${row.error}` : row.summary}\n    log ${row.logPath}`,
+		(row) =>
+			`${"error" in row ? `${row.laneId}: ${row.error}` : row.summary}\n    log ${row.logPath}`,
 	);
 	if (omitted > 0)
 		lines.push(
@@ -525,7 +607,10 @@ export interface SwarmStatusCardSnapshot {
  * carries the plan's display brief plus the handle's state dir, log path, pid, or start error. A plain
  * projection — text sanitization stays at render time, and nothing here touches fs or env.
  */
-export function toSwarmSpawnCard(handles: readonly LaneHandle[], plans: readonly LanePlan[]): SwarmSpawnCardSnapshot {
+export function toSwarmSpawnCard(
+	handles: readonly LaneHandle[],
+	plans: readonly LanePlan[],
+): SwarmSpawnCardSnapshot {
 	return {
 		spawned: handles.filter((handle) => handle.pid !== undefined).length,
 		total: plans.length,
@@ -545,12 +630,21 @@ export function toSwarmSpawnCard(handles: readonly LaneHandle[], plans: readonly
  * becomes a bare error lane with empty counts; every lane carries its run log path, and the discovery
  * bound's omitted count passes through untouched.
  */
-export function toSwarmStatusCard(rows: readonly LaneStatusRow[], omitted: number): SwarmStatusCardSnapshot {
+export function toSwarmStatusCard(
+	rows: readonly LaneStatusRow[],
+	omitted: number,
+): SwarmStatusCardSnapshot {
 	return {
 		lanes: rows.map((row) =>
 			"error" in row
 				? { laneId: row.laneId, summary: "", logPath: row.logPath, error: row.error }
-				: { laneId: row.laneId, summary: row.summary, logPath: row.logPath, done: row.done, total: row.total },
+				: {
+						laneId: row.laneId,
+						summary: row.summary,
+						logPath: row.logPath,
+						done: row.done,
+						total: row.total,
+					},
 		),
 		omitted,
 	};

@@ -19,7 +19,9 @@ import {
 	ULTRATHINK_VERBS,
 } from "./commands.ts";
 
-function config(patch: { track?: boolean; notion?: string; linear?: string } = {}): UltrathinkConfig {
+function config(
+	patch: { track?: boolean; notion?: string; linear?: string } = {},
+): UltrathinkConfig {
 	const base = defaultConfig();
 	return {
 		...base,
@@ -40,8 +42,14 @@ describe("parseUltrathinkCommand", () => {
 			"<command-message>ultrathink:ultrathink-quick is running…</command-message>\n<command-name>/ultrathink:ultrathink-quick</command-name>\n<command-args>  fix the typo </command-args>",
 			{ verb: "quick", args: "fix the typo" },
 		],
-		["<command-name>/ultrathink-track</command-name>\n<command-args>on</command-args>", { verb: "track", args: "on" }],
-		['<user_query>\n/ultrathink-quick fix the typo\n</user_query>\n<skill_information>\n<skill name="ultrathink-quick" args="fix the typo">\nBody.\n</skill>\n</skill_information>', { verb: "quick", args: "fix the typo" }],
+		[
+			"<command-name>/ultrathink-track</command-name>\n<command-args>on</command-args>",
+			{ verb: "track", args: "on" },
+		],
+		[
+			'<user_query>\n/ultrathink-quick fix the typo\n</user_query>\n<skill_information>\n<skill name="ultrathink-quick" args="fix the typo">\nBody.\n</skill>\n</skill_information>',
+			{ verb: "quick", args: "fix the typo" },
+		],
 		// Older names stay accepted.
 		["/ultrathink:quick fix the typo", { verb: "quick", args: "fix the typo" }],
 		["<command-name>/ultrathink:off</command-name>", { verb: "off", args: "" }],
@@ -54,7 +62,12 @@ describe("parseUltrathinkCommand", () => {
 
 	test("every verb parses under each of its names", () => {
 		for (const verb of ULTRATHINK_VERBS) {
-			for (const typed of [`/ultrathink-${verb}`, `/ultrathink:ultrathink-${verb}`, `/ultrathink:${verb}`, `/ultrathink ${verb}`]) {
+			for (const typed of [
+				`/ultrathink-${verb}`,
+				`/ultrathink:ultrathink-${verb}`,
+				`/ultrathink:${verb}`,
+				`/ultrathink ${verb}`,
+			]) {
 				expect(parseUltrathinkCommand(typed)).toEqual({ verb, args: "" });
 			}
 		}
@@ -90,7 +103,9 @@ describe("trackingEnabled", () => {
 		expect(trackingEnabled(config({ track: false }), {}, {})).toBe(false);
 		expect(trackingEnabled(config({ track: true }), { trackEnabled: false }, {})).toBe(false);
 		expect(trackingEnabled(config({ track: false }), { trackEnabled: true }, {})).toBe(true);
-		expect(trackingEnabled(config({ track: true }), { trackEnabled: true }, { ULTRATHINK_TRACK: "0" })).toBe(false);
+		expect(
+			trackingEnabled(config({ track: true }), { trackEnabled: true }, { ULTRATHINK_TRACK: "0" }),
+		).toBe(false);
 		expect(trackingEnabled(config({ track: true }), {}, { ULTRATHINK_TRACK: "1" })).toBe(true);
 	});
 });
@@ -141,7 +156,10 @@ describe("runControl", () => {
 	function projectConfig(extra: Record<string, unknown>): void {
 		mkdirSync(join(io.cwd, ".claude"), { recursive: true });
 		// An empty Grok home keeps the OAuth status line off the real ~/.grok.
-		writeFileSync(join(io.cwd, ".claude", "ultrathink.json"), JSON.stringify({ grok: { home: join(dir, "grok") }, ...extra }));
+		writeFileSync(
+			join(io.cwd, ".claude", "ultrathink.json"),
+			JSON.stringify({ grok: { home: join(dir, "grok") }, ...extra }),
+		);
 	}
 
 	/** User-layer config (`~/.config/ultrathink/config.json`); overwrites the whole file. */
@@ -162,9 +180,21 @@ describe("runControl", () => {
 		// User-level config on the machine running the tests must not leak in.
 		process.env.XDG_CONFIG_HOME = join(dir, "xdg");
 		process.env.CLAUDE_CONFIG_DIR = join(dir, "claude");
-		for (const key of ["ULTRATHINK_TRACK", "ULTRATHINK_SHIP", "SUBSTRATE_URL", "SUBSTRATE_DISABLED"] as const) delete process.env[key];
+		for (const key of [
+			"ULTRATHINK_TRACK",
+			"ULTRATHINK_SHIP",
+			"SUBSTRATE_URL",
+			"SUBSTRATE_DISABLED",
+		] as const)
+			delete process.env[key];
 		// Neither the machine's Jev keys nor its endpoint override may reach a test.
-		for (const key of ["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "ULTRATHINK_DECISIONS_URL", "ULTRATHINK_DECISIONS", "ULTRATHINK_DEBUG"] as const) {
+		for (const key of [
+			"OPENROUTER_API_KEY",
+			"AI_GATEWAY_API_KEY",
+			"ULTRATHINK_DECISIONS_URL",
+			"ULTRATHINK_DECISIONS",
+			"ULTRATHINK_DEBUG",
+		] as const) {
 			delete process.env[key];
 		}
 		for (const key of [
@@ -197,22 +227,32 @@ describe("runControl", () => {
 		expect(await runControl(["off"], io)).toBe("Prompt Uplift off");
 		expect(readControl(io.stateDir)).toEqual({ enabled: false });
 		expect(await runControl(["on"], io)).toBe("Prompt Uplift on");
-		expect(await runControl(["skip"], io)).toBe("Prompt Uplift skip needs a session id (--session <id>); none was given, so nothing was armed.");
+		expect(await runControl(["skip"], io)).toBe(
+			"Prompt Uplift skip needs a session id (--session <id>); none was given, so nothing was armed.",
+		);
 		expect(readSkipOnce(io.stateDir, "s1")).toBe(false);
-		expect(await runControl(["skip"], { ...io, sessionId: "s1" })).toBe("Prompt Uplift will skip the next prompt in this session");
+		expect(await runControl(["skip"], { ...io, sessionId: "s1" })).toBe(
+			"Prompt Uplift will skip the next prompt in this session",
+		);
 		expect(readSkipOnce(io.stateDir, "s1")).toBe(true);
 		expect(readSkipOnce(io.stateDir, "s2")).toBe(false);
-		expect(await runControl(["track", "off"], io)).toStartWith("Tracking: off (Linear/Notion rows)");
+		expect(await runControl(["track", "off"], io)).toStartWith(
+			"Tracking: off (Linear/Notion rows)",
+		);
 		expect(readControl(io.stateDir)).toEqual({ enabled: true, trackEnabled: false });
 		expect(await runControl(["Track", "ON"], io)).toStartWith("Tracking: on");
 		expect(readControl(io.stateDir)).toEqual({ enabled: true, trackEnabled: true });
-		expect(await runControl(["status"], { ...io, sessionId: "s1" })).toStartWith("Prompt Uplift on (skipping next prompt)");
+		expect(await runControl(["status"], { ...io, sessionId: "s1" })).toStartWith(
+			"Prompt Uplift on (skipping next prompt)",
+		);
 		expect(await runControl(["status"], io)).not.toContain("skipping next prompt");
 	});
 
 	test("status reports tracking and names what is not configured", async () => {
 		const status = await runControl(["status"], io);
-		expect(status).toContain("Tracking: on (not configured: set notion.dataSourceUrl / linear.team)");
+		expect(status).toContain(
+			"Tracking: on (not configured: set notion.dataSourceUrl / linear.team)",
+		);
 		expect(status).toContain("Notion: not configured");
 		expect(status).toContain("Linear team: not configured");
 		expect(status).toContain(`State: ${io.stateDir}`);
@@ -225,18 +265,23 @@ describe("runControl", () => {
 		expect(configured).toContain("Linear team: Acme");
 
 		await runControl(["track", "off"], io);
-		expect(await runControl(["track"], io)).toBe("Tracking: off (Linear/Notion rows)\nNotion: collection://abc\nLinear team: Acme");
+		expect(await runControl(["track"], io)).toBe(
+			"Tracking: off (Linear/Notion rows)\nNotion: collection://abc\nLinear team: Acme",
+		);
 	});
 
 	test("tracking reads off only when no rows are wanted; config or ULTRATHINK_TRACK=0 leaves them to kickoff", async () => {
-		const kickoff = "Tracking: kickoff (planner-side row creation off; /ultrathink-track off stops all rows)";
+		const kickoff =
+			"Tracking: kickoff (planner-side row creation off; /ultrathink-track off stops all rows)";
 		projectConfig({ linear: { team: "Acme" }, track: { enabled: false } });
 		expect(await runControl(["status"], io)).toContain(kickoff);
 		projectConfig({ linear: { team: "Acme" } });
 		process.env.ULTRATHINK_TRACK = "0";
 		expect(await runControl(["track"], io)).toStartWith(kickoff);
 		expect(await runControl(["track", "on"], io)).toStartWith(kickoff);
-		expect(await runControl(["track", "off"], io)).toStartWith("Tracking: off (Linear/Notion rows)");
+		expect(await runControl(["track", "off"], io)).toStartWith(
+			"Tracking: off (Linear/Notion rows)",
+		);
 	});
 
 	/** The one status line starting with `prefix`. */
@@ -245,7 +290,9 @@ describe("runControl", () => {
 	}
 
 	test("status shows the substrate as off until a URL is set; SUBSTRATE_URL beats config, SUBSTRATE_DISABLED beats both", async () => {
-		expect(await statusLine("Substrate:")).toBe("Substrate: off (optional: set substrate.url or SUBSTRATE_URL)");
+		expect(await statusLine("Substrate:")).toBe(
+			"Substrate: off (optional: set substrate.url or SUBSTRATE_URL)",
+		);
 		projectConfig({ substrate: { url: "https://substrate.example/" } });
 		expect(await statusLine("Substrate:")).toBe("Substrate: https://substrate.example (config)");
 		process.env.SUBSTRATE_URL = "http://localhost:9000";
@@ -265,7 +312,9 @@ describe("runControl", () => {
 	});
 
 	test("status shows the knowledge base as opt-in, idle while HITL is off, missing a credential, then ready with its organization", async () => {
-		expect(await statusLine("Knowledge base:")).toBe("Knowledge base: off (opt-in: set hitl.knowledgeBase)");
+		expect(await statusLine("Knowledge base:")).toBe(
+			"Knowledge base: off (opt-in: set hitl.knowledgeBase)",
+		);
 		projectConfig({ hitl: { knowledgeBase: true } });
 		expect(await statusLine("Knowledge base:")).toBe(
 			"Knowledge base: on · no Greptile credential (run bin/ultrathink-mcp auth login greptile)",
@@ -276,12 +325,21 @@ describe("runControl", () => {
 		});
 		expect(await statusLine("Knowledge base:")).toBe("Knowledge base: on · Greptile");
 		projectConfig({ hitl: { knowledgeBase: true }, ship: { greptileOrganization: "acme" } });
-		expect(await statusLine("Knowledge base:")).toBe("Knowledge base: on · Greptile · organization acme");
+		expect(await statusLine("Knowledge base:")).toBe(
+			"Knowledge base: on · Greptile · organization acme",
+		);
 		await runControl(["hitl", "off"], io);
-		expect(await statusLine("Knowledge base:")).toBe("Knowledge base: on · not read while HITL is off");
-		projectConfig({ hitl: { enabled: false, knowledgeBase: true }, ship: { greptileOrganization: "acme" } });
+		expect(await statusLine("Knowledge base:")).toBe(
+			"Knowledge base: on · not read while HITL is off",
+		);
+		projectConfig({
+			hitl: { enabled: false, knowledgeBase: true },
+			ship: { greptileOrganization: "acme" },
+		});
 		await runControl(["hitl", "on"], io);
-		expect(await statusLine("Knowledge base:")).toBe("Knowledge base: on · Greptile · organization acme");
+		expect(await statusLine("Knowledge base:")).toBe(
+			"Knowledge base: on · Greptile · organization acme",
+		);
 	});
 
 	test("the shunt status names the missing gateway setting and the model actually sent", async () => {
@@ -306,8 +364,14 @@ describe("runControl", () => {
 		expect(await runControl(["think", "off"], io)).toBe("Graph of Thought off");
 		expect(await runControl(["think"], io)).toBe("Graph of Thought off");
 		expect(await runControl(["hitl", "off"], io)).toBe("HITL clarifications off");
-		expect(await runControl(["grok", "engine", "claude"], io)).toBe("Thinking engine set to claude:sonnet");
-		expect(readControl(io.stateDir)).toEqual({ thinkEnabled: false, hitlEnabled: false, engine: "claude" });
+		expect(await runControl(["grok", "engine", "claude"], io)).toBe(
+			"Thinking engine set to claude:sonnet",
+		);
+		expect(readControl(io.stateDir)).toEqual({
+			thinkEnabled: false,
+			hitlEnabled: false,
+			engine: "claude",
+		});
 		expect(await runControl(["grok"], io)).toStartWith("Engine: claude:sonnet\nGrok: ");
 		expect(await runControl(["last"], io)).toBe("No uplift recorded yet");
 		expect(await runControl(["think", "last"], io)).toBe("No thought graph recorded yet");
@@ -340,7 +404,9 @@ describe("runControl", () => {
 			writeSession(io.stateDir, record);
 		}
 
-		async function statusLines(input: { host?: HostId; modelResolution?: ModelResolution } = {}): Promise<string[]> {
+		async function statusLines(
+			input: { host?: HostId; modelResolution?: ModelResolution } = {},
+		): Promise<string[]> {
 			return (await runControl(["status"], { ...io, ...input })).split("\n");
 		}
 
@@ -357,43 +423,62 @@ describe("runControl", () => {
 			["muse", "muse"],
 			["grok-build", "grok"],
 			["hermes", "claude"],
-		] as const)("%s static status projects host overrides and engine pins across the whole response", async (host, route) => {
-			const sentinel = "EXAMPLE_SENTINEL";
-			const selectors = [
-				[`https://model.invalid/path?token=${sentinel}`, false],
-				[`sk-${sentinel}_0123456789abcdef`, false],
-				[`user:${sentinel}@model.invalid`, false],
-				[`<model>${sentinel}</model>`, false],
-				[`${sentinel}${"x".repeat(600)}`, false],
-				[`${sentinel}\u001b[31m\nmodel`, true],
-			] as const;
-			for (const [model, invalid] of selectors) {
-				for (const source of ["host-override", "engine-model", ...(route === "grok" ? ["shunt-model"] : [])]) {
-					const grok = { home: join(dir, "grok"), transport: "shunt", shuntBaseUrl: "http://gateway.example" };
-					const extra: Record<string, unknown> = { grok };
-					if (source === "host-override") extra.models = { hosts: { [host]: { model } } };
-					else if (source === "shunt-model") extra.grok = { ...grok, shuntModel: model };
-					else extra[route] = route === "grok" ? { ...grok, model } : { model };
-					projectConfig(extra);
-					for (const args of [["status"], ["grok", "status"]]) {
-						const text = await runControl(args, { ...io, host });
-						expect(text).not.toContain(sentinel);
-						expect(text).not.toContain("model.invalid");
-						expect(text).not.toContain("\u001b");
-						expect(text).not.toContain("</model>");
-						const engine = text.split("\n").find((line) => line.startsWith("Engine:"));
-						expect(engine).toContain(invalid ? "unresolved [selector-invalid]" : "<opaque-model>");
-						expect(engine!.length).toBeLessThanOrEqual(500);
-						if (host === "hermes") expect(engine).toEndWith("(follows session model)");
+		] as const)(
+			"%s static status projects host overrides and engine pins across the whole response",
+			async (host, route) => {
+				const sentinel = "EXAMPLE_SENTINEL";
+				const selectors = [
+					[`https://model.invalid/path?token=${sentinel}`, false],
+					[`sk-${sentinel}_0123456789abcdef`, false],
+					[`user:${sentinel}@model.invalid`, false],
+					[`<model>${sentinel}</model>`, false],
+					[`${sentinel}${"x".repeat(600)}`, false],
+					[`${sentinel}\u001b[31m\nmodel`, true],
+				] as const;
+				for (const [model, invalid] of selectors) {
+					for (const source of [
+						"host-override",
+						"engine-model",
+						...(route === "grok" ? ["shunt-model"] : []),
+					]) {
+						const grok = {
+							home: join(dir, "grok"),
+							transport: "shunt",
+							shuntBaseUrl: "http://gateway.example",
+						};
+						const extra: Record<string, unknown> = { grok };
+						if (source === "host-override") extra.models = { hosts: { [host]: { model } } };
+						else if (source === "shunt-model") extra.grok = { ...grok, shuntModel: model };
+						else extra[route] = route === "grok" ? { ...grok, model } : { model };
+						projectConfig(extra);
+						for (const args of [["status"], ["grok", "status"]]) {
+							const text = await runControl(args, { ...io, host });
+							expect(text).not.toContain(sentinel);
+							expect(text).not.toContain("model.invalid");
+							expect(text).not.toContain("\u001b");
+							expect(text).not.toContain("</model>");
+							const engine = text.split("\n").find((line) => line.startsWith("Engine:"));
+							expect(engine).toContain(
+								invalid ? "unresolved [selector-invalid]" : "<opaque-model>",
+							);
+							expect(engine!.length).toBeLessThanOrEqual(500);
+							if (host === "hermes") expect(engine).toEndWith("(follows session model)");
+						}
 					}
 				}
-			}
-		});
+			},
+		);
 
 		test("Grok HTTP and CLI status never repeat unsafe configured models in the transport line", async () => {
 			const sentinel = "EXAMPLE_SENTINEL";
 			for (const transport of ["http", "cli"]) {
-				projectConfig({ grok: { home: join(dir, "grok"), transport, model: `https://model.invalid/path?token=${sentinel}` } });
+				projectConfig({
+					grok: {
+						home: join(dir, "grok"),
+						transport,
+						model: `https://model.invalid/path?token=${sentinel}`,
+					},
+				});
 				for (const args of [["status"], ["grok", "status"]]) {
 					const text = await runControl(args, { ...io, host: "grok-build" });
 					expect(text).not.toContain(sentinel);
@@ -430,23 +515,39 @@ describe("runControl", () => {
 			const lines = await statusLines({ host: "omp" });
 			expect(lines).toContain("Engine: omp-native:auto (live model not observed)");
 			expect(lines.at(-2)).toStartWith("Last: BUILD_PROMPT · llm");
-			expect(lines.at(-1)).toBe("Last planned resolution: omp-native:anthropic/claude-x [detected] · reason live-model · engine auto (config)");
+			expect(lines.at(-1)).toBe(
+				"Last planned resolution: omp-native:anthropic/claude-x [detected] · reason live-model · engine auto (config)",
+			);
 		});
 
 		test("a live projection names the current model without any lookup; a named Omp engine shows its opt-out", async () => {
-			expect(await statusLines({ host: "omp", modelResolution: detected })).toContain("Engine: omp-native:anthropic/claude-x [detected]");
-			expect(await runControl(["grok", "engine", "claude"], { ...io, host: "omp", modelResolution: detected })).toBe(
-				"Thinking engine set to claude:sonnet",
+			expect(await statusLines({ host: "omp", modelResolution: detected })).toContain(
+				"Engine: omp-native:anthropic/claude-x [detected]",
 			);
+			expect(
+				await runControl(["grok", "engine", "claude"], {
+					...io,
+					host: "omp",
+					modelResolution: detected,
+				}),
+			).toBe("Thinking engine set to claude:sonnet");
 			// The live record was observed for `auto`; it is not the named engine's selection.
 			const named = await statusLines({ host: "omp", modelResolution: detected });
 			expect(named).toContain("Engine: claude:sonnet");
 			expect(named).toContain("Engine request: claude (control, native opt-out) · concurrency 3");
-			expect(await runControl(["grok", "status"], { ...io, host: "omp" })).toStartWith("Engine: claude:sonnet\nGrok: ");
+			expect(await runControl(["grok", "status"], { ...io, host: "omp" })).toStartWith(
+				"Engine: claude:sonnet\nGrok: ",
+			);
 		});
 
 		test("a malformed or unsafe record never fails the status and never shows unsafe text", async () => {
-			for (const saved of [null, "omp-native:x", [], { ...detected, engineSelection: null }, { ...detected, version: "2.0.0" }]) {
+			for (const saved of [
+				null,
+				"omp-native:x",
+				[],
+				{ ...detected, engineSelection: null },
+				{ ...detected, version: "2.0.0" },
+			]) {
 				savePlan(saved);
 				const text = (await statusLines({ host: "omp" })).join("\n");
 				expect(text).toStartWith("Prompt Uplift on");
@@ -454,11 +555,21 @@ describe("runControl", () => {
 			}
 			// Built in pieces so no scanner reads a credential-like literal out of this fixture.
 			const sentinel = ["sentinel", "credential", "value"].join("-");
-			savePlan({ ...detected, label: `omp-native:x [detected]\nBearer ${sentinel}`, baseUrl: "https://gateway.example/v1", apiKey: sentinel });
-			const live = { ...detected, label: `omp-native:https://user:${sentinel}@gateway.example/v1 [detected]` };
+			savePlan({
+				...detected,
+				label: `omp-native:x [detected]\nBearer ${sentinel}`,
+				baseUrl: "https://gateway.example/v1",
+				apiKey: sentinel,
+			});
+			const live = {
+				...detected,
+				label: `omp-native:https://user:${sentinel}@gateway.example/v1 [detected]`,
+			};
 			const text = (await statusLines({ host: "omp", modelResolution: live })).join("\n");
 			expect(text).toContain("Engine: <opaque-model>");
-			expect(text).toContain("Last planned resolution: <opaque-model> · reason live-model · engine auto (config)");
+			expect(text).toContain(
+				"Last planned resolution: <opaque-model> · reason live-model · engine auto (config)",
+			);
 			expect(text).not.toContain(sentinel);
 			expect(text).not.toContain("gateway.example");
 		});
@@ -484,7 +595,8 @@ describe("runControl", () => {
 					expect(text).not.toContain(sentinel);
 					expect(text).not.toContain("model.invalid");
 					expect(text).not.toContain("\u001b");
-					if (args[0] === "status") expect(text).toContain("Last planned resolution: <opaque-model>");
+					if (args[0] === "status")
+						expect(text).toContain("Last planned resolution: <opaque-model>");
 				}
 			}
 		});
@@ -500,23 +612,31 @@ describe("runControl", () => {
 		expect(await runControl(["track", "maybe"], io)).toBe("Usage: track on|off|status");
 		expect(await runControl(["think", "sideways"], io)).toBe("Usage: think on|off|last|status");
 		expect(await runControl(["hitl", "maybe"], io)).toBe("Usage: hitl on|off|last|status");
-		expect(await runControl(["grok", "engine", "gpt"], io)).toBe("Usage: grok engine auto|claude|grok|muse");
+		expect(await runControl(["grok", "engine", "gpt"], io)).toBe(
+			"Usage: grok engine auto|claude|grok|muse",
+		);
 		expect(readControl(io.stateDir)).toEqual({});
 
 		const blocker = join(dir, "blocker");
 		writeFileSync(blocker, "");
-		expect(await runControl(["off"], { stateDir: join(blocker, "state"), cwd: io.cwd })).toStartWith("ultrathink: ");
+		expect(
+			await runControl(["off"], { stateDir: join(blocker, "state"), cwd: io.cwd }),
+		).toStartWith("ultrathink: ");
 	});
 
 	describe("Decisions status line", () => {
 		const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 		const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-		const ON_DEFAULTS = "Decisions: on · ~typesafe/jev-latest · plan, ship, knowledge, blocking, teachable, skillworthy";
+		const ON_DEFAULTS =
+			"Decisions: on · ~typesafe/jev-latest · plan, ship, knowledge, blocking, teachable, skillworthy";
 
 		/** User-layer config (`~/.config/ultrathink/config.json`); undefined leaves no decisions key in any layer. */
 		function userConfig(decisions: Record<string, unknown> | undefined): void {
 			mkdirSync(join(dir, "xdg", "ultrathink"), { recursive: true });
-			writeFileSync(join(dir, "xdg", "ultrathink", "config.json"), JSON.stringify(decisions ? { decisions } : {}));
+			writeFileSync(
+				join(dir, "xdg", "ultrathink", "config.json"),
+				JSON.stringify(decisions ? { decisions } : {}),
+			);
 		}
 
 		function storeKey(): void {
@@ -527,7 +647,11 @@ describe("runControl", () => {
 		}
 
 		/** The status text with every Jev request recorded (the endpoint, or the active override): status never asks Jev. */
-		async function status(): Promise<{ text: string; line: string | undefined; jevCalls: string[] }> {
+		async function status(): Promise<{
+			text: string;
+			line: string | undefined;
+			jevCalls: string[];
+		}> {
 			const jevCalls: string[] = [];
 			const realFetch = globalThis.fetch;
 			globalThis.fetch = (async (input: string | URL | Request) => {
@@ -576,7 +700,9 @@ describe("runControl", () => {
 			rmSync(process.env.ULTRATHINK_MCP_STORE as string);
 			process.env.OPENROUTER_API_KEY = K;
 			const fromEnv = await status();
-			expect(fromEnv.line).toBe(`${ON_DEFAULTS} · provider openrouter · key from OPENROUTER_API_KEY · zdr on`);
+			expect(fromEnv.line).toBe(
+				`${ON_DEFAULTS} · provider openrouter · key from OPENROUTER_API_KEY · zdr on`,
+			);
 			expect(fromEnv.text).not.toContain(K);
 			expect(fromEnv.text).not.toContain("Bearer sk-or-");
 			expect([...stored.jevCalls, ...fromEnv.jevCalls]).toEqual([]);
@@ -587,12 +713,16 @@ describe("runControl", () => {
 			userConfig({ enabled: true });
 			process.env.AI_GATEWAY_API_KEY = V;
 			const auto = await status();
-			expect(auto.line).toBe(`${ON_DEFAULTS} · provider vercel · key from AI_GATEWAY_API_KEY · zdr on`);
+			expect(auto.line).toBe(
+				`${ON_DEFAULTS} · provider vercel · key from AI_GATEWAY_API_KEY · zdr on`,
+			);
 			expect(auto.text).not.toContain(V);
 			process.env.OPENROUTER_API_KEY = K;
 			userConfig({ enabled: true, provider: "openrouter" });
 			const pinned = await status();
-			expect(pinned.line).toBe(`${ON_DEFAULTS} · provider openrouter · key from OPENROUTER_API_KEY · zdr on`);
+			expect(pinned.line).toBe(
+				`${ON_DEFAULTS} · provider openrouter · key from OPENROUTER_API_KEY · zdr on`,
+			);
 			expect([...auto.jevCalls, ...pinned.jevCalls]).toEqual([]);
 		});
 
@@ -606,16 +736,27 @@ describe("runControl", () => {
 		});
 
 		test("the line shows the configured model, points and zdr, the normalised URL when an override is in effect, and flags a rejected one", async () => {
-			userConfig({ enabled: true, model: "typesafe/jev-1.13-20260917", points: ["ship", "plan"], zdr: false });
+			userConfig({
+				enabled: true,
+				model: "typesafe/jev-1.13-20260917",
+				points: ["ship", "plan"],
+				zdr: false,
+			});
 			storeKey();
-			const base = "Decisions: on · typesafe/jev-1.13-20260917 · ship, plan · provider openrouter · key from store · zdr off";
+			const base =
+				"Decisions: on · typesafe/jev-1.13-20260917 · ship, plan · provider openrouter · key from store · zdr off";
 			expect((await status()).line).toBe(base);
 			process.env.ULTRATHINK_DECISIONS_URL = "http://127.0.0.1:9999/decisions?token=secret#frag";
 			const override = await status();
 			expect(override.line).toBe(`${base} · url http://127.0.0.1:9999/decisions`);
 			expect(override.text).not.toContain("secret");
 			const ignored = `${base} · ULTRATHINK_DECISIONS_URL ignored (must be https://openrouter.ai/… or a loopback URL)`;
-			for (const rejected of ["ftp://127.0.0.1/x", "https://gw.example/d", "http://openrouter.ai/api", "https://me:pw@openrouter.ai/api"]) {
+			for (const rejected of [
+				"ftp://127.0.0.1/x",
+				"https://gw.example/d",
+				"http://openrouter.ai/api",
+				"https://me:pw@openrouter.ai/api",
+			]) {
 				process.env.ULTRATHINK_DECISIONS_URL = rejected;
 				const out = await status();
 				expect(out.line).toBe(ignored);
@@ -623,7 +764,9 @@ describe("runControl", () => {
 			}
 			delete process.env.ULTRATHINK_DECISIONS_URL;
 			userConfig({ enabled: true, points: [] });
-			expect((await status()).line).toBe("Decisions: on · ~typesafe/jev-latest · no points · provider openrouter · key from store · zdr on");
+			expect((await status()).line).toBe(
+				"Decisions: on · ~typesafe/jev-latest · no points · provider openrouter · key from store · zdr on",
+			);
 		});
 
 		test("K1: ULTRATHINK_DECISIONS=0 shows Decisions off whatever the config and key say", async () => {
@@ -654,7 +797,9 @@ describe("runControl", () => {
 		const probe = usage.findIndex((line) => line.startsWith("  decisions probe"));
 		expect(usage[probe + 1]).toStartWith("  hindsight check");
 		expect(usage[probe + 2]).toStartWith("  ragflow check|datasets|search");
-		expect(usage[probe + 3]).toStartWith("  teach status|list|show|capture|recall|confirm|forget|sync|observe|promote|export");
+		expect(usage[probe + 3]).toStartWith(
+			"  teach status|list|show|capture|recall|confirm|forget|sync|observe|promote|export",
+		);
 		expect(usage[probe + 4]).toStartWith("In an agent:");
 	});
 
@@ -669,13 +814,21 @@ describe("runControl", () => {
 	});
 
 	test("status reflects the config sections for Hindsight, RAGFlow and Teach", async () => {
-		projectConfig({ hindsight: { enabled: true }, ragflow: { enabled: true }, teach: { enabled: true } });
+		projectConfig({
+			hindsight: { enabled: true },
+			ragflow: { enabled: true },
+			teach: { enabled: true },
+		});
 		// A project file can only turn things off, so the lines stay off.
 		expect(await statusLine("Hindsight:")).toStartWith("Hindsight: off (opt-in");
 		mkdirSync(join(dir, "xdg", "ultrathink"), { recursive: true });
 		writeFileSync(
 			join(dir, "xdg", "ultrathink", "config.json"),
-			JSON.stringify({ hindsight: { enabled: true }, ragflow: { enabled: true }, teach: { enabled: true } }),
+			JSON.stringify({
+				hindsight: { enabled: true },
+				ragflow: { enabled: true },
+				teach: { enabled: true },
+			}),
 		);
 		for (const prefix of ["Hindsight:", "RAGFlow:", "Teach:"]) {
 			const line = await statusLine(prefix);
@@ -690,7 +843,12 @@ describe("runControl", () => {
 		userServices({});
 		projectConfig({
 			hindsight: { enabled: true, url: "https://evil-hs.example", bank: "evil" },
-			ragflow: { enabled: true, ground: true, url: "https://evil-rf.example", datasetIds: ["evil"] },
+			ragflow: {
+				enabled: true,
+				ground: true,
+				url: "https://evil-rf.example",
+				datasetIds: ["evil"],
+			},
 		});
 		// The same load bin/ultrathink status uses: the project layer changes nothing.
 		const merged = loadConfig(claudeConfigPaths(io.cwd));
@@ -716,15 +874,18 @@ describe("runControl", () => {
 
 		function storeKeys(hindsight?: string, ragflow?: string): void {
 			const providers: Record<string, unknown> = {};
-			if (hindsight !== undefined) providers.hindsight = { kind: "api_key", apiKey: hindsight, updatedAt: 1 };
-			if (ragflow !== undefined) providers.ragflow = { kind: "api_key", apiKey: ragflow, updatedAt: 1 };
+			if (hindsight !== undefined)
+				providers.hindsight = { kind: "api_key", apiKey: hindsight, updatedAt: 1 };
+			if (ragflow !== undefined)
+				providers.ragflow = { kind: "api_key", apiKey: ragflow, updatedAt: 1 };
 			writeStore(process.env.ULTRATHINK_MCP_STORE as string, { version: 1, providers });
 		}
 
 		function serviceLines(text: string): { hindsight: string; ragflow: string } {
 			const hindsight = text.split("\n").find((line) => line.startsWith("Hindsight:"));
 			const ragflow = text.split("\n").find((line) => line.startsWith("RAGFlow:"));
-			if (hindsight === undefined || ragflow === undefined) throw new Error("status printed no Hindsight/RAGFlow lines");
+			if (hindsight === undefined || ragflow === undefined)
+				throw new Error("status printed no Hindsight/RAGFlow lines");
 			return { hindsight, ragflow };
 		}
 
@@ -756,12 +917,17 @@ describe("runControl", () => {
 			expect(hindsight[2]).toContain("Hindsight: on · bad URL (http is allowed only for");
 			expect(ragflow[2]).toContain("RAGFlow: on · bad URL (http is allowed only for");
 
-			userServices({ hindsight: { enabled: true, url: HS_URL }, ragflow: { enabled: true, url: RF_URL } });
+			userServices({
+				hindsight: { enabled: true, url: HS_URL },
+				ragflow: { enabled: true, url: RF_URL },
+			});
 			await collect();
 			expect(hindsight[3]).toBe(
 				"Hindsight: on · no key (run bin/ultrathink-mcp auth set-key hindsight --stdin, or set HINDSIGHT_API_KEY)",
 			);
-			expect(ragflow[3]).toBe("RAGFlow: on · no key (run bin/ultrathink-mcp auth set-key ragflow --stdin, or set RAGFLOW_API_KEY)");
+			expect(ragflow[3]).toBe(
+				"RAGFlow: on · no key (run bin/ultrathink-mcp auth set-key ragflow --stdin, or set RAGFLOW_API_KEY)",
+			);
 
 			storeKeys(HS_STORE_KEY, RF_STORE_KEY);
 			const text = await runControl(["status"], io);
@@ -769,7 +935,9 @@ describe("runControl", () => {
 			hindsight.push(ready.hindsight);
 			ragflow.push(ready.ragflow);
 			expect(ready.hindsight).toBe(`Hindsight: on · ${HS_URL} · bank ultrathink · key from store`);
-			expect(ready.ragflow).toBe(`RAGFlow: on · ${RF_URL} · key from store · grounding off · all datasets`);
+			expect(ready.ragflow).toBe(
+				`RAGFlow: on · ${RF_URL} · key from store · grounding off · all datasets`,
+			);
 			expect(text).not.toContain(HS_STORE_KEY);
 			expect(text).not.toContain(RF_STORE_KEY);
 
@@ -778,7 +946,10 @@ describe("runControl", () => {
 		});
 
 		test("the kill switch forces the off line even when enabled, URL, and key are present", async () => {
-			userServices({ hindsight: { enabled: true, url: HS_URL }, ragflow: { enabled: true, url: RF_URL } });
+			userServices({
+				hindsight: { enabled: true, url: HS_URL },
+				ragflow: { enabled: true, url: RF_URL },
+			});
 			storeKeys(HS_STORE_KEY, RF_STORE_KEY);
 			process.env.ULTRATHINK_HINDSIGHT = "0";
 			process.env.ULTRATHINK_RAGFLOW = "0";
@@ -796,31 +967,46 @@ describe("runControl", () => {
 			process.env.RAGFLOW_API_KEY = RF_ENV_KEY;
 			const text = await runControl(["status"], io);
 			const lines = serviceLines(text);
-			expect(lines.hindsight).toBe("Hindsight: on · https://env-hs.example · bank ultrathink · key from HINDSIGHT_API_KEY");
-			expect(lines.ragflow).toBe("RAGFlow: on · https://env-rf.example · key from RAGFLOW_API_KEY · grounding off · all datasets");
+			expect(lines.hindsight).toBe(
+				"Hindsight: on · https://env-hs.example · bank ultrathink · key from HINDSIGHT_API_KEY",
+			);
+			expect(lines.ragflow).toBe(
+				"RAGFlow: on · https://env-rf.example · key from RAGFLOW_API_KEY · grounding off · all datasets",
+			);
 			expect(text).not.toContain(HS_ENV_KEY);
 			expect(text).not.toContain(RF_ENV_KEY);
 		});
 
 		test("the stored key wins over env keys, and env keys are named when nothing is stored", async () => {
-			userServices({ hindsight: { enabled: true, url: HS_URL }, ragflow: { enabled: true, url: RF_URL } });
+			userServices({
+				hindsight: { enabled: true, url: HS_URL },
+				ragflow: { enabled: true, url: RF_URL },
+			});
 			clearStore();
 			process.env.HINDSIGHT_API_KEY = HS_ENV_KEY;
 			process.env.RAGFLOW_API_KEY = RF_ENV_KEY;
 			const fromEnv = serviceLines(await runControl(["status"], io));
-			expect(fromEnv.hindsight).toBe(`Hindsight: on · ${HS_URL} · bank ultrathink · key from HINDSIGHT_API_KEY`);
-			expect(fromEnv.ragflow).toBe(`RAGFlow: on · ${RF_URL} · key from RAGFLOW_API_KEY · grounding off · all datasets`);
+			expect(fromEnv.hindsight).toBe(
+				`Hindsight: on · ${HS_URL} · bank ultrathink · key from HINDSIGHT_API_KEY`,
+			);
+			expect(fromEnv.ragflow).toBe(
+				`RAGFlow: on · ${RF_URL} · key from RAGFLOW_API_KEY · grounding off · all datasets`,
+			);
 
 			storeKeys(HS_STORE_KEY, RF_STORE_KEY);
 			const text = await runControl(["status"], io);
 			const stored = serviceLines(text);
 			expect(stored.hindsight).toContain("key from store");
 			expect(stored.ragflow).toContain("key from store");
-			for (const secret of [HS_STORE_KEY, HS_ENV_KEY, RF_STORE_KEY, RF_ENV_KEY]) expect(text).not.toContain(secret);
+			for (const secret of [HS_STORE_KEY, HS_ENV_KEY, RF_STORE_KEY, RF_ENV_KEY])
+				expect(text).not.toContain(secret);
 		});
 
 		test("status makes no request to either service", async () => {
-			userServices({ hindsight: { enabled: true, url: HS_URL }, ragflow: { enabled: true, url: RF_URL } });
+			userServices({
+				hindsight: { enabled: true, url: HS_URL },
+				ragflow: { enabled: true, url: RF_URL },
+			});
 			storeKeys(HS_STORE_KEY, RF_STORE_KEY);
 			const fetched: string[] = [];
 			const realFetch = globalThis.fetch;
@@ -833,64 +1019,78 @@ describe("runControl", () => {
 			} finally {
 				globalThis.fetch = realFetch;
 			}
-		expect(fetched).toEqual([]);
+			expect(fetched).toEqual([]);
 		});
 	});
 
 	test("bin/ultrathink decisions goes to the decisions command, not the control verbs", () => {
 		// beforeEach already removed OPENROUTER_API_KEY and pointed config and the store at temp paths.
-		const proc = Bun.spawnSync([process.execPath, join(import.meta.dir, "commands.ts"), "Decisions"], {
-			cwd: io.cwd,
-			env: { ...process.env, HOME: join(dir, "home") },
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		const proc = Bun.spawnSync(
+			[process.execPath, join(import.meta.dir, "commands.ts"), "Decisions"],
+			{
+				cwd: io.cwd,
+				env: { ...process.env, HOME: join(dir, "home") },
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
 		expect(proc.exitCode).toBe(2);
 		expect(proc.stdout.toString()).toBe(
 			"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>\n",
 		);
 	});
 
-	test.each(["hindsight", "ragflow", "teach"])("bin/ultrathink %s goes to its own command, not the control verbs", (name) => {
-		const proc = Bun.spawnSync([process.execPath, join(import.meta.dir, "commands.ts"), name, "--no-such-flag"], {
-			cwd: io.cwd,
-			env: {
-				...process.env,
-				HOME: join(dir, "home"),
-				ULTRATHINK_STATE_DIR: join(dir, "state"),
-				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
-			},
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		// Not runControl's usage text, and a usage failure (2) rather than a success (0).
-		expect(proc.stdout.toString()).not.toStartWith("Usage: ultrathink <command>");
-		expect(proc.exitCode).not.toBe(0);
-	});
+	test.each(["hindsight", "ragflow", "teach"])(
+		"bin/ultrathink %s goes to its own command, not the control verbs",
+		(name) => {
+			const proc = Bun.spawnSync(
+				[process.execPath, join(import.meta.dir, "commands.ts"), name, "--no-such-flag"],
+				{
+					cwd: io.cwd,
+					env: {
+						...process.env,
+						HOME: join(dir, "home"),
+						ULTRATHINK_STATE_DIR: join(dir, "state"),
+						ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
+					},
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			// Not runControl's usage text, and a usage failure (2) rather than a success (0).
+			expect(proc.stdout.toString()).not.toStartWith("Usage: ultrathink <command>");
+			expect(proc.exitCode).not.toBe(0);
+		},
+	);
 
 	test("the usage text lists doctor", async () => {
-		expect(await runControl(["bogus"], io)).toContain("  doctor [--json]        check config files, credentials, state and environment");
+		expect(await runControl(["bogus"], io)).toContain(
+			"  doctor [--json]        check config files, credentials, state and environment",
+		);
 	});
 
 	describe("bin/ultrathink doctor", () => {
 		const FAKE_KEY = "sk-test-not-a-real-key-0123456789";
 
 		function runDoctor(args: string[]): { stdout: string; exitCode: number | null } {
-			const proc = Bun.spawnSync([process.execPath, join(import.meta.dir, "commands.ts"), "doctor", ...args], {
-				cwd: io.cwd,
-				env: {
-					...process.env,
-					HOME: join(dir, "home"),
-					ULTRATHINK_STATE_DIR: join(dir, "state"),
-					ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
-					OPENROUTER_API_KEY: FAKE_KEY,
+			const proc = Bun.spawnSync(
+				[process.execPath, join(import.meta.dir, "commands.ts"), "doctor", ...args],
+				{
+					cwd: io.cwd,
+					env: {
+						...process.env,
+						HOME: join(dir, "home"),
+						ULTRATHINK_STATE_DIR: join(dir, "state"),
+						ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
+						OPENROUTER_API_KEY: FAKE_KEY,
+					},
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
 				},
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			);
 			return { stdout: proc.stdout.toString(), exitCode: proc.exitCode };
 		}
 
@@ -925,13 +1125,20 @@ describe("runControl", () => {
 		const SECRET_PROMPT = "a prompt that must never be printed";
 
 		function runPrune(args: string[]): { stdout: string; exitCode: number | null } {
-			const proc = Bun.spawnSync([process.execPath, join(import.meta.dir, "commands.ts"), "prune", ...args], {
-				cwd: io.cwd,
-				env: { ...process.env, HOME: join(dir, "home"), ULTRATHINK_STATE_DIR: join(dir, "state") },
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			const proc = Bun.spawnSync(
+				[process.execPath, join(import.meta.dir, "commands.ts"), "prune", ...args],
+				{
+					cwd: io.cwd,
+					env: {
+						...process.env,
+						HOME: join(dir, "home"),
+						ULTRATHINK_STATE_DIR: join(dir, "state"),
+					},
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
 			return { stdout: proc.stdout.toString(), exitCode: proc.exitCode };
 		}
 
@@ -939,7 +1146,14 @@ describe("runControl", () => {
 			const sessions = join(dir, "state", "sessions");
 			mkdirSync(sessions, { recursive: true });
 			const path = join(sessions, `${id}.json`);
-			writeFileSync(path, JSON.stringify({ sessionId: id, at: 0, result: { xml: "", original: SECRET_PROMPT, root: "", source: "llm" } }));
+			writeFileSync(
+				path,
+				JSON.stringify({
+					sessionId: id,
+					at: 0,
+					result: { xml: "", original: SECRET_PROMPT, root: "", source: "llm" },
+				}),
+			);
 			const aged = (Date.now() - ageDays * 86_400_000) / 1000;
 			utimesSync(path, aged, aged);
 			return path;

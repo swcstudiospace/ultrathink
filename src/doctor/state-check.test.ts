@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	truncateSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildReport, formatReport, reportJson } from "./report.ts";
@@ -30,7 +41,10 @@ describe("checkState", () => {
 	}
 
 	/** A file under the state directory with an explicit mode, size and age; content is a fake prompt padded to `size`. */
-	function put(relative: string, options: { size?: number; mode?: number; ageMs?: number } = {}): string {
+	function put(
+		relative: string,
+		options: { size?: number; mode?: number; ageMs?: number } = {},
+	): string {
 		const path = join(stateDir, relative);
 		mkdirSync(join(path, ".."), { recursive: true });
 		writeFileSync(path, JSON.stringify({ prompt: PROMPT }).padEnd(options.size ?? 40, " "));
@@ -68,14 +82,23 @@ describe("checkState", () => {
 	test("an empty writable directory is ok and has no sessions", () => {
 		mkdirSync(stateDir);
 		const findings = checkState(deps);
-		expect(byId(findings, "state.dir")).toMatchObject({ level: "ok", title: `State directory is writable: ${stateDir}` });
-		expect(byId(findings, "state.sessions")).toMatchObject({ level: "info", title: "No session records yet" });
+		expect(byId(findings, "state.dir")).toMatchObject({
+			level: "ok",
+			title: `State directory is writable: ${stateDir}`,
+		});
+		expect(byId(findings, "state.sessions")).toMatchObject({
+			level: "info",
+			title: "No session records yet",
+		});
 		expect(ids(findings)).toEqual(["state.dir", "state.sessions"]);
 	});
 
 	test("a state path that is a file is an error", () => {
 		writeFileSync(stateDir, "");
-		expect(byId(checkState(deps), "state.dir")).toMatchObject({ level: "error", title: `State path is not a directory: ${stateDir}` });
+		expect(byId(checkState(deps), "state.dir")).toMatchObject({
+			level: "error",
+			title: `State path is not a directory: ${stateDir}`,
+		});
 	});
 
 	test("a symlinked state directory is followed", () => {
@@ -84,8 +107,13 @@ describe("checkState", () => {
 		symlinkSync(target, stateDir);
 		put("sessions/a.json", { size: 100 });
 		const findings = checkState(deps);
-		expect(byId(findings, "state.dir")).toMatchObject({ level: "ok", title: `State directory is writable: ${stateDir}` });
-		expect(byId(findings, "state.sessions").title).toBe("1 session record, 100 B, oldest under an hour old");
+		expect(byId(findings, "state.dir")).toMatchObject({
+			level: "ok",
+			title: `State directory is writable: ${stateDir}`,
+		});
+		expect(byId(findings, "state.sessions").title).toBe(
+			"1 session record, 100 B, oldest under an hour old",
+		);
 	});
 
 	test("a symlinked sessions directory is followed and its records counted", () => {
@@ -97,7 +125,9 @@ describe("checkState", () => {
 		put("sessions/b.json", { size: 100 });
 		const findings = checkState(deps);
 		expect(byId(findings, "state.dir")).toMatchObject({ level: "ok" });
-		expect(byId(findings, "state.sessions").title).toBe("2 session records, 200 B, oldest under an hour old");
+		expect(byId(findings, "state.sessions").title).toBe(
+			"2 session records, 200 B, oldest under an hour old",
+		);
 	});
 
 	test("a sessions path that is a file is an error with no healthy summary", () => {
@@ -176,14 +206,21 @@ describe("checkState", () => {
 		put("sessions/c.json", { size: 3000, ageMs: HOUR });
 		put("sessions/a.xml", { size: 9999, ageMs: 30 * DAY });
 		const finding = byId(checkState(deps), "state.sessions");
-		expect(finding).toMatchObject({ level: "info", title: "3 session records, 5.9 KB, oldest 5 days old" });
+		expect(finding).toMatchObject({
+			level: "info",
+			title: "3 session records, 5.9 KB, oldest 5 days old",
+		});
 	});
 
 	test("one fresh session is singular and ages under two days are in hours", () => {
 		put("sessions/a.json", { size: 100, ageMs: 3 * HOUR });
-		expect(byId(checkState(deps), "state.sessions").title).toBe("1 session record, 100 B, oldest 3 hours old");
+		expect(byId(checkState(deps), "state.sessions").title).toBe(
+			"1 session record, 100 B, oldest 3 hours old",
+		);
 		put("sessions/a.json", { size: 100, ageMs: 10 * 60 * 1000 });
-		expect(byId(checkState(deps), "state.sessions").title).toBe("1 session record, 100 B, oldest under an hour old");
+		expect(byId(checkState(deps), "state.sessions").title).toBe(
+			"1 session record, 100 B, oldest under an hour old",
+		);
 	});
 
 	test("more than 500 sessions is a warning with the prune hint; 500 is not", () => {
@@ -250,7 +287,11 @@ describe("checkState", () => {
 		put("sessions/a.json.tmp", { ageMs: 2 * HOUR });
 		put("sessions/b.json.lock", { ageMs: 90 * 60 * 1000 });
 		mkdirSync(join(stateDir, "sessions", "c.lock"));
-		utimesSync(join(stateDir, "sessions", "c.lock"), (NOW - 3 * HOUR) / 1000, (NOW - 3 * HOUR) / 1000);
+		utimesSync(
+			join(stateDir, "sessions", "c.lock"),
+			(NOW - 3 * HOUR) / 1000,
+			(NOW - 3 * HOUR) / 1000,
+		);
 		put("sessions/d.json.tmp", { ageMs: 10 * 60 * 1000 });
 		put("sessions/e.json", { ageMs: 5 * HOUR });
 		const findings = checkState(deps);
@@ -292,7 +333,9 @@ describe("checkState", () => {
 		const orphan = put("control.json.lock", { ageMs: 2 * HOUR });
 		const findings = checkState(deps);
 		expect(byId(findings, "state.sessions").level).toBe("error");
-		expect(byId(findings, "state.permissions").title).toStartWith("1 session, carrier or control file");
+		expect(byId(findings, "state.permissions").title).toStartWith(
+			"1 session, carrier or control file",
+		);
 		expect(byId(findings, "state.orphans").title).toStartWith("1 leftover .tmp or .lock file");
 		expect(existsSync(orphan)).toBe(true);
 		expect(lstatSync(join(stateDir, "control.json")).mode & 0o777).toBe(0o640);
@@ -303,7 +346,8 @@ describe("checkState", () => {
 		const target = join(dir, "external.json");
 		writeFileSync(target, PROMPT, { mode: 0o644 });
 		chmodSync(target, 0o644);
-		for (const name of ["control.json", "last.json", "last-plan.json"]) symlinkSync(target, join(stateDir, name));
+		for (const name of ["control.json", "last.json", "last-plan.json"])
+			symlinkSync(target, join(stateDir, name));
 		expect(ids(checkState(deps))).not.toContain("state.permissions");
 	});
 

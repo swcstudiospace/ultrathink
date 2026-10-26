@@ -20,14 +20,42 @@ function makePlan(): TrackPlan {
 	const nodes = GRAPH.nodes;
 	return {
 		graphId,
-		task: { graphId, item: "Ship it", description: "d", upliftedPrompt: "u", agent: "claude", status: "Todo", linearState: "Todo" },
-		issues: nodes.map((node) => ({ graphId, nodeId: node.id, item: `[${node.id}] ${node.title}`, thought: node.question })),
+		task: {
+			graphId,
+			item: "Ship it",
+			description: "d",
+			upliftedPrompt: "u",
+			agent: "claude",
+			status: "Todo",
+			linearState: "Todo",
+		},
+		issues: nodes.map((node) => ({
+			graphId,
+			nodeId: node.id,
+			item: `[${node.id}] ${node.title}`,
+			thought: node.question,
+		})),
 		subIssues: nodes.flatMap((node) =>
-			[1, 2].map((step) => ({ graphId, nodeId: node.id, item: `[${node.id}] Step ${step}: s`, step, thought: "t" })),
+			[1, 2].map((step) => ({
+				graphId,
+				nodeId: node.id,
+				item: `[${node.id}] Step ${step}: s`,
+				step,
+				thought: "t",
+			})),
 		),
-		linearIssues: nodes.map((node) => ({ nodeId: node.id, title: node.title, description: `desc ${node.id}` })),
+		linearIssues: nodes.map((node) => ({
+			nodeId: node.id,
+			title: node.title,
+			description: `desc ${node.id}`,
+		})),
 		linearSubIssues: nodes.flatMap((node) =>
-			[1, 2].map((step) => ({ nodeId: node.id, step, title: `${node.title} — Step ${step}: s`, description: "sd" })),
+			[1, 2].map((step) => ({
+				nodeId: node.id,
+				step,
+				title: `${node.title} — Step ${step}: s`,
+				description: "sd",
+			})),
 		),
 		hitl: { blocking: [], nonBlocking: [] },
 	};
@@ -51,7 +79,13 @@ function fakeLinear(
 			if (opts.throwOn?.(args)) throw new Error("HTTP 500");
 			counter++;
 			const identifier = `ENG-${counter}`;
-			return { issue: { id: `uuid-${counter}`, identifier, url: `https://linear.app/org/issue/${identifier}/slug` } };
+			return {
+				issue: {
+					id: `uuid-${counter}`,
+					identifier,
+					url: `https://linear.app/org/issue/${identifier}/slug`,
+				},
+			};
 		},
 	};
 }
@@ -66,7 +100,16 @@ function fakeNotion(opts: { rows?: unknown[] } = {}): ToolCaller & { calls: Call
 			if (name === "notion-query-data-sources") return { results: opts.rows ?? [] };
 			if (name === "notion-fetch") {
 				const props = Object.fromEntries(
-					["Item", "Level", "Graph ID", "Parent Item", "Linear URL", "Issue ID", "Step", "Thought"].map((p) => [p, { type: "text" }]),
+					[
+						"Item",
+						"Level",
+						"Graph ID",
+						"Parent Item",
+						"Linear URL",
+						"Issue ID",
+						"Step",
+						"Thought",
+					].map((p) => [p, { type: "text" }]),
 				);
 				return `<data-source>${JSON.stringify({ schema: props })}</data-source>`;
 			}
@@ -78,7 +121,14 @@ function fakeNotion(opts: { rows?: unknown[] } = {}): ToolCaller & { calls: Call
 }
 
 function deps(over: Partial<CreateTrackingDeps>): CreateTrackingDeps {
-	return { linearTeam: "Acme Engineering", notionDataSource: "ds-uuid", concurrency: 3, budgetMs: 5000, now: () => 1, ...over };
+	return {
+		linearTeam: "Acme Engineering",
+		notionDataSource: "ds-uuid",
+		concurrency: 3,
+		budgetMs: 5000,
+		now: () => 1,
+		...over,
+	};
 }
 
 describe("createTracking", () => {
@@ -100,11 +150,19 @@ describe("createTracking", () => {
 
 	test("progress events count up to the plan size", async () => {
 		const events: ProgressEvent[] = [];
-		await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion: fakeNotion(), progress: (e) => events.push(e) }));
+		await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion: fakeNotion(), progress: (e) => events.push(e) }),
+		);
 		const track = events.flatMap((e) => (e.type === "track" ? [e] : []));
 		expect(track.length).toBeGreaterThan(0);
 		for (let i = 1; i < track.length; i++) {
-			const [prev, cur] = [track[i - 1], track[i]] as [(typeof track)[number], (typeof track)[number]];
+			const [prev, cur] = [track[i - 1], track[i]] as [
+				(typeof track)[number],
+				(typeof track)[number],
+			];
 			expect(cur.linear!.nodes[0]).toBeGreaterThanOrEqual(prev.linear!.nodes[0]);
 			expect(cur.linear!.steps[0]).toBeGreaterThanOrEqual(prev.linear!.steps[0]);
 		}
@@ -117,36 +175,78 @@ describe("createTracking", () => {
 	test("a failing call emits a track event with the error", async () => {
 		const events: ProgressEvent[] = [];
 		const linear = fakeLinear({ throwOn: (args) => args.title === "[n2] Build" });
-		await createTracking(makePlan(), GRAPH, undefined, deps({ linear, notion: fakeNotion(), progress: (e) => events.push(e) }));
+		await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear, notion: fakeNotion(), progress: (e) => events.push(e) }),
+		);
 		const errored = events.find((e) => e.type === "track" && e.error?.includes("HTTP 500"));
 		expect(errored).toBeDefined();
 	});
 
 	test("emits one linear issue event per created node and step with its identifier and url", async () => {
 		const events: ProgressEvent[] = [];
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion: fakeNotion(), progress: (e) => events.push(e) }));
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion: fakeNotion(), progress: (e) => events.push(e) }),
+		);
 		const linear = events.filter((e) => e.type === "issue" && e.provider === "linear");
 		expect(linear).toHaveLength(9);
 		for (const node of GRAPH.nodes) {
 			const ref = refs.linear.nodes[node.id]!;
-			expect(linear).toContainEqual({ type: "issue", at: expect.any(Number), provider: "linear", nodeId: node.id, identifier: ref.identifier, url: ref.url });
+			expect(linear).toContainEqual({
+				type: "issue",
+				at: expect.any(Number),
+				provider: "linear",
+				nodeId: node.id,
+				identifier: ref.identifier,
+				url: ref.url,
+			});
 			for (const step of [1, 2]) {
 				const sub = refs.linear.steps[stepKey(node.id, step)]!;
-				expect(linear).toContainEqual({ type: "issue", at: expect.any(Number), provider: "linear", nodeId: node.id, step, identifier: sub.identifier, url: sub.url });
+				expect(linear).toContainEqual({
+					type: "issue",
+					at: expect.any(Number),
+					provider: "linear",
+					nodeId: node.id,
+					step,
+					identifier: sub.identifier,
+					url: sub.url,
+				});
 			}
 		}
 		const notion = events.filter((e) => e.type === "issue" && e.provider === "notion");
 		expect(notion).toHaveLength(9);
 		const stepUrl = refs.notion.steps[stepKey("n2", 1)];
 		if (stepUrl === undefined) throw new Error("expected a notion step url");
-		expect(notion).toContainEqual({ type: "issue", at: expect.any(Number), provider: "notion", nodeId: "n2", step: 1, url: stepUrl });
+		expect(notion).toContainEqual({
+			type: "issue",
+			at: expect.any(Number),
+			provider: "notion",
+			nodeId: "n2",
+			step: 1,
+			url: stepUrl,
+		});
 		expect(notion.some((e) => e.type === "issue" && e.url === refs.notion.taskUrl)).toBe(false);
 	});
 
 	test("adoption emits issue events for adopted Linear rows", async () => {
 		const listed = () => [
-			{ identifier: "ENG-90", url: "https://linear.app/org/issue/ENG-90/x", title: "t", description: "d\n\nultrathink graph g-1 · node n1" },
-			{ identifier: "ENG-91", url: "https://linear.app/org/issue/ENG-91/x", title: "t", description: "d\n\nultrathink graph g-1 · node n1 · step 2" },
+			{
+				identifier: "ENG-90",
+				url: "https://linear.app/org/issue/ENG-90/x",
+				title: "t",
+				description: "d\n\nultrathink graph g-1 · node n1",
+			},
+			{
+				identifier: "ENG-91",
+				url: "https://linear.app/org/issue/ENG-91/x",
+				title: "t",
+				description: "d\n\nultrathink graph g-1 · node n1 · step 2",
+			},
 		];
 		const existing: TrackingRefs = {
 			graphId: "g-1",
@@ -158,17 +258,46 @@ describe("createTracking", () => {
 			updatedAt: 0,
 		};
 		const events: ProgressEvent[] = [];
-		await createTracking(makePlan(), GRAPH, existing, deps({ linear: fakeLinear({ listed }), notion: fakeNotion(), progress: (e) => events.push(e) }));
+		await createTracking(
+			makePlan(),
+			GRAPH,
+			existing,
+			deps({
+				linear: fakeLinear({ listed }),
+				notion: fakeNotion(),
+				progress: (e) => events.push(e),
+			}),
+		);
 		const issues = events.filter((e) => e.type === "issue" && e.provider === "linear");
 		expect(issues.slice(0, 2)).toEqual([
-			{ type: "issue", at: expect.any(Number), provider: "linear", nodeId: "n1", identifier: "ENG-90", url: "https://linear.app/org/issue/ENG-90/x" },
-			{ type: "issue", at: expect.any(Number), provider: "linear", nodeId: "n1", step: 2, identifier: "ENG-91", url: "https://linear.app/org/issue/ENG-91/x" },
+			{
+				type: "issue",
+				at: expect.any(Number),
+				provider: "linear",
+				nodeId: "n1",
+				identifier: "ENG-90",
+				url: "https://linear.app/org/issue/ENG-90/x",
+			},
+			{
+				type: "issue",
+				at: expect.any(Number),
+				provider: "linear",
+				nodeId: "n1",
+				step: 2,
+				identifier: "ENG-91",
+				url: "https://linear.app/org/issue/ENG-91/x",
+			},
 		]);
 		expect(issues).toHaveLength(9);
 	});
 
 	test("a throwing progress sink does not change the refs", async () => {
-		const plain = await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion: fakeNotion() }));
+		const plain = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion: fakeNotion() }),
+		);
 		const noisy = await createTracking(
 			makePlan(),
 			GRAPH,
@@ -186,16 +315,33 @@ describe("createTracking", () => {
 
 	test("levels run in dependency order and blockedBy carries dependency identifiers", async () => {
 		const linear = fakeLinear();
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear, notion: fakeNotion() }));
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear, notion: fakeNotion() }),
+		);
 		const nodeCalls = linear.calls.filter((call) => call.args.parentId === undefined);
-		expect(nodeCalls.map((call) => call.args.title)).toEqual(["[n1] Understand", "[n2] Build", "[n3] Review"]);
+		expect(nodeCalls.map((call) => call.args.title)).toEqual([
+			"[n1] Understand",
+			"[n2] Build",
+			"[n3] Review",
+		]);
 		expect(nodeCalls[0]?.args.blockedBy).toBeUndefined();
 		expect(nodeCalls[1]?.args.blockedBy).toEqual([refs.linear.nodes.n1?.identifier]);
-		expect(nodeCalls[2]?.args.blockedBy).toEqual([refs.linear.nodes.n1?.identifier, refs.linear.nodes.n2?.identifier]);
+		expect(nodeCalls[2]?.args.blockedBy).toEqual([
+			refs.linear.nodes.n1?.identifier,
+			refs.linear.nodes.n2?.identifier,
+		]);
 	});
 
 	test("existing refs are not recreated", async () => {
-		const first = await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion: fakeNotion() }));
+		const first = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion: fakeNotion() }),
+		);
 		const partial: TrackingRefs = structuredClone(first);
 		delete partial.linear.steps[stepKey("n3", 2)];
 		delete partial.notion.steps[stepKey("n3", 2)];
@@ -206,14 +352,23 @@ describe("createTracking", () => {
 		const saves = linear.calls.filter((call) => call.name === "save_issue");
 		expect(saves).toHaveLength(1);
 		expect(saves[0]?.args.parentId).toBe(first.linear.nodes.n3?.identifier);
-		expect(notion.calls.map((call) => call.name)).toEqual(["notion-query-data-sources", "notion-fetch", "notion-create-pages"]);
+		expect(notion.calls.map((call) => call.name)).toEqual([
+			"notion-query-data-sources",
+			"notion-fetch",
+			"notion-create-pages",
+		]);
 		expect((notion.calls[2]?.args.pages as unknown[]).length).toBe(1);
 		expect(refs.linear.nodes).toEqual(first.linear.nodes);
 	});
 
 	test("a failing sub-issue call yields partial with an error naming the key", async () => {
 		const linear = fakeLinear({ throwOn: (args) => args.title === "Review — Step 1: s" });
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear, notion: fakeNotion() }));
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear, notion: fakeNotion() }),
+		);
 		expect(refs.status).toBe("partial");
 		expect(refs.linear.steps["n3.1"]).toBeUndefined();
 		expect(refs.errors).toContain("linear n3.1: HTTP 500");
@@ -230,7 +385,17 @@ describe("createTracking", () => {
 	test("Linear-only config makes no Notion calls, reports no Notion progress and is complete", async () => {
 		const notion = fakeNotion();
 		const events: ProgressEvent[] = [];
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion, notionDataSource: undefined, progress: (e) => events.push(e) }));
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({
+				linear: fakeLinear(),
+				notion,
+				notionDataSource: undefined,
+				progress: (e) => events.push(e),
+			}),
+		);
 		expect(notion.calls).toEqual([]);
 		expect(refs.status).toBe("complete");
 		expect(refs.errors).toEqual([]);
@@ -242,8 +407,20 @@ describe("createTracking", () => {
 
 	test("Notion-only config makes no Linear calls, records no team and is complete", async () => {
 		const linear = fakeLinear();
-		const existing: TrackingRefs = { graphId: "g-1", status: "failed", linear: { nodes: {}, steps: {} }, notion: { nodes: {}, steps: {} }, errors: [], updatedAt: 0 };
-		const refs = await createTracking(makePlan(), GRAPH, existing, deps({ linear, notion: fakeNotion(), linearTeam: undefined }));
+		const existing: TrackingRefs = {
+			graphId: "g-1",
+			status: "failed",
+			linear: { nodes: {}, steps: {} },
+			notion: { nodes: {}, steps: {} },
+			errors: [],
+			updatedAt: 0,
+		};
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			existing,
+			deps({ linear, notion: fakeNotion(), linearTeam: undefined }),
+		);
 		expect(linear.calls).toEqual([]);
 		expect(refs.status).toBe("complete");
 		expect(refs.errors).toEqual([]);
@@ -256,15 +433,31 @@ describe("createTracking", () => {
 		const linear: ToolCaller = {
 			async call(_name, _args, signal) {
 				count++;
-				if (count === 1) return { identifier: "ENG-1", url: "https://linear.app/org/issue/ENG-1/x", id: "u1" };
+				if (count === 1)
+					return { identifier: "ENG-1", url: "https://linear.app/org/issue/ENG-1/x", id: "u1" };
 				const { promise, reject } = Promise.withResolvers<unknown>();
 				signal?.addEventListener("abort", () => reject(new Error("aborted")));
 				return promise;
 			},
 		};
-		const started = performance.now();
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear, notion: fakeNotion(), budgetMs: 20 }));
-		expect(performance.now() - started).toBeLessThan(1000);
+		// The budget timer is armed on a test-held port: the test fires it by hand instead of waiting for budgetMs.
+		const armed = Promise.withResolvers<() => void>();
+		const timers = {
+			setTimeout: (fn: () => void) => {
+				armed.resolve(fn);
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		};
+		const tracking = createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear, notion: fakeNotion(), budgetMs: 20, timers }),
+		);
+		const fireBudget = await armed.promise;
+		fireBudget();
+		const refs = await tracking;
 		expect(refs.status).toBe("partial");
 		expect(refs.linear.nodes.n1?.identifier).toBe("ENG-1");
 		expect(refs.errors.some((error) => error.includes("budget exhausted"))).toBe(true);
@@ -272,16 +465,25 @@ describe("createTracking", () => {
 
 	test("budgetMs 0 means no limit: a slow client still completes every row without a budget error", async () => {
 		const fast = fakeLinear();
+		// Each row stays in flight until the test opens the gate after the first call has entered.
+		const entered = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
 		const linear: ToolCaller = {
 			async call(name, args, signal) {
-				// Real delay on purpose: the abort timer under test is a real setTimeout, which fake timers would not exercise.
-				const { promise, resolve } = Promise.withResolvers<void>();
-				setTimeout(resolve, 40);
-				await promise;
+				entered.resolve();
+				await gate.promise;
 				return fast.call(name, args, signal);
 			},
 		};
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear, notion: fakeNotion(), budgetMs: 0 }));
+		const tracking = createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear, notion: fakeNotion(), budgetMs: 0 }),
+		);
+		await entered.promise;
+		gate.resolve();
+		const refs = await tracking;
 		expect(refs.status).toBe("complete");
 		expect(refs.errors).toEqual([]);
 		expect(Object.keys(refs.linear.nodes).sort()).toEqual(["n1", "n2", "n3"]);
@@ -291,7 +493,12 @@ describe("createTracking", () => {
 
 	test("Notion page URLs map to the right node and step keys with parent relations", async () => {
 		const notion = fakeNotion();
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion, concurrency: 1 }));
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion, concurrency: 1 }),
+		);
 		expect(refs.notion.taskUrl).toBe("https://www.notion.so/page-1");
 		expect(refs.notion.nodes).toEqual({
 			n1: "https://www.notion.so/page-2",
@@ -301,23 +508,44 @@ describe("createTracking", () => {
 		expect(refs.notion.steps["n1.1"]).toBe("https://www.notion.so/page-5");
 		expect(refs.notion.steps["n3.2"]).toBe("https://www.notion.so/page-10");
 		const nodePages = notion.calls[2]?.args.pages as Array<{ properties: Record<string, unknown> }>;
-		expect(nodePages[1]?.properties["Parent Item"]).toBe(JSON.stringify(["https://www.notion.so/page-1"]));
+		expect(nodePages[1]?.properties["Parent Item"]).toBe(
+			JSON.stringify(["https://www.notion.so/page-1"]),
+		);
 		expect(nodePages[1]?.properties["Issue ID"]).toBe(refs.linear.nodes.n2?.identifier);
 		expect(nodePages[1]?.properties.Agent).toBeUndefined();
 		const stepPages = notion.calls[3]?.args.pages as Array<{ properties: Record<string, unknown> }>;
-		expect(stepPages[5]?.properties["Parent Item"]).toBe(JSON.stringify(["https://www.notion.so/page-4"]));
+		expect(stepPages[5]?.properties["Parent Item"]).toBe(
+			JSON.stringify(["https://www.notion.so/page-4"]),
+		);
 		expect(stepPages[5]?.properties.Step).toBe(2);
 	});
 
 	test("re-run adopts a Linear issue created by a lost call instead of saving it again", async () => {
 		const plan = makePlan();
-		const first = await createTracking(plan, GRAPH, undefined, deps({ linear: fakeLinear(), notion: fakeNotion() }));
+		const first = await createTracking(
+			plan,
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion: fakeNotion() }),
+		);
 		const partial: TrackingRefs = structuredClone(first);
 		const lost = partial.linear.steps["n2.1"];
 		delete partial.linear.steps["n2.1"];
 		const listed = () => [
-			{ id: "other", identifier: "ENG-99", url: "https://linear.app/org/issue/ENG-99/x", title: "x", description: "ultrathink graph g-10 · node n2 · step 1" },
-			{ id: lost?.id, identifier: lost?.identifier, url: lost?.url, title: "Build — Step 1: s", description: "sd\n\nultrathink graph g-1 · node n2 · step 1" },
+			{
+				id: "other",
+				identifier: "ENG-99",
+				url: "https://linear.app/org/issue/ENG-99/x",
+				title: "x",
+				description: "ultrathink graph g-10 · node n2 · step 1",
+			},
+			{
+				id: lost?.id,
+				identifier: lost?.identifier,
+				url: lost?.url,
+				title: "Build — Step 1: s",
+				description: "sd\n\nultrathink graph g-1 · node n2 · step 1",
+			},
 		];
 		const linear = fakeLinear({ listed });
 		const refs = await createTracking(plan, GRAPH, partial, deps({ linear, notion: fakeNotion() }));
@@ -337,16 +565,30 @@ describe("createTracking", () => {
 
 	test("re-run adopts Notion rows by Level, Item prefix and Step", async () => {
 		const plan = makePlan();
-		const first = await createTracking(plan, GRAPH, undefined, deps({ linear: fakeLinear(), notion: fakeNotion() }));
+		const first = await createTracking(
+			plan,
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion: fakeNotion() }),
+		);
 		const partial: TrackingRefs = structuredClone(first);
 		delete partial.notion.taskUrl;
 		partial.notion.nodes = {};
 		partial.notion.steps = {};
 		const rows = [
 			{ url: "https://www.notion.so/t", Level: "Task", Item: "Ship it" },
-			...GRAPH.nodes.map((node) => ({ url: `https://www.notion.so/${node.id}`, Level: "Issue", Item: `[${node.id}] ${node.title}` })),
+			...GRAPH.nodes.map((node) => ({
+				url: `https://www.notion.so/${node.id}`,
+				Level: "Issue",
+				Item: `[${node.id}] ${node.title}`,
+			})),
 			...GRAPH.nodes.flatMap((node) =>
-				[1, 2].map((step) => ({ url: `https://www.notion.so/${node.id}-${step}`, Level: "Sub-Issue", Item: `[${node.id}] Step ${step}: s`, Step: step })),
+				[1, 2].map((step) => ({
+					url: `https://www.notion.so/${node.id}-${step}`,
+					Level: "Sub-Issue",
+					Item: `[${node.id}] Step ${step}: s`,
+					Step: step,
+				})),
 			),
 		];
 		const notion = fakeNotion({ rows });
@@ -363,14 +605,23 @@ describe("createTracking", () => {
 
 	test("create-pages sends allow_async false and maps structured urls in order", async () => {
 		const notion = fakeNotion();
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion, concurrency: 1 }));
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion, concurrency: 1 }),
+		);
 		const creates = notion.calls.filter((call) => call.name === "notion-create-pages");
 		expect(creates.every((call) => call.args.allow_async === false)).toBe(true);
 		expect(refs.notion.nodes.n3).toBe("https://www.notion.so/page-4");
 	});
 
 	test("the hosted Notion fetch shape (schema JSON inside a text field) keeps every property on created rows", async () => {
-		const schema = Object.fromEntries(["Item", "Level", "Graph ID", "Agent", "Status", "Thought", "Parent Item", "Step"].map((name) => [name, { name, type: "text" }]));
+		const schema = Object.fromEntries(
+			["Item", "Level", "Graph ID", "Agent", "Status", "Thought", "Parent Item", "Step"].map(
+				(name) => [name, { name, type: "text" }],
+			),
+		);
 		const text = [
 			'<data-source url="{{collection://ds-uuid}}">',
 			"Here is the database's configurable state:",
@@ -383,14 +634,36 @@ describe("createTracking", () => {
 		const notion: ToolCaller = {
 			async call(name, args) {
 				calls.push({ name, args });
-				if (name === "notion-fetch") return { metadata: { type: "data_source" }, title: "Agent Task Graph", url: "collection://ds-uuid", text };
-				return { pages: (args.pages as unknown[]).map(() => ({ url: `https://www.notion.so/page-${++counter}` })) };
+				if (name === "notion-fetch")
+					return {
+						metadata: { type: "data_source" },
+						title: "Agent Task Graph",
+						url: "collection://ds-uuid",
+						text,
+					};
+				return {
+					pages: (args.pages as unknown[]).map(() => ({
+						url: `https://www.notion.so/page-${++counter}`,
+					})),
+				};
 			},
 		};
-		await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion, concurrency: 1 }));
-		const pages = calls.filter((call) => call.name === "notion-create-pages").flatMap((call) => call.args.pages as Array<{ properties: Record<string, unknown> }>);
+		await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion, concurrency: 1 }),
+		);
+		const pages = calls
+			.filter((call) => call.name === "notion-create-pages")
+			.flatMap((call) => call.args.pages as Array<{ properties: Record<string, unknown> }>);
 		expect(pages.length).toBeGreaterThan(0);
-		for (const page of pages) expect(page.properties).toMatchObject({ "Graph ID": "g-1", Level: expect.any(String), Item: expect.any(String) });
+		for (const page of pages)
+			expect(page.properties).toMatchObject({
+				"Graph ID": "g-1",
+				Level: expect.any(String),
+				Item: expect.any(String),
+			});
 		expect(pages[0]?.properties).toMatchObject({ Level: "Task", Status: expect.any(String) });
 		expect(pages.every((page) => !("metadata" in page.properties))).toBe(true);
 	});
@@ -400,26 +673,63 @@ describe("createTracking", () => {
 		const notion: ToolCaller = {
 			async call(name, args) {
 				calls.push({ name, args });
-				if (name === "notion-fetch") return { metadata: { type: "data_source" }, text: "unparseable schema" };
-				return { pages: (args.pages as unknown[]).map((_, index) => ({ url: `https://www.notion.so/q${index}` })) };
+				if (name === "notion-fetch")
+					return { metadata: { type: "data_source" }, text: "unparseable schema" };
+				return {
+					pages: (args.pages as unknown[]).map((_, index) => ({
+						url: `https://www.notion.so/q${index}`,
+					})),
+				};
 			},
 		};
-		await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion, concurrency: 1 }));
-		const task = (calls.find((call) => call.name === "notion-create-pages")?.args.pages as Array<{ properties: Record<string, unknown> }>)[0];
-		expect(task?.properties).toMatchObject({ Item: expect.any(String), Level: "Task", "Graph ID": "g-1", Status: expect.any(String), Agent: expect.any(String) });
-		const node = (calls.filter((call) => call.name === "notion-create-pages")[1]?.args.pages as Array<{ properties: Record<string, unknown> }>)[0];
-		expect(node?.properties).toMatchObject({ Level: "Issue", Thought: expect.any(String), "Parent Item": expect.any(String) });
+		await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion, concurrency: 1 }),
+		);
+		const task = (
+			calls.find((call) => call.name === "notion-create-pages")?.args.pages as Array<{
+				properties: Record<string, unknown>;
+			}>
+		)[0];
+		expect(task?.properties).toMatchObject({
+			Item: expect.any(String),
+			Level: "Task",
+			"Graph ID": "g-1",
+			Status: expect.any(String),
+			Agent: expect.any(String),
+		});
+		const node = (
+			calls.filter((call) => call.name === "notion-create-pages")[1]?.args.pages as Array<{
+				properties: Record<string, unknown>;
+			}>
+		)[0];
+		expect(node?.properties).toMatchObject({
+			Level: "Issue",
+			Thought: expect.any(String),
+			"Parent Item": expect.any(String),
+		});
 	});
 
 	test("structured page urls win over urls mentioned elsewhere in the result", async () => {
 		const notion: ToolCaller = {
 			async call(name, args) {
-				if (name === "notion-fetch") return { schema: { Item: { type: "title" }, Level: { type: "select" } } };
+				if (name === "notion-fetch")
+					return { schema: { Item: { type: "title" }, Level: { type: "select" } } };
 				const pages = args.pages as unknown[];
-				return { note: "see https://www.notion.so/unrelated", pages: pages.map((_, index) => ({ url: `https://www.notion.so/p${index}` })) };
+				return {
+					note: "see https://www.notion.so/unrelated",
+					pages: pages.map((_, index) => ({ url: `https://www.notion.so/p${index}` })),
+				};
 			},
 		};
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion }));
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion }),
+		);
 		expect(refs.notion.taskUrl).toBe("https://www.notion.so/p0");
 		expect(refs.notion.nodes.n2).toBe("https://www.notion.so/p1");
 	});
@@ -428,12 +738,18 @@ describe("createTracking", () => {
 		let counter = 0;
 		const notion: ToolCaller = {
 			async call(name, args) {
-				if (name === "notion-fetch") return { schema: { Item: { type: "title" }, Level: { type: "select" } } };
+				if (name === "notion-fetch")
+					return { schema: { Item: { type: "title" }, Level: { type: "select" } } };
 				const pages = args.pages as unknown[];
 				return `Created ${pages.length} pages:\n${pages.map(() => `<page url="https://app.notion.com/p/row-${++counter}">`).join("\n")}`;
 			},
 		};
-		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear: fakeLinear(), notion, concurrency: 1 }));
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear(), notion, concurrency: 1 }),
+		);
 		expect(refs.errors).toEqual([]);
 		expect(refs.status).toBe("complete");
 		expect(refs.notion.taskUrl).toBe("https://app.notion.com/p/row-1");
@@ -445,14 +761,22 @@ describe("createTracking", () => {
 	test("a node whose dependency failed is skipped, then created with full blockedBy on re-run", async () => {
 		const plan = makePlan();
 		const failing = fakeLinear({ throwOn: (args) => args.title === "[n2] Build" });
-		const first = await createTracking(plan, GRAPH, undefined, deps({ linear: failing, notion: fakeNotion() }));
+		const first = await createTracking(
+			plan,
+			GRAPH,
+			undefined,
+			deps({ linear: failing, notion: fakeNotion() }),
+		);
 		expect(first.errors).toContain("linear n3: dependency missing");
 		expect(first.linear.nodes.n3).toBeUndefined();
 		expect(failing.calls.some((call) => call.args.title === "[n3] Review")).toBe(false);
 		const linear = fakeLinear();
 		const refs = await createTracking(plan, GRAPH, first, deps({ linear, notion: fakeNotion() }));
 		const n3 = linear.calls.find((call) => call.args.title === "[n3] Review");
-		expect(n3?.args.blockedBy).toEqual([first.linear.nodes.n1?.identifier, refs.linear.nodes.n2?.identifier]);
+		expect(n3?.args.blockedBy).toEqual([
+			first.linear.nodes.n1?.identifier,
+			refs.linear.nodes.n2?.identifier,
+		]);
 		expect(refs.linear.nodes.n3).toBeDefined();
 	});
 
@@ -461,18 +785,33 @@ describe("createTracking", () => {
 			goal: "g",
 			nodes: [
 				{ id: "constructor", title: "A", kind: "understand", question: "q1", dependsOn: [] },
-				{ id: "__proto__", title: "B", kind: "synthesize", question: "q2", dependsOn: ["constructor"] },
+				{
+					id: "__proto__",
+					title: "B",
+					kind: "synthesize",
+					question: "q2",
+					dependsOn: ["constructor"],
+				},
 			],
 		};
 		const plan: TrackPlan = {
 			...makePlan(),
 			issues: [],
 			subIssues: [],
-			linearIssues: graph.nodes.map((node) => ({ nodeId: node.id, title: node.title, description: `desc ${node.id}` })),
+			linearIssues: graph.nodes.map((node) => ({
+				nodeId: node.id,
+				title: node.title,
+				description: `desc ${node.id}`,
+			})),
 			linearSubIssues: [],
 		};
 		const linear = fakeLinear();
-		const refs = await createTracking(plan, graph, undefined, deps({ linear, notionDataSource: undefined }));
+		const refs = await createTracking(
+			plan,
+			graph,
+			undefined,
+			deps({ linear, notionDataSource: undefined }),
+		);
 		const saves = linear.calls.filter((call) => call.name === "save_issue");
 		expect(saves.map((call) => call.args.title)).toEqual(["[constructor] A", "[__proto__] B"]);
 		// A non-literal key keeps TypeScript from resolving `constructor` to Object.prototype's member.
@@ -483,17 +822,40 @@ describe("createTracking", () => {
 		expect(Object.getPrototypeOf(refs.linear.nodes)).toBeNull();
 
 		const failing = fakeLinear({ throwOn: (args) => args.title === "[constructor] A" });
-		const failed = await createTracking(plan, graph, undefined, deps({ linear: failing, notionDataSource: undefined }));
+		const failed = await createTracking(
+			plan,
+			graph,
+			undefined,
+			deps({ linear: failing, notionDataSource: undefined }),
+		);
 		expect(failing.calls.filter((call) => call.name === "save_issue")).toHaveLength(1);
 		expect(failed.status).not.toBe("complete");
 		expect(Object.keys(failed.linear.nodes)).toEqual([]);
-		expect(failed.errors).toEqual(["linear constructor: HTTP 500", "linear __proto__: dependency missing"]);
+		expect(failed.errors).toEqual([
+			"linear constructor: HTTP 500",
+			"linear __proto__: dependency missing",
+		]);
 
-		const listed = () => [{ identifier: "ENG-90", url: "https://linear.app/org/issue/ENG-90/x", title: "t", description: "d\n\nultrathink graph g-1 · node __proto__" }];
+		const listed = () => [
+			{
+				identifier: "ENG-90",
+				url: "https://linear.app/org/issue/ENG-90/x",
+				title: "t",
+				description: "d\n\nultrathink graph g-1 · node __proto__",
+			},
+		];
 		const adopting = fakeLinear({ listed });
-		const adopted = await createTracking(plan, graph, failed, deps({ linear: adopting, notionDataSource: undefined }));
+		const adopted = await createTracking(
+			plan,
+			graph,
+			failed,
+			deps({ linear: adopting, notionDataSource: undefined }),
+		);
+		// biome-ignore lint/suspicious/noProto: reason: this test asserts that a node id named __proto__ is stored as an own key, so the literal accessor is the subject under test. remove when: the node store no longer keys a plain object by node id.
 		expect(adopted.linear.nodes["__proto__"]?.identifier).toBe("ENG-90");
-		expect(adopting.calls.filter((call) => call.name === "save_issue").map((call) => call.args.title)).toEqual(["[constructor] A"]);
+		expect(
+			adopting.calls.filter((call) => call.name === "save_issue").map((call) => call.args.title),
+		).toEqual(["[constructor] A"]);
 		expect(adopted.status).toBe("complete");
 	});
 });

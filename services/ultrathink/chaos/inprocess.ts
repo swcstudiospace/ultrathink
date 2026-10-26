@@ -39,7 +39,9 @@ export interface InProcessTarget {
  * and a zero-delay sleep would time every plan out before its first upstream call. Retry waits stay at zero because the
  * faulted 5xx carries `Retry-After: 0`.
  */
-export async function createInProcessTarget(options: InProcessTargetOptions): Promise<InProcessTarget> {
+export async function createInProcessTarget(
+	options: InProcessTargetOptions,
+): Promise<InProcessTarget> {
 	const { template, stateDir, now } = options;
 	if (template.kind !== "inprocess" || template.plan === undefined) {
 		throw new TypeError(`template ${template.id} is not an inprocess template with a fault plan`);
@@ -107,7 +109,10 @@ export async function createInProcessTarget(options: InProcessTargetOptions): Pr
 	return { target, close };
 }
 
-function applyOverrides(base: UltrathinkConfig, overrides: ExperimentTemplate["config"]): UltrathinkConfig {
+function applyOverrides(
+	base: UltrathinkConfig,
+	overrides: ExperimentTemplate["config"],
+): UltrathinkConfig {
 	if (overrides === undefined) return base;
 	return {
 		...base,

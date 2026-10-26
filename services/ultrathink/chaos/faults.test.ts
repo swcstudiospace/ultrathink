@@ -5,8 +5,20 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type OpenRouterCallInfo, type OpenRouterCompleterOptions, OpenRouterError, type OpenRouterFetch, createOpenRouterCompleter } from "../engine/openrouter.ts";
-import { createFaultyFetch, type FaultPlan, type FaultStep, loadChaosFetch, parseFaultPlan } from "./faults.ts";
+import {
+	type OpenRouterCallInfo,
+	type OpenRouterCompleterOptions,
+	OpenRouterError,
+	type OpenRouterFetch,
+	createOpenRouterCompleter,
+} from "../engine/openrouter.ts";
+import {
+	createFaultyFetch,
+	type FaultPlan,
+	type FaultStep,
+	loadChaosFetch,
+	parseFaultPlan,
+} from "./faults.ts";
 
 const BODY = "INNER-BODY-MARK";
 const KEY = "sk-or-test-SECRETKEY-0123456789";
@@ -29,7 +41,9 @@ function recordingInner(body: string = BODY): Recorded {
 }
 
 /** A chat completion body with content "ok", for the completer tests. */
-const COMPLETION_BODY = JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] });
+const COMPLETION_BODY = JSON.stringify({
+	choices: [{ message: { role: "assistant", content: "ok" } }],
+});
 
 function plan(...steps: FaultStep[]): FaultPlan {
 	return { steps };
@@ -53,7 +67,10 @@ function parseErrorOf(json: unknown): unknown {
 	throw new Error("expected parseFaultPlan to throw");
 }
 
-function completerWith(fetch: OpenRouterFetch, overrides: Partial<OpenRouterCompleterOptions> = {}) {
+function completerWith(
+	fetch: OpenRouterFetch,
+	overrides: Partial<OpenRouterCompleterOptions> = {},
+) {
 	const sleeps: number[] = [];
 	const calls: OpenRouterCallInfo[] = [];
 	const complete = createOpenRouterCompleter({
@@ -78,7 +95,10 @@ describe("createFaultyFetch step sequencing", () => {
 	test("status 503 x2 then pass gives two 503 responses, then the inner response; inner is called once", async () => {
 		const inner = recordingInner();
 		const faulty = createFaultyFetch(
-			plan({ count: 2, fault: { kind: "status", status: 503 } }, { count: 1, fault: { kind: "pass" } }),
+			plan(
+				{ count: 2, fault: { kind: "status", status: 503 } },
+				{ count: 1, fault: { kind: "pass" } },
+			),
 			inner.fetch,
 		);
 		const first = await faulty("https://upstream.test/v1", {});
@@ -93,7 +113,10 @@ describe("createFaultyFetch step sequencing", () => {
 
 	test("exhausted plans pass through to the inner fetch", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "status", status: 500 } }), inner.fetch);
+		const faulty = createFaultyFetch(
+			plan({ count: 1, fault: { kind: "status", status: 500 } }),
+			inner.fetch,
+		);
 		expect((await faulty("u", {})).status).toBe(500);
 		expect(await (await faulty("u", {})).text()).toBe(BODY);
 		expect(await (await faulty("u", {})).text()).toBe(BODY);
@@ -102,7 +125,10 @@ describe("createFaultyFetch step sequencing", () => {
 
 	test("a forever step never advances and never reaches the inner fetch", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: "forever", fault: { kind: "status", status: 502 } }), inner.fetch);
+		const faulty = createFaultyFetch(
+			plan({ count: "forever", fault: { kind: "status", status: 502 } }),
+			inner.fetch,
+		);
 		for (let call = 0; call < 5; call += 1) {
 			expect((await faulty("u", {})).status).toBe(502);
 		}
@@ -127,7 +153,10 @@ describe("createFaultyFetch step sequencing", () => {
 
 	test("concurrent calls consume units in call order", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "status", status: 503 } }), inner.fetch);
+		const faulty = createFaultyFetch(
+			plan({ count: 1, fault: { kind: "status", status: 503 } }),
+			inner.fetch,
+		);
 		const first = faulty("u", {});
 		const second = faulty("u", {});
 		expect((await first).status).toBe(503);
@@ -147,7 +176,10 @@ describe("createFaultyFetch step sequencing", () => {
 describe("createFaultyFetch fault kinds", () => {
 	test("status with retryAfterSec sets Retry-After and returns the injected body", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "status", status: 429, retryAfterSec: 3 } }), inner.fetch);
+		const faulty = createFaultyFetch(
+			plan({ count: 1, fault: { kind: "status", status: 429, retryAfterSec: 3 } }),
+			inner.fetch,
+		);
 		const response = await faulty("u", {});
 		expect(response.status).toBe(429);
 		expect(response.headers.get("retry-after")).toBe("3");
@@ -156,7 +188,10 @@ describe("createFaultyFetch fault kinds", () => {
 	});
 
 	test("status without retryAfterSec sets no Retry-After header", async () => {
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "status", status: 503 } }), recordingInner().fetch);
+		const faulty = createFaultyFetch(
+			plan({ count: 1, fault: { kind: "status", status: 503 } }),
+			recordingInner().fetch,
+		);
 		expect((await faulty("u", {})).headers.get("retry-after")).toBeNull();
 	});
 
@@ -191,7 +226,10 @@ describe("createFaultyFetch fault kinds", () => {
 	});
 
 	test("blackhole with an already-aborted signal rejects with AbortError", async () => {
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "blackhole" } }), recordingInner().fetch);
+		const faulty = createFaultyFetch(
+			plan({ count: 1, fault: { kind: "blackhole" } }),
+			recordingInner().fetch,
+		);
 		const controller = new AbortController();
 		controller.abort();
 		const error = await rejectionOf(faulty("u", { signal: controller.signal }));
@@ -223,7 +261,11 @@ describe("createFaultyFetch fault kinds", () => {
 			signal?.addEventListener("abort", () => resolve(), { once: true });
 			await promise;
 		};
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "latency", ms: 60_000 } }), inner.fetch, untilSignal);
+		const faulty = createFaultyFetch(
+			plan({ count: 1, fault: { kind: "latency", ms: 60_000 } }),
+			inner.fetch,
+			untilSignal,
+		);
 		const controller = new AbortController();
 		const pending = faulty("u", { signal: controller.signal });
 		controller.abort();
@@ -234,7 +276,11 @@ describe("createFaultyFetch fault kinds", () => {
 
 	test("latency with an already-aborted signal rejects with AbortError without calling the inner fetch", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "latency", ms: 0 } }), inner.fetch, async () => undefined);
+		const faulty = createFaultyFetch(
+			plan({ count: 1, fault: { kind: "latency", ms: 0 } }),
+			inner.fetch,
+			async () => undefined,
+		);
 		const controller = new AbortController();
 		controller.abort();
 		const error = await rejectionOf(faulty("u", { signal: controller.signal }));
@@ -245,7 +291,9 @@ describe("createFaultyFetch fault kinds", () => {
 
 describe("parseFaultPlan", () => {
 	test("accepts the documented example", () => {
-		const parsed = parseFaultPlan({ steps: [{ count: 3, fault: { kind: "status", status: 503 } }] });
+		const parsed = parseFaultPlan({
+			steps: [{ count: 3, fault: { kind: "status", status: 503 } }],
+		});
 		expect(parsed).toEqual({ steps: [{ count: 3, fault: { kind: "status", status: 503 } }] });
 	});
 
@@ -273,23 +321,78 @@ describe("parseFaultPlan", () => {
 		expect(parsed.steps[0]).not.toBe(input.steps[0]);
 	});
 
-	const invalid: Array<{ label: string; json: unknown; error: new (message?: string) => Error; path: string }> = [
+	const invalid: Array<{
+		label: string;
+		json: unknown;
+		error: new (message?: string) => Error;
+		path: string;
+	}> = [
 		{ label: "empty steps", json: { steps: [] }, error: RangeError, path: "steps" },
-		{ label: "more than 100 steps", json: { steps: Array.from({ length: 101 }, () => ({ count: 1, fault: { kind: "pass" } })) }, error: RangeError, path: "steps" },
-		{ label: "count 0", json: { steps: [{ count: 0, fault: { kind: "pass" } }] }, error: RangeError, path: "steps[0].count" },
-		{ label: "count 1.5", json: { steps: [{ count: 1.5, fault: { kind: "pass" } }] }, error: TypeError, path: "steps[0].count" },
-		{ label: "count above the safe integer range", json: { steps: [{ count: 2 ** 60, fault: { kind: "pass" } }] }, error: RangeError, path: "steps[0].count" },
-		{ label: "count as a string other than forever", json: { steps: [{ count: "3", fault: { kind: "pass" } }] }, error: TypeError, path: "steps[0].count" },
 		{
-			label: "forever before the last step",
-			json: { steps: [{ count: "forever", fault: { kind: "pass" } }, { count: 1, fault: { kind: "pass" } }] },
+			label: "more than 100 steps",
+			json: { steps: Array.from({ length: 101 }, () => ({ count: 1, fault: { kind: "pass" } })) },
+			error: RangeError,
+			path: "steps",
+		},
+		{
+			label: "count 0",
+			json: { steps: [{ count: 0, fault: { kind: "pass" } }] },
 			error: RangeError,
 			path: "steps[0].count",
 		},
-		{ label: "status 200", json: { steps: [{ count: 1, fault: { kind: "status", status: 200 } }] }, error: RangeError, path: "steps[0].fault.status" },
-		{ label: "status 600", json: { steps: [{ count: 1, fault: { kind: "status", status: 600 } }] }, error: RangeError, path: "steps[0].fault.status" },
-		{ label: "status 503.5", json: { steps: [{ count: 1, fault: { kind: "status", status: 503.5 } }] }, error: TypeError, path: "steps[0].fault.status" },
-		{ label: "status missing", json: { steps: [{ count: 1, fault: { kind: "status" } }] }, error: TypeError, path: "steps[0].fault.status" },
+		{
+			label: "count 1.5",
+			json: { steps: [{ count: 1.5, fault: { kind: "pass" } }] },
+			error: TypeError,
+			path: "steps[0].count",
+		},
+		{
+			label: "count above the safe integer range",
+			json: { steps: [{ count: 2 ** 60, fault: { kind: "pass" } }] },
+			error: RangeError,
+			path: "steps[0].count",
+		},
+		{
+			label: "count as a string other than forever",
+			json: { steps: [{ count: "3", fault: { kind: "pass" } }] },
+			error: TypeError,
+			path: "steps[0].count",
+		},
+		{
+			label: "forever before the last step",
+			json: {
+				steps: [
+					{ count: "forever", fault: { kind: "pass" } },
+					{ count: 1, fault: { kind: "pass" } },
+				],
+			},
+			error: RangeError,
+			path: "steps[0].count",
+		},
+		{
+			label: "status 200",
+			json: { steps: [{ count: 1, fault: { kind: "status", status: 200 } }] },
+			error: RangeError,
+			path: "steps[0].fault.status",
+		},
+		{
+			label: "status 600",
+			json: { steps: [{ count: 1, fault: { kind: "status", status: 600 } }] },
+			error: RangeError,
+			path: "steps[0].fault.status",
+		},
+		{
+			label: "status 503.5",
+			json: { steps: [{ count: 1, fault: { kind: "status", status: 503.5 } }] },
+			error: TypeError,
+			path: "steps[0].fault.status",
+		},
+		{
+			label: "status missing",
+			json: { steps: [{ count: 1, fault: { kind: "status" } }] },
+			error: TypeError,
+			path: "steps[0].fault.status",
+		},
 		{
 			label: "retryAfterSec 21",
 			json: { steps: [{ count: 1, fault: { kind: "status", status: 429, retryAfterSec: 21 } }] },
@@ -302,14 +405,54 @@ describe("parseFaultPlan", () => {
 			error: TypeError,
 			path: "steps[0].fault.retryAfterSec",
 		},
-		{ label: "latency ms -1", json: { steps: [{ count: 1, fault: { kind: "latency", ms: -1 } }] }, error: RangeError, path: "steps[0].fault.ms" },
-		{ label: "latency ms above 60000", json: { steps: [{ count: 1, fault: { kind: "latency", ms: 60001 } }] }, error: RangeError, path: "steps[0].fault.ms" },
-		{ label: "latency ms missing", json: { steps: [{ count: 1, fault: { kind: "latency" } }] }, error: TypeError, path: "steps[0].fault.ms" },
-		{ label: "unknown fault kind", json: { steps: [{ count: 1, fault: { kind: "explode" } }] }, error: TypeError, path: "steps[0].fault.kind" },
-		{ label: "fault without kind", json: { steps: [{ count: 1, fault: {} }] }, error: TypeError, path: "steps[0].fault.kind" },
-		{ label: "unknown field on a fault", json: { steps: [{ count: 1, fault: { kind: "reset", status: 500 } }] }, error: TypeError, path: "steps[0].fault.status" },
-		{ label: "unknown field on a step", json: { steps: [{ count: 1, fault: { kind: "pass" }, note: "x" }] }, error: TypeError, path: "steps[0].note" },
-		{ label: "unknown field on the plan", json: { steps: [{ count: 1, fault: { kind: "pass" } }], extra: true }, error: TypeError, path: "plan.extra" },
+		{
+			label: "latency ms -1",
+			json: { steps: [{ count: 1, fault: { kind: "latency", ms: -1 } }] },
+			error: RangeError,
+			path: "steps[0].fault.ms",
+		},
+		{
+			label: "latency ms above 60000",
+			json: { steps: [{ count: 1, fault: { kind: "latency", ms: 60001 } }] },
+			error: RangeError,
+			path: "steps[0].fault.ms",
+		},
+		{
+			label: "latency ms missing",
+			json: { steps: [{ count: 1, fault: { kind: "latency" } }] },
+			error: TypeError,
+			path: "steps[0].fault.ms",
+		},
+		{
+			label: "unknown fault kind",
+			json: { steps: [{ count: 1, fault: { kind: "explode" } }] },
+			error: TypeError,
+			path: "steps[0].fault.kind",
+		},
+		{
+			label: "fault without kind",
+			json: { steps: [{ count: 1, fault: {} }] },
+			error: TypeError,
+			path: "steps[0].fault.kind",
+		},
+		{
+			label: "unknown field on a fault",
+			json: { steps: [{ count: 1, fault: { kind: "reset", status: 500 } }] },
+			error: TypeError,
+			path: "steps[0].fault.status",
+		},
+		{
+			label: "unknown field on a step",
+			json: { steps: [{ count: 1, fault: { kind: "pass" }, note: "x" }] },
+			error: TypeError,
+			path: "steps[0].note",
+		},
+		{
+			label: "unknown field on the plan",
+			json: { steps: [{ count: 1, fault: { kind: "pass" } }], extra: true },
+			error: TypeError,
+			path: "plan.extra",
+		},
 		{ label: "steps not an array", json: { steps: { count: 1 } }, error: TypeError, path: "steps" },
 		{ label: "steps missing", json: {}, error: TypeError, path: "steps" },
 		{ label: "step not an object", json: { steps: [42] }, error: TypeError, path: "steps[0]" },
@@ -330,7 +473,10 @@ describe("parseFaultPlan", () => {
 describe("completer integration", () => {
 	test("reset on every call is an upstream error with retry, exhausted after MAX_RETRIES", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: "forever", fault: { kind: "reset" } }), inner.fetch);
+		const faulty = createFaultyFetch(
+			plan({ count: "forever", fault: { kind: "reset" } }),
+			inner.fetch,
+		);
 		const { complete, calls } = completerWith(faulty);
 		const error = await rejectionOf(complete("system", "user"));
 		expect(error).toBeInstanceOf(OpenRouterError);
@@ -342,7 +488,10 @@ describe("completer integration", () => {
 	});
 
 	test("blackhole under a 20 ms completer timeout is a timeout with no retry", async () => {
-		const faulty = createFaultyFetch(plan({ count: "forever", fault: { kind: "blackhole" } }), recordingInner().fetch);
+		const faulty = createFaultyFetch(
+			plan({ count: "forever", fault: { kind: "blackhole" } }),
+			recordingInner().fetch,
+		);
 		const { complete, calls } = completerWith(faulty, { timeoutMs: 20 });
 		const error = await rejectionOf(complete("system", "user"));
 		expect(error).toBeInstanceOf(OpenRouterError);
@@ -375,7 +524,9 @@ describe("loadChaosFetch", () => {
 	};
 
 	test("returns undefined when chaosEnabled is not true, even with a path set", () => {
-		expect(loadChaosFetch({ chaosEnabled: false, chaosPlanPath: "/plans/a.json" }, unreadable)).toBeUndefined();
+		expect(
+			loadChaosFetch({ chaosEnabled: false, chaosPlanPath: "/plans/a.json" }, unreadable),
+		).toBeUndefined();
 		expect(loadChaosFetch({ chaosPlanPath: "/plans/a.json" }, unreadable)).toBeUndefined();
 	});
 
@@ -395,7 +546,10 @@ describe("loadChaosFetch", () => {
 
 		test("reads a valid plan file and returns a fetch that applies its first step", async () => {
 			const path = join(dir, "valid.json");
-			writeFileSync(path, JSON.stringify({ steps: [{ count: 1, fault: { kind: "status", status: 503 } }] }));
+			writeFileSync(
+				path,
+				JSON.stringify({ steps: [{ count: 1, fault: { kind: "status", status: 503 } }] }),
+			);
 			const faulty = loadChaosFetch({ chaosEnabled: true, chaosPlanPath: path });
 			expect(faulty).toBeFunction();
 			const response = await faulty?.("https://unused.invalid/v1", {});
@@ -417,7 +571,8 @@ describe("loadChaosFetch", () => {
 	});
 
 	test("a plan with status 200 throws an Error naming the field and not the plan contents", () => {
-		const readText = (): string => JSON.stringify({ steps: [{ count: 1, fault: { kind: "status", status: 200 } }] });
+		const readText = (): string =>
+			JSON.stringify({ steps: [{ count: 1, fault: { kind: "status", status: 200 } }] });
 		let thrown: unknown;
 		try {
 			loadChaosFetch({ chaosEnabled: true, chaosPlanPath: "/plans/bad.json" }, readText);
@@ -429,7 +584,7 @@ describe("loadChaosFetch", () => {
 		expect(message).toContain("/plans/bad.json");
 		expect(message).toContain("steps[0].fault.status");
 		expect(message).not.toContain('"kind"');
-		expect(message).not.toContain("steps\":[");
+		expect(message).not.toContain('steps":[');
 	});
 
 	test("invalid JSON throws an Error that does not echo the file text", () => {

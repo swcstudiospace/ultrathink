@@ -7,7 +7,11 @@ import { createLogger, newRequestId, sanitizeRequestId } from "./log.ts";
 
 function capture(opts: Parameters<typeof createLogger>[0] = {}) {
 	const lines: string[] = [];
-	const logger = createLogger({ now: () => Date.UTC(2026, 0, 2, 3, 4, 5, 678), ...opts, write: (l) => lines.push(l) });
+	const logger = createLogger({
+		now: () => Date.UTC(2026, 0, 2, 3, 4, 5, 678),
+		...opts,
+		write: (l) => lines.push(l),
+	});
 	const parsed = () => lines.map((l) => JSON.parse(l) as Record<string, unknown>);
 	return { logger, lines, parsed };
 }
@@ -39,7 +43,11 @@ describe("createLogger", () => {
 	test("fields cannot overwrite ts, level or event", () => {
 		const { logger, parsed } = capture();
 		logger.info("real", { ts: "x", level: "debug", event: "fake" });
-		expect(parsed()[0]).toMatchObject({ ts: "2026-01-02T03:04:05.678Z", level: "info", event: "real" });
+		expect(parsed()[0]).toMatchObject({
+			ts: "2026-01-02T03:04:05.678Z",
+			level: "info",
+			event: "real",
+		});
 	});
 
 	test("drops secret-looking keys at the top level case-insensitively", () => {
@@ -64,7 +72,11 @@ describe("createLogger", () => {
 	test("drops secret-looking keys one level down", () => {
 		const { logger, lines, parsed } = capture();
 		logger.info("req", {
-			headers: { Authorization: "Bearer fake-value", "X-Connector-Key": "fake-value", accept: "text/plain" },
+			headers: {
+				Authorization: "Bearer fake-value",
+				"X-Connector-Key": "fake-value",
+				accept: "text/plain",
+			},
 			list: [{ token: "fake-value", id: 1 }],
 		});
 		expect(lines[0]).not.toContain("fake-value");
@@ -202,7 +214,11 @@ describe("newRequestId", () => {
 });
 
 describe("request context", () => {
-	const CTX = { reqId: "req-log-1", traceId: "4bf92f3577b34da6a3ce929d0e0e4736", spanId: "00f067aa0ba902b7" };
+	const CTX = {
+		reqId: "req-log-1",
+		traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+		spanId: "00f067aa0ba902b7",
+	};
 
 	test("a line emitted inside a request carries its reqId and traceId", () => {
 		const { logger, parsed } = capture();

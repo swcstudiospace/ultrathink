@@ -6,7 +6,7 @@ import { UPLIFT_SYSTEM_PROMPT } from "./prompt.ts";
 import { sanitizeUpliftXml } from "./xml.ts";
 
 /** Input gate in characters; 0 means no gate. A positive value is an explicit cap. */
-export const DEFAULT_MAX_CHARS = 0;
+const DEFAULT_MAX_CHARS = 0;
 
 function isAbortError(error: unknown): boolean {
 	return error instanceof Error && error.name === "AbortError";
@@ -24,13 +24,20 @@ function fallbackResult(original: string): UpliftResult {
 	return { xml, original, root: "UPLIFTED_PROMPT", source: "fallback" };
 }
 
-function fallbackWith(original: string, fallbackReason: string, rawReplyChars: number, attempts: number): UpliftResult {
+function fallbackWith(
+	original: string,
+	fallbackReason: string,
+	rawReplyChars: number,
+	attempts: number,
+): UpliftResult {
 	return { ...fallbackResult(original), fallbackReason, rawReplyChars, attempts };
 }
 
 /** `provider_error:<status>` when the provider's HTTP status is known, else `provider_error`. */
 function providerReason(report: CompletionReport | undefined): string {
-	return report?.httpStatus === undefined ? "provider_error" : `provider_error:${report.httpStatus}`;
+	return report?.httpStatus === undefined
+		? "provider_error"
+		: `provider_error:${report.httpStatus}`;
 }
 
 export async function runUplift(input: {
@@ -45,10 +52,20 @@ export async function runUplift(input: {
 	const maxChars = input.maxChars ?? DEFAULT_MAX_CHARS;
 	const original = input.original;
 
-	if (maxChars > 0 && original.length > maxChars) return { ...fallbackResult(original), fallbackReason: "input_over_limit", rawReplyChars: 0, attempts: 0 };
+	if (maxChars > 0 && original.length > maxChars)
+		return {
+			...fallbackResult(original),
+			fallbackReason: "input_over_limit",
+			rawReplyChars: 0,
+			attempts: 0,
+		};
 
 	try {
-		const raw = await input.complete(UPLIFT_SYSTEM_PROMPT, buildPayload(original, input.conversation), input.signal);
+		const raw = await input.complete(
+			UPLIFT_SYSTEM_PROMPT,
+			buildPayload(original, input.conversation),
+			input.signal,
+		);
 		const report = input.report?.();
 		const attempts = report?.attempts ?? 1;
 		const reply = raw ?? "";

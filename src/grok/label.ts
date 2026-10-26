@@ -8,7 +8,9 @@ import type { GrokConfig } from "./types.ts";
  * transport, where the wire model alias carries the effort; an unset
  * `shuntModel` falls back to `model`, matching what is sent on the wire).
  */
-export function grokEngineLabel(grok: Pick<GrokConfig, "model" | "reasoningEffort" | "transport" | "shuntModel">): string {
+export function grokEngineLabel(
+	grok: Pick<GrokConfig, "model" | "reasoningEffort" | "transport" | "shuntModel">,
+): string {
 	if (grok.transport === "shunt") return `${grok.shuntModel.trim() || grok.model}@shunt`;
 	return `${grok.model}@${grok.reasoningEffort}`;
 }

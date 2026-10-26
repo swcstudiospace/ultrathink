@@ -36,7 +36,7 @@ export function appendActivity(stateDir: string, notice: unknown, sessionId: str
 		try {
 			chmodSync(dir, 0o700);
 		} catch {
-			// a directory we do not own keeps its mode
+			// reason: a directory we do not own keeps its mode
 		}
 		const path = activityPath(stateDir);
 		withFileLock(path, () => {
@@ -44,6 +44,7 @@ export function appendActivity(stateDir: string, notice: unknown, sessionId: str
 			try {
 				prior = readFileSync(path, "utf8");
 			} catch {
+				// reason: a missing file means no prior receipts. Other read errors also start empty, so the rename below can replace earlier receipts; flagged in the SUMMARY, not changed here.
 				prior = "";
 			}
 			const lines = prior.split("\n").filter((line) => line !== "");
@@ -55,17 +56,17 @@ export function appendActivity(stateDir: string, notice: unknown, sessionId: str
 			try {
 				chmodSync(tmp, 0o600);
 			} catch {
-				// mode was set at create
+				// reason: mode was set at create
 			}
 			renameSync(tmp, path);
 		});
 		try {
 			chmodSync(path, 0o600);
 		} catch {
-			// best-effort
+			// reason: the chmod only tightens a receipt file the write just created; a failure leaves the mode the write set
 		}
 	} catch {
-		// fail-open: a receipt is display only
+		// reason: fail-open: a receipt is display only
 	}
 }
 
@@ -79,13 +80,19 @@ export function readActivity(stateDir: string): ActivityReceipt[] {
 			try {
 				const value: unknown = JSON.parse(line);
 				if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-				const id = "id" in value && typeof value.id === "string" && /^[0-9a-f]{8}$/.test(value.id) ? value.id : undefined;
-				const sessionId = "sessionId" in value && typeof value.sessionId === "string" && value.sessionId !== "" ? value.sessionId : undefined;
+				const id =
+					"id" in value && typeof value.id === "string" && /^[0-9a-f]{8}$/.test(value.id)
+						? value.id
+						: undefined;
+				const sessionId =
+					"sessionId" in value && typeof value.sessionId === "string" && value.sessionId !== ""
+						? value.sessionId
+						: undefined;
 				const notice = toActivityNotice(value);
 				if (!id || !notice) continue;
 				receipts.push({ id, ...(sessionId ? { sessionId } : {}), ...notice });
 			} catch {
-				// skip one bad line
+				// reason: skip one bad line
 			}
 		}
 		return receipts;

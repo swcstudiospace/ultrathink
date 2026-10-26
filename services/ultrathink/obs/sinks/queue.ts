@@ -16,7 +16,7 @@
 
 import type { SendResult, SinkEnvelope, SinkTransport } from "./types.ts";
 
-export type SinkEventType = "sent" | "failed" | "dropped";
+type SinkEventType = "sent" | "failed" | "dropped";
 
 export interface SinkEvent {
 	readonly type: SinkEventType;
@@ -76,7 +76,8 @@ function normalize(value: SendResult | undefined): SendResult {
 }
 
 export function createSinkQueue(options: SinkQueueOptions): SinkQueue {
-	const { transport, capacity, maxBatch, maxAttempts, backoffMs, requestTimeoutMs, onEvent } = options;
+	const { transport, capacity, maxBatch, maxAttempts, backoffMs, requestTimeoutMs, onEvent } =
+		options;
 	const setTimer = options.setTimer ?? defaultSetTimer;
 	const clearTimer = options.clearTimer ?? defaultClearTimer;
 	const sink = transport.name;
@@ -101,7 +102,7 @@ export function createSinkQueue(options: SinkQueueOptions): SinkQueue {
 		try {
 			onEvent(event);
 		} catch {
-			// An observer failure must never reach the record path.
+			// reason: An observer failure must never reach the record path.
 		}
 	};
 

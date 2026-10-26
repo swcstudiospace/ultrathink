@@ -20,7 +20,13 @@ function normalizeOrigin(value: string): string | null {
 		return null;
 	}
 	if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-	if (url.username !== "" || url.password !== "" || url.pathname !== "/" || url.search !== "" || url.hash !== "") {
+	if (
+		url.username !== "" ||
+		url.password !== "" ||
+		url.pathname !== "/" ||
+		url.search !== "" ||
+		url.hash !== ""
+	) {
 		return null;
 	}
 	return url.origin;
@@ -39,7 +45,9 @@ export function originAllowed(origin: string | null, allowed: readonly string[])
 }
 
 /** The version in the MCP-Protocol-Version header. An absent header means the oldest supported version. */
-export function resolveProtocolVersion(header: string | null): { ok: true; version: string } | { ok: false } {
+export function resolveProtocolVersion(
+	header: string | null,
+): { ok: true; version: string } | { ok: false } {
 	if (header === null) return { ok: true, version: DEFAULT_PROTOCOL_VERSION };
 	const version = SUPPORTED_PROTOCOL_VERSIONS.find((supported) => supported === header);
 	return version === undefined ? { ok: false } : { ok: true, version };

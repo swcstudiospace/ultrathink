@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { thrownBy } from "../../../src/test.helpers.ts";
 import { TOOL_DEFINITIONS } from "./mcp.ts";
 import { compileSchema, SchemaCompileError, validateAgainst } from "./validate.ts";
 
@@ -51,25 +52,21 @@ const NESTED_SCHEMA = {
 	additionalProperties: false,
 };
 
-function thrownBy(run: () => void): unknown {
-	try {
-		run();
-	} catch (error) {
-		return error;
-	}
-	return undefined;
-}
-
 describe("the real tool schemas", () => {
 	test("every served tool schema compiles", () => {
-		for (const tool of TOOL_DEFINITIONS) expect(() => compileSchema(tool.inputSchema)).not.toThrow();
+		for (const tool of TOOL_DEFINITIONS)
+			expect(() => compileSchema(tool.inputSchema)).not.toThrow();
 	});
 
 	test("the real ultrathink_result schema accepts valid arguments and refuses an unknown key", () => {
 		const schema = TOOL_DEFINITIONS.find((tool) => tool.name === "ultrathink_result")?.inputSchema;
 		const validate = compileSchema(schema);
 		expect(validate({ sessionId: "s1", waitSeconds: 10, detail: "full" })).toEqual({ ok: true });
-		expect(validate({ sessionId: "s1", extra: 1 })).toEqual({ ok: false, path: "arguments.extra", reason: "unknown property" });
+		expect(validate({ sessionId: "s1", extra: 1 })).toEqual({
+			ok: false,
+			path: "arguments.extra",
+			reason: "unknown property",
+		});
 	});
 });
 
@@ -89,11 +86,19 @@ describe("validating arguments", () => {
 	});
 
 	test("an unknown key is refused with the path to the key", () => {
-		expect(validate({ sessionId: "abc", bogus: 1 })).toEqual({ ok: false, path: "arguments.bogus", reason: "unknown property" });
+		expect(validate({ sessionId: "abc", bogus: 1 })).toEqual({
+			ok: false,
+			path: "arguments.bogus",
+			reason: "unknown property",
+		});
 	});
 
 	test("a wrong type names the expected type", () => {
-		expect(validate({ sessionId: 7 })).toEqual({ ok: false, path: "arguments.sessionId", reason: "expected string" });
+		expect(validate({ sessionId: 7 })).toEqual({
+			ok: false,
+			path: "arguments.sessionId",
+			reason: "expected string",
+		});
 		expect(validate({ sessionId: "abc", waitSeconds: "5" })).toEqual({
 			ok: false,
 			path: "arguments.waitSeconds",
@@ -103,7 +108,11 @@ describe("validating arguments", () => {
 
 	test("a value outside the enum is refused without echoing it", () => {
 		const result = validate({ sessionId: "abc", detail: "verbose-secret" });
-		expect(result).toEqual({ ok: false, path: "arguments.detail", reason: "not one of the allowed values" });
+		expect(result).toEqual({
+			ok: false,
+			path: "arguments.detail",
+			reason: "not one of the allowed values",
+		});
 		expect(JSON.stringify(result)).not.toContain("verbose-secret");
 	});
 
@@ -153,9 +162,17 @@ describe("validating arguments", () => {
 	test("number accepts fractions and refuses NaN and Infinity", () => {
 		const schema = { type: "number", minimum: 0.5 };
 		expect(validateAgainst(schema, 1.5)).toEqual({ ok: true });
-		expect(validateAgainst(schema, 0.25)).toEqual({ ok: false, path: "arguments", reason: "below minimum 0.5" });
+		expect(validateAgainst(schema, 0.25)).toEqual({
+			ok: false,
+			path: "arguments",
+			reason: "below minimum 0.5",
+		});
 		for (const value of [Number.NaN, Number.POSITIVE_INFINITY]) {
-			expect(validateAgainst(schema, value)).toEqual({ ok: false, path: "arguments", reason: "expected number" });
+			expect(validateAgainst(schema, value)).toEqual({
+				ok: false,
+				path: "arguments",
+				reason: "expected number",
+			});
 		}
 	});
 
@@ -165,16 +182,26 @@ describe("validating arguments", () => {
 			path: "arguments.sessionId",
 			reason: "missing required property",
 		});
-		expect(validate({})).toEqual({ ok: false, path: "arguments.sessionId", reason: "missing required property" });
+		expect(validate({})).toEqual({
+			ok: false,
+			path: "arguments.sessionId",
+			reason: "missing required property",
+		});
 	});
 
 	test("a required property set to null or undefined is present but mistyped", () => {
-		expect(validate({ sessionId: null })).toEqual({ ok: false, path: "arguments.sessionId", reason: "expected string" });
+		expect(validate({ sessionId: null })).toEqual({
+			ok: false,
+			path: "arguments.sessionId",
+			reason: "expected string",
+		});
 	});
 
 	test("nested array items report their index and nested path", () => {
 		const check = compileSchema(NESTED_SCHEMA);
-		expect(check({ items: [{ name: "a" }, { name: "b", count: 2 }], meta: { tags: ["x"] } })).toEqual({ ok: true });
+		expect(
+			check({ items: [{ name: "a" }, { name: "b", count: 2 }], meta: { tags: ["x"] } }),
+		).toEqual({ ok: true });
 		expect(check({ items: [{ name: "a" }, { name: "b" }, { count: 1 }] })).toEqual({
 			ok: false,
 			path: "arguments.items[2].name",
@@ -195,52 +222,110 @@ describe("validating arguments", () => {
 			path: "arguments.items[0].other",
 			reason: "unknown property",
 		});
-		expect(check({ meta: { tags: ["x", 2] } })).toEqual({ ok: false, path: "arguments.meta.tags[1]", reason: "expected string" });
-		expect(check({ items: "nope" })).toEqual({ ok: false, path: "arguments.items", reason: "expected array" });
-		expect(check({ meta: [] })).toEqual({ ok: false, path: "arguments.meta", reason: "expected object" });
+		expect(check({ meta: { tags: ["x", 2] } })).toEqual({
+			ok: false,
+			path: "arguments.meta.tags[1]",
+			reason: "expected string",
+		});
+		expect(check({ items: "nope" })).toEqual({
+			ok: false,
+			path: "arguments.items",
+			reason: "expected array",
+		});
+		expect(check({ meta: [] })).toEqual({
+			ok: false,
+			path: "arguments.meta",
+			reason: "expected object",
+		});
 	});
 
 	test("type arrays accept any listed type and name them all when none matches", () => {
 		const schema = { type: ["string", "null"] };
 		expect(validateAgainst(schema, "x")).toEqual({ ok: true });
 		expect(validateAgainst(schema, null)).toEqual({ ok: true });
-		expect(validateAgainst(schema, 1)).toEqual({ ok: false, path: "arguments", reason: "expected string or null" });
+		expect(validateAgainst(schema, 1)).toEqual({
+			ok: false,
+			path: "arguments",
+			reason: "expected string or null",
+		});
 	});
 
 	test("the null and boolean types are enforced", () => {
 		expect(validateAgainst({ type: "null" }, null)).toEqual({ ok: true });
-		expect(validateAgainst({ type: "null" }, undefined)).toEqual({ ok: false, path: "arguments", reason: "expected null" });
-		expect(validateAgainst({ type: "boolean" }, 0)).toEqual({ ok: false, path: "arguments", reason: "expected boolean" });
+		expect(validateAgainst({ type: "null" }, undefined)).toEqual({
+			ok: false,
+			path: "arguments",
+			reason: "expected null",
+		});
+		expect(validateAgainst({ type: "boolean" }, 0)).toEqual({
+			ok: false,
+			path: "arguments",
+			reason: "expected boolean",
+		});
 	});
 
 	test("enum members of every primitive kind are compared strictly", () => {
 		const schema = { enum: [1, "1", true, null] };
-		for (const value of [1, "1", true, null]) expect(validateAgainst(schema, value)).toEqual({ ok: true });
+		for (const value of [1, "1", true, null])
+			expect(validateAgainst(schema, value)).toEqual({ ok: true });
 		for (const value of [2, "true", false, undefined, {}]) {
-			expect(validateAgainst(schema, value)).toEqual({ ok: false, path: "arguments", reason: "not one of the allowed values" });
+			expect(validateAgainst(schema, value)).toEqual({
+				ok: false,
+				path: "arguments",
+				reason: "not one of the allowed values",
+			});
 		}
 	});
 
 	test("a node without type applies its keywords by the value's kind", () => {
-		const schema = { minLength: 2, minimum: 10, properties: { a: { type: "string" } }, additionalProperties: false };
+		const schema = {
+			minLength: 2,
+			minimum: 10,
+			properties: { a: { type: "string" } },
+			additionalProperties: false,
+		};
 		expect(validateAgainst(schema, "ab")).toEqual({ ok: true });
-		expect(validateAgainst(schema, "a")).toEqual({ ok: false, path: "arguments", reason: "shorter than 2 characters" });
-		expect(validateAgainst(schema, 5)).toEqual({ ok: false, path: "arguments", reason: "below minimum 10" });
-		expect(validateAgainst(schema, { b: 1 })).toEqual({ ok: false, path: "arguments.b", reason: "unknown property" });
+		expect(validateAgainst(schema, "a")).toEqual({
+			ok: false,
+			path: "arguments",
+			reason: "shorter than 2 characters",
+		});
+		expect(validateAgainst(schema, 5)).toEqual({
+			ok: false,
+			path: "arguments",
+			reason: "below minimum 10",
+		});
+		expect(validateAgainst(schema, { b: 1 })).toEqual({
+			ok: false,
+			path: "arguments.b",
+			reason: "unknown property",
+		});
 		expect(validateAgainst(schema, [1, 2, 3])).toEqual({ ok: true });
 	});
 
 	test("additionalProperties true or absent allows extra keys; a schema validates their values", () => {
-		expect(validateAgainst({ type: "object", properties: {} }, { anything: 1 })).toEqual({ ok: true });
-		expect(validateAgainst({ type: "object", additionalProperties: true }, { anything: 1 })).toEqual({ ok: true });
+		expect(validateAgainst({ type: "object", properties: {} }, { anything: 1 })).toEqual({
+			ok: true,
+		});
+		expect(
+			validateAgainst({ type: "object", additionalProperties: true }, { anything: 1 }),
+		).toEqual({ ok: true });
 		const typed = { type: "object", additionalProperties: { type: "integer" } };
 		expect(validateAgainst(typed, { a: 1, b: 2 })).toEqual({ ok: true });
-		expect(validateAgainst(typed, { a: 1, b: "2" })).toEqual({ ok: false, path: "arguments.b", reason: "expected integer" });
+		expect(validateAgainst(typed, { a: 1, b: "2" })).toEqual({
+			ok: false,
+			path: "arguments.b",
+			reason: "expected integer",
+		});
 	});
 
 	test("__proto__ and constructor are plain unknown properties and never reach the prototype", () => {
 		const parsed = JSON.parse('{"sessionId":"abc","__proto__":{"polluted":true}}');
-		expect(validate(parsed)).toEqual({ ok: false, path: "arguments.__proto__", reason: "unknown property" });
+		expect(validate(parsed)).toEqual({
+			ok: false,
+			path: "arguments.__proto__",
+			reason: "unknown property",
+		});
 		expect(validate({ sessionId: "abc", constructor: 1 })).toEqual({
 			ok: false,
 			path: "arguments.constructor",
@@ -271,8 +356,17 @@ describe("validating arguments", () => {
 	});
 
 	test("the first failure wins: required before unknown keys, in declaration order", () => {
-		expect(validate({ bogus: 1 })).toEqual({ ok: false, path: "arguments.sessionId", reason: "missing required property" });
-		expect(validateAgainst({ type: "object", required: ["a", "b"], properties: { a: {}, b: {} } }, { b: 1 })).toEqual({
+		expect(validate({ bogus: 1 })).toEqual({
+			ok: false,
+			path: "arguments.sessionId",
+			reason: "missing required property",
+		});
+		expect(
+			validateAgainst(
+				{ type: "object", required: ["a", "b"], properties: { a: {}, b: {} } },
+				{ b: 1 },
+			),
+		).toEqual({
 			ok: false,
 			path: "arguments.a",
 			reason: "missing required property",
@@ -286,7 +380,11 @@ describe("validating arguments", () => {
 				throw new Error("boom");
 			},
 		});
-		expect(validate(hostile)).toEqual({ ok: false, path: "arguments", reason: "invalid arguments" });
+		expect(validate(hostile)).toEqual({
+			ok: false,
+			path: "arguments",
+			reason: "invalid arguments",
+		});
 	});
 
 	test("ignored annotations do not affect validation", () => {
@@ -303,24 +401,45 @@ describe("compiling schemas", () => {
 	}
 
 	test("an unsupported keyword names the keyword and its path", () => {
-		const error = compileError({ type: "object", properties: { name: { type: "string", pattern: "^a" } } });
+		const error = compileError({
+			type: "object",
+			properties: { name: { type: "string", pattern: "^a" } },
+		});
 		expect(error.keyword).toBe("pattern");
 		expect(error.path).toBe("inputSchema.properties.name");
 		expect(error.message).toBe('unsupported keyword "pattern" at inputSchema.properties.name');
-		for (const keyword of ["anyOf", "oneOf", "allOf", "not", "$ref", "$schema", "$defs", "const", "format", "requird"]) {
+		for (const keyword of [
+			"anyOf",
+			"oneOf",
+			"allOf",
+			"not",
+			"$ref",
+			"$schema",
+			"$defs",
+			"const",
+			"format",
+			"requird",
+		]) {
 			expect(compileError({ type: "object", [keyword]: [] }).keyword).toBe(keyword);
 		}
 		expect(compileError({ type: "array", items: { $ref: "#/x" } }).path).toBe("inputSchema.items");
-		expect(compileError({ type: "object", additionalProperties: { pattern: "x" } }).path).toBe("inputSchema.additionalProperties");
+		expect(compileError({ type: "object", additionalProperties: { pattern: "x" } }).path).toBe(
+			"inputSchema.additionalProperties",
+		);
 	});
 
 	test("validateAgainst throws the same compile error", () => {
-		expect(thrownBy(() => validateAgainst({ type: "string", pattern: "x" }, "x"))).toBeInstanceOf(SchemaCompileError);
+		expect(thrownBy(() => validateAgainst({ type: "string", pattern: "x" }, "x"))).toBeInstanceOf(
+			SchemaCompileError,
+		);
 	});
 
 	test("a schema that is not an object is refused", () => {
-		for (const schema of [undefined, null, "object", 1, []]) expect(compileError(schema).path).toBe("inputSchema");
-		expect(compileError({ type: "object", properties: { a: "string" } }).path).toBe("inputSchema.properties.a");
+		for (const schema of [undefined, null, "object", 1, []])
+			expect(compileError(schema).path).toBe("inputSchema");
+		expect(compileError({ type: "object", properties: { a: "string" } }).path).toBe(
+			"inputSchema.properties.a",
+		);
 	});
 
 	test("invalid types, enums, bounds, required and properties are refused", () => {
@@ -331,7 +450,9 @@ describe("compiling schemas", () => {
 		expect(compileError({ enum: [{ a: 1 }] }).keyword).toBe("enum");
 		expect(compileError({ type: "number", minimum: "0" }).keyword).toBe("minimum");
 		expect(compileError({ type: "number", maximum: Number.NaN }).keyword).toBe("maximum");
-		expect(compileError({ type: "number", minimum: 2, maximum: 1 }).message).toBe("minimum is greater than maximum at inputSchema.minimum");
+		expect(compileError({ type: "number", minimum: 2, maximum: 1 }).message).toBe(
+			"minimum is greater than maximum at inputSchema.minimum",
+		);
 		expect(compileError({ type: "string", minLength: -1 }).keyword).toBe("minLength");
 		expect(compileError({ type: "string", maxLength: 1.5 }).keyword).toBe("maxLength");
 		expect(compileError({ type: "string", minLength: 3, maxLength: 2 }).keyword).toBe("minLength");
@@ -341,7 +462,9 @@ describe("compiling schemas", () => {
 			'required names "missing", which is not in properties at inputSchema.required',
 		);
 		expect(compileError({ type: "object", properties: [] }).keyword).toBe("properties");
-		expect(compileError({ type: "object", additionalProperties: "no" }).keyword).toBe("additionalProperties");
+		expect(compileError({ type: "object", additionalProperties: "no" }).keyword).toBe(
+			"additionalProperties",
+		);
 	});
 
 	test("a cyclic or absurdly deep schema is refused instead of recursing forever", () => {
@@ -354,6 +477,14 @@ describe("compiling schemas", () => {
 		expect(() => compileSchema(RESULT_SCHEMA)).not.toThrow();
 		expect(() => compileSchema(NESTED_SCHEMA)).not.toThrow();
 		expect(() => compileSchema({})).not.toThrow();
-		expect(() => compileSchema({ type: ["integer", "null"], minimum: 0, maximum: 0, enum: [0, null], default: 0 })).not.toThrow();
+		expect(() =>
+			compileSchema({
+				type: ["integer", "null"],
+				minimum: 0,
+				maximum: 0,
+				enum: [0, null],
+				default: 0,
+			}),
+		).not.toThrow();
 	});
 });

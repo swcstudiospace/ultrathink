@@ -27,9 +27,14 @@ interface ConvertMarks {
 }
 
 /** Claude transcript entries become agent messages. `tool_use` becomes a tool call; `tool_result` a tool result. */
-function claudeToAgent(entry: Record<string, unknown>, toolNames: Map<string, string>, marks: ConvertMarks): unknown[] {
+function claudeToAgent(
+	entry: Record<string, unknown>,
+	toolNames: Map<string, string>,
+	marks: ConvertMarks,
+): unknown[] {
 	const message = asRecord(entry.message);
-	if (entry.isMeta === true || !message || (entry.type !== "user" && entry.type !== "assistant")) return [];
+	if (entry.isMeta === true || !message || (entry.type !== "user" && entry.type !== "assistant"))
+		return [];
 	const role = entry.type === "assistant" ? "assistant" : "user";
 	const content = message.content;
 	if (typeof content === "string") {
@@ -66,11 +71,16 @@ function claudeToAgent(entry: Record<string, unknown>, toolNames: Map<string, st
 			flush();
 			const name = typeof item.name === "string" && item.name.trim() ? item.name.trim() : "tool";
 			if (typeof item.id === "string") toolNames.set(item.id, name);
-			out.push({ role: "assistant", content: [{ type: "toolCall", name, arguments: item.input ?? {} }] });
+			out.push({
+				role: "assistant",
+				content: [{ type: "toolCall", name, arguments: item.input ?? {} }],
+			});
 		} else if (item.type === "tool_result") {
 			flush();
-			const fromId = typeof item.tool_use_id === "string" ? toolNames.get(item.tool_use_id) : undefined;
-			const toolName = typeof item.name === "string" && item.name.trim() ? item.name.trim() : fromId;
+			const fromId =
+				typeof item.tool_use_id === "string" ? toolNames.get(item.tool_use_id) : undefined;
+			const toolName =
+				typeof item.name === "string" && item.name.trim() ? item.name.trim() : fromId;
 			out.push({
 				role: "toolResult",
 				content: item.content ?? "",
@@ -98,13 +108,22 @@ export function grokbotDigest(
 		try {
 			entry = asRecord(JSON.parse(trimmed));
 		} catch {
+			// reason: a malformed transcript line is skipped; the other lines still count
 			continue;
 		}
 		if (!entry) continue;
 		if (entry.role === "tool") {
 			const name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : "tool";
-			messages.push({ role: "assistant", content: [{ type: "toolCall", name, arguments: entry.input ?? {} }] });
-			messages.push({ role: "toolResult", toolName: name, content: entry.content ?? "", ...(entry.isError === true ? { isError: true } : {}) });
+			messages.push({
+				role: "assistant",
+				content: [{ type: "toolCall", name, arguments: entry.input ?? {} }],
+			});
+			messages.push({
+				role: "toolResult",
+				toolName: name,
+				content: entry.content ?? "",
+				...(entry.isError === true ? { isError: true } : {}),
+			});
 			continue;
 		}
 		if ((entry.type === "user" || entry.type === "assistant") && entry.message) {

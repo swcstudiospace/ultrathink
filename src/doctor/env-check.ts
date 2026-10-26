@@ -13,7 +13,12 @@ import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
 import { DECISIONS_PROVIDERS, type DecisionsProvider } from "../decisions/types.ts";
 import { resolveGatewayToken, serviceBackend } from "../gateway/settings.ts";
-import { GATEWAY_STORE_PROVIDER, HINDSIGHT_BACKEND_ENV, RAGFLOW_BACKEND_ENV, SUBSTRATE_BACKEND_ENV } from "../gateway/types.ts";
+import {
+	GATEWAY_STORE_PROVIDER,
+	HINDSIGHT_BACKEND_ENV,
+	RAGFLOW_BACKEND_ENV,
+	SUBSTRATE_BACKEND_ENV,
+} from "../gateway/types.ts";
 import { detectHost } from "../host/detect.ts";
 import { resolveHindsightKey } from "../hindsight/settings.ts";
 import { hasUsableCredential } from "../mcp/client.ts";
@@ -30,8 +35,14 @@ function parseVersion(text: string | undefined): { major: number; minor: number 
 	return match ? { major: Number(match[1]), minor: Number(match[2]) } : undefined;
 }
 
-function atLeast(version: { major: number; minor: number }, minimum: { major: number; minor: number }): boolean {
-	return version.major > minimum.major || (version.major === minimum.major && version.minor >= minimum.minor);
+function atLeast(
+	version: { major: number; minor: number },
+	minimum: { major: number; minor: number },
+): boolean {
+	return (
+		version.major > minimum.major ||
+		(version.major === minimum.major && version.minor >= minimum.minor)
+	);
 }
 
 function shipOn(config: UltrathinkConfig, env: DoctorDeps["env"]): boolean {
@@ -39,7 +50,9 @@ function shipOn(config: UltrathinkConfig, env: DoctorDeps["env"]): boolean {
 }
 
 function ghHostsFile(env: DoctorDeps["env"]): string {
-	const dir = env.GH_CONFIG_DIR?.trim() || join(env.XDG_CONFIG_HOME?.trim() || join(env.HOME?.trim() || homedir(), ".config"), "gh");
+	const dir =
+		env.GH_CONFIG_DIR?.trim() ||
+		join(env.XDG_CONFIG_HOME?.trim() || join(env.HOME?.trim() || homedir(), ".config"), "gh");
 	return join(dir, "hosts.yml");
 }
 
@@ -53,7 +66,8 @@ export function checkRuntime(deps: DoctorDeps): Finding[] {
 	};
 
 	const bun = parseVersion(deps.bunVersion);
-	if (bun && atLeast(bun, MIN_BUN)) add({ id: "runtime.bun", level: "ok", title: `Bun ${deps.bunVersion}` });
+	if (bun && atLeast(bun, MIN_BUN))
+		add({ id: "runtime.bun", level: "ok", title: `Bun ${deps.bunVersion}` });
 	else {
 		add({
 			id: "runtime.bun",
@@ -87,17 +101,28 @@ export function checkRuntime(deps: DoctorDeps): Finding[] {
 			fix: "Install the GitHub CLI (https://cli.github.com) or set ship.enabled to false.",
 		});
 	} else {
-		add({ id: "runtime.gh", level: "info", title: "gh not found on PATH", detail: "Only needed when ship.enabled is on." });
+		add({
+			id: "runtime.gh",
+			level: "info",
+			title: "gh not found on PATH",
+			detail: "Only needed when ship.enabled is on.",
+		});
 	}
 	if (gh || ship) {
 		const tokenVar = (["GH_TOKEN", "GITHUB_TOKEN"] as const).find((name) => env[name]?.trim());
 		const hostsFile = ghHostsFile(env);
 		const hostsPresent = existsSync(hostsFile);
-		const source = tokenVar ? `${tokenVar} is set` : hostsPresent ? "a gh hosts file exists" : undefined;
+		const source = tokenVar
+			? `${tokenVar} is set`
+			: hostsPresent
+				? "a gh hosts file exists"
+				: undefined;
 		add({
 			id: "runtime.gh-auth",
 			level: source ? "info" : ship ? "warn" : "info",
-			title: source ? `gh credentials: ${source}` : "gh credentials: no GH_TOKEN, GITHUB_TOKEN or gh hosts file found",
+			title: source
+				? `gh credentials: ${source}`
+				: "gh credentials: no GH_TOKEN, GITHUB_TOKEN or gh hosts file found",
 			detail: "Authentication is not verified offline: doctor never runs gh.",
 			...(source ? {} : { fix: "Run `gh auth login`, or set GH_TOKEN." }),
 		});
@@ -138,12 +163,25 @@ function featuresOn(config: UltrathinkConfig, env: DoctorDeps["env"]): Feature[]
 	if (config.notion.dataSourceUrl) want("notion", "Notion tracking");
 	if (config.linear.team) want("linear", "Linear tracking");
 	if (config.hindsight.enabled && env.ULTRATHINK_HINDSIGHT !== "0") {
-		want(serviceBackend(config.hindsight.backend, env, HINDSIGHT_BACKEND_ENV) === "gateway" ? GATEWAY_STORE_PROVIDER : "hindsight", "Hindsight");
+		want(
+			serviceBackend(config.hindsight.backend, env, HINDSIGHT_BACKEND_ENV) === "gateway"
+				? GATEWAY_STORE_PROVIDER
+				: "hindsight",
+			"Hindsight",
+		);
 	}
 	if (config.ragflow.enabled && env.ULTRATHINK_RAGFLOW?.trim() !== "0") {
-		want(serviceBackend(config.ragflow.backend, env, RAGFLOW_BACKEND_ENV) === "gateway" ? GATEWAY_STORE_PROVIDER : "ragflow", "RAGFlow");
+		want(
+			serviceBackend(config.ragflow.backend, env, RAGFLOW_BACKEND_ENV) === "gateway"
+				? GATEWAY_STORE_PROVIDER
+				: "ragflow",
+			"RAGFlow",
+		);
 	}
-	if (env.SUBSTRATE_DISABLED !== "1" && serviceBackend(config.substrate.backend, env, SUBSTRATE_BACKEND_ENV) === "gateway") {
+	if (
+		env.SUBSTRATE_DISABLED !== "1" &&
+		serviceBackend(config.substrate.backend, env, SUBSTRATE_BACKEND_ENV) === "gateway"
+	) {
 		want(GATEWAY_STORE_PROVIDER, "substrate");
 	}
 	return [...wanted].map(([provider, features]) => ({ provider, features }));
@@ -152,13 +190,16 @@ function featuresOn(config: UltrathinkConfig, env: DoctorDeps["env"]): Feature[]
 function fixFor(provider: ProviderId): string {
 	const base = "bin/ultrathink-mcp";
 	if (provider === "notion") return `${base} auth login notion`;
-	if (PROVIDERS[provider].kind === "mcp") return `${base} auth set-key ${provider} --stdin (or ${base} auth login ${provider})`;
+	if (PROVIDERS[provider].kind === "mcp")
+		return `${base} auth set-key ${provider} --stdin (or ${base} auth login ${provider})`;
 	return `${base} auth set-key ${provider} --stdin`;
 }
 
 /** Provider names, present or missing, for the features the config switches on. Never reads or prints a credential value. */
 /** The key-based rails Jev can run on: every decisions provider but `auto`, so no rail is spelled out in this module. */
-const JEV_RAILS = DECISIONS_PROVIDERS.filter((provider): provider is Exclude<DecisionsProvider, "auto"> => provider !== "auto");
+const JEV_RAILS = DECISIONS_PROVIDERS.filter(
+	(provider): provider is Exclude<DecisionsProvider, "auto"> => provider !== "auto",
+);
 
 export function checkCredentials(deps: DoctorDeps): Finding[] {
 	const { env } = deps;
@@ -177,7 +218,9 @@ export function checkCredentials(deps: DoctorDeps): Finding[] {
 			add({
 				id: `credentials.${provider}`,
 				level: source ? "ok" : "warn",
-				title: source ? `Desk gateway: credential present (${source === "store" ? "credential store" : source})` : "Desk gateway: no credential",
+				title: source
+					? `Desk gateway: credential present (${source === "store" ? "credential store" : source})`
+					: "Desk gateway: no credential",
 				detail: used,
 				...(source ? {} : { fix: "Set DESK_GATEWAY_TOKEN or store a desk-gateway credential." }),
 			});
@@ -209,7 +252,11 @@ export function checkCredentials(deps: DoctorDeps): Finding[] {
 	}
 
 	if (decisionsKilled(env)) {
-		add({ id: "credentials.jev", level: "info", title: "Jev decisions: off (ULTRATHINK_DECISIONS=0)" });
+		add({
+			id: "credentials.jev",
+			level: "info",
+			title: "Jev decisions: off (ULTRATHINK_DECISIONS=0)",
+		});
 	} else {
 		const jev = resolveDecisionsKeys(config.decisions, path, env);
 		if (jev.key) {

@@ -7,7 +7,16 @@
  * The first hook to create the claim file wins. Fail-open: a broken claim store
  * must never block planning.
  */
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, opendirSync, statSync, unlinkSync } from "node:fs";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	opendirSync,
+	statSync,
+	unlinkSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
@@ -25,14 +34,14 @@ function pruneStaleClaims(dir: string, now: number): void {
 				try {
 					if (now - statSync(path).mtimeMs > CLAIM_TTL_MS) unlinkSync(path);
 				} catch {
-					// a sibling hook may have pruned it first
+					// reason: a sibling hook may have pruned it first
 				}
 			}
 		} finally {
 			handle.closeSync();
 		}
 	} catch {
-		// best-effort
+		// reason: pruning stale claims is best effort; a failed prune only leaves old claim files for a later turn to remove
 	}
 }
 
@@ -46,7 +55,7 @@ export function claimTurn(stateDir: string, key: string, now = Date.now()): bool
 			try {
 				chmodSync(stateDir, 0o700);
 			} catch {
-				// a directory we do not own keeps its mode
+				// reason: a directory we do not own keeps its mode
 			}
 		}
 		pruneStaleClaims(dir, now);

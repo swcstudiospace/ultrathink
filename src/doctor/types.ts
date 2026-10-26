@@ -6,7 +6,7 @@
  * nothing in this directory opens a network connection or starts `gh` or `curl`.
  */
 
-export const DOCTOR_LEVELS = ["ok", "info", "warn", "error"] as const;
+const DOCTOR_LEVELS = ["ok", "info", "warn", "error"] as const;
 export type DoctorLevel = (typeof DOCTOR_LEVELS)[number];
 
 /** Report order of the sections. */

@@ -2,17 +2,27 @@
 // Copyright (C) 2026 SWC Studio
 // Register the central ultrathink MCP gateway (notion, linear, greptile) in every host's user config.
 // Usage: see USAGE below (`bun scripts/mcp-register.ts --help`).
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isRecord } from "../src/shared.ts";
 
-export const HOSTS = ["claude", "grok", "hermes", "muse", "omp"] as const;
-export type Host = (typeof HOSTS)[number];
+const HOSTS = ["claude", "grok", "hermes", "muse", "omp"] as const;
+type Host = (typeof HOSTS)[number];
 /** MCP servers only: API-key providers such as openrouter are never registered with a host. */
 export const PROVIDER_IDS = ["notion", "linear", "greptile"] as const;
 
-export const USAGE = `Usage: bun scripts/mcp-register.ts [--hosts claude,grok,hermes,muse,omp] [--providers notion,linear,greptile] [--replace | --remove] [--dry-run]
+const USAGE = `Usage: bun scripts/mcp-register.ts [--hosts claude,grok,hermes,muse,omp] [--providers notion,linear,greptile] [--replace | --remove] [--dry-run]
 
 Registers notion, linear and greptile entries that run <clone>/bin/ultrathink-mcp serve <provider>
 in each host's user config. Every file it changes is backed up as <file>.bak-ultrathink-mcp-<timestamp>.
@@ -31,7 +41,7 @@ export interface Entry {
 
 export type Mode = "add" | "replace" | "remove";
 
-export type Action =
+type Action =
 	| "added"
 	| "replaced"
 	| "re-enabled"
@@ -53,7 +63,7 @@ export interface MergeResult {
 	changes: Change[];
 }
 
-export interface RunResult {
+interface RunResult {
 	code: number;
 	stdout: string;
 	stderr: string;
@@ -77,7 +87,7 @@ export interface PlanOptions {
 }
 
 /** What a host holds under one server name. `ours` is false whenever ownership cannot be determined. */
-export interface Found {
+interface Found {
 	present: boolean;
 	ours: boolean;
 	matches: boolean;
@@ -94,28 +104,30 @@ const KEPT_ON_REMOVE = "existing entry is not ultrathink's; left in place";
 const ABSENT: Found = { present: false, ours: false, matches: false, disabled: false };
 const UNKNOWN: Found = { present: true, ours: false, matches: false, disabled: false };
 // Actions that run host commands (and are verified afterwards).
-const ACTING: Partial<Record<Action, true>> = { added: true, replaced: true, "re-enabled": true, removed: true };
-
-function isObject(value: unknown): value is Json {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+const ACTING: Partial<Record<Action, true>> = {
+	added: true,
+	replaced: true,
+	"re-enabled": true,
+	removed: true,
+};
 
 function sameJson(a: unknown, b: unknown): boolean {
 	return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** An entry is ultrathink's when its command is some clone's bin/ultrathink-mcp. */
-export function isOurs(command: unknown): boolean {
+function isOurs(command: unknown): boolean {
 	return typeof command === "string" && command.trim().endsWith(OURS_SUFFIX);
 }
 
-export function decide(id: string, found: Found, mode: Mode): Change {
+function decide(id: string, found: Found, mode: Mode): Change {
 	if (mode === "remove") {
 		if (!found.present) return { id, action: "not registered" };
 		return found.ours ? { id, action: "removed" } : { id, action: "kept", reason: KEPT_ON_REMOVE };
 	}
 	if (found.matches && !found.disabled) return { id, action: "unchanged" };
-	if (found.present && !found.ours && mode !== "replace") return { id, action: "kept", reason: KEPT_ON_ADD };
+	if (found.present && !found.ours && mode !== "replace")
+		return { id, action: "kept", reason: KEPT_ON_ADD };
 	if (found.disabled) return { id, action: "re-enabled", reason: "was disabled" };
 	return { id, action: found.present ? "replaced" : "added" };
 }
@@ -127,9 +139,9 @@ function mergeServers(
 	mode: Mode,
 	legacyKey?: string,
 ): MergeResult {
-	const next: Json = isObject(current) ? { ...current } : {};
-	let servers: Json = isObject(next.mcpServers) ? { ...next.mcpServers } : {};
-	if (legacyKey && isObject(next[legacyKey])) {
+	const next: Json = isRecord(current) ? { ...current } : {};
+	let servers: Json = isRecord(next.mcpServers) ? { ...next.mcpServers } : {};
+	if (legacyKey && isRecord(next[legacyKey])) {
 		servers = { ...(next[legacyKey] as Json), ...servers };
 		delete next[legacyKey];
 	}
@@ -139,13 +151,14 @@ function mergeServers(
 		const existing = servers[entry.id];
 		const found: Found = {
 			present: existing !== undefined,
-			ours: isObject(existing) && isOurs(existing.command),
+			ours: isRecord(existing) && isOurs(existing.command),
 			// Hosts may rewrite the file: key order changes and the default `type: "stdio"` can be dropped.
 			matches:
-				isObject(existing) &&
+				isRecord(existing) &&
 				Object.keys(existing).every((key) => key in wanted) &&
 				Object.entries(wanted).every(
-					([key, value]) => sameJson(existing[key], value) || (key === "type" && existing[key] === undefined),
+					([key, value]) =>
+						sameJson(existing[key], value) || (key === "type" && existing[key] === undefined),
 				),
 			disabled: false,
 		};
@@ -159,16 +172,16 @@ function mergeServers(
 
 // Deletes only ultrathink's entries, from mcpServers and (for Muse) the legacy key, without reshaping the file.
 function removeServers(current: unknown, ids: string[], legacyKey?: string): MergeResult {
-	const next: Json = isObject(current) ? { ...current } : {};
+	const next: Json = isRecord(current) ? { ...current } : {};
 	const keys = legacyKey ? ["mcpServers", legacyKey] : ["mcpServers"];
 	const changes = ids.map((id): Change => {
 		const holders = keys.filter((key) => {
 			const servers = next[key];
-			return isObject(servers) && Object.hasOwn(servers, id);
+			return isRecord(servers) && Object.hasOwn(servers, id);
 		});
 		const ours = holders.filter((key) => {
 			const existing = (next[key] as Json)[id];
-			return isObject(existing) && isOurs(existing.command);
+			return isRecord(existing) && isOurs(existing.command);
 		});
 		for (const key of ours) {
 			const rest = { ...(next[key] as Json) };
@@ -176,19 +189,39 @@ function removeServers(current: unknown, ids: string[], legacyKey?: string): Mer
 			next[key] = rest;
 		}
 		if (ours.length) return { id, action: "removed" };
-		return holders.length ? { id, action: "kept", reason: KEPT_ON_REMOVE } : { id, action: "not registered" };
+		return holders.length
+			? { id, action: "kept", reason: KEPT_ON_REMOVE }
+			: { id, action: "not registered" };
 	});
 	return { next, changes };
 }
 
 export function mergeOmpMcp(current: unknown, entries: Entry[], mode: Mode = "add"): MergeResult {
-	if (mode === "remove") return removeServers(current, entries.map((e) => e.id));
-	return mergeServers(current, entries, (e) => ({ type: "stdio", command: e.command, args: e.args }), mode);
+	if (mode === "remove")
+		return removeServers(
+			current,
+			entries.map((e) => e.id),
+		);
+	return mergeServers(
+		current,
+		entries,
+		(e) => ({ type: "stdio", command: e.command, args: e.args }),
+		mode,
+	);
 }
 
-export function mergeMuseSettings(current: unknown, entries: Entry[], mode: Mode = "add"): MergeResult {
-	if (mode === "remove") return removeServers(current, entries.map((e) => e.id), "mcp_servers");
-	const base = isObject(current) ? current : { schema_version: 1 };
+export function mergeMuseSettings(
+	current: unknown,
+	entries: Entry[],
+	mode: Mode = "add",
+): MergeResult {
+	if (mode === "remove")
+		return removeServers(
+			current,
+			entries.map((e) => e.id),
+			"mcp_servers",
+		);
+	const base = isRecord(current) ? current : { schema_version: 1 };
 	return mergeServers(
 		base,
 		entries,
@@ -198,7 +231,10 @@ export function mergeMuseSettings(current: unknown, entries: Entry[], mode: Mode
 	);
 }
 
-const CLI_COMMANDS: Record<CliHost, { add: (entry: Entry) => string[][]; remove: (id: string) => string[][] }> = {
+const CLI_COMMANDS: Record<
+	CliHost,
+	{ add: (entry: Entry) => string[][]; remove: (id: string) => string[][] }
+> = {
 	claude: {
 		add: (e) => [
 			["claude", "mcp", "remove", "--scope", "user", e.id],
@@ -219,7 +255,12 @@ const CLI_COMMANDS: Record<CliHost, { add: (entry: Entry) => string[][]; remove:
 	},
 };
 
-function planFrom(host: CliHost, entries: Entry[], find: (entry: Entry) => Found, mode: Mode): Plan {
+function planFrom(
+	host: CliHost,
+	entries: Entry[],
+	find: (entry: Entry) => Found,
+	mode: Mode,
+): Plan {
 	const plan: Plan = { commands: [], changes: [] };
 	for (const entry of entries) {
 		const found = find(entry);
@@ -249,22 +290,24 @@ export function planClaude(run: Run, entries: Entry[], options: PlanOptions = {}
 				const command = /^\s*Command:\s*(.+?)\s*$/m.exec(text)?.[1];
 				const matches =
 					text.includes([entry.command, ...entry.args].join(" ")) ||
-					(text.includes(`Command: ${entry.command}`) && text.includes(`Args: ${entry.args.join(" ")}`));
+					(text.includes(`Command: ${entry.command}`) &&
+						text.includes(`Args: ${entry.args.join(" ")}`));
 				return { present: true, ours: matches || isOurs(command), matches, disabled: false };
 			}
 			const note = `${scope.split(" (")[0]?.toLowerCase()} entry with this name is left alone`;
 			let servers: Json | undefined;
 			try {
 				const parsed: unknown = JSON.parse(options.claudeConfig?.() ?? "");
-				if (isObject(parsed)) servers = isObject(parsed.mcpServers) ? parsed.mcpServers : {};
+				if (isRecord(parsed)) servers = isRecord(parsed.mcpServers) ? parsed.mcpServers : {};
 			} catch {
+				// reason: unparseable claude config is reported as UNKNOWN, not as an absent entry
 				servers = undefined;
 			}
 			if (servers === undefined) return { ...UNKNOWN, note };
 			const user = servers[entry.id];
 			if (user === undefined) return { ...ABSENT, note };
-			const command = isObject(user) ? user.command : undefined;
-			const args = isObject(user) ? (user.args ?? []) : undefined;
+			const command = isRecord(user) ? user.command : undefined;
+			const args = isRecord(user) ? (user.args ?? []) : undefined;
 			return {
 				present: true,
 				ours: isOurs(command),
@@ -284,8 +327,9 @@ export function planGrok(run: Run, entries: Entry[], options: PlanOptions = {}):
 	let servers: Json[] | undefined;
 	try {
 		const parsed: unknown = JSON.parse(listed.stdout);
-		if (Array.isArray(parsed)) servers = parsed.filter(isObject);
+		if (Array.isArray(parsed)) servers = parsed.filter(isRecord);
 	} catch {
+		// reason: unparseable grok list output is reported as UNKNOWN, not as an absent entry
 		servers = undefined;
 	}
 	return planFrom(
@@ -295,13 +339,19 @@ export function planGrok(run: Run, entries: Entry[], options: PlanOptions = {}):
 			if (!servers) return UNKNOWN;
 			const named = servers.filter((s) => s.name === entry.id);
 			const user = named.filter((s) => s.scope === undefined || s.scope === "user");
-			const others = [...new Set(named.filter((s) => !user.includes(s)).map((s) => String(s.scope)))];
-			const note = others.length ? `${others.join(", ")}-scope entry with this name is left alone` : undefined;
+			const others = [
+				...new Set(named.filter((s) => !user.includes(s)).map((s) => String(s.scope))),
+			];
+			const note = others.length
+				? `${others.join(", ")}-scope entry with this name is left alone`
+				: undefined;
 			if (!user.length) return { ...ABSENT, note };
 			return {
 				present: true,
 				ours: user.every((s) => isOurs(s.command)),
-				matches: user.some((s) => s.command === entry.command && sameJson(s.args ?? [], entry.args)),
+				matches: user.some(
+					(s) => s.command === entry.command && sameJson(s.args ?? [], entry.args),
+				),
 				disabled: false,
 				note,
 			};
@@ -319,7 +369,7 @@ function unquote(value: string): string {
  * Server name → `command` (undefined for url servers) from the `mcp_servers:` block of Hermes' config.yaml.
  * A small indentation-based reader for the block style Hermes writes; anything else simply yields no command.
  */
-export function hermesServerCommands(text: string): Map<string, string | undefined> {
+function hermesServerCommands(text: string): Map<string, string | undefined> {
 	const found = new Map<string, string | undefined>();
 	let inServers = false;
 	let serverIndent = -1;
@@ -348,7 +398,8 @@ export function hermesServerCommands(text: string): Map<string, string | undefin
 		if (childIndent < 0) childIndent = indent;
 		if (indent !== childIndent) continue;
 		const command = /^command:\s*(.+?)\s*$/.exec(line)?.[1];
-		if (command !== undefined && found.get(current) === undefined) found.set(current, unquote(command));
+		if (command !== undefined && found.get(current) === undefined)
+			found.set(current, unquote(command));
 	}
 	return found;
 }
@@ -359,17 +410,22 @@ export function hermesServerCommands(text: string): Map<string, string | undefin
  * selects `profiles/<name>` under HERMES_HOME (or ~/.hermes). Undefined when that profile cannot be resolved,
  * which Hermes itself refuses to run with.
  */
-export function hermesConfigFile(env: Record<string, string | undefined>, home: string): string | undefined {
+export function hermesConfigFile(
+	env: Record<string, string | undefined>,
+	home: string,
+): string | undefined {
 	const native = resolve(home, ".hermes");
 	const envHome = env.HERMES_HOME?.trim() || undefined;
 	if (envHome && basename(dirname(envHome)) === "profiles") return join(envHome, "config.yaml");
 	const base = envHome ?? native;
 	const envPath = envHome === undefined ? undefined : resolve(envHome);
-	const root = envPath === undefined || envPath === native || envPath.startsWith(`${native}/`) ? native : base;
+	const root =
+		envPath === undefined || envPath === native || envPath.startsWith(`${native}/`) ? native : base;
 	let active = "";
 	try {
 		active = readFileSync(join(root, "active_profile"), "utf8").trim().toLowerCase();
 	} catch {
+		// reason: a missing active_profile file is the normal case and selects the default profile
 		active = "";
 	}
 	if (!active || active === "default") return join(base, "config.yaml");
@@ -382,7 +438,9 @@ export function hermesConfigFile(env: Record<string, string | undefined>, home: 
 // A row's command is trusted only when config.yaml agrees with it (or, without a config entry, when the row is
 // untruncated); a missing row, a url server or any disagreement between the two makes the entry foreign.
 export function planHermes(run: Run, entries: Entry[], options: PlanOptions = {}): Plan {
-	const lines = run(["hermes", "mcp", "list"]).stdout.split("\n").map((line) => line.trim());
+	const lines = run(["hermes", "mcp", "list"])
+		.stdout.split("\n")
+		.map((line) => line.trim());
 	const config = options.hermesConfig?.();
 	const commands = config === undefined ? undefined : hermesServerCommands(config);
 	return planFrom(
@@ -391,10 +449,18 @@ export function planHermes(run: Run, entries: Entry[], options: PlanOptions = {}
 		(entry) => {
 			const full = [entry.command, ...entry.args].join(" ");
 			const named = lines.filter((line) => line.split(/\s+/)[0] === entry.id);
-			const transports = named.map((line) => line.slice(entry.id.length).trim().split(/\s{2,}/)[0] ?? "");
+			const transports = named.map(
+				(line) =>
+					line
+						.slice(entry.id.length)
+						.trim()
+						.split(/\s{2,}/)[0] ?? "",
+			);
 			const shown = named.filter((_, i) => {
 				const transport = transports[i] ?? "";
-				return transport.endsWith("...") ? full.startsWith(transport.slice(0, -3)) : transport === full;
+				return transport.endsWith("...")
+					? full.startsWith(transport.slice(0, -3))
+					: transport === full;
 			});
 			// Status column is `✓ enabled` or `✗ disabled`; Hermes saves failed connection tests disabled.
 			const disabled = shown.length > 0 && shown.every((line) => /\bdisabled\s*$/.test(line));
@@ -408,7 +474,9 @@ export function planHermes(run: Run, entries: Entry[], options: PlanOptions = {}
 					const text = truncated ? t.slice(0, -3) : t;
 					if (configured === undefined) return !truncated && isOurs(text.split(/\s+/)[0]);
 					const agrees =
-						text === configured || text.startsWith(`${configured} `) || (truncated && configured.startsWith(text));
+						text === configured ||
+						text.startsWith(`${configured} `) ||
+						(truncated && configured.startsWith(text));
 					return agrees && isOurs(configured);
 				});
 			return { present: named.length > 0 || inConfig, ours, matches: shown.length > 0, disabled };
@@ -417,7 +485,7 @@ export function planHermes(run: Run, entries: Entry[], options: PlanOptions = {}
 	);
 }
 
-export function backupSuffix(date: Date): string {
+function backupSuffix(date: Date): string {
 	const p = (n: number) => String(n).padStart(2, "0");
 	return `.bak-ultrathink-mcp-${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}-${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}`;
 }
@@ -457,7 +525,11 @@ function report(host: Host, changes: Change[], log: (line: string) => void): voi
 const spawnRun: Run = (cmd, options) => {
 	const stdin = options?.stdin === undefined ? "ignore" : Buffer.from(options.stdin);
 	const proc = Bun.spawnSync(cmd, { stdin, stdout: "pipe", stderr: "pipe" });
-	return { code: proc.exitCode ?? 1, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
+	return {
+		code: proc.exitCode ?? 1,
+		stdout: proc.stdout.toString(),
+		stderr: proc.stderr.toString(),
+	};
 };
 
 const PLANNERS: Record<CliHost, (run: Run, entries: Entry[], options?: PlanOptions) => Plan> = {
@@ -472,7 +544,13 @@ export interface ApplyOptions extends PlanOptions {
 
 // Runs the plan's commands, then re-plans to confirm every changed entry is now registered (or gone, for --remove).
 // `hermes mcp add|remove` prompt (connection test / confirm); feeding "y\n" saves even when auth is pending.
-export function applyCliPlan(host: CliHost, run: Run, entries: Entry[], plan: Plan, options: ApplyOptions = {}): Change[] {
+export function applyCliPlan(
+	host: CliHost,
+	run: Run,
+	entries: Entry[],
+	plan: Plan,
+	options: ApplyOptions = {},
+): Change[] {
 	const log = options.log ?? console.log;
 	const removing = options.mode === "remove";
 	const stdin = host === "hermes" ? "y\n" : undefined;
@@ -496,15 +574,21 @@ export function applyCliPlan(host: CliHost, run: Run, entries: Entry[], plan: Pl
 		if (!removing && host === "hermes" && next === "re-enabled") {
 			return { id: c.id, action: "saved disabled", reason: `${c.id} not authenticated yet` };
 		}
-		const fallback = removing ? `still registered after ${host} mcp remove` : `not registered after ${host} mcp add`;
+		const fallback = removing
+			? `still registered after ${host} mcp remove`
+			: `not registered after ${host} mcp add`;
 		return { id: c.id, action: "FAILED", reason: errors.get(c.id) ?? fallback };
 	});
 }
 
 function list(value: string | undefined, allowed: readonly string[], name: string): string[] {
 	if (!value) return [...allowed];
-	const items = value.split(",").map((s) => s.trim()).filter(Boolean);
-	for (const item of items) if (!allowed.includes(item)) throw new Error(`unknown ${name}: ${item}`);
+	const items = value
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+	for (const item of items)
+		if (!allowed.includes(item)) throw new Error(`unknown ${name}: ${item}`);
 	return items;
 }
 
@@ -531,8 +615,13 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 		log(USAGE);
 		return 0;
 	}
-	if (argv.includes("--replace") && argv.includes("--remove")) throw new Error("--replace and --remove cannot be combined");
-	const mode: Mode = argv.includes("--remove") ? "remove" : argv.includes("--replace") ? "replace" : "add";
+	if (argv.includes("--replace") && argv.includes("--remove"))
+		throw new Error("--replace and --remove cannot be combined");
+	const mode: Mode = argv.includes("--remove")
+		? "remove"
+		: argv.includes("--replace")
+			? "replace"
+			: "add";
 	const dryRun = argv.includes("--dry-run");
 	const hosts = list(argValue(argv, "--hosts"), HOSTS, "host") as Host[];
 	const providers = list(argValue(argv, "--providers"), PROVIDER_IDS, "provider");
@@ -550,7 +639,10 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 		claudeConfig: () => readText(claudeFile),
 	};
 	let failed = false;
-	if (dryRun) log("dry run: no file is written and no host is changed; read-only list/get commands still run");
+	if (dryRun)
+		log(
+			"dry run: no file is written and no host is changed; read-only list/get commands still run",
+		);
 	if (mode !== "remove" && `${root}/`.includes("/plugins/cache/")) {
 		log(
 			`warning: ${root} is a plugin cache that the next plugin update replaces, which would break the registered commands; clone the repository to a stable directory and rerun mcp-register from there`,
@@ -565,10 +657,15 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 					? join(env.PI_CODING_AGENT_DIR?.trim() || join(home, ".omp", "agent"), "mcp.json")
 					: join(config, "muse", "settings.json");
 			const current = readJson(file);
-			const merged = host === "omp" ? mergeOmpMcp(current, entries, mode) : mergeMuseSettings(current, entries, mode);
+			const merged =
+				host === "omp"
+					? mergeOmpMcp(current, entries, mode)
+					: mergeMuseSettings(current, entries, mode);
 			report(host, merged.changes, log);
 			const dirty =
-				mode === "remove" ? merged.changes.some((c) => c.action === "removed") : !sameJson(current, merged.next);
+				mode === "remove"
+					? merged.changes.some((c) => c.action === "removed")
+					: !sameJson(current, merged.next);
 			if (!dirty) continue;
 			backup(file, stamp, dryRun, log);
 			log(`  write ${file}`);
@@ -589,7 +686,9 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 					? join(env.GROK_HOME?.trim() || join(home, ".grok"), "config.toml")
 					: hermesFile;
 		if (configFile === undefined) {
-			log("  hermes: the active Hermes profile could not be resolved (check `hermes profile list`); config.yaml not backed up");
+			log(
+				"  hermes: the active Hermes profile could not be resolved (check `hermes profile list`); config.yaml not backed up",
+			);
 		} else backup(configFile, stamp, dryRun, log);
 		if (dryRun) {
 			for (const cmd of plan.commands) log(`  $ ${cmd.join(" ")}`);

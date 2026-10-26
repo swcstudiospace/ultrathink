@@ -8,12 +8,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
 import { identityFromUriSans, type IdentityResult } from "./identity.ts";
-import { bunAtLeast, MAX_CONNECTIONS, MTLS_MIN_BUN, type MtlsPeer, type MtlsServer, peerIdentity, startMtlsServer } from "./mtls.ts";
+import {
+	bunAtLeast,
+	MAX_CONNECTIONS,
+	MTLS_MIN_BUN,
+	type MtlsPeer,
+	type MtlsServer,
+	peerIdentity,
+	startMtlsServer,
+} from "./mtls.ts";
 
 const TRUST_DOMAIN = "ultrathink.test";
 const EDGE_URI = "spiffe://ultrathink.test/edge/nginx";
 const MAX_BODY_BYTES = 1024;
-const EXT_LEAF = "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\n";
+const EXT_LEAF =
+	"basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\n";
 
 interface Credentials {
 	cert: string;
@@ -38,15 +47,52 @@ function openssl(args: string[]): void {
 }
 
 /** Writes a key and a CSR for `name`, then signs it with the given CA. The leaf gets `sanLine` as its SAN. */
-function issueLeaf(name: string, sanLine: string, signerCert: string, signerKey: string): Credentials {
+function issueLeaf(
+	name: string,
+	sanLine: string,
+	signerCert: string,
+	signerKey: string,
+): Credentials {
 	writeFileSync(join(dir, `${name}.ext`), `${EXT_LEAF}subjectAltName=${sanLine}\n`);
-	openssl(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", `${name}.key`, "-out", `${name}.csr`, "-subj", `/CN=${name}`]);
-	openssl(["x509", "-req", "-in", `${name}.csr`, "-CA", signerCert, "-CAkey", signerKey, "-CAcreateserial", "-out", `${name}.pem`, "-days", "2", "-extfile", `${name}.ext`]);
+	openssl([
+		"req",
+		"-newkey",
+		"ec",
+		"-pkeyopt",
+		"ec_paramgen_curve:P-256",
+		"-nodes",
+		"-keyout",
+		`${name}.key`,
+		"-out",
+		`${name}.csr`,
+		"-subj",
+		`/CN=${name}`,
+	]);
+	openssl([
+		"x509",
+		"-req",
+		"-in",
+		`${name}.csr`,
+		"-CA",
+		signerCert,
+		"-CAkey",
+		signerKey,
+		"-CAcreateserial",
+		"-out",
+		`${name}.pem`,
+		"-days",
+		"2",
+		"-extfile",
+		`${name}.ext`,
+	]);
 	return credentialsOf(name);
 }
 
 function credentialsOf(name: string): Credentials {
-	return { cert: readFileSync(join(dir, `${name}.pem`), "utf8"), key: readFileSync(join(dir, `${name}.key`), "utf8") };
+	return {
+		cert: readFileSync(join(dir, `${name}.pem`), "utf8"),
+		key: readFileSync(join(dir, `${name}.key`), "utf8"),
+	};
 }
 
 /** Issues a leaf whose validity window lies in the past, through `openssl ca` with explicit dates. */
@@ -76,16 +122,46 @@ function issueExpiredLeaf(name: string, sanLine: string): Credentials {
 		].join("\n"),
 	);
 	writeFileSync(join(dir, `${name}.ext`), `${EXT_LEAF}subjectAltName=${sanLine}\n`);
-	openssl(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", `${name}.key`, "-out", `${name}.csr`, "-subj", `/CN=${name}`]);
 	openssl([
-		"ca", "-batch", "-config", join(dir, "ca.cnf"), "-in", `${name}.csr`, "-out", `${name}.pem`,
-		"-extfile", `${name}.ext`, "-startdate", "20200101000000Z", "-enddate", "20200102000000Z", "-notext",
+		"req",
+		"-newkey",
+		"ec",
+		"-pkeyopt",
+		"ec_paramgen_curve:P-256",
+		"-nodes",
+		"-keyout",
+		`${name}.key`,
+		"-out",
+		`${name}.csr`,
+		"-subj",
+		`/CN=${name}`,
+	]);
+	openssl([
+		"ca",
+		"-batch",
+		"-config",
+		join(dir, "ca.cnf"),
+		"-in",
+		`${name}.csr`,
+		"-out",
+		`${name}.pem`,
+		"-extfile",
+		`${name}.ext`,
+		"-startdate",
+		"20200101000000Z",
+		"-enddate",
+		"20200102000000Z",
+		"-notext",
 	]);
 	return credentialsOf(name);
 }
 
 function fetchWith(port: number, init: Partial<TlsFetchInit>): Promise<Response> {
-	return fetch(`https://127.0.0.1:${port}/`, { method: "POST", tls: { ca }, ...init } as TlsFetchInit);
+	return fetch(`https://127.0.0.1:${port}/`, {
+		method: "POST",
+		tls: { ca },
+		...init,
+	} as TlsFetchInit);
 }
 
 function serverOptions(idleTimeoutSec: number) {
@@ -99,6 +175,102 @@ function serverOptions(idleTimeoutSec: number) {
 	};
 }
 
+/** Timers the test fires by hand: the request deadline arms here instead of on the platform clock. */
+type ManualTimers = {
+	timers: {
+		setTimeout(fn: () => void): NodeJS.Timeout;
+		clearTimeout(handle: NodeJS.Timeout | undefined): void;
+	};
+	/** Timers armed so far, fired or not. */
+	armCount: () => number;
+	/** Runs the oldest pending timer, waiting until the server has armed one. */
+	fireNext: () => Promise<void>;
+};
+
+function manualTimers(): ManualTimers {
+	const pending: Array<{ run: () => void; handle: NodeJS.Timeout }> = [];
+	const waiting: Array<() => void> = [];
+	let arms = 0;
+	const timers: ManualTimers["timers"] = {
+		setTimeout: (run) => {
+			arms += 1;
+			// reason: the port's handle is opaque; the test removes it by identity and never reads it
+			const handle = {} as NodeJS.Timeout;
+			pending.push({ run, handle });
+			for (const wake of waiting.splice(0)) wake();
+			return handle;
+		},
+		clearTimeout: (handle) => {
+			const index = pending.findIndex((entry) => entry.handle === handle);
+			if (index >= 0) pending.splice(index, 1);
+		},
+	};
+	const fireNext = async (): Promise<void> => {
+		const next = pending.shift();
+		if (!next) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+			return fireNext();
+		}
+		next.run();
+	};
+	return { timers, armCount: () => arms, fireNext };
+}
+
+/** Socket deadlines the test fires by hand: idle and handshake deadlines arm here instead of on the platform clock. */
+type ManualSocketDeadlines = {
+	port: { arm(socket: net.Socket, ms: number, onTimeout: () => void): void };
+	/** Resolves once the server has armed a deadline; the deadline stays armed. */
+	armed: () => Promise<void>;
+	/** Resolves with the socket of the oldest armed deadline, waiting until one is armed; the deadline stays armed. */
+	armedSocket: () => Promise<net.Socket>;
+	/** Deadlines armed on this socket so far, fired or not. */
+	armCount: (socket: net.Socket) => number;
+	/** Deadlines armed and not yet fired. */
+	pendingCount: () => number;
+	/** Runs the oldest armed deadline, waiting until one is armed. Resolves with that deadline's length in ms. */
+	fireNext: () => Promise<number>;
+};
+
+function manualSocketDeadlines(): ManualSocketDeadlines {
+	const pending: Array<{ socket: net.Socket; ms: number; run: () => void }> = [];
+	const waiting: Array<() => void> = [];
+	const arms = new Map<net.Socket, number>();
+	const armed = async (): Promise<void> => {
+		while (pending.length === 0) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+		}
+	};
+	return {
+		port: {
+			arm: (socket, ms, onTimeout) => {
+				arms.set(socket, (arms.get(socket) ?? 0) + 1);
+				pending.push({ socket, ms, run: onTimeout });
+				for (const wake of waiting.splice(0)) wake();
+			},
+		},
+		armed,
+		armedSocket: async () => {
+			await armed();
+			const next = pending[0];
+			if (!next) throw new Error("no socket deadline armed");
+			return next.socket;
+		},
+		armCount: (socket) => arms.get(socket) ?? 0,
+		pendingCount: () => pending.length,
+		fireNext: async () => {
+			await armed();
+			const next = pending.shift();
+			if (!next) throw new Error("no socket deadline armed");
+			next.run();
+			return next.ms;
+		},
+	};
+}
+
 /** The TCP port a listener bound to, failing the test if it is not a TCP listener. */
 function boundPort(listener: net.Server): number {
 	const address = listener.address();
@@ -108,14 +280,24 @@ function boundPort(listener: net.Server): number {
 
 /** Opens a TLS client with the edge certificate, so the test controls the bytes written after the handshake. */
 function edgeClient(port: number): tls.TLSSocket {
-	const client = tls.connect({ port, host: "127.0.0.1", ca, cert: edgeCreds.cert, key: edgeCreds.key });
-	client.on("error", () => {});
+	const client = tls.connect({
+		port,
+		host: "127.0.0.1",
+		ca,
+		cert: edgeCreds.cert,
+		key: edgeCreds.key,
+	});
+	client.on("error", () => {
+		// reason: test double, an error after the test is over is expected and not asserted
+	});
 	return client;
 }
 
 const ADAPTER_SKIP_REASON = "Bun below 1.4.0: requests through the adapter hang";
 const ADAPTER_SUPPORTED = bunAtLeast(Bun.version, MTLS_MIN_BUN);
-const ADAPTER_TITLE = ADAPTER_SUPPORTED ? "mTLS server adapter" : `mTLS server adapter (skipped: ${ADAPTER_SKIP_REASON})`;
+const ADAPTER_TITLE = ADAPTER_SUPPORTED
+	? "mTLS server adapter"
+	: `mTLS server adapter (skipped: ${ADAPTER_SKIP_REASON})`;
 
 test("bunAtLeast compares semantic versions and fails closed on malformed input", () => {
 	expect(bunAtLeast("1.2.23", MTLS_MIN_BUN)).toBe(false);
@@ -128,15 +310,70 @@ test("bunAtLeast compares semantic versions and fails closed on malformed input"
 describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	beforeAll(async () => {
 		dir = mkdtempSync(join(tmpdir(), "mtls-test-"));
-		openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2", "-subj", "/CN=ultrathink-test-ca", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);
-		openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "ca2.key", "-out", "ca2.pem", "-days", "2", "-subj", "/CN=other-test-ca", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);
+		openssl([
+			"req",
+			"-x509",
+			"-newkey",
+			"ec",
+			"-pkeyopt",
+			"ec_paramgen_curve:P-256",
+			"-nodes",
+			"-keyout",
+			"ca.key",
+			"-out",
+			"ca.pem",
+			"-days",
+			"2",
+			"-subj",
+			"/CN=ultrathink-test-ca",
+			"-addext",
+			"basicConstraints=critical,CA:TRUE",
+			"-addext",
+			"keyUsage=critical,keyCertSign,cRLSign",
+		]);
+		openssl([
+			"req",
+			"-x509",
+			"-newkey",
+			"ec",
+			"-pkeyopt",
+			"ec_paramgen_curve:P-256",
+			"-nodes",
+			"-keyout",
+			"ca2.key",
+			"-out",
+			"ca2.pem",
+			"-days",
+			"2",
+			"-subj",
+			"/CN=other-test-ca",
+			"-addext",
+			"basicConstraints=critical,CA:TRUE",
+			"-addext",
+			"keyUsage=critical,keyCertSign,cRLSign",
+		]);
 		ca = readFileSync(join(dir, "ca.pem"), "utf8");
 		serverCreds = issueLeaf("srv", "IP:127.0.0.1", join(dir, "ca.pem"), join(dir, "ca.key"));
 		writeFileSync(join(dir, "srv.key"), serverCreds.key);
 		writeFileSync(join(dir, "srv.pem"), serverCreds.cert);
-		edgeCreds = issueLeaf("edge", `URI:${EDGE_URI},DNS:edge.test`, join(dir, "ca.pem"), join(dir, "ca.key"));
-		edgeNewCreds = issueLeaf("edge-new", `URI:${EDGE_URI}`, join(dir, "ca.pem"), join(dir, "ca.key"));
-		foreignCreds = issueLeaf("foreign", `URI:${EDGE_URI}`, join(dir, "ca2.pem"), join(dir, "ca2.key"));
+		edgeCreds = issueLeaf(
+			"edge",
+			`URI:${EDGE_URI},DNS:edge.test`,
+			join(dir, "ca.pem"),
+			join(dir, "ca.key"),
+		);
+		edgeNewCreds = issueLeaf(
+			"edge-new",
+			`URI:${EDGE_URI}`,
+			join(dir, "ca.pem"),
+			join(dir, "ca.key"),
+		);
+		foreignCreds = issueLeaf(
+			"foreign",
+			`URI:${EDGE_URI}`,
+			join(dir, "ca2.pem"),
+			join(dir, "ca2.key"),
+		);
 		expiredCreds = issueExpiredLeaf("expired", `URI:${EDGE_URI}`);
 		server = await startMtlsServer(serverOptions(30), async (req, peer) => {
 			calls++;
@@ -152,7 +389,10 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 
 	test("admits a verified edge client and reports its SPIFFE identity", async () => {
 		calls = 0;
-		const response = await fetchWith(server.port, { body: "hi", tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key } });
+		const response = await fetchWith(server.port, {
+			body: "hi",
+			tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key },
+		});
 		expect(response.status).toBe(200);
 		expect(await response.text()).toBe("hi");
 		expect(calls).toBe(1);
@@ -170,19 +410,26 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 
 	test("refuses a client certificate issued by another CA", async () => {
 		calls = 0;
-		await expect(fetchWith(server.port, { tls: { ca, cert: foreignCreds.cert, key: foreignCreds.key } })).rejects.toThrow();
+		await expect(
+			fetchWith(server.port, { tls: { ca, cert: foreignCreds.cert, key: foreignCreds.key } }),
+		).rejects.toThrow();
 		expect(calls).toBe(0);
 	});
 
 	test("refuses an expired leaf from the client CA", async () => {
 		calls = 0;
-		await expect(fetchWith(server.port, { tls: { ca, cert: expiredCreds.cert, key: expiredCreds.key } })).rejects.toThrow();
+		await expect(
+			fetchWith(server.port, { tls: { ca, cert: expiredCreds.cert, key: expiredCreds.key } }),
+		).rejects.toThrow();
 		expect(calls).toBe(0);
 	});
 
 	test("admits the current and the rotation-overlap leaf from the same CA", async () => {
 		for (const creds of [edgeCreds, edgeNewCreds]) {
-			const response = await fetchWith(server.port, { body: "x", tls: { ca, cert: creds.cert, key: creds.key } });
+			const response = await fetchWith(server.port, {
+				body: "x",
+				tls: { ca, cert: creds.cert, key: creds.key },
+			});
 			expect(response.status).toBe(200);
 			await response.text();
 		}
@@ -191,7 +438,10 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	test("answers 413 to a body over maxBodyBytes and never calls the handler", async () => {
 		calls = 0;
 		const client = { ca, cert: edgeCreds.cert, key: edgeCreds.key };
-		const sized = await fetchWith(server.port, { body: new Uint8Array(MAX_BODY_BYTES * 2), tls: client });
+		const sized = await fetchWith(server.port, {
+			body: new Uint8Array(MAX_BODY_BYTES * 2),
+			tls: client,
+		});
 		expect(sized.status).toBe(413);
 		await sized.text();
 		const chunked = new ReadableStream<Uint8Array>({
@@ -200,7 +450,11 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 				controller.close();
 			},
 		});
-		const streamed = await fetchWith(server.port, { body: chunked, duplex: "half", tls: client } as Partial<TlsFetchInit>);
+		const streamed = await fetchWith(server.port, {
+			body: chunked,
+			duplex: "half",
+			tls: client,
+		} as Partial<TlsFetchInit>);
 		expect(streamed.status).toBe(413);
 		await streamed.text();
 		expect(calls).toBe(0);
@@ -209,7 +463,10 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	test("passes a body of exactly maxBodyBytes to the handler", async () => {
 		calls = 0;
 		const body = new Uint8Array(MAX_BODY_BYTES).fill(0x61);
-		const response = await fetchWith(server.port, { body, tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key } });
+		const response = await fetchWith(server.port, {
+			body,
+			tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key },
+		});
 		expect(response.status).toBe(200);
 		expect((await response.arrayBuffer()).byteLength).toBe(MAX_BODY_BYTES);
 		expect(calls).toBe(1);
@@ -217,13 +474,28 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 
 	test("reads the verified identity from the TLS socket through peerIdentity", async () => {
 		const identity = await new Promise<IdentityResult>((resolve, reject) => {
-			const probe = tls.createServer({ cert: serverCreds.cert, key: serverCreds.key, ca, requestCert: true, rejectUnauthorized: true }, (socket) => {
-				resolve(peerIdentity(socket, TRUST_DOMAIN));
-				socket.end();
-			});
+			const probe = tls.createServer(
+				{
+					cert: serverCreds.cert,
+					key: serverCreds.key,
+					ca,
+					requestCert: true,
+					rejectUnauthorized: true,
+				},
+				(socket) => {
+					resolve(peerIdentity(socket, TRUST_DOMAIN));
+					socket.end();
+				},
+			);
 			probe.once("error", reject);
 			probe.listen(0, "127.0.0.1", () => {
-				const client = tls.connect({ port: boundPort(probe), host: "127.0.0.1", ca, cert: edgeCreds.cert, key: edgeCreds.key });
+				const client = tls.connect({
+					port: boundPort(probe),
+					host: "127.0.0.1",
+					ca,
+					cert: edgeCreds.cert,
+					key: edgeCreds.key,
+				});
 				client.on("error", reject);
 				client.on("close", () => probe.close());
 			});
@@ -231,47 +503,87 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 		expect(identity).toEqual({ ok: true, spiffeId: EDGE_URI, path: "/edge/nginx" });
 	});
 
-	// Timing tests: socket timeouts run on the platform clock inside the server, so they cannot be faked from the
-	// client. Each awaits the close event with a short configured window, never an elapsed-time assertion.
+	// Deadline tests: the idle and handshake deadlines are armed on the server's sockets. Each test fires the armed
+	// deadline by hand, so the outcome is the close event, not a wait on the platform clock.
 	test("closes a connection that stays idle past idleTimeoutSec", async () => {
-		const idle = await startMtlsServer(serverOptions(0.2), async () => new Response("unused"));
+		// The idle deadline is armed once the TLS handshake verifies the client; the client then sends nothing.
+		const deadlines = manualSocketDeadlines();
+		const idle = await startMtlsServer(
+			{ ...serverOptions(30), idleTimers: deadlines.port },
+			async () => new Response("unused"),
+		);
 		try {
-			await new Promise<void>((resolve) => {
-				const client = edgeClient(idle.port);
-				client.on("close", () => resolve());
-			});
+			const client = edgeClient(idle.port);
+			const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
+			expect(await deadlines.fireNext()).toBe(30_000);
+			await closed;
 		} finally {
 			await idle.stop();
 		}
 	});
 
 	test("closes a request that trickles past the per-request deadline", async () => {
-		// Bytes keep arriving every 20 ms, well inside the 300 ms window, so only the absolute deadline can close it.
-		const slow = await startMtlsServer(serverOptions(0.3), async () => new Response("unused"));
+		// One partial request, a second chunk before the deadline, then silence. The second chunk must not restart the
+		// deadline the first byte armed: the test checks that one deadline is still the only one armed, then fires it
+		// by hand. The idle deadline stays held back and unfired throughout.
+		const manual = manualTimers();
+		const idle = manualSocketDeadlines();
+		const slow = await startMtlsServer(
+			{ ...serverOptions(0.3), timers: manual.timers, idleTimers: idle.port },
+			async () => new Response("unused"),
+		);
 		try {
-			await new Promise<void>((resolve) => {
-				const client = edgeClient(slow.port);
-				let trickle: NodeJS.Timeout | undefined;
-				client.on("close", () => {
-					clearInterval(trickle);
-					resolve();
-				});
-				client.write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: ");
-				trickle = setInterval(() => client.write("a"), 20);
+			const client = edgeClient(slow.port);
+			const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
+			// The idle deadline is armed once the server verifies the client; the test sends nothing before that.
+			const socket = await idle.armedSocket();
+			// Counts the decrypted bytes the server reads, so the test can wait until a chunk has been processed.
+			let received = 0;
+			const waiting: Array<() => void> = [];
+			socket.on("data", (chunk: Buffer) => {
+				received += chunk.length;
+				for (const wake of waiting.splice(0)) wake();
 			});
+			const receivedAtLeast = async (bytes: number): Promise<void> => {
+				while (received < bytes) {
+					const { promise, resolve } = Promise.withResolvers<void>();
+					waiting.push(resolve);
+					await promise;
+				}
+			};
+			const first = "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: ";
+			const second = "trickle";
+			client.write(first);
+			await receivedAtLeast(first.length);
+			expect(manual.armCount()).toBe(1);
+			client.write(second);
+			await receivedAtLeast(first.length + second.length);
+			expect(manual.armCount()).toBe(1);
+			expect(idle.armCount(socket)).toBe(1);
+			expect(idle.pendingCount()).toBe(1);
+			await manual.fireNext();
+			await closed;
 		} finally {
 			await slow.stop();
 		}
 	});
 
 	test("closes a connection that never completes the TLS handshake", async () => {
-		const stalled = await startMtlsServer(serverOptions(0.2), async () => new Response("unused"));
+		// The handshake deadline is armed when the connection is accepted. The test fires it by hand instead of
+		// waiting on the platform clock.
+		const deadlines = manualSocketDeadlines();
+		const stalled = await startMtlsServer(
+			{ ...serverOptions(30), handshakeTimers: deadlines.port },
+			async () => new Response("unused"),
+		);
 		try {
-			await new Promise<void>((resolve) => {
-				const raw = net.connect(stalled.port, "127.0.0.1");
-				raw.on("error", () => {});
-				raw.on("close", () => resolve());
+			const raw = net.connect(stalled.port, "127.0.0.1");
+			raw.on("error", () => {
+				// reason: test double, the error of a stalled handshake is expected and not asserted
 			});
+			const closed = new Promise<void>((resolve) => raw.on("close", () => resolve()));
+			expect(await deadlines.fireNext()).toBe(30_000);
+			await closed;
 		} finally {
 			await stalled.stop();
 		}
@@ -284,7 +596,9 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 			const firstClose = new Promise<void>((resolve) => {
 				for (let i = 0; i <= MAX_CONNECTIONS; i++) {
 					const raw = net.connect(full.port, "127.0.0.1");
-					raw.on("error", () => {});
+					raw.on("error", () => {
+						// reason: test double, the error of a refused connection is expected and not asserted
+					});
 					raw.on("close", () => resolve());
 					held.push(raw);
 				}
@@ -302,26 +616,37 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 			const client = edgeClient(server.port);
 			client.on("secureConnect", () => {
 				// Declares 100 body bytes, sends 3, and drops the connection once those bytes are flushed.
-				client.write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\nabc", () => client.destroy());
+				client.write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\nabc", () =>
+					client.destroy(),
+				);
 			});
 			client.on("close", () => resolve());
 		});
 		await aborted;
-		const response = await fetchWith(server.port, { body: "ok", tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key } });
+		const response = await fetchWith(server.port, {
+			body: "ok",
+			tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key },
+		});
 		expect(response.status).toBe(200);
 		expect(await response.text()).toBe("ok");
 		expect(calls).toBe(1);
 	});
 
 	test("stop closes a connection that is still in its TLS handshake", async () => {
-		// Sends no ClientHello, so the handshake never finishes. The idle timeout is long, so only stop() can close it.
-		const pending = await startMtlsServer(serverOptions(30), async () => new Response("unused"));
+		// Sends no ClientHello, so the handshake never finishes. The handshake deadline is armed on accept and never
+		// fired here, so only stop() can close the connection.
+		const deadlines = manualSocketDeadlines();
+		const pending = await startMtlsServer(
+			{ ...serverOptions(30), handshakeTimers: deadlines.port },
+			async () => new Response("unused"),
+		);
 		const raw = net.connect(pending.port, "127.0.0.1");
-		raw.on("error", () => {});
+		raw.on("error", () => {
+			// reason: test double, the error of the stalled handshake is expected and not asserted
+		});
 		const closed = new Promise<void>((resolve) => raw.on("close", () => resolve()));
-		await new Promise<void>((resolve) => raw.once("connect", () => resolve()));
-		// The TCP accept happens in the kernel and no event reaches this test, so a short pause lets it land before stop().
-		await Bun.sleep(50);
+		// The deadline is armed as the server accepts the connection, so this wait ends once stop() has it to close.
+		await deadlines.armed();
 		await pending.stop();
 		await closed;
 	});
@@ -330,13 +655,20 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 		const holder = net.createServer();
 		await new Promise<void>((resolve) => holder.listen(0, "127.0.0.1", () => resolve()));
 		try {
-			await expect(startMtlsServer({ ...serverOptions(30), port: boundPort(holder) }, async () => new Response())).rejects.toThrow();
+			await expect(
+				startMtlsServer(
+					{ ...serverOptions(30), port: boundPort(holder) },
+					async () => new Response(),
+				),
+			).rejects.toThrow();
 		} finally {
 			await new Promise<void>((resolve) => holder.close(() => resolve()));
 		}
 	});
 
 	test("refuses to bind any address other than 127.0.0.1", async () => {
-		await expect(startMtlsServer({ ...serverOptions(30), hostname: "0.0.0.0" }, async () => new Response())).rejects.toThrow(RangeError);
+		await expect(
+			startMtlsServer({ ...serverOptions(30), hostname: "0.0.0.0" }, async () => new Response()),
+		).rejects.toThrow(RangeError);
 	});
 });

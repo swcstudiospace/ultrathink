@@ -3,12 +3,38 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionRecord } from "../../../src/claude/state.ts";
 import { workflowWaves } from "../../../src/think/graph.ts";
-import { FALLBACK_GRAPH, NODE_KINDS, type NodeKind, type ThoughtGraph, type ThoughtNode } from "../../../src/think/types.ts";
+import {
+	FALLBACK_GRAPH,
+	NODE_KINDS,
+	type NodeKind,
+	type ThoughtGraph,
+	type ThoughtNode,
+} from "../../../src/think/types.ts";
 import { nodeStepTitles } from "../../../src/track/plan.ts";
-import { buildGraphView, type GraphView, renderGraphBlock, renderMermaid, renderTree } from "./graph-view.ts";
+import {
+	buildGraphView,
+	type GraphView,
+	renderGraphBlock,
+	renderMermaid,
+	renderTree,
+} from "./graph-view.ts";
 
-function node(id: string, kind: NodeKind, dependsOn: string[], extra: Partial<ThoughtNode> = {}): ThoughtNode {
-	return { id, title: `Title ${id}`, kind, question: `Question ${id}?`, dependsOn, thinking: "1. First.\n2. Second.", conclusion: `Conclusion ${id}.`, ...extra };
+function node(
+	id: string,
+	kind: NodeKind,
+	dependsOn: string[],
+	extra: Partial<ThoughtNode> = {},
+): ThoughtNode {
+	return {
+		id,
+		title: `Title ${id}`,
+		kind,
+		question: `Question ${id}?`,
+		dependsOn,
+		thinking: "1. First.\n2. Second.",
+		conclusion: `Conclusion ${id}.`,
+		...extra,
+	};
 }
 
 function record(graph: unknown, degraded?: string[]): SessionRecord {
@@ -55,8 +81,19 @@ function expectSound(built: GraphView): void {
 
 describe("buildGraphView", () => {
 	test("is null without a graph, without nodes, for the boilerplate fallback and for malformed graphs", () => {
-		const fallback: ThoughtGraph = { goal: FALLBACK_GRAPH.goal, nodes: FALLBACK_GRAPH.nodes.map((n) => ({ ...n, dependsOn: [...n.dependsOn] })) };
-		for (const graph of [undefined, null, { goal: "g", nodes: [] }, fallback, { goal: "g" }, { goal: "g", nodes: "nope" }, { goal: "g", nodes: [null, 3, "x"] }]) {
+		const fallback: ThoughtGraph = {
+			goal: FALLBACK_GRAPH.goal,
+			nodes: FALLBACK_GRAPH.nodes.map((n) => ({ ...n, dependsOn: [...n.dependsOn] })),
+		};
+		for (const graph of [
+			undefined,
+			null,
+			{ goal: "g", nodes: [] },
+			fallback,
+			{ goal: "g" },
+			{ goal: "g", nodes: "nope" },
+			{ goal: "g", nodes: [null, 3, "x"] },
+		]) {
 			expect(buildGraphView(record(graph))).toBeNull();
 		}
 	});
@@ -65,7 +102,12 @@ describe("buildGraphView", () => {
 		const built = view(SMALL);
 		expect(built.version).toBe(1);
 		expect(built.goal).toBe("Design the converter");
-		expect(built.nodes.map((n) => [n.id, n.wave])).toEqual([["n1", 1], ["n2", 2], ["n3", 2], ["n4", 3]]);
+		expect(built.nodes.map((n) => [n.id, n.wave])).toEqual([
+			["n1", 1],
+			["n2", 2],
+			["n3", 2],
+			["n4", 3],
+		]);
 		expect(built.waves).toEqual([
 			{ wave: 1, parallel: false, ids: ["n1"] },
 			{ wave: 2, parallel: true, ids: ["n2", "n3"] },
@@ -104,7 +146,14 @@ describe("buildGraphView", () => {
 	});
 
 	test("orders nodes topologically when the input is not", () => {
-		const built = view({ goal: "g", nodes: [node("n3", "refine", ["n2"]), node("n2", "compare", ["n1"]), node("n1", "understand", [])] });
+		const built = view({
+			goal: "g",
+			nodes: [
+				node("n3", "refine", ["n2"]),
+				node("n2", "compare", ["n1"]),
+				node("n1", "understand", []),
+			],
+		});
 		expect(built.nodes.map((n) => n.id)).toEqual(["n1", "n2", "n3"]);
 		expect(built.nodes.map((n) => n.wave)).toEqual([1, 2, 3]);
 		expectSound(built);
@@ -129,14 +178,21 @@ describe("buildGraphView", () => {
 		expect(byId.get("a")!.question).toBe("Question a?");
 		expect(byId.get("a")!.dependsOn).toEqual([]);
 		expect(byId.get("b")!.dependsOn).toEqual(["a"]);
-		expect(built.nodes.filter((n) => n.kind === "decompose" || n.kind === "critique").every((n) => /^n\d/.test(n.id))).toBe(true);
+		expect(
+			built.nodes
+				.filter((n) => n.kind === "decompose" || n.kind === "critique")
+				.every((n) => /^n\d/.test(n.id)),
+		).toBe(true);
 		// A two-node cycle keeps one edge only.
 		expect(byId.get("c")!.dependsOn.length + byId.get("d")!.dependsOn.length).toBe(1);
 	});
 
 	test("two different long ids that collide once cut stay two nodes", () => {
 		const long = "x".repeat(60);
-		const built = view({ goal: "g", nodes: [node(`${long}1`, "understand", []), node(`${long}2`, "decompose", [`${long}1`])] });
+		const built = view({
+			goal: "g",
+			nodes: [node(`${long}1`, "understand", []), node(`${long}2`, "decompose", [`${long}1`])],
+		});
 		expect(built.nodes).toHaveLength(2);
 		expect(built.nodes[0]!.id).toHaveLength(40);
 		expect(built.nodes[0]!.id.endsWith("…")).toBe(true);
@@ -174,27 +230,44 @@ describe("buildGraphView", () => {
 
 	test("a cut never leaves half of an emoji at the boundary", () => {
 		// TITLE_MAX is 120 with the ellipsis; the emoji straddles the cut at unit 119.
-		const built = view({ goal: "g", nodes: [node("a", "understand", [], { title: `${"t".repeat(118)}😀tail` })] });
+		const built = view({
+			goal: "g",
+			nodes: [node("a", "understand", [], { title: `${"t".repeat(118)}😀tail` })],
+		});
 		const title = built.nodes[0]!.title;
 		expect(title).toBe(`${"t".repeat(118)}…`);
-		expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(title)).toBe(false);
+		expect(
+			/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(title),
+		).toBe(false);
 		expect(built.truncated).toBe(true);
 	});
 
 	test("draws at most 24 nodes", () => {
-		const nodes = Array.from({ length: 30 }, (_, i) => node(`n${i + 1}`, "generate", i === 0 ? [] : [`n${i}`]));
+		const nodes = Array.from({ length: 30 }, (_, i) =>
+			node(`n${i + 1}`, "generate", i === 0 ? [] : [`n${i}`]),
+		);
 		const built = view({ goal: "g", nodes });
 		expect(built.nodes).toHaveLength(24);
 		expect(built.counts).toMatchObject({ nodes: 24, edges: 23, waves: 24 });
 		expect(built.truncated).toBe(true);
 		expectSound(built);
-		expect(renderMermaid(built).split("\n").filter((line) => /^\s+N\d+\[/.test(line))).toHaveLength(24);
+		expect(
+			renderMermaid(built)
+				.split("\n")
+				.filter((line) => /^\s+N\d+\[/.test(line)),
+		).toHaveLength(24);
 	});
 
 	test("one-line fields never carry line breaks or control characters", () => {
 		const built = view({
 			goal: "g",
-			nodes: [node("n\n1\u0007", "understand", [], { title: "t\r\nu\u202Ev\u0000w", question: "a\n\nb", conclusion: "x\r\ny\u0000\n\n\n\nz" })],
+			nodes: [
+				node("n\n1\u0007", "understand", [], {
+					title: "t\r\nu\u202Ev\u0000w",
+					question: "a\n\nb",
+					conclusion: "x\r\ny\u0000\n\n\n\nz",
+				}),
+			],
 		});
 		const only = built.nodes[0]!;
 		expect(only.id).toBe("n 1");
@@ -206,7 +279,18 @@ describe("buildGraphView", () => {
 	test("an unknown kind is coerced and malformed nodes do not throw", () => {
 		const built = view({
 			goal: 7,
-			nodes: [{ id: 5, title: null, kind: "wizardry", question: {}, dependsOn: "n1", thinking: 3, conclusion: [] }, { id: "ok", dependsOn: [null, 4, "ok"] }],
+			nodes: [
+				{
+					id: 5,
+					title: null,
+					kind: "wizardry",
+					question: {},
+					dependsOn: "n1",
+					thinking: 3,
+					conclusion: [],
+				},
+				{ id: "ok", dependsOn: [null, 4, "ok"] },
+			],
 		});
 		expect(built.nodes).toHaveLength(2);
 		expect(built.nodes.every((n) => (NODE_KINDS as readonly string[]).includes(n.kind))).toBe(true);
@@ -217,7 +301,13 @@ describe("buildGraphView", () => {
 	});
 
 	test("a node with no rationale still has one step, like the tracker plan", () => {
-		const built = view({ goal: "g", nodes: [node("n1", "understand", [], { thinking: "", conclusion: "Only the answer." }), node("n2", "decompose", ["n1"], { thinking: undefined, conclusion: undefined })] });
+		const built = view({
+			goal: "g",
+			nodes: [
+				node("n1", "understand", [], { thinking: "", conclusion: "Only the answer." }),
+				node("n2", "decompose", ["n1"], { thinking: undefined, conclusion: undefined }),
+			],
+		});
 		expect(built.nodes[0]!.steps).toEqual(["Only the answer."]);
 		expect(built.nodes[1]!.steps).toEqual(["Question n2?"]);
 	});
@@ -304,7 +394,9 @@ describe("renderMermaid", () => {
 	test("uses the fixed palette for every kind and groups class statements", () => {
 		const kinds = [...NODE_KINDS];
 		const nodes = kinds.map((kind, i) => node(`k${i}`, kind, []));
-		const text = renderMermaid(view({ goal: "g", nodes: [...nodes, node("extra", "understand", [])] }));
+		const text = renderMermaid(
+			view({ goal: "g", nodes: [...nodes, node("extra", "understand", [])] }),
+		);
 		const expected: Record<string, [string, string]> = {
 			understand: ["#dbeafe", "#1d4ed8"],
 			decompose: ["#e0e7ff", "#4338ca"],
@@ -323,9 +415,21 @@ describe("renderMermaid", () => {
 	});
 
 	test("hostile model text stays inside quoted, whitelisted labels and adds no nodes, edges or directives", () => {
-		const nodes: ThoughtNode[] = HOSTILE_TITLES.map((title, i) => node(`id${i}`, NODE_KINDS[i % NODE_KINDS.length]!, i === 0 ? [] : [`id${i - 1}`, "ghost", `id${i}`], { title }));
+		const nodes: ThoughtNode[] = HOSTILE_TITLES.map((title, i) =>
+			node(
+				`id${i}`,
+				NODE_KINDS[i % NODE_KINDS.length]!,
+				i === 0 ? [] : [`id${i - 1}`, "ghost", `id${i}`],
+				{ title },
+			),
+		);
 		// Hostile ids too, a cycle, and a duplicate.
-		nodes.push(node('bad"id]', "critique", ["id3"], { title: "t" }), node("id3", "refine", ["bad\"id]"], { title: "dup" }), node("cyc1", "compare", ["cyc2"]), node("cyc2", "compare", ["cyc1"]));
+		nodes.push(
+			node('bad"id]', "critique", ["id3"], { title: "t" }),
+			node("id3", "refine", ['bad"id]'], { title: "dup" }),
+			node("cyc1", "compare", ["cyc2"]),
+			node("cyc2", "compare", ["cyc1"]),
+		);
 		const built = view({ goal: 'goal "] %%{init}%% <script>', nodes });
 		const text = renderMermaid(built);
 		const drawn = built.nodes.length;
@@ -342,7 +446,9 @@ describe("renderMermaid", () => {
 			expect(allowed.some((re) => re.test(line))).toBe(true);
 		}
 		expect(text.split("\n").filter((line) => /^ {4}N\d+\[/.test(line))).toHaveLength(drawn);
-		expect(text.split("\n").filter((line) => line.startsWith("  subgraph "))).toHaveLength(built.waves.length);
+		expect(text.split("\n").filter((line) => line.startsWith("  subgraph "))).toHaveLength(
+			built.waves.length,
+		);
 		for (const line of text.split("\n")) {
 			const label = line.match(/^ {4}N\d+\["(.*)"\]$/u)?.[1];
 			if (label !== undefined) expect([...label].length).toBeLessThanOrEqual(44);
@@ -359,13 +465,23 @@ describe("renderMermaid", () => {
 	});
 
 	test("an empty title falls back to the id, and an empty id-less label to a placeholder", () => {
-		const text = renderMermaid(view({ goal: "g", nodes: [node("n1", "understand", [], { title: "" }), node("%%%", "decompose", [], { title: "###" })] }));
+		const text = renderMermaid(
+			view({
+				goal: "g",
+				nodes: [
+					node("n1", "understand", [], { title: "" }),
+					node("%%%", "decompose", [], { title: "###" }),
+				],
+			}),
+		);
 		expect(text).toContain('N1["n1"]');
 		expect(text).toContain('N2["node 2"]');
 	});
 
 	test("a long label is cut at 44 characters with an ellipsis", () => {
-		const text = renderMermaid(view({ goal: "g", nodes: [node("n1", "understand", [], { title: "word ".repeat(40) })] }));
+		const text = renderMermaid(
+			view({ goal: "g", nodes: [node("n1", "understand", [], { title: "word ".repeat(40) })] }),
+		);
 		const label = text.match(/N1\["(.*)"\]/u)![1]!;
 		expect([...label]).toHaveLength(44);
 		expect(label.endsWith("…")).toBe(true);
@@ -391,7 +507,12 @@ describe("renderTree", () => {
 	test("model text is collapsed to one line and capped; a single step reads singular", () => {
 		const built = view({
 			goal: `${"goal ".repeat(100)}\nmore`,
-			nodes: [node("n1", "understand", [], { title: `multi\nline ${"w".repeat(200)}`, thinking: "just one step" })],
+			nodes: [
+				node("n1", "understand", [], {
+					title: `multi\nline ${"w".repeat(200)}`,
+					thinking: "just one step",
+				}),
+			],
 		});
 		const lines = renderTree(built).split("\n");
 		expect(lines).toHaveLength(3);
@@ -401,7 +522,9 @@ describe("renderTree", () => {
 	});
 
 	test("an empty title is shown as untitled", () => {
-		expect(renderTree(view({ goal: "g", nodes: [node("n1", "understand", [], { title: "" })] }))).toContain("(untitled)");
+		expect(
+			renderTree(view({ goal: "g", nodes: [node("n1", "understand", [], { title: "" })] })),
+		).toContain("(untitled)");
 	});
 });
 
@@ -426,7 +549,9 @@ describe("renderGraphBlock", () => {
 	});
 
 	test("a cut graph gets one note line between the tree and the diagram, outside both fences", () => {
-		const nodes = Array.from({ length: 30 }, (_, i) => node(`n${i + 1}`, "generate", i === 0 ? [] : [`n${i}`]));
+		const nodes = Array.from({ length: 30 }, (_, i) =>
+			node(`n${i + 1}`, "generate", i === 0 ? [] : [`n${i}`]),
+		);
 		const built = view({ goal: "g", nodes });
 		expect(built.truncated).toBe(true);
 		const parts = renderGraphBlock(built).split("\n\n");
@@ -439,7 +564,10 @@ describe("renderGraphBlock", () => {
 	});
 
 	test("the tree fence is longer than any backtick run in model text", () => {
-		const built = view({ goal: "goal ````````` end", nodes: [node("n1", "understand", [], { title: "``` x" })] });
+		const built = view({
+			goal: "goal ````````` end",
+			nodes: [node("n1", "understand", [], { title: "``` x" })],
+		});
 		const text = renderGraphBlock(built);
 		const fence = "`".repeat(10);
 		const lines = text.split("\n");

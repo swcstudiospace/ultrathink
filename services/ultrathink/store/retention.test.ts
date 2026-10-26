@@ -15,26 +15,42 @@ const RECENT = NOW - 5 * DAY_MS;
 function openDb(options: { ledger?: boolean } = {}): Database {
 	const db = new Database(":memory:");
 	db.run("PRAGMA foreign_keys = ON");
-	db.run("CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+	db.run(
+		"CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT NOT NULL, updated_at INTEGER NOT NULL)",
+	);
 	db.run("CREATE TABLE phases (run_id TEXT NOT NULL REFERENCES runs(id), phase TEXT NOT NULL)");
 	if (options.ledger !== false) {
-		db.run("CREATE TABLE token_ledger (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), day TEXT NOT NULL)");
+		db.run(
+			"CREATE TABLE token_ledger (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), day TEXT NOT NULL)",
+		);
 	}
 	db.run("CREATE TABLE future_notes (run_id TEXT NOT NULL REFERENCES runs(id), note TEXT)");
 	return db;
 }
 
-function addRun(db: Database, id: string, status: string, updatedAt: number, ledgerDay?: string): void {
+function addRun(
+	db: Database,
+	id: string,
+	status: string,
+	updatedAt: number,
+	ledgerDay?: string,
+): void {
 	db.query("INSERT INTO runs (id, status, updated_at) VALUES (?, ?, ?)").run(id, status, updatedAt);
 	db.query("INSERT INTO phases (run_id, phase) VALUES (?, 'discover')").run(id);
 	db.query("INSERT INTO future_notes (run_id, note) VALUES (?, 'n')").run(id);
-	if (ledgerDay !== undefined) db.query("INSERT INTO token_ledger (run_id, day) VALUES (?, ?)").run(id, ledgerDay);
+	if (ledgerDay !== undefined)
+		db.query("INSERT INTO token_ledger (run_id, day) VALUES (?, ?)").run(id, ledgerDay);
 }
 
 function count(db: Database, table: string, runId?: string): number {
 	const column = table === "runs" ? "id" : "run_id";
-	const sql = runId === undefined ? `SELECT count(*) AS n FROM ${table}` : `SELECT count(*) AS n FROM ${table} WHERE ${column} = ?`;
-	const row = (runId === undefined ? db.query(sql).get() : db.query(sql).get(runId)) as { n: number };
+	const sql =
+		runId === undefined
+			? `SELECT count(*) AS n FROM ${table}`
+			: `SELECT count(*) AS n FROM ${table} WHERE ${column} = ?`;
+	const row = (runId === undefined ? db.query(sql).get() : db.query(sql).get(runId)) as {
+		n: number;
+	};
 	return row.n;
 }
 
@@ -46,7 +62,8 @@ describe("pruneRuns", () => {
 		const result = pruneRuns(db, { cutoffMs: CUTOFF, today: TODAY });
 
 		expect(result).toEqual({ runs: 1, rows: { future_notes: 1, phases: 1, token_ledger: 1 } });
-		for (const table of ["runs", "phases", "token_ledger", "future_notes"]) expect(count(db, table)).toBe(0);
+		for (const table of ["runs", "phases", "token_ledger", "future_notes"])
+			expect(count(db, table)).toBe(0);
 	});
 
 	test("leaves a recent run and its rows untouched", () => {
@@ -58,7 +75,8 @@ describe("pruneRuns", () => {
 
 		expect(result.runs).toBe(1);
 		expect(count(db, "runs")).toBe(1);
-		for (const table of ["phases", "token_ledger", "future_notes"]) expect(count(db, table, "recent")).toBe(1);
+		for (const table of ["phases", "token_ledger", "future_notes"])
+			expect(count(db, table, "recent")).toBe(1);
 	});
 
 	test("keeps an old run that has a ledger row dated today, with all its rows", () => {
@@ -68,7 +86,8 @@ describe("pruneRuns", () => {
 		const result = pruneRuns(db, { cutoffMs: CUTOFF, today: TODAY });
 
 		expect(result).toEqual({ runs: 0, rows: { future_notes: 0, phases: 0, token_ledger: 0 } });
-		for (const table of ["runs", "phases", "token_ledger", "future_notes"]) expect(count(db, table)).toBe(1);
+		for (const table of ["runs", "phases", "token_ledger", "future_notes"])
+			expect(count(db, table)).toBe(1);
 	});
 
 	test("removes an old run stuck in a paused status", () => {
@@ -93,11 +112,14 @@ describe("pruneRuns", () => {
 	test("is all or nothing: a failing delete rolls back the deletes that already ran", () => {
 		const db = openDb();
 		addRun(db, "old", "complete", OLD, "2026-09-08");
-		db.run("CREATE TRIGGER block_ledger BEFORE DELETE ON token_ledger BEGIN SELECT RAISE(ABORT, 'blocked'); END");
+		db.run(
+			"CREATE TRIGGER block_ledger BEFORE DELETE ON token_ledger BEGIN SELECT RAISE(ABORT, 'blocked'); END",
+		);
 
 		expect(() => pruneRuns(db, { cutoffMs: CUTOFF, today: TODAY })).toThrow();
 
-		for (const table of ["runs", "phases", "token_ledger", "future_notes"]) expect(count(db, table, "old")).toBe(1);
+		for (const table of ["runs", "phases", "token_ledger", "future_notes"])
+			expect(count(db, table, "old")).toBe(1);
 	});
 
 	test("takes the write lock up front: a deferred transaction can fail with SQLITE_BUSY_SNAPSHOT when the web process commits mid-prune", () => {

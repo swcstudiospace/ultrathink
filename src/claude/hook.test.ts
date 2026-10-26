@@ -1,46 +1,69 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeConfigPaths, defaultConfig, loadConfig, type UltrathinkConfig } from "../config.ts";
-import type { DecisionAction, DecisionRecord, DecisionsConfig, DecisionsErrorKind } from "../decisions/types.ts";
+import type {
+	DecisionAction,
+	DecisionRecord,
+	DecisionsConfig,
+	DecisionsErrorKind,
+} from "../decisions/types.ts";
+import { JEV, recordingFetch } from "../test.helpers.ts";
 import type { Clarification } from "../hitl/types.ts";
 import type { KnowledgeReader, KnowledgeResult } from "../greptile/knowledge.ts";
 import type { RunClarifyOptions } from "../hitl/pipeline.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import type { ProgressEvent } from "../host/progress.ts";
 import { TRACKING_OFF_NOTE, UPLIFT_CONTEXT_HEADER } from "./output.ts";
-import { runPromptSubmit, savePlanRecord, type HookDeps, type PromptSubmitInput, type PromptSubmitResult } from "./hook.ts";
-import { readSession, type SessionRecord, sessionPath, updateSession, writeSession } from "./state.ts";
+import {
+	runPromptSubmit,
+	savePlanRecord,
+	type HookDeps,
+	type PromptSubmitInput,
+	type PromptSubmitResult,
+} from "./hook.ts";
+import {
+	readSession,
+	type SessionRecord,
+	sessionPath,
+	updateSession,
+	writeSession,
+} from "./state.ts";
 import type { TrackingRefs } from "../track/types.ts";
 import type { EmitInput } from "../substrate/brief.ts";
 import type { GroundOutcome } from "../ragflow/types.ts";
-import type { RecalledLesson, RecallOutcome, RecalledSkill, SkillRecallOutcome } from "../teach/types.ts";
+import type {
+	RecalledLesson,
+	RecallOutcome,
+	RecalledSkill,
+	SkillRecallOutcome,
+} from "../teach/types.ts";
+import { graphJson } from "../test.helpers.ts";
 
 function tempStateDir(): { dir: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-hook-"));
-	return { dir: join(dir, "ultrathink"), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
-}
-
-function graphJson(count = 3): string {
-	return JSON.stringify({
-		goal: "Ship it",
-		nodes: Array.from({ length: count }, (_, i) => ({
-			id: `n${i + 1}`,
-			title: `T${i + 1}`,
-			kind: i === 0 ? "understand" : i === count - 1 ? "synthesize" : "generate",
-			question: `Q${i + 1}`,
-			depends_on: i === 0 ? [] : [`n${i}`],
-		})),
-	});
+	return {
+		dir: join(dir, "ultrathink"),
+		cleanup: () => rmSync(dir, { recursive: true, force: true }),
+	};
 }
 
 /** Dispatches by payload content so one fake handles uplift, graph, CoT, and clarify calls correctly. */
 function smartComplete(): (system: string, user: string) => Promise<string> {
 	return async (_system, user) => {
-		if (user.includes("<user_request>")) return "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>";
+		if (user.includes("<user_request>"))
+			return "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>";
 		if (user.startsWith("<spec>")) return JSON.stringify({ questions: [] });
 		if (user.includes("current_node")) {
 			const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
@@ -59,6 +82,57 @@ function trackedConfig(): UltrathinkConfig {
 	return config;
 }
 
+/** Timers the test fires by hand: each timeout the code arms is held here instead of on the real clock. */
+type ManualTimers = {
+	timers: NonNullable<HookDeps["timers"]>;
+	/** Runs the oldest pending timer of `ms`, waiting until the code has armed one. */
+	fire: (ms: number) => Promise<void>;
+};
+
+function manualTimers(): ManualTimers {
+	const armed: Array<{ ms: number; run: () => void; handle: NodeJS.Timeout }> = [];
+	const pending = new Set<NodeJS.Timeout>();
+	const waiting: Array<() => void> = [];
+	const timers: NonNullable<HookDeps["timers"]> = {
+		setTimeout: (run, ms) => {
+			// reason: the port's handle is opaque; the test tracks it by identity and never reads it
+			const handle = {} as NodeJS.Timeout;
+			armed.push({ ms, run, handle });
+			pending.add(handle);
+			for (const wake of waiting.splice(0)) wake();
+			return handle;
+		},
+		clearTimeout: (handle) => {
+			if (handle) pending.delete(handle);
+		},
+	};
+	const fire = async (ms: number): Promise<void> => {
+		const entry = armed.find((candidate) => pending.has(candidate.handle) && candidate.ms === ms);
+		if (!entry) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+			return fire(ms);
+		}
+		pending.delete(entry.handle);
+		entry.run();
+	};
+	return { timers, fire };
+}
+
+/** Controller-driven AbortSignal.timeout: each per-attempt budget the decisions client arms is a signal the test aborts. */
+type ControlledTimeouts = { armed: AbortController[]; restore: () => void };
+
+function controlledTimeouts(): ControlledTimeouts {
+	const armed: AbortController[] = [];
+	const spy = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+		const controller = new AbortController();
+		armed.push(controller);
+		return controller.signal;
+	});
+	return { armed, restore: () => spy.mockRestore() };
+}
+
 function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup: () => void } {
 	const { dir, cleanup } = tempStateDir();
 	const deps: HookDeps = {
@@ -71,7 +145,9 @@ function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup:
 		brief: async () => "",
 		emit: async () => true,
 		now: () => 1_000,
-		log: () => {},
+		log: () => {
+			// reason: test log sink; assertions read the emitted events, not this line
+		},
 		// Jev is always on, so tests that do not exercise the gate kill it: no ambient key, no network.
 		decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0" } },
 		...overrides,
@@ -183,7 +259,9 @@ describe("runPromptSubmit", () => {
 			expect(plan?.subIssues).toHaveLength(25);
 			expect(plan?.linearSubIssues).toHaveLength(25);
 			for (const id of ["n1", "n2", "n3", "n4", "n5"]) {
-				expect(plan?.subIssues.filter((row) => row.nodeId === id).map((row) => row.step)).toEqual([1, 2, 3, 4, 5]);
+				expect(plan?.subIssues.filter((row) => row.nodeId === id).map((row) => row.step)).toEqual([
+					1, 2, 3, 4, 5,
+				]);
 			}
 
 			const persisted = readSession(deps.stateDir, "s1");
@@ -251,7 +329,12 @@ describe("runPromptSubmit", () => {
 				default: "Postgres",
 				blocking: true,
 			};
-			const answered: Clarification = { ...open, answer: "Postgres", answeredAt: 2, source: "user" };
+			const answered: Clarification = {
+				...open,
+				answer: "Postgres",
+				answeredAt: 2,
+				source: "user",
+			};
 			const seed: SessionRecord = {
 				sessionId: "s1",
 				at: 0,
@@ -261,7 +344,12 @@ describe("runPromptSubmit", () => {
 			const planned = (record: SessionRecord): SessionRecord => ({
 				...record,
 				at: 1,
-				result: { xml: "<SPEC><GOAL>add a widget</GOAL></SPEC>", original: "add a widget", root: "SPEC", source: "llm" },
+				result: {
+					xml: "<SPEC><GOAL>add a widget</GOAL></SPEC>",
+					original: "add a widget",
+					root: "SPEC",
+					source: "llm",
+				},
 			});
 			// The planner read the session before the answer landed, then saves: the
 			// late answer is overlaid onto the same question instead of being lost.
@@ -278,7 +366,11 @@ describe("runPromptSubmit", () => {
 			expect(existsSync(`${saved.statePath}.lock`)).toBe(false);
 			// The plan lands first, then the locked answer update: nothing is lost either.
 			writeSession(deps.stateDir, seed);
-			const planFirst = savePlanRecord(deps.stateDir, "s1", planned({ ...seed, clarifications: [open] }));
+			const planFirst = savePlanRecord(
+				deps.stateDir,
+				"s1",
+				planned({ ...seed, clarifications: [open] }),
+			);
 			expect(planFirst.record.clarifications).toEqual([open]);
 			updateSession(deps.stateDir, "s1", (current) => ({ ...current, clarifications: [answered] }));
 			expect(readSession(deps.stateDir, "s1")?.clarifications).toEqual([answered]);
@@ -330,7 +422,9 @@ describe("runPromptSubmit", () => {
 
 	test("echo disabled: no systemMessage, additionalContext still returned", async () => {
 		const base = defaultConfig();
-		const { deps, cleanup } = baseDeps({ config: { ...base, claude: { ...base.claude, echo: false } } });
+		const { deps, cleanup } = baseDeps({
+			config: { ...base, claude: { ...base.claude, echo: false } },
+		});
 		try {
 			const result = await runPromptSubmit(input, deps);
 			expect(result.output?.systemMessage).toBeUndefined();
@@ -357,7 +451,8 @@ describe("runPromptSubmit", () => {
 		try {
 			mkdirSync(deps.stateDir, { recursive: true });
 			writeFileSync(`${join(deps.stateDir, "last.json")}.lock`, String(process.pid));
-			const saved = (await runPromptSubmit(input, deps)).output?.hookSpecificOutput.additionalContext ?? "";
+			const saved =
+				(await runPromptSubmit(input, deps)).output?.hookSpecificOutput.additionalContext ?? "";
 			const spec = join(deps.stateDir, "sessions", "s1.xml");
 			expect(saved).toContain(`Specification file: ${spec}`);
 			expect(saved).toContain(`State file: ${join(deps.stateDir, "sessions", "s1.json")}`);
@@ -372,13 +467,15 @@ describe("runPromptSubmit", () => {
 	test("Hermes gets a handoff to the saved spec, or the inline spec when the spec file could not be written", async () => {
 		const { deps, cleanup } = baseDeps({ surface: "hermes", complete: smartComplete() });
 		try {
-			const saved = (await runPromptSubmit(input, deps)).output?.hookSpecificOutput.additionalContext ?? "";
+			const saved =
+				(await runPromptSubmit(input, deps)).output?.hookSpecificOutput.additionalContext ?? "";
 			expect(saved).toContain(`Specification file: ${join(deps.stateDir, "sessions", "s1.xml")}`);
 			expect(saved).not.toContain("<BUILD_PROMPT>");
 			// A file where the state directory should be makes every state write fail.
 			rmSync(deps.stateDir, { recursive: true, force: true });
 			writeFileSync(deps.stateDir, "not a directory");
-			const unsaved = (await runPromptSubmit(input, deps)).output?.hookSpecificOutput.additionalContext ?? "";
+			const unsaved =
+				(await runPromptSubmit(input, deps)).output?.hookSpecificOutput.additionalContext ?? "";
 			expect(unsaved).toContain("<BUILD_PROMPT>");
 			expect(unsaved).not.toContain("Specification file:");
 		} finally {
@@ -402,7 +499,10 @@ describe("gateway tracking", () => {
 					graphId: plan.graphId,
 					status: "partial",
 					linearTeam: "Team",
-					linear: { nodes: { n1: { id: "uuid-1", identifier: "ENG-12", url, title: "T1" } }, steps: {} },
+					linear: {
+						nodes: { n1: { id: "uuid-1", identifier: "ENG-12", url, title: "T1" } },
+						steps: {},
+					},
 					notion: { nodes: {}, steps: {} },
 					errors: ["notion: login required"],
 					updatedAt: 1_000,
@@ -491,7 +591,10 @@ describe("gateway tracking", () => {
 				graphId: plan.graphId,
 				status: "partial",
 				linearTeam: "Team",
-				linear: { nodes: { n1: { id: "uuid-1", identifier: "ENG-12", url, title: "T1" } }, steps: {} },
+				linear: {
+					nodes: { n1: { id: "uuid-1", identifier: "ENG-12", url, title: "T1" } },
+					steps: {},
+				},
 				notion: { nodes: {}, steps: {} },
 				errors: [],
 				updatedAt: 1_000,
@@ -502,7 +605,9 @@ describe("gateway tracking", () => {
 			// 5 nodes, 25 steps: 4 node issues + 25 sub-issues missing in Linear; Notion is not configured.
 			expect(result.output?.systemMessage).toContain("Tracking · partial (29 missing)");
 			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
-			expect(ctx).toContain("Tracker rows created before this turn: 1 Linear issues, 0 sub-issues (graph");
+			expect(ctx).toContain(
+				"Tracker rows created before this turn: 1 Linear issues, 0 sub-issues (graph",
+			);
 			expect(ctx).not.toContain("Notion task");
 		} finally {
 			cleanup();
@@ -529,7 +634,9 @@ describe("substrate brief", () => {
 	});
 
 	test("passes the resolved repo and branch to the brief, with the planning lifetime", async () => {
-		let seen: { repo?: string; branch?: string; surface?: string; signal?: AbortSignal } | undefined;
+		let seen:
+			| { repo?: string; branch?: string; surface?: string; signal?: AbortSignal }
+			| undefined;
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
 			clarify: async () => [],
@@ -540,7 +647,11 @@ describe("substrate brief", () => {
 		});
 		try {
 			await runPromptSubmit(input, deps);
-			expect(seen).toMatchObject({ repo: "acme/widgets", branch: "feat/widget", surface: "claude-code" });
+			expect(seen).toMatchObject({
+				repo: "acme/widgets",
+				branch: "feat/widget",
+				surface: "claude-code",
+			});
 			expect(Object.keys(seen ?? {}).sort()).toEqual(["branch", "repo", "signal", "surface"]);
 			expect(seen?.signal).toBeInstanceOf(AbortSignal);
 		} finally {
@@ -549,10 +660,16 @@ describe("substrate brief", () => {
 	});
 
 	test("an empty brief adds no section at all", async () => {
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [], brief: async () => "" });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => [],
+			brief: async () => "",
+		});
 		try {
 			const result = await runPromptSubmit(input, deps);
-			expect(result.output?.hookSpecificOutput.additionalContext ?? "").not.toContain("## Agent Substrate brief");
+			expect(result.output?.hookSpecificOutput.additionalContext ?? "").not.toContain(
+				"## Agent Substrate brief",
+			);
 		} finally {
 			cleanup();
 		}
@@ -588,7 +705,12 @@ describe("substrate brief", () => {
 		const run = async (substrateUrl: string): Promise<string> => {
 			const config = trackedConfig();
 			config.substrate.url = substrateUrl;
-			const { deps, cleanup } = baseDeps({ config, complete: smartComplete(), clarify: async () => [], brief: undefined });
+			const { deps, cleanup } = baseDeps({
+				config,
+				complete: smartComplete(),
+				clarify: async () => [],
+				brief: undefined,
+			});
 			try {
 				const result = await runPromptSubmit(input, deps);
 				return result.output?.hookSpecificOutput.additionalContext ?? "";
@@ -657,7 +779,11 @@ describe("substrate plan event", () => {
 
 	test("two prompts planned in one host session emit notes on different session ids, each ending in its own graph id", async () => {
 		const { emit, sent } = recorder();
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [], emit });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => [],
+			emit,
+		});
 		try {
 			const first = await runPromptSubmit(input, deps);
 			const second = await runPromptSubmit(input, deps);
@@ -699,18 +825,31 @@ describe("substrate plan event", () => {
 
 	test("a skill run on another host names that host and the skill, and nothing of what was asked", async () => {
 		const { emit, sent } = recorder();
-		const { deps, cleanup } = baseDeps({ surface: "hermes", complete: smartComplete(), clarify: async () => [], emit });
+		const { deps, cleanup } = baseDeps({
+			surface: "hermes",
+			complete: smartComplete(),
+			clarify: async () => [],
+			emit,
+		});
 		try {
 			const result = await runPromptSubmit(
 				{
 					...input,
 					prompt: "fix the login redirect",
-					skill: { name: "gsd-quick", instruction: "fix the login redirect", summary: "Fast atomic task.", source: "omp" },
+					skill: {
+						name: "gsd-quick",
+						instruction: "fix the login redirect",
+						summary: "Fast atomic task.",
+						source: "omp",
+					},
 				},
 				deps,
 			);
 			expect(sent).toHaveLength(1);
-			expect(sent[0]).toMatchObject({ surface: "hermes", payload: { ultrathink: "plan", nodes: 5, host: "hermes", skill: "gsd-quick" } });
+			expect(sent[0]).toMatchObject({
+				surface: "hermes",
+				payload: { ultrathink: "plan", nodes: 5, host: "hermes", skill: "gsd-quick" },
+			});
 			const wire = JSON.stringify(sent);
 			expect(wire).toContain(result.record?.plan?.graphId ?? "missing graph id");
 			expect(wire).not.toContain("login redirect");
@@ -722,11 +861,19 @@ describe("substrate plan event", () => {
 
 	test("a prompt that is not planned emits nothing: trivial, raw, planning off, and a Jev skip", async () => {
 		const { emit, sent } = recorder();
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [], emit });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => [],
+			emit,
+		});
 		try {
 			expect((await runPromptSubmit({ ...input, prompt: "ok" }, deps)).skipped).toBe("skip");
-			expect((await runPromptSubmit({ ...input, prompt: "raw: add a widget" }, deps)).skipped).toBe("passthrough");
-			expect((await runPromptSubmit(input, { ...deps, control: { enabled: false } })).skipped).toBe("skip");
+			expect((await runPromptSubmit({ ...input, prompt: "raw: add a widget" }, deps)).skipped).toBe(
+				"passthrough",
+			);
+			expect((await runPromptSubmit(input, { ...deps, control: { enabled: false } })).skipped).toBe(
+				"skip",
+			);
 			expect(sent).toEqual([]);
 		} finally {
 			cleanup();
@@ -764,7 +911,11 @@ describe("substrate plan event", () => {
 
 	test("a session record that could not be written is not announced", async () => {
 		const { emit, sent } = recorder();
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [], emit });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => [],
+			emit,
+		});
 		try {
 			// A file where the state directory should be makes every state write fail.
 			rmSync(deps.stateDir, { recursive: true, force: true });
@@ -780,7 +931,11 @@ describe("substrate plan event", () => {
 
 	test("a prompt with no session id is planned but not announced", async () => {
 		const { emit, sent } = recorder();
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [], emit });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => [],
+			emit,
+		});
 		try {
 			for (const session_id of [undefined, "  "]) {
 				const result = await runPromptSubmit({ ...input, session_id }, deps);
@@ -795,21 +950,28 @@ describe("substrate plan event", () => {
 
 	test("a run whose planning budget is already spent sends no event, but still persists the record", async () => {
 		const { emit, sent } = recorder();
+		const manual = manualTimers();
+		const tracking = Promise.withResolvers<void>();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
 			clarify: async () => [],
 			emit,
+			timers: manual.timers,
 			// The tracker waits for the budget to fire, so the plan is finished only after the controller aborted.
 			track: async ({ signal }) => {
 				const { promise, resolve } = Promise.withResolvers<void>();
 				signal?.addEventListener("abort", () => resolve());
+				tracking.resolve();
 				await promise;
 				return undefined;
 			},
 		});
 		deps.config.claude.budgetMs = 20;
 		try {
-			const result = await runPromptSubmit(input, deps);
+			const running = runPromptSubmit(input, deps);
+			await tracking.promise;
+			await manual.fire(20);
+			const result = await running;
 			expect(result.record?.plan?.graphId).toBeDefined();
 			expect(readSession(deps.stateDir, "s1")?.plan?.graphId).toBe(result.record?.plan?.graphId);
 			expect(sent).toEqual([]);
@@ -820,22 +982,27 @@ describe("substrate plan event", () => {
 
 	test("the event is handed the planning signal, and a budget that fires mid-request ends the wait promptly", async () => {
 		let seen: AbortSignal | undefined;
+		const manual = manualTimers();
+		const emitted = Promise.withResolvers<void>();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
 			clarify: async () => [],
+			timers: manual.timers,
 			emit: (_event, signal) => {
 				const { promise, resolve } = Promise.withResolvers<boolean>();
 				seen = signal;
 				// A substrate that never answers: only the budget can end the wait.
 				signal?.addEventListener("abort", () => resolve(false));
+				emitted.resolve();
 				return promise;
 			},
 		});
 		deps.config.claude.budgetMs = 80;
 		try {
-			const started = performance.now();
-			const result = await runPromptSubmit(input, deps);
-			expect(performance.now() - started).toBeLessThan(1_000);
+			const running = runPromptSubmit(input, deps);
+			await emitted.promise;
+			await manual.fire(80);
+			const result = await running;
 			expect(seen).toBeDefined();
 			expect(seen?.aborted).toBe(true);
 			expect(result.record?.plan?.graphId).toBeDefined();
@@ -884,7 +1051,11 @@ describe("substrate plan event", () => {
 
 	test("the substrate's answer, a refusal or a failure never changes the plan, the record, the summary or the result", async () => {
 		const events: ProgressEvent[] = [];
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [], progress: (e) => events.push(e) });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => [],
+			progress: (e) => events.push(e),
+		});
 		try {
 			// The baseline: no emit seam and no substrate URL, so the real emitter has nothing to send to.
 			const base = await runPromptSubmit(input, { ...deps, emit: undefined });
@@ -907,9 +1078,13 @@ describe("substrate plan event", () => {
 			for (const [name, emit] of emitters) {
 				events.length = 0;
 				const result = await runPromptSubmit(input, { ...deps, emit });
-				expect(normalized(result, result.record?.plan?.graphId), name).toEqual(normalized(base, base.record?.plan?.graphId));
+				expect(normalized(result, result.record?.plan?.graphId), name).toEqual(
+					normalized(base, base.record?.plan?.graphId),
+				);
 				// The record was persisted before the emit, and the progress stream still ends planned.
-				expect(readSession(deps.stateDir, "s1")?.plan?.graphId, name).toBe(result.record?.plan?.graphId);
+				expect(readSession(deps.stateDir, "s1")?.plan?.graphId, name).toBe(
+					result.record?.plan?.graphId,
+				);
 				expect(events.at(-1), name).toMatchObject({ type: "end", outcome: "planned" });
 			}
 		} finally {
@@ -923,7 +1098,10 @@ describe("substrate plan event", () => {
 			urls.push(String(url));
 			return Promise.resolve(new Response("{}", { status: 202 }));
 		}) as unknown as typeof fetch;
-		const run = async (substrateUrl: string, env: Record<string, string>): Promise<PromptSubmitResult> => {
+		const run = async (
+			substrateUrl: string,
+			env: Record<string, string>,
+		): Promise<PromptSubmitResult> => {
 			const config = trackedConfig();
 			config.substrate.url = substrateUrl;
 			const { deps, cleanup } = baseDeps({
@@ -942,7 +1120,9 @@ describe("substrate plan event", () => {
 		try {
 			expect((await run("", {})).record?.plan?.graphId).toBeDefined();
 			expect(urls).toEqual([]);
-			expect((await run("https://substrate.test", { SUBSTRATE_DISABLED: "1" })).record?.plan?.graphId).toBeDefined();
+			expect(
+				(await run("https://substrate.test", { SUBSTRATE_DISABLED: "1" })).record?.plan?.graphId,
+			).toBeDefined();
 			expect(urls).toEqual([]);
 		} finally {
 			globalThis.fetch = realFetch;
@@ -984,7 +1164,9 @@ describe("substrate plan event", () => {
 			const wire = JSON.stringify(call?.body);
 			expect(wire).not.toContain("add a widget");
 			expect(wire).not.toContain("BUILD_PROMPT");
-			expect(JSON.stringify([wire, result, logs, sessionText(deps.stateDir)])).not.toContain("tok-secret-1234");
+			expect(JSON.stringify([wire, result, logs, sessionText(deps.stateDir)])).not.toContain(
+				"tok-secret-1234",
+			);
 		} finally {
 			globalThis.fetch = realFetch;
 			cleanup();
@@ -998,21 +1180,38 @@ describe("progress events", () => {
 
 	test("a planned prompt streams begin, ordered stages, graph and node events, then end planned", async () => {
 		const events: ProgressEvent[] = [];
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), progress: (e) => events.push(e) });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			progress: (e) => events.push(e),
+		});
 		try {
 			await runPromptSubmit(input, deps);
 			const labels = events.map(label);
 			expect(labels[0]).toBe("begin");
 			expect(labels.at(-1)).toBe("end");
 			expect(events.at(-1)).toMatchObject({ type: "end", outcome: "planned" });
-			const order = ["uplift:start", "uplift:end", "think:start", "graph", "think:end", "clarify:start", "clarify:end", "plan:start", "plan:end", "state:start", "state:end"];
+			const order = [
+				"uplift:start",
+				"uplift:end",
+				"think:start",
+				"graph",
+				"think:end",
+				"clarify:start",
+				"clarify:end",
+				"plan:start",
+				"plan:end",
+				"state:start",
+				"state:end",
+			];
 			const positions = order.map((l) => labels.indexOf(l));
 			expect(positions.every((p) => p >= 0)).toBe(true);
 			expect([...positions].sort((a, b) => a - b)).toEqual(positions);
 			expect(labels).not.toContain("track:start");
 			expect(labels.filter((l) => l === "node:done")).toHaveLength(5);
 			expect(events.find((e) => e.type === "graph")).toMatchObject({ total: 5 });
-			expect(events.find((e) => e.type === "stage" && e.stage === "think" && e.phase === "end")).toMatchObject({ ok: true, detail: "5 nodes" });
+			expect(
+				events.find((e) => e.type === "stage" && e.stage === "think" && e.phase === "end"),
+			).toMatchObject({ ok: true, detail: "5 nodes" });
 		} finally {
 			cleanup();
 		}
@@ -1075,7 +1274,12 @@ describe("skill invocations", () => {
 	const skillInput: PromptSubmitInput = {
 		...input,
 		prompt: "fix the login redirect",
-		skill: { name: "gsd-quick", instruction: "fix the login redirect", summary: "Fast atomic task.", source: "omp" },
+		skill: {
+			name: "gsd-quick",
+			instruction: "fix the login redirect",
+			summary: "Fast atomic task.",
+			source: "omp",
+		},
 	};
 
 	test("plans the instruction under the skill: ORIGINAL, conversation line, record, begin, header and summary", async () => {
@@ -1093,8 +1297,14 @@ describe("skill invocations", () => {
 			const result = await runPromptSubmit(skillInput, deps);
 			const uplift = payloads.find((p) => p.includes("<user_request>")) ?? "";
 			expect(uplift).toContain("<user_request>\nfix the login redirect\n</user_request>");
-			expect(uplift).toContain('The user invoked the "gsd-quick" skill with this message. Skill summary: Fast atomic task.');
-			expect(result.record?.skill).toEqual({ name: "gsd-quick", summary: "Fast atomic task.", source: "omp" });
+			expect(uplift).toContain(
+				'The user invoked the "gsd-quick" skill with this message. Skill summary: Fast atomic task.',
+			);
+			expect(result.record?.skill).toEqual({
+				name: "gsd-quick",
+				summary: "Fast atomic task.",
+				source: "omp",
+			});
 			expect(readSession(deps.stateDir, "s1")?.skill?.name).toBe("gsd-quick");
 			expect(events[0]).toMatchObject({ type: "begin", skill: "gsd-quick" });
 			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
@@ -1108,10 +1318,15 @@ describe("skill invocations", () => {
 
 	test("a plain prompt keeps the original header and no skill anywhere", async () => {
 		const events: ProgressEvent[] = [];
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), progress: (e) => events.push(e) });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			progress: (e) => events.push(e),
+		});
 		try {
 			const result = await runPromptSubmit(input, deps);
-			expect(result.output?.hookSpecificOutput.additionalContext.startsWith(UPLIFT_CONTEXT_HEADER)).toBe(true);
+			expect(
+				result.output?.hookSpecificOutput.additionalContext.startsWith(UPLIFT_CONTEXT_HEADER),
+			).toBe(true);
 			expect(result.output?.systemMessage).not.toContain("Skill ·");
 			expect(result.record?.skill).toBeUndefined();
 			expect(events[0]).not.toHaveProperty("skill");
@@ -1156,7 +1371,11 @@ describe("skill invocations", () => {
 
 describe("Greptile knowledge base before clarify", () => {
 	/** A reader whose read() resolves `result`; records start() inputs and close() calls. */
-	function fakeReader(result: KnowledgeResult): { reader: KnowledgeReader; starts: Array<{ repo?: string }>; closed: () => number } {
+	function fakeReader(result: KnowledgeResult): {
+		reader: KnowledgeReader;
+		starts: Array<{ repo?: string }>;
+		closed: () => number;
+	} {
 		const starts: Array<{ repo?: string }> = [];
 		let closes = 0;
 		const reader: KnowledgeReader = {
@@ -1197,7 +1416,14 @@ describe("Greptile knowledge base before clarify", () => {
 
 	test("a used lookup reaches clarify, is recorded with its settled count, and adds the context section", async () => {
 		const { reader, starts, closed } = fakeReader({
-			lookup: { outcome: "used", repo: "acme/widgets", namespaceId: "ns1", docs: ["index.md", "docs/storage.md"], chars: 42, ms: 5 },
+			lookup: {
+				outcome: "used",
+				repo: "acme/widgets",
+				namespaceId: "ns1",
+				docs: ["index.md", "docs/storage.md"],
+				chars: 42,
+				ms: 5,
+			},
 			digest: "## index.md\nwidgets persist in the widgets table",
 		});
 		let seen: RunClarifyOptions | undefined;
@@ -1212,9 +1438,19 @@ describe("Greptile knowledge base before clarify", () => {
 		try {
 			const result = await runPromptSubmit(input, deps);
 			expect(starts).toEqual([{ repo: "acme/widgets" }]);
-			expect(seen?.knowledge).toEqual({ digest: "## index.md\nwidgets persist in the widgets table", docs: ["index.md", "docs/storage.md"] });
-			expect(result.record?.knowledge).toMatchObject({ outcome: "used", docs: ["index.md", "docs/storage.md"], settled: 1 });
-			expect(readSession(deps.stateDir, "s1")?.knowledge).toMatchObject({ outcome: "used", settled: 1 });
+			expect(seen?.knowledge).toEqual({
+				digest: "## index.md\nwidgets persist in the widgets table",
+				docs: ["index.md", "docs/storage.md"],
+			});
+			expect(result.record?.knowledge).toMatchObject({
+				outcome: "used",
+				docs: ["index.md", "docs/storage.md"],
+				settled: 1,
+			});
+			expect(readSession(deps.stateDir, "s1")?.knowledge).toMatchObject({
+				outcome: "used",
+				settled: 1,
+			});
 			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
 			expect(ctx).toContain("## Greptile knowledge base");
 			expect(ctx).toContain("for acme/widgets: index.md, docs/storage.md.");
@@ -1227,7 +1463,14 @@ describe("Greptile knowledge base before clarify", () => {
 
 	test("an error lookup fails open: clarify runs without knowledge, the record says error, no context section", async () => {
 		const { reader } = fakeReader({
-			lookup: { outcome: "error", repo: "acme/widgets", docs: [], chars: 0, ms: 20_000, reason: "timed out after 20000ms" },
+			lookup: {
+				outcome: "error",
+				repo: "acme/widgets",
+				docs: [],
+				chars: 0,
+				ms: 20_000,
+				reason: "timed out after 20000ms",
+			},
 			digest: "",
 		});
 		let seen: RunClarifyOptions | undefined;
@@ -1245,7 +1488,9 @@ describe("Greptile knowledge base before clarify", () => {
 			expect(seen?.knowledge).toBeUndefined();
 			expect(result.record?.knowledge).toMatchObject({ outcome: "error", settled: 0 });
 			expect(result.record?.clarifications).toEqual([open]);
-			expect(result.output?.hookSpecificOutput.additionalContext ?? "").not.toContain("## Greptile knowledge base");
+			expect(result.output?.hookSpecificOutput.additionalContext ?? "").not.toContain(
+				"## Greptile knowledge base",
+			);
 			expect(result.output?.systemMessage).toContain("Knowledge · error");
 		} finally {
 			cleanup();
@@ -1254,7 +1499,14 @@ describe("Greptile knowledge base before clarify", () => {
 
 	test("a lookup is still recorded when clarify throws", async () => {
 		const { reader } = fakeReader({
-			lookup: { outcome: "none", repo: "acme/widgets", docs: [], chars: 0, ms: 3, reason: "repository not listed" },
+			lookup: {
+				outcome: "none",
+				repo: "acme/widgets",
+				docs: [],
+				chars: 0,
+				ms: 3,
+				reason: "repository not listed",
+			},
 			digest: "",
 		});
 		const { deps, cleanup } = baseDeps({
@@ -1274,8 +1526,15 @@ describe("Greptile knowledge base before clarify", () => {
 	});
 
 	test("HITL off: the knowledge base is never read", async () => {
-		const { reader, starts } = fakeReader({ lookup: { outcome: "used", docs: ["index.md"], chars: 1, ms: 1 }, digest: "x" });
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), knowledge: reader, control: { hitlEnabled: false } });
+		const { reader, starts } = fakeReader({
+			lookup: { outcome: "used", docs: ["index.md"], chars: 1, ms: 1 },
+			digest: "x",
+		});
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			knowledge: reader,
+			control: { hitlEnabled: false },
+		});
 		try {
 			const result = await runPromptSubmit(input, deps);
 			expect(starts).toEqual([]);
@@ -1294,10 +1553,16 @@ describe("Greptile knowledge base before clarify", () => {
 					topics.push(topic);
 					return { lookup: { outcome: "none", docs: [], chars: 0, ms: 1 }, digest: "" };
 				},
-				close: () => {},
+				close: () => {
+					// reason: the fixture holds no resource to release
+				},
 			}),
 		};
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), knowledge: reader, clarify: async () => [] });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			knowledge: reader,
+			clarify: async () => [],
+		});
 		try {
 			await runPromptSubmit(input, deps);
 			expect(topics).toHaveLength(1);
@@ -1306,7 +1571,8 @@ describe("Greptile knowledge base before clarify", () => {
 			expect(topic).toContain("Ship it");
 			expect(topic).toContain("T1: c n1");
 			expect(topic).not.toContain("<");
-			for (const tag of ["BUILD_PROMPT", "GRAPH_OF_THOUGHT", "ORIGINAL", "NODE"]) expect(topic).not.toContain(tag);
+			for (const tag of ["BUILD_PROMPT", "GRAPH_OF_THOUGHT", "ORIGINAL", "NODE"])
+				expect(topic).not.toContain(tag);
 		} finally {
 			cleanup();
 		}
@@ -1334,13 +1600,6 @@ describe("Greptile knowledge base before clarify", () => {
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-interface Recorded {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body: unknown;
-}
-
 const realFetch = globalThis.fetch;
 const jevDirs: string[] = [];
 afterEach(() => {
@@ -1348,42 +1607,19 @@ afterEach(() => {
 	for (const dir of jevDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): { fetch: typeof fetch; calls: Recorded[] } {
-	const calls: Recorded[] = [];
-	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-		const headers: Record<string, string> = {};
-		new Headers(init?.headers).forEach((value, key) => {
-			headers[key] = value;
-		});
-		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body;
-		calls.push({ url: String(input), method: init?.method ?? "GET", headers, body });
-		const next = queue[Math.min(calls.length, queue.length) - 1];
-		if (!next) throw new Error("empty queue");
-		return next();
-	}) as typeof fetch;
-	globalThis.fetch = fetchImpl;
-	return { fetch: fetchImpl, calls };
-}
-
-const JEV =
-	(p: number, key = "plan_worthy") =>
-	() =>
-		Response.json({
-			id: "gen-dec-test",
-			model: "typesafe/jev-1.13-20260917",
-			provider: "TypeSafe",
-			answers: { [key]: { type: "noul", noul: p } },
-			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
-		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
-	Response.json({ error: { code: s, message: `upstream said no for ${K}` } }, { status: s, headers });
+	Response.json(
+		{ error: { code: s, message: `upstream said no for ${K}` } },
+		{ status: s, headers },
+	);
 
 /** Never resolves; rejects with an AbortError when its signal fires (as src/grok/complete.test.ts hangingFetch). Installed as globalThis.fetch too. */
 function hangingFetch(onCall?: () => void): typeof fetch {
 	const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) =>
 		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+			init?.signal?.addEventListener("abort", () =>
+				reject(new DOMException("aborted", "AbortError")),
+			);
 			onCall?.();
 		})) as typeof fetch;
 	globalThis.fetch = fetchImpl;
@@ -1396,9 +1632,16 @@ function tempStore(key?: string): string {
 	jevDirs.push(dir);
 	const path = join(dir, "mcp-credentials.json");
 	if (key !== undefined) {
-		writeFileSync(path, JSON.stringify({ version: 1, providers: { openrouter: { kind: "api_key", apiKey: key, updatedAt: 1 } } }), {
-			mode: 0o600,
-		});
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				providers: { openrouter: { kind: "api_key", apiKey: key, updatedAt: 1 } },
+			}),
+			{
+				mode: 0o600,
+			},
+		);
 	}
 	return path;
 }
@@ -1413,7 +1656,8 @@ function onConfig(decisions: Partial<DecisionsConfig> = {}, echo = true): Ultrat
 
 const ACK = "thanks, that works now";
 const NEW_WORK = "Add OAuth login with GitHub to the web app";
-const NOTICE_004 = "Prompt Uplift · not planned: Jev judged this is not new multi-step work (0.04) · start with uplift: to plan it";
+const NOTICE_004 =
+	"Prompt Uplift · not planned: Jev judged this is not new multi-step work (0.04) · start with uplift: to plan it";
 
 interface JevHarness {
 	deps: HookDeps;
@@ -1424,7 +1668,11 @@ interface JevHarness {
 }
 
 /** Hook deps that count every engine, tracker, brief and knowledge-base call, with the Decisions seams injected (key K, empty store). */
-function jevHarness(config: UltrathinkConfig, fetchImpl: typeof fetch, overrides: Partial<HookDeps> = {}): JevHarness {
+function jevHarness(
+	config: UltrathinkConfig,
+	fetchImpl: typeof fetch,
+	overrides: Partial<HookDeps> = {},
+): JevHarness {
 	const calls = { engine: 0, track: 0, brief: 0, knowledge: 0 };
 	const events: ProgressEvent[] = [];
 	const logs: string[] = [];
@@ -1446,13 +1694,29 @@ function jevHarness(config: UltrathinkConfig, fetchImpl: typeof fetch, overrides
 		knowledge: {
 			start: () => {
 				calls.knowledge++;
-				return { read: async () => ({ lookup: { outcome: "none", docs: [], chars: 0, ms: 1 }, digest: "" }), close: () => {} };
+				return {
+					read: async () => ({
+						lookup: { outcome: "none", docs: [], chars: 0, ms: 1 },
+						digest: "",
+					}),
+					close: () => {
+						// reason: the fixture holds no resource to release
+					},
+				};
 			},
 		},
-		conversation: () => "User: the login page is broken\n\nAssistant: Fixed the redirect; it works now.",
+		conversation: () =>
+			"User: the login page is broken\n\nAssistant: Fixed the redirect; it works now.",
 		log: (message) => logs.push(message),
 		progress: (event) => events.push(event),
-		decisionsDeps: { env: { OPENROUTER_API_KEY: K }, storePath: tempStore(), fetch: fetchImpl, sleep: async () => {} },
+		decisionsDeps: {
+			env: { OPENROUTER_API_KEY: K },
+			storePath: tempStore(),
+			fetch: fetchImpl,
+			sleep: async () => {
+				// reason: no real delay in the fixture; retries run immediately
+			},
+		},
 		...overrides,
 	});
 	return { deps, calls, events, logs, cleanup };
@@ -1466,7 +1730,10 @@ function withConfig(h: JevHarness, config: UltrathinkConfig): HookDeps {
 /** The same run with Jev killed (BASELINE: decisions off), sharing everything else. */
 function offDeps(deps: HookDeps): HookDeps {
 	const decisionsDeps = deps.decisionsDeps;
-	return { ...deps, decisionsDeps: { ...decisionsDeps, env: { ...decisionsDeps?.env, ULTRATHINK_DECISIONS: "0" } } };
+	return {
+		...deps,
+		decisionsDeps: { ...decisionsDeps, env: { ...decisionsDeps?.env, ULTRATHINK_DECISIONS: "0" } },
+	};
 }
 
 /** `value` with the random graph id replaced, so two planned runs compare equal. */
@@ -1487,8 +1754,12 @@ function withoutDecisions(record: SessionRecord | undefined): SessionRecord | un
 function expectBaseline(jev: PromptSubmitResult, base: PromptSubmitResult, bit?: string): void {
 	const jevGraph = jev.record?.plan?.graphId;
 	const baseGraph = base.record?.plan?.graphId;
-	expect(normalized(jev.output?.hookSpecificOutput, jevGraph)).toEqual(normalized(base.output?.hookSpecificOutput, baseGraph));
-	expect(normalized(withoutDecisions(jev.record), jevGraph)).toEqual(normalized(base.record, baseGraph));
+	expect(normalized(jev.output?.hookSpecificOutput, jevGraph)).toEqual(
+		normalized(base.output?.hookSpecificOutput, baseGraph),
+	);
+	expect(normalized(withoutDecisions(jev.record), jevGraph)).toEqual(
+		normalized(base.record, baseGraph),
+	);
 	const summary = jev.output?.systemMessage;
 	if (bit === undefined) expect(summary).toBe(base.output?.systemMessage);
 	else {
@@ -1512,24 +1783,41 @@ function sessionText(stateDir: string): string {
 }
 
 /** The 4.1–4.9 failures and the kind each maps to; `respond` gets the asked question key. */
-const FAILURES: ReadonlyArray<{ name: string; kind: DecisionsErrorKind; respond?: (key: string) => () => Response }> = [
+const FAILURES: ReadonlyArray<{
+	name: string;
+	kind: DecisionsErrorKind;
+	respond?: (key: string) => () => Response;
+}> = [
 	{ name: "401", kind: "auth", respond: () => ERR(401) },
 	{ name: "402", kind: "credits", respond: () => ERR(402) },
 	{ name: "400", kind: "bad-request", respond: () => ERR(400) },
 	{ name: "429 then 429", kind: "rate-limit", respond: () => ERR(429) },
 	{ name: "503 then 503", kind: "upstream", respond: () => ERR(503) },
 	{ name: "a hanging request", kind: "timeout" },
-	{ name: "invalid JSON", kind: "invalid-response", respond: () => () => new Response("not json", { status: 200 }) },
+	{
+		name: "invalid JSON",
+		kind: "invalid-response",
+		respond: () => () => new Response("not json", { status: 200 }),
+	},
 	{ name: "a missing answer key", kind: "invalid-response", respond: () => JEV(0.97, "not_asked") },
 	{ name: "noul out of range", kind: "invalid-response", respond: (key) => JEV(1.5, key) },
 ];
 
 /**
- * R for one failure: a recording fetch that repeats it, or a hanging fetch. The hanging case needs a real clock: the
- * client's per-attempt budget is an AbortSignal.timeout, so it gets the shortest budget that still proves `timeout`.
+ * R for one failure: a recording fetch that repeats it, or a hanging fetch. The hanging fetch aborts the per-attempt
+ * budget the decisions client arms with AbortSignal.timeout, so that attempt times out without a real clock.
  */
-function failureFetch(failure: (typeof FAILURES)[number], key: string): { fetch: typeof fetch; timeoutMs: number } {
-	if (!failure.respond) return { fetch: hangingFetch(), timeoutMs: 50 };
+function failureFetch(
+	failure: (typeof FAILURES)[number],
+	key: string,
+	timeouts: ControlledTimeouts,
+): { fetch: typeof fetch; timeoutMs: number } {
+	if (!failure.respond) {
+		const fetchImpl = hangingFetch(() => {
+			timeouts.armed.at(-1)?.abort(new DOMException("timed out", "TimeoutError"));
+		});
+		return { fetch: fetchImpl, timeoutMs: 50 };
+	}
 	return { fetch: recordingFetch([failure.respond(key)]).fetch, timeoutMs: 3000 };
 }
 
@@ -1555,7 +1843,11 @@ describe("Jev plan gate", () => {
 					{ ...input, prompt: NEW_WORK },
 					{
 						...h.deps,
-						decisionsDeps: { env: { OPENROUTER_API_KEY: K }, storePath: tempStore(K), fetch: R.fetch },
+						decisionsDeps: {
+							env: { OPENROUTER_API_KEY: K },
+							storePath: tempStore(K),
+							fetch: R.fetch,
+						},
 					},
 				);
 				expect(R.calls).toHaveLength(1);
@@ -1572,23 +1864,34 @@ describe("Jev plan gate", () => {
 			const h = jevHarness(onConfig(), R.fetch, { surface });
 			try {
 				// An earlier planned prompt of this session: the skip must leave its record untouched (A13).
-				const earlier = await runPromptSubmit({ ...input, prompt: NEW_WORK }, offDeps(withConfig(h, trackedConfig())));
+				const earlier = await runPromptSubmit(
+					{ ...input, prompt: NEW_WORK },
+					offDeps(withConfig(h, trackedConfig())),
+				);
 				const before = sessionText(h.deps.stateDir);
 				const counts = { ...h.calls };
 				h.events.length = 0;
 
 				const result = await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
 				expect(R.calls).toHaveLength(1);
-				expect(result).toEqual({ skipped: "jev-skip", decisions: [expect.objectContaining({ point: "plan", p: 0.04 })], notice: NOTICE_004 });
+				expect(result).toEqual({
+					skipped: "jev-skip",
+					decisions: [expect.objectContaining({ point: "plan", p: 0.04 })],
+					notice: NOTICE_004,
+				});
 				// Not planned, exactly as a deterministic skip: no engine, tracker, brief or knowledge call, no event, no write.
 				expect(h.calls).toEqual(counts);
 				expect(h.events).toEqual([]);
 				expect(sessionText(h.deps.stateDir)).toBe(before);
-				expect(readSession(h.deps.stateDir, "s1")?.plan?.graphId).toBe(earlier.record?.plan?.graphId);
+				expect(readSession(h.deps.stateDir, "s1")?.plan?.graphId).toBe(
+					earlier.record?.plan?.graphId,
+				);
 
 				const trivial = await runPromptSubmit({ ...input, prompt: "thanks" }, h.deps);
 				expect(trivial).toEqual({ skipped: "skip" });
-				expect(Object.keys(result).filter((k) => k !== "decisions" && k !== "notice")).toEqual(Object.keys(trivial));
+				expect(Object.keys(result).filter((k) => k !== "decisions" && k !== "notice")).toEqual(
+					Object.keys(trivial),
+				);
 				expectNoKey(result, h.logs, sessionText(h.deps.stateDir));
 			} finally {
 				h.cleanup();
@@ -1636,7 +1939,11 @@ describe("Jev plan gate", () => {
 		const h = jevHarness(onConfig(), R.fetch);
 		try {
 			const result = await runPromptSubmit(
-				{ ...input, prompt: "3", skill: { name: "gsd-quick", instruction: "3", summary: "Quick task", source: "slash" } },
+				{
+					...input,
+					prompt: "3",
+					skill: { name: "gsd-quick", instruction: "3", summary: "Quick task", source: "slash" },
+				},
 				h.deps,
 			);
 			expect(R.calls).toHaveLength(0);
@@ -1675,7 +1982,10 @@ describe("Jev plan gate", () => {
 			}
 			expect(R.calls).toHaveLength(0);
 
-			const ack = await runPromptSubmit({ ...input, prompt: `<user_query>\n${ACK}\n</user_query>` }, h.deps);
+			const ack = await runPromptSubmit(
+				{ ...input, prompt: `<user_query>\n${ACK}\n</user_query>` },
+				h.deps,
+			);
 			expect(R.calls).toHaveLength(1);
 			expect(ack.skipped).toBe("jev-skip");
 		} finally {
@@ -1688,7 +1998,10 @@ describe("Jev plan gate", () => {
 		const h = jevHarness(onConfig(), R.fetch);
 		try {
 			for (const prompt of ["yes", "ok", "thanks", "go ahead", "lgtm!"]) {
-				const base = await runPromptSubmit({ ...input, prompt }, withConfig(h, onConfig({ enabled: false })));
+				const base = await runPromptSubmit(
+					{ ...input, prompt },
+					withConfig(h, onConfig({ enabled: false })),
+				);
 				const jev = await runPromptSubmit({ ...input, prompt }, h.deps);
 				expect(jev).toEqual(base);
 				expect(jev).toEqual({ skipped: "skip" });
@@ -1711,7 +2024,10 @@ describe("Jev plan gate", () => {
 				[NEW_WORK, { control: { enabled: false } }],
 			];
 			for (const [prompt, extra] of cases) {
-				const base = await runPromptSubmit({ ...input, prompt }, { ...h.deps, ...extra, config: onConfig({ enabled: false }) });
+				const base = await runPromptSubmit(
+					{ ...input, prompt },
+					{ ...h.deps, ...extra, config: onConfig({ enabled: false }) },
+				);
 				const jev = await runPromptSubmit({ ...input, prompt }, { ...h.deps, ...extra });
 				expect(jev).toEqual(base);
 				expect(jev.skipped).toBeDefined();
@@ -1761,7 +2077,9 @@ describe("Jev plan gate", () => {
 			const skipped = await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
 			expect(skipped.decisions).toEqual([expected(0.04, "skip-plan")]);
 			const skipRecord = skipped.decisions?.[0];
-			expect(Number.isFinite(skipRecord?.latencyMs) && (skipRecord?.latencyMs ?? -1) >= 0).toBe(true);
+			expect(Number.isFinite(skipRecord?.latencyMs) && (skipRecord?.latencyMs ?? -1) >= 0).toBe(
+				true,
+			);
 			expect(skipRecord).not.toHaveProperty("error");
 			expect(JSON.stringify(skipRecord)).not.toContain(ACK);
 			expect(readSession(h.deps.stateDir, "s1")).toBeUndefined();
@@ -1804,15 +2122,42 @@ describe("Jev plan gate", () => {
 		mkdirSync(join(project, ".claude"), { recursive: true });
 		// Consent is the user's: a project layer can only narrow decisions, so the Claude user layer turns them on.
 		mkdirSync(join(root, "claude"), { recursive: true });
-		writeFileSync(join(root, "claude", "ultrathink.json"), JSON.stringify({ decisions: { enabled: true } }));
+		writeFileSync(
+			join(root, "claude", "ultrathink.json"),
+			JSON.stringify({ decisions: { enabled: true } }),
+		);
 		writeFileSync(
 			join(project, ".claude", "ultrathink.json"),
-			JSON.stringify({ decisions: { enabled: true, url: "https://evil.example/x", endpoint: "https://evil.example/y" } }),
+			JSON.stringify({
+				decisions: {
+					enabled: true,
+					url: "https://evil.example/x",
+					endpoint: "https://evil.example/y",
+				},
+			}),
 		);
-		const config = loadConfig(claudeConfigPaths(project, { XDG_CONFIG_HOME: join(root, "xdg"), CLAUDE_CONFIG_DIR: join(root, "claude") }));
-		expect(Object.keys(config.decisions).sort()).toEqual(
-			["blockingAt", "enabled", "groundedAt", "model", "planSkipBelow", "points", "provider", "shipApproveAt", "shipVetoAtOrBelow", "skillworthyAt", "teachableAutoAt", "teachableBelow", "timeoutMs", "zdr"],
+		const config = loadConfig(
+			claudeConfigPaths(project, {
+				XDG_CONFIG_HOME: join(root, "xdg"),
+				CLAUDE_CONFIG_DIR: join(root, "claude"),
+			}),
 		);
+		expect(Object.keys(config.decisions).sort()).toEqual([
+			"blockingAt",
+			"enabled",
+			"groundedAt",
+			"model",
+			"planSkipBelow",
+			"points",
+			"provider",
+			"shipApproveAt",
+			"shipVetoAtOrBelow",
+			"skillworthyAt",
+			"teachableAutoAt",
+			"teachableBelow",
+			"timeoutMs",
+			"zdr",
+		]);
 		expect(JSON.stringify(config.decisions)).not.toContain("evil.example");
 		const R = recordingFetch([JEV(0.04)]);
 		const h = jevHarness(config, R.fetch);
@@ -1826,29 +2171,33 @@ describe("Jev plan gate", () => {
 		}
 	});
 
-	test(
-		"every plan failure kind plans exactly as today and reports the kind (AC-4.11)",
-		async () => {
-			for (const failure of FAILURES) {
-				const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "plan_worthy");
-				const h = jevHarness(onConfig({ points: ["plan"], timeoutMs }), fetchImpl);
-				try {
-					const base = await runPromptSubmit({ ...input, prompt: ACK }, offDeps(h.deps));
-					const jev = await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
-					expect(jev.record?.plan).toBeDefined();
-					expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
-					expect(jev.decisions).toEqual([
-						expect.objectContaining({ point: "plan", outcome: "error", error: failure.kind, action: "fail-open", probabilities: {} }),
-					]);
-					expect(readSession(h.deps.stateDir, "s1")?.decisions).toEqual(jev.decisions);
-					expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
-				} finally {
-					h.cleanup();
-				}
+	test("every plan failure kind plans exactly as today and reports the kind (AC-4.11)", async () => {
+		for (const failure of FAILURES) {
+			const timeouts = controlledTimeouts();
+			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "plan_worthy", timeouts);
+			const h = jevHarness(onConfig({ points: ["plan"], timeoutMs }), fetchImpl);
+			try {
+				const base = await runPromptSubmit({ ...input, prompt: ACK }, offDeps(h.deps));
+				const jev = await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
+				expect(jev.record?.plan).toBeDefined();
+				expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
+				expect(jev.decisions).toEqual([
+					expect.objectContaining({
+						point: "plan",
+						outcome: "error",
+						error: failure.kind,
+						action: "fail-open",
+						probabilities: {},
+					}),
+				]);
+				expect(readSession(h.deps.stateDir, "s1")?.decisions).toEqual(jev.decisions);
+				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
+			} finally {
+				timeouts.restore();
+				h.cleanup();
 			}
-		},
-		30_000,
-	);
+		}
+	}, 30_000);
 
 	test("a caller abort during the plan gate is re-thrown as an AbortError before anything runs (AC-5.7)", async () => {
 		const controller = new AbortController();
@@ -1859,6 +2208,7 @@ describe("Jev plan gate", () => {
 			try {
 				await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
 			} catch (error) {
+				// reason: the error is captured and asserted by the caller
 				caught = error;
 			}
 			expect((caught as Error | undefined)?.name).toBe("AbortError");
@@ -1878,24 +2228,61 @@ describe("Jev knowledge and blocking points through the hook", () => {
 	const usedReader: KnowledgeReader = {
 		start: () => ({
 			read: async () => ({
-				lookup: { outcome: "used", repo: "acme/widgets", namespaceId: "ns1", docs: DOCS, chars: DIGEST.length, ms: 1 },
+				lookup: {
+					outcome: "used",
+					repo: "acme/widgets",
+					namespaceId: "ns1",
+					docs: DOCS,
+					chars: DIGEST.length,
+					ms: 1,
+				},
 				digest: DIGEST,
 			}),
-			close: () => {},
+			close: () => {
+				// reason: the fixture holds no resource to release
+			},
 		}),
 	};
 	/** Two claims the knowledge base settles. */
 	const SETTLED = JSON.stringify({
 		questions: [
-			{ question: "How are sessions signed?", header: "Auth", why: "w", options: [], blocking: false, knowledge: { answer: "JWTs signed with RS256", source: "docs/auth.md" } },
-			{ question: "Where do widgets persist?", header: "Storage", why: "w", options: [], blocking: false, knowledge: { answer: "In the widgets table", source: "docs/storage.md" } },
+			{
+				question: "How are sessions signed?",
+				header: "Auth",
+				why: "w",
+				options: [],
+				blocking: false,
+				knowledge: { answer: "JWTs signed with RS256", source: "docs/auth.md" },
+			},
+			{
+				question: "Where do widgets persist?",
+				header: "Storage",
+				why: "w",
+				options: [],
+				blocking: false,
+				knowledge: { answer: "In the widgets table", source: "docs/storage.md" },
+			},
 		],
 	});
 	/** Two open questions the clarifier did not mark blocking. */
 	const OPEN = JSON.stringify({
 		questions: [
-			{ question: "Which OAuth scopes?", header: "Scopes", why: "w", options: [{ label: "read:user" }, { label: "repo" }], default: "read:user", blocking: false },
-			{ question: "Where are tokens stored?", header: "Tokens", why: "w", options: [{ label: "Cookie" }, { label: "Local storage" }], default: "Cookie", blocking: false },
+			{
+				question: "Which OAuth scopes?",
+				header: "Scopes",
+				why: "w",
+				options: [{ label: "read:user" }, { label: "repo" }],
+				default: "read:user",
+				blocking: false,
+			},
+			{
+				question: "Where are tokens stored?",
+				header: "Tokens",
+				why: "w",
+				options: [{ label: "Cookie" }, { label: "Local storage" }],
+				default: "Cookie",
+				blocking: false,
+			},
 		],
 	});
 	/** smartComplete, with `reply` as the clarifier's answer. */
@@ -1904,57 +2291,67 @@ describe("Jev knowledge and blocking points through the hook", () => {
 		return async (system, user) => (user.startsWith("<spec>") ? reply : complete(system, user));
 	}
 
-	test(
-		"every knowledge failure kind keeps both claims settled and reports the kind (AC-4.13)",
-		async () => {
-			for (const failure of FAILURES) {
-				const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "supported");
-				const h = jevHarness(onConfig({ points: ["knowledge"], timeoutMs }), fetchImpl, { knowledge: usedReader });
-				const deps = { ...h.deps, complete: clarifying(SETTLED) };
-				try {
-					const base = await runPromptSubmit({ ...input, prompt: NEW_WORK }, offDeps(deps));
-					expect(base.record?.clarifications?.filter((c) => c.source === "knowledge")).toHaveLength(2);
-					const jev = await runPromptSubmit({ ...input, prompt: NEW_WORK }, deps);
-					expect(jev.record?.clarifications).toEqual(base.record?.clarifications);
-					expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
-					expect(jev.decisions).toHaveLength(2);
-					for (const record of jev.decisions ?? []) {
-						expect(record).toMatchObject({ point: "knowledge", outcome: "error", error: failure.kind, action: "fail-open" });
-					}
-					expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
-				} finally {
-					h.cleanup();
+	test("every knowledge failure kind keeps both claims settled and reports the kind (AC-4.13)", async () => {
+		for (const failure of FAILURES) {
+			const timeouts = controlledTimeouts();
+			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "supported", timeouts);
+			const h = jevHarness(onConfig({ points: ["knowledge"], timeoutMs }), fetchImpl, {
+				knowledge: usedReader,
+			});
+			const deps = { ...h.deps, complete: clarifying(SETTLED) };
+			try {
+				const base = await runPromptSubmit({ ...input, prompt: NEW_WORK }, offDeps(deps));
+				expect(base.record?.clarifications?.filter((c) => c.source === "knowledge")).toHaveLength(
+					2,
+				);
+				const jev = await runPromptSubmit({ ...input, prompt: NEW_WORK }, deps);
+				expect(jev.record?.clarifications).toEqual(base.record?.clarifications);
+				expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
+				expect(jev.decisions).toHaveLength(2);
+				for (const record of jev.decisions ?? []) {
+					expect(record).toMatchObject({
+						point: "knowledge",
+						outcome: "error",
+						error: failure.kind,
+						action: "fail-open",
+					});
 				}
+				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
+			} finally {
+				timeouts.restore();
+				h.cleanup();
 			}
-		},
-		30_000,
-	);
+		}
+	}, 30_000);
 
-	test(
-		"every blocking failure kind keeps both questions non-blocking and reports the kind (AC-4.14)",
-		async () => {
-			for (const failure of FAILURES) {
-				const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "risky");
-				const h = jevHarness(onConfig({ points: ["blocking"], timeoutMs }), fetchImpl);
-				const deps = { ...h.deps, complete: clarifying(OPEN) };
-				try {
-					const base = await runPromptSubmit({ ...input, prompt: NEW_WORK }, offDeps(deps));
-					expect(base.record?.clarifications?.map((c) => c.blocking)).toEqual([false, false]);
-					const jev = await runPromptSubmit({ ...input, prompt: NEW_WORK }, deps);
-					expect(jev.record?.clarifications).toEqual(base.record?.clarifications);
-					expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
-					expect(jev.decisions).toHaveLength(2);
-					for (const record of jev.decisions ?? []) {
-						expect(record).toMatchObject({ point: "blocking", outcome: "error", error: failure.kind, action: "fail-open" });
-					}
-					expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
-				} finally {
-					h.cleanup();
+	test("every blocking failure kind keeps both questions non-blocking and reports the kind (AC-4.14)", async () => {
+		for (const failure of FAILURES) {
+			const timeouts = controlledTimeouts();
+			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "risky", timeouts);
+			const h = jevHarness(onConfig({ points: ["blocking"], timeoutMs }), fetchImpl);
+			const deps = { ...h.deps, complete: clarifying(OPEN) };
+			try {
+				const base = await runPromptSubmit({ ...input, prompt: NEW_WORK }, offDeps(deps));
+				expect(base.record?.clarifications?.map((c) => c.blocking)).toEqual([false, false]);
+				const jev = await runPromptSubmit({ ...input, prompt: NEW_WORK }, deps);
+				expect(jev.record?.clarifications).toEqual(base.record?.clarifications);
+				expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
+				expect(jev.decisions).toHaveLength(2);
+				for (const record of jev.decisions ?? []) {
+					expect(record).toMatchObject({
+						point: "blocking",
+						outcome: "error",
+						error: failure.kind,
+						action: "fail-open",
+					});
 				}
+				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
+			} finally {
+				timeouts.restore();
+				h.cleanup();
 			}
-		},
-		30_000,
-	);
+		}
+	}, 30_000);
 });
 
 describe("lessons and RAGFlow documents in the plan", () => {
@@ -1970,10 +2367,22 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		createdAt: "2026-01-01T00:00:00.000Z",
 		source: "local",
 	};
-	const recalled: RecallOutcome = { status: "used", lessons: [lesson], source: "local", chars: 200, ms: 5 };
+	const recalled: RecallOutcome = {
+		status: "used",
+		lessons: [lesson],
+		source: "local",
+		chars: 200,
+		ms: 5,
+	};
 	const grounded: GroundOutcome = {
 		status: "used",
-		chunks: [{ id: "c1", content: "MARKER_D1 widgets are stored in the widgets table", documentName: "storage.md" }],
+		chunks: [
+			{
+				id: "c1",
+				content: "MARKER_D1 widgets are stored in the widgets table",
+				documentName: "storage.md",
+			},
+		],
 		chars: 120,
 		ms: 7,
 		datasets: 1,
@@ -2027,7 +2436,12 @@ describe("lessons and RAGFlow documents in the plan", () => {
 			expect(result.output?.systemMessage).toContain("Docs · 1 excerpt (RAGFlow)");
 
 			// The record keeps the lookups, never their text, and reads back from disk.
-			expect(result.record?.lessons).toMatchObject({ outcome: "used", count: 1, ids: ["l1"], source: "local" });
+			expect(result.record?.lessons).toMatchObject({
+				outcome: "used",
+				count: 1,
+				ids: ["l1"],
+				source: "local",
+			});
 			expect(result.record?.docs).toMatchObject({ status: "used", count: 1, datasets: 1 });
 			const stored = readSession(deps.stateDir, "s1");
 			expect(stored?.lessons).toEqual(result.record?.lessons);
@@ -2059,7 +2473,11 @@ describe("lessons and RAGFlow documents in the plan", () => {
 			expect(result.output?.systemMessage).toContain("Skills · 1 recalled");
 
 			// The record keeps the lookup, never skill text, and reads back from disk.
-			expect(result.record?.skills).toMatchObject({ outcome: "used", count: 1, names: ["lesson-bun-test"] });
+			expect(result.record?.skills).toMatchObject({
+				outcome: "used",
+				count: 1,
+				names: ["lesson-bun-test"],
+			});
 			const stored = readSession(deps.stateDir, "s1");
 			expect(stored?.skills).toEqual(result.record?.skills);
 			expect(JSON.stringify(stored)).not.toContain("MARKER_S1");
@@ -2069,7 +2487,11 @@ describe("lessons and RAGFlow documents in the plan", () => {
 	});
 
 	test("off, none and error lookups leave the planner text exactly as without them", async () => {
-		const { deps, cleanup } = baseDeps({ config: echoConfig(), complete: smartComplete(), clarify: async () => [] });
+		const { deps, cleanup } = baseDeps({
+			config: echoConfig(),
+			complete: smartComplete(),
+			clarify: async () => [],
+		});
 		try {
 			const base = await runPromptSubmit(input, deps);
 			const quiet: Array<[RecallOutcome, GroundOutcome]> = [
@@ -2082,12 +2504,23 @@ describe("lessons and RAGFlow documents in the plan", () => {
 					{ status: "none", chunks: [], chars: 0, ms: 1, datasets: 1 },
 				],
 				[
-					{ status: "error", lessons: [], source: "none", chars: 0, ms: 1, reason: "hindsight unreachable" },
+					{
+						status: "error",
+						lessons: [],
+						source: "none",
+						chars: 0,
+						ms: 1,
+						reason: "hindsight unreachable",
+					},
 					{ status: "error", chunks: [], chars: 0, ms: 1, datasets: 0, reason: "auth" },
 				],
 			];
 			for (const [lessons, docs] of quiet) {
-				const result = await runPromptSubmit(input, { ...deps, recall: async () => lessons, ground: async () => docs });
+				const result = await runPromptSubmit(input, {
+					...deps,
+					recall: async () => lessons,
+					ground: async () => docs,
+				});
 				expect(plannedContext(result)).toEqual(plannedContext(base));
 				expect(contextOf(result)).not.toContain("## Lessons from earlier work");
 				expect(contextOf(result)).not.toContain("## Documents (RAGFlow)");
@@ -2111,7 +2544,12 @@ describe("lessons and RAGFlow documents in the plan", () => {
 
 	test("with nothing configured only the local lessons and skills lookups run and nothing is contacted", async () => {
 		const R = recordingFetch([() => new Response("")]);
-		const { deps, cleanup } = baseDeps({ config: echoConfig(), complete: smartComplete(), clarify: async () => [], decisionsDeps: { env: {}, storePath: tempStore(), fetch: R.fetch } });
+		const { deps, cleanup } = baseDeps({
+			config: echoConfig(),
+			complete: smartComplete(),
+			clarify: async () => [],
+			decisionsDeps: { env: {}, storePath: tempStore(), fetch: R.fetch },
+		});
 		try {
 			const result = await runPromptSubmit(input, deps);
 			expect(result.record?.lessons).toMatchObject({ outcome: "none", count: 0 });
@@ -2126,7 +2564,11 @@ describe("lessons and RAGFlow documents in the plan", () => {
 	});
 
 	test("a throwing seam fails open: the plan is the same and the record names an error, not the message", async () => {
-		const { deps, cleanup } = baseDeps({ config: echoConfig(), complete: smartComplete(), clarify: async () => [] });
+		const { deps, cleanup } = baseDeps({
+			config: echoConfig(),
+			complete: smartComplete(),
+			clarify: async () => [],
+		});
 		try {
 			const base = await runPromptSubmit(input, deps);
 			const result = await runPromptSubmit(input, {
@@ -2153,12 +2595,21 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const config = echoConfig();
 		config.teach.timeoutMs = 20;
 		config.ragflow.timeoutMs = 20;
-		const { deps, cleanup } = baseDeps({ config, complete: smartComplete(), clarify: async () => [] });
+		const manual = manualTimers();
+		const { deps, cleanup } = baseDeps({
+			config,
+			complete: smartComplete(),
+			clarify: async () => [],
+			timers: manual.timers,
+		});
 		try {
 			const base = await runPromptSubmit(input, deps);
-			const started = Date.now();
-			const hung = await runPromptSubmit(input, { ...deps, recall: never, ground: never });
-			expect(Date.now() - started).toBeLessThan(2_000);
+			// A lookup aborts at its 20 ms timeout and its deadline falls 150 ms later. The hung seams ignore the abort,
+			// so only each deadline ends its wait.
+			const hungRun = runPromptSubmit(input, { ...deps, recall: never, ground: never });
+			await manual.fire(170);
+			await manual.fire(170);
+			const hung = await hungRun;
 			expect(plannedContext(hung)).toEqual(plannedContext(base));
 			expect(hung.record?.lessons).toMatchObject({ outcome: "error", reason: "timeout" });
 			expect(hung.record?.docs).toMatchObject({ status: "error", reason: "timeout" });
@@ -2170,7 +2621,15 @@ describe("lessons and RAGFlow documents in the plan", () => {
 				signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
 				return promise;
 			};
-			const aborted = await runPromptSubmit(input, { ...deps, recall: ({ signal }) => abortable(signal), ground: ({ signal }) => abortable(signal) });
+			const abortingRun = runPromptSubmit(input, {
+				...deps,
+				recall: ({ signal }) => abortable(signal),
+				ground: ({ signal }) => abortable(signal),
+			});
+			// Each seam rejects on its lookup's abort, which fires at the 20 ms timeout.
+			await manual.fire(20);
+			await manual.fire(20);
+			const aborted = await abortingRun;
 			expect(signals).toHaveLength(2);
 			expect(signals.every((signal) => signal.aborted)).toBe(true);
 			expect(plannedContext(aborted)).toEqual(plannedContext(base));
@@ -2256,7 +2715,16 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		});
 		try {
 			const skilled = await runPromptSubmit(
-				{ ...input, prompt: "fix the login redirect", skill: { name: "gsd-quick", instruction: "fix the login redirect", summary: "Fast atomic task.", source: "omp" } },
+				{
+					...input,
+					prompt: "fix the login redirect",
+					skill: {
+						name: "gsd-quick",
+						instruction: "fix the login redirect",
+						summary: "Fast atomic task.",
+						source: "omp",
+					},
+				},
 				deps,
 			);
 			expect(contextOf(skilled)).toContain("MARKER_L1");
@@ -2285,10 +2753,20 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const h = jevHarness(onConfig(), R.fetch, seams);
 		try {
 			expect((await runPromptSubmit({ ...input, prompt: ACK }, h.deps)).skipped).toBe("jev-skip");
-			expect((await runPromptSubmit({ ...input, prompt: "thanks" }, offDeps({ ...h.deps, config: trackedConfig() }))).skipped).toBe("skip");
+			expect(
+				(
+					await runPromptSubmit(
+						{ ...input, prompt: "thanks" },
+						offDeps({ ...h.deps, config: trackedConfig() }),
+					)
+				).skipped,
+			).toBe("skip");
 			expect(calls).toEqual({ recall: 0, ground: 0 });
 			// The same seams do run for a prompt that is planned.
-			const planned = await runPromptSubmit({ ...input, prompt: NEW_WORK }, offDeps({ ...h.deps, config: trackedConfig() }));
+			const planned = await runPromptSubmit(
+				{ ...input, prompt: NEW_WORK },
+				offDeps({ ...h.deps, config: trackedConfig() }),
+			);
 			expect(planned.record).toBeDefined();
 			expect(calls).toEqual({ recall: 1, ground: 1 });
 		} finally {
@@ -2337,7 +2815,12 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		config.teach.enabled = true;
 		config.ragflow.enabled = true;
 		config.ragflow.ground = true;
-		const { deps, cleanup } = baseDeps({ config, complete: smartComplete(), clarify: async () => [], decisionsDeps: { env: {}, storePath: tempStore(), fetch: R.fetch } });
+		const { deps, cleanup } = baseDeps({
+			config,
+			complete: smartComplete(),
+			clarify: async () => [],
+			decisionsDeps: { env: {}, storePath: tempStore(), fetch: R.fetch },
+		});
 		try {
 			const result = await runPromptSubmit(input, deps);
 			expect(result.record?.lessons).toMatchObject({ outcome: "none", count: 0, source: "none" });
@@ -2346,7 +2829,10 @@ describe("lessons and RAGFlow documents in the plan", () => {
 			expect(R.calls).toHaveLength(0);
 
 			// The kill switch beats the config.
-			const killed = await runPromptSubmit(input, { ...deps, decisionsDeps: { env: { ULTRATHINK_TEACH: "0" }, storePath: tempStore(), fetch: R.fetch } });
+			const killed = await runPromptSubmit(input, {
+				...deps,
+				decisionsDeps: { env: { ULTRATHINK_TEACH: "0" }, storePath: tempStore(), fetch: R.fetch },
+			});
 			expect(killed.record?.lessons?.outcome).toBe("off");
 			expect(R.calls).toHaveLength(0);
 		} finally {
@@ -2372,11 +2858,23 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 	const STAGE = { uplift: 0, graph: 1, fill: 1, clarify: 2 } as const;
 	type Phase = keyof typeof STAGE;
 	const phaseOf = (user: string): Phase =>
-		user.includes("<user_request>") ? "uplift" : user.startsWith("<spec>") ? "clarify" : user.includes("current_node") ? "fill" : "graph";
-	const noneKnowledge: KnowledgeResult = { lookup: { outcome: "none", docs: [], chars: 0, ms: 1 }, digest: "" };
+		user.includes("<user_request>")
+			? "uplift"
+			: user.startsWith("<spec>")
+				? "clarify"
+				: user.includes("current_node")
+					? "fill"
+					: "graph";
+	const noneKnowledge: KnowledgeResult = {
+		lookup: { outcome: "none", docs: [], chars: 0, ms: 1 },
+		digest: "",
+	};
 
 	/** Runs a plan whose seams record every completer phase and every write, so a test sees what started after cancellation. */
-	async function cancelledRun(overrides: (controller: AbortController) => Partial<HookDeps>, onPhase?: (phase: Phase, controller: AbortController) => boolean) {
+	async function cancelledRun(
+		overrides: (controller: AbortController) => Partial<HookDeps>,
+		onPhase?: (phase: Phase, controller: AbortController) => boolean,
+	) {
 		const controller = new AbortController();
 		const phases: Phase[] = [];
 		const events: ProgressEvent[] = [];
@@ -2411,14 +2909,23 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				tracked,
 				events,
 				aborted: controller.signal.aborted,
-				written: existsSync(sessionPath(deps.stateDir, "s1")) || existsSync(specFile) || existsSync(join(deps.stateDir, "last.json")),
+				written:
+					existsSync(sessionPath(deps.stateDir, "s1")) ||
+					existsSync(specFile) ||
+					existsSync(join(deps.stateDir, "last.json")),
 			};
 		} finally {
 			cleanup();
 		}
 	}
 
-	const ENDED: ProgressEvent = { type: "end", at: 1_000, outcome: "skipped", detail: "aborted", modelResolution: RESOLUTION };
+	const ENDED: ProgressEvent = {
+		type: "end",
+		at: 1_000,
+		outcome: "skipped",
+		detail: "aborted",
+		modelResolution: RESOLUTION,
+	};
 
 	test("a flight cancelled before it starts sends no gate request and starts no lookup, stage, tracker call or write", async () => {
 		const R = recordingFetch([JEV(0.97)]);
@@ -2466,9 +2973,17 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				);
 				const label = { at, honours };
 				expect({ ...label, name: run.name }).toEqual({ ...label, name: "AbortError" });
-				expect({ ...label, later: run.phases.filter((phase) => STAGE[phase] > STAGE[at]) }).toEqual({ ...label, later: [] });
-				expect({ ...label, tracked: run.tracked, written: run.written }).toEqual({ ...label, tracked: 0, written: false });
-				expect(run.events.some((event) => event.type === "stage" && event.stage === "state")).toBe(false);
+				expect({ ...label, later: run.phases.filter((phase) => STAGE[phase] > STAGE[at]) }).toEqual(
+					{ ...label, later: [] },
+				);
+				expect({ ...label, tracked: run.tracked, written: run.written }).toEqual({
+					...label,
+					tracked: 0,
+					written: false,
+				});
+				expect(run.events.some((event) => event.type === "stage" && event.stage === "state")).toBe(
+					false,
+				);
 				expect(run.events.at(-1)).toEqual(ENDED);
 			}
 		}
@@ -2476,11 +2991,27 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 
 	for (const at of ["uplift", "graph", "fill", "clarify"] as const) {
 		test(`a provider AbortError during ${at} cancels planning while the caller signal stays live`, async () => {
-			const run = await cancelledRun(() => ({}), (phase) => phase === at);
-			const phases: Phase[] = ["uplift", "graph", "fill", "fill", "fill", "fill", "fill", "clarify"];
+			const run = await cancelledRun(
+				() => ({}),
+				(phase) => phase === at,
+			);
+			const phases: Phase[] = [
+				"uplift",
+				"graph",
+				"fill",
+				"fill",
+				"fill",
+				"fill",
+				"fill",
+				"clarify",
+			];
 			expect(run.phases).toEqual(phases.slice(0, phases.indexOf(at) + 1));
 			expect(run).toMatchObject({ name: "AbortError", aborted: false, tracked: 0, written: false });
-			expect(run.events.some((event) => event.type === "stage" && ["plan", "track", "state"].includes(event.stage))).toBe(false);
+			expect(
+				run.events.some(
+					(event) => event.type === "stage" && ["plan", "track", "state"].includes(event.stage),
+				),
+			).toBe(false);
 			expect(run.events.at(-1)).toEqual(ENDED);
 		});
 	}
@@ -2527,17 +3058,29 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 							reads++;
 							return noneKnowledge;
 						},
-						close: () => { closed++; },
+						close: () => {
+							closed++;
+						},
 					};
 				},
 			},
 		});
 		try {
-			const caught = await runPromptSubmit(input, deps).then(() => undefined, (error: unknown) => error);
+			const caught = await runPromptSubmit(input, deps).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
 			expect(caught instanceof Error ? caught.name : caught).toBe("AbortError");
 			expect(controller.signal.aborted).toBe(false);
-			expect(Object.keys(signals).sort()).toEqual(["brief", "ground", "knowledge", "recall", "skills"]);
-			for (const [name, signal] of Object.entries(signals)) expect({ name, aborted: signal?.aborted }).toEqual({ name, aborted: true });
+			expect(Object.keys(signals).sort()).toEqual([
+				"brief",
+				"ground",
+				"knowledge",
+				"recall",
+				"skills",
+			]);
+			for (const [name, signal] of Object.entries(signals))
+				expect({ name, aborted: signal?.aborted }).toEqual({ name, aborted: true });
 			expect({ reads, closed }).toEqual({ reads: 0, closed: 1 });
 			expect(existsSync(deps.stateDir)).toBe(false);
 		} finally {
@@ -2584,7 +3127,12 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 					if (id === "n1") return first.promise;
 					if (id === "n2") {
 						siblingSignal = signal;
-						if (honours) signal?.addEventListener("abort", () => sibling.reject(new DOMException("aborted", "AbortError")), { once: true });
+						if (honours)
+							signal?.addEventListener(
+								"abort",
+								() => sibling.reject(new DOMException("aborted", "AbortError")),
+								{ once: true },
+							);
 						siblingStarted.resolve();
 						return sibling.promise;
 					}
@@ -2596,14 +3144,18 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				},
 			});
 			try {
-				const running = runPromptSubmit(input, deps).then(() => undefined, (error: unknown) => error);
+				const running = runPromptSubmit(input, deps).then(
+					() => undefined,
+					(error: unknown) => error,
+				);
 				await siblingStarted.promise;
 				expect(siblingSignal?.aborted).toBe(false);
 				first.reject(new DOMException("provider cancelled", "AbortError"));
 				const caught = await running;
 				// A late success from an ignoring provider must not release its worker to start n3.
 				sibling.resolve("<node><rationale>step</rationale><conclusion>late</conclusion></node>");
-				await new Promise<void>((resolve) => setImmediate(resolve));
+				// The late settlement is promise-driven: a bounded microtask flush delivers it, no macrotask needed.
+				for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
 				expect(caught instanceof Error ? caught.name : caught).toBe("AbortError");
 				expect(controller.signal.aborted).toBe(false);
 				expect(siblingSignal?.aborted).toBe(true);
@@ -2622,7 +3174,11 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 	}
 
 	test("a cancellation seen by the brief, a lookup, the knowledge base or the tracker ends the flight at the next boundary", async () => {
-		const cases: Array<{ name: string; seams: (controller: AbortController) => Partial<HookDeps>; later: Phase[] }> = [
+		const cases: Array<{
+			name: string;
+			seams: (controller: AbortController) => Partial<HookDeps>;
+			later: Phase[];
+		}> = [
 			{
 				name: "brief",
 				seams: (controller) => ({
@@ -2652,7 +3208,9 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 								controller.abort();
 								return noneKnowledge;
 							},
-							close: () => {},
+							close: () => {
+								// reason: the fixture holds no resource to release
+							},
 						}),
 					},
 				}),
@@ -2671,8 +3229,15 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 		];
 		for (const { name, seams, later } of cases) {
 			const run = await cancelledRun(seams);
-			expect({ name, aborted: run.aborted, error: run.name }).toEqual({ name, aborted: true, error: "AbortError" });
-			expect({ name, later: run.phases.filter((phase) => later.includes(phase)) }).toEqual({ name, later: [] });
+			expect({ name, aborted: run.aborted, error: run.name }).toEqual({
+				name,
+				aborted: true,
+				error: "AbortError",
+			});
+			expect({ name, later: run.phases.filter((phase) => later.includes(phase)) }).toEqual({
+				name,
+				later: [],
+			});
 			expect({ name, written: run.written }).toEqual({ name, written: false });
 			expect(run.events.at(-1)).toEqual(ENDED);
 		}
@@ -2694,7 +3259,8 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			},
 			// The caller aborts just as the plan starts waiting for the lookups (the brief has settled).
 			progress: (event) => {
-				if (event.type === "stage" && event.stage === "brief" && event.phase === "end") controller.abort();
+				if (event.type === "stage" && event.stage === "brief" && event.phase === "end")
+					controller.abort();
 			},
 		});
 		try {
@@ -2729,7 +3295,12 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			knowledge: {
 				start: ({ signal }) => {
 					seen.knowledge = signal;
-					return { read: async () => noneKnowledge, close: () => {} };
+					return {
+						read: async () => noneKnowledge,
+						close: () => {
+							// reason: the fixture holds no resource to release
+						},
+					};
 				},
 			},
 			track: async ({ signal }) => {
@@ -2742,9 +3313,11 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			expect(result.record).toBeDefined();
 			const names = ["brief", "clarify", "fill", "graph", "knowledge", "track", "uplift"];
 			expect(Object.keys(seen).sort()).toEqual(names);
-			for (const name of names) expect({ name, aborted: seen[name]?.aborted }).toEqual({ name, aborted: false });
+			for (const name of names)
+				expect({ name, aborted: seen[name]?.aborted }).toEqual({ name, aborted: false });
 			controller.abort();
-			for (const name of names) expect({ name, aborted: seen[name]?.aborted }).toEqual({ name, aborted: true });
+			for (const name of names)
+				expect({ name, aborted: seen[name]?.aborted }).toEqual({ name, aborted: true });
 		} finally {
 			cleanup();
 		}
@@ -2752,22 +3325,33 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 
 	test("the hook budget alone is not cancellation: it still delivers the plan built so far", async () => {
 		const config = trackedConfig();
-		// Real timer: the budget is a platform setTimeout inside runPromptSubmit with no clock seam; 30 ms keeps it short.
 		config.claude = { ...config.claude, budgetMs: 30 };
 		const complete = smartComplete();
+		const manual = manualTimers();
+		const graphStarted = Promise.withResolvers<void>();
 		const { deps, cleanup } = baseDeps({
 			config,
+			timers: manual.timers,
 			signal: new AbortController().signal,
 			modelResolution: RESOLUTION,
 			clarify: async () => [],
 			complete: async (system, user, signal) => {
 				if (phaseOf(user) !== "graph") return complete(system, user);
+				graphStarted.resolve();
 				// The graph call outlives the budget and honours its signal.
-				return new Promise<string>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+				return new Promise<string>((_resolve, reject) =>
+					signal?.addEventListener("abort", () =>
+						reject(new DOMException("aborted", "AbortError")),
+					),
+				);
 			},
 		});
 		try {
-			const result = await runPromptSubmit(input, deps);
+			const running = runPromptSubmit(input, deps);
+			// The budget fires only once the graph call is in flight, so only the budget can end it.
+			await graphStarted.promise;
+			await manual.fire(30);
+			const result = await running;
 			expect(result.skipped).toBeUndefined();
 			expect(result.output).toBeDefined();
 			expect(result.record?.graph).toBeUndefined();
@@ -2784,13 +3368,17 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			const controller = new AbortController();
 			const complete = smartComplete();
 			const phases: Phase[] = [];
+			const manual = manualTimers();
+			const reached = Promise.withResolvers<void>();
 			const { deps, cleanup } = baseDeps({
 				config,
 				signal: controller.signal,
+				timers: manual.timers,
 				complete: async (system, user, signal) => {
 					const phase = phaseOf(user);
 					phases.push(phase);
 					if (phase !== at) return complete(system, user);
+					reached.resolve();
 					return new Promise<string>((_resolve, reject) => {
 						const abort = (): void => reject(new DOMException("budget expired", "AbortError"));
 						if (signal?.aborted) abort();
@@ -2799,7 +3387,11 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				},
 			});
 			try {
-				const result = await runPromptSubmit(input, deps);
+				const running = runPromptSubmit(input, deps);
+				// The budget fires once the phase under test is in flight, so only the budget can end it.
+				await reached.promise;
+				await manual.fire(30);
+				const result = await running;
 				expect(controller.signal.aborted).toBe(false);
 				expect(phases.at(-1)).toBe(at);
 				if (at === "uplift") {
@@ -2831,15 +3423,26 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			const result = await runPromptSubmit(input, deps);
 			expect(result.record?.modelResolution).toEqual(RESOLUTION);
 			expect(readSession(deps.stateDir, "s1")?.modelResolution).toEqual(RESOLUTION);
-			expect(events[0]).toMatchObject({ type: "begin", engine: "claude:sonnet", modelResolution: RESOLUTION });
-			expect(events.at(-1)).toEqual({ type: "end", at: 1_000, outcome: "planned", modelResolution: RESOLUTION });
+			expect(events[0]).toMatchObject({
+				type: "begin",
+				engine: "claude:sonnet",
+				modelResolution: RESOLUTION,
+			});
+			expect(events.at(-1)).toEqual({
+				type: "end",
+				at: 1_000,
+				outcome: "planned",
+				modelResolution: RESOLUTION,
+			});
 		} finally {
 			cleanup();
 		}
 
 		const trivial = baseDeps({ modelResolution: RESOLUTION });
 		try {
-			expect(await runPromptSubmit({ ...input, prompt: "ok" }, trivial.deps)).toEqual({ skipped: "skip" });
+			expect(await runPromptSubmit({ ...input, prompt: "ok" }, trivial.deps)).toEqual({
+				skipped: "skip",
+			});
 			expect(existsSync(sessionPath(trivial.deps.stateDir, "s1"))).toBe(false);
 		} finally {
 			trivial.cleanup();
@@ -2860,13 +3463,23 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 });
 
 describe("scheduled session retention", () => {
-	/** A record 90 days old, written straight to disk so its mtime (not a fake clock) is what ages it. */
+	/** The fixed clock the sweep reads through setSystemTime; the seeded record ages relative to it. */
+	const FIXED_NOW = Date.UTC(2026, 9, 25);
+
+	/** A record 90 days before FIXED_NOW, written straight to disk: its mtime, set from the fixed clock, ages it. */
 	function seedOldSession(stateDir: string): string {
 		const sessions = join(stateDir, "sessions");
 		mkdirSync(sessions, { recursive: true });
 		const path = join(sessions, "old-session.json");
-		writeFileSync(path, JSON.stringify({ sessionId: "old-session", at: 0, result: { xml: "", original: "old", root: "", source: "llm" } }));
-		const aged = (Date.now() - 90 * 86_400_000) / 1000;
+		writeFileSync(
+			path,
+			JSON.stringify({
+				sessionId: "old-session",
+				at: 0,
+				result: { xml: "", original: "old", root: "", source: "llm" },
+			}),
+		);
+		const aged = (FIXED_NOW - 90 * 86_400_000) / 1000;
 		utimesSync(path, aged, aged);
 		return path;
 	}
@@ -2876,12 +3489,14 @@ describe("scheduled session retention", () => {
 		config.state.retentionDays = 30;
 		const { deps, cleanup } = baseDeps({ config });
 		try {
+			setSystemTime(FIXED_NOW);
 			const old = seedOldSession(deps.stateDir);
 			const result = await runPromptSubmit(input, deps);
 			expect(result.record).toBeDefined();
 			expect(existsSync(old)).toBe(false);
 			expect(readSession(deps.stateDir, "s1")).toBeDefined();
 		} finally {
+			setSystemTime();
 			cleanup();
 		}
 	});

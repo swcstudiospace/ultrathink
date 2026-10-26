@@ -2,7 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { PhaseRecord, Run, Store } from "../store/store.ts";
 import { fsyncDirectory } from "./durable.ts";
@@ -69,7 +77,7 @@ function readPendingDecision(store: Store, runId: string): PendingDecision | nul
 function renderPhaseRow(phase: PhaseRecord): string {
 	const artifact =
 		phase.status === "complete" ? `[artifact](${encodeURIComponent(phase.phase)}.md)` : "";
-	return `| ${oneLine(phase.phase).replace(/\|/g, "\\|")} | ${phase.attempt} | ${phase.status} | ${artifact} |`;
+	return `| ${oneLine(phase.phase).replace(/\\/g, "\\\\").replace(/\|/g, "\\|")} | ${phase.attempt} | ${phase.status} | ${artifact} |`;
 }
 
 function renderDecision(decision: PendingDecision | null): string[] {
@@ -145,7 +153,11 @@ export function writeRunState(input: { store: Store; runId: string; artifactDir:
 }
 
 /** Mirrors every run owned by `ownerId` (newest first, capped) and returns how many were written. */
-export function mirrorAllRuns(input: { store: Store; artifactDir: string; ownerId: string }): number {
+export function mirrorAllRuns(input: {
+	store: Store;
+	artifactDir: string;
+	ownerId: string;
+}): number {
 	const { store, artifactDir, ownerId } = input;
 	const runs = store.listRunsForOwner(ownerId, MIRROR_RUN_LIMIT);
 	for (const run of runs) {

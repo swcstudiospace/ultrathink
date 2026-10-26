@@ -11,7 +11,12 @@
  */
 import { fileURLToPath } from "node:url";
 import { isChildInvocation } from "../src/claude/complete.ts";
-import { defaultStateDir, readSession, type SessionRecord, sessionRecordPath } from "../src/claude/state.ts";
+import {
+	defaultStateDir,
+	readSession,
+	type SessionRecord,
+	sessionRecordPath,
+} from "../src/claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../src/config.ts";
 import { detectHost } from "../src/host/detect.ts";
 import { isSubagentEnvelope, parseEnvelope } from "../src/host/envelope.ts";
@@ -46,7 +51,12 @@ export function observeStop(
 		if (typeof input.transcriptPath !== "string" || !input.transcriptPath) return false;
 		const env = deps.env ?? process.env;
 		const host = detectHost(env);
-		const ctx = (deps.teachContext ?? teachContext)({ host, cwd: input.cwd, env, sessionId: input.sessionId });
+		const ctx = (deps.teachContext ?? teachContext)({
+			host,
+			cwd: input.cwd,
+			env,
+			sessionId: input.sessionId,
+		});
 		if (!teachEnabled(ctx) || ctx.config.teach.capture === "explicit") return false;
 		const digest = (deps.digest ?? digestFromClaudeTranscript)(input.transcriptPath, {
 			host,
@@ -55,7 +65,12 @@ export function observeStop(
 			outcome: "completed",
 		});
 		if (!digest) return false;
-		return (deps.spawn ?? spawnObserveDetached)(digest, { repoRoot: deps.repoRoot ?? ROOT, env, stateDir: ctx.stateDir, host }).spawned;
+		return (deps.spawn ?? spawnObserveDetached)(digest, {
+			repoRoot: deps.repoRoot ?? ROOT,
+			env,
+			stateDir: ctx.stateDir,
+			host,
+		}).spawned;
 	} catch {
 		return false;
 	}
@@ -73,8 +88,15 @@ export function runStop(stdin: string, deps: StopDeps = {}): string | undefined 
 	const raw = parseEnvelope(stdin);
 	// parseEnvelope maps Grok camelCase (sessionId, stopHookActive, subagentType) onto the snake_case keys.
 	if (isSubagentEnvelope(raw)) return undefined;
-	const input = raw as { session_id?: string; stop_hook_active?: boolean; cwd?: string; reason?: string; transcript_path?: unknown };
-	if (input.stop_hook_active || typeof input.session_id !== "string" || !input.session_id) return undefined;
+	const input = raw as {
+		session_id?: string;
+		stop_hook_active?: boolean;
+		cwd?: string;
+		reason?: string;
+		transcript_path?: unknown;
+	};
+	if (input.stop_hook_active || typeof input.session_id !== "string" || !input.session_id)
+		return undefined;
 	// Grok also fires an observe-only session-end Stop (reason channel_closed/shutdown) that cannot be blocked.
 	const endTurn = input.reason === undefined || input.reason === "end_turn";
 	const stateDir = deps.stateDir ?? defaultStateDir(deps.env);
@@ -86,7 +108,11 @@ export function runStop(stdin: string, deps: StopDeps = {}): string | undefined 
 
 	const sync = `Ultrathink · this turn tracked a task (graphId=${record.plan.graphId}). If the work reached a stopping point worth recording, invoke the ultrathink-sync skill before the session ends.`;
 	const nudge = endTurn ? shipCheck(record, stateDir, input.session_id, cwd) : undefined;
-	return JSON.stringify(nudge ? { ...nudge, systemMessage: `${nudge.systemMessage}\n${sync}` } : { systemMessage: sync });
+	return JSON.stringify(
+		nudge
+			? { ...nudge, systemMessage: `${nudge.systemMessage}\n${sync}` }
+			: { systemMessage: sync },
+	);
 }
 
 async function main(): Promise<void> {
@@ -101,10 +127,16 @@ async function main(): Promise<void> {
 }
 
 /** Fail-open: any error means no nudge, and the nudge is recorded before it is printed so it fires once. */
-function shipCheck(record: SessionRecord, stateDir: string, sessionId: string, cwd: string): ShipNudge | undefined {
+function shipCheck(
+	record: SessionRecord,
+	stateDir: string,
+	sessionId: string,
+	cwd: string,
+): ShipNudge | undefined {
 	try {
 		const config = loadConfig(claudeConfigPaths(cwd)).ship;
-		if (!shipApplies(config, record.skill?.name) || record.ship?.nudgedAt !== undefined) return undefined;
+		if (!shipApplies(config, record.skill?.name) || record.ship?.nudgedAt !== undefined)
+			return undefined;
 		const statePath = sessionRecordPath(stateDir, sessionId);
 		const nudge = shipNudge({ record, config, precheck: shipPrecheck(cwd), statePath });
 		if (!nudge || !writeShip(statePath, { nudgedAt: Date.now() })) return undefined;

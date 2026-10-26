@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import type { Api, ApiKeyResolver, AssistantMessage, Context, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import type {
+	Api,
+	ApiKeyResolver,
+	AssistantMessage,
+	Context,
+	Model,
+	SimpleStreamOptions,
+} from "@oh-my-pi/pi-ai";
 import { join } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,14 +17,20 @@ import type { UltrathinkConfig } from "../config.ts";
 import { createOmpExtension } from "./omp.ts";
 import type { CompleteSimple, ExtensionAPI, OmpNativeRuntime, OmpPlan, OmpPlanner } from "./omp.ts";
 
-type Handler = (event: { type: "before_agent_start"; prompt: string; systemPrompt: string[] }, ctx: never) => Promise<
-	| {
-			message?:
-				| string
-				| { customType?: string; content?: string; display?: boolean; attribution?: string; details?: unknown };
-	  }
-	| void
->;
+type Handler = (
+	event: { type: "before_agent_start"; prompt: string; systemPrompt: string[] },
+	ctx: never,
+) => Promise<{
+	message?:
+		| string
+		| {
+				customType?: string;
+				content?: string;
+				display?: boolean;
+				attribution?: string;
+				details?: unknown;
+		  };
+} | void>;
 type AnyHandler = (event: unknown, ctx: unknown) => unknown;
 
 const MCP = () => ({ linear: "ready", notion: "login", greptile: "none" }) as const;
@@ -36,11 +49,19 @@ type OmpOptions = NonNullable<Parameters<typeof createOmpExtension>[0]>;
 export interface OmpTestHarness {
 	run: (prompt?: string) => unknown;
 	sent: { message: unknown; options: unknown }[];
-	emit: (event: string, payload?: Record<string, unknown>, context?: Record<string, unknown>) => unknown;
+	emit: (
+		event: string,
+		payload?: Record<string, unknown>,
+		context?: Record<string, unknown>,
+	) => unknown;
 	renderers: string[];
 	commands: Map<
 		string,
-		{ description?: string; getArgumentCompletions?: (prefix: string) => unknown; handler: (event: unknown, ctx: unknown) => unknown }
+		{
+			description?: string;
+			getArgumentCompletions?: (prefix: string) => unknown;
+			handler: (event: unknown, ctx: unknown) => unknown;
+		}
 	>;
 	command: (name: string, args?: string) => unknown;
 	userMessages: string[];
@@ -59,7 +80,14 @@ export function setup(
 	const handlers = new Map<string, AnyHandler[]>();
 	const sent: { message: unknown; options: unknown }[] = [];
 	const renderers: string[] = [];
-	const commands = new Map<string, { description?: string; getArgumentCompletions?: (prefix: string) => unknown; handler: AnyHandler }>();
+	const commands = new Map<
+		string,
+		{
+			description?: string;
+			getArgumentCompletions?: (prefix: string) => unknown;
+			handler: AnyHandler;
+		}
+	>();
 	const userMessages: string[] = [];
 	const notices: string[] = [];
 	const pi = {
@@ -84,23 +112,38 @@ export function setup(
 	} as unknown as ExtensionAPI;
 	// Every flight captures config; a quiet one keeps the suite off the developer's own config files.
 	// With omitRaceMs the race property stays absent so the flight proves the real factory default.
-	createOmpExtension({ ...(plan ? { plan: wrap(plan) } : {}), ...(omitRaceMs ? {} : { raceMs }), mcp: MCP, config: () => quietConfig(), ...extra })(pi);
+	createOmpExtension({
+		...(plan ? { plan: wrap(plan) } : {}),
+		...(omitRaceMs ? {} : { raceMs }),
+		mcp: MCP,
+		config: () => quietConfig(),
+		...extra,
+	})(pi);
 	const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "s1" }, ...ctxExtra };
-	const emit = (event: string, payload: Record<string, unknown> = {}, context: Record<string, unknown> = ctx) => {
+	const emit = (
+		event: string,
+		payload: Record<string, unknown> = {},
+		context: Record<string, unknown> = ctx,
+	) => {
 		let result: unknown;
-		for (const handler of handlers.get(event) ?? []) result = handler({ type: event, ...payload }, context);
+		for (const handler of handlers.get(event) ?? [])
+			result = handler({ type: event, ...payload }, context);
 		return result;
 	};
 	const run = (prompt = "do it") =>
-		(handlers.get("before_agent_start")?.[0] as Handler)({ type: "before_agent_start", prompt, systemPrompt: [] }, ctx as never);
+		(handlers.get("before_agent_start")?.[0] as Handler)(
+			{ type: "before_agent_start", prompt, systemPrompt: [] },
+			ctx as never,
+		);
 	const command = (name: string, args = "") =>
-		commands
-			.get(name)
-			?.handler(args, {
-				...ctx,
-				// Keep harness-provided host UI (e.g. a `custom` recorder) while still recording notifications.
-				ui: { notify: (text: string) => void notices.push(text), ...((ctx as Record<string, unknown>).ui as Record<string, unknown> | undefined ?? {}) },
-			});
+		commands.get(name)?.handler(args, {
+			...ctx,
+			// Keep harness-provided host UI (e.g. a `custom` recorder) while still recording notifications.
+			ui: {
+				notify: (text: string) => void notices.push(text),
+				...(((ctx as Record<string, unknown>).ui as Record<string, unknown> | undefined) ?? {}),
+			},
+		});
 	return { run, sent, emit, renderers, commands, command, userMessages, notices };
 }
 
@@ -116,10 +159,18 @@ export function tuiCtx(setWidget?: (key: string, factory: unknown, options: unkn
 			}),
 	};
 	const line = (width = 200) => {
-		const factory = widgets.at(-1)!.factory as (t: typeof tui, theme: unknown) => { render(w: number): readonly string[] };
+		const factory = widgets.at(-1)!.factory as (
+			t: typeof tui,
+			theme: unknown,
+		) => { render(w: number): readonly string[] };
 		return factory(tui, {}).render(width).join("");
 	};
-	return { ctx: { hasUI: true, mode: "tui", ui, setInterval: () => 0 }, widgets, line, renders: () => renders };
+	return {
+		ctx: { hasUI: true, mode: "tui", ui, setInterval: () => 0 },
+		widgets,
+		line,
+		renders: () => renders,
+	};
 }
 
 export function controlled() {
@@ -162,7 +213,11 @@ export function quietConfig(patch?: (config: UltrathinkConfig) => void): Ultrath
 }
 
 /** A synthetic whole Model: opaque ids, endpoint and header sentinels, nested routing data and a header resolver. */
-export function fakeModel(provider: string, id: string, extra: Record<string, unknown> = {}): Model<Api> {
+export function fakeModel(
+	provider: string,
+	id: string,
+	extra: Record<string, unknown> = {},
+): Model<Api> {
 	const model = {
 		provider,
 		id,
@@ -188,7 +243,10 @@ interface RuntimeLog {
 /** The host's `ctx.models` and `ctx.modelRegistry` over a fixed authenticated set and role aliases; it records every use. */
 export function fakeRuntime(
 	available: Model<Api>[],
-	options: { current?: () => Model<Api> | undefined; aliases?: Record<string, () => Model<Api> | undefined> } = {},
+	options: {
+		current?: () => Model<Api> | undefined;
+		aliases?: Record<string, () => Model<Api> | undefined>;
+	} = {},
 ): { runtime: OmpNativeRuntime; log: RuntimeLog } {
 	const log: RuntimeLog = { resolves: [], resolvers: [] };
 	const runtime: OmpNativeRuntime = {
@@ -197,7 +255,9 @@ export function fakeRuntime(
 			resolve: (spec) => {
 				log.resolves.push(spec);
 				const alias = options.aliases?.[spec];
-				return alias ? alias() : available.find((model) => `${model.provider}/${model.id}` === spec);
+				return alias
+					? alias()
+					: available.find((model) => `${model.provider}/${model.id}` === spec);
 			},
 		},
 		modelRegistry: {
@@ -218,7 +278,9 @@ interface NativeCall {
 }
 
 /** A recording `completeSimple`: the deterministic suite never reaches a provider or live auth. */
-export function recorder(answer: (call: NativeCall) => AssistantMessage | Promise<AssistantMessage>): { complete: CompleteSimple; calls: NativeCall[] } {
+export function recorder(
+	answer: (call: NativeCall) => AssistantMessage | Promise<AssistantMessage>,
+): { complete: CompleteSimple; calls: NativeCall[] } {
 	const calls: NativeCall[] = [];
 	const complete: CompleteSimple = async (model, context, options) => {
 		const call = { model, context, options };
@@ -230,7 +292,16 @@ export function recorder(answer: (call: NativeCall) => AssistantMessage | Promis
 
 /** An AssistantMessage fixture; usage and response metadata play no part in planning. */
 export const reply = (content: unknown[], extra: Record<string, unknown> = {}): AssistantMessage =>
-	({ role: "assistant", content, api: "acme-chat", provider: "acme", model: "m", usage: {}, stopReason: "stop", ...extra }) as unknown as AssistantMessage;
+	({
+		role: "assistant",
+		content,
+		api: "acme-chat",
+		provider: "acme",
+		model: "m",
+		usage: {},
+		stopReason: "stop",
+		...extra,
+	}) as unknown as AssistantMessage;
 export const planReply = () => reply([{ type: "text", text: "PLAN" }]);
 
 /** The text of a native call's one user message. */
@@ -241,12 +312,20 @@ export function userText(call: NativeCall): string {
 
 /** Answers uplift, Graph, node fill and clarify calls by payload, as the shared host suite does, and names the stage. */
 export function stageAnswer(user: string): { stage: string; text: string } {
-	if (user.includes("<user_request>")) return { stage: "uplift", text: "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>" };
-	if (user.startsWith("<spec>")) return { stage: "clarify", text: JSON.stringify({ questions: [] }) };
+	if (user.includes("<user_request>"))
+		return {
+			stage: "uplift",
+			text: "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>",
+		};
+	if (user.startsWith("<spec>"))
+		return { stage: "clarify", text: JSON.stringify({ questions: [] }) };
 	if (user.includes("current_node")) {
 		const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
 		const steps = Array.from({ length: 5 }, (_, i) => `${i + 1}. ${id} step ${i + 1}`).join(" ");
-		return { stage: "fill", text: `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>` };
+		return {
+			stage: "fill",
+			text: `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>`,
+		};
 	}
 	const nodes = Array.from({ length: 5 }, (_, i) => ({
 		id: `n${i + 1}`,
@@ -307,7 +386,9 @@ export async function runChildLifetimeScenario(scenario: {
 			timedOut = true;
 			try {
 				proc.kill("SIGKILL");
-			} catch {}
+			} catch {
+				// reason: the process may already have exited; the kill is best effort
+			}
 		}, 90_000);
 		let exited = false;
 		try {
@@ -317,8 +398,10 @@ export async function runChildLifetimeScenario(scenario: {
 			const code = await proc.exited;
 			exited = true;
 			const [out, err] = await Promise.all([outText, errText]);
-			if (timedOut) throw new Error("child lifetime scenario timed out after 90 s: " + err.slice(-2000));
-			if (code !== 0) throw new Error("child lifetime scenario exited " + code + ": " + err.slice(-2000));
+			if (timedOut)
+				throw new Error("child lifetime scenario timed out after 90 s: " + err.slice(-2000));
+			if (code !== 0)
+				throw new Error("child lifetime scenario exited " + code + ": " + err.slice(-2000));
 			const line = out.split("\n").find((entry) => entry.startsWith("SCENARIO-RESULT "));
 			if (!line) throw new Error("child lifetime scenario printed no result: " + err.slice(-2000));
 			const parsed: unknown = JSON.parse(line.slice("SCENARIO-RESULT ".length));
@@ -336,7 +419,11 @@ export async function runChildLifetimeScenario(scenario: {
 			if (scenario.handoffOrder === undefined) return { planAsides, nativeCalls };
 			if (!("handoff" in parsed)) throw new Error("child handoff proof missing: " + line);
 			const handoffValue: unknown = parsed.handoff;
-			if (typeof handoffValue !== "object" || handoffValue === null || Array.isArray(handoffValue)) {
+			if (
+				typeof handoffValue !== "object" ||
+				handoffValue === null ||
+				Array.isArray(handoffValue)
+			) {
 				throw new Error("child handoff proof missing: " + line);
 			}
 			if (
@@ -373,7 +460,10 @@ export async function runChildLifetimeScenario(scenario: {
 			const asideContent: unknown = handoffValue.asideContent;
 			const asideCustomType: unknown = handoffValue.asideCustomType;
 			const asideDeliverAs: unknown = handoffValue.asideDeliverAs;
-			if ((order !== "provider-first" && order !== "race-first") || order !== scenario.handoffOrder) {
+			if (
+				(order !== "provider-first" && order !== "race-first") ||
+				order !== scenario.handoffOrder
+			) {
 				throw new Error("child handoff proof order mismatch: " + line);
 			}
 			if (
@@ -422,7 +512,9 @@ export async function runChildLifetimeScenario(scenario: {
 			if (!exited) {
 				try {
 					proc.kill("SIGKILL");
-				} catch {}
+				} catch {
+					// reason: the process may already have exited; the kill is best effort
+				}
 			}
 		}
 	} finally {
@@ -437,7 +529,11 @@ export async function runChildLifetimeScenario(scenario: {
  * microtask drains between callbacks; I/O and delivery use real started/completed/delivered
  * barriers, never the parent process clock. No paid provider, no live auth, disposable roots only.
  */
-function childLifetimeSource(hostDir: string, scenario: { maxRunMs?: number; cancelHung: boolean; handoffOrder?: HandoffOrder }, parentRoot: string): string {
+function childLifetimeSource(
+	hostDir: string,
+	scenario: { maxRunMs?: number; cancelHung: boolean; handoffOrder?: HandoffOrder },
+	parentRoot: string,
+): string {
 	const ompPath = JSON.stringify(join(hostDir, "omp.ts"));
 	const helpersPath = JSON.stringify(join(hostDir, "omp-test.helpers.ts"));
 	const planPath = JSON.stringify(join(hostDir, "plan.ts"));
@@ -449,7 +545,9 @@ function childLifetimeSource(hostDir: string, scenario: { maxRunMs?: number; can
 	const parentRootPath = JSON.stringify(parentRoot);
 	return [
 		"import { createNativeEngineSelector } from " + ompPath + ";",
-		"import { fakeModel, fakeRuntime, isolatedPlanEnv, quietConfig, recorder, reply, setup, stageAnswer, userText } from " + helpersPath + ";",
+		"import { fakeModel, fakeRuntime, isolatedPlanEnv, quietConfig, recorder, reply, setup, stageAnswer, userText } from " +
+			helpersPath +
+			";",
 		"import { planPrompt } from " + planPath + ";",
 		"import type { UltrathinkConfig } from " + configPath + ";",
 		"import type { OmpPlanner } from " + ompPath + ";",

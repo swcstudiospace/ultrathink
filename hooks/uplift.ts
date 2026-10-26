@@ -11,9 +11,21 @@
 import { claudeConfigPaths, loadConfig } from "../src/config.ts";
 import { isChildInvocation } from "../src/claude/complete.ts";
 import { runPromptSubmit, type PromptSubmitInput } from "../src/claude/hook.ts";
-import { defaultStateDir, hostSessionId, readControl, readSkipOnce, sessionPath } from "../src/claude/state.ts";
+import {
+	defaultStateDir,
+	hostSessionId,
+	readControl,
+	readSkipOnce,
+	sessionPath,
+} from "../src/claude/state.ts";
 import { recentConversationFromTranscript } from "../src/claude/transcript.ts";
-import { parseUltrathinkCommand, runControl, takeSessionFlag, trackingEnabled, trackingOff } from "../src/uplift/commands.ts";
+import {
+	parseUltrathinkCommand,
+	runControl,
+	takeSessionFlag,
+	trackingEnabled,
+	trackingOff,
+} from "../src/uplift/commands.ts";
 import { planningTarget } from "../src/uplift/skill.ts";
 import { clearPlanCarrier, writePlanCarrier } from "../src/host/carrier.ts";
 import { claimTurn } from "../src/host/claim.ts";
@@ -38,7 +50,9 @@ async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
 	if (argv[0] === "--ctl") {
 		const { sessionId, args } = takeSessionFlag(argv.slice(1));
-		process.stdout.write(`${await runControl(args, { stateDir: defaultStateDir(), cwd: process.cwd(), sessionId })}\n`);
+		process.stdout.write(
+			`${await runControl(args, { stateDir: defaultStateDir(), cwd: process.cwd(), sessionId })}\n`,
+		);
 		return;
 	}
 	if (isChildInvocation()) return;
@@ -93,14 +107,19 @@ async function main(): Promise<void> {
 		}
 		if (target.skill) input = { ...raw, prompt: target.text, skill: target.skill };
 	} catch {
-		// fail-open: a throwing skill parser plans the prompt as written
+		// reason: fail-open: a throwing skill parser plans the prompt as written
 	}
 	if (grok) {
 		// Grok may dispatch this hook twice per turn (global hook file plus plugin hooks); only the
 		// first plans, and it owns the carrier: a duplicate must not clear the plan it writes.
 		const promptId = envelope.prompt_id ?? envelope.promptId;
 		const turnSessionId = typeof raw.session_id === "string" ? raw.session_id.trim() : "";
-		if (typeof promptId === "string" && promptId.trim() && turnSessionId && !claimTurn(stateDir, `${turnSessionId}:${promptId.trim()}`)) {
+		if (
+			typeof promptId === "string" &&
+			promptId.trim() &&
+			turnSessionId &&
+			!claimTurn(stateDir, `${turnSessionId}:${promptId.trim()}`)
+		) {
 			log("skipped: duplicate hook for this turn");
 			return;
 		}
@@ -114,8 +133,12 @@ async function main(): Promise<void> {
 	const armedSkip = hookSession !== undefined && readSkipOnce(stateDir, hookSession);
 	// Legacy route evidence only when the host's own envelope carries it (blank means unknown); nothing is read from a
 	// transcript (AD-4). selectEngine reads a session model for Hermes `auto` routing only, so other routes are unchanged.
-	const sessionModel = typeof envelope.model === "string" && envelope.model.trim() ? envelope.model.trim() : undefined;
-	const provider = typeof envelope.provider === "string" && envelope.provider.trim() ? envelope.provider.trim() : undefined;
+	const sessionModel =
+		typeof envelope.model === "string" && envelope.model.trim() ? envelope.model.trim() : undefined;
+	const provider =
+		typeof envelope.provider === "string" && envelope.provider.trim()
+			? envelope.provider.trim()
+			: undefined;
 	const engine = await selectEngine(config, state, cwd, {
 		host,
 		purpose: "planning",
@@ -125,7 +148,8 @@ async function main(): Promise<void> {
 	if ("skipped" in engine) {
 		log(`skipped: engine ${engine.resolution.state} (${engine.resolution.reason})`);
 		// A skill invocation must never receive a skip systemMessage (e.g. Grok login required) that eats the command.
-		if (!input.skill) process.stdout.write(JSON.stringify({ systemMessage: engine.notice ?? engine.skipped }));
+		if (!input.skill)
+			process.stdout.write(JSON.stringify({ systemMessage: engine.notice ?? engine.skipped }));
 		return;
 	}
 
@@ -148,7 +172,8 @@ async function main(): Promise<void> {
 	if (result.skipped) log(`skipped: ${result.skipped}`);
 	// A Jev skip shows its notice only: no hookSpecificOutput, so the prompt reaches the model unchanged. Grok discards
 	// stdout, and its carrier was cleared at the start of the owned turn, exactly as for a deterministic skip.
-	if (result.skipped && result.notice) process.stdout.write(JSON.stringify({ systemMessage: result.notice }));
+	if (result.skipped && result.notice)
+		process.stdout.write(JSON.stringify({ systemMessage: result.notice }));
 	if (result.output) {
 		// Claude reads stdout first, so a carrier failure can never cost it the plan.
 		// Grok discards stdout; last-plan.json is the carrier there.
@@ -159,7 +184,9 @@ async function main(): Promise<void> {
 				host,
 				stateDir,
 				sessionId,
-				specPath: sessionId ? sessionPath(stateDir, sessionId).replace(/\.json$/, ".xml") : undefined,
+				specPath: sessionId
+					? sessionPath(stateDir, sessionId).replace(/\.json$/, ".xml")
+					: undefined,
 				statePath: sessionId ? sessionPath(stateDir, sessionId) : undefined,
 				graphId: result.record?.plan?.graphId,
 				context: result.output.hookSpecificOutput.additionalContext,

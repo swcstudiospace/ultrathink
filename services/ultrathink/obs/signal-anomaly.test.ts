@@ -2,7 +2,11 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
-import { type AnomalyDetector, type AnomalyState, createAnomalyDetector } from "./signal-anomaly.ts";
+import {
+	type AnomalyDetector,
+	type AnomalyState,
+	createAnomalyDetector,
+} from "./signal-anomaly.ts";
 
 const OFFSETS = [0.1, -0.1, 0.05, -0.05, 0, 0.1, -0.1, 0];
 
@@ -81,7 +85,10 @@ describe("createAnomalyDetector", () => {
 	test("a sustained new level clears after rebaseAfter breaching samples and re-baselines", () => {
 		const detector = createAnomalyDetector();
 		run(detector, stableSeries(10, 60));
-		const states = run(detector, Array.from({ length: 200 }, () => 30));
+		const states = run(
+			detector,
+			Array.from({ length: 200 }, () => 30),
+		);
 		expect(indicesOf(states, "raised")).toEqual([2]);
 		expect(indicesOf(states, "cleared")).toEqual([119]);
 		expect(states[119]?.active).toBe(false);

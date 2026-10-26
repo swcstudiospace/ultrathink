@@ -42,7 +42,9 @@ describe("isPrCreationTool", () => {
 
 	test("PR review and Copilot tools are not PR creation", () => {
 		expect(isPrCreationTool("mcp__github__create_pull_request_review", undefined)).toBe(false);
-		expect(isPrCreationTool("mcp__github__create_pull_request_with_copilot", undefined)).toBe(false);
+		expect(isPrCreationTool("mcp__github__create_pull_request_with_copilot", undefined)).toBe(
+			false,
+		);
 	});
 
 	test("other tools never match, even with a gh pr create command", () => {
@@ -55,13 +57,20 @@ describe("isPrCreationTool", () => {
 
 describe("extractPrFromOutput", () => {
 	test("extracts the PR URL and number from gh pr create's stdout", () => {
-		const output = "Creating pull request for feat/widget into main in acme/widgets\n\nhttps://github.com/acme/widgets/pull/42\n";
-		expect(extractPrFromOutput(output)).toEqual({ url: "https://github.com/acme/widgets/pull/42", number: 42 });
+		const output =
+			"Creating pull request for feat/widget into main in acme/widgets\n\nhttps://github.com/acme/widgets/pull/42\n";
+		expect(extractPrFromOutput(output)).toEqual({
+			url: "https://github.com/acme/widgets/pull/42",
+			number: 42,
+		});
 	});
 
 	test("extracts from a JSON-stringified MCP tool response too", () => {
 		const output = JSON.stringify({ number: 7, htmlUrl: "https://github.com/acme/widgets/pull/7" });
-		expect(extractPrFromOutput(output)).toEqual({ url: "https://github.com/acme/widgets/pull/7", number: 7 });
+		expect(extractPrFromOutput(output)).toEqual({
+			url: "https://github.com/acme/widgets/pull/7",
+			number: 7,
+		});
 	});
 
 	test("undefined when no PR URL is present", () => {
@@ -70,7 +79,11 @@ describe("extractPrFromOutput", () => {
 	});
 
 	test("finds the first match when multiple URLs are present", () => {
-		const output = "See https://github.com/acme/widgets/pull/1 (superseded by https://github.com/acme/widgets/pull/2)";
-		expect(extractPrFromOutput(output)).toEqual({ url: "https://github.com/acme/widgets/pull/1", number: 1 });
+		const output =
+			"See https://github.com/acme/widgets/pull/1 (superseded by https://github.com/acme/widgets/pull/2)";
+		expect(extractPrFromOutput(output)).toEqual({
+			url: "https://github.com/acme/widgets/pull/1",
+			number: 1,
+		});
 	});
 });

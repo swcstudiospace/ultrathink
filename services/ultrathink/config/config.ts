@@ -14,7 +14,7 @@ export class ConfigError extends Error {
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 /** `host:port` of the syslog audit sink. */
-export interface AuditSyslogTarget {
+interface AuditSyslogTarget {
 	readonly host: string;
 	readonly port: number;
 }
@@ -150,7 +150,11 @@ const REASONING_EFFORTS: readonly ReasoningEffort[] = ["minimal", "low", "medium
 const OWNER_HASH_FORMAT =
 	/^(?:\$argon2(?:id|i|d)\$v=\d+\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/]+\$[A-Za-z0-9+/]+|\$2[abxy]\$\d{2}\$[./A-Za-z0-9]{53})$/;
 const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true };
-const OTLP_LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true, "[::1]": true };
+const OTLP_LOOPBACK_HOSTS: Record<string, true> = {
+	localhost: true,
+	"127.0.0.1": true,
+	"[::1]": true,
+};
 const DEFAULT_AUDIT_ANCHOR_EVERY = 1000;
 const DEFAULT_AUDIT_SEGMENT_BYTES = 67108864;
 const DEFAULT_AUDIT_RETENTION_DAYS = 365;
@@ -159,20 +163,18 @@ const DEFAULT_AUDIT_SINK_QUEUE = 10000;
 const MIN_AUDIT_HTTP_TOKEN_LENGTH = 16;
 const DEFAULT_SPIFFE_TRUST_DOMAIN = "ultrathink.internal";
 const TRUST_DOMAIN_PATTERN = /^[a-z0-9._-]{1,255}$/;
-const TLS_VARIABLES = ["ULTRATHINK_TLS_CERT", "ULTRATHINK_TLS_KEY", "ULTRATHINK_TLS_CLIENT_CA"] as const;
+const TLS_VARIABLES = [
+	"ULTRATHINK_TLS_CERT",
+	"ULTRATHINK_TLS_KEY",
+	"ULTRATHINK_TLS_CLIENT_CA",
+] as const;
 
-function readOptional(
-	env: Record<string, string | undefined>,
-	name: string,
-): string | undefined {
+function readOptional(env: Record<string, string | undefined>, name: string): string | undefined {
 	const trimmed = env[name]?.trim();
 	return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
-function readRequired(
-	env: Record<string, string | undefined>,
-	name: string,
-): string {
+function readRequired(env: Record<string, string | undefined>, name: string): string {
 	const value = readOptional(env, name);
 	if (value === undefined) {
 		throw new ConfigError(`${name} is required`);
@@ -223,11 +225,12 @@ function readPublicOrigin(env: Record<string, string | undefined>): string {
 	try {
 		url = new URL(raw);
 	} catch {
-		throw new ConfigError(
-			"ULTRATHINK_PUBLIC_ORIGIN must be an absolute https:// URL",
-		);
+		throw new ConfigError("ULTRATHINK_PUBLIC_ORIGIN must be an absolute https:// URL");
 	}
-	if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)) {
+	if (
+		url.protocol !== "https:" &&
+		!(url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)
+	) {
 		throw new ConfigError(
 			"ULTRATHINK_PUBLIC_ORIGIN must use https:// (http:// is allowed only for localhost or 127.0.0.1)",
 		);
@@ -235,7 +238,13 @@ function readPublicOrigin(env: Record<string, string | undefined>): string {
 	// Consumers build "<origin>/mcp" and compare it with the browser's Origin
 	// header, so only scheme, host and port may be configured; a trailing slash
 	// is dropped and the host is lower-cased by url.origin.
-	if (url.username !== "" || url.password !== "" || url.pathname !== "/" || raw.includes("?") || raw.includes("#")) {
+	if (
+		url.username !== "" ||
+		url.password !== "" ||
+		url.pathname !== "/" ||
+		raw.includes("?") ||
+		raw.includes("#")
+	) {
 		throw new ConfigError(
 			"ULTRATHINK_PUBLIC_ORIGIN must be an origin only (scheme, host and optional port, with no credentials, path, query or fragment)",
 		);
@@ -287,9 +296,7 @@ function readPreviousSessionSecrets(env: Record<string, string | undefined>): st
 	return secrets;
 }
 
-function readPlanningModel(
-	env: Record<string, string | undefined>,
-): string | undefined {
+function readPlanningModel(env: Record<string, string | undefined>): string | undefined {
 	const model = readOptional(env, "ULTRATHINK_PLANNING_MODEL");
 	if (model !== undefined && !PLANNING_MODEL_PATTERN.test(model)) {
 		throw new ConfigError(
@@ -302,7 +309,9 @@ function readPlanningModel(
 function readConnectorKey(env: Record<string, string | undefined>): string | undefined {
 	const key = readOptional(env, "ULTRATHINK_CONNECTOR_KEY");
 	if (key !== undefined && key.length < MIN_CONNECTOR_KEY_LENGTH) {
-		throw new ConfigError(`ULTRATHINK_CONNECTOR_KEY must be at least ${MIN_CONNECTOR_KEY_LENGTH} characters`);
+		throw new ConfigError(
+			`ULTRATHINK_CONNECTOR_KEY must be at least ${MIN_CONNECTOR_KEY_LENGTH} characters`,
+		);
 	}
 	return key;
 }
@@ -320,10 +329,7 @@ function readReasoningEffort(env: Record<string, string | undefined>): Reasoning
 	return raw as ReasoningEffort;
 }
 
-function readFlag(
-	env: Record<string, string | undefined>,
-	name: string,
-): boolean | undefined {
+function readFlag(env: Record<string, string | undefined>, name: string): boolean | undefined {
 	const raw = readOptional(env, name);
 	if (raw === undefined) {
 		return undefined;
@@ -340,7 +346,9 @@ function readFlag(
 function readOpenRouterApiKey(env: Record<string, string | undefined>): string | undefined {
 	const key = readOptional(env, "OPENROUTER_API_KEY");
 	if (key !== undefined && key.length < MIN_OPENROUTER_KEY_LENGTH) {
-		throw new ConfigError(`OPENROUTER_API_KEY must be at least ${MIN_OPENROUTER_KEY_LENGTH} characters`);
+		throw new ConfigError(
+			`OPENROUTER_API_KEY must be at least ${MIN_OPENROUTER_KEY_LENGTH} characters`,
+		);
 	}
 	return key;
 }
@@ -366,9 +374,7 @@ function readOpenRouterBaseUrl(env: Record<string, string | undefined>): string 
 		raw.includes("?") ||
 		raw.includes("#")
 	) {
-		throw new ConfigError(
-			`${name} must be an https:// URL without credentials, query or fragment`,
-		);
+		throw new ConfigError(`${name} must be an https:// URL without credentials, query or fragment`);
 	}
 	return raw.replace(/\/+$/, "");
 }
@@ -455,7 +461,10 @@ function readSinkUrl(env: Record<string, string | undefined>, name: string): str
 	if (url.username !== "" || url.password !== "") {
 		throw new ConfigError(`${name} must not contain credentials`);
 	}
-	if (url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)) {
+	if (
+		url.protocol === "https:" ||
+		(url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)
+	) {
 		return raw;
 	}
 	throw new ConfigError(`${name} must use https://, or http:// to 127.0.0.1 or localhost`);
@@ -477,7 +486,10 @@ function readOtlpEndpoint(env: Record<string, string | undefined>): string | und
 	} catch {
 		throw new ConfigError(`${name} must be an absolute URL`);
 	}
-	if (url.protocol !== "https:" && !(url.protocol === "http:" && OTLP_LOOPBACK_HOSTS[url.hostname] === true)) {
+	if (
+		url.protocol !== "https:" &&
+		!(url.protocol === "http:" && OTLP_LOOPBACK_HOSTS[url.hostname] === true)
+	) {
 		throw new ConfigError(`${name} must use https://, or http:// to 127.0.0.1, localhost or [::1]`);
 	}
 	if (url.username !== "" || url.password !== "" || raw.includes("?") || raw.includes("#")) {
@@ -604,7 +616,9 @@ function readTlsFiles(
 	}
 	const missing = TLS_VARIABLES.filter((name) => !present.includes(name));
 	if (missing.length > 0) {
-		throw new ConfigError(`${TLS_VARIABLES.join(", ")} must be set together; missing ${missing.join(", ")}`);
+		throw new ConfigError(
+			`${TLS_VARIABLES.join(", ")} must be set together; missing ${missing.join(", ")}`,
+		);
 	}
 	return {
 		certFile: readAbsoluteFile(env, "ULTRATHINK_TLS_CERT"),
@@ -616,7 +630,9 @@ function readTlsFiles(
 function readSpiffeTrustDomain(env: Record<string, string | undefined>): string {
 	const domain = readOptional(env, "ULTRATHINK_SPIFFE_TRUST_DOMAIN") ?? DEFAULT_SPIFFE_TRUST_DOMAIN;
 	if (!TRUST_DOMAIN_PATTERN.test(domain)) {
-		throw new ConfigError("ULTRATHINK_SPIFFE_TRUST_DOMAIN must be 1-255 characters from a-z, 0-9, '.', '_' and '-'");
+		throw new ConfigError(
+			"ULTRATHINK_SPIFFE_TRUST_DOMAIN must be 1-255 characters from a-z, 0-9, '.', '_' and '-'",
+		);
 	}
 	return domain;
 }
@@ -640,7 +656,9 @@ function readChaosGate(env: Record<string, string | undefined>): {
 		return { chaosEnabled, chaosEnv, chaosPlanPath };
 	}
 	if (chaosEnv !== "staging") {
-		throw new ConfigError("ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_ENV=staging; chaos never runs outside staging");
+		throw new ConfigError(
+			"ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_ENV=staging; chaos never runs outside staging",
+		);
 	}
 	if (chaosPlanPath === undefined) {
 		throw new ConfigError("ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_PLAN to be set");
@@ -746,7 +764,13 @@ export function loadConfig(
 		drainMs: readInteger(env, "ULTRATHINK_DRAIN_MS", 5000, 0, 60000),
 		retentionDays: readInteger(env, "ULTRATHINK_RETENTION_DAYS", 30, 0, 3650),
 		auditLog: readFlag(env, "ULTRATHINK_AUDIT_LOG") ?? true,
-		auditAnchorEvery: readInteger(env, "ULTRATHINK_AUDIT_ANCHOR_EVERY", DEFAULT_AUDIT_ANCHOR_EVERY, 1, 1000000),
+		auditAnchorEvery: readInteger(
+			env,
+			"ULTRATHINK_AUDIT_ANCHOR_EVERY",
+			DEFAULT_AUDIT_ANCHOR_EVERY,
+			1,
+			1000000,
+		),
 		auditSegmentBytes: readInteger(
 			env,
 			"ULTRATHINK_AUDIT_SEGMENT_BYTES",
@@ -754,9 +778,21 @@ export function loadConfig(
 			1048576,
 			4294967296,
 		),
-		auditRetentionDays: readInteger(env, "ULTRATHINK_AUDIT_RETENTION_DAYS", DEFAULT_AUDIT_RETENTION_DAYS, 0, 36500),
+		auditRetentionDays: readInteger(
+			env,
+			"ULTRATHINK_AUDIT_RETENTION_DAYS",
+			DEFAULT_AUDIT_RETENTION_DAYS,
+			0,
+			36500,
+		),
 		auditWatchMs: readInteger(env, "ULTRATHINK_AUDIT_WATCH_MS", DEFAULT_AUDIT_WATCH_MS, 100, 1000),
-		auditSinkQueue: readInteger(env, "ULTRATHINK_AUDIT_SINK_QUEUE", DEFAULT_AUDIT_SINK_QUEUE, 1, 1000000),
+		auditSinkQueue: readInteger(
+			env,
+			"ULTRATHINK_AUDIT_SINK_QUEUE",
+			DEFAULT_AUDIT_SINK_QUEUE,
+			1,
+			1000000,
+		),
 		auditRules: readAuditRules(env),
 		auditHttpUrl: readSinkUrl(env, "ULTRATHINK_AUDIT_HTTP_URL"),
 		auditHttpToken: readAuditHttpToken(env),
@@ -772,9 +808,7 @@ export function loadConfig(
 
 export function requirePlanningModel(config: UltrathinkConfig): string {
 	if (config.planningModel === undefined) {
-		throw new ConfigError(
-			"ULTRATHINK_PLANNING_MODEL is required before planning can run",
-		);
+		throw new ConfigError("ULTRATHINK_PLANNING_MODEL is required before planning can run");
 	}
 	return config.planningModel;
 }

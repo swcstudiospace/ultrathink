@@ -71,9 +71,14 @@ const MAX_FILE_BYTES = 1024 * 1024;
 const JSON_SUFFIX = ".json";
 
 /** Journal statuses that mean the session is finished; anything else (or absent) is in progress, as in sessions.ts. */
-const FINISHED_CLIENT_STATUSES: Record<string, true> = { planned: true, invalid: true, skipped: true };
+const FINISHED_CLIENT_STATUSES: Record<string, true> = {
+	planned: true,
+	invalid: true,
+	skipped: true,
+};
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
 
 interface Tally {
 	removed: { jobs: number; sessions: number; journals: number };
@@ -103,7 +108,7 @@ function closeScan(dir: string): void {
 	try {
 		handle?.closeSync();
 	} catch {
-		// Nothing left to release.
+		// reason: Nothing left to release.
 	}
 }
 
@@ -177,6 +182,7 @@ function removeFile(path: string, tally: Tally, place: "jobs" | "sessions"): voi
 		unlinkSync(path);
 		tally.removed[place] += 1;
 	} catch {
+		// reason: the failure is counted in tally.errors, which the sweep returns
 		tally.errors += 1;
 	}
 }
@@ -240,7 +246,10 @@ function sweepJobs(stateDir: string, walk: Walk): void {
 			tally.skipped += 1;
 			continue;
 		}
-		const time = typeof job.updatedAt === "number" && Number.isFinite(job.updatedAt) ? Math.trunc(job.updatedAt) : mtime;
+		const time =
+			typeof job.updatedAt === "number" && Number.isFinite(job.updatedAt)
+				? Math.trunc(job.updatedAt)
+				: mtime;
 		if (time >= walk.cutoff || job.status === "running") {
 			tally.kept += 1;
 			continue;
@@ -287,7 +296,10 @@ function sweepJournals(stateDir: string, walk: Walk): void {
 				tally.skipped += 1;
 				continue;
 			}
-			if (typeof parsed.status !== "string" || !Object.hasOwn(FINISHED_CLIENT_STATUSES, parsed.status)) {
+			if (
+				typeof parsed.status !== "string" ||
+				!Object.hasOwn(FINISHED_CLIENT_STATUSES, parsed.status)
+			) {
 				tally.kept += 1;
 				continue;
 			}
@@ -301,6 +313,7 @@ function sweepJournals(stateDir: string, walk: Walk): void {
 			rmSync(dir, { recursive: true, force: true });
 			tally.removed.journals += 1;
 		} catch {
+			// reason: the failure is counted in tally.errors, which the sweep returns
 			tally.errors += 1;
 		}
 	}
@@ -313,14 +326,27 @@ function sweepJournals(stateDir: string, walk: Walk): void {
  * missing state directory or sub-directory is not an error: there is nothing to sweep.
  */
 export function sweepStateDir(options: SweepOptions): SweepResult {
-	if (typeof options.stateDir !== "string" || options.stateDir.trim() === "") throw new TypeError("retention: stateDir must be a non-empty path");
-	if (typeof options.retentionDays !== "number" || !Number.isFinite(options.retentionDays) || options.retentionDays < 0) {
-		throw new RangeError("retention: retentionDays must be a finite number >= 0 (0 disables the sweep)");
+	if (typeof options.stateDir !== "string" || options.stateDir.trim() === "")
+		throw new TypeError("retention: stateDir must be a non-empty path");
+	if (
+		typeof options.retentionDays !== "number" ||
+		!Number.isFinite(options.retentionDays) ||
+		options.retentionDays < 0
+	) {
+		throw new RangeError(
+			"retention: retentionDays must be a finite number >= 0 (0 disables the sweep)",
+		);
 	}
 	const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
-	if (!Number.isInteger(maxEntries) || maxEntries < 1) throw new RangeError("retention: maxEntries must be an integer >= 1");
+	if (!Number.isInteger(maxEntries) || maxEntries < 1)
+		throw new RangeError("retention: maxEntries must be an integer >= 1");
 
-	const tally: Tally = { removed: { jobs: 0, sessions: 0, journals: 0 }, kept: 0, skipped: 0, errors: 0 };
+	const tally: Tally = {
+		removed: { jobs: 0, sessions: 0, journals: 0 },
+		kept: 0,
+		skipped: 0,
+		errors: 0,
+	};
 	if (options.retentionDays === 0) return { ...tally, disabled: true };
 
 	const now = options.now ?? Date.now;
@@ -337,17 +363,23 @@ export function sweepStateDir(options: SweepOptions): SweepResult {
  * run throws escapes: it reaches `onError` and the next tick runs as usual.
  */
 export function createSweeper<T = SweepResult>(options: SweeperOptions<T>): Sweeper<T> {
-	if (typeof options.sweep !== "function") throw new TypeError("retention: sweep must be a function");
-	if (typeof options.intervalMs !== "number" || !Number.isFinite(options.intervalMs) || options.intervalMs <= 0) {
+	if (typeof options.sweep !== "function")
+		throw new TypeError("retention: sweep must be a function");
+	if (
+		typeof options.intervalMs !== "number" ||
+		!Number.isFinite(options.intervalMs) ||
+		options.intervalMs <= 0
+	) {
 		throw new RangeError("retention: intervalMs must be a positive finite number");
 	}
 	const setTimer = options.setTimer ?? realSetTimer;
-	const clearTimer = options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
+	const clearTimer =
+		options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
 	const report = (error: unknown): void => {
 		try {
 			options.onError?.(error instanceof Error ? error : new Error(String(error)));
 		} catch {
-			// An error hook that throws has nowhere further to report.
+			// reason: An error hook that throws has nowhere further to report.
 		}
 	};
 

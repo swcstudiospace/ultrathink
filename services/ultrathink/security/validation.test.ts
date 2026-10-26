@@ -159,7 +159,10 @@ describe("Validation", () => {
 		});
 
 		test("passes unknown fields through when allowExtraKeys is set", () => {
-			const validator = new ObjectValidator({ name: new StringValidator() }, { allowExtraKeys: true, strict: true });
+			const validator = new ObjectValidator(
+				{ name: new StringValidator() },
+				{ allowExtraKeys: true, strict: true },
+			);
 			const result = validator.validate({ name: "Ada", extra: 1 });
 			expect(result.valid).toBe(true);
 			expect(result.value).toEqual({ name: "Ada", extra: 1 });
@@ -172,19 +175,29 @@ describe("Validation", () => {
 			new Request("http://localhost/test", { method: "POST", body, headers });
 
 		test("returns the validated body", async () => {
-			const result = await validateRequestBody(jsonRequest(JSON.stringify({ name: "Ada" })), schema);
+			const result = await validateRequestBody(
+				jsonRequest(JSON.stringify({ name: "Ada" })),
+				schema,
+			);
 			expect(result.valid).toBe(true);
 			expect(result.value).toEqual({ name: "Ada" });
 		});
 
 		test("rejects unknown fields by default", async () => {
-			const result = await validateRequestBody(jsonRequest(JSON.stringify({ name: "Ada", extra: true })), schema);
+			const result = await validateRequestBody(
+				jsonRequest(JSON.stringify({ name: "Ada", extra: true })),
+				schema,
+			);
 			expect(result.valid).toBe(false);
 			expect(result.errors[0]).toMatchObject({ field: "extra", code: "UNEXPECTED_FIELD" });
 		});
 
 		test("accepts unknown fields when allowExtraKeys is set", async () => {
-			const result = await validateRequestBody(jsonRequest(JSON.stringify({ name: "Ada", extra: true })), schema, { allowExtraKeys: true });
+			const result = await validateRequestBody(
+				jsonRequest(JSON.stringify({ name: "Ada", extra: true })),
+				schema,
+				{ allowExtraKeys: true },
+			);
 			expect(result.valid).toBe(true);
 		});
 
@@ -213,7 +226,11 @@ describe("Validation", () => {
 					cancelled = true;
 				},
 			});
-			const request = new Request("http://localhost/test", { method: "POST", body: stream, duplex: "half" } as RequestInit);
+			const request = new Request("http://localhost/test", {
+				method: "POST",
+				body: stream,
+				duplex: "half",
+			} as RequestInit);
 			const result = await validateRequestBody(request, schema, { maxBodySize: 25 });
 			expect(result.errors[0]?.code).toBe("BODY_TOO_LARGE");
 			expect(pulls).toBeLessThan(10);
@@ -229,7 +246,10 @@ describe("Validation", () => {
 		});
 
 		test("validates min/max length", () => {
-			const validator = new ArrayValidator(new StringValidator({ minLength: 1 }), { minLength: 2, maxLength: 5 });
+			const validator = new ArrayValidator(new StringValidator({ minLength: 1 }), {
+				minLength: 2,
+				maxLength: 5,
+			});
 			expect(validator.validate(["a", "b"]).valid).toBe(true);
 			expect(validator.validate(["a"]).valid).toBe(false);
 			expect(validator.validate(["a", "b", "c", "d", "e", "f"]).valid).toBe(false);
@@ -244,7 +264,9 @@ describe("Validation", () => {
 
 	describe("commonValidators", () => {
 		test("has sessionId validator", () => {
-			expect(commonValidators.sessionId.validate("550e8400-e29b-41d4-a716-446655440000").valid).toBe(true);
+			expect(
+				commonValidators.sessionId.validate("550e8400-e29b-41d4-a716-446655440000").valid,
+			).toBe(true);
 		});
 
 		test("has apiKey validator", () => {

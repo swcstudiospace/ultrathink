@@ -27,7 +27,13 @@ export interface SkillLookup {
 }
 
 /** Ultrathink's own skills; a user typing one of them must never re-plan (duplicate tracker rows). */
-export const ULTRATHINK_SKILLS: readonly string[] = ["ultrathink-kickoff", "ultrathink-sync", "ultrathink-plan", "ultrathink-ship", "ultrathink-teach"];
+const ULTRATHINK_SKILLS: readonly string[] = [
+	"ultrathink-kickoff",
+	"ultrathink-sync",
+	"ultrathink-plan",
+	"ultrathink-ship",
+	"ultrathink-teach",
+];
 
 /**
  * First line of every engine child prompt. Hosts that fire hooks for headless runs with a sanitized
@@ -46,10 +52,13 @@ export function isNestedChildPrompt(prompt: string): boolean {
 }
 
 const SUMMARY_MAX = 600;
-const OMP_PREFIX_RE = /^\[IMPORTANT: User invoked the "([^"]+)" skill; follow its instructions\. Full skill below\.\]/;
+const OMP_PREFIX_RE =
+	/^\[IMPORTANT: User invoked the "([^"]+)" skill; follow its instructions\. Full skill below\.\]/;
 const HERMES_PREFIX = '[IMPORTANT: The user has invoked the "';
-const HERMES_SINGLE_TAIL = '" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]';
-const HERMES_INSTRUCTION = "The user has provided the following instruction alongside the skill invocation: ";
+const HERMES_SINGLE_TAIL =
+	'" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]';
+const HERMES_INSTRUCTION =
+	"The user has provided the following instruction alongside the skill invocation: ";
 const HERMES_RUNTIME = "\n\n[Runtime note:";
 const BUNDLE_INSTRUCTION = "\nUser instruction: ";
 const BUNDLE_END = "\n\n[Loaded as part of the ";
@@ -62,7 +71,7 @@ const ULTRATHINK_COMMAND_RE = /^ultrathink(?::|$)/i;
 const GSD_COMMAND_RE = /^gsd-[a-z0-9][a-z0-9-]*$/i;
 
 /** Bare `gsd-*` name, or undefined when `name` is not a GSD command. */
-export function gsdCommandBareName(name: string): string | undefined {
+function gsdCommandBareName(name: string): string | undefined {
 	const bare = name.includes(":") ? name.slice(name.lastIndexOf(":") + 1) : name;
 	return GSD_COMMAND_RE.test(bare) ? bare.toLowerCase() : undefined;
 }
@@ -148,7 +157,9 @@ export function parseSkillScaffold(prompt: string): SkillInvocation | undefined 
 		let instruction: string | undefined;
 		let body = text.slice(header.length);
 		if (at >= 0 && (loadedAt < 0 || at < loadedAt)) {
-			instruction = nonEmpty(text.slice(at + BUNDLE_INSTRUCTION.length, loadedAt < 0 ? undefined : loadedAt));
+			instruction = nonEmpty(
+				text.slice(at + BUNDLE_INSTRUCTION.length, loadedAt < 0 ? undefined : loadedAt),
+			);
 			body = text.slice(header.length, at);
 		}
 		return { name, instruction, summary: bodySummary(body), source: "hermes-bundle" };
@@ -197,7 +208,10 @@ function readSkill(path: string): { path: string; summary?: string } | undefined
 	try {
 		if (!statSync(path).isFile()) return undefined;
 		const { frontmatter, body } = splitFrontmatter(readFileSync(path, "utf8"));
-		return { path, summary: (frontmatter ? frontmatterDescription(frontmatter) : undefined) ?? bodySummary(body) };
+		return {
+			path,
+			summary: (frontmatter ? frontmatterDescription(frontmatter) : undefined) ?? bodySummary(body),
+		};
 	} catch {
 		return undefined;
 	}
@@ -205,7 +219,9 @@ function readSkill(path: string): { path: string; summary?: string } | undefined
 
 function globFirst(root: string, pattern: string): string | undefined {
 	try {
-		const hits = [...new Bun.Glob(pattern).scanSync({ cwd: root, onlyFiles: true, followSymlinks: true })].sort();
+		const hits = [
+			...new Bun.Glob(pattern).scanSync({ cwd: root, onlyFiles: true, followSymlinks: true }),
+		].sort();
 		return hits[0] === undefined ? undefined : join(root, hits[0]);
 	} catch {
 		return undefined;
@@ -213,7 +229,10 @@ function globFirst(root: string, pattern: string): string | undefined {
 }
 
 /** SKILL.md / command .md for a slash command name, or undefined (built-in or unknown command). */
-export function resolveSkillFile(name: string, lookup: SkillLookup): { path: string; summary?: string } | undefined {
+export function resolveSkillFile(
+	name: string,
+	lookup: SkillLookup,
+): { path: string; summary?: string } | undefined {
 	const normalized = normalizeName(name);
 	if (!NAME_RE.test(normalized) || normalized.includes("..")) return undefined;
 	const home = lookup.home ?? homedir();
@@ -221,7 +240,10 @@ export function resolveSkillFile(name: string, lookup: SkillLookup): { path: str
 	if (parts.length === 2 && parts[0] && parts[1]) {
 		const [plugin, skill] = parts;
 		const root = join(home, ".claude", "plugins", "cache");
-		for (const pattern of [`*/${plugin}/*/skills/${skill}/SKILL.md`, `*/${plugin}/*/commands/${skill}.md`]) {
+		for (const pattern of [
+			`*/${plugin}/*/skills/${skill}/SKILL.md`,
+			`*/${plugin}/*/commands/${skill}.md`,
+		]) {
 			const hit = globFirst(root, pattern);
 			const found = hit ? readSkill(hit) : undefined;
 			if (found) return found;
@@ -260,7 +282,8 @@ export function resolveSkillFile(name: string, lookup: SkillLookup): { path: str
 			if (found) return found;
 		}
 		const pstack = resolvePstack(join(home, ".cursor"));
-		const pstackFound = "skillsDir" in pstack ? readSkill(join(pstack.skillsDir, normalized, "SKILL.md")) : undefined;
+		const pstackFound =
+			"skillsDir" in pstack ? readSkill(join(pstack.skillsDir, normalized, "SKILL.md")) : undefined;
 		return pstackFound;
 	}
 	for (const path of candidates) {
@@ -276,12 +299,17 @@ function isUltrathinkSkill(name: string): boolean {
 }
 
 /** A resolved skill or command file that lives under this plugin's root (symlinks resolved) is ultrathink's own. */
-function ownFile(path: string, lookup: SkillLookup): "ultrathink-command" | "ultrathink-skill" | undefined {
+function ownFile(
+	path: string,
+	lookup: SkillLookup,
+): "ultrathink-command" | "ultrathink-skill" | undefined {
 	try {
 		const root = realpathSync(lookup.pluginRoot ?? PLUGIN_ROOT);
 		const file = realpathSync(path);
 		if (!file.startsWith(`${root}${sep}`)) return undefined;
-		return file.startsWith(`${join(root, "commands")}${sep}`) ? "ultrathink-command" : "ultrathink-skill";
+		return file.startsWith(`${join(root, "commands")}${sep}`)
+			? "ultrathink-command"
+			: "ultrathink-skill";
 	} catch {
 		return undefined;
 	}
@@ -300,7 +328,10 @@ function targetFor(skill: SkillInvocation): { text: string; skill: SkillInvocati
  * command. When that text is itself a slash command, keep it, but do not let the planning text
  * start with `/` — `decideUplift` would then skip it as an unknown command.
  */
-function gsdPlanningTarget(name: string, instruction?: string): { text: string; skill: SkillInvocation } {
+function gsdPlanningTarget(
+	name: string,
+	instruction?: string,
+): { text: string; skill: SkillInvocation } {
 	const skill: SkillInvocation = { name, ...(instruction ? { instruction } : {}), source: "slash" };
 	const planned = targetFor(skill);
 	if (!isCommandPrompt(planned.text)) return planned;
@@ -314,7 +345,10 @@ type SkipReason = "slash-command" | "ultrathink-skill" | "ultrathink-command" | 
  * ultrathink file, stops planning. Any other stacked command stays in the instruction. Checked before any fallback, so
  * `/gsd-quick /ultrathink-quick …` is not planned even when no GSD file is installed.
  */
-function walkStacked(args: string | undefined, lookup: SkillLookup): { skip: SkipReason } | { instruction?: string } {
+function walkStacked(
+	args: string | undefined,
+	lookup: SkillLookup,
+): { skip: SkipReason } | { instruction?: string } {
 	let instruction = args;
 	for (let count = 1; count < MAX_STACKED_SKILLS && instruction?.startsWith("/"); count++) {
 		const stacked = parseSlashCommand(instruction);
@@ -368,5 +402,10 @@ export function planningTarget(
 	if (!file) return { skip: "slash-command" };
 	const walked = walkStacked(command.args, lookup);
 	if ("skip" in walked) return walked;
-	return targetFor({ name: command.name, instruction: walked.instruction, summary: file.summary, source: "slash" });
+	return targetFor({
+		name: command.name,
+		instruction: walked.instruction,
+		summary: file.summary,
+		source: "slash",
+	});
 }

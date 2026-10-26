@@ -2,12 +2,18 @@
 // Copyright (C) 2026 SWC Studio
 import { DECISIONS_ERROR_KINDS, formatP } from "../decisions/types.ts";
 import { formatModelSelection } from "../claude/output.ts";
-import { type SwarmLaneCard, type SwarmSpawnCardSnapshot, type SwarmStatusCardSnapshot, type SwarmStatusLane } from "../swarm/teams.ts";
+import type {
+	SwarmLaneCard,
+	SwarmSpawnCardSnapshot,
+	SwarmStatusCardSnapshot,
+	SwarmStatusLane,
+} from "../swarm/teams.ts";
 import { type GraphModel, renderGraph } from "./omp-graph.ts";
 import { sanitizeInsightText } from "./omp-insights.ts";
 import { type ActivityNotice, toActivityNotice } from "./activity-notice.ts";
 import { formatElapsed, type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
 import { type PlanView, projectResolution } from "./view.ts";
+import { isRecord } from "../shared.ts";
 
 export const PLAN_TYPE = "ultrathink-plan";
 export const PENDING_TYPE = "ultrathink-pending";
@@ -36,21 +42,36 @@ const NON_SPACE_WHITESPACE = /[^\S ]+/g;
 const TRACKING_COLORS = { complete: "success", partial: "warning", failed: "error" } as const;
 
 type Component = { render(width: number): readonly string[] };
-type Renderer = (message: { content: unknown; details?: unknown }, options: { expanded: boolean }, theme: unknown) => Component | undefined;
+type Renderer = (
+	message: { content: unknown; details?: unknown },
+	options: { expanded: boolean },
+	theme: unknown,
+) => Component | undefined;
 type FrameOptions = { border: "borderMuted" | "borderAccent"; padY: number };
 
 function isPlanView(value: unknown): value is PlanView {
 	if (!value || typeof value !== "object") return false;
 	const view = value as Partial<PlanView>;
-	return typeof view.root === "string" && Array.isArray(view.nodes) && Array.isArray(view.waves) && Array.isArray(view.clarifications);
+	return (
+		typeof view.root === "string" &&
+		Array.isArray(view.nodes) &&
+		Array.isArray(view.waves) &&
+		Array.isArray(view.clarifications)
+	);
 }
 
 /**
  * Omp's own custom-message card around `rows`: rounded `theme.boxRound` border, `customMessageBg` interior with one
  * column of padding per side and `padY` blank rows top and bottom. Every returned row is exactly `width` columns.
  */
-function frame(rows: (room: number) => string[], width: number, p: Paint, options: FrameOptions): string[] {
-	if (width < MIN_FRAME_WIDTH) return rows(width).map((row) => truncateToWidth(row.replace(NON_SPACE_WHITESPACE, " "), width));
+function frame(
+	rows: (room: number) => string[],
+	width: number,
+	p: Paint,
+	options: FrameOptions,
+): string[] {
+	if (width < MIN_FRAME_WIDTH)
+		return rows(width).map((row) => truncateToWidth(row.replace(NON_SPACE_WHITESPACE, " "), width));
 	const lines = rows(width - 4).map((row) => row.replace(NON_SPACE_WHITESPACE, " "));
 	const box = p.boxChars();
 	const inner = width - 2;
@@ -65,7 +86,13 @@ function frame(rows: (room: number) => string[], width: number, p: Paint, option
 		return `${side}${p.bg("customMessageBg", ` ${text}`)}${p.bg("customMessageBg", fill)}${side}`;
 	});
 	const rule = box.horizontal.repeat(inner);
-	return [p.fg(options.border, `${box.topLeft}${rule}${box.topRight}`), ...padding, ...body, ...padding, p.fg(options.border, `${box.bottomLeft}${rule}${box.bottomRight}`)];
+	return [
+		p.fg(options.border, `${box.topLeft}${rule}${box.topRight}`),
+		...padding,
+		...body,
+		...padding,
+		p.fg(options.border, `${box.bottomLeft}${rule}${box.bottomRight}`),
+	];
 }
 
 /** Frames the rows built for each render width's content room; repeated renders at the same width return the same array. */
@@ -79,6 +106,7 @@ function card(rows: (room: number) => string[], p: Paint, options: FrameOptions)
 			try {
 				cached = frame(rows, width, p, options);
 			} catch {
+				// reason: a frame that cannot be drawn renders as no rows rather than throwing into the host
 				cached = [];
 			}
 			return cached;
@@ -87,7 +115,7 @@ function card(rows: (room: number) => string[], p: Paint, options: FrameOptions)
 }
 
 /** The plan's final Graph of Thought: every node done, linked issues attached, no animation timestamps. */
-export function planViewToGraph(view: PlanView): GraphModel {
+function planViewToGraph(view: PlanView): GraphModel {
 	return {
 		nodes: view.nodes.map((node) => ({
 			id: node.id,
@@ -100,26 +128,45 @@ export function planViewToGraph(view: PlanView): GraphModel {
 			steps: node.steps.map((step) => ({
 				step: step.step,
 				title: step.title,
-				...(step.url ? { issue: { ...(step.identifier ? { identifier: step.identifier } : {}), url: step.url } } : {}),
+				...(step.url
+					? {
+							issue: { ...(step.identifier ? { identifier: step.identifier } : {}), url: step.url },
+						}
+					: {}),
 			})),
 		})),
 	};
 }
 
 /** Card content rows (header, blank, graph, summaries) for a content room of `room` columns; the frame truncates each row. */
-function planRows(view: PlanView, graph: GraphModel, expanded: boolean, p: Paint, theme: unknown, room: number): string[] {
+function planRows(
+	view: PlanView,
+	graph: GraphModel,
+	expanded: boolean,
+	p: Paint,
+	theme: unknown,
+	room: number,
+): string[] {
 	const icon = p.icon("package");
 	const issues = view.tracking ? `${view.tracking.issues} issues` : "issues via kickoff";
 	const label = p.fg("customMessageLabel", p.bold(icon ? `${icon} ${PLAN_TYPE}` : PLAN_TYPE));
 	const via = view.skill ? ` · via /${view.skill}` : "";
 	const header = `${label}${p.fg("muted", ` · ${view.root} · ${view.nodes.length} nodes · ${issues} · ${formatElapsed(view.elapsedMs)}${via}`)}`;
-	const body = renderGraph(graph, theme, room, { now: 0, steps: expanded ? "all" : "none", animate: false, maxRows: expanded ? undefined : COLLAPSED_GRAPH_ROWS });
+	const body = renderGraph(graph, theme, room, {
+		now: 0,
+		steps: expanded ? "all" : "none",
+		animate: false,
+		maxRows: expanded ? undefined : COLLAPSED_GRAPH_ROWS,
+	});
 	if (expanded) {
 		for (const node of view.nodes) {
 			if (node.issue) body.push(p.fg("muted", `${node.issue.identifier} ${node.issue.url}`));
 			if (node.notionUrl) body.push(`${p.fg("dim", "notion")} ${p.fg("muted", node.notionUrl)}`);
 			for (const step of node.steps) {
-				if (step.url) body.push(`${INDENT}${p.fg("muted", `${step.identifier ? `${step.identifier} ` : ""}${step.url}`)}`);
+				if (step.url)
+					body.push(
+						`${INDENT}${p.fg("muted", `${step.identifier ? `${step.identifier} ` : ""}${step.url}`)}`,
+					);
 			}
 		}
 	} else if (view.nodes.some((node) => node.steps.length > 0)) {
@@ -127,29 +174,42 @@ function planRows(view: PlanView, graph: GraphModel, expanded: boolean, p: Paint
 	}
 	if (view.clarifications.length > 0) {
 		const blocking = view.clarifications.filter((item) => item.blocking).length;
-		const blockingCount = blocking > 0 ? `${p.fg("muted", " · ")}${p.fg("warning", `${blocking} blocking`)}` : "";
+		const blockingCount =
+			blocking > 0 ? `${p.fg("muted", " · ")}${p.fg("warning", `${blocking} blocking`)}` : "";
 		const count = view.clarifications.length;
-		body.push(`${p.fg("dim", "?")} ${p.fg("muted", `${count} clarification${count === 1 ? "" : "s"}`)}${blockingCount}`);
+		body.push(
+			`${p.fg("dim", "?")} ${p.fg("muted", `${count} clarification${count === 1 ? "" : "s"}`)}${blockingCount}`,
+		);
 		if (expanded) {
 			for (const item of view.clarifications) {
 				const mark = item.blocking ? `${p.fg("warning", "[blocking]")} ` : "";
-				const resolution = item.answer ? ` → ${item.answer}` : item.recommended ? ` · recommended: ${item.recommended}` : "";
-				body.push(`${INDENT}${mark}${p.fg("customMessageText", item.question)}${resolution && p.fg("muted", resolution)}`);
+				const resolution = item.answer
+					? ` → ${item.answer}`
+					: item.recommended
+						? ` · recommended: ${item.recommended}`
+						: "";
+				body.push(
+					`${INDENT}${mark}${p.fg("customMessageText", item.question)}${resolution && p.fg("muted", resolution)}`,
+				);
 			}
 		}
 	}
 	if (view.tracking) {
 		const { status, issues: count, subIssues, errors, notionTaskUrl } = view.tracking;
-		body.push(`${p.fg("dim", "tracking")} ${p.fg(TRACKING_COLORS[status], status)}${p.fg("muted", ` · ${count} issues · ${subIssues} sub-issues`)}`);
+		body.push(
+			`${p.fg("dim", "tracking")} ${p.fg(TRACKING_COLORS[status], status)}${p.fg("muted", ` · ${count} issues · ${subIssues} sub-issues`)}`,
+		);
 		if (expanded) {
-			for (const error of errors) body.push(`${INDENT}${p.fg("error", `${p.glyph("error")} ${error}`)}`);
+			for (const error of errors)
+				body.push(`${INDENT}${p.fg("error", `${p.glyph("error")} ${error}`)}`);
 		}
 		if (notionTaskUrl) body.push(`${p.fg("dim", "notion")} ${p.fg("muted", notionTaskUrl)}`);
 	}
 	// The planning model's safe record (details are untrusted session data, so it is projected again): label, reason and
 	// engine request, e.g. `omp-native:openai-codex/gpt-6.1-sol [detected] · reason live-model · engine auto (config)`.
 	const resolution = projectResolution(view.modelResolution);
-	if (resolution) body.push(`${p.fg("dim", "model")} ${p.fg("muted", formatModelSelection(resolution))}`);
+	if (resolution)
+		body.push(`${p.fg("dim", "model")} ${p.fg("muted", formatModelSelection(resolution))}`);
 	return [header, "", ...body];
 }
 
@@ -165,7 +225,14 @@ const INSIGHT_FOOTER_FLOOR = 4;
 const PARTIAL_READ_WARNING = "Partial snapshot — some reads failed";
 
 /** Closed vocabularies of the frozen card DTO; anything outside them is untrusted persisted data. */
-const INSIGHT_POINTS = ["plan", "ship", "knowledge", "blocking", "teachable", "skillworthy"] as const;
+const INSIGHT_POINTS = [
+	"plan",
+	"ship",
+	"knowledge",
+	"blocking",
+	"teachable",
+	"skillworthy",
+] as const;
 const INSIGHT_OUTCOMES = ["ok", "error"] as const;
 const INSIGHT_ACTIONS = [
 	"plan",
@@ -189,17 +256,15 @@ const INSIGHT_KINDS = ["bug", "pitfall", "pattern", "decision", "playbook"] as c
 const INSIGHT_CAPTURES = ["explicit", "observe", "auto"] as const;
 const INSIGHT_TARGETS = ["hermes", "omp", "claude", "prime-agent", "drafts"] as const;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isLiteral<T extends string>(list: readonly T[], value: unknown): value is T {
 	return typeof value === "string" && (list as readonly string[]).includes(value);
 }
 
 function insightText(value: unknown, maxChars: number): string {
 	if (typeof value !== "string" || value === "") return "";
-	return sanitizeInsightText(value, { maxChars }).replace(/[^\S ]+/g, " ").trim();
+	return sanitizeInsightText(value, { maxChars })
+		.replace(/[^\S ]+/g, " ")
+		.trim();
 }
 
 /** Validated non-negative integer counts; anything else is not the canonical DTO. */
@@ -241,7 +306,6 @@ type InsightCardPolicy = {
 	jevEnabled: boolean;
 };
 
-
 type InsightCardLesson = {
 	name: string;
 	status: string;
@@ -267,12 +331,19 @@ type InsightCard = {
 
 /** Recorded 0..1 probability; anything else leaves the field unrecorded. */
 function insightProbability(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+		? value
+		: undefined;
 }
 
 /** Non-negative finite bound for latency/cost/epoch millis; anything else leaves the field unrecorded. */
 function insightMillis(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : undefined;
+	return typeof value === "number" &&
+		Number.isFinite(value) &&
+		value >= 0 &&
+		value <= Number.MAX_SAFE_INTEGER
+		? value
+		: undefined;
 }
 
 function insightQuestion(value: unknown): InsightCardQuestion | undefined {
@@ -312,14 +383,22 @@ function insightDecision(value: unknown): InsightCardDecision | undefined {
 		const threshold = insightProbability(value.threshold);
 		if (threshold !== undefined) decision.threshold = threshold;
 	}
-	if (typeof value.error === "string" && (DECISIONS_ERROR_KINDS as readonly string[]).includes(value.error)) {
+	if (
+		typeof value.error === "string" &&
+		(DECISIONS_ERROR_KINDS as readonly string[]).includes(value.error)
+	) {
 		decision.error = value.error;
 	}
 	if (value.latencyMs !== undefined) {
 		const latencyMs = insightMillis(value.latencyMs);
 		if (latencyMs !== undefined) decision.latencyMs = latencyMs;
 	}
-	if (value.attempts !== undefined && typeof value.attempts === "number" && Number.isInteger(value.attempts) && value.attempts >= 0) {
+	if (
+		value.attempts !== undefined &&
+		typeof value.attempts === "number" &&
+		Number.isInteger(value.attempts) &&
+		value.attempts >= 0
+	) {
 		decision.attempts = value.attempts;
 	}
 	if (value.at !== undefined) {
@@ -378,7 +457,8 @@ function asInsightCard(details: unknown): InsightCard | undefined {
 	const recallLimit = insightCount(details.policy.recallLimit);
 	const recallChars = insightCount(details.policy.recallChars);
 	const promoteAfter = insightCount(details.policy.promoteAfter);
-	if (recallLimit === undefined || recallChars === undefined || promoteAfter === undefined) return undefined;
+	if (recallLimit === undefined || recallChars === undefined || promoteAfter === undefined)
+		return undefined;
 	if (typeof details.policy.autoPromote !== "boolean") return undefined;
 	if (typeof details.policy.jevEnabled !== "boolean") return undefined;
 	if (!isRecord(details.counts)) return undefined;
@@ -466,11 +546,16 @@ function decisionRow(decision: InsightCardDecision): string {
 	];
 	if (decision.error !== undefined) parts.push("err " + decision.error);
 	parts.push(decision.latencyMs === undefined ? "latency Not recorded" : decision.latencyMs + "ms");
-	parts.push(decision.attempts === undefined ? "attempts Not recorded" : decision.attempts + (decision.attempts === 1 ? " attempt" : " attempts"));
+	parts.push(
+		decision.attempts === undefined
+			? "attempts Not recorded"
+			: decision.attempts + (decision.attempts === 1 ? " attempt" : " attempts"),
+	);
 	if (decision.cost !== undefined) parts.push("Cost " + decision.cost);
 	const first = decision.questions[0];
 	if (first !== undefined) {
-		const extra = decision.questions.length > 1 ? " +" + (decision.questions.length - 1) + " more" : "";
+		const extra =
+			decision.questions.length > 1 ? " +" + (decision.questions.length - 1) + " more" : "";
 		parts.push("Q " + first.key + " (" + formatP(first.p) + ")" + extra);
 	}
 	const at = insightTimestamp(decision.at);
@@ -518,7 +603,10 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 	// the frame truncates every row to the room (width - 4), so the not-live marker rides on the
 	// label row: after time/scope it vanishes at common widths and the card reads as live state.
 	const label = p.fg("customMessageLabel", p.bold(INSIGHT_TYPE + " · captured — not live"));
-	const fallback = [`${label}`, "Insight snapshot unavailable. Open /ultrathink-ui for the live view."];
+	const fallback = [
+		`${label}`,
+		"Insight snapshot unavailable. Open /ultrathink-ui for the live view.",
+	];
 	const card = asInsightCard(details);
 	if (card === undefined) return fallback;
 	const scopeLine =
@@ -541,28 +629,43 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 				" · P " +
 				(latest.p === undefined ? "Not recorded" : formatP(latest.p));
 	const first = card.lessons[0];
-	const omittedLessons = Math.max(0, card.counts.reduce((total, entry) => total + entry.total, 0) - card.lessons.length);
+	const omittedLessons = Math.max(
+		0,
+		card.counts.reduce((total, entry) => total + entry.total, 0) - card.lessons.length,
+	);
 	const lessonLine =
 		first === undefined
 			? "No lessons recorded for this project"
-			: "Moments: " + card.lessons.length + " shown" + (omittedLessons > 0 ? " · " + omittedLessons + " omitted from card" : "") + " · " + first.name + " · " + first.status;
-	const autonomyCounts = "Autonomy: " + card.eligible + " eligible · " + card.promoted + " promoted";
+			: "Moments: " +
+				card.lessons.length +
+				" shown" +
+				(omittedLessons > 0 ? " · " + omittedLessons + " omitted from card" : "") +
+				" · " +
+				first.name +
+				" · " +
+				first.status;
+	const autonomyCounts =
+		"Autonomy: " + card.eligible + " eligible · " + card.promoted + " promoted";
 	const autonomySettings =
 		" · capture " +
 		card.policy.capture +
 		" · recall " +
-		(card.policy.recall ? "on (" + card.policy.recallLimit + "/" + card.policy.recallChars + ")" : "off") +
+		(card.policy.recall
+			? "on (" + card.policy.recallLimit + "/" + card.policy.recallChars + ")"
+			: "off") +
 		" · auto-promote " +
 		(card.policy.autoPromote ? "on" : "off") +
 		" after " +
 		card.policy.promoteAfter;
 	// a failed read must never read as ordinary missing history: the short warning leads the row so
 	// it survives truncation, while the settings trail as optional text that narrow rows may clip
-	const autonomyLine = (card.partial ? PARTIAL_READ_WARNING + " · " : "") + autonomyCounts + autonomySettings;
+	const autonomyLine =
+		(card.partial ? PARTIAL_READ_WARNING + " · " : "") + autonomyCounts + autonomySettings;
 	const countsLine =
 		card.counts.length === 0
 			? "Counts (shown): none recorded"
-			: "Counts (shown): " + card.counts.map((entry) => entry.total + " " + entry.status).join(" · ");
+			: "Counts (shown): " +
+				card.counts.map((entry) => entry.total + " " + entry.status).join(" · ");
 	if (!expanded) {
 		const rows = [`${label}`, scopeLine, latestLine, lessonLine, autonomyLine];
 		// Counts lead on the final row so they survive truncation: real snapshots always carry
@@ -574,21 +677,42 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 	const rows = [`${label}`, scopeLine, latestLine, lessonLine];
 	const jevShown = card.decisions.slice(0, INSIGHT_SUMMARY_CAP);
 	for (const decision of jevShown) rows.push(decisionRow(decision));
-	if (card.decisions.length > jevShown.length) rows.push("  " + (card.decisions.length - jevShown.length) + " more decisions — open /ultrathink-ui");
+	if (card.decisions.length > jevShown.length)
+		rows.push(
+			"  " + (card.decisions.length - jevShown.length) + " more decisions — open /ultrathink-ui",
+		);
 	const lessonsShown = card.lessons.slice(0, INSIGHT_SUMMARY_CAP);
 	for (const lesson of lessonsShown) {
 		rows.push(
-			"  Lesson: " + lesson.name + " · " + lesson.status + " · " + lesson.kind + " ×" + lesson.occurrences + (lesson.promotion === "" ? "" : " · " + lesson.promotion),
+			"  Lesson: " +
+				lesson.name +
+				" · " +
+				lesson.status +
+				" · " +
+				lesson.kind +
+				" ×" +
+				lesson.occurrences +
+				(lesson.promotion === "" ? "" : " · " + lesson.promotion),
 		);
 	}
-	if (card.lessons.length > lessonsShown.length) rows.push("  " + (card.lessons.length - lessonsShown.length) + " more lessons — open /ultrathink-ui");
+	if (card.lessons.length > lessonsShown.length)
+		rows.push(
+			"  " + (card.lessons.length - lessonsShown.length) + " more lessons — open /ultrathink-ui",
+		);
 	const flagged = card.lessons.filter((lesson) => lesson.eligible || lesson.promotion !== "");
 	const skillsShown = flagged.slice(0, INSIGHT_SUMMARY_CAP);
 	for (const lesson of skillsShown) {
-		rows.push("  Skill: " + lesson.name + " · " + (lesson.promotion === "" ? "eligible by saved lesson rules" : lesson.promotion));
+		rows.push(
+			"  Skill: " +
+				lesson.name +
+				" · " +
+				(lesson.promotion === "" ? "eligible by saved lesson rules" : lesson.promotion),
+		);
 	}
 	if (flagged.length > skillsShown.length) {
-		rows.push("  " + (flagged.length - skillsShown.length) + " more skills omitted — open /ultrathink-ui");
+		rows.push(
+			"  " + (flagged.length - skillsShown.length) + " more skills omitted — open /ultrathink-ui",
+		);
 	}
 	// the footer autonomy row keeps the recorded counts and the partial-read warning but drops the
 	// settings: the "Effective policy" row below already states them, and fewer fixed rows keep the
@@ -600,7 +724,9 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 			" · capture " +
 			card.policy.capture +
 			" · recall " +
-			(card.policy.recall ? "on (" + card.policy.recallLimit + "/" + card.policy.recallChars + ")" : "off") +
+			(card.policy.recall
+				? "on (" + card.policy.recallLimit + "/" + card.policy.recallChars + ")"
+				: "off") +
 			" · auto-promote " +
 			(card.policy.autoPromote ? "on" : "off") +
 			" after " +
@@ -608,7 +734,8 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 			" · Jev " +
 			(card.policy.jevEnabled ? "on" : "off"),
 	);
-	for (const limitation of pickLimitations(card.limitations, 2)) footer.push("Limitation: " + limitation);
+	for (const limitation of pickLimitations(card.limitations, 2))
+		footer.push("Limitation: " + limitation);
 	const identity = [rows[0]!, ...wrapInsightLines(rows.slice(1, 4), room)];
 	const detailsRows = wrapInsightLines(rows.slice(4), room);
 	const footerRows = wrapInsightLines(footer, room);
@@ -622,22 +749,41 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 		const identityCap = INSIGHT_EXPANDED_ROWS - INSIGHT_FOOTER_FLOOR - reserved;
 		if (id.length > identityCap) {
 			const hidden = id.length - identityCap + 1;
-			id = [...id.slice(0, identityCap - 1), truncateToWidth(hidden + " more record lines — open /ultrathink-ui", room)];
+			id = [
+				...id.slice(0, identityCap - 1),
+				truncateToWidth(hidden + " more record lines — open /ultrathink-ui", room),
+			];
 		}
 		let booked = footerRows;
-		const footerBudget = Math.max(INSIGHT_FOOTER_FLOOR, INSIGHT_EXPANDED_ROWS - reserved - id.length);
+		const footerBudget = Math.max(
+			INSIGHT_FOOTER_FLOOR,
+			INSIGHT_EXPANDED_ROWS - reserved - id.length,
+		);
 		if (booked.length > footerBudget) {
 			const hidden = booked.length - footerBudget + 1;
-			booked = [...booked.slice(0, footerBudget - 1), truncateToWidth(hidden + " more policy and limitation lines — open /ultrathink-ui", room)];
+			booked = [
+				...booked.slice(0, footerBudget - 1),
+				truncateToWidth(hidden + " more policy and limitation lines — open /ultrathink-ui", room),
+			];
 		}
-		return { id, footer: booked, available: Math.max(0, INSIGHT_EXPANDED_ROWS - id.length - booked.length) };
+		return {
+			id,
+			footer: booked,
+			available: Math.max(0, INSIGHT_EXPANDED_ROWS - id.length - booked.length),
+		};
 	};
 	let { id: shownIdentity, footer: shownFooter, available } = fitBookends(0);
-	if (detailsRows.length > 0 && available === 0) ({ id: shownIdentity, footer: shownFooter, available } = fitBookends(1));
+	if (detailsRows.length > 0 && available === 0)
+		({ id: shownIdentity, footer: shownFooter, available } = fitBookends(1));
 	if (detailsRows.length > available) {
 		const shown = available - 1;
-		const notice = (detailsRows.length - shown) + " more detail lines — open /ultrathink-ui";
-		return [...shownIdentity, ...detailsRows.slice(0, shown), truncateToWidth(notice, room), ...shownFooter];
+		const notice = detailsRows.length - shown + " more detail lines — open /ultrathink-ui";
+		return [
+			...shownIdentity,
+			...detailsRows.slice(0, shown),
+			truncateToWidth(notice, room),
+			...shownFooter,
+		];
 	}
 	return [...shownIdentity, ...detailsRows, ...shownFooter];
 }
@@ -724,7 +870,11 @@ function wrapRow(text: string, room: number): string[] {
 }
 
 /** 4× each render cap: drawn text always truncates below these bounds, so per-lane work stays proportional to what a row can show. */
-const SWARM_INPUT_CHARS = { id: SWARM_ID_CHARS * 4, text: SWARM_TEXT_CHARS * 4, path: SWARM_PATH_CHARS * 4 };
+const SWARM_INPUT_CHARS = {
+	id: SWARM_ID_CHARS * 4,
+	text: SWARM_TEXT_CHARS * 4,
+	path: SWARM_PATH_CHARS * 4,
+};
 
 /** Shallow copy of one persisted lane with every string field pre-truncated to its input bound, before validation or sanitization runs. */
 function capLaneStrings(value: unknown): unknown {
@@ -748,10 +898,21 @@ function swarmSpawnLane(value: unknown): SwarmLaneCard | undefined {
 	if (!isRecord(value)) return undefined;
 	if (typeof value.laneId !== "string" || value.laneId === "") return undefined;
 	if (typeof value.brief !== "string") return undefined;
-	if (typeof value.stateDir !== "string" || value.stateDir === "" || typeof value.logPath !== "string") return undefined;
-	const lane: SwarmLaneCard = { laneId: value.laneId, brief: value.brief, stateDir: value.stateDir, logPath: value.logPath };
+	if (
+		typeof value.stateDir !== "string" ||
+		value.stateDir === "" ||
+		typeof value.logPath !== "string"
+	)
+		return undefined;
+	const lane: SwarmLaneCard = {
+		laneId: value.laneId,
+		brief: value.brief,
+		stateDir: value.stateDir,
+		logPath: value.logPath,
+	};
 	if (value.pid !== undefined) {
-		if (typeof value.pid !== "number" || !Number.isInteger(value.pid) || value.pid <= 0) return undefined;
+		if (typeof value.pid !== "number" || !Number.isInteger(value.pid) || value.pid <= 0)
+			return undefined;
 		lane.pid = value.pid;
 	}
 	if (value.error !== undefined) {
@@ -764,9 +925,16 @@ function swarmSpawnLane(value: unknown): SwarmLaneCard | undefined {
 /** Validated status lane: a probed lane carries strict done/total counts; a failed probe is bare (error only). Both carry the run log path. */
 function swarmStatusLane(value: unknown): SwarmStatusLane | undefined {
 	if (!isRecord(value)) return undefined;
-	if (typeof value.laneId !== "string" || value.laneId === "" || typeof value.summary !== "string") return undefined;
+	if (typeof value.laneId !== "string" || value.laneId === "" || typeof value.summary !== "string")
+		return undefined;
 	if (typeof value.logPath !== "string") return undefined;
-	if (typeof value.error === "string") return { laneId: value.laneId, summary: value.summary, logPath: value.logPath, error: value.error };
+	if (typeof value.error === "string")
+		return {
+			laneId: value.laneId,
+			summary: value.summary,
+			logPath: value.logPath,
+			error: value.error,
+		};
 	const done = insightCount(value.done);
 	const total = insightCount(value.total);
 	if (done === undefined || total === undefined) return undefined;
@@ -783,7 +951,9 @@ function swarmStatusLane(value: unknown): SwarmStatusLane | undefined {
  * returns undefined and the caller renders the bounded SAFE fallback. Recorded text is never rewritten
  * beyond that cap — sanitization happens at draw time on every rendered row.
  */
-function asSwarmCard(details: unknown): SwarmSpawnCardSnapshot | SwarmStatusCardSnapshot | undefined {
+function asSwarmCard(
+	details: unknown,
+): SwarmSpawnCardSnapshot | SwarmStatusCardSnapshot | undefined {
 	if (!isRecord(details) || !Array.isArray(details.lanes)) return undefined;
 	const spawned = insightCount(details.spawned);
 	const total = insightCount(details.total);
@@ -812,7 +982,9 @@ function asSwarmCard(details: unknown): SwarmSpawnCardSnapshot | SwarmStatusCard
 function swarmStatusCounts(lanes: readonly SwarmStatusLane[]): string {
 	const failed = lanes.filter((lane) => "error" in lane).length;
 	const empty = lanes.filter((lane) => !("error" in lane) && lane.total === 0).length;
-	const done = lanes.filter((lane) => !("error" in lane) && lane.total > 0 && lane.done >= lane.total).length;
+	const done = lanes.filter(
+		(lane) => !("error" in lane) && lane.total > 0 && lane.done >= lane.total,
+	).length;
 	const incomplete = lanes.length - done - failed - empty;
 	const parts: string[] = [];
 	if (done > 0) parts.push(`${done} done`);
@@ -827,10 +999,17 @@ function swarmCompactRow(lane: SwarmLaneCard | SwarmStatusLane): string {
 	const id = insightText(lane.laneId, SWARM_ID_CHARS);
 	if ("brief" in lane) {
 		const lead = insightText(lane.error ?? lane.brief, SWARM_TEXT_CHARS);
-		return [id, lead, pathBasename(pathText(lane.stateDir, SWARM_PATH_CHARS))].filter((part) => part !== "").join(" · ");
+		return [id, lead, pathBasename(pathText(lane.stateDir, SWARM_PATH_CHARS))]
+			.filter((part) => part !== "")
+			.join(" · ");
 	}
-	if ("error" in lane) return [id, insightText(lane.error, SWARM_TEXT_CHARS)].filter((part) => part !== "").join(" · ");
-	return [id, `${lane.done}/${lane.total} done`, insightText(lane.summary, SWARM_TEXT_CHARS)].filter((part) => part !== "").join(" · ");
+	if ("error" in lane)
+		return [id, insightText(lane.error, SWARM_TEXT_CHARS)]
+			.filter((part) => part !== "")
+			.join(" · ");
+	return [id, `${lane.done}/${lane.total} done`, insightText(lane.summary, SWARM_TEXT_CHARS)]
+		.filter((part) => part !== "")
+		.join(" · ");
 }
 
 /**
@@ -842,29 +1021,52 @@ function swarmCompactRow(lane: SwarmLaneCard | SwarmStatusLane): string {
 function swarmLaneExpandedRows(lane: SwarmLaneCard | SwarmStatusLane, room: number): string[] {
 	if ("brief" in lane) {
 		const id = insightText(lane.laneId, SWARM_ID_CHARS);
-		const heading = [id, lane.pid === undefined ? "" : `pid ${lane.pid}`].filter((part) => part !== "").join(" · ");
+		const heading = [id, lane.pid === undefined ? "" : `pid ${lane.pid}`]
+			.filter((part) => part !== "")
+			.join(" · ");
 		const lead = insightText(lane.error ?? lane.brief, SWARM_TEXT_CHARS);
-		return [heading, ...wrapRow(lead, room), pathText(lane.stateDir, SWARM_PATH_CHARS), `log ${pathText(lane.logPath, SWARM_PATH_CHARS)}`].filter((row) => row !== "");
+		return [
+			heading,
+			...wrapRow(lead, room),
+			pathText(lane.stateDir, SWARM_PATH_CHARS),
+			`log ${pathText(lane.logPath, SWARM_PATH_CHARS)}`,
+		].filter((row) => row !== "");
 	}
 	const id = insightText(lane.laneId, SWARM_ID_CHARS);
 	if ("error" in lane) {
-		return [id, ...wrapRow(insightText(lane.error, SWARM_TEXT_CHARS), room), `log ${pathText(lane.logPath, SWARM_PATH_CHARS)}`].filter((row) => row !== "");
+		return [
+			id,
+			...wrapRow(insightText(lane.error, SWARM_TEXT_CHARS), room),
+			`log ${pathText(lane.logPath, SWARM_PATH_CHARS)}`,
+		].filter((row) => row !== "");
 	}
 	const heading = [id, `${lane.done}/${lane.total} done`].filter((part) => part !== "").join(" · ");
-	return [heading, ...wrapRow(insightText(lane.summary, SWARM_TEXT_CHARS), room), `log ${pathText(lane.logPath, SWARM_PATH_CHARS)}`].filter((row) => row !== "");
+	return [
+		heading,
+		...wrapRow(insightText(lane.summary, SWARM_TEXT_CHARS), room),
+		`log ${pathText(lane.logPath, SWARM_PATH_CHARS)}`,
+	].filter((row) => row !== "");
 }
 
 function swarmRows(details: unknown, expanded: boolean, p: Paint, room: number): string[] {
 	const label = p.fg("customMessageLabel", p.bold(SWARM_TYPE));
-	const fallback = [`${label}`, "Swarm lanes — details unavailable. Run /ultrathink-swarm status for the full list."];
+	const fallback = [
+		`${label}`,
+		"Swarm lanes — details unavailable. Run /ultrathink-swarm status for the full list.",
+	];
 	const swarm = asSwarmCard(details);
 	if (swarm === undefined) return fallback;
 	const omitted = "omitted" in swarm ? swarm.omitted : 0;
 	// a zero-lane report is a real state, not an empty frame: one bounded content row names it
 	if (swarm.lanes.length === 0) {
-		return omitted === 0 ? ["No swarm lanes"] : ["No swarm lanes", `${omitted} older lanes not shown`];
+		return omitted === 0
+			? ["No swarm lanes"]
+			: ["No swarm lanes", `${omitted} older lanes not shown`];
 	}
-	const counts = "spawned" in swarm ? `${swarm.spawned}/${swarm.total} lanes spawned` : swarmStatusCounts(swarm.lanes);
+	const counts =
+		"spawned" in swarm
+			? `${swarm.spawned}/${swarm.total} lanes spawned`
+			: swarmStatusCounts(swarm.lanes);
 	// counts — and any omission notice — lead so they survive truncation before the per-lane rows
 	const head = [`${label}`, counts];
 	if (omitted > 0) head.push(`${omitted} older lanes not shown`);
@@ -889,7 +1091,8 @@ function swarmRows(details: unknown, expanded: boolean, p: Paint, room: number):
 		rows.push(...laneRows);
 		shown += 1;
 	}
-	if (shown < swarm.lanes.length) rows.push(`${shown} of ${swarm.lanes.length} lanes shown — ${SWARM_RECOVERY}`);
+	if (shown < swarm.lanes.length)
+		rows.push(`${shown} of ${swarm.lanes.length} lanes shown — ${SWARM_RECOVERY}`);
 	return rows;
 }
 
@@ -902,7 +1105,12 @@ function activityHeader(notice: ActivityNotice): string {
 
 /** One plain line a host without a card renderer can show. */
 export function activityFallbackLine(notice: ActivityNotice): string {
-	const count = notice.count !== undefined ? ` · ${notice.count}` : notice.outcome ? ` · ${notice.outcome}` : "";
+	const count =
+		notice.count !== undefined
+			? ` · ${notice.count}`
+			: notice.outcome
+				? ` · ${notice.outcome}`
+				: "";
 	const source = notice.source ? ` (${notice.source})` : "";
 	return `${activityHeader(notice)}${count}${source}`;
 }
@@ -917,13 +1125,16 @@ function activityRows(details: unknown, p: Paint): string[] {
 	const names = notice.names ?? [];
 	for (const name of names.slice(0, 3)) rows.push(p.fg("muted", name));
 	// Validation caps `names`, so the hidden total comes from `count` when that is larger than the stored names.
-	const hidden = names.length > 0 ? Math.max(names.length, notice.count ?? 0) - Math.min(names.length, 3) : 0;
+	const hidden =
+		names.length > 0 ? Math.max(names.length, notice.count ?? 0) - Math.min(names.length, 3) : 0;
 	if (hidden > 0) rows.push(p.fg("dim", `${hidden} more`));
 	if (notice.detail) rows.push(p.fg("dim", notice.detail));
 	return rows;
 }
 
-export function registerUltrathinkRenderers(pi: { registerMessageRenderer(type: string, renderer: Renderer): void }): void {
+export function registerUltrathinkRenderers(pi: {
+	registerMessageRenderer(type: string, renderer: Renderer): void;
+}): void {
 	pi.registerMessageRenderer(PLAN_TYPE, (message, options, theme) => {
 		// details are untrusted session data: a malformed view falls back to Omp's default card instead of throwing into Omp
 		try {
@@ -932,7 +1143,10 @@ export function registerUltrathinkRenderers(pi: { registerMessageRenderer(type: 
 			const p = paint(theme);
 			// built eagerly so malformed nodes fall back to Omp's default card here
 			const graph = planViewToGraph(view);
-			return card((room) => planRows(view, graph, options.expanded, p, theme, room), p, { border: "borderMuted", padY: 1 });
+			return card((room) => planRows(view, graph, options.expanded, p, theme, room), p, {
+				border: "borderMuted",
+				padY: 1,
+			});
 		} catch {
 			return undefined;
 		}
@@ -946,7 +1160,8 @@ export function registerUltrathinkRenderers(pi: { registerMessageRenderer(type: 
 	pi.registerMessageRenderer(SYNC_TYPE, (message, _options, theme) => {
 		// details are untrusted session data: anything without a PR URL falls back to Omp's default card
 		const { details } = message;
-		const url = details && typeof details === "object" && "url" in details ? details.url : undefined;
+		const url =
+			details && typeof details === "object" && "url" in details ? details.url : undefined;
 		if (typeof url !== "string") return undefined;
 		const p = paint(theme);
 		const label = p.fg("customMessageLabel", p.bold(SYNC_TYPE));
@@ -960,7 +1175,8 @@ export function registerUltrathinkRenderers(pi: { registerMessageRenderer(type: 
 		const branch = "branch" in details ? details.branch : undefined;
 		const base = "base" in details ? details.base : undefined;
 		const ahead = "ahead" in details ? details.ahead : undefined;
-		if (typeof branch !== "string" || typeof base !== "string" || typeof ahead !== "number") return undefined;
+		if (typeof branch !== "string" || typeof base !== "string" || typeof ahead !== "number")
+			return undefined;
 		const p = paint(theme);
 		const label = p.fg("customMessageLabel", p.bold(SHIP_TYPE));
 		const row = `${p.fg("accent", p.glyph("running"))} ${label}${p.fg("muted", ` · ${branch} → ${base} · ${ahead} commits`)}`;
@@ -971,7 +1187,10 @@ export function registerUltrathinkRenderers(pi: { registerMessageRenderer(type: 
 		// bounded display-only card, never throwing raw text into the host.
 		try {
 			const p = paint(theme);
-			return card((room) => insightRows(message.details, options.expanded, p, room), p, { border: "borderMuted", padY: options.expanded ? 1 : 0 });
+			return card((room) => insightRows(message.details, options.expanded, p, room), p, {
+				border: "borderMuted",
+				padY: options.expanded ? 1 : 0,
+			});
 		} catch {
 			return undefined;
 		}
@@ -981,7 +1200,10 @@ export function registerUltrathinkRenderers(pi: { registerMessageRenderer(type: 
 		// bounded display-only card, never throwing raw text into the host.
 		try {
 			const p = paint(theme);
-			return card((room) => swarmRows(message.details, options.expanded, p, room), p, { border: "borderMuted", padY: options.expanded ? 1 : 0 });
+			return card((room) => swarmRows(message.details, options.expanded, p, room), p, {
+				border: "borderMuted",
+				padY: options.expanded ? 1 : 0,
+			});
 		} catch {
 			return undefined;
 		}

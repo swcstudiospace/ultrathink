@@ -11,7 +11,7 @@ import { type McpToolHost, handleMcpPayload } from "../mcp/mcp.ts";
 import type { Logger } from "../obs/log.ts";
 
 /** A line longer than this is refused and discarded, so one runaway message cannot grow memory without bound. */
-export const MAX_LINE_BYTES = 1024 * 1024;
+const MAX_LINE_BYTES = 1024 * 1024;
 
 const NEWLINE = 0x0a;
 const CARRIAGE_RETURN = 0x0d;
@@ -111,10 +111,16 @@ export async function serveStdio(options: StdioServerOptions): Promise<void> {
 		}
 		let reply: McpReply | null;
 		try {
-			reply = await handleMcpPayload(host, payload, protocolVersion === undefined ? undefined : { protocolVersion });
+			reply = await handleMcpPayload(
+				host,
+				payload,
+				protocolVersion === undefined ? undefined : { protocolVersion },
+			);
 		} catch (error) {
 			// Only the error class is kept: the message may quote request content.
-			logger?.error("handler_error", { error: error instanceof Error ? error.name : "UnknownError" });
+			logger?.error("handler_error", {
+				error: error instanceof Error ? error.name : "UnknownError",
+			});
 			await write(errorLine(requestId(payload), INTERNAL_ERROR, "internal error"));
 			return;
 		}

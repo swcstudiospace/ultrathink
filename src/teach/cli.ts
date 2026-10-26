@@ -10,12 +10,25 @@
 import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { toAgentCardFromMoments } from "./agent-card.ts";
-import { captureMoment, confirmMoment, forgetMoment, syncOutbox, TeachInputError } from "./capture.ts";
+import {
+	captureMoment,
+	confirmMoment,
+	forgetMoment,
+	syncOutbox,
+	TeachInputError,
+} from "./capture.ts";
 import { teachContext, teachEnabled } from "./context.ts";
 import type { TeachContextOptions } from "./context.ts";
 import { parseDigest } from "./digest.ts";
 import { observeDigest } from "./observe.ts";
-import { filterSkillworthy, installSkill, markPromoted, promotionCandidates, renderSkillDraft, targetForHost } from "./promote.ts";
+import {
+	filterSkillworthy,
+	installSkill,
+	markPromoted,
+	promotionCandidates,
+	renderSkillDraft,
+	targetForHost,
+} from "./promote.ts";
 import { formatLessonsSection, recallLessons } from "./recall.ts";
 import { redactText } from "./redact.ts";
 import { hindsightReadiness, momentCounts, teachStatusLine } from "./status.ts";
@@ -104,7 +117,10 @@ const SPECS: Record<string, Spec> = {
 		},
 		maxArgs: 0,
 	},
-	recall: { flags: { json: "bool", limit: "value", project: "value" }, maxArgs: Number.POSITIVE_INFINITY },
+	recall: {
+		flags: { json: "bool", limit: "value", project: "value" },
+		maxArgs: Number.POSITIVE_INFINITY,
+	},
 	confirm: { flags: { json: "bool" }, maxArgs: 1 },
 	forget: { flags: { json: "bool" }, maxArgs: 1 },
 	sync: { flags: { json: "bool" }, maxArgs: 0 },
@@ -161,7 +177,10 @@ function parseArgs(argv: readonly string[], spec: Spec): Parsed {
 		if (token.includes("=")) value = token.slice(token.indexOf("=") + 1);
 		else {
 			const next = argv[i + 1];
-			const looksLikeFlag = next !== undefined && next.startsWith("--") && (next === "--" || Object.hasOwn(spec.flags, flagName(next)));
+			const looksLikeFlag =
+				next !== undefined &&
+				next.startsWith("--") &&
+				(next === "--" || Object.hasOwn(spec.flags, flagName(next)));
 			if (next !== undefined && !looksLikeFlag) {
 				value = next;
 				i += 1;
@@ -189,6 +208,7 @@ function oneLine(message: string): string {
 	try {
 		text = redactText(message);
 	} catch {
+		// reason: a redaction failure is replaced by a fixed word, so no unredacted text is printed
 		text = "failed";
 	}
 	const line = (text.split(/\r?\n/)[0] ?? "").trim();
@@ -204,7 +224,8 @@ function fail(json: boolean, code: number, message: string): CliResult {
 }
 
 function asEnum<T extends string>(value: string, allowed: readonly T[], what: string): T {
-	if (!(allowed as readonly string[]).includes(value)) throw new UsageError(`unknown ${what}: ${value.slice(0, 40)}`);
+	if (!(allowed as readonly string[]).includes(value))
+		throw new UsageError(`unknown ${what}: ${value.slice(0, 40)}`);
 	return value as T;
 }
 
@@ -234,7 +255,9 @@ function findMoment(store: TeachStore | undefined, token: string): TeachableMome
 }
 
 function newestFirst(moments: TeachableMoment[]): TeachableMoment[] {
-	return [...moments].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.id.localeCompare(b.id)));
+	return [...moments].sort((a, b) =>
+		a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.id.localeCompare(b.id),
+	);
 }
 
 function momentLine(moment: TeachableMoment): string {
@@ -248,7 +271,12 @@ function captureLine(outcome: CaptureOutcome): string {
 }
 
 function captureJson(outcome: CaptureOutcome): Record<string, unknown> {
-	return { id: outcome.moment.id, created: outcome.created, retain: outcome.retain, reason: outcome.reason ?? null };
+	return {
+		id: outcome.moment.id,
+		created: outcome.created,
+		retain: outcome.retain,
+		reason: outcome.reason ?? null,
+	};
 }
 
 async function readInput(deps: CommandDeps): Promise<string> {
@@ -264,7 +292,8 @@ function parseJsonObject(text: string, what: string): Record<string, unknown> {
 	} catch {
 		throw new UsageError(`${what} is not valid JSON`);
 	}
-	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new UsageError(`${what} must be a JSON object`);
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		throw new UsageError(`${what} must be a JSON object`);
 	return value as Record<string, unknown>;
 }
 
@@ -278,11 +307,16 @@ function optString(o: Record<string, unknown>, key: string): string | undefined 
 function optStrings(o: Record<string, unknown>, key: string): string[] | undefined {
 	const value = o[key];
 	if (value === undefined || value === null) return undefined;
-	if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new UsageError(`${key} must be an array of strings`);
+	if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+		throw new UsageError(`${key} must be an array of strings`);
 	return value as string[];
 }
 
-function optEnum<T extends string>(o: Record<string, unknown>, key: string, allowed: readonly T[]): T | undefined {
+function optEnum<T extends string>(
+	o: Record<string, unknown>,
+	key: string,
+	allowed: readonly T[],
+): T | undefined {
 	const value = optString(o, key);
 	return value === undefined ? undefined : asEnum(value, allowed, key);
 }
@@ -290,7 +324,8 @@ function optEnum<T extends string>(o: Record<string, unknown>, key: string, allo
 function captureInputFromJson(o: Record<string, unknown>): CaptureInput {
 	const name = optString(o, "name");
 	const body = optString(o, "body");
-	if (name === undefined || body === undefined) throw new UsageError("capture input needs name and body");
+	if (name === undefined || body === undefined)
+		throw new UsageError("capture input needs name and body");
 	const input: CaptureInput = { name, body };
 	const description = optString(o, "description");
 	if (description !== undefined) input.description = description;
@@ -306,7 +341,8 @@ function captureInputFromJson(o: Record<string, unknown>): CaptureInput {
 	if (relatedIds) input.relatedIds = relatedIds;
 	const confidence = o.confidence;
 	if (confidence !== undefined && confidence !== null) {
-		if (typeof confidence !== "number" || !Number.isFinite(confidence)) throw new UsageError("confidence must be a number");
+		if (typeof confidence !== "number" || !Number.isFinite(confidence))
+			throw new UsageError("confidence must be a number");
 		input.confidence = confidence;
 	}
 	const origin = optEnum<MomentOrigin>(o, "origin", MOMENT_ORIGINS);
@@ -321,7 +357,8 @@ function captureInputFromJson(o: Record<string, unknown>): CaptureInput {
 function captureInputFromFlags(p: Parsed): CaptureInput {
 	const name = p.one("name");
 	const body = p.one("body");
-	if (name === undefined || body === undefined) throw new UsageError("capture needs --stdin or both --name and --body");
+	if (name === undefined || body === undefined)
+		throw new UsageError("capture needs --stdin or both --name and --body");
 	const input: CaptureInput = { name, body };
 	const description = p.one("description");
 	if (description !== undefined) input.description = description;
@@ -336,7 +373,11 @@ function captureInputFromFlags(p: Parsed): CaptureInput {
 
 function buildContext(deps: CommandDeps): TeachContext {
 	const env = deps.env ?? process.env;
-	const options: TeachContextOptions = { cwd: deps.cwd, env, stateDir: deps.stateDir ?? resolveStateDir(env) };
+	const options: TeachContextOptions = {
+		cwd: deps.cwd,
+		env,
+		stateDir: deps.stateDir ?? resolveStateDir(env),
+	};
 	if (deps.storePath !== undefined) options.storePath = deps.storePath;
 	if (deps.fetch) options.fetch = deps.fetch;
 	if (deps.now) options.now = deps.now;
@@ -390,10 +431,15 @@ function list(ctx: TeachContext, p: Parsed): CliResult {
 	const project = p.one("project")?.toLowerCase();
 	const moments = newestFirst(
 		(existingStore(ctx)?.list() ?? []).filter(
-			(moment) => (statusFilter === undefined || moment.status === statusFilter) && (project === undefined || moment.project === project),
+			(moment) =>
+				(statusFilter === undefined || moment.status === statusFilter) &&
+				(project === undefined || moment.project === project),
 		),
 	);
-	return done(p, moments.length === 0 ? "No moments." : moments.map(momentLine).join("\n"), { count: moments.length, moments });
+	return done(p, moments.length === 0 ? "No moments." : moments.map(momentLine).join("\n"), {
+		count: moments.length,
+		moments,
+	});
 }
 
 function show(ctx: TeachContext, p: Parsed): CliResult {
@@ -401,7 +447,10 @@ function show(ctx: TeachContext, p: Parsed): CliResult {
 	if (token === undefined) throw new UsageError("show needs <id>");
 	const moment = findMoment(existingStore(ctx), token);
 	if (!moment) return fail(p.json, 1, `no moment ${token}`);
-	const lines = [`${moment.id} · ${moment.status} · ${moment.kind} · x${moment.occurrences} · ${moment.project}`, moment.name];
+	const lines = [
+		`${moment.id} · ${moment.status} · ${moment.kind} · x${moment.occurrences} · ${moment.project}`,
+		moment.name,
+	];
 	if (moment.description) lines.push(moment.description);
 	lines.push("", moment.body, "");
 	lines.push(
@@ -409,14 +458,24 @@ function show(ctx: TeachContext, p: Parsed): CliResult {
 		`created ${moment.createdAt} · last seen ${moment.lastSeenAt} · recalled ${moment.recalled}x`,
 	);
 	if (moment.retained) lines.push(`retained ${moment.retained.at} (${moment.retained.bank})`);
-	if (moment.promoted) lines.push(`promoted ${moment.promoted.at} → ${moment.promoted.skill} (${moment.promoted.target})`);
+	if (moment.promoted)
+		lines.push(
+			`promoted ${moment.promoted.at} → ${moment.promoted.skill} (${moment.promoted.target})`,
+		);
 	return done(p, lines.join("\n"), moment);
 }
 
 async function capture(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise<CliResult> {
-	const viaFlags = ["name", "body", "description", "kind", "tag", "phase", "artifact"].some((name) => p.has(name));
-	if (p.has("stdin") && viaFlags) throw new UsageError("--stdin cannot be combined with --name/--body and the other capture flags");
-	const input = p.has("stdin") ? captureInputFromJson(parseJsonObject(await readInput(deps), "stdin")) : captureInputFromFlags(p);
+	const viaFlags = ["name", "body", "description", "kind", "tag", "phase", "artifact"].some(
+		(name) => p.has(name),
+	);
+	if (p.has("stdin") && viaFlags)
+		throw new UsageError(
+			"--stdin cannot be combined with --name/--body and the other capture flags",
+		);
+	const input = p.has("stdin")
+		? captureInputFromJson(parseJsonObject(await readInput(deps), "stdin"))
+		: captureInputFromFlags(p);
 	const outcome = await captureMoment(input, ctx);
 	return done(p, `Captured ${captureLine(outcome)}`, { ok: true, ...captureJson(outcome) });
 }
@@ -461,7 +520,12 @@ async function recall(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 		header += ` · ${outcome.status}${outcome.reason ? `: ${oneLine(outcome.reason)}` : ""}`;
 	}
 	const section = formatLessonsSection(outcome, ctx.config.teach.recallChars);
-	return done(p, section ? `${header}\n${section}` : header, value, outcome.status === "error" ? 1 : 0);
+	return done(
+		p,
+		section ? `${header}\n${section}` : header,
+		value,
+		outcome.status === "error" ? 1 : 0,
+	);
 }
 
 async function confirm(ctx: TeachContext, p: Parsed): Promise<CliResult> {
@@ -486,7 +550,12 @@ async function forget(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 	const id = findMoment(existingStore(ctx), token)?.id ?? token;
 	const outcome = await forgetMoment(id, ctx);
 	if (!outcome.removed) return fail(p.json, 1, `no moment ${token}`);
-	return done(p, `Forgot ${id} · remote ${outcome.remote}`, { ok: true, id, removed: true, remote: outcome.remote });
+	return done(p, `Forgot ${id} · remote ${outcome.remote}`, {
+		ok: true,
+		id,
+		removed: true,
+		remote: outcome.remote,
+	});
 }
 
 async function sync(ctx: TeachContext, p: Parsed): Promise<CliResult> {
@@ -494,12 +563,18 @@ async function sync(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 	const value: Record<string, unknown> = { done: outcome.done, pending: outcome.pending };
 	if (outcome.reason) value.reason = oneLine(outcome.reason);
 	const reason = outcome.reason ? ` · ${oneLine(outcome.reason)}` : "";
-	return done(p, `Sync: ${outcome.done} done · ${outcome.pending} pending${reason}`, value, outcome.reason && outcome.pending > 0 ? 1 : 0);
+	return done(
+		p,
+		`Sync: ${outcome.done} done · ${outcome.pending} pending${reason}`,
+		value,
+		outcome.reason && outcome.pending > 0 ? 1 : 0,
+	);
 }
 
 async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise<CliResult> {
 	const file = p.one("file");
-	if (p.has("stdin") === (file !== undefined)) throw new UsageError("observe needs exactly one of --stdin and --file <path>");
+	if (p.has("stdin") === (file !== undefined))
+		throw new UsageError("observe needs exactly one of --stdin and --file <path>");
 	// A refused path is never deleted: it may not be ours.
 	const inbox = file === undefined ? undefined : inboxFile(ctx, deps.cwd, file);
 	try {
@@ -531,7 +606,9 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 					...outcome.captured.map((c) => `Captured ${captureLine(c)}`),
 				];
 		if (outcome.decisions.length > 0) {
-			const jev = outcome.decisions.map((d) => `${d.point} ${d.p === undefined ? "n/a" : d.p.toFixed(2)} ${d.action}`);
+			const jev = outcome.decisions.map(
+				(d) => `${d.point} ${d.p === undefined ? "n/a" : d.p.toFixed(2)} ${d.action}`,
+			);
 			lines.push(`Jev: ${jev.join(", ")}`);
 		}
 		return done(p, lines.join("\n"), value);
@@ -543,22 +620,33 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 async function promote(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 	const store = existingStore(ctx);
 	if (p.has("due")) {
-		if (p.args.length > 0 || p.has("install") || p.has("mark-promoted") || p.has("target") || p.has("skill") || p.has("path")) {
+		if (
+			p.args.length > 0 ||
+			p.has("install") ||
+			p.has("mark-promoted") ||
+			p.has("target") ||
+			p.has("skill") ||
+			p.has("path")
+		) {
 			throw new UsageError("--due takes no ids and no other promote flags");
 		}
 		const due = promotionCandidates(ctx);
 		const candidates = await filterSkillworthy(due, ctx);
 		const skipped = due.length - candidates.length;
-		const lines = candidates.length === 0 ? ["No moments are due for promotion."] : candidates.map(momentLine);
+		const lines =
+			candidates.length === 0 ? ["No moments are due for promotion."] : candidates.map(momentLine);
 		if (skipped > 0) lines.push(`Jev skipped ${skipped} moment(s): not worth a standing skill.`);
 		return done(p, lines.join("\n"), skipped > 0 ? { candidates, skipped } : { candidates });
 	}
 	if (p.args.length === 0) throw new UsageError("promote needs --due or at least one <id>");
 	const marking = p.has("mark-promoted");
-	if (!marking && (p.has("skill") || p.has("path"))) throw new UsageError("--skill and --path belong to --mark-promoted");
-	if (marking && p.has("install")) throw new UsageError("--mark-promoted cannot be combined with --install");
+	if (!marking && (p.has("skill") || p.has("path")))
+		throw new UsageError("--skill and --path belong to --mark-promoted");
+	if (marking && p.has("install"))
+		throw new UsageError("--mark-promoted cannot be combined with --install");
 	const targetText = p.one("target");
-	const target = targetText === undefined ? undefined : asEnum<SkillTarget>(targetText, SKILL_TARGETS, "target");
+	const target =
+		targetText === undefined ? undefined : asEnum<SkillTarget>(targetText, SKILL_TARGETS, "target");
 	const moments: TeachableMoment[] = [];
 	for (const token of p.args) {
 		const moment = findMoment(store, token);
@@ -569,10 +657,16 @@ async function promote(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 
 	if (marking) {
 		const skill = p.one("skill");
-		if (skill === undefined || target === undefined) throw new UsageError("--mark-promoted needs --skill <name> and --target <t>");
-		if (!SKILL_NAME.test(skill)) throw new UsageError("--skill must be lowercase letters, digits and hyphens");
+		if (skill === undefined || target === undefined)
+			throw new UsageError("--mark-promoted needs --skill <name> and --target <t>");
+		if (!SKILL_NAME.test(skill))
+			throw new UsageError("--skill must be lowercase letters, digits and hyphens");
 		const path = p.one("path");
-		const marked = markPromoted(ids, path === undefined ? { skill, target } : { skill, target, path }, ctx);
+		const marked = markPromoted(
+			ids,
+			path === undefined ? { skill, target } : { skill, target, path },
+			ctx,
+		);
 		return done(p, `Marked ${marked.length} moment(s) promoted · ${skill} (${target})`, {
 			ok: true,
 			promoted: marked.map((moment) => moment.id),
@@ -589,16 +683,30 @@ async function promote(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 	const outcome = p.has("install") ? installSkill(draft, chosen, ctx) : null;
 	let promoted: string[] = [];
 	if (outcome && (outcome.action === "created" || outcome.action === "updated")) {
-		promoted = markPromoted(ids, { skill: draft.name, target: chosen, path: outcome.path }, ctx).map((moment) => moment.id);
+		promoted = markPromoted(
+			ids,
+			{ skill: draft.name, target: chosen, path: outcome.path },
+			ctx,
+		).map((moment) => moment.id);
 	}
 	const value = {
-		draft: { name: draft.name, description: draft.description, content: draft.content, warnings: draft.warnings },
+		draft: {
+			name: draft.name,
+			description: draft.description,
+			content: draft.content,
+			warnings: draft.warnings,
+		},
 		outcome,
 		promoted,
 	};
-	const lines = [`Draft ${draft.name} · ${draft.description}`, ...draft.warnings.map((warning) => `warning: ${oneLine(warning)}`)];
+	const lines = [
+		`Draft ${draft.name} · ${draft.description}`,
+		...draft.warnings.map((warning) => `warning: ${oneLine(warning)}`),
+	];
 	if (outcome) {
-		lines.push(`${outcome.action} ${outcome.path}${outcome.reason ? ` · ${oneLine(outcome.reason)}` : ""}`);
+		lines.push(
+			`${outcome.action} ${outcome.path}${outcome.reason ? ` · ${oneLine(outcome.reason)}` : ""}`,
+		);
 		if (promoted.length > 0) lines.push(`Marked ${promoted.length} moment(s) promoted`);
 	} else {
 		lines.push("", draft.content);
@@ -618,19 +726,37 @@ function exportCard(ctx: TeachContext, p: Parsed): CliResult {
 			moments.push(moment);
 		}
 	} else {
-		moments = newestFirst((store?.list() ?? []).filter((moment) => moment.status === "confirmed" || moment.status === "promoted"));
+		moments = newestFirst(
+			(store?.list() ?? []).filter(
+				(moment) => moment.status === "confirmed" || moment.status === "promoted",
+			),
+		);
 	}
-	return { code: 0, text: JSON.stringify(toAgentCardFromMoments(moments, { name: "ultrathink" }), null, 2) };
+	return {
+		code: 0,
+		text: JSON.stringify(toAgentCardFromMoments(moments, { name: "ultrathink" }), null, 2),
+	};
 }
 
 /** Subcommands that change state; they refuse to run while Teachable Moments is off. */
-const MUTATING: Record<string, true> = { capture: true, observe: true, confirm: true, forget: true, sync: true, promote: true };
+const MUTATING: Record<string, true> = {
+	capture: true,
+	observe: true,
+	confirm: true,
+	forget: true,
+	sync: true,
+	promote: true,
+};
 
 async function dispatch(argv: readonly string[], deps: CommandDeps): Promise<CliResult> {
 	const sub = argv[0];
-	if (sub === undefined) throw new UsageError(`missing subcommand (${Object.keys(SPECS).join("|")})`);
+	if (sub === undefined)
+		throw new UsageError(`missing subcommand (${Object.keys(SPECS).join("|")})`);
 	if (sub === "help" || sub === "--help" || sub === "-h") return { code: 0, text: USAGE };
-	if (!Object.hasOwn(SPECS, sub)) throw new UsageError(`unknown subcommand ${sub.slice(0, 40)} (${Object.keys(SPECS).join("|")})`);
+	if (!Object.hasOwn(SPECS, sub))
+		throw new UsageError(
+			`unknown subcommand ${sub.slice(0, 40)} (${Object.keys(SPECS).join("|")})`,
+		);
 	const p = parseArgs(argv.slice(1), SPECS[sub] as Spec);
 	const ctx = buildContext(deps);
 	if (Object.hasOwn(MUTATING, sub) && sub !== "observe") {
@@ -671,8 +797,8 @@ export async function runTeachCommand(argv: string[], deps: CommandDeps): Promis
 		return await dispatch(argv, deps);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (error instanceof UsageError || error instanceof TeachInputError) return fail(json, 2, `teach: ${oneLine(message)}`);
+		if (error instanceof UsageError || error instanceof TeachInputError)
+			return fail(json, 2, `teach: ${oneLine(message)}`);
 		return fail(json, 1, `teach: ${oneLine(message)}`);
 	}
 }
-

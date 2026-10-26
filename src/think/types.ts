@@ -82,7 +82,8 @@ export const FALLBACK_GRAPH: ThoughtGraph = {
 			id: "n4",
 			title: "Risks",
 			kind: "critique",
-			question: "What could go wrong: missing constraints, edge cases, regressions, or over-scoping?",
+			question:
+				"What could go wrong: missing constraints, edge cases, regressions, or over-scoping?",
 			dependsOn: ["n3"],
 		},
 		{

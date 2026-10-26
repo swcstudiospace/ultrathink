@@ -3,17 +3,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { randomHash } from "../../../src/test.helpers.ts";
 import { ConfigError, loadConfig, requirePlanningModel, type ReasoningEffort } from "./config.ts";
 
 function randomSecret(): string {
 	return randomBytes(24).toString("base64url");
-}
-
-function randomHash(): string {
-	// PHC strings use standard base64 without padding, as Bun.password.hash writes them.
-	const salt = randomBytes(16).toString("base64").replace(/=+$/, "");
-	const digest = randomBytes(16).toString("base64").replace(/=+$/, "");
-	return `$argon2id$v=19$m=65536,t=2,p=1$${salt}$${digest}`;
 }
 
 function baseEnv(): Record<string, string | undefined> {
@@ -167,9 +161,7 @@ describe("strict integers", () => {
 	test("rejects a malformed daily token ceiling", () => {
 		const env = baseEnv();
 		env.ULTRATHINK_DAILY_TOKEN_CEILING = "1e6";
-		expect(messageOf(() => loadConfig(env))).toContain(
-			"ULTRATHINK_DAILY_TOKEN_CEILING",
-		);
+		expect(messageOf(() => loadConfig(env))).toContain("ULTRATHINK_DAILY_TOKEN_CEILING");
 	});
 });
 
@@ -193,9 +185,7 @@ describe("publicOrigin", () => {
 	test("rejects a value that is not an absolute URL", () => {
 		const env = baseEnv();
 		env.ULTRATHINK_PUBLIC_ORIGIN = "ultrathink.swcstudio.space";
-		expect(messageOf(() => loadConfig(env))).toContain(
-			"ULTRATHINK_PUBLIC_ORIGIN",
-		);
+		expect(messageOf(() => loadConfig(env))).toContain("ULTRATHINK_PUBLIC_ORIGIN");
 	});
 });
 
@@ -295,7 +285,9 @@ describe("server planning defaults", () => {
 		env.ULTRATHINK_PLAN_TIMEOUT_MS = "0";
 		env.ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS = "0";
 		const config = loadConfig(env);
-		expect([config.modelTimeoutMs, config.planTimeoutMs, config.modelMaxOutputTokens]).toEqual([0, 0, 0]);
+		expect([config.modelTimeoutMs, config.planTimeoutMs, config.modelMaxOutputTokens]).toEqual([
+			0, 0, 0,
+		]);
 	});
 
 	test("explicit values are read", () => {
@@ -393,7 +385,9 @@ describe("openRouterBaseUrl", () => {
 });
 
 describe("serverPlanning derivation", () => {
-	function withPlanning(extra: Record<string, string | undefined>): Record<string, string | undefined> {
+	function withPlanning(
+		extra: Record<string, string | undefined>,
+	): Record<string, string | undefined> {
 		return { ...baseEnv(), ...extra };
 	}
 
@@ -405,7 +399,9 @@ describe("serverPlanning derivation", () => {
 	});
 
 	test("is false without the key", () => {
-		expect(loadConfig(withPlanning({ ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7" })).serverPlanning).toBe(false);
+		expect(
+			loadConfig(withPlanning({ ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7" })).serverPlanning,
+		).toBe(false);
 	});
 
 	test("is false without the planning model", () => {
@@ -436,7 +432,12 @@ describe("serverPlanning derivation", () => {
 
 	test("ULTRATHINK_SERVER_PLANNING=1 without a key throws a ConfigError", () => {
 		const message = messageOf(() =>
-			loadConfig(withPlanning({ ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7", ULTRATHINK_SERVER_PLANNING: "1" })),
+			loadConfig(
+				withPlanning({
+					ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7",
+					ULTRATHINK_SERVER_PLANNING: "1",
+				}),
+			),
 		);
 		expect(message).toContain("OPENROUTER_API_KEY");
 	});
@@ -475,7 +476,8 @@ describe("origin lists", () => {
 
 	test("oauth redirect origins accept https and parse like allowed origins", () => {
 		const env = baseEnv();
-		env.ULTRATHINK_OAUTH_REDIRECT_ORIGINS = "https://app.example.test, https://app.example.test,https://c.example.test:8443";
+		env.ULTRATHINK_OAUTH_REDIRECT_ORIGINS =
+			"https://app.example.test, https://app.example.test,https://c.example.test:8443";
 		expect(loadConfig(env).oauthRedirectOrigins).toEqual([
 			"https://app.example.test",
 			"https://c.example.test:8443",
@@ -678,7 +680,12 @@ describe("audit sink configuration", () => {
 
 	const integerFields = [
 		{ name: "ULTRATHINK_AUDIT_ANCHOR_EVERY", field: "auditAnchorEvery", min: 1, max: 1000000 },
-		{ name: "ULTRATHINK_AUDIT_SEGMENT_BYTES", field: "auditSegmentBytes", min: 1048576, max: 4294967296 },
+		{
+			name: "ULTRATHINK_AUDIT_SEGMENT_BYTES",
+			field: "auditSegmentBytes",
+			min: 1048576,
+			max: 4294967296,
+		},
 		{ name: "ULTRATHINK_AUDIT_RETENTION_DAYS", field: "auditRetentionDays", min: 0, max: 36500 },
 		{ name: "ULTRATHINK_AUDIT_WATCH_MS", field: "auditWatchMs", min: 100, max: 1000 },
 		{ name: "ULTRATHINK_AUDIT_SINK_QUEUE", field: "auditSinkQueue", min: 1, max: 1000000 },
@@ -686,38 +693,55 @@ describe("audit sink configuration", () => {
 
 	for (const spec of integerFields) {
 		test(`${spec.name} accepts its lowest and highest value`, () => {
-			expect(loadConfig({ ...baseEnv(), [spec.name]: String(spec.min) })[spec.field]).toBe(spec.min);
-			expect(loadConfig({ ...baseEnv(), [spec.name]: String(spec.max) })[spec.field]).toBe(spec.max);
+			expect(loadConfig({ ...baseEnv(), [spec.name]: String(spec.min) })[spec.field]).toBe(
+				spec.min,
+			);
+			expect(loadConfig({ ...baseEnv(), [spec.name]: String(spec.max) })[spec.field]).toBe(
+				spec.max,
+			);
 		});
 
 		test(`${spec.name} rejects out-of-range or malformed values, naming the variable`, () => {
 			for (const value of [String(spec.min - 1), String(spec.max + 1), "1e3", "abc"]) {
-				expect(messageOf(() => loadConfig({ ...baseEnv(), [spec.name]: value }))).toContain(spec.name);
+				expect(messageOf(() => loadConfig({ ...baseEnv(), [spec.name]: value }))).toContain(
+					spec.name,
+				);
 			}
 		});
 	}
 
 	test("ULTRATHINK_AUDIT_WATCH_MS rejects 1001 and 99 by name", () => {
-		expect(messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_WATCH_MS: "1001" }))).toContain("ULTRATHINK_AUDIT_WATCH_MS");
-		expect(messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_WATCH_MS: "99" }))).toContain("ULTRATHINK_AUDIT_WATCH_MS");
+		expect(
+			messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_WATCH_MS: "1001" })),
+		).toContain("ULTRATHINK_AUDIT_WATCH_MS");
+		expect(
+			messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_WATCH_MS: "99" })),
+		).toContain("ULTRATHINK_AUDIT_WATCH_MS");
 	});
 
 	test("ULTRATHINK_AUDIT_RULES returns the parsed rules for a valid array", () => {
 		const rules = [{ name: "login-burst", event: "login_failed", count: 5, windowSec: 60 }];
-		expect(loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_RULES: JSON.stringify(rules) }).auditRules).toEqual(rules);
+		expect(
+			loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_RULES: JSON.stringify(rules) }).auditRules,
+		).toEqual(rules);
 	});
 
 	test("ULTRATHINK_AUDIT_RULES rejects malformed JSON, non-array values and invalid rules, naming the variable", () => {
 		for (const value of ["[", '{"name":"login-burst"}', '[{"name":"login-burst"}]']) {
-			expect(messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_RULES: value }))).toContain("ULTRATHINK_AUDIT_RULES");
+			expect(
+				messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_RULES: value })),
+			).toContain("ULTRATHINK_AUDIT_RULES");
 		}
 	});
 
 	test("ULTRATHINK_AUDIT_HTTP_URL accepts https and loopback http", () => {
-		expect(loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_URL: "https://siem.example.com/ingest" }).auditHttpUrl).toBe(
-			"https://siem.example.com/ingest",
-		);
-		expect(loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_URL: "http://127.0.0.1:9" }).auditHttpUrl).toBe("http://127.0.0.1:9");
+		expect(
+			loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_URL: "https://siem.example.com/ingest" })
+				.auditHttpUrl,
+		).toBe("https://siem.example.com/ingest");
+		expect(
+			loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_URL: "http://127.0.0.1:9" }).auditHttpUrl,
+		).toBe("http://127.0.0.1:9");
 	});
 
 	test("ULTRATHINK_AUDIT_HTTP_URL rejects plaintext, non-loopback, credentialed and malformed URLs", () => {
@@ -728,26 +752,34 @@ describe("audit sink configuration", () => {
 			"http://user@127.0.0.1:9",
 			"not a url",
 		]) {
-			const message = messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_URL: value }));
+			const message = messageOf(() =>
+				loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_URL: value }),
+			);
 			expect(message).toContain("ULTRATHINK_AUDIT_HTTP_URL");
 			expect(message).not.toContain("secret");
 		}
 	});
 
 	test("ULTRATHINK_AUDIT_HTTP_TOKEN accepts a printable token of 16 characters or more", () => {
-		expect(loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_TOKEN: "abcdefghijklmnop" }).auditHttpToken).toBe("abcdefghijklmnop");
+		expect(
+			loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_TOKEN: "abcdefghijklmnop" }).auditHttpToken,
+		).toBe("abcdefghijklmnop");
 	});
 
 	test("ULTRATHINK_AUDIT_HTTP_TOKEN rejects short or malformed tokens without echoing them", () => {
 		for (const token of ["short-token", "has space inside this token"]) {
-			const message = messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_TOKEN: token }));
+			const message = messageOf(() =>
+				loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_HTTP_TOKEN: token }),
+			);
 			expect(message).toContain("ULTRATHINK_AUDIT_HTTP_TOKEN");
 			expect(message).not.toContain(token);
 		}
 	});
 
 	test("ULTRATHINK_AUDIT_SYSLOG parses host and port", () => {
-		expect(loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_SYSLOG: "siem.example.com:514" }).auditSyslog).toEqual({
+		expect(
+			loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_SYSLOG: "siem.example.com:514" }).auditSyslog,
+		).toEqual({
 			host: "siem.example.com",
 			port: 514,
 		});
@@ -763,7 +795,9 @@ describe("audit sink configuration", () => {
 			"siem.example.com:5x",
 			"bad host:514",
 		]) {
-			expect(messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_SYSLOG: value }))).toContain("ULTRATHINK_AUDIT_SYSLOG");
+			expect(
+				messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_SYSLOG: value })),
+			).toContain("ULTRATHINK_AUDIT_SYSLOG");
 		}
 	});
 
@@ -777,11 +811,16 @@ describe("audit sink configuration", () => {
 		expect(config.auditKafkaTopic).toBe("audit");
 
 		const urlOnly = messageOf(() =>
-			loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_KAFKA_REST_URL: "https://kafka-rest.example.com" }),
+			loadConfig({
+				...baseEnv(),
+				ULTRATHINK_AUDIT_KAFKA_REST_URL: "https://kafka-rest.example.com",
+			}),
 		);
 		expect(urlOnly).toContain("ULTRATHINK_AUDIT_KAFKA_TOPIC");
 
-		const topicOnly = messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_KAFKA_TOPIC: "audit" }));
+		const topicOnly = messageOf(() =>
+			loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_KAFKA_TOPIC: "audit" }),
+		);
 		expect(topicOnly).toContain("ULTRATHINK_AUDIT_KAFKA_REST_URL");
 	});
 
@@ -830,10 +869,25 @@ describe("rate limiting settings", () => {
 
 	const ranges = [
 		{ name: "ULTRATHINK_PRIORITY_RESERVE_PCT", field: "priorityReservePct", min: "0", max: "90" },
-		{ name: "ULTRATHINK_ADAPTIVE_QUOTA_MIN_PCT", field: "adaptiveQuotaMinPct", min: "10", max: "100" },
+		{
+			name: "ULTRATHINK_ADAPTIVE_QUOTA_MIN_PCT",
+			field: "adaptiveQuotaMinPct",
+			min: "10",
+			max: "100",
+		},
 		{ name: "ULTRATHINK_LAG_TARGET_MS", field: "lagTargetMs", min: "10", max: "5000" },
-		{ name: "ULTRATHINK_REPLICA_CAPACITY_RPS", field: "replicaCapacityRps", min: "1", max: "100000" },
-		{ name: "ULTRATHINK_ABUSE_FAILURES_PER_MINUTE", field: "abuseFailuresPerMinute", min: "1", max: "10000" },
+		{
+			name: "ULTRATHINK_REPLICA_CAPACITY_RPS",
+			field: "replicaCapacityRps",
+			min: "1",
+			max: "100000",
+		},
+		{
+			name: "ULTRATHINK_ABUSE_FAILURES_PER_MINUTE",
+			field: "abuseFailuresPerMinute",
+			min: "1",
+			max: "10000",
+		},
 		{ name: "ULTRATHINK_FAIR_QUEUE_DEPTH", field: "fairQueueDepth", min: "0", max: "1000" },
 		{ name: "ULTRATHINK_FAIR_QUEUE_WAIT_MS", field: "fairQueueWaitMs", min: "1", max: "60000" },
 	] as const;
@@ -904,25 +958,36 @@ describe("ULTRATHINK_OTLP_ENDPOINT", () => {
 	});
 
 	test("a trailing slash is removed from the stored endpoint", () => {
-		expect(loadConfig({ ...baseEnv(), ULTRATHINK_OTLP_ENDPOINT: "https://collector.example/otel/" }).otlpEndpoint).toBe(
-			"https://collector.example/otel",
-		);
+		expect(
+			loadConfig({ ...baseEnv(), ULTRATHINK_OTLP_ENDPOINT: "https://collector.example/otel/" })
+				.otlpEndpoint,
+		).toBe("https://collector.example/otel");
 	});
 
 	test("plaintext http is refused for a non-loopback host", () => {
-		const message = messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_OTLP_ENDPOINT: "http://collector.example:4318" }));
+		const message = messageOf(() =>
+			loadConfig({ ...baseEnv(), ULTRATHINK_OTLP_ENDPOINT: "http://collector.example:4318" }),
+		);
 		expect(message).toContain("ULTRATHINK_OTLP_ENDPOINT");
 	});
 
 	test("http is accepted for 127.0.0.1, localhost and [::1]", () => {
 		for (const value of ["http://127.0.0.1:4318", "http://localhost:4318", "http://[::1]:4318"]) {
-			expect(loadConfig({ ...baseEnv(), ULTRATHINK_OTLP_ENDPOINT: value }).otlpEndpoint).toBe(value);
+			expect(loadConfig({ ...baseEnv(), ULTRATHINK_OTLP_ENDPOINT: value }).otlpEndpoint).toBe(
+				value,
+			);
 		}
 	});
 
 	test("credentials, a query or a fragment are refused, and the message echoes neither the secret nor the query", () => {
-		for (const value of ["https://user:secret@collector.example", "https://collector.example/?key=1", "https://collector.example/#key=1"]) {
-			const message = messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_OTLP_ENDPOINT: value }));
+		for (const value of [
+			"https://user:secret@collector.example",
+			"https://collector.example/?key=1",
+			"https://collector.example/#key=1",
+		]) {
+			const message = messageOf(() =>
+				loadConfig({ ...baseEnv(), ULTRATHINK_OTLP_ENDPOINT: value }),
+			);
 			expect(message).toContain("ULTRATHINK_OTLP_ENDPOINT");
 			expect(message).not.toContain("secret");
 			expect(message).not.toContain("key=1");
@@ -973,7 +1038,9 @@ describe("mTLS and plaintext opt-in", () => {
 
 	test("a single TLS variable names both of the others as missing", () => {
 		const env = { ...tlsEnv(), ULTRATHINK_TLS_CERT: undefined, ULTRATHINK_TLS_KEY: undefined };
-		expect(messageOf(() => loadConfig(env))).toContain("missing ULTRATHINK_TLS_CERT, ULTRATHINK_TLS_KEY");
+		expect(messageOf(() => loadConfig(env))).toContain(
+			"missing ULTRATHINK_TLS_CERT, ULTRATHINK_TLS_KEY",
+		);
 	});
 
 	test("full TLS with absolute paths loads with tls set and the default trust domain", () => {
@@ -1004,7 +1071,9 @@ describe("mTLS and plaintext opt-in", () => {
 	test("ULTRATHINK_PLAINTEXT_LOOPBACK must be 0 or 1", () => {
 		const env = baseEnv();
 		env.ULTRATHINK_PLAINTEXT_LOOPBACK = "yes";
-		expect(messageOf(() => loadConfig(env))).toContain("ULTRATHINK_PLAINTEXT_LOOPBACK must be 0 or 1");
+		expect(messageOf(() => loadConfig(env))).toContain(
+			"ULTRATHINK_PLAINTEXT_LOOPBACK must be 0 or 1",
+		);
 	});
 
 	test("a relative TLS path throws naming the variable and not the path", () => {
@@ -1015,7 +1084,10 @@ describe("mTLS and plaintext opt-in", () => {
 	});
 
 	test("a lowercase trust domain with dots, dashes and underscores is accepted", () => {
-		const config = loadConfig({ ...tlsEnv(), ULTRATHINK_SPIFFE_TRUST_DOMAIN: "spiffe.example-1_x" });
+		const config = loadConfig({
+			...tlsEnv(),
+			ULTRATHINK_SPIFFE_TRUST_DOMAIN: "spiffe.example-1_x",
+		});
 		expect(config.spiffeTrustDomain).toBe("spiffe.example-1_x");
 	});
 
@@ -1027,10 +1099,13 @@ describe("mTLS and plaintext opt-in", () => {
 	});
 
 	test("a trust domain is limited to 255 characters", () => {
-		expect(loadConfig({ ...tlsEnv(), ULTRATHINK_SPIFFE_TRUST_DOMAIN: "a".repeat(255) }).spiffeTrustDomain).toBe(
-			"a".repeat(255),
-		);
-		expect(() => loadConfig({ ...tlsEnv(), ULTRATHINK_SPIFFE_TRUST_DOMAIN: "a".repeat(256) })).toThrow(ConfigError);
+		expect(
+			loadConfig({ ...tlsEnv(), ULTRATHINK_SPIFFE_TRUST_DOMAIN: "a".repeat(255) })
+				.spiffeTrustDomain,
+		).toBe("a".repeat(255));
+		expect(() =>
+			loadConfig({ ...tlsEnv(), ULTRATHINK_SPIFFE_TRUST_DOMAIN: "a".repeat(256) }),
+		).toThrow(ConfigError);
 	});
 });
 
@@ -1058,7 +1133,11 @@ describe("loadConfig chaos gate", () => {
 
 	test("ULTRATHINK_CHAOS=1 with staging and an absolute plan path loads", () => {
 		const config = loadConfig(
-			withEnv({ ULTRATHINK_CHAOS: "1", ULTRATHINK_CHAOS_ENV: "staging", ULTRATHINK_CHAOS_PLAN: PLAN }),
+			withEnv({
+				ULTRATHINK_CHAOS: "1",
+				ULTRATHINK_CHAOS_ENV: "staging",
+				ULTRATHINK_CHAOS_PLAN: PLAN,
+			}),
 		);
 		expect(config.chaosEnabled).toBe(true);
 		expect(config.chaosEnv).toBe("staging");
@@ -1066,26 +1145,42 @@ describe("loadConfig chaos gate", () => {
 	});
 
 	test("ULTRATHINK_CHAOS=1 without ULTRATHINK_CHAOS_ENV throws naming the variable", () => {
-		const message = messageOf(() => loadConfig(withEnv({ ULTRATHINK_CHAOS: "1", ULTRATHINK_CHAOS_PLAN: PLAN })));
+		const message = messageOf(() =>
+			loadConfig(withEnv({ ULTRATHINK_CHAOS: "1", ULTRATHINK_CHAOS_PLAN: PLAN })),
+		);
 		expect(message).toContain("ULTRATHINK_CHAOS_ENV");
 	});
 
 	test("ULTRATHINK_CHAOS=1 refuses a production environment", () => {
 		const message = messageOf(() =>
-			loadConfig(withEnv({ ULTRATHINK_CHAOS: "1", ULTRATHINK_CHAOS_ENV: "production", ULTRATHINK_CHAOS_PLAN: PLAN })),
+			loadConfig(
+				withEnv({
+					ULTRATHINK_CHAOS: "1",
+					ULTRATHINK_CHAOS_ENV: "production",
+					ULTRATHINK_CHAOS_PLAN: PLAN,
+				}),
+			),
 		);
 		expect(message).toContain("ULTRATHINK_CHAOS_ENV");
 	});
 
 	test("ULTRATHINK_CHAOS=1 without a plan path throws naming the variable", () => {
-		const message = messageOf(() => loadConfig(withEnv({ ULTRATHINK_CHAOS: "1", ULTRATHINK_CHAOS_ENV: "staging" })));
+		const message = messageOf(() =>
+			loadConfig(withEnv({ ULTRATHINK_CHAOS: "1", ULTRATHINK_CHAOS_ENV: "staging" })),
+		);
 		expect(message).toContain("ULTRATHINK_CHAOS_PLAN");
 	});
 
 	test("a relative plan path throws naming the variable and not the path", () => {
 		const relative = "plans/faults.json";
 		const message = messageOf(() =>
-			loadConfig(withEnv({ ULTRATHINK_CHAOS: "1", ULTRATHINK_CHAOS_ENV: "staging", ULTRATHINK_CHAOS_PLAN: relative })),
+			loadConfig(
+				withEnv({
+					ULTRATHINK_CHAOS: "1",
+					ULTRATHINK_CHAOS_ENV: "staging",
+					ULTRATHINK_CHAOS_PLAN: relative,
+				}),
+			),
 		);
 		expect(message).toContain("ULTRATHINK_CHAOS_PLAN");
 		expect(message).not.toContain(relative);
@@ -1098,7 +1193,13 @@ describe("loadConfig chaos gate", () => {
 
 	test("a plan path with ULTRATHINK_CHAOS=0 throws naming the variable", () => {
 		const message = messageOf(() =>
-			loadConfig(withEnv({ ULTRATHINK_CHAOS: "0", ULTRATHINK_CHAOS_ENV: "staging", ULTRATHINK_CHAOS_PLAN: PLAN })),
+			loadConfig(
+				withEnv({
+					ULTRATHINK_CHAOS: "0",
+					ULTRATHINK_CHAOS_ENV: "staging",
+					ULTRATHINK_CHAOS_PLAN: PLAN,
+				}),
+			),
 		);
 		expect(message).toContain("ULTRATHINK_CHAOS_PLAN");
 	});

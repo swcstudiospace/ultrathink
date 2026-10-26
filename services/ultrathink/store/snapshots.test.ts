@@ -3,7 +3,14 @@
 
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import { formatStamp, nextStamp, parseStamp, pickAtOrBefore, retentionPlan, type RetentionWindows } from "./snapshots.ts";
+import {
+	formatStamp,
+	nextStamp,
+	parseStamp,
+	pickAtOrBefore,
+	retentionPlan,
+	type RetentionWindows,
+} from "./snapshots.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -20,13 +27,19 @@ function sorted(names: readonly string[]): string[] {
 	return [...names].sort();
 }
 
-async function cli(args: string[], stdin = ""): Promise<{ code: number; stdout: string; stderr: string }> {
+async function cli(
+	args: string[],
+	stdin = "",
+): Promise<{ code: number; stdout: string; stderr: string }> {
 	const proc = Bun.spawn([process.execPath, CLI, ...args], {
 		stdin: new Blob([stdin]),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+	const [stdout, stderr] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+	]);
 	return { code: await proc.exited, stdout, stderr };
 }
 
@@ -75,7 +88,9 @@ describe("formatStamp", () => {
 		expect(formatStamp(Date.UTC(2027, 0, 1, 0, 0, 0, 0))).toBe("20270101T000000000Z");
 		expect(parseStamp("ultrathink-20270101T000000000Z.sqlite")).toBe(Date.UTC(2027, 0, 1));
 		expect(formatStamp(Date.UTC(2028, 1, 29, 12, 30, 15, 7))).toBe("20280229T123015007Z");
-		expect(parseStamp("ultrathink-20280229T123015007Z.sqlite")).toBe(Date.UTC(2028, 1, 29, 12, 30, 15, 7));
+		expect(parseStamp("ultrathink-20280229T123015007Z.sqlite")).toBe(
+			Date.UTC(2028, 1, 29, 12, 30, 15, 7),
+		);
 		for (const ms of [0, NOW, Date.UTC(2028, 1, 29, 23, 59, 59, 999), Date.UTC(2027, 0, 1) - 1]) {
 			expect(parseStamp(`ultrathink-${formatStamp(ms)}`)).toBe(ms);
 		}
@@ -147,7 +162,12 @@ describe("retentionPlan", () => {
 		const thinBase = Math.floor(NOW / (5 * MINUTE)) * (5 * MINUTE);
 		const bandStart = thinBase - 2 * HOUR;
 		const recent = [NOW, NOW - 30 * MINUTE, NOW - HOUR];
-		const bandFirstBucket = [bandStart, bandStart + MINUTE, bandStart + 2 * MINUTE, bandStart + 4 * MINUTE];
+		const bandFirstBucket = [
+			bandStart,
+			bandStart + MINUTE,
+			bandStart + 2 * MINUTE,
+			bandStart + 4 * MINUTE,
+		];
 		const bandSecondBucket = [bandStart + 5 * MINUTE, bandStart + 7 * MINUTE];
 		const old = NOW - 25 * HOUR;
 
@@ -158,7 +178,11 @@ describe("retentionPlan", () => {
 			sorted([...recent, bandStart + 4 * MINUTE, bandStart + 7 * MINUTE].map(at)),
 		);
 		expect(sorted(plan.delete)).toEqual(
-			sorted([bandStart, bandStart + MINUTE, bandStart + 2 * MINUTE, bandStart + 5 * MINUTE, old].map(at)),
+			sorted(
+				[bandStart, bandStart + MINUTE, bandStart + 2 * MINUTE, bandStart + 5 * MINUTE, old].map(
+					at,
+				),
+			),
 		);
 	});
 
@@ -182,7 +206,11 @@ describe("retentionPlan", () => {
 
 	test("names that do not parse appear in neither list", () => {
 		const current = at(NOW);
-		const plan = retentionPlan(["notes.txt", ".tmp-20261021T120000123Z.sqlite", current], NOW, WINDOWS);
+		const plan = retentionPlan(
+			["notes.txt", ".tmp-20261021T120000123Z.sqlite", current],
+			NOW,
+			WINDOWS,
+		);
 		expect(plan.keep).toEqual([current]);
 		expect(plan.delete).toEqual([]);
 	});
@@ -231,13 +259,20 @@ describe("snapshots-cli", () => {
 	test("plan prints one delete line per name to remove", async () => {
 		const old3d = at(NOW - 3 * DAY);
 		const old4d = at(NOW - 4 * DAY);
-		const result = await cli(["plan", String(NOW), String(HOUR), String(5 * MINUTE), String(DAY)], `${old3d}\n${old4d}\n`);
+		const result = await cli(
+			["plan", String(NOW), String(HOUR), String(5 * MINUTE), String(DAY)],
+			`${old3d}\n${old4d}\n`,
+		);
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe(`delete ${old4d}\n`);
 	});
 
 	test("stamp prints the stamp for a time; an unknown command exits 2", async () => {
-		expect(await cli(["stamp", String(NOW)])).toEqual({ code: 0, stdout: `${formatStamp(NOW)}\n`, stderr: "" });
+		expect(await cli(["stamp", String(NOW)])).toEqual({
+			code: 0,
+			stdout: `${formatStamp(NOW)}\n`,
+			stderr: "",
+		});
 		expect((await cli(["bogus"])).code).toBe(2);
 	});
 });

@@ -12,11 +12,18 @@
  */
 
 import { clientPlanView } from "../engine/plan-view.ts";
-import { fenced, type GraphView, type GraphViewNode, renderGraphBlock } from "../engine/graph-view.ts";
+import {
+	fenced,
+	type GraphView,
+	type GraphViewNode,
+	renderGraphBlock,
+} from "../engine/graph-view.ts";
 import type { HeadlessPlanner, ResultView } from "../engine/headless.ts";
 import { isSessionId } from "../engine/journal.ts";
 import { listSessions, newestPlannedSessionId, type SessionSummary } from "../engine/sessions.ts";
+import { createLogger } from "../obs/log.ts";
 import { GRAPH_APP_URI } from "../ui/graph-app.ts";
+import { isRecord } from "../../../src/shared.ts";
 import {
 	type CatalogCommand,
 	COMMAND_OVERLAY,
@@ -27,8 +34,16 @@ import {
 } from "./commands.ts";
 import type { ToolDefinition, ToolOutcome } from "./mcp.ts";
 
+// Connector diagnostics go to stderr: over stdio, stdout carries the JSON-RPC protocol.
+const connectorLogger = createLogger({ write: (line) => void process.stderr.write(`${line}\n`) });
+
 // idempotentHint only means something for a tool that writes; the read-only tools carry it too so every tool states it.
-export const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+export const READ_ONLY = {
+	readOnlyHint: true,
+	destructiveHint: false,
+	idempotentHint: true,
+	openWorldHint: false,
+};
 
 /** Tells an MCP Apps host which `ui://` resource draws the result: the nested shape and the legacy flat key. */
 export const GRAPH_UI_META: Record<string, unknown> = {
@@ -37,7 +52,9 @@ export const GRAPH_UI_META: Record<string, unknown> = {
 };
 
 /** Claude Code otherwise cuts a tool result at a much smaller size than a full plan or graph needs. */
-export const LARGE_RESULT_META: Record<string, unknown> = { "anthropic/maxResultSizeChars": 200_000 };
+export const LARGE_RESULT_META: Record<string, unknown> = {
+	"anthropic/maxResultSizeChars": 200_000,
+};
 
 export const GRAPH_TOOL = "ultrathink_graph";
 export const SESSIONS_TOOL = "ultrathink_sessions";
@@ -57,7 +74,10 @@ export const CONNECTOR_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 					type: "string",
 					description: "Session id of the plan to show. Omit to use the newest planned session.",
 				},
-				node: { type: "string", description: "Id of one node to show with its question, steps and conclusion." },
+				node: {
+					type: "string",
+					description: "Id of one node to show with its question, steps and conclusion.",
+				},
 				detail: {
 					type: "string",
 					enum: ["brief", "full"],
@@ -101,7 +121,8 @@ export const CONNECTOR_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 				command: {
 					type: "string",
 					maxLength: 100,
-					description: "The command name, for example ultrathink-ship, ship or /ultrathink-ship. help lists every command.",
+					description:
+						"The command name, for example ultrathink-ship, ship or /ultrathink-ship. help lists every command.",
 				},
 				args: {
 					type: "string",
@@ -152,7 +173,11 @@ const MAX_DETAIL_CHARS = 120_000;
 const NO_PLANNED_SESSION =
 	"There is no planned ultrathink session yet. Plan a request first with /ultrathink <request>, then ask again.";
 
-const invalid = (...errors: string[]): ToolOutcome => ({ ok: false, code: "invalid_input", errors });
+const invalid = (...errors: string[]): ToolOutcome => ({
+	ok: false,
+	code: "invalid_input",
+	errors,
+});
 
 /** Result whose structured data carries the tool content text too (see the module comment). */
 export function textOutcome(data: Record<string, unknown>, text: string): ToolOutcome {
@@ -168,8 +193,12 @@ function optionalText(value: unknown): { ok: true; value: string | undefined } |
 
 /** Node text is model-written: inside a fence it can never read as a heading, a link or a `Session:` line of this tool's own. */
 function nodeSection(node: GraphViewNode): string {
-	const lines = [`### ${node.id}: ${node.title} [${node.kind}] - wave ${node.wave}`, `Question: ${node.question}`];
-	if (node.steps.length > 0) lines.push("Steps:", ...node.steps.map((step, index) => `${index + 1}. ${step}`));
+	const lines = [
+		`### ${node.id}: ${node.title} [${node.kind}] - wave ${node.wave}`,
+		`Question: ${node.question}`,
+	];
+	if (node.steps.length > 0)
+		lines.push("Steps:", ...node.steps.map((step, index) => `${index + 1}. ${step}`));
 	if (node.conclusion !== "") lines.push(`Conclusion: ${node.conclusion}`);
 	return fenced(lines.join("\n"), "text");
 }
@@ -177,16 +206,26 @@ function nodeSection(node: GraphViewNode): string {
 /** The node ids are model text, so an exact match wins and a case-insensitive match is the fallback. */
 function findNode(view: GraphView, wanted: string): GraphViewNode | undefined {
 	const id = wanted.trim();
-	return view.nodes.find((node) => node.id === id) ?? view.nodes.find((node) => node.id.toLowerCase() === id.toLowerCase());
+	return (
+		view.nodes.find((node) => node.id === id) ??
+		view.nodes.find((node) => node.id.toLowerCase() === id.toLowerCase())
+	);
 }
 
-function graphText(sessionId: string, view: GraphView, node: GraphViewNode | undefined, detail: "brief" | "full"): string {
+function graphText(
+	sessionId: string,
+	view: GraphView,
+	node: GraphViewNode | undefined,
+	detail: "brief" | "full",
+): string {
 	const parts = [`Session: ${sessionId}`, renderGraphBlock(view)];
 	const sections = node ? [node] : detail === "full" ? view.nodes : [];
 	let size = parts.join("\n\n").length;
 	for (const [index, section] of sections.entries()) {
 		if (size > MAX_DETAIL_CHARS) {
-			parts.push(`[${sections.length - index} more node(s) left out to fit the size limit; ask for one with node.]`);
+			parts.push(
+				`[${sections.length - index} more node(s) left out to fit the size limit; ask for one with node.]`,
+			);
 			break;
 		}
 		const text = nodeSection(section);
@@ -203,14 +242,24 @@ function when(ms: number): string {
 
 function planningLines(planning: PlanningInfo): string[] {
 	if (!planning.serverPlanning) {
-		return ["Planning: client-driven. The chat model answers the planning prompts; the server does not plan."];
+		return [
+			"Planning: client-driven. The chat model answers the planning prompts; the server does not plan.",
+		];
 	}
 	const facts = [
 		planning.model === undefined ? undefined : `model ${planning.model}`,
-		planning.maxConcurrentPlans === undefined ? undefined : `up to ${planning.maxConcurrentPlans} plans at once`,
-		planning.runTokenCeiling === undefined ? undefined : `${planning.runTokenCeiling} tokens per plan`,
-		planning.dailyTokenCeiling === undefined ? undefined : `${planning.dailyTokenCeiling} tokens per day`,
-		planning.usedTodayTokens === undefined ? undefined : `${planning.usedTodayTokens} tokens used today (UTC)`,
+		planning.maxConcurrentPlans === undefined
+			? undefined
+			: `up to ${planning.maxConcurrentPlans} plans at once`,
+		planning.runTokenCeiling === undefined
+			? undefined
+			: `${planning.runTokenCeiling} tokens per plan`,
+		planning.dailyTokenCeiling === undefined
+			? undefined
+			: `${planning.dailyTokenCeiling} tokens per day`,
+		planning.usedTodayTokens === undefined
+			? undefined
+			: `${planning.usedTodayTokens} tokens used today (UTC)`,
 	].filter((fact): fact is string => fact !== undefined);
 	return [`Planning: server planning${facts.length > 0 ? ` (${facts.join(", ")})` : ""}.`];
 }
@@ -227,7 +276,9 @@ function sessionsText(sessions: readonly SessionSummary[], planning: PlanningInf
 	for (const session of sessions) {
 		const nodes = session.hasGraph ? `${session.nodeCount} nodes` : "no graph";
 		const goal = session.goal === "" ? "(no goal yet)" : session.goal;
-		table.push(`- ${session.sessionId} | ${session.status} | ${session.mode} | ${when(session.updatedAt)} | ${nodes} | ${goal}`);
+		table.push(
+			`- ${session.sessionId} | ${session.status} | ${session.mode} | ${when(session.updatedAt)} | ${nodes} | ${goal}`,
+		);
 	}
 	lines.push(fenced(table.join("\n"), "text"));
 	return lines.join("\n");
@@ -296,7 +347,8 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 
 	async function graph(args: Record<string, unknown>): Promise<ToolOutcome> {
 		const { detail } = args;
-		if (detail !== undefined && detail !== "brief" && detail !== "full") return invalid("detail must be brief or full");
+		if (detail !== undefined && detail !== "brief" && detail !== "full")
+			return invalid("detail must be brief or full");
 		const node = optionalText(args.node);
 		if (!node.ok || (node.value !== undefined && node.value.length > MAX_NODE_CHARS)) {
 			return invalid("node must be a node id of at most 100 characters");
@@ -305,7 +357,7 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 		if (!given.ok) return { ok: false, code: "invalid_session_id" };
 		let sessionId = given.value;
 		if (sessionId === undefined) {
-			sessionId = newestPlannedSessionId(stateDir);
+			sessionId = newestPlannedSessionId(stateDir, connectorLogger);
 			if (sessionId === undefined) return textOutcome({ status: "none" }, NO_PLANNED_SESSION);
 		} else if (!isSessionId(sessionId)) {
 			return { ok: false, code: "invalid_session_id" };
@@ -315,7 +367,10 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 		const read = planner
 			? await planner.result({ sessionId, waitSeconds: 0, detail: "brief" })
 			: clientPlanView(stateDir, sessionId, "brief");
-		if (!read.ok) return read.errors === undefined ? { ok: false, code: read.code } : { ok: false, code: read.code, errors: read.errors };
+		if (!read.ok)
+			return read.errors === undefined
+				? { ok: false, code: read.code }
+				: { ok: false, code: read.code, errors: read.errors };
 		const view = read.data;
 		deps.onFinished?.(view);
 
@@ -330,31 +385,48 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 		}
 		const found = node.value === undefined ? undefined : findNode(view.graph, node.value);
 		if (node.value !== undefined && found === undefined) return { ok: false, code: "not_found" };
-		return textOutcome({ ...base, graph: view.graph }, graphText(sessionId, view.graph, found, detail === "full" ? "full" : "brief"));
+		return textOutcome(
+			{ ...base, graph: view.graph },
+			graphText(sessionId, view.graph, found, detail === "full" ? "full" : "brief"),
+		);
 	}
 
 	function sessions(args: Record<string, unknown>): ToolOutcome {
 		const { limit } = args;
-		if (limit !== undefined && limit !== null && (typeof limit !== "number" || !Number.isFinite(limit))) {
+		if (
+			limit !== undefined &&
+			limit !== null &&
+			(typeof limit !== "number" || !Number.isFinite(limit))
+		) {
 			return invalid("limit must be a number; it is clamped to 1..20");
 		}
-		const list = listSessions(stateDir, typeof limit === "number" ? { limit } : {});
+		const list = listSessions(stateDir, {
+			...(typeof limit === "number" ? { limit } : {}),
+			logger: connectorLogger,
+		});
 		const info = planning();
 		return textOutcome({ sessions: list, planning: info }, sessionsText(list, info));
 	}
 
 	async function command(args: Record<string, unknown>): Promise<ToolOutcome> {
-		if (typeof args.command !== "string" || args.command.trim() === "") return invalid("command is required");
+		if (typeof args.command !== "string" || args.command.trim() === "")
+			return invalid("command is required");
 		const rest = optionalText(args.args);
 		if (!rest.ok) return invalid("args must be a string");
-		if (rest.value !== undefined && rest.value.length > MAX_ARGUMENT_CHARS) return invalid("args is too long");
+		if (rest.value !== undefined && rest.value.length > MAX_ARGUMENT_CHARS)
+			return invalid("args is too long");
 		const request = rest.value?.trim();
 
 		const resolved = resolveCommand(args.command);
 		if (resolved.kind === "help") {
 			const text = helpText();
 			return textOutcome(
-				{ command: "help", support: "native", message: text, commands: catalog.commands.map(describeCommand) },
+				{
+					command: "help",
+					support: "native",
+					message: text,
+					commands: catalog.commands.map(describeCommand),
+				},
 				text,
 			);
 		}
@@ -365,7 +437,15 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 			});
 			const names = resolved.suggestions.map((name) => `/${name}`).join(", ");
 			const text = `${JSON.stringify(args.command.slice(0, 100))} is not an ultrathink command. The closest are: ${names}. Call ultrathink_command with command help to list every command.`;
-			return textOutcome({ command: args.command.trim().slice(0, 100), support: "unknown", message: text, commands: known.map(describeCommand) }, text);
+			return textOutcome(
+				{
+					command: args.command.trim().slice(0, 100),
+					support: "unknown",
+					message: text,
+					commands: known.map(describeCommand),
+				},
+				text,
+			);
 		}
 
 		const { name, entry, target } = resolved;
@@ -394,7 +474,10 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 				const text = serverPlanning
 					? `Plan commands run through their own tools. Call ultrathink_uplift with prompt set to the request, verbatim; then call ultrathink_result with the sessionId until the status is planned, also when ultrathink_uplift already reports planned, then ask the user the questions in the plan that matter and carry out the plan.`
 					: `Plan commands run through their own tools. Call ultrathink_plan with prompt set to the request, verbatim, answer each pending prompt with ultrathink_show and ultrathink_answer, call ultrathink_plan again with the same sessionId and prompt until the status is planned, then call ultrathink_result with the sessionId.`;
-				return textOutcome({ command: name, support, message: text, next: { tool, arguments: { prompt: request } } }, text);
+				return textOutcome(
+					{ command: name, support, message: text, next: { tool, arguments: { prompt: request } } },
+					text,
+				);
 			}
 			case "ultrathink-think": {
 				const parsed = thinkArguments(request);
@@ -412,7 +495,10 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 				const inner = await graph({});
 				if (!inner.ok) return inner;
 				const sessionId = inner.data.sessionId;
-				const extra = typeof sessionId === "string" ? { next: { tool: "ultrathink_result", arguments: { sessionId } } } : {};
+				const extra =
+					typeof sessionId === "string"
+						? { next: { tool: "ultrathink_result", arguments: { sessionId } } }
+						: {};
 				const summary = isRecord(inner.data.graph)
 					? "The newest planned session. Show its wave tree to the user first, unchanged, in a code block, then call ultrathink_result with the sessionId in next for the plan itself."
 					: typeof sessionId === "string"
@@ -443,9 +529,8 @@ function wrapped(
 ): ToolOutcome {
 	if (!inner.ok) return inner;
 	const { text, ...result } = inner.data;
-	return textOutcome({ command, support, message, result, ...extra }, typeof text === "string" ? text : message);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+	return textOutcome(
+		{ command, support, message, result, ...extra },
+		typeof text === "string" ? text : message,
+	);
 }

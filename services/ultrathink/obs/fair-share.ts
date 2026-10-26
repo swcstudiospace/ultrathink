@@ -17,7 +17,7 @@
 import type { SecurityEventLogger } from "../security/events.ts";
 
 /** Priority class of an admitted request. `owner` > `connector` > `bearer`. */
-export type AdmissionClass = "owner" | "connector" | "bearer";
+type AdmissionClass = "owner" | "connector" | "bearer";
 
 /** Who is asking for a slot and at which priority. */
 export interface Admission {
@@ -31,7 +31,7 @@ export interface FairShareTimers {
 	clearTimeout(handle: unknown): void;
 }
 
-export interface FairShareQueue {
+interface FairShareQueue {
 	/** Waiting admissions per class. Integer `>= 0`; 0 refuses at once. */
 	depth: number;
 	/** Longest wait before the admission expires, in ms. Positive safe integer. */
@@ -54,7 +54,7 @@ export interface FairShareOptions {
 }
 
 /** Why a slot was refused. Checked in this order. */
-export type FairShareRefusal = "capacity" | "reserved" | "principal";
+type FairShareRefusal = "capacity" | "reserved" | "principal";
 
 /**
  * Outcome of `admit`. `queue_full`: over budget with no room to wait. `expired`: the wait ran out.
@@ -66,7 +66,7 @@ export type AdmitResult =
 	| { ok: false; cause: "aborted" };
 
 /** Options for `admit`. `onWait` runs once, just before an admission joins its queue; it must not release pool slots. */
-export interface AdmitOptions {
+interface AdmitOptions {
 	signal?: AbortSignal;
 	onWait?: () => void;
 }
@@ -76,7 +76,9 @@ export interface FairShare {
 	 * Try to take one slot without waiting. Refusal changes nothing. The returned `release` frees the slot;
 	 * calling it again on the same handle frees nothing.
 	 */
-	acquire(admission: Admission): { ok: true; release: () => void } | { ok: false; reason: FairShareRefusal };
+	acquire(
+		admission: Admission,
+	): { ok: true; release: () => void } | { ok: false; reason: FairShareRefusal };
 	/**
 	 * Take one slot, waiting in the class queue when over budget. Resolves once: admitted, refused, expired or aborted.
 	 * A waiter is removed from its queue as soon as it settles, and its timer is cleared.
@@ -109,10 +111,14 @@ export function createFairShare(options: FairShareOptions): FairShare {
 	const { capacity, reserve } = options;
 	const perPrincipalMax = options.perPrincipalMax ?? capacity;
 	if (!Number.isSafeInteger(capacity) || capacity <= 0) {
-		throw new RangeError(`createFairShare: capacity must be a positive safe integer, got ${String(capacity)}`);
+		throw new RangeError(
+			`createFairShare: capacity must be a positive safe integer, got ${String(capacity)}`,
+		);
 	}
 	if (!Number.isSafeInteger(reserve) || reserve < 0 || reserve >= capacity) {
-		throw new RangeError(`createFairShare: reserve must be an integer in 0..${capacity - 1}, got ${String(reserve)}`);
+		throw new RangeError(
+			`createFairShare: reserve must be an integer in 0..${capacity - 1}, got ${String(reserve)}`,
+		);
 	}
 	if (!Number.isSafeInteger(perPrincipalMax) || perPrincipalMax < 1 || perPrincipalMax > capacity) {
 		throw new RangeError(
@@ -121,10 +127,14 @@ export function createFairShare(options: FairShareOptions): FairShare {
 	}
 	const queue = options.queue;
 	if (queue !== undefined && (!Number.isSafeInteger(queue.depth) || queue.depth < 0)) {
-		throw new RangeError(`createFairShare: queue.depth must be a non-negative safe integer, got ${String(queue.depth)}`);
+		throw new RangeError(
+			`createFairShare: queue.depth must be a non-negative safe integer, got ${String(queue.depth)}`,
+		);
 	}
 	if (queue !== undefined && (!Number.isSafeInteger(queue.waitMs) || queue.waitMs < 1)) {
-		throw new RangeError(`createFairShare: queue.waitMs must be a positive safe integer, got ${String(queue.waitMs)}`);
+		throw new RangeError(
+			`createFairShare: queue.waitMs must be a positive safe integer, got ${String(queue.waitMs)}`,
+		);
 	}
 	const depth = queue?.depth ?? 0;
 	const waitMs = queue?.waitMs ?? 0;
@@ -140,7 +150,8 @@ export function createFairShare(options: FairShareOptions): FairShare {
 		if (held >= capacity) return "capacity";
 		const owner = admission.class === "owner";
 		if (!owner && held >= capacity - reserve) return "reserved";
-		if (!owner && (heldByPrincipal.get(admission.principal) ?? 0) >= perPrincipalMax) return "principal";
+		if (!owner && (heldByPrincipal.get(admission.principal) ?? 0) >= perPrincipalMax)
+			return "principal";
 		return undefined;
 	}
 
@@ -192,7 +203,11 @@ export function createFairShare(options: FairShareOptions): FairShare {
 		return true;
 	}
 
-	function report(admission: Admission, reason: FairShareRefusal, cause: "budget" | "queue_full" | "expired"): void {
+	function report(
+		admission: Admission,
+		reason: FairShareRefusal,
+		cause: "budget" | "queue_full" | "expired",
+	): void {
 		security?.logRateLimitExceeded({
 			name: "rate_limit.fair_share_refused",
 			details: { class: admission.class, reason, cause },

@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MAPPING, resolvePstack, skillPath, type PstackStage } from "../cursor/pstack.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
+import { isRecord } from "../shared.ts";
 
 type StageKey = Exclude<PstackStage, "orchestrate">;
 
@@ -27,10 +28,6 @@ interface Decision {
 	forcedOff: boolean;
 	cursorDir?: string | undefined;
 	mapping?: Partial<Record<StageKey, string[]>> | undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readObject(file: string): Record<string, unknown> | undefined {
@@ -53,13 +50,16 @@ function readConfigValue(file: string): { status: "skip" } | { status: "parsed";
 }
 
 /** The hook's search order. `ULTRATHINK_CONFIG_DIR` replaces it; a project file is never a candidate. */
-export function hookConfigCandidates(env: Env): string[] {
+function hookConfigCandidates(env: Env): string[] {
 	const override = env.ULTRATHINK_CONFIG_DIR?.trim();
 	if (override) return [join(override, "config.json")];
 	const home = env.HOME?.trim() || homedir();
 	const xdg = env.XDG_CONFIG_HOME?.trim();
 	const claude = env.CLAUDE_CONFIG_DIR?.trim();
-	return [join(xdg || join(home, ".config"), "ultrathink", "config.json"), join(claude || join(home, ".claude"), "ultrathink.json")];
+	return [
+		join(xdg || join(home, ".config"), "ultrathink", "config.json"),
+		join(claude || join(home, ".claude"), "ultrathink.json"),
+	];
 }
 
 function mappingOverride(value: unknown): Partial<Record<StageKey, string[]>> | undefined {
@@ -68,7 +68,9 @@ function mappingOverride(value: unknown): Partial<Record<StageKey, string[]>> | 
 	for (const stage of STAGES) {
 		const names = value[stage];
 		if (!Array.isArray(names)) continue;
-		merged[stage] = names.filter((name): name is string => typeof name === "string" && name.trim().length > 0).map((name) => name.trim());
+		merged[stage] = names
+			.filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+			.map((name) => name.trim());
 	}
 	return Object.keys(merged).length > 0 ? merged : undefined;
 }
@@ -82,7 +84,10 @@ function readDecision(env: Env): Decision {
 		if (!isRecord(read.value)) return { source: file, enabled: false, forcedOff };
 		const pstack = read.value.pstack;
 		if (!isRecord(pstack)) return { source: file, enabled: false, forcedOff };
-		const cursorDir = typeof pstack.cursorDir === "string" && pstack.cursorDir.startsWith("/") ? pstack.cursorDir : undefined;
+		const cursorDir =
+			typeof pstack.cursorDir === "string" && pstack.cursorDir.startsWith("/")
+				? pstack.cursorDir
+				: undefined;
 		return {
 			source: file,
 			enabled: !forcedOff && pstack.enabled === true,
@@ -95,7 +100,8 @@ function readDecision(env: Env): Decision {
 }
 
 function namesFor(stage: StageKey, override: Decision["mapping"]): readonly string[] {
-	if (override && Object.prototype.hasOwnProperty.call(override, stage)) return override[stage] ?? [];
+	if (override && Object.prototype.hasOwnProperty.call(override, stage))
+		return override[stage] ?? [];
 	return DEFAULT_MAPPING[stage];
 }
 
@@ -126,16 +132,26 @@ function hookState(cursorDir: string): { installed: boolean; detail: string } {
 			entry = list.some(
 				(item) =>
 					isRecord(item) &&
-					(item["ultrathink-managed"] === true || (typeof item.command === "string" && item.command.includes(HOOK_FILE))),
+					(item["ultrathink-managed"] === true ||
+						(typeof item.command === "string" && item.command.includes(HOOK_FILE))),
 			);
 		}
 	} catch {
+		// reason: an unparseable hooks file is reported as not installed, with its path in the detail
 		unreadable = true;
 	}
 	if (unreadable) return { installed: false, detail: `${hooksFile} is not valid JSON` };
-	if (entry && stagedOk) return { installed: true, detail: `${hooksFile} has one ultrathink-managed beforeSubmitPrompt entry; staged file ${staged}` };
-	if (entry) return { installed: false, detail: `hooks.json names the hook but ${staged} is missing` };
-	return { installed: false, detail: `${hooksFile} has no ultrathink-managed beforeSubmitPrompt entry` };
+	if (entry && stagedOk)
+		return {
+			installed: true,
+			detail: `${hooksFile} has one ultrathink-managed beforeSubmitPrompt entry; staged file ${staged}`,
+		};
+	if (entry)
+		return { installed: false, detail: `hooks.json names the hook but ${staged} is missing` };
+	return {
+		installed: false,
+		detail: `${hooksFile} has no ultrathink-managed beforeSubmitPrompt entry`,
+	};
 }
 
 /** Pstack findings for doctor. Never throws: a probe that fails becomes a finding inside this function. */
@@ -177,9 +193,15 @@ export function checkPstack(deps: DoctorDeps): Finding[] {
 			level: decision.enabled ? "warn" : "info",
 			title: "pstack plugin not resolved",
 			detail: `${resolved.reason}\nLooked in: ${cursorDir}`,
-			...(decision.enabled ? { fix: "Install the pstack Cursor plugin, or set pstack.cursorDir to the Cursor directory that contains it." } : {}),
+			...(decision.enabled
+				? {
+						fix: "Install the pstack Cursor plugin, or set pstack.cursorDir to the Cursor directory that contains it.",
+					}
+				: {}),
 		});
-		const planned = STAGES.map((stage) => `${stage}: ${namesFor(stage, decision.mapping).join(", ") || "(none)"}`).join("\n");
+		const planned = STAGES.map(
+			(stage) => `${stage}: ${namesFor(stage, decision.mapping).join(", ") || "(none)"}`,
+		).join("\n");
 		findings.push({
 			id: "pstack.skills",
 			section: "pstack",
@@ -213,10 +235,15 @@ export function checkPstack(deps: DoctorDeps): Finding[] {
 			id: "pstack.skills",
 			section: "pstack",
 			level: missing.length > 0 ? (decision.enabled ? "warn" : "info") : "ok",
-			title: missing.length > 0 ? `unknown or missing pstack skill: ${missing.join(", ")}` : "per-stage skills resolve",
+			title:
+				missing.length > 0
+					? `unknown or missing pstack skill: ${missing.join(", ")}`
+					: "per-stage skills resolve",
 			detail: lines.join("\n"),
 			...(missing.length > 0 && decision.enabled
-				? { fix: "Fix pstack.mapping or reinstall the pstack plugin. The hook skips a missing skill and still injects the rest." }
+				? {
+						fix: "Fix pstack.mapping or reinstall the pstack plugin. The hook skips a missing skill and still injects the rest.",
+					}
 				: {}),
 		});
 	}
@@ -228,7 +255,9 @@ export function checkPstack(deps: DoctorDeps): Finding[] {
 		level: hook.installed ? "ok" : decision.enabled ? "warn" : "info",
 		title: hook.installed ? "Cursor hook installed" : "Cursor hook not installed",
 		detail: hook.detail,
-		...(!hook.installed && decision.enabled ? { fix: "From the ultrathink clone, run: bun scripts/cursor-hooks.ts install" } : {}),
+		...(!hook.installed && decision.enabled
+			? { fix: "From the ultrathink clone, run: bun scripts/cursor-hooks.ts install" }
+			: {}),
 	});
 	return findings;
 }

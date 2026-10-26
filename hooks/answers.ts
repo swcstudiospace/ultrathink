@@ -11,7 +11,11 @@ import { writeFileAtomic } from "../src/claude/atomic.ts";
 import { isChildInvocation } from "../src/claude/complete.ts";
 import { defaultStateDir, updateSession } from "../src/claude/state.ts";
 import { parseEnvelope } from "../src/host/envelope.ts";
-import { applyAnswers, type AskUserQuestionInput, type AskUserQuestionResponse } from "../src/hitl/answers.ts";
+import {
+	applyAnswers,
+	type AskUserQuestionInput,
+	type AskUserQuestionResponse,
+} from "../src/hitl/answers.ts";
 import { injectClarificationsXml } from "../src/hitl/format.ts";
 import type { Clarification } from "../src/hitl/types.ts";
 
@@ -39,7 +43,9 @@ async function main(): Promise<void> {
 	// The XML is resolved from the record path the update reads and writes, under the same lock, so the pair never splits.
 	const updated = updateSession(stateDir, input.session_id, (record, recordPath) => {
 		const xmlPath = recordPath.replace(/\.json$/, ".xml");
-		const existing: Clarification[] = Array.isArray(record.clarifications) ? record.clarifications : [];
+		const existing: Clarification[] = Array.isArray(record.clarifications)
+			? record.clarifications
+			: [];
 		const applied = applyAnswers(existing, input.tool_input, input.tool_response, Date.now());
 		matched = applied.matched;
 		const currentXml = existsSync(xmlPath) ? readFileSync(xmlPath, "utf8") : record.result.xml;

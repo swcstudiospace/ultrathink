@@ -29,7 +29,11 @@ const created = {
 describe("activity receipts", () => {
 	test("append then read round-trips a created notice and does not store a body", () => {
 		const dir = stateDir();
-		appendActivity(dir, { ...created, body: "LESSON BODY MUST NOT BE STORED", documentId: "tm:secret" }, "s1");
+		appendActivity(
+			dir,
+			{ ...created, body: "LESSON BODY MUST NOT BE STORED", documentId: "tm:secret" },
+			"s1",
+		);
 		const rows = readActivity(dir);
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toMatchObject(created);

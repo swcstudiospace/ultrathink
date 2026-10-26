@@ -2,7 +2,18 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EVENT, HOOK_FILE, acquireHookLock, isOwned } from "./cursor-hooks.ts";
@@ -21,7 +32,11 @@ import {
 	upsertPlanHook,
 } from "./cursor-plugin.ts";
 
-const PSTACK = { type: "command", command: `/usr/bin/node /cursor/hooks/${HOOK_FILE}`, "ultrathink-managed": true };
+const PSTACK = {
+	type: "command",
+	command: `/usr/bin/node /cursor/hooks/${HOOK_FILE}`,
+	"ultrathink-managed": true,
+};
 const SUBSTRATE = {
 	type: "command",
 	command: "bun /opt/agent-substrate/packages/cli/src/index.ts brief --surface cursor --write",
@@ -68,7 +83,11 @@ describe("externalSteps", () => {
 		expect(externalSteps({}, "/repo")).toEqual([]);
 		expect(externalSteps({ SWARM_ROOT: "/swarm" }, undefined).map((step) => step.name)).toEqual([]);
 		const steps = externalSteps({ SUBSTRATE_ROOT: "/sub", SWARM_ROOT: "/swarm" }, "/repo");
-		expect(steps.map((step) => step.name)).toEqual(["substrate-hooks", "substrate-mcp", "swarm-cursor"]);
+		expect(steps.map((step) => step.name)).toEqual([
+			"substrate-hooks",
+			"substrate-mcp",
+			"swarm-cursor",
+		]);
 		const flat = steps.flatMap((step) => step.argv).join(" ");
 		expect(flat).not.toContain("swarm_run.py");
 		expect(flat).not.toContain("autonomous_run.py");
@@ -91,8 +110,22 @@ describe("main", () => {
 			);
 			const logs: string[] = [];
 			const log = (line: string) => logs.push(line);
-			expect(main(["install", "--cursor-dir", cursorDir], { env: {}, root, log, nodeCandidates: [process.execPath] })).toBe(0);
-			expect(main(["install", "--cursor-dir", cursorDir], { env: {}, root, log, nodeCandidates: [process.execPath] })).toBe(0);
+			expect(
+				main(["install", "--cursor-dir", cursorDir], {
+					env: {},
+					root,
+					log,
+					nodeCandidates: [process.execPath],
+				}),
+			).toBe(0);
+			expect(
+				main(["install", "--cursor-dir", cursorDir], {
+					env: {},
+					root,
+					log,
+					nodeCandidates: [process.execPath],
+				}),
+			).toBe(0);
 			const hooks = JSON.parse(readFileSync(join(cursorDir, "hooks.json"), "utf8")) as {
 				hooks: Record<string, unknown[]>;
 			};
@@ -104,7 +137,14 @@ describe("main", () => {
 			expect(logs.filter((line) => line.includes("entry added"))).toHaveLength(1);
 			expect(logs.some((line) => line.includes("already current"))).toBe(true);
 
-			expect(main(["remove", "--cursor-dir", cursorDir], { env: {}, root, log, nodeCandidates: [process.execPath] })).toBe(0);
+			expect(
+				main(["remove", "--cursor-dir", cursorDir], {
+					env: {},
+					root,
+					log,
+					nodeCandidates: [process.execPath],
+				}),
+			).toBe(0);
 			const after = JSON.parse(readFileSync(join(cursorDir, "hooks.json"), "utf8")) as {
 				hooks: Record<string, unknown[]>;
 			};
@@ -125,16 +165,21 @@ describe("main", () => {
 			mkdirSync(join(root, "hosts", "cursor"), { recursive: true });
 			writeFileSync(join(root, "hosts", "cursor", PLAN_HOOK_FILE), "#!/usr/bin/env node\n");
 			const ran: string[][] = [];
-			const code = main(["install", "--cursor-dir", cursorDir, "--target", join(cursorDir, "repo")], {
-				env: { SUBSTRATE_ROOT: substrate, SWARM_ROOT: swarm },
-				root,
-				log: () => {},
-				nodeCandidates: [process.execPath],
-				run: (argv) => {
-					ran.push(argv);
-					return 0;
+			const code = main(
+				["install", "--cursor-dir", cursorDir, "--target", join(cursorDir, "repo")],
+				{
+					env: { SUBSTRATE_ROOT: substrate, SWARM_ROOT: swarm },
+					root,
+					log: () => {
+						// reason: install output is not asserted here; the file state and the ran list are
+					},
+					nodeCandidates: [process.execPath],
+					run: (argv) => {
+						ran.push(argv);
+						return 0;
+					},
 				},
-			});
+			);
 			expect(code).toBe(0);
 			expect(ran).toEqual([]);
 			expect(existsSync(join(cursorDir, "hooks", PLAN_HOOK_FILE))).toBe(true);
@@ -167,7 +212,9 @@ describe("main", () => {
 			const code = main(["install", "--cursor-dir", cursorDir, "--target", target], {
 				env: { SUBSTRATE_ROOT: substrate, SWARM_ROOT: swarm },
 				root,
-				log: () => {},
+				log: () => {
+					// reason: install output is not asserted here; the exit code and the ran list are
+				},
 				nodeCandidates: [process.execPath],
 				run: (argv) => {
 					ran.push(argv);
@@ -180,7 +227,9 @@ describe("main", () => {
 			const names = gsdCommandNames();
 			expect(names.length).toBeGreaterThan(0);
 			for (const name of names) {
-				expect(readFileSync(join(cursorDir, "commands", `${name}.md`), "utf8")).toBe(renderGsdCommand(name));
+				expect(readFileSync(join(cursorDir, "commands", `${name}.md`), "utf8")).toBe(
+					renderGsdCommand(name),
+				);
 			}
 		} finally {
 			rmSync(cursorDir, { recursive: true, force: true });
@@ -205,14 +254,30 @@ describe("main", () => {
 			writeFileSync(join(outside, "gsd-ship.md"), "# linked\n");
 			symlinkSync(join(outside, "gsd-ship.md"), link);
 			const logs: string[] = [];
-			expect(main(["install", "--cursor-dir", cursorDir], { env: {}, root, log: (line) => logs.push(line), nodeCandidates: [process.execPath] })).toBe(0);
+			expect(
+				main(["install", "--cursor-dir", cursorDir], {
+					env: {},
+					root,
+					log: (line) => logs.push(line),
+					nodeCandidates: [process.execPath],
+				}),
+			).toBe(0);
 			expect(readFileSync(foreign, "utf8")).toBe("# real GSD plan-phase\n");
 			expect(lstatSync(link).isSymbolicLink()).toBe(true);
 			expect(readFileSync(join(commands, "gsd-quick.md"), "utf8")).toContain(GSD_MARKER);
 			expect(logs.some((line) => line.includes("left gsd-plan-phase.md in place"))).toBe(true);
 			expect(logs.some((line) => line.includes("left gsd-ship.md in place"))).toBe(true);
 
-			expect(main(["remove", "--cursor-dir", cursorDir], { env: {}, root, log: () => {}, nodeCandidates: [process.execPath] })).toBe(0);
+			expect(
+				main(["remove", "--cursor-dir", cursorDir], {
+					env: {},
+					root,
+					log: () => {
+						// reason: remove output is not asserted here; the foreign file check is
+					},
+					nodeCandidates: [process.execPath],
+				}),
+			).toBe(0);
 			expect(existsSync(foreign)).toBe(true);
 			expect(lstatSync(link).isSymbolicLink()).toBe(true);
 			expect(existsSync(join(commands, "gsd-quick.md"))).toBe(false);
@@ -229,7 +294,9 @@ describe("main", () => {
 describe("shipped GSD commands", () => {
 	test("the plugin lists the command directory and each file matches the renderer", () => {
 		const root = join(import.meta.dir, "..");
-		const manifest = JSON.parse(readFileSync(join(root, ".cursor-plugin", "plugin.json"), "utf8")) as {
+		const manifest = JSON.parse(
+			readFileSync(join(root, ".cursor-plugin", "plugin.json"), "utf8"),
+		) as {
 			skills?: string;
 			commands?: string[];
 		};
@@ -237,7 +304,11 @@ describe("shipped GSD commands", () => {
 		expect(manifest.commands).toEqual(["./hosts/cursor/commands", `./${GSD_COMMAND_DIR}`]);
 		const dir = join(root, GSD_COMMAND_DIR);
 		const names = gsdCommandNames();
-		expect(readdirSync(dir).filter((name) => name.endsWith(".md")).sort()).toEqual(names.map((name) => `${name}.md`).sort());
+		expect(
+			readdirSync(dir)
+				.filter((name) => name.endsWith(".md"))
+				.sort(),
+		).toEqual(names.map((name) => `${name}.md`).sort());
 		for (const name of names) {
 			const text = readFileSync(join(dir, `${name}.md`), "utf8");
 			expect(text).toBe(renderGsdCommand(name));
@@ -274,7 +345,14 @@ describe("installer restores and locks", () => {
 			const link = join(commands, "gsd-ship.md");
 			symlinkSync(target, link);
 			const logs: string[] = [];
-			expect(main(["install", "--cursor-dir", cursorDir], { env: {}, root, log: (line) => logs.push(line), nodeCandidates: [process.execPath] })).toBe(0);
+			expect(
+				main(["install", "--cursor-dir", cursorDir], {
+					env: {},
+					root,
+					log: (line) => logs.push(line),
+					nodeCandidates: [process.execPath],
+				}),
+			).toBe(0);
 			expect(existsSync(target)).toBe(false);
 			expect(lstatSync(link).isSymbolicLink()).toBe(true);
 			expect(logs.some((line) => line.includes("left gsd-ship.md in place"))).toBe(true);
@@ -295,7 +373,12 @@ describe("installer restores and locks", () => {
 			const source = join(root, "hosts", "cursor", PLAN_HOOK_FILE);
 			writeFileSync(source, "// previous planner\n");
 			const logs: string[] = [];
-			const deps = { env: {}, root, log: (line: string) => logs.push(line), nodeCandidates: [process.execPath] };
+			const deps = {
+				env: {},
+				root,
+				log: (line: string) => logs.push(line),
+				nodeCandidates: [process.execPath],
+			};
 			expect(main(["install", "--cursor-dir", cursorDir], deps)).toBe(0);
 			const staged = join(cursorDir, "hooks", PLAN_HOOK_FILE);
 			const rootFile = join(cursorDir, "hooks", PLAN_ROOT_FILE);
@@ -320,7 +403,15 @@ describe("installer restores and locks", () => {
 		try {
 			mkdirSync(join(root, "hosts", "cursor"), { recursive: true });
 			writeFileSync(join(root, "hosts", "cursor", PLAN_HOOK_FILE), "#!/usr/bin/env node\n");
-			const deps = { env: {}, root, log: () => {}, nodeCandidates: [process.execPath], lockWaitMs: 0 };
+			const deps = {
+				env: {},
+				root,
+				log: () => {
+					// reason: install output is not asserted here; the lock behaviour is checked through the files
+				},
+				nodeCandidates: [process.execPath],
+				lockWaitMs: 0,
+			};
 			expect(main(["install", "--cursor-dir", cursorDir], deps)).toBe(0);
 			const quick = join(cursorDir, "commands", "gsd-quick.md");
 			const held = acquireHookLock(cursorDir, 0);
@@ -347,7 +438,11 @@ describe("Cursor control commands", () => {
 		const dir = join(import.meta.dir, "..", "hosts", "cursor", "commands");
 		const verbs = ["on", "off", "skip", "status", "track"];
 		const names = [...verbs.map((verb) => `ultrathink-${verb}`), "ultrathink-quick"];
-		expect(readdirSync(dir).filter((file) => file.endsWith(".md")).sort()).toEqual(names.map((name) => `${name}.md`).sort());
+		expect(
+			readdirSync(dir)
+				.filter((file) => file.endsWith(".md"))
+				.sort(),
+		).toEqual(names.map((name) => `${name}.md`).sort());
 		for (const name of names) {
 			const text = readFileSync(join(dir, `${name}.md`), "utf8");
 			expect(text).toContain(`name: ${name}\n`);
@@ -355,8 +450,12 @@ describe("Cursor control commands", () => {
 		}
 		for (const verb of verbs) {
 			const text = readFileSync(join(dir, `ultrathink-${verb}.md`), "utf8");
-			expect(text).toContain(`ULTRATHINK_HOST=cursor "$(cat "$HOME/.cursor/hooks/ultrathink-cursor-plan.root")/bin/ultrathink" ${verb} $ARGUMENTS`);
-			expect(text).toContain(`ULTRATHINK_HOST=cursor "<that directory>/bin/ultrathink" ${verb} $ARGUMENTS`);
+			expect(text).toContain(
+				`ULTRATHINK_HOST=cursor "$(cat "$HOME/.cursor/hooks/ultrathink-cursor-plan.root")/bin/ultrathink" ${verb} $ARGUMENTS`,
+			);
+			expect(text).toContain(
+				`ULTRATHINK_HOST=cursor "<that directory>/bin/ultrathink" ${verb} $ARGUMENTS`,
+			);
 		}
 	});
 });
@@ -368,17 +467,37 @@ describe("installed planner hook", () => {
 		const checkout = join(import.meta.dir, "..");
 		const node = Bun.which("node") ?? process.execPath;
 		try {
-			expect(main(["install", "--cursor-dir", cursorDir], { env: {}, root: checkout, log: () => {}, nodeCandidates: [node] })).toBe(0);
-			const hooks = JSON.parse(readFileSync(join(cursorDir, "hooks.json"), "utf8")) as { hooks: Record<string, unknown[]> };
+			expect(
+				main(["install", "--cursor-dir", cursorDir], {
+					env: {},
+					root: checkout,
+					log: () => {
+						// reason: install output is not asserted here; the staged hook is run next
+					},
+					nodeCandidates: [node],
+				}),
+			).toBe(0);
+			const hooks = JSON.parse(readFileSync(join(cursorDir, "hooks.json"), "utf8")) as {
+				hooks: Record<string, unknown[]>;
+			};
 			const entry = hooks.hooks[EVENT]?.find(isPlanOwned) as { command?: string } | undefined;
-			if (typeof entry?.command !== "string") throw new Error("planner entry missing from hooks.json");
-			const stdout = await runShell(entry.command, JSON.stringify({ prompt: "/ultrathink-status", conversation_id: "e2e", workspace_roots: [home] }), {
-				PATH: process.env.PATH ?? "",
-				HOME: home,
-				BUN: process.execPath,
-				XDG_CONFIG_HOME: join(home, ".config"),
-				CLAUDE_CONFIG_DIR: join(home, ".claude"),
-			});
+			if (typeof entry?.command !== "string")
+				throw new Error("planner entry missing from hooks.json");
+			const stdout = await runShell(
+				entry.command,
+				JSON.stringify({
+					prompt: "/ultrathink-status",
+					conversation_id: "e2e",
+					workspace_roots: [home],
+				}),
+				{
+					PATH: process.env.PATH ?? "",
+					HOME: home,
+					BUN: process.execPath,
+					XDG_CONFIG_HOME: join(home, ".config"),
+					CLAUDE_CONFIG_DIR: join(home, ".claude"),
+				},
+			);
 			const reply = JSON.parse(stdout) as { continue?: boolean; user_message?: string };
 			expect(reply.continue).toBe(false);
 			expect(reply.user_message).toContain("Prompt Uplift");

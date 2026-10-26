@@ -19,7 +19,10 @@ import { FALLBACK_GRAPH, MAX_NODES, MIN_NODES, type ThoughtNode } from "./types.
 describe("extractJsonObject", () => {
 	test("parses fenced json and raw objects", () => {
 		expect(extractJsonObject('```json\n{"goal":"g"}\n```')).toEqual({ goal: "g" });
-		expect(extractJsonObject('noise {"goal":"g","nodes":[]} trailing')).toEqual({ goal: "g", nodes: [] });
+		expect(extractJsonObject('noise {"goal":"g","nodes":[]} trailing')).toEqual({
+			goal: "g",
+			nodes: [],
+		});
 		expect(extractJsonObject("not json")).toBeNull();
 	});
 });
@@ -35,7 +38,13 @@ describe("isFallbackGraph", () => {
 		expect(isFallbackGraph(FALLBACK_GRAPH)).toBe(true);
 		expect(isFallbackGraph(normalizeGraph(null, "goal", MIN_NODES, MAX_NODES))).toBe(true);
 		const real = normalizeGraph(
-			{ goal: "Ship it", nodes: FALLBACK_GRAPH.nodes.map((node) => ({ ...node, question: `${node.question} (task)` })) },
+			{
+				goal: "Ship it",
+				nodes: FALLBACK_GRAPH.nodes.map((node) => ({
+					...node,
+					question: `${node.question} (task)`,
+				})),
+			},
 			"goal",
 			MIN_NODES,
 			MAX_NODES,
@@ -81,7 +90,13 @@ describe("normalizeGraph", () => {
 			{
 				goal: "g",
 				nodes: [
-					{ id: "n1", title: "A", kind: "understand", question: "q1", depends_on: ["missing", "n1"] },
+					{
+						id: "n1",
+						title: "A",
+						kind: "understand",
+						question: "q1",
+						depends_on: ["missing", "n1"],
+					},
 					{ id: "n2", title: "B", kind: "decompose", question: "q2", dependsOn: ["n1"] },
 					{ id: "n3", title: "C", kind: "generate", question: "q3", depends_on: ["n2", "ghost"] },
 				],
@@ -102,10 +117,34 @@ describe("normalizeGraph", () => {
 				goal: "g",
 				nodes: [
 					{ id: "constructor", title: "A", kind: "understand", question: "q1", depends_on: [] },
-					{ id: "__proto__", title: "B", kind: "decompose", question: "q2", depends_on: ["constructor"] },
-					{ id: 'bad id"', title: "C", kind: "generate", question: "q3", depends_on: ["__proto__", "constructor"] },
-					{ id: "x".repeat(65), title: "D", kind: "generate", question: "q4", depends_on: ['bad id"', "keep_this-1"] },
-					{ id: "keep_this-1", title: "E", kind: "critique", question: "q5", depends_on: ["toString"] },
+					{
+						id: "__proto__",
+						title: "B",
+						kind: "decompose",
+						question: "q2",
+						depends_on: ["constructor"],
+					},
+					{
+						id: 'bad id"',
+						title: "C",
+						kind: "generate",
+						question: "q3",
+						depends_on: ["__proto__", "constructor"],
+					},
+					{
+						id: "x".repeat(65),
+						title: "D",
+						kind: "generate",
+						question: "q4",
+						depends_on: ['bad id"', "keep_this-1"],
+					},
+					{
+						id: "keep_this-1",
+						title: "E",
+						kind: "critique",
+						question: "q5",
+						depends_on: ["toString"],
+					},
 				],
 			},
 			"fb",
@@ -205,21 +244,28 @@ describe("graphToXml", () => {
 
 describe("parseNodeFill", () => {
 	test("reads rationale and conclusion", () => {
-		expect(parseNodeFill("<node><rationale>step 1</rationale><conclusion>do x</conclusion></node>")).toEqual({
+		expect(
+			parseNodeFill("<node><rationale>step 1</rationale><conclusion>do x</conclusion></node>"),
+		).toEqual({
 			thinking: "step 1",
 			conclusion: "do x",
 		});
 	});
 
 	test("still reads the older <thinking> tag for back-compat", () => {
-		expect(parseNodeFill("<node><thinking>step 1</thinking><conclusion>do x</conclusion></node>")).toEqual({
+		expect(
+			parseNodeFill("<node><thinking>step 1</thinking><conclusion>do x</conclusion></node>"),
+		).toEqual({
 			thinking: "step 1",
 			conclusion: "do x",
 		});
 	});
 
 	test("falls back to whole text", () => {
-		expect(parseNodeFill("plain answer")).toEqual({ thinking: "plain answer", conclusion: "plain answer" });
+		expect(parseNodeFill("plain answer")).toEqual({
+			thinking: "plain answer",
+			conclusion: "plain answer",
+		});
 	});
 });
 

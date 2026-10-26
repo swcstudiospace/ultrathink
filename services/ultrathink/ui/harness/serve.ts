@@ -30,13 +30,20 @@ export const APP_CSP = [
 	"font-src 'self'",
 ].join("; ");
 
-function respond(body: ConstructorParameters<typeof Response>[0], type: string, extra: Record<string, string> = {}): Response {
-	return new Response(body, { headers: { "content-type": type, "cache-control": "no-store", ...extra } });
+function respond(
+	body: ConstructorParameters<typeof Response>[0],
+	type: string,
+	extra: Record<string, string> = {},
+): Response {
+	return new Response(body, {
+		headers: { "content-type": type, "cache-control": "no-store", ...extra },
+	});
 }
 
 export function harnessFetch(req: Request): Response | Promise<Response> {
 	const url = new URL(req.url);
-	if (req.method !== "GET" && req.method !== "HEAD") return new Response("method not allowed", { status: 405 });
+	if (req.method !== "GET" && req.method !== "HEAD")
+		return new Response("method not allowed", { status: 405 });
 	switch (url.pathname) {
 		case "/":
 		case "/index.html":
@@ -45,9 +52,14 @@ export function harnessFetch(req: Request): Response | Promise<Response> {
 				.text()
 				.then((html) => respond(html, "text/html; charset=utf-8"));
 		case "/app.html":
-			return respond(graphAppHtml(), "text/html; charset=utf-8", { "content-security-policy": APP_CSP });
+			return respond(graphAppHtml(), "text/html; charset=utf-8", {
+				"content-security-policy": APP_CSP,
+			});
 		case "/fixtures.json":
-			return respond(JSON.stringify({ names: FIXTURE_NAMES, fixtures: FIXTURES }), "application/json; charset=utf-8");
+			return respond(
+				JSON.stringify({ names: FIXTURE_NAMES, fixtures: FIXTURES }),
+				"application/json; charset=utf-8",
+			);
 		default:
 			return new Response("not found", { status: 404 });
 	}

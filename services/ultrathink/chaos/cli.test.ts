@@ -5,6 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { yieldTurn } from "../../../src/test.helpers.ts";
 import { type CliDeps, runCli } from "./cli.ts";
 import { appendHistory } from "./history.ts";
 import type { HttpFetch, HttpRequestInit } from "./observe.ts";
@@ -13,13 +14,6 @@ import type { RunResult } from "./run.ts";
 const EXPERIMENTS = join(import.meta.dir, "experiments");
 const ROLLBACK = ["deploy/ultrathink-release.sh", "rollback"];
 const roots: string[] = [];
-
-// The runner's settle poll waits between polls; one event-loop turn is enough, since the planner progresses on the app's own promises.
-function yieldTurn(): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	setImmediate(resolve);
-	return promise;
-}
 
 afterAll(() => {
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
@@ -103,7 +97,11 @@ describe("templates", () => {
 		const code = await runCli(["templates"], h.deps);
 
 		expect(code).toBe(0);
-		const ids = h.stdout().trim().split("\n").map((line) => line.split("\t")[0]);
+		const ids = h
+			.stdout()
+			.trim()
+			.split("\n")
+			.map((line) => line.split("\t")[0]);
 		expect(ids).toEqual([
 			"audit-corrupt",
 			"inflight-saturation",
@@ -120,7 +118,10 @@ describe("run: gates and usage", () => {
 	test("http driver off loopback without staging exits 2 and sends no request", async () => {
 		const h = harness();
 
-		const code = await runCli(["run", "audit-corrupt", "--driver", "http", "--base-url", "https://example.com"], h.deps);
+		const code = await runCli(
+			["run", "audit-corrupt", "--driver", "http", "--base-url", "https://example.com"],
+			h.deps,
+		);
 
 		expect(code).toBe(2);
 		expect(h.events).toEqual([]);
@@ -131,7 +132,10 @@ describe("run: gates and usage", () => {
 	test("http driver off loopback with staging set reaches the target", async () => {
 		const h = harness({ env: { ULTRATHINK_CHAOS_ENV: "staging" } });
 
-		const code = await runCli(["run", "audit-corrupt", "--driver", "http", "--base-url", "https://example.com"], h.deps);
+		const code = await runCli(
+			["run", "audit-corrupt", "--driver", "http", "--base-url", "https://example.com"],
+			h.deps,
+		);
 
 		expect(code).toBe(0);
 		expect(h.events).toEqual(["confirm", "fetch /healthz", "fetch /readyz", "fetch /healthz"]);
@@ -148,7 +152,16 @@ describe("run: gates and usage", () => {
 		const h = harness();
 
 		const code = await runCli(
-			["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9", "--rollback-argv", "not json"],
+			[
+				"run",
+				"audit-corrupt",
+				"--driver",
+				"http",
+				"--base-url",
+				"http://127.0.0.1:9",
+				"--rollback-argv",
+				"not json",
+			],
 			h.deps,
 		);
 
@@ -160,7 +173,16 @@ describe("run: gates and usage", () => {
 		const h = harness();
 
 		const code = await runCli(
-			["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9", "--rollback-argv", "[]"],
+			[
+				"run",
+				"audit-corrupt",
+				"--driver",
+				"http",
+				"--base-url",
+				"http://127.0.0.1:9",
+				"--rollback-argv",
+				"[]",
+			],
 			h.deps,
 		);
 
@@ -171,13 +193,20 @@ describe("run: gates and usage", () => {
 	test("an in-process template given the http driver exits 2", async () => {
 		const h = harness();
 
-		expect(await runCli(["run", "upstream-5xx-breaker", "--driver", "http", "--base-url", "http://127.0.0.1:9"], h.deps)).toBe(2);
+		expect(
+			await runCli(
+				["run", "upstream-5xx-breaker", "--driver", "http", "--base-url", "http://127.0.0.1:9"],
+				h.deps,
+			),
+		).toBe(2);
 		expect(h.events).toEqual([]);
 	});
 
 	test("an unknown command or template exits 2", async () => {
 		expect(await runCli(["frobnicate"], harness().deps)).toBe(2);
-		expect(await runCli(["run", "no-such-template", "--driver", "inprocess"], harness().deps)).toBe(2);
+		expect(await runCli(["run", "no-such-template", "--driver", "inprocess"], harness().deps)).toBe(
+			2,
+		);
 	});
 });
 
@@ -185,7 +214,10 @@ describe("run: operator template over http", () => {
 	test("confirmation comes before any request, and a passing run is recorded", async () => {
 		const h = harness();
 
-		const code = await runCli(["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9"], h.deps);
+		const code = await runCli(
+			["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9"],
+			h.deps,
+		);
 
 		expect(code).toBe(0);
 		expect(h.events[0]).toBe("confirm");
@@ -201,7 +233,10 @@ describe("run: operator template over http", () => {
 			},
 		});
 
-		const code = await runCli(["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9"], h.deps);
+		const code = await runCli(
+			["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9"],
+			h.deps,
+		);
 
 		expect(code).toBe(2);
 		expect(h.events.some((event) => event.startsWith("fetch"))).toBe(false);
@@ -210,15 +245,29 @@ describe("run: operator template over http", () => {
 	});
 
 	test("a failed hypothesis exits 1, and rollback runs once when staging and argv are given", async () => {
-		const h = harness({ env: { ULTRATHINK_CHAOS_ENV: "staging" }, statusFor: (path) => (path === "/readyz" ? 503 : 200) });
+		const h = harness({
+			env: { ULTRATHINK_CHAOS_ENV: "staging" },
+			statusFor: (path) => (path === "/readyz" ? 503 : 200),
+		});
 
 		const code = await runCli(
-			["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9", "--rollback-argv", JSON.stringify(ROLLBACK)],
+			[
+				"run",
+				"audit-corrupt",
+				"--driver",
+				"http",
+				"--base-url",
+				"http://127.0.0.1:9",
+				"--rollback-argv",
+				JSON.stringify(ROLLBACK),
+			],
 			h.deps,
 		);
 
 		expect(code).toBe(1);
-		expect(h.events.filter((event) => event.startsWith("exec"))).toEqual([`exec ${ROLLBACK.join(" ")}`]);
+		expect(h.events.filter((event) => event.startsWith("exec"))).toEqual([
+			`exec ${ROLLBACK.join(" ")}`,
+		]);
 		expect(h.stdout()).toContain("rollback invoked (exit 0)");
 	});
 
@@ -226,7 +275,16 @@ describe("run: operator template over http", () => {
 		const h = harness({ statusFor: (path) => (path === "/readyz" ? 503 : 200) });
 
 		const code = await runCli(
-			["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9", "--rollback-argv", JSON.stringify(ROLLBACK)],
+			[
+				"run",
+				"audit-corrupt",
+				"--driver",
+				"http",
+				"--base-url",
+				"http://127.0.0.1:9",
+				"--rollback-argv",
+				JSON.stringify(ROLLBACK),
+			],
 			h.deps,
 		);
 
@@ -251,7 +309,8 @@ describe("run: in-process template", () => {
 describe("score", () => {
 	test("prints the mean and slope of a fixture history", async () => {
 		const h = harness();
-		for (const score of [60, 70, 80]) appendHistory(h.historyPath, runRecord("upstream-5xx-breaker", score));
+		for (const score of [60, 70, 80])
+			appendHistory(h.historyPath, runRecord("upstream-5xx-breaker", score));
 
 		const code = await runCli(["score", "upstream-5xx-breaker"], h.deps);
 
@@ -274,7 +333,17 @@ describe("run: production-safety gate", () => {
 	test("a production URL is refused on the gate before the template is checked", async () => {
 		const h = harness();
 
-		const code = await runCli(["run", "upstream-5xx-breaker", "--driver", "http", "--base-url", "https://ultrathink.swcstudio.space"], h.deps);
+		const code = await runCli(
+			[
+				"run",
+				"upstream-5xx-breaker",
+				"--driver",
+				"http",
+				"--base-url",
+				"https://ultrathink.swcstudio.space",
+			],
+			h.deps,
+		);
 
 		expect(code).toBe(2);
 		expect(h.stderr()).toContain("ULTRATHINK_CHAOS_ENV=staging");
@@ -285,7 +354,11 @@ describe("run: production-safety gate", () => {
 describe("run: TLS probe flags", () => {
 	function pemFiles(): { ca: string; cert: string; key: string } {
 		const dir = freshDir();
-		const files = { ca: join(dir, "ca.pem"), cert: join(dir, "probe.pem"), key: join(dir, "probe.key") };
+		const files = {
+			ca: join(dir, "ca.pem"),
+			cert: join(dir, "probe.pem"),
+			key: join(dir, "probe.key"),
+		};
 		writeFileSync(files.ca, "CA-PEM");
 		writeFileSync(files.cert, "CERT-PEM");
 		writeFileSync(files.key, "KEY-PEM");
@@ -305,20 +378,37 @@ describe("run: TLS probe flags", () => {
 		};
 
 		const code = await runCli(
-			["run", "audit-corrupt", "--driver", "http", "--base-url", "https://127.0.0.1:9", "--ca-file", files.ca, "--client-cert", files.cert, "--client-key", files.key],
+			[
+				"run",
+				"audit-corrupt",
+				"--driver",
+				"http",
+				"--base-url",
+				"https://127.0.0.1:9",
+				"--ca-file",
+				files.ca,
+				"--client-cert",
+				files.cert,
+				"--client-key",
+				files.key,
+			],
 			deps,
 		);
 
 		expect(code).toBe(0);
 		expect(seen.length).toBeGreaterThan(0);
-		for (const init of seen) expect(init.tls).toEqual({ ca: "CA-PEM", cert: "CERT-PEM", key: "KEY-PEM" });
+		for (const init of seen)
+			expect(init.tls).toEqual({ ca: "CA-PEM", cert: "CERT-PEM", key: "KEY-PEM" });
 	});
 
 	test("TLS flags with the in-process driver exit 2 before anything runs", async () => {
 		const h = harness();
 		const files = pemFiles();
 
-		const code = await runCli(["run", "upstream-5xx-breaker", "--driver", "inprocess", "--ca-file", files.ca], h.deps);
+		const code = await runCli(
+			["run", "upstream-5xx-breaker", "--driver", "inprocess", "--ca-file", files.ca],
+			h.deps,
+		);
 
 		expect(code).toBe(2);
 		expect(h.stderr()).toContain("apply to --driver http only");
@@ -329,7 +419,19 @@ describe("run: TLS probe flags", () => {
 		const h = harness();
 		const files = pemFiles();
 
-		const code = await runCli(["run", "audit-corrupt", "--driver", "http", "--base-url", "https://127.0.0.1:9", "--client-cert", files.cert], h.deps);
+		const code = await runCli(
+			[
+				"run",
+				"audit-corrupt",
+				"--driver",
+				"http",
+				"--base-url",
+				"https://127.0.0.1:9",
+				"--client-cert",
+				files.cert,
+			],
+			h.deps,
+		);
 
 		expect(code).toBe(2);
 		expect(h.stderr()).toContain("must be given together");
@@ -340,7 +442,19 @@ describe("run: TLS probe flags", () => {
 		const h = harness();
 		const files = pemFiles();
 
-		const code = await runCli(["run", "audit-corrupt", "--driver", "http", "--base-url", "http://127.0.0.1:9", "--ca-file", files.ca], h.deps);
+		const code = await runCli(
+			[
+				"run",
+				"audit-corrupt",
+				"--driver",
+				"http",
+				"--base-url",
+				"http://127.0.0.1:9",
+				"--ca-file",
+				files.ca,
+			],
+			h.deps,
+		);
 
 		expect(code).toBe(2);
 		expect(h.stderr()).toContain("need an https --base-url");
@@ -351,7 +465,19 @@ describe("run: TLS probe flags", () => {
 		const h = harness();
 		const missing = join(freshDir(), "absent-ca.pem");
 
-		const code = await runCli(["run", "audit-corrupt", "--driver", "http", "--base-url", "https://127.0.0.1:9", "--ca-file", missing], h.deps);
+		const code = await runCli(
+			[
+				"run",
+				"audit-corrupt",
+				"--driver",
+				"http",
+				"--base-url",
+				"https://127.0.0.1:9",
+				"--ca-file",
+				missing,
+			],
+			h.deps,
+		);
 
 		expect(code).toBe(2);
 		expect(h.stderr()).toContain(`--ca-file cannot read ${missing}`);

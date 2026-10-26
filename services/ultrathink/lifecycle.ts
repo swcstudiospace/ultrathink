@@ -116,7 +116,11 @@ export function createShutdown(deps: ShutdownDeps): Shutdown {
 }
 
 /** Signals end the process cleanly; a crash logs its cause and ends it with a non-zero code. */
-export function installProcessHandlers(shutdown: Shutdown, logger: Logger, source: SignalSource): void {
+export function installProcessHandlers(
+	shutdown: Shutdown,
+	logger: Logger,
+	source: SignalSource,
+): void {
 	source.on("SIGTERM", () => void shutdown("SIGTERM", 0));
 	source.on("SIGINT", () => void shutdown("SIGINT", 0));
 	source.on("unhandledRejection", (reason) => {

@@ -25,6 +25,7 @@ import {
 	redactSecrets,
 } from "./auth.ts";
 import { DEFAULT_GROK_CONFIG, type GrokEffort, type GrokTransport } from "./types.ts";
+import { abortError } from "../claude/complete.ts";
 
 export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 
@@ -50,11 +51,16 @@ export interface GrokCompleteOptions {
 	shuntMaxTokens?: number;
 }
 
-export const SHUNT_ANTHROPIC_VERSION = "2023-06-01";
+const SHUNT_ANTHROPIC_VERSION = "2023-06-01";
 
 const LOGIN_HINT = "run `grok login`";
 
-export function buildResponsesBody(system: string, user: string, model: string, effort: GrokEffort): Record<string, unknown> {
+export function buildResponsesBody(
+	system: string,
+	user: string,
+	model: string,
+	effort: GrokEffort,
+): Record<string, unknown> {
 	return { model, instructions: system, input: user, reasoning: { effort }, stream: false };
 }
 
@@ -86,24 +92,25 @@ export function parseResponsesText(json: unknown): string {
 			for (const raw of item.content) {
 				if (!raw || typeof raw !== "object") continue;
 				const block: ResponsesContentBlock = raw;
-				if (block.type === "output_text" && typeof block.text === "string" && block.text) parts.push(block.text);
+				if (block.type === "output_text" && typeof block.text === "string" && block.text)
+					parts.push(block.text);
 			}
 		}
 	}
-	if (parts.length === 0 && typeof reply.output_text === "string" && reply.output_text) parts.push(reply.output_text);
+	if (parts.length === 0 && typeof reply.output_text === "string" && reply.output_text)
+		parts.push(reply.output_text);
 	const text = parts.join("\n");
 	if (!text.trim()) throw new Error("grok returned no text");
 	return text;
 }
 
-function abortError(): Error {
-	const error = new Error("Aborted");
-	error.name = "AbortError";
-	return error;
-}
-
 /** Anthropic Messages body for the shunt gateway. No `thinking` param: the route pins the effort. */
-export function buildShuntBody(system: string, user: string, model: string, maxTokens: number): Record<string, unknown> {
+export function buildShuntBody(
+	system: string,
+	user: string,
+	model: string,
+	maxTokens: number,
+): Record<string, unknown> {
 	return { model, max_tokens: maxTokens, system, messages: [{ role: "user", content: user }] };
 }
 
@@ -118,17 +125,26 @@ interface ShuntReply {
 export function parseShuntText(json: unknown): string {
 	const reply: ShuntReply = json && typeof json === "object" ? json : {};
 	if (reply.type === "error") {
-		const err = reply.error && typeof reply.error === "object" ? (reply.error as { type?: unknown; message?: unknown }) : {};
-		const message = typeof err.message === "string" ? err.message : JSON.stringify(reply.error ?? null);
+		const err =
+			reply.error && typeof reply.error === "object"
+				? (reply.error as { type?: unknown; message?: unknown })
+				: {};
+		const message =
+			typeof err.message === "string" ? err.message : JSON.stringify(reply.error ?? null);
 		const kind = typeof err.type === "string" ? err.type : "error";
-		throw new GrokHttpError(`shunt ${kind}: ${redactSecrets(message).slice(0, 500)}`, 0, redactSecrets(message).slice(0, 500));
+		throw new GrokHttpError(
+			`shunt ${kind}: ${redactSecrets(message).slice(0, 500)}`,
+			0,
+			redactSecrets(message).slice(0, 500),
+		);
 	}
 	const parts: string[] = [];
 	if (Array.isArray(reply.content)) {
 		for (const raw of reply.content) {
 			if (!raw || typeof raw !== "object") continue;
 			const block: ResponsesContentBlock = raw;
-			if (block.type === "text" && typeof block.text === "string" && block.text) parts.push(block.text);
+			if (block.type === "text" && typeof block.text === "string" && block.text)
+				parts.push(block.text);
 		}
 	}
 	const text = parts.join("\n");
@@ -148,12 +164,13 @@ function callGuard(opts: GrokCompleteOptions): CallGuard {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_GROK_CONFIG.callTimeoutMs;
 	const controller = new AbortController();
 	let timedOut = false;
-	const timer = timeoutMs > 0
-		? setTimeout(() => {
-				timedOut = true;
-				controller.abort();
-			}, timeoutMs)
-		: undefined;
+	const timer =
+		timeoutMs > 0
+			? setTimeout(() => {
+					timedOut = true;
+					controller.abort();
+				}, timeoutMs)
+			: undefined;
 	const onAbort = (): void => controller.abort();
 	opts.signal?.addEventListener("abort", onAbort, { once: true });
 	return {
@@ -171,14 +188,21 @@ function callGuard(opts: GrokCompleteOptions): CallGuard {
 }
 
 const SHUNT_URL_MISSING =
-	"grok shunt transport: set grok.shuntBaseUrl (the base URL of your Anthropic-compatible gateway) in ~/.config/ultrathink/config.json, or switch grok.transport to \"http\"";
+	'grok shunt transport: set grok.shuntBaseUrl (the base URL of your Anthropic-compatible gateway) in ~/.config/ultrathink/config.json, or switch grok.transport to "http"';
 
-async function completeShunt(system: string, user: string, opts: GrokCompleteOptions, fallbackModel: string): Promise<string> {
+async function completeShunt(
+	system: string,
+	user: string,
+	opts: GrokCompleteOptions,
+	fallbackModel: string,
+): Promise<string> {
 	const baseUrl = (opts.shuntBaseUrl?.trim() ?? "").replace(/\/+$/, "");
 	if (!baseUrl) throw new Error(SHUNT_URL_MISSING);
 	const model = opts.shuntModel?.trim() || fallbackModel;
 	const maxTokens =
-		typeof opts.shuntMaxTokens === "number" && Number.isInteger(opts.shuntMaxTokens) && opts.shuntMaxTokens > 0
+		typeof opts.shuntMaxTokens === "number" &&
+		Number.isInteger(opts.shuntMaxTokens) &&
+		opts.shuntMaxTokens > 0
 			? opts.shuntMaxTokens
 			: DEFAULT_GROK_CONFIG.shuntMaxTokens;
 	const guard = callGuard(opts);
@@ -187,7 +211,11 @@ async function completeShunt(system: string, user: string, opts: GrokCompleteOpt
 		try {
 			res = await (opts.fetch ?? fetch)(`${baseUrl}/v1/messages`, {
 				method: "POST",
-				headers: { "content-type": "application/json", "anthropic-version": SHUNT_ANTHROPIC_VERSION, accept: "application/json" },
+				headers: {
+					"content-type": "application/json",
+					"anthropic-version": SHUNT_ANTHROPIC_VERSION,
+					accept: "application/json",
+				},
 				body: JSON.stringify(buildShuntBody(system, user, model, maxTokens)),
 				signal: guard.signal,
 			});
@@ -196,7 +224,11 @@ async function completeShunt(system: string, user: string, opts: GrokCompleteOpt
 		}
 		if (!res.ok) {
 			const body = redactSecrets(await res.text().catch(() => "")).slice(0, 500);
-			throw new GrokHttpError(`shunt HTTP ${res.status}${body ? `: ${body}` : ""}`, res.status, body);
+			throw new GrokHttpError(
+				`shunt HTTP ${res.status}${body ? `: ${body}` : ""}`,
+				res.status,
+				body,
+			);
 		}
 		return parseShuntText(await res.json());
 	} finally {
@@ -204,7 +236,13 @@ async function completeShunt(system: string, user: string, opts: GrokCompleteOpt
 	}
 }
 
-async function completeHttp(system: string, user: string, opts: GrokCompleteOptions, model: string, effort: GrokEffort): Promise<string> {
+async function completeHttp(
+	system: string,
+	user: string,
+	opts: GrokCompleteOptions,
+	model: string,
+	effort: GrokEffort,
+): Promise<string> {
 	const refresh = opts.refresh ?? ensureFreshGrokAuth;
 	const refreshOpts: EnsureFreshOptions = { home: opts.home, bin: opts.bin, timeoutMs: 20_000 };
 	const auth = await refresh(refreshOpts);
@@ -220,7 +258,11 @@ async function completeHttp(system: string, user: string, opts: GrokCompleteOpti
 		try {
 			return await (opts.fetch ?? fetch)(`${baseUrl}/responses`, {
 				method: "POST",
-				headers: { ...grokHeaders(session, model, version), "content-type": "application/json", accept: "application/json" },
+				headers: {
+					...grokHeaders(session, model, version),
+					"content-type": "application/json",
+					accept: "application/json",
+				},
 				body,
 				signal: guard.signal,
 			});
@@ -244,7 +286,11 @@ async function completeHttp(system: string, user: string, opts: GrokCompleteOpti
 		}
 		if (!res.ok) {
 			const body = redactSecrets(await res.text().catch(() => "")).slice(0, 500);
-			throw new GrokHttpError(`grok HTTP ${res.status}${body ? `: ${body}` : ""}`, res.status, body);
+			throw new GrokHttpError(
+				`grok HTTP ${res.status}${body ? `: ${body}` : ""}`,
+				res.status,
+				body,
+			);
 		}
 		return parseResponsesText(await res.json());
 	} finally {
@@ -253,7 +299,8 @@ async function completeHttp(system: string, user: string, opts: GrokCompleteOpti
 }
 
 /** Tools the Grok CLI still registers under `--tools none`; disallowed by name so a headless call cannot start a tool loop. */
-const CLI_DISALLOWED_TOOLS = "run_terminal_cmd,search_replace,write_file,read_file,list_dir,grep,web_search,web_fetch,todo_write,task,Agent";
+const CLI_DISALLOWED_TOOLS =
+	"run_terminal_cmd,search_replace,write_file,read_file,list_dir,grep,web_search,web_fetch,todo_write,task,Agent";
 
 let scratch: string | undefined;
 
@@ -280,7 +327,11 @@ function parseCliJson(stdout: string): string {
 		parsed = JSON.parse(trimmed.slice(start + 1));
 	}
 	if (!parsed || typeof parsed !== "object") throw new Error("grok output is not an object");
-	if ("stopReason" in parsed && parsed.stopReason !== undefined && parsed.stopReason !== "end_turn") {
+	if (
+		"stopReason" in parsed &&
+		parsed.stopReason !== undefined &&
+		parsed.stopReason !== "end_turn"
+	) {
 		throw new Error(`grok cli stopped: ${String(parsed.stopReason)}`);
 	}
 	if (!("text" in parsed)) throw new Error("grok output is not an object");
@@ -289,11 +340,22 @@ function parseCliJson(stdout: string): string {
 	return text;
 }
 
-async function completeCli(system: string, user: string, opts: GrokCompleteOptions, model: string, effort: GrokEffort): Promise<string> {
+async function completeCli(
+	system: string,
+	user: string,
+	opts: GrokCompleteOptions,
+	model: string,
+	effort: GrokEffort,
+): Promise<string> {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-grok-"));
 	const promptPath = join(dir, "prompt.md");
 	writeFileSync(promptPath, user, "utf8");
-	const env: Record<string, string | undefined> = { ...process.env, GROK_SUBAGENTS: "0", GROK_MEMORY: "0", GROK_WEB_FETCH: "0" };
+	const env: Record<string, string | undefined> = {
+		...process.env,
+		GROK_SUBAGENTS: "0",
+		GROK_MEMORY: "0",
+		GROK_WEB_FETCH: "0",
+	};
 	if (opts.home?.trim()) env.GROK_HOME = opts.home.trim();
 	const proc = Bun.spawn(
 		[
@@ -333,12 +395,13 @@ async function completeCli(system: string, user: string, opts: GrokCompleteOptio
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_GROK_CONFIG.callTimeoutMs;
 	let timedOut = false;
 	let aborted = false;
-	const timer = timeoutMs > 0
-		? setTimeout(() => {
-				timedOut = true;
-				proc.kill();
-			}, timeoutMs)
-		: undefined;
+	const timer =
+		timeoutMs > 0
+			? setTimeout(() => {
+					timedOut = true;
+					proc.kill();
+				}, timeoutMs)
+			: undefined;
 	const onAbort = (): void => {
 		aborted = true;
 		proc.kill();
@@ -355,7 +418,8 @@ async function completeCli(system: string, user: string, opts: GrokCompleteOptio
 		if (timedOut) throw new Error(`grok timed out after ${timeoutMs}ms`);
 		if (code !== 0 && !stdout.trim()) {
 			const message = redactSecrets(stderr.trim()) || `grok exited ${code}`;
-			if (/login|unauthori[sz]ed|401/i.test(message)) throw new GrokAuthError(`Grok login rejected: ${LOGIN_HINT}`);
+			if (/login|unauthori[sz]ed|401/i.test(message))
+				throw new GrokAuthError(`Grok login rejected: ${LOGIN_HINT}`);
 			throw new Error(message);
 		}
 		return parseCliJson(stdout);
@@ -366,7 +430,11 @@ async function completeCli(system: string, user: string, opts: GrokCompleteOptio
 	}
 }
 
-export async function grokComplete(system: string, user: string, opts: GrokCompleteOptions = {}): Promise<string> {
+export async function grokComplete(
+	system: string,
+	user: string,
+	opts: GrokCompleteOptions = {},
+): Promise<string> {
 	if (opts.signal?.aborted) throw abortError();
 	const model = opts.model?.trim() || DEFAULT_GROK_CONFIG.model;
 	const effort = opts.reasoningEffort ?? DEFAULT_GROK_CONFIG.reasoningEffort;
@@ -386,5 +454,7 @@ export function createGrokCompleter(opts: Omit<GrokCompleteOptions, "signal">): 
 
 export function isGrokAuthError(error: unknown): boolean {
 	if (error instanceof GrokAuthError) return true;
-	return typeof error === "object" && error !== null && "name" in error && error.name === "GrokAuthError";
+	return (
+		typeof error === "object" && error !== null && "name" in error && error.name === "GrokAuthError"
+	);
 }

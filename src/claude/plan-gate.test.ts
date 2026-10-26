@@ -7,17 +7,11 @@ import { join } from "node:path";
 import { createDecisions, type Decisions } from "../decisions/gate.ts";
 import { QUESTIONS } from "../decisions/questions.ts";
 import { DEFAULT_DECISIONS_CONFIG, type DecisionsConfig } from "../decisions/types.ts";
+import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
 import { type PlanGateInput, planGate } from "./plan-gate.ts";
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-interface Recorded {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body: unknown;
-}
-
 const realFetch = globalThis.fetch;
 const dirs: string[] = [];
 afterEach(() => {
@@ -25,73 +19,63 @@ afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): { fetch: typeof fetch; calls: Recorded[] } {
-	const calls: Recorded[] = [];
-	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-		const headers: Record<string, string> = {};
-		new Headers(init?.headers).forEach((value, key) => {
-			headers[key] = value;
-		});
-		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body;
-		calls.push({ url: String(input), method: init?.method ?? "GET", headers, body });
-		const next = queue[Math.min(calls.length, queue.length) - 1];
-		if (!next) throw new Error("empty queue");
-		return next();
-	}) as typeof fetch;
-	globalThis.fetch = fetchImpl;
-	return { fetch: fetchImpl, calls };
-}
-
-const JEV =
-	(p: number, key = "plan_worthy") =>
-	() =>
-		Response.json({
-			id: "gen-dec-test",
-			model: "typesafe/jev-1.13-20260917",
-			provider: "TypeSafe",
-			answers: { [key]: { type: "noul", noul: p } },
-			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
-		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
-	Response.json({ error: { code: s, message: `upstream said no for ${K}` } }, { status: s, headers });
-
-/** Never resolves; rejects with an AbortError when its signal fires (as src/grok/complete.test.ts hangingFetch). */
-function hangingFetch(onCall?: () => void): typeof fetch {
-	return ((_input: string | URL | Request, init?: RequestInit) =>
-		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-			onCall?.();
-		})) as typeof fetch;
-}
+	Response.json(
+		{ error: { code: s, message: `upstream said no for ${K}` } },
+		{ status: s, headers },
+	);
 
 /** The Decisions runtime with `ON` defaults: key K in the injected env, an empty temp store, no real sleeps. */
-function runtime(fetchImpl: typeof fetch, config: Partial<DecisionsConfig> = {}, sessionId?: string, env: Record<string, string> = { OPENROUTER_API_KEY: K }): Decisions {
+function runtime(
+	fetchImpl: typeof fetch,
+	config: Partial<DecisionsConfig> = {},
+	sessionId?: string,
+	env: Record<string, string> = { OPENROUTER_API_KEY: K },
+): Decisions {
 	const dir = mkdtempSync(join(tmpdir(), "ut-decisions-plan-gate-"));
 	dirs.push(dir);
 	return createDecisions({
-		config: { ...DEFAULT_DECISIONS_CONFIG, points: [...DEFAULT_DECISIONS_CONFIG.points], enabled: true, ...config },
+		config: {
+			...DEFAULT_DECISIONS_CONFIG,
+			points: [...DEFAULT_DECISIONS_CONFIG.points],
+			enabled: true,
+			...config,
+		},
 		...(sessionId ? { sessionId } : {}),
 		env,
 		storePath: join(dir, "mcp-credentials.json"),
 		fetch: fetchImpl,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: no real delay in the fixture; retries run immediately
+		},
 	});
 }
 
-const ACK: PlanGateInput = { prompt: "thanks, that works now", text: "thanks, that works now", history: "" };
+const ACK: PlanGateInput = {
+	prompt: "thanks, that works now",
+	text: "thanks, that works now",
+	history: "",
+};
 
 describe("planGate", () => {
 	test("planSkipBelow is a strict less-than: P 0.2 plans, P 0.19 skips (AC-3.5)", async () => {
 		const R = recordingFetch([JEV(0.2), JEV(0.19)]);
 		const decisions = runtime(R.fetch);
 		const at = await planGate(ACK, decisions);
-		expect(at).toEqual({ plan: true, record: expect.objectContaining({ point: "plan", p: 0.2, threshold: 0.2, action: "plan" }) });
+		expect(at).toEqual({
+			plan: true,
+			record: expect.objectContaining({ point: "plan", p: 0.2, threshold: 0.2, action: "plan" }),
+		});
 		const below = await planGate(ACK, decisions);
 		expect(below).toEqual({
 			plan: false,
 			p: 0.19,
-			record: expect.objectContaining({ point: "plan", p: 0.19, threshold: 0.2, action: "skip-plan" }),
+			record: expect.objectContaining({
+				point: "plan",
+				p: 0.19,
+				threshold: 0.2,
+				action: "skip-plan",
+			}),
 		});
 		expect(R.calls).toHaveLength(2);
 	});
@@ -99,7 +83,11 @@ describe("planGate", () => {
 	test("a configured planSkipBelow is the threshold used and recorded", async () => {
 		const R = recordingFetch([JEV(0.3)]);
 		const verdict = await planGate(ACK, runtime(R.fetch, { planSkipBelow: 0.5 }));
-		expect(verdict).toMatchObject({ plan: false, p: 0.3, record: { threshold: 0.5, action: "skip-plan" } });
+		expect(verdict).toMatchObject({
+			plan: false,
+			p: 0.3,
+			record: { threshold: 0.5, action: "skip-plan" },
+		});
 	});
 
 	test("the plan request has the pinned shape: bounded state, Q-PLAN verbatim, ZDR, session and trace (AC-3.12)", async () => {
@@ -109,8 +97,14 @@ describe("planGate", () => {
 		const history = `User: add a flag\n\nAssistant: ${turn}`;
 		await planGate({ prompt: message, text: message, history }, runtime(R.fetch, {}, "sess-123"));
 		// No transcript available (Hermes, Omp): the conversation is empty.
-		await planGate({ prompt: message, text: message, history: "" }, runtime(R.fetch, {}, "sess-123"));
-		await planGate({ prompt: message, text: message, history }, runtime(R.fetch, { zdr: false }, "sess-123"));
+		await planGate(
+			{ prompt: message, text: message, history: "" },
+			runtime(R.fetch, {}, "sess-123"),
+		);
+		await planGate(
+			{ prompt: message, text: message, history },
+			runtime(R.fetch, { zdr: false }, "sess-123"),
+		);
 		expect(R.calls).toHaveLength(3);
 
 		const [full, bare, open] = R.calls.map((call) => call.body as Record<string, unknown>);
@@ -134,7 +128,12 @@ describe("planGate", () => {
 	test("a skill invocation plans with zero requests, whatever Jev would say (D9)", async () => {
 		const R = recordingFetch([JEV(0.01)]);
 		const verdict = await planGate(
-			{ ...ACK, prompt: "3", text: "3", skill: { name: "gsd-quick", instruction: "3", source: "slash" } },
+			{
+				...ACK,
+				prompt: "3",
+				text: "3",
+				skill: { name: "gsd-quick", instruction: "3", source: "slash" },
+			},
 			runtime(R.fetch),
 		);
 		expect(verdict).toEqual({ plan: true });
@@ -143,7 +142,9 @@ describe("planGate", () => {
 
 	test("uplift: plans with zero requests", async () => {
 		const R = recordingFetch([JEV(0.01)]);
-		expect(await planGate({ prompt: "uplift: thanks", text: "thanks", history: "" }, runtime(R.fetch))).toEqual({ plan: true });
+		expect(
+			await planGate({ prompt: "uplift: thanks", text: "thanks", history: "" }, runtime(R.fetch)),
+		).toEqual({ plan: true });
 		expect(R.calls).toHaveLength(0);
 	});
 
@@ -153,13 +154,22 @@ describe("planGate", () => {
 		const R = recordingFetch([JEV(0.01)]);
 		const decisions = runtime(R.fetch);
 		for (const prompt of ["<user_query>\nuplift: thanks\n</user_query>", grok("/gsd-quick 3")]) {
-			expect(await planGate({ prompt, text: prompt, history: "" }, decisions)).toEqual({ plan: true });
+			expect(await planGate({ prompt, text: prompt, history: "" }, decisions)).toEqual({
+				plan: true,
+			});
 		}
 		expect(R.calls).toHaveLength(0);
 
 		const wrappedAck = `<user_query>\n${ACK.prompt}\n</user_query>`;
-		const verdict = await planGate({ prompt: wrappedAck, text: wrappedAck, history: "" }, decisions);
-		expect(verdict).toMatchObject({ plan: false, p: 0.01, record: { point: "plan", action: "skip-plan" } });
+		const verdict = await planGate(
+			{ prompt: wrappedAck, text: wrappedAck, history: "" },
+			decisions,
+		);
+		expect(verdict).toMatchObject({
+			plan: false,
+			p: 0.01,
+			record: { point: "plan", action: "skip-plan" },
+		});
 		expect(R.calls).toHaveLength(1);
 	});
 
@@ -181,7 +191,14 @@ describe("planGate", () => {
 		const verdict = await planGate(ACK, runtime(R.fetch));
 		expect(verdict).toEqual({
 			plan: true,
-			record: expect.objectContaining({ point: "plan", outcome: "error", error: "credits", action: "fail-open", threshold: 0.2, attempts: 1 }),
+			record: expect.objectContaining({
+				point: "plan",
+				outcome: "error",
+				error: "credits",
+				action: "fail-open",
+				threshold: 0.2,
+				attempts: 1,
+			}),
 		});
 		expect(JSON.stringify(verdict)).not.toContain(K);
 		expect(JSON.stringify(verdict)).not.toContain("Bearer sk-or-");
@@ -195,6 +212,7 @@ describe("planGate", () => {
 		try {
 			await planGate(ACK, runtime(fetchImpl), controller.signal);
 		} catch (error) {
+			// reason: the error is captured and asserted by the caller
 			caught = error;
 		}
 		expect((caught as Error | undefined)?.name).toBe("AbortError");

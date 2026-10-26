@@ -7,9 +7,16 @@
  * Which commands exist, and which are supported, is decided by the overlay in commands.ts.
  */
 
-import { COMMAND_OVERLAY, type CommandArgument, MAX_ARGUMENT_CHARS, type OverlayEntry, overlayEntry, toPromptName } from "./commands.ts";
+import {
+	COMMAND_OVERLAY,
+	type CommandArgument,
+	MAX_ARGUMENT_CHARS,
+	type OverlayEntry,
+	overlayEntry,
+	toPromptName,
+} from "./commands.ts";
 
-export interface PromptArgument {
+interface PromptArgument {
 	name: string;
 	description: string;
 	required: boolean;
@@ -22,7 +29,7 @@ export interface PromptDefinition {
 	arguments: PromptArgument[];
 }
 
-export interface PromptMessage {
+interface PromptMessage {
 	role: "user";
 	content: { type: "text"; text: string };
 }
@@ -36,11 +43,17 @@ export interface PromptOptions {
 	serverPlanning?: boolean;
 }
 
-const CLIENT_DESCRIPTION = "Plan a request with ultrathink. The chat model answers each planning prompt.";
-const SERVER_DESCRIPTION = "Plan a request with ultrathink. The server does the thinking and returns the plan.";
+const CLIENT_DESCRIPTION =
+	"Plan a request with ultrathink. The chat model answers each planning prompt.";
+const SERVER_DESCRIPTION =
+	"Plan a request with ultrathink. The server does the thinking and returns the plan.";
 
 /** Title and description of a listed prompt. The overlay owns the arguments; the planning prompts also depend on the mode. */
-function promptText(name: string, entry: OverlayEntry, serverPlanning: boolean): { title: string; description: string } {
+function promptText(
+	name: string,
+	entry: OverlayEntry,
+	serverPlanning: boolean,
+): { title: string; description: string } {
 	const planning = serverPlanning ? SERVER_DESCRIPTION : CLIENT_DESCRIPTION;
 	switch (name) {
 		case "ultrathink":
@@ -48,13 +61,25 @@ function promptText(name: string, entry: OverlayEntry, serverPlanning: boolean):
 		case "ultrathink-plan":
 			return { title: "Ultrathink plan", description: planning };
 		case "ultrathink-think":
-			return { title: "Ultrathink graph", description: "Show the Graph of Thought of a plan: its diagram, tree and one node's steps." };
+			return {
+				title: "Ultrathink graph",
+				description: "Show the Graph of Thought of a plan: its diagram, tree and one node's steps.",
+			};
 		case "ultrathink-last":
-			return { title: "Ultrathink last plan", description: "Show the newest planned session's plan with its diagram." };
+			return {
+				title: "Ultrathink last plan",
+				description: "Show the newest planned session's plan with its diagram.",
+			};
 		case "ultrathink-status":
-			return { title: "Ultrathink status", description: "Show the planning mode, the token ceilings and recent sessions." };
+			return {
+				title: "Ultrathink status",
+				description: "Show the planning mode, the token ceilings and recent sessions.",
+			};
 		case "ultrathink-quick":
-			return { title: "Ultrathink quick", description: "Answer one message directly, with no ultrathink planning." };
+			return {
+				title: "Ultrathink quick",
+				description: "Answer one message directly, with no ultrathink planning.",
+			};
 		default:
 			return { title: name, description: entry.summary ?? name };
 	}
@@ -101,7 +126,8 @@ const CLIENT_STEPS = [
 	"3. When the status is planned, call ultrathink_result with the sessionId. Ask the user the questions in the plan that matter, or state the defaults you assume for the rest, then carry out the plan.",
 ];
 
-const CLIENT_GRAPH_STEP = "When a client-answered plan is ready, call ultrathink_graph once with its sessionId besides ultrathink_result.";
+const CLIENT_GRAPH_STEP =
+	"When a client-answered plan is ready, call ultrathink_graph once with its sessionId besides ultrathink_result.";
 
 const CLIENT_RULES = [
 	"",
@@ -189,20 +215,28 @@ function readArguments(
 			continue;
 		}
 		if (typeof value !== "string") {
-			return { ok: false, message: spec.required ? `${spec.name} is required` : `${spec.name} must be a string` };
+			return {
+				ok: false,
+				message: spec.required ? `${spec.name} is required` : `${spec.name} must be a string`,
+			};
 		}
 		if (value.trim() === "") {
 			if (spec.required) return { ok: false, message: `${spec.name} is required` };
 			continue;
 		}
-		if (value.length > MAX_ARGUMENT_CHARS) return { ok: false, message: `${spec.name} is too long` };
+		if (value.length > MAX_ARGUMENT_CHARS)
+			return { ok: false, message: `${spec.name} is too long` };
 		values.set(spec.name, value);
 	}
 	return { ok: true, values };
 }
 
 /** The user message of a supported command; the user's own text, where there is one, goes last and unmodified. */
-function promptBody(name: string, values: ReadonlyMap<string, string>, serverPlanning: boolean): string | undefined {
+function promptBody(
+	name: string,
+	values: ReadonlyMap<string, string>,
+	serverPlanning: boolean,
+): string | undefined {
 	switch (name) {
 		case "ultrathink":
 		case "ultrathink-plan":
@@ -236,14 +270,20 @@ function promptEntry(name: unknown): { name: string; entry: OverlayEntry } | und
  * Renders a prompt. The user's text goes last and unmodified, so it needs no delimiter that its own text could close.
  * A text argument over MAX_ARGUMENT_CHARS is refused. An unsupported command renders an explanation instead of an error.
  */
-export function renderPrompt(name: unknown, args: Record<string, unknown>, options?: PromptOptions): PromptRender {
+export function renderPrompt(
+	name: unknown,
+	args: Record<string, unknown>,
+	options?: PromptOptions,
+): PromptRender {
 	const found = promptEntry(name);
 	if (found === undefined) return { ok: false, message: "unknown prompt" };
 	if (found.entry.state === "unsupported") {
 		return {
 			ok: true,
 			description: `/${found.name} is not supported on the connector.`,
-			messages: [{ role: "user", content: { type: "text", text: explanation(found.name, found.entry) } }],
+			messages: [
+				{ role: "user", content: { type: "text", text: explanation(found.name, found.entry) } },
+			],
 		};
 	}
 	const parsed = readArguments(found.entry.arguments ?? [], args);

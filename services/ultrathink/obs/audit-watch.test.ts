@@ -2,11 +2,20 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
-import { type Acknowledged, type AuditWatch, createAuditWatch, type Fingerprint, type ScanReply, type WatchAlert } from "./audit-watch.ts";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	type Acknowledged,
+	type AuditWatch,
+	createAuditWatch,
+	type Fingerprint,
+	type ScanReply,
+	type WatchAlert,
+} from "./audit-watch.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { auditPath, createAuditLog } from "./audit.ts";
+import { diskFingerprint } from "../../../src/shared.ts";
+import { bulk } from "../../../src/test.helpers.ts";
 
 const GENESIS = "0".repeat(64);
 const HEAD_HASH = "a".repeat(64);
@@ -33,7 +42,11 @@ function harness(options: { intervalMs?: number; fullScanEveryTicks?: number } =
 		scans: 0,
 	};
 	const alerts: WatchAlert[] = [];
-	const timers = { scheduled: undefined as (() => void) | undefined, handle: {} as object, cleared: 0 };
+	const timers = {
+		scheduled: undefined as (() => void) | undefined,
+		handle: {} as object,
+		cleared: 0,
+	};
 	let recovers = 0;
 
 	const watch: AuditWatch = createAuditWatch({
@@ -419,7 +432,14 @@ describe("off the request path", () => {
 
 describe("timer and interval", () => {
 	test("intervalMs 99 and 1001 throw RangeError; the 100 and 1000 bounds are accepted", () => {
-		const base = { stat: () => undefined, acknowledged: () => ({ fingerprint: undefined, seq: 0, hash: GENESIS }), scan: async () => ({ ok: true as const, records: 0, lastHash: GENESIS }), onAlert: () => {} };
+		const base = {
+			stat: () => undefined,
+			acknowledged: () => ({ fingerprint: undefined, seq: 0, hash: GENESIS }),
+			scan: async () => ({ ok: true as const, records: 0, lastHash: GENESIS }),
+			onAlert: () => {
+				// reason: test double, no alert is asserted in this test
+			},
+		};
 		expect(() => createAuditWatch({ ...base, intervalMs: 99 })).toThrow(RangeError);
 		expect(() => createAuditWatch({ ...base, intervalMs: 1001 })).toThrow(RangeError);
 		expect(() => createAuditWatch({ ...base, intervalMs: 100 })).not.toThrow();
@@ -443,12 +463,16 @@ describe("timer and interval", () => {
 			stat: () => undefined,
 			acknowledged: () => ({ fingerprint: undefined, seq: 0, hash: GENESIS }),
 			scan: async () => ({ ok: true, records: 0, lastHash: GENESIS }),
-			onAlert: () => {},
+			onAlert: () => {
+				// reason: test double, no alert is asserted in this test
+			},
 			setTimer: () => {
 				scheduled += 1;
 				return {};
 			},
-			clearTimer: () => {},
+			clearTimer: () => {
+				// reason: test double, no timer is armed so there is nothing to clear
+			},
 		});
 
 		watch.start();
@@ -475,21 +499,6 @@ describe("timer and interval", () => {
 describe("pruned chain", () => {
 	const MIB = 1024 * 1024;
 
-	function bulk(i: number): Record<string, string | number> {
-		const fields: Record<string, string | number> = { n: i };
-		for (let k = 0; k < 31; k += 1) fields[`k${k}`] = "x".repeat(250);
-		return fields;
-	}
-
-	function diskOf(path: string): Fingerprint | undefined {
-		try {
-			const stat = statSync(path);
-			return { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino };
-		} catch {
-			return undefined;
-		}
-	}
-
 	test("a full scan of a pruned chain raises no tamper alert, and dropping its boundary record alerts", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-watch-"));
 		try {
@@ -503,7 +512,7 @@ describe("pruned chain", () => {
 			const watch = createAuditWatch({
 				intervalMs: 1000,
 				fullScanEveryTicks: 1,
-				stat: () => diskOf(path),
+				stat: () => diskFingerprint(path),
 				acknowledged: () => {
 					const head = log.head();
 					return { fingerprint: log.fingerprint(), seq: head.seq, hash: head.hash };
@@ -515,7 +524,10 @@ describe("pruned chain", () => {
 			expect(alerts).toEqual([]);
 
 			// Drop the boundary record at the end of the file: the pruned chain no longer verifies, so the full scan alerts.
-			const kept = readFileSync(path, "utf8").split("\n").filter((l) => l.length > 0).slice(0, -1);
+			const kept = readFileSync(path, "utf8")
+				.split("\n")
+				.filter((l) => l.length > 0)
+				.slice(0, -1);
 			writeFileSync(path, kept.map((l) => `${l}\n`).join(""));
 			await watch.tick();
 			expect(alerts.map((alert) => alert.kind)).toEqual(["chain_broken"]);

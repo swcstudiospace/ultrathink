@@ -8,10 +8,10 @@
  * and error messages are redacted.
  */
 
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { GROK_CLIENT_VERSION_FALLBACK } from "./types.ts";
+import { readJson } from "../shared.ts";
 
 export interface GrokAuth {
 	token: string;
@@ -50,16 +50,11 @@ export class GrokHttpError extends Error {
 	}
 }
 
-export function grokHome(home?: string, env: Record<string, string | undefined> = process.env): string {
+export function grokHome(
+	home?: string,
+	env: Record<string, string | undefined> = process.env,
+): string {
 	return home?.trim() || env.GROK_HOME?.trim() || join(homedir(), ".grok");
-}
-
-function readJson(path: string): unknown {
-	try {
-		return JSON.parse(readFileSync(path, "utf8")) as unknown;
-	} catch {
-		return undefined;
-	}
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -111,7 +106,11 @@ export function grokClientVersion(home?: string): string {
 	return GROK_CLIENT_VERSION_FALLBACK;
 }
 
-export function isGrokAuthExpired(auth: GrokAuth, now: number = Date.now(), skewMs = 60_000): boolean {
+export function isGrokAuthExpired(
+	auth: GrokAuth,
+	now: number = Date.now(),
+	skewMs = 60_000,
+): boolean {
 	return auth.expiresAt !== undefined && auth.expiresAt - skewMs <= now;
 }
 
@@ -145,7 +144,11 @@ export interface EnsureFreshOptions {
 	spawn?: (cmd: string[], env: Record<string, string | undefined>) => Promise<number>;
 }
 
-async function spawnGrok(cmd: string[], env: Record<string, string | undefined>, timeoutMs: number): Promise<number> {
+async function spawnGrok(
+	cmd: string[],
+	env: Record<string, string | undefined>,
+	timeoutMs: number,
+): Promise<number> {
 	const proc = Bun.spawn(cmd, { env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
 	const timer = timeoutMs > 0 ? setTimeout(() => proc.kill(), timeoutMs) : undefined;
 	try {
@@ -163,7 +166,9 @@ async function spawnGrok(cmd: string[], env: Record<string, string | undefined>,
  * file. The result may still be expired — callers decide what that means.
  * Never throws: a failed or missing CLI just leaves the session as it was.
  */
-export async function ensureFreshGrokAuth(opts: EnsureFreshOptions = {}): Promise<GrokAuth | undefined> {
+export async function ensureFreshGrokAuth(
+	opts: EnsureFreshOptions = {},
+): Promise<GrokAuth | undefined> {
 	const auth = readGrokAuth(opts.home);
 	if (!auth) return undefined;
 	if (!opts.force && !isGrokAuthExpired(auth, opts.now, opts.skewMs)) return auth;
@@ -177,17 +182,25 @@ export async function ensureFreshGrokAuth(opts: EnsureFreshOptions = {}): Promis
 		if (opts.spawn) await opts.spawn(cmd, env);
 		else await spawnGrok(cmd, env, opts.timeoutMs ?? 20_000);
 	} catch {
-		// The CLI is optional here: fall through and report whatever auth.json holds now.
+		// reason: The CLI is optional here: fall through and report whatever auth.json holds now.
 	}
 	return readGrokAuth(opts.home);
 }
 
 /** `grokAuthStatus` after giving the CLI a chance to refresh an expired session. */
 export async function grokAuthStatusFresh(opts: EnsureFreshOptions = {}): Promise<GrokAuthStatus> {
-	return statusFromAuth(await ensureFreshGrokAuth(opts), grokHome(opts.home), opts.now ?? Date.now());
+	return statusFromAuth(
+		await ensureFreshGrokAuth(opts),
+		grokHome(opts.home),
+		opts.now ?? Date.now(),
+	);
 }
 
-export function grokHeaders(auth: GrokAuth, model: string, version: string): Record<string, string> {
+export function grokHeaders(
+	auth: GrokAuth,
+	model: string,
+	version: string,
+): Record<string, string> {
 	return {
 		Authorization: `Bearer ${auth.token}`,
 		"X-XAI-Token-Auth": "xai-grok-cli",

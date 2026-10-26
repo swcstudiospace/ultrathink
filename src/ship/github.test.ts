@@ -21,23 +21,47 @@ function fakeRun(respond: (argv: string[]) => Reply) {
 	return { run, calls };
 }
 
-const PR_JSON = { number: 7, url: "https://github.com/o/r/pull/7", headRefName: "feat", baseRefName: "master" };
+const PR_JSON = {
+	number: 7,
+	url: "https://github.com/o/r/pull/7",
+	headRefName: "feat",
+	baseRefName: "master",
+};
 
 describe("createGithub", () => {
 	test("repo parses name and default branch; failure is undefined", () => {
 		const { run, calls } = fakeRun(() => ({
 			stdout: JSON.stringify({ nameWithOwner: "o/r", defaultBranchRef: { name: "master" } }),
 		}));
-		expect(createGithub({ cwd: "/w", run }).repo()).toEqual({ name: "o/r", defaultBranch: "master" });
+		expect(createGithub({ cwd: "/w", run }).repo()).toEqual({
+			name: "o/r",
+			defaultBranch: "master",
+		});
 		expect(calls[0]?.cwd).toBe("/w");
-		expect(createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: "nope" })).run }).repo()).toBeUndefined();
-		expect(createGithub({ cwd: "/w", run: fakeRun(() => ({ exitCode: 1 })).run }).repo()).toBeUndefined();
+		expect(
+			createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: "nope" })).run }).repo(),
+		).toBeUndefined();
+		expect(
+			createGithub({ cwd: "/w", run: fakeRun(() => ({ exitCode: 1 })).run }).repo(),
+		).toBeUndefined();
 	});
 
 	test("push reports the first stderr line on failure", () => {
-		const { run, calls } = fakeRun(() => ({ exitCode: 1, stderr: "rejected: non-fast-forward\nhint" }));
-		expect(createGithub({ cwd: "/w", run }).push("feat")).toEqual({ ok: false, error: "rejected: non-fast-forward" });
-		expect(calls[0]?.argv).toEqual(["git", "push", "-u", "origin", "refs/heads/feat:refs/heads/feat"]);
+		const { run, calls } = fakeRun(() => ({
+			exitCode: 1,
+			stderr: "rejected: non-fast-forward\nhint",
+		}));
+		expect(createGithub({ cwd: "/w", run }).push("feat")).toEqual({
+			ok: false,
+			error: "rejected: non-fast-forward",
+		});
+		expect(calls[0]?.argv).toEqual([
+			"git",
+			"push",
+			"-u",
+			"origin",
+			"refs/heads/feat:refs/heads/feat",
+		]);
 		expect(calls[0]?.timeoutMs).toBe(180_000);
 	});
 
@@ -45,33 +69,71 @@ describe("createGithub", () => {
 		const { run, calls } = fakeRun(() => ({}));
 		const gh = createGithub({ cwd: "/w", run });
 		expect(gh.push("-f")).toEqual({ ok: false, error: 'refusing branch name "-f"' });
-		expect(gh.deleteRemoteBranch("--force")).toEqual({ ok: false, error: 'refusing branch name "--force"' });
-		expect(gh.syncBase({ base: "master", branch: "-f" })).toEqual({ ok: false, error: 'refusing branch name "-f"' });
+		expect(gh.deleteRemoteBranch("--force")).toEqual({
+			ok: false,
+			error: 'refusing branch name "--force"',
+		});
+		expect(gh.syncBase({ base: "master", branch: "-f" })).toEqual({
+			ok: false,
+			error: 'refusing branch name "-f"',
+		});
 		expect(calls).toHaveLength(0);
 	});
 
 	test("findOpenPr returns none or the first PR", () => {
-		expect(createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: "[]" })).run }).findOpenPr("feat")).toBeUndefined();
-		const gh = createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: JSON.stringify([PR_JSON]) })).run });
-		expect(gh.findOpenPr("feat")).toEqual({ number: 7, url: PR_JSON.url, head: "feat", base: "master" });
+		expect(
+			createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: "[]" })).run }).findOpenPr("feat"),
+		).toBeUndefined();
+		const gh = createGithub({
+			cwd: "/w",
+			run: fakeRun(() => ({ stdout: JSON.stringify([PR_JSON]) })).run,
+		});
+		expect(gh.findOpenPr("feat")).toEqual({
+			number: 7,
+			url: PR_JSON.url,
+			head: "feat",
+			base: "master",
+		});
 	});
 
 	test("createPr pipes body on stdin and reads back the PR", () => {
 		const { run, calls } = fakeRun((argv) =>
-			argv[2] === "create" ? { stdout: `Creating...\n${PR_JSON.url}\n` } : { stdout: JSON.stringify(PR_JSON) },
+			argv[2] === "create"
+				? { stdout: `Creating...\n${PR_JSON.url}\n` }
+				: { stdout: JSON.stringify(PR_JSON) },
 		);
-		const pr = createGithub({ cwd: "/w", run }).createPr({ base: "master", head: "feat", title: "T", body: "B\nody" });
+		const pr = createGithub({ cwd: "/w", run }).createPr({
+			base: "master",
+			head: "feat",
+			title: "T",
+			body: "B\nody",
+		});
 		expect(pr).toEqual({ number: 7, url: PR_JSON.url, head: "feat", base: "master" });
 		expect(calls[0]?.argv).toEqual([
-			"gh", "pr", "create", "--base", "master", "--head", "feat", "--title", "T", "--body-file", "-",
+			"gh",
+			"pr",
+			"create",
+			"--base",
+			"master",
+			"--head",
+			"feat",
+			"--title",
+			"T",
+			"--body-file",
+			"-",
 		]);
 		expect(calls[0]?.stdin).toBe("B\nody");
 		expect(calls[1]?.argv.slice(0, 4)).toEqual(["gh", "pr", "view", PR_JSON.url]);
 	});
 
 	test("createPr failure returns error", () => {
-		const gh = createGithub({ cwd: "/w", run: fakeRun(() => ({ exitCode: 1, stderr: "already exists" })).run });
-		expect(gh.createPr({ base: "m", head: "h", title: "t", body: "b" })).toEqual({ error: "already exists" });
+		const gh = createGithub({
+			cwd: "/w",
+			run: fakeRun(() => ({ exitCode: 1, stderr: "already exists" })).run,
+		});
+		expect(gh.createPr({ base: "m", head: "h", title: "t", body: "b" })).toEqual({
+			error: "already exists",
+		});
 	});
 
 	test.each([
@@ -111,38 +173,84 @@ describe("createGithub", () => {
 			checks: "pending",
 			url: PR_JSON.url,
 		});
-		expect(createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: "{}" })).run }).prStatus(7)).toBeUndefined();
+		expect(
+			createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: "{}" })).run }).prStatus(7),
+		).toBeUndefined();
 	});
 
 	const prView = (state: string) => ({
-		stdout: JSON.stringify({ state, headRefOid: "sha1", mergeable: "UNKNOWN", statusCheckRollup: [], url: "u" }),
+		stdout: JSON.stringify({
+			state,
+			headRefOid: "sha1",
+			mergeable: "UNKNOWN",
+			statusCheckRollup: [],
+			url: "u",
+		}),
 	});
 
-	test.each(["squash", "merge", "rebase"] as const)("merge --%s never deletes the branch and confirms MERGED", (method) => {
-		const { run, calls } = fakeRun((argv) => (argv[2] === "view" ? prView("MERGED") : {}));
-		expect(createGithub({ cwd: "/w", run }).merge({ number: 7, method, headSha: "sha1" })).toEqual({ ok: true });
-		expect(calls[0]?.argv).toEqual(["gh", "pr", "merge", "7", `--${method}`, "--match-head-commit", "sha1"]);
-		expect(calls[1]?.argv.slice(0, 4)).toEqual(["gh", "pr", "view", "7"]);
-	});
+	test.each(["squash", "merge", "rebase"] as const)(
+		"merge --%s never deletes the branch and confirms MERGED",
+		(method) => {
+			const { run, calls } = fakeRun((argv) => (argv[2] === "view" ? prView("MERGED") : {}));
+			expect(
+				createGithub({ cwd: "/w", run }).merge({ number: 7, method, headSha: "sha1" }),
+			).toEqual({ ok: true });
+			expect(calls[0]?.argv).toEqual([
+				"gh",
+				"pr",
+				"merge",
+				"7",
+				`--${method}`,
+				"--match-head-commit",
+				"sha1",
+			]);
+			expect(calls[1]?.argv.slice(0, 4)).toEqual(["gh", "pr", "view", "7"]);
+		},
+	);
 
 	test("merge is not ok unless the PR reads back MERGED", () => {
-		const failed = fakeRun((argv) => (argv[2] === "view" ? prView("OPEN") : { exitCode: 1, stderr: "head commit mismatch" }));
-		expect(createGithub({ cwd: "/w", run: failed.run }).merge({ number: 7, method: "squash", headSha: "x" })).toEqual({
+		const failed = fakeRun((argv) =>
+			argv[2] === "view" ? prView("OPEN") : { exitCode: 1, stderr: "head commit mismatch" },
+		);
+		expect(
+			createGithub({ cwd: "/w", run: failed.run }).merge({
+				number: 7,
+				method: "squash",
+				headSha: "x",
+			}),
+		).toEqual({
 			ok: false,
 			error: "head commit mismatch",
 		});
 		const queued = fakeRun((argv) => (argv[2] === "view" ? prView("OPEN") : {}));
-		expect(createGithub({ cwd: "/w", run: queued.run }).merge({ number: 7, method: "squash", headSha: "x" })).toEqual({
+		expect(
+			createGithub({ cwd: "/w", run: queued.run }).merge({
+				number: 7,
+				method: "squash",
+				headSha: "x",
+			}),
+		).toEqual({
 			ok: false,
 			error: "PR is OPEN after merge",
 		});
 		// A non-zero exit whose merge actually landed still counts.
-		const landed = fakeRun((argv) => (argv[2] === "view" ? prView("MERGED") : { exitCode: 1, stderr: "local fail" }));
-		expect(createGithub({ cwd: "/w", run: landed.run }).merge({ number: 7, method: "squash", headSha: "x" }).ok).toBe(true);
+		const landed = fakeRun((argv) =>
+			argv[2] === "view" ? prView("MERGED") : { exitCode: 1, stderr: "local fail" },
+		);
+		expect(
+			createGithub({ cwd: "/w", run: landed.run }).merge({
+				number: 7,
+				method: "squash",
+				headSha: "x",
+			}).ok,
+		).toBe(true);
 	});
 
 	test("deleteRemoteBranch treats an already-deleted ref as ok", () => {
-		const { run, calls } = fakeRun(() => ({ exitCode: 1, stderr: "error: unable to delete 'feat': remote ref does not exist" }));
+		const { run, calls } = fakeRun(() => ({
+			exitCode: 1,
+			stderr: "error: unable to delete 'feat': remote ref does not exist",
+		}));
 		expect(createGithub({ cwd: "/w", run }).deleteRemoteBranch("feat")).toEqual({ ok: true });
 		expect(calls[0]?.argv).toEqual(["git", "push", "origin", ":refs/heads/feat"]);
 		const denied = fakeRun(() => ({ exitCode: 1, stderr: "permission denied" }));
@@ -161,14 +269,24 @@ describe("createGithub", () => {
 
 	test("mergeMethods lists allowed methods; empty on failure", () => {
 		const { run } = fakeRun(() => ({
-			stdout: JSON.stringify({ squashMergeAllowed: true, mergeCommitAllowed: false, rebaseMergeAllowed: true }),
+			stdout: JSON.stringify({
+				squashMergeAllowed: true,
+				mergeCommitAllowed: false,
+				rebaseMergeAllowed: true,
+			}),
 		}));
 		expect(createGithub({ cwd: "/w", run }).mergeMethods()).toEqual(["squash", "rebase"]);
-		expect(createGithub({ cwd: "/w", run: fakeRun(() => ({ exitCode: 1 })).run }).mergeMethods()).toEqual([]);
-		expect(createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: "x" })).run }).mergeMethods()).toEqual([]);
+		expect(
+			createGithub({ cwd: "/w", run: fakeRun(() => ({ exitCode: 1 })).run }).mergeMethods(),
+		).toEqual([]);
+		expect(
+			createGithub({ cwd: "/w", run: fakeRun(() => ({ stdout: "x" })).run }).mergeMethods(),
+		).toEqual([]);
 	});
 
-	const node = (o: { resolved?: boolean; outdated?: boolean; login?: string | null; line?: number | null } = {}) => ({
+	const node = (
+		o: { resolved?: boolean; outdated?: boolean; login?: string | null; line?: number | null } = {},
+	) => ({
 		id: "T1",
 		isResolved: o.resolved ?? false,
 		isOutdated: o.outdated ?? false,
@@ -185,25 +303,59 @@ describe("createGithub", () => {
 		},
 	});
 	const graphql = (nodes: unknown[], hasNextPage = false) => ({
-		stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage }, nodes } } } } }),
+		stdout: JSON.stringify({
+			data: {
+				repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage }, nodes } } },
+			},
+		}),
 	});
-	const thread = { id: "T1", isResolved: false, isOutdated: false, author: "greptile-apps", path: "a.ts", line: 3, body: "fix" };
+	const thread = {
+		id: "T1",
+		isResolved: false,
+		isOutdated: false,
+		author: "greptile-apps",
+		path: "a.ts",
+		line: 3,
+		body: "fix",
+	};
 
 	test.each<[string, Reply, ReviewThreads]>([
 		["open", graphql([node()]), { ok: true, threads: [thread] }],
-		["resolved", graphql([node({ resolved: true })]), { ok: true, threads: [{ ...thread, isResolved: true }] }],
+		[
+			"resolved",
+			graphql([node({ resolved: true })]),
+			{ ok: true, threads: [{ ...thread, isResolved: true }] },
+		],
 		[
 			"outdated falls back to its original line",
 			graphql([node({ outdated: true, line: null })]),
 			{ ok: true, threads: [{ ...thread, isOutdated: true, line: 9 }] },
 		],
-		["non-Greptile and deleted authors are dropped", graphql([node({ login: "octocat" }), node({ login: null })]), { ok: true, threads: [] }],
-		["gh failure", { exitCode: 1, stderr: "gh: HTTP 502\nmore" }, { ok: false, error: "gh: HTTP 502" }],
-		["graphql errors", { stdout: JSON.stringify({ errors: [{ message: "Could not resolve to a PullRequest" }] }) }, { ok: false, error: "Could not resolve to a PullRequest" }],
-		["missing pull request", { stdout: JSON.stringify({ data: { repository: { pullRequest: null } } }) }, { ok: false, error: "pull request review threads missing" }],
+		[
+			"non-Greptile and deleted authors are dropped",
+			graphql([node({ login: "octocat" }), node({ login: null })]),
+			{ ok: true, threads: [] },
+		],
+		[
+			"gh failure",
+			{ exitCode: 1, stderr: "gh: HTTP 502\nmore" },
+			{ ok: false, error: "gh: HTTP 502" },
+		],
+		[
+			"graphql errors",
+			{ stdout: JSON.stringify({ errors: [{ message: "Could not resolve to a PullRequest" }] }) },
+			{ ok: false, error: "Could not resolve to a PullRequest" },
+		],
+		[
+			"missing pull request",
+			{ stdout: JSON.stringify({ data: { repository: { pullRequest: null } } }) },
+			{ ok: false, error: "pull request review threads missing" },
+		],
 	])("reviewThreads: %s", (_name, reply, expected) => {
 		const { run, calls } = fakeRun((argv) =>
-			argv[1] === "repo" ? { stdout: JSON.stringify({ nameWithOwner: "o/r", defaultBranchRef: { name: "master" } }) } : reply,
+			argv[1] === "repo"
+				? { stdout: JSON.stringify({ nameWithOwner: "o/r", defaultBranchRef: { name: "master" } }) }
+				: reply,
 		);
 		expect(createGithub({ cwd: "/w", run }).reviewThreads(7)).toEqual(expected);
 		const argv = calls[1]?.argv ?? [];
@@ -214,7 +366,9 @@ describe("createGithub", () => {
 	});
 
 	describe("reviewThreads pagination", () => {
-		const REPO_REPLY = { stdout: JSON.stringify({ nameWithOwner: "o/r", defaultBranchRef: { name: "master" } }) };
+		const REPO_REPLY = {
+			stdout: JSON.stringify({ nameWithOwner: "o/r", defaultBranchRef: { name: "master" } }),
+		};
 		/** A page of `count` thread nodes; every third one is by another author, every fifth resolved, every seventh outdated. */
 		const pageNodes = (tag: string, count: number) =>
 			Array.from({ length: count }, (_unused, i) => ({
@@ -222,7 +376,15 @@ describe("createGithub", () => {
 				isResolved: i % 5 === 0,
 				isOutdated: i % 7 === 0,
 				comments: {
-					nodes: [{ author: { login: i % 3 === 0 ? "octocat" : "greptile-apps" }, path: "a.ts", line: i + 1, originalLine: 0, body: `finding ${tag}-${i}` }],
+					nodes: [
+						{
+							author: { login: i % 3 === 0 ? "octocat" : "greptile-apps" },
+							path: "a.ts",
+							line: i + 1,
+							originalLine: 0,
+							body: `finding ${tag}-${i}`,
+						},
+					],
 				},
 			}));
 		const expectedThreads = (tag: string, count: number): ReviewThread[] =>
@@ -241,12 +403,19 @@ describe("createGithub", () => {
 					},
 				];
 			});
-		const page = (nodes: unknown[], endCursor?: string | null, hasNextPage = endCursor !== undefined) => ({
+		const page = (
+			nodes: unknown[],
+			endCursor?: string | null,
+			hasNextPage = endCursor !== undefined,
+		) => ({
 			stdout: JSON.stringify({
 				data: {
 					repository: {
 						pullRequest: {
-							reviewThreads: { pageInfo: hasNextPage ? { hasNextPage, endCursor } : { hasNextPage }, nodes },
+							reviewThreads: {
+								pageInfo: hasNextPage ? { hasNextPage, endCursor } : { hasNextPage },
+								nodes,
+							},
 						},
 					},
 				},
@@ -256,7 +425,9 @@ describe("createGithub", () => {
 		/** Answers `gh repo view`, then hands each GraphQL call the next scripted reply (the last one repeats). */
 		const threadsOf = (...replies: Reply[]) => {
 			let n = 0;
-			const fake = fakeRun((argv) => (argv[1] === "repo" ? REPO_REPLY : (replies[Math.min(n++, replies.length - 1)] ?? {})));
+			const fake = fakeRun((argv) =>
+				argv[1] === "repo" ? REPO_REPLY : (replies[Math.min(n++, replies.length - 1)] ?? {}),
+			);
 			const result = createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7);
 			return { result, graphqlCalls: fake.calls.filter((c) => c.argv[1] === "api") };
 		};
@@ -276,7 +447,11 @@ describe("createGithub", () => {
 			);
 			expect(result).toEqual({
 				ok: true,
-				threads: [...expectedThreads("p1", 100), ...expectedThreads("p2", 100), ...expectedThreads("p3", 50)],
+				threads: [
+					...expectedThreads("p1", 100),
+					...expectedThreads("p2", 100),
+					...expectedThreads("p3", 50),
+				],
 			});
 			expect(graphqlCalls).toHaveLength(3);
 			expect(after(graphqlCalls[0]?.argv ?? [])).toBeUndefined();
@@ -298,10 +473,21 @@ describe("createGithub", () => {
 			],
 			["a non-zero exit", { exitCode: 1, stderr: "gh: HTTP 502\nmore" }, "gh: HTTP 502"],
 			["unparseable output", { stdout: "<html>" }, "unparseable review threads response"],
-			["a malformed thread", page([{ id: "x", comments: { nodes: [] } }]), "malformed review thread"],
+			[
+				"a malformed thread",
+				page([{ id: "x", comments: { nodes: [] } }]),
+				"malformed review thread",
+			],
 			[
 				"a Greptile thread without a boolean flag",
-				page([{ id: "x", isResolved: "no", isOutdated: false, comments: { nodes: [{ author: { login: "greptile-apps" }, body: "b" }] } }]),
+				page([
+					{
+						id: "x",
+						isResolved: "no",
+						isOutdated: false,
+						comments: { nodes: [{ author: { login: "greptile-apps" }, body: "b" }] },
+					},
+				]),
 				"malformed review thread",
 			],
 		])("a later page failing (%s) fails closed with no partial threads", (_name, bad, error) => {
@@ -317,34 +503,74 @@ describe("createGithub", () => {
 			["missing", undefined],
 		])("hasNextPage with a %s endCursor fails closed", (_name, cursor) => {
 			const first = threadsOf(page(pageNodes("p1", 100), cursor, true));
-			expect(first.result).toEqual({ ok: false, error: "review threads pagination did not advance" });
+			expect(first.result).toEqual({
+				ok: false,
+				error: "review threads pagination did not advance",
+			});
 			expect(first.graphqlCalls).toHaveLength(1);
-			const later = threadsOf(page(pageNodes("p1", 100), "c1"), page(pageNodes("p2", 100), cursor, true));
-			expect(later.result).toEqual({ ok: false, error: "review threads pagination did not advance" });
+			const later = threadsOf(
+				page(pageNodes("p1", 100), "c1"),
+				page(pageNodes("p2", 100), cursor, true),
+			);
+			expect(later.result).toEqual({
+				ok: false,
+				error: "review threads pagination did not advance",
+			});
 			expect(later.graphqlCalls).toHaveLength(2);
 		});
 
 		test("a non-string endCursor fails closed", () => {
 			const reply = {
 				stdout: JSON.stringify({
-					data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 5 }, nodes: [] } } } },
+					data: {
+						repository: {
+							pullRequest: {
+								reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 5 }, nodes: [] },
+							},
+						},
+					},
 				}),
 			};
-			expect(threadsOf(reply).result).toEqual({ ok: false, error: "review threads pagination did not advance" });
+			expect(threadsOf(reply).result).toEqual({
+				ok: false,
+				error: "review threads pagination did not advance",
+			});
 		});
 
-		test.each([{ pageInfo: undefined }, { pageInfo: [] }, { pageInfo: { hasNextPage: "false" } }])("invalid pageInfo fails closed without partial threads (%p)", ({ pageInfo }) => {
-			const malformed = {
-				stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { pageInfo, nodes: pageNodes("later", 1) } } } } }),
-			};
-			const { result } = threadsOf(page(pageNodes("first", 100), "next"), malformed);
-			expect(result).toEqual({ ok: false, error: "malformed review threads pageInfo" });
-		});
+		test.each([{ pageInfo: undefined }, { pageInfo: [] }, { pageInfo: { hasNextPage: "false" } }])(
+			"invalid pageInfo fails closed without partial threads (%p)",
+			({ pageInfo }) => {
+				const malformed = {
+					stdout: JSON.stringify({
+						data: {
+							repository: {
+								pullRequest: { reviewThreads: { pageInfo, nodes: pageNodes("later", 1) } },
+							},
+						},
+					}),
+				};
+				const { result } = threadsOf(page(pageNodes("first", 100), "next"), malformed);
+				expect(result).toEqual({ ok: false, error: "malformed review threads pageInfo" });
+			},
+		);
 
-		test.each([undefined, "greptile-apps", { login: 7 }])("malformed author classification fails closed (%p)", (author) => {
-			const malformed = page([{ id: "x", isResolved: false, isOutdated: false, comments: { nodes: [{ author, body: "finding" }] } }]);
-			expect(threadsOf(malformed).result).toEqual({ ok: false, error: "malformed review thread" });
-		});
+		test.each([undefined, "greptile-apps", { login: 7 }])(
+			"malformed author classification fails closed (%p)",
+			(author) => {
+				const malformed = page([
+					{
+						id: "x",
+						isResolved: false,
+						isOutdated: false,
+						comments: { nodes: [{ author, body: "finding" }] },
+					},
+				]);
+				expect(threadsOf(malformed).result).toEqual({
+					ok: false,
+					error: "malformed review thread",
+				});
+			},
+		);
 
 		test("a repeated cursor stops the loop", () => {
 			const { result, graphqlCalls } = threadsOf(page(pageNodes("p1", 100), "same"));
@@ -355,7 +581,9 @@ describe("createGithub", () => {
 
 		test("an endless server is cut off at 20 pages", () => {
 			let n = 0;
-			const fake = fakeRun((argv) => (argv[1] === "repo" ? REPO_REPLY : page(pageNodes("p", 100), `c${++n}`)));
+			const fake = fakeRun((argv) =>
+				argv[1] === "repo" ? REPO_REPLY : page(pageNodes("p", 100), `c${++n}`),
+			);
 			const result = createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7);
 			expect(result).toEqual({ ok: false, error: "more than 2000 review threads" });
 			expect(fake.calls.filter((c) => c.argv[1] === "api")).toHaveLength(20);
@@ -369,7 +597,10 @@ describe("createGithub", () => {
 				now += 30_000;
 				return page(pageNodes(`p${now}`, 100), `c${now}`);
 			});
-			const result = createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7, { deadlineMs: 100_000, now: () => now });
+			const result = createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7, {
+				deadlineMs: 100_000,
+				now: () => now,
+			});
 			expect(result).toEqual({ ok: false, error: "review threads scan exceeded its deadline" });
 			expect("threads" in result).toBe(false);
 			const graphqlCalls = fake.calls.filter((c) => c.argv[1] === "api");
@@ -378,8 +609,13 @@ describe("createGithub", () => {
 		});
 
 		test("an already-spent deadline fails closed without paging", () => {
-			const fake = fakeRun((argv) => (argv[1] === "repo" ? REPO_REPLY : page(pageNodes("p", 100), "c1")));
-			const result = createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7, { deadlineMs: 100_000, now: () => 100_000 });
+			const fake = fakeRun((argv) =>
+				argv[1] === "repo" ? REPO_REPLY : page(pageNodes("p", 100), "c1"),
+			);
+			const result = createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7, {
+				deadlineMs: 100_000,
+				now: () => 100_000,
+			});
 			expect(result).toEqual({ ok: false, error: "review threads scan exceeded its deadline" });
 			expect(fake.calls.filter((c) => c.argv[1] === "api")).toHaveLength(0);
 		});
@@ -391,24 +627,41 @@ describe("createGithub", () => {
 				if (lookup === (late === "repo")) now = 1000;
 				return lookup ? REPO_REPLY : page(pageNodes("terminal", 1));
 			});
-			expect(createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7, { deadlineMs: 1000, now: () => now }))
-				.toEqual({ ok: false, error: "review threads scan exceeded its deadline" });
+			expect(
+				createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7, {
+					deadlineMs: 1000,
+					now: () => now,
+				}),
+			).toEqual({ ok: false, error: "review threads scan exceeded its deadline" });
 		});
 
 		test("a scan within its deadline still pages to the end", () => {
-			const replies = Array.from({ length: 3 }, (_unused, i) => page(pageNodes(`p${i}`, 100), i < 2 ? `c${i}` : undefined));
+			const replies = Array.from({ length: 3 }, (_unused, i) =>
+				page(pageNodes(`p${i}`, 100), i < 2 ? `c${i}` : undefined),
+			);
 			let n = 0;
-			const fake = fakeRun((argv) => (argv[1] === "repo" ? REPO_REPLY : (replies[Math.min(n++, replies.length - 1)] ?? {})));
-			const result = createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7, { deadlineMs: 100_000, now: () => 0 });
+			const fake = fakeRun((argv) =>
+				argv[1] === "repo" ? REPO_REPLY : (replies[Math.min(n++, replies.length - 1)] ?? {}),
+			);
+			const result = createGithub({ cwd: "/w", run: fake.run }).reviewThreads(7, {
+				deadlineMs: 100_000,
+				now: () => 0,
+			});
 			expect(result).toEqual({
 				ok: true,
-				threads: [...expectedThreads("p0", 100), ...expectedThreads("p1", 100), ...expectedThreads("p2", 100)],
+				threads: [
+					...expectedThreads("p0", 100),
+					...expectedThreads("p1", 100),
+					...expectedThreads("p2", 100),
+				],
 			});
 			expect(fake.calls.filter((c) => c.argv[1] === "api")).toHaveLength(3);
 		});
 
 		test("exactly 20 full pages still succeed", () => {
-			const replies = Array.from({ length: 20 }, (_unused, i) => page(pageNodes(`p${i}`, 100), i < 19 ? `c${i}` : undefined));
+			const replies = Array.from({ length: 20 }, (_unused, i) =>
+				page(pageNodes(`p${i}`, 100), i < 19 ? `c${i}` : undefined),
+			);
 			const { result, graphqlCalls } = threadsOf(...replies);
 			expect(result.ok).toBe(true);
 			expect(graphqlCalls).toHaveLength(20);
@@ -417,15 +670,28 @@ describe("createGithub", () => {
 
 	test("reviewThreads fails without a resolvable repo", () => {
 		const { run, calls } = fakeRun(() => ({ exitCode: 1 }));
-		expect(createGithub({ cwd: "/w", run }).reviewThreads(7)).toEqual({ ok: false, error: "could not resolve GitHub repo" });
+		expect(createGithub({ cwd: "/w", run }).reviewThreads(7)).toEqual({
+			ok: false,
+			error: "could not resolve GitHub repo",
+		});
 		expect(calls.length).toBe(1);
 	});
 
 	test("syncBase deletes the local branch with -d when it exists and is not current", () => {
-		const { run, calls } = fakeRun((argv) => (argv[1] === "rev-parse" && argv[2] === "--abbrev-ref" ? { stdout: "master\n" } : {}));
-		expect(createGithub({ cwd: "/w", run }).syncBase({ base: "master", branch: "feat" })).toEqual({ ok: true });
+		const { run, calls } = fakeRun((argv) =>
+			argv[1] === "rev-parse" && argv[2] === "--abbrev-ref" ? { stdout: "master\n" } : {},
+		);
+		expect(createGithub({ cwd: "/w", run }).syncBase({ base: "master", branch: "feat" })).toEqual({
+			ok: true,
+		});
 		expect(calls.map((c) => c.argv)).toContainEqual(["git", "checkout", "master"]);
-		expect(calls.map((c) => c.argv)).toContainEqual(["git", "pull", "--ff-only", "origin", "master"]);
+		expect(calls.map((c) => c.argv)).toContainEqual([
+			"git",
+			"pull",
+			"--ff-only",
+			"origin",
+			"master",
+		]);
 		expect(calls.at(-1)?.argv).toEqual(["git", "branch", "-d", "feat"]);
 	});
 
@@ -439,18 +705,36 @@ describe("createGithub", () => {
 						? { exitCode: 1, stderr: "error: The branch 'feat' is not fully merged.\nhint: use -D" }
 						: {},
 		);
-		expect(createGithub({ cwd: "/w", run }).syncBase({ base: "master", branch: "feat", headSha: "beef2" })).toEqual({
+		expect(
+			createGithub({ cwd: "/w", run }).syncBase({
+				base: "master",
+				branch: "feat",
+				headSha: "beef2",
+			}),
+		).toEqual({
 			ok: false,
 			error: "error: The branch 'feat' is not fully merged.",
 		});
-		expect(calls.filter((c) => c.argv[1] === "branch").map((c) => c.argv)).toEqual([["git", "branch", "-d", "feat"]]);
+		expect(calls.filter((c) => c.argv[1] === "branch").map((c) => c.argv)).toEqual([
+			["git", "branch", "-d", "feat"],
+		]);
 	});
 
 	test("syncBase forces the delete only when the local tip is exactly the merged head", () => {
 		const { run, calls } = fakeRun((argv) =>
-			argv[2] === "--abbrev-ref" ? { stdout: "master\n" } : argv[2] === "--verify" ? { stdout: "beef2\n" } : {},
+			argv[2] === "--abbrev-ref"
+				? { stdout: "master\n" }
+				: argv[2] === "--verify"
+					? { stdout: "beef2\n" }
+					: {},
 		);
-		expect(createGithub({ cwd: "/w", run }).syncBase({ base: "master", branch: "feat", headSha: "beef2" })).toEqual({ ok: true });
+		expect(
+			createGithub({ cwd: "/w", run }).syncBase({
+				base: "master",
+				branch: "feat",
+				headSha: "beef2",
+			}),
+		).toEqual({ ok: true });
 		expect(calls.at(-1)?.argv).toEqual(["git", "branch", "-D", "feat"]);
 	});
 
@@ -459,7 +743,11 @@ describe("createGithub", () => {
 		createGithub({ cwd: "/w", run: onBranch.run }).syncBase({ base: "master", branch: "feat" });
 		expect(onBranch.calls.some((c) => c.argv[1] === "branch")).toBe(false);
 		const gone = fakeRun((argv) =>
-			argv[2] === "--verify" ? { exitCode: 1 } : argv[2] === "--abbrev-ref" ? { stdout: "master" } : {},
+			argv[2] === "--verify"
+				? { exitCode: 1 }
+				: argv[2] === "--abbrev-ref"
+					? { stdout: "master" }
+					: {},
 		);
 		createGithub({ cwd: "/w", run: gone.run }).syncBase({ base: "master", branch: "feat" });
 		expect(gone.calls.some((c) => c.argv[1] === "branch")).toBe(false);
@@ -498,7 +786,17 @@ describe("buildPr", () => {
 			graph: { goal: "x".repeat(100), nodes: [] },
 			plan: { graphId: "g-1" },
 			tracking: {
-				linear: { nodes: { n1: { id: "1", identifier: "ENG-12", url: "https://linear.app/i/ENG-12", title: "Do\u0007 it" } }, steps: {} },
+				linear: {
+					nodes: {
+						n1: {
+							id: "1",
+							identifier: "ENG-12",
+							url: "https://linear.app/i/ENG-12",
+							title: "Do\u0007 it",
+						},
+					},
+					steps: {},
+				},
 				notion: { taskUrl: "https://notion.so/t", nodes: {}, steps: {} },
 			},
 		} as unknown as SessionRecord;
@@ -535,7 +833,13 @@ describe("buildPr", () => {
 		const { body } = buildPr(base, {
 			...assessment,
 			mode: "advisory",
-			judge: { done: false, confidence: 0.6, summary: "", gaps: ["docs in /root/x.md", "tests"], error: "timeout\u0007" },
+			judge: {
+				done: false,
+				confidence: 0.6,
+				summary: "",
+				gaps: ["docs in /root/x.md", "tests"],
+				error: "timeout\u0007",
+			},
 		});
 		expect(body).toContain("- Judge (advisory): done no, confidence 0.6, error: timeout\n");
 		expect(body).toContain("- Judge notes:\n  - docs in <local path>\n  - tests");
@@ -554,8 +858,21 @@ describe("buildPr", () => {
 });
 
 describe("mergeGate", () => {
-	const status: PrStatus = { state: "OPEN", headSha: "h", mergeable: "MERGEABLE", checks: "passing", url: "u" };
-	const review: ReviewResult = { source: "pr", status: "completed", score: 5, comments: [], headSha: "h", at: 1 };
+	const status: PrStatus = {
+		state: "OPEN",
+		headSha: "h",
+		mergeable: "MERGEABLE",
+		checks: "passing",
+		url: "u",
+	};
+	const review: ReviewResult = {
+		source: "pr",
+		status: "completed",
+		score: 5,
+		comments: [],
+		headSha: "h",
+		at: 1,
+	};
 	const config = DEFAULT_SHIP_CONFIG;
 
 	test.each([
@@ -586,6 +903,9 @@ describe("mergeGate", () => {
 			ok: true,
 			reason: "ready to merge",
 		});
-		expect(mergeGate({ config, status, latest: review })).toEqual({ ok: true, reason: "ready to merge" });
+		expect(mergeGate({ config, status, latest: review })).toEqual({
+			ok: true,
+			reason: "ready to merge",
+		});
 	});
 });

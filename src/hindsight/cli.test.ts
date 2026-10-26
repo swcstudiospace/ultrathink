@@ -9,7 +9,12 @@ import { DEFAULT_HINDSIGHT_CONFIG, type HindsightConfig } from "./types.ts";
 
 const KEY = "hs-cli-secret-key-0123456789";
 const CONFIGURED_BANK = "ultrathink-prod";
-const CONFIG: HindsightConfig = { ...DEFAULT_HINDSIGHT_CONFIG, enabled: true, url: "https://hs.example.test", bank: CONFIGURED_BANK };
+const CONFIG: HindsightConfig = {
+	...DEFAULT_HINDSIGHT_CONFIG,
+	enabled: true,
+	url: "https://hs.example.test",
+	bank: CONFIGURED_BANK,
+};
 const SMOKE_BANK = /^ultrathink-smoke-[0-9a-f]{8}$/;
 
 const root = mkdtempSync(join(tmpdir(), "ut-hindsight-cli-"));
@@ -39,7 +44,8 @@ function server(options: { recall?: "match" | "empty" | "error" } = {}) {
 	const banks = new Map<string, Bank>([[CONFIGURED_BANK, { mode: "concise", docs: new Map() }]]);
 	const calls: Seen[] = [];
 	const retained: { bank: string; mode: string }[] = [];
-	const reply = (status: number, payload: unknown) => new Response(JSON.stringify(payload), { status });
+	const reply = (status: number, payload: unknown) =>
+		new Response(JSON.stringify(payload), { status });
 	const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = new URL(String(input));
 		const method = init?.method ?? "GET";
@@ -47,7 +53,8 @@ function server(options: { recall?: "match" | "empty" | "error" } = {}) {
 		const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
 		calls.push({ method, path: url.pathname, auth: headers.Authorization, body });
 		if (url.pathname === "/health") return reply(200, { status: "healthy", database: "connected" });
-		if (url.pathname === "/version") return reply(200, { api_version: "0.9.1", features: { observations: false, worker: false } });
+		if (url.pathname === "/version")
+			return reply(200, { api_version: "0.9.1", features: { observations: false, worker: false } });
 		const match = /^\/v1\/default\/banks\/([^/]+)(\/.*)?$/.exec(url.pathname);
 		if (!match) return reply(404, { detail: "no such route" });
 		if (headers.Authorization !== `Bearer ${KEY}`) return reply(401, { detail: "Invalid API key" });
@@ -67,7 +74,12 @@ function server(options: { recall?: "match" | "empty" | "error" } = {}) {
 		}
 		if (rest === "/config") {
 			if (!bank) return reply(404, { detail: "bank not found" });
-			if (method === "GET") return reply(200, { bank_id: name, config: { retain_extraction_mode: bank.mode }, overrides: {} });
+			if (method === "GET")
+				return reply(200, {
+					bank_id: name,
+					config: { retain_extraction_mode: bank.mode },
+					overrides: {},
+				});
 			if (method === "PATCH") {
 				const updates = body as { updates: { retain_extraction_mode: string } };
 				bank.mode = updates.updates.retain_extraction_mode;
@@ -79,8 +91,14 @@ function server(options: { recall?: "match" | "empty" | "error" } = {}) {
 			banks.set(name, target);
 			retained.push({ bank: name, mode: target.mode });
 			const sent = body as { items: { document_id: string; content: string; tags: string[] }[] };
-			for (const item of sent.items) target.docs.set(item.document_id, { content: item.content, tags: item.tags });
-			return reply(200, { success: true, bank_id: name, items_count: sent.items.length, async: false });
+			for (const item of sent.items)
+				target.docs.set(item.document_id, { content: item.content, tags: item.tags });
+			return reply(200, {
+				success: true,
+				bank_id: name,
+				items_count: sent.items.length,
+				async: false,
+			});
 		}
 		if (rest === "/memories/recall" && method === "POST") {
 			if (options.recall === "error") return reply(500, { detail: "recall exploded" });
@@ -90,7 +108,12 @@ function server(options: { recall?: "match" | "empty" | "error" } = {}) {
 					? []
 					: [...bank.docs.entries()]
 							.filter(([, doc]) => doc.content.includes(query))
-							.map(([id, doc]) => ({ id: `mem-${id}`, text: doc.content, document_id: id, tags: doc.tags }));
+							.map(([id, doc]) => ({
+								id: `mem-${id}`,
+								text: doc.content,
+								document_id: id,
+								tags: doc.tags,
+							}));
 			return reply(200, { results });
 		}
 		if (rest.startsWith("/documents/") && method === "DELETE") {
@@ -150,11 +173,26 @@ describe("hindsight check", () => {
 
 	test("not ready prints the status-line reason, exits 1 and sends nothing", async () => {
 		const cases: [Partial<CommandDeps>, string][] = [
-			[{ config: DEFAULT_HINDSIGHT_CONFIG }, "Hindsight check: off (opt-in: set hindsight.enabled)"],
-			[{ env: { HINDSIGHT_API_KEY: KEY, ULTRATHINK_HINDSIGHT: "0" } }, "Hindsight check: off (ULTRATHINK_HINDSIGHT=0)"],
-			[{ config: { ...CONFIG, url: "" } }, "Hindsight check: on · no URL (set hindsight.url or HINDSIGHT_API_URL)"],
-			[{ config: { ...CONFIG, url: "http://example.com" } }, "Hindsight check: on · bad URL (http is allowed only for localhost, *.ts.net and 100.64.0.0/10; use https)"],
-			[{ env: {} }, "Hindsight check: on · no key (run bin/ultrathink-mcp auth set-key hindsight --stdin, or set HINDSIGHT_API_KEY)"],
+			[
+				{ config: DEFAULT_HINDSIGHT_CONFIG },
+				"Hindsight check: off (opt-in: set hindsight.enabled)",
+			],
+			[
+				{ env: { HINDSIGHT_API_KEY: KEY, ULTRATHINK_HINDSIGHT: "0" } },
+				"Hindsight check: off (ULTRATHINK_HINDSIGHT=0)",
+			],
+			[
+				{ config: { ...CONFIG, url: "" } },
+				"Hindsight check: on · no URL (set hindsight.url or HINDSIGHT_API_URL)",
+			],
+			[
+				{ config: { ...CONFIG, url: "http://example.com" } },
+				"Hindsight check: on · bad URL (http is allowed only for localhost, *.ts.net and 100.64.0.0/10; use https)",
+			],
+			[
+				{ env: {} },
+				"Hindsight check: on · no key (run bin/ultrathink-mcp auth set-key hindsight --stdin, or set HINDSIGHT_API_KEY)",
+			],
 		];
 		for (const [override, text] of cases) {
 			const fake = server();
@@ -167,10 +205,15 @@ describe("hindsight check", () => {
 	});
 
 	test("a server that answers 401 everywhere is an auth error with the redacted message, exit 1", async () => {
-		const denied = (async () => new Response(JSON.stringify({ detail: `bad key ${KEY}` }), { status: 401 })) as unknown as typeof fetch;
+		const denied = (async () =>
+			new Response(JSON.stringify({ detail: `bad key ${KEY}` }), {
+				status: 401,
+			})) as unknown as typeof fetch;
 		const result = await runHindsightCommand(["check"], deps({ fetch: denied }));
 		expect(result.code).toBe(1);
-		expect(result.text).toBe("Hindsight check: error (auth) · hindsight auth: HTTP 401: bad key [redacted]");
+		expect(result.text).toBe(
+			"Hindsight check: error (auth) · hindsight auth: HTTP 401: bad key [redacted]",
+		);
 		expect(result.text).not.toContain(KEY);
 	});
 
@@ -181,17 +224,29 @@ describe("hindsight check", () => {
 				: new Response(JSON.stringify({ api_version: "0.9.1" }))) as unknown as typeof fetch;
 		const result = await runHindsightCommand(["check"], deps({ fetch: mixed }));
 		expect(result.code).toBe(1);
-		expect(result.text).toBe("Hindsight check: error (server) · hindsight server: /health did not report healthy (Hindsight 0.9.1, database not connected)");
+		expect(result.text).toBe(
+			"Hindsight check: error (server) · hindsight server: /health did not report healthy (Hindsight 0.9.1, database not connected)",
+		);
 	});
 
 	test("an unreachable server is a network error, exit 1", async () => {
-		const down = (() => Promise.reject(new Error("connect ECONNREFUSED"))) as unknown as typeof fetch;
+		const down = (() =>
+			Promise.reject(new Error("connect ECONNREFUSED"))) as unknown as typeof fetch;
 		const result = await runHindsightCommand(["check"], deps({ fetch: down }));
-		expect(result).toEqual({ code: 1, text: "Hindsight check: error (network) · hindsight network: connect ECONNREFUSED" });
+		expect(result).toEqual({
+			code: 1,
+			text: "Hindsight check: error (network) · hindsight network: connect ECONNREFUSED",
+		});
 	});
 
 	test("usage errors exit 2 and send nothing", async () => {
-		for (const argv of [[], ["status"], ["check", "--bogus"], ["check", "extra"], ["check", "--json", "--nope"]]) {
+		for (const argv of [
+			[],
+			["status"],
+			["check", "--bogus"],
+			["check", "extra"],
+			["check", "--json", "--nope"],
+		]) {
 			const fake = server();
 			const result = await runHindsightCommand(argv, deps(fake));
 			expect(result.code).toBe(2);
@@ -207,7 +262,9 @@ describe("hindsight check --roundtrip", () => {
 		const result = await runHindsightCommand(["check", "--roundtrip"], deps(fake));
 		expect(result.code).toBe(0);
 		const lines = result.text.split("\n");
-		expect(lines[0]).toMatch(/^Hindsight check: ok · Hindsight 0\.9\.1 · database connected · bank ultrathink-prod · \d+ ms$/);
+		expect(lines[0]).toMatch(
+			/^Hindsight check: ok · Hindsight 0\.9\.1 · database connected · bank ultrathink-prod · \d+ ms$/,
+		);
 		const bank = /throwaway bank (\S+)$/.exec(lines[2] ?? "")?.[1] ?? "";
 		expect(bank).toMatch(SMOKE_BANK);
 		expect(lines[2]).toBe(`Hindsight roundtrip: ok · throwaway bank ${bank}`);
@@ -232,20 +289,33 @@ describe("hindsight check --roundtrip", () => {
 			`DELETE ${prefix}/documents/smoke%3A${nonce}`,
 			`DELETE ${prefix}`,
 		]);
-		const retain = fake.calls.find((call) => call.path === `${prefix}/memories`)?.body as { items: { content: string; document_id: string; tags: string[]; update_mode: string }[]; async: boolean };
+		const retain = fake.calls.find((call) => call.path === `${prefix}/memories`)?.body as {
+			items: { content: string; document_id: string; tags: string[]; update_mode: string }[];
+			async: boolean;
+		};
 		expect(retain.async).toBe(false);
-		expect(retain.items[0]).toMatchObject({ document_id: `smoke:${nonce}`, tags: ["ultrathink-smoke"], update_mode: "replace" });
+		expect(retain.items[0]).toMatchObject({
+			document_id: `smoke:${nonce}`,
+			tags: ["ultrathink-smoke"],
+			update_mode: "replace",
+		});
 		expect(retain.items[0]?.content).toContain(nonce);
 		expect(fake.retained).toEqual([{ bank, mode: "chunks" }]);
 		expect([...fake.banks.keys()]).toEqual([CONFIGURED_BANK]);
-		expect(fake.calls.filter((call) => call.path.startsWith("/v1/")).every((call) => call.auth === `Bearer ${KEY}`)).toBe(true);
+		expect(
+			fake.calls
+				.filter((call) => call.path.startsWith("/v1/"))
+				.every((call) => call.auth === `Bearer ${KEY}`),
+		).toBe(true);
 		expect(result.text).not.toContain(KEY);
 	});
 
 	test("never touches the configured bank", async () => {
 		const fake = server();
 		await runHindsightCommand(["check", "--roundtrip"], deps(fake));
-		expect(fake.calls.filter((call) => call.path.includes(`/banks/${CONFIGURED_BANK}`))).toEqual([]);
+		expect(fake.calls.filter((call) => call.path.includes(`/banks/${CONFIGURED_BANK}`))).toEqual(
+			[],
+		);
 		expect(fake.banks.get(CONFIGURED_BANK)).toEqual({ mode: "concise", docs: new Map() });
 	});
 
@@ -267,11 +337,19 @@ describe("hindsight check --roundtrip", () => {
 		const result = await runHindsightCommand(["check", "--roundtrip"], deps(fake));
 		expect(result.code).toBe(1);
 		const lines = result.text.split("\n");
-		expect(lines[2]).toMatch(/^Hindsight roundtrip: failed · throwaway bank ultrathink-smoke-[0-9a-f]{8}$/);
-		expect(lines.find((line) => line.startsWith("  recall"))).toMatch(/^ {2}recall: failed · no hit contains the nonce \(0 hits\) · \d+ ms$/);
+		expect(lines[2]).toMatch(
+			/^Hindsight roundtrip: failed · throwaway bank ultrathink-smoke-[0-9a-f]{8}$/,
+		);
+		expect(lines.find((line) => line.startsWith("  recall"))).toMatch(
+			/^ {2}recall: failed · no hit contains the nonce \(0 hits\) · \d+ ms$/,
+		);
 		expect(lines.find((line) => line.startsWith("  delete document"))).toMatch(/: ok/);
 		expect(lines.find((line) => line.startsWith("  delete bank"))).toMatch(/: ok/);
-		expect(trace(fake).slice(-2).map((entry) => entry.split(" ")[0])).toEqual(["DELETE", "DELETE"]);
+		expect(
+			trace(fake)
+				.slice(-2)
+				.map((entry) => entry.split(" ")[0]),
+		).toEqual(["DELETE", "DELETE"]);
 		expect([...fake.banks.keys()]).toEqual([CONFIGURED_BANK]);
 	});
 
@@ -279,23 +357,32 @@ describe("hindsight check --roundtrip", () => {
 		const fake = server({ recall: "error" });
 		const result = await runHindsightCommand(["check", "--roundtrip"], deps(fake));
 		expect(result.code).toBe(1);
-		expect(result.text).toContain("  recall: failed (server) · hindsight server: HTTP 500: recall exploded");
+		expect(result.text).toContain(
+			"  recall: failed (server) · hindsight server: HTTP 500: recall exploded",
+		);
 		expect([...fake.banks.keys()]).toEqual([CONFIGURED_BANK]);
 	});
 
 	test("a rejected key fails at the first authenticated step, skips retain and recall, and still attempts the cleanup", async () => {
 		const fake = server();
-		const result = await runHindsightCommand(["check", "--roundtrip"], deps(fake, { env: { HINDSIGHT_API_KEY: "some-other-key" } }));
+		const result = await runHindsightCommand(
+			["check", "--roundtrip"],
+			deps(fake, { env: { HINDSIGHT_API_KEY: "some-other-key" } }),
+		);
 		expect(result.code).toBe(1);
 		const lines = result.text.split("\n");
-		expect(lines.find((line) => line.startsWith("  ensure bank"))).toMatch(/^ {2}ensure bank: failed \(auth\) · hindsight auth: HTTP 401: Invalid API key · \d+ ms$/);
+		expect(lines.find((line) => line.startsWith("  ensure bank"))).toMatch(
+			/^ {2}ensure bank: failed \(auth\) · hindsight auth: HTTP 401: Invalid API key · \d+ ms$/,
+		);
 		expect(lines).toContain("  retain: skipped");
 		expect(lines).toContain("  recall: skipped");
 		const methods = trace(fake).map((entry) => entry.split(" ")[0]);
 		expect(methods.slice(-2)).toEqual(["DELETE", "DELETE"]);
 		expect(trace(fake).some((entry) => entry.includes("/memories"))).toBe(false);
 		expect(result.text).not.toContain("some-other-key");
-		expect(fake.calls.filter((call) => call.path.includes(`/banks/${CONFIGURED_BANK}`))).toEqual([]);
+		expect(fake.calls.filter((call) => call.path.includes(`/banks/${CONFIGURED_BANK}`))).toEqual(
+			[],
+		);
 	});
 
 	test("--json adds the roundtrip steps and no key", async () => {
@@ -305,7 +392,9 @@ describe("hindsight check --roundtrip", () => {
 		expect(payload.ok).toBe(true);
 		expect(payload.roundtrip.bank).toMatch(SMOKE_BANK);
 		expect(payload.roundtrip.ok).toBe(true);
-		expect(payload.roundtrip.steps.map((step: { name: string; ok: boolean }) => [step.name, step.ok])).toEqual([
+		expect(
+			payload.roundtrip.steps.map((step: { name: string; ok: boolean }) => [step.name, step.ok]),
+		).toEqual([
 			["ensure bank", true],
 			["retain", true],
 			["recall", true],
@@ -316,7 +405,8 @@ describe("hindsight check --roundtrip", () => {
 	});
 
 	test("the roundtrip does not start when health is not ok", async () => {
-		const down = (() => Promise.reject(new Error("connect ECONNREFUSED"))) as unknown as typeof fetch;
+		const down = (() =>
+			Promise.reject(new Error("connect ECONNREFUSED"))) as unknown as typeof fetch;
 		const result = await runHindsightCommand(["check", "--roundtrip"], deps({ fetch: down }));
 		expect(result.code).toBe(1);
 		expect(result.text).not.toContain("roundtrip");

@@ -12,7 +12,7 @@ const MAX_SNIPPETS = 8;
 const MAX_MESSAGE_CHARS = 600;
 const TAIL_BYTES = 256 * 1024;
 
-function textParts(content: unknown): string {
+export function textParts(content: unknown): string {
 	if (typeof content === "string") return content.trim();
 	if (!Array.isArray(content)) return "";
 	const parts: string[] = [];
@@ -26,10 +26,15 @@ function textParts(content: unknown): string {
 
 export function isNoise(text: string): boolean {
 	// Skip injected system/hook context and the plugin's own uplift blocks.
-	return /^<(?:system-reminder|command-name|local-command|UPLIFTED_PROMPT|BUILD_PROMPT|FIX_PROMPT|RESEARCH_PROMPT|CHANGE_PROMPT)/i.test(text);
+	return /^<(?:system-reminder|command-name|local-command|UPLIFTED_PROMPT|BUILD_PROMPT|FIX_PROMPT|RESEARCH_PROMPT|CHANGE_PROMPT)/i.test(
+		text,
+	);
 }
 
-export function conversationFromJsonl(jsonl: string, maxChars = DEFAULT_CONVERSATION_CHARS): string {
+export function conversationFromJsonl(
+	jsonl: string,
+	maxChars = DEFAULT_CONVERSATION_CHARS,
+): string {
 	const lines = jsonl.split(/\r?\n/);
 	const chunks: string[] = [];
 	for (let i = lines.length - 1; i >= 0 && chunks.length < MAX_SNIPPETS; i--) {
@@ -39,6 +44,7 @@ export function conversationFromJsonl(jsonl: string, maxChars = DEFAULT_CONVERSA
 		try {
 			entry = JSON.parse(line);
 		} catch {
+			// reason: a malformed transcript line is skipped; the other lines still count
 			continue;
 		}
 		if (!entry || typeof entry !== "object") continue;
@@ -47,7 +53,8 @@ export function conversationFromJsonl(jsonl: string, maxChars = DEFAULT_CONVERSA
 		if (rec.type !== "user" && rec.type !== "assistant") continue;
 		if (!rec.message || typeof rec.message !== "object") continue;
 		const message = rec.message as { role?: unknown; content?: unknown };
-		const role = message.role === "assistant" ? "Assistant" : rec.type === "assistant" ? "Assistant" : "User";
+		const role =
+			message.role === "assistant" ? "Assistant" : rec.type === "assistant" ? "Assistant" : "User";
 		const text = textParts(message.content);
 		if (!text || isNoise(text)) continue;
 		const clipped = text.length > MAX_MESSAGE_CHARS ? `${text.slice(0, MAX_MESSAGE_CHARS)}…` : text;
@@ -58,7 +65,10 @@ export function conversationFromJsonl(jsonl: string, maxChars = DEFAULT_CONVERSA
 	return combined.length > maxChars ? combined.slice(-maxChars) : combined;
 }
 
-export function recentConversationFromTranscript(path: string | undefined, maxChars = DEFAULT_CONVERSATION_CHARS): string {
+export function recentConversationFromTranscript(
+	path: string | undefined,
+	maxChars = DEFAULT_CONVERSATION_CHARS,
+): string {
 	if (!path) return "";
 	let fd: number | undefined;
 	try {
@@ -85,7 +95,7 @@ export function recentConversationFromTranscript(path: string | undefined, maxCh
 			try {
 				closeSync(fd);
 			} catch {
-				// already closed or never opened
+				// reason: already closed or never opened
 			}
 		}
 	}

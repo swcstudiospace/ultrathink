@@ -24,7 +24,6 @@ const GROK_EVENT_TO_PASCAL: Record<string, string> = {
 	post_compact: "PostCompact",
 };
 
-
 function pick(record: Record<string, unknown>, snake: string, camel: string): unknown {
 	if (record[snake] !== undefined) return record[snake];
 	if (record[camel] !== undefined) return record[camel];
@@ -85,4 +84,14 @@ export function isSubagentEnvelope(input: Record<string, unknown>): boolean {
 		const value = input[key];
 		return typeof value === "string" && value.trim() !== "";
 	});
+}
+
+/** A hook's tool response as text: a string as-is, anything else as JSON (empty when it cannot be encoded). */
+export function responseText(response: unknown): string {
+	if (typeof response === "string") return response;
+	try {
+		return JSON.stringify(response ?? "");
+	} catch {
+		return "";
+	}
 }

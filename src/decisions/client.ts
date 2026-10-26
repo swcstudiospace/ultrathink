@@ -48,7 +48,12 @@ export type DecideOutcome =
 
 /** ULTRATHINK_DECISIONS_URL is the one place the OpenRouter key can be pointed elsewhere, so it only accepts hosts that
  *  should ever see that key: OpenRouter itself over https, or a loopback test/proxy endpoint. */
-const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true, "[::1]": true, "::1": true };
+const LOOPBACK_HOSTS: Record<string, true> = {
+	localhost: true,
+	"127.0.0.1": true,
+	"[::1]": true,
+	"::1": true,
+};
 
 export interface DecisionsUrl {
 	url: string;
@@ -74,12 +79,13 @@ export function resolveDecisionsUrl(env: Env): DecisionsUrl {
 		const { protocol, hostname } = parsed;
 		const loopback = Object.hasOwn(LOOPBACK_HOSTS, hostname);
 		const allowed =
-			(protocol === "https:" && (hostname === "openrouter.ai" || loopback)) || (protocol === "http:" && loopback);
+			(protocol === "https:" && (hostname === "openrouter.ai" || loopback)) ||
+			(protocol === "http:" && loopback);
 		if (allowed && !parsed.username && !parsed.password) {
 			return { url: `${parsed.origin}${parsed.pathname}`, source: "ULTRATHINK_DECISIONS_URL" };
 		}
 	} catch {
-		// not a URL: the default endpoint
+		// reason: not a URL: the default endpoint
 	}
 	return { url: DEFAULT_DECISIONS_URL, source: "default", ignored: true };
 }
@@ -98,18 +104,22 @@ export function isUnit(value: unknown): value is number {
 
 /** Math.ceil(JSON.stringify({ state, questions }).length / 4). */
 export function estimateTokens(request: Pick<DecisionsRequest, "state" | "questions">): number {
-	return Math.ceil(JSON.stringify({ state: request.state, questions: request.questions }).length / 4);
+	return Math.ceil(
+		JSON.stringify({ state: request.state, questions: request.questions }).length / 4,
+	);
 }
 
 /** The first violated D7 request rule, or undefined. */
 function requestViolation(request: DecisionsRequest): string | undefined {
-	if (typeof request.model !== "string" || !request.model.trim()) return "model must be a non-empty string";
+	if (typeof request.model !== "string" || !request.model.trim())
+		return "model must be a non-empty string";
 	const state: unknown = request.state;
 	if (typeof state !== "string" && !Array.isArray(state) && !isPlainObject(state)) {
 		return "state must be a string, an object or an array";
 	}
 	const questions: unknown = request.questions;
-	if (!isPlainObject(questions) || Object.keys(questions).length === 0) return "questions must be a non-empty object";
+	if (!isPlainObject(questions) || Object.keys(questions).length === 0)
+		return "questions must be a non-empty object";
 	for (const [key, value] of Object.entries(questions)) {
 		const at = `questions.${key}`;
 		if (!isPlainObject(value)) return `${at} must be an object`;
@@ -117,17 +127,30 @@ function requestViolation(request: DecisionsRequest): string | undefined {
 		const criteria = value.criteria;
 		switch (value.type) {
 			case "noul":
-				if (criteria !== undefined && (!isPlainObject(criteria) || typeof criteria.true !== "string" || typeof criteria.false !== "string")) {
+				if (
+					criteria !== undefined &&
+					(!isPlainObject(criteria) ||
+						typeof criteria.true !== "string" ||
+						typeof criteria.false !== "string")
+				) {
 					return `${at}.criteria must have string true and false`;
 				}
 				break;
 			case "choice":
-				if (!isPlainObject(criteria) || Object.keys(criteria).length < 2 || !Object.values(criteria).every((v) => typeof v === "string")) {
+				if (
+					!isPlainObject(criteria) ||
+					Object.keys(criteria).length < 2 ||
+					!Object.values(criteria).every((v) => typeof v === "string")
+				) {
 					return `${at}.criteria must map at least 2 options to strings`;
 				}
 				break;
 			case "score":
-				if (!Array.isArray(criteria) || criteria.length < 2 || !criteria.every((v) => typeof v === "string")) {
+				if (
+					!Array.isArray(criteria) ||
+					criteria.length < 2 ||
+					!criteria.every((v) => typeof v === "string")
+				) {
 					return `${at}.criteria must be at least 2 level strings`;
 				}
 				break;
@@ -141,12 +164,15 @@ function requestViolation(request: DecisionsRequest): string | undefined {
 /** Local checks (D7). undefined when the request may be sent. */
 export function validateRequest(request: DecisionsRequest): DecisionsError | undefined {
 	const violation = requestViolation(request);
-	if (violation) return new DecisionsError("bad-request", redact(`decisions bad-request: ${violation}`));
+	if (violation)
+		return new DecisionsError("bad-request", redact(`decisions bad-request: ${violation}`));
 	const tokens = estimateTokens(request);
 	if (tokens > MAX_ESTIMATED_TOKENS) {
 		return new DecisionsError(
 			"too-large",
-			redact(`decisions too-large: request is about ${tokens} tokens (limit ${MAX_ESTIMATED_TOKENS})`),
+			redact(
+				`decisions too-large: request is about ${tokens} tokens (limit ${MAX_ESTIMATED_TOKENS})`,
+			),
 		);
 	}
 	return undefined;
@@ -157,7 +183,11 @@ function invalid(rule: string): DecisionsError {
 }
 
 /** `probabilities` keyed exactly by `keys`, every value in [0, 1]. */
-function checkProbabilities(value: unknown, keys: readonly string[], at: string): Record<string, number> {
+export function checkProbabilities(
+	value: unknown,
+	keys: readonly string[],
+	at: string,
+): Record<string, number> {
 	if (!isPlainObject(value)) throw invalid(`${at} must be an object`);
 	const got = Object.keys(value);
 	if (got.length !== keys.length || !keys.every((key) => Object.hasOwn(value, key))) {
@@ -179,9 +209,12 @@ function optionalFields(
 	at: string,
 ): { probabilities?: Record<string, number>; confidence?: number } {
 	const confidence = value.confidence;
-	if (confidence !== undefined && !isUnit(confidence)) throw invalid(`${at}.confidence must be a finite number in [0, 1]`);
+	if (confidence !== undefined && !isUnit(confidence))
+		throw invalid(`${at}.confidence must be a finite number in [0, 1]`);
 	return {
-		...(value.probabilities !== undefined ? { probabilities: checkProbabilities(value.probabilities, keys, `${at}.probabilities`) } : {}),
+		...(value.probabilities !== undefined
+			? { probabilities: checkProbabilities(value.probabilities, keys, `${at}.probabilities`) }
+			: {}),
 		...(isUnit(confidence) ? { confidence } : {}),
 	};
 }
@@ -208,7 +241,12 @@ function checkAnswer(value: unknown, question: DecisionQuestion, at: string): De
 		throw invalid(`${at}.score must be a finite number in [0, ${top}]`);
 	}
 	const levels = question.criteria.map((_, index) => String(index));
-	return { type: "score", score, ...optionalFields(value, levels, at), ...(value.legend !== undefined ? { legend: value.legend } : {}) };
+	return {
+		type: "score",
+		score,
+		...optionalFields(value, levels, at),
+		...(value.legend !== undefined ? { legend: value.legend } : {}),
+	};
 }
 
 /** Shared with the Vercel rail: a finite number >= 0. */
@@ -217,12 +255,16 @@ export function isCount(value: unknown): value is number {
 }
 
 /** Strict D7 parse; throws DecisionsError("invalid-response") on any violation. */
-export function parseDecisionsResponse(body: unknown, questions: Record<string, DecisionQuestion>): DecisionsResponse {
+export function parseDecisionsResponse(
+	body: unknown,
+	questions: Record<string, DecisionQuestion>,
+): DecisionsResponse {
 	if (!isPlainObject(body)) throw invalid("response must be a JSON object");
 	const { id, model, provider, answers } = body;
 	if (typeof model !== "string" || !model) throw invalid("model must be a non-empty string");
 	if (id !== undefined && typeof id !== "string") throw invalid("id must be a string");
-	if (provider !== undefined && typeof provider !== "string") throw invalid("provider must be a string");
+	if (provider !== undefined && typeof provider !== "string")
+		throw invalid("provider must be a string");
 	if (!isPlainObject(answers)) throw invalid("answers must be an object");
 	for (const key of Object.keys(answers)) {
 		if (!Object.hasOwn(questions, key)) throw invalid(`answers.${key} was not asked`);
@@ -237,8 +279,13 @@ export function parseDecisionsResponse(body: unknown, questions: Record<string, 
 	const { input_tokens, output_tokens, cost } = usage;
 	if (!isCount(input_tokens)) throw invalid("usage.input_tokens must be a finite number >= 0");
 	if (!isCount(output_tokens)) throw invalid("usage.output_tokens must be a finite number >= 0");
-	if (cost !== undefined && !isCount(cost)) throw invalid("usage.cost must be a finite number >= 0");
-	const typedUsage: DecisionsUsage = { input_tokens, output_tokens, ...(isCount(cost) ? { cost } : {}) };
+	if (cost !== undefined && !isCount(cost))
+		throw invalid("usage.cost must be a finite number >= 0");
+	const typedUsage: DecisionsUsage = {
+		input_tokens,
+		output_tokens,
+		...(isCount(cost) ? { cost } : {}),
+	};
 	return {
 		...(typeof id === "string" ? { id } : {}),
 		model,
@@ -275,14 +322,17 @@ const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([408, 429, 500, 502, 503
 /** Shared with the Vercel rail: the caller's abort reason, or an AbortError. */
 export function abortError(signal: AbortSignal): Error {
 	const reason: unknown = signal.reason;
-	if ((reason instanceof Error || reason instanceof DOMException) && reason.name === "AbortError") return reason;
+	if ((reason instanceof Error || reason instanceof DOMException) && reason.name === "AbortError")
+		return reason;
 	return new DOMException("The operation was aborted.", "AbortError");
 }
 
 /** Settles with `work`, or rejects as soon as `signal` aborts, even if `work` ignores the signal. */
 function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) {
-		work.catch(() => {});
+		work.catch(() => {
+			// reason: the aborted work's own rejection is discarded; the caller gets signal.reason
+		});
 		return Promise.reject(signal.reason);
 	}
 	return new Promise<T>((resolve, reject) => {
@@ -314,11 +364,15 @@ function retryAfterMs(header: string | null, now: number): number | undefined {
 function upstreamDetail(text: string, statusText: string): string {
 	try {
 		const parsed: unknown = JSON.parse(text);
-		if (isPlainObject(parsed) && isPlainObject(parsed.error) && typeof parsed.error.message === "string") {
+		if (
+			isPlainObject(parsed) &&
+			isPlainObject(parsed.error) &&
+			typeof parsed.error.message === "string"
+		) {
 			return parsed.error.message;
 		}
 	} catch {
-		// not JSON: use the text
+		// reason: not JSON: use the text
 	}
 	return text.trim() ? text.slice(0, MAX_ERROR_CHARS) : statusText;
 }
@@ -361,12 +415,19 @@ export async function postDecision(
 	const caller = opts.signal;
 	const start = now();
 	const deadline = start + opts.timeoutMs;
-	const settle = <T extends object>(result: T) => ({ ...result, latencyMs: Math.max(0, now() - start) });
+	const settle = <T extends object>(result: T) => ({
+		...result,
+		latencyMs: Math.max(0, now() - start),
+	});
 	if (caller?.aborted) throw abortError(caller);
 
 	const fetchImpl = opts.fetch ?? globalThis.fetch;
 	const fail = (kind: DecisionsErrorKind, detail: string, status?: number) =>
-		new DecisionsError(kind, redact(`decisions ${kind}: ${redact(detail, opts.apiKey)}`, opts.apiKey), status);
+		new DecisionsError(
+			kind,
+			redact(`decisions ${kind}: ${redact(detail, opts.apiKey)}`, opts.apiKey),
+			status,
+		);
 
 	const attempt = async (): Promise<Attempt> => {
 		let timeout: AbortSignal | undefined;
@@ -409,13 +470,22 @@ export async function postDecision(
 			try {
 				json = JSON.parse(text);
 			} catch {
-				return { ok: false, error: fail("invalid-response", "response body is not JSON"), transient: false };
+				return {
+					ok: false,
+					error: fail("invalid-response", "response body is not JSON"),
+					transient: false,
+				};
 			}
 			try {
 				return { ok: true, response: parse(json) };
 			} catch (error) {
-				const message = error instanceof DecisionsError ? error.message : "response could not be parsed";
-				return { ok: false, error: new DecisionsError("invalid-response", redact(message, opts.apiKey)), transient: false };
+				const message =
+					error instanceof DecisionsError ? error.message : "response could not be parsed";
+				return {
+					ok: false,
+					error: new DecisionsError("invalid-response", redact(message, opts.apiKey)),
+					transient: false,
+				};
 			}
 		}
 		const kind = statusKind(status);
@@ -430,14 +500,19 @@ export async function postDecision(
 	const first = await attempt();
 	if (first.ok) return settle({ ok: true as const, response: first.response, attempts: 1 });
 	const remaining = deadline - now();
-	if (!first.transient || remaining < RETRY_MIN_REMAINING_MS) return settle({ ok: false as const, error: first.error, attempts: 1 });
+	if (!first.transient || remaining < RETRY_MIN_REMAINING_MS)
+		return settle({ ok: false as const, error: first.error, attempts: 1 });
 
 	const hinted = retryAfterMs(first.retryAfter ?? null, now());
 	const wait =
-		hinted !== undefined && remaining - hinted >= RETRY_MIN_REMAINING_MS ? hinted : Math.round(125 + random() * 250);
+		hinted !== undefined && remaining - hinted >= RETRY_MIN_REMAINING_MS
+			? hinted
+			: Math.round(125 + random() * 250);
 	// A failing sleep seam only shortens the wait; a caller abort during it is re-thrown.
 	const pause = Promise.resolve().then(() => sleep(wait));
-	await (caller ? raceAbort(pause, caller) : pause).catch(() => {});
+	await (caller ? raceAbort(pause, caller) : pause).catch(() => {
+		// reason: a failing sleep seam only shortens the wait; the abort check below decides
+	});
 	if (caller?.aborted) throw abortError(caller);
 
 	const second = await attempt();
@@ -446,7 +521,10 @@ export async function postDecision(
 }
 
 /** OpenRouter rail: local D7 checks, then the shared POST core. Never rejects except with an AbortError when opts.signal aborts. */
-export async function decide(request: DecisionsRequest, opts: DecideOptions): Promise<DecideOutcome> {
+export async function decide(
+	request: DecisionsRequest,
+	opts: DecideOptions,
+): Promise<DecideOutcome> {
 	const now = opts.now ?? Date.now;
 	const start = now();
 	if (opts.signal?.aborted) throw abortError(opts.signal);

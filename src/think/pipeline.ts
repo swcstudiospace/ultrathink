@@ -14,6 +14,7 @@ import {
 } from "./graph.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "./prompts.ts";
 import { MAX_NODES, MIN_NODES, type ThoughtGraph, type ThoughtNode } from "./types.ts";
+import { isAbortError } from "../shared.ts";
 
 export interface ThinkResult extends UpliftResult {
 	graph: ThoughtGraph;
@@ -34,8 +35,12 @@ export interface RunThinkOptions {
 	onEvent?: (event: ThinkEvent) => void;
 }
 
-export type ThinkEvent =
-	| { type: "graph"; total: number; nodes: Array<{ id: string; title: string; kind: string; dependsOn: string[] }> }
+type ThinkEvent =
+	| {
+			type: "graph";
+			total: number;
+			nodes: Array<{ id: string; title: string; kind: string; dependsOn: string[] }>;
+	  }
 	| {
 			type: "node";
 			phase: "start" | "done";
@@ -48,15 +53,11 @@ export type ThinkEvent =
 			steps?: string[];
 	  };
 
-function isAbortError(error: unknown): boolean {
-	if (error instanceof Error) return error.name === "AbortError";
-	if (!error || typeof error !== "object" || !("name" in error)) return false;
-	return error.name === "AbortError";
-}
-
 function predecessorBlock(graph: ThoughtGraph, node: ThoughtNode): string {
 	const byId = new Map(graph.nodes.map((item) => [item.id, item]));
-	const preds = node.dependsOn.map((id) => byId.get(id)).filter((item): item is ThoughtNode => Boolean(item));
+	const preds = node.dependsOn
+		.map((id) => byId.get(id))
+		.filter((item): item is ThoughtNode => Boolean(item));
 	if (preds.length === 0) return "(no predecessors)";
 	return preds
 		.map((pred) => {
@@ -97,12 +98,19 @@ async function buildGraph(
 	maxNodes: number,
 ): Promise<{ graph: ThoughtGraph; fallback: boolean }> {
 	try {
-		const raw = await opts.complete(GRAPH_SYSTEM_PROMPT, graphUserPayload(opts.uplift), opts.signal);
+		const raw = await opts.complete(
+			GRAPH_SYSTEM_PROMPT,
+			graphUserPayload(opts.uplift),
+			opts.signal,
+		);
 		const graph = normalizeGraph(extractJsonObject(raw), opts.uplift.original, minNodes, maxNodes);
 		return { graph, fallback: isFallbackGraph(graph) };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
-		return { graph: normalizeGraph(null, opts.uplift.original, minNodes, maxNodes), fallback: true };
+		return {
+			graph: normalizeGraph(null, opts.uplift.original, minNodes, maxNodes),
+			fallback: true,
+		};
 	}
 }
 
@@ -117,7 +125,11 @@ async function fillNode(
 	opts.onEvent?.({ type: "node", phase: "start", ...base });
 	let fallback = false;
 	try {
-		const raw = await opts.complete(COT_SYSTEM_PROMPT, cotUserPayload(opts.uplift, graph, node), opts.signal);
+		const raw = await opts.complete(
+			COT_SYSTEM_PROMPT,
+			cotUserPayload(opts.uplift, graph, node),
+			opts.signal,
+		);
 		const fill = parseNodeFill(raw);
 		node.thinking = fill.thinking;
 		node.conclusion = fill.conclusion;
@@ -131,7 +143,9 @@ async function fillNode(
 	}
 	const steps = nodeStepTitles(node);
 	opts.onEvent?.(
-		fallback ? { type: "node", phase: "done", ...base, fallback: true, steps } : { type: "node", phase: "done", ...base, steps },
+		fallback
+			? { type: "node", phase: "done", ...base, fallback: true, steps }
+			: { type: "node", phase: "done", ...base, steps },
 	);
 	return fallback;
 }
@@ -165,7 +179,12 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 	opts.onEvent?.({
 		type: "graph",
 		total: graph.nodes.length,
-		nodes: graph.nodes.map((node) => ({ id: node.id, title: node.title, kind: node.kind, dependsOn: [...node.dependsOn] })),
+		nodes: graph.nodes.map((node) => ({
+			id: node.id,
+			title: node.title,
+			kind: node.kind,
+			dependsOn: [...node.dependsOn],
+		})),
 	});
 
 	const fills: string[] = [];
@@ -185,5 +204,11 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 	}
 
 	const xml = injectGraphXml(opts.uplift.xml, graph);
-	return { ...opts.uplift, xml, graph, source: opts.uplift.source, degraded: { graph: built.fallback, fills } };
+	return {
+		...opts.uplift,
+		xml,
+		graph,
+		source: opts.uplift.source,
+		degraded: { graph: built.fallback, fills },
+	};
 }
