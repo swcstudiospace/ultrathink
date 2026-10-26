@@ -25,6 +25,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UltrathinkConfig } from "../config.ts";
@@ -60,19 +61,15 @@ const K_DOWN = "[B";
 const K_LEFT = "[D";
 const K_RIGHT = "[C";
 
-// Zero-duration yield only: the awaited condition is the real signal (recorded
-// call, rendered text, resolved promise). Real fs reads need event-loop turns
-// that microtask-only spins would starve, so deterministic time control cannot apply.
-const until = async (
-	condition: () => boolean,
-	label: string,
-	timeoutMs = 10_000,
-): Promise<void> => {
-	const start = Date.now();
-	for (;;) {
+// The awaited condition is the real signal (recorded call, rendered text, resolved promise).
+// The read model's directory reads run on the libuv threadpool and land only when the loop
+// turns, so each poll turn awaits one real fs completion. The cap counts turns, not time.
+const UNTIL_MAX_TURNS = 10_000;
+const until = async (condition: () => boolean, label: string): Promise<void> => {
+	for (let turn = 0; ; turn++) {
 		if (condition()) return;
-		if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for: ${label}`);
-		await Bun.sleep(0);
+		if (turn === UNTIL_MAX_TURNS) throw new Error(`timed out waiting for: ${label}`);
+		await stat(import.meta.path);
 	}
 };
 
@@ -655,7 +652,8 @@ describe("native dashboard lifetime", () => {
 		// The released, stale run resolves late: it must neither publish nor surface.
 		firstGate.resolve(first);
 		await firstGate.promise;
-		await Bun.sleep(0);
+		// The stale continuation is microtask-only; a flush settles it.
+		await flush();
 		visible = render(mounted.component);
 		expect(visible).toContain("Second wave");
 		expect(visible).not.toContain("Refreshing local snapshot");
@@ -682,7 +680,8 @@ describe("native dashboard lifetime", () => {
 			() => undefined,
 			() => undefined,
 		);
-		await Bun.sleep(0);
+		// The detached failing continuation is microtask-only; a flush settles it.
+		await flush();
 		visible = render(mounted.component);
 		expect(visible).not.toContain("late boom");
 		expect(visible).toContain("fresh boom");
@@ -720,11 +719,10 @@ describe("session switch and shutdown", () => {
 		seedMoment(suite.fixture, { id: "mom-late", name: "Late lesson" });
 		const inputsBefore = suite.teachInputs.length;
 		const sentBefore = suite.harness.sent.length;
-		// The switch already tore the lifetime down: the disposed copy ignores "r" by design,
-		// so the proof is inertness — two event-loop turns bound it, growth never arrives.
+		// The switch already tore the lifetime down and disposed the copy, whose handleInput
+		// returns before any read starts, so a microtask flush bounds the inertness proof.
 		mountedA.component.handleInput("r");
-		await Bun.sleep(0);
-		await Bun.sleep(0);
+		await flush();
 		expect(suite.teachInputs.length).toBe(inputsBefore);
 		expect(suite.harness.sent.length).toBe(sentBefore);
 		expect(suite.harness.userMessages).toHaveLength(0);

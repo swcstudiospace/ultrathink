@@ -14,12 +14,26 @@ export const MAX_RESPONSE_CHARS = 4_000_000;
 /** setTimeout/AbortSignal.timeout reject delays above the signed 32-bit range. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
+export type DeadlineLabel = "retain" | "request";
+
+/** Supplies the abort signal that enforces a request's time budget. Defaults to `AbortSignal.timeout`. */
+export interface Deadlines {
+	arm(label: DeadlineLabel, ms: number): AbortSignal;
+}
+
+export const platformDeadlines: Deadlines = {
+	arm: (_label, ms) => AbortSignal.timeout(ms),
+};
+
 export interface HttpRequest {
 	method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 	headers?: Record<string, string>;
 	/** Serialized with JSON.stringify when present. */
 	body?: unknown;
 	timeoutMs: number;
+	/** Which budget this request runs under; passed to `deadlines.arm`. Defaults to "request". */
+	label?: DeadlineLabel;
+	deadlines?: Deadlines;
 	signal?: AbortSignal;
 	fetch?: typeof fetch;
 }
@@ -55,7 +69,7 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 export async function requestJson(url: string, request: HttpRequest): Promise<HttpOutcome> {
 	const started = Date.now();
 	const budget = Math.min(Math.max(1, request.timeoutMs), MAX_TIMEOUT_MS);
-	const timeout = AbortSignal.timeout(budget);
+	const timeout = (request.deadlines ?? platformDeadlines).arm(request.label ?? "request", budget);
 	const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
 	const headers: Record<string, string> = {
 		"User-Agent": USER_AGENT,

@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
-	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -153,50 +151,56 @@ describe("spawnObserveDetached", () => {
 	});
 
 	test("prunes inbox files older than 24 hours and leaves fresh and foreign files alone", () => {
-		mkdirSync(inbox(), { recursive: true });
-		const old = join(inbox(), "1000-aaaaaaaa.json");
-		const oldTmp = join(inbox(), "1000-bbbbbbbb.json.tmp");
-		const fresh = join(inbox(), `${Date.now() - 60_000}-cccccccc.json`);
-		const foreign = join(inbox(), "notes.txt");
-		for (const path of [old, oldTmp, fresh, foreign]) writeFileSync(path, "{}");
-		spawnObserveDetached(digest(), {
-			repoRoot,
-			env: {},
-			stateDir,
-			host: "omp",
-			spawn: () => {
-				// reason: test double; only the inbox prune is under test, so no process is started
-			},
-		});
-		expect(existsSync(old)).toBe(false);
-		expect(existsSync(oldTmp)).toBe(false);
-		expect(existsSync(fresh)).toBe(true);
-		expect(existsSync(foreign)).toBe(true);
-		expect(readdirSync(inbox())).toHaveLength(3);
+		const now = 1_790_000_000_000;
+		setSystemTime(new Date(now));
+		try {
+			mkdirSync(inbox(), { recursive: true });
+			const old = join(inbox(), "1000-aaaaaaaa.json");
+			const oldTmp = join(inbox(), "1000-bbbbbbbb.json.tmp");
+			const fresh = join(inbox(), `${now - 60_000}-cccccccc.json`);
+			const foreign = join(inbox(), "notes.txt");
+			for (const path of [old, oldTmp, fresh, foreign]) writeFileSync(path, "{}");
+			spawnObserveDetached(digest(), {
+				repoRoot,
+				env: {},
+				stateDir,
+				host: "omp",
+				spawn: () => {
+					// reason: test double; only the inbox prune is under test, so no process is started
+				},
+			});
+			expect(existsSync(old)).toBe(false);
+			expect(existsSync(oldTmp)).toBe(false);
+			expect(existsSync(fresh)).toBe(true);
+			expect(existsSync(foreign)).toBe(true);
+			expect(readdirSync(inbox())).toHaveLength(3);
+		} finally {
+			setSystemTime();
+		}
 	});
 
-	test("the default spawn runs the launcher detached with the file argument and environment", async () => {
-		const marker = join(root, "marker.txt");
-		mkdirSync(join(repoRoot, "bin"));
-		const launcher = join(repoRoot, "bin", "ultrathink");
-		writeFileSync(
-			launcher,
-			`#!/bin/sh\nprintf '%s|%s|%s|%s' "$1 $2 $3" "$ULTRATHINK_HOST" "$ULTRATHINK_STATE_DIR" "$(pwd -P)" > "${marker}.tmp" && mv "${marker}.tmp" "${marker}"\n`,
-		);
-		chmodSync(launcher, 0o755);
+	test("passes the file argument, host, state dir and session cwd to the launcher spawn", () => {
+		const calls: { cmd: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
 		const result = spawnObserveDetached(digest(), {
 			repoRoot,
-			env: { ...process.env },
+			env: { PATH: "/usr/bin" },
 			stateDir,
 			host: "omp",
+			spawn: (cmd, args, opts) => {
+				calls.push({ cmd, args, ...opts });
+			},
 		});
 		expect(result).toEqual({ spawned: true });
-		// The launcher runs detached, so there is no handle to await: poll for its (atomically renamed) marker file.
-		for (let i = 0; i < 250 && !existsSync(marker); i++) await Bun.sleep(20);
-		const [args, host, state, cwd] = readFileSync(marker, "utf8").split("|");
-		expect(args).toBe("teach observe --file");
-		expect(host).toBe("omp");
-		expect(state).toBe(stateDir);
-		expect(cwd).toBe(realpathSync(sessionCwd));
+		expect(calls).toHaveLength(1);
+		const call = calls[0];
+		expect(call?.cmd).toBe(join(repoRoot, "bin", "ultrathink"));
+		expect(call?.args.slice(0, 3).join(" ")).toBe("teach observe --file");
+		expect(call?.args[3]?.startsWith(`${inbox()}/`)).toBe(true);
+		expect(call?.env).toMatchObject({
+			PATH: "/usr/bin",
+			ULTRATHINK_HOST: "omp",
+			ULTRATHINK_STATE_DIR: stateDir,
+		});
+		expect(call?.cwd).toBe(sessionCwd);
 	});
 });

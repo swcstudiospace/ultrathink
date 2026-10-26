@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import type { Deadlines } from "../net/http.ts";
 import { createHindsightClient } from "./client.ts";
 import type { HindsightClient, HindsightClientOptions, HindsightResult } from "./types.ts";
 
@@ -50,9 +51,30 @@ function fake(routes: Record<string, Route>) {
 	return { fetch: fetchFn, calls };
 }
 
+/** One budget the client armed: the label and ms it asked for, and the signal the test controls. */
+interface ArmedBudget {
+	label: string;
+	ms: number;
+	signal: AbortSignal;
+	fire: () => void;
+}
+
+/** A deadlines port that records each arm and lets the test fire it, instead of waiting on the real clock. */
+function manualDeadlines(): { deadlines: Deadlines; arms: ArmedBudget[] } {
+	const arms: ArmedBudget[] = [];
+	const deadlines: Deadlines = {
+		arm(label, ms) {
+			const controller = new AbortController();
+			arms.push({ label, ms, signal: controller.signal, fire: () => controller.abort() });
+			return controller.signal;
+		},
+	};
+	return { deadlines, arms };
+}
+
 function client(
 	fetchFn: typeof fetch,
-	overrides: Partial<HindsightClientOptions> = {},
+	overrides: Partial<HindsightClientOptions & { deadlines: Deadlines }> = {},
 ): HindsightClient {
 	return createHindsightClient({
 		url: URL_BASE,
@@ -358,26 +380,45 @@ describe("retain", () => {
 	});
 
 	test("uses retainTimeoutMs for the retain and timeoutMs for everything else", async () => {
-		const hang = ((_: string | URL | Request, init?: RequestInit) => {
-			if (new URL(String(_)).pathname.endsWith("/config")) {
-				return Promise.resolve(
-					new Response(JSON.stringify({ config: { retain_extraction_mode: "chunks" } })),
-				);
-			}
-			return new Promise<Response>((_resolve, reject) =>
-				init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))),
-			);
-		}) as unknown as typeof fetch;
-		const c = client(hang, { timeoutMs: 5_000, retainTimeoutMs: 30 });
-		const started = Date.now();
-		const failure = error(await c.retain({ documentId: "tm:abc", content: "c", tags: [] }));
+		// The test plays the clock: the fetch fires the budget armed for its own request, then hangs.
+		const hangingFetch = (armed: ArmedBudget[]) =>
+			((input: string | URL | Request, init?: RequestInit) => {
+				if (new URL(String(input)).pathname.endsWith("/config")) {
+					return Promise.resolve(
+						new Response(JSON.stringify({ config: { retain_extraction_mode: "chunks" } })),
+					);
+				}
+				armed.find((a) => a.signal === init?.signal)?.fire();
+				return new Promise<Response>(() => {
+					// reason: the fetch never settles; the test ends when the armed budget fires and the client rejects.
+				});
+			}) as unknown as typeof fetch;
+
+		const retainArms = manualDeadlines();
+		const failure = error(
+			await client(hangingFetch(retainArms.arms), {
+				timeoutMs: 5_000,
+				retainTimeoutMs: 30,
+				deadlines: retainArms.deadlines,
+			}).retain({ documentId: "tm:abc", content: "c", tags: [] }),
+		);
 		expect(failure.kind).toBe("timeout");
 		expect(failure.message).toContain("30 ms");
-		expect(Date.now() - started).toBeLessThan(2_000);
+		expect(retainArms.arms.map((a) => [a.label, a.ms])).toEqual([
+			["request", 5_000],
+			["retain", 30],
+		]);
+
+		const recallArms = manualDeadlines();
 		const recallFailure = error(
-			await client(hang, { timeoutMs: 25, retainTimeoutMs: 5_000 }).recall({ query: "q" }),
+			await client(hangingFetch(recallArms.arms), {
+				timeoutMs: 25,
+				retainTimeoutMs: 5_000,
+				deadlines: recallArms.deadlines,
+			}).recall({ query: "q" }),
 		);
 		expect(recallFailure.message).toContain("25 ms");
+		expect(recallArms.arms.map((a) => [a.label, a.ms])).toEqual([["request", 25]]);
 	});
 });
 

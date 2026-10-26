@@ -8,7 +8,7 @@
  * Never rejects except with an AbortError when the caller's signal aborts.
  */
 import { redactSecrets } from "../grok/auth.ts";
-import { requestJson } from "../net/http.ts";
+import { type DeadlineLabel, type Deadlines, requestJson } from "../net/http.ts";
 import { checkServiceUrl } from "../net/safe-url.ts";
 import { isRecord } from "../shared.ts";
 import type {
@@ -71,6 +71,8 @@ type Reply = { ok: true; status: number; json: unknown } | { ok: false; error: H
 interface CallOptions {
 	body?: unknown;
 	timeoutMs: number;
+	/** Which budget `deadlines.arm` is asked for; "request" when omitted. */
+	label?: DeadlineLabel;
 	/** False for `/health` and `/version`, which take no key. */
 	auth?: boolean;
 	/** A 404 is returned as a reply instead of an error. */
@@ -115,7 +117,9 @@ function toDocument(json: unknown): DocumentInfo | undefined {
 }
 
 /** Throws a plain Error on a programming error (unsafe URL, empty bank or key); src/hindsight/settings.ts guards first. */
-export function createHindsightClient(options: HindsightClientOptions): HindsightClient {
+export function createHindsightClient(
+	options: HindsightClientOptions & { deadlines?: Deadlines },
+): HindsightClient {
 	const checked = checkServiceUrl(options.url);
 	if (!checked.ok) throw new Error(`hindsight: invalid url (${checked.reason})`);
 	if (options.bank.trim() === "") throw new Error("hindsight: bank must not be empty");
@@ -148,6 +152,8 @@ export function createHindsightClient(options: HindsightClientOptions): Hindsigh
 			headers: opts.auth === false ? undefined : { Authorization: `Bearer ${apiKey}` },
 			body: opts.body,
 			timeoutMs: opts.timeoutMs,
+			label: opts.label,
+			deadlines: options.deadlines,
 			signal: options.signal,
 			fetch: options.fetch,
 		});
@@ -268,6 +274,7 @@ export function createHindsightClient(options: HindsightClientOptions): Hindsigh
 				async: false,
 			},
 			timeoutMs: options.retainTimeoutMs,
+			label: "retain",
 		});
 		if (!reply.ok) return reply;
 		const json = reply.json;

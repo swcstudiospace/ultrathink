@@ -60,9 +60,25 @@ const platformTimers: TimerPort = {
 	clearTimeout: (handle) => clearTimeout(handle),
 };
 
+/** Arms a socket's inactivity deadline: the socket's own timer by default, or a test double. */
+type SocketDeadlinePort = {
+	arm(socket: NetSocket, ms: number, onTimeout: () => void): void;
+};
+
+const nativeDeadlines: SocketDeadlinePort = {
+	arm: (socket, ms, onTimeout) => {
+		socket.setTimeout(ms);
+		socket.on("timeout", onTimeout);
+	},
+};
+
 export interface MtlsServerOptions {
 	/** Timer port for the data-driven request deadline; defaults to the platform timers. */
 	timers?: TimerPort;
+	/** Arms the idle deadline on each verified TLS socket; defaults to the socket's own inactivity timer. */
+	idleTimers?: SocketDeadlinePort;
+	/** Arms the handshake deadline on each accepted connection; defaults to the socket's own inactivity timer. */
+	handshakeTimers?: SocketDeadlinePort;
 	port: number;
 	certFile: string;
 	keyFile: string;
@@ -283,6 +299,8 @@ export async function startMtlsServer(
 	const idleMs = options.idleTimeoutSec * 1000;
 	const maxBodyBytes = options.maxBodyBytes;
 	const timers = options.timers ?? platformTimers;
+	const idleDeadlines = options.idleTimers ?? nativeDeadlines;
+	const handshakeDeadlines = options.handshakeTimers ?? nativeDeadlines;
 
 	/** Clears the request deadline of a socket once its response has finished. */
 	const disarmDeadline = new WeakMap<TLSSocket, () => void>();
@@ -310,8 +328,7 @@ export async function startMtlsServer(
 				socket.destroy();
 				return;
 			}
-			socket.setTimeout(idleMs);
-			socket.on("timeout", () => socket.destroy());
+			idleDeadlines.arm(socket, idleMs, () => socket.destroy());
 			let deadline: NodeJS.Timeout | undefined;
 			const disarm = () => {
 				timers.clearTimeout(deadline);
@@ -332,7 +349,7 @@ export async function startMtlsServer(
 	tlsServer.on("connection", (raw) => {
 		connections.add(raw);
 		raw.once("close", () => connections.delete(raw));
-		raw.setTimeout(idleMs, () => raw.destroy());
+		handshakeDeadlines.arm(raw, idleMs, () => raw.destroy());
 		// A refused handshake emits its error on this raw socket. Bun 1.2.23 does not route it to tlsClientError, so
 		// without a listener it escalates as an unhandled error. The failed handshake already closes the socket.
 		raw.on("error", () => {

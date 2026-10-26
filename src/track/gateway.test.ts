@@ -87,7 +87,7 @@ describe("createGatewayTracker", () => {
 	test("Linear-only config never contacts Notion", async () => {
 		writeStore(path, {
 			version: 1,
-			providers: { notion: expiredOauth("https://mcp.notion.com", Date.now()) },
+			providers: { notion: expiredOauth("https://mcp.notion.com", FIXED) },
 		});
 		const urls: string[] = [];
 		const tracker = createGatewayTracker(configured({ team: "Team" }), {
@@ -101,7 +101,7 @@ describe("createGatewayTracker", () => {
 	test("Notion-only config never contacts Linear", async () => {
 		writeStore(path, {
 			version: 1,
-			providers: { linear: expiredOauth("https://mcp.linear.app", Date.now()) },
+			providers: { linear: expiredOauth("https://mcp.linear.app", FIXED) },
 		});
 		const urls: string[] = [];
 		const tracker = createGatewayTracker(configured({ dataSourceUrl: "collection://ds" }), {
@@ -129,7 +129,7 @@ describe("createGatewayTracker", () => {
 	});
 
 	test("auth resolution slower than the budget returns undefined", async () => {
-		const now = Date.now();
+		const now = FIXED;
 		writeStore(path, {
 			version: 1,
 			providers: { notion: expiredOauth("https://mcp.notion.com", now) },
@@ -167,7 +167,7 @@ describe("createGatewayTracker", () => {
 	test("budgetMs 0 means no limit: a slow auth refresh is not cut and tracking proceeds", async () => {
 		writeStore(path, {
 			version: 1,
-			providers: { notion: expiredOauth("https://mcp.notion.com", Date.now()) },
+			providers: { notion: expiredOauth("https://mcp.notion.com", FIXED) },
 		});
 		const entered = Promise.withResolvers<void>();
 		const gate = Promise.withResolvers<void>();

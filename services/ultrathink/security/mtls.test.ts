@@ -214,6 +214,43 @@ function manualTimers(): ManualTimers {
 	return { timers, fireNext };
 }
 
+/** Socket deadlines the test fires by hand: idle and handshake deadlines arm here instead of on the platform clock. */
+type ManualSocketDeadlines = {
+	port: { arm(socket: net.Socket, ms: number, onTimeout: () => void): void };
+	/** Resolves once the server has armed a deadline; the deadline stays armed. */
+	armed: () => Promise<void>;
+	/** Runs the oldest armed deadline, waiting until one is armed. Resolves with that deadline's length in ms. */
+	fireNext: () => Promise<number>;
+};
+
+function manualSocketDeadlines(): ManualSocketDeadlines {
+	const pending: Array<{ ms: number; run: () => void }> = [];
+	const waiting: Array<() => void> = [];
+	const armed = async (): Promise<void> => {
+		while (pending.length === 0) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+		}
+	};
+	return {
+		port: {
+			arm: (_socket, ms, onTimeout) => {
+				pending.push({ ms, run: onTimeout });
+				for (const wake of waiting.splice(0)) wake();
+			},
+		},
+		armed,
+		fireNext: async () => {
+			await armed();
+			const next = pending.shift();
+			if (!next) throw new Error("no socket deadline armed");
+			next.run();
+			return next.ms;
+		},
+	};
+}
+
 /** The TCP port a listener bound to, failing the test if it is not a TCP listener. */
 function boundPort(listener: net.Server): number {
 	const address = listener.address();
@@ -446,15 +483,20 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 		expect(identity).toEqual({ ok: true, spiffeId: EDGE_URI, path: "/edge/nginx" });
 	});
 
-	// Timing tests: socket timeouts run on the platform clock inside the server, so they cannot be faked from the
-	// client. Each awaits the close event with a short configured window, never an elapsed-time assertion.
+	// Deadline tests: the idle and handshake deadlines are armed on the server's sockets. Each test fires the armed
+	// deadline by hand, so the outcome is the close event, not a wait on the platform clock.
 	test("closes a connection that stays idle past idleTimeoutSec", async () => {
-		const idle = await startMtlsServer(serverOptions(0.2), async () => new Response("unused"));
+		// The idle deadline is armed once the TLS handshake verifies the client; the client then sends nothing.
+		const deadlines = manualSocketDeadlines();
+		const idle = await startMtlsServer(
+			{ ...serverOptions(30), idleTimers: deadlines.port },
+			async () => new Response("unused"),
+		);
 		try {
-			await new Promise<void>((resolve) => {
-				const client = edgeClient(idle.port);
-				client.on("close", () => resolve());
-			});
+			const client = edgeClient(idle.port);
+			const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
+			expect(await deadlines.fireNext()).toBe(30_000);
+			await closed;
 		} finally {
 			await idle.stop();
 		}
@@ -480,15 +522,21 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	});
 
 	test("closes a connection that never completes the TLS handshake", async () => {
-		const stalled = await startMtlsServer(serverOptions(0.2), async () => new Response("unused"));
+		// The handshake deadline is armed when the connection is accepted. The test fires it by hand instead of
+		// waiting on the platform clock.
+		const deadlines = manualSocketDeadlines();
+		const stalled = await startMtlsServer(
+			{ ...serverOptions(30), handshakeTimers: deadlines.port },
+			async () => new Response("unused"),
+		);
 		try {
-			await new Promise<void>((resolve) => {
-				const raw = net.connect(stalled.port, "127.0.0.1");
-				raw.on("error", () => {
-					// reason: test double, the error of a stalled handshake is expected and not asserted
-				});
-				raw.on("close", () => resolve());
+			const raw = net.connect(stalled.port, "127.0.0.1");
+			raw.on("error", () => {
+				// reason: test double, the error of a stalled handshake is expected and not asserted
 			});
+			const closed = new Promise<void>((resolve) => raw.on("close", () => resolve()));
+			expect(await deadlines.fireNext()).toBe(30_000);
+			await closed;
 		} finally {
 			await stalled.stop();
 		}
@@ -538,16 +586,20 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	});
 
 	test("stop closes a connection that is still in its TLS handshake", async () => {
-		// Sends no ClientHello, so the handshake never finishes. The idle timeout is long, so only stop() can close it.
-		const pending = await startMtlsServer(serverOptions(30), async () => new Response("unused"));
+		// Sends no ClientHello, so the handshake never finishes. The handshake deadline is armed on accept and never
+		// fired here, so only stop() can close the connection.
+		const deadlines = manualSocketDeadlines();
+		const pending = await startMtlsServer(
+			{ ...serverOptions(30), handshakeTimers: deadlines.port },
+			async () => new Response("unused"),
+		);
 		const raw = net.connect(pending.port, "127.0.0.1");
 		raw.on("error", () => {
 			// reason: test double, the error of the stalled handshake is expected and not asserted
 		});
 		const closed = new Promise<void>((resolve) => raw.on("close", () => resolve()));
-		await new Promise<void>((resolve) => raw.once("connect", () => resolve()));
-		// The TCP accept happens in the kernel and no event reaches this test, so a short pause lets it land before stop().
-		await Bun.sleep(50);
+		// The deadline is armed as the server accepts the connection, so this wait ends once stop() has it to close.
+		await deadlines.armed();
 		await pending.stop();
 		await closed;
 	});

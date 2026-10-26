@@ -97,9 +97,9 @@ function seedOAuth(expiresAt: number, refreshToken = "rt-old") {
 	});
 }
 
-/** A lock clock that starts at the real time. Each injected wait advances it, so staleness is judged with no real delay. */
+/** A lock clock that starts at NOW, the instant the test stamps on each lock dir. Each injected wait advances it, so staleness is judged with no real delay. */
 function lockClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
-	let clock = Date.now();
+	let clock = NOW;
 	return {
 		now: () => clock,
 		sleep: (ms) => {
@@ -160,8 +160,8 @@ describe("store", () => {
 		).toBe(42);
 	});
 
-	// Staleness is judged from the lock directory's real mtime against the injected clock, and waits go through the
-	// injected sleep. Each wait advances the clock, so the test reaches "stale" with no real delay.
+	// Staleness is judged from the lock directory's mtime against the injected clock. The holder stamps the lock at NOW,
+	// and waits go through the injected sleep. Each wait advances the clock, so the test reaches "stale" with no real delay.
 	test("a broken stale lock is never released by its previous holder", async () => {
 		const lock = `${path}.lock`;
 		const clock = lockClock();
@@ -173,6 +173,7 @@ describe("store", () => {
 			path,
 			async () => {
 				events.push("a-start");
+				utimesSync(lock, new Date(NOW), new Date(NOW));
 				await aRelease.promise;
 				events.push("a-end");
 			},
@@ -201,7 +202,7 @@ describe("store", () => {
 		const events: string[] = [];
 		const release = Promise.withResolvers<void>();
 		const polled = Promise.withResolvers<void>();
-		const frozen = Date.now();
+		const frozen = NOW;
 		let polls = 0;
 		const opts = {
 			staleMs: 500,
@@ -218,6 +219,7 @@ describe("store", () => {
 			path,
 			async () => {
 				events.push("a-start");
+				utimesSync(`${path}.lock`, new Date(frozen), new Date(frozen));
 				await release.promise;
 				events.push("a-end");
 			},
