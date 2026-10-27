@@ -1176,6 +1176,28 @@ describe("teach capture", () => {
 		},
 	);
 
+	test("agent_end spawns observe for a run started with /skill:, which omp delivers as a custom message", () => {
+		const { emit, spawned } = teach(true, "auto");
+		emit("agent_end", {
+			messages: [
+				{
+					role: "custom",
+					customType: "skill-prompt",
+					attribution: "user",
+					display: true,
+					content: "[IMPORTANT: User invoked the skill] LONG SKILL BODY",
+					details: { name: "gsd-autonomous", path: "/p/SKILL.md", args: "fix the failing build" },
+				},
+				...MESSAGES.slice(1),
+			],
+		});
+		expect(spawned).toHaveLength(1);
+		expect(spawned[0]?.digest.turns[0]).toEqual({
+			role: "user",
+			text: "/skill:gsd-autonomous fix the failing build",
+		});
+	});
+
 	test.each<[string, boolean, CaptureMode, Record<string, unknown>]>([
 		["explicit mode", true, "explicit", {}],
 		["Teachable Moments disabled", false, "auto", {}],

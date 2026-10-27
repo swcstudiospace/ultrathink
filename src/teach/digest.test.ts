@@ -348,4 +348,72 @@ describe("digestFromAgentMessages", () => {
 		expect(digestFromAgentMessages([{ role: "user", content: "x" }], META)).toBeUndefined();
 		expect(digestFromAgentMessages([], META)).toBeUndefined();
 	});
+
+	describe("a run the user started with /skill:", () => {
+		// Omp delivers it as a `custom` message, never a `user` one, and its content is the whole skill body.
+		const skillPrompt = (details: unknown, extra: Record<string, unknown> = {}) => ({
+			role: "custom",
+			customType: "skill-prompt",
+			attribution: "user",
+			display: true,
+			content: '[IMPORTANT: User invoked the "gsd-autonomous" skill]\n\nLONG SKILL BODY',
+			details,
+			...extra,
+		});
+		const reply = {
+			role: "assistant",
+			content: [{ type: "text", text: "On it." }],
+			stopReason: "stop",
+		};
+
+		test("the words the user typed are the user turn, never the skill body", () => {
+			const digest = digestFromAgentMessages(
+				[
+					skillPrompt({ name: "gsd-autonomous", path: "/p/SKILL.md", args: "fix the memory bank" }),
+					reply,
+				],
+				META,
+			);
+			expect(digest?.turns).toEqual([
+				{ role: "user", text: "/skill:gsd-autonomous fix the memory bank" },
+				{ role: "assistant", text: "On it." },
+			]);
+		});
+
+		test("the submitted draft wins over the rebuilt command, and a bare skill keeps its name", () => {
+			const draft = digestFromAgentMessages(
+				[skillPrompt({ name: "ship", args: "x", prompt: "please /skill:ship x" }), reply],
+				META,
+			);
+			expect(draft?.turns[0]).toEqual({ role: "user", text: "please /skill:ship x" });
+			const bare = digestFromAgentMessages([skillPrompt({ name: "ship" }), reply], META);
+			expect(bare?.turns[0]).toEqual({ role: "user", text: "/skill:ship" });
+		});
+
+		test.each<[string, unknown]>([
+			["an autoload or agent injection", skillPrompt({ name: "ship" }, { attribution: "agent" })],
+			[
+				"another custom message",
+				skillPrompt({ name: "ship" }, { customType: "ultrathink-notice" }),
+			],
+			["a prompt without details", skillPrompt(undefined)],
+			["a prompt whose details name no skill", skillPrompt({ args: "x" })],
+		])("%s is not a user turn", (_name, message) => {
+			expect(digestFromAgentMessages([message, reply], META)).toBeUndefined();
+		});
+
+		test("a real user message in the same run still counts alongside the skill prompt", () => {
+			const digest = digestFromAgentMessages(
+				[
+					skillPrompt({ name: "ship", args: "go" }),
+					{ role: "user", content: "no, use squash" },
+					reply,
+				],
+				META,
+			);
+			expect(digest?.turns.filter((turn) => turn.role === "user").map((turn) => turn.text)).toEqual(
+				["/skill:ship go", "no, use squash"],
+			);
+		});
+	});
 });
