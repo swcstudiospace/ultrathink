@@ -22,6 +22,12 @@ export interface ClaudeCompleteOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	env?: Record<string, string | undefined>;
+	/**
+	 * Opt-in (`claude.fallbackToLogin`): when `ANTHROPIC_API_KEY` is set and the first attempt fails with an
+	 * authentication or billing error, retry once without it so the CLI uses the claude.ai login. The retry gets its own
+	 * `timeoutMs` window and shares the signal.
+	 */
+	fallbackToLogin?: boolean;
 }
 
 export type ClaudeCompleter = (
@@ -70,10 +76,18 @@ export function parseClaudeJson(stdout: string): string {
 		parsed = JSON.parse(trimmed.slice(start + 1));
 	}
 	if (!parsed || typeof parsed !== "object") throw new Error("claude output is not an object");
-	const rec = parsed as { result?: unknown; is_error?: unknown; subtype?: unknown };
+	const rec = parsed as {
+		result?: unknown;
+		is_error?: unknown;
+		subtype?: unknown;
+		api_error_status?: unknown;
+	};
 	const result = typeof rec.result === "string" ? rec.result : "";
 	if (rec.is_error === true)
-		throw new Error(result || `claude error (${String(rec.subtype ?? "unknown")})`);
+		throw new ClaudeResultError(
+			result || `claude error (${String(rec.subtype ?? "unknown")})`,
+			typeof rec.api_error_status === "number" ? rec.api_error_status : undefined,
+		);
 	return result;
 }
 
@@ -83,18 +97,67 @@ export function abortError(): Error {
 	return error;
 }
 
+/** The CLI reported `is_error: true`; keeps the HTTP-style status the CLI attached, when any. */
+class ClaudeResultError extends Error {
+	readonly apiErrorStatus: number | undefined;
+	constructor(message: string, apiErrorStatus?: number) {
+		super(message);
+		this.name = "ClaudeResultError";
+		this.apiErrorStatus = apiErrorStatus;
+	}
+}
+
+const AUTH_OR_BILLING_TEXT = /credit balance is too low|invalid x-api-key|invalid api key/i;
+const MAX_RETRY_MESSAGE_CHARS = 500;
+
+/** True for a CLI result error that a different credential could fix: 401/403 or a billing / bad-key message. */
+function isAuthOrBillingError(error: unknown): boolean {
+	if (!(error instanceof ClaudeResultError)) return false;
+	if (error.apiErrorStatus === 401 || error.apiErrorStatus === 403) return true;
+	return AUTH_OR_BILLING_TEXT.test(error.message);
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 async function claudeComplete(
 	system: string,
 	user: string,
 	opts: ClaudeCompleteOptions = {},
 ): Promise<string> {
 	if (opts.signal?.aborted) throw abortError();
-	const bin = opts.bin?.trim() || "claude";
 	const env: Record<string, string | undefined> = {
 		...(opts.env ?? process.env),
 		[CHILD_ENV]: "1",
 	};
 	if (!opts.thinking) env.MAX_THINKING_TOKENS = "0";
+	const hadKey = Boolean(env.ANTHROPIC_API_KEY);
+	try {
+		return await claudeAttempt(system, user, opts, env);
+	} catch (first) {
+		if (!opts.fallbackToLogin || !hadKey || !isAuthOrBillingError(first)) throw first;
+		if (opts.signal?.aborted) throw abortError();
+		const loginEnv = Object.fromEntries(
+			Object.entries(env).filter(([name]) => name !== "ANTHROPIC_API_KEY"),
+		);
+		try {
+			return await claudeAttempt(system, user, opts, loginEnv);
+		} catch (second) {
+			if (second instanceof Error && second.name === "AbortError") throw second;
+			const combined = `${errorMessage(second)} (first attempt: ${errorMessage(first)})`;
+			throw new Error(combined.slice(0, MAX_RETRY_MESSAGE_CHARS));
+		}
+	}
+}
+
+async function claudeAttempt(
+	system: string,
+	user: string,
+	opts: ClaudeCompleteOptions,
+	env: Record<string, string | undefined>,
+): Promise<string> {
+	const bin = opts.bin?.trim() || "claude";
 	const proc = Bun.spawn([bin, ...buildClaudeArgs(system, opts)], {
 		cwd: opts.cwd,
 		env,
@@ -129,7 +192,7 @@ async function claudeComplete(
 		if (code !== 0 && !stdout.trim()) throw new Error(stderr.trim() || `claude exited ${code}`);
 		return parseClaudeJson(stdout);
 	} finally {
-		if (timer) clearTimeout(timer);
+		clearTimeout(timer);
 		opts.signal?.removeEventListener("abort", onAbort);
 	}
 }

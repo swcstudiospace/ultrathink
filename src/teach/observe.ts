@@ -77,6 +77,8 @@ export interface ObserveDeps {
 export interface ObserveReport extends ObserveOutcome {
 	dropped: number;
 	decisions: DecisionSummary[];
+	/** Redacted error text (at most 160 chars) when `skipped` is "distiller failed"; never digest or lesson text. */
+	detail?: string;
 }
 
 /** At least one of: a recovery, a user correction after the first prompt, or a failed/interrupted run with tool errors. */
@@ -211,12 +213,14 @@ export async function observeDigest(
 	const started = now();
 	const decisionLog: DecisionSummary[] = [];
 	let dropped = 0;
+	let detail: string | undefined;
 	const done = (captured: CaptureOutcome[], skipped?: string): ObserveReport => ({
 		captured,
 		ms: Math.max(0, now() - started),
 		dropped,
 		decisions: decisionLog,
 		...(skipped ? { skipped } : {}),
+		...(detail ? { detail } : {}),
 	});
 	try {
 		if (!teachEnabled(ctx)) return done([], "off");
@@ -250,7 +254,8 @@ export async function observeDigest(
 		let reply: string;
 		try {
 			reply = await Promise.race([complete(DISTILL_SYSTEM, user, combined), aborted(combined)]);
-		} catch {
+		} catch (error) {
+			detail = redactLine(error instanceof Error ? error.message : String(error), 160);
 			return done([], "distiller failed");
 		}
 

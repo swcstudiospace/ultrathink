@@ -46,7 +46,7 @@ describe("runDoctorCommand", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	test("a healthy machine exits 0 and the text report has the five sections and a summary", async () => {
+	test("a healthy machine exits 0 and the text report has the six sections and a summary", async () => {
 		const { output, exitCode } = await runDoctorCommand([], deps);
 		expect(exitCode).toBe(0);
 		const lines = output.split("\n");
@@ -56,6 +56,7 @@ describe("runDoctorCommand", () => {
 			"config",
 			"credentials",
 			"state",
+			"memory",
 			"pstack",
 		]);
 		expect(lines.at(-1)).toBe("0 errors, 0 warnings");
@@ -109,8 +110,8 @@ describe("runDoctorCommand", () => {
 		expect(report.findings.map((finding) => finding.section)).toEqual(
 			[...report.findings.map((finding) => finding.section)].sort(
 				(a, b) =>
-					["runtime", "config", "credentials", "state", "pstack"].indexOf(a) -
-					["runtime", "config", "credentials", "state", "pstack"].indexOf(b),
+					["runtime", "config", "credentials", "state", "memory", "pstack"].indexOf(a) -
+					["runtime", "config", "credentials", "state", "memory", "pstack"].indexOf(b),
 			),
 		);
 		const typo = report.findings.find(

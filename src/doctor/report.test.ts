@@ -75,6 +75,7 @@ describe("formatReport", () => {
 				"  ! Greptile: no credential",
 				"state",
 				"  ✓ State directory is writable: /s",
+				"memory",
 				"pstack",
 				"1 error, 2 warnings",
 			].join("\n"),
@@ -83,7 +84,7 @@ describe("formatReport", () => {
 
 	test("an empty report still lists the sections and a zero summary", () => {
 		expect(formatReport(buildReport([]))).toBe(
-			"ultrathink doctor\nruntime\nconfig\ncredentials\nstate\npstack\n0 errors, 0 warnings",
+			"ultrathink doctor\nruntime\nconfig\ncredentials\nstate\nmemory\npstack\n0 errors, 0 warnings",
 		);
 	});
 

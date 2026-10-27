@@ -42,7 +42,7 @@ How the merge works (`src/config.ts`):
 - A value with the wrong type or outside its allowed range is ignored, and the value from the earlier file (or the default) stays.
 - Some string keys only accept a non-empty value, so an empty string in a later file does not clear a value an earlier file set: `notion.dataSourceUrl`, `linear.team`, `grok.baseUrl`, `grok.model`, `grok.bin`, `grok.shuntModel`, `claude.bin`, `decisions.model`, `hindsight.url`, `hindsight.bank`, `ragflow.url`, and the URL keys `grok.shuntBaseUrl` and `substrate.url`. To stop row creation, use `/ultrathink-track off` (see [Turning tracking off](tracking.md#turning-tracking-off)). To turn the Agent Substrate brief off, set `SUBSTRATE_DISABLED=1`.
 - The URL keys `grok.shuntBaseUrl` and `substrate.url` must be `http://` or `https://` URLs. Trailing slashes are removed.
-- The project file cannot set `claude.bin`, `claude.settingSources`, `grok.bin`, `grok.home`, `grok.baseUrl`, `grok.shuntBaseUrl` or `muse.bin`. Together they choose which program runs, where your Grok login is read from, and which URLs receive your prompts and Grok token. A cloned repository must not choose these, so only the two user files set them and a project value is ignored. `grok.baseUrl` and `grok.shuntBaseUrl` must be `http://` or `https://` URLs.
+- The project file cannot set `claude.bin`, `claude.fallbackToLogin`, `claude.settingSources`, `grok.bin`, `grok.home`, `grok.baseUrl`, `grok.shuntBaseUrl` or `muse.bin`. Together they choose which program runs, which credential the `claude` child uses, where your Grok login is read from, and which URLs receive your prompts and Grok token. A cloned repository must not choose these, so only the two user files set them and a project value is ignored. `grok.baseUrl` and `grok.shuntBaseUrl` must be `http://` or `https://` URLs.
 - Millisecond budgets are capped at 2147483647 ms, the timer maximum. A larger value is set to the cap, not rejected, and `0` still means no timer. The capped keys are `claude.callTimeoutMs`, `claude.budgetMs`, `grok.callTimeoutMs`, `muse.callTimeoutMs` and `track.budgetMs`.
 - `pstack` is user-only. The merge ignores a project file's whole `pstack` section, so `pstack.enabled: true` there does not turn the Cursor bridge on. The Cursor hook never reads the project file. See [`pstack`](#pstack-cursor-bridge).
 - The project file can only make Jev decisions more restrictive: there, `decisions.zdr` can only turn zero data retention on (a `false` is ignored), and `decisions.points` can only drop points (it is intersected with the list from the earlier files, or the default). `decisions.enabled` is ignored in every file: Jev is always on, and only `ULTRATHINK_DECISIONS=0` turns it off. The other `decisions` keys (`provider`, `model`, `timeoutMs` and the thresholds) merge as usual, and the two user files merge every key as usual. See [`decisions`](#decisions-jev-decisions-openrouter-decisions-api).
@@ -99,6 +99,7 @@ The Claude engine runs the `claude` CLI headless. It uses your existing Claude C
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `bin` | string | `"claude"` | The `claude` binary. |
+| `fallbackToLogin` | boolean | `false` | When `ANTHROPIC_API_KEY` is set and a `claude` call fails with an authentication or billing error (HTTP 401 or 403, `Credit balance is too low`, `invalid x-api-key`), retry that call once without the key so the CLI uses your claude.ai login. |
 | `model` | string | `"sonnet"` | Model alias or name for the planning calls. `""` uses the CLI's default model. |
 | `thinking` | boolean | `false` | Allow extended thinking in the planning calls. Slower. When `false`, the child calls run with `MAX_THINKING_TOKENS=0`. |
 | `settingSources` | string | `""` | Passed as `--setting-sources` to the planning calls. `""` loads none, which is fastest and keeps other hooks out of the child calls. |
@@ -106,6 +107,8 @@ The Claude engine runs the `claude` CLI headless. It uses your existing Claude C
 | `budgetMs` | number, >= 0 | `0` | Budget for the whole planning pass. `0` means run until the host's hook timeout. |
 | `concurrency` | number, > 0 | `3` | Node fills that run in parallel within one dependency level. Rounded down, at least 1. |
 | `echo` | boolean | `true` | Show a one-line summary to the user after each plan. |
+
+`claude.fallbackToLogin` is for the case where `ANTHROPIC_API_KEY` is set but cannot pay (for example `Credit balance is too low`): the `claude` CLI prefers the key over your claude.ai login. With it on, such a failed call is retried once with the key removed from the child's environment, so it runs on your claude.ai subscription instead of API billing. That applies to every `claude` CLI call: the planner, the Teachable Moments lesson distiller and the ship judge. The retry gets its own `callTimeoutMs` window, and timeouts, aborts and other errors are never retried. It is off by default, and only the user files can set it.
 
 ### `grok`: the Grok engine
 
@@ -418,7 +421,7 @@ Teachable Moments are on by default: finished turns are distilled into lessons a
 
 `ULTRATHINK_TEACH=0` is checked after `enabled`. While `enabled` is false the status line says `Teach: off (opt-in: set teach.enabled)` even if the variable is set. When `enabled` is true and the variable is `0`, the line is `Teach: off (ULTRATHINK_TEACH=0)`.
 
-Lessons are written under the host state directory, `<stateDir>/teach/`: one JSON file per moment in `moments/`, pending Hindsight writes in `outbox/`, observe digests in `inbox/`, and skill drafts in `skill-drafts/<name>/SKILL.md`. `ULTRATHINK_STATE_DIR` is honored, and a path inside `.planning` is ignored. Nothing is written into `<cwd>/.planning` or a repository working tree. A Hindsight failure queues an outbox entry (backoff 1 minute, doubling, capped at 6 hours) and does not block the caller. `teach sync` drains the outbox.
+Lessons are written under the host state directory, `<stateDir>/teach/`: one JSON file per moment in `moments/`, pending Hindsight writes in `outbox/`, observe digests in `inbox/`, the newest 50 `teach observe` runs (no lesson text) in `observe-runs.ndjson`, and skill drafts in `skill-drafts/<name>/SKILL.md`. `ULTRATHINK_STATE_DIR` is honored, and a path inside `.planning` is ignored. Nothing is written into `<cwd>/.planning` or a repository working tree. A Hindsight failure queues an outbox entry (backoff 1 minute, doubling, capped at 6 hours) and does not block the caller. Every `teach observe` run drains due outbox entries (at most 20, within 30 s), and `teach sync` forces it.
 
 Before anything is stored or sent, text is redacted. `Bearer` followed by a short English word is left alone (`the Bearer key`, `Bearer token rotation`). `Bearer` followed by a token is replaced with `[redacted]` when the token is at least 16 characters, or at least 6 characters and contains a digit. Trailing dots stay. See [Troubleshooting](troubleshooting.md#redaction).
 
@@ -468,6 +471,7 @@ All keys are optional; write only the ones you change. This file shows every key
   "hitl": { "enabled": true, "maxQuestions": 4, "knowledgeBase": false },
   "claude": {
     "bin": "claude",
+    "fallbackToLogin": false,
     "model": "sonnet",
     "thinking": false,
     "settingSources": "",

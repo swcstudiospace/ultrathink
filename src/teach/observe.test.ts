@@ -474,6 +474,40 @@ describe("observeDigest never throws", () => {
 	});
 });
 
+describe("observeDigest failure detail", () => {
+	test("a rejecting distiller reports the error message as detail", async () => {
+		const h = harness();
+		h.ctx.complete = async () => {
+			throw new Error("Credit balance is too low");
+		};
+		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
+		expect(outcome.skipped).toBe("distiller failed");
+		expect(outcome.detail).toBe("Credit balance is too low");
+	});
+
+	test("a secret-shaped token in the error is redacted in detail", async () => {
+		const h = harness();
+		h.ctx.complete = async () => {
+			throw new Error(`bad key ${KEY}`);
+		};
+		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
+		expect(outcome.detail).toBeDefined();
+		expect(outcome.detail).not.toContain(KEY);
+	});
+
+	test("a timeout gives a detail and a skip without a distiller failure has none", async () => {
+		const h = harness();
+		h.ctx.complete = () =>
+			new Promise(() => {
+				// reason: the distiller must hang; the timeout under test ends it
+			});
+		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture, timeoutMs: 20 });
+		expect(outcome.detail).toBe("observe distiller timed out");
+		const ok = await observeDigest(digest({ toolCalls: 0 }), harness().ctx, {});
+		expect(ok.detail).toBeUndefined();
+	});
+});
+
 describe("observeDigest with the Jev teachable point", () => {
 	const JEV_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 

@@ -41,10 +41,14 @@ function statFollowOrUndefined(path: string): Stats | undefined {
 	}
 }
 
-function formatAge(ms: number): string {
+export function formatAge(ms: number): string {
 	if (ms < HOUR_MS) return "under an hour";
-	if (ms < 2 * DAY_MS) return `${Math.floor(ms / HOUR_MS)} hours`;
-	return `${Math.floor(ms / DAY_MS)} days`;
+	if (ms < 2 * DAY_MS) {
+		const hours = Math.floor(ms / HOUR_MS);
+		return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+	}
+	const days = Math.floor(ms / DAY_MS);
+	return `${days} ${days === 1 ? "day" : "days"}`;
 }
 
 function plural(count: number, noun: string): string {

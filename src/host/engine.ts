@@ -371,6 +371,7 @@ function claudeRoute(
 		`claude:${resolution.modelId ?? "session default"}${suffix}`,
 		createClaudeCompleter({
 			bin: config.claude.bin,
+			fallbackToLogin: config.claude.fallbackToLogin,
 			model: choice.model || undefined,
 			settingSources: config.claude.settingSources,
 			thinking: config.claude.thinking,

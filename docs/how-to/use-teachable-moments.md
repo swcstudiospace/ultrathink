@@ -179,6 +179,10 @@ Recall does not wait on the outbox. If Hindsight fails or is not ready, and this
 
 Hermes starts a detached `teach sync` when a session ends, if Teachable Moments is on. See [Teachable Moments on Hermes](teachable-moments-on-hermes.md).
 
+Every `teach observe` run also replays due outbox entries (at most 20 per run), so after each agent run on Omp, Claude Code, Grok Build and Muse the outbox drains without a command. A manual `teach sync` is only needed to force it. The observe output gains a `Sync: <done> done · <pending> pending` line and a `sync` object in `--json`. A failed replay never changes the exit code of `teach observe`.
+
+Each observe run is recorded in `<state dir>/teach/observe-runs.ndjson`, one JSON object per line: `at` (epoch ms), `sessionId`, `outcome` (`captured` or `skipped`), `captured` (count), and, for a skip, `skipped` (reason, at most 80 characters) and `detail` (the failure text, at most 160 characters, for example `Credit balance is too low`). Secrets are redacted. The newest 50 lines are kept. The file never holds lesson text. `bin/ultrathink doctor` reads it in its `memory` section.
+
 ## 7. Promote a lesson to a skill
 
 `teach promote --due` lists lessons that are due. It does not install anything. A lesson is due when it is confirmed, not already promoted or superseded, and either its occurrence count is at least `teach.promoteAfter` (default 3, from 2 to 20) or its kind is `playbook`. Newest first.

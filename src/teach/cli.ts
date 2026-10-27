@@ -21,6 +21,7 @@ import { teachContext, teachEnabled } from "./context.ts";
 import type { TeachContextOptions } from "./context.ts";
 import { parseDigest } from "./digest.ts";
 import { observeDigest } from "./observe.ts";
+import { appendRun } from "./runlog.ts";
 import {
 	filterSkillworthy,
 	installSkill,
@@ -86,6 +87,7 @@ const USAGE = `usage:
 const MAX_INPUT_CHARS = 2_000_000;
 const ID_PREFIX_MIN = 4;
 const SKILL_TARGETS: readonly SkillTarget[] = ["hermes", "omp", "claude", "prime-agent", "drafts"];
+const SYNC_TIMEOUT_MS = 30_000;
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** The store's id alphabet, without a leading dot, so an id can never name a path. */
 const ID_TOKEN = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,79}$/;
@@ -558,17 +560,38 @@ async function forget(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 	});
 }
 
-async function sync(ctx: TeachContext, p: Parsed): Promise<CliResult> {
-	const outcome = await syncOutbox(ctx);
+/** The JSON value and the one text line `teach sync` and `teach observe` print for a sync outcome. */
+function syncSummary(outcome: { done: number; pending: number; reason?: string }): {
+	value: Record<string, unknown>;
+	line: string;
+} {
 	const value: Record<string, unknown> = { done: outcome.done, pending: outcome.pending };
 	if (outcome.reason) value.reason = oneLine(outcome.reason);
 	const reason = outcome.reason ? ` · ${oneLine(outcome.reason)}` : "";
-	return done(
-		p,
-		`Sync: ${outcome.done} done · ${outcome.pending} pending${reason}`,
-		value,
-		outcome.reason && outcome.pending > 0 ? 1 : 0,
-	);
+	return { value, line: `Sync: ${outcome.done} done · ${outcome.pending} pending${reason}` };
+}
+
+async function sync(ctx: TeachContext, p: Parsed): Promise<CliResult> {
+	const outcome = await syncOutbox(ctx);
+	const summary = syncSummary(outcome);
+	return done(p, summary.line, summary.value, outcome.reason && outcome.pending > 0 ? 1 : 0);
+}
+
+/** `syncOutbox` bounded to 30 s (and the caller's signal); a failure is reported as a reason, never thrown. */
+async function drainOutbox(
+	ctx: TeachContext,
+): Promise<{ value: Record<string, unknown>; line: string }> {
+	try {
+		const timeout = AbortSignal.timeout(SYNC_TIMEOUT_MS);
+		const signal = ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout;
+		return syncSummary(await syncOutbox({ ...ctx, signal }));
+	} catch (error) {
+		return syncSummary({
+			done: 0,
+			pending: 0,
+			reason: `sync failed: ${error instanceof Error ? error.message : String(error)}`,
+		});
+	}
 }
 
 async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise<CliResult> {
@@ -591,6 +614,14 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 		const digest = parseDigest(raw);
 		if (!digest) throw new UsageError("digest does not match the TeachDigest shape");
 		const outcome = await observeDigest(digest, ctx);
+		appendRun(ctx.stateDir, {
+			at: ctx.now?.() ?? Date.now(),
+			sessionId: digest.sessionId,
+			outcome: outcome.skipped ? "skipped" : "captured",
+			captured: outcome.captured.length,
+			...(outcome.skipped ? { skipped: outcome.skipped } : {}),
+			...(outcome.detail ? { detail: outcome.detail } : {}),
+		});
 		const value: Record<string, unknown> = {
 			ok: true,
 			captured: outcome.captured.map(captureJson),
@@ -599,8 +630,11 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 			decisions: outcome.decisions,
 		};
 		if (outcome.skipped) value.skipped = outcome.skipped;
+		if (outcome.detail) value.detail = outcome.detail;
 		const lines = outcome.skipped
-			? [`Observe skipped: ${oneLine(outcome.skipped)}`]
+			? [
+					`Observe skipped: ${oneLine(outcome.skipped)}${outcome.detail ? ` · ${oneLine(outcome.detail)}` : ""}`,
+				]
 			: [
 					`Observed · ${outcome.captured.length} captured${outcome.dropped > 0 ? ` · ${outcome.dropped} dropped by Jev` : ""}`,
 					...outcome.captured.map((c) => `Captured ${captureLine(c)}`),
@@ -611,6 +645,10 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 			);
 			lines.push(`Jev: ${jev.join(", ")}`);
 		}
+		// Drain the Hindsight outbox on every observe run: no host calls `teach sync` after an agent run. Never affects the exit code.
+		const drained = await drainOutbox(ctx);
+		value.sync = drained.value;
+		lines.push(drained.line);
 		return done(p, lines.join("\n"), value);
 	} finally {
 		if (inbox !== undefined) rmSync(inbox, { force: true });

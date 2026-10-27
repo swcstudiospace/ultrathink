@@ -1,0 +1,222 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 SWC Studio
+/**
+ * The `memory` doctor section: is the Teachable Moments pipeline (observe, outbox, local lessons) working? Filesystem
+ * reads only: no network, no child process, and nothing is created. The outbox is read directly (never through
+ * `openStore`, which creates directories). Lesson text is never read; only counts, ages and run-log reasons.
+ */
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { defaultStateDir } from "../claude/state.ts";
+import { claudeConfigPaths, loadConfig } from "../config.ts";
+import { readRuns } from "../teach/runlog.ts";
+import { storeDir } from "../teach/store.ts";
+import { formatAge } from "./state-check.ts";
+import type { DoctorDeps, Finding } from "./types.ts";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const FAILURE_STREAK = 3;
+
+interface OutboxItem {
+	enqueuedAt: number;
+	attempts: number;
+	lastError?: string;
+}
+
+function plural(count: number, noun: string): string {
+	return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function jsonFiles(dir: string): string[] {
+	try {
+		return readdirSync(dir).filter((name) => name.endsWith(".json"));
+	} catch {
+		// reason: a missing or unreadable directory means there is nothing to report.
+		return [];
+	}
+}
+
+function readOutbox(dir: string): OutboxItem[] {
+	const items: OutboxItem[] = [];
+	for (const name of jsonFiles(join(dir, "outbox"))) {
+		try {
+			const raw: unknown = JSON.parse(readFileSync(join(dir, "outbox", name), "utf8"));
+			if (typeof raw !== "object" || raw === null) continue;
+			const { enqueuedAt, attempts, lastError } = raw as Record<string, unknown>;
+			if (typeof enqueuedAt !== "number" || !Number.isFinite(enqueuedAt)) continue;
+			if (typeof attempts !== "number" || !Number.isFinite(attempts)) continue;
+			const item: OutboxItem = { enqueuedAt, attempts };
+			if (typeof lastError === "string") item.lastError = lastError;
+			items.push(item);
+		} catch {
+			// reason: one unreadable or malformed entry must not hide the others.
+		}
+	}
+	return items.sort((a, b) => a.enqueuedAt - b.enqueuedAt);
+}
+
+function outboxFinding(dir: string, now: number): Finding {
+	const items = readOutbox(dir);
+	const oldest = items[0];
+	if (!oldest) {
+		return {
+			id: "memory.outbox",
+			section: "memory",
+			level: "ok",
+			title: "Hindsight outbox is empty",
+		};
+	}
+	const age = Math.max(0, now - oldest.enqueuedAt);
+	if (age < DAY_MS) {
+		return {
+			id: "memory.outbox",
+			section: "memory",
+			level: "info",
+			title: `${plural(items.length, "Hindsight write")} pending (oldest ${formatAge(age)})`,
+		};
+	}
+	const neverTried = items.filter((item) => item.attempts === 0).length;
+	const newestError = [...items].reverse().find((item) => item.lastError !== undefined)?.lastError;
+	const lines = [`${neverTried} of them were never attempted.`];
+	if (newestError !== undefined) lines.push(`Newest error: ${newestError}`);
+	return {
+		id: "memory.outbox",
+		section: "memory",
+		level: "warn",
+		title: `${items.length} Hindsight writes have waited over 24 h (oldest ${formatAge(age)})`,
+		detail: lines.join("\n"),
+		fix: "bin/ultrathink teach sync",
+	};
+}
+
+function isFailure(skipped: string | undefined): boolean {
+	return (
+		skipped === "distiller failed" ||
+		skipped === "error" ||
+		(skipped?.startsWith("no engine") ?? false)
+	);
+}
+
+function observeFinding(stateDir: string, now: number): Finding {
+	const runs = readRuns(stateDir);
+	const newest = runs.at(-1);
+	if (!newest) {
+		return {
+			id: "memory.observe",
+			section: "memory",
+			level: "info",
+			title: "No teach observe runs recorded yet",
+		};
+	}
+	const age = formatAge(Math.max(0, now - newest.at));
+	const streak = runs.slice(-FAILURE_STREAK);
+	if (
+		streak.length === FAILURE_STREAK &&
+		streak.every((run) => run.outcome === "skipped" && isFailure(run.skipped))
+	) {
+		return {
+			id: "memory.observe",
+			section: "memory",
+			level: "error",
+			title: `Teach observe failed ${FAILURE_STREAK} times in a row (last ${age} ago)`,
+			detail: newest.detail ?? newest.skipped ?? "unknown cause",
+			fix: "Fix the cause above (for example the claude CLI login or balance), then run a session and check bin/ultrathink doctor again",
+		};
+	}
+	return {
+		id: "memory.observe",
+		section: "memory",
+		level: "ok",
+		title: `Last teach observe run: ${newest.outcome} ${age} ago`,
+	};
+}
+
+function momentsFinding(dir: string, now: number): Finding | undefined {
+	const names = jsonFiles(join(dir, "moments"));
+	if (names.length === 0 && !dirExists(join(dir, "moments"))) return undefined;
+	let newest = 0;
+	for (const name of names) {
+		try {
+			newest = Math.max(newest, statSync(join(dir, "moments", name)).mtimeMs);
+		} catch {
+			// reason: a file removed between listing and stat is simply not counted for the age.
+		}
+	}
+	const age = newest > 0 ? `, newest ${formatAge(Math.max(0, now - newest))} old` : "";
+	return {
+		id: "memory.moments",
+		section: "memory",
+		level: "info",
+		title: `${plural(names.length, "local lesson")}${age}`,
+	};
+}
+
+const INBOX_NAME = /^[0-9]+-[0-9a-f]{8}\.json(\.tmp)?$/;
+const STALE_DIGEST_MS = 60 * 60 * 1000;
+
+function inboxFinding(stateDir: string, now: number): Finding | undefined {
+	const inbox = join(stateDir, "teach", "inbox");
+	let names: string[];
+	try {
+		names = readdirSync(inbox);
+	} catch {
+		// reason: a missing inbox means nothing is waiting; the doctor never creates it.
+		return undefined;
+	}
+	let count = 0;
+	let oldest: { path: string; mtime: number } | undefined;
+	for (const name of names) {
+		if (!INBOX_NAME.test(name)) continue;
+		const path = join(inbox, name);
+		try {
+			const mtime = statSync(path).mtimeMs;
+			if (now - mtime < STALE_DIGEST_MS) continue;
+			count++;
+			if (!oldest || mtime < oldest.mtime) oldest = { path, mtime };
+		} catch {
+			// reason: a digest consumed between listing and stat is no longer stale.
+		}
+	}
+	if (!oldest) return undefined;
+	return {
+		id: "memory.inbox",
+		section: "memory",
+		level: "warn",
+		title: `${count} observe ${count === 1 ? "digest was" : "digests were"} never processed (oldest ${formatAge(now - oldest.mtime)})`,
+		detail:
+			"A detached teach observe reads and deletes its digest as soon as it starts, so a file left behind means the process never started or died before reading it (for example bun missing from the host's PATH).",
+		fix: `Run the oldest by hand to see the error: bin/ultrathink teach observe --file ${oldest.path}`,
+	};
+}
+
+function dirExists(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		// reason: absence is the answer.
+		return false;
+	}
+}
+
+/** Outbox age, recent observe runs and the local lesson count. Never throws for a missing store; never writes. */
+export function checkTeach(deps: DoctorDeps): Finding[] {
+	if (!loadConfig(claudeConfigPaths(deps.cwd, deps.env)).teach.enabled) {
+		return [
+			{
+				id: "memory.teach.off",
+				section: "memory",
+				level: "info",
+				title: "Teachable Moments are off (teach.enabled is false)",
+			},
+		];
+	}
+	const stateDir = defaultStateDir(deps.env);
+	const dir = storeDir(stateDir);
+	const now = deps.now();
+	const findings = [outboxFinding(dir, now), observeFinding(stateDir, now)];
+	const inbox = inboxFinding(stateDir, now);
+	if (inbox) findings.push(inbox);
+	const moments = momentsFinding(dir, now);
+	if (moments) findings.push(moments);
+	return findings;
+}

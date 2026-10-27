@@ -130,7 +130,7 @@ No: a project file can only tighten Teachable Moments, never loosen it. `<repo>/
 
 ## What if Hindsight is down?
 
-The lesson stays in `<state dir>/teach`. If the server was ready and the write failed, the retain waits in the outbox and `bin/ultrathink teach sync` retries it (`Sync: 0 done · 1 pending · <reason>` while it cannot, exit 1). If Hindsight was not ready, the lesson is local-only and the next sync sends it once Hindsight is ready. Recall uses this machine's store when the server does not answer. Planning is not blocked. See [When Hindsight is down](how-to/use-teachable-moments.md#6-when-hindsight-is-down).
+The lesson stays in `<state dir>/teach`. If the server was ready and the write failed, the retain waits in the outbox and `bin/ultrathink teach sync` retries it (`Sync: 0 done · 1 pending · <reason>` while it cannot, exit 1); the outbox is also drained automatically after each `teach observe` run, so a manual `teach sync` is only needed to force it. If Hindsight was not ready, the lesson is local-only and the next sync sends it once Hindsight is ready. Recall uses this machine's store when the server does not answer. Planning is not blocked. See [When Hindsight is down](how-to/use-teachable-moments.md#6-when-hindsight-is-down).
 
 ## Does Hermes install skills by itself?
 
