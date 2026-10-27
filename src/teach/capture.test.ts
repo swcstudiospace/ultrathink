@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import {
@@ -866,6 +866,27 @@ describe("syncOutbox", () => {
 			expect(box.store.get(id)).toBeUndefined();
 			expect(fake.calls.deleteDocument).toEqual([`tm:${id}`]);
 			expect(box.store.outbox()).toEqual([]);
+		});
+
+		test("an unreadable local lesson is kept and its remote copy is not deleted", async () => {
+			const box = setup();
+			const created = await captureMoment(lesson(), box.ctx);
+			const id = created.moment.id;
+			const file = join(box.store.dir, "moments", `${id}.json`);
+			const fake = fakeClient({
+				retain: async (item) => {
+					writeFileSync(file, "{not json");
+					return ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 });
+				},
+			});
+			box.ctx.hindsight = fake.client;
+			const outcome = await syncOutbox(box.ctx);
+			expect(fake.calls.retain).toHaveLength(1);
+			expect(fake.calls.deleteDocument).toEqual([]);
+			expect(readFileSync(file, "utf8")).toBe("{not json");
+			expect(box.store.outbox().map((entry) => entry.op.op)).toEqual(["retain"]);
+			expect(outcome).toMatchObject({ done: 0, pending: 1 });
+			expect(outcome.reason).toContain("unreadable");
 		});
 	});
 

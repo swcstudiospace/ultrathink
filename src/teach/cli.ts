@@ -661,6 +661,7 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 			lines.push(`Jev: ${jev.join(", ")}`);
 		}
 		// Drain the Hindsight outbox on every observe run: no host calls `teach sync` after an agent run. Never affects the exit code.
+		// A lesson forgotten while a retain is in flight is deleted remotely by retainOne (capture.ts), so this drain cannot revive it.
 		const drained = await drainOutbox(ctx);
 		value.sync = drained.value;
 		lines.push(drained.line);

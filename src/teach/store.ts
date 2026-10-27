@@ -15,6 +15,7 @@ import {
 	readdirSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
@@ -291,6 +292,15 @@ export function openStore(dir: string): TeachStore {
 		dir,
 		list,
 		get: read,
+		has(id) {
+			if (!isValidId(id)) return false;
+			try {
+				statSync(join(momentsDir, `${id}.json`));
+				return true;
+			} catch (error) {
+				return (error as NodeJS.ErrnoException | null)?.code !== "ENOENT";
+			}
+		},
 		findByDedupeKey(key) {
 			const matches = list().filter((moment) => moment.dedupeKey === key);
 			return matches.find((moment) => moment.status !== "superseded") ?? matches[0];

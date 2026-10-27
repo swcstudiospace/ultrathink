@@ -344,6 +344,8 @@ export interface TeachStore {
 	readonly dir: string;
 	list(): TeachableMoment[];
 	get(id: string): TeachableMoment | undefined;
+	/** True when a moment record for `id` exists on disk, readable or not; true on any error other than "does not exist" (uncertainty must never look like a removal). */
+	has(id: string): boolean;
 	findByDedupeKey(key: string): TeachableMoment | undefined;
 	put(moment: TeachableMoment): void;
 	remove(id: string): boolean;

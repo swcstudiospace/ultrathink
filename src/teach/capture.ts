@@ -254,6 +254,14 @@ async function retainOne(
 	// lesson state (a worker confirm, a merged capture) with the stale pre-await object.
 	const current = store.get(moment.id);
 	if (!current) {
+		// `get` is undefined for a removed lesson and for one that cannot be read: only a confirmed removal may delete the
+		// remote copy, because a damaged local file may be the last good copy.
+		if (store.has(moment.id))
+			return {
+				ok: false,
+				message:
+					"the local lesson is unreadable; the remote copy was kept and the lesson stays queued to sync",
+			};
 		// The lesson was forgotten while the request was in flight. The remote document the request created cannot be
 		// unsent, so delete it (or queue the delete) and write nothing locally.
 		let deleted = false;
