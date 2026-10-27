@@ -36,9 +36,12 @@ describe("runDoctorCommand", () => {
 			cwd: join(dir, "project"),
 			now: () => 1_800_000_000_000,
 			which: (command) =>
-				["git", "gh", "python3"].includes(command) ? `/usr/bin/${command}` : undefined,
+				["git", "gh", "python3", "claude"].includes(command) ? `/usr/bin/${command}` : undefined,
 			bunVersion: "1.2.0",
 			runVersion: () => "Python 3.12.1",
+			claudeVersion: () => "2.1.300 (Claude Code)",
+			claudeAuth: () =>
+				JSON.stringify({ loggedIn: true, authMethod: "claude.ai", subscriptionType: "max" }),
 		};
 	});
 
@@ -46,7 +49,7 @@ describe("runDoctorCommand", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	test("a healthy machine exits 0 and the text report has the six sections and a summary", async () => {
+	test("a healthy machine exits 0 and the text report has the seven sections and a summary", async () => {
 		const { output, exitCode } = await runDoctorCommand([], deps);
 		expect(exitCode).toBe(0);
 		const lines = output.split("\n");
@@ -55,6 +58,7 @@ describe("runDoctorCommand", () => {
 			"runtime",
 			"config",
 			"credentials",
+			"inference",
 			"state",
 			"memory",
 			"pstack",
@@ -107,13 +111,10 @@ describe("runDoctorCommand", () => {
 		expect(Object.keys(report)).toEqual(["ok", "summary", "findings"]);
 		expect(report.ok).toBe(true);
 		expect(report.summary).toMatchObject({ error: 0, warn: 1 });
-		expect(report.findings.map((finding) => finding.section)).toEqual(
-			[...report.findings.map((finding) => finding.section)].sort(
-				(a, b) =>
-					["runtime", "config", "credentials", "state", "memory", "pstack"].indexOf(a) -
-					["runtime", "config", "credentials", "state", "memory", "pstack"].indexOf(b),
-			),
-		);
+		const order = ["runtime", "config", "credentials", "inference", "state", "memory", "pstack"];
+		const sections = report.findings.map((finding) => finding.section);
+		expect(sections).toEqual([...sections].sort((a, b) => order.indexOf(a) - order.indexOf(b)));
+		expect(sections).toContain("inference");
 		const typo = report.findings.find(
 			(finding) => finding.id === "config.project.unknown-section.shipp",
 		);

@@ -18,7 +18,7 @@ function record(): SessionRecord {
 	return {
 		sessionId: "s1",
 		at: 1,
-		engine: "claude:sonnet",
+		engine: "claude:claude-haiku-5-5",
 		result: { xml: "<x/>", original: "add", root: "BUILD_PROMPT", source: "llm" },
 		graph: {
 			goal: "Ship it",
@@ -164,7 +164,7 @@ describe("buildPlanView model resolution (§9 path 3)", () => {
 
 	test("a record without a resolution keeps its recorded engine label and carries none", () => {
 		const view = buildPlanView(record(), 0);
-		expect(view.engine).toBe("claude:sonnet");
+		expect(view.engine).toBe("claude:claude-haiku-5-5");
 		expect(view).not.toHaveProperty("modelResolution");
 	});
 
@@ -286,7 +286,7 @@ describe("buildPlanView model resolution (§9 path 3)", () => {
 			{ ...record(), modelResolution: null as unknown as ModelResolution },
 			0,
 		);
-		expect(view.engine).toBe("claude:sonnet");
+		expect(view.engine).toBe("claude:claude-haiku-5-5");
 		expect(view).not.toHaveProperty("modelResolution");
 	});
 });

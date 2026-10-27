@@ -12,6 +12,18 @@ export type GrokEffort = "low" | "medium" | "high" | "xhigh";
 
 export const GROK_EFFORTS: readonly GrokEffort[] = ["low", "medium", "high", "xhigh"];
 
+/** xAI documents `reasoning_effort` only for grok-4.5, 4.6 and 4.7. */
+export function grokSupportsEffort(model: string): boolean {
+	return /^grok-4\.(?:5|6|7)(?:-|$)/.test(model.trim().toLowerCase());
+}
+
+/** Effort to put on the wire, or undefined when the model takes none. grok-4.5 has no `xhigh`. */
+export function grokWireEffort(model: string, effort: GrokEffort): GrokEffort | undefined {
+	if (!grokSupportsEffort(model)) return undefined;
+	if (effort === "xhigh" && /^grok-4\.5(?:-|$)/.test(model.trim().toLowerCase())) return "high";
+	return effort;
+}
+
 /**
  * `http`: Grok CLI chat proxy `/responses` with the `grok login` token.
  * `cli`: shell out to the Grok Build CLI.
@@ -24,7 +36,7 @@ export const GROK_TRANSPORTS: readonly GrokTransport[] = ["http", "cli", "shunt"
 export interface GrokConfig {
 	enabled: boolean;
 	baseUrl: string;
-	/** Wire model; the built-in value is the Grok route default (`ROUTE_DEFAULT_MODELS.grok`). */
+	/** Wire model; the built-in value is the Grok route default (`ROUTE_DEFAULT_MODELS.grok`, `grok-build-0.1`). */
 	model: string;
 	/** "Extra High" = the model at xhigh. */
 	reasoningEffort: GrokEffort;
@@ -36,6 +48,8 @@ export interface GrokConfig {
 	callTimeoutMs: number;
 	/** Never silently downgrade to Claude by default. */
 	fallbackToClaude: boolean;
+	/** Tried in order after `model` when the session cannot serve it. */
+	fallbackModels: string[];
 	/** Base URL of your shunt gateway; `/v1/messages` is appended. "" = not configured (required for `transport: "shunt"`). */
 	shuntBaseUrl: string;
 	/** Wire model sent to shunt; the gateway route pins the effort, so the alias carries it. "" = send `model`. */
@@ -54,6 +68,7 @@ export const DEFAULT_GROK_CONFIG: GrokConfig = {
 	home: "",
 	callTimeoutMs: 0,
 	fallbackToClaude: false,
+	fallbackModels: ["grok-4.7"],
 	shuntBaseUrl: "",
 	shuntModel: "",
 	shuntMaxTokens: 8192,

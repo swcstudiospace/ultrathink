@@ -159,6 +159,7 @@ async function main(): Promise<void> {
 		complete: engine.complete,
 		engine: engine.label,
 		engineError: engine.error,
+		engineFailover: engine.failover,
 		modelResolution: engine.resolution,
 		stateDir,
 		armedSkip,

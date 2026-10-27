@@ -690,6 +690,8 @@ export function formatSummary(input: {
 	/** The substrate brief, when one was fetched. Absent or empty means unreachable. */
 	brief?: string;
 	engineError?: string;
+	/** A successful failover to another model route; shown right after the model selection. */
+	engineFailover?: string;
 	elapsedMs?: number;
 	/** Rows created before this turn; replaces the kickoff-pending note. */
 	tracking?: TrackingRefs;
@@ -714,6 +716,7 @@ export function formatSummary(input: {
 	const bits = [`Prompt Uplift · ${input.result.root} · ${input.result.source}`];
 	if (input.modelResolution) bits.push(formatModelSelection(input.modelResolution));
 	else if (input.engine) bits.push(input.engine);
+	if (input.engineFailover) bits.push(`Failover · ${input.engineFailover}`);
 	if (input.skill) bits.push(`Skill · ${input.skill}`);
 	if (input.graph) bits.push(`Graph of Thought · ${input.graph.nodes.length} nodes`);
 	const briefLines = input.brief?.trim() ? input.brief.trim().split("\n").length : 0;

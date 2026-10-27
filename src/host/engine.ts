@@ -9,9 +9,13 @@
  * model is a file pin, a host wire override, or the route default from `ROUTE_DEFAULT_MODELS`. Claude replaces a selected
  * Grok route only through the two explicit, labeled user switches `grok.fallbackToClaude: true` (login missing or
  * expired) and `grok.enabled: false`; otherwise a missing or expired Grok login skips with `GROK_LOGIN_REQUIRED`. The
- * shunt transport does not need `grok login`.
+ * shunt transport does not need `grok login`. Failover exists at call time and is opt-in: with
+ * `claude.fallbackToGrok` a failed Claude call (plan limit, auth, billing, overload, ...) continues on the Grok
+ * models, and a selected Grok route walks `grok.model` then `grok.fallbackModels` (`createFailoverCompleter`); the
+ * resolution record and label stay those of the first candidate, `SelectedEngine.failover` reports the switch.
  */
 import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
+import { createFailoverCompleter, type FailoverCandidate } from "../failover/chain.ts";
 import { createGrokCompleter } from "../grok/complete.ts";
 import { grokEngineLabel } from "../grok/label.ts";
 import type { GrokTransport } from "../grok/types.ts";
@@ -110,6 +114,8 @@ export interface SelectedEngine {
 	error: () => string | undefined;
 	/** The completer's report for its most recent call (attempts, HTTP status); absent when the route reports nothing. */
 	report?: () => CompletionReport | undefined;
+	/** `<first> → <answering> (<class>)` once a later candidate answered; absent on single-candidate routes. */
+	failover?: () => string | undefined;
 	resolution: ModelResolution;
 }
 
@@ -151,8 +157,7 @@ export interface EngineSelectionContext {
 	purpose?: "planning" | "auxiliary";
 }
 
-export const GROK_LOGIN_REQUIRED =
-	"Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)";
+export const GROK_LOGIN_REQUIRED = "Prompt Uplift skipped · Grok login required (run `grok login`)";
 
 /**
  * Legacy route per host under `think.engine: auto`. Omp planning resolves natively and never reads this; the Omp entry
@@ -174,6 +179,7 @@ export function captureFirstError(
 	label: string,
 	complete: ClaudeCompleter,
 	resolution: ModelResolution,
+	failover?: () => string | undefined,
 ): SelectedEngine {
 	let first: string | undefined;
 	return {
@@ -195,6 +201,7 @@ export function captureFirstError(
 		},
 		error: () => first,
 		resolution,
+		...(failover ? { failover } : {}),
 	};
 }
 
@@ -342,14 +349,14 @@ type SelectionBase = Pick<ResolutionFields, "host" | "engineSelection">;
  * user configuration (`grok.enabled: false` or `grok.fallbackToClaude: true`, AD-2a): the choice is then Claude's own
  * effective model, never the Grok or host wire selector, and the record says configured fallback.
  */
-function claudeRoute(
+async function claudeRoute(
 	config: UltrathinkConfig,
 	cwd: string,
 	base: SelectionBase,
 	choice: WireChoice,
 	suffix: string,
 	fallback: boolean,
-): EngineSelection {
+): Promise<EngineSelection> {
 	if (hasControlCharacter(choice.model))
 		return unresolvedSkip(
 			resolutionRecord({
@@ -367,19 +374,71 @@ function claudeRoute(
 		...fields,
 		...(fallback ? ({ source: "configured-fallback", reason: "grok-unavailable" } as const) : {}),
 	});
-	return captureFirstError(
-		`claude:${resolution.modelId ?? "session default"}${suffix}`,
-		createClaudeCompleter({
-			bin: config.claude.bin,
-			fallbackToLogin: config.claude.fallbackToLogin,
-			model: choice.model || undefined,
-			settingSources: config.claude.settingSources,
-			thinking: config.claude.thinking,
-			cwd,
-			timeoutMs: config.claude.callTimeoutMs,
-		}),
-		resolution,
-	);
+	const label = `claude:${resolution.modelId ?? "session default"}${suffix}`;
+	const claude = createClaudeCompleter({
+		bin: config.claude.bin,
+		auth: config.claude.auth,
+		model: choice.model || undefined,
+		settingSources: config.claude.settingSources,
+		thinking: config.claude.thinking,
+		cwd,
+		timeoutMs: config.claude.callTimeoutMs,
+	});
+	// Claude standing in for an unavailable Grok route has nothing to fail over to.
+	const failoverToGrok = !fallback && config.claude.fallbackToGrok && config.grok.enabled;
+	if (failoverToGrok && (await grokUsable(config))) {
+		const grokModels = unique([config.grok.model, ...config.grok.fallbackModels]);
+		const chain = createFailoverCompleter([
+			{ id: label, label, complete: claude },
+			...grokCandidates(config, cwd, grokModels),
+		]);
+		return captureFirstError(label, chain.complete, resolution, chain.failover);
+	}
+	return captureFirstError(label, claude, resolution);
+}
+
+/** Order-preserving distinct nonblank ids. */
+function unique(values: readonly string[]): string[] {
+	return [...new Set(values.filter((value) => value.trim() !== ""))];
+}
+
+/** Whether a Grok call could start now: a shunt URL is set, or the `grok login` session is present and fresh. */
+async function grokUsable(config: UltrathinkConfig): Promise<boolean> {
+	if (config.grok.transport === "shunt") return config.grok.shuntBaseUrl.trim() !== "";
+	const auth = await grokAuthStatusFresh({
+		home: config.grok.home || undefined,
+		bin: config.grok.bin,
+	});
+	return auth.loggedIn && !auth.expired;
+}
+
+/** One failover candidate per Grok model; the shunt transport sends its own alias, so it is a single candidate. */
+function grokCandidates(
+	config: UltrathinkConfig,
+	cwd: string,
+	models: readonly string[],
+): FailoverCandidate[] {
+	const chain = config.grok.transport === "shunt" ? models.slice(0, 1) : models;
+	return chain.map((model) => {
+		const label = `grok:${displayId(model, "<opaque-model>")}`;
+		return {
+			id: label,
+			label,
+			complete: createGrokCompleter({
+				baseUrl: config.grok.baseUrl,
+				model,
+				reasoningEffort: config.grok.reasoningEffort,
+				timeoutMs: config.grok.callTimeoutMs,
+				home: config.grok.home || undefined,
+				transport: config.grok.transport,
+				bin: config.grok.bin,
+				cwd,
+				shuntBaseUrl: config.grok.shuntBaseUrl,
+				shuntModel: config.grok.shuntModel,
+				shuntMaxTokens: config.grok.shuntMaxTokens,
+			}),
+		};
+	});
 }
 
 /**
@@ -552,14 +611,27 @@ export async function selectEngine(
 			};
 		}
 	}
-	const model = override.model || config.grok.model;
 	const resolution = resolutionRecord({ ...base, transport, ...legacyFields(choice) });
+	const label = grokEngineLabel({
+		...config.grok,
+		model: resolution.modelId ?? "<opaque-model>",
+		shuntModel: "",
+	});
+	// A host wire override or a shunt alias names one exact model: no chain.
+	if (config.grok.transport !== "shunt" && !override.model) {
+		const candidates = grokCandidates(
+			config,
+			cwd,
+			unique([choice.model, ...config.grok.fallbackModels]),
+		);
+		if (candidates.length > 1) {
+			const chain = createFailoverCompleter(candidates);
+			return captureFirstError(label, chain.complete, resolution, chain.failover);
+		}
+	}
+	const model = override.model || config.grok.model;
 	return captureFirstError(
-		grokEngineLabel({
-			...config.grok,
-			model: resolution.modelId ?? "<opaque-model>",
-			shuntModel: "",
-		}),
+		label,
 		createGrokCompleter({
 			baseUrl: config.grok.baseUrl,
 			model,

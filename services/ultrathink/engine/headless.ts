@@ -2,11 +2,13 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * Server-side planner: runs the plugin's own pipeline (`planPrompt`: uplift, Graph of Thought, Chain of Thought,
- * clarify) against an OpenRouter chat model, as a background job with long-polled results.
+ * clarify) against one model backend, as a background job with long-polled results. The backend is an OpenRouter
+ * chat model by default, or the plan-login `claude -p` backend (`ULTRATHINK_PLANNING_BACKEND=plan`).
  *
  * The plan never reads the operator's personal config or control state: the plugin config is built here and handed
  * over captured, the env is built from scratch, and tracking, substrate, Hindsight, RAGFlow, shipping, lessons and
- * Jev stay off. The only outbound traffic is the OpenRouter completer.
+ * Jev stay off. The only outbound traffic is the one selected model backend: the OpenRouter completer, or in plan
+ * mode the `claude` CLI child (plus the `grok` CLI when the Grok fallback is on), each with an allowlisted env.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -22,6 +24,7 @@ import {
 	readMeta,
 } from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
+import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
@@ -46,6 +49,7 @@ import {
 	createOpenRouterCompleter,
 } from "./openrouter.ts";
 import { clientPlanView, serverPlanView } from "./plan-view.ts";
+import { type PlanBackend, type PlanErrorCode, createPlanBackend } from "./plan.ts";
 import type { ChatQuestion } from "./render.ts";
 
 export type JobStatus = "running" | "planned" | "failed" | "invalid" | "skipped";
@@ -95,6 +99,8 @@ export interface HeadlessPlanner {
 	shutdown(): Promise<void>;
 	/** Upstream circuit breaker state and failure count for health reporting; undefined when the planner has no breaker. */
 	upstream(): { state: BreakerState; failures: number } | undefined;
+	/** Readiness of the model backend: always ok for OpenRouter, the `claude` CLI check in plan mode. */
+	backendReady(): { ok: boolean; detail?: string };
 }
 
 export interface PlannerCall {
@@ -118,6 +124,8 @@ export interface HeadlessOptions {
 	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	/** Replaces the OpenRouter completer (tests). Its calls are still reserved and settled in the ledger. */
 	completer?: ClaudeCompleter;
+	/** Replaces the plan-login backend in plan mode (tests). Ignored unless `config.planningBackend` is `plan`. */
+	planBackend?: PlanBackend;
 	/** Environment the planner's allowlisted pass-through keys are read from; defaults to process.env. */
 	env?: Record<string, string | undefined>;
 	/** Plugin entry point; defaults to `planPrompt`. A test seam, never a behavior switch. */
@@ -189,6 +197,23 @@ const JOB_STATUSES: Record<string, true> = {
 };
 /** Skips that mean the engine failed rather than that the request was declined. */
 const ENGINE_SKIPS: Record<string, true> = { "uplift-failed": true, "engine-error": true };
+/** Codes a plan-login completer failure carries; the OpenRouter vocabulary it shares with `OpenRouterError`. */
+const PLAN_ERROR_CODES: Readonly<Record<PlanErrorCode, true>> = {
+	auth: true,
+	rate_limited: true,
+	upstream: true,
+	timeout: true,
+	aborted: true,
+};
+
+/** The classified code of a completer failure: an `OpenRouterError`'s, or the closed-set `code` of a `PlanCompleterError`. */
+function failureCode(error: unknown): string | undefined {
+	if (error instanceof OpenRouterError) return error.code;
+	if (!(error instanceof Error) || !("code" in error)) return undefined;
+	const { code } = error;
+	return typeof code === "string" && Object.hasOwn(PLAN_ERROR_CODES, code) ? code : undefined;
+}
+
 /** Variables with no secret and no config meaning that a plan may inherit. */
 const PASS_THROUGH_ENV = ["PATH", "TZ", "LANG", "LC_ALL", "TMPDIR"] as const;
 
@@ -253,6 +278,24 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 	const sleep = opts.sleep ?? defaultSleep;
 	const plan = opts.plan ?? planPrompt;
 	const stateDir = config.stateDir;
+	/** Plan-login backend in use: the config selects it and no completer replaces it. */
+	const planMode = config.planningBackend === "plan" && opts.completer === undefined;
+	const planModel = config.planningModel ?? ROUTE_DEFAULT_MODELS.claude;
+	const engineName = planMode ? "plan" : "openrouter";
+	let backend: PlanBackend | undefined;
+	/** Built once, on first use, so a deployment on OpenRouter never touches the plan module's process checks. */
+	function planBackend(): PlanBackend {
+		backend ??=
+			opts.planBackend ??
+			createPlanBackend({
+				model: planModel,
+				fallback: config.planFallback ?? "none",
+				concurrency: config.planConcurrency ?? 2,
+				timeoutMs: config.modelTimeoutMs,
+				env: opts.env ?? process.env,
+			});
+		return backend;
+	}
 	const jobsDir = join(stateDir, "jobs");
 	const cwd = join(stateDir, "cwd");
 	const jobs = new Map<string, Job>();
@@ -354,7 +397,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			engineSelection: { engine: "auto", source: "config", nativeOptOut: false },
 			modelKnown: true,
 			modelId: model,
-			label: `openrouter:${model}`,
+			label: `${engineName}:${model}`,
 		};
 	}
 
@@ -434,41 +477,43 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				}
 			};
 			try {
-				const complete =
-					opts.completer ??
-					createOpenRouterCompleter({
-						apiKey: config.openRouterApiKey ?? "",
-						baseUrl: config.openRouterBaseUrl,
-						model,
-						maxOutputTokens: outputCap,
-						timeoutMs: config.modelTimeoutMs,
-						referer: config.publicOrigin,
-						...(config.modelReasoningEffort === undefined
-							? {}
-							: { reasoningEffort: config.modelReasoningEffort }),
-						sleep,
-						...(opts.fetch ? { fetch: opts.fetch } : {}),
-						...(opts.breaker ? { breaker: opts.breaker } : {}),
-						...(opts.spans ? { spans: opts.spans } : {}),
-						onUsage: (usage) => {
-							reported.usage = usage;
-						},
-						onCall: (info) => {
-							reported.call = { ms: info.ms, outcome: info.outcome, attempts: info.attempts };
-						},
-					});
+				const complete: ClaudeCompleter = planMode
+					? (planSystem, planUser, planSignal) =>
+							planBackend().complete(planSystem, planUser, planSignal, (usage) => {
+								reported.usage = usage;
+							})
+					: (opts.completer ??
+						createOpenRouterCompleter({
+							apiKey: config.openRouterApiKey ?? "",
+							baseUrl: config.openRouterBaseUrl,
+							model,
+							maxOutputTokens: outputCap,
+							timeoutMs: config.modelTimeoutMs,
+							referer: config.publicOrigin,
+							...(config.modelReasoningEffort === undefined
+								? {}
+								: { reasoningEffort: config.modelReasoningEffort }),
+							sleep,
+							...(opts.fetch ? { fetch: opts.fetch } : {}),
+							...(opts.breaker ? { breaker: opts.breaker } : {}),
+							...(opts.spans ? { spans: opts.spans } : {}),
+							onUsage: (usage) => {
+								reported.usage = usage;
+							},
+							onCall: (info) => {
+								reported.call = { ms: info.ms, outcome: info.outcome, attempts: info.attempts };
+							},
+						}));
 				const text = await complete(system, user, signal);
 				const { usage } = reported;
 				emit("ok", usage);
 				bill(usage, reservationId);
 				return text;
 			} catch (error) {
+				const code = failureCode(error);
 				const failure =
-					error instanceof OpenRouterError
-						? error.code
-						: error instanceof Error && error.name === "AbortError"
-							? "aborted"
-							: "engine_error";
+					code ??
+					(error instanceof Error && error.name === "AbortError" ? "aborted" : "engine_error");
 				// A reply cut at its output limit reports what it cost, so that call is billed like a completed one.
 				const cut = error instanceof OpenRouterError ? error.usage : undefined;
 				emit(failure, cut);
@@ -483,12 +528,11 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				}
 				if (error instanceof OpenRouterError && error.code === "truncated") job.truncated = true;
 				const aborted =
-					error instanceof OpenRouterError
-						? error.code === "aborted"
-						: error instanceof Error && error.name === "AbortError";
-				if (!aborted)
-					job.firstError ??= error instanceof OpenRouterError ? error.code : "engine_error";
-				if (!aborted && !(error instanceof OpenRouterError))
+					code === undefined
+						? error instanceof Error && error.name === "AbortError"
+						: code === "aborted";
+				if (!aborted) job.firstError ??= code ?? "engine_error";
+				if (!aborted && code === undefined)
 					throw new Error(`meteredCompleter: ${failureLabel(error)}`, { cause: error });
 				throw error;
 			}
@@ -607,7 +651,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					control: { enabled: true },
 					createTracker: () => undefined,
 					selectEngine: async (): Promise<SelectedEngine> => ({
-						label: `openrouter:${model}`,
+						label: `${engineName}:${model}`,
 						complete: meteredCompleter(job, model),
 						error: () => job.firstError,
 						resolution: resolutionFor(model),
@@ -661,7 +705,9 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (!enabled) return fail("disabled");
 			if (closed) return fail("not_ready");
 			const model = config.planningModel;
-			if (
+			if (planMode) {
+				if (!planBackend().ready().ok) return fail("not_ready");
+			} else if (
 				opts.completer === undefined &&
 				(config.openRouterApiKey === undefined || model === undefined)
 			)
@@ -730,7 +776,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				return fail("engine_error");
 			}
 			jobs.set(sessionId, job);
-			void execute(job, prompt, model ?? "custom");
+			void execute(job, prompt, planMode ? planModel : (model ?? "custom"));
 			await waitFor(job, START_WAIT_MS);
 			return { ok: true, data: startView(job) };
 		},
@@ -765,6 +811,10 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			const file = jobs.get(sessionId) ?? readJobFile(sessionId);
 			if (!file) return null;
 			return { ok: true, data: { sessionId, status: file.status, pendingCount: 0, pending: [] } };
+		},
+
+		backendReady() {
+			return planMode ? planBackend().ready() : { ok: true };
 		},
 
 		upstream() {

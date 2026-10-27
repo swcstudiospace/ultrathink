@@ -95,6 +95,7 @@ function stubPlanner(
 		results: [],
 		serverIds: new Set(),
 		upstream: () => undefined,
+		backendReady: () => ({ ok: true }),
 		async start(input) {
 			stub.starts.push(input);
 			return { ok: true, data: { sessionId: String(input.sessionId), status: "planned" } };

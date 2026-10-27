@@ -358,6 +358,21 @@ describe("formatSummary", () => {
 		);
 	});
 
+	test("Failover bit follows the model selection and is absent by default", () => {
+		const failover = "claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)";
+		expect(formatSummary({ result, engine: "claude:x", engineFailover: failover })).toBe(
+			`Prompt Uplift · BUILD_PROMPT · llm · claude:x · Failover · ${failover}`,
+		);
+		expect(
+			formatSummary({ result, engine: "claude:x", engineFailover: failover, skill: "gsd-quick" }),
+		).toBe(
+			`Prompt Uplift · BUILD_PROMPT · llm · claude:x · Failover · ${failover} · Skill · gsd-quick`,
+		);
+		expect(formatSummary({ result, engine: "claude:x" })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · claude:x",
+		);
+	});
+
 	test("adds engine, open HITL count and engine error bits only when provided", () => {
 		expect(
 			formatSummary({
@@ -1382,11 +1397,11 @@ describe("model selection labels (§9 path 3, D-11)", () => {
 	}
 
 	const ROUTE_DEFAULT_LINE =
-		"claude:sonnet [route default] · reason route-default-model · engine auto (config)";
+		"claude:claude-haiku-5-5 [route default] · reason route-default-model · engine auto (config)";
 
 	test("summary and context show the generated label, the model reason and the engine request apart from model state", async () => {
 		const resolution = await recordOf(defaultConfig(), {}, "claude-code");
-		expect(resolution.label).toBe("claude:sonnet [route default]");
+		expect(resolution.label).toBe("claude:claude-haiku-5-5 [route default]");
 		expect(formatModelSelection(resolution)).toBe(ROUTE_DEFAULT_LINE);
 		expect(
 			formatSummary({
@@ -1459,7 +1474,7 @@ describe("model selection labels (§9 path 3, D-11)", () => {
 			"grok-build",
 		);
 		expect(formatModelSelection(fallback)).toBe(
-			"claude:sonnet [configured fallback · grok unavailable] · reason grok-unavailable · engine auto (config)",
+			"claude:claude-haiku-5-5 [configured fallback · grok unavailable] · reason grok-unavailable · engine auto (config)",
 		);
 		for (const record of [unavailable, fallback]) {
 			expect(formatSummary({ result, modelResolution: record })).not.toContain("provider-disabled");
@@ -1479,7 +1494,7 @@ describe("model selection labels (§9 path 3, D-11)", () => {
 			engineError: "claude exited 1",
 		});
 		expect(out).toContain(
-			"The claude:sonnet [route default] planning call failed (claude exited 1).",
+			"The claude:claude-haiku-5-5 [route default] planning call failed (claude exited 1).",
 		);
 		expect(out).toContain(`Planning model: ${ROUTE_DEFAULT_LINE}`);
 		// A default selection with a real plan is not degradation, and the engine error keeps its own summary bit.

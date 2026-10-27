@@ -875,6 +875,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				// reason: the stub holds no resources to release.
 			},
 			upstream: () => undefined,
+			backendReady: () => ({ ok: true }),
 		};
 		// maxInflight 4 with a 50 % reserve: the reserve is 2, so non-owner classes may hold 2 slots.
 		const { app, metrics } = build(
@@ -931,6 +932,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				// reason: the stub holds no resources to release.
 			},
 			upstream: () => undefined,
+			backendReady: () => ({ ok: true }),
 		};
 		// maxInflight 4 with a 50 % reserve, and no queue: the third connector is refused at once.
 		const { app } = build(
@@ -988,6 +990,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				// reason: the stub holds no resources to release.
 			},
 			upstream: () => undefined,
+			backendReady: () => ({ ok: true }),
 		};
 		// maxInflight 4 with a 50 % reserve: non-owner classes hold 2 pool slots, so the next two connectors queue.
 		// The queue is on (the build default depth 16); its 1500 ms timers are cleared when the queued requests are granted.
@@ -1058,6 +1061,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 				// reason: the stub holds no resources to release.
 			},
 			upstream: () => undefined,
+			backendReady: () => ({ ok: true }),
 		};
 		// /login calls from the held IPs block inside auth, holding an outer slot each; every other caller is unaffected.
 		const realAuth = createAuth({
@@ -1194,6 +1198,7 @@ describe("router boundary failures", () => {
 				// reason: the stub holds no resources to release.
 			},
 			upstream: () => undefined,
+			backendReady: () => ({ ok: true }),
 		};
 		try {
 			const app = createApp({

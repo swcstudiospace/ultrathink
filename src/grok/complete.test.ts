@@ -121,6 +121,11 @@ describe("buildResponsesBody", () => {
 			stream: false,
 		});
 	});
+
+	test("omits reasoning when effort is undefined", () => {
+		const body = buildResponsesBody("SYS", "USER", "grok-build-0.1");
+		expect("reasoning" in body).toBe(false);
+	});
 });
 
 describe("parseResponsesText", () => {
@@ -184,15 +189,42 @@ describe("grokComplete (http)", () => {
 		});
 	});
 
-	test("defaults to the Grok route default (grok-4.7) at xhigh via createGrokCompleter", async () => {
+	test("defaults to the Grok route default (grok-build-0.1) with no reasoning via createGrokCompleter", async () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("ok"));
 		const complete = createGrokCompleter({ home: tempHome(), fetch });
 		await complete("S", "U");
 		const body = JSON.parse(String(calls[0]!.init.body));
 		expect(body.model).toBe(ROUTE_DEFAULT_MODELS.grok);
-		expect(body.model).toBe("grok-4.7");
-		expect(body.reasoning).toEqual({ effort: "xhigh" });
+		expect(body.model).toBe("grok-build-0.1");
+		expect("reasoning" in body).toBe(false);
 		expect(calls[0]!.url).toBe("https://cli-chat-proxy.grok.com/v1/responses");
+	});
+
+	test("grok-4.7 sends reasoning xhigh", async () => {
+		const { fetch, calls } = fakeFetch(() => responsesReply("ok"));
+		await grokComplete("S", "U", { home: tempHome(), fetch, model: "grok-4.7" });
+		const body = JSON.parse(String(calls[0]!.init.body));
+		expect(body.reasoning).toEqual({ effort: "xhigh" });
+	});
+
+	test("onResult reports usage from the reply", async () => {
+		const { fetch } = fakeFetch(() =>
+			Response.json({
+				output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+				usage: { input_tokens: 216, output_tokens: 151 },
+			}),
+		);
+		const seen: unknown[] = [];
+		await grokComplete("S", "U", {
+			home: tempHome(),
+			fetch,
+			model: "grok-build-0.1",
+			onResult: (info) => {
+				seen.push(info);
+				throw new Error("callback failures must not surface");
+			},
+		});
+		expect(seen).toEqual([{ model: "grok-build-0.1", inputTokens: 216, outputTokens: 151 }]);
 	});
 
 	test("401 becomes a GrokAuthError pointing at grok login", async () => {
@@ -572,6 +604,20 @@ describe("grokComplete (cli)", () => {
 		for (const flag of ["--no-plan", "--no-subagents", "--disable-web-search", "--verbatim"])
 			expect(seen.args).toContain(flag);
 		expect(after("--system-prompt-override")).toBe("SYS");
+	});
+
+	test("omits --reasoning-effort for a model without effort support", async () => {
+		const { bin, argsPath } = fakeGrok('{ text: "ok" }');
+		await grokComplete("SYS", "USER", {
+			transport: "cli",
+			bin,
+			home: tempHome(),
+			model: "grok-build-0.1",
+			reasoningEffort: "xhigh",
+		});
+		const seen = JSON.parse(await Bun.file(argsPath).text()) as { args: string[] };
+		expect(seen.args.slice(0, 3)).toEqual(["-m", "grok-build-0.1", "--output-format"]);
+		expect(seen.args).not.toContain("--reasoning-effort");
 	});
 
 	test("reuses one scratch cwd within the process", async () => {

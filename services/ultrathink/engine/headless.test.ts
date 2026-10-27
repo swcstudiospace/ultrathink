@@ -40,6 +40,12 @@ import {
 } from "./headless.ts";
 import { answerRequest, listPendingRequests, showRequest, startPlan } from "./journal.ts";
 import type { OpenRouterFetch } from "./openrouter.ts";
+import {
+	type PlanBackend,
+	PlanCompleterError,
+	type PlanErrorCode,
+	type PlanUsage,
+} from "./plan.ts";
 
 const PROMPT =
 	"Build a small TypeScript CLI that converts CSV files to JSON with streaming support, tests and a README.";
@@ -1787,5 +1793,222 @@ describe("headless planner: boundary failures", () => {
 		expect(line).toBe("finalize: Error");
 		expect(line).not.toContain(SECRET);
 		expect(redactText(line, { home: "" })).toBe(line);
+	});
+});
+
+interface FakeBackend {
+	backend: PlanBackend;
+	/** Stage of every call that reached the backend. */
+	stages: string[];
+	/** How many times readiness was asked. */
+	readyChecks: () => number;
+	setReady: (ready: { ok: boolean; detail?: string }) => void;
+}
+
+/** A scripted plan backend; with `failWith` every call throws it. Reports 100 prompt and 50 completion tokens per call. */
+function fakeBackend(failWith?: PlanCompleterError): FakeBackend {
+	const script = scriptedModel();
+	const stages: string[] = [];
+	let ready: { ok: boolean; detail?: string } = { ok: true };
+	let readyChecks = 0;
+	const backend: PlanBackend = {
+		label: "plan:claude-haiku-5-5",
+		ready: () => {
+			readyChecks += 1;
+			return ready;
+		},
+		async complete(system, user, _signal, onUsage?: (usage: PlanUsage) => void) {
+			stages.push(stageOf(system));
+			if (failWith) throw failWith;
+			onUsage?.({ promptTokens: 100, completionTokens: 50 });
+			return script(system, user);
+		},
+	};
+	return {
+		backend,
+		stages,
+		readyChecks: () => readyChecks,
+		setReady: (next) => {
+			ready = next;
+		},
+	};
+}
+
+const PLAN_CONFIG: Partial<UltrathinkConfig> = {
+	planningBackend: "plan",
+	planningModel: "claude-haiku-5-5",
+	openRouterApiKey: undefined,
+};
+
+describe("headless planner: plan backend", () => {
+	test("plan mode runs the plan through the backend with no OpenRouter key, and settles tokens without a cost", async () => {
+		const fake = fakeBackend();
+		const calls: PlannerCall[] = [];
+		const labels: Array<string | undefined> = [];
+		const h = setup(PLAN_CONFIG, {
+			completer: undefined,
+			planBackend: fake.backend,
+			onCall: (call) => calls.push(call),
+			plan: async (request, env, options) => {
+				const inner = options?.selectEngine;
+				if (!inner) throw new Error("planPrompt got no engine selector");
+				return planPrompt(request, env, {
+					...options,
+					selectEngine: async (...args) => {
+						const engine = await inner(...args);
+						if ("skipped" in engine) return engine;
+						labels.push(engine.label, engine.resolution?.label);
+						return engine;
+					},
+				});
+			},
+		});
+		const sessionId = randomUUID();
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
+		expect(fake.stages.length).toBeGreaterThanOrEqual(8);
+		expect(calls.length).toBe(fake.stages.length);
+		for (const call of calls) {
+			expect(call.model).toBe("claude-haiku-5-5");
+			expect(call.outcome).toBe("ok");
+			expect(call.inputTokens).toBe(100);
+			expect(call.outputTokens).toBe(50);
+			expect("costUsd" in call).toBe(false);
+		}
+		const n = fake.stages.length;
+		const file = jobFile(h.stateDir, sessionId);
+		expect(file.usage).toEqual({ calls: n, inputTokens: 100 * n, outputTokens: 50 * n });
+		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
+		expect(ledger.spentForRun(String(file.runId))).toBe(150 * n);
+		expect(labels.length).toBeGreaterThan(0);
+		for (const label of labels) expect(label).toBe("plan:claude-haiku-5-5");
+	});
+
+	test("a PlanCompleterError code ends the job with that code, exactly like an OpenRouterError code", async () => {
+		const cases: Array<[PlanErrorCode, ConstructorParameters<typeof PlanCompleterError>[1]]> = [
+			["auth", "auth"],
+			["rate_limited", "plan-limit"],
+			["upstream", "other"],
+			["timeout", "timeout"],
+		];
+		for (const [code, failure] of cases) {
+			const fake = fakeBackend(new PlanCompleterError(code, failure));
+			const calls: PlannerCall[] = [];
+			const h = setup(PLAN_CONFIG, {
+				completer: undefined,
+				planBackend: fake.backend,
+				onCall: (call) => calls.push(call),
+			});
+			const sessionId = randomUUID();
+			expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
+				ok: true,
+				data: { sessionId, status: "failed", error: code },
+			});
+			expect(calls.length).toBeGreaterThanOrEqual(1);
+			for (const call of calls) {
+				expect(call.outcome).toBe(code);
+				expect(call.inputTokens).toBe(0);
+				expect("costUsd" in call).toBe(false);
+			}
+		}
+	});
+
+	test("a plan call that fails bills no usage to the job and its reservation stays counted", async () => {
+		const fake = fakeBackend(new PlanCompleterError("auth", "auth"));
+		const h = setup(PLAN_CONFIG, { completer: undefined, planBackend: fake.backend });
+		const sessionId = randomUUID();
+		await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(jobFile(h.stateDir, sessionId).usage).toEqual({
+			calls: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+		});
+		// The call reported no usage, so its reservation is abandoned, not settled, and still counts toward the ceilings.
+		const states = h.store.db
+			.query<{ state: string; n: number }, []>(
+				"SELECT state, COUNT(*) AS n FROM token_ledger GROUP BY state",
+			)
+			.all();
+		expect(states).toEqual([{ state: "abandoned", n: fake.stages.length }]);
+		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
+		expect(ledger.spentForRun(String(jobFile(h.stateDir, sessionId).runId))).toBeGreaterThan(0);
+	});
+
+	test("start is not_ready only while the plan backend is not ready", async () => {
+		const fake = fakeBackend();
+		fake.setReady({ ok: false, detail: "claude CLI not found" });
+		const h = setup(PLAN_CONFIG, { completer: undefined, planBackend: fake.backend });
+		expect(await h.planner.start({ prompt: PROMPT })).toEqual({ ok: false, code: "not_ready" });
+		expect(fake.stages).toEqual([]);
+		fake.setReady({ ok: true });
+		expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
+	});
+
+	test("backendReady reports the plan backend in plan mode and is always ok on OpenRouter", () => {
+		const fake = fakeBackend();
+		const plan = setup(PLAN_CONFIG, { completer: undefined, planBackend: fake.backend });
+		expect(plan.planner.backendReady()).toEqual({ ok: true });
+		fake.setReady({ ok: false, detail: "claude CLI not found" });
+		expect(plan.planner.backendReady()).toEqual({ ok: false, detail: "claude CLI not found" });
+
+		const openRouter = setup({}, { completer: undefined, planBackend: fake.backend });
+		expect(openRouter.planner.backendReady()).toEqual({ ok: true });
+		expect(setup().planner.backendReady()).toEqual({ ok: true });
+	});
+
+	test("the default openrouter backend never touches a plan backend and keeps its label and key check", async () => {
+		const fake = fakeBackend();
+		const labels: Array<string | undefined> = [];
+		const script = scriptedModel();
+		const openRouter: OpenRouterFetch = async (_url, init) => {
+			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+			const content = script(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
+			return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
+				status: 200,
+			});
+		};
+		const h = setup(
+			{},
+			{
+				completer: undefined,
+				fetch: openRouter,
+				planBackend: fake.backend,
+				plan: async (request, env, options) => {
+					const inner = options?.selectEngine;
+					if (!inner) throw new Error("planPrompt got no engine selector");
+					return planPrompt(request, env, {
+						...options,
+						selectEngine: async (...args) => {
+							const engine = await inner(...args);
+							if ("skipped" in engine) return engine;
+							labels.push(engine.label, engine.resolution?.label);
+							return engine;
+						},
+					});
+				},
+			},
+		);
+		expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
+		expect(fake.stages).toEqual([]);
+		expect(fake.readyChecks()).toBe(0);
+		expect(labels.length).toBeGreaterThan(0);
+		for (const label of labels) expect(label).toBe("openrouter:x-ai/grok-test");
+
+		const keyless = setup(
+			{ openRouterApiKey: undefined },
+			{ completer: undefined, planBackend: fake.backend },
+		);
+		expect(await keyless.planner.start({ prompt: PROMPT })).toEqual({
+			ok: false,
+			code: "not_ready",
+		});
 	});
 });

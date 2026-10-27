@@ -1584,7 +1584,7 @@ describe("grok-bot skills status and status lines", () => {
 
 	test("replaces the Grok CLI lines in ctl status", () => {
 		const text =
-			"Prompt Uplift on\nGrok: grok-4.7 @ xhigh · transport http\nSuperGrok OAuth: not logged in (run grok login)\nGraph of Thought on";
+			"Prompt Uplift on\nGrok: grok-build-0.1 · transport http\nSuperGrok OAuth: not logged in (run grok login)\nGraph of Thought on";
 		expect(grokbotStatusLines(text)).toBe(
 			"Prompt Uplift on\nGrok CLI: not used (grok-bot host: Desk Lead answers every planner request)\nGraph of Thought on",
 		);

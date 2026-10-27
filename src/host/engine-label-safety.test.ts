@@ -193,16 +193,23 @@ describe("legacy diagnostic label safety", () => {
 		}
 	});
 
-	test("Grok HTTP and CLI labels keep effort but never expose an unsafe model", async () => {
+	test("Grok HTTP and CLI labels never expose an unsafe model and carry effort only where it applies", async () => {
 		for (const transport of ["http", "cli"] as const) {
 			for (const [, model] of models) {
 				const config = configWith({
 					grok: { ...defaultConfig().grok, transport, model, home: grokLogin() },
 				});
 				const selected = engineOf(await selectEngine(config, {}, "/repo", { host: "grok-build" }));
-				expect(selected.label).toBe("<opaque-model>@xhigh");
+				// An opaque id takes no effort, so the label is the bare placeholder.
+				expect(selected.label).toBe("<opaque-model>");
 				expect(JSON.stringify(selected)).not.toContain(sentinel);
 			}
+			const effortful = configWith({
+				grok: { ...defaultConfig().grok, transport, model: "grok-4.7", home: grokLogin() },
+			});
+			expect(
+				engineOf(await selectEngine(effortful, {}, "/repo", { host: "grok-build" })).label,
+			).toBe("grok-4.7@xhigh");
 		}
 	});
 
@@ -215,7 +222,7 @@ describe("legacy diagnostic label safety", () => {
 			const before = readdirSync(cli.cwd).sort();
 			const realTmp = realpathSync(tmpdir());
 			const host = route === "claude" ? "claude-code" : route === "muse" ? "muse" : "grok-build";
-			const argvLengths: Record<LegacyRoute, number> = { claude: 14, muse: 13, grok: 28 };
+			const argvLengths: Record<LegacyRoute, number> = { claude: 14, muse: 13, grok: 26 };
 			const lower = defaultConfig();
 			lower[route].bin = cli.bin;
 			if (route === "grok") {
@@ -334,7 +341,6 @@ describe("legacy diagnostic label safety", () => {
 										model,
 										instructions: "system",
 										input: "user",
-										reasoning: { effort: lower.grok.reasoningEffort },
 										stream: false,
 									},
 								}

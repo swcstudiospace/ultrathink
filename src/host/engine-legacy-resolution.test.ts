@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { NativeEngineSelector } from "./engine.ts";
-import { defaultConfig, mergeConfig } from "../config.ts";
+import { defaultConfig, mergeConfig, type UltrathinkConfig } from "../config.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
 import { engineLabel, GROK_LOGIN_REQUIRED, selectEngine, selectNativeEngine } from "./engine.ts";
 import {
@@ -35,9 +37,9 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 			source: "route-default",
 			reason: "route-default-model",
 			engineSelection: AUTO,
-			modelId: "sonnet",
+			modelId: "claude-haiku-5-5",
 			modelKnown: true,
-			label: "claude:sonnet [route default]",
+			label: "claude:claude-haiku-5-5 [route default]",
 		});
 	});
 
@@ -50,7 +52,7 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 				{ host: "grok-build" },
 			),
 		);
-		expect(http.label).toBe(`${ROUTE_DEFAULT_MODELS.grok}@xhigh`);
+		expect(http.label).toBe(ROUTE_DEFAULT_MODELS.grok);
 		expect(http.resolution).toEqual({
 			version: "1.0.0",
 			state: "default",
@@ -59,9 +61,9 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 			source: "route-default",
 			reason: "route-default-model",
 			engineSelection: AUTO,
-			modelId: "grok-4.7",
+			modelId: "grok-build-0.1",
 			modelKnown: true,
-			label: "grok:grok-4.7 [route default]",
+			label: "grok:grok-build-0.1 [route default]",
 		});
 		const viaShunt = engineOf(await selectEngine(shunt(), {}, "/repo", { host: "grok-build" }));
 		expect(viaShunt.resolution).toMatchObject({
@@ -70,7 +72,7 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 			source: "route-default",
 			modelId: ROUTE_DEFAULT_MODELS.grok,
 		});
-		expect(viaShunt.resolution.label).toBe("grok:grok-4.7@shunt [route default]");
+		expect(viaShunt.resolution.label).toBe("grok:grok-build-0.1@shunt [route default]");
 	});
 
 	test("unpinned Muse plans on the Muse entry", async () => {
@@ -91,16 +93,16 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 
 	test("a file pin is an override even when it equals the route default; so is any other configured value", async () => {
 		const pinned = mergeConfig(
-			{ claude: { model: "sonnet" }, muse: { model: "muse-spark-1.3-contributor" } },
+			{ claude: { model: "claude-haiku-5-5" }, muse: { model: "muse-spark-1.3-contributor" } },
 			defaultConfig(),
 		);
 		expect(await resolutionOf(pinned, {}, "claude-code")).toMatchObject({
 			state: "override",
 			source: "engine-model",
 			reason: "explicit-model",
-			modelId: "sonnet",
+			modelId: "claude-haiku-5-5",
 			modelKnown: true,
-			label: "claude:sonnet [override]",
+			label: "claude:claude-haiku-5-5 [override]",
 		});
 		expect(await resolutionOf(pinned, {}, "muse")).toMatchObject({
 			state: "override",
@@ -162,7 +164,7 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 			source: "route-default",
 			reason: "route-default-model",
 			modelId: ROUTE_DEFAULT_MODELS.grok,
-			label: "grok:grok-4.7@shunt [route default]",
+			label: "grok:grok-build-0.1@shunt [route default]",
 		});
 	});
 
@@ -678,7 +680,7 @@ describe("Grok availability (AD-2, AD-2a, AC-15-043)", () => {
 		const selected = engineOf(
 			await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "grok-build" }),
 		);
-		expect(selected.label).toBe("claude:sonnet (grok fallback)");
+		expect(selected.label).toBe("claude:claude-haiku-5-5 (grok fallback)");
 		expect(selected.resolution).toEqual({
 			version: "1.0.0",
 			state: "default",
@@ -689,7 +691,7 @@ describe("Grok availability (AD-2, AD-2a, AC-15-043)", () => {
 			engineSelection: AUTO,
 			modelId: ROUTE_DEFAULT_MODELS.claude,
 			modelKnown: true,
-			label: "claude:sonnet [configured fallback · grok unavailable]",
+			label: "claude:claude-haiku-5-5 [configured fallback · grok unavailable]",
 		});
 		await expect(selected.complete("system", "user")).rejects.toThrow();
 		expect(spy.ran()).toBe(true);
@@ -731,7 +733,7 @@ describe("Grok availability (AD-2, AD-2a, AC-15-043)", () => {
 	test("grok.enabled: false keeps the documented Claude route, recorded as a configured fallback", async () => {
 		const config = configWith({ grok: { ...defaultConfig().grok, enabled: false } });
 		const auto = engineOf(await selectEngine(config, {}, "/repo", { host: "grok-build" }));
-		expect(auto.label).toBe("claude:sonnet");
+		expect(auto.label).toBe("claude:claude-haiku-5-5");
 		expect(auto.resolution).toMatchObject({
 			state: "default",
 			transport: "claude-cli",
@@ -789,5 +791,206 @@ describe("Grok availability (AD-2, AD-2a, AC-15-043)", () => {
 			await resolutionOf(configWith({ grok: { ...missing, enabled: false } }), {}, "grok-build"),
 		];
 		for (const record of records) expect(record.reason).not.toBe("provider-disabled");
+	});
+});
+
+describe("call-time failover (claude.fallbackToGrok and the Grok model chain)", () => {
+	const PLAN_LIMIT = JSON.stringify({
+		type: "result",
+		is_error: true,
+		result: "You've hit your session limit · resets 3:45pm",
+	});
+	const OK_RESULT = JSON.stringify({ type: "result", is_error: false, result: "CLAUDE_REPLY" });
+	const CLAUDE_FIRST = "claude:claude-haiku-5-5";
+	const RATE_LIMIT_ZERO =
+		'{"code":"resource-exhausted","error":"Too many requests for team t-1 and model grok-build-0.1. Your team\'s rate limit is — Requests per Minute (actual/limit): 0/0. Your rate limit tier is determined based on your historical API spend."}';
+
+	/** A `claude` stub that logs whether `ANTHROPIC_API_KEY` reached it, then prints `out` and exits `code`. */
+	function claudeStub(out: string, code = 0): { bin: string; keyLog: () => string[] } {
+		const dir = tempDir("ultrathink-engine-claude-stub-");
+		const bin = join(dir, "claude");
+		const outFile = join(dir, "out.json");
+		const logFile = join(dir, "calls.log");
+		writeFileSync(outFile, out);
+		writeFileSync(
+			bin,
+			[
+				"#!/bin/sh",
+				"cat >/dev/null",
+				`echo "key=\${ANTHROPIC_API_KEY:+set}" >> '${logFile}'`,
+				`cat '${outFile}'`,
+				`exit ${code}`,
+			].join("\n"),
+		);
+		chmodSync(bin, 0o755);
+		return {
+			bin,
+			keyLog: () => {
+				try {
+					return readFileSync(logFile, "utf8").trim().split("\n");
+				} catch {
+					// reason: the stub never ran, so no log exists
+					return [];
+				}
+			},
+		};
+	}
+
+	/** A local gateway; `answer` decides each reply and sees the request path and JSON body. */
+	function gateway(answer: (path: string, body: { model?: string }) => Response): {
+		origin: string;
+		models: string[];
+		stop: () => void;
+	} {
+		const models: string[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(request) {
+				const body = (await request.json()) as { model?: string };
+				models.push(body.model ?? "");
+				return answer(new URL(request.url).pathname, body);
+			},
+		});
+		return { origin: `http://127.0.0.1:${server.port}`, models, stop: () => server.stop(true) };
+	}
+
+	const shuntReply = () => Response.json({ content: [{ type: "text", text: "GATEWAY_REPLY" }] });
+
+	function claudeConfig(
+		bin: string,
+		fallbackToGrok: boolean,
+		grok: Partial<UltrathinkConfig["grok"]>,
+		auth: "plan" | "api-key" = "plan",
+	) {
+		return configWith({
+			claude: { ...defaultConfig().claude, bin, fallbackToGrok, auth },
+			grok: { ...defaultConfig().grok, ...grok },
+		});
+	}
+
+	test("fallbackToGrok: a plan-limit Claude failure continues on Grok, reported as a failover, not an error", async () => {
+		const claude = claudeStub(PLAN_LIMIT, 1);
+		const gw = gateway(shuntReply);
+		try {
+			const config = claudeConfig(claude.bin, true, {
+				transport: "shunt",
+				shuntBaseUrl: gw.origin,
+			});
+			const selected = engineOf(
+				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),
+			);
+			expect(selected.label).toBe(CLAUDE_FIRST);
+			expect(selected.resolution.modelId).toBe("claude-haiku-5-5");
+			expect(selected.failover?.()).toBeUndefined();
+			expect(await selected.complete("system", "user")).toBe("GATEWAY_REPLY");
+			expect(selected.failover?.()).toBe(`${CLAUDE_FIRST} → grok:grok-build-0.1 (plan-limit)`);
+			expect(selected.label).toBe(CLAUDE_FIRST);
+			expect(selected.resolution.modelId).toBe("claude-haiku-5-5");
+			expect(selected.error()).toBeUndefined();
+			expect(claude.keyLog()).toHaveLength(1);
+			expect(gw.models).toEqual(["grok-build-0.1"]);
+		} finally {
+			gw.stop();
+		}
+	});
+
+	test("fallbackToGrok off: the plan-limit error propagates and there is no failover", async () => {
+		const claude = claudeStub(PLAN_LIMIT, 1);
+		const gw = gateway(shuntReply);
+		try {
+			const config = claudeConfig(claude.bin, false, {
+				transport: "shunt",
+				shuntBaseUrl: gw.origin,
+			});
+			const selected = engineOf(
+				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),
+			);
+			await expect(selected.complete("system", "user")).rejects.toThrow(/session limit/);
+			expect(selected.failover).toBeUndefined();
+			expect(selected.error()).toContain("session limit");
+			expect(gw.models).toEqual([]);
+		} finally {
+			gw.stop();
+		}
+	});
+
+	test("fallbackToGrok on without a usable Grok login stays a single Claude candidate", async () => {
+		const claude = claudeStub(PLAN_LIMIT, 1);
+		const config = claudeConfig(claude.bin, true, { transport: "http", home: emptyHome() });
+		const selected = engineOf(
+			await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),
+		);
+		expect(selected.failover).toBeUndefined();
+		await expect(selected.complete("system", "user")).rejects.toThrow(/session limit/);
+		expect(selected.failover).toBeUndefined();
+	});
+
+	test("a selected Grok route walks grok.model then grok.fallbackModels, skipping a model the session cannot use", async () => {
+		const gw = gateway((_path, body) =>
+			body.model === "grok-build-0.1"
+				? new Response(RATE_LIMIT_ZERO, { status: 429 })
+				: Response.json({ output_text: "HTTP_REPLY" }),
+		);
+		try {
+			const config = configWith({
+				grok: { ...defaultConfig().grok, home: grokLogin(), baseUrl: `${gw.origin}/v1` },
+			});
+			const selected = engineOf(
+				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "grok-build" }),
+			);
+			expect(selected.label).toBe("grok-build-0.1");
+			expect(await selected.complete("system", "user")).toBe("HTTP_REPLY");
+			expect(selected.failover?.()).toBe("grok:grok-build-0.1 → grok:grok-4.7 (model-unavailable)");
+			expect(selected.label).toBe("grok-build-0.1");
+			expect(selected.resolution.modelId).toBe("grok-build-0.1");
+			// The dead model is in cooldown: the second call goes straight to the fallback model.
+			expect(await selected.complete("system", "user")).toBe("HTTP_REPLY");
+			expect(gw.models).toEqual(["grok-build-0.1", "grok-4.7", "grok-4.7"]);
+		} finally {
+			gw.stop();
+		}
+	});
+
+	test("a host wire override names one exact model: no model chain", async () => {
+		const gw = gateway(() => new Response(RATE_LIMIT_ZERO, { status: 429 }));
+		try {
+			const config = configWith({
+				grok: { ...defaultConfig().grok, home: grokLogin(), baseUrl: `${gw.origin}/v1` },
+			});
+			config.models.hosts["grok-build"] = { provider: "", model: "wire-model" };
+			const selected = engineOf(
+				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "grok-build" }),
+			);
+			expect(selected.failover).toBeUndefined();
+			await expect(selected.complete("system", "user")).rejects.toThrow(/HTTP 429/);
+			expect(gw.models).toEqual(["wire-model"]);
+		} finally {
+			gw.stop();
+		}
+	});
+
+	test("the claude child never sees ANTHROPIC_API_KEY by default, and sees it with claude.auth api-key", async () => {
+		const saved = process.env.ANTHROPIC_API_KEY;
+		process.env.ANTHROPIC_API_KEY = "fixture-not-a-real-key";
+		try {
+			for (const [auth, expected] of [
+				["plan", "key="],
+				["api-key", "key=set"],
+			] as const) {
+				const claude = claudeStub(OK_RESULT);
+				const config = claudeConfig(claude.bin, false, {}, auth);
+				const selected = engineOf(
+					await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), {
+						host: "claude-code",
+					}),
+				);
+				expect(await selected.complete("system", "user")).toBe("CLAUDE_REPLY");
+				expect(claude.keyLog()).toEqual([expected]);
+			}
+		} finally {
+			if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+			else process.env.ANTHROPIC_API_KEY = saved;
+		}
 	});
 });
