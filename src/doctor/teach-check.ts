@@ -3,20 +3,25 @@
 /**
  * The `memory` doctor section: is the Teachable Moments pipeline (observe, outbox, local lessons) working? Filesystem
  * reads only: no network, no child process, and nothing is created. The outbox is read directly (never through
- * `openStore`, which creates directories). Lesson text is never read; only counts, ages and run-log reasons.
+ * `openStore`, which creates directories). Lesson text is never reported; a lesson file is read only for its two
+ * timestamps, because its mtime is not the capture time: retain and recall rewrite the file.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { readRuns } from "../teach/runlog.ts";
 import { storeDir } from "../teach/store.ts";
-import { TEACH_KILL_ENV } from "../teach/types.ts";
+import { type CaptureMode, TEACH_KILL_ENV } from "../teach/types.ts";
 import { formatAge } from "./state-check.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FAILURE_STREAK = 3;
+const STALE_LESSON_MS = 3 * DAY_MS;
+const ACTIVE_SESSION_MS = DAY_MS;
+/** The store's own cap for one lesson file (`MOMENT_MAX_BYTES` in `teach/skills.ts`). */
+const LESSON_MAX_BYTES = 64 * 1024;
 
 interface OutboxItem {
 	enqueuedAt: number;
@@ -133,23 +138,72 @@ function observeFinding(stateDir: string, now: number): Finding {
 	};
 }
 
-function momentsFinding(dir: string, now: number): Finding | undefined {
-	const names = jsonFiles(join(dir, "moments"));
-	if (names.length === 0 && !dirExists(join(dir, "moments"))) return undefined;
+/**
+ * Epoch ms of the newest capture: a lesson's `lastSeenAt` (captured again) or its `createdAt`. Never the file mtime.
+ * Like the store's own reader it skips a symlink and a file over 64 KiB: they count as lessons but give no age.
+ */
+function newestCapture(dir: string, names: readonly string[]): number {
 	let newest = 0;
 	for (const name of names) {
 		try {
-			newest = Math.max(newest, statSync(join(dir, "moments", name)).mtimeMs);
+			const path = join(dir, "moments", name);
+			const stat = lstatSync(path);
+			if (!stat.isFile() || stat.size > LESSON_MAX_BYTES) continue;
+			const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+			if (typeof raw !== "object" || raw === null) continue;
+			const { lastSeenAt, createdAt } = raw as Record<string, unknown>;
+			for (const stamp of [lastSeenAt, createdAt]) {
+				const at = typeof stamp === "string" ? Date.parse(stamp) : Number.NaN;
+				if (Number.isFinite(at)) newest = Math.max(newest, at);
+			}
 		} catch {
-			// reason: a file removed between listing and stat is simply not counted for the age.
+			// reason: one unreadable lesson must not hide the others; it still counts as a file.
 		}
 	}
-	const age = newest > 0 ? `, newest ${formatAge(Math.max(0, now - newest))} old` : "";
+	return newest;
+}
+
+/** The newest write to a session record: proof that Ultrathink planned a run on this machine. 0 when there is none. */
+function newestSession(stateDir: string): number {
+	let newest = 0;
+	for (const name of jsonFiles(join(stateDir, "sessions"))) {
+		try {
+			newest = Math.max(newest, statSync(join(stateDir, "sessions", name)).mtimeMs);
+		} catch {
+			// reason: a record removed between listing and stat is not activity.
+		}
+	}
+	return newest;
+}
+
+function momentsFinding(
+	stateDir: string,
+	dir: string,
+	now: number,
+	capture: CaptureMode,
+): Finding | undefined {
+	const names = jsonFiles(join(dir, "moments"));
+	if (names.length === 0 && !dirExists(join(dir, "moments"))) return undefined;
+	const newest = newestCapture(dir, names);
+	const idle = Math.max(0, now - newest);
+	const title = `${plural(names.length, "local lesson")}${newest > 0 ? `, newest captured ${formatAge(idle)} ago` : ""}`;
+	const session = newestSession(stateDir);
+	const stalled =
+		capture !== "explicit" &&
+		newest > 0 &&
+		idle > STALE_LESSON_MS &&
+		now - session < ACTIVE_SESSION_MS;
+	if (!stalled) return { id: "memory.moments", section: "memory", level: "info", title };
 	return {
 		id: "memory.moments",
 		section: "memory",
-		level: "info",
-		title: `${plural(names.length, "local lesson")}${age}`,
+		level: "warn",
+		title: `${title}, yet a session ran ${formatAge(Math.max(0, now - session))} ago`,
+		detail: [
+			`Capture mode is "${capture}": a finished run should hand a digest to teach observe.`,
+			"The digest is built inside the host process, so a host started before the plugin was updated keeps the old capture code.",
+		].join("\n"),
+		fix: "Check the observe line above, restart the host if the plugin changed since it started, finish a run, then run bin/ultrathink doctor again",
 	};
 }
 
@@ -212,7 +266,8 @@ export function checkTeach(deps: DoctorDeps): Finding[] {
 			},
 		];
 	}
-	if (!loadConfig(claudeConfigPaths(deps.cwd, deps.env)).teach.enabled) {
+	const teach = loadConfig(claudeConfigPaths(deps.cwd, deps.env)).teach;
+	if (!teach.enabled) {
 		return [
 			{
 				id: "memory.teach.off",
@@ -228,7 +283,7 @@ export function checkTeach(deps: DoctorDeps): Finding[] {
 	const findings = [outboxFinding(dir, now), observeFinding(stateDir, now)];
 	const inbox = inboxFinding(stateDir, now);
 	if (inbox) findings.push(inbox);
-	const moments = momentsFinding(dir, now);
+	const moments = momentsFinding(stateDir, dir, now, teach.capture);
 	if (moments) findings.push(moments);
 	return findings;
 }

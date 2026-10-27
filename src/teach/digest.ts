@@ -256,6 +256,24 @@ export function digestFromClaudeTranscript(
 	return finish(turns, toolCalls, meta, interrupted ? "interrupted" : undefined);
 }
 
+/**
+ * What the user typed for a `/skill:` run. Omp delivers it as a `custom` message, never a `user` one, and its `content`
+ * is the whole skill body, which the user did not write. The words are in `details`: the submitted draft, else
+ * `/skill:<name> <args>`. Autoload and agent injections carry another attribution and are not a user turn.
+ */
+function skillPromptText(rec: Record<string, unknown>): string {
+	if (rec.customType !== "skill-prompt" || rec.attribution !== "user") return "";
+	const details = rec.details;
+	if (!details || typeof details !== "object") return "";
+	const { prompt, name, args } = details as Record<string, unknown>;
+	const typed = nonEmpty(prompt);
+	if (typed) return typed;
+	const skill = nonEmpty(name);
+	if (!skill) return "";
+	const rest = nonEmpty(args);
+	return rest ? `/skill:${skill} ${rest}` : `/skill:${skill}`;
+}
+
 export function digestFromAgentMessages(
 	messages: readonly unknown[],
 	meta: DigestMeta,
@@ -266,9 +284,9 @@ export function digestFromAgentMessages(
 	for (const message of messages) {
 		if (!message || typeof message !== "object") continue;
 		const rec = message as Record<string, unknown>;
-		if (rec.role === "user") {
+		if (rec.role === "user" || rec.role === "custom") {
 			if (rec.synthetic === true) continue;
-			const text = textParts(rec.content);
+			const text = rec.role === "user" ? textParts(rec.content) : skillPromptText(rec);
 			if (text && !isNoise(text)) turns.push({ role: "user", text });
 		} else if (rec.role === "assistant") {
 			lastStop = rec.stopReason;

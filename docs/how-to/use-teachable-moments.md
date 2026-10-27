@@ -183,6 +183,8 @@ Every `teach observe` run also replays due outbox entries (at most 20 per run), 
 
 Each observe run is recorded in `<state dir>/teach/runs/`, one small JSON file per run: `at` (epoch ms), `sessionId`, `outcome` (`captured` or `skipped`), `captured` (count), and, for a skip, `skipped` (reason, at most 80 characters) and `detail` (the failure text, at most 160 characters, for example `Credit balance is too low`). Secrets are redacted. The newest 50 files are kept. The files never hold lesson text. `bin/ultrathink doctor` reads them in its `memory` section.
 
+A run is handed to `teach observe` when it starts from a prompt of yours: a typed message or, on Omp, a `/skill:<name>` you invoked. The digest's user turn is what you typed (`/skill:<name> <args>`), never the skill's own text. A run that resumes on an agent-side message alone, such as an async result or a ship nudge, has no prompt of yours and is not captured. The host builds the digest in its own process, so restart it after updating the plugin.
+
 ## 7. Promote a lesson to a skill
 
 `teach promote --due` lists lessons that are due. It does not install anything. A lesson is due when it is confirmed, not already promoted or superseded, and either its occurrence count is at least `teach.promoteAfter` (default 3, from 2 to 20) or its kind is `playbook`. Newest first.

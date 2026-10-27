@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { appendRun } from "../teach/runlog.ts";
@@ -255,15 +263,90 @@ describe("checkTeach", () => {
 		expect(byId(checkTeach(deps), "memory.observe").level).toBe("error");
 	});
 
-	test("local lessons are counted with the age of the newest by mtime", () => {
-		writeJson(join(teachDir(), "moments", "a.json"), { id: "a" });
-		writeJson(join(teachDir(), "moments", "b.json"), { id: "b" });
-		const stamp = (NOW - 3 * DAY) / 1000;
-		utimesSync(join(teachDir(), "moments", "a.json"), stamp, stamp);
-		utimesSync(join(teachDir(), "moments", "b.json"), stamp, stamp);
-		expect(byId(checkTeach(deps), "memory.moments")).toMatchObject({
-			level: "info",
-			title: "2 local lessons, newest 3 days old",
+	describe("local lessons", () => {
+		const lesson = (id: string, createdAt: number, lastSeenAt = createdAt): void =>
+			writeJson(join(teachDir(), "moments", `${id}.json`), {
+				id,
+				createdAt: new Date(createdAt).toISOString(),
+				lastSeenAt: new Date(lastSeenAt).toISOString(),
+			});
+
+		/** A session record written `ago` ms before NOW: the proof that a run happened on this machine. */
+		function session(ago: number): void {
+			const path = join(dir, "state", "sessions", "s1.json");
+			writeJson(path, { sessionId: "s1" });
+			utimesSync(path, (NOW - ago) / 1000, (NOW - ago) / 1000);
+		}
+
+		test("the age comes from the lesson's own timestamps, not from a file written since by retain or recall", () => {
+			lesson("a", NOW - 3 * DAY);
+			lesson("b", NOW - 4 * DAY, NOW - 2 * DAY);
+			// The Hindsight retain and the recall counter rewrite a lesson file, so its mtime is "now".
+			for (const id of ["a", "b"])
+				utimesSync(join(teachDir(), "moments", `${id}.json`), NOW / 1000, NOW / 1000);
+			expect(byId(checkTeach(deps), "memory.moments")).toMatchObject({
+				level: "info",
+				title: "2 local lessons, newest captured 2 days ago",
+			});
+		});
+
+		test("a file without timestamps is still counted and gives no age", () => {
+			writeJson(join(teachDir(), "moments", "a.json"), { id: "a" });
+			writeFileSync(join(teachDir(), "moments", "b.json"), "{not json");
+			expect(byId(checkTeach(deps), "memory.moments")).toMatchObject({
+				level: "info",
+				title: "2 local lessons",
+			});
+		});
+
+		test("a symlink and an oversized file are counted but never read for an age", () => {
+			lesson("a", NOW - 3 * DAY);
+			const fresh = {
+				createdAt: new Date(NOW).toISOString(),
+				lastSeenAt: new Date(NOW).toISOString(),
+			};
+			// Neither may make the store look fresh: the store's own reader skips both.
+			writeJson(join(dir, "outside.json"), fresh);
+			symlinkSync(join(dir, "outside.json"), join(teachDir(), "moments", "link.json"));
+			writeJson(join(teachDir(), "moments", "big.json"), { ...fresh, pad: "x".repeat(70_000) });
+			expect(byId(checkTeach(deps), "memory.moments")).toMatchObject({
+				level: "info",
+				title: "3 local lessons, newest captured 3 days ago",
+			});
+		});
+
+		test("nothing captured for over 3 days while a session ran today warns with the cause to check", () => {
+			lesson("a", NOW - 4 * DAY);
+			session(2 * HOUR);
+			const finding = byId(checkTeach(deps), "memory.moments");
+			expect(finding.level).toBe("warn");
+			expect(finding.title).toBe(
+				"1 local lesson, newest captured 4 days ago, yet a session ran 2 hours ago",
+			);
+			expect(finding.detail).toContain('Capture mode is "auto"');
+			expect(finding.detail).toContain("host started before the plugin was updated");
+			expect(finding.fix).toContain("restart the host");
+		});
+
+		test.each([
+			["a lesson was captured within 3 days", () => lesson("a", NOW - 2 * DAY), 2 * HOUR],
+			["no session ran in the last day", () => lesson("a", NOW - 10 * DAY), 2 * DAY],
+		])("stays info when %s", (_name, seed, sessionAgo) => {
+			seed();
+			session(sessionAgo);
+			expect(byId(checkTeach(deps), "memory.moments").level).toBe("info");
+		});
+
+		test("explicit capture never warns: lessons only arrive when the user captures one", () => {
+			writeJson(join(dir, "xdg", "ultrathink", "config.json"), { teach: { capture: "explicit" } });
+			lesson("a", NOW - 10 * DAY);
+			session(HOUR);
+			expect(byId(checkTeach(deps), "memory.moments").level).toBe("info");
+		});
+
+		test("a store with no session records yet stays info", () => {
+			lesson("a", NOW - 30 * DAY);
+			expect(byId(checkTeach(deps), "memory.moments").level).toBe("info");
 		});
 	});
 
