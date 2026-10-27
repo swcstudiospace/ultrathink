@@ -31,7 +31,7 @@ import {
 	targetForHost,
 } from "./promote.ts";
 import { formatLessonsSection, recallLessons } from "./recall.ts";
-import { redactText } from "./redact.ts";
+import { redactLine, redactText } from "./redact.ts";
 import { hindsightReadiness, momentCounts, teachStatusLine } from "./status.ts";
 import { openStore, storeDir } from "./store.ts";
 import { MOMENT_KINDS, MOMENT_ORIGINS, MOMENT_STATUSES } from "./types.ts";
@@ -614,14 +614,29 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 		const digest = parseDigest(raw);
 		if (!digest) throw new UsageError("digest does not match the TeachDigest shape");
 		const outcome = await observeDigest(digest, ctx);
-		appendRun(ctx.stateDir, {
-			at: ctx.now?.() ?? Date.now(),
-			sessionId: digest.sessionId,
-			outcome: outcome.skipped ? "skipped" : "captured",
-			captured: outcome.captured.length,
-			...(outcome.skipped ? { skipped: outcome.skipped } : {}),
-			...(outcome.detail ? { detail: outcome.detail } : {}),
-		});
+		// A save that did not reach disk (`retain: "off"`) is not a capture: count only the stored ones.
+		const stored = outcome.captured.filter((c) => c.retain !== "off").length;
+		const notSaved = outcome.captured.length > 0 && stored === 0;
+		appendRun(
+			ctx.stateDir,
+			notSaved
+				? {
+						at: ctx.now?.() ?? Date.now(),
+						sessionId: digest.sessionId,
+						outcome: "skipped",
+						captured: 0,
+						skipped: "lesson not saved",
+						detail: redactLine(outcome.captured[0]?.reason ?? "store unavailable", 160),
+					}
+				: {
+						at: ctx.now?.() ?? Date.now(),
+						sessionId: digest.sessionId,
+						outcome: outcome.skipped ? "skipped" : "captured",
+						captured: stored,
+						...(outcome.skipped ? { skipped: outcome.skipped } : {}),
+						...(outcome.detail ? { detail: outcome.detail } : {}),
+					},
+		);
 		const value: Record<string, unknown> = {
 			ok: true,
 			captured: outcome.captured.map(captureJson),

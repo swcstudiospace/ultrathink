@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { appendRun } from "../teach/runlog.ts";
 import { runDoctorCommand } from "./cli.ts";
 import { checkTeach } from "./teach-check.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
@@ -37,12 +38,12 @@ describe("checkTeach", () => {
 		writeJson(join(teachDir(), "outbox", `${id}.json`), { id, ...entry });
 	}
 
-	function runs(lines: RunLine[], extra = ""): void {
+	const runsDir = (): string => join(teachDir(), "runs");
+
+	function runs(lines: RunLine[]): void {
+		rmSync(runsDir(), { recursive: true, force: true });
 		mkdirSync(teachDir(), { recursive: true });
-		writeFileSync(
-			join(teachDir(), "observe-runs.ndjson"),
-			`${lines.map((line) => JSON.stringify(line)).join("\n")}\n${extra}`,
-		);
+		for (const line of lines) appendRun(join(dir, "state"), line);
 	}
 
 	function failed(n: number, detail = "Credit balance is too low"): RunLine {
@@ -167,6 +168,18 @@ describe("checkTeach", () => {
 		expect(finding.detail).toBe("no engine: claude CLI not found");
 	});
 
+	test("three lesson-not-saved skips give the observe error with the detail", () => {
+		const unsaved = (n: number): RunLine => ({
+			...noSignal(n),
+			skipped: "lesson not saved",
+			detail: "store unavailable",
+		});
+		runs([unsaved(3), unsaved(2), unsaved(1)]);
+		const finding = byId(checkTeach(deps), "memory.observe");
+		expect(finding.level).toBe("error");
+		expect(finding.detail).toBe("store unavailable");
+	});
+
 	test("three unexpected-error skips give the observe error", () => {
 		const errored = (n: number): RunLine => ({ ...noSignal(n), skipped: "error" });
 		runs([errored(3), errored(2), errored(1)]);
@@ -236,8 +249,9 @@ describe("checkTeach", () => {
 		expect(byId(checkTeach(deps), "memory.observe").level).toBe("ok");
 	});
 
-	test("malformed NDJSON lines are ignored", () => {
-		runs([failed(3), failed(2), failed(1)], "{not json\n[]\n");
+	test("a malformed run file is ignored", () => {
+		runs([failed(3), failed(2), failed(1)]);
+		writeFileSync(join(runsDir(), "9999999999999-deadbeef.json"), "{not json");
 		expect(byId(checkTeach(deps), "memory.observe").level).toBe("error");
 	});
 
@@ -259,6 +273,21 @@ describe("checkTeach", () => {
 		const findings = checkTeach(deps);
 		expect(findings).toHaveLength(1);
 		expect(findings[0]).toMatchObject({ id: "memory.teach.off", level: "info" });
+	});
+
+	test("ULTRATHINK_TEACH=0 gives the single info finding and doctor exits 0", async () => {
+		deps.env.ULTRATHINK_TEACH = "0";
+		runs([failed(3), failed(2), failed(1)]);
+		outbox("a", { op: { op: "tags" }, attempts: 0, nextAt: 0, enqueuedAt: NOW - 3 * DAY });
+		const findings = checkTeach(deps);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({
+			id: "memory.teach.off",
+			level: "info",
+			title: "Teachable Moments are off (ULTRATHINK_TEACH=0)",
+		});
+		const result = await runDoctorCommand([], deps);
+		expect(result.exitCode).toBe(0);
 	});
 
 	test("through runDoctorCommand three failures exit 1 and a secret in detail is masked", async () => {

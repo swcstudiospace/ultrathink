@@ -181,7 +181,7 @@ Hermes starts a detached `teach sync` when a session ends, if Teachable Moments 
 
 Every `teach observe` run also replays due outbox entries (at most 20 per run), so after each agent run on Omp, Claude Code, Grok Build and Muse the outbox drains without a command. A manual `teach sync` is only needed to force it. The observe output gains a `Sync: <done> done · <pending> pending` line and a `sync` object in `--json`. A failed replay never changes the exit code of `teach observe`.
 
-Each observe run is recorded in `<state dir>/teach/observe-runs.ndjson`, one JSON object per line: `at` (epoch ms), `sessionId`, `outcome` (`captured` or `skipped`), `captured` (count), and, for a skip, `skipped` (reason, at most 80 characters) and `detail` (the failure text, at most 160 characters, for example `Credit balance is too low`). Secrets are redacted. The newest 50 lines are kept. The file never holds lesson text. `bin/ultrathink doctor` reads it in its `memory` section.
+Each observe run is recorded in `<state dir>/teach/runs/`, one small JSON file per run: `at` (epoch ms), `sessionId`, `outcome` (`captured` or `skipped`), `captured` (count), and, for a skip, `skipped` (reason, at most 80 characters) and `detail` (the failure text, at most 160 characters, for example `Credit balance is too low`). Secrets are redacted. The newest 50 files are kept. The files never hold lesson text. `bin/ultrathink doctor` reads them in its `memory` section.
 
 ## 7. Promote a lesson to a skill
 

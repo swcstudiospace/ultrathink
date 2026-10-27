@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * Run log of detached `teach observe` processes, whose stdio is ignored: one NDJSON line per run so a failure
- * (for example a distiller that cannot authenticate) is visible to `doctor` and to the user. Holds no lesson text.
- * Never throws.
+ * Run log of detached `teach observe` processes, whose stdio is ignored: one small JSON file per run under
+ * `<stateDir>/teach/runs/` so a failure (for example a distiller that cannot authenticate) is visible to `doctor` and
+ * to the user. Each run is its own atomically written file, so there is no read-modify-write and concurrent observers
+ * cannot drop one another's records. File names sort chronologically; only the newest 50 are kept. Holds no lesson
+ * text. Never throws.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { withFileLock } from "../claude/atomic.ts";
+import { writeFileAtomic } from "../claude/atomic.ts";
 import { redactLine } from "./redact.ts";
 
-const MAX_LINES = 50;
-const FILE_NAME = "observe-runs.ndjson";
+const MAX_RUNS = 50;
+const AT_DIGITS = 13;
+const RUN_FILE = /^\d{13,}-[0-9a-f]{8}\.json$/;
 const SKIPPED_CHARS = 80;
 const DETAIL_CHARS = 160;
 
@@ -25,21 +28,21 @@ export interface ObserveRun {
 	detail?: string; // redactLine, at most 160 chars
 }
 
-function runsPath(stateDir: string): string {
-	return join(stateDir, "teach", FILE_NAME);
+function runsDir(stateDir: string): string {
+	return join(stateDir, "teach", "runs");
 }
 
-/** Appends one run, redacting and clipping `skipped` and `detail`. Keeps the newest 50 lines. Never throws. */
+/** Run file names, oldest first (the name starts with the zero-padded `at`). Throws when the directory cannot be listed. */
+function listRunFiles(dir: string): string[] {
+	return readdirSync(dir)
+		.filter((name) => RUN_FILE.test(name))
+		.sort();
+}
+
+/** Writes one run as its own file, redacting and clipping `skipped` and `detail`, then keeps the newest 50. Never throws. */
 export function appendRun(stateDir: string, run: ObserveRun): void {
 	try {
-		const dir = join(stateDir, "teach");
-		mkdirSync(dir, { recursive: true, mode: 0o700 });
-		try {
-			chmodSync(dir, 0o700);
-		} catch {
-			// reason: a directory we do not own keeps its mode
-		}
-		const path = runsPath(stateDir);
+		const dir = runsDir(stateDir);
 		const entry: ObserveRun = {
 			at: run.at,
 			sessionId: run.sessionId,
@@ -48,30 +51,18 @@ export function appendRun(stateDir: string, run: ObserveRun): void {
 			...(run.skipped ? { skipped: redactLine(run.skipped, SKIPPED_CHARS) } : {}),
 			...(run.detail ? { detail: redactLine(run.detail, DETAIL_CHARS) } : {}),
 		};
-		withFileLock(path, () => {
-			let prior = "";
-			try {
-				prior = readFileSync(path, "utf8");
-			} catch (error) {
-				// reason: only a missing file means no prior runs; any other read error throws before the rename, so runs already on disk are kept
-				if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw error;
-			}
-			const lines = prior.split("\n").filter((line) => line !== "");
-			lines.push(JSON.stringify(entry));
-			const tail = lines.slice(-MAX_LINES);
-			const tmp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-			writeFileSync(tmp, `${tail.join("\n")}\n`, { mode: 0o600 });
-			try {
-				chmodSync(tmp, 0o600);
-			} catch {
-				// reason: mode was set at create
-			}
-			renameSync(tmp, path);
-		});
+		const name = `${String(Math.max(0, Math.trunc(run.at))).padStart(AT_DIGITS, "0")}-${randomBytes(4).toString("hex")}.json`;
+		writeFileAtomic(join(dir, name), `${JSON.stringify(entry)}\n`, { mode: 0o600, dirMode: 0o700 });
 		try {
-			chmodSync(path, 0o600);
+			for (const old of listRunFiles(dir).slice(0, -MAX_RUNS)) {
+				try {
+					rmSync(join(dir, old), { force: true });
+				} catch {
+					// reason: an older run that cannot be removed is pruned by a later append
+				}
+			}
 		} catch {
-			// reason: the chmod only tightens a file the write just created; a failure leaves the mode the write set
+			// reason: pruning is best effort; the run is already written
 		}
 	} catch {
 		// reason: fail-open: the run log is diagnostics only
@@ -96,22 +87,23 @@ function parseRun(value: unknown): ObserveRun | undefined {
 	};
 }
 
-/** Parsed runs, oldest first, skipping malformed lines. Empty when the file is missing or unreadable. */
+/** Parsed runs, oldest first, from the newest 50 files, skipping malformed ones. Empty when the directory is missing or unreadable. */
 export function readRuns(stateDir: string): ObserveRun[] {
+	const dir = runsDir(stateDir);
+	let names: string[];
 	try {
-		const text = readFileSync(runsPath(stateDir), "utf8");
-		const runs: ObserveRun[] = [];
-		for (const line of text.split("\n")) {
-			if (line === "") continue;
-			try {
-				const run = parseRun(JSON.parse(line));
-				if (run) runs.push(run);
-			} catch {
-				// reason: skip one bad line
-			}
-		}
-		return runs;
+		names = listRunFiles(dir).slice(-MAX_RUNS);
 	} catch {
 		return [];
 	}
+	const runs: ObserveRun[] = [];
+	for (const name of names) {
+		try {
+			const run = parseRun(JSON.parse(readFileSync(join(dir, name), "utf8")));
+			if (run) runs.push(run);
+		} catch {
+			// reason: skip one unreadable or malformed run file
+		}
+	}
+	return runs;
 }

@@ -218,7 +218,7 @@ async function retainOne(
 	client: HindsightClient,
 	store: TeachStore,
 	ctx: TeachContext,
-): Promise<Failure | { ok: true; moment: TeachableMoment }> {
+): Promise<Failure | { ok: true; moment: TeachableMoment } | { ok: true; forgotten: true }> {
 	const documentId = documentIdFor(moment.id);
 	const sentContent = contentFor(moment);
 	let result: HindsightResult<RetainOutcome>;
@@ -252,7 +252,30 @@ async function retainOne(
 		};
 	// Reread before spreading retention metadata so a deferred completion cannot overwrite newer
 	// lesson state (a worker confirm, a merged capture) with the stale pre-await object.
-	const current = store.get(moment.id) ?? moment;
+	const current = store.get(moment.id);
+	if (!current) {
+		// The lesson was forgotten while the request was in flight. The remote document the request created cannot be
+		// unsent, so delete it (or queue the delete) and write nothing locally.
+		let deleted = false;
+		try {
+			deleted = (await client.deleteDocument(documentId)).ok;
+		} catch {
+			// reason: a failed delete is queued below
+		}
+		try {
+			dropRetainOps(store, moment.id);
+		} catch {
+			// reason: a leftover retain entry for a forgotten lesson is acknowledged by the next sync
+		}
+		if (!deleted) {
+			try {
+				store.enqueue({ op: "delete", documentId }, nowOf(ctx));
+			} catch {
+				// reason: the outbox is unwritable; the remote document stays until a later forget
+			}
+		}
+		return { ok: true, forgotten: true };
+	}
 	// Acknowledge only the revision the request carried: if a capture changed the lesson while this
 	// retain was pending, the remote holds the older text, so the newer text must stay unretained —
 	// with any queued retry intact — and reach Hindsight on a later sync.
@@ -290,6 +313,12 @@ async function settle(
 	const { client, reason } = hindsightFor(ctx);
 	if (!client) return { moment, retain: "local-only", reason };
 	const result = await retainOne(moment, client, store, ctx);
+	if (result.ok && "forgotten" in result)
+		return {
+			moment,
+			retain: "off",
+			reason: "the lesson was forgotten while it was being retained; nothing was kept",
+		};
 	if (result.ok) return { moment: result.moment, retain: "retained" };
 	// A cancelled lifetime never turns a failed retain into a queued outbox write.
 	if (ctx.signal?.aborted)
@@ -525,7 +554,8 @@ export async function syncOutbox(ctx: TeachContext): Promise<SyncOutcome> {
 				if (ctx.signal?.aborted) break;
 				const step = await retainOne(moment, client, store, ctx);
 				if (step.ok) {
-					done++;
+					// A forgotten lesson was handled (remote delete issued or queued) and is not a delivered retain.
+					if (!("forgotten" in step)) done++;
 					continue;
 				}
 				// Queue it so the backoff applies instead of retrying on every sync.

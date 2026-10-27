@@ -11,6 +11,7 @@ import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { readRuns } from "../teach/runlog.ts";
 import { storeDir } from "../teach/store.ts";
+import { TEACH_KILL_ENV } from "../teach/types.ts";
 import { formatAge } from "./state-check.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
 
@@ -92,6 +93,7 @@ function outboxFinding(dir: string, now: number): Finding {
 function isFailure(skipped: string | undefined): boolean {
 	return (
 		skipped === "distiller failed" ||
+		skipped === "lesson not saved" ||
 		skipped === "error" ||
 		(skipped?.startsWith("no engine") ?? false)
 	);
@@ -200,6 +202,16 @@ function dirExists(path: string): boolean {
 
 /** Outbox age, recent observe runs and the local lesson count. Never throws for a missing store; never writes. */
 export function checkTeach(deps: DoctorDeps): Finding[] {
+	if (deps.env[TEACH_KILL_ENV] === "0") {
+		return [
+			{
+				id: "memory.teach.off",
+				section: "memory",
+				level: "info",
+				title: "Teachable Moments are off (ULTRATHINK_TEACH=0)",
+			},
+		];
+	}
 	if (!loadConfig(claudeConfigPaths(deps.cwd, deps.env)).teach.enabled) {
 		return [
 			{

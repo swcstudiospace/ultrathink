@@ -1325,6 +1325,74 @@ describe("observe run log and outbox drain", () => {
 		]);
 	});
 
+	test("a run whose lessons could not be stored records a skipped run, not a capture", async () => {
+		const refused = join(root, ".planning", "state");
+		const result = await run(["observe", "--stdin", "--json"], {
+			stateDir: refused,
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => DISTILLED,
+		});
+		expect(result.code).toBe(0);
+		expect((json(result).captured as Json[]).length).toBe(1);
+		expect(readRuns(refused)).toEqual([
+			{
+				at: NOW,
+				sessionId: "session-1",
+				outcome: "skipped",
+				captured: 0,
+				skipped: "lesson not saved",
+				detail: "teach store is unavailable",
+			},
+		]);
+	});
+
+	test("a run where one of two lessons is stored records captured 1", async () => {
+		const lessons = JSON.stringify({
+			lessons: [
+				{
+					name: "First lesson",
+					description: "d",
+					body: "Body one.",
+					kind: "pitfall",
+					confidence: 0.7,
+				},
+				{
+					name: "Second lesson",
+					description: "d",
+					body: "Body two.",
+					kind: "pitfall",
+					confidence: 0.7,
+				},
+			],
+		});
+		let asked = 0;
+		const result = await run(["observe", "--stdin", "--json"], {
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => lessons,
+			env: { ...baseEnv(), OPENROUTER_API_KEY: JEV_KEY },
+			config: { ...config(), decisions: decisionsOn({ points: ["teachable"] }) },
+			// The Decisions call runs once per lesson, just before its capture: break the store after the first one.
+			fetch: (async () => {
+				asked += 1;
+				if (asked === 2) {
+					const moments = join(storeDir(stateDir), "moments");
+					rmSync(moments, { recursive: true, force: true });
+					writeFileSync(moments, "not a directory");
+				}
+				return Response.json({
+					model: "typesafe/jev-1.13-20260917",
+					answers: { teachable: { type: "noul", noul: 0.31 } },
+					usage: { input_tokens: 10, output_tokens: 0 },
+				});
+			}) as unknown as typeof fetch,
+		});
+		expect(result.code).toBe(0);
+		expect((json(result).captured as Json[]).length).toBe(2);
+		expect(readRuns(stateDir)).toEqual([
+			{ at: NOW, sessionId: "session-1", outcome: "captured", captured: 1 },
+		]);
+	});
+
 	test("observe replays a due outbox entry even when the digest is skipped", async () => {
 		queueTags();
 		const tagged: string[] = [];

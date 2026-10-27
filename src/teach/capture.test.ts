@@ -49,7 +49,9 @@ const err = (kind: HindsightError["kind"], message = "boom"): HindsightResult<ne
 
 interface FakeOptions {
 	bank?: string;
-	retain?: (item: RetainItem) => HindsightResult<RetainOutcome>;
+	retain?: (
+		item: RetainItem,
+	) => HindsightResult<RetainOutcome> | Promise<HindsightResult<RetainOutcome>>;
 	deleteDocument?: (id: string) => HindsightResult<boolean>;
 	setDocumentTags?: (id: string, tags: string[]) => HindsightResult<true>;
 }
@@ -808,6 +810,63 @@ describe("syncOutbox", () => {
 		expect(store.get(c.moment.id)?.retained).toBeUndefined();
 		expect(store.get(d.moment.id)?.retained).toBeUndefined();
 		expect(await syncOutbox(ctx)).toEqual({ done: 0, pending: 0 });
+	});
+
+	describe("a lesson forgotten while its retain is in flight", () => {
+		async function raceForget(deleteDocument?: FakeOptions["deleteDocument"]) {
+			const box = setup();
+			const created = await captureMoment(lesson(), box.ctx);
+			const id = created.moment.id;
+			const fake = fakeClient({
+				retain: async (item) => {
+					await forgetMoment(id, box.ctx);
+					return ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 });
+				},
+				...(deleteDocument ? { deleteDocument } : {}),
+			});
+			box.ctx.hindsight = fake.client;
+			const outcome = await syncOutbox(box.ctx);
+			return { ...box, ...fake, id, outcome };
+		}
+
+		test("is not revived locally and its remote document is deleted", async () => {
+			const { store, calls, id, outcome } = await raceForget();
+			expect(calls.retain).toHaveLength(1);
+			expect(store.get(id)).toBeUndefined();
+			expect(store.list()).toEqual([]);
+			expect(calls.deleteDocument).toEqual([`tm:${id}`]);
+			expect(store.outbox()).toEqual([]);
+			expect(outcome).toEqual({ done: 0, pending: 0 });
+		});
+
+		test("queues the remote delete when it fails", async () => {
+			const { store, calls, id, outcome } = await raceForget(() => err("server"));
+			expect(store.get(id)).toBeUndefined();
+			expect(calls.deleteDocument).toEqual([`tm:${id}`]);
+			expect(store.outbox().map((entry) => entry.op)).toEqual([
+				{ op: "delete", documentId: `tm:${id}` },
+			]);
+			expect(outcome).toEqual({ done: 0, pending: 1 });
+		});
+
+		test("a capture or confirm reports it as not kept", async () => {
+			const box = setup();
+			const created = await captureMoment(lesson({ origin: "observe" }), box.ctx);
+			const id = created.moment.id;
+			const fake = fakeClient({
+				retain: async (item) => {
+					await forgetMoment(id, box.ctx);
+					return ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 });
+				},
+			});
+			box.ctx.hindsight = fake.client;
+			const confirmed = await confirmMoment(id, box.ctx);
+			expect(confirmed).toMatchObject({ retain: "off" });
+			expect(confirmed?.reason).toContain("forgotten");
+			expect(box.store.get(id)).toBeUndefined();
+			expect(fake.calls.deleteDocument).toEqual([`tm:${id}`]);
+			expect(box.store.outbox()).toEqual([]);
+		});
 	});
 
 	test("a failed backfill is queued with backoff instead of being retried on every sync", async () => {
