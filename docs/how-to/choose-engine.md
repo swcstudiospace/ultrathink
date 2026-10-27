@@ -4,35 +4,46 @@ The **engine** is the model ultrathink calls to plan a prompt. It writes the spe
 
 - [Claude](#claude)
 - [Grok](#grok)
+- [The Grok model walk](#the-grok-model-walk)
+- [Claude to Grok fallback](#claude-to-grok-fallback)
 - [Muse](#muse)
 - [Omp: the session's own model](#omp-the-sessions-own-model)
 - [Switch engines](#switch-engines)
 - [Check which engine is active](#check-which-engine-is-active)
 - [Planning model states](#planning-model-states)
 - [When the engine fails](#when-the-engine-fails)
+- [Verified models](#verified-models)
 
 ## Claude
 
 ultrathink runs the Claude Code CLI headless (`claude -p`) for every planning call on the hosts whose engine resolves to Claude: Claude Code by default, Hermes when the session model is a Claude model or of an unknown family, Omp and every other host with `think.engine` set to `"claude"`, and a Grok route that one of the two Grok switches below hands to Claude. On Omp under `auto` it also runs the ship done check and the Teachable Moments distiller, which never use the session's model. Each call is a plain completion: no tools, no MCP servers and no settings sources, and it runs with `ULTRATHINK_CHILD=1` so the prompt hook never plans ultrathink's own calls.
 
+**Plan-first auth.** Claude is the primary engine and it runs on the plan login of the person who owns the machine: the `claude` CLI signed in with your own Claude plan (Pro or Max). Anthropic documents that with a plan login, `claude -p` still draws from your subscription limits (the 5-hour session and the weekly limit). The monthly API credits that Max and Team plans include do **not** cover plan-login `claude -p`. The plan is for its holder's own use: Anthropic does not permit routing other people's requests through plan credentials, so never put a plan login behind a multi-user service. ultrathink reads no credential out of the CLI's store; it only runs the CLI.
+
+Claude Code ranks credentials, and an `ANTHROPIC_API_KEY` in the environment outranks a plan login in `-p` mode (see "Authentication precedence" in the [Claude Code docs](https://code.claude.com/docs/en/authentication)). A stale or empty-balance key then fails every call with `Credit balance is too low`. So with `claude.auth: "plan"` (the default) ultrathink starts the child without `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and `CLAUDE_CODE_USE_FOUNDRY`, and the plan login authenticates. Your shell is not changed: an interactive `claude` still uses the key. `claude.auth: "api-key"` passes the environment through unchanged, for people who really use an API key. Only the user config file can set `claude.auth`.
+
+For headless machines, run `claude setup-token` once and export the one-year token it prints as `CLAUDE_CODE_OAUTH_TOKEN`; it bills to your plan and the child honors it.
+
 You need:
 
-- the `claude` CLI on `PATH` (or its path in `claude.bin`);
-- a working login for it. ultrathink uses whatever login the CLI already has, OAuth or API key. The calls count against that account.
+- the `claude` CLI on `PATH` (or its path in `claude.bin`), at least version 2.1.293 for the default model (`claude update` upgrades it);
+- a plan login for it (run `claude` and sign in with `/login`), or `CLAUDE_CODE_OAUTH_TOKEN`. The calls count against your plan's limits. When a limit is hit, see the [Claude to Grok fallback](#claude-to-grok-fallback).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `claude.model` | `"sonnet"` | Model alias passed as `--model`. `""` uses the CLI's own default model. The built-in value comes from the [route-default map](../configuration.md#route-defaults). |
+| `claude.model` | `"claude-haiku-5-5"` | Model passed as `--model`. `""` uses the CLI's own default model. The built-in value comes from the [route-default map](../configuration.md#route-defaults). |
+| `claude.auth` | `"plan"` | `"plan"` runs the child on the plan login and ignores the key variables above; `"api-key"` passes the environment through. User config only. |
+| `claude.fallbackToGrok` | `false` | Fail a failed Claude call over to the Grok route. User config only. See [Claude to Grok fallback](#claude-to-grok-fallback). |
 | `claude.bin` | `"claude"` | Binary to run. |
 | `claude.thinking` | `false` | Allow extended thinking in the planning calls. Off sets `MAX_THINKING_TOKENS=0` for the child, which is much faster. |
 | `claude.settingSources` | `""` | `--setting-sources` for the child. Empty loads none: fastest, and no nested hooks. |
 | `claude.callTimeoutMs` | `0` | Timeout for one call. `0` means no timer; the host's hook timeout still applies. |
 
-The `Engine:` line of `bin/ultrathink status` shows `claude:<model>`, for example `claude:sonnet`, or `claude:session default` when `claude.model` is `""`. The plan's model line shows how the model was chosen: `claude:sonnet [route default]` for the built-in model, `claude:<model> [override]` for a model set in a config file, and `claude:CLI default (model unobserved)` for `""`.
+The `Engine:` line of `bin/ultrathink status` shows `claude:<model>`, for example `claude:claude-haiku-5-5`, or `claude:session default` when `claude.model` is `""`. The `Claude:` line shows the model, the auth mode and whether the Grok fallback is on. The plan's model line shows how the model was chosen: `claude:claude-haiku-5-5 [route default]` for the built-in model, `claude:<model> [override]` for a model set in a config file (an old `claude.model` pin such as `"claude-sonnet-5-5"` keeps winning until you remove it), and `claude:CLI default (model unobserved)` for `""`. The removed `claude.fallbackToLogin` key is ignored if it is still in a config file.
 
 ## Grok
 
-Grok Build plans with Grok by default (`grok-4.7` at `xhigh` reasoning effort). Set `think.engine` to `"grok"` to plan with Grok on every host. `grok.enabled` (default `true`) must stay `true`; `false` forces Claude even when Grok is selected.
+Grok Build plans with Grok by default (`grok-build-0.1`, with no reasoning effort; `grok-4.7` at `xhigh` takes over when the session cannot serve `grok-build-0.1`, see [the model walk](#the-grok-model-walk)). Set `think.engine` to `"grok"` to plan with Grok on every host. `grok.enabled` (default `true`) must stay `true`; `false` forces Claude even when Grok is selected.
 
 Grok has three **transports**, the ways ultrathink reaches the model:
 
@@ -47,7 +58,7 @@ For `http` and `cli`:
 - The Grok home is `grok.home`, else `$GROK_HOME`, else `~/.grok`.
 - `bin/ultrathink status` calls this session "SuperGrok OAuth". You need a Grok account that can sign in to the Grok Build CLI.
 - When the session has expired and has a refresh token, ultrathink runs `grok models` once so the CLI refreshes it. ultrathink never calls the token endpoint itself.
-- Before planning, ultrathink checks the login. If it is missing or expired, the prompt goes through unplanned with the reason ``Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)``, which the Claude Code, Grok Build and Muse Code hook shows for a plain prompt. That is the same under `auto` on Grok Build and with `think.engine: "grok"`; the record says `grok:unresolved [grok-unavailable]`.
+- Before planning, ultrathink checks the login. If it is missing or expired, the prompt goes through unplanned with the reason ``Prompt Uplift skipped · Grok login required (run `grok login`)``, which the Claude Code, Grok Build and Muse Code hook shows for a plain prompt. That is the same under `auto` on Grok Build and with `think.engine: "grok"`; the record says `grok:unresolved [grok-unavailable]`.
 - Claude replaces a selected Grok route only through the two explicit, labeled user switches: `grok.fallbackToClaude: true` (HTTP/CLI login missing or expired) and `grok.enabled: false` (documented ‘forces Claude even when Grok is selected’). Without them, a missing or expired Grok login skips planning with the unchanged `GROK_LOGIN_REQUIRED` notice. Naming `think.engine: "claude"` is a deliberate engine choice, not a replacement.
 - With either switch, Claude plans on its own `claude.model`, never on the Grok model, and the plan's model line reads `claude:<model> [configured fallback · grok unavailable]`.
 
@@ -60,8 +71,9 @@ For `shunt`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `grok.model` | `"grok-4.7"` | Model for `http` and `cli`. |
-| `grok.reasoningEffort` | `"xhigh"` | `"low"`, `"medium"`, `"high"` or `"xhigh"`. Used by `http` and `cli`. |
+| `grok.model` | `"grok-build-0.1"` | First model for `http` and `cli`. |
+| `grok.fallbackModels` | `["grok-4.7"]` | Models tried, in order, after `grok.model` when the session cannot use it. `[]` means none. See [the model walk](#the-grok-model-walk). |
+| `grok.reasoningEffort` | `"xhigh"` | `"low"`, `"medium"`, `"high"` or `"xhigh"`. Used by `http` and `cli`, and sent only to `grok-4.5`, `grok-4.6` and `grok-4.7`, the models xAI documents it for (`grok-4.5` treats `xhigh` as `high`). Other models, including `grok-build-0.1`, get no effort and no `@<effort>` in their label. |
 | `grok.baseUrl` | `"https://cli-chat-proxy.grok.com/v1"` | Endpoint for `http`. |
 | `grok.bin` | `"grok"` | Grok CLI binary, for `cli` and for the session refresh. |
 | `grok.home` | `""` | Grok home; empty uses `$GROK_HOME`, else `~/.grok`. |
@@ -84,7 +96,32 @@ Example: Grok over your own gateway.
 }
 ```
 
-The `Engine:` status label is `<model>@<effort>` for `http` and `cli` (for example `grok-4.7@xhigh`) and `<shuntModel or model>@shunt` for `shunt`. The plan's model line reads, for example, `grok:grok-4.7 [route default]`.
+The `Engine:` status label is `<model>@<effort>` for `http` and `cli` when the model takes an effort (for example `grok-4.7@xhigh`), just `<model>` when it does not (`grok-build-0.1`), and `<shuntModel or model>@shunt` for `shunt`. The plan's model line reads, for example, `grok:grok-build-0.1 [route default]`.
+
+## The Grok model walk
+
+The `http` and `cli` transports try `grok.model` first and then each entry of `grok.fallbackModels`, in order, and skip a model your session cannot use. A model counts as unusable when the proxy answers HTTP 429 with a request limit of 0, HTTP 403 `requires a Grok subscription`, or the CLI reports `unknown model id`. A model that failed this way rests for 60 minutes, so the next prompt does not try it first. Other failures that fail over use the cooldowns [below](#claude-to-grok-fallback).
+
+This matters because `grok-build-0.1`, the default, is not served to every Grok session (see [Verified models](#verified-models)). A session that cannot use it plans on `grok-4.7`, the default `grok.fallbackModels` entry, and the summary says so with a `Failover · …` segment. Set `grok.model` to `"grok-4.7"` to skip the first attempt. Set `grok.fallbackModels` to `[]` to disable the walk; a project config file may set it, like `grok.model`. A `shunt` gateway is a single candidate and is not walked.
+
+## Claude to Grok fallback
+
+By default a failed Claude call is an engine error. Set `claude.fallbackToGrok: true` in your **user** config (a project file cannot set it) and a failed Claude call fails over to the Grok route instead, trying `grok.model` and then `grok.fallbackModels`. It is off by default because the prompt text then leaves Anthropic for xAI; see [Privacy](../privacy.md). It applies only while the Grok route is usable, meaning a Grok login that is present and not expired, or a configured `shunt` gateway.
+
+These failure classes fail over: `auth`, `billing`, `plan-limit`, `rate-limit`, `overloaded`, `model-unavailable`, `unavailable` and `network`. `timeout`, `aborted` and `other` do not; they stop the call as before. A candidate that failed is not retried on every stage call; it rests for a cooldown:
+
+| Class | Cooldown | Typical cause |
+|---|---|---|
+| `auth` | 10 min | Claude or Grok login missing, expired or rejected. |
+| `billing` | 60 min | `Credit balance is too low`. |
+| `plan-limit` | 15 min | `You've hit your session limit`, or the weekly, Opus or Sonnet limit. |
+| `rate-limit` | 60 s | HTTP 429 or `Server is temporarily limiting requests`. |
+| `overloaded` | 30 s | HTTP 529, 500 or 503. |
+| `model-unavailable` | 60 min | The model is not served to this session, or the CLI is too old for it. |
+| `unavailable` | 60 min | The CLI binary is missing. |
+| `network` | 30 s | `fetch failed`, `ECONNRESET`, a DNS failure. |
+
+The CLIs already retry 429 and 529 themselves, so ultrathink adds no retry layer of its own: it classifies the failure, fails over and cools the candidate down. The summary line then carries `Failover · claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)`, and the session record stores the same text as `engineFailover`.
 
 ## Muse
 
@@ -147,11 +184,12 @@ A host with no stored control engine follows `think.engine`. A stored control ch
 <clone>/bin/ultrathink grok
 ```
 
-It prints three lines, for example:
+It prints four lines, for example:
 
 ```text
-Engine: grok-4.7@xhigh
-Grok: grok-4.7 @ xhigh · transport http
+Engine: grok-build-0.1
+Claude: claude-haiku-5-5 · auth plan · fallback to Grok off
+Grok: grok-build-0.1 · transport http · then grok-4.7
 SuperGrok OAuth: you@example.com · expires 2026-10-01T12:00:00.000Z
 ```
 
@@ -166,7 +204,7 @@ Every selection records one of four states, with the source and the reason. The 
 | State | Meaning | Example labels |
 |---|---|---|
 | `detected` | Omp's live session model, used as it is. | `omp-native:<provider>/<model> [detected]` |
-| `default` | A default chose the model: a CLI route's built-in model, the CLI's own default after `""`, the configured or catalog default for the live model's provider on Omp, or Claude through one of the two Grok switches. | `claude:sonnet [route default]`, `claude:CLI default (model unobserved)`, `omp-native:<provider>/<model> [configured default]`, `omp-native:<provider>/<model> [host-catalog default]`, `claude:sonnet [configured fallback · grok unavailable]` |
+| `default` | A default chose the model: a CLI route's built-in model, the CLI's own default after `""`, the configured or catalog default for the live model's provider on Omp, or Claude through one of the two Grok switches. | `claude:claude-haiku-5-5 [route default]`, `claude:CLI default (model unobserved)`, `omp-native:<provider>/<model> [configured default]`, `omp-native:<provider>/<model> [host-catalog default]`, `claude:claude-haiku-5-5 [configured fallback · grok unavailable]` |
 | `override` | You chose it: a model key set in a config file, `grok.shuntModel`, `models.hosts.<host>.model`, or an Omp provider constraint that picked that provider's default (the record's `defaultSource` then names `configured-default` or `host-catalog`). | `claude:opus [override]`, `omp-native:<provider>/<model> [override]` |
 | `unresolved` | No model could be used. The prompt goes through unplanned with the reason. | `omp-native:unresolved [provider-unknown]`, `grok:unresolved [grok-unavailable]` |
 
@@ -197,4 +235,18 @@ The record shows the selection, not that the calls worked. A `detected` model wh
 
 A failed or timed-out planning call never blocks your prompt. If the spec call fails, the turn goes on with a minimal fallback spec and creates no tracking rows, and the summary line reports `Engine error · …`. If the graph call fails, a built-in five-node graph is used. A node whose detail call fails keeps its question as its conclusion. A failed clarification call asks no questions. See [Troubleshooting](../troubleshooting.md) and [Reduce cost and latency](reduce-cost-and-latency.md) for the timeouts.
 
+A failover is not an error. When [Claude fails over to Grok](#claude-to-grok-fallback) or the Grok route [moves to the next model](#the-grok-model-walk) and a later candidate answers, the plan is complete. The summary shows `Failover · <first> → <answering> (<failure class>)` and the session record keeps it as `engineFailover`. `Engine error · …` appears only when every candidate failed.
+
 For every engine key, see [Configuration](../configuration.md#key-reference). For what each engine sends off your machine, see [Privacy](../privacy.md).
+
+## Verified models
+
+The built-in defaults were checked against the vendors' documentation and a live session on 2026-10-27.
+
+| Model | Facts | Source |
+|---|---|---|
+| `claude-haiku-5-5` | Claude Haiku 5.5, released 2026-10-07, a dateless id that does not drift. Needs Claude Code 2.1.293 or newer. | [platform.claude.com/docs/en/models/overview](https://platform.claude.com/docs/en/models/overview) |
+| `grok-build-0.1` | Grok Build 0.1, 256k context, aliases `grok-code-fast-1` and `grok-code-fast`. Not served to every session: a probe session got HTTP 429 with a request limit of 0, so ultrathink walks on to `grok-4.7`. | [docs.x.ai/developers/models/grok-build-0.1](https://docs.x.ai/developers/models/grok-build-0.1) |
+| `grok-4.7` | Answers on the same session, and takes `reasoning_effort` (`xhigh` from `grok-4.6` on). xAI documents the effort for `grok-4.5`, `grok-4.6` and `grok-4.7` only. | [docs.x.ai/developers/models](https://docs.x.ai/developers/models) |
+
+**Compliance.** The Grok `http` transport reuses the Grok Build login token against the Grok CLI's chat proxy. That is not an xAI-documented integration. The documented alternatives are the `cli` transport (`grok -p`) or an `XAI_API_KEY`.

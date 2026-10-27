@@ -20,9 +20,9 @@ Short answers to the questions people ask first. Each links to the page with the
 
 ## What does it cost?
 
-ultrathink itself is free (AGPL-3.0-or-later). The planning runs on your own engine login, so it uses your Claude Code plan or API usage (or your Grok account if you switched engines), the same as any other `claude -p` call. On Omp it runs on the session's own model and counts against that provider account, like the rest of the session.
+ultrathink itself is free (AGPL-3.0-or-later). The planning runs on your own engine login. The Claude route calls `claude -p` on your Claude plan login (Pro, Max, Team or Enterprise), so it draws from your plan's usage limits (the 5-hour session and weekly limits) and not from an API key: with the default `claude.auth: "plan"`, `ANTHROPIC_API_KEY` is kept away from the child process. Max and Team monthly API credits do not cover plan-login `claude -p`. The Grok route uses your Grok account if you switched engines or turned on `claude.fallbackToGrok`. On Omp it runs on the session's own model and counts against that provider account, like the rest of the session. The plan is yours alone: Anthropic does not permit routing other people's requests through plan credentials.
 
-Each planned prompt makes several engine calls: one to write the spec, one to draft the Graph of Thought, one per node (5 to 8 by default), and one for clarifying questions. The default Claude model is `sonnet` (`claude.model`).
+Each planned prompt makes several engine calls: one to write the spec, one to draft the Graph of Thought, one per node (5 to 8 by default), and one for clarifying questions. The default Claude model is `claude-haiku-5-5` (`claude.model`), which needs Claude Code 2.1.293 or newer.
 
 To spend less:
 
@@ -49,7 +49,7 @@ For prompts that don't need planning, the skip options above cost nothing. More 
 Each host's own engine, unless you name one with `think.engine`:
 
 - **Omp:** the session's own model, called inside Omp with Omp's own provider and login. No extra login is needed and ultrathink copies no credential. `models.hosts.omp` can name another model or provider; see [`models`](configuration.md#models-planning-model-selection).
-- **Claude Code, Grok Build, Muse Code:** Claude, Grok or Muse on their CLI routes, with the built-in models `sonnet`, `grok-4.7` and `muse-spark-1.3-contributor` unless you set `claude.model`, `grok.model` or `muse.model`. A blank `claude.model` or `muse.model` lets the CLI pick its own default. See [Route defaults](configuration.md#route-defaults).
+- **Claude Code, Grok Build, Muse Code:** Claude, Grok or Muse on their CLI routes, with the built-in models `claude-haiku-5-5`, `grok-build-0.1` (then `grok-4.7`, from `grok.fallbackModels`, when the session cannot use it) and `muse-spark-1.3-contributor` unless you set `claude.model`, `grok.model` or `muse.model`. A blank `claude.model` or `muse.model` lets the CLI pick its own default. See [Route defaults](configuration.md#route-defaults).
 - **Hermes Agent:** the Claude, Grok or Muse route that matches the session model's family, Claude when the family is unknown.
 
 The summary line, the plan and `bin/ultrathink status` (`Last planned resolution:`) say which model planned and why: `detected`, `default`, `override` or `unresolved`. When no model can be used, the prompt goes through unplanned and the reason is shown; nothing is blocked. The six `/ultrathink-*` commands work the same on every host. See [Planning model states](how-to/choose-engine.md#planning-model-states).

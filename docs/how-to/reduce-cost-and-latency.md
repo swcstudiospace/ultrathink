@@ -1,6 +1,6 @@
 # Reduce cost and latency
 
-Planning makes several model calls before your agent starts, and the agent waits for them. This guide counts those calls and lists every setting that makes planning cheaper or faster. The **engine** is the model that plans (see [Choose the engine](choose-engine.md)). With the Claude engine, each call is one headless `claude -p` run on the account the `claude` CLI is logged in with.
+Planning makes several model calls before your agent starts, and the agent waits for them. This guide counts those calls and lists every setting that makes planning cheaper or faster. The **engine** is the model that plans (see [Choose the engine](choose-engine.md)). With the Claude engine, each call is one headless `claude -p` run on the plan login the `claude` CLI is signed in with, so the calls count against your plan's session and weekly limits rather than an API balance (see [plan-first auth](choose-engine.md#claude)).
 
 - [What one plan costs](#what-one-plan-costs)
 - [Plan fewer prompts](#plan-fewer-prompts)
@@ -70,12 +70,13 @@ For example, a lighter plan for every host:
 
 | Key | Default | Effect |
 |---|---|---|
-| `claude.model` | `"sonnet"` | Model alias for the Claude engine. A smaller model is faster and cheaper. `""` uses the `claude` CLI's default. |
+| `claude.model` | `"claude-haiku-5-5"` | Model for the Claude engine, passed as `--model`. The default is already the small, fast model. `""` uses the `claude` CLI's default. |
 | `claude.thinking` | `false` | Keep it off. On allows extended thinking in every planning call, which dominates latency. |
 | `claude.settingSources` | `""` | Keep it empty. Empty loads no settings in the child `claude` calls: fastest, and no nested hooks. |
 | `claude.concurrency` | `3` | Node detail calls that run at once, per dependency level of the graph. It applies to both engines. `1` runs them one by one. Higher is faster, if your account allows the parallel calls. |
-| `grok.reasoningEffort` | `"xhigh"` | Grok `http` and `cli` transports: `"low"`, `"medium"` or `"high"` trade depth for speed. |
-| `grok.model`, `grok.shuntModel` | `"grok-4.7"`, `""` | The Grok model, or the model your shunt gateway routes. |
+| `grok.reasoningEffort` | `"xhigh"` | Grok `http` and `cli` transports: `"low"`, `"medium"` or `"high"` trade depth for speed. It is sent only to `grok-4.5`, `grok-4.6` and `grok-4.7`; the default `grok-build-0.1` takes no effort, so the setting changes nothing for it. |
+| `grok.model`, `grok.shuntModel` | `"grok-build-0.1"`, `""` | The Grok model, or the model your shunt gateway routes. |
+| `grok.fallbackModels` | `["grok-4.7"]` | Models tried after `grok.model` when the session cannot use it. A skipped model costs one rejected request, then rests for 60 minutes. |
 
 ## Cap the waiting time
 

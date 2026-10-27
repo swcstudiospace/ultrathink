@@ -47,7 +47,7 @@ Run each item in Grok Bot, in order. The connection counts as verified only when
 
 ## 6. Cost
 
-The server makes no paid model call on the Grok Bot path. The only spend is the bot's own usage in its chat. Server-side plans (section 9) are paid by the operator's OpenRouter account and are bounded only by `ULTRATHINK_RUN_TOKEN_CEILING` and `ULTRATHINK_DAILY_TOKEN_CEILING` when they are set above 0; both are unlimited by default. One measured plan (2026-10-18, reasoning effort `low`) cost between 0.018 USD (`openai/gpt-5.6-luna`) and 0.153 USD (`x-ai/grok-4.7`) and took 44 to 138 seconds depending on the model. The full table is in [the chat guide](../how-to/use-ultrathink-in-chat.md) under "Time and cost".
+The server makes no paid model call on the Grok Bot path. The only spend is the bot's own usage in its chat. Server-side plans (section 9) are paid by the operator's OpenRouter account (the default backend) or, when the operator sets `ULTRATHINK_PLANNING_BACKEND=plan`, drawn from the owner's own Claude plan limits; they are bounded only by `ULTRATHINK_RUN_TOKEN_CEILING` and `ULTRATHINK_DAILY_TOKEN_CEILING` when they are set above 0; both are unlimited by default. One measured plan (2026-10-18, through OpenRouter, reasoning effort `low`) cost between 0.018 USD (`openai/gpt-5.6-luna`) and 0.153 USD (`x-ai/grok-4.7`) and took 44 to 138 seconds depending on the model; plan mode was not measured. The full table is in [the chat guide](../how-to/use-ultrathink-in-chat.md) under "Time and cost".
 
 ## 7. Known limits
 
