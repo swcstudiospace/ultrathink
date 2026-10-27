@@ -315,17 +315,31 @@ describe("checkTeach", () => {
 			});
 		});
 
-		test("nothing captured for over 3 days while a session ran today warns with the cause to check", () => {
+		test("nothing captured for over 3 days, a session today and no observe run warns with the cause to check", () => {
 			lesson("a", NOW - 4 * DAY);
 			session(2 * HOUR);
 			const finding = byId(checkTeach(deps), "memory.moments");
 			expect(finding.level).toBe("warn");
 			expect(finding.title).toBe(
-				"1 local lesson, newest captured 4 days ago, yet a session ran 2 hours ago",
+				"1 local lesson, newest captured 4 days ago, yet a session ran 2 hours ago and no observe run was recorded in 3 days",
 			);
 			expect(finding.detail).toContain('Capture mode is "auto"');
 			expect(finding.detail).toContain("host started before the plugin was updated");
-			expect(finding.fix).toContain("restart the host");
+			expect(finding.fix).toContain("Restart the host");
+		});
+
+		test("recent observe runs that found nothing teachable are a healthy hand-off, so an old store stays info", () => {
+			lesson("a", NOW - 4 * DAY);
+			session(2 * HOUR);
+			runs([noSignal(5), { ...noSignal(3), skipped: "too few tool calls" }]);
+			expect(byId(checkTeach(deps), "memory.moments").level).toBe("info");
+		});
+
+		test("observe runs older than 3 days do not excuse a store that stopped capturing", () => {
+			lesson("a", NOW - 6 * DAY);
+			session(2 * HOUR);
+			runs([noSignal(100)]);
+			expect(byId(checkTeach(deps), "memory.moments").level).toBe("warn");
 		});
 
 		test.each([

@@ -10,7 +10,7 @@ import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
-import { readRuns } from "../teach/runlog.ts";
+import { type ObserveRun, readRuns } from "../teach/runlog.ts";
 import { storeDir } from "../teach/store.ts";
 import { type CaptureMode, TEACH_KILL_ENV } from "../teach/types.ts";
 import { formatAge } from "./state-check.ts";
@@ -104,8 +104,7 @@ function isFailure(skipped: string | undefined): boolean {
 	);
 }
 
-function observeFinding(stateDir: string, now: number): Finding {
-	const runs = readRuns(stateDir);
+function observeFinding(runs: readonly ObserveRun[], now: number): Finding {
 	const newest = runs.at(-1);
 	if (!newest) {
 		return {
@@ -181,6 +180,7 @@ function momentsFinding(
 	dir: string,
 	now: number,
 	capture: CaptureMode,
+	lastObserveAt: number | undefined,
 ): Finding | undefined {
 	const names = jsonFiles(join(dir, "moments"));
 	if (names.length === 0 && !dirExists(join(dir, "moments"))) return undefined;
@@ -188,22 +188,25 @@ function momentsFinding(
 	const idle = Math.max(0, now - newest);
 	const title = `${plural(names.length, "local lesson")}${newest > 0 ? `, newest captured ${formatAge(idle)} ago` : ""}`;
 	const session = newestSession(stateDir);
+	// A recent run file proves the hand-off works, even when the distiller keeps finding nothing teachable.
+	const observing = lastObserveAt !== undefined && now - lastObserveAt <= STALE_LESSON_MS;
 	const stalled =
 		capture !== "explicit" &&
 		newest > 0 &&
 		idle > STALE_LESSON_MS &&
-		now - session < ACTIVE_SESSION_MS;
+		now - session < ACTIVE_SESSION_MS &&
+		!observing;
 	if (!stalled) return { id: "memory.moments", section: "memory", level: "info", title };
 	return {
 		id: "memory.moments",
 		section: "memory",
 		level: "warn",
-		title: `${title}, yet a session ran ${formatAge(Math.max(0, now - session))} ago`,
+		title: `${title}, yet a session ran ${formatAge(Math.max(0, now - session))} ago and no observe run was recorded in ${formatAge(STALE_LESSON_MS)}`,
 		detail: [
-			`Capture mode is "${capture}": a finished run should hand a digest to teach observe.`,
+			`Capture mode is "${capture}": every finished run that starts from a prompt of yours should hand a digest to teach observe, which records a run file.`,
 			"The digest is built inside the host process, so a host started before the plugin was updated keeps the old capture code.",
 		].join("\n"),
-		fix: "Check the observe line above, restart the host if the plugin changed since it started, finish a run, then run bin/ultrathink doctor again",
+		fix: "Restart the host if the plugin changed since it started, finish a run, then run bin/ultrathink doctor again",
 	};
 }
 
@@ -280,10 +283,11 @@ export function checkTeach(deps: DoctorDeps): Finding[] {
 	const stateDir = defaultStateDir(deps.env);
 	const dir = storeDir(stateDir);
 	const now = deps.now();
-	const findings = [outboxFinding(dir, now), observeFinding(stateDir, now)];
+	const runs = readRuns(stateDir);
+	const findings = [outboxFinding(dir, now), observeFinding(runs, now)];
 	const inbox = inboxFinding(stateDir, now);
 	if (inbox) findings.push(inbox);
-	const moments = momentsFinding(stateDir, dir, now, teach.capture);
+	const moments = momentsFinding(stateDir, dir, now, teach.capture, runs.at(-1)?.at);
 	if (moments) findings.push(moments);
 	return findings;
 }
