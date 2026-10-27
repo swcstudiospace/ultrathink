@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildReport, formatReport, reportJson } from "./report.ts";
-import { checkState } from "./state-check.ts";
+import { checkState, formatAge } from "./state-check.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
 
 const NOW = 1_800_000_000_000;
@@ -221,6 +221,16 @@ describe("checkState", () => {
 		expect(byId(checkState(deps), "state.sessions").title).toBe(
 			"1 session record, 100 B, oldest under an hour old",
 		);
+	});
+
+	test("formatAge uses singular units and keeps hours below two days", () => {
+		expect(formatAge(30 * 60 * 1000)).toBe("under an hour");
+		expect(formatAge(HOUR)).toBe("1 hour");
+		expect(formatAge(3 * HOUR)).toBe("3 hours");
+		expect(formatAge(24 * HOUR)).toBe("24 hours");
+		expect(formatAge(47 * HOUR)).toBe("47 hours");
+		expect(formatAge(2 * DAY)).toBe("2 days");
+		expect(formatAge(3 * DAY)).toBe("3 days");
 	});
 
 	test("more than 500 sessions is a warning with the prune hint; 500 is not", () => {

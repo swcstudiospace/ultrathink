@@ -57,6 +57,11 @@ import { readJson } from "./shared.ts";
 interface ClaudeConfig {
 	/** `claude` binary used for headless completions. A project file cannot set this. */
 	bin: string;
+	/**
+	 * When `ANTHROPIC_API_KEY` is set and the claude CLI fails with an authentication or billing error, retry once
+	 * without it so the CLI uses your claude.ai login. Off by default. A project file cannot set this.
+	 */
+	fallbackToLogin: boolean;
 	/** Model alias/name for the uplift and thinking calls; empty inherits the user default. */
 	model: string;
 	/** Allow extended thinking in child calls (slower). */
@@ -75,6 +80,7 @@ interface ClaudeConfig {
 
 const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	bin: "claude",
+	fallbackToLogin: false,
 	model: ROUTE_DEFAULT_MODELS.claude,
 	thinking: false,
 	settingSources: "",
@@ -343,6 +349,10 @@ function mergeClaude(
 		typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 	return {
 		bin: project ? defaults.bin : nonEmpty(claude.bin, defaults.bin),
+		fallbackToLogin:
+			!project && typeof claude.fallbackToLogin === "boolean"
+				? claude.fallbackToLogin
+				: defaults.fallbackToLogin,
 		model: selectorField(claude.model) ?? defaults.model,
 		thinking: typeof claude.thinking === "boolean" ? claude.thinking : defaults.thinking,
 		settingSources:

@@ -2151,4 +2151,25 @@ describe("legacy model provenance (AD-1)", () => {
 			).grok.fallbackToClaude,
 		).toBe(true);
 	});
+
+	test("claude.fallbackToLogin defaults false, is user-only and boolean-only", () => {
+		const base = defaultConfig();
+		expect(base.claude.fallbackToLogin).toBe(false);
+		const user = mergeConfig({ claude: { fallbackToLogin: true } }, base);
+		expect(user.claude.fallbackToLogin).toBe(true);
+		expect(
+			mergeConfig({ claude: { fallbackToLogin: true } }, base, { project: true }).claude
+				.fallbackToLogin,
+		).toBe(false);
+		expect(
+			mergeConfig({ claude: { fallbackToLogin: true } }, user, { project: true }).claude
+				.fallbackToLogin,
+		).toBe(true);
+		expect(mergeConfig({ claude: { fallbackToLogin: "yes" } }, user).claude.fallbackToLogin).toBe(
+			true,
+		);
+		expect(mergeConfig({ claude: { fallbackToLogin: "yes" } }, base).claude.fallbackToLogin).toBe(
+			false,
+		);
+	});
 });

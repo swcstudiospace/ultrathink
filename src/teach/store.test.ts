@@ -197,6 +197,29 @@ describe("corruption tolerance", () => {
 	});
 });
 
+describe("has", () => {
+	test("false for an unknown id, true for a stored moment and for a corrupt file", () => {
+		const { dir, store } = openTemp();
+		store.put(moment("good"));
+		writeFileSync(join(dir, "moments", "bad.json"), "{not json");
+		expect(store.has("nope")).toBe(false);
+		expect(store.has("../x")).toBe(false);
+		expect(store.has("good")).toBe(true);
+		expect(store.get("bad")).toBeUndefined();
+		expect(store.has("bad")).toBe(true);
+		store.remove("good");
+		expect(store.has("good")).toBe(false);
+	});
+
+	test("true, not false, when the record cannot be checked for a reason other than missing", () => {
+		const { dir, store } = openTemp();
+		// A regular file where the moments directory should be makes every lookup fail with ENOTDIR, not ENOENT.
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "moments"), "not a directory");
+		expect(store.has("anything")).toBe(true);
+	});
+});
+
 describe("ids", () => {
 	test("only [A-Za-z0-9_.-]{1,80} ids are valid", () => {
 		for (const id of ["a", "tm_1.2-3", "A".repeat(80), "0f8fad5b-d9cb-469f-a165-70867728950e"])

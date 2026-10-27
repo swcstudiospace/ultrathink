@@ -24,9 +24,10 @@ import type {
 import { runTeachCommand } from "./cli.ts";
 import type { CommandDeps } from "./cli.ts";
 import { contentFor, documentIdFor, metadataFor, projectOf, tagsFor } from "./mapping.ts";
+import { readRuns } from "./runlog.ts";
 import { openStore, storeDir } from "./store.ts";
-import { DEFAULT_TEACH_CONFIG } from "./types.ts";
 import type { CliResult, TeachableMoment, TeachConfig } from "./types.ts";
+import { DEFAULT_TEACH_CONFIG } from "./types.ts";
 
 type Json = Record<string, unknown>;
 
@@ -885,7 +886,7 @@ describe("observe", () => {
 					stdin: async () => JSON.stringify(digest({ toolCalls: 1 })),
 				})
 			).text,
-		).toBe("Observe skipped: too few tool calls");
+		).toBe("Observe skipped: too few tool calls\nSync: 0 done · 0 pending");
 	});
 
 	test("a malformed digest exits 2", async () => {
@@ -1273,5 +1274,174 @@ describe("export", () => {
 	test("needs --a2a; an unknown id exits 1", async () => {
 		expect((await run(["export"])).code).toBe(2);
 		expect((await run(["export", "--a2a", "nope0001"])).code).toBe(1);
+	});
+});
+
+describe("observe run log and outbox drain", () => {
+	function noSignal(): Json {
+		return digest({
+			turns: [
+				{ role: "user", text: "make the build pass" },
+				{ role: "assistant", text: "done" },
+			],
+		});
+	}
+
+	function queueTags(): void {
+		store().enqueue({ op: "tags", documentId: "tm:aaaa0001", tags: ["ultrathink"] }, NOW);
+	}
+
+	test("a failing distiller records one skipped run with detail", async () => {
+		const result = await run(["observe", "--stdin", "--json"], {
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => {
+				throw new Error("Credit balance is too low");
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(json(result)).toMatchObject({
+			skipped: "distiller failed",
+			detail: "Credit balance is too low",
+		});
+		expect(readRuns(stateDir)).toEqual([
+			{
+				at: NOW,
+				sessionId: "session-1",
+				outcome: "skipped",
+				captured: 0,
+				skipped: "distiller failed",
+				detail: "Credit balance is too low",
+			},
+		]);
+	});
+
+	test("a captured run records outcome captured", async () => {
+		await run(["observe", "--stdin", "--json"], {
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => DISTILLED,
+		});
+		expect(readRuns(stateDir)).toEqual([
+			{ at: NOW, sessionId: "session-1", outcome: "captured", captured: 1 },
+		]);
+	});
+
+	test("a run whose lessons could not be stored records a skipped run, not a capture", async () => {
+		const refused = join(root, ".planning", "state");
+		const result = await run(["observe", "--stdin", "--json"], {
+			stateDir: refused,
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => DISTILLED,
+		});
+		expect(result.code).toBe(0);
+		expect((json(result).captured as Json[]).length).toBe(1);
+		expect(readRuns(refused)).toEqual([
+			{
+				at: NOW,
+				sessionId: "session-1",
+				outcome: "skipped",
+				captured: 0,
+				skipped: "lesson not saved",
+				detail: "teach store is unavailable",
+			},
+		]);
+	});
+
+	test("a run where one of two lessons is stored records captured 1", async () => {
+		const lessons = JSON.stringify({
+			lessons: [
+				{
+					name: "First lesson",
+					description: "d",
+					body: "Body one.",
+					kind: "pitfall",
+					confidence: 0.7,
+				},
+				{
+					name: "Second lesson",
+					description: "d",
+					body: "Body two.",
+					kind: "pitfall",
+					confidence: 0.7,
+				},
+			],
+		});
+		let asked = 0;
+		const result = await run(["observe", "--stdin", "--json"], {
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => lessons,
+			env: { ...baseEnv(), OPENROUTER_API_KEY: JEV_KEY },
+			config: { ...config(), decisions: decisionsOn({ points: ["teachable"] }) },
+			// The Decisions call runs once per lesson, just before its capture: break the store after the first one.
+			fetch: (async () => {
+				asked += 1;
+				if (asked === 2) {
+					const moments = join(storeDir(stateDir), "moments");
+					rmSync(moments, { recursive: true, force: true });
+					writeFileSync(moments, "not a directory");
+				}
+				return Response.json({
+					model: "typesafe/jev-1.13-20260917",
+					answers: { teachable: { type: "noul", noul: 0.31 } },
+					usage: { input_tokens: 10, output_tokens: 0 },
+				});
+			}) as unknown as typeof fetch,
+		});
+		expect(result.code).toBe(0);
+		expect((json(result).captured as Json[]).length).toBe(2);
+		expect(readRuns(stateDir)).toEqual([
+			{ at: NOW, sessionId: "session-1", outcome: "captured", captured: 1 },
+		]);
+	});
+
+	test("observe replays a due outbox entry even when the digest is skipped", async () => {
+		queueTags();
+		const tagged: string[] = [];
+		fake.client.setDocumentTags = async (id) => {
+			tagged.push(id);
+			return { ok: true, value: true as const };
+		};
+		const result = await run(["observe", "--stdin", "--json"], {
+			stdin: async () => JSON.stringify(noSignal()),
+			complete: async () => {
+				throw new Error("must not be called");
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(json(result)).toMatchObject({ skipped: "no signal", sync: { done: 1, pending: 0 } });
+		expect(tagged).toEqual(["tm:aaaa0001"]);
+		expect(store().outbox()).toHaveLength(0);
+	});
+
+	test("a failing Hindsight leaves the exit code and reports pending", async () => {
+		queueTags();
+		fake.client.setDocumentTags = async () => ({ ok: false, error: NETWORK_ERROR });
+		const result = await run(["observe", "--stdin", "--json"], {
+			stdin: async () => JSON.stringify(noSignal()),
+		});
+		expect(result.code).toBe(0);
+		const sync = json(result).sync as Json;
+		expect(sync.done).toBe(0);
+		expect(sync.pending).toBe(1);
+		expect(store().outbox()).toHaveLength(1);
+		const human = await run(["observe", "--stdin"], {
+			stdin: async () => JSON.stringify(noSignal()),
+		});
+		expect(human.text.split("\n").at(-1)).toMatch(/^Sync: 0 done · 1 pending/);
+	});
+
+	test("with teach off nothing is written or synced", async () => {
+		queueTags();
+		const tagged: string[] = [];
+		fake.client.setDocumentTags = async (id) => {
+			tagged.push(id);
+			return { ok: true, value: true as const };
+		};
+		const result = await runOff(["observe", "--stdin"], {
+			stdin: async () => JSON.stringify(digest()),
+		});
+		expect(result).toEqual({ code: 1, text: OFF_MESSAGE });
+		expect(readRuns(stateDir)).toEqual([]);
+		expect(tagged).toEqual([]);
+		expect(store().outbox()).toHaveLength(1);
 	});
 });
