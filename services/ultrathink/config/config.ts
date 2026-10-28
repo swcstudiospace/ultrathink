@@ -12,11 +12,6 @@ export class ConfigError extends Error {
 	}
 }
 
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
-
-/** `openrouter` calls the OpenRouter API; `plan` runs the owner's coding-plan CLI logins. */
-type PlanningBackend = "openrouter" | "plan";
-
 type PlanFallback = "none" | "grok";
 
 /** `host:port` of the syslog audit sink. */
@@ -46,26 +41,21 @@ export interface UltrathinkConfig {
 	maxBodyBytes: number;
 	runTokenCeiling: number;
 	dailyTokenCeiling: number;
-	planningModel: string | undefined;
+	planningModel: string;
 	connectorKey: string | undefined;
 	allowedOrigins: string[];
 	oauthRedirectOrigins: string[];
-	/** Undefined in `plan` mode unless a key is set anyway; unused there. */
-	openRouterApiKey: string | undefined;
-	openRouterBaseUrl: string;
 	serverPlanning: boolean;
-	/** Where planning inference runs. Absent means `openrouter`. */
-	planningBackend?: PlanningBackend;
-	/** `plan` backend only: whether a failed Claude call fails over to Grok. Absent means `none`. */
+	/** Whether a failed Claude call fails over to Grok. Absent means `none`. */
 	planFallback?: PlanFallback;
-	/** `plan` backend only: most `claude` children in flight at once. Absent means 2. */
+	/** Most `claude` children in flight at once. Absent means 2. */
 	planConcurrency?: number;
 	maxConcurrentPlans: number;
 	modelTimeoutMs: number;
 	planTimeoutMs: number;
 	modelMaxOutputTokens: number;
-	/** Absent means the `reasoning` request parameter is not sent. */
-	modelReasoningEffort?: ReasoningEffort;
+	/** Names of removed OpenRouter-era variables that are still set; names only, never values. */
+	legacyEnvIgnored: string[];
 	/** Failures counted within `breakerWindowMs` that open the upstream breaker; 0 disables it. */
 	breakerFailures: number;
 	/** Window in which upstream failures are counted. */
@@ -149,9 +139,7 @@ const MIN_SESSION_SECRET_LENGTH = 32;
 const MIN_CONNECTOR_KEY_LENGTH = 32;
 const MAX_PREVIOUS_SESSION_SECRETS = 4;
 const INTEGER_PATTERN = /^[0-9]+$/;
-const PLANNING_MODEL_PATTERN = /^[A-Za-z0-9._:\/-]{1,80}$/;
-const MIN_OPENROUTER_KEY_LENGTH = 20;
-const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const PLANNING_MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,80}$/;
 const DEFAULT_MAX_CONCURRENT_PLANS = 2;
 const DEFAULT_PLAN_CONCURRENCY = 2;
 const MAX_PLAN_CONCURRENCY = 6;
@@ -160,7 +148,8 @@ const DEFAULT_MODEL_TIMEOUT_MS = 0;
 const DEFAULT_PLAN_TIMEOUT_MS = 0;
 // 0 means no configured cap; with a token ceiling set, each call is capped to the budget left, and to at most 16000 tokens.
 const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 0;
-const REASONING_EFFORTS: readonly ReasoningEffort[] = ["minimal", "low", "medium", "high"];
+/** Removed variables (the OpenRouter key/base URL family and the reasoning effort); matched by pattern so no name is spelled out here. */
+const LEGACY_ENV_PATTERN = /openrouter|^ULTRATHINK_MODEL_REASONING_EFFORT$/i;
 // The formats Bun.password.verify accepts: PHC argon2 strings and modular-crypt bcrypt strings.
 const OWNER_HASH_FORMAT =
 	/^(?:\$argon2(?:id|i|d)\$v=\d+\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/]+\$[A-Za-z0-9+/]+|\$2[abxy]\$\d{2}\$[./A-Za-z0-9]{53})$/;
@@ -311,29 +300,28 @@ function readPreviousSessionSecrets(env: Record<string, string | undefined>): st
 	return secrets;
 }
 
-/** In `plan` mode the model is optional and defaults to the Claude route default. */
-function readPlanningModel(
-	env: Record<string, string | undefined>,
-	backend: PlanningBackend,
-): string | undefined {
+/** The model runs on the Claude plan login, so an OpenRouter-style `vendor/model` id can never work. */
+function readPlanningModel(env: Record<string, string | undefined>): string {
 	const model = readOptional(env, "ULTRATHINK_PLANNING_MODEL");
-	if (model !== undefined && !PLANNING_MODEL_PATTERN.test(model)) {
+	if (model?.includes("/")) {
 		throw new ConfigError(
-			"ULTRATHINK_PLANNING_MODEL must be 1-80 characters from A-Z, a-z, 0-9, '.', '_', ':', '/', '-'",
+			"ULTRATHINK_PLANNING_MODEL names an OpenRouter-style model id; the hosted planner runs on the Claude plan login (default claude-haiku-5-5). Remove the line or set a Claude model id.",
 		);
 	}
-	return model ?? (backend === "plan" ? ROUTE_DEFAULT_MODELS.claude : undefined);
+	if (model !== undefined && !PLANNING_MODEL_PATTERN.test(model)) {
+		throw new ConfigError(
+			"ULTRATHINK_PLANNING_MODEL must be 1-80 characters from A-Z, a-z, 0-9, '.', '_', ':', '-'",
+		);
+	}
+	return model ?? ROUTE_DEFAULT_MODELS.claude;
 }
 
-function readPlanningBackend(env: Record<string, string | undefined>): PlanningBackend {
-	const raw = readOptional(env, "ULTRATHINK_PLANNING_BACKEND");
-	if (raw === undefined) {
-		return "openrouter";
+function rejectRemovedPlanningBackend(env: Record<string, string | undefined>): void {
+	if (readOptional(env, "ULTRATHINK_PLANNING_BACKEND") !== undefined) {
+		throw new ConfigError(
+			"ULTRATHINK_PLANNING_BACKEND was removed: the hosted planner always runs on the Claude plan login; OpenRouter is reserved for Jev decisions. Remove the line.",
+		);
 	}
-	if (raw !== "openrouter" && raw !== "plan") {
-		throw new ConfigError("ULTRATHINK_PLANNING_BACKEND must be openrouter or plan");
-	}
-	return raw;
 }
 
 function readPlanFallback(env: Record<string, string | undefined>): PlanFallback {
@@ -357,19 +345,6 @@ function readConnectorKey(env: Record<string, string | undefined>): string | und
 	return key;
 }
 
-/** Unset and `auto` omit the `reasoning` parameter, so the provider chooses; `default` is an older alias of `auto`. */
-function readReasoningEffort(env: Record<string, string | undefined>): ReasoningEffort | undefined {
-	const name = "ULTRATHINK_MODEL_REASONING_EFFORT";
-	const raw = readOptional(env, name);
-	if (raw === undefined || raw === "auto" || raw === "default") {
-		return undefined;
-	}
-	if (!REASONING_EFFORTS.includes(raw as ReasoningEffort)) {
-		throw new ConfigError(`${name} must be one of minimal, low, medium, high, auto or default`);
-	}
-	return raw as ReasoningEffort;
-}
-
 function readFlag(env: Record<string, string | undefined>, name: string): boolean | undefined {
 	const raw = readOptional(env, name);
 	if (raw === undefined) {
@@ -382,63 +357,6 @@ function readFlag(env: Record<string, string | undefined>, name: string): boolea
 		return false;
 	}
 	throw new ConfigError(`${name} must be 0 or 1`);
-}
-
-function readOpenRouterApiKey(env: Record<string, string | undefined>): string | undefined {
-	const key = readOptional(env, "OPENROUTER_API_KEY");
-	if (key !== undefined && key.length < MIN_OPENROUTER_KEY_LENGTH) {
-		throw new ConfigError(
-			`OPENROUTER_API_KEY must be at least ${MIN_OPENROUTER_KEY_LENGTH} characters`,
-		);
-	}
-	return key;
-}
-
-function readOpenRouterBaseUrl(env: Record<string, string | undefined>): string {
-	const name = "ULTRATHINK_OPENROUTER_BASE_URL";
-	const raw = readOptional(env, name);
-	if (raw === undefined) {
-		return DEFAULT_OPENROUTER_BASE_URL;
-	}
-	let url: URL;
-	try {
-		url = new URL(raw);
-	} catch {
-		throw new ConfigError(`${name} must be an absolute https:// URL`);
-	}
-	if (
-		url.protocol !== "https:" ||
-		url.username !== "" ||
-		url.password !== "" ||
-		url.search !== "" ||
-		url.hash !== "" ||
-		raw.includes("?") ||
-		raw.includes("#")
-	) {
-		throw new ConfigError(`${name} must be an https:// URL without credentials, query or fragment`);
-	}
-	return raw.replace(/\/+$/, "");
-}
-
-function readServerPlanning(
-	env: Record<string, string | undefined>,
-	backend: PlanningBackend,
-	apiKey: string | undefined,
-	planningModel: string | undefined,
-): boolean {
-	const flag = readFlag(env, "ULTRATHINK_SERVER_PLANNING");
-	if (backend === "plan") {
-		return flag !== false;
-	}
-	if (flag === true) {
-		if (apiKey === undefined) {
-			throw new ConfigError("ULTRATHINK_SERVER_PLANNING=1 requires OPENROUTER_API_KEY");
-		}
-		if (planningModel === undefined) {
-			throw new ConfigError("ULTRATHINK_SERVER_PLANNING=1 requires ULTRATHINK_PLANNING_MODEL");
-		}
-	}
-	return flag !== false && apiKey !== undefined && planningModel !== undefined;
 }
 
 /** Comma list of bare origins (scheme://host[:port], no path, query, fragment or credentials), normalized and de-duplicated. */
@@ -718,9 +636,8 @@ export function loadConfig(
 	env: Record<string, string | undefined> = process.env,
 ): UltrathinkConfig {
 	const stateDir = readStateDir(env);
-	const planningBackend = readPlanningBackend(env);
-	const planningModel = readPlanningModel(env, planningBackend);
-	const openRouterApiKey = readOpenRouterApiKey(env);
+	rejectRemovedPlanningBackend(env);
+	const planningModel = readPlanningModel(env);
 	const plaintextLoopback = readFlag(env, "ULTRATHINK_PLAINTEXT_LOOPBACK") === true;
 	return {
 		publicOrigin: readPublicOrigin(env),
@@ -763,10 +680,7 @@ export function loadConfig(
 		connectorKey: readConnectorKey(env),
 		allowedOrigins: readOriginList(env, "ULTRATHINK_ALLOWED_ORIGINS", ["https:", "http:"]),
 		oauthRedirectOrigins: readOriginList(env, "ULTRATHINK_OAUTH_REDIRECT_ORIGINS", ["https:"]),
-		openRouterApiKey,
-		openRouterBaseUrl: readOpenRouterBaseUrl(env),
-		serverPlanning: readServerPlanning(env, planningBackend, openRouterApiKey, planningModel),
-		planningBackend,
+		serverPlanning: readFlag(env, "ULTRATHINK_SERVER_PLANNING") === true,
 		planFallback: readPlanFallback(env),
 		planConcurrency: readInteger(
 			env,
@@ -803,7 +717,9 @@ export function loadConfig(
 			256,
 			32000,
 		),
-		modelReasoningEffort: readReasoningEffort(env),
+		legacyEnvIgnored: Object.keys(env)
+			.filter((name) => LEGACY_ENV_PATTERN.test(name) && readOptional(env, name) !== undefined)
+			.sort(),
 		breakerFailures: readInteger(env, "ULTRATHINK_BREAKER_FAILURES", 5, 0, 100),
 		breakerWindowMs: readInteger(env, "ULTRATHINK_BREAKER_WINDOW_MS", 60000, 1000, 3600000),
 		breakerOpenMs: readInteger(env, "ULTRATHINK_BREAKER_OPEN_MS", 30000, 1000, 600000),
@@ -859,11 +775,4 @@ export function loadConfig(
 		...readChaosGate(env),
 		...readKafkaSink(env),
 	};
-}
-
-export function requirePlanningModel(config: UltrathinkConfig): string {
-	if (config.planningModel === undefined) {
-		throw new ConfigError("ULTRATHINK_PLANNING_MODEL is required before planning can run");
-	}
-	return config.planningModel;
 }

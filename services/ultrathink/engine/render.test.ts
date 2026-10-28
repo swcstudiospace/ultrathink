@@ -91,7 +91,7 @@ function record(overrides: Partial<SessionRecord> = {}): SessionRecord {
 	return {
 		sessionId: "11111111-2222-4333-8444-555555555555",
 		at: 1,
-		engine: "openrouter:test/model",
+		engine: "plan:test-model",
 		result: { xml: SPEC(REQUEST), original: REQUEST, root: "BUILD_PROMPT", source: "llm" },
 		graph: GRAPH,
 		clarifications: QUESTIONS,
@@ -143,7 +143,7 @@ describe("renderChatPlan", () => {
 	test("header carries session id, engine and node count; request and spec are present", () => {
 		const { text } = renderChatPlan(record(), { detail: "brief", maxChars: 40_000 });
 		expect(text).toContain("11111111-2222-4333-8444-555555555555");
-		expect(text).toContain("openrouter:test/model");
+		expect(text).toContain("plan:test-model");
 		expect(text).toMatch(/\b4\b/);
 		expect(text).toContain(REQUEST);
 		expect(text).toContain("CSV to JSON with streaming.");

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAuth } from "../auth/auth.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
-import type { OpenRouterFetch } from "../engine/openrouter.ts";
+import { type PlanBackend, PlanCompleterError } from "../engine/plan.ts";
 import { createLogger } from "../obs/log.ts";
 import type { FinishedSpan, SpanSink } from "../obs/otel.ts";
 import type { RuntimeSample } from "../obs/runtime.ts";
@@ -20,7 +20,16 @@ const PEER = "127.0.0.1";
 const CONNECTOR_KEY = randomBytes(24).toString("hex");
 const OWNER_HASH = await Bun.password.hash(randomBytes(24).toString("base64url"));
 const SESSION_SECRET = randomBytes(32).toString("hex");
-const FAKE_KEY = "sk-or-fake-key-0123456789abcdef";
+/** A plan backend that is ready and fails every call with the given error. */
+function failingBackend(error: PlanCompleterError): PlanBackend {
+	return {
+		label: "plan:claude-haiku-5-5",
+		ready: () => ({ ok: true }),
+		complete: async () => {
+			throw error;
+		},
+	};
+}
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const PARENT_SPAN = "00f067aa0ba902b7";
 const PROMPT = "Build a small TypeScript CLI that converts CSV files to JSON.";
@@ -66,12 +75,11 @@ function harness(
 		maxBodyBytes: 65536,
 		runTokenCeiling: 5_000_000,
 		dailyTokenCeiling: 50_000_000,
-		planningModel: undefined,
+		planningModel: "claude-haiku-5-5",
 		connectorKey: CONNECTOR_KEY,
 		allowedOrigins: [],
 		oauthRedirectOrigins: [],
-		openRouterApiKey: undefined,
-		openRouterBaseUrl: "https://openrouter.test/api/v1",
+		legacyEnvIgnored: [],
 		serverPlanning: false,
 		maxConcurrentPlans: 2,
 		modelTimeoutMs: 5000,
@@ -261,40 +269,58 @@ describe("request spans and correlation", () => {
 });
 
 describe("runtime-fed signals", () => {
-	test("upstream failures past breakerFailures are counted as one closed-to-open transition on /metrics", async () => {
-		const failing: OpenRouterFetch = async () => new Response("upstream down", { status: 500 });
-		const h = harness(
-			{
-				serverPlanning: true,
-				planningModel: "x-ai/grok-test",
-				openRouterApiKey: FAKE_KEY,
-				breakerFailures: 3,
+	test("upstream failures past breakerFailures are counted as one closed-to-open transition on /metrics, and the open breaker refuses the next call", async () => {
+		let backendCalls = 0;
+		const failing = failingBackend(new PlanCompleterError("upstream", "unavailable"));
+		const planBackend: PlanBackend = {
+			...failing,
+			complete: (...args) => {
+				backendCalls += 1;
+				return failing.complete(...args);
 			},
-			{ fetch: failing, sleep: instantBackoff },
+		};
+		const h = harness(
+			{ serverPlanning: true, planningModel: "claude-haiku-5-5", breakerFailures: 3 },
+			{ planBackend, sleep: instantBackoff },
 		);
-		await h.app.handle(
-			new Request(`${ORIGIN}/mcp`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY },
-				body: JSON.stringify({
-					jsonrpc: "2.0",
-					id: 1,
-					method: "tools/call",
-					params: {
-						name: "ultrathink_uplift",
-						arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() },
-					},
+		const uplift = (): Promise<Response> =>
+			h.app.handle(
+				new Request(`${ORIGIN}/mcp`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY },
+					body: JSON.stringify({
+						jsonrpc: "2.0",
+						id: 1,
+						method: "tools/call",
+						params: {
+							name: "ultrathink_uplift",
+							arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() },
+						},
+					}),
 				}),
-			}),
-			PEER,
-		);
+				PEER,
+			);
+		// No retry layer: each failing call is exactly one breaker failure.
+		for (let i = 0; i < 3; i += 1) await uplift();
 
 		const scrape = await h.app.handle(new Request(`${ORIGIN}/metrics`), PEER);
 		expect(scrape.status).toBe(200);
+		expect(backendCalls).toBe(3);
 		expect(
 			sample(h, "ultrathink_upstream_breaker_transitions_total", { from: "closed", to: "open" }),
 		).toBe(1);
 		expect(sample(h, "ultrathink_upstream_breaker_state", { state: "open" })).toBe(1);
+
+		const refusedBefore =
+			sample(h, "ultrathink_planner_calls_total", { outcome: "upstream_unavailable" }) ?? 0;
+		await uplift();
+		// The pipeline degrades stage by stage instead of stopping, so one refused uplift records one refusal per
+		// stage it still attempts (as the OpenRouter path did); none of them may reach the backend.
+		expect(backendCalls).toBe(3);
+		expect(
+			sample(h, "ultrathink_planner_calls_total", { outcome: "upstream_unavailable" }),
+		).toBeGreaterThan(refusedBefore);
+		expect(sample(h, "ultrathink_planner_calls_total", { outcome: "upstream" })).toBe(3);
 		await h.app.shutdown();
 	});
 
@@ -348,10 +374,12 @@ describe("retention sweep, planner correlation and shutdown", () => {
 	});
 
 	test("a plan started by a request logs its planner_call line under that request's reqId", async () => {
-		const rejected: OpenRouterFetch = async () => new Response("bad request", { status: 400 });
 		const h = harness(
-			{ serverPlanning: true, planningModel: "x-ai/grok-test", openRouterApiKey: FAKE_KEY },
-			{ fetch: rejected, sleep: instantBackoff },
+			{ serverPlanning: true, planningModel: "claude-haiku-5-5" },
+			{
+				planBackend: failingBackend(new PlanCompleterError("auth", "auth")),
+				sleep: instantBackoff,
+			},
 		);
 		const started = await h.app.handle(
 			new Request(`${ORIGIN}/mcp`, {

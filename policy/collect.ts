@@ -6,8 +6,8 @@
 // a running server and records the response headers as they arrived. It writes JSON to stdout and never writes
 // anything else.
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { type Dirent, readFileSync, readdirSync, statSync } from "node:fs";
+import { extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { parse as parseYaml } from "yaml";
 import { SECURITY_HEADERS } from "../services/ultrathink/routes/router.ts";
@@ -46,6 +46,12 @@ export interface UnitFile {
 	sections: UnitSections;
 }
 
+/** One scanned file that references OpenRouter: its root-relative posix path and the reference kinds found in it. */
+export interface SourceScan {
+	file: string;
+	refs: string[];
+}
+
 export interface PolicyInput {
 	source: "static" | "live";
 	/** The `SECURITY_HEADERS` export of services/ultrathink/routes/router.ts, in its own case. */
@@ -54,6 +60,8 @@ export interface PolicyInput {
 	headers: Record<string, string>;
 	workflows: Workflow[];
 	units: UnitFile[];
+	/** Non-test source and config files that reference OpenRouter, sorted by file. Files without a reference are absent. */
+	sources: SourceScan[];
 }
 
 export interface CollectOptions {
@@ -235,6 +243,151 @@ export async function fetchLiveHeaders(
 	return headers;
 }
 
+// Reference kinds, in the order they are reported. `provider` is the quoted provider id: bare words in prose and labels
+// ("OpenRouter") are deliberately not references, only code that names the host, the key variable, the provider id or
+// the removed hosted-planner symbols.
+const OPENROUTER_REFS: readonly { kind: string; pattern: RegExp }[] = [
+	{ kind: "host", pattern: /openrouter\.ai/ },
+	{ kind: "env", pattern: /\bOPENROUTER_API_KEY\b/ },
+	{ kind: "provider", pattern: /["'`]openrouter["'`]/ },
+	{
+		kind: "symbol",
+		pattern:
+			/\b(?:OpenRouterFetch|OpenRouterError|OpenRouterCompleter\w*|createOpenRouterCompleter|openRouterApiKey|openRouterBaseUrl|ULTRATHINK_OPENROUTER\w*)\b/,
+	},
+];
+
+const SOURCE_DIRS = [
+	"src",
+	"hooks",
+	"services",
+	"scripts",
+	"plugins",
+	"hosts",
+	"deploy",
+	"bin",
+	".github",
+];
+// Workflows are YAML, so .yml and .yaml are scanned as well: a key reference in CI is the likeliest leak.
+const SOURCE_EXTENSIONS = [
+	".ts",
+	".tsx",
+	".js",
+	".mjs",
+	".cjs",
+	".sh",
+	".service",
+	".timer",
+	".json",
+	".yml",
+	".yaml",
+];
+// Dependencies, VCS data and prose never configure a model route; tests may name OpenRouter freely.
+const SKIPPED_DIRS = ["node_modules", ".git", "docs"];
+const TEST_FILE = /\.test\.tsx?$/;
+// A full-line comment: `//`, `/*`, a ` * ` block-comment body line, or `#`.
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*(?:\s|$)|#)/;
+// Only these languages have `//` and `/* */` comments. In shell, YAML and unit files `//` is part of a URL, so there
+// only full-line comments are dropped.
+const C_STYLE_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs", ".cjs"];
+
+/**
+ * Drops trailing `//` comments and `/* ... *\/` blocks, including multi-line ones. Quotes are tracked so the `//` in
+ * "https://openrouter.ai" stays code. A quote left open at a line end is dropped, except a template literal, which
+ * spans lines; a regex literal holding a quote can therefore leave a comment unstripped, which only over-reports.
+ */
+function stripCStyleComments(lines: string[]): string[] {
+	let inBlock = false;
+	let quote = "";
+	return lines.map((line) => {
+		let kept = "";
+		let i = 0;
+		while (i < line.length) {
+			const char = line.charAt(i);
+			if (inBlock) {
+				if (line.startsWith("*/", i)) {
+					inBlock = false;
+					i += 2;
+				} else {
+					i += 1;
+				}
+				continue;
+			}
+			if (quote !== "") {
+				kept += char;
+				if (char === "\\") {
+					kept += line.charAt(i + 1);
+					i += 2;
+					continue;
+				}
+				if (char === quote) quote = "";
+				i += 1;
+				continue;
+			}
+			if (line.startsWith("//", i)) break;
+			if (line.startsWith("/*", i)) {
+				inBlock = true;
+				i += 2;
+				continue;
+			}
+			if (char === '"' || char === "'" || char === "`") quote = char;
+			kept += char;
+			i += 1;
+		}
+		if (quote !== "`") quote = "";
+		return kept;
+	});
+}
+
+function stripComments(text: string, extension: string): string {
+	const lines = text.split("\n");
+	const code = C_STYLE_EXTENSIONS.includes(extension) ? stripCStyleComments(lines) : lines;
+	return code.filter((line) => !COMMENT_LINE.test(line)).join("\n");
+}
+
+/** Scannable files under `dir` (root-relative posix paths). Extensionless files count only under bin/. */
+function walkSources(root: string, dir: string, out: string[]): void {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(join(root, dir), { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	for (const entry of entries) {
+		const relative = `${dir}/${entry.name}`;
+		if (entry.isDirectory()) {
+			if (!SKIPPED_DIRS.includes(entry.name)) walkSources(root, relative, out);
+			continue;
+		}
+		if (!entry.isFile() || TEST_FILE.test(entry.name)) continue;
+		const extension = extname(entry.name);
+		if (SOURCE_EXTENSIONS.includes(extension) || (extension === "" && relative.startsWith("bin/")))
+			out.push(relative);
+	}
+}
+
+/**
+ * The OpenRouter references in the non-test files of the tree, against the allow-list in openrouter.rego. Only the
+ * resolved `--root` is read, so a fixture root without src/ or services/ yields an empty list.
+ */
+function scanSources(root: string): SourceScan[] {
+	const files: string[] = [];
+	for (const dir of SOURCE_DIRS) walkSources(root, dir, files);
+	if (statSync(join(root, "package.json"), { throwIfNoEntry: false })?.isFile())
+		files.push("package.json");
+
+	const scans: SourceScan[] = [];
+	for (const file of files.sort()) {
+		const text = stripComments(readFileSync(join(root, file), "utf8"), extname(file));
+		const refs = OPENROUTER_REFS.filter(({ pattern }) => pattern.test(text)).map(
+			({ kind }) => kind,
+		);
+		if (refs.length > 0) scans.push({ file, refs });
+	}
+	return scans;
+}
+
 export async function collect(options: CollectOptions = {}): Promise<PolicyInput> {
 	const root = resolve(options.root ?? DEFAULT_ROOT);
 	if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
@@ -258,8 +411,16 @@ export async function collect(options: CollectOptions = {}): Promise<PolicyInput
 	});
 
 	const expected: Record<string, string> = { ...SECURITY_HEADERS };
+	const sources = scanSources(root);
 	if (options.live === undefined) {
-		return { source: "static", expected, headers: lowercaseKeys(expected), workflows, units };
+		return {
+			source: "static",
+			expected,
+			headers: lowercaseKeys(expected),
+			workflows,
+			units,
+			sources,
+		};
 	}
 	return {
 		source: "live",
@@ -267,6 +428,7 @@ export async function collect(options: CollectOptions = {}): Promise<PolicyInput
 		headers: await fetchLiveHeaders(options.live, options.liveTls),
 		workflows,
 		units,
+		sources,
 	};
 }
 

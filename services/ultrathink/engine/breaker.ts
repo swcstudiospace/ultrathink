@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 /**
- * Upstream circuit breaker for the OpenRouter completer (Refs SPE-17437).
+ * Upstream circuit breaker for the planner's model calls (Refs SPE-17437).
  *
  * Pure state machine, no I/O, no logging and no timers: time comes from the
  * injected `now` clock and every transition is reported through
@@ -29,7 +29,7 @@
  * for the request that gets the probe).
  *
  * Fail-open semantics belong to the caller: this module only refuses slots.
- * The completer maps a refusal to `upstream_unavailable` and the service keeps
+ * The planner maps a refusal to `upstream_unavailable` and the service keeps
  * serving every non-planning tool while the upstream is cut off. Nothing here
  * throws after construction; `onTransition` exceptions are swallowed.
  */

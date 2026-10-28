@@ -36,24 +36,33 @@ export interface PlanUsage {
 	completionTokens?: number;
 }
 
-export type PlanErrorCode = "auth" | "rate_limited" | "upstream" | "timeout" | "aborted";
+export type PlanErrorCode =
+	| "auth"
+	| "rate_limited"
+	| "upstream"
+	| "timeout"
+	| "aborted"
+	| "upstream_unavailable";
 
 export class PlanCompleterError extends Error {
 	readonly code: PlanErrorCode;
 	readonly failure: FailureClass;
+	/** Set only on `upstream_unavailable`: how long the open circuit breaker keeps refusing calls. */
+	readonly retryAfterMs?: number;
 
-	constructor(code: PlanErrorCode, failure: FailureClass, cause?: unknown) {
+	constructor(code: PlanErrorCode, failure: FailureClass, cause?: unknown, retryAfterMs?: number) {
 		super(`plan ${code}`, cause === undefined ? undefined : { cause });
 		this.name = "PlanCompleterError";
 		this.code = code;
 		this.failure = failure;
+		if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
 	}
 }
 
 export interface PlanCallHooks {
 	/** Output-token cap for this call, passed to every completer that supports one. */
 	maxOutputTokens?: number;
-	/** Fires once per attempt that reported tokens (a failed Claude attempt, then Grok), never costUsd. */
+	/** Fires once per attempt that reported tokens (a failed Claude attempt, then Grok). */
 	onUsage?: (usage: PlanUsage) => void;
 	/** Fires once after a call that a later candidate answered, with the chain's summary. */
 	onFailover?: (summary: string) => void;

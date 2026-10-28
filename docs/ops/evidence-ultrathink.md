@@ -7,12 +7,12 @@ First recorded 2026-10-16, refreshed 2026-10-18 from the VPS, public resolvers a
 | Item | State |
 |---|---|
 | Web service | `ultrathink-web.service` as user `ultrathink` on `127.0.0.1:8795`. Code comes from `/opt/ultrathink/releases/<sha>-<utc>` through the `current` link, run by the pinned Bun at `/opt/ultrathink/bin/bun`. `systemd-analyze security` scores 1.4 (OK); the first unit scored 9.0 (UNSAFE). |
-| Server planning | On. `x-ai/grok-4.7` through OpenRouter, reasoning effort low, 240 s call timeout, at most 2 concurrent plans. Measurements are in the runbook under "Planner model". |
+| Server planning | At the 2026-10-18 check: on, `x-ai/grok-4.7` through OpenRouter, reasoning effort low, 240 s call timeout, at most 2 concurrent plans. That OpenRouter planner was retired from the service: server planning now runs only on the service user's Claude plan login, and only when `ULTRATHINK_SERVER_PLANNING=1` is set (runbook section 12a). The live setting after the retirement is not recorded here. |
 | Worker | `ultrathink-worker` is not installed: `worker/main.ts` does not exist. `POST /ultrathink` queues runs that nothing executes. Chat planning runs inside the web service instead. The draft unit file `deploy/ultrathink-worker.service` is in the repository, marked as a draft that is not installed: its `ExecStart` points at `services/ultrathink/worker/main.ts`, which does not exist. |
 | Public `/healthz` | 200 through Cloudflare. A request straight to the origin address returns 403. |
 | Public `/mcp` | Without credentials: 401 with a challenge that names the protected-resource metadata. With the connector key or an OAuth bearer: `initialize` returns protocol 2025-11-25 and `tools/list` returns 7 tools. Note: 7 was the count at the time of the check; the connector surface of the current code lists 10 tools (9 with server planning off), and the runbook smoke checklist expects that number. |
 | OAuth | Discovery documents return 200. Registration, authorization with PKCE S256, token, refresh rotation with reuse detection, and revocation work (see the verification table). |
-| Config | `/etc/ultrathink/ultrathink.env`, mode 600, root. Holds the password hash, session secret, connector key, OpenRouter key and planner settings. |
+| Config | `/etc/ultrathink/ultrathink.env`, mode 600, root. Holds the password hash, session secret, connector key and planner settings. At the 2026-10-18 check it also held an OpenRouter key and an OpenRouter model id; the service no longer uses them, and the runbook (section 12a) lists the lines to delete before the release that retired them. |
 | Owner password | Stored as an Argon2id hash (m=65536 KiB, t=2, p=1). The generated plaintext is in `/root/.config/ultrathink/owner-password`, mode 600; it was written once and never read by the automation. Read it, then delete the file. |
 | State | `/var/lib/ultrathink`, owned by `ultrathink`. The SQLite file and `oauth.json` are mode 600. |
 | Maintenance | `ultrathink-maintenance.timer` runs daily at 03:17 UTC plus a random delay. It writes a SQLite `VACUUM INTO` copy with `oauth.json` and checksums, keeps 14 archives, and removes journal, session, job and SQLite run data older than 30 days. A manual run produced an archive that passed `verify` (checksums, SQLite integrity, `oauth.json` syntax). |
@@ -64,7 +64,7 @@ The browser rows ran against throwaway instances on loopback ports with a tempor
 |---|---|
 | `grok-4-heavy` via the SuperGrok session | HTTP 404: the model does not exist or the team has no access. Recorded 2026-10-16 in `heavy-probe.json` in the first snapshot directory. |
 | `grok-4.7` via the SuperGrok session | HTTP 429: the included usage was used up, with a rolling 24-hour reset. Recorded in `grok47-probe.json` there. |
-| `grok-4.7` via OpenRouter | Used in production. Reasoning effort low finishes a full plan in about 139 s for $0.15. At the provider's default effort it did not finish in 6 minutes. |
+| `grok-4.7` via OpenRouter | Was used in production at the 2026-10-18 check. Reasoning effort low finished a full plan in about 139 s for $0.15. At the provider's default effort it did not finish in 6 minutes. Retired: the hosted service no longer uses OpenRouter. |
 
 The xAI models page lists no Heavy API model, so an API key does not by itself give Heavy access.
 

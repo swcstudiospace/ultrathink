@@ -19,7 +19,6 @@ export const METRIC_FAMILIES: readonly string[] = [
 	"ultrathink_planner_calls_total",
 	"ultrathink_planner_call_duration_seconds",
 	"ultrathink_plan_tokens_total",
-	"ultrathink_plan_cost_usd_total",
 	"ultrathink_planner_enabled",
 	"ultrathink_build_info",
 	"ultrathink_metrics_dropped_total",

@@ -11,13 +11,14 @@ import { createPenaltyLadder } from "../auth/penalty.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { type Ledger, createLedger } from "../cost/ledger.ts";
 import { type BreakerState, createCircuitBreaker } from "../engine/breaker.ts";
+import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
 import {
 	type HeadlessPlanner,
 	type ResultView,
 	createHeadlessPlanner,
 } from "../engine/headless.ts";
 import type { JournalOptions } from "../engine/journal.ts";
-import type { OpenRouterFetch } from "../engine/openrouter.ts";
+import type { PlanBackend } from "../engine/plan.ts";
 import { type SweepResult, createSweeper, sweepStateDir } from "../engine/retention.ts";
 import { defaultGraphResources, loadCatalogWithFallback } from "../mcp/connector-host.ts";
 import { type McpToolHost, type ToolOutcome, handleMcpPayload } from "../mcp/mcp.ts";
@@ -95,8 +96,10 @@ export interface RouterDeps {
 	metrics?: Metrics;
 	/** Defaults to a ledger over the store with the configured ceilings. Used only by the default planner. */
 	ledger?: Ledger;
-	/** Reaches the default planner's OpenRouter completer. */
-	fetch?: OpenRouterFetch;
+	/** Replaces the default planner's model completer (tests). */
+	completer?: ClaudeCompleter;
+	/** Replaces the default planner's plan-login backend; chaos wraps the real one here. */
+	planBackend?: PlanBackend;
 	/** Reaches the default planner's waits. */
 	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	/** Test seam. Defaults to the state directory's audit log, which is absent when config.auditLog is off. */
@@ -798,7 +801,8 @@ export function createApp(deps: RouterDeps): App {
 			now: deps.now,
 			logger,
 			...(breaker ? { breaker } : {}),
-			...(deps.fetch ? { fetch: deps.fetch } : {}),
+			...(deps.completer ? { completer: deps.completer } : {}),
+			...(deps.planBackend ? { planBackend: deps.planBackend } : {}),
 			...(deps.sleep ? { sleep: deps.sleep } : {}),
 			...(spans === undefined ? {} : { spans }),
 			onCall: (call) => {
@@ -813,11 +817,7 @@ export function createApp(deps: RouterDeps): App {
 					ms: call.ms,
 					outcome: call.outcome,
 					attempts: call.attempts,
-					usage: {
-						input: call.inputTokens,
-						output: call.outputTokens,
-						...(call.costUsd === undefined ? {} : { costUsd: call.costUsd }),
-					},
+					usage: { input: call.inputTokens, output: call.outputTokens },
 				});
 			},
 		});
@@ -1131,12 +1131,8 @@ export function createApp(deps: RouterDeps): App {
 			const code = error instanceof Error && "code" in error ? error.code : undefined;
 			oauthOk = code === "ENOENT" && stateDirOk;
 		}
-		// Plan mode needs the plan backend (the `claude` CLI), not an OpenRouter key; the default needs key and model.
-		const plannerOk =
-			!planner.enabled ||
-			(config.planningBackend === "plan"
-				? planner.backendReady().ok
-				: config.openRouterApiKey !== undefined && config.planningModel !== undefined);
+		// The planner needs the plan backend (the `claude` CLI login) and nothing else.
+		const plannerOk = !planner.enabled || planner.backendReady().ok;
 		const checks = {
 			store: storeOk,
 			stateDir: stateDirOk,
@@ -1203,7 +1199,7 @@ export function createApp(deps: RouterDeps): App {
 		};
 	}
 
-	/** Counts a finished server plan: the job, its tokens and its cost. The tool host calls it once per plan. */
+	/** Counts a finished server plan: the job and its tokens. The tool host calls it once per plan. */
 	function recordFinished(view: ResultView): void {
 		metrics.inc("ultrathink_plan_jobs_total", { status: view.status });
 		const { usage } = view;
@@ -1212,8 +1208,6 @@ export function createApp(deps: RouterDeps): App {
 			metrics.inc("ultrathink_plan_tokens_total", { direction: "input" }, usage.inputTokens);
 		if (usage.outputTokens > 0)
 			metrics.inc("ultrathink_plan_tokens_total", { direction: "output" }, usage.outputTokens);
-		if (usage.costUsd !== undefined && usage.costUsd > 0)
-			metrics.inc("ultrathink_plan_cost_usd_total", undefined, usage.costUsd);
 	}
 
 	const toolHost = createToolHost({

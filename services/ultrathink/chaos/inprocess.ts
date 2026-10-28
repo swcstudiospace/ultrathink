@@ -4,11 +4,11 @@
 import { randomBytes } from "node:crypto";
 import { createAuth } from "../auth/auth.ts";
 import { type UltrathinkConfig, loadConfig } from "../config/config.ts";
-import type { OpenRouterFetch } from "../engine/openrouter.ts";
+import { type PlanBackend, PlanCompleterError } from "../engine/plan.ts";
 import { createLogger } from "../obs/log.ts";
 import { createApp } from "../routes/router.ts";
 import { openStore } from "../store/store.ts";
-import { createFaultyFetch } from "./faults.ts";
+import { createFaultyBackend } from "./faults.ts";
 import type { ChaosResponse, ChaosTarget } from "./observe.ts";
 import type { ExperimentTemplate } from "./schema.ts";
 
@@ -18,6 +18,8 @@ const ORIGIN = "https://ultrathink.test";
 const PEER_IP = "127.0.0.1";
 // The stand-in upstream: any call that is not faulted reaches it and fails as an upstream error.
 const NO_UPSTREAM_MESSAGE = "no upstream in process";
+// A real Claude model id; the stand-in backend never runs it, but the config validates its shape.
+const PLANNING_MODEL = "claude-haiku-5-5";
 
 export interface InProcessTargetOptions {
 	template: ExperimentTemplate;
@@ -33,11 +35,11 @@ export interface InProcessTarget {
 }
 
 /**
- * Builds the real app in process with a temporary state directory, the template's fault plan at the OpenRouter seam,
- * and the template's config overrides. The environment is fixed and never read from process.env, so a run cannot pick
- * up production configuration. The app's own sleep is not overridden: the planner uses it for the whole-plan timer,
- * and a zero-delay sleep would time every plan out before its first upstream call. Retry waits stay at zero because the
- * faulted 5xx carries `Retry-After: 0`.
+ * Builds the real app in process with a temporary state directory, the template's fault plan wrapped around a stand-in
+ * plan backend, and the template's config overrides. The environment is fixed and never read from process.env, so a
+ * run cannot pick up production configuration. The app's own sleep is not overridden: the planner uses it for the
+ * whole-plan timer, and a zero-delay sleep would time every plan out before its first upstream call. A blackhole
+ * times out at the template's `timeoutMs`, which stands in for the plan backend's own per-call timer.
  */
 export async function createInProcessTarget(
 	options: InProcessTargetOptions,
@@ -57,9 +59,8 @@ export async function createInProcessTarget(
 			ULTRATHINK_STATE_DIR: stateDir,
 			ULTRATHINK_PLAINTEXT_LOOPBACK: "1",
 			ULTRATHINK_SERVER_PLANNING: "1",
-			ULTRATHINK_PLANNING_MODEL: "chaos/inprocess",
+			ULTRATHINK_PLANNING_MODEL: PLANNING_MODEL,
 			ULTRATHINK_CONNECTOR_KEY: connectorKey,
-			OPENROUTER_API_KEY: "chaos-inprocess-no-upstream",
 		}),
 		template.config,
 	);
@@ -71,15 +72,20 @@ export async function createInProcessTarget(
 		cookieSecure: true,
 	});
 	const store = openStore(config.dbPath);
-	const upstream: OpenRouterFetch = async () => {
-		throw new Error(NO_UPSTREAM_MESSAGE);
+	// `ready` is ok so the planner does not answer not_ready before the fault plan is consulted.
+	const upstream: PlanBackend = {
+		label: `plan:${PLANNING_MODEL}`,
+		ready: () => ({ ok: true }),
+		complete: async () => {
+			throw new PlanCompleterError("upstream", "unavailable", new Error(NO_UPSTREAM_MESSAGE));
+		},
 	};
 	const app = createApp({
 		config,
 		store,
 		auth,
 		logger: createLogger({ write: () => undefined }),
-		fetch: createFaultyFetch(template.plan, upstream),
+		planBackend: createFaultyBackend(template.plan, upstream, { timeoutMs: config.modelTimeoutMs }),
 		...(now === undefined ? {} : { now: () => now().getTime() }),
 	});
 

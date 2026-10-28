@@ -5,45 +5,42 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type PlanBackend, type PlanCallHooks, PlanCompleterError } from "../engine/plan.ts";
 import {
-	type OpenRouterCallInfo,
-	type OpenRouterCompleterOptions,
-	OpenRouterError,
-	type OpenRouterFetch,
-	createOpenRouterCompleter,
-} from "../engine/openrouter.ts";
-import {
-	createFaultyFetch,
+	createFaultyBackend,
 	type FaultPlan,
 	type FaultStep,
-	loadChaosFetch,
+	loadChaosBackend,
 	parseFaultPlan,
 } from "./faults.ts";
 
-const BODY = "INNER-BODY-MARK";
-const KEY = "sk-or-test-SECRETKEY-0123456789";
+const REPLY = "INNER-REPLY-MARK";
 
 interface Recorded {
-	fetch: OpenRouterFetch;
-	calls: Array<{ input: string; init: RequestInit }>;
+	backend: PlanBackend;
+	calls: Array<{
+		system: string;
+		user: string;
+		signal: AbortSignal | undefined;
+		hooks: PlanCallHooks | undefined;
+	}>;
 }
 
-/** An inner fetch that records calls and answers 200 with a fixed body. */
-function recordingInner(body: string = BODY): Recorded {
+/** An inner backend that records calls and answers with a fixed reply. */
+function recordingInner(reply: string = REPLY): Recorded {
 	const calls: Recorded["calls"] = [];
 	return {
 		calls,
-		fetch: async (input, init) => {
-			calls.push({ input, init });
-			return new Response(body, { status: 200 });
+		backend: {
+			label: "plan:claude-haiku-5-5",
+			ready: () => ({ ok: true, detail: "inner ready" }),
+			async complete(system, user, signal, hooks) {
+				calls.push({ system, user, signal, hooks });
+				return reply;
+			},
 		},
 	};
 }
-
-/** A chat completion body with content "ok", for the completer tests. */
-const COMPLETION_BODY = JSON.stringify({
-	choices: [{ message: { role: "assistant", content: "ok" } }],
-});
 
 function plan(...steps: FaultStep[]): FaultPlan {
 	return { steps };
@@ -58,6 +55,13 @@ async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
 	throw new Error("expected the promise to reject");
 }
 
+/** The rejection as a plan error; fails the test when the call rejected with anything else. */
+async function planErrorOf(promise: Promise<unknown>): Promise<PlanCompleterError> {
+	const error = await rejectionOf(promise);
+	expect(error).toBeInstanceOf(PlanCompleterError);
+	return error as PlanCompleterError;
+}
+
 function parseErrorOf(json: unknown): unknown {
 	try {
 		parseFaultPlan(json);
@@ -67,224 +71,281 @@ function parseErrorOf(json: unknown): unknown {
 	throw new Error("expected parseFaultPlan to throw");
 }
 
-function completerWith(
-	fetch: OpenRouterFetch,
-	overrides: Partial<OpenRouterCompleterOptions> = {},
-) {
-	const sleeps: number[] = [];
-	const calls: OpenRouterCallInfo[] = [];
-	const complete = createOpenRouterCompleter({
-		apiKey: KEY,
-		baseUrl: "https://router.example.test/api/v1",
-		model: "x-ai/test-model",
-		maxOutputTokens: 16,
-		timeoutMs: 5000,
-		fetch,
-		sleep: async (ms) => {
-			sleeps.push(ms);
-		},
-		onCall: (info) => {
-			calls.push(info);
-		},
-		...overrides,
-	});
-	return { complete, sleeps, calls };
-}
+/** Resolves only when the signal aborts, so a test never waits on wall-clock time. */
+const untilSignal = async (_ms: number, signal?: AbortSignal): Promise<void> => {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	if (signal?.aborted === true) {
+		return;
+	}
+	signal?.addEventListener("abort", () => resolve(), { once: true });
+	await promise;
+};
 
-describe("createFaultyFetch step sequencing", () => {
-	test("status 503 x2 then pass gives two 503 responses, then the inner response; inner is called once", async () => {
+describe("createFaultyBackend step sequencing", () => {
+	test("status 503 x2 then pass fails twice as upstream, then returns the inner reply; inner is called once", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(
+		const faulty = createFaultyBackend(
 			plan(
 				{ count: 2, fault: { kind: "status", status: 503 } },
 				{ count: 1, fault: { kind: "pass" } },
 			),
-			inner.fetch,
+			inner.backend,
 		);
-		const first = await faulty("https://upstream.test/v1", {});
-		const second = await faulty("https://upstream.test/v1", {});
-		const third = await faulty("https://upstream.test/v1", {});
-		expect(first.status).toBe(503);
-		expect(second.status).toBe(503);
-		expect(third.status).toBe(200);
-		expect(await third.text()).toBe(BODY);
+		expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("upstream");
+		expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("upstream");
+		expect(await faulty.complete("s", "u")).toBe(REPLY);
 		expect(inner.calls).toHaveLength(1);
 	});
 
-	test("exhausted plans pass through to the inner fetch", async () => {
+	test("exhausted plans pass through to the inner backend", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(
+		const faulty = createFaultyBackend(
 			plan({ count: 1, fault: { kind: "status", status: 500 } }),
-			inner.fetch,
+			inner.backend,
 		);
-		expect((await faulty("u", {})).status).toBe(500);
-		expect(await (await faulty("u", {})).text()).toBe(BODY);
-		expect(await (await faulty("u", {})).text()).toBe(BODY);
+		expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("upstream");
+		expect(await faulty.complete("s", "u")).toBe(REPLY);
+		expect(await faulty.complete("s", "u")).toBe(REPLY);
 		expect(inner.calls).toHaveLength(2);
 	});
 
-	test("a forever step never advances and never reaches the inner fetch", async () => {
+	test("a forever step never advances and never reaches the inner backend", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(
+		const faulty = createFaultyBackend(
 			plan({ count: "forever", fault: { kind: "status", status: 502 } }),
-			inner.fetch,
+			inner.backend,
 		);
 		for (let call = 0; call < 5; call += 1) {
-			expect((await faulty("u", {})).status).toBe(502);
+			expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("upstream");
 		}
 		expect(inner.calls).toHaveLength(0);
 	});
 
 	test("steps advance across fault kinds in order", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(
+		const faulty = createFaultyBackend(
 			plan(
-				{ count: 1, fault: { kind: "status", status: 503 } },
+				{ count: 1, fault: { kind: "status", status: 429 } },
 				{ count: 1, fault: { kind: "reset" } },
 				{ count: 1, fault: { kind: "pass" } },
 			),
-			inner.fetch,
+			inner.backend,
 		);
-		expect((await faulty("u", {})).status).toBe(503);
-		expect(await rejectionOf(faulty("u", {}))).toBeInstanceOf(TypeError);
-		expect(await (await faulty("u", {})).text()).toBe(BODY);
+		expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("rate_limited");
+		expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("upstream");
+		expect(await faulty.complete("s", "u")).toBe(REPLY);
 		expect(inner.calls).toHaveLength(1);
 	});
 
 	test("concurrent calls consume units in call order", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(
+		const faulty = createFaultyBackend(
 			plan({ count: 1, fault: { kind: "status", status: 503 } }),
-			inner.fetch,
+			inner.backend,
 		);
-		const first = faulty("u", {});
-		const second = faulty("u", {});
-		expect((await first).status).toBe(503);
-		expect(await (await second).text()).toBe(BODY);
+		const first = faulty.complete("s", "u");
+		const second = faulty.complete("s", "u");
+		expect((await planErrorOf(first)).code).toBe("upstream");
+		expect(await second).toBe(REPLY);
 	});
 
 	test("the caller's plan object is copied, so later mutation has no effect", async () => {
 		const inner = recordingInner();
 		const steps: FaultStep[] = [{ count: 1, fault: { kind: "status", status: 500 } }];
-		const faulty = createFaultyFetch({ steps }, inner.fetch);
+		const faulty = createFaultyBackend({ steps }, inner.backend);
 		steps.push({ count: "forever", fault: { kind: "status", status: 599 } });
-		expect((await faulty("u", {})).status).toBe(500);
-		expect(await (await faulty("u", {})).text()).toBe(BODY);
+		expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("upstream");
+		expect(await faulty.complete("s", "u")).toBe(REPLY);
 	});
 });
 
-describe("createFaultyFetch fault kinds", () => {
-	test("status with retryAfterSec sets Retry-After and returns the injected body", async () => {
+describe("createFaultyBackend fault kinds", () => {
+	const mapping: Array<{
+		status: number;
+		code: PlanCompleterError["code"];
+		failure: PlanCompleterError["failure"];
+	}> = [
+		{ status: 401, code: "auth", failure: "auth" },
+		{ status: 403, code: "auth", failure: "auth" },
+		{ status: 429, code: "rate_limited", failure: "rate-limit" },
+		{ status: 400, code: "upstream", failure: "other" },
+		{ status: 500, code: "upstream", failure: "unavailable" },
+		{ status: 503, code: "upstream", failure: "unavailable" },
+		{ status: 599, code: "upstream", failure: "unavailable" },
+	];
+
+	for (const entry of mapping) {
+		test(`status ${entry.status} throws a ${entry.code} plan error of class ${entry.failure} and skips the inner backend`, async () => {
+			const inner = recordingInner();
+			const faulty = createFaultyBackend(
+				plan({ count: 1, fault: { kind: "status", status: entry.status } }),
+				inner.backend,
+			);
+			const error = await planErrorOf(faulty.complete("s", "u"));
+			expect(error.code).toBe(entry.code);
+			expect(error.failure).toBe(entry.failure);
+			expect(inner.calls).toHaveLength(0);
+		});
+	}
+
+	test("reset throws an upstream plan error and does not call the inner backend", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(
-			plan({ count: 1, fault: { kind: "status", status: 429, retryAfterSec: 3 } }),
-			inner.fetch,
+		const faulty = createFaultyBackend(plan({ count: 1, fault: { kind: "reset" } }), inner.backend);
+		const error = await planErrorOf(faulty.complete("s", "u"));
+		expect(error.code).toBe("upstream");
+		expect(error.failure).toBe("network");
+		expect(inner.calls).toHaveLength(0);
+	});
+
+	test("label and ready delegate to the inner backend", () => {
+		const faulty = createFaultyBackend(
+			plan({ count: 1, fault: { kind: "reset" } }),
+			recordingInner().backend,
 		);
-		const response = await faulty("u", {});
-		expect(response.status).toBe(429);
-		expect(response.headers.get("retry-after")).toBe("3");
-		expect(await response.text()).toBe('{"error":"injected"}');
-		expect(inner.calls).toHaveLength(0);
+		expect(faulty.label).toBe("plan:claude-haiku-5-5");
+		expect(faulty.ready()).toEqual({ ok: true, detail: "inner ready" });
 	});
 
-	test("status without retryAfterSec sets no Retry-After header", async () => {
-		const faulty = createFaultyFetch(
-			plan({ count: 1, fault: { kind: "status", status: 503 } }),
-			recordingInner().fetch,
-		);
-		expect((await faulty("u", {})).headers.get("retry-after")).toBeNull();
-	});
-
-	test("reset rejects with a TypeError and does not call the inner fetch", async () => {
+	test("pass forwards the prompt, the signal and the hooks to the inner backend", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "reset" } }), inner.fetch);
-		const error = await rejectionOf(faulty("u", {}));
-		expect(error).toBeInstanceOf(TypeError);
-		expect((error as Error).message).toBe("fetch failed: injected reset");
-		expect(inner.calls).toHaveLength(0);
-	});
-
-	test("blackhole without init.signal rejects at once and does not call the inner fetch", async () => {
-		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "blackhole" } }), inner.fetch);
-		const error = await rejectionOf(faulty("u", {}));
-		expect(error).toBeInstanceOf(Error);
-		expect((error as Error).message).toContain("init.signal");
-		expect(inner.calls).toHaveLength(0);
-	});
-
-	test("blackhole rejects with AbortError when the caller's signal aborts", async () => {
-		const inner = recordingInner();
-		const faulty = createFaultyFetch(plan({ count: 1, fault: { kind: "blackhole" } }), inner.fetch);
+		const faulty = createFaultyBackend(plan({ count: 1, fault: { kind: "pass" } }), inner.backend);
 		const controller = new AbortController();
-		const pending = faulty("u", { signal: controller.signal });
-		controller.abort();
-		const error = await rejectionOf(pending);
-		expect(error).toBeInstanceOf(DOMException);
-		expect((error as DOMException).name).toBe("AbortError");
-		expect(inner.calls).toHaveLength(0);
+		const hooks: PlanCallHooks = { maxOutputTokens: 7 };
+		expect(await faulty.complete("sys", "usr", controller.signal, hooks)).toBe(REPLY);
+		expect(inner.calls).toEqual([{ system: "sys", user: "usr", signal: controller.signal, hooks }]);
 	});
 
-	test("blackhole with an already-aborted signal rejects with AbortError", async () => {
-		const faulty = createFaultyFetch(
+	test("blackhole with neither a signal nor a timeout rejects at once and does not call the inner backend", async () => {
+		const inner = recordingInner();
+		const faulty = createFaultyBackend(
 			plan({ count: 1, fault: { kind: "blackhole" } }),
-			recordingInner().fetch,
+			inner.backend,
+		);
+		const error = await rejectionOf(faulty.complete("s", "u"));
+		expect(error).toBeInstanceOf(Error);
+		expect(error).not.toBeInstanceOf(PlanCompleterError);
+		expect((error as Error).message).toContain("timeoutMs");
+		expect(inner.calls).toHaveLength(0);
+	});
+
+	test("blackhole rejects with an aborted plan error when the caller's signal aborts", async () => {
+		const inner = recordingInner();
+		const faulty = createFaultyBackend(
+			plan({ count: 1, fault: { kind: "blackhole" } }),
+			inner.backend,
+		);
+		const controller = new AbortController();
+		const pending = faulty.complete("s", "u", controller.signal);
+		controller.abort();
+		const error = await planErrorOf(pending);
+		expect(error.code).toBe("aborted");
+		expect(error.failure).toBe("aborted");
+		expect(inner.calls).toHaveLength(0);
+	});
+
+	test("blackhole with an already-aborted signal rejects with an aborted plan error", async () => {
+		const faulty = createFaultyBackend(
+			plan({ count: 1, fault: { kind: "blackhole" } }),
+			recordingInner().backend,
 		);
 		const controller = new AbortController();
 		controller.abort();
-		const error = await rejectionOf(faulty("u", { signal: controller.signal }));
-		expect((error as DOMException).name).toBe("AbortError");
+		expect((await planErrorOf(faulty.complete("s", "u", controller.signal))).code).toBe("aborted");
 	});
 
-	test("latency waits through the injected sleep with the fault's ms and then forwards to the inner fetch", async () => {
+	test("blackhole with a backend timeout waits through the injected sleep, then rejects as a timeout", async () => {
 		const inner = recordingInner();
 		const sleeps: Array<{ ms: number; signal: AbortSignal | undefined }> = [];
-		const faulty = createFaultyFetch(
-			plan({ count: 1, fault: { kind: "latency", ms: 250 } }),
-			inner.fetch,
-			async (ms, signal) => {
-				sleeps.push({ ms, signal });
+		const faulty = createFaultyBackend(
+			plan({ count: 1, fault: { kind: "blackhole" } }),
+			inner.backend,
+			{
+				timeoutMs: 50,
+				sleep: async (ms, signal) => {
+					sleeps.push({ ms, signal });
+				},
 			},
 		);
 		const controller = new AbortController();
-		const response = await faulty("u", { signal: controller.signal });
-		expect(await response.text()).toBe(BODY);
+		const error = await planErrorOf(faulty.complete("s", "u", controller.signal));
+		expect(error.code).toBe("timeout");
+		expect(error.failure).toBe("timeout");
+		expect(sleeps).toEqual([{ ms: 50, signal: controller.signal }]);
+		expect(inner.calls).toHaveLength(0);
+	});
+
+	test("blackhole with a backend timeout needs no signal", async () => {
+		const faulty = createFaultyBackend(
+			plan({ count: 1, fault: { kind: "blackhole" } }),
+			recordingInner().backend,
+			{ timeoutMs: 50, sleep: async () => undefined },
+		);
+		expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("timeout");
+	});
+
+	test("a caller abort that lands before the backend timeout is aborted, not a timeout", async () => {
+		const faulty = createFaultyBackend(
+			plan({ count: 1, fault: { kind: "blackhole" } }),
+			recordingInner().backend,
+			{ timeoutMs: 60_000, sleep: untilSignal },
+		);
+		const controller = new AbortController();
+		const pending = faulty.complete("s", "u", controller.signal);
+		controller.abort();
+		expect((await planErrorOf(pending)).code).toBe("aborted");
+	});
+
+	test("blackhole under a 20 ms backend timeout is a timeout on the real clock", async () => {
+		const faulty = createFaultyBackend(
+			plan({ count: "forever", fault: { kind: "blackhole" } }),
+			recordingInner().backend,
+			{ timeoutMs: 20 },
+		);
+		expect((await planErrorOf(faulty.complete("s", "u"))).code).toBe("timeout");
+	});
+
+	test("latency waits through the injected sleep with the fault's ms and then forwards to the inner backend", async () => {
+		const inner = recordingInner();
+		const sleeps: Array<{ ms: number; signal: AbortSignal | undefined }> = [];
+		const faulty = createFaultyBackend(
+			plan({ count: 1, fault: { kind: "latency", ms: 250 } }),
+			inner.backend,
+			{
+				sleep: async (ms, signal) => {
+					sleeps.push({ ms, signal });
+				},
+			},
+		);
+		const controller = new AbortController();
+		expect(await faulty.complete("s", "u", controller.signal)).toBe(REPLY);
 		expect(sleeps).toEqual([{ ms: 250, signal: controller.signal }]);
 		expect(inner.calls).toHaveLength(1);
 	});
 
-	test("latency aborted by the caller rejects with AbortError and does not call the inner fetch", async () => {
+	test("latency aborted by the caller rejects with an aborted plan error and does not call the inner backend", async () => {
 		const inner = recordingInner();
-		// Resolves only when the signal aborts, so the test never waits on wall-clock time.
-		const untilSignal = async (_ms: number, signal?: AbortSignal): Promise<void> => {
-			const { promise, resolve } = Promise.withResolvers<void>();
-			signal?.addEventListener("abort", () => resolve(), { once: true });
-			await promise;
-		};
-		const faulty = createFaultyFetch(
+		const faulty = createFaultyBackend(
 			plan({ count: 1, fault: { kind: "latency", ms: 60_000 } }),
-			inner.fetch,
-			untilSignal,
+			inner.backend,
+			{ sleep: untilSignal },
 		);
 		const controller = new AbortController();
-		const pending = faulty("u", { signal: controller.signal });
+		const pending = faulty.complete("s", "u", controller.signal);
 		controller.abort();
-		const error = await rejectionOf(pending);
-		expect((error as DOMException).name).toBe("AbortError");
+		expect((await planErrorOf(pending)).code).toBe("aborted");
 		expect(inner.calls).toHaveLength(0);
 	});
 
-	test("latency with an already-aborted signal rejects with AbortError without calling the inner fetch", async () => {
+	test("latency with an already-aborted signal rejects with an aborted plan error without calling the inner backend", async () => {
 		const inner = recordingInner();
-		const faulty = createFaultyFetch(
+		const faulty = createFaultyBackend(
 			plan({ count: 1, fault: { kind: "latency", ms: 0 } }),
-			inner.fetch,
-			async () => undefined,
+			inner.backend,
+			{ sleep: async () => undefined },
 		);
 		const controller = new AbortController();
 		controller.abort();
-		const error = await rejectionOf(faulty("u", { signal: controller.signal }));
-		expect((error as DOMException).name).toBe("AbortError");
+		expect((await planErrorOf(faulty.complete("s", "u", controller.signal))).code).toBe("aborted");
 		expect(inner.calls).toHaveLength(0);
 	});
 });
@@ -301,8 +362,8 @@ describe("parseFaultPlan", () => {
 		const parsed = parseFaultPlan({
 			steps: [
 				{ count: 1, fault: { kind: "pass" } },
-				{ count: 1, fault: { kind: "status", status: 400, retryAfterSec: 0 } },
-				{ count: 1, fault: { kind: "status", status: 599, retryAfterSec: 20 } },
+				{ count: 1, fault: { kind: "status", status: 400 } },
+				{ count: 1, fault: { kind: "status", status: 599 } },
 				{ count: 1, fault: { kind: "reset" } },
 				{ count: 1, fault: { kind: "blackhole" } },
 				{ count: 1, fault: { kind: "latency", ms: 0 } },
@@ -394,16 +455,10 @@ describe("parseFaultPlan", () => {
 			path: "steps[0].fault.status",
 		},
 		{
-			label: "retryAfterSec 21",
-			json: { steps: [{ count: 1, fault: { kind: "status", status: 429, retryAfterSec: 21 } }] },
-			error: RangeError,
-			path: "steps[0].fault.retryAfterSec",
-		},
-		{
-			label: "retryAfterSec as a string",
-			json: { steps: [{ count: 1, fault: { kind: "status", status: 429, retryAfterSec: "1" } }] },
+			label: "an unknown field on a status fault",
+			json: { steps: [{ count: 1, fault: { kind: "status", status: 429, headers: {} } }] },
 			error: TypeError,
-			path: "steps[0].fault.retryAfterSec",
+			path: "steps[0].fault.headers",
 		},
 		{
 			label: "latency ms -1",
@@ -470,72 +525,27 @@ describe("parseFaultPlan", () => {
 	}
 });
 
-describe("completer integration", () => {
-	test("reset on every call is an upstream error with retry, exhausted after MAX_RETRIES", async () => {
-		const inner = recordingInner();
-		const faulty = createFaultyFetch(
-			plan({ count: "forever", fault: { kind: "reset" } }),
-			inner.fetch,
-		);
-		const { complete, calls } = completerWith(faulty);
-		const error = await rejectionOf(complete("system", "user"));
-		expect(error).toBeInstanceOf(OpenRouterError);
-		expect((error as OpenRouterError).code).toBe("upstream");
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.outcome).toBe("upstream");
-		expect(calls[0]?.attempts).toBe(3);
-		expect(inner.calls).toHaveLength(0);
-	});
-
-	test("blackhole under a 20 ms completer timeout is a timeout with no retry", async () => {
-		const faulty = createFaultyFetch(
-			plan({ count: "forever", fault: { kind: "blackhole" } }),
-			recordingInner().fetch,
-		);
-		const { complete, calls } = completerWith(faulty, { timeoutMs: 20 });
-		const error = await rejectionOf(complete("system", "user"));
-		expect(error).toBeInstanceOf(OpenRouterError);
-		expect((error as OpenRouterError).code).toBe("timeout");
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.outcome).toBe("timeout");
-		expect(calls[0]?.attempts).toBe(1);
-	});
-
-	test("a 429 with retryAfterSec 1 then pass: the completer sleeps 1000 ms before the second attempt", async () => {
-		const faulty = createFaultyFetch(
-			plan(
-				{ count: 1, fault: { kind: "status", status: 429, retryAfterSec: 1 } },
-				{ count: 1, fault: { kind: "pass" } },
-			),
-			recordingInner(COMPLETION_BODY).fetch,
-		);
-		const { complete, sleeps, calls } = completerWith(faulty);
-		expect(await complete("system", "user")).toBe("ok");
-		expect(sleeps).toEqual([1000]);
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.outcome).toBe("ok");
-		expect(calls[0]?.attempts).toBe(2);
-	});
-});
-
-describe("loadChaosFetch", () => {
+describe("loadChaosBackend", () => {
 	const unreadable = (): string => {
 		throw new Error("must not read the plan");
 	};
+	const inner = recordingInner().backend;
 
 	test("returns undefined when chaosEnabled is not true, even with a path set", () => {
 		expect(
-			loadChaosFetch({ chaosEnabled: false, chaosPlanPath: "/plans/a.json" }, unreadable),
+			loadChaosBackend({ chaosEnabled: false, chaosPlanPath: "/plans/a.json" }, inner, unreadable),
 		).toBeUndefined();
-		expect(loadChaosFetch({ chaosPlanPath: "/plans/a.json" }, unreadable)).toBeUndefined();
+		expect(loadChaosBackend({ chaosPlanPath: "/plans/a.json" }, inner, unreadable)).toBeUndefined();
 	});
 
 	test("returns undefined when chaos is off and no path is set", () => {
-		expect(loadChaosFetch({}, unreadable)).toBeUndefined();
+		expect(loadChaosBackend({}, inner, unreadable)).toBeUndefined();
 	});
 
 	test("throws when chaos is enabled without a plan path", () => {
-		expect(() => loadChaosFetch({ chaosEnabled: true }, unreadable)).toThrow("no fault plan path");
+		expect(() => loadChaosBackend({ chaosEnabled: true }, inner, unreadable)).toThrow(
+			"no fault plan path",
+		);
 	});
 
 	describe("with a real temp directory", () => {
@@ -544,23 +554,23 @@ describe("loadChaosFetch", () => {
 			rmSync(dir, { recursive: true, force: true });
 		});
 
-		test("reads a valid plan file and returns a fetch that applies its first step", async () => {
+		test("reads a valid plan file and returns a backend that applies its first step", async () => {
 			const path = join(dir, "valid.json");
 			writeFileSync(
 				path,
 				JSON.stringify({ steps: [{ count: 1, fault: { kind: "status", status: 503 } }] }),
 			);
-			const faulty = loadChaosFetch({ chaosEnabled: true, chaosPlanPath: path });
-			expect(faulty).toBeFunction();
-			const response = await faulty?.("https://unused.invalid/v1", {});
-			expect(response?.status).toBe(503);
+			const faulty = loadChaosBackend({ chaosEnabled: true, chaosPlanPath: path }, inner);
+			expect(faulty?.label).toBe(inner.label);
+			expect(faulty).toBeDefined();
+			expect((await planErrorOf((faulty as PlanBackend).complete("s", "u"))).code).toBe("upstream");
 		});
 
 		test("a missing file throws an Error naming the path and the reason", () => {
 			const path = join(dir, "missing.json");
 			let thrown: unknown;
 			try {
-				loadChaosFetch({ chaosEnabled: true, chaosPlanPath: path });
+				loadChaosBackend({ chaosEnabled: true, chaosPlanPath: path }, inner);
 			} catch (error) {
 				thrown = error;
 			}
@@ -570,12 +580,24 @@ describe("loadChaosFetch", () => {
 		});
 	});
 
+	test("modelTimeoutMs becomes the blackhole timeout", async () => {
+		const readText = (): string =>
+			JSON.stringify({ steps: [{ count: "forever", fault: { kind: "blackhole" } }] });
+		const faulty = loadChaosBackend(
+			{ chaosEnabled: true, chaosPlanPath: "/plans/hole.json", modelTimeoutMs: 20 },
+			inner,
+			readText,
+		);
+		expect(faulty).toBeDefined();
+		expect((await planErrorOf((faulty as PlanBackend).complete("s", "u"))).code).toBe("timeout");
+	});
+
 	test("a plan with status 200 throws an Error naming the field and not the plan contents", () => {
 		const readText = (): string =>
 			JSON.stringify({ steps: [{ count: 1, fault: { kind: "status", status: 200 } }] });
 		let thrown: unknown;
 		try {
-			loadChaosFetch({ chaosEnabled: true, chaosPlanPath: "/plans/bad.json" }, readText);
+			loadChaosBackend({ chaosEnabled: true, chaosPlanPath: "/plans/bad.json" }, inner, readText);
 		} catch (error) {
 			thrown = error;
 		}
@@ -591,7 +613,11 @@ describe("loadChaosFetch", () => {
 		const readText = (): string => "{not json SECRET-PLAN-MARK";
 		let thrown: unknown;
 		try {
-			loadChaosFetch({ chaosEnabled: true, chaosPlanPath: "/plans/broken.json" }, readText);
+			loadChaosBackend(
+				{ chaosEnabled: true, chaosPlanPath: "/plans/broken.json" },
+				inner,
+				readText,
+			);
 		} catch (error) {
 			thrown = error;
 		}

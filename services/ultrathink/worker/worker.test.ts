@@ -15,7 +15,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redactText } from "../../../src/teach/redact.ts";
 import { type Ledger, type LedgerLimits, LedgerWriteError, createLedger } from "../cost/ledger.ts";
-import { OpenRouterError } from "../engine/openrouter.ts";
 import { type Run, type Store, openStore } from "../store/store.ts";
 import {
 	PHASES,
@@ -435,7 +434,7 @@ describe("worker", () => {
 		const env = makeEnv();
 		const run = newRun(env);
 		const model = fakeModel(() => {
-			throw new OpenRouterError("truncated");
+			throw Object.assign(new Error("truncated"), { code: "truncated" });
 		});
 		const { worker, sleeps } = makeWorker(env, model, { maxModelAttempts: 3, backoffMs: 1000 });
 

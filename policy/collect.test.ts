@@ -298,6 +298,124 @@ describe("static collection of a fixture repository", () => {
 	});
 });
 
+describe("OpenRouter source scan", () => {
+	/** A fixture root that satisfies collect's own requirements (workflows and deploy) and holds only the given files. */
+	function scanRoot(files: Record<string, string>): string {
+		const root = tempRoot();
+		writeRepoFile(root, ".github/workflows/ci.yml", "on: push\njobs: {}\n");
+		writeRepoFile(root, "deploy/ultrathink-x.service", "[Service]\nUser=ultrathink\n");
+		for (const [file, text] of Object.entries(files)) writeRepoFile(root, file, text);
+		return root;
+	}
+
+	test("finds an OpenRouter host call in a source file and names its kind", async () => {
+		const root = scanRoot({
+			"src/a.ts": 'export const go = () => fetch("https://openrouter.ai/x");\n',
+		});
+		expect((await collect({ root })).sources).toEqual([{ file: "src/a.ts", refs: ["host"] }]);
+	});
+
+	test("reports every kind found in a file, in a fixed order, and sorts files", async () => {
+		const root = scanRoot({
+			"src/z.ts": "const k = process.env.OPENROUTER_API_KEY;\n",
+			"src/b.ts":
+				'const p = "openrouter";\nconst e = new OpenRouterError();\nconst u = "openrouter.ai";\n',
+			"services/s.ts": "const c = createOpenRouterCompleter;\n",
+			"deploy/unit.service": "[Service]\nEnvironment=ULTRATHINK_OPENROUTER_BASE_URL=x\n",
+			"package.json": '{"name": "x", "url": "https://openrouter.ai"}\n',
+			"bin/run": 'curl "https://openrouter.ai"\n',
+			".github/leak.yml": "env:\n  OPENROUTER_API_KEY: x\n",
+		});
+		expect((await collect({ root })).sources).toEqual([
+			{ file: ".github/leak.yml", refs: ["env"] },
+			{ file: "bin/run", refs: ["host"] },
+			{ file: "deploy/unit.service", refs: ["symbol"] },
+			{ file: "package.json", refs: ["host"] },
+			{ file: "services/s.ts", refs: ["symbol"] },
+			{ file: "src/b.ts", refs: ["host", "provider", "symbol"] },
+			{ file: "src/z.ts", refs: ["env"] },
+		]);
+	});
+
+	test("ignores test files, docs, markdown, node_modules and unscanned extensions", async () => {
+		const text = 'fetch("https://openrouter.ai/x");\n';
+		const root = scanRoot({
+			"src/a.test.ts": text,
+			"src/a.test.tsx": text,
+			"src/node_modules/dep/index.ts": text,
+			"src/docs/notes.ts": text,
+			"src/readme.md": text,
+			"src/data.txt": text,
+			"lib/other.ts": text,
+			"nested/package.json": text,
+		});
+		expect((await collect({ root })).sources).toEqual([]);
+	});
+
+	test("a root without src or any scanned directory gives an empty list", async () => {
+		expect((await collect({ root: scanRoot({}) })).sources).toEqual([]);
+	});
+
+	test("honors --root: the scan reads the given tree and not this repository", async () => {
+		const root = scanRoot({ "src/only-here.ts": 'const u = "https://openrouter.ai";\n' });
+		const proc = Bun.spawn([process.execPath, COLLECT, "--root", root], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+		expect(exitCode).toBe(0);
+		expect((JSON.parse(stdout) as PolicyInput).sources).toEqual([
+			{ file: "src/only-here.ts", refs: ["host"] },
+		]);
+	});
+
+	test("comments are not references: full-line, trailing and block comments, in code and in shell", async () => {
+		const root = scanRoot({
+			"src/c.ts": [
+				'// fetch("https://openrouter.ai/x")',
+				'/* const k = "OPENROUTER_API_KEY" */',
+				"/**",
+				' * The "openrouter" provider was removed; see OpenRouterError.',
+				" */",
+				"/*",
+				"openrouter.ai is named here without a star prefix",
+				"*/",
+				"const live = 1; // calls openrouter.ai and reads OPENROUTER_API_KEY",
+				"const inline = 2; /* OpenRouterFetch */ const after = 3;",
+				"",
+			].join("\n"),
+			"scripts/run.sh": '#!/bin/sh\n# curl https://openrouter.ai\necho "no model here"\n',
+			"deploy/note.service": "[Service]\n# OPENROUTER_API_KEY lives elsewhere\nUser=ultrathink\n",
+		});
+		expect((await collect({ root })).sources).toEqual([]);
+	});
+
+	test("a // inside a string is code, and code after a closed block comment still counts", async () => {
+		const root = scanRoot({
+			"src/d.ts": 'const a = 1; /* note */ const u = "https://openrouter.ai/x"; // trailing\n',
+			"src/e.ts": "const t = `\n// still inside the template\nopenrouter.ai\n`;\n",
+			"scripts/f.sh": "curl https://openrouter.ai/x # fetch\n",
+		});
+		expect((await collect({ root })).sources).toEqual([
+			{ file: "scripts/f.sh", refs: ["host"] },
+			{ file: "src/d.ts", refs: ["host"] },
+			{ file: "src/e.ts", refs: ["host"] },
+		]);
+	});
+
+	test("the legacy-env regex /openrouter/i is not a reference; the quoted id and exact names are", async () => {
+		const root = scanRoot({
+			"src/legacy.ts": [
+				"const LEGACY_ENV_PATTERN = /openrouter/i;",
+				"const stale = Object.keys(env).filter((name) => LEGACY_ENV_PATTERN.test(name));",
+				"",
+			].join("\n"),
+			"src/named.ts": 'const names = ["OPENROUTER_API_KEY"];\n',
+		});
+		expect((await collect({ root })).sources).toEqual([{ file: "src/named.ts", refs: ["env"] }]);
+	});
+});
+
 describe("live mode against the real router", () => {
 	let dir: string;
 	let store: Store;
@@ -323,12 +441,11 @@ describe("live mode against the real router", () => {
 			maxBodyBytes: 1024,
 			runTokenCeiling: 150000,
 			dailyTokenCeiling: 1000000,
-			planningModel: undefined,
+			planningModel: "claude-haiku-5-5",
 			connectorKey: undefined,
 			allowedOrigins: [],
 			oauthRedirectOrigins: [],
-			openRouterApiKey: undefined,
-			openRouterBaseUrl: "https://openrouter.ai/api/v1",
+			legacyEnvIgnored: [],
 			serverPlanning: false,
 			maxConcurrentPlans: 2,
 			fairQueueDepth: 16,

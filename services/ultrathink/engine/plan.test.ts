@@ -378,6 +378,14 @@ describe("error mapping", () => {
 			expect(planError.cause).toBe(row.error);
 		});
 	}
+
+	test("an upstream_unavailable refusal carries the breaker's retryAfterMs, and other codes carry none", () => {
+		const refused = new PlanCompleterError("upstream_unavailable", "unavailable", undefined, 1500);
+		expect(refused.code).toBe("upstream_unavailable");
+		expect(refused.retryAfterMs).toBe(1500);
+		expect(refused.message).toBe("plan upstream_unavailable");
+		expect(new PlanCompleterError("upstream", "other").retryAfterMs).toBeUndefined();
+	});
 });
 
 describe("usage reporting", () => {
@@ -391,7 +399,6 @@ describe("usage reporting", () => {
 		const seen: PlanUsage[] = [];
 		await backend.complete("s", "u", undefined, { onUsage: (usage) => seen.push(usage) });
 		expect(seen).toEqual([{ promptTokens: 120, completionTokens: 34 }]);
-		expect("costUsd" in (seen[0] ?? {})).toBe(false);
 	});
 
 	test("absent counts stay absent and a result without tokens reports nothing", async () => {
