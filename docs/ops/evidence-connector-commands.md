@@ -66,6 +66,6 @@ Run against a local instance of the service in client-driven mode with throwaway
 | Whether Claude or Grok render a fenced Mermaid block | No vendor document says so; the plan text leads with a wave tree for that reason. |
 | The MCP App inside Claude | Only run in the dev host harness; custom connectors are reported to render MCP Apps inconsistently. |
 | Typed slash commands from the plugin bundle in claude.ai, and `$ARGUMENTS` in chat-loaded plugin commands | The plugin upload was not run. |
-| Server-side planning (`ultrathink_uplift`) on this build against a real model | Needs the operator's OpenRouter key and costs money; the code path is covered by the headless tests and the shared view code. |
+| Server-side planning (`ultrathink_uplift`) on this build against a real model | Needs the service user's Claude plan login and spends plan usage; the code path is covered by the headless tests and the shared view code. |
 | The Windows stdio invocation | No Windows host here. |
 | The first real connection's protocol fallback | Confirmed for the official SDKs only; runbook section 13 shows how to read it from the log. |

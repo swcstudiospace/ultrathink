@@ -39,7 +39,6 @@ import {
 	UNPERSISTED_JOBS_MAX,
 } from "./headless.ts";
 import { answerRequest, listPendingRequests, showRequest, startPlan } from "./journal.ts";
-import type { OpenRouterFetch } from "./openrouter.ts";
 import {
 	type PlanBackend,
 	type PlanCallHooks,
@@ -50,7 +49,7 @@ import {
 
 const PROMPT =
 	"Build a small TypeScript CLI that converts CSV files to JSON with streaming support, tests and a README.";
-const FAKE_KEY = "sk-or-fake-key-0123456789abcdef";
+const FAKE_KEY = "sk-fake-key-0123456789abcdef";
 const dirs: string[] = [];
 const stores: Store[] = [];
 const tmp = (): string => {
@@ -223,13 +222,12 @@ function setup(
 		maxBodyBytes: 65536,
 		runTokenCeiling: 5_000_000,
 		dailyTokenCeiling: 50_000_000,
-		planningModel: "x-ai/grok-test",
+		planningModel: "claude-haiku-5-5",
 		connectorKey: undefined,
 		allowedOrigins: [],
 		oauthRedirectOrigins: [],
-		openRouterApiKey: FAKE_KEY,
-		openRouterBaseUrl: "https://openrouter.test/api/v1",
 		serverPlanning: true,
+		legacyEnvIgnored: [],
 		maxConcurrentPlans: 2,
 		modelTimeoutMs: 5000,
 		planTimeoutMs: 60_000,
@@ -448,13 +446,15 @@ describe("headless planner: start and result", () => {
 		});
 	});
 
-	test("disabled when server planning is off, not_ready without a key or model", async () => {
+	test("disabled when server planning is off, not_ready while the plan backend is not ready", async () => {
 		const off = setup({ serverPlanning: false });
 		expect(off.planner.enabled).toBe(false);
 		expect(await off.planner.start({ prompt: PROMPT })).toEqual({ ok: false, code: "disabled" });
-		const keyless = setup({ openRouterApiKey: undefined }, { completer: undefined });
-		expect(keyless.planner.enabled).toBe(true);
-		expect(await keyless.planner.start({ prompt: PROMPT })).toEqual({
+		const fake = fakeBackend();
+		fake.setReady({ ok: false, detail: "claude CLI not found" });
+		const unready = setup({}, { completer: undefined, planBackend: fake.backend });
+		expect(unready.planner.enabled).toBe(true);
+		expect(await unready.planner.start({ prompt: PROMPT })).toEqual({
 			ok: false,
 			code: "not_ready",
 		});
@@ -553,16 +553,11 @@ describe("headless planner: limits and lifecycle", () => {
 
 	test("with output cap 0, a run ceiling with no headroom for the input refuses before any model call", async () => {
 		let requests = 0;
-		const counting: OpenRouterFetch = async () => {
+		const counting: ClaudeCompleter = async () => {
 			requests += 1;
-			return new Response(JSON.stringify({ choices: [{ message: { content: "unreachable" } }] }), {
-				status: 200,
-			});
+			return "unreachable";
 		};
-		const h = setup(
-			{ runTokenCeiling: 10, modelMaxOutputTokens: 0 },
-			{ completer: undefined, fetch: counting },
-		);
+		const h = setup({ runTokenCeiling: 10, modelMaxOutputTokens: 0 }, { completer: counting });
 		const sessionId = randomUUID();
 		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
 			ok: true,
@@ -576,31 +571,20 @@ describe("headless planner: limits and lifecycle", () => {
 	});
 
 	test("a response without usage, or with only some counts, keeps the estimate in the ledger so the ceiling still ends the job", async () => {
-		const shapes: Array<Record<string, unknown> | undefined> = [
-			undefined,
-			{ prompt_tokens: 10 },
-			{ completion_tokens: 5, cost: 0.001 },
-			{ prompt_tokens: "x", completion_tokens: -1 },
-		];
-		for (const usage of shapes) {
-			const model = scriptedModel();
-			let seen = 0;
-			const openRouter: OpenRouterFetch = async (_url, init) => {
-				seen += 1;
-				const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
-				const content = model(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-				return new Response(
-					JSON.stringify({ choices: [{ message: { content } }], ...(usage ? { usage } : {}) }),
-					{ status: 200 },
-				);
-			};
-			const h = setup({ runTokenCeiling: 6000 }, { completer: undefined, fetch: openRouter });
+		const shapes: PlanUsage[][] = [[], [{ promptTokens: 10 }], [{ completionTokens: 5 }]];
+		for (const reports of shapes) {
+			const fake = fakeBackend(undefined, { reports });
+			const h = setup(
+				{ runTokenCeiling: 6000 },
+				{ completer: undefined, planBackend: fake.backend },
+			);
 			const sessionId = randomUUID();
 			const started = await h.planner.start({ prompt: PROMPT, sessionId });
 			expect(started).toEqual({
 				ok: true,
 				data: { sessionId, status: "failed", error: "budget_exceeded" },
 			});
+			const seen = fake.stages.length;
 			// A plan needs at least eight calls; zero-settled calls would have let them all through.
 			expect(seen).toBeGreaterThanOrEqual(1);
 			expect(seen).toBeLessThan(8);
@@ -628,9 +612,10 @@ describe("headless planner: limits and lifecycle", () => {
 	});
 
 	test("an engine failure ends the job as failed with the code, never the response body", async () => {
-		const failing: OpenRouterFetch = async () =>
-			new Response("secret upstream body", { status: 401 });
-		const h = setup({}, { completer: undefined, fetch: failing });
+		const failing = fakeBackend(
+			new PlanCompleterError("auth", "auth", new Error("secret upstream body")),
+		);
+		const h = setup({}, { completer: undefined, planBackend: failing.backend });
 		const sessionId = randomUUID();
 		const started = await h.planner.start({ prompt: PROMPT, sessionId });
 		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "auth" } });
@@ -906,46 +891,6 @@ describe("headless planner: limits and lifecycle", () => {
 		const result = await h.planner.result({ sessionId, waitSeconds: 30 });
 		expect(result).toMatchObject({ ok: true, data: { status: "planned" } });
 	});
-
-	test("a reply cut at the output limit ends the job as failed with truncated", async () => {
-		const cut: OpenRouterFetch = async () =>
-			new Response(
-				JSON.stringify({
-					choices: [{ finish_reason: "length", message: { content: "1. Partial step" } }],
-				}),
-				{ status: 200 },
-			);
-		const h = setup({}, { completer: undefined, fetch: cut });
-		const sessionId = randomUUID();
-		const started = await h.planner.start({ prompt: PROMPT, sessionId });
-		expect(started).toEqual({
-			ok: true,
-			data: { sessionId, status: "failed", error: "truncated" },
-		});
-	});
-
-	test("a clarify call cut at the output limit fails the job as truncated, even though the record still passes", async () => {
-		const script = scriptedModel();
-		const cutClarify: OpenRouterFetch = async (_url, init) => {
-			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
-			const system = body.messages[0]?.content ?? "";
-			if (stageOf(system) === "clarify") {
-				return new Response(
-					JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "{" } }] }),
-					{ status: 200 },
-				);
-			}
-			const content = script(system, body.messages[1]?.content ?? "");
-			return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
-		};
-		const h = setup({}, { completer: undefined, fetch: cutClarify });
-		const sessionId = randomUUID();
-		const started = await h.planner.start({ prompt: PROMPT, sessionId });
-		expect(started).toEqual({
-			ok: true,
-			data: { sessionId, status: "failed", error: "truncated" },
-		});
-	});
 });
 
 describe("headless planner: client-mode fallback", () => {
@@ -1005,55 +950,39 @@ describe("headless planner: client-mode fallback", () => {
 
 describe("headless planner: call telemetry", () => {
 	test("emits one event per model call with the session id, model, counts and no prompt text", async () => {
-		const script = scriptedModel();
-		const requests: string[] = [];
-		const openRouter: OpenRouterFetch = async (_url, init) => {
-			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
-			requests.push("x");
-			const content = script(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-			return new Response(
-				JSON.stringify({
-					choices: [{ message: { content } }],
-					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 },
-				}),
-				{ status: 200 },
-			);
-		};
+		const fake = fakeBackend();
 		const calls: PlannerCall[] = [];
 		const h = setup(
 			{},
-			{ completer: undefined, fetch: openRouter, onCall: (call) => calls.push(call) },
+			{ completer: undefined, planBackend: fake.backend, onCall: (call) => calls.push(call) },
 		);
 		const sessionId = randomUUID();
 		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({
 			ok: true,
 			data: { status: "planned" },
 		});
-		expect(calls.length).toBe(requests.length);
+		expect(calls.length).toBe(fake.stages.length);
 		expect(calls.length).toBeGreaterThanOrEqual(8);
 		for (const call of calls) {
 			expect(call.sessionId).toBe(sessionId);
-			expect(call.model).toBe("x-ai/grok-test");
+			expect(call.model).toBe("claude-haiku-5-5");
 			expect(call.outcome).toBe("ok");
-			expect(call.attempts).toBeGreaterThanOrEqual(1);
+			expect(call.attempts).toBe(1);
 			expect(call.ms).toBeGreaterThanOrEqual(0);
 			expect(call.inputTokens).toBe(100);
 			expect(call.outputTokens).toBe(50);
-			expect(call.costUsd).toBeCloseTo(0.002, 6);
 		}
-		const text = JSON.stringify(calls);
-		expect(text).not.toContain(FAKE_KEY);
-		expect(text).not.toContain(PROMPT);
+		expect(JSON.stringify(calls)).not.toContain(PROMPT);
 	});
 
 	test("a failing call emits the error code with zero tokens, and a throwing hook does not affect the job", async () => {
-		const failing: OpenRouterFetch = async () => new Response("nope", { status: 401 });
+		const fake = fakeBackend(new PlanCompleterError("auth", "auth"));
 		const calls: PlannerCall[] = [];
 		const h = setup(
 			{},
 			{
 				completer: undefined,
-				fetch: failing,
+				planBackend: fake.backend,
 				onCall: (call) => {
 					calls.push(call);
 					throw new Error("hook failure");
@@ -1066,68 +995,54 @@ describe("headless planner: call telemetry", () => {
 		expect(calls.length).toBeGreaterThanOrEqual(1);
 		for (const call of calls) {
 			expect(call.outcome).toBe("auth");
+			expect(call.attempts).toBe(1);
 			expect(call.inputTokens).toBe(0);
 			expect(call.outputTokens).toBe(0);
-			expect("costUsd" in call).toBe(false);
 		}
-	});
-
-	test("a call cut at the output limit is billed: its usage reaches telemetry, the job totals and the ledger", async () => {
-		const seen: string[] = [];
-		const cut: OpenRouterFetch = async (url) => {
-			seen.push(url);
-			return new Response(
-				JSON.stringify({
-					choices: [{ finish_reason: "length", message: { content: "partial" } }],
-					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.002 },
-				}),
-				{ status: 200 },
-			);
-		};
-		const calls: PlannerCall[] = [];
-		const h = setup({}, { completer: undefined, fetch: cut, onCall: (call) => calls.push(call) });
-		const sessionId = randomUUID();
-		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
-			ok: true,
-			data: { sessionId, status: "failed", error: "truncated" },
-		});
-		expect(seen.length).toBeGreaterThanOrEqual(1);
-		expect(calls).toHaveLength(seen.length);
-		for (const call of calls) {
-			expect(call.outcome).toBe("truncated");
-			expect(call.inputTokens).toBe(100);
-			expect(call.outputTokens).toBe(50);
-			expect(call.costUsd).toBeCloseTo(0.002, 6);
-		}
-		expect(jobFile(h.stateDir, sessionId).usage).toMatchObject({
-			calls: seen.length,
-			inputTokens: 100 * seen.length,
-			outputTokens: 50 * seen.length,
-		});
-		const runId = String(jobFile(h.stateDir, sessionId).runId);
-		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
-		expect(ledger.spentForRun(runId)).toBe(150 * seen.length);
 	});
 });
 
 describe("headless planner: upstream breaker", () => {
-	test("a tripped breaker fails the job with upstream_unavailable before any request, and upstream() reports open", async () => {
+	test("a tripped breaker fails the job with upstream_unavailable before any backend call, and upstream() reports open", async () => {
 		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
 		const slot = breaker.tryAcquire();
 		if (!slot.ok) throw new Error("expected a closed breaker");
 		slot.release("failure");
 		expect(breaker.state()).toBe("open");
-		let requests = 0;
-		const never: OpenRouterFetch = async () => {
-			requests += 1;
-			return new Response(JSON.stringify({ choices: [{ message: { content: "unreachable" } }] }), {
-				status: 200,
-			});
-		};
+		const fake = fakeBackend();
 		const calls: PlannerCall[] = [];
+		const refusals: unknown[] = [];
 		const h = setup(
 			{},
-			{ completer: undefined, fetch: never, breaker, onCall: (call) => calls.push(call) },
+			{
+				completer: undefined,
+				planBackend: fake.backend,
+				breaker,
+				onCall: (call) => calls.push(call),
+				plan: async (request, env, options) => {
+					const select = options?.selectEngine;
+					if (!select) throw new Error("selectEngine missing");
+					return planPrompt(request, env, {
+						...options,
+						selectEngine: async (...args) => {
+							const engine = await select(...args);
+							if ("skipped" in engine) return engine;
+							const real = engine.complete;
+							return {
+								...engine,
+								complete: async (system, user, signal) => {
+									try {
+										return await real(system, user, signal);
+									} catch (error) {
+										refusals.push(error);
+										throw error;
+									}
+								},
+							};
+						},
+					});
+				},
+			},
 		);
 		const sessionId = randomUUID();
 		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
@@ -1143,51 +1058,157 @@ describe("headless planner: upstream breaker", () => {
 			error: "upstream_unavailable",
 			usage: { calls: 0 },
 		});
-		expect(requests).toBe(0);
+		expect(fake.stages).toEqual([]);
 		expect(calls.length).toBeGreaterThanOrEqual(1);
 		for (const call of calls)
 			expect(call).toMatchObject({
 				outcome: "upstream_unavailable",
-				attempts: 0,
+				attempts: 1,
 				inputTokens: 0,
 				outputTokens: 0,
 			});
+		expect(refusals.length).toBeGreaterThanOrEqual(1);
+		for (const error of refusals) {
+			expect(error).toBeInstanceOf(PlanCompleterError);
+			const refused = error as PlanCompleterError;
+			expect(refused.code).toBe("upstream_unavailable");
+			expect(refused.retryAfterMs).toBeGreaterThan(0);
+			expect(refused.retryAfterMs).toBeLessThanOrEqual(30_000);
+		}
 		expect(h.planner.upstream()).toEqual({ state: "open", failures: 1 });
-		// Every reservation made for the refused calls was abandoned, none left reserved or settled.
+		// A refusal spends nothing: every reservation made for the refused calls was settled to zero tokens.
 		const states = h.store.db
-			.query<{ state: string; n: number }, []>(
-				"SELECT state, COUNT(*) AS n FROM token_ledger GROUP BY state",
+			.query<{ state: string; n: number; tokens: number }, []>(
+				"SELECT state, COUNT(*) AS n, SUM(actual_tokens) AS tokens FROM token_ledger GROUP BY state",
 			)
 			.all();
-		expect(states).toEqual([{ state: "abandoned", n: calls.length }]);
+		expect(states).toEqual([{ state: "settled", n: calls.length, tokens: 0 }]);
 		const run = h.store.db
 			.query<{ status: string; reason: string | null }, []>("SELECT status, reason FROM runs")
 			.get();
 		expect(run).toEqual({ status: "failed", reason: "upstream_unavailable" });
 	});
 
-	test("upstream failures seen through the planner trip the shared breaker", async () => {
-		const breaker = createCircuitBreaker({ failureThreshold: 2, windowMs: 60_000, openMs: 30_000 });
-		let requests = 0;
-		const down: OpenRouterFetch = async () => {
-			requests += 1;
-			return new Response("down", { status: 503, headers: { "retry-after": "1" } });
-		};
-		const h = setup({}, { completer: undefined, fetch: down, breaker });
-		const sessionId = randomUUID();
-		const started = h.planner.start({ prompt: PROMPT, sessionId });
-		// The completer backs off (Retry-After: 1 s) through the planner's clock between the two 503s.
-		// The cap counts event-loop turns, not time: the planner reaches the backoff only after its I/O settles on a later turn.
-		for (let i = 0; i < 10_000 && !h.clock.has(1000); i++) await flush();
-		expect(h.clock.has(1000)).toBe(true);
-		h.clock.fire(1000);
-		expect(await started).toEqual({
+	test("upstream, timeout and rate_limited failures trip the shared breaker; later calls never reach the backend", async () => {
+		const cases: Array<[PlanErrorCode, ConstructorParameters<typeof PlanCompleterError>[1]]> = [
+			["upstream", "other"],
+			["timeout", "timeout"],
+			["rate_limited", "plan-limit"],
+		];
+		for (const [code, failure] of cases) {
+			const breaker = createCircuitBreaker({
+				failureThreshold: 1,
+				windowMs: 60_000,
+				openMs: 30_000,
+			});
+			const fake = fakeBackend(new PlanCompleterError(code, failure));
+			const h = setup({}, { completer: undefined, planBackend: fake.backend, breaker });
+			const sessionId = randomUUID();
+			expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
+				ok: true,
+				data: { sessionId, status: "failed", error: code },
+			});
+			// One failed call opens the breaker, so whatever the pipeline asks next is refused without a backend call.
+			expect(fake.stages).toHaveLength(1);
+			expect(h.planner.upstream()).toEqual({ state: "open", failures: 1 });
+		}
+	});
+
+	test("a reply, an auth failure and an unclassified error never count against the breaker", async () => {
+		const options = { failureThreshold: 1, windowMs: 60_000, openMs: 30_000 };
+		const answered = createCircuitBreaker(options);
+		const ok = setup(
+			{},
+			{ completer: undefined, planBackend: fakeBackend().backend, breaker: answered },
+		);
+		expect(await ok.planner.start({ prompt: PROMPT })).toMatchObject({
 			ok: true,
-			data: { sessionId, status: "failed", error: "upstream_unavailable" },
+			data: { status: "planned" },
 		});
-		// Two 503s open the breaker; the completer then stops retrying and no later call reaches the upstream.
-		expect(requests).toBe(2);
-		expect(h.planner.upstream()).toEqual({ state: "open", failures: 2 });
+		expect(ok.planner.upstream()).toEqual({ state: "closed", failures: 0 });
+
+		const denied = createCircuitBreaker(options);
+		const auth = setup(
+			{},
+			{
+				completer: undefined,
+				planBackend: fakeBackend(new PlanCompleterError("auth", "auth")).backend,
+				breaker: denied,
+			},
+		);
+		await auth.planner.start({ prompt: PROMPT });
+		expect(auth.planner.upstream()).toEqual({ state: "closed", failures: 0 });
+
+		const broken = createCircuitBreaker(options);
+		const boom = setup(
+			{},
+			{
+				completer: async () => {
+					throw new Error("boom");
+				},
+				breaker: broken,
+			},
+		);
+		await boom.planner.start({ prompt: PROMPT });
+		expect(boom.planner.upstream()).toEqual({ state: "closed", failures: 0 });
+	});
+
+	test("refused calls leave the daily budget untouched, so planning works again once the breaker closes", async () => {
+		let clock = 1_000_000;
+		const breaker = createCircuitBreaker({
+			failureThreshold: 1,
+			windowMs: 60_000,
+			openMs: 30_000,
+			now: () => clock,
+		});
+		const slot = breaker.tryAcquire();
+		if (!slot.ok) throw new Error("expected a closed breaker");
+		slot.release("failure");
+		const fake = fakeBackend();
+		const h = setup(
+			{ dailyTokenCeiling: 60_000 },
+			{ completer: undefined, planBackend: fake.backend, breaker },
+		);
+		const ledger = createLedger(h.store, { runTokenCeiling: 0, dailyTokenCeiling: 60_000 });
+		const today = new Date().toISOString().slice(0, 10);
+		// Each refused start used to keep its estimates counted: far more than the ceiling over this many starts.
+		for (let i = 0; i < 12; i += 1) {
+			expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({
+				ok: true,
+				data: { status: "failed", error: "upstream_unavailable" },
+			});
+		}
+		expect(fake.stages).toEqual([]);
+		expect(ledger.spentForDay(today)).toBe(0);
+
+		clock += 30_001;
+		expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
+		expect(h.planner.upstream()).toEqual({ state: "closed", failures: 0 });
+	});
+
+	test("a call that reached the backend and failed keeps its estimate counted while the refused ones add nothing", async () => {
+		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
+		const fake = fakeBackend(new PlanCompleterError("upstream", "other"));
+		const h = setup({}, { completer: undefined, planBackend: fake.backend, breaker });
+		const ledger = createLedger(h.store, { runTokenCeiling: 0, dailyTokenCeiling: 0 });
+		const sessionId = randomUUID();
+		await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(fake.stages).toHaveLength(1);
+		const runId = String(jobFile(h.stateDir, sessionId).runId);
+		const states = h.store.db
+			.query<{ state: string; n: number }, []>(
+				"SELECT state, COUNT(*) AS n FROM token_ledger GROUP BY state",
+			)
+			.all();
+		expect(states.find((row) => row.state === "abandoned")?.n).toBe(1);
+		expect(states.find((row) => row.state === "reserved")).toBeUndefined();
+		expect(ledger.spentForRun(runId)).toBeGreaterThan(0);
+		expect(ledger.spentForDay(new Date().toISOString().slice(0, 10))).toBe(
+			ledger.spentForRun(runId),
+		);
 	});
 
 	test("a planner without a breaker reports upstream() as undefined and keeps today's behaviour", async () => {
@@ -1199,87 +1220,6 @@ describe("headless planner: upstream breaker", () => {
 			data: { sessionId, status: "planned" },
 		});
 		expect(h.planner.upstream()).toBeUndefined();
-	});
-});
-
-describe("headless planner: reasoning effort", () => {
-	async function bodiesFor(
-		overrides: Partial<UltrathinkConfig>,
-	): Promise<Array<Record<string, unknown>>> {
-		const script = scriptedModel();
-		const bodies: Array<Record<string, unknown>> = [];
-		const openRouter: OpenRouterFetch = async (_url, init) => {
-			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
-			bodies.push(body as unknown as Record<string, unknown>);
-			const content = script(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-			return new Response(
-				JSON.stringify({
-					choices: [{ message: { content } }],
-					usage: { prompt_tokens: 10, completion_tokens: 5 },
-				}),
-				{ status: 200 },
-			);
-		};
-		const h = setup(overrides, { completer: undefined, fetch: openRouter });
-		expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({
-			ok: true,
-			data: { status: "planned" },
-		});
-		return bodies;
-	}
-
-	test("sends reasoning.effort on every call when configured, and no reasoning key otherwise", async () => {
-		const low = await bodiesFor({ modelReasoningEffort: "low" });
-		expect(low.length).toBeGreaterThanOrEqual(8);
-		for (const body of low) expect(body.reasoning).toEqual({ effort: "low" });
-		const unset = await bodiesFor({});
-		expect(unset.length).toBeGreaterThanOrEqual(8);
-		for (const body of unset) expect("reasoning" in body).toBe(false);
-	});
-
-	test("sends no max_tokens key when the output cap is 0 and no ceiling applies", async () => {
-		const bodies = await bodiesFor({
-			modelMaxOutputTokens: 0,
-			runTokenCeiling: 0,
-			dailyTokenCeiling: 0,
-		});
-		expect(bodies.length).toBeGreaterThanOrEqual(8);
-		for (const body of bodies) expect("max_tokens" in body).toBe(false);
-	});
-
-	test("with a ceiling and output cap 0, max_tokens is capped to the budget left and to 16000", async () => {
-		const ceiling = 100_000;
-		const bodies = await bodiesFor({
-			modelMaxOutputTokens: 0,
-			runTokenCeiling: ceiling,
-			dailyTokenCeiling: 0,
-		});
-		expect(bodies.length).toBeGreaterThanOrEqual(8);
-		const inputEstimates = bodies.map((body) => {
-			const messages = body.messages as Array<{ content: string }>;
-			return Math.ceil(
-				((messages[0]?.content.length ?? 0) + (messages[1]?.content.length ?? 0)) / 3,
-			);
-		});
-		bodies.forEach((body, index) => {
-			const maxTokens = body.max_tokens as number;
-			expect(Number.isInteger(maxTokens)).toBe(true);
-			expect(maxTokens).toBeGreaterThan(0);
-			expect(maxTokens).toBeLessThanOrEqual(16_000);
-			expect(maxTokens + (inputEstimates[index] ?? 0)).toBeLessThanOrEqual(ceiling);
-		});
-		// The first call runs alone against an empty ledger, so its cap is exact.
-		expect(bodies[0]?.max_tokens).toBe(Math.min(ceiling - (inputEstimates[0] ?? 0), 16_000));
-	});
-
-	test("a ceiling above the output bound still caps max_tokens at 16000", async () => {
-		const bodies = await bodiesFor({
-			modelMaxOutputTokens: 0,
-			runTokenCeiling: 5_000_000,
-			dailyTokenCeiling: 0,
-		});
-		expect(bodies.length).toBeGreaterThanOrEqual(8);
-		for (const body of bodies) expect(body.max_tokens).toBe(16_000);
 	});
 });
 
@@ -1297,7 +1237,7 @@ describe("headless planner: isolation", () => {
 			ULTRATHINK_UPLIFT: "0",
 			ULTRATHINK_SHIP: "1",
 			ULTRATHINK_DECISIONS: "1",
-			OPENROUTER_API_KEY: FAKE_KEY,
+			ANTHROPIC_API_KEY: FAKE_KEY,
 			GITHUB_TOKEN: "ghp_fake",
 			PATH: "/usr/bin",
 		};
@@ -1331,7 +1271,7 @@ describe("headless planner: isolation", () => {
 		});
 		expect("ULTRATHINK_CHILD" in env).toBe(false);
 		expect("ULTRATHINK_UPLIFT" in env).toBe(false);
-		expect(env.OPENROUTER_API_KEY).toBeUndefined();
+		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
 		expect(env.GITHUB_TOKEN).toBeUndefined();
 		for (const key of ["HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"])
 			expect(env[key]?.startsWith(h.stateDir)).toBe(true);
@@ -1350,17 +1290,17 @@ describe("headless planner: isolation", () => {
 		});
 	});
 
-	test("ULTRATHINK_SERVER_DECISIONS in the environment never gives a server plan the OpenRouter key or Jev", async () => {
+	test("ULTRATHINK_SERVER_DECISIONS in the environment never gives a server plan a provider key or Jev", async () => {
 		let env: Record<string, string | undefined> = {};
 		let decisions: boolean | undefined;
 		const h = setup(
 			{},
 			{
-				// The operator's environment asks for decisions and holds the key; neither reaches the plan.
+				// The operator's environment asks for decisions and holds a key; neither reaches the plan.
 				env: {
 					PATH: process.env.PATH,
 					ULTRATHINK_SERVER_DECISIONS: "1",
-					OPENROUTER_API_KEY: FAKE_KEY,
+					ANTHROPIC_API_KEY: FAKE_KEY,
 				},
 				// Not the real planPrompt: a live Jev gate would call out.
 				plan: async (_request, given, options) => {
@@ -1372,13 +1312,13 @@ describe("headless planner: isolation", () => {
 			},
 		);
 		await h.planner.start({ prompt: PROMPT });
-		expect(env.OPENROUTER_API_KEY).toBeUndefined();
+		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
 		expect(env.ULTRATHINK_SERVER_DECISIONS).toBeUndefined();
 		expect(env.ULTRATHINK_DECISIONS).toBe("0");
 		expect(decisions).toBe(false);
 	});
 
-	test("a hostile operator config changes nothing and nothing but OpenRouter is contacted", async () => {
+	test("a hostile operator config changes nothing and nothing outside the plan backend is contacted", async () => {
 		const hostileRoot = tmp();
 		const hostileConfig = JSON.stringify({
 			uplift: { enabled: false },
@@ -1411,27 +1351,15 @@ describe("headless planner: isolation", () => {
 		process.env.XDG_CONFIG_HOME = join(hostileRoot, "xdg");
 		process.env.CLAUDE_CONFIG_DIR = join(hostileRoot, "claude");
 
-		const script = scriptedModel();
-		const seen: Array<{ url: string; headers: Record<string, string> }> = [];
-		const openRouter: OpenRouterFetch = async (url, init) => {
-			seen.push({ url, headers: init.headers as Record<string, string> });
-			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
-			const content = script(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-			return new Response(
-				JSON.stringify({
-					choices: [{ message: { content } }],
-					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.001 },
-				}),
-				{ status: 200 },
-			);
-		};
+		const fake = fakeBackend();
+		const seen = fake.stages;
 		try {
 			// The fixture is hostile: read the way the plugin reads it, it would switch everything on and planning off.
 			const hostileSeen = loadConfig(claudeConfigPaths(join(hostileRoot, "cwd")));
 			expect(hostileSeen.uplift.enabled).toBe(false);
 			expect(hostileSeen.hindsight.enabled).toBe(true);
 
-			const h = setup({}, { completer: undefined, fetch: openRouter, env: process.env });
+			const h = setup({}, { completer: undefined, planBackend: fake.backend, env: process.env });
 			const sessionId = randomUUID();
 			const started = await h.planner.start({ prompt: PROMPT, sessionId });
 			expect(started).toEqual({ ok: true, data: { sessionId, status: "planned" } });
@@ -1441,16 +1369,11 @@ describe("headless planner: isolation", () => {
 
 			expect(stray).toEqual([]);
 			expect(seen.length).toBeGreaterThanOrEqual(8);
-			for (const call of seen) {
-				expect(call.url).toBe("https://openrouter.test/api/v1/chat/completions");
-				expect(call.headers["HTTP-Referer"]).toBe("https://ultrathink.example.test");
-			}
 			expect(result.data.usage).toMatchObject({
 				calls: seen.length,
 				inputTokens: 100 * seen.length,
 				outputTokens: 50 * seen.length,
 			});
-			expect(result.data.usage?.costUsd).toBeCloseTo(0.001 * seen.length, 6);
 			const runId = String(jobFile(h.stateDir, sessionId).runId);
 			const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
 			expect(ledger.spentForRun(runId)).toBe(150 * seen.length);
@@ -1584,8 +1507,8 @@ describe("headless planner: graph view", () => {
 		gate.resolve();
 		await running.planner.result({ sessionId: runningId, waitSeconds: 30 });
 
-		const failing: OpenRouterFetch = async () => new Response("nope", { status: 401 });
-		const h = setup({}, { completer: undefined, fetch: failing });
+		const failing = fakeBackend(new PlanCompleterError("auth", "auth"));
+		const h = setup({}, { completer: undefined, planBackend: failing.backend });
 		const failedId = randomUUID();
 		await h.planner.start({ prompt: PROMPT, sessionId: failedId });
 		expect(await h.planner.result({ sessionId: failedId, waitSeconds: 0 })).toEqual({
@@ -1726,39 +1649,109 @@ describe("headless planner: plan-slot fairness", () => {
 });
 
 describe("headless planner: client span threading", () => {
-	test("a planner call started inside a request context records its hop span parented by that context", async () => {
-		const CTX: RequestContext = {
-			reqId: "req-plan-span",
-			traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
-			spanId: "00f067aa0ba902b7",
-		};
+	const CTX: RequestContext = {
+		reqId: "req-plan-span",
+		traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+		spanId: "00f067aa0ba902b7",
+	};
+	const collect = (): { spans: FinishedSpan[]; sink: SpanSink } => {
 		const spans: FinishedSpan[] = [];
-		const sink: SpanSink = {
-			record: (span) => {
-				spans.push(span);
+		return {
+			spans,
+			sink: {
+				record: (span) => {
+					spans.push(span);
+				},
 			},
 		};
-		const sentParents: string[] = [];
-		const rejected: OpenRouterFetch = async (_url, init) => {
-			sentParents.push((init.headers as Record<string, string>).traceparent?.split("-")[2] ?? "");
-			return new Response("nope", { status: 401 });
-		};
-		const h = setup({}, { completer: undefined, fetch: rejected, spans: sink });
+	};
+
+	test("each model call started inside a request context records one hop span parented by that context", async () => {
+		const fake = fakeBackend();
+		const { spans, sink } = collect();
+		const h = setup({}, { completer: undefined, planBackend: fake.backend, spans: sink });
 		const sessionId = randomUUID();
 		const started = await runWithRequestContext(CTX, () =>
 			h.planner.start({ prompt: PROMPT, sessionId }),
 		);
-		expect(started).toEqual({ ok: true, data: { sessionId, status: "failed", error: "auth" } });
-		expect(spans.length).toBeGreaterThanOrEqual(1);
-		expect(spans.map((span) => span.spanId)).toEqual(sentParents);
+		expect(started).toMatchObject({ ok: true, data: { status: "planned" } });
+		expect(spans.length).toBe(fake.stages.length);
+		expect(new Set(spans.map((span) => span.spanId)).size).toBe(spans.length);
 		for (const span of spans) {
 			expect(span).toMatchObject({
 				traceId: CTX.traceId,
 				parentSpanId: CTX.spanId,
+				name: "plan complete",
 				kind: 3,
 				error: false,
+				attributes: {
+					"ultrathink.engine": "plan",
+					"ultrathink.model": "claude-haiku-5-5",
+					"ultrathink.attempt": 1,
+				},
 			});
 		}
+	});
+
+	test("a failing call marks its span as an error only for an upstream failure, never for an auth failure", async () => {
+		const cases: Array<[PlanCompleterError, boolean]> = [
+			[new PlanCompleterError("upstream", "other"), true],
+			[new PlanCompleterError("timeout", "timeout"), true],
+			[new PlanCompleterError("auth", "auth"), false],
+		];
+		for (const [failure, error] of cases) {
+			const { spans, sink } = collect();
+			const h = setup(
+				{},
+				{ completer: undefined, planBackend: fakeBackend(failure).backend, spans: sink },
+			);
+			const sessionId = randomUUID();
+			const started = await runWithRequestContext(CTX, () =>
+				h.planner.start({ prompt: PROMPT, sessionId }),
+			);
+			expect(started).toEqual({
+				ok: true,
+				data: { sessionId, status: "failed", error: failure.code },
+			});
+			expect(spans.length).toBeGreaterThanOrEqual(1);
+			for (const span of spans) expect(span).toMatchObject({ kind: 3, error });
+		}
+	});
+
+	test("an unsampled context, no context, no sink and a refused call record nothing, and a throwing sink changes nothing", async () => {
+		const { spans, sink } = collect();
+		const unsampled = setup({}, { spans: sink });
+		await runWithRequestContext({ ...CTX, sampled: false }, () =>
+			unsampled.planner.start({ prompt: PROMPT }),
+		);
+		const bare = setup({}, { spans: sink });
+		await bare.planner.start({ prompt: PROMPT });
+		const sinkless = setup();
+		expect(
+			await runWithRequestContext(CTX, () => sinkless.planner.start({ prompt: PROMPT })),
+		).toMatchObject({ ok: true, data: { status: "planned" } });
+
+		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
+		const slot = breaker.tryAcquire();
+		if (!slot.ok) throw new Error("expected a closed breaker");
+		slot.release("failure");
+		const refused = setup({}, { spans: sink, breaker });
+		await runWithRequestContext(CTX, () => refused.planner.start({ prompt: PROMPT }));
+		expect(spans).toEqual([]);
+
+		const throwing = setup(
+			{},
+			{
+				spans: {
+					record: () => {
+						throw new Error("sink down");
+					},
+				},
+			},
+		);
+		expect(
+			await runWithRequestContext(CTX, () => throwing.planner.start({ prompt: PROMPT })),
+		).toMatchObject({ ok: true, data: { status: "planned" } });
 	});
 });
 
@@ -1853,35 +1846,32 @@ function fakeBackend(
 	};
 }
 
-const PLAN_CONFIG: Partial<UltrathinkConfig> = {
-	planningBackend: "plan",
-	planningModel: "claude-haiku-5-5",
-	openRouterApiKey: undefined,
-};
-
 describe("headless planner: plan backend", () => {
-	test("plan mode runs the plan through the backend with no OpenRouter key, and settles tokens without a cost", async () => {
+	test("the plan runs through the backend and settles tokens without a cost", async () => {
 		const fake = fakeBackend();
 		const calls: PlannerCall[] = [];
 		const labels: Array<string | undefined> = [];
-		const h = setup(PLAN_CONFIG, {
-			completer: undefined,
-			planBackend: fake.backend,
-			onCall: (call) => calls.push(call),
-			plan: async (request, env, options) => {
-				const inner = options?.selectEngine;
-				if (!inner) throw new Error("planPrompt got no engine selector");
-				return planPrompt(request, env, {
-					...options,
-					selectEngine: async (...args) => {
-						const engine = await inner(...args);
-						if ("skipped" in engine) return engine;
-						labels.push(engine.label, engine.resolution?.label);
-						return engine;
-					},
-				});
+		const h = setup(
+			{},
+			{
+				completer: undefined,
+				planBackend: fake.backend,
+				onCall: (call) => calls.push(call),
+				plan: async (request, env, options) => {
+					const inner = options?.selectEngine;
+					if (!inner) throw new Error("planPrompt got no engine selector");
+					return planPrompt(request, env, {
+						...options,
+						selectEngine: async (...args) => {
+							const engine = await inner(...args);
+							if ("skipped" in engine) return engine;
+							labels.push(engine.label, engine.resolution?.label);
+							return engine;
+						},
+					});
+				},
 			},
-		});
+		);
 		const sessionId = randomUUID();
 		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({
 			ok: true,
@@ -1894,7 +1884,6 @@ describe("headless planner: plan backend", () => {
 			expect(call.outcome).toBe("ok");
 			expect(call.inputTokens).toBe(100);
 			expect(call.outputTokens).toBe(50);
-			expect("costUsd" in call).toBe(false);
 		}
 		const n = fake.stages.length;
 		const file = jobFile(h.stateDir, sessionId);
@@ -1905,7 +1894,7 @@ describe("headless planner: plan backend", () => {
 		for (const label of labels) expect(label).toBe("plan:claude-haiku-5-5");
 	});
 
-	test("a PlanCompleterError code ends the job with that code, exactly like an OpenRouterError code", async () => {
+	test("a PlanCompleterError code ends the job with that code", async () => {
 		const cases: Array<[PlanErrorCode, ConstructorParameters<typeof PlanCompleterError>[1]]> = [
 			["auth", "auth"],
 			["rate_limited", "plan-limit"],
@@ -1915,11 +1904,14 @@ describe("headless planner: plan backend", () => {
 		for (const [code, failure] of cases) {
 			const fake = fakeBackend(new PlanCompleterError(code, failure));
 			const calls: PlannerCall[] = [];
-			const h = setup(PLAN_CONFIG, {
-				completer: undefined,
-				planBackend: fake.backend,
-				onCall: (call) => calls.push(call),
-			});
+			const h = setup(
+				{},
+				{
+					completer: undefined,
+					planBackend: fake.backend,
+					onCall: (call) => calls.push(call),
+				},
+			);
 			const sessionId = randomUUID();
 			expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
 				ok: true,
@@ -1929,14 +1921,13 @@ describe("headless planner: plan backend", () => {
 			for (const call of calls) {
 				expect(call.outcome).toBe(code);
 				expect(call.inputTokens).toBe(0);
-				expect("costUsd" in call).toBe(false);
 			}
 		}
 	});
 
 	test("a plan call that fails bills no usage to the job and its reservation stays counted", async () => {
 		const fake = fakeBackend(new PlanCompleterError("auth", "auth"));
-		const h = setup(PLAN_CONFIG, { completer: undefined, planBackend: fake.backend });
+		const h = setup({}, { completer: undefined, planBackend: fake.backend });
 		const sessionId = randomUUID();
 		await h.planner.start({ prompt: PROMPT, sessionId });
 		expect(jobFile(h.stateDir, sessionId).usage).toEqual({
@@ -1959,7 +1950,7 @@ describe("headless planner: plan backend", () => {
 		const fake = fakeBackend(new PlanCompleterError("rate_limited", "plan-limit"), {
 			reports: [{ promptTokens: 30, completionTokens: 7 }],
 		});
-		const h = setup(PLAN_CONFIG, { completer: undefined, planBackend: fake.backend });
+		const h = setup({}, { completer: undefined, planBackend: fake.backend });
 		const sessionId = randomUUID();
 		await h.planner.start({ prompt: PROMPT, sessionId });
 		const n = fake.stages.length;
@@ -1978,19 +1969,42 @@ describe("headless planner: plan backend", () => {
 
 	test("the output cap reaches the backend as hooks.maxOutputTokens, and is absent when no cap applies", async () => {
 		const capped = fakeBackend();
-		const withCap = setup(PLAN_CONFIG, { completer: undefined, planBackend: capped.backend });
+		const withCap = setup({}, { completer: undefined, planBackend: capped.backend });
 		await withCap.planner.start({ prompt: PROMPT });
 		expect(capped.caps.length).toBeGreaterThanOrEqual(8);
 		for (const cap of capped.caps) expect(cap).toBe(1000);
 
 		const open = fakeBackend();
 		const noCap = setup(
-			{ ...PLAN_CONFIG, modelMaxOutputTokens: 0, runTokenCeiling: 0, dailyTokenCeiling: 0 },
+			{ modelMaxOutputTokens: 0, runTokenCeiling: 0, dailyTokenCeiling: 0 },
 			{ completer: undefined, planBackend: open.backend },
 		);
 		await noCap.planner.start({ prompt: PROMPT });
 		expect(open.caps.length).toBeGreaterThanOrEqual(8);
 		for (const cap of open.caps) expect(cap).toBeUndefined();
+	});
+
+	test("with output cap 0 and a run ceiling, the cap reaching the backend is bounded by the budget left and by 16000", async () => {
+		const bounded = fakeBackend();
+		const withCeiling = setup(
+			{ modelMaxOutputTokens: 0, runTokenCeiling: 100_000, dailyTokenCeiling: 0 },
+			{ completer: undefined, planBackend: bounded.backend },
+		);
+		await withCeiling.planner.start({ prompt: PROMPT });
+		expect(bounded.caps.length).toBeGreaterThanOrEqual(8);
+		for (const cap of bounded.caps) {
+			expect(cap).toBeGreaterThan(0);
+			expect(cap).toBeLessThanOrEqual(16_000);
+		}
+
+		const roomy = fakeBackend();
+		const withRoom = setup(
+			{ modelMaxOutputTokens: 0, runTokenCeiling: 5_000_000, dailyTokenCeiling: 0 },
+			{ completer: undefined, planBackend: roomy.backend },
+		);
+		await withRoom.planner.start({ prompt: PROMPT });
+		expect(roomy.caps.length).toBeGreaterThanOrEqual(8);
+		for (const cap of roomy.caps) expect(cap).toBe(16_000);
 	});
 
 	test("several usage reports of one call add up, so a failed attempt and an answering one both bill", async () => {
@@ -2001,11 +2015,14 @@ describe("headless planner: plan backend", () => {
 			],
 		});
 		const calls: PlannerCall[] = [];
-		const h = setup(PLAN_CONFIG, {
-			completer: undefined,
-			planBackend: fake.backend,
-			onCall: (call) => calls.push(call),
-		});
+		const h = setup(
+			{},
+			{
+				completer: undefined,
+				planBackend: fake.backend,
+				onCall: (call) => calls.push(call),
+			},
+		);
 		const sessionId = randomUUID();
 		await h.planner.start({ prompt: PROMPT, sessionId });
 		const n = fake.stages.length;
@@ -2041,14 +2058,14 @@ describe("headless planner: plan backend", () => {
 			reports: [{ promptTokens: 1, completionTokens: 1 }],
 			failover: summary,
 		});
-		const h = setup(PLAN_CONFIG, { completer: undefined, planBackend: switched.backend, ...watch });
+		const h = setup({}, { completer: undefined, planBackend: switched.backend, ...watch });
 		await h.planner.start({ prompt: PROMPT });
 		expect(seen.length).toBe(1);
 		expect(seen[0]?.()).toBe(summary);
 
 		seen.length = 0;
 		const plain = fakeBackend();
-		const p = setup(PLAN_CONFIG, { completer: undefined, planBackend: plain.backend, ...watch });
+		const p = setup({}, { completer: undefined, planBackend: plain.backend, ...watch });
 		await p.planner.start({ prompt: PROMPT });
 		expect(seen.length).toBe(1);
 		expect(seen[0]?.()).toBeUndefined();
@@ -2057,7 +2074,7 @@ describe("headless planner: plan backend", () => {
 	test("start is not_ready only while the plan backend is not ready", async () => {
 		const fake = fakeBackend();
 		fake.setReady({ ok: false, detail: "claude CLI not found" });
-		const h = setup(PLAN_CONFIG, { completer: undefined, planBackend: fake.backend });
+		const h = setup({}, { completer: undefined, planBackend: fake.backend });
 		expect(await h.planner.start({ prompt: PROMPT })).toEqual({ ok: false, code: "not_ready" });
 		expect(fake.stages).toEqual([]);
 		fake.setReady({ ok: true });
@@ -2067,34 +2084,26 @@ describe("headless planner: plan backend", () => {
 		});
 	});
 
-	test("backendReady reports the plan backend in plan mode and is always ok on OpenRouter", () => {
+	test("backendReady reports the plan backend, and is ok without consulting it when a completer replaces it", () => {
 		const fake = fakeBackend();
-		const plan = setup(PLAN_CONFIG, { completer: undefined, planBackend: fake.backend });
+		const plan = setup({}, { completer: undefined, planBackend: fake.backend });
 		expect(plan.planner.backendReady()).toEqual({ ok: true });
 		fake.setReady({ ok: false, detail: "claude CLI not found" });
 		expect(plan.planner.backendReady()).toEqual({ ok: false, detail: "claude CLI not found" });
 
-		const openRouter = setup({}, { completer: undefined, planBackend: fake.backend });
-		expect(openRouter.planner.backendReady()).toEqual({ ok: true });
-		expect(setup().planner.backendReady()).toEqual({ ok: true });
+		const before = fake.readyChecks();
+		const injected = setup({}, { planBackend: fake.backend });
+		expect(injected.planner.backendReady()).toEqual({ ok: true });
+		expect(fake.readyChecks()).toBe(before);
 	});
 
-	test("the default openrouter backend never touches a plan backend and keeps its label and key check", async () => {
+	test("an injected completer never touches the plan backend or its readiness, and the engine label is plan:<model>", async () => {
 		const fake = fakeBackend();
+		fake.setReady({ ok: false, detail: "claude CLI not found" });
 		const labels: Array<string | undefined> = [];
-		const script = scriptedModel();
-		const openRouter: OpenRouterFetch = async (_url, init) => {
-			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
-			const content = script(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-			return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
-				status: 200,
-			});
-		};
 		const h = setup(
 			{},
 			{
-				completer: undefined,
-				fetch: openRouter,
 				planBackend: fake.backend,
 				plan: async (request, env, options) => {
 					const inner = options?.selectEngine;
@@ -2118,15 +2127,6 @@ describe("headless planner: plan backend", () => {
 		expect(fake.stages).toEqual([]);
 		expect(fake.readyChecks()).toBe(0);
 		expect(labels.length).toBeGreaterThan(0);
-		for (const label of labels) expect(label).toBe("openrouter:x-ai/grok-test");
-
-		const keyless = setup(
-			{ openRouterApiKey: undefined },
-			{ completer: undefined, planBackend: fake.backend },
-		);
-		expect(await keyless.planner.start({ prompt: PROMPT })).toEqual({
-			ok: false,
-			code: "not_ready",
-		});
+		for (const label of labels) expect(label).toBe("plan:claude-haiku-5-5");
 	});
 });

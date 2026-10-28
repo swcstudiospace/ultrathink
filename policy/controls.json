@@ -9,7 +9,8 @@
       "gdpr": ["Art. 25", "Art. 32(1)(b)"]
     },
     "evidence": [
-      "services/ultrathink/auth/auth.ts"
+      "services/ultrathink/auth/auth.ts",
+      "policy/openrouter.rego"
     ]
   },
   {

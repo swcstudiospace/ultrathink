@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
 import { randomHash } from "../../../src/test.helpers.ts";
-import { ConfigError, loadConfig, requirePlanningModel, type ReasoningEffort } from "./config.ts";
+import { ConfigError, loadConfig } from "./config.ts";
 
 function randomSecret(): string {
 	return randomBytes(24).toString("base64url");
@@ -49,7 +49,7 @@ describe("loadConfig required variables", () => {
 });
 
 describe("loadConfig defaults", () => {
-	test("applies documented defaults and leaves planningModel unset", () => {
+	test("applies documented defaults and the Claude route planning model", () => {
 		const config = loadConfig(baseEnv());
 		expect(config.stateDir).toBe("/var/lib/ultrathink");
 		expect(config.dbPath).toBe("/var/lib/ultrathink/ultrathink.sqlite");
@@ -59,7 +59,7 @@ describe("loadConfig defaults", () => {
 		expect(config.maxBodyBytes).toBe(1048576);
 		expect(config.runTokenCeiling).toBe(0);
 		expect(config.dailyTokenCeiling).toBe(0);
-		expect(config.planningModel).toBeUndefined();
+		expect(config.planningModel).toBe(ROUTE_DEFAULT_MODELS.claude);
 	});
 
 	test("trims values before use", () => {
@@ -94,17 +94,24 @@ describe("loadConfig defaults", () => {
 });
 
 describe("planningModel", () => {
-	test("requirePlanningModel throws a ConfigError naming the variable when unset", () => {
-		const config = loadConfig(baseEnv());
-		const message = messageOf(() => requirePlanningModel(config));
-		expect(message).toContain("ULTRATHINK_PLANNING_MODEL");
+	test("defaults to the Claude route model", () => {
+		expect(loadConfig(baseEnv()).planningModel).toBe("claude-haiku-5-5");
 	});
 
-	test("requirePlanningModel returns the model when set", () => {
+	test("takes a Claude model id", () => {
 		const env = baseEnv();
-		env.ULTRATHINK_PLANNING_MODEL = "vendor/model-1.0:latest";
-		const config = loadConfig(env);
-		expect(requirePlanningModel(config)).toBe("vendor/model-1.0:latest");
+		env.ULTRATHINK_PLANNING_MODEL = "claude-sonnet-5-5";
+		expect(loadConfig(env).planningModel).toBe("claude-sonnet-5-5");
+	});
+
+	test("a slash is a ConfigError saying the id looks like OpenRouter's, without echoing it", () => {
+		const env = baseEnv();
+		env.ULTRATHINK_PLANNING_MODEL = "x-ai/grok-4.7";
+		const message = messageOf(() => loadConfig(env));
+		expect(message).toBe(
+			"ULTRATHINK_PLANNING_MODEL names an OpenRouter-style model id; the hosted planner runs on the Claude plan login (default claude-haiku-5-5). Remove the line or set a Claude model id.",
+		);
+		expect(message).not.toContain("grok");
 	});
 
 	test("a model name outside the allowed pattern is rejected without echoing it", () => {
@@ -260,15 +267,11 @@ describe("sessionSecret", () => {
 	});
 });
 
-const FAKE_KEY = `sk-or-test-${"k".repeat(24)}`;
-
 describe("server planning defaults", () => {
 	test("new fields default to disabled server planning with documented limits", () => {
 		const config = loadConfig(baseEnv());
 		expect(config.allowedOrigins).toEqual([]);
 		expect(config.oauthRedirectOrigins).toEqual([]);
-		expect(config.openRouterApiKey).toBeUndefined();
-		expect(config.openRouterBaseUrl).toBe("https://openrouter.ai/api/v1");
 		expect(config.serverPlanning).toBe(false);
 		expect(config.maxConcurrentPlans).toBe(2);
 		expect(config.modelTimeoutMs).toBe(0);
@@ -331,128 +334,24 @@ describe("server planning bounds", () => {
 	}
 });
 
-describe("openRouterApiKey", () => {
-	test("is read and trimmed", () => {
-		const env = baseEnv();
-		env.OPENROUTER_API_KEY = `  ${FAKE_KEY}  `;
-		expect(loadConfig(env).openRouterApiKey).toBe(FAKE_KEY);
-	});
-
-	test("a blank key counts as unset", () => {
-		const env = baseEnv();
-		env.OPENROUTER_API_KEY = "   ";
-		expect(loadConfig(env).openRouterApiKey).toBeUndefined();
-	});
-
-	test("a key shorter than 20 characters is rejected without echoing it", () => {
-		const env = baseEnv();
-		const short = FAKE_KEY.slice(0, 19);
-		env.OPENROUTER_API_KEY = short;
-		const message = messageOf(() => loadConfig(env));
-		expect(message).toContain("OPENROUTER_API_KEY");
-		expect(message).not.toContain(short);
-	});
-
-	test("a key of exactly 20 characters is accepted", () => {
-		const env = baseEnv();
-		env.OPENROUTER_API_KEY = FAKE_KEY.slice(0, 20);
-		expect(loadConfig(env).openRouterApiKey).toHaveLength(20);
-	});
-});
-
-describe("openRouterBaseUrl", () => {
-	test("accepts an https URL and strips trailing slashes", () => {
-		const env = baseEnv();
-		env.ULTRATHINK_OPENROUTER_BASE_URL = "https://router.example.test/api/v1//";
-		expect(loadConfig(env).openRouterBaseUrl).toBe("https://router.example.test/api/v1");
-	});
-
-	for (const value of [
-		"http://openrouter.ai/api/v1",
-		"openrouter.ai/api/v1",
-		"ftp://openrouter.ai/api/v1",
-		"https://user:pass@openrouter.ai/api/v1",
-		"https://openrouter.ai/api/v1?x=1",
-		"https://openrouter.ai/api/v1#frag",
-	]) {
-		test(`rejects ${value}`, () => {
-			const env = baseEnv();
-			env.ULTRATHINK_OPENROUTER_BASE_URL = value;
-			const message = messageOf(() => loadConfig(env));
-			expect(message).toContain("ULTRATHINK_OPENROUTER_BASE_URL");
-			expect(message).not.toContain("pass@");
-		});
-	}
-});
-
 describe("serverPlanning derivation", () => {
-	function withPlanning(
-		extra: Record<string, string | undefined>,
-	): Record<string, string | undefined> {
-		return { ...baseEnv(), ...extra };
-	}
+	test("is false by default: the connector keeps offering client planning", () => {
+		expect(loadConfig(baseEnv()).serverPlanning).toBe(false);
+	});
 
-	test("is true when the key and the planning model are set", () => {
-		const config = loadConfig(
-			withPlanning({ OPENROUTER_API_KEY: FAKE_KEY, ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7" }),
+	test("is true only with ULTRATHINK_SERVER_PLANNING=1", () => {
+		expect(loadConfig({ ...baseEnv(), ULTRATHINK_SERVER_PLANNING: "1" }).serverPlanning).toBe(true);
+	});
+
+	test("ULTRATHINK_SERVER_PLANNING=0 is false", () => {
+		expect(loadConfig({ ...baseEnv(), ULTRATHINK_SERVER_PLANNING: "0" }).serverPlanning).toBe(
+			false,
 		);
-		expect(config.serverPlanning).toBe(true);
-	});
-
-	test("is false without the key", () => {
-		expect(
-			loadConfig(withPlanning({ ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7" })).serverPlanning,
-		).toBe(false);
-	});
-
-	test("is false without the planning model", () => {
-		expect(loadConfig(withPlanning({ OPENROUTER_API_KEY: FAKE_KEY })).serverPlanning).toBe(false);
-	});
-
-	test("ULTRATHINK_SERVER_PLANNING=0 disables it even with key and model", () => {
-		const config = loadConfig(
-			withPlanning({
-				OPENROUTER_API_KEY: FAKE_KEY,
-				ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7",
-				ULTRATHINK_SERVER_PLANNING: "0",
-			}),
-		);
-		expect(config.serverPlanning).toBe(false);
-	});
-
-	test("ULTRATHINK_SERVER_PLANNING=1 with key and model enables it", () => {
-		const config = loadConfig(
-			withPlanning({
-				OPENROUTER_API_KEY: FAKE_KEY,
-				ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7",
-				ULTRATHINK_SERVER_PLANNING: "1",
-			}),
-		);
-		expect(config.serverPlanning).toBe(true);
-	});
-
-	test("ULTRATHINK_SERVER_PLANNING=1 without a key throws a ConfigError", () => {
-		const message = messageOf(() =>
-			loadConfig(
-				withPlanning({
-					ULTRATHINK_PLANNING_MODEL: "x-ai/grok-4.7",
-					ULTRATHINK_SERVER_PLANNING: "1",
-				}),
-			),
-		);
-		expect(message).toContain("OPENROUTER_API_KEY");
-	});
-
-	test("ULTRATHINK_SERVER_PLANNING=1 without a planning model throws a ConfigError", () => {
-		const message = messageOf(() =>
-			loadConfig(withPlanning({ OPENROUTER_API_KEY: FAKE_KEY, ULTRATHINK_SERVER_PLANNING: "1" })),
-		);
-		expect(message).toContain("ULTRATHINK_PLANNING_MODEL");
 	});
 
 	test("any other ULTRATHINK_SERVER_PLANNING value is rejected", () => {
 		const message = messageOf(() =>
-			loadConfig(withPlanning({ ULTRATHINK_SERVER_PLANNING: "true" })),
+			loadConfig({ ...baseEnv(), ULTRATHINK_SERVER_PLANNING: "true" }),
 		);
 		expect(message).toContain("ULTRATHINK_SERVER_PLANNING");
 	});
@@ -520,48 +419,6 @@ describe("origin lists", () => {
 		env.ULTRATHINK_OAUTH_REDIRECT_ORIGINS = "https://app.example.test/callback";
 		expect(messageOf(() => loadConfig(env))).toContain("ULTRATHINK_OAUTH_REDIRECT_ORIGINS");
 	});
-});
-
-describe("modelReasoningEffort", () => {
-	test("unset leaves the parameter undefined, so the provider chooses", () => {
-		expect(loadConfig(baseEnv()).modelReasoningEffort).toBeUndefined();
-	});
-
-	for (const value of ["minimal", "low", "medium", "high"]) {
-		test(`accepts ${value}`, () => {
-			const env = baseEnv();
-			env.ULTRATHINK_MODEL_REASONING_EFFORT = ` ${value} `;
-			expect(loadConfig(env).modelReasoningEffort).toBe(value as ReasoningEffort);
-		});
-	}
-
-	test("default leaves the parameter undefined", () => {
-		const env = baseEnv();
-		env.ULTRATHINK_MODEL_REASONING_EFFORT = "default";
-		expect(loadConfig(env).modelReasoningEffort).toBeUndefined();
-	});
-
-	test("auto leaves the parameter undefined, the same as the unset default", () => {
-		const env = baseEnv();
-		env.ULTRATHINK_MODEL_REASONING_EFFORT = "auto";
-		expect(loadConfig(env).modelReasoningEffort).toBeUndefined();
-	});
-
-	test("a blank value counts as unset", () => {
-		const env = baseEnv();
-		env.ULTRATHINK_MODEL_REASONING_EFFORT = "  ";
-		expect(loadConfig(env).modelReasoningEffort).toBeUndefined();
-	});
-
-	for (const value of ["extreme", "LOW", "none", "1"]) {
-		test(`rejects ${value} naming the variable without echoing it`, () => {
-			const env = baseEnv();
-			env.ULTRATHINK_MODEL_REASONING_EFFORT = value;
-			const message = messageOf(() => loadConfig(env));
-			expect(message).toContain("ULTRATHINK_MODEL_REASONING_EFFORT");
-			expect(message).not.toContain(value);
-		});
-	}
 });
 
 describe("previous session secrets", () => {
@@ -1212,94 +1069,79 @@ describe("loadConfig chaos gate", () => {
 });
 
 describe("planning backend", () => {
-	function planEnv(
-		extra: Record<string, string | undefined> = {},
-	): Record<string, string | undefined> {
-		return { ...baseEnv(), ULTRATHINK_PLANNING_BACKEND: "plan", ...extra };
-	}
-
-	test("defaults keep the openrouter backend, no fallback and concurrency 2", () => {
+	test("defaults to the Claude route model, no fallback and concurrency 2", () => {
 		const config = loadConfig(baseEnv());
-		expect(config.planningBackend).toBe("openrouter");
 		expect(config.planFallback).toBe("none");
 		expect(config.planConcurrency).toBe(2);
-		expect(config.planningModel).toBeUndefined();
-		expect(config.serverPlanning).toBe(false);
-	});
-
-	test("openrouter mode still needs key and model, whatever the plan variables say", () => {
-		const config = loadConfig({
-			...baseEnv(),
-			ULTRATHINK_PLANNING_FALLBACK: "grok",
-			ULTRATHINK_PLAN_CONCURRENCY: "4",
-		});
-		expect(config.serverPlanning).toBe(false);
-		expect(config.planningModel).toBeUndefined();
-	});
-
-	test("plan mode needs no OpenRouter key, defaults the model and turns planning on", () => {
-		const config = loadConfig(planEnv());
-		expect(config.planningBackend).toBe("plan");
-		expect(config.openRouterApiKey).toBeUndefined();
 		expect(config.planningModel).toBe(ROUTE_DEFAULT_MODELS.claude);
-		expect(config.serverPlanning).toBe(true);
-		expect(requirePlanningModel(config)).toBe(ROUTE_DEFAULT_MODELS.claude);
-	});
-
-	test("plan mode takes ULTRATHINK_PLANNING_MODEL and still pattern-checks it", () => {
-		expect(
-			loadConfig(planEnv({ ULTRATHINK_PLANNING_MODEL: "claude-sonnet-5-5" })).planningModel,
-		).toBe("claude-sonnet-5-5");
-		const message = messageOf(() =>
-			loadConfig(planEnv({ ULTRATHINK_PLANNING_MODEL: "bad model name!" })),
-		);
-		expect(message).toContain("ULTRATHINK_PLANNING_MODEL");
-		expect(message).not.toContain("bad model name!");
-	});
-
-	test("ULTRATHINK_SERVER_PLANNING=0 disables plan mode planning", () => {
-		expect(loadConfig(planEnv({ ULTRATHINK_SERVER_PLANNING: "0" })).serverPlanning).toBe(false);
-	});
-
-	test("ULTRATHINK_SERVER_PLANNING=1 in plan mode needs nothing else", () => {
-		expect(loadConfig(planEnv({ ULTRATHINK_SERVER_PLANNING: "1" })).serverPlanning).toBe(true);
-	});
-
-	test("any other ULTRATHINK_SERVER_PLANNING value is still rejected in plan mode", () => {
-		const message = messageOf(() => loadConfig(planEnv({ ULTRATHINK_SERVER_PLANNING: "true" })));
-		expect(message).toContain("ULTRATHINK_SERVER_PLANNING");
-	});
-
-	test("an unknown backend throws a ConfigError naming the variable, not the value", () => {
-		const message = messageOf(() =>
-			loadConfig({ ...baseEnv(), ULTRATHINK_PLANNING_BACKEND: "sekrit-backend" }),
-		);
-		expect(message).toContain("ULTRATHINK_PLANNING_BACKEND");
-		expect(message).not.toContain("sekrit-backend");
 	});
 
 	test("the fallback accepts none and grok only", () => {
-		expect(loadConfig(planEnv({ ULTRATHINK_PLANNING_FALLBACK: "grok" })).planFallback).toBe("grok");
-		expect(loadConfig(planEnv({ ULTRATHINK_PLANNING_FALLBACK: "none" })).planFallback).toBe("none");
+		expect(loadConfig({ ...baseEnv(), ULTRATHINK_PLANNING_FALLBACK: "grok" }).planFallback).toBe(
+			"grok",
+		);
+		expect(loadConfig({ ...baseEnv(), ULTRATHINK_PLANNING_FALLBACK: "none" }).planFallback).toBe(
+			"none",
+		);
 		const message = messageOf(() =>
-			loadConfig(planEnv({ ULTRATHINK_PLANNING_FALLBACK: "sekrit-fallback" })),
+			loadConfig({ ...baseEnv(), ULTRATHINK_PLANNING_FALLBACK: "sekrit-fallback" }),
 		);
 		expect(message).toContain("ULTRATHINK_PLANNING_FALLBACK");
 		expect(message).not.toContain("sekrit-fallback");
 	});
 
 	test("concurrency accepts 1..6 and rejects anything else", () => {
-		expect(loadConfig(planEnv({ ULTRATHINK_PLAN_CONCURRENCY: "1" })).planConcurrency).toBe(1);
-		expect(loadConfig(planEnv({ ULTRATHINK_PLAN_CONCURRENCY: "6" })).planConcurrency).toBe(6);
+		const withConcurrency = (value: string) => ({
+			...baseEnv(),
+			ULTRATHINK_PLAN_CONCURRENCY: value,
+		});
+		expect(loadConfig(withConcurrency("1")).planConcurrency).toBe(1);
+		expect(loadConfig(withConcurrency("6")).planConcurrency).toBe(6);
 		for (const value of ["0", "7", "2.5", "-1", "abc"]) {
-			const message = messageOf(() => loadConfig(planEnv({ ULTRATHINK_PLAN_CONCURRENCY: value })));
+			const message = messageOf(() => loadConfig(withConcurrency(value)));
 			expect(message).toContain("ULTRATHINK_PLAN_CONCURRENCY");
 		}
 	});
 
-	test("an OpenRouter key in plan mode is still length-checked and never echoed", () => {
-		const message = messageOf(() => loadConfig(planEnv({ OPENROUTER_API_KEY: "short-fake" })));
-		expect(message).toContain("OPENROUTER_API_KEY");
-		expect(message).not.toContain("short-fake");
+	test("any ULTRATHINK_PLANNING_BACKEND value is a ConfigError that never echoes it", () => {
+		for (const value of ["plan", "openrouter", "sekrit-backend"]) {
+			const message = messageOf(() =>
+				loadConfig({ ...baseEnv(), ULTRATHINK_PLANNING_BACKEND: value }),
+			);
+			expect(message).toBe(
+				"ULTRATHINK_PLANNING_BACKEND was removed: the hosted planner always runs on the Claude plan login; OpenRouter is reserved for Jev decisions. Remove the line.",
+			);
+		}
+	});
+});
+
+describe("legacyEnvIgnored", () => {
+	test("is empty when none of the removed variables is set", () => {
+		expect(loadConfig(baseEnv()).legacyEnvIgnored).toEqual([]);
+	});
+
+	test("lists the names of the removed variables that are set, sorted, and never a value", () => {
+		const secret = "sk-or-sekrit-value-0123456789";
+		const config = loadConfig({
+			...baseEnv(),
+			ULTRATHINK_OPENROUTER_KEY: secret,
+			OPENROUTER_API_KEY: secret,
+			ULTRATHINK_OPENROUTER_BASE_URL: "https://example.test/v1",
+			ULTRATHINK_MODEL_REASONING_EFFORT: "high",
+		});
+		expect(config.legacyEnvIgnored).toEqual([
+			"OPENROUTER_API_KEY",
+			"ULTRATHINK_MODEL_REASONING_EFFORT",
+			"ULTRATHINK_OPENROUTER_BASE_URL",
+			"ULTRATHINK_OPENROUTER_KEY",
+		]);
+		expect(JSON.stringify(config.legacyEnvIgnored)).not.toContain(secret);
+	});
+
+	test("a blank value counts as unset", () => {
+		expect(
+			loadConfig({ ...baseEnv(), OPENROUTER_API_KEY: "  ", ULTRATHINK_OPENROUTER_KEY: "" })
+				.legacyEnvIgnored,
+		).toEqual([]);
 	});
 });

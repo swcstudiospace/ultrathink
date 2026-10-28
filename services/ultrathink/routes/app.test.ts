@@ -14,7 +14,7 @@ import { escapeXml } from "../../../src/uplift/xml.ts";
 import { type Auth, createAuth } from "../auth/auth.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import type { HeadlessPlanner, ResultView } from "../engine/headless.ts";
-import type { OpenRouterFetch } from "../engine/openrouter.ts";
+import type { PlanBackend } from "../engine/plan.ts";
 import { auditPath, verifyAuditFile } from "../obs/audit.ts";
 import { type RequestContext, currentRequestContext } from "../obs/context.ts";
 import { createLogger } from "../obs/log.ts";
@@ -31,7 +31,6 @@ const CONNECTOR_KEY = randomBytes(24).toString("hex");
 const OWNER_PASSWORD = randomBytes(24).toString("base64url");
 const OWNER_HASH = await Bun.password.hash(OWNER_PASSWORD);
 const SESSION_SECRET = randomBytes(32).toString("hex");
-const FAKE_KEY = "sk-or-fake-key-0123456789abcdef";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 type Json = Record<string, unknown>;
@@ -73,12 +72,11 @@ function baseConfig(dir: string, overrides: Partial<UltrathinkConfig> = {}): Ult
 		maxBodyBytes: 65536,
 		runTokenCeiling: 5_000_000,
 		dailyTokenCeiling: 50_000_000,
-		planningModel: undefined,
+		planningModel: "claude-haiku-5-5",
 		connectorKey: CONNECTOR_KEY,
 		allowedOrigins: [],
 		oauthRedirectOrigins: [],
-		openRouterApiKey: undefined,
-		openRouterBaseUrl: "https://openrouter.test/api/v1",
+		legacyEnvIgnored: [],
 		serverPlanning: false,
 		maxConcurrentPlans: 2,
 		modelTimeoutMs: 5000,
@@ -289,7 +287,7 @@ function viewOf(sessionId: string, overrides: Partial<ResultView> = {}): ResultV
 		mode: "server",
 		text: PLAN_TEXT,
 		questions: [{ question: "Which database?", default: "Postgres" }],
-		usage: { calls: 9, inputTokens: 900, outputTokens: 450, costUsd: 0.02 },
+		usage: { calls: 9, inputTokens: 900, outputTokens: 450 },
 		...overrides,
 	};
 }
@@ -532,7 +530,7 @@ describe("tool surface", () => {
 	test("the default planner is enabled exactly when config.serverPlanning is", () => {
 		expect(harness().app.planner.enabled).toBe(false);
 		const on = harness({
-			config: { serverPlanning: true, planningModel: "x-ai/grok-test", openRouterApiKey: FAKE_KEY },
+			config: { serverPlanning: true, planningModel: "claude-haiku-5-5" },
 		});
 		expect(on.app.planner.enabled).toBe(true);
 	});
@@ -658,7 +656,7 @@ describe("tool surface", () => {
 });
 
 describe("plan metrics", () => {
-	test("each finished plan is counted once, with tokens and cost, however often it is polled", async () => {
+	test("each finished plan is counted once, with its tokens, however often it is polled", async () => {
 		const planner = stubPlanner(true);
 		const h = harness({ deps: { planner } });
 		const sessionId = randomSessionId();
@@ -667,7 +665,6 @@ describe("plan metrics", () => {
 		expect(sample(h, "ultrathink_plan_jobs_total", { status: "planned" })).toBe(1);
 		expect(sample(h, "ultrathink_plan_tokens_total", { direction: "input" })).toBe(900);
 		expect(sample(h, "ultrathink_plan_tokens_total", { direction: "output" })).toBe(450);
-		expect(sample(h, "ultrathink_plan_cost_usd_total")).toBeCloseTo(0.02, 6);
 
 		const other = randomSessionId();
 		await callTool(h, "ultrathink_result", { sessionId: other });
@@ -809,23 +806,20 @@ describe("end to end with the real planner", () => {
 		return promise;
 	};
 
-	test("ultrathink_uplift runs the pipeline against the injected OpenRouter, and ultrathink_result returns the plan as text", async () => {
-		const seen: Array<{ url: string; headers: Record<string, string> }> = [];
-		const openRouter: OpenRouterFetch = async (url, init) => {
-			seen.push({ url, headers: init.headers as Record<string, string> });
-			const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
-			const content = answerFor(body.messages[0]?.content ?? "", body.messages[1]?.content ?? "");
-			return new Response(
-				JSON.stringify({
-					choices: [{ message: { content } }],
-					usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.001 },
-				}),
-				{ status: 200 },
-			);
+	test("ultrathink_uplift runs the pipeline against the injected plan backend, and ultrathink_result returns the plan as text", async () => {
+		const seen: string[] = [];
+		const planBackend: PlanBackend = {
+			label: "plan:claude-haiku-5-5",
+			ready: () => ({ ok: true }),
+			complete: async (system, user, _signal, hooks) => {
+				seen.push(system);
+				hooks?.onUsage?.({ promptTokens: 100, completionTokens: 50 });
+				return answerFor(system, user);
+			},
 		};
 		const h = harness({
-			config: { serverPlanning: true, planningModel: "x-ai/grok-test", openRouterApiKey: FAKE_KEY },
-			deps: { fetch: openRouter, sleep: sleepUntilAborted },
+			config: { serverPlanning: true, planningModel: "claude-haiku-5-5" },
+			deps: { planBackend, sleep: sleepUntilAborted },
 		});
 		expect(await toolNames(h)).toContain("ultrathink_uplift");
 
@@ -856,10 +850,6 @@ describe("end to end with the real planner", () => {
 
 		const calls = seen.length;
 		expect(calls).toBeGreaterThanOrEqual(8);
-		for (const call of seen) {
-			expect(call.url).toBe("https://openrouter.test/api/v1/chat/completions");
-			expect(call.headers.Authorization).toBe(`Bearer ${FAKE_KEY}`);
-		}
 		expect(result.structuredContent.usage).toMatchObject({
 			calls,
 			inputTokens: 100 * calls,
@@ -873,11 +863,10 @@ describe("end to end with the real planner", () => {
 			sample(h, "ultrathink_mcp_tool_calls_total", { tool: "ultrathink_uplift", outcome: "ok" }),
 		).toBe(1);
 
-		// Neither the key nor the prompt text reaches the logs or the metrics.
+		// The prompt text reaches neither the logs nor the metrics.
 		const logText = JSON.stringify(h.logs);
-		expect(logText).not.toContain(FAKE_KEY);
 		expect(logText).not.toContain(PROMPT);
-		expect(h.app.metrics.render()).not.toContain(FAKE_KEY);
+		expect(h.app.metrics.render()).not.toContain(PROMPT);
 
 		// One planner_call line per model call: no prompt, no text, no secret, and both metrics agree with the log.
 		const callLogs = logsOf(h, "planner_call");
@@ -886,7 +875,7 @@ describe("end to end with the real planner", () => {
 			expect(line).toMatchObject({
 				level: "info",
 				sessionId,
-				model: "x-ai/grok-test",
+				model: "claude-haiku-5-5",
 				attempts: 1,
 				usage: { input: 100, output: 50 },
 			});
@@ -1153,13 +1142,13 @@ describe("command surface", () => {
 
 	test("ultrathink_sessions reports the server planning mode, ceilings and today's usage", async () => {
 		const h = harness({
-			config: { planningModel: "x-ai/grok-test" },
+			config: { planningModel: "claude-haiku-5-5" },
 			deps: { planner: stubPlanner(true), now: () => Date.UTC(2026, 9, 19, 12) },
 		});
 		const sessions = await callTool(h, "ultrathink_sessions", { limit: 3 });
 		expect(sessions.structuredContent.planning).toEqual({
 			serverPlanning: true,
-			model: "x-ai/grok-test",
+			model: "claude-haiku-5-5",
 			maxConcurrentPlans: 2,
 			runTokenCeiling: 5_000_000,
 			dailyTokenCeiling: 50_000_000,
@@ -1460,19 +1449,17 @@ describe("readiness and metrics endpoints", () => {
 		expect(dirBody.failed).toContain("stateDir");
 		expect(dirText).not.toContain(stateDir);
 
-		// An enabled planner without its model or key cannot do work.
-		const unconfigured = harness({ deps: { planner: stubPlanner(true) } });
+		// An enabled planner whose backend is not ready cannot do work.
+		const unconfigured = harness({
+			deps: { planner: stubPlanner(true, { backendReady: () => ({ ok: false }) }) },
+		});
 		const plannerDown = await unconfigured.app.handle(new Request(`${ORIGIN}/readyz`), PEER);
 		expect(plannerDown.status).toBe(503);
 		expect((await json<{ failed: string[] }>(plannerDown)).failed).toEqual(["planner"]);
 	});
 
-	test("/readyz in plan mode needs the plan backend, not an OpenRouter key", async () => {
-		const planConfig = {
-			planningBackend: "plan",
-			planningModel: "claude-haiku-5-5",
-			openRouterApiKey: undefined,
-		} as const;
+	test("/readyz in plan mode follows the plan backend's readiness", async () => {
+		const planConfig = { serverPlanning: true, planningModel: "claude-haiku-5-5" } as const;
 		const ready = harness({
 			config: planConfig,
 			deps: { planner: stubPlanner(true, { backendReady: () => ({ ok: true }) }) },
@@ -1496,20 +1483,6 @@ describe("readiness and metrics endpoints", () => {
 		const body: { failed: string[] } = JSON.parse(text);
 		expect(body.failed).toEqual(["planner"]);
 		expect(text).not.toContain("claude CLI not found");
-	});
-
-	test("/readyz on the default openrouter backend ignores the backend accessor and still needs key and model", async () => {
-		const notReady = { backendReady: () => ({ ok: false }) };
-		const keyed = harness({
-			config: { planningModel: "x-ai/grok-test", openRouterApiKey: FAKE_KEY },
-			deps: { planner: stubPlanner(true, notReady) },
-		});
-		expect((await keyed.app.handle(new Request(`${ORIGIN}/readyz`), PEER)).status).toBe(200);
-		const keyless = harness({
-			config: { planningModel: "x-ai/grok-test", openRouterApiKey: undefined },
-			deps: { planner: stubPlanner(true, { backendReady: () => ({ ok: true }) }) },
-		});
-		expect((await keyless.app.handle(new Request(`${ORIGIN}/readyz`), PEER)).status).toBe(503);
 	});
 
 	test("/metrics answers a loopback peer with Prometheus text and refuses everything else with 404", async () => {
