@@ -195,23 +195,25 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 		};
 	}
 	const health = input.stateDir ? openJevHealth(input.stateDir, "openrouter") : undefined;
-	const checkedAt = now();
-	const verdict = health?.shouldCall(checkedAt);
-	if (verdict && !verdict.call) {
-		// The OpenRouter breaker is open: no request is made, and the verdict is an error like any other Jev failure.
-		return {
-			...base,
-			decision: null,
-			confidence: null,
-			rationale: unavailableMessage(verdict, "openrouter"),
-			state: "error",
-			errorClass: "unavailable",
-			retryCount: 0,
-			latencyMs: 0,
-		};
-	}
 	let retryCount = 0;
 	for (const repair of [false, true]) {
+		// Each real request takes its own verdict and start time, never the previous request's: a repair sent right
+		// after a probe closed the breaker is an ordinary call, and its failure must count.
+		const startedAt = now();
+		const verdict = health?.shouldCall(startedAt);
+		if (verdict && !verdict.call) {
+			// The OpenRouter breaker is open: no request is made, and the verdict is an error like any other Jev failure.
+			return {
+				...base,
+				decision: null,
+				confidence: null,
+				rationale: unavailableMessage(verdict, "openrouter"),
+				state: "error",
+				errorClass: "unavailable",
+				retryCount,
+				latencyMs: Math.max(0, now() - started),
+			};
+		}
 		const request = requestFor(input, repair);
 		const outcome = await decide(request, {
 			apiKey: input.apiKey,
@@ -227,12 +229,7 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 			}),
 		});
 		if (health) {
-			recordHealth(
-				health,
-				outcome,
-				now(),
-				verdict?.call ? { ...verdict, startedAt: checkedAt } : undefined,
-			);
+			recordHealth(health, outcome, now(), verdict?.call ? { ...verdict, startedAt } : undefined);
 		}
 		if (!outcome.ok) {
 			const kind = outcome.error.kind;

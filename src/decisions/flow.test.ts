@@ -312,6 +312,63 @@ describe("evaluateFlowOutput with a state dir", () => {
 		expect(r.calls).toHaveLength(1);
 	});
 
+	/** Replies in order (the last repeats); the injected clock advances 10 ms per real request. */
+	function ticking(clock: { now: number }, replies: Array<() => Response>) {
+		const calls: number[] = [];
+		const fetchImpl = (async () => {
+			const reply = replies[Math.min(calls.length, replies.length - 1)];
+			if (!reply) throw new Error("no reply queued");
+			calls.push(clock.now);
+			clock.now += 10;
+			return reply();
+		}) as unknown as typeof fetch;
+		return { fetch: fetchImpl, calls };
+	}
+
+	function openedAt(dir: string): number {
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		health.recordFailure("credits", T);
+		return health.read().nextProbeAt ?? 0;
+	}
+
+	test("a repair after a probe closed the breaker is an ordinary call: its 401 reopens it and warns", async () => {
+		const dir = tempDir();
+		const clock = { now: openedAt(dir) };
+		// The probe's reply lacks confidence and closes the breaker; the repair is then refused with a 401.
+		const r = ticking(clock, [() => ok("approve"), () => json({ error: { message: "no" } }, 401)]);
+		const record = await evaluateFlowOutput({
+			subject: "phase:discuss",
+			output: OUTPUT,
+			apiKey: K,
+			fetch: r.fetch,
+			now: () => clock.now,
+			stateDir: dir,
+		});
+		expect(r.calls).toHaveLength(2);
+		expect(record.errorClass).toBe("auth");
+		const health = openJevHealth(dir, "openrouter");
+		expect(health.read()).toMatchObject({ state: "open", cause: "auth" });
+		expect(health.takeWarning(clock.now)).toContain("OpenRouter rejected the key");
+	});
+
+	test("a repair that succeeds after the probe closed the breaker leaves it closed", async () => {
+		const dir = tempDir();
+		const clock = { now: openedAt(dir) };
+		const r = ticking(clock, [() => ok("approve"), () => ok("approve", 0.8)]);
+		const record = await evaluateFlowOutput({
+			subject: "phase:discuss",
+			output: OUTPUT,
+			apiKey: K,
+			fetch: r.fetch,
+			now: () => clock.now,
+			stateDir: dir,
+		});
+		expect(record.state).toBe("success");
+		const health = openJevHealth(dir, "openrouter");
+		expect(health.read().state).toBe("closed");
+		expect(health.takeWarning(clock.now)).toBeUndefined();
+	});
+
 	test("the same URL, model and key are used for a probe after a 402; nothing else is contacted", async () => {
 		const dir = tempDir();
 		const r = serving(() => json({ error: { message: "insufficient credits" } }, 402));
