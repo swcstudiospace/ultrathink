@@ -120,6 +120,12 @@ The client creates the configured bank on the first retain, not during a plain `
 
 That mode is required. The server ultrathink is written for has no LLM, and a retain in any other extraction mode would call one. A retain into a missing bank would also let the server create the bank in its default (LLM) mode, so the client creates the bank and sets `chunks` first. `chunks` stores the lesson text as-is. The `--roundtrip` "ensure bank" step does the same thing in the throwaway bank, then deletes that bank.
 
+## Hindsight needs no inference
+
+Connecting Hindsight costs no model tokens. The server runs with its LLM provider set to `none` (`HINDSIGHT_API_LLM_PROVIDER=none`, "chunks mode"), the client forces `retain_extraction_mode=chunks`, and ultrathink never calls reflect or consolidation. Retain stores the lesson text as chunks and recall searches them, both with no LLM call. `bin/ultrathink hindsight check` prints `observations off · worker off` for such a server.
+
+Hindsight's own `claude-code` and `xai-oauth` providers are deliberately unused. Either would need a plan login on the server host, and Hindsight's documentation marks `claude-code` as local, personal use only. The one model call in the memory bank is the local `teach observe` distill, which runs on your machine through the official CLIs; see [Memory-bank chain](choose-engine.md#memory-bank-chain).
+
 ## Turn it off again
 
 - `"hindsight": { "enabled": false }` in config (the default), or remove the section. No Hindsight request is made, and `bin/ultrathink status` shows `Hindsight: off (opt-in: set hindsight.enabled)`. A project file can do this for its repository.

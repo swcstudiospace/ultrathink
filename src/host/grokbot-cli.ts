@@ -21,7 +21,6 @@ import { UPLIFT_SYSTEM_PROMPT } from "../uplift/prompt.ts";
 import { runControl, takeSessionFlag, trackingOff } from "../uplift/commands.ts";
 import {
 	checkRecord,
-	createJournalCompleter,
 	deepenTargets,
 	GROKBOT_ENGINE_HOST,
 	grokbotStateDir,
@@ -618,23 +617,11 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 			}
 			const blocked = promoteGuard(rest);
 			if (blocked) return { code: 2, text: blocked };
-			const journal = createJournalCompleter({ dir: journalDir(stateDir, "teach") });
 			// Moments are captured as host grok-bot; an unknown host's promotion target is drafts, so even with
-			// teach.autoPromote on nothing is installed into another host's skill directory.
+			// teach.autoPromote on nothing is installed into another host's skill directory. No completer is injected:
+			// memory distillation is pinned to the memory chain (`selectEngine` purpose "memory"), never the bot's model.
 			const teachEnv = { ...env, ULTRATHINK_HOST: GROKBOT_TEACH_HOST };
-			const result = await runTeachCommand(rest, {
-				cwd,
-				env: teachEnv,
-				stateDir,
-				stdin: readStdin,
-				complete: journal.complete,
-			});
-			const missed = journal.missed();
-			if (missed.length === 0) return result;
-			return {
-				code: result.code,
-				text: `${result.text}\n${json({ needsModel: missed.map(({ key, stage }) => ({ key, stage, session: "teach" })) })}`,
-			};
+			return await runTeachCommand(rest, { cwd, env: teachEnv, stateDir, stdin: readStdin });
 		}
 		default:
 			return { code: command ? 2 : 0, text: USAGE };

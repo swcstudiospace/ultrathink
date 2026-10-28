@@ -2197,9 +2197,9 @@ describe("legacy model provenance (AD-1)", () => {
 		expect("fallbackToLogin" in merged.claude).toBe(false);
 	});
 
-	test("grok.fallbackModels defaults to grok-4.7 and merges from user and project layers", () => {
+	test("grok.fallbackModels defaults to [] and merges from user and project layers", () => {
 		const base = defaultConfig();
-		expect(base.grok.fallbackModels).toEqual(["grok-4.7"]);
+		expect(base.grok.fallbackModels).toEqual([]);
 		expect(
 			mergeConfig({ grok: { fallbackModels: ["grok-4.6"] } }, base).grok.fallbackModels,
 		).toEqual(["grok-4.6"]);
@@ -2207,6 +2207,11 @@ describe("legacy model provenance (AD-1)", () => {
 			mergeConfig({ grok: { fallbackModels: ["grok-4.5"] } }, base, { project: true }).grok
 				.fallbackModels,
 		).toEqual(["grok-4.5"]);
+		const user = mergeConfig({ grok: { fallbackModels: ["grok-4.6"] } }, base);
+		expect(
+			mergeConfig({ grok: { fallbackModels: ["grok-4.5", "grok-4.7"] } }, user, { project: true })
+				.grok.fallbackModels,
+		).toEqual(["grok-4.5", "grok-4.7"]);
 	});
 
 	test("grok.fallbackModels trims, dedupes, drops blanks, controls and non-strings, caps at 8", () => {
@@ -2229,22 +2234,34 @@ describe("legacy model provenance (AD-1)", () => {
 	test("grok.fallbackModels arrays are never shared with the module default", () => {
 		const first = defaultConfig();
 		first.grok.fallbackModels.push("mutated");
-		expect(defaultConfig().grok.fallbackModels).toEqual(["grok-4.7"]);
-		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual(["grok-4.7"]);
+		expect(defaultConfig().grok.fallbackModels).toEqual([]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual([]);
 		const base = defaultConfig();
 		const merged = mergeConfig({ grok: { model: "x" } }, base);
 		expect(merged.grok.fallbackModels).not.toBe(DEFAULT_GROK_CONFIG.fallbackModels);
 		expect(merged.grok.fallbackModels).not.toBe(base.grok.fallbackModels);
 		merged.grok.fallbackModels.push("mutated");
-		expect(base.grok.fallbackModels).toEqual(["grok-4.7"]);
-		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual(["grok-4.7"]);
+		expect(base.grok.fallbackModels).toEqual([]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual([]);
+		const nonArray = mergeConfig({ grok: { fallbackModels: "grok-4.6" } }, base);
+		expect(nonArray.grok.fallbackModels).not.toBe(DEFAULT_GROK_CONFIG.fallbackModels);
+		expect(nonArray.grok.fallbackModels).not.toBe(base.grok.fallbackModels);
 	});
 
-	test("grok.fallbackModels: a non-array keeps the default and [] is honored", () => {
+	test("grok.fallbackModels: a non-array keeps the current list and [] is honored", () => {
 		const base = defaultConfig();
+		expect(base.grok.fallbackModels).toEqual([]);
 		expect(mergeConfig({ grok: { fallbackModels: "grok-4.6" } }, base).grok.fallbackModels).toEqual(
-			["grok-4.7"],
+			[],
 		);
-		expect(mergeConfig({ grok: { fallbackModels: [] } }, base).grok.fallbackModels).toEqual([]);
+		const user = mergeConfig({ grok: { fallbackModels: ["grok-4.6"] } }, base);
+		expect(user.grok.fallbackModels).toEqual(["grok-4.6"]);
+		expect(mergeConfig({ grok: { fallbackModels: "grok-4.5" } }, user).grok.fallbackModels).toEqual(
+			["grok-4.6"],
+		);
+		expect(
+			mergeConfig({ grok: { fallbackModels: [] } }, user, { project: true }).grok.fallbackModels,
+		).toEqual([]);
+		expect(mergeConfig({ grok: { fallbackModels: [] } }, user).grok.fallbackModels).toEqual([]);
 	});
 });

@@ -652,6 +652,7 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 				]
 			: [
 					`Observed · ${outcome.captured.length} captured${outcome.dropped > 0 ? ` · ${outcome.dropped} dropped by Jev` : ""}`,
+					...(outcome.detail ? [`Note: ${oneLine(outcome.detail)}`] : []),
 					...outcome.captured.map((c) => `Captured ${captureLine(c)}`),
 				];
 		if (outcome.decisions.length > 0) {

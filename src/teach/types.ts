@@ -144,7 +144,10 @@ export interface TeachContext {
 	fetch?: typeof fetch;
 	/** Injected Hindsight client (tests); otherwise resolved from `config.hindsight`, the credential store and `env`. */
 	hindsight?: HindsightClient;
-	/** One LLM completion (system, user) -> text; `observe` uses it to distill lessons. Default: the configured planning engine. */
+	/**
+	 * Test seam: one LLM completion (system, user) -> text that `observe` uses to distill lessons. Production hosts must
+	 * not inject a completer: memory distillation is pinned to the memory chain (`selectEngine` purpose "memory").
+	 */
 	complete?: (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 	signal?: AbortSignal;
 	log?: (line: string) => void;

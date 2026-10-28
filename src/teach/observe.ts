@@ -53,7 +53,7 @@ export const DISTILL_SYSTEM = [
 	'Return 0 to 3 lessons. Reply {"lessons":[]} when nothing qualifies.',
 	"A lesson qualifies only when it is reusable knowledge about THIS repository, its tooling or its workflow that a future agent would otherwise have to rediscover: a pitfall, a bug and its fix, a convention, a decision and its reason, or a repeatable playbook.",
 	"Do not restate the task, do not summarize the session, and do not include secrets, credentials, personal data or file contents.",
-	`kind is one of: ${MOMENT_KINDS.join(", ")}.`,
+	`kind is one of: ${MOMENT_KINDS.join(", ")}. Use exactly one of those words; if none fits exactly, pick the closest (pattern for conventions).`,
 	`name: a short imperative or descriptive title, at most ${NAME_CHARS} characters. description: one sentence, at most ${DESCRIPTION_CHARS} characters. body: the lesson with the concrete fix or rule, at most ${BODY_CHARS} characters.`,
 	"confidence is a number from 0 to 1: how sure you are the lesson is correct and reusable.",
 ].join("\n");
@@ -77,7 +77,10 @@ export interface ObserveDeps {
 export interface ObserveReport extends ObserveOutcome {
 	dropped: number;
 	decisions: DecisionSummary[];
-	/** Redacted error text (at most 160 chars) when `skipped` is "distiller failed"; never digest or lesson text. */
+	/**
+	 * Redacted text (at most 160 chars): the distiller error when `skipped` is "distiller failed", or the count and first
+	 * reason when the parser rejected lessons from the reply; never digest or lesson text.
+	 */
 	detail?: string;
 }
 
@@ -139,8 +142,64 @@ function firstJsonObject(text: string): unknown {
 	return undefined;
 }
 
-/** Strict, defensive parse of the distiller reply: invalid items are dropped, lengths clipped, confidence clamped, at most 3 kept. */
-export function parseLessons(text: string): Lesson[] {
+/**
+ * Words a model uses for the five kinds (normalized: lowercase, spaces and underscores as hyphens). An exact kind needs
+ * no entry; a word outside this table is still rejected, so a stray label is reported instead of guessed.
+ */
+const KIND_ALIASES: Readonly<Record<MomentKind, readonly string[]>> = {
+	pattern: [
+		"convention",
+		"rule",
+		"guideline",
+		"practice",
+		"best-practice",
+		"standard",
+		"style",
+		"idiom",
+		"principle",
+	],
+	pitfall: [
+		"gotcha",
+		"trap",
+		"mistake",
+		"warning",
+		"anti-pattern",
+		"antipattern",
+		"caveat",
+		"footgun",
+	],
+	bug: ["defect", "issue", "regression", "error", "fix"],
+	decision: ["choice", "rationale", "tradeoff", "trade-off", "architecture", "policy"],
+	playbook: [
+		"procedure",
+		"workflow",
+		"runbook",
+		"steps",
+		"recipe",
+		"checklist",
+		"process",
+		"howto",
+		"how-to",
+	],
+};
+
+function normalizeKind(value: string): MomentKind | undefined {
+	const key = value
+		.trim()
+		.toLowerCase()
+		.replace(/[\s_]+/g, "-");
+	return (
+		MOMENT_KINDS.find((kind) => kind === key) ??
+		MOMENT_KINDS.find((kind) => KIND_ALIASES[kind].includes(key))
+	);
+}
+
+/**
+ * Strict, defensive parse of the distiller reply: invalid items are dropped, lengths clipped, confidence clamped, at
+ * most 3 kept. Each dropped item pushes its reason onto `rejections` so the caller can report it; nothing is lost
+ * silently.
+ */
+export function parseLessons(text: string, rejections?: string[]): Lesson[] {
 	const parsed = firstJsonObject(text);
 	if (
 		!parsed ||
@@ -150,27 +209,52 @@ export function parseLessons(text: string): Lesson[] {
 	)
 		return [];
 	const lessons: Lesson[] = [];
+	const reject = (reason: string): void => {
+		rejections?.push(reason);
+	};
 	for (const item of parsed.lessons) {
 		if (lessons.length >= MAX_LESSONS) break;
-		if (!item || typeof item !== "object") continue;
+		if (!item || typeof item !== "object") {
+			reject("lesson is not an object");
+			continue;
+		}
 		const rec = item as Record<string, unknown>;
 		const { name: rawName, body: rawBody, kind, description, confidence } = rec;
-		if (typeof rawName !== "string" || typeof rawBody !== "string") continue;
-		if (typeof kind !== "string" || !(MOMENT_KINDS as readonly string[]).includes(kind)) continue;
-		if (description !== undefined && typeof description !== "string") continue;
+		if (typeof rawName !== "string" || typeof rawBody !== "string") {
+			reject("name or body is not a string");
+			continue;
+		}
+		const lessonKind = typeof kind === "string" ? normalizeKind(kind) : undefined;
+		if (!lessonKind) {
+			reject(
+				typeof kind === "string"
+					? `unknown kind ${JSON.stringify(clip(kind.trim(), 40))}`
+					: "kind is not a string",
+			);
+			continue;
+		}
+		if (description !== undefined && typeof description !== "string") {
+			reject("description is not a string");
+			continue;
+		}
 		if (
 			confidence !== undefined &&
 			(typeof confidence !== "number" || !Number.isFinite(confidence))
-		)
+		) {
+			reject("confidence is not a number");
 			continue;
+		}
 		const name = rawName.trim();
 		const body = rawBody.trim();
-		if (!name || !body) continue;
+		if (!name || !body) {
+			reject("name or body is empty");
+			continue;
+		}
 		lessons.push({
 			name: clip(name, NAME_CHARS),
 			description: clip(description?.trim() || body, DESCRIPTION_CHARS),
 			body: clip(body, BODY_CHARS),
-			kind: kind as MomentKind,
+			kind: lessonKind,
 			confidence: Math.min(1, Math.max(0, confidence ?? DEFAULT_CONFIDENCE)),
 		});
 	}
@@ -178,10 +262,10 @@ export function parseLessons(text: string): Lesson[] {
 }
 
 /**
- * The configured engine on its auxiliary CLI route (`purpose: "auxiliary"`): a detached distiller has no invoking live
- * model or auth, so it never inherits a native session target and never rebuilds one from a SessionRecord. A missing or
- * expired Grok login switches to Claude only with `grok.fallbackToClaude: true`. `claudeComplete` marks its child with
- * ULTRATHINK_CHILD=1.
+ * The memory chain (`purpose: "memory"`): Claude Haiku 5.5, then Grok Build only with `claude.fallbackToGrok` and a Grok
+ * login, whatever `claude.model`, `grok.*` models or `think.engine` say. A detached distiller has no invoking live model
+ * or auth, so it never inherits a native session target and never rebuilds one from a SessionRecord. `claudeComplete`
+ * marks its child with ULTRATHINK_CHILD=1.
  */
 async function engineComplete(
 	ctx: TeachContext,
@@ -190,7 +274,7 @@ async function engineComplete(
 	const host = (HOSTS as readonly string[]).includes(ctx.host) ? (ctx.host as HostId) : undefined;
 	const engine = await selectEngine(config, readControl(ctx.stateDir), ctx.cwd, {
 		host,
-		purpose: "auxiliary",
+		purpose: "memory",
 		signal: ctx.signal,
 	});
 	return "skipped" in engine ? engine.skipped : engine.complete;
@@ -263,7 +347,11 @@ export async function observeDigest(
 		const captured: CaptureOutcome[] = [];
 		const jev = lessonDecisions(ctx);
 		const decisionsConfig = ctx.config.decisions ?? DEFAULT_DECISIONS_CONFIG;
-		for (const lesson of parseLessons(reply)) {
+		const rejected: string[] = [];
+		const lessons = parseLessons(reply, rejected);
+		if (rejected.length > 0)
+			detail = redactLine(`${rejected.length} lesson(s) rejected: ${rejected[0]}`, 160);
+		for (const lesson of lessons) {
 			const text = {
 				name: redactText(lesson.name, redactOptions),
 				description: redactText(lesson.description, redactOptions),

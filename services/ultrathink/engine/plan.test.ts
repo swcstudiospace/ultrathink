@@ -4,7 +4,6 @@
 import { describe, expect, test } from "bun:test";
 import { type ClaudeCompleteOptions, ClaudeResultError } from "../../../src/claude/complete.ts";
 import type { GrokCompleteOptions } from "../../../src/grok/complete.ts";
-import { DEFAULT_GROK_CONFIG } from "../../../src/grok/types.ts";
 import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
 import {
 	createPlanBackend,
@@ -486,9 +485,7 @@ describe("usage reporting", () => {
 });
 
 describe("fallback chain", () => {
-	const grokModels = [
-		...new Set([ROUTE_DEFAULT_MODELS.grok, ...DEFAULT_GROK_CONFIG.fallbackModels]),
-	];
+	const grokModels = [ROUTE_DEFAULT_MODELS.grok];
 
 	test("fallback none never builds a grok completer and labels the model", async () => {
 		const h = harness(() => async () => "claude says hi");
@@ -634,7 +631,7 @@ describe("fallback chain", () => {
 		expect((error as PlanCompleterError).failure).toBe("auth");
 	});
 
-	test("a plan-limit walks claude, then each grok model in order, until one answers", async () => {
+	test("a plan-limit walks claude, then grok build, and grok's answer is returned", async () => {
 		const order: string[] = [];
 		const h = harness(
 			() => async () => {
@@ -644,20 +641,36 @@ describe("fallback chain", () => {
 			{ fallback: "grok" },
 			(seam) => async () => {
 				order.push(`grok:${seam.model}`);
-				if (seam.model === grokModels[0] && grokModels.length > 1) {
-					throw namedError(
-						"GrokHttpError",
-						'grok HTTP 429: {"code":"resource-exhausted","error":"Requests per Minute (actual/limit): 0/0."}',
-						{ status: 429 },
-					);
-				}
 				return `answer from ${seam.model}`;
 			},
 		);
-		const backend = createPlanBackend(h.opts);
-		const text = await backend.complete("s", "u");
-		expect(order).toEqual(["claude", ...grokModels.map((model) => `grok:${model}`)]);
-		expect(text).toBe(`answer from ${grokModels[grokModels.length - 1]}`);
+		const text = await createPlanBackend(h.opts).complete("s", "u");
+		expect(order).toEqual(["claude", `grok:${ROUTE_DEFAULT_MODELS.grok}`]);
+		expect(text).toBe(`answer from ${ROUTE_DEFAULT_MODELS.grok}`);
+	});
+
+	test("the hosted fallback never tries another model when grok build fails too", async () => {
+		const tried: string[] = [];
+		const h = harness(
+			() => async () => {
+				tried.push("claude");
+				throw new Error("You've hit your session limit · resets 3:45pm");
+			},
+			{ fallback: "grok" },
+			(seam) => async () => {
+				tried.push(`grok:${seam.model}`);
+				throw namedError(
+					"GrokHttpError",
+					'grok HTTP 429: {"code":"resource-exhausted","error":"Requests per Minute (actual/limit): 0/0."}',
+					{ status: 429 },
+				);
+			},
+		);
+		const error = await failureOf(createPlanBackend(h.opts).complete("s", "u"));
+		expect(error).toBeInstanceOf(PlanCompleterError);
+		expect(tried).toEqual(["claude", `grok:${ROUTE_DEFAULT_MODELS.grok}`]);
+		expect(h.grokOpts.map((seam) => seam.model)).toEqual([ROUTE_DEFAULT_MODELS.grok]);
+		expect(tried.some((entry) => entry.includes("grok-4.7"))).toBe(false);
 	});
 
 	test("an error that is not failover-worthy does not reach grok", async () => {

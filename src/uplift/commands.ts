@@ -20,6 +20,8 @@ import { runDecisionsCommand } from "../decisions/cli.ts";
 import { runDoctorCommand } from "../doctor/cli.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
 import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
+import { type GrokCheckOptions, runGrokCheck } from "../grok/check.ts";
+import { type GrokLoginOptions, runGrokLogin } from "../grok/login.ts";
 import { grokWireEffort } from "../grok/types.ts";
 import { formatHitlEcho } from "../hitl/format.ts";
 import { detectHost } from "../host/detect.ts";
@@ -68,7 +70,7 @@ const USAGE = [
 	"  last                   the last uplifted spec",
 	"  think on|off|last      Graph of Thought",
 	"  hitl on|off|last       HITL clarifications",
-	"  grok [engine auto|claude|grok|muse]",
+	"  grok [status | engine auto|claude|grok|muse | login | check]",
 	"  decisions check        one live Jev decision: resolved model, latency, cost",
 	"  decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>",
 	"  hindsight check        Hindsight memory server: readiness, health, optional round trip",
@@ -150,7 +152,7 @@ function claudeStatusLine(config: UltrathinkConfig): string {
 	return `Claude: ${displayId(claude.model, OPAQUE_MODEL)} · auth ${claude.auth} · fallback to Grok ${claude.fallbackToGrok ? "on" : "off"}`;
 }
 
-/** `Grok: <model> [@ <effort>] · transport <t> [· then <fallbacks>]`, plus the shunt gateway when active. */
+/** `Grok: <model> [@ <effort>] · transport <t> [· home <dir>] [· then <fallbacks>]`, plus the shunt gateway when active. */
 function grokTransportLine(config: UltrathinkConfig): string {
 	const { grok } = config;
 	const effort = grokWireEffort(grok.model, grok.reasoningEffort);
@@ -158,7 +160,11 @@ function grokTransportLine(config: UltrathinkConfig): string {
 		grok.fallbackModels.length > 0
 			? ` · then ${grok.fallbackModels.map((model) => displayId(model, OPAQUE_MODEL)).join(", ")}`
 			: "";
-	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)}${effort ? ` @ ${effort}` : ""} · transport ${grok.transport}${then}`;
+	// grok.home is user-config only; a path is not a model id, so displayId would mask every absolute path.
+	const home = grok.home.trim()
+		? ` · home ${redactSecrets(grok.home.trim().replace(/\s+/g, " "))}`
+		: "";
+	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)}${effort ? ` @ ${effort}` : ""} · transport ${grok.transport}${home}${then}`;
 	if (grok.transport !== "shunt") return base;
 	const gateway = grok.shuntBaseUrl
 		? `${grok.shuntBaseUrl}/v1/messages`
@@ -406,8 +412,17 @@ export async function runControl(
 							grokTransportLine(config),
 							await grokOauthLine(config),
 						].join("\n");
+					case "login":
+					case "check":
+						// `args` still holds the caller's case; `verb` above is lower-cased.
+						return (
+							await runGrokCommand(args.filter((arg) => arg.trim()).slice(1), {
+								cwd,
+								env: process.env,
+							})
+						).text;
 					default:
-						return "Usage: grok [status | engine auto|claude|grok|muse]";
+						return "Usage: grok [status | engine auto|claude|grok|muse | login | check]";
 				}
 			default:
 				return USAGE;
@@ -430,6 +445,99 @@ export function takeSessionFlag(args: readonly string[]): { sessionId?: string; 
 	};
 }
 
+const GROK_LOGIN_USAGE = "Usage: grok login [--home <dir>] [--write-config]";
+const GROK_CHECK_USAGE = "Usage: grok check [--model <id>] [--transport http|cli] [--json]";
+
+/** `login` and `check` need the caller's raw args and an exit code, so they bypass the lower-casing control path. */
+function isGrokLaneVerb(verb: string | undefined): boolean {
+	const name = verb?.trim().toLowerCase();
+	return name === "login" || name === "check";
+}
+
+/** A flag's value, or undefined when the flag is last or its value looks like another flag. */
+function flagValue(args: readonly string[], at: number): string | undefined {
+	const value = args[at + 1];
+	return value === undefined || value.startsWith("--") || !value.trim() ? undefined : value;
+}
+
+/** `grok login` flags; undefined on any unknown flag, stray argument, repeat or missing value. */
+function parseGrokLoginArgs(args: readonly string[]): GrokLoginOptions | undefined {
+	const opts: GrokLoginOptions = {};
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--write-config" && opts.writeConfig === undefined) {
+			opts.writeConfig = true;
+		} else if (args[i] === "--home" && opts.home === undefined) {
+			const value = flagValue(args, i);
+			if (value === undefined) return undefined;
+			opts.home = value;
+			i++;
+		} else {
+			return undefined;
+		}
+	}
+	return opts;
+}
+
+/** `grok check` flags; undefined on any unknown flag, stray argument, repeat, missing value or transport other than http|cli. */
+function parseGrokCheckArgs(args: readonly string[]): GrokCheckOptions | undefined {
+	const opts: GrokCheckOptions = {};
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--json" && opts.json === undefined) {
+			opts.json = true;
+		} else if (args[i] === "--model" && opts.model === undefined) {
+			const value = flagValue(args, i);
+			if (value === undefined) return undefined;
+			opts.model = value.trim();
+			i++;
+		} else if (args[i] === "--transport" && opts.transport === undefined) {
+			const value = flagValue(args, i);
+			if (value !== "http" && value !== "cli") return undefined;
+			opts.transport = value;
+			i++;
+		} else {
+			return undefined;
+		}
+	}
+	return opts;
+}
+
+/**
+ * `grok login|check` with the caller's raw args (case and paths intact). Exit codes come from the modules; a usage
+ * error is 2. The module seams exist for tests. Never throws: an error becomes a message with exit 1.
+ */
+export async function runGrokCommand(
+	args: readonly string[],
+	input: {
+		cwd: string;
+		env?: Record<string, string | undefined>;
+		check?: typeof runGrokCheck;
+		login?: typeof runGrokLogin;
+	},
+): Promise<{ code: number; text: string }> {
+	try {
+		const [verb, ...rest] = args;
+		const grok = loadConfig(claudeConfigPaths(input.cwd)).grok;
+		if (verb?.trim().toLowerCase() === "login") {
+			const opts = parseGrokLoginArgs(rest);
+			if (!opts) return { code: 2, text: GROK_LOGIN_USAGE };
+			const result = await (input.login ?? runGrokLogin)({ grok, env: input.env }, opts);
+			return { code: result.exitCode, text: result.text };
+		}
+		if (verb?.trim().toLowerCase() === "check") {
+			const opts = parseGrokCheckArgs(rest);
+			if (!opts) return { code: 2, text: GROK_CHECK_USAGE };
+			const result = await (input.check ?? runGrokCheck)({ grok }, opts);
+			return { code: result.exitCode, text: opts.json ? JSON.stringify(result.json) : result.text };
+		}
+		return { code: 2, text: `${GROK_LOGIN_USAGE}\n${GROK_CHECK_USAGE}` };
+	} catch (error) {
+		return {
+			code: 1,
+			text: `ultrathink: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+		};
+	}
+}
+
 /** `ULTRATHINK_PRUNE_NOW_MS`: a fixed epoch-ms clock for `prune` (tests); unset or not an integer means the wall clock. */
 function pruneClock(env: Record<string, string | undefined>): (() => number) | undefined {
 	const raw = env.ULTRATHINK_PRUNE_NOW_MS?.trim();
@@ -441,7 +549,7 @@ function pruneClock(env: Record<string, string | undefined>): (() => number) | u
 }
 
 // `bin/ultrathink <verb> [args…]`: the host state dir comes from ULTRATHINK_HOST, else the detected host.
-// `decisions`, `hindsight`, `ragflow`, `teach`, `doctor` and `prune` bypass runControl, which lower-cases its args (probe takes a file path).
+// `decisions`, `hindsight`, `ragflow`, `teach`, `doctor`, `prune` and `grok login|check` bypass runControl, which lower-cases its args (probe takes a file path; login takes a directory; check takes a model id) and returns no exit code.
 if (import.meta.main) {
 	const argv = process.argv.slice(2);
 	const service = argv[0]?.trim().toLowerCase();
@@ -465,7 +573,9 @@ if (import.meta.main) {
 										env: process.env,
 										now: pruneClock(process.env),
 									}).then(({ output, exitCode }) => ({ code: exitCode, text: output }))
-								: undefined;
+								: service === "grok" && isGrokLaneVerb(argv[1])
+									? runGrokCommand(argv.slice(1), { cwd: process.cwd(), env: process.env })
+									: undefined;
 	if (command) {
 		command.then(({ code, text }) => {
 			process.stdout.write(`${text}\n`, () => process.exit(code));
