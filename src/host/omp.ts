@@ -62,9 +62,9 @@ import {
 	parseLaneArgs,
 	pidAlive,
 	planLanes,
-	refuseDuplicatesAndOverCap,
 	resolveStopTargets,
 	resolveSwarmRoot,
+	spawnGuarded,
 	spawnLanes,
 	stopLanes,
 	swarmClassifier,
@@ -73,7 +73,6 @@ import {
 	toSwarmStatusCard,
 	TEAMS_USAGE,
 } from "../swarm/teams.ts";
-import { withLaneLock } from "../swarm/lane.ts";
 import { extractPrFromOutput, isPrCreationTool } from "../track/pr-detect.ts";
 import { resolveRepoSlug } from "../track/git.ts";
 import { runControl, type UltrathinkVerb } from "../uplift/commands.ts";
@@ -2100,21 +2099,16 @@ export function createOmpExtension(
 							// Ask Swarm's own classifier about the exact lane text first, then refuse briefs that duplicate a
 							// live lane or exceed the live-lane cap; only the survivors spawn.
 							const preflight = await filterSpawnable(planned, classifierFor(root.root));
-							// Check, spawn and lane.json write are one step across Omp processes sharing the state directory;
-							// the classifier await above stays outside the lock.
-							const { guarded, handles } = withLaneLock(dir, () => {
-								const checked = refuseDuplicatesAndOverCap(
-									preflight.spawn,
-									dir,
-									cwd,
-									maxLanes(process.env),
-									pidAlive,
-								);
-								return {
-									guarded: checked,
-									handles: checked.spawn.length > 0 ? spawnLaneSet(checked.spawn) : [],
-								};
+							// Check, spawn and lane.json write are one locked step (spawnGuarded); the classifier await above
+							// stays outside the lock.
+							const guarded = spawnGuarded(preflight.spawn, {
+								stateDir: dir,
+								cwd,
+								cap: maxLanes(process.env),
+								isAlive: pidAlive,
+								spawn: spawnLaneSet,
 							});
+							const handles = guarded.handles;
 							const plan = guarded.spawn;
 							const refusals = [...preflight.refused, ...guarded.refused].map(
 								(refusal) => `${refusal.laneId}: ${refusal.reason}`,
@@ -2371,16 +2365,13 @@ export function createOmpExtension(
 				const preflight = await filterSpawnable(planned, classifierFor(swarmRoot));
 				// The classifier ran across an await: a shut-down extension or a switched session spawns nothing.
 				if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return false;
-				// Check, spawn and lane.json write are one step across Omp processes sharing the state directory.
-				const { plan, handles } = withLaneLock(dir, () => {
-					const guarded = refuseDuplicatesAndOverCap(
-						preflight.spawn,
-						dir,
-						cwd,
-						maxLanes(process.env),
-						pidAlive,
-					).spawn;
-					return { plan: guarded, handles: guarded.length > 0 ? spawnLaneSet(guarded) : [] };
+				// Check, spawn and lane.json write are one locked step (spawnGuarded); the classifier await stays outside.
+				const { spawn: plan, handles } = spawnGuarded(preflight.spawn, {
+					stateDir: dir,
+					cwd,
+					cap: maxLanes(process.env),
+					isAlive: pidAlive,
+					spawn: spawnLaneSet,
 				});
 				if (plan.length === 0) return false; // Refused (not SDLC, duplicate or over the cap): silent, the turn proceeds.
 				const started = handles.filter((handle) => handle.pid !== undefined).length;

@@ -36,6 +36,7 @@ import {
 	capRefusal,
 	findDuplicate,
 	type LaneFileFs,
+	type LaneLockDeps,
 	type LaneRecord,
 	type LaneVerdict,
 	laneBriefWithGraphId,
@@ -45,6 +46,7 @@ import {
 	START_TIME_TOLERANCE_MS,
 	STOP_HINT,
 	verifyLaneProcess,
+	withLaneLock,
 	writeLaneFile,
 } from "./lane.ts";
 
@@ -472,7 +474,8 @@ function recordLane(lane: LanePlan, pid: number, fs: LaneFileFs): string | undef
 /**
  * Start every planned lane detached, each with `stdout`/`stderr` appended to `<stateDir>/run.log`, and record
  * `<stateDir>/lane.json` right after a successful start. One lane failing to start becomes an error row for
- * that lane alone; the sibling lanes always spawn.
+ * that lane alone; the sibling lanes always spawn. Callers that also run the live-lane check MUST use
+ * {@link spawnGuarded}, which holds the lane lock across check and spawn.
  */
 export function spawnLanes(
 	plan: readonly LanePlan[],
@@ -726,6 +729,7 @@ export async function filterSpawnable(
  * everything past the live-lane cap. The live set is every lane dir under `stateDir` whose `lane.json` parses,
  * whose pid is alive and that `verify` still attributes to the lane; dead pids, recycled pids and missing or
  * malformed `lane.json` are not counted. The cap counts live lanes across all commands, not per command.
+ * Callers that go on to spawn MUST use {@link spawnGuarded}, which holds the lane lock across check and spawn.
  */
 export function refuseDuplicatesAndOverCap(
 	plans: readonly LanePlan[],
@@ -772,6 +776,52 @@ export function refuseDuplicatesAndOverCap(
 		spawn.push(plan);
 	}
 	return { spawn, refused };
+}
+
+/** The outcome of {@link spawnGuarded}: the plans that were spawned, the refusals, and one handle per spawned plan. */
+export interface GuardedSpawn {
+	spawn: LanePlan[];
+	refused: Array<{ laneId: string; reason: string }>;
+	handles: LaneHandle[];
+}
+
+/**
+ * The live-lane check ({@link refuseDuplicatesAndOverCap}) and the spawn as ONE step: both run inside
+ * `withLaneLock(opts.stateDir, ...)`, so two Omp processes sharing the state directory cannot both pass the cap
+ * check before either has written its `lane.json`. This is the only place the guard and the spawn are combined;
+ * the lock covers the `lane.json` writes (they happen inside the spawner). The spawner runs on the survivors
+ * only and not at all when none survive. Await the classifier ({@link filterSpawnable}) BEFORE calling this: an
+ * async wait must never sit inside the synchronous lock. The lock fails open after about a second (a stuck lock
+ * never blocks prompt submission), so this narrows the race rather than guaranteeing it away. `opts.lock`
+ * exposes the lock's clock and sleep seams for tests.
+ */
+export function spawnGuarded(
+	plans: readonly LanePlan[],
+	opts: {
+		stateDir: string;
+		cwd: string;
+		cap: number;
+		isAlive: PidAlive;
+		spawn?: (plans: readonly LanePlan[]) => LaneHandle[];
+		lock?: LaneLockDeps;
+	},
+): GuardedSpawn {
+	return withLaneLock(
+		opts.stateDir,
+		() => {
+			const checked = refuseDuplicatesAndOverCap(
+				plans,
+				opts.stateDir,
+				opts.cwd,
+				opts.cap,
+				opts.isAlive,
+			);
+			const spawner = opts.spawn ?? ((list: readonly LanePlan[]) => spawnLanes(list));
+			const handles = checked.spawn.length > 0 ? spawner(checked.spawn) : [];
+			return { spawn: checked.spawn, refused: checked.refused, handles };
+		},
+		opts.lock,
+	);
 }
 
 /**

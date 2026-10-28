@@ -61,6 +61,7 @@ import {
 	swarmRootMessage,
 	signalAliveMatchingStart,
 	SKIP_REFUSAL,
+	spawnGuarded,
 	spawnLanes,
 	STOP_GRACE_DEFAULT_MS,
 	STOP_POLL_MS,
@@ -1700,6 +1701,129 @@ describe("refuseDuplicatesAndOverCap", () => {
 		expect(result.spawn.map((entry) => entry.brief)).toEqual(["add tests"]);
 		expect(result.refused.map((entry) => entry.laneId)).toEqual(["lane-2", "lane-3"]);
 		for (const refusal of result.refused) expect(refusal.reason).toContain("lane cap reached");
+	});
+});
+
+describe("spawnGuarded", () => {
+	const noneAlive = (): boolean => false;
+	const plans = (briefs: string[]): LanePlan[] => planLanes(briefs, baseOpts("/state"));
+	const handleFor = (lane: LanePlan): LaneHandle => ({
+		laneId: lane.id,
+		pid: 1,
+		stateDir: lane.stateDir,
+		logPath: join(lane.stateDir, "run.log"),
+	});
+
+	test("the spawner runs while the lane lock directory exists and the lock is released afterwards", () => {
+		const root = tmp("teams-guarded-lock-");
+		const lock = join(root, "swarm", ".lane-lock");
+		const seen: boolean[] = [];
+		const result = spawnGuarded(plans(["write docs"]), {
+			stateDir: root,
+			cwd: "/repo",
+			cap: 3,
+			isAlive: noneAlive,
+			spawn: (list) => {
+				seen.push(existsSync(lock));
+				return list.map(handleFor);
+			},
+		});
+		expect(seen).toEqual([true]);
+		expect(existsSync(lock)).toBe(false);
+		expect(result.handles.map((handle) => handle.laneId)).toEqual(["lane-1"]);
+	});
+
+	test("the lock is released when the spawner throws", () => {
+		const root = tmp("teams-guarded-throw-");
+		expect(() =>
+			spawnGuarded(plans(["write docs"]), {
+				stateDir: root,
+				cwd: "/repo",
+				cap: 3,
+				isAlive: noneAlive,
+				spawn: () => {
+					throw new Error("spawn failed");
+				},
+			}),
+		).toThrow("spawn failed");
+		expect(existsSync(join(root, "swarm", ".lane-lock"))).toBe(false);
+	});
+
+	test("a repeated brief and the cap are refused as refuseDuplicatesAndOverCap refuses them; only survivors spawn, in order", () => {
+		const root = tmp("teams-guarded-refuse-");
+		const input = plans(["Build X", "build   x", "write docs", "add tests"]);
+		const expected = refuseDuplicatesAndOverCap(input, root, "/repo", 2, noneAlive);
+		const spawned: string[][] = [];
+		const result = spawnGuarded(input, {
+			stateDir: root,
+			cwd: "/repo",
+			cap: 2,
+			isAlive: noneAlive,
+			spawn: (list) => {
+				spawned.push(list.map((lane) => lane.brief));
+				return list.map(handleFor);
+			},
+		});
+		expect(result.spawn.map((lane) => lane.brief)).toEqual(["Build X", "write docs"]);
+		expect(result.spawn).toEqual(expected.spawn);
+		expect(result.refused).toEqual(expected.refused);
+		expect(result.refused.map((entry) => entry.laneId)).toEqual(["lane-2", "lane-4"]);
+		expect(result.refused[0]!.reason).toBe("duplicate of lane-1 in this command");
+		expect(result.refused[1]!.reason).toContain("lane cap reached");
+		expect(spawned).toEqual([["Build X", "write docs"]]);
+		expect(result.handles.map((handle) => handle.laneId)).toEqual(["lane-1", "lane-3"]);
+	});
+
+	test("no survivors: the spawner is never called and there are no handles", () => {
+		const root = tmp("teams-guarded-none-");
+		let calls = 0;
+		const result = spawnGuarded(plans(["write docs"]), {
+			stateDir: root,
+			cwd: "/repo",
+			cap: 0,
+			isAlive: noneAlive,
+			spawn: (list) => {
+				calls += 1;
+				return list.map(handleFor);
+			},
+		});
+		expect(calls).toBe(0);
+		expect(result.handles).toEqual([]);
+		expect(result.spawn).toEqual([]);
+		expect(result.refused.map((entry) => entry.laneId)).toEqual(["lane-1"]);
+		expect(existsSync(join(root, "swarm", ".lane-lock"))).toBe(false);
+	});
+
+	test("a lock held by another holder past the wait fails open: the lane still spawns and the other lock is left alone", () => {
+		const root = tmp("teams-guarded-open-");
+		const lock = join(root, "swarm", ".lane-lock");
+		mkdirSync(lock, { recursive: true });
+		let clock = 0;
+		const slept: number[] = [];
+		const spawned: string[] = [];
+		const result = spawnGuarded(plans(["write docs"]), {
+			stateDir: root,
+			cwd: "/repo",
+			cap: 3,
+			isAlive: noneAlive,
+			spawn: (list) => {
+				spawned.push(...list.map((lane) => lane.brief));
+				return list.map(handleFor);
+			},
+			lock: {
+				now: () => clock,
+				sleep: (ms) => {
+					slept.push(ms);
+					clock += ms;
+				},
+				waitMs: 50,
+				staleMs: 1_000_000,
+			},
+		});
+		expect(slept.length).toBeGreaterThan(0);
+		expect(spawned).toEqual(["write docs"]);
+		expect(result.handles).toHaveLength(1);
+		expect(existsSync(lock)).toBe(true);
 	});
 });
 
