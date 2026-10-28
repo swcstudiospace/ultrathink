@@ -1,0 +1,50 @@
+# Example Compose file for the hosted ultrathink service. Copy it, do not edit it in place.
+#
+#   cd deploy/docker
+#   cp compose.example.yml compose.yml
+#   (create ultrathink.env beside it, as described below)
+#   docker compose up -d --build
+#
+# ultrathink.env holds secrets. Create it with `umask 077` so it is mode 0600 (`ls -l` shows -rw-------), keep it out
+# of git and out of backups you do not control, and never print it. The build context excludes *.env files.
+# It takes three required variables plus the listener choice. Placeholders only; generate your own values as in
+# docs/how-to/self-host.md.
+#
+#   ULTRATHINK_PUBLIC_ORIGIN=<your-origin>
+#   ULTRATHINK_OWNER_PASSWORD_HASH='<paste-the-argon2id-hash>'
+#   ULTRATHINK_SESSION_SECRET=<paste-the-64-character-secret>
+#   ULTRATHINK_PLAINTEXT_LOOPBACK=1
+#
+# The argon2id hash contains `$` characters. Compose interpolates `$` in env_file values unless the value is in single
+# quotes, so keep the single quotes around the hash. With `docker run --env-file` there is no quote handling: do not
+# add the quotes there.
+#
+# ULTRATHINK_PLAINTEXT_LOOPBACK=1 is for development and local smoke tests. For a real deployment put a TLS-terminating
+# reverse proxy in front and set the three ULTRATHINK_TLS_* paths instead (see docs/how-to/self-host.md); mount the
+# files into the container read-only and adjust the health check in the Dockerfile.
+services:
+  ultrathink-web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    env_file: ultrathink.env
+    # The service listens on 127.0.0.1 only, so it must share the host's network namespace to be reachable (Linux hosts;
+    # `ports:` has no effect here and a published port cannot reach a loopback-only listener). Reach it at
+    # http://127.0.0.1:8795 on the host, or put your reverse proxy there.
+    network_mode: host
+    volumes:
+      - ultrathink-state:/var/lib/ultrathink
+    # Hardening. The same settings were exercised with `docker run` (--read-only, --cap-drop ALL,
+    # --security-opt no-new-privileges:true, --tmpfs /tmp) plus the state volume: /healthz returned 200, `tools/list`
+    # returned 9 tools and the service exited cleanly. Nothing beyond that was tested.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=64m"
+    restart: unless-stopped
+
+volumes:
+  ultrathink-state:

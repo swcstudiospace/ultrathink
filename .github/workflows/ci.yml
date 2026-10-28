@@ -98,6 +98,8 @@ jobs:
 
       - name: Test
         run: bun test
+        env:
+          ULTRATHINK_SMOKE_SERVICE: "1"
 
       - name: Hermes bridge test
         run: python3 hosts/hermes/bridge_test.py
