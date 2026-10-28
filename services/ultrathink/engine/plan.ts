@@ -19,7 +19,6 @@ import {
 	type GrokCallInfo,
 	type GrokCompleteOptions,
 } from "../../../src/grok/complete.ts";
-import { DEFAULT_GROK_CONFIG } from "../../../src/grok/types.ts";
 import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
 
 /**
@@ -182,10 +181,6 @@ class Semaphore {
 	}
 }
 
-function unique(values: readonly string[]): string[] {
-	return [...new Set(values)];
-}
-
 export function createPlanBackend(opts: PlanBackendOptions): PlanBackend {
 	const env = allowlistedEnv(opts.env);
 	const which = opts.which ?? ((command: string) => Bun.which(command) ?? undefined);
@@ -239,14 +234,11 @@ export function createPlanBackend(opts: PlanBackendOptions): PlanBackend {
 
 	let run: Completer = claudeAttempt;
 	if (opts.fallback === "grok") {
-		const grokModels = unique([ROUTE_DEFAULT_MODELS.grok, ...DEFAULT_GROK_CONFIG.fallbackModels]);
+		// Exactly one Grok model: the hosted fallback never tries another one.
+		const grokModel = ROUTE_DEFAULT_MODELS.grok;
 		const candidates: FailoverCandidate[] = [
 			{ id: `claude:${opts.model}`, label: `claude:${opts.model}`, complete: claudeAttempt },
-			...grokModels.map((model) => ({
-				id: `grok:${model}`,
-				label: `grok:${model}`,
-				complete: grokAttempt(model),
-			})),
+			{ id: `grok:${grokModel}`, label: `grok:${grokModel}`, complete: grokAttempt(grokModel) },
 		];
 		// The chain calls this inside the caller's async context, so it reaches this call's hook only.
 		run = createFailoverCompleter(candidates, {

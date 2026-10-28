@@ -226,7 +226,7 @@ Usage: ultrathink <command>
   last                   the last uplifted spec
   think on|off|last      Graph of Thought
   hitl on|off|last       HITL clarifications
-  grok [engine auto|claude|grok|muse]
+  grok [status | engine auto|claude|grok|muse | login | check]
   decisions check        one live Jev decision: resolved model, latency, cost
   decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>
   hindsight check        Hindsight memory server: readiness, health, optional round trip
@@ -250,8 +250,9 @@ The top-level help and the `decisions` subcommand both list all six probe points
 | `think last` | Goal and node sketch of the last graph. |
 | `hitl on`, `hitl off`, `hitl status` | HITL clarifications on or off for this host. |
 | `hitl last` | The clarifications of the last plan, with answers. |
-| `grok` or `grok status` | Engine label, Grok model, effort and transport, and Grok login state. |
+| `grok` or `grok status` | Engine label, Grok model, effort and transport, the dedicated login home when `grok.home` is set, and Grok login state. |
 | `grok engine auto`, `grok engine claude`, `grok engine grok`, `grok engine muse` | Switches the planning engine for this host (`auto` follows `think.engine`). |
+| `grok login [--home <dir>] [--write-config]`, `grok check [--model <id>] [--transport http\|cli] [--json]` | Sign the dedicated Grok Build login lane in, and make one live call to prove it. See [`bin/ultrathink grok`](#binultrathink-grok). |
 | `decisions check` | One live Jev decision to prove the integration end to end. See [`bin/ultrathink decisions`](#binultrathink-decisions). |
 | `decisions probe <plan\|ship\|knowledge\|blocking\|teachable\|skillworthy> <cases.json>` | Runs your own cases through one decision point and prints P and the action under the current thresholds. See [`bin/ultrathink decisions`](#binultrathink-decisions). |
 | `hindsight check [--roundtrip] [--json]` | Readiness, `/health` and `/version`, and an optional throwaway-bank round trip. Exit 0, 1 or 2. See [`bin/ultrathink hindsight`](#binultrathink-hindsight). |
@@ -275,7 +276,7 @@ Example `status` output on a fresh install (the state path is shortened):
 Prompt Uplift on
 Engine: claude:claude-haiku-5-5
 Claude: claude-haiku-5-5 · auth plan · fallback to Grok off
-Grok: grok-build-0.1 · transport http · then grok-4.7
+Grok: grok-build-0.1 · transport http
 SuperGrok OAuth: not logged in (run grok login)
 Graph of Thought on
 HITL clarifications on · max 4
@@ -300,7 +301,7 @@ What the lines can say:
 | `Prompt Uplift` | `on` or `off`, plus `(skipping next prompt)` while a `/ultrathink-skip` is armed. |
 | `Engine` | The current engine label: `claude:<model>` (`claude:session default` when `claude.model` is `""`), the Grok label (`<model>@<effort>` for a model that takes an effort, plain `<model>` otherwise, or `<model>@shunt`), or `muse:<model>`. On a CLI route, a provider set in `models.hosts.<host>.provider` shows `<engine>:unresolved [transport-incompatible]`. On Omp with `auto` it is the planning model the session last used, for example `omp-native:<provider>/<model> [detected]`, or `omp-native:auto (live model not observed)` before the first plan and from a shell. |
 | `Claude` | `claude.model`, `claude.auth` (`plan` or `api-key`) and whether `claude.fallbackToGrok` is on: `Claude: <model> · auth <plan\|api-key> · fallback to Grok <on\|off>`. |
-| `Grok` | Model, effort and transport: `Grok: <model> @ <effort> · transport <t>` when the model takes an effort (`grok-4.5`, `grok-4.6`, `grok-4.7`), otherwise `Grok: <model> · transport <t>`. When `grok.fallbackModels` is not empty, ` · then <models>` is appended. With `transport: "shunt"` it adds `<shuntBaseUrl>/v1/messages`, or `shunt gateway not configured (set grok.shuntBaseUrl)`, then the wire model and `max_tokens`. |
+| `Grok` | Model, effort and transport: `Grok: <model> @ <effort> · transport <t>` when the model takes an effort (`grok-4.5`, `grok-4.6`, `grok-4.7`), otherwise `Grok: <model> · transport <t>`. ` · home <dir>` follows when `grok.home` is set, and ` · then <models>` when you set `grok.fallbackModels` (empty by default, so no `then` suffix). With `transport: "shunt"` it adds `<shuntBaseUrl>/v1/messages`, or `shunt gateway not configured (set grok.shuntBaseUrl)`, then the wire model and `max_tokens`. |
 | `SuperGrok OAuth` | The `grok login` state: the account and expiry, `not logged in (run grok login)`, `expired (run grok login)`, or `not used (shunt gateway owns upstream auth)`. |
 | `Tracking` | `on (Linear/Notion rows)`, `off (Linear/Notion rows)` after `/ultrathink-track off`, `on (not configured: …)` when neither tracker is set, or `kickoff (…)` when only the planner's own row creation is off. |
 | `Notion`, `Linear team` | The configured value or `not configured`. |
@@ -381,6 +382,22 @@ Decisions probe: plan · typesafe/jev-1.13-20260917 · cases 2 · labelled 2 · 
 - For `plan`, `knowledge` and `blocking`, a case agrees when `label: true` meets `plan`, `keep` or `promote` and `label: false` meets the other action. For `ship`, `label: true` agrees unless the action is `veto`, and `label: false` agrees unless it is `approve`. For `skillworthy`, `label: true` agrees with `keep` and `label: false` agrees with `skip`. For `teachable`, the label agrees unless the action is `drop`: `keep` and `auto-confirm` both count as yes.
 - The summary is `Decisions probe: <point> · <model> · cases <n> · labelled <m> · agree <a>/<m> · errors <e>`, with the resolved model of the first answered case.
 - Exit 0 when every case was answered, 1 when any case failed, when `ULTRATHINK_DECISIONS=0` is set (`Decisions probe: off (ULTRATHINK_DECISIONS=0)`, printed once the file is checked; no request is sent) or when there is no key for the resolved rail (`Decisions probe: no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or OPENROUTER_API_KEY)`). An unreadable or invalid file exits 2 before any request, with `Decisions probe: <reason>`, for example `Decisions probe: case #3: "message" must be a non-empty string` or `Decisions probe: plan-cases.json is not a JSON array of 1 to 200 cases`.
+
+### `bin/ultrathink grok`
+
+The Grok route's controls and its login lane. See [`grok`](configuration.md#grok-the-grok-engine) for the keys.
+
+```text
+Usage: ultrathink grok [status | engine auto|claude|grok|muse | login [--home <dir>] [--write-config] | check [--model <id>] [--transport http|cli] [--json]]
+```
+
+| Subcommand | What it does |
+|---|---|
+| `status` (also the default) and `engine …` | As in the table above: the Grok state, and the planning engine for this host. |
+| `login [--home <dir>] [--write-config]` | Signs the dedicated Grok Build lane in. It runs `grok login --device-auth` with `GROK_HOME` set to the lane home and `XAI_API_KEY` removed from the child's environment, so the lane is a plan login, and the CLI prints the verification URL and code. The lane home is `--home`, else `grok.home`, else `<XDG_CONFIG_HOME or ~/.config>/ultrathink/grok`; it must be an absolute path and is created with mode 0700. `~/.grok` is never read or written. On success it prints `Grok login: <account> · home <dir> · expires <time>` and runs a `check` against the lane; a failed entitlement check is reported with its fix but does not fail the login. `--write-config` stores the lane home as `grok.home` in your user config only (`~/.config/ultrathink/config.json`), keeping the other keys. |
+| `check [--model <id>] [--transport http\|cli] [--json]` | One live call through the configured Grok route (transport, binary, home, base URL and timeout from `grok.*`; `--model` replaces `grok.model`, `--transport` replaces `grok.transport`) with the prompt `Reply with exactly the single word: pong`. Prints `Grok check: ok · <model> · <seconds> s · in <n> out <n> · account <email> · home <dir or default> · transport <t>`, or `Grok check: error (<class>) · <message> · fix: <hint>`. For a model the login is not entitled to (xAI answers 429 with a request limit of 0) the fix is `ultrathink grok login` as the xAI account that holds Grok Build. `--json` prints the same fields as one object. |
+
+Exit codes: `check` exits 0 when the call answered and 1 when it failed. `login` exits 0 when the login completed, 1 when `grok login` or the lane setup failed, and 2 on a usage error such as a relative `--home`. An unknown flag or a bad value exits 2 for both, with the usage line. No token is ever printed.
 
 ### `bin/ultrathink hindsight`
 

@@ -307,7 +307,7 @@ describe("checkInference", () => {
 			expect(byId(checkInference(deps), "inference.grok.login")).toMatchObject({
 				level: "warn",
 				title: "Grok login expired",
-				fix: "grok login",
+				fix: "ultrathink grok login",
 			});
 		});
 
@@ -356,7 +356,7 @@ describe("checkInference", () => {
 			expect(byId(checkInference(deps), "inference.grok.login")).toMatchObject({
 				level: "warn",
 				title: "Grok login: not signed in",
-				fix: "grok login",
+				fix: "ultrathink grok login",
 			});
 		});
 
@@ -390,8 +390,38 @@ describe("checkInference", () => {
 			);
 			userConfig({ grok: { home: other } });
 			expect(byId(checkInference(deps), "inference.grok.login").title).toBe(
-				"Grok login: other@example.com",
+				`Grok login: other@example.com (home ${other})`,
 			);
+		});
+
+		test("with grok.home set, a missing login names the lane home and the dedicated-home login", () => {
+			const lane = join(dir, "lane-grok");
+			userConfig({ grok: { home: lane }, claude: { fallbackToGrok: true } });
+			expect(byId(checkInference(deps), "inference.grok.login")).toMatchObject({
+				level: "warn",
+				title: "Grok login: not signed in",
+				detail: `claude.fallbackToGrok is on, so a failed Claude call has nowhere to go\nGrok lane home: ${lane}`,
+				fix: `ultrathink grok login (or GROK_HOME=${lane} grok login --device-auth)`,
+			});
+			expect(existsSync(lane)).toBe(false);
+		});
+
+		test("with grok.home set, an expired lane login names the lane home in detail and fix", () => {
+			const lane = join(dir, "lane-grok");
+			mkdirSync(lane);
+			writeFileSync(
+				join(lane, "auth.json"),
+				JSON.stringify({ a: { key: FAKE_SECRET, expires_at: new Date(NOW - DAY).toISOString() } }),
+			);
+			userConfig({ grok: { home: lane } });
+			const finding = byId(checkInference(deps), "inference.grok.login");
+			expect(finding).toMatchObject({
+				level: "warn",
+				title: "Grok login expired",
+				detail: `Grok lane home: ${lane}`,
+				fix: `ultrathink grok login (or GROK_HOME=${lane} grok login --device-auth)`,
+			});
+			expect(JSON.stringify(finding)).not.toContain(FAKE_SECRET);
 		});
 	});
 
@@ -403,24 +433,31 @@ describe("checkInference", () => {
 			});
 		});
 
-		test("the fallback line lists the Grok models when on", () => {
+		test("the fallback line lists only grok.model by default and adds explicit fallbackModels", () => {
 			userConfig({ claude: { fallbackToGrok: true } });
-			expect(byId(checkInference(deps), "inference.fallback").title).toBe(
-				"Claude to Grok fallback: on (models grok-build-0.1, grok-4.7)",
-			);
-			userConfig({ claude: { fallbackToGrok: true }, grok: { fallbackModels: [] } });
 			expect(byId(checkInference(deps), "inference.fallback").title).toBe(
 				"Claude to Grok fallback: on (models grok-build-0.1)",
 			);
+			userConfig({ claude: { fallbackToGrok: true }, grok: { fallbackModels: ["grok-4.7"] } });
+			expect(byId(checkInference(deps), "inference.fallback").title).toBe(
+				"Claude to Grok fallback: on (models grok-build-0.1, grok-4.7)",
+			);
 		});
 
-		test("the models line names the route defaults without a pin note", () => {
+		test("the models line names the route defaults without a pin note or a fallback list", () => {
 			const finding = byId(checkInference(deps), "inference.models");
 			expect(finding).toMatchObject({
 				level: "info",
-				title: "Models: claude claude-haiku-5-5, grok grok-build-0.1 then grok-4.7",
+				title: "Models: claude claude-haiku-5-5, grok grok-build-0.1",
 			});
 			expect(finding.detail).toBeUndefined();
+		});
+
+		test("explicit fallbackModels still print after the Grok model", () => {
+			userConfig({ grok: { fallbackModels: ["grok-4.7"] } });
+			expect(byId(checkInference(deps), "inference.models").title).toBe(
+				"Models: claude claude-haiku-5-5, grok grok-build-0.1 then grok-4.7",
+			);
 		});
 
 		test("a pinned claude.model and an empty fallback list show in the models line", () => {
@@ -429,6 +466,99 @@ describe("checkInference", () => {
 				title: "Models: claude claude-sonnet-5-5, grok grok-build-0.1",
 				detail: "claude.model is pinned in config",
 			});
+		});
+	});
+
+	describe("inference.memory", () => {
+		const PRIVATE = "user:private@model";
+		const detailOf = (): string => byId(checkInference(deps), "inference.memory").detail ?? "";
+
+		test("fallback off (the default): Haiku only, with the reason and the Hindsight note", () => {
+			const finding = byId(checkInference(deps), "inference.memory");
+			expect(finding.level).toBe("info");
+			expect(finding.title).toBe("Memory-bank inference: claude-haiku-5-5 only");
+			expect(finding.detail).toBe(
+				[
+					"Hindsight needs no inference (chunks mode); only the local observe distill calls a model.",
+					"No Grok fallback: claude.fallbackToGrok is off",
+				].join("\n"),
+			);
+		});
+
+		test("fallback on: Haiku then Grok Build, no reason line and nothing flagged as ignored", () => {
+			userConfig({ claude: { fallbackToGrok: true } });
+			const finding = byId(checkInference(deps), "inference.memory");
+			expect(finding.title).toBe("Memory-bank inference: claude-haiku-5-5, then grok-build-0.1");
+			expect(finding.detail).toBe(
+				"Hindsight needs no inference (chunks mode); only the local observe distill calls a model.",
+			);
+		});
+
+		test("the shunt transport has no Grok fallback and says why", () => {
+			userConfig({
+				claude: { fallbackToGrok: true },
+				grok: { transport: "shunt", shuntBaseUrl: "http://127.0.0.1:9999" },
+			});
+			const finding = byId(checkInference(deps), "inference.memory");
+			expect(finding.title).toBe("Memory-bank inference: claude-haiku-5-5 only");
+			expect(finding.detail).toContain("No Grok fallback: grok.transport is shunt");
+		});
+
+		test("grok.enabled false has no Grok fallback and says why", () => {
+			userConfig({ claude: { fallbackToGrok: true }, grok: { enabled: false } });
+			expect(byId(checkInference(deps), "inference.memory").title).toBe(
+				"Memory-bank inference: claude-haiku-5-5 only",
+			);
+			expect(detailOf()).toContain("No Grok fallback: grok.enabled is false");
+		});
+
+		test("a Sonnet pin and grok-4.7 settings never change the chain and are reported as not applying", () => {
+			userConfig({
+				claude: { model: "claude-sonnet-5-5", fallbackToGrok: true },
+				grok: { model: "grok-4.7", fallbackModels: ["grok-4.7"] },
+				think: { engine: "grok" },
+				models: { hosts: { "claude-code": { model: "claude-sonnet-5-5" } } },
+			});
+			const finding = byId(checkInference(deps), "inference.memory");
+			expect(finding.title).toBe("Memory-bank inference: claude-haiku-5-5, then grok-build-0.1");
+			expect(finding.title).not.toContain("sonnet");
+			expect(finding.title).not.toContain("grok-4.7");
+			expect(finding.detail).toContain(
+				"claude.model claude-sonnet-5-5 applies to planning and helpers, not to memory-bank calls",
+			);
+			expect(finding.detail).toContain(
+				"models.hosts.claude-code.model claude-sonnet-5-5 applies to planning and helpers, not to memory-bank calls",
+			);
+			expect(finding.detail).toContain(
+				"grok.model grok-4.7 applies to planning, not to memory-bank calls",
+			);
+			expect(finding.detail).toContain(
+				"grok.fallbackModels (grok-4.7) apply to planning, not to memory-bank calls",
+			);
+		});
+
+		test("a private selector in any ignored setting is masked", () => {
+			userConfig({
+				claude: { model: PRIVATE },
+				grok: { model: PRIVATE, fallbackModels: ["other:secret@x"] },
+			});
+			const finding = byId(checkInference(deps), "inference.memory");
+			expect(finding.detail).toContain("claude.model <opaque-model> applies to planning");
+			expect(finding.detail).toContain("grok.model <opaque-model> applies to planning");
+			expect(finding.detail).toContain("grok.fallbackModels (<opaque-model>) apply to planning");
+			expect(JSON.stringify(finding)).not.toContain("private");
+			expect(JSON.stringify(finding)).not.toContain("secret");
+		});
+
+		test("it is info in every configuration", () => {
+			for (const config of [
+				{},
+				{ claude: { fallbackToGrok: true } },
+				{ claude: { model: "claude-sonnet-5-5" }, grok: { fallbackModels: ["grok-4.7"] } },
+			]) {
+				userConfig(config);
+				expect(byId(checkInference(deps), "inference.memory").level).toBe("info");
+			}
 		});
 	});
 
@@ -443,6 +573,7 @@ describe("checkInference", () => {
 				"inference.grok.login",
 				"inference.fallback",
 				"inference.models",
+				"inference.memory",
 			]);
 			expect(findings.every((finding) => finding.section === "inference")).toBe(true);
 			expect(findings.some((finding) => finding.level === "error")).toBe(false);
@@ -454,6 +585,7 @@ describe("checkInference", () => {
 				"inference.grok.login",
 				"inference.fallback",
 				"inference.models",
+				"inference.memory",
 			]);
 		});
 
@@ -558,7 +690,7 @@ describe("checkInference", () => {
 				"claude 2.1.100 is older than 2.1.293, which haiku needs",
 			);
 			expect(byId(findings, "inference.models")).toMatchObject({
-				title: "Models: claude haiku, grok grok-build-0.1 then grok-4.7",
+				title: "Models: claude haiku, grok grok-build-0.1",
 				detail: "claude model comes from models.hosts.claude-code.model",
 			});
 		});
@@ -570,7 +702,7 @@ describe("checkInference", () => {
 				"claude 2.1.100 is older than 2.1.280, which opus needs",
 			);
 			expect(byId(findings, "inference.models")).toMatchObject({
-				title: "Models: claude opus, grok grok-build-0.1 then grok-4.7",
+				title: "Models: claude opus, grok grok-build-0.1",
 				detail: "claude.model is pinned in config",
 			});
 		});

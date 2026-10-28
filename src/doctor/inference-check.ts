@@ -16,6 +16,7 @@ import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.
 import { grokAuthStatus } from "../grok/auth.ts";
 import { detectHost } from "../host/detect.ts";
 import { HOST_DEFAULT_ENGINES } from "../host/engine.ts";
+import { MEMORY_CHAIN, memoryChainFor } from "../host/memory-chain.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
 import { formatAge } from "./state-check.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
@@ -204,6 +205,13 @@ function keyFinding(deps: DoctorDeps): Finding | undefined {
 	};
 }
 
+/** The fix for a missing or expired Grok login: the lane login command, and the raw CLI form for a dedicated home. */
+function grokLoginFix(laneHome: string): string {
+	return laneHome
+		? `ultrathink grok login (or GROK_HOME=${laneHome} grok login --device-auth)`
+		: "ultrathink grok login";
+}
+
 function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 	if (config.grok.transport === "shunt") {
 		return {
@@ -214,8 +222,10 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 		};
 	}
 	const now = deps.now();
+	const laneHome = config.grok.home.trim();
+	const laneNote = laneHome ? `Grok lane home: ${laneHome}` : undefined;
 	const home =
-		config.grok.home.trim() ||
+		laneHome ||
 		deps.env.GROK_HOME?.trim() ||
 		join(deps.env.HOME?.trim() || deps.env.USERPROFILE?.trim() || homedir(), ".grok");
 	const status = grokAuthStatus(home, now);
@@ -228,7 +238,7 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 			id: "inference.grok.login",
 			section: "inference",
 			level: "ok",
-			title: `Grok login: ${account}${expires}`,
+			title: `Grok login: ${account}${expires}${laneHome ? ` (home ${laneHome})` : ""}`,
 		};
 	}
 	if (status.loggedIn) {
@@ -237,7 +247,8 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 			section: "inference",
 			level: "warn",
 			title: "Grok login expired",
-			fix: "grok login",
+			...(laneNote ? { detail: laneNote } : {}),
+			fix: grokLoginFix(laneHome),
 		};
 	}
 	const engine =
@@ -245,15 +256,16 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 			? HOST_DEFAULT_ENGINES[detectHost(deps.env)]
 			: config.think.engine;
 	if (config.claude.fallbackToGrok || engine === "grok") {
+		const reason = config.claude.fallbackToGrok
+			? "claude.fallbackToGrok is on, so a failed Claude call has nowhere to go"
+			: "The engine resolves to the Grok route";
 		return {
 			id: "inference.grok.login",
 			section: "inference",
 			level: "warn",
 			title: "Grok login: not signed in",
-			detail: config.claude.fallbackToGrok
-				? "claude.fallbackToGrok is on, so a failed Claude call has nowhere to go"
-				: "The engine resolves to the Grok route",
-			fix: "grok login",
+			detail: laneNote ? `${reason}\n${laneNote}` : reason,
+			fix: grokLoginFix(laneHome),
 		};
 	}
 	return {
@@ -261,6 +273,56 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 		section: "inference",
 		level: "info",
 		title: "Grok login: not signed in (the Grok route is not in use)",
+		...(laneNote ? { detail: laneNote } : {}),
+	};
+}
+
+/** Why a memory-bank call has no Grok fallback, mirroring the conditions in `memoryChainFor`. */
+function memoryFallbackReason(config: UltrathinkConfig): string {
+	if (!config.claude.fallbackToGrok) return "No Grok fallback: claude.fallbackToGrok is off";
+	if (!config.grok.enabled) return "No Grok fallback: grok.enabled is false";
+	return "No Grok fallback: grok.transport is shunt, which cannot be proven to be Grok Build";
+}
+
+/** The pinned memory-bank chain, plus every configured value that does not apply to it. Info only: it describes, never fails. */
+function memoryFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
+	const chain = memoryChainFor(config);
+	const primary = displayId(MEMORY_CHAIN.primary.model, "<opaque-model>");
+	const fallback = displayId(MEMORY_CHAIN.fallback.model, "<opaque-model>");
+	const withFallback = chain.length > 1;
+	const detail = [
+		"Hindsight needs no inference (chunks mode); only the local observe distill calls a model.",
+	];
+	if (!withFallback) detail.push(memoryFallbackReason(config));
+	const ignored = (setting: string, value: string, scope: string): void => {
+		const shown = displayId(value, "<opaque-model>");
+		detail.push(`${setting} ${shown} applies to ${scope}, not to memory-bank calls`);
+	};
+	const claudeModel = config.claude.model.trim();
+	if (claudeModel && claudeModel !== MEMORY_CHAIN.primary.model) {
+		ignored("claude.model", claudeModel, "planning and helpers");
+	}
+	const host = detectHost(deps.env);
+	const hostModel = config.models.hosts[host]?.model.trim() ?? "";
+	if (hostModel && hostModel !== MEMORY_CHAIN.primary.model) {
+		ignored(`models.hosts.${host}.model`, hostModel, "planning and helpers");
+	}
+	const grokModel = config.grok.model.trim();
+	if (grokModel && grokModel !== MEMORY_CHAIN.fallback.model) {
+		ignored("grok.model", grokModel, "planning");
+	}
+	const extra = config.grok.fallbackModels.map((model) => displayId(model, "<opaque-model>"));
+	if (extra.length > 0) {
+		detail.push(
+			`grok.fallbackModels (${extra.join(", ")}) apply to planning, not to memory-bank calls`,
+		);
+	}
+	return {
+		id: "inference.memory",
+		section: "inference",
+		level: "info",
+		title: `Memory-bank inference: ${primary}${withFallback ? `, then ${fallback}` : " only"}`,
+		detail: detail.join("\n"),
 	};
 }
 
@@ -307,5 +369,6 @@ export function checkInference(deps: DoctorDeps): Finding[] {
 			: "claude.model is pinned in config";
 	}
 	findings.push(models);
+	findings.push(memoryFinding(deps, config));
 	return findings;
 }

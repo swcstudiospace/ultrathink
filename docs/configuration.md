@@ -115,7 +115,9 @@ The plan is the plan holder's own. Anthropic does not permit routing other peopl
 
 #### Claude and Grok failover
 
-With `claude.fallbackToGrok: true`, a failed Claude call is retried on the Grok route (`grok.model`, then `grok.fallbackModels`) when the Grok route is usable: a signed-in, unexpired `grok login` session for `http` and `cli`, or `grok.shuntBaseUrl` for `shunt`. Failures that fail over: authentication, billing, plan limit, rate limit, overload, model unavailable, CLI missing and network error. Timeouts, aborts and other errors do not. Within one failover chain, that is one planning run in one process, a failed candidate is skipped for a cooldown so the later stage calls of that run do not retry it: authentication 10 minutes, billing 60 minutes, plan limit 15 minutes, rate limit 60 seconds, overload 30 seconds, model unavailable 60 minutes, CLI missing 60 minutes, network error 30 seconds. The cooldown is not kept across prompts: each new hook process tries the configured model once, and a refused model costs one quick failed request before the fallback answers. The hosted service keeps its chain for the life of the process. A successful failover is not an error: the summary shows `Failover · claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)` and the session record stores it as `engineFailover`, on the hosted service as well as locally. When every candidate fails, the summary reports `Engine error · ...` as before.
+With `claude.fallbackToGrok: true`, a failed Claude call is retried on the Grok route (`grok.model`, then any `grok.fallbackModels` you set) when the Grok route is usable: a signed-in, unexpired `grok login` session for `http` and `cli`, or `grok.shuntBaseUrl` for `shunt`. Failures that fail over: authentication, billing, plan limit, rate limit, overload, model unavailable, CLI missing and network error. Timeouts, aborts and other errors do not. Within one failover chain, that is one planning run in one process, a failed candidate is skipped for a cooldown so the later stage calls of that run do not retry it: authentication 10 minutes, billing 60 minutes, plan limit 15 minutes, rate limit 60 seconds, overload 30 seconds, model unavailable 60 minutes, CLI missing 60 minutes, network error 30 seconds. The cooldown is not kept across prompts: each new hook process tries the configured model once, and a refused model costs one quick failed request before the fallback answers. The hosted service keeps its chain for the life of the process. A successful failover is not an error: the summary shows `Failover · claude:claude-haiku-5-5 → grok:grok-build-0.1 (plan-limit)` and the session record stores it as `engineFailover`, on the hosted service as well as locally. When every candidate fails, the summary reports `Engine error · ...` as before.
+
+Memory-bank calls (the Teachable Moments distiller behind `teach observe`) do not follow these keys. Their chain is pinned in code and is not configurable: `claude-haiku-5-5` first, then `grok-build-0.1` only when `claude.fallbackToGrok` is on, `grok.enabled` is on, the transport is not `shunt` and the Grok lane (see `grok.home`) is signed in. `claude.model`, `grok.model`, `grok.fallbackModels`, `models.hosts.<host>.model` and `think.engine` apply to planning and the other helpers, not to memory-bank calls. Hindsight itself needs no inference: it runs in chunks mode.
 
 ### `grok`: the Grok engine
 
@@ -126,11 +128,11 @@ Used when the engine resolves to Grok: on Grok Build by default, or anywhere wit
 | `enabled` | boolean | `true` | When `false`, the Claude engine is used even if `think.engine` is `"grok"`. The plan's model line then reads `claude:<model> [configured fallback · grok unavailable]`. |
 | `transport` | `"http"`, `"cli"` or `"shunt"` | `"http"` | `http`: POST `{baseUrl}/responses` with your `grok login` token. `cli`: run the `grok` binary. `shunt`: POST `{shuntBaseUrl}/v1/messages` on an Anthropic-compatible gateway that you run, with no auth. |
 | `baseUrl` | string | `"https://cli-chat-proxy.grok.com/v1"` | Base URL for the `http` transport. Trailing slashes are removed. |
-| `model` | string | `"grok-build-0.1"` | Model for `http` and `cli`, and for `shunt` when `shuntModel` is empty. A model the session cannot use (HTTP 429 with a limit of 0, HTTP 403 "requires a Grok subscription", or the CLI's "unknown model id") is skipped and the route continues with `fallbackModels`. |
-| `fallbackModels` | array of strings | `["grok-4.7"]` | Models tried, in order, after `model` for `http` and `cli`. Entries are trimmed and deduplicated, at most 8. `[]` means no fallback model. A project file may set it, like `grok.model`. |
+| `model` | string | `"grok-build-0.1"` | Model for `http` and `cli`, and for `shunt` when `shuntModel` is empty. A model the login cannot use (HTTP 429 with a limit of 0, HTTP 403 "requires a Grok subscription", or the CLI's "unknown model id") is skipped and the route continues with `fallbackModels`, if you set any. |
+| `fallbackModels` | array of strings | `[]` | Models tried, in order, after `model` for `http` and `cli`. Empty by default, so a refused `grok.model` fails instead of silently moving to a pricier model; set it yourself to opt in, for example `["grok-4.7"]`. Entries are trimmed and deduplicated, at most 8. A project file may set it, like `grok.model`. |
 | `reasoningEffort` | `"low"`, `"medium"`, `"high"` or `"xhigh"` | `"xhigh"` | Reasoning effort for `http` and `cli`. Sent only to `grok-4.5`, `grok-4.6` and `grok-4.7` (`grok-4.5` treats `xhigh` as `high`). Other models, including `grok-build-0.1`, get no effort, and their labels carry no `@effort`. |
 | `bin` | string | `"grok"` | The `grok` binary. |
-| `home` | string | `""` | Grok home directory, used to find the `grok login` session. `""` means `$GROK_HOME`, else `~/.grok`. |
+| `home` | string | `""` | Grok home directory, used to find the Grok login session, and the dedicated Grok Build login lane. `""` means `$GROK_HOME`, else `~/.grok`. Set it to an absolute directory that holds a login of the xAI account entitled to Grok Build; `ultrathink grok login` creates that login and `--write-config` stores the path here. The CLI transport runs `grok` with `GROK_HOME` set to it. User files only; a project file cannot set it. |
 | `callTimeoutMs` | number, >= 0 | `0` | Timeout for one call. `0` means no timer; the host's hook timeout is the limit. |
 | `fallbackToClaude` | boolean | `false` | When the Grok login is missing or expired (`http` and `cli` transports), plan with Claude instead; the plan's model line then reads `claude:<model> [configured fallback · grok unavailable]`. When `false`, the prompt is not planned and the hook reports ``Prompt Uplift skipped · Grok login required (run `grok login`)``. This applies on Grok Build under `auto` too. |
 | `shuntBaseUrl` | http(s) URL | `""` | Base URL of your gateway for `shunt`; `/v1/messages` is appended. There is no built-in gateway: with `transport: "shunt"` and this key empty, the prompt is not planned and nothing is sent. The hook reports ``Prompt Uplift skipped · grok:unresolved [transport-incompatible]``, and no rows are created. Claude is not used instead: `fallbackToClaude` only applies to a missing Grok login. |
@@ -138,6 +140,8 @@ Used when the engine resolves to Grok: on Grok Build by default, or anywhere wit
 | `shuntMaxTokens` | integer, > 0 | `8192` | `max_tokens` for `shunt` calls. |
 
 The `http` and `cli` transports need `grok login`. `shunt` does not; the gateway owns the upstream credentials.
+
+Use a dedicated `grok.home` when the xAI account that holds Grok Build is not the account your default `grok` CLI login uses. xAI rotates the refresh token every time it refreshes and retires the old one, so two applications must never share one login: `ultrathink grok login` signs the lane in with its own device login and never reads or writes `~/.grok`. `ultrathink grok check` makes one live call through the configured route and says whether the login is entitled to the model. See [Commands](commands.md#binultrathink).
 
 ### `muse`: the Muse engine
 
@@ -159,7 +163,7 @@ With `think.engine` set to `"auto"` (the default), each host plans with its own 
 | Claude Code | Claude | `claude.model` (`"claude-haiku-5-5"`) |
 | Hermes Agent | Chosen by the session model's family | The Claude, Grok or Muse route, picked from the model id Hermes sends; Claude when the family is unknown. The route then uses its own model key. |
 | Omp | Native | The session's own live model, called inside Omp through Omp's own provider and login. See [`models`](#models-planning-model-selection). |
-| Grok Build | Grok | `grok.model` (`"grok-build-0.1"`, then `grok.fallbackModels`) |
+| Grok Build | Grok | `grok.model` (`"grok-build-0.1"`, then `grok.fallbackModels` when you set it) |
 | Muse Code | Muse | `muse.model` (`"muse-spark-1.3-contributor"`) |
 
 On Omp, `auto` plans natively. ultrathink copies the session's live model once per prompt and runs the uplift, the graph, every node fill and the clarifying questions on that copy, through Omp's own provider and login. Nothing is read from Omp's saved session history, and the model is not mapped to a Claude, Grok or Muse family. When no model can be used, the prompt goes through unplanned and the reason is shown (see [the four states](how-to/choose-engine.md#planning-model-states)). A named engine (`think.engine`, or `bin/ultrathink grok engine …` for Omp) opts Omp out of native planning and uses that engine's CLI route. Omp's auxiliary helpers, the ship done check and the Teachable Moments distiller, are never native: they use the Claude CLI route under `auto`, or the named engine.
@@ -494,7 +498,7 @@ All keys are optional; write only the ones you change. This file shows every key
     "transport": "http",
     "baseUrl": "https://cli-chat-proxy.grok.com/v1",
     "model": "grok-build-0.1",
-    "fallbackModels": ["grok-4.7"],
+    "fallbackModels": [],
     "reasoningEffort": "xhigh",
     "bin": "grok",
     "home": "",

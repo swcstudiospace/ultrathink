@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QUESTIONS } from "../decisions/questions.ts";
@@ -761,6 +770,54 @@ describe("observeDigest receipts", () => {
 				outcome: "created",
 				names: [GOOD.name],
 			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("observeDigest engine (purpose memory)", () => {
+	test("distills on claude-haiku-5-5 whatever claude.model, think.engine or models.hosts say", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ultrathink-observe-memory-"));
+		try {
+			const configHome = join(root, "xdg");
+			mkdirSync(join(configHome, "ultrathink"), { recursive: true });
+			const argvLog = join(root, "argv.log");
+			const reply = join(root, "reply.json");
+			const bin = join(root, "claude");
+			writeFileSync(
+				reply,
+				JSON.stringify({ type: "result", is_error: false, result: lessonJson(GOOD) }),
+			);
+			writeFileSync(
+				bin,
+				[
+					"#!/bin/sh",
+					"cat >/dev/null",
+					`printf '%s\\n' "$*" >> '${argvLog}'`,
+					`cat '${reply}'`,
+				].join("\n"),
+			);
+			chmodSync(bin, 0o755);
+			writeFileSync(
+				join(configHome, "ultrathink", "config.json"),
+				JSON.stringify({
+					claude: { bin, model: "claude-sonnet-5-5" },
+					think: { engine: "grok" },
+					models: { hosts: { "claude-code": { model: "claude-sonnet-5-5" } } },
+				}),
+			);
+			const h = harness({
+				env: { XDG_CONFIG_HOME: configHome, CLAUDE_CONFIG_DIR: join(root, "claude-home") },
+			});
+			const ctx: TeachContext = { ...h.ctx, cwd: root };
+			delete ctx.complete;
+			const outcome = await observeDigest(digest({ cwd: root }), ctx, { capture: h.capture });
+			expect(outcome.skipped).toBeUndefined();
+			expect(h.captured).toHaveLength(1);
+			const argv = readFileSync(argvLog, "utf8").trim().split(/\s+/);
+			expect(argv[argv.indexOf("--model") + 1]).toBe("claude-haiku-5-5");
+			expect(argv).not.toContain("claude-sonnet-5-5");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

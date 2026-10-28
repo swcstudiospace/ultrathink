@@ -9,10 +9,13 @@ import { readControl, readSkipOnce, type SessionRecord, writeSession } from "../
 import type { DoctorReport } from "../doctor/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import type { HostId } from "../host/types.ts";
+import type { runGrokCheck } from "../grok/check.ts";
+import type { runGrokLogin } from "../grok/login.ts";
 import { writeStore } from "../mcp/store.ts";
 import {
 	parseUltrathinkCommand,
 	runControl,
+	runGrokCommand,
 	trackingEnabled,
 	trackingOff,
 	type UltrathinkCommand,
@@ -365,7 +368,7 @@ describe("runControl", () => {
 		const lines = (await runControl(["status"], io)).split("\n");
 		const engine = lines.findIndex((line) => line.startsWith("Engine:"));
 		expect(lines[engine + 1]).toBe("Claude: claude-haiku-5-5 · auth plan · fallback to Grok off");
-		expect(lines[engine + 2]).toBe("Grok: grok-build-0.1 · transport http · then grok-4.7");
+		expect(lines[engine + 2]).toBe("Grok: grok-build-0.1 · transport http");
 	});
 
 	test("status shows claude.auth api-key and claude.fallbackToGrok when set in user config", async () => {
@@ -408,11 +411,102 @@ describe("runControl", () => {
 		);
 	});
 
-	test("the shunt status keeps its gateway extension after the then part", async () => {
+	test("the shunt status keeps its gateway extension after the transport", async () => {
 		projectConfig({ grok: { home: join(dir, "grok"), model: "grok-test", transport: "shunt" } });
 		expect(await statusLine("Grok:")).toBe(
-			"Grok: grok-test · transport shunt · then grok-4.7 · shunt gateway not configured (set grok.shuntBaseUrl) · wire model grok-test · max_tokens 8192",
+			"Grok: grok-test · transport shunt · shunt gateway not configured (set grok.shuntBaseUrl) · wire model grok-test · max_tokens 8192",
 		);
+	});
+
+	test("status omits the then part by default and shows the lane home from user config", async () => {
+		userServices({ grok: { home: "/lane/grok-home", transport: "http" } });
+		expect(await statusLine("Grok:")).toBe(
+			"Grok: grok-build-0.1 · transport http · home /lane/grok-home",
+		);
+	});
+
+	test("status still shows then for fallback models the user sets explicitly", async () => {
+		userServices({ grok: { transport: "http", fallbackModels: ["grok-4.7"] } });
+		expect(await statusLine("Grok:")).toContain("transport http · then grok-4.7");
+	});
+
+	describe("grok login and check", () => {
+		const calls: { check: unknown[]; login: unknown[] } = { check: [], login: [] };
+		const check: typeof runGrokCheck = async (deps, opts) => {
+			calls.check.push({ model: deps.grok.model, opts });
+			return { ok: false, exitCode: 1, text: "Grok check: error (model-unavailable)", json: {} };
+		};
+		const login: typeof runGrokLogin = async (deps, opts) => {
+			calls.login.push({ home: deps.grok.home, opts });
+			return { ok: true, exitCode: 0, text: "Grok login: ok" };
+		};
+		const run = (args: string[]) => runGrokCommand(args, { cwd: io.cwd, check, login });
+
+		beforeEach(() => {
+			calls.check = [];
+			calls.login = [];
+		});
+
+		test("check passes its flags through with the module's exit code and text", async () => {
+			expect(
+				await run(["check", "--model", "Grok-Build-0.1", "--transport", "cli", "--json"]),
+			).toEqual({
+				code: 1,
+				text: "Grok check: error (model-unavailable)",
+			});
+			expect(calls.check).toEqual([
+				{
+					model: loadConfig(claudeConfigPaths(io.cwd)).grok.model,
+					opts: { model: "Grok-Build-0.1", transport: "cli", json: true },
+				},
+			]);
+		});
+
+		test("login keeps the directory's case and returns the module's code", async () => {
+			expect(await run(["login", "--home", "/Lane/Grok", "--write-config"])).toEqual({
+				code: 0,
+				text: "Grok login: ok",
+			});
+			expect(calls.login).toEqual([{ home: "", opts: { home: "/Lane/Grok", writeConfig: true } }]);
+		});
+
+		test("bare check and login call the modules with empty options", async () => {
+			await run(["check"]);
+			await run(["login"]);
+			expect(calls.check).toHaveLength(1);
+			expect(calls.login).toHaveLength(1);
+		});
+
+		test.each([
+			[["login", "--home"], "Usage: grok login [--home <dir>] [--write-config]"],
+			[["login", "--home", "--write-config"], "Usage: grok login [--home <dir>] [--write-config]"],
+			[
+				["login", "--home", "/a", "--home", "/b"],
+				"Usage: grok login [--home <dir>] [--write-config]",
+			],
+			[["login", "--force"], "Usage: grok login [--home <dir>] [--write-config]"],
+			[["login", "extra"], "Usage: grok login [--home <dir>] [--write-config]"],
+			[["check", "--model"], "Usage: grok check [--model <id>] [--transport http|cli] [--json]"],
+			[
+				["check", "--transport", "shunt"],
+				"Usage: grok check [--model <id>] [--transport http|cli] [--json]",
+			],
+			[
+				["check", "--json", "--json"],
+				"Usage: grok check [--model <id>] [--transport http|cli] [--json]",
+			],
+			[["check", "--bogus"], "Usage: grok check [--model <id>] [--transport http|cli] [--json]"],
+		])("bad flags %p are a usage error that never reaches the module", async (args, usage) => {
+			expect(await run(args)).toEqual({ code: 2, text: usage });
+			expect(calls.check).toEqual([]);
+			expect(calls.login).toEqual([]);
+		});
+
+		test("the grok help line names login and check", async () => {
+			expect(await runControl(["grok", "bogus"], io)).toBe(
+				"Usage: grok [status | engine auto|claude|grok|muse | login | check]",
+			);
+		});
 	});
 
 	test("the legacy think, hitl, grok and last scopes keep working", async () => {
@@ -541,7 +635,8 @@ describe("runControl", () => {
 					expect(text).not.toContain(sentinel);
 					expect(text).not.toContain("model.invalid");
 					expect(text).toContain("Engine: <opaque-model>");
-					expect(text).toContain(`Grok: <opaque-model> · transport ${transport} · then grok-4.7`);
+					expect(text).toContain(`Grok: <opaque-model> · transport ${transport}`);
+					expect(text).not.toContain("· then");
 				}
 			}
 		});
@@ -841,7 +936,7 @@ describe("runControl", () => {
 	test("usage lists the decisions commands right after the grok line", async () => {
 		expect(await runControl(["bogus"], io)).toContain(
 			[
-				"  grok [engine auto|claude|grok|muse]",
+				"  grok [status | engine auto|claude|grok|muse | login | check]",
 				"  decisions check        one live Jev decision: resolved model, latency, cost",
 				"  decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>",
 				"  hindsight check",

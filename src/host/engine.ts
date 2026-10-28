@@ -12,7 +12,9 @@
  * shunt transport does not need `grok login`. Failover exists at call time and is opt-in: with
  * `claude.fallbackToGrok` a failed Claude call (plan limit, auth, billing, overload, ...) continues on the Grok
  * models, and a selected Grok route walks `grok.model` then `grok.fallbackModels` (`createFailoverCompleter`); the
- * resolution record and label stay those of the first candidate, `SelectedEngine.failover` reports the switch.
+ * resolution record and label stay those of the first candidate, `SelectedEngine.failover` reports the switch. The
+ * `memory` purpose (memory-bank distill) is a fixed chain in `memory-chain.ts`: Claude Haiku 5.5, then Grok Build under
+ * the same consent, whatever any model setting says.
  */
 import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
 import { createFailoverCompleter, type FailoverCandidate } from "../failover/chain.ts";
@@ -29,6 +31,7 @@ import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
 import { redactLine } from "../teach/redact.ts";
 import { detectHost } from "./detect.ts";
 import type { HostId } from "./types.ts";
+import { assertMemoryChain, MEMORY_CHAIN, memoryChainFor } from "./memory-chain.ts";
 import { MAX_ENGINE_ERROR_CHARS } from "./display-limits.ts";
 import type { CompletionReport } from "../types.ts";
 
@@ -52,7 +55,8 @@ type ModelResolutionSource =
 	| "cli-default"
 	| "none"
 	| "route-default"
-	| "configured-fallback";
+	| "configured-fallback"
+	| "memory-chain";
 type ModelResolutionReason =
 	| "explicit-model"
 	| "explicit-provider"
@@ -153,8 +157,11 @@ export interface EngineSelectionContext {
 	signal?: AbortSignal;
 	/** In-process native selector; consulted only for Omp planning under `auto`. */
 	native?: NativeEngineSelector;
-	/** Default "planning". Auxiliary helpers (ship judge, lesson distiller) never inherit a native session target. */
-	purpose?: "planning" | "auxiliary";
+	/**
+	 * Default "planning". Auxiliary helpers (ship judge, lesson distiller) never inherit a native session target.
+	 * `memory` (memory-bank distill) always runs the pinned `MEMORY_CHAIN`, whatever engine or model is configured.
+	 */
+	purpose?: "planning" | "auxiliary" | "memory";
 }
 
 export const GROK_LOGIN_REQUIRED = "Prompt Uplift skipped · Grok login required (run `grok login`)";
@@ -226,6 +233,7 @@ const DEFAULT_TAG: Partial<Record<ModelResolutionSource, string>> = {
 	"configured-default": "configured default",
 	"host-catalog": "host-catalog default",
 	"cli-default": "",
+	"memory-chain": "memory chain",
 };
 
 interface ResolutionFields {
@@ -375,15 +383,7 @@ async function claudeRoute(
 		...(fallback ? ({ source: "configured-fallback", reason: "grok-unavailable" } as const) : {}),
 	});
 	const label = `claude:${resolution.modelId ?? "session default"}${suffix}`;
-	const claude = createClaudeCompleter({
-		bin: config.claude.bin,
-		auth: config.claude.auth,
-		model: choice.model || undefined,
-		settingSources: config.claude.settingSources,
-		thinking: config.claude.thinking,
-		cwd,
-		timeoutMs: config.claude.callTimeoutMs,
-	});
+	const claude = claudeCli(config, cwd, choice.model);
 	// Claude standing in for an unavailable Grok route has nothing to fail over to.
 	const failoverToGrok = !fallback && config.claude.fallbackToGrok && config.grok.enabled;
 	if (failoverToGrok && (await grokUsable(config))) {
@@ -450,6 +450,62 @@ function grokCandidates(
 	});
 }
 
+/** The `claude -p` completer for one wire model; `""` omits `--model`. */
+function claudeCli(config: UltrathinkConfig, cwd: string, model: string): ClaudeCompleter {
+	return createClaudeCompleter({
+		bin: config.claude.bin,
+		auth: config.claude.auth,
+		model: model || undefined,
+		settingSources: config.claude.settingSources,
+		thinking: config.claude.thinking,
+		cwd,
+		timeoutMs: config.claude.callTimeoutMs,
+	});
+}
+
+/**
+ * Fails closed unless the candidates (ids are `<vendor>:<model>`) are exactly the memory chain, so a future routing bug
+ * raises `MemoryChainError` instead of reaching another model.
+ */
+export function assertMemoryCandidates(candidates: readonly FailoverCandidate[]): void {
+	assertMemoryChain(
+		candidates.map((candidate) => {
+			const split = candidate.id.indexOf(":");
+			return { vendor: candidate.id.slice(0, split), model: candidate.id.slice(split + 1) };
+		}),
+	);
+}
+
+/**
+ * Memory-bank inference: Claude on `MEMORY_CHAIN.primary` always (no `claude.model`, file pin, host override or engine
+ * choice applies), then Grok Build exactly as `memoryChainFor` allows (same consent and login rules as the planning
+ * failover; never a shunt alias, never `grok.model` or `grok.fallbackModels`).
+ */
+async function memoryRoute(
+	config: UltrathinkConfig,
+	cwd: string,
+	base: SelectionBase,
+): Promise<EngineSelection> {
+	const model = MEMORY_CHAIN.primary.model;
+	const resolution = resolutionRecord({
+		...base,
+		transport: "claude-cli",
+		state: "default",
+		source: "memory-chain",
+		reason: "route-default-model",
+		modelId: model,
+	});
+	const label = `${MEMORY_CHAIN.primary.vendor}:${model}`;
+	const claude = claudeCli(config, cwd, model);
+	const candidates: FailoverCandidate[] = [{ id: label, label, complete: claude }];
+	if (memoryChainFor(config).length > 1 && (await grokUsable(config)))
+		candidates.push(...grokCandidates(config, cwd, [MEMORY_CHAIN.fallback.model]));
+	assertMemoryCandidates(candidates);
+	if (candidates.length === 1) return captureFirstError(label, claude, resolution);
+	const chain = createFailoverCompleter(candidates);
+	return captureFirstError(label, chain.complete, resolution, chain.failover);
+}
+
 /**
  * Map a session model id to a planning route for Hermes under `auto` (AD-3): Hermes sessions run an array of models, so
  * its route follows the model in use instead of the host default. Matching is case-insensitive over the whole id,
@@ -485,6 +541,7 @@ export async function selectEngine(
 		nativeOptOut: host === "omp" && requested !== "auto",
 	};
 	const base: SelectionBase = { host, engineSelection };
+	if (context.purpose === "memory") return memoryRoute(config, cwd, base);
 	const ompAuto = host === "omp" && requested === "auto";
 	if (ompAuto && (context.purpose ?? "planning") === "planning") {
 		// Native: the live model decides. Neither family mapping nor the route-default map is consulted (D-06, D-09).

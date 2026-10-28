@@ -991,7 +991,12 @@ describe("call-time failover (claude.fallbackToGrok and the Grok model chain)", 
 		);
 		try {
 			const config = configWith({
-				grok: { ...defaultConfig().grok, home: grokLogin(), baseUrl: `${gw.origin}/v1` },
+				grok: {
+					...defaultConfig().grok,
+					home: grokLogin(),
+					baseUrl: `${gw.origin}/v1`,
+					fallbackModels: ["grok-4.7"],
+				},
 			});
 			const selected = engineOf(
 				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "grok-build" }),

@@ -31,10 +31,10 @@ describe("grokWireEffort", () => {
 });
 
 describe("DEFAULT_GROK_CONFIG", () => {
-	test("defaults to grok-build-0.1 with grok-4.7 as fallback", () => {
+	test("defaults to grok-build-0.1 with no fallback models", () => {
 		expect(DEFAULT_GROK_CONFIG.model).toBe(ROUTE_DEFAULT_MODELS.grok);
 		expect(DEFAULT_GROK_CONFIG.model).toBe("grok-build-0.1");
-		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual(["grok-4.7"]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual([]);
 	});
 });
 

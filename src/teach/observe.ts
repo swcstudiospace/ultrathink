@@ -178,10 +178,10 @@ export function parseLessons(text: string): Lesson[] {
 }
 
 /**
- * The configured engine on its auxiliary CLI route (`purpose: "auxiliary"`): a detached distiller has no invoking live
- * model or auth, so it never inherits a native session target and never rebuilds one from a SessionRecord. A missing or
- * expired Grok login switches to Claude only with `grok.fallbackToClaude: true`. `claudeComplete` marks its child with
- * ULTRATHINK_CHILD=1.
+ * The memory chain (`purpose: "memory"`): Claude Haiku 5.5, then Grok Build only with `claude.fallbackToGrok` and a Grok
+ * login, whatever `claude.model`, `grok.*` models or `think.engine` say. A detached distiller has no invoking live model
+ * or auth, so it never inherits a native session target and never rebuilds one from a SessionRecord. `claudeComplete`
+ * marks its child with ULTRATHINK_CHILD=1.
  */
 async function engineComplete(
 	ctx: TeachContext,
@@ -190,7 +190,7 @@ async function engineComplete(
 	const host = (HOSTS as readonly string[]).includes(ctx.host) ? (ctx.host as HostId) : undefined;
 	const engine = await selectEngine(config, readControl(ctx.stateDir), ctx.cwd, {
 		host,
-		purpose: "auxiliary",
+		purpose: "memory",
 		signal: ctx.signal,
 	});
 	return "skipped" in engine ? engine.skipped : engine.complete;

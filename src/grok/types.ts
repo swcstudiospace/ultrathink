@@ -48,7 +48,7 @@ export interface GrokConfig {
 	callTimeoutMs: number;
 	/** Never silently downgrade to Claude by default. */
 	fallbackToClaude: boolean;
-	/** Tried in order after `model` when the session cannot serve it. */
+	/** Tried in order after `model` when the session cannot serve it. Empty by default: a more expensive model is never a silent default. */
 	fallbackModels: string[];
 	/** Base URL of your shunt gateway; `/v1/messages` is appended. "" = not configured (required for `transport: "shunt"`). */
 	shuntBaseUrl: string;
@@ -68,7 +68,7 @@ export const DEFAULT_GROK_CONFIG: GrokConfig = {
 	home: "",
 	callTimeoutMs: 0,
 	fallbackToClaude: false,
-	fallbackModels: ["grok-4.7"],
+	fallbackModels: [],
 	shuntBaseUrl: "",
 	shuntModel: "",
 	shuntMaxTokens: 8192,
