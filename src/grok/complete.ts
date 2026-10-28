@@ -281,7 +281,7 @@ async function completeShunt(
 			throw guard.wrap(error);
 		}
 		if (!res.ok) {
-			const body = redactSecrets(await res.text().catch(() => "")).slice(0, 500);
+			const body = await errorBody(res, guard);
 			throw new GrokHttpError(
 				`shunt HTTP ${res.status}${body ? `: ${body}` : ""}`,
 				res.status,
@@ -291,6 +291,21 @@ async function completeShunt(
 		return parseShuntText(await res.json());
 	} finally {
 		guard.release();
+	}
+}
+
+/**
+ * Reads an error body for the message. A timeout or caller abort while reading is the call's own
+ * failure and must not be mistaken for a bad login or an HTTP error; any other read failure leaves
+ * the body empty.
+ */
+async function errorBody(res: Response, guard: CallGuard): Promise<string> {
+	try {
+		return redactSecrets(await res.text()).slice(0, 500);
+	} catch (error) {
+		const mapped = guard.wrap(error);
+		if (mapped !== error) throw mapped;
+		return "";
 	}
 }
 
@@ -350,7 +365,7 @@ async function completeHttp(
 			}
 		}
 		if (res.status === 401 || res.status === 403) {
-			const rejected = redactSecrets(await res.text().catch(() => "")).slice(0, 500);
+			const rejected = await errorBody(res, guard);
 			// A 403 that names the model or subscription is a per-model refusal, not a bad login.
 			if (MODEL_REFUSAL.test(rejected)) {
 				throw new GrokHttpError(`grok HTTP ${res.status}: ${rejected}`, res.status, rejected);
@@ -358,7 +373,7 @@ async function completeHttp(
 			throw new GrokAuthError(`Grok login rejected (HTTP ${res.status}): ${LOGIN_HINT}`);
 		}
 		if (!res.ok) {
-			const body = redactSecrets(await res.text().catch(() => "")).slice(0, 500);
+			const body = await errorBody(res, guard);
 			throw new GrokHttpError(
 				`grok HTTP ${res.status}${body ? `: ${body}` : ""}`,
 				res.status,

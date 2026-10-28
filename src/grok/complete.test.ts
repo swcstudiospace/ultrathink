@@ -166,6 +166,23 @@ describe("parseResponsesText", () => {
 	});
 });
 
+/** Fetch whose reply has `status` but a body that never arrives; `text()` rejects with an AbortError when the call's signal fires. */
+function stalledBodyFetch(status: number, onText?: () => void): typeof fetch {
+	return (async (_input: string | URL | Request, init?: RequestInit) => ({
+		status,
+		ok: false,
+		body: null,
+		text: () => {
+			const { promise, reject } = Promise.withResolvers<string>();
+			const fail = (): void => reject(new DOMException("Aborted", "AbortError"));
+			if (init?.signal?.aborted) fail();
+			else init?.signal?.addEventListener("abort", fail, { once: true });
+			onText?.();
+			return promise;
+		},
+	})) as unknown as typeof fetch;
+}
+
 describe("grokComplete (http)", () => {
 	test("posts to {baseUrl}/responses with login headers and returns the text", async () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("<UPLIFT/>"));
@@ -382,6 +399,56 @@ describe("grokComplete (http)", () => {
 		);
 		expect(error.message).toBe("grok timed out after 20ms");
 	});
+
+	test("a timeout while reading a 403 body is the timeout, not an auth failure", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home, () => undefined);
+		const error = await rejection(
+			grokComplete("S", "U", { home, refresh, fetch: stalledBodyFetch(403), timeoutMs: 20 }),
+		);
+		expect(error.message).toBe("grok timed out after 20ms");
+		expect(isGrokAuthError(error)).toBe(false);
+		expect(["auth", "model-unavailable"]).not.toContain(classifyFailure(error));
+	});
+
+	test("a timeout while reading a 500 body is the timeout, not a GrokHttpError", async () => {
+		const error = await rejection(
+			grokComplete("S", "U", {
+				home: tempHome(),
+				fetch: stalledBodyFetch(500),
+				timeoutMs: 20,
+			}),
+		);
+		expect(error.message).toBe("grok timed out after 20ms");
+		expect(error).not.toBeInstanceOf(GrokHttpError);
+	});
+
+	test("a caller abort while reading a 403 body surfaces as AbortError", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home, () => undefined);
+		const controller = new AbortController();
+		const fetch = stalledBodyFetch(403, () => controller.abort());
+		const error = await rejection(
+			grokComplete("S", "U", { home, refresh, fetch, signal: controller.signal }),
+		);
+		expect(error.name).toBe("AbortError");
+		expect(isGrokAuthError(error)).toBe(false);
+	});
+
+	test("a non-timeout failure reading a 403 body leaves the body empty (GrokAuthError)", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home, () => undefined);
+		const fetch = (async () => ({
+			status: 403,
+			ok: false,
+			body: null,
+			text: async () => {
+				throw new Error("socket closed");
+			},
+		})) as unknown as typeof globalThis.fetch;
+		const error = await rejection(grokComplete("S", "U", { home, refresh, fetch }));
+		expect(error).toBeInstanceOf(GrokAuthError);
+	});
 });
 
 /** Anthropic Messages reply the shunt gateway returns for `grok-shunt-route` (thinking block first). */
@@ -596,6 +663,19 @@ describe("grokComplete (shunt)", () => {
 			}),
 		);
 		expect(error.message).toBe("grok timed out after 20ms");
+	});
+
+	test("a timeout while reading a non-OK body surfaces as the timeout", async () => {
+		const error = await rejection(
+			grokComplete("S", "U", {
+				transport: "shunt",
+				shuntBaseUrl,
+				fetch: stalledBodyFetch(502),
+				timeoutMs: 20,
+			}),
+		);
+		expect(error.message).toBe("grok timed out after 20ms");
+		expect(error).not.toBeInstanceOf(GrokHttpError);
 	});
 });
 
