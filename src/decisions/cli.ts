@@ -173,9 +173,10 @@ async function forcedCall(
 	request: DecisionsRequest,
 	point: string,
 ): Promise<DecideOutcome> {
-	const verdict = rt.health.shouldCall(rt.now(), { force: true });
+	const startedAt = rt.now();
+	const verdict = rt.health.shouldCall(startedAt, { force: true });
 	const outcome = await rt.rail(request, rt.decideOptions(apiKey, point));
-	recordHealth(rt.health, outcome, rt.now(), verdict.call ? verdict : undefined);
+	recordHealth(rt.health, outcome, rt.now(), verdict.call ? { ...verdict, startedAt } : undefined);
 	return outcome;
 }
 

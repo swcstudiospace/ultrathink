@@ -281,7 +281,13 @@ describe("calls while open and the probe", () => {
 		const due = T0 + COOL_DOWN_BASE_MS;
 		const probe = take(first, due);
 		first.recordSuccess(due + 5, probe);
-		expect(second.read()).toEqual({ v: 1, state: "closed", failures: 0, lastOkAt: due + 5 });
+		expect(second.read()).toEqual({
+			v: 1,
+			state: "closed",
+			failures: 0,
+			lastOkAt: due + 5,
+			recoveredAt: due + 5,
+		});
 		expect(second.shouldCall(due + 6)).toEqual({ call: true, probe: false });
 		expect(second.describe(due + 6)).toBeUndefined();
 		// The next spell starts from the base cool-down again.
@@ -404,7 +410,13 @@ describe("an operator's forced call", () => {
 		expect(forced).toEqual({ call: true, probe: true, forced: true });
 		expect(health.read()).toEqual(before);
 		health.recordSuccess(T0 + 2, take(health, T0 + 1, { force: true }));
-		expect(health.read()).toEqual({ v: 1, state: "closed", failures: 0, lastOkAt: T0 + 2 });
+		expect(health.read()).toEqual({
+			v: 1,
+			state: "closed",
+			failures: 0,
+			lastOkAt: T0 + 2,
+			recoveredAt: T0 + 2,
+		});
 		expect(health.shouldCall(T0 + 3)).toEqual({ call: true, probe: false });
 	});
 
@@ -502,7 +514,13 @@ describe("in-memory health (no state dir)", () => {
 		expect(health.takeWarning(due + 4)).toBeUndefined();
 		const next = health.read().nextProbeAt ?? 0;
 		health.recordSuccess(next + 5, take(health, next));
-		expect(health.read()).toEqual({ v: 1, state: "closed", failures: 0, lastOkAt: next + 5 });
+		expect(health.read()).toEqual({
+			v: 1,
+			state: "closed",
+			failures: 0,
+			lastOkAt: next + 5,
+			recoveredAt: next + 5,
+		});
 	});
 
 	test("each instance is its own breaker, names its rail, and read() hands out a copy", () => {
@@ -515,4 +533,76 @@ describe("in-memory health (no state dir)", () => {
 		snapshot.state = "closed";
 		expect(first.read().state).toBe("open");
 	});
+});
+
+describe("failures of calls that began before the last recovery", () => {
+	const backings: Array<[string, () => JevHealth]> = [
+		["file", () => open(tempDir())],
+		["memory", () => openMemoryJevHealth("openrouter", { rng: () => 0.5 })],
+	];
+	/** A call's ticket as the gate hands it back: the verdict plus when the call began. */
+	const began = (health: JevHealth, at: number, opts?: { force?: boolean }): JevCall => ({
+		...take(health, at, opts),
+		startedAt: at,
+	});
+
+	test.each(backings)(
+		"(%s) a late 401 from a call begun before a forced check closed the breaker changes nothing",
+		(_name, make) => {
+			const health = make();
+			// Call A starts with the old key while the breaker is closed.
+			const old = began(health, T0);
+			// The operator replaces the key; `decisions check` succeeds at t1.
+			health.recordSuccess(T0 + 5, began(health, T0 + 4, { force: true }));
+			expect(health.read()).toMatchObject({ state: "closed", recoveredAt: T0 + 5 });
+			// A's late 401 arrives at t2: stale, so it opens nothing and warns nothing.
+			expect(health.recordFailure("auth", T0 + 6, old)).toEqual({ opened: false });
+			expect(health.read()).toMatchObject({ state: "closed", failures: 0, recoveredAt: T0 + 5 });
+			expect(health.describe(T0 + 7)).toBeUndefined();
+			expect(health.takeWarning(T0 + 7)).toBeUndefined();
+			expect(health.shouldCall(T0 + 8)).toEqual({ call: true, probe: false });
+		},
+	);
+
+	test.each(backings)(
+		"(%s) a late failure from before a probe recovery cannot reopen it either",
+		(_name, make) => {
+			const health = make();
+			health.recordFailure("credits", T0);
+			const due = T0 + COOL_DOWN_BASE_MS;
+			const probe = began(health, due);
+			health.recordSuccess(due + 5, probe);
+			const straggler = { startedAt: due - 1 };
+			expect(health.recordFailure("credits", due + 6, straggler)).toEqual({ opened: false });
+			expect(health.read().state).toBe("closed");
+		},
+	);
+
+	test.each(backings)(
+		"(%s) a call begun after the recovery that fails 401 opens the breaker",
+		(_name, make) => {
+			const health = make();
+			health.recordSuccess(T0 + 5, began(health, T0 + 4, { force: true }));
+			const fresh = began(health, T0 + 5);
+			expect(health.recordFailure("auth", T0 + 6, fresh)).toEqual({ opened: true });
+			expect(health.read()).toMatchObject({ state: "open", cause: "auth", recoveredAt: T0 + 5 });
+			// A second call begun before the breaker opened fails the same way: now a plain straggler.
+			expect(health.recordFailure("auth", T0 + 7, { startedAt: T0 + 5 })).toEqual({
+				opened: false,
+			});
+		},
+	);
+
+	test.each(backings)(
+		"(%s) a failed claimed probe still doubles the cool-down after a recovery",
+		(_name, make) => {
+			const health = make();
+			health.recordSuccess(T0 + 5, began(health, T0 + 4, { force: true }));
+			health.recordFailure("credits", T0 + 10, began(health, T0 + 10));
+			const due = health.read().nextProbeAt ?? 0;
+			const probe = began(health, due);
+			expect(health.recordFailure("credits", due + 1, probe)).toEqual({ opened: true });
+			expect(health.read().coolDownMs).toBe(600_000);
+		},
+	);
 });

@@ -296,7 +296,7 @@ export function createDecisions(input: DecisionsInput): Decisions {
 					latencyMs: 0,
 				};
 			} else {
-				ticket = verdict;
+				ticket = { ...verdict, startedAt: start };
 				try {
 					// The Vercel rail has a fixed endpoint; only the OpenRouter rail honors ULTRATHINK_DECISIONS_URL.
 					const rail = picked.provider === "vercel" ? decideVercel : decide;

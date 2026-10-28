@@ -40,6 +40,8 @@ export interface JevHealthState {
 	warnedCause?: JevOpenCause;
 	warnedAt?: number;
 	lastOkAt?: number;
+	/** When the breaker was last closed by a claimed probe or a forced check; failures of calls that began earlier are stale. */
+	recoveredAt?: number;
 }
 
 export const COOL_DOWN_BASE_MS = 300_000;
@@ -59,6 +61,8 @@ export interface JevCall {
 	claim?: string;
 	/** An operator's check/probe that bypassed the cool-down: its result is authoritative too. */
 	forced?: boolean;
+	/** When the call began, on the caller's clock: a failure of a call older than the last recovery is ignored. */
+	startedAt?: number;
 }
 
 type Verdict =
@@ -141,9 +145,11 @@ function parseState(raw: unknown): JevHealthState {
 	const common: JevHealthState = { v: 1, state: "closed", failures };
 	const warnedAt = timestamp(row.warnedAt);
 	const lastOkAt = timestamp(row.lastOkAt);
+	const recoveredAt = timestamp(row.recoveredAt);
 	if (isCause(row.warnedCause)) common.warnedCause = row.warnedCause;
 	if (warnedAt !== undefined) common.warnedAt = warnedAt;
 	if (lastOkAt !== undefined) common.lastOkAt = lastOkAt;
+	if (recoveredAt !== undefined) common.recoveredAt = recoveredAt;
 	if (row.state === "closed") return common;
 	const nextProbeAt = timestamp(row.nextProbeAt);
 	if (!isCause(row.cause) || nextProbeAt === undefined) return closed();
@@ -274,10 +280,11 @@ function createHealth(backing: Backing, rail: JevRail, rng: () => number): JevHe
 			mutate<undefined>((state) => {
 				// An ordinary success (a call that began before the breaker opened) must not erase a newer hard
 				// failure: it only notes that Jev answered. The claimed probe, or a forced call, ends the spell and
-				// its warning, so the next spell warns again.
-				if (isOpen(state) && !authoritative(state, call))
-					return { next: { ...state, lastOkAt: now }, result: undefined };
-				return { next: { ...closed(), lastOkAt: now }, result: undefined };
+				// its warning, so the next spell warns again, and stamps the recovery time that lets later failures
+				// of older calls be recognised as stale.
+				const recovers = call?.forced === true || (isOpen(state) && authoritative(state, call));
+				if (!recovers) return { next: { ...state, lastOkAt: now }, result: undefined };
+				return { next: { ...closed(), lastOkAt: now, recoveredAt: now }, result: undefined };
 			});
 		},
 
@@ -285,6 +292,15 @@ function createHealth(backing: Backing, rail: JevRail, rng: () => number): JevHe
 			if (!isCause(kind)) return { opened: false };
 			const cause = kind;
 			return mutate<{ opened: boolean }>((state) => {
+				// A call that began before the last recovery (an old key still in flight when the operator fixed it)
+				// answers for a state that no longer exists: it must not reopen the breaker, move the schedule or
+				// change the cause, open or closed.
+				if (
+					state.recoveredAt !== undefined &&
+					call?.startedAt !== undefined &&
+					call.startedAt < state.recoveredAt
+				)
+					return { result: { opened: false } };
 				// Already open and not the claimed probe: a straggler. Count it, leave the schedule alone.
 				if (isOpen(state) && !authoritative(state, call))
 					return { next: { ...state, failures: state.failures + 1 }, result: { opened: false } };

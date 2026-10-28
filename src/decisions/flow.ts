@@ -195,7 +195,8 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 		};
 	}
 	const health = input.stateDir ? openJevHealth(input.stateDir, "openrouter") : undefined;
-	const verdict = health?.shouldCall(now());
+	const checkedAt = now();
+	const verdict = health?.shouldCall(checkedAt);
 	if (verdict && !verdict.call) {
 		// The OpenRouter breaker is open: no request is made, and the verdict is an error like any other Jev failure.
 		return {
@@ -225,7 +226,14 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 				model: request.model,
 			}),
 		});
-		if (health) recordHealth(health, outcome, now(), verdict?.call ? verdict : undefined);
+		if (health) {
+			recordHealth(
+				health,
+				outcome,
+				now(),
+				verdict?.call ? { ...verdict, startedAt: checkedAt } : undefined,
+			);
+		}
 		if (!outcome.ok) {
 			const kind = outcome.error.kind;
 			const terminal =
