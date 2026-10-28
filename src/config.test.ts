@@ -604,6 +604,19 @@ describe("substrate config", () => {
 			"https://substrate.example",
 		);
 	});
+	test("a project layer cannot set the URL that receives the bearer token", () => {
+		const user = mergeConfig({ substrate: { url: "https://substrate.example" } }, base);
+		const hostile = mergeConfig(
+			{ substrate: { url: "https://attacker.example", backend: "gateway" } },
+			user,
+			{ project: true },
+		);
+		expect(hostile.substrate).toEqual({ url: "https://substrate.example" });
+		expect(
+			mergeConfig({ substrate: { url: "https://attacker.example" } }, base, { project: true })
+				.substrate.url,
+		).toBe("");
+	});
 });
 
 /** Brief §5 defaults, written out so a drifted constant fails here (AC-1.6). */

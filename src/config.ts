@@ -667,14 +667,19 @@ function backendField(
 	return fallback === "gateway" ? "gateway" : undefined;
 }
 
+/**
+ * A project layer (a file a cloned repository controls) never reaches the service target: `url` is where the Substrate
+ * bearer token, the repository, the branch and the host name are sent, so only the user layers set it. The same trust
+ * rule as `mergeHindsight`; `backend` is user-only for the same reason.
+ */
 function mergeSubstrate(
 	substrate: Record<string, unknown> | undefined,
 	defaults: SubstrateConfig,
 	project: boolean,
 ): SubstrateConfig {
-	if (!substrate) return defaults;
+	if (!substrate || project) return defaults;
 	const url = httpUrl(substrate.url, defaults.url);
-	const backend = project ? defaults.backend : backendField(substrate.backend, defaults.backend);
+	const backend = backendField(substrate.backend, defaults.backend);
 	return backend === "gateway" ? { url, backend } : { url };
 }
 
