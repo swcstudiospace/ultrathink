@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { CLAUDE_AUTH_MODES, type ClaudeAuthMode } from "./claude/complete.ts";
 import type { PstackStage } from "./cursor/pstack.ts";
 import { DEFAULT_GATEWAY_CONFIG, SEAT_PATTERN, type GatewayConfig } from "./gateway/types.ts";
 import { DEFAULT_HINDSIGHT_CONFIG, type HindsightConfig } from "./hindsight/types.ts";
@@ -58,10 +59,15 @@ interface ClaudeConfig {
 	/** `claude` binary used for headless completions. A project file cannot set this. */
 	bin: string;
 	/**
-	 * When `ANTHROPIC_API_KEY` is set and the claude CLI fails with an authentication or billing error, retry once
-	 * without it so the CLI uses your claude.ai login. Off by default. A project file cannot set this.
+	 * How the headless `claude -p` child authenticates. `plan` (default) strips API-key and cloud-provider env so the
+	 * signed-in Claude plan login is used; `api-key` passes the environment through unchanged. A project file cannot set this.
 	 */
-	fallbackToLogin: boolean;
+	auth: ClaudeAuthMode;
+	/**
+	 * When a Claude call fails (plan limit, auth, outage), fail over to the Grok route. Off by default because prompt
+	 * text then leaves Anthropic for xAI. A project file cannot set this.
+	 */
+	fallbackToGrok: boolean;
 	/** Model alias/name for the uplift and thinking calls; empty inherits the user default. */
 	model: string;
 	/** Allow extended thinking in child calls (slower). */
@@ -80,7 +86,8 @@ interface ClaudeConfig {
 
 const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	bin: "claude",
-	fallbackToLogin: false,
+	auth: "plan",
+	fallbackToGrok: false,
 	model: ROUTE_DEFAULT_MODELS.claude,
 	thinking: false,
 	settingSources: "",
@@ -256,7 +263,7 @@ export function defaultConfig(): UltrathinkConfig {
 			engine: "auto",
 		},
 		claude: { ...DEFAULT_CLAUDE_CONFIG },
-		grok: { ...DEFAULT_GROK_CONFIG },
+		grok: { ...DEFAULT_GROK_CONFIG, fallbackModels: [...DEFAULT_GROK_CONFIG.fallbackModels] },
 		muse: { ...DEFAULT_MUSE_CONFIG },
 		hitl: { ...DEFAULT_HITL_CONFIG },
 		notion: { ...DEFAULT_NOTION_CONFIG },
@@ -349,10 +356,14 @@ function mergeClaude(
 		typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 	return {
 		bin: project ? defaults.bin : nonEmpty(claude.bin, defaults.bin),
-		fallbackToLogin:
-			!project && typeof claude.fallbackToLogin === "boolean"
-				? claude.fallbackToLogin
-				: defaults.fallbackToLogin,
+		auth:
+			!project && CLAUDE_AUTH_MODES.includes(claude.auth as ClaudeAuthMode)
+				? (claude.auth as ClaudeAuthMode)
+				: defaults.auth,
+		fallbackToGrok:
+			!project && typeof claude.fallbackToGrok === "boolean"
+				? claude.fallbackToGrok
+				: defaults.fallbackToGrok,
 		model: selectorField(claude.model) ?? defaults.model,
 		thinking: typeof claude.thinking === "boolean" ? claude.thinking : defaults.thinking,
 		settingSources:
@@ -368,6 +379,22 @@ function mergeClaude(
 
 function nonEmpty(value: unknown, fallback: string): string {
 	return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+const MAX_FALLBACK_MODELS = 8;
+
+/** Array of model ids: trimmed, blanks and control-character entries dropped, deduped in order, capped. Non-array keeps the default. */
+function mergeFallbackModels(value: unknown, fallback: string[]): string[] {
+	if (!Array.isArray(value)) return [...fallback];
+	const out: string[] = [];
+	for (const entry of value) {
+		if (typeof entry !== "string" || hasControlCharacter(entry)) continue;
+		const model = entry.trim();
+		if (!model || out.includes(model)) continue;
+		out.push(model);
+		if (out.length >= MAX_FALLBACK_MODELS) break;
+	}
+	return out;
 }
 
 /** Same trust rule as `mergeClaude`: a project layer keeps `bin`, `home`, `baseUrl` and `shuntBaseUrl` (where the CLI and traffic go). */
@@ -397,6 +424,7 @@ function mergeGrok(
 		shuntBaseUrl: project
 			? defaults.shuntBaseUrl
 			: httpUrl(grok.shuntBaseUrl, defaults.shuntBaseUrl),
+		fallbackModels: mergeFallbackModels(grok.fallbackModels, defaults.fallbackModels),
 		shuntModel: selectorField(grok.shuntModel) || defaults.shuntModel,
 		shuntMaxTokens:
 			typeof grok.shuntMaxTokens === "number" &&

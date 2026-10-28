@@ -254,7 +254,7 @@ describe("Claude Code transport under the hook entries' selection context (D-10,
 			provider: "anthropic",
 		};
 		for (const [model, tail] of [
-			[undefined, ["--model", "sonnet"]],
+			[undefined, ["--model", "claude-haiku-5-5"]],
 			["opus", ["--model", "opus"]],
 			["", []],
 		] as const) {

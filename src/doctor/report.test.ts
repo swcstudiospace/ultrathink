@@ -73,6 +73,7 @@ describe("formatReport", () => {
 				"      fix: Did you mean ship.autoMerge?",
 				"credentials",
 				"  ! Greptile: no credential",
+				"inference",
 				"state",
 				"  ✓ State directory is writable: /s",
 				"memory",
@@ -84,7 +85,8 @@ describe("formatReport", () => {
 
 	test("an empty report still lists the sections and a zero summary", () => {
 		expect(formatReport(buildReport([]))).toBe(
-			"ultrathink doctor\nruntime\nconfig\ncredentials\nstate\nmemory\npstack\n0 errors, 0 warnings",
+			"ultrathink doctor\nruntime\nconfig\ncredentials\ninference\nstate\nmemory\npstack\n" +
+				"0 errors, 0 warnings",
 		);
 	});
 

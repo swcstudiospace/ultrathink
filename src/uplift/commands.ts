@@ -20,6 +20,7 @@ import { runDecisionsCommand } from "../decisions/cli.ts";
 import { runDoctorCommand } from "../doctor/cli.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
 import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
+import { grokWireEffort } from "../grok/types.ts";
 import { formatHitlEcho } from "../hitl/format.ts";
 import { detectHost } from "../host/detect.ts";
 import { engineLabel, type ModelResolution } from "../host/engine.ts";
@@ -143,10 +144,21 @@ function trackingLines(config: UltrathinkConfig, state: ControlState): string[] 
 	];
 }
 
-/** `Grok: <model> @ <effort> · transport <t>` plus the gateway URL and wire model when shunt is active. */
+/** `Claude: <model> · auth <auth> · fallback to Grok <on|off>`. */
+function claudeStatusLine(config: UltrathinkConfig): string {
+	const { claude } = config;
+	return `Claude: ${displayId(claude.model, OPAQUE_MODEL)} · auth ${claude.auth} · fallback to Grok ${claude.fallbackToGrok ? "on" : "off"}`;
+}
+
+/** `Grok: <model> [@ <effort>] · transport <t> [· then <fallbacks>]`, plus the shunt gateway when active. */
 function grokTransportLine(config: UltrathinkConfig): string {
 	const { grok } = config;
-	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)} @ ${grok.reasoningEffort} · transport ${grok.transport}`;
+	const effort = grokWireEffort(grok.model, grok.reasoningEffort);
+	const then =
+		grok.fallbackModels.length > 0
+			? ` · then ${grok.fallbackModels.map((model) => displayId(model, OPAQUE_MODEL)).join(", ")}`
+			: "";
+	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)}${effort ? ` @ ${effort}` : ""} · transport ${grok.transport}${then}`;
 	if (grok.transport !== "shunt") return base;
 	const gateway = grok.shuntBaseUrl
 		? `${grok.shuntBaseUrl}/v1/messages`
@@ -252,6 +264,7 @@ async function statusText(
 	const lines = [
 		`Prompt Uplift ${flag(state.enabled, config.uplift.enabled)}${skipArmed ? " (skipping next prompt)" : ""}`,
 		`Engine: ${engineLabel(config, state, host, live)}`,
+		claudeStatusLine(config),
 		grokTransportLine(config),
 		await grokOauthLine(config),
 		`Graph of Thought ${flag(state.thinkEnabled, config.think.enabled)}`,
@@ -389,6 +402,7 @@ export async function runControl(
 					case "status":
 						return [
 							`Engine: ${engineLabel(config, state, host, live)}`,
+							claudeStatusLine(config),
 							grokTransportLine(config),
 							await grokOauthLine(config),
 						].join("\n");

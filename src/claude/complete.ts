@@ -3,13 +3,45 @@
 /**
  * LLM completion for the Claude Code plugin path.
  *
- * Calls headless `claude -p` so the plugin reuses whatever login the user already
- * has (OAuth or API key). Tools and settings sources are disabled so the child is a
- * plain completion, and ULTRATHINK_CHILD marks it so the UserPromptSubmit hook does
- * not recurse into itself.
+ * Calls headless `claude -p` so the plugin reuses the plan login (claude.ai Max/Pro)
+ * the user already has. By default the child env is scrubbed of the variables that
+ * outrank that login (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, cloud-provider
+ * switches), so inference is drawn from the plan; an API key is only used with
+ * `auth: "api-key"`. Tools and settings sources are disabled so the child is a plain
+ * completion, and ULTRATHINK_CHILD marks it so the UserPromptSubmit hook does not
+ * recurse into itself.
  */
 
 export const CHILD_ENV = "ULTRATHINK_CHILD";
+
+export const CLAUDE_AUTH_MODES = ["plan", "api-key"] as const;
+export type ClaudeAuthMode = (typeof CLAUDE_AUTH_MODES)[number];
+
+/** Variables that outrank the plan login inside `claude -p` (Anthropic docs, "Authentication precedence"). */
+export const PLAN_SCRUBBED_ENV: readonly string[] = [
+	"ANTHROPIC_API_KEY",
+	"ANTHROPIC_AUTH_TOKEN",
+	"CLAUDE_CODE_USE_BEDROCK",
+	"CLAUDE_CODE_USE_VERTEX",
+	"CLAUDE_CODE_USE_FOUNDRY",
+];
+
+/** Copy of `env` without the variables that would override the plan login; the input is not mutated. */
+export function planEnv(
+	env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+	const copy: Record<string, string | undefined> = { ...env };
+	for (const name of PLAN_SCRUBBED_ENV) delete copy[name];
+	return copy;
+}
+
+/** Usage facts read from a `claude -p --output-format json` result; every field is optional. */
+export interface ClaudeCallInfo {
+	model?: string;
+	/** `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`. */
+	inputTokens?: number;
+	outputTokens?: number;
+}
 
 export interface ClaudeCompleteOptions {
 	bin?: string;
@@ -23,11 +55,14 @@ export interface ClaudeCompleteOptions {
 	signal?: AbortSignal;
 	env?: Record<string, string | undefined>;
 	/**
-	 * Opt-in (`claude.fallbackToLogin`): when `ANTHROPIC_API_KEY` is set and the first attempt fails with an
-	 * authentication or billing error, retry once without it so the CLI uses the claude.ai login. The retry gets its own
-	 * `timeoutMs` window and shares the signal.
+	 * `plan` (default) strips the credentials that outrank the plan login from the child env;
+	 * `api-key` passes the env through unchanged.
 	 */
-	fallbackToLogin?: boolean;
+	auth?: ClaudeAuthMode;
+	/** Called once per call whose stdout was parseable JSON, including `is_error` results. */
+	onResult?: (info: ClaudeCallInfo) => void;
+	/** Output token cap for the reply (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`); floored, ignored unless a positive integer. */
+	maxOutputTokens?: number;
 }
 
 export type ClaudeCompleter = (
@@ -62,8 +97,17 @@ export function buildClaudeArgs(
 	return args;
 }
 
-/** Extracts the assistant text from `claude -p --output-format json` stdout. */
-export function parseClaudeJson(stdout: string): string {
+interface ClaudeResultRecord {
+	result?: unknown;
+	is_error?: unknown;
+	subtype?: unknown;
+	api_error_status?: unknown;
+	usage?: unknown;
+	modelUsage?: unknown;
+}
+
+/** Parses stdout into the result object; throws like the historical `parseClaudeJson`. */
+function parseResultRecord(stdout: string): ClaudeResultRecord {
 	const trimmed = stdout.trim();
 	if (!trimmed) throw new Error("claude returned no output");
 	let parsed: unknown;
@@ -76,19 +120,60 @@ export function parseClaudeJson(stdout: string): string {
 		parsed = JSON.parse(trimmed.slice(start + 1));
 	}
 	if (!parsed || typeof parsed !== "object") throw new Error("claude output is not an object");
-	const rec = parsed as {
-		result?: unknown;
-		is_error?: unknown;
-		subtype?: unknown;
-		api_error_status?: unknown;
-	};
+	return parsed as ClaudeResultRecord;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readInfo(rec: ClaudeResultRecord): ClaudeCallInfo {
+	const info: ClaudeCallInfo = {};
+	const usage = rec.usage;
+	if (usage && typeof usage === "object") {
+		const u = usage as Record<string, unknown>;
+		const parts = [
+			numberOrUndefined(u.input_tokens),
+			numberOrUndefined(u.cache_read_input_tokens),
+			numberOrUndefined(u.cache_creation_input_tokens),
+		].filter((n): n is number => n !== undefined);
+		if (parts.length > 0) info.inputTokens = parts.reduce((a, b) => a + b, 0);
+		const output = numberOrUndefined(u.output_tokens);
+		if (output !== undefined) info.outputTokens = output;
+	}
+	const modelUsage = rec.modelUsage;
+	if (modelUsage && typeof modelUsage === "object") {
+		const model = Object.keys(modelUsage)[0];
+		if (model) info.model = model;
+	}
+	return info;
+}
+
+/** Extracts the assistant text and usage facts from `claude -p --output-format json` stdout. */
+export function parseClaudeResult(stdout: string): { text: string; info: ClaudeCallInfo } {
+	const rec = parseResultRecord(stdout);
 	const result = typeof rec.result === "string" ? rec.result : "";
 	if (rec.is_error === true)
 		throw new ClaudeResultError(
 			result || `claude error (${String(rec.subtype ?? "unknown")})`,
 			typeof rec.api_error_status === "number" ? rec.api_error_status : undefined,
 		);
-	return result;
+	return { text: result, info: readInfo(rec) };
+}
+
+/** Extracts the assistant text from `claude -p --output-format json` stdout. */
+export function parseClaudeJson(stdout: string): string {
+	return parseClaudeResult(stdout).text;
+}
+
+/** Best-effort usage read; never throws and returns undefined when stdout is not parseable JSON. */
+function readInfoQuietly(stdout: string): ClaudeCallInfo | undefined {
+	try {
+		return readInfo(parseResultRecord(stdout));
+	} catch {
+		// reason: unparseable output is reported by the strict parse that follows
+		return undefined;
+	}
 }
 
 export function abortError(): Error {
@@ -98,27 +183,13 @@ export function abortError(): Error {
 }
 
 /** The CLI reported `is_error: true`; keeps the HTTP-style status the CLI attached, when any. */
-class ClaudeResultError extends Error {
+export class ClaudeResultError extends Error {
 	readonly apiErrorStatus: number | undefined;
 	constructor(message: string, apiErrorStatus?: number) {
 		super(message);
 		this.name = "ClaudeResultError";
 		this.apiErrorStatus = apiErrorStatus;
 	}
-}
-
-const AUTH_OR_BILLING_TEXT = /credit balance is too low|invalid x-api-key|invalid api key/i;
-const MAX_RETRY_MESSAGE_CHARS = 500;
-
-/** True for a CLI result error that a different credential could fix: 401/403 or a billing / bad-key message. */
-function isAuthOrBillingError(error: unknown): boolean {
-	if (!(error instanceof ClaudeResultError)) return false;
-	if (error.apiErrorStatus === 401 || error.apiErrorStatus === 403) return true;
-	return AUTH_OR_BILLING_TEXT.test(error.message);
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 async function claudeComplete(
@@ -132,23 +203,10 @@ async function claudeComplete(
 		[CHILD_ENV]: "1",
 	};
 	if (!opts.thinking) env.MAX_THINKING_TOKENS = "0";
-	const hadKey = Boolean(env.ANTHROPIC_API_KEY);
-	try {
-		return await claudeAttempt(system, user, opts, env);
-	} catch (first) {
-		if (!opts.fallbackToLogin || !hadKey || !isAuthOrBillingError(first)) throw first;
-		if (opts.signal?.aborted) throw abortError();
-		const loginEnv = Object.fromEntries(
-			Object.entries(env).filter(([name]) => name !== "ANTHROPIC_API_KEY"),
-		);
-		try {
-			return await claudeAttempt(system, user, opts, loginEnv);
-		} catch (second) {
-			if (second instanceof Error && second.name === "AbortError") throw second;
-			const combined = `${errorMessage(second)} (first attempt: ${errorMessage(first)})`;
-			throw new Error(combined.slice(0, MAX_RETRY_MESSAGE_CHARS));
-		}
-	}
+	const childEnv = opts.auth === "api-key" ? env : planEnv(env);
+	const cap = opts.maxOutputTokens === undefined ? 0 : Math.floor(opts.maxOutputTokens);
+	if (Number.isFinite(cap) && cap > 0) childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(cap);
+	return claudeAttempt(system, user, opts, childEnv);
 }
 
 async function claudeAttempt(
@@ -190,7 +248,17 @@ async function claudeAttempt(
 		if (aborted) throw abortError();
 		if (timedOut) throw new Error(`claude timed out after ${opts.timeoutMs}ms`);
 		if (code !== 0 && !stdout.trim()) throw new Error(stderr.trim() || `claude exited ${code}`);
-		return parseClaudeJson(stdout);
+		if (opts.onResult) {
+			const info = readInfoQuietly(stdout);
+			if (info) {
+				try {
+					opts.onResult(info);
+				} catch {
+					// reason: a reporting hook must never change the completion outcome
+				}
+			}
+		}
+		return parseClaudeResult(stdout).text;
 	} finally {
 		clearTimeout(timer);
 		opts.signal?.removeEventListener("abort", onAbort);

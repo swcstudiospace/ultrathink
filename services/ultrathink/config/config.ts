@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { isAbsolute } from "node:path";
+import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
 import { type AnomalyRule, parseAnomalyRules } from "../obs/anomaly.ts";
 
 export class ConfigError extends Error {
@@ -12,6 +13,11 @@ export class ConfigError extends Error {
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
+/** `openrouter` calls the OpenRouter API; `plan` runs the owner's coding-plan CLI logins. */
+type PlanningBackend = "openrouter" | "plan";
+
+type PlanFallback = "none" | "grok";
 
 /** `host:port` of the syslog audit sink. */
 interface AuditSyslogTarget {
@@ -44,9 +50,16 @@ export interface UltrathinkConfig {
 	connectorKey: string | undefined;
 	allowedOrigins: string[];
 	oauthRedirectOrigins: string[];
+	/** Undefined in `plan` mode unless a key is set anyway; unused there. */
 	openRouterApiKey: string | undefined;
 	openRouterBaseUrl: string;
 	serverPlanning: boolean;
+	/** Where planning inference runs. Absent means `openrouter`. */
+	planningBackend?: PlanningBackend;
+	/** `plan` backend only: whether a failed Claude call fails over to Grok. Absent means `none`. */
+	planFallback?: PlanFallback;
+	/** `plan` backend only: most `claude` children in flight at once. Absent means 2. */
+	planConcurrency?: number;
 	maxConcurrentPlans: number;
 	modelTimeoutMs: number;
 	planTimeoutMs: number;
@@ -140,6 +153,8 @@ const PLANNING_MODEL_PATTERN = /^[A-Za-z0-9._:\/-]{1,80}$/;
 const MIN_OPENROUTER_KEY_LENGTH = 20;
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_MAX_CONCURRENT_PLANS = 2;
+const DEFAULT_PLAN_CONCURRENCY = 2;
+const MAX_PLAN_CONCURRENCY = 6;
 // 0 means unlimited; a positive value is an explicit cap.
 const DEFAULT_MODEL_TIMEOUT_MS = 0;
 const DEFAULT_PLAN_TIMEOUT_MS = 0;
@@ -296,14 +311,40 @@ function readPreviousSessionSecrets(env: Record<string, string | undefined>): st
 	return secrets;
 }
 
-function readPlanningModel(env: Record<string, string | undefined>): string | undefined {
+/** In `plan` mode the model is optional and defaults to the Claude route default. */
+function readPlanningModel(
+	env: Record<string, string | undefined>,
+	backend: PlanningBackend,
+): string | undefined {
 	const model = readOptional(env, "ULTRATHINK_PLANNING_MODEL");
 	if (model !== undefined && !PLANNING_MODEL_PATTERN.test(model)) {
 		throw new ConfigError(
 			"ULTRATHINK_PLANNING_MODEL must be 1-80 characters from A-Z, a-z, 0-9, '.', '_', ':', '/', '-'",
 		);
 	}
-	return model;
+	return model ?? (backend === "plan" ? ROUTE_DEFAULT_MODELS.claude : undefined);
+}
+
+function readPlanningBackend(env: Record<string, string | undefined>): PlanningBackend {
+	const raw = readOptional(env, "ULTRATHINK_PLANNING_BACKEND");
+	if (raw === undefined) {
+		return "openrouter";
+	}
+	if (raw !== "openrouter" && raw !== "plan") {
+		throw new ConfigError("ULTRATHINK_PLANNING_BACKEND must be openrouter or plan");
+	}
+	return raw;
+}
+
+function readPlanFallback(env: Record<string, string | undefined>): PlanFallback {
+	const raw = readOptional(env, "ULTRATHINK_PLANNING_FALLBACK");
+	if (raw === undefined) {
+		return "none";
+	}
+	if (raw !== "none" && raw !== "grok") {
+		throw new ConfigError("ULTRATHINK_PLANNING_FALLBACK must be none or grok");
+	}
+	return raw;
 }
 
 function readConnectorKey(env: Record<string, string | undefined>): string | undefined {
@@ -381,10 +422,14 @@ function readOpenRouterBaseUrl(env: Record<string, string | undefined>): string 
 
 function readServerPlanning(
 	env: Record<string, string | undefined>,
+	backend: PlanningBackend,
 	apiKey: string | undefined,
 	planningModel: string | undefined,
 ): boolean {
 	const flag = readFlag(env, "ULTRATHINK_SERVER_PLANNING");
+	if (backend === "plan") {
+		return flag !== false;
+	}
 	if (flag === true) {
 		if (apiKey === undefined) {
 			throw new ConfigError("ULTRATHINK_SERVER_PLANNING=1 requires OPENROUTER_API_KEY");
@@ -673,7 +718,8 @@ export function loadConfig(
 	env: Record<string, string | undefined> = process.env,
 ): UltrathinkConfig {
 	const stateDir = readStateDir(env);
-	const planningModel = readPlanningModel(env);
+	const planningBackend = readPlanningBackend(env);
+	const planningModel = readPlanningModel(env, planningBackend);
 	const openRouterApiKey = readOpenRouterApiKey(env);
 	const plaintextLoopback = readFlag(env, "ULTRATHINK_PLAINTEXT_LOOPBACK") === true;
 	return {
@@ -719,7 +765,16 @@ export function loadConfig(
 		oauthRedirectOrigins: readOriginList(env, "ULTRATHINK_OAUTH_REDIRECT_ORIGINS", ["https:"]),
 		openRouterApiKey,
 		openRouterBaseUrl: readOpenRouterBaseUrl(env),
-		serverPlanning: readServerPlanning(env, openRouterApiKey, planningModel),
+		serverPlanning: readServerPlanning(env, planningBackend, openRouterApiKey, planningModel),
+		planningBackend,
+		planFallback: readPlanFallback(env),
+		planConcurrency: readInteger(
+			env,
+			"ULTRATHINK_PLAN_CONCURRENCY",
+			DEFAULT_PLAN_CONCURRENCY,
+			1,
+			MAX_PLAN_CONCURRENCY,
+		),
 		maxConcurrentPlans: readInteger(
 			env,
 			"ULTRATHINK_MAX_CONCURRENT_PLANS",

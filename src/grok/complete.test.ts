@@ -20,6 +20,7 @@ import {
 	parseResponsesText,
 	parseShuntText,
 } from "./complete.ts";
+import { classifyFailure } from "../failover/classify.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
 import { hangingFetch } from "../test.helpers.ts";
 
@@ -121,6 +122,18 @@ describe("buildResponsesBody", () => {
 			stream: false,
 		});
 	});
+
+	test("adds max_output_tokens only for a positive number", () => {
+		expect(buildResponsesBody("S", "U", "grok-build-0.1", undefined, 100.7).max_output_tokens).toBe(
+			100,
+		);
+		expect("max_output_tokens" in buildResponsesBody("S", "U", "grok-build-0.1")).toBe(false);
+	});
+
+	test("omits reasoning when effort is undefined", () => {
+		const body = buildResponsesBody("SYS", "USER", "grok-build-0.1");
+		expect("reasoning" in body).toBe(false);
+	});
 });
 
 describe("parseResponsesText", () => {
@@ -153,6 +166,23 @@ describe("parseResponsesText", () => {
 	});
 });
 
+/** Fetch whose reply has `status` but a body that never arrives; `text()` rejects with an AbortError when the call's signal fires. */
+function stalledBodyFetch(status: number, onText?: () => void): typeof fetch {
+	return (async (_input: string | URL | Request, init?: RequestInit) => ({
+		status,
+		ok: false,
+		body: null,
+		text: () => {
+			const { promise, reject } = Promise.withResolvers<string>();
+			const fail = (): void => reject(new DOMException("Aborted", "AbortError"));
+			if (init?.signal?.aborted) fail();
+			else init?.signal?.addEventListener("abort", fail, { once: true });
+			onText?.();
+			return promise;
+		},
+	})) as unknown as typeof fetch;
+}
+
 describe("grokComplete (http)", () => {
 	test("posts to {baseUrl}/responses with login headers and returns the text", async () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("<UPLIFT/>"));
@@ -184,15 +214,42 @@ describe("grokComplete (http)", () => {
 		});
 	});
 
-	test("defaults to the Grok route default (grok-4.7) at xhigh via createGrokCompleter", async () => {
+	test("defaults to the Grok route default (grok-build-0.1) with no reasoning via createGrokCompleter", async () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("ok"));
 		const complete = createGrokCompleter({ home: tempHome(), fetch });
 		await complete("S", "U");
 		const body = JSON.parse(String(calls[0]!.init.body));
 		expect(body.model).toBe(ROUTE_DEFAULT_MODELS.grok);
-		expect(body.model).toBe("grok-4.7");
-		expect(body.reasoning).toEqual({ effort: "xhigh" });
+		expect(body.model).toBe("grok-build-0.1");
+		expect("reasoning" in body).toBe(false);
 		expect(calls[0]!.url).toBe("https://cli-chat-proxy.grok.com/v1/responses");
+	});
+
+	test("grok-4.7 sends reasoning xhigh", async () => {
+		const { fetch, calls } = fakeFetch(() => responsesReply("ok"));
+		await grokComplete("S", "U", { home: tempHome(), fetch, model: "grok-4.7" });
+		const body = JSON.parse(String(calls[0]!.init.body));
+		expect(body.reasoning).toEqual({ effort: "xhigh" });
+	});
+
+	test("onResult reports usage from the reply", async () => {
+		const { fetch } = fakeFetch(() =>
+			Response.json({
+				output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+				usage: { input_tokens: 216, output_tokens: 151 },
+			}),
+		);
+		const seen: unknown[] = [];
+		await grokComplete("S", "U", {
+			home: tempHome(),
+			fetch,
+			model: "grok-build-0.1",
+			onResult: (info) => {
+				seen.push(info);
+				throw new Error("callback failures must not surface");
+			},
+		});
+		expect(seen).toEqual([{ model: "grok-build-0.1", inputTokens: 216, outputTokens: 151 }]);
 	});
 
 	test("401 becomes a GrokAuthError pointing at grok login", async () => {
@@ -229,6 +286,48 @@ describe("grokComplete (http)", () => {
 		const error = await rejection(grokComplete("S", "U", { home, fetch, refresh }));
 		expect(error).toBeInstanceOf(GrokAuthError);
 		expect(calls).toHaveLength(2);
+	});
+
+	test("a 403 naming the model or subscription is a GrokHttpError classified model-unavailable", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home);
+		const body = `{"code":"permission-denied","error":"The model 'grok-build' requires a Grok subscription."}`;
+		const { fetch } = fakeFetch(() => new Response(body, { status: 403 }));
+		const error = await rejection(grokComplete("S", "U", { home, fetch, refresh }));
+		expect(error).toBeInstanceOf(GrokHttpError);
+		expect(isGrokAuthError(error)).toBe(false);
+		expect(error.message).toBe(`grok HTTP 403: ${body}`);
+		expect(classifyFailure(error)).toBe("model-unavailable");
+	});
+
+	test("a 403 with an empty body stays a GrokAuthError", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home);
+		const { fetch } = fakeFetch(() => new Response("", { status: 403 }));
+		const error = await rejection(grokComplete("S", "U", { home, fetch, refresh }));
+		expect(error).toBeInstanceOf(GrokAuthError);
+		expect(classifyFailure(error)).toBe("auth");
+	});
+
+	test("max_output_tokens is sent only for a positive number, floored", async () => {
+		const { fetch, calls } = fakeFetch(() => responsesReply("ok"));
+		const home = tempHome();
+		await grokComplete("S", "U", { home, fetch, maxOutputTokens: 4096.9 });
+		await grokComplete("S", "U", { home, fetch });
+		await grokComplete("S", "U", { home, fetch, maxOutputTokens: 0 });
+		const bodies = calls.map((call) => JSON.parse(String(call.init.body)));
+		expect(bodies[0].max_output_tokens).toBe(4096);
+		expect("max_output_tokens" in bodies[1]).toBe(false);
+		expect("max_output_tokens" in bodies[2]).toBe(false);
+	});
+
+	test("the refresh gets the given env, never process.env", async () => {
+		const home = tempHome();
+		const { refresh, calls: refreshCalls } = fakeRefresh(home);
+		const { fetch } = fakeFetch(() => responsesReply("ok"));
+		const env = { PATH: "/usr/bin" };
+		await grokComplete("S", "U", { home, fetch, refresh, env });
+		expect(refreshCalls[0]?.env).toBe(env);
 	});
 
 	test("does not retry when the forced refresh yields nothing usable", async () => {
@@ -299,6 +398,56 @@ describe("grokComplete (http)", () => {
 			grokComplete("S", "U", { home: tempHome(), fetch: hangingFetch(), timeoutMs: 20 }),
 		);
 		expect(error.message).toBe("grok timed out after 20ms");
+	});
+
+	test("a timeout while reading a 403 body is the timeout, not an auth failure", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home, () => undefined);
+		const error = await rejection(
+			grokComplete("S", "U", { home, refresh, fetch: stalledBodyFetch(403), timeoutMs: 20 }),
+		);
+		expect(error.message).toBe("grok timed out after 20ms");
+		expect(isGrokAuthError(error)).toBe(false);
+		expect(["auth", "model-unavailable"]).not.toContain(classifyFailure(error));
+	});
+
+	test("a timeout while reading a 500 body is the timeout, not a GrokHttpError", async () => {
+		const error = await rejection(
+			grokComplete("S", "U", {
+				home: tempHome(),
+				fetch: stalledBodyFetch(500),
+				timeoutMs: 20,
+			}),
+		);
+		expect(error.message).toBe("grok timed out after 20ms");
+		expect(error).not.toBeInstanceOf(GrokHttpError);
+	});
+
+	test("a caller abort while reading a 403 body surfaces as AbortError", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home, () => undefined);
+		const controller = new AbortController();
+		const fetch = stalledBodyFetch(403, () => controller.abort());
+		const error = await rejection(
+			grokComplete("S", "U", { home, refresh, fetch, signal: controller.signal }),
+		);
+		expect(error.name).toBe("AbortError");
+		expect(isGrokAuthError(error)).toBe(false);
+	});
+
+	test("a non-timeout failure reading a 403 body leaves the body empty (GrokAuthError)", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home, () => undefined);
+		const fetch = (async () => ({
+			status: 403,
+			ok: false,
+			body: null,
+			text: async () => {
+				throw new Error("socket closed");
+			},
+		})) as unknown as typeof globalThis.fetch;
+		const error = await rejection(grokComplete("S", "U", { home, refresh, fetch }));
+		expect(error).toBeInstanceOf(GrokAuthError);
 	});
 });
 
@@ -515,6 +664,19 @@ describe("grokComplete (shunt)", () => {
 		);
 		expect(error.message).toBe("grok timed out after 20ms");
 	});
+
+	test("a timeout while reading a non-OK body surfaces as the timeout", async () => {
+		const error = await rejection(
+			grokComplete("S", "U", {
+				transport: "shunt",
+				shuntBaseUrl,
+				fetch: stalledBodyFetch(502),
+				timeoutMs: 20,
+			}),
+		);
+		expect(error.message).toBe("grok timed out after 20ms");
+		expect(error).not.toBeInstanceOf(GrokHttpError);
+	});
 });
 
 describe("grokComplete (cli)", () => {
@@ -526,7 +688,7 @@ describe("grokComplete (cli)", () => {
 		const argsPath = join(dir, "args.json");
 		writeFileSync(
 			bin,
-			`#!${process.execPath}\nconst args = process.argv.slice(2);\nconst prompt = await Bun.file(args[args.indexOf("--prompt-file") + 1]).text();\nawait Bun.write(${JSON.stringify(argsPath)}, JSON.stringify({ args, prompt, cwd: process.cwd(), env: { GROK_HOME: process.env.GROK_HOME, GROK_SUBAGENTS: process.env.GROK_SUBAGENTS, GROK_MEMORY: process.env.GROK_MEMORY, GROK_WEB_FETCH: process.env.GROK_WEB_FETCH } }));\nconsole.log(JSON.stringify(${replyJs}));\n`,
+			`#!${process.execPath}\nconst args = process.argv.slice(2);\nconst prompt = await Bun.file(args[args.indexOf("--prompt-file") + 1]).text();\nawait Bun.write(${JSON.stringify(argsPath)}, JSON.stringify({ args, prompt, cwd: process.cwd(), env: { GROK_HOME: process.env.GROK_HOME, GROK_SUBAGENTS: process.env.GROK_SUBAGENTS, GROK_MEMORY: process.env.GROK_MEMORY, GROK_WEB_FETCH: process.env.GROK_WEB_FETCH }, leaked: process.env.OPENROUTER_API_KEY }));\nconsole.log(JSON.stringify(${replyJs}));\n`,
 			{ mode: 0o755 },
 		);
 		return { bin, argsPath };
@@ -572,6 +734,49 @@ describe("grokComplete (cli)", () => {
 		for (const flag of ["--no-plan", "--no-subagents", "--disable-web-search", "--verbatim"])
 			expect(seen.args).toContain(flag);
 		expect(after("--system-prompt-override")).toBe("SYS");
+	});
+
+	test("a given env replaces process.env for the child", async () => {
+		const { bin, argsPath } = fakeGrok('{ text: "ok" }');
+		const home = tempHome();
+		const before = process.env.OPENROUTER_API_KEY;
+		process.env.OPENROUTER_API_KEY = "planted-secret";
+		try {
+			await grokComplete("SYS", "USER", {
+				transport: "cli",
+				bin,
+				home,
+				env: { HOME: "/nonexistent" },
+			});
+		} finally {
+			if (before === undefined) delete process.env.OPENROUTER_API_KEY;
+			else process.env.OPENROUTER_API_KEY = before;
+		}
+		const seen = JSON.parse(await Bun.file(argsPath).text()) as {
+			env: Record<string, string | undefined>;
+			leaked?: string;
+		};
+		expect(seen.leaked).toBeUndefined();
+		expect(seen.env).toEqual({
+			GROK_HOME: home,
+			GROK_SUBAGENTS: "0",
+			GROK_MEMORY: "0",
+			GROK_WEB_FETCH: "0",
+		});
+	});
+
+	test("omits --reasoning-effort for a model without effort support", async () => {
+		const { bin, argsPath } = fakeGrok('{ text: "ok" }');
+		await grokComplete("SYS", "USER", {
+			transport: "cli",
+			bin,
+			home: tempHome(),
+			model: "grok-build-0.1",
+			reasoningEffort: "xhigh",
+		});
+		const seen = JSON.parse(await Bun.file(argsPath).text()) as { args: string[] };
+		expect(seen.args.slice(0, 3)).toEqual(["-m", "grok-build-0.1", "--output-format"]);
+		expect(seen.args).not.toContain("--reasoning-effort");
 	});
 
 	test("reuses one scratch cwd within the process", async () => {

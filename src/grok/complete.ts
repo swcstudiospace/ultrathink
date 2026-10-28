@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * Grok 4.7 completion for the Ultrathink pre-pass.
+ * Grok completion for the Ultrathink pre-pass (default model `grok-build-0.1`;
+ * reasoning effort is sent only for models that support it).
  *
  * Default transport talks directly to the Grok CLI chat proxy (`/responses`)
  * with the user's existing `grok login` session; the `cli` transport shells
@@ -24,11 +25,21 @@ import {
 	isGrokAuthExpired,
 	redactSecrets,
 } from "./auth.ts";
-import { DEFAULT_GROK_CONFIG, type GrokEffort, type GrokTransport } from "./types.ts";
+import {
+	DEFAULT_GROK_CONFIG,
+	type GrokEffort,
+	type GrokTransport,
+	grokWireEffort,
+} from "./types.ts";
 import { abortError } from "../claude/complete.ts";
 
 export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 
+export interface GrokCallInfo {
+	model?: string;
+	inputTokens?: number;
+	outputTokens?: number;
+}
 export interface GrokCompleteOptions {
 	baseUrl?: string;
 	model?: string;
@@ -49,6 +60,12 @@ export interface GrokCompleteOptions {
 	shuntModel?: string;
 	/** `shunt` transport: Anthropic `max_tokens`. */
 	shuntMaxTokens?: number;
+	/** `http` transport: receives model and token usage from the reply when present. Never throws into the call. */
+	onResult?: (info: GrokCallInfo) => void;
+	/** `http` transport: `max_output_tokens` (visible output only; positive integer, floored). The CLI transport ignores it. */
+	maxOutputTokens?: number;
+	/** Child environment for the token refresh and the CLI transport; default is the whole `process.env`. Pass an allowlist when the host holds unrelated secrets. */
+	env?: Record<string, string | undefined>;
 }
 
 const SHUNT_ANTHROPIC_VERSION = "2023-06-01";
@@ -59,9 +76,19 @@ export function buildResponsesBody(
 	system: string,
 	user: string,
 	model: string,
-	effort: GrokEffort,
+	effort?: GrokEffort,
+	maxOutputTokens?: number,
 ): Record<string, unknown> {
-	return { model, instructions: system, input: user, reasoning: { effort }, stream: false };
+	const body: Record<string, unknown> = { model, instructions: system, input: user };
+	if (effort) body.reasoning = { effort };
+	if (
+		typeof maxOutputTokens === "number" &&
+		Number.isFinite(maxOutputTokens) &&
+		maxOutputTokens >= 1
+	)
+		body.max_output_tokens = Math.floor(maxOutputTokens);
+	body.stream = false;
+	return body;
 }
 
 /** Shape of a `/responses` reply; each field is still checked at use because it is upstream JSON. */
@@ -102,6 +129,37 @@ export function parseResponsesText(json: unknown): string {
 	const text = parts.join("\n");
 	if (!text.trim()) throw new Error("grok returned no text");
 	return text;
+}
+
+/** Tolerant usage reader for a `/responses` reply; fields are reported only when numeric. */
+function readResponsesUsage(json: unknown, requestedModel: string): GrokCallInfo | undefined {
+	if (!json || typeof json !== "object") return undefined;
+	const reply = json as { usage?: unknown; model?: unknown };
+	const usage = reply.usage && typeof reply.usage === "object" ? reply.usage : undefined;
+	if (!usage) return undefined;
+	const { input_tokens: input, output_tokens: output } = usage as {
+		input_tokens?: unknown;
+		output_tokens?: unknown;
+	};
+	const inputTokens = typeof input === "number" ? input : undefined;
+	const outputTokens = typeof output === "number" ? output : undefined;
+	if (inputTokens === undefined && outputTokens === undefined) return undefined;
+	const info: GrokCallInfo = {
+		model: typeof reply.model === "string" ? reply.model : requestedModel,
+	};
+	if (inputTokens !== undefined) info.inputTokens = inputTokens;
+	if (outputTokens !== undefined) info.outputTokens = outputTokens;
+	return info;
+}
+
+function reportUsage(opts: GrokCompleteOptions, json: unknown, model: string): void {
+	if (!opts.onResult) return;
+	try {
+		const info = readResponsesUsage(json, model);
+		if (info) opts.onResult(info);
+	} catch {
+		// reason: usage reporting is best-effort and must never fail a completed call
+	}
 }
 
 /** Anthropic Messages body for the shunt gateway. No `thinking` param: the route pins the effort. */
@@ -223,7 +281,7 @@ async function completeShunt(
 			throw guard.wrap(error);
 		}
 		if (!res.ok) {
-			const body = redactSecrets(await res.text().catch(() => "")).slice(0, 500);
+			const body = await errorBody(res, guard);
 			throw new GrokHttpError(
 				`shunt HTTP ${res.status}${body ? `: ${body}` : ""}`,
 				res.status,
@@ -236,15 +294,38 @@ async function completeShunt(
 	}
 }
 
+/**
+ * Reads an error body for the message. A timeout or caller abort while reading is the call's own
+ * failure and must not be mistaken for a bad login or an HTTP error; any other read failure leaves
+ * the body empty.
+ */
+async function errorBody(res: Response, guard: CallGuard): Promise<string> {
+	try {
+		return redactSecrets(await res.text()).slice(0, 500);
+	} catch (error) {
+		const mapped = guard.wrap(error);
+		if (mapped !== error) throw mapped;
+		return "";
+	}
+}
+
+const MODEL_REFUSAL =
+	/requires a grok subscription|unknown model|not available|model.*(?:not found|unsupported)/i;
+
 async function completeHttp(
 	system: string,
 	user: string,
 	opts: GrokCompleteOptions,
 	model: string,
-	effort: GrokEffort,
+	effort: GrokEffort | undefined,
 ): Promise<string> {
 	const refresh = opts.refresh ?? ensureFreshGrokAuth;
-	const refreshOpts: EnsureFreshOptions = { home: opts.home, bin: opts.bin, timeoutMs: 20_000 };
+	const refreshOpts: EnsureFreshOptions = {
+		home: opts.home,
+		bin: opts.bin,
+		timeoutMs: 20_000,
+		env: opts.env,
+	};
 	const auth = await refresh(refreshOpts);
 	if (!auth) throw new GrokAuthError(`Grok login missing: ${LOGIN_HINT}`);
 	if (isGrokAuthExpired(auth)) throw new GrokAuthError(`Grok login expired: ${LOGIN_HINT}`);
@@ -252,7 +333,9 @@ async function completeHttp(
 	const baseUrl = (opts.baseUrl?.trim() || DEFAULT_GROK_CONFIG.baseUrl).replace(/\/+$/, "");
 	const guard = callGuard(opts);
 	const version = grokClientVersion(opts.home);
-	const body = JSON.stringify(buildResponsesBody(system, user, model, effort));
+	const body = JSON.stringify(
+		buildResponsesBody(system, user, model, effort, opts.maxOutputTokens),
+	);
 
 	async function send(session: GrokAuth): Promise<Response> {
 		try {
@@ -282,17 +365,24 @@ async function completeHttp(
 			}
 		}
 		if (res.status === 401 || res.status === 403) {
+			const rejected = await errorBody(res, guard);
+			// A 403 that names the model or subscription is a per-model refusal, not a bad login.
+			if (MODEL_REFUSAL.test(rejected)) {
+				throw new GrokHttpError(`grok HTTP ${res.status}: ${rejected}`, res.status, rejected);
+			}
 			throw new GrokAuthError(`Grok login rejected (HTTP ${res.status}): ${LOGIN_HINT}`);
 		}
 		if (!res.ok) {
-			const body = redactSecrets(await res.text().catch(() => "")).slice(0, 500);
+			const body = await errorBody(res, guard);
 			throw new GrokHttpError(
 				`grok HTTP ${res.status}${body ? `: ${body}` : ""}`,
 				res.status,
 				body,
 			);
 		}
-		return parseResponsesText(await res.json());
+		const reply: unknown = await res.json();
+		reportUsage(opts, reply, model);
+		return parseResponsesText(reply);
 	} finally {
 		guard.release();
 	}
@@ -345,13 +435,13 @@ async function completeCli(
 	user: string,
 	opts: GrokCompleteOptions,
 	model: string,
-	effort: GrokEffort,
+	effort: GrokEffort | undefined,
 ): Promise<string> {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-grok-"));
 	const promptPath = join(dir, "prompt.md");
 	writeFileSync(promptPath, user, "utf8");
 	const env: Record<string, string | undefined> = {
-		...process.env,
+		...(opts.env ?? process.env),
 		GROK_SUBAGENTS: "0",
 		GROK_MEMORY: "0",
 		GROK_WEB_FETCH: "0",
@@ -362,8 +452,7 @@ async function completeCli(
 			opts.bin?.trim() || DEFAULT_GROK_CONFIG.bin,
 			"-m",
 			model,
-			"--reasoning-effort",
-			effort,
+			...(effort ? ["--reasoning-effort", effort] : []),
 			"--output-format",
 			"json",
 			"--tools",
@@ -437,7 +526,7 @@ export async function grokComplete(
 ): Promise<string> {
 	if (opts.signal?.aborted) throw abortError();
 	const model = opts.model?.trim() || DEFAULT_GROK_CONFIG.model;
-	const effort = opts.reasoningEffort ?? DEFAULT_GROK_CONFIG.reasoningEffort;
+	const effort = grokWireEffort(model, opts.reasoningEffort ?? DEFAULT_GROK_CONFIG.reasoningEffort);
 	switch (opts.transport) {
 		case "shunt":
 			return completeShunt(system, user, opts, model);

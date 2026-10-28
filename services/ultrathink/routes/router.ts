@@ -1131,9 +1131,12 @@ export function createApp(deps: RouterDeps): App {
 			const code = error instanceof Error && "code" in error ? error.code : undefined;
 			oauthOk = code === "ENOENT" && stateDirOk;
 		}
+		// Plan mode needs the plan backend (the `claude` CLI), not an OpenRouter key; the default needs key and model.
 		const plannerOk =
 			!planner.enabled ||
-			(config.openRouterApiKey !== undefined && config.planningModel !== undefined);
+			(config.planningBackend === "plan"
+				? planner.backendReady().ok
+				: config.openRouterApiKey !== undefined && config.planningModel !== undefined);
 		const checks = {
 			store: storeOk,
 			stateDir: stateDirOk,

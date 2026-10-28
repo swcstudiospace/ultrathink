@@ -9,7 +9,7 @@ Operations guide for the ultrathink MCP service on the VPS. Commands run as root
 3. nginx (`deploy/nginx-ultrathink.swcstudio.space.conf`) accepts only Cloudflare peers, takes the real client address from `CF-Connecting-IP`, rate-limits per client, and proxies the allowed routes over mTLS to `127.0.0.1:8795` (section 17).
 4. The Bun service `ultrathink-web` (`services/ultrathink/server.ts`) serves `/mcp`, the OAuth endpoints, `/login`, `/ultrathink`, `/healthz`, `/readyz` and `/metrics` on a TLS-only loopback listener. Which client certificate may reach which route is in section 17.
 5. It runs as the unprivileged user `ultrathink` from `/opt/ultrathink/current`, a symlink into `/opt/ultrathink/releases/<sha>-<utc>`, under a systemd sandbox (`deploy/ultrathink-web.service`).
-6. Server-side planning calls OpenRouter (`OPENROUTER_API_KEY`, model `ULTRATHINK_PLANNING_MODEL`); the client-driven loop (Grok Bot) makes no model call.
+6. Server-side planning calls the configured planning backend: `openrouter` (the default; `OPENROUTER_API_KEY`, model `ULTRATHINK_PLANNING_MODEL`) or `plan` (opt-in, single owner; the owner's own Claude plan through `claude -p`, see "Plan backend (coding-plan inference)" after section 12). The client-driven loop (Grok Bot) makes no model call.
 7. State lives in `/var/lib/ultrathink` (mode 0700): `ultrathink.sqlite` (runs, token ledger), `oauth.json` (OAuth clients and tokens), `journal/`, `sessions/`, `jobs/`.
 8. Configuration and secrets live in `/etc/ultrathink/ultrathink.env` (mode 0600, root), read by systemd.
 9. `deploy/ultrathink-release.sh` builds, tests, smoke-tests and switches releases. Scheduled jobs: `deploy/ultrathink-maintenance.timer` runs the daily backup and retention job; `deploy/ultrathink-snapshot.timer` takes a point-in-time snapshot every 30 seconds and stays disabled until the staging measurement is recorded (section 5); `deploy/ultrathink-drill.timer` runs the monthly restore drill.
@@ -43,7 +43,7 @@ Prerequisites: a git checkout of this repository on the VPS (any path; the relea
    find /var/lib/ultrathink -type f -exec chmod 0600 {} +
    ```
 
-4. Check `/etc/ultrathink/ultrathink.env` (mode 0600, owner root). Variables: `ULTRATHINK_PUBLIC_ORIGIN`, `ULTRATHINK_SESSION_SECRET`, `ULTRATHINK_OWNER_PASSWORD_HASH`, `ULTRATHINK_CONNECTOR_KEY`, `ULTRATHINK_PLANNING_MODEL` (for example `x-ai/grok-4.7`), `OPENROUTER_API_KEY`, and optionally the limits listed in `services/ultrathink/config/config.ts`. The owner hash must be argon2id (see section 6); the service refuses to start when it is not an argon2 or bcrypt hash, and when `ULTRATHINK_PUBLIC_ORIGIN` has a path, query or credentials (a trailing slash is dropped). Check the variable names without printing values:
+4. Check `/etc/ultrathink/ultrathink.env` (mode 0600, owner root). Variables: `ULTRATHINK_PUBLIC_ORIGIN`, `ULTRATHINK_SESSION_SECRET`, `ULTRATHINK_OWNER_PASSWORD_HASH`, `ULTRATHINK_CONNECTOR_KEY`, and for the default `openrouter` backend `ULTRATHINK_PLANNING_MODEL` (for example `x-ai/grok-4.7`) and `OPENROUTER_API_KEY` (the opt-in `plan` backend needs neither; see "Plan backend (coding-plan inference)"), and optionally the limits listed in `services/ultrathink/config/config.ts`. The owner hash must be argon2id (see section 6); the service refuses to start when it is not an argon2 or bcrypt hash, and when `ULTRATHINK_PUBLIC_ORIGIN` has a path, query or credentials (a trailing slash is dropped). Check the variable names without printing values:
 
    ```bash
    cut -d= -f1 /etc/ultrathink/ultrathink.env
@@ -88,7 +88,7 @@ The release script's probes need `/readyz`, which the old code lacks, and its re
    (cd "$rel" && env -i PATH=/usr/bin:/bin HOME=/tmp /opt/ultrathink/bin/bun test services/ultrathink)
    ```
 
-2. Run a canary: the real unit under another name, on port 8796, with its own empty state directory, while the old service keeps serving. The production env file is reused, so the canary can reach OpenRouter; do not start a plan on it.
+2. Run a canary: the real unit under another name, on port 8796, with its own empty state directory, while the old service keeps serving. The production env file is reused, so the canary can reach the configured planning backend (OpenRouter, or the owner's Claude plan in `plan` mode); do not start a plan on it.
 
    ```bash
    printf 'ULTRATHINK_PORT=8796\nULTRATHINK_STATE_DIR=/var/lib/ultrathink-canary\n' >/etc/ultrathink/canary.env
@@ -140,8 +140,11 @@ These are read by `services/ultrathink/config/config.ts` and are not in the item
 | `ULTRATHINK_MAX_INPUT_CHARS` | `4000000` | Longest request in characters; `0` means no limit. The 1 MB request body limit applies first over HTTP. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | `20000` | Longest client-driven answer, 1 to 20000 characters. |
 | `ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` | `0` | Output token limit for one model call. `0` sends no configured cap: with no token ceiling set, the provider's own maximum applies; with `ULTRATHINK_RUN_TOKEN_CEILING` or `ULTRATHINK_DAILY_TOKEN_CEILING` set, each call's reply is capped to the tokens the ceilings still allow after its input, and never above 16000. A positive value is always sent as the cap; it must be 256 to 32000. |
-| `ULTRATHINK_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base. https only, no credentials, query or fragment. |
-| `ULTRATHINK_SERVER_PLANNING` | unset | `0` turns server-side planning off. `1` requires `OPENROUTER_API_KEY` and `ULTRATHINK_PLANNING_MODEL`, or the service refuses to start. Unset means on when both are set. |
+| `ULTRATHINK_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base. https only, no credentials, query or fragment. Used only by the `openrouter` backend. |
+| `ULTRATHINK_PLANNING_BACKEND` | `openrouter` | `openrouter` or `plan`. `plan` runs planning through the owner's Claude plan login (`claude -p`) and needs no `OPENROUTER_API_KEY`. Any other value stops the service at start. Single owner only; see "Plan backend (coding-plan inference)". |
+| `ULTRATHINK_PLANNING_FALLBACK` | `none` | `none` or `grok`. Only read when the backend is `plan`. `grok` fails a plan call over to the Grok login (http transport) when the Claude call fails with a failover-worthy error. |
+| `ULTRATHINK_PLAN_CONCURRENCY` | `2` | Integer 1 to 6. Only read when the backend is `plan`. Most `claude` child processes running at once, across all plans. Each child is a separate process, so raise `MemoryMax` with it. |
+| `ULTRATHINK_SERVER_PLANNING` | unset | `0` turns server-side planning off. `1` with the `openrouter` backend requires `OPENROUTER_API_KEY` and `ULTRATHINK_PLANNING_MODEL`, or the service refuses to start; with the `plan` backend it needs nothing else. Unset means on when the backend is `plan`, or when the OpenRouter key and model are both set. |
 | `ULTRATHINK_SESSION_SECRET_PREVIOUS` | unset | Comma list of up to 4 earlier session secrets, each at least 32 characters, for sessions signed before a rotation. |
 | `ULTRATHINK_OAUTH_REDIRECT_ORIGINS` | unset | Comma list of extra https origins allowed in client redirect URIs. |
 | `ULTRATHINK_BREAKER_FAILURES` | `5` | Failures inside the window that open the upstream circuit breaker, 0 to 100. `0` turns the breaker off. |
@@ -421,7 +424,8 @@ Edit the env file with `sudoedit /etc/ultrathink/ultrathink.env` (keeps mode 060
 |---|---|---|
 | Connector key (`ULTRATHINK_CONNECTOR_KEY`) | `openssl rand -hex 32`, store it, restart, then update the `x-connector-key` header in Grok Bot (`docs/ops/grok-bot-setup-ultrathink.md` section 5). | The old key stops working at restart. |
 | Session secret (`ULTRATHINK_SESSION_SECRET`, at least 32 characters) | `openssl rand -hex 32`, store it, restart. | Every web login session is invalidated; this is also the only way to revoke a stolen session cookie (see residual risks). |
-| OpenRouter key (`OPENROUTER_API_KEY`) | Create a new key in the OpenRouter dashboard with a spending limit, store it, restart, confirm one plan succeeds, then delete the old key in the dashboard. | Server-side planning uses the new key. |
+| OpenRouter key (`OPENROUTER_API_KEY`, `openrouter` backend) | Create a new key in the OpenRouter dashboard with a spending limit, store it, restart, confirm one plan succeeds, then delete the old key in the dashboard. | Server-side planning uses the new key. |
+| Claude plan token (`CLAUDE_CODE_OAUTH_TOKEN`, `plan` backend) | As the `ultrathink` user, with the service's home, run `sudo -u ultrathink env HOME=/var/lib/ultrathink/home claude setup-token`, put the new token in `/etc/ultrathink/ultrathink.env` (mode 0600), restart, confirm one plan succeeds, then revoke the old token from the Claude account. | Server-side planning uses the new token. |
 | Owner password hash (`ULTRATHINK_OWNER_PASSWORD_HASH`) | Generate an argon2id hash without putting the password in argv (command below), store it, restart. | The old password stops working; OAuth approvals use the new one. |
 
 Owner password hash, with a prompt so nothing lands in shell history:
@@ -463,7 +467,7 @@ Common symptoms:
 | 429 | Rate limit. An nginx 429 carries the default nginx error page; an app 429 comes from the service itself (it logs the limit that fired). nginx limits: login 5 per minute, OAuth 30, `/mcp` 120, per real client address. | If many users share one address, raise the nginx rate. If every client is limited, real-IP is broken: check that `CF-Connecting-IP` reaches nginx and that the Cloudflare ranges are current. |
 | 503 with `{"error":"unavailable"}` and `Retry-After: 60` | nginx: the upstream is down, restarting or timing out (it saw a 502 or 504). | `systemctl status ultrathink-web`, `journalctl -u ultrathink-web`, and the release (section 4). |
 | 503 with any other body | The app itself (nginx does not rewrite it): not ready (`/readyz` lists the failing check), persistence unavailable (the body carries a `correlationId`), or the planner is busy (`maxConcurrentPlans` jobs running). | Check `journalctl`, `/readyz`, and wait for running plans; raise `ULTRATHINK_MAX_CONCURRENT_PLANS` (1 to 8) if busy is routine. |
-| `planner failed` (result status `failed`) | OpenRouter rejected or timed out: bad or exhausted key, unknown model id, 429 or 5xx from the provider, model timeout, plan timeout. | The result's `error` field and the error log say which. Check the key and credit in the OpenRouter dashboard, `ULTRATHINK_PLANNING_MODEL`, and `ULTRATHINK_MODEL_TIMEOUT_MS` and `ULTRATHINK_PLAN_TIMEOUT_MS`. A plan interrupted by a restart reports `interrupted`. |
+| `planner failed` (result status `failed`) | The planning backend rejected or timed out: with `openrouter`, a bad or exhausted key, unknown model id, 429 or 5xx from the provider; with `plan`, see the plan backend troubleshooting table. Also model timeout, plan timeout. | The result's `error` field and the error log say which. Check the key and credit in the OpenRouter dashboard (or the Claude login in plan mode), `ULTRATHINK_PLANNING_MODEL`, and `ULTRATHINK_MODEL_TIMEOUT_MS` and `ULTRATHINK_PLAN_TIMEOUT_MS`. A plan interrupted by a restart reports `interrupted`. |
 | `budget_exceeded` | The per-run or daily token ceiling was reached, or a call's input alone does not fit the budget left (`ULTRATHINK_RUN_TOKEN_CEILING`, `ULTRATHINK_DAILY_TOKEN_CEILING`). The day is a UTC calendar day. | Wait for the next UTC day, or raise the ceiling and restart. The ledger keeps abandoned reservations counted against the ceiling. |
 | `ultrathink-maintenance.service` fails with `status=226/NAMESPACE` ("Failed to set up mount namespacing: /var/backups/ultrathink: No such file or directory") | The backup directory does not exist. systemd builds the `ReadWritePaths=` mount namespace before any `ExecStartPre=` runs, so the unit cannot create it itself. | `install -m 0644 deploy/ultrathink-tmpfiles.conf /etc/tmpfiles.d/ultrathink.conf && systemd-tmpfiles --create /etc/tmpfiles.d/ultrathink.conf`, then start the unit again. |
 | Service flapping | Bad env file, port in use, failed sandbox call. | `systemctl status` shows the start limit (5 starts in 60 seconds). A `SIGSYS` kill means the syscall filter blocked a call: `journalctl -k \| grep -i seccomp`. Roll back the release (section 4). |
@@ -484,10 +488,10 @@ Scrape `https://127.0.0.1:8795/metrics` with the probe identity (loopback only; 
 | `ultrathink_auth_failures_total` | `kind` | Failed logins, bearer tokens and connector keys |
 | `ultrathink_rate_limited_total` | `scope` | Requests refused by an in-app limiter |
 | `ultrathink_plan_jobs_total` | `status` | Server-side plan jobs by final status |
-| `ultrathink_planner_calls_total` | `outcome` | OpenRouter model calls by outcome (including `timeout`) |
+| `ultrathink_planner_calls_total` | `outcome` | Planning model calls by outcome (including `timeout`), for either backend |
 | `ultrathink_planner_call_duration_seconds` | histogram | Duration of one model call |
 | `ultrathink_plan_tokens_total` | `direction` | Planner tokens (input and output) |
-| `ultrathink_plan_cost_usd_total` | none | Planner spend reported by OpenRouter |
+| `ultrathink_plan_cost_usd_total` | none | Planner spend reported by OpenRouter. Stays at zero in `plan` mode: plan usage is not billed per token, so only tokens are reported |
 | `ultrathink_planner_enabled` | none | 1 when server-side planning is configured |
 | `ultrathink_build_info` | `version` | Constant 1; identifies the running version |
 | `ultrathink_metrics_dropped_total` | none | Series dropped by the cardinality cap |
@@ -546,7 +550,7 @@ The metric rows of this table are encoded as alert rules in `deploy/observabilit
 | Off-host copies | The rsync target (`ULTRATHINK_BACKUP_RSYNC_TARGET`): archives at its root, snapshots under `ring/` | Encrypted archives and snapshots, once a recipient is set | The operator's cleanup on the target host. The scripts never delete remote files. |
 | Drill scratch | `$TMPDIR/ultrathink-restore.*` | Restored copy used by the drill | Removed when the drill exits. |
 | Logs and metrics | journald, `/metrics` | Structured access and error logs without prompt text, secrets or tokens; counters | Per journald configuration (`journalctl --disk-usage`; set `SystemMaxUse` if needed). |
-| Provider side | OpenRouter and the model provider | Prompts and outputs of server-side plans | Governed by the provider's policy and your OpenRouter privacy settings. |
+| Provider side | The planning backend's provider: OpenRouter and the model provider, or in `plan` mode Anthropic (and xAI when `ULTRATHINK_PLANNING_FALLBACK=grok`) | Prompts and outputs of server-side plans | Governed by the provider's policy and your OpenRouter privacy settings, or the owner's Claude (and Grok) account terms in `plan` mode. |
 
 ## 11. Residual risks
 
@@ -564,7 +568,7 @@ Known gaps that are accepted for now. Each has an owner decision pending.
 
 ## 12. Planner latency and model choice
 
-The planner calls OpenRouter once per pipeline stage: uplift, graph, one Chain of Thought call per graph node, then clarify. That is about 9 to 11 calls per plan. Nodes run level by level because a node depends on the nodes before it, so the calls are sequential within a level and the total time is the sum of the levels, not of the nodes.
+The planner calls the configured backend once per pipeline stage: uplift, graph, one Chain of Thought call per graph node, then clarify. That is about 9 to 11 calls per plan. Nodes run level by level because a node depends on the nodes before it, so the calls are sequential within a level and the total time is the sum of the levels, not of the nodes. The measurements below were taken through OpenRouter and are dated evidence; the `plan` backend has not been measured here.
 
 Measured on this VPS on 2026-10-18, one prompt, reasoning effort low:
 
@@ -580,7 +584,7 @@ At the provider's default reasoning effort, grok-4.7 did not finish in 6 minutes
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ULTRATHINK_PLANNING_MODEL` | none (planning off without it) | OpenRouter model id used for every stage |
+| `ULTRATHINK_PLANNING_MODEL` | none for `openrouter` (planning off without it); `claude-haiku-5-5` for `plan` | Model id used for every stage: an OpenRouter model id, or in `plan` mode a Claude model id |
 | `ULTRATHINK_MODEL_REASONING_EFFORT` | `auto` | Reasoning effort sent with each call; `auto` (the default) omits the parameter so the provider decides. The main lever on latency and cost |
 | `ULTRATHINK_MODEL_TIMEOUT_MS` | 0 (no timeout) | Per model call, when set above 0. A call that exceeds it is not retried: it fails with `timeout` and the whole plan ends as `failed`. Only 429, 5xx and network errors are retried (up to 2 times) |
 | `ULTRATHINK_PLAN_TIMEOUT_MS` | 0 (no timeout) | Whole plan, when set above 0; a plan over this ends as `failed` |
@@ -599,6 +603,65 @@ Switching models safely:
 3. Run one plan from a chat client with a short prompt.
 4. Check the cost and size of that plan: `curl -s --cacert /etc/ultrathink/tls/ca.pem --cert /etc/ultrathink/tls/ops/cert.pem --key /etc/ultrathink/tls/ops/key.pem https://127.0.0.1:8795/metrics | grep ultrathink_plan_` (`ultrathink_plan_cost_usd_total`, `ultrathink_plan_tokens_total`; the counters start from zero at the restart, so the values are that plan), and inspect the job file under `/var/lib/ultrathink/jobs/` (as root; it holds the request and the plan) for the status, usage and any error.
 5. If the plan failed, was slow, or cost more than expected, restore the old line and restart again. If it passed, delete the commented old line.
+
+## 12a. Plan backend (coding-plan inference)
+
+`ULTRATHINK_PLANNING_BACKEND=plan` makes the service run each planning call as a `claude -p` child process on the owner's own Claude plan login, instead of calling OpenRouter. The default is `openrouter`; a deploy changes nothing until the variable is set.
+
+**Single owner only.** The plan is the plan holder's own. Anthropic does not permit routing other people's requests through plan credentials, so use this backend only when the service plans for its owner alone. That is also why it is opt-in and never the default. Plan usage draws the plan's subscription limits (the 5-hour session and the weekly limit). The monthly API credits of Max and Team plans do not cover plan-login `claude -p`.
+
+Settings (full table in section 2, "Other environment keys"): `ULTRATHINK_PLANNING_BACKEND` (`openrouter` or `plan`), `ULTRATHINK_PLANNING_FALLBACK` (`none` or `grok`, default `none`), `ULTRATHINK_PLAN_CONCURRENCY` (1 to 6, default 2), `ULTRATHINK_PLANNING_MODEL` (optional; default `claude-haiku-5-5`, which needs Claude Code 2.1.293 or newer). `OPENROUTER_API_KEY` is not needed. The `claude` child receives only an allowlisted environment (`PATH`, `TZ`, `LANG`, `LC_ALL`, `TMPDIR`, `HOME`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, `GROK_HOME`), so the server's other secrets never reach it, and `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from it.
+
+### Owner steps: switch to plan mode
+
+1. Check the CLI: `/usr/bin/claude` is world executable, so the `ultrathink` user can run it. Confirm `sudo -u ultrathink /usr/bin/claude --version` prints 2.1.293 or newer (`claude update` as root otherwise).
+2. Give the `ultrathink` user a Claude login. The unit sets `HOME=/var/lib/ultrathink/home`, so run the login with that home, otherwise it lands in a different directory than the one the service reads: `sudo -u ultrathink env HOME=/var/lib/ultrathink/home claude setup-token`, and sign in with the owner's plan account; it prints a long-lived token. The token goes into the env file in the next step and is what the service uses; a login written under a different `HOME` is not read.
+3. Put the token in `/etc/ultrathink/ultrathink.env` (mode 0600, owner root) as `CLAUDE_CODE_OAUTH_TOKEN=<token>`. Do not paste it into a shell history or a ticket.
+4. Keep `ANTHROPIC_API_KEY` out of that file. Claude Code ranks an API key above the plan token, and the key's account has no credit, so a key there is the failure the service strips for. Check names only: `grep -c '^ANTHROPIC_API_KEY=' /etc/ultrathink/ultrathink.env` must print 0.
+5. Set `ULTRATHINK_PLANNING_BACKEND=plan` in the same file. Optionally set `ULTRATHINK_PLAN_CONCURRENCY` and `ULTRATHINK_PLANNING_FALLBACK=grok`. Keep the old `OPENROUTER_API_KEY` and `ULTRATHINK_PLANNING_MODEL` lines (commented or not) until rollback is no longer wanted; if `ULTRATHINK_PLANNING_MODEL` still holds an OpenRouter id such as `x-ai/grok-4.7`, remove or comment it, because in plan mode it names a Claude model.
+6. Raise the memory limit. Each `claude` child is a separate process. 768M fits one plan at `ULTRATHINK_PLAN_CONCURRENCY=1`; use 2G for the default of 2. Use a drop-in, not an edit of the shipped unit:
+
+   ```bash
+   mkdir -p /etc/systemd/system/ultrathink-web.service.d
+   cat > /etc/systemd/system/ultrathink-web.service.d/plan-backend.conf <<'EOF'
+   [Service]
+   MemoryMax=2G
+   EOF
+   systemctl daemon-reload
+   ```
+
+7. Optional Grok fallback (`ULTRATHINK_PLANNING_FALLBACK=grok`). The unit sets `ProtectHome=true`, which hides `/root/.grok`, so a `grok` installed under `/root` cannot run. Install the `grok` binary outside `/root` (for example `/usr/local/bin/grok`, world executable), then run `sudo -u ultrathink env HOME=/var/lib/ultrathink/home grok login --device-auth`. The unit's `HOME` is `/var/lib/ultrathink/home`, not the `/var/lib/ultrathink` that the setup recipe gives that user as its home, so the login must be written with the service's `HOME`. Alternatively set `GROK_HOME` to the same directory for the login and in the unit's environment. Check with `sudo -u ultrathink env HOME=/var/lib/ultrathink/home grok models`. The fallback uses the `http` transport, which reuses the Grok Build login token against the CLI chat proxy; that is not an xAI-documented integration. The documented alternative is the `cli` transport (`grok -p`) or an `XAI_API_KEY`. Prompt text leaves Anthropic for xAI when the fallback fires, so enable it only if that is acceptable. The service does not need Grok to start: a missing `grok` is reported in the readiness detail but does not fail `/readyz`.
+8. `systemctl restart ultrathink-web`.
+
+### Verify
+
+1. `/readyz` is 200: `curl -s --cacert /etc/ultrathink/tls/ca.pem --cert /etc/ultrathink/tls/ops/cert.pem --key /etc/ultrathink/tls/ops/key.pem https://127.0.0.1:8795/readyz`. In plan mode the planner check is ok when `claude` resolves on `PATH`; it does not prove the login works.
+2. Run one plan from a chat client with a short prompt. A bad login shows up here, as a `failed` plan with error `auth`.
+3. Count the calls: `curl -s ... https://127.0.0.1:8795/metrics | grep -E 'ultrathink_planner_calls_total|ultrathink_plan_tokens_total'` (same certificate flags as above). `ultrathink_planner_calls_total` should rise by about 9 to 11 for one plan, and `ultrathink_plan_tokens_total` by that plan's tokens. `ultrathink_plan_cost_usd_total` stays at zero in plan mode.
+4. Inspect the job file under `/var/lib/ultrathink/jobs/` (as root) for the status, the engine label (`plan:<model>`, or `plan:<model>+grok` with the fallback) and any error.
+
+### Roll back
+
+Edit `/etc/ultrathink/ultrathink.env`: set `ULTRATHINK_PLANNING_BACKEND=openrouter` (or delete the line; `openrouter` is the default), restore `OPENROUTER_API_KEY` and `ULTRATHINK_PLANNING_MODEL` if you commented them out, then `systemctl restart ultrathink-web` and repeat the verify steps. The `MemoryMax` drop-in may stay. No state migration is involved: plan jobs already stored keep their result.
+
+### What is not covered
+
+- Chaos faults are injected only at the OpenRouter seam (section 18); the `plan` backend gets none.
+- The upstream circuit breaker (`ultrathink_upstream_breaker_transitions_total`) and the OpenRouter CLIENT spans (section 16) cover only OpenRouter. In plan mode a failing plan shows in `ultrathink_planner_calls_total{outcome}` and in the job's `error`, not in the breaker.
+- Cost metrics report tokens only. Plan usage is not billed per token, so `ultrathink_plan_cost_usd_total` does not move and no dollar figure exists for a plan; watch the plan's own usage meter in the Claude app instead.
+- The latency table in section 12 was measured through OpenRouter.
+- A failed candidate (for example Claude at its plan limit) is skipped for a stated rest time (15 minutes for a plan limit, 10 minutes for an auth failure) inside one failover chain. The hosted service keeps its chain for the life of the process, so a restart clears every rest and the next call tries Claude first again.
+- A hosted failover is recorded on the saved session record (`engineFailover`) exactly like a local one, and the token usage of every attempt, including a failed one, is metered against the same budget.
+
+### Troubleshooting (plan mode)
+
+| Symptom in the job `error` or the error log | Cause | Action |
+|---|---|---|
+| `You've hit your session limit` (or a weekly, Opus or Sonnet limit) | The plan's usage limit is used up; the message carries the reset time. The plan finishes as `failed` with a rate-limit style error unless the Grok fallback answers. | Wait for the reset time, or enable `ULTRATHINK_PLANNING_FALLBACK=grok` (step 7). Lower `ULTRATHINK_PLAN_CONCURRENCY` if plans burn the limit too fast. |
+| `Not logged in` (also `Login expired`, `Invalid API key`) | `CLAUDE_CODE_OAUTH_TOKEN` is missing, expired or revoked, or the `ultrathink` user has no login; the plan fails with error `auth`. | Run `sudo -u ultrathink env HOME=/var/lib/ultrathink/home claude setup-token` (the login must be written under the service's `HOME`), replace the token in `/etc/ultrathink/ultrathink.env`, restart (section 6 row for the plan token). Confirm `ANTHROPIC_API_KEY` is not in the file. |
+| `Credit balance is too low` | An Anthropic API account with no credit was billed. The service removes `ANTHROPIC_API_KEY` from the `claude` child, so the likely source is another tool, or an interactive `claude` run by a user whose shell still exports the key. | Remove `ANTHROPIC_API_KEY` from `/etc/ultrathink/ultrathink.env`, from the service user's shell profile and from any other unit that sets it; make sure `CLAUDE_CODE_OAUTH_TOKEN` is set; restart and run one plan. |
+| `/readyz` 503 with the planner check failing | `claude` is not on the service's `PATH`. | Install Claude Code so `/usr/bin/claude` exists and is world executable, restart. |
+| Failed plan mentioning the model or a required Claude Code version | The CLI is older than the model needs (`claude-haiku-5-5` needs 2.1.293). | `claude update`, or set `ULTRATHINK_PLANNING_MODEL` to a model the installed CLI supports. |
 
 ## 13. Connector surface and diagnostics
 
@@ -896,7 +959,7 @@ This section covers the phase 71 signals. Metrics live in memory and reset on re
 ### Traces
 
 - `ULTRATHINK_OTLP_ENDPOINT` is optional. Unset or empty disables export. Otherwise it must be `https://`, or `http://` for `127.0.0.1`, `localhost` or `[::1]`, with no userinfo, query or fragment. A trailing slash is removed, and spans go to `<endpoint>/v1/traces` as OTLP/JSON. A bad value stops startup with an error that names the variable and never the value.
-- Spans are recorded only for sampled requests. Sampling is head-based: the inbound `traceparent` flag decides, and a request with no inbound trace is sampled. Each request gets a SERVER span, and each OpenRouter attempt gets a CLIENT span named `POST chat/completions` with `server.address` set to the host only. No span carries a URL path, query, header, API key, bearer token or peer address.
+- Spans are recorded only for sampled requests. Sampling is head-based: the inbound `traceparent` flag decides, and a request with no inbound trace is sampled. Each request gets a SERVER span, and each OpenRouter attempt gets a CLIENT span named `POST chat/completions` with `server.address` set to the host only. No span carries a URL path, query, header, API key, bearer token or peer address. In `plan` mode no CLIENT span is recorded, because the `claude` child is not an OpenRouter attempt.
 - Export is bounded: a queue of 2048 spans, batches of 512, a 5 s timeout, and a flush on each 5 s runtime sample and at shutdown. A failed batch is dropped and never retried, and export never delays a response.
 - `ultrathink_otel_spans_dropped_total{reason="queue_full"}` counts spans refused by a full queue, and `ultrathink_otel_export_failures_total` counts failed batches. If failures rise, test the collector from the host with `curl -s -o /dev/null -w '%{http_code}\n' -X POST '<endpoint>/v1/traces' -H 'content-type: application/json' -d '{}'`. Any HTTP status means the collector answers; `000` or a timeout means it does not.
 
@@ -910,7 +973,7 @@ Lines written inside a request carry `reqId`, `traceId` and `spanId`. The `reque
 
 | Family | Labels | Meaning |
 |---|---|---|
-| `ultrathink_upstream_breaker_transitions_total` | `from`, `to` | Breaker state changes on the OpenRouter hop |
+| `ultrathink_upstream_breaker_transitions_total` | `from`, `to` | Breaker state changes on the OpenRouter hop (the breaker does not cover the `plan` backend) |
 | `ultrathink_audit_chain_notices_total` | none | Audit chain notices (section 14) |
 | `ultrathink_retention_sweep_duration_seconds` | histogram | Duration of one retention sweep |
 | `ultrathink_retention_errors_total` | none | Errors reported by retention sweeps |
@@ -1110,7 +1173,7 @@ The CLI has its own gate, separate from the service. An `http` run against a hos
 
 ### Drivers
 
-- **`inprocess`** builds the real app inside the CLI process, with a temporary state directory and the template's fault plan at the OpenRouter seam. No upstream is reached, and the state directory is removed after the run. It does not read `ULTRATHINK_CHAOS`, because it never touches a running service. Its runs are deterministic.
+- **`inprocess`** builds the real app inside the CLI process, with a temporary state directory and the template's fault plan at the OpenRouter seam (faults are not injected into the `plan` backend). No upstream is reached, and the state directory is removed after the run. It does not read `ULTRATHINK_CHAOS`, because it never touches a running service. Its runs are deterministic.
 - **`http`** observes a URL that is already running. It is the only driver for operator templates. The CLI never executes an operator step. It prints the step and waits until someone types `confirmed`; no load is sent before that.
 
 Against an mTLS listener, pass the CA that signed the server and the client identity the listener requires: `--ca-file`, `--client-cert` and `--client-key`, each a PEM path. `--client-cert` and `--client-key` go together, and the base URL must be https. Server verification stays on. Each request has a 5 s deadline that covers the response headers and the body; a request past it fails. A load request that fails is not judged. A hypothesis whose read fails counts as failed, and its reason is recorded.
@@ -1166,7 +1229,7 @@ The default history file is `<ULTRATHINK_STATE_DIR>/chaos/history.jsonl`, or `/v
 ### Not shipped
 
 - **CHAOS-04, scheduled chaos.** No timer, unit or schedule exists. Scheduled runs need a staging environment with its own state directory and non-production secrets, and a signed chaos policy that names the blast radius, the abort criteria and an owner. The repository has none of these yet.
-- **Network-level faults.** TCP partitions and real latency need a staging host with `toxiproxy` or `tc netem` between the service and its upstream. The framework injects faults only at the OpenRouter seam.
+- **Network-level faults.** TCP partitions and real latency need a staging host with `toxiproxy` or `tc netem` between the service and its upstream. The framework injects faults only at the OpenRouter seam, not at the `plan` backend.
 - **Long-horizon trend charts.** The trend covers the local run history only. A time-series store is needed for charts over longer periods.
 
 ### Status

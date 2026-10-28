@@ -304,7 +304,7 @@ interface StubPlanner extends HeadlessPlanner {
 
 function stubPlanner(
 	enabled: boolean,
-	impl: Partial<Pick<HeadlessPlanner, "start" | "result">> = {},
+	impl: Partial<Pick<HeadlessPlanner, "start" | "result" | "backendReady">> = {},
 ): StubPlanner {
 	const stub: StubPlanner = {
 		enabled,
@@ -313,6 +313,7 @@ function stubPlanner(
 		shutdowns: 0,
 		serverIds: new Set(),
 		upstream: () => undefined,
+		backendReady: () => (impl.backendReady ? impl.backendReady() : { ok: true }),
 		async start(input) {
 			stub.starts.push(input);
 			if (impl.start) return impl.start(input);
@@ -1464,6 +1465,51 @@ describe("readiness and metrics endpoints", () => {
 		const plannerDown = await unconfigured.app.handle(new Request(`${ORIGIN}/readyz`), PEER);
 		expect(plannerDown.status).toBe(503);
 		expect((await json<{ failed: string[] }>(plannerDown)).failed).toEqual(["planner"]);
+	});
+
+	test("/readyz in plan mode needs the plan backend, not an OpenRouter key", async () => {
+		const planConfig = {
+			planningBackend: "plan",
+			planningModel: "claude-haiku-5-5",
+			openRouterApiKey: undefined,
+		} as const;
+		const ready = harness({
+			config: planConfig,
+			deps: { planner: stubPlanner(true, { backendReady: () => ({ ok: true }) }) },
+		});
+		const up = await ready.app.handle(new Request(`${ORIGIN}/readyz`), PEER);
+		expect(up.status).toBe(200);
+		const upBody = await json<{ checks: { planner: boolean } }>(up);
+		expect(upBody.checks.planner).toBe(true);
+
+		const down = harness({
+			config: planConfig,
+			deps: {
+				planner: stubPlanner(true, {
+					backendReady: () => ({ ok: false, detail: "claude CLI not found" }),
+				}),
+			},
+		});
+		const response = await down.app.handle(new Request(`${ORIGIN}/readyz`), PEER);
+		expect(response.status).toBe(503);
+		const text = await response.text();
+		const body: { failed: string[] } = JSON.parse(text);
+		expect(body.failed).toEqual(["planner"]);
+		expect(text).not.toContain("claude CLI not found");
+	});
+
+	test("/readyz on the default openrouter backend ignores the backend accessor and still needs key and model", async () => {
+		const notReady = { backendReady: () => ({ ok: false }) };
+		const keyed = harness({
+			config: { planningModel: "x-ai/grok-test", openRouterApiKey: FAKE_KEY },
+			deps: { planner: stubPlanner(true, notReady) },
+		});
+		expect((await keyed.app.handle(new Request(`${ORIGIN}/readyz`), PEER)).status).toBe(200);
+		const keyless = harness({
+			config: { planningModel: "x-ai/grok-test", openRouterApiKey: undefined },
+			deps: { planner: stubPlanner(true, { backendReady: () => ({ ok: true }) }) },
+		});
+		expect((await keyless.app.handle(new Request(`${ORIGIN}/readyz`), PEER)).status).toBe(503);
 	});
 
 	test("/metrics answers a loopback peer with Prometheus text and refuses everything else with 404", async () => {

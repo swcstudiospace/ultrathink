@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
 import { randomHash } from "../../../src/test.helpers.ts";
 import { ConfigError, loadConfig, requirePlanningModel, type ReasoningEffort } from "./config.ts";
 
@@ -1207,5 +1208,98 @@ describe("loadConfig chaos gate", () => {
 	test("ULTRATHINK_CHAOS other than 0 or 1 throws naming the variable", () => {
 		const message = messageOf(() => loadConfig(withEnv({ ULTRATHINK_CHAOS: "true" })));
 		expect(message).toContain("ULTRATHINK_CHAOS must be 0 or 1");
+	});
+});
+
+describe("planning backend", () => {
+	function planEnv(
+		extra: Record<string, string | undefined> = {},
+	): Record<string, string | undefined> {
+		return { ...baseEnv(), ULTRATHINK_PLANNING_BACKEND: "plan", ...extra };
+	}
+
+	test("defaults keep the openrouter backend, no fallback and concurrency 2", () => {
+		const config = loadConfig(baseEnv());
+		expect(config.planningBackend).toBe("openrouter");
+		expect(config.planFallback).toBe("none");
+		expect(config.planConcurrency).toBe(2);
+		expect(config.planningModel).toBeUndefined();
+		expect(config.serverPlanning).toBe(false);
+	});
+
+	test("openrouter mode still needs key and model, whatever the plan variables say", () => {
+		const config = loadConfig({
+			...baseEnv(),
+			ULTRATHINK_PLANNING_FALLBACK: "grok",
+			ULTRATHINK_PLAN_CONCURRENCY: "4",
+		});
+		expect(config.serverPlanning).toBe(false);
+		expect(config.planningModel).toBeUndefined();
+	});
+
+	test("plan mode needs no OpenRouter key, defaults the model and turns planning on", () => {
+		const config = loadConfig(planEnv());
+		expect(config.planningBackend).toBe("plan");
+		expect(config.openRouterApiKey).toBeUndefined();
+		expect(config.planningModel).toBe(ROUTE_DEFAULT_MODELS.claude);
+		expect(config.serverPlanning).toBe(true);
+		expect(requirePlanningModel(config)).toBe(ROUTE_DEFAULT_MODELS.claude);
+	});
+
+	test("plan mode takes ULTRATHINK_PLANNING_MODEL and still pattern-checks it", () => {
+		expect(
+			loadConfig(planEnv({ ULTRATHINK_PLANNING_MODEL: "claude-sonnet-5-5" })).planningModel,
+		).toBe("claude-sonnet-5-5");
+		const message = messageOf(() =>
+			loadConfig(planEnv({ ULTRATHINK_PLANNING_MODEL: "bad model name!" })),
+		);
+		expect(message).toContain("ULTRATHINK_PLANNING_MODEL");
+		expect(message).not.toContain("bad model name!");
+	});
+
+	test("ULTRATHINK_SERVER_PLANNING=0 disables plan mode planning", () => {
+		expect(loadConfig(planEnv({ ULTRATHINK_SERVER_PLANNING: "0" })).serverPlanning).toBe(false);
+	});
+
+	test("ULTRATHINK_SERVER_PLANNING=1 in plan mode needs nothing else", () => {
+		expect(loadConfig(planEnv({ ULTRATHINK_SERVER_PLANNING: "1" })).serverPlanning).toBe(true);
+	});
+
+	test("any other ULTRATHINK_SERVER_PLANNING value is still rejected in plan mode", () => {
+		const message = messageOf(() => loadConfig(planEnv({ ULTRATHINK_SERVER_PLANNING: "true" })));
+		expect(message).toContain("ULTRATHINK_SERVER_PLANNING");
+	});
+
+	test("an unknown backend throws a ConfigError naming the variable, not the value", () => {
+		const message = messageOf(() =>
+			loadConfig({ ...baseEnv(), ULTRATHINK_PLANNING_BACKEND: "sekrit-backend" }),
+		);
+		expect(message).toContain("ULTRATHINK_PLANNING_BACKEND");
+		expect(message).not.toContain("sekrit-backend");
+	});
+
+	test("the fallback accepts none and grok only", () => {
+		expect(loadConfig(planEnv({ ULTRATHINK_PLANNING_FALLBACK: "grok" })).planFallback).toBe("grok");
+		expect(loadConfig(planEnv({ ULTRATHINK_PLANNING_FALLBACK: "none" })).planFallback).toBe("none");
+		const message = messageOf(() =>
+			loadConfig(planEnv({ ULTRATHINK_PLANNING_FALLBACK: "sekrit-fallback" })),
+		);
+		expect(message).toContain("ULTRATHINK_PLANNING_FALLBACK");
+		expect(message).not.toContain("sekrit-fallback");
+	});
+
+	test("concurrency accepts 1..6 and rejects anything else", () => {
+		expect(loadConfig(planEnv({ ULTRATHINK_PLAN_CONCURRENCY: "1" })).planConcurrency).toBe(1);
+		expect(loadConfig(planEnv({ ULTRATHINK_PLAN_CONCURRENCY: "6" })).planConcurrency).toBe(6);
+		for (const value of ["0", "7", "2.5", "-1", "abc"]) {
+			const message = messageOf(() => loadConfig(planEnv({ ULTRATHINK_PLAN_CONCURRENCY: value })));
+			expect(message).toContain("ULTRATHINK_PLAN_CONCURRENCY");
+		}
+	});
+
+	test("an OpenRouter key in plan mode is still length-checked and never echoed", () => {
+		const message = messageOf(() => loadConfig(planEnv({ OPENROUTER_API_KEY: "short-fake" })));
+		expect(message).toContain("OPENROUTER_API_KEY");
+		expect(message).not.toContain("short-fake");
 	});
 });

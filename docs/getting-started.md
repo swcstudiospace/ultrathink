@@ -85,8 +85,9 @@ On a fresh install it looks like this (the state path is your home directory):
 
 ```text
 Prompt Uplift on
-Engine: claude:sonnet
-Grok: grok-4.7 @ xhigh · transport http
+Engine: claude:claude-haiku-5-5
+Claude: claude-haiku-5-5 · auth plan · fallback to Grok off
+Grok: grok-build-0.1 · transport http · then grok-4.7
 SuperGrok OAuth: not logged in (run grok login)
 Graph of Thought on
 HITL clarifications on · max 4
@@ -120,7 +121,7 @@ What happens:
 2. A summary line appears in the transcript, for example:
 
    ```text
-   Prompt Uplift · BUILD_PROMPT · llm · claude:sonnet [route default] · reason route-default-model · engine auto (config) · Graph of Thought · 6 nodes · HITL · 2 question(s) · Tracking · off · 48.3s
+   Prompt Uplift · BUILD_PROMPT · llm · claude:claude-haiku-5-5 [route default] · reason route-default-model · engine auto (config) · Graph of Thought · 6 nodes · HITL · 2 question(s) · Tracking · off · 48.3s
    ```
 
    `BUILD_PROMPT` is the kind of spec, `llm` means the engine wrote it (`fallback` means the engine failed and a minimal spec was used), then the planning model with why it was chosen and the engine you asked for, the node count, the open questions, the tracking state and the time taken.

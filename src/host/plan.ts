@@ -250,6 +250,7 @@ export async function planPrompt(
 				complete: engine.complete,
 				engine: engine.label,
 				engineError: engine.error,
+				engineFailover: engine.failover,
 				engineReport: engine.report,
 				modelResolution: resolution,
 				stateDir,

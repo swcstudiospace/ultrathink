@@ -273,8 +273,9 @@ Example `status` output on a fresh install (the state path is shortened):
 
 ```text
 Prompt Uplift on
-Engine: claude:sonnet
-Grok: grok-4.7 @ xhigh · transport http
+Engine: claude:claude-haiku-5-5
+Claude: claude-haiku-5-5 · auth plan · fallback to Grok off
+Grok: grok-build-0.1 · transport http · then grok-4.7
 SuperGrok OAuth: not logged in (run grok login)
 Graph of Thought on
 HITL clarifications on · max 4
@@ -297,8 +298,9 @@ What the lines can say:
 | Line | Values |
 |---|---|
 | `Prompt Uplift` | `on` or `off`, plus `(skipping next prompt)` while a `/ultrathink-skip` is armed. |
-| `Engine` | The current engine label: `claude:<model>` (`claude:session default` when `claude.model` is `""`), the Grok label (`<model>@<effort>`, or `<model>@shunt`), or `muse:<model>`. On a CLI route, a provider set in `models.hosts.<host>.provider` shows `<engine>:unresolved [transport-incompatible]`. On Omp with `auto` it is the planning model the session last used, for example `omp-native:<provider>/<model> [detected]`, or `omp-native:auto (live model not observed)` before the first plan and from a shell. |
-| `Grok` | Model, effort and transport. With `transport: "shunt"` it adds `<shuntBaseUrl>/v1/messages`, or `shunt gateway not configured (set grok.shuntBaseUrl)`, then the wire model and `max_tokens`. |
+| `Engine` | The current engine label: `claude:<model>` (`claude:session default` when `claude.model` is `""`), the Grok label (`<model>@<effort>` for a model that takes an effort, plain `<model>` otherwise, or `<model>@shunt`), or `muse:<model>`. On a CLI route, a provider set in `models.hosts.<host>.provider` shows `<engine>:unresolved [transport-incompatible]`. On Omp with `auto` it is the planning model the session last used, for example `omp-native:<provider>/<model> [detected]`, or `omp-native:auto (live model not observed)` before the first plan and from a shell. |
+| `Claude` | `claude.model`, `claude.auth` (`plan` or `api-key`) and whether `claude.fallbackToGrok` is on: `Claude: <model> · auth <plan\|api-key> · fallback to Grok <on\|off>`. |
+| `Grok` | Model, effort and transport: `Grok: <model> @ <effort> · transport <t>` when the model takes an effort (`grok-4.5`, `grok-4.6`, `grok-4.7`), otherwise `Grok: <model> · transport <t>`. When `grok.fallbackModels` is not empty, ` · then <models>` is appended. With `transport: "shunt"` it adds `<shuntBaseUrl>/v1/messages`, or `shunt gateway not configured (set grok.shuntBaseUrl)`, then the wire model and `max_tokens`. |
 | `SuperGrok OAuth` | The `grok login` state: the account and expiry, `not logged in (run grok login)`, `expired (run grok login)`, or `not used (shunt gateway owns upstream auth)`. |
 | `Tracking` | `on (Linear/Notion rows)`, `off (Linear/Notion rows)` after `/ultrathink-track off`, `on (not configured: …)` when neither tracker is set, or `kickoff (…)` when only the planner's own row creation is off. |
 | `Notion`, `Linear team` | The configured value or `not configured`. |
@@ -312,7 +314,7 @@ What the lines can say:
 | `RAGFlow` | Starts with `RAGFlow: `. `off (ULTRATHINK_RAGFLOW=0)`; `off (opt-in: set ragflow.enabled)`; `on · no URL (set ragflow.url or RAGFLOW_URL)`; `on · bad URL (<reason>)`; `on · no key (run bin/ultrathink-mcp auth set-key ragflow --stdin, or set RAGFLOW_API_KEY)`; or `on · <origin> · key from <store|RAGFLOW_API_KEY> · grounding on|off · <n> dataset(s) pinned` (or `all datasets`). |
 | `Teach` | Starts with `Teach: `. `off (opt-in: set teach.enabled)` while `teach.enabled` is false, even if `ULTRATHINK_TEACH=0` is set; `off (ULTRATHINK_TEACH=0)` when enabled and that variable is `0`; or `on · capture <mode> · recall on|off · <n> confirmed, <m> candidate · Hindsight <ready|off|no URL|bad URL|no key> · outbox <k>`. |
 | `Last` | Only after a plan: root element, source (`llm` or `fallback`) and node count of the last plan. |
-| `Last planned resolution` | Only after a plan that recorded its model: the model line of the last plan, for example `claude:sonnet [route default] · reason route-default-model · engine auto (config)`. It is what planned last time, not a live check. See [Planning model states](how-to/choose-engine.md#planning-model-states). |
+| `Last planned resolution` | Only after a plan that recorded its model: the model line of the last plan, for example `claude:claude-haiku-5-5 [route default] · reason route-default-model · engine auto (config)`. It is what planned last time, not a live check. See [Planning model states](how-to/choose-engine.md#planning-model-states). |
 
 The `Decisions:` line in full, in its three forms:
 
@@ -469,19 +471,20 @@ While Teachable Moments is off, `capture`, `confirm`, `forget`, `sync` and `prom
 
 ### `bin/ultrathink doctor`
 
-A static diagnosis that sends nothing anywhere: no network request, no `gh` and no `curl`. It reads the three config files for the current directory, the credential store and the host state directory. See [Diagnose with doctor](how-to/diagnose-with-doctor.md) (`docs/how-to/diagnose-with-doctor.md`).
+A diagnosis that sends nothing anywhere: no network request of its own, no `gh` and no `curl`. It reads the three config files for the current directory, the credential store and the host state directory. The `inference` section also runs two local probes, `claude --version` and `claude auth status --json`, each capped at 8 seconds. See [Diagnose with doctor](how-to/diagnose-with-doctor.md) (`docs/how-to/diagnose-with-doctor.md`).
 
 ```text
 Usage: ultrathink doctor [--json]
 ```
 
-Any other argument prints that line and exits 2. The report has six sections, `runtime`, `config`, `credentials`, `state`, `memory` and `pstack`, with one line per finding marked `✓` (ok), `i` (info), `!` (warning) or `✗` (error), and ends with `<n> errors, <n> warnings`. The `memory` section reads the Teachable Moments files only: it warns when Hindsight writes have waited in the outbox over 24 h and errors when the last three `teach observe` runs all failed (`distiller failed`, `lesson not saved`, `no engine` or `error`). `ULTRATHINK_TEACH=0` turns the `memory` section into one info line. `--json` prints one object, `{"ok","summary","findings"}`, instead.
+Any other argument prints that line and exits 2. The report has seven sections, `runtime`, `config`, `credentials`, `inference`, `state`, `memory` and `pstack`, with one line per finding marked `✓` (ok), `i` (info), `!` (warning) or `✗` (error), and ends with `<n> errors, <n> warnings`. The `memory` section reads the Teachable Moments files only: it warns when Hindsight writes have waited in the outbox over 24 h and errors when the last three `teach observe` runs all failed (`distiller failed`, `lesson not saved`, `no engine` or `error`). `ULTRATHINK_TEACH=0` turns the `memory` section into one info line. `--json` prints one object, `{"ok","summary","findings"}`, instead.
 
 | What it reports | Findings |
 |---|---|
 | `runtime` | Bun 1.2 or later, `git`, `gh` (a warning only when `ship.enabled` is on), whether a GitHub token variable or a gh hosts file exists (not verified), Python 3.10 or later (info only), the detected host. |
 | `config` | Per file: not found (info), invalid JSON or not an object (error), unknown section or key with a `Did you mean …?`, a wrong type, a value the merge ignores or adjusts with the effective value, and a key a project file may not set (info, by design). |
 | `credentials` | Present or missing, by provider name only, for the features that are switched on, with the command that stores a missing one. |
+| `inference` | The Claude and Grok routes. `claude --version` against the minimum Claude Code version that `claude.model` needs (2.1.293 for `claude-haiku-5-5` and `haiku`, 2.1.284 for `claude-sonnet-5-5` and `sonnet`, 2.1.280 for `claude-opus-5-5` and `opus`; a warning with `claude update` when older, a warning when the CLI is missing); `claude auth status --json` run with the environment the planner will use (with `claude.auth: "plan"`: `Claude auth: plan login (<subscription>)`, or a warning `Claude auth: no plan login` with the fix `claude` then `/login`, or `claude setup-token` and `CLAUDE_CODE_OAUTH_TOKEN`); an info line when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set but ignored for planning (the name, never the value); the Grok login (account and expiry, a warning when expired, a warning when missing while `claude.fallbackToGrok` is on or the engine resolves to Grok, otherwise info that the Grok route is not in use); whether the Claude to Grok fallback is on and with which models; and the configured Claude and Grok models, noting a pinned `claude.model`. A probe that cannot run is skipped, not an error. |
 | `state` | Missing or unwritable directory, session count, size and oldest age (a warning above 500 sessions or 100 MB, with the hint `ultrathink prune --older-than 30 --dry-run`), session and carrier files that group or others can read, and `*.tmp` and `*.lock` files in `sessions/` older than one hour. |
 | `memory` | The Teachable Moments memory bank: Hindsight outbox age (a warning when a write has waited 24 h or more, with `bin/ultrathink teach sync`), the last `teach observe` runs from `<stateDir>/teach/runs/` (an error when the newest three all failed with `distiller failed`, `lesson not saved`, `no engine` or `error`), observe digests in the inbox that were never processed (a warning when one is over an hour old), and the number of local lessons with the age of the newest capture. The age is read from each lesson's own `lastSeenAt` and `createdAt`, because a lesson file's modification time also moves when Hindsight confirms the write or a plan recalls the lesson. It is a warning when the newest capture is over 3 days old, a session record was written in the last 24 hours and no `teach observe` run was recorded in the last 3 days (a run that found nothing teachable proves the hand-off works), unless `teach.capture` is `explicit`. A single info line when `teach.enabled` is off or `ULTRATHINK_TEACH=0` is set. |
 | `pstack` | Enabled or disabled, with the user file that decided it (a project file cannot enable it); the resolved plugin path and version; each stage's skills, with a warning for a mapped name that has no `SKILL.md`; whether the Cursor `beforeSubmitPrompt` hook is installed. Warnings only matter once the bridge is enabled. See [Run pstack skills beside GSD in Cursor](how-to/use-pstack-with-cursor.md). |

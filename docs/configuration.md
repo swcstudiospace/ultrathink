@@ -42,7 +42,7 @@ How the merge works (`src/config.ts`):
 - A value with the wrong type or outside its allowed range is ignored, and the value from the earlier file (or the default) stays.
 - Some string keys only accept a non-empty value, so an empty string in a later file does not clear a value an earlier file set: `notion.dataSourceUrl`, `linear.team`, `grok.baseUrl`, `grok.model`, `grok.bin`, `grok.shuntModel`, `claude.bin`, `decisions.model`, `hindsight.url`, `hindsight.bank`, `ragflow.url`, and the URL keys `grok.shuntBaseUrl` and `substrate.url`. To stop row creation, use `/ultrathink-track off` (see [Turning tracking off](tracking.md#turning-tracking-off)). To turn the Agent Substrate brief off, set `SUBSTRATE_DISABLED=1`.
 - The URL keys `grok.shuntBaseUrl` and `substrate.url` must be `http://` or `https://` URLs. Trailing slashes are removed.
-- The project file cannot set `claude.bin`, `claude.fallbackToLogin`, `claude.settingSources`, `grok.bin`, `grok.home`, `grok.baseUrl`, `grok.shuntBaseUrl` or `muse.bin`. Together they choose which program runs, which credential the `claude` child uses, where your Grok login is read from, and which URLs receive your prompts and Grok token. A cloned repository must not choose these, so only the two user files set them and a project value is ignored. `grok.baseUrl` and `grok.shuntBaseUrl` must be `http://` or `https://` URLs.
+- The project file cannot set `claude.bin`, `claude.auth`, `claude.fallbackToGrok`, `claude.settingSources`, `grok.bin`, `grok.home`, `grok.baseUrl`, `grok.shuntBaseUrl` or `muse.bin`. Together they choose which program runs, which credential the `claude` child uses, whether a failed Claude call sends your prompt text to xAI, where your Grok login is read from, and which URLs receive your prompts and Grok token. A cloned repository must not choose these, so only the two user files set them and a project value is ignored. `grok.baseUrl` and `grok.shuntBaseUrl` must be `http://` or `https://` URLs.
 - Millisecond budgets are capped at 2147483647 ms, the timer maximum. A larger value is set to the cap, not rejected, and `0` still means no timer. The capped keys are `claude.callTimeoutMs`, `claude.budgetMs`, `grok.callTimeoutMs`, `muse.callTimeoutMs` and `track.budgetMs`.
 - `pstack` is user-only. The merge ignores a project file's whole `pstack` section, so `pstack.enabled: true` there does not turn the Cursor bridge on. The Cursor hook never reads the project file. See [`pstack`](#pstack-cursor-bridge).
 - The project file can only make Jev decisions more restrictive: there, `decisions.zdr` can only turn zero data retention on (a `false` is ignored), and `decisions.points` can only drop points (it is intersected with the list from the earlier files, or the default). `decisions.enabled` is ignored in every file: Jev is always on, and only `ULTRATHINK_DECISIONS=0` turns it off. The other `decisions` keys (`provider`, `model`, `timeoutMs` and the thresholds) merge as usual, and the two user files merge every key as usual. See [`decisions`](#decisions-jev-decisions-openrouter-decisions-api).
@@ -94,13 +94,14 @@ How the knowledge-base read works when `knowledgeBase` is `true` (see [Use the G
 
 ### `claude`: the Claude engine
 
-The Claude engine runs the `claude` CLI headless. It uses your existing Claude Code login.
+The Claude engine runs the `claude` CLI headless. It uses your Claude plan login (Pro, Max, Team or Enterprise) by default; see `claude.auth` below.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `bin` | string | `"claude"` | The `claude` binary. |
-| `fallbackToLogin` | boolean | `false` | When `ANTHROPIC_API_KEY` is set and a `claude` call fails with an authentication or billing error (HTTP 401 or 403, `Credit balance is too low`, `invalid x-api-key`), retry that call once without the key so the CLI uses your claude.ai login. |
-| `model` | string | `"sonnet"` | Model alias or name for the planning calls. `""` uses the CLI's default model. |
+| `auth` | `"plan"` or `"api-key"` | `"plan"` | Which credential the `claude` child uses. `plan` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and `CLAUDE_CODE_USE_FOUNDRY` from the child's environment, so your plan login (or `CLAUDE_CODE_OAUTH_TOKEN`) authenticates. `api-key` passes the environment through unchanged. User files only; a project file cannot set it. |
+| `fallbackToGrok` | boolean | `false` | When a `claude` call fails for a reason that can clear on another vendor (authentication, billing, plan limit, rate limit, overload, model unavailable, CLI missing, network error), plan that call with the Grok route instead. Your prompt text then goes to xAI, so it is an explicit opt-in. User files only; a project file cannot set it. See [failover](#claude-and-grok-failover). |
+| `model` | string | `"claude-haiku-5-5"` | Model alias or name for the planning calls. `""` uses the CLI's default model. `claude-haiku-5-5` needs Claude Code 2.1.293 or newer. |
 | `thinking` | boolean | `false` | Allow extended thinking in the planning calls. Slower. When `false`, the child calls run with `MAX_THINKING_TOKENS=0`. |
 | `settingSources` | string | `""` | Passed as `--setting-sources` to the planning calls. `""` loads none, which is fastest and keeps other hooks out of the child calls. |
 | `callTimeoutMs` | number, >= 0 | `0` | Timeout for one planning call. `0` means no timer. |
@@ -108,7 +109,13 @@ The Claude engine runs the `claude` CLI headless. It uses your existing Claude C
 | `concurrency` | number, > 0 | `3` | Node fills that run in parallel within one dependency level. Rounded down, at least 1. |
 | `echo` | boolean | `true` | Show a one-line summary to the user after each plan. |
 
-`claude.fallbackToLogin` is for the case where `ANTHROPIC_API_KEY` is set but cannot pay (for example `Credit balance is too low`): the `claude` CLI prefers the key over your claude.ai login. With it on, such a failed call is retried once with the key removed from the child's environment, so it runs on your claude.ai subscription instead of API billing. That applies to every `claude` CLI call: the planner, the Teachable Moments lesson distiller and the ship judge. The retry gets its own `callTimeoutMs` window, and timeouts, aborts and other errors are never retried. It is off by default, and only the user files can set it.
+`claude.auth: "plan"` is the default because the `claude` CLI ranks credentials as: cloud provider, then `ANTHROPIC_AUTH_TOKEN`, then `ANTHROPIC_API_KEY` (always used in `-p` mode), then `apiKeyHelper`, then `CLAUDE_CODE_OAUTH_TOKEN`, then your `/login` subscription. An exported `ANTHROPIC_API_KEY` therefore always wins over your plan login in `claude -p`; when that key has no credit, every call fails with `Credit balance is too low`. With `auth: "plan"` the key never reaches the child, so the call runs on your plan and counts against its usage limits (the 5-hour session and weekly limits). Max and Team monthly API credits do not cover plan-login `claude -p`. For a headless machine, run `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN`; the plan mode keeps it. This applies to every `claude` CLI call: the planner, the Teachable Moments lesson distiller and the ship judge. Other tools on the machine, including an interactive `claude`, still use `ANTHROPIC_API_KEY` if it is exported. Set `auth: "api-key"` only if you really bill planning to an API key.
+
+The plan is the plan holder's own. Anthropic does not permit routing other people's requests through plan credentials, so do not use this for a shared or multi-user setup. `claude.fallbackToLogin`, from an earlier unreleased build, was removed and replaced by `claude.auth`; an old key in a config file is ignored.
+
+#### Claude and Grok failover
+
+With `claude.fallbackToGrok: true`, a failed Claude call is retried on the Grok route (`grok.model`, then `grok.fallbackModels`) when the Grok route is usable: a signed-in, unexpired `grok login` session for `http` and `cli`, or `grok.shuntBaseUrl` for `shunt`. Failures that fail over: authentication, billing, plan limit, rate limit, overload, model unavailable, CLI missing and network error. Timeouts, aborts and other errors do not. Within one failover chain, that is one planning run in one process, a failed candidate is skipped for a cooldown so the later stage calls of that run do not retry it: authentication 10 minutes, billing 60 minutes, plan limit 15 minutes, rate limit 60 seconds, overload 30 seconds, model unavailable 60 minutes, CLI missing 60 minutes, network error 30 seconds. The cooldown is not kept across prompts: each new hook process tries the configured model once, and a refused model costs one quick failed request before the fallback answers. The hosted service keeps its chain for the life of the process. A successful failover is not an error: the summary shows `Failover · claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)` and the session record stores it as `engineFailover`, on the hosted service as well as locally. When every candidate fails, the summary reports `Engine error · ...` as before.
 
 ### `grok`: the Grok engine
 
@@ -119,12 +126,13 @@ Used when the engine resolves to Grok: on Grok Build by default, or anywhere wit
 | `enabled` | boolean | `true` | When `false`, the Claude engine is used even if `think.engine` is `"grok"`. The plan's model line then reads `claude:<model> [configured fallback · grok unavailable]`. |
 | `transport` | `"http"`, `"cli"` or `"shunt"` | `"http"` | `http`: POST `{baseUrl}/responses` with your `grok login` token. `cli`: run the `grok` binary. `shunt`: POST `{shuntBaseUrl}/v1/messages` on an Anthropic-compatible gateway that you run, with no auth. |
 | `baseUrl` | string | `"https://cli-chat-proxy.grok.com/v1"` | Base URL for the `http` transport. Trailing slashes are removed. |
-| `model` | string | `"grok-4.7"` | Model for `http` and `cli`, and for `shunt` when `shuntModel` is empty. |
-| `reasoningEffort` | `"low"`, `"medium"`, `"high"` or `"xhigh"` | `"xhigh"` | Reasoning effort for `http` and `cli`. |
+| `model` | string | `"grok-build-0.1"` | Model for `http` and `cli`, and for `shunt` when `shuntModel` is empty. A model the session cannot use (HTTP 429 with a limit of 0, HTTP 403 "requires a Grok subscription", or the CLI's "unknown model id") is skipped and the route continues with `fallbackModels`. |
+| `fallbackModels` | array of strings | `["grok-4.7"]` | Models tried, in order, after `model` for `http` and `cli`. Entries are trimmed and deduplicated, at most 8. `[]` means no fallback model. A project file may set it, like `grok.model`. |
+| `reasoningEffort` | `"low"`, `"medium"`, `"high"` or `"xhigh"` | `"xhigh"` | Reasoning effort for `http` and `cli`. Sent only to `grok-4.5`, `grok-4.6` and `grok-4.7` (`grok-4.5` treats `xhigh` as `high`). Other models, including `grok-build-0.1`, get no effort, and their labels carry no `@effort`. |
 | `bin` | string | `"grok"` | The `grok` binary. |
 | `home` | string | `""` | Grok home directory, used to find the `grok login` session. `""` means `$GROK_HOME`, else `~/.grok`. |
 | `callTimeoutMs` | number, >= 0 | `0` | Timeout for one call. `0` means no timer; the host's hook timeout is the limit. |
-| `fallbackToClaude` | boolean | `false` | When the Grok login is missing or expired (`http` and `cli` transports), plan with Claude instead; the plan's model line then reads `claude:<model> [configured fallback · grok unavailable]`. When `false`, the prompt is not planned and the hook reports ``Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)``. This applies on Grok Build under `auto` too. |
+| `fallbackToClaude` | boolean | `false` | When the Grok login is missing or expired (`http` and `cli` transports), plan with Claude instead; the plan's model line then reads `claude:<model> [configured fallback · grok unavailable]`. When `false`, the prompt is not planned and the hook reports ``Prompt Uplift skipped · Grok login required (run `grok login`)``. This applies on Grok Build under `auto` too. |
 | `shuntBaseUrl` | http(s) URL | `""` | Base URL of your gateway for `shunt`; `/v1/messages` is appended. There is no built-in gateway: with `transport: "shunt"` and this key empty, the prompt is not planned and nothing is sent. The hook reports ``Prompt Uplift skipped · grok:unresolved [transport-incompatible]``, and no rows are created. Claude is not used instead: `fallbackToClaude` only applies to a missing Grok login. |
 | `shuntModel` | string | `""` | Model name sent to the gateway. `""` sends `model`. |
 | `shuntMaxTokens` | integer, > 0 | `8192` | `max_tokens` for `shunt` calls. |
@@ -148,10 +156,10 @@ With `think.engine` set to `"auto"` (the default), each host plans with its own 
 
 | Host | Engine | Model |
 |---|---|---|
-| Claude Code | Claude | `claude.model` (`"sonnet"`) |
+| Claude Code | Claude | `claude.model` (`"claude-haiku-5-5"`) |
 | Hermes Agent | Chosen by the session model's family | The Claude, Grok or Muse route, picked from the model id Hermes sends; Claude when the family is unknown. The route then uses its own model key. |
 | Omp | Native | The session's own live model, called inside Omp through Omp's own provider and login. See [`models`](#models-planning-model-selection). |
-| Grok Build | Grok | `grok.model` (`"grok-4.7"`) |
+| Grok Build | Grok | `grok.model` (`"grok-build-0.1"`, then `grok.fallbackModels`) |
 | Muse Code | Muse | `muse.model` (`"muse-spark-1.3-contributor"`) |
 
 On Omp, `auto` plans natively. ultrathink copies the session's live model once per prompt and runs the uplift, the graph, every node fill and the clarifying questions on that copy, through Omp's own provider and login. Nothing is read from Omp's saved session history, and the model is not mapped to a Claude, Grok or Muse family. When no model can be used, the prompt goes through unplanned and the reason is shown (see [the four states](how-to/choose-engine.md#planning-model-states)). A named engine (`think.engine`, or `bin/ultrathink grok engine …` for Omp) opts Omp out of native planning and uses that engine's CLI route. Omp's auxiliary helpers, the ship done check and the Teachable Moments distiller, are never native: they use the Claude CLI route under `auto`, or the named engine.
@@ -164,7 +172,7 @@ Hermes sends its session's model id, and ultrathink picks the Claude, Grok or Mu
 
 Claude replaces a selected Grok route only through the two explicit, labeled user switches: `grok.fallbackToClaude: true` (HTTP/CLI login missing or expired) and `grok.enabled: false` (documented ‘forces Claude even when Grok is selected’). Without them, a missing or expired Grok login skips planning with the unchanged `GROK_LOGIN_REQUIRED` notice. Naming `think.engine: "claude"` is a deliberate engine choice, not a replacement.
 
-The notice reads ``Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)``. Set `think.engine` to a named engine to plan with one engine on every host. Teachable Moments are stored per host (see [`teach`](#teach-teachable-moments)), so every host keeps its own lessons whichever engine it plans with.
+The notice reads ``Prompt Uplift skipped · Grok login required (run `grok login`)``. Set `think.engine` to a named engine to plan with one engine on every host. Teachable Moments are stored per host (see [`teach`](#teach-teachable-moments)), so every host keeps its own lessons whichever engine it plans with.
 
 ### Route defaults
 
@@ -172,11 +180,11 @@ The CLI routes take their built-in model from one version-controlled map, `ROUTE
 
 | Route | Built-in model | Key that replaces it |
 |---|---|---|
-| `claude` | `sonnet` | `claude.model` |
-| `grok` | `grok-4.7` | `grok.model` (on `shunt`, a non-empty `grok.shuntModel` is sent instead) |
+| `claude` | `claude-haiku-5-5` | `claude.model` |
+| `grok` | `grok-build-0.1` | `grok.model` (on `shunt`, a non-empty `grok.shuntModel` is sent instead) |
 | `muse` | `muse-spark-1.3-contributor` | `muse.model` |
 
-- Unset in every config file, a route uses its map entry. The record says `default`, source `route-default`, and the label reads, for example, `claude:sonnet [route default]`.
+- Unset in every config file, a route uses its map entry. The record says `default`, source `route-default`, and the label reads, for example, `claude:claude-haiku-5-5 [route default]`.
 - Set in any config file, the value is an override (`override`, source `engine-model`), even when it equals the built-in model.
 - `""` for `claude.model` or `muse.model` omits `--model`, so the CLI's own default model answers: `claude:CLI default (model unobserved)`. A blank `grok.model` or `grok.shuntModel` is ignored, as before.
 - Nonblank legacy model and shunt-alias values retain leading or trailing control characters for `selector-invalid` rejection before auth or execution; trimming cannot turn an invalid selector into a valid target. Whitespace-only values keep the clearing and lower-pin rules above.
@@ -471,8 +479,9 @@ All keys are optional; write only the ones you change. This file shows every key
   "hitl": { "enabled": true, "maxQuestions": 4, "knowledgeBase": false },
   "claude": {
     "bin": "claude",
-    "fallbackToLogin": false,
-    "model": "sonnet",
+    "auth": "plan",
+    "fallbackToGrok": false,
+    "model": "claude-haiku-5-5",
     "thinking": false,
     "settingSources": "",
     "callTimeoutMs": 0,
@@ -484,7 +493,8 @@ All keys are optional; write only the ones you change. This file shows every key
     "enabled": true,
     "transport": "http",
     "baseUrl": "https://cli-chat-proxy.grok.com/v1",
-    "model": "grok-4.7",
+    "model": "grok-build-0.1",
+    "fallbackModels": ["grok-4.7"],
     "reasoningEffort": "xhigh",
     "bin": "grok",
     "home": "",

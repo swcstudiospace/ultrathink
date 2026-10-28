@@ -24,13 +24,14 @@ Run it from the project you have the problem in: the project file `<cwd>/.claude
 
 ## What it checks
 
-The report has five sections, always in this order.
+The report has six sections, always in this order.
 
 | Section | What doctor looks at |
 |---|---|
 | `runtime` | Bun 1.2 or later (error below that), `git` on `PATH` (error when missing), `gh` on `PATH` (a warning only while `ship.enabled` is on, otherwise info), and Python 3.10 or later (info only: just the Hermes and Prime Agent hosts need it). It also names the detected host. For `gh` it reports whether `GH_TOKEN` or `GITHUB_TOKEN` is set or a gh hosts file exists, and says that authentication is not verified. |
 | `config` | The three config files, lowest precedence first: `${XDG_CONFIG_HOME:-~/.config}/ultrathink/config.json`, `${CLAUDE_CONFIG_DIR:-~/.claude}/ultrathink.json` and `<cwd>/.claude/ultrathink.json`. See below. |
 | `credentials` | For each feature your config switches on, whether its provider has a credential. Providers are named as present or missing and nothing more. |
+| `inference` | The Claude and Grok logins planning runs on: the `claude` CLI and its version, the auth method it reports, an `ANTHROPIC_API_KEY` that planning ignores, the Grok session, the Claude to Grok fallback and the effective models. See [Inference](#inference). |
 | `state` | The state directory: whether it exists and is writable, how many session records it holds and how large they are, which files other users can read, and leftover temporary and lock files. |
 | `pstack` | The Cursor bridge: whether it is enabled and which user file decided that (a project file cannot enable it), the resolved pstack plugin path and version, each stage's skills (a warning for a mapped name with no `SKILL.md`), and whether the `beforeSubmitPrompt` hook is installed. Info when the bridge is off. See [Run pstack skills beside GSD in Cursor](use-pstack-with-cursor.md). |
 
@@ -80,9 +81,29 @@ A missing credential for a feature you turned on is a warning, with the command 
 | Session, carrier, control or last files that group or others can read | warn, with the fix `chmod -R go-rwx <dir>`. ultrathink writes new files with mode `0600`. |
 | `*.tmp` or `*.lock` regular files in the state root or `sessions/` older than one hour | warn: possible write leftovers. Pruning still preserves a strict `last.json` lock whose PID is alive. |
 
+### Inference
+
+The `inference` section looks at the two coding-plan logins that planning runs on: Claude first, Grok as the opt-in fallback. The plan is the plan holder's own login; Anthropic does not permit routing other people's requests through plan credentials. Doctor starts two local commands, `claude --version` and `claude auth status --json`, and makes no network request itself. When `claude.auth` is `"plan"` it runs the second one with the same environment the planning child gets, minus `ANTHROPIC_API_KEY` and the other scrubbed variables. A probe that cannot run skips its finding; it is never an error. Doctor prints a variable's name, never its value.
+
+| Finding | Level | Meaning |
+|---|---|---|
+| `claude <v>` | ok | The `claude` CLI is installed and new enough for `claude.model`. `claude-haiku-5-5` needs 2.1.293, `claude-sonnet-5-5` 2.1.284, `claude-opus-5-5` 2.1.280. |
+| `claude CLI not found: the Claude route cannot plan` | warn | No `claude` on `PATH`. Install Claude Code. |
+| `claude <v> is older than <min>, which <model> needs` | warn | Fix: `claude update`. |
+| `Claude auth: plan login (<plan>)` | ok | `claude auth status` reports a claude.ai login. |
+| `Claude auth: no plan login` | warn | Run `claude` and sign in with `/login`, or run `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN`. |
+| `Claude auth: API key (claude.auth is api-key)` | info | You opted into the key. A warning follows when neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_AUTH_TOKEN` is set. |
+| `ANTHROPIC_API_KEY is set and ignored for planning (claude.auth is plan)` | info | Planning ignores it, but an interactive `claude` still uses it and bills the API. Unset it where your shell or service sets it. |
+| `Grok login: <account> expires in <age>` | ok | A signed-in, unexpired Grok session. |
+| `Grok login expired` | warn | Fix: `grok login`. |
+| `Grok login: not signed in` | warn or info | A warning when `claude.fallbackToGrok` is on or the engine resolves to Grok; otherwise info, because the Grok route is not in use. |
+| `Grok route uses a shunt gateway` | info | The `shunt` transport has no login to check. |
+| `Claude to Grok fallback: off` or `on (models …)` | info | The state of `claude.fallbackToGrok` and the Grok models the fallback would walk. |
+| `Models: claude …, grok … then …` | info | The effective models. A detail says when `claude.model` is pinned in config rather than the route default. |
+
 ## What it never does
 
-- It makes no network request and starts neither `gh` nor `curl`. It does not run `gh auth status`, which contacts GitHub. Whether a token works is something only a live probe can tell you (see [What to run next](#what-to-run-next)).
+- It makes no network request and starts neither `gh` nor `curl`. The only programs it starts are `claude --version` and `claude auth status --json`, both local (see [Inference](#inference)). It does not run `gh auth status`, which contacts GitHub. Whether a token works is something only a live probe can tell you (see [What to run next](#what-to-run-next)).
 - It never prints a credential: not the value, not a prefix of it, not its length. Effective URL values omit username/password before formatting; every line also passes through shared secret redaction.
 - It never opens a session record. It only looks at their names, sizes, ages and permissions, and it prints none of the names.
 - It never writes or deletes anything and never changes your config.
@@ -110,6 +131,15 @@ credentials
   i Jev decisions: no OpenRouter or Vercel AI Gateway key
       Decision points are skipped without one; planning continues.
       fix: bin/ultrathink-mcp auth set-key openrouter --stdin (or vercel)
+inference
+  ✓ claude 2.1.301
+  ✓ Claude auth: plan login (max)
+  i ANTHROPIC_API_KEY is set and ignored for planning (claude.auth is plan)
+      Other tools, including an interactive claude, still use it and bill the API
+      fix: Unset it where your shell or service sets it
+  ✓ Grok login: you@example.com expires in 6d
+  i Claude to Grok fallback: off (claude.fallbackToGrok is false)
+  i Models: claude claude-haiku-5-5, grok grok-build-0.1 then grok-4.7
 state
   ✓ State directory is writable: /home/you/.claude/ultrathink
   i 12 session records, 96.4 KB, oldest 9 days old

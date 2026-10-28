@@ -120,7 +120,7 @@ describe("Omp planning is native (D-06, D-09)", () => {
 				engineSelection: { engine: "claude", source, nativeOptOut: true },
 				modelId: ROUTE_DEFAULT_MODELS.claude,
 				modelKnown: true,
-				label: "claude:sonnet [route default]",
+				label: "claude:claude-haiku-5-5 [route default]",
 			});
 		}
 		const blank = mergeConfig({ think: { engine: "muse" }, muse: { model: "" } }, defaultConfig());
@@ -154,7 +154,7 @@ describe("Omp planning is native (D-06, D-09)", () => {
 		const selected = engineOf(
 			await selectEngine(config, {}, "/repo", { host: "omp", purpose: "auxiliary", native }),
 		);
-		expect(selected.label).toBe("claude:sonnet");
+		expect(selected.label).toBe("claude:claude-haiku-5-5");
 		expect(selected.resolution).toMatchObject({
 			state: "default",
 			transport: "claude-cli",

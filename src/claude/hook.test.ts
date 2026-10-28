@@ -139,7 +139,7 @@ function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup:
 		config: trackedConfig(),
 		control: {},
 		complete: async () => "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>",
-		engine: "claude:sonnet",
+		engine: "claude:claude-haiku-5-5",
 		stateDir: dir,
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),
 		brief: async () => "",
@@ -196,6 +196,43 @@ describe("runPromptSubmit", () => {
 			expect(ctx).toContain("## Planning degraded");
 			expect(ctx).toContain("No tracker rows were created for this plan, and none will be.");
 			expect(result.output?.systemMessage).toContain("Engine error · boom");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a failover is persisted and summarized only when the engine reports one", async () => {
+		const failover = "claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)";
+		const withFailover = baseDeps({ engineFailover: () => failover });
+		try {
+			const result = await runPromptSubmit(input, withFailover.deps);
+			expect(result.record?.engineFailover).toBe(failover);
+			expect(readSession(withFailover.deps.stateDir, "s1")?.engineFailover).toBe(failover);
+			expect(result.output?.systemMessage).toContain(`Failover · ${failover}`);
+		} finally {
+			withFailover.cleanup();
+		}
+		const without = baseDeps({ engineFailover: () => undefined });
+		try {
+			const result = await runPromptSubmit(input, without.deps);
+			expect(result.record).not.toHaveProperty("engineFailover");
+			expect(readSession(without.deps.stateDir, "s1")).not.toHaveProperty("engineFailover");
+			expect(result.output?.systemMessage).not.toContain("Failover");
+		} finally {
+			without.cleanup();
+		}
+	});
+
+	test("reading a record drops a non-string engineFailover", async () => {
+		const { deps, cleanup } = baseDeps();
+		try {
+			const result = await runPromptSubmit(input, deps);
+			const record = result.record as SessionRecord;
+			writeSession(deps.stateDir, {
+				...record,
+				engineFailover: 42 as unknown as string,
+			});
+			expect(readSession(deps.stateDir, "s1")).not.toHaveProperty("engineFailover");
 		} finally {
 			cleanup();
 		}
@@ -3425,7 +3462,7 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			expect(readSession(deps.stateDir, "s1")?.modelResolution).toEqual(RESOLUTION);
 			expect(events[0]).toMatchObject({
 				type: "begin",
-				engine: "claude:sonnet",
+				engine: "claude:claude-haiku-5-5",
 				modelResolution: RESOLUTION,
 			});
 			expect(events.at(-1)).toEqual({

@@ -360,19 +360,76 @@ describe("runControl", () => {
 		expect(set).toContain("wire model wire-x");
 	});
 
+	test("status lines show the Claude route and the Grok model chain by default", async () => {
+		projectConfig({ grok: { home: join(dir, "grok"), transport: "http" } });
+		const lines = (await runControl(["status"], io)).split("\n");
+		const engine = lines.findIndex((line) => line.startsWith("Engine:"));
+		expect(lines[engine + 1]).toBe("Claude: claude-haiku-5-5 · auth plan · fallback to Grok off");
+		expect(lines[engine + 2]).toBe("Grok: grok-build-0.1 · transport http · then grok-4.7");
+	});
+
+	test("status shows claude.auth api-key and claude.fallbackToGrok when set in user config", async () => {
+		userServices({ claude: { auth: "api-key", fallbackToGrok: true } });
+		expect(await statusLine("Claude:")).toBe(
+			"Claude: claude-haiku-5-5 · auth api-key · fallback to Grok on",
+		);
+	});
+
+	test("status shows the effort for a model that supports it and hides the then part for no fallbacks", async () => {
+		projectConfig({
+			grok: { home: join(dir, "grok"), transport: "http", model: "grok-4.7", fallbackModels: [] },
+		});
+		expect(await statusLine("Grok:")).toBe("Grok: grok-4.7 @ xhigh · transport http");
+	});
+
+	test("status prints the effort actually sent: grok-4.5 maps xhigh to high", async () => {
+		projectConfig({
+			grok: { home: join(dir, "grok"), transport: "http", model: "grok-4.5", fallbackModels: [] },
+		});
+		expect(await statusLine("Grok:")).toBe("Grok: grok-4.5 @ high · transport http");
+	});
+
+	test("status masks unsafe fallback and Claude model ids", async () => {
+		userServices({ claude: { model: "user:private@model" } });
+		projectConfig({
+			grok: {
+				home: join(dir, "grok"),
+				transport: "http",
+				fallbackModels: ["user:private@model", "grok-4.7"],
+			},
+		});
+		const text = await runControl(["status"], io);
+		expect(text).not.toContain("private");
+		expect(await statusLine("Claude:")).toBe(
+			"Claude: <opaque-model> · auth plan · fallback to Grok off",
+		);
+		expect(await statusLine("Grok:")).toBe(
+			"Grok: grok-build-0.1 · transport http · then <opaque-model>, grok-4.7",
+		);
+	});
+
+	test("the shunt status keeps its gateway extension after the then part", async () => {
+		projectConfig({ grok: { home: join(dir, "grok"), model: "grok-test", transport: "shunt" } });
+		expect(await statusLine("Grok:")).toBe(
+			"Grok: grok-test · transport shunt · then grok-4.7 · shunt gateway not configured (set grok.shuntBaseUrl) · wire model grok-test · max_tokens 8192",
+		);
+	});
+
 	test("the legacy think, hitl, grok and last scopes keep working", async () => {
 		expect(await runControl(["think", "off"], io)).toBe("Graph of Thought off");
 		expect(await runControl(["think"], io)).toBe("Graph of Thought off");
 		expect(await runControl(["hitl", "off"], io)).toBe("HITL clarifications off");
 		expect(await runControl(["grok", "engine", "claude"], io)).toBe(
-			"Thinking engine set to claude:sonnet",
+			"Thinking engine set to claude:claude-haiku-5-5",
 		);
 		expect(readControl(io.stateDir)).toEqual({
 			thinkEnabled: false,
 			hitlEnabled: false,
 			engine: "claude",
 		});
-		expect(await runControl(["grok"], io)).toStartWith("Engine: claude:sonnet\nGrok: ");
+		expect(await runControl(["grok"], io)).toStartWith(
+			"Engine: claude:claude-haiku-5-5\nClaude: claude-haiku-5-5 · auth plan · fallback to Grok off\nGrok: ",
+		);
 		expect(await runControl(["last"], io)).toBe("No uplift recorded yet");
 		expect(await runControl(["think", "last"], io)).toBe("No thought graph recorded yet");
 	});
@@ -413,7 +470,7 @@ describe("runControl", () => {
 		test("the universal Model line is gone: the engine request, its source and concurrency show apart from model state", async () => {
 			const lines = await statusLines({ host: "claude-code" });
 			expect(lines.some((line) => line.startsWith("Model:"))).toBe(false);
-			expect(lines).toContain("Engine: claude:sonnet");
+			expect(lines).toContain("Engine: claude:claude-haiku-5-5");
 			expect(lines).toContain("Engine request: auto (config) · concurrency 3");
 			expect(lines.some((line) => line.startsWith("Last planned resolution:"))).toBe(false);
 		});
@@ -483,8 +540,8 @@ describe("runControl", () => {
 					const text = await runControl(args, { ...io, host: "grok-build" });
 					expect(text).not.toContain(sentinel);
 					expect(text).not.toContain("model.invalid");
-					expect(text).toContain("Engine: <opaque-model>@xhigh");
-					expect(text).toContain(`Grok: <opaque-model> @ xhigh · transport ${transport}`);
+					expect(text).toContain("Engine: <opaque-model>");
+					expect(text).toContain(`Grok: <opaque-model> · transport ${transport} · then grok-4.7`);
 				}
 			}
 		});
@@ -530,13 +587,13 @@ describe("runControl", () => {
 					host: "omp",
 					modelResolution: detected,
 				}),
-			).toBe("Thinking engine set to claude:sonnet");
+			).toBe("Thinking engine set to claude:claude-haiku-5-5");
 			// The live record was observed for `auto`; it is not the named engine's selection.
 			const named = await statusLines({ host: "omp", modelResolution: detected });
-			expect(named).toContain("Engine: claude:sonnet");
+			expect(named).toContain("Engine: claude:claude-haiku-5-5");
 			expect(named).toContain("Engine request: claude (control, native opt-out) · concurrency 3");
 			expect(await runControl(["grok", "status"], { ...io, host: "omp" })).toStartWith(
-				"Engine: claude:sonnet\nGrok: ",
+				"Engine: claude:claude-haiku-5-5\nClaude: ",
 			);
 		});
 

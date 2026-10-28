@@ -108,6 +108,8 @@ export interface HookDeps {
 	clarify?: (opts: RunClarifyOptions) => Promise<Clarification[]>;
 	/** First error the completer threw (already redacted), surfaced in the summary. */
 	engineError?: () => string | undefined;
+	/** A successful failover to another route this run (not an error), e.g. "claude:… → grok:… (plan-limit)". */
+	engineFailover?: () => string | undefined;
 	/** The completer's report for its most recent call (attempts, HTTP status), read when the uplift falls back. */
 	engineReport?: () => CompletionReport | undefined;
 	/** Test seam for git remote/branch resolution; default reads the real repo at cwd. */
@@ -1097,6 +1099,7 @@ export async function runPromptSubmit(
 
 		// Read once: the record, the summary and the context all report the same first error.
 		const engineError = deps.engineError?.();
+		const engineFailover = deps.engineFailover?.();
 		const degraded = [...(result.source === "fallback" ? ["uplift"] : []), ...thinkDegraded];
 		let record: SessionRecord = {
 			sessionId,
@@ -1104,6 +1107,7 @@ export async function runPromptSubmit(
 			engine: deps.engine,
 			...withResolution,
 			...(engineError ? { engineError } : {}),
+			...(engineFailover ? { engineFailover } : {}),
 			...(degraded.length > 0 ? { degraded } : {}),
 			host: deps.surface ?? "claude-code",
 			result,
@@ -1236,6 +1240,7 @@ export async function runPromptSubmit(
 				docs,
 				skills,
 				...(engineError ? { engineError } : {}),
+				...(engineFailover ? { engineFailover } : {}),
 				elapsedMs: now() - started,
 				decisions: records,
 			});

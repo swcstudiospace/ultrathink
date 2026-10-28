@@ -12,7 +12,7 @@
 export type LegacyRoute = "claude" | "grok" | "muse";
 
 export const ROUTE_DEFAULT_MODELS: Readonly<Record<LegacyRoute, string>> = Object.freeze({
-	claude: "sonnet",
-	grok: "grok-4.7",
+	claude: "claude-haiku-5-5",
+	grok: "grok-build-0.1",
 	muse: "muse-spark-1.3-contributor",
 });

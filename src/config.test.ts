@@ -15,6 +15,7 @@ import {
 	userConfigPath,
 } from "./config.ts";
 import type { DecisionsConfig } from "./decisions/types.ts";
+import { DEFAULT_GROK_CONFIG } from "./grok/types.ts";
 import { ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
 
 function tempConfigFile(content: unknown): { path: string; cleanup: () => void } {
@@ -129,10 +130,10 @@ describe("mergeConfig", () => {
 		expect(mergeConfig({ muse: { callTimeoutMs: -5 } }, base).muse.callTimeoutMs).toBe(0);
 	});
 
-	test("grok defaults are the Grok route default (grok-4.7) @ xhigh over the http transport, with no shunt gateway configured", () => {
+	test("grok defaults are the Grok route default (grok-build-0.1) @ xhigh over the http transport, with no shunt gateway configured", () => {
 		const grok = defaultConfig().grok;
 		expect(grok.model).toBe(ROUTE_DEFAULT_MODELS.grok);
-		expect(grok.model).toBe("grok-4.7");
+		expect(grok.model).toBe("grok-build-0.1");
 		expect(grok.reasoningEffort).toBe("xhigh");
 		expect(grok.transport).toBe("http");
 		expect(grok.shuntBaseUrl).toBe("");
@@ -1733,8 +1734,8 @@ describe("route defaults (AD-1)", () => {
 	test("unconfigured routes retain their legacy targets and route-default provenance", () => {
 		const config = defaultConfig();
 		expect([config.claude.model, config.grok.model, config.muse.model]).toEqual([
-			"sonnet",
-			"grok-4.7",
+			"claude-haiku-5-5",
+			"grok-build-0.1",
 			"muse-spark-1.3-contributor",
 		]);
 		expect(config.modelProvenance).toEqual({
@@ -1748,7 +1749,7 @@ describe("route defaults (AD-1)", () => {
 		expect(() => {
 			(ROUTE_DEFAULT_MODELS as Record<string, string>).claude = "other";
 		}).toThrow();
-		expect(ROUTE_DEFAULT_MODELS.claude).toBe("sonnet");
+		expect(ROUTE_DEFAULT_MODELS.claude).toBe("claude-haiku-5-5");
 	});
 });
 
@@ -1996,8 +1997,8 @@ describe("legacy model provenance (AD-1)", () => {
 		});
 		const pinned = loadLayerFiles(
 			roots,
-			{ claude: { model: "sonnet" } },
-			{ grok: { model: " grok-4.7 " } },
+			{ claude: { model: "claude-haiku-5-5" } },
+			{ grok: { model: " grok-build-0.1 " } },
 			{ muse: { model: "muse-spark-1.3-contributor" } },
 		);
 		expect(pinned.modelProvenance).toEqual({
@@ -2006,8 +2007,8 @@ describe("legacy model provenance (AD-1)", () => {
 			muse: "file-pin",
 		});
 		expect([pinned.claude.model, pinned.grok.model, pinned.muse.model]).toEqual([
-			"sonnet",
-			"grok-4.7",
+			"claude-haiku-5-5",
+			"grok-build-0.1",
 			"muse-spark-1.3-contributor",
 		]);
 	});
@@ -2152,24 +2153,98 @@ describe("legacy model provenance (AD-1)", () => {
 		).toBe(true);
 	});
 
-	test("claude.fallbackToLogin defaults false, is user-only and boolean-only", () => {
+	test("claude.auth defaults to plan, accepts api-key, rejects others, and is user-only", () => {
 		const base = defaultConfig();
-		expect(base.claude.fallbackToLogin).toBe(false);
-		const user = mergeConfig({ claude: { fallbackToLogin: true } }, base);
-		expect(user.claude.fallbackToLogin).toBe(true);
+		expect(base.claude.auth).toBe("plan");
+		const user = mergeConfig({ claude: { auth: "api-key" } }, base);
+		expect(user.claude.auth).toBe("api-key");
+		expect(mergeConfig({ claude: { auth: "bogus" } }, base).claude.auth).toBe("plan");
+		expect(mergeConfig({ claude: { auth: "bogus" } }, user).claude.auth).toBe("api-key");
+		expect(mergeConfig({ claude: { auth: 1 } }, base).claude.auth).toBe("plan");
+		expect(mergeConfig({ claude: { auth: "api-key" } }, base, { project: true }).claude.auth).toBe(
+			"plan",
+		);
+		expect(mergeConfig({ claude: { auth: "plan" } }, user, { project: true }).claude.auth).toBe(
+			"api-key",
+		);
+	});
+
+	test("claude.fallbackToGrok defaults false, is user-only and boolean-only", () => {
+		const base = defaultConfig();
+		expect(base.claude.fallbackToGrok).toBe(false);
+		const user = mergeConfig({ claude: { fallbackToGrok: true } }, base);
+		expect(user.claude.fallbackToGrok).toBe(true);
 		expect(
-			mergeConfig({ claude: { fallbackToLogin: true } }, base, { project: true }).claude
-				.fallbackToLogin,
+			mergeConfig({ claude: { fallbackToGrok: true } }, base, { project: true }).claude
+				.fallbackToGrok,
 		).toBe(false);
 		expect(
-			mergeConfig({ claude: { fallbackToLogin: true } }, user, { project: true }).claude
-				.fallbackToLogin,
+			mergeConfig({ claude: { fallbackToGrok: false } }, user, { project: true }).claude
+				.fallbackToGrok,
 		).toBe(true);
-		expect(mergeConfig({ claude: { fallbackToLogin: "yes" } }, user).claude.fallbackToLogin).toBe(
+		expect(mergeConfig({ claude: { fallbackToGrok: "yes" } }, user).claude.fallbackToGrok).toBe(
 			true,
 		);
-		expect(mergeConfig({ claude: { fallbackToLogin: "yes" } }, base).claude.fallbackToLogin).toBe(
+		expect(mergeConfig({ claude: { fallbackToGrok: "yes" } }, base).claude.fallbackToGrok).toBe(
 			false,
 		);
+	});
+
+	test("an old claude.fallbackToLogin key is ignored without error", () => {
+		const base = defaultConfig();
+		const merged = mergeConfig({ claude: { fallbackToLogin: true } }, base);
+		expect(merged.claude).toEqual(base.claude);
+		expect("fallbackToLogin" in merged.claude).toBe(false);
+	});
+
+	test("grok.fallbackModels defaults to grok-4.7 and merges from user and project layers", () => {
+		const base = defaultConfig();
+		expect(base.grok.fallbackModels).toEqual(["grok-4.7"]);
+		expect(
+			mergeConfig({ grok: { fallbackModels: ["grok-4.6"] } }, base).grok.fallbackModels,
+		).toEqual(["grok-4.6"]);
+		expect(
+			mergeConfig({ grok: { fallbackModels: ["grok-4.5"] } }, base, { project: true }).grok
+				.fallbackModels,
+		).toEqual(["grok-4.5"]);
+	});
+
+	test("grok.fallbackModels trims, dedupes, drops blanks, controls and non-strings, caps at 8", () => {
+		const base = defaultConfig();
+		const models = mergeConfig(
+			{
+				grok: {
+					fallbackModels: [" a ", "a", "", "  ", "b\u0000c", "d\ne", 7, "b"],
+				},
+			},
+			base,
+		).grok.fallbackModels;
+		expect(models).toEqual(["a", "b"]);
+		const many = Array.from({ length: 12 }, (_, i) => `m${i}`);
+		expect(mergeConfig({ grok: { fallbackModels: many } }, base).grok.fallbackModels).toEqual(
+			many.slice(0, 8),
+		);
+	});
+
+	test("grok.fallbackModels arrays are never shared with the module default", () => {
+		const first = defaultConfig();
+		first.grok.fallbackModels.push("mutated");
+		expect(defaultConfig().grok.fallbackModels).toEqual(["grok-4.7"]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual(["grok-4.7"]);
+		const base = defaultConfig();
+		const merged = mergeConfig({ grok: { model: "x" } }, base);
+		expect(merged.grok.fallbackModels).not.toBe(DEFAULT_GROK_CONFIG.fallbackModels);
+		expect(merged.grok.fallbackModels).not.toBe(base.grok.fallbackModels);
+		merged.grok.fallbackModels.push("mutated");
+		expect(base.grok.fallbackModels).toEqual(["grok-4.7"]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual(["grok-4.7"]);
+	});
+
+	test("grok.fallbackModels: a non-array keeps the default and [] is honored", () => {
+		const base = defaultConfig();
+		expect(mergeConfig({ grok: { fallbackModels: "grok-4.6" } }, base).grok.fallbackModels).toEqual(
+			["grok-4.7"],
+		);
+		expect(mergeConfig({ grok: { fallbackModels: [] } }, base).grok.fallbackModels).toEqual([]);
 	});
 });

@@ -142,6 +142,8 @@ export interface EnsureFreshOptions {
 	force?: boolean;
 	/** Test seam: runs `cmd` with `env`, resolves with the exit code. */
 	spawn?: (cmd: string[], env: Record<string, string | undefined>) => Promise<number>;
+	/** Child environment for the CLI; default is the whole `process.env`. Pass an allowlist when the host holds unrelated secrets. */
+	env?: Record<string, string | undefined>;
 }
 
 async function spawnGrok(
@@ -174,7 +176,7 @@ export async function ensureFreshGrokAuth(
 	if (!opts.force && !isGrokAuthExpired(auth, opts.now, opts.skewMs)) return auth;
 	if (!auth.refreshToken) return auth;
 
-	const env: Record<string, string | undefined> = { ...process.env };
+	const env: Record<string, string | undefined> = { ...(opts.env ?? process.env) };
 	const home = opts.home?.trim();
 	if (home) env.GROK_HOME = home;
 	const cmd = [opts.bin?.trim() || "grok", "models"];

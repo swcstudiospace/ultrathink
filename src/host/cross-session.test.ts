@@ -102,7 +102,7 @@ function baseDeps(): HookDeps {
 		config: defaultConfig(),
 		control: {},
 		complete: smartComplete(),
-		engine: "claude:sonnet",
+		engine: "claude:claude-haiku-5-5",
 		stateDir: join(tempRoot(), "ultrathink"),
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),
 		brief: async () => "",

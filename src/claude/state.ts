@@ -54,6 +54,8 @@ export interface SessionRecord {
 	modelResolution?: ModelResolution;
 	/** First engine error message (redacted), when a plan call threw; explains a fallback source. */
 	engineError?: string;
+	/** A successful failover this prompt, e.g. "claude:<model> → grok:<model> (plan-limit)"; not an error. */
+	engineFailover?: string;
 	/** Plan stages that fell back to boilerplate, in run order: "uplift", "graph", "fill:<nodeId>". Absent when every stage used LLM output. */
 	degraded?: string[];
 	/** Host that planned this prompt. Absent on records written before multi-host support. */
@@ -233,6 +235,13 @@ export function clearSkipOnce(dir: string, sessionId: string): void {
 	}
 }
 
+/** `engineFailover` is only ever a string; a hand-edited or corrupt record loses a non-string value. */
+function dropBadFailover(record: SessionRecord): SessionRecord {
+	if (record.engineFailover !== undefined && typeof record.engineFailover !== "string")
+		delete record.engineFailover;
+	return record;
+}
+
 export function readSession(dir: string, sessionId: string): SessionRecord | undefined {
 	const raw = readJson(sessionRecordPath(dir, sessionId));
 	if (!raw || typeof raw !== "object") return undefined;
@@ -240,7 +249,7 @@ export function readSession(dir: string, sessionId: string): SessionRecord | und
 	// A file names its session: on a case-insensitive file system another id's record can share this file's name.
 	if (rec.sessionId !== sessionId || !rec.result || typeof rec.result !== "object")
 		return undefined;
-	return rec as SessionRecord;
+	return dropBadFailover(rec as SessionRecord);
 }
 
 const LAST_LOCK_WAIT_MS = 5;
@@ -387,5 +396,5 @@ export function readLast(dir: string): SessionRecord | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
 	const rec = raw as Partial<SessionRecord>;
 	if (!rec.result || typeof rec.result !== "object") return undefined;
-	return rec as SessionRecord;
+	return dropBadFailover(rec as SessionRecord);
 }

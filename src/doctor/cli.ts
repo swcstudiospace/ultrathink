@@ -2,11 +2,14 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * `bin/ultrathink doctor [--json]`: a static, offline diagnosis of the config files, the credentials the enabled features
- * need, the state directory and the runtime. It sends nothing anywhere and starts no `gh` or `curl`; the live probes
- * (`ultrathink-mcp check`, `decisions check`, `hindsight check`, `ragflow check`) stay separate commands.
+ * need, the inference route (claude CLI version and plan login, Grok login), the state directory and the runtime. It
+ * sends nothing anywhere and starts no `gh` or `curl`; the only other processes are the Python and `claude --version` /
+ * `claude auth status --json` probes, which read local state. The live probes (`ultrathink-mcp check`,
+ * `decisions check`, `hindsight check`, `ragflow check`) stay separate commands.
  */
 import { checkConfig } from "./config-check.ts";
 import { checkCredentials, checkRuntime } from "./env-check.ts";
+import { checkInference } from "./inference-check.ts";
 import { checkPstack } from "./pstack-check.ts";
 import { buildReport, formatReport, reportJson } from "./report.ts";
 import { checkState } from "./state-check.ts";
@@ -15,6 +18,28 @@ import type { DoctorDeps, DoctorSection, Finding, PythonCommand } from "./types.
 
 const USAGE = "Usage: ultrathink doctor [--json]";
 const VERSION_TIMEOUT_MS = 3_000;
+const CLAUDE_PROBE_TIMEOUT_MS = 8_000;
+
+/** Stdout of `<bin> <args>`, or undefined when the CLI cannot run or printed nothing. A logged-out status exits non-zero but still prints its JSON. */
+function runClaude(
+	bin: string,
+	args: string[],
+	env: Record<string, string | undefined>,
+): string | undefined {
+	try {
+		const proc = Bun.spawnSync([bin, ...args], {
+			env,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "ignore",
+			timeout: CLAUDE_PROBE_TIMEOUT_MS,
+		});
+		return proc.stdout.toString().trim() || undefined;
+	} catch {
+		// reason: a missing or hanging claude is the answer; the check reports it as absent.
+		return undefined;
+	}
+}
 
 /** First line of `<command> --version` (Python 2 prints it on stderr), or undefined when the command cannot run. */
 function runVersion(command: PythonCommand): string | undefined {
@@ -41,6 +66,8 @@ function productionDeps(): DoctorDeps {
 		which: (command) => Bun.which(command) ?? undefined,
 		bunVersion: Bun.version,
 		runVersion,
+		claudeVersion: (bin) => runClaude(bin, ["--version"], process.env)?.split("\n")[0],
+		claudeAuth: (env, bin) => runClaude(bin, ["auth", "status", "--json"], env),
 	};
 }
 
@@ -81,6 +108,7 @@ export async function runDoctorCommand(
 		...guarded("runtime", checkRuntime, deps),
 		...guarded("config", checkConfig, deps),
 		...guarded("credentials", checkCredentials, deps),
+		...guarded("inference", checkInference, deps),
 		...guarded("state", checkState, deps),
 		...guarded("memory", checkTeach, deps),
 		...guarded("pstack", checkPstack, deps),

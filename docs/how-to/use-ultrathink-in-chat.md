@@ -23,13 +23,13 @@ The server offers two ways to do the thinking. The tool list tells you which one
 
 | | Server-side mode | Client-driven mode |
 |---|---|---|
-| Who thinks | The server calls an OpenRouter model. | The chat model answers each planning prompt itself. |
+| Who thinks | The server calls a planning model: an OpenRouter model by default, or the owner's own Claude plan when the operator sets `ULTRATHINK_PLANNING_BACKEND=plan`. | The chat model answers each planning prompt itself. |
 | Tools the chat model uses | `ultrathink_uplift`, then `ultrathink_result` | `ultrathink_plan`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, then `ultrathink_result` |
 | Tool count | 10 tools: the six client-driven tools, `ultrathink_uplift`, and the three connector tools `ultrathink_graph`, `ultrathink_sessions` and `ultrathink_command` | 9 tools (`ultrathink_uplift` is not listed) |
-| Who pays | The operator's OpenRouter account. | Your chat plan. The server makes no paid call. |
+| Who pays | The operator's OpenRouter account, or, in plan mode, the owner's own Claude plan (its usage limits; one owner only). | Your chat plan. The server makes no paid call. |
 | Used by | The hosted server when planning is configured: Grok Chat, Claude chat, Claude Code | Grok Bot, the local stdio server, or any client when server-side mode is off |
 
-Server-side mode is on when `OPENROUTER_API_KEY` and `ULTRATHINK_PLANNING_MODEL` are both set and `ULTRATHINK_SERVER_PLANNING` is not `0`. Without them the server lists no `ultrathink_uplift`, and its prompt and instructions describe the client-driven loop. The client-driven tools stay available in both modes. `ultrathink_result` returns the plan for a finished session from either mode.
+Server-side mode is on when `ULTRATHINK_SERVER_PLANNING` is not `0` and either the backend is `plan` (`ULTRATHINK_PLANNING_BACKEND=plan`), or `OPENROUTER_API_KEY` and `ULTRATHINK_PLANNING_MODEL` are both set. Without them the server lists no `ultrathink_uplift`, and its prompt and instructions describe the client-driven loop. The client-driven tools stay available in both modes. `ultrathink_result` returns the plan for a finished session from either mode.
 
 ## Connect a client
 
@@ -249,7 +249,7 @@ If server-side planning is off (no `ultrathink_uplift` in the tool list), the fi
 - Which protocol revision Claude chat and Grok Chat open with, and how they react to the 400 on a 2026-07-28 probe. The fallback was confirmed only for the official SDK clients.
 - Grok Chat's redirect addresses on iOS, Android and Tesla, its tool-result size limit, per-call timeout and tool description length limit, and whether it uses client ID metadata documents.
 - That the model follows a typed `/ultrathink`. This is a convention that the descriptions, the prompts and your custom instructions encourage. A model can still answer the request directly without calling a tool. Say "use ultrathink" or run the prompt when that happens.
-- Which model a hosted client uses. The server cannot see it, and server-side mode does not depend on it: the planning model is the server's OpenRouter model.
+- Which model a hosted client uses. The server cannot see it, and server-side mode does not depend on it: the planning model is the server's own (an OpenRouter model, or a Claude model in plan mode).
 
 To check a client, send `/ultrathink plan a short test feature` and look for an `ultrathink_uplift` call in the chat, then `ultrathink_result` calls, then a plan that starts with a wave tree and ends with questions. Then send `/ultrathink-status` and look for an `ultrathink_sessions` call.
 
@@ -260,9 +260,9 @@ To check a client, send `/ultrathink plan a short test feature` and look for an 
 - **Revoking.** A client can revoke its own token at `POST /oauth/revoke` (RFC 7009). To revoke every client and token, stop the service, delete `/var/lib/ultrathink/oauth.json`, and start it again (`systemctl stop ultrathink-web`, `rm /var/lib/ultrathink/oauth.json`, `systemctl start ultrathink-web`). Every client then registers and asks you to approve again. Plans are not lost. To lock out the owner login, rotate the hash (runbook section 6).
 - **Connector key.** The legacy `x-connector-key` header (`ULTRATHINK_CONNECTOR_KEY`) is for Grok Bot, which cannot do OAuth, and for Claude Code (`--header`). It works on `/mcp` next to OAuth. Do not paste it into Grok Chat or Claude chat: neither client's connector UI can send it. Rotate it in [the Grok Bot guide](../ops/grok-bot-setup-ultrathink.md) section 5.
 - **Browser origins.** `/mcp` refuses a request whose `Origin` header is not the server's own origin, `https://claude.ai`, `https://claude.com`, `https://grok.com`, `https://console.x.ai` or an origin in `ULTRATHINK_ALLOWED_ORIGINS`. A request with no `Origin` header (native and server-side clients) is allowed.
-- **Where your text goes.** In server-side mode the request and the model's intermediate text go to OpenRouter and the model provider you chose, under their privacy terms. The server stores the request, the prompts and the plan under `/var/lib/ultrathink` (`journal/`, `sessions/`, `jobs/`) for 30 days by default. Do not send secrets in a request.
+- **Where your text goes.** In server-side mode the request and the model's intermediate text go to OpenRouter and the model provider you chose, under their privacy terms; in plan mode they go to Anthropic through the owner's Claude plan (and to xAI if the operator enabled the Grok fallback), under the owner's account terms. The server stores the request, the prompts and the plan under `/var/lib/ultrathink` (`journal/`, `sessions/`, `jobs/`) for 30 days by default. Do not send secrets in a request.
 - **Logs.** The server logs one JSON line per request: request id, HTTP method and path, status, duration, JSON-RPC method, tool name, the `MCP-Protocol-Version` header as sent, auth kind and client address. It does not log prompt text, plans, the owner password, tokens, the connector key, the OpenRouter key or authorization headers; fields with such names are dropped by the logger.
-- **OpenRouter key.** The key stays on the server (`OPENROUTER_API_KEY` in `/etc/ultrathink/ultrathink.env`). Use a key with a spending limit.
+- **Credentials.** The key stays on the server (`OPENROUTER_API_KEY` in `/etc/ultrathink/ultrathink.env`); use a key with a spending limit. In plan mode the Claude token (`CLAUDE_CODE_OAUTH_TOKEN`) lives in the same file, and the `claude` child process receives only an allowlisted environment, so no other server secret reaches it.
 
 ## Configuration
 
@@ -279,10 +279,13 @@ The operator sets these in `/etc/ultrathink/ultrathink.env` and restarts the ser
 | `ULTRATHINK_MAX_ANSWER_CHARS` | `20000` | Longest client-driven answer, 1 to 20000 characters. |
 | `ULTRATHINK_RUN_TOKEN_CEILING` | `0` | Token limit for one plan; `0` means no limit. A plan over a positive limit stops with `budget_exceeded`. With no output cap set, each model reply is capped to the tokens this limit still allows, and to at most 16000. |
 | `ULTRATHINK_DAILY_TOKEN_CEILING` | `0` | Token limit per UTC day across all plans; `0` means no limit. With no output cap set, each model reply is capped to the tokens this limit still allows, and to at most 16000. |
-| `ULTRATHINK_PLANNING_MODEL` | unset | OpenRouter model id for server-side planning, for example `x-ai/grok-4.7`. Server-side mode needs it. |
-| `OPENROUTER_API_KEY` | unset | OpenRouter key, at least 20 characters. Server-side mode needs it. |
+| `ULTRATHINK_PLANNING_BACKEND` | `openrouter` | `openrouter` or `plan`. `plan` runs planning on the owner's own Claude plan through `claude -p`; single owner only. See the runbook section "Plan backend (coding-plan inference)". |
+| `ULTRATHINK_PLANNING_FALLBACK` | `none` | `none` or `grok`; read only in plan mode. |
+| `ULTRATHINK_PLAN_CONCURRENCY` | `2` | 1 to 6; read only in plan mode. Most `claude` child processes at once. |
+| `ULTRATHINK_PLANNING_MODEL` | unset | Model id for server-side planning: an OpenRouter id such as `x-ai/grok-4.7`, which the `openrouter` backend needs, or in plan mode a Claude model id (default `claude-haiku-5-5`). |
+| `OPENROUTER_API_KEY` | unset | OpenRouter key, at least 20 characters. The `openrouter` backend needs it; plan mode does not. |
 | `ULTRATHINK_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base. https only, no credentials, query or fragment. |
-| `ULTRATHINK_SERVER_PLANNING` | unset | `0` turns server-side mode off. `1` requires the key and the model, otherwise the server refuses to start. Unset means on when both are set. |
+| `ULTRATHINK_SERVER_PLANNING` | unset | `0` turns server-side mode off. `1` requires the key and the model with the `openrouter` backend (otherwise the server refuses to start); with the `plan` backend it needs nothing else. Unset means on when the backend is `plan` or when the key and model are both set. |
 | `ULTRATHINK_MAX_CONCURRENT_PLANS` | `2` | Plans that run at once, 1 to 8. More starts return `busy`. |
 | `ULTRATHINK_MODEL_TIMEOUT_MS` | `0` | Timeout for one model call; `0` means no timeout. A positive value must be 5000 to 600000. A call that times out is not retried. |
 | `ULTRATHINK_PLAN_TIMEOUT_MS` | `0` | Timeout for one whole plan; `0` means no timeout. A positive value must be 30000 to 1800000. |
@@ -345,8 +348,8 @@ Origin lists take bare origins only (`https://host[:port]`, no path, query or fr
 | `disabled` or `not_ready` from `ultrathink_uplift` | Server-side mode is off, or the server is shutting down. | Use the client-driven tools (`ultrathink_plan`), or ask the operator to set the key and the model. |
 | Status `failed`, error `budget_exceeded` | The per-run or daily token ceiling was reached. | Wait for the next UTC day, or ask the operator to raise the ceiling. |
 | Status `skipped` | The pipeline declined the request, for example one that starts with a slash command or a `raw:` prefix. | State the request as a plain description of the task and call `ultrathink_uplift` again with a new `sessionId`. |
-| Status `failed`, error `auth` | OpenRouter refused the API key (HTTP 401 or 403). | The operator replaces `OPENROUTER_API_KEY` and restarts. |
-| Status `failed`, error `rate_limited`, `upstream`, `empty` or `bad_response` | The model provider limited, failed or returned nothing usable, after retries. | Try again with a new `sessionId`. The operator checks the model id, credit and timeouts. |
+| Status `failed`, error `auth` | OpenRouter refused the API key (HTTP 401 or 403), or in plan mode the owner's Claude login is missing or expired. | The operator replaces `OPENROUTER_API_KEY` (or renews the Claude token, runbook section "Plan backend") and restarts. |
+| Status `failed`, error `rate_limited`, `upstream`, `empty` or `bad_response` | The model provider limited, failed or returned nothing usable, after retries; in plan mode `rate_limited` includes the Claude plan's usage limit. | Try again with a new `sessionId`. The operator checks the model id, credit (or the plan's usage limit) and timeouts. |
 | Status `failed`, error `timeout` | One model call took longer than `ULTRATHINK_MODEL_TIMEOUT_MS`, or the whole plan took longer than `ULTRATHINK_PLAN_TIMEOUT_MS`. Both are off by default, so this needs a limit you set. A timeout is not retried: the plan fails with `timeout`. | Raise the limit, try a faster model (see the table above), or a lower `ULTRATHINK_MODEL_REASONING_EFFORT`. The cost of the partial run still counts against the ceilings. |
 | Status `failed`, error `truncated` | The model stopped at its own output limit, so the plan was cut and not stored. | Try again with a new `sessionId`, or use a model with a larger output limit. |
 | Status `failed`, error `interrupted` | The service restarted while the plan ran. | Run it again with a new `sessionId`. |
