@@ -174,7 +174,12 @@ describe("appendUsage", () => {
 		const readOnly = join(dir, "ro");
 		appendUsage(readOnly, record());
 		chmodSync(readOnly, 0o500);
-		expect(() => appendUsage(readOnly, record())).not.toThrow();
+		try {
+			expect(() => appendUsage(readOnly, record())).not.toThrow();
+		} finally {
+			// A non-root teardown cannot remove a 0500 directory's contents; root (local runs) never notices.
+			chmodSync(readOnly, 0o700);
+		}
 	});
 });
 
