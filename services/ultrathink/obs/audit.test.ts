@@ -356,6 +356,26 @@ describe("fields", () => {
 		expect(records(path).map((r) => r.fields)).toEqual([{}, {}, {}]);
 		expect(log.verify().ok).toBe(true);
 	});
+
+	test("masks key and Bearer shapes in string values before they are clipped and hashed", () => {
+		const key = "sk-or-v1-CANARYCANARYCANARY1234";
+		const bearer = "canary-bearer-token-9876";
+		const path = auditPath(tempDir());
+		const log = createAuditLog({ path, now: clock() });
+		log.record("login_failed", {
+			detail: `rejected ${key} with Bearer ${bearer} for user 42`,
+			long: `${"x".repeat(240)} ${key}`,
+		});
+		const raw = readFileSync(path, "utf8");
+		expect(raw).not.toContain("sk-or-v1");
+		expect(raw).not.toContain("CANARYCANARY");
+		expect(raw).not.toContain(bearer);
+		const [rec] = records(path);
+		expect((rec?.fields as { detail: string }).detail).toBe(
+			"rejected [redacted] with [redacted] for user 42",
+		);
+		expect(log.verify().ok).toBe(true);
+	});
 });
 
 describe("failure handling", () => {

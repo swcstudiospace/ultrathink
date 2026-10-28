@@ -120,15 +120,18 @@ function cliFindings(
 	memoryModel: string | undefined,
 ): Finding[] {
 	if (!deps.which(bin)) {
-		return [
-			{
-				id: "inference.claude.cli",
-				section: "inference",
-				level: "warn",
-				title: "claude CLI not found: the Claude route cannot plan",
-				fix: "Install Claude Code (https://code.claude.com/docs/en/setup)",
-			},
-		];
+		const finding: Finding = {
+			id: "inference.claude.cli",
+			section: "inference",
+			level: "warn",
+			title: "claude CLI not found: the Claude route cannot plan",
+			fix: "Install Claude Code (https://code.claude.com/docs/en/setup)",
+		};
+		// The distill is active exactly when a memory model is passed: say that it needs the CLI too.
+		if (memoryModel !== undefined) {
+			finding.detail = `The memory-bank distill also needs it: it runs ${displayId(memoryModel, "<opaque-model>")} through the claude CLI first, and Grok Build only with claude.fallbackToGrok and a Grok login. With neither, teach observe reports "distiller failed".`;
+		}
+		return [finding];
 	}
 	const line = deps.claudeVersion?.(bin);
 	const version = line === undefined ? undefined : parseSemver(line);

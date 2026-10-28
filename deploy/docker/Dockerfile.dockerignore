@@ -1,0 +1,19 @@
+# Applied by BuildKit as the ignore file of deploy/docker/Dockerfile (<Dockerfile name>.dockerignore beside it takes
+# precedence over a .dockerignore at the context root). The Dockerfile also copies an explicit list of paths, so
+# nothing below can reach the image; this keeps them out of the build context as well.
+.git
+node_modules
+.planning
+.omp
+.cursor
+.grok
+*.log
+coverage
+docs/superpowers
+issues
+# Secrets: an env file next to the compose example must never be sent to the builder.
+.env
+.env.*
+*.env
+**/*.env
+.mcp.json

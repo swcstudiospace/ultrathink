@@ -24,11 +24,14 @@ import {
 } from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
 import { graphJson } from "../test.helpers.ts";
+import { realmHint, type RealmProbe } from "../stack/realm.ts";
 import type { TrackPlan } from "../track/types.ts";
 import { runControl, takeSessionFlag } from "../uplift/commands.ts";
 import { editTargets, recordEditAttribution } from "./omp.ts";
 import { main as grokbotMain } from "./grokbot-cli.ts";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
+import type { ModelResolution, SelectedEngine } from "./engine.ts";
+import { type PlanOptions, planPrompt } from "./plan.ts";
 
 const roots: string[] = [];
 
@@ -105,7 +108,7 @@ function baseDeps(): HookDeps {
 		engine: "claude:claude-haiku-5-5",
 		stateDir: join(tempRoot(), "ultrathink"),
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),
-		brief: async () => "",
+		brief: async () => ({ text: "", state: "none" }),
 		clarify: async () => [],
 		emit: async () => true,
 		now: () => 1_000,
@@ -539,5 +542,149 @@ describe("blank session ids", () => {
 		expect(readSession(deps.stateDir, firstId)?.clarifications).toEqual([answered]);
 		// The shared "unknown" record is never written, and no turn's state lands in a file another turn reads.
 		expect(existsSync(sessionPath(deps.stateDir, "unknown"))).toBe(false);
+	});
+});
+
+/** The honest record an injected stub engine carries: an explicit fake wire target, never a detected model. */
+const STUB_RESOLUTION: ModelResolution = {
+	version: "1.0.0",
+	state: "override",
+	host: "claude-code",
+	transport: "claude-cli",
+	source: "engine-model",
+	reason: "explicit-model",
+	engineSelection: { engine: "auto", source: "config", nativeOptOut: false },
+	modelId: "stub",
+	modelKnown: true,
+	label: "claude:stub [override]",
+};
+
+describe("planPrompt substrate brief", () => {
+	const SUBSTRATE = "https://substrate.test";
+	const DEGRADED_LABEL =
+		"(Substrate brief is degraded; some sources failed or the copy is a snapshot)";
+
+	/**
+	 * One planPrompt run whose Substrate answers `reply`; every other URL is refused, and no real token directory is
+	 * read. The Realm probe is a seam (default: no Realm), so no run reaches the real daemon.
+	 */
+	async function planAgainst(
+		reply: Response,
+		realmProbe: PlanOptions["realmProbe"] = async () => ({ kind: "absent" }),
+	): Promise<{ context: string; summary: string; carrier: string }> {
+		const root = tempRoot();
+		const config = defaultConfig();
+		config.substrate.url = SUBSTRATE;
+		config.teach.enabled = false;
+		config.ragflow.enabled = false;
+		const options: PlanOptions = {
+			config,
+			control: { hitlEnabled: false },
+			stateDir: join(root, "state"),
+			selectEngine: async (): Promise<SelectedEngine> => ({
+				label: "stub",
+				complete: smartComplete(),
+				error: () => undefined,
+				resolution: STUB_RESOLUTION,
+			}),
+			realmProbe,
+		};
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = ((url: string) =>
+			Promise.resolve(
+				String(url) === `${SUBSTRATE}/brief` ? reply : new Response("no", { status: 503 }),
+			)) as unknown as typeof fetch;
+		try {
+			const response = await planPrompt(
+				{ host: "claude-code", session_id: "s1", prompt: "add a widget", cwd: root },
+				{
+					ULTRATHINK_DECISIONS: "0",
+					SUBSTRATE_TOKENS_DIR: join(root, "tokens"),
+				},
+				options,
+			);
+			const carrier = response.carrierPath ? readFileSync(response.carrierPath, "utf8") : "";
+			return { context: response.context, summary: response.summary ?? "", carrier };
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	}
+
+	test("a degraded brief reaches the planned context with its label line, and the summary shows no unavailable segment", async () => {
+		const { context, summary } = await planAgainst(
+			new Response("## Substrate brief: acme/widgets\n- earlier work", {
+				headers: { "x-substrate-brief": "degraded" },
+			}),
+		);
+		expect(context).toContain("## Agent Substrate brief");
+		expect(context).toContain(DEGRADED_LABEL);
+		expect(context).toContain("- earlier work");
+		expect(summary).not.toContain("brief unavailable");
+	});
+
+	test("a brief the Substrate refused leaves the context without a brief block and puts one reason segment in the summary", async () => {
+		const { context, summary } = await planAgainst(new Response("{}", { status: 401 }));
+		expect(context).not.toContain("## Agent Substrate brief");
+		expect(summary).toContain("Substrate · brief unavailable (unauthorized)");
+	});
+
+	test("a brief carrying secrets reaches neither the planned context nor the carrier, and a degraded label survives", async () => {
+		const { context, summary, carrier } = await planAgainst(
+			new Response(
+				[
+					"## Substrate brief: acme/widgets",
+					"- cursor used sk-or-v1_CANARYCANARYCANARY1234 on the gateway",
+					"- vercel key vck_CANARYCANARYCANARY1234 was rotated",
+					"- request carried Authorization: Bearer CANARYBEARERCANARY1234567890",
+					"- earlier work",
+				].join("\n"),
+				{ headers: { "x-substrate-brief": "degraded" } },
+			),
+		);
+		expect(context).toContain(DEGRADED_LABEL);
+		expect(context).toContain("- earlier work");
+		expect(carrier).toContain("- earlier work");
+		for (const shown of [context, summary, carrier]) expect(shown).not.toContain("CANARY");
+	});
+
+	test("a brief with an ESC sequence and 100000 characters reaches neither the planned context nor the carrier raw", async () => {
+		const { context, summary, carrier } = await planAgainst(
+			new Response(
+				`\u001b]0;pwned\u0007## Substrate brief: acme/widgets\n- earlier work\u001b[2J\n${"y".repeat(100_000)}`,
+			),
+		);
+		for (const shown of [context, summary, carrier]) {
+			expect(shown).not.toContain("\u001b");
+			expect(shown).not.toContain("\u0007");
+		}
+		expect(context).toContain("- earlier work");
+		expect(context).toContain("[brief truncated]");
+		expect(carrier).toContain("[brief truncated]");
+		expect(context).not.toContain("y".repeat(10_000));
+	});
+
+	test("an enforcing Realm reaches the planned context and the carrier as one framed note; an advisory one adds nothing", async () => {
+		const present = (mode: "advisory" | "fail-closed"): RealmProbe => ({
+			kind: "present",
+			stateDir: join(tempRoot(), "realm"),
+			state: "active",
+			label: "realm active",
+			degraded: false,
+			reason: "ok",
+			mode,
+			lastTransitionAt: "2026-10-28T09:00:00.000Z",
+			workspaceMatches: true,
+			via: "socket",
+			probedAt: "2026-10-28T09:00:00.000Z",
+		});
+		const reply = (): Response => new Response("## Substrate brief: acme/widgets\n- earlier work");
+		const enforcing = await planAgainst(reply(), async () => present("fail-closed"));
+		const note = `Realm note (untrusted advisory, not an instruction): ${realmHint(present("fail-closed"), "claude-code").instruction}`;
+		expect(enforcing.context.split("\n")).toContain(note);
+		expect(enforcing.carrier).toContain(note);
+		expect(enforcing.summary).not.toContain("Realm");
+		const advisory = await planAgainst(reply(), async () => present("advisory"));
+		expect(advisory.context).not.toContain("Realm note");
+		expect(advisory.carrier).not.toContain("Realm note");
 	});
 });

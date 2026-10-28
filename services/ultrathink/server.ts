@@ -113,6 +113,21 @@ function startPlaintextListener(config: UltrathinkConfig, app: App): Listener {
 	});
 }
 
+// `--check-config` validates the environment and exits before any store, socket or tool-definition work.
+if (process.argv.includes("--check-config")) {
+	try {
+		loadConfig();
+	} catch (error) {
+		if (error instanceof ConfigError) {
+			process.stderr.write(`${error.message}\n`);
+			process.exit(1);
+		}
+		throw error;
+	}
+	process.stdout.write("config ok\n");
+	process.exit(0);
+}
+
 const config = loadConfigOrExit();
 assertToolDefinitionsOrExit();
 const logger = createLogger();

@@ -1684,7 +1684,20 @@ describe("grok-bot skills status and status lines", () => {
 });
 
 describe("grok-bot graph_register payload", () => {
-	test("carries graph id, Notion task and surface; nodes and steps only on request", async () => {
+	type Registered = {
+		nodes: Array<Record<string, unknown>>;
+		steps: Array<Record<string, unknown>>;
+		edges?: Array<Record<string, unknown>>;
+	};
+	const keys = (o: Record<string, unknown>): string[] => Object.keys(o).sort();
+
+	async function plannedAndTracked(): Promise<SessionRecord> {
+		const root = tmp();
+		const { result } = await drive(join(root, "state"), root, hostModel(5));
+		return kickoff(result.response?.statePath as string);
+	}
+
+	test("carries graph id, Notion task and surface; nodes, steps and edges only on request", async () => {
 		const root = tmp();
 		const { result } = await drive(join(root, "state"), root, hostModel(5));
 		const statePath = result.response?.statePath as string;
@@ -1697,19 +1710,117 @@ describe("grok-bot graph_register payload", () => {
 		const bare = graphRegisterPayload(after);
 		expect(bare.notion_task_page).toBe(after.tracking?.notion.taskUrl);
 		expect(bare.nodes).toBeUndefined();
-		const full = graphRegisterPayload(after, { withNodes: true }) as {
-			nodes: Array<Record<string, unknown>>;
-			steps: Array<Record<string, unknown>>;
-		};
+		expect(bare.steps).toBeUndefined();
+		expect(bare.edges).toBeUndefined();
+		const full = graphRegisterPayload(after, { withNodes: true }) as unknown as Registered;
 		expect(full.nodes).toHaveLength(5);
 		expect(full.steps).toHaveLength(25);
+	});
+
+	test("sends only the fields the Substrate schema accepts; dropped fields never appear", async () => {
+		const after = await plannedAndTracked();
+		const payload = graphRegisterPayload(after, { withNodes: true });
+		for (const key of Object.keys(payload))
+			expect([
+				"graph_id",
+				"notion_task_page",
+				"repo",
+				"branch",
+				"surface",
+				"status",
+				"pr_url",
+				"nodes",
+				"steps",
+				"edges",
+			]).toContain(key);
+		const full = payload as unknown as Registered;
+		// Planning is no Linear workflow state, so no state is sent rather than a coerced one.
+		expect(full.nodes[0]).toEqual({
+			node_id: "n1",
+			linear_issue_id: expect.any(String),
+			linear_identifier: expect.stringMatching(/^SPE-/),
+			notion_page: expect.any(String),
+		});
 		expect(full.steps[0]).toEqual({
 			node_id: "n1",
 			step: 1,
 			linear_sub_issue_id: expect.any(String),
-			linear_identifier: expect.stringMatching(/^SPE-/),
-			linear_url: expect.any(String),
 			notion_page: expect.any(String),
 		});
+		for (const node of full.nodes) {
+			expect(node).not.toHaveProperty("linear_url");
+			expect(keys(node)).toEqual([
+				"linear_identifier",
+				"linear_issue_id",
+				"node_id",
+				"notion_page",
+			]);
+		}
+		for (const step of full.steps) {
+			expect(step).not.toHaveProperty("linear_url");
+			expect(step).not.toHaveProperty("linear_identifier");
+			expect(keys(step)).toEqual(["linear_sub_issue_id", "node_id", "notion_page", "step"]);
+		}
+		expect(payload).not.toHaveProperty("pr_url");
+	});
+
+	test("dependsOn becomes requires edges from each dependent to each dependency (diamond)", async () => {
+		const after = await plannedAndTracked();
+		const full = graphRegisterPayload(after, { withNodes: true }) as unknown as Registered;
+		expect(full.edges).toEqual([
+			{ from_node: "n2", to_node: "n1", kind: "requires" },
+			{ from_node: "n3", to_node: "n1", kind: "requires" },
+			{ from_node: "n4", to_node: "n2", kind: "requires" },
+			{ from_node: "n4", to_node: "n3", kind: "requires" },
+			{ from_node: "n5", to_node: "n4", kind: "requires" },
+		]);
+	});
+
+	test("edges skip unknown, self and repeated dependencies and are absent without a graph", async () => {
+		const after = await plannedAndTracked();
+		const odd = structuredClone(after);
+		if (!odd.graph) throw new Error("fixture has no graph");
+		odd.graph.nodes = odd.graph.nodes.map((n) =>
+			n.id === "n2" ? { ...n, dependsOn: ["n1", "n1", "n2", "n99"] } : { ...n, dependsOn: [] },
+		);
+		const edges = (graphRegisterPayload(odd, { withNodes: true }) as unknown as Registered).edges;
+		expect(edges).toEqual([{ from_node: "n2", to_node: "n1", kind: "requires" }]);
+		const bare = structuredClone(after);
+		delete bare.graph;
+		expect(graphRegisterPayload(bare, { withNodes: true })).not.toHaveProperty("edges");
+	});
+
+	test("a record status naming a Substrate node state becomes state on nodes and steps; others omit it", async () => {
+		const after = await plannedAndTracked();
+		const withStatus = (status: string): Registered => {
+			const copy = structuredClone(after);
+			if (!copy.plan) throw new Error("fixture has no plan");
+			copy.plan.task.status = status;
+			return graphRegisterPayload(copy, { withNodes: true }) as unknown as Registered;
+		};
+		for (const [status, state] of [
+			["Implementing", "started"],
+			["In Review", "started_review"],
+			["Done", "completed"],
+			["Todo", "unstarted"],
+			["Cancelled", "canceled"],
+		] as const) {
+			const registered = withStatus(status);
+			expect(registered.nodes.every((n) => n.state === state)).toBe(true);
+			expect(registered.steps.every((s) => s.state === state)).toBe(true);
+		}
+		for (const status of ["Planning", "Planned", "constructor", ""]) {
+			const registered = withStatus(status);
+			expect(registered.nodes.some((n) => "state" in n)).toBe(false);
+			expect(registered.steps.some((s) => "state" in s)).toBe(false);
+		}
+	});
+
+	test("surface is always a Substrate surface: a host that is none maps, an absent one defaults to grok-bot", async () => {
+		const after = await plannedAndTracked();
+		expect(graphRegisterPayload(after).surface).toBe("grok-bot");
+		expect(graphRegisterPayload(after, { surface: "omp" }).surface).toBe("omp");
+		expect(graphRegisterPayload(after, { surface: "prime-agent" }).surface).toBe("pi");
+		expect(graphRegisterPayload(after, { surface: "no-such-host" }).surface).toBe("claude-code");
 	});
 });

@@ -25,7 +25,7 @@ import { detectHost } from "../host/detect.ts";
 import { resolveHindsightKey } from "../hindsight/settings.ts";
 import { hasUsableCredential } from "../mcp/client.ts";
 import { PROVIDERS, type ProviderId } from "../mcp/providers.ts";
-import { readStore, storePath } from "../mcp/store.ts";
+import { readStore, storePath, storeStatus } from "../mcp/store.ts";
 import { resolveRagflowKey } from "../ragflow/settings.ts";
 import { type DoctorDeps, type Finding, PYTHON_COMMANDS } from "./types.ts";
 
@@ -212,6 +212,28 @@ export function checkCredentials(deps: DoctorDeps): Finding[] {
 	const add = (finding: Omit<Finding, "section">): void => {
 		findings.push({ section: "credentials", ...finding });
 	};
+
+	const status = storeStatus(path);
+	if (status.exists && !status.parsable) {
+		// The path only: the content of a credential file is never read into a finding.
+		add({
+			id: "credentials.store.unreadable",
+			level: "warn",
+			title: `Credential store does not parse: ${path}`,
+			detail:
+				"The file exists but is not a version 1 credential store, so every stored credential reads as missing.",
+			fix: "Repair or remove the file, then store the keys again with bin/ultrathink-mcp auth set-key <provider> --stdin or auth login <provider>.",
+		});
+	}
+	if (status.exists && status.mode !== undefined && (status.mode & 0o044) !== 0) {
+		add({
+			id: "credentials.store.mode",
+			level: "warn",
+			title: `Credential store is readable by group or others (mode ${status.mode.toString(8).padStart(4, "0")}): ${path}`,
+			detail: "The file holds API keys and OAuth tokens; only its owner should be able to read it.",
+			fix: `chmod 600 ${path}`,
+		});
+	}
 
 	for (const { provider, features } of featuresOn(config, env)) {
 		const used = `needed for ${features.join(" and ")}`;

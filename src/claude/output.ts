@@ -10,10 +10,11 @@
  */
 import { join } from "node:path";
 import { hasControlCharacter } from "../config.ts";
-import { redactSecrets } from "../grok/auth.ts";
 import type { ModelResolution } from "../host/engine.ts";
-import { MAX_ENGINE_ERROR_CHARS } from "../host/display-limits.ts";
+import { HANDOFF_MAX_CHARS, MAX_ENGINE_ERROR_CHARS } from "../host/display-limits.ts";
+import { redactSecrets } from "../redact.ts";
 import { redactLine } from "../teach/redact.ts";
+import { sanitizeBrief } from "../substrate/inject.ts";
 import { SHIP_CLI } from "../ship/nudge.ts";
 import { type DecisionRecord, formatP } from "../decisions/types.ts";
 import { formatHitlAddendum } from "../hitl/format.ts";
@@ -32,11 +33,6 @@ import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
 
 /** Ceiling for the injected specification; 0 means no truncation. A positive value is an explicit cap: RATIONALE bodies go first, then the tail. */
 const DEFAULT_CONTEXT_CHARS = 0;
-/**
- * Ceiling for a handoff. Hermes spills a hook context piece over 10,000 characters to a file and keeps only its first
- * and last 500, which could hide the kickoff instruction in the middle.
- */
-export const HANDOFF_MAX_CHARS = 9_000;
 const BRIEF_CUT = "\n(brief truncated)";
 const LINKED_POINTER =
 	"## Linked issues\n\nThe tracker rows' TODO lines are too long to repeat here: copy them from the ISSUES block of the specification file (or from kickoff's `track complete` output), keeping each identifier and URL.";
@@ -261,6 +257,8 @@ export interface PromptContextInput {
 	clarifications?: Clarification[];
 	/** Agent Substrate briefing; empty or absent when the substrate is unreachable. */
 	brief?: string;
+	/** Untrusted Realm advisory appended after the sanitised brief; shown as part of the brief block. */
+	briefNote?: string;
 	/** Path to the session state file `ultrathink-kickoff` should read; adds the tracking tail when set. */
 	statePath?: string;
 	specPath?: string;
@@ -468,7 +466,11 @@ export function formatPromptContext(input: PromptContextInput): string {
 		if (input.statePath) parts.push(`State file: ${input.statePath}`);
 	}
 
-	const brief = input.brief?.trim();
+	// The brief gets its control characters stripped and its length capped here too (the hook already did; the helper is
+	// idempotent), then the Realm note is appended: sanitising never cuts or alters the note.
+	const cleanBrief = sanitizeBrief(input.brief?.trim() ?? "").trim();
+	const briefNote = input.briefNote?.trim();
+	const brief = [cleanBrief, briefNote].filter(Boolean).join("\n\n");
 	const briefParts = brief ? [SUBSTRATE_CONTEXT_HEADER, brief] : [];
 	const lessons = input.lessons?.trim() || undefined;
 	const docs = input.docs?.trim() || undefined;

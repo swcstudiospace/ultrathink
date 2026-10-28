@@ -24,6 +24,9 @@ import {
 /** The credential-store provider id; `bin/ultrathink-mcp auth set-key hindsight --stdin` writes it. */
 const PROVIDER = "hindsight";
 
+/** The shorter name some Hindsight deployments export; read only when `HINDSIGHT_API_URL` is unset or blank, so the canonical name wins. */
+const HINDSIGHT_URL_FALLBACK_ENV = "HINDSIGHT_URL";
+
 /** Stored `hindsight` api_key (trimmed, non-empty) wins; then HINDSIGHT_API_KEY, then HINDSIGHT_API_TOKEN. Never throws. */
 export function resolveHindsightKey(
 	storePath: string | undefined,
@@ -92,7 +95,11 @@ export function resolveHindsight(
 			client,
 		};
 	}
-	const rawUrl = config.url.trim() || env[HINDSIGHT_URL_ENV]?.trim() || "";
+	const rawUrl =
+		config.url.trim() ||
+		env[HINDSIGHT_URL_ENV]?.trim() ||
+		env[HINDSIGHT_URL_FALLBACK_ENV]?.trim() ||
+		"";
 	if (rawUrl === "") return { readiness: { state: "unready", reason: "no-url" } };
 	const url = checkServiceUrl(rawUrl);
 	if (!url.ok) return { readiness: { state: "unready", reason: "bad-url", detail: url.reason } };

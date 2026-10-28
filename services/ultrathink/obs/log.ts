@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { randomUUID } from "node:crypto";
+import { redactSecrets } from "../../../src/redact.ts";
 import { currentRequestContext } from "./context.ts";
 
 export type LogLevel = "info" | "warn" | "error";
@@ -34,9 +35,9 @@ function clip(value: string): string {
 function serializeError(err: Error, withStack: boolean): Record<string, unknown> {
 	const out: Record<string, unknown> = {
 		name: clip(String(err.name)),
-		message: clip(String(err.message)),
+		message: clip(redactSecrets(String(err.message))),
 	};
-	if (withStack && typeof err.stack === "string") out.stack = clip(err.stack);
+	if (withStack && typeof err.stack === "string") out.stack = clip(redactSecrets(err.stack));
 	return out;
 }
 
@@ -48,7 +49,7 @@ function serialize(
 ): unknown {
 	switch (typeof value) {
 		case "string":
-			return clip(value);
+			return clip(redactSecrets(value));
 		case "number":
 			return Number.isFinite(value) ? value : String(value);
 		case "boolean":

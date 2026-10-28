@@ -105,17 +105,15 @@ export function spawnObserveDetached(
 		pruneInbox(inboxDir(options.stateDir), Date.now());
 		path = writeInbox(digest, options.stateDir);
 		const cwd = existsSync(digest.cwd) ? digest.cwd : options.repoRoot;
+		const childEnv: NodeJS.ProcessEnv = {
+			...options.env,
+			ULTRATHINK_HOST: options.host,
+			ULTRATHINK_STATE_DIR: options.stateDir,
+		};
 		const launch = (options.spawn ?? startDetached)(
 			join(options.repoRoot, "bin", "ultrathink"),
 			["teach", "observe", "--file", path],
-			{
-				env: {
-					...options.env,
-					ULTRATHINK_HOST: options.host,
-					ULTRATHINK_STATE_DIR: options.stateDir,
-				},
-				cwd,
-			},
+			{ env: childEnv, cwd },
 		);
 		if (launch && launch.pid === undefined) throw new Error("launcher did not start");
 		return { spawned: true };

@@ -8,12 +8,47 @@
  * process starts — are injectable so tests never spawn a real process. This module composes with, and never
  * modifies, the AgentSwarm runtime checked out at `ULTRATHINK_SWARM_ROOT`.
  */
-import { execFile as nodeExecFile, spawn as nodeSpawn } from "node:child_process";
+import {
+	execFile as nodeExecFile,
+	execFileSync as nodeExecFileSync,
+	spawn as nodeSpawn,
+} from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { buildBlock, type PstackInput } from "../cursor/pstack.ts";
+import { dropJevKeys } from "../route-defaults.ts";
+import { isRecord } from "../shared.ts";
+import { type ClassifyVerdict, preflightClassify } from "./classify.ts";
+import {
+	briefDigest,
+	capRefusal,
+	findDuplicate,
+	type LaneFileFs,
+	type LaneLockDeps,
+	type LaneRecord,
+	type LaneVerdict,
+	laneBriefWithGraphId,
+	liveLanes,
+	type PidAlive,
+	readLaneFile,
+	START_TIME_TOLERANCE_MS,
+	STOP_HINT,
+	verifyLaneProcess,
+	withLaneLock,
+	writeLaneFile,
+} from "./lane.ts";
 
 /** Hard ceiling on lanes per command, whatever the environment asks for. */
 export const TEAMS_MAX_LANES = 6;
@@ -27,22 +62,42 @@ export const LANE_STATUS_CONCURRENCY = 4;
 /** How many historical lanes discovery reports at most (most recent by directory mtime). */
 export const MAX_DISCOVERED_LANES = 24;
 
-/** The run states AgentSwarm itself treats as finished (orch_status.py, swarm/observability.py). */
-const DONE_STATES: Record<string, true> = { DONE: true, APPROVED: true, CANCELLED: true };
+/** Task states that need a human; any of these in a lane's Task Store makes the lane row `attention`. */
+const ATTENTION_TASK_STATES: Record<string, true> = {
+	FAILED: true,
+	ESCALATED: true,
+	BLOCKED: true,
+};
+
+/** The grace between SIGTERM and SIGKILL when `SWARM_AUTONOMOUS_RUN_GRACE_S` is unset: Swarm's own default. */
+export const STOP_GRACE_DEFAULT_MS = 15_000;
+
+/** The poll interval of the SIGTERM grace: how often a stopping lane is re-verified before the full grace. */
+export const STOP_POLL_MS = 250;
+
+/** The user-visible refusal for a brief Swarm's own classifier would silently drop. */
+export const SKIP_REFUSAL = "Swarm would skip this brief (not SDLC work)";
+
+/** The note for a brief that spawned because the classifier could not answer. */
+export const CLASSIFIER_UNAVAILABLE_NOTE = "classifier unavailable — spawned without preflight";
 
 /** One-line user help for `/ultrathink-swarm`; the reply when parsing finds nothing usable. */
 export const TEAMS_USAGE =
 	"/ultrathink-swarm usage: `/ultrathink-swarm <brief>|<brief>|…` spawns one AgentSwarm orchestrator lane per " +
-	`brief (up to ${TEAMS_MAX_LANES}); \`/ultrathink-swarm status\` reports each lane's task counts. Each lane ` +
-	"gets its own SWARM_DIR, so state and logs are isolated under <state dir>/swarm/<lane>/run.log. Configuration " +
-	"is env-only: ULTRATHINK_SWARM_ROOT (absolute agent-swarm checkout, required) and ULTRATHINK_SWARM_MAX_LANES " +
-	`(default 3, cap ${TEAMS_MAX_LANES}).`;
+	`brief (up to ${TEAMS_MAX_LANES} per command). Swarm drops briefs its classifier does not read as SDLC work, so ` +
+	"those are refused up front. `/ultrathink-swarm status` reports each lane as planning, running, skipped, " +
+	"plan-failed, done, attention or not-planned; `/ultrathink-swarm stop [laneId|all]` ends a lane's process group. " +
+	"A lane's real output is autonomous.log, events.jsonl and results/ in its state dir " +
+	"(<state dir>/swarm/<lane>/); run.log there is only the wrapper's own stdout. ULTRATHINK_SWARM_MAX_LANES " +
+	`(default 3, cap ${TEAMS_MAX_LANES}) bounds live lanes across all commands, and a brief already running in the ` +
+	"same repository is refused; two lanes in one repository share one working tree and its branches. Lanes are " +
+	"detached on purpose: ending the Omp session does not stop them. Configuration is env-only: " +
+	"ULTRATHINK_SWARM_ROOT (or SWARM_ROOT) names the absolute agent-swarm checkout (required).";
 
 /** The sync fs surface this module needs; injectable so tests never touch real state outside a tmpdir. */
-export interface TeamsFs {
-	existsSync(path: string): boolean;
-	mkdirSync(path: string, options: { recursive: true }): void;
-	openSync(path: string, flags: string): number;
+export interface TeamsFs extends LaneFileFs {
+	mkdirSync(path: string, options: { recursive: true; mode: number }): void;
+	openSync(path: string, flags: string, mode: number): number;
 	closeSync(fd: number): void;
 	readdirSync(path: string): string[];
 	statSync(path: string): { mtimeMs: number };
@@ -55,14 +110,32 @@ const defaultFs = {
 	closeSync,
 	readdirSync,
 	statSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
 } satisfies TeamsFs;
 
+/** A copy of `env` without the Jev key variables: the environment every child Ultrathink starts here gets. */
+function scrubbedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string | undefined> {
+	const copy: Record<string, string | undefined> = { ...env };
+	dropJevKeys(copy);
+	return copy;
+}
+
+/** Why lanes cannot run. `reason` never carries the configured value; `got` does, for the user who typed it. */
+export interface SwarmRootFailure {
+	reason: string;
+	/** The raw configured value; only a path-shape failure sets it. Reports and probes must never read it. */
+	got?: string;
+}
+
 /** A usable swarm checkout, or why lanes cannot run. */
-export type SwarmRoot = { root: string } | { reason: string };
+export type SwarmRoot = { root: string } | SwarmRootFailure;
 
 /** What the command argument parses into. */
 export type LaneArgs =
 	| { kind: "status" }
+	| { kind: "stop"; target: string }
 	| { kind: "spawn"; briefs: string[] }
 	| { kind: "usage"; reason: string };
 
@@ -73,6 +146,8 @@ export interface LanePlan {
 	brief: string;
 	/** What actually goes to `--brief`: the brief plus the pstack orchestrate block when one resolved. */
 	laneBrief: string;
+	/** The Graph ID embedded as the lane brief's first line, when the caller had a well-formed one. */
+	graphId?: string;
 	cwd: string;
 	stateDir: string;
 	argv: string[];
@@ -87,6 +162,8 @@ export interface LaneHandle {
 	logPath: string;
 	/** Present only when this lane failed to start; sibling lanes are unaffected. */
 	error?: string;
+	/** A non-fatal remark about a lane that did start (for example, `lane.json` could not be written). */
+	note?: string;
 }
 
 /** A lane addressable by status: its display id and the state directory that identifies it. */
@@ -104,15 +181,34 @@ export interface LaneDiscovery {
 	omitted: number;
 }
 
-/** Per-lane task counts, or why the probe failed. `logPath` always names the lane's run log. */
+/** What a lane is really doing, read from its own files (never inferred from the spawn). */
+export type LaneState =
+	| "planning"
+	| "running"
+	| "skipped"
+	| "plan-failed"
+	| "done"
+	| "attention"
+	| "not-planned";
+
+/**
+ * One lane's status: the state word and a summary line from the lane's own files, or why the probe failed.
+ * `logPath` always names the lane's `run.log` (the wrapper's stdout); the lane's real output is
+ * `autonomous.log`, `events.jsonl` and `results/` beside it.
+ */
 export type LaneStatusRow =
 	| {
 			laneId: string;
 			logPath: string;
+			state: LaneState;
+			summary: string;
+			/** Task total from `orch_status`; 0 while no plan exists. */
 			total: number;
 			byState: Record<string, number>;
+			/** `total` once `orch_status` reports `complete: true`, else 0; never re-derived from task states. */
 			done: number;
-			summary: string;
+			graphId?: string;
+			detail?: string;
 	  }
 	| { laneId: string; logPath: string; error: string };
 
@@ -139,22 +235,32 @@ export type OrchStatusSpawn = (
 export type LaneStatusProbe = (stateDir: string) => Promise<{ stdout: string } | { error: string }>;
 
 /**
- * Validate `ULTRATHINK_SWARM_ROOT`: absolute, an existing directory, and containing `hooks/autonomous_run.py`.
- * Anything else is a `reason` the caller can show verbatim.
+ * Validate the swarm root: `ULTRATHINK_SWARM_ROOT`, or `SWARM_ROOT` when that is unset or empty. It must be
+ * absolute, an existing directory, and contain `hooks/autonomous_run.py`. A non-empty `ULTRATHINK_SWARM_ROOT`
+ * always wins. This is the only root lookup: the spawn path and the probe both call it. Anything unusable is a
+ * {@link SwarmRootFailure}: its `reason` is safe to print anywhere; a value that is not even an absolute path
+ * (it may be a mistyped credential) is held back in `got`, which only the spawn reply to that user prints.
  */
 export function resolveSwarmRoot(env: NodeJS.ProcessEnv, fs: TeamsFs = defaultFs): SwarmRoot {
-	const raw = (env.ULTRATHINK_SWARM_ROOT ?? "").trim();
+	const primary = (env.ULTRATHINK_SWARM_ROOT ?? "").trim();
+	const raw = primary || (env.SWARM_ROOT ?? "").trim();
 	if (!raw)
 		return {
-			reason: "ULTRATHINK_SWARM_ROOT is not set — point it at an absolute agent-swarm checkout",
+			reason:
+				"ULTRATHINK_SWARM_ROOT (or SWARM_ROOT fallback) is not set — point one of them at an absolute agent-swarm checkout",
 		};
-	if (!raw.startsWith("/"))
-		return { reason: `ULTRATHINK_SWARM_ROOT must be an absolute path, got ${raw}` };
+	const name = primary ? "ULTRATHINK_SWARM_ROOT" : "SWARM_ROOT";
+	if (!raw.startsWith("/")) return { reason: `${name} must be an absolute path`, got: raw };
 	const runner = join(raw, "hooks", "autonomous_run.py");
 	if (!fs.existsSync(raw) || !fs.existsSync(runner)) {
 		return { reason: `${raw} is not an agent-swarm checkout (missing ${runner})` };
 	}
 	return { root: raw };
+}
+
+/** The failure as the user who typed the value reads it: `reason`, then `, got <value>` when the value was held back. */
+export function swarmRootMessage(failure: SwarmRootFailure): string {
+	return failure.got === undefined ? failure.reason : `${failure.reason}, got ${failure.got}`;
 }
 
 /** The effective per-command lane limit: `ULTRATHINK_SWARM_MAX_LANES` (default 3), clamped to 1..6. */
@@ -165,13 +271,32 @@ export function maxLanes(env: NodeJS.ProcessEnv): number {
 }
 
 /**
- * Split the command argument into `status`, a spawn plan, or a usage reply. Briefs are separated by `|`,
- * trimmed, and emptied ones dropped; more briefs than the lane limit (never more than the hard cap) is a
+ * Parse `stop`, `stop <laneId>` and `stop all`; a bare `stop` means every live lane. Anything with more
+ * words is not a stop command (a brief may legitimately begin with the word "stop") and yields a usage.
+ */
+export function parseStopArgs(
+	input: string,
+): { kind: "stop"; target: string } | { kind: "usage"; reason: string } {
+	const words = (input ?? "")
+		.trim()
+		.split(/\s+/)
+		.filter((word) => word !== "");
+	if (words[0] !== "stop") return { kind: "usage", reason: "not a stop command" };
+	if (words.length === 1) return { kind: "stop", target: "all" };
+	if (words.length === 2) return { kind: "stop", target: words[1]! };
+	return { kind: "usage", reason: "stop takes one lane id or `all`" };
+}
+
+/**
+ * Split the command argument into `status`, `stop`, a spawn plan, or a usage reply. Briefs are separated by
+ * `|`, trimmed, and emptied ones dropped; more briefs than the lane limit (never more than the hard cap) is a
  * usage with the reason, never a partial spawn.
  */
 export function parseLaneArgs(input: string, opts: { maxLanes?: number } = {}): LaneArgs {
 	const text = (input ?? "").trim();
 	if (text === "status") return { kind: "status" };
+	const stop = parseStopArgs(text);
+	if (stop.kind === "stop") return stop;
 	const briefs = text
 		.split("|")
 		.map((brief) => brief.trim())
@@ -236,19 +361,23 @@ export interface PlanLanesOptions {
 	/** The host state directory; each lane gets `<stateDir>/swarm/<sha8(brief)>-<i>-<nonce>`. */
 	stateDir: string;
 	swarmRoot: string;
-	/** Parent env snapshot; the lane env merges it under the lane's own overrides (SWARM_DIR, cap). */
+	/** Parent env snapshot; the lane env merges it under the lane's own overrides (SWARM_DIR, cap), minus the Jev keys. */
 	env?: NodeJS.ProcessEnv;
 	/** A pstack resolution (or a stand-in); when absent or unresolved the skills block is dropped. */
 	pstack?: PstackInput;
 	/** Invocation clock feeding the state-directory nonce; defaults to `Date.now`. */
 	now?: () => number;
+	/** The Ultrathink Graph ID of the planned prompt; it becomes the lane brief's first line. A malformed id is ignored. */
+	graphId?: string;
 }
 
 /**
  * Plan one lane per brief, 1-based: id `lane-i`, a per-invocation state directory (hash, index, nonce — so
  * repeated runs of the same briefs never share state), the runner argv, and the lane env: the parent env
  * merged under the lane's own overrides, so `PATH`/`HOME` and friends survive while `SWARM_DIR` and the cap
- * stay lane-local.
+ * stay lane-local. The Jev keys never reach a lane (`dropJevKeys` on the lane's own copy). The lane brief is
+ * `Graph ID: <id>` first (when given), then the brief, then the pstack block, so Swarm's `graph_id_in_text`
+ * finds the id on the first line.
  */
 export function planLanes(briefs: readonly string[], opts: PlanLanesOptions): LanePlan[] {
 	const built = opts.pstack ? buildBlock("orchestrate", opts.pstack) : undefined;
@@ -265,8 +394,15 @@ export function planLanes(briefs: readonly string[], opts: PlanLanesOptions): La
 	return briefs.map((brief, index) => {
 		const i = index + 1;
 		const stateDir = join(opts.stateDir, "swarm", `${sha8(brief)}-${i}-${nonce}`);
-		const laneBrief = skills ? `${brief}\n\n${skills}` : brief;
-		return {
+		const bound = laneBriefWithGraphId(brief, opts.graphId);
+		const laneBrief = skills ? `${bound}\n\n${skills}` : bound;
+		const env: Record<string, string> = {
+			...parentEnv,
+			SWARM_DIR: stateDir,
+			...(cap ? { SWARM_AUTONOMOUS_RUN_CAP_S: cap } : {}),
+		};
+		dropJevKeys(env);
+		const plan: LanePlan = {
 			id: `lane-${i}`,
 			brief,
 			laneBrief,
@@ -282,12 +418,10 @@ export function planLanes(briefs: readonly string[], opts: PlanLanesOptions): La
 				"--brief",
 				laneBrief,
 			],
-			env: {
-				...parentEnv,
-				SWARM_DIR: stateDir,
-				...(cap ? { SWARM_AUTONOMOUS_RUN_CAP_S: cap } : {}),
-			},
+			env,
 		};
+		if (opts.graphId !== undefined && bound !== brief) plan.graphId = opts.graphId;
+		return plan;
 	});
 }
 
@@ -315,9 +449,33 @@ function startLaneDetached(
 	return { pid: child.pid };
 }
 
+/** Record the lane's identity in `lane.json`; a failure never fails the spawn, it becomes a handle note. */
+function recordLane(lane: LanePlan, pid: number, fs: LaneFileFs): string | undefined {
+	try {
+		writeLaneFile(
+			lane.stateDir,
+			{
+				laneId: basename(lane.stateDir),
+				pid,
+				graphId: lane.graphId,
+				briefDigest: briefDigest(lane.brief),
+				cwd: lane.cwd,
+				startedAt: new Date().toISOString(),
+			},
+			fs,
+		);
+		return undefined;
+	} catch (error) {
+		const why = error instanceof Error ? error.message.slice(0, 120) : "write failed";
+		return `lane.json not written (${why}); status, stop and the live-lane cap cannot see this lane`;
+	}
+}
+
 /**
- * Start every planned lane detached, each with `stdout`/`stderr` appended to `<stateDir>/run.log`. One lane
- * failing to start becomes an error row for that lane alone; the sibling lanes always spawn.
+ * Start every planned lane detached, each with `stdout`/`stderr` appended to `<stateDir>/run.log`, and record
+ * `<stateDir>/lane.json` right after a successful start. One lane failing to start becomes an error row for
+ * that lane alone; the sibling lanes always spawn. Callers that also run the live-lane check MUST use
+ * {@link spawnGuarded}, which holds the lane lock across check and spawn.
  */
 export function spawnLanes(
 	plan: readonly LanePlan[],
@@ -327,8 +485,8 @@ export function spawnLanes(
 	return plan.map((lane) => {
 		const logPath = join(lane.stateDir, "run.log");
 		try {
-			fs.mkdirSync(lane.stateDir, { recursive: true });
-			const log = fs.openSync(logPath, "a");
+			fs.mkdirSync(lane.stateDir, { recursive: true, mode: 0o700 });
+			const log = fs.openSync(logPath, "a", 0o600);
 			try {
 				const child = spawnFn(lane.argv[0]!, lane.argv.slice(1), {
 					cwd: lane.cwd,
@@ -343,7 +501,14 @@ export function spawnLanes(
 						logPath,
 						error: "spawned without a pid",
 					};
-				return { laneId: lane.id, pid: child.pid, stateDir: lane.stateDir, logPath };
+				const note = recordLane(lane, child.pid, fs);
+				return {
+					laneId: lane.id,
+					pid: child.pid,
+					stateDir: lane.stateDir,
+					logPath,
+					...(note === undefined ? {} : { note }),
+				};
 			} finally {
 				try {
 					fs.closeSync(log);
@@ -365,20 +530,17 @@ export function spawnLanes(
 /** Lane state directories are `<sha8(brief)>-<i>-<nonce>`; the nonce is base36 alphanumerics. */
 const LANE_DIR_PATTERN = /^([0-9a-f]{8})-(\d+)-([0-9a-z]+)$/;
 
-/**
- * Discover recently spawned lanes under a host state directory: every `swarm/<sha8>-<i>-<nonce>`
- * subdirectory becomes a lane labelled by its full basename, ordered by lane index (then nonce). Discovery
- * is bounded to the {@link MAX_DISCOVERED_LANES} most recent directories by mtime, so history never floods
- * a status reply; the count of older lanes it hid is returned as `omitted`, because those lanes may still
- * be running and must not disappear silently.
- */
-export function laneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneDiscovery {
+/** Every lane directory under `<stateDir>/swarm`, unbounded and unordered; empty when the directory is absent. */
+function scanLaneDirs(
+	stateDir: string,
+	fs: TeamsFs,
+): Array<{ laneId: string; stateDir: string; index: number; nonce: string; mtimeMs: number }> {
 	const swarmDir = join(stateDir, "swarm");
 	let names: string[] = [];
 	try {
 		names = fs.readdirSync(swarmDir);
 	} catch {
-		return { lanes: [], omitted: 0 };
+		return [];
 	}
 	const lanes: Array<{
 		laneId: string;
@@ -405,25 +567,484 @@ export function laneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneDiscove
 			mtimeMs,
 		});
 	}
+	return lanes;
+}
+
+/**
+ * Discover recently spawned lanes under a host state directory: every `swarm/<sha8>-<i>-<nonce>`
+ * subdirectory becomes a lane labelled by its full basename, ordered by lane index (then nonce). Discovery
+ * is bounded to the {@link MAX_DISCOVERED_LANES} most recent directories by mtime, so history never floods
+ * a status reply; the count of older lanes it hid is returned as `omitted`, because those lanes may still
+ * be running and must not disappear silently.
+ */
+export function laneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneDiscovery {
+	const lanes = scanLaneDirs(stateDir, fs);
 	lanes.sort((a, b) => b.mtimeMs - a.mtimeMs);
 	const kept = lanes.slice(0, MAX_DISCOVERED_LANES);
 	return {
 		lanes: kept
 			.sort((a, b) => a.index - b.index || a.nonce.localeCompare(b.nonce))
-			.map(({ laneId, stateDir }) => ({ laneId, stateDir })),
+			.map(({ laneId, stateDir: dir }) => ({ laneId, stateDir: dir })),
 		omitted: lanes.length - kept.length,
 	};
 }
 
 /**
- * Read every lane's Task Store through `runFn` (the injected `orch_status.py` probe) and aggregate
- * `{ total, byState, done }` per lane, tolerantly: bad JSON, a failed probe or a throwing one is an error
- * row for that lane alone. Probes run concurrently but at most {@link LANE_STATUS_CONCURRENCY} at a time,
- * and rows come back in input order. `done` follows AgentSwarm's own convention (DONE, APPROVED, CANCELLED).
+ * Every lane directory under `<stateDir>/swarm`, ordered like {@link laneDirs} but never bounded by recency.
+ * Stop and every live-lane count use this: a long-running lane must stay reachable however many newer lanes
+ * exist. Only the status listing is bounded, for display.
+ */
+export function allLaneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneRef[] {
+	return scanLaneDirs(stateDir, fs)
+		.sort((a, b) => a.index - b.index || a.nonce.localeCompare(b.nonce))
+		.map(({ laneId, stateDir: dir }) => ({ laneId, stateDir: dir }));
+}
+
+/** Default liveness: signal 0. EPERM means the pid exists under another user, so it is alive (and never ours). */
+export function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** Parse `ps -o etime=` (`[[dd-]hh:]mm:ss`) into elapsed seconds; undefined when it is not that shape. */
+export function parseEtimeSeconds(raw: string): number | undefined {
+	const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(raw.trim());
+	if (!match) return undefined;
+	const [, days, hours, minutes, seconds] = match;
+	return (
+		((Number(days ?? 0) * 24 + Number(hours ?? 0)) * 60 + Number(minutes)) * 60 + Number(seconds)
+	);
+}
+
+function psElapsedSeconds(pid: number): number | undefined {
+	try {
+		const out = nodeExecFileSync("ps", ["-o", "etime=", "-p", String(pid)], {
+			encoding: "utf8",
+			timeout: 2_000,
+			env: scrubbedEnv(process.env),
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		return parseEtimeSeconds(out);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The non-Linux recycled-pid gate: the pid must be alive AND its process start (now minus `ps` elapsed time)
+ * must sit within {@link START_TIME_TOLERANCE_MS} of the lane's recorded `startedAt`. A dead pid or a start
+ * outside the tolerance is a `mismatch`; an unreadable start time (or an unparseable `startedAt`) is `unknown`.
+ */
+export function signalAliveMatchingStart(
+	pid: number,
+	startedAt: string,
+	deps: {
+		alive?: PidAlive;
+		etimeSeconds?: (pid: number) => number | undefined;
+		now?: () => number;
+	} = {},
+): LaneVerdict {
+	if (!(deps.alive ?? pidAlive)(pid)) return "mismatch";
+	const started = Date.parse(startedAt);
+	if (!Number.isFinite(started)) return "unknown";
+	const elapsed = (deps.etimeSeconds ?? psElapsedSeconds)(pid);
+	if (elapsed === undefined) return "unknown";
+	const processStart = (deps.now ?? Date.now)() - elapsed * 1000;
+	return Math.abs(processStart - started) <= START_TIME_TOLERANCE_MS ? "match" : "mismatch";
+}
+
+/** The recycled-pid gate seam: what a lane's recorded pid is, as a {@link LaneVerdict}. */
+export type LaneVerify = (record: LaneRecord) => LaneVerdict;
+
+/** The recycled-pid gate every default path uses: `verifyLaneProcess` with the start-time-aware fallback. */
+function defaultVerify(record: LaneRecord): LaneVerdict {
+	return verifyLaneProcess(record, { signalAlive: signalAliveMatchingStart });
+}
+
+/**
+ * A lane is live when its recorded pid is alive and not provably someone else's: an `unknown` verdict (an
+ * unreadable /proc) keeps the lane counted and listed, because a running lane must never be forgotten for
+ * want of a readable file. Only `mismatch` (a recycled pid) frees it. Never throws.
+ */
+function isLaneLive(record: LaneRecord, isAlive: PidAlive, verify: LaneVerify): boolean {
+	try {
+		return isAlive(record.pid) && verify(record) !== "mismatch";
+	} catch {
+		return false;
+	}
+}
+
+/** The Swarm classifier seam: the exact lane text in, Swarm's own verdict out. */
+export type LaneClassify = (text: string) => Promise<ClassifyVerdict>;
+
+/** A {@link LaneClassify} bound to a swarm checkout; this is what the host uses unless a test injects another. */
+export function swarmClassifier(swarmRoot: string): LaneClassify {
+	return (text) => preflightClassify(text, { swarmRoot });
+}
+
+/**
+ * Preflight every plan on its exact final `laneBrief` (brief plus pstack block). `sdlc` keeps the plan, `skip`
+ * refuses it with {@link SKIP_REFUSAL}, and `unknown` (the classifier could not answer, or threw) keeps the
+ * plan and adds {@link CLASSIFIER_UNAVAILABLE_NOTE} once. Never throws.
+ */
+export async function filterSpawnable(
+	plans: LanePlan[],
+	classify: LaneClassify,
+): Promise<{
+	spawn: LanePlan[];
+	refused: Array<{ laneId: string; reason: string }>;
+	notes: string[];
+}> {
+	const verdicts = await Promise.all(
+		plans.map(async (plan): Promise<ClassifyVerdict> => {
+			try {
+				return await classify(plan.laneBrief);
+			} catch {
+				return { kind: "unknown", reason: "classifier could not start" };
+			}
+		}),
+	);
+	const spawn: LanePlan[] = [];
+	const refused: Array<{ laneId: string; reason: string }> = [];
+	const notes: string[] = [];
+	for (const [index, plan] of plans.entries()) {
+		const verdict = verdicts[index]!;
+		if (verdict.kind === "skip") {
+			refused.push({ laneId: plan.id, reason: SKIP_REFUSAL });
+			continue;
+		}
+		spawn.push(plan);
+		if (verdict.kind === "unknown" && !notes.includes(CLASSIFIER_UNAVAILABLE_NOTE))
+			notes.push(CLASSIFIER_UNAVAILABLE_NOTE);
+	}
+	return { spawn, refused, notes };
+}
+
+/**
+ * The lanes alive right now: every lane dir under `stateDir` whose `lane.json` parses, whose pid is alive and that
+ * `verify` still attributes to the lane. Dead pids, recycled pids and missing or malformed `lane.json` are not
+ * counted. A snapshot is only worth anything while the lane lock is held from taking it until the lanes it
+ * admitted have written their `lane.json`: take it through {@link spawnGuarded}.
+ */
+export function liveLaneSnapshot(
+	stateDir: string,
+	isAlive: PidAlive,
+	verify: LaneVerify = defaultVerify,
+	fs: TeamsFs = defaultFs,
+): LaneRecord[] {
+	return liveLanes(scanLaneDirs(stateDir, fs), isAlive, fs).filter((record) =>
+		isLaneLive(record, isAlive, verify),
+	);
+}
+
+/**
+ * Refuse plans before spawn, as a pure decision over a snapshot of the live lanes ({@link liveLaneSnapshot}): a brief
+ * already running in this cwd (`already running as <laneId>`), a repeat of an earlier brief of the same command, and
+ * everything past the live-lane cap (which counts live lanes across all commands, not per command). It reads nothing
+ * itself, so there is no unlocked check to race: {@link spawnGuarded} takes the snapshot under the lane lock and spawns
+ * the survivors before releasing it, and every caller that goes on to spawn MUST use it.
+ */
+export function refuseDuplicatesAndOverCap(
+	plans: readonly LanePlan[],
+	cwd: string,
+	cap: number,
+	live: readonly LaneRecord[],
+): { spawn: LanePlan[]; refused: Array<{ laneId: string; reason: string }> } {
+	const spawn: LanePlan[] = [];
+	const refused: Array<{ laneId: string; reason: string }> = [];
+	// Accepted plans of this command by normalized digest (the cwd is the command's, so it is part of the key).
+	const accepted = new Map<string, string>();
+	for (const plan of plans) {
+		const digest = briefDigest(plan.brief);
+		const duplicate = findDuplicate(cwd, digest, live);
+		if (duplicate !== undefined) {
+			refused.push({
+				laneId: plan.id,
+				reason: `already running as ${duplicate.laneId} (pid ${duplicate.pid}) in ${cwd}; ${STOP_HINT} to replace it`,
+			});
+			continue;
+		}
+		const earlier = accepted.get(digest);
+		if (earlier !== undefined) {
+			refused.push({ laneId: plan.id, reason: `duplicate of ${earlier} in this command` });
+			continue;
+		}
+		if (live.length + spawn.length >= cap) {
+			refused.push({
+				laneId: plan.id,
+				reason:
+					live.length >= cap
+						? capRefusal(live, cap)
+						: `Swarm lane cap reached: ${live.length} live plus ${spawn.length} starting lane(s), limit ${cap} (ULTRATHINK_SWARM_MAX_LANES); ${STOP_HINT}.`,
+			});
+			continue;
+		}
+		accepted.set(digest, plan.id);
+		spawn.push(plan);
+	}
+	return { spawn, refused };
+}
+
+/** The outcome of {@link spawnGuarded}: the plans that were spawned, the refusals, and one handle per spawned plan. */
+export interface GuardedSpawn {
+	spawn: LanePlan[];
+	refused: Array<{ laneId: string; reason: string }>;
+	handles: LaneHandle[];
+}
+
+/**
+ * The live-lane snapshot ({@link liveLaneSnapshot}), the decision ({@link refuseDuplicatesAndOverCap}) and the spawn as
+ * ONE step: all three run inside `withLaneLock(opts.stateDir, ...)`, so two Omp processes sharing the state directory
+ * cannot both pass the cap check before either has written its `lane.json`. This is the only place a live-lane scan
+ * and a spawn are combined; the lock covers the `lane.json` writes (they happen inside the spawner). The spawner runs
+ * on the survivors only, and not at all when none survive. Await the classifier ({@link filterSpawnable}) BEFORE calling this: an
+ * async wait must never sit inside the synchronous lock. It FAILS CLOSED: when the lane lock stays busy (or cannot be
+ * taken) nothing is spawned and every plan is refused with the lock's reason (`handles` is empty), because the cap is
+ * a safety limit and refusing to start lanes never blocks prompt submission. `opts.lock` exposes the lock's clock,
+ * sleep, liveness and fs seams for tests.
+ */
+export function spawnGuarded(
+	plans: readonly LanePlan[],
+	opts: {
+		stateDir: string;
+		cwd: string;
+		cap: number;
+		isAlive: PidAlive;
+		spawn?: (plans: readonly LanePlan[]) => LaneHandle[];
+		lock?: LaneLockDeps;
+	},
+): GuardedSpawn {
+	const locked = withLaneLock(
+		opts.stateDir,
+		() => {
+			const live = liveLaneSnapshot(opts.stateDir, opts.isAlive);
+			const checked = refuseDuplicatesAndOverCap(plans, opts.cwd, opts.cap, live);
+			const spawner = opts.spawn ?? ((list: readonly LanePlan[]) => spawnLanes(list));
+			const handles = checked.spawn.length > 0 ? spawner(checked.spawn) : [];
+			return { spawn: checked.spawn, refused: checked.refused, handles };
+		},
+		opts.lock,
+	);
+	if (locked.held) return locked.value;
+	return {
+		spawn: [],
+		refused: plans.map((plan) => ({ laneId: plan.id, reason: locked.reason })),
+		handles: [],
+	};
+}
+
+/**
+ * Grace between SIGTERM and SIGKILL: Swarm's own `SWARM_AUTONOMOUS_RUN_GRACE_S` (seconds) when it is a finite
+ * number >= 0, else exactly 15 s. Unset or blank means the default; no other cap applies.
+ */
+export function stopGraceMs(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env.SWARM_AUTONOMOUS_RUN_GRACE_S?.trim();
+	if (!raw) return STOP_GRACE_DEFAULT_MS;
+	const seconds = Number(raw);
+	return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : STOP_GRACE_DEFAULT_MS;
+}
+
+/**
+ * Turn a `stop` target into lanes. `all` is every live, verified lane (nothing live is a reason); a lane id
+ * matches exactly, else by unique prefix, and is returned even when finished so `stopLanes` can say so.
+ */
+export function resolveStopTargets(
+	target: string,
+	lanes: readonly LaneRef[],
+	deps: { isAlive?: PidAlive; verify?: LaneVerify; fs?: LaneFileFs } = {},
+): { targets: LaneRef[] } | { reason: string } {
+	if (target === "all") {
+		const live = lanes.filter((lane) => {
+			const record = readLaneFile(lane.stateDir, deps.fs);
+			return (
+				record !== undefined &&
+				isLaneLive(record, deps.isAlive ?? pidAlive, deps.verify ?? defaultVerify)
+			);
+		});
+		return live.length === 0 ? { reason: "no live swarm lanes to stop" } : { targets: live };
+	}
+	const exact = lanes.filter((lane) => lane.laneId === target);
+	const matches = exact.length > 0 ? exact : lanes.filter((lane) => lane.laneId.startsWith(target));
+	if (matches.length === 1) return { targets: matches };
+	const shown = oneLine(target, 60);
+	if (matches.length === 0) return { reason: `no swarm lane matches ${shown}` };
+	return {
+		reason: `${shown} matches ${matches.length} lanes (${matches.map((lane) => lane.laneId).join(", ")}); give a longer id`,
+	};
+}
+
+/**
+ * Stop lanes: for each, verify the recorded pid still belongs to the lane, SIGTERM its process group
+ * (`kill(-pid)`; lanes are group leaders because they spawn detached), then poll the same verification every
+ * {@link STOP_POLL_MS} through `waitMs` until the lane is gone or the grace elapses, and SIGKILL the group
+ * when the lane is still verifiably the lane. Every signal is preceded by a fresh verification with nothing
+ * awaited in between: a `mismatch` (a recycled pid) is reported and never signalled, and so is an `unknown`
+ * (an unreadable /proc), which is reported as unverifiable rather than as gone. A missing record is reported.
+ * Lanes stop concurrently; one line per lane comes back in target order.
+ */
+export async function stopLanes(
+	targets: readonly LaneRef[],
+	opts: {
+		kill: (pid: number, signal: string) => void;
+		waitMs: (ms: number) => Promise<void>;
+		readCmdline?: (pid: number) => string | undefined;
+		readStat?: (pid: number) => string | undefined;
+		readBootTimeSec?: () => number | undefined;
+		signalAlive?: (pid: number, startedAt: string) => LaneVerdict;
+		isAlive?: PidAlive;
+		platform?: string;
+		graceMs?: number;
+		env?: NodeJS.ProcessEnv;
+		fs?: LaneFileFs;
+	},
+): Promise<string[]> {
+	const graceMs = opts.graceMs ?? stopGraceMs(opts.env ?? process.env);
+	const isAlive = opts.isAlive ?? pidAlive;
+	/** A fresh look at the recorded pid: `gone` when it is not alive, else the verification (a throw is `unknown`). */
+	const check = (record: LaneRecord): LaneVerdict | "gone" => {
+		try {
+			if (!isAlive(record.pid)) return "gone";
+			return verifyLaneProcess(record, {
+				readCmdline: opts.readCmdline,
+				readStat: opts.readStat,
+				readBootTimeSec: opts.readBootTimeSec,
+				signalAlive: opts.signalAlive ?? signalAliveMatchingStart,
+				platform: opts.platform,
+			});
+		} catch {
+			return "unknown";
+		}
+	};
+	const signal = (pid: number, name: string): string | undefined => {
+		try {
+			opts.kill(-pid, name);
+			return undefined;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ESRCH") return "gone";
+			return error instanceof Error ? error.message.slice(0, 120) : "signal failed";
+		}
+	};
+	const stopOne = async (lane: LaneRef): Promise<string> => {
+		const record = readLaneFile(lane.stateDir, opts.fs);
+		if (record === undefined) return `${lane.laneId}: not-planned, nothing to stop`;
+		const refusal = (verdict: "mismatch" | "unknown"): string =>
+			verdict === "mismatch"
+				? `${lane.laneId}: pid ${record.pid} no longer belongs to the lane — ignored`
+				: `${lane.laneId}: could not verify pid ${record.pid}; not signalled`;
+		const first = check(record);
+		if (first === "gone") return `${lane.laneId}: already exited`;
+		if (first !== "match") return refusal(first);
+		const term = signal(record.pid, "SIGTERM");
+		if (term === "gone") return `${lane.laneId}: already exited`;
+		if (term !== undefined) return `${lane.laneId}: could not stop pid ${record.pid} (${term})`;
+		// Poll instead of sleeping the whole grace: a lane that exits on SIGTERM must not be waited on.
+		for (let waited = 0; waited < graceMs; ) {
+			const step = Math.min(STOP_POLL_MS, graceMs - waited);
+			await opts.waitMs(step);
+			waited += step;
+			const now = check(record);
+			if (now === "gone" || now === "mismatch") return `${lane.laneId}: stopped (SIGTERM)`;
+		}
+		const last = check(record);
+		if (last === "gone" || last === "mismatch") return `${lane.laneId}: stopped (SIGTERM)`;
+		if (last === "unknown") return refusal(last);
+		const kill = signal(record.pid, "SIGKILL");
+		if (kill === "gone") return `${lane.laneId}: stopped (SIGTERM)`;
+		if (kill !== undefined) return `${lane.laneId}: could not kill pid ${record.pid} (${kill})`;
+		return `${lane.laneId}: stopped (SIGKILL after ${graceMs} ms)`;
+	};
+	return Promise.all(targets.map(stopOne));
+}
+
+/** Untrusted lane-written text rendered as data: control characters and runs of whitespace become one space. */
+function oneLine(text: string, max: number): string {
+	return text
+		.replace(/\p{Cc}+/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, max);
+}
+
+/** What a lane's own `autonomous.log` says (written once, at the end of the run). */
+type LaneLog =
+	| { kind: "duplicate"; digest: string }
+	| { kind: "plan-failed"; code?: string; message?: string }
+	| { kind: "ran"; runRc?: number }
+	| { kind: "unreadable" };
+
+/** Parse `autonomous.log`: the plain `skip duplicate <digest>` line, or the JSON record. Never throws. */
+function parseLaneLog(text: string): LaneLog {
+	const trimmed = text.trim();
+	const lastLine = trimmed.split("\n").at(-1)?.trim() ?? "";
+	const duplicate = /^skip duplicate (\S+)$/.exec(lastLine);
+	if (duplicate) return { kind: "duplicate", digest: duplicate[1]! };
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(trimmed);
+	} catch {
+		return { kind: "unreadable" };
+	}
+	if (!isRecord(parsed)) return { kind: "unreadable" };
+	const error = parsed.error;
+	if (parsed.skipped_run === true || (error !== undefined && error !== null)) {
+		const fromRecord = isRecord(error);
+		const code = fromRecord && typeof error.code === "string" ? error.code : undefined;
+		const message = fromRecord
+			? typeof error.message === "string"
+				? error.message
+				: undefined
+			: typeof error === "string"
+				? error
+				: undefined;
+		return { kind: "plan-failed", code, message };
+	}
+	return { kind: "ran", runRc: typeof parsed.run_rc === "number" ? parsed.run_rc : undefined };
+}
+
+/** A lane-local file read: undefined when absent or unreadable. */
+function readText(path: string, fs: LaneFileFs): string | undefined {
+	try {
+		return fs.existsSync(path) ? fs.readFileSync(path, "utf8") : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** `orch_status` per-state counts, when the body carries a well-formed `counts` object. */
+function readCounts(value: unknown): Record<string, number> | undefined {
+	if (!isRecord(value)) return undefined;
+	const counts: Record<string, number> = {};
+	for (const [state, count] of Object.entries(value)) {
+		if (typeof count !== "number" || !Number.isInteger(count) || count < 0) return undefined;
+		counts[oneLine(state, 40)] = count;
+	}
+	return counts;
+}
+
+/** Which fields a lane status probe may use beyond the Task Store probe itself. */
+interface LaneProbeDeps {
+	/** Whether a recorded pid is alive; defaults to signal 0. */
+	isAlive?: PidAlive;
+	/** The recycled-pid gate; defaults to the `autonomous_run.py` cmdline and start-time check (start time alone off Linux). */
+	verify?: LaneVerify;
+	fs?: TeamsFs;
+}
+
+/**
+ * Report every lane's real state through `runFn` (the injected `orch_status.py` probe) plus the lane's own
+ * files: `lane.json` (liveness), `latest_correlation` and `autonomous.log`. Probes run concurrently but at
+ * most {@link LANE_STATUS_CONCURRENCY} at a time, rows come back in input order, and every failure (a failed
+ * probe, bad JSON, a throwing one) is an error row for that lane alone. Done-ness is only ever what
+ * `orch_status` reports as `complete`.
  */
 export async function laneStatus(
 	lanes: readonly LaneRef[],
 	runFn: LaneStatusProbe,
+	deps: LaneProbeDeps = {},
 ): Promise<LaneStatusRow[]> {
 	const results = new Array<LaneStatusRow>(lanes.length);
 	let next = 0;
@@ -432,7 +1053,7 @@ export async function laneStatus(
 			const index = next;
 			if (index >= lanes.length) return;
 			next += 1;
-			results[index] = await probeLane(lanes[index]!, runFn);
+			results[index] = await probeLane(lanes[index]!, runFn, deps);
 		}
 	};
 	await Promise.all(
@@ -441,49 +1062,144 @@ export async function laneStatus(
 	return results;
 }
 
-/** Probe one lane and fold its Task Store into a status row; every failure mode stays lane-local. */
-async function probeLane(lane: LaneRef, runFn: LaneStatusProbe): Promise<LaneStatusRow> {
+/**
+ * Probe one lane and fold its files and Task Store into one of seven states; every failure mode stays
+ * lane-local. Order: live pid with no plan yet is `planning`; a `complete` lane is `done`; a live lane with
+ * unfinished tasks is `running`, unless a task is FAILED, ESCALATED or BLOCKED (or `escalated` is non-empty),
+ * which is `attention` even while the process runs; a finished lane is `skipped` (duplicate), `plan-failed`
+ * (its log) or `attention`; no plan and no process is `not-planned`.
+ */
+async function probeLane(
+	lane: LaneRef,
+	runFn: LaneStatusProbe,
+	deps: LaneProbeDeps,
+): Promise<LaneStatusRow> {
+	const fs = deps.fs ?? defaultFs;
 	const logPath = join(lane.stateDir, "run.log");
+	const record = readLaneFile(lane.stateDir, fs);
+	const live =
+		record !== undefined &&
+		isLaneLive(record, deps.isAlive ?? pidAlive, deps.verify ?? defaultVerify);
+	const correlation = (readText(join(lane.stateDir, "latest_correlation"), fs) ?? "").trim();
+	const logText = readText(join(lane.stateDir, "autonomous.log"), fs);
+	const log = logText === undefined || logText.trim() === "" ? undefined : parseLaneLog(logText);
+	const graphId = record?.graphId === undefined ? undefined : oneLine(record.graphId, 80);
+	const errorRow = (error: string): LaneStatusRow => ({ laneId: lane.laneId, logPath, error });
+	const row = (
+		state: LaneState,
+		text: string,
+		extra: {
+			total?: number;
+			byState?: Record<string, number>;
+			done?: number;
+			detail?: string;
+		} = {},
+	): LaneStatusRow => ({
+		laneId: lane.laneId,
+		logPath,
+		state,
+		summary: `${lane.laneId}: ${state} — ${text}`,
+		total: extra.total ?? 0,
+		byState: extra.byState ?? {},
+		done: extra.done ?? 0,
+		...(graphId === undefined ? {} : { graphId }),
+		...(extra.detail === undefined ? {} : { detail: extra.detail }),
+	});
+
+	if (live && correlation === "")
+		return row("planning", "waiting for the plan (no correlation yet)");
+	if (!live && log?.kind === "duplicate") {
+		const digest = oneLine(log.digest, 16);
+		return row("skipped", `duplicate of an earlier run (digest ${digest})`, {
+			detail: `skip duplicate ${digest}`,
+		});
+	}
+	if (!live && log?.kind === "plan-failed") {
+		const message = log.message === undefined ? undefined : oneLine(log.message, 120);
+		const code = log.code === undefined ? undefined : oneLine(log.code, 60);
+		const why = code ?? message ?? "no error code recorded";
+		return row(
+			"plan-failed",
+			message !== undefined && code !== undefined ? `${code}: ${message}` : why,
+			{
+				detail: why,
+			},
+		);
+	}
+	if (correlation === "") {
+		return row(
+			"not-planned",
+			log?.kind === "unreadable"
+				? "no plan and no running process; autonomous.log is unreadable"
+				: "no plan, no running process, no log",
+		);
+	}
+
 	let probe: { stdout: string } | { error: string };
 	try {
 		probe = await runFn(lane.stateDir);
 	} catch (error) {
-		return {
-			laneId: lane.laneId,
-			logPath,
-			error: error instanceof Error ? error.message.slice(0, 200) : "status probe failed",
-		};
+		return errorRow(error instanceof Error ? error.message.slice(0, 200) : "status probe failed");
 	}
-	if ("error" in probe) return { laneId: lane.laneId, logPath, error: probe.error };
+	if ("error" in probe) return errorRow(probe.error);
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(probe.stdout) as unknown;
 	} catch {
-		return { laneId: lane.laneId, logPath, error: "unreadable status output (not JSON)" };
+		return errorRow("unreadable status output (not JSON)");
 	}
-	let tasks: unknown[] | undefined;
-	if (parsed && typeof parsed === "object" && "tasks" in parsed && Array.isArray(parsed.tasks))
-		tasks = parsed.tasks;
-	if (!tasks) return { laneId: lane.laneId, logPath, error: "status output had no task list" };
-	const byState: Record<string, number> = {};
-	let done = 0;
-	for (const task of tasks) {
-		let state = "UNKNOWN";
-		if (task && typeof task === "object" && "state" in task && typeof task.state === "string")
-			state = task.state;
-		byState[state] = (byState[state] ?? 0) + 1;
-		if (DONE_STATES[state]) done += 1;
+	if (isRecord(parsed) && isRecord(parsed.error)) {
+		const code = typeof parsed.error.code === "string" ? oneLine(parsed.error.code, 60) : "unknown";
+		const message =
+			typeof parsed.error.message === "string" ? oneLine(parsed.error.message, 160) : "";
+		return errorRow(`orch_status refused (${code})${message ? `: ${message}` : ""}`);
 	}
-	const total = tasks.length;
+	const tasks = isRecord(parsed) && Array.isArray(parsed.tasks) ? parsed.tasks : undefined;
+	let byState = isRecord(parsed) ? readCounts(parsed.counts) : undefined;
+	if (byState === undefined && tasks !== undefined) {
+		byState = {};
+		for (const task of tasks) {
+			let state = "UNKNOWN";
+			if (isRecord(task) && typeof task.state === "string") state = oneLine(task.state, 40);
+			byState[state] = (byState[state] ?? 0) + 1;
+		}
+	}
+	if (byState === undefined || !isRecord(parsed)) return errorRow("status output had no task list");
+	const total = Object.values(byState).reduce((sum, count) => sum + count, 0);
 	const counts = Object.entries(byState)
 		.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
 		.map(([state, count]) => `${count} ${state}`)
 		.join(", ");
-	const summary =
-		total === 0
-			? `${lane.laneId}: no tasks yet`
-			: `${lane.laneId}: ${total} task${total === 1 ? "" : "s"} — ${counts} · ${done} done`;
-	return { laneId: lane.laneId, logPath, total, byState, done, summary };
+	const complete = parsed.complete === true;
+	const progress =
+		total === 0 ? "no tasks yet" : `${total} task${total === 1 ? "" : "s"} — ${counts}`;
+	if (complete) return row("done", progress, { total, byState, done: total });
+	const reasons: string[] = [];
+	for (const [state, count] of Object.entries(byState)) {
+		if (Object.hasOwn(ATTENTION_TASK_STATES, state) && count > 0) reasons.push(`${count} ${state}`);
+	}
+	if (Array.isArray(parsed.escalated) && parsed.escalated.length > 0 && !("ESCALATED" in byState))
+		reasons.push(`${parsed.escalated.length} ESCALATED`);
+	if (live) {
+		// A live orchestrator does not make a FAILED, ESCALATED or BLOCKED task healthy: Swarm needs a human for
+		// those and never self-releases them, so the lane is `attention` even while its process still runs.
+		if (reasons.length === 0) return row("running", progress, { total, byState });
+		reasons.push("process still running");
+		return row("attention", `${reasons.join(", ")} (${progress})`, {
+			total,
+			byState,
+			detail: reasons.join(", "),
+		});
+	}
+	const runRc = log?.kind === "ran" ? log.runRc : undefined;
+	if (runRc !== undefined && runRc !== 0 && runRc !== 1)
+		reasons.push(`run exited with code ${runRc}`);
+	if (reasons.length === 0) reasons.push("no live lane process and the tasks are unfinished");
+	return row("attention", `${reasons.join(", ")} (${progress})`, {
+		total,
+		byState,
+		detail: reasons.join(", "),
+	});
 }
 
 const execFileP = promisify(nodeExecFile);
@@ -526,7 +1242,7 @@ export function orchStatusRunner(
 				[join(opts.swarmRoot, "scripts", "orch_status.py"), "--json", "--repo", opts.cwd],
 				{
 					cwd: opts.cwd,
-					env: { ...opts.env, SWARM_DIR: stateDir },
+					env: { ...scrubbedEnv(opts.env), SWARM_DIR: stateDir },
 					timeout: ORCH_STATUS_TIMEOUT_MS,
 				},
 			);
@@ -550,7 +1266,7 @@ export function formatLaneHandles(handles: readonly LaneHandle[]): string {
 	const lines = handles.map((handle) =>
 		handle.error
 			? `${handle.laneId}: failed to start — ${handle.error}`
-			: `${handle.laneId}: pid ${handle.pid} · ${handle.stateDir}\n    log ${handle.logPath}`,
+			: `${handle.laneId}: pid ${handle.pid} · ${handle.stateDir}\n    log ${handle.logPath}${handle.note ? `\n    note ${handle.note}` : ""}`,
 	);
 	return [`Swarm lanes: ${started}/${handles.length} spawned`, ...lines].join("\n");
 }
@@ -563,9 +1279,10 @@ export function formatLaneHandles(handles: readonly LaneHandle[]): string {
 export function formatLaneStatusText(rows: readonly LaneStatusRow[], omitted = 0): string {
 	if (rows.length === 0 && omitted === 0)
 		return "No swarm lanes found under this state directory yet.";
-	const lines = rows.map(
-		(row) =>
-			`${"error" in row ? `${row.laneId}: ${row.error}` : row.summary}\n    log ${row.logPath}`,
+	const lines = rows.map((row) =>
+		"error" in row
+			? `${row.laneId}: ${row.error}\n    log ${row.logPath}`
+			: `${row.summary}${row.graphId ? `\n    graph ${row.graphId}` : ""}\n    log ${row.logPath}`,
 	);
 	if (omitted > 0)
 		lines.push(
@@ -591,9 +1308,17 @@ export interface SwarmSpawnCardSnapshot {
 	lanes: SwarmLaneCard[];
 }
 
-/** One status card lane: the lane's own summary line and counts, or the probe error in their place; both carry the run log path. */
+/** One status card lane: the lane's own summary line, state and counts, or the probe error in their place; both carry the run log path. */
 export type SwarmStatusLane =
-	| { laneId: string; summary: string; logPath: string; done: number; total: number }
+	| {
+			laneId: string;
+			summary: string;
+			logPath: string;
+			done: number;
+			total: number;
+			state?: LaneState;
+			graphId?: string;
+	  }
 	| { laneId: string; summary: string; logPath: string; error: string };
 
 /** The status reply as a card snapshot, plus how many discovered lanes the recency bound hid. */
@@ -644,6 +1369,8 @@ export function toSwarmStatusCard(
 						logPath: row.logPath,
 						done: row.done,
 						total: row.total,
+						state: row.state,
+						...(row.graphId === undefined ? {} : { graphId: row.graphId }),
 					},
 		),
 		omitted,

@@ -7,7 +7,7 @@
  */
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import type { GatewayConfig } from "../gateway/types.ts";
-import { redactSecrets } from "../grok/auth.ts";
+import { redactSecrets } from "../redact.ts";
 import type { CliResult } from "../teach/types.ts";
 import { flattenText } from "./ground.ts";
 import { ragflowStatusLine, resolveRagflow } from "./settings.ts";

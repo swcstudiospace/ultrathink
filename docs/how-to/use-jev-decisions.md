@@ -13,6 +13,8 @@
 
 Decisions are **always on**: the moment a Jev key exists, every listed point is consulted. A fresh install with no key contacts nothing. When anything goes wrong (no key, an HTTP error, a timeout, an invalid answer), the point behaves exactly as it does with Decisions off.
 
+The GSD flow hook (`hooks/flow-eval.ts`) is not one of the six points. `decisions.points` does not affect it; it is silent without a key for the rail it picks (no context note, no record) and is switched off only with `ULTRATHINK_DECISIONS=0`.
+
 The OpenRouter Decisions API endpoint (`https://openrouter.ai/api/alpha/decisions`) is marked **alpha** by OpenRouter, so its shape may change. ultrathink checks every answer strictly and fails open on anything unexpected. The Vercel rail uses the fixed v4 evaluation-model endpoint (`https://ai-gateway.vercel.sh/v4/ai/evaluation-model`); Vercel serves Jev only, never the planner.
 
 **The OpenRouter key is for Jev only.** ultrathink has one OpenRouter client, and it sends one thing: Decisions requests to Jev's model family (`~typesafe/jev-latest`, `typesafe/jev-1.13-20260917`, and Vercel's `typesafe-ai/jev`). `decisions.model` accepts only `typesafe/jev*` ids; any other value, in any config layer including a project file, is ignored: that layer leaves the earlier layers' value in place (an invalid project value keeps your pinned Jev version), and only when no layer holds a valid Jev id does the default alias `~typesafe/jev-latest` apply. A failure never falls back to another model, provider or key: the point just behaves as with Decisions off. Planning, memory and every other model call use their own routes and never see this key.
@@ -58,7 +60,7 @@ Or read it from a `NAME=value` line in an env file:
 <clone>/bin/ultrathink-mcp auth set-key vercel --env-file <path to .env> --var AI_GATEWAY_API_KEY
 ```
 
-Either prints only the key's length, `vercel: api key stored (<n> chars)`. `<clone>/bin/ultrathink-mcp auth status` then shows `vercel  api_key  ready  api key set (<n> chars)`.
+Either prints only the key's length, `vercel: api key stored (<n> chars)`. For `vercel`, `set-key` rejects an empty key, a key with whitespace or control characters in it, and a key shorter than 16 or longer than 512 characters, with a message that never repeats the key. It accepts `--no-verify` and ignores it: unlike OpenRouter, there is no live verify endpoint for the gateway key, so nothing is checked online and a wrong key shows up at [step 4](#4-check-it). `<clone>/bin/ultrathink-mcp auth status` then shows `vercel  api_key  ready  api key set (<n> chars)`.
 
 Instead of storing it, you can set `AI_GATEWAY_API_KEY` (Vercel rail) or `ULTRATHINK_OPENROUTER_KEY` (OpenRouter rail) in the host's environment. It is used only when no key is stored for that rail: **the stored key wins**. The generic `OPENROUTER_API_KEY` is no longer read: SDKs and agents pick that name up on their own, so exporting it lets every other tool in the environment spend your key. If you exported it, remove the export from your shell profile or service unit; `<clone>/bin/ultrathink doctor` warns while it is still set. `vercel` and `openrouter` are API-key providers, not MCP servers, so `ultrathink-mcp serve`, `check` and `auth login` refuse them and `scripts/mcp-register.ts` never registers them.
 
@@ -90,7 +92,7 @@ The line after `Knowledge base:` shows the state:
 
 | Line | Meaning |
 |---|---|
-| `Decisions: on · ~typesafe/jev-latest · plan, ship, knowledge, blocking, teachable, skillworthy · provider vercel · key from store · zdr on` | Ready on the Vercel rail, with the stored key. `provider openrouter` means the OpenRouter rail; `key from AI_GATEWAY_API_KEY` or `key from ULTRATHINK_OPENROUTER_KEY` means the key comes from the environment. The key itself is never shown. |
+| `Decisions: on · ~typesafe/jev-latest · plan, ship, knowledge, blocking, teachable, skillworthy · provider vercel · key from store · zdr n/a (vercel)` | Ready on the Vercel rail, with the stored key. `provider openrouter` means the OpenRouter rail and ends with `zdr on` or `zdr off` from `decisions.zdr`; the Vercel rail sends no zero-data-retention preference, so it prints `zdr n/a (vercel)` whatever `decisions.zdr` says. `key from AI_GATEWAY_API_KEY` or `key from ULTRATHINK_OPENROUTER_KEY` means the key comes from the environment. The key itself is never shown. |
 | `Decisions: on · no Jev key (Vercel: …; OpenRouter: …)` | No key for the resolved rail; no point sends a request. Do [step 2](#2-store-a-jev-key). |
 | `Decisions: off (ULTRATHINK_DECISIONS=0)` | `ULTRATHINK_DECISIONS=0` is set in this environment and turns every point off, whatever the config says. Unset it to use Decisions. |
 
@@ -103,10 +105,10 @@ Then prove the live integration end to end with one real decision:
 ```
 
 ```text
-Decisions check: ok · typesafe-ai/jev (requested ~typesafe/jev-latest) · 512 ms · attempts 1 · cost n/a · provider vercel · zdr on · key from store
+Decisions check: ok · typesafe-ai/jev (requested ~typesafe/jev-latest) · 512 ms · attempts 1 · cost n/a · provider vercel · zdr n/a (vercel) · key from store
 ```
 
-It prints the resolved model, the latency, the attempts, the cost reported by the rail (`n/a` when the rail reports none, which Vercel always does), the rail, whether zero data retention was requested and where the key came from, and exits 0. On a failure it prints `Decisions check: error (<kind>) · <message> · …` and exits 1; for example a bad key gives `error (auth)`. `decisions check` ignores `decisions.enabled` and `decisions.points`, so it runs even with an empty points list. With `ULTRATHINK_DECISIONS=0` set, it sends nothing, prints `Decisions check: off (ULTRATHINK_DECISIONS=0)` and exits 1. Every error kind and its fix: [Troubleshooting: Decisions](../troubleshooting.md#decisions).
+It prints the resolved model, the latency, the attempts, the cost reported by the rail (`n/a` when the rail reports none, which Vercel always does), the rail, the zero-data-retention setting (`zdr on` or `zdr off` on OpenRouter; `zdr n/a (vercel)` on the Vercel rail, which sends no ZDR preference) and where the key came from, and exits 0. On a failure it prints `Decisions check: error (<kind>) · <message> · …` and exits 1; for example a bad key gives `error (auth)`. `decisions check` ignores `decisions.enabled` and `decisions.points`, so it runs even with an empty points list. With `ULTRATHINK_DECISIONS=0` set, it sends nothing, prints `Decisions check: off (ULTRATHINK_DECISIONS=0)` and exits 1. Every error kind and its fix: [Troubleshooting: Decisions](../troubleshooting.md#decisions).
 
 ## When Jev is unavailable
 
@@ -253,12 +255,13 @@ Decision models can be pushed to confident wrong answers by adversarial or unusu
 - **Jev cannot add a lesson, and it cannot block an explicit promote.** `teachable` only drops or holds a candidate `observe` already produced. `skillworthy` only skips a due listing. `teach promote <id>` does not ask Jev. A failure at either point behaves as with Decisions off.
 - **Deterministic rules come first.** Jev is asked only when the rules have left the action open. GSD roadmap and verification signals stay rules and never enter Jev's state.
 - **The key stays yours.** The OpenRouter key is sent only to `https://openrouter.ai/api/alpha/decisions`, or to `ULTRATHINK_DECISIONS_URL` when you set that in the environment, which is accepted only as an `https://openrouter.ai/…` URL or a loopback URL (`localhost`, `127.0.0.1`, `[::1]`) with no user name or password in it. The Vercel key is sent only to the fixed `https://ai-gateway.vercel.sh/v4/ai/evaluation-model`. Requests never follow a redirect. No config file can change either endpoint, so a cloned repository cannot redirect a key; and because ultrathink starts Bun with `--no-env-file`, the repository's `.env*` files cannot set the variable either on Bun 1.3.3 and later (Bun 1.2.x still loads them). A key never appears in output, records or error messages.
-- **Child processes never get the key.** Every model CLI ultrathink starts (`claude -p`, the Grok CLI, the Muse engine) runs with `ULTRATHINK_OPENROUTER_KEY` and `OPENROUTER_API_KEY` removed from its environment, in every auth mode, so a helper model cannot spend it.
+- **Model children never get the key.** Every model CLI ultrathink starts (`claude -p`, the Grok CLI, the Muse engine) runs with `ULTRATHINK_OPENROUTER_KEY`, `OPENROUTER_API_KEY` and `AI_GATEWAY_API_KEY` removed from its environment, in every auth mode, so a helper model cannot spend it. The detached `teach` worker is ultrathink's own code and asks Jev itself, so it keeps the keys; the model CLIs it starts do not receive them.
 - **A repository cannot send without your key.** Its project file can drop points and turn `zdr` on, never the reverse, and keys live only in your credential store and environment, so opening a repository sends nothing to either rail unless you stored or set a key.
-- **Your data.** OpenRouter requests ask for zero data retention and `data_collection: "deny"` (`decisions.zdr`, on by default). Vercel requests carry no provider preferences, no session id and no trace: only the state and the questions. Each request carries only the small state its question reads; see [Privacy: Jev decisions](../privacy.md#jev-decisions-openrouter).
+- **Your data.** OpenRouter requests ask for zero data retention and `data_collection: "deny"` (`decisions.zdr`, on by default). The Vercel rail sends no ZDR preference and no provider preferences at all, whatever `decisions.zdr` says, so the status line and `decisions check` print `zdr n/a (vercel)` there; it carries no session id and no trace either: only the state and the questions. Each request carries only the small state its question reads; see [Privacy: Jev decisions](../privacy.md#jev-decisions-openrouter).
 
 ## Turn it off again
 
 - `ULTRATHINK_DECISIONS=0` in the host's environment turns every point off for that process, whatever any config file says: no request, no record, no notice, and `decisions check` and `decisions probe` refuse. `bin/ultrathink status` then shows `Decisions: off (ULTRATHINK_DECISIONS=0)`. It is the only off switch: `decisions.enabled` is ignored.
 - To stop one point only, leave it out of `decisions.points`, for example `"points": ["ship"]`.
+- The GSD flow hook (`hooks/flow-eval.ts`) is not one of the six points: `decisions.points` does not affect it, and only `ULTRATHINK_DECISIONS=0` switches it off.
 - To stop every point without the environment variable, remove the keys: `<clone>/bin/ultrathink-mcp auth logout vercel` and `<clone>/bin/ultrathink-mcp auth logout openrouter`, unset `AI_GATEWAY_API_KEY` and `ULTRATHINK_OPENROUTER_KEY`, then revoke the keys in your Vercel and OpenRouter account settings. With no key, no point sends a request.

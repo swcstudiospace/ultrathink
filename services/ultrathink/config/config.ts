@@ -173,6 +173,22 @@ const TLS_VARIABLES = [
 	"ULTRATHINK_TLS_CLIENT_CA",
 ] as const;
 
+/**
+ * Runs one reader. A ConfigError is recorded in `problems` and `fallback` is returned so the load carries on and every
+ * problem is reported together; the fallback never escapes because loadConfig throws whenever `problems` is non-empty.
+ */
+function collect<T>(problems: string[], fallback: T, read: () => T): T {
+	try {
+		return read();
+	} catch (error) {
+		if (error instanceof ConfigError) {
+			problems.push(error.message);
+			return fallback;
+		}
+		throw error;
+	}
+}
+
 function readOptional(env: Record<string, string | undefined>, name: string): string | undefined {
 	const trimmed = env[name]?.trim();
 	return trimmed === undefined || trimmed === "" ? undefined : trimmed;
@@ -388,7 +404,7 @@ function readOriginList(
 			!protocols.includes(url.protocol) ||
 			!entry.toLowerCase().startsWith(`${url.protocol}//`) ||
 			authority === "" ||
-			/[\/?#@\\]/.test(authority)
+			/[/?#@\\]/.test(authority)
 		) {
 			throw new ConfigError(message);
 		}
@@ -516,20 +532,31 @@ function readAuditRules(env: Record<string, string | undefined>): AnomalyRule[] 
 	try {
 		return parseAnomalyRules(value);
 	} catch (error) {
-		const reason = error instanceof Error ? error.message : "invalid rule";
+		// The validator's text quotes the operator's rule and field names; keep the position and the expectation only.
+		const reason = (error instanceof Error ? error.message : "invalid rule")
+			.replace(/"[^"]*"/g, '"…"')
+			.replace(/where\.\S+/g, "where.…");
 		throw new ConfigError(`${name} is invalid: ${reason}`);
 	}
 }
 
 /** The Kafka REST sink needs both its URL and its topic, or neither. */
-function readKafkaSink(env: Record<string, string | undefined>): {
+function readKafkaSink(
+	env: Record<string, string | undefined>,
+	problems: string[],
+): {
 	auditKafkaRestUrl: string | undefined;
 	auditKafkaTopic: string | undefined;
 } {
-	const auditKafkaRestUrl = readSinkUrl(env, "ULTRATHINK_AUDIT_KAFKA_REST_URL");
+	const before = problems.length;
+	const auditKafkaRestUrl = collect(problems, undefined, () =>
+		readSinkUrl(env, "ULTRATHINK_AUDIT_KAFKA_REST_URL"),
+	);
 	const auditKafkaTopic = readOptional(env, "ULTRATHINK_AUDIT_KAFKA_TOPIC");
-	if ((auditKafkaRestUrl === undefined) !== (auditKafkaTopic === undefined)) {
-		throw new ConfigError(
+	// A rejected URL says nothing about whether it was set, so the pairing is judged only when it parsed.
+	const urlParsed = problems.length === before;
+	if (urlParsed && (auditKafkaRestUrl === undefined) !== (auditKafkaTopic === undefined)) {
+		problems.push(
 			"ULTRATHINK_AUDIT_KAFKA_REST_URL and ULTRATHINK_AUDIT_KAFKA_TOPIC must be set together",
 		);
 	}
@@ -537,14 +564,22 @@ function readKafkaSink(env: Record<string, string | undefined>): {
 }
 
 /** Penalty blocks: the cap may not sit below the first block, or every escalation would be capped from the start. */
-function readPenaltyBlocks(env: Record<string, string | undefined>): {
+function readPenaltyBlocks(
+	env: Record<string, string | undefined>,
+	problems: string[],
+): {
 	penaltyBaseSec: number;
 	penaltyMaxSec: number;
 } {
-	const penaltyBaseSec = readInteger(env, "ULTRATHINK_PENALTY_BASE_SEC", 60, 1, 86400);
-	const penaltyMaxSec = readInteger(env, "ULTRATHINK_PENALTY_MAX_SEC", 3600, 1, 86400);
-	if (penaltyMaxSec < penaltyBaseSec) {
-		throw new ConfigError(
+	const before = problems.length;
+	const penaltyBaseSec = collect(problems, 60, () =>
+		readInteger(env, "ULTRATHINK_PENALTY_BASE_SEC", 60, 1, 86400),
+	);
+	const penaltyMaxSec = collect(problems, 3600, () =>
+		readInteger(env, "ULTRATHINK_PENALTY_MAX_SEC", 3600, 1, 86400),
+	);
+	if (problems.length === before && penaltyMaxSec < penaltyBaseSec) {
+		problems.push(
 			"ULTRATHINK_PENALTY_MAX_SEC must be greater than or equal to ULTRATHINK_PENALTY_BASE_SEC",
 		);
 	}
@@ -562,31 +597,35 @@ function readAbsoluteFile(env: Record<string, string | undefined>, name: string)
 
 /**
  * The three mTLS files are one set. Unset is allowed only with the plaintext loopback opt-in, the single way to run
- * without TLS; a partial set is refused even with it.
+ * without TLS; a partial set is refused even with it. `plaintextLoopback` is undefined when that flag itself was
+ * rejected: whether TLS is then required is unknown, so only the files that are set are judged.
  */
 function readTlsFiles(
 	env: Record<string, string | undefined>,
-	plaintextLoopback: boolean,
+	plaintextLoopback: boolean | undefined,
+	problems: string[],
 ): TlsFiles | undefined {
 	const present = TLS_VARIABLES.filter((name) => readOptional(env, name) !== undefined);
 	if (present.length === 0) {
-		if (plaintextLoopback) {
+		if (plaintextLoopback !== false) {
 			return undefined;
 		}
-		throw new ConfigError(
+		problems.push(
 			`${TLS_VARIABLES.join(", ")} must be set to absolute paths; ULTRATHINK_PLAINTEXT_LOOPBACK=1 allows plaintext for dev and local smoke only`,
 		);
+		return undefined;
 	}
 	const missing = TLS_VARIABLES.filter((name) => !present.includes(name));
 	if (missing.length > 0) {
-		throw new ConfigError(
+		problems.push(
 			`${TLS_VARIABLES.join(", ")} must be set together; missing ${missing.join(", ")}`,
 		);
+		return undefined;
 	}
 	return {
-		certFile: readAbsoluteFile(env, "ULTRATHINK_TLS_CERT"),
-		keyFile: readAbsoluteFile(env, "ULTRATHINK_TLS_KEY"),
-		clientCaFile: readAbsoluteFile(env, "ULTRATHINK_TLS_CLIENT_CA"),
+		certFile: collect(problems, "", () => readAbsoluteFile(env, "ULTRATHINK_TLS_CERT")),
+		keyFile: collect(problems, "", () => readAbsoluteFile(env, "ULTRATHINK_TLS_KEY")),
+		clientCaFile: collect(problems, "", () => readAbsoluteFile(env, "ULTRATHINK_TLS_CLIENT_CA")),
 	};
 }
 
@@ -604,114 +643,119 @@ function readSpiffeTrustDomain(env: Record<string, string | undefined>): string 
  * Chaos gate. Fault injection is off unless ULTRATHINK_CHAOS=1. It is armed only with ULTRATHINK_CHAOS_ENV=staging and
  * an absolute ULTRATHINK_CHAOS_PLAN. A plan path without the flag is refused, so a stray variable cannot arm it.
  */
-function readChaosGate(env: Record<string, string | undefined>): {
+function readChaosGate(
+	env: Record<string, string | undefined>,
+	problems: string[],
+): {
 	chaosEnabled: boolean;
 	chaosEnv: string | undefined;
 	chaosPlanPath: string | undefined;
 } {
-	const chaosEnabled = readFlag(env, "ULTRATHINK_CHAOS") ?? false;
+	const before = problems.length;
+	const flag = collect<boolean | undefined>(problems, undefined, () =>
+		readFlag(env, "ULTRATHINK_CHAOS"),
+	);
+	const chaosEnabled = flag ?? false;
 	const chaosEnv = readOptional(env, "ULTRATHINK_CHAOS_ENV");
 	const chaosPlanPath = readOptional(env, "ULTRATHINK_CHAOS_PLAN");
+	// A rejected flag leaves the gate state unknown, so the checks that depend on it are skipped.
+	if (problems.length > before) {
+		return { chaosEnabled, chaosEnv, chaosPlanPath };
+	}
 	if (!chaosEnabled) {
 		if (chaosPlanPath !== undefined) {
-			throw new ConfigError("ULTRATHINK_CHAOS_PLAN requires ULTRATHINK_CHAOS=1");
+			problems.push("ULTRATHINK_CHAOS_PLAN requires ULTRATHINK_CHAOS=1");
 		}
 		return { chaosEnabled, chaosEnv, chaosPlanPath };
 	}
 	if (chaosEnv !== "staging") {
-		throw new ConfigError(
+		problems.push(
 			"ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_ENV=staging; chaos never runs outside staging",
 		);
 	}
 	if (chaosPlanPath === undefined) {
-		throw new ConfigError("ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_PLAN to be set");
-	}
-	if (!isAbsolute(chaosPlanPath)) {
-		throw new ConfigError("ULTRATHINK_CHAOS_PLAN must be an absolute path");
+		problems.push("ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_PLAN to be set");
+	} else if (!isAbsolute(chaosPlanPath)) {
+		problems.push("ULTRATHINK_CHAOS_PLAN must be an absolute path");
 	}
 	return { chaosEnabled, chaosEnv, chaosPlanPath };
 }
 
+/**
+ * Reads every variable and reports every problem at once. One `ConfigError` is thrown after the last reader: its first
+ * line is `ultrathink: N configuration problems`, then one indented line per problem in reader order. Each line names
+ * a variable and what it expects, never a value.
+ */
 export function loadConfig(
 	env: Record<string, string | undefined> = process.env,
 ): UltrathinkConfig {
-	const stateDir = readStateDir(env);
-	rejectRemovedPlanningBackend(env);
-	const planningModel = readPlanningModel(env);
-	const plaintextLoopback = readFlag(env, "ULTRATHINK_PLAINTEXT_LOOPBACK") === true;
-	return {
-		publicOrigin: readPublicOrigin(env),
-		ownerPasswordHash: readOwnerPasswordHash(env),
-		sessionSecret: readSessionSecret(env),
-		sessionSecretPrevious: readPreviousSessionSecrets(env),
+	const problems: string[] = [];
+	const int = (name: string, fallback: number, min: number, max: number): number =>
+		collect(problems, fallback, () => readInteger(env, name, fallback, min, max));
+	const limit = (name: string, fallback: number, min: number, max: number): number =>
+		collect(problems, fallback, () => readLimit(env, name, fallback, min, max));
+	const flag = (name: string): boolean | undefined =>
+		collect<boolean | undefined>(problems, undefined, () => readFlag(env, name));
+	const stateDir = collect(problems, DEFAULT_STATE_DIR, () => readStateDir(env));
+	collect(problems, undefined, () => {
+		rejectRemovedPlanningBackend(env);
+		return undefined;
+	});
+	const planningModel = collect(problems, ROUTE_DEFAULT_MODELS.claude, () =>
+		readPlanningModel(env),
+	);
+	const plaintextBefore = problems.length;
+	const plaintextFlag = flag("ULTRATHINK_PLAINTEXT_LOOPBACK");
+	const plaintextRejected = problems.length > plaintextBefore;
+	const plaintextLoopback = plaintextFlag === true;
+	const config: UltrathinkConfig = {
+		publicOrigin: collect(problems, "", () => readPublicOrigin(env)),
+		ownerPasswordHash: collect(problems, "", () => readOwnerPasswordHash(env)),
+		sessionSecret: collect(problems, "", () => readSessionSecret(env)),
+		sessionSecretPrevious: collect(problems, [], () => readPreviousSessionSecrets(env)),
 		stateDir,
 		dbPath: `${stateDir}/ultrathink.sqlite`,
-		port: readInteger(env, "ULTRATHINK_PORT", DEFAULT_PORT, 1024, 65535),
-		maxInputChars: readLimit(
-			env,
+		port: int("ULTRATHINK_PORT", DEFAULT_PORT, 1024, 65535),
+		maxInputChars: limit(
 			"ULTRATHINK_MAX_INPUT_CHARS",
 			DEFAULT_MAX_INPUT_CHARS,
 			1,
 			Number.MAX_SAFE_INTEGER,
 		),
-		maxAnswerChars: readInteger(
-			env,
-			"ULTRATHINK_MAX_ANSWER_CHARS",
-			DEFAULT_MAX_ANSWER_CHARS,
-			1,
-			200000,
-		),
+		maxAnswerChars: int("ULTRATHINK_MAX_ANSWER_CHARS", DEFAULT_MAX_ANSWER_CHARS, 1, 200000),
 		maxBodyBytes: MAX_BODY_BYTES,
-		runTokenCeiling: readLimit(
-			env,
+		runTokenCeiling: limit(
 			"ULTRATHINK_RUN_TOKEN_CEILING",
 			DEFAULT_RUN_TOKEN_CEILING,
 			1,
 			Number.MAX_SAFE_INTEGER,
 		),
-		dailyTokenCeiling: readLimit(
-			env,
+		dailyTokenCeiling: limit(
 			"ULTRATHINK_DAILY_TOKEN_CEILING",
 			DEFAULT_DAILY_TOKEN_CEILING,
 			1,
 			Number.MAX_SAFE_INTEGER,
 		),
 		planningModel,
-		connectorKey: readConnectorKey(env),
-		allowedOrigins: readOriginList(env, "ULTRATHINK_ALLOWED_ORIGINS", ["https:", "http:"]),
-		oauthRedirectOrigins: readOriginList(env, "ULTRATHINK_OAUTH_REDIRECT_ORIGINS", ["https:"]),
-		serverPlanning: readFlag(env, "ULTRATHINK_SERVER_PLANNING") === true,
-		planFallback: readPlanFallback(env),
-		planConcurrency: readInteger(
-			env,
+		connectorKey: collect(problems, undefined, () => readConnectorKey(env)),
+		allowedOrigins: collect(problems, [], () =>
+			readOriginList(env, "ULTRATHINK_ALLOWED_ORIGINS", ["https:", "http:"]),
+		),
+		oauthRedirectOrigins: collect(problems, [], () =>
+			readOriginList(env, "ULTRATHINK_OAUTH_REDIRECT_ORIGINS", ["https:"]),
+		),
+		serverPlanning: flag("ULTRATHINK_SERVER_PLANNING") === true,
+		planFallback: collect<PlanFallback>(problems, "none", () => readPlanFallback(env)),
+		planConcurrency: int(
 			"ULTRATHINK_PLAN_CONCURRENCY",
 			DEFAULT_PLAN_CONCURRENCY,
 			1,
 			MAX_PLAN_CONCURRENCY,
 		),
-		maxConcurrentPlans: readInteger(
-			env,
-			"ULTRATHINK_MAX_CONCURRENT_PLANS",
-			DEFAULT_MAX_CONCURRENT_PLANS,
-			1,
-			8,
-		),
-		modelTimeoutMs: readLimit(
-			env,
-			"ULTRATHINK_MODEL_TIMEOUT_MS",
-			DEFAULT_MODEL_TIMEOUT_MS,
-			5000,
-			600000,
-		),
-		planTimeoutMs: readLimit(
-			env,
-			"ULTRATHINK_PLAN_TIMEOUT_MS",
-			DEFAULT_PLAN_TIMEOUT_MS,
-			30000,
-			1800000,
-		),
-		modelMaxOutputTokens: readLimit(
-			env,
+		maxConcurrentPlans: int("ULTRATHINK_MAX_CONCURRENT_PLANS", DEFAULT_MAX_CONCURRENT_PLANS, 1, 8),
+		modelTimeoutMs: limit("ULTRATHINK_MODEL_TIMEOUT_MS", DEFAULT_MODEL_TIMEOUT_MS, 5000, 600000),
+		planTimeoutMs: limit("ULTRATHINK_PLAN_TIMEOUT_MS", DEFAULT_PLAN_TIMEOUT_MS, 30000, 1800000),
+		modelMaxOutputTokens: limit(
 			"ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS",
 			DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
 			256,
@@ -720,59 +764,56 @@ export function loadConfig(
 		legacyEnvIgnored: Object.keys(env)
 			.filter((name) => LEGACY_ENV_PATTERN.test(name) && readOptional(env, name) !== undefined)
 			.sort(),
-		breakerFailures: readInteger(env, "ULTRATHINK_BREAKER_FAILURES", 5, 0, 100),
-		breakerWindowMs: readInteger(env, "ULTRATHINK_BREAKER_WINDOW_MS", 60000, 1000, 3600000),
-		breakerOpenMs: readInteger(env, "ULTRATHINK_BREAKER_OPEN_MS", 30000, 1000, 600000),
-		maxInflight: readInteger(env, "ULTRATHINK_MAX_INFLIGHT", 256, 1, 10000),
-		priorityReservePct: readInteger(env, "ULTRATHINK_PRIORITY_RESERVE_PCT", 25, 0, 90),
-		fairQueueDepth: readInteger(env, "ULTRATHINK_FAIR_QUEUE_DEPTH", 16, 0, 1000),
-		fairQueueWaitMs: readInteger(env, "ULTRATHINK_FAIR_QUEUE_WAIT_MS", 1500, 1, 60000),
-		adaptiveQuotaMinPct: readInteger(env, "ULTRATHINK_ADAPTIVE_QUOTA_MIN_PCT", 50, 10, 100),
-		lagTargetMs: readInteger(env, "ULTRATHINK_LAG_TARGET_MS", 100, 10, 5000),
-		replicaCapacityRps: readInteger(env, "ULTRATHINK_REPLICA_CAPACITY_RPS", 20, 1, 100000),
-		abuseFailuresPerMinute: readInteger(env, "ULTRATHINK_ABUSE_FAILURES_PER_MINUTE", 20, 1, 10000),
-		...readPenaltyBlocks(env),
-		drainMs: readInteger(env, "ULTRATHINK_DRAIN_MS", 5000, 0, 60000),
-		retentionDays: readInteger(env, "ULTRATHINK_RETENTION_DAYS", 30, 0, 3650),
-		auditLog: readFlag(env, "ULTRATHINK_AUDIT_LOG") ?? true,
-		auditAnchorEvery: readInteger(
-			env,
-			"ULTRATHINK_AUDIT_ANCHOR_EVERY",
-			DEFAULT_AUDIT_ANCHOR_EVERY,
-			1,
-			1000000,
-		),
-		auditSegmentBytes: readInteger(
-			env,
+		breakerFailures: int("ULTRATHINK_BREAKER_FAILURES", 5, 0, 100),
+		breakerWindowMs: int("ULTRATHINK_BREAKER_WINDOW_MS", 60000, 1000, 3600000),
+		breakerOpenMs: int("ULTRATHINK_BREAKER_OPEN_MS", 30000, 1000, 600000),
+		maxInflight: int("ULTRATHINK_MAX_INFLIGHT", 256, 1, 10000),
+		priorityReservePct: int("ULTRATHINK_PRIORITY_RESERVE_PCT", 25, 0, 90),
+		fairQueueDepth: int("ULTRATHINK_FAIR_QUEUE_DEPTH", 16, 0, 1000),
+		fairQueueWaitMs: int("ULTRATHINK_FAIR_QUEUE_WAIT_MS", 1500, 1, 60000),
+		adaptiveQuotaMinPct: int("ULTRATHINK_ADAPTIVE_QUOTA_MIN_PCT", 50, 10, 100),
+		lagTargetMs: int("ULTRATHINK_LAG_TARGET_MS", 100, 10, 5000),
+		replicaCapacityRps: int("ULTRATHINK_REPLICA_CAPACITY_RPS", 20, 1, 100000),
+		abuseFailuresPerMinute: int("ULTRATHINK_ABUSE_FAILURES_PER_MINUTE", 20, 1, 10000),
+		...readPenaltyBlocks(env, problems),
+		drainMs: int("ULTRATHINK_DRAIN_MS", 5000, 0, 60000),
+		retentionDays: int("ULTRATHINK_RETENTION_DAYS", 30, 0, 3650),
+		auditLog: flag("ULTRATHINK_AUDIT_LOG") ?? true,
+		auditAnchorEvery: int("ULTRATHINK_AUDIT_ANCHOR_EVERY", DEFAULT_AUDIT_ANCHOR_EVERY, 1, 1000000),
+		auditSegmentBytes: int(
 			"ULTRATHINK_AUDIT_SEGMENT_BYTES",
 			DEFAULT_AUDIT_SEGMENT_BYTES,
 			1048576,
 			4294967296,
 		),
-		auditRetentionDays: readInteger(
-			env,
+		auditRetentionDays: int(
 			"ULTRATHINK_AUDIT_RETENTION_DAYS",
 			DEFAULT_AUDIT_RETENTION_DAYS,
 			0,
 			36500,
 		),
-		auditWatchMs: readInteger(env, "ULTRATHINK_AUDIT_WATCH_MS", DEFAULT_AUDIT_WATCH_MS, 100, 1000),
-		auditSinkQueue: readInteger(
-			env,
-			"ULTRATHINK_AUDIT_SINK_QUEUE",
-			DEFAULT_AUDIT_SINK_QUEUE,
-			1,
-			1000000,
+		auditWatchMs: int("ULTRATHINK_AUDIT_WATCH_MS", DEFAULT_AUDIT_WATCH_MS, 100, 1000),
+		auditSinkQueue: int("ULTRATHINK_AUDIT_SINK_QUEUE", DEFAULT_AUDIT_SINK_QUEUE, 1, 1000000),
+		auditRules: collect(problems, undefined, () => readAuditRules(env)),
+		auditHttpUrl: collect(problems, undefined, () => readSinkUrl(env, "ULTRATHINK_AUDIT_HTTP_URL")),
+		auditHttpToken: collect(problems, undefined, () => readAuditHttpToken(env)),
+		auditSyslog: collect(problems, undefined, () => readAuditSyslog(env)),
+		otlpEndpoint: collect(problems, undefined, () => readOtlpEndpoint(env)),
+		tls: readTlsFiles(env, plaintextRejected ? undefined : plaintextLoopback, problems),
+		spiffeTrustDomain: collect(problems, DEFAULT_SPIFFE_TRUST_DOMAIN, () =>
+			readSpiffeTrustDomain(env),
 		),
-		auditRules: readAuditRules(env),
-		auditHttpUrl: readSinkUrl(env, "ULTRATHINK_AUDIT_HTTP_URL"),
-		auditHttpToken: readAuditHttpToken(env),
-		auditSyslog: readAuditSyslog(env),
-		otlpEndpoint: readOtlpEndpoint(env),
-		tls: readTlsFiles(env, plaintextLoopback),
-		spiffeTrustDomain: readSpiffeTrustDomain(env),
 		plaintextLoopback,
-		...readChaosGate(env),
-		...readKafkaSink(env),
+		...readChaosGate(env, problems),
+		...readKafkaSink(env, problems),
 	};
+	if (problems.length > 0) {
+		throw new ConfigError(
+			[
+				`ultrathink: ${problems.length} configuration problems`,
+				...problems.map((problem) => `  ${problem}`),
+			].join("\n"),
+		);
+	}
+	return config;
 }

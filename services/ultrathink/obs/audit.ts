@@ -35,6 +35,7 @@ import {
 } from "./audit-merkle.ts";
 import { listSegments, sealedName } from "./audit-segments.ts";
 import type { Fingerprint } from "./audit-watch.ts";
+import { redactSecrets } from "../../../src/redact.ts";
 import { isRecord } from "../../../src/shared.ts";
 
 /** Security events the service records. New events append here; verification accepts any string event so old files still verify. */
@@ -252,7 +253,7 @@ function sanitizeFields(
 			continue;
 		}
 		let value: Primitive;
-		if (typeof raw === "string") value = cleanString(raw);
+		if (typeof raw === "string") value = cleanString(redactSecrets(raw));
 		else if (typeof raw === "boolean") value = raw;
 		else if (typeof raw === "number" && Number.isFinite(raw)) value = raw;
 		else continue;

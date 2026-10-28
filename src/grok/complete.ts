@@ -23,7 +23,6 @@ import {
 	grokClientVersion,
 	grokHeaders,
 	isGrokAuthExpired,
-	redactSecrets,
 } from "./auth.ts";
 import {
 	DEFAULT_GROK_CONFIG,
@@ -32,6 +31,7 @@ import {
 	grokWireEffort,
 } from "./types.ts";
 import { abortError } from "../claude/complete.ts";
+import { redactSecrets } from "../redact.ts";
 import { dropJevKeys } from "../route-defaults.ts";
 
 export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;

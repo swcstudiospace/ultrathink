@@ -307,7 +307,13 @@ describe("Vercel is Jev-only: engine code never references it (JEV-03)", () => {
 			rel === "mcp/providers.ts" ||
 			rel === "mcp/cli.ts" ||
 			rel === "config.ts" ||
-			rel === "uplift/commands.ts";
+			rel === "uplift/commands.ts" ||
+			// The Jev child-env scrub list names AI_GATEWAY_API_KEY so it never reaches an engine subprocess.
+			rel === "route-defaults.ts" ||
+			// The variable registry documents AI_GATEWAY_API_KEY like every other configuration variable.
+			rel === "env-registry.ts" ||
+			// The `ultrathink stack` Decisions probe reports the Decisions (Vercel gateway) member.
+			rel === "stack/decisions.ts";
 		const matches: string[] = [];
 		const offenders: string[] = [];
 		let visited = 0;

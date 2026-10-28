@@ -7,7 +7,7 @@
  */
 
 import { abortError } from "../claude/complete.ts";
-import { redactSecrets } from "../grok/auth.ts";
+import { redactSecrets } from "../redact.ts";
 import { redactLine } from "../teach/redact.ts";
 import {
 	classifyFailure,

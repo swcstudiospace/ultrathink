@@ -8,11 +8,12 @@ import {
 	appendFlowScore,
 	evaluateFlowOutput,
 	FLOW_OUTPUT_MAX,
+	flowEvalActive,
 	isGsdFlowCommand,
 	lookupFlowScore,
-	openRouterKey,
 } from "./flow.ts";
 import { openJevHealth } from "./health.ts";
+import { DEFAULT_DECISIONS_CONFIG, VERCEL_DECISIONS_URL } from "./types.ts";
 import { USAGE_FILE } from "./usage.ts";
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
@@ -155,6 +156,36 @@ describe("evaluateFlowOutput", () => {
 	});
 });
 
+describe("flowEvalActive", () => {
+	function storeFile(): string {
+		const path = join(tempDir(), "mcp-credentials.json");
+		writeFileSync(path, JSON.stringify({ version: 1, providers: {} }), { mode: 0o600 });
+		return path;
+	}
+
+	test("true only with a usable key on the picked rail and the kill switch off", () => {
+		const storePath = storeFile();
+		const input = { subject: "s", output: "o", storePath };
+		expect(flowEvalActive(input, { AI_GATEWAY_API_KEY: "vck_CANARYCANARYCANARY1234" })).toBe(true);
+		expect(flowEvalActive(input, { ULTRATHINK_OPENROUTER_KEY: K })).toBe(true);
+		expect(flowEvalActive(input, {})).toBe(false);
+		// OPENROUTER_API_KEY is not a Jev key variable.
+		expect(flowEvalActive(input, { OPENROUTER_API_KEY: K })).toBe(false);
+		expect(flowEvalActive(input, { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" })).toBe(
+			false,
+		);
+	});
+
+	test("agrees with evaluateFlowOutput: inactive exactly when the evaluation is inactive", async () => {
+		const storePath = storeFile();
+		for (const env of [{}, { ULTRATHINK_OPENROUTER_KEY: K }, { ULTRATHINK_DECISIONS: "0" }]) {
+			const input = { subject: "s", output: "", storePath, env };
+			const record = await evaluateFlowOutput(input);
+			expect(flowEvalActive(input, env)).toBe(record.state !== "inactive");
+		}
+	});
+});
+
 describe("isGsdFlowCommand", () => {
 	test("matches gsd skill and phase commands and skips unrelated tools", () => {
 		expect(isGsdFlowCommand("Skill", "gsd-discuss-phase 15")).toBe(true);
@@ -164,20 +195,218 @@ describe("isGsdFlowCommand", () => {
 	});
 });
 
-describe("openRouterKey", () => {
-	test("reads the store, then ULTRATHINK_OPENROUTER_KEY, and never the legacy variable", () => {
+describe("evaluateFlowOutput rail selection", () => {
+	const OUTPUT = "SENTINEL-FLOW-OUTPUT written to CONTEXT.md";
+	const VK = "vck_CANARYCANARYCANARY1234";
+	const OK_KEY = "sk-or-v1-CANARYCANARYCANARY1234";
+
+	function emptyStore(): string {
 		const store = join(tempDir(), "mcp-credentials.json");
 		writeFileSync(store, JSON.stringify({ version: 1, providers: {} }), { mode: 0o600 });
-		expect(openRouterKey(store, { OPENROUTER_API_KEY: K })).toBeUndefined();
-		expect(openRouterKey(store, { ULTRATHINK_OPENROUTER_KEY: K })).toBe(K);
-		const stored = { openrouter: { kind: "api_key", apiKey: "sk-or-v1-STORED", updatedAt: 1 } };
-		writeFileSync(store, JSON.stringify({ version: 1, providers: stored }), { mode: 0o600 });
+		return store;
+	}
+
+	function vercelAnswer(choice: string, confidence: number): Response {
+		return json({
+			answers: { verdict: { type: "choice", choice } },
+			providerMetadata: { typesafe: { confidence: { verdict: confidence } } },
+			usage: { inputTokens: 3, outputTokens: 2 },
+		});
+	}
+
+	function recording(respond: () => Response) {
+		const calls: Array<{ url: string; body: Record<string, unknown>; headers: Headers }> = [];
+		const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+			calls.push({
+				url: String(input),
+				body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+				headers: new Headers(init?.headers),
+			});
+			return respond();
+		}) as unknown as typeof fetch;
+		return { fetch: fetchImpl, calls };
+	}
+
+	function evaluate(
+		fetchImpl: typeof fetch,
+		extra: {
+			env?: Record<string, string | undefined>;
+			config?: typeof DEFAULT_DECISIONS_CONFIG;
+			output?: string;
+			stateDir?: string;
+		},
+	) {
+		return evaluateFlowOutput({
+			subject: "phase:discuss",
+			output: extra.output ?? OUTPUT,
+			storePath: emptyStore(),
+			fetch: fetchImpl,
+			now: () => 1000,
+			env: {},
+			...extra,
+		});
+	}
+
+	test("no key on either rail is inactive: no request, no usage row, no breaker file, whatever the output", async () => {
+		const dir = tempDir();
+		const r = recording(() => ok("approve", 0.9));
+		// The generic OpenRouter variable is never read, so exporting it must not make the hook speak.
+		const env = { OPENROUTER_API_KEY: OK_KEY };
+		for (const output of [OUTPUT, "  \n", "x".repeat(FLOW_OUTPUT_MAX + 1)]) {
+			const record = await evaluate(r.fetch, { env, output, stateDir: dir });
+			expect(record.state).toBe("inactive");
+			expect(record.decision).toBeNull();
+			expect(record.confidence).toBeNull();
+		}
+		expect(r.calls).toHaveLength(0);
+		expect(existsSync(join(dir, USAGE_FILE))).toBe(false);
+		expect(existsSync(join(dir, "decisions-health-openrouter.json"))).toBe(false);
+	});
+
+	test("a pinned rail with no key is inactive even when the other rail has one", async () => {
+		const r = recording(() => ok("approve", 0.9));
+		const onlyVercel = { AI_GATEWAY_API_KEY: VK };
+		const onlyOpenRouter = { ULTRATHINK_OPENROUTER_KEY: OK_KEY };
 		expect(
-			openRouterKey(store, {
-				ULTRATHINK_OPENROUTER_KEY: K,
-				OPENROUTER_API_KEY: "sk-or-v1-LEGACYKEY-0123456789abcdef",
+			(
+				await evaluate(r.fetch, {
+					env: onlyVercel,
+					config: { ...DEFAULT_DECISIONS_CONFIG, provider: "openrouter" },
+				})
+			).state,
+		).toBe("inactive");
+		expect(
+			(
+				await evaluate(r.fetch, {
+					env: onlyOpenRouter,
+					config: { ...DEFAULT_DECISIONS_CONFIG, provider: "vercel" },
+				})
+			).state,
+		).toBe("inactive");
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("the kill switch is inactive before any resolution or request, keys present", async () => {
+		const r = recording(() => ok("approve", 0.9));
+		const record = await evaluate(r.fetch, {
+			env: { ULTRATHINK_DECISIONS: "0", AI_GATEWAY_API_KEY: VK, ULTRATHINK_OPENROUTER_KEY: OK_KEY },
+		});
+		expect(record.state).toBe("inactive");
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("a Vercel-only key decides on the Vercel rail: the choice question goes out, no ZDR preference, rail named", async () => {
+		const dir = tempDir();
+		const r = recording(() => vercelAnswer("approve", 0.77));
+		const record = await evaluate(r.fetch, { env: { AI_GATEWAY_API_KEY: VK }, stateDir: dir });
+		expect(record.state).toBe("success");
+		expect(record.decision).toBe("approve");
+		expect(record.confidence).toBe(0.77);
+		expect(record.provider).toBe("Vercel");
+		expect(r.calls).toHaveLength(1);
+		const call = r.calls[0]!;
+		expect(call.url).toBe(VERCEL_DECISIONS_URL);
+		expect(call.headers.get("authorization")).toBe(`Bearer ${VK}`);
+		expect(call.headers.get("ai-model-id")).toBe("typesafe-ai/jev");
+		const questions = call.body.questions as Record<string, { type: string }>;
+		expect(questions.verdict?.type).toBe("choice");
+		expect(call.body.provider).toBeUndefined();
+		expect(JSON.stringify(call.body)).toContain(OUTPUT);
+		expect(JSON.stringify(call.body)).not.toContain('"zdr"');
+		const usageRows = readFileSync(join(dir, USAGE_FILE), "utf8").trim().split("\n");
+		expect(usageRows).toHaveLength(1);
+		expect(JSON.parse(usageRows[0]!)).toMatchObject({ point: "flow", rail: "vercel", ok: true });
+		expect(existsSync(join(dir, "decisions-health-openrouter.json"))).toBe(false);
+	});
+
+	test("Vercel answer without a confidence is one repair then a flow error, never a default score", async () => {
+		const r = recording(() =>
+			json({
+				answers: { verdict: { type: "choice", choice: "approve" } },
+				usage: { inputTokens: 3, outputTokens: 2 },
 			}),
-		).toBe("sk-or-v1-STORED");
+		);
+		const record = await evaluate(r.fetch, { env: { AI_GATEWAY_API_KEY: VK } });
+		expect(r.calls).toHaveLength(2);
+		expect(record.state).toBe("error");
+		expect(record.errorClass).toBe("invalid-response");
+		expect(record.confidence).toBeNull();
+		expect(record.provider).toBe("Vercel");
+	});
+
+	test("a Vercel breaker open on its own rail refuses the call with zero requests, naming Vercel", async () => {
+		const dir = tempDir();
+		openJevHealth(dir, "vercel").recordFailure("credits", 1000);
+		const r = recording(() => vercelAnswer("approve", 0.9));
+		const record = await evaluate(r.fetch, {
+			env: { AI_GATEWAY_API_KEY: VK },
+			stateDir: dir,
+		});
+		expect(record.errorClass).toBe("unavailable");
+		expect(record.rationale).not.toContain("OpenRouter");
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("an OpenRouter-only key decides on OpenRouter with decisions.zdr and honors ULTRATHINK_DECISIONS_URL", async () => {
+		const r = recording(() => ok("approve", 0.6));
+		const env = {
+			ULTRATHINK_OPENROUTER_KEY: OK_KEY,
+			ULTRATHINK_DECISIONS_URL: "http://127.0.0.1:9/api/alpha/decisions",
+		};
+		const withZdr = await evaluate(r.fetch, { env });
+		expect(withZdr.provider).toBe("OpenRouter");
+		expect(r.calls[0]?.url).toBe("http://127.0.0.1:9/api/alpha/decisions");
+		expect(r.calls[0]?.body.provider).toEqual({ zdr: true });
+		await evaluate(r.fetch, { env, config: { ...DEFAULT_DECISIONS_CONFIG, zdr: false } });
+		expect(r.calls[1]?.body.provider).toBeUndefined();
+	});
+
+	test("with both keys auto picks Vercel; decisions.provider pins either rail", async () => {
+		const env = { AI_GATEWAY_API_KEY: VK, ULTRATHINK_OPENROUTER_KEY: OK_KEY };
+		const urls: string[] = [];
+		const routed = (async (input: string | URL | Request) => {
+			urls.push(String(input));
+			return String(input) === VERCEL_DECISIONS_URL
+				? vercelAnswer("approve", 0.6)
+				: ok("approve", 0.6);
+		}) as unknown as typeof fetch;
+		const auto = await evaluate(routed, { env });
+		const pinnedOpenRouter = await evaluate(routed, {
+			env,
+			config: { ...DEFAULT_DECISIONS_CONFIG, provider: "openrouter" },
+		});
+		const pinnedVercel = await evaluate(routed, {
+			env,
+			config: { ...DEFAULT_DECISIONS_CONFIG, provider: "vercel" },
+		});
+		expect([auto.provider, pinnedOpenRouter.provider, pinnedVercel.provider]).toEqual([
+			"Vercel",
+			"OpenRouter",
+			"Vercel",
+		]);
+		expect(urls).toEqual([
+			VERCEL_DECISIONS_URL,
+			"https://openrouter.ai/api/alpha/decisions",
+			VERCEL_DECISIONS_URL,
+		]);
+	});
+
+	test("the store key resolves like the gates: stored Vercel key beats nothing, and the key never reaches the record", async () => {
+		const store = join(tempDir(), "mcp-credentials.json");
+		const providers = { vercel: { kind: "api_key", apiKey: VK, updatedAt: 1 } };
+		writeFileSync(store, JSON.stringify({ version: 1, providers }), { mode: 0o600 });
+		const r = recording(() => vercelAnswer("reject", 0.4));
+		const record = await evaluateFlowOutput({
+			subject: "phase:plan",
+			output: OUTPUT,
+			storePath: store,
+			env: {},
+			fetch: r.fetch,
+		});
+		expect(record.state).toBe("success");
+		expect(r.calls[0]?.headers.get("authorization")).toBe(`Bearer ${VK}`);
+		const serialized = JSON.stringify(record);
+		for (const secret of [VK, OK_KEY, "Bearer"]) expect(serialized).not.toContain(secret);
 	});
 });
 

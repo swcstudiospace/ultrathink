@@ -450,11 +450,8 @@ describe.skipIf(process.platform !== "linux")("release ancestry gate (do_release
 		"scripts/security-gate.ts",
 		"src/decisions/client.ts",
 		"src/decisions/types.ts",
-		"src/grok/auth.ts",
-		"src/grok/types.ts",
 		"src/mcp/providers.ts",
-		"src/route-defaults.ts",
-		"src/shared.ts",
+		"src/redact.ts",
 	];
 	const RELEASE_STUBS: Record<string, string> = {
 		id: "#!/bin/sh\necho 0\n",

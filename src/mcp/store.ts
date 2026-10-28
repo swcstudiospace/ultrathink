@@ -70,6 +70,38 @@ export function readStore(path: string): CredentialStore {
 	return { version: 1, providers: {} };
 }
 
+export interface StoreStatus {
+	/** False when no file is there: nothing to report. */
+	exists: boolean;
+	/** True when the file holds a version 1 store; always true when it does not exist. */
+	parsable: boolean;
+	/** The file's permission bits (`mode & 0o777`); absent when it does not exist. */
+	mode?: number;
+}
+
+/** Whether the store file is there, parses and who can read it. Never throws and never returns file content, unlike `readStore`, which reads a corrupt store as empty. */
+export function storeStatus(path: string): StoreStatus {
+	let mode: number;
+	try {
+		mode = statSync(path).mode & 0o777;
+	} catch {
+		// reason: no file (or no access to its directory) means no store to judge; the caller reports nothing.
+		return { exists: false, parsable: true };
+	}
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CredentialStore> | null;
+		const valid =
+			!!parsed &&
+			parsed.version === 1 &&
+			!!parsed.providers &&
+			typeof parsed.providers === "object";
+		return { exists: true, parsable: valid, mode };
+	} catch {
+		// reason: the failure is the answer: the file exists and does not parse (or cannot be read).
+		return { exists: true, parsable: false, mode };
+	}
+}
+
 export function writeStore(path: string, store: CredentialStore): void {
 	const dir = dirname(path);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });

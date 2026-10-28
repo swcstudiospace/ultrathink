@@ -32,6 +32,9 @@ describe("runDoctorCommand", () => {
 				ULTRATHINK_STATE_DIR: join(dir, "state"),
 				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
 				GH_CONFIG_DIR: join(dir, "gh"),
+				// The stack section runs the real probes: switch off the two that would otherwise look at the machine.
+				ULTRATHINK_DECISIONS: "0",
+				ULTRATHINK_REALM: "off",
 			},
 			cwd: join(dir, "project"),
 			now: () => 1_800_000_000_000,
@@ -49,7 +52,7 @@ describe("runDoctorCommand", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	test("a healthy machine exits 0 and the text report has the seven sections and a summary", async () => {
+	test("a healthy machine exits 0 and the text report has the nine sections and a summary", async () => {
 		const { output, exitCode } = await runDoctorCommand([], deps);
 		expect(exitCode).toBe(0);
 		const lines = output.split("\n");
@@ -58,10 +61,12 @@ describe("runDoctorCommand", () => {
 			"runtime",
 			"config",
 			"credentials",
+			"env",
 			"inference",
 			"state",
 			"memory",
 			"pstack",
+			"stack",
 		]);
 		expect(lines.at(-1)).toBe("0 errors, 0 warnings");
 		expect(output).not.toEndWith("\n");
@@ -78,11 +83,19 @@ describe("runDoctorCommand", () => {
 			{ mode: 0o755 },
 		);
 		const planted = "sk-or-v1-UTTESTKEY-0123456789abcdef";
-		const names = ["PATH", "ULTRATHINK_OPENROUTER_KEY", "OPENROUTER_API_KEY", "UT_TEST_PLANTED"];
+		const plantedGateway = "vck_UTTESTGATEWAYKEY0123456789abcdef";
+		const names = [
+			"PATH",
+			"ULTRATHINK_OPENROUTER_KEY",
+			"OPENROUTER_API_KEY",
+			"AI_GATEWAY_API_KEY",
+			"UT_TEST_PLANTED",
+		];
 		const saved = names.map((name) => process.env[name]);
 		process.env.PATH = `${bin}:${saved[0] ?? ""}`;
 		process.env.ULTRATHINK_OPENROUTER_KEY = planted;
 		process.env.OPENROUTER_API_KEY = planted;
+		process.env.AI_GATEWAY_API_KEY = plantedGateway;
 		process.env.UT_TEST_PLANTED = "1";
 		// The probes are production deps: an explicit `undefined` override would replace them, so leave both keys out.
 		const { claudeVersion: _version, claudeAuth: _auth, ...rest } = deps;
@@ -94,6 +107,7 @@ describe("runDoctorCommand", () => {
 					PATH: process.env.PATH,
 					ULTRATHINK_OPENROUTER_KEY: planted,
 					OPENROUTER_API_KEY: planted,
+					AI_GATEWAY_API_KEY: plantedGateway,
 					UT_TEST_PLANTED: "1",
 				},
 			});
@@ -109,7 +123,51 @@ describe("runDoctorCommand", () => {
 		expect(log).toContain("UT_TEST_PLANTED=1");
 		expect(log).not.toContain("ULTRATHINK_OPENROUTER_KEY");
 		expect(log).not.toContain("OPENROUTER_API_KEY");
+		expect(log).not.toContain("AI_GATEWAY_API_KEY");
 		expect(log).not.toContain(planted);
+		expect(log).not.toContain(plantedGateway);
+	});
+
+	test("the python version probe never hands the Jev key variables to the child", async () => {
+		const bin = join(dir, "bin-python");
+		mkdirSync(bin);
+		const seenFile = join(dir, "python-env.log");
+		writeFileSync(join(bin, "python3"), `#!/bin/sh\nenv >> "${seenFile}"\necho "Python 3.12.1"\n`, {
+			mode: 0o755,
+		});
+		const planted = "sk-or-v1-CANARYCANARYCANARY1234";
+		const names = [
+			"PATH",
+			"ULTRATHINK_OPENROUTER_KEY",
+			"OPENROUTER_API_KEY",
+			"AI_GATEWAY_API_KEY",
+			"UT_TEST_PLANTED",
+		];
+		const saved = names.map((name) => process.env[name]);
+		process.env.PATH = `${bin}:${saved[0] ?? ""}`;
+		process.env.ULTRATHINK_OPENROUTER_KEY = planted;
+		process.env.OPENROUTER_API_KEY = `${planted}B`;
+		process.env.AI_GATEWAY_API_KEY = `${planted}C`;
+		process.env.UT_TEST_PLANTED = "1";
+		// runVersion is a production dep: leave the key out so the real probe runs.
+		const { runVersion: _runVersion, ...rest } = deps;
+		try {
+			await runDoctorCommand([], { ...rest });
+		} finally {
+			names.forEach((name, i) => {
+				const value = saved[i];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			});
+		}
+		const log = readFileSync(seenFile, "utf8");
+		// The control proves the stub ran with the inherited environment, so the absences below are not vacuous.
+		expect(log).toContain("UT_TEST_PLANTED=1");
+		expect(log).toContain("PATH=");
+		expect(log).not.toContain("ULTRATHINK_OPENROUTER_KEY");
+		expect(log).not.toContain("OPENROUTER_API_KEY");
+		expect(log).not.toContain("AI_GATEWAY_API_KEY");
+		expect(log).not.toContain("CANARYCANARY");
 	});
 
 	test("the text output is identical across runs with a fixed clock", async () => {
@@ -156,7 +214,17 @@ describe("runDoctorCommand", () => {
 		expect(Object.keys(report)).toEqual(["ok", "summary", "findings"]);
 		expect(report.ok).toBe(true);
 		expect(report.summary).toMatchObject({ error: 0, warn: 1 });
-		const order = ["runtime", "config", "credentials", "inference", "state", "memory", "pstack"];
+		const order = [
+			"runtime",
+			"config",
+			"credentials",
+			"env",
+			"inference",
+			"state",
+			"memory",
+			"pstack",
+			"stack",
+		];
 		const sections = report.findings.map((finding) => finding.section);
 		expect(sections).toEqual([...sections].sort((a, b) => order.indexOf(a) - order.indexOf(b)));
 		expect(sections).toContain("inference");
@@ -233,5 +301,59 @@ describe("runDoctorCommand", () => {
 			globalThis.fetch = original;
 		}
 		expect(calls).toEqual([]);
+	});
+
+	test("the blocking local checks finish before any stack probe starts its request", async () => {
+		// `claude --version` / `claude auth status` block the thread; a probe started before them would have its 3 s timer
+		// run down while they block. A fetch is the first thing the Substrate probe does, so it marks the probe's start.
+		const events: string[] = [];
+		const tokens = join(dir, "no-tokens");
+		mkdirSync(tokens);
+		const original = globalThis.fetch;
+		globalThis.fetch = ((..._args: unknown[]) => {
+			events.push("probe");
+			return Promise.resolve(new Response("ok", { status: 200 }));
+		}) as unknown as typeof fetch;
+		try {
+			const { exitCode } = await runDoctorCommand([], {
+				...deps,
+				env: {
+					...deps.env,
+					SUBSTRATE_URL: "https://substrate.example.test",
+					SUBSTRATE_TOKENS_DIR: tokens,
+				},
+				runVersion: () => {
+					events.push("python");
+					return "Python 3.12.1";
+				},
+				claudeVersion: () => {
+					events.push("claude-version");
+					return "2.1.300 (Claude Code)";
+				},
+				claudeAuth: () => {
+					events.push("claude-auth");
+					return JSON.stringify({
+						loggedIn: true,
+						authMethod: "claude.ai",
+						subscriptionType: "max",
+					});
+				},
+			});
+			expect(exitCode).toBe(0);
+		} finally {
+			globalThis.fetch = original;
+		}
+		// Control: the probe really ran and every local check really ran.
+		expect(events).toContain("probe");
+		expect(events).toContain("python");
+		expect(events).toContain("claude-version");
+		expect(events).toContain("claude-auth");
+		const firstProbe = events.indexOf("probe");
+		const lastLocal = Math.max(
+			events.lastIndexOf("python"),
+			events.lastIndexOf("claude-version"),
+			events.lastIndexOf("claude-auth"),
+		);
+		expect(firstProbe).toBeGreaterThan(lastLocal);
 	});
 });

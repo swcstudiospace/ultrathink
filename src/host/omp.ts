@@ -47,17 +47,28 @@ import { spawnObserveDetached } from "../teach/spawn.ts";
 import { status as authStatus } from "../mcp/oauth.ts";
 import { storePath } from "../mcp/store.ts";
 import {
+	filterSpawnable,
 	formatLaneHandles,
 	formatLaneStatusText,
 	isSdlcPrompt,
+	allLaneDirs,
+	type LaneClassify,
 	laneDirs,
+	type LaneHandle,
 	laneStatus,
+	type LanePlan,
 	maxLanes,
 	orchStatusRunner,
 	parseLaneArgs,
+	pidAlive,
 	planLanes,
+	resolveStopTargets,
 	resolveSwarmRoot,
+	spawnGuarded,
 	spawnLanes,
+	stopLanes,
+	swarmClassifier,
+	swarmRootMessage,
 	toSwarmSpawnCard,
 	toSwarmStatusCard,
 	TEAMS_USAGE,
@@ -1091,6 +1102,11 @@ export function createOmpExtension(
 		spawnObserve?: typeof spawnObserveDetached;
 		/** Ship config source; defaults to the merged Claude config files for the session cwd. */
 		shipConfig?: (cwd: string) => ShipConfig;
+		/** AgentSwarm lane seams: the classifier bound to a swarm root, and the lane spawner. Default to the real ones. */
+		swarm?: {
+			classify?: (swarmRoot: string) => LaneClassify;
+			spawn?: (plan: readonly LanePlan[]) => LaneHandle[];
+		};
 	} = {},
 ): (pi: ExtensionAPI) => void {
 	const plan = options.plan ?? nativeEnginePlanner;
@@ -1106,6 +1122,12 @@ export function createOmpExtension(
 	// The host state dir for the session cwd, made absolute: planning, carriers and commands share it.
 	const stateDir = (cwd: string) =>
 		resolve(cwd, options.stateDir ?? resolveStateDir({ ...process.env, ULTRATHINK_HOST: "omp" }));
+	// Swarm seams: Swarm's own classifier and the lane spawner; the defaults are the real ones.
+	const classifierFor = options.swarm?.classify ?? swarmClassifier;
+	const spawnLaneSet = options.swarm?.spawn ?? spawnLanes;
+	/** One `<laneId>: <note>` line per lane that started with a remark (for example, `lane.json` was not written). */
+	const laneNotes = (handles: readonly LaneHandle[]): string[] =>
+		handles.flatMap((handle) => (handle.note ? [`${handle.laneId}: ${handle.note}`] : []));
 
 	return (pi) => {
 		interface Flight {
@@ -2014,7 +2036,8 @@ export function createOmpExtension(
 			// display-only text (never a model turn); child sessions may use it like the verbs above.
 			guard(() =>
 				pi.registerCommand?.("ultrathink-swarm", {
-					description: "Fan out AgentSwarm lanes from `|`-separated briefs, or show lane status",
+					description:
+						"Fan out AgentSwarm lanes from `|`-separated briefs, show lane status, or `stop [laneId|all]`",
 					handler: async (args, ctx) => {
 						try {
 							// The session this command belongs to; replies computed across an await are dropped if it changed.
@@ -2024,9 +2047,25 @@ export function createOmpExtension(
 							const parsed = parseLaneArgs(args ?? "", { maxLanes: maxLanes(process.env) });
 							if (parsed.kind === "usage")
 								return sendInsightText(`${parsed.reason}. ${TEAMS_USAGE}`);
+							// `stop` never needs a valid swarm root: a user whose config broke must still be able to end lanes.
+							// Every kill goes through `stopLanes`: verified pid, then the lane's process group only.
+							if (parsed.kind === "stop") {
+								const resolved = resolveStopTargets(parsed.target, allLaneDirs(dir));
+								if ("reason" in resolved) return sendSessionText(sessionId, ctx, resolved.reason);
+								const lines = await stopLanes(resolved.targets, {
+									kill: (pid, signal) => process.kill(pid, signal as NodeJS.Signals),
+									waitMs: (ms) => {
+										const { promise, resolve } = Promise.withResolvers<void>();
+										// unref: a stop wait must never be what keeps the host's event loop alive.
+										setTimeout(resolve, ms).unref();
+										return promise;
+									},
+								});
+								return sendSessionText(sessionId, ctx, lines.join("\n"));
+							}
 							const root = resolveSwarmRoot(process.env);
 							if ("reason" in root)
-								return sendInsightText(`AgentSwarm lanes unavailable: ${root.reason}`);
+								return sendInsightText(`AgentSwarm lanes unavailable: ${swarmRootMessage(root)}`);
 							if (parsed.kind === "status") {
 								const discovery = laneDirs(dir);
 								const rows = await laneStatus(
@@ -2047,23 +2086,56 @@ export function createOmpExtension(
 								return sendSessionText(sessionId, ctx, full);
 							}
 							const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
-							const plan = planLanes(parsed.briefs, {
+							// The Graph ID of the session's tracked plan (when there is one) becomes the lane brief's first line.
+							const graphId = sessionId ? readSession(dir, sessionId)?.plan?.graphId : undefined;
+							const planned = planLanes(parsed.briefs, {
 								cwd,
 								stateDir: dir,
 								swarmRoot: root.root,
 								env: process.env,
 								pstack,
+								graphId,
 							});
-							const handles = spawnLanes(plan);
+							// Ask Swarm's own classifier about the exact lane text first, then refuse briefs that duplicate a
+							// live lane or exceed the live-lane cap; only the survivors spawn.
+							const preflight = await filterSpawnable(planned, classifierFor(root.root));
+							// Check, spawn and lane.json write are one locked step (spawnGuarded); the classifier await above
+							// stays outside the lock.
+							const guarded = spawnGuarded(preflight.spawn, {
+								stateDir: dir,
+								cwd,
+								cap: maxLanes(process.env),
+								isAlive: pidAlive,
+								spawn: spawnLaneSet,
+							});
+							const handles = guarded.handles;
+							const plan = guarded.spawn;
+							const refusals = [...preflight.refused, ...guarded.refused].map(
+								(refusal) => `${refusal.laneId}: ${refusal.reason}`,
+							);
+							const remarks = [...refusals, ...preflight.notes];
+							if (plan.length === 0)
+								return sendSessionText(
+									sessionId,
+									ctx,
+									[...refusals, ...(preflight.refused.length > 0 ? [TEAMS_USAGE] : [])].join("\n"),
+								);
 							const started = handles.filter((handle) => handle.pid !== undefined).length;
-							if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function")
+							if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") {
 								sendSwarmCard(
 									sessionId,
 									ctx,
 									`Swarm lanes — ${started}/${plan.length} spawned`,
 									toSwarmSpawnCard(handles, plan),
 								);
-							else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
+								const beside = [...laneNotes(handles), ...remarks];
+								if (beside.length > 0) sendSessionText(sessionId, ctx, beside.join("\n"));
+							} else
+								sendSessionText(
+									sessionId,
+									ctx,
+									[formatLaneHandles(handles), ...remarks].join("\n"),
+								);
 						} catch {
 							// reason: a failed swarm card must not reject into the host command runner
 						}
@@ -2233,47 +2305,87 @@ export function createOmpExtension(
 		 * AgentSwarm auto-run: with `swarm.autoRun` on (user files only, default off) an SDLC-sounding prompt in a
 		 * top-level session fans out one detached lane for it, published exactly like the /ultrathink-swarm spawn
 		 * branch. Explicit /commands, child sessions, unconfigured swarm roots and repeat submissions never spawn;
-		 * every skip is silent and a spawn failure never breaks prompt submission (the guard below). When a lane
-		 * actually started it owns the request: the quick suppression /ultrathink-quick arms makes the session's own
-		 * planning skip the submission, and the caller returns without a plan. Returns whether the lane owns it.
+		 * the first-word `isSdlcPrompt` gate stays as the cheap pre-gate, then Swarm's own classifier is asked about
+		 * the exact lane text (a `skip` verdict, a duplicate of a live lane and the live-lane cap all refuse; an
+		 * unanswered classifier spawns). Every skip is silent and a failure never breaks prompt submission. When a
+		 * lane actually started it owns the request: the quick suppression /ultrathink-quick arms makes the
+		 * session's own planning skip the submission, and the caller returns without a plan. Returns `false`
+		 * synchronously when any cheap gate fails (a prompt that never auto-runs reaches its planner in the same
+		 * tick it always did: the flight lifecycle tests pin that), otherwise a promise of whether the lane owns it;
+		 * never rejects.
 		 * Fired from `before_agent_start` after its quick bypass, which this host delivers for every submitted prompt.
 		 */
 		let lastLane = "";
-		const maybeAutoRun = (prompt: string, ctx: ExtensionContext | undefined): boolean => {
-			let owned = false;
-			guard(() => {
-				const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
-				const cwd = ctx?.cwd || process.cwd();
-				// Dedupe per session+cwd+prompt: identical resubmissions never double-spawn, while the same text in
-				// another session or repo is a fresh request. The key lands only once a lane actually started, so a
-				// failed spawn stays retryable.
-				const key = `${sessionId}:${cwd}:${prompt}`;
-				if (!prompt || prompt.startsWith("/") || prompt === lastLane) return;
-				if (isSubagentSession(ctx, exists)) return;
-				if (flightConfig(cwd).swarm?.autoRun !== true) return;
-				const root = resolveSwarmRoot(process.env);
-				if ("reason" in root) return;
-				if (!isSdlcPrompt(prompt)) return;
-				if (!sessionId) return;
-				const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
-				const plan = planLanes([prompt.trim()], {
+		interface AutoRunStart {
+			sessionId: string;
+			cwd: string;
+			key: string;
+			dir: string;
+			swarmRoot: string;
+			planned: LanePlan[];
+		}
+		/** Every gate that needs no await; `undefined` means this prompt does not auto-run. */
+		const autoRunGate = (
+			prompt: string,
+			ctx: ExtensionContext | undefined,
+		): AutoRunStart | undefined => {
+			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+			const cwd = ctx?.cwd || process.cwd();
+			// Dedupe per session+cwd+prompt: identical resubmissions never double-spawn, while the same text in
+			// another session or repo is a fresh request. The key lands only once a lane actually started, so a
+			// failed spawn stays retryable.
+			const key = `${sessionId}:${cwd}:${prompt}`;
+			if (!prompt || prompt.startsWith("/") || key === lastLane) return undefined;
+			if (isSubagentSession(ctx, exists)) return undefined;
+			if (flightConfig(cwd).swarm?.autoRun !== true) return undefined;
+			const root = resolveSwarmRoot(process.env);
+			if ("reason" in root) return undefined;
+			if (!isSdlcPrompt(prompt)) return undefined;
+			if (!sessionId) return undefined;
+			const dir = stateDir(cwd);
+			const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
+			const planned = planLanes([prompt.trim()], {
+				cwd,
+				stateDir: dir,
+				swarmRoot: root.root,
+				env: process.env,
+				pstack,
+				// No graphId: auto-run returns before this prompt is planned, so the session's tracked plan
+				// belongs to earlier work; Swarm and Substrate mint the lane's own graph.
+			});
+			return { sessionId, cwd, key, dir, swarmRoot: root.root, planned };
+		};
+		const autoRunSpawn = async (
+			start: AutoRunStart,
+			prompt: string,
+			ctx: ExtensionContext | undefined,
+		): Promise<boolean> => {
+			try {
+				const { sessionId, cwd, key, dir, swarmRoot, planned } = start;
+				const preflight = await filterSpawnable(planned, classifierFor(swarmRoot));
+				// The classifier ran across an await: a shut-down extension or a switched session spawns nothing.
+				if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return false;
+				// Check, spawn and lane.json write are one locked step (spawnGuarded); the classifier await stays outside.
+				const { spawn: plan, handles } = spawnGuarded(preflight.spawn, {
+					stateDir: dir,
 					cwd,
-					stateDir: stateDir(cwd),
-					swarmRoot: root.root,
-					env: process.env,
-					pstack,
+					cap: maxLanes(process.env),
+					isAlive: pidAlive,
+					spawn: spawnLaneSet,
 				});
-				const handles = spawnLanes(plan);
+				if (plan.length === 0) return false; // Refused (not SDLC, duplicate or over the cap): silent, the turn proceeds.
 				const started = handles.filter((handle) => handle.pid !== undefined).length;
-				if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function")
+				if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") {
 					sendSwarmCard(
 						sessionId,
 						ctx,
 						`Swarm lanes — ${started}/${plan.length} spawned${started > 0 ? " — the AgentSwarm lane owns this request; monitor with /ultrathink-swarm status, do not implement it here" : ""}`,
 						toSwarmSpawnCard(handles, plan),
 					);
-				else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
-				if (started === 0) return; // Nothing started: the normal turn proceeds and a resubmission may retry.
+					const notes = laneNotes(handles);
+					if (notes.length > 0) sendSessionText(sessionId, ctx, notes.join("\n"));
+				} else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
+				if (started === 0) return false; // Nothing started: the normal turn proceeds and a resubmission may retry.
 				// The lane owns this submission: the caller's early return skips launch's supersede, so cancel any
 				// pending plan here — a stale one must not settle into this submission — then arm quick so neither
 				// this turn nor a resubmission of the same text plans the request (the quick bypass's bookkeeping).
@@ -2281,9 +2393,24 @@ export function createOmpExtension(
 				if (older) cancel(older, SUPERSEDED);
 				lastLane = key;
 				quick = { sessionId, text: prompt.trim(), submission: turns.get(sessionId) };
-				owned = true;
-			});
-			return owned;
+				return true;
+			} catch {
+				// reason: a failed lane spawn must never reject into prompt submission; the normal turn proceeds
+				return false;
+			}
+		};
+		const maybeAutoRun = (
+			prompt: string,
+			ctx: ExtensionContext | undefined,
+		): boolean | Promise<boolean> => {
+			let start: AutoRunStart | undefined;
+			try {
+				start = autoRunGate(prompt, ctx);
+			} catch {
+				// reason: a gate that throws must never reject into prompt submission; the normal turn proceeds
+				return false;
+			}
+			return start === undefined ? false : autoRunSpawn(start, prompt, ctx);
 		};
 
 		pi.on("before_agent_start", async (event, ctx) => {
@@ -2311,10 +2438,15 @@ export function createOmpExtension(
 				}
 				// After the quick bypass, so an armed quick message never spawns a lane. When one did spawn it owns
 				// this submission: return without a plan so the planner never races the lane.
+				const autoRun = maybeAutoRun(prompt, ctx);
 				let lane = false;
-				guard(() => {
-					lane = maybeAutoRun(prompt, ctx);
-				});
+				if (typeof autoRun === "boolean") lane = autoRun;
+				else {
+					lane = await autoRun;
+					// The spawn step awaited the classifier: a session that shut down or switched meanwhile starts no
+					// plan (the shutdown already cleared the flights). The synchronous path never reaches this.
+					if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return;
+				}
 				if (lane) return;
 				const dir = stateDir(cwd);
 				let captured: { config?: UltrathinkConfig; control?: ControlState; intent?: FlightIntent } =

@@ -5,8 +5,8 @@
  * bearer key to another origin), a bounded response, and a result value instead of an exception. The only rejection is
  * an AbortError when the caller's own signal aborts. Error text is run through `redactSecrets`.
  */
-import { redactSecrets } from "../grok/auth.ts";
 import { USER_AGENT } from "../mcp/providers.ts";
+import { redactSecrets } from "../redact.ts";
 import { readBodyPrefix } from "./body.ts";
 
 /** Bytes buffered from a response before it is refused as too large; the rest of the stream is cancelled unread. */

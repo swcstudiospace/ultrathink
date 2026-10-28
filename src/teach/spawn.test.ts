@@ -108,6 +108,34 @@ describe("spawnObserveDetached", () => {
 		expect(env.ULTRATHINK_HOST).toBe("stale");
 	});
 
+	test("hands the detached worker the Jev key variables unchanged (it asks Jev itself) along with the rest of the host env", () => {
+		const calls: { env: NodeJS.ProcessEnv }[] = [];
+		const result = spawnObserveDetached(digest(), {
+			repoRoot,
+			env: {
+				PATH: "/usr/bin",
+				KEEP: "1",
+				ULTRATHINK_OPENROUTER_KEY: "sk-or-v1-CANARYCANARYCANARY1234",
+				OPENROUTER_API_KEY: "sk-or-v1-CANARYCANARYCANARY5678",
+				AI_GATEWAY_API_KEY: "vck_CANARYCANARYCANARY9012",
+			},
+			stateDir,
+			host: "omp",
+			spawn: (_cmd, _args, opts) => {
+				calls.push({ env: opts.env });
+			},
+		});
+		expect(result).toEqual({ spawned: true });
+		expect(calls).toHaveLength(1);
+		const childEnv = calls[0]?.env ?? {};
+		expect(childEnv.ULTRATHINK_OPENROUTER_KEY).toBe("sk-or-v1-CANARYCANARYCANARY1234");
+		expect(childEnv.OPENROUTER_API_KEY).toBe("sk-or-v1-CANARYCANARYCANARY5678");
+		expect(childEnv.AI_GATEWAY_API_KEY).toBe("vck_CANARYCANARYCANARY9012");
+		expect(childEnv.PATH).toBe("/usr/bin");
+		expect(childEnv.KEEP).toBe("1");
+		expect(childEnv.ULTRATHINK_HOST).toBe("omp");
+	});
+
 	test("runs in the repository root when the session directory no longer exists", () => {
 		let cwd = "";
 		spawnObserveDetached(digest({ cwd: join(root, "gone") }), {

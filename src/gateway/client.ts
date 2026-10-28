@@ -6,8 +6,8 @@
  * notifications, SSE relay). This client reuses that session's tool envelope and the
  * shared HTTP helper (`requestJson`: hard budget, no redirects, redacted errors).
  */
-import { redactSecrets } from "../grok/auth.ts";
 import { requestJson } from "../net/http.ts";
+import { redactSecrets } from "../redact.ts";
 import type { GatewayCallResult, GatewayFailure } from "./types.ts";
 import { isRecord } from "../shared.ts";
 
@@ -29,10 +29,7 @@ interface ToolPayload {
 }
 
 function oneLine(text: string, token: string): string {
-	const hidden = token.trim();
-	const out = redactSecrets(hidden ? text.replaceAll(hidden, "[redacted]") : text)
-		.replace(/\s+/g, " ")
-		.trim();
+	const out = redactSecrets(text, token).replace(/\s+/g, " ").trim();
 	return out.length > MAX_REASON ? `${out.slice(0, MAX_REASON - 3)}...` : out;
 }
 

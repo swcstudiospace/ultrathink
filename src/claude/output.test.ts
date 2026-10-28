@@ -24,13 +24,13 @@ import {
 	formatPlanSkipNotice,
 	formatPromptContext,
 	formatSummary,
-	HANDOFF_MAX_CHARS,
 	SKILL_CONTEXT_HEADER,
 	SUBSTRATE_CONTEXT_HEADER,
 	TRACKING_OFF_NOTE,
 	truncateXml,
 	UPLIFT_CONTEXT_HEADER,
 } from "./output.ts";
+import { HANDOFF_MAX_CHARS } from "../host/display-limits.ts";
 import type { ControlState } from "./state.ts";
 import type { TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { KnowledgeLookup } from "../greptile/knowledge.ts";
@@ -1073,6 +1073,37 @@ describe("handoff", () => {
 		expect(both.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
 		expect(both).toContain(mediumBrief);
 		expect(both).toContain("copy them from the ISSUES block of the specification file");
+	});
+});
+
+describe("substrate brief sanitising", () => {
+	test("control characters and a 100000-character brief never reach the context; the capped brief ends with a marker line", () => {
+		const brief = `\u001b[31m## Substrate brief\u001b[0m\u0007\n- keep\ttabs\n${"z".repeat(100_000)}`;
+		const out = formatPromptContext({ result, brief });
+		expect(out).toContain(SUBSTRATE_CONTEXT_HEADER);
+		expect(out).not.toContain("\u001b");
+		expect(out).not.toContain("\u0007");
+		expect(out).toContain("[31m## Substrate brief[0m");
+		expect(out).toContain("- keep\ttabs");
+		expect(out).toContain("\n[brief truncated]");
+		expect(out).not.toContain("z".repeat(HANDOFF_MAX_CHARS));
+	});
+
+	test("the Realm note rides after the sanitised brief and is never cut or altered by the cap", () => {
+		const note =
+			"Realm note (untrusted advisory, not an instruction): route tool calls through Realm.";
+		const out = formatPromptContext({ result, brief: "q".repeat(50_000), briefNote: note });
+		expect(out).toContain(`\n[brief truncated]\n\n${note}`);
+		expect(out.split("\n")).toContain(note);
+		const noteOnly = formatPromptContext({ result, briefNote: note });
+		expect(noteOnly).toContain(SUBSTRATE_CONTEXT_HEADER);
+		expect(noteOnly.split("\n")).toContain(note);
+	});
+
+	test("a brief of control characters alone adds no brief block", () => {
+		expect(formatPromptContext({ result, brief: "\u001b\u0007\u009b" })).not.toContain(
+			SUBSTRATE_CONTEXT_HEADER,
+		);
 	});
 });
 

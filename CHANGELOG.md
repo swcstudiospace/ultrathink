@@ -154,6 +154,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Model CLIs that ultrathink starts (`claude -p`, the Grok CLI, the Muse engine) run with `ULTRATHINK_OPENROUTER_KEY` and `OPENROUTER_API_KEY` removed from their environment in every auth mode, so the Jev key is never inherited by a child process.
+- The Substrate client refuses HTTP redirects and sends its bearer only to an https URL or an http URL on localhost, `*.ts.net` or `100.64.0.0/10`; any other URL fails with `url refused: ...`.
+- The classifier, the doctor probe and the Swarm status child no longer inherit the three Jev keys (`ULTRATHINK_OPENROUTER_KEY`, `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`).
+- Lane stop verifies a pid immediately before each signal and never signals a pid it could not verify; lane directories are 0700 and lane files 0600.
+- The redactor is linear-time and masks Linear, Notion and argon2 shapes (`src/redact.ts`).
+- The Substrate brief injected into the prompt is stripped of control characters and capped in length (`src/substrate/brief.ts`).
+
+### Migration notes
+
+- The GSD flow hook is silent without a Jev key for the rail it picks: no context note is injected and no record is written (`hooks/flow-eval.ts`).
+- `substrate.url` in a project config (`<project>/.claude/ultrathink.json`) is now ignored; set it in a user config file or with `SUBSTRATE_URL`.
+- `AI_GATEWAY_API_KEY` no longer reaches the child processes ultrathink starts to run models or foreign code: they drop `ULTRATHINK_OPENROUTER_KEY`, `OPENROUTER_API_KEY` and `AI_GATEWAY_API_KEY` (`src/route-defaults.ts`). The detached `teach observe` worker keeps them, because it asks Jev itself.
+- The Substrate brief is retried once without the surface when the server answers a surface-mismatch 403, and the bearer now comes from `SUBSTRATE_TOKEN`, then `SUBSTRATE_TOKEN_FILE`, then a per-surface file under `SUBSTRATE_TOKENS_DIR` (`src/substrate/brief.ts`, `src/substrate/surface.ts`).
+- `redactSecrets` moved from `src/grok/auth.ts` to `src/redact.ts` and is no longer exported from the old module; import it from `src/redact.ts`.
+- The hosted service prints every configuration problem in one `ultrathink: N configuration problems` block instead of stopping at the first, and `--check-config` validates the environment without binding anything (`services/ultrathink/server.ts`).
+- `HINDSIGHT_URL` is read as a fallback for `HINDSIGHT_API_URL`, and `SWARM_ROOT` as a fallback for `ULTRATHINK_SWARM_ROOT`; the canonical name wins and a conflicting pair is reported as a warning.
+- Swarm lanes drop the three Jev key variables from their environment and nothing else (`src/swarm/teams.ts`). The detached `teach observe` worker keeps them, because it asks Jev for the `teachable` and `skillworthy` points; the model CLIs it starts drop them.
+- The explicit `/ultrathink-swarm` binds the session's graph to its lanes; auto-run does not.
+- `/ultrathink-swarm stop [laneId|all]` ends a lane's process group, and `ULTRATHINK_SWARM_MAX_LANES` caps the live lanes (`src/swarm/teams.ts`).
+- `ultrathink doctor` reports nine sections: runtime, config, credentials, env, inference, state, memory, pstack and stack (`src/doctor/types.ts`).
+- `stack` reports the Substrate desk-gateway link as `degraded` (not probed) instead of `connected`.
+- Lane stop returns as soon as the lane exits instead of waiting out the grace period, and reports `could not verify pid N; not signalled` when `/proc` cannot be read (`src/swarm/teams.ts`, `src/swarm/lane.ts`).
+- The container recipe copies `hosts/grok-bot/skills/` (the image failed to start without it), and `deploy/docker/compose.example.yml` is hardened with `read_only`, `cap_drop: [ALL]`, `no-new-privileges` and a `noexec` `/tmp` tmpfs.
+- `redactSecrets` masks every explicit secret that is non-blank after trimming, whatever its length (the 8-character floor of the first v1.20 draft is gone, so a short gateway, Hindsight or RAGFlow credential in an upstream error is masked).
+- The offline stack summary reads a gateway-backed Substrate as `ready` (usable gateway) or `missing` (unusable gateway) instead of `off`.
+- `ultrathink doctor` runs the local checks before the stack probes, so a slow `claude` CLI no longer makes healthy services read as timed out.
+- The GSD flow hook stays silent after the key is removed even when a cached verdict exists; a kill switch or an environment variable padded with whitespace that its reader would not accept is reported by `ultrathink doctor` as ineffective, never with its value.
+- Swarm: `stop` and the live-lane cap use every lane directory, not only the 24 newest; a live lane with a FAILED, ESCALATED or BLOCKED task reads `attention` (with `process still running`); spawn and cap checks run under a short advisory lock shared by all processes (it fails closed: when it stays busy for about one second no lane starts and the spawn is refused with `lane lock busy`, a lock held by a live process is never taken over, and a lock left by a dead process is recovered automatically, one waiter at a time, and a holder is recognised by process id and start time so a recycled process id cannot keep it alive); a brief that repeats an earlier brief of the same command is refused as `duplicate of <laneId> in this command`; an Omp session that ends during the auto-run classifier wait starts no plan.
+- The graph registered for a Grok Bot or kickoff session carries `pr_url` from the stored shipped PR, and nothing when no PR is stored.
 
 ## [1.4.0] - 2026-10-08
 

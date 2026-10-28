@@ -221,7 +221,7 @@ describe("gateway backend", () => {
 			"",
 			{ ...binding, fetch: briefFetch.fetch },
 		);
-		expect(brief).toBe("other agents already landed the cache");
+		expect(brief).toEqual({ text: "other agents already landed the cache", state: "complete" });
 		expect(expectTool(briefFetch.sent[0], "desk_brief")).toEqual({ graph_id: GRAPH });
 
 		const emitFetch = scripted(() => toolReply({ ok: true }));
@@ -238,6 +238,51 @@ describe("gateway backend", () => {
 		expect(args.kind).toBe("note");
 		expect(args).not.toHaveProperty("graph_id");
 		expect(args.payload).toEqual({ summary: "planned" });
+	});
+
+	test("gateway brief and event arguments carry no repo, branch or surface, and no Substrate bearer, whatever the caller passes", async () => {
+		const canary = "sk-or-v1-CANARYCANARYCANARY1234";
+		const env = { DESK_GATEWAY_TOKEN: TOKEN, SUBSTRATE_TOKEN: canary };
+		const binding = { backend: "gateway" as const, gateway: GATEWAY };
+		const briefFetch = scripted(() => toolReply({ brief: "other agents landed the cache" }));
+		const brief = await fetchBrief(
+			{ repo: "acme/widgets", branch: "feat/widget", surface: "omp", graphId: GRAPH },
+			env,
+			"",
+			{ ...binding, fetch: briefFetch.fetch },
+		);
+		expect(brief).toEqual({ text: "other agents landed the cache", state: "complete" });
+		expect(expectTool(briefFetch.sent[0], "desk_brief")).toEqual({ graph_id: GRAPH });
+
+		const emitFetch = scripted(() => toolReply({ ok: true }));
+		expect(
+			await emitEvent(
+				{
+					kind: "note",
+					summary: "planned",
+					surface: "omp",
+					repo: "acme/widgets",
+					branch: "feat/widget",
+					sessionId: "s1",
+					nodeId: "n1",
+					graphId: GRAPH,
+				},
+				env,
+				"",
+				undefined,
+				{ ...binding, fetch: emitFetch.fetch },
+			),
+		).toBe(true);
+		expect(expectTool(emitFetch.sent[0], "desk_event_emit")).toEqual({
+			kind: "note",
+			graph_id: GRAPH,
+			payload: { summary: "planned" },
+		});
+		for (const sent of [...briefFetch.sent, ...emitFetch.sent]) {
+			expect(JSON.stringify(sent)).not.toContain(canary);
+			for (const key of ["repo", "branch", "surface"])
+				expect(sent.body.params?.arguments).not.toHaveProperty(key);
+		}
 	});
 
 	test("not_configured, error/reason, unknown_tool and timeouts degrade without throwing", async () => {

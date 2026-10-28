@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { redactSecrets } from "../redact.ts";
 import {
 	ensureFreshGrokAuth,
 	grokAuthStatus,
@@ -14,7 +15,6 @@ import {
 	GrokAuthError,
 	isGrokAuthExpired,
 	readGrokAuth,
-	redactSecrets,
 } from "./auth.ts";
 import { GROK_CLIENT_VERSION_FALLBACK } from "./types.ts";
 

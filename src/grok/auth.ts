@@ -212,11 +212,3 @@ export function grokHeaders(
 		"x-grok-client-version": version,
 	};
 }
-
-const BEARER_RE = /Bearer\s+\S+/g;
-const JWT_RE = /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}/g;
-
-/** Masks `Bearer …` credentials and JWT-like strings so text is safe to log. */
-export function redactSecrets(text: string): string {
-	return text.replace(BEARER_RE, "[redacted]").replace(JWT_RE, "[redacted]");
-}

@@ -11,8 +11,9 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { claudeConfigPaths, userConfigPath } from "../config.ts";
+import { redactSecrets } from "../redact.ts";
 import { isRecord } from "../shared.ts";
-import { type GrokAuthStatus, grokAuthStatus, redactSecrets } from "./auth.ts";
+import { type GrokAuthStatus, grokAuthStatus } from "./auth.ts";
 import { type GrokCheckResult, runGrokCheck } from "./check.ts";
 import { dropJevKeys } from "../route-defaults.ts";
 import type { GrokConfig } from "./types.ts";

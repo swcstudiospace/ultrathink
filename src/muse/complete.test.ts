@@ -173,22 +173,27 @@ describe("museComplete (fake bin)", () => {
 		const seenPath = join(dir, "seen.json");
 		writeFileSync(
 			bin,
-			`#!${process.execPath}\nawait Bun.write(${JSON.stringify(seenPath)}, JSON.stringify({ jev: [process.env.ULTRATHINK_OPENROUTER_KEY, process.env.OPENROUTER_API_KEY] }));\nprocess.stdout.write(${JSON.stringify(`${terminalLine("ok")}\n`)});\n`,
+			`#!${process.execPath}\nawait Bun.write(${JSON.stringify(seenPath)}, JSON.stringify({ jev: [process.env.ULTRATHINK_OPENROUTER_KEY ?? null, process.env.OPENROUTER_API_KEY ?? null, process.env.AI_GATEWAY_API_KEY ?? null] }));\nprocess.stdout.write(${JSON.stringify(`${terminalLine("ok")}\n`)});\n`,
 			{ mode: 0o755 },
 		);
-		const saved = [process.env.ULTRATHINK_OPENROUTER_KEY, process.env.OPENROUTER_API_KEY];
-		process.env.ULTRATHINK_OPENROUTER_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
-		process.env.OPENROUTER_API_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+		const names = [
+			"ULTRATHINK_OPENROUTER_KEY",
+			"OPENROUTER_API_KEY",
+			"AI_GATEWAY_API_KEY",
+		] as const;
+		const saved = names.map((name) => process.env[name]);
+		for (const name of names) process.env[name] = "sk-or-v1-CANARYCANARYCANARY1234";
 		try {
 			await museComplete("SYS", "USER", { bin });
 		} finally {
-			if (saved[0] === undefined) delete process.env.ULTRATHINK_OPENROUTER_KEY;
-			else process.env.ULTRATHINK_OPENROUTER_KEY = saved[0];
-			if (saved[1] === undefined) delete process.env.OPENROUTER_API_KEY;
-			else process.env.OPENROUTER_API_KEY = saved[1];
+			names.forEach((name, index) => {
+				const value = saved[index];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			});
 		}
 		const got = (await Bun.file(seenPath).json()) as { jev: (string | null)[] };
-		expect(got.jev).toEqual([null, null]);
+		expect(got.jev).toEqual([null, null, null]);
 	});
 
 	test("removes the prompt directory afterwards", async () => {
