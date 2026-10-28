@@ -26,6 +26,7 @@ import {
 	briefDigest,
 	type LaneRecord,
 	type LaneVerdict,
+	type PidAlive,
 	readLaneFile,
 	verifyLaneProcess,
 	writeLaneFile,
@@ -44,6 +45,8 @@ import {
 	laneDirs,
 	laneStatus,
 	type LaneStatusRow,
+	type LaneVerify,
+	liveLaneSnapshot,
 	maxLanes,
 	LANE_STATUS_CONCURRENCY,
 	MAX_DISCOVERED_LANES,
@@ -55,7 +58,7 @@ import {
 	pidAlive,
 	planLanes,
 	type PlanLanesOptions,
-	refuseDuplicatesAndOverCap,
+	refuseDuplicatesAndOverCap as decideLaneSpawn,
 	resolveStopTargets,
 	resolveSwarmRoot,
 	swarmRootMessage,
@@ -90,6 +93,19 @@ const realFs: TeamsFs = {
 	renameSync,
 	writeFileSync,
 };
+
+/** The guard as the tests below use it: snapshot the live lanes of `stateDir`, then decide (what spawnGuarded does under the lane lock). */
+function refuseDuplicatesAndOverCap(
+	plans: readonly LanePlan[],
+	stateDir: string,
+	cwd: string,
+	cap: number,
+	isAlive: PidAlive,
+	verify?: LaneVerify,
+	fs?: TeamsFs,
+): { spawn: LanePlan[]; refused: Array<{ laneId: string; reason: string }> } {
+	return decideLaneSpawn(plans, cwd, cap, liveLaneSnapshot(stateDir, isAlive, verify, fs));
+}
 
 const tmpDirs: string[] = [];
 afterEach(() => {

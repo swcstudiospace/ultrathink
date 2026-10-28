@@ -725,24 +725,35 @@ export async function filterSpawnable(
 }
 
 /**
- * Refuse plans before spawn: a brief already running in this cwd (`already running as <laneId>`), and
- * everything past the live-lane cap. The live set is every lane dir under `stateDir` whose `lane.json` parses,
- * whose pid is alive and that `verify` still attributes to the lane; dead pids, recycled pids and missing or
- * malformed `lane.json` are not counted. The cap counts live lanes across all commands, not per command.
- * Callers that go on to spawn MUST use {@link spawnGuarded}, which holds the lane lock across check and spawn.
+ * The lanes alive right now: every lane dir under `stateDir` whose `lane.json` parses, whose pid is alive and that
+ * `verify` still attributes to the lane. Dead pids, recycled pids and missing or malformed `lane.json` are not
+ * counted. A snapshot is only worth anything while the lane lock is held from taking it until the lanes it
+ * admitted have written their `lane.json`: take it through {@link spawnGuarded}.
  */
-export function refuseDuplicatesAndOverCap(
-	plans: readonly LanePlan[],
+export function liveLaneSnapshot(
 	stateDir: string,
-	cwd: string,
-	cap: number,
 	isAlive: PidAlive,
 	verify: LaneVerify = defaultVerify,
 	fs: TeamsFs = defaultFs,
-): { spawn: LanePlan[]; refused: Array<{ laneId: string; reason: string }> } {
-	const live = liveLanes(scanLaneDirs(stateDir, fs), isAlive, fs).filter((record) =>
+): LaneRecord[] {
+	return liveLanes(scanLaneDirs(stateDir, fs), isAlive, fs).filter((record) =>
 		isLaneLive(record, isAlive, verify),
 	);
+}
+
+/**
+ * Refuse plans before spawn, as a pure decision over a snapshot of the live lanes ({@link liveLaneSnapshot}): a brief
+ * already running in this cwd (`already running as <laneId>`), a repeat of an earlier brief of the same command, and
+ * everything past the live-lane cap (which counts live lanes across all commands, not per command). It reads nothing
+ * itself, so there is no unlocked check to race: {@link spawnGuarded} takes the snapshot under the lane lock and spawns
+ * the survivors before releasing it, and every caller that goes on to spawn MUST use it.
+ */
+export function refuseDuplicatesAndOverCap(
+	plans: readonly LanePlan[],
+	cwd: string,
+	cap: number,
+	live: readonly LaneRecord[],
+): { spawn: LanePlan[]; refused: Array<{ laneId: string; reason: string }> } {
 	const spawn: LanePlan[] = [];
 	const refused: Array<{ laneId: string; reason: string }> = [];
 	// Accepted plans of this command by normalized digest (the cwd is the command's, so it is part of the key).
@@ -786,11 +797,11 @@ export interface GuardedSpawn {
 }
 
 /**
- * The live-lane check ({@link refuseDuplicatesAndOverCap}) and the spawn as ONE step: both run inside
- * `withLaneLock(opts.stateDir, ...)`, so two Omp processes sharing the state directory cannot both pass the cap
- * check before either has written its `lane.json`. This is the only place the guard and the spawn are combined;
- * the lock covers the `lane.json` writes (they happen inside the spawner). The spawner runs on the survivors
- * only and not at all when none survive. Await the classifier ({@link filterSpawnable}) BEFORE calling this: an
+ * The live-lane snapshot ({@link liveLaneSnapshot}), the decision ({@link refuseDuplicatesAndOverCap}) and the spawn as
+ * ONE step: all three run inside `withLaneLock(opts.stateDir, ...)`, so two Omp processes sharing the state directory
+ * cannot both pass the cap check before either has written its `lane.json`. This is the only place a live-lane scan
+ * and a spawn are combined; the lock covers the `lane.json` writes (they happen inside the spawner). The spawner runs
+ * on the survivors only, and not at all when none survive. Await the classifier ({@link filterSpawnable}) BEFORE calling this: an
  * async wait must never sit inside the synchronous lock. The lock fails open after about a second (a stuck lock
  * never blocks prompt submission), so this narrows the race rather than guaranteeing it away. `opts.lock`
  * exposes the lock's clock and sleep seams for tests.
@@ -809,13 +820,8 @@ export function spawnGuarded(
 	return withLaneLock(
 		opts.stateDir,
 		() => {
-			const checked = refuseDuplicatesAndOverCap(
-				plans,
-				opts.stateDir,
-				opts.cwd,
-				opts.cap,
-				opts.isAlive,
-			);
+			const live = liveLaneSnapshot(opts.stateDir, opts.isAlive);
+			const checked = refuseDuplicatesAndOverCap(plans, opts.cwd, opts.cap, live);
 			const spawner = opts.spawn ?? ((list: readonly LanePlan[]) => spawnLanes(list));
 			const handles = checked.spawn.length > 0 ? spawner(checked.spawn) : [];
 			return { spawn: checked.spawn, refused: checked.refused, handles };
