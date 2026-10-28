@@ -390,6 +390,44 @@ describe("OpenRouter source scan", () => {
 		expect((await collect({ root })).sources).toEqual([]);
 	});
 
+	test("TypeScript private class fields start with # and are code, not comments", async () => {
+		const root = scanRoot({
+			"src/private.ts": [
+				"class Client {",
+				'\t#url = "https://openrouter.ai/api/v1";',
+				'\t#key = process.env["ULTRATHINK_OPENROUTER_KEY"];',
+				"}",
+				"",
+			].join("\n"),
+			"src/shebang.ts": '#!/usr/bin/env bun\nconst quiet = "nothing";\n',
+		});
+		expect((await collect({ root })).sources).toEqual([
+			{ file: "src/private.ts", refs: ["host", "symbol"] },
+		]);
+	});
+
+	test("a mention only in a # comment is not a reference in shell and YAML, but a # line in TypeScript is code", async () => {
+		const root = scanRoot({
+			"scripts/note.sh":
+				'#!/bin/sh\n  # export OPENROUTER_API_KEY and call https://openrouter.ai\necho "ok"\n',
+			"deploy/ci-note.yml": "# OPENROUTER_API_KEY is not read here\nname: x\n",
+			"src/hash.ts": 'class A {\n\t#note = "openrouter.ai";\n}\n',
+		});
+		expect((await collect({ root })).sources).toEqual([{ file: "src/hash.ts", refs: ["host"] }]);
+	});
+
+	test("a mention only inside a // comment in TypeScript is not a reference", async () => {
+		const root = scanRoot({
+			"src/commented.ts": [
+				'// const url = "https://openrouter.ai/x";',
+				"\t// OPENROUTER_API_KEY was removed",
+				"const url = 1;",
+				"",
+			].join("\n"),
+		});
+		expect((await collect({ root })).sources).toEqual([]);
+	});
+
 	test("a // inside a string is code, and code after a closed block comment still counts", async () => {
 		const root = scanRoot({
 			"src/d.ts": 'const a = 1; /* note */ const u = "https://openrouter.ai/x"; // trailing\n',

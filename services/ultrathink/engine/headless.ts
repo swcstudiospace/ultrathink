@@ -540,6 +540,8 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					// reason: the reservation keeps counting, which only errs on the safe side.
 				}
 			};
+			// False when the breaker refuses the call: nothing reached the backend, so nothing was spent.
+			let dispatched = false;
 			try {
 				const complete: ClaudeCompleter =
 					opts.completer ??
@@ -560,7 +562,10 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 								job.failover ??= summary;
 							},
 						}));
-				const text = await guarded(model, () => complete(system, user, signal));
+				const text = await guarded(model, () => {
+					dispatched = true;
+					return complete(system, user, signal);
+				});
 				const { usage } = reported;
 				emit("ok", usage);
 				bill(usage, reservationId);
@@ -577,7 +582,14 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						? reported.usage
 						: undefined;
 				emit(failure, cut);
-				if (cut) {
+				if (!dispatched) {
+					// A refusal spends no tokens: releasing it in full keeps an outage from eating the daily ceiling.
+					try {
+						ledger.settle(reservationId, 0);
+					} catch {
+						// reason: the reservation keeps counting, which only errs on the safe side.
+					}
+				} else if (cut) {
 					bill(cut, reservationId);
 				} else {
 					try {

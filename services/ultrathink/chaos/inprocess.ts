@@ -2,13 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 
 import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createAuth } from "../auth/auth.ts";
 import { type UltrathinkConfig, loadConfig } from "../config/config.ts";
-import { type PlanBackend, PlanCompleterError } from "../engine/plan.ts";
+import { createPlanBackend } from "../engine/plan.ts";
 import { createLogger } from "../obs/log.ts";
 import { createApp } from "../routes/router.ts";
 import { openStore } from "../store/store.ts";
-import { createFaultyBackend } from "./faults.ts";
+import { createFaultyClaude } from "./faults.ts";
 import type { ChaosResponse, ChaosTarget } from "./observe.ts";
 import type { ExperimentTemplate } from "./schema.ts";
 
@@ -16,10 +18,12 @@ import type { ExperimentTemplate } from "./schema.ts";
 const ORIGIN = "https://ultrathink.test";
 // Every in-process request arrives from loopback, so /metrics (loopback only) answers.
 const PEER_IP = "127.0.0.1";
-// The stand-in upstream: any call that is not faulted reaches it and fails as an upstream error.
+// The stand-in upstream: a passing call runs this script in place of `claude`, and it fails as an upstream error.
 const NO_UPSTREAM_MESSAGE = "no upstream in process";
-// A real Claude model id; the stand-in backend never runs it, but the config validates its shape.
+// A real Claude model id; the stand-in never runs it, but the config validates its shape.
 const PLANNING_MODEL = "claude-haiku-5-5";
+// Fixed child PATH so the fault shims find `sleep` without reading process.env.
+const CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
 
 export interface InProcessTargetOptions {
 	template: ExperimentTemplate;
@@ -35,11 +39,12 @@ export interface InProcessTarget {
 }
 
 /**
- * Builds the real app in process with a temporary state directory, the template's fault plan wrapped around a stand-in
- * plan backend, and the template's config overrides. The environment is fixed and never read from process.env, so a
- * run cannot pick up production configuration. The app's own sleep is not overridden: the planner uses it for the
- * whole-plan timer, and a zero-delay sleep would time every plan out before its first upstream call. A blackhole
- * times out at the template's `timeoutMs`, which stands in for the plan backend's own per-call timer.
+ * Builds the real app in process with a temporary state directory, the real plan backend (the production `claude`
+ * completer with its own timer) whose child is the template's fault plan or, past the plan, a stand-in that fails, and
+ * the template's config overrides. The environment is fixed and never read from process.env, so a run cannot pick up
+ * production configuration. The app's own sleep is not overridden: the planner uses it for the whole-plan timer, and a
+ * zero-delay sleep would time every plan out before its first upstream call. A blackhole or a latency past
+ * `timeoutMs` ends by the backend's real kill, which is the behaviour under test.
  */
 export async function createInProcessTarget(
 	options: InProcessTargetOptions,
@@ -72,20 +77,28 @@ export async function createInProcessTarget(
 		cookieSecure: true,
 	});
 	const store = openStore(config.dbPath);
-	// `ready` is ok so the planner does not answer not_ready before the fault plan is consulted.
-	const upstream: PlanBackend = {
-		label: `plan:${PLANNING_MODEL}`,
-		ready: () => ({ ok: true }),
-		complete: async () => {
-			throw new PlanCompleterError("upstream", "unavailable", new Error(NO_UPSTREAM_MESSAGE));
-		},
-	};
+	const shimDir = join(stateDir, "chaos-shims");
+	mkdirSync(shimDir, { recursive: true, mode: 0o700 });
+	const noUpstream = join(shimDir, "no-upstream.sh");
+	writeFileSync(noUpstream, `#!/bin/sh\necho "${NO_UPSTREAM_MESSAGE}" >&2\nexit 1\n`, {
+		mode: 0o700,
+	});
+	const planBackend = createPlanBackend({
+		model: PLANNING_MODEL,
+		fallback: "none",
+		concurrency: config.planConcurrency ?? 2,
+		timeoutMs: config.modelTimeoutMs,
+		env: { PATH: CHILD_PATH },
+		// The stand-in stands for the `claude` binary, so readiness holds without one installed.
+		which: () => noUpstream,
+		claude: createFaultyClaude(template.plan, { dir: shimDir, bin: noUpstream }),
+	});
 	const app = createApp({
 		config,
 		store,
 		auth,
 		logger: createLogger({ write: () => undefined }),
-		planBackend: createFaultyBackend(template.plan, upstream, { timeoutMs: config.modelTimeoutMs }),
+		planBackend,
 		...(now === undefined ? {} : { now: () => now().getTime() }),
 	});
 

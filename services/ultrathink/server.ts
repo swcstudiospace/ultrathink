@@ -123,19 +123,18 @@ const auth = createAuth({
 	previousSessionSecrets: config.sessionSecretPrevious,
 	cookieSecure: config.publicOrigin.startsWith("https://"),
 });
-// Chaos wraps the real plan backend so faults hit the same seam production calls go through; off, the planner builds its own.
-const chaosBackend = config.chaosEnabled
-	? loadChaosBackend(
-			config,
-			createPlanBackend({
-				model: config.planningModel,
-				fallback: config.planFallback ?? "none",
-				concurrency: config.planConcurrency ?? 2,
-				timeoutMs: config.modelTimeoutMs,
-				env: process.env,
-			}),
-		)
-	: undefined;
+// Chaos builds the real plan backend around a faulty `claude` seam, so faults land inside the same timed child call
+// production uses; off, nothing is built here and the planner makes its own backend.
+const chaosBackend = loadChaosBackend(config, (claude) =>
+	createPlanBackend({
+		model: config.planningModel,
+		fallback: config.planFallback ?? "none",
+		concurrency: config.planConcurrency ?? 2,
+		timeoutMs: config.modelTimeoutMs,
+		env: process.env,
+		claude,
+	}),
+);
 const app = createApp({
 	config,
 	store,

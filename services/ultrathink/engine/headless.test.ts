@@ -1076,13 +1076,13 @@ describe("headless planner: upstream breaker", () => {
 			expect(refused.retryAfterMs).toBeLessThanOrEqual(30_000);
 		}
 		expect(h.planner.upstream()).toEqual({ state: "open", failures: 1 });
-		// Every reservation made for the refused calls was abandoned, none left reserved or settled.
+		// A refusal spends nothing: every reservation made for the refused calls was settled to zero tokens.
 		const states = h.store.db
-			.query<{ state: string; n: number }, []>(
-				"SELECT state, COUNT(*) AS n FROM token_ledger GROUP BY state",
+			.query<{ state: string; n: number; tokens: number }, []>(
+				"SELECT state, COUNT(*) AS n, SUM(actual_tokens) AS tokens FROM token_ledger GROUP BY state",
 			)
 			.all();
-		expect(states).toEqual([{ state: "abandoned", n: calls.length }]);
+		expect(states).toEqual([{ state: "settled", n: calls.length, tokens: 0 }]);
 		const run = h.store.db
 			.query<{ status: string; reason: string | null }, []>("SELECT status, reason FROM runs")
 			.get();
@@ -1151,6 +1151,64 @@ describe("headless planner: upstream breaker", () => {
 		);
 		await boom.planner.start({ prompt: PROMPT });
 		expect(boom.planner.upstream()).toEqual({ state: "closed", failures: 0 });
+	});
+
+	test("refused calls leave the daily budget untouched, so planning works again once the breaker closes", async () => {
+		let clock = 1_000_000;
+		const breaker = createCircuitBreaker({
+			failureThreshold: 1,
+			windowMs: 60_000,
+			openMs: 30_000,
+			now: () => clock,
+		});
+		const slot = breaker.tryAcquire();
+		if (!slot.ok) throw new Error("expected a closed breaker");
+		slot.release("failure");
+		const fake = fakeBackend();
+		const h = setup(
+			{ dailyTokenCeiling: 60_000 },
+			{ completer: undefined, planBackend: fake.backend, breaker },
+		);
+		const ledger = createLedger(h.store, { runTokenCeiling: 0, dailyTokenCeiling: 60_000 });
+		const today = new Date().toISOString().slice(0, 10);
+		// Each refused start used to keep its estimates counted: far more than the ceiling over this many starts.
+		for (let i = 0; i < 12; i += 1) {
+			expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({
+				ok: true,
+				data: { status: "failed", error: "upstream_unavailable" },
+			});
+		}
+		expect(fake.stages).toEqual([]);
+		expect(ledger.spentForDay(today)).toBe(0);
+
+		clock += 30_001;
+		expect(await h.planner.start({ prompt: PROMPT })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
+		expect(h.planner.upstream()).toEqual({ state: "closed", failures: 0 });
+	});
+
+	test("a call that reached the backend and failed keeps its estimate counted while the refused ones add nothing", async () => {
+		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
+		const fake = fakeBackend(new PlanCompleterError("upstream", "other"));
+		const h = setup({}, { completer: undefined, planBackend: fake.backend, breaker });
+		const ledger = createLedger(h.store, { runTokenCeiling: 0, dailyTokenCeiling: 0 });
+		const sessionId = randomUUID();
+		await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(fake.stages).toHaveLength(1);
+		const runId = String(jobFile(h.stateDir, sessionId).runId);
+		const states = h.store.db
+			.query<{ state: string; n: number }, []>(
+				"SELECT state, COUNT(*) AS n FROM token_ledger GROUP BY state",
+			)
+			.all();
+		expect(states.find((row) => row.state === "abandoned")?.n).toBe(1);
+		expect(states.find((row) => row.state === "reserved")).toBeUndefined();
+		expect(ledger.spentForRun(runId)).toBeGreaterThan(0);
+		expect(ledger.spentForDay(new Date().toISOString().slice(0, 10))).toBe(
+			ledger.spentForRun(runId),
+		);
 	});
 
 	test("a planner without a breaker reports upstream() as undefined and keeps today's behaviour", async () => {

@@ -285,11 +285,11 @@ const SOURCE_EXTENSIONS = [
 // Dependencies, VCS data and prose never configure a model route; tests may name OpenRouter freely.
 const SKIPPED_DIRS = ["node_modules", ".git", "docs"];
 const TEST_FILE = /\.test\.tsx?$/;
-// A full-line comment: `//`, `/*`, a ` * ` block-comment body line, or `#`.
-const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*(?:\s|$)|#)/;
-// Only these languages have `//` and `/* */` comments. In shell, YAML and unit files `//` is part of a URL, so there
-// only full-line comments are dropped.
+// Comment syntax is per language. `//` and `/* */` belong to the C-style languages only: in shell, YAML and unit files
+// `//` is part of a URL. `#` starts a comment in shell, YAML and unit files, but in TypeScript it opens a private class
+// member (`#url = "https://openrouter.ai/..."`), so a `#` line is never dropped there; JSON has no comments at all.
 const C_STYLE_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs", ".cjs"];
+const HASH_COMMENT_LINE = /^\s*#/;
 
 /**
  * Drops trailing `//` comments and `/* ... *\/` blocks, including multi-line ones. Quotes are tracked so the `//` in
@@ -341,8 +341,13 @@ function stripCStyleComments(lines: string[]): string[] {
 
 function stripComments(text: string, extension: string): string {
 	const lines = text.split("\n");
-	const code = C_STYLE_EXTENSIONS.includes(extension) ? stripCStyleComments(lines) : lines;
-	return code.filter((line) => !COMMENT_LINE.test(line)).join("\n");
+	if (C_STYLE_EXTENSIONS.includes(extension)) {
+		// A shebang is the one `#` line a C-style file may start with.
+		if (lines[0]?.startsWith("#!")) lines[0] = "";
+		return stripCStyleComments(lines).join("\n");
+	}
+	if (extension === ".json") return text;
+	return lines.filter((line) => !HASH_COMMENT_LINE.test(line)).join("\n");
 }
 
 /** Scannable files under `dir` (root-relative posix paths). Extensionless files count only under bin/. */

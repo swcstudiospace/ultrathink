@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { readFileSync } from "node:fs";
-import { type PlanBackend, PlanCompleterError } from "../engine/plan.ts";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { ClaudeResultError, createClaudeCompleter } from "../../../src/claude/complete.ts";
+import type { PlanBackend, PlanBackendOptions } from "../engine/plan.ts";
 import { isRecord } from "../../../src/shared.ts";
 
 /**
- * Fault plans for the upstream seam. A plan is ordered steps; each call through the faulty backend consumes one unit
- * of the current step, and after the last step calls pass through to the inner backend. No randomness, no clock
- * assertions: latency and blackhole faults honour the call's `signal` (and the backend timeout for a blackhole), so the
- * caller's own timeout is the behaviour under test.
+ * Fault plans for the upstream seam. A plan is ordered steps; each plan call consumes one unit of the current step,
+ * and after the last step calls pass through to the real `claude` child. No randomness, no clock assertions.
+ *
+ * The faults live inside `createPlanBackend`'s `claude` seam, below the backend's own timer and semaphore. A `latency`
+ * or `blackhole` fault is a shim executable that the real completer spawns in place of `claude`, so the real
+ * `timeoutMs` kill and the caller's `signal` are what end it, and a broken timeout fails the experiment instead of
+ * being papered over by a timer of the fault's own.
  *
  * Plan errors name the offending field path and never echo the plan's values, so a rejected plan cannot leak its
  * contents into a log line.
@@ -36,40 +41,6 @@ const MAX_STATUS = 599;
 const MIN_ERROR_STATUS = 400;
 const MAX_LATENCY_MS = 60_000;
 const FAULT_KINDS = ["pass", "status", "reset", "blackhole", "latency"] as const;
-
-type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
-
-function abortedError(): PlanCompleterError {
-	return new PlanCompleterError("aborted", "aborted");
-}
-
-/** Resolves after `ms`, or early when `signal` aborts; the caller checks the signal to tell the two apart. */
-function waitFor(ms: number, signal?: AbortSignal): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	if (signal?.aborted === true) {
-		resolve();
-		return promise;
-	}
-	const done = (): void => {
-		clearTimeout(timer);
-		signal?.removeEventListener("abort", done);
-		resolve();
-	};
-	const timer = setTimeout(done, ms);
-	signal?.addEventListener("abort", done, { once: true });
-	return promise;
-}
-
-/** Never resolves; rejects with an `aborted` plan error as soon as `signal` aborts. */
-function untilAborted(signal: AbortSignal): Promise<never> {
-	const { promise, reject } = Promise.withResolvers<never>();
-	if (signal.aborted) {
-		reject(abortedError());
-		return promise;
-	}
-	signal.addEventListener("abort", () => reject(abortedError()), { once: true });
-	return promise;
-}
 
 function expectRecord(value: unknown, path: string): Record<string, unknown> {
 	if (!isRecord(value)) {
@@ -176,38 +147,42 @@ export function parseFaultPlan(json: unknown): FaultPlan {
 	return { steps };
 }
 
-/** Maps an injected HTTP status onto the class the plan backend would have reported for the same upstream answer. */
-function statusError(status: number): PlanCompleterError {
-	if (status === 401 || status === 403) {
-		return new PlanCompleterError("auth", "auth");
-	}
-	if (status === 429) {
-		return new PlanCompleterError("rate_limited", "rate-limit");
-	}
-	return new PlanCompleterError("upstream", status >= 500 ? "unavailable" : "other");
+/** The `claude` seam of `createPlanBackend`: builds the completer for one attempt. */
+export type FaultyClaudeFactory = NonNullable<PlanBackendOptions["claude"]>;
+
+export interface FaultyClaudeOptions {
+	/** Directory for the generated shim scripts. Owned by this wrapper; created by the caller. */
+	dir: string;
+	/** The executable real (passing) calls and a finished latency run; default `claude` on the child's PATH. */
+	bin?: string;
+	/** Test seam; default `createClaudeCompleter`. */
+	base?: FaultyClaudeFactory;
 }
 
-export interface FaultyBackendOptions {
-	/** Replaces the real timer behind `latency` and the blackhole timeout; tests inject one that never waits on the clock. */
-	sleep?: Sleep;
-	/** The plan backend's per-call timer (config `modelTimeoutMs`); 0 or absent = none, so only the caller's signal ends a blackhole. */
-	timeoutMs?: number;
+/** Quotes `value` as one POSIX shell word. */
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 /**
- * Wraps `inner` so that each call consumes one unit of the plan. The plan is copied, so later mutation of the caller's
- * object has no effect. Consumption happens synchronously when the call is made, so concurrent calls take units in
- * call order. `label` and `ready` delegate to `inner`; only `complete` is faulted. Injected failures are thrown as the
- * `PlanCompleterError` the real backend would have thrown, so the planner's breaker, metrics and outcome codes see them
- * exactly like a real upstream failure.
+ * Wraps the `claude` seam so that each call consumes one unit of the plan. The plan is copied, so later mutation of
+ * the caller's object has no effect.
+ *
+ * - `status` throws the error the CLI raises for an API failure (`ClaudeResultError` with the status), so the backend
+ *   classifies it exactly as a real one: 401/403 `auth`, 402 and 429 `rate_limited`, anything else `upstream`.
+ * - `reset` throws a network error, class `upstream`.
+ * - `blackhole` runs a shim that never answers: only the backend's `timeoutMs` kill (`timeout`) or the caller's
+ *   `signal` (`aborted`) ends it, and with neither the call hangs, as a silent upstream would.
+ * - `latency` runs a shim that sleeps `ms` and then execs the real binary with the same arguments and stdin, so the
+ *   delay sits inside the same timed section as the real call: a delay past `timeoutMs` times out and the real binary
+ *   is never started.
  */
-export function createFaultyBackend(
+export function createFaultyClaude(
 	plan: FaultPlan,
-	inner: PlanBackend,
-	opts: FaultyBackendOptions = {},
-): PlanBackend {
-	const sleep = opts.sleep ?? waitFor;
-	const timeoutMs = opts.timeoutMs ?? 0;
+	options: FaultyClaudeOptions,
+): FaultyClaudeFactory {
+	const base = options.base ?? createClaudeCompleter;
+	const realBin = options.bin ?? "claude";
 	const steps: FaultStep[] = plan.steps.map((step) => ({ count: step.count, fault: step.fault }));
 	let index = 0;
 	let used = 0;
@@ -230,46 +205,40 @@ export function createFaultyBackend(
 		return undefined;
 	};
 
-	// A silent upstream ends the way the real backend's call does: its own timer says `timeout`, the caller's signal says `aborted`.
-	const blackhole = async (signal: AbortSignal | undefined): Promise<never> => {
-		if (timeoutMs > 0) {
-			await sleep(timeoutMs, signal);
-			if (signal?.aborted === true) {
-				throw abortedError();
-			}
-			throw new PlanCompleterError("timeout", "timeout");
+	const written = new Set<string>();
+	const shim = (name: string, body: string): string => {
+		const path = join(options.dir, name);
+		if (!written.has(path)) {
+			writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
+			written.add(path);
 		}
-		if (signal === undefined) {
-			throw new Error(
-				"blackhole fault needs a way to end: the call has no signal and timeoutMs is 0",
-			);
-		}
-		return untilAborted(signal);
+		return path;
 	};
 
-	return {
-		label: inner.label,
-		ready: () => inner.ready(),
-		async complete(system, user, signal, hooks) {
-			const fault = nextFault();
-			if (fault === undefined || fault.kind === "pass") {
-				return inner.complete(system, user, signal, hooks);
-			}
-			switch (fault.kind) {
-				case "status":
-					throw statusError(fault.status);
-				case "reset":
-					throw new PlanCompleterError("upstream", "network");
-				case "blackhole":
-					return blackhole(signal);
-				case "latency":
-					await sleep(fault.ms, signal);
-					if (signal?.aborted === true) {
-						throw abortedError();
-					}
-					return inner.complete(system, user, signal, hooks);
-			}
-		},
+	return (opts) => async (system, user, signal) => {
+		const fault = nextFault();
+		const run = (bin: string): Promise<string> => base({ ...opts, bin })(system, user, signal);
+		if (fault === undefined || fault.kind === "pass") {
+			return run(realBin);
+		}
+		switch (fault.kind) {
+			case "status":
+				throw new ClaudeResultError(`injected status ${fault.status}`, fault.status);
+			case "reset":
+				throw new Error("fetch failed: injected reset");
+			case "blackhole":
+				// exec, so the kill lands on the sleeper itself and closes the child's pipes.
+				return run(shim("blackhole.sh", "exec sleep 86400"));
+			case "latency":
+				// The sleep's fds are detached: a timed-out shell is killed but its sleeper lives on, and an
+				// inherited pipe would keep the caller waiting for the full delay.
+				return run(
+					shim(
+						`latency-${fault.ms}.sh`,
+						`sleep ${fault.ms / 1000} >/dev/null 2>&1\nexec ${shellQuote(realBin)} "$@"`,
+					),
+				);
+		}
 	};
 }
 
@@ -281,14 +250,15 @@ function errorCode(error: unknown): string {
 }
 
 /**
- * The chaos gate. Returns `undefined` unless `chaosEnabled` is exactly true. Otherwise reads and validates the plan at
- * `chaosPlanPath` and returns the faulty wrapper around `inner` (the caller builds the real plan backend, and only when
- * chaos is active). A missing or invalid plan throws an Error that names the path and the reason; it never includes
- * the plan contents (JSON syntax errors are replaced by a fixed message for the same reason).
+ * The chaos gate. Returns `undefined` unless `chaosEnabled` is exactly true, and then never calls `build`. Otherwise
+ * reads and validates the plan at `chaosPlanPath` and returns `build(claude)`: the caller creates the real plan
+ * backend with the faulty `claude` seam (so the real backend is built only when chaos is active). Shim scripts go in
+ * `<stateDir>/chaos-shims`. A missing or invalid plan throws an Error that names the path and the reason; it never
+ * includes the plan contents (JSON syntax errors are replaced by a fixed message for the same reason).
  */
 export function loadChaosBackend(
-	config: { chaosEnabled?: boolean; chaosPlanPath?: string; modelTimeoutMs?: number },
-	inner: PlanBackend,
+	config: { chaosEnabled?: boolean; chaosPlanPath?: string; stateDir: string },
+	build: (claude: FaultyClaudeFactory) => PlanBackend,
 	readText: (path: string) => string = (path) => readFileSync(path, "utf8"),
 ): PlanBackend | undefined {
 	if (config.chaosEnabled !== true) {
@@ -318,9 +288,7 @@ export function loadChaosBackend(
 			`chaos fault plan ${path} is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
 		);
 	}
-	return createFaultyBackend(
-		plan,
-		inner,
-		config.modelTimeoutMs === undefined ? {} : { timeoutMs: config.modelTimeoutMs },
-	);
+	const dir = join(config.stateDir, "chaos-shims");
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	return build(createFaultyClaude(plan, { dir }));
 }
