@@ -51,7 +51,10 @@ import {
 	formatLaneHandles,
 	formatLaneStatusText,
 	isSdlcPrompt,
+	allLaneDirs,
+	type LaneClassify,
 	laneDirs,
+	type LaneHandle,
 	laneStatus,
 	type LanePlan,
 	maxLanes,
@@ -70,6 +73,7 @@ import {
 	toSwarmStatusCard,
 	TEAMS_USAGE,
 } from "../swarm/teams.ts";
+import { withLaneLock } from "../swarm/lane.ts";
 import { extractPrFromOutput, isPrCreationTool } from "../track/pr-detect.ts";
 import { resolveRepoSlug } from "../track/git.ts";
 import { runControl, type UltrathinkVerb } from "../uplift/commands.ts";
@@ -1099,6 +1103,11 @@ export function createOmpExtension(
 		spawnObserve?: typeof spawnObserveDetached;
 		/** Ship config source; defaults to the merged Claude config files for the session cwd. */
 		shipConfig?: (cwd: string) => ShipConfig;
+		/** AgentSwarm lane seams: the classifier bound to a swarm root, and the lane spawner. Default to the real ones. */
+		swarm?: {
+			classify?: (swarmRoot: string) => LaneClassify;
+			spawn?: (plan: readonly LanePlan[]) => LaneHandle[];
+		};
 	} = {},
 ): (pi: ExtensionAPI) => void {
 	const plan = options.plan ?? nativeEnginePlanner;
@@ -1114,6 +1123,12 @@ export function createOmpExtension(
 	// The host state dir for the session cwd, made absolute: planning, carriers and commands share it.
 	const stateDir = (cwd: string) =>
 		resolve(cwd, options.stateDir ?? resolveStateDir({ ...process.env, ULTRATHINK_HOST: "omp" }));
+	// Swarm seams: Swarm's own classifier and the lane spawner; the defaults are the real ones.
+	const classifierFor = options.swarm?.classify ?? swarmClassifier;
+	const spawnLaneSet = options.swarm?.spawn ?? spawnLanes;
+	/** One `<laneId>: <note>` line per lane that started with a remark (for example, `lane.json` was not written). */
+	const laneNotes = (handles: readonly LaneHandle[]): string[] =>
+		handles.flatMap((handle) => (handle.note ? [`${handle.laneId}: ${handle.note}`] : []));
 
 	return (pi) => {
 		interface Flight {
@@ -2036,7 +2051,7 @@ export function createOmpExtension(
 							// `stop` never needs a valid swarm root: a user whose config broke must still be able to end lanes.
 							// Every kill goes through `stopLanes`: verified pid, then the lane's process group only.
 							if (parsed.kind === "stop") {
-								const resolved = resolveStopTargets(parsed.target, laneDirs(dir).lanes);
+								const resolved = resolveStopTargets(parsed.target, allLaneDirs(dir));
 								if ("reason" in resolved) return sendSessionText(sessionId, ctx, resolved.reason);
 								const lines = await stopLanes(resolved.targets, {
 									kill: (pid, signal) => process.kill(pid, signal as NodeJS.Signals),
@@ -2084,14 +2099,22 @@ export function createOmpExtension(
 							});
 							// Ask Swarm's own classifier about the exact lane text first, then refuse briefs that duplicate a
 							// live lane or exceed the live-lane cap; only the survivors spawn.
-							const preflight = await filterSpawnable(planned, swarmClassifier(root.root));
-							const guarded = refuseDuplicatesAndOverCap(
-								preflight.spawn,
-								dir,
-								cwd,
-								maxLanes(process.env),
-								pidAlive,
-							);
+							const preflight = await filterSpawnable(planned, classifierFor(root.root));
+							// Check, spawn and lane.json write are one step across Omp processes sharing the state directory;
+							// the classifier await above stays outside the lock.
+							const { guarded, handles } = withLaneLock(dir, () => {
+								const checked = refuseDuplicatesAndOverCap(
+									preflight.spawn,
+									dir,
+									cwd,
+									maxLanes(process.env),
+									pidAlive,
+								);
+								return {
+									guarded: checked,
+									handles: checked.spawn.length > 0 ? spawnLaneSet(checked.spawn) : [],
+								};
+							});
 							const plan = guarded.spawn;
 							const refusals = [...preflight.refused, ...guarded.refused].map(
 								(refusal) => `${refusal.laneId}: ${refusal.reason}`,
@@ -2103,7 +2126,6 @@ export function createOmpExtension(
 									ctx,
 									[...refusals, ...(preflight.refused.length > 0 ? [TEAMS_USAGE] : [])].join("\n"),
 								);
-							const handles = spawnLanes(plan);
 							const started = handles.filter((handle) => handle.pid !== undefined).length;
 							if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") {
 								sendSwarmCard(
@@ -2112,7 +2134,8 @@ export function createOmpExtension(
 									`Swarm lanes — ${started}/${plan.length} spawned`,
 									toSwarmSpawnCard(handles, plan),
 								);
-								if (remarks.length > 0) sendSessionText(sessionId, ctx, remarks.join("\n"));
+								const beside = [...laneNotes(handles), ...remarks];
+								if (beside.length > 0) sendSessionText(sessionId, ctx, beside.join("\n"));
 							} else
 								sendSessionText(
 									sessionId,
@@ -2345,27 +2368,32 @@ export function createOmpExtension(
 		): Promise<boolean> => {
 			try {
 				const { sessionId, cwd, key, dir, swarmRoot, planned } = start;
-				const preflight = await filterSpawnable(planned, swarmClassifier(swarmRoot));
+				const preflight = await filterSpawnable(planned, classifierFor(swarmRoot));
 				// The classifier ran across an await: a shut-down extension or a switched session spawns nothing.
 				if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return false;
-				const plan = refuseDuplicatesAndOverCap(
-					preflight.spawn,
-					dir,
-					cwd,
-					maxLanes(process.env),
-					pidAlive,
-				).spawn;
+				// Check, spawn and lane.json write are one step across Omp processes sharing the state directory.
+				const { plan, handles } = withLaneLock(dir, () => {
+					const guarded = refuseDuplicatesAndOverCap(
+						preflight.spawn,
+						dir,
+						cwd,
+						maxLanes(process.env),
+						pidAlive,
+					).spawn;
+					return { plan: guarded, handles: guarded.length > 0 ? spawnLaneSet(guarded) : [] };
+				});
 				if (plan.length === 0) return false; // Refused (not SDLC, duplicate or over the cap): silent, the turn proceeds.
-				const handles = spawnLanes(plan);
 				const started = handles.filter((handle) => handle.pid !== undefined).length;
-				if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function")
+				if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") {
 					sendSwarmCard(
 						sessionId,
 						ctx,
 						`Swarm lanes — ${started}/${plan.length} spawned${started > 0 ? " — the AgentSwarm lane owns this request; monitor with /ultrathink-swarm status, do not implement it here" : ""}`,
 						toSwarmSpawnCard(handles, plan),
 					);
-				else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
+					const notes = laneNotes(handles);
+					if (notes.length > 0) sendSessionText(sessionId, ctx, notes.join("\n"));
+				} else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
 				if (started === 0) return false; // Nothing started: the normal turn proceeds and a resubmission may retry.
 				// The lane owns this submission: the caller's early return skips launch's supersede, so cancel any
 				// pending plan here — a stale one must not settle into this submission — then arm quick so neither
@@ -2420,7 +2448,14 @@ export function createOmpExtension(
 				// After the quick bypass, so an armed quick message never spawns a lane. When one did spawn it owns
 				// this submission: return without a plan so the planner never races the lane.
 				const autoRun = maybeAutoRun(prompt, ctx);
-				const lane = typeof autoRun === "boolean" ? autoRun : await autoRun;
+				let lane = false;
+				if (typeof autoRun === "boolean") lane = autoRun;
+				else {
+					lane = await autoRun;
+					// The spawn step awaited the classifier: a session that shut down or switched meanwhile starts no
+					// plan (the shutdown already cleared the flights). The synchronous path never reaches this.
+					if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return;
+				}
 				if (lane) return;
 				const dir = stateDir(cwd);
 				let captured: { config?: UltrathinkConfig; control?: ControlState; intent?: FlightIntent } =

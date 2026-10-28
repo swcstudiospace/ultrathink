@@ -483,9 +483,8 @@ const DRAIN_OBSERVE_MS = 4000;
 const DRAIN_EXIT_MS = 60_000;
 const HTTP_TIMEOUT_MS = 15_000;
 const CHECK_CONFIG_TIMEOUT_MS = 30_000;
-const CHECK_CONFIG_PROBE_MS = 15_000;
-/** The two strings phase 93 (CONF-02) documents for `--check-config`. */
-const CONFIG_OK = "config ok";
+/** The string phase 93 (CONF-02) documents `--check-config` prints, with exit 0, on a valid environment. */
+export const CONFIG_OK = "config ok";
 /** The documented keys of GET /readyz `checks`, sorted. */
 const READY_CHECKS = ["draining", "integrity", "oauth", "planner", "stateDir", "store"];
 
@@ -952,25 +951,6 @@ export async function runCheckConfig(
 		return { exitCode, stdout: out, stderr: err, output: `${out}${err}`, timedOut, listened };
 	} finally {
 		room.cleanup();
-	}
-}
-
-/**
- * Whether the hosted service knows `--check-config` (phase 93): true only when it exits 0 and says "config ok" on a
- * valid environment. Never throws; a timeout, a spawn error or a service that starts listening instead is false.
- */
-export async function supportsCheckConfig(): Promise<boolean> {
-	try {
-		const result = await runCheckConfig({}, CHECK_CONFIG_PROBE_MS);
-		return (
-			!result.timedOut &&
-			!result.listened &&
-			result.exitCode === 0 &&
-			result.output.includes(CONFIG_OK)
-		);
-	} catch {
-		// reason: a probe that cannot run means the flag cannot be relied on.
-		return false;
 	}
 }
 

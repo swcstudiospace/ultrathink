@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import pkg from "../package.json";
 import {
+	CONFIG_OK,
 	type StdioSmokeResult,
 	evaluateSignalSmoke,
 	evaluateStdioSmoke,
@@ -27,7 +28,6 @@ import {
 	secretsAbsent,
 	stateDirForCleanEnv,
 	strayHomeEntries,
-	supportsCheckConfig,
 } from "./standalone-smoke.ts";
 
 const EXPECTED_VERSION = pkg.version;
@@ -313,7 +313,6 @@ const RUN_SERVICE = process.env.ULTRATHINK_SMOKE_SERVICE === "1";
 const SERVICE_TEST_TIMEOUT_MS = 90_000;
 const SERVICE_SKIP_REASON =
 	"skipped: ULTRATHINK_SMOKE_SERVICE != 1 (service cases bind loopback and take ~90 s; orchestrator and CI run this file with ULTRATHINK_SMOKE_SERVICE=1)";
-const CHECK_CONFIG_SKIP_REASON = `${SERVICE_SKIP_REASON}; or phase 93 --check-config not yet landed (93-CONTEXT D-06); hosted smoke does not depend on it`;
 
 type GatedTest = (name: string, fn: () => Promise<void>, timeoutMs: number) => void;
 
@@ -324,9 +323,6 @@ function gatedTest(enabled: boolean, reason: string): GatedTest {
 }
 
 const serviceTest = gatedTest(RUN_SERVICE, SERVICE_SKIP_REASON);
-// Probed only when the service cases run, so a bare `bun test` starts no service at all.
-const HAS_CHECK_CONFIG = RUN_SERVICE && (await supportsCheckConfig());
-const checkConfigTest = gatedTest(HAS_CHECK_CONFIG, CHECK_CONFIG_SKIP_REASON);
 
 describe("secret sweep", () => {
 	test("finds a secret in any text and refuses a needle too short to mean anything", () => {
@@ -362,9 +358,15 @@ describe("hosted service, loopback", () => {
 		SERVICE_TEST_TIMEOUT_MS,
 	);
 
-	checkConfigTest(
-		"check-config lists every problem in one secret-free block",
+	serviceTest(
+		"check-config accepts a valid environment, then lists every problem in one secret-free block",
 		async () => {
+			const valid = await runCheckConfig();
+			expect(valid.timedOut).toBe(false);
+			expect(valid.listened).toBe(false);
+			expect(valid.output).toContain(CONFIG_OK);
+			expect(valid.exitCode).toBe(0);
+
 			const canary = `canary-${randomBytes(4).toString("hex")}`;
 			const result = await runCheckConfig({
 				ULTRATHINK_PUBLIC_ORIGIN: "not-a-url",

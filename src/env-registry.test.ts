@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { ENV_REGISTRY, type EnvFinding, validateEnv } from "./env-registry.ts";
 import { resolveHindsight } from "./hindsight/settings.ts";
 import { DEFAULT_HINDSIGHT_CONFIG } from "./hindsight/types.ts";
+import { resolveSubstrate } from "./substrate/brief.ts";
 import { resolveSubstrateToken } from "./substrate/surface.ts";
 import { resolveSwarmRoot } from "./swarm/teams.ts";
 
@@ -231,6 +232,71 @@ describe("validateEnv: kill switches", () => {
 
 	test("ULTRATHINK_RAGFLOW=' 0 ' is clean: the RAGFlow reader trims", () => {
 		expect(problems({ ULTRATHINK_RAGFLOW: " 0 " })).toEqual([]);
+	});
+
+	test("an exact-match kill switch with padding is reported as ineffective, naming the variable and never the value", () => {
+		for (const [name, padded] of [
+			["SUBSTRATE_DISABLED", " 1 "],
+			["ULTRATHINK_DECISIONS", " 0"],
+			["ULTRATHINK_HINDSIGHT", "0 "],
+			["ULTRATHINK_GATEWAY", "\t0"],
+		] as const) {
+			const findings = validateEnv({ [name]: padded });
+			expect(findings).toHaveLength(1);
+			expect(findings[0]).toMatchObject({ name, problem: "kill-switch" });
+			expect(findings[0]?.message).toContain(name);
+			expect(findings[0]?.message).toContain("whitespace");
+			expect(findings[0]?.message).not.toContain(padded);
+			expect(problems({ [name]: padded.trim() })).toEqual([]);
+		}
+	});
+
+	test("a padded value of an exact-match kill switch that is wrong anyway is reported once, as the wrong value", () => {
+		const findings = validateEnv({ SUBSTRATE_DISABLED: " true " });
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.message).toContain("only the value 1");
+	});
+
+	test("the registry matches the real readers: SUBSTRATE_DISABLED and ULTRATHINK_HINDSIGHT compare the raw string, ULTRATHINK_RAGFLOW trims", () => {
+		const byName = new Map(ENV_REGISTRY.map((def) => [def.name, def]));
+		expect(byName.get("SUBSTRATE_DISABLED")?.reader).toBe("raw");
+		expect(byName.get("ULTRATHINK_HINDSIGHT")?.reader).toBe("raw");
+		expect(byName.get("ULTRATHINK_RAGFLOW")?.reader).toBe("trims");
+		const url = "https://substrate.example.com";
+		expect(resolveSubstrate({ SUBSTRATE_DISABLED: "1" }, url)).toBeUndefined();
+		expect(resolveSubstrate({ SUBSTRATE_DISABLED: " 1 " }, url)).toBeDefined();
+		const config = { ...DEFAULT_HINDSIGHT_CONFIG, enabled: true };
+		expect(resolveHindsight(config, { ULTRATHINK_HINDSIGHT: "0" }).readiness).toMatchObject({
+			state: "off",
+			reason: "killed",
+		});
+		expect(resolveHindsight(config, { ULTRATHINK_HINDSIGHT: " 0 " }).readiness).not.toMatchObject({
+			reason: "killed",
+		});
+	});
+
+	test("a boolean or enum row with an exact reader and padding is reported; a trimming reader is clean", () => {
+		expect(problems({ ULTRATHINK_DEBUG: " 1 " })).toEqual(["ULTRATHINK_DEBUG:bad-kind"]);
+		expect(problems({ ULTRATHINK_OAUTH_TAILSCALE: "1 " })).toEqual([
+			"ULTRATHINK_OAUTH_TAILSCALE:bad-kind",
+		]);
+		expect(problems({ ULTRATHINK_HINDSIGHT_BACKEND: " gateway " })).toEqual([
+			"ULTRATHINK_HINDSIGHT_BACKEND:bad-kind",
+		]);
+		expect(problems({ ULTRATHINK_DEBUG: "1" })).toEqual([]);
+		expect(problems({ ULTRATHINK_AUDIT_LOG: " 0 " })).toEqual([]);
+		expect(problems({ ULTRATHINK_SERVER_PLANNING: " 1 " })).toEqual([]);
+		expect(problems({ ULTRATHINK_PLANNING_FALLBACK: " grok " })).toEqual([]);
+		expect(problems({ ULTRATHINK_HOST: " omp " })).toEqual([]);
+	});
+
+	test("every kill switch, bool01, bool1 and enum row declares how its reader treats whitespace", () => {
+		const undeclared = ENV_REGISTRY.filter(
+			(def) =>
+				(def.disableValue !== undefined || ["bool01", "bool1", "enum"].includes(def.kind)) &&
+				def.reader === undefined,
+		).map((def) => def.name);
+		expect(undeclared).toEqual([]);
 	});
 });
 

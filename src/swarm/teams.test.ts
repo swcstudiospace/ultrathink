@@ -40,6 +40,7 @@ import {
 	formatLaneHandles,
 	formatLaneStatusText,
 	isSdlcPrompt,
+	allLaneDirs,
 	laneDirs,
 	laneStatus,
 	type LaneStatusRow,
@@ -892,6 +893,57 @@ describe("laneStatus", () => {
 			expect(okRow(row).state).toBe("attention" satisfies LaneState);
 		});
 
+		test("attention: a live lane with a FAILED or BLOCKED task is attention, not running", async () => {
+			// Pre-fix: a live process returned `running` before the task states were read.
+			const lane = fixtureLane(tmp("teams-st-"), "att-live-1", {
+				correlation: "corr-1",
+				record: { pid: 111 },
+			});
+			const [row] = await laneStatus(
+				[lane],
+				orchReply({
+					counts: { RUNNING: 1, FAILED: 1, BLOCKED: 2 },
+					escalated: [],
+					complete: false,
+				}),
+				PROBE_DEPS,
+			);
+			const ok = okRow(row);
+			expect(ok.state).toBe("attention" satisfies LaneState);
+			expect(ok.detail).toContain("1 FAILED");
+			expect(ok.detail).toContain("2 BLOCKED");
+			expect(ok.detail).toContain("process still running");
+			expect(ok.summary).toContain("process still running");
+			expect(ok.total).toBe(4);
+		});
+
+		test("attention: a live lane with a non-empty escalated list is attention", async () => {
+			const lane = fixtureLane(tmp("teams-st-"), "att-live-2", {
+				correlation: "corr-1",
+				record: { pid: 111 },
+			});
+			const [row] = await laneStatus(
+				[lane],
+				orchReply({ counts: { RUNNING: 2 }, escalated: ["T-7"], complete: false }),
+				PROBE_DEPS,
+			);
+			expect(okRow(row).state).toBe("attention" satisfies LaneState);
+			expect(okRow(row).detail).toBe("1 ESCALATED, process still running");
+		});
+
+		test("a complete lane stays done even with a live pid and failed tasks on record", async () => {
+			const lane = fixtureLane(tmp("teams-st-"), "att-live-3", {
+				correlation: "corr-1",
+				record: { pid: 111 },
+			});
+			const [row] = await laneStatus(
+				[lane],
+				orchReply({ counts: { DONE: 2, FAILED: 1 }, escalated: [], complete: true }),
+				PROBE_DEPS,
+			);
+			expect(okRow(row).state).toBe("done" satisfies LaneState);
+		});
+
 		test("not-planned: no correlation, no process, no log (old: probed and reported 'no task list')", async () => {
 			const lane = fixtureLane(tmp("teams-st-"), "np-1", { record: { pid: 222 } });
 			const [row] = await laneStatus([lane], failIfProbed, PROBE_DEPS);
@@ -1089,6 +1141,39 @@ describe("laneDirs", () => {
 			if (keys[i]!.index === keys[i - 1]!.index)
 				expect(keys[i]!.nonce >= keys[i - 1]!.nonce).toBe(true);
 		}
+	});
+
+	test("allLaneDirs is never bounded by recency: every lane stays reachable, ordered by index then nonce", () => {
+		const entries: Record<string, { mtimeMs: number }> = {};
+		for (let i = 1; i <= MAX_DISCOVERED_LANES + 6; i += 1)
+			entries[`abcd1234-${i}-m${i.toString(36)}`] = { mtimeMs: i };
+		const fakeFs: TeamsFs = {
+			existsSync: () => false,
+			mkdirSync: () => {
+				// reason: test double, the fake directory needs no creation
+			},
+			openSync: () => 0,
+			closeSync,
+			readdirSync: () => Object.keys(entries),
+			statSync: (path: string) => {
+				const entry = entries[basename(path)];
+				if (!entry) throw new Error(`vanished: ${path}`);
+				return entry;
+			},
+			readFileSync,
+			renameSync,
+			writeFileSync,
+		};
+		const all = allLaneDirs("/state", fakeFs);
+		expect(all).toHaveLength(MAX_DISCOVERED_LANES + 6);
+		// The oldest lane is the one the bounded listing hides; stop must still reach it.
+		expect(all.map((entry) => entry.laneId)).toContain("abcd1234-1-m1");
+		expect(laneDirs("/state", fakeFs).lanes.map((entry) => entry.laneId)).not.toContain(
+			"abcd1234-1-m1",
+		);
+		expect(all.map((entry) => entry.laneId)[0]).toBe("abcd1234-1-m1");
+		const target = resolveStopTargets("abcd1234-1-m1", all);
+		expect(target).toEqual({ targets: [all[0]!] });
 	});
 });
 
@@ -1580,6 +1665,41 @@ describe("refuseDuplicatesAndOverCap", () => {
 		expect(result.spawn).toEqual([]);
 		expect(result.refused[0]!.reason).toContain("already running as aaaaaaaa-1-n1");
 		expect(result.refused[1]!.reason).toContain("pid 100");
+	});
+
+	test("equivalent briefs in one command: the later one is refused as a duplicate of the earlier and costs no slot", () => {
+		const root = stateWithLanes();
+		// Cap 3 with one live lane leaves two slots. "Build X" and "build   x" normalize alike (the pre-fix
+		// code spawned both and pushed "write docs" out of the cap).
+		const result = refuseDuplicatesAndOverCap(
+			plan("Build X", "build   x", "write docs"),
+			root,
+			"/repo",
+			3,
+			alive,
+			verify,
+			realFs,
+		);
+		expect(result.spawn.map((entry) => entry.brief)).toEqual(["Build X", "write docs"]);
+		expect(result.refused).toEqual([
+			{ laneId: "lane-2", reason: "duplicate of lane-1 in this command" },
+		]);
+	});
+
+	test("a brief refused by the cap is not an earlier lane: its twin is refused by the cap too, not as a duplicate", () => {
+		const root = stateWithLanes();
+		const result = refuseDuplicatesAndOverCap(
+			plan("add tests", "write docs", "Write  DOCS"),
+			root,
+			"/repo",
+			2,
+			alive,
+			verify,
+			realFs,
+		);
+		expect(result.spawn.map((entry) => entry.brief)).toEqual(["add tests"]);
+		expect(result.refused.map((entry) => entry.laneId)).toEqual(["lane-2", "lane-3"]);
+		for (const refusal of result.refused) expect(refusal.reason).toContain("lane cap reached");
 	});
 });
 

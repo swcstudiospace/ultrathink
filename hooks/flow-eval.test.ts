@@ -180,6 +180,18 @@ describe("evaluateFlowHook", () => {
 		expect(readFileSync(h.logPath, "utf8").trim().split("\n")).toHaveLength(1);
 	});
 
+	test("a cached success stays silent once the key is gone: nothing printed, nothing appended, no request", async () => {
+		const h = harness({ AI_GATEWAY_API_KEY: VERCEL_KEY }, vercelAnswer);
+		await evaluateFlowHook(GSD, h.deps);
+		expect(h.lines).toHaveLength(1);
+		const stored = readFileSync(h.logPath, "utf8");
+		h.lines.length = 0;
+		await evaluateFlowHook(GSD, { ...h.deps, env: {} });
+		expect(h.lines).toEqual([]);
+		expect(h.fetchCalls).toBe(1);
+		expect(readFileSync(h.logPath, "utf8")).toBe(stored);
+	});
+
 	test("a rejected key is an error note with no rail text, and the key never reaches the note or the record", async () => {
 		const h = harness({ AI_GATEWAY_API_KEY: VERCEL_KEY }, () =>
 			json({ error: { message: `invalid key ${VERCEL_KEY}` } }, 401),

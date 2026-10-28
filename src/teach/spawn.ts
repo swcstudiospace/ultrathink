@@ -17,7 +17,6 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { dropJevKeys } from "../route-defaults.ts";
 import type { TeachDigest } from "./types.ts";
 
 const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -111,7 +110,6 @@ export function spawnObserveDetached(
 			ULTRATHINK_HOST: options.host,
 			ULTRATHINK_STATE_DIR: options.stateDir,
 		};
-		dropJevKeys(childEnv);
 		const launch = (options.spawn ?? startDetached)(
 			join(options.repoRoot, "bin", "ultrathink"),
 			["teach", "observe", "--file", path],

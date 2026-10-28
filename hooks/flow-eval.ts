@@ -15,6 +15,7 @@ import { claudeConfigPaths, loadConfig } from "../src/config.ts";
 import {
 	appendFlowScore,
 	evaluateFlowOutput,
+	flowEvalActive,
 	flowHash,
 	isGsdFlowCommand,
 	lookupFlowScore,
@@ -73,18 +74,19 @@ export async function evaluateFlowHook(input: HookInput, deps: FlowHookDeps): Pr
 	const output = responseText(input.tool_response);
 	const subject = `${input.session_id ?? "unknown"}:${command}`;
 	const logPath = join(deps.stateDir, "flow-decisions.jsonl");
+	const evalInput: FlowEvalInput = {
+		subject,
+		output,
+		command,
+		config: deps.config(),
+		env: deps.env,
+		storePath: deps.storePath,
+		stateDir: deps.stateDir,
+	};
+	// Resolve the current rail and key before replaying: a keyless run must not print an old verdict.
+	if (!flowEvalActive(evalInput, deps.env)) return;
 	const cached = deps.lookup(logPath, flowHash(output));
-	const record =
-		cached ??
-		(await deps.evaluate({
-			subject,
-			output,
-			command,
-			config: deps.config(),
-			env: deps.env,
-			storePath: deps.storePath,
-			stateDir: deps.stateDir,
-		}));
+	const record = cached ?? (await deps.evaluate(evalInput));
 	const note = formatFlowNote(record);
 	if (note === undefined) return;
 	if (!cached) deps.append(logPath, record);

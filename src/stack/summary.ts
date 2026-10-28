@@ -9,8 +9,10 @@
  * carries counts only: no member name, URL, path or key material. Contacting a member is `ultrathink stack`.
  *
  * Readiness per member, each from the member's own offline helper:
- * - substrate: ready iff `resolveSubstrate(env, config.substrate.url)` returns a target (false for
- *   `SUBSTRATE_DISABLED=1` or no URL), else off.
+ * - substrate: off for `SUBSTRATE_DISABLED=1`. Otherwise the selected backend decides, as in the stack probe
+ *   (`serviceBackend` of `gateway/settings.ts`): with the desk gateway selected it is ready iff `resolveGateway`
+ *   resolves (gateway URL and token; no Substrate URL is needed), else missing; with the direct backend it is
+ *   ready iff `resolveSubstrate(env, config.substrate.url)` returns a target, else off (no URL).
  * - swarm: ready iff `resolveSwarmRoot(env)` returns `{ root }` (an absolute checkout holding
  *   `hooks/autonomous_run.py`), else missing.
  * - realm: off iff `isOptedOut(env)` of `realm.ts` (`ULTRATHINK_REALM` trims and lowercases to `off`); else ready
@@ -26,6 +28,8 @@
 import { existsSync } from "node:fs";
 import type { UltrathinkConfig } from "../config.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
+import { resolveGateway, serviceBackend } from "../gateway/settings.ts";
+import { SUBSTRATE_BACKEND_ENV } from "../gateway/types.ts";
 import { resolveHindsight } from "../hindsight/settings.ts";
 import { storePath } from "../mcp/store.ts";
 import { resolveSubstrate } from "../substrate/brief.ts";
@@ -56,6 +60,16 @@ function decisionsReadiness(config: UltrathinkConfig, env: Env): Readiness {
 	return resolveDecisionsKeys(config.decisions, storePath(env), env).key ? "ready" : "missing";
 }
 
+/** Picks the branch the stack probe picks: the kill switch, then the selected backend (`serviceBackend`), then the gateway or the direct URL. */
+function substrateReadiness(config: UltrathinkConfig, env: Env): Readiness {
+	if (env.SUBSTRATE_DISABLED === "1") return "off";
+	if (serviceBackend(config.substrate.backend, env, SUBSTRATE_BACKEND_ENV) === "gateway")
+		return resolveGateway(config.gateway, env, { storePath: storePath(env) }).ok
+			? "ready"
+			: "missing";
+	return resolveSubstrate(env, config.substrate.url) ? "ready" : "off";
+}
+
 /** One member's readiness; a helper that throws counts as missing so the line still renders. */
 function guarded(read: () => Readiness): Readiness {
 	try {
@@ -77,7 +91,7 @@ function guarded(read: () => Readiness): Readiness {
  *   ready        | the member's own config helper resolves     | connected, degraded or unavailable (decided by
  *                | (a target, a root, a key, a config file)    | the probe's request; the line cannot tell)
  *   off          | explicit kill switch or opt-out, OR no      | disabled
- *                | Substrate URL (see below)                   |
+ *                | Substrate URL (direct backend, see below)   |
  *   missing      | not set up and not switched off             | misconfigured, or disabled for swarm (autoRun off,
  *                |                                             | no root) and realm (not installed or configured)
  *
@@ -85,10 +99,12 @@ function guarded(read: () => Readiness): Readiness {
  * - kill switch or opt-out (the user said no): substrate `SUBSTRATE_DISABLED=1`; realm `ULTRATHINK_REALM=off`;
  *   decisions `ULTRATHINK_DECISIONS=0`; hindsight `ULTRATHINK_HINDSIGHT=0` (readiness `off`, reason `killed`) or
  *   `hindsight.enabled` not set (readiness `off`, reason `disabled`: Hindsight is opt-in).
- * - no URL configured (nothing was asked for): substrate only, `resolveSubstrate` returns no target, so a fresh
- *   install without a Substrate URL reads `off`, and its probe says `disabled` ("no Substrate URL configured").
+ * - no URL configured (nothing was asked for): substrate with the direct backend, `resolveSubstrate` returns no
+ *   target, so a fresh install without a Substrate URL reads `off`, and its probe says `disabled` ("no Substrate URL
+ *   configured").
  *
- * What produces `missing` (a member that should work but lacks a piece): swarm has no valid root (no root set, or
+ * What produces `missing` (a member that should work but lacks a piece): substrate with the desk gateway selected
+ *   but no usable gateway URL or token (its probe says `misconfigured`); swarm has no valid root (no root set, or
  *   the root fails `resolveSwarmRoot`; the offline line has no `off` for swarm, so a swarm the probe calls `disabled`
  *   reads `missing` here); realm has no config file at the derived path (its probe says `disabled`, "not installed
  *   or not configured"); decisions has no Jev key; hindsight is
@@ -103,7 +119,7 @@ export function stackSummaryLine(
 ): string {
 	const existsPath = deps.existsPath ?? existsSync;
 	const states: Readiness[] = [
-		guarded(() => (resolveSubstrate(env, config.substrate.url) ? "ready" : "off")),
+		guarded(() => substrateReadiness(config, env)),
 		guarded(() => ("root" in resolveSwarmRoot(env) ? "ready" : "missing")),
 		guarded(() => realmReadiness(env, existsPath)),
 		guarded(() => decisionsReadiness(config, env)),

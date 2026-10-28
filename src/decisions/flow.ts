@@ -181,6 +181,14 @@ function pickRail(
 	return picked.key ? { rail: picked.provider, key: picked.key.key, zdr: config.zdr } : undefined;
 }
 
+/** Whether an evaluation of this input could decide now: the kill switch is off and a usable key is picked. Same decision `evaluateFlowOutput` makes. */
+export function flowEvalActive(
+	input: FlowEvalInput,
+	env: Record<string, string | undefined>,
+): boolean {
+	return pickRail(input, env) !== undefined;
+}
+
 export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowRecord> {
 	const now = input.now ?? Date.now;
 	const started = now();

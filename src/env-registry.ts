@@ -15,7 +15,8 @@
  * Kind semantics: `bool01` means only exact `"0"` and `"1"` are meaningful; `bool1` means only exact `"1"` enables;
  * `enum` lists the allowed values in `values`. An entry with `disableValue` is a kill switch: only that exact value
  * (trimmed, compared without case) has an effect, so any other non-empty value is reported. Empty or blank values count
- * as unset everywhere.
+ * as unset everywhere. Each such row (and every boolean and enum row) records in `reader` whether its real reader trims
+ * the value or compares the raw string; a padded value is reported when only a trimming reader would honour it.
  *
  * Precedence of the setting families, as the resolvers implement it:
  * - Hindsight URL: `hindsight.url` in config, else `HINDSIGHT_API_URL`, else `HINDSIGHT_URL` (src/hindsight/settings.ts).
@@ -43,6 +44,12 @@ export interface EnvVarDef {
 	family: string;
 	/** For a kill switch: the one value that has an effect. */
 	disableValue?: string;
+	/**
+	 * Required on every `bool01`, `bool1` and `enum` row and every kill switch: how the real reader treats surrounding
+	 * whitespace. `trims` readers strip it (the value still works); `raw` readers compare the exact string, so a padded
+	 * value (for example `SUBSTRATE_DISABLED=" 1 "`) has no effect even though {@link validateEnv} would accept it trimmed.
+	 */
+	reader?: "trims" | "raw";
 	/** For `enum`: the allowed values. */
 	values?: readonly string[];
 	default?: string;
@@ -52,7 +59,10 @@ export interface EnvVarDef {
 
 /** The optional parts of a row; `secret` defaults to false. */
 type RowExtra = Partial<
-	Pick<EnvVarDef, "secret" | "aliases" | "disableValue" | "values" | "default" | "min" | "max">
+	Pick<
+		EnvVarDef,
+		"secret" | "aliases" | "disableValue" | "reader" | "values" | "default" | "min" | "max"
+	>
 >;
 
 function row(
@@ -69,8 +79,13 @@ function row(
 const KILL = "kill-switch";
 
 /** Kill switches that disable on the exact string `0` (the polarity differs from `SUBSTRATE_DISABLED=1`). */
-function killZero(scope: EnvScope, name: string, description: string): EnvVarDef {
-	return row(scope, KILL, "bool01", name, description, { disableValue: "0" });
+function killZero(
+	scope: EnvScope,
+	name: string,
+	description: string,
+	reader: "trims" | "raw" = "raw",
+): EnvVarDef {
+	return row(scope, KILL, "bool01", name, description, { disableValue: "0", reader });
 }
 
 export const ENV_REGISTRY: readonly EnvVarDef[] = [
@@ -106,6 +121,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"plugin",
 		"ULTRATHINK_RAGFLOW",
 		"Set to 0 to send no RAGFlow request in this process; whitespace around the 0 is trimmed.",
+		"trims",
 	),
 	killZero(
 		"plugin",
@@ -128,7 +144,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool1",
 		"SUBSTRATE_DISABLED",
 		"Set to 1 to never contact Agent Substrate, even when SUBSTRATE_URL or substrate.url is set.",
-		{ disableValue: "1" },
+		{ disableValue: "1", reader: "raw" },
 	),
 	row(
 		"stack",
@@ -136,7 +152,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"enum",
 		"ULTRATHINK_REALM",
 		"Set to off to skip the Realm probe; any other value leaves it on.",
-		{ disableValue: "off", values: ["off"] },
+		{ disableValue: "off", values: ["off"], reader: "trims" },
 	),
 
 	// Backend selectors: src/gateway/settings.ts serviceBackend; other values silently fall back to the config value.
@@ -146,7 +162,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"enum",
 		"ULTRATHINK_HINDSIGHT_BACKEND",
 		"Chooses the Hindsight backend and wins over hindsight.backend unless ULTRATHINK_GATEWAY is 0.",
-		{ values: ["direct", "gateway"] },
+		{ values: ["direct", "gateway"], reader: "raw" },
 	),
 	row(
 		"plugin",
@@ -154,7 +170,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"enum",
 		"ULTRATHINK_RAGFLOW_BACKEND",
 		"Chooses the RAGFlow backend and wins over ragflow.backend unless ULTRATHINK_GATEWAY is 0.",
-		{ values: ["direct", "gateway"] },
+		{ values: ["direct", "gateway"], reader: "raw" },
 	),
 	row(
 		"plugin",
@@ -162,7 +178,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"enum",
 		"ULTRATHINK_SUBSTRATE_BACKEND",
 		"Chooses the Substrate brief backend and wins over substrate.backend unless ULTRATHINK_GATEWAY is 0.",
-		{ values: ["direct", "gateway"] },
+		{ values: ["direct", "gateway"], reader: "raw" },
 	),
 
 	// Substrate: src/substrate/brief.ts (URL, timeout, disabled) and src/substrate/surface.ts (bearer).
@@ -356,6 +372,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool1",
 		"ULTRATHINK_OAUTH_TAILSCALE",
 		"Set to 1 to receive the OAuth callback through tailscale serve on a remote session.",
+		{ reader: "raw" },
 	),
 	row(
 		"plugin",
@@ -363,6 +380,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool1",
 		"ULTRATHINK_DEBUG",
 		"Set to 1 to write ultrathink log lines and one line per Jev decision to stderr.",
+		{ reader: "raw" },
 	),
 	row(
 		"plugin",
@@ -370,6 +388,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool1",
 		"ULTRATHINK_MCP_DEBUG",
 		"Set to 1 so ultrathink-mcp serve writes relay log lines to stderr.",
+		{ reader: "raw" },
 	),
 	row(
 		"plugin",
@@ -387,7 +406,8 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"enum",
 		"ULTRATHINK_HOST",
 		"Forces the detected host; an unknown value is ignored.",
-		{ values: HOSTS },
+		// detectHost trims; hooks/engine.ts compares the raw value only to fill an absent host, then detection still trims.
+		{ values: HOSTS, reader: "trims" },
 	),
 	row(
 		"plugin",
@@ -565,7 +585,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"enum",
 		"ULTRATHINK_PLANNING_FALLBACK",
 		"Whether a failed Claude call fails over to Grok.",
-		{ default: "none", values: ["none", "grok"] },
+		{ default: "none", values: ["none", "grok"], reader: "trims" },
 	),
 	row(
 		"service",
@@ -573,7 +593,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool01",
 		"ULTRATHINK_SERVER_PLANNING",
 		"Set to 1 to let the service plan on the server.",
-		{ default: "0" },
+		{ default: "0", reader: "trims" },
 	),
 	row(
 		"service",
@@ -581,7 +601,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool01",
 		"ULTRATHINK_PLAINTEXT_LOOPBACK",
 		"Set to 1 to run without TLS; for development and local smoke tests only.",
-		{ default: "0" },
+		{ default: "0", reader: "trims" },
 	),
 	row(
 		"service",
@@ -781,7 +801,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool01",
 		"ULTRATHINK_AUDIT_LOG",
 		"Set to 0 to stop writing the append-only audit log.",
-		{ default: "1" },
+		{ default: "1", reader: "trims" },
 	),
 	row(
 		"service",
@@ -908,7 +928,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool01",
 		"ULTRATHINK_CHAOS",
 		"Set to 1 to arm fault injection at the upstream seam; needs the staging environment and a plan.",
-		{ default: "0" },
+		{ default: "0", reader: "trims" },
 	),
 	row(
 		"service",
@@ -1018,6 +1038,29 @@ function checkValue(def: EnvVarDef, name: string, value: string): EnvFinding | u
 }
 
 /**
+ * A value that is accepted only after trimming but whose reader compares the raw string, so the surrounding whitespace
+ * makes the setting ineffective. `undefined` for a trimming reader, an unpadded value, or a value already reported as bad.
+ * Names the variable only, never the value.
+ */
+function paddedFinding(
+	def: EnvVarDef,
+	raw: string | undefined,
+	trimmed: string,
+): EnvFinding | undefined {
+	if (def.reader !== "raw" || raw === undefined || raw === trimmed) return undefined;
+	const accepted =
+		def.disableValue !== undefined
+			? trimmed.toLowerCase() === def.disableValue.toLowerCase()
+			: checkValue(def, def.name, trimmed) === undefined;
+	if (!accepted) return undefined;
+	return {
+		name: def.name,
+		problem: def.disableValue !== undefined ? "kill-switch" : "bad-kind",
+		message: `${def.name} has whitespace around its value, and its reader compares the exact string, so the setting has no effect`,
+	};
+}
+
+/**
  * One finding per problem in `env`, in registry order. Reporting only: nothing here changes how a variable is read.
  * Never reports `OPENROUTER_API_KEY` (env-check owns that finding) and never echoes a value.
  */
@@ -1027,17 +1070,22 @@ export function validateEnv(env: Env): EnvFinding[] {
 		const value = nonEmpty(env, def.name);
 		if (def.disableValue !== undefined) {
 			// Only the disabling value has an effect (compared trimmed and without case, as the readers do for 0 and off).
-			if (value !== undefined && value.toLowerCase() !== def.disableValue.toLowerCase()) {
-				findings.push({
-					name: def.name,
-					problem: "kill-switch",
-					message: `${def.name} is set but only the value ${def.disableValue} has an effect, so it disables nothing`,
-				});
+			if (value !== undefined) {
+				if (value.toLowerCase() !== def.disableValue.toLowerCase()) {
+					findings.push({
+						name: def.name,
+						problem: "kill-switch",
+						message: `${def.name} is set but only the value ${def.disableValue} has an effect, so it disables nothing`,
+					});
+				} else {
+					const padded = paddedFinding(def, env[def.name], value);
+					if (padded) findings.push(padded);
+				}
 			}
 			continue;
 		}
 		if (value !== undefined) {
-			const finding = checkValue(def, def.name, value);
+			const finding = checkValue(def, def.name, value) ?? paddedFinding(def, env[def.name], value);
 			if (finding) findings.push(finding);
 		}
 		for (const alias of def.aliases ?? []) {

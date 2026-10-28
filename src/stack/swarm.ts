@@ -13,7 +13,7 @@
 import { type ClassifySpawn, CLASSIFY_TIMEOUT_MS, preflightClassify } from "../swarm/classify.ts";
 import { type PidAlive, readLaneFile, STOP_HINT } from "../swarm/lane.ts";
 import {
-	laneDirs,
+	allLaneDirs,
 	laneStatus,
 	type LaneVerify,
 	maxLanes,
@@ -113,16 +113,17 @@ async function probe(
 	}
 
 	const cap = maxLanes(ctx.env);
-	const discovery = laneDirs(ctx.stateDir, deps.fs);
+	// The complete lane list, not the bounded status listing: the cap counts every live lane, however old.
+	const lanes = allLaneDirs(ctx.stateDir, deps.fs);
 	const laneDeps = { isAlive: deps.isAlive, verify: deps.verify, fs: deps.fs };
-	const liveTargets = resolveStopTargets("all", discovery.lanes, laneDeps);
+	const liveTargets = resolveStopTargets("all", lanes, laneDeps);
 	const live = "targets" in liveTargets ? liveTargets.targets.length : 0;
 
 	// Only lanes started within the window can degrade the link: an old failed lane would otherwise hold it
 	// degraded forever. A lane without a readable lane.json (or start time) is not counted; older attention
 	// lanes still show in `/ultrathink-swarm status`.
 	const windowStart = now() - ATTENTION_WINDOW_MS;
-	const recent = discovery.lanes.filter((lane) => {
+	const recent = lanes.filter((lane) => {
 		const startedAt = Date.parse(readLaneFile(lane.stateDir, deps.fs)?.startedAt ?? "");
 		return Number.isFinite(startedAt) && startedAt >= windowStart;
 	});

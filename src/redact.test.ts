@@ -170,9 +170,24 @@ describe("redactSecrets: exact secrets", () => {
 		expect(redactSecrets(`got ${long}`, short, long)).toBe("got [redacted]");
 	});
 
-	test("ignores empty, blank and sub-8-character secrets so they cannot blank the text", () => {
+	test("ignores empty and blank exact secrets so they cannot blank the text", () => {
 		const text = "the word short and its spaces are fine, 7chars! too";
-		expect(redactSecrets(text, "", "   ", "short", "7chars!", " 7chars! ")).toBe(text);
+		expect(redactSecrets(text, "", "   ", "\t\n")).toBe(text);
+	});
+
+	test("masks a short explicit secret whatever its length, trimmed or not", () => {
+		// A 7-character gateway token: an upstream error must not echo it back.
+		expect(redactSecrets("invalid credential ut7test", "ut7test")).toBe(
+			"invalid credential [redacted]",
+		);
+		expect(redactSecrets("invalid credential ut7test", " ut7test ")).toBe(
+			"invalid credential [redacted]",
+		);
+		expect(redactSecrets("got 7chars! back", "7chars!")).toBe("got [redacted] back");
+	});
+
+	test("a one-character explicit secret is masked everywhere it occurs without throwing", () => {
+		expect(redactSecrets("a-b-a", "a")).toBe("[redacted]-b-[redacted]");
 	});
 
 	test("skips a non-string secret at runtime instead of throwing", () => {

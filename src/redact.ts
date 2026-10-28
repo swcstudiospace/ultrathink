@@ -17,9 +17,6 @@
 
 const REDACTED = "[redacted]";
 
-/** Exact secrets shorter than this are ignored: a short string would blank unrelated text. */
-const MIN_EXACT_SECRET_CHARS = 8;
-
 /** A PEM private-key block; one cut off by a length cap has no END line, so everything after BEGIN goes. A single lazy pass keeps this linear. */
 const PEM_BLOCK =
 	/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
@@ -159,13 +156,13 @@ export function redactSecretShapes(text: string): string {
 	return redactAssignments(out);
 }
 
-/** The forms one secret takes inside error text: as given, trimmed, JSON-escaped (inside a quoted body) and URL-encoded. */
+/** The forms one secret takes inside error text: as given, trimmed, JSON-escaped (inside a quoted body) and URL-encoded. A blank secret has none. */
 function exactForms(secret: string): string[] {
 	const trimmed = secret.trim();
-	if (trimmed.length < MIN_EXACT_SECRET_CHARS) return [];
+	if (trimmed === "") return [];
 	const forms = new Set<string>([secret, trimmed, JSON.stringify(trimmed).slice(1, -1)]);
 	forms.add(encodeURIComponent(trimmed));
-	return [...forms].filter((form) => form.length >= MIN_EXACT_SECRET_CHARS);
+	return [...forms];
 }
 
 /** Replaces every occurrence of every exact secret, longest first, with a literal split/join. */
@@ -184,8 +181,8 @@ function maskExact(text: string, exactSecrets: readonly string[]): string {
 
 /**
  * Masks every exact secret, then every supported secret shape, so the text is safe to log, throw or print. A non-string
- * input gives "". Exact secrets that are empty, blank or shorter than 8 characters are ignored. It does not collapse
- * whitespace and does not truncate: cut the result to the caller's cap afterwards.
+ * input gives "". An exact secret is masked whatever its length; only empty and blank ones are ignored. It does not
+ * collapse whitespace and does not truncate: cut the result to the caller's cap afterwards.
  */
 export function redactSecrets(text: string, ...exactSecrets: string[]): string {
 	try {

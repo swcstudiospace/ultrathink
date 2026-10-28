@@ -188,4 +188,50 @@ describe("stackSummaryLine", () => {
 		);
 		expect(line).toBe("Stack: 3 off · 2 missing (run ultrathink stack)");
 	});
+
+	describe("substrate readiness follows the selected backend", () => {
+		// Only substrate varies: realm, decisions and hindsight are switched off and swarm has no root (missing).
+		const quiet = { ULTRATHINK_REALM: "off", ULTRATHINK_DECISIONS: "0", ULTRATHINK_HINDSIGHT: "0" };
+		const gateway = {
+			ULTRATHINK_SUBSTRATE_BACKEND: "gateway",
+			DESK_GATEWAY_URL: "https://gateway.example.test",
+			DESK_GATEWAY_TOKEN: "ut7test",
+		};
+
+		test("a gateway backend with a usable gateway is ready without any Substrate URL", () => {
+			const line = stackSummaryLine(defaultConfig(), env({ ...quiet, ...gateway }));
+			expect(line).toBe("Stack: 1 ready · 3 off · 1 missing (run ultrathink stack)");
+		});
+
+		test("a gateway backend without a usable gateway is missing even when a Substrate URL is set", () => {
+			const config = defaultConfig();
+			config.substrate = { ...config.substrate, backend: "gateway" };
+			const line = stackSummaryLine(
+				config,
+				env({ ...quiet, SUBSTRATE_URL: "https://substrate.example.test" }),
+			);
+			expect(line).toBe("Stack: 3 off · 2 missing (run ultrathink stack)");
+		});
+
+		test("the direct backend still reads off without a Substrate URL and ready with one", () => {
+			const direct = { ...gateway, ULTRATHINK_SUBSTRATE_BACKEND: "direct" };
+			expect(stackSummaryLine(defaultConfig(), env({ ...quiet, ...direct }))).toBe(
+				"Stack: 4 off · 1 missing (run ultrathink stack)",
+			);
+			expect(
+				stackSummaryLine(
+					defaultConfig(),
+					env({ ...quiet, ...direct, SUBSTRATE_URL: "https://substrate.example.test" }),
+				),
+			).toBe("Stack: 1 ready · 3 off · 1 missing (run ultrathink stack)");
+		});
+
+		test("SUBSTRATE_DISABLED=1 keeps a gateway-backed Substrate off", () => {
+			const line = stackSummaryLine(
+				defaultConfig(),
+				env({ ...quiet, ...gateway, SUBSTRATE_DISABLED: "1" }),
+			);
+			expect(line).toBe("Stack: 4 off · 1 missing (run ultrathink stack)");
+		});
+	});
 });

@@ -108,7 +108,7 @@ describe("spawnObserveDetached", () => {
 		expect(env.ULTRATHINK_HOST).toBe("stale");
 	});
 
-	test("drops all three Jev key variables from the detached child env and keeps the rest", () => {
+	test("hands the detached worker the Jev key variables unchanged (it asks Jev itself) along with the rest of the host env", () => {
 		const calls: { env: NodeJS.ProcessEnv }[] = [];
 		const result = spawnObserveDetached(digest(), {
 			repoRoot,
@@ -128,9 +128,10 @@ describe("spawnObserveDetached", () => {
 		expect(result).toEqual({ spawned: true });
 		expect(calls).toHaveLength(1);
 		const childEnv = calls[0]?.env ?? {};
-		expect(Object.keys(childEnv)).not.toContain("ULTRATHINK_OPENROUTER_KEY");
-		expect(Object.keys(childEnv)).not.toContain("OPENROUTER_API_KEY");
-		expect(Object.keys(childEnv)).not.toContain("AI_GATEWAY_API_KEY");
+		expect(childEnv.ULTRATHINK_OPENROUTER_KEY).toBe("sk-or-v1-CANARYCANARYCANARY1234");
+		expect(childEnv.OPENROUTER_API_KEY).toBe("sk-or-v1-CANARYCANARYCANARY5678");
+		expect(childEnv.AI_GATEWAY_API_KEY).toBe("vck_CANARYCANARYCANARY9012");
+		expect(childEnv.PATH).toBe("/usr/bin");
 		expect(childEnv.KEEP).toBe("1");
 		expect(childEnv.ULTRATHINK_HOST).toBe("omp");
 	});

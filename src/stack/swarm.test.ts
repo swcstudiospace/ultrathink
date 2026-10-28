@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../config.ts";
@@ -252,6 +252,19 @@ describe("probeSwarm", () => {
 		expect(result.reason).toBe("2 live lane(s) at the cap of 2 (ULTRATHINK_SWARM_MAX_LANES)");
 		expect(result.fix).toContain("/ultrathink-swarm stop");
 		expectClean(result);
+	});
+
+	test("a live lane older than the 24 newest still counts toward the cap", async () => {
+		const f = fixture();
+		// The long-running lane is the oldest directory by mtime; 24 newer (dead) lanes push it out of the bounded listing.
+		addLane(f.stateDir, "aaaaaaaa-1-old", 4101);
+		const old = (Date.now() - 3_600_000) / 1000;
+		utimesSync(join(f.stateDir, "swarm", "aaaaaaaa-1-old"), old, old);
+		f.alive.add(4101);
+		for (let i = 2; i < 26; i += 1) addLane(f.stateDir, `bbbbbbbb-${i}-n${i}`, 5000 + i);
+		const result = await f.probe(f.ctx({ ULTRATHINK_SWARM_MAX_LANES: "1" }));
+		expect(result).toMatchObject({ status: "degraded", affects: ["lanes"] });
+		expect(result.reason).toBe("1 live lane(s) at the cap of 1 (ULTRATHINK_SWARM_MAX_LANES)");
 	});
 
 	test("a lane that needs attention is degraded even below the cap", async () => {

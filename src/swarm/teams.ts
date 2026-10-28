@@ -586,6 +586,17 @@ export function laneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneDiscove
 	};
 }
 
+/**
+ * Every lane directory under `<stateDir>/swarm`, ordered like {@link laneDirs} but never bounded by recency.
+ * Stop and every live-lane count use this: a long-running lane must stay reachable however many newer lanes
+ * exist. Only the status listing is bounded, for display.
+ */
+export function allLaneDirs(stateDir: string, fs: TeamsFs = defaultFs): LaneRef[] {
+	return scanLaneDirs(stateDir, fs)
+		.sort((a, b) => a.index - b.index || a.nonce.localeCompare(b.nonce))
+		.map(({ laneId, stateDir: dir }) => ({ laneId, stateDir: dir }));
+}
+
 /** Default liveness: signal 0. EPERM means the pid exists under another user, so it is alive (and never ours). */
 export function pidAlive(pid: number): boolean {
 	try {
@@ -730,13 +741,21 @@ export function refuseDuplicatesAndOverCap(
 	);
 	const spawn: LanePlan[] = [];
 	const refused: Array<{ laneId: string; reason: string }> = [];
+	// Accepted plans of this command by normalized digest (the cwd is the command's, so it is part of the key).
+	const accepted = new Map<string, string>();
 	for (const plan of plans) {
-		const duplicate = findDuplicate(cwd, briefDigest(plan.brief), live);
+		const digest = briefDigest(plan.brief);
+		const duplicate = findDuplicate(cwd, digest, live);
 		if (duplicate !== undefined) {
 			refused.push({
 				laneId: plan.id,
 				reason: `already running as ${duplicate.laneId} (pid ${duplicate.pid}) in ${cwd}; ${STOP_HINT} to replace it`,
 			});
+			continue;
+		}
+		const earlier = accepted.get(digest);
+		if (earlier !== undefined) {
+			refused.push({ laneId: plan.id, reason: `duplicate of ${earlier} in this command` });
 			continue;
 		}
 		if (live.length + spawn.length >= cap) {
@@ -749,6 +768,7 @@ export function refuseDuplicatesAndOverCap(
 			});
 			continue;
 		}
+		accepted.set(digest, plan.id);
 		spawn.push(plan);
 	}
 	return { spawn, refused };
@@ -981,9 +1001,10 @@ export async function laneStatus(
 
 /**
  * Probe one lane and fold its files and Task Store into one of seven states; every failure mode stays
- * lane-local. Order: live pid with no plan yet is `planning`; live and unfinished is `running`; a finished
- * lane is `skipped` (duplicate), `plan-failed` (its log), `done` (`complete`), or `attention`; no plan and no
- * process is `not-planned`.
+ * lane-local. Order: live pid with no plan yet is `planning`; a `complete` lane is `done`; a live lane with
+ * unfinished tasks is `running`, unless a task is FAILED, ESCALATED or BLOCKED (or `escalated` is non-empty),
+ * which is `attention` even while the process runs; a finished lane is `skipped` (duplicate), `plan-failed`
+ * (its log) or `attention`; no plan and no process is `not-planned`.
  */
 async function probeLane(
 	lane: LaneRef,
@@ -1089,7 +1110,6 @@ async function probeLane(
 	const complete = parsed.complete === true;
 	const progress =
 		total === 0 ? "no tasks yet" : `${total} task${total === 1 ? "" : "s"} — ${counts}`;
-	if (live && !complete) return row("running", progress, { total, byState });
 	if (complete) return row("done", progress, { total, byState, done: total });
 	const reasons: string[] = [];
 	for (const [state, count] of Object.entries(byState)) {
@@ -1097,6 +1117,17 @@ async function probeLane(
 	}
 	if (Array.isArray(parsed.escalated) && parsed.escalated.length > 0 && !("ESCALATED" in byState))
 		reasons.push(`${parsed.escalated.length} ESCALATED`);
+	if (live) {
+		// A live orchestrator does not make a FAILED, ESCALATED or BLOCKED task healthy: Swarm needs a human for
+		// those and never self-releases them, so the lane is `attention` even while its process still runs.
+		if (reasons.length === 0) return row("running", progress, { total, byState });
+		reasons.push("process still running");
+		return row("attention", `${reasons.join(", ")} (${progress})`, {
+			total,
+			byState,
+			detail: reasons.join(", "),
+		});
+	}
 	const runRc = log?.kind === "ran" ? log.runRc : undefined;
 	if (runRc !== undefined && runRc !== 0 && runRc !== 1)
 		reasons.push(`run exited with code ${runRc}`);

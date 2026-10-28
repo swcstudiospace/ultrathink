@@ -129,8 +129,8 @@ export async function runDoctorCommand(
 		else return { output: USAGE, exitCode: 2 };
 	}
 	const deps: DoctorDeps = { ...productionDeps(), ...overrides };
-	// Started first so the probes run while the synchronous sections work.
-	const stack = guardedAsync("stack", checkStackConnections, deps);
+	// The local checks block the thread (`claude --version` and `claude auth status` may take seconds), so they run first:
+	// a probe's 3 s timer starts only when its work does, and a slow local check cannot make a healthy service time out.
 	const synchronous = [
 		...guarded("runtime", checkRuntime, deps),
 		...guarded("config", checkConfig, deps),
@@ -141,6 +141,7 @@ export async function runDoctorCommand(
 		...guarded("memory", checkTeach, deps),
 		...guarded("pstack", checkPstack, deps),
 	];
-	const report = buildReport([...synchronous, ...(await stack)]);
+	const stack = await guardedAsync("stack", checkStackConnections, deps);
+	const report = buildReport([...synchronous, ...stack]);
 	return { output: json ? reportJson(report) : formatReport(report), exitCode: report.ok ? 0 : 1 };
 }

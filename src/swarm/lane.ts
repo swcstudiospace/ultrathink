@@ -10,7 +10,15 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmdirSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 import { isRecord } from "../shared.ts";
@@ -246,4 +254,80 @@ export function verifyLaneProcess(
 	if (!Number.isFinite(recorded)) return "unknown";
 	const processStartMs = (boot + ticks / CLOCK_TICKS_PER_SECOND) * 1000;
 	return Math.abs(processStartMs - recorded) <= START_TIME_TOLERANCE_MS ? "match" : "mismatch";
+}
+
+/** The lock directory, under `<stateDir>/swarm/`; it never matches a lane directory name. */
+const LOCK_DIR = ".lane-lock";
+
+/** A lock older than this (by mtime) belongs to a crashed holder and is taken over. */
+const LANE_LOCK_STALE_MS = 30_000;
+
+/** How long a lane lock is awaited before running unlocked. */
+const LANE_LOCK_WAIT_MS = 1_000;
+
+const LANE_LOCK_POLL_MS = 10;
+
+/** Test seams for {@link withLaneLock}; the defaults are the wall clock and a synchronous `Atomics.wait` sleep. */
+export interface LaneLockDeps {
+	now?: () => number;
+	sleep?: (ms: number) => void;
+	staleMs?: number;
+	waitMs?: number;
+}
+
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Run `fn` holding a cross-process lock on the swarm state directory, so the live-lane check, the spawn and the
+ * `lane.json` write are one step across Omp processes sharing the directory. The lock is a directory created
+ * atomically (`mkdir` without `recursive`: EEXIST means held). A lock older than `staleMs` by mtime belongs to a
+ * crashed holder and is removed and taken. After `waitMs` of short synchronous sleeps it FAILS OPEN and runs
+ * `fn` unlocked (leaving the other holder's lock alone), as does any other lock failure: a stuck lock must never
+ * block prompt submission. A lock this call took is always released.
+ */
+export function withLaneLock<T>(stateDir: string, fn: () => T, deps: LaneLockDeps = {}): T {
+	const now = deps.now ?? Date.now;
+	const sleep = deps.sleep ?? sleepSync;
+	const staleMs = deps.staleMs ?? LANE_LOCK_STALE_MS;
+	const swarmDir = join(stateDir, "swarm");
+	const lockPath = join(swarmDir, LOCK_DIR);
+	let held = false;
+	try {
+		mkdirSync(swarmDir, { recursive: true, mode: 0o700 });
+		const deadline = now() + (deps.waitMs ?? LANE_LOCK_WAIT_MS);
+		for (;;) {
+			try {
+				mkdirSync(lockPath, { mode: 0o700 });
+				held = true;
+				break;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") break;
+			}
+			try {
+				if (now() - statSync(lockPath).mtimeMs > staleMs) {
+					rmdirSync(lockPath);
+					continue;
+				}
+			} catch {
+				// reason: the holder released between the mkdir and the stat; the next mkdir decides
+			}
+			if (now() >= deadline) break;
+			sleep(LANE_LOCK_POLL_MS);
+		}
+	} catch {
+		// reason: the lock is advisory; an unusable state directory fails open
+	}
+	try {
+		return fn();
+	} finally {
+		if (held) {
+			try {
+				rmdirSync(lockPath);
+			} catch {
+				// reason: a lock that is already gone is released
+			}
+		}
+	}
 }

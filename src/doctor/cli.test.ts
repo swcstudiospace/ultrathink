@@ -302,4 +302,58 @@ describe("runDoctorCommand", () => {
 		}
 		expect(calls).toEqual([]);
 	});
+
+	test("the blocking local checks finish before any stack probe starts its request", async () => {
+		// `claude --version` / `claude auth status` block the thread; a probe started before them would have its 3 s timer
+		// run down while they block. A fetch is the first thing the Substrate probe does, so it marks the probe's start.
+		const events: string[] = [];
+		const tokens = join(dir, "no-tokens");
+		mkdirSync(tokens);
+		const original = globalThis.fetch;
+		globalThis.fetch = ((..._args: unknown[]) => {
+			events.push("probe");
+			return Promise.resolve(new Response("ok", { status: 200 }));
+		}) as unknown as typeof fetch;
+		try {
+			const { exitCode } = await runDoctorCommand([], {
+				...deps,
+				env: {
+					...deps.env,
+					SUBSTRATE_URL: "https://substrate.example.test",
+					SUBSTRATE_TOKENS_DIR: tokens,
+				},
+				runVersion: () => {
+					events.push("python");
+					return "Python 3.12.1";
+				},
+				claudeVersion: () => {
+					events.push("claude-version");
+					return "2.1.300 (Claude Code)";
+				},
+				claudeAuth: () => {
+					events.push("claude-auth");
+					return JSON.stringify({
+						loggedIn: true,
+						authMethod: "claude.ai",
+						subscriptionType: "max",
+					});
+				},
+			});
+			expect(exitCode).toBe(0);
+		} finally {
+			globalThis.fetch = original;
+		}
+		// Control: the probe really ran and every local check really ran.
+		expect(events).toContain("probe");
+		expect(events).toContain("python");
+		expect(events).toContain("claude-version");
+		expect(events).toContain("claude-auth");
+		const firstProbe = events.indexOf("probe");
+		const lastLocal = Math.max(
+			events.lastIndexOf("python"),
+			events.lastIndexOf("claude-version"),
+			events.lastIndexOf("claude-auth"),
+		);
+		expect(firstProbe).toBeGreaterThan(lastLocal);
+	});
 });

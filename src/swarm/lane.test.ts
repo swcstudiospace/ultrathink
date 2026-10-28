@@ -10,6 +10,7 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +28,7 @@ import {
 	parseStatStartTicks,
 	START_TIME_TOLERANCE_MS,
 	verifyLaneProcess,
+	withLaneLock,
 	writeLaneFile,
 } from "./lane.ts";
 
@@ -372,5 +374,99 @@ describe("capRefusal", () => {
 		expect(text).toContain("/ultrathink-swarm stop [laneId|all]");
 		expect(text).toContain("ULTRATHINK_SWARM_MAX_LANES");
 		expect(text).toContain("limit 2");
+	});
+});
+
+describe("withLaneLock", () => {
+	const lockPath = (stateDir: string): string => join(stateDir, "swarm", ".lane-lock");
+
+	/** A fake clock whose sleep advances it, so a bounded wait finishes instantly. */
+	function fakeClock() {
+		let t = 1_000;
+		const sleeps: number[] = [];
+		return {
+			sleeps,
+			now: () => t,
+			sleep: (ms: number) => {
+				sleeps.push(ms);
+				t += ms;
+			},
+		};
+	}
+
+	test("returns fn's value, holds the lock while it runs and always releases it", () => {
+		const stateDir = tmp();
+		const value = withLaneLock(stateDir, () => {
+			expect(existsSync(lockPath(stateDir))).toBe(true);
+			return 7;
+		});
+		expect(value).toBe(7);
+		expect(existsSync(lockPath(stateDir))).toBe(false);
+		expect(() =>
+			withLaneLock(stateDir, () => {
+				throw new Error("boom");
+			}),
+		).toThrow("boom");
+		expect(existsSync(lockPath(stateDir))).toBe(false);
+	});
+
+	test("a lock held by another process is awaited, then taken once it is released", () => {
+		const stateDir = tmp();
+		mkdirSync(lockPath(stateDir), { recursive: true });
+		const clock = fakeClock();
+		let held = false;
+		withLaneLock(
+			stateDir,
+			() => {
+				held = existsSync(lockPath(stateDir));
+			},
+			{
+				now: clock.now,
+				sleep: (ms) => {
+					clock.sleep(ms);
+					// The other process finishes during its third wait.
+					if (clock.sleeps.length === 3) rmSync(lockPath(stateDir), { recursive: true });
+				},
+			},
+		);
+		expect(clock.sleeps).toHaveLength(3);
+		expect(held).toBe(true);
+		expect(existsSync(lockPath(stateDir))).toBe(false);
+	});
+
+	test("a lock older than the stale age belongs to a crashed holder: it is taken without waiting", () => {
+		const stateDir = tmp();
+		mkdirSync(lockPath(stateDir), { recursive: true });
+		const old = (Date.now() - 60_000) / 1000;
+		utimesSync(lockPath(stateDir), old, old);
+		const clock = fakeClock();
+		let ran = false;
+		withLaneLock(stateDir, () => (ran = true), { sleep: clock.sleep });
+		expect(ran).toBe(true);
+		expect(clock.sleeps).toEqual([]);
+		expect(existsSync(lockPath(stateDir))).toBe(false);
+	});
+
+	test("a lock that is never released fails open after the bounded wait and is left to its holder", () => {
+		const stateDir = tmp();
+		mkdirSync(lockPath(stateDir), { recursive: true });
+		const clock = fakeClock();
+		let ran = 0;
+		const value = withLaneLock(stateDir, () => ++ran, {
+			now: clock.now,
+			sleep: clock.sleep,
+			waitMs: 100,
+		});
+		expect(value).toBe(1);
+		expect(ran).toBe(1);
+		expect(clock.sleeps.length).toBeGreaterThan(0);
+		expect(clock.sleeps.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(110);
+		expect(existsSync(lockPath(stateDir))).toBe(true);
+	});
+
+	test("an unusable state directory fails open: fn still runs", () => {
+		const stateDir = tmp();
+		writeFileSync(join(stateDir, "swarm"), "not a directory");
+		expect(withLaneLock(stateDir, () => "ran")).toBe("ran");
 	});
 });

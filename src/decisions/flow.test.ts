@@ -8,6 +8,7 @@ import {
 	appendFlowScore,
 	evaluateFlowOutput,
 	FLOW_OUTPUT_MAX,
+	flowEvalActive,
 	isGsdFlowCommand,
 	lookupFlowScore,
 } from "./flow.ts";
@@ -152,6 +153,36 @@ describe("evaluateFlowOutput", () => {
 		appendFlowScore(path, record);
 		expect(lookupFlowScore(path, "abc")?.confidence).toBe(0.5);
 		expect(lookupFlowScore(path, "nope")).toBeUndefined();
+	});
+});
+
+describe("flowEvalActive", () => {
+	function storeFile(): string {
+		const path = join(tempDir(), "mcp-credentials.json");
+		writeFileSync(path, JSON.stringify({ version: 1, providers: {} }), { mode: 0o600 });
+		return path;
+	}
+
+	test("true only with a usable key on the picked rail and the kill switch off", () => {
+		const storePath = storeFile();
+		const input = { subject: "s", output: "o", storePath };
+		expect(flowEvalActive(input, { AI_GATEWAY_API_KEY: "vck_CANARYCANARYCANARY1234" })).toBe(true);
+		expect(flowEvalActive(input, { ULTRATHINK_OPENROUTER_KEY: K })).toBe(true);
+		expect(flowEvalActive(input, {})).toBe(false);
+		// OPENROUTER_API_KEY is not a Jev key variable.
+		expect(flowEvalActive(input, { OPENROUTER_API_KEY: K })).toBe(false);
+		expect(flowEvalActive(input, { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" })).toBe(
+			false,
+		);
+	});
+
+	test("agrees with evaluateFlowOutput: inactive exactly when the evaluation is inactive", async () => {
+		const storePath = storeFile();
+		for (const env of [{}, { ULTRATHINK_OPENROUTER_KEY: K }, { ULTRATHINK_DECISIONS: "0" }]) {
+			const input = { subject: "s", output: "", storePath, env };
+			const record = await evaluateFlowOutput(input);
+			expect(flowEvalActive(input, env)).toBe(record.state !== "inactive");
+		}
 	});
 });
 

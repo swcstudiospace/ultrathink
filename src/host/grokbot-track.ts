@@ -308,7 +308,8 @@ export function graphRegisterPayload(
 	const plan = record.plan;
 	if (!plan) throw new Error("session record has no plan");
 	const t = record.tracking;
-	const task = plan.task as { repo?: string; branch?: string; status?: string; prUrl?: string };
+	const task = plan.task;
+	const prUrl = record.ship?.pr?.url;
 	const payload: Record<string, unknown> = {
 		graph_id: plan.graphId,
 		surface: hostToSurface(options.surface ?? "grok-bot"),
@@ -317,7 +318,7 @@ export function graphRegisterPayload(
 	if (task.repo) payload.repo = task.repo;
 	if (task.branch) payload.branch = task.branch;
 	if (task.status) payload.status = task.status;
-	if (task.prUrl) payload.pr_url = task.prUrl;
+	if (prUrl) payload.pr_url = prUrl;
 	if (options.withNodes && t) {
 		const clean = (o: Record<string, unknown>) =>
 			Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== ""));
