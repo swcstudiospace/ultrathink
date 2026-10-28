@@ -76,9 +76,9 @@ const SCOPES: ReadonlyArray<{ scope: EnvScope; title: string; blurb: string }> =
 const COLUMNS =
 	"| name | aliases | secret | kind | default | description |\n| --- | --- | --- | --- | --- | --- |";
 
-/** A table cell: one line, with the column separator escaped. */
+/** A table cell: one line, with the backslash and the column separator escaped (the backslash first, so an escaped pipe stays one). */
 function cell(text: string): string {
-	return text.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
+	return text.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
 function code(text: string): string {

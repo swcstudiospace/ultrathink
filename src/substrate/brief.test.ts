@@ -833,7 +833,8 @@ function redirectingFetch(): { hops: Hop[]; fetch: typeof fetch } {
 			headers: (init?.headers ?? {}) as Record<string, string>,
 			redirect: init?.redirect,
 		});
-		if (String(url).startsWith(EVIL)) return new Response("# stolen brief", { status: 202 });
+		if (new URL(String(url)).host === new URL(EVIL).host)
+			return new Response("# stolen brief", { status: 202 });
 		if (init?.redirect === "error") throw new TypeError("fetch failed: redirect is not allowed");
 		return fake(`${EVIL}/brief`, init);
 	}

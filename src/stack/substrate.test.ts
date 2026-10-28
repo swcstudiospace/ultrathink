@@ -459,7 +459,7 @@ describe("probeSubstrate", () => {
 							: undefined,
 				});
 				if (url.endsWith("/healthz")) return Response.json({ ok: true });
-				if (url.startsWith("https://evil.example.com")) return new Response("# stolen");
+				if (new URL(url).host === "evil.example.com") return new Response("# stolen");
 				// The server answers 302. A fetch told `redirect: "error"` fails; any other follows to the target, bearer and all.
 				if (init?.redirect === "error")
 					throw new TypeError("fetch failed: redirect is not allowed");
@@ -477,7 +477,7 @@ describe("probeSubstrate", () => {
 				affects: ["brief"],
 				via: "http",
 			});
-			expect(hops.some((hop) => hop.url.startsWith("https://evil.example.com"))).toBe(false);
+			expect(hops.some((hop) => new URL(hop.url).host === "evil.example.com")).toBe(false);
 			expect(hops.map((hop) => hop.method)).toEqual(["GET", "POST"]);
 			expectNoSecret(result);
 		});
