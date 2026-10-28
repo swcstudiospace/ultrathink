@@ -871,6 +871,29 @@ describe("observe", () => {
 		expect(lines[1]).toMatch(/^Captured \S+ \(created\) · retain local-only/);
 	});
 
+	test("a rejected lesson is reported: a Note line and detail in --json; a clean run prints no Note", async () => {
+		const rejected = JSON.stringify({
+			lessons: [{ name: "Odd", description: "d", body: "b", kind: "weird", confidence: 0.7 }],
+		});
+		const human = await run(["observe", "--stdin"], {
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => rejected,
+		});
+		const lines = human.text.split("\n");
+		expect(lines[0]).toBe("Observed · 0 captured");
+		expect(lines[1]).toBe('Note: 1 lesson(s) rejected: unknown kind "weird"');
+		const asJson = await run(["observe", "--stdin", "--json"], {
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => rejected,
+		});
+		expect(json(asJson).detail).toBe('1 lesson(s) rejected: unknown kind "weird"');
+		const clean = await run(["observe", "--stdin"], {
+			stdin: async () => JSON.stringify(digest()),
+			complete: async () => DISTILLED,
+		});
+		expect(clean.text).not.toContain("Note:");
+	});
+
 	test("a digest below the tool-call floor is skipped with exit 0", async () => {
 		const result = await run(["observe", "--stdin", "--json"], {
 			stdin: async () => JSON.stringify(digest({ toolCalls: 1 })),

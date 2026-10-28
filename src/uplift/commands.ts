@@ -527,7 +527,7 @@ export async function runGrokCommand(
 			const opts = parseGrokCheckArgs(rest);
 			if (!opts) return { code: 2, text: GROK_CHECK_USAGE };
 			const result = await (input.check ?? runGrokCheck)({ grok }, opts);
-			return { code: result.exitCode, text: result.text };
+			return { code: result.exitCode, text: opts.json ? JSON.stringify(result.json) : result.text };
 		}
 		return { code: 2, text: `${GROK_LOGIN_USAGE}\n${GROK_CHECK_USAGE}` };
 	} catch (error) {

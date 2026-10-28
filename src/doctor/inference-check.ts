@@ -13,11 +13,12 @@ import { join } from "node:path";
 import { planEnv } from "../claude/complete.ts";
 import { displayId } from "../claude/output.ts";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
-import { grokAuthStatus } from "../grok/auth.ts";
+import { type GrokAuthStatus, grokAuthStatus } from "../grok/auth.ts";
 import { detectHost } from "../host/detect.ts";
 import { HOST_DEFAULT_ENGINES } from "../host/engine.ts";
 import { MEMORY_CHAIN, memoryChainFor } from "../host/memory-chain.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
+import { TEACH_KILL_ENV } from "../teach/types.ts";
 import { formatAge } from "./state-check.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
 
@@ -100,37 +101,80 @@ function effectiveClaudeModel(
 		: { model: config.claude.model.trim(), hostOverride: false };
 }
 
-function cliFinding(deps: DoctorDeps, bin: string, model: string): Finding | undefined {
+/** The minimum Claude Code version for a model id or alias, parsed; undefined for an unknown model. */
+function minimumFor(model: string): { text: string; parsed: [number, number, number] } | undefined {
+	const text = CLAUDE_MIN_VERSIONS[model.trim().toLowerCase()];
+	const parsed = text === undefined ? undefined : parseSemver(text);
+	return text !== undefined && parsed ? { text, parsed } : undefined;
+}
+
+/**
+ * The CLI findings: `inference.claude.cli` for the planning model, then, when `memoryModel` is given, a separate
+ * `inference.memory.cli` if the installed Claude Code is below the memory-bank model's minimum and updating for the
+ * planning finding would not already fix it.
+ */
+function cliFindings(
+	deps: DoctorDeps,
+	bin: string,
+	model: string,
+	memoryModel: string | undefined,
+): Finding[] {
 	if (!deps.which(bin)) {
-		return {
-			id: "inference.claude.cli",
-			section: "inference",
-			level: "warn",
-			title: "claude CLI not found: the Claude route cannot plan",
-			fix: "Install Claude Code (https://code.claude.com/docs/en/setup)",
-		};
+		return [
+			{
+				id: "inference.claude.cli",
+				section: "inference",
+				level: "warn",
+				title: "claude CLI not found: the Claude route cannot plan",
+				fix: "Install Claude Code (https://code.claude.com/docs/en/setup)",
+			},
+		];
 	}
 	const line = deps.claudeVersion?.(bin);
 	const version = line === undefined ? undefined : parseSemver(line);
-	if (!version) return undefined;
+	if (!version) return [];
 	const shown = version.join(".");
-	const minimum = CLAUDE_MIN_VERSIONS[model.trim().toLowerCase()];
-	const minimumVersion = minimum === undefined ? undefined : parseSemver(minimum);
-	if (minimum && minimumVersion && compareSemver(version, minimumVersion) < 0) {
-		return {
-			id: "inference.claude.cli",
-			section: "inference",
-			level: "warn",
-			title: `claude ${shown} is older than ${minimum}, which ${displayId(model, "<opaque-model>")} needs`,
-			fix: "claude update",
-		};
+	const planning = minimumFor(model);
+	const planningFails = planning !== undefined && compareSemver(version, planning.parsed) < 0;
+	const findings: Finding[] = [
+		planning && planningFails
+			? {
+					id: "inference.claude.cli",
+					section: "inference",
+					level: "warn",
+					title: `claude ${shown} is older than ${planning.text}, which ${displayId(model, "<opaque-model>")} needs`,
+					fix: "claude update",
+				}
+			: {
+					id: "inference.claude.cli",
+					section: "inference",
+					level: "ok",
+					title: `claude ${shown}`,
+				},
+	];
+	const memory = memoryModel === undefined ? undefined : minimumFor(memoryModel);
+	if (memoryModel === undefined || !memory || compareSemver(version, memory.parsed) >= 0) {
+		return findings;
 	}
-	return {
-		id: "inference.claude.cli",
+	// One `claude update` fixes both when the planning minimum is at least the memory minimum: do not repeat it.
+	if (planning && planningFails && compareSemver(planning.parsed, memory.parsed) >= 0) {
+		return findings;
+	}
+	findings.push({
+		id: "inference.memory.cli",
 		section: "inference",
-		level: "ok",
-		title: `claude ${shown}`,
-	};
+		level: "warn",
+		title: `claude ${shown} is older than ${memory.text}, which ${displayId(memoryModel, "<opaque-model>")} needs for memory-bank calls`,
+		fix: "claude update",
+	});
+	return findings;
+}
+
+/** Whether a `teach observe` distill can run, hence a memory-bank model call: not killed by env, enabled, and not explicit-only capture. */
+function memoryCallsActive(deps: DoctorDeps, config: UltrathinkConfig): boolean {
+	return (
+		deps.env[TEACH_KILL_ENV] !== "0" && config.teach.enabled && config.teach.capture !== "explicit"
+	);
 }
 
 function authFindings(deps: DoctorDeps, mode: "plan" | "api-key", bin: string): Finding[] {
@@ -212,6 +256,19 @@ function grokLoginFix(laneHome: string): string {
 		: "ultrathink grok login";
 }
 
+/** The Grok home the login finding reads and its signed-in state; offline, so an expired token is not refreshed. */
+function grokLoginState(
+	deps: DoctorDeps,
+	config: UltrathinkConfig,
+): { laneHome: string; status: GrokAuthStatus } {
+	const laneHome = config.grok.home.trim();
+	const home =
+		laneHome ||
+		deps.env.GROK_HOME?.trim() ||
+		join(deps.env.HOME?.trim() || deps.env.USERPROFILE?.trim() || homedir(), ".grok");
+	return { laneHome, status: grokAuthStatus(home, deps.now()) };
+}
+
 function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 	if (config.grok.transport === "shunt") {
 		return {
@@ -222,13 +279,8 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 		};
 	}
 	const now = deps.now();
-	const laneHome = config.grok.home.trim();
+	const { laneHome, status } = grokLoginState(deps, config);
 	const laneNote = laneHome ? `Grok lane home: ${laneHome}` : undefined;
-	const home =
-		laneHome ||
-		deps.env.GROK_HOME?.trim() ||
-		join(deps.env.HOME?.trim() || deps.env.USERPROFILE?.trim() || homedir(), ".grok");
-	const status = grokAuthStatus(home, now);
 	if (status.loggedIn && !status.expired) {
 		const account = status.email ?? "signed in";
 		const expires = status.expiresAt
@@ -289,11 +341,22 @@ function memoryFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 	const chain = memoryChainFor(config);
 	const primary = displayId(MEMORY_CHAIN.primary.model, "<opaque-model>");
 	const fallback = displayId(MEMORY_CHAIN.fallback.model, "<opaque-model>");
-	const withFallback = chain.length > 1;
+	const configured = chain.length > 1;
+	// The engine adds Grok only when the lane is signed in; the doctor reads the same state offline.
+	const login = configured ? grokLoginState(deps, config).status : undefined;
+	const active = login !== undefined && login.loggedIn && !login.expired;
 	const detail = [
 		"Hindsight needs no inference (chunks mode); only the local observe distill calls a model.",
 	];
-	if (!withFallback) detail.push(memoryFallbackReason(config));
+	if (!configured) detail.push(memoryFallbackReason(config));
+	let title = `Memory-bank inference: ${primary}`;
+	if (active) title += `, then ${fallback}`;
+	else if (configured) {
+		const why = login?.loggedIn ? "login expired" : "not signed in";
+		title += ` only; Grok Build fallback configured but inactive (${why}: ultrathink grok login)`;
+	} else if (!config.claude.fallbackToGrok) {
+		title += " only; Grok Build fallback is off (claude.fallbackToGrok is false)";
+	} else title += " only";
 	const ignored = (setting: string, value: string, scope: string): void => {
 		const shown = displayId(value, "<opaque-model>");
 		detail.push(`${setting} ${shown} applies to ${scope}, not to memory-bank calls`);
@@ -321,7 +384,7 @@ function memoryFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 		id: "inference.memory",
 		section: "inference",
 		level: "info",
-		title: `Memory-bank inference: ${primary}${withFallback ? `, then ${fallback}` : " only"}`,
+		title,
 		detail: detail.join("\n"),
 	};
 }
@@ -332,8 +395,14 @@ export function checkInference(deps: DoctorDeps): Finding[] {
 	const findings: Finding[] = [];
 	const bin = config.claude.bin;
 	const claude = effectiveClaudeModel(deps, config);
-	const cli = cliFinding(deps, bin, claude.model);
-	if (cli) findings.push(cli);
+	findings.push(
+		...cliFindings(
+			deps,
+			bin,
+			claude.model,
+			memoryCallsActive(deps, config) ? MEMORY_CHAIN.primary.model : undefined,
+		),
+	);
 	findings.push(...authFindings(deps, config.claude.auth, bin));
 	if (config.claude.auth === "plan") {
 		const key = keyFinding(deps);

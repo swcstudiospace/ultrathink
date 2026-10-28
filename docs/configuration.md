@@ -141,7 +141,7 @@ Used when the engine resolves to Grok: on Grok Build by default, or anywhere wit
 
 The `http` and `cli` transports need `grok login`. `shunt` does not; the gateway owns the upstream credentials.
 
-Use a dedicated `grok.home` when the xAI account that holds Grok Build is not the account your default `grok` CLI login uses. xAI rotates the refresh token every time it refreshes and retires the old one, so two applications must never share one login: `ultrathink grok login` signs the lane in with its own device login and never reads or writes `~/.grok`. `ultrathink grok check` makes one live call through the configured route and says whether the login is entitled to the model. See [Commands](commands.md#binultrathink).
+Use a dedicated `grok.home` when the xAI account that holds Grok Build is not the account your default `grok` CLI login uses. xAI rotates the refresh token every time it refreshes and retires the old one, so two applications must never share one login: `ultrathink grok login` signs the lane in with its own device login and never reads or writes `~/.grok`. `ultrathink grok check` runs a one-word probe through the configured route and says whether the login is entitled to the model. See [Commands](commands.md#binultrathink).
 
 ### `muse`: the Muse engine
 

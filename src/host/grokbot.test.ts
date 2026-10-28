@@ -61,7 +61,7 @@ import { injectTrackingXml, stripTrackingXml } from "../track/render.ts";
 import { parseDigest } from "../teach/digest.ts";
 import { mkdirSync } from "node:fs";
 import { MAX_STEPS } from "../think/types.ts";
-import { writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../think/prompts.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../uplift/prompt.ts";
 
@@ -1555,6 +1555,97 @@ describe("grok-bot teach digest and host", () => {
 		expect(captured.code).toBe(0);
 		const listed = await main(["teach", "list", "--json"], env);
 		expect(listed.text).toContain('"grok-bot"');
+	});
+
+	describe("teach observe distills on the memory chain, never the bot's own model", () => {
+		const DIGEST = {
+			host: "grok-bot",
+			sessionId: "s1",
+			cwd: "/work/repo",
+			at: "2026-10-02T10:00:00.000Z",
+			toolCalls: 4,
+			turns: [
+				{ role: "user", text: "make the build pass" },
+				{ role: "assistant", tool: "Bash", text: "Bash: bun run build" },
+				{ role: "tool", tool: "Bash", text: "TS1484: use import type", isError: true },
+				{ role: "assistant", tool: "Edit", text: "Edit: src/a.ts" },
+				{ role: "tool", tool: "Edit", text: "edited" },
+				{ role: "assistant", text: "Fixed." },
+			],
+		};
+		const LESSONS = JSON.stringify({
+			lessons: [
+				{
+					name: "Use import type",
+					description: "tsc rejects value imports of types",
+					body: "Use `import type` for type-only imports.",
+					kind: "pitfall",
+					confidence: 0.6,
+				},
+			],
+		});
+
+		/** A state dir holding the inbox digest, a user config that points `claude.bin` at `bin`, and the env to run with. */
+		function setup(bin: string): { env: NodeJS.ProcessEnv; state: string; inbox: string } {
+			const root = tmp();
+			const state = join(root, "state");
+			const inboxDir = join(state, "teach", "inbox");
+			mkdirSync(inboxDir, { recursive: true });
+			const inbox = join(inboxDir, "d1.json");
+			writeFileSync(inbox, JSON.stringify(DIGEST));
+			mkdirSync(join(root, "xdg", "ultrathink"), { recursive: true });
+			writeFileSync(
+				join(root, "xdg", "ultrathink", "config.json"),
+				JSON.stringify({ claude: { bin, model: "claude-sonnet-5-5" } }),
+			);
+			const env = {
+				...testEnv(root),
+				ULTRATHINK_STATE_DIR: state,
+				ULTRATHINK_HINDSIGHT: "0",
+			} as NodeJS.ProcessEnv;
+			return { env, state, inbox };
+		}
+
+		test("the pinned Haiku answers and no host journal is consulted or created", async () => {
+			const dir = tmp();
+			const argvLog = join(dir, "argv.log");
+			const bin = join(dir, "claude");
+			writeFileSync(
+				join(dir, "reply.json"),
+				JSON.stringify({ type: "result", is_error: false, result: LESSONS }),
+			);
+			writeFileSync(
+				bin,
+				[
+					"#!/bin/sh",
+					"cat >/dev/null",
+					`printf '%s\\n' "$*" >> '${argvLog}'`,
+					`cat '${dir}/reply.json'`,
+				].join("\n"),
+			);
+			chmodSync(bin, 0o755);
+			const { env, state, inbox } = setup(bin);
+			const result = await main(["teach", "observe", "--file", inbox, "--json"], env);
+			expect(result.code).toBe(0);
+			expect(result.text).not.toContain("needsModel");
+			const body = JSON.parse(result.text) as { captured: unknown[]; skipped?: string };
+			expect(body.skipped).toBeUndefined();
+			expect(body.captured).toHaveLength(1);
+			const argv = readFileSync(argvLog, "utf8").trim().split(/\s+/);
+			expect(argv[argv.indexOf("--model") + 1]).toBe("claude-haiku-5-5");
+			expect(existsSync(journalDir(state, "teach"))).toBe(false);
+		});
+
+		test("with no usable engine the report is skipped with its reason and never asks the bot for a model", async () => {
+			const { env, state, inbox } = setup(join(tmp(), "no-such-claude"));
+			const result = await main(["teach", "observe", "--file", inbox, "--json"], env);
+			expect(result.code).toBe(0);
+			expect(result.text).not.toContain("needsModel");
+			const body = JSON.parse(result.text) as { skipped?: string; detail?: string };
+			expect(body.skipped).toBe("distiller failed");
+			expect(typeof body.detail).toBe("string");
+			expect(existsSync(journalDir(state, "teach"))).toBe(false);
+		});
 	});
 });
 

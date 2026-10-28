@@ -9,7 +9,7 @@ description: >-
 # Ultrathink teach admin
 
 - `G teach status|list|show <id>|capture ...|recall "<q>"|confirm <id>|forget <id>|sync|export --a2a`
-- Observe a finished session: build the digest with `G teach digest --session S --transcript <turns.jsonl> [--outcome completed]` and pipe it into `G teach observe --stdin`. If the output lists `needsModel` (stage `distill`), answer it like a plan request: `G show --session teach <key>`, write the JSON lessons the SYSTEM text asks for, `G answer --session teach <key> --file F`, then re-run the same observe command.
+- Observe a finished session: build the digest with `G teach digest --session S --transcript <turns.jsonl> [--outcome completed]` and pipe it into `G teach observe --stdin`. The distill always runs on the pinned memory chain (Claude Haiku 5.5, then Grok Build when `claude.fallbackToGrok` is on); your own model is never asked, so the output never lists `needsModel`. A `skipped` report with a reason (for example `distiller failed`) means the chain could not answer: say so, and do not write the lessons yourself.
 - Promote: `G teach promote <id> --target drafts` only; `--install` is blocked.
 
 ## Shared rules (every ultrathink skill on Grok Bot)

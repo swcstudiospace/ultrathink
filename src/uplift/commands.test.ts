@@ -9,7 +9,7 @@ import { readControl, readSkipOnce, type SessionRecord, writeSession } from "../
 import type { DoctorReport } from "../doctor/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import type { HostId } from "../host/types.ts";
-import type { runGrokCheck } from "../grok/check.ts";
+import type { GrokCheckResult, runGrokCheck } from "../grok/check.ts";
 import type { runGrokLogin } from "../grok/login.ts";
 import { writeStore } from "../mcp/store.ts";
 import {
@@ -432,9 +432,16 @@ describe("runControl", () => {
 
 	describe("grok login and check", () => {
 		const calls: { check: unknown[]; login: unknown[] } = { check: [], login: [] };
+		const failedCheck: GrokCheckResult = {
+			ok: false,
+			exitCode: 1,
+			text: "Grok check: error (model-unavailable)",
+			json: { ok: false, class: "model-unavailable" },
+		};
+		let nextCheck = failedCheck;
 		const check: typeof runGrokCheck = async (deps, opts) => {
 			calls.check.push({ model: deps.grok.model, opts });
-			return { ok: false, exitCode: 1, text: "Grok check: error (model-unavailable)", json: {} };
+			return nextCheck;
 		};
 		const login: typeof runGrokLogin = async (deps, opts) => {
 			calls.login.push({ home: deps.grok.home, opts });
@@ -445,21 +452,40 @@ describe("runControl", () => {
 		beforeEach(() => {
 			calls.check = [];
 			calls.login = [];
+			nextCheck = failedCheck;
 		});
 
 		test("check passes its flags through with the module's exit code and text", async () => {
-			expect(
-				await run(["check", "--model", "Grok-Build-0.1", "--transport", "cli", "--json"]),
-			).toEqual({
+			expect(await run(["check", "--model", "Grok-Build-0.1", "--transport", "cli"])).toEqual({
 				code: 1,
 				text: "Grok check: error (model-unavailable)",
 			});
 			expect(calls.check).toEqual([
 				{
 					model: loadConfig(claudeConfigPaths(io.cwd)).grok.model,
-					opts: { model: "Grok-Build-0.1", transport: "cli", json: true },
+					opts: { model: "Grok-Build-0.1", transport: "cli" },
 				},
 			]);
+		});
+
+		test("check --json prints the result's JSON for a failed and an ok check, keeping the exit code", async () => {
+			const failed = await run(["check", "--json"]);
+			expect(failed.code).toBe(1);
+			expect(JSON.parse(failed.text)).toEqual({ ok: false, class: "model-unavailable" });
+			nextCheck = {
+				ok: true,
+				exitCode: 0,
+				text: "Grok check: ok · grok-build-0.1",
+				json: { ok: true, model: "grok-build-0.1", account: "lane@example.test" },
+			};
+			const ok = await run(["check", "--json"]);
+			expect(ok.code).toBe(0);
+			expect(JSON.parse(ok.text)).toEqual({
+				ok: true,
+				model: "grok-build-0.1",
+				account: "lane@example.test",
+			});
+			expect((await run(["check"])).text).toBe("Grok check: ok · grok-build-0.1");
 		});
 
 		test("login keeps the directory's case and returns the module's code", async () => {

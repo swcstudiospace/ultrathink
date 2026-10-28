@@ -13,7 +13,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { GrokAuthStatus } from "./auth.ts";
 import type { GrokCheckResult } from "./check.ts";
 import { type GrokLoginDeps, runGrokLogin } from "./login.ts";
@@ -51,7 +51,12 @@ function harness(overrides: Partial<GrokLoginDeps> = {}) {
 	const calls: SpawnCall[] = [];
 	const deps: GrokLoginDeps = {
 		grok: DEFAULT_GROK_CONFIG,
-		env: { XDG_CONFIG_HOME: xdg, XAI_API_KEY: "xai-planted-key", KEEP: "1" },
+		env: {
+			XDG_CONFIG_HOME: xdg,
+			CLAUDE_CONFIG_DIR: join(xdg, "claude"),
+			XAI_API_KEY: "xai-planted-key",
+			KEEP: "1",
+		},
 		spawn: async (cmd, env) => {
 			calls.push({ cmd, env });
 			return 0;
@@ -60,7 +65,13 @@ function harness(overrides: Partial<GrokLoginDeps> = {}) {
 		check: async () => CHECK_OK,
 		...overrides,
 	};
-	return { deps, calls, xdg, configPath: join(xdg, "ultrathink", "config.json") };
+	return {
+		deps,
+		calls,
+		xdg,
+		configPath: join(xdg, "ultrathink", "config.json"),
+		claudePath: join(xdg, "claude", "ultrathink.json"),
+	};
 }
 
 describe("runGrokLogin", () => {
@@ -234,15 +245,73 @@ describe("runGrokLogin --write-config", () => {
 
 	test("writeUserConfig is the seam: its returned path is reported", async () => {
 		const homes: string[] = [];
-		const { deps } = harness({
-			writeUserConfig: (home) => {
-				homes.push(home);
-				return "/custom/config.json";
-			},
-		});
+		const { deps, configPath } = harness();
 		const home = join(tempDir(), "lane");
-		const result = await runGrokLogin(deps, { home, writeConfig: true });
+		const result = await runGrokLogin(
+			{
+				...deps,
+				writeUserConfig: (lane) => {
+					homes.push(lane);
+					mkdirSync(dirname(configPath), { recursive: true });
+					writeFileSync(configPath, JSON.stringify({ grok: { home: lane } }));
+					return configPath;
+				},
+			},
+			{ home, writeConfig: true },
+		);
 		expect(homes).toEqual([home]);
-		expect(result.text).toContain("/custom/config.json");
+		expect(result.exitCode).toBe(0);
+		expect(result.text).toContain(configPath);
+	});
+
+	test("writes into the higher-priority user file that already sets grok.home", async () => {
+		const home = join(tempDir(), "lane");
+		const { deps, configPath, claudePath } = harness();
+		mkdirSync(dirname(configPath), { recursive: true });
+		mkdirSync(dirname(claudePath), { recursive: true });
+		writeFileSync(configPath, `${JSON.stringify({ grok: { home: "/low" }, keep: 1 })}\n`);
+		writeFileSync(claudePath, `${JSON.stringify({ grok: { home: "/old", enabled: true } })}\n`);
+		chmodSync(claudePath, 0o600);
+		const lowBefore = readFileSync(configPath, "utf8");
+		const result = await runGrokLogin(deps, { home, writeConfig: true });
+		expect(result.ok).toBe(true);
+		expect(result.exitCode).toBe(0);
+		expect(result.text).toContain(`set grok.home in ${claudePath}`);
+		expect(JSON.parse(readFileSync(claudePath, "utf8"))).toEqual({
+			grok: { home, enabled: true },
+		});
+		expect(statSync(claudePath).mode & 0o777).toBe(0o600);
+		expect(readFileSync(configPath, "utf8")).toBe(lowBefore);
+	});
+
+	test("when no user file sets grok.home the default user file is created", async () => {
+		const home = join(tempDir(), "lane");
+		const { deps, configPath, claudePath } = harness();
+		mkdirSync(dirname(claudePath), { recursive: true });
+		writeFileSync(claudePath, `${JSON.stringify({ claude: { model: "claude-haiku-5-5" } })}\n`);
+		const claudeBefore = readFileSync(claudePath, "utf8");
+		const result = await runGrokLogin(deps, { home, writeConfig: true });
+		expect(result.exitCode).toBe(0);
+		expect(result.text).toContain(`set grok.home in ${configPath}`);
+		expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ grok: { home } });
+		expect(statSync(configPath).mode & 0o777).toBe(0o600);
+		expect(readFileSync(claudePath, "utf8")).toBe(claudeBefore);
+	});
+
+	test("an override that was not changed is a warning naming the winning file and value, exit 1", async () => {
+		const home = join(tempDir(), "lane");
+		const { deps, configPath, claudePath } = harness();
+		mkdirSync(dirname(claudePath), { recursive: true });
+		writeFileSync(claudePath, `${JSON.stringify({ grok: { home: "/winner" } })}\n`);
+		const result = await runGrokLogin(
+			{ ...deps, writeUserConfig: () => configPath },
+			{ home, writeConfig: true },
+		);
+		expect(result.ok).toBe(false);
+		expect(result.exitCode).toBe(1);
+		expect(result.text).toContain("warning");
+		expect(result.text).toContain(claudePath);
+		expect(result.text).toContain("/winner");
+		expect(result.text).toContain(home);
 	});
 });

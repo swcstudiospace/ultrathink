@@ -32,7 +32,7 @@ import {
 
 const KEY = "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCD";
 
-function lessonJson(...items: Record<string, unknown>[]): string {
+function lessonJson(...items: unknown[]): string {
 	return JSON.stringify({ lessons: items });
 }
 
@@ -821,5 +821,140 @@ describe("observeDigest engine (purpose memory)", () => {
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("lesson kind normalization and visible rejections", () => {
+	const ALIASES = [
+		[
+			"pattern",
+			[
+				"convention",
+				"rule",
+				"guideline",
+				"practice",
+				"best-practice",
+				"standard",
+				"style",
+				"idiom",
+				"principle",
+			],
+		],
+		[
+			"pitfall",
+			["gotcha", "trap", "mistake", "warning", "anti-pattern", "antipattern", "caveat", "footgun"],
+		],
+		["bug", ["defect", "issue", "regression", "error", "fix"]],
+		["decision", ["choice", "rationale", "tradeoff", "trade-off", "architecture", "policy"]],
+		[
+			"playbook",
+			[
+				"procedure",
+				"workflow",
+				"runbook",
+				"steps",
+				"recipe",
+				"checklist",
+				"process",
+				"howto",
+				"how-to",
+			],
+		],
+	] as const;
+
+	test("a Haiku-style reply with kind convention is captured as a pattern, with no detail", async () => {
+		const h = harness({ reply: lessonJson({ ...GOOD, kind: "convention" }) });
+		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
+		expect(h.captured.map((c) => c.kind)).toEqual(["pattern"]);
+		expect(outcome.captured).toHaveLength(1);
+		expect(outcome.detail).toBeUndefined();
+	});
+
+	test.each(ALIASES.flatMap(([kind, words]) => words.map((word) => [word, kind] as const)))(
+		"alias %s maps to %s",
+		(word, kind) => {
+			expect(parseLessons(lessonJson({ ...GOOD, kind: word }))[0]?.kind).toBe(kind);
+		},
+	);
+
+	test.each([
+		["Anti_Pattern", "pitfall"],
+		["  Best Practice  ", "pattern"],
+		["BUG", "bug"],
+		["Pitfall", "pitfall"],
+		["how to", "playbook"],
+		["Trade_Off", "decision"],
+	] as const)("kind %j normalizes to %s", (raw, kind) => {
+		expect(parseLessons(lessonJson({ ...GOOD, kind: raw }))[0]?.kind).toBe(kind);
+	});
+
+	test("an unknown kind is dropped and the report's detail names it", async () => {
+		const h = harness({
+			reply: lessonJson(
+				{ ...GOOD, name: "Odd one", kind: "weird" },
+				{ ...GOOD, name: "Odd two", kind: "strange" },
+				{ ...GOOD, name: "Kept" },
+			),
+		});
+		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
+		expect(h.captured.map((c) => c.name)).toEqual(["Kept"]);
+		expect(outcome.detail).toBe('2 lesson(s) rejected: unknown kind "weird"');
+		expect(outcome.dropped).toBe(0);
+		expect(outcome.skipped).toBeUndefined();
+	});
+
+	test("a reply whose only lesson is rejected still reports why", async () => {
+		const h = harness({ reply: lessonJson({ ...GOOD, kind: "weird" }) });
+		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
+		expect(outcome.captured).toEqual([]);
+		expect(outcome.detail).toBe('1 lesson(s) rejected: unknown kind "weird"');
+	});
+
+	test("a clean reply and an empty lessons answer set no detail", async () => {
+		for (const reply of [lessonJson(GOOD), '{"lessons":[]}']) {
+			const h = harness({ reply });
+			const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
+			expect(outcome.detail).toBeUndefined();
+		}
+	});
+
+	test("a secret-shaped kind never reaches the detail", async () => {
+		const h = harness({ reply: lessonJson({ ...GOOD, kind: KEY }) });
+		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
+		expect(outcome.detail).toStartWith("1 lesson(s) rejected: unknown kind");
+		expect(outcome.detail).not.toContain("abcdefghijklmnopqrstuvwxyz0123");
+	});
+
+	test("parseLessons collects the reason of every rejected item", () => {
+		const rejections: string[] = [];
+		const lessons = parseLessons(
+			lessonJson(
+				{ ...GOOD, kind: "rumor" },
+				{ ...GOOD, kind: 4 },
+				{ ...GOOD, name: 5 },
+				{ ...GOOD, description: 7 },
+				{ ...GOOD, confidence: "high" },
+				{ ...GOOD, name: "   " },
+				"nope",
+				{ ...GOOD, name: "Valid" },
+			),
+			rejections,
+		);
+		expect(lessons.map((l) => l.name)).toEqual(["Valid"]);
+		expect(rejections).toEqual([
+			'unknown kind "rumor"',
+			"kind is not a string",
+			"name or body is not a string",
+			"description is not a string",
+			"confidence is not a number",
+			"name or body is empty",
+			"lesson is not an object",
+		]);
+	});
+
+	test("the distiller prompt tells the model to use exactly one kind word", () => {
+		expect(DISTILL_SYSTEM).toContain(
+			"Use exactly one of those words; if none fits exactly, pick the closest (pattern for conventions).",
+		);
 	});
 });

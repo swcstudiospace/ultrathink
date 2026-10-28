@@ -10,7 +10,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import { userConfigPath } from "../config.ts";
+import { claudeConfigPaths, userConfigPath } from "../config.ts";
 import { isRecord } from "../shared.ts";
 import { type GrokAuthStatus, grokAuthStatus, redactSecrets } from "./auth.ts";
 import { type GrokCheckResult, runGrokCheck } from "./check.ts";
@@ -96,6 +96,30 @@ function writeGrokHome(path: string, home: string): string {
 	return path;
 }
 
+/** Every user-layer config file, lowest priority first. A project layer cannot set `grok.home`. */
+function userConfigFiles(env: Record<string, string | undefined>): string[] {
+	return claudeConfigPaths(process.cwd(), env).filter(
+		(source): source is string => typeof source === "string",
+	);
+}
+
+/** The highest-priority user file that sets `grok.home`; any string counts, as in `mergeGrok`. */
+function winningGrokHome(files: readonly string[]): { path: string; value: string } | undefined {
+	for (const path of files.toReversed()) {
+		if (!existsSync(path)) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(readFileSync(path, "utf8"));
+		} catch {
+			// reason: an unreadable or invalid file is skipped by the config loader too
+			continue;
+		}
+		if (isRecord(parsed) && isRecord(parsed.grok) && typeof parsed.grok.home === "string")
+			return { path, value: parsed.grok.home.trim() };
+	}
+	return undefined;
+}
+
 /**
  * Signs the dedicated Grok lane in with the OFFICIAL Grok CLI under its own `GROK_HOME`.
  * Ultrathink never reads or refreshes tokens here: xAI rotates refresh tokens, so the lane
@@ -152,14 +176,26 @@ export async function runGrokLogin(
 	lines.push((await check(home)).text);
 
 	if (opts.writeConfig) {
+		const files = userConfigFiles(env);
+		let written: string;
 		try {
-			const written = deps.writeUserConfig
+			// Write where grok.home is already decided, or a later `grok check` keeps the old home.
+			written = deps.writeUserConfig
 				? deps.writeUserConfig(home)
-				: writeGrokHome(userConfigPath(env), home);
-			lines.push(`Grok login: set grok.home in ${written}`);
+				: writeGrokHome(winningGrokHome(files)?.path ?? userConfigPath(env), home);
 		} catch (error) {
 			const message = redactSecrets(error instanceof Error ? error.message : String(error));
 			lines.push(`Grok login: config not written (${message})`);
+			return { ok: false, exitCode: 1, text: lines.join("\n") };
+		}
+		lines.push(`Grok login: set grok.home in ${written}`);
+		const winner = winningGrokHome(files);
+		if (winner?.value !== home) {
+			lines.push(
+				winner
+					? `Grok login: warning · ${winner.path} sets grok.home to ${winner.value || "(empty)"} and overrides the lane home ${home}; change or remove grok.home there`
+					: `Grok login: warning · grok.home is still unset after writing ${written}; the lane is not in use`,
+			);
 			return { ok: false, exitCode: 1, text: lines.join("\n") };
 		}
 	} else {
