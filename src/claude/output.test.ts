@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -17,6 +17,7 @@ import { MAX_ENGINE_ERROR_CHARS } from "../host/display-limits.ts";
 import type { HostId } from "../host/types.ts";
 import { FALLBACK_GRAPH } from "../think/types.ts";
 import type { DecisionPoint, DecisionRecord, DecisionsErrorKind } from "../decisions/types.ts";
+import { openJevHealth, takeJevWarning } from "../decisions/health.ts";
 import {
 	formatDecisionsBit,
 	formatModelSelection,
@@ -371,6 +372,50 @@ describe("formatSummary", () => {
 		expect(formatSummary({ result, engine: "claude:x" })).toBe(
 			"Prompt Uplift · BUILD_PROMPT · llm · claude:x",
 		);
+	});
+
+	test("Jev bit shows the breaker's one-time warning and nothing otherwise", () => {
+		const warning = "Jev unavailable: OpenRouter reports insufficient credits since 2026-10-28.";
+		expect(formatSummary({ result, engine: "claude:x", jevWarning: warning })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · claude:x · Jev · unavailable: OpenRouter reports insufficient credits since 2026-10-28.",
+		);
+		expect(formatSummary({ result, engine: "claude:x" })).not.toContain("Jev ·");
+	});
+
+	test("fed by takeJevWarning, the Jev bit appears once per cause entry and never while closed", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ut-summary-jev-"));
+		try {
+			const now = 1_000_000;
+			const summary = (): string =>
+				formatSummary({ result, engine: "claude:x", jevWarning: takeJevWarning(dir, now) });
+			const health = openJevHealth(dir, "openrouter");
+			expect(summary()).not.toContain("Jev ·");
+			health.recordFailure("credits", now);
+			expect(summary()).toContain("Jev · unavailable: OpenRouter reports insufficient credits");
+			expect(summary()).not.toContain("Jev ·");
+			// Only the claimed probe's success ends the spell.
+			const due = health.read().nextProbeAt ?? 0;
+			const probe = health.shouldCall(due);
+			if (!probe.call) throw new Error("expected the probe to be allowed");
+			health.recordSuccess(due, probe);
+			expect(summary()).not.toContain("Jev ·");
+			writeFileSync(join(dir, "decisions-health-openrouter.json"), "{corrupt");
+			expect(summary()).not.toContain("Jev ·");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a failing Vercel rail is named as Vercel in the summary bit", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ut-summary-jev-"));
+		try {
+			openJevHealth(dir, "vercel").recordFailure("auth", 1_000_000);
+			expect(
+				formatSummary({ result, engine: "claude:x", jevWarning: takeJevWarning(dir, 1_000_001) }),
+			).toContain("Jev · unavailable: Vercel AI Gateway rejected the key");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("adds engine, open HITL count and engine error bits only when provided", () => {

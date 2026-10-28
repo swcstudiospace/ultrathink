@@ -39,7 +39,11 @@ function runWith(
 	opts: { stdin?: string },
 	...args: string[]
 ): { code: number | null; stdout: string; stderr: string } {
-	const { OPENROUTER_API_KEY: _machineKey, ...env } = process.env;
+	const {
+		OPENROUTER_API_KEY: _legacyKey,
+		ULTRATHINK_OPENROUTER_KEY: _jevKey,
+		...env
+	} = process.env;
 	const proc = Bun.spawnSync([process.execPath, CLI, ...args], {
 		cwd: root,
 		env: {
@@ -414,7 +418,9 @@ describe("openrouter API-key provider", () => {
 			"--no-verify",
 		);
 		expect(code).toBe(0);
-		expect(stdout).toBe("openrouter: api key stored (35 chars)\n");
+		expect(stdout).toBe(
+			"openrouter: api key stored (35 chars)\nJev reads it from the credential store first, then ULTRATHINK_OPENROUTER_KEY.\n",
+		);
 		noLeak(stdout, stderr);
 		expect(statSync(store()).mode & 0o777).toBe(0o600);
 		expect(resolveOpenRouterKey(store(), {})).toEqual({ key: K, source: "store" });
@@ -422,7 +428,7 @@ describe("openrouter API-key provider", () => {
 
 	test("set-key --env-file --var stores the key from an env file", () => {
 		const file = join(root, "openrouter.env");
-		writeFileSync(file, `# keys\nOPENROUTER_API_KEY=${K}\n`);
+		writeFileSync(file, `# keys\nULTRATHINK_OPENROUTER_KEY=${K}\n`);
 		const { code, stdout, stderr } = run(
 			"auth",
 			"set-key",
@@ -430,11 +436,13 @@ describe("openrouter API-key provider", () => {
 			"--env-file",
 			file,
 			"--var",
-			"OPENROUTER_API_KEY",
+			"ULTRATHINK_OPENROUTER_KEY",
 			"--no-verify",
 		);
 		expect(code).toBe(0);
-		expect(stdout).toBe("openrouter: api key stored (35 chars)\n");
+		expect(stdout).toBe(
+			"openrouter: api key stored (35 chars)\nJev reads it from the credential store first, then ULTRATHINK_OPENROUTER_KEY.\n",
+		);
 		noLeak(stdout, stderr);
 		expect(statSync(store()).mode & 0o777).toBe(0o600);
 		expect(resolveOpenRouterKey(store(), {})).toEqual({ key: K, source: "store" });

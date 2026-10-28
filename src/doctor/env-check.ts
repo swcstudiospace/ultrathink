@@ -9,8 +9,10 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
+import { describeJevHealth } from "../decisions/health.ts";
 import { DECISIONS_PROVIDERS, type DecisionsProvider } from "../decisions/types.ts";
 import { resolveGatewayToken, serviceBackend } from "../gateway/settings.ts";
 import {
@@ -274,7 +276,28 @@ export function checkCredentials(deps: DoctorDeps): Finding[] {
 				detail: "Decision points are skipped without one; planning continues.",
 				fix: `bin/ultrathink-mcp auth set-key ${firstRail} --stdin${otherRails.length > 0 ? ` (or ${otherRails.join(", ")})` : ""}`,
 			});
+			if (env.OPENROUTER_API_KEY?.trim()) {
+				// Retired name: say so instead of leaving the owner wondering why an exported key does nothing.
+				add({
+					id: "credentials.jev.legacy",
+					level: "warn",
+					title: "Jev decisions: OPENROUTER_API_KEY is set but Ultrathink no longer reads it",
+					detail: "Jev reads the credential store or ULTRATHINK_OPENROUTER_KEY.",
+					fix: "bin/ultrathink-mcp auth set-key openrouter --stdin",
+				});
+			}
 		}
+		const breaker = describeJevHealth(defaultStateDir(env), deps.now());
+		if (breaker) add({ id: "decisions.health", level: "warn", title: breaker });
+	}
+	if (env.OPENROUTER_API_KEY?.trim()) {
+		add({
+			id: "credentials.openrouter-export",
+			level: "warn",
+			title:
+				"OPENROUTER_API_KEY is exported: Ultrathink no longer reads it (Jev uses the credential store or ULTRATHINK_OPENROUTER_KEY), so the export only lets other tools in this environment spend the key",
+			fix: "remove the export from your shell profile or service unit",
+		});
 	}
 	return findings;
 }

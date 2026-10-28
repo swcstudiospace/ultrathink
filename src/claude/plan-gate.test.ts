@@ -30,7 +30,7 @@ function runtime(
 	fetchImpl: typeof fetch,
 	config: Partial<DecisionsConfig> = {},
 	sessionId?: string,
-	env: Record<string, string> = { OPENROUTER_API_KEY: K },
+	env: Record<string, string> = { ULTRATHINK_OPENROUTER_KEY: K },
 ): Decisions {
 	const dir = mkdtempSync(join(tmpdir(), "ut-decisions-plan-gate-"));
 	dirs.push(dir);
@@ -176,7 +176,7 @@ describe("planGate", () => {
 	test("an inactive point plans with zero requests and no record: killed, not listed, or no key", async () => {
 		const R = recordingFetch([JEV(0.01)]);
 		for (const decisions of [
-			runtime(R.fetch, {}, undefined, { OPENROUTER_API_KEY: K, ULTRATHINK_DECISIONS: "0" }),
+			runtime(R.fetch, {}, undefined, { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" }),
 			runtime(R.fetch, { points: ["ship", "knowledge", "blocking"] }),
 			runtime(R.fetch, { points: [] }),
 			runtime(R.fetch, {}, undefined, {}),

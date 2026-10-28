@@ -100,6 +100,20 @@ describe("runGrokLogin", () => {
 		expect(deps.env).toHaveProperty("XAI_API_KEY");
 	});
 
+	test("the login child never inherits the Jev key variables", async () => {
+		const { deps, calls } = harness();
+		const planted = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+		deps.env = {
+			...deps.env,
+			ULTRATHINK_OPENROUTER_KEY: planted,
+			OPENROUTER_API_KEY: planted,
+		};
+		await runGrokLogin(deps, { home: join(tempDir(), "lane") });
+		expect(calls[0]?.env).not.toHaveProperty("ULTRATHINK_OPENROUTER_KEY");
+		expect(calls[0]?.env).not.toHaveProperty("OPENROUTER_API_KEY");
+		expect(calls[0]?.env.KEEP).toBe("1");
+	});
+
 	test("the default home is <XDG_CONFIG_HOME>/ultrathink/grok", async () => {
 		const { deps, calls, xdg } = harness();
 		const made: string[] = [];

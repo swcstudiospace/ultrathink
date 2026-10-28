@@ -14,7 +14,12 @@ import {
 	validateRequest,
 } from "./client.ts";
 import { QUESTIONS } from "./questions.ts";
-import { DecisionsError, type DecisionsRequest, type DecisionsResponse } from "./types.ts";
+import {
+	DecisionsError,
+	type DecisionsRequest,
+	type DecisionsResponse,
+	isJevModelId,
+} from "./types.ts";
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
@@ -587,6 +592,67 @@ describe("decide: local request validation (D7)", () => {
 		expect(validateRequest({ ...REQUEST, state: [] })).toBeUndefined();
 		expect(validateRequest(CHOICE_REQUEST)).toBeUndefined();
 		expect(validateRequest(SCORE_REQUEST)).toBeUndefined();
+	});
+});
+
+describe("Jev-only model guard", () => {
+	test.each([
+		["~typesafe/jev-latest", true],
+		["typesafe/jev-1.13-20260917", true],
+		["typesafe-ai/jev", true],
+		["anthropic/claude-opus-5.5", false],
+		["z-ai/glm-5.3-flash", false],
+		["anthropic/claude-sonnet-5-5", false],
+		["anthropic/claude-haiku-5-5", false],
+		["x-ai/grok-4.7", false],
+		["typesafe/jevx", false],
+		["typesafe/jev/extra", false],
+		["evil/typesafe/jev", false],
+		["~anthropic/x", false],
+		["", false],
+		[undefined, false],
+		[42, false],
+		[null, false],
+	])("isJevModelId(%p) is %p", (value, expected) => {
+		expect(isJevModelId(value)).toBe(expected);
+	});
+
+	test("decide refuses a non-Jev model with kind model and zero requests", async () => {
+		const r = recordingFetch([JEV(0.5)]);
+		const refused = "anthropic/claude-opus-5.5";
+		const outcome = await failure(r.fetch, {}, { ...REQUEST, model: refused });
+		expect(outcome.error.kind).toBe("model");
+		expect(outcome.error.message).toContain(refused);
+		expect(outcome.error.message).toContain("only Jev models");
+		expect(outcome.attempts).toBe(0);
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("a long refused id is cut to 120 chars in the message", async () => {
+		const r = recordingFetch([JEV(0.5)]);
+		const outcome = await failure(r.fetch, {}, { ...REQUEST, model: `x/${"a".repeat(400)}` });
+		expect(outcome.error.kind).toBe("model");
+		expect(outcome.error.message).not.toContain("a".repeat(121));
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("after a 402 nothing else is tried: one request, same model, URL and key", async () => {
+		const r = recordingFetch([ERR(402), JEV(0.5)]);
+		const outcome = await failure(r.fetch);
+		expect(outcome.error.kind).toBe("credits");
+		expect(r.calls).toHaveLength(1);
+		expect(r.calls[0]?.url).toBe(ENDPOINT);
+		expect(r.calls[0]?.body).toMatchObject({ model: "~typesafe/jev-latest" });
+	});
+
+	test("after a transient 503 the retry reuses the same model, URL and key", async () => {
+		const r = recordingFetch([ERR(503), ERR(503)]);
+		await failure(r.fetch);
+		expect(r.calls).toHaveLength(2);
+		expect(r.calls[1]?.url).toBe(r.calls[0]?.url);
+		expect(r.calls[1]?.headers.authorization).toBe(r.calls[0]?.headers.authorization);
+		expect(r.calls[1]?.body).toEqual(r.calls[0]?.body);
+		expect(r.calls[0]?.body).toMatchObject({ model: "~typesafe/jev-latest" });
 	});
 });
 

@@ -7,6 +7,7 @@
  * `claude auth status --json` probes, which read local state. The live probes (`ultrathink-mcp check`,
  * `decisions check`, `hindsight check`, `ragflow check`) stay separate commands.
  */
+import { dropJevKeys } from "../route-defaults.ts";
 import { checkConfig } from "./config-check.ts";
 import { checkCredentials, checkRuntime } from "./env-check.ts";
 import { checkInference } from "./inference-check.ts";
@@ -27,8 +28,10 @@ function runClaude(
 	env: Record<string, string | undefined>,
 ): string | undefined {
 	try {
+		const childEnv = { ...env };
+		dropJevKeys(childEnv);
 		const proc = Bun.spawnSync([bin, ...args], {
-			env,
+			env: childEnv,
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "ignore",

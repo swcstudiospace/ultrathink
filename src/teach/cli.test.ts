@@ -1022,7 +1022,7 @@ describe("observe", () => {
 						},
 					],
 				}),
-			env: { ...baseEnv(), OPENROUTER_API_KEY: JEV_KEY },
+			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn({ points: ["teachable"] }) },
 			fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
 				calls.push(String(init?.body ?? ""));
@@ -1235,7 +1235,7 @@ describe("promote", () => {
 		seed(playbook());
 		const calls = { n: 0 };
 		const result = await run(["promote", "feed0001"], {
-			env: { ...baseEnv(), OPENROUTER_API_KEY: JEV_KEY },
+			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn() },
 			fetch: jevFetch(0.1, calls),
 		});
@@ -1250,7 +1250,7 @@ describe("promote", () => {
 		seed(playbook());
 		const lowCalls = { n: 0 };
 		const low = await run(["promote", "--due"], {
-			env: { ...baseEnv(), OPENROUTER_API_KEY: JEV_KEY },
+			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn() },
 			fetch: jevFetch(0.1, lowCalls),
 		});
@@ -1261,7 +1261,7 @@ describe("promote", () => {
 
 		const offCalls = { n: 0 };
 		const off = await run(["promote", "--due"], {
-			env: { ...baseEnv(), OPENROUTER_API_KEY: JEV_KEY, ULTRATHINK_DECISIONS: "0" },
+			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY, ULTRATHINK_DECISIONS: "0" },
 			config: { ...config(), decisions: decisionsOn() },
 			fetch: jevFetch(0.1, offCalls),
 		});
@@ -1392,7 +1392,7 @@ describe("observe run log and outbox drain", () => {
 		const result = await run(["observe", "--stdin", "--json"], {
 			stdin: async () => JSON.stringify(digest()),
 			complete: async () => lessons,
-			env: { ...baseEnv(), OPENROUTER_API_KEY: JEV_KEY },
+			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn({ points: ["teachable"] }) },
 			// The Decisions call runs once per lesson, just before its capture: break the store after the first one.
 			fetch: (async () => {

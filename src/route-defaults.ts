@@ -16,3 +16,14 @@ export const ROUTE_DEFAULT_MODELS: Readonly<Record<LegacyRoute, string>> = Objec
 	grok: "grok-build-0.1",
 	muse: "muse-spark-1.3-contributor",
 });
+
+/** Variables holding the Jev OpenRouter key; no model-CLI child Ultrathink spawns may inherit them (SDKs auto-read the generic name). */
+const JEV_KEY_ENV_NAMES: readonly string[] = Object.freeze([
+	"ULTRATHINK_OPENROUTER_KEY",
+	"OPENROUTER_API_KEY",
+]);
+
+/** Deletes the Jev key variables from a child env the caller already owns (a copy, never `process.env`); the one place every model-CLI launch drops them. */
+export function dropJevKeys(env: Record<string, string | undefined>): void {
+	for (const name of JEV_KEY_ENV_NAMES) delete env[name];
+}

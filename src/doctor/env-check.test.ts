@@ -179,17 +179,116 @@ describe("env checks", () => {
 		});
 
 		test("a Jev key from the environment or the store is present, named by source, never shown", () => {
-			setEnv({ OPENROUTER_API_KEY: FAKE_KEY });
+			setEnv({ ULTRATHINK_OPENROUTER_KEY: FAKE_KEY });
 			let jev = byId(checkCredentials(deps), "credentials.jev");
 			expect(jev).toMatchObject({
 				level: "ok",
-				title: "Jev decisions: OpenRouter key present (OPENROUTER_API_KEY)",
+				title: "Jev decisions: OpenRouter key present (ULTRATHINK_OPENROUTER_KEY)",
 			});
 
-			deps = { ...deps, env: { ...deps.env, OPENROUTER_API_KEY: undefined } };
+			deps = { ...deps, env: { ...deps.env, ULTRATHINK_OPENROUTER_KEY: undefined } };
 			store({ vercel: apiKey() });
 			jev = byId(checkCredentials(deps), "credentials.jev");
 			expect(jev.title).toBe("Jev decisions: Vercel AI Gateway key present (credential store)");
+		});
+
+		test("an exported OPENROUTER_API_KEY is warned about and never counted as a Jev key", () => {
+			let findings = checkCredentials(deps);
+			expect(findings.map((finding) => finding.id)).not.toContain("credentials.openrouter-export");
+
+			setEnv({ OPENROUTER_API_KEY: FAKE_KEY });
+			findings = checkCredentials(deps);
+			expect(byId(findings, "credentials.openrouter-export")).toMatchObject({
+				level: "warn",
+				fix: "remove the export from your shell profile or service unit",
+			});
+			expect(byId(findings, "credentials.openrouter-export").title).toContain(
+				"Ultrathink no longer reads it",
+			);
+			// With no other key the legacy variable gets the actionable message, not a "key present" one.
+			expect(byId(findings, "credentials.jev").level).toBe("info");
+			expect(byId(findings, "credentials.jev.legacy")).toMatchObject({
+				level: "warn",
+				fix: "bin/ultrathink-mcp auth set-key openrouter --stdin",
+			});
+			expect(JSON.stringify(findings)).not.toContain(FAKE_KEY);
+
+			setEnv({ ULTRATHINK_OPENROUTER_KEY: FAKE_KEY });
+			expect(checkCredentials(deps).map((finding) => finding.id)).not.toContain(
+				"credentials.jev.legacy",
+			);
+		});
+
+		test("an open Jev breaker is a decisions.health warning; closed, missing or corrupt is silent", () => {
+			const stateDir = join(dir, "state");
+			setEnv({ ULTRATHINK_STATE_DIR: stateDir, ULTRATHINK_OPENROUTER_KEY: FAKE_KEY });
+			const health = join(stateDir, "decisions-health-openrouter.json");
+			const ids = () => checkCredentials(deps).map((finding) => finding.id);
+			expect(ids()).not.toContain("decisions.health");
+
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(
+				health,
+				JSON.stringify({
+					v: 1,
+					state: "open",
+					cause: "auth",
+					since: 1,
+					nextProbeAt: 3_600_000,
+					coolDownMs: 300_000,
+					failures: 1,
+				}),
+			);
+			const finding = byId(checkCredentials(deps), "decisions.health");
+			expect(finding.level).toBe("warn");
+			expect(finding.title).toContain("Jev unavailable");
+
+			writeFileSync(health, JSON.stringify({ v: 1, state: "closed", failures: 0 }));
+			expect(ids()).not.toContain("decisions.health");
+			writeFileSync(health, "{not json");
+			expect(ids()).not.toContain("decisions.health");
+		});
+
+		test("each rail's breaker is its own finding text, naming the rail and its fix", () => {
+			const stateDir = join(dir, "state");
+			setEnv({ ULTRATHINK_STATE_DIR: stateDir, ULTRATHINK_OPENROUTER_KEY: FAKE_KEY });
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(
+				join(stateDir, "decisions-health-vercel.json"),
+				JSON.stringify({
+					v: 1,
+					state: "open",
+					cause: "credits",
+					since: 1,
+					nextProbeAt: 3_600_000,
+					coolDownMs: 300_000,
+					failures: 1,
+				}),
+			);
+			const finding = byId(checkCredentials(deps), "decisions.health");
+			expect(finding.title).toContain(
+				"Jev unavailable: Vercel AI Gateway reports insufficient credits",
+			);
+			expect(finding.title).not.toContain("OpenRouter");
+		});
+
+		test("ULTRATHINK_DECISIONS=0 shows no breaker finding even with a saved open breaker", () => {
+			const stateDir = join(dir, "state");
+			setEnv({ ULTRATHINK_STATE_DIR: stateDir, ULTRATHINK_DECISIONS: "0" });
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(
+				join(stateDir, "decisions-health-openrouter.json"),
+				JSON.stringify({
+					v: 1,
+					state: "open",
+					cause: "auth",
+					since: 1,
+					nextProbeAt: 3_600_000,
+					coolDownMs: 300_000,
+					failures: 1,
+				}),
+			);
+			expect(checkCredentials(deps).map((finding) => finding.id)).not.toContain("decisions.health");
 		});
 
 		test("ULTRATHINK_DECISIONS=0 reports Jev as off", () => {
@@ -458,7 +557,11 @@ describe("env checks", () => {
 				ragflow: { enabled: true },
 				linear: { team: "Acme" },
 			});
-			setEnv({ OPENROUTER_API_KEY: FAKE_KEY, HINDSIGHT_API_KEY: FAKE_KEY, GH_TOKEN: FAKE_KEY });
+			setEnv({
+				ULTRATHINK_OPENROUTER_KEY: FAKE_KEY,
+				HINDSIGHT_API_KEY: FAKE_KEY,
+				GH_TOKEN: FAKE_KEY,
+			});
 			store({ greptile: apiKey(), ragflow: apiKey(), vercel: apiKey() });
 			const report = buildReport([...checkRuntime(deps), ...checkCredentials(deps)]);
 			for (const output of [formatReport(report), reportJson(report)]) {

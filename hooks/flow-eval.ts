@@ -68,6 +68,7 @@ async function main(): Promise<void> {
 			output,
 			command,
 			apiKey: openRouterKey(defaultStorePath(process.env), process.env),
+			stateDir,
 		}));
 	if (!cached) appendFlowScore(logPath, record);
 	console.log(JSON.stringify({ additionalContext: formatFlowNote(record) }));

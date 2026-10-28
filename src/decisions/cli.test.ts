@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JEV, recordingFetch } from "../test.helpers.ts";
+import { JEV, recordingFetch, VEV } from "../test.helpers.ts";
 import { type DecisionsCommandDeps, runDecisionsCommand } from "./cli.ts";
+import { openJevHealth } from "./health.ts";
 import { QUESTIONS } from "./questions.ts";
+import { appendUsage, USAGE_FILE } from "./usage.ts";
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
@@ -24,9 +26,9 @@ const ERR = (s: number, headers?: Record<string, string>) => () =>
 	);
 
 const USAGE =
-	"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>";
+	"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json> | ultrathink decisions usage [--days N] [--json]";
 const NO_KEY =
-	"no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or OPENROUTER_API_KEY)";
+	"no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 
 /** Temp project, config layers and credential store; the env holds K unless overridden. */
 function setup(
@@ -58,10 +60,11 @@ function setup(
 			XDG_CONFIG_HOME: xdg,
 			CLAUDE_CONFIG_DIR: join(root, "claude"),
 			HOME: join(root, "home"),
-			OPENROUTER_API_KEY: K,
+			ULTRATHINK_OPENROUTER_KEY: K,
 			...opts.env,
 		},
 		storePath,
+		stateDir: join(root, "state"),
 		fetch: r.fetch,
 		now: () => 5000,
 		sleep: async () => {
@@ -89,7 +92,7 @@ describe("decisions check", () => {
 		const out = await runDecisionsCommand(["check"], setup(r));
 		expect(out).toEqual({
 			code: 0,
-			text: "Decisions check: ok · typesafe/jev-1.13-20260917 (requested ~typesafe/jev-latest) · 0 ms · attempts 1 · cost 0.000019 · provider openrouter · zdr on · key from OPENROUTER_API_KEY",
+			text: "Decisions check: ok · typesafe/jev-1.13-20260917 (requested ~typesafe/jev-latest) · 0 ms · attempts 1 · cost 0.000019 · provider openrouter · zdr on · key from ULTRATHINK_OPENROUTER_KEY",
 		});
 		expectNoKey(out.text);
 		expect(r.calls).toHaveLength(1);
@@ -108,7 +111,7 @@ describe("decisions check", () => {
 		const out = await runDecisionsCommand(["check"], setup(r));
 		expect(out).toEqual({
 			code: 1,
-			text: "Decisions check: error (auth) · decisions auth: HTTP 401: upstream said no for [redacted] · 0 ms · attempts 1 · provider openrouter · zdr on · key from OPENROUTER_API_KEY",
+			text: "Decisions check: error (auth) · decisions auth: HTTP 401: upstream said no for [redacted] · 0 ms · attempts 1 · breaker opened: auth · provider openrouter · zdr on · key from ULTRATHINK_OPENROUTER_KEY",
 		});
 		expectNoKey(out.text);
 	});
@@ -124,7 +127,7 @@ describe("decisions check", () => {
 		const deps = setup(r, {
 			storeKey: K,
 			env: {
-				OPENROUTER_API_KEY: undefined,
+				ULTRATHINK_OPENROUTER_KEY: undefined,
 				ULTRATHINK_DECISIONS_URL: "http://127.0.0.1:9999/decisions?token=secret#frag",
 			},
 		});
@@ -148,7 +151,7 @@ describe("decisions check", () => {
 			);
 			expect(
 				out.text.endsWith(
-					" · provider openrouter · zdr on · key from OPENROUTER_API_KEY · ULTRATHINK_DECISIONS_URL ignored (must be https://openrouter.ai/… or a loopback URL)",
+					" · provider openrouter · zdr on · key from ULTRATHINK_OPENROUTER_KEY · ULTRATHINK_DECISIONS_URL ignored (must be https://openrouter.ai/… or a loopback URL)",
 				),
 			).toBe(true);
 			expect(out.text).not.toContain("gw.example");
@@ -185,7 +188,17 @@ describe("decisions check", () => {
 		const r = recordingFetch([JEV(0.9)]);
 		const out = await runDecisionsCommand(
 			["check"],
-			setup(r, { env: { OPENROUTER_API_KEY: undefined } }),
+			setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined } }),
+		);
+		expect(out).toEqual({ code: 1, text: `Decisions check: ${NO_KEY}` });
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("the legacy OPENROUTER_API_KEY export is not a key source", async () => {
+		const r = recordingFetch([JEV(0.9)]);
+		const out = await runDecisionsCommand(
+			["check"],
+			setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, OPENROUTER_API_KEY: K } }),
 		);
 		expect(out).toEqual({ code: 1, text: `Decisions check: ${NO_KEY}` });
 		expect(r.calls).toHaveLength(0);
@@ -202,7 +215,7 @@ describe("decisions check", () => {
 		]);
 		const out = await runDecisionsCommand(
 			["check"],
-			setup(r, { env: { OPENROUTER_API_KEY: undefined, AI_GATEWAY_API_KEY: V } }),
+			setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V } }),
 		);
 		expect(out).toEqual({
 			code: 0,
@@ -215,7 +228,7 @@ describe("decisions check", () => {
 
 	test("explicit provider pins the rail even when both keys exist (JEV-02)", async () => {
 		const V = "vck_test_key_do_not_use";
-		const both = { OPENROUTER_API_KEY: K, AI_GATEWAY_API_KEY: V };
+		const both = { ULTRATHINK_OPENROUTER_KEY: K, AI_GATEWAY_API_KEY: V };
 		const r = recordingFetch([JEV(0.9)]);
 		const pinned = await runDecisionsCommand(
 			["check"],
@@ -238,6 +251,123 @@ describe("decisions usage", () => {
 	])("%j prints the usage with exit 2 and makes no request", async (argv) => {
 		const r = recordingFetch([JEV(0.9)]);
 		expect(await runDecisionsCommand(argv, setup(r))).toEqual({ code: 2, text: USAGE });
+		expect(r.calls).toHaveLength(0);
+	});
+});
+
+describe("decisions usage ledger", () => {
+	const NOW = Date.UTC(2026, 9, 28, 12, 0, 0);
+	const DAY = 86_400_000;
+
+	function fixture(): DecisionsCommandDeps {
+		const deps = { ...setup(recordingFetch([])), now: () => NOW };
+		const stateDir = deps.stateDir as string;
+		const base = {
+			point: "plan",
+			rail: "openrouter",
+			requestedModel: "~typesafe/jev-latest",
+		} as const;
+		appendUsage(stateDir, {
+			...base,
+			ts: NOW - 1000,
+			servedModel: "typesafe/jev-1.13-20260917",
+			ok: true,
+			ms: 40,
+			costUsd: 0.000019,
+		});
+		appendUsage(stateDir, {
+			...base,
+			ts: NOW - 2000,
+			servedModel: "typesafe/jev-1.13-20260917",
+			ok: true,
+			ms: 41,
+			costUsd: 0.000021,
+		});
+		appendUsage(stateDir, {
+			...base,
+			ts: NOW - DAY,
+			ok: false,
+			kind: "credits",
+			status: 402,
+			ms: 12,
+		});
+		appendUsage(stateDir, { ...base, ts: NOW - 30 * DAY, ok: true, ms: 9, costUsd: 5 });
+		return deps;
+	}
+
+	test("prints the totals, per-day, per-model, failures by kind and the dashboard reconciliation line", async () => {
+		const out = await runDecisionsCommand(["usage"], fixture());
+		expect(out.code).toBe(0);
+		expect(out.text.split("\n")).toEqual([
+			"Decisions usage: last 7 days · calls 3 · failures 1 · cost $0.000040",
+			"Per day (UTC):",
+			"  2026-10-27 · calls 1 · failures 1 · cost $0.000000",
+			"  2026-10-28 · calls 2 · failures 0 · cost $0.000040",
+			"Per model:",
+			"  typesafe/jev-1.13-20260917 · calls 2 · failures 0 · cost $0.000040",
+			"  ~typesafe/jev-latest · calls 1 · failures 1 · cost $0.000000",
+			"Failures by kind: credits 1",
+			"This is the local ledger of Jev calls made from this machine: compare its per-model counts and cost with the per-model breakdown on the OpenRouter dashboard.",
+		]);
+		expectNoKey(out.text);
+	});
+
+	test("--days widens the window; --days=N is accepted", async () => {
+		const deps = fixture();
+		const wide = await runDecisionsCommand(["usage", "--days", "90"], deps);
+		expect(wide.text).toContain("last 90 days · calls 4 · failures 1 · cost $5.000040");
+		const equals = await runDecisionsCommand(["usage", "--days=90"], deps);
+		expect(equals.text).toBe(wide.text);
+	});
+
+	test("--json prints the summary object", async () => {
+		const out = await runDecisionsCommand(["usage", "--json", "--days", "2"], fixture());
+		expect(out.code).toBe(0);
+		const parsed = JSON.parse(out.text) as {
+			days: number;
+			total: { calls: number; failures: number };
+			failuresByKind: Record<string, number>;
+		};
+		expect(parsed.days).toBe(2);
+		expect(parsed.total).toMatchObject({ calls: 3, failures: 1 });
+		expect(parsed.failuresByKind).toEqual({ credits: 1 });
+	});
+
+	test("an empty ledger prints zero totals and none rows, exit 0", async () => {
+		const out = await runDecisionsCommand(["usage"], setup(recordingFetch([])));
+		expect(out.code).toBe(0);
+		expect(out.text).toContain("calls 0 · failures 0 · cost $0.000000");
+		expect(out.text).toContain(
+			"Per day (UTC):\n  none\nPer model:\n  none\nFailures by kind: none",
+		);
+	});
+
+	test.each([
+		[["usage", "--days"]],
+		[["usage", "--days", "0"]],
+		[["usage", "--days", "91"]],
+		[["usage", "--days", "1.5"]],
+		[["usage", "--days", "-3"]],
+		[["usage", "--days", "abc"]],
+		[["usage", "--days=0"]],
+		[["usage", "--days", "3", "--days", "4"]],
+		[["usage", "--json", "--json"]],
+		[["usage", "--verbose"]],
+		[["usage", "7"]],
+	])("%j is a usage error, exit 2", async (argv) => {
+		expect(await runDecisionsCommand(argv, setup(recordingFetch([])))).toEqual({
+			code: 2,
+			text: USAGE,
+		});
+	});
+
+	test("never needs a key and makes no request", async () => {
+		const r = recordingFetch([]);
+		const out = await runDecisionsCommand(
+			["usage"],
+			setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined } }),
+		);
+		expect(out.code).toBe(0);
 		expect(r.calls).toHaveLength(0);
 	});
 });
@@ -278,7 +408,7 @@ describe("decisions probe (A11, §5.7)", () => {
 		const r = recordingFetch([
 			() => Response.json({ answers: { plan_worthy: { type: "boolean", probability: 0.97 } } }),
 		]);
-		const deps = setup(r, { env: { OPENROUTER_API_KEY: undefined, AI_GATEWAY_API_KEY: V } });
+		const deps = setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V } });
 		const file = writeCases(deps, [{ message: "build a widget", label: true }]);
 		const out = await runDecisionsCommand(["probe", "plan", file], deps);
 		expect(out.code).toBe(0);
@@ -436,7 +566,7 @@ describe("decisions probe (A11, §5.7)", () => {
 			text: [
 				"#1 P 0.90 · plan",
 				"#2 error (credits)",
-				"Decisions probe: plan · typesafe/jev-1.13-20260917 · cases 2 · labelled 1 · agree 0/1 · errors 1",
+				"Decisions probe: plan · typesafe/jev-1.13-20260917 · cases 2 · labelled 1 · agree 0/1 · errors 1 · breaker opened: credits",
 			].join("\n"),
 		});
 		expectNoKey(out.text);
@@ -451,7 +581,7 @@ describe("decisions probe (A11, §5.7)", () => {
 		);
 		expect(out.code).toBe(1);
 		expect(out.text.split("\n").at(-1)).toBe(
-			"Decisions probe: plan · ~typesafe/jev-latest · cases 1 · labelled 0 · agree 0/0 · errors 1",
+			"Decisions probe: plan · ~typesafe/jev-latest · cases 1 · labelled 0 · agree 0/0 · errors 1 · breaker opened: auth",
 		);
 	});
 
@@ -557,7 +687,7 @@ describe("decisions probe (A11, §5.7)", () => {
 
 	test("without a key prints how to add one, exit 1, zero requests", async () => {
 		const r = recordingFetch([JEV(0.9)]);
-		const deps = setup(r, { env: { OPENROUTER_API_KEY: undefined } });
+		const deps = setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined } });
 		const out = await runDecisionsCommand(
 			["probe", "plan", writeCases(deps, [{ message: "a" }])],
 			deps,
@@ -578,5 +708,104 @@ describe("decisions probe (A11, §5.7)", () => {
 			2,
 		);
 		expect(r.calls).toHaveLength(0);
+	});
+});
+
+describe("decisions check and probe go through the health breaker and the ledger", () => {
+	const ledger = (stateDir: string): Array<Record<string, unknown>> =>
+		readFileSync(join(stateDir, USAGE_FILE), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+	test("a successful check after a top-up closes the open breaker and says so, cool-down or not", async () => {
+		const r = recordingFetch([JEV(0.9)]);
+		const deps = setup(r);
+		const stateDir = deps.stateDir as string;
+		const health = openJevHealth(stateDir, "openrouter");
+		health.recordFailure("credits", 4000);
+		expect(health.shouldCall(5000)).toMatchObject({ call: false });
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.code).toBe(0);
+		expect(out.text).toContain(" · cost 0.000019 · breaker closed · provider openrouter ·");
+		expect(r.calls).toHaveLength(1);
+		expect(health.read().state).toBe("closed");
+		expect(health.shouldCall(5001)).toEqual({ call: true, probe: false });
+	});
+
+	test("a failed check on an open breaker says it is still open and re-schedules it", async () => {
+		const r = recordingFetch([ERR(402)]);
+		const deps = setup(r);
+		const stateDir = deps.stateDir as string;
+		const health = openJevHealth(stateDir, "openrouter");
+		health.recordFailure("credits", 4000);
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.code).toBe(1);
+		expect(out.text).toContain(
+			" · attempts 1 · breaker still open: credits · provider openrouter ·",
+		);
+		expect(health.read().coolDownMs).toBe(600_000);
+	});
+
+	test("a check on the Vercel rail closes only the Vercel breaker", async () => {
+		const V = "vck_test_key_do_not_use";
+		const r = recordingFetch([VEV(0.9)]);
+		const deps = setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V } });
+		const stateDir = deps.stateDir as string;
+		openJevHealth(stateDir, "vercel").recordFailure("auth", 4000);
+		openJevHealth(stateDir, "openrouter").recordFailure("credits", 4000);
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.text).toContain(" · breaker closed · provider vercel ·");
+		expect(openJevHealth(stateDir, "vercel").read().state).toBe("closed");
+		expect(openJevHealth(stateDir, "openrouter").read().state).toBe("open");
+	});
+
+	test("every real POST of a check is ledgered, a retried 503 included", async () => {
+		const r = recordingFetch([ERR(503), JEV(0.9)]);
+		const deps = setup(r);
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.text).toContain("attempts 2");
+		expect(ledger(deps.stateDir as string)).toEqual([
+			{
+				ts: 5000,
+				point: "check",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				ok: false,
+				kind: "upstream",
+				status: 503,
+				ms: 0,
+			},
+			{
+				ts: 5000,
+				point: "check",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				servedModel: "typesafe/jev-1.13-20260917",
+				ok: true,
+				ms: 0,
+				promptTokens: 450,
+				completionTokens: 0,
+				costUsd: 0.000019,
+				requestId: "gen-dec-test",
+			},
+		]);
+	});
+
+	test("probe cases are forced calls too: a success closes the open breaker, each POST is ledgered", async () => {
+		const r = recordingFetch([JEV(0.9)]);
+		const deps = setup(r);
+		const stateDir = deps.stateDir as string;
+		const health = openJevHealth(stateDir, "openrouter");
+		health.recordFailure("auth", 4000);
+		const out = await runDecisionsCommand(
+			["probe", "plan", writeCases(deps, [{ message: "a" }, { message: "b" }])],
+			deps,
+		);
+		expect(out.code).toBe(0);
+		expect(out.text.split("\n").at(-1)).toEndWith("errors 0 · breaker closed");
+		expect(health.read().state).toBe("closed");
+		expect(r.calls).toHaveLength(2);
+		expect(ledger(stateDir).map((row) => row.point)).toEqual(["plan", "plan"]);
 	});
 });

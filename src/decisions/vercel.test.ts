@@ -239,13 +239,39 @@ describe("decideVercel", () => {
 		expect(outcome.attempts).toBe(1);
 	});
 
-	test("an explicit model travels verbatim in ai-model-id", async () => {
+	test("an explicit Jev model travels verbatim in ai-model-id", async () => {
 		const r = recordingFetch([VEV(0.5)]);
 		await decideVercel(
-			{ ...request(), model: "custom/jev" },
+			{ ...request(), model: "typesafe/jev-1.13-20260917" },
 			{ apiKey: K, timeoutMs: 3000, fetch: r.fetch },
 		);
-		expect(r.calls[0]?.headers?.["ai-model-id"]).toBe("custom/jev");
+		expect(r.calls[0]?.headers?.["ai-model-id"]).toBe("typesafe/jev-1.13-20260917");
+	});
+
+	test("a non-Jev model is refused with kind model and zero calls", async () => {
+		const r = recordingFetch([VEV(0.5)]);
+		const outcome = await decideVercel(
+			{ ...request(), model: "anthropic/claude-opus-5.5" },
+			{ apiKey: K, timeoutMs: 3000, fetch: r.fetch },
+		);
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) throw new Error("expected error");
+		expect(outcome.error.kind).toBe("model");
+		expect(outcome.error.message).toContain("anthropic/claude-opus-5.5");
+		expect(outcome.attempts).toBe(0);
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("after a 402 nothing else is tried: one call with the same model, URL and key", async () => {
+		const r = recordingFetch([ERR(402), VEV(0.5)]);
+		const outcome = await decideVercel(request(), { apiKey: K, timeoutMs: 3000, fetch: r.fetch });
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) throw new Error("expected error");
+		expect(outcome.error.kind).toBe("credits");
+		expect(r.calls).toHaveLength(1);
+		expect(r.calls[0]?.url).toBe(VERCEL_DECISIONS_URL);
+		expect(r.calls[0]?.headers["ai-model-id"]).toBe("typesafe-ai/jev");
+		expect(r.calls[0]?.headers.authorization).toBe(`Bearer ${K}`);
 	});
 
 	test("shares the core's retry and error discipline: 503 retries once, 401 maps to auth", async () => {

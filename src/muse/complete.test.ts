@@ -166,6 +166,31 @@ describe("museComplete (fake bin)", () => {
 		expect(got.args).toContain("m1");
 	});
 
+	test("the child never sees the Jev key variables inherited from the parent env", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-muse-jev-"));
+		dirs.push(dir);
+		const bin = join(dir, "muse");
+		const seenPath = join(dir, "seen.json");
+		writeFileSync(
+			bin,
+			`#!${process.execPath}\nawait Bun.write(${JSON.stringify(seenPath)}, JSON.stringify({ jev: [process.env.ULTRATHINK_OPENROUTER_KEY, process.env.OPENROUTER_API_KEY] }));\nprocess.stdout.write(${JSON.stringify(`${terminalLine("ok")}\n`)});\n`,
+			{ mode: 0o755 },
+		);
+		const saved = [process.env.ULTRATHINK_OPENROUTER_KEY, process.env.OPENROUTER_API_KEY];
+		process.env.ULTRATHINK_OPENROUTER_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+		process.env.OPENROUTER_API_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+		try {
+			await museComplete("SYS", "USER", { bin });
+		} finally {
+			if (saved[0] === undefined) delete process.env.ULTRATHINK_OPENROUTER_KEY;
+			else process.env.ULTRATHINK_OPENROUTER_KEY = saved[0];
+			if (saved[1] === undefined) delete process.env.OPENROUTER_API_KEY;
+			else process.env.OPENROUTER_API_KEY = saved[1];
+		}
+		const got = (await Bun.file(seenPath).json()) as { jev: (string | null)[] };
+		expect(got.jev).toEqual([null, null]);
+	});
+
 	test("removes the prompt directory afterwards", async () => {
 		const { bin, seenPath } = fakeMuse(`${terminalLine("ok")}\n`);
 		await museComplete("SYS", "USER", { bin });

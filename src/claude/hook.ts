@@ -9,7 +9,8 @@
  * AbortError, aborting sibling work and preventing later inference or side effects.
  */
 import type { UltrathinkConfig } from "../config.ts";
-import { createDecisions, type DecisionsDeps } from "../decisions/gate.ts";
+import { createDecisions, type DecisionsDeps, decisionsKilled } from "../decisions/gate.ts";
+import { takeJevWarning } from "../decisions/health.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
 import {
 	createGreptileKnowledge,
@@ -611,6 +612,7 @@ export async function runPromptSubmit(
 	const decisions = createDecisions({
 		config: deps.config.decisions,
 		...(isTurnSessionId(sessionId) ? {} : { sessionId }),
+		stateDir: deps.stateDir,
 		...deps.decisionsDeps,
 	});
 	// Keep cancellation separate from the hook's partial-result budget, whose timer starts after the gate as before.
@@ -1221,6 +1223,12 @@ export async function runPromptSubmit(
 				signal: lifetime,
 			});
 		}
+		// Taken only when the summary is shown: it marks the cause as warned, so a hidden summary must not spend it. An
+		// intentionally disabled run (ULTRATHINK_DECISIONS=0) neither shows nor consumes a Jev failure warning.
+		const jevWarning =
+			deps.config.claude.echo && !decisionsKilled(deps.decisionsDeps?.env ?? process.env)
+				? takeJevWarning(deps.stateDir, now())
+				: undefined;
 		if (deps.config.claude.echo) {
 			output.systemMessage = formatSummary({
 				result,
@@ -1240,6 +1248,7 @@ export async function runPromptSubmit(
 				docs,
 				skills,
 				...(engineError ? { engineError } : {}),
+				...(jevWarning ? { jevWarning } : {}),
 				...(engineFailover ? { engineFailover } : {}),
 				elapsedMs: now() - started,
 				decisions: records,

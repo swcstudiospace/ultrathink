@@ -18,6 +18,7 @@ import {
 import { DECISIONS_URL_IGNORED, resolveDecisionsUrl } from "../decisions/client.ts";
 import { runDecisionsCommand } from "../decisions/cli.ts";
 import { runDoctorCommand } from "../doctor/cli.ts";
+import { describeJevHealth } from "../decisions/health.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
 import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
 import { type GrokCheckOptions, runGrokCheck } from "../grok/check.ts";
@@ -211,12 +212,16 @@ function knowledgeLine(
 
 /** Jev Decisions are always on and need a key; the key's source is shown, never the key. `ULTRATHINK_DECISIONS=0`
  *  turns them off for this shell whatever the config says. */
-function decisionsLine(config: UltrathinkConfig, env: Record<string, string | undefined>): string {
+function decisionsLine(
+	config: UltrathinkConfig,
+	env: Record<string, string | undefined>,
+	stateDir: string,
+): string {
 	const { decisions } = config;
 	if (decisionsKilled(env)) return "Decisions: off (ULTRATHINK_DECISIONS=0)";
 	const picked = resolveDecisionsKeys(decisions, storePath(env), env);
 	if (!picked.key) {
-		return "Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or OPENROUTER_API_KEY)";
+		return "Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 	}
 	const points = decisions.points.length ? decisions.points.join(", ") : "no points";
 	const endpoint = resolveDecisionsUrl(env);
@@ -228,7 +233,8 @@ function decisionsLine(config: UltrathinkConfig, env: Record<string, string | un
 					? DECISIONS_URL_IGNORED
 					: ""
 			: "";
-	return `Decisions: on · ${decisions.model} · ${points} · provider ${picked.provider} · key from ${picked.key.source} · zdr ${decisions.zdr ? "on" : "off"}${url}`;
+	const breaker = describeJevHealth(stateDir, Date.now());
+	return `Decisions: on · ${decisions.model} · ${points} · provider ${picked.provider} · key from ${picked.key.source} · zdr ${decisions.zdr ? "on" : "off"}${url}${breaker ? ` · ${breaker}` : ""}`;
 }
 
 async function grokOauthLine(config: UltrathinkConfig): Promise<string> {
@@ -279,7 +285,7 @@ async function statusText(
 		substrateLine(config, process.env),
 		shipLine(config, process.env),
 		knowledgeLine(config, state, process.env),
-		decisionsLine(config, process.env),
+		decisionsLine(config, process.env, stateDir),
 		hindsightStatusLine(config.hindsight, process.env, storePath(process.env), config.gateway),
 		ragflowStatusLine(config.ragflow, process.env, storePath(process.env), config.gateway),
 		teachStatusLine(
@@ -555,7 +561,7 @@ if (import.meta.main) {
 	const service = argv[0]?.trim().toLowerCase();
 	const command =
 		service === "decisions"
-			? runDecisionsCommand(argv.slice(1), { cwd: process.cwd() })
+			? runDecisionsCommand(argv.slice(1), { cwd: process.cwd(), stateDir: resolveStateDir() })
 			: service === "hindsight"
 				? runHindsightCommand(argv.slice(1), { cwd: process.cwd(), env: process.env })
 				: service === "ragflow"

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	existsSync,
@@ -72,6 +72,17 @@ interface Harness {
 	capture: CaptureFn;
 }
 
+/** A real per-test state dir, removed after the test: Jev health and usage persist under it, so a fake absolute path would be created on disk when running as root. */
+const harnessDirs: string[] = [];
+afterEach(() => {
+	for (const dir of harnessDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+function harnessStateDir(): string {
+	const dir = mkdtempSync(join(tmpdir(), "ut-observe-state-"));
+	harnessDirs.push(dir);
+	return dir;
+}
+
 function harness(
 	options: {
 		teach?: Partial<TeachConfig>;
@@ -92,7 +103,7 @@ function harness(
 			hindsight: DEFAULT_HINDSIGHT_CONFIG,
 		},
 		env: { HOME: "/home/someone", ...options.env },
-		stateDir: "/nonexistent-state",
+		stateDir: harnessStateDir(),
 		now: () => (clock += 5),
 		complete: async (system, user) => {
 			completions.push({ system, user });
@@ -531,8 +542,8 @@ describe("observeDigest with the Jev teachable point", () => {
 			...h.ctx.config,
 			decisions: { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: ["teachable"], ...config },
 		};
-		h.ctx.env = { ...h.ctx.env, OPENROUTER_API_KEY: JEV_KEY };
-		h.ctx.storePath = "/nonexistent-state/credentials.json";
+		h.ctx.env = { ...h.ctx.env, ULTRATHINK_OPENROUTER_KEY: JEV_KEY };
+		h.ctx.storePath = join(h.ctx.stateDir ?? tmpdir(), "credentials.json");
 		h.ctx.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
 			bodies.push(JSON.parse(String(init?.body)));
 			const next = answers[Math.min(bodies.length, answers.length) - 1];

@@ -7,10 +7,12 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
 import {
 	type DecideOptions,
+	type DecideOutcome,
 	type DecisionsUrl,
 	DECISIONS_URL_IGNORED,
 	decide,
@@ -23,8 +25,17 @@ import {
 	type ResolvedProvider,
 	buildDecisionsRequest,
 	decisionsKilled,
+	recordHealth,
 	resolveDecisionsKeys,
+	usageListener,
 } from "./gate.ts";
+import {
+	type JevHealth,
+	type JevHealthState,
+	openJevHealth,
+	openMemoryJevHealth,
+} from "./health.ts";
+import { type UsageTotals, summarizeUsage } from "./usage.ts";
 import { decideVercel } from "./vercel.ts";
 import {
 	buildBlockingState,
@@ -36,7 +47,13 @@ import {
 	type DecisionStates,
 	QUESTION_KEYS,
 } from "./questions.ts";
-import { type DecisionPoint, type DecisionsConfig, DECISION_POINTS, formatP } from "./types.ts";
+import {
+	type DecisionPoint,
+	type DecisionsConfig,
+	type DecisionsRequest,
+	DECISION_POINTS,
+	formatP,
+} from "./types.ts";
 
 export interface DecisionsCommandDeps extends Omit<DecisionsDeps, "debug"> {
 	cwd: string;
@@ -45,9 +62,9 @@ export interface DecisionsCommandDeps extends Omit<DecisionsDeps, "debug"> {
 }
 
 const USAGE =
-	"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>";
+	"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json> | ultrathink decisions usage [--days N] [--json]";
 const NO_KEY =
-	"no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or OPENROUTER_API_KEY)";
+	"no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 const KILLED = "off (ULTRATHINK_DECISIONS=0)";
 const CHECK_MESSAGE = "Add a --verbose flag to the export command";
 const MAX_CASES = 200;
@@ -59,8 +76,11 @@ interface Runtime {
 	provider: ResolvedProvider;
 	key?: { key: string; source: KeySource };
 	url: DecisionsUrl;
-	decideOptions: (apiKey: string) => DecideOptions;
+	decideOptions: (apiKey: string, point: string) => DecideOptions;
 	rail: typeof decide;
+	now: () => number;
+	/** The picked rail's breaker: under the caller's state dir, else in memory (no disk). */
+	health: JevHealth;
 }
 
 function runtime(deps: DecisionsCommandDeps): Runtime {
@@ -74,7 +94,7 @@ function runtime(deps: DecisionsCommandDeps): Runtime {
 		provider: picked.provider,
 		key: picked.key,
 		url,
-		decideOptions: (apiKey) => ({
+		decideOptions: (apiKey, point) => ({
 			apiKey,
 			timeoutMs: config.timeoutMs,
 			...(picked.provider === "openrouter" ? { url: url.url } : {}),
@@ -82,8 +102,19 @@ function runtime(deps: DecisionsCommandDeps): Runtime {
 			now: deps.now,
 			sleep: deps.sleep,
 			random: deps.random,
+			onAttempt: usageListener(deps.stateDir, {
+				point,
+				rail: picked.provider,
+				model: config.model,
+			}),
 		}),
 		rail: picked.provider === "vercel" ? decideVercel : decide,
+		now: deps.now ?? Date.now,
+		health:
+			deps.health ??
+			(deps.stateDir === undefined
+				? openMemoryJevHealth(picked.provider)
+				: openJevHealth(deps.stateDir, picked.provider)),
 	};
 }
 
@@ -112,21 +143,51 @@ async function check(rt: Runtime): Promise<{ code: number; text: string }> {
 			spanName: "check",
 		},
 	);
-	const outcome = await rt.rail(request, rt.decideOptions(rt.key.key));
+	const before = rt.health.read();
+	const outcome = await forcedCall(rt, rt.key.key, request, "check");
 	const timing = `${Math.round(outcome.latencyMs)} ms · attempts ${outcome.attempts}`;
+	// Between the timing and the footer, so the footer (provider · zdr · key source · url) still ends the line.
+	const note = breakerNote(before, rt.health.read());
 	const tail = footer(rt, rt.key.source);
 	if (!outcome.ok) {
 		return {
 			code: 1,
-			text: `Decisions check: error (${outcome.error.kind}) · ${outcome.error.message} · ${timing}${tail}`,
+			text: `Decisions check: error (${outcome.error.kind}) · ${outcome.error.message} · ${timing}${note}${tail}`,
 		};
 	}
 	const { model, usage } = outcome.response;
 	const cost = usage.cost !== undefined ? String(usage.cost) : "n/a";
 	return {
 		code: 0,
-		text: `Decisions check: ok · ${model} (requested ${rt.config.model}) · ${timing} · cost ${cost}${tail}`,
+		text: `Decisions check: ok · ${model} (requested ${rt.config.model}) · ${timing} · cost ${cost}${note}${tail}`,
 	};
+}
+
+/**
+ * The operator's request goes out whatever the cool-down says, and its result is recorded like a claimed probe's: a
+ * success closes the rail's breaker, a 402/401/403 re-schedules it. The ledger gets a row per real POST.
+ */
+async function forcedCall(
+	rt: Runtime,
+	apiKey: string,
+	request: DecisionsRequest,
+	point: string,
+): Promise<DecideOutcome> {
+	const startedAt = rt.now();
+	const verdict = rt.health.shouldCall(startedAt, { force: true });
+	const outcome = await rt.rail(request, rt.decideOptions(apiKey, point));
+	recordHealth(rt.health, outcome, rt.now(), verdict.call ? { ...verdict, startedAt } : undefined);
+	return outcome;
+}
+
+/** ` · breaker closed` / ` · breaker still open: <cause>` / ` · breaker opened: <cause>` when the call changed it, else nothing. */
+function breakerNote(before: JevHealthState, after: JevHealthState): string {
+	if (after.state === "open") {
+		return before.state === "open"
+			? ` · breaker still open: ${after.cause}`
+			: ` · breaker opened: ${after.cause}`;
+	}
+	return before.state === "open" ? " · breaker closed" : "";
 }
 
 type ProbeCase = { state: DecisionStates[DecisionPoint]; label?: boolean };
@@ -300,6 +361,7 @@ async function probe(
 	if (rt.killed) return { code: 1, text: `Decisions probe: ${KILLED}` };
 	if (!rt.key) return { code: 1, text: `Decisions probe: ${NO_KEY}` };
 
+	const before = rt.health.read();
 	const lines: string[] = [];
 	const questionKey = QUESTION_KEYS[point];
 	let model: string | undefined;
@@ -313,7 +375,7 @@ async function probe(
 			zdr: rt.config.zdr,
 			spanName: point,
 		});
-		const outcome = await rt.rail(request, rt.decideOptions(rt.key.key));
+		const outcome = await forcedCall(rt, rt.key.key, request, point);
 		if (!outcome.ok) {
 			errors++;
 			lines.push(`#${index + 1} error (${outcome.error.kind})`);
@@ -332,9 +394,71 @@ async function probe(
 		lines.push(line);
 	}
 	lines.push(
-		`Decisions probe: ${point} · ${model ?? rt.config.model} · cases ${cases.length} · labelled ${labelled} · agree ${agreed}/${labelled} · errors ${errors}`,
+		`Decisions probe: ${point} · ${model ?? rt.config.model} · cases ${cases.length} · labelled ${labelled} · agree ${agreed}/${labelled} · errors ${errors}${breakerNote(before, rt.health.read())}`,
 	);
 	return { code: errors > 0 ? 1 : 0, text: lines.join("\n") };
+}
+
+const USAGE_DEFAULT_DAYS = 7;
+const USAGE_MAX_DAYS = 90;
+
+/** `--days N` (or `--days=N`, integer 1..90) and `--json`, each at most once; anything else is a usage error. */
+function parseUsageArgs(args: readonly string[]): { days: number; json: boolean } | undefined {
+	let days: number | undefined;
+	let json = false;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+		if (arg === "--json") {
+			if (json) return undefined;
+			json = true;
+			continue;
+		}
+		if (days !== undefined) return undefined;
+		let value: string | undefined;
+		if (arg === "--days") value = args[++i];
+		else if (arg.startsWith("--days=")) value = arg.slice("--days=".length);
+		else return undefined;
+		if (value === undefined || !/^\d+$/.test(value)) return undefined;
+		days = Number(value);
+		if (days < 1 || days > USAGE_MAX_DAYS) return undefined;
+	}
+	return { days: days ?? USAGE_DEFAULT_DAYS, json };
+}
+
+function usageStats(totals: UsageTotals): string {
+	return `calls ${totals.calls} · failures ${totals.failures} · cost $${totals.costUsd.toFixed(6)}`;
+}
+
+/** The local ledger as a table the owner can hold against the OpenRouter dashboard. Reads only; never touches the network or the key. */
+function usage(
+	args: readonly string[],
+	deps: DecisionsCommandDeps,
+): { code: number; text: string } {
+	const parsed = parseUsageArgs(args);
+	if (!parsed) return { code: 2, text: USAGE };
+	const env = deps.env ?? process.env;
+	const summary = summarizeUsage(deps.stateDir ?? defaultStateDir(env), {
+		days: parsed.days,
+		now: (deps.now ?? Date.now)(),
+	});
+	if (parsed.json) return { code: 0, text: JSON.stringify(summary) };
+	const rows = (map: Record<string, UsageTotals>): string[] =>
+		Object.keys(map)
+			.sort()
+			.map((key) => `  ${key} · ${usageStats(map[key] as UsageTotals)}`);
+	const kinds = Object.entries(summary.failuresByKind)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([kind, count]) => `${kind} ${count}`);
+	const lines = [
+		`Decisions usage: last ${summary.days} days · ${usageStats(summary.total)}`,
+		"Per day (UTC):",
+		...(rows(summary.byDay).length > 0 ? rows(summary.byDay) : ["  none"]),
+		"Per model:",
+		...(rows(summary.byModel).length > 0 ? rows(summary.byModel) : ["  none"]),
+		`Failures by kind: ${kinds.length > 0 ? kinds.join(" · ") : "none"}`,
+		"This is the local ledger of Jev calls made from this machine: compare its per-model counts and cost with the per-model breakdown on the OpenRouter dashboard.",
+	];
+	return { code: 0, text: lines.join("\n") };
 }
 
 /** `bin/ultrathink decisions <argv…>`. Never rejects. code 0 ok, 1 failure, 2 usage/invalid input. text has no trailing newline. */
@@ -355,6 +479,7 @@ export async function runDecisionsCommand(
 			apiKey = rt.key?.key;
 			return await probe(rt, argv, deps);
 		}
+		if (command === "usage") return usage(argv.slice(1), deps);
 		return { code: 2, text: USAGE };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

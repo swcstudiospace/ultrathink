@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { writeStore } from "../mcp/store.ts";
@@ -65,6 +65,51 @@ describe("runDoctorCommand", () => {
 		]);
 		expect(lines.at(-1)).toBe("0 errors, 0 warnings");
 		expect(output).not.toEndWith("\n");
+	});
+
+	test("the claude probes never hand the Jev key variables to the child", async () => {
+		const bin = join(dir, "bin");
+		mkdirSync(bin);
+		const seenFile = join(dir, "probe-env.log");
+		// A leaf script: it must not call `claude` again through PATH. It dumps its whole environment so a leaked name cannot hide.
+		writeFileSync(
+			join(bin, "claude"),
+			`#!/bin/sh\nenv >> "${seenFile}"\nif [ "$1" = "--version" ]; then echo "2.1.308 (Claude Code)"; else echo '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'; fi\n`,
+			{ mode: 0o755 },
+		);
+		const planted = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+		const names = ["PATH", "ULTRATHINK_OPENROUTER_KEY", "OPENROUTER_API_KEY", "UT_TEST_PLANTED"];
+		const saved = names.map((name) => process.env[name]);
+		process.env.PATH = `${bin}:${saved[0] ?? ""}`;
+		process.env.ULTRATHINK_OPENROUTER_KEY = planted;
+		process.env.OPENROUTER_API_KEY = planted;
+		process.env.UT_TEST_PLANTED = "1";
+		// The probes are production deps: an explicit `undefined` override would replace them, so leave both keys out.
+		const { claudeVersion: _version, claudeAuth: _auth, ...rest } = deps;
+		try {
+			await runDoctorCommand([], {
+				...rest,
+				env: {
+					...deps.env,
+					PATH: process.env.PATH,
+					ULTRATHINK_OPENROUTER_KEY: planted,
+					OPENROUTER_API_KEY: planted,
+					UT_TEST_PLANTED: "1",
+				},
+			});
+		} finally {
+			names.forEach((name, i) => {
+				const value = saved[i];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			});
+		}
+		const log = readFileSync(seenFile, "utf8");
+		// The control proves the stub ran with the inherited environment, so the absences below are not vacuous.
+		expect(log).toContain("UT_TEST_PLANTED=1");
+		expect(log).not.toContain("ULTRATHINK_OPENROUTER_KEY");
+		expect(log).not.toContain("OPENROUTER_API_KEY");
+		expect(log).not.toContain(planted);
 	});
 
 	test("the text output is identical across runs with a fixed clock", async () => {
@@ -146,7 +191,7 @@ describe("runDoctorCommand", () => {
 		);
 		const env = {
 			...deps.env,
-			OPENROUTER_API_KEY: FAKE_KEY,
+			ULTRATHINK_OPENROUTER_KEY: FAKE_KEY,
 			HINDSIGHT_API_KEY: FAKE_KEY,
 			GH_TOKEN: FAKE_KEY,
 			AI_GATEWAY_API_KEY: FAKE_KEY,

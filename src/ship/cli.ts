@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import type { SessionRecord } from "../claude/state.ts";
-import { readControl } from "../claude/state.ts";
+import { defaultStateDir, readControl } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { createDecisions } from "../decisions/gate.ts";
 import type { Decisions } from "../decisions/gate.ts";
@@ -918,6 +918,9 @@ async function main(): Promise<number> {
 	const cwdIndex = argv.indexOf("--cwd");
 	const cwd = resolve(cwdIndex >= 0 ? (argv[cwdIndex + 1] ?? process.cwd()) : process.cwd());
 	const stateIndex = argv.indexOf("--state");
+	// The session record lives at <stateDir>/sessions/<id>.json; without it the host's default state dir applies.
+	const stateFile = stateIndex >= 0 ? argv[stateIndex + 1] : undefined;
+	const stateDir = stateFile ? dirname(dirname(resolve(stateFile))) : defaultStateDir();
 	const config = loadConfig(claudeConfigPaths(cwd));
 	let client: McpClient | undefined;
 	const deps: ShipDeps = {
@@ -930,16 +933,12 @@ async function main(): Promise<number> {
 		signals: collectSignals,
 		diff: gatherDiff,
 		engine: async () => {
-			const stateFile = stateIndex >= 0 ? argv[stateIndex + 1] : undefined;
 			if (!stateFile) return undefined;
-			// state file lives at <stateDir>/sessions/<id>.json. The judge is an auxiliary helper on the configured CLI route
-			// (explicit engine/model or the host's route default); it never replays the session's planning model or auth.
-			const selected = await selectEngine(
-				config,
-				readControl(dirname(dirname(resolve(stateFile)))),
-				cwd,
-				{ purpose: "auxiliary" },
-			);
+			// The judge is an auxiliary helper on the configured CLI route (explicit engine/model or the host's route
+			// default); it never replays the session's planning model or auth.
+			const selected = await selectEngine(config, readControl(stateDir), cwd, {
+				purpose: "auxiliary",
+			});
 			return "skipped" in selected ? undefined : selected.complete;
 		},
 		greptile: () => {
@@ -949,7 +948,7 @@ async function main(): Promise<number> {
 		},
 		sleep: Bun.sleep,
 		decisions: (record) =>
-			createDecisions({ config: config.decisions, sessionId: record.sessionId }),
+			createDecisions({ config: config.decisions, sessionId: record.sessionId, stateDir }),
 	};
 	const { code, output } = await runShip(argv, deps);
 	client?.close();

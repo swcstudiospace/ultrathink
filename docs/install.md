@@ -77,7 +77,7 @@ Optional:
 | `gh`, logged in | [Ship](ship.md) (opt-in): pushing, opening and merging the PR |
 | Greptile CLI (`greptile login`) | Ship's CLI review mode |
 | Notion, Linear, Greptile credentials | [Tracking](tracking.md) and ship, through the [shared MCP gateway](#shared-mcp-gateway) |
-| A Jev key: a Vercel AI Gateway API key (`bin/ultrathink-mcp auth set-key vercel --stdin`, or `AI_GATEWAY_API_KEY`) or an OpenRouter API key (`bin/ultrathink-mcp auth set-key openrouter --stdin`, or `OPENROUTER_API_KEY`) | [Jev decisions](how-to/use-jev-decisions.md) (always on once a key exists): it is stored in the same credential store, but `vercel` and `openrouter` are not MCP servers and are never registered in a host |
+| A Jev key: a Vercel AI Gateway API key (`bin/ultrathink-mcp auth set-key vercel --stdin`, or `AI_GATEWAY_API_KEY`) or an OpenRouter API key (`bin/ultrathink-mcp auth set-key openrouter --stdin`, or `ULTRATHINK_OPENROUTER_KEY`) | [Jev decisions](how-to/use-jev-decisions.md) (always on once a key exists): it is stored in the same credential store, but `vercel` and `openrouter` are not MCP servers and are never registered in a host. The OpenRouter key is for Jev only; the generic `OPENROUTER_API_KEY` is not read (and is scrubbed from model-CLI children), so remove that export if you have one |
 | A Hindsight API key (`bin/ultrathink-mcp auth set-key hindsight --stdin`, or `HINDSIGHT_API_KEY` / `HINDSIGHT_API_TOKEN`) | [Hindsight](how-to/connect-hindsight.md) (opt-in, `hindsight.enabled`). Not an MCP server. |
 | A RAGFlow API key (`bin/ultrathink-mcp auth set-key ragflow --stdin`, or `RAGFLOW_API_KEY`) | [RAGFlow](how-to/connect-ragflow.md) (opt-in, `ragflow.enabled`). Not an MCP server. |
 

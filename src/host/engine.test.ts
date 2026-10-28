@@ -330,6 +330,7 @@ describe("selectEngine with only a Vercel key present (JEV-03)", () => {
 	test("auto still resolves per host and no label mentions vercel or gateway", async () => {
 		const saved = new Map<string, string | undefined>();
 		for (const name of [
+			"ULTRATHINK_OPENROUTER_KEY",
 			"OPENROUTER_API_KEY",
 			"AI_GATEWAY_API_KEY",
 			"HINDSIGHT_API_KEY",

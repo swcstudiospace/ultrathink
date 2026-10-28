@@ -14,6 +14,7 @@ import {
 	type DecisionPoint,
 	type DecisionsConfig,
 	type DecisionsProvider,
+	isJevModelId,
 } from "./decisions/types.ts";
 import {
 	DEFAULT_GROK_CONFIG,
@@ -706,7 +707,9 @@ const MAX_DECISIONS_TIMEOUT_MS = 30_000;
 
 /**
  * Per-field merge; only the fourteen known keys are read, so a layer can never add a URL (D1). `enabled` is ignored in
- * every layer: Jev is always on, and only ULTRATHINK_DECISIONS=0 disables it. A project layer (a file a cloned repository
+ * every layer: Jev is always on, and only ULTRATHINK_DECISIONS=0 disables it. `model` is accepted only when it is a Jev
+ * model id (the OpenRouter key is Jev's alone); in every layer, project files included, anything else keeps the earlier
+ * layer's value. A project layer (a file a cloned repository
  * controls) may only tighten consent (K5): `zdr` false→true, `points` narrowed to the intersection with the lower layers;
  * the remaining keys merge as usual.
  */
@@ -734,7 +737,10 @@ function mergeDecisions(
 		provider: DECISIONS_PROVIDERS.includes(decisions.provider as DecisionsProvider)
 			? (decisions.provider as DecisionsProvider)
 			: defaults.provider,
-		model: nonEmpty(decisions.model, defaults.model),
+		model:
+			typeof decisions.model === "string" && isJevModelId(decisions.model.trim())
+				? decisions.model.trim()
+				: defaults.model,
 		points,
 		timeoutMs:
 			typeof decisions.timeoutMs === "number" &&
