@@ -24,6 +24,7 @@ import { basename, join } from "node:path";
 import type { ClassifyVerdict } from "./classify.ts";
 import {
 	briefDigest,
+	LANE_LOCK_BUSY,
 	type LaneRecord,
 	type LaneVerdict,
 	type PidAlive,
@@ -1810,20 +1811,22 @@ describe("spawnGuarded", () => {
 		expect(existsSync(join(root, "swarm", ".lane-lock"))).toBe(false);
 	});
 
-	test("a lock held by another holder past the wait fails open: the lane still spawns and the other lock is left alone", () => {
-		const root = tmp("teams-guarded-open-");
+	test("a lock held by a live owner past the wait fails closed: every plan is refused with the busy reason, nothing spawns and the other lock is left alone", () => {
+		const root = tmp("teams-guarded-busy-");
 		const lock = join(root, "swarm", ".lane-lock");
 		mkdirSync(lock, { recursive: true });
-		let clock = 0;
+		writeFileSync(join(lock, "owner"), "4242");
+		let clock = Date.now();
 		const slept: number[] = [];
-		const spawned: string[] = [];
-		const result = spawnGuarded(plans(["write docs"]), {
+		let spawnCalls = 0;
+		const input = plans(["write docs", "fix the gate"]);
+		const result = spawnGuarded(input, {
 			stateDir: root,
 			cwd: "/repo",
 			cap: 3,
 			isAlive: noneAlive,
 			spawn: (list) => {
-				spawned.push(...list.map((lane) => lane.brief));
+				spawnCalls++;
 				return list.map(handleFor);
 			},
 			lock: {
@@ -1834,11 +1837,16 @@ describe("spawnGuarded", () => {
 				},
 				waitMs: 50,
 				staleMs: 1_000_000,
+				isAlive: () => true,
 			},
 		});
 		expect(slept.length).toBeGreaterThan(0);
-		expect(spawned).toEqual(["write docs"]);
-		expect(result.handles).toHaveLength(1);
+		expect(spawnCalls).toBe(0);
+		expect(result.spawn).toEqual([]);
+		expect(result.handles).toEqual([]);
+		expect(result.refused).toEqual(
+			input.map((lane) => ({ laneId: lane.id, reason: LANE_LOCK_BUSY })),
+		);
 		expect(existsSync(lock)).toBe(true);
 	});
 });

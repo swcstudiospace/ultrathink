@@ -9,13 +9,13 @@
  * seam, and the stop/cap/duplicate wiring lives in `teams.ts` and the Omp host.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
 	renameSync,
-	rmdirSync,
+	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -259,72 +259,183 @@ export function verifyLaneProcess(
 /** The lock directory, under `<stateDir>/swarm/`; it never matches a lane directory name. */
 const LOCK_DIR = ".lane-lock";
 
+/** The file inside the lock directory that names the holder's pid. */
+const LOCK_OWNER_FILE = "owner";
+
 /** A lock older than this (by mtime) belongs to a crashed holder and is taken over. */
 const LANE_LOCK_STALE_MS = 30_000;
 
-/** How long a lane lock is awaited before running unlocked. */
+/** How long a lane lock is awaited before the start is refused. */
 const LANE_LOCK_WAIT_MS = 1_000;
 
 const LANE_LOCK_POLL_MS = 10;
 
-/** Test seams for {@link withLaneLock}; the defaults are the wall clock and a synchronous `Atomics.wait` sleep. */
+/** The refusal when the lane lock stays held by another live process for the whole wait. */
+export const LANE_LOCK_BUSY =
+	"another ultrathink process is starting lanes (lane lock busy); try again in a moment";
+
+/** Result of {@link withLaneLock}: `fn` ran under the lock (`held`), or it was NOT run and `reason` says why. */
+export type LaneLockResult<T> = { held: true; value: T } | { held: false; reason: string };
+
+/** Minimal fs seam for the lane lock, so tests can force races and failures without touching real state. */
+interface LaneLockFs {
+	mkdirSync(path: string, options: { mode?: number; recursive?: boolean }): void;
+	writeFileSync(path: string, data: string, options: { mode: number }): void;
+	readFileSync(path: string, encoding: "utf8"): string;
+	statSync(path: string): { mtimeMs: number };
+	renameSync(from: string, to: string): void;
+	rmSync(path: string, options: { recursive: boolean; force: boolean }): void;
+}
+
+const defaultLockFs: LaneLockFs = {
+	mkdirSync: (path, options) => {
+		mkdirSync(path, options);
+	},
+	writeFileSync,
+	readFileSync,
+	statSync,
+	renameSync,
+	rmSync,
+};
+
+/** Test seams for {@link withLaneLock}; the defaults are the wall clock, a synchronous `Atomics.wait` sleep and `process.kill(pid, 0)`. */
 export interface LaneLockDeps {
 	now?: () => number;
 	sleep?: (ms: number) => void;
 	staleMs?: number;
 	waitMs?: number;
+	/** Whether a lock owner's pid is alive; a dead owner means the holder crashed. */
+	isAlive?: PidAlive;
+	fs?: Partial<LaneLockFs>;
 }
 
 function sleepSync(ms: number): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/** `process.kill(pid, 0)`: ESRCH means dead, EPERM (and anything else) means alive. */
+function signalZeroAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+function errorCode(error: unknown): string {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && code.length > 0 ? code : "UNKNOWN";
+}
+
 /**
  * Run `fn` holding a cross-process lock on the swarm state directory, so the live-lane check, the spawn and the
- * `lane.json` write are one step across Omp processes sharing the directory. The lock is a directory created
- * atomically (`mkdir` without `recursive`: EEXIST means held). A lock older than `staleMs` by mtime belongs to a
- * crashed holder and is removed and taken. After `waitMs` of short synchronous sleeps it FAILS OPEN and runs
- * `fn` unlocked (leaving the other holder's lock alone), as does any other lock failure: a stuck lock must never
- * block prompt submission. A lock this call took is always released.
+ * `lane.json` write are one step across Omp processes sharing the directory. FAILS CLOSED: `fn` runs only when
+ * the lock is held (`{ held: true, value }`); when it stays busy for `waitMs` (`LANE_LOCK_BUSY`) or the lock
+ * directory cannot be created (`cannot take the lane lock (<code>)`) `fn` is NOT run (`{ held: false, reason }`).
+ * Refusing to start lanes never blocks prompt submission, and a cap is a safety limit.
+ *
+ * The lock is a directory created atomically (`mkdir` without `recursive`: EEXIST means held) holding an `owner`
+ * file with the holder's pid. A waiter finding it takes it over at once when the owner pid is dead (a crashed
+ * holder) or, failing that, when the directory is older than `staleMs`; otherwise it polls with short synchronous
+ * sleeps. Takeover is atomic: the directory is renamed to a unique tombstone beside it (a waiter that loses the
+ * rename gets ENOENT and just retries the `mkdir`), then the tombstone is removed. A lock this call took is
+ * always released, and only that one.
  */
-export function withLaneLock<T>(stateDir: string, fn: () => T, deps: LaneLockDeps = {}): T {
+export function withLaneLock<T>(
+	stateDir: string,
+	fn: () => T,
+	deps: LaneLockDeps = {},
+): LaneLockResult<T> {
 	const now = deps.now ?? Date.now;
 	const sleep = deps.sleep ?? sleepSync;
 	const staleMs = deps.staleMs ?? LANE_LOCK_STALE_MS;
+	const isAlive = deps.isAlive ?? signalZeroAlive;
+	const fs: LaneLockFs = { ...defaultLockFs, ...deps.fs };
 	const swarmDir = join(stateDir, "swarm");
 	const lockPath = join(swarmDir, LOCK_DIR);
+
+	const readOwner = (dir: string): number | undefined => {
+		try {
+			const raw = fs.readFileSync(join(dir, LOCK_OWNER_FILE), "utf8").trim();
+			const pid = /^\d+$/.test(raw) ? Number(raw) : 0;
+			return pid > 0 ? pid : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+
+	/** `stale`: its holder died or it outlived `staleMs`; `gone`: it vanished; `fresh`: a live holder has it. */
+	const judge = (dir: string): "stale" | "fresh" | "gone" => {
+		let mtimeMs: number;
+		try {
+			mtimeMs = fs.statSync(dir).mtimeMs;
+		} catch (error) {
+			return errorCode(error) === "ENOENT" ? "gone" : "fresh";
+		}
+		const owner = readOwner(dir);
+		if (owner !== undefined && !isAlive(owner)) return "stale";
+		return now() - mtimeMs > staleMs ? "stale" : "fresh";
+	};
+
 	let held = false;
 	try {
-		mkdirSync(swarmDir, { recursive: true, mode: 0o700 });
+		fs.mkdirSync(swarmDir, { recursive: true, mode: 0o700 });
 		const deadline = now() + (deps.waitMs ?? LANE_LOCK_WAIT_MS);
 		for (;;) {
 			try {
-				mkdirSync(lockPath, { mode: 0o700 });
+				fs.mkdirSync(lockPath, { mode: 0o700 });
 				held = true;
 				break;
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "EEXIST") break;
+				if (errorCode(error) !== "EEXIST") throw error;
 			}
-			try {
-				if (now() - statSync(lockPath).mtimeMs > staleMs) {
-					rmdirSync(lockPath);
+			const verdict = judge(lockPath);
+			if (verdict === "gone") continue;
+			if (verdict === "stale") {
+				const tombstone = join(
+					swarmDir,
+					`${LOCK_DIR}.stale-${process.pid}-${randomBytes(4).toString("hex")}`,
+				);
+				try {
+					fs.renameSync(lockPath, tombstone);
+				} catch (error) {
+					// reason: another waiter won the takeover; the next mkdir decides
+					if (errorCode(error) === "ENOENT") continue;
+					throw error;
+				}
+				if (judge(tombstone) === "fresh") {
+					// reason: the stale lock was replaced by a live holder between the check and the rename; put it back
+					try {
+						fs.renameSync(tombstone, lockPath);
+					} catch {
+						fs.rmSync(tombstone, { recursive: true, force: true });
+					}
+				} else {
+					fs.rmSync(tombstone, { recursive: true, force: true });
 					continue;
 				}
-			} catch {
-				// reason: the holder released between the mkdir and the stat; the next mkdir decides
 			}
-			if (now() >= deadline) break;
+			if (now() >= deadline) return { held: false, reason: LANE_LOCK_BUSY };
 			sleep(LANE_LOCK_POLL_MS);
 		}
-	} catch {
-		// reason: the lock is advisory; an unusable state directory fails open
+	} catch (error) {
+		return { held: false, reason: `cannot take the lane lock (${errorCode(error)})` };
 	}
 	try {
-		return fn();
+		try {
+			fs.writeFileSync(join(lockPath, LOCK_OWNER_FILE), String(process.pid), { mode: 0o600 });
+		} catch {
+			// reason: the owner file only speeds up crash takeover; the mtime fallback still applies
+		}
+		return { held: true, value: fn() };
 	} finally {
 		if (held) {
 			try {
-				rmdirSync(lockPath);
+				const owner = readOwner(lockPath);
+				if (owner === undefined || owner === process.pid) {
+					fs.rmSync(lockPath, { recursive: true, force: true });
+				}
 			} catch {
 				// reason: a lock that is already gone is released
 			}

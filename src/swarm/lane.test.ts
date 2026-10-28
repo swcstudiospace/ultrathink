@@ -19,6 +19,7 @@ import {
 	briefDigest,
 	capRefusal,
 	findDuplicate,
+	LANE_LOCK_BUSY,
 	type LaneFileFs,
 	type LaneRecord,
 	laneBriefWithGraphId,
@@ -379,10 +380,14 @@ describe("capRefusal", () => {
 
 describe("withLaneLock", () => {
 	const lockPath = (stateDir: string): string => join(stateDir, "swarm", ".lane-lock");
+	const DEAD_PID = 999_999;
+	const LIVE_PID = 4242;
+	/** Liveness seam: every pid but DEAD_PID is alive. */
+	const isAlive = (pid: number): boolean => pid !== DEAD_PID;
 
-	/** A fake clock whose sleep advances it, so a bounded wait finishes instantly. */
+	/** A fake clock (starting at the real time, so lock mtimes compare sanely) whose sleep advances it. */
 	function fakeClock() {
-		let t = 1_000;
+		let t = Date.now();
 		const sleeps: number[] = [];
 		return {
 			sleeps,
@@ -394,14 +399,30 @@ describe("withLaneLock", () => {
 		};
 	}
 
-	test("returns fn's value, holds the lock while it runs and always releases it", () => {
+	/** Another holder's lock: the directory, its owner file and an age in ms. */
+	function heldBy(stateDir: string, owner: number | undefined, ageMs = 0): void {
+		mkdirSync(lockPath(stateDir), { recursive: true });
+		if (owner !== undefined) writeFileSync(join(lockPath(stateDir), "owner"), String(owner));
+		const when = (Date.now() - ageMs) / 1000;
+		utimesSync(lockPath(stateDir), when, when);
+	}
+
+	const enoent = (): Error => Object.assign(new Error("gone"), { code: "ENOENT" });
+
+	test("returns fn's value as held, records this process as owner while it runs, and releases the lock", () => {
 		const stateDir = tmp();
-		const value = withLaneLock(stateDir, () => {
-			expect(existsSync(lockPath(stateDir))).toBe(true);
+		let owner = "";
+		const result = withLaneLock(stateDir, () => {
+			owner = readFileSync(join(lockPath(stateDir), "owner"), "utf8");
 			return 7;
 		});
-		expect(value).toBe(7);
+		expect(result).toEqual({ held: true, value: 7 });
+		expect(owner).toBe(String(process.pid));
 		expect(existsSync(lockPath(stateDir))).toBe(false);
+	});
+
+	test("a throwing fn propagates and the lock is still released", () => {
+		const stateDir = tmp();
 		expect(() =>
 			withLaneLock(stateDir, () => {
 				throw new Error("boom");
@@ -410,18 +431,20 @@ describe("withLaneLock", () => {
 		expect(existsSync(lockPath(stateDir))).toBe(false);
 	});
 
-	test("a lock held by another process is awaited, then taken once it is released", () => {
+	test("a lock held by another live process is awaited, then taken once it is released", () => {
 		const stateDir = tmp();
-		mkdirSync(lockPath(stateDir), { recursive: true });
+		heldBy(stateDir, LIVE_PID);
 		const clock = fakeClock();
-		let held = false;
-		withLaneLock(
+		let sawLock = false;
+		const result = withLaneLock(
 			stateDir,
 			() => {
-				held = existsSync(lockPath(stateDir));
+				sawLock = readFileSync(join(lockPath(stateDir), "owner"), "utf8") === String(process.pid);
+				return "ok";
 			},
 			{
 				now: clock.now,
+				isAlive,
 				sleep: (ms) => {
 					clock.sleep(ms);
 					// The other process finishes during its third wait.
@@ -430,43 +453,220 @@ describe("withLaneLock", () => {
 			},
 		);
 		expect(clock.sleeps).toHaveLength(3);
-		expect(held).toBe(true);
+		expect(result).toEqual({ held: true, value: "ok" });
+		expect(sawLock).toBe(true);
 		expect(existsSync(lockPath(stateDir))).toBe(false);
 	});
 
-	test("a lock older than the stale age belongs to a crashed holder: it is taken without waiting", () => {
+	test("a lock that stays busy fails closed: fn never runs, the busy reason is returned and the holder's lock is untouched", () => {
 		const stateDir = tmp();
-		mkdirSync(lockPath(stateDir), { recursive: true });
-		const old = (Date.now() - 60_000) / 1000;
-		utimesSync(lockPath(stateDir), old, old);
-		const clock = fakeClock();
-		let ran = false;
-		withLaneLock(stateDir, () => (ran = true), { sleep: clock.sleep });
-		expect(ran).toBe(true);
-		expect(clock.sleeps).toEqual([]);
-		expect(existsSync(lockPath(stateDir))).toBe(false);
-	});
-
-	test("a lock that is never released fails open after the bounded wait and is left to its holder", () => {
-		const stateDir = tmp();
-		mkdirSync(lockPath(stateDir), { recursive: true });
+		heldBy(stateDir, LIVE_PID);
 		const clock = fakeClock();
 		let ran = 0;
-		const value = withLaneLock(stateDir, () => ++ran, {
+		const result = withLaneLock(stateDir, () => ++ran, {
 			now: clock.now,
 			sleep: clock.sleep,
+			isAlive,
 			waitMs: 100,
 		});
-		expect(value).toBe(1);
-		expect(ran).toBe(1);
+		expect(result).toEqual({ held: false, reason: LANE_LOCK_BUSY });
+		expect(ran).toBe(0);
 		expect(clock.sleeps.length).toBeGreaterThan(0);
 		expect(clock.sleeps.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(110);
-		expect(existsSync(lockPath(stateDir))).toBe(true);
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
 	});
 
-	test("an unusable state directory fails open: fn still runs", () => {
+	test("the busy reason is the documented one-line refusal", () => {
+		expect(LANE_LOCK_BUSY).toBe(
+			"another ultrathink process is starting lanes (lane lock busy); try again in a moment",
+		);
+	});
+
+	test("a lock whose owner pid is dead belongs to a crashed holder: taken over at once, without waiting", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, DEAD_PID);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+		});
+		expect(result).toEqual({ held: true, value: true });
+		expect(ran).toBe(true);
+		expect(clock.sleeps).toEqual([]);
+		// the lock is released and no tombstone is left behind
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([]);
+	});
+
+	test("a live owner younger than the stale age is not taken over", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, LIVE_PID, 5_000);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			staleMs: 30_000,
+			waitMs: 50,
+		});
+		expect(result.held).toBe(false);
+		expect(ran).toBe(false);
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
+	});
+
+	test("a lock older than the stale age is taken over even when its owner pid is alive", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, LIVE_PID, 60_000);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			staleMs: 30_000,
+		});
+		expect(result).toEqual({ held: true, value: true });
+		expect(ran).toBe(true);
+		expect(clock.sleeps).toEqual([]);
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([]);
+	});
+
+	test("an ownerless lock falls back to its age: fresh is waited on, old is taken over", () => {
+		const fresh = tmp();
+		heldBy(fresh, undefined, 1_000);
+		const clock = fakeClock();
+		expect(
+			withLaneLock(fresh, () => 1, { now: clock.now, sleep: clock.sleep, isAlive, waitMs: 30 })
+				.held,
+		).toBe(false);
+		const old = tmp();
+		heldBy(old, undefined, 120_000);
+		expect(withLaneLock(old, () => 1, { isAlive })).toEqual({ held: true, value: 1 });
+	});
+
+	test("two waiters racing to take over one stale lock leave exactly one holder: the loser retries and waits", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, DEAD_PID);
+		const clock = fakeClock();
+		let renames = 0;
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			waitMs: 30,
+			fs: {
+				renameSync: (from, _to) => {
+					renames++;
+					// The other waiter wins the takeover first: it removes the stale lock and holds a fresh one.
+					rmSync(from, { recursive: true, force: true });
+					mkdirSync(from);
+					writeFileSync(join(from, "owner"), String(LIVE_PID));
+					throw enoent();
+				},
+			},
+		});
+		expect(renames).toBe(1);
+		expect(result).toEqual({ held: false, reason: LANE_LOCK_BUSY });
+		expect(ran).toBe(false);
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([".lane-lock"]);
+	});
+
+	test("a takeover that renames a lock a faster waiter just took puts it back and does not run fn", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, DEAD_PID);
+		const clock = fakeClock();
+		let renames = 0;
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			waitMs: 30,
+			fs: {
+				renameSync: (from, to) => {
+					renames++;
+					if (renames === 1) {
+						// Between this waiter's check and its rename, the stale lock is replaced by a live holder's.
+						rmSync(from, { recursive: true, force: true });
+						mkdirSync(from);
+						writeFileSync(join(from, "owner"), String(LIVE_PID));
+					}
+					renameSync(from, to);
+				},
+			},
+		});
+		expect(result).toEqual({ held: false, reason: LANE_LOCK_BUSY });
+		expect(ran).toBe(false);
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([".lane-lock"]);
+	});
+
+	test("a state directory that cannot be created fails closed with the error code and no path", () => {
 		const stateDir = tmp();
 		writeFileSync(join(stateDir, "swarm"), "not a directory");
-		expect(withLaneLock(stateDir, () => "ran")).toBe("ran");
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true));
+		expect(ran).toBe(false);
+		expect(result.held).toBe(false);
+		if (result.held) return;
+		expect(result.reason).toMatch(/^cannot take the lane lock \([A-Z]+\)$/);
+		expect(result.reason).not.toContain(stateDir);
+	});
+
+	test("a lock directory that cannot be created for a reason other than EEXIST fails closed with that code", () => {
+		const stateDir = tmp();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			fs: {
+				mkdirSync: (path, options) => {
+					if (path.endsWith(".lane-lock"))
+						throw Object.assign(new Error(`denied ${path}`), { code: "EACCES" });
+					mkdirSync(path, options);
+				},
+			},
+		});
+		expect(result).toEqual({ held: false, reason: "cannot take the lane lock (EACCES)" });
+		expect(ran).toBe(false);
+	});
+
+	test("a takeover that fails for a reason other than ENOENT fails closed instead of looping", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, DEAD_PID);
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			isAlive,
+			fs: {
+				renameSync: () => {
+					throw Object.assign(new Error("denied"), { code: "EPERM" });
+				},
+			},
+		});
+		expect(result).toEqual({ held: false, reason: "cannot take the lane lock (EPERM)" });
+		expect(ran).toBe(false);
+	});
+
+	test("a failed owner write does not stop fn, and the lock is still released", () => {
+		const stateDir = tmp();
+		const result = withLaneLock(stateDir, () => "ran", {
+			fs: {
+				writeFileSync: () => {
+					throw new Error("disk full");
+				},
+			},
+		});
+		expect(result).toEqual({ held: true, value: "ran" });
+		expect(existsSync(lockPath(stateDir))).toBe(false);
+	});
+
+	test("a refused call never releases the lock it did not take", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, LIVE_PID);
+		const clock = fakeClock();
+		withLaneLock(stateDir, () => 1, { now: clock.now, sleep: clock.sleep, isAlive, waitMs: 20 });
+		expect(existsSync(lockPath(stateDir))).toBe(true);
 	});
 });

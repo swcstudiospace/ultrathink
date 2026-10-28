@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Effort, Model } from "@oh-my-pi/pi-ai";
 import { writeSession } from "../claude/state.ts";
-import { briefDigest, writeLaneFile } from "../swarm/lane.ts";
+import { briefDigest, LANE_LOCK_BUSY, writeLaneFile } from "../swarm/lane.ts";
 import type { ClassifyVerdict } from "../swarm/classify.ts";
 import { type LaneClassify, spawnLanes, type TeamsFs } from "../swarm/teams.ts";
 import { runUplift } from "../uplift/run.ts";
@@ -2620,6 +2620,86 @@ describe("swarm auto-run", () => {
 			expect(await run("build a health endpoint")).toBeUndefined();
 			expect(seen).toEqual({ classify: false, spawn: true });
 			expect(existsSync(lock)).toBe(false);
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	/** Another Omp process mid-spawn: the lane lock held by a live owner (this test process stands in for it). */
+	const holdLaneLock = (stateDir: string): string => {
+		const lock = join(stateDir, "swarm", ".lane-lock");
+		mkdirSync(lock, { recursive: true });
+		writeFileSync(join(lock, "owner"), String(process.pid));
+		return lock;
+	};
+
+	test("the explicit command refuses every brief with the busy reason while another process holds the lane lock, and spawns nothing", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-busy-"));
+		try {
+			const lock = holdLaneLock(stateDir);
+			const spawned: number[] = [];
+			const { command, sent } = setup(
+				async () => "PLAN",
+				1_000,
+				{
+					swarm: {
+						classify: sdlc,
+						spawn: (plan) => {
+							spawned.push(plan.length);
+							return spawnLanes(plan, startedLane, laneFs());
+						},
+					},
+				},
+				{ cwd },
+			);
+			await command("ultrathink-swarm", "build a health endpoint | fix the login bug");
+			expect(spawned).toEqual([]);
+			expect(repliesOf(sent).split(LANE_LOCK_BUSY).length - 1).toBe(2);
+			expect(swarmCards(sent)).toBe(0);
+			expect(laneDirNames(stateDir)).toEqual([".lane-lock"]);
+			expect(existsSync(lock)).toBe(true);
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("auto-run starts no lane while another process holds the lane lock: it returns false and the prompt plans normally", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-auto-busy-"));
+		try {
+			const lock = holdLaneLock(stateDir);
+			const spawned: number[] = [];
+			const gate = controlled();
+			const { run, sent } = setup(
+				gate.plan,
+				1,
+				{
+					config: autoRunConfig,
+					swarm: {
+						classify: sdlc,
+						spawn: (plan) => {
+							spawned.push(plan.length);
+							return spawnLanes(plan, startedLane, laneFs());
+						},
+					},
+				},
+				{ hasUI: true, cwd },
+			);
+			expect(await run("build a health endpoint")).toEqual({
+				message: expect.objectContaining({ customType: "ultrathink-pending" }),
+			});
+			expect(spawned).toEqual([]);
+			expect(swarmCards(sent)).toBe(0);
+			expect(laneDirNames(stateDir)).toEqual([".lane-lock"]);
+			expect(existsSync(lock)).toBe(true);
+			expect(gate.calls()).toBe(1);
 		} finally {
 			restore();
 			rmSync(root, { recursive: true, force: true });

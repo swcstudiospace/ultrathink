@@ -802,9 +802,10 @@ export interface GuardedSpawn {
  * cannot both pass the cap check before either has written its `lane.json`. This is the only place a live-lane scan
  * and a spawn are combined; the lock covers the `lane.json` writes (they happen inside the spawner). The spawner runs
  * on the survivors only, and not at all when none survive. Await the classifier ({@link filterSpawnable}) BEFORE calling this: an
- * async wait must never sit inside the synchronous lock. The lock fails open after about a second (a stuck lock
- * never blocks prompt submission), so this narrows the race rather than guaranteeing it away. `opts.lock`
- * exposes the lock's clock and sleep seams for tests.
+ * async wait must never sit inside the synchronous lock. It FAILS CLOSED: when the lane lock stays busy (or cannot be
+ * taken) nothing is spawned and every plan is refused with the lock's reason (`handles` is empty), because the cap is
+ * a safety limit and refusing to start lanes never blocks prompt submission. `opts.lock` exposes the lock's clock,
+ * sleep, liveness and fs seams for tests.
  */
 export function spawnGuarded(
 	plans: readonly LanePlan[],
@@ -817,7 +818,7 @@ export function spawnGuarded(
 		lock?: LaneLockDeps;
 	},
 ): GuardedSpawn {
-	return withLaneLock(
+	const locked = withLaneLock(
 		opts.stateDir,
 		() => {
 			const live = liveLaneSnapshot(opts.stateDir, opts.isAlive);
@@ -828,6 +829,12 @@ export function spawnGuarded(
 		},
 		opts.lock,
 	);
+	if (locked.held) return locked.value;
+	return {
+		spawn: [],
+		refused: plans.map((plan) => ({ laneId: plan.id, reason: locked.reason })),
+		handles: [],
+	};
 }
 
 /**
