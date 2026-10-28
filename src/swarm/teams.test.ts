@@ -1836,7 +1836,6 @@ describe("spawnGuarded", () => {
 					clock += ms;
 				},
 				waitMs: 50,
-				staleMs: 1_000_000,
 				isAlive: () => true,
 			},
 		});
@@ -1844,9 +1843,12 @@ describe("spawnGuarded", () => {
 		expect(spawnCalls).toBe(0);
 		expect(result.spawn).toEqual([]);
 		expect(result.handles).toEqual([]);
-		expect(result.refused).toEqual(
-			input.map((lane) => ({ laneId: lane.id, reason: LANE_LOCK_BUSY })),
-		);
+		expect(result.refused.map((lane) => lane.laneId)).toEqual(input.map((lane) => lane.id));
+		for (const refusal of result.refused) {
+			expect(refusal.reason.startsWith(LANE_LOCK_BUSY)).toBe(true);
+			expect(refusal.reason).toContain("held by process 4242");
+			expect(refusal.reason).toContain(lock);
+		}
 		expect(existsSync(lock)).toBe(true);
 	});
 });

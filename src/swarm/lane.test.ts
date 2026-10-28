@@ -21,6 +21,7 @@ import {
 	findDuplicate,
 	LANE_LOCK_BUSY,
 	type LaneFileFs,
+	type LaneLockResult,
 	type LaneRecord,
 	laneBriefWithGraphId,
 	liveLanes,
@@ -407,8 +408,6 @@ describe("withLaneLock", () => {
 		utimesSync(lockPath(stateDir), when, when);
 	}
 
-	const enoent = (): Error => Object.assign(new Error("gone"), { code: "ENOENT" });
-
 	test("returns fn's value as held, records this process as owner while it runs, and releases the lock", () => {
 		const stateDir = tmp();
 		let owner = "";
@@ -458,7 +457,16 @@ describe("withLaneLock", () => {
 		expect(existsSync(lockPath(stateDir))).toBe(false);
 	});
 
-	test("a lock that stays busy fails closed: fn never runs, the busy reason is returned and the holder's lock is untouched", () => {
+	/** A takeover mutex another waiter holds: `<lock>.takeover` and its age in ms. */
+	function takeoverHeld(stateDir: string, ageMs = 0): string {
+		const path = `${lockPath(stateDir)}.takeover`;
+		mkdirSync(path, { recursive: true });
+		const when = (Date.now() - ageMs) / 1000;
+		utimesSync(path, when, when);
+		return path;
+	}
+
+	test("a lock that stays busy fails closed: fn never runs, the reason names the holder and its lock, and the lock is untouched", () => {
 		const stateDir = tmp();
 		heldBy(stateDir, LIVE_PID);
 		const clock = fakeClock();
@@ -469,7 +477,10 @@ describe("withLaneLock", () => {
 			isAlive,
 			waitMs: 100,
 		});
-		expect(result).toEqual({ held: false, reason: LANE_LOCK_BUSY });
+		expect(result).toEqual({
+			held: false,
+			reason: `${LANE_LOCK_BUSY} (held by process ${LIVE_PID}; if that process is gone, remove ${lockPath(stateDir)})`,
+		});
 		expect(ran).toBe(0);
 		expect(clock.sleeps.length).toBeGreaterThan(0);
 		expect(clock.sleeps.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(110);
@@ -495,114 +506,184 @@ describe("withLaneLock", () => {
 		expect(result).toEqual({ held: true, value: true });
 		expect(ran).toBe(true);
 		expect(clock.sleeps).toEqual([]);
-		// the lock is released and no tombstone is left behind
+		// the lock is released and neither a tombstone nor the takeover mutex is left behind
 		expect(readdirSync(join(stateDir, "swarm"))).toEqual([]);
 	});
 
-	test("a live owner younger than the stale age is not taken over", () => {
+	test("a live owner is never taken over, however old its lock is", () => {
 		const stateDir = tmp();
-		heldBy(stateDir, LIVE_PID, 5_000);
+		heldBy(stateDir, LIVE_PID, 10 * 365 * 24 * 3_600_000);
 		const clock = fakeClock();
 		let ran = false;
 		const result = withLaneLock(stateDir, () => (ran = true), {
 			now: clock.now,
 			sleep: clock.sleep,
 			isAlive,
-			staleMs: 30_000,
 			waitMs: 50,
 		});
 		expect(result.held).toBe(false);
-		expect(ran).toBe(false);
-		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
-	});
-
-	test("a lock older than the stale age is taken over even when its owner pid is alive", () => {
-		const stateDir = tmp();
-		heldBy(stateDir, LIVE_PID, 60_000);
-		const clock = fakeClock();
-		let ran = false;
-		const result = withLaneLock(stateDir, () => (ran = true), {
-			now: clock.now,
-			sleep: clock.sleep,
-			isAlive,
-			staleMs: 30_000,
-		});
-		expect(result).toEqual({ held: true, value: true });
-		expect(ran).toBe(true);
-		expect(clock.sleeps).toEqual([]);
-		expect(readdirSync(join(stateDir, "swarm"))).toEqual([]);
-	});
-
-	test("an ownerless lock falls back to its age: fresh is waited on, old is taken over", () => {
-		const fresh = tmp();
-		heldBy(fresh, undefined, 1_000);
-		const clock = fakeClock();
-		expect(
-			withLaneLock(fresh, () => 1, { now: clock.now, sleep: clock.sleep, isAlive, waitMs: 30 })
-				.held,
-		).toBe(false);
-		const old = tmp();
-		heldBy(old, undefined, 120_000);
-		expect(withLaneLock(old, () => 1, { isAlive })).toEqual({ held: true, value: 1 });
-	});
-
-	test("two waiters racing to take over one stale lock leave exactly one holder: the loser retries and waits", () => {
-		const stateDir = tmp();
-		heldBy(stateDir, DEAD_PID);
-		const clock = fakeClock();
-		let renames = 0;
-		let ran = false;
-		const result = withLaneLock(stateDir, () => (ran = true), {
-			now: clock.now,
-			sleep: clock.sleep,
-			isAlive,
-			waitMs: 30,
-			fs: {
-				renameSync: (from, _to) => {
-					renames++;
-					// The other waiter wins the takeover first: it removes the stale lock and holds a fresh one.
-					rmSync(from, { recursive: true, force: true });
-					mkdirSync(from);
-					writeFileSync(join(from, "owner"), String(LIVE_PID));
-					throw enoent();
-				},
-			},
-		});
-		expect(renames).toBe(1);
-		expect(result).toEqual({ held: false, reason: LANE_LOCK_BUSY });
+		if (result.held) return;
+		expect(result.reason.startsWith(LANE_LOCK_BUSY)).toBe(true);
+		expect(result.reason).toContain(`held by process ${LIVE_PID}`);
 		expect(ran).toBe(false);
 		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
 		expect(readdirSync(join(stateDir, "swarm"))).toEqual([".lane-lock"]);
 	});
 
-	test("a takeover that renames a lock a faster waiter just took puts it back and does not run fn", () => {
-		const stateDir = tmp();
-		heldBy(stateDir, DEAD_PID);
+	test("an ownerless lock is busy while younger than 2 s and recovered once older", () => {
+		const young = tmp();
+		heldBy(young, undefined, 1_000);
 		const clock = fakeClock();
-		let renames = 0;
-		let ran = false;
-		const result = withLaneLock(stateDir, () => (ran = true), {
+		let ranYoung = false;
+		const refused = withLaneLock(young, () => (ranYoung = true), {
 			now: clock.now,
 			sleep: clock.sleep,
 			isAlive,
 			waitMs: 30,
+		});
+		expect(refused).toEqual({ held: false, reason: LANE_LOCK_BUSY });
+		expect(ranYoung).toBe(false);
+		expect(existsSync(lockPath(young))).toBe(true);
+
+		const old = tmp();
+		heldBy(old, undefined, 3_000);
+		const oldClock = fakeClock();
+		expect(
+			withLaneLock(old, () => 1, { now: oldClock.now, sleep: oldClock.sleep, isAlive }),
+		).toEqual({ held: true, value: 1 });
+		expect(oldClock.sleeps).toEqual([]);
+		expect(readdirSync(join(old, "swarm"))).toEqual([]);
+	});
+
+	test("the ownerless age is a seam", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, undefined, 1_000);
+		const clock = fakeClock();
+		expect(
+			withLaneLock(stateDir, () => 1, {
+				now: clock.now,
+				sleep: clock.sleep,
+				isAlive,
+				ownerlessMs: 500,
+			}),
+		).toEqual({ held: true, value: 1 });
+	});
+
+	test("a second waiter that reads the owner after the first created a fresh lock does not remove it", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, DEAD_PID);
+		const clock = fakeClock();
+		const renames: string[] = [];
+		let swapped = false;
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			waitMs: 30,
+			isAlive: (pid) => {
+				if (pid === DEAD_PID && !swapped) {
+					swapped = true;
+					// The first waiter wins the recovery before this one acts on what it just saw, and holds a fresh lock.
+					rmSync(lockPath(stateDir), { recursive: true, force: true });
+					heldBy(stateDir, LIVE_PID);
+					return false;
+				}
+				return isAlive(pid);
+			},
 			fs: {
 				renameSync: (from, to) => {
-					renames++;
-					if (renames === 1) {
-						// Between this waiter's check and its rename, the stale lock is replaced by a live holder's.
-						rmSync(from, { recursive: true, force: true });
-						mkdirSync(from);
-						writeFileSync(join(from, "owner"), String(LIVE_PID));
-					}
+					renames.push(from);
 					renameSync(from, to);
 				},
 			},
 		});
-		expect(result).toEqual({ held: false, reason: LANE_LOCK_BUSY });
+		expect(renames).toEqual([]);
 		expect(ran).toBe(false);
+		expect(result.held).toBe(false);
 		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
 		expect(readdirSync(join(stateDir, "swarm"))).toEqual([".lane-lock"]);
+	});
+
+	test("two waiters on one dead lock: exactly one recovers it, and the other never runs while it holds the lock", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, DEAD_PID);
+		const removals: string[] = [];
+		const fsSeam = {
+			renameSync: (from: string, to: string) => {
+				removals.push(from);
+				renameSync(from, to);
+			},
+		};
+		let inside = 0;
+		let maxInside = 0;
+		let secondRan = false;
+		const seen: { second?: LaneLockResult<boolean> } = {};
+		const first = withLaneLock(
+			stateDir,
+			() => {
+				inside++;
+				maxInside = Math.max(maxInside, inside);
+				// The second waiter arrives while the first holds the recovered lock.
+				const clock = fakeClock();
+				seen.second = withLaneLock(
+					stateDir,
+					() => {
+						inside++;
+						maxInside = Math.max(maxInside, inside);
+						secondRan = true;
+						inside--;
+						return true;
+					},
+					{ now: clock.now, sleep: clock.sleep, isAlive, waitMs: 30, fs: fsSeam },
+				);
+				inside--;
+				return true;
+			},
+			{ isAlive, fs: fsSeam },
+		);
+		expect(first).toEqual({ held: true, value: true });
+		expect(seen.second?.held).toBe(false);
+		expect(secondRan).toBe(false);
+		expect(maxInside).toBe(1);
+		expect(removals).toHaveLength(1);
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([]);
+	});
+
+	test("a takeover mutex held by a live recoverer makes the other waiter wait, and the dead lock is left alone", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, DEAD_PID);
+		const mutex = takeoverHeld(stateDir, 1_000);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			waitMs: 50,
+		});
+		expect(result.held).toBe(false);
+		if (result.held) return;
+		expect(result.reason.startsWith(LANE_LOCK_BUSY)).toBe(true);
+		expect(ran).toBe(false);
+		expect(clock.sleeps.length).toBeGreaterThan(0);
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(DEAD_PID));
+		expect(existsSync(mutex)).toBe(true);
+	});
+
+	test("a takeover mutex older than 5 s belongs to a crashed recoverer: it is cleared and recovery proceeds", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, DEAD_PID);
+		takeoverHeld(stateDir, 6_000);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+		});
+		expect(result).toEqual({ held: true, value: true });
+		expect(ran).toBe(true);
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([]);
 	});
 
 	test("a state directory that cannot be created fails closed with the error code and no path", () => {
@@ -633,7 +714,7 @@ describe("withLaneLock", () => {
 		expect(ran).toBe(false);
 	});
 
-	test("a takeover that fails for a reason other than ENOENT fails closed instead of looping", () => {
+	test("a takeover that fails for a reason other than ENOENT fails closed instead of looping, and frees the mutex", () => {
 		const stateDir = tmp();
 		heldBy(stateDir, DEAD_PID);
 		let ran = false;
@@ -647,19 +728,43 @@ describe("withLaneLock", () => {
 		});
 		expect(result).toEqual({ held: false, reason: "cannot take the lane lock (EPERM)" });
 		expect(ran).toBe(false);
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([".lane-lock"]);
 	});
 
-	test("a failed owner write does not stop fn, and the lock is still released", () => {
+	test("a failed owner write fails closed and removes the unstamped lock: a lock without an owner would be recoverable from a live holder", () => {
 		const stateDir = tmp();
-		const result = withLaneLock(stateDir, () => "ran", {
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
 			fs: {
 				writeFileSync: () => {
-					throw new Error("disk full");
+					throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
 				},
 			},
 		});
-		expect(result).toEqual({ held: true, value: "ran" });
+		expect(result).toEqual({ held: false, reason: "cannot take the lane lock (ENOSPC)" });
+		expect(ran).toBe(false);
 		expect(existsSync(lockPath(stateDir))).toBe(false);
+	});
+
+	test("release leaves a lock whose owner names another process alone", () => {
+		const stateDir = tmp();
+		const result = withLaneLock(stateDir, () => {
+			// Another process now holds the lock directory at the same path.
+			rmSync(lockPath(stateDir), { recursive: true, force: true });
+			heldBy(stateDir, LIVE_PID);
+			return "ran";
+		});
+		expect(result).toEqual({ held: true, value: "ran" });
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
+	});
+
+	test("release leaves a lock without a readable owner alone", () => {
+		const stateDir = tmp();
+		withLaneLock(stateDir, () => {
+			rmSync(join(lockPath(stateDir), "owner"));
+			return 1;
+		});
+		expect(existsSync(lockPath(stateDir))).toBe(true);
 	});
 
 	test("a refused call never releases the lock it did not take", () => {
