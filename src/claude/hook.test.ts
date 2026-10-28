@@ -19,6 +19,7 @@ import type {
 	DecisionsConfig,
 	DecisionsErrorKind,
 } from "../decisions/types.ts";
+import { openJevHealth } from "../decisions/health.ts";
 import { JEV, recordingFetch } from "../test.helpers.ts";
 import type { Clarification } from "../hitl/types.ts";
 import type { KnowledgeReader, KnowledgeResult } from "../greptile/knowledge.ts";
@@ -2280,6 +2281,22 @@ describe("Jev plan gate", () => {
 			}
 		}
 	}, 30_000);
+
+	test("an intentionally disabled run neither shows nor consumes a saved Jev failure warning (ULTRATHINK_DECISIONS=0)", async () => {
+		const h = jevHarness(onConfig({ points: ["plan"] }), recordingFetch([JEV(0.97)]).fetch);
+		try {
+			openJevHealth(h.deps.stateDir, "openrouter").recordFailure("credits", Date.now());
+			const off = await runPromptSubmit({ ...input, prompt: ACK }, offDeps(h.deps));
+			expect(off.output?.systemMessage ?? "").not.toContain("Jev · unavailable");
+			expect(openJevHealth(h.deps.stateDir, "openrouter").read().warnedCause).toBeUndefined();
+			// Enabled again, the saved failure still warns, once.
+			const on = await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
+			expect(on.output?.systemMessage?.match(JEV_WARNING) ?? []).toHaveLength(1);
+			expect(openJevHealth(h.deps.stateDir, "openrouter").read().warnedCause).toBe("credits");
+		} finally {
+			h.cleanup();
+		}
+	});
 
 	test("a caller abort during the plan gate is re-thrown as an AbortError before anything runs (AC-5.7)", async () => {
 		const controller = new AbortController();

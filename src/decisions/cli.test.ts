@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JEV, recordingFetch } from "../test.helpers.ts";
+import { JEV, recordingFetch, VEV } from "../test.helpers.ts";
 import { type DecisionsCommandDeps, runDecisionsCommand } from "./cli.ts";
+import { openJevHealth } from "./health.ts";
 import { QUESTIONS } from "./questions.ts";
-import { appendUsage } from "./usage.ts";
+import { appendUsage, USAGE_FILE } from "./usage.ts";
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
@@ -110,7 +111,7 @@ describe("decisions check", () => {
 		const out = await runDecisionsCommand(["check"], setup(r));
 		expect(out).toEqual({
 			code: 1,
-			text: "Decisions check: error (auth) · decisions auth: HTTP 401: upstream said no for [redacted] · 0 ms · attempts 1 · provider openrouter · zdr on · key from ULTRATHINK_OPENROUTER_KEY",
+			text: "Decisions check: error (auth) · decisions auth: HTTP 401: upstream said no for [redacted] · 0 ms · attempts 1 · breaker opened: auth · provider openrouter · zdr on · key from ULTRATHINK_OPENROUTER_KEY",
 		});
 		expectNoKey(out.text);
 	});
@@ -565,7 +566,7 @@ describe("decisions probe (A11, §5.7)", () => {
 			text: [
 				"#1 P 0.90 · plan",
 				"#2 error (credits)",
-				"Decisions probe: plan · typesafe/jev-1.13-20260917 · cases 2 · labelled 1 · agree 0/1 · errors 1",
+				"Decisions probe: plan · typesafe/jev-1.13-20260917 · cases 2 · labelled 1 · agree 0/1 · errors 1 · breaker opened: credits",
 			].join("\n"),
 		});
 		expectNoKey(out.text);
@@ -580,7 +581,7 @@ describe("decisions probe (A11, §5.7)", () => {
 		);
 		expect(out.code).toBe(1);
 		expect(out.text.split("\n").at(-1)).toBe(
-			"Decisions probe: plan · ~typesafe/jev-latest · cases 1 · labelled 0 · agree 0/0 · errors 1",
+			"Decisions probe: plan · ~typesafe/jev-latest · cases 1 · labelled 0 · agree 0/0 · errors 1 · breaker opened: auth",
 		);
 	});
 
@@ -707,5 +708,104 @@ describe("decisions probe (A11, §5.7)", () => {
 			2,
 		);
 		expect(r.calls).toHaveLength(0);
+	});
+});
+
+describe("decisions check and probe go through the health breaker and the ledger", () => {
+	const ledger = (stateDir: string): Array<Record<string, unknown>> =>
+		readFileSync(join(stateDir, USAGE_FILE), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+	test("a successful check after a top-up closes the open breaker and says so, cool-down or not", async () => {
+		const r = recordingFetch([JEV(0.9)]);
+		const deps = setup(r);
+		const stateDir = deps.stateDir as string;
+		const health = openJevHealth(stateDir, "openrouter");
+		health.recordFailure("credits", 4000);
+		expect(health.shouldCall(5000)).toMatchObject({ call: false });
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.code).toBe(0);
+		expect(out.text).toContain(" · cost 0.000019 · breaker closed · provider openrouter ·");
+		expect(r.calls).toHaveLength(1);
+		expect(health.read().state).toBe("closed");
+		expect(health.shouldCall(5001)).toEqual({ call: true, probe: false });
+	});
+
+	test("a failed check on an open breaker says it is still open and re-schedules it", async () => {
+		const r = recordingFetch([ERR(402)]);
+		const deps = setup(r);
+		const stateDir = deps.stateDir as string;
+		const health = openJevHealth(stateDir, "openrouter");
+		health.recordFailure("credits", 4000);
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.code).toBe(1);
+		expect(out.text).toContain(
+			" · attempts 1 · breaker still open: credits · provider openrouter ·",
+		);
+		expect(health.read().coolDownMs).toBe(600_000);
+	});
+
+	test("a check on the Vercel rail closes only the Vercel breaker", async () => {
+		const V = "vck_test_key_do_not_use";
+		const r = recordingFetch([VEV(0.9)]);
+		const deps = setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V } });
+		const stateDir = deps.stateDir as string;
+		openJevHealth(stateDir, "vercel").recordFailure("auth", 4000);
+		openJevHealth(stateDir, "openrouter").recordFailure("credits", 4000);
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.text).toContain(" · breaker closed · provider vercel ·");
+		expect(openJevHealth(stateDir, "vercel").read().state).toBe("closed");
+		expect(openJevHealth(stateDir, "openrouter").read().state).toBe("open");
+	});
+
+	test("every real POST of a check is ledgered, a retried 503 included", async () => {
+		const r = recordingFetch([ERR(503), JEV(0.9)]);
+		const deps = setup(r);
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.text).toContain("attempts 2");
+		expect(ledger(deps.stateDir as string)).toEqual([
+			{
+				ts: 5000,
+				point: "check",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				ok: false,
+				kind: "upstream",
+				status: 503,
+				ms: 0,
+			},
+			{
+				ts: 5000,
+				point: "check",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				servedModel: "typesafe/jev-1.13-20260917",
+				ok: true,
+				ms: 0,
+				promptTokens: 450,
+				completionTokens: 0,
+				costUsd: 0.000019,
+				requestId: "gen-dec-test",
+			},
+		]);
+	});
+
+	test("probe cases are forced calls too: a success closes the open breaker, each POST is ledgered", async () => {
+		const r = recordingFetch([JEV(0.9)]);
+		const deps = setup(r);
+		const stateDir = deps.stateDir as string;
+		const health = openJevHealth(stateDir, "openrouter");
+		health.recordFailure("auth", 4000);
+		const out = await runDecisionsCommand(
+			["probe", "plan", writeCases(deps, [{ message: "a" }, { message: "b" }])],
+			deps,
+		);
+		expect(out.code).toBe(0);
+		expect(out.text.split("\n").at(-1)).toEndWith("errors 0 · breaker closed");
+		expect(health.read().state).toBe("closed");
+		expect(r.calls).toHaveLength(2);
+		expect(ledger(stateDir).map((row) => row.point)).toEqual(["plan", "plan"]);
 	});
 });

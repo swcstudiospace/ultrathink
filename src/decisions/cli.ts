@@ -12,6 +12,7 @@ import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
 import {
 	type DecideOptions,
+	type DecideOutcome,
 	type DecisionsUrl,
 	DECISIONS_URL_IGNORED,
 	decide,
@@ -24,8 +25,16 @@ import {
 	type ResolvedProvider,
 	buildDecisionsRequest,
 	decisionsKilled,
+	recordHealth,
 	resolveDecisionsKeys,
+	usageListener,
 } from "./gate.ts";
+import {
+	type JevHealth,
+	type JevHealthState,
+	openJevHealth,
+	openMemoryJevHealth,
+} from "./health.ts";
 import { type UsageTotals, summarizeUsage } from "./usage.ts";
 import { decideVercel } from "./vercel.ts";
 import {
@@ -38,7 +47,13 @@ import {
 	type DecisionStates,
 	QUESTION_KEYS,
 } from "./questions.ts";
-import { type DecisionPoint, type DecisionsConfig, DECISION_POINTS, formatP } from "./types.ts";
+import {
+	type DecisionPoint,
+	type DecisionsConfig,
+	type DecisionsRequest,
+	DECISION_POINTS,
+	formatP,
+} from "./types.ts";
 
 export interface DecisionsCommandDeps extends Omit<DecisionsDeps, "debug"> {
 	cwd: string;
@@ -61,8 +76,11 @@ interface Runtime {
 	provider: ResolvedProvider;
 	key?: { key: string; source: KeySource };
 	url: DecisionsUrl;
-	decideOptions: (apiKey: string) => DecideOptions;
+	decideOptions: (apiKey: string, point: string) => DecideOptions;
 	rail: typeof decide;
+	now: () => number;
+	/** The picked rail's breaker: under the caller's state dir, else in memory (no disk). */
+	health: JevHealth;
 }
 
 function runtime(deps: DecisionsCommandDeps): Runtime {
@@ -76,7 +94,7 @@ function runtime(deps: DecisionsCommandDeps): Runtime {
 		provider: picked.provider,
 		key: picked.key,
 		url,
-		decideOptions: (apiKey) => ({
+		decideOptions: (apiKey, point) => ({
 			apiKey,
 			timeoutMs: config.timeoutMs,
 			...(picked.provider === "openrouter" ? { url: url.url } : {}),
@@ -84,8 +102,19 @@ function runtime(deps: DecisionsCommandDeps): Runtime {
 			now: deps.now,
 			sleep: deps.sleep,
 			random: deps.random,
+			onAttempt: usageListener(deps.stateDir, {
+				point,
+				rail: picked.provider,
+				model: config.model,
+			}),
 		}),
 		rail: picked.provider === "vercel" ? decideVercel : decide,
+		now: deps.now ?? Date.now,
+		health:
+			deps.health ??
+			(deps.stateDir === undefined
+				? openMemoryJevHealth(picked.provider)
+				: openJevHealth(deps.stateDir, picked.provider)),
 	};
 }
 
@@ -114,21 +143,50 @@ async function check(rt: Runtime): Promise<{ code: number; text: string }> {
 			spanName: "check",
 		},
 	);
-	const outcome = await rt.rail(request, rt.decideOptions(rt.key.key));
+	const before = rt.health.read();
+	const outcome = await forcedCall(rt, rt.key.key, request, "check");
 	const timing = `${Math.round(outcome.latencyMs)} ms · attempts ${outcome.attempts}`;
+	// Between the timing and the footer, so the footer (provider · zdr · key source · url) still ends the line.
+	const note = breakerNote(before, rt.health.read());
 	const tail = footer(rt, rt.key.source);
 	if (!outcome.ok) {
 		return {
 			code: 1,
-			text: `Decisions check: error (${outcome.error.kind}) · ${outcome.error.message} · ${timing}${tail}`,
+			text: `Decisions check: error (${outcome.error.kind}) · ${outcome.error.message} · ${timing}${note}${tail}`,
 		};
 	}
 	const { model, usage } = outcome.response;
 	const cost = usage.cost !== undefined ? String(usage.cost) : "n/a";
 	return {
 		code: 0,
-		text: `Decisions check: ok · ${model} (requested ${rt.config.model}) · ${timing} · cost ${cost}${tail}`,
+		text: `Decisions check: ok · ${model} (requested ${rt.config.model}) · ${timing} · cost ${cost}${note}${tail}`,
 	};
+}
+
+/**
+ * The operator's request goes out whatever the cool-down says, and its result is recorded like a claimed probe's: a
+ * success closes the rail's breaker, a 402/401/403 re-schedules it. The ledger gets a row per real POST.
+ */
+async function forcedCall(
+	rt: Runtime,
+	apiKey: string,
+	request: DecisionsRequest,
+	point: string,
+): Promise<DecideOutcome> {
+	const verdict = rt.health.shouldCall(rt.now(), { force: true });
+	const outcome = await rt.rail(request, rt.decideOptions(apiKey, point));
+	recordHealth(rt.health, outcome, rt.now(), verdict.call ? verdict : undefined);
+	return outcome;
+}
+
+/** ` · breaker closed` / ` · breaker still open: <cause>` / ` · breaker opened: <cause>` when the call changed it, else nothing. */
+function breakerNote(before: JevHealthState, after: JevHealthState): string {
+	if (after.state === "open") {
+		return before.state === "open"
+			? ` · breaker still open: ${after.cause}`
+			: ` · breaker opened: ${after.cause}`;
+	}
+	return before.state === "open" ? " · breaker closed" : "";
 }
 
 type ProbeCase = { state: DecisionStates[DecisionPoint]; label?: boolean };
@@ -302,6 +360,7 @@ async function probe(
 	if (rt.killed) return { code: 1, text: `Decisions probe: ${KILLED}` };
 	if (!rt.key) return { code: 1, text: `Decisions probe: ${NO_KEY}` };
 
+	const before = rt.health.read();
 	const lines: string[] = [];
 	const questionKey = QUESTION_KEYS[point];
 	let model: string | undefined;
@@ -315,7 +374,7 @@ async function probe(
 			zdr: rt.config.zdr,
 			spanName: point,
 		});
-		const outcome = await rt.rail(request, rt.decideOptions(rt.key.key));
+		const outcome = await forcedCall(rt, rt.key.key, request, point);
 		if (!outcome.ok) {
 			errors++;
 			lines.push(`#${index + 1} error (${outcome.error.kind})`);
@@ -334,7 +393,7 @@ async function probe(
 		lines.push(line);
 	}
 	lines.push(
-		`Decisions probe: ${point} · ${model ?? rt.config.model} · cases ${cases.length} · labelled ${labelled} · agree ${agreed}/${labelled} · errors ${errors}`,
+		`Decisions probe: ${point} · ${model ?? rt.config.model} · cases ${cases.length} · labelled ${labelled} · agree ${agreed}/${labelled} · errors ${errors}${breakerNote(before, rt.health.read())}`,
 	);
 	return { code: errors > 0 ? 1 : 0, text: lines.join("\n") };
 }

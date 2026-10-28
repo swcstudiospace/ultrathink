@@ -12,7 +12,7 @@
  * recurse into itself.
  */
 
-import { JEV_KEY_ENV_NAMES } from "../route-defaults.ts";
+import { dropJevKeys } from "../route-defaults.ts";
 
 export const CHILD_ENV = "ULTRATHINK_CHILD";
 
@@ -206,7 +206,7 @@ async function claudeComplete(
 	};
 	if (!opts.thinking) env.MAX_THINKING_TOKENS = "0";
 	const childEnv = opts.auth === "api-key" ? env : planEnv(env);
-	for (const name of JEV_KEY_ENV_NAMES) delete childEnv[name];
+	dropJevKeys(childEnv);
 	const cap = opts.maxOutputTokens === undefined ? 0 : Math.floor(opts.maxOutputTokens);
 	if (Number.isFinite(cap) && cap > 0) childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(cap);
 	return claudeAttempt(system, user, opts, childEnv);

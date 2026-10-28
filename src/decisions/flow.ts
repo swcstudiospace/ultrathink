@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { decide, type DecideOptions } from "./client.ts";
-import { recordAttempt, resolveOpenRouterKey } from "./gate.ts";
+import { recordHealth, resolveOpenRouterKey, usageListener } from "./gate.ts";
 import { openJevHealth, unavailableMessage } from "./health.ts";
 import {
 	DEFAULT_DECISIONS_MODEL,
@@ -194,17 +194,15 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 			latencyMs: 0,
 		};
 	}
-	const sink = input.stateDir
-		? { stateDir: input.stateDir, health: openJevHealth(input.stateDir) }
-		: undefined;
-	const verdict = sink?.health.shouldCall(now());
+	const health = input.stateDir ? openJevHealth(input.stateDir, "openrouter") : undefined;
+	const verdict = health?.shouldCall(now());
 	if (verdict && !verdict.call) {
-		// The shared breaker is open: no request is made, and the verdict is an error like any other Jev failure.
+		// The OpenRouter breaker is open: no request is made, and the verdict is an error like any other Jev failure.
 		return {
 			...base,
 			decision: null,
 			confidence: null,
-			rationale: unavailableMessage(verdict),
+			rationale: unavailableMessage(verdict, "openrouter"),
 			state: "error",
 			errorClass: "unavailable",
 			retryCount: 0,
@@ -221,15 +219,13 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 			now,
 			signal: input.signal,
 			timeoutMs: 3000,
+			onAttempt: usageListener(input.stateDir, {
+				point: "flow",
+				rail: "openrouter",
+				model: request.model,
+			}),
 		});
-		if (sink) {
-			recordAttempt(
-				sink,
-				{ point: "flow", rail: "openrouter", requestedModel: request.model },
-				outcome,
-				now(),
-			);
-		}
+		if (health) recordHealth(health, outcome, now(), verdict?.call ? verdict : undefined);
 		if (!outcome.ok) {
 			const kind = outcome.error.kind;
 			const terminal =

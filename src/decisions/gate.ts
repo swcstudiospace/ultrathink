@@ -8,9 +8,17 @@
  * all); while the breaker is open run() makes no request.
  */
 import { readStore, storePath as defaultStorePath } from "../mcp/store.ts";
-import { type DecideOutcome, decide, redact, resolveDecisionsUrl } from "./client.ts";
 import {
+	type DecideOutcome,
+	type DecisionAttempt,
+	decide,
+	redact,
+	resolveDecisionsUrl,
+} from "./client.ts";
+import {
+	type JevCall,
 	type JevHealth,
+	type JevRail,
 	openJevHealth,
 	openMemoryJevHealth,
 	unavailableMessage,
@@ -74,7 +82,7 @@ function resolveStoreKey(
 }
 
 /** The picked rail: `auto` resolves to vercel when its key is present, else openrouter; explicit pins either. */
-export type ResolvedProvider = "openrouter" | "vercel";
+export type ResolvedProvider = JevRail;
 
 export interface ResolvedDecisionsKeys {
 	provider: ResolvedProvider;
@@ -186,37 +194,50 @@ export function decisionsKilled(env: Env): boolean {
 }
 
 /**
- * Feeds one finished Jev call to the two sinks every caller shares (run() and the flow judge): the health breaker
- * and, when the host named a `stateDir`, the usage ledger. A request reached the wire iff `attempts > 0`; the
- * breaker's own refusals and the local request checks make none, so they are neither counted as spend nor as a
- * service failure. The ledger takes counts, timings and ids only: never a key, a prompt or a body. Never throws.
+ * Feeds one finished decision to its rail's breaker, handing back the verdict `shouldCall` gave the call, so only the
+ * claimed probe (or an operator's forced call) can close or re-schedule an open breaker. A request reached the wire
+ * iff `attempts > 0`; the breaker's own refusals and the local request checks make none, so they are neither a
+ * service success nor a failure. Never throws.
  */
-export function recordAttempt(
-	sink: { stateDir?: string; health: JevHealth },
-	call: { point: string; rail: ResolvedProvider; requestedModel: string },
+export function recordHealth(
+	health: JevHealth,
 	outcome: DecideOutcome,
 	ts: number,
+	call?: JevCall,
 ): void {
 	if (outcome.attempts === 0) return;
-	const sent = { ts, ...call, ms: outcome.latencyMs };
-	let row: UsageRecord;
-	if (outcome.ok) {
-		const { response } = outcome;
-		sink.health.recordSuccess(ts);
-		row = {
-			...sent,
-			ok: true,
-			servedModel: response.model,
-			promptTokens: response.usage.input_tokens,
-			completionTokens: response.usage.output_tokens,
-			costUsd: response.usage.cost,
-			requestId: response.id,
+	if (outcome.ok) health.recordSuccess(ts, call);
+	else health.recordFailure(outcome.error.kind, ts, call);
+}
+
+/**
+ * The transport hook that writes one usage row per real POST (a retried decision is two rows), or undefined when the
+ * host named no state dir (no disk at all). Rows carry counts, timings and ids only: never a key, a prompt or a body.
+ */
+export function usageListener(
+	stateDir: string | undefined,
+	call: { point: string; rail: ResolvedProvider; model: string },
+): ((attempt: DecisionAttempt) => void) | undefined {
+	if (stateDir === undefined) return undefined;
+	const requestedModel = call.rail === "vercel" ? resolveGatewayModel(call.model) : call.model;
+	return (attempt) => {
+		const row: UsageRecord = {
+			ts: attempt.at,
+			point: call.point,
+			rail: call.rail,
+			requestedModel,
+			servedModel: attempt.model,
+			ok: attempt.ok,
+			kind: attempt.kind,
+			status: attempt.status,
+			ms: attempt.ms,
+			promptTokens: attempt.promptTokens,
+			completionTokens: attempt.completionTokens,
+			costUsd: attempt.costUsd,
+			requestId: attempt.requestId,
 		};
-	} else {
-		sink.health.recordFailure(outcome.error.kind, ts);
-		row = { ...sent, ok: false, kind: outcome.error.kind, status: outcome.error.status };
-	}
-	if (sink.stateDir !== undefined) appendUsage(sink.stateDir, row);
+		appendUsage(stateDir, row);
+	};
 }
 
 /** Never throws; reads nothing until active()/run() is called. */
@@ -236,13 +257,20 @@ export function createDecisions(input: DecisionsInput): Decisions {
 	};
 	const active = (point: DecisionPoint): boolean =>
 		!decisionsKilled(env) && config.points.includes(point) && keys().key !== undefined;
-	let breaker: JevHealth | undefined;
-	// Persisted only when the host named a state dir; otherwise in memory, so a bare runtime touches no disk.
-	const healthOf = (): JevHealth => {
-		breaker ??=
-			input.health ??
-			(input.stateDir === undefined ? openMemoryJevHealth() : openJevHealth(input.stateDir));
-		return breaker;
+	const breakers = new Map<ResolvedProvider, JevHealth>();
+	// One breaker per rail (separate keys and accounts). Persisted only when the host named a state dir; otherwise in
+	// memory, so a bare runtime touches no disk.
+	const healthOf = (rail: ResolvedProvider): JevHealth => {
+		let health = breakers.get(rail);
+		if (!health) {
+			health =
+				input.health ??
+				(input.stateDir === undefined
+					? openMemoryJevHealth(rail)
+					: openJevHealth(input.stateDir, rail));
+			breakers.set(rail, health);
+		}
+		return health;
 	};
 
 	return {
@@ -253,19 +281,22 @@ export function createDecisions(input: DecisionsInput): Decisions {
 			const apiKeyNow = picked?.key?.key;
 			if (!apiKeyNow || !picked) return { status: "inactive" };
 			const questionKey = QUESTION_KEYS[point];
-			const health = healthOf();
+			const health = healthOf(picked.provider);
 			const start = now();
 			// The breaker answers before any request: while it is open there is no network I/O at all.
 			const verdict = health.shouldCall(start);
+			// What shouldCall told this call (claimed probe or not) goes back with its result.
+			let ticket: JevCall | undefined;
 			let outcome: DecideOutcome;
 			if (!verdict.call) {
 				outcome = {
 					ok: false,
-					error: new DecisionsError("unavailable", unavailableMessage(verdict)),
+					error: new DecisionsError("unavailable", unavailableMessage(verdict, picked.provider)),
 					attempts: 0,
 					latencyMs: 0,
 				};
 			} else {
+				ticket = verdict;
 				try {
 					// The Vercel rail has a fixed endpoint; only the OpenRouter rail honors ULTRATHINK_DECISIONS_URL.
 					const rail = picked.provider === "vercel" ? decideVercel : decide;
@@ -284,6 +315,11 @@ export function createDecisions(input: DecisionsInput): Decisions {
 							now,
 							sleep: input.sleep,
 							random: input.random,
+							onAttempt: usageListener(input.stateDir, {
+								point,
+								rail: picked.provider,
+								model: config.model,
+							}),
 						},
 					);
 				} catch (error) {
@@ -304,17 +340,7 @@ export function createDecisions(input: DecisionsInput): Decisions {
 					};
 				}
 			}
-			recordAttempt(
-				{ stateDir: input.stateDir, health },
-				{
-					point,
-					rail: picked.provider,
-					requestedModel:
-						picked.provider === "vercel" ? resolveGatewayModel(config.model) : config.model,
-				},
-				outcome,
-				now(),
-			);
+			recordHealth(health, outcome, now(), ticket);
 			const base = {
 				point,
 				threshold: opts.threshold,

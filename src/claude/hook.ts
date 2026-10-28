@@ -9,8 +9,8 @@
  * AbortError, aborting sibling work and preventing later inference or side effects.
  */
 import type { UltrathinkConfig } from "../config.ts";
-import { createDecisions, type DecisionsDeps } from "../decisions/gate.ts";
-import { openJevHealth } from "../decisions/health.ts";
+import { createDecisions, type DecisionsDeps, decisionsKilled } from "../decisions/gate.ts";
+import { takeJevWarning } from "../decisions/health.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
 import {
 	createGreptileKnowledge,
@@ -1223,10 +1223,12 @@ export async function runPromptSubmit(
 				signal: lifetime,
 			});
 		}
-		// Taken only when the summary is shown: it marks the cause as warned, so a hidden summary must not spend it.
-		const jevWarning = deps.config.claude.echo
-			? openJevHealth(deps.stateDir).takeWarning(now())
-			: undefined;
+		// Taken only when the summary is shown: it marks the cause as warned, so a hidden summary must not spend it. An
+		// intentionally disabled run (ULTRATHINK_DECISIONS=0) neither shows nor consumes a Jev failure warning.
+		const jevWarning =
+			deps.config.claude.echo && !decisionsKilled(deps.decisionsDeps?.env ?? process.env)
+				? takeJevWarning(deps.stateDir, now())
+				: undefined;
 		if (deps.config.claude.echo) {
 			output.systemMessage = formatSummary({
 				result,

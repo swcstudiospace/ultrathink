@@ -4,16 +4,19 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	appendUsage,
+	LOCK_STALE_MS,
 	summarizeUsage,
 	USAGE_FILE,
 	USAGE_MAX_BYTES,
@@ -101,6 +104,65 @@ describe("appendUsage", () => {
 		appendUsage(dir, record());
 		expect(readFileSync(`${path}.1`, "utf8")).toStartWith("yyyy");
 		expect(existsSync(`${path}.2`)).toBe(false);
+	});
+
+	test("a second writer after a rotation neither re-rotates nor destroys the retained history", () => {
+		const dir = tempDir();
+		const path = join(dir, USAGE_FILE);
+		writeFileSync(path, `${"x".repeat(USAGE_MAX_BYTES)}\n`);
+		appendUsage(dir, record({ point: "plan" }));
+		// The loser of the race saw the full file before the rotation; under the lock it re-checks and finds a fresh one.
+		appendUsage(dir, record({ point: "ship" }));
+		expect(readFileSync(`${path}.1`, "utf8")).toStartWith("xxxx");
+		const points = readFileSync(path, "utf8")
+			.trimEnd()
+			.split("\n")
+			.map((line) => (JSON.parse(line) as UsageRecord).point);
+		expect(points).toEqual(["plan", "ship"]);
+		expect(existsSync(join(dir, "decisions-usage.lock"))).toBe(false);
+	});
+
+	test("a writer that cannot take the lock still appends its row and leaves rotation to the holder", () => {
+		const dir = tempDir();
+		const path = join(dir, USAGE_FILE);
+		const lock = join(dir, "decisions-usage.lock");
+		writeFileSync(path, `${"x".repeat(USAGE_MAX_BYTES)}\n`);
+		writeFileSync(lock, "");
+		appendUsage(dir, record({ point: "ship" }));
+		expect(existsSync(`${path}.1`)).toBe(false);
+		expect(readFileSync(path, "utf8")).toContain('"point":"ship"');
+		expect(existsSync(lock)).toBe(true);
+		// Once the holder is done the next writer rotates the full file.
+		rmSync(lock);
+		appendUsage(dir, record({ point: "plan" }));
+		expect(readFileSync(`${path}.1`, "utf8")).toContain('"point":"ship"');
+		expect(readFileSync(path, "utf8").trimEnd().split("\n")).toHaveLength(1);
+	});
+
+	test("a stale lock from a crashed holder is taken over", () => {
+		const dir = tempDir();
+		const path = join(dir, USAGE_FILE);
+		const lock = join(dir, "decisions-usage.lock");
+		writeFileSync(path, `${"x".repeat(USAGE_MAX_BYTES)}\n`);
+		writeFileSync(lock, "");
+		const old = new Date(Date.now() - LOCK_STALE_MS - 1000);
+		utimesSync(lock, old, old);
+		appendUsage(dir, record({ point: "ship" }));
+		expect(readFileSync(`${path}.1`, "utf8")).toStartWith("xxxx");
+		expect(readFileSync(path, "utf8")).toContain('"point":"ship"');
+		expect(existsSync(lock)).toBe(false);
+	});
+
+	test("a failed rotation keeps the row (appended to the full file) and releases the lock", () => {
+		const dir = tempDir();
+		const path = join(dir, USAGE_FILE);
+		writeFileSync(path, `${"x".repeat(USAGE_MAX_BYTES)}\n`);
+		// A non-empty directory at `.1` makes the rename fail.
+		mkdirSync(`${path}.1`);
+		writeFileSync(join(`${path}.1`, "keep"), "");
+		appendUsage(dir, record({ point: "ship" }));
+		expect(readFileSync(path, "utf8")).toContain('"point":"ship"');
+		expect(existsSync(join(dir, "decisions-usage.lock"))).toBe(false);
 	});
 
 	test("never throws when the path cannot be written", () => {

@@ -32,7 +32,7 @@ import {
 	grokWireEffort,
 } from "./types.ts";
 import { abortError } from "../claude/complete.ts";
-import { JEV_KEY_ENV_NAMES } from "../route-defaults.ts";
+import { dropJevKeys } from "../route-defaults.ts";
 
 export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 
@@ -448,7 +448,7 @@ async function completeCli(
 		GROK_WEB_FETCH: "0",
 	};
 	if (opts.home?.trim()) env.GROK_HOME = opts.home.trim();
-	for (const name of JEV_KEY_ENV_NAMES) delete env[name];
+	dropJevKeys(env);
 	const proc = Bun.spawn(
 		[
 			opts.bin?.trim() || DEFAULT_GROK_CONFIG.bin,

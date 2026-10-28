@@ -222,7 +222,7 @@ describe("env checks", () => {
 		test("an open Jev breaker is a decisions.health warning; closed, missing or corrupt is silent", () => {
 			const stateDir = join(dir, "state");
 			setEnv({ ULTRATHINK_STATE_DIR: stateDir, ULTRATHINK_OPENROUTER_KEY: FAKE_KEY });
-			const health = join(stateDir, "decisions-health.json");
+			const health = join(stateDir, "decisions-health-openrouter.json");
 			const ids = () => checkCredentials(deps).map((finding) => finding.id);
 			expect(ids()).not.toContain("decisions.health");
 
@@ -247,6 +247,48 @@ describe("env checks", () => {
 			expect(ids()).not.toContain("decisions.health");
 			writeFileSync(health, "{not json");
 			expect(ids()).not.toContain("decisions.health");
+		});
+
+		test("each rail's breaker is its own finding text, naming the rail and its fix", () => {
+			const stateDir = join(dir, "state");
+			setEnv({ ULTRATHINK_STATE_DIR: stateDir, ULTRATHINK_OPENROUTER_KEY: FAKE_KEY });
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(
+				join(stateDir, "decisions-health-vercel.json"),
+				JSON.stringify({
+					v: 1,
+					state: "open",
+					cause: "credits",
+					since: 1,
+					nextProbeAt: 3_600_000,
+					coolDownMs: 300_000,
+					failures: 1,
+				}),
+			);
+			const finding = byId(checkCredentials(deps), "decisions.health");
+			expect(finding.title).toContain(
+				"Jev unavailable: Vercel AI Gateway reports insufficient credits",
+			);
+			expect(finding.title).not.toContain("OpenRouter");
+		});
+
+		test("ULTRATHINK_DECISIONS=0 shows no breaker finding even with a saved open breaker", () => {
+			const stateDir = join(dir, "state");
+			setEnv({ ULTRATHINK_STATE_DIR: stateDir, ULTRATHINK_DECISIONS: "0" });
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(
+				join(stateDir, "decisions-health-openrouter.json"),
+				JSON.stringify({
+					v: 1,
+					state: "open",
+					cause: "auth",
+					since: 1,
+					nextProbeAt: 3_600_000,
+					coolDownMs: 300_000,
+					failures: 1,
+				}),
+			);
+			expect(checkCredentials(deps).map((finding) => finding.id)).not.toContain("decisions.health");
 		});
 
 		test("ULTRATHINK_DECISIONS=0 reports Jev as off", () => {

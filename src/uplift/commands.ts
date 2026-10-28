@@ -18,7 +18,7 @@ import {
 import { DECISIONS_URL_IGNORED, resolveDecisionsUrl } from "../decisions/client.ts";
 import { runDecisionsCommand } from "../decisions/cli.ts";
 import { runDoctorCommand } from "../doctor/cli.ts";
-import { openJevHealth } from "../decisions/health.ts";
+import { describeJevHealth } from "../decisions/health.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
 import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
 import { type GrokCheckOptions, runGrokCheck } from "../grok/check.ts";
@@ -233,7 +233,7 @@ function decisionsLine(
 					? DECISIONS_URL_IGNORED
 					: ""
 			: "";
-	const breaker = openJevHealth(stateDir).describe(Date.now());
+	const breaker = describeJevHealth(stateDir, Date.now());
 	return `Decisions: on · ${decisions.model} · ${points} · provider ${picked.provider} · key from ${picked.key.source} · zdr ${decisions.zdr ? "on" : "off"}${url}${breaker ? ` · ${breaker}` : ""}`;
 }
 
@@ -561,7 +561,7 @@ if (import.meta.main) {
 	const service = argv[0]?.trim().toLowerCase();
 	const command =
 		service === "decisions"
-			? runDecisionsCommand(argv.slice(1), { cwd: process.cwd() })
+			? runDecisionsCommand(argv.slice(1), { cwd: process.cwd(), stateDir: resolveStateDir() })
 			: service === "hindsight"
 				? runHindsightCommand(argv.slice(1), { cwd: process.cwd(), env: process.env })
 				: service === "ragflow"

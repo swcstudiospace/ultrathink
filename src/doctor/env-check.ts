@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
-import { openJevHealth } from "../decisions/health.ts";
+import { describeJevHealth } from "../decisions/health.ts";
 import { DECISIONS_PROVIDERS, type DecisionsProvider } from "../decisions/types.ts";
 import { resolveGatewayToken, serviceBackend } from "../gateway/settings.ts";
 import {
@@ -287,7 +287,7 @@ export function checkCredentials(deps: DoctorDeps): Finding[] {
 				});
 			}
 		}
-		const breaker = openJevHealth(defaultStateDir(env)).describe(deps.now());
+		const breaker = describeJevHealth(defaultStateDir(env), deps.now());
 		if (breaker) add({ id: "decisions.health", level: "warn", title: breaker });
 	}
 	if (env.OPENROUTER_API_KEY?.trim()) {

@@ -14,6 +14,7 @@ import { claudeConfigPaths, userConfigPath } from "../config.ts";
 import { isRecord } from "../shared.ts";
 import { type GrokAuthStatus, grokAuthStatus, redactSecrets } from "./auth.ts";
 import { type GrokCheckResult, runGrokCheck } from "./check.ts";
+import { dropJevKeys } from "../route-defaults.ts";
 import type { GrokConfig } from "./types.ts";
 
 export interface GrokLoginOptions {
@@ -149,6 +150,7 @@ export async function runGrokLogin(
 	const childEnv: Record<string, string | undefined> = { ...env, GROK_HOME: home };
 	// The lane must be the plan login, not a pay-per-token key the CLI would prefer.
 	delete childEnv.XAI_API_KEY;
+	dropJevKeys(childEnv);
 
 	let code: number;
 	try {

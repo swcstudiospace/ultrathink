@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redactSecrets } from "../grok/auth.ts";
 import { abortError, CHILD_ENV } from "../claude/complete.ts";
-import { JEV_KEY_ENV_NAMES } from "../route-defaults.ts";
+import { dropJevKeys } from "../route-defaults.ts";
 import { CHILD_PROMPT_SENTINEL } from "../uplift/skill.ts";
 import type { MuseEffort } from "./types.ts";
 
@@ -118,7 +118,7 @@ export async function museComplete(
 		...(opts.env ?? process.env),
 		[CHILD_ENV]: "1",
 	};
-	for (const name of JEV_KEY_ENV_NAMES) delete env[name];
+	dropJevKeys(env);
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-muse-"));
 	const promptFile = join(dir, "prompt.txt");
 	try {

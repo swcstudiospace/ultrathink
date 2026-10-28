@@ -915,9 +915,9 @@ describe("runControl", () => {
 			expect(text).not.toContain("sk-or-v1-ENVKEY");
 		});
 
-		function writeHealth(state: Record<string, unknown>): void {
+		function writeHealth(state: Record<string, unknown>, rail = "openrouter"): void {
 			mkdirSync(io.stateDir, { recursive: true });
-			writeFileSync(join(io.stateDir, "decisions-health.json"), JSON.stringify(state));
+			writeFileSync(join(io.stateDir, `decisions-health-${rail}.json`), JSON.stringify(state));
 		}
 
 		test("an open breaker appends its reason to the Decisions line; closed or corrupt shows nothing", async () => {
@@ -943,8 +943,30 @@ describe("runControl", () => {
 			writeHealth({ v: 1, state: "closed", failures: 0 });
 			expect((await status()).line).toBe(closed);
 
-			writeFileSync(join(io.stateDir, "decisions-health.json"), "{not json");
+			writeFileSync(join(io.stateDir, "decisions-health-openrouter.json"), "{not json");
 			expect((await status()).line).toBe(closed);
+		});
+
+		test("an open Vercel breaker names Vercel on the Decisions line, not OpenRouter", async () => {
+			userConfig({ enabled: true });
+			storeKey();
+			const now = Date.now();
+			writeHealth(
+				{
+					v: 1,
+					state: "open",
+					cause: "auth",
+					since: now - 60_000,
+					nextProbeAt: now + 3_600_000,
+					coolDownMs: 300_000,
+					failures: 1,
+				},
+				"vercel",
+			);
+			const { line } = await status();
+			expect(line).toContain("Jev unavailable: Vercel AI Gateway rejected the key");
+			expect(line).toContain("auth set-key vercel --stdin");
+			expect(line).not.toContain("OpenRouter rejected");
 		});
 
 		test("the line shows the configured model, points and zdr, the normalised URL when an override is in effect, and flags a rejected one", async () => {

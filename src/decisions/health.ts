@@ -1,29 +1,40 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * Persisted circuit breaker for the Jev rails. A spent account (HTTP 402) or a rejected key (401/403) cannot heal by
- * retrying, so the first such failure opens the breaker: every later call is refused locally, without network I/O,
- * until a cool-down passes and one probe call finds out whether Jev is back. Each hook invocation is its own process,
- * so the state lives in `<stateDir>/decisions-health.json` (owner-only, atomic) and read-modify-write is serialised
- * with the repo's file lock. A missing, empty, corrupt or foreign-version file reads as closed: a broken state file
- * must never keep Jev off, and no method here ever throws.
+ * Persisted circuit breaker for the Jev rails, one per rail (OpenRouter and the Vercel AI Gateway have their own keys
+ * and accounts, so one rail's spent account must not block the other). A spent account (HTTP 402) or a rejected key
+ * (401/403) cannot heal by retrying, so the first such failure opens the breaker: every later call is refused locally,
+ * without network I/O, until a cool-down passes and ONE claimed probe finds out whether Jev is back. Each hook
+ * invocation is its own process, so the state lives in `<stateDir>/decisions-health-<rail>.json` (owner-only, atomic;
+ * a file per rail so two processes updating different rails cannot clobber each other) and read-modify-write is
+ * serialised with the repo's file lock. A missing, empty, corrupt or foreign-version file reads as closed: a broken
+ * state file must never keep Jev off, and no method here ever throws.
+ *
+ * Who may change an open breaker: only the claimed probe (or an operator's forced check) closes it on success and
+ * re-schedules it on failure. A call that started before the breaker opened (a straggler: several decisions start
+ * together and all pass `shouldCall` before the first 402 arrives) can neither double the cool-down nor close it.
  */
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 
 export type JevOpenCause = "credits" | "auth";
+export type JevRail = "openrouter" | "vercel";
+export const JEV_RAILS: readonly JevRail[] = ["openrouter", "vercel"];
 
-interface JevHealthState {
+export interface JevHealthState {
 	v: 1;
 	state: "closed" | "open";
 	cause?: JevOpenCause;
 	/** Epoch ms the current open spell began. */
 	since?: number;
-	/** Epoch ms; calls before it are refused without network I/O. */
+	/** Epoch ms; calls before it are refused without network I/O. A probe claim pushes it out, so it is also the claim's expiry. */
 	nextProbeAt?: number;
 	/** Current cool-down (doubles per failed probe, capped). */
 	coolDownMs?: number;
+	/** Id of the one claimed probe; only its result may close or re-schedule the breaker. */
+	probeId?: string;
 	/** Consecutive hard failures. */
 	failures: number;
 	warnedCause?: JevOpenCause;
@@ -41,19 +52,33 @@ const PROBE_CLAIM_MS = 60_000;
 const JITTER = 0.2;
 /** `Date` cannot format a time beyond this; a larger stored value is corrupt. */
 const MAX_TIME_MS = 8.64e15;
-const FILE = "decisions-health.json";
+
+/** What a caller learned from `shouldCall` and hands back when it records the call's result. */
+export interface JevCall {
+	/** Set on the claimed probe: its result is authoritative. */
+	claim?: string;
+	/** An operator's check/probe that bypassed the cool-down: its result is authoritative too. */
+	forced?: boolean;
+}
 
 type Verdict =
-	| { call: true; probe: boolean }
+	| ({ call: true; probe: boolean } & JevCall)
 	| { call: false; cause: JevOpenCause; nextProbeAt: number };
 
 export interface JevHealth {
 	read(): JevHealthState;
-	/** call: false carries the cause and nextProbeAt; probe: true marks the first call after the cool-down. */
-	shouldCall(now: number): Verdict;
-	recordSuccess(now: number): void;
-	/** Only "credits" and "auth" open the breaker; every other kind is ignored here. Returns whether this call opened or re-opened it. */
-	recordFailure(kind: string, now: number): { opened: boolean };
+	/**
+	 * call: false carries the cause and nextProbeAt; probe: true marks the first call after the cool-down, which also
+	 * carries the claim. `force` is for operator actions: it bypasses the cool-down without moving the schedule.
+	 */
+	shouldCall(now: number, opts?: { force?: boolean }): Verdict;
+	/** Hand back the verdict of the call's `shouldCall`. Only a claimed probe or a forced call closes an open breaker. */
+	recordSuccess(now: number, call?: JevCall): void;
+	/**
+	 * Only "credits" and "auth" open the breaker; every other kind is ignored here. Returns whether this call opened or
+	 * re-opened it. A failure of anything but the claimed probe or a forced call changes only a counter once it is open.
+	 */
+	recordFailure(kind: string, now: number, call?: JevCall): { opened: boolean };
 	/** The text the visible channels show, or undefined when closed. */
 	describe(now: number): string | undefined;
 	/** True once per cause entry (and again after REWARN_MS while open); marks it warned and persists. */
@@ -68,10 +93,23 @@ type OpenState = JevHealthState & {
 	nextProbeAt: number;
 };
 
-const CAUSE_PHRASE: Record<JevOpenCause, string> = {
-	credits: "OpenRouter reports insufficient credits",
-	auth: "OpenRouter rejected the key",
+const RAIL_LABEL: Record<JevRail, string> = {
+	openrouter: "OpenRouter",
+	vercel: "Vercel AI Gateway",
 };
+
+const CAUSE_PHRASE: Record<JevOpenCause, string> = {
+	credits: "reports insufficient credits",
+	auth: "rejected the key",
+};
+
+/** What the owner does about it, per rail and cause. */
+function remedy(rail: JevRail, cause: JevOpenCause): string {
+	if (cause === "auth") return `Fix: bin/ultrathink-mcp auth set-key ${rail} --stdin`;
+	return rail === "openrouter"
+		? "Decisions fall back to their defaults until you top up at https://openrouter.ai/settings/credits"
+		: "Decisions fall back to their defaults until you add credits in your Vercel AI Gateway dashboard";
+}
 
 function isCause(value: unknown): value is JevOpenCause {
 	return value === "credits" || value === "auth";
@@ -118,6 +156,7 @@ function parseState(raw: unknown): JevHealthState {
 		since: timestamp(row.since) ?? nextProbeAt,
 		nextProbeAt,
 		...(coolDownMs !== undefined && coolDownMs > 0 ? { coolDownMs } : {}),
+		...(typeof row.probeId === "string" ? { probeId: row.probeId } : {}),
 	};
 }
 
@@ -133,18 +172,19 @@ const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 const isoTime = (ms: number): string => `${new Date(ms).toISOString().slice(0, 19)}Z`;
 
 /** The error message for a call the breaker refused: one line, `decisions <kind>: <detail>`, well under 200 chars. */
-export function unavailableMessage(refused: { cause: JevOpenCause; nextProbeAt: number }): string {
-	return `decisions unavailable: ${CAUSE_PHRASE[refused.cause]}; next check ${isoTime(refused.nextProbeAt)}`;
+export function unavailableMessage(
+	refused: { cause: JevOpenCause; nextProbeAt: number },
+	rail: JevRail,
+): string {
+	return `decisions unavailable: ${RAIL_LABEL[rail]} ${CAUSE_PHRASE[refused.cause]}; next check ${isoTime(refused.nextProbeAt)}`;
 }
 
-function describeOpen(state: OpenState, now: number): string {
+function describeOpen(state: OpenState, rail: JevRail, now: number): string {
 	const next =
 		state.nextProbeAt <= now
 			? "next check: the next decision"
 			: `next check ${isoTime(state.nextProbeAt)}`;
-	return state.cause === "credits"
-		? `Jev unavailable: ${CAUSE_PHRASE.credits} since ${isoDate(state.since)}. Decisions fall back to their defaults until you top up at https://openrouter.ai/settings/credits (${next}).`
-		: `Jev unavailable: ${CAUSE_PHRASE.auth} since ${isoDate(state.since)}. Fix: bin/ultrathink-mcp auth set-key openrouter --stdin (${next}).`;
+	return `Jev unavailable: ${RAIL_LABEL[rail]} ${CAUSE_PHRASE[state.cause]} since ${isoDate(state.since)}. ${remedy(rail, state.cause)} (${next}).`;
 }
 
 function warningDue(state: OpenState, now: number): boolean {
@@ -192,7 +232,7 @@ function memoryBacking(): Backing {
 	};
 }
 
-function createHealth(backing: Backing, rng: () => number): JevHealth {
+function createHealth(backing: Backing, rail: JevRail, rng: () => number): JevHealth {
 	const { read, mutate } = backing;
 
 	const refusal = (state: OpenState): Verdict => ({
@@ -201,33 +241,53 @@ function createHealth(backing: Backing, rng: () => number): JevHealth {
 		nextProbeAt: state.nextProbeAt,
 	});
 
+	/** The claimed probe or a forced call: the only results allowed to move an open breaker. */
+	const authoritative = (state: OpenState, call: JevCall | undefined): boolean =>
+		call?.forced === true || (call?.claim !== undefined && call.claim === state.probeId);
+
 	return {
 		read,
 
-		shouldCall(now) {
+		shouldCall(now, opts) {
 			const state = read();
-			if (!isOpen(state)) return { call: true, probe: false };
+			if (!isOpen(state)) {
+				return opts?.force
+					? { call: true, probe: false, forced: true }
+					: { call: true, probe: false };
+			}
+			// An operator action needs no claim: it goes out now and its own result is authoritative.
+			if (opts?.force) return { call: true, probe: true, forced: true };
 			if (now < state.nextProbeAt) return refusal(state);
 			// Due: claim the probe under the lock so only one of several waiting processes makes it.
 			return mutate<Verdict>((current) => {
 				if (!isOpen(current)) return { result: { call: true, probe: false } };
 				if (now < current.nextProbeAt) return { result: refusal(current) };
+				const claim = randomUUID();
 				return {
-					next: { ...current, nextProbeAt: now + PROBE_CLAIM_MS },
-					result: { call: true, probe: true },
+					next: { ...current, nextProbeAt: now + PROBE_CLAIM_MS, probeId: claim },
+					result: { call: true, probe: true, claim },
 				};
 			});
 		},
 
-		recordSuccess(now) {
-			// A success ends the spell and its warning, so the next spell warns again.
-			mutate<undefined>(() => ({ next: { ...closed(), lastOkAt: now }, result: undefined }));
+		recordSuccess(now, call) {
+			mutate<undefined>((state) => {
+				// An ordinary success (a call that began before the breaker opened) must not erase a newer hard
+				// failure: it only notes that Jev answered. The claimed probe, or a forced call, ends the spell and
+				// its warning, so the next spell warns again.
+				if (isOpen(state) && !authoritative(state, call))
+					return { next: { ...state, lastOkAt: now }, result: undefined };
+				return { next: { ...closed(), lastOkAt: now }, result: undefined };
+			});
 		},
 
-		recordFailure(kind, now) {
+		recordFailure(kind, now, call) {
 			if (!isCause(kind)) return { opened: false };
 			const cause = kind;
 			return mutate<{ opened: boolean }>((state) => {
+				// Already open and not the claimed probe: a straggler. Count it, leave the schedule alone.
+				if (isOpen(state) && !authoritative(state, call))
+					return { next: { ...state, failures: state.failures + 1 }, result: { opened: false } };
 				const sameSpell = isOpen(state) && state.cause === cause;
 				const coolDownMs = sameSpell
 					? Math.min((state.coolDownMs ?? COOL_DOWN_BASE_MS) * 2, COOL_DOWN_MAX_MS)
@@ -241,6 +301,7 @@ function createHealth(backing: Backing, rng: () => number): JevHealth {
 						since: sameSpell ? state.since : now,
 						nextProbeAt: now + spread,
 						coolDownMs,
+						probeId: undefined,
 						failures: state.failures + 1,
 					},
 					result: { opened: true },
@@ -250,7 +311,7 @@ function createHealth(backing: Backing, rng: () => number): JevHealth {
 
 		describe(now) {
 			const state = read();
-			return isOpen(state) ? describeOpen(state, now) : undefined;
+			return isOpen(state) ? describeOpen(state, rail, now) : undefined;
 		},
 
 		takeWarning(now) {
@@ -260,22 +321,46 @@ function createHealth(backing: Backing, rng: () => number): JevHealth {
 				if (!isOpen(current) || !warningDue(current, now)) return { result: undefined };
 				return {
 					next: { ...current, warnedCause: current.cause, warnedAt: now },
-					result: describeOpen(current, now),
+					result: describeOpen(current, rail, now),
 				};
 			});
 		},
 	};
 }
 
-/** Never throws; reads nothing until a method is called. `rng` (default Math.random) supplies the cool-down jitter. */
-export function openJevHealth(stateDir: string, opts: { rng?: () => number } = {}): JevHealth {
-	return createHealth(fileBacking(join(stateDir, FILE)), opts.rng ?? Math.random);
+/** The rail's breaker under `stateDir`. Never throws; reads nothing until a method is called. `rng` (default Math.random) supplies the cool-down jitter. */
+export function openJevHealth(
+	stateDir: string,
+	rail: JevRail,
+	opts: { rng?: () => number } = {},
+): JevHealth {
+	return createHealth(
+		fileBacking(join(stateDir, `decisions-health-${rail}.json`)),
+		rail,
+		opts.rng ?? Math.random,
+	);
 }
 
 /**
  * The same state machine with no file at all, for a runtime that was given no state dir: it must touch no disk, so
  * its breaker lives and dies with the process (it still refuses repeat calls inside it).
  */
-export function openMemoryJevHealth(opts: { rng?: () => number } = {}): JevHealth {
-	return createHealth(memoryBacking(), opts.rng ?? Math.random);
+export function openMemoryJevHealth(rail: JevRail, opts: { rng?: () => number } = {}): JevHealth {
+	return createHealth(memoryBacking(), rail, opts.rng ?? Math.random);
+}
+
+/** Every open rail's text, space-joined (each names its rail), or undefined when none is open. For status and doctor. */
+export function describeJevHealth(stateDir: string, now: number): string | undefined {
+	const texts = JEV_RAILS.map((rail) => openJevHealth(stateDir, rail).describe(now)).filter(
+		(text): text is string => text !== undefined,
+	);
+	return texts.length > 0 ? texts.join(" ") : undefined;
+}
+
+/** `takeWarning` across the rails: each open rail's warning is shown and consumed once; space-joined. For the planning summary. */
+export function takeJevWarning(stateDir: string, now: number): string | undefined {
+	const texts = JEV_RAILS.map((rail) => openJevHealth(stateDir, rail).takeWarning(now)).filter(
+		(text): text is string => text !== undefined,
+	);
+	return texts.length > 0 ? texts.join(" ") : undefined;
 }

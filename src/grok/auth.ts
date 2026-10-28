@@ -11,6 +11,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { GROK_CLIENT_VERSION_FALLBACK } from "./types.ts";
+import { dropJevKeys } from "../route-defaults.ts";
 import { readJson } from "../shared.ts";
 
 export interface GrokAuth {
@@ -179,6 +180,7 @@ export async function ensureFreshGrokAuth(
 	const env: Record<string, string | undefined> = { ...(opts.env ?? process.env) };
 	const home = opts.home?.trim();
 	if (home) env.GROK_HOME = home;
+	dropJevKeys(env);
 	const cmd = [opts.bin?.trim() || "grok", "models"];
 	try {
 		if (opts.spawn) await opts.spawn(cmd, env);

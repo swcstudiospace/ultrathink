@@ -15,7 +15,7 @@ Decisions are **always on**: the moment a Jev key exists, every listed point is 
 
 The OpenRouter Decisions API endpoint (`https://openrouter.ai/api/alpha/decisions`) is marked **alpha** by OpenRouter, so its shape may change. ultrathink checks every answer strictly and fails open on anything unexpected. The Vercel rail uses the fixed v4 evaluation-model endpoint (`https://ai-gateway.vercel.sh/v4/ai/evaluation-model`); Vercel serves Jev only, never the planner.
 
-**The OpenRouter key is for Jev only.** ultrathink has one OpenRouter client, and it sends one thing: Decisions requests to Jev's model family (`~typesafe/jev-latest`, `typesafe/jev-1.13-20260917`, and Vercel's `typesafe-ai/jev`). `decisions.model` accepts only `typesafe/jev*` ids; any other value, in any config layer including a project file, is ignored and the default applies. A failure never falls back to another model, provider or key: the point just behaves as with Decisions off. Planning, memory and every other model call use their own routes and never see this key.
+**The OpenRouter key is for Jev only.** ultrathink has one OpenRouter client, and it sends one thing: Decisions requests to Jev's model family (`~typesafe/jev-latest`, `typesafe/jev-1.13-20260917`, and Vercel's `typesafe-ai/jev`). `decisions.model` accepts only `typesafe/jev*` ids; any other value, in any config layer including a project file, is ignored: that layer leaves the earlier layers' value in place (an invalid project value keeps your pinned Jev version), and only when no layer holds a valid Jev id does the default alias `~typesafe/jev-latest` apply. A failure never falls back to another model, provider or key: the point just behaves as with Decisions off. Planning, memory and every other model call use their own routes and never see this key.
 
 - [1. Check the requirements](#1-check-the-requirements)
 - [2. Store a Jev key](#2-store-a-jev-key)
@@ -110,12 +110,12 @@ It prints the resolved model, the latency, the attempts, the cost reported by th
 
 ## When Jev is unavailable
 
-Two failures mean the account or the key is the problem, not the request: HTTP 402 (insufficient credits) and HTTP 401 or 403 (the key was rejected). Retrying them only burns time and, on a metered account, adds noise, so the first one **opens a health breaker**. A timeout, a 429 or a 5xx never opens it.
+Two failures mean the account or the key is the problem, not the request: HTTP 402 (insufficient credits) and HTTP 401 or 403 (the key was rejected). Retrying them only burns time and, on a metered account, adds noise, so the first one **opens a health breaker for that rail**. The OpenRouter and Vercel AI Gateway rails have their own keys and accounts, so each has its own breaker: a spent OpenRouter account does not stop the Vercel rail. A timeout, a 429 or a 5xx never opens it.
 
-- **Where it lives.** `<state dir>/decisions-health.json` (mode 0600), so it holds across the separate processes of every hook, not only the one that saw the failure. The hooks, the ship CLI and the teach context pass their real state directory; a runtime created without one keeps the breaker in memory only.
+- **Where it lives.** `<state dir>/decisions-health-openrouter.json` and `<state dir>/decisions-health-vercel.json` (mode 0600, one per rail), so it holds across the separate processes of every hook, not only the one that saw the failure. The old single `decisions-health.json` is no longer read; delete it if it is still there. The hooks, the ship CLI and the teach context pass their real state directory; a runtime created without one keeps the breaker in memory only.
 - **While it is open.** No request is sent. Every point uses its existing default, exactly as with Decisions off: the plan gate plans every prompt, the ship flow keeps its LLM verdict and the Greptile gate, `knowledge` and `blocking` leave the clarifier's questions as they are, and `teachable` and `skillworthy` keep the candidate or due moment. Nothing else takes Jev's place: no other model, provider or key is tried.
-- **When it retries.** After a cool-down of 5 minutes, doubling after each failed probe up to 6 hours (with some jitter). The first call after the cool-down is the only probe; a success closes the breaker, a failure re-opens it with the longer cool-down.
-- **Where you see it.** One warning when it opens, again after 24 hours if it is still open: a `Jev · unavailable (credits)` segment in the planning summary. `bin/ultrathink status` adds the same state to its `Jev:` line while it is open, and `bin/ultrathink doctor` shows a `decisions.health` warning with the cause, the date it opened and the next check time.
+- **When it retries.** After a cool-down of 5 minutes, doubling after each failed probe up to 6 hours (with some jitter). The first call after the cool-down claims the probe and is the only one sent; its success closes the breaker and its failure re-opens it with the longer cool-down. An ordinary success, or a failure of a call that started before the breaker opened, neither closes it nor moves its schedule. An explicit `ultrathink decisions check` or `decisions probe` goes out whatever the cool-down says and counts like a claimed probe.
+- **Where you see it.** One warning per cause when it opens, again after 24 hours if it is still open: a `Jev · unavailable …` segment in the planning summary (not shown, and not used up, while `ULTRATHINK_DECISIONS=0`). It names the failing rail (`OpenRouter` or `Vercel AI Gateway`) and that rail's own fix: top up at the OpenRouter credits page, add credits in the Vercel AI Gateway dashboard, or store a valid key with `bin/ultrathink-mcp auth set-key <rail> --stdin`. `bin/ultrathink status` adds the same text to its `Decisions:` line while a rail is open, and `bin/ultrathink doctor` shows a `decisions.health` warning with the cause, the date it opened and the next check time.
 
 **After a top-up (or a key fix)**, prove it instead of waiting for the cool-down:
 
@@ -123,16 +123,16 @@ Two failures mean the account or the key is the problem, not the request: HTTP 4
 <clone>/bin/ultrathink decisions check
 ```
 
-`ok` closes the breaker. Then open the OpenRouter dashboard's activity view and its per-model breakdown: it should list only the Jev model. Any other model there was spent by something else that holds the key; rotate the key in the dashboard and store the new one with `auth set-key openrouter --stdin`.
+`ok` closes the breaker, and the line says so: `Decisions check: ok · … · breaker closed · …`. A check that fails while the breaker is open ends with `breaker still open: <cause>`, and one that opens it ends with `breaker opened: <cause>`. Then open the OpenRouter dashboard's activity view and its per-model breakdown: it should list only the Jev model. Any other model there was spent by something else that holds the key; rotate the key in the dashboard and store the new one with `auth set-key openrouter --stdin`.
 
-To reconcile against that dashboard, `ultrathink decisions usage` summarises the local usage ledger (`<state dir>/decisions-usage.jsonl`, mode 0600, one line per real request, capped at 1 MiB with one rotated generation, never a prompt, a body or the key; written only by callers that pass a state directory, which the hooks, the ship CLI and the teach context do):
+To reconcile against that dashboard, `ultrathink decisions usage` summarises the local usage ledger (`<state dir>/decisions-usage.jsonl`, mode 0600, one line per real HTTP request, so a retry is its own line and `decisions check` and `probe` requests are included, rather than one per decision; capped at 1 MiB with one rotated generation, never a prompt, a body or the key; written only by callers that pass a state directory, which the hooks, the ship CLI and the teach context do). Rotation is serialised by `decisions-usage.lock` in the same directory: a writer that cannot take the lock still appends, and a lock older than 5 seconds is treated as stale:
 
 ```sh
 <clone>/bin/ultrathink decisions usage              # last 7 days
 <clone>/bin/ultrathink decisions usage --days 30 --json
 ```
 
-It prints per-day and per-model call counts, failures by error kind and the summed cost the rail reported. `--days` takes 1 to 90.
+It prints per-day and per-model call counts (one per request), failures by error kind and the summed cost the rail reported. `--days` takes 1 to 90.
 
 ## See what Jev decided
 
@@ -231,7 +231,7 @@ To keep your thresholds stable, pin the version:
 { "decisions": { "model": "typesafe/jev-1.13" } }
 ```
 
-Only `typesafe/jev*` ids are accepted. Anything else (another vendor's model, a typo, an empty value) is ignored in every config layer and the default alias is used; `decisions check` and every point refuse a non-Jev id before any request.
+Only `typesafe/jev*` ids are accepted. Anything else (another vendor's model, a typo, an empty value) is ignored in every config layer: the layer leaves the earlier layers' value in place (an invalid project value keeps your pinned version), and only when no layer holds a valid Jev id is the default alias used; `decisions check` and every point refuse a non-Jev id before any request.
 
 Whichever you choose, every decision records the model that actually answered, and `decisions check` shows it next to the one you asked for. On the OpenRouter rail the model is sent as-is (`ok · typesafe/jev-1.13-20260917 (requested ~typesafe/jev-latest)`); on the Vercel rail the default alias is sent as `typesafe-ai/jev` in the `ai-model-id` header and an explicit model verbatim (`ok · typesafe-ai/jev (requested ~typesafe/jev-latest)`). When the resolved model changes, run your probe cases again before you trust the old thresholds.
 

@@ -692,7 +692,7 @@ export function formatSummary(input: {
 	engineError?: string;
 	/** A successful failover to another model route; shown right after the model selection. */
 	engineFailover?: string;
-	/** The breaker's one-time warning (`takeWarning`); absent unless Jev just became unavailable or the 24 h re-warn is due. */
+	/** The breakers' one-time warning (`takeJevWarning`, names the failing rail); absent unless Jev just became unavailable or the 24 h re-warn is due. */
 	jevWarning?: string;
 	elapsedMs?: number;
 	/** Rows created before this turn; replaces the kickoff-pending note. */

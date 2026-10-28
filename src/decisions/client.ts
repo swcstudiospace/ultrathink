@@ -41,11 +41,29 @@ export interface DecideOptions {
 	sleep?: (ms: number) => Promise<void>;
 	/** Default Math.random (jitter). */
 	random?: () => number;
+	/** Called once per real POST, retries included (the usage ledger's hook). Must not throw (a throw is swallowed). */
+	onAttempt?: (attempt: DecisionAttempt) => void;
 }
 
 export type DecideOutcome =
 	| { ok: true; response: DecisionsResponse; attempts: number; latencyMs: number }
 	| { ok: false; error: DecisionsError; attempts: number; latencyMs: number };
+
+/** What one real POST came to: the transport reports it, the usage ledger records it. No bodies, keys or prompts. */
+export interface DecisionAttempt {
+	/** Epoch ms when the POST settled. */
+	at: number;
+	ms: number;
+	ok: boolean;
+	/** Served model id (ok only). */
+	model?: string;
+	kind?: DecisionsErrorKind;
+	status?: number;
+	promptTokens?: number;
+	completionTokens?: number;
+	costUsd?: number;
+	requestId?: string;
+}
 
 /** ULTRATHINK_DECISIONS_URL is the one place the OpenRouter key can be pointed elsewhere, so it only accepts hosts that
  *  should ever see that key: OpenRouter itself over https, or a loopback test/proxy endpoint. */
@@ -405,6 +423,8 @@ export interface PostDecisionOptions {
 	sleep?: (ms: number) => Promise<void>;
 	/** Default Math.random (jitter). */
 	random?: () => number;
+	/** Called once per real POST, retries included. Must not throw (a throw is swallowed). */
+	onAttempt?: (attempt: DecisionAttempt) => void;
 }
 
 /**
@@ -439,7 +459,7 @@ export async function postDecision(
 			status,
 		);
 
-	const attempt = async (): Promise<Attempt> => {
+	const sendOnce = async (): Promise<Attempt> => {
 		let timeout: AbortSignal | undefined;
 		const timedOut = () => ({
 			ok: false as const,
@@ -505,6 +525,34 @@ export async function postDecision(
 			transient: TRANSIENT_STATUSES.has(status),
 			retryAfter,
 		};
+	};
+
+	// One report per real POST (a retried decision is two); a caller abort throws before it, its outcome being unknown.
+	const attempt = async (): Promise<Attempt> => {
+		const began = now();
+		const result = await sendOnce();
+		if (opts.onAttempt) {
+			const ms = Math.max(0, now() - began);
+			try {
+				opts.onAttempt(
+					result.ok
+						? {
+								at: now(),
+								ms,
+								ok: true,
+								model: result.response.model,
+								promptTokens: result.response.usage.input_tokens,
+								completionTokens: result.response.usage.output_tokens,
+								costUsd: result.response.usage.cost,
+								requestId: result.response.id,
+							}
+						: { at: now(), ms, ok: false, kind: result.error.kind, status: result.error.status },
+				);
+			} catch {
+				// reason: a reporting sink (the usage ledger) must never change a decision
+			}
+		}
+		return result;
 	};
 
 	const first = await attempt();

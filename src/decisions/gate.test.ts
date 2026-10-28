@@ -806,7 +806,7 @@ describe("health breaker on the Jev rails", () => {
 		expect(kindOf(await other.run("ship", shipState, PLAN_OPTS))).toBe("unavailable");
 		expect(kindOf(await plan(other))).toBe("unavailable");
 		expect(r.calls).toHaveLength(1);
-		const file = join(dir, "decisions-health.json");
+		const file = join(dir, "decisions-health-openrouter.json");
 		expect(statSync(file).mode & 0o777).toBe(0o600);
 		expect(readFileSync(file, "utf8")).not.toContain(K);
 	});
@@ -846,14 +846,14 @@ describe("health breaker on the Jev rails", () => {
 			const second = await plan(decisions);
 			if (kindOf(second) === "unavailable") throw new Error(`${label}: opened the breaker`);
 			if (r.calls.length <= before) throw new Error(`${label}: the next call made no request`);
-			expect(openJevHealth(dir).read().state).toBe("closed");
+			expect(openJevHealth(dir, "openrouter").read().state).toBe("closed");
 		}
 	});
 
 	test("a hand-built open file proves it across processes: zero requests, typed unavailable", async () => {
 		const dir = tempStateDir();
 		writeFileSync(
-			join(dir, "decisions-health.json"),
+			join(dir, "decisions-health-openrouter.json"),
 			JSON.stringify({
 				v: 1,
 				state: "open",
@@ -875,7 +875,7 @@ describe("health breaker on the Jev rails", () => {
 	test("after the cool-down one call probes, and a success closes the breaker", async () => {
 		const dir = tempStateDir();
 		const clock = { now: T };
-		const health = openJevHealth(dir, { rng: () => 0.5 });
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
 		const r = recordingFetch([ERR(402), JEV(0.9)]);
 		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => clock.now });
 		expect(kindOf(await plan(decisions))).toBe("credits");
@@ -892,7 +892,7 @@ describe("health breaker on the Jev rails", () => {
 
 	test("while one process probes, a second process stays off", async () => {
 		const dir = tempStateDir();
-		openJevHealth(dir, { rng: () => 0.5 }).recordFailure("credits", T);
+		openJevHealth(dir, "openrouter", { rng: () => 0.5 }).recordFailure("credits", T);
 		const answer = Promise.withResolvers<Response>();
 		const probe = recordingFetch([() => answer.promise]);
 		const first = runtime(probe.fetch, { stateDir: dir, now: () => T + BASE }).decisions;
@@ -909,7 +909,7 @@ describe("health breaker on the Jev rails", () => {
 	test("after a 402 the same URL, model and key are used on every later attempt and nothing else is contacted", async () => {
 		const dir = tempStateDir();
 		const clock = { now: T };
-		const health = openJevHealth(dir, { rng: () => 0.5 });
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
 		const r = recordingFetch([ERR(402)]);
 		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => clock.now });
 		const kinds: string[] = [];
@@ -1025,7 +1025,7 @@ describe("usage ledger", () => {
 		expect(kindOf(await plan(decisions))).toBe("model");
 		expect(r.calls).toHaveLength(0);
 		expect(existsSync(join(dir, USAGE_FILE))).toBe(false);
-		expect(existsSync(join(dir, "decisions-health.json"))).toBe(false);
+		expect(existsSync(join(dir, "decisions-health-openrouter.json"))).toBe(false);
 	});
 
 	test("the Vercel rail is ledgered with its own rail and the gateway model id", async () => {
@@ -1061,7 +1061,7 @@ describe("usage ledger", () => {
 		await plan(good.decisions);
 		const bad = runtime(recordingFetch([ERR(402)]).fetch, { stateDir: dir });
 		await plan(bad.decisions);
-		const text = ["decisions-health.json", USAGE_FILE]
+		const text = ["decisions-health-openrouter.json", USAGE_FILE]
 			.map((name) => readFileSync(join(dir, name), "utf8"))
 			.join("\n");
 		for (const secret of [K, MESSAGE, "Bearer", "upstream said no", "sk-or-"])
@@ -1069,5 +1069,106 @@ describe("usage ledger", () => {
 		// The files were really written, so the absence above means something.
 		expect(text).toContain("credits");
 		expect(rows(dir)).toHaveLength(2);
+	});
+});
+
+describe("per-rail breakers, stragglers and the per-POST ledger", () => {
+	const T = Date.UTC(2026, 9, 28, 12, 0, 0);
+	const BASE = 300_000;
+	const usageRows = (dir: string): Array<Record<string, unknown>> =>
+		readFileSync(join(dir, USAGE_FILE), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+	test("a spent Vercel account does not block OpenRouter, and the refusal names Vercel", async () => {
+		const dir = tempStateDir();
+		const vercel = runtime(recordingFetch([ERR(402)]).fetch, {
+			stateDir: dir,
+			config: { ...ON, provider: "vercel" },
+			env: { AI_GATEWAY_API_KEY: "vck_test_key_do_not_use" },
+		}).decisions;
+		expect(kindOf(await plan(vercel))).toBe("credits");
+		const refused = await plan(vercel);
+		if (refused.status !== "error") throw new Error("expected the Vercel breaker to refuse");
+		expect(refused.error.message).toStartWith(
+			"decisions unavailable: Vercel AI Gateway reports insufficient credits",
+		);
+		const r = recordingFetch([JEV(0.9)]);
+		const openrouter = runtime(r.fetch, {
+			stateDir: dir,
+			config: { ...ON, provider: "openrouter" },
+		}).decisions;
+		expect(kindOf(await plan(openrouter))).toBe("ok");
+		expect(r.calls).toHaveLength(1);
+		expect(existsSync(join(dir, "decisions-health-vercel.json"))).toBe(true);
+		expect(readFileSync(join(dir, "decisions-health-openrouter.json"), "utf8")).toContain("closed");
+		expect(existsSync(join(dir, "decisions-health.json"))).toBe(false);
+	});
+
+	test("decisions started together cannot double the cool-down: every failure after the first is a straggler", async () => {
+		const dir = tempStateDir();
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const r = recordingFetch([ERR(402)]);
+		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => T });
+		const outcomes = await Promise.all([plan(decisions), plan(decisions), plan(decisions)]);
+		expect(outcomes.map(kindOf)).toEqual(["credits", "credits", "credits"]);
+		expect(r.calls).toHaveLength(3);
+		expect(health.read()).toMatchObject({
+			state: "open",
+			coolDownMs: BASE,
+			nextProbeAt: T + BASE,
+			failures: 3,
+		});
+	});
+
+	test("a success already in flight cannot erase a newer hard failure", async () => {
+		const dir = tempStateDir();
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const slow = Promise.withResolvers<Response>();
+		const r = recordingFetch([ERR(402), () => slow.promise]);
+		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => T });
+		const failing = plan(decisions);
+		const inFlight = plan(decisions);
+		expect(kindOf(await failing)).toBe("credits");
+		expect(health.read().state).toBe("open");
+		slow.resolve(JEV(0.9)());
+		expect(kindOf(await inFlight)).toBe("ok");
+		expect(health.read()).toMatchObject({ state: "open", cause: "credits" });
+		expect(kindOf(await plan(decisions))).toBe("unavailable");
+		expect(r.calls).toHaveLength(2);
+	});
+
+	test("the ledger records each real POST: a 503 retried to success is two rows", async () => {
+		const dir = tempStateDir();
+		const r = recordingFetch([ERR(503), JEV(0.97)]);
+		const outcome = await plan(runtime(r.fetch, { stateDir: dir }).decisions);
+		expect(outcome.status === "ok" && outcome.record.attempts).toBe(2);
+		expect(r.calls).toHaveLength(2);
+		expect(usageRows(dir)).toEqual([
+			{
+				ts: 1000,
+				point: "plan",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				ok: false,
+				kind: "upstream",
+				status: 503,
+				ms: 0,
+			},
+			{
+				ts: 1000,
+				point: "plan",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				servedModel: "typesafe/jev-1.13-20260917",
+				ok: true,
+				ms: 0,
+				promptTokens: 450,
+				completionTokens: 0,
+				costUsd: 0.000019,
+				requestId: "gen-dec-test",
+			},
+		]);
 	});
 });

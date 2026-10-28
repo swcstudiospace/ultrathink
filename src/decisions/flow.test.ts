@@ -220,7 +220,10 @@ describe("evaluateFlowOutput with a state dir", () => {
 		const r = serving(() => json({ error: { message: "insufficient credits" } }, 402));
 		const first = await evaluate(dir, r.fetch);
 		expect(first.errorClass).toBe("credits");
-		expect(openJevHealth(dir).read()).toMatchObject({ state: "open", cause: "credits" });
+		expect(openJevHealth(dir, "openrouter").read()).toMatchObject({
+			state: "open",
+			cause: "credits",
+		});
 		const second = await evaluate(dir, r.fetch);
 		expect(second.state).toBe("error");
 		expect(second.errorClass).toBe("unavailable");
@@ -235,7 +238,7 @@ describe("evaluateFlowOutput with a state dir", () => {
 	test("a hand-built open file refuses the call in a fresh process with zero requests", async () => {
 		const dir = tempDir();
 		writeFileSync(
-			join(dir, "decisions-health.json"),
+			join(dir, "decisions-health-openrouter.json"),
 			JSON.stringify({
 				v: 1,
 				state: "open",
@@ -260,7 +263,7 @@ describe("evaluateFlowOutput with a state dir", () => {
 		const before = r.calls.length;
 		expect((await evaluate(dir, r.fetch)).errorClass).toBe("rate-limit");
 		expect(r.calls.length).toBeGreaterThan(before);
-		expect(openJevHealth(dir).read().state).toBe("closed");
+		expect(openJevHealth(dir, "openrouter").read().state).toBe("closed");
 	});
 
 	test("every real attempt is ledgered as point flow, without the key or the output", async () => {
@@ -284,7 +287,7 @@ describe("evaluateFlowOutput with a state dir", () => {
 		expect(rows(dir)).toEqual([expected, expected]);
 		const text = [
 			readFileSync(join(dir, USAGE_FILE), "utf8"),
-			readFileSync(join(dir, "decisions-health.json"), "utf8"),
+			readFileSync(join(dir, "decisions-health-openrouter.json"), "utf8"),
 		].join("\n");
 		for (const secret of [K, OUTPUT, "Bearer", "sk-or-"]) expect(text).not.toContain(secret);
 	});
@@ -297,14 +300,23 @@ describe("evaluateFlowOutput with a state dir", () => {
 		expect(record.errorClass).toBe("model");
 		expect(r.calls).toHaveLength(0);
 		expect(existsSync(join(dir, USAGE_FILE))).toBe(false);
-		expect(existsSync(join(dir, "decisions-health.json"))).toBe(false);
+		expect(existsSync(join(dir, "decisions-health-openrouter.json"))).toBe(false);
+	});
+
+	test("an open Vercel breaker does not stop the flow judge, which only ever uses OpenRouter", async () => {
+		const dir = tempDir();
+		openJevHealth(dir, "vercel").recordFailure("credits", T);
+		const r = serving(() => ok("approve", 0.9));
+		const record = await evaluate(dir, r.fetch);
+		expect(record.state).toBe("success");
+		expect(r.calls).toHaveLength(1);
 	});
 
 	test("the same URL, model and key are used for a probe after a 402; nothing else is contacted", async () => {
 		const dir = tempDir();
 		const r = serving(() => json({ error: { message: "insufficient credits" } }, 402));
 		await evaluate(dir, r.fetch);
-		const due = openJevHealth(dir).read().nextProbeAt ?? 0;
+		const due = openJevHealth(dir, "openrouter").read().nextProbeAt ?? 0;
 		await evaluateFlowOutput({
 			subject: "phase:discuss",
 			output: OUTPUT,

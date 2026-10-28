@@ -148,16 +148,44 @@ describe("ensureFreshGrokAuth", () => {
 	test("spawns with the given env instead of process.env", async () => {
 		const home = tempHome(fixture({ expires_at: PAST }));
 		const { spawn, calls } = fakeSpawn(home);
-		process.env.OPENROUTER_API_KEY = "planted-secret";
+		process.env.UT_TEST_PLANTED = "planted-secret";
 		try {
 			await ensureFreshGrokAuth({ home, spawn, env: { PATH: "/usr/bin" } });
 			await ensureFreshGrokAuth({ home, spawn, force: true });
 		} finally {
-			delete process.env.OPENROUTER_API_KEY;
+			delete process.env.UT_TEST_PLANTED;
 		}
 		expect(calls[0]?.env).toEqual({ PATH: "/usr/bin", GROK_HOME: home });
-		expect(calls[0]?.env.OPENROUTER_API_KEY).toBeUndefined();
-		expect(calls[1]?.env.OPENROUTER_API_KEY).toBe("planted-secret");
+		expect(calls[0]?.env.UT_TEST_PLANTED).toBeUndefined();
+		expect(calls[1]?.env.UT_TEST_PLANTED).toBe("planted-secret");
+	});
+
+	test("the refresh child never inherits the Jev key variables, given or ambient", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const { spawn, calls } = fakeSpawn(home);
+		const planted = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+		const saved = [process.env.ULTRATHINK_OPENROUTER_KEY, process.env.OPENROUTER_API_KEY];
+		process.env.ULTRATHINK_OPENROUTER_KEY = planted;
+		process.env.OPENROUTER_API_KEY = planted;
+		try {
+			await ensureFreshGrokAuth({ home, spawn });
+			await ensureFreshGrokAuth({
+				home,
+				spawn,
+				force: true,
+				env: { ULTRATHINK_OPENROUTER_KEY: planted, OPENROUTER_API_KEY: planted, PATH: "/usr/bin" },
+			});
+		} finally {
+			if (saved[0] === undefined) delete process.env.ULTRATHINK_OPENROUTER_KEY;
+			else process.env.ULTRATHINK_OPENROUTER_KEY = saved[0];
+			if (saved[1] === undefined) delete process.env.OPENROUTER_API_KEY;
+			else process.env.OPENROUTER_API_KEY = saved[1];
+		}
+		expect(calls).toHaveLength(2);
+		for (const call of calls) {
+			expect(call.env).not.toHaveProperty("ULTRATHINK_OPENROUTER_KEY");
+			expect(call.env).not.toHaveProperty("OPENROUTER_API_KEY");
+		}
 	});
 
 	test("honours bin and leaves a fresh session alone", async () => {

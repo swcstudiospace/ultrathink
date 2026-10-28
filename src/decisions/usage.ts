@@ -5,7 +5,16 @@
  * per-model breakdown. Counts, timings and cost only; bodies, prompts and keys never reach the file. Writing and
  * reading never throw: a ledger problem must not change a decision or break the CLI.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import {
+	appendFileSync,
+	closeSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 
 export interface UsageRecord {
@@ -43,6 +52,8 @@ export const USAGE_FILE = "decisions-usage.jsonl";
 /** One generation of history: the file rolls to `.1` past this size. */
 export const USAGE_MAX_BYTES = 1_048_576;
 const DAY_MS = 86_400_000;
+/** A rotation takes milliseconds; a lock older than this belongs to a crashed process. */
+export const LOCK_STALE_MS = 5000;
 
 /** Copies only the declared fields so an over-full caller object cannot leak a body, prompt or key into the file. */
 function sanitize(record: UsageRecord): UsageRecord {
@@ -64,12 +75,63 @@ function sanitize(record: UsageRecord): UsageRecord {
 	return out;
 }
 
+function fileSize(path: string): number {
+	try {
+		return statSync(path).size;
+	} catch {
+		return 0;
+	}
+}
+
+/** Takes the rotation lock, replacing one older than LOCK_STALE_MS (a crashed holder must not wedge rotation). */
+function takeLock(lockPath: string): number | undefined {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			return openSync(lockPath, "wx", 0o600);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
+			try {
+				if (Date.now() - statSync(lockPath).mtimeMs < LOCK_STALE_MS) return undefined;
+				unlinkSync(lockPath);
+			} catch {
+				return undefined;
+			}
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Roll a full file to `.1`, serialised across hook processes. Without the lock two writers that both saw a full file
+ * would rename twice, the second moving the fresh file over `.1` and destroying the retained history. A process that
+ * loses the lock does nothing: its append still lands (a single short O_APPEND write is atomic) and the holder rotates.
+ * The size is re-checked under the lock so a rotation another process just finished is not repeated.
+ */
+function rotateIfFull(path: string): void {
+	if (fileSize(path) < USAGE_MAX_BYTES) return;
+	const lockPath = `${path.slice(0, -".jsonl".length)}.lock`;
+	const fd = takeLock(lockPath);
+	if (fd === undefined) return;
+	try {
+		if (fileSize(path) >= USAGE_MAX_BYTES) renameSync(path, `${path}.1`);
+	} catch {
+		// reason: a failed rename leaves the full file in place; the row is still appended to it
+	} finally {
+		closeSync(fd);
+		try {
+			unlinkSync(lockPath);
+		} catch {
+			// reason: a vanished lock needs no cleanup
+		}
+	}
+}
+
 /** Never throws (read-only directory, full disk, bad state dir: the record is simply dropped). */
 export function appendUsage(stateDir: string, record: UsageRecord): void {
 	try {
 		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 		const path = join(stateDir, USAGE_FILE);
-		if (existsSync(path) && statSync(path).size >= USAGE_MAX_BYTES) renameSync(path, `${path}.1`);
+		rotateIfFull(path);
 		appendFileSync(path, `${JSON.stringify(sanitize(record))}\n`, { mode: 0o600 });
 	} catch {
 		// reason: the ledger is best effort; it must never affect the decision that produced the record
