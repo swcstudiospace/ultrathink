@@ -28,7 +28,7 @@ Grok Bot runs the engine through `bin/ultrathink-grokbot`, and the bot's own mod
 - No hook fires: planning happens when the bot follows `ultrathink-protocol`, and the Stop hook's `teach observe` is a protocol step (`teach digest` then `teach observe --stdin`). The distill runs on the memory chain (Claude Haiku 5.5, then Grok Build when `claude.fallbackToGrok` is on), never the bot's own model, so `teach observe` has no `needsModel` step.
 - `ultrathink-ship` never merges, pushes or retriggers; `ship pr|merge|run` are not exposed.
 - `teach promote --install` is refused; promotions go to drafts. Installing a skill into the bot is a reviewed, manual step (`skills status` reports drift between `hosts/grok-bot/skills` and the installed copies).
-- No engine CLI (Claude, Grok, Muse) is spawned: the bot's model is the planner, and the only outside model call is Jev.
+- Planning spawns no engine CLI (Claude, Grok, Muse): the bot's model is the planner, and the only outside model call during planning is Jev. Lesson capture (`teach observe`) is the exception: it needs the `claude` CLI signed in on the machine that runs `ultrathink-grokbot` (plan login; `ultrathink doctor` shows it), and optionally the Grok lane (`ultrathink grok login`) for the Grok Build fallback. Without a usable engine the observe run reports `skipped` with a reason and saves nothing; never write lessons by hand. `teach capture` needs no model.
 
 ## Files
 
