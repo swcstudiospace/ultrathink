@@ -12,6 +12,13 @@ import type { HostId } from "../host/types.ts";
 import type { GrokCheckResult, runGrokCheck } from "../grok/check.ts";
 import type { runGrokLogin } from "../grok/login.ts";
 import { writeStore } from "../mcp/store.ts";
+import { dispatchStack } from "../stack/cli.ts";
+import {
+	STACK_MEMBERS,
+	type StackConnection,
+	type StackMember,
+	type StackProbe,
+} from "../stack/types.ts";
 import {
 	parseUltrathinkCommand,
 	runControl,
@@ -152,6 +159,11 @@ describe("runControl", () => {
 		"ULTRATHINK_DECISIONS_URL",
 		"ULTRATHINK_DECISIONS",
 		"ULTRATHINK_DEBUG",
+		"ULTRATHINK_REALM",
+		"ULTRATHINK_SWARM_ROOT",
+		"SWARM_ROOT",
+		"SUBSTRATE_TOKEN",
+		"SUBSTRATE_TOKENS_DIR",
 	] as const;
 	const saved: Partial<Record<(typeof ENV_KEYS)[number], string>> = {};
 	let dir: string;
@@ -294,11 +306,13 @@ describe("runControl", () => {
 		return (await runControl(["status"], io)).split("\n").find((line) => line.startsWith(prefix));
 	}
 
-	test("status shows the substrate as off until a URL is set; SUBSTRATE_URL beats config, SUBSTRATE_DISABLED beats both", async () => {
-		expect(await statusLine("Substrate:")).toBe(
-			"Substrate: off (optional: set substrate.url or SUBSTRATE_URL)",
-		);
-		projectConfig({ substrate: { url: "https://substrate.example/" } });
+	test("status shows the substrate as off until a user-level URL is set; SUBSTRATE_URL beats config, SUBSTRATE_DISABLED beats both", async () => {
+		const off = "Substrate: off (optional: set substrate.url or SUBSTRATE_URL)";
+		expect(await statusLine("Substrate:")).toBe(off);
+		// A cloned repository must not redirect the Substrate bearer token: a project file cannot set substrate.url.
+		projectConfig({ substrate: { url: "https://evil-substrate.example/" } });
+		expect(await statusLine("Substrate:")).toBe(off);
+		userServices({ substrate: { url: "https://substrate.example/" } });
 		expect(await statusLine("Substrate:")).toBe("Substrate: https://substrate.example (config)");
 		process.env.SUBSTRATE_URL = "http://localhost:9000";
 		expect(await statusLine("Substrate:")).toBe("Substrate: http://localhost:9000 (SUBSTRATE_URL)");
@@ -894,7 +908,7 @@ describe("runControl", () => {
 			process.env.AI_GATEWAY_API_KEY = V;
 			const auto = await status();
 			expect(auto.line).toBe(
-				`${ON_DEFAULTS} · provider vercel · key from AI_GATEWAY_API_KEY · zdr on`,
+				`${ON_DEFAULTS} · provider vercel · key from AI_GATEWAY_API_KEY · zdr n/a (vercel)`,
 			);
 			expect(auto.text).not.toContain(V);
 			process.env.ULTRATHINK_OPENROUTER_KEY = K;
@@ -1044,7 +1058,8 @@ describe("runControl", () => {
 		expect(lines[decisions + 1]).toStartWith("Hindsight: off (opt-in");
 		expect(lines[decisions + 2]).toStartWith("RAGFlow: off (opt-in");
 		expect(lines[decisions + 3]).toStartWith("Teach: on · capture auto · recall on");
-		expect(lines[decisions + 4]).toStartWith("Engine request:");
+		expect(lines[decisions + 4]).toStartWith("Stack: ");
+		expect(lines[decisions + 5]).toStartWith("Engine request:");
 	});
 
 	test("status reflects the config sections for Hindsight, RAGFlow and Teach", async () => {
@@ -1305,21 +1320,128 @@ describe("runControl", () => {
 		);
 	});
 
+	describe("Stack status line", () => {
+		const CANARY = "sk-or-v1-CANARYCANARYCANARY1234";
+		const CANARY_B = "vck_CANARYCANARYCANARY1234";
+
+		function stackLine(text: string): string {
+			const line = text.split("\n").find((candidate) => candidate.startsWith("Stack: "));
+			if (line === undefined) throw new Error("status printed no Stack line");
+			return line;
+		}
+
+		/** Every stack member off or missing, and no token directory of the host in reach. */
+		function hermeticStackEnv(): void {
+			process.env.SUBSTRATE_DISABLED = "1";
+			process.env.ULTRATHINK_REALM = "off";
+			process.env.ULTRATHINK_DECISIONS = "0";
+			process.env.SUBSTRATE_TOKENS_DIR = join(dir, "no-tokens");
+			delete process.env.ULTRATHINK_SWARM_ROOT;
+			delete process.env.SWARM_ROOT;
+		}
+
+		test("status carries one counts-only Stack line between the Teach and Engine request lines", async () => {
+			hermeticStackEnv();
+			const text = await runControl(["status"], io);
+			const lines = text.split("\n");
+			expect(stackLine(text)).toBe("Stack: 4 off · 1 missing (run ultrathink stack)");
+			expect(lines.filter((line) => line.startsWith("Stack: "))).toHaveLength(1);
+			const index = lines.findIndex((line) => line.startsWith("Stack: "));
+			expect(lines[index - 1]).toStartWith("Teach:");
+			expect(lines[index + 1]).toStartWith("Engine request:");
+		});
+
+		test("a ready Decisions key moves one member from off to ready without a request", async () => {
+			hermeticStackEnv();
+			delete process.env.ULTRATHINK_DECISIONS;
+			process.env.ULTRATHINK_OPENROUTER_KEY = CANARY;
+			const original = globalThis.fetch;
+			let calls = 0;
+			globalThis.fetch = (() => {
+				calls++;
+				throw new Error("status must not touch the network");
+			}) as unknown as typeof fetch;
+			try {
+				const text = await runControl(["status"], io);
+				expect(stackLine(text)).toBe("Stack: 1 ready · 3 off · 1 missing (run ultrathink stack)");
+				expect(calls).toBe(0);
+			} finally {
+				globalThis.fetch = original;
+			}
+		});
+
+		test("no planted input value reaches the Stack line", async () => {
+			hermeticStackEnv();
+			delete process.env.SUBSTRATE_DISABLED;
+			process.env.SUBSTRATE_URL = `https://operator:${CANARY}@substrate.example.test`;
+			process.env.SUBSTRATE_TOKEN = CANARY;
+			process.env.ULTRATHINK_SWARM_ROOT = `/nonexistent/${CANARY_B}`;
+			process.env.HINDSIGHT_API_URL = `https://hindsight.example.test/${CANARY}`;
+			process.env.HINDSIGHT_API_KEY = CANARY_B;
+			process.env.AI_GATEWAY_API_KEY = CANARY;
+			process.env.RAGFLOW_API_KEY = CANARY_B;
+			const line = stackLine(await runControl(["status"], io));
+			expect(line).toMatch(/^Stack: (\d+ (ready|off|missing)( · )?)+ \(run ultrathink stack\)$/);
+			expect(line).not.toContain("CANARY");
+			expect(line).not.toContain("substrate.example");
+			expect(line).not.toContain("nonexistent");
+		});
+
+		test("the usage text lists stack with its flags", async () => {
+			expect(await runControl(["bogus"], io)).toContain(
+				"  stack [--live] [--json] [--strict] [--only <member>] [--timeout <ms>]   five stack links with reason and fix",
+			);
+		});
+	});
+
 	describe("bin/ultrathink doctor", () => {
 		const FAKE_KEY = "sk-test-not-a-real-key-0123456789";
+
+		/**
+		 * The doctor's `stack` section makes real probes (Substrate brief, Hindsight, the Swarm classifier, the Realm
+		 * socket). Every member is disabled or pointed at nothing here, and no directory of the host is in reach, so
+		 * the run depends on this temp dir only.
+		 */
+		function hermeticDoctorEnv(): Record<string, string | undefined> {
+			const env: Record<string, string | undefined> = {
+				...process.env,
+				HOME: join(dir, "home"),
+				XDG_CONFIG_HOME: join(dir, "xdg"),
+				ULTRATHINK_STATE_DIR: join(dir, "state"),
+				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
+				SUBSTRATE_DISABLED: "1",
+				SUBSTRATE_TOKENS_DIR: join(dir, "no-tokens"),
+				ULTRATHINK_REALM: "off",
+				ULTRATHINK_DECISIONS: "0",
+				ULTRATHINK_HINDSIGHT: "0",
+				OPENROUTER_API_KEY: FAKE_KEY,
+			};
+			for (const name of [
+				"SUBSTRATE_URL",
+				"SUBSTRATE_TOKEN",
+				"ULTRATHINK_SWARM_ROOT",
+				"SWARM_ROOT",
+				"HINDSIGHT_API_URL",
+				"HINDSIGHT_API_KEY",
+				"HINDSIGHT_API_TOKEN",
+				"DESK_GATEWAY_URL",
+				"DESK_GATEWAY_TOKEN",
+				"ULTRATHINK_HINDSIGHT_BACKEND",
+				"ULTRATHINK_SUBSTRATE_BACKEND",
+				"ULTRATHINK_OPENROUTER_KEY",
+				"AI_GATEWAY_API_KEY",
+			]) {
+				delete env[name];
+			}
+			return env;
+		}
 
 		function runDoctor(args: string[]): { stdout: string; exitCode: number | null } {
 			const proc = Bun.spawnSync(
 				[process.execPath, join(import.meta.dir, "commands.ts"), "doctor", ...args],
 				{
 					cwd: io.cwd,
-					env: {
-						...process.env,
-						HOME: join(dir, "home"),
-						ULTRATHINK_STATE_DIR: join(dir, "state"),
-						ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
-						OPENROUTER_API_KEY: FAKE_KEY,
-					},
+					env: hermeticDoctorEnv(),
 					stdin: "ignore",
 					stdout: "pipe",
 					stderr: "pipe",
@@ -1426,5 +1548,68 @@ describe("runControl", () => {
 			expect(stdout).toContain("refusing to prune everything");
 			expect(existsSync(old)).toBe(true);
 		});
+	});
+});
+
+describe("dispatchStack", () => {
+	const CANARY = "sk-or-v1-CANARYCANARYCANARY1234";
+	const INPUT = { cwd: "/tmp/ut-dispatch-stack-cwd", env: {} };
+
+	function fake(member: StackMember, over: Partial<StackConnection> = {}): StackProbe {
+		return async () => ({ member, status: "connected", reason: `${member} answers`, ...over });
+	}
+
+	function deps(over: Partial<Record<StackMember, Partial<StackConnection>>> = {}) {
+		const probes: Record<StackMember, StackProbe> = {
+			substrate: fake("substrate", over.substrate),
+			swarm: fake("swarm", over.swarm),
+			realm: fake("realm", over.realm),
+			decisions: fake("decisions", over.decisions),
+			hindsight: fake("hindsight", over.hindsight),
+		};
+		return {
+			probes,
+			config: defaultConfig(),
+			stateDir: "/tmp/ut-dispatch-stack-state",
+			host: "claude-code" as const,
+		};
+	}
+
+	test("passes argv through to the stack command: --only and --json shape the output", async () => {
+		const { code, text } = await dispatchStack(["--json", "--only", "realm"], INPUT, deps());
+		expect(code).toBe(0);
+		const parsed = JSON.parse(text) as { members: StackConnection[] };
+		expect(parsed.members.map((member) => member.member)).toEqual(["realm"]);
+		const all = await dispatchStack([], INPUT, deps());
+		expect(all.text.split("\n")).toHaveLength(STACK_MEMBERS.length);
+	});
+
+	test("exit 0 for a healthy stack, also under --strict", async () => {
+		expect((await dispatchStack(["--strict"], INPUT, deps())).code).toBe(0);
+	});
+
+	test("--strict exits 1 with a misconfigured member and 0 without --strict", async () => {
+		const bad = deps({
+			swarm: { status: "misconfigured", reason: "ULTRATHINK_SWARM_ROOT is relative" },
+		});
+		const strict = await dispatchStack(["--strict"], INPUT, bad);
+		expect(strict.code).toBe(1);
+		expect(strict.text).toContain("swarm  misconfigured  ULTRATHINK_SWARM_ROOT is relative");
+		expect((await dispatchStack([], INPUT, bad)).code).toBe(0);
+	});
+
+	test("a bad --only value is a usage error: exit 2 and the one-line usage", async () => {
+		const result = await dispatchStack(["--only", "nope"], INPUT, deps());
+		expect(result.code).toBe(2);
+		expect(result.text).toStartWith("Usage: ultrathink stack ");
+		expect(result.text).not.toContain("\n");
+	});
+
+	test("a secret in a probe answer never reaches the text", async () => {
+		const leaky = deps({
+			hindsight: { status: "unavailable", reason: `key ${CANARY} refused`, fix: `use ${CANARY}` },
+		});
+		const { text } = await dispatchStack([], INPUT, leaky);
+		expect(text).not.toContain("CANARYCANARY");
 	});
 });

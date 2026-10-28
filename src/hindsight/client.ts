@@ -7,9 +7,9 @@
  * kept in `chunks` extraction mode: the server runs without an LLM, and a retain in any other mode would call one.
  * Never rejects except with an AbortError when the caller's signal aborts.
  */
-import { redactSecrets } from "../grok/auth.ts";
 import { type DeadlineLabel, type Deadlines, requestJson } from "../net/http.ts";
 import { checkServiceUrl } from "../net/safe-url.ts";
+import { redactSecrets } from "../redact.ts";
 import { isRecord } from "../shared.ts";
 import type {
 	BankState,
@@ -34,8 +34,7 @@ const WANTED_MODE = "chunks";
 
 /** Replaces `apiKey` and known secret shapes with "[redacted]", collapses whitespace to one line, caps at 200 characters. */
 export function redactMessage(text: string, apiKey?: string): string {
-	const key = apiKey?.trim();
-	const out = redactSecrets(key ? text.replaceAll(key, "[redacted]") : text)
+	const out = redactSecrets(text, apiKey ?? "")
 		.replace(/\s+/g, " ")
 		.trim();
 	return out.length > MAX_MESSAGE_CHARS ? `${out.slice(0, MAX_MESSAGE_CHARS - 3)}...` : out;

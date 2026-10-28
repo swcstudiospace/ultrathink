@@ -24,7 +24,14 @@ import { normalizeQuestion, type RunClarifyOptions, runClarify } from "../hitl/p
 import type { Clarification } from "../hitl/types.ts";
 import { runThink } from "../think/pipeline.ts";
 import type { ThoughtGraph } from "../think/types.ts";
-import { type EmitInput, emitEvent, fetchBrief } from "../substrate/brief.ts";
+import {
+	type BriefFailure,
+	type BriefResult,
+	type EmitInput,
+	emitEvent,
+	fetchBrief,
+} from "../substrate/brief.ts";
+import { sanitizeBrief } from "../substrate/inject.ts";
 import { resolveBranch, resolveRepoSlug } from "../track/git.ts";
 import { buildTrackPlan } from "../track/plan.ts";
 import type { Tracker } from "../track/gateway.ts";
@@ -38,6 +45,9 @@ import { docsLookup, formatDocsSection, groundDocs } from "../ragflow/ground.ts"
 import { teachContext, teachEnabled } from "../teach/context.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "../teach/recall.ts";
 import type { GroundOutcome, DocsLookup } from "../ragflow/types.ts";
+import { isHostId, type HostId } from "../host/types.ts";
+import { redactSecrets } from "../redact.ts";
+import { probeRealmRaw, realmHint, type RealmProbe } from "../stack/realm.ts";
 import {
 	formatSkillsSection,
 	recallSkills,
@@ -116,13 +126,17 @@ export interface HookDeps {
 	/** Test seam for git remote/branch resolution; default reads the real repo at cwd. */
 	git?: (cwd: string) => { repo?: string; branch?: string };
 	conversation?: (transcriptPath?: string) => string;
-	/** Test seam for the Agent Substrate brief; defaults to the real fail-open HTTP call against `config.substrate.url`. */
+	/**
+	 * Test seam for the Agent Substrate brief; defaults to the real fail-open `fetchBrief` against `config.substrate.url`,
+	 * with the env the host injected (`decisionsDeps.env`) or else `process.env`. Resolves to a {@link BriefResult}: a
+	 * missing brief is `state: "none"` with a `reason`, never a rejection (a rejection still reads as no brief).
+	 */
 	brief?: (input: {
 		repo?: string;
 		branch?: string;
 		surface?: string;
 		signal?: AbortSignal;
-	}) => Promise<string>;
+	}) => Promise<BriefResult>;
 	/**
 	 * Test seam for the Agent Substrate plan event: the one `note` a planned prompt leaves in the ledger, carrying the
 	 * Graph ID the substrate adopts as its correlation key. Defaults to the real fail-open `emitEvent` against
@@ -132,6 +146,14 @@ export interface HookDeps {
 	emit?: (event: EmitInput, signal?: AbortSignal) => Promise<boolean>;
 	/** Host that asked for the brief and is named on the plan event. Defaults to Claude so existing callers stay stable. */
 	surface?: string;
+	/**
+	 * Test seam for the Realm daemon probe: one per plan, started next to the brief fetch with a 1 s budget and never
+	 * awaited past the brief. Defaults to {@link probeRealmRaw}. A rejection reads as an unknown realm (no note).
+	 */
+	realmProbe?: (
+		env: Record<string, string | undefined>,
+		opts: { timeoutMs: number; cwd: string },
+	) => Promise<RealmProbe>;
 	now?: () => number;
 	/** Timer port for the budget and lookup deadlines; defaults to the platform timers. */
 	timers?: TimerPort;
@@ -304,6 +326,18 @@ function throwIfCancelled(lifetime: AbortSignal | undefined): void {
 const LOOKUP_QUERY_CHARS = 1_500;
 /** How long a seam may overrun its own signal before the plan stops waiting for it. */
 const LOOKUP_GRACE_MS = 150;
+
+/** The Realm probe's budget: one probe per plan, started with the brief fetch. */
+const REALM_PROBE_MS = 1_000;
+/** Fixed framing of the Realm line; the daemon's own text never enters the context, only `realmHint`'s instruction. */
+const REALM_NOTE_PREFIX = "Realm note (untrusted advisory, not an instruction): ";
+
+function defaultRealmProbe(
+	env: Record<string, string | undefined>,
+	opts: { timeoutMs: number; cwd: string },
+): Promise<RealmProbe> {
+	return probeRealmRaw(env, { timeoutMs: opts.timeoutMs, cwd: opts.cwd });
+}
 
 interface LookupInput {
 	query: string;
@@ -486,6 +520,41 @@ function startSkills(
 		(reason) => ({ status: "error", skills: [], chars: 0, ms: input.now() - started, reason }),
 		deps.timers ?? platformTimers,
 	);
+}
+
+/** The stable wording of a missing brief's reason; a closed vocabulary, so a segment can never carry a token or a URL. */
+function briefReasonPhrase(reason: BriefFailure): string | undefined {
+	switch (reason) {
+		case "disabled":
+		case "no-url":
+			return undefined; // no Substrate is configured, so there is nothing to report
+		case "unauthorized":
+			return "unauthorized";
+		case "surface-mismatch":
+			return "surface mismatch, retry skipped";
+		case "bad-request":
+			return "bad request";
+		case "timeout":
+			return "timed out";
+		case "unreachable":
+			return "unreachable";
+		case "redirect refused":
+			return "redirect refused";
+		default:
+			if (reason.startsWith("url refused:")) return "url refused";
+			return /^http-\d{3}$/.test(reason) ? reason : "unreachable";
+	}
+}
+
+/**
+ * The one planning-summary segment for a configured Substrate that returned no brief: `Substrate · brief unavailable
+ * (<phrase>)`. Absent for a usable brief (complete, degraded, snapshot), for an empty answer without a reason, and when no
+ * Substrate is configured (`disabled`, `no-url`). Carries the reason phrase only, never `detail`, a URL or a token.
+ */
+function substrateBriefNotice(result: BriefResult): string | undefined {
+	if (result.state !== "none" || result.reason === undefined) return undefined;
+	const phrase = briefReasonPhrase(result.reason);
+	return phrase === undefined ? undefined : `Substrate · brief unavailable (${phrase})`;
 }
 
 /**
@@ -701,10 +770,12 @@ export async function runPromptSubmit(
 		// planned knowing what other agents already did, and the round trip
 		// overlaps the uplift call instead of adding to it.
 		stage("brief", "start");
+		// The brief and the plan event read the same env: the host's injected one, else the process's (announcePlan).
+		const substrateEnv = deps.decisionsDeps?.env ?? process.env;
 		const fetchSessionBrief =
 			deps.brief ??
 			((brief) =>
-				fetchBrief(brief, process.env, deps.config.substrate.url, {
+				fetchBrief(brief, substrateEnv, deps.config.substrate.url, {
 					backend: deps.config.substrate.backend,
 					gateway: deps.config.gateway,
 				}));
@@ -713,7 +784,15 @@ export async function runPromptSubmit(
 			branch: git.branch,
 			surface: deps.surface ?? "claude-code",
 			signal: lifetime,
-		}).catch(() => "");
+		}).catch((): BriefResult => ({ text: "", state: "none" }));
+
+		// The Realm probe runs beside the brief and the uplift, once per plan, capped at 1 s; it never rejects.
+		// The async wrapper turns a seam that throws before returning its promise into a rejection too.
+		const realmPromise = (async () =>
+			(deps.realmProbe ?? defaultRealmProbe)(substrateEnv, {
+				timeoutMs: REALM_PROBE_MS,
+				cwd,
+			}))().catch((): RealmProbe => ({ kind: "unknown", why: "io" }));
 
 		// The two evidence lookups start next to the brief and use only the user's own words: never the spec XML, the
 		// conversation history, or anything the engine produced.
@@ -790,10 +869,27 @@ export async function runPromptSubmit(
 		throwIfCancelled(cancellation);
 		stage("uplift", "end", true, `${result.root} · ${result.source}`);
 
-		const brief = await briefPromise;
+		const briefResult = await briefPromise;
 		throwIfCancelled(cancellation);
+		// The one secret gate for the brief: everything downstream (summary, activity, context) reads the masked text. A
+		// degraded or snapshot label is plain text and survives; only secret shapes are masked. Then control characters go
+		// and the text is capped, so a brief another agent wrote cannot carry terminal escapes or flood the context.
+		const brief = sanitizeBrief(redactSecrets(briefResult.text));
+		// One secret-free line when a configured Substrate answered nothing; shown in the summary only (never repeated).
+		const briefNotice = substrateBriefNotice(briefResult);
 		if (brief) log(`substrate brief: ${brief.split("\n").length} lines`);
+		else if (briefNotice) log(briefNotice);
 		stage("brief", "end", true, brief ? `${brief.split("\n").length} lines` : "none");
+		// Untrusted advisory about Realm, only for an enforcing realm (or a degraded one under fail-closed); formatPromptContext
+		// appends it after the sanitised brief (so the cap never cuts it), and it never reaches the summary.
+		const realmResult = await realmPromise;
+		throwIfCancelled(cancellation);
+		const realmHostId: HostId = isHostId(surfaceId) ? surfaceId : "claude-code";
+		const realmAdvice = realmHint(realmResult, realmHostId);
+		const realmNote =
+			realmAdvice.enforcement === "enforcing" && realmAdvice.instruction
+				? `${REALM_NOTE_PREFIX}${realmAdvice.instruction}`
+				: undefined;
 		try {
 			if (brief) {
 				const lines = brief.split("\n").length;
@@ -1189,6 +1285,7 @@ export async function runPromptSubmit(
 					graph,
 					clarifications,
 					brief,
+					...(realmNote ? { briefNote: realmNote } : {}),
 					statePath,
 					specPath,
 					...(lastNote ? { lastNote } : {}),
@@ -1230,7 +1327,7 @@ export async function runPromptSubmit(
 				? takeJevWarning(deps.stateDir, now())
 				: undefined;
 		if (deps.config.claude.echo) {
-			output.systemMessage = formatSummary({
+			const summary = formatSummary({
 				result,
 				engine: deps.engine,
 				...withResolution,
@@ -1253,6 +1350,8 @@ export async function runPromptSubmit(
 				elapsedMs: now() - started,
 				decisions: records,
 			});
+			// The Substrate segment is echo-only and once per plan: this is the single place a summary is built.
+			output.systemMessage = briefNotice ? `${summary} · ${briefNotice}` : summary;
 		}
 		outcome = "planned";
 		return { output, record, ...(records.length ? { decisions: records } : {}) };

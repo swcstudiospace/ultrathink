@@ -14,8 +14,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { redactSecrets } from "../grok/auth.ts";
 import { abortError, CHILD_ENV } from "../claude/complete.ts";
+import { redactSecrets } from "../redact.ts";
 import { dropJevKeys } from "../route-defaults.ts";
 import { CHILD_PROMPT_SENTINEL } from "../uplift/skill.ts";
 import type { MuseEffort } from "./types.ts";

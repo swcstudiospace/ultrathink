@@ -226,7 +226,7 @@ describe("claudeComplete plan auth", () => {
 				[
 					"#!/bin/sh",
 					"cat >/dev/null",
-					`echo "ult=\${ULTRATHINK_OPENROUTER_KEY:+set} or=\${OPENROUTER_API_KEY:+set} anth=\${ANTHROPIC_API_KEY:+set}" >> "${seenFile}"`,
+					`echo "ult=\${ULTRATHINK_OPENROUTER_KEY:+set} or=\${OPENROUTER_API_KEY:+set} gw=\${AI_GATEWAY_API_KEY:+set} anth=\${ANTHROPIC_API_KEY:+set}" >> "${seenFile}"`,
 					"printf '%s\\n' \"$STUB_OUT\"",
 				].join("\n"),
 				{ mode: 0o755 },
@@ -234,11 +234,13 @@ describe("claudeComplete plan auth", () => {
 			const saved = {
 				ult: process.env.ULTRATHINK_OPENROUTER_KEY,
 				or: process.env.OPENROUTER_API_KEY,
+				gw: process.env.AI_GATEWAY_API_KEY,
 				anth: process.env.ANTHROPIC_API_KEY,
 				out: process.env.STUB_OUT,
 			};
 			process.env.ULTRATHINK_OPENROUTER_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 			process.env.OPENROUTER_API_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+			process.env.AI_GATEWAY_API_KEY = "vck_UTTESTKEY0123456789abcdef";
 			process.env.ANTHROPIC_API_KEY = "sk-ant-fake";
 			process.env.STUB_OUT = okResult;
 			try {
@@ -247,6 +249,7 @@ describe("claudeComplete plan auth", () => {
 				for (const [name, value] of [
 					["ULTRATHINK_OPENROUTER_KEY", saved.ult],
 					["OPENROUTER_API_KEY", saved.or],
+					["AI_GATEWAY_API_KEY", saved.gw],
 					["ANTHROPIC_API_KEY", saved.anth],
 					["STUB_OUT", saved.out],
 				] as const) {
@@ -255,10 +258,33 @@ describe("claudeComplete plan auth", () => {
 				}
 			}
 			expect(readFileSync(seenFile, "utf8").trim()).toBe(
-				`ult= or= anth=${auth === "api-key" ? "set" : ""}`,
+				`ult= or= gw= anth=${auth === "api-key" ? "set" : ""}`,
 			);
 		});
 	}
+
+	test("a failing child's stderr is masked before it is thrown", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-claude-stderr-"));
+		dirs.push(dir);
+		const bin = join(dir, "claude");
+		const canary = "sk-or-v1-CANARYCANARYCANARY1234";
+		writeFileSync(
+			bin,
+			["#!/bin/sh", "cat >/dev/null", `echo "auth failed for ${canary}" >&2`, "exit 1"].join("\n"),
+			{ mode: 0o755 },
+		);
+		let thrown: unknown;
+		try {
+			await createClaudeCompleter({ bin, env: { PATH: process.env.PATH } })("s", "u");
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toBeInstanceOf(Error);
+		const message = (thrown as Error).message;
+		expect(message).toContain("auth failed");
+		expect(message).not.toContain(canary);
+		expect(message).not.toContain("CANARYCANARYCANARY");
+	});
 
 	test("no cap variable is set without maxOutputTokens or for a non-positive value", async () => {
 		for (const maxOutputTokens of [undefined, 0, -5, 0.4, Number.NaN]) {

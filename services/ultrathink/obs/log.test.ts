@@ -84,6 +84,31 @@ describe("createLogger", () => {
 		expect(parsed()[0]?.list).toEqual([{ id: 1 }]);
 	});
 
+	test("masks key and Bearer shapes inside string values, error messages and stacks", () => {
+		const key = "sk-or-v1-CANARYCANARYCANARY1234";
+		const bearer = "canary-bearer-token-9876";
+		const { logger, lines, parsed } = capture();
+		logger.info("upstream", {
+			detail: `rejected ${key} with Bearer ${bearer} for user 42`,
+			nested: { list: [`again ${key}`] },
+		});
+		logger.error("failed", { err: new Error(`bad ${key}`), stack: true });
+		for (const line of lines) {
+			expect(line).not.toContain("CANARYCANARY");
+			expect(line).not.toContain(bearer);
+		}
+		expect((parsed()[0] as { detail: string }).detail).toBe(
+			"rejected [redacted] with [redacted] for user 42",
+		);
+	});
+
+	test("masks a key that sits across the 512 character clip", () => {
+		const key = "sk-or-v1-CANARYCANARYCANARY1234";
+		const { logger, lines } = capture();
+		logger.info("long", { text: `${"x".repeat(500)} ${key}` });
+		expect(lines[0]).not.toContain("sk-or-v1");
+	});
+
 	test("truncates strings over 512 characters and keeps shorter ones intact", () => {
 		const { logger, parsed } = capture();
 		const exact = "a".repeat(512);

@@ -89,6 +89,8 @@ export interface PlanOptions {
 	/** Test seams for the lessons and RAGFlow lookups (see HookDeps); default to the configured Teachable Moments and RAGFlow. */
 	recall?: HookDeps["recall"];
 	ground?: HookDeps["ground"];
+	/** Test seam for the Realm probe (see HookDeps); defaults to the real, free, read-only probe. */
+	realmProbe?: HookDeps["realmProbe"];
 }
 
 function skipReason(
@@ -274,6 +276,7 @@ export async function planPrompt(
 				decisionsDeps: { env },
 				...(options.recall ? { recall: options.recall } : {}),
 				...(options.ground ? { ground: options.ground } : {}),
+				...(options.realmProbe ? { realmProbe: options.realmProbe } : {}),
 				signal: options.signal,
 			},
 		);

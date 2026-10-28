@@ -219,11 +219,38 @@ describe("decisions check", () => {
 		);
 		expect(out).toEqual({
 			code: 0,
-			text: "Decisions check: ok · typesafe-ai/jev (requested ~typesafe/jev-latest) · 0 ms · attempts 1 · cost n/a · provider vercel · zdr on · key from AI_GATEWAY_API_KEY",
+			text: "Decisions check: ok · typesafe-ai/jev (requested ~typesafe/jev-latest) · 0 ms · attempts 1 · cost n/a · provider vercel · zdr n/a (vercel) · key from AI_GATEWAY_API_KEY",
 		});
 		expect(r.calls).toHaveLength(1);
 		expect(r.calls[0]?.url).toBe("https://ai-gateway.vercel.sh/v4/ai/evaluation-model");
 		expect(out.text).not.toContain(V);
+	});
+
+	test("the Vercel rail prints zdr n/a (vercel) whatever decisions.zdr says; OpenRouter keeps zdr on|off", async () => {
+		const V = "vck_test_key_do_not_use";
+		const answer = () =>
+			Response.json({
+				answers: { plan_worthy: { type: "boolean", probability: 0.9 } },
+				usage: { inputTokens: 100, outputTokens: 5 },
+			});
+		for (const zdr of [true, false]) {
+			const vercel = await runDecisionsCommand(
+				["check"],
+				setup(recordingFetch([answer]), {
+					config: { decisions: { zdr } },
+					env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V },
+				}),
+			);
+			expect(vercel.text).toContain(" · provider vercel · zdr n/a (vercel) · key from ");
+			expect(vercel.text).not.toContain("zdr on");
+			expect(vercel.text).not.toContain("zdr off");
+			const openrouter = await runDecisionsCommand(
+				["check"],
+				setup(recordingFetch([JEV(0.9)]), { config: { decisions: { zdr } } }),
+			);
+			expect(openrouter.text).toContain(` · provider openrouter · zdr ${zdr ? "on" : "off"} · `);
+			expect(openrouter.text).not.toContain("n/a (vercel)");
+		}
 	});
 
 	test("explicit provider pins the rail even when both keys exist (JEV-02)", async () => {

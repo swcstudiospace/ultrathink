@@ -16,7 +16,7 @@
  * `memory` purpose (memory-bank distill) is a fixed chain in `memory-chain.ts`: Claude Haiku 5.5, then Grok Build under
  * the same consent, whatever any model setting says.
  */
-import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
+import { grokAuthStatusFresh } from "../grok/auth.ts";
 import { createFailoverCompleter, type FailoverCandidate } from "../failover/chain.ts";
 import { createGrokCompleter } from "../grok/complete.ts";
 import { grokEngineLabel } from "../grok/label.ts";
@@ -28,6 +28,7 @@ import { hasControlCharacter, normalizeSelectorField } from "../config.ts";
 import type { HostModelOverride, UltrathinkConfig } from "../config.ts";
 import type { ControlState } from "../claude/state.ts";
 import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
+import { redactSecrets } from "../redact.ts";
 import { redactLine } from "../teach/redact.ts";
 import { detectHost } from "./detect.ts";
 import type { HostId } from "./types.ts";

@@ -6,8 +6,8 @@
  * Never rejects except with an AbortError when the caller aborts. `postDecision` is the shared POST core the Vercel
  * rail (`./vercel.ts`) reuses, so both rails share timeout/retry/redaction discipline structurally.
  */
-import { redactSecrets } from "../grok/auth.ts";
 import { USER_AGENT } from "../mcp/providers.ts";
+import { redactSecrets } from "../redact.ts";
 import {
 	type DecisionAnswer,
 	type DecisionQuestion,
@@ -323,14 +323,11 @@ export function parseDecisionsResponse(
 	};
 }
 
-const SK_OR_RE = /sk-or-[A-Za-z0-9_-]+/g;
-
-/** Replaces apiKey (every occurrence), /sk-or-[A-Za-z0-9_-]+/g and redactSecrets() patterns with "[redacted]"; collapses whitespace to one line; cuts to 200 chars (197 + "..."). */
+/** Masks apiKey (every occurrence) and every secret shape from `redactSecrets` with "[redacted]"; collapses whitespace to one line; cuts to 200 chars (197 + "..."). */
 export function redact(text: string, apiKey?: string): string {
-	const key = apiKey?.trim();
-	let out = key ? text.replaceAll(key, "[redacted]") : text;
-	out = redactSecrets(out.replace(SK_OR_RE, "[redacted]"));
-	out = out.replace(/\s+/g, " ").trim();
+	const out = redactSecrets(text, apiKey ?? "")
+		.replace(/\s+/g, " ")
+		.trim();
 	return out.length > MAX_ERROR_CHARS ? `${out.slice(0, MAX_ERROR_CHARS - 3)}...` : out;
 }
 

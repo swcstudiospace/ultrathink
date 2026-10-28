@@ -102,15 +102,17 @@ describe("runGrokLogin", () => {
 
 	test("the login child never inherits the Jev key variables", async () => {
 		const { deps, calls } = harness();
-		const planted = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+		const planted = "sk-or-v1-CANARYCANARYCANARY1234";
 		deps.env = {
 			...deps.env,
 			ULTRATHINK_OPENROUTER_KEY: planted,
 			OPENROUTER_API_KEY: planted,
+			AI_GATEWAY_API_KEY: planted,
 		};
 		await runGrokLogin(deps, { home: join(tempDir(), "lane") });
 		expect(calls[0]?.env).not.toHaveProperty("ULTRATHINK_OPENROUTER_KEY");
 		expect(calls[0]?.env).not.toHaveProperty("OPENROUTER_API_KEY");
+		expect(calls[0]?.env).not.toHaveProperty("AI_GATEWAY_API_KEY");
 		expect(calls[0]?.env.KEEP).toBe("1");
 	});
 

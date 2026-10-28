@@ -134,6 +134,42 @@ describe("resolveHindsight", () => {
 		expect(both.readiness).toMatchObject({ state: "ready", url: "https://hs.example.test" });
 	});
 
+	test("HINDSIGHT_URL is a fallback for HINDSIGHT_API_URL: canonical wins, blank canonical falls through, config wins over both", () => {
+		const off = { ...ON, url: "" };
+		const alias = resolveHindsight(
+			off,
+			{ HINDSIGHT_URL: " https://alias.example.test/ " },
+			{ storePath: path },
+		);
+		expect(alias.readiness).toMatchObject({ state: "ready", url: "https://alias.example.test" });
+		expect(alias.client).toBeDefined();
+		const both = resolveHindsight(
+			off,
+			{
+				HINDSIGHT_API_URL: "https://canonical.example.test",
+				HINDSIGHT_URL: "https://alias.example.test",
+			},
+			{ storePath: path },
+		);
+		expect(both.readiness).toMatchObject({ url: "https://canonical.example.test" });
+		const blank = resolveHindsight(
+			off,
+			{ HINDSIGHT_API_URL: "  ", HINDSIGHT_URL: "https://alias.example.test" },
+			{ storePath: path },
+		);
+		expect(blank.readiness).toMatchObject({ url: "https://alias.example.test" });
+		const config = resolveHindsight(
+			ON,
+			{ HINDSIGHT_URL: "https://alias.example.test" },
+			{ storePath: path },
+		);
+		expect(config.readiness).toMatchObject({ url: "https://hs.example.test" });
+		expect(resolveHindsight(off, { HINDSIGHT_URL: " " }, { storePath: path }).readiness).toEqual({
+			state: "unready",
+			reason: "no-url",
+		});
+	});
+
 	test("a URL the policy refuses is bad-url with the reason", () => {
 		const insecure = resolveHindsight(
 			{ ...ON, url: "http://example.com" },

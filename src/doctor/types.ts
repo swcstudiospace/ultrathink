@@ -2,8 +2,8 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * Shared shapes for `ultrathink doctor`: a finding, the report built from findings, and the side-effect seams every
- * check receives. Imports nothing, so each check module and the report can depend on it. Doctor is static and offline:
- * nothing in this directory opens a network connection or starts `gh` or `curl`.
+ * check receives. Imports nothing, so each check module and the report can depend on it. Doctor is static and offline,
+ * except the `stack` section (stack-check.ts), which makes the free read-only probe requests; nothing starts `gh` or `curl`.
  */
 
 const DOCTOR_LEVELS = ["ok", "info", "warn", "error"] as const;
@@ -14,10 +14,12 @@ export const DOCTOR_SECTIONS = [
 	"runtime",
 	"config",
 	"credentials",
+	"env",
 	"inference",
 	"state",
 	"memory",
 	"pstack",
+	"stack",
 ] as const;
 export type DoctorSection = (typeof DOCTOR_SECTIONS)[number];
 

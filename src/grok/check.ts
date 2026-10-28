@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { classifyFailure, type FailureClass } from "../failover/classify.ts";
-import { type GrokAuthStatus, grokAuthStatus, redactSecrets } from "./auth.ts";
+import { redactSecrets } from "../redact.ts";
+import { type GrokAuthStatus, grokAuthStatus } from "./auth.ts";
 import { type GrokCallInfo, grokComplete } from "./complete.ts";
 import type { GrokConfig } from "./types.ts";
 

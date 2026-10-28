@@ -108,10 +108,30 @@ describe("checkInference", () => {
 				section: "inference",
 				level: "warn",
 				title: "claude CLI not found: the Claude route cannot plan",
+				detail:
+					'The memory-bank distill also needs it: it runs claude-haiku-5-5 through the claude CLI first, and Grok Build only with claude.fallbackToGrok and a Grok login. With neither, teach observe reports "distiller failed".',
 				fix: "Install Claude Code (https://code.claude.com/docs/en/setup)",
 			});
 			expect(findings.map((finding) => finding.id)).not.toContain("inference.claude.auth");
 			expect(probed).toBe(0);
+		});
+
+		test("a missing claude keeps the plain warning, with no memory-bank text, when the distill is inactive", () => {
+			deps = { ...deps, which: () => undefined };
+			const plain: Finding = {
+				id: "inference.claude.cli",
+				section: "inference",
+				level: "warn",
+				title: "claude CLI not found: the Claude route cannot plan",
+				fix: "Install Claude Code (https://code.claude.com/docs/en/setup)",
+			};
+			for (const config of [{ teach: { enabled: false } }, { teach: { capture: "explicit" } }]) {
+				userConfig(config);
+				expect(byId(checkInference(deps), "inference.claude.cli")).toEqual(plain);
+			}
+			userConfig({});
+			setEnv({ ULTRATHINK_TEACH: "0" });
+			expect(byId(checkInference(deps), "inference.claude.cli")).toEqual(plain);
 		});
 
 		test("a version older than the haiku minimum 2.1.293 warns and says claude update", () => {

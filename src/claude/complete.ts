@@ -12,6 +12,7 @@
  * recurse into itself.
  */
 
+import { redactSecrets } from "../redact.ts";
 import { dropJevKeys } from "../route-defaults.ts";
 
 export const CHILD_ENV = "ULTRATHINK_CHILD";
@@ -250,7 +251,9 @@ async function claudeAttempt(
 		]);
 		if (aborted) throw abortError();
 		if (timedOut) throw new Error(`claude timed out after ${opts.timeoutMs}ms`);
-		if (code !== 0 && !stdout.trim()) throw new Error(stderr.trim() || `claude exited ${code}`);
+		if (code !== 0 && !stdout.trim()) {
+			throw new Error(redactSecrets(stderr.trim()) || `claude exited ${code}`);
+		}
 		if (opts.onResult) {
 			const info = readInfoQuietly(stdout);
 			if (info) {

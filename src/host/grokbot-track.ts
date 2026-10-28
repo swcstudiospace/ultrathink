@@ -17,6 +17,7 @@ import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 import { createTracking, type ToolCaller } from "../track/create.ts";
 import { formatTrackingTodos, injectTrackingXml } from "../track/render.ts";
 import { mirrorLast } from "./grokbot-hitl.ts";
+import { hostToSurface } from "../substrate/surface.ts";
 import type { IssueRef, TrackingRefs } from "../track/types.ts";
 
 /** Notion Agent Task Graph columns (docs/tracking.md); the dry run reports every one so no property is dropped. */
@@ -253,10 +254,52 @@ export function recordRefs(
 	});
 }
 
+/** Substrate's Linear workflow states (agent-substrate `types.ts` NODE_STATES), the only values `state` accepts. */
+type NodeState =
+	| "backlog"
+	| "unstarted"
+	| "started"
+	| "started_review"
+	| "completed"
+	| "canceled"
+	| "duplicate";
+
+/** Record status words (compared case-insensitively, hyphens and runs of whitespace folded to one space) that name a Substrate node state. */
+const NODE_STATE_BY_STATUS: Readonly<Record<string, NodeState>> = {
+	backlog: "backlog",
+	unstarted: "unstarted",
+	todo: "unstarted",
+	started: "started",
+	"in progress": "started",
+	implementing: "started",
+	started_review: "started_review",
+	"in review": "started_review",
+	completed: "completed",
+	done: "completed",
+	canceled: "canceled",
+	cancelled: "canceled",
+	duplicate: "duplicate",
+};
+
+/** The Substrate node state for a record status, or undefined when the status names none (the state is then omitted, never coerced). */
+function nodeStateOf(status: string | undefined): NodeState | undefined {
+	if (!status) return undefined;
+	const key = status
+		.trim()
+		.toLowerCase()
+		.replace(/[-\s]+/g, " ");
+	return Object.hasOwn(NODE_STATE_BY_STATUS, key) ? NODE_STATE_BY_STATUS[key] : undefined;
+}
+
 /**
  * The upstream kickoff skill's optional `graph_register` call (Agent Substrate), built from the tracking refs with absent
- * fields left out. Desk Lead sends it through its desk gateway (`desk_graph_register`). `nodes`/`steps` are omitted
- * unless asked for: the desk gateway currently rejects them (see FULL-REVIEW.md), and the call is idempotent by graph_id.
+ * fields left out. Desk Lead sends it through its desk gateway (`desk_graph_register`). It carries only the fields the
+ * Substrate schema accepts (mcp.ts `graph_register` inputSchema): top level `graph_id`, `notion_task_page`, `repo`,
+ * `branch`, `surface`, `status`, `pr_url`; nodes `node_id`, `linear_issue_id`, `linear_identifier`, `notion_page`, `state`;
+ * steps `node_id`, `step`, `linear_sub_issue_id`, `notion_page`, `state`; edges `from_node`, `to_node`, `kind`. `surface`
+ * goes through {@link hostToSurface}, so a host that is not a Substrate surface still sends a valid one. `nodes`, `steps`
+ * and `edges` are omitted unless asked for: the desk gateway currently rejects them (see FULL-REVIEW.md), and the call is
+ * idempotent by graph_id. An edge `requires` runs from the dependent node to the node it depends on.
  */
 export function graphRegisterPayload(
 	record: SessionRecord,
@@ -265,26 +308,28 @@ export function graphRegisterPayload(
 	const plan = record.plan;
 	if (!plan) throw new Error("session record has no plan");
 	const t = record.tracking;
-	const task = plan.task as { repo?: string; branch?: string; status?: string };
+	const task = plan.task as { repo?: string; branch?: string; status?: string; prUrl?: string };
 	const payload: Record<string, unknown> = {
 		graph_id: plan.graphId,
-		surface: options.surface ?? "grok-bot",
+		surface: hostToSurface(options.surface ?? "grok-bot"),
 	};
 	if (t?.notion.taskUrl) payload.notion_task_page = t.notion.taskUrl;
 	if (task.repo) payload.repo = task.repo;
 	if (task.branch) payload.branch = task.branch;
 	if (task.status) payload.status = task.status;
+	if (task.prUrl) payload.pr_url = task.prUrl;
 	if (options.withNodes && t) {
 		const clean = (o: Record<string, unknown>) =>
 			Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== ""));
+		const state = nodeStateOf(task.status);
 		payload.nodes = plan.issues.map((issue) => {
 			const ref = t.linear.nodes[issue.nodeId];
 			return clean({
 				node_id: issue.nodeId,
 				linear_issue_id: ref?.id,
 				linear_identifier: ref?.identifier,
-				linear_url: ref?.url,
 				notion_page: t.notion.nodes[issue.nodeId],
+				state,
 			});
 		});
 		payload.steps = plan.subIssues.map((sub) => {
@@ -294,11 +339,20 @@ export function graphRegisterPayload(
 				node_id: sub.nodeId,
 				step: sub.step,
 				linear_sub_issue_id: ref?.id,
-				linear_identifier: ref?.identifier,
-				linear_url: ref?.url,
 				notion_page: t.notion.steps[key],
+				state,
 			});
 		});
+		const known = new Set(plan.issues.map((issue) => issue.nodeId));
+		const edges: Array<{ from_node: string; to_node: string; kind: "requires" }> = [];
+		for (const node of record.graph?.nodes ?? []) {
+			if (!known.has(node.id)) continue;
+			for (const dep of new Set(node.dependsOn)) {
+				if (dep !== node.id && known.has(dep))
+					edges.push({ from_node: node.id, to_node: dep, kind: "requires" });
+			}
+		}
+		if (edges.length > 0) payload.edges = edges;
 	}
 	return payload;
 }

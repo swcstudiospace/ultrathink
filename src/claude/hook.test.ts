@@ -26,6 +26,7 @@ import type { KnowledgeReader, KnowledgeResult } from "../greptile/knowledge.ts"
 import type { RunClarifyOptions } from "../hitl/pipeline.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import type { ProgressEvent } from "../host/progress.ts";
+import { HANDOFF_MAX_CHARS } from "../host/display-limits.ts";
 import { TRACKING_OFF_NOTE, UPLIFT_CONTEXT_HEADER } from "./output.ts";
 import {
 	runPromptSubmit,
@@ -42,7 +43,8 @@ import {
 	writeSession,
 } from "./state.ts";
 import type { TrackingRefs } from "../track/types.ts";
-import type { EmitInput } from "../substrate/brief.ts";
+import type { BriefFailure, BriefResult, EmitInput } from "../substrate/brief.ts";
+import { realmHint, type RealmProbe } from "../stack/realm.ts";
 import type { GroundOutcome } from "../ragflow/types.ts";
 import type {
 	RecalledLesson,
@@ -81,6 +83,17 @@ function trackedConfig(): UltrathinkConfig {
 	config.linear.team = "Team";
 	config.notion.dataSourceUrl = "collection://ds";
 	return config;
+}
+
+/** A brief that came back empty with no reason: the stub for tests that do not care about the Substrate. */
+const NO_BRIEF: BriefResult = { text: "", state: "none" };
+
+/** A usable brief carrying `text`, complete unless a test needs the degraded or snapshot label. */
+function briefOf(
+	text: string,
+	state: "complete" | "degraded" | "snapshot" = "complete",
+): BriefResult {
+	return { text, state };
 }
 
 /** Timers the test fires by hand: each timeout the code arms is held here instead of on the real clock. */
@@ -143,7 +156,9 @@ function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup:
 		engine: "claude:claude-haiku-5-5",
 		stateDir: dir,
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),
-		brief: async () => "",
+		brief: async () => NO_BRIEF,
+		// No test reaches the real Realm daemon: an absent Realm adds nothing to the plan.
+		realmProbe: async () => ({ kind: "absent" }),
 		emit: async () => true,
 		now: () => 1_000,
 		log: () => {
@@ -658,7 +673,8 @@ describe("substrate brief", () => {
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
 			clarify: async () => [],
-			brief: async () => "## Substrate brief: acme/widgets\n- 09:04 cursor edited widget.ts",
+			brief: async () =>
+				briefOf("## Substrate brief: acme/widgets\n- 09:04 cursor edited widget.ts"),
 		});
 		try {
 			const result = await runPromptSubmit(input, deps);
@@ -680,7 +696,7 @@ describe("substrate brief", () => {
 			clarify: async () => [],
 			brief: async (i) => {
 				seen = i;
-				return "";
+				return NO_BRIEF;
 			},
 		});
 		try {
@@ -701,7 +717,7 @@ describe("substrate brief", () => {
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
 			clarify: async () => [],
-			brief: async () => "",
+			brief: async () => NO_BRIEF,
 		});
 		try {
 			const result = await runPromptSubmit(input, deps);
@@ -740,6 +756,7 @@ describe("substrate brief", () => {
 			urls.push(String(url));
 			return Promise.resolve(new Response("## Substrate brief: acme/widgets\n- earlier work"));
 		}) as unknown as typeof fetch;
+		const tokensDir = mkdtempSync(join(tmpdir(), "ultrathink-hook-tokens-"));
 		const run = async (substrateUrl: string): Promise<string> => {
 			const config = trackedConfig();
 			config.substrate.url = substrateUrl;
@@ -748,6 +765,7 @@ describe("substrate brief", () => {
 				complete: smartComplete(),
 				clarify: async () => [],
 				brief: undefined,
+				decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0", SUBSTRATE_TOKENS_DIR: tokensDir } },
 			});
 			try {
 				const result = await runPromptSubmit(input, deps);
@@ -763,8 +781,373 @@ describe("substrate brief", () => {
 			expect(urls).toEqual(["https://substrate.test/brief"]);
 		} finally {
 			globalThis.fetch = realFetch;
+			rmSync(tokensDir, { recursive: true, force: true });
 			if (saved.url === undefined) delete process.env.SUBSTRATE_URL;
 			else process.env.SUBSTRATE_URL = saved.url;
+			if (saved.disabled === undefined) delete process.env.SUBSTRATE_DISABLED;
+			else process.env.SUBSTRATE_DISABLED = saved.disabled;
+		}
+	});
+
+	/** Both ways a prompt can reach the substrate segment: the summary line and the context block. */
+	async function plan(
+		brief: NonNullable<HookDeps["brief"]>,
+		overrides: Partial<HookDeps> = {},
+	): Promise<{ summary: string; context: string; logs: string[] }> {
+		const logs: string[] = [];
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => [],
+			brief,
+			log: (message) => {
+				logs.push(message);
+			},
+			...overrides,
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			return {
+				summary: result.output?.systemMessage ?? "",
+				context: result.output?.hookSpecificOutput.additionalContext ?? "",
+				logs,
+			};
+		} finally {
+			cleanup();
+		}
+	}
+
+	test("a configured substrate that returned nothing shows one secret-free segment per reason, in the summary only", async () => {
+		const cases: Array<[BriefFailure, string]> = [
+			["unauthorized", "unauthorized"],
+			["surface-mismatch", "surface mismatch, retry skipped"],
+			["bad-request", "bad request"],
+			["timeout", "timed out"],
+			["unreachable", "unreachable"],
+			["http-503", "http-503"],
+			["redirect refused", "redirect refused"],
+			["url refused: userinfo not allowed", "url refused"],
+		];
+		for (const [reason, phrase] of cases) {
+			const { summary, context } = await plan(async () => ({ text: "", state: "none", reason }));
+			const segment = `Substrate · brief unavailable (${phrase})`;
+			expect(summary.split(segment)).toHaveLength(2);
+			expect(summary).not.toContain("Substrate · brief 0");
+			expect(context).not.toContain("brief unavailable");
+		}
+	});
+
+	test("no segment for a usable brief, an empty answer without a reason, a substrate that is off, or a hidden summary", async () => {
+		const silent: BriefResult[] = [
+			briefOf("## Substrate brief: acme/widgets\n- earlier work"),
+			briefOf(
+				"(Substrate brief is degraded; some sources failed or the copy is a snapshot)\n\n## Substrate brief",
+				"degraded",
+			),
+			briefOf(
+				"(Substrate brief is snapshot; some sources failed or the copy is a snapshot)\n\n## Substrate brief",
+				"snapshot",
+			),
+			{ text: "", state: "complete" },
+			NO_BRIEF,
+			{ text: "", state: "none", reason: "disabled" },
+			{ text: "", state: "none", reason: "no-url" },
+		];
+		for (const result of silent) {
+			const { summary } = await plan(async () => result);
+			expect(summary).not.toContain("brief unavailable");
+		}
+		const config = trackedConfig();
+		config.claude.echo = false;
+		const hidden = await plan(async () => ({ text: "", state: "none", reason: "timeout" }), {
+			config,
+		});
+		expect(hidden.summary).toBe("");
+	});
+
+	test("a rejected brief seam reads as no brief with no segment", async () => {
+		const { summary, context } = await plan(async () => {
+			throw new Error("ECONNREFUSED");
+		});
+		expect(summary).not.toContain("brief unavailable");
+		expect(context).not.toContain("## Agent Substrate brief");
+	});
+
+	test("the segment carries the closed reason phrase only: no detail, token or URL reaches the summary or the log", async () => {
+		const canary = "sk-or-v1-CANARYCANARYCANARY1234";
+		const { summary, context, logs } = await plan(async () => ({
+			text: "",
+			state: "none",
+			reason: "unauthorized",
+			detail: `Bearer ${canary} https://substrate.internal.test`,
+		}));
+		expect(summary).toContain("Substrate · brief unavailable (unauthorized)");
+		for (const text of [summary, context, ...logs]) {
+			expect(text).not.toContain(canary);
+			expect(text).not.toContain("substrate.internal.test");
+		}
+	});
+
+	test("a degraded brief reaches the context with its label line and adds no segment", async () => {
+		const label = "(Substrate brief is degraded; some sources failed or the copy is a snapshot)";
+		const { summary, context } = await plan(async () =>
+			briefOf(`${label}\n\n## Substrate brief: acme/widgets\n- earlier work`, "degraded"),
+		);
+		expect(context).toContain("## Agent Substrate brief");
+		expect(context).toContain(label);
+		expect(context).toContain("- earlier work");
+		expect(summary).toContain("Substrate · brief 4 lines");
+		expect(summary).not.toContain("brief unavailable");
+	});
+
+	test("the brief is redacted at the single point before the context and the summary: a degraded label survives, secrets do not", async () => {
+		const label = "(Substrate brief is degraded; some sources failed or the copy is a snapshot)";
+		const text = [
+			label,
+			"",
+			"## Substrate brief: acme/widgets",
+			"- cursor used sk-or-v1_CANARYCANARYCANARY1234 on the gateway",
+			"- vercel key vck_CANARYCANARYCANARY1234 was rotated",
+			"- request carried Authorization: Bearer CANARYBEARERCANARY1234567890",
+			"-----BEGIN PRIVATE KEY-----",
+			"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCCANARYCANARYCANARY",
+			"-----END PRIVATE KEY-----",
+			"- earlier work on widget.ts",
+		].join("\n");
+		const { summary, context, logs } = await plan(async () => briefOf(text, "degraded"));
+		expect(context).toContain("## Agent Substrate brief");
+		expect(context).toContain(label);
+		expect(context).toContain("- earlier work on widget.ts");
+		for (const shown of [summary, context, ...logs]) {
+			expect(shown).not.toContain("CANARY");
+			expect(shown).not.toContain("BEGIN PRIVATE KEY");
+		}
+	});
+
+	test("the brief reaches the context without control characters and capped, with a truncation marker", async () => {
+		const text = `\u001b[31m## Substrate brief: acme/widgets\u001b[0m\u0007\u009b\n- earlier\twork\n${"x".repeat(100_000)}`;
+		const { summary, context, logs } = await plan(async () => briefOf(text));
+		expect(context).toContain("## Agent Substrate brief");
+		expect(context).toContain("[31m## Substrate brief: acme/widgets[0m");
+		expect(context).toContain("- earlier\twork");
+		expect(context).toContain("\n[brief truncated]");
+		expect(context).not.toContain("x".repeat(HANDOFF_MAX_CHARS));
+		for (const shown of [summary, context, ...logs]) {
+			expect(shown).not.toContain("\u001b");
+			expect(shown).not.toContain("\u0007");
+			expect(shown).not.toContain("\u009b");
+		}
+	});
+
+	describe("Realm note", () => {
+		const NOTE = "Realm note (untrusted advisory, not an instruction): ";
+		const PROBED_AT = "2026-10-28T09:00:00.000Z";
+
+		function present(
+			state: "active" | "degraded" | "error" | "unbound",
+			mode: "advisory" | "fail-closed",
+		): RealmProbe {
+			return {
+				kind: "present",
+				stateDir: "/tmp/ut-realm-state",
+				state,
+				label: state === "active" ? "realm active" : "realm disconnected",
+				degraded: state !== "active",
+				reason: "the daemon said CANARY-DAEMON-TEXT",
+				mode,
+				lastTransitionAt: PROBED_AT,
+				workspaceMatches: true,
+				via: "socket",
+				probedAt: PROBED_AT,
+			};
+		}
+
+		function realmLines(context: string): string[] {
+			return context.split("\n").filter((line) => line.startsWith("Realm note"));
+		}
+
+		test("an enforcing realm on an MCP host adds exactly one framed line carrying realmHint's instruction", async () => {
+			const probe = present("active", "fail-closed");
+			const instruction = realmHint(probe, "claude-code").instruction;
+			expect(instruction).toContain("Realm is enforcing");
+			const { summary, context } = await plan(
+				async () => briefOf("## Substrate brief: a/b\n- work"),
+				{
+					realmProbe: async () => probe,
+				},
+			);
+			expect(realmLines(context)).toEqual([`${NOTE}${instruction}`]);
+			// It rides after the brief, inside the untrusted-history section, and never reaches the summary.
+			expect(context.indexOf("- work")).toBeLessThan(context.indexOf(NOTE));
+			expect(summary).not.toContain("Realm");
+			// Only the fixed framing and the hint text enter: nothing the daemon said.
+			expect(context).not.toContain("CANARY-DAEMON-TEXT");
+		});
+
+		test("a degraded realm under fail-closed still enforces, so the note is added; the extension host gets its own text", async () => {
+			const probe = present("degraded", "fail-closed");
+			const { context } = await plan(async () => NO_BRIEF, {
+				realmProbe: async () => probe,
+				surface: "omp",
+			});
+			const expected = realmHint(probe, "omp").instruction;
+			expect(realmLines(context)).toEqual([`${NOTE}${expected}`]);
+			expect(expected).not.toContain("route tool calls");
+		});
+
+		test("advisory, absent, unknown, daemon-down and non-live states add no line", async () => {
+			const silent: RealmProbe[] = [
+				present("active", "advisory"),
+				present("degraded", "advisory"),
+				present("error", "fail-closed"),
+				present("unbound", "fail-closed"),
+				{ kind: "absent" },
+				{ kind: "unknown", why: "timeout" },
+				{ kind: "daemon-down", stateDir: "/tmp/ut-realm-state" },
+			];
+			for (const probe of silent) {
+				const { context } = await plan(async () => briefOf("## Substrate brief: a/b\n- work"), {
+					realmProbe: async () => probe,
+				});
+				expect(context).not.toContain("Realm note");
+				expect(context).not.toContain("Realm is");
+			}
+		});
+
+		test("a host Realm cannot reach adds no line even when enforcing", async () => {
+			const { context } = await plan(async () => NO_BRIEF, {
+				realmProbe: async () => present("active", "fail-closed"),
+				surface: "cursor",
+			});
+			expect(context).not.toContain("Realm note");
+		});
+
+		test("the Realm note survives a brief that hit the length cap: it is appended after sanitising, never cut", async () => {
+			const probe = present("active", "fail-closed");
+			const instruction = realmHint(probe, "claude-code").instruction;
+			const { context } = await plan(
+				async () => briefOf(`## Substrate brief: a/b\n${"- work\n".repeat(20_000)}`),
+				{ realmProbe: async () => probe },
+			);
+			expect(context).toContain("[brief truncated]");
+			expect(realmLines(context)).toEqual([`${NOTE}${instruction}`]);
+		});
+
+		test("an unknown surface id falls back to the Claude host class", async () => {
+			const probe = present("active", "fail-closed");
+			const { context } = await plan(async () => NO_BRIEF, {
+				realmProbe: async () => probe,
+				surface: "some-new-host",
+			});
+			expect(realmLines(context)).toEqual([
+				`${NOTE}${realmHint(probe, "claude-code").instruction}`,
+			]);
+		});
+
+		test("a rejecting or throwing seam still plans, with no note", async () => {
+			const rejecting = await plan(async () => briefOf("## Substrate brief: a/b\n- work"), {
+				realmProbe: async () => {
+					throw new Error("socket exploded CANARY");
+				},
+			});
+			expect(rejecting.context).toContain("- work");
+			expect(rejecting.context).not.toContain("Realm note");
+			expect(rejecting.context).not.toContain("CANARY");
+			const synchronous = await plan(async () => NO_BRIEF, {
+				realmProbe: () => {
+					throw new Error("sync failure");
+				},
+			});
+			expect(synchronous.context).toContain("<BUILD_PROMPT>");
+		});
+
+		test("the probe runs once per plan, with a 1000 ms budget, the plan's cwd and the injected env", async () => {
+			const calls: Array<{
+				env: Record<string, string | undefined>;
+				timeoutMs: number;
+				cwd: string;
+			}> = [];
+			const env = { ULTRATHINK_DECISIONS: "0", ULTRATHINK_REALM: "probe-me" };
+			await plan(async () => NO_BRIEF, {
+				decisionsDeps: { env },
+				realmProbe: async (probeEnv, opts) => {
+					calls.push({ env: probeEnv, ...opts });
+					return { kind: "absent" };
+				},
+			});
+			expect(calls).toHaveLength(1);
+			expect(calls[0]?.timeoutMs).toBe(1000);
+			expect(calls[0]?.cwd).toBe("/repo");
+			expect(calls[0]?.env).toBe(env);
+		});
+
+		test("the probe starts before the brief settles: a slow brief does not delay the probe", async () => {
+			const order: string[] = [];
+			const brief = Promise.withResolvers<BriefResult>();
+			const planned = plan(
+				() => {
+					order.push("brief-start");
+					return brief.promise;
+				},
+				{
+					realmProbe: async () => {
+						order.push("realm-start");
+						brief.resolve(NO_BRIEF);
+						return { kind: "absent" };
+					},
+				},
+			);
+			await planned;
+			expect(order).toEqual(["brief-start", "realm-start"]);
+		});
+	});
+
+	test("the default brief seam reads the injected env, the same one the plan event uses, not process.env", async () => {
+		const realFetch = globalThis.fetch;
+		const saved = {
+			url: process.env.SUBSTRATE_URL,
+			token: process.env.SUBSTRATE_TOKEN,
+			disabled: process.env.SUBSTRATE_DISABLED,
+		};
+		process.env.SUBSTRATE_URL = "https://process.test";
+		process.env.SUBSTRATE_TOKEN = "sk-or-v1-PROCESSCANARYCANARY1234";
+		delete process.env.SUBSTRATE_DISABLED;
+		const tokensDir = mkdtempSync(join(tmpdir(), "ultrathink-hook-tokens-"));
+		const calls: Array<{ url: string; authorization: string | undefined }> = [];
+		globalThis.fetch = ((url: string, init?: RequestInit) => {
+			calls.push({
+				url: String(url),
+				authorization: (init?.headers as Record<string, string> | undefined)?.authorization,
+			});
+			return Promise.resolve(new Response("## Substrate brief: acme/widgets\n- earlier work"));
+		}) as unknown as typeof fetch;
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => [],
+			brief: undefined,
+			decisionsDeps: {
+				env: {
+					ULTRATHINK_DECISIONS: "0",
+					SUBSTRATE_URL: "https://injected.test",
+					SUBSTRATE_TOKEN: "sk-or-v1-INJECTEDCANARYCANARY1234",
+					SUBSTRATE_TOKENS_DIR: tokensDir,
+				},
+			},
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(result.output?.hookSpecificOutput.additionalContext).toContain(
+				"## Agent Substrate brief",
+			);
+			expect(calls.map((call) => call.url)).toEqual(["https://injected.test/brief"]);
+			expect(calls[0]?.authorization).toBe("Bearer sk-or-v1-INJECTEDCANARYCANARY1234");
+		} finally {
+			cleanup();
+			rmSync(tokensDir, { recursive: true, force: true });
+			globalThis.fetch = realFetch;
+			if (saved.url === undefined) delete process.env.SUBSTRATE_URL;
+			else process.env.SUBSTRATE_URL = saved.url;
+			if (saved.token === undefined) delete process.env.SUBSTRATE_TOKEN;
+			else process.env.SUBSTRATE_TOKEN = saved.token;
 			if (saved.disabled === undefined) delete process.env.SUBSTRATE_DISABLED;
 			else process.env.SUBSTRATE_DISABLED = saved.disabled;
 		}
@@ -847,7 +1230,7 @@ describe("substrate plan event", () => {
 			emit,
 			brief: async (brief) => {
 				briefSurface = brief.surface;
-				return "";
+				return NO_BRIEF;
 			},
 		});
 		try {
@@ -1723,7 +2106,7 @@ function jevHarness(
 		},
 		brief: async () => {
 			calls.brief++;
-			return "";
+			return NO_BRIEF;
 		},
 		track: async () => {
 			calls.track++;
@@ -2551,7 +2934,8 @@ describe("lessons and RAGFlow documents in the plan", () => {
 			config: echoConfig(),
 			complete: smartComplete(),
 			clarify: async () => [],
-			brief: async () => "## Substrate brief: acme/widgets\n- 09:04 cursor edited widget.ts",
+			brief: async () =>
+				briefOf("## Substrate brief: acme/widgets\n- 09:04 cursor edited widget.ts"),
 			recall: async () => recalled,
 			ground: async () => grounded,
 		});
@@ -3317,7 +3701,7 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				seams: (controller) => ({
 					brief: async () => {
 						controller.abort();
-						return "## Substrate brief";
+						return briefOf("## Substrate brief");
 					},
 				}),
 				later: ["uplift", "graph", "fill", "clarify"],
@@ -3423,7 +3807,7 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			},
 			brief: async ({ signal }) => {
 				seen.brief = signal;
-				return "";
+				return NO_BRIEF;
 			},
 			knowledge: {
 				start: ({ signal }) => {

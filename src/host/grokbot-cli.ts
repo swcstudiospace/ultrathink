@@ -50,7 +50,9 @@ const USAGE = `usage: ultrathink-grokbot <command>
   summary --session S                         graph summary: nodes, steps per node, total, waves, questions, spec path
   track payloads --session S [--out F] [--project P] [--agent A]   dry-run tracker calls (Linear + Notion), placeholders only
   track record --session S --refs F           write real refs (from Desk Lead's connector results) into state + spec
-  track register --session S [--with-nodes]   graph_register payload (graph id, Notion task, surface, status; nodes/steps opt-in)
+  track register --session S [--with-nodes]   graph_register payload: graph_id, surface, notion_task_page, repo, branch, status, pr_url;
+                                              --with-nodes adds nodes (node_id, linear_issue_id, linear_identifier, notion_page, state),
+                                              steps (node_id, step, linear_sub_issue_id, notion_page, state) and edges (from_node, to_node, kind)
   review read --repo owner/name --pr N [--from-dir D]   read-only Greptile score + open threads (public GitHub API)
   prompts [uplift|graph|cot|clarify|distill]  print the plugin's system prompts
   prompts build --session S --units units.json [--out-dir D]   cloud-agent prompts per graph node (validated; never launched)

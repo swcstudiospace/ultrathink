@@ -4,7 +4,7 @@
  * Turns findings into the report doctor prints, as text or as one JSON object. Every string that leaves this module passes
  * through `redactSecrets`, so a bearer token or JWT that reached a finding by accident is masked rather than printed.
  */
-import { redactSecrets } from "../grok/auth.ts";
+import { redactSecrets } from "../redact.ts";
 import { DOCTOR_SECTIONS, type DoctorLevel, type DoctorReport, type Finding } from "./types.ts";
 
 const MARKERS: Record<DoctorLevel, string> = { ok: "✓", info: "i", warn: "!", error: "✗" };
@@ -34,7 +34,7 @@ export function formatReport(report: DoctorReport): string {
 		}
 	}
 	lines.push(`${count(report.summary.error, "error")}, ${count(report.summary.warn, "warning")}`);
-	return lines.map(redactSecrets).join("\n");
+	return lines.map((line) => redactSecrets(line)).join("\n");
 }
 
 /** One compact JSON object with a fixed key order: `ok`, `summary`, then `findings` (each `id`, `section`, `level`, `title`, `detail`, `fix`). */

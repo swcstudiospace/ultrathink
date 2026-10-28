@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Credential, type CredentialStore, writeStore } from "../mcp/store.ts";
@@ -322,6 +322,45 @@ describe("env checks", () => {
 			expect(byId(checkCredentials(deps), "credentials.greptile").detail).toBe(
 				"needed for knowledge base",
 			);
+		});
+
+		test("a missing or healthy 0600 store raises no store finding", () => {
+			const ids = (): string[] => checkCredentials(deps).map((finding) => finding.id);
+			expect(ids()).not.toContain("credentials.store.unreadable");
+			expect(ids()).not.toContain("credentials.store.mode");
+			store({ greptile: apiKey() });
+			expect(ids()).not.toContain("credentials.store.unreadable");
+			expect(ids()).not.toContain("credentials.store.mode");
+		});
+
+		test("a store that does not parse warns with the path only, never its content", () => {
+			const path = join(dir, "mcp-credentials.json");
+			writeFileSync(path, `{"version":1,"providers":{"openrouter":{"apiKey":"${FAKE_KEY}"`, {
+				mode: 0o600,
+			});
+			const finding = byId(checkCredentials(deps), "credentials.store.unreadable");
+			expect(finding.level).toBe("warn");
+			expect(finding.section).toBe("credentials");
+			expect(finding.title).toContain(path);
+			expect(JSON.stringify(finding)).not.toContain(FAKE_KEY);
+			expect(JSON.stringify(finding)).not.toContain("openrouter");
+
+			writeFileSync(path, JSON.stringify({ version: 2, providers: {} }), { mode: 0o600 });
+			expect(byId(checkCredentials(deps), "credentials.store.unreadable").level).toBe("warn");
+		});
+
+		test("a store readable by group or others warns with the chmod 600 fix", () => {
+			store({ greptile: apiKey() });
+			const path = join(dir, "mcp-credentials.json");
+			chmodSync(path, 0o644);
+			const finding = byId(checkCredentials(deps), "credentials.store.mode");
+			expect(finding).toMatchObject({ level: "warn", fix: `chmod 600 ${path}` });
+			expect(finding.title).toContain("0644");
+			expect(JSON.stringify(finding)).not.toContain(FAKE_KEY);
+			chmodSync(path, 0o640);
+			expect(byId(checkCredentials(deps), "credentials.store.mode").level).toBe("warn");
+			chmodSync(path, 0o600);
+			expect(checkCredentials(deps).some((f) => f.id === "credentials.store.mode")).toBe(false);
 		});
 
 		test("a stored OAuth credential that needs a new login is not present", () => {

@@ -98,7 +98,7 @@ describe("legacy diagnostic label safety", () => {
 					stateDir,
 					trackingOff: true,
 					git: () => ({}),
-					brief: async () => "",
+					brief: async () => ({ text: "", state: "none" }),
 					now: () => 1,
 					decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0" } },
 					progress: createFdProgressSink({ ULTRATHINK_PROGRESS_FD: String(fd) }),

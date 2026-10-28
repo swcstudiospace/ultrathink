@@ -1,11 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Effort, Model } from "@oh-my-pi/pi-ai";
 import { writeSession } from "../claude/state.ts";
+import { briefDigest, writeLaneFile } from "../swarm/lane.ts";
 import { runUplift } from "../uplift/run.ts";
 import type { TrackPlan } from "../track/types.ts";
 import { DEFAULT_SHIP_CONFIG, type ShipConfig } from "../ship/types.ts";
@@ -1987,13 +1997,25 @@ describe("swarm auto-run", () => {
 		};
 	};
 
-	/** A stub `python3` first on PATH, so `spawnLanes` reports a started lane without a real interpreter. */
-	const withSpawnablePython = (): { restore: () => void } => {
+	/**
+	 * A stub `python3` first on PATH, so `spawnLanes` reports a started lane without a real interpreter. As the
+	 * preflight classifier (`python3 -c ...`) it exits `classifyRc` (0 sdlc, 2 skip, anything else unknown); as a
+	 * lane (`python3 autonomous_run.py ...`) it logs its argv to `argvLog` and exits 0.
+	 */
+	const withSpawnablePython = (
+		opts: { classifyRc?: number } = {},
+	): { argvLog: string; restore: () => void } => {
 		const previousPath = process.env.PATH;
 		const bin = mkdtempSync(join(tmpdir(), "sw-autorun-bin-"));
-		writeFileSync(join(bin, "python3"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+		const argvLog = join(bin, "argv.log");
+		writeFileSync(
+			join(bin, "python3"),
+			`#!/bin/sh\nif [ "$1" = "-c" ]; then exit ${opts.classifyRc ?? 0}; fi\nprintf '%s\\n' "$@" >> '${argvLog}'\nexit 0\n`,
+			{ mode: 0o755 },
+		);
 		process.env.PATH = `${bin}:${previousPath ?? ""}`;
 		return {
+			argvLog,
 			restore: () => {
 				if (previousPath === undefined) delete process.env.PATH;
 				else process.env.PATH = previousPath;
@@ -2011,7 +2033,7 @@ describe("swarm auto-run", () => {
 		return typeof content === "string" ? content : "";
 	};
 
-	test("an SDLC prompt with autoRun enabled spawns a lane and publishes the card", () => {
+	test("an SDLC prompt with autoRun enabled spawns a lane and publishes the card", async () => {
 		const { root, stateDir, restore } = withSwarmRoot();
 		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-cwd-"));
 		try {
@@ -2026,7 +2048,7 @@ describe("swarm auto-run", () => {
 				},
 				{ hasUI: true, cwd },
 			);
-			void run("build a health endpoint");
+			await run("build a health endpoint");
 			const card = sent.find((entry) => fields(entry.message).customType === "ultrathink-swarm");
 			expect(card).toBeDefined();
 			// Spawn success depends on a usable python3 in the environment; the card itself must always appear.
@@ -2041,7 +2063,7 @@ describe("swarm auto-run", () => {
 		}
 	});
 
-	test("a non-SDLC prompt never spawns, and the opt-in off keeps everything quiet", () => {
+	test("a non-SDLC prompt never spawns, and the opt-in off keeps everything quiet", async () => {
 		const { root, stateDir, restore } = withSwarmRoot();
 		try {
 			const on = setup(async () => "PLAN", 1_000, {
@@ -2050,12 +2072,12 @@ describe("swarm auto-run", () => {
 						config.swarm.autoRun = true;
 					}),
 			});
-			void on.run("what does this repo do");
+			await on.run("what does this repo do");
 			expect(on.sent.some((entry) => fields(entry.message).customType === "ultrathink-swarm")).toBe(
 				false,
 			);
 			const off = setup(async () => "PLAN", 1_000, { config: () => quietConfig() });
-			off.run("build a health endpoint");
+			await off.run("build a health endpoint");
 			expect(
 				off.sent.some((entry) => fields(entry.message).customType === "ultrathink-swarm"),
 			).toBe(false);
@@ -2183,5 +2205,401 @@ describe("swarm auto-run", () => {
 			rmSync(stateDir, { recursive: true, force: true });
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+
+	/** The plain-text content of a sent message (display-only replies carry no customType), or "". */
+	const textOf = (message: unknown): string =>
+		typeof message === "object" &&
+		message !== null &&
+		"content" in message &&
+		typeof message.content === "string"
+			? message.content
+			: "";
+
+	/** Every reply the harness captured, joined: display text and card titles alike. */
+	const repliesOf = (sent: { message: unknown }[]): string =>
+		sent.map((entry) => textOf(entry.message)).join("\n");
+
+	const swarmCards = (sent: { message: unknown }[]): number =>
+		sent.filter((entry) => fields(entry.message).customType === "ultrathink-swarm").length;
+
+	const autoRunConfig = () =>
+		quietConfig((config) => {
+			config.swarm.autoRun = true;
+		});
+
+	/** Set an environment variable for one test; the returned function restores the previous value. */
+	const setEnv = (name: string, value: string): (() => void) => {
+		const previous = process.env[name];
+		process.env[name] = value;
+		return () => {
+			if (previous === undefined) delete process.env[name];
+			else process.env[name] = previous;
+		};
+	};
+
+	// Real clock on purpose: this polls a real child process (a lane stub starting or writing its argv), which
+	// exposes no event to await and which fake timers cannot drive.
+	const waitFor = async (ready: () => boolean): Promise<boolean> => {
+		for (let attempt = 0; attempt < 150 && !ready(); attempt++) await Bun.sleep(20);
+		return ready();
+	};
+
+	/** The lane directories `spawnLanes` created under the state dir; refused plans create none. */
+	const laneDirNames = (stateDir: string): string[] =>
+		existsSync(join(stateDir, "swarm")) ? readdirSync(join(stateDir, "swarm")) : [];
+
+	/**
+	 * A real, verifiable "lane": a shell running a script named `autonomous_run.py`, so its /proc cmdline passes
+	 * the lane-process gate. It leads its own process group (detached), like a real lane.
+	 */
+	const startFakeLane = async (): Promise<{
+		pid: number;
+		exited: Promise<string | null>;
+		kill: () => void;
+		cleanup: () => void;
+	}> => {
+		const dir = mkdtempSync(join(tmpdir(), "sw-fake-lane-"));
+		const script = join(dir, "autonomous_run.py");
+		writeFileSync(script, "sleep 30\n");
+		const child = spawn("sh", [script], { detached: true, stdio: "ignore" });
+		const pid = child.pid;
+		if (pid === undefined) throw new Error("fake lane did not start");
+		const exit = Promise.withResolvers<string | null>();
+		child.once("exit", (_code, signal) => exit.resolve(signal));
+		child.unref();
+		const kill = (): void => {
+			try {
+				process.kill(-pid, "SIGKILL");
+			} catch {
+				// reason: the group already exited
+			}
+		};
+		const marked = await waitFor(() => {
+			try {
+				return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("autonomous_run.py");
+			} catch {
+				return false;
+			}
+		});
+		if (!marked) {
+			kill();
+			throw new Error("fake lane cmdline never showed the runner script");
+		}
+		return {
+			pid,
+			exited: exit.promise,
+			kill,
+			cleanup: () => {
+				kill();
+				rmSync(dir, { recursive: true, force: true });
+			},
+		};
+	};
+
+	/** Write the `lane.json` of a lane that is "running" as `pid`, in `<stateDir>/swarm/<laneId>/`. */
+	const recordFakeLane = (
+		stateDir: string,
+		laneId: string,
+		pid: number,
+		brief: string,
+		cwd: string,
+	): void => {
+		const laneDir = join(stateDir, "swarm", laneId);
+		mkdirSync(laneDir, { recursive: true });
+		writeLaneFile(laneDir, {
+			laneId,
+			pid,
+			briefDigest: briefDigest(brief),
+			cwd,
+			startedAt: new Date().toISOString(),
+		});
+	};
+
+	const CANARY = "sk-or-v1-CANARYCANARYCANARY1234";
+
+	test("lastLane compares the key it stores: the same prompt resubmitted after another prompt does not spawn a second lane", async () => {
+		// Mechanism: the old code stored lastLane = `${sessionId}:${cwd}:${prompt}` but compared the bare `prompt`,
+		// so the compare could never match. An identical resubmission normally dies at the quick bypass, but an
+		// intervening prompt disarms quick; the old code then spawned a second lane (two lane dirs and two cards
+		// instead of one), which is what this test fails on.
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-lastlane-"));
+		try {
+			const gate = controlled();
+			const { run, sent } = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+			expect(await run("build a health endpoint")).toBeUndefined();
+			await run("what does this repo do");
+			await run("build a health endpoint");
+			expect(swarmCards(sent)).toBe(1);
+			expect(laneDirNames(stateDir)).toHaveLength(1);
+		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("auto-run preflight: a brief Swarm's classifier skips spawns nothing and the turn plans normally", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 2 });
+		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-skip-"));
+		try {
+			const gate = controlled();
+			const { run, sent } = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+			expect(await run("build a health endpoint")).toEqual({
+				message: expect.objectContaining({ customType: "ultrathink-pending" }),
+			});
+			expect(swarmCards(sent)).toBe(0);
+			expect(laneDirNames(stateDir)).toEqual([]);
+			expect(gate.calls()).toBe(1);
+		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("auto-run preflight: an unanswered classifier still spawns the lane, which owns the request", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 1 });
+		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-unknown-"));
+		try {
+			const gate = controlled();
+			const { run, sent } = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+			expect(await run("build a health endpoint")).toBeUndefined();
+			expect(cardContent(sent, 0)).toContain("Swarm lanes — 1/1 spawned");
+			expect(laneDirNames(stateDir)).toHaveLength(1);
+			expect(gate.calls()).toBe(0);
+		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("/ultrathink-swarm preflight: a skipped brief is refused with the reason and the usage, and nothing spawns", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 2 });
+		const unset = setEnv("OPENROUTER_API_KEY", CANARY);
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-skip-"));
+		try {
+			const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+			await command("ultrathink-swarm", "build a health endpoint");
+			const replies = repliesOf(sent);
+			expect(replies).toContain("Swarm would skip this brief (not SDLC work)");
+			expect(replies).toContain("/ultrathink-swarm usage");
+			expect(replies).not.toContain(CANARY);
+			expect(laneDirNames(stateDir)).toEqual([]);
+		} finally {
+			unset();
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("/ultrathink-swarm preflight: an unanswered classifier spawns the lane and the reply says so", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 1 });
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-unknown-"));
+		try {
+			const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+			await command("ultrathink-swarm", "build a health endpoint");
+			expect(repliesOf(sent)).toContain("classifier unavailable");
+			expect(laneDirNames(stateDir)).toHaveLength(1);
+		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test.skipIf(process.platform !== "linux")(
+		"/ultrathink-swarm refuses a brief already running as a live lane in the same repository",
+		async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const python = withSpawnablePython();
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-dup-"));
+			const lane = await startFakeLane();
+			try {
+				recordFakeLane(stateDir, "aaaaaaaa-1-live0", lane.pid, "Build a   health endpoint", cwd);
+				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command("ultrathink-swarm", "build a health endpoint");
+				expect(repliesOf(sent)).toContain("already running as aaaaaaaa-1-live0");
+				expect(laneDirNames(stateDir)).toEqual(["aaaaaaaa-1-live0"]);
+			} finally {
+				lane.cleanup();
+				python.restore();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "linux")(
+		"live lanes at ULTRATHINK_SWARM_MAX_LANES refuse a new lane, in the command and silently in auto-run",
+		async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const python = withSpawnablePython();
+			const unset = setEnv("ULTRATHINK_SWARM_MAX_LANES", "1");
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-cap-"));
+			const lane = await startFakeLane();
+			try {
+				recordFakeLane(stateDir, "aaaaaaaa-1-live0", lane.pid, "write the release notes", cwd);
+				const command = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command.command("ultrathink-swarm", "add a feature flag");
+				const replies = repliesOf(command.sent);
+				expect(replies).toContain("aaaaaaaa-1-live0");
+				expect(replies).toContain("/ultrathink-swarm stop");
+				// Auto-run hits the same cap: it stays silent, spawns nothing and lets the turn plan.
+				const gate = controlled();
+				const auto = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+				expect(await auto.run("build a health endpoint")).toEqual({
+					message: expect.objectContaining({ customType: "ultrathink-pending" }),
+				});
+				expect(swarmCards(auto.sent)).toBe(0);
+				expect(laneDirNames(stateDir)).toEqual(["aaaaaaaa-1-live0"]);
+			} finally {
+				lane.cleanup();
+				unset();
+				python.restore();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "linux")(
+		"/ultrathink-swarm stop <laneId> ends the lane's process group",
+		async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const unsetGrace = setEnv("SWARM_AUTONOMOUS_RUN_GRACE_S", "0");
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-stop-"));
+			const lane = await startFakeLane();
+			try {
+				recordFakeLane(stateDir, "aaaaaaaa-1-live0", lane.pid, "build a health endpoint", cwd);
+				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command("ultrathink-swarm", "stop aaaaaaaa-1-live0");
+				expect(repliesOf(sent)).toContain("aaaaaaaa-1-live0: stopped");
+				const signal = await Promise.race([lane.exited, Bun.sleep(3_000).then(() => "timeout")]);
+				expect(["SIGTERM", "SIGKILL"]).toContain(String(signal));
+			} finally {
+				lane.cleanup();
+				unsetGrace();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test("/ultrathink-swarm stop works without a swarm root and reports when no lane is live", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const unsetPrimary = setEnv("ULTRATHINK_SWARM_ROOT", "");
+		const unsetFallback = setEnv("SWARM_ROOT", "");
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-stopnone-"));
+		try {
+			const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+			await command("ultrathink-swarm", "stop");
+			expect(repliesOf(sent)).toContain("no live swarm lanes to stop");
+			expect(repliesOf(sent)).not.toContain("unavailable");
+		} finally {
+			unsetFallback();
+			unsetPrimary();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	describe("Graph ID", () => {
+		const GRAPH_ID = "ut-m1abc-0a1b2c3d";
+		const trackedSession = (stateDir: string): void => {
+			writeSession(stateDir, {
+				sessionId: "s1",
+				at: 1,
+				result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
+				plan: { graphId: GRAPH_ID } as TrackPlan,
+			} as unknown as Parameters<typeof writeSession>[1]);
+		};
+
+		test("/ultrathink-swarm binds the session's graph: the lane brief starts with its Graph ID line and lane.json records it", async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const python = withSpawnablePython();
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-graph-"));
+			try {
+				trackedSession(stateDir);
+				const { command } = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command("ultrathink-swarm", "build a health endpoint");
+				expect(
+					await waitFor(
+						() =>
+							existsSync(python.argvLog) &&
+							readFileSync(python.argvLog, "utf8").includes("build a health endpoint"),
+					),
+				).toBe(true);
+				expect(readFileSync(python.argvLog, "utf8")).toContain(`Graph ID: ${GRAPH_ID}\n`);
+				const [laneId] = laneDirNames(stateDir);
+				const record: unknown = JSON.parse(
+					readFileSync(join(stateDir, "swarm", laneId ?? "", "lane.json"), "utf8"),
+				);
+				expect(record).toMatchObject({ graphId: GRAPH_ID });
+			} finally {
+				python.restore();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+
+		test("auto-run never binds the session's earlier plan: no Graph ID line in the lane brief and no graphId in lane.json", async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const python = withSpawnablePython();
+			const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-graph-"));
+			try {
+				const gate = controlled();
+				trackedSession(stateDir);
+				const tracked = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+				expect(await tracked.run("fix the login redirect")).toBeUndefined();
+				expect(
+					await waitFor(
+						() =>
+							existsSync(python.argvLog) &&
+							readFileSync(python.argvLog, "utf8").includes("fix the login redirect"),
+					),
+				).toBe(true);
+				expect(readFileSync(python.argvLog, "utf8")).not.toContain("Graph ID:");
+				const [laneId] = laneDirNames(stateDir);
+				const record: unknown = JSON.parse(
+					readFileSync(join(stateDir, "swarm", laneId ?? "", "lane.json"), "utf8"),
+				);
+				expect(record).not.toHaveProperty("graphId");
+			} finally {
+				python.restore();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
 	});
 });

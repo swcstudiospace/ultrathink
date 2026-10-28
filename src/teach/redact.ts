@@ -8,10 +8,14 @@
  * Idempotent (the replacement `[redacted]` matches no pattern) and never throws: a failure yields `[redacted]` rather
  * than the unredacted text.
  *
+ * The secret patterns are the shared table in `src/redact.ts` (`redactSecretShapes`); this module adds only path masking.
+ *
  * Paths: an absolute path under `options.home` that is not under `options.repoRoot` becomes `~/.../<last two segments>`
  * (`~/<segments>` when it has at most two, `~` for the home directory itself). A `repoRoot` that is the home directory
  * or one of its ancestors exempts nothing, so a session started in `~` still hides `~/.ssh/...`.
  */
+
+import { redactSecretShapes } from "../redact.ts";
 
 const REDACTED = "[redacted]";
 
@@ -20,94 +24,6 @@ export interface RedactOptions {
 	home?: string;
 	/** Paths under this directory stay readable (the project the lesson is about). */
 	repoRoot?: string;
-}
-
-const PEM_BLOCK =
-	/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
-/** A block cut off by a length cap has no END line: everything after BEGIN goes. */
-const PEM_OPEN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*$/g;
-const URL_USERINFO = /\b([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/]+@/g;
-const AUTH_HEADER =
-	/((?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie|set-cookie)["']?\s*[:=]\s*["']?)(?:(?:Bearer|Basic|Token|Digest)\s+)?[^\s"',;]+/gi;
-/** A Cookie or Set-Cookie header value runs to the end of its line or to a quote: every pair in it is a credential, not only the first. */
-const COOKIE_HEADER = /((?:set-)?cookie["']?\s*[:=]\s*["']?)[^\r\n"']+/gi;
-const BEARER = /\bBearer(\s+)([A-Za-z0-9._~+/-]+=*)/gi;
-const JWT = /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}/g;
-const TOKEN_PATTERNS: RegExp[] = [
-	/\bsk-ant-[A-Za-z0-9_-]{8,}/g,
-	/\bsk-[A-Za-z0-9_-]{16,}/g,
-	/\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-	/\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-	/\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
-	/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
-	/\bAIza[0-9A-Za-z_-]{30,}/g,
-];
-const ASSIGNMENT =
-	/(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1([ \t]*[:=][ \t]*)(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"',;&|]+))/g;
-const SECRET_WORDS = ["key", "token", "secret", "password", "passwd"];
-
-/** Name tokens (split on non-alphanumerics and camelCase) that end in a secret word: API_KEY, apiKey, client-secret. "keyboard" is not. */
-function isSecretName(name: string): boolean {
-	const tokens = name
-		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
-		.toLowerCase()
-		.split(/[^a-z0-9]+/);
-	return tokens.some((token) =>
-		SECRET_WORDS.some((word) => token.endsWith(word) || token.endsWith(`${word}s`)),
-	);
-}
-
-/** A value is credential-shaped when it is long or carries a digit: "abcdef123456" is, "key" and "rotation" are not. */
-function isCredentialShaped(value: string): boolean {
-	return value.length >= 16 || (value.length >= 6 && /\d/.test(value));
-}
-
-/** `Bearer <word>` is a credential only when the word looks like one; "the Bearer key" and "Bearer token rotation" are prose. */
-function redactBearer(text: string): string {
-	return text.replace(BEARER, (match, _space: string, value: string) => {
-		const dots = /\.+$/.exec(value)?.[0] ?? "";
-		const core = dots ? value.slice(0, -dots.length) : value;
-		if (!isCredentialShaped(core)) return match;
-		return `${REDACTED}${dots}`;
-	});
-}
-
-function redactAssignments(text: string): string {
-	return text.replace(
-		ASSIGNMENT,
-		(
-			match,
-			quote: string,
-			name: string,
-			sep: string,
-			dq: string | undefined,
-			sq: string | undefined,
-			bare: string | undefined,
-			offset: number,
-		) => {
-			if (!isSecretName(name)) return match;
-			// `the password: is required` and `Key: use import type` are prose: a plain-word name (not an env or header name
-			// like `API_KEY`, `X-API-Key`, `db.password`), an unquoted `:`, an unquoted value that neither fills the rest of
-			// the line (YAML, header and .env lines do) nor looks like a credential. `password: hunter2` is redacted.
-			if (
-				sep.includes(":") &&
-				quote === "" &&
-				bare !== undefined &&
-				!/[-_.]/.test(name) &&
-				name !== name.toUpperCase()
-			) {
-				const fillsLine = /^[ \t]*(?:\r?\n|$)/.test(text.slice(offset + match.length));
-				if (!fillsLine && !isCredentialShaped(bare.replace(/[.,:;!?]+$/, ""))) return match;
-			}
-			const head = `${quote}${name}${quote}${sep}`;
-			if (dq !== undefined) return `${head}"${REDACTED}"`;
-			if (sq !== undefined) return `${head}'${REDACTED}'`;
-			// Template references and JSX props (`key={id}`, `TOKEN=$TOKEN`) hold no secret.
-			if (bare !== undefined && /^[$({<%]/.test(bare)) return match;
-			return `${head}${REDACTED}`;
-		},
-	);
 }
 
 function redactPaths(text: string, home: string, repoRoot: string | undefined): string {
@@ -135,13 +51,7 @@ function redactPaths(text: string, home: string, repoRoot: string | undefined): 
 export function redactText(text: string, options: RedactOptions = {}): string {
 	try {
 		if (typeof text !== "string" || text === "") return "";
-		let out = text.replace(PEM_BLOCK, REDACTED).replace(PEM_OPEN, REDACTED);
-		out = out.replace(URL_USERINFO, `$1${REDACTED}@`);
-		out = out.replace(COOKIE_HEADER, `$1${REDACTED}`);
-		out = out.replace(AUTH_HEADER, `$1${REDACTED}`);
-		out = redactBearer(out).replace(JWT, REDACTED);
-		for (const pattern of TOKEN_PATTERNS) out = out.replace(pattern, REDACTED);
-		out = redactAssignments(out);
+		let out = redactSecretShapes(text);
 		const home = options.home ?? process.env.HOME;
 		if (home) out = redactPaths(out, home, options.repoRoot);
 		return out;

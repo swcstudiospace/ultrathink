@@ -83,9 +83,9 @@ interface Runtime {
 	health: JevHealth;
 }
 
-function runtime(deps: DecisionsCommandDeps): Runtime {
+function runtime(deps: DecisionsCommandDeps, configured?: DecisionsConfig): Runtime {
 	const env = deps.env ?? process.env;
-	const config = loadConfig(claudeConfigPaths(deps.cwd, env)).decisions;
+	const config = configured ?? loadConfig(claudeConfigPaths(deps.cwd, env)).decisions;
 	const url = resolveDecisionsUrl(env);
 	const picked = resolveDecisionsKeys(config, deps.storePath ?? defaultStorePath(env), env);
 	return {
@@ -118,7 +118,7 @@ function runtime(deps: DecisionsCommandDeps): Runtime {
 	};
 }
 
-/** ` · provider <rail> · zdr <on|off> · key from <source>` + ` · url <url>` when the env override is in effect on the OpenRouter rail, or the ignored notice when it was rejected. */
+/** ` · provider <rail> · zdr <n/a (vercel)|on|off> · key from <source>` + ` · url <url>` when the env override is in effect on the OpenRouter rail, or the ignored notice when it was rejected. The Vercel rail sends no ZDR preference. */
 function footer(rt: Runtime, source: KeySource): string {
 	const url =
 		rt.provider === "openrouter"
@@ -128,13 +128,13 @@ function footer(rt: Runtime, source: KeySource): string {
 					? DECISIONS_URL_IGNORED
 					: ""
 			: "";
-	return ` · provider ${rt.provider} · zdr ${rt.config.zdr ? "on" : "off"} · key from ${source}${url}`;
+	const zdr = rt.provider === "vercel" ? "n/a (vercel)" : rt.config.zdr ? "on" : "off";
+	return ` · provider ${rt.provider} · zdr ${zdr} · key from ${source}${url}`;
 }
 
-async function check(rt: Runtime): Promise<{ code: number; text: string }> {
-	if (rt.killed) return { code: 1, text: `Decisions check: ${KILLED}` };
-	if (!rt.key) return { code: 1, text: `Decisions check: ${NO_KEY}` };
-	const request = buildDecisionsRequest(
+/** The one-request check: the plan question against the configured model, with the rail's data-handling setting. */
+function checkRequest(rt: Runtime): DecisionsRequest {
+	return buildDecisionsRequest(
 		"plan",
 		buildPlanState({ message: CHECK_MESSAGE, recentConversation: "" }),
 		{
@@ -143,6 +143,48 @@ async function check(rt: Runtime): Promise<{ code: number; text: string }> {
 			spanName: "check",
 		},
 	);
+}
+
+interface DecisionsLiveCheck {
+	ok: boolean;
+	/** The failure's kind (`auth`, `credits`, `timeout`, ...), or `killed` / `no-key` when no request was made; absent on success. Never a message. */
+	kind?: string;
+	latencyMs: number;
+	attempts: number;
+}
+
+/**
+ * The request `decisions check` sends, with its result recorded on the rail's breaker, for callers that need a verdict
+ * and not a printed line (the stack probe). `config` replaces the file layers; `config.timeoutMs` is the total budget.
+ * No key, or `ULTRATHINK_DECISIONS=0`, sends nothing. Never rejects.
+ */
+export async function decisionsLiveCheck(
+	deps: DecisionsCommandDeps,
+	config: DecisionsConfig,
+): Promise<DecisionsLiveCheck> {
+	try {
+		const rt = runtime(deps, config);
+		if (rt.killed) return { ok: false, kind: "killed", latencyMs: 0, attempts: 0 };
+		if (!rt.key) return { ok: false, kind: "no-key", latencyMs: 0, attempts: 0 };
+		const outcome = await forcedCall(rt, rt.key.key, checkRequest(rt), "check");
+		return outcome.ok
+			? { ok: true, latencyMs: outcome.latencyMs, attempts: outcome.attempts }
+			: {
+					ok: false,
+					kind: outcome.error.kind,
+					latencyMs: outcome.latencyMs,
+					attempts: outcome.attempts,
+				};
+	} catch {
+		// reason: a probe verdict must not reject; the failure is reported as an unavailable check without its message.
+		return { ok: false, kind: "unavailable", latencyMs: 0, attempts: 0 };
+	}
+}
+
+async function check(rt: Runtime): Promise<{ code: number; text: string }> {
+	if (rt.killed) return { code: 1, text: `Decisions check: ${KILLED}` };
+	if (!rt.key) return { code: 1, text: `Decisions check: ${NO_KEY}` };
+	const request = checkRequest(rt);
 	const before = rt.health.read();
 	const outcome = await forcedCall(rt, rt.key.key, request, "check");
 	const timing = `${Math.round(outcome.latencyMs)} ms · attempts ${outcome.attempts}`;

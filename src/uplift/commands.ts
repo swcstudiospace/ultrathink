@@ -20,10 +20,11 @@ import { runDecisionsCommand } from "../decisions/cli.ts";
 import { runDoctorCommand } from "../doctor/cli.ts";
 import { describeJevHealth } from "../decisions/health.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
-import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
+import { grokAuthStatusFresh } from "../grok/auth.ts";
 import { type GrokCheckOptions, runGrokCheck } from "../grok/check.ts";
 import { type GrokLoginOptions, runGrokLogin } from "../grok/login.ts";
 import { grokWireEffort } from "../grok/types.ts";
+import { redactSecrets } from "../redact.ts";
 import { formatHitlEcho } from "../hitl/format.ts";
 import { detectHost } from "../host/detect.ts";
 import { engineLabel, type ModelResolution } from "../host/engine.ts";
@@ -40,6 +41,8 @@ import { runPruneCommand } from "../retention/cli.ts";
 import { ragflowStatusLine } from "../ragflow/settings.ts";
 import { gatewayStatus, resolveGateway, serviceBackend } from "../gateway/settings.ts";
 import { SUBSTRATE_BACKEND_ENV } from "../gateway/types.ts";
+import { dispatchStack } from "../stack/cli.ts";
+import { stackSummaryLine } from "../stack/summary.ts";
 import { resolveSubstrate } from "../substrate/brief.ts";
 import { runTeachCommand } from "../teach/cli.ts";
 import { teachStatusLine } from "../teach/status.ts";
@@ -80,6 +83,7 @@ const USAGE = [
 	"In an agent: /ultrathink-status, /ultrathink-off, /ultrathink-on, /ultrathink-skip, /ultrathink-track off|on,",
 	"and /ultrathink-quick <message> sends one message as typed (no planning, no Linear/Notion rows).",
 	"  doctor [--json]        check config files, credentials, state and environment",
+	"  stack [--live] [--json] [--strict] [--only <member>] [--timeout <ms>]   five stack links with reason and fix",
 	"  prune [--older-than <days>] [--dry-run]   remove session records older than that many days (nothing is removed by default)",
 ].join("\n");
 
@@ -234,7 +238,8 @@ function decisionsLine(
 					: ""
 			: "";
 	const breaker = describeJevHealth(stateDir, Date.now());
-	return `Decisions: on · ${decisions.model} · ${points} · provider ${picked.provider} · key from ${picked.key.source} · zdr ${decisions.zdr ? "on" : "off"}${url}${breaker ? ` · ${breaker}` : ""}`;
+	const zdr = picked.provider === "vercel" ? "n/a (vercel)" : decisions.zdr ? "on" : "off";
+	return `Decisions: on · ${decisions.model} · ${points} · provider ${picked.provider} · key from ${picked.key.source} · zdr ${zdr}${url}${breaker ? ` · ${breaker}` : ""}`;
 }
 
 async function grokOauthLine(config: UltrathinkConfig): Promise<string> {
@@ -294,6 +299,7 @@ async function statusText(
 			storePath(process.env),
 			stateDir,
 		),
+		stackSummaryLine(config, process.env),
 		engineRequestLine(config, state, host),
 		`State: ${stateDir}`,
 	];
@@ -555,7 +561,7 @@ function pruneClock(env: Record<string, string | undefined>): (() => number) | u
 }
 
 // `bin/ultrathink <verb> [args…]`: the host state dir comes from ULTRATHINK_HOST, else the detected host.
-// `decisions`, `hindsight`, `ragflow`, `teach`, `doctor`, `prune` and `grok login|check` bypass runControl, which lower-cases its args (probe takes a file path; login takes a directory; check takes a model id) and returns no exit code.
+// `decisions`, `hindsight`, `ragflow`, `teach`, `doctor`, `stack`, `prune` and `grok login|check` bypass runControl, which lower-cases its args (probe takes a file path; login takes a directory; check takes a model id) and returns no exit code.
 if (import.meta.main) {
 	const argv = process.argv.slice(2);
 	const service = argv[0]?.trim().toLowerCase();
@@ -573,15 +579,17 @@ if (import.meta.main) {
 									code: exitCode,
 									text: output,
 								}))
-							: service === "prune"
-								? runPruneCommand(argv.slice(1), {
-										cwd: process.cwd(),
-										env: process.env,
-										now: pruneClock(process.env),
-									}).then(({ output, exitCode }) => ({ code: exitCode, text: output }))
-								: service === "grok" && isGrokLaneVerb(argv[1])
-									? runGrokCommand(argv.slice(1), { cwd: process.cwd(), env: process.env })
-									: undefined;
+							: service === "stack"
+								? dispatchStack(argv.slice(1), { cwd: process.cwd(), env: process.env })
+								: service === "prune"
+									? runPruneCommand(argv.slice(1), {
+											cwd: process.cwd(),
+											env: process.env,
+											now: pruneClock(process.env),
+										}).then(({ output, exitCode }) => ({ code: exitCode, text: output }))
+									: service === "grok" && isGrokLaneVerb(argv[1])
+										? runGrokCommand(argv.slice(1), { cwd: process.cwd(), env: process.env })
+										: undefined;
 	if (command) {
 		command.then(({ code, text }) => {
 			process.stdout.write(`${text}\n`, () => process.exit(code));

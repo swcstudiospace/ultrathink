@@ -7,9 +7,9 @@
  * free of the key and the question. The health probe is a one-row dataset listing: the documented healthz route blocks
  * the operator's single API worker for minutes (see ./types.ts).
  */
-import { redactSecrets } from "../grok/auth.ts";
 import { type HttpOutcome, requestJson } from "../net/http.ts";
 import { checkServiceUrl } from "../net/safe-url.ts";
+import { redactSecrets } from "../redact.ts";
 import type {
 	RagflowChunk,
 	RagflowClient,
@@ -74,11 +74,11 @@ export function createRagflowClient(options: RagflowClientOptions): RagflowClien
 	if (apiKey === "") throw new Error("ragflow: api key is empty");
 	const base = checked.url;
 
-	/** One line of server text with the key (and anything the caller marks secret) removed. */
+	/** One line of server text with the key removed by `redactSecrets`, and anything the caller marks secret (any length) masked first. */
 	const clean = (text: string, secrets: readonly string[]): string => {
-		let out = text.replaceAll(apiKey, "[redacted]");
+		let out = text;
 		for (const secret of secrets) if (secret.length > 0) out = out.replaceAll(secret, "[redacted]");
-		return redactSecrets(out).replace(/\s+/g, " ").trim();
+		return redactSecrets(out, apiKey).replace(/\s+/g, " ").trim();
 	};
 
 	/** The `{code:0,...}` body of a successful call, or the classified failure. `secrets` are masked in error detail. */

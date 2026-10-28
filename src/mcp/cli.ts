@@ -280,6 +280,24 @@ async function login(id: McpProviderId, args: string[], deps: AuthDeps): Promise
 	out(`${id}: logged in`);
 }
 
+const VERCEL_KEY_MIN = 16;
+const VERCEL_KEY_MAX = 512;
+
+/** The message for a Vercel AI Gateway key that cannot be one, or undefined. It names the problem and the length, never the key. */
+function vercelKeyProblem(key: string): string | undefined {
+	if (key.length === 0) return "empty api key";
+	for (const ch of key) {
+		const code = ch.codePointAt(0) ?? 0;
+		if (code <= 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f) || /\s/u.test(ch)) {
+			return "vercel api key must not contain whitespace or control characters";
+		}
+	}
+	if (key.length < VERCEL_KEY_MIN || key.length > VERCEL_KEY_MAX) {
+		return `vercel api key must be ${VERCEL_KEY_MIN} to ${VERCEL_KEY_MAX} characters (got ${key.length})`;
+	}
+	return undefined;
+}
+
 async function setKey(id: ProviderId, args: string[], deps: AuthDeps): Promise<void> {
 	let key: string | undefined;
 	if (args.includes("--stdin")) {
@@ -293,6 +311,11 @@ async function setKey(id: ProviderId, args: string[], deps: AuthDeps): Promise<v
 		if (key === undefined) throw new Error(`${name} not found in ${file}`);
 	}
 	if (!key) throw new Error("empty api key");
+	if (id === "vercel") {
+		// The gateway key has no live verify endpoint, so --no-verify (accepted for symmetry) changes nothing.
+		const problem = vercelKeyProblem(key);
+		if (problem) throw new Error(problem);
+	}
 	if (id === "openrouter") {
 		const check = args.includes("--no-verify")
 			? checkOpenRouterKeyFormat(key)

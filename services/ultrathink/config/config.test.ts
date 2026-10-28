@@ -30,6 +30,13 @@ function messageOf(fn: () => unknown): string {
 	throw new Error("expected function to throw");
 }
 
+/** The aggregated block: a header with the problem count, then one two-space-indented line per problem. */
+function expectProblem(message: string, problem: string, count = 1): void {
+	const lines = message.split("\n");
+	expect(lines[0]).toBe(`ultrathink: ${count} configuration problems`);
+	expect(lines).toContain(`  ${problem}`);
+}
+
 describe("loadConfig required variables", () => {
 	test("a missing required variable throws a ConfigError naming it without its value", () => {
 		const env = baseEnv();
@@ -109,7 +116,7 @@ describe("planningModel", () => {
 		env.ULTRATHINK_PLANNING_MODEL = "x-ai/grok-4.7";
 		const message = messageOf(() => loadConfig(env));
 		expect(message).toBe(
-			"ULTRATHINK_PLANNING_MODEL names an OpenRouter-style model id; the hosted planner runs on the Claude plan login (default claude-haiku-5-5). Remove the line or set a Claude model id.",
+			"ultrathink: 1 configuration problems\n  ULTRATHINK_PLANNING_MODEL names an OpenRouter-style model id; the hosted planner runs on the Claude plan login (default claude-haiku-5-5). Remove the line or set a Claude model id.",
 		);
 		expect(message).not.toContain("grok");
 	});
@@ -890,6 +897,10 @@ describe("mTLS and plaintext opt-in", () => {
 		};
 		const message = messageOf(() => loadConfig(env));
 		expect(message).toContain("missing ULTRATHINK_TLS_CLIENT_CA");
+		expectProblem(
+			message,
+			"ULTRATHINK_TLS_CERT, ULTRATHINK_TLS_KEY, ULTRATHINK_TLS_CLIENT_CA must be set together; missing ULTRATHINK_TLS_CLIENT_CA",
+		);
 		expect(message).not.toContain("missing ULTRATHINK_TLS_CERT");
 		expect(message).not.toContain("missing ULTRATHINK_TLS_KEY");
 	});
@@ -929,15 +940,16 @@ describe("mTLS and plaintext opt-in", () => {
 	test("ULTRATHINK_PLAINTEXT_LOOPBACK must be 0 or 1", () => {
 		const env = baseEnv();
 		env.ULTRATHINK_PLAINTEXT_LOOPBACK = "yes";
-		expect(messageOf(() => loadConfig(env))).toContain(
-			"ULTRATHINK_PLAINTEXT_LOOPBACK must be 0 or 1",
-		);
+		const message = messageOf(() => loadConfig(env));
+		expect(message).toContain("ULTRATHINK_PLAINTEXT_LOOPBACK must be 0 or 1");
+		expectProblem(message, "ULTRATHINK_PLAINTEXT_LOOPBACK must be 0 or 1");
 	});
 
 	test("a relative TLS path throws naming the variable and not the path", () => {
 		const env = { ...tlsEnv(), ULTRATHINK_TLS_KEY: "tls/app/key.pem" };
 		const message = messageOf(() => loadConfig(env));
 		expect(message).toContain("ULTRATHINK_TLS_KEY must be an absolute path");
+		expectProblem(message, "ULTRATHINK_TLS_KEY must be an absolute path");
 		expect(message).not.toContain("tls/app/key.pem");
 	});
 
@@ -1065,6 +1077,7 @@ describe("loadConfig chaos gate", () => {
 	test("ULTRATHINK_CHAOS other than 0 or 1 throws naming the variable", () => {
 		const message = messageOf(() => loadConfig(withEnv({ ULTRATHINK_CHAOS: "true" })));
 		expect(message).toContain("ULTRATHINK_CHAOS must be 0 or 1");
+		expectProblem(message, "ULTRATHINK_CHAOS must be 0 or 1");
 	});
 });
 
@@ -1109,7 +1122,7 @@ describe("planning backend", () => {
 				loadConfig({ ...baseEnv(), ULTRATHINK_PLANNING_BACKEND: value }),
 			);
 			expect(message).toBe(
-				"ULTRATHINK_PLANNING_BACKEND was removed: the hosted planner always runs on the Claude plan login; OpenRouter is reserved for Jev decisions. Remove the line.",
+				"ultrathink: 1 configuration problems\n  ULTRATHINK_PLANNING_BACKEND was removed: the hosted planner always runs on the Claude plan login; OpenRouter is reserved for Jev decisions. Remove the line.",
 			);
 		}
 	});
@@ -1143,5 +1156,186 @@ describe("legacyEnvIgnored", () => {
 			loadConfig({ ...baseEnv(), OPENROUTER_API_KEY: "  ", ULTRATHINK_OPENROUTER_KEY: "" })
 				.legacyEnvIgnored,
 		).toEqual([]);
+	});
+});
+
+describe("loadConfig aggregation", () => {
+	test("three bad variables throw one ConfigError listing all three in reader order", () => {
+		const env: Record<string, string | undefined> = {
+			...baseEnv(),
+			ULTRATHINK_PORT: "80",
+			ULTRATHINK_TLS_CERT: TLS_PATHS.ULTRATHINK_TLS_CERT,
+		};
+		delete env.ULTRATHINK_PUBLIC_ORIGIN;
+		expect(messageOf(() => loadConfig(env)).split("\n")).toEqual([
+			"ultrathink: 3 configuration problems",
+			"  ULTRATHINK_PUBLIC_ORIGIN is required",
+			"  ULTRATHINK_PORT must be an integer between 1024 and 65535",
+			"  ULTRATHINK_TLS_CERT, ULTRATHINK_TLS_KEY, ULTRATHINK_TLS_CLIENT_CA must be set together; missing ULTRATHINK_TLS_KEY, ULTRATHINK_TLS_CLIENT_CA",
+		]);
+	});
+
+	test("a single bad variable keeps the plural header and its original text", () => {
+		expect(
+			messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_PORT: "80" })).split("\n"),
+		).toEqual([
+			"ultrathink: 1 configuration problems",
+			"  ULTRATHINK_PORT must be an integer between 1024 and 65535",
+		]);
+	});
+
+	test("cross-variable checks run next to ordinary ones: partial TLS and a bad port both appear", () => {
+		const message = messageOf(() =>
+			loadConfig({
+				...baseEnv(),
+				ULTRATHINK_PORT: "80",
+				ULTRATHINK_TLS_KEY: TLS_PATHS.ULTRATHINK_TLS_KEY,
+			}),
+		);
+		expect(message.split("\n")[0]).toBe("ultrathink: 2 configuration problems");
+		expect(message).toContain("ULTRATHINK_PORT must be an integer between 1024 and 65535");
+		expect(message).toContain("missing ULTRATHINK_TLS_CERT, ULTRATHINK_TLS_CLIENT_CA");
+	});
+
+	test("the penalty order is judged only when both values parsed", () => {
+		const broken = messageOf(() =>
+			loadConfig({
+				...baseEnv(),
+				ULTRATHINK_PENALTY_BASE_SEC: "abc",
+				ULTRATHINK_PENALTY_MAX_SEC: "5",
+			}),
+		);
+		expect(broken.split("\n")).toEqual([
+			"ultrathink: 1 configuration problems",
+			"  ULTRATHINK_PENALTY_BASE_SEC must be an integer between 1 and 86400",
+		]);
+		const crossed = messageOf(() =>
+			loadConfig({
+				...baseEnv(),
+				ULTRATHINK_PENALTY_BASE_SEC: "600",
+				ULTRATHINK_PENALTY_MAX_SEC: "300",
+				ULTRATHINK_DRAIN_MS: "-1",
+			}),
+		);
+		expect(crossed.split("\n")[0]).toBe("ultrathink: 2 configuration problems");
+		expect(crossed).toContain("ULTRATHINK_DRAIN_MS must be an integer between 0 and 60000");
+		expect(crossed).toContain(
+			"ULTRATHINK_PENALTY_MAX_SEC must be greater than or equal to ULTRATHINK_PENALTY_BASE_SEC",
+		);
+	});
+
+	test("a rejected Kafka URL does not also report the missing topic, and a missing topic still does", () => {
+		const rejected = messageOf(() =>
+			loadConfig({ ...baseEnv(), ULTRATHINK_AUDIT_KAFKA_REST_URL: "http://example.com" }),
+		);
+		expect(rejected.split("\n")).toEqual([
+			"ultrathink: 1 configuration problems",
+			"  ULTRATHINK_AUDIT_KAFKA_REST_URL must use https://, or http:// to 127.0.0.1 or localhost",
+		]);
+		const unpaired = messageOf(() =>
+			loadConfig({
+				...baseEnv(),
+				ULTRATHINK_AUDIT_KAFKA_REST_URL: "https://kafka-rest.example.com",
+				ULTRATHINK_AUDIT_LOG: "2",
+			}),
+		);
+		expect(unpaired.split("\n")[0]).toBe("ultrathink: 2 configuration problems");
+		expect(unpaired).toContain("ULTRATHINK_AUDIT_LOG must be 0 or 1");
+		expect(unpaired).toContain(
+			"ULTRATHINK_AUDIT_KAFKA_REST_URL and ULTRATHINK_AUDIT_KAFKA_TOPIC must be set together",
+		);
+	});
+
+	test("a rejected gate flag does not add problems that depend on its value", () => {
+		const plaintext = messageOf(() => {
+			const env = baseEnv();
+			env.ULTRATHINK_PLAINTEXT_LOOPBACK = "yes";
+			return loadConfig(env);
+		});
+		expect(plaintext.split("\n")).toEqual([
+			"ultrathink: 1 configuration problems",
+			"  ULTRATHINK_PLAINTEXT_LOOPBACK must be 0 or 1",
+		]);
+		const chaos = messageOf(() =>
+			loadConfig({
+				...baseEnv(),
+				ULTRATHINK_CHAOS: "true",
+				ULTRATHINK_CHAOS_PLAN: "/var/lib/ultrathink-chaos/plan.json",
+			}),
+		);
+		expect(chaos.split("\n")).toEqual([
+			"ultrathink: 1 configuration problems",
+			"  ULTRATHINK_CHAOS must be 0 or 1",
+		]);
+	});
+
+	test("chaos reports a wrong environment and a missing plan together", () => {
+		const message = messageOf(() =>
+			loadConfig({ ...baseEnv(), ULTRATHINK_CHAOS: "1", ULTRATHINK_CHAOS_ENV: "production" }),
+		);
+		expect(message.split("\n")).toEqual([
+			"ultrathink: 2 configuration problems",
+			"  ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_ENV=staging; chaos never runs outside staging",
+			"  ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_PLAN to be set",
+		]);
+	});
+
+	test("the block names every bad variable and echoes no value planted in any of them", () => {
+		const env: Record<string, string | undefined> = {
+			...baseEnv(),
+			ULTRATHINK_STATE_DIR: "relative-STATECANARY",
+			ULTRATHINK_PLANNING_MODEL: "bad CANARYMODEL!",
+			ULTRATHINK_PUBLIC_ORIGIN: "https://user:CANARYPW@origin.example",
+			ULTRATHINK_OWNER_PASSWORD_HASH: "$argon2id$HASHCANARY",
+			ULTRATHINK_SESSION_SECRET: "sk-or-v1-CANARYSHORT",
+			ULTRATHINK_SESSION_SECRET_PREVIOUS: "sk-or-v1-CANARYPREVIOUS",
+			ULTRATHINK_CONNECTOR_KEY: "sk-or-v1-CANARYCANARYCANARY1234",
+			ULTRATHINK_ALLOWED_ORIGINS: "ftp://CANARYORIGIN",
+			ULTRATHINK_AUDIT_RULES: '[{"name":"RULECANARY","bogusCANARY":1}]',
+			ULTRATHINK_AUDIT_HTTP_URL: "https://user:CANARYPW@collector.example",
+			ULTRATHINK_AUDIT_HTTP_TOKEN: "TOKENCANARY",
+			ULTRATHINK_AUDIT_SYSLOG: "SYSLOGCANARY",
+			ULTRATHINK_OTLP_ENDPOINT: "https://user:CANARYPW@otel.example",
+			ULTRATHINK_TLS_CERT: "relative/CERTCANARY.pem",
+			ULTRATHINK_TLS_KEY: "relative/KEYCANARY.pem",
+			ULTRATHINK_TLS_CLIENT_CA: "relative/CACANARY.pem",
+			ULTRATHINK_SPIFFE_TRUST_DOMAIN: "TrustCANARY.Domain",
+			ULTRATHINK_CHAOS: "1",
+			ULTRATHINK_CHAOS_ENV: "staging",
+			ULTRATHINK_CHAOS_PLAN: "relative/CHAOSCANARY.json",
+			ULTRATHINK_AUDIT_KAFKA_REST_URL: "http://KAFKACANARY.example",
+			ULTRATHINK_AUDIT_KAFKA_TOPIC: "TOPICCANARY",
+		};
+		const names = [
+			"ULTRATHINK_STATE_DIR",
+			"ULTRATHINK_PLANNING_MODEL",
+			"ULTRATHINK_PUBLIC_ORIGIN",
+			"ULTRATHINK_OWNER_PASSWORD_HASH",
+			"ULTRATHINK_SESSION_SECRET",
+			"ULTRATHINK_SESSION_SECRET_PREVIOUS",
+			"ULTRATHINK_CONNECTOR_KEY",
+			"ULTRATHINK_ALLOWED_ORIGINS",
+			"ULTRATHINK_AUDIT_RULES",
+			"ULTRATHINK_AUDIT_HTTP_URL",
+			"ULTRATHINK_AUDIT_HTTP_TOKEN",
+			"ULTRATHINK_AUDIT_SYSLOG",
+			"ULTRATHINK_OTLP_ENDPOINT",
+			"ULTRATHINK_TLS_CERT",
+			"ULTRATHINK_TLS_KEY",
+			"ULTRATHINK_TLS_CLIENT_CA",
+			"ULTRATHINK_SPIFFE_TRUST_DOMAIN",
+			"ULTRATHINK_CHAOS_PLAN",
+			"ULTRATHINK_AUDIT_KAFKA_REST_URL",
+		];
+		const lines = messageOf(() => loadConfig(env)).split("\n");
+		expect(lines[0]).toBe(`ultrathink: ${names.length} configuration problems`);
+		expect(lines).toHaveLength(names.length + 1);
+		names.forEach((name, index) => {
+			expect(lines[index + 1]).toStartWith(`  ${name}`);
+		});
+		const block = lines.join("\n");
+		for (const secret of ["CANARY", "$argon2id", "user:", "relative", "bogus"]) {
+			expect(block).not.toContain(secret);
+		}
 	});
 });
