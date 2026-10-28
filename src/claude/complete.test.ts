@@ -164,18 +164,21 @@ describe("claudeComplete plan auth", () => {
 	function setup(): {
 		bin: string;
 		log: () => string[];
+		caps: () => string[];
 		env: (extra: Record<string, string>) => Record<string, string | undefined>;
 	} {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-claude-complete-"));
 		dirs.push(dir);
 		const bin = join(dir, "claude");
 		const logFile = join(dir, "calls.log");
+		const capFile = join(dir, "caps.log");
 		writeFileSync(
 			bin,
 			[
 				"#!/bin/sh",
 				"cat >/dev/null",
 				`echo "key=\${ANTHROPIC_API_KEY:+set} token=\${ANTHROPIC_AUTH_TOKEN:+set} bedrock=\${CLAUDE_CODE_USE_BEDROCK:+set} vertex=\${CLAUDE_CODE_USE_VERTEX:+set} foundry=\${CLAUDE_CODE_USE_FOUNDRY:+set} oauth=\${CLAUDE_CODE_OAUTH_TOKEN:+set} child=\${ULTRATHINK_CHILD}" >> "${logFile}"`,
+				`echo "cap=\${CLAUDE_CODE_MAX_OUTPUT_TOKENS}" >> "${capFile}"`,
 				"printf '%s\\n' \"$STUB_OUT\"",
 				'exit "${STUB_EXIT:-0}"',
 			].join("\n"),
@@ -184,9 +187,46 @@ describe("claudeComplete plan auth", () => {
 		return {
 			bin,
 			log: () => (existsSync(logFile) ? readFileSync(logFile, "utf8").trim().split("\n") : []),
+			caps: () => (existsSync(capFile) ? readFileSync(capFile, "utf8").trim().split("\n") : []),
 			env: (extra) => ({ PATH: process.env.PATH, ...extra }),
 		};
 	}
+
+	test("maxOutputTokens sets CLAUDE_CODE_MAX_OUTPUT_TOKENS in plan mode, floored", async () => {
+		const stub = setup();
+		const complete = createClaudeCompleter({
+			bin: stub.bin,
+			maxOutputTokens: 1234.9,
+			env: stub.env({ STUB_OUT: okResult }),
+		});
+		await complete("s", "u");
+		expect(stub.caps()).toEqual(["cap=1234"]);
+	});
+
+	test("maxOutputTokens also reaches the child in api-key mode", async () => {
+		const stub = setup();
+		const complete = createClaudeCompleter({
+			bin: stub.bin,
+			auth: "api-key",
+			maxOutputTokens: 500,
+			env: stub.env({ ANTHROPIC_API_KEY: "sk-ant-fake", STUB_OUT: okResult }),
+		});
+		await complete("s", "u");
+		expect(stub.caps()).toEqual(["cap=500"]);
+	});
+
+	test("no cap variable is set without maxOutputTokens or for a non-positive value", async () => {
+		for (const maxOutputTokens of [undefined, 0, -5, 0.4, Number.NaN]) {
+			const stub = setup();
+			const complete = createClaudeCompleter({
+				bin: stub.bin,
+				maxOutputTokens,
+				env: stub.env({ STUB_OUT: okResult }),
+			});
+			await complete("s", "u");
+			expect(stub.caps()).toEqual(["cap="]);
+		}
+	});
 
 	const credentials = {
 		ANTHROPIC_API_KEY: "sk-ant-fake",

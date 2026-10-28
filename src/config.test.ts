@@ -15,6 +15,7 @@ import {
 	userConfigPath,
 } from "./config.ts";
 import type { DecisionsConfig } from "./decisions/types.ts";
+import { DEFAULT_GROK_CONFIG } from "./grok/types.ts";
 import { ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
 
 function tempConfigFile(content: unknown): { path: string; cleanup: () => void } {
@@ -2223,6 +2224,20 @@ describe("legacy model provenance (AD-1)", () => {
 		expect(mergeConfig({ grok: { fallbackModels: many } }, base).grok.fallbackModels).toEqual(
 			many.slice(0, 8),
 		);
+	});
+
+	test("grok.fallbackModels arrays are never shared with the module default", () => {
+		const first = defaultConfig();
+		first.grok.fallbackModels.push("mutated");
+		expect(defaultConfig().grok.fallbackModels).toEqual(["grok-4.7"]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual(["grok-4.7"]);
+		const base = defaultConfig();
+		const merged = mergeConfig({ grok: { model: "x" } }, base);
+		expect(merged.grok.fallbackModels).not.toBe(DEFAULT_GROK_CONFIG.fallbackModels);
+		expect(merged.grok.fallbackModels).not.toBe(base.grok.fallbackModels);
+		merged.grok.fallbackModels.push("mutated");
+		expect(base.grok.fallbackModels).toEqual(["grok-4.7"]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual(["grok-4.7"]);
 	});
 
 	test("grok.fallbackModels: a non-array keeps the default and [] is honored", () => {

@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { abortError } from "../claude/complete.ts";
 import { createFailoverCompleter, type FailoverCandidate } from "./chain.ts";
+import { classifyFailure } from "./classify.ts";
 
 const TOKEN = "Bearer abcdef0123456789abcdef";
 const PLAN_LIMIT = "You've hit your session limit \u00b7 resets 3:45pm";
@@ -215,7 +216,24 @@ describe("all candidates fail", () => {
 		expect(error).not.toBe(e2);
 		expect(error.message).toBe(`a: ${PLAN_LIMIT}; b: grok HTTP 503: upstream`);
 		expect(error.cause).toBe(e1);
+		expect(error.name).toBe("FailoverError");
+		expect((error as Error & { failure?: string }).failure).toBe("plan-limit");
 		expect(chain.failover()).toBeUndefined();
+	});
+
+	test("the combined error reports the class of the first failure", async () => {
+		const chain = createFailoverCompleter([
+			scripted("a", [new Error("Not logged in \u00b7 Please run /login")]),
+			scripted("b", [
+				Object.assign(new Error("grok HTTP 429: {}"), { name: "GrokHttpError", status: 429 }),
+			]),
+		]);
+		const error = await chain.complete("s", "u").then(
+			() => undefined,
+			(e: unknown) => e,
+		);
+		expect(classifyFailure(error)).toBe("auth");
+		expect(chain.attempts().map((a) => a.failure)).toEqual(["auth", "rate-limit"]);
 	});
 
 	test("message is redacted and at most 500 characters", async () => {
@@ -341,5 +359,122 @@ describe("abort handling", () => {
 		const chain = createFailoverCompleter([first, second]);
 		await expect(chain.complete("s", "u")).rejects.toBe(aborted);
 		expect(second.calls()).toBe(0);
+	});
+});
+
+describe("onFailover", () => {
+	const SUMMARY = "a \u2192 b (plan-limit)";
+
+	test("fires once per failing-over call, including while the first candidate is in cooldown", async () => {
+		const time = clock();
+		const seen: string[] = [];
+		const first = scripted("a", [new Error(PLAN_LIMIT), "back"]);
+		const second = scripted("b", ["ok"]);
+		const chain = createFailoverCompleter([first, second], {
+			now: time.now,
+			onFailover: (summary) => seen.push(summary),
+		});
+
+		await chain.complete("s", "u");
+		expect(seen).toEqual([SUMMARY]);
+
+		// first is in cooldown, second answers: this call reports again
+		time.advance(1_000);
+		await chain.complete("s", "u");
+		expect(first.calls()).toBe(1);
+		expect(seen).toEqual([SUMMARY, SUMMARY]);
+
+		// cooldown over, first answers again: no report, failover() stays cumulative
+		time.advance(900_000);
+		expect(await chain.complete("s", "u")).toBe("back");
+		expect(seen).toHaveLength(2);
+		expect(chain.failover()).toBe(SUMMARY);
+	});
+
+	test("does not fire when the first candidate answers", async () => {
+		const seen: string[] = [];
+		const chain = createFailoverCompleter([scripted("a", ["ok"]), scripted("b", ["nope"])], {
+			onFailover: (summary) => seen.push(summary),
+		});
+		await chain.complete("s", "u");
+		expect(seen).toEqual([]);
+	});
+
+	test("does not fire when every candidate fails", async () => {
+		const seen: string[] = [];
+		const chain = createFailoverCompleter(
+			[
+				scripted("a", [new Error(PLAN_LIMIT)]),
+				scripted("b", [new Error("Request rejected (429)")]),
+			],
+			{ onFailover: (summary) => seen.push(summary) },
+		);
+		await expect(chain.complete("s", "u")).rejects.toThrow();
+		expect(seen).toEqual([]);
+		expect(chain.failover()).toBeUndefined();
+	});
+
+	test("does not fire for a single-candidate passthrough", async () => {
+		const seen: string[] = [];
+		const chain = createFailoverCompleter([scripted("a", ["ok"])], {
+			onFailover: (summary) => seen.push(summary),
+		});
+		expect(await chain.complete("s", "u")).toBe("ok");
+		expect(seen).toEqual([]);
+	});
+
+	test("a throwing callback does not change the returned text", async () => {
+		const chain = createFailoverCompleter(
+			[scripted("a", [new Error(PLAN_LIMIT)]), scripted("b", ["from b"])],
+			{
+				onFailover: () => {
+					throw new Error("hook broke");
+				},
+			},
+		);
+		expect(await chain.complete("s", "u")).toBe("from b");
+		expect(chain.failover()).toBe(SUMMARY);
+	});
+
+	test("two overlapping calls each receive their own summary exactly once", async () => {
+		const answers: ((text: string) => void)[] = [];
+		const bothReached = Promise.withResolvers<void>();
+		const second: FailoverCandidate = {
+			id: "b",
+			label: "b",
+			complete: () => {
+				const gate = Promise.withResolvers<string>();
+				answers.push(gate.resolve);
+				if (answers.length === 2) bothReached.resolve();
+				return gate.promise;
+			},
+		};
+		let firstCalls = 0;
+		const first: FailoverCandidate = {
+			id: "a",
+			label: "a",
+			complete: async () => {
+				firstCalls += 1;
+				// call A (first to start) hits the plan limit, call B a network error
+				throw new Error(firstCalls === 1 ? PLAN_LIMIT : "fetch failed");
+			},
+		};
+		const seen: string[] = [];
+		const chain = createFailoverCompleter([first, second], {
+			onFailover: (summary) => seen.push(summary),
+		});
+
+		const callA = chain.complete("s", "A");
+		const callB = chain.complete("s", "B");
+		await bothReached.promise;
+		expect(seen).toEqual([]);
+
+		// settle B first, then A: neither wipes or replaces the other's summary
+		answers[1]?.("answer B");
+		expect(await callB).toBe("answer B");
+		expect(seen).toEqual(["a \u2192 b (network)"]);
+		answers[0]?.("answer A");
+		expect(await callA).toBe("answer A");
+		expect(seen).toEqual(["a \u2192 b (network)", "a \u2192 b (plan-limit)"]);
 	});
 });

@@ -263,7 +263,7 @@ export function defaultConfig(): UltrathinkConfig {
 			engine: "auto",
 		},
 		claude: { ...DEFAULT_CLAUDE_CONFIG },
-		grok: { ...DEFAULT_GROK_CONFIG },
+		grok: { ...DEFAULT_GROK_CONFIG, fallbackModels: [...DEFAULT_GROK_CONFIG.fallbackModels] },
 		muse: { ...DEFAULT_MUSE_CONFIG },
 		hitl: { ...DEFAULT_HITL_CONFIG },
 		notion: { ...DEFAULT_NOTION_CONFIG },
@@ -385,7 +385,7 @@ const MAX_FALLBACK_MODELS = 8;
 
 /** Array of model ids: trimmed, blanks and control-character entries dropped, deduped in order, capped. Non-array keeps the default. */
 function mergeFallbackModels(value: unknown, fallback: string[]): string[] {
-	if (!Array.isArray(value)) return fallback;
+	if (!Array.isArray(value)) return [...fallback];
 	const out: string[] = [];
 	for (const entry of value) {
 		if (typeof entry !== "string" || hasControlCharacter(entry)) continue;

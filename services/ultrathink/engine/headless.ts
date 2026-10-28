@@ -166,6 +166,8 @@ interface Job extends JobFile {
 	slotRelease?: () => void;
 	/** A model call was cut at its output limit, so the job cannot finish as planned. */
 	truncated?: boolean;
+	/** Failover summary the plan backend reported (first one wins); memory only, never persisted. */
+	failover?: string;
 }
 
 interface Outcome {
@@ -212,6 +214,12 @@ function failureCode(error: unknown): string | undefined {
 	if (!(error instanceof Error) || !("code" in error)) return undefined;
 	const { code } = error;
 	return typeof code === "string" && Object.hasOwn(PLAN_ERROR_CODES, code) ? code : undefined;
+}
+
+/** Sum of two optional token counts; a count nobody reported stays absent. */
+function addCount(a: number | undefined, b: number | undefined): number | undefined {
+	if (a === undefined) return b;
+	return b === undefined ? a : a + b;
 }
 
 /** Variables with no secret and no config meaning that a plan may inherit. */
@@ -479,8 +487,21 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			try {
 				const complete: ClaudeCompleter = planMode
 					? (planSystem, planUser, planSignal) =>
-							planBackend().complete(planSystem, planUser, planSignal, (usage) => {
-								reported.usage = usage;
+							planBackend().complete(planSystem, planUser, planSignal, {
+								...(outputCap === undefined ? {} : { maxOutputTokens: outputCap }),
+								// One report per attempt: they add up, so a failed attempt plus an answering one bill both.
+								onUsage: (usage) => {
+									const sum = reported.usage ?? {};
+									const promptTokens = addCount(sum.promptTokens, usage.promptTokens);
+									const completionTokens = addCount(sum.completionTokens, usage.completionTokens);
+									reported.usage = {
+										...(promptTokens === undefined ? {} : { promptTokens }),
+										...(completionTokens === undefined ? {} : { completionTokens }),
+									};
+								},
+								onFailover: (summary) => {
+									job.failover ??= summary;
+								},
 							})
 					: (opts.completer ??
 						createOpenRouterCompleter({
@@ -515,7 +536,14 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					code ??
 					(error instanceof Error && error.name === "AbortError" ? "aborted" : "engine_error");
 				// A reply cut at its output limit reports what it cost, so that call is billed like a completed one.
-				const cut = error instanceof OpenRouterError ? error.usage : undefined;
+				const cut =
+					error instanceof OpenRouterError
+						? error.usage
+						: planMode &&
+								(reported.usage?.promptTokens !== undefined ||
+									reported.usage?.completionTokens !== undefined)
+							? reported.usage
+							: undefined;
 				emit(failure, cut);
 				if (cut) {
 					bill(cut, reservationId);
@@ -654,6 +682,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						label: `${engineName}:${model}`,
 						complete: meteredCompleter(job, model),
 						error: () => job.firstError,
+						failover: () => job.failover,
 						resolution: resolutionFor(model),
 					}),
 				},

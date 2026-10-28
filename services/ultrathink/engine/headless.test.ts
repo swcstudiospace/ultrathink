@@ -42,6 +42,7 @@ import { answerRequest, listPendingRequests, showRequest, startPlan } from "./jo
 import type { OpenRouterFetch } from "./openrouter.ts";
 import {
 	type PlanBackend,
+	type PlanCallHooks,
 	PlanCompleterError,
 	type PlanErrorCode,
 	type PlanUsage,
@@ -1800,15 +1801,30 @@ interface FakeBackend {
 	backend: PlanBackend;
 	/** Stage of every call that reached the backend. */
 	stages: string[];
+	/** `hooks.maxOutputTokens` of every call. */
+	caps: Array<number | undefined>;
 	/** How many times readiness was asked. */
 	readyChecks: () => number;
 	setReady: (ready: { ok: boolean; detail?: string }) => void;
 }
 
-/** A scripted plan backend; with `failWith` every call throws it. Reports 100 prompt and 50 completion tokens per call. */
-function fakeBackend(failWith?: PlanCompleterError): FakeBackend {
+interface FakeBackendBehavior {
+	/** One `onUsage` report per entry, made before the call ends. Default: one 100/50 report, none when failing. */
+	reports?: PlanUsage[];
+	/** Summary handed to `onFailover` on every call. */
+	failover?: string;
+}
+
+/** A scripted plan backend; with `failWith` every call throws it after its reports. */
+function fakeBackend(
+	failWith?: PlanCompleterError,
+	behavior: FakeBackendBehavior = {},
+): FakeBackend {
 	const script = scriptedModel();
 	const stages: string[] = [];
+	const caps: Array<number | undefined> = [];
+	const reports =
+		behavior.reports ?? (failWith ? [] : [{ promptTokens: 100, completionTokens: 50 }]);
 	let ready: { ok: boolean; detail?: string } = { ok: true };
 	let readyChecks = 0;
 	const backend: PlanBackend = {
@@ -1817,16 +1833,19 @@ function fakeBackend(failWith?: PlanCompleterError): FakeBackend {
 			readyChecks += 1;
 			return ready;
 		},
-		async complete(system, user, _signal, onUsage?: (usage: PlanUsage) => void) {
+		async complete(system, user, _signal, hooks?: PlanCallHooks) {
 			stages.push(stageOf(system));
+			caps.push(hooks?.maxOutputTokens);
+			if (behavior.failover !== undefined) hooks?.onFailover?.(behavior.failover);
+			for (const report of reports) hooks?.onUsage?.(report);
 			if (failWith) throw failWith;
-			onUsage?.({ promptTokens: 100, completionTokens: 50 });
 			return script(system, user);
 		},
 	};
 	return {
 		backend,
 		stages,
+		caps,
 		readyChecks: () => readyChecks,
 		setReady: (next) => {
 			ready = next;
@@ -1934,6 +1953,105 @@ describe("headless planner: plan backend", () => {
 		expect(states).toEqual([{ state: "abandoned", n: fake.stages.length }]);
 		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
 		expect(ledger.spentForRun(String(jobFile(h.stateDir, sessionId).runId))).toBeGreaterThan(0);
+	});
+
+	test("a failed plan call that reported usage bills it, so the ledger holds the reported tokens, not the reservation", async () => {
+		const fake = fakeBackend(new PlanCompleterError("rate_limited", "plan-limit"), {
+			reports: [{ promptTokens: 30, completionTokens: 7 }],
+		});
+		const h = setup(PLAN_CONFIG, { completer: undefined, planBackend: fake.backend });
+		const sessionId = randomUUID();
+		await h.planner.start({ prompt: PROMPT, sessionId });
+		const n = fake.stages.length;
+		expect(n).toBeGreaterThanOrEqual(1);
+		const file = jobFile(h.stateDir, sessionId);
+		expect(file.usage).toEqual({ calls: n, inputTokens: 30 * n, outputTokens: 7 * n });
+		const states = h.store.db
+			.query<{ state: string; n: number }, []>(
+				"SELECT state, COUNT(*) AS n FROM token_ledger GROUP BY state",
+			)
+			.all();
+		expect(states).toEqual([{ state: "settled", n }]);
+		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
+		expect(ledger.spentForRun(String(file.runId))).toBe(37 * n);
+	});
+
+	test("the output cap reaches the backend as hooks.maxOutputTokens, and is absent when no cap applies", async () => {
+		const capped = fakeBackend();
+		const withCap = setup(PLAN_CONFIG, { completer: undefined, planBackend: capped.backend });
+		await withCap.planner.start({ prompt: PROMPT });
+		expect(capped.caps.length).toBeGreaterThanOrEqual(8);
+		for (const cap of capped.caps) expect(cap).toBe(1000);
+
+		const open = fakeBackend();
+		const noCap = setup(
+			{ ...PLAN_CONFIG, modelMaxOutputTokens: 0, runTokenCeiling: 0, dailyTokenCeiling: 0 },
+			{ completer: undefined, planBackend: open.backend },
+		);
+		await noCap.planner.start({ prompt: PROMPT });
+		expect(open.caps.length).toBeGreaterThanOrEqual(8);
+		for (const cap of open.caps) expect(cap).toBeUndefined();
+	});
+
+	test("several usage reports of one call add up, so a failed attempt and an answering one both bill", async () => {
+		const fake = fakeBackend(undefined, {
+			reports: [
+				{ promptTokens: 100, completionTokens: 50 },
+				{ promptTokens: 20, completionTokens: 10 },
+			],
+		});
+		const calls: PlannerCall[] = [];
+		const h = setup(PLAN_CONFIG, {
+			completer: undefined,
+			planBackend: fake.backend,
+			onCall: (call) => calls.push(call),
+		});
+		const sessionId = randomUUID();
+		await h.planner.start({ prompt: PROMPT, sessionId });
+		const n = fake.stages.length;
+		expect(n).toBeGreaterThanOrEqual(8);
+		for (const call of calls) {
+			expect(call.inputTokens).toBe(120);
+			expect(call.outputTokens).toBe(60);
+		}
+		const file = jobFile(h.stateDir, sessionId);
+		expect(file.usage).toEqual({ calls: n, inputTokens: 120 * n, outputTokens: 60 * n });
+		const ledger = createLedger(h.store, { runTokenCeiling: 1, dailyTokenCeiling: 1 });
+		expect(ledger.spentForRun(String(file.runId))).toBe(180 * n);
+	});
+
+	test("the selected engine reports the failover the backend signalled, and none otherwise", async () => {
+		const summary = "claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)";
+		const seen: Array<() => string | undefined> = [];
+		const watch: Pick<HeadlessOptions, "plan"> = {
+			plan: async (request, env, options) => {
+				const inner = options?.selectEngine;
+				if (!inner) throw new Error("planPrompt got no engine selector");
+				return planPrompt(request, env, {
+					...options,
+					selectEngine: async (...args) => {
+						const engine = await inner(...args);
+						if (!("skipped" in engine) && engine.failover) seen.push(engine.failover);
+						return engine;
+					},
+				});
+			},
+		};
+		const switched = fakeBackend(undefined, {
+			reports: [{ promptTokens: 1, completionTokens: 1 }],
+			failover: summary,
+		});
+		const h = setup(PLAN_CONFIG, { completer: undefined, planBackend: switched.backend, ...watch });
+		await h.planner.start({ prompt: PROMPT });
+		expect(seen.length).toBe(1);
+		expect(seen[0]?.()).toBe(summary);
+
+		seen.length = 0;
+		const plain = fakeBackend();
+		const p = setup(PLAN_CONFIG, { completer: undefined, planBackend: plain.backend, ...watch });
+		await p.planner.start({ prompt: PROMPT });
+		expect(seen.length).toBe(1);
+		expect(seen[0]?.()).toBeUndefined();
 	});
 
 	test("start is not_ready only while the plan backend is not ready", async () => {

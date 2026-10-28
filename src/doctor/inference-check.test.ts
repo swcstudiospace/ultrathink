@@ -476,6 +476,146 @@ describe("checkInference", () => {
 		});
 	});
 
+	describe("the configured claude.bin", () => {
+		const CUSTOM = "/opt/ut-test/claude-custom";
+
+		test("is the binary looked up and probed; a bare claude on PATH is never consulted", () => {
+			userConfig({ claude: { bin: CUSTOM } });
+			const lookups: string[] = [];
+			const versionBins: string[] = [];
+			const authBins: string[] = [];
+			deps = {
+				...deps,
+				which: (command) => {
+					lookups.push(command);
+					return command === CUSTOM ? CUSTOM : command === "claude" ? "/usr/bin/claude" : undefined;
+				},
+				claudeVersion: (bin) => {
+					versionBins.push(bin);
+					return "2.1.300";
+				},
+				claudeAuth: (_env, bin) => {
+					authBins.push(bin);
+					return PLAN_JSON;
+				},
+			};
+			const findings = checkInference(deps);
+			expect(byId(findings, "inference.claude.cli").level).toBe("ok");
+			expect(byId(findings, "inference.claude.auth").level).toBe("ok");
+			expect(lookups.length).toBeGreaterThan(0);
+			expect(lookups.every((command) => command === CUSTOM)).toBe(true);
+			expect(versionBins).toEqual([CUSTOM]);
+			expect(authBins).toEqual([CUSTOM]);
+		});
+
+		test("a missing custom binary warns even when a bare claude is on PATH, and nothing is probed", () => {
+			userConfig({ claude: { bin: CUSTOM } });
+			let probed = 0;
+			deps = {
+				...deps,
+				which: (command) => (command === "claude" ? "/usr/bin/claude" : undefined),
+				claudeVersion: () => {
+					probed++;
+					return "2.1.300";
+				},
+				claudeAuth: () => {
+					probed++;
+					return PLAN_JSON;
+				},
+			};
+			const findings = checkInference(deps);
+			expect(byId(findings, "inference.claude.cli").level).toBe("warn");
+			expect(findings.map((finding) => finding.id)).not.toContain("inference.claude.auth");
+			expect(probed).toBe(0);
+		});
+
+		test("the default probes the bare claude command", () => {
+			const bins: string[] = [];
+			deps = {
+				...deps,
+				claudeVersion: (bin) => {
+					bins.push(bin);
+					return "2.1.300";
+				},
+			};
+			checkInference(deps);
+			expect(bins).toEqual(["claude"]);
+		});
+	});
+
+	describe("the effective Claude model", () => {
+		beforeEach(() => {
+			userConfig({
+				claude: { model: "opus" },
+				models: { hosts: { "claude-code": { model: "haiku" }, omp: { model: "haiku" } } },
+			});
+			deps = { ...deps, claudeVersion: () => "2.1.100" };
+		});
+
+		test("a host override replaces claude.model for the minimum, the title and the Models line", () => {
+			const findings = checkInference(deps);
+			expect(byId(findings, "inference.claude.cli").title).toBe(
+				"claude 2.1.100 is older than 2.1.293, which haiku needs",
+			);
+			expect(byId(findings, "inference.models")).toMatchObject({
+				title: "Models: claude haiku, grok grok-build-0.1 then grok-4.7",
+				detail: "claude model comes from models.hosts.claude-code.model",
+			});
+		});
+
+		test("on omp the override names a native target and is ignored", () => {
+			setEnv({ ULTRATHINK_HOST: "omp" });
+			const findings = checkInference(deps);
+			expect(byId(findings, "inference.claude.cli").title).toBe(
+				"claude 2.1.100 is older than 2.1.280, which opus needs",
+			);
+			expect(byId(findings, "inference.models")).toMatchObject({
+				title: "Models: claude opus, grok grok-build-0.1 then grok-4.7",
+				detail: "claude.model is pinned in config",
+			});
+		});
+
+		test("a blank host override falls back to claude.model", () => {
+			userConfig({
+				claude: { model: "opus" },
+				models: { hosts: { "claude-code": { model: "" } } },
+			});
+			expect(byId(checkInference(deps), "inference.claude.cli").title).toBe(
+				"claude 2.1.100 is older than 2.1.280, which opus needs",
+			);
+		});
+	});
+
+	describe("model ids are masked like engine labels", () => {
+		const PRIVATE = "user:private@model";
+
+		test("a credential-shaped selector never reaches the Models, fallback or version lines", () => {
+			userConfig({
+				claude: { model: PRIVATE, fallbackToGrok: true },
+				grok: { model: PRIVATE, fallbackModels: ["other:secret@x", "grok-4.7"] },
+			});
+			const findings = checkInference(deps);
+			expect(byId(findings, "inference.models").title).toBe(
+				"Models: claude <opaque-model>, grok <opaque-model> then <opaque-model>, grok-4.7",
+			);
+			expect(byId(findings, "inference.fallback").title).toBe(
+				"Claude to Grok fallback: on (models <opaque-model>, <opaque-model>, grok-4.7)",
+			);
+			const text = JSON.stringify(findings);
+			expect(text).not.toContain("private");
+			expect(text).not.toContain("secret");
+		});
+
+		test("a masked host override model is masked in the Models line", () => {
+			userConfig({ models: { hosts: { "claude-code": { model: PRIVATE } } } });
+			const findings = checkInference(deps);
+			expect(byId(findings, "inference.models").title).toStartWith(
+				"Models: claude <opaque-model>,",
+			);
+			expect(JSON.stringify(findings)).not.toContain("private");
+		});
+	});
+
 	describe("through runDoctorCommand", () => {
 		beforeEach(() => {
 			deps = {

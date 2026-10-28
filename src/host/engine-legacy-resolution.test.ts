@@ -895,6 +895,63 @@ describe("call-time failover (claude.fallbackToGrok and the Grok model chain)", 
 		}
 	});
 
+	test("fallbackToGrok skips a grok.model with a control character and answers on the next valid model", async () => {
+		const claude = claudeStub(PLAN_LIMIT, 1);
+		const gw = gateway(() => Response.json({ output_text: "HTTP_REPLY" }));
+		try {
+			const config = claudeConfig(claude.bin, true, {
+				home: grokLogin(),
+				baseUrl: `${gw.origin}/v1`,
+				model: "bad\nmodel",
+				fallbackModels: ["grok-4.7"],
+			});
+			const selected = engineOf(
+				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),
+			);
+			expect(await selected.complete("system", "user")).toBe("HTTP_REPLY");
+			expect(selected.failover?.()).toBe(`${CLAUDE_FIRST} → grok:grok-4.7 (plan-limit)`);
+			expect(gw.models).toEqual(["grok-4.7"]);
+		} finally {
+			gw.stop();
+		}
+	});
+
+	test("fallbackToGrok with only unusable Grok selectors stays a single Claude candidate", async () => {
+		const claude = claudeStub(PLAN_LIMIT, 1);
+		const config = claudeConfig(claude.bin, true, {
+			home: grokLogin(),
+			model: "bad\nmodel",
+			fallbackModels: [],
+		});
+		const selected = engineOf(
+			await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),
+		);
+		expect(selected.failover).toBeUndefined();
+		await expect(selected.complete("system", "user")).rejects.toThrow(/session limit/);
+	});
+
+	test("a shunt Grok fallback is named by the effective wire alias, not grok.model", async () => {
+		const claude = claudeStub(PLAN_LIMIT, 1);
+		const gw = gateway(shuntReply);
+		try {
+			const config = claudeConfig(claude.bin, true, {
+				transport: "shunt",
+				shuntBaseUrl: gw.origin,
+				shuntModel: "gateway-alias",
+			});
+			const selected = engineOf(
+				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),
+			);
+			expect(await selected.complete("system", "user")).toBe("GATEWAY_REPLY");
+			const failover = selected.failover?.();
+			expect(failover).toBe(`${CLAUDE_FIRST} → grok:gateway-alias (plan-limit)`);
+			expect(failover).not.toContain("grok-build-0.1");
+			expect(gw.models).toEqual(["gateway-alias"]);
+		} finally {
+			gw.stop();
+		}
+	});
+
 	test("fallbackToGrok off: the plan-limit error propagates and there is no failover", async () => {
 		const claude = claudeStub(PLAN_LIMIT, 1);
 		const gw = gateway(shuntReply);

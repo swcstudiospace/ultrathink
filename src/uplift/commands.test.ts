@@ -382,6 +382,32 @@ describe("runControl", () => {
 		expect(await statusLine("Grok:")).toBe("Grok: grok-4.7 @ xhigh · transport http");
 	});
 
+	test("status prints the effort actually sent: grok-4.5 maps xhigh to high", async () => {
+		projectConfig({
+			grok: { home: join(dir, "grok"), transport: "http", model: "grok-4.5", fallbackModels: [] },
+		});
+		expect(await statusLine("Grok:")).toBe("Grok: grok-4.5 @ high · transport http");
+	});
+
+	test("status masks unsafe fallback and Claude model ids", async () => {
+		userServices({ claude: { model: "user:private@model" } });
+		projectConfig({
+			grok: {
+				home: join(dir, "grok"),
+				transport: "http",
+				fallbackModels: ["user:private@model", "grok-4.7"],
+			},
+		});
+		const text = await runControl(["status"], io);
+		expect(text).not.toContain("private");
+		expect(await statusLine("Claude:")).toBe(
+			"Claude: <opaque-model> · auth plan · fallback to Grok off",
+		);
+		expect(await statusLine("Grok:")).toBe(
+			"Grok: grok-build-0.1 · transport http · then <opaque-model>, grok-4.7",
+		);
+	});
+
 	test("the shunt status keeps its gateway extension after the then part", async () => {
 		projectConfig({ grok: { home: join(dir, "grok"), model: "grok-test", transport: "shunt" } });
 		expect(await statusLine("Grok:")).toBe(

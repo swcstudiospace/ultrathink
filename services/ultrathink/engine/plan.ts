@@ -51,16 +51,25 @@ export class PlanCompleterError extends Error {
 	}
 }
 
+export interface PlanCallHooks {
+	/** Output-token cap for this call, passed to every completer that supports one. */
+	maxOutputTokens?: number;
+	/** Fires once per attempt that reported tokens (a failed Claude attempt, then Grok), never costUsd. */
+	onUsage?: (usage: PlanUsage) => void;
+	/** Fires once after a call that a later candidate answered, with the chain's summary. */
+	onFailover?: (summary: string) => void;
+}
+
 export interface PlanBackend {
 	/** `plan:<model>` or `plan:<model>+grok`. */
 	readonly label: string;
 	ready(): { ok: boolean; detail?: string };
-	/** One model call. `onUsage` fires for THIS call only (tokens, never costUsd). Throws PlanCompleterError. */
+	/** One model call. Throws PlanCompleterError. */
 	complete(
 		system: string,
 		user: string,
 		signal?: AbortSignal,
-		onUsage?: (usage: PlanUsage) => void,
+		hooks?: PlanCallHooks,
 	): Promise<string>;
 }
 
@@ -183,12 +192,13 @@ export function createPlanBackend(opts: PlanBackendOptions): PlanBackend {
 	const makeClaude = opts.claude ?? createClaudeCompleter;
 	const makeGrok = opts.grok ?? createGrokCompleter;
 	const semaphore = new Semaphore(Math.max(1, Math.floor(opts.concurrency)));
-	// Completers are built once (cooldown state lives in the chain); the call's own usage hook
-	// travels through async context so concurrent calls never see each other's tokens.
-	const usageHook = new AsyncLocalStorage<(usage: PlanUsage) => void>();
+	// The failover chain is built once (its cooldown state must outlive a call). The per-call hooks
+	// and the output cap travel through async context, and each attempt builds its completer from
+	// them, so concurrent calls never see each other's tokens or caps.
+	const callHooks = new AsyncLocalStorage<PlanCallHooks>();
 
 	const report = (promptTokens: number | undefined, completionTokens: number | undefined): void => {
-		const hook = usageHook.getStore();
+		const hook = callHooks.getStore()?.onUsage;
 		if (!hook) return;
 		const usage: PlanUsage = {};
 		if (promptTokens !== undefined) usage.promptTokens = promptTokens;
@@ -201,35 +211,47 @@ export function createPlanBackend(opts: PlanBackendOptions): PlanBackend {
 		}
 	};
 
-	const claude = makeClaude({
-		auth: "plan",
-		env,
-		model: opts.model,
-		timeoutMs: opts.timeoutMs,
-		onResult: (info: ClaudeCallInfo) => report(info.inputTokens, info.outputTokens),
-	});
+	// One report per attempt: a failed Claude attempt that consumed tokens is not folded into the
+	// attempt that answered. Note: whether the Claude CLI honors the output cap is up to
+	// `maxOutputTokens` in src/claude/complete.ts; each completer is given what it supports.
+	const claudeAttempt: Completer = (system, user, signal) =>
+		makeClaude({
+			auth: "plan",
+			env,
+			model: opts.model,
+			timeoutMs: opts.timeoutMs,
+			maxOutputTokens: callHooks.getStore()?.maxOutputTokens,
+			onResult: (info: ClaudeCallInfo) => report(info.inputTokens, info.outputTokens),
+		})(system, user, signal);
 
-	let run: Completer = claude;
+	const grokAttempt =
+		(model: string): Completer =>
+		(system, user, signal) =>
+			makeGrok({
+				model,
+				transport: "http",
+				timeoutMs: opts.timeoutMs,
+				env,
+				maxOutputTokens: callHooks.getStore()?.maxOutputTokens,
+				...(env.GROK_HOME ? { home: env.GROK_HOME } : {}),
+				onResult: (info: GrokCallInfo) => report(info.inputTokens, info.outputTokens),
+			})(system, user, signal);
+
+	let run: Completer = claudeAttempt;
 	if (opts.fallback === "grok") {
-		const candidates: FailoverCandidate[] = [
-			{ id: `claude:${opts.model}`, label: `claude:${opts.model}`, complete: claude },
-		];
-		const grokEnvHome = env.GROK_HOME;
 		const grokModels = unique([ROUTE_DEFAULT_MODELS.grok, ...DEFAULT_GROK_CONFIG.fallbackModels]);
-		for (const model of grokModels) {
-			candidates.push({
+		const candidates: FailoverCandidate[] = [
+			{ id: `claude:${opts.model}`, label: `claude:${opts.model}`, complete: claudeAttempt },
+			...grokModels.map((model) => ({
 				id: `grok:${model}`,
 				label: `grok:${model}`,
-				complete: makeGrok({
-					model,
-					transport: "http",
-					timeoutMs: opts.timeoutMs,
-					...(grokEnvHome ? { home: grokEnvHome } : {}),
-					onResult: (info: GrokCallInfo) => report(info.inputTokens, info.outputTokens),
-				}),
-			});
-		}
-		run = createFailoverCompleter(candidates).complete;
+				complete: grokAttempt(model),
+			})),
+		];
+		// The chain calls this inside the caller's async context, so it reaches this call's hook only.
+		run = createFailoverCompleter(candidates, {
+			onFailover: (summary) => callHooks.getStore()?.onFailover?.(summary),
+		}).complete;
 	}
 
 	return {
@@ -244,12 +266,10 @@ export function createPlanBackend(opts: PlanBackendOptions): PlanBackend {
 			}
 			return { ok: true };
 		},
-		async complete(system, user, signal, onUsage) {
+		async complete(system, user, signal, hooks = {}) {
 			await semaphore.acquire(signal);
 			try {
-				return await (onUsage
-					? usageHook.run(onUsage, () => run(system, user, signal))
-					: run(system, user, signal));
+				return await callHooks.run(hooks, () => run(system, user, signal));
 			} catch (error) {
 				throw toPlanError(error);
 			} finally {

@@ -35,6 +35,7 @@ interface FailoverAttempt {
 export interface FailoverCompleter {
 	complete: Completer;
 	attempts(): readonly FailoverAttempt[];
+	/** Cumulative: set once any call was answered by a later candidate and never cleared. */
 	failover(): string | undefined;
 }
 
@@ -48,9 +49,20 @@ function safeMessage(error: unknown, max: number): string {
 	return redactSecrets(redactLine(text, max)).slice(0, max);
 }
 
+/**
+ * Ordered failover over `candidates`. One candidate is returned untouched. Cooldowns, `attempts()` and
+ * `failover()` live for the life of the returned completer, not across prompts or processes: a hook
+ * that builds a new chain per prompt starts with every candidate ready. When every candidate fails
+ * the thrown `FailoverError` carries `failure`, the class of the first failure in that walk.
+ *
+ * `onFailover` is called synchronously, inside the `complete` call itself, with the summary of that
+ * call whenever a candidate after the first answers it. Callers that share one chain between
+ * concurrent calls must use it rather than `failover()`, which is cumulative. It never fires for a
+ * single candidate, when the first candidate answers or when every candidate fails.
+ */
 export function createFailoverCompleter(
 	candidates: readonly FailoverCandidate[],
-	opts: { now?: () => number } = {},
+	opts: { now?: () => number; onFailover?: (summary: string) => void } = {},
 ): FailoverCompleter {
 	const [first] = candidates;
 	if (first === undefined) throw new Error("createFailoverCompleter needs at least one candidate");
@@ -64,18 +76,26 @@ export function createFailoverCompleter(
 	let failoverText: string | undefined;
 
 	const complete: Completer = async (system, user, signal) => {
+		let firstFailureHere: FailureClass | undefined;
 		if (signal?.aborted) throw abortError();
 		const at = now();
 		const ready = candidates.filter((c) => (cooldownUntil.get(c.id) ?? 0) <= at);
 		const walk = ready.length > 0 ? ready : candidates;
 		const failed: { label: string; message: string }[] = [];
 		let firstError: unknown;
+		let firstFailure: FailureClass = "other";
 		for (const candidate of walk) {
 			if (signal?.aborted) throw abortError();
 			try {
 				const text = await candidate.complete(system, user, signal);
 				if (candidate !== first) {
-					failoverText = `${first.label} → ${candidate.label} (${lastFailure.get(first.id) ?? "other"})`;
+					const summary = `${first.label} → ${candidate.label} (${firstFailureHere ?? lastFailure.get(first.id) ?? "other"})`;
+					failoverText = summary;
+					try {
+						opts.onFailover?.(summary);
+					} catch {
+						// reason: a reporting hook must never change the completion outcome
+					}
 				}
 				return text;
 			} catch (error) {
@@ -85,14 +105,21 @@ export function createFailoverCompleter(
 				attempts.push({ candidate: candidate.id, failure, message });
 				if (attempts.length > MAX_KEPT_ATTEMPTS) attempts.shift();
 				lastFailure.set(candidate.id, failure);
+				if (candidate === first) firstFailureHere = failure;
 				if (!isFailoverWorthy(failure)) throw error;
 				cooldownUntil.set(candidate.id, now() + failureCooldownMs(failure));
-				firstError ??= error;
+				if (failed.length === 0) {
+					firstError = error;
+					firstFailure = failure;
+				}
 				failed.push({ label: candidate.label, message });
 			}
 		}
 		const summary = failed.map((f) => `${f.label}: ${f.message}`).join("; ");
-		throw new Error(redactSecrets(summary.slice(0, MAX_ERROR_CHARS)), { cause: firstError });
+		throw Object.assign(
+			new Error(redactSecrets(summary.slice(0, MAX_ERROR_CHARS)), { cause: firstError }),
+			{ name: "FailoverError", failure: firstFailure },
+		);
 	};
 
 	return {

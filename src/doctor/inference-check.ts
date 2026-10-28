@@ -11,6 +11,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { planEnv } from "../claude/complete.ts";
+import { displayId } from "../claude/output.ts";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { grokAuthStatus } from "../grok/auth.ts";
 import { detectHost } from "../host/detect.ts";
@@ -86,8 +87,20 @@ function parseClaudeStatus(stdout: string): ClaudeStatus | undefined {
 	};
 }
 
-function cliFinding(deps: DoctorDeps, model: string): Finding | undefined {
-	if (!deps.which("claude")) {
+/** The Claude model planning really sends on this host: a non-blank `models.hosts.<host>.model` wins, except on Omp (a native target, never a CLI wire model). */
+function effectiveClaudeModel(
+	deps: DoctorDeps,
+	config: UltrathinkConfig,
+): { model: string; hostOverride: boolean } {
+	const host = detectHost(deps.env);
+	const override = host === "omp" ? "" : (config.models.hosts[host]?.model.trim() ?? "");
+	return override
+		? { model: override, hostOverride: true }
+		: { model: config.claude.model.trim(), hostOverride: false };
+}
+
+function cliFinding(deps: DoctorDeps, bin: string, model: string): Finding | undefined {
+	if (!deps.which(bin)) {
 		return {
 			id: "inference.claude.cli",
 			section: "inference",
@@ -96,7 +109,7 @@ function cliFinding(deps: DoctorDeps, model: string): Finding | undefined {
 			fix: "Install Claude Code (https://code.claude.com/docs/en/setup)",
 		};
 	}
-	const line = deps.claudeVersion?.();
+	const line = deps.claudeVersion?.(bin);
 	const version = line === undefined ? undefined : parseSemver(line);
 	if (!version) return undefined;
 	const shown = version.join(".");
@@ -107,7 +120,7 @@ function cliFinding(deps: DoctorDeps, model: string): Finding | undefined {
 			id: "inference.claude.cli",
 			section: "inference",
 			level: "warn",
-			title: `claude ${shown} is older than ${minimum}, which ${model} needs`,
+			title: `claude ${shown} is older than ${minimum}, which ${displayId(model, "<opaque-model>")} needs`,
 			fix: "claude update",
 		};
 	}
@@ -119,7 +132,7 @@ function cliFinding(deps: DoctorDeps, model: string): Finding | undefined {
 	};
 }
 
-function authFindings(deps: DoctorDeps, mode: "plan" | "api-key"): Finding[] {
+function authFindings(deps: DoctorDeps, mode: "plan" | "api-key", bin: string): Finding[] {
 	if (mode === "api-key") {
 		const findings: Finding[] = [
 			{
@@ -141,8 +154,8 @@ function authFindings(deps: DoctorDeps, mode: "plan" | "api-key"): Finding[] {
 		}
 		return findings;
 	}
-	if (!deps.claudeAuth || !deps.which("claude")) return [];
-	const raw = deps.claudeAuth(planEnv(deps.env));
+	if (!deps.claudeAuth || !deps.which(bin)) return [];
+	const raw = deps.claudeAuth(planEnv(deps.env), bin);
 	const status = raw === undefined ? undefined : parseClaudeStatus(raw);
 	if (!status) return [];
 	if (!status.loggedIn) {
@@ -255,16 +268,20 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 export function checkInference(deps: DoctorDeps): Finding[] {
 	const config = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
 	const findings: Finding[] = [];
-	const cli = cliFinding(deps, config.claude.model);
+	const bin = config.claude.bin;
+	const claude = effectiveClaudeModel(deps, config);
+	const cli = cliFinding(deps, bin, claude.model);
 	if (cli) findings.push(cli);
-	findings.push(...authFindings(deps, config.claude.auth));
+	findings.push(...authFindings(deps, config.claude.auth, bin));
 	if (config.claude.auth === "plan") {
 		const key = keyFinding(deps);
 		if (key) findings.push(key);
 	}
 	findings.push(grokFinding(deps, config));
 
-	const grokModels = [...new Set([config.grok.model, ...config.grok.fallbackModels])];
+	const grokModels = [...new Set([config.grok.model, ...config.grok.fallbackModels])].map((model) =>
+		displayId(model, "<opaque-model>"),
+	);
 	findings.push({
 		id: "inference.fallback",
 		section: "inference",
@@ -274,18 +291,20 @@ export function checkInference(deps: DoctorDeps): Finding[] {
 			: "Claude to Grok fallback: off (claude.fallbackToGrok is false)",
 	});
 
-	const claudeModel = config.claude.model.trim();
-	const thenModels = config.grok.fallbackModels;
+	const claudeModel = claude.model;
+	const thenModels = config.grok.fallbackModels.map((model) => displayId(model, "<opaque-model>"));
 	const models: Finding = {
 		id: "inference.models",
 		section: "inference",
 		level: "info",
-		title: `Models: claude ${claudeModel || "(default)"}, grok ${config.grok.model}${
+		title: `Models: claude ${claudeModel ? displayId(claudeModel, "<opaque-model>") : "(default)"}, grok ${displayId(config.grok.model, "<opaque-model>")}${
 			thenModels.length > 0 ? ` then ${thenModels.join(", ")}` : ""
 		}`,
 	};
 	if (claudeModel && claudeModel !== ROUTE_DEFAULT_MODELS.claude) {
-		models.detail = "claude.model is pinned in config";
+		models.detail = claude.hostOverride
+			? `claude model comes from models.hosts.${detectHost(deps.env)}.model`
+			: "claude.model is pinned in config";
 	}
 	findings.push(models);
 	return findings;

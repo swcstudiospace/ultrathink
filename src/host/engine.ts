@@ -388,11 +388,11 @@ async function claudeRoute(
 	const failoverToGrok = !fallback && config.claude.fallbackToGrok && config.grok.enabled;
 	if (failoverToGrok && (await grokUsable(config))) {
 		const grokModels = unique([config.grok.model, ...config.grok.fallbackModels]);
-		const chain = createFailoverCompleter([
-			{ id: label, label, complete: claude },
-			...grokCandidates(config, cwd, grokModels),
-		]);
-		return captureFirstError(label, chain.complete, resolution, chain.failover);
+		const grok = grokCandidates(config, cwd, grokModels);
+		if (grok.length > 0) {
+			const chain = createFailoverCompleter([{ id: label, label, complete: claude }, ...grok]);
+			return captureFirstError(label, chain.complete, resolution, chain.failover);
+		}
 	}
 	return captureFirstError(label, claude, resolution);
 }
@@ -412,32 +412,41 @@ async function grokUsable(config: UltrathinkConfig): Promise<boolean> {
 	return auth.loggedIn && !auth.expired;
 }
 
-/** One failover candidate per Grok model; the shunt transport sends its own alias, so it is a single candidate. */
+/**
+ * One failover candidate per usable Grok model; the shunt transport sends its own alias, so it is a single candidate
+ * named by the effective wire model. A selector with a control character never reaches a header or argv: it is skipped.
+ */
 function grokCandidates(
 	config: UltrathinkConfig,
 	cwd: string,
 	models: readonly string[],
 ): FailoverCandidate[] {
-	const chain = config.grok.transport === "shunt" ? models.slice(0, 1) : models;
-	return chain.map((model) => {
-		const label = `grok:${displayId(model, "<opaque-model>")}`;
-		return {
-			id: label,
-			label,
-			complete: createGrokCompleter({
-				baseUrl: config.grok.baseUrl,
-				model,
-				reasoningEffort: config.grok.reasoningEffort,
-				timeoutMs: config.grok.callTimeoutMs,
-				home: config.grok.home || undefined,
-				transport: config.grok.transport,
-				bin: config.grok.bin,
-				cwd,
-				shuntBaseUrl: config.grok.shuntBaseUrl,
-				shuntModel: config.grok.shuntModel,
-				shuntMaxTokens: config.grok.shuntMaxTokens,
-			}),
-		};
+	const shunt = config.grok.transport === "shunt";
+	const chain = shunt ? models.slice(0, 1) : models;
+	return chain.flatMap((model) => {
+		const raw = shunt && config.grok.shuntModel.trim() ? config.grok.shuntModel : model;
+		const wire = raw.trim();
+		if (!wire || hasControlCharacter(raw)) return [];
+		const label = `grok:${displayId(wire, "<opaque-model>")}`;
+		return [
+			{
+				id: label,
+				label,
+				complete: createGrokCompleter({
+					baseUrl: config.grok.baseUrl,
+					model,
+					reasoningEffort: config.grok.reasoningEffort,
+					timeoutMs: config.grok.callTimeoutMs,
+					home: config.grok.home || undefined,
+					transport: config.grok.transport,
+					bin: config.grok.bin,
+					cwd,
+					shuntBaseUrl: config.grok.shuntBaseUrl,
+					shuntModel: config.grok.shuntModel,
+					shuntMaxTokens: config.grok.shuntMaxTokens,
+				}),
+			},
+		];
 	});
 }
 

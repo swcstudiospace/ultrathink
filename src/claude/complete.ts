@@ -61,6 +61,8 @@ export interface ClaudeCompleteOptions {
 	auth?: ClaudeAuthMode;
 	/** Called once per call whose stdout was parseable JSON, including `is_error` results. */
 	onResult?: (info: ClaudeCallInfo) => void;
+	/** Output token cap for the reply (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`); floored, ignored unless a positive integer. */
+	maxOutputTokens?: number;
 }
 
 export type ClaudeCompleter = (
@@ -201,7 +203,10 @@ async function claudeComplete(
 		[CHILD_ENV]: "1",
 	};
 	if (!opts.thinking) env.MAX_THINKING_TOKENS = "0";
-	return claudeAttempt(system, user, opts, opts.auth === "api-key" ? env : planEnv(env));
+	const childEnv = opts.auth === "api-key" ? env : planEnv(env);
+	const cap = opts.maxOutputTokens === undefined ? 0 : Math.floor(opts.maxOutputTokens);
+	if (Number.isFinite(cap) && cap > 0) childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(cap);
+	return claudeAttempt(system, user, opts, childEnv);
 }
 
 async function claudeAttempt(

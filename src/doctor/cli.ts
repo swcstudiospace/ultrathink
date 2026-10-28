@@ -20,10 +20,14 @@ const USAGE = "Usage: ultrathink doctor [--json]";
 const VERSION_TIMEOUT_MS = 3_000;
 const CLAUDE_PROBE_TIMEOUT_MS = 8_000;
 
-/** Stdout of `claude <args>`, or undefined when the CLI cannot run or printed nothing. A logged-out status exits non-zero but still prints its JSON. */
-function runClaude(args: string[], env: Record<string, string | undefined>): string | undefined {
+/** Stdout of `<bin> <args>`, or undefined when the CLI cannot run or printed nothing. A logged-out status exits non-zero but still prints its JSON. */
+function runClaude(
+	bin: string,
+	args: string[],
+	env: Record<string, string | undefined>,
+): string | undefined {
 	try {
-		const proc = Bun.spawnSync(["claude", ...args], {
+		const proc = Bun.spawnSync([bin, ...args], {
 			env,
 			stdin: "ignore",
 			stdout: "pipe",
@@ -62,8 +66,8 @@ function productionDeps(): DoctorDeps {
 		which: (command) => Bun.which(command) ?? undefined,
 		bunVersion: Bun.version,
 		runVersion,
-		claudeVersion: () => runClaude(["--version"], process.env)?.split("\n")[0],
-		claudeAuth: (env) => runClaude(["auth", "status", "--json"], env),
+		claudeVersion: (bin) => runClaude(bin, ["--version"], process.env)?.split("\n")[0],
+		claudeAuth: (env, bin) => runClaude(bin, ["auth", "status", "--json"], env),
 	};
 }
 

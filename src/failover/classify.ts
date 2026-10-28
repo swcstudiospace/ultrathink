@@ -115,6 +115,13 @@ function statusClass(status: number | undefined): FailureClass | undefined {
 /** Maps a thrown value from any inference route onto one failover class. */
 export function classifyFailure(error: unknown): FailureClass {
 	const name = readString(error, "name");
+	if (name === "FailoverError") {
+		// A chain that ran out of candidates carries the class of its first failure; the clipped text cannot.
+		const carried = readString(error, "failure");
+		if (carried !== undefined && Object.hasOwn(COOLDOWN_MS, carried)) {
+			return carried as FailureClass;
+		}
+	}
 	if (name === "AbortError") return "aborted";
 	const message = messageOf(error);
 	if (anyMatch(MODEL_UNAVAILABLE_RES, message)) return "model-unavailable";

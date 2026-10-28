@@ -58,8 +58,8 @@ export interface DoctorDeps {
 	bunVersion: string;
 	/** First line of `<command> --version`, or undefined when it cannot be run. Only the Python interpreters are ever probed: `gh` and `curl` cannot be passed. */
 	runVersion: (command: PythonCommand) => string | undefined;
-	/** First line of `claude --version` (sync, 8 s cap), or undefined when it cannot run. Optional: absent means the version finding is skipped. */
-	claudeVersion?: () => string | undefined;
-	/** Stdout of `claude auth status --json` run with `env` (sync, 8 s cap), or undefined when it cannot run. Optional: absent means the auth finding is skipped. */
-	claudeAuth?: (env: Env) => string | undefined;
+	/** First line of `<bin> --version` for the configured `claude.bin` (sync, 8 s cap), or undefined when it cannot run. Optional: absent means the version finding is skipped. */
+	claudeVersion?: (bin: string) => string | undefined;
+	/** Stdout of `<bin> auth status --json` run with `env` (sync, 8 s cap), or undefined when it cannot run. Optional: absent means the auth finding is skipped. */
+	claudeAuth?: (env: Env, bin: string) => string | undefined;
 }

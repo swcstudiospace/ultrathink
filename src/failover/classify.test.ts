@@ -181,6 +181,24 @@ describe("classifyFailure precedence", () => {
 		);
 	});
 
+	test("a FailoverError reports its carried class before any text or status rule", () => {
+		const carried = Object.assign(new Error("x"), { name: "FailoverError", failure: "plan-limit" });
+		expect(classifyFailure(carried)).toBe("plan-limit");
+		const overText = Object.assign(new Error("fetch failed"), {
+			name: "FailoverError",
+			failure: "auth",
+			status: 429,
+		});
+		expect(classifyFailure(overText)).toBe("auth");
+	});
+
+	test("a FailoverError with an invalid failure falls through to the normal rules", () => {
+		for (const failure of ["bogus", 7, undefined, "toString"]) {
+			const error = Object.assign(new Error("fetch failed"), { name: "FailoverError", failure });
+			expect(classifyFailure(error)).toBe("network");
+		}
+	});
+
 	test("a plan-limit message wins over a 429 status", () => {
 		expect(classifyFailure(err("You've hit your session limit", { apiErrorStatus: 429 }))).toBe(
 			"plan-limit",

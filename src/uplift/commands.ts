@@ -154,8 +154,11 @@ function claudeStatusLine(config: UltrathinkConfig): string {
 function grokTransportLine(config: UltrathinkConfig): string {
 	const { grok } = config;
 	const effort = grokWireEffort(grok.model, grok.reasoningEffort);
-	const then = grok.fallbackModels.length > 0 ? ` · then ${grok.fallbackModels.join(", ")}` : "";
-	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)}${effort ? ` @ ${grok.reasoningEffort}` : ""} · transport ${grok.transport}${then}`;
+	const then =
+		grok.fallbackModels.length > 0
+			? ` · then ${grok.fallbackModels.map((model) => displayId(model, OPAQUE_MODEL)).join(", ")}`
+			: "";
+	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)}${effort ? ` @ ${effort}` : ""} · transport ${grok.transport}${then}`;
 	if (grok.transport !== "shunt") return base;
 	const gateway = grok.shuntBaseUrl
 		? `${grok.shuntBaseUrl}/v1/messages`

@@ -100,17 +100,17 @@ The `Engine:` status label is `<model>@<effort>` for `http` and `cli` when the m
 
 ## The Grok model walk
 
-The `http` and `cli` transports try `grok.model` first and then each entry of `grok.fallbackModels`, in order, and skip a model your session cannot use. A model counts as unusable when the proxy answers HTTP 429 with a request limit of 0, HTTP 403 `requires a Grok subscription`, or the CLI reports `unknown model id`. A model that failed this way rests for 60 minutes, so the next prompt does not try it first. Other failures that fail over use the cooldowns [below](#claude-to-grok-fallback).
+The `http` and `cli` transports try `grok.model` first and then each entry of `grok.fallbackModels`, in order, and skip a model your session cannot use. A model counts as unusable when the proxy answers HTTP 429 with a request limit of 0, HTTP 403 `requires a Grok subscription`, or the CLI reports `unknown model id`. Within one planning run such a model rests for 60 minutes, so the later stage calls of that run do not try it again; the next prompt tries it once more. Other failures that fail over use the rest times [below](#claude-to-grok-fallback).
 
-This matters because `grok-build-0.1`, the default, is not served to every Grok session (see [Verified models](#verified-models)). A session that cannot use it plans on `grok-4.7`, the default `grok.fallbackModels` entry, and the summary says so with a `Failover · …` segment. Set `grok.model` to `"grok-4.7"` to skip the first attempt. Set `grok.fallbackModels` to `[]` to disable the walk; a project config file may set it, like `grok.model`. A `shunt` gateway is a single candidate and is not walked.
+This matters because `grok-build-0.1`, the default, is not served to every Grok session (see [Verified models](#verified-models)). Each new prompt tries the configured model once; a refusal costs one quick failed request, then `grok-4.7`, the default `grok.fallbackModels` entry, answers and the summary says so with a `Failover · …` segment. Set `grok.model` to a model you can use, for example `"grok-4.7"`, to skip that attempt. Set `grok.fallbackModels` to `[]` to disable the walk; a project config file may set it, like `grok.model`. A `shunt` gateway is a single candidate and is not walked.
 
 ## Claude to Grok fallback
 
 By default a failed Claude call is an engine error. Set `claude.fallbackToGrok: true` in your **user** config (a project file cannot set it) and a failed Claude call fails over to the Grok route instead, trying `grok.model` and then `grok.fallbackModels`. It is off by default because the prompt text then leaves Anthropic for xAI; see [Privacy](../privacy.md). It applies only while the Grok route is usable, meaning a Grok login that is present and not expired, or a configured `shunt` gateway.
 
-These failure classes fail over: `auth`, `billing`, `plan-limit`, `rate-limit`, `overloaded`, `model-unavailable`, `unavailable` and `network`. `timeout`, `aborted` and `other` do not; they stop the call as before. A candidate that failed is not retried on every stage call; it rests for a cooldown:
+These failure classes fail over: `auth`, `billing`, `plan-limit`, `rate-limit`, `overloaded`, `model-unavailable`, `unavailable` and `network`. `timeout`, `aborted` and `other` do not; they stop the call as before. Within one planning run, a candidate that failed is not retried on every stage call; it rests for the time below. The rest lives in that run's failover chain, in that process only. A hook process is short-lived and builds a new chain for each prompt, so on those hosts the next prompt starts with every candidate available again; only a long-lived process, such as the hosted service, carries a rest from one request to the next.
 
-| Class | Cooldown | Typical cause |
+| Class | Rest within one run | Typical cause |
 |---|---|---|
 | `auth` | 10 min | Claude or Grok login missing, expired or rejected. |
 | `billing` | 60 min | `Credit balance is too low`. |
@@ -121,7 +121,7 @@ These failure classes fail over: `auth`, `billing`, `plan-limit`, `rate-limit`, 
 | `unavailable` | 60 min | The CLI binary is missing. |
 | `network` | 30 s | `fetch failed`, `ECONNRESET`, a DNS failure. |
 
-The CLIs already retry 429 and 529 themselves, so ultrathink adds no retry layer of its own: it classifies the failure, fails over and cools the candidate down. The summary line then carries `Failover · claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)`, and the session record stores the same text as `engineFailover`.
+The CLIs already retry 429 and 529 themselves, so ultrathink adds no retry layer of its own: it classifies the failure, fails over and rests the candidate for the time above. The summary line then carries `Failover · claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)`, and the session record stores the same text as `engineFailover`.
 
 ## Muse
 

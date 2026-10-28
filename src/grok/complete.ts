@@ -62,6 +62,10 @@ export interface GrokCompleteOptions {
 	shuntMaxTokens?: number;
 	/** `http` transport: receives model and token usage from the reply when present. Never throws into the call. */
 	onResult?: (info: GrokCallInfo) => void;
+	/** `http` transport: `max_output_tokens` (visible output only; positive integer, floored). The CLI transport ignores it. */
+	maxOutputTokens?: number;
+	/** Child environment for the token refresh and the CLI transport; default is the whole `process.env`. Pass an allowlist when the host holds unrelated secrets. */
+	env?: Record<string, string | undefined>;
 }
 
 const SHUNT_ANTHROPIC_VERSION = "2023-06-01";
@@ -73,9 +77,16 @@ export function buildResponsesBody(
 	user: string,
 	model: string,
 	effort?: GrokEffort,
+	maxOutputTokens?: number,
 ): Record<string, unknown> {
 	const body: Record<string, unknown> = { model, instructions: system, input: user };
 	if (effort) body.reasoning = { effort };
+	if (
+		typeof maxOutputTokens === "number" &&
+		Number.isFinite(maxOutputTokens) &&
+		maxOutputTokens >= 1
+	)
+		body.max_output_tokens = Math.floor(maxOutputTokens);
 	body.stream = false;
 	return body;
 }
@@ -283,6 +294,9 @@ async function completeShunt(
 	}
 }
 
+const MODEL_REFUSAL =
+	/requires a grok subscription|unknown model|not available|model.*(?:not found|unsupported)/i;
+
 async function completeHttp(
 	system: string,
 	user: string,
@@ -291,7 +305,12 @@ async function completeHttp(
 	effort: GrokEffort | undefined,
 ): Promise<string> {
 	const refresh = opts.refresh ?? ensureFreshGrokAuth;
-	const refreshOpts: EnsureFreshOptions = { home: opts.home, bin: opts.bin, timeoutMs: 20_000 };
+	const refreshOpts: EnsureFreshOptions = {
+		home: opts.home,
+		bin: opts.bin,
+		timeoutMs: 20_000,
+		env: opts.env,
+	};
 	const auth = await refresh(refreshOpts);
 	if (!auth) throw new GrokAuthError(`Grok login missing: ${LOGIN_HINT}`);
 	if (isGrokAuthExpired(auth)) throw new GrokAuthError(`Grok login expired: ${LOGIN_HINT}`);
@@ -299,7 +318,9 @@ async function completeHttp(
 	const baseUrl = (opts.baseUrl?.trim() || DEFAULT_GROK_CONFIG.baseUrl).replace(/\/+$/, "");
 	const guard = callGuard(opts);
 	const version = grokClientVersion(opts.home);
-	const body = JSON.stringify(buildResponsesBody(system, user, model, effort));
+	const body = JSON.stringify(
+		buildResponsesBody(system, user, model, effort, opts.maxOutputTokens),
+	);
 
 	async function send(session: GrokAuth): Promise<Response> {
 		try {
@@ -329,6 +350,11 @@ async function completeHttp(
 			}
 		}
 		if (res.status === 401 || res.status === 403) {
+			const rejected = redactSecrets(await res.text().catch(() => "")).slice(0, 500);
+			// A 403 that names the model or subscription is a per-model refusal, not a bad login.
+			if (MODEL_REFUSAL.test(rejected)) {
+				throw new GrokHttpError(`grok HTTP ${res.status}: ${rejected}`, res.status, rejected);
+			}
 			throw new GrokAuthError(`Grok login rejected (HTTP ${res.status}): ${LOGIN_HINT}`);
 		}
 		if (!res.ok) {
@@ -400,7 +426,7 @@ async function completeCli(
 	const promptPath = join(dir, "prompt.md");
 	writeFileSync(promptPath, user, "utf8");
 	const env: Record<string, string | undefined> = {
-		...process.env,
+		...(opts.env ?? process.env),
 		GROK_SUBAGENTS: "0",
 		GROK_MEMORY: "0",
 		GROK_WEB_FETCH: "0",

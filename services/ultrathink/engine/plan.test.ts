@@ -133,14 +133,26 @@ describe("child env allowlist", () => {
 		expect(h.claudeOpts[0]?.env).toEqual({ PATH: "/usr/bin" });
 	});
 
-	test("the grok fallback is given GROK_HOME from the env and never the whole env", () => {
-		const h = harness(() => async () => "ok");
-		createPlanBackend({ ...h.opts, fallback: "grok" });
+	test("the grok completers get the filtered env and GROK_HOME, never other secrets", async () => {
+		const h = harness(
+			() => async () => {
+				throw new Error("You've hit your session limit · resets 3:45pm");
+			},
+			{ fallback: "grok" },
+		);
+		await createPlanBackend(h.opts).complete("s", "u");
 		expect(h.grokOpts.length).toBeGreaterThan(0);
 		for (const seam of h.grokOpts) {
 			expect(seam.transport).toBe("http");
 			expect(seam.home).toBe("/home/ultrathink/.grok");
-			expect("env" in seam).toBe(false);
+			expect(seam.env).toEqual(h.claudeOpts[0]?.env);
+			for (const secret of [
+				"OPENROUTER_API_KEY",
+				"ULTRATHINK_SESSION_SECRET",
+				"ANTHROPIC_API_KEY",
+			]) {
+				expect(secret in (seam.env ?? {})).toBe(false);
+			}
 		}
 	});
 });
@@ -378,7 +390,7 @@ describe("usage reporting", () => {
 			}).opts,
 		);
 		const seen: PlanUsage[] = [];
-		await backend.complete("s", "u", undefined, (usage) => seen.push(usage));
+		await backend.complete("s", "u", undefined, { onUsage: (usage) => seen.push(usage) });
 		expect(seen).toEqual([{ promptTokens: 120, completionTokens: 34 }]);
 		expect("costUsd" in (seen[0] ?? {})).toBe(false);
 	});
@@ -394,8 +406,8 @@ describe("usage reporting", () => {
 			}).opts,
 		);
 		const seen: PlanUsage[] = [];
-		await backend.complete("s", "u", undefined, (usage) => seen.push(usage));
-		await backend.complete("s", "u", undefined, (usage) => seen.push(usage));
+		await backend.complete("s", "u", undefined, { onUsage: (usage) => seen.push(usage) });
+		await backend.complete("s", "u", undefined, { onUsage: (usage) => seen.push(usage) });
 		expect(seen).toEqual([{ completionTokens: 5 }]);
 	});
 
@@ -425,8 +437,8 @@ describe("usage reporting", () => {
 		const slow: PlanUsage[] = [];
 		const fast: PlanUsage[] = [];
 		await Promise.all([
-			backend.complete("s", "slow", undefined, (usage) => slow.push(usage)),
-			backend.complete("s", "fast", undefined, (usage) => fast.push(usage)),
+			backend.complete("s", "slow", undefined, { onUsage: (usage) => slow.push(usage) }),
+			backend.complete("s", "fast", undefined, { onUsage: (usage) => fast.push(usage) }),
 		]);
 		expect(slow).toEqual([{ promptTokens: 100, completionTokens: 1 }]);
 		expect(fast).toEqual([{ promptTokens: 7, completionTokens: 1 }]);
@@ -439,16 +451,19 @@ describe("usage reporting", () => {
 				return "ok";
 			}).opts,
 		);
-		const text = await backend.complete("s", "u", undefined, () => {
-			throw new Error("hook");
+		const text = await backend.complete("s", "u", undefined, {
+			onUsage: () => {
+				throw new Error("hook");
+			},
 		});
 		expect(text).toBe("ok");
 	});
 
-	test("grok fallback tokens are reported too", async () => {
+	test("usage is reported once per attempt: a failed claude attempt, then grok", async () => {
 		const backend = createPlanBackend(
 			harness(
-				() => async () => {
+				(seam) => async () => {
+					seam.onResult?.({ inputTokens: 5, outputTokens: 1 });
 					throw new Error("You've hit your session limit · resets 3:45pm");
 				},
 				{ fallback: "grok" },
@@ -459,10 +474,14 @@ describe("usage reporting", () => {
 			).opts,
 		);
 		const seen: PlanUsage[] = [];
-		expect(await backend.complete("s", "u", undefined, (usage) => seen.push(usage))).toBe(
-			"from grok",
-		);
-		expect(seen).toEqual([{ promptTokens: 9, completionTokens: 2 }]);
+		const text = await backend.complete("s", "u", undefined, {
+			onUsage: (usage) => seen.push(usage),
+		});
+		expect(text).toBe("from grok");
+		expect(seen).toEqual([
+			{ promptTokens: 5, completionTokens: 1 },
+			{ promptTokens: 9, completionTokens: 2 },
+		]);
 	});
 });
 
@@ -488,11 +507,131 @@ describe("fallback chain", () => {
 		expect(h.grokOpts).toEqual([]);
 	});
 
-	test("grok fallback builds one completer per unique grok model, in order", () => {
-		const h = harness(() => async () => "ok");
-		const backend = createPlanBackend({ ...h.opts, fallback: "grok" });
+	test("grok fallback walks one completer per unique grok model, in order", async () => {
+		const h = harness(
+			() => async () => {
+				throw new Error("You've hit your session limit · resets 3:45pm");
+			},
+			{ fallback: "grok" },
+			() => async () => {
+				throw namedError("GrokHttpError", "grok HTTP 503: unavailable", { status: 503 });
+			},
+		);
+		const backend = createPlanBackend(h.opts);
 		expect(backend.label).toBe("plan:claude-haiku-5-5+grok");
+		await failureOf(backend.complete("s", "u"));
 		expect(h.grokOpts.map((seam) => seam.model)).toEqual(grokModels);
+	});
+
+	test("the output cap reaches the claude completer and every grok completer", async () => {
+		const h = harness(
+			() => async () => {
+				throw new Error("You've hit your session limit · resets 3:45pm");
+			},
+			{ fallback: "grok" },
+			() => async () => {
+				throw namedError("GrokHttpError", "grok HTTP 503: unavailable", { status: 503 });
+			},
+		);
+		await failureOf(
+			createPlanBackend(h.opts).complete("s", "u", undefined, { maxOutputTokens: 777 }),
+		);
+		expect(h.claudeOpts.map((seam) => seam.maxOutputTokens)).toEqual([777]);
+		expect(h.grokOpts.length).toBe(grokModels.length);
+		expect(h.grokOpts.map((seam) => seam.maxOutputTokens)).toEqual(grokModels.map(() => 777));
+	});
+
+	test("without a cap no completer is given one, and caps never leak between calls", async () => {
+		const h = harness(() => async () => "ok");
+		const backend = createPlanBackend(h.opts);
+		await backend.complete("s", "u", undefined, { maxOutputTokens: 500 });
+		await backend.complete("s", "u");
+		expect(h.claudeOpts.map((seam) => seam.maxOutputTokens)).toEqual([500, undefined]);
+	});
+
+	test("onFailover fires once with the chain summary when a later candidate answers", async () => {
+		const summaries: string[] = [];
+		const h = harness(
+			() => async () => {
+				throw new Error("You've hit your session limit · resets 3:45pm");
+			},
+			{ fallback: "grok" },
+			() => async () => "from grok",
+		);
+		const text = await createPlanBackend(h.opts).complete("s", "u", undefined, {
+			onFailover: (summary) => summaries.push(summary),
+		});
+		expect(text).toBe("from grok");
+		expect(summaries).toEqual([`claude:claude-haiku-5-5 → grok:${grokModels[0]} (plan-limit)`]);
+	});
+
+	test("onFailover does not fire when claude answers, or without a fallback chain", async () => {
+		const summaries: string[] = [];
+		const hooks = { onFailover: (summary: string) => summaries.push(summary) };
+		await createPlanBackend(harness(() => async () => "ok", { fallback: "grok" }).opts).complete(
+			"s",
+			"u",
+			undefined,
+			hooks,
+		);
+		await createPlanBackend(harness(() => async () => "ok").opts).complete(
+			"s",
+			"u",
+			undefined,
+			hooks,
+		);
+		expect(summaries).toEqual([]);
+	});
+
+	test("overlapping calls each get exactly their own onFailover summary", async () => {
+		const claudeGates = new Map<string, PromiseWithResolvers<void>>();
+		const grokGates = new Map<string, PromiseWithResolvers<void>>();
+		for (const user of ["a", "b"]) {
+			claudeGates.set(user, Promise.withResolvers<void>());
+			grokGates.set(user, Promise.withResolvers<void>());
+		}
+		const h = harness(
+			() => async (_system, user) => {
+				await claudeGates.get(user)?.promise;
+				throw new Error("You've hit your session limit · resets 3:45pm");
+			},
+			{ fallback: "grok", concurrency: 2 },
+			() => async (_system, user) => {
+				await grokGates.get(user)?.promise;
+				return `grok:${user}`;
+			},
+		);
+		const backend = createPlanBackend(h.opts);
+		const seenA: string[] = [];
+		const seenB: string[] = [];
+		const a = backend.complete("s", "a", undefined, { onFailover: (s) => seenA.push(s) });
+		const b = backend.complete("s", "b", undefined, { onFailover: (s) => seenB.push(s) });
+		// Both claude attempts are in flight; fail them in the opposite order to the starts, then
+		// let the grok attempts finish interleaved.
+		claudeGates.get("b")?.resolve();
+		claudeGates.get("a")?.resolve();
+		grokGates.get("a")?.resolve();
+		grokGates.get("b")?.resolve();
+		expect(await Promise.all([a, b])).toEqual(["grok:a", "grok:b"]);
+		const summary = `claude:claude-haiku-5-5 → grok:${grokModels[0]} (plan-limit)`;
+		expect(seenA).toEqual([summary]);
+		expect(seenB).toEqual([summary]);
+	});
+
+	test("a combined failure keeps its class: auth plus rate limit maps to auth", async () => {
+		const h = harness(
+			() => async () => {
+				throw new Error("Not logged in · Please run /login");
+			},
+			{ fallback: "grok" },
+			() => async () => {
+				throw new Error("Request rejected (429)");
+			},
+		);
+		const error = await failureOf(createPlanBackend(h.opts).complete("s", "u"));
+		expect(error).toBeInstanceOf(PlanCompleterError);
+		expect((error as PlanCompleterError).code).toBe("auth");
+		expect((error as PlanCompleterError).failure).toBe("auth");
 	});
 
 	test("a plan-limit walks claude, then each grok model in order, until one answers", async () => {

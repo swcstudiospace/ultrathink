@@ -145,6 +145,21 @@ describe("ensureFreshGrokAuth", () => {
 		expect(auth && isGrokAuthExpired(auth)).toBe(false);
 	});
 
+	test("spawns with the given env instead of process.env", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const { spawn, calls } = fakeSpawn(home);
+		process.env.OPENROUTER_API_KEY = "planted-secret";
+		try {
+			await ensureFreshGrokAuth({ home, spawn, env: { PATH: "/usr/bin" } });
+			await ensureFreshGrokAuth({ home, spawn, force: true });
+		} finally {
+			delete process.env.OPENROUTER_API_KEY;
+		}
+		expect(calls[0]?.env).toEqual({ PATH: "/usr/bin", GROK_HOME: home });
+		expect(calls[0]?.env.OPENROUTER_API_KEY).toBeUndefined();
+		expect(calls[1]?.env.OPENROUTER_API_KEY).toBe("planted-secret");
+	});
+
 	test("honours bin and leaves a fresh session alone", async () => {
 		const home = tempHome(fixture());
 		const { spawn, calls } = fakeSpawn(home);
