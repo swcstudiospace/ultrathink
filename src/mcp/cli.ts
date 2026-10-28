@@ -52,6 +52,7 @@ const USAGE = `usage:
   ultrathink-mcp auth status
   ultrathink-mcp auth set-key <provider> (--stdin | --env-file <path> --var <NAME>)
   (openrouter, vercel, hindsight and ragflow are API-key only: set-key, status and logout; never serve, check or login)
+  (the openrouter key is Jev's alone: stored in the credential store, with ULTRATHINK_OPENROUTER_KEY as the fallback)
   ultrathink-mcp auth login <provider> [--port <n>] [--redirect <url>] [--tailscale] [--no-listen]
   ultrathink-mcp auth logout <provider>
   ultrathink-mcp check [provider...]
@@ -300,6 +301,8 @@ async function setKey(id: ProviderId, args: string[], deps: AuthDeps): Promise<v
 	}
 	await setApiKey(id, key, deps);
 	out(`${id}: api key stored (${key.length} chars)`);
+	if (id === "openrouter")
+		out("Jev reads it from the credential store first, then ULTRATHINK_OPENROUTER_KEY.");
 }
 
 interface RpcMessage {

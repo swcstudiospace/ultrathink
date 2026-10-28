@@ -3,10 +3,18 @@
 /**
  * The Decisions runtime every decision point shares: the key lookup, the one is-point-active predicate, and a
  * fail-open run() that returns a typed outcome plus a content-free DecisionRecord. Jev runs on OpenRouter or the
- * Vercel AI Gateway rail; `resolveDecisionsKeys` is the one place the rail and key are picked.
+ * Vercel AI Gateway rail; `resolveDecisionsKeys` is the one place the rail and key are picked. Every real attempt
+ * feeds the health breaker and, when the host names a `stateDir`, the usage ledger (no `stateDir` means no disk at
+ * all); while the breaker is open run() makes no request.
  */
 import { readStore, storePath as defaultStorePath } from "../mcp/store.ts";
 import { type DecideOutcome, decide, redact, resolveDecisionsUrl } from "./client.ts";
+import {
+	type JevHealth,
+	openJevHealth,
+	openMemoryJevHealth,
+	unavailableMessage,
+} from "./health.ts";
 import { type DecisionStates, QUESTION_KEYS, QUESTIONS } from "./questions.ts";
 import {
 	type DecisionAction,
@@ -17,18 +25,23 @@ import {
 	type DecisionsRequest,
 	formatP,
 } from "./types.ts";
-import { decideVercel } from "./vercel.ts";
+import { appendUsage, type UsageRecord } from "./usage.ts";
+import { decideVercel, resolveGatewayModel } from "./vercel.ts";
 
 type Env = Record<string, string | undefined>;
 
-export type KeySource = "store" | "OPENROUTER_API_KEY" | "AI_GATEWAY_API_KEY";
+export type KeySource = "store" | "ULTRATHINK_OPENROUTER_KEY" | "AI_GATEWAY_API_KEY";
 
-/** Stored openrouter api_key (trimmed, non-empty) wins; else trimmed non-empty env.OPENROUTER_API_KEY; else undefined. Never throws. */
+/**
+ * Stored openrouter api_key (trimmed, non-empty) wins; else trimmed non-empty env.ULTRATHINK_OPENROUTER_KEY; else
+ * undefined. The generic OpenRouter variable that SDKs and agents auto-read is deliberately not read: exporting it
+ * would let every other tool in the shell spend Jev's key. Never throws.
+ */
 export function resolveOpenRouterKey(
 	storePath: string,
 	env: Env,
 ): { key: string; source: KeySource } | undefined {
-	return resolveStoreKey(storePath, env, "openrouter", "OPENROUTER_API_KEY");
+	return resolveStoreKey(storePath, env, "openrouter", "ULTRATHINK_OPENROUTER_KEY");
 }
 
 /** Stored vercel api_key (trimmed, non-empty) wins; else trimmed non-empty env.AI_GATEWAY_API_KEY; else undefined. Never throws. */
@@ -43,7 +56,7 @@ function resolveStoreKey(
 	storePath: string,
 	env: Env,
 	provider: string,
-	envVar: "OPENROUTER_API_KEY" | "AI_GATEWAY_API_KEY",
+	envVar: "ULTRATHINK_OPENROUTER_KEY" | "AI_GATEWAY_API_KEY",
 ): { key: string; source: KeySource } | undefined {
 	try {
 		const providers = readStore(storePath).providers as Record<string, unknown>;
@@ -98,6 +111,13 @@ export interface DecisionsDeps {
 	/** One line per decision, without the "[ultrathink] " prefix. Default: when env.ULTRATHINK_DEBUG === "1",
 	 *  process.stderr.write(`[ultrathink] ${line}\n`); otherwise no output. */
 	debug?: (line: string) => void;
+	/**
+	 * Where the health breaker and the usage ledger persist. Absent: no disk at all; the breaker lives in memory for
+	 * this runtime only and no ledger is written. Production hosts pass their real state dir.
+	 */
+	stateDir?: string;
+	/** Test seam: the breaker run() consults and feeds; default is the file breaker under `stateDir`, else an in-memory one. */
+	health?: JevHealth;
 }
 
 export interface DecisionsInput extends DecisionsDeps {
@@ -165,6 +185,40 @@ export function decisionsKilled(env: Env): boolean {
 	return env.ULTRATHINK_DECISIONS === "0";
 }
 
+/**
+ * Feeds one finished Jev call to the two sinks every caller shares (run() and the flow judge): the health breaker
+ * and, when the host named a `stateDir`, the usage ledger. A request reached the wire iff `attempts > 0`; the
+ * breaker's own refusals and the local request checks make none, so they are neither counted as spend nor as a
+ * service failure. The ledger takes counts, timings and ids only: never a key, a prompt or a body. Never throws.
+ */
+export function recordAttempt(
+	sink: { stateDir?: string; health: JevHealth },
+	call: { point: string; rail: ResolvedProvider; requestedModel: string },
+	outcome: DecideOutcome,
+	ts: number,
+): void {
+	if (outcome.attempts === 0) return;
+	const sent = { ts, ...call, ms: outcome.latencyMs };
+	let row: UsageRecord;
+	if (outcome.ok) {
+		const { response } = outcome;
+		sink.health.recordSuccess(ts);
+		row = {
+			...sent,
+			ok: true,
+			servedModel: response.model,
+			promptTokens: response.usage.input_tokens,
+			completionTokens: response.usage.output_tokens,
+			costUsd: response.usage.cost,
+			requestId: response.id,
+		};
+	} else {
+		sink.health.recordFailure(outcome.error.kind, ts);
+		row = { ...sent, ok: false, kind: outcome.error.kind, status: outcome.error.status };
+	}
+	if (sink.stateDir !== undefined) appendUsage(sink.stateDir, row);
+}
+
 /** Never throws; reads nothing until active()/run() is called. */
 export function createDecisions(input: DecisionsInput): Decisions {
 	const { config } = input;
@@ -182,6 +236,14 @@ export function createDecisions(input: DecisionsInput): Decisions {
 	};
 	const active = (point: DecisionPoint): boolean =>
 		!decisionsKilled(env) && config.points.includes(point) && keys().key !== undefined;
+	let breaker: JevHealth | undefined;
+	// Persisted only when the host named a state dir; otherwise in memory, so a bare runtime touches no disk.
+	const healthOf = (): JevHealth => {
+		breaker ??=
+			input.health ??
+			(input.stateDir === undefined ? openMemoryJevHealth() : openJevHealth(input.stateDir));
+		return breaker;
+	};
 
 	return {
 		config,
@@ -191,45 +253,68 @@ export function createDecisions(input: DecisionsInput): Decisions {
 			const apiKeyNow = picked?.key?.key;
 			if (!apiKeyNow || !picked) return { status: "inactive" };
 			const questionKey = QUESTION_KEYS[point];
+			const health = healthOf();
 			const start = now();
+			// The breaker answers before any request: while it is open there is no network I/O at all.
+			const verdict = health.shouldCall(start);
 			let outcome: DecideOutcome;
-			try {
-				// The Vercel rail has a fixed endpoint; only the OpenRouter rail honors ULTRATHINK_DECISIONS_URL.
-				const rail = picked.provider === "vercel" ? decideVercel : decide;
-				outcome = await rail(
-					buildDecisionsRequest(point, state, {
-						model: config.model,
-						zdr: config.zdr,
-						sessionId: input.sessionId,
-					}),
-					{
-						apiKey: apiKeyNow,
-						timeoutMs: config.timeoutMs,
-						...(picked.provider === "openrouter" ? { url: resolveDecisionsUrl(env).url } : {}),
-						fetch: input.fetch,
-						signal: opts.signal,
-						now,
-						sleep: input.sleep,
-						random: input.random,
-					},
-				);
-			} catch (error) {
-				// Only the caller's abort propagates; anything else decide() should never throw still fails open.
-				if (opts.signal?.aborted) throw error;
-				const message = error instanceof Error ? error.message : String(error);
+			if (!verdict.call) {
 				outcome = {
 					ok: false,
-					error: new DecisionsError(
-						"network",
-						redact(
-							`decisions network: ${redact(message || "unexpected error", apiKeyNow)}`,
-							apiKeyNow,
-						),
-					),
+					error: new DecisionsError("unavailable", unavailableMessage(verdict)),
 					attempts: 0,
-					latencyMs: Math.max(0, now() - start),
+					latencyMs: 0,
 				};
+			} else {
+				try {
+					// The Vercel rail has a fixed endpoint; only the OpenRouter rail honors ULTRATHINK_DECISIONS_URL.
+					const rail = picked.provider === "vercel" ? decideVercel : decide;
+					outcome = await rail(
+						buildDecisionsRequest(point, state, {
+							model: config.model,
+							zdr: config.zdr,
+							sessionId: input.sessionId,
+						}),
+						{
+							apiKey: apiKeyNow,
+							timeoutMs: config.timeoutMs,
+							...(picked.provider === "openrouter" ? { url: resolveDecisionsUrl(env).url } : {}),
+							fetch: input.fetch,
+							signal: opts.signal,
+							now,
+							sleep: input.sleep,
+							random: input.random,
+						},
+					);
+				} catch (error) {
+					// Only the caller's abort propagates; anything else decide() should never throw still fails open.
+					if (opts.signal?.aborted) throw error;
+					const message = error instanceof Error ? error.message : String(error);
+					outcome = {
+						ok: false,
+						error: new DecisionsError(
+							"network",
+							redact(
+								`decisions network: ${redact(message || "unexpected error", apiKeyNow)}`,
+								apiKeyNow,
+							),
+						),
+						attempts: 0,
+						latencyMs: Math.max(0, now() - start),
+					};
+				}
 			}
+			recordAttempt(
+				{ stateDir: input.stateDir, health },
+				{
+					point,
+					rail: picked.provider,
+					requestedModel:
+						picked.provider === "vercel" ? resolveGatewayModel(config.model) : config.model,
+				},
+				outcome,
+				now(),
+			);
 			const base = {
 				point,
 				threshold: opts.threshold,

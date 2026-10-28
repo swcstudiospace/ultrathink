@@ -17,6 +17,7 @@ import {
 	type DecisionsUsage,
 	DecisionsError,
 	DEFAULT_DECISIONS_URL,
+	isJevModelId,
 	MAX_ERROR_CHARS,
 	MAX_ESTIMATED_TOKENS,
 	RETRY_MIN_REMAINING_MS,
@@ -166,6 +167,15 @@ export function validateRequest(request: DecisionsRequest): DecisionsError | und
 	const violation = requestViolation(request);
 	if (violation)
 		return new DecisionsError("bad-request", redact(`decisions bad-request: ${violation}`));
+	// Shared by both rails and checked before any I/O: the Decisions key is Jev-only, so no other model id may leave.
+	if (!isJevModelId(request.model)) {
+		return new DecisionsError(
+			"model",
+			redact(
+				`decisions model: refused ${redact(request.model).slice(0, 120)}; only Jev models travel on these rails`,
+			),
+		);
+	}
 	const tokens = estimateTokens(request);
 	if (tokens > MAX_ESTIMATED_TOKENS) {
 		return new DecisionsError(

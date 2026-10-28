@@ -692,6 +692,8 @@ export function formatSummary(input: {
 	engineError?: string;
 	/** A successful failover to another model route; shown right after the model selection. */
 	engineFailover?: string;
+	/** The breaker's one-time warning (`takeWarning`); absent unless Jev just became unavailable or the 24 h re-warn is due. */
+	jevWarning?: string;
 	elapsedMs?: number;
 	/** Rows created before this turn; replaces the kickoff-pending note. */
 	tracking?: TrackingRefs;
@@ -717,6 +719,7 @@ export function formatSummary(input: {
 	if (input.modelResolution) bits.push(formatModelSelection(input.modelResolution));
 	else if (input.engine) bits.push(input.engine);
 	if (input.engineFailover) bits.push(`Failover · ${input.engineFailover}`);
+	if (input.jevWarning) bits.push(`Jev · ${input.jevWarning.replace(/^Jev /, "")}`);
 	if (input.skill) bits.push(`Skill · ${input.skill}`);
 	if (input.graph) bits.push(`Graph of Thought · ${input.graph.nodes.length} nodes`);
 	const briefLines = input.brief?.trim() ? input.brief.trim().split("\n").length : 0;

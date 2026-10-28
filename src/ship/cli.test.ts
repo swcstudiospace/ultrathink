@@ -1457,7 +1457,7 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 				createDecisions({
 					config: { ...JEV_ON, ...o.decisions },
 					sessionId: record.sessionId,
-					env: o.env ?? { OPENROUTER_API_KEY: K },
+					env: o.env ?? { ULTRATHINK_OPENROUTER_KEY: K },
 					storePath: join(dir, "mcp-credentials.json"),
 					fetch: o.fetch,
 					sleep: async () => {
@@ -1474,7 +1474,7 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 		const d = jevShip({
 			fetch: r.fetch,
 			judge: DONE_REPLY,
-			env: { OPENROUTER_API_KEY: K, ULTRATHINK_DECISIONS: "0" },
+			env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" },
 		});
 		const baseline = await ship("assess", { ...d, decisions: undefined });
 		expect((await ship("pr", { ...d, decisions: undefined })).output.ok).toBe(true);

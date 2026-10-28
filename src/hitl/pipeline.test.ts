@@ -602,7 +602,12 @@ function openItem(
 	};
 }
 
-const ENV_NAMES = ["OPENROUTER_API_KEY", "ULTRATHINK_DECISIONS_URL", "ULTRATHINK_DEBUG"];
+const ENV_NAMES = [
+	"ULTRATHINK_OPENROUTER_KEY",
+	"OPENROUTER_API_KEY",
+	"ULTRATHINK_DECISIONS_URL",
+	"ULTRATHINK_DEBUG",
+];
 const realFetch = globalThis.fetch;
 const dirs: string[] = [];
 
@@ -620,7 +625,7 @@ function tempStore(key?: string): string {
 	return path;
 }
 
-/** `ON` point-isolated to `points`: OPENROUTER_API_KEY=K in the injected env, an empty store, a fixed clock, instant retries. */
+/** `ON` point-isolated to `points`: ULTRATHINK_OPENROUTER_KEY=K in the injected env, an empty store, a fixed clock, instant retries. */
 function jev(
 	fetchImpl: typeof fetch,
 	points: DecisionPoint[],
@@ -629,7 +634,7 @@ function jev(
 	const lines: string[] = [];
 	const decisions = createDecisions({
 		config: { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points, ...config },
-		env: { OPENROUTER_API_KEY: K },
+		env: { ULTRATHINK_OPENROUTER_KEY: K },
 		storePath: tempStore(),
 		fetch: fetchImpl,
 		now: () => 1000,
@@ -647,7 +652,7 @@ function jevOff(fetchImpl: typeof fetch, points: DecisionPoint[]) {
 	const lines: string[] = [];
 	const decisions = createDecisions({
 		config: { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points },
-		env: { OPENROUTER_API_KEY: K, ULTRATHINK_DECISIONS: "0" },
+		env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" },
 		storePath: tempStore(),
 		fetch: fetchImpl,
 		now: () => 1000,
@@ -857,7 +862,7 @@ describe("runClarify with Jev decisions", () => {
 		const lines: string[] = [];
 		const decisions = createDecisions({
 			config: { ...config.decisions, points: ["knowledge"] },
-			env: { OPENROUTER_API_KEY: K },
+			env: { ULTRATHINK_OPENROUTER_KEY: K },
 			storePath: tempStore(K),
 			fetch: r.fetch,
 			debug: (line) => lines.push(line),

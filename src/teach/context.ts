@@ -139,6 +139,7 @@ export function lessonDecisions(ctx: TeachContext): Decisions | undefined {
 		return createDecisions({
 			config,
 			env: ctx.env,
+			stateDir: ctx.stateDir,
 			...(ctx.storePath !== undefined ? { storePath: ctx.storePath } : {}),
 			...(ctx.fetch ? { fetch: ctx.fetch } : {}),
 			...(ctx.now ? { now: ctx.now } : {}),

@@ -868,7 +868,7 @@ function jevRuntime(
 	const decisions = createDecisions({
 		config: { ...ON, ...config },
 		sessionId: RECORD.sessionId,
-		env: { OPENROUTER_API_KEY: K },
+		env: { ULTRATHINK_OPENROUTER_KEY: K },
 		storePath: join(decisionsDir(), "mcp-credentials.json"),
 		fetch: fetchImpl,
 		sleep: async () => {
@@ -989,7 +989,7 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 		const keyed = createDecisions({
 			config: { ...DEFAULT_DECISIONS_CONFIG, points: [...DEFAULT_DECISIONS_CONFIG.points] },
 			sessionId: RECORD.sessionId,
-			env: { OPENROUTER_API_KEY: K },
+			env: { ULTRATHINK_OPENROUTER_KEY: K },
 			storePath: store,
 			fetch: r2.fetch,
 		});

@@ -16,3 +16,9 @@ export const ROUTE_DEFAULT_MODELS: Readonly<Record<LegacyRoute, string>> = Objec
 	grok: "grok-build-0.1",
 	muse: "muse-spark-1.3-contributor",
 });
+
+/** Variables holding the Jev OpenRouter key; no model-CLI child Ultrathink spawns may inherit them (SDKs auto-read the generic name). */
+export const JEV_KEY_ENV_NAMES: readonly string[] = Object.freeze([
+	"ULTRATHINK_OPENROUTER_KEY",
+	"OPENROUTER_API_KEY",
+]);

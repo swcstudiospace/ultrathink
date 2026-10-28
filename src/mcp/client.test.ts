@@ -139,7 +139,7 @@ describe("createMcpClient", () => {
 	test("the openrouter hint names set-key and the env variable, never a login", () => {
 		const hint = loginHint("openrouter");
 		expect(hint).toBe(
-			"run: ultrathink-mcp auth set-key openrouter --stdin (API key from your OpenRouter account settings; or set OPENROUTER_API_KEY)",
+			"run: ultrathink-mcp auth set-key openrouter --stdin (API key from your OpenRouter account settings; or set ULTRATHINK_OPENROUTER_KEY)",
 		);
 		expect(hint).not.toContain("auth login openrouter");
 	});

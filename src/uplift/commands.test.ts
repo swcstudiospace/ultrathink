@@ -147,6 +147,7 @@ describe("runControl", () => {
 		"RAGFLOW_URL",
 		"RAGFLOW_API_KEY",
 		"OPENROUTER_API_KEY",
+		"ULTRATHINK_OPENROUTER_KEY",
 		"AI_GATEWAY_API_KEY",
 		"ULTRATHINK_DECISIONS_URL",
 		"ULTRATHINK_DECISIONS",
@@ -193,6 +194,7 @@ describe("runControl", () => {
 		// Neither the machine's Jev keys nor its endpoint override may reach a test.
 		for (const key of [
 			"OPENROUTER_API_KEY",
+			"ULTRATHINK_OPENROUTER_KEY",
 			"AI_GATEWAY_API_KEY",
 			"ULTRATHINK_DECISIONS_URL",
 			"ULTRATHINK_DECISIONS",
@@ -848,7 +850,7 @@ describe("runControl", () => {
 		test("a fresh install shows Decisions on right after the knowledge-base line, with a key stored and in the env (JEV-01)", async () => {
 			userConfig(undefined);
 			storeKey();
-			process.env.OPENROUTER_API_KEY = K;
+			process.env.ULTRATHINK_OPENROUTER_KEY = K;
 			const { text, line, jevCalls } = await status();
 			expect(line).toBe(`${ON_DEFAULTS} · provider openrouter · key from store · zdr on`);
 			if (line === undefined) throw new Error("status printed no Decisions line");
@@ -862,7 +864,7 @@ describe("runControl", () => {
 			userConfig({ enabled: true });
 			const { line, jevCalls } = await status();
 			expect(line).toBe(
-				"Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or OPENROUTER_API_KEY)",
+				"Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)",
 			);
 			expect(jevCalls).toEqual([]);
 		});
@@ -876,10 +878,10 @@ describe("runControl", () => {
 			expect(stored.text).not.toContain("Bearer sk-or-");
 
 			rmSync(process.env.ULTRATHINK_MCP_STORE as string);
-			process.env.OPENROUTER_API_KEY = K;
+			process.env.ULTRATHINK_OPENROUTER_KEY = K;
 			const fromEnv = await status();
 			expect(fromEnv.line).toBe(
-				`${ON_DEFAULTS} · provider openrouter · key from OPENROUTER_API_KEY · zdr on`,
+				`${ON_DEFAULTS} · provider openrouter · key from ULTRATHINK_OPENROUTER_KEY · zdr on`,
 			);
 			expect(fromEnv.text).not.toContain(K);
 			expect(fromEnv.text).not.toContain("Bearer sk-or-");
@@ -895,11 +897,11 @@ describe("runControl", () => {
 				`${ON_DEFAULTS} · provider vercel · key from AI_GATEWAY_API_KEY · zdr on`,
 			);
 			expect(auto.text).not.toContain(V);
-			process.env.OPENROUTER_API_KEY = K;
+			process.env.ULTRATHINK_OPENROUTER_KEY = K;
 			userConfig({ enabled: true, provider: "openrouter" });
 			const pinned = await status();
 			expect(pinned.line).toBe(
-				`${ON_DEFAULTS} · provider openrouter · key from OPENROUTER_API_KEY · zdr on`,
+				`${ON_DEFAULTS} · provider openrouter · key from ULTRATHINK_OPENROUTER_KEY · zdr on`,
 			);
 			expect([...auto.jevCalls, ...pinned.jevCalls]).toEqual([]);
 		});
@@ -907,10 +909,42 @@ describe("runControl", () => {
 		test("the stored key wins over the env key", async () => {
 			userConfig({ enabled: true });
 			storeKey();
-			process.env.OPENROUTER_API_KEY = "sk-or-v1-ENVKEY";
+			process.env.ULTRATHINK_OPENROUTER_KEY = "sk-or-v1-ENVKEY";
 			const { line, text } = await status();
 			expect(line).toBe(`${ON_DEFAULTS} · provider openrouter · key from store · zdr on`);
 			expect(text).not.toContain("sk-or-v1-ENVKEY");
+		});
+
+		function writeHealth(state: Record<string, unknown>): void {
+			mkdirSync(io.stateDir, { recursive: true });
+			writeFileSync(join(io.stateDir, "decisions-health.json"), JSON.stringify(state));
+		}
+
+		test("an open breaker appends its reason to the Decisions line; closed or corrupt shows nothing", async () => {
+			userConfig({ enabled: true });
+			storeKey();
+			const closed = `${ON_DEFAULTS} · provider openrouter · key from store · zdr on`;
+			expect((await status()).line).toBe(closed);
+
+			const now = Date.now();
+			writeHealth({
+				v: 1,
+				state: "open",
+				cause: "credits",
+				since: now - 60_000,
+				nextProbeAt: now + 3_600_000,
+				coolDownMs: 300_000,
+				failures: 1,
+			});
+			const open = (await status()).line;
+			expect(open).toStartWith(`${closed} · Jev unavailable`);
+			expect(open).toContain("credits");
+
+			writeHealth({ v: 1, state: "closed", failures: 0 });
+			expect((await status()).line).toBe(closed);
+
+			writeFileSync(join(io.stateDir, "decisions-health.json"), "{not json");
+			expect((await status()).line).toBe(closed);
 		});
 
 		test("the line shows the configured model, points and zdr, the normalised URL when an override is in effect, and flags a rejected one", async () => {
@@ -1215,7 +1249,7 @@ describe("runControl", () => {
 		);
 		expect(proc.exitCode).toBe(2);
 		expect(proc.stdout.toString()).toBe(
-			"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>\n",
+			"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json> | ultrathink decisions usage [--days N] [--json]\n",
 		);
 	});
 

@@ -726,6 +726,40 @@ describe("decisions config", () => {
 		}
 	});
 
+	const NON_JEV_MODELS = [
+		"anthropic/claude-opus-5.5",
+		"z-ai/glm-5.3-flash",
+		"anthropic/claude-sonnet-5-5",
+		"anthropic/claude-haiku-4.5",
+		"x-ai/grok-4.7",
+		"  x-ai/grok-4.3  ",
+		"typesafe/other",
+	];
+
+	test("model accepts only the three Jev ids in every layer; anything else keeps the earlier layer (user, claude, project)", () => {
+		for (const model of ["~typesafe/jev-latest", "typesafe/jev-1.13-20260917", "typesafe-ai/jev"]) {
+			expect(loadLayers({ decisions: { model } }).decisions.model).toBe(model);
+			expect(loadLayers({}, { decisions: { model } }).decisions.model).toBe(model);
+			expect(loadLayers({}, undefined, { decisions: { model } }).decisions.model).toBe(model);
+		}
+		const user = { decisions: { model: "typesafe/jev-user" } };
+		const claude = { decisions: { model: "typesafe-ai/jev" } };
+		for (const model of NON_JEV_MODELS) {
+			expect(loadLayers({ decisions: { model } }).decisions.model).toBe("~typesafe/jev-latest");
+			expect(loadLayers(user, { decisions: { model } }).decisions.model).toBe("typesafe/jev-user");
+			expect(loadLayers({}, { decisions: { model } }).decisions.model).toBe("~typesafe/jev-latest");
+			expect(loadLayers(user, claude, { decisions: { model } }).decisions.model).toBe(
+				"typesafe-ai/jev",
+			);
+			expect(loadLayers(user, undefined, { decisions: { model } }).decisions.model).toBe(
+				"typesafe/jev-user",
+			);
+			expect(mergeConfig({ decisions: { model } }, defaultConfig()).decisions.model).toBe(
+				"~typesafe/jev-latest",
+			);
+		}
+	});
+
 	test("points keeps known names in input order, drops unknowns and duplicates, allows []; a non-array keeps the earlier layer (AC-10.7)", () => {
 		const user = { decisions: { points: ["ship", "knowledge"] } };
 		expect(loadLayers(user, { decisions: { points: ["plan", "ship"] } }).decisions.points).toEqual([

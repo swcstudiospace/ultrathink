@@ -1747,7 +1747,7 @@ function jevHarness(
 		log: (message) => logs.push(message),
 		progress: (event) => events.push(event),
 		decisionsDeps: {
-			env: { OPENROUTER_API_KEY: K },
+			env: { ULTRATHINK_OPENROUTER_KEY: K },
 			storePath: tempStore(),
 			fetch: fetchImpl,
 			sleep: async () => {
@@ -1787,8 +1787,22 @@ function withoutDecisions(record: SessionRecord | undefined): SessionRecord | un
 	return copy;
 }
 
-/** A planned Jev run deep-equals its BASELINE apart from the Decisions additions (records and the summary bit). */
-function expectBaseline(jev: PromptSubmitResult, base: PromptSubmitResult, bit?: string): void {
+/** The one-time breaker warning bit; its text carries a real-clock date, so tests match its shape, never its text. */
+const JEV_WARNING = / · Jev · unavailable:[^\n]*?(?= · |\n|$)/g;
+
+/** Failure kinds that open the persisted breaker: the first summary after them carries the warning. */
+const BREAKER_KINDS: readonly DecisionsErrorKind[] = ["auth", "credits"];
+
+/**
+ * A planned Jev run deep-equals its BASELINE apart from the Decisions additions (records and the summary bits).
+ * `kind` is the failure the run met: a breaker kind adds exactly one `Jev · unavailable:` bit, anything else none.
+ */
+function expectBaseline(
+	jev: PromptSubmitResult,
+	base: PromptSubmitResult,
+	bit?: string,
+	kind?: DecisionsErrorKind,
+): void {
 	const jevGraph = jev.record?.plan?.graphId;
 	const baseGraph = base.record?.plan?.graphId;
 	expect(normalized(jev.output?.hookSpecificOutput, jevGraph)).toEqual(
@@ -1798,10 +1812,14 @@ function expectBaseline(jev: PromptSubmitResult, base: PromptSubmitResult, bit?:
 		normalized(base.record, baseGraph),
 	);
 	const summary = jev.output?.systemMessage;
-	if (bit === undefined) expect(summary).toBe(base.output?.systemMessage);
+	expect(summary?.match(JEV_WARNING) ?? []).toHaveLength(
+		kind !== undefined && BREAKER_KINDS.includes(kind) ? 1 : 0,
+	);
+	const rest = summary?.replace(JEV_WARNING, "");
+	if (bit === undefined) expect(rest).toBe(base.output?.systemMessage);
 	else {
-		expect(summary).toContain(` · ${bit}`);
-		expect(summary?.replace(` · ${bit}`, "")).toBe(base.output?.systemMessage);
+		expect(rest).toContain(` · ${bit}`);
+		expect(rest?.replace(` · ${bit}`, "")).toBe(base.output?.systemMessage);
 	}
 }
 
@@ -1858,6 +1876,16 @@ function failureFetch(
 	return { fetch: recordingFetch([failure.respond(key)]).fetch, timeoutMs: 3000 };
 }
 
+/** A fetch that counts its calls, so a refused call can be proven to have made no network request. */
+function countingFetch(inner: typeof fetch): { fetch: typeof fetch; count: () => number } {
+	let calls = 0;
+	const counted = ((...args: Parameters<typeof fetch>) => {
+		calls++;
+		return inner(...args);
+	}) as typeof fetch;
+	return { fetch: counted, count: () => calls };
+}
+
 describe("Jev plan gate", () => {
 	test("a fresh install sends nothing without a key, and consults Jev with one (AC-1.1, JEV-01)", async () => {
 		for (const surface of ["claude-code", "grok-build"]) {
@@ -1881,7 +1909,7 @@ describe("Jev plan gate", () => {
 					{
 						...h.deps,
 						decisionsDeps: {
-							env: { OPENROUTER_API_KEY: K },
+							env: { ULTRATHINK_OPENROUTER_KEY: K },
 							storePath: tempStore(K),
 							fetch: R.fetch,
 						},
@@ -2212,12 +2240,13 @@ describe("Jev plan gate", () => {
 		for (const failure of FAILURES) {
 			const timeouts = controlledTimeouts();
 			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "plan_worthy", timeouts);
-			const h = jevHarness(onConfig({ points: ["plan"], timeoutMs }), fetchImpl);
+			const counted = countingFetch(fetchImpl);
+			const h = jevHarness(onConfig({ points: ["plan"], timeoutMs }), counted.fetch);
 			try {
 				const base = await runPromptSubmit({ ...input, prompt: ACK }, offDeps(h.deps));
 				const jev = await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
 				expect(jev.record?.plan).toBeDefined();
-				expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
+				expectBaseline(jev, base, `Decisions · error (${failure.kind})`, failure.kind);
 				expect(jev.decisions).toEqual([
 					expect.objectContaining({
 						point: "plan",
@@ -2229,6 +2258,22 @@ describe("Jev plan gate", () => {
 				]);
 				expect(readSession(h.deps.stateDir, "s1")?.decisions).toEqual(jev.decisions);
 				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
+				if (BREAKER_KINDS.includes(failure.kind)) {
+					// The breaker is open in the shared state dir: the next prompt is refused with no request.
+					const before = counted.count();
+					const again = await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
+					expect(counted.count()).toBe(before);
+					expect(again.record?.plan).toBeDefined();
+					expectBaseline(again, base, "Decisions · error (unavailable)", "unavailable");
+					expect(again.decisions).toEqual([
+						expect.objectContaining({
+							point: "plan",
+							outcome: "error",
+							error: "unavailable",
+							action: "fail-open",
+						}),
+					]);
+				}
 			} finally {
 				timeouts.restore();
 				h.cleanup();
@@ -2332,7 +2377,8 @@ describe("Jev knowledge and blocking points through the hook", () => {
 		for (const failure of FAILURES) {
 			const timeouts = controlledTimeouts();
 			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "supported", timeouts);
-			const h = jevHarness(onConfig({ points: ["knowledge"], timeoutMs }), fetchImpl, {
+			const counted = countingFetch(fetchImpl);
+			const h = jevHarness(onConfig({ points: ["knowledge"], timeoutMs }), counted.fetch, {
 				knowledge: usedReader,
 			});
 			const deps = { ...h.deps, complete: clarifying(SETTLED) };
@@ -2343,7 +2389,7 @@ describe("Jev knowledge and blocking points through the hook", () => {
 				);
 				const jev = await runPromptSubmit({ ...input, prompt: NEW_WORK }, deps);
 				expect(jev.record?.clarifications).toEqual(base.record?.clarifications);
-				expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
+				expectBaseline(jev, base, `Decisions · error (${failure.kind})`, failure.kind);
 				expect(jev.decisions).toHaveLength(2);
 				for (const record of jev.decisions ?? []) {
 					expect(record).toMatchObject({
@@ -2354,6 +2400,22 @@ describe("Jev knowledge and blocking points through the hook", () => {
 					});
 				}
 				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
+				if (BREAKER_KINDS.includes(failure.kind)) {
+					const before = counted.count();
+					const again = await runPromptSubmit({ ...input, prompt: NEW_WORK }, deps);
+					expect(counted.count()).toBe(before);
+					expect(again.record?.clarifications).toEqual(base.record?.clarifications);
+					expectBaseline(again, base, "Decisions · error (unavailable)", "unavailable");
+					expect(again.decisions).toHaveLength(2);
+					for (const record of again.decisions ?? []) {
+						expect(record).toMatchObject({
+							point: "knowledge",
+							outcome: "error",
+							error: "unavailable",
+							action: "fail-open",
+						});
+					}
+				}
 			} finally {
 				timeouts.restore();
 				h.cleanup();
@@ -2365,14 +2427,15 @@ describe("Jev knowledge and blocking points through the hook", () => {
 		for (const failure of FAILURES) {
 			const timeouts = controlledTimeouts();
 			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "risky", timeouts);
-			const h = jevHarness(onConfig({ points: ["blocking"], timeoutMs }), fetchImpl);
+			const counted = countingFetch(fetchImpl);
+			const h = jevHarness(onConfig({ points: ["blocking"], timeoutMs }), counted.fetch);
 			const deps = { ...h.deps, complete: clarifying(OPEN) };
 			try {
 				const base = await runPromptSubmit({ ...input, prompt: NEW_WORK }, offDeps(deps));
 				expect(base.record?.clarifications?.map((c) => c.blocking)).toEqual([false, false]);
 				const jev = await runPromptSubmit({ ...input, prompt: NEW_WORK }, deps);
 				expect(jev.record?.clarifications).toEqual(base.record?.clarifications);
-				expectBaseline(jev, base, `Decisions · error (${failure.kind})`);
+				expectBaseline(jev, base, `Decisions · error (${failure.kind})`, failure.kind);
 				expect(jev.decisions).toHaveLength(2);
 				for (const record of jev.decisions ?? []) {
 					expect(record).toMatchObject({
@@ -2383,6 +2446,22 @@ describe("Jev knowledge and blocking points through the hook", () => {
 					});
 				}
 				expectNoKey(jev, h.logs, sessionText(h.deps.stateDir));
+				if (BREAKER_KINDS.includes(failure.kind)) {
+					const before = counted.count();
+					const again = await runPromptSubmit({ ...input, prompt: NEW_WORK }, deps);
+					expect(counted.count()).toBe(before);
+					expect(again.record?.clarifications).toEqual(base.record?.clarifications);
+					expectBaseline(again, base, "Decisions · error (unavailable)", "unavailable");
+					expect(again.decisions).toHaveLength(2);
+					for (const record of again.decisions ?? []) {
+						expect(record).toMatchObject({
+							point: "blocking",
+							outcome: "error",
+							error: "unavailable",
+							action: "fail-open",
+						});
+					}
+				}
 			} finally {
 				timeouts.restore();
 				h.cleanup();

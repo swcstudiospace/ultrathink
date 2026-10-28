@@ -146,7 +146,7 @@ describe("runDoctorCommand", () => {
 		);
 		const env = {
 			...deps.env,
-			OPENROUTER_API_KEY: FAKE_KEY,
+			ULTRATHINK_OPENROUTER_KEY: FAKE_KEY,
 			HINDSIGHT_API_KEY: FAKE_KEY,
 			GH_TOKEN: FAKE_KEY,
 			AI_GATEWAY_API_KEY: FAKE_KEY,

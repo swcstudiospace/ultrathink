@@ -7,6 +7,7 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
 import {
@@ -25,6 +26,7 @@ import {
 	decisionsKilled,
 	resolveDecisionsKeys,
 } from "./gate.ts";
+import { type UsageTotals, summarizeUsage } from "./usage.ts";
 import { decideVercel } from "./vercel.ts";
 import {
 	buildBlockingState,
@@ -45,9 +47,9 @@ export interface DecisionsCommandDeps extends Omit<DecisionsDeps, "debug"> {
 }
 
 const USAGE =
-	"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>";
+	"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json> | ultrathink decisions usage [--days N] [--json]";
 const NO_KEY =
-	"no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or OPENROUTER_API_KEY)";
+	"no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 const KILLED = "off (ULTRATHINK_DECISIONS=0)";
 const CHECK_MESSAGE = "Add a --verbose flag to the export command";
 const MAX_CASES = 200;
@@ -337,6 +339,68 @@ async function probe(
 	return { code: errors > 0 ? 1 : 0, text: lines.join("\n") };
 }
 
+const USAGE_DEFAULT_DAYS = 7;
+const USAGE_MAX_DAYS = 90;
+
+/** `--days N` (or `--days=N`, integer 1..90) and `--json`, each at most once; anything else is a usage error. */
+function parseUsageArgs(args: readonly string[]): { days: number; json: boolean } | undefined {
+	let days: number | undefined;
+	let json = false;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+		if (arg === "--json") {
+			if (json) return undefined;
+			json = true;
+			continue;
+		}
+		if (days !== undefined) return undefined;
+		let value: string | undefined;
+		if (arg === "--days") value = args[++i];
+		else if (arg.startsWith("--days=")) value = arg.slice("--days=".length);
+		else return undefined;
+		if (value === undefined || !/^\d+$/.test(value)) return undefined;
+		days = Number(value);
+		if (days < 1 || days > USAGE_MAX_DAYS) return undefined;
+	}
+	return { days: days ?? USAGE_DEFAULT_DAYS, json };
+}
+
+function usageStats(totals: UsageTotals): string {
+	return `calls ${totals.calls} · failures ${totals.failures} · cost $${totals.costUsd.toFixed(6)}`;
+}
+
+/** The local ledger as a table the owner can hold against the OpenRouter dashboard. Reads only; never touches the network or the key. */
+function usage(
+	args: readonly string[],
+	deps: DecisionsCommandDeps,
+): { code: number; text: string } {
+	const parsed = parseUsageArgs(args);
+	if (!parsed) return { code: 2, text: USAGE };
+	const env = deps.env ?? process.env;
+	const summary = summarizeUsage(deps.stateDir ?? defaultStateDir(env), {
+		days: parsed.days,
+		now: (deps.now ?? Date.now)(),
+	});
+	if (parsed.json) return { code: 0, text: JSON.stringify(summary) };
+	const rows = (map: Record<string, UsageTotals>): string[] =>
+		Object.keys(map)
+			.sort()
+			.map((key) => `  ${key} · ${usageStats(map[key] as UsageTotals)}`);
+	const kinds = Object.entries(summary.failuresByKind)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([kind, count]) => `${kind} ${count}`);
+	const lines = [
+		`Decisions usage: last ${summary.days} days · ${usageStats(summary.total)}`,
+		"Per day (UTC):",
+		...(rows(summary.byDay).length > 0 ? rows(summary.byDay) : ["  none"]),
+		"Per model:",
+		...(rows(summary.byModel).length > 0 ? rows(summary.byModel) : ["  none"]),
+		`Failures by kind: ${kinds.length > 0 ? kinds.join(" · ") : "none"}`,
+		"This is the local ledger of Jev calls made from this machine: compare its per-model counts and cost with the per-model breakdown on the OpenRouter dashboard.",
+	];
+	return { code: 0, text: lines.join("\n") };
+}
+
 /** `bin/ultrathink decisions <argv…>`. Never rejects. code 0 ok, 1 failure, 2 usage/invalid input. text has no trailing newline. */
 export async function runDecisionsCommand(
 	argv: readonly string[],
@@ -355,6 +419,7 @@ export async function runDecisionsCommand(
 			apiKey = rt.key?.key;
 			return await probe(rt, argv, deps);
 		}
+		if (command === "usage") return usage(argv.slice(1), deps);
 		return { code: 2, text: USAGE };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

@@ -10,6 +10,7 @@
  */
 import type { UltrathinkConfig } from "../config.ts";
 import { createDecisions, type DecisionsDeps } from "../decisions/gate.ts";
+import { openJevHealth } from "../decisions/health.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
 import {
 	createGreptileKnowledge,
@@ -611,6 +612,7 @@ export async function runPromptSubmit(
 	const decisions = createDecisions({
 		config: deps.config.decisions,
 		...(isTurnSessionId(sessionId) ? {} : { sessionId }),
+		stateDir: deps.stateDir,
 		...deps.decisionsDeps,
 	});
 	// Keep cancellation separate from the hook's partial-result budget, whose timer starts after the gate as before.
@@ -1221,6 +1223,10 @@ export async function runPromptSubmit(
 				signal: lifetime,
 			});
 		}
+		// Taken only when the summary is shown: it marks the cause as warned, so a hidden summary must not spend it.
+		const jevWarning = deps.config.claude.echo
+			? openJevHealth(deps.stateDir).takeWarning(now())
+			: undefined;
 		if (deps.config.claude.echo) {
 			output.systemMessage = formatSummary({
 				result,
@@ -1240,6 +1246,7 @@ export async function runPromptSubmit(
 				docs,
 				skills,
 				...(engineError ? { engineError } : {}),
+				...(jevWarning ? { jevWarning } : {}),
 				...(engineFailover ? { engineFailover } : {}),
 				elapsedMs: now() - started,
 				decisions: records,

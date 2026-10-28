@@ -765,6 +765,37 @@ describe("grokComplete (cli)", () => {
 		});
 	});
 
+	test("the child never sees the Jev key variables, whether given or inherited", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-grok-jev-"));
+		dirs.push(dir);
+		const bin = join(dir, "grok");
+		const seenPath = join(dir, "seen.json");
+		writeFileSync(
+			bin,
+			`#!${process.execPath}\nawait Bun.write(${JSON.stringify(seenPath)}, JSON.stringify({ jev: [process.env.ULTRATHINK_OPENROUTER_KEY ?? null, process.env.OPENROUTER_API_KEY ?? null] }));\nconsole.log(JSON.stringify({ text: "ok" }));\n`,
+			{ mode: 0o755 },
+		);
+		const planted = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+		const saved = [process.env.ULTRATHINK_OPENROUTER_KEY, process.env.OPENROUTER_API_KEY];
+		process.env.ULTRATHINK_OPENROUTER_KEY = planted;
+		process.env.OPENROUTER_API_KEY = planted;
+		try {
+			for (const env of [
+				undefined,
+				{ ULTRATHINK_OPENROUTER_KEY: planted, OPENROUTER_API_KEY: planted },
+			]) {
+				await grokComplete("SYS", "USER", { transport: "cli", bin, home: tempHome(), env });
+				const got = JSON.parse(await Bun.file(seenPath).text()) as { jev: (string | null)[] };
+				expect(got.jev).toEqual([null, null]);
+			}
+		} finally {
+			if (saved[0] === undefined) delete process.env.ULTRATHINK_OPENROUTER_KEY;
+			else process.env.ULTRATHINK_OPENROUTER_KEY = saved[0];
+			if (saved[1] === undefined) delete process.env.OPENROUTER_API_KEY;
+			else process.env.OPENROUTER_API_KEY = saved[1];
+		}
+	});
+
 	test("omits --reasoning-effort for a model without effort support", async () => {
 		const { bin, argsPath } = fakeGrok('{ text: "ok" }');
 		await grokComplete("SYS", "USER", {

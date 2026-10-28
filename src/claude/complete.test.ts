@@ -215,6 +215,51 @@ describe("claudeComplete plan auth", () => {
 		expect(stub.caps()).toEqual(["cap=500"]);
 	});
 
+	for (const auth of ["plan", "api-key"] as const) {
+		test(`the ${auth} child never sees the Jev key variables inherited from the parent env`, async () => {
+			const dir = mkdtempSync(join(tmpdir(), "ultrathink-claude-jev-"));
+			dirs.push(dir);
+			const bin = join(dir, "claude");
+			const seenFile = join(dir, "seen.log");
+			writeFileSync(
+				bin,
+				[
+					"#!/bin/sh",
+					"cat >/dev/null",
+					`echo "ult=\${ULTRATHINK_OPENROUTER_KEY:+set} or=\${OPENROUTER_API_KEY:+set} anth=\${ANTHROPIC_API_KEY:+set}" >> "${seenFile}"`,
+					"printf '%s\\n' \"$STUB_OUT\"",
+				].join("\n"),
+				{ mode: 0o755 },
+			);
+			const saved = {
+				ult: process.env.ULTRATHINK_OPENROUTER_KEY,
+				or: process.env.OPENROUTER_API_KEY,
+				anth: process.env.ANTHROPIC_API_KEY,
+				out: process.env.STUB_OUT,
+			};
+			process.env.ULTRATHINK_OPENROUTER_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+			process.env.OPENROUTER_API_KEY = "sk-or-v1-UTTESTKEY-0123456789abcdef";
+			process.env.ANTHROPIC_API_KEY = "sk-ant-fake";
+			process.env.STUB_OUT = okResult;
+			try {
+				await createClaudeCompleter({ bin, auth })("s", "u");
+			} finally {
+				for (const [name, value] of [
+					["ULTRATHINK_OPENROUTER_KEY", saved.ult],
+					["OPENROUTER_API_KEY", saved.or],
+					["ANTHROPIC_API_KEY", saved.anth],
+					["STUB_OUT", saved.out],
+				] as const) {
+					if (value === undefined) delete process.env[name];
+					else process.env[name] = value;
+				}
+			}
+			expect(readFileSync(seenFile, "utf8").trim()).toBe(
+				`ult= or= anth=${auth === "api-key" ? "set" : ""}`,
+			);
+		});
+	}
+
 	test("no cap variable is set without maxOutputTokens or for a non-positive value", async () => {
 		for (const maxOutputTokens of [undefined, 0, -5, 0.4, Number.NaN]) {
 			const stub = setup();

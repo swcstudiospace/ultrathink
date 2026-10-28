@@ -4,13 +4,15 @@
  * Autonomous-output judge. Unlike the six noul gates, this asks a choice question so OpenRouter's
  * Decisions API must return `confidence` in [0, 1]. The rail is OpenRouter only: a Vercel key must
  * not steal this path. A missing or out-of-range confidence is one repair retry, then a failure.
- * No default score. The hook writes only this record; it never rewrites the phase artifact.
+ * No default score. The hook writes only this record; it never rewrites the phase artifact. Given a `stateDir`,
+ * every real call here also feeds, and obeys, the same health breaker and usage ledger as the six gates.
  */
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { decide, type DecideOptions } from "./client.ts";
-import { resolveOpenRouterKey } from "./gate.ts";
+import { recordAttempt, resolveOpenRouterKey } from "./gate.ts";
+import { openJevHealth, unavailableMessage } from "./health.ts";
 import {
 	DEFAULT_DECISIONS_MODEL,
 	DEFAULT_DECISIONS_URL,
@@ -53,6 +55,8 @@ export interface FlowEvalInput {
 	url?: string;
 	fetch?: DecideOptions["fetch"];
 	now?: () => number;
+	/** State directory of the shared Jev breaker and usage ledger; without it this call neither consults nor feeds them. */
+	stateDir?: string;
 	signal?: AbortSignal;
 }
 
@@ -190,9 +194,27 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 			latencyMs: 0,
 		};
 	}
+	const sink = input.stateDir
+		? { stateDir: input.stateDir, health: openJevHealth(input.stateDir) }
+		: undefined;
+	const verdict = sink?.health.shouldCall(now());
+	if (verdict && !verdict.call) {
+		// The shared breaker is open: no request is made, and the verdict is an error like any other Jev failure.
+		return {
+			...base,
+			decision: null,
+			confidence: null,
+			rationale: unavailableMessage(verdict),
+			state: "error",
+			errorClass: "unavailable",
+			retryCount: 0,
+			latencyMs: 0,
+		};
+	}
 	let retryCount = 0;
 	for (const repair of [false, true]) {
-		const outcome = await decide(requestFor(input, repair), {
+		const request = requestFor(input, repair);
+		const outcome = await decide(request, {
 			apiKey: input.apiKey,
 			url: input.url ?? DEFAULT_DECISIONS_URL,
 			fetch: input.fetch,
@@ -200,6 +222,14 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 			signal: input.signal,
 			timeoutMs: 3000,
 		});
+		if (sink) {
+			recordAttempt(
+				sink,
+				{ point: "flow", rail: "openrouter", requestedModel: request.model },
+				outcome,
+				now(),
+			);
+		}
 		if (!outcome.ok) {
 			const kind = outcome.error.kind;
 			const terminal =
@@ -279,6 +309,7 @@ export function appendFlowScore(path: string, record: FlowRecord): void {
 	appendFileSync(path, `${JSON.stringify(record)}\n`);
 }
 
+/** The flow judge's key: the Decisions resolver's openrouter entry, so there is one reader and one variable. */
 export function openRouterKey(
 	storePath: string,
 	env: Record<string, string | undefined>,

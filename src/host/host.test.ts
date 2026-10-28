@@ -750,7 +750,7 @@ function jevPlanHarness(
 	configure(decisions);
 	const env: Record<string, string> = {
 		...h.env,
-		OPENROUTER_API_KEY: K,
+		ULTRATHINK_OPENROUTER_KEY: K,
 		ULTRATHINK_MCP_STORE: join(h.root, "mcp-credentials.json"),
 		PI_CODING_AGENT_DIR: join(h.root, "omp"),
 	};
@@ -809,7 +809,7 @@ describe("planPrompt with the Jev plan gate", () => {
 			// FRESH: no decisions key anywhere.
 			const h = jevPlanHarness(undefined);
 			try {
-				delete h.env.OPENROUTER_API_KEY;
+				delete h.env.ULTRATHINK_OPENROUTER_KEY;
 				const keyless = await planPrompt(
 					{ host, session_id: "s1", prompt: NEW_WORK, cwd: h.root },
 					h.env,
@@ -820,7 +820,7 @@ describe("planPrompt with the Jev plan gate", () => {
 				expect(keyless.context).not.toBe("");
 				expect(keyless.summary).not.toContain("Decisions ·");
 
-				h.env.OPENROUTER_API_KEY = K;
+				h.env.ULTRATHINK_OPENROUTER_KEY = K;
 				const keyed = await planPrompt(
 					{ host, session_id: "s1", prompt: NEW_WORK, cwd: h.root },
 					h.env,
@@ -1091,16 +1091,17 @@ describe("planPrompt with the Jev plan gate", () => {
 		// case needs the real per-attempt AbortSignal.timeout, so it gets the shortest budget that proves `timeout`.
 		for (const host of PLAN_HOSTS) {
 			for (const failure of PLAN_FAILURES) {
-				if (failure.respond) recordingFetch([failure.respond]);
-				else hangingFetch();
-				const h = jevPlanHarness({ enabled: false });
+				const R = failure.respond ? recordingFetch([failure.respond]) : undefined;
+				if (!R) hangingFetch();
+				// Jev is always on (the file value is ignored); only ULTRATHINK_DECISIONS=0 gives a baseline with no Jev traffic.
+				const h = jevPlanHarness({ points: ["plan"], timeoutMs: failure.respond ? 3000 : 50 });
 				try {
 					const base = await planPrompt(
 						{ host, session_id: "s1", prompt: ACK, cwd: h.root },
-						h.env,
+						{ ...h.env, ULTRATHINK_DECISIONS: "0" },
 						h.options,
 					);
-					h.configure({ enabled: true, points: ["plan"], timeoutMs: failure.respond ? 3000 : 50 });
+					expect(R?.calls ?? []).toHaveLength(0);
 					const jev = await planPrompt(
 						{ host, session_id: "s1", prompt: ACK, cwd: h.root },
 						h.env,
@@ -1109,6 +1110,10 @@ describe("planPrompt with the Jev plan gate", () => {
 					expect(jev.context).not.toBe("");
 					expect(plannedContext(jev)).toBe(plannedContext(base));
 					expect(jev.summary).toContain(`Decisions · error (${failure.kind})`);
+					// Only a breaker kind (401/403, 402) adds the one-time `Jev · unavailable:` bit to the first summary.
+					expect(jev.summary?.match(/ · Jev · unavailable:/g) ?? []).toHaveLength(
+						failure.kind === "auth" || failure.kind === "credits" ? 1 : 0,
+					);
 					const session = readFileSync(h.sessionFile, "utf8");
 					expect((JSON.parse(session) as { decisions?: unknown[] }).decisions).toEqual([
 						expect.objectContaining({
@@ -1119,6 +1124,31 @@ describe("planPrompt with the Jev plan gate", () => {
 						}),
 					]);
 					expectNoKey(jev, session);
+					if (R && (failure.kind === "auth" || failure.kind === "credits")) {
+						// The breaker is open in the shared state dir: the next prompt is refused with no request and
+						// does not repeat the warning.
+						const before = R.calls.length;
+						const again = await planPrompt(
+							{ host, session_id: "s1", prompt: ACK, cwd: h.root },
+							h.env,
+							h.options,
+						);
+						expect(R.calls).toHaveLength(before);
+						expect(plannedContext(again)).toBe(plannedContext(base));
+						expect(again.summary).toContain("Decisions · error (unavailable)");
+						expect(again.summary).not.toContain("Jev · unavailable:");
+						const second = JSON.parse(readFileSync(h.sessionFile, "utf8")) as {
+							decisions?: unknown[];
+						};
+						expect(second.decisions).toEqual([
+							expect.objectContaining({
+								point: "plan",
+								outcome: "error",
+								error: "unavailable",
+								action: "fail-open",
+							}),
+						]);
+					}
 				} finally {
 					rmSync(h.root, { recursive: true, force: true });
 				}

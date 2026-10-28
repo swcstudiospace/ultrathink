@@ -70,6 +70,14 @@ Only features that are switched on are checked:
 
 A missing credential for a feature you turned on is a warning, with the command that stores it, for example `bin/ultrathink-mcp auth set-key greptile --stdin`. Jev without a key is only info, because it fails open and skips its decision points. A present credential is reported as `credential present` with its source, either the credential store or the name of the environment variable.
 
+Three Jev findings are specific to the OpenRouter key, which ultrathink uses for Jev only:
+
+| Finding | Level | Meaning and fix |
+|---|---|---|
+| `OPENROUTER_API_KEY is exported: Ultrathink no longer reads it …` | warn | The generic name is not read any more; Jev takes its key from the credential store or `ULTRATHINK_OPENROUTER_KEY`. The export only lets other tools in this environment (SDKs and agents read that name on their own) spend the key. Fix: remove the export from your shell profile or service unit. |
+| `Jev decisions: OPENROUTER_API_KEY is set but Ultrathink no longer reads it` | warn | Jev has no key and only the legacy variable is set. Fix: `bin/ultrathink-mcp auth set-key openrouter --stdin`, then remove the export. |
+| `decisions.health` (title: `Jev unavailable: …`) | warn | The persisted Jev health breaker is open: OpenRouter answered HTTP 402 (insufficient credits) or 401/403 (key rejected). The finding shows the cause, the date it opened and the next check time. Decisions use their defaults until then; the plan gate plans every prompt. Fix the cause (top up, or store a valid key), then run `bin/ultrathink decisions check`; `ok` closes the breaker. |
+
 ### State directory
 
 | Finding | Level |

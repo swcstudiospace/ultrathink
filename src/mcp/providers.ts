@@ -76,7 +76,7 @@ const KEY_PROVIDERS: Record<KeyProviderId, KeyProvider> = {
 		label: "OpenRouter",
 		apiKey: true,
 		oauth: false,
-		envVar: "OPENROUTER_API_KEY",
+		envVar: "ULTRATHINK_OPENROUTER_KEY",
 	},
 	vercel: {
 		kind: "key",
