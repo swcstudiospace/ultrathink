@@ -9,6 +9,7 @@
  * seam, and the stop/cap/duplicate wiring lives in `teams.ts` and the Omp host.
  */
 
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
 	existsSync,
@@ -259,8 +260,70 @@ export function verifyLaneProcess(
 /** The lock directory, under `<stateDir>/swarm/`; it never matches a lane directory name. */
 const LOCK_DIR = ".lane-lock";
 
-/** The file inside the lock directory that names the holder's pid. */
+/** The file inside the lock directory that names the holder: `<pid> <identity>` (identity `-` when unknown). */
 const LOCK_OWNER_FILE = "owner";
+
+/** The `owner` file's marker for a holder whose start time could not be read. */
+const UNKNOWN_IDENTITY = "-";
+
+/** How long the `ps` fallback of {@link processIdentity} may run before it is abandoned. */
+const PS_TIMEOUT_MS = 1_000;
+
+/** Runs `ps -o lstart= -p <pid>` and returns its stdout; undefined when it fails, times out or cannot spawn. */
+function defaultRunPs(pid: number): string | undefined {
+	try {
+		const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+			encoding: "utf8",
+			timeout: PS_TIMEOUT_MS,
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", LC_ALL: "C", LANG: "C" },
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		if (result.error !== undefined || result.status !== 0) return undefined;
+		return typeof result.stdout === "string" ? result.stdout : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * A stable token for a LIVE process: its start time, which a recycled pid never shares with the process that
+ * held it before. Linux: `proc:<stat field 22>` (clock ticks since boot, from `/proc/<pid>/stat`). Elsewhere:
+ * `ps:<ps -o lstart=>`. Undefined when the process does not exist or its start cannot be read.
+ */
+export function processIdentity(
+	pid: number,
+	opts: {
+		platform?: string;
+		readStat?: (pid: number) => string | undefined;
+		runPs?: (pid: number) => string | undefined;
+	} = {},
+): string | undefined {
+	if ((opts.platform ?? process.platform) === "linux") {
+		const stat = (opts.readStat ?? defaultReadStat)(pid);
+		const ticks = stat === undefined ? undefined : parseStatStartTicks(stat);
+		return ticks === undefined ? undefined : `proc:${ticks}`;
+	}
+	const out = (opts.runPs ?? defaultRunPs)(pid)?.trim().replace(/\s+/g, " ");
+	return out === undefined || out.length === 0 ? undefined : `ps:${out}`;
+}
+
+/** What an `owner` file names: the holder's pid and, when it was recorded, its identity token. */
+interface LockOwner {
+	pid: number;
+	identity?: string;
+}
+
+/** Parses `<pid>` or `<pid> <identity>`; undefined when the pid is not a positive integer. */
+function parseLockOwner(raw: string): LockOwner | undefined {
+	const match = /^(\d+)(?:\s+(\S[\s\S]*))?$/.exec(raw.trim());
+	if (match === null) return undefined;
+	const pid = Number(match[1]);
+	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+	const identity = match[2]?.trim();
+	return identity === undefined || identity === "" || identity === UNKNOWN_IDENTITY
+		? { pid }
+		: { pid, identity };
+}
 
 /** A lock with no readable owner older than this belongs to a holder that crashed between `mkdir` and the owner write. */
 const LANE_LOCK_OWNERLESS_MS = 2_000;
@@ -313,6 +376,11 @@ export interface LaneLockDeps {
 	ownerlessMs?: number;
 	/** Whether a lock owner's pid is alive; a dead owner means the holder crashed. */
 	isAlive?: PidAlive;
+	/**
+	 * A stable token for a live process (its start time), or undefined when it does not exist or cannot be read.
+	 * A live pid whose token differs from the one its lock recorded was recycled: the original holder is gone.
+	 */
+	identityOf?: (pid: number) => string | undefined;
 	fs?: Partial<LaneLockFs>;
 }
 
@@ -344,14 +412,17 @@ function errorCode(error: unknown): string {
  * lanes never blocks prompt submission, and a cap is a safety limit.
  *
  * The lock is a directory created atomically (`mkdir` without `recursive`: EEXIST means held) holding an `owner`
- * file with the holder's pid. A lock whose owner is ALIVE is never taken over, however old: a live holder is the
- * only one who can release it, and two holders must never share the critical section. Only a holder that can
- * neither release nor recreate the lock is recovered: its `owner` pid is dead, or the directory has no readable
- * owner and is older than `ownerlessMs` (a crash between `mkdir` and the owner write). Recovery is serialised by a
+ * file with the holder's pid and start-time token (`<pid> <identity>`). A lock whose owner is ALIVE is never
+ * taken over, however old: a live holder is the only one who can release it, and two holders must never share the
+ * critical section. Only a holder that can neither release nor recreate the lock is recovered: its `owner` pid is
+ * dead, or alive but now carrying a DIFFERENT start-time token (a recycled pid: the holder is gone), or the
+ * directory has no readable owner and is older than `ownerlessMs` (a crash between `mkdir` and the owner write).
+ * An unreadable token on either side, or an owner file with only a pid, is judged conservatively: busy while the
+ * pid is alive. Recovery is serialised by a
  * second directory, `<lock>.takeover` (EEXIST means another waiter is recovering: keep waiting; one older than
  * `TAKEOVER_STALE_MS` belongs to a crashed recoverer and is cleared). Inside it the condition is judged again and
  * the lock directory is renamed to a unique tombstone only if the SAME condition still holds. A lock this call
- * took is released only while its `owner` file still names this process.
+ * took is released only while its `owner` file still names this process (pid and token).
  */
 export function withLaneLock<T>(
 	stateDir: string,
@@ -362,30 +433,36 @@ export function withLaneLock<T>(
 	const sleep = deps.sleep ?? sleepSync;
 	const ownerlessMs = deps.ownerlessMs ?? LANE_LOCK_OWNERLESS_MS;
 	const isAlive = deps.isAlive ?? signalZeroAlive;
+	const identityOf = deps.identityOf ?? ((pid: number): string | undefined => processIdentity(pid));
 	const fs: LaneLockFs = { ...defaultLockFs, ...deps.fs };
 	const swarmDir = join(stateDir, "swarm");
 	const lockPath = join(swarmDir, LOCK_DIR);
 	const takeoverPath = `${lockPath}${TAKEOVER_SUFFIX}`;
 
-	const readOwner = (dir: string): number | undefined => {
+	const readOwner = (dir: string): LockOwner | undefined => {
 		try {
-			const raw = fs.readFileSync(join(dir, LOCK_OWNER_FILE), "utf8").trim();
-			const pid = /^\d+$/.test(raw) ? Number(raw) : 0;
-			return pid > 0 ? pid : undefined;
+			return parseLockOwner(fs.readFileSync(join(dir, LOCK_OWNER_FILE), "utf8"));
 		} catch {
 			return undefined;
 		}
 	};
 
 	/**
-	 * `gone`: the directory does not exist. `dead-owner`: its owner pid is dead. `ownerless`: no readable owner and
-	 * older than `ownerlessMs`. `held`: anything else (a live owner, or a lock too young to judge); `pid` is the
-	 * owner when one is readable.
+	 * `gone`: the directory does not exist. `dead-owner`: its owner pid is dead, or alive with a start-time token
+	 * that differs from the recorded one (recycled pid). `ownerless`: no readable owner and older than
+	 * `ownerlessMs`. `held`: anything else (a live owner, or a lock too young to judge); `pid` is the owner when
+	 * one is readable.
 	 */
 	const inspect = (): { kind: "gone" | "dead-owner" | "ownerless" | "held"; pid?: number } => {
-		const pid = readOwner(lockPath);
-		if (pid !== undefined) {
-			return isAlive(pid) ? { kind: "held", pid } : { kind: "dead-owner", pid };
+		const owner = readOwner(lockPath);
+		if (owner !== undefined) {
+			const { pid } = owner;
+			if (!isAlive(pid)) return { kind: "dead-owner", pid };
+			if (owner.identity !== undefined) {
+				const current = identityOf(pid);
+				if (current !== undefined && current !== owner.identity) return { kind: "dead-owner", pid };
+			}
+			return { kind: "held", pid };
 		}
 		let mtimeMs: number;
 		try {
@@ -473,9 +550,15 @@ export function withLaneLock<T>(
 	} catch (error) {
 		return { held: false, reason: `cannot take the lane lock (${errorCode(error)})` };
 	}
+	let ownIdentity: string | undefined;
 	try {
 		try {
-			fs.writeFileSync(join(lockPath, LOCK_OWNER_FILE), String(process.pid), { mode: 0o600 });
+			ownIdentity = identityOf(process.pid);
+			fs.writeFileSync(
+				join(lockPath, LOCK_OWNER_FILE),
+				`${process.pid} ${ownIdentity ?? UNKNOWN_IDENTITY}`,
+				{ mode: 0o600 },
+			);
 		} catch (error) {
 			// reason: without an owner file a waiter would treat this lock as ownerless and recover it from a live holder
 			try {
@@ -490,7 +573,8 @@ export function withLaneLock<T>(
 	} finally {
 		if (held) {
 			try {
-				if (readOwner(lockPath) === process.pid) {
+				const owner = readOwner(lockPath);
+				if (owner?.pid === process.pid && owner.identity === ownIdentity) {
 					fs.rmSync(lockPath, { recursive: true, force: true });
 				}
 			} catch {

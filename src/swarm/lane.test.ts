@@ -28,6 +28,7 @@ import {
 	readLaneFile,
 	type LaneVerdict,
 	parseStatStartTicks,
+	processIdentity,
 	START_TIME_TOLERANCE_MS,
 	verifyLaneProcess,
 	withLaneLock,
@@ -249,6 +250,50 @@ describe("parseStatStartTicks", () => {
 	});
 });
 
+describe("processIdentity", () => {
+	test("Linux: the start ticks of /proc/<pid>/stat, even with spaces and parentheses in the process name", () => {
+		const reads: number[] = [];
+		const readStat = (pid: number): string | undefined => {
+			reads.push(pid);
+			return procStat(pid, 424242, "my) S 1 (app");
+		};
+		expect(processIdentity(77, { platform: "linux", readStat })).toBe("proc:424242");
+		expect(reads).toEqual([77]);
+	});
+
+	test("Linux: an unreadable or malformed stat is an unknown identity and never falls back to ps", () => {
+		const runPs = (): string | undefined => {
+			throw new Error("ps must not run on Linux");
+		};
+		expect(
+			processIdentity(77, { platform: "linux", readStat: () => undefined, runPs }),
+		).toBeUndefined();
+		expect(
+			processIdentity(77, { platform: "linux", readStat: () => "garbage", runPs }),
+		).toBeUndefined();
+	});
+
+	test("elsewhere: the trimmed, single-spaced `ps -o lstart=` output", () => {
+		const pids: number[] = [];
+		const runPs = (pid: number): string | undefined => {
+			pids.push(pid);
+			return "  Tue Oct  28 10:00:00 2026\n";
+		};
+		expect(processIdentity(31, { platform: "darwin", runPs })).toBe("ps:Tue Oct 28 10:00:00 2026");
+		expect(pids).toEqual([31]);
+	});
+
+	test("elsewhere: a failed or empty ps is an unknown identity", () => {
+		expect(processIdentity(31, { platform: "darwin", runPs: () => undefined })).toBeUndefined();
+		expect(processIdentity(31, { platform: "darwin", runPs: () => "  \n" })).toBeUndefined();
+	});
+
+	test("the real default reads this process on Linux", () => {
+		if (process.platform !== "linux") return;
+		expect(processIdentity(process.pid)).toMatch(/^proc:\d+$/);
+	});
+});
+
 describe("verifyLaneProcess", () => {
 	const RUNNER = "python3\0/swarm/hooks/autonomous_run.py\0--runtime\0omp";
 	const startedAt = "2026-10-28T10:00:00.000Z";
@@ -401,7 +446,7 @@ describe("withLaneLock", () => {
 	}
 
 	/** Another holder's lock: the directory, its owner file and an age in ms. */
-	function heldBy(stateDir: string, owner: number | undefined, ageMs = 0): void {
+	function heldBy(stateDir: string, owner: number | string | undefined, ageMs = 0): void {
 		mkdirSync(lockPath(stateDir), { recursive: true });
 		if (owner !== undefined) writeFileSync(join(lockPath(stateDir), "owner"), String(owner));
 		const when = (Date.now() - ageMs) / 1000;
@@ -411,12 +456,16 @@ describe("withLaneLock", () => {
 	test("returns fn's value as held, records this process as owner while it runs, and releases the lock", () => {
 		const stateDir = tmp();
 		let owner = "";
-		const result = withLaneLock(stateDir, () => {
-			owner = readFileSync(join(lockPath(stateDir), "owner"), "utf8");
-			return 7;
-		});
+		const result = withLaneLock(
+			stateDir,
+			() => {
+				owner = readFileSync(join(lockPath(stateDir), "owner"), "utf8");
+				return 7;
+			},
+			{ identityOf: (pid) => `proc:${pid}:start` },
+		);
 		expect(result).toEqual({ held: true, value: 7 });
-		expect(owner).toBe(String(process.pid));
+		expect(owner).toBe(`${process.pid} proc:${process.pid}:start`);
 		expect(existsSync(lockPath(stateDir))).toBe(false);
 	});
 
@@ -438,12 +487,14 @@ describe("withLaneLock", () => {
 		const result = withLaneLock(
 			stateDir,
 			() => {
-				sawLock = readFileSync(join(lockPath(stateDir), "owner"), "utf8") === String(process.pid);
+				sawLock =
+					readFileSync(join(lockPath(stateDir), "owner"), "utf8") === `${process.pid} proc:1`;
 				return "ok";
 			},
 			{
 				now: clock.now,
 				isAlive,
+				identityOf: () => "proc:1",
 				sleep: (ms) => {
 					clock.sleep(ms);
 					// The other process finishes during its third wait.
@@ -528,6 +579,99 @@ describe("withLaneLock", () => {
 		expect(ran).toBe(false);
 		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
 		expect(readdirSync(join(stateDir, "swarm"))).toEqual([".lane-lock"]);
+	});
+
+	test("an owner whose pid is alive but whose start time changed is a recycled pid: recovered at once, fn runs", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, `${LIVE_PID} proc:100`);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			identityOf: (pid) => (pid === LIVE_PID ? "proc:999" : "proc:1"),
+		});
+		expect(result).toEqual({ held: true, value: true });
+		expect(ran).toBe(true);
+		expect(clock.sleeps).toEqual([]);
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([]);
+	});
+
+	test("an owner with the same start time is the original holder: busy, never taken over", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, `${LIVE_PID} proc:100`, 10 * 365 * 24 * 3_600_000);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			identityOf: () => "proc:100",
+			waitMs: 50,
+		});
+		expect(result.held).toBe(false);
+		if (result.held) return;
+		expect(result.reason).toContain(`held by process ${LIVE_PID}`);
+		expect(ran).toBe(false);
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(`${LIVE_PID} proc:100`);
+		expect(readdirSync(join(stateDir, "swarm"))).toEqual([".lane-lock"]);
+	});
+
+	test("an owner whose current start time cannot be read stays busy rather than risk two holders", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, `${LIVE_PID} proc:100`);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			identityOf: () => undefined,
+			waitMs: 50,
+		});
+		expect(result.held).toBe(false);
+		expect(ran).toBe(false);
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(`${LIVE_PID} proc:100`);
+	});
+
+	test("an owner that recorded no start time (`-`) stays busy while its pid is alive", () => {
+		const stateDir = tmp();
+		heldBy(stateDir, `${LIVE_PID} -`);
+		const clock = fakeClock();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			identityOf: () => "proc:7",
+			waitMs: 50,
+		});
+		expect(result.held).toBe(false);
+		expect(ran).toBe(false);
+	});
+
+	test("an old-format owner file (pid only) is judged by liveness alone, whatever the current start time", () => {
+		const live = tmp();
+		heldBy(live, LIVE_PID);
+		const clock = fakeClock();
+		let ranLive = false;
+		const refused = withLaneLock(live, () => (ranLive = true), {
+			now: clock.now,
+			sleep: clock.sleep,
+			isAlive,
+			identityOf: () => "proc:7",
+			waitMs: 50,
+		});
+		expect(refused.held).toBe(false);
+		expect(ranLive).toBe(false);
+
+		const dead = tmp();
+		heldBy(dead, DEAD_PID);
+		expect(withLaneLock(dead, () => 1, { isAlive, identityOf: () => "proc:7" })).toEqual({
+			held: true,
+			value: 1,
+		});
 	});
 
 	test("an ownerless lock is busy while younger than 2 s and recovered once older", () => {
@@ -756,6 +900,23 @@ describe("withLaneLock", () => {
 		});
 		expect(result).toEqual({ held: true, value: "ran" });
 		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
+	});
+
+	test("release leaves a lock whose owner names this pid but a different start time (a successor in a recycled pid)", () => {
+		const stateDir = tmp();
+		const result = withLaneLock(
+			stateDir,
+			() => {
+				rmSync(lockPath(stateDir), { recursive: true, force: true });
+				heldBy(stateDir, `${process.pid} proc:successor`);
+				return "ran";
+			},
+			{ identityOf: () => "proc:original" },
+		);
+		expect(result).toEqual({ held: true, value: "ran" });
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(
+			`${process.pid} proc:successor`,
+		);
 	});
 
 	test("release leaves a lock without a readable owner alone", () => {
