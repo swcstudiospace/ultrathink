@@ -30,11 +30,15 @@ ultrathink plans every non-trivial prompt into a spec and a Graph of Thought bef
 - [Use with Grok Bot](how-to/use-with-grok-bot.md): the native Grok Bot host (`bin/ultrathink-grokbot` plus skills; no prompt hook).
 - [Use /ultrathink in Claude, Claude Code and Grok Chat](how-to/use-ultrathink-in-chat.md): connect the hosted connector or the local stdio server to each client, with what is and is not verified per client.
 - [Run pstack skills beside GSD in Cursor](how-to/use-pstack-with-cursor.md): install the Cursor hook, enable it in your user config, and check it with doctor.
+- [Self-host ultrathink](how-to/self-host.md): run the hosted service (`/mcp`, OAuth, the owner login, `/healthz` and `/readyz`) on a machine you control, with variables you supply.
+- [Bring your own variables](how-to/bring-your-own-variables.md): where your own values go for the plugin on a host, the stdio connector and the hosted service, and which variables the code reads.
 
 ## Reference
 
 - [Configuration](configuration.md): config files, every key and its default, environment variables, state directories.
 - [Commands](commands.md): the `/ultrathink-*` commands, prompt prefixes and the `bin/` CLIs.
+- [Environment](environment.md): every environment variable the code reads, its aliases, what it accepts and which are secrets (generated).
+- [Realm](integration/realm.md): the read-only Realm seam, what it does and does not give you under Omp, and what ultrathink asks of Realm.
 - [Runbook: the hosted connector](ops/runbook-ultrathink.md): operate the hosted server, including the connector inventory, the log fields and the smoke checks (section 13).
 - [Evidence: connector commands and graph views](ops/evidence-connector-commands.md): what was run for the command surface, the graph views, the stdio server and the plugin bundle, and what was not.
 - [Tracking](tracking.md): the rows ultrathink creates in Notion and Linear, and when.

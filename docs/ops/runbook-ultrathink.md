@@ -165,6 +165,8 @@ The script, in order: checks the TLS files of section 17 and refuses before it c
 
 The smoke start reads the production env file, so the leftovers of the retired OpenRouter planner must be out of it before this step (section 12a, "Upgrade from the OpenRouter planner"): a refused line fails the smoke start and nothing is switched.
 
+To check the environment without starting the service, run `bun services/ultrathink/server.ts --check-config` with the production variables set. It validates every variable, then exits before it opens a store, a socket or a listener: `config ok` on stdout with exit 0, or `ultrathink: N configuration problems` followed by one line per problem on stderr with exit 1. Each line names a variable and what it expects, never its value. The [environment reference](../environment.md) and the [bring-your-own-variables guide](../how-to/bring-your-own-variables.md) say what each variable accepts.
+
 After a deploy that changed units or nginx, install the new copies (section 2, step 5) and reload. Unit changes need `systemctl daemon-reload` and a restart. The renewal units are installed the same way; section 17 gives their order.
 
 ### Release gate evidence
@@ -760,6 +762,8 @@ printf '%s\n' \
 ```
 
 Expect two JSON lines on stdout and nothing else: an `initialize` result, then a `tools/list` result with 9 tools and no `ultrathink_uplift`. Diagnostics go to stderr (level `warn` by default, `ULTRATHINK_LOG_LEVEL=info` for more) and never include request text. A line that is not JSON gets `-32700`; a line over 1 MiB gets `-32600`. The process exits when stdin ends. Without Bun it exits 127 with an install hint; on Windows use `bun <path>\services\ultrathink\stdio\main.ts`. The same assertions run against the tool host, the HTTP app and a spawned stdio process in `services/ultrathink/mcp/conformance.test.ts`.
+
+For a clean-room run of the same connector, use `scripts/standalone-smoke.ts`: `bun scripts/standalone-smoke.ts` runs the stdio connector with no keys, no network and a temporary home, and `bun scripts/standalone-smoke.ts --service` starts the hosted service on loopback with throwaway secrets and runs the HTTP and MCP checklist and the SIGTERM drain. Both print a PASS/FAIL report.
 
 ### Rate limits that matter for connectors
 

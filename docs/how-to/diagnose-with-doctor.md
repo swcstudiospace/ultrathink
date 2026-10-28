@@ -1,6 +1,6 @@
 # Diagnose with doctor
 
-`ultrathink doctor` checks your config files, the credentials your enabled features need, the state directory and the tools ultrathink runs on, then prints what it found. It is static and offline: it reads files on this machine and sends nothing anywhere.
+`ultrathink doctor` checks your config files, the credentials your enabled features need, your environment variables, the state directory, the tools ultrathink runs on and the five stack links, then prints what it found. It spends no tokens and never prints a credential. Most of it reads files on this machine; the `stack` section also makes the free, read-only requests described under [What it never does](#what-it-never-does).
 
 Use it first when planning, tracking or ship does less than you expect. ultrathink fails open, and its config merge ignores a misspelled key or an out-of-range value without a word, so a typo such as `ship.autoMerg` looks exactly like a feature that is not working. doctor is where those silent cases become visible.
 
@@ -24,16 +24,19 @@ Run it from the project you have the problem in: the project file `<cwd>/.claude
 
 ## What it checks
 
-The report has six sections, always in this order.
+The report has nine sections, always in this order.
 
 | Section | What doctor looks at |
 |---|---|
 | `runtime` | Bun 1.2 or later (error below that), `git` on `PATH` (error when missing), `gh` on `PATH` (a warning only while `ship.enabled` is on, otherwise info), and Python 3.10 or later (info only: just the Hermes and Prime Agent hosts need it). It also names the detected host. For `gh` it reports whether `GH_TOKEN` or `GITHUB_TOKEN` is set or a gh hosts file exists, and says that authentication is not verified. |
 | `config` | The three config files, lowest precedence first: `${XDG_CONFIG_HOME:-~/.config}/ultrathink/config.json`, `${CLAUDE_CONFIG_DIR:-~/.claude}/ultrathink.json` and `<cwd>/.claude/ultrathink.json`. See below. |
 | `credentials` | For each feature your config switches on, whether its provider has a credential. Providers are named as present or missing and nothing more. |
+| `env` | Every non-secret variable of the [environment reference](../environment.md), checked against its kind and range. All problems come in one report, one warning per variable named `env.<NAME>`; a finding names the variable and what it expects, never its value. It also warns when two names set for one setting disagree (for example `HINDSIGHT_API_URL` and `HINDSIGHT_URL`) and when a kill switch is set to a value that does not switch it off. Secret variables are not shape-checked. |
 | `inference` | The Claude and Grok logins planning runs on: the `claude` CLI and its version, the auth method it reports, an `ANTHROPIC_API_KEY` that planning ignores, the Grok session, the Claude to Grok fallback, the effective models and the pinned memory-bank chain. See [Inference](#inference). |
 | `state` | The state directory: whether it exists and is writable, how many session records it holds and how large they are, which files other users can read, and leftover temporary and lock files. |
+| `memory` | The Teachable Moments memory bank: Hindsight outbox age, the last `teach observe` runs, observe digests never processed, and the age of the newest lesson. A single info line when Teachable Moments is off. |
 | `pstack` | The Cursor bridge: whether it is enabled and which user file decided that (a project file cannot enable it), the resolved pstack plugin path and version, each stage's skills (a warning for a mapped name with no `SKILL.md`), and whether the `beforeSubmitPrompt` hook is installed. Info when the bridge is off. See [Run pstack skills beside GSD in Cursor](use-pstack-with-cursor.md). |
+| `stack` | The five stack links (Substrate, Swarm, Realm, Decisions, Hindsight), one finding per link that is not connected, named `stack.<member>`. `unavailable` and `misconfigured` are warnings with a fix, `degraded` is info. It runs the same free probes as `ultrathink stack` without `--live`, each capped at 3 seconds. |
 
 ### Config files
 
@@ -78,6 +81,13 @@ Three Jev findings are specific to the OpenRouter key, which ultrathink uses for
 | `Jev decisions: OPENROUTER_API_KEY is set but Ultrathink no longer reads it` | warn | Jev has no key and only the legacy variable is set. Fix: `bin/ultrathink-mcp auth set-key openrouter --stdin`, then remove the export. |
 | `decisions.health` (title: `Jev unavailable: …`) | warn | A persisted Jev health breaker is open: a rail (`OpenRouter` or `Vercel AI Gateway`; each has its own breaker) answered HTTP 402 (insufficient credits) or 401/403 (key rejected). The finding names the rail, the cause, the date it opened, that rail's own fix and the next check time. Decisions use their defaults until then; the plan gate plans every prompt. Fix the cause (top up, or store a valid key), then run `bin/ultrathink decisions check`; `ok` closes the breaker (the line ends with `breaker closed`). |
 
+Two findings are about the credential store file itself (`${XDG_CONFIG_HOME:-~/.config}/ultrathink/mcp-credentials.json`, or the path in `ULTRATHINK_MCP_STORE`). They appear only when the file exists, and they name its path, never its content:
+
+| Finding (id) | Level | Meaning and fix |
+|---|---|---|
+| `Credential store does not parse: <path>` (`credentials.store.unreadable`) | warn | The file exists but is not a version 1 credential store, so every stored credential reads as missing and the features that need one report a missing credential. Fix: repair or remove the file, then store the keys again with `bin/ultrathink-mcp auth set-key <provider> --stdin` or `bin/ultrathink-mcp auth login <provider>`. |
+| `Credential store is readable by group or others (mode <mode>): <path>` (`credentials.store.mode`) | warn | The file holds API keys and OAuth tokens, and its mode lets other users on the machine read it. Fix: `chmod 600 <path>`, the command the `fix:` line prints with the real path. |
+
 ### State directory
 
 | Finding | Level |
@@ -96,8 +106,9 @@ The `inference` section looks at the two coding-plan logins that planning runs o
 | Finding | Level | Meaning |
 |---|---|---|
 | `claude <v>` | ok | The `claude` CLI is installed and new enough for `claude.model`. `claude-haiku-5-5` needs 2.1.293, `claude-sonnet-5-5` 2.1.284, `claude-opus-5-5` 2.1.280. |
-| `claude CLI not found: the Claude route cannot plan` | warn | No `claude` on `PATH`. Install Claude Code. |
+| `claude CLI not found: the Claude route cannot plan` | warn | No `claude` on `PATH`. Install Claude Code. When a memory-bank distill is active (`teach.enabled`, not killed by `ULTRATHINK_TEACH=0`, and `teach.capture` is not `explicit`), the finding also carries the detail that the memory-bank distill needs the CLI too: it runs `claude-haiku-5-5` through the `claude` CLI first, and Grok Build only with `claude.fallbackToGrok` and a Grok login. With neither, `teach observe` reports "distiller failed". The fix is the same: install Claude Code (https://code.claude.com/docs/en/setup). |
 | `claude <v> is older than <min>, which <model> needs` | warn | Fix: `claude update`. |
+| `claude <v> is older than <min>, which <model> needs for memory-bank calls` (`inference.memory.cli`) | warn | The installed `claude` meets the planning model's minimum but not the memory-bank model's, and only while a memory-bank distill is active. It is not repeated when `claude update` for the planning finding already fixes both. Fix: `claude update`. |
 | `Claude auth: plan login (<plan>)` | ok | `claude auth status` reports a claude.ai login. |
 | `Claude auth: no plan login` | warn | Run `claude` and sign in with `/login`, or run `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN`. |
 | `Claude auth: API key (claude.auth is api-key)` | info | You opted into the key. A warning follows when neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_AUTH_TOKEN` is set. |
@@ -112,7 +123,8 @@ The `inference` section looks at the two coding-plan logins that planning runs o
 
 ## What it never does
 
-- It makes no network request and starts neither `gh` nor `curl`. The only programs it starts are `claude --version` and `claude auth status --json`, both local (see [Inference](#inference)). It does not run `gh auth status`, which contacts GitHub. Whether a token works is something only a live probe can tell you (see [What to run next](#what-to-run-next)).
+- It starts neither `gh` nor `curl` and spends no tokens. The programs it starts are `claude --version` and `claude auth status --json`, both local (see [Inference](#inference)), and Swarm's local classifier check in the `stack` section. It does not run `gh auth status`, which contacts GitHub. Whether a token works is something only a live probe can tell you (see [What to run next](#what-to-run-next)).
+- Its network use is the `stack` section only: a request to your own Substrate (the brief probe sends the same per-surface bearer a prompt does) and to Hindsight (`/health` and `/version`, no key), plus a read of Realm's local control socket. The Decisions link makes no request unless you run `ultrathink stack --live`. The `env` section reads variables and prints names only, never a value.
 - It never prints a credential: not the value, not a prefix of it, not its length. Effective URL values omit username/password before formatting; every line also passes through shared secret redaction.
 - It never opens a session record. It only looks at their names, sizes, ages and permissions, and it prints none of the names.
 - It never writes or deletes anything and never changes your config.
@@ -226,13 +238,14 @@ Run the `chmod` shown in the `fix:` line. Run doctor again to confirm the warnin
 
 ## What to run next
 
-Doctor tells you what is wrong on this machine. It cannot tell you whether a service answers or a key works. For that, run the live probe for the feature you are debugging. Each one sends requests to the service:
+Doctor tells you what is wrong on this machine, and its `stack` section shows whether the five stack links answer. It cannot tell you whether a key works. For that, run the live probe for the feature you are debugging. Each one sends requests to the service:
 
 | Question | Command |
 |---|---|
 | Do the Notion, Linear and Greptile credentials work? | `<clone>/bin/ultrathink-mcp check` |
 | Does Jev reach its model with your key? | `<clone>/bin/ultrathink decisions check` |
 | Is the Hindsight server up? | `<clone>/bin/ultrathink hindsight check` |
+| Do all five stack links answer? Which variable is wrong? | `<clone>/bin/ultrathink stack` (add `--live` to also run the Decisions check, which spends one request) |
 | Does RAGFlow answer, and which datasets can the key see? | `<clone>/bin/ultrathink ragflow check` |
 | Is `gh` logged in? | `gh auth status` |
 

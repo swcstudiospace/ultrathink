@@ -28,6 +28,7 @@ This page explains how the pieces fit together. To install it, start with [Getti
 ## Contents
 
 - [Services and trust boundaries](#services-and-trust-boundaries)
+- [USSR Stack](#ussr-stack)
 - [Planning pipeline](#planning-pipeline)
 - [Teachable Moments](#teachable-moments)
 - [How each host runs it](#how-each-host-runs-it)
@@ -101,6 +102,69 @@ The boundaries that matter:
 - **Nothing else.** There is no telemetry, analytics or update check.
 
 [Privacy and data flow](privacy.md) lists what each destination receives.
+
+## USSR Stack
+
+The USSR Stack is the set of five links between ultrathink and the services around it. Each link is optional and fails open; `ultrathink stack` reports where every one stands. This section shows what each link carries, how a link's state is decided and where each transport runs. The Jev, Substrate and Hindsight paragraphs of [Services and trust boundaries](#services-and-trust-boundaries) still apply and are not repeated here.
+
+### Links
+
+```mermaid
+flowchart LR
+    engine["ultrathink engine"]
+    substrate["substrate<br/>Agent Substrate server"]
+    swarm["swarm<br/>AgentSwarm checkout"]
+    realm["realm<br/>Realm daemon"]
+    decisions["decisions<br/>Jev decision model"]
+    hindsight["hindsight<br/>memory server"]
+    engine -- "GET /healthz<br/>POST /brief (per-surface bearer, one retry without surface on a surface mismatch)<br/>POST /events<br/>graph_register over MCP" --> substrate
+    engine -- "detached autonomous_run.py lanes,<br/>spawned after the signal_detector preflight" --> swarm
+    engine -- "read-only: the status method on the control socket" --> realm
+    engine -- "OpenRouter Decisions API or Vercel AI Gateway, key only" --> decisions
+    engine -- "GET /health, GET /version<br/>(key never sent on the health path)" --> hindsight
+```
+
+The five members are `substrate`, `swarm`, `realm`, `decisions` and `hindsight`, in the order `ultrathink stack` prints them.
+
+- **Substrate** carries the brief of what other agents already did (`POST /brief`, with the bearer of the host's surface; one retry without the surface when the server refuses the surface), the plan event (`POST /events`) and, at kickoff, `graph_register` over an MCP server named `substrate`. `GET /healthz` is the liveness check.
+- **Swarm** carries lanes: each is a detached `hooks/autonomous_run.py` process of the agent-swarm checkout, started only after the `signal_detector` classifier accepts the brief.
+- **Realm** is read, never driven: ultrathink sends one `status` request on Realm's control socket. It never calls `up`, `mcp`, `acp` or `retry`. See [Realm integration](integration/realm.md).
+- **Decisions** carries the small typed questions of the Jev gates to the OpenRouter Decisions API or the Vercel AI Gateway. It needs only a key.
+- **Hindsight** carries lessons and recall queries; the stack check uses only its health and version routes.
+
+### Connection states
+
+Every link is reported as exactly one of these states. A probe never throws and never prints a credential value; a reason names a variable or a surface, never its value.
+
+| State | Meaning for the link |
+|---|---|
+| `connected` | The link answers and does what it is for. |
+| `degraded` | The link works with a known limit (a stale brief, a breaker open, advisory containment). |
+| `unavailable` | Configured, but nothing answers or the answer is refused. |
+| `misconfigured` | A setting is missing, invalid or contradicts another; the reason names it. |
+| `disabled` | Switched off or never opted in; nothing is contacted. |
+
+What each probe reads before it reports:
+
+- **Substrate** reads `GET /healthz`, then one `/brief` through the same client a prompt uses. With the desk gateway as the Substrate backend it does not probe the direct URL.
+- **Swarm** runs the `python3 -c` classifier from the agent-swarm checkout and counts live lanes. Only lanes started in the last 24 hours can count as needing attention.
+- **Realm** dials the control socket once, within a 1.5 s cap. A socket that fails the owner and mode check is not written to. The `realm status` command is run only when no socket path can be derived.
+- **Decisions** sends a live request only when the stack run passes `live`: ``--live also runs the Decisions check (spends one request; moves the rail breaker and writes a usage row exactly like `decisions check`)``. Without it, the probe reads the environment, the credential store and the rail breaker files.
+- **Hindsight** reads `/health` and `/version` with no key. With the desk gateway as the Hindsight backend, the link is checked only by a live probe.
+
+Flags and exit codes of `ultrathink stack` are in [Commands](commands.md#binultrathink-stack).
+
+### What runs where
+
+| Where | What runs | State, logs, limits |
+|---|---|---|
+| Plugin | The host's own hook, bridge or extension starts the planner on each prompt; Omp runs it in-process. Per-host entry points are in [How each host runs it](#how-each-host-runs-it). | State under the host state directory, never inside your repository. Every stage fails open; hook time limits are in [Runtime constraints](#runtime-constraints). |
+| Stdio connector | `bin/ultrathink-connector`, a separate process speaking JSON-RPC on stdin and stdout, with 9 client-driven tools and no planner. | State under `ULTRATHINK_STATE_DIR`, else the `connector` directory under the host state directory. Logs go to stderr; stdout carries JSON-RPC only. |
+| Hosted service | `services/ultrathink/server.ts`, one process serving `/mcp`, OAuth and the owner login. It listens on loopback (plaintext only with `ULTRATHINK_PLAINTEXT_LOOPBACK=1`) or with TLS. | State under `ULTRATHINK_STATE_DIR`. `/healthz` says the process is up and keeps answering while it drains; `/readyz` says it can do its work. `--check-config` validates the environment without binding a port. Setup: [Self-host the ultrathink hosted service](how-to/self-host.md). |
+
+The hosted service is **single-tenant by design**: one owner password, one Claude plan login, and the Jev decision gate off.
+
+A tenant model, accounts, billing, a UI or a multi-tenant hosted broker are out of scope (Anthropic does not permit routing other users through plan credentials).
 
 ## Planning pipeline
 

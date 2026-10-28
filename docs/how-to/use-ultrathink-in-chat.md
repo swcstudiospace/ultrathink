@@ -161,6 +161,107 @@ On Windows there is no shell wrapper. Run Bun on the entry file directly:
 
 That is `bun <path>\services\ultrathink\stdio\main.ts`. If Claude Desktop cannot find `bun`, give the full path to `bun.exe` as the command. Claude Code can start the same process with `claude mcp add --transport stdio ultrathink -- <path-to-clone>/bin/ultrathink-connector`. Claude Desktop writes the server's stderr to `mcp-server-ultrathink.log` in its log directory, `~/Library/Logs/Claude` on macOS and `%APPDATA%\Claude\logs` on Windows. Checking the server by hand is in the [runbook](../ops/runbook-ultrathink.md#13-connector-surface-and-diagnostics). That a local-server entry shows the six prompts and the card in Claude Desktop is not verified.
 
+## Copy-paste configs by client
+
+The sections above explain each client. This section is the short version: one block per client with placeholders, and for each one the variables its transport actually reads. Replace `<path-to-clone>` with the absolute path of your checkout, `<path-to-state-directory>` with a directory you own (the connector creates it with mode 0700) and `<your-origin>` with the origin of your own [self-hosted service](self-host.md). Nothing here is a real value. Where your variables belong for each shape is in [Bring your own variables](bring-your-own-variables.md).
+
+There are two transports, and they read different variables:
+
+- **Stdio connector** (`bin/ultrathink-connector`, started by the client as a process). It reads no config file, no credential store and no `.env` file (`bin/run-bun` starts Bun with `--no-env-file`, which Bun 1.3.3 and later honour), and it makes no network call. Its settings come only from the environment the client gives the process. Those are the variables in the table below.
+- **Hosted service** (`https://<your-origin>/mcp`, OAuth). The client side reads no ultrathink variable: you give the client a URL and sign in on the consent page with the owner password. The variables belong to the service and its operator; see [Self-host](self-host.md).
+
+| Stdio variable | Used for |
+|---|---|
+| `ULTRATHINK_STATE_DIR` | Where sessions are kept. Set it in every config below. A path inside a `.planning` tree is ignored. When it is unset, the directory is the `connector` directory under the host's state directory (next rows). |
+| `ULTRATHINK_LOG_LEVEL` | `info`, `warn` or `error`; default `warn`. Logs go to stderr. |
+| `ULTRATHINK_HOST` | Forces which host's state directory is the default: `claude-code`, `grok-build`, `hermes`, `muse`, `omp`, `prime-agent` or `cursor`. Any other value is ignored. Only matters when `ULTRATHINK_STATE_DIR` is unset. |
+| `GROK_PLUGIN_ROOT`, `GROK_HOOK_EVENT`, `GROK_SESSION_ID`, `MUSE_TOOL_USE_ID`, `MUSE_PLUGIN_ID`, `PRIME_AGENT_CODING_AGENT_DIR`, `RLM_SESSION_DIR` | Host detection when `ULTRATHINK_HOST` is unset: any Grok marker means Grok Build, a Muse marker Muse, a Prime Agent marker Prime Agent; otherwise Claude Code. |
+| `HOME`, `CLAUDE_CONFIG_DIR`, `GROK_PLUGIN_DATA`, `GROK_HOME`, `HERMES_HOME`, `XDG_CONFIG_HOME`, `PI_CODING_AGENT_DIR` | Where the default state directory is, per detected host (see [State directories](../configuration.md#state-directories)). Only used when `ULTRATHINK_STATE_DIR` is unset. |
+| `BUN`, `BUN_INSTALL`, `PATH` | `bin/run-bun` looks for Bun with them (see [Finding Bun](../configuration.md#finding-bun)). |
+
+Host detection never returns Omp from the environment, so inside an Omp shell the default stays the Claude Code directory unless `ULTRATHINK_HOST=omp` is set. Setting `ULTRATHINK_STATE_DIR` in the client's config avoids the question.
+
+### Config for Claude Desktop
+
+Stdio, in `claude_desktop_config.json` (location and Windows form are under [Local stdio](#local-stdio)):
+
+```json
+{
+  "mcpServers": {
+    "ultrathink": {
+      "command": "<path-to-clone>/bin/ultrathink-connector",
+      "args": [],
+      "env": {
+        "ULTRATHINK_STATE_DIR": "<path-to-state-directory>",
+        "ULTRATHINK_LOG_LEVEL": "info"
+      }
+    }
+  }
+}
+```
+
+Variables read: `ULTRATHINK_STATE_DIR` and `ULTRATHINK_LOG_LEVEL` from the `env` block, and the stdio table above. Hosted: use the [custom connector](#claude-desktop-and-claudeai-custom-connector) with `https://<your-origin>/mcp`; it reads no variable.
+
+### Config for Claude Code
+
+Stdio, with the environment passed by `-e` (the name comes before `-e`, and `--` ends the options):
+
+```bash
+claude mcp add --transport stdio ultrathink -e ULTRATHINK_STATE_DIR=<path-to-state-directory> -- <path-to-clone>/bin/ultrathink-connector
+```
+
+Hosted, with OAuth (then run `/mcp` inside Claude Code and authenticate), and with the connector key header instead:
+
+```bash
+claude mcp add --transport http ultrathink https://<your-origin>/mcp
+claude mcp add --transport http ultrathink https://<your-origin>/mcp --header "x-connector-key: $ULTRATHINK_CONNECTOR_KEY"
+```
+
+Run only one of the two hosted commands for the same name. Variables read: the stdio form reads `ULTRATHINK_STATE_DIR` (and the stdio table above); the hosted forms read none on the client, and the header form uses the key in your shell variable `ULTRATHINK_CONNECTOR_KEY`, which the service's `ULTRATHINK_CONNECTOR_KEY` must match. *Not verified:* these commands in a live Claude Code; the `-e` form follows Claude Code's documented `claude mcp add` syntax.
+
+### Config for Cursor
+
+Stdio, the same `mcpServers` JSON as Claude Desktop, in Cursor's MCP configuration. This repository's own setup writes MCP servers for Cursor to `~/.cursor/mcp.json` ([Install](../install.md)), so that file is where to paste it:
+
+```json
+{
+  "mcpServers": {
+    "ultrathink": {
+      "command": "<path-to-clone>/bin/ultrathink-connector",
+      "args": [],
+      "env": {
+        "ULTRATHINK_STATE_DIR": "<path-to-state-directory>"
+      }
+    }
+  }
+}
+```
+
+Variables read: the `env` block and the stdio table above. *Not verified:* the Cursor settings menu that opens the same file, that Cursor starts the connector with this entry, and whether Cursor can complete this server's OAuth sign-in (use stdio for Cursor).
+
+### Config for Grok Chat
+
+Hosted only: in grok.com/connectors choose **New Connector**, **Custom**, enter `https://<your-origin>/mcp`, choose OAuth, and approve with the owner password (full steps under [Grok Chat](#grok-chat)). Grok Chat runs in xAI's cloud, so it cannot start a local stdio process. Variables read on the client: none. Grok caches the tool list at connect time, so reconnect after the service's tools change.
+
+### Config for Omp
+
+This repository is already an Omp plugin (`package.json` names `src/host/omp.ts` as its extension), and the plugin plans in-process without the connector. To also give Omp the connector's nine tools, start `bin/ultrathink-connector` as a stdio process through Omp's MCP file, `~/.omp/agent/mcp.json` (`$PI_CODING_AGENT_DIR/mcp.json` when that variable is set), the file this repository's `scripts/mcp-register.ts` writes for Omp:
+
+```json
+{
+  "mcpServers": {
+    "ultrathink": {
+      "type": "stdio",
+      "command": "<path-to-clone>/bin/ultrathink-connector",
+      "args": [],
+      "env": { "ULTRATHINK_STATE_DIR": "<path-to-state-directory>", "ULTRATHINK_HOST": "omp" }
+    }
+  }
+}
+```
+
+Variables read: the `env` block and the stdio table above; `ULTRATHINK_HOST=omp` only matters if you drop `ULTRATHINK_STATE_DIR`. *Not verified:* that Omp passes an `env` key to a stdio server (this repository's writer emits only `type`, `command` and `args`). If it does not, run the connector through `env` instead: `"command": "env"` and `"args": ["ULTRATHINK_STATE_DIR=<path-to-state-directory>", "<path-to-clone>/bin/ultrathink-connector"]`. Hosted from Omp is not covered here.
+
 ## Use it
 
 Type `/ultrathink` followed by the request, in one message:

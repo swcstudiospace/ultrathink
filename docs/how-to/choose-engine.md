@@ -129,8 +129,10 @@ Memory-bank inference is the local `teach observe` distill that turns a session 
 - `claude.model`, `grok.model`, `grok.fallbackModels`, `think.engine`, `models.hosts.<host>.model` overrides and shunt aliases do not apply to it. A `shunt` transport leaves the chain at Haiku only, because an alias cannot be proven to be Grok Build.
 - Sonnet and `grok-4.7` are unreachable from it, whatever those keys say. A chain that would include any other model fails closed instead of running.
 - Jev verdicts on lessons are separate calls to Jev and do not use this chain.
+- **It needs the `claude` CLI, Claude Code 2.1.293 or newer** (the minimum for Haiku 5.5). There is no direct-HTTP route in the chain. A user with no CLI, and no Grok fallback that is on and signed in, gets `distiller failed`: `teach observe` stores nothing for that turn.
+- **The API-key route still goes through the CLI.** Set `claude.auth: "api-key"` and export `ANTHROPIC_API_KEY`: the distill then runs `claude -p` with that key instead of the plan login. It does not bypass the CLI requirement.
 
-`bin/ultrathink doctor` shows the chain as `inference.memory`: `Memory-bank inference: claude-haiku-5-5, then grok-build-0.1`, or `… claude-haiku-5-5 only` with the reason in the detail, and it names any configured model that is ignored here. Hindsight itself needs no inference; see [Connect Hindsight](connect-hindsight.md).
+`bin/ultrathink doctor` shows the chain as `inference.memory`: `Memory-bank inference: claude-haiku-5-5, then grok-build-0.1`, or `… claude-haiku-5-5 only` with the reason in the detail, and it names any configured model that is ignored here. While the distill is active (`teach.enabled` on, `ULTRATHINK_TEACH` not `0`, `teach.capture` not `explicit`), a missing `claude` CLI is a warning (`inference.claude.cli`) whose detail says the memory-bank distill needs it too. Hindsight itself needs no inference; see [Connect Hindsight](connect-hindsight.md).
 
 ## Claude to Grok fallback
 
