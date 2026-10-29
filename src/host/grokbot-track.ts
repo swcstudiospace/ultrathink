@@ -12,7 +12,12 @@
  * Desk addition: every Linear create carries `project` (default "Kanban"); the plugin has no project setting.
  */
 import { readFileSync } from "node:fs";
-import { CLI_LOCK, degradedNodeIds, type SessionRecord } from "../claude/state.ts";
+import {
+	CLI_LOCK,
+	degradedNodeIds,
+	type LastLockOptions,
+	type SessionRecord,
+} from "../claude/state.ts";
 import { type LockOptions, withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 import { createTracking, type ToolCaller } from "../track/create.ts";
 import { formatTrackingTodos, injectTrackingXml } from "../track/render.ts";
@@ -196,12 +201,16 @@ export interface RealRefs {
 	trackers?: { linear?: boolean; notion?: boolean };
 }
 
-/** Writes real refs into the record's tracking and re-renders the spec, like `ultrathink-mcp track complete`. */
+/**
+ * Writes real refs into the record's tracking and re-renders the spec, like `ultrathink-mcp track complete`.
+ * `lastLock` is the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s).
+ */
 export function recordRefs(
 	statePath: string,
 	refs: RealRefs,
 	now = Date.now(),
 	lock?: LockOptions,
+	lastLock?: LastLockOptions,
 ): { tracking: TrackingRefs; todos: string } {
 	return withFileLock(
 		statePath,
@@ -253,7 +262,7 @@ export function recordRefs(
 			record.result = { ...record.result, xml };
 			writeFileAtomic(statePath, `${JSON.stringify(record, null, 2)}\n`);
 			writeFileAtomic(statePath.replace(/\.json$/, ".xml"), xml);
-			mirrorLast(statePath, record);
+			mirrorLast(statePath, record, lastLock);
 			return { tracking, todos: formatTrackingTodos(plan, tracking) };
 		},
 		{ ...CLI_LOCK, ...lock },

@@ -434,11 +434,17 @@ export function lastRefreshMessage(lastPath: string): string {
 }
 
 /** Writes `record` to `path` and mirrors it to last.json. Returns a warning when `last.json` could not be refreshed (busy lock or failed write); the record file is still saved. */
-function saveSessionFile(dir: string, path: string, record: SessionRecord): string | undefined {
+function saveSessionFile(
+	dir: string,
+	path: string,
+	record: SessionRecord,
+	lastLock?: LastLockOptions,
+): string | undefined {
 	writeJson(path, record);
 	const last = join(dir, "last.json");
 	try {
-		if (!withLastLock(last, () => writeJson(last, record))) return lastRefreshMessage(last);
+		if (!withLastLock(last, () => writeJson(last, record), lastLock))
+			return lastRefreshMessage(last);
 	} catch {
 		// reason: the session file is saved; a failed mirror must not drop the plan pointer the caller holds
 		return lastRefreshMessage(last);
@@ -446,9 +452,16 @@ function saveSessionFile(dir: string, path: string, record: SessionRecord): stri
 	return undefined;
 }
 
-/** Writes the session. Returns a warning when `last.json` could not be refreshed; the session file is still saved. */
-export function writeSession(dir: string, record: SessionRecord): string | undefined {
-	return saveSessionFile(dir, sessionPath(dir, record.sessionId), record);
+/**
+ * Writes the session. Returns a warning when `last.json` could not be refreshed; the session file is still saved.
+ * `lastLock` carries the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s).
+ */
+export function writeSession(
+	dir: string,
+	record: SessionRecord,
+	lastLock?: LastLockOptions,
+): string | undefined {
+	return saveSessionFile(dir, sessionPath(dir, record.sessionId), record, lastLock);
 }
 
 /**

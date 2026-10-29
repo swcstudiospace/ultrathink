@@ -22,6 +22,7 @@ import { planPrompt } from "../../../src/host/plan.ts";
 import { redactText } from "../../../src/teach/redact.ts";
 import { NODE, UPLIFT } from "../../../src/test.helpers.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../../../src/think/prompts.ts";
+import { instantThink } from "../../../src/think/test.helpers.ts";
 import { FALLBACK_GRAPH } from "../../../src/think/types.ts";
 import { attachReport, type CompletionReport } from "../../../src/types.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../../../src/uplift/prompt.ts";
@@ -268,6 +269,7 @@ function setup(
 		dailyTokenCeiling: config.dailyTokenCeiling,
 	});
 	const clock = fakeClock();
+	const innerPlan = options.plan ?? planPrompt;
 	const planner = createHeadlessPlanner({
 		config,
 		store,
@@ -275,6 +277,9 @@ function setup(
 		sleep: clock.sleep,
 		completer: fakeModel().complete,
 		...options,
+		// A failing fill is retried with 0.5 to 8 s of real backoff; the planner's retries run without it.
+		plan: (request, env, planOptions) =>
+			innerPlan(request, env, { think: instantThink, ...planOptions }),
 	});
 	return { planner, config, stateDir, store, clock };
 }

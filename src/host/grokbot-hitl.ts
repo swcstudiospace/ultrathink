@@ -9,7 +9,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
-import { CLI_LOCK, lastRefreshMessage, type SessionRecord, withLastLock } from "../claude/state.ts";
+import {
+	CLI_LOCK,
+	type LastLockOptions,
+	lastRefreshMessage,
+	type SessionRecord,
+	withLastLock,
+} from "../claude/state.ts";
 import { applyAnswers } from "../hitl/answers.ts";
 import { injectClarificationsXml } from "../hitl/format.ts";
 import type { Clarification } from "../hitl/types.ts";
@@ -40,10 +46,12 @@ export function parseAnswersInput(raw: unknown): AnswersInput {
 	return { answers, ...(response ? { response } : {}) };
 }
 
+/** `lastLock` is the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s). */
 export function recordAnswers(
 	statePath: string,
 	input: AnswersInput,
 	now = Date.now(),
+	lastLock?: LastLockOptions,
 ): { matched: Clarification[]; unknownIds: string[]; list: Clarification[] } {
 	return withFileLock(
 		statePath,
@@ -78,7 +86,7 @@ export function recordAnswers(
 			};
 			writeFileAtomic(statePath, `${JSON.stringify(next, null, 2)}\n`);
 			writeFileAtomic(xmlPath, `${xml}\n`);
-			mirrorLast(statePath, next);
+			mirrorLast(statePath, next, lastLock);
 			return { matched, unknownIds, list };
 		},
 		CLI_LOCK,
@@ -86,16 +94,24 @@ export function recordAnswers(
 }
 
 /** `ctl last` and `ctl hitl last` read `last.json`, a copy of the session written when the plan was saved. */
-export function mirrorLast(statePath: string, record: SessionRecord): void {
+export function mirrorLast(
+	statePath: string,
+	record: SessionRecord,
+	lastLock?: LastLockOptions,
+): void {
 	const lastPath = join(dirname(dirname(statePath)), "last.json");
 	if (!existsSync(lastPath)) return;
 	let refreshed = false;
 	try {
-		refreshed = withLastLock(lastPath, () => {
-			const last = JSON.parse(readFileSync(lastPath, "utf8")) as { sessionId?: string };
-			if (last.sessionId !== record.sessionId) return;
-			writeFileAtomic(lastPath, `${JSON.stringify(record, null, "\t")}\n`);
-		});
+		refreshed = withLastLock(
+			lastPath,
+			() => {
+				const last = JSON.parse(readFileSync(lastPath, "utf8")) as { sessionId?: string };
+				if (last.sessionId !== record.sessionId) return;
+				writeFileAtomic(lastPath, `${JSON.stringify(record, null, "\t")}\n`);
+			},
+			lastLock,
+		);
 	} catch {
 		// an unreadable last.json stays as it is
 		return;

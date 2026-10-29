@@ -97,6 +97,8 @@ export interface PlanOptions {
 	ground?: HookDeps["ground"];
 	/** Test seam for the Realm probe (see HookDeps); defaults to the real, free, read-only probe. */
 	realmProbe?: HookDeps["realmProbe"];
+	/** Test seam for the Graph of Thought (see HookDeps); defaults to `runThink`. */
+	think?: HookDeps["think"];
 }
 
 /** One diagnostic line on stderr when `ULTRATHINK_DEBUG=1`, like the hook entries' own log. */
@@ -310,6 +312,7 @@ export async function planPrompt(
 				...(options.recall ? { recall: options.recall } : {}),
 				...(options.ground ? { ground: options.ground } : {}),
 				...(options.realmProbe ? { realmProbe: options.realmProbe } : {}),
+				...(options.think ? { think: options.think } : {}),
 				signal: options.signal,
 			},
 		);

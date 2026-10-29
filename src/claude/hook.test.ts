@@ -59,6 +59,7 @@ import type {
 import { graphJson } from "../test.helpers.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { runThink, type RunThinkOptions } from "../think/pipeline.ts";
+import { instantThink } from "../think/test.helpers.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 
 function tempStateDir(): { dir: string; cleanup: () => void } {
@@ -170,6 +171,8 @@ function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup:
 		log: () => {
 			// reason: test log sink; assertions read the emitted events, not this line
 		},
+		// A failing fill is retried; the retries run without their real backoff (see instantThink).
+		think: instantThink,
 		// Jev is always on, so tests that do not exercise the gate kill it: no ambient key, no network.
 		decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0" } },
 		...overrides,

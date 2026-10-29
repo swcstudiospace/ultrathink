@@ -18,7 +18,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LockTimeoutError } from "../claude/atomic.ts";
-import { type SessionRecord, writeControl, writeSession } from "../claude/state.ts";
+import {
+	type LastLockOptions,
+	type SessionRecord,
+	writeControl,
+	writeSession,
+} from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
 import { FIELD_CAPS } from "../resilience/limits.ts";
 import { NODE, UPLIFT } from "../test.helpers.ts";
@@ -83,6 +88,20 @@ const tmp = (): string => {
 afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+
+/**
+ * The wait for a busy last.json lock on a virtual clock that each sleep advances: the 3 s deadline passes at once, with
+ * the same attempts a real wait makes, instead of holding the test for 3 s of wall time per write.
+ */
+function virtualLastLock(): LastLockOptions {
+	let clock = 0;
+	return {
+		now: () => clock,
+		sleep: (ms) => {
+			clock += ms;
+		},
+	};
+}
 
 const testEnv = (root: string): Record<string, string | undefined> => ({
 	HOME: root,
@@ -631,7 +650,8 @@ describe("grok-bot track bridge", () => {
 				id: "id0",
 				identifier: "SPE-1",
 				url: "https://linear.app/x/issue/SPE-1/t",
-				title: "t",
+				// The row carries the title the plan gives it: a ref with another title is stale, and a second run recreates it.
+				title: String(issue?.args.title),
 			},
 		};
 		const partial = recordRefs(statePath, { linear });
@@ -669,7 +689,7 @@ describe("grok-bot track bridge", () => {
 					id: `id${i}`,
 					identifier: `SPE-${i}`,
 					url: `https://linear.app/x/issue/SPE-${i}/t`,
-					title: "t",
+					title: String(call.args.title),
 				};
 			});
 		const linearOnly = recordRefs(otherPath, {
@@ -1414,11 +1434,17 @@ describe("grok-bot answers", () => {
 		const before = readFileSync(lastPath, "utf8");
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
 		try {
-			expect(() => recordAnswers(statePath, { answers: { q1: "JSON lines" } }, 301)).toThrow(
-				/could not refresh/,
-			);
 			expect(() =>
-				recordRefs(statePath, { notion: { task: "https://www.notion.so/saved-task" } }, 302),
+				recordAnswers(statePath, { answers: { q1: "JSON lines" } }, 301, virtualLastLock()),
+			).toThrow(/could not refresh/);
+			expect(() =>
+				recordRefs(
+					statePath,
+					{ notion: { task: "https://www.notion.so/saved-task" } },
+					302,
+					undefined,
+					virtualLastLock(),
+				),
 			).toThrow(/could not refresh/);
 			const saved = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
 			expect(saved.clarifications?.[0]?.answer).toBe("JSON lines");
@@ -1464,11 +1490,13 @@ describe("grok-bot answers", () => {
 		const fd = openSync(`${lastPath}.lock`, "wx");
 		writeSync(fd, String(process.pid));
 		try {
-			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(
+			expect(() =>
+				mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 }, virtualLastLock()),
+			).toThrow(/could not refresh/);
+			expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
+			expect(writeSession(stateDir, { ...record, at: 3 }, virtualLastLock())).toMatch(
 				/could not refresh/,
 			);
-			expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
-			expect(writeSession(stateDir, { ...record, at: 3 })).toMatch(/could not refresh/);
 			expect(JSON.parse(readFileSync(join(stateDir, "sessions", "s1.json"), "utf8")).at).toBe(3);
 			expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
 		} finally {
@@ -1492,15 +1520,17 @@ describe("grok-bot answers", () => {
 		const lastPath = join(stateDir, "last.json");
 		const before = readFileSync(lastPath, "utf8");
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
-		// Real clock: the refresh waits out its 3 s wall-clock deadline, which a frozen clock would never reach.
+		// The holder is alive however old its lock is, so the refresh waits out its whole deadline (a virtual one).
 		const old = new Date(Date.now() - 60_000);
 		utimesSync(`${lastPath}.lock`, old, old);
 		const lockMtime = statSync(`${lastPath}.lock`).mtimeMs;
 		try {
-			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(
+			expect(() =>
+				mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 }, virtualLastLock()),
+			).toThrow(/could not refresh/);
+			expect(writeSession(stateDir, { ...record, at: 3 }, virtualLastLock())).toMatch(
 				/could not refresh/,
 			);
-			expect(writeSession(stateDir, { ...record, at: 3 })).toMatch(/could not refresh/);
 			expect(readFileSync(lastPath, "utf8")).toBe(before);
 			expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe(String(process.pid));
 			expect(statSync(`${lastPath}.lock`).mtimeMs).toBe(lockMtime);
@@ -1521,8 +1551,10 @@ describe("grok-bot answers", () => {
 		writeSession(stateDir, record);
 		const lastPath = join(stateDir, "last.json");
 		writeFileSync(`${lastPath}.lock`, "");
-		// Real clock: the refresh waits out its 3 s wall-clock deadline, which a frozen clock would never reach.
-		expect(writeSession(stateDir, { ...record, at: 2 })).toMatch(/could not refresh/);
+		// The empty lock is fresh, so the refresh waits out its whole deadline (a virtual one).
+		expect(writeSession(stateDir, { ...record, at: 2 }, virtualLastLock())).toMatch(
+			/could not refresh/,
+		);
 		expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
 		expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe("");
 		const stale = new Date(Date.now() - 6_000);

@@ -2,22 +2,29 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterAll, setDefaultTimeout } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { availableParallelism, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	removeStaleTestStateDirs,
+	resetTestStateDir,
+	TEST_STATE_DIR_PREFIX,
+} from "./test.state-dir.ts";
 
 // Planning, failover cooldowns, carriers and trackers write under the state directory. A test process gets a fresh
 // temp one (unless the caller set its own) so no suite can touch the operator's real state, e.g. failover-cooldowns.json.
 if (!process.env.ULTRATHINK_STATE_DIR?.trim()) {
-	const stateDir = mkdtempSync(join(tmpdir(), "ultrathink-test-state-"));
+	// Earlier runs leave one empty directory each (see below): drop the ones from yesterday and before.
+	removeStaleTestStateDirs(tmpdir());
+	const stateDir = mkdtempSync(join(tmpdir(), TEST_STATE_DIR_PREFIX));
 	process.env.ULTRATHINK_STATE_DIR = stateDir;
-	// `bun test` never fires process "exit" handlers, so the preload's global afterAll removes the directory.
+	// Measured with a preload that logs: `process.on("exit")` and `beforeExit` handlers never fire under `bun test`
+	// (Bun 1.2.23 and 1.4.0), and a preload's global afterAll runs after EVERY test file on Bun 1.2.23 (3 files, 3 calls)
+	// but once after the last file on Bun 1.4.0. The runner offers no end-of-run hook, so the hook below must be correct
+	// on both: after each call the directory is empty and exists, so the next file starts clean and never finds it gone.
+	// The empty directory the last call leaves is removed by a later run's stale sweep above.
 	afterAll(() => {
-		try {
-			rmSync(stateDir, { recursive: true, force: true });
-		} catch {
-			// reason: best-effort cleanup of a temp directory after the run
-		}
+		resetTestStateDir(stateDir);
 	});
 }
 
@@ -32,6 +39,7 @@ const scale =
 		? override
 		: Math.max(1, oneMinuteLoad / availableParallelism());
 
-// Bun 1.4 discards a preload's setDefaultTimeout after the first file (oven-sh/bun#45192), so this covers
-// every file only under `bun test --isolate` or `--parallel`; suites that spawn children keep explicit budgets.
+// Bun discards a preload's setDefaultTimeout after the first file (Bun 1.4: oven-sh/bun#45192; Bun 1.2.23: tests of the
+// second file onward time out at 5000 ms), so this covers every file only under `bun test --isolate` or `--parallel`;
+// suites that spawn children keep explicit budgets, and nothing may rely on more than the 5 s default of a CI run.
 setDefaultTimeout(Math.ceil(BASE_TIMEOUT_MS * scale));
