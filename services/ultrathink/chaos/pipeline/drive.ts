@@ -60,7 +60,7 @@ export interface PromptVerdict {
 }
 
 /** Why the driver aborted a prompt: no progress anywhere in the run (a hang) or the per-prompt livelock ceiling. */
-export type AbortKind = "stalled" | "ceiling";
+type AbortKind = "stalled" | "ceiling";
 
 export interface PromptOutcome {
 	promptId: number;
