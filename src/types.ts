@@ -21,10 +21,14 @@ export interface UpliftResult {
 	attempts?: number;
 }
 
-/** What a completer reports about its most recent call: attempts and HTTP status, never the reply text. */
+/** What a completer reports about its most recent call: attempts, HTTP status, the server's retry hint and a redacted cause, never the reply text. */
 export interface CompletionReport {
 	attempts: number;
 	httpStatus?: number;
+	/** Milliseconds the provider asked us to wait (Retry-After), clamped by the retry kernel. */
+	retryAfterMs?: number;
+	/** Redacted, single-line cause of the last failure, at most 200 characters. */
+	cause?: string;
 }
 
 export interface UpliftState {
