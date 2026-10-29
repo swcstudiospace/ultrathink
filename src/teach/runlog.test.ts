@@ -207,4 +207,29 @@ describe("failure streak", () => {
 		]);
 		expect(shouldNotifyFailure(undefined)).toBe(false);
 	});
+
+	test("skipped runs cannot push an unresolved failure out of the 50-run log", () => {
+		const dir = stateDir();
+		appendRun(dir, failed(1));
+		for (let i = 2; i <= 70; i++)
+			appendRun(dir, skippedFor(i, i % 2 === 0 ? "no signal" : "too few tool calls"));
+		expect(runFiles(dir)).toHaveLength(50);
+		const runs = readRuns(dir);
+		expect(runs[0]).toEqual(failed(1));
+		expect(runs.at(-1)?.at).toBe(70);
+		const streak = failureStreak(runs);
+		expect(streak).toMatchObject({ count: 1, since: 1, truncated: false });
+		appendRun(dir, failed(71));
+		expect(failureStreak(readRuns(dir))).toMatchObject({ count: 2, since: 1 });
+		expect(shouldNotifyFailure(failureStreak(readRuns(dir)))).toBe(false);
+	});
+
+	test("real runs are still dropped oldest first when no skipped run can go", () => {
+		const dir = stateDir();
+		for (let i = 1; i <= 52; i++) appendRun(dir, failed(i));
+		expect(readRuns(dir).map((r) => r.at)).toEqual(Array.from({ length: 50 }, (_, i) => i + 3));
+		appendRun(dir, skippedFor(53, "no signal"));
+		expect(runFiles(dir)).toHaveLength(50);
+		expect(readRuns(dir)[0]?.at).toBe(4);
+	});
 });

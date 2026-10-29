@@ -4,7 +4,7 @@
  * Run log of detached `teach observe` processes, whose stdio is ignored: one small JSON file per run under
  * `<stateDir>/teach/runs/` so a failure (for example a distiller that cannot authenticate) is visible to `doctor` and
  * to the user. Each run is its own atomically written file, so there is no read-modify-write and concurrent observers
- * cannot drop one another's records. File names sort chronologically; only the newest 50 are kept. Holds no lesson
+ * cannot drop one another's records. File names sort chronologically; 50 runs are kept, the newest, except that runs skipped before the distiller was asked are dropped first (see `pruneVictims`). Holds no lesson
  * text. Never throws.
  */
 import { randomBytes } from "node:crypto";
@@ -32,6 +32,20 @@ function runsDir(stateDir: string): string {
 	return join(stateDir, "teach", "runs");
 }
 
+/** Skip reasons recorded before the distiller was asked: they say nothing about its health either way. */
+const BEFORE_DISTILLER = new Set([
+	"off",
+	"capture mode is explicit",
+	"child invocation",
+	"too few tool calls",
+	"no signal",
+]);
+
+/** A run skipped before the distiller was asked: it says nothing about the distiller's health. */
+function isBeforeDistiller(run: ObserveRun): boolean {
+	return run.outcome === "skipped" && BEFORE_DISTILLER.has(run.skipped ?? "");
+}
+
 /** Run file names, oldest first (the name starts with the zero-padded `at`). Throws when the directory cannot be listed. */
 function listRunFiles(dir: string): string[] {
 	return readdirSync(dir)
@@ -39,7 +53,33 @@ function listRunFiles(dir: string): string[] {
 		.sort();
 }
 
-/** Writes one run as its own file, redacting and clipping `skipped` and `detail`, then keeps the newest 50. Never throws. */
+/**
+ * The run files to drop so that at most 50 remain, never `keep` (the run just written). Runs skipped before the
+ * distiller was asked go first, oldest first, then the oldest of the rest: a stream of skipped runs cannot push an
+ * unresolved distiller failure out of the log and hide the warning `failureStreak` derives from it.
+ */
+function pruneVictims(dir: string, keep: string): string[] {
+	const names = listRunFiles(dir).filter((name) => name !== keep);
+	const excess = names.length + 1 - MAX_RUNS;
+	if (excess <= 0) return [];
+	const victims: string[] = [];
+	for (const name of names) {
+		if (victims.length === excess) break;
+		try {
+			const run = parseRun(JSON.parse(readFileSync(join(dir, name), "utf8")));
+			if (run && isBeforeDistiller(run)) victims.push(name);
+		} catch {
+			// reason: an unreadable file is treated as a real run and kept
+		}
+	}
+	for (const name of names) {
+		if (victims.length === excess) break;
+		if (!victims.includes(name)) victims.push(name);
+	}
+	return victims;
+}
+
+/** Writes one run as its own file, redacting and clipping `skipped` and `detail`, then keeps 50 runs (see `pruneVictims`). Never throws. */
 export function appendRun(stateDir: string, run: ObserveRun): void {
 	try {
 		const dir = runsDir(stateDir);
@@ -54,7 +94,7 @@ export function appendRun(stateDir: string, run: ObserveRun): void {
 		const name = `${String(Math.max(0, Math.trunc(run.at))).padStart(AT_DIGITS, "0")}-${randomBytes(4).toString("hex")}.json`;
 		writeFileAtomic(join(dir, name), `${JSON.stringify(entry)}\n`, { mode: 0o600, dirMode: 0o700 });
 		try {
-			for (const old of listRunFiles(dir).slice(0, -MAX_RUNS)) {
+			for (const old of pruneVictims(dir, name)) {
 				try {
 					rmSync(join(dir, old), { force: true });
 				} catch {
@@ -108,15 +148,6 @@ export function readRuns(stateDir: string): ObserveRun[] {
 	return runs;
 }
 
-/** Skip reasons recorded before the distiller was asked: they say nothing about its health either way. */
-const BEFORE_DISTILLER = new Set([
-	"off",
-	"capture mode is explicit",
-	"child invocation",
-	"too few tool calls",
-	"no signal",
-]);
-
 /** A skip reason that means the distiller (or the store behind it) could not do its work, as opposed to finding nothing teachable. */
 export function isObserveFailure(skipped: string | undefined): boolean {
 	return (
@@ -150,7 +181,7 @@ export function failureStreak(runs: readonly ObserveRun[]): FailureStreak | unde
 	for (let i = runs.length - 1; i >= 0; i--) {
 		const run = runs[i];
 		if (!run) continue;
-		if (run.outcome === "skipped" && BEFORE_DISTILLER.has(run.skipped ?? "")) continue;
+		if (isBeforeDistiller(run)) continue;
 		if (run.outcome !== "skipped" || !isObserveFailure(run.skipped)) {
 			broken = true;
 			break;
@@ -162,7 +193,7 @@ export function failureStreak(runs: readonly ObserveRun[]): FailureStreak | unde
 	if (count === 0) return undefined;
 	return {
 		count,
-		truncated: !broken && runs.length >= MAX_RUNS,
+		truncated: !broken && count >= MAX_RUNS,
 		since,
 		reason: redactLine(reason ?? "unknown cause", 80),
 	};
