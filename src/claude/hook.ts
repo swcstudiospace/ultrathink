@@ -69,7 +69,7 @@ import { decideUplift } from "../uplift/detect.ts";
 import type { SkillInvocation } from "../uplift/skill.ts";
 import { runUplift } from "../uplift/run.ts";
 import { pruneSessionsBestEffort } from "../retention/prune.ts";
-import { withFileLock, writeFileAtomic } from "./atomic.ts";
+import { type LockOptions, withFileLock, writeFileAtomic } from "./atomic.ts";
 import type { ClaudeCompleter } from "./complete.ts";
 import { isChildInvocation } from "./complete.ts";
 import { formatPlanSkipNotice, formatPromptContext, formatSummary } from "./output.ts";
@@ -117,6 +117,8 @@ export interface HookDeps {
 	 */
 	modelResolution?: ModelResolution;
 	stateDir: string;
+	/** Lock policy of the plan save and the tracker checkpoints: `HOOK_LOCK` for a hook process, `OMP_LOCK` inside the Omp TUI. Absent: the lock default (2 s, then unlocked). */
+	stateLock?: LockOptions;
 	/**
 	 * The session's armed /ultrathink-skip as the caller read it, before any engine wait (the Claude/Grok/Muse hook and
 	 * planPrompt both do). Absent, the hook reads it at its own start. Either way, a prompt skipped by it clears the flag.
@@ -279,6 +281,7 @@ export function savePlanRecord(
 	log: (message: string) => void = () => {
 		// reason: no logger was injected; the default is a silent sink
 	},
+	lock?: LockOptions,
 ): { record: SessionRecord; specPath: string; statePath: string; lastNote?: string } {
 	const statePath = sessionPath(stateDir, sessionId);
 	const specPath = specFile(stateDir, sessionId);
@@ -317,7 +320,7 @@ export function savePlanRecord(
 			if (lastNote) log(lastNote);
 			return merged;
 		},
-		{ log },
+		{ log, ...lock },
 	);
 	return { record: saved, specPath, statePath, lastNote };
 }
@@ -1356,7 +1359,7 @@ export async function runPromptSubmit(
 		 * derived locals are refreshed, keeping reference equality when the merge changed nothing.
 		 */
 		const persist = (): void => {
-			const saved = savePlanRecord(deps.stateDir, sessionId, record, log);
+			const saved = savePlanRecord(deps.stateDir, sessionId, record, log, deps.stateLock);
 			record = saved.record;
 			if (
 				saved.record.clarifications !== undefined &&
@@ -1410,7 +1413,12 @@ export async function runPromptSubmit(
 					// between two rows keeps the refs made so far, and no later save loses them.
 					onRef: (live) => {
 						try {
-							updateSession(deps.stateDir, sessionId, trackingCheckpoint(plan.graphId, live));
+							updateSession(
+								deps.stateDir,
+								sessionId,
+								trackingCheckpoint(plan.graphId, live),
+								deps.stateLock,
+							);
 						} catch (error) {
 							log(
 								`tracking checkpoint failed: ${error instanceof Error ? error.message : String(error)}`,

@@ -1347,6 +1347,64 @@ describe("grok-bot answers", () => {
 		expect(existsSync(`${statePath}.lock`)).toBe(false);
 	}, 15_000);
 
+	test("answers outlast a 3 s hold of the session lock: both the holder's mutation and the answer survive", async () => {
+		const root = tmp();
+		const stateDir = join(root, "state");
+		const { result } = await drive(stateDir, root, hostModel(6));
+		const statePath = result.response?.statePath as string;
+		// A live helper process holds the session lock past the old 2 s cap (a real hold: the writer's wait is wall-clock).
+		const holder = Bun.spawn(
+			[
+				process.execPath,
+				"-e",
+				`
+			import { readSync } from "node:fs";
+			import { updateSession } from ${JSON.stringify(join(import.meta.dir, "../claude/state.ts"))};
+			updateSession(${JSON.stringify(stateDir)}, "s1", record => {
+				process.stdout.write("ready");
+				readSync(0, new Uint8Array(1), 0, 1, null);
+				return { ...record, engine: "held-for-3s" };
+			});
+		`,
+			],
+			{ stdin: "pipe", stdout: "pipe", stderr: "pipe", env: testEnv(root) },
+		);
+		const reader = holder.stdout.getReader();
+		let worker: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
+		try {
+			let ready = "";
+			while (ready.length < "ready".length) {
+				const chunk = await reader.read();
+				if (chunk.done) break;
+				ready += new TextDecoder().decode(chunk.value);
+			}
+			expect(ready).toBe("ready");
+			worker = Bun.spawn(
+				[
+					process.execPath,
+					"-e",
+					`import { recordAnswers } from ${JSON.stringify(join(import.meta.dir, "grokbot-hitl.ts"))}; recordAnswers(${JSON.stringify(statePath)}, { answers: { q1: "after the hold" } }, 401);`,
+				],
+				{ stdin: "ignore", stdout: "pipe", stderr: "pipe", env: testEnv(root) },
+			);
+			await new Promise((resolve) => setTimeout(resolve, 3_000));
+			// Still blocked on the lock: nothing of the answer is on disk yet.
+			expect(readFileSync(statePath, "utf8")).not.toContain("after the hold");
+		} finally {
+			reader.releaseLock();
+			holder.stdin.write("go");
+			holder.stdin.end();
+			await holder.exited;
+			if (worker) await worker.exited;
+		}
+		expect(holder.exitCode).toBe(0);
+		expect(worker?.exitCode).toBe(0);
+		expect(await new Response(worker?.stderr).text()).toBe("");
+		const saved = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
+		expect(saved.engine).toBe("held-for-3s");
+		expect(saved.clarifications?.[0]).toMatchObject({ answer: "after the hold", answeredAt: 401 });
+	}, 30_000);
+
 	test("a busy last mirror saves answers and refs but leaves the held copy untouched", async () => {
 		const root = tmp();
 		const stateDir = join(root, "state");

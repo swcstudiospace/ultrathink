@@ -189,6 +189,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A failed `last.json` refresh no longer drops the plan pointer: `writeSession` and the plan record return the refresh note, so `statePath` and `specPath` survive.
 - A toggle write no longer wipes the other toggles after a transient read failure of `control.json` (EIO, EACCES, a directory in its place): it aborts with one line and writes nothing. `bin/ultrathink` prints a failed control command (including a held lock) as one line and exits 1.
 - Prime Agent `ultrathink.last()` returns the single-file carrier of an earlier build only when it names this session.
+- Lock waits are explicit per process kind (`HOOK_LOCK`, `CLI_LOCK`, `OMP_LOCK` in `src/claude/state.ts`): a hook entrypoint waits up to 15 s for a live holder of a session lock, a CLI writer up to 30 s (`grok-bot answers` was still on the 2 s default and wrote unlocked under load, losing a concurrent mark), and the Omp extension keeps 2 s so it never freezes the TUI.
 
 ### Security
 

@@ -10,7 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "../src/claude/atomic.ts";
 import { isChildInvocation } from "../src/claude/complete.ts";
 import { installChildReaper } from "../src/resilience/child.ts";
-import { defaultStateDir, updateSession } from "../src/claude/state.ts";
+import { defaultStateDir, HOOK_LOCK, updateSession } from "../src/claude/state.ts";
 import { parseEnvelope } from "../src/host/envelope.ts";
 import {
 	applyAnswers,
@@ -42,18 +42,23 @@ async function main(): Promise<void> {
 	let matched: Clarification[] = [];
 	// One locked read-apply-write, so a concurrent writer of this session record (ship, kickoff marks) is not overwritten.
 	// The XML is resolved from the record path the update reads and writes, under the same lock, so the pair never splits.
-	const updated = updateSession(stateDir, input.session_id, (record, recordPath) => {
-		const xmlPath = recordPath.replace(/\.json$/, ".xml");
-		const existing: Clarification[] = Array.isArray(record.clarifications)
-			? record.clarifications
-			: [];
-		const applied = applyAnswers(existing, input.tool_input, input.tool_response, Date.now());
-		matched = applied.matched;
-		const currentXml = existsSync(xmlPath) ? readFileSync(xmlPath, "utf8") : record.result.xml;
-		const xml = injectClarificationsXml(currentXml, applied.list).trimEnd();
-		writeFileAtomic(xmlPath, `${xml}\n`);
-		return { ...record, result: { ...record.result, xml }, clarifications: applied.list };
-	});
+	const updated = updateSession(
+		stateDir,
+		input.session_id,
+		(record, recordPath) => {
+			const xmlPath = recordPath.replace(/\.json$/, ".xml");
+			const existing: Clarification[] = Array.isArray(record.clarifications)
+				? record.clarifications
+				: [];
+			const applied = applyAnswers(existing, input.tool_input, input.tool_response, Date.now());
+			matched = applied.matched;
+			const currentXml = existsSync(xmlPath) ? readFileSync(xmlPath, "utf8") : record.result.xml;
+			const xml = injectClarificationsXml(currentXml, applied.list).trimEnd();
+			writeFileAtomic(xmlPath, `${xml}\n`);
+			return { ...record, result: { ...record.result, xml }, clarifications: applied.list };
+		},
+		HOOK_LOCK,
+	); // a hook entrypoint in its own process: wait up to 15 s, then the logged unlocked fallback
 	if (!updated) return;
 
 	if (matched.length > 0) {

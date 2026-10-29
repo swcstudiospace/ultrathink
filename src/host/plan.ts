@@ -10,9 +10,11 @@
 import { redactSecrets } from "../redact.ts";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { isChildInvocation } from "../claude/complete.ts";
+import type { LockOptions } from "../claude/atomic.ts";
 import { type HookDeps, runPromptSubmit } from "../claude/hook.ts";
 import {
 	clearSkipOnce,
+	HOOK_LOCK,
 	hostSessionId,
 	newTurnSessionId,
 	type ControlState,
@@ -84,6 +86,8 @@ export interface PlanOptions {
 	control?: ControlState;
 	/** State directory for control, sessions, specs and the carrier; defaults to the host's resolved state directory. */
 	stateDir?: string;
+	/** Lock policy of the plan save and tracker checkpoints. Defaults to `HOOK_LOCK` (a hook process); Omp passes `OMP_LOCK`. */
+	stateLock?: LockOptions;
 	/** Test seam for the hook-side tracker; defaults to `createGatewayTracker`. `deps.log` receives credential and setup errors. */
 	createTracker?: (
 		config: UltrathinkConfig,
@@ -285,6 +289,7 @@ export async function planPrompt(
 				...(engine.throttle ? { throttle: engine.throttle } : {}),
 				modelResolution: resolution,
 				stateDir,
+				stateLock: options.stateLock ?? HOOK_LOCK,
 				armedSkip: skipArmed,
 				surface: host,
 				conversation: recentConversationFromTranscript,

@@ -62,14 +62,19 @@ export function writeShip(
 	statePath: string,
 	patch: Partial<ShipState>,
 	now: number = Date.now(),
+	lock?: LockOptions,
 ): ShipState | undefined {
-	return updateShip(statePath, (record) => ({
-		phase: "not-done",
-		rounds: [],
-		...priorShip(record),
-		...patch,
-		updatedAt: now,
-	}));
+	return updateShip(
+		statePath,
+		(record) => ({
+			phase: "not-done",
+			rounds: [],
+			...priorShip(record),
+			...patch,
+			updatedAt: now,
+		}),
+		lock,
+	);
 }
 
 /**

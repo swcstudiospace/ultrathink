@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { isChildInvocation } from "../src/claude/complete.ts";
 import {
 	defaultStateDir,
+	HOOK_LOCK,
 	readSession,
 	type SessionRecord,
 	sessionRecordPath,
@@ -140,7 +141,8 @@ function shipCheck(
 			return undefined;
 		const statePath = sessionRecordPath(stateDir, sessionId);
 		const nudge = shipNudge({ record, config, precheck: shipPrecheck(cwd), statePath });
-		if (!nudge || !writeShip(statePath, { nudgedAt: Date.now() })) return undefined;
+		if (!nudge || !writeShip(statePath, { nudgedAt: Date.now() }, Date.now(), HOOK_LOCK))
+			return undefined;
 		return nudge;
 	} catch {
 		return undefined;

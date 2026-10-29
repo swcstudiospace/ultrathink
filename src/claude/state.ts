@@ -456,9 +456,10 @@ export function writeSession(dir: string, record: SessionRecord): string | undef
  * undefined without writing when the record is missing or `mutate` returns undefined. `mutate` receives the path
  * readers resolve for this id (`sessionRecordPath`), so any sidecar it writes beside the JSON pairs with it. The
  * record is written back to that same path: a record still under its earlier name keeps its JSON beside its XML, and
- * never splits onto the new name. `mutate` must not write the record file itself. A held lock is waited for 2 s and then the
- * update runs unlocked (a hook never fails on a lock), which can lose a concurrent update; that is reported in one line on
- * stderr unless `lock.log` takes it. A writer that must not lose an update passes `CLI_LOCK`.
+ * never splits onto the new name. `mutate` must not write the record file itself. Without `lock` a held lock is waited for 2 s and
+ * then the update runs unlocked, which can lose a concurrent update; that is reported in one line on stderr unless
+ * `lock.log` takes it. Every production caller names its policy: `HOOK_LOCK` (hook entrypoints), `CLI_LOCK` (a writer that
+ * must not lose an update) or `OMP_LOCK` (the TUI process).
  */
 export function updateSession(
 	dir: string,
@@ -494,6 +495,19 @@ function logUnlockedWrite(message: string): void {
  * default; a CLI has nobody waiting on a deadline, and an unlocked write is how a concurrent update is lost.
  */
 export const CLI_LOCK: LockOptions = { timeoutMs: 30_000, onTimeout: "throw" };
+
+/**
+ * Lock policy of a hook entrypoint (its own short-lived process: `hooks/answers.ts`, `hooks/stop.ts`, `hooks/engine.ts`):
+ * wait up to 15 s, then run unlocked with one logged line. A live holder's lock is never taken, so a long wait only costs
+ * time when someone really holds it, and a cold worker on a loaded host no longer misses a 2 s window and loses an update.
+ */
+export const HOOK_LOCK: LockOptions = { timeoutMs: 15_000 };
+
+/**
+ * Lock policy of the Omp extension, which runs in the TUI process and blocks its event loop while it waits: keep the 2 s
+ * bound, because freezing the TUI for 15 s is worse than the rare logged lost update.
+ */
+export const OMP_LOCK: LockOptions = { timeoutMs: 2_000 };
 
 /** The node ids whose fill degraded, from the `fill:<id>` tokens of a record's `degraded` list; the tracker marks their rows. */
 export function degradedNodeIds(record: Pick<SessionRecord, "degraded"> | undefined): string[] {

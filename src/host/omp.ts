@@ -30,6 +30,7 @@ import {
 	readSession,
 	type SessionRecord,
 	sessionRecordPath,
+	OMP_LOCK,
 	updateSession,
 } from "../claude/state.ts";
 import type { LockOptions } from "../claude/atomic.ts";
@@ -967,6 +968,8 @@ export function createNativeEnginePlanner(
 				...(request.config ? { config: request.config } : {}),
 				...(request.control ? { control: request.control } : {}),
 				...(request.stateDir ? { stateDir: request.stateDir } : {}),
+				// In-process in the TUI: keep the short 2 s lock bound.
+				stateLock: OMP_LOCK,
 			},
 		);
 		return toOmpPlan(response);
@@ -1069,6 +1072,8 @@ export function recordEditAttribution(
 			return { ...record, workRepos, repoMismatch: { labelled, edited: workRepos } };
 		},
 		{
+			// The TUI process: keep the short 2 s lock bound (a long wait would freeze the screen).
+			...OMP_LOCK,
 			log: () => {
 				// reason: no stderr inside the Omp TUI; attribution is a best-effort label, so the unlocked fallback is not reported
 			},
@@ -2209,7 +2214,8 @@ export function createOmpExtension(
 				const nudge = shipNudge({ record, config, precheck, statePath });
 				if (!nudge) return;
 				boundedAdd(nudgedGraphs, graphId, NUDGED_GRAPHS_CAP);
-				writeShip(statePath, { nudgedAt: now() });
+				// The TUI process: keep the short 2 s lock bound (a long wait would freeze the screen).
+				writeShip(statePath, { nudgedAt: now() }, now(), OMP_LOCK);
 				pi.sendMessage(
 					{
 						customType: SHIP_TYPE,
