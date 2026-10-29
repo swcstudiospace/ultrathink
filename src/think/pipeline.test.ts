@@ -350,6 +350,35 @@ describe("runThink resilience", () => {
 		}
 	});
 
+	test("the repair-skipped note says provider unavailable only for provider failures, not for content failures", async () => {
+		const content = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) =>
+				user.includes("current_node") ? "I cannot help with that." : graphJson(5),
+		});
+		expect(content.degraded.fills).toHaveLength(5);
+		for (const cause of Object.values(content.degraded.causes ?? {})) {
+			expect(cause).toContain("repair skipped: no fill succeeded");
+			expect(cause).not.toContain("provider unavailable");
+			expect(cause.length).toBeLessThanOrEqual(200);
+		}
+		const provider = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) => {
+				if (!user.includes("current_node")) return graphJson(5);
+				const error = new Error("bad request");
+				attachReport(error, { attempts: 1, httpStatus: 400 });
+				throw error;
+			},
+		});
+		for (const cause of Object.values(provider.degraded.causes ?? {})) {
+			expect(cause).toContain("repair skipped: no fill succeeded, provider unavailable");
+			expect(cause.length).toBeLessThanOrEqual(200);
+		}
+	});
+
 	test("a graph call that failed with a completer report is surfaced as degraded.graphFailure; an unparseable graph reply is not", async () => {
 		const failing = await runThink({
 			uplift,

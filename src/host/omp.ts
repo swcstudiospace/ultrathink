@@ -32,6 +32,7 @@ import {
 	sessionRecordPath,
 	updateSession,
 } from "../claude/state.ts";
+import type { LockOptions } from "../claude/atomic.ts";
 import { claudeConfigPaths, loadConfig, normalizeSelectorField } from "../config.ts";
 import type { LegacyModelProvenance, UltrathinkConfig } from "../config.ts";
 import type { CompletionReport } from "../types.ts";
@@ -1042,29 +1043,42 @@ export function repoOfPath(file: string, now: () => number = Date.now): string |
 /**
  * Records the repo an edit touched on the session's record and returns a warning when that repo is not the plan's
  * labelled repo, once per distinct edited set. Attribution only: the label and the edit itself are never changed.
- * A session with no record (never planned) or a file outside any repo changes nothing.
+ * A session with no record (never planned) or a file outside any repo changes nothing. Runs inside the Omp TUI, where a
+ * raw stderr line would corrupt the screen: a lock that cannot be taken falls back to the unlocked write silently
+ * (`lock` is a test seam).
  */
 export function recordEditAttribution(
 	dir: string,
 	sessionId: string,
 	file: string,
+	lock?: LockOptions,
 ): string | undefined {
 	const edited = repoOfPath(file);
 	if (edited === undefined) return undefined;
 	let warning: string | undefined;
-	updateSession(dir, sessionId, (record) => {
-		const previous = record.workRepos ?? [];
-		if (previous.includes(edited)) return undefined;
-		const workRepos = [...previous, edited].sort();
-		if (!record.plan) return { ...record, workRepos };
-		const labelled = record.plan.task.repo ?? null;
-		if (workRepos.every((repo) => repo === labelled)) return { ...record, workRepos };
-		const before = record.repoMismatch;
-		if (!before || before.edited.join("\n") !== workRepos.join("\n")) {
-			warning = `Ultrathink: this session edited ${workRepos.join(", ")}, but its plan is labelled ${labelled ?? "with no repo"}. The tracked task row may name the wrong repository.`;
-		}
-		return { ...record, workRepos, repoMismatch: { labelled, edited: workRepos } };
-	});
+	updateSession(
+		dir,
+		sessionId,
+		(record) => {
+			const previous = record.workRepos ?? [];
+			if (previous.includes(edited)) return undefined;
+			const workRepos = [...previous, edited].sort();
+			if (!record.plan) return { ...record, workRepos };
+			const labelled = record.plan.task.repo ?? null;
+			if (workRepos.every((repo) => repo === labelled)) return { ...record, workRepos };
+			const before = record.repoMismatch;
+			if (!before || before.edited.join("\n") !== workRepos.join("\n")) {
+				warning = `Ultrathink: this session edited ${workRepos.join(", ")}, but its plan is labelled ${labelled ?? "with no repo"}. The tracked task row may name the wrong repository.`;
+			}
+			return { ...record, workRepos, repoMismatch: { labelled, edited: workRepos } };
+		},
+		{
+			log: () => {
+				// reason: no stderr inside the Omp TUI; attribution is a best-effort label, so the unlocked fallback is not reported
+			},
+			...lock,
+		},
+	);
 	return warning;
 }
 

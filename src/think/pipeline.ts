@@ -119,6 +119,8 @@ interface FillContext {
 	/** Ids of nodes whose fill is currently failed. */
 	failed: Set<string>;
 	causes: Map<string, string>;
+	/** The failed nodes whose failure carried a completer report: the provider failed, not the reply. */
+	providerFailed: Set<string>;
 }
 
 /** Progress sinks are the caller's: one that throws must never fail the plan. */
@@ -276,6 +278,7 @@ function applyFill(ctx: FillContext, node: ThoughtNode, fill: NodeFill): void {
 	node.degraded = undefined;
 	ctx.failed.delete(node.id);
 	ctx.causes.delete(node.id);
+	ctx.providerFailed.delete(node.id);
 }
 
 /** A failed fill stays empty: the question is never passed off as a conclusion. */
@@ -285,6 +288,8 @@ function degradeNode(ctx: FillContext, node: ThoughtNode, error: unknown): void 
 	node.degraded = true;
 	ctx.failed.add(node.id);
 	ctx.causes.set(node.id, describeCause(error));
+	if (readReport(unwrapRetryError(error)) === undefined) ctx.providerFailed.delete(node.id);
+	else ctx.providerFailed.add(node.id);
 }
 
 function nodeEventBase(graph: ThoughtGraph, node: ThoughtNode) {
@@ -342,13 +347,19 @@ async function fillLevel(
 	await Promise.all(Array.from({ length: Math.min(limit, group.length) }, worker));
 }
 
-const REPAIR_SKIPPED_NOTE = " · repair skipped: no fill succeeded, provider unavailable";
+const REPAIR_SKIPPED_NOTE = " · repair skipped: no fill succeeded";
+const PROVIDER_UNAVAILABLE_NOTE = `${REPAIR_SKIPPED_NOTE}, provider unavailable`;
 
-/** Every fill failed, so the repair pass is skipped; each node's cause says so (the base cause is clipped to keep the 200-character bound). */
+/**
+ * Every fill failed, so the repair pass is skipped; each node's cause says so (the base cause is clipped to keep the
+ * 200-character bound). Only a failure the completer reported (the provider failed) says "provider unavailable": a reply
+ * that was not a closed rationale is a content failure and the provider may well be fine.
+ */
 function noteRepairSkipped(ctx: FillContext): void {
 	for (const [id, cause] of ctx.causes) {
-		const base = clip(cause, CAUSE_MAX_CHARS - REPAIR_SKIPPED_NOTE.length).text;
-		ctx.causes.set(id, `${base}${REPAIR_SKIPPED_NOTE}`);
+		const note = ctx.providerFailed.has(id) ? PROVIDER_UNAVAILABLE_NOTE : REPAIR_SKIPPED_NOTE;
+		const base = clip(cause, CAUSE_MAX_CHARS - note.length).text;
+		ctx.causes.set(id, `${base}${note}`);
 	}
 }
 
@@ -407,6 +418,7 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 		progress: (message) => safely(() => opts.onProgress?.(message)),
 		failed: new Set(),
 		causes: new Map(),
+		providerFailed: new Set(),
 	};
 
 	ctx.progress("Graph of Thought…");
