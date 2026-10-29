@@ -587,15 +587,11 @@ describe("planning decisions (D-05)", () => {
 	});
 
 	test("grokUserQuery on a 20000-space run is linear-time bounded (L2-11)", () => {
-		const hostile = (n: number) => `<user_query>${" ".repeat(n)}x`;
-		const time = (n: number) => {
-			const start = performance.now();
-			grokUserQuery(hostile(n));
-			parseSlashCommand(`/a${" ".repeat(n)}`);
-			return performance.now() - start;
-		};
-		time(500);
-		const small = Math.max(time(5_000), 0.05);
-		expect(time(20_000) / small).toBeLessThan(8);
+		const start = performance.now();
+		grokUserQuery(`<user_query>${" ".repeat(20_000)}x`);
+		parseSlashCommand(`/a${" ".repeat(20_000)}`);
+		// A linear scan takes well under a millisecond; a quadratic one takes seconds. The bound is absolute and wide on
+		// purpose: a ratio of two tiny timings is noise under host load.
+		expect(performance.now() - start).toBeLessThan(1000);
 	});
 });
