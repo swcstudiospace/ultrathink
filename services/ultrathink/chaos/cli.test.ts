@@ -564,6 +564,37 @@ describe("pipeline run and score", () => {
 		expect(await runCli(["pipeline", "run", "smoke", "--trace-heap=yes"], harness().deps)).toBe(2);
 	});
 
+	test("--watchdog-ms sets the budget the run prints; the run always prints the budget, the abort count and the probe latency", async () => {
+		const plain = harness();
+		const custom = harness();
+
+		expect(await runCli(["pipeline", "run", "smoke", "--prompts", "2"], plain.deps)).toBe(0);
+		expect(
+			await runCli(
+				["pipeline", "run", "smoke", "--prompts", "2", "--watchdog-ms", "45000"],
+				custom.deps,
+			),
+		).toBe(0);
+
+		expect(plain.stdout()).toContain("watchdog budget 120000 ms, aborts 0");
+		expect(plain.stdout()).toMatch(
+			/probe latency real \d+ ms baseline none ratio n\/a \(virtual \d+ ms\)/,
+		);
+		expect(custom.stdout()).toContain("watchdog budget 45000 ms, aborts 0");
+		const recorded = JSON.parse(readFileSync(custom.historyPath, "utf8").trim()) as {
+			details: Record<string, number>;
+		};
+		expect(recorded.details.watchdogMs).toBe(45000);
+	});
+
+	test("--watchdog-ms out of range or malformed exits 2", async () => {
+		for (const value of ["500", "abc", "-1"]) {
+			const h = harness();
+			expect(await runCli(["pipeline", "run", "smoke", "--watchdog-ms", value], h.deps)).toBe(2);
+			expect(existsSync(h.historyPath)).toBe(false);
+		}
+	});
+
 	test("--history overrides the default history file", async () => {
 		const h = harness();
 		const custom = join(freshDir(), "custom.jsonl");

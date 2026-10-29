@@ -1471,6 +1471,23 @@ describe("native binding (D-01, D-02, §7)", () => {
 		expect(await outcome(ignoring.complete("s", "u"))).toBe("AbortError");
 	});
 
+	test("a provider that throws an AbortError on a live flight stays a cancellation, with no retry", async () => {
+		const live = fakeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		const cancelling = recorder(() => {
+			const error = new Error("provider cancelled");
+			error.name = "AbortError";
+			throw error;
+		});
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: cancelling.complete,
+			providerDefaults: {},
+			sleep: instantSleep([]),
+		});
+		expect(await outcome(engine.complete("s", "u"))).toBe("AbortError");
+		expect(cancelling.calls).toHaveLength(1);
+	});
+
 	test("retries a 429 once and then plans, after one positive bounded wait", async () => {
 		const live = fakeModel("acme", "sol-1");
 		const { runtime } = fakeRuntime([live]);

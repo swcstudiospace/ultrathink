@@ -39,6 +39,10 @@ export interface Scenario {
 	invariants: InvariantId[];
 	/** Base of the JS heap growth allowance in MiB for the `resources` invariant; 64 KiB per prompt is added. Default 64. */
 	resourceSlackMiB?: number;
+	/** Per-prompt real-time watchdog in ms (the hang detector). Default: the larger of 120000 and 4000 per concurrent slot. */
+	watchdogMs?: number;
+	/** A prompt the watchdog aborts is a violation unless an injected `hang` targeted it; true accepts any abort. */
+	allowAborts?: boolean;
 	/** Recovery only: the scenario whose recorded probe latency the post-load probe is compared with. */
 	baselineOf?: string;
 }
@@ -70,6 +74,8 @@ const SCENARIO_KEYS = [
 	"config",
 	"invariants",
 	"resourceSlackMiB",
+	"watchdogMs",
+	"allowAborts",
 	"baselineOf",
 ];
 const PROMPTS_KEYS = ["count", "concurrency", "corpus"];
@@ -323,6 +329,12 @@ function buildScenario(json: unknown): Scenario {
 		config: parseConfig(fields.config),
 		invariants,
 	};
+	if (fields.watchdogMs !== undefined) {
+		scenario.watchdogMs = asInteger(fields.watchdogMs, "watchdogMs", 1000, 3_600_000);
+	}
+	if (fields.allowAborts !== undefined) {
+		scenario.allowAborts = asBoolean(fields.allowAborts, "allowAborts");
+	}
 	if (fields.resourceSlackMiB !== undefined) {
 		scenario.resourceSlackMiB = asInteger(fields.resourceSlackMiB, "resourceSlackMiB", 1, 4096);
 	}

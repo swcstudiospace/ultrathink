@@ -37,6 +37,10 @@ interface JudgeOptions {
 	maxNodes?: number;
 	/** The prompts went to a live engine: its text carries no nonce, so the nonce-presence check is skipped. */
 	real?: boolean;
+	/** The per-prompt watchdog budget in ms, named in the finding for a prompt it aborted. */
+	watchdogMs?: number;
+	/** Any watchdog abort is accepted. Otherwise only a prompt an injected `hang` targeted may be aborted. */
+	allowAborts?: boolean;
 }
 
 export interface OracleContext extends JudgeOptions {
@@ -46,8 +50,12 @@ export interface OracleContext extends JudgeOptions {
 	baseline: ResourceSnapshot;
 	/** One ordinary prompt planned after the load, with the faults quiesced. */
 	probe: PromptOutcome;
-	/** Probe time of the baseline run (the nominal scenario); with it the probe must be within 1.25x. */
+	/** Probe time on the scripted provider's clock of the baseline run (informational; used when no real baseline exists). */
 	baselineMs?: number;
+	/** Probe time on the real clock of the baseline run (the nominal scenario): the probe must be within 1.25x plus 250 ms. */
+	baselineRealMs?: number;
+	/** Prompts the corpus asks to be planned ({@link expectedPlanned} in drive.ts); fewer planned than this is a finding. */
+	expectedPlanned?: number;
 	/** Number of prompts the scenario asked for. */
 	expectedPrompts?: number;
 	/** Which invariants to evaluate. Default: all ten. */
@@ -90,6 +98,8 @@ const DEFAULT_HANDLE_SLACK = 16;
 /** The Omp native binding retries a call three times before it fails. */
 const NATIVE_ATTEMPTS = 3;
 const LATENCY_FACTOR = 1.25;
+/** Absolute allowance on top of the ratio, so a fast baseline (tens of ms) does not make host noise a regression. */
+const LATENCY_ALLOWANCE_MS = 250;
 const SHOWN = 3;
 
 /** The process figures and what the driver's state directories under `stateRoot` still hold. */
@@ -131,13 +141,25 @@ function isReal(node: ThoughtNode, tokens: Set<string>): boolean {
 	return node.degraded !== true && !tokens.has(`fill:${node.id}`);
 }
 
-function terminalOf(outcome: PromptOutcome): string[] {
+/** An abort is accepted only for a prompt an injected `hang` targeted (on any stage, also behind a `delay`) or when the scenario allows aborts. */
+function abortAllowed(outcome: PromptOutcome, calls: CallLog[], options: JudgeOptions): boolean {
+	return (
+		outcome.terminal === "aborted" &&
+		(options.allowAborts === true || calls.some((call) => call.chain.includes("hang")))
+	);
+}
+
+function terminalOf(outcome: PromptOutcome, calls: CallLog[], options: JudgeOptions): string[] {
 	const id = outcome.promptId;
 	if (outcome.error !== undefined) return [`prompt ${id}: threw ${outcome.error}`];
 	if (outcome.terminal === "planned") {
 		return outcome.record === undefined ? [`prompt ${id}: planned with no session record`] : [];
 	}
-	if (outcome.terminal === "aborted") return [];
+	if (outcome.terminal === "aborted") {
+		if (abortAllowed(outcome, calls, options)) return [];
+		const budget = options.watchdogMs === undefined ? "" : ` (budget ${options.watchdogMs} ms)`;
+		return [`prompt ${id}: aborted by the watchdog${budget} and no injected hang targeted it`];
+	}
 	if (Object.hasOwn(SKIP_REASONS, outcome.terminal.slice("skipped:".length))) return [];
 	return [`prompt ${id}: unexpected terminal status ${outcome.terminal}`];
 }
@@ -336,7 +358,8 @@ export function createJudge(
 ): (outcome: PromptOutcome, calls: CallLog[]) => PromptVerdict {
 	return (outcome, calls) => ({
 		planned: outcome.terminal === "planned" && outcome.record !== undefined,
-		terminal: terminalOf(outcome),
+		allowedAbort: abortAllowed(outcome, calls, options),
+		terminal: terminalOf(outcome, calls, options),
 		original: originalOf(outcome),
 		uplift: upliftOf(outcome),
 		degraded: degradedOf(outcome, calls),
@@ -398,18 +421,36 @@ function terminal(
 		violations.push(`${outcomes.length} outcomes for ${ctx.expectedPrompts} prompts`);
 	}
 	let settled = 0;
+	let planned = 0;
+	let skipped = 0;
+	let aborted = 0;
+	let allowedAborts = 0;
 	for (const [index, verdict] of verdicts.entries()) {
 		if (verdict === undefined) {
 			violations.push(`prompt ${index}: no outcome`);
-		} else if (verdict.terminal.length === 0) {
-			settled += 1;
-		} else {
-			violations.push(...verdict.terminal);
+			continue;
 		}
+		if (verdict.terminal.length === 0) settled += 1;
+		else violations.push(...verdict.terminal);
+		const status = outcomes[index]?.terminal;
+		if (verdict.planned) planned += 1;
+		else if (status === "aborted") {
+			aborted += 1;
+			if (verdict.allowedAbort) allowedAborts += 1;
+		} else if (status?.startsWith("skipped:") && verdict.terminal.length === 0) skipped += 1;
 	}
 	const pending = report.calls.filter((call) => call.outcome === "pending").length;
 	if (pending > 0) violations.push(`${pending} provider call(s) still pending after the run`);
-	return { violations, observed: `${settled}/${outcomes.length} terminal` };
+	if (ctx.expectedPlanned !== undefined && planned + allowedAborts < ctx.expectedPlanned) {
+		violations.push(
+			`${planned} planned, expected at least ${ctx.expectedPlanned - allowedAborts} (${ctx.expectedPlanned} by the corpus, ${allowedAborts} aborted by an injected hang)`,
+		);
+	}
+	const injected = allowedAborts > 0 ? ` (${allowedAborts} allowed)` : "";
+	return {
+		violations,
+		observed: `${settled}/${outcomes.length} terminal: ${planned} planned, ${skipped} skipped (by design), ${aborted} aborted${injected}`,
+	};
 }
 
 function isolation(report: DriveReport, verdicts: Array<PromptVerdict | undefined>): Verdict {
@@ -477,12 +518,29 @@ function recovery(ctx: OracleContext): Verdict {
 		violations.push("probe fell back instead of planning from the model");
 	else if (probe.degraded.length > 0)
 		violations.push(`probe degraded: ${probe.degraded.join(", ")}`);
-	if (ctx.baselineMs !== undefined && probe.ms > ctx.baselineMs * LATENCY_FACTOR) {
+	const real = Math.round(probe.realMs);
+	const baselineReal =
+		ctx.baselineRealMs === undefined ? undefined : Math.round(ctx.baselineRealMs);
+	if (baselineReal !== undefined) {
+		// The real clock decides: the scripted provider's clock only moves when a wait is injected, so it is vacuous here.
+		if (real > baselineReal * LATENCY_FACTOR + LATENCY_ALLOWANCE_MS) {
+			violations.push(
+				`probe took ${real} ms of real time, over ${LATENCY_FACTOR}x the ${baselineReal} ms baseline plus ${LATENCY_ALLOWANCE_MS} ms`,
+			);
+		}
+	} else if (ctx.baselineMs !== undefined && probe.ms > ctx.baselineMs * LATENCY_FACTOR) {
 		violations.push(
 			`probe took ${probe.ms} ms, over ${LATENCY_FACTOR}x the ${ctx.baselineMs} ms baseline`,
 		);
 	}
-	return { violations, observed: probe.ms };
+	const ratio =
+		baselineReal === undefined || baselineReal === 0
+			? "n/a"
+			: String(Math.round((real / baselineReal) * 100) / 100);
+	return {
+		violations,
+		observed: `probe latency real ${real} ms baseline ${baselineReal === undefined ? "none" : `${baselineReal} ms`} ratio ${ratio} (virtual ${probe.ms} ms)`,
+	};
 }
 
 function persisted(report: DriveReport, ctx: OracleContext): Verdict {

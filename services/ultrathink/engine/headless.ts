@@ -25,6 +25,7 @@ import {
 } from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
 import { redactSecrets } from "../../../src/redact.ts";
+import { isAbortError } from "../../../src/shared.ts";
 import { type CompletionReport, readReport } from "../../../src/types.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
@@ -687,9 +688,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				return text;
 			} catch (error) {
 				const code = failureCode(error);
-				const failure =
-					code ??
-					(error instanceof Error && error.name === "AbortError" ? "aborted" : "engine_error");
+				const failure = code ?? (isAbortError(error) ? "aborted" : "engine_error");
 				// A reply cut at its output limit reports what it cost, so that call is billed like a completed one.
 				const cut =
 					reported.usage?.promptTokens !== undefined ||
@@ -715,10 +714,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						// reason: the reservation keeps counting, which only errs on the safe side.
 					}
 				}
-				const aborted =
-					code === undefined
-						? error instanceof Error && error.name === "AbortError"
-						: code === "aborted";
+				const aborted = code === undefined ? isAbortError(error) : code === "aborted";
 				if (error instanceof BreakerRefusal) job.refusal ??= { retryAfterMs: error.retryAfterMs };
 				else if (!aborted) job.firstError ??= code ?? "engine_error";
 				if (!aborted && code === undefined)

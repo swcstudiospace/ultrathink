@@ -1004,6 +1004,24 @@ describe("headless planner: call telemetry", () => {
 			expect(call.outputTokens).toBe(0);
 		}
 	});
+
+	test("a completer that throws a bare AbortError emits the aborted outcome and is not recorded as an engine error", async () => {
+		const calls: PlannerCall[] = [];
+		const h = setup(
+			{},
+			{
+				completer: async () => {
+					throw new DOMException("provider cancelled", "AbortError");
+				},
+				onCall: (call) => calls.push(call),
+			},
+		);
+		const sessionId = randomUUID();
+		await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(calls.length).toBeGreaterThanOrEqual(1);
+		for (const call of calls) expect(call.outcome).toBe("aborted");
+		expect(jobFile(h.stateDir, sessionId)).not.toMatchObject({ error: "engine_error" });
+	});
 });
 
 describe("headless planner: completion report", () => {

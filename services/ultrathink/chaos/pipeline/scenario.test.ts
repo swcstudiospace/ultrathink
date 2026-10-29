@@ -156,6 +156,26 @@ describe("parseScenario", () => {
 		}
 	});
 
+	test("accepts watchdogMs and allowAborts and range-checks them", () => {
+		const scenario = parseScenario(
+			{ ...valid(), watchdogMs: 30000, allowAborts: true },
+			"tiny.json",
+		);
+
+		expect(scenario.watchdogMs).toBe(30000);
+		expect(scenario.allowAborts).toBe(true);
+		expect(parseScenario(valid(), "tiny.json").watchdogMs).toBeUndefined();
+		expect(parseScenario(valid(), "tiny.json").allowAborts).toBeUndefined();
+		for (const watchdogMs of [999, 3_600_001]) {
+			expect(messageOf(() => parseScenario({ ...valid(), watchdogMs }, "tiny.json"))).toBe(
+				"tiny.json: watchdogMs must be between 1000 and 3600000",
+			);
+		}
+		expect(messageOf(() => parseScenario({ ...valid(), allowAborts: "yes" }, "tiny.json"))).toBe(
+			"tiny.json: allowAborts must be true or false",
+		);
+	});
+
 	test("rejects a prompt id that is not a fixed-width nonce", () => {
 		const input = {
 			...valid(),

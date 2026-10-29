@@ -850,11 +850,7 @@ export function createNativeEngineSelector(
 						} catch (error) {
 							// A cancelled flight stays a cancellation. A TimeoutError of a live flight (a hung resolver or
 							// request deadline) is a failed attempt, never a silent cancel.
-							if (
-								lifetime.aborted ||
-								deps.isCurrent?.() === false ||
-								(error instanceof Error && error.name === "AbortError")
-							)
+							if (lifetime.aborted || deps.isCurrent?.() === false || isAbortError(error))
 								throw cancelled();
 							throw thrownFailure(error, hintMs);
 						}

@@ -34,6 +34,7 @@ import { resolveStateDir } from "./paths.ts";
 import type { ProgressSink } from "./progress.ts";
 import type { HostId } from "./types.ts";
 import type { UpliftState } from "../types.ts";
+import { isAbortError } from "../shared.ts";
 import { buildPlanView, type PlanView } from "./view.ts";
 
 export interface PlanRequest {
@@ -345,14 +346,7 @@ export async function planPrompt(
 		};
 	} catch (error) {
 		// Provider cancellation need not abort the caller's signal. Preserve it here with only the safe selection record.
-		if (
-			options.signal?.aborted ||
-			(typeof error === "object" &&
-				error !== null &&
-				"name" in error &&
-				error.name === "AbortError")
-		)
-			return skip("aborted", resolution);
+		if (options.signal?.aborted || isAbortError(error)) return skip("aborted", resolution);
 		return skip("engine-error", resolution, causeOf(error));
 	}
 }

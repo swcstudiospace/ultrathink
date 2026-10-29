@@ -6,6 +6,8 @@
  * `apiErrorStatus`, `status`, `code` and the message text so this module imports no route classes.
  */
 
+import { isAbortError } from "../shared.ts";
+
 export type FailureClass =
 	| "auth"
 	| "billing"
@@ -141,7 +143,7 @@ export function classifyFailure(error: unknown): FailureClass {
 			return carried as FailureClass;
 		}
 	}
-	if (name === "AbortError") return "aborted";
+	if (isAbortError(error)) return "aborted";
 	const message = messageOf(error);
 	if (anyMatch(MODEL_UNAVAILABLE_RES, message)) return "model-unavailable";
 	if (anyMatch(PLAN_LIMIT_RES, message)) return "plan-limit";

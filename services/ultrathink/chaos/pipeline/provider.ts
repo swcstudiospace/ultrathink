@@ -46,6 +46,8 @@ export interface CallLog {
 	/** 1-based ordinal of this call among the prompt's calls of the same stage. */
 	ordinal: number;
 	effect: Effect["kind"];
+	/** The kinds of the effect and of every `after` effect behind it, so a `delay` that ends in a `hang` is still known as one. */
+	chain: Effect["kind"][];
 	outcome: "pending" | "ok" | "error" | "aborted";
 	status: number | undefined;
 	startedAt: number;
@@ -213,6 +215,12 @@ function faultError(effect: Extract<Effect, { kind: "error" }>): Error {
 	return error;
 }
 
+function chainOf(effect: Effect): Effect["kind"][] {
+	return effect.kind === "delay"
+		? [effect.kind, ...chainOf(effect.after ?? { kind: "ok" })]
+		: [effect.kind];
+}
+
 function failureReport(error: unknown): CompletionReport {
 	const status = numberField(error, "status");
 	const retryAfterSec = numberField(error, "retryAfterSec");
@@ -326,6 +334,7 @@ export function createScriptedProvider(rules: Rule[], seams: ProviderSeams = {})
 			node,
 			ordinal,
 			effect: "ok",
+			chain: ["ok"],
 			outcome: "pending",
 			status: undefined,
 			startedAt: now(),
@@ -343,6 +352,7 @@ export function createScriptedProvider(rules: Rule[], seams: ProviderSeams = {})
 			if (state) state.remaining -= 1;
 			const effect = state?.rule.effect ?? { kind: "ok" as const };
 			entry.effect = effect.kind;
+			entry.chain = chainOf(effect);
 			if (effect.kind === "error") entry.status = effect.status;
 			const text = await apply(effect, () => okReply(call, inner, system, user, signal), signal);
 			entry.outcome = "ok";

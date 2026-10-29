@@ -9,7 +9,13 @@ import type { HostId } from "../../../../src/host/types.ts";
 import { appendHistory, readHistory } from "../history.ts";
 import type { HistoryRecord, RunResult } from "../run.ts";
 import { scoreRun } from "../score.ts";
-import { type DriveDeps, runProbe, runPrompts } from "./drive.ts";
+import {
+	type DriveDeps,
+	expectedPlanned,
+	runProbe,
+	runPrompts,
+	watchdogBudgetMs,
+} from "./drive.ts";
 import { checkInvariants, createJudge, snapshotResources } from "./oracle.ts";
 import {
 	type Pressure,
@@ -35,8 +41,14 @@ interface PipelineDeps {
 	engineSelector?: typeof selectEngine;
 	/** Host named to the selector on the real path. Default "claude-code": a CLI has no Omp runtime. */
 	host?: HostId;
-	/** Probe time of the baseline run; defaults to the latest recorded one of `scenario.baselineOf`. */
+	/** Probe time on the scripted clock of the baseline run; defaults to the latest recorded one of `scenario.baselineOf`. */
 	baselineMs?: number;
+	/** Probe time on the real clock of the baseline run; defaults like `baselineMs`. */
+	baselineRealMs?: number;
+	/** Real clock in ms for the probe and per-prompt wall time; default `performance.now`. */
+	realNow?: () => number;
+	/** Watchdog budget in real ms; defaults to the scenario's `watchdogMs`, else the concurrency-scaled default. */
+	watchdogMs?: number;
 	stateRoot?: string;
 	/** Prompts that take the Omp planner path. Default: a quarter of the batch, at most 10. */
 	ompPrompts?: number;
@@ -71,17 +83,37 @@ function guardReal(scenario: Scenario, real: PipelineDeps["real"]): void {
 	}
 }
 
+interface Baseline {
+	/** Probe time on the scripted provider's clock. */
+	virtualMs?: number;
+	/** Probe time on the real clock. */
+	realMs?: number;
+}
+
+function finite(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 /**
- * The recovery probe time of the latest recorded pipeline run of `id`: what a later run's probe is compared with. A
- * run that recorded none, or a non-numeric observation, is passed over.
+ * The recovery probe times of the latest recorded pipeline run of `id`: what a later run's probe is compared with. The
+ * real-clock figure is `details.probeRealMs`; a run recorded before it existed carries only a numeric `recovery`
+ * observation, read as the scripted-clock figure. A run with neither is passed over.
  */
-export function baselineFromHistory(records: HistoryRecord[], id: string): number | undefined {
+export function baselineFromHistory(records: HistoryRecord[], id: string): Baseline | undefined {
 	const runs = records
 		.filter((record) => record.templateId === id && record.driver === "pipeline")
 		.sort((a, b) => b.seq - a.seq);
 	for (const run of runs) {
-		const observed = run.hypotheses.find((hypothesis) => hypothesis.id === "recovery")?.observed;
-		if (typeof observed === "number" && Number.isFinite(observed)) return observed;
+		const realMs = finite(run.details?.probeRealMs);
+		const virtualMs =
+			finite(run.details?.probeVirtualMs) ??
+			finite(run.hypotheses.find((hypothesis) => hypothesis.id === "recovery")?.observed);
+		if (realMs !== undefined || virtualMs !== undefined) {
+			return {
+				...(virtualMs === undefined ? {} : { virtualMs }),
+				...(realMs === undefined ? {} : { realMs }),
+			};
+		}
 	}
 	return undefined;
 }
@@ -108,6 +140,25 @@ export function heapSlopeKiBPerPrompt(samples: HeapSample[]): number | undefined
 
 function mib(bytes: number): number {
 	return Math.round((bytes / (1024 * 1024)) * 10) / 10;
+}
+
+/** Outcome counts by status, with a `skipped:<reason>` count per skip reason. */
+function countStatuses(terminals: Array<string | undefined>): {
+	planned: number;
+	skipped: number;
+	aborted: number;
+	reasons: Record<string, number>;
+} {
+	const counts = { planned: 0, skipped: 0, aborted: 0, reasons: {} as Record<string, number> };
+	for (const terminal of terminals) {
+		if (terminal === "planned") counts.planned += 1;
+		else if (terminal === "aborted") counts.aborted += 1;
+		else if (terminal?.startsWith("skipped:")) {
+			counts.skipped += 1;
+			counts.reasons[terminal] = (counts.reasons[terminal] ?? 0) + 1;
+		}
+	}
+	return counts;
 }
 
 function pressureSpecOf(scenario: Scenario): PressureSpec {
@@ -138,9 +189,12 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 		nodeRange,
 		...(real && deps.real ? { maxCalls: deps.real.maxCalls } : {}),
 	});
+	const watchdogMs = watchdogBudgetMs(scenario, deps);
 	const judge = createJudge({
 		minNodes: nodeRange[0],
 		maxNodes: nodeRange[1],
+		watchdogMs,
+		...(scenario.allowAborts === undefined ? {} : { allowAborts: scenario.allowAborts }),
 		...(real ? { real } : {}),
 	});
 	const samples: HeapSample[] = [];
@@ -150,6 +204,8 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 		provider,
 		sleep: clock.sleep,
 		now: clock.now,
+		...(deps.realNow ? { realNow: deps.realNow } : {}),
+		watchdogMs,
 		stateRoot,
 		ompPrompts: deps.ompPrompts ?? Math.min(MAX_OMP_PROMPTS, Math.ceil(scenario.prompts.count / 4)),
 		// Each prompt is judged as it completes and then reduced to its verdict, so the run holds no records to the end.
@@ -187,18 +243,24 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 		provider.quiesce();
 		const probe = await runProbe(scenario, drive);
 		const capped = provider.capped();
-		const baselineMs =
-			deps.baselineMs ??
-			(scenario.baselineOf === undefined
+		const recorded =
+			scenario.baselineOf === undefined
 				? undefined
-				: baselineFromHistory(readHistory(deps.historyPath).records, scenario.baselineOf));
+				: baselineFromHistory(readHistory(deps.historyPath).records, scenario.baselineOf);
+		const baselineMs = deps.baselineMs ?? recorded?.virtualMs;
+		const baselineRealMs = deps.baselineRealMs ?? recorded?.realMs;
 		const hypotheses: RunResult["hypotheses"] = checkInvariants(report, {
 			stateRoot,
 			historyPath: deps.historyPath,
 			baseline,
 			probe,
 			...(baselineMs === undefined ? {} : { baselineMs }),
+			...(baselineRealMs === undefined ? {} : { baselineRealMs }),
 			expectedPrompts: scenario.prompts.count,
+			// A live engine's prompts are not the corpus' planned share (the call cap skips some), so only the mock run expects it.
+			...(real ? {} : { expectedPlanned: expectedPlanned(scenario) }),
+			watchdogMs,
+			...(scenario.allowAborts === undefined ? {} : { allowAborts: scenario.allowAborts }),
 			// A capped real run could not send its probe, so recovery cannot be judged.
 			invariants: scenario.invariants.filter((id) => !(capped && id === "recovery")),
 			minNodes: nodeRange[0],
@@ -223,6 +285,12 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 						},
 			);
 		}
+		const statuses = countStatuses(report.outcomes.map((outcome) => outcome?.terminal));
+		deps.notes?.(`watchdog budget ${watchdogMs} ms, aborts ${statuses.aborted}`);
+		const recoveryObserved = hypotheses.find(
+			(hypothesis) => hypothesis.id === "recovery",
+		)?.observed;
+		if (typeof recoveryObserved === "string") deps.notes?.(recoveryObserved);
 		if (real && deps.real) {
 			deps.notes?.(
 				`calls made: ${provider.calls().length} (cap ${deps.real.maxCalls}${capped ? ", reached" : ""})`,
@@ -238,6 +306,15 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 			passed: hypotheses.every((hypothesis) => hypothesis.passed),
 			score: scoreRun(hypotheses),
 			rollback: "skipped:not_requested",
+			details: {
+				watchdogMs,
+				planned: statuses.planned,
+				skipped: statuses.skipped,
+				aborted: statuses.aborted,
+				...statuses.reasons,
+				probeVirtualMs: Math.round(probe.ms),
+				probeRealMs: Math.round(probe.realMs),
+			},
 		};
 		return appendHistory(deps.historyPath, result);
 	} finally {

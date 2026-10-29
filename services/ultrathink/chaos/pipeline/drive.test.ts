@@ -6,7 +6,14 @@ import { readdirSync, rmSync } from "node:fs";
 import type { SelectedEngine } from "../../../../src/host/engine.ts";
 import { yieldTurn } from "../../../../src/test.helpers.ts";
 import { makeTempDir } from "../../test.helpers.ts";
-import { nonceFor, runPrompts, runProbe } from "./drive.ts";
+import {
+	defaultWatchdogMs,
+	expectedPlanned,
+	nonceFor,
+	runProbe,
+	runPrompts,
+	watchdogBudgetMs,
+} from "./drive.ts";
 import { createJudge } from "./oracle.ts";
 import {
 	createScriptedProvider,
@@ -227,6 +234,8 @@ describe("runPrompts through the real hook", () => {
 
 		expect(report.outcomes[0]?.terminal).toBe("aborted");
 		expect(report.outcomes[1]?.terminal).toBe("planned");
+		const [call] = provider.byPrompt(nonceOf(7, 0)).filter((entry) => entry.stage === "graph");
+		expect(call?.chain).toEqual(["hang"]);
 		expect(provider.byPrompt(nonceOf(7, 0)).at(-1)?.outcome).toBe("aborted");
 		expect(readdirSync(stateRoot)).toEqual([]);
 	});
@@ -369,6 +378,100 @@ describe("the Omp planner path", () => {
 			"skipped:engine-error",
 			"skipped:engine-error",
 		]);
+	});
+});
+
+describe("watchdog budget", () => {
+	test("scales with concurrency: the larger of 120 s and 4 s per slot", () => {
+		expect(defaultWatchdogMs(5)).toBe(120_000);
+		expect(defaultWatchdogMs(30)).toBe(120_000);
+		expect(defaultWatchdogMs(100)).toBe(400_000);
+		expect(defaultWatchdogMs(128)).toBe(512_000);
+	});
+
+	test("the caller's budget wins over the scenario's, which wins over the default", () => {
+		const scenario = tiny({ watchdogMs: 9000, prompts: { count: 1, concurrency: 100 } });
+
+		expect(watchdogBudgetMs(scenario, { watchdogMs: 1234 })).toBe(1234);
+		expect(watchdogBudgetMs(scenario, {})).toBe(9000);
+		expect(watchdogBudgetMs(tiny({ prompts: { count: 1, concurrency: 100 } }), {})).toBe(400_000);
+	});
+});
+
+describe("expected planned share", () => {
+	test("the generated cycle skips 2 of every 16 prompts", () => {
+		const of = (count: number) => expectedPlanned(tiny({ prompts: { count, concurrency: 1 } }));
+
+		expect(of(16)).toBe(14);
+		expect(of(2000)).toBe(1750);
+		expect(of(500)).toBe(436);
+		expect(of(1)).toBe(0);
+		expect(of(3)).toBe(1);
+	});
+
+	test("a corpus plans every non-blank entry in the cycle", () => {
+		expect(expectedPlanned(tiny())).toBe(3);
+		expect(
+			expectedPlanned(tiny({ prompts: { count: 7, concurrency: 1, corpus: ["a", " ", "b"] } })),
+		).toBe(5);
+	});
+
+	test("matches what the driver really plans for one full cycle", async () => {
+		const scenario = tiny({ prompts: { count: 16, concurrency: 4 }, faults: [] });
+		const { deps } = rig(scenario);
+
+		const report = await runPrompts(scenario, deps);
+
+		expect(report.outcomes.filter((outcome) => outcome.terminal === "planned")).toHaveLength(
+			expectedPlanned(scenario),
+		);
+	});
+});
+
+describe("event-loop turns", () => {
+	test("the batch yields a macrotask between prompts, so timers and the watchdog are not starved by the harness", async () => {
+		const scenario = tiny({
+			prompts: { count: 8, concurrency: 4, corpus: ["add a widget"] },
+			faults: [],
+		});
+		const { deps } = rig(scenario);
+		let turned = false;
+		setTimeout(() => {
+			turned = true;
+		}, 0);
+		const seen: boolean[] = [];
+
+		await runPrompts(scenario, {
+			...deps,
+			ompPrompts: 0,
+			onPromptDone: () => seen.push(turned),
+		});
+
+		// A prompt that finished while the timer was due but never ran would mean the loop did not turn once in the batch.
+		expect(seen.at(-1)).toBe(true);
+		expect(seen.indexOf(true)).toBeLessThan(seen.length - 1);
+	});
+});
+
+describe("real-clock timing", () => {
+	test("each prompt records its time on the injected real clock, apart from the scripted one", async () => {
+		const scenario = tiny({
+			prompts: { count: 2, concurrency: 1, corpus: ["add a widget"] },
+			faults: [],
+		});
+		const { deps } = rig(scenario);
+		let tick = 0;
+
+		const report = await runPrompts(scenario, {
+			...deps,
+			realNow: () => {
+				tick += 250;
+				return tick;
+			},
+		});
+
+		expect(report.outcomes.map((outcome) => outcome.realMs)).toEqual([250, 250]);
+		expect(report.outcomes.every((outcome) => outcome.ms === 0)).toBe(true);
 	});
 });
 

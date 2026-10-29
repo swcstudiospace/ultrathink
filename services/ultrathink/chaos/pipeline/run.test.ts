@@ -370,6 +370,108 @@ describe("the real-provider guard", () => {
 	});
 });
 
+describe("watchdog and the run's figures", () => {
+	test("the budget is printed with the abort count and recorded in the history details", async () => {
+		const { historyPath, stateRoot } = paths();
+		const notes: string[] = [];
+
+		const result = await runPipeline(tiny(), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			notes: (line) => notes.push(line),
+		});
+
+		expect(notes).toContain("watchdog budget 120000 ms, aborts 0");
+		expect(
+			notes.some((line) =>
+				/^probe latency real \d+ ms baseline none ratio n\/a \(virtual \d+ ms\)$/.test(line),
+			),
+		).toBe(true);
+		expect(result.details).toMatchObject({
+			watchdogMs: 120000,
+			planned: 2,
+			skipped: 1,
+			aborted: 0,
+			"skipped:empty": 1,
+		});
+		expect(typeof result.details?.probeRealMs).toBe("number");
+		const terminal = result.hypotheses.find((hypothesis) => hypothesis.id === "terminal");
+		expect(terminal?.observed).toBe("3/3 terminal: 2 planned, 1 skipped (by design), 0 aborted");
+	});
+
+	test("the scenario's watchdogMs and the concurrency scaling set the budget", async () => {
+		const a = paths();
+		const b = paths();
+		const notesA: string[] = [];
+		const notesB: string[] = [];
+
+		await runPipeline(tiny({ watchdogMs: 7000 }), {
+			historyPath: a.historyPath,
+			stateRoot: a.stateRoot,
+			ompPrompts: 0,
+			notes: (line) => notesA.push(line),
+		});
+		await runPipeline(tiny({ prompts: { count: 2, concurrency: 100, corpus: ["add a widget"] } }), {
+			historyPath: b.historyPath,
+			stateRoot: b.stateRoot,
+			ompPrompts: 0,
+			notes: (line) => notesB.push(line),
+		});
+
+		expect(notesA).toContain("watchdog budget 7000 ms, aborts 0");
+		expect(notesB).toContain("watchdog budget 400000 ms, aborts 0");
+	});
+
+	test("a prompt an injected hang targets is aborted by the watchdog, counted and not a finding", async () => {
+		const { historyPath, stateRoot } = paths();
+		const notes: string[] = [];
+
+		const result = await runPipeline(tiny(), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			watchdogMs: 50,
+			notes: (line) => notes.push(line),
+			providerRules: [{ stage: "graph", promptId: 0, effect: { kind: "hang" }, count: "forever" }],
+		});
+
+		expect(notes).toContain("watchdog budget 50 ms, aborts 1");
+		expect(result.details).toMatchObject({ aborted: 1, planned: 1 });
+		const terminal = result.hypotheses.find((hypothesis) => hypothesis.id === "terminal");
+		expect(terminal?.passed).toBe(true);
+		expect(terminal?.observed).toBe(
+			"3/3 terminal: 1 planned, 1 skipped (by design), 1 aborted (1 allowed)",
+		);
+	});
+
+	test("the recovery probe is compared on the real clock against a recorded real baseline", async () => {
+		const { historyPath, stateRoot } = paths();
+		appendHistory(historyPath, { ...record("nominal", 1, 0), details: { probeRealMs: 100 } });
+		let tick = 0;
+		const realNow = () => {
+			tick += 1000;
+			return tick;
+		};
+
+		const slow = await runPipeline(tiny({ baselineOf: "nominal" }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			realNow,
+		});
+
+		const recovery = slow.hypotheses.find((hypothesis) => hypothesis.id === "recovery");
+		expect(recovery?.passed).toBe(false);
+		expect(recovery?.reason).toContain("of real time");
+		expect(recovery?.observed).toContain("baseline 100 ms ratio 10");
+		expect(slow.details?.probeRealMs).toBe(1000);
+	});
+});
+
 describe("heap tracing", () => {
 	test("the slope is a least-squares fit in KiB per prompt, undefined below two samples", () => {
 		const KIB = 1024;
@@ -442,9 +544,22 @@ describe("baselineFromHistory", () => {
 			record("nominal", 6, 7, "inprocess"),
 		];
 
-		expect(baselineFromHistory(records, "nominal")).toBe(80);
-		expect(baselineFromHistory(records, "smoke")).toBe(5);
+		expect(baselineFromHistory(records, "nominal")).toEqual({ virtualMs: 80 });
+		expect(baselineFromHistory(records, "smoke")).toEqual({ virtualMs: 5 });
 		expect(baselineFromHistory(records, "missing")).toBeUndefined();
+	});
+
+	test("the real-clock figure comes from the run's details and wins over the old numeric observation", () => {
+		const records = [
+			{ ...record("nominal", 1, 5), details: { probeRealMs: 90, probeVirtualMs: 3 } },
+			{ ...record("nominal", 2, undefined), details: { probeRealMs: 120 } },
+		];
+
+		expect(baselineFromHistory(records, "nominal")).toEqual({ realMs: 120 });
+		expect(baselineFromHistory(records.slice(0, 1), "nominal")).toEqual({
+			realMs: 90,
+			virtualMs: 3,
+		});
 	});
 
 	test("a baseline that is not a finite number is ignored", () => {

@@ -50,7 +50,7 @@ import { formatLessonsSection, lessonsLookup, recallLessons } from "../teach/rec
 import type { GroundOutcome, DocsLookup } from "../ragflow/types.ts";
 import { isHostId, type HostId } from "../host/types.ts";
 import { redactSecrets } from "../redact.ts";
-import { isRecord } from "../shared.ts";
+import { isAbortError, isRecord } from "../shared.ts";
 import { probeRealmRaw, realmHint, type RealmProbe } from "../stack/realm.ts";
 import {
 	formatSkillsSection,
@@ -766,14 +766,7 @@ export async function runPromptSubmit(
 	const lifetime = AbortSignal.any([cancellation, budgetController.signal]);
 	const rethrowCancellation = (error: unknown): void => {
 		// A provider can abort while the caller is still live. Only an expired hook budget may fail open with a partial plan.
-		if (
-			!budgetController.signal.aborted &&
-			typeof error === "object" &&
-			error !== null &&
-			"name" in error &&
-			error.name === "AbortError"
-		)
-			controller.abort();
+		if (!budgetController.signal.aborted && isAbortError(error)) controller.abort();
 		throwIfCancelled(cancellation);
 	};
 	const complete: ClaudeCompleter = async (system, user, signal) => {

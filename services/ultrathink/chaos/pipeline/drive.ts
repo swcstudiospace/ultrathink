@@ -47,6 +47,8 @@ interface StateScan {
 export interface PromptVerdict {
 	/** Planned with a session record. */
 	planned: boolean;
+	/** Aborted, and an injected `hang` targeted the prompt or the scenario allows aborts: the one abort that is not a finding. */
+	allowedAbort: boolean;
 	terminal: string[];
 	original: string[];
 	uplift: string[];
@@ -75,8 +77,10 @@ export interface PromptOutcome {
 	/** The track plans the tracker stub received, serialized. */
 	rows: string[];
 	state?: StateScan;
-	/** Time the prompt took on the injected clock. */
+	/** Time the prompt took on the injected clock (the scripted provider's delays and backoffs; informational). */
 	ms: number;
+	/** Time the prompt took on the real clock: what the host and the code under test actually spent. */
+	realMs: number;
 	/** Set when the driver was given a judge: the oracle's per-prompt findings. */
 	verdict?: PromptVerdict;
 }
@@ -99,6 +103,8 @@ export interface DriveDeps {
 	/** Must be the clock the provider was built with, so a delay and a retry backoff move the same time. */
 	sleep?: typeof abortableSleep;
 	now?: () => number;
+	/** Real clock in ms for the per-prompt wall time; default `performance.now`. */
+	realNow?: () => number;
 	/** Parent of the per-prompt temp state directories. Default: the OS temp directory. */
 	stateRoot?: string;
 	/**
@@ -116,14 +122,28 @@ export interface DriveDeps {
 	host?: HostId;
 	/** Most prompts that take the Omp planner path when no selector is given. Default 10; 0 keeps every prompt on the hook. */
 	ompPrompts?: number;
-	/** Aborts a flight that is still running after this many milliseconds. Default 120000. */
+	/**
+	 * Aborts a flight that is still running after this many real milliseconds: the hang detector. Default: the scenario's
+	 * `watchdogMs`, else {@link defaultWatchdogMs} of its concurrency.
+	 */
 	watchdogMs?: number;
 	timers?: WatchdogTimers;
 }
 
 const DEFAULT_OMP_PROMPTS = 10;
-const DEFAULT_WATCHDOG_MS = 120_000;
+const MIN_WATCHDOG_MS = 120_000;
+const WATCHDOG_MS_PER_SLOT = 4_000;
 const CWD = "/chaos/pipeline";
+
+/** The larger of 120 s and 4 s per concurrent slot, so a wide batch on a busy host is not cut off by accident. */
+export function defaultWatchdogMs(concurrency: number): number {
+	return Math.max(MIN_WATCHDOG_MS, WATCHDOG_MS_PER_SLOT * concurrency);
+}
+
+/** The watchdog budget a run uses: the caller's, else the scenario's, else the concurrency-scaled default. */
+export function watchdogBudgetMs(scenario: Scenario, deps: Pick<DriveDeps, "watchdogMs">): number {
+	return deps.watchdogMs ?? scenario.watchdogMs ?? defaultWatchdogMs(scenario.prompts.concurrency);
+}
 
 const platformTimers: WatchdogTimers = {
 	setTimeout: (callback, ms) => setTimeout(callback, ms),
@@ -303,6 +323,7 @@ interface Resolved {
 	deps: DriveDeps;
 	sleep: typeof abortableSleep;
 	now: () => number;
+	realNow: () => number;
 	stateRoot: string;
 	timers: WatchdogTimers;
 	watchdogMs: number;
@@ -316,9 +337,10 @@ function resolve(scenario: Scenario, deps: DriveDeps): Resolved {
 		deps,
 		sleep: deps.sleep ?? clock.sleep,
 		now: deps.now ?? clock.now,
+		realNow: deps.realNow ?? (() => performance.now()),
 		stateRoot: deps.stateRoot ?? tmpdir(),
 		timers: deps.timers ?? platformTimers,
-		watchdogMs: deps.watchdogMs ?? DEFAULT_WATCHDOG_MS,
+		watchdogMs: watchdogBudgetMs(scenario, deps),
 		random: seededRandom(scenario.seed),
 	};
 }
@@ -473,6 +495,7 @@ async function drivePrompt(
 			degraded: [],
 			rows: [],
 			ms: 0,
+			realMs: 0,
 		};
 	}
 	mkdirSync(stateRoot, { recursive: true });
@@ -483,6 +506,7 @@ async function drivePrompt(
 	const watchdog = timers.setTimeout(() => controller.abort(), ctx.watchdogMs);
 	const rows: string[] = [];
 	const startedAt = now();
+	const realStartedAt = ctx.realNow();
 	let terminal: PromptOutcome["terminal"] = "planned";
 	let context = "";
 	let error: string | undefined;
@@ -533,7 +557,34 @@ async function drivePrompt(
 		rows,
 		state,
 		ms: now() - startedAt,
+		realMs: ctx.realNow() - realStartedAt,
 	};
+}
+
+/**
+ * How many of the scenario's prompts the corpus asks the pipeline to plan: every prompt but the blank ones (the cycle's
+ * `empty` and `whitespace` kinds, or blank corpus entries), which are skipped by design. Derived from the scenario, so a
+ * resized or re-corpused run expects its own share.
+ */
+export function expectedPlanned(scenario: Scenario): number {
+	const { count, corpus } = scenario.prompts;
+	let planned = 0;
+	for (let index = 0; index < count; index += 1) {
+		if (corpus !== undefined) {
+			if ((corpus[index % corpus.length] ?? "").trim() !== "") planned += 1;
+		} else {
+			const kind = KINDS[index % KINDS.length];
+			if (kind !== "empty" && kind !== "whitespace") planned += 1;
+		}
+	}
+	return planned;
+}
+
+function yieldTurn(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	// A timer, not setImmediate: Bun runs chained immediates ahead of due timers, which would keep starving the watchdog.
+	setTimeout(resolve, 0);
+	return promise;
 }
 
 /** Indexes that take the Omp planner path: evenly spread, at most `max`. */
@@ -581,6 +632,10 @@ export async function runPrompts(scenario: Scenario, deps: DriveDeps): Promise<D
 			outcomes[index] = outcome;
 			completed += 1;
 			deps.onPromptDone?.(completed);
+			// The hook path is microtasks and synchronous file work: with no turn of the event loop between prompts a wide batch
+			// starves every timer, the watchdog included, so a prompt waiting for its macrotask would be aborted for the
+			// harness's own greed. One turn per prompt keeps the watchdog a measure of a hang, not of the queue.
+			await yieldTurn();
 		}
 	};
 	await Promise.all(Array.from({ length: Math.min(scenario.prompts.concurrency, total) }, worker));

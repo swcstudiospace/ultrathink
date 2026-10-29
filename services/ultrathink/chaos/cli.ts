@@ -45,7 +45,7 @@ const USAGE = [
 	"       chaos run <id> --driver inprocess|http [--base-url URL] [--ca-file PEM] [--client-cert PEM --client-key PEM] [--history PATH] [--rollback-argv JSON]",
 	"       chaos score <id> [--history PATH]",
 	"       chaos pipeline templates",
-	"       chaos pipeline run <id> [--prompts N] [--concurrency C] [--seed S] [--history PATH] [--pressure] [--trace-heap] [--provider real [--max-calls N]]",
+	"       chaos pipeline run <id> [--prompts N] [--concurrency C] [--seed S] [--history PATH] [--pressure] [--trace-heap] [--watchdog-ms MS] [--provider real [--max-calls N]]",
 	"       chaos pipeline score <id> [--history PATH]",
 	"       chaos pipeline pressure --workers N --seconds S [--memory-mb M] [--floor R]",
 ].join("\n");
@@ -60,6 +60,7 @@ const PIPELINE_RUN_FLAGS = [
 	"--history",
 	"--pressure",
 	"--trace-heap",
+	"--watchdog-ms",
 	"--provider",
 	"--max-calls",
 ] as const;
@@ -161,11 +162,19 @@ function resized(scenario: Scenario, flags: Map<string, string>): Scenario {
 	const prompts = flags.get("--prompts");
 	const concurrency = flags.get("--concurrency");
 	const seed = flags.get("--seed");
-	if (prompts === undefined && concurrency === undefined && seed === undefined) return scenario;
+	const watchdog = flags.get("--watchdog-ms");
+	if (
+		prompts === undefined &&
+		concurrency === undefined &&
+		seed === undefined &&
+		watchdog === undefined
+	)
+		return scenario;
 	return parseScenario(
 		{
 			...scenario,
 			...(seed === undefined ? {} : { seed: integerFlag("--seed", seed, 0) }),
+			...(watchdog === undefined ? {} : { watchdogMs: integerFlag("--watchdog-ms", watchdog, 0) }),
 			prompts: {
 				...scenario.prompts,
 				...(prompts === undefined ? {} : { count: integerFlag("--prompts", prompts, 0) }),

@@ -110,10 +110,20 @@ describe("a passing report", () => {
 		}
 	});
 
-	test("the recovery observation is the probe time, which a later run reads back as its baseline", () => {
+	test("the recovery observation names the real-clock probe latency, the baseline, the ratio and the virtual figure", () => {
 		const results = checkInvariants(report, context());
 
-		expect(only(results, "recovery").observed).toBe(probe.ms);
+		expect(only(results, "recovery").observed).toBe(
+			`probe latency real ${Math.round(probe.realMs)} ms baseline none ratio n/a (virtual ${probe.ms} ms)`,
+		);
+	});
+
+	test("the terminal observation breaks the statuses down", () => {
+		const results = checkInvariants(report, context({ expectedPlanned: 3 }));
+
+		expect(only(results, "terminal").observed).toBe(
+			"4/4 terminal: 3 planned, 1 skipped (by design), 0 aborted",
+		);
 	});
 
 	test("a subset of invariants returns only those", () => {
@@ -145,6 +155,123 @@ describe("terminal", () => {
 
 		expect(only(results, "terminal").passed).toBe(false);
 		expect(only(results, "terminal").reason).toContain("5");
+	});
+});
+
+describe("watchdog aborts", () => {
+	/** Prompt 0 ends aborted by the watchdog; `hang` makes it the injected kind. */
+	function abortedPrompt(hang: boolean): DriveReport {
+		const broken = copy();
+		const outcome = broken.outcomes[0]!;
+		outcome.terminal = "aborted";
+		delete outcome.record;
+		outcome.degraded = [];
+		outcome.calls = {};
+		broken.calls = broken.calls.filter((call) => call.key !== outcome.nonce);
+		if (hang) {
+			broken.calls.push({
+				seq: 9999,
+				stage: "graph",
+				key: outcome.nonce,
+				index: 0,
+				node: undefined,
+				ordinal: 1,
+				effect: "delay",
+				chain: ["delay", "hang"],
+				outcome: "aborted",
+				status: undefined,
+				startedAt: 0,
+				endedAt: 1,
+				foreign: [],
+			});
+		}
+		return broken;
+	}
+
+	test("an abort with no injected hang fails terminal, naming the prompt and the watchdog budget", () => {
+		const results = checkInvariants(abortedPrompt(false), context({ watchdogMs: 120000 }));
+
+		const terminal = only(results, "terminal");
+		expect(terminal.passed).toBe(false);
+		expect(terminal.reason).toContain("prompt 0: aborted by the watchdog (budget 120000 ms)");
+		expect(terminal.observed).toBe("3/4 terminal: 2 planned, 1 skipped (by design), 1 aborted");
+	});
+
+	test("an abort on a prompt an injected hang targeted (also behind a delay) passes and is counted", () => {
+		const results = checkInvariants(abortedPrompt(true), context({ expectedPlanned: 3 }));
+
+		expect(only(results, "terminal").passed).toBe(true);
+		expect(only(results, "terminal").observed).toBe(
+			"4/4 terminal: 2 planned, 1 skipped (by design), 1 aborted (1 allowed)",
+		);
+	});
+
+	test("a scenario that allows aborts accepts any abort", () => {
+		const results = checkInvariants(abortedPrompt(false), context({ allowAborts: true }));
+
+		expect(only(results, "terminal").passed).toBe(true);
+	});
+
+	test("the per-prompt judge decides it too, so a compacted report keeps the finding", () => {
+		const broken = abortedPrompt(false);
+		const outcome = broken.outcomes[0]!;
+		outcome.verdict = createJudge({ watchdogMs: 5000 })(
+			outcome,
+			broken.calls.filter((call) => call.key === outcome.nonce),
+		);
+
+		const results = checkInvariants(broken, context());
+
+		expect(only(results, "terminal").reason).toContain("(budget 5000 ms)");
+		expect(outcome.verdict.allowedAbort).toBe(false);
+	});
+});
+
+describe("expected planned share", () => {
+	test("fewer planned prompts than the corpus asks for is a finding, even with every status terminal", () => {
+		const broken = copy();
+		broken.outcomes[2]!.terminal = "skipped:empty";
+		delete broken.outcomes[2]!.record;
+
+		const results = checkInvariants(broken, context({ expectedPlanned: 3 }));
+
+		const terminal = only(results, "terminal");
+		expect(terminal.passed).toBe(false);
+		expect(terminal.reason).toContain("2 planned, expected at least 3 (3 by the corpus");
+		expect(terminal.observed).toBe("4/4 terminal: 2 planned, 2 skipped (by design), 0 aborted");
+	});
+
+	test("an abort by an injected hang lowers the expected share by one", () => {
+		const aborted = copy();
+		aborted.outcomes[2]!.terminal = "aborted";
+		delete aborted.outcomes[2]!.record;
+		aborted.calls.push({
+			seq: 9998,
+			stage: "fill",
+			key: aborted.outcomes[2]!.nonce,
+			index: 2,
+			node: "n1",
+			ordinal: 1,
+			effect: "hang",
+			chain: ["hang"],
+			outcome: "aborted",
+			status: undefined,
+			startedAt: 0,
+			endedAt: 1,
+			foreign: [],
+		});
+
+		expect(only(checkInvariants(aborted, context({ expectedPlanned: 3 })), "terminal").passed).toBe(
+			true,
+		);
+	});
+
+	test("is not checked when the context gives none", () => {
+		const broken = copy();
+		broken.outcomes[2]!.terminal = "skipped:empty";
+		delete broken.outcomes[2]!.record;
+
+		expect(only(checkInvariants(broken, context()), "terminal").passed).toBe(true);
 	});
 });
 
@@ -447,6 +574,41 @@ describe("recovery", () => {
 		for (const bad of [degraded, fallback, skipped]) {
 			expectOnlyFailing(checkInvariants(report, context({ probe: bad })), "recovery");
 		}
+	});
+
+	test("the real-clock latency decides: within 1.25x plus 250 ms passes, over it fails, and the virtual figure is only informational", () => {
+		const real = (ms: number): PromptOutcome => ({ ...structuredClone(probe), ms: 0, realMs: ms });
+
+		const within = checkInvariants(
+			report,
+			context({ probe: real(1000 * 1.25 + 250), baselineRealMs: 1000 }),
+		);
+		const over = checkInvariants(
+			report,
+			context({ probe: real(1000 * 1.25 + 251), baselineRealMs: 1000, baselineMs: 0 }),
+		);
+		const fastBaseline = checkInvariants(report, context({ probe: real(300), baselineRealMs: 40 }));
+
+		expect(only(within, "recovery").passed).toBe(true);
+		expect(only(over, "recovery").passed).toBe(false);
+		expect(only(over, "recovery").reason).toContain("1501 ms of real time");
+		expect(only(over, "recovery").reason).toContain("1.25x the 1000 ms baseline plus 250 ms");
+		expect(only(within, "recovery").observed).toBe(
+			"probe latency real 1500 ms baseline 1000 ms ratio 1.5 (virtual 0 ms)",
+		);
+		// 300 ms against a 40 ms baseline is inside 40 x 1.25 + 250: host noise, not a regression.
+		expect(only(fastBaseline, "recovery").passed).toBe(true);
+	});
+
+	test("a virtual baseline of 0 does not fail a real probe when a real baseline exists", () => {
+		const slowReal: PromptOutcome = { ...structuredClone(probe), ms: 0, realMs: 100 };
+
+		const results = checkInvariants(
+			report,
+			context({ probe: slowReal, baselineRealMs: 90, baselineMs: 0 }),
+		);
+
+		expect(only(results, "recovery").passed).toBe(true);
 	});
 
 	test("the probe latency must stay within 1.25x the baseline", () => {

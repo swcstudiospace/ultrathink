@@ -269,6 +269,26 @@ describe("effects", () => {
 		expect(provider.inflight()).toEqual({ now: 0, peak: 1 });
 	});
 
+	test("the log records the effect chain, so a delay that ends in a hang is known as one", async () => {
+		const provider = createScriptedProvider([
+			{ stage: "graph", effect: { kind: "delay", ms: 5, after: { kind: "hang" } } },
+		]);
+		const controller = new AbortController();
+
+		const pending = rejection(
+			provider.complete(SYSTEM, graphPayload("pl-1-000000"), controller.signal),
+		);
+		await yieldTurn();
+		controller.abort();
+		await pending;
+		await provider.complete(SYSTEM, upliftPayload("pl-1-000000"));
+
+		const [graph, uplift] = provider.calls();
+		expect(graph?.effect).toBe("delay");
+		expect(graph?.chain).toEqual(["delay", "hang"]);
+		expect(uplift?.chain).toEqual(["ok"]);
+	});
+
 	test("a call whose signal is already aborted rejects at once and a hang never arms", async () => {
 		const provider = createScriptedProvider([{ stage: "clarify", effect: { kind: "hang" } }]);
 		const controller = new AbortController();
