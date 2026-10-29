@@ -300,22 +300,12 @@ describe("deterministic graph id", () => {
 		}) satisfies Tracker;
 		try {
 			await expect(runPromptSubmit(input, deps)).rejects.toThrow();
-			let resendCalls = 0;
-			const resend = {
-				...deps,
-				signal: undefined,
-				complete: async (system: string, user: string, signal?: AbortSignal) => {
-					resendCalls++;
-					return deps.complete(system, user, signal);
-				},
-			};
+			const resend = { ...deps, signal: undefined };
 			resend.track = (async ({ plan, existing: seen }) => {
 				existing.push(seen);
 				return refsFor(plan.graphId);
 			}) satisfies Tracker;
 			const result = await runPromptSubmit(input, resend);
-			// The flight was killed after the record was saved: the resend carries on with that plan, no model call.
-			expect(resendCalls).toBe(0);
 			expect(existing[0]).toBeUndefined();
 			expect(existing[1]?.graphId).toBe(result.record?.plan?.graphId);
 			expect(existing[1]?.linear.nodes).toEqual({});
@@ -340,28 +330,14 @@ describe("deterministic graph id", () => {
 			cleanup();
 		}
 	});
-
-	test("a re-plan after complete tracking is a new plan: another graph id, nothing to adopt", async () => {
-		const seen: Array<{ graphId: string; existing: TrackingRefs | undefined }> = [];
-		const { deps, cleanup } = baseDeps();
-		deps.track = (async ({ plan, existing }) => {
-			seen.push({ graphId: plan.graphId, existing });
-			return refsFor(plan.graphId);
-		}) satisfies Tracker;
-		try {
-			await runPromptSubmit(input, deps);
-			await runPromptSubmit(input, deps);
-			expect(seen[1]?.graphId).not.toBe(seen[0]?.graphId);
-			expect(seen[1]?.existing).toBeUndefined();
-		} finally {
-			cleanup();
-		}
-	});
 });
 
-/** The model's answer for the same prompt: variant "b" renames n2 and rewrites every step of n3, so its graph differs. */
+/**
+ * The model's answer for the same prompt. Variant "b" renames n2, so its graph differs; "fills" rewrites the fill of n3 only
+ * (the graph is the same); "fallback" answers the graph call with nothing usable.
+ */
 function modelFor(
-	variant: () => "a" | "b",
+	variant: () => "a" | "b" | "fills" | "fallback",
 	onCall: () => void = () => undefined,
 ): (system: string, user: string) => Promise<string> {
 	const base = smartComplete();
@@ -369,14 +345,16 @@ function modelFor(
 		onCall();
 		if (user.includes("current_node")) {
 			const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
-			const lead = variant() === "b" && id === "n3" ? "changed " : "";
+			const lead = variant() === "fills" && id === "n3" ? "changed " : "";
 			const steps = Array.from(
 				{ length: 5 },
 				(_, i) => `${i + 1}. ${lead}${id} step ${i + 1}`,
 			).join(" ");
 			return `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>`;
 		}
-		if (variant() === "b" && !user.includes("<user_request>") && !user.startsWith("<spec>"))
+		const graphCall = !user.includes("<user_request>") && !user.startsWith("<spec>");
+		if (variant() === "fallback" && graphCall) return "not a graph";
+		if (variant() === "b" && graphCall)
 			return graphJson(5).replace('"title":"T2"', '"title":"Rewritten"');
 		return base(system, user);
 	};
@@ -399,10 +377,14 @@ function worldTracker(world: { linear: ToolCaller; notion: ToolCaller }): Tracke
 		});
 }
 
-describe("a resend never adopts the rows of another graph (greptile r2 #0)", () => {
-	test("a plan whose tracking stopped half way is resumed without a model call and adopts its rows", async () => {
-		let variant: "a" | "b" = "a";
-		let calls = 0;
+describe("the graph id is content-addressed (greptile r3)", () => {
+	/** A world whose Linear refuses new issues once three exist, so the first run ends with half its rows. */
+	function halfWorld(): {
+		linear: ReturnType<typeof statefulLinear>;
+		notion: ReturnType<typeof statefulNotion>;
+		tracker: Tracker;
+		heal: () => void;
+	} {
 		const linear = statefulLinear();
 		let down = true;
 		const flaky: ToolCaller = {
@@ -412,69 +394,74 @@ describe("a resend never adopts the rows of another graph (greptile r2 #0)", () 
 					: linear.call(name, args, signal),
 		};
 		const notion = statefulNotion();
-		const { deps, cleanup } = baseDeps({
-			complete: modelFor(
-				() => variant,
-				() => {
-					calls++;
-				},
-			),
-		});
-		deps.track = worldTracker({ linear: flaky, notion });
+		return {
+			linear,
+			notion,
+			tracker: worldTracker({ linear: flaky, notion }),
+			heal: () => {
+				down = false;
+			},
+		};
+	}
+
+	test("a resend that produces the same graph gets the same id and adopts every row without duplicates", async () => {
+		const world = halfWorld();
+		const { deps, cleanup } = baseDeps();
+		deps.track = world.tracker;
 		try {
 			const first = await runPromptSubmit(input, deps);
 			expect(first.record?.tracking?.status).toBe("partial");
-			expect(linear.rows).toHaveLength(3);
-			// The rows were made. A resend now asks the model for nothing, even one that would answer another graph.
-			calls = 0;
-			down = false;
-			variant = "b";
+			expect(world.linear.rows).toHaveLength(3);
+			world.heal();
 			const second = await runPromptSubmit(input, deps);
-			expect(calls).toBe(0);
 			expect(second.record?.plan?.graphId).toBe(first.record?.plan?.graphId);
-			expect(second.record?.graph).toEqual(first.record?.graph);
-			expect(second.record?.plan).toEqual(first.record?.plan);
 			expect(second.record?.tracking?.status).toBe("complete");
-			// Every row exists once: the first run's three Linear rows and its Notion rows were adopted, not made again.
-			expect(linear.rows).toHaveLength(30);
-			expect(new Set(linear.rows.map((row) => row.title)).size).toBe(30);
-			expect(notion.rows).toHaveLength(31);
-			expect(new Set(notion.rows.map((row) => `${row.Level}${row.Item}`)).size).toBe(31);
-			expect(readSession(deps.stateDir, "s1")?.tracking?.status).toBe("complete");
+			expect(world.linear.rows).toHaveLength(30);
+			expect(new Set(world.linear.rows.map((row) => row.title)).size).toBe(30);
+			expect(world.notion.rows).toHaveLength(31);
+			expect(new Set(world.notion.rows.map((row) => `${row.Level}${row.Item}`)).size).toBe(31);
 		} finally {
 			cleanup();
 		}
 	});
 
-	test("a new plan of the same prompt after complete tracking gets a new graph id and rows of its own", async () => {
+	test("fills, conclusions and other attempt noise are not identity: the same graph with other fills keeps the id", async () => {
+		let variant: "a" | "fills" = "a";
+		const ids: string[] = [];
+		const { deps, cleanup } = baseDeps({ complete: modelFor(() => variant) });
+		deps.track = (async ({ plan }) => {
+			ids.push(plan.graphId);
+			return undefined;
+		}) satisfies Tracker;
+		try {
+			await runPromptSubmit(input, deps);
+			variant = "fills";
+			await runPromptSubmit(input, deps);
+			expect(ids).toHaveLength(2);
+			expect(ids[1]).toBe(ids[0]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a resend that produces another graph gets another id and none of the earlier rows is adopted", async () => {
 		let variant: "a" | "b" = "a";
-		let calls = 0;
 		const linear = statefulLinear();
 		const notion = statefulNotion();
-		const { deps, cleanup } = baseDeps({
-			complete: modelFor(
-				() => variant,
-				() => {
-					calls++;
-				},
-			),
-		});
+		const { deps, cleanup } = baseDeps({ complete: modelFor(() => variant) });
 		deps.track = worldTracker({ linear, notion });
 		try {
 			const first = await runPromptSubmit(input, deps);
 			expect(first.record?.tracking?.status).toBe("complete");
-			expect(first.record?.generation).toBe(0);
 			const firstUrls = new Set(linear.rows.map((row) => row.url));
 			const firstPages = new Set(notion.rows.map((row) => row.url));
-			calls = 0;
 			variant = "b";
 			const second = await runPromptSubmit(input, deps);
-			expect(calls).toBeGreaterThan(0);
 			const firstId = first.record?.plan?.graphId ?? "";
 			const secondId = second.record?.plan?.graphId ?? "";
 			expect(secondId).not.toBe(firstId);
-			expect(second.record?.generation).toBe(1);
 			// The id keeps the shape every consumer reads: the gateway, the swarm lane brief and the hand-off guard.
+			expect(firstId).toMatch(GRAPH_ID_PATTERN);
 			expect(secondId).toMatch(GRAPH_ID_PATTERN);
 			expect(secondId.slice(0, 13)).toBe(firstId.slice(0, 13));
 			expect(
@@ -483,7 +470,6 @@ describe("a resend never adopts the rows of another graph (greptile r2 #0)", () 
 					{ enabled: true, skipOnce: false, skipTrivial: true },
 				),
 			).toEqual({ action: "skip", reason: "graph-reference" });
-			// Every row of the new plan is new, and no ref of the record points at a row of the first plan.
 			const tracking = second.record?.tracking;
 			expect(tracking?.status).toBe("complete");
 			const refsUrls = [
@@ -498,6 +484,7 @@ describe("a resend never adopts the rows of another graph (greptile r2 #0)", () 
 			expect(refsUrls).toHaveLength(30);
 			expect(refsUrls.some((url) => firstUrls.has(url))).toBe(false);
 			expect(refsPages.some((url) => firstPages.has(url))).toBe(false);
+			// The earlier rows are left alone, as orphans.
 			expect(linear.rows).toHaveLength(60);
 			expect(notion.rows).toHaveLength(62);
 		} finally {
@@ -505,17 +492,35 @@ describe("a resend never adopts the rows of another graph (greptile r2 #0)", () 
 		}
 	});
 
-	test("a third plan of the session gets a third graph id", async () => {
-		const ids = new Set<string>();
+	test("a prompt that is not planned in between changes nothing", async () => {
+		const world = halfWorld();
 		const { deps, cleanup } = baseDeps();
+		deps.track = world.tracker;
+		try {
+			const first = await runPromptSubmit(input, deps);
+			const between = await runPromptSubmit({ ...input, prompt: "/model" }, deps);
+			expect(between.skipped).toBeDefined();
+			world.heal();
+			const second = await runPromptSubmit(input, deps);
+			expect(second.record?.plan?.graphId).toBe(first.record?.plan?.graphId);
+			expect(world.linear.rows).toHaveLength(30);
+			expect(world.notion.rows).toHaveLength(31);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a fallback graph makes no tracker rows and no plan, as before", async () => {
+		const calls: string[] = [];
+		const { deps, cleanup } = baseDeps({ complete: modelFor(() => "fallback") });
 		deps.track = (async ({ plan }) => {
-			ids.add(plan.graphId);
-			return refsFor(plan.graphId);
+			calls.push(plan.graphId);
+			return undefined;
 		}) satisfies Tracker;
 		try {
-			for (let i = 0; i < 3; i++) await runPromptSubmit(input, deps);
-			expect(ids.size).toBe(3);
-			expect([...ids].every((id) => GRAPH_ID_PATTERN.test(id))).toBe(true);
+			const result = await runPromptSubmit(input, deps);
+			expect(calls).toEqual([]);
+			expect(result.record?.plan).toBeUndefined();
 		} finally {
 			cleanup();
 		}

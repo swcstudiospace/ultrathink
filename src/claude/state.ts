@@ -72,11 +72,6 @@ export interface SessionRecord {
 	clarifications?: Clarification[];
 	plan?: TrackPlan;
 	/**
-	 * How many plans this session had before this one (0 for the first). It is part of the graph id, so a re-plan of the
-	 * same prompt gets rows of its own instead of adopting an earlier plan's.
-	 */
-	generation?: number;
-	/**
 	 * Set true once ultrathink-kickoff has run for the plan in this record. Plan-scoped: the record holds the session's
 	 * latest plan, so the next planned prompt writes a new graph with kickedOff and synced false again.
 	 */

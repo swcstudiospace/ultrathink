@@ -226,52 +226,26 @@ function specFile(stateDir: string, sessionId: string): string {
 /**
  * The id every tracker row of one plan carries, in the shape every graph-id consumer expects
  * (`ut-<token>-<8 hex>`: the gateway's GRAPH_ID_PATTERN, the swarm lane brief, the hand-off guard in uplift/detect).
- * The first 10 hex digits come from the session id and the digest of the user's original prompt:
- * `sha256(sessionId + "\n" + sha256(original))`. The 8 after the dash are the next 8 digits of that hash for the
- * session's first plan (generation 0) and a hash of it and the generation for each later plan of the session. A resume of
- * a plan whose tracking is not done reuses its id and adopts the rows a killed flight already created; a new plan, even
- * of the same prompt and with another graph from the model, gets a new id, so it never adopts an earlier plan's rows.
+ * The first 10 hex digits are the session's hash of the user's original prompt:
+ * `sha256(sessionId + "\n" + sha256(original))`. The 8 after the dash are a hash of that and the graph's identity, for
+ * each node in order its id, kind, title, question and dependencies. The fills, conclusions and degraded flags are not
+ * identity: they vary between attempts at the same graph. So a resend that produces the same graph gets the same id and
+ * adopts the rows a killed flight already made, and one that produces a different graph gets a different id and can
+ * never adopt the rows of the earlier graph (they are left alone in the tracker).
  */
-function deterministicGraphId(sessionId: string, original: string, generation = 0): string {
-	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
-	const hex = digest(`${sessionId}\n${digest(original)}`);
-	const tail = generation === 0 ? hex.slice(10, 18) : digest(`${hex}\n${generation}`).slice(0, 8);
-	return `ut-${hex.slice(0, 10)}-${tail}`;
-}
-
-/** How many tracker rows a tracking record holds. */
-function trackedRows(tracking: TrackingRefs): number {
-	return (
-		Object.keys(tracking.linear.nodes).length +
-		Object.keys(tracking.linear.steps).length +
-		Object.keys(tracking.notion.nodes).length +
-		Object.keys(tracking.notion.steps).length +
-		(tracking.notion.taskUrl ? 1 : 0)
-	);
-}
-
-/**
- * The saved plan of this session when this prompt should carry on with it instead of planning again: the same prompt,
- * the same graph id, a real graph, and tracking that is unfinished, that is, a pass that started and never reported (a
- * flight killed while tracking) or one that made rows and left others missing. A complete tracking, a pass that
- * reported only errors and made nothing, and a plan that was never tracked are not resumed: the prompt is planned again
- * under a new graph id. A resumed plan is reused as it is, so the rows it created are adopted exactly.
- */
-function resumablePlan(
-	prior: SessionRecord | undefined,
+function deterministicGraphId(
 	sessionId: string,
 	original: string,
-): SessionRecord | undefined {
-	const plan = prior?.plan;
-	const tracking = prior?.tracking;
-	if (!prior || !plan || !prior.graph || !tracking || tracking.graphId !== plan.graphId)
-		return undefined;
-	if (prior.result.source !== "llm" || prior.result.original !== original) return undefined;
-	if (isFallbackGraph(prior.graph)) return undefined;
-	if (plan.graphId !== deterministicGraphId(sessionId, original, prior.generation ?? 0))
-		return undefined;
-	if (tracking.status === "complete") return undefined;
-	return trackedRows(tracking) > 0 || tracking.errors.length === 0 ? prior : undefined;
+	graph: ThoughtGraph | undefined,
+): string {
+	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+	const hex = digest(`${sessionId}\n${digest(original)}`);
+	const identity = graph
+		? JSON.stringify(
+				graph.nodes.map((node) => [node.id, node.kind, node.title, node.question, node.dependsOn]),
+			)
+		: "";
+	return `ut-${hex.slice(0, 10)}-${digest(`${hex}\n${identity}`).slice(0, 8)}`;
 }
 
 /** A tracking record with no refs: tells the tracker a flight of this graph id may already have created rows to adopt. */
@@ -873,28 +847,6 @@ export async function runPromptSubmit(
 
 		// Decided before the brief: the knowledge-base prefetch only runs when clarify will.
 		const hitlOn = deps.control.hitlEnabled ?? deps.config.hitl.enabled;
-		// A saved plan of this very prompt whose tracking is not complete (a flight killed while tracking, or rows still
-		// missing) is carried on, not planned again: no model call is made, so its graph is the one its rows were made for
-		// and adoption by key and title is exact. Any other prompt, or one whose tracking is complete, gets a new plan with
-		// a new graph id, so it never adopts the rows of an earlier plan.
-		const priorRecord = readSession(deps.stateDir, sessionId);
-		const resumed =
-			deps.track !== undefined && !deps.trackingOff
-				? resumablePlan(priorRecord, sessionId, original)
-				: undefined;
-		const carriedDegraded = (resumed?.degraded ?? []).filter((token) => token !== "state");
-		// A new plan whose predecessor made tracker rows gets the next generation, so it can never adopt them. A predecessor
-		// that made none has nothing to adopt and its generation is kept.
-		const priorGeneration = priorRecord?.generation ?? 0;
-		const generation = resumed
-			? priorGeneration
-			: priorRecord?.plan && priorRecord.tracking && trackedRows(priorRecord.tracking) > 0
-				? priorGeneration + 1
-				: priorGeneration;
-		if (resumed)
-			log(
-				`resuming plan ${resumed.plan?.graphId}: tracking ${resumed.tracking?.status ?? "not started"}, no new model calls`,
-			);
 
 		// Started now, awaited before the Graph of Thought: the graph is then
 		// planned knowing what other agents already did, and the round trip
@@ -963,8 +915,7 @@ export async function runPromptSubmit(
 
 		// The knowledge-base prefetch (find the repo, list documents, read index.md) overlaps the uplift and the
 		// Graph of Thought; the topic-specific documents are read right before clarify.
-		const reader =
-			hitlOn && !resumed ? (deps.knowledge ?? createGreptileKnowledge(deps.config)) : undefined;
+		const reader = hitlOn ? (deps.knowledge ?? createGreptileKnowledge(deps.config)) : undefined;
 		if (reader) {
 			try {
 				session = reader.start({ repo: git.repo, signal: lifetime });
@@ -980,16 +931,14 @@ export async function runPromptSubmit(
 		throwIfCancelled(cancellation);
 		stage("uplift", "start");
 		try {
-			result = resumed
-				? resumed.result
-				: await runUplift({
-						original,
-						conversation,
-						complete,
-						signal: lifetime,
-						maxChars: deps.config.uplift.maxChars,
-						report: deps.engineReport,
-					});
+			result = await runUplift({
+				original,
+				conversation,
+				complete,
+				signal: lifetime,
+				maxChars: deps.config.uplift.maxChars,
+				report: deps.engineReport,
+			});
 		} catch (error) {
 			rethrowCancellation(error);
 			log(`uplift failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1174,12 +1123,7 @@ export async function runPromptSubmit(
 		/** The graph call failed after the completer's own retries (it carried a report): the provider is unavailable for this flight. */
 		let providerUnavailable = false;
 		const thinkOn = deps.control.thinkEnabled ?? deps.config.think.enabled;
-		if (resumed) {
-			graph = resumed.graph;
-			thinkDegraded = carriedDegraded.filter(
-				(token) => token === "graph" || token === "think" || token.startsWith("fill:"),
-			);
-		} else if (thinkOn && !lifetime.aborted) {
+		if (thinkOn && !lifetime.aborted) {
 			stage("think", "start");
 			// One limiter per flight: a rate limit seen by any fill slows every fill of this prompt. A route whose completer
 			// already owns the limiter (Omp's native binding acquires a slot per call and feeds it every failure) is that one:
@@ -1245,14 +1189,12 @@ export async function runPromptSubmit(
 		}
 
 		/** Answered clarifications from an earlier turn of this session survive; stale open ones are dropped. */
-		let clarifications: Clarification[] = resumed
-			? [...(resumed.clarifications ?? [])]
-			: (readSession(deps.stateDir, sessionId)?.clarifications ?? []).filter(
-					(c) => c.answer && c.source !== "knowledge",
-				);
+		let clarifications: Clarification[] = (
+			readSession(deps.stateDir, sessionId)?.clarifications ?? []
+		).filter((c) => c.answer && c.source !== "knowledge");
 
 		// Always awaited once started (it honours the abort signal and never rejects) so the record says what happened.
-		let knowledge: KnowledgeLookup | undefined = resumed?.knowledge;
+		let knowledge: KnowledgeLookup | undefined;
 		let knowledgeInput: { digest: string; docs: string[] } | undefined;
 		if (session) {
 			const read = await readKnowledge(session, knowledgeTopic(result, graph));
@@ -1285,13 +1227,13 @@ export async function runPromptSubmit(
 			}
 		}
 		let clarifyFailed: string | undefined;
-		if (!resumed && hitlOn && !lifetime.aborted && providerUnavailable) {
+		if (hitlOn && !lifetime.aborted && providerUnavailable) {
 			// The graph call exhausted its retries against a provider that answered with a failure: a clarify call would only
 			// repeat it (three more completer calls), so the stage is recorded as skipped instead.
 			clarifyFailed = CLARIFY_SKIPPED_CAUSE;
 			log(`clarify ${CLARIFY_SKIPPED_CAUSE}`);
 			stage("clarify", "end", false, CLARIFY_SKIPPED_CAUSE);
-		} else if (!resumed && hitlOn && !lifetime.aborted) {
+		} else if (hitlOn && !lifetime.aborted) {
 			stage("clarify", "start");
 			try {
 				const outcome = await (deps.clarify ?? runClarify)({
@@ -1337,19 +1279,19 @@ export async function runPromptSubmit(
 			}
 		}
 		if (clarifyFailed !== undefined) degradedCauses.clarify = clarifyFailed;
-		if (!resumed && clarifications.length > 0) {
+		if (clarifications.length > 0) {
 			result = { ...result, xml: injectClarificationsXml(result.xml, clarifications) };
 		}
 
-		let plan: TrackPlan | undefined = resumed?.plan;
+		let plan: TrackPlan | undefined;
 		// Fail-open per design: a totally failed engine (conservative XML fallback) proceeds
 		// untracked rather than creating generic FALLBACK_GRAPH boilerplate rows in the shared
 		// Notion/Linear tracker on every engine outage. Only a real LLM uplift on a real graph is tracked: the boilerplate
 		// graph (substituted when the model's graph is unusable) and a think stage that threw without a graph make no rows.
 		const boilerplateGraph = graph ? isFallbackGraph(graph) : thinkThrew;
-		if (!resumed && result.source === "llm" && boilerplateGraph)
+		if (result.source === "llm" && boilerplateGraph)
 			log("track plan skipped: graph-fallback, no tracker rows");
-		if (!resumed && result.source === "llm" && !boilerplateGraph) {
+		if (result.source === "llm" && !boilerplateGraph) {
 			throwIfCancelled(cancellation);
 			stage("plan", "start");
 			try {
@@ -1359,7 +1301,7 @@ export async function runPromptSubmit(
 					clarifications,
 					repo: git.repo,
 					branch: git.branch,
-					graphId: deterministicGraphId(sessionId, result.original, generation),
+					graphId: deterministicGraphId(sessionId, result.original, graph),
 					agent: deps.surface ?? "claude-code",
 				});
 				stage(
@@ -1377,13 +1319,11 @@ export async function runPromptSubmit(
 		// Read once: the record, the summary and the context all report the same first error.
 		const engineError = deps.engineError?.();
 		const engineFailover = deps.engineFailover?.();
-		const degraded = resumed
-			? [...carriedDegraded]
-			: [
-					...(result.source === "fallback" ? ["uplift"] : []),
-					...thinkDegraded,
-					...(clarifyFailed !== undefined ? ["clarify"] : []),
-				];
+		const degraded = [
+			...(result.source === "fallback" ? ["uplift"] : []),
+			...thinkDegraded,
+			...(clarifyFailed !== undefined ? ["clarify"] : []),
+		];
 		const buildRecord = (current: UpliftResult, refs: TrackingRefs | undefined): SessionRecord => ({
 			sessionId,
 			at: now(),
@@ -1395,7 +1335,6 @@ export async function runPromptSubmit(
 			host: deps.surface ?? "claude-code",
 			result: current,
 			graph,
-			...(plan ? { generation } : {}),
 			clarifications,
 			plan,
 			tracking: refs,
@@ -1408,17 +1347,13 @@ export async function runPromptSubmit(
 						},
 					}
 				: {}),
-			kickedOff: resumed?.kickedOff ?? false,
-			synced: resumed?.synced ?? false,
+			kickedOff: false,
+			synced: false,
 			...(knowledge ? { knowledge } : {}),
 			...(lessons ? { lessons } : {}),
 			...(docs ? { docs } : {}),
 			...(skills ? { skills } : {}),
-			...(resumed?.decisions?.length
-				? { decisions: resumed.decisions }
-				: records.length
-					? { decisions: records }
-					: {}),
+			...(records.length ? { decisions: records } : {}),
 		});
 		let record: SessionRecord = buildRecord(result, undefined);
 		/** The state directory could not be written: `degraded` gains a `state` token and the record (when it is saved later) says so. */
@@ -1463,23 +1398,20 @@ export async function runPromptSubmit(
 		if (plan && deps.track && !deps.trackingOff) {
 			throwIfCancelled(cancellation);
 			// Rows in the shared trackers are permanent: the record that points at them is saved first, so a kill while
-			// they are being created leaves a readable record (spec and state paths). The next run of the same prompt resumes
-			// that plan under the same graph id (see `resumablePlan`), so its graph is the one the rows were made for, and
-			// the tracker adopts them instead of creating them again.
+			// they are being created leaves a readable record (spec and state paths). A resend that produces the same graph
+			// gets the same graph id (the id is content-addressed, see `deterministicGraphId`) and adopts the rows instead of
+			// creating them again; one that produces another graph gets another id and adopts none of them.
 			const prior = readSession(deps.stateDir, sessionId);
 			const sameGraph = prior?.plan?.graphId === plan.graphId;
 			const priorRefs = prior?.tracking?.graphId === plan.graphId ? prior.tracking : undefined;
 			existing = priorRefs ?? (sameGraph ? emptyTracking(plan.graphId, now()) : undefined);
-			// The shell says a pass started: a flight killed before it reported leaves it behind, and that is what makes the
-			// plan resumable. A pass that reports nothing and made no rows removes it again below.
-			record = { ...record, tracking: priorRefs ?? emptyTracking(plan.graphId, now()) };
+			if (priorRefs) record = { ...record, tracking: priorRefs };
 			try {
 				persist();
 			} catch (error) {
 				const cause = causeText(error);
 				log(`state write failed before tracking: ${cause}`);
 				markStateFailed(cause);
-				record = { ...record, tracking: priorRefs };
 				// Rows in the shared trackers are permanent and a resend adopts them only through a saved record: none are made.
 				stage("track", "end", false, "skipped: state not writable");
 				trackBlocked = true;
@@ -1540,16 +1472,9 @@ export async function runPromptSubmit(
 				record = buildRecord(result, tracking);
 			} else {
 				stage("track", "end", false);
-				// A tracker that returned nothing may still have checkpointed rows: the record keeps them. With none, the
-				// pass is over and made nothing: no tracking is recorded and the plan is not resumable.
+				// A tracker that returned nothing may still have checkpointed rows: the record keeps them.
 				const checkpointed = readSession(deps.stateDir, sessionId)?.tracking;
-				record = {
-					...record,
-					tracking:
-						checkpointed?.graphId === plan.graphId && trackedRows(checkpointed) > 0
-							? checkpointed
-							: undefined,
-				};
+				if (checkpointed?.graphId === plan.graphId) record = { ...record, tracking: checkpointed };
 			}
 		}
 

@@ -287,6 +287,11 @@ function pageKey(value: string): string {
 	return text.replace(/-/g, "").match(/[0-9a-f]{32}$/)?.[0] ?? text;
 }
 
+/** True when two Notion urls or ids name the same page (any url form: workspace slug, host, query, dashes). */
+function samePage(recorded: string | undefined, url: string): boolean {
+	return recorded !== undefined && pageKey(recorded) === pageKey(url);
+}
+
 /** The pages a `Parent Item` relation value points at (a JSON array, urls, ids or a list of them), as `pageKey`s. */
 function parentKeys(value: unknown): string[] {
 	const text = Array.isArray(value)
@@ -755,13 +760,14 @@ async function adoptNotion(
 			listed.add(row.nodeId);
 			const want = titles.notionNodes.get(row.nodeId);
 			if (matchesAny(row.item, want)) nodes.push(row);
-			else if (want !== undefined && refs.notion.nodes[row.nodeId] === row.url)
+			else if (want !== undefined && samePage(refs.notion.nodes[row.nodeId], row.url))
 				stale.notionNodes.add(row.nodeId);
 		} else if (row.level === "Sub-Issue" && row.step !== undefined) {
 			const key = stepKey(row.nodeId, row.step);
 			const want = titles.notionSteps.get(key);
 			if (matchesAny(row.item, want)) steps.push(row);
-			else if (want !== undefined && refs.notion.steps[key] === row.url) stale.notionSteps.add(key);
+			else if (want !== undefined && samePage(refs.notion.steps[key], row.url))
+				stale.notionSteps.add(key);
 		}
 	}
 	removeStale(refs, plan, graph, stale);
@@ -806,8 +812,6 @@ export async function createTracking(
 	const titles = planTitles(plan);
 	removeStale(refs, plan, graph, staleRefs(refs, titles));
 	prunePending(refs, plan, graph);
-	/** The nodes that had an issue before this run: a dependency that gets one now was not linked to them. */
-	const entered = new Set(Object.keys(refs.linear.nodes));
 	const controller = new AbortController();
 	const signal = controller.signal;
 	const timer =
@@ -1001,6 +1005,11 @@ export async function createTracking(
 			prunePending(refs, plan, graph);
 			emit();
 		}
+		/**
+		 * The nodes that have an issue now, adopted ones included: a dependency that gets one later in this run was not linked
+		 * to them, whether they were made by an earlier run or found in the tracker.
+		 */
+		const entered = new Set(Object.keys(refs.linear.nodes));
 		const settle = (work: Promise<void>): Promise<void> =>
 			work.catch((error: unknown) => fail(`tracking: ${shortError(error)}`));
 		// Both providers start at once; Notion only waits (bounded) for the Linear links it prints on its rows.

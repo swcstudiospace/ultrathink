@@ -1897,3 +1897,138 @@ describe("createTracking links to a dependency that now exists (greptile r2 #1)"
 		expect(second.pendingLinks).toBeUndefined();
 	});
 });
+
+describe("createTracking links for adopted nodes (greptile r3 #0)", () => {
+	test("a dependent adopted from the tracker gets the link once its dependency gets an issue", async () => {
+		const linear = statefulLinear();
+		const failing: ToolCaller & { calls: Call[] } = {
+			calls: linear.calls,
+			async call(name, args, signal) {
+				if (name === "save_issue" && args.title === "[n2] Build")
+					throw failure("HTTP 404", { status: 404 });
+				return linear.call(name, args, signal);
+			},
+		};
+		const first = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: failing, notionDataSource: undefined }),
+		);
+		expect(first.linear.nodes.n3).toBeDefined();
+		expect(first.linear.nodes.n2).toBeUndefined();
+		// The record is lost: n3 is found again in the tracker (adopted), n2 is made in this run.
+		const lost: TrackingRefs = {
+			graphId: "g-1",
+			status: "failed",
+			linear: { nodes: {}, steps: {} },
+			notion: { nodes: {}, steps: {} },
+			errors: [],
+			updatedAt: 1,
+		};
+		const second = await createTracking(
+			makePlan(),
+			GRAPH,
+			lost,
+			deps({ linear, notionDataSource: undefined }),
+		);
+		expect(second.linear.nodes.n3?.id).toBe(first.linear.nodes.n3?.id);
+		expect(
+			linear.calls.some(
+				(call) =>
+					call.args.id === first.linear.nodes.n3?.identifier &&
+					JSON.stringify(call.args.blockedBy) ===
+						JSON.stringify([second.linear.nodes.n2?.identifier]),
+			),
+		).toBe(true);
+		expect(second.pendingLinks).toBeUndefined();
+		expect(second.status).toBe("complete");
+	});
+
+	test("an adopted dependent whose link update fails stays pending and the run is partial", async () => {
+		const linear = statefulLinear();
+		let n2Down = true;
+		let linkDown = true;
+		const flaky: ToolCaller & { calls: Call[] } = {
+			calls: linear.calls,
+			async call(name, args, signal) {
+				if (name === "save_issue" && args.title === "[n2] Build" && n2Down)
+					throw failure("HTTP 404", { status: 404 });
+				if (name === "save_issue" && args.id !== undefined && linkDown)
+					throw failure("HTTP 400", { status: 400 });
+				return linear.call(name, args, signal);
+			},
+		};
+		await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: flaky, notionDataSource: undefined }),
+		);
+		n2Down = false;
+		const shell = (): TrackingRefs => ({
+			graphId: "g-1",
+			status: "failed",
+			linear: { nodes: {}, steps: {} },
+			notion: { nodes: {}, steps: {} },
+			errors: [],
+			updatedAt: 1,
+		});
+		const second = await createTracking(
+			makePlan(),
+			GRAPH,
+			shell(),
+			deps({ linear: flaky, notionDataSource: undefined }),
+		);
+		expect(second.pendingLinks).toEqual({ n3: ["n2"] });
+		expect(second.status).toBe("partial");
+		linkDown = false;
+		const third = await createTracking(
+			makePlan(),
+			GRAPH,
+			structuredClone(second),
+			deps({ linear: flaky, notionDataSource: undefined }),
+		);
+		expect(third.pendingLinks).toBeUndefined();
+		expect(third.status).toBe("complete");
+	});
+});
+
+describe("createTracking compares Notion pages by id (greptile r3 pre-review)", () => {
+	const PAGE = "0123456789abcdef0123456789abcdef";
+
+	test("a ref stored as https://www.notion.so/<id> is recognised against a row url in another form and dropped as stale", async () => {
+		const rows = (url: string) => [
+			{ url: `https://www.notion.so/Task-${"a".repeat(32)}`, Level: "Task", Item: "Ship it" },
+			{ url, Level: "Issue", Item: "[n2] A different title from an older plan" },
+		];
+		const recorded: TrackingRefs = {
+			graphId: "g-1",
+			status: "partial",
+			linear: { nodes: {}, steps: {} },
+			notion: {
+				taskUrl: `https://www.notion.so/Task-${"a".repeat(32)}`,
+				nodes: { n2: `https://www.notion.so/${PAGE}` },
+				steps: {},
+			},
+			errors: [],
+			updatedAt: 1,
+		};
+		for (const url of [
+			`https://notion.so/${PAGE}`,
+			`https://www.notion.so/${PAGE}?pvs=4`,
+			`https://www.notion.so/Build-${PAGE.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5")}`,
+		]) {
+			const notion = fakeNotion({ rows: rows(url) });
+			const refs = await createTracking(
+				makePlan(),
+				GRAPH,
+				structuredClone(recorded),
+				deps({ notion, linearTeam: undefined }),
+			);
+			// The recorded row says other work: the ref is dropped and a fresh Issue is made.
+			expect(refs.notion.nodes.n2, url).not.toBe(`https://www.notion.so/${PAGE}`);
+			expect(refs.status, url).toBe("complete");
+		}
+	});
+});
