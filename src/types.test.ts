@@ -6,7 +6,12 @@ import { attachReport, readReport } from "./types.ts";
 describe("completion report seam", () => {
 	test("a report round-trips through the error that carries it", () => {
 		const error = new Error("boom");
-		attachReport(error, { attempts: 3, httpStatus: 429, retryAfterMs: 7000, cause: "rate limited" });
+		attachReport(error, {
+			attempts: 3,
+			httpStatus: 429,
+			retryAfterMs: 7000,
+			cause: "rate limited",
+		});
 		expect(readReport(error)).toEqual({
 			attempts: 3,
 			httpStatus: 429,

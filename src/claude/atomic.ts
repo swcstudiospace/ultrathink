@@ -9,7 +9,9 @@
  */
 import { randomBytes } from "node:crypto";
 import {
+	chmodSync,
 	closeSync,
+	fchmodSync,
 	fsyncSync,
 	lstatSync,
 	mkdirSync,
@@ -22,7 +24,9 @@ import {
 	unlinkSync,
 	writeSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { diskFingerprint } from "../shared.ts";
+import { processIdentity } from "../swarm/lane.ts";
 
 /** The synchronous file calls `writeFileAtomic` needs, so a test can make one of them fail. */
 interface AtomicFs {
@@ -33,6 +37,8 @@ interface AtomicFs {
 	closeSync(fd: number): void;
 	renameSync(from: string, to: string): void;
 	unlinkSync(path: string): void;
+	fchmodSync(fd: number, mode: number): void;
+	chmodSync(path: string, mode: number): void;
 }
 
 export interface AtomicWriteOptions {
@@ -52,6 +58,8 @@ const NODE_FS: AtomicFs = {
 	closeSync,
 	renameSync,
 	unlinkSync,
+	fchmodSync,
+	chmodSync,
 };
 
 const TEXT = new TextEncoder();
@@ -72,8 +80,18 @@ export function writeFileAtomic(
 	const bytes = typeof data === "string" ? TEXT.encode(data) : data;
 	let fd: number | undefined;
 	try {
-		fs.mkdirSync(dir, { recursive: true, mode: options.dirMode ?? 0o700 });
-		fd = fs.openSync(tmp, "wx", options.mode ?? 0o600);
+		const dirMode = options.dirMode ?? 0o700;
+		const mode = options.mode ?? 0o600;
+		const created = fs.mkdirSync(dir, { recursive: true, mode: dirMode });
+		// The create modes are filtered by the umask; explicit chmod calls are not.
+		if (typeof created === "string") {
+			for (let made = dir; ; made = dirname(made)) {
+				fs.chmodSync(made, dirMode);
+				if (resolve(made) === resolve(created) || dirname(made) === made) break;
+			}
+		}
+		fd = fs.openSync(tmp, "wx", mode);
+		fs.fchmodSync(fd, mode);
 		let offset = 0;
 		while (offset < bytes.length) offset += fs.writeSync(fd, bytes.subarray(offset));
 		fs.fsyncSync(fd);
@@ -98,11 +116,31 @@ export function writeFileAtomic(
 	}
 }
 
+/** The seams behind the holder-liveness check, so a test can plant live and dead holders without real processes. */
+interface LockLiveness {
+	/** Passed to `processIdentity` (default: the running platform). */
+	platform?: string;
+	/** Passed to `processIdentity`: the `/proc/<pid>/stat` line on Linux. */
+	readStat?: (pid: number) => string | undefined;
+	/** Passed to `processIdentity`: the `ps -o lstart=` output elsewhere. */
+	runPs?: (pid: number) => string | undefined;
+	/** Whether the pid is running (default: `process.kill(pid, 0)`; EPERM counts as running). */
+	killAlive?: (pid: number) => boolean;
+}
+
 export interface LockOptions {
-	/** A lock file older than this is reclaimed as an expired lease (default 10 s). */
+	/**
+	 * A lock whose holder cannot be verified (legacy bare token, unreadable start identity) is reclaimed once older
+	 * than this (default 10 s). A lock whose holder is alive is never taken, whatever its age.
+	 */
 	staleMs?: number;
-	/** How long to wait for a held lock before running unlocked (default 2 s). */
+	/** How long to wait for a held lock before `onTimeout` applies (default 2 s; non-hook writers pass longer). */
 	timeoutMs?: number;
+	/**
+	 * What happens when the wait expires: `"run-unlocked"` runs the callback without the lock (default, so hook
+	 * paths stay fail-open); `"throw"` throws a {@link LockTimeoutError} naming the lock instead.
+	 */
+	onTimeout?: "run-unlocked" | "throw";
 	/** Base wait between attempts (default 15 ms, plus up to the same again as jitter). */
 	pollMs?: number;
 	now?: () => number;
@@ -110,6 +148,8 @@ export interface LockOptions {
 	sleep?: (ms: number) => void;
 	/** Receives one line when the lock could not be taken and the callback ran unlocked. */
 	log?: (message: string) => void;
+	/** Seams for the holder-liveness check (default: the real process table). */
+	liveness?: LockLiveness;
 }
 
 const SLEEP_WORD = new Int32Array(new SharedArrayBuffer(4));
@@ -201,7 +241,9 @@ export function withLockMutation<T>(lockPath: string, fn: () => T): T | undefine
 	try {
 		mkdirSync(candidate, { mode: 0o700 });
 		prepared = true;
+		chmodSync(candidate, 0o700);
 		fd = openSync(join(candidate, owner), "wx", 0o600);
+		fchmodSync(fd, 0o600);
 		closeSync(fd);
 		fd = undefined;
 		try {
@@ -245,14 +287,91 @@ export function withLockMutation<T>(lockPath: string, fn: () => T): T | undefine
 
 type Reclaim = "reclaimed" | "fresh" | "gone";
 
-/** Called only while holding the mutation guard, so the stale name cannot become a successor during deletion. */
-function reclaimStale(lockPath: string, staleMs: number, now: () => number): Reclaim {
+/** The record a lock file holds: who owns it (pid plus process start identity) and the owner's unique token. */
+interface LockHolder {
+	pid: number;
+	startTime: string;
+	token: string;
+}
+
+/** The holder record, or undefined for a legacy bare-token lock or any content that is not a holder record. */
+function parseHolder(raw: string): LockHolder | undefined {
+	let value: unknown;
 	try {
+		value = JSON.parse(raw);
+	} catch {
+		// reason: a legacy bare-token lock is not JSON; the caller falls back to the mtime rule
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null) return undefined;
+	const { pid, startTime, token } = value as Record<string, unknown>;
+	if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
+	if (typeof startTime !== "string" || typeof token !== "string") return undefined;
+	return { pid, startTime, token };
+}
+
+/** Whether the lock's holder is running: `live` never loses its lock, `dead` loses it at once, `unknown` ages out. */
+type Verdict = "live" | "dead" | "unknown";
+
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		// EPERM means the pid exists under another user: alive.
+		return errorCode(error) !== "ESRCH";
+	}
+}
+
+function holderVerdict(holder: LockHolder, liveness: LockLiveness | undefined): Verdict {
+	if (!(liveness?.killAlive ?? pidAlive)(holder.pid)) return "dead";
+	// The pid is alive, but pids are recycled: only an identical start identity proves it is the same process.
+	if (holder.startTime === "") return "unknown";
+	const current = processIdentity(holder.pid, liveness);
+	if (current === undefined) return "unknown";
+	return current === holder.startTime ? "live" : "dead";
+}
+
+let ownIdentity: string | undefined;
+
+/** This process's start identity (a pid never changes, so the default read is cached); "" when unreadable. */
+function selfIdentity(liveness: LockLiveness | undefined): string {
+	if (liveness !== undefined) return processIdentity(process.pid, liveness) ?? "";
+	ownIdentity ??= processIdentity(process.pid) ?? "";
+	return ownIdentity;
+}
+
+/** Called only while holding the mutation guard, so the stale name cannot become a successor during deletion. */
+function reclaimStale(
+	lockPath: string,
+	staleMs: number,
+	now: () => number,
+	liveness: LockLiveness | undefined,
+): Reclaim {
+	try {
+		const holder = parseHolder(readFileSync(lockPath, "utf8"));
+		if (holder !== undefined) {
+			const verdict = holderVerdict(holder, liveness);
+			if (verdict === "live") return "fresh";
+			if (verdict === "dead") {
+				unlinkSync(lockPath);
+				return "reclaimed";
+			}
+		}
 		if (now() - statSync(lockPath).mtimeMs <= staleMs) return "fresh";
 		unlinkSync(lockPath);
 		return "reclaimed";
 	} catch (error) {
 		return errorCode(error) === "ENOENT" ? "gone" : "fresh";
+	}
+}
+
+/** Thrown by {@link withFileLock} with `onTimeout: "throw"` when a live holder keeps the lock past `timeoutMs`. */
+export class LockTimeoutError extends Error {
+	readonly code = "ELOCKTIMEOUT";
+	constructor(lockPath: string, timeoutMs: number) {
+		super(`lock ${lockPath} still held after ${timeoutMs} ms`);
+		this.name = "LockTimeoutError";
 	}
 }
 
@@ -264,6 +383,11 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 	const now = options.now ?? Date.now;
 	const sleep = options.sleep ?? blockingSleep;
 	const token = randomBytes(16).toString("hex");
+	const record = JSON.stringify({
+		pid: process.pid,
+		startTime: selfIdentity(options.liveness),
+		token,
+	} satisfies LockHolder);
 	const started = now();
 	for (let attempt = 0; ; attempt++) {
 		let retry: string | boolean | undefined;
@@ -272,7 +396,9 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 				try {
 					const fd = openSync(lockPath, "wx", 0o600);
 					try {
-						writeSync(fd, token);
+						// The create mode is filtered by the umask; the explicit mode is not.
+						fchmodSync(fd, 0o600);
+						writeSync(fd, record);
 					} catch (error) {
 						try {
 							unlinkSync(lockPath);
@@ -287,7 +413,7 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 				} catch (error) {
 					if (errorCode(error) !== "EEXIST") throw error;
 				}
-				return reclaimStale(lockPath, staleMs, now) !== "fresh";
+				return reclaimStale(lockPath, staleMs, now, options.liveness) !== "fresh";
 			});
 		} catch (error) {
 			options.log?.(
@@ -299,6 +425,7 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 		// Reclaimed names retry immediately, but every retry takes the same mutation guard.
 		if (retry === true && attempt < 1_000) continue;
 		if (now() - started >= timeoutMs) {
+			if (options.onTimeout === "throw") throw new LockTimeoutError(lockPath, timeoutMs);
 			options.log?.(
 				`lock ${basename(lockPath)} still held after ${timeoutMs} ms, writing unlocked`,
 			);
@@ -317,7 +444,8 @@ function release(lockPath: string, token: string, options: LockOptions): void {
 			if (
 				withLockMutation(lockPath, () => {
 					try {
-						if (readFileSync(lockPath, "utf8") === token) unlinkSync(lockPath);
+						const holder = parseHolder(readFileSync(lockPath, "utf8"));
+						if (holder?.token === token) unlinkSync(lockPath);
 					} catch {
 						// reason: The lock is already gone or no longer ours.
 					}
@@ -334,9 +462,12 @@ function release(lockPath: string, token: string, options: LockOptions): void {
 }
 
 /**
- * Runs `fn` while holding `<target>.lock`, so overlapping processes take turns on one read-modify-write. A stale or
- * unobtainable lock never blocks: past `timeoutMs`, or on any lock bookkeeping error, `fn` runs unlocked. Errors
- * thrown by `fn` propagate. `fn` must not take the same lock again.
+ * Runs `fn` while holding `<target>.lock`, so overlapping processes take turns on one read-modify-write. A lock
+ * whose holder is alive is never taken. A dead holder's lock is reclaimed at once; a lock without a verifiable
+ * holder (legacy writer, unreadable identity) is reclaimed once older than `staleMs`. Past `timeoutMs`, or on any
+ * lock bookkeeping error, `fn` runs unlocked (`onTimeout: "run-unlocked"`, the default) or the wait throws a
+ * {@link LockTimeoutError} (`onTimeout: "throw"`). Errors thrown by `fn` propagate. `fn` must not take the same
+ * lock again.
  */
 export function withFileLock<T>(target: string, fn: () => T, options: LockOptions = {}): T {
 	const lockPath = `${target}.lock`;
@@ -347,4 +478,72 @@ export function withFileLock<T>(target: string, fn: () => T, options: LockOption
 	} finally {
 		release(lockPath, token, options);
 	}
+}
+
+/** How many times {@link updateJsonAtomic} re-reads and re-applies before it reports busy. */
+const JSON_UPDATE_ATTEMPTS = 5;
+
+/** A file's size, mtime and inode as `diskFingerprint` reports them; undefined for a file that does not exist. */
+interface FileFingerprint {
+	readonly size: number;
+	readonly mtimeMs: number;
+	readonly ino: number;
+}
+
+function sameFingerprint(a: FileFingerprint | undefined, b: FileFingerprint | undefined): boolean {
+	if (a === undefined || b === undefined) return a === b;
+	return a.size === b.size && a.mtimeMs === b.mtimeMs && a.ino === b.ino;
+}
+
+/**
+ * Read-modify-write of one JSON file that never silently overwrites a concurrent writer. Under the file lock (when
+ * it can be taken) the file is read, `apply` maps its parsed content to the next value, and the result is written
+ * only if the file's fingerprint (size, mtime, inode) is unchanged since the read; otherwise the file is re-read and
+ * `apply` runs again, up to 5 attempts. `apply` must be a pure function of its argument and returns `undefined`
+ * for "no change". A missing file reads as `opts.initial`; unparseable content is handed to `apply` as the raw
+ * text. Returns true when `next` was written, false when `apply` declined or every attempt lost a race (callers
+ * treat false as "busy, retry later", never as a write that happened). The compare and the rename are two steps, so
+ * with a lock timeout the check narrows the lost-update window rather than closing it.
+ */
+export function updateJsonAtomic(
+	path: string,
+	apply: (current: unknown) => unknown | undefined,
+	opts: LockOptions & { initial?: unknown } = {},
+): boolean {
+	const { initial, ...lockOptions } = opts;
+	return withFileLock(
+		path,
+		() => {
+			for (let attempt = 0; attempt < JSON_UPDATE_ATTEMPTS; attempt++) {
+				// Fingerprint BEFORE the read: a replacement between the two then fails the later compare.
+				const before = diskFingerprint(path);
+				let current: unknown = initial;
+				if (before !== undefined) {
+					let raw: string;
+					try {
+						raw = readFileSync(path, "utf8");
+					} catch (error) {
+						if (errorCode(error) === "ENOENT") continue;
+						throw error;
+					}
+					try {
+						current = JSON.parse(raw);
+					} catch {
+						// reason: apply decides what to do with content that is not JSON
+						current = raw;
+					}
+				}
+				const next = apply(current);
+				if (next === undefined) return false;
+				if (!sameFingerprint(before, diskFingerprint(path))) continue;
+				writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
+				return true;
+			}
+			lockOptions.log?.(
+				`${basename(path)} changed under ${JSON_UPDATE_ATTEMPTS} consecutive updates, not written`,
+			);
+			return false;
+		},
+		lockOptions,
+	);
 }
