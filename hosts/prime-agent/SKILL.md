@@ -14,7 +14,7 @@ skills are the same ones the other hosts use. State lives in `${PRIME_AGENT_CODI
 
 ```python
 r = await ultrathink("add a /health endpoint returning uptime and git sha")
-r["planned"]          # False when the engine skipped (r["skipped"] says why: precheck-skip, precheck-trivial, child-or-disabled, timeout, engine-error ...)
+r["planned"]          # False when the engine skipped (r["skipped"] says why: precheck-<reason> such as precheck-trivial or precheck-graph-reference, child-or-disabled, timeout, engine-error ...)
 r["context"]          # the plan: spec path, HITL questions, tracking rows, WORKFLOW waves. Work from this.
 r["spec"]             # the XML spec (ORIGINAL holds the user's verbatim words)
 r["spec_path"], r["state_path"], r["graph_id"], r["summary"], r["view"], r["model_resolution"]
@@ -45,7 +45,7 @@ r["spec_path"], r["state_path"], r["graph_id"], r["summary"], r["view"], r["mode
 | `/ultrathink-quick <message>` | do not call the planner; answer the message |
 | think / hitl / engine | `ultrathink.ctl("think", "off")`, `ctl("hitl", "status")`, `ctl("grok", "engine", "claude")` |
 
-`ultrathink.last()` returns the last carrier (`last-plan.json`), `ultrathink.spec()` the last XML.
+`ultrathink.last()` returns this session's carrier (`last-plan.<session>.json`; pass `session_id=` to name another session, a carrier that names a different session is never returned), `ultrathink.spec()` its XML.
 `ultrathink.teach("recall", "<query>")`, `teach("status")`, `teach("promote", "--due")` reach Teachable Moments; promoted skills install
 into `~/.prime/agent/skills/<name>/SKILL.md` with `--target prime-agent --install`.
 

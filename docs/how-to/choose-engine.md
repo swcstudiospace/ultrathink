@@ -138,7 +138,7 @@ Memory-bank inference is the local `teach observe` distill that turns a session 
 
 By default a failed Claude call is an engine error. Set `claude.fallbackToGrok: true` in your **user** config (a project file cannot set it) and a failed Claude call fails over to the Grok route instead, trying `grok.model` and then `grok.fallbackModels`. It is off by default because the prompt text then leaves Anthropic for xAI; see [Privacy](../privacy.md). It applies only while the Grok route is usable, meaning a Grok login that is present and not expired, or a configured `shunt` gateway.
 
-These failure classes fail over: `auth`, `billing`, `plan-limit`, `rate-limit`, `overloaded`, `model-unavailable`, `unavailable` and `network`. `timeout`, `aborted` and `other` do not; they stop the call as before. Within one planning run, a candidate that failed is not retried on every stage call; it rests for the time below. The rest lives in that run's failover chain, in that process only. A hook process is short-lived and builds a new chain for each prompt, so on those hosts the next prompt starts with every candidate available again; only a long-lived process, such as the hosted service, carries a rest from one request to the next.
+These failure classes fail over: `auth`, `billing`, `plan-limit`, `rate-limit`, `overloaded`, `model-unavailable`, `unavailable`, `network` and `timeout`. `aborted` and `other` do not; they stop the call as before. Within one planning run, a candidate that failed is not retried on every stage call; it rests for the time below. When every candidate is resting, nothing is invoked: the call fails at once with the same failure, and once the rests lapse only one resting candidate is probed per call. The rests are kept in `<state dir>/failover-cooldowns.json`, so a hook process, which builds a new chain for each prompt, starts with the rests that earlier processes found instead of walking an exhausted candidate again; an unreadable or missing file means no rests.
 
 | Class | Rest within one run | Typical cause |
 |---|---|---|
@@ -149,9 +149,10 @@ These failure classes fail over: `auth`, `billing`, `plan-limit`, `rate-limit`, 
 | `overloaded` | 30 s | HTTP 529, 500 or 503. |
 | `model-unavailable` | 60 min | The model is not served to this session, or the CLI is too old for it. |
 | `unavailable` | 60 min | The CLI binary is missing. |
-| `network` | 30 s | `fetch failed`, `ECONNRESET`, a DNS failure. |
+| `network` | 30 s | `fetch failed`, `ECONNRESET`, a DNS failure, or resource exhaustion on the host (`EAGAIN`, `ENOMEM`, `EMFILE`, a child killed or `exited 137`). |
+| `timeout` | 30 s | A call that ran past its timeout (`claude.callTimeoutMs` and the like), or HTTP 408. |
 
-The CLIs already retry 429 and 529 themselves, so ultrathink adds no retry layer of its own: it classifies the failure, fails over and rests the candidate for the time above. The summary line then carries `Failover · claude:claude-haiku-5-5 → grok:grok-build-0.1 (plan-limit)`, and the session record stores the same text as `engineFailover`.
+Before a failure is classified, a transient one (HTTP 408, 425, 429, 5xx, a network, overload or usage-limit error, a reply cut off at the token limit) is retried on the same candidate: three attempts with jittered backoff that honours `Retry-After`, never another model. Only the failure that remains is classified, fails over and rests the candidate for the time above. The summary line then carries `Failover · claude:claude-haiku-5-5 → grok:grok-build-0.1 (plan-limit)`, and the session record stores the same text as `engineFailover`.
 
 ## Muse
 
@@ -263,7 +264,7 @@ The record shows the selection, not that the calls worked. A `detected` model wh
 
 ## When the engine fails
 
-A failed or timed-out planning call never blocks your prompt. If the spec call fails, the turn goes on with a minimal fallback spec and creates no tracking rows, and the summary line reports `Engine error · …`. If the graph call fails, a built-in five-node graph is used. A node whose detail call fails keeps its question as its conclusion. A failed clarification call asks no questions. See [Troubleshooting](../troubleshooting.md) and [Reduce cost and latency](reduce-cost-and-latency.md) for the timeouts.
+A failed or timed-out planning call never blocks your prompt. If the spec call fails, the turn goes on with a minimal fallback spec and creates no tracking rows, and the summary line reports `Engine error · …`. If the graph call fails, a built-in five-node graph is used, and no tracking rows are created from it. A node whose detail call fails is retried, repaired once, and then marked degraded: it carries no conclusion, and the plan's `## Planning degraded` notice names it. A failed clarification call is reported the same way (`clarify`) and asks no questions. See [Troubleshooting](../troubleshooting.md#planning-degraded) and [Reduce cost and latency](reduce-cost-and-latency.md) for the timeouts.
 
 A failover is not an error. When [Claude fails over to Grok](#claude-to-grok-fallback) or the Grok route [moves to a model you listed in `grok.fallbackModels`](#the-grok-model-walk) and a later candidate answers, the plan is complete. The summary shows `Failover · <first> → <answering> (<failure class>)` and the session record keeps it as `engineFailover`. `Engine error · …` appears only when every candidate failed.
 

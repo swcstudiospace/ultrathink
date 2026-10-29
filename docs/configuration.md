@@ -61,7 +61,7 @@ Types: "integer" means a whole JSON number; "number" allows fractions. Ranges ar
 |---|---|---|---|
 | `enabled` | boolean | `true` | Plan prompts. When `false`, only prompts that start with `uplift:` are planned. `/ultrathink-off` and `/ultrathink-on` override this per host. |
 | `skipTrivial` | boolean | `true` | Skip trivial acknowledgements such as `ok` or `lgtm`. |
-| `maxChars` | number, >= 0 | `0` | `0` means no limit: every prompt is sent to the engine. A positive value caps the uplift call: a longer prompt is not sent, gets the conservative fallback spec, and creates no rows. |
+| `maxChars` | number, >= 0 | `200000` | The longest prompt, in characters, that is sent to the uplift call. A longer prompt is not sent: it gets the conservative fallback spec with the visible reason `input_over_limit` (the plan's `## Planning degraded` notice says to shorten the prompt or raise this), and creates no rows. `0` means no limit. A negative or non-numeric value keeps the default. |
 | `echo` | boolean | `true` | Accepted but not read. The one-line summary after each plan is controlled by `claude.echo`. |
 
 ### `think`: Graph of Thought
@@ -72,8 +72,10 @@ Types: "integer" means a whole JSON number; "number" allows fractions. Ranges ar
 | `minNodes` | integer, >= 1 | `5` | Fewest graph nodes. Clamped to `maxNodes`. |
 | `maxNodes` | integer, >= `minNodes` | `8` | Most graph nodes. Values above 8 are capped at 8. |
 | `engine` | `"auto"`, `"claude"`, `"grok"` or `"muse"` | `"auto"` | Engine for the uplift, the graph, the per-node fills, the HITL questions and the ship judge. `"auto"` uses each host's own engine (see the matrix below). A named engine plans on every host. `bin/ultrathink grok engine auto\|claude\|grok\|muse` overrides this per host. |
+| `fillRetries` | integer, >= 1 | `2` | Extra attempts for a node fill that fails, so each fill is tried `1 + fillRetries` times (3 by default). A fill counts only when it has a closed rationale of 5 to 8 numbered steps and a closed conclusion; a provider error, a refusal, error text, truncated markup or a reply cut off at the token limit is a failed attempt. Waits between attempts use jittered backoff from 500 ms, capped at 8 s, and honour `Retry-After`. Any other value keeps the default. |
+| `repair` | boolean | `true` | After the first pass, run one repair pass: each node that still failed gets one more attempt, in dependency order, and the nodes downstream of a node it repaired are filled again with the repaired conclusion. A node that still fails keeps boilerplate and is reported as degraded (`fill:<id>`). `false` skips the pass. |
 
-Each node gets 4 to 8 numbered rationale steps. That range is fixed in code, not configurable. Each step becomes one sub-issue when tracking is on.
+Each node gets 5 to 8 numbered rationale steps. That range is fixed in code, not configurable. Each step becomes one sub-issue when tracking is on. A step list longer than 8 is not accepted as a fill; the tracker rows clamp to 8 steps. These keys change defaults and behaviour, not guarantees: whatever `fillRetries` and `repair` say, a fill that cannot be completed never blocks the plan. The node is marked degraded, the plan is delivered partial, and a `## Planning degraded` notice names it (see [Degradation ladder](architecture.md#degradation-ladder) and [Troubleshooting: Planning degraded](troubleshooting.md#planning-degraded)). Retries use the same model, route and effort and add no deadline; `claude.callTimeoutMs`, `claude.budgetMs` and the other timeouts keep their default of `0` (no timer).
 
 ### `hitl`: clarifying questions
 
@@ -251,7 +253,7 @@ Example: on Omp, always plan with a model from one provider. The session's own m
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | The planner creates the Linear and Notion rows before the agent sees the prompt. When `false`, the planner creates none and the `ultrathink-kickoff` skill creates them instead. On Hermes the planner never creates rows, whatever this says; kickoff creates them all. `/ultrathink-track off\|on` overrides this per host. Has no effect when neither tracker is configured. |
-| `budgetMs` | number, > 0 | `60000` | Time limit for the planner's whole row-creation run, including credential lookup. Rows not created in time are left for kickoff. |
+| `budgetMs` | number, >= 0 | `0` | Time limit for the planner's whole row-creation run, including credential lookup. `0` means no limit: no timer is created and the run waits for every row. Rows not created in time are left for kickoff. Each tracker call is retried up to 3 times regardless. |
 | `concurrency` | number, >= 1 | `6` | Row-creation calls that run in parallel. Rounded down. |
 
 ### `ship`: PR, review and merge
@@ -451,7 +453,7 @@ The confirmed/candidate counts and the outbox count are included when the status
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `retentionDays` | integer, 0 to 3650 | `0` | Days to keep session records (`sessions/<id>.json` and its `.xml`). `0` keeps everything forever. Above `0`, the scheduled prune removes sessions whose newest file is older than this. User files only: a project file cannot set it. |
+| `retentionDays` | integer, 0 to 3650 | `0` | Days to keep session records (`sessions/<id>.json` and its `.xml`). `0` keeps everything forever, and it stays the default: retention is off unless you set it. Above `0`, the scheduled prune removes sessions whose newest file is older than this. User files only: a project file cannot set it. |
 
 #### Session retention
 
@@ -463,7 +465,7 @@ By default nothing is ever deleted: every session record stays in the state dire
 What a prune never removes:
 
 - A session whose ship has a pull request that is neither merged nor blocked.
-- The session `last.json` names and the session the plan carrier (`last-plan.json`) points to.
+- The session `last.json` names and the sessions the plan carriers (`last-plan.<sessionId>.json`, one per session, and the single `last-plan.json` of earlier builds) point to.
 - Symlinks or Teachable Moments lessons under `teach/`. Session deletion only selects `sessions/<id>.json` and `sessions/<id>.xml`; narrowly recognized write/lock leftovers have the separate orphan rules below.
 
 A prune also removes regular `*.tmp` and `*.lock` files older than one hour in `sessions/` or directly in the state directory. Lock deletion shares the writer's mutation guard and rechecks age before removal; a busy guard is skipped, and an active strict `last.json` lock whose PID is alive is never an orphan. Prepared `*.lock.guard.<pid>.<32-hex-nonce>.tmp` directories are removed only when their named PID is dead and they are empty or contain exactly their own empty owner marker; live owners and unrelated contents are preserved. Dry runs take no mutation guard and change nothing.
@@ -480,8 +482,8 @@ All keys are optional; write only the ones you change. This file shows every key
 
 ```json
 {
-  "uplift": { "enabled": true, "skipTrivial": true, "maxChars": 0, "echo": true },
-  "think": { "enabled": true, "minNodes": 5, "maxNodes": 8, "engine": "auto" },
+  "uplift": { "enabled": true, "skipTrivial": true, "maxChars": 200000, "echo": true },
+  "think": { "enabled": true, "minNodes": 5, "maxNodes": 8, "engine": "auto", "fillRetries": 2, "repair": true },
   "hitl": { "enabled": true, "maxQuestions": 4, "knowledgeBase": false },
   "claude": {
     "bin": "claude",
@@ -779,12 +781,16 @@ What a state directory holds:
 | `sessions/<session-id>.json` | The session record: the spec, the graph, the clarifications, the tracking plan, the created row links, the ship progress and, with Decisions on, the Jev decision records (`decisions`, and the ship assessment's `decision`). The kickoff, sync and ship skills take this file as `stateFile`. |
 | `sessions/<session-id>.xml` | The full uplifted spec. |
 | `last.json` | A copy of the latest session record. `bin/ultrathink last` reads it. |
-| `last-plan.json` | The plan carrier for hosts that do not read hook output directly, such as Grok Build. |
+| `last-plan.<sessionId>.json` | The plan carrier for hosts that do not read hook output directly, such as Grok Build. One file per session, read and cleared only by that session. Carriers untouched for 24 hours, and the single `last-plan.json` of earlier builds, are swept by the next planned prompt (at most 200 entries per sweep). |
+| `failover-cooldowns.json` | Which engine candidates are cooling after a failover-worthy failure: each candidate's id, failure class and expiry time. It keeps a fresh hook process from walking a candidate that another process just found exhausted. Written atomically and fail-open: an unreadable or unwritable file is read as empty. No prompt text is stored. |
+| `control.json.corrupt-<epochMs>` | A `control.json` that did not parse, set aside instead of overwritten (see [Control state versus config](#control-state-versus-config)). |
 | `.last-prune` | Empty marker written by the scheduled prune; its modification time is when the prune last ran. Only exists when `state.retentionDays` is set. |
 | `teach/moments/<id>.json` | One Teachable Moments file. Written only when `teach.enabled` is on. |
 | `teach/outbox/<id>.json` | A pending Hindsight retain, delete or tag update. |
 | `teach/inbox/<id>.json` | A finished-turn digest waiting for `teach observe`. `teach observe --file` deletes the file afterwards, and only when the path resolved to a file under this directory. A refused path is left alone. |
 | `teach/skill-drafts/<name>/SKILL.md` | A rendered skill draft. Hermes installs from here through `skill_manage`; ultrathink never writes `~/.hermes/skills`. |
+
+**Lock waits.** State writes hold `<file>.lock`. A hook path waits 2 s for a held lock and then runs unlocked, so a stuck lock cannot block a prompt. A writer that is not a hook never writes unlocked: the `/ultrathink-*` toggles and `bin/ultrathink` commands that write `control.json` wait up to 30 s (the default) and then fail with a lock error, and `bin/ultrathink-mcp session mark` waits up to 120 s. These waits are fixed in code, not configuration keys. A lock whose holder process has died is taken over at once; a live holder's lock is never taken.
 
 ## Control state versus config
 
@@ -807,3 +813,5 @@ A value in the control state beats the config value until you change it again:
 `ULTRATHINK_TRACK=0` beats both the control state and the config, for the planner's own row creation. `ULTRATHINK_UPLIFT=0` and `ULTRATHINK_SHIP=0` likewise beat both for planning and ship.
 
 `bin/ultrathink` picks the state directory from `ULTRATHINK_HOST`, else from the detected host: Grok Build when `GROK_PLUGIN_ROOT`, `GROK_HOOK_EVENT` or `GROK_SESSION_ID` is set, Muse when `MUSE_TOOL_USE_ID` or `MUSE_PLUGIN_ID` is set, and Claude Code otherwise. Run from a plain shell, it changes the Claude Code state. See [Commands](commands.md) for every command and how each host shows the reply.
+
+A `control.json` that does not parse is set aside as `control.json.corrupt-<epochMs>`: the prompt in flight runs with no toggles, a debug line (`ULTRATHINK_DEBUG=1`) names the file, and you re-apply any toggle you had set (`/ultrathink-off`, `think`, `hitl`, `track`, `engine`). The next toggle write stores only the toggle it was asked for, never an empty file produced by a failed read. A `control.json` that cannot be read at all (permissions, I/O) is read as no toggles for the prompt in flight and left in place; a toggle write refuses to build on it, prints one line (`ultrathink: control.json could not be read ...`), exits non-zero on the command line and writes nothing, so your other toggles are kept. A toggle write that cannot get the file's lock within 30 seconds fails the same way (`control.json is locked by another process`).

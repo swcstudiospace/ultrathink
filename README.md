@@ -41,7 +41,7 @@ The agent-side half is four skills, shared by every host:
 | Skill | Runs | Does |
 |---|---|---|
 | `ultrathink-kickoff` | First, when tracking is on | Finishes missing tracker rows, resolves blocking questions, hands back the full spec and the linked TODO lines |
-| `ultrathink-plan` | On a host that drops hook output (Grok Build) | Reads the plan from `last-plan.json`, then runs kickoff |
+| `ultrathink-plan` | On a host that drops hook output (Grok Build) | Reads this session's plan from `last-plan.<sessionId>.json`, then runs kickoff |
 | `ultrathink-sync` | After a pull request opens, or at a stopping point | Puts the PR link, checks and status on the tracked rows; never creates rows |
 | `ultrathink-ship` | After a planned GSD skill run, only when ship is turned on | Done check, pull request, Greptile review to 5/5; merge and branch cleanup only when you enable them (see [Ship](#ship)) |
 
@@ -52,7 +52,7 @@ Each host except Cursor was tested live with the version shown, including planni
 | Host | Tested | How ultrathink loads | How the plan reaches the agent |
 |---|---|---|---|
 | Claude Code | 2.1.278 | `.claude-plugin/` marketplace; hooks in `hooks/hooks.json` | `UserPromptSubmit` hook context |
-| Grok Build | 1.0.41 | The plugin directory supplies the skills and commands. Grok does not dispatch plugin hooks, so `bun scripts/setup.ts apply` installs the global hook file `${GROK_HOME:-~/.grok}/hooks/ultrathink.json` | Grok discards hook output, so the plan is written to `last-plan.json` and a rule file (`${GROK_HOME:-~/.grok}/rules/ultrathink.md`) tells the model to read it |
+| Grok Build | 1.0.41 | The plugin directory supplies the skills and commands. Grok does not dispatch plugin hooks, so `bun scripts/setup.ts apply` installs the global hook file `${GROK_HOME:-~/.grok}/hooks/ultrathink.json` | Grok discards hook output, so the plan is written to the session's own `last-plan.<sessionId>.json` and a rule file (`${GROK_HOME:-~/.grok}/rules/ultrathink.md`) tells the model to read it |
 | Hermes Agent | v0.21.4 | Python plugin `hosts/hermes` (Python 3.10 or later), symlinked into `${HERMES_HOME:-~/.hermes}/plugins/ultrathink` | `pre_llm_call` gets the plan from `hooks/engine.ts` and hands the agent a short handoff: the spec path, the state file and the Graph ID |
 | Muse Code | 1.4.0 | `.muse-plugin/plugin.json` | `UserPromptSubmit` hook context, same entry as Claude Code |
 | Prime Agent | 0.9.8 | Python-backed kernel skill `hosts/prime-agent`, linked into `${PRIME_AGENT_CODING_AGENT_DIR:-~/.prime/agent}/skills/ultrathink` by `bun scripts/setup.ts apply`; the `ultrathink-*` agent skills are linked into `~/.agents/skills` | Prime Agent has no prompt hook: the agent calls `await ultrathink("<request>")` in its persistent Python kernel, the skill runs `hooks/engine.ts` and returns the plan (`context`, the spec and its path) to the kernel. The agent then runs the waves, with `ultrathink-kickoff` first when tracking is on |

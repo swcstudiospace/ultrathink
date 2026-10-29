@@ -148,7 +148,7 @@ See [Upgrade and move](how-to/upgrade-and-move.md#upgrade) and [Uninstall](how-t
 
 Grok Build uses the plugin directory for skills and commands. It finds the plugin's `hooks/hooks.json` but does not dispatch plugin hooks, so `bun scripts/setup.ts apply` installs a global hook file, `${GROK_HOME:-~/.grok}/hooks/ultrathink.json`. That file is a copy of `hooks/hooks.json` with absolute paths, `ULTRATHINK_HOST=grok-build` on every hook, and a 600 s timeout on the prompt hook in place of Grok's 30 s default. Because the paths are absolute, run `apply` again after moving the clone.
 
-Grok also discards hook stdout, so the plan cannot be injected into the turn directly. Instead, the hook writes the plan to `last-plan.json` in the Grok state directory (`$GROK_PLUGIN_DATA/ultrathink/` if set, otherwise `${GROK_HOME:-~/.grok}/plugin-data/ultrathink/`), and `apply` installs the rule `${GROK_HOME:-~/.grok}/rules/ultrathink.md`. The rule tells the model to read that file before acting. `last-plan.json` exists only for a prompt that was planned. The hook deletes it on every prompt it does not plan (`/ultrathink-quick`, control commands, skipped or trivial prompts, planning turned off), so the model never picks up an older plan.
+Grok also discards hook stdout, so the plan cannot be injected into the turn directly. Instead, the hook writes the plan to this session's own `last-plan.<sessionId>.json` in the Grok state directory (`$GROK_PLUGIN_DATA/ultrathink/` if set, otherwise `${GROK_HOME:-~/.grok}/plugin-data/ultrathink/`), and `apply` installs the rule `${GROK_HOME:-~/.grok}/rules/ultrathink.md`. The rule tells the model to read that file before acting. One state directory serves several concurrent sessions, so there is one carrier per session (`<sessionId>` is the session id with every character outside `A-Z a-z 0-9 _ -` replaced by `_`, cut to 64 characters), and a session reads and clears only its own. A carrier exists only for a prompt that was planned. The hook deletes this session's carrier on every prompt it does not plan (`/ultrathink-quick`, control commands, skipped or trivial prompts, planning turned off), so the model never picks up an older plan. Carriers left by sessions that ended, and the single `last-plan.json` of earlier builds, are removed once they are 24 hours old.
 
 `apply` never overwrites the rule. If the rule file is missing, it writes the packaged rule from `hosts/grok/ultrathink.md`. If the file exists, it replaces only the block between `<!-- ultrathink:start -->` and `<!-- ultrathink:end -->`, or appends the block when there is none. Your own text in that file is kept.
 
@@ -170,7 +170,7 @@ Grok keeps a plugin disabled until you enable it, so without `grok plugin enable
 1. `grok plugin list` shows `ultrathink` as enabled.
 2. Run `bun <clone>/scripts/setup.ts status`. It should print `Grok rule: installed (…/rules/ultrathink.md)` and `Grok hooks: installed (…/hooks/ultrathink.json)`. The rule counts as installed only when it contains the `<!-- ultrathink:start -->` … `<!-- ultrathink:end -->` block.
 3. Start Grok and run `/ultrathink-status`. The prompt hook blocks the command and shows the state.
-4. Send a non-trivial prompt. `last-plan.json` should appear in the Grok state directory, and the model should read the plan and invoke `ultrathink-plan`, then `ultrathink-kickoff`. After a `/ultrathink-quick` message or a control command, the file is gone.
+4. Send a non-trivial prompt. `last-plan.<sessionId>.json` should appear in the Grok state directory, and the model should read the plan and invoke `ultrathink-plan`, then `ultrathink-kickoff`. After a `/ultrathink-quick` message or a control command, that session's file is gone.
 
 Verified live on Grok Build 1.0.41: `/ultrathink-status` and `/ultrathink-quick` in `grok -p`. A quick message was answered. In headless mode a blocked control command prints nothing, so check status in the interactive UI or with `ULTRATHINK_HOST=grok-build <clone>/bin/ultrathink status`.
 
@@ -300,8 +300,8 @@ bun <clone>/scripts/setup.ts apply
 ### Verify
 
 1. In a Prime Agent session, `await ultrathink.status()` shows `host: prime-agent`, `engine_present: True`, the state directory and the `ultrathink status` text (planning on, the engine route, tracking).
-2. `await ultrathink("ok")` returns `planned: False` with `skipped: precheck-skip` (a trivial prompt is never planned).
-3. `await ultrathink("add a /health endpoint returning uptime and git sha")` returns `planned: True` after one to five minutes, with `context`, `spec_path` under the state directory and, when tracking is configured, the row links. `ultrathink.last()` returns the carrier (`last-plan.json`) afterwards.
+2. `await ultrathink("ok")` returns `planned: False` with `skipped: precheck-trivial` (a trivial prompt is never planned).
+3. `await ultrathink("add a /health endpoint returning uptime and git sha")` returns `planned: True` after one to five minutes, with `context`, `spec_path` under the state directory and, when tracking is configured, the row links. `ultrathink.last()` returns this session's carrier (`last-plan.<sessionId>.json`) afterwards.
 4. `/skill:ultrathink-kickoff` loads the kickoff skill.
 
 Tracking from Prime Agent uses the shared MCP gateway through the kickoff and sync skills: log in with `bin/ultrathink-mcp auth login linear` and `notion` from the clone. Teachable Moments: `ultrathink.teach("status")`, `ultrathink.teach("recall", "<query>")`; promoted skills install into `~/.prime/agent/skills/<name>/SKILL.md` with `--target prime-agent --install`.
