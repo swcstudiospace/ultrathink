@@ -242,16 +242,13 @@ describe("escapeXml XML-invalid characters (L1-10)", () => {
 });
 
 describe("stripFences linear time (D-02)", () => {
-	test("40k whitespace after an opening fence is not quadratically slower than 10k", () => {
-		const noise = (n: number) => `\`\`\`${" ".repeat(n)}x`;
-		const time = (n: number) => {
-			const start = performance.now();
-			stripFences(noise(n));
-			sanitizeUpliftXml(noise(n), "o");
-			return performance.now() - start;
-		};
-		time(500);
-		const small = Math.max(time(10_000), 0.05);
-		expect(time(40_000) / small).toBeLessThan(8);
+	test("40k whitespace after an opening fence is scanned in linear time", () => {
+		const noise = `\`\`\`${" ".repeat(40_000)}x`;
+		const start = performance.now();
+		stripFences(noise);
+		sanitizeUpliftXml(noise, "o");
+		// A linear scan takes about a millisecond; the quadratic one it replaced took 9.5 s at 20k characters. The bound is
+		// absolute and three orders of magnitude wide: a ratio of two sub-millisecond timings flips under host load, this does not.
+		expect(performance.now() - start).toBeLessThan(1000);
 	});
 });
