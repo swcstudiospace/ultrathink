@@ -180,3 +180,59 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 		expect(armedAfter).toBe(true);
 	}, 60_000);
 });
+
+describe("a provider that answers 429 forever, through the real hook entry and the real Claude completer", () => {
+	test("the record says provider_error:429 after 3 attempts, the clarify stage is skipped, and no fill is retried a second time", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-429-"));
+		try {
+			const home = join(dir, "home");
+			const stateDir = join(dir, "state");
+			const calls = join(dir, "calls.log");
+			const fake = join(dir, "claude-fake");
+			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(
+				fake,
+				`#!/bin/sh\ncat >/dev/null\necho call >> '${calls}'\necho '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"rate limited"}'\nexit 1\n`,
+				{ mode: 0o755 },
+			);
+			writeFileSync(
+				join(home, ".config", "ultrathink", "config.json"),
+				JSON.stringify({ claude: { bin: fake } }),
+			);
+			const proc = Bun.spawn(["bun", "--no-env-file", join(HOOKS, "uplift.ts")], {
+				stdin: new Blob([
+					JSON.stringify({
+						session_id: "s429",
+						hook_event_name: "UserPromptSubmit",
+						cwd: dir,
+						prompt: "add a retry flag to the exporter please",
+					}),
+				]),
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					PATH: process.env.PATH ?? "",
+					HOME: home,
+					ULTRATHINK_STATE_DIR: stateDir,
+				},
+			});
+			const [out] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+			]);
+			expect(await proc.exited).toBe(0);
+			expect(out).toContain("Planning degraded");
+			const record = JSON.parse(readFileSync(join(stateDir, "last.json"), "utf8"));
+			expect(record.result.source).toBe("fallback");
+			expect(record.result.fallbackReason).toBe("provider_error:429");
+			expect(record.result.attempts).toBe(3);
+			expect(record.degraded).toContain("clarify");
+			// uplift 3 + graph 3 + five fills at 3 attempts each: the fill layer does not retry what the completer retried,
+			// the repair pass does not run against a dead provider and clarify is skipped (39 calls before).
+			expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(21);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 180_000);
+});

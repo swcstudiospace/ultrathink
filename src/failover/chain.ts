@@ -11,6 +11,7 @@ import { abortError } from "../claude/complete.ts";
 import { redactSecrets } from "../redact.ts";
 import { readJson } from "../shared.ts";
 import { redactLine } from "../teach/redact.ts";
+import { attachReport, type CompletionReport, readReport } from "../types.ts";
 import {
 	classifyFailure,
 	type FailureClass,
@@ -87,11 +88,22 @@ function loadCooldowns(path: string, at: number): CooldownFile {
 	return out;
 }
 
-function failoverError(summary: string, cause: unknown, failure: FailureClass): Error {
-	return Object.assign(new Error(redactSecrets(summary.slice(0, MAX_ERROR_CHARS)), { cause }), {
-		name: "FailoverError",
-		failure,
-	});
+/**
+ * The combined error carries a completion report (the last failed candidate's), so a caller that retries on a missing
+ * report, such as the fill layer of the think stage, sees that every candidate was already tried and cooled.
+ */
+function failoverError(
+	summary: string,
+	cause: unknown,
+	failure: FailureClass,
+	report: CompletionReport,
+): Error {
+	const error = Object.assign(
+		new Error(redactSecrets(summary.slice(0, MAX_ERROR_CHARS)), { cause }),
+		{ name: "FailoverError", failure },
+	);
+	attachReport(error, report);
+	return error;
 }
 
 /**
@@ -185,7 +197,9 @@ export function createFailoverCompleter(
 			firstFailure ??= failure;
 			parts.push(`${candidate.label}: cooling after ${failure}`);
 		}
-		remembered = failoverError(parts.join("; "), undefined, firstFailure ?? "other");
+		remembered = failoverError(parts.join("; "), undefined, firstFailure ?? "other", {
+			attempts: 1,
+		});
 		return remembered;
 	}
 
@@ -205,6 +219,8 @@ export function createFailoverCompleter(
 		}
 		const failed: { label: string; message: string }[] = [];
 		let firstError: unknown;
+		/** The completion report of the last candidate that failed: the walk's final word on how hard it tried. */
+		let lastReport: CompletionReport | undefined;
 		let firstFailure: FailureClass = "other";
 		try {
 			for (const candidate of walk) {
@@ -240,13 +256,19 @@ export function createFailoverCompleter(
 						firstFailure = failure;
 					}
 					failed.push({ label: candidate.label, message });
+					lastReport = readReport(error);
 				}
 			}
 		} finally {
 			if (probe !== undefined) probing.delete(probe.id);
 		}
 		const summary = failed.map((f) => `${f.label}: ${f.message}`).join("; ");
-		remembered = failoverError(summary, firstError, firstFailure);
+		remembered = failoverError(
+			summary,
+			firstError,
+			firstFailure,
+			lastReport ?? { attempts: Math.max(1, failed.length) },
+		);
 		throw remembered;
 	};
 

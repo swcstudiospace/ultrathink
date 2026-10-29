@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { type ClaudeCompleteOptions, ClaudeResultError } from "../../../src/claude/complete.ts";
 import type { GrokCompleteOptions } from "../../../src/grok/complete.ts";
 import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
+import { attachReport, readReport } from "../../../src/types.ts";
 import {
 	createPlanBackend,
 	PlanCompleterError,
@@ -385,6 +386,33 @@ describe("error mapping", () => {
 		expect(refused.retryAfterMs).toBe(1500);
 		expect(refused.message).toBe("plan upstream_unavailable");
 		expect(new PlanCompleterError("upstream", "other").retryAfterMs).toBeUndefined();
+	});
+
+	test("the completion report of the completer's error survives the wrapper", async () => {
+		const raw = new Error("rate limited");
+		attachReport(raw, { attempts: 3, httpStatus: 429, cause: "rate limited" });
+		const backend = createPlanBackend(
+			harness(() => async () => {
+				throw raw;
+			}).opts,
+		);
+		const planError = await failureOf(backend.complete("s", "u"));
+		expect(planError).toBeInstanceOf(PlanCompleterError);
+		// Attached to the wrapper itself, not only reachable through its cause.
+		expect(Object.getOwnPropertySymbols(planError as object)).toContain(
+			Symbol.for("ultrathink.completionReport"),
+		);
+		expect(readReport(planError)).toEqual({ attempts: 3, httpStatus: 429, cause: "rate limited" });
+	});
+
+	test("a completer error without a report is wrapped with a single-attempt report", async () => {
+		const backend = createPlanBackend(
+			harness(() => async () => {
+				throw new Error("boom");
+			}).opts,
+		);
+		const planError = await failureOf(backend.complete("s", "u"));
+		expect(readReport(planError)).toEqual({ attempts: 1 });
 	});
 });
 

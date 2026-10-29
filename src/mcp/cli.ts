@@ -2,11 +2,11 @@
 // Copyright (C) 2026 SWC Studio
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { claudeConfigPaths, loadConfig, userConfigPath } from "../config.ts";
+import { claudeConfigPaths, loadConfig, type UltrathinkConfig, userConfigPath } from "../config.ts";
 import { type LockOptions, withFileLock, writeFileAtomic } from "../claude/atomic.ts";
-import { readControl } from "../claude/state.ts";
+import { CLI_LOCK, degradedNodeIds, readControl, trackingCheckpoint } from "../claude/state.ts";
 import type { SessionRecord } from "../claude/state.ts";
-import { createGatewayTracker } from "../track/gateway.ts";
+import { createGatewayTracker, type Tracker } from "../track/gateway.ts";
 import { formatTrackingTodos, injectTrackingXml } from "../track/render.ts";
 import { createMcpClient, loginHint, MAX_TOOL_PAGES } from "./client.ts";
 import {
@@ -377,7 +377,7 @@ async function checkOne(id: McpProviderId, deps: AuthDeps): Promise<number> {
 	return count;
 }
 
-async function trackComplete(args: string[]): Promise<number> {
+async function trackComplete(args: string[], seams: CliSeams): Promise<number> {
 	const statePath = flag(args, "--state");
 	if (!statePath) throw new UsageError("track complete needs --state <path>");
 	// The state file lives at <host state dir>/sessions/<id>.json; control.json sits in the state dir.
@@ -393,14 +393,29 @@ async function trackComplete(args: string[]): Promise<number> {
 		return 1;
 	}
 	const config = loadConfig(claudeConfigPaths(process.cwd()));
-	const tracker = createGatewayTracker(config);
+	const tracker = (seams.tracker ?? createGatewayTracker)(config);
 	if (!tracker) {
 		err(
 			`ultrathink-mcp: tracking not configured: set linear.team and/or notion.dataSourceUrl in ${userConfigPath()} (or run: ultrathink-mcp notion init --parent <page>)`,
 		);
 		return 0;
 	}
-	const tracking = await tracker({ plan, graph: record.graph, existing: record.tracking });
+	const tracking = await tracker({
+		plan,
+		graph: record.graph,
+		existing: record.tracking,
+		degradedNodes: degradedNodeIds(record),
+		// Every created row is checkpointed into the record under its lock, so a run killed mid-way keeps the rows made so far.
+		onRef: (live) => {
+			try {
+				updateRecord(statePath, trackingCheckpoint(plan.graphId, live));
+			} catch (error) {
+				err(
+					`ultrathink-mcp: tracking checkpoint failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		},
+	});
 	if (!tracking) {
 		err("ultrathink-mcp: no tracker credentials: run ultrathink-mcp auth status");
 		return 1;
@@ -478,7 +493,7 @@ function updateRecord(
 			if (text !== undefined) writeFileAtomic(statePath.replace(/\.json$/, ".xml"), text);
 			return next;
 		},
-		lock,
+		{ ...CLI_LOCK, ...lock },
 	);
 }
 function sessionMark(args: string[]): number {
@@ -542,6 +557,8 @@ async function notionInit(args: string[], deps: AuthDeps): Promise<number> {
 }
 
 export interface CliSeams {
+	/** Test seam for the tracker `track complete` runs (default: the gateway tracker of the loaded config). */
+	tracker?: (config: UltrathinkConfig) => Tracker | undefined;
 	/** Test seam for one provider check (default: the real relay-based check). */
 	checkOne?: (id: McpProviderId, deps: AuthDeps) => Promise<number>;
 }
@@ -577,7 +594,8 @@ export async function main(argv: string[], seams: CliSeams = {}): Promise<number
 			}
 			return failed ? 1 : 0;
 		}
-		if (command === "track" && rest[0] === "complete") return await trackComplete(rest.slice(1));
+		if (command === "track" && rest[0] === "complete")
+			return await trackComplete(rest.slice(1), seams);
 		if (command === "session" && rest[0] === "mark") return sessionMark(rest.slice(1));
 		if (command === "notion" && rest[0] === "init") return await notionInit(rest.slice(1), deps);
 		if (command === "auth") {

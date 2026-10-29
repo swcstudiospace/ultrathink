@@ -211,6 +211,7 @@ async function main(): Promise<void> {
 		complete: engine.complete,
 		engine: engine.label,
 		engineError: engine.error,
+		engineReport: engine.report,
 		engineFailover: engine.failover,
 		modelResolution: engine.resolution,
 		stateDir,

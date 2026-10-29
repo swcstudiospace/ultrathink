@@ -17,6 +17,8 @@ import { join } from "node:path";
 import type { SessionRecord } from "../claude/state.ts";
 import { resolveOpenRouterKey } from "../decisions/gate.ts";
 import { appendAttempts, writeShip } from "../ship/state.ts";
+import type { Tracker } from "../track/gateway.ts";
+import type { TrackingRefs } from "../track/types.ts";
 import { feedLoginInput, main, prepareRedirect } from "./cli.ts";
 import type { McpProviderId } from "./providers.ts";
 import type { Run } from "./redirect.ts";
@@ -162,6 +164,95 @@ describe("track complete", () => {
 		expect(code).toBe(1);
 		expect(stderr).toContain("no tracker credentials");
 	}, 60_000);
+
+	/** Live refs holding one Linear issue per node id. */
+	const refsFor = (...nodes: string[]): TrackingRefs => ({
+		graphId: "ut-test",
+		status: "partial",
+		linear: {
+			nodes: Object.fromEntries(
+				nodes.map((n) => [
+					n,
+					{ id: n, identifier: n.toUpperCase(), url: `https://linear.app/${n}`, title: n },
+				]),
+			),
+			steps: {},
+		},
+		notion: { nodes: {}, steps: {} },
+		errors: [],
+		updatedAt: 9,
+	});
+
+	async function inProcess(
+		path: string,
+		tracker: Tracker,
+	): Promise<{ code: number; stdout: string; stderr: string }> {
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+		const writes = { out: process.stdout.write, err: process.stderr.write };
+		process.stdout.write = ((chunk: string | Uint8Array) =>
+			stdout.push(String(chunk)) > 0) as unknown as typeof process.stdout.write;
+		process.stderr.write = ((chunk: string | Uint8Array) =>
+			stderr.push(String(chunk)) > 0) as unknown as typeof process.stderr.write;
+		let code: number;
+		try {
+			code = await main(["track", "complete", "--state", path], { tracker: () => tracker });
+		} finally {
+			process.stdout.write = writes.out;
+			process.stderr.write = writes.err;
+		}
+		return { code, stdout: stdout.join(""), stderr: stderr.join("") };
+	}
+
+	test("hands the tracker the record's degraded fills and checkpoints every created row into the record while it runs", async () => {
+		const path = session(undefined, undefined);
+		writeFileSync(
+			path,
+			JSON.stringify({ ...record, degraded: ["uplift", "fill:n2", "fill:n4", "clarify"] }),
+		);
+		const seen: {
+			degradedNodes?: readonly string[];
+			afterFirst?: string[];
+			afterSecond?: string[];
+		} = {};
+		const nodesInRecord = (): string[] =>
+			Object.keys(
+				(JSON.parse(readFileSync(path, "utf8")) as SessionRecord).tracking?.linear.nodes ?? {},
+			);
+		const tracker: Tracker = async (input) => {
+			seen.degradedNodes = input.degradedNodes;
+			input.onRef?.(refsFor("n1"));
+			seen.afterFirst = nodesInRecord();
+			input.onRef?.(refsFor("n2"));
+			seen.afterSecond = nodesInRecord();
+			return { ...refsFor("n1", "n2"), status: "complete" };
+		};
+		const result = await inProcess(path, tracker);
+		expect(result.code).toBe(0);
+		expect(seen.degradedNodes).toEqual(["n2", "n4"]);
+		expect(seen.afterFirst).toEqual(["n1"]);
+		expect(seen.afterSecond?.sort()).toEqual(["n1", "n2"]);
+		const final = JSON.parse(readFileSync(path, "utf8")) as SessionRecord;
+		expect(final.tracking?.status).toBe("complete");
+		expect(final.degraded).toEqual(["uplift", "fill:n2", "fill:n4", "clarify"]);
+	});
+
+	test("a checkpoint for a plan the record no longer holds is skipped, and the final write still reports the newer plan", async () => {
+		const path = session(undefined, undefined);
+		const tracker: Tracker = async (input) => {
+			// The record is replaced under the tracker by a newer plan: its checkpoint declines silently, the run still finishes.
+			writeFileSync(
+				path,
+				JSON.stringify({ ...record, plan: { ...record.plan, graphId: "ut-other" } }),
+			);
+			input.onRef?.(refsFor("n1"));
+			return { ...refsFor("n1"), status: "complete" };
+		};
+		const result = await inProcess(path, tracker);
+		expect(result.stderr).toContain("newer plan");
+		expect(result.code).toBe(1);
+		expect(JSON.parse(readFileSync(path, "utf8")).tracking).toBeUndefined();
+	});
 });
 
 describe("session mark", () => {

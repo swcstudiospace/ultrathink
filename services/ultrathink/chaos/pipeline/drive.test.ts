@@ -142,8 +142,9 @@ describe("runPrompts through the real hook", () => {
 		const nodes = outcome?.record?.graph?.nodes ?? [];
 		expect(outcome?.record?.result.source).toBe("llm");
 		expect(outcome?.degraded).toEqual(nodes.map((node) => `fill:${node.id}`));
-		// Three attempts per fill and one repair attempt each, all on the injected clock.
-		expect(outcome?.calls.fill).toBe(nodes.length * 4);
+		// The hook path's completer attaches no report, so each fill is tried three times; the repair pass is skipped
+		// because no fill succeeded.
+		expect(outcome?.calls.fill).toBe(nodes.length * 3);
 		expect(outcome?.context).toContain("Planning degraded");
 	});
 
@@ -311,7 +312,7 @@ describe("the Omp planner path", () => {
 		expect(outcome?.path).toBe("omp");
 		expect(outcome?.terminal).toBe("planned");
 		expect((outcome?.degraded ?? []).some((token) => token.startsWith("fill:"))).toBe(true);
-		// Three native attempts, each inside three think attempts, on virtual time.
+		// Three native attempts per fill (the native completer attaches its report, so the fill layer does not retry), on virtual time.
 		expect(outcome?.calls.fill).toBeGreaterThanOrEqual(9);
 		expect(clock.now()).toBeGreaterThan(0);
 	});

@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { randomHash } from "../../src/test.helpers.ts";
 
 const SERVER = new URL("./server.ts", import.meta.url).pathname;
@@ -65,5 +66,16 @@ describe("server --check-config", () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("config ok");
 		expect(result.stderr).toBe("");
+	});
+});
+
+describe("server child reaper", () => {
+	test("installs the exit reaper without signal handlers, after the config loads and before the store opens", () => {
+		const source = readFileSync(SERVER, "utf8");
+		const call = source.indexOf("installChildReaper();");
+		expect(call).toBeGreaterThan(source.indexOf("const config = loadConfigOrExit();"));
+		expect(call).toBeLessThan(source.indexOf("const store = openStore("));
+		// The service has its own SIGTERM drain: the reaper must not exit the process on a signal.
+		expect(source).not.toContain("installChildReaper({ signals: true })");
 	});
 });

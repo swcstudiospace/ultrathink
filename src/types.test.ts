@@ -60,3 +60,34 @@ describe("completion report seam", () => {
 		expect(readReport(error)).toBeUndefined();
 	});
 });
+
+describe("readReport across wrapped errors", () => {
+	test("finds the report on a cause up to four levels down, nearest report first", () => {
+		const root = new Error("root");
+		attachReport(root, { attempts: 3, httpStatus: 429 });
+		let outer: Error = root;
+		for (let level = 0; level < 4; level++) outer = new Error(`wrap ${level}`, { cause: outer });
+		expect(readReport(outer)).toEqual({ attempts: 3, httpStatus: 429 });
+		const middle = new Error("middle", { cause: root });
+		attachReport(middle, { attempts: 1 });
+		expect(readReport(new Error("top", { cause: middle }))).toEqual({ attempts: 1 });
+	});
+
+	test("a report deeper than four levels, a cyclic cause or a hostile cause getter reads as undefined and never throws", () => {
+		const root = new Error("root");
+		attachReport(root, { attempts: 3 });
+		let outer: Error = root;
+		for (let level = 0; level < 5; level++) outer = new Error(`wrap ${level}`, { cause: outer });
+		expect(readReport(outer)).toBeUndefined();
+		const loop = new Error("loop");
+		Object.defineProperty(loop, "cause", { value: loop });
+		expect(readReport(loop)).toBeUndefined();
+		const hostile = new Error("hostile");
+		Object.defineProperty(hostile, "cause", {
+			get() {
+				throw new Error("getter");
+			},
+		});
+		expect(readReport(hostile)).toBeUndefined();
+	});
+});

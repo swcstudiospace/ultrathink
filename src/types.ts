@@ -13,7 +13,7 @@ export interface UpliftResult {
 	original: string;
 	root: string;
 	source: "llm" | "fallback";
-	/** Why the uplift fell back: `provider_error:<http status>`, `provider_error`, `empty_reply`, `truncated_reply`, `unparseable_reply`, `graph_minimum_not_met` or `input_over_limit`. Absent for `llm`. */
+	/** Why the uplift fell back: `provider_error:<http status>`, `provider_error`, `empty_reply`, `truncated_reply`, `unparseable_reply` or `input_over_limit`. Absent for `llm`. */
 	fallbackReason?: string;
 	/** Characters in the raw model reply; 0 when there was no reply. */
 	rawReplyChars?: number;
@@ -51,20 +51,36 @@ export function attachReport(error: unknown, report: CompletionReport): void {
 	}
 }
 
-/** The report attached by `attachReport`, or `undefined` when there is none or it is not shaped like one. Never throws. */
+/** How many `cause` links `readReport` follows: a wrapper (`PlanCompleterError`, `FailoverError`, `RetryExhaustedError`) may sit a few levels above the error the completer reported on. */
+const REPORT_CAUSE_DEPTH = 4;
+
+function ownReport(error: object): CompletionReport | undefined {
+	const value = (error as Record<symbol, unknown>)[REPORT_KEY];
+	if (typeof value !== "object" || value === null) return undefined;
+	const report = value as Partial<CompletionReport>;
+	return typeof report.attempts === "number" && Number.isFinite(report.attempts)
+		? (report as CompletionReport)
+		: undefined;
+}
+
+/**
+ * The report attached by `attachReport` to the error or, failing that, to the nearest of its `cause` chain (at most four
+ * levels), or `undefined` when there is none or it is not shaped like one. Never throws.
+ */
 export function readReport(error: unknown): CompletionReport | undefined {
-	if (typeof error !== "object" || error === null) return undefined;
-	try {
-		const value = (error as Record<symbol, unknown>)[REPORT_KEY];
-		if (typeof value !== "object" || value === null) return undefined;
-		const report = value as Partial<CompletionReport>;
-		return typeof report.attempts === "number" && Number.isFinite(report.attempts)
-			? (report as CompletionReport)
-			: undefined;
-	} catch {
-		// reason: a hostile getter must not turn error reporting into a second failure
-		return undefined;
+	let current: unknown = error;
+	for (let depth = 0; depth <= REPORT_CAUSE_DEPTH; depth++) {
+		if (typeof current !== "object" || current === null) return undefined;
+		try {
+			const report = ownReport(current);
+			if (report !== undefined) return report;
+			current = Reflect.get(current, "cause");
+		} catch {
+			// reason: a hostile getter must not turn error reporting into a second failure
+			return undefined;
+		}
 	}
+	return undefined;
 }
 
 export interface UpliftState {

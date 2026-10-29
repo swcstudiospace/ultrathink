@@ -234,6 +234,45 @@ describe("formatPromptContext", () => {
 		).toContain("Failed: the clarify step — ");
 	});
 
+	test("a clarify stage skipped for a dead provider reads as skipped, not as a failure, and no rows are promised", () => {
+		const out = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["graph", "clarify"],
+			causes: { graph: "rate limited", clarify: "skipped: provider unavailable" },
+			graph: FALLBACK_GRAPH,
+		});
+		expect(out).toContain("the graph structure (rate limited) use fallback content");
+		expect(out).toContain(
+			"Skipped: the clarify step (provider unavailable) — no clarifying questions were asked",
+		);
+		expect(out).not.toContain("Failed: the clarify step");
+	});
+
+	test("a state token alone adds the notice with its cause; with other tokens it follows them", () => {
+		const only = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["state"],
+			causes: { state: "ENOTDIR: not a directory" },
+		});
+		expect(only).toContain("## Planning degraded");
+		expect(only).toContain("The plan state could not be saved (ENOTDIR: not a directory)");
+		expect(only).toContain("Tracker rows are not created while the record cannot be saved");
+		const both = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["fill:n2", "state"],
+			causes: { state: "EROFS" },
+			graph: FALLBACK_GRAPH,
+		});
+		expect(both.indexOf("the n2 fill")).toBeLessThan(
+			both.indexOf("The plan state could not be saved"),
+		);
+		expect(both).toContain("No tracker rows were created for this plan, and none will be.");
+		expect(both.match(/## Planning degraded/g)).toHaveLength(1);
+	});
+
 	test("mixed tokens join in order and a hostile cause stays on one bounded line", () => {
 		const out = formatPromptContext({
 			result,

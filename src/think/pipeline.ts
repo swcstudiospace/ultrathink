@@ -48,6 +48,11 @@ export interface ThinkResult extends UpliftResult {
 		fills: string[];
 		causes?: Record<string, string>;
 		repaired?: string[];
+		/**
+		 * Present only when the graph call itself failed with a completer report (it already classified and retried the
+		 * failure): a redacted single-line cause. The provider is unavailable, so a later stage need not try it again.
+		 */
+		graphFailure?: string;
 	};
 }
 
@@ -185,7 +190,7 @@ async function buildGraph(
 	opts: RunThinkOptions,
 	minNodes: number,
 	maxNodes: number,
-): Promise<{ graph: ThoughtGraph; fallback: boolean }> {
+): Promise<{ graph: ThoughtGraph; fallback: boolean; failure?: string }> {
 	try {
 		const raw = await opts.complete(
 			GRAPH_SYSTEM_PROMPT,
@@ -200,6 +205,10 @@ async function buildGraph(
 		return {
 			graph: normalizeGraph(null, opts.uplift.original, minNodes, maxNodes),
 			fallback: true,
+			// A report means the completer judged and retried the failure itself: the provider, not the reply, failed.
+			...(readReport(unwrapRetryError(error)) === undefined
+				? {}
+				: { failure: describeCause(error) }),
 		};
 	}
 }
@@ -238,19 +247,20 @@ async function attemptFill(
 }
 
 /**
- * What the fill-level retry retries. It is for content failures (a refusal, a truncated or malformed fill) and for provider
- * failures the completer did not retry itself. Every completer already runs the kernel retry (three attempts with backoff
- * and Retry-After) and reports its attempts, so a failure that reports more than one has spent its retries: another
- * round here would multiply them (3 x 3 calls, the server's Retry-After slept twice). The repair pass gives that node one
- * more go after the other fills, which spreads the load in time.
+ * What the fill-level retry retries. Only a content failure (a refusal, a truncated or malformed fill) and a provider
+ * failure nobody classified (an error with no completion report) are retried here. Every real completer classifies its
+ * failures and retries the transient ones itself (three attempts with backoff and Retry-After), then attaches a report
+ * to the error, directly or on a wrapper's `cause` (`PlanCompleterError`, `FailoverError`): an error that carries a
+ * report is final, whatever its attempt count (a 400, a timeout, a login failure, a stopped deadline), and another
+ * round here would multiply the completer's calls. The repair pass gives a failed node one more go after the other
+ * fills, which spreads the load in time.
  */
 const classifyFill: typeof isTransientFailure = (error, now) => {
 	const root = unwrapRetryError(error);
 	if (root instanceof FillRejectedError) return { transient: true, reason: "fill rejected" };
 	if (isAbortError(root)) return { transient: false, reason: "aborted" };
-	const attempts = readReport(root)?.attempts;
-	if (attempts !== undefined && attempts > 1)
-		return { transient: false, reason: "the completer already retried" };
+	if (readReport(root) !== undefined)
+		return { transient: false, reason: "the completer already classified it" };
 	return isTransientFailure(root, now);
 };
 
@@ -330,6 +340,16 @@ async function fillLevel(
 		}
 	};
 	await Promise.all(Array.from({ length: Math.min(limit, group.length) }, worker));
+}
+
+const REPAIR_SKIPPED_NOTE = " · repair skipped: no fill succeeded, provider unavailable";
+
+/** Every fill failed, so the repair pass is skipped; each node's cause says so (the base cause is clipped to keep the 200-character bound). */
+function noteRepairSkipped(ctx: FillContext): void {
+	for (const [id, cause] of ctx.causes) {
+		const base = clip(cause, CAUSE_MAX_CHARS - REPAIR_SKIPPED_NOTE.length).text;
+		ctx.causes.set(id, `${base}${REPAIR_SKIPPED_NOTE}`);
+	}
 }
 
 /**
@@ -420,7 +440,11 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 				done += group.length;
 			}
 		}
-		if (opts.repair !== false && ctx.failed.size > 0) await repairPass(ctx, graph, repaired);
+		if (opts.repair !== false && ctx.failed.size > 0) {
+			// Nothing was filled: the provider is down, and a repair attempt per node would only repeat the same failures.
+			if (ctx.failed.size === graph.nodes.length) noteRepairSkipped(ctx);
+			else await repairPass(ctx, graph, repaired);
+		}
 	} catch (error) {
 		// An abort (the hook budget expiring) keeps every fill already made: the consumer reads `error.partial.graph`.
 		if (isAbortError(error)) attachPartialGraph(error, graph);
@@ -439,6 +463,7 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 		partial: built.fallback || fills.length > 0,
 		degraded: {
 			graph: built.fallback,
+			...(built.failure === undefined ? {} : { graphFailure: built.failure }),
 			fills,
 			...(fills.length > 0 ? { causes } : {}),
 			...(repaired.length > 0 ? { repaired } : {}),

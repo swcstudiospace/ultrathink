@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, type UltrathinkConfig } from "../config.ts";
@@ -11,6 +11,7 @@ import { GRAPH_ID_PATTERN } from "../gateway/types.ts";
 import { decideUplift } from "../uplift/detect.ts";
 import type { Tracker } from "../track/gateway.ts";
 import type { TrackingRefs } from "../track/types.ts";
+import { attachReport } from "../types.ts";
 import { type HookDeps, type PromptSubmitInput, runPromptSubmit } from "./hook.ts";
 import { readSession, sessionPath } from "./state.ts";
 
@@ -333,6 +334,115 @@ describe("degraded fills reach the tracker", () => {
 		try {
 			await runPromptSubmit(input, deps);
 			expect(seen).toEqual([[]]);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("an unwritable state directory", () => {
+	test("makes no tracker rows, adds a state token to degraded with the cause and says so in the notice", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "ultrathink-hook-nostate-"));
+		// A regular file where the state directory's parent should be: every save fails with ENOTDIR.
+		const blocker = join(parent, "blocker");
+		writeFileSync(blocker, "not a directory");
+		const { deps, cleanup } = baseDeps({ stateDir: join(blocker, "state") });
+		let trackCalls = 0;
+		deps.track = (async ({ plan }) => {
+			trackCalls += 1;
+			return refsFor(plan.graphId);
+		}) satisfies Tracker;
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(trackCalls).toBe(0);
+			expect(result.record?.degraded).toContain("state");
+			expect(result.record?.tracking).toBeUndefined();
+			const context = result.output?.hookSpecificOutput.additionalContext ?? "";
+			expect(context).toContain("The plan state could not be saved");
+			expect(context).toMatch(/ENOTDIR|not a directory/i);
+			expect(context).toContain("Tracker rows are not created while the record cannot be saved");
+		} finally {
+			cleanup();
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	test("a writable state directory still tracks and reports no state token", async () => {
+		let trackCalls = 0;
+		const { deps, cleanup } = baseDeps();
+		deps.track = (async ({ plan }) => {
+			trackCalls += 1;
+			return refsFor(plan.graphId);
+		}) satisfies Tracker;
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(trackCalls).toBe(1);
+			expect(result.record?.degraded ?? []).not.toContain("state");
+			expect(result.output?.hookSpecificOutput.additionalContext).not.toContain(
+				"plan state could not be saved",
+			);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("a provider that is down", () => {
+	/** A graph call the completer already retried (report attempts 3, HTTP 429), then working fills and clarify. */
+	function graphDown(counts: { graph: number; clarify: number }, report: boolean) {
+		return async (_system: string, user: string): Promise<string> => {
+			if (user.includes("<user_request>")) return UPLIFT("add a widget");
+			if (user.startsWith("<spec>")) {
+				counts.clarify += 1;
+				return JSON.stringify({ questions: [] });
+			}
+			if (user.includes("current_node")) return smartComplete()(_system, user);
+			counts.graph += 1;
+			if (!report) return "not json at all";
+			const error = Object.assign(new Error("rate limited"), { status: 429 });
+			attachReport(error, { attempts: 3, httpStatus: 429 });
+			throw error;
+		};
+	}
+
+	test("skips the clarify stage after the graph call exhausted its retries, and records it as degraded with a cause", async () => {
+		const counts = { graph: 0, clarify: 0 };
+		let clarifyRuns = 0;
+		const { deps, cleanup } = baseDeps({
+			complete: graphDown(counts, true),
+			clarify: async () => {
+				clarifyRuns += 1;
+				return { items: [] };
+			},
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(clarifyRuns).toBe(0);
+			expect(result.record?.degraded).toContain("graph");
+			expect(result.record?.degraded).toContain("clarify");
+			const context = result.output?.hookSpecificOutput.additionalContext ?? "";
+			expect(context).toContain("Skipped: the clarify step (provider unavailable)");
+			expect(context).toContain("the graph structure (rate limited)");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("still runs clarify when the graph fell back only because its reply was unusable", async () => {
+		const counts = { graph: 0, clarify: 0 };
+		let clarifyRuns = 0;
+		const { deps, cleanup } = baseDeps({
+			complete: graphDown(counts, false),
+			clarify: async () => {
+				clarifyRuns += 1;
+				return { items: [] };
+			},
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(clarifyRuns).toBe(1);
+			expect(result.record?.degraded).toContain("graph");
+			expect(result.record?.degraded ?? []).not.toContain("clarify");
 		} finally {
 			cleanup();
 		}

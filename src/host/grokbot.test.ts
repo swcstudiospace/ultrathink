@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LockTimeoutError } from "../claude/atomic.ts";
 import { type SessionRecord, writeControl, writeSession } from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
 import { FIELD_CAPS } from "../resilience/limits.ts";
@@ -43,7 +44,12 @@ import {
 	validateNodeFill,
 	validateUplift,
 } from "./grokbot.ts";
-import { buildTrackPayloads, graphRegisterPayload, recordRefs } from "./grokbot-track.ts";
+import {
+	buildTrackPayloads,
+	graphRegisterPayload,
+	recordRefs,
+	type TrackPayloads,
+} from "./grokbot-track.ts";
 import {
 	buildCloudPrompt,
 	DEFAULT_DESK_RULES,
@@ -558,6 +564,49 @@ describe("grok-bot track bridge", () => {
 		recordRefs(statePath, { linear, notion }, first.tracking.updatedAt);
 		expect(readFileSync(statePath.replace(/\.json$/, ".xml"), "utf8")).toBe(once);
 		expect(once).toContain("SPE-9000");
+	});
+
+	test("the dry run marks the rows of a degraded fill, from the record's degraded list", async () => {
+		const root = tmp();
+		const { result } = await drive(join(root, "state"), root, hostModel(5));
+		const statePath = result.response?.statePath as string;
+		const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
+		const options = { linearTeam: "Team", notionDataSource: "collection://abc", agent: "grok-bot" };
+		const marked = (payloads: TrackPayloads): string[] =>
+			payloads.calls
+				.filter((call) => call.tool === "save_issue" && !String(call.keys[0]).includes("."))
+				.filter((call) => String(call.args.title).includes("[degraded fill]"))
+				.map((call) => String(call.keys[0]));
+		expect(marked(await buildTrackPayloads(record, options))).toEqual([]);
+		const degraded = await buildTrackPayloads(
+			{ ...record, degraded: ["uplift", "fill:n2"] },
+			options,
+		);
+		expect(marked(degraded)).toEqual(["n2"]);
+	});
+
+	test("a lock held past the wait fails the real-ref write instead of writing unlocked over a concurrent update", async () => {
+		const root = tmp();
+		const { result } = await drive(join(root, "state"), root, hostModel(5));
+		const statePath = result.response?.statePath as string;
+		const before = readFileSync(statePath, "utf8");
+		// A live holder that never lets go: pid alive, start identity unverifiable, never stale.
+		writeFileSync(
+			`${statePath}.lock`,
+			JSON.stringify({ pid: process.pid, startTime: "", token: "held" }),
+		);
+		let clock = 0;
+		expect(() =>
+			recordRefs(statePath, { errors: ["x"] }, Date.now(), {
+				now: () => clock,
+				sleep: (ms) => {
+					clock += ms;
+				},
+				staleMs: Number.MAX_SAFE_INTEGER,
+				liveness: { killAlive: () => true },
+			}),
+		).toThrow(LockTimeoutError);
+		expect(readFileSync(statePath, "utf8")).toBe(before);
 	});
 
 	test("a second payload build skips rows that already exist, and one configured tracker can finish", async () => {
@@ -1856,5 +1905,15 @@ describe("grok-bot graph_register payload", () => {
 		expect(graphRegisterPayload(after, { surface: "omp" }).surface).toBe("omp");
 		expect(graphRegisterPayload(after, { surface: "prime-agent" }).surface).toBe("pi");
 		expect(graphRegisterPayload(after, { surface: "no-such-host" }).surface).toBe("claude-code");
+	});
+});
+
+describe("grok-bot cli child reaper", () => {
+	test("the entry installs it with signals before it runs a command that may spawn a completer child", () => {
+		const source = readFileSync(new URL("./grokbot-cli.ts", import.meta.url), "utf8");
+		const entry = source.slice(source.indexOf("if (import.meta.main) {"));
+		expect(entry).toMatch(
+			/if \(import\.meta\.main\) \{\s*installChildReaper\(\{ signals: true \}\);\s*main\(/,
+		);
 	});
 });

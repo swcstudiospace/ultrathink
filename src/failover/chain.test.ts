@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { abortError } from "../claude/complete.ts";
+import { attachReport, readReport } from "../types.ts";
 import { createFailoverCompleter, type FailoverCandidate } from "./chain.ts";
 import { classifyFailure } from "./classify.ts";
 
@@ -226,6 +227,47 @@ describe("all candidates fail", () => {
 		expect(error.name).toBe("FailoverError");
 		expect((error as Error & { failure?: string }).failure).toBe("plan-limit");
 		expect(chain.failover()).toBeUndefined();
+	});
+
+	test("the combined error carries the last candidate's completion report, or one attempt per candidate when none reported", async () => {
+		const first = Object.assign(new Error(PLAN_LIMIT), {});
+		attachReport(first, { attempts: 1 });
+		const last = Object.assign(new Error("grok HTTP 429: {}"), {
+			name: "GrokHttpError",
+			status: 429,
+		});
+		attachReport(last, { attempts: 3, httpStatus: 429 });
+		const reported = await createFailoverCompleter([scripted("a", [first]), scripted("b", [last])])
+			.complete("s", "u")
+			.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+		expect(readReport(reported)).toEqual({ attempts: 3, httpStatus: 429 });
+		const bare = await createFailoverCompleter([
+			scripted("a", [new Error(PLAN_LIMIT)]),
+			scripted("b", [Object.assign(new Error("grok HTTP 503"), { status: 503 })]),
+		])
+			.complete("s", "u")
+			.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+		expect(readReport(bare)).toEqual({ attempts: 2 });
+	});
+
+	test("the error thrown while every candidate is cooling also carries a report, so a caller never retries it", async () => {
+		const time = clock();
+		const chain = createFailoverCompleter(
+			[scripted("a", [new Error(PLAN_LIMIT)]), scripted("b", [new Error(PLAN_LIMIT)])],
+			{ now: time.now },
+		);
+		await chain.complete("s", "u").catch(() => undefined);
+		const cooling = await chain.complete("s", "u").then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(readReport(cooling)).toBeDefined();
 	});
 
 	test("the combined error reports the class of the first failure", async () => {

@@ -2057,12 +2057,13 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 					);
 					const stateDir = env.ULTRATHINK_STATE_DIR!;
 					const fills = (count: number) => Array.from({ length: count }, () => "fill");
-					// A failed fill gets one repair pass after the first five calls, so every node is called twice.
+					// A provider that failed every fill (a 400 on each) is down: no repair pass runs against it. A graph call the
+					// completer already gave up on (it carries a report) skips the clarify stage for the same reason.
 					const expected = [
 						"uplift",
 						"graph",
-						...fills(failure === "ordinary-error" && at === "fill" ? 10 : 5),
-						"clarify",
+						...fills(5),
+						...(failure === "ordinary-error" && at === "graph" ? [] : ["clarify"]),
 					];
 					expect(controller.signal.aborted).toBe(false);
 					expect(response.modelResolution).toMatchObject({

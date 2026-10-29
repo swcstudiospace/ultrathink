@@ -85,6 +85,7 @@ import {
 	readSkipOnce,
 	type SessionRecord,
 	sessionPath,
+	trackingCheckpoint,
 	updateSession,
 	writeSession,
 } from "./state.ts";
@@ -233,28 +234,6 @@ function deterministicGraphId(sessionId: string, original: string): string {
 }
 
 /** A tracking record with no refs: tells the tracker a flight of this graph id may already have created rows to adopt. */
-/** A checkpoint's refs: everything the record already holds stays, the live refs are added over it. Never fewer refs. */
-function mergeTrackingRefs(prior: TrackingRefs | undefined, live: TrackingRefs): TrackingRefs {
-	const taskUrl = live.notion.taskUrl ?? prior?.notion.taskUrl;
-	const linearTeam = live.linearTeam ?? prior?.linearTeam;
-	return {
-		graphId: live.graphId,
-		status: "partial",
-		...(linearTeam ? { linearTeam } : {}),
-		linear: {
-			nodes: { ...prior?.linear.nodes, ...live.linear.nodes },
-			steps: { ...prior?.linear.steps, ...live.linear.steps },
-		},
-		notion: {
-			...(taskUrl ? { taskUrl } : {}),
-			nodes: { ...prior?.notion.nodes, ...live.notion.nodes },
-			steps: { ...prior?.notion.steps, ...live.notion.steps },
-		},
-		errors: [...live.errors],
-		updatedAt: live.updatedAt,
-	};
-}
-
 function emptyTracking(graphId: string, at: number): TrackingRefs {
 	return {
 		graphId,
@@ -674,6 +653,8 @@ async function announcePlan(
 const MAX_FLIGHT_CONCURRENCY = 3;
 /** Longest cause the hook records or shows for a failed stage. */
 const MAX_CAUSE_CHARS = 200;
+/** The `degraded` cause of a clarify stage that was not attempted because the provider had just failed every retry. */
+const CLARIFY_SKIPPED_CAUSE = "skipped: provider unavailable";
 
 /** A redacted, single-line, bounded cause of a failed stage: the error's message or the given text, never a reply body. */
 function causeText(value: unknown): string {
@@ -1126,10 +1107,12 @@ export async function runPromptSubmit(
 
 		let graph: ThoughtGraph | undefined;
 		let thinkDegraded: string[] = [];
-		/** Redacted, bounded cause per degraded token ("fill:<id>", "clarify", "think"); shown in the notice and stage details. */
+		/** Redacted, bounded cause per degraded token ("graph", "fill:<id>", "clarify", "think", "state"); shown in the notice and stage details. */
 		const degradedCauses: Record<string, string> = {};
 		/** The think stage threw: a graph it did not hand back is unknown, never the boilerplate one. */
 		let thinkThrew = false;
+		/** The graph call failed after the completer's own retries (it carried a report): the provider is unavailable for this flight. */
+		let providerUnavailable = false;
 		const thinkOn = deps.control.thinkEnabled ?? deps.config.think.enabled;
 		if (thinkOn && !lifetime.aborted) {
 			stage("think", "start");
@@ -1165,6 +1148,10 @@ export async function runPromptSubmit(
 				];
 				for (const [id, cause] of Object.entries(thought.degraded.causes ?? {}))
 					degradedCauses[`fill:${id}`] = causeText(cause);
+				if (thought.degraded.graphFailure !== undefined) {
+					providerUnavailable = true;
+					degradedCauses.graph = causeText(thought.degraded.graphFailure);
+				}
 				const total = `${graph.nodes.length} nodes`;
 				if (thought.partial || thinkDegraded.length > 0)
 					stage("think", "end", false, `${total} · ${thinkDegraded.join(", ") || "partial"}`);
@@ -1231,7 +1218,13 @@ export async function runPromptSubmit(
 			}
 		}
 		let clarifyFailed: string | undefined;
-		if (hitlOn && !lifetime.aborted) {
+		if (hitlOn && !lifetime.aborted && providerUnavailable) {
+			// The graph call exhausted its retries against a provider that answered with a failure: a clarify call would only
+			// repeat it (three more completer calls), so the stage is recorded as skipped instead.
+			clarifyFailed = CLARIFY_SKIPPED_CAUSE;
+			log(`clarify ${CLARIFY_SKIPPED_CAUSE}`);
+			stage("clarify", "end", false, CLARIFY_SKIPPED_CAUSE);
+		} else if (hitlOn && !lifetime.aborted) {
 			stage("clarify", "start");
 			try {
 				const outcome = await (deps.clarify ?? runClarify)({
@@ -1354,6 +1347,12 @@ export async function runPromptSubmit(
 			...(records.length ? { decisions: records } : {}),
 		});
 		let record: SessionRecord = buildRecord(result, undefined);
+		/** The state directory could not be written: `degraded` gains a `state` token and the record (when it is saved later) says so. */
+		const markStateFailed = (cause: string): void => {
+			if (!degraded.includes("state")) degraded.push("state");
+			degradedCauses.state = cause;
+			record = { ...record, degraded: [...degraded] };
+		};
 		let specPath: string | undefined;
 		let statePath: string | undefined;
 		let lastNote: string | undefined;
@@ -1379,6 +1378,8 @@ export async function runPromptSubmit(
 		};
 
 		let tracking: TrackingRefs | undefined;
+		let existing: TrackingRefs | undefined;
+		let trackBlocked = false;
 		if (plan && deps.track && !deps.trackingOff) {
 			throwIfCancelled(cancellation);
 			// Rows in the shared trackers are permanent: the record that points at them is saved first, so a kill while
@@ -1387,15 +1388,20 @@ export async function runPromptSubmit(
 			const prior = readSession(deps.stateDir, sessionId);
 			const sameGraph = prior?.plan?.graphId === plan.graphId;
 			const priorRefs = prior?.tracking?.graphId === plan.graphId ? prior.tracking : undefined;
-			const existing = priorRefs ?? (sameGraph ? emptyTracking(plan.graphId, now()) : undefined);
+			existing = priorRefs ?? (sameGraph ? emptyTracking(plan.graphId, now()) : undefined);
 			if (priorRefs) record = { ...record, tracking: priorRefs };
 			try {
 				persist();
 			} catch (error) {
-				log(
-					`state write failed before tracking: ${error instanceof Error ? error.message : String(error)}`,
-				);
+				const cause = causeText(error);
+				log(`state write failed before tracking: ${cause}`);
+				markStateFailed(cause);
+				// Rows in the shared trackers are permanent and a resend adopts them only through a saved record: none are made.
+				stage("track", "end", false, "skipped: state not writable");
+				trackBlocked = true;
 			}
+		}
+		if (plan && deps.track && !deps.trackingOff && !trackBlocked) {
 			stage("track", "start");
 			tracking = await deps
 				.track({
@@ -1411,17 +1417,7 @@ export async function runPromptSubmit(
 					// between two rows keeps the refs made so far, and no later save loses them.
 					onRef: (live) => {
 						try {
-							updateSession(deps.stateDir, sessionId, (current) =>
-								current.plan?.graphId === plan.graphId
-									? {
-											...current,
-											tracking: mergeTrackingRefs(
-												current.tracking?.graphId === plan.graphId ? current.tracking : undefined,
-												live,
-											),
-										}
-									: undefined,
-							);
+							updateSession(deps.stateDir, sessionId, trackingCheckpoint(plan.graphId, live));
 						} catch (error) {
 							log(
 								`tracking checkpoint failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1468,8 +1464,10 @@ export async function runPromptSubmit(
 			persist();
 			stage("state", "end", true);
 		} catch (error) {
-			log(`state write failed: ${error instanceof Error ? error.message : String(error)}`);
-			stage("state", "end", false);
+			const cause = causeText(error);
+			log(`state write failed: ${cause}`);
+			markStateFailed(cause);
+			stage("state", "end", false, cause);
 		}
 		// Opt-in retention (state.retentionDays above 0): at most one bounded sweep a day. It never throws and never waits.
 		pruneSessionsBestEffort({

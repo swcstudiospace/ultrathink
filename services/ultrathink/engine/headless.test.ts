@@ -23,6 +23,7 @@ import { redactText } from "../../../src/teach/redact.ts";
 import { NODE, UPLIFT } from "../../../src/test.helpers.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../../../src/think/prompts.ts";
 import { FALLBACK_GRAPH } from "../../../src/think/types.ts";
+import { attachReport, type CompletionReport } from "../../../src/types.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../../../src/uplift/prompt.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { createLedger } from "../cost/ledger.ts";
@@ -1002,6 +1003,87 @@ describe("headless planner: call telemetry", () => {
 			expect(call.inputTokens).toBe(0);
 			expect(call.outputTokens).toBe(0);
 		}
+	});
+});
+
+describe("headless planner: completion report", () => {
+	test("a 429-exhausted hosted uplift reports its attempts and status through the engine, and the call event counts them", async () => {
+		const exhausted = new PlanCompleterError("rate_limited", "rate-limit");
+		attachReport(exhausted, { attempts: 3, httpStatus: 429, cause: "rate limited" });
+		const fake = fakeBackend(exhausted);
+		const calls: PlannerCall[] = [];
+		const reports: Array<CompletionReport | undefined> = [];
+		let reportSeam: boolean | undefined;
+		const h = setup(
+			{},
+			{
+				completer: undefined,
+				planBackend: fake.backend,
+				onCall: (call) => calls.push(call),
+				plan: async (request, env, options) => {
+					const inner = options?.selectEngine;
+					if (!inner) throw new Error("planPrompt got no engine selector");
+					return planPrompt(request, env, {
+						...options,
+						selectEngine: async (...args) => {
+							const engine = await inner(...args);
+							if ("skipped" in engine) return engine;
+							reportSeam = engine.report !== undefined;
+							const complete = engine.complete;
+							return {
+								...engine,
+								complete: async (...callArgs) => {
+									try {
+										return await complete(...callArgs);
+									} finally {
+										reports.push(engine.report?.());
+									}
+								},
+							};
+						},
+					});
+				},
+			},
+		);
+		await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() });
+		expect(reportSeam).toBe(true);
+		expect(reports[0]).toMatchObject({ attempts: 3, httpStatus: 429 });
+		expect(calls[0]?.attempts).toBe(3);
+	});
+
+	test("a call that answers leaves no stale report behind", async () => {
+		const fake = fakeBackend();
+		const reports: Array<CompletionReport | undefined> = [];
+		const h = setup(
+			{},
+			{
+				completer: undefined,
+				planBackend: fake.backend,
+				plan: async (request, env, options) => {
+					const inner = options?.selectEngine;
+					if (!inner) throw new Error("planPrompt got no engine selector");
+					return planPrompt(request, env, {
+						...options,
+						selectEngine: async (...args) => {
+							const engine = await inner(...args);
+							if ("skipped" in engine) return engine;
+							const complete = engine.complete;
+							return {
+								...engine,
+								complete: async (...callArgs) => {
+									const text = await complete(...callArgs);
+									reports.push(engine.report?.());
+									return text;
+								},
+							};
+						},
+					});
+				},
+			},
+		);
+		await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() });
+		expect(reports.length).toBeGreaterThan(0);
+		expect(reports.every((report) => report === undefined)).toBe(true);
 	});
 });
 

@@ -25,6 +25,7 @@ import {
 } from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
 import { redactSecrets } from "../../../src/redact.ts";
+import { type CompletionReport, readReport } from "../../../src/types.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
@@ -208,6 +209,8 @@ interface Job extends JobFile {
 	slotRelease?: () => void;
 	/** Failover summary the plan backend reported (first one wins); memory only, never persisted. */
 	failover?: string;
+	/** The report of the model call that settled last: why it failed and after how many attempts; absent after an answer. Memory only. */
+	report?: CompletionReport;
 }
 
 interface Outcome {
@@ -616,7 +619,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			}
 			const reported: { usage?: PlanUsage } = {};
 			const startedAt = now();
-			const emit = (outcome: string, usage?: PlanUsage): void => {
+			const emit = (outcome: string, usage?: PlanUsage, attempts?: number): void => {
 				if (!opts.onCall) return;
 				try {
 					opts.onCall({
@@ -624,7 +627,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						model,
 						ms: Math.max(0, now() - startedAt),
 						outcome,
-						attempts: 1,
+						attempts: attempts ?? 1,
 						inputTokens: usage?.promptTokens ?? 0,
 						outputTokens: usage?.completionTokens ?? 0,
 					});
@@ -678,6 +681,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					return complete(system, user, signal);
 				});
 				const { usage } = reported;
+				job.report = undefined;
 				emit("ok", usage);
 				bill(usage, reservationId);
 				return text;
@@ -692,7 +696,9 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					reported.usage?.completionTokens !== undefined
 						? reported.usage
 						: undefined;
-				emit(failure, cut);
+				const report = readReport(error);
+				job.report = report;
+				emit(failure, cut, report?.attempts);
 				if (!dispatched) {
 					// A refusal spends no tokens: releasing it in full keeps an outage from eating the daily ceiling.
 					try {
@@ -874,6 +880,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 						label: `plan:${model}`,
 						complete: meteredCompleter(job, model),
 						error: () => engineError(job),
+						report: () => job.report,
 						failover: () => job.failover,
 						resolution: resolutionFor(model),
 					}),

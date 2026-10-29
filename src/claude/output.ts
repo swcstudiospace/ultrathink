@@ -400,7 +400,7 @@ function degradedStage(token: string, causes: Record<string, string> | undefined
  * Warns the agent that parts of the plan are boilerplate: a failed uplift (with or without a
  * recorded engine error), or — under a real spec — the think stages that fell back.
  */
-function degradationNotice(
+function planningNotice(
 	input: Pick<
 		PromptContextInput,
 		| "result"
@@ -443,22 +443,28 @@ function degradationNotice(
 			`Planning produced no usable model output (an empty or invalid completion), so the specification below is generic fallback text, not a real plan; treat the attached graph as unverified. No tracker rows were created for it. Shorten the prompt or fix the engine and resend to get a real plan.`,
 		].join("\n");
 	}
-	const degraded = input.degraded ?? [];
+	const degraded = (input.degraded ?? []).filter((token) => token !== "state");
 	if (degraded.length === 0) return undefined;
+	// A clarify that was never attempted (the provider had just failed every retry) is named apart from one that failed.
+	const clarifySkipped =
+		degraded.includes("clarify") && input.causes?.clarify?.startsWith("skipped:") === true;
 	// Boilerplate content versus steps that failed outright: a failed clarify or think produced nothing to call "fallback".
-	const stepTokens = degraded.filter((token) => token === "clarify" || token === "think");
+	const stepTokens = degraded.filter(
+		(token) => (token === "clarify" && !clarifySkipped) || token === "think",
+	);
 	const contentTokens = degraded.filter((token) => token !== "clarify" && token !== "think");
 	const named = (tokens: string[]): string =>
 		tokens.map((token) => degradedStage(token, input.causes)).join(", ");
 	// A boilerplate graph, or a think stage that left no graph, never gets tracker rows (the hook builds no plan for it).
 	const noRows = degraded.includes("graph") || (degraded.includes("think") && !input.graph);
+	const stateFailed = (input.degraded ?? []).includes("state");
 	const rows = input.trackingOff
 		? "No tracker rows were created (tracking is off)."
 		: input.tracking?.status === "complete"
 			? "Tracker rows were created; rows under the unverified parts carry boilerplate."
 			: input.tracking
 				? `Tracker rows are incomplete (${input.tracking.status}); rows under the unverified parts carry boilerplate.`
-				: noRows
+				: noRows || stateFailed
 					? "No tracker rows were created for this plan, and none will be."
 					: "Tracker rows are left for ultrathink-kickoff; rows under the unverified parts will carry boilerplate.";
 	const lead =
@@ -469,7 +475,29 @@ function degradationNotice(
 		stepTokens.length > 0
 			? ` Failed: ${named(stepTokens)} — the plan lacks their output; treat it as unverified there.`
 			: "";
-	return ["## Planning degraded", "", `${lead}${failedSteps} ${rows}`].join("\n");
+	const skippedSteps = clarifySkipped
+		? ` Skipped: the clarify step (${boundedCause(input.causes?.clarify ?? "").replace(/^skipped:\s*/, "")}) — no clarifying questions were asked, so the plan's open assumptions are unconfirmed.`
+		: "";
+	return ["## Planning degraded", "", `${lead}${failedSteps}${skippedSteps} ${rows}`].join("\n");
+}
+
+/** The one line the notice adds when the plan could not be saved: no record, no spec file, and no tracker rows made first. */
+function stateNotice(
+	degraded: readonly string[],
+	causes: Record<string, string> | undefined,
+): string | undefined {
+	if (!degraded.includes("state")) return undefined;
+	const raw = causes?.state;
+	const cause = raw === undefined ? "" : boundedCause(raw);
+	return `The plan state could not be saved${cause ? ` (${cause})` : ""}: the session record and the specification file are missing, so the specification above is inline only. Tracker rows are not created while the record cannot be saved. Fix the state directory (ULTRATHINK_STATE_DIR) and resend the prompt.`;
+}
+
+function degradationNotice(input: Parameters<typeof planningNotice>[0]): string | undefined {
+	const state = stateNotice(input.degraded ?? [], input.causes);
+	const planning = planningNotice(input);
+	if (state === undefined) return planning;
+	if (planning === undefined) return ["## Planning degraded", "", state].join("\n");
+	return `${planning}\n\n${state}`;
 }
 
 export function formatPromptContext(input: PromptContextInput): string {

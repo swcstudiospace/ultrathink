@@ -3,6 +3,7 @@
 
 import { accessSync, constants, existsSync } from "node:fs";
 import pkg from "../../package.json";
+import { installChildReaper } from "../../src/resilience/child.ts";
 import { createAuth } from "./auth/auth.ts";
 import { loadChaosBackend } from "./chaos/faults.ts";
 import { ConfigError, type TlsFiles, type UltrathinkConfig, loadConfig } from "./config/config.ts";
@@ -141,6 +142,8 @@ if (process.argv.includes("--check-config")) {
 
 const config = loadConfigOrExit();
 assertToolDefinitionsOrExit();
+// The service drains on SIGTERM itself; the reaper's exit handler only kills any child group still alive at exit.
+installChildReaper();
 const logger = createLogger();
 const store = openStore(config.dbPath);
 const auth = createAuth({

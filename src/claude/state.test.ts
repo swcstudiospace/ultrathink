@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -20,10 +20,13 @@ import { shipNudge } from "../ship/nudge.ts";
 import { DEFAULT_SHIP_CONFIG } from "../ship/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { main as mcpMain } from "../mcp/cli.ts";
-import { LockTimeoutError, writeFileAtomic } from "./atomic.ts";
+import type { TrackingRefs } from "../track/types.ts";
+import { LockTimeoutError, type LockOptions, writeFileAtomic } from "./atomic.ts";
 import {
+	CLI_LOCK,
 	controlPath,
 	defaultStateDir,
+	degradedNodeIds,
 	legacySessionPath,
 	readControl,
 	readLast,
@@ -31,6 +34,7 @@ import {
 	type SessionRecord,
 	sessionPath,
 	sessionRecordPath,
+	trackingCheckpoint,
 	updateSession,
 	writeControl,
 	writeSession,
@@ -484,6 +488,127 @@ describe("updateSession", () => {
 		).toThrow("bad mutate");
 		expect(existsSync(`${sessionPath(dir, "u1")}.lock`)).toBe(false);
 		expect(readSession(dir, "u1")).toEqual(record);
+	});
+});
+
+describe("updateSession under a held lock (D-07: no silent overwrite)", () => {
+	const record: SessionRecord = {
+		sessionId: "u1",
+		at: 1,
+		result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+	};
+	/** Clock and liveness seams that make a live holder time out at once, without waiting. */
+	function starved(): LockOptions {
+		let clock = 0;
+		return {
+			now: () => clock,
+			sleep: (ms) => {
+				clock += ms;
+			},
+			staleMs: Number.MAX_SAFE_INTEGER,
+			liveness: { killAlive: () => true },
+		};
+	}
+
+	test("with the throw policy a holder past the timeout makes the second update fail loudly instead of being overwritten; a retry loses no field", () => {
+		const dir = tempDir();
+		writeSession(dir, record);
+		let caught: unknown;
+		updateSession(dir, "u1", (current) => {
+			// A second writer arrives while this one holds the lock, and the holder outlives its timeout.
+			try {
+				updateSession(dir, "u1", (inner) => ({ ...inner, synced: true }), {
+					...starved(),
+					...CLI_LOCK,
+				});
+			} catch (error) {
+				caught = error;
+			}
+			return { ...current, kickedOff: true };
+		});
+		expect(caught).toBeInstanceOf(LockTimeoutError);
+		expect(readSession(dir, "u1")).toEqual({ ...record, kickedOff: true });
+		// The failed writer retries once the lock is free: both fields survive.
+		updateSession(dir, "u1", (current) => ({ ...current, synced: true }), CLI_LOCK);
+		expect(readSession(dir, "u1")).toEqual({ ...record, kickedOff: true, synced: true });
+	});
+
+	test("the hook policy still writes unlocked after the timeout and says so in one line through the injected log", () => {
+		const dir = tempDir();
+		writeSession(dir, record);
+		const lines: string[] = [];
+		let returned: SessionRecord | undefined;
+		updateSession(dir, "u1", (current) => {
+			returned = updateSession(dir, "u1", (inner) => ({ ...inner, synced: true }), {
+				...starved(),
+				log: (line) => lines.push(line),
+			});
+			return { ...current, kickedOff: true };
+		});
+		expect(returned?.synced).toBe(true);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("writing unlocked");
+	});
+
+	test("without an injected log the unlocked write is still visible on stderr", () => {
+		const dir = tempDir();
+		writeSession(dir, record);
+		const written: string[] = [];
+		const spy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+			written.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write);
+		try {
+			updateSession(dir, "u1", (current) => {
+				updateSession(dir, "u1", (inner) => ({ ...inner, synced: true }), starved());
+				return { ...current, kickedOff: true };
+			});
+		} finally {
+			spy.mockRestore();
+		}
+		expect(written.filter((line) => line.includes("writing unlocked"))).toHaveLength(1);
+	});
+});
+
+describe("tracking checkpoints and degraded nodes", () => {
+	const tracking = (graphId: string, node: string): TrackingRefs => ({
+		graphId,
+		status: "partial",
+		linear: {
+			nodes: {
+				[node]: { id: node, identifier: node, url: `https://linear.app/${node}`, title: node },
+			},
+			steps: {},
+		},
+		notion: { nodes: {}, steps: {} },
+		errors: [],
+		updatedAt: 5,
+	});
+	const planned = (graphId: string): SessionRecord =>
+		({
+			sessionId: "t1",
+			at: 1,
+			result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+			plan: { graphId, task: { graphId } },
+		}) as unknown as SessionRecord;
+
+	test("degradedNodeIds reads the fill:<id> tokens of the record's degraded list and nothing else", () => {
+		expect(degradedNodeIds(undefined)).toEqual([]);
+		expect(
+			degradedNodeIds({ degraded: ["uplift", "fill:n2", "graph", "fill:n5", "clarify"] }),
+		).toEqual(["n2", "n5"]);
+	});
+
+	test("a checkpoint merges the live refs over what the record already holds, never fewer", () => {
+		const prior = trackingCheckpoint("g1", tracking("g1", "n1"))(planned("g1"));
+		expect(Object.keys(prior?.tracking?.linear.nodes ?? {})).toEqual(["n1"]);
+		const next = trackingCheckpoint("g1", tracking("g1", "n2"))(prior as SessionRecord);
+		expect(Object.keys(next?.tracking?.linear.nodes ?? {}).sort()).toEqual(["n1", "n2"]);
+		expect(next?.tracking?.status).toBe("partial");
+	});
+
+	test("a checkpoint for a graph the record no longer holds changes nothing", () => {
+		expect(trackingCheckpoint("old", tracking("old", "n1"))(planned("new"))).toBeUndefined();
 	});
 });
 

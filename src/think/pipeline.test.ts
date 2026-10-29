@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, spyOn, test } from "bun:test";
+import { createFailoverCompleter } from "../failover/chain.ts";
 import { FIELD_CAPS } from "../resilience/limits.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { nodeStepTitles } from "../track/plan.ts";
@@ -209,8 +210,8 @@ describe("runThink resilience", () => {
 			expect(node.conclusion).toBe("");
 			expect(node.degraded).toBe(true);
 		}
-		// 1 attempt plus 2 retries, then one repair attempt.
-		expect([...calls.values()]).toEqual([4, 4, 4, 4, 4]);
+		// 1 attempt plus 2 retries; no fill succeeded, so the provider is down and the repair pass is skipped.
+		expect([...calls.values()]).toEqual([3, 3, 3, 3, 3]);
 		expect(result.xml.match(/degraded="true"/g)).toHaveLength(5);
 	});
 
@@ -232,7 +233,7 @@ describe("runThink resilience", () => {
 		expect(Object.keys(result.degraded.causes ?? {})).toHaveLength(5);
 	});
 
-	test("a permanent provider error is not retried in the pass, only in the repair", async () => {
+	test("a permanent provider error is attempted once per node; with nothing filled there is no repair", async () => {
 		const calls = new Map<string, number>();
 		const result = await runThink({
 			uplift,
@@ -243,7 +244,7 @@ describe("runThink resilience", () => {
 				throw Object.assign(new Error("forbidden"), { status: 403 });
 			},
 		});
-		expect([...calls.values()]).toEqual([2, 2, 2, 2, 2]);
+		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1]);
 		expect(result.degraded.fills).toHaveLength(5);
 	});
 
@@ -252,7 +253,9 @@ describe("runThink resilience", () => {
 		const delays: number[] = [];
 		const complete = async (_system: string, user: string): Promise<string> => {
 			if (!user.includes("current_node")) return graphJson(5);
-			calls.set(nodeId(user), (calls.get(nodeId(user)) ?? 0) + 1);
+			const id = nodeId(user);
+			calls.set(id, (calls.get(id) ?? 0) + 1);
+			if (id === "n1") return fillXml("done n1");
 			const error = transient("slow down", { retryAfterMs: 1000 });
 			attachReport(error, { attempts: 3, httpStatus: 429 });
 			throw error;
@@ -262,12 +265,112 @@ describe("runThink resilience", () => {
 		};
 		const result = await runThink({ uplift, random: () => 0.5, sleep, complete });
 		// The completer's three tries are its own: the fill layer neither multiplies nor sleeps them again.
-		expect([...calls.values()]).toEqual([2, 2, 2, 2, 2]);
+		expect([...calls.values()]).toEqual([1, 2, 2, 2, 2]);
 		expect(delays).toEqual([]);
-		expect(result.degraded.fills).toHaveLength(5);
+		expect(result.degraded.fills).toEqual(["n2", "n3", "n4", "n5"]);
 		calls.clear();
 		await runThink({ uplift, random: () => 0.5, sleep, complete, repair: false });
 		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1]);
+	});
+
+	test("a failure whose report sits on its cause (PlanCompleterError, FailoverError shape) is attempted once at the fill layer", async () => {
+		const calls = new Map<string, number>();
+		const complete = async (_system: string, user: string): Promise<string> => {
+			if (!user.includes("current_node")) return graphJson(5);
+			calls.set(nodeId(user), (calls.get(nodeId(user)) ?? 0) + 1);
+			const root = transient("slow down");
+			attachReport(root, { attempts: 3, httpStatus: 429 });
+			throw new Error("completer failed", { cause: new Error("wrapper", { cause: root }) });
+		};
+		await runThink({ uplift, ...seams, complete, repair: false });
+		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1]);
+	});
+
+	test("a failover chain whose every candidate failed is walked once per fill, not once per fill-layer attempt", async () => {
+		const calls = new Map<string, number>();
+		const candidate = (id: string) => ({
+			id,
+			label: id,
+			complete: async (_system: string, user: string): Promise<string> => {
+				if (!user.includes("current_node")) return graphJson(5);
+				const key = `${id}:${nodeId(user)}`;
+				calls.set(key, (calls.get(key) ?? 0) + 1);
+				throw Object.assign(new Error("upstream unavailable"), { status: 503 });
+			},
+		});
+		const chain = createFailoverCompleter([candidate("a"), candidate("b")]);
+		const result = await runThink({ uplift, ...seams, complete: chain.complete, repair: false });
+		expect(result.degraded.fills).toHaveLength(5);
+		// The first walk tries both candidates; the rest find both cooling and call nothing. Without the chain's report
+		// the fill layer would have walked it again and again.
+		expect([...calls.values()].reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(2);
+	});
+
+	test("a permanent 400 whose report says attempts 1 is not retried at the fill layer: dead-provider call counts (21 before the fix)", async () => {
+		let graphCalls = 0;
+		const calls = new Map<string, number>();
+		const complete = async (_system: string, user: string): Promise<string> => {
+			if (!user.includes("current_node")) {
+				graphCalls++;
+				return graphJson(5);
+			}
+			const id = nodeId(user);
+			calls.set(id, (calls.get(id) ?? 0) + 1);
+			if (id === "n1") return fillXml("done n1");
+			const error = Object.assign(new Error("bad request"), { apiErrorStatus: 400 });
+			attachReport(error, { attempts: 1, httpStatus: 400 });
+			throw error;
+		};
+		await runThink({ uplift, ...seams, complete });
+		// graph 1 + n1 once + n2..n5 once each + one repair attempt each = 10 (the per-node 3x retry gave 18).
+		expect(graphCalls + [...calls.values()].reduce((a, b) => a + b, 0)).toBe(10);
+		expect([...calls.values()]).toEqual([1, 2, 2, 2, 2]);
+	});
+
+	test("a provider that fails every call costs graph 1 + one fill per node and no repair pass, and the result says so", async () => {
+		let total = 0;
+		const result = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) => {
+				total++;
+				if (!user.includes("current_node")) return graphJson(5);
+				const error = Object.assign(new Error("bad request"), { apiErrorStatus: 400 });
+				attachReport(error, { attempts: 1, httpStatus: 400 });
+				throw error;
+			},
+		});
+		expect(total).toBe(1 + 5);
+		expect(result.degraded.fills).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+		expect(result.degraded.repaired).toBeUndefined();
+		for (const cause of Object.values(result.degraded.causes ?? {})) {
+			expect(cause).toContain("bad request");
+			expect(cause).toContain("repair skipped");
+			expect(cause.length).toBeLessThanOrEqual(200);
+		}
+	});
+
+	test("a graph call that failed with a completer report is surfaced as degraded.graphFailure; an unparseable graph reply is not", async () => {
+		const failing = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) => {
+				if (user.includes("current_node")) return fillXml("c");
+				const error = transient("rate limited");
+				attachReport(error, { attempts: 3, httpStatus: 429 });
+				throw error;
+			},
+		});
+		expect(failing.degraded.graph).toBe(true);
+		expect(failing.degraded.graphFailure).toContain("rate limited");
+		const unparseable = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) =>
+				user.includes("current_node") ? fillXml("c") : "not json at all",
+		});
+		expect(unparseable.degraded.graph).toBe(true);
+		expect(unparseable.degraded.graphFailure).toBeUndefined();
 	});
 
 	test("a rejected fill (refusal, truncated or malformed) is retried up to 1 + fillRetries at the fill layer", async () => {
@@ -284,7 +387,7 @@ describe("runThink resilience", () => {
 		expect([...calls.values()]).toEqual([2, 2, 2, 2, 2]);
 	});
 
-	test("a provider error the completer did not retry (report attempts 1, HTTP 503) is retried at the fill layer", async () => {
+	test("a report-less provider error the kernel calls transient (HTTP 503) is retried at the fill layer", async () => {
 		const calls = new Map<string, number>();
 		const result = await runThink({
 			uplift,
@@ -296,7 +399,6 @@ describe("runThink resilience", () => {
 				calls.set(id, count);
 				if (id === "n2" && count <= 2) {
 					const error = Object.assign(new Error("unavailable"), { status: 503 });
-					attachReport(error, { attempts: 1, httpStatus: 503 });
 					throw error;
 				}
 				return fillXml(`done ${id}`);
@@ -306,7 +408,7 @@ describe("runThink resilience", () => {
 		expect(result.degraded).toEqual({ graph: false, fills: [] });
 	});
 
-	test("two concurrent fills failing once with a retryable 429 (report attempts 1) still end real (ROADMAP criterion)", async () => {
+	test("two concurrent fills failing once with a retryable 429 (no report, nothing classified it) still end real (ROADMAP criterion)", async () => {
 		const calls = new Map<string, number>();
 		const result = await runThink({
 			uplift,
@@ -319,7 +421,7 @@ describe("runThink resilience", () => {
 				calls.set(id, count);
 				if ((id === "n2" || id === "n3") && count === 1) {
 					const error = transient();
-					attachReport(error, { attempts: 1, httpStatus: 429 });
+					// No report: a completer that did not classify the failure leaves it to the kernel's verdict (429: transient).
 					throw error;
 				}
 				return fillXml(`done ${id}`);

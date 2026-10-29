@@ -18,7 +18,7 @@ import {
 	writeFileSync,
 	writeSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
 	type LockOptions,
 	errorCode,
@@ -456,7 +456,9 @@ export function writeSession(dir: string, record: SessionRecord): string | undef
  * undefined without writing when the record is missing or `mutate` returns undefined. `mutate` receives the path
  * readers resolve for this id (`sessionRecordPath`), so any sidecar it writes beside the JSON pairs with it. The
  * record is written back to that same path: a record still under its earlier name keeps its JSON beside its XML, and
- * never splits onto the new name. `mutate` must not write the record file itself.
+ * never splits onto the new name. `mutate` must not write the record file itself. A held lock is waited for 2 s and then the
+ * update runs unlocked (a hook never fails on a lock), which can lose a concurrent update; that is reported in one line on
+ * stderr unless `lock.log` takes it. A writer that must not lose an update passes `CLI_LOCK`.
  */
 export function updateSession(
 	dir: string,
@@ -464,8 +466,11 @@ export function updateSession(
 	mutate: (record: SessionRecord, recordPath: string) => SessionRecord | undefined,
 	lock?: LockOptions,
 ): SessionRecord | undefined {
+	const lockTarget = sessionPath(dir, sessionId);
+	// No sessions directory, no record to update: nothing to lock, and no lock file could be made there to report.
+	if (!existsSync(dirname(lockTarget))) return undefined;
 	return withFileLock(
-		sessionPath(dir, sessionId),
+		lockTarget,
 		() => {
 			const recordPath = sessionRecordPath(dir, sessionId);
 			const record = readSession(dir, sessionId);
@@ -475,8 +480,69 @@ export function updateSession(
 			saveSessionFile(dir, recordPath, next);
 			return next;
 		},
-		lock,
+		{ log: logUnlockedWrite, ...lock },
 	);
+}
+
+function logUnlockedWrite(message: string): void {
+	process.stderr.write(`[ultrathink] ${message}\n`);
+}
+
+/**
+ * Lock policy of a writer outside every hook (the ultrathink-mcp and grok-bot CLIs): wait up to 30 s for a live holder, then
+ * fail with a `LockTimeoutError` rather than write unlocked. A hook prefers an unlocked write over a failure and keeps the
+ * default; a CLI has nobody waiting on a deadline, and an unlocked write is how a concurrent update is lost.
+ */
+export const CLI_LOCK: LockOptions = { timeoutMs: 30_000, onTimeout: "throw" };
+
+/** The node ids whose fill degraded, from the `fill:<id>` tokens of a record's `degraded` list; the tracker marks their rows. */
+export function degradedNodeIds(record: Pick<SessionRecord, "degraded"> | undefined): string[] {
+	return (record?.degraded ?? [])
+		.filter((token) => token.startsWith("fill:"))
+		.map((token) => token.slice("fill:".length));
+}
+
+/** A checkpoint's refs: everything the record already holds stays, the live refs are added over it. Never fewer refs. */
+function mergeTrackingRefs(prior: TrackingRefs | undefined, live: TrackingRefs): TrackingRefs {
+	const taskUrl = live.notion.taskUrl ?? prior?.notion.taskUrl;
+	const linearTeam = live.linearTeam ?? prior?.linearTeam;
+	return {
+		graphId: live.graphId,
+		status: "partial",
+		...(linearTeam ? { linearTeam } : {}),
+		linear: {
+			nodes: { ...prior?.linear.nodes, ...live.linear.nodes },
+			steps: { ...prior?.linear.steps, ...live.linear.steps },
+		},
+		notion: {
+			...(taskUrl ? { taskUrl } : {}),
+			nodes: { ...prior?.notion.nodes, ...live.notion.nodes },
+			steps: { ...prior?.notion.steps, ...live.notion.steps },
+		},
+		errors: [...live.errors],
+		updatedAt: live.updatedAt,
+	};
+}
+
+/**
+ * The record mutation behind every tracking checkpoint (the `onRef` of `createTracking`): the live refs are merged over the
+ * refs the record holds, so a flight killed between two rows keeps the rows made so far. Run it under the record's lock
+ * (`updateSession`, or the CLI's locked update). A record that now holds another plan's graph is left alone.
+ */
+export function trackingCheckpoint(
+	graphId: string,
+	live: TrackingRefs,
+): (record: SessionRecord) => SessionRecord | undefined {
+	return (current) =>
+		current.plan?.graphId === graphId
+			? {
+					...current,
+					tracking: mergeTrackingRefs(
+						current.tracking?.graphId === graphId ? current.tracking : undefined,
+						live,
+					),
+				}
+			: undefined;
 }
 
 export function readLast(dir: string): SessionRecord | undefined {
