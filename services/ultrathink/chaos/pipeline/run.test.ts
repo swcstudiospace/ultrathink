@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { SelectedEngine } from "../../../../src/host/engine.ts";
 import { makeTempDir } from "../../test.helpers.ts";
 import { appendHistory, readHistory } from "../history.ts";
-import type { RunResult } from "../run.ts";
+import type { HistoryRecord, RunResult } from "../run.ts";
 import { createScriptedProvider } from "./provider.ts";
 import type { Pressure } from "./pressure.ts";
 import { baselineFromHistory, heapSlopeKiBPerPrompt, runPipeline } from "./run.ts";
@@ -550,7 +550,7 @@ describe("baselineFromHistory", () => {
 	});
 
 	test("the real-clock figure comes from the run's details and wins over the old numeric observation", () => {
-		const records = [
+		const records: HistoryRecord[] = [
 			{ ...record("nominal", 1, 5), details: { probeRealMs: 90, probeVirtualMs: 3 } },
 			{ ...record("nominal", 2, undefined), details: { probeRealMs: 120 } },
 		];
