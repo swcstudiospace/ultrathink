@@ -254,14 +254,52 @@ function linearNodeTitle(nodeId: string, title: string, degraded: boolean): stri
 	return title.startsWith(`[${nodeId}]`) ? title : `[${nodeId}] ${title}`;
 }
 
-/** The Item a node's Notion row is created with. */
+/**
+ * The Item a node's Notion row is created with, the one rule for building it and for comparing it. A degraded node's
+ * base title is clipped to leave room for the `[<id>] [degraded fill] ` prefix and the prefix is added after, so the
+ * marker is never clipped and the base title's tail is the same whichever way it is read.
+ */
 function notionNodeItem(row: IssueRow, degraded: boolean): string {
-	return clip(degraded ? markTitle(row.nodeId, row.item) : row.item, FIELD_CAPS.title).text;
+	if (!degraded) return clip(row.item, FIELD_CAPS.title).text;
+	const prefix = markTitle(row.nodeId, "");
+	const lead = `[${row.nodeId}]`;
+	const base = row.item.startsWith(lead) ? row.item.slice(lead.length).trimStart() : row.item;
+	return prefix + clip(base, Math.max(FIELD_CAPS.title - prefix.length, 1)).text;
+}
+
+/** The Items a node's Notion row can carry: as a clean node or as a degraded one (a later run may not know which it was). */
+function notionNodeItems(row: IssueRow): string[] {
+	return [notionNodeItem(row, false), notionNodeItem(row, true)];
 }
 
 /** The Item a step's Notion row is created with. */
 function notionStepItem(row: SubIssueRow): string {
 	return clip(row.item, FIELD_CAPS.step).text;
+}
+
+/** A Notion page as compared: its 32-digit id when the text has one (any url form, dashes or not), else the url lowercased. */
+function pageKey(value: string): string {
+	const text = value
+		.trim()
+		.toLowerCase()
+		.replace(/[?#].*$/, "")
+		.replace(/\/+$/, "");
+	return text.replace(/-/g, "").match(/[0-9a-f]{32}$/)?.[0] ?? text;
+}
+
+/** The pages a `Parent Item` relation value points at (a JSON array, urls, ids or a list of them), as `pageKey`s. */
+function parentKeys(value: unknown): string[] {
+	const text = Array.isArray(value)
+		? value.map(String).join(" ")
+		: typeof value === "string"
+			? value
+			: "";
+	const found = [
+		...(text.match(/https?:\/\/[^\s"',[\]]+/g) ?? []),
+		...(text.match(/\b[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\b/gi) ?? []),
+	];
+	const keys = found.map(pageKey);
+	return keys.length > 0 || text.trim() === "" ? keys : [pageKey(text)];
 }
 
 /** What a tracker caller is guarded with: retried, refused once its breaker is open, and able to read back a create. */
@@ -289,8 +327,8 @@ type RunDeps = Omit<CreateTrackingDeps, "linear" | "notion"> & {
 interface PlanTitles {
 	linearNodes: Map<string, string>;
 	linearSteps: Map<string, string>;
-	notionNodes: Map<string, string>;
-	notionSteps: Map<string, string>;
+	notionNodes: Map<string, string[]>;
+	notionSteps: Map<string, string[]>;
 }
 
 function planTitles(plan: TrackPlan): PlanTitles {
@@ -304,9 +342,9 @@ function planTitles(plan: TrackPlan): PlanTitles {
 		linearSteps: new Map(
 			plan.linearSubIssues.map((sub) => [stepKey(sub.nodeId, sub.step), sub.title]),
 		),
-		notionNodes: new Map(plan.issues.map((row) => [row.nodeId, notionNodeItem(row, false)])),
+		notionNodes: new Map(plan.issues.map((row) => [row.nodeId, notionNodeItems(row)])),
 		notionSteps: new Map(
-			plan.subIssues.map((row) => [stepKey(row.nodeId, row.step), notionStepItem(row)]),
+			plan.subIssues.map((row) => [stepKey(row.nodeId, row.step), [notionStepItem(row)]]),
 		),
 	};
 }
@@ -333,27 +371,17 @@ function differs(have: string | undefined, want: string | undefined): boolean {
 	return have !== undefined && want !== undefined && !sameTitle(have, want);
 }
 
-/**
- * The recorded refs whose row no longer matches what the plan says for that key. The Linear refs carry their own title;
- * `recorded`, when given, is the plan that created the rows and is the source of the old titles for both providers.
- */
-function staleRefs(refs: TrackingRefs, current: PlanTitles, recorded?: PlanTitles): StaleKeys {
+function matchesAny(title: string, want: readonly string[] | undefined): boolean {
+	return want !== undefined && want.some((candidate) => sameTitle(title, candidate));
+}
+
+/** The recorded Linear refs whose issue no longer carries the title the plan gives that key (the refs keep their own title). */
+function staleRefs(refs: TrackingRefs, current: PlanTitles): StaleKeys {
 	const stale = emptyStale();
-	for (const [key, ref] of Object.entries(refs.linear.nodes)) {
-		const have = recorded ? recorded.linearNodes.get(key) : refTitle(ref);
-		if (differs(have, current.linearNodes.get(key))) stale.linearNodes.add(key);
-	}
-	for (const [key, ref] of Object.entries(refs.linear.steps)) {
-		const have = recorded ? recorded.linearSteps.get(key) : refTitle(ref);
-		if (differs(have, current.linearSteps.get(key))) stale.linearSteps.add(key);
-	}
-	if (!recorded) return stale;
-	for (const key of Object.keys(refs.notion.nodes))
-		if (differs(recorded.notionNodes.get(key), current.notionNodes.get(key)))
-			stale.notionNodes.add(key);
-	for (const key of Object.keys(refs.notion.steps))
-		if (differs(recorded.notionSteps.get(key), current.notionSteps.get(key)))
-			stale.notionSteps.add(key);
+	for (const [key, ref] of Object.entries(refs.linear.nodes))
+		if (differs(refTitle(ref), current.linearNodes.get(key))) stale.linearNodes.add(key);
+	for (const [key, ref] of Object.entries(refs.linear.steps))
+		if (differs(refTitle(ref), current.linearSteps.get(key))) stale.linearSteps.add(key);
 	return stale;
 }
 
@@ -395,21 +423,6 @@ function removeStale(
 		const replaced = node.dependsOn.filter((dep) => dep !== node.id && stale.linearNodes.has(dep));
 		if (replaced.length > 0) addPending(refs, node.id, replaced);
 	}
-}
-
-/**
- * `refs` without the rows that describe other work than `plan` does, judged against `prior`, the plan that created them.
- * A resend of the same prompt gets a new graph from the model under the same graph id: the old rows are not its rows.
- */
-export function dropStaleRefs(
-	refs: TrackingRefs,
-	plan: TrackPlan,
-	graph: ThoughtGraph | undefined,
-	prior: TrackPlan,
-): TrackingRefs {
-	const kept = structuredClone(refs);
-	removeStale(kept, plan, graph, staleRefs(kept, planTitles(plan), planTitles(prior)));
-	return kept;
 }
 
 /** Drops the pending links that no longer apply: a node or dependency that left the plan or the graph, or a node with no issue. */
@@ -666,6 +679,8 @@ interface NotionRow {
 	nodeId?: string;
 	step?: number;
 	item: string;
+	/** The pages the `Parent Item` relation points at, as `pageKey`s; empty when the row says none or the query did not return it. */
+	parents: string[];
 }
 
 /** Every Notion row tagged with this graph's Graph ID. A failure is the caller's to record. */
@@ -681,7 +696,7 @@ async function lookupNotion(
 		{
 			data: {
 				data_source_urls: [collection],
-				query: `SELECT url, "Level", "Item", "Step" FROM "${collection}" WHERE "Graph ID" = ?`,
+				query: `SELECT url, "Level", "Item", "Step", "Parent Item" FROM "${collection}" WHERE "Graph ID" = ?`,
 				params: [plan.graphId],
 			},
 		},
@@ -694,7 +709,7 @@ async function lookupNotion(
 		if (!url || !level) continue;
 		const item = nonEmpty(row.Item) ?? "";
 		if (level === "Task") {
-			rows.push({ url, level, item });
+			rows.push({ url, level, item, parents: [] });
 			continue;
 		}
 		const nodeId = item.match(/^\[([^\]]+)\]/)?.[1];
@@ -705,6 +720,7 @@ async function lookupNotion(
 			level,
 			nodeId,
 			item,
+			parents: parentKeys(row["Parent Item"]),
 			...(level === "Sub-Issue" && Number.isFinite(step) ? { step } : {}),
 		});
 	}
@@ -738,13 +754,13 @@ async function adoptNotion(
 		} else if (row.level === "Issue") {
 			listed.add(row.nodeId);
 			const want = titles.notionNodes.get(row.nodeId);
-			if (sameTitle(row.item, want)) nodes.push(row);
+			if (matchesAny(row.item, want)) nodes.push(row);
 			else if (want !== undefined && refs.notion.nodes[row.nodeId] === row.url)
 				stale.notionNodes.add(row.nodeId);
 		} else if (row.level === "Sub-Issue" && row.step !== undefined) {
 			const key = stepKey(row.nodeId, row.step);
 			const want = titles.notionSteps.get(key);
-			if (sameTitle(row.item, want)) steps.push(row);
+			if (matchesAny(row.item, want)) steps.push(row);
 			else if (want !== undefined && refs.notion.steps[key] === row.url) stale.notionSteps.add(key);
 		}
 	}
@@ -754,6 +770,9 @@ async function adoptNotion(
 		const nodeId = row.nodeId as string;
 		// A node whose rows are listed but none matches the plan was replaced: its steps hang under the old row.
 		if (listed.has(nodeId) && !refs.notion.nodes[nodeId]) continue;
+		// A child belongs to the Issue its `Parent Item` names: one that hangs under another Issue (the replaced one) is not this one's.
+		const parent = refs.notion.nodes[nodeId];
+		if (parent && row.parents.length > 0 && !row.parents.includes(pageKey(parent))) continue;
 		refs.notion.steps[stepKey(nodeId, row.step as number)] ??= row.url;
 	}
 }
@@ -787,6 +806,8 @@ export async function createTracking(
 	const titles = planTitles(plan);
 	removeStale(refs, plan, graph, staleRefs(refs, titles));
 	prunePending(refs, plan, graph);
+	/** The nodes that had an issue before this run: a dependency that gets one now was not linked to them. */
+	const entered = new Set(Object.keys(refs.linear.nodes));
 	const controller = new AbortController();
 	const signal = controller.signal;
 	const timer =
@@ -983,7 +1004,17 @@ export async function createTracking(
 		const settle = (work: Promise<void>): Promise<void> =>
 			work.catch((error: unknown) => fail(`tracking: ${shortError(error)}`));
 		// Both providers start at once; Notion only waits (bounded) for the Linear links it prints on its rows.
-		const ctx: RunContext = { plan, refs, deps: run, signal, fail, report, emit, emitIssue };
+		const ctx: RunContext = {
+			plan,
+			refs,
+			entered,
+			deps: run,
+			signal,
+			fail,
+			report,
+			emit,
+			emitIssue,
+		};
 		const nodesDone = Promise.withResolvers<void>();
 		const linearRun =
 			deps.linearTeam && !skipped.linear
@@ -1050,6 +1081,7 @@ function noCaller(provider: Provider, deps: CreateTrackingDeps): string {
 interface RunContext {
 	plan: TrackPlan;
 	refs: TrackingRefs;
+	entered: ReadonlySet<string>;
 	deps: RunDeps;
 	signal: AbortSignal;
 	fail: (message: string) => void;
@@ -1065,10 +1097,31 @@ interface LinearProgress {
 }
 
 async function createLinear(
-	{ plan, refs, deps, signal, fail, report, emit, emitIssue }: RunContext,
+	{ plan, refs, entered, deps, signal, fail, report, emit, emitIssue }: RunContext,
 	graph: ThoughtGraph | undefined,
 	nodesDone: () => void,
 ): Promise<void> {
+	const byNode = new Map(plan.linearIssues.map((issue) => [issue.nodeId, issue]));
+	const dependsOn = new Map(
+		(graph?.nodes ?? []).map((node) => [
+			node.id,
+			node.dependsOn.filter((dep) => dep !== node.id && byNode.has(dep)),
+		]),
+	);
+	/**
+	 * An issue that existed before this run was made without any link to a dependency that had no issue then. When that
+	 * dependency has one now (made or adopted by this run) the link is owed, whatever the record says about pending links.
+	 */
+	const oweLinks = (): void => {
+		for (const node of graph?.nodes ?? []) {
+			if (!entered.has(node.id) || !refs.linear.nodes[node.id]) continue;
+			const fresh = (dependsOn.get(node.id) ?? []).filter(
+				(dep) => !entered.has(dep) && refs.linear.nodes[dep],
+			);
+			if (fresh.length > 0) addPending(refs, node.id, fresh);
+		}
+	};
+	oweLinks();
 	const pendingNodes = plan.linearIssues.filter((issue) => !refs.linear.nodes[issue.nodeId]);
 	const pendingSteps = plan.linearSubIssues.filter(
 		(sub) => !refs.linear.steps[stepKey(sub.nodeId, sub.step)],
@@ -1081,13 +1134,6 @@ async function createLinear(
 		return;
 	}
 	const degraded = new Set(deps.degradedNodes ?? []);
-	const byNode = new Map(plan.linearIssues.map((issue) => [issue.nodeId, issue]));
-	const dependsOn = new Map(
-		(graph?.nodes ?? []).map((node) => [
-			node.id,
-			node.dependsOn.filter((dep) => dep !== node.id && byNode.has(dep)),
-		]),
-	);
 	const save = async (
 		label: string,
 		title: string,
@@ -1151,6 +1197,7 @@ async function createLinear(
 			}
 		});
 	}
+	oweLinks();
 	nodesDone();
 	const steps = plan.linearSubIssues.filter((sub) => {
 		if (refs.linear.steps[stepKey(sub.nodeId, sub.step)]) return false;
@@ -1278,12 +1325,17 @@ async function createNotionRows(
 		/** The Item the row is created with. */
 		item: string;
 		page: { properties: Record<string, unknown>; content?: string };
+		/** The Issue page a child hangs under (its `Parent Item`). */
+		parent?: string;
 	}
 	const isRow = (row: NotionRow, spec: RowSpec): boolean =>
 		row.level === spec.level &&
 		row.nodeId === spec.nodeId &&
 		row.step === spec.step &&
-		(spec.level === "Task" || sameTitle(row.item, spec.item));
+		(spec.level === "Task" || sameTitle(row.item, spec.item)) &&
+		(spec.parent === undefined ||
+			row.parents.length === 0 ||
+			row.parents.includes(pageKey(spec.parent)));
 	/**
 	 * Creates the rows and returns each one's url (undefined for a row that was not made). A create whose outcome is
 	 * unknown is read back first: rows already there are adopted and only the missing ones are created again.
@@ -1409,6 +1461,7 @@ async function createNotionRows(
 				nodeId: row.nodeId,
 				step: row.step,
 				item,
+				parent: refs.notion.nodes[row.nodeId],
 				page: {
 					properties: props({
 						Item: item,

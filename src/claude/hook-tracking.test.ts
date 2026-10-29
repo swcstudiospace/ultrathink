@@ -9,8 +9,10 @@ import { runThink } from "../think/pipeline.ts";
 import { graphJson, UPLIFT } from "../test.helpers.ts";
 import { GRAPH_ID_PATTERN } from "../gateway/types.ts";
 import { decideUplift } from "../uplift/detect.ts";
+import { createTracking, type ToolCaller } from "../track/create.ts";
 import type { Tracker } from "../track/gateway.ts";
-import type { TrackingRefs, TrackPlan } from "../track/types.ts";
+import { failure, statefulLinear, statefulNotion } from "../track/test.helpers.ts";
+import type { TrackingRefs } from "../track/types.ts";
 import { attachReport } from "../types.ts";
 import { type HookDeps, type PromptSubmitInput, runPromptSubmit } from "./hook.ts";
 import { readSession, sessionPath } from "./state.ts";
@@ -186,7 +188,7 @@ describe("per-ref checkpoint (TRK-01 G5)", () => {
 		let graphId = "";
 		deps.track = (async ({ plan }) => {
 			graphId = plan.graphId;
-			return refsFor(plan.graphId);
+			return { ...refsFor(plan.graphId), status: "partial" } satisfies TrackingRefs;
 		}) satisfies Tracker;
 		try {
 			await runPromptSubmit(input, deps);
@@ -298,12 +300,22 @@ describe("deterministic graph id", () => {
 		}) satisfies Tracker;
 		try {
 			await expect(runPromptSubmit(input, deps)).rejects.toThrow();
-			const resend = { ...deps, signal: undefined };
+			let resendCalls = 0;
+			const resend = {
+				...deps,
+				signal: undefined,
+				complete: async (system: string, user: string, signal?: AbortSignal) => {
+					resendCalls++;
+					return deps.complete(system, user, signal);
+				},
+			};
 			resend.track = (async ({ plan, existing: seen }) => {
 				existing.push(seen);
 				return refsFor(plan.graphId);
 			}) satisfies Tracker;
 			const result = await runPromptSubmit(input, resend);
+			// The flight was killed after the record was saved: the resend carries on with that plan, no model call.
+			expect(resendCalls).toBe(0);
 			expect(existing[0]).toBeUndefined();
 			expect(existing[1]?.graphId).toBe(result.record?.plan?.graphId);
 			expect(existing[1]?.linear.nodes).toEqual({});
@@ -312,12 +324,12 @@ describe("deterministic graph id", () => {
 		}
 	});
 
-	test("a replan of a tracked prompt passes the recorded refs as existing", async () => {
+	test("a resend of a plan whose tracking is partial passes the recorded refs as existing", async () => {
 		const existing: Array<TrackingRefs | undefined> = [];
 		const { deps, cleanup } = baseDeps();
 		deps.track = (async ({ plan, existing: seen }) => {
 			existing.push(seen);
-			return refsFor(plan.graphId);
+			return { ...refsFor(plan.graphId), status: "partial" } satisfies TrackingRefs;
 		}) satisfies Tracker;
 		try {
 			await runPromptSubmit(input, deps);
@@ -328,114 +340,182 @@ describe("deterministic graph id", () => {
 			cleanup();
 		}
 	});
-});
 
-/** Refs for every row of `plan`, as a tracker that created all of them would hold them. */
-function refsOfPlan(plan: TrackPlan, tag: string): TrackingRefs {
-	const refs = refsFor(plan.graphId);
-	refs.linear = { nodes: {}, steps: {} };
-	plan.linearIssues.forEach((issue, index) => {
-		refs.linear.nodes[issue.nodeId] = {
-			id: `${tag}-u${index}`,
-			identifier: `ENG-${tag}${index}`,
-			url: `https://linear.app/o/issue/ENG-${tag}${index}/x`,
-			title: `[${issue.nodeId}] ${issue.title}`,
-		};
-	});
-	for (const sub of plan.linearSubIssues)
-		refs.linear.steps[`${sub.nodeId}.${sub.step}`] = {
-			id: `${tag}-${sub.nodeId}-${sub.step}`,
-			identifier: `ENG-${tag}${sub.nodeId}${sub.step}`,
-			url: `https://linear.app/o/issue/ENG-${tag}${sub.nodeId}${sub.step}/x`,
-			title: sub.title,
-		};
-	for (const row of plan.issues)
-		refs.notion.nodes[row.nodeId] = `https://notion.so/${tag}-${row.nodeId}`;
-	for (const row of plan.subIssues)
-		refs.notion.steps[`${row.nodeId}.${row.step}`] =
-			`https://notion.so/${tag}-${row.nodeId}-${row.step}`;
-	refs.notion.taskUrl = `https://notion.so/${tag}-task`;
-	return refs;
-}
-
-describe("a resend that gets a different graph (greptile r1 #3)", () => {
-	/** The model's answer for the same prompt: variant "b" renames n2 and rewrites every step of n3. */
-	function modelFor(variant: () => "a" | "b"): (system: string, user: string) => Promise<string> {
-		const base = smartComplete();
-		return async (system, user) => {
-			if (user.includes("current_node")) {
-				const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
-				const lead = variant() === "b" && id === "n3" ? "changed " : "";
-				const steps = Array.from(
-					{ length: 5 },
-					(_, i) => `${i + 1}. ${lead}${id} step ${i + 1}`,
-				).join(" ");
-				return `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>`;
-			}
-			if (variant() === "b" && !user.includes("<user_request>") && !user.startsWith("<spec>"))
-				return graphJson(5).replace('"title":"T2"', '"title":"Rewritten"');
-			return base(system, user);
-		};
-	}
-
-	test("the tracker and the saved record keep only the refs whose rows still describe the plan", async () => {
-		let variant: "a" | "b" = "a";
-		const { deps, cleanup } = baseDeps({ complete: modelFor(() => variant) });
-		const seen: Array<{ existing?: TrackingRefs; saved?: TrackingRefs }> = [];
+	test("a re-plan after complete tracking is a new plan: another graph id, nothing to adopt", async () => {
+		const seen: Array<{ graphId: string; existing: TrackingRefs | undefined }> = [];
+		const { deps, cleanup } = baseDeps();
 		deps.track = (async ({ plan, existing }) => {
-			seen.push({ existing, saved: readSession(deps.stateDir, "s1")?.tracking });
-			return refsOfPlan(plan, variant);
+			seen.push({ graphId: plan.graphId, existing });
+			return refsFor(plan.graphId);
 		}) satisfies Tracker;
 		try {
 			await runPromptSubmit(input, deps);
-			variant = "b";
 			await runPromptSubmit(input, deps);
-			const second = seen[1];
-			expect(Object.keys(second?.existing?.linear.nodes ?? {}).sort()).toEqual([
-				"n1",
-				"n3",
-				"n4",
-				"n5",
-			]);
-			expect(second?.existing?.linear.nodes.n1?.id).toBe("a-u0");
-			expect(Object.keys(second?.existing?.notion.nodes ?? {}).sort()).toEqual([
-				"n1",
-				"n3",
-				"n4",
-				"n5",
-			]);
-			// n2 is a new row with its steps under it; n3's steps are all new work.
-			for (const provider of [second?.existing?.linear.steps, second?.existing?.notion.steps])
-				expect(
-					Object.keys(provider ?? {}).some((key) => key.startsWith("n2.") || key.startsWith("n3.")),
-				).toBe(false);
-			expect(Object.keys(second?.existing?.linear.steps ?? {})).toContain("n1.1");
-			expect(second?.saved?.linear.nodes.n2).toBeUndefined();
-			expect(second?.saved?.notion.nodes.n2).toBeUndefined();
-			expect(second?.saved?.linear.nodes.n1?.id).toBe("a-u0");
-			// The final record holds the new rows the tracker returned for n2.
-			expect(readSession(deps.stateDir, "s1")?.tracking?.linear.nodes.n2?.id).toBe("b-u1");
+			expect(seen[1]?.graphId).not.toBe(seen[0]?.graphId);
+			expect(seen[1]?.existing).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+/** The model's answer for the same prompt: variant "b" renames n2 and rewrites every step of n3, so its graph differs. */
+function modelFor(
+	variant: () => "a" | "b",
+	onCall: () => void = () => undefined,
+): (system: string, user: string) => Promise<string> {
+	const base = smartComplete();
+	return async (system, user) => {
+		onCall();
+		if (user.includes("current_node")) {
+			const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
+			const lead = variant() === "b" && id === "n3" ? "changed " : "";
+			const steps = Array.from(
+				{ length: 5 },
+				(_, i) => `${i + 1}. ${lead}${id} step ${i + 1}`,
+			).join(" ");
+			return `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>`;
+		}
+		if (variant() === "b" && !user.includes("<user_request>") && !user.startsWith("<spec>"))
+			return graphJson(5).replace('"title":"T2"', '"title":"Rewritten"');
+		return base(system, user);
+	};
+}
+
+/** The real creator over in-memory trackers, so a partial or killed pass leaves real rows behind for the next one. */
+function worldTracker(world: { linear: ToolCaller; notion: ToolCaller }): Tracker {
+	return ({ plan, graph, existing, degradedNodes, onRef }) =>
+		createTracking(plan, graph, existing, {
+			linear: world.linear,
+			notion: world.notion,
+			linearTeam: "Team",
+			notionDataSource: "ds",
+			concurrency: 2,
+			budgetMs: 0,
+			sleep: async () => undefined,
+			random: () => 0,
+			...(degradedNodes ? { degradedNodes } : {}),
+			...(onRef ? { onRef } : {}),
+		});
+}
+
+describe("a resend never adopts the rows of another graph (greptile r2 #0)", () => {
+	test("a plan whose tracking stopped half way is resumed without a model call and adopts its rows", async () => {
+		let variant: "a" | "b" = "a";
+		let calls = 0;
+		const linear = statefulLinear();
+		let down = true;
+		const flaky: ToolCaller = {
+			call: (name, args, signal) =>
+				down && name === "save_issue" && args.id === undefined && linear.rows.length >= 3
+					? Promise.reject(failure("HTTP 400", { status: 400 }))
+					: linear.call(name, args, signal),
+		};
+		const notion = statefulNotion();
+		const { deps, cleanup } = baseDeps({
+			complete: modelFor(
+				() => variant,
+				() => {
+					calls++;
+				},
+			),
+		});
+		deps.track = worldTracker({ linear: flaky, notion });
+		try {
+			const first = await runPromptSubmit(input, deps);
+			expect(first.record?.tracking?.status).toBe("partial");
+			expect(linear.rows).toHaveLength(3);
+			// The rows were made. A resend now asks the model for nothing, even one that would answer another graph.
+			calls = 0;
+			down = false;
+			variant = "b";
+			const second = await runPromptSubmit(input, deps);
+			expect(calls).toBe(0);
+			expect(second.record?.plan?.graphId).toBe(first.record?.plan?.graphId);
+			expect(second.record?.graph).toEqual(first.record?.graph);
+			expect(second.record?.plan).toEqual(first.record?.plan);
+			expect(second.record?.tracking?.status).toBe("complete");
+			// Every row exists once: the first run's three Linear rows and its Notion rows were adopted, not made again.
+			expect(linear.rows).toHaveLength(30);
+			expect(new Set(linear.rows.map((row) => row.title)).size).toBe(30);
+			expect(notion.rows).toHaveLength(31);
+			expect(new Set(notion.rows.map((row) => `${row.Level}${row.Item}`)).size).toBe(31);
+			expect(readSession(deps.stateDir, "s1")?.tracking?.status).toBe("complete");
 		} finally {
 			cleanup();
 		}
 	});
 
-	test("an identical resend passes every recorded ref on", async () => {
+	test("a new plan of the same prompt after complete tracking gets a new graph id and rows of its own", async () => {
+		let variant: "a" | "b" = "a";
+		let calls = 0;
+		const linear = statefulLinear();
+		const notion = statefulNotion();
+		const { deps, cleanup } = baseDeps({
+			complete: modelFor(
+				() => variant,
+				() => {
+					calls++;
+				},
+			),
+		});
+		deps.track = worldTracker({ linear, notion });
+		try {
+			const first = await runPromptSubmit(input, deps);
+			expect(first.record?.tracking?.status).toBe("complete");
+			expect(first.record?.generation).toBe(0);
+			const firstUrls = new Set(linear.rows.map((row) => row.url));
+			const firstPages = new Set(notion.rows.map((row) => row.url));
+			calls = 0;
+			variant = "b";
+			const second = await runPromptSubmit(input, deps);
+			expect(calls).toBeGreaterThan(0);
+			const firstId = first.record?.plan?.graphId ?? "";
+			const secondId = second.record?.plan?.graphId ?? "";
+			expect(secondId).not.toBe(firstId);
+			expect(second.record?.generation).toBe(1);
+			// The id keeps the shape every consumer reads: the gateway, the swarm lane brief and the hand-off guard.
+			expect(secondId).toMatch(GRAPH_ID_PATTERN);
+			expect(secondId.slice(0, 13)).toBe(firstId.slice(0, 13));
+			expect(
+				decideUplift(
+					{ text: `execute graph ${secondId}`, source: "user" },
+					{ enabled: true, skipOnce: false, skipTrivial: true },
+				),
+			).toEqual({ action: "skip", reason: "graph-reference" });
+			// Every row of the new plan is new, and no ref of the record points at a row of the first plan.
+			const tracking = second.record?.tracking;
+			expect(tracking?.status).toBe("complete");
+			const refsUrls = [
+				...Object.values(tracking?.linear.nodes ?? {}).map((ref) => ref.url),
+				...Object.values(tracking?.linear.steps ?? {}).map((ref) => ref.url),
+			];
+			const refsPages = [
+				...Object.values(tracking?.notion.nodes ?? {}),
+				...Object.values(tracking?.notion.steps ?? {}),
+				tracking?.notion.taskUrl ?? "",
+			];
+			expect(refsUrls).toHaveLength(30);
+			expect(refsUrls.some((url) => firstUrls.has(url))).toBe(false);
+			expect(refsPages.some((url) => firstPages.has(url))).toBe(false);
+			expect(linear.rows).toHaveLength(60);
+			expect(notion.rows).toHaveLength(62);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a third plan of the session gets a third graph id", async () => {
+		const ids = new Set<string>();
 		const { deps, cleanup } = baseDeps();
-		const seen: Array<TrackingRefs | undefined> = [];
-		deps.track = (async ({ plan, existing }) => {
-			seen.push(existing);
-			return refsOfPlan(plan, "a");
+		deps.track = (async ({ plan }) => {
+			ids.add(plan.graphId);
+			return refsFor(plan.graphId);
 		}) satisfies Tracker;
 		try {
-			await runPromptSubmit(input, deps);
-			await runPromptSubmit(input, deps);
-			const kept = seen[1];
-			expect(Object.keys(kept?.linear.nodes ?? {})).toHaveLength(5);
-			expect(Object.keys(kept?.linear.steps ?? {})).toHaveLength(25);
-			expect(Object.keys(kept?.notion.nodes ?? {})).toHaveLength(5);
-			expect(Object.keys(kept?.notion.steps ?? {})).toHaveLength(25);
-			expect(kept?.notion.taskUrl).toBe("https://notion.so/a-task");
+			for (let i = 0; i < 3; i++) await runPromptSubmit(input, deps);
+			expect(ids.size).toBe(3);
+			expect([...ids].every((id) => GRAPH_ID_PATTERN.test(id))).toBe(true);
 		} finally {
 			cleanup();
 		}

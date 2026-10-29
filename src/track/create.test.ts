@@ -6,6 +6,7 @@ import { FIELD_CAPS } from "../resilience/limits.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import { createTracking, stepKey, type CreateTrackingDeps, type ToolCaller } from "./create.ts";
 import type { TrackingRefs, TrackPlan } from "./types.ts";
+import { type Call, failure, statefulLinear, statefulNotion } from "./test.helpers.ts";
 
 const GRAPH: ThoughtGraph = {
 	goal: "Ship it",
@@ -60,11 +61,6 @@ function makePlan(): TrackPlan {
 		),
 		hitl: { blocking: [], nonBlocking: [] },
 	};
-}
-
-interface Call {
-	name: string;
-	args: Record<string, unknown>;
 }
 
 function fakeLinear(
@@ -895,11 +891,6 @@ describe("createTracking", () => {
 	});
 });
 
-/** An error as the relay and the MCP client surface it: a message, optionally an HTTP status and a retry hint. */
-function failure(message: string, extra: Record<string, unknown> = {}): Error {
-	return Object.assign(new Error(message), extra);
-}
-
 /** A Linear fake that answers like `fakeLinear` unless `fail` returns an error for the call. */
 function scriptedLinear(
 	fail: (args: Record<string, unknown>, attempt: number) => Error | undefined,
@@ -1334,114 +1325,6 @@ describe("createTracking degraded fill marker", () => {
 	});
 });
 
-interface LinearRow {
-	id: string;
-	identifier: string;
-	url: string;
-	title: string;
-	description: string;
-}
-
-/**
- * A Linear that remembers what it was asked to create. `afterCreate` runs once the row exists, so an error it returns is a
- * lost reply: the tracker has the row, the caller never sees the answer.
- */
-function statefulLinear(
-	opts: {
-		afterCreate?: (args: Record<string, unknown>, attempt: number) => Error | undefined;
-		listError?: Error;
-	} = {},
-): ToolCaller & { calls: Call[]; rows: LinearRow[] } {
-	const calls: Call[] = [];
-	const rows: LinearRow[] = [];
-	const attempts = new Map<string, number>();
-	return {
-		calls,
-		rows,
-		async call(name, args) {
-			calls.push({ name, args });
-			if (name === "list_issues") {
-				if (opts.listError) throw opts.listError;
-				return { issues: rows.map((row) => ({ ...row })) };
-			}
-			if (typeof args.id === "string") {
-				const row = rows.find((entry) => entry.identifier === args.id);
-				return { issue: { id: row?.id, identifier: args.id, url: row?.url } };
-			}
-			const number = rows.length + 1;
-			const identifier = `ENG-${number}`;
-			const row: LinearRow = {
-				id: `uuid-${number}`,
-				identifier,
-				url: `https://linear.app/org/issue/${identifier}/slug`,
-				title: String(args.title),
-				description: String(args.description),
-			};
-			rows.push(row);
-			const attempt = (attempts.get(row.title) ?? 0) + 1;
-			attempts.set(row.title, attempt);
-			const error = opts.afterCreate?.(args, attempt);
-			if (error) throw error;
-			return { issue: { id: row.id, identifier, url: row.url } };
-		},
-	};
-}
-
-interface NotionRow {
-	url: string;
-	Level: string;
-	Item: string;
-	Step?: number;
-	graphId: string;
-}
-
-/**
- * A Notion that remembers the pages it was asked to create. `persist` keeps only the first N pages of a call that then
- * fails with `lose`; a lost reply is `lose` with the default `persist`.
- */
-function statefulNotion(
-	opts: {
-		lose?: (call: number) => Error | undefined;
-		persist?: (call: number) => number | undefined;
-		queryError?: Error;
-	} = {},
-): ToolCaller & { calls: Call[]; rows: NotionRow[] } {
-	const inner = fakeNotion();
-	const calls: Call[] = [];
-	const rows: NotionRow[] = [];
-	let creates = 0;
-	return {
-		calls,
-		rows,
-		async call(name, args, signal) {
-			calls.push({ name, args });
-			if (name === "notion-fetch") return inner.call(name, args, signal);
-			if (name === "notion-query-data-sources") {
-				if (opts.queryError) throw opts.queryError;
-				return { results: rows.map((row) => ({ ...row })) };
-			}
-			creates++;
-			const pages = args.pages as Array<{ properties: Record<string, unknown> }>;
-			const keep = opts.persist?.(creates) ?? pages.length;
-			const urls: string[] = [];
-			for (const page of pages.slice(0, keep)) {
-				const url = `https://www.notion.so/row-${rows.length + 1}`;
-				rows.push({
-					url,
-					Level: String(page.properties.Level),
-					Item: String(page.properties.Item),
-					...(page.properties.Step === undefined ? {} : { Step: Number(page.properties.Step) }),
-					graphId: String(page.properties["Graph ID"]),
-				});
-				urls.push(url);
-			}
-			const error = opts.lose?.(creates);
-			if (error) throw error;
-			return { pages: urls.map((url) => ({ url })) };
-		},
-	};
-}
-
 /** A lost reply: the request may have reached the tracker, the answer never came back. */
 function timedOut(): Error {
 	return failure("request timed out after 30000ms");
@@ -1827,5 +1710,190 @@ describe("createTracking missing links are repaired (greptile r1 #12)", () => {
 						JSON.stringify([third.linear.nodes.n2?.identifier]),
 			),
 		).toBe(true);
+	});
+});
+
+describe("createTracking children belong to the current parent (greptile r2 #2)", () => {
+	const notionOnly = (notion: ToolCaller) => deps({ notion, linearTeam: undefined });
+	const parentOf = (
+		notion: { rows: Array<{ url: string; "Parent Item"?: string }> },
+		url?: string,
+	) => notion.rows.find((row) => row.url === url)?.["Parent Item"];
+
+	test("a replacement Issue does not adopt the children of the old one; its failed child create leaves tracking partial", async () => {
+		// Calls: 1 task, 2 nodes, 3 steps (first pass); 4 the replacement n2, 5 its children and n3.2 (second pass).
+		const notion = statefulNotion({
+			refuse: (call) => (call === 5 ? failure("HTTP 400", { status: 400 }) : undefined),
+		});
+		const first = await createTracking(makePlan(), GRAPH, undefined, notionOnly(notion));
+		expect(first.status).toBe("complete");
+		const second = await createTracking(
+			replanned(),
+			GRAPH,
+			structuredClone(first),
+			notionOnly(notion),
+		);
+		expect(second.notion.nodes.n2).not.toBe(first.notion.nodes.n2);
+		expect(second.notion.steps["n2.1"]).toBeUndefined();
+		expect(second.status).toBe("partial");
+		// The next run finds the old children by key and title, but they hang under the old Issue: new ones are made.
+		const third = await createTracking(
+			replanned(),
+			GRAPH,
+			structuredClone(second),
+			notionOnly(notion),
+		);
+		expect(third.status).toBe("complete");
+		for (const key of ["n2.1", "n2.2"]) {
+			expect(third.notion.steps[key]).not.toBe(first.notion.steps[key]);
+			expect(parentOf(notion, third.notion.steps[key])).toBe(
+				JSON.stringify([third.notion.nodes.n2]),
+			);
+		}
+		// A child of a kept Issue is still adopted: n1's children were never touched.
+		expect(third.notion.steps["n1.1"]).toBe(first.notion.steps["n1.1"]);
+	});
+
+	test("a lost reply on the children of a replacement Issue is not answered with the old Issue's children", async () => {
+		// The replacement n2 is call 4; its children are call 5, which makes nothing and then loses its reply.
+		const notion = statefulNotion({
+			persist: (call) => (call === 5 ? 0 : undefined),
+			lose: (call) => (call === 5 ? timedOut() : undefined),
+		});
+		const first = await createTracking(makePlan(), GRAPH, undefined, notionOnly(notion));
+		const second = await createTracking(
+			replanned(),
+			GRAPH,
+			structuredClone(first),
+			notionOnly(notion),
+		);
+		expect(second.status).toBe("complete");
+		for (const key of ["n2.1", "n2.2"]) {
+			expect(second.notion.steps[key]).not.toBe(first.notion.steps[key]);
+			expect(parentOf(notion, second.notion.steps[key])).toBe(
+				JSON.stringify([second.notion.nodes.n2]),
+			);
+		}
+	});
+
+	test("Parent Item matches by page id whatever the url form", async () => {
+		const id = "0123456789abcdef0123456789abcdef";
+		const rows = [
+			{ url: `https://www.notion.so/Task-${"a".repeat(32)}`, Level: "Task", Item: "Ship it" },
+			{ url: `https://www.notion.so/${id}`, Level: "Issue", Item: "[n1] Understand" },
+			{
+				url: "https://www.notion.so/child-1",
+				Level: "Sub-Issue",
+				Item: "[n1] Step 1: s",
+				Step: 1,
+				"Parent Item": `["https://notion.so/Understand-${id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5")}"]`,
+			},
+			{
+				url: "https://www.notion.so/child-2",
+				Level: "Sub-Issue",
+				Item: "[n1] Step 2: s",
+				Step: 2,
+				"Parent Item": `["https://www.notion.so/${"b".repeat(32)}"]`,
+			},
+		];
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			{
+				graphId: "g-1",
+				status: "failed",
+				linear: { nodes: {}, steps: {} },
+				notion: { nodes: {}, steps: {} },
+				errors: [],
+				updatedAt: 1,
+			},
+			deps({ notion: fakeNotion({ rows }), linearTeam: undefined }),
+		);
+		expect(refs.notion.steps["n1.1"]).toBe("https://www.notion.so/child-1");
+		expect(refs.notion.steps["n1.2"]).not.toBe("https://www.notion.so/child-2");
+	});
+});
+
+describe("createTracking long degraded titles (greptile r2 #3)", () => {
+	function longPlan(): TrackPlan {
+		const plan = makePlan();
+		const item = `[n2] ${"x".repeat(165)}`;
+		return {
+			...plan,
+			issues: plan.issues.map((row) => (row.nodeId === "n2" ? { ...row, item } : row)),
+		};
+	}
+	const options = (notion: ToolCaller) =>
+		deps({ notion, linearTeam: undefined, degradedNodes: ["n2"] });
+
+	test("a degraded title over the cap matches itself on the next run: one row, same ref", async () => {
+		const notion = statefulNotion();
+		const first = await createTracking(longPlan(), GRAPH, undefined, options(notion));
+		const second = await createTracking(longPlan(), GRAPH, structuredClone(first), options(notion));
+		expect(notion.rows.filter((row) => row.Level === "Issue")).toHaveLength(3);
+		expect(notion.rows.filter((row) => row.Level === "Sub-Issue")).toHaveLength(6);
+		expect(second.notion.nodes.n2).toBe(first.notion.nodes.n2);
+		expect(second.status).toBe("complete");
+		const created = notion.calls.filter((call) => call.name === "notion-create-pages").length;
+		expect(created).toBe(3);
+	});
+
+	test("the same row is adopted from a lost record, and by a run that no longer knows the node is degraded", async () => {
+		const notion = statefulNotion();
+		const first = await createTracking(longPlan(), GRAPH, undefined, options(notion));
+		const lost: TrackingRefs = {
+			...structuredClone(first),
+			notion: { nodes: {}, steps: {} },
+		};
+		delete lost.notion.taskUrl;
+		const adopted = await createTracking(longPlan(), GRAPH, lost, options(notion));
+		expect(adopted.notion.nodes.n2).toBe(first.notion.nodes.n2);
+		const clean = await createTracking(
+			longPlan(),
+			GRAPH,
+			structuredClone(first),
+			deps({ notion, linearTeam: undefined }),
+		);
+		expect(clean.notion.nodes.n2).toBe(first.notion.nodes.n2);
+		expect(notion.rows.filter((row) => row.Level === "Issue")).toHaveLength(3);
+	});
+});
+
+describe("createTracking links to a dependency that now exists (greptile r2 #1)", () => {
+	test("a record without pending links is repaired when a dependency of an existing issue gets its issue", async () => {
+		const linear = statefulLinear();
+		const failing: ToolCaller & { calls: Call[] } = {
+			calls: linear.calls,
+			async call(name, args, signal) {
+				if (name === "save_issue" && args.title === "[n2] Build")
+					throw failure("HTTP 404", { status: 404 });
+				return linear.call(name, args, signal);
+			},
+		};
+		const first = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: failing, notionDataSource: undefined }),
+		);
+		// A record written before pending links were kept.
+		const legacy = structuredClone(first);
+		delete legacy.pendingLinks;
+		const second = await createTracking(
+			makePlan(),
+			GRAPH,
+			legacy,
+			deps({ linear, notionDataSource: undefined }),
+		);
+		expect(
+			linear.calls.some(
+				(call) =>
+					call.args.id === first.linear.nodes.n3?.identifier &&
+					JSON.stringify(call.args.blockedBy) ===
+						JSON.stringify([second.linear.nodes.n2?.identifier]),
+			),
+		).toBe(true);
+		expect(second.status).toBe("complete");
+		expect(second.pendingLinks).toBeUndefined();
 	});
 });
