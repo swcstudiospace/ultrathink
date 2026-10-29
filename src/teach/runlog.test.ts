@@ -238,4 +238,25 @@ describe("failure streak", () => {
 		expect(streak?.reason).toBe("[2Kcredit balance low");
 		expect(streak && failureStreakText(streak)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
 	});
+
+	test("overlapping observers in separate processes never lose the newest run", async () => {
+		const dir = stateDir();
+		for (let i = 1; i <= 50; i++) appendRun(dir, run(i));
+		const module = join(import.meta.dir, "runlog.ts");
+		const children = [0, 1, 2].map((id) => {
+			const script = join(dir, `${id}.ts`);
+			writeFileSync(
+				script,
+				`import { appendRun } from ${JSON.stringify(module)};\nfor (let i = 0; i < 10; i++) appendRun(${JSON.stringify(dir)}, { at: Date.now(), sessionId: "child-${id}", outcome: "skipped", captured: 0, skipped: "no signal" });\n`,
+			);
+			return Bun.spawn([process.execPath, script], { stdout: "ignore", stderr: "ignore" });
+		});
+		expect(await Promise.all(children.map((child) => child.exited))).toEqual([0, 0, 0]);
+		expect(runFiles(dir)).toHaveLength(50);
+		const runs = readRuns(dir);
+		// A full log of answered runs drops skipped ones first, but the newest run always survives.
+		expect(runs.at(-1)?.sessionId).toStartWith("child-");
+		expect(runs.filter((r) => r.sessionId.startsWith("child-"))).toHaveLength(1);
+		expect(runs.filter((r) => r.sessionId.startsWith("s"))).toHaveLength(49);
+	});
 });

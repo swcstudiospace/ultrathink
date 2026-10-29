@@ -8,9 +8,9 @@
  * text. Never throws.
  */
 import { randomBytes } from "node:crypto";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { writeFileAtomic } from "../claude/atomic.ts";
+import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 import { redactLine } from "./redact.ts";
 
 const MAX_RUNS = 50;
@@ -18,6 +18,7 @@ const AT_DIGITS = 13;
 const RUN_FILE = /^\d{13,}-[0-9a-f]{8}\.json$/;
 const SKIPPED_CHARS = 80;
 const DETAIL_CHARS = 160;
+const LOCK_WAIT_MS = 5_000;
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
 
 export interface ObserveRun {
@@ -98,18 +99,30 @@ export function appendRun(stateDir: string, run: ObserveRun): void {
 			...(run.detail ? { detail: redactLine(run.detail, DETAIL_CHARS) } : {}),
 		};
 		const name = `${String(Math.max(0, Math.trunc(run.at))).padStart(AT_DIGITS, "0")}-${randomBytes(4).toString("hex")}.json`;
-		writeFileAtomic(join(dir, name), `${JSON.stringify(entry)}\n`, { mode: 0o600, dirMode: 0o700 });
-		try {
-			for (const old of pruneVictims(dir, name)) {
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		// Write and prune as one step: two observers that each listed the log before the other wrote would each protect
+		// only their own file and drop the other's. A lock that cannot be taken runs unlocked.
+		withFileLock(
+			join(dir, ".append"),
+			() => {
+				writeFileAtomic(join(dir, name), `${JSON.stringify(entry)}\n`, {
+					mode: 0o600,
+					dirMode: 0o700,
+				});
 				try {
-					rmSync(join(dir, old), { force: true });
+					for (const old of pruneVictims(dir, name)) {
+						try {
+							rmSync(join(dir, old), { force: true });
+						} catch {
+							// reason: an older run that cannot be removed is pruned by a later append
+						}
+					}
 				} catch {
-					// reason: an older run that cannot be removed is pruned by a later append
+					// reason: pruning is best effort; the run is already written
 				}
-			}
-		} catch {
-			// reason: pruning is best effort; the run is already written
-		}
+			},
+			{ timeoutMs: LOCK_WAIT_MS },
+		);
 	} catch {
 		// reason: fail-open: the run log is diagnostics only
 	}
