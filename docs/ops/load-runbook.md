@@ -52,9 +52,9 @@ The scenarios and the sizes they ship with:
 | `nominal` | 500 | 25 | 12 | none |
 | `stress` | 2 000 | 100 | 13 | every 4th prompt's fills fail 429 with `Retry-After: 2` (25 percent of prompts), and the first fill of every 5th prompt fails 503 |
 | `spike` | 1 000 | 100 | 14 | every 3rd uplift is delayed 1.5 s and then fails 429 with `Retry-After: 1`; every 7th graph reply is garbage; then the probe prompt |
-| `recovery` | 5 | 1 | 15 | none; a probe batch after the load whose latency must be back within 1.25 times the `nominal` baseline (`baselineOf: nominal`) |
+| `recovery` | 5 | 1 | 15 | none; a probe prompt after the load whose real-clock latency must be back within 1.25 times the `nominal` baseline plus 250 ms (`baselineOf: nominal`) |
 
-Run `recovery` after a `nominal` run in the same history: it reads the latest recorded probe time of `nominal` from the history and compares against it. With no recorded `nominal` run there is no baseline and the latency comparison is not made.
+Run `recovery` after a `nominal` run in the same history: it reads the latest recorded real probe latency (`details.probeRealMs`) of `nominal` from the history and compares against it. With no recorded `nominal` run there is no baseline and the latency comparison is not made. A `nominal` run recorded before the real-clock figure existed offers only its scripted-clock observation, which is then the baseline.
 
 Flags of `pipeline run <id>`:
 
@@ -65,6 +65,7 @@ Flags of `pipeline run <id>`:
 | `--seed S` | Replaces its seed. A resized run is validated by the scenario parser, so a bad value names its field. |
 | `--history PATH` | The history file. Default: `<ULTRATHINK_STATE_DIR>/chaos/history.jsonl`, or `/var/lib/ultrathink/chaos/history.jsonl` when `ULTRATHINK_STATE_DIR` is unset. `score` reads the same file. |
 | `--pressure` | Runs CPU workers beside the load (see below). |
+| `--watchdog-ms MS` | Replaces the per-prompt watchdog budget (1 000 to 3 600 000 ms, validated like the other resize flags). See "The watchdog" below. |
 | `--trace-heap` | Prints `heap prompts=<n> heapUsed=<MiB> rss=<MiB>` after a forced full collection every 100 completed prompts, then `heap slope: <KiB/prompt> over <n> samples`. A slope above about 100 KiB per prompt means the code under test retains memory per prompt. |
 | `--provider real` | Sends the prompts to the live engine instead of the scripted provider (see the real-provider section). |
 | `--max-calls N` | With `--provider real` only: the most provider calls the run may make. Default 40. |
@@ -77,20 +78,24 @@ Each invariant is checked for every prompt, and a failure names the prompt. They
 
 | Id | Holds when |
 |---|---|
-| `terminal` | The run has exactly the prompts the scenario asked for, and every one ended planned (with a session record), aborted, or skipped with a deterministic reason; none threw, and no provider call is still pending. The reasons are the hook's `empty`, `trivial`, `command`, `already-uplifted`, `graph-reference`, `skip-once`, `disabled`, `extension` and `steer`, the Omp and Hermes `precheck-<reason>` codes (`precheck-trivial`, `precheck-command`, `precheck-already-uplifted`, `precheck-graph-reference`, `precheck-skip-once`, `precheck-disabled`, `precheck-empty`, `precheck-extension`, `precheck-steer` and `precheck-passthrough`), and `max-calls`. |
+| `terminal` | The run has exactly the prompts the scenario asked for, and every one ended planned (with a session record) or skipped with a deterministic reason; none threw, and no provider call is still pending. A prompt aborted by the watchdog is a finding, not a pass: it is accepted only when an injected `hang` fault targeted that prompt (on any stage, also behind a `delay`) or the scenario sets `allowAborts`. The planned count must also reach the share the corpus asks for: the prompts that are not blank (the generated cycle skips 2 of every 16, its `empty` and `whitespace` kinds), minus the prompts an injected hang aborted. The observation breaks the statuses down, for example `2000/2000 terminal: 1750 planned, 250 skipped (by design), 0 aborted`; the history record's `details` hold the per-reason skip counts (`skipped:empty`), the watchdog budget and the abort count. The reasons are the hook's `empty`, `trivial`, `command`, `already-uplifted`, `graph-reference`, `skip-once`, `disabled`, `extension` and `steer`, the Omp and Hermes `precheck-<reason>` codes (`precheck-trivial`, `precheck-command`, `precheck-already-uplifted`, `precheck-graph-reference`, `precheck-skip-once`, `precheck-disabled`, `precheck-empty`, `precheck-extension`, `precheck-steer` and `precheck-passthrough`), and `max-calls`. |
 | `original` | The user's text is preserved byte for byte in the spec. |
 | `uplift` | A malformed uplift is never counted as a success: a `source: "llm"` result is a complete uplift with a known root and no fallback reason, and a fallback has a reason and is listed as a degraded `uplift`. |
 | `degraded` | Every stage that fell back is listed in the record's `degraded` and shown in the plan notice, and a reply that was not a successful call is never accepted as a real fill. |
 | `cot` | Every real fill carries 5 to 8 steps and a conclusion. |
 | `isolation` | No other prompt's nonce appears in a prompt's record, spec, context, tracker rows or completer payloads. A token that is only a clipped start of the prompt's own nonce is not a leak. |
 | `resources` | After the run's own report has been reduced to verdicts and the heap fully collected, the JS heap is within 64 MiB plus 64 KiB per prompt of the baseline taken before the run (the base is the scenario's optional `resourceSlackMiB`), and handles, child processes and leftover state files and locks are back to the baseline. The resident set size is printed with it but does not decide the verdict: it includes memory the allocator has not returned. |
-| `recovery` | The probe prompt, sent after the load with the faults off, plans from the model with nothing degraded; with a baseline, it takes no more than 1.25 times the baseline's probe time. |
+| `recovery` | The probe prompt, sent after the load with the faults off, plans from the model with nothing degraded; with a baseline, its latency on the real clock is no more than 1.25 times the baseline's real probe latency plus 250 ms. The scripted provider's clock only moves when a wait is injected, so it reads 0 for a fault-free probe and is printed only as information. The observation reads `probe latency real <ms> baseline <ms or none> ratio <r or n/a> (virtual <ms>)`, and the history record's `details` hold `probeRealMs` and `probeVirtualMs`. |
 | `persisted` | Every persisted state file parses. |
 | `calls` | The provider calls per prompt stay inside the retry budget: one attempt plus the fill retries plus the single repair attempt per node, times three on the Omp path, and one per uplift or graph call and two per clarify call. |
 
 ## Pass criteria
 
 A scenario passes when the command exits 0: all ten invariants pass, the score is 100, and, with `--pressure`, the `pressure` hypothesis passes as well. Any failing invariant is a regression to fix; do not rerun until it goes away. Faults make prompts degrade by design (the `stress` and `spike` fixtures inject them), so a degraded prompt is not a failure. A degraded stage that is not listed and shown is: that is the `degraded` invariant.
+
+## The watchdog
+
+Every prompt runs under a real-time watchdog that aborts it when it has not finished within the budget: it is the hang detector, so it measures real time on purpose and is never swallowed. The budget is the scenario's `watchdogMs` when set, else the larger of 120 s and 4 s per concurrent slot (so `concurrency` 100 gets 400 s), and `--watchdog-ms` replaces either. A run prints `watchdog budget <ms> ms, aborts <n>` before its verdict, and records both in the history `details`. The driver yields a timer turn after every prompt: the hook path is microtasks and synchronous file work, and without that turn a wide batch starved every timer (Bun also runs chained `setImmediate` callbacks ahead of due timers, so the turn is a `setTimeout`), which aborted Omp-path prompts that were only waiting for the loop. A prompt that the watchdog aborts without an injected `hang` targeting it fails the `terminal` invariant; on a host so loaded that prompts really exceed the budget, rerun with a larger `--watchdog-ms` to tell starvation from a hang, and do not loosen the invariant.
 
 ## CPU pressure
 
