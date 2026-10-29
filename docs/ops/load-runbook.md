@@ -40,8 +40,8 @@ bun run chaos -- pipeline run smoke --pressure
 bun run chaos -- pipeline score nominal
 bun run chaos -- pipeline score nominal --history /tmp/pipeline-history.jsonl
 
-# hold CPU pressure on its own, beside another job
-bun run chaos -- pipeline pressure --workers 4 --seconds 1800
+# hold CPU pressure on its own, beside another job (see "Soak" for the repeated-window procedure)
+bun run chaos -- pipeline pressure --workers 4 --seconds 300
 ```
 
 The scenarios and the sizes they ship with:
@@ -98,7 +98,7 @@ A scenario passes when the command exits 0: all ten invariants pass, the score i
 
 The run fails with `pressure-not-applied: achieved CPU ratio <r> is below the floor 0.5` when the achieved ratio is under the floor. That figure is the host's, not the harness's: on a machine that is already loaded (a load average well above the CPU count, other agents building or testing) the workers get less than their share, and the helper cannot make the host deliver more. It means the pressure the run asked for was not applied, not that the pipeline failed. Rerun when the host is calmer, or run without `--pressure`: the gate scenarios are deterministic without it, and pressure runs are advisory but recorded. `pipeline run` takes no worker count or floor; to try other values, hold pressure with `pipeline pressure --workers N --floor R` and run the scenario in another shell.
 
-`pipeline pressure --workers N --seconds S [--memory-mb M] [--floor R]` holds full-duty pressure for `S` seconds (at most 3600) so another job can run beside it, then prints `pressure held Ns: cpuMs … wallMs … ratio …`. It exits 0 when the ratio met the floor (default 0.5), and 2 with `pressure not applied` on stderr when it did not.
+`pipeline pressure --workers N --seconds S [--memory-mb M] [--floor R]` holds full-duty pressure for `S` seconds (at most 3600) so another job can run beside it, then prints `pressure held Ns: cpuMs … wallMs … ratio …`. It exits 0 when the ratio met the floor (default 0.5), and 2 with `pressure not applied` on stderr when it did not. The ratio is CPU seconds per wall second, so a value above 1 means more than one core's worth of pressure; the workers stop when the window ends, so a job that outlasts the window runs unpressured for the rest of its time (see "Soak").
 
 ## Running against a real provider
 
@@ -128,12 +128,143 @@ Two variables are intentionally not in the environment registry, so `docs/enviro
 
 ## Recorded results
 
-One row per scenario. Each value comes from the output of the command in the last column and the line `recorded seq <n> in <history path>` that it prints; the score, the probe outcome and the history entry are read back with `pipeline score <id>` or from that file. A row that has not been recorded yet names the command that produces it and says so; no number is estimated here.
+Recorded on commit `e3097be` on a shared 8-CPU host (one-minute load average 28.93 when the first run started), with `--history` pointing at `.planning/phases/100-load-proof-and-closeout/load-history.jsonl` (six records, seq 1 to 6). Each row is transcribed from the run log `load-run.log` next to it and from that history file; the score and mean are read back with `pipeline score <id> --history <that file>`. Every run exited 0, printed `PASSED, score 100` and `pass` for all ten invariants (the `--pressure` run also printed `pass pressure`). The `Planned` column is how many of the prompts the oracle counted as planned (the `original`, `uplift`, `degraded` and `cot` invariants are checked over those, for example 436/436 in `nominal`); the others ended skipped or aborted with a status the `terminal` invariant accepts (all 500 of 500 were terminal), which is what the deterministic skip rules do to the varied prompt corpus.
 
-| Scenario | Prompts | Concurrency | Faults | Score | Probe outcome | History | Produced by |
-|---|---|---|---|---|---|---|---|
-| `smoke` | 50 | 5 | none | not yet recorded | not yet recorded | not yet recorded | `bun run chaos -- pipeline run smoke` |
-| `nominal` | 500 | 25 | none | not yet recorded | not yet recorded | not yet recorded | `bun run chaos -- pipeline run nominal` |
-| `stress` | 2 000 | 100 | 429 on every 4th prompt's fills, 503 on every 5th prompt's first fill | not yet recorded | not yet recorded | not yet recorded | `bun run chaos -- pipeline run stress` |
-| `spike` | 1 000 | 100 | slow then 429 on every 3rd uplift, garbage on every 7th graph | not yet recorded | not yet recorded | not yet recorded | `bun run chaos -- pipeline run spike` |
-| `recovery` | 5 | 1 | none (probe batch after `nominal`) | not yet recorded | not yet recorded | not yet recorded | `bun run chaos -- pipeline run recovery`, after `nominal` |
+| Scenario | Prompts | Concurrency | Faults | Score | Planned | Probe outcome | Wall | Max RSS | History |
+|---|---|---|---|---|---|---|---|---|---|
+| `smoke` | 50 | 5 | none | 100 | 42 | passed | 13.28 s | 147 532 KB | seq 1 |
+| `nominal` | 500 | 25 | none | 100 | 436 | passed | 109.92 s | 183 764 KB | seq 2 |
+| `recovery` | 5 | 1 | none (probe batch after `nominal`) | 100 | 3 | passed | 1.33 s | 82 848 KB | seq 3 |
+| `stress` | 2 000 | 100 | 429 on every 4th prompt's fills, 503 on every 5th prompt's first fill | 100 | 1 750 | passed | 267.82 s | 301 216 KB | seq 4 |
+| `spike` | 1 000 | 100 | slow then 429 on every 3rd uplift, garbage on every 7th graph | 100 | 874 | passed | 108.31 s | 225 908 KB | seq 5 |
+| `nominal --pressure` | 500 | 25 | none, with full-duty pressure on every CPU (the scenario names none, so the helper uses all of them) | 100 | 436 | passed | 117.18 s | 214 500 KB | seq 6 |
+
+The probe outcome is the `recovery` invariant: the probe prompt planned from the model with nothing degraded. Its recorded observation is `0` in every run: the harness measures it on its virtual clock, so there was no latency to compare with the 1.25 times baseline, and the invariant rests on the probe's outcome alone. Per-run figures the oracle recorded:
+
+| Run | `terminal` | `isolation` | `resources` (after the run, against the baseline before it) | `calls` |
+|---|---|---|---|---|
+| `smoke` | 50/50 | 42 prompts, 0 leaks | heap +4 MiB, rss +93 MiB, handles +0, files 0, peak in flight 5 | 51/51 within budget |
+| `nominal` | 500/500 | 436 prompts, 0 leaks | heap +7 MiB, rss +117 MiB, handles +0, files 0, peak in flight 20 | 501/501 |
+| `recovery` | 5/5 | 3 prompts, 0 leaks | heap +5 MiB, rss +32 MiB, handles +0, files 0, peak in flight 1 | 6/6 |
+| `stress` | 2000/2000 | 1750 prompts, 0 leaks | heap +17 MiB, rss +166 MiB, handles +0, files 0, peak in flight 81 | 2001/2001 |
+| `spike` | 1000/1000 | 874 prompts, 0 leaks | heap +9 MiB, rss +126 MiB, handles +0, files 0, peak in flight 97 | 1001/1001 |
+| `nominal --pressure` | 500/500 | 436 prompts, 0 leaks | heap +6 MiB, rss +116 MiB, handles +0, files 0, peak in flight 20 | 501/501 |
+
+Pressure applied during the `nominal --pressure` run (seq 6): the `pressure` hypothesis passed with an achieved CPU ratio of 4.785 against the floor of 0.5. `pipeline score` after the six runs: `smoke`, `recovery`, `stress` and `spike` have one run each, mean 100, latest 100; `nominal` has two runs (seq 2 and 6), mean 100, trend slope 0, latest 100.
+
+## Soak: the load-flaky test files under pressure
+
+The soak proves that the test files that used to fail only on a loaded host (`atomic`, `audit-segments`, `audit-verify`, `session mark`, the doctor commands, `pstack-check`, `engine-label-safety`) pass repeatedly while the host is under CPU pressure. `audit-watch.test.ts` is hardened by the same seam and is proved in focused runs, not in the loop.
+
+The procedure is one script that holds the pressure helper in repeated 300 s windows in the background while twenty iterations of the seven files run in the foreground, and stops on the first failing iteration. The helper's window must be at least as long as one loop iteration; otherwise the tail of an iteration runs unpressured and the soak proves less than it claims. An iteration took 105 to 170 s here, so 300 s covers it. Run it from the repository root:
+
+```bash
+FILES="src/claude/atomic.test.ts services/ultrathink/obs/audit-segments.test.ts services/ultrathink/obs/audit-verify.test.ts src/mcp/cli.test.ts src/uplift/commands.test.ts src/doctor/pstack-check.test.ts src/host/engine-label-safety.test.ts"
+LOG=/tmp/soak-20.log
+DONE=/tmp/soak20.done
+rm -f "$DONE" "$LOG"
+(
+  while [ ! -f "$DONE" ]; do
+    echo "pressure window $(date -u +%T)" >> "$LOG"
+    bun run chaos -- pipeline pressure --workers 4 --seconds 300 >> "$LOG" 2>&1
+    echo "pressure window exit=$?" >> "$LOG"
+  done
+) &
+PRESSURE=$!
+pass=0
+for i in $(seq 1 20); do
+  start=$(date +%s)
+  if bun test --timeout 240000 $FILES > "/tmp/soak-run-$i.out" 2>&1; then
+    pass=$((pass + 1))
+    echo "run $i PASS $(( $(date +%s) - start )) s load $(cut -d' ' -f1 /proc/loadavg)" >> "$LOG"
+  else
+    echo "run $i FAIL $(( $(date +%s) - start )) s load $(cut -d' ' -f1 /proc/loadavg)" >> "$LOG"
+    grep -E '^\(fail\)|^ *[0-9]+ (pass|fail)|error:' "/tmp/soak-run-$i.out" | head -20 >> "$LOG"
+    break
+  fi
+done
+touch "$DONE"
+echo "soak runs passed: $pass of 20" >> "$LOG"
+wait "$PRESSURE" 2>/dev/null
+```
+
+Every window's last lines must read `pressure held 300s: … ratio <r>` with `pressure window exit=0`; an exit 2 (`pressure not applied`) means the host delivered less than the floor and that window proves nothing. The soak passes when the log ends with `soak runs passed: 20 of 20`. Do not run the loop while another heavy job (a full `bun test`, a build) holds the host, so that a failure is attributable to the files.
+
+Recorded result: soak started 2026-10-29T08:47:46Z on commit `e3097be`, 8 CPUs, one-minute load average 34.99 at the start, ended 09:31:48Z with `soak runs passed: 20 of 20`. Each run executed the same 273 tests: 273 pass, 0 fail, in all 20. The load column is the one-minute load average read when that run ended.
+
+| Run | Result | Time | Load | Tests |
+|---|---|---|---|---|
+| 1 | PASS | 124 s | 9.00 | 273 pass, 0 fail |
+| 2 | PASS | 132 s | 8.92 | 273 pass, 0 fail |
+| 3 | PASS | 111 s | 25.46 | 273 pass, 0 fail |
+| 4 | PASS | 118 s | 31.87 | 273 pass, 0 fail |
+| 5 | PASS | 117 s | 11.18 | 273 pass, 0 fail |
+| 6 | PASS | 131 s | 11.65 | 273 pass, 0 fail |
+| 7 | PASS | 142 s | 29.07 | 273 pass, 0 fail |
+| 8 | PASS | 134 s | 24.42 | 273 pass, 0 fail |
+| 9 | PASS | 149 s | 8.85 | 273 pass, 0 fail |
+| 10 | PASS | 170 s | 19.92 | 273 pass, 0 fail |
+| 11 | PASS | 159 s | 51.85 | 273 pass, 0 fail |
+| 12 | PASS | 138 s | 11.24 | 273 pass, 0 fail |
+| 13 | PASS | 122 s | 5.84 | 273 pass, 0 fail |
+| 14 | PASS | 124 s | 22.73 | 273 pass, 0 fail |
+| 15 | PASS | 105 s | 21.04 | 273 pass, 0 fail |
+| 16 | PASS | 151 s | 17.05 | 273 pass, 0 fail |
+| 17 | PASS | 146 s | 19.28 | 273 pass, 0 fail |
+| 18 | PASS | 129 s | 46.02 | 273 pass, 0 fail |
+| 19 | PASS | 122 s | 33.06 | 273 pass, 0 fail |
+| 20 | PASS | 116 s | 10.73 | 273 pass, 0 fail |
+
+Pressure delivered, as the helper measured it (nine 300 s windows, 4 workers on 8 CPUs, floor 0.5; every window exited 0):
+
+| Window start (UTC) | cpuMs | wallMs | Ratio |
+|---|---|---|---|
+| 08:47:46 | 778 552 | 300 011 | 2.5951 |
+| 08:52:47 | 805 781 | 300 011 | 2.6858 |
+| 08:57:48 | 670 569 | 300 002 | 2.2352 |
+| 09:02:48 | 650 878 | 300 077 | 2.1690 |
+| 09:07:49 | 572 158 | 300 385 | 1.9047 |
+| 09:12:50 | 712 774 | 300 002 | 2.3759 |
+| 09:17:52 | 769 537 | 300 004 | 2.5651 |
+| 09:22:53 | 738 589 | 300 010 | 2.4619 |
+| 09:27:54 | 832 657 | 300 071 | 2.7749 |
+
+## Closeout record (v1.21)
+
+What the gates produced, transcribed from the orchestrator's runs. A value that has not been produced is `pending` with the command that produces it; nothing is estimated.
+
+### GATE-01: static gates and tests
+
+Run by the orchestrator on the milestone code before the last documentation commit (commit `e3097be` for the load runs):
+
+| Gate | Command | Result |
+|---|---|---|
+| Types | `bun run check` | exit 0 |
+| Service types | `bun run check:services` | exit 0 |
+| Lint | `bun run lint` | exit 0, 0 errors; 64 infos, which already exist on `origin/main` |
+| Dead code | `bun run deadcode` | exit 0 |
+| Environment docs | `bun scripts/render-env-docs.ts --check` | current |
+| Hermes bridge | `python3 hosts/hermes/bridge_test.py` | OK |
+| Prime Agent bridge | `python3 hosts/prime-agent/bridge_test.py` | 17 tests OK |
+| Full local suite, pre-integration tree | `bun test` | 8 048 pass, 12 skip, 0 fail, 1 237 s |
+| Full local suite, final tree | `bun test` | 8 092 pass, 12 skip, 2 fail |
+| Pull request CI | the CI checks on the pull request | pending: PR CI |
+
+The two failures on the final tree are known load-sensitive tests, not passes. Neither is touched by this milestone; each passed 3 of 3 times when run alone, and each failed only while the host's load average was above 30: `plugins/omp-token-opt/src/remote-sink.test.ts` (`close returns within about timeoutMs`) and `services/ultrathink/mcp/conformance.test.ts` (`a line over 1 MiB is refused …`). The full suite is not a local gate on this host; CI on the pull request is, and it has not run yet.
+
+### GATE-02: load and soak
+
+The five scenarios at full size, the `nominal --pressure` run and the 20-run soak are recorded in "Recorded results" and "Soak" above: every scenario scored 100 with all ten invariants passing, and 20 of 20 soak runs passed under measured pressure (ratio 1.9047 to 2.7749).
+
+### GATE-03: milestone audit
+
+pending. The audit must list the unverified claims, the deferred findings and the owner decisions, from the milestone audit run (`/gsd:audit-milestone`). What it has to carry from the findings file:
+
+- Owner policies kept: no default planning deadline on Omp (the 25 s race is delivery-only), one model per flight, every stage fails open; a retry never changes model, route or effort.
+- Deferred by decision, not built: a machine-wide model-call gate across processes (L12-08); default per-call deadlines for the Claude, Grok and Muse CLI routes (L5-02) and for the hosted service (L9-01 keeps 0, with a warning); retention on by default (L8-12); the Hermes plan-deadline redesign (L7-07 c); every LOW finding.
+- Suspected and unproven: L5-09, L8-13, L4-06. Performance, not load-critical: L9-09, L9-10, L12-09, L12-13.
+- Known gap: a journal or job that records no principal is visible only to an owner-class caller and to a stdio host. The client tools addressed by an explicit session id (`ultrathink_result`, `ultrathink_answer`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_status`) do not check the principal: the session UUID is the only protection there.
+
+### GATE-04: review, merge and sync
+
+pending. Greptile 5 of 5 on the exact head with no open threads, CI green, merge, then the live checkout synced to `main` and STATE written, all through `ultrathink-ship`.
