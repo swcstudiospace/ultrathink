@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+import { beforeEach } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +23,13 @@ import type { HostId } from "./types.ts";
 /** Each test file owns its directories and registers its own afterEach cleanup. */
 export function createEngineFixtures() {
 	const dirs: string[] = [];
+	let savedStateDir: { value: string | undefined } | undefined;
 	function cleanup(): void {
+		if (savedStateDir) {
+			if (savedStateDir.value === undefined) delete process.env.ULTRATHINK_STATE_DIR;
+			else process.env.ULTRATHINK_STATE_DIR = savedStateDir.value;
+			savedStateDir = undefined;
+		}
 		while (dirs.length) rmSync(dirs.pop() as string, { recursive: true, force: true });
 	}
 
@@ -49,6 +56,13 @@ export function createEngineFixtures() {
 		);
 		return home;
 	}
+
+	// Failover cooldowns persist under the state directory: each test gets its own, so none reaches the user's real one
+	// or leaks a cooling candidate into the next test. `cleanup` (registered with afterEach) restores the variable.
+	beforeEach(() => {
+		savedStateDir = { value: process.env.ULTRATHINK_STATE_DIR };
+		process.env.ULTRATHINK_STATE_DIR = tempDir("ultrathink-engine-state-");
+	});
 
 	/** A claude binary that only records that it ran: the Claude-spawn spy. */
 	function claudeSpy(): { bin: string; ran: () => boolean } {

@@ -6,11 +6,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeConfigPaths, loadConfig } from "../../../src/config.ts";
-import { journalDir, listPending, stageOf } from "../../../src/host/grokbot.ts";
+import { journalDir, listPending, readMeta, stageOf } from "../../../src/host/grokbot.ts";
 import { planPrompt } from "../../../src/host/plan.ts";
 import { NODE, UPLIFT } from "../../../src/test.helpers.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../../../src/think/prompts.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../../../src/uplift/prompt.ts";
+import { runWithRequestContext } from "../obs/context.ts";
 import {
 	type JournalOptions,
 	type PlanView,
@@ -386,6 +387,52 @@ describe("grok-bot journal service", () => {
 		const started = startPlan(o, { prompt: "x".repeat(10000), sessionId: randomUUID() });
 		open();
 		expect(await started).toMatchObject({ ok: true, data: { status: "needs-model" } });
+	});
+});
+
+describe("journal principal scoping", () => {
+	const admitted = (principal: string) => ({
+		reqId: randomUUID(),
+		traceId: "0".repeat(32),
+		spanId: "0".repeat(16),
+		admission: { principal, class: "connector" as const },
+	});
+
+	test("a plan that throws mid-run still leaves its journal scoped to the caller that started it", async () => {
+		const stateDir = newState();
+		const sessionId = randomUUID();
+		const plan: JournalOptions["plan"] = async () => {
+			throw new Error("the client journal died mid-run");
+		};
+		const started = await runWithRequestContext(admitted("key:alice"), () =>
+			startPlan({ ...opts(stateDir), plan }, { prompt: PROMPT, sessionId }),
+		);
+		expect(started).toMatchObject({ ok: false, code: "engine_error" });
+		expect(readMeta(journalDir(stateDir, sessionId))?.principal).toBe("key:alice");
+	});
+
+	test("the principal is recorded before the run starts, so a run in flight is already scoped", async () => {
+		const stateDir = newState();
+		const sessionId = randomUUID();
+		let seen: string | undefined;
+		const plan: JournalOptions["plan"] = async () => {
+			seen = readMeta(journalDir(stateDir, sessionId))?.principal;
+			throw new Error("stop after looking");
+		};
+		await runWithRequestContext(admitted("key:alice"), () =>
+			startPlan({ ...opts(stateDir), plan }, { prompt: PROMPT, sessionId }),
+		);
+		expect(seen).toBe("key:alice");
+	});
+
+	test("a start without an admission leaves the journal without a principal", async () => {
+		const stateDir = newState();
+		const sessionId = randomUUID();
+		const plan: JournalOptions["plan"] = async () => {
+			throw new Error("died");
+		};
+		await startPlan({ ...opts(stateDir), plan }, { prompt: PROMPT, sessionId });
+		expect(readMeta(journalDir(stateDir, sessionId))?.principal).toBeUndefined();
 	});
 });
 

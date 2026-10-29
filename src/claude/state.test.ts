@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -9,18 +9,24 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { claudeConfigPaths, loadConfig } from "../config.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
 import { shipNudge } from "../ship/nudge.ts";
 import { DEFAULT_SHIP_CONFIG } from "../ship/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { main as mcpMain } from "../mcp/cli.ts";
+import type { TrackingRefs } from "../track/types.ts";
+import { LockTimeoutError, type LockOptions, writeFileAtomic } from "./atomic.ts";
 import {
+	CLI_LOCK,
 	controlPath,
 	defaultStateDir,
+	degradedNodeIds,
 	legacySessionPath,
 	readControl,
 	readLast,
@@ -28,6 +34,7 @@ import {
 	type SessionRecord,
 	sessionPath,
 	sessionRecordPath,
+	trackingCheckpoint,
 	updateSession,
 	writeControl,
 	writeSession,
@@ -484,6 +491,127 @@ describe("updateSession", () => {
 	});
 });
 
+describe("updateSession under a held lock (D-07: no silent overwrite)", () => {
+	const record: SessionRecord = {
+		sessionId: "u1",
+		at: 1,
+		result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+	};
+	/** Clock and liveness seams that make a live holder time out at once, without waiting. */
+	function starved(): LockOptions {
+		let clock = 0;
+		return {
+			now: () => clock,
+			sleep: (ms) => {
+				clock += ms;
+			},
+			staleMs: Number.MAX_SAFE_INTEGER,
+			liveness: { killAlive: () => true },
+		};
+	}
+
+	test("with the throw policy a holder past the timeout makes the second update fail loudly instead of being overwritten; a retry loses no field", () => {
+		const dir = tempDir();
+		writeSession(dir, record);
+		let caught: unknown;
+		updateSession(dir, "u1", (current) => {
+			// A second writer arrives while this one holds the lock, and the holder outlives its timeout.
+			try {
+				updateSession(dir, "u1", (inner) => ({ ...inner, synced: true }), {
+					...starved(),
+					...CLI_LOCK,
+				});
+			} catch (error) {
+				caught = error;
+			}
+			return { ...current, kickedOff: true };
+		});
+		expect(caught).toBeInstanceOf(LockTimeoutError);
+		expect(readSession(dir, "u1")).toEqual({ ...record, kickedOff: true });
+		// The failed writer retries once the lock is free: both fields survive.
+		updateSession(dir, "u1", (current) => ({ ...current, synced: true }), CLI_LOCK);
+		expect(readSession(dir, "u1")).toEqual({ ...record, kickedOff: true, synced: true });
+	});
+
+	test("the hook policy still writes unlocked after the timeout and says so in one line through the injected log", () => {
+		const dir = tempDir();
+		writeSession(dir, record);
+		const lines: string[] = [];
+		let returned: SessionRecord | undefined;
+		updateSession(dir, "u1", (current) => {
+			returned = updateSession(dir, "u1", (inner) => ({ ...inner, synced: true }), {
+				...starved(),
+				log: (line) => lines.push(line),
+			});
+			return { ...current, kickedOff: true };
+		});
+		expect(returned?.synced).toBe(true);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("writing unlocked");
+	});
+
+	test("without an injected log the unlocked write is still visible on stderr", () => {
+		const dir = tempDir();
+		writeSession(dir, record);
+		const written: string[] = [];
+		const spy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+			written.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write);
+		try {
+			updateSession(dir, "u1", (current) => {
+				updateSession(dir, "u1", (inner) => ({ ...inner, synced: true }), starved());
+				return { ...current, kickedOff: true };
+			});
+		} finally {
+			spy.mockRestore();
+		}
+		expect(written.filter((line) => line.includes("writing unlocked"))).toHaveLength(1);
+	});
+});
+
+describe("tracking checkpoints and degraded nodes", () => {
+	const tracking = (graphId: string, node: string): TrackingRefs => ({
+		graphId,
+		status: "partial",
+		linear: {
+			nodes: {
+				[node]: { id: node, identifier: node, url: `https://linear.app/${node}`, title: node },
+			},
+			steps: {},
+		},
+		notion: { nodes: {}, steps: {} },
+		errors: [],
+		updatedAt: 5,
+	});
+	const planned = (graphId: string): SessionRecord =>
+		({
+			sessionId: "t1",
+			at: 1,
+			result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+			plan: { graphId, task: { graphId } },
+		}) as unknown as SessionRecord;
+
+	test("degradedNodeIds reads the fill:<id> tokens of the record's degraded list and nothing else", () => {
+		expect(degradedNodeIds(undefined)).toEqual([]);
+		expect(
+			degradedNodeIds({ degraded: ["uplift", "fill:n2", "graph", "fill:n5", "clarify"] }),
+		).toEqual(["n2", "n5"]);
+	});
+
+	test("a checkpoint merges the live refs over what the record already holds, never fewer", () => {
+		const prior = trackingCheckpoint("g1", tracking("g1", "n1"))(planned("g1"));
+		expect(Object.keys(prior?.tracking?.linear.nodes ?? {})).toEqual(["n1"]);
+		const next = trackingCheckpoint("g1", tracking("g1", "n2"))(prior as SessionRecord);
+		expect(Object.keys(next?.tracking?.linear.nodes ?? {}).sort()).toEqual(["n1", "n2"]);
+		expect(next?.tracking?.status).toBe("partial");
+	});
+
+	test("a checkpoint for a graph the record no longer holds changes nothing", () => {
+		expect(trackingCheckpoint("old", tracking("old", "n1"))(planned("new"))).toBeUndefined();
+	});
+});
+
 describe("strict last-lock completion", () => {
 	test("a completed live writer can be replaced after a competing mutation guard is freed", () => {
 		const dir = tempDir();
@@ -684,5 +812,257 @@ describe("a legacy-only session record through the answers hook", () => {
 			answer: "Postgres",
 		});
 		expect(readFileSync(legacyXml, "utf8")).toBe(`${marked?.result.xml}\n`);
+	});
+});
+
+/** The pid of a child that has already exited: nothing runs under it. */
+function deadPid(): number {
+	return Bun.spawnSync(["true"]).pid;
+}
+
+describe("control state under load and corruption", () => {
+	test("two processes toggling different keys concurrently both keep every toggle", async () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		const stateUrl = JSON.stringify(join(import.meta.dir, "state.ts"));
+		const worker = (key: string) =>
+			Bun.spawn(
+				[
+					"bun",
+					"--no-env-file",
+					"-e",
+					`import { writeControl } from ${stateUrl};\n` +
+						`for (let i = 0; i < 25; i++) writeControl(${JSON.stringify(dir)}, { ${key}: i % 2 === 0 }, { timeoutMs: 120_000 });\n`,
+				],
+				{ stdout: "pipe", stderr: "pipe" },
+			);
+		const children = [worker("enabled"), worker("hitlEnabled"), worker("trackEnabled")];
+		for (const child of children) expect(await child.exited).toBe(0);
+		const control = readControl(dir);
+		expect(Object.keys(control).sort()).toEqual(["enabled", "hitlEnabled", "trackEnabled"]);
+	}, 120_000);
+
+	test("a lock held past the default wait is waited for (up to 30 s) and never bypassed by an unlocked write", () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		writeControl(dir, { enabled: false });
+		// A live holder that never lets go: pid alive, start identity unverifiable, never stale.
+		writeFileSync(
+			`${controlPath(dir)}.lock`,
+			JSON.stringify({ pid: process.pid, startTime: "", token: "held" }),
+		);
+		let clock = 0;
+		let slept = 0;
+		let caught: unknown;
+		try {
+			writeControl(
+				dir,
+				{ hitlEnabled: true },
+				{
+					now: () => clock,
+					sleep: (ms) => {
+						slept += ms;
+						clock += ms;
+					},
+					staleMs: Number.MAX_SAFE_INTEGER,
+					liveness: { killAlive: () => true },
+				},
+			);
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toBeInstanceOf(LockTimeoutError);
+		expect(slept).toBeGreaterThanOrEqual(30_000);
+		expect(readControl(dir)).toEqual({ enabled: false });
+	});
+
+	test("a corrupt control.json reads as {} for this flight, is quarantined, and the next write persists only deliberate toggles", () => {
+		const dir = tempDir();
+		writeControl(dir, { enabled: false, hitlEnabled: true });
+		writeFileSync(controlPath(dir), '{\n\t"enabled": fal');
+		const lines: string[] = [];
+		expect(readControl(dir, { log: (line) => lines.push(line) })).toEqual({});
+		const quarantined = readdirSync(dir).filter((name) => name.startsWith("control.json.corrupt-"));
+		expect(quarantined).toHaveLength(1);
+		expect(quarantined[0]).toMatch(/^control\.json\.corrupt-\d+/);
+		expect(readFileSync(join(dir, quarantined[0] as string), "utf8")).toBe('{\n\t"enabled": fal');
+		expect(existsSync(controlPath(dir))).toBe(false);
+		expect(lines.join("\n")).toContain(quarantined[0] as string);
+		// Nothing was persisted by the read, and the next write holds only what it was asked to toggle.
+		expect(writeControl(dir, { trackEnabled: false })).toEqual({ trackEnabled: false });
+		expect(JSON.parse(readFileSync(controlPath(dir), "utf8"))).toEqual({ trackEnabled: false });
+		expect(readdirSync(dir).filter((name) => name.startsWith("control.json.corrupt-"))).toEqual(
+			quarantined,
+		);
+	});
+
+	test("a control.json that parses to a non-object is corrupt too; a missing one is {} with no quarantine", () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		expect(readControl(dir)).toEqual({});
+		expect(readdirSync(dir)).toEqual([]);
+		for (const text of ["[]", "null", "7", ""]) {
+			writeFileSync(controlPath(dir), text);
+			expect(readControl(dir)).toEqual({});
+			expect(existsSync(controlPath(dir))).toBe(false);
+		}
+		expect(
+			readdirSync(dir).filter((name) => name.startsWith("control.json.corrupt-")),
+		).toHaveLength(4);
+	});
+
+	test("a corrupt config layer keeps the lower layers' values for the flight and is never written back", () => {
+		const root = mkdtempSync(join(tmpdir(), "ultrathink-config-layer-"));
+		dirs.push(root);
+		const home = join(root, "home");
+		const cwd = join(root, "cwd");
+		mkdirSync(join(cwd, ".claude"), { recursive: true });
+		mkdirSync(join(home, ".claude"), { recursive: true });
+		writeFileSync(
+			join(home, ".claude", "ultrathink.json"),
+			JSON.stringify({ track: { enabled: false } }),
+		);
+		const broken = join(cwd, ".claude", "ultrathink.json");
+		writeFileSync(broken, '{"track": {"enabled": tr');
+		const env = { CLAUDE_CONFIG_DIR: join(home, ".claude"), XDG_CONFIG_HOME: join(home, "xdg") };
+		const config = loadConfig(claudeConfigPaths(cwd, env));
+		expect(config.track.enabled).toBe(false);
+		expect(readFileSync(broken, "utf8")).toBe('{"track": {"enabled": tr');
+	});
+});
+
+describe("last.json refresh waits by wall clock", () => {
+	test("a live holder that lets go after 1 s of waiting does not cost the refresh", () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		const last = join(dir, "last.json");
+		const lock = `${last}.lock`;
+		writeFileSync(lock, String(process.pid), { mode: 0o600 });
+		let clock = 0;
+		const refreshed = withLastLock(last, () => writeFileSync(last, '{"ok":true}'), {
+			now: () => clock,
+			sleep: (ms) => {
+				clock += ms;
+				if (clock >= 1_000) rmSync(lock, { force: true });
+			},
+		});
+		expect(refreshed).toBe(true);
+		expect(readFileSync(last, "utf8")).toBe('{"ok":true}');
+	});
+
+	test("a live holder that never lets go gives up only after 3 s", () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		const last = join(dir, "last.json");
+		writeFileSync(`${last}.lock`, String(process.pid), { mode: 0o600 });
+		let clock = 0;
+		const refreshed = withLastLock(last, () => writeFileSync(last, "{}"), {
+			now: () => clock,
+			sleep: (ms) => {
+				clock += ms;
+			},
+		});
+		expect(refreshed).toBe(false);
+		expect(clock).toBeGreaterThanOrEqual(3_000);
+		expect(existsSync(last)).toBe(false);
+	});
+});
+
+describe("writeFileAtomic orphan temp sweep", () => {
+	function plant(dir: string, name: string, ageSeconds?: number): string {
+		const path = join(dir, name);
+		writeFileSync(path, "partial");
+		if (ageSeconds !== undefined) {
+			const at = Date.now() / 1000 - ageSeconds;
+			utimesSync(path, at, at);
+		}
+		return path;
+	}
+
+	test("a write removes old temp files of dead pids and keeps a live pid's, a young one and other files", () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		const dead = deadPid();
+		const orphan = plant(dir, `.control.json.${dead}.deadbeef.tmp`, 600);
+		const live = plant(dir, `.control.json.${process.pid}.cafebabe.tmp`, 600);
+		const young = plant(dir, `.control.json.${dead}.0badf00d.tmp`, 1);
+		const unrelated = plant(dir, `.notes.${dead}.tmp.txt`, 600);
+		const plain = plant(dir, "other.json", 600);
+		writeFileAtomic(join(dir, "control.json"), "{}");
+		expect(existsSync(orphan)).toBe(false);
+		for (const kept of [live, young, unrelated, plain]) expect(existsSync(kept)).toBe(true);
+		expect(readFileSync(join(dir, "control.json"), "utf8")).toBe("{}");
+	});
+
+	test("a temp entry that cannot be unlinked never fails the write", () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		// A directory with an orphan's name: unlink on it throws, and the sweep must swallow that.
+		const trap = join(dir, `.control.json.${deadPid()}.deadbeef.tmp`);
+		mkdirSync(trap);
+		const at = Date.now() / 1000 - 600;
+		utimesSync(trap, at, at);
+		writeFileAtomic(join(dir, "control.json"), "{}");
+		expect(readFileSync(join(dir, "control.json"), "utf8")).toBe("{}");
+		expect(existsSync(trap)).toBe(true);
+	});
+});
+
+describe("a failing last.json refresh keeps the session saved", () => {
+	test("last.json being a directory returns the refresh note; the session file is written", () => {
+		const dir = tempDir();
+		mkdirSync(join(dir, "last.json"), { recursive: true });
+		const record: SessionRecord = {
+			sessionId: "g1",
+			at: 1,
+			result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+		};
+		const note = writeSession(dir, record);
+		expect(note).toContain("could not refresh");
+		expect(note).toContain("last.json");
+		expect(readSession(dir, "g1")).toEqual(record);
+	});
+
+	test("updateSession on such a store still returns the mutated record", () => {
+		const dir = tempDir();
+		const record: SessionRecord = {
+			sessionId: "g1b",
+			at: 1,
+			result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+		};
+		writeSession(dir, record);
+		rmSync(join(dir, "last.json"), { force: true });
+		mkdirSync(join(dir, "last.json"));
+		const next = updateSession(dir, "g1b", (current) => ({ ...current, at: 2 }));
+		expect(next?.at).toBe(2);
+		expect(readSession(dir, "g1b")?.at).toBe(2);
+	});
+});
+
+describe("writeControl never builds on an unreadable control.json", () => {
+	test("a control.json that cannot be read aborts the write, names the cause and changes nothing", () => {
+		const dir = tempDir();
+		writeControl(dir, { enabled: false, hitlEnabled: true });
+		const text = readFileSync(controlPath(dir), "utf8");
+		// A directory in place of the file reads with EISDIR, a non-ENOENT failure that also works as root.
+		rmSync(controlPath(dir));
+		mkdirSync(controlPath(dir));
+		expect(() => writeControl(dir, { trackEnabled: false })).toThrow(
+			/could not be read.*nothing was written/,
+		);
+		expect(statSync(controlPath(dir)).isDirectory()).toBe(true);
+		rmSync(controlPath(dir), { recursive: true });
+		writeFileSync(controlPath(dir), text);
+		expect(readControl(dir)).toEqual({ enabled: false, hitlEnabled: true });
+		expect(writeControl(dir, { trackEnabled: false })).toEqual({
+			enabled: false,
+			hitlEnabled: true,
+			trackEnabled: false,
+		});
+	});
+
+	test("a missing control.json is still empty: the first write creates it", () => {
+		const dir = tempDir();
+		expect(writeControl(dir, { thinkEnabled: true })).toEqual({ thinkEnabled: true });
 	});
 });

@@ -5,6 +5,7 @@ import pkg from "../../../package.json";
 import { promptDefinitions, renderPrompt } from "./prompts.ts";
 import type { ResourceRegistry } from "./resources.ts";
 import {
+	CANCEL_TOOL,
 	CONNECTOR_TOOL_DEFINITIONS,
 	GRAPH_UI_META,
 	LARGE_RESULT_META,
@@ -269,11 +270,12 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 	...CONNECTOR_TOOL_DEFINITIONS,
 ];
 
+// The two tools that act on a server plan exist only where the host plans on the server.
 const CLIENT_TOOL_DEFINITIONS: readonly ToolDefinition[] = TOOL_DEFINITIONS.filter(
-	(tool) => tool.name !== UPLIFT_TOOL,
+	(tool) => tool.name !== UPLIFT_TOOL && tool.name !== CANCEL_TOOL,
 );
 
-/** The tools a host serves: ultrathink_uplift exists only when the host plans on the server. */
+/** The tools a host serves: ultrathink_uplift and ultrathink_cancel exist only when the host plans on the server. */
 export function toolDefinitions(serverPlanning: boolean): readonly ToolDefinition[] {
 	return serverPlanning ? TOOL_DEFINITIONS : CLIENT_TOOL_DEFINITIONS;
 }

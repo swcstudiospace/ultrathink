@@ -4,7 +4,7 @@
  * Cross-session isolation: an edit is attributed to the repo it touched, `/ultrathink-skip` arms one session only, and a
  * prompt with no session id gets a turn id of its own. Temp git repos only; every root is removed after each test.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,7 +23,7 @@ import {
 	writeSession,
 } from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
-import { graphJson } from "../test.helpers.ts";
+import { graphJson, UPLIFT } from "../test.helpers.ts";
 import { realmHint, type RealmProbe } from "../stack/realm.ts";
 import type { TrackPlan } from "../track/types.ts";
 import { runControl, takeSessionFlag } from "../uplift/commands.ts";
@@ -88,8 +88,7 @@ function plannedRecord(sessionId: string, labelled: string | undefined): Session
 /** Dispatches by payload content so one fake handles uplift, graph, CoT, and clarify calls. */
 function smartComplete(): (system: string, user: string) => Promise<string> {
 	return async (_system, user) => {
-		if (user.includes("<user_request>"))
-			return "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>";
+		if (user.includes("<user_request>")) return UPLIFT("add a widget");
 		if (user.startsWith("<spec>")) return JSON.stringify({ questions: [] });
 		if (user.includes("current_node")) {
 			const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
@@ -109,7 +108,7 @@ function baseDeps(): HookDeps {
 		stateDir: join(tempRoot(), "ultrathink"),
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),
 		brief: async () => ({ text: "", state: "none" }),
-		clarify: async () => [],
+		clarify: async () => ({ items: [] }),
 		emit: async () => true,
 		now: () => 1_000,
 		log: () => {
@@ -136,6 +135,41 @@ describe("edit attribution", () => {
 		const record = readSession(dir, "s1");
 		expect(record?.workRepos).toEqual(["acme/other"]);
 		expect(record?.repoMismatch).toEqual({ labelled: "acme/widgets", edited: ["acme/other"] });
+	});
+
+	test("a held session lock falls back to the unlocked write without a line on stderr (Omp TUI)", () => {
+		const root = tempRoot();
+		const dir = join(root, "ultrathink");
+		repoAt(root, "acme/widgets");
+		const other = repoAt(root, "acme/other");
+		writeSession(dir, plannedRecord("s1", "acme/widgets"));
+		const file = join(other, "src", "widget.ts");
+		let clock = 0;
+		const starved = {
+			now: () => clock,
+			sleep: (ms: number) => {
+				clock += ms;
+			},
+			staleMs: Number.MAX_SAFE_INTEGER,
+			liveness: { killAlive: () => true },
+		};
+		const written: string[] = [];
+		const spy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+			written.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write);
+		let warning: string | undefined;
+		try {
+			// The outer update holds the session lock, so the attribution's own update times out and writes unlocked.
+			updateSession(dir, "s1", (current) => {
+				warning = recordEditAttribution(dir, "s1", file, starved);
+				return current;
+			});
+		} finally {
+			spy.mockRestore();
+		}
+		expect(warning).toContain("acme/other");
+		expect(written.filter((line) => line.includes("unlocked"))).toEqual([]);
 	});
 
 	test("an edit inside the labelled repo records no mismatch; a session with no record changes nothing", () => {

@@ -38,7 +38,8 @@ const ORIGINAL_CLIENT_TOOLS = [
 // The three connector tools are always listed, in both modes: Grok never refreshes tools/list.
 const CONNECTOR_TOOLS = ["ultrathink_graph", "ultrathink_sessions", "ultrathink_command"];
 const CLIENT_TOOLS = [...ORIGINAL_CLIENT_TOOLS, ...CONNECTOR_TOOLS];
-const SERVER_TOOLS = ["ultrathink_uplift", ...CLIENT_TOOLS];
+// ultrathink_cancel is listed last, and only where the host plans on the server; the slash commands never name it.
+const SERVER_TOOLS = ["ultrathink_uplift", ...CLIENT_TOOLS, "ultrathink_cancel"];
 const UI_URI = "ui://ultrathink/graph";
 const READ_ONLY = {
 	readOnlyHint: true,
@@ -85,6 +86,7 @@ const VALID_ARGS: Record<string, Record<string, unknown>> = {
 	ultrathink_graph: {},
 	ultrathink_sessions: {},
 	ultrathink_command: { command: "help" },
+	ultrathink_cancel: { sessionId: SESSION_ID },
 };
 
 interface Call {
@@ -508,7 +510,7 @@ describe("tools/list", () => {
 		);
 	});
 
-	test("a host with serverPlanning true lists ten tools, ultrathink_uplift first", async () => {
+	test("a host with serverPlanning true lists eleven tools, ultrathink_uplift first", async () => {
 		expect((await listTools(serverHost())).map((tool) => tool.name)).toEqual(SERVER_TOOLS);
 	});
 
@@ -518,7 +520,7 @@ describe("tools/list", () => {
 		host.capabilities = () => ({ serverPlanning });
 		expect((await listTools(host)).length).toBe(9);
 		serverPlanning = true;
-		expect((await listTools(host)).length).toBe(10);
+		expect((await listTools(host)).length).toBe(11);
 	});
 
 	test("returns the exported definitions", async () => {
@@ -577,9 +579,10 @@ describe("tools/list", () => {
 			"ultrathink_uplift",
 			...ORIGINAL_CLIENT_TOOLS,
 		]);
-		expect((await listTools(serverHost())).slice(7).map((tool) => tool.name)).toEqual(
-			CONNECTOR_TOOLS,
-		);
+		expect((await listTools(serverHost())).slice(7).map((tool) => tool.name)).toEqual([
+			...CONNECTOR_TOOLS,
+			"ultrathink_cancel",
+		]);
 	});
 
 	test("ultrathink_uplift and ultrathink_graph carry the UI resource in both the nested and the legacy flat key", async () => {

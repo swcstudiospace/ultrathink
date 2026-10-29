@@ -8,6 +8,8 @@
  * fail-open: the user's prompt always goes through. Caller or provider cancellation is re-thrown as an
  * AbortError, aborting sibling work and preventing later inference or side effects.
  */
+import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 import type { UltrathinkConfig } from "../config.ts";
 import { createDecisions, type DecisionsDeps, decisionsKilled } from "../decisions/gate.ts";
 import { takeJevWarning } from "../decisions/health.ts";
@@ -22,7 +24,9 @@ import {
 import { injectClarificationsXml } from "../hitl/format.ts";
 import { normalizeQuestion, type RunClarifyOptions, runClarify } from "../hitl/pipeline.ts";
 import type { Clarification } from "../hitl/types.ts";
-import { runThink } from "../think/pipeline.ts";
+import { FlightThrottle } from "../resilience/throttle.ts";
+import { injectGraphXml, isFallbackGraph } from "../think/graph.ts";
+import { type RunThinkOptions, runThink, type ThinkResult } from "../think/pipeline.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import {
 	type BriefFailure,
@@ -47,6 +51,7 @@ import { formatLessonsSection, lessonsLookup, recallLessons } from "../teach/rec
 import type { GroundOutcome, DocsLookup } from "../ragflow/types.ts";
 import { isHostId, type HostId } from "../host/types.ts";
 import { redactSecrets } from "../redact.ts";
+import { isAbortError, isRecord } from "../shared.ts";
 import { probeRealmRaw, realmHint, type RealmProbe } from "../stack/realm.ts";
 import {
 	formatSkillsSection,
@@ -65,7 +70,7 @@ import { decideUplift } from "../uplift/detect.ts";
 import type { SkillInvocation } from "../uplift/skill.ts";
 import { runUplift } from "../uplift/run.ts";
 import { pruneSessionsBestEffort } from "../retention/prune.ts";
-import { withFileLock, writeFileAtomic } from "./atomic.ts";
+import { type LockOptions, withFileLock, writeFileAtomic } from "./atomic.ts";
 import type { ClaudeCompleter } from "./complete.ts";
 import { isChildInvocation } from "./complete.ts";
 import { formatPlanSkipNotice, formatPromptContext, formatSummary } from "./output.ts";
@@ -75,12 +80,15 @@ import {
 	clearSkipOnce,
 	type ControlState,
 	hostSessionId,
+	HOOK_LOCK,
 	isTurnSessionId,
 	newTurnSessionId,
 	readSession,
 	readSkipOnce,
 	type SessionRecord,
 	sessionPath,
+	trackingCheckpoint,
+	updateSession,
 	writeSession,
 } from "./state.ts";
 
@@ -111,18 +119,24 @@ export interface HookDeps {
 	 */
 	modelResolution?: ModelResolution;
 	stateDir: string;
+	/** Lock policy of the plan save and the tracker checkpoints. Absent: `HOOK_LOCK` (this pipeline runs in a hook process: 15 s, then one logged unlocked write); the Omp extension passes `OMP_LOCK` (2 s) so it never freezes the TUI. */
+	stateLock?: LockOptions;
 	/**
 	 * The session's armed /ultrathink-skip as the caller read it, before any engine wait (the Claude/Grok/Muse hook and
 	 * planPrompt both do). Absent, the hook reads it at its own start. Either way, a prompt skipped by it clears the flag.
 	 */
 	armedSkip?: boolean;
-	clarify?: (opts: RunClarifyOptions) => Promise<Clarification[]>;
+	clarify?: (opts: RunClarifyOptions) => Promise<{ items: Clarification[]; failed?: string }>;
+	/** Test seam for the Graph of Thought; defaults to `runThink`. */
+	think?: (opts: RunThinkOptions) => Promise<ThinkResult>;
 	/** First error the completer threw (already redacted), surfaced in the summary. */
 	engineError?: () => string | undefined;
 	/** A successful failover to another route this run (not an error), e.g. "claude:… → grok:… (plan-limit)". */
 	engineFailover?: () => string | undefined;
 	/** The completer's report for its most recent call (attempts, HTTP status), read when the uplift falls back. */
 	engineReport?: () => CompletionReport | undefined;
+	/** Set when the engine route's completer already owns the flight's limiter (Omp's native binding): the think stage then builds and takes none, so a flight has exactly one. */
+	throttle?: FlightThrottle;
 	/** Test seam for git remote/branch resolution; default reads the real repo at cwd. */
 	git?: (cwd: string) => { repo?: string; branch?: string };
 	conversation?: (transcriptPath?: string) => string;
@@ -198,6 +212,8 @@ export interface PromptSubmitResult {
 	output?: HookOutput;
 	record?: SessionRecord;
 	skipped?: string;
+	/** Why a deterministic skip happened (the uplift decision's reason, e.g. "trivial" or "skip-once"); set with `skipped`. */
+	reason?: string;
 	/** Jev skip notice (§5.3); set only on a Jev skip with claude.echo on. */
 	notice?: string;
 	/** Every DecisionRecord of this prompt, in call order; absent when none. */
@@ -206,6 +222,54 @@ export interface PromptSubmitResult {
 
 function specFile(stateDir: string, sessionId: string): string {
 	return sessionPath(stateDir, sessionId).replace(/\.json$/, ".xml");
+}
+
+/**
+ * The id every tracker row of one plan carries, in the shape every graph-id consumer expects
+ * (`ut-<token>-<8 hex>`: the gateway's GRAPH_ID_PATTERN, the swarm lane brief, the hand-off guard in uplift/detect).
+ * The first 10 hex digits are the session's hash of the user's original prompt:
+ * `sha256(sessionId + "\n" + sha256(original))`. The 8 after the dash are a hash of that, the repository the plan labels
+ * its rows with (the resolved `owner/name` slug, else the resolved working directory) and the graph's text, for each
+ * node in order its id, kind, title, question, dependencies, thinking and conclusion: everything the tracker's rows are
+ * built from (step titles come from the thinking, descriptions from the conclusion). So equal ids mean identical row
+ * titles and bodies for the same repository. A byte-identical resend adopts the rows a killed flight already made; any
+ * other graph or another repository gets a different id and can never adopt an earlier plan's rows (they are left alone
+ * in the tracker). Without a graph (thinking off) the id is the prompt and the repository. The `degraded` flag is not in
+ * it: a degraded node has empty fills, which differ on their own.
+ */
+function deterministicGraphId(
+	sessionId: string,
+	original: string,
+	graph: ThoughtGraph | undefined,
+	repository: string,
+): string {
+	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+	const hex = digest(`${sessionId}\n${digest(original)}`);
+	const nodes = graph
+		? graph.nodes.map((node) => [
+				node.id,
+				node.kind,
+				node.title,
+				node.question,
+				node.dependsOn,
+				node.thinking ?? "",
+				node.conclusion ?? "",
+			])
+		: null;
+	// One JSON array, so no two inputs can concatenate to the same text.
+	return `ut-${hex.slice(0, 10)}-${digest(JSON.stringify([hex, repository, nodes])).slice(0, 8)}`;
+}
+
+/** A tracking record with no refs: tells the tracker a flight of this graph id may already have created rows to adopt. */
+function emptyTracking(graphId: string, at: number): TrackingRefs {
+	return {
+		graphId,
+		status: "failed",
+		linear: { nodes: {}, steps: {} },
+		notion: { nodes: {}, steps: {} },
+		errors: [],
+		updatedAt: at,
+	};
 }
 
 /**
@@ -242,6 +306,7 @@ export function savePlanRecord(
 	log: (message: string) => void = () => {
 		// reason: no logger was injected; the default is a silent sink
 	},
+	lock?: LockOptions,
 ): { record: SessionRecord; specPath: string; statePath: string; lastNote?: string } {
 	const statePath = sessionPath(stateDir, sessionId);
 	const specPath = specFile(stateDir, sessionId);
@@ -280,7 +345,7 @@ export function savePlanRecord(
 			if (lastNote) log(lastNote);
 			return merged;
 		},
-		{ log },
+		{ log, ...lock },
 	);
 	return { record: saved, specPath, statePath, lastNote };
 }
@@ -612,6 +677,35 @@ async function announcePlan(
 	}
 }
 
+/** Most model calls one flight lets run at once, whatever `claude.concurrency` says: a shared rate limit punishes more. */
+const MAX_FLIGHT_CONCURRENCY = 3;
+/** Longest cause the hook records or shows for a failed stage. */
+const MAX_CAUSE_CHARS = 200;
+/** The `degraded` cause of a clarify stage that was not attempted because the provider had just failed every retry. */
+const CLARIFY_SKIPPED_CAUSE = "skipped: provider unavailable";
+
+/** A redacted, single-line, bounded cause of a failed stage: the error's message or the given text, never a reply body. */
+function causeText(value: unknown): string {
+	const raw = value instanceof Error ? value.message : String(value);
+	return redactSecrets(raw).replace(/\s+/g, " ").trim().slice(0, MAX_CAUSE_CHARS) || "error";
+}
+
+function isThoughtGraph(value: unknown): value is ThoughtGraph {
+	return (
+		isRecord(value) &&
+		typeof value.goal === "string" &&
+		Array.isArray(value.nodes) &&
+		value.nodes.every((node) => isRecord(node) && typeof node.id === "string")
+	);
+}
+
+/** The partial graph a throwing think stage carries, as `error.partial.graph` or `error.graph`; undefined when it carries none. */
+function partialGraphOf(error: unknown): ThoughtGraph | undefined {
+	if (!isRecord(error)) return undefined;
+	const carrier = isRecord(error.partial) ? error.partial : error;
+	return isThoughtGraph(carrier.graph) ? carrier.graph : undefined;
+}
+
 export async function runPromptSubmit(
 	input: PromptSubmitInput,
 	deps: HookDeps,
@@ -663,14 +757,21 @@ export async function runPromptSubmit(
 		skipTrivial: deps.config.uplift.skipTrivial,
 	};
 	const decision = decideUplift({ text: input.prompt ?? "", source: "user", idle: true }, state);
-	if (skipArmed && !state.skipOnce) {
+	// Only the prompt skipped by the armed flag spends it (reason "skip-once"); a command, an ack or a disabled-planning
+	// skip leaves it armed for the real next prompt.
+	if (skipArmed && decision.action === "skip" && decision.reason === "skip-once") {
 		try {
 			clearSkipOnce(deps.stateDir, sessionId);
 		} catch {
 			// reason: fail-open: a skip-once marker that cannot be removed only skips one later planning pass; the prompt must not block on it
 		}
 	}
-	if (decision.action !== "uplift") return { skipped: decision.action };
+	if (decision.action !== "uplift") {
+		return {
+			skipped: decision.action,
+			...(decision.action === "skip" ? { reason: decision.reason } : {}),
+		};
+	}
 	// A cancelled flight starts nothing: no gate request, stage, lookup, tracker call or write.
 	throwIfCancelled(deps.signal);
 	const skill = input.skill;
@@ -693,14 +794,7 @@ export async function runPromptSubmit(
 	const lifetime = AbortSignal.any([cancellation, budgetController.signal]);
 	const rethrowCancellation = (error: unknown): void => {
 		// A provider can abort while the caller is still live. Only an expired hook budget may fail open with a partial plan.
-		if (
-			!budgetController.signal.aborted &&
-			typeof error === "object" &&
-			error !== null &&
-			"name" in error &&
-			error.name === "AbortError"
-		)
-			controller.abort();
+		if (!budgetController.signal.aborted && isAbortError(error)) controller.abort();
 		throwIfCancelled(cancellation);
 	};
 	const complete: ClaudeCompleter = async (system, user, signal) => {
@@ -867,7 +961,12 @@ export async function runPromptSubmit(
 		}
 		// A completer that ignored its signal and answered anyway still ends a cancelled flight here.
 		throwIfCancelled(cancellation);
-		stage("uplift", "end", true, `${result.root} · ${result.source}`);
+		stage(
+			"uplift",
+			"end",
+			result.source === "llm",
+			`${result.root} · ${result.source}${result.fallbackReason ? ` · ${result.fallbackReason}` : ""}`,
+		);
 
 		const briefResult = await briefPromise;
 		throwIfCancelled(cancellation);
@@ -1029,17 +1128,35 @@ export async function runPromptSubmit(
 
 		let graph: ThoughtGraph | undefined;
 		let thinkDegraded: string[] = [];
+		/** Redacted, bounded cause per degraded token ("graph", "fill:<id>", "clarify", "think", "state"); shown in the notice and stage details. */
+		const degradedCauses: Record<string, string> = {};
+		/** The think stage threw: a graph it did not hand back is unknown, never the boilerplate one. */
+		let thinkThrew = false;
+		/** The graph call failed after the completer's own retries (it carried a report): the provider is unavailable for this flight. */
+		let providerUnavailable = false;
 		const thinkOn = deps.control.thinkEnabled ?? deps.config.think.enabled;
 		if (thinkOn && !lifetime.aborted) {
 			stage("think", "start");
+			// One limiter per flight: a rate limit seen by any fill slows every fill of this prompt. A route whose completer
+			// already owns the limiter (Omp's native binding acquires a slot per call and feeds it every failure) is that one:
+			// the think stage takes no second slot from it (a nested acquire at a limit of one would wait forever) and builds
+			// none of its own. Only a route without a limiter gets one here.
+			const throttle = deps.throttle
+				? undefined
+				: new FlightThrottle({
+						max: Math.min(MAX_FLIGHT_CONCURRENCY, deps.config.claude.concurrency),
+					});
 			try {
-				const thought = await runThink({
+				const thought = await (deps.think ?? runThink)({
 					uplift: result,
 					complete,
 					signal: lifetime,
 					minNodes: deps.config.think.minNodes,
 					maxNodes: deps.config.think.maxNodes,
 					concurrency: deps.config.claude.concurrency,
+					fillRetries: deps.config.think.fillRetries,
+					repair: deps.config.think.repair,
+					...(throttle ? { throttle } : {}),
 					onProgress: log,
 					onEvent: (event) => emit({ ...event, at: now() }),
 				});
@@ -1050,11 +1167,36 @@ export async function runPromptSubmit(
 					...(thought.degraded.graph ? ["graph"] : []),
 					...thought.degraded.fills.map((id) => `fill:${id}`),
 				];
-				stage("think", "end", true, `${graph.nodes.length} nodes`);
+				for (const [id, cause] of Object.entries(thought.degraded.causes ?? {}))
+					degradedCauses[`fill:${id}`] = causeText(cause);
+				if (thought.degraded.graphFailure !== undefined) {
+					providerUnavailable = true;
+					degradedCauses.graph = causeText(thought.degraded.graphFailure);
+				}
+				const total = `${graph.nodes.length} nodes`;
+				if (thought.partial || thinkDegraded.length > 0)
+					stage("think", "end", false, `${total} · ${thinkDegraded.join(", ") || "partial"}`);
+				else stage("think", "end", true, total);
 			} catch (error) {
 				rethrowCancellation(error);
-				log(`think failed: ${error instanceof Error ? error.message : String(error)}`);
-				stage("think", "end", false);
+				const cause = causeText(error);
+				log(`think failed: ${cause}`);
+				thinkThrew = true;
+				// Whatever the failing stage carried stays: the nodes it had filled are real work, the rest are marked.
+				const partial = partialGraphOf(error);
+				if (partial) {
+					graph = partial;
+					result = { ...result, xml: injectGraphXml(result.xml, partial) };
+				}
+				thinkDegraded = [
+					...(partial && isFallbackGraph(partial) ? ["graph"] : []),
+					...(partial?.nodes ?? [])
+						.filter((node) => node.degraded === true || !node.conclusion?.trim())
+						.map((node) => `fill:${node.id}`),
+					"think",
+				];
+				degradedCauses.think = cause;
+				stage("think", "end", false, cause);
 			}
 		}
 
@@ -1096,10 +1238,17 @@ export async function runPromptSubmit(
 				}
 			}
 		}
-		if (hitlOn && !lifetime.aborted) {
+		let clarifyFailed: string | undefined;
+		if (hitlOn && !lifetime.aborted && providerUnavailable) {
+			// The graph call exhausted its retries against a provider that answered with a failure: a clarify call would only
+			// repeat it (three more completer calls), so the stage is recorded as skipped instead.
+			clarifyFailed = CLARIFY_SKIPPED_CAUSE;
+			log(`clarify ${CLARIFY_SKIPPED_CAUSE}`);
+			stage("clarify", "end", false, CLARIFY_SKIPPED_CAUSE);
+		} else if (hitlOn && !lifetime.aborted) {
 			stage("clarify", "start");
 			try {
-				const fresh = await (deps.clarify ?? runClarify)({
+				const outcome = await (deps.clarify ?? runClarify)({
 					uplift: result,
 					graph,
 					conversation,
@@ -1115,25 +1264,33 @@ export async function runPromptSubmit(
 				});
 				throwIfCancelled(cancellation);
 				const seen = new Set(clarifications.map((c) => normalizeQuestion(c.question)));
-				const kept = fresh.filter((c) => !seen.has(normalizeQuestion(c.question)));
+				const kept = outcome.items.filter((c) => !seen.has(normalizeQuestion(c.question)));
 				clarifications = [...clarifications, ...kept];
 				if (knowledge)
 					knowledge = {
 						...knowledge,
 						settled: kept.filter((c) => c.source === "knowledge").length,
 					};
-				stage(
-					"clarify",
-					"end",
-					true,
-					`${clarifications.length} question${clarifications.length === 1 ? "" : "s"}`,
-				);
+				if (outcome.failed !== undefined) {
+					// Leading items a cut-off reply still yielded are kept; the stage is not a success.
+					clarifyFailed = causeText(outcome.failed);
+					log(`clarify failed: ${clarifyFailed}`);
+					stage("clarify", "end", false, clarifyFailed);
+				} else
+					stage(
+						"clarify",
+						"end",
+						true,
+						`${clarifications.length} question${clarifications.length === 1 ? "" : "s"}`,
+					);
 			} catch (error) {
 				rethrowCancellation(error);
-				log(`clarify failed: ${error instanceof Error ? error.message : String(error)}`);
-				stage("clarify", "end", false);
+				clarifyFailed = causeText(error);
+				log(`clarify failed: ${clarifyFailed}`);
+				stage("clarify", "end", false, clarifyFailed);
 			}
 		}
+		if (clarifyFailed !== undefined) degradedCauses.clarify = clarifyFailed;
 		if (clarifications.length > 0) {
 			result = { ...result, xml: injectClarificationsXml(result.xml, clarifications) };
 		}
@@ -1141,8 +1298,12 @@ export async function runPromptSubmit(
 		let plan: TrackPlan | undefined;
 		// Fail-open per design: a totally failed engine (conservative XML fallback) proceeds
 		// untracked rather than creating generic FALLBACK_GRAPH boilerplate rows in the shared
-		// Notion/Linear tracker on every engine outage. Only build a plan for real LLM output.
-		if (result.source !== "fallback") {
+		// Notion/Linear tracker on every engine outage. Only a real LLM uplift on a real graph is tracked: the boilerplate
+		// graph (substituted when the model's graph is unusable) and a think stage that threw without a graph make no rows.
+		const boilerplateGraph = graph ? isFallbackGraph(graph) : thinkThrew;
+		if (result.source === "llm" && boilerplateGraph)
+			log("track plan skipped: graph-fallback, no tracker rows");
+		if (result.source === "llm" && !boilerplateGraph) {
 			throwIfCancelled(cancellation);
 			stage("plan", "start");
 			try {
@@ -1152,6 +1313,12 @@ export async function runPromptSubmit(
 					clarifications,
 					repo: git.repo,
 					branch: git.branch,
+					graphId: deterministicGraphId(
+						sessionId,
+						result.original,
+						graph,
+						git.repo ?? resolve(cwd),
+					),
 					agent: deps.surface ?? "claude-code",
 				});
 				stage(
@@ -1166,40 +1333,15 @@ export async function runPromptSubmit(
 			}
 		}
 
-		let tracking: TrackingRefs | undefined;
-		if (plan && deps.track && !deps.trackingOff) {
-			throwIfCancelled(cancellation);
-			stage("track", "start");
-			tracking = await deps
-				.track({ plan, graph, signal: lifetime, progress: deps.progress })
-				.catch((error: unknown) => {
-					rethrowCancellation(error);
-					log(`tracking failed: ${error instanceof Error ? error.message : String(error)}`);
-					return undefined;
-				});
-			throwIfCancelled(cancellation);
-			if (tracking) {
-				result = { ...result, xml: injectTrackingXml(result.xml, plan, tracking) };
-				log(
-					`tracking ${tracking.status}${tracking.errors.length > 0 ? `: ${tracking.errors.join("; ")}` : ""}`,
-				);
-				const issues = Object.keys(tracking.linear.nodes).length;
-				stage(
-					"track",
-					"end",
-					tracking.status !== "failed",
-					`${tracking.status} · ${issues}/${plan.linearIssues.length} issues`,
-				);
-			} else {
-				stage("track", "end", false);
-			}
-		}
-
 		// Read once: the record, the summary and the context all report the same first error.
 		const engineError = deps.engineError?.();
 		const engineFailover = deps.engineFailover?.();
-		const degraded = [...(result.source === "fallback" ? ["uplift"] : []), ...thinkDegraded];
-		let record: SessionRecord = {
+		const degraded = [
+			...(result.source === "fallback" ? ["uplift"] : []),
+			...thinkDegraded,
+			...(clarifyFailed !== undefined ? ["clarify"] : []),
+		];
+		const buildRecord = (current: UpliftResult, refs: TrackingRefs | undefined): SessionRecord => ({
 			sessionId,
 			at: now(),
 			engine: deps.engine,
@@ -1208,11 +1350,11 @@ export async function runPromptSubmit(
 			...(engineFailover ? { engineFailover } : {}),
 			...(degraded.length > 0 ? { degraded } : {}),
 			host: deps.surface ?? "claude-code",
-			result,
+			result: current,
 			graph,
 			clarifications,
 			plan,
-			tracking,
+			tracking: refs,
 			...(skill
 				? {
 						skill: {
@@ -1229,22 +1371,32 @@ export async function runPromptSubmit(
 			...(docs ? { docs } : {}),
 			...(skills ? { skills } : {}),
 			...(records.length ? { decisions: records } : {}),
+		});
+		let record: SessionRecord = buildRecord(result, undefined);
+		/** The state directory could not be written: `degraded` gains a `state` token and the record (when it is saved later) says so. */
+		const markStateFailed = (cause: string): void => {
+			if (!degraded.includes("state")) degraded.push("state");
+			degradedCauses.state = cause;
+			record = { ...record, degraded: [...degraded] };
 		};
 		let specPath: string | undefined;
 		let statePath: string | undefined;
 		let lastNote: string | undefined;
-		// No spec or session write for a cancelled flight.
-		throwIfCancelled(cancellation);
-		stage("state", "start");
-		try {
-			// The JSON and XML saves share the session lock with the answers/ship/mark
-			// updates, so neither side can overwrite the other with stale content.
-			const saved = savePlanRecord(deps.stateDir, sessionId, record, log);
+		/**
+		 * Saves `record` (the JSON and XML saves share the session lock with the answers/ship/mark updates, so neither
+		 * side can overwrite the other with stale content). A late answer merged at save time must reach the agent:
+		 * `record` alone is not enough, since `result`/`clarifications` still hold the stale pre-save values, so the
+		 * derived locals are refreshed, keeping reference equality when the merge changed nothing.
+		 */
+		const persist = (): void => {
+			const saved = savePlanRecord(
+				deps.stateDir,
+				sessionId,
+				record,
+				log,
+				deps.stateLock ?? HOOK_LOCK,
+			);
 			record = saved.record;
-			// A late answer merged at save time must reach the agent: `record` alone is
-			// not enough, since `result`/`clarifications` below still hold the stale
-			// pre-save values. Refresh the derived locals, keeping reference equality
-			// when the merge changed nothing.
 			if (
 				saved.record.clarifications !== undefined &&
 				saved.record.clarifications !== clarifications
@@ -1255,12 +1407,107 @@ export async function runPromptSubmit(
 			specPath = saved.specPath;
 			statePath = saved.statePath;
 			lastNote = saved.lastNote;
+		};
+
+		let tracking: TrackingRefs | undefined;
+		let existing: TrackingRefs | undefined;
+		let trackBlocked = false;
+		if (plan && deps.track && !deps.trackingOff) {
+			throwIfCancelled(cancellation);
+			// Rows in the shared trackers are permanent: the record that points at them is saved first, so a kill while
+			// they are being created leaves a readable record (spec and state paths). A resend that produces the same graph
+			// gets the same graph id (the id is content-addressed, see `deterministicGraphId`) and adopts the rows instead of
+			// creating them again; one that produces another graph gets another id and adopts none of them.
+			const prior = readSession(deps.stateDir, sessionId);
+			const priorRefs = prior?.tracking?.graphId === plan.graphId ? prior.tracking : undefined;
+			// The adoption lookup runs only when the record already holds this graph id (a resend of the same graph, or a
+			// saved record): a first-time plan makes no lookup call and never waits on one before it creates rows.
+			const sameGraph = prior?.plan?.graphId === plan.graphId;
+			existing = priorRefs ?? (sameGraph ? emptyTracking(plan.graphId, now()) : undefined);
+			if (priorRefs) record = { ...record, tracking: priorRefs };
+			try {
+				persist();
+			} catch (error) {
+				const cause = causeText(error);
+				log(`state write failed before tracking: ${cause}`);
+				markStateFailed(cause);
+				// Rows in the shared trackers are permanent and a resend adopts them only through a saved record: none are made.
+				stage("track", "end", false, "skipped: state not writable");
+				trackBlocked = true;
+			}
+		}
+		if (plan && deps.track && !deps.trackingOff && !trackBlocked) {
+			stage("track", "start");
+			tracking = await deps
+				.track({
+					plan,
+					graph,
+					...(existing ? { existing } : {}),
+					degradedNodes: thinkDegraded
+						.filter((token) => token.startsWith("fill:"))
+						.map((token) => token.slice("fill:".length)),
+					signal: lifetime,
+					progress: deps.progress,
+					// Every created row is checkpointed into the record under its lock, merged over what it holds: a flight killed
+					// between two rows keeps the refs made so far, and no later save loses them.
+					onRef: (live) => {
+						try {
+							updateSession(
+								deps.stateDir,
+								sessionId,
+								trackingCheckpoint(plan.graphId, live),
+								deps.stateLock ?? HOOK_LOCK,
+							);
+						} catch (error) {
+							log(
+								`tracking checkpoint failed: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					},
+				})
+				.catch((error: unknown) => {
+					rethrowCancellation(error);
+					log(`tracking failed: ${error instanceof Error ? error.message : String(error)}`);
+					return undefined;
+				});
+			throwIfCancelled(cancellation);
+			if (tracking) {
+				result = { ...result, xml: injectTrackingXml(result.xml, plan, tracking) };
+				// A node whose fill is degraded is created with a "[degraded fill]" marker on its tracker rows.
+				const notes = [
+					...tracking.errors,
+					...thinkDegraded
+						.filter((token) => token.startsWith("fill:"))
+						.map((token) => `degraded ${token}`),
+				];
+				log(`tracking ${tracking.status}${notes.length > 0 ? `: ${notes.join("; ")}` : ""}`);
+				const issues = Object.keys(tracking.linear.nodes).length;
+				stage(
+					"track",
+					"end",
+					tracking.status !== "failed",
+					`${tracking.status} · ${issues}/${plan.linearIssues.length} issues`,
+				);
+				record = buildRecord(result, tracking);
+			} else {
+				stage("track", "end", false);
+				// A tracker that returned nothing may still have checkpointed rows: the record keeps them.
+				const checkpointed = readSession(deps.stateDir, sessionId)?.tracking;
+				if (checkpointed?.graphId === plan.graphId) record = { ...record, tracking: checkpointed };
+			}
+		}
+
+		// No spec or session write for a cancelled flight.
+		throwIfCancelled(cancellation);
+		stage("state", "start");
+		try {
+			persist();
 			stage("state", "end", true);
 		} catch (error) {
-			log(`state write failed: ${error instanceof Error ? error.message : String(error)}`);
-			specPath = undefined;
-			statePath = undefined;
-			stage("state", "end", false);
+			const cause = causeText(error);
+			log(`state write failed: ${cause}`);
+			markStateFailed(cause);
+			stage("state", "end", false, cause);
 		}
 		// Opt-in retention (state.retentionDays above 0): at most one bounded sweep a day. It never throws and never waits.
 		pruneSessionsBestEffort({
@@ -1281,7 +1528,7 @@ export async function runPromptSubmit(
 					engine: deps.engine,
 					...withResolution,
 					...(engineError ? { engineError } : {}),
-					...(degraded.length > 0 ? { degraded } : {}),
+					...(degraded.length > 0 ? { degraded, causes: degradedCauses } : {}),
 					graph,
 					clarifications,
 					brief,

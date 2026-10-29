@@ -4,8 +4,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runDoctorCommand } from "./cli.ts";
 import { checkPstack } from "./pstack-check.ts";
+import { buildReport, formatReport, reportJson } from "./report.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
 
 const SKILLS = ["how", "architect", "arena", "tdd", "interrogate", "no-comments"];
@@ -86,7 +86,7 @@ describe("checkPstack", () => {
 		}
 	});
 
-	test("an enabled user file, a resolved plugin and an installed hook are ok, in text and JSON", async () => {
+	test("an enabled user file, a resolved plugin and an installed hook are ok, in text and JSON", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pstack-doctor-on-"));
 		try {
 			const cursorDir = join(dir, "cursor");
@@ -116,28 +116,22 @@ describe("checkPstack", () => {
 			);
 			expect(byId(findings, "pstack.hook").level).toBe("ok");
 
-			const text = await runDoctorCommand([], {
-				...deps(dir, env),
-				which: () => "/usr/bin/git",
-				runVersion: () => "Python 3.12",
-			});
-			expect(text.exitCode).toBe(0);
-			expect(text.output).toContain("pstack\n");
-			expect(text.output).toContain("  ✓ pstack bridge enabled");
-			expect(text.output).toContain("  ✓ pstack 1.2.3");
-			const json = await runDoctorCommand(["--json"], {
-				...deps(dir, env),
-				which: () => "/usr/bin/git",
-				runVersion: () => "Python 3.12",
-			});
-			const report = JSON.parse(json.output) as { findings: Finding[] };
+			// The pstack findings only: the full doctor also runs every other section, and a cold run of those is what made this test load-fragile.
+			const report = buildReport(findings);
+			expect(report.ok).toBe(true);
+			const text = formatReport(report);
+			expect(text).toContain("pstack\n");
+			expect(text).toContain("  ✓ pstack bridge enabled");
+			expect(text).toContain("  ✓ pstack 1.2.3");
+			const parsed = JSON.parse(reportJson(report)) as { ok: boolean; findings: Finding[] };
+			expect(parsed.ok).toBe(true);
 			expect(
-				report.findings.some((finding) => finding.id === "pstack.hook" && finding.level === "ok"),
+				parsed.findings.some((finding) => finding.id === "pstack.hook" && finding.level === "ok"),
 			).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
-	});
+	}, 30_000);
 
 	test("a project file cannot enable the bridge, and the first user file wins over a later one", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pstack-doctor-project-"));

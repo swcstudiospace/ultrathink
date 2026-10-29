@@ -8,6 +8,8 @@ import {
 	formatDefaultOption,
 } from "../decisions/questions.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
+import { clip, clipHeadTail, FIELD_CAPS } from "../resilience/limits.ts";
+import { redactLine } from "../teach/redact.ts";
 import { extractJsonObject } from "../think/graph.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
@@ -46,6 +48,18 @@ const MAX_OPTIONS = 4;
 const MAX_KNOWLEDGE_ANSWER_CHARS = 500;
 /** Longest claimed answer shown as the "As stated" option description of a rejected knowledge claim. */
 const MAX_CLAIMED_DESCRIPTION_CHARS = 200;
+/** A question shown to the user, and an answer or claim echoed back: short by design, apart from a graph node's question cap. */
+const MAX_QUESTION_CHARS = 600;
+const MAX_LABEL_CHARS = 120;
+const MAX_OPTION_DESCRIPTION_CHARS = 400;
+/** Longest `failed` cause returned by runClarify. */
+const MAX_FAILED_CHARS = 200;
+const ID_NUMBER = /^[qk](\d+)$/;
+
+/** Whitespace collapsed to single spaces, then capped at `max`: model text cannot open a new line or grow a prompt. */
+function oneLine(text: string, max: number): string {
+	return clip(text.replace(/\s+/g, " ").trim(), max).text;
+}
 
 function asString(value: unknown): string {
 	return typeof value === "string" ? value.trim() : "";
@@ -61,14 +75,17 @@ export function normalizeQuestion(question: string): string {
 
 function normalizeOption(raw: unknown): ClarificationOption | undefined {
 	if (typeof raw === "string") {
-		const label = raw.trim();
+		const label = oneLine(raw, MAX_LABEL_CHARS);
 		return label ? { label } : undefined;
 	}
 	if (!raw || typeof raw !== "object") return undefined;
 	const obj = raw as Record<string, unknown>;
-	const label = asString(obj.label) || asString(obj.name) || asString(obj.value);
+	const label = oneLine(
+		asString(obj.label) || asString(obj.name) || asString(obj.value),
+		MAX_LABEL_CHARS,
+	);
 	if (!label) return undefined;
-	const description = asString(obj.description);
+	const description = oneLine(asString(obj.description), MAX_OPTION_DESCRIPTION_CHARS);
 	return description ? { label, description } : { label };
 }
 
@@ -94,7 +111,7 @@ function normalizeHeader(raw: unknown, fallback: string): string {
 }
 
 function normalizeQuestionText(raw: unknown): string {
-	const question = asString(raw).replace(/\s+/g, " ");
+	const question = oneLine(asString(raw), MAX_QUESTION_CHARS);
 	if (!question) return "";
 	return /[?]$/.test(question) ? question : `${question.replace(/[.!:;,]+$/, "")}?`;
 }
@@ -110,6 +127,11 @@ function claimedOptions(claimed: string): ClarificationOption[] {
 	return [first, { label: "Something else" }];
 }
 
+/** `why` text: single-lined and capped like a question. */
+function normalizeWhy(raw: unknown): string {
+	return oneLine(asString(raw), MAX_QUESTION_CHARS);
+}
+
 /**
  * An open question (id `q{index+1}`), or undefined when it has no question text or fewer than two options.
  * `claimed` is the collapsed answer of a rejected knowledge claim: when given, an item short of two options
@@ -122,7 +144,7 @@ function normalizeItem(raw: unknown, index: number, claimed?: string): Clarifica
 	if (!question) return undefined;
 
 	let options = normalizeOptions(obj.options);
-	let wanted = asString(obj.default).toLowerCase();
+	let wanted = oneLine(asString(obj.default), MAX_LABEL_CHARS).toLowerCase();
 	if (options.length < MIN_OPTIONS) {
 		if (claimed === undefined) return undefined;
 		options = claimedOptions(claimed);
@@ -138,7 +160,7 @@ function normalizeItem(raw: unknown, index: number, claimed?: string): Clarifica
 		id: `q${index + 1}`,
 		question,
 		header: normalizeHeader(obj.header, `Q${index + 1}`),
-		why: asString(obj.why).replace(/\s+/g, " "),
+		why: normalizeWhy(obj.why),
 		options,
 		default: match?.label ?? fallbackDefault,
 		blocking: obj.blocking === true,
@@ -182,7 +204,7 @@ function normalizeSettledItem(
 	if (!question) return undefined;
 
 	const options = normalizeOptions(raw.options);
-	const wanted = asString(raw.default).toLowerCase();
+	const wanted = oneLine(asString(raw.default), MAX_LABEL_CHARS).toLowerCase();
 	const match = wanted
 		? options.find((option) => option.label.toLowerCase() === wanted)
 		: undefined;
@@ -191,7 +213,7 @@ function normalizeSettledItem(
 		id: `k${index + 1}`,
 		question,
 		header: normalizeHeader(raw.header, "KB"),
-		why: asString(raw.why).replace(/\s+/g, " "),
+		why: normalizeWhy(raw.why),
 		options,
 		blocking: false,
 		answer: claim.answer,
@@ -210,11 +232,13 @@ function normalizeSettledItem(
  * rejected claim is never dropped: it becomes an open question (subject to `maxQuestions`, keeping `blocking`) with
  * its own options, or, short of two, "As stated" (the claimed answer) / "Something else".
  * Items without a knowledge object, and every item without `knowledgeDocs`, need two options or are dropped.
+ * `idOffset` is the highest numeric id already used in the conversation: ids continue after it (q{offset+1}..).
  */
 export function normalizeClarifications(
 	raw: unknown,
 	maxQuestions: number,
 	knowledgeDocs?: string[],
+	idOffset = 0,
 ): Clarification[] {
 	const max = Math.max(0, Math.floor(Number.isFinite(maxQuestions) ? maxQuestions : MAX_QUESTIONS));
 	const items = clarifierItems(raw);
@@ -238,11 +262,11 @@ export function normalizeClarifications(
 				? knowledgeClaim(knowledge, docs)
 				: undefined;
 		let clarification: Clarification | undefined;
-		if (obj && claim) clarification = normalizeSettledItem(obj, settled.length, claim);
+		if (obj && claim) clarification = normalizeSettledItem(obj, idOffset + settled.length, claim);
 		else if (open.length < max)
 			clarification = normalizeItem(
 				item,
-				open.length,
+				idOffset + open.length,
 				knowledge ? claimedAnswer(knowledge) : undefined,
 			);
 		if (!clarification) continue;
@@ -258,7 +282,7 @@ export function normalizeClarifications(
  * Pass 2: the pass-1 `list` with the claims Jev `rejected` taken out of the settled items and asked instead. Every
  * pass-1 open question keeps its place and content; a rejected claim is appended after them, in the clarifier's
  * order, only while fewer than `max` questions are open, so a rejection never displaces a clarifier question.
- * Open ids stay q1.. in final order; settled ids are re-numbered k1..
+ * Open ids continue after `idOffset` in final order; settled ids are re-numbered after it.
  */
 function reopenRejected(
 	parsed: unknown,
@@ -266,6 +290,7 @@ function reopenRejected(
 	rejected: ReadonlySet<string>,
 	max: number,
 	knowledgeDocs: string[],
+	idOffset: number,
 ): Clarification[] {
 	const docs = new Set(knowledgeDocs.map((path) => path.trim()).filter(Boolean));
 	const open = list.filter((item) => item.source !== "knowledge");
@@ -273,7 +298,7 @@ function reopenRejected(
 		.filter(
 			(item) => item.source === "knowledge" && !rejected.has(normalizeQuestion(item.question)),
 		)
-		.map((item, index) => ({ ...item, id: `k${index + 1}` }));
+		.map((item, index) => ({ ...item, id: `k${idOffset + index + 1}` }));
 	const pending = new Set(rejected);
 	for (const item of clarifierItems(parsed)) {
 		if (open.length >= max || pending.size === 0) break;
@@ -293,7 +318,7 @@ function reopenRejected(
 		)
 			continue;
 		pending.delete(key);
-		const reopened = normalizeItem(obj, open.length, claimedAnswer(knowledge));
+		const reopened = normalizeItem(obj, idOffset + open.length, claimedAnswer(knowledge));
 		if (reopened) open.push(reopened);
 	}
 	return [...open, ...settled];
@@ -302,7 +327,18 @@ function reopenRejected(
 function graphConclusions(graph: ThoughtGraph): string {
 	return graph.nodes
 		.filter((node) => (node.conclusion ?? "").trim())
-		.map((node) => `[${node.id}] ${node.title}\n${(node.conclusion ?? "").trim()}`)
+		.map(
+			(node) =>
+				`[${node.id}] ${oneLine(node.title, FIELD_CAPS.title)}\n${
+					// Head and tail: the closing Open questions: list of a critique is what the clarifier needs most.
+					clipHeadTail(
+						(node.conclusion ?? "").trim(),
+						FIELD_CAPS.predecessor,
+						FIELD_CAPS.predecessorHead,
+						FIELD_CAPS.predecessorTail,
+					).text
+				}`,
+		)
 		.join("\n\n");
 }
 
@@ -329,7 +365,10 @@ function clarifyUserPayload(opts: RunClarifyOptions, maxQuestions: number): stri
 		parts.push(
 			"",
 			"<answered>",
-			...answered.map((item) => `${item.question} → ${item.answer!.trim()}`),
+			...answered.map(
+				(item) =>
+					`${oneLine(item.question, MAX_QUESTION_CHARS)} → ${oneLine(item.answer ?? "", MAX_QUESTION_CHARS)}`,
+			),
 			"</answered>",
 		);
 	}
@@ -358,6 +397,7 @@ async function checkClarifications(
 	max: number,
 	knowledge: { digest: string; docs: string[] } | undefined,
 	list: Clarification[],
+	idOffset: number,
 ): Promise<Clarification[]> {
 	const kb = knowledge && decisions.active("knowledge") ? knowledge : undefined;
 	const blockingOn = decisions.active("blocking");
@@ -425,7 +465,7 @@ async function checkClarifications(
 	let checked = list;
 	let second: Checked[] = [];
 	if (kb && rejected.size > 0) {
-		checked = reopenRejected(parsed, list, rejected, max, kb.docs);
+		checked = reopenRejected(parsed, list, rejected, max, kb.docs, idOffset);
 		second = await Promise.all(
 			checkBlocking(
 				checked.filter(
@@ -449,28 +489,126 @@ async function checkClarifications(
 	);
 }
 
-/** Fail-open: returns [] on any failure except an abort, which is rethrown. */
-export async function runClarify(opts: RunClarifyOptions): Promise<Clarification[]> {
+/** Highest numeric part of the `q`/`k` ids in `answered`; 0 when none. */
+function maxAnsweredId(answered: Clarification[] | undefined): number {
+	let max = 0;
+	for (const item of answered ?? []) {
+		const match = ID_NUMBER.exec(item.id);
+		if (match) max = Math.max(max, Number(match[1]));
+	}
+	return max;
+}
+
+/**
+ * The top-level `{...}` objects of the clarifier's questions array (or a bare array) in `text`, in order, up to the
+ * first one that does not parse: a brace-depth walk that honours strings, so a reply cut off mid-array still yields
+ * its complete leading objects.
+ */
+function leadingObjects(text: string): unknown[] {
+	const key = text.indexOf('"questions"');
+	const open = text.indexOf("[", Math.max(key, 0));
+	if (open < 0) return [];
+	const found: unknown[] = [];
+	let depth = 0;
+	let start = -1;
+	let inString = false;
+	let escaped = false;
+	for (let i = open + 1; i < text.length; i++) {
+		const char = text[i]!;
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (char === "\\") escaped = true;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (char === '"') inString = true;
+		else if (char === "{" || char === "[") {
+			if (depth === 0) start = i;
+			depth++;
+		} else if (char === "}" || char === "]") {
+			if (depth === 0) break;
+			depth--;
+			if (depth === 0 && char === "}") {
+				try {
+					found.push(JSON.parse(text.slice(start, i + 1)));
+				} catch {
+					// reason: a candidate that does not parse ends the leading run; nothing after it is trusted
+					break;
+				}
+			}
+		}
+	}
+	return found;
+}
+
+/** The complete leading questions of a reply that is not valid JSON as a whole, as a parsed reply; none when none survive. */
+function salvageTruncated(
+	text: string,
+	max: number,
+	docs: string[] | undefined,
+	idOffset: number,
+): { questions: unknown[] } | undefined {
+	const run: unknown[] = [];
+	for (const candidate of leadingObjects(text)) {
+		if (normalizeClarifications([candidate], max, docs, idOffset).length === 0) break;
+		run.push(candidate);
+	}
+	return normalizeClarifications(run, max, docs, idOffset).length > 0
+		? { questions: run }
+		: undefined;
+}
+
+function failedCause(error: unknown): string {
+	return redactLine(error instanceof Error ? error.message : String(error), MAX_FAILED_CHARS);
+}
+
+/**
+ * Fail-open but never silent: a provider error, timeout, empty or unparseable reply returns `{ items: [], failed }`
+ * with the redacted single-line cause (never the reply text); a reply cut off mid-array returns its complete leading
+ * items with `failed` set. `failed` is absent when the clarifier answered, even with no questions. An abort is rethrown.
+ * Ids continue after the highest numeric id in `opts.answered`.
+ */
+export async function runClarify(
+	opts: RunClarifyOptions,
+): Promise<{ items: Clarification[]; failed?: string }> {
 	const max = Math.max(0, Math.floor(opts.maxQuestions ?? MAX_QUESTIONS));
-	if (max === 0) return [];
+	if (max === 0) return { items: [] };
 	const knowledge = activeKnowledge(opts);
+	const idOffset = maxAnsweredId(opts.answered);
 	try {
 		opts.onProgress?.("Clarifications…");
 		const system = clarifySystemPrompt(max, knowledge ? { knowledge: true } : {});
 		const text = await opts.complete(system, clarifyUserPayload(opts, max), opts.signal);
-		const parsed = extractJsonObject(text);
-		if (!parsed || typeof parsed !== "object") throw new Error("unparsable JSON");
-		const normalized = normalizeClarifications(parsed, max, knowledge?.docs);
+		let parsed: unknown = extractJsonObject(text);
+		let failed: string | undefined;
+		if (!parsed || typeof parsed !== "object") {
+			// A reply cut off mid-array: its complete leading items go through the same checks as a whole reply.
+			parsed = salvageTruncated(text, max, knowledge?.docs, idOffset);
+			if (!parsed) throw new Error("unparsable JSON");
+			const kept = normalizeClarifications(parsed, max, knowledge?.docs, idOffset).length;
+			failed = `reply truncated: kept ${kept} complete question${kept === 1 ? "" : "s"}`;
+			opts.onProgress?.(`clarify failed: ${failed}`);
+		}
+		const normalized = normalizeClarifications(parsed, max, knowledge?.docs, idOffset);
 		const list = opts.decisions
-			? await checkClarifications(opts, opts.decisions, parsed, max, knowledge, normalized)
+			? await checkClarifications(
+					opts,
+					opts.decisions,
+					parsed,
+					max,
+					knowledge,
+					normalized,
+					idOffset,
+				)
 			: normalized;
 		const settled = list.filter((item) => item.source === "knowledge").length;
 		const settledBit = settled > 0 ? ` (+${settled} settled)` : "";
-		opts.onProgress?.(`Clarifications → ${list.length - settled}${settledBit}`);
-		return list;
+		if (!failed) opts.onProgress?.(`Clarifications → ${list.length - settled}${settledBit}`);
+		return failed ? { items: list, failed } : { items: list };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
-		opts.onProgress?.(`clarify failed: ${error instanceof Error ? error.message : String(error)}`);
-		return [];
+		const failed = failedCause(error);
+		opts.onProgress?.(`clarify failed: ${failed}`);
+		return { items: [], failed };
 	}
 }

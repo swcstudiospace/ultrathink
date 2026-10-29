@@ -24,12 +24,12 @@ The server offers two ways to do the thinking. The tool list tells you which one
 | | Server-side mode | Client-driven mode |
 |---|---|---|
 | Who thinks | The server calls a planning model: `claude -p` on the owner's own Claude plan login (one owner only), with an optional Grok Build fallback. | The chat model answers each planning prompt itself. |
-| Tools the chat model uses | `ultrathink_uplift`, then `ultrathink_result` | `ultrathink_plan`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, then `ultrathink_result` |
-| Tool count | 10 tools: the six client-driven tools, `ultrathink_uplift`, and the three connector tools `ultrathink_graph`, `ultrathink_sessions` and `ultrathink_command` | 9 tools (`ultrathink_uplift` is not listed) |
+| Tools the chat model uses | `ultrathink_uplift`, then `ultrathink_result`; `ultrathink_cancel` to stop a plan the user abandons | `ultrathink_plan`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, then `ultrathink_result` |
+| Tool count | 11 tools: the six client-driven tools, `ultrathink_uplift`, the three connector tools `ultrathink_graph`, `ultrathink_sessions` and `ultrathink_command`, and `ultrathink_cancel` | 9 tools (`ultrathink_uplift` and `ultrathink_cancel` are not listed) |
 | Who pays | The owner's own Claude plan (its usage limits; one owner only). | Your chat plan. The server makes no paid call. |
 | Used by | The hosted server when planning is configured: Grok Chat, Claude chat, Claude Code | Grok Bot, the local stdio server, or any client when server-side mode is off |
 
-Server-side mode is on only when the operator sets `ULTRATHINK_SERVER_PLANNING=1`, an explicit opt-in; the planner runs on the service user's Claude plan login, and OpenRouter is not involved (it was retired from the hosted service). Unset or `0` means client-driven mode: the server lists no `ultrathink_uplift`, and its prompt and instructions describe the client-driven loop. The client-driven tools stay available in both modes. `ultrathink_result` returns the plan for a finished session from either mode.
+Server-side mode is on only when the operator sets `ULTRATHINK_SERVER_PLANNING=1`, an explicit opt-in; the planner runs on the service user's Claude plan login, and OpenRouter is not involved (it was retired from the hosted service). Unset or `0` means client-driven mode: the server lists no `ultrathink_uplift` and no `ultrathink_cancel`, and its prompt and instructions describe the client-driven loop. The client-driven tools stay available in both modes. `ultrathink_result` returns the plan for a finished session from either mode. In server-side mode, a start can be refused as `busy` (all plan slots and the wait queue are taken; the error says `retry after 30s`) or `upstream_unavailable` (the failure-rate breaker is open), and `ultrathink_cancel` with the `sessionId` stops a plan that is still running and frees its place. A session is visible only to the caller that started it (the owner sees all); see [Hosted service under load](../architecture.md#hosted-service-under-load).
 
 ## Connect a client
 

@@ -3,6 +3,7 @@
 
 import { accessSync, constants, existsSync } from "node:fs";
 import pkg from "../../package.json";
+import { installChildReaper } from "../../src/resilience/child.ts";
 import { createAuth } from "./auth/auth.ts";
 import { loadChaosBackend } from "./chaos/faults.ts";
 import { ConfigError, type TlsFiles, type UltrathinkConfig, loadConfig } from "./config/config.ts";
@@ -113,10 +114,19 @@ function startPlaintextListener(config: UltrathinkConfig, app: App): Listener {
 	});
 }
 
+// A hosted plan with neither timer set has nothing that stops a model call that hangs; the defaults stay 0 by policy, so
+// the operator is told instead.
+function timeoutWarning(config: UltrathinkConfig): string | undefined {
+	if (!config.serverPlanning || config.modelTimeoutMs > 0 || config.planTimeoutMs > 0)
+		return undefined;
+	return "ULTRATHINK_MODEL_TIMEOUT_MS and ULTRATHINK_PLAN_TIMEOUT_MS are both 0: a model call that hangs is never stopped and keeps its plan slot until the process restarts or the client cancels the plan";
+}
+
 // `--check-config` validates the environment and exits before any store, socket or tool-definition work.
 if (process.argv.includes("--check-config")) {
+	let checked: UltrathinkConfig;
 	try {
-		loadConfig();
+		checked = loadConfig();
 	} catch (error) {
 		if (error instanceof ConfigError) {
 			process.stderr.write(`${error.message}\n`);
@@ -124,12 +134,16 @@ if (process.argv.includes("--check-config")) {
 		}
 		throw error;
 	}
+	const warning = timeoutWarning(checked);
+	if (warning !== undefined) process.stderr.write(`warning: ${warning}\n`);
 	process.stdout.write("config ok\n");
 	process.exit(0);
 }
 
 const config = loadConfigOrExit();
 assertToolDefinitionsOrExit();
+// The service drains on SIGTERM itself; the reaper's exit handler only kills any child group still alive at exit.
+installChildReaper();
 const logger = createLogger();
 const store = openStore(config.dbPath);
 const auth = createAuth({
@@ -183,6 +197,9 @@ if (config.legacyEnvIgnored.length > 0) {
 			"these variables are no longer used by the hosted service; remove them from the environment file",
 	});
 }
+
+const timeouts = timeoutWarning(config);
+if (timeouts !== undefined) logger.warn("timeouts_unset", { message: timeouts });
 
 logger.info("listening", {
 	version: pkg.version,

@@ -64,6 +64,28 @@ describe("env checks", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	describe("service timeouts", () => {
+		test("warns when the hosted service plans with both timeouts unset or 0", () => {
+			setEnv({ ULTRATHINK_SERVER_PLANNING: "1" });
+			expect(byId(checkRuntime(deps), "runtime.service-timeouts")).toMatchObject({
+				level: "warn",
+				fix: expect.stringContaining("ULTRATHINK_PLAN_TIMEOUT_MS"),
+			});
+			setEnv({ ULTRATHINK_MODEL_TIMEOUT_MS: "0", ULTRATHINK_PLAN_TIMEOUT_MS: "0" });
+			expect(byId(checkRuntime(deps), "runtime.service-timeouts").level).toBe("warn");
+		});
+
+		test("is absent once either timeout is set, and when the service does not plan", () => {
+			setEnv({ ULTRATHINK_SERVER_PLANNING: "1", ULTRATHINK_PLAN_TIMEOUT_MS: "600000" });
+			expect(checkRuntime(deps).some((f) => f.id === "runtime.service-timeouts")).toBe(false);
+			deps = { ...deps, env: { ...deps.env, ULTRATHINK_PLAN_TIMEOUT_MS: undefined } };
+			setEnv({ ULTRATHINK_MODEL_TIMEOUT_MS: "120000" });
+			expect(checkRuntime(deps).some((f) => f.id === "runtime.service-timeouts")).toBe(false);
+			setEnv({ ULTRATHINK_SERVER_PLANNING: "0", ULTRATHINK_MODEL_TIMEOUT_MS: "0" });
+			expect(checkRuntime(deps).some((f) => f.id === "runtime.service-timeouts")).toBe(false);
+		});
+	});
+
 	describe("checkRuntime", () => {
 		test("a complete machine reports ok for Bun, git, gh and Python, and the detected host", () => {
 			const findings = checkRuntime(deps);

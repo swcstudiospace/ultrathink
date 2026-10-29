@@ -9,7 +9,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
-import { lastRefreshMessage, type SessionRecord, withLastLock } from "../claude/state.ts";
+import {
+	CLI_LOCK,
+	type LastLockOptions,
+	lastRefreshMessage,
+	type SessionRecord,
+	withLastLock,
+} from "../claude/state.ts";
 import { applyAnswers } from "../hitl/answers.ts";
 import { injectClarificationsXml } from "../hitl/format.ts";
 import type { Clarification } from "../hitl/types.ts";
@@ -40,58 +46,72 @@ export function parseAnswersInput(raw: unknown): AnswersInput {
 	return { answers, ...(response ? { response } : {}) };
 }
 
+/** `lastLock` is the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s). */
 export function recordAnswers(
 	statePath: string,
 	input: AnswersInput,
 	now = Date.now(),
+	lastLock?: LastLockOptions,
 ): { matched: Clarification[]; unknownIds: string[]; list: Clarification[] } {
-	return withFileLock(statePath, () => {
-		const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
-		const existing: Clarification[] = Array.isArray(record.clarifications)
-			? record.clarifications
-			: [];
-		// Ids (q1, q2…) resolve to their question text, which is what applyAnswers matches on.
-		const unknownIds: string[] = [];
-		const byQuestion: Record<string, string> = {};
-		for (const [key, value] of Object.entries(input.answers ?? {})) {
-			const item = existing.find((c) => c.id === key);
-			if (item) byQuestion[item.question] = value;
-			else if (/^q\d+$/.test(key)) unknownIds.push(key);
-			else byQuestion[key] = value;
-		}
-		if (unknownIds.length > 0) return { matched: [], unknownIds, list: existing };
-		const { list, matched } = applyAnswers(
-			existing,
-			undefined,
-			{ answers: byQuestion, ...(input.response ? { response: input.response } : {}) },
-			now,
-		);
-		const xmlPath = statePath.replace(/\.json$/, ".xml");
-		const currentXml = existsSync(xmlPath) ? readFileSync(xmlPath, "utf8") : record.result.xml;
-		const xml = injectClarificationsXml(currentXml, list).trimEnd();
-		const next: SessionRecord = {
-			...record,
-			result: { ...record.result, xml },
-			clarifications: list,
-		};
-		writeFileAtomic(statePath, `${JSON.stringify(next, null, 2)}\n`);
-		writeFileAtomic(xmlPath, `${xml}\n`);
-		mirrorLast(statePath, next);
-		return { matched, unknownIds, list };
-	});
+	return withFileLock(
+		statePath,
+		() => {
+			const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
+			const existing: Clarification[] = Array.isArray(record.clarifications)
+				? record.clarifications
+				: [];
+			// Ids (q1, q2…) resolve to their question text, which is what applyAnswers matches on.
+			const unknownIds: string[] = [];
+			const byQuestion: Record<string, string> = {};
+			for (const [key, value] of Object.entries(input.answers ?? {})) {
+				const item = existing.find((c) => c.id === key);
+				if (item) byQuestion[item.question] = value;
+				else if (/^q\d+$/.test(key)) unknownIds.push(key);
+				else byQuestion[key] = value;
+			}
+			if (unknownIds.length > 0) return { matched: [], unknownIds, list: existing };
+			const { list, matched } = applyAnswers(
+				existing,
+				undefined,
+				{ answers: byQuestion, ...(input.response ? { response: input.response } : {}) },
+				now,
+			);
+			const xmlPath = statePath.replace(/\.json$/, ".xml");
+			const currentXml = existsSync(xmlPath) ? readFileSync(xmlPath, "utf8") : record.result.xml;
+			const xml = injectClarificationsXml(currentXml, list).trimEnd();
+			const next: SessionRecord = {
+				...record,
+				result: { ...record.result, xml },
+				clarifications: list,
+			};
+			writeFileAtomic(statePath, `${JSON.stringify(next, null, 2)}\n`);
+			writeFileAtomic(xmlPath, `${xml}\n`);
+			mirrorLast(statePath, next, lastLock);
+			return { matched, unknownIds, list };
+		},
+		CLI_LOCK,
+	); // a CLI writer in its own process: wait up to 30 s, never write unlocked
 }
 
 /** `ctl last` and `ctl hitl last` read `last.json`, a copy of the session written when the plan was saved. */
-export function mirrorLast(statePath: string, record: SessionRecord): void {
+export function mirrorLast(
+	statePath: string,
+	record: SessionRecord,
+	lastLock?: LastLockOptions,
+): void {
 	const lastPath = join(dirname(dirname(statePath)), "last.json");
 	if (!existsSync(lastPath)) return;
 	let refreshed = false;
 	try {
-		refreshed = withLastLock(lastPath, () => {
-			const last = JSON.parse(readFileSync(lastPath, "utf8")) as { sessionId?: string };
-			if (last.sessionId !== record.sessionId) return;
-			writeFileAtomic(lastPath, `${JSON.stringify(record, null, "\t")}\n`);
-		});
+		refreshed = withLastLock(
+			lastPath,
+			() => {
+				const last = JSON.parse(readFileSync(lastPath, "utf8")) as { sessionId?: string };
+				if (last.sessionId !== record.sessionId) return;
+				writeFileAtomic(lastPath, `${JSON.stringify(record, null, "\t")}\n`);
+			},
+			lastLock,
+		);
 	} catch {
 		// an unreadable last.json stays as it is
 		return;

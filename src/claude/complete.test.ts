@@ -4,12 +4,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { classifyFailure } from "../failover/classify.ts";
+import { readReport } from "../types.ts";
 import {
 	buildClaudeArgs,
 	CHILD_ENV,
 	CLAUDE_AUTH_MODES,
 	type ClaudeCallInfo,
 	ClaudeResultError,
+	abortError,
 	createClaudeCompleter,
 	isChildInvocation,
 	PLAN_SCRUBBED_ENV,
@@ -149,6 +152,8 @@ describe("parseClaudeResult", () => {
 	});
 });
 
+const noWait = { sleep: async (): Promise<void> => undefined, random: () => 0 };
+
 describe("claudeComplete plan auth", () => {
 	const dirs: string[] = [];
 	afterEach(() => {
@@ -158,6 +163,8 @@ describe("claudeComplete plan auth", () => {
 	const okResult =
 		'{"type":"result","is_error":false,"result":"plan ok","usage":{"input_tokens":5,"cache_read_input_tokens":20,"output_tokens":9},"modelUsage":{"claude-haiku-5-5":{}}}';
 	const limitError =
+		'{"type":"result","is_error":true,"api_error_status":429,"result":"Too many requests, slow down"}';
+	const sessionLimitError =
 		'{"type":"result","is_error":true,"api_error_status":429,"result":"You\'ve hit your session limit"}';
 
 	/** Stub `claude`: logs the credential env it sees, one line per call, then prints `STUB_OUT` and exits `STUB_EXIT`. */
@@ -275,7 +282,10 @@ describe("claudeComplete plan auth", () => {
 		);
 		let thrown: unknown;
 		try {
-			await createClaudeCompleter({ bin, env: { PATH: process.env.PATH } })("s", "u");
+			await createClaudeCompleter({ bin, env: { PATH: process.env.PATH }, retrySeams: noWait })(
+				"s",
+				"u",
+			);
 		} catch (error) {
 			thrown = error;
 		}
@@ -355,11 +365,31 @@ describe("claudeComplete plan auth", () => {
 		expect(stub.log()).toEqual(["key= token= bedrock= vertex= foundry= oauth=set child=1"]);
 	});
 
-	test("a failing call is attempted exactly once and throws a ClaudeResultError with the status", async () => {
+	test("a 429 call is retried on the same model and finally throws the ClaudeResultError with the status", async () => {
 		const stub = setup();
 		const complete = createClaudeCompleter({
 			bin: stub.bin,
+			retrySeams: noWait,
 			env: stub.env({ ...credentials, STUB_OUT: limitError, STUB_EXIT: "1" }),
+		});
+		let thrown: unknown;
+		try {
+			await complete("s", "u");
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toBeInstanceOf(ClaudeResultError);
+		expect((thrown as ClaudeResultError).apiErrorStatus).toBe(429);
+		expect((thrown as ClaudeResultError).message).toBe("Too many requests, slow down");
+		expect(stub.log()).toHaveLength(3);
+	});
+
+	test("a 429 with session-limit wording is permanent and is not retried", async () => {
+		const stub = setup();
+		const complete = createClaudeCompleter({
+			bin: stub.bin,
+			retrySeams: noWait,
+			env: stub.env({ ...credentials, STUB_OUT: sessionLimitError, STUB_EXIT: "1" }),
 		});
 		let thrown: unknown;
 		try {
@@ -401,7 +431,7 @@ describe("claudeComplete plan auth", () => {
 		expect(seen).toEqual([{ inputTokens: 25, outputTokens: 9, model: "claude-haiku-5-5" }]);
 	});
 
-	test("onResult fires once for an is_error result, before the error is thrown", async () => {
+	test("onResult fires once per attempt for an is_error result, before the error is thrown", async () => {
 		const stub = setup();
 		const seen: ClaudeCallInfo[] = [];
 		const complete = createClaudeCompleter({
@@ -411,10 +441,14 @@ describe("claudeComplete plan auth", () => {
 					'{"type":"result","is_error":true,"api_error_status":429,"result":"limit","usage":{"input_tokens":4,"output_tokens":1},"modelUsage":{"claude-haiku-5-5":{}}}',
 				STUB_EXIT: "1",
 			}),
+			retrySeams: noWait,
 			onResult: (info) => seen.push(info),
 		});
 		await expect(complete("s", "u")).rejects.toBeInstanceOf(ClaudeResultError);
-		expect(seen).toEqual([{ inputTokens: 4, outputTokens: 1, model: "claude-haiku-5-5" }]);
+		// The 429 is transient: three attempts, each reports its own usage.
+		expect(seen).toEqual(
+			Array(3).fill({ inputTokens: 4, outputTokens: 1, model: "claude-haiku-5-5" }),
+		);
 	});
 
 	test("onResult is not called for non-JSON output", async () => {
@@ -423,6 +457,7 @@ describe("claudeComplete plan auth", () => {
 		const complete = createClaudeCompleter({
 			bin: stub.bin,
 			env: stub.env({ STUB_OUT: "not json" }),
+			retrySeams: noWait,
 			onResult: () => {
 				calls += 1;
 			},
@@ -441,5 +476,219 @@ describe("claudeComplete plan auth", () => {
 			},
 		});
 		expect(await complete("s", "u")).toBe("plan ok");
+	});
+});
+
+describe("claudeComplete resilience", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+	});
+
+	interface Step {
+		out?: string;
+		err?: string;
+		exit?: number;
+	}
+
+	/** Stub `claude` whose n-th call replays steps[n-1] (the last step repeats); `spawns()` counts calls. */
+	function sequence(steps: Step[]): { bin: string; spawns: () => number } {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-claude-seq-"));
+		dirs.push(dir);
+		steps.forEach((step, index) => {
+			writeFileSync(join(dir, `out.${index + 1}`), step.out ?? "");
+			writeFileSync(join(dir, `err.${index + 1}`), step.err ?? "");
+			writeFileSync(join(dir, `exit.${index + 1}`), String(step.exit ?? 0));
+		});
+		const counter = join(dir, "counter");
+		const bin = join(dir, "claude");
+		writeFileSync(
+			bin,
+			[
+				"#!/bin/sh",
+				"cat >/dev/null",
+				`n=$(cat "${counter}" 2>/dev/null || echo 0)`,
+				"n=$((n+1))",
+				`echo $n > "${counter}"`,
+				`[ $n -gt ${steps.length} ] && n=${steps.length}`,
+				`cat "${dir}/out.$n"`,
+				`cat "${dir}/err.$n" >&2`,
+				`exit $(cat "${dir}/exit.$n")`,
+			].join("\n"),
+			{ mode: 0o755 },
+		);
+		return {
+			bin,
+			spawns: () => (existsSync(counter) ? Number(readFileSync(counter, "utf8").trim()) : 0),
+		};
+	}
+
+	const env = { PATH: process.env.PATH };
+	const ok = (text: string): string =>
+		JSON.stringify({ type: "result", is_error: false, result: text });
+	const transient: Step = { err: "fetch failed", exit: 1 };
+
+	async function failure(run: Promise<string>): Promise<Error> {
+		return run.then(
+			() => new Error("should have thrown"),
+			(error: Error) => error,
+		);
+	}
+
+	test("a transient failure is retried on the same model and succeeds on attempt 2", async () => {
+		const stub = sequence([transient, { out: ok("second") }]);
+		const complete = createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait });
+		expect(await complete("s", "u")).toBe("second");
+		expect(stub.spawns()).toBe(2);
+	});
+
+	test("a success spawns exactly once", async () => {
+		const stub = sequence([{ out: ok("fine") }]);
+		await createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait })("s", "u");
+		expect(stub.spawns()).toBe(1);
+	});
+
+	test("two transient failures then a success resolves on attempt 3", async () => {
+		const stub = sequence([transient, transient, { out: ok("third") }]);
+		const complete = createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait });
+		expect(await complete("s", "u")).toBe("third");
+		expect(stub.spawns()).toBe(3);
+	});
+
+	test("a truncated reply (max_tokens) is a failed attempt with cause truncated_reply", async () => {
+		const truncated = JSON.stringify({
+			type: "result",
+			is_error: false,
+			result: "cut off mid-sen",
+			stop_reason: "max_tokens",
+		});
+		const stub = sequence([{ out: truncated }]);
+		const error = await failure(
+			createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait })("s", "u"),
+		);
+		expect(readReport(error)?.cause).toBe("truncated_reply");
+		expect(readReport(error)?.attempts).toBe(3);
+		expect(stub.spawns()).toBe(3);
+	});
+
+	test("a truncated first reply followed by a complete one resolves with the complete text", async () => {
+		const truncated = JSON.stringify({ is_error: false, result: "cut", stop_reason: "max_tokens" });
+		const stub = sequence([{ out: truncated }, { out: ok("whole") }]);
+		const complete = createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait });
+		expect(await complete("s", "u")).toBe("whole");
+	});
+
+	test("an empty reply text is a truncated_reply failure, never accepted text", async () => {
+		const stub = sequence([{ out: ok("") }]);
+		const error = await failure(
+			createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait })("s", "u"),
+		);
+		expect(readReport(error)?.cause).toBe("truncated_reply");
+	});
+
+	test("a permanent failure is not retried", async () => {
+		const stub = sequence([{ err: "permission denied", exit: 1 }]);
+		const error = await failure(
+			createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait })("s", "u"),
+		);
+		expect(error.message).toContain("permission denied");
+		expect(stub.spawns()).toBe(1);
+		expect(readReport(error)?.attempts).toBe(1);
+	});
+
+	test("an abort during the backoff rejects with AbortError after one spawn", async () => {
+		const stub = sequence([transient, { out: ok("never") }]);
+		const controller = new AbortController();
+		const complete = createClaudeCompleter({
+			bin: stub.bin,
+			env,
+			retrySeams: {
+				sleep: async () => {
+					controller.abort();
+					throw abortError();
+				},
+			},
+		});
+		const error = await failure(complete("s", "u", controller.signal));
+		expect(error.name).toBe("AbortError");
+		expect(readReport(error)).toBeUndefined();
+		expect(stub.spawns()).toBe(1);
+	});
+
+	test("an already-aborted signal rejects without spawning", async () => {
+		const stub = sequence([{ out: ok("never") }]);
+		const controller = new AbortController();
+		controller.abort();
+		const error = await failure(
+			createClaudeCompleter({ bin: stub.bin, env })("s", "u", controller.signal),
+		);
+		expect(error.name).toBe("AbortError");
+		expect(stub.spawns()).toBe(0);
+	});
+
+	test("the report cause is redacted, one line and at most 200 characters", async () => {
+		const secret = "sk-ant-api03-SENTINELSENTINELSENTINEL1234567890";
+		const stub = sequence([
+			{ err: `first line ${secret}\nsecond line ${"x".repeat(400)}`, exit: 1 },
+		]);
+		const error = await failure(
+			createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait })("s", "u"),
+		);
+		const cause = readReport(error)?.cause ?? "";
+		expect(cause.length).toBeGreaterThan(0);
+		expect(cause.length).toBeLessThanOrEqual(200);
+		expect(cause).not.toContain("\n");
+		expect(cause).not.toContain("SENTINELSENTINEL");
+	});
+
+	test("a transient failure on every attempt throws the original error with attempts 3", async () => {
+		const stub = sequence([transient]);
+		const error = await failure(
+			createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait })("s", "u"),
+		);
+		expect(error.name).not.toBe("RetryExhaustedError");
+		expect(error.message).toBe("fetch failed");
+		expect(readReport(error)?.attempts).toBe(3);
+		expect(stub.spawns()).toBe(3);
+	});
+
+	test("an api_error_status surfaces as the report httpStatus", async () => {
+		for (const status of [429, 529]) {
+			const stub = sequence([
+				{
+					out: JSON.stringify({ is_error: true, api_error_status: status, result: "busy" }),
+					exit: 1,
+				},
+			]);
+			const error = await failure(
+				createClaudeCompleter({ bin: stub.bin, env, retrySeams: noWait })("s", "u"),
+			);
+			expect(error).toBeInstanceOf(ClaudeResultError);
+			expect(readReport(error)?.httpStatus).toBe(status);
+			expect(stub.spawns()).toBe(3);
+		}
+	});
+
+	test("a timeout is final and not retried", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-claude-hang-"));
+		dirs.push(dir);
+		const bin = join(dir, "claude");
+		writeFileSync(bin, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+		const error = await failure(
+			createClaudeCompleter({ bin, env, timeoutMs: 50, retrySeams: noWait })("s", "u"),
+		);
+		expect(error.message).toBe("claude timed out after 50ms");
+		expect(readReport(error)?.attempts).toBe(1);
+	});
+
+	test("a child killed by a signal with no output keeps its cause for the failover classifier", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-claude-killed-"));
+		dirs.push(dir);
+		const bin = join(dir, "claude");
+		writeFileSync(bin, "#!/bin/sh\ncat >/dev/null\nkill -9 $$\n", { mode: 0o755 });
+		const error = await failure(createClaudeCompleter({ bin, env, retrySeams: noWait })("s", "u"));
+		expect(error.message).toContain("SIGKILL");
+		expect(classifyFailure(error)).toBe("network");
+		expect(readReport(error)?.cause).toContain("SIGKILL");
 	});
 });

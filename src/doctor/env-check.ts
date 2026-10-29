@@ -146,8 +146,30 @@ export function checkRuntime(deps: DoctorDeps): Finding[] {
 		add({ id: "runtime.python", level: "info", title: "Python not found", detail: hermesNote });
 	}
 
+	// The hosted service reads its own variables; a doctor run in that environment checks the two that bound a hung plan.
+	if (
+		env.ULTRATHINK_SERVER_PLANNING === "1" &&
+		noTimeout(env.ULTRATHINK_MODEL_TIMEOUT_MS) &&
+		noTimeout(env.ULTRATHINK_PLAN_TIMEOUT_MS)
+	) {
+		add({
+			id: "runtime.service-timeouts",
+			level: "warn",
+			title: "Hosted service plans with no model and no plan timeout",
+			detail:
+				"ULTRATHINK_MODEL_TIMEOUT_MS and ULTRATHINK_PLAN_TIMEOUT_MS are both unset or 0, so a model call that hangs is never stopped and holds its plan slot until the process restarts or the client cancels.",
+			fix: "Set ULTRATHINK_PLAN_TIMEOUT_MS (30000 to 1800000) and/or ULTRATHINK_MODEL_TIMEOUT_MS (5000 to 600000) in the service environment.",
+		});
+	}
+
 	add({ id: "runtime.host", level: "ok", title: `Detected host: ${detectHost(env)}` });
 	return findings;
+}
+
+/** A service timeout variable that is unset, blank or 0 turns the timer off. */
+function noTimeout(value: string | undefined): boolean {
+	const text = value?.trim();
+	return text === undefined || text === "" || Number(text) === 0;
 }
 
 interface Feature {

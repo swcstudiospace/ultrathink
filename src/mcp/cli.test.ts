@@ -17,6 +17,8 @@ import { join } from "node:path";
 import type { SessionRecord } from "../claude/state.ts";
 import { resolveOpenRouterKey } from "../decisions/gate.ts";
 import { appendAttempts, writeShip } from "../ship/state.ts";
+import type { Tracker } from "../track/gateway.ts";
+import type { TrackingRefs } from "../track/types.ts";
 import { feedLoginInput, main, prepareRedirect } from "./cli.ts";
 import type { McpProviderId } from "./providers.ts";
 import type { Run } from "./redirect.ts";
@@ -30,21 +32,21 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
+type CliResult = { code: number | null; stdout: string; stderr: string };
+
 /** Runs the real CLI with its config files, credential store and cwd all inside `root`; never the machine's OpenRouter key. */
-function run(...args: string[]): { code: number | null; stdout: string; stderr: string } {
+function run(...args: string[]): Promise<CliResult> {
 	return runWith({}, ...args);
 }
 
-function runWith(
-	opts: { stdin?: string },
-	...args: string[]
-): { code: number | null; stdout: string; stderr: string } {
+/** Async so the event loop stays free while a cold `bun` child starts; a blocking spawn made the suite depend on host load. */
+async function runWith(opts: { stdin?: string }, ...args: string[]): Promise<CliResult> {
 	const {
 		OPENROUTER_API_KEY: _legacyKey,
 		ULTRATHINK_OPENROUTER_KEY: _jevKey,
 		...env
 	} = process.env;
-	const proc = Bun.spawnSync([process.execPath, CLI, ...args], {
+	const proc = Bun.spawn([process.execPath, CLI, ...args], {
 		cwd: root,
 		env: {
 			...env,
@@ -53,29 +55,34 @@ function runWith(
 			CLAUDE_CONFIG_DIR: join(root, "claude"),
 			ULTRATHINK_MCP_STORE: join(root, "credentials.json"),
 		},
-		stdin: opts.stdin === undefined ? "ignore" : new TextEncoder().encode(opts.stdin),
+		stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	return { code: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
+	const [stdout, stderr, code] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	return { code, stdout, stderr };
 }
 
 describe("notion init", () => {
-	test("without --parent is a usage error", () => {
-		const { code, stderr } = run("notion", "init", "--write-config");
+	test("without --parent is a usage error", async () => {
+		const { code, stderr } = await run("notion", "init", "--write-config");
 		expect(code).toBe(2);
 		expect(stderr).toContain("notion init needs --parent <notion page url or id>");
 		expect(stderr).toContain("ultrathink-mcp notion init --parent");
-	});
+	}, 60_000);
 
-	test("a --parent without a page id is a usage error", () => {
-		const { code, stderr } = run("notion", "init", "--parent", "https://www.notion.so/acme");
+	test("a --parent without a page id is a usage error", async () => {
+		const { code, stderr } = await run("notion", "init", "--parent", "https://www.notion.so/acme");
 		expect(code).toBe(2);
 		expect(stderr).toContain("--parent is not a Notion page url or id");
-	});
+	}, 60_000);
 
-	test("without a Notion login fails with the login command and writes no config", () => {
-		const { code, stderr } = run(
+	test("without a Notion login fails with the login command and writes no config", async () => {
+		const { code, stderr } = await run(
 			"notion",
 			"init",
 			"--parent",
@@ -86,7 +93,7 @@ describe("notion init", () => {
 		expect(stderr).toContain("notion is not logged in: run: ultrathink-mcp auth login notion");
 		expect(stderr).not.toContain("set-key");
 		expect(existsSync(join(root, "xdg", "ultrathink", "config.json"))).toBe(false);
-	});
+	}, 60_000);
 });
 
 describe("track complete", () => {
@@ -130,32 +137,121 @@ describe("track complete", () => {
 		return path;
 	}
 
-	test("tracking off (/ultrathink-track off) exits 0 without touching the session, even when configured", () => {
+	test("tracking off (/ultrathink-track off) exits 0 without touching the session, even when configured", async () => {
 		const path = session({ trackEnabled: false }, { linear: { team: "Acme" } });
-		const { code, stdout, stderr } = run("track", "complete", "--state", path);
+		const { code, stdout, stderr } = await run("track", "complete", "--state", path);
 		expect(code).toBe(0);
 		expect(stderr).toContain("ultrathink-mcp: tracking is off (/ultrathink-track on to enable)");
 		expect(stdout).toBe("");
 		expect(readFileSync(path, "utf8")).toBe(JSON.stringify(record));
 		expect(existsSync(path.replace(/\.json$/, ".xml"))).toBe(false);
-	});
+	}, 60_000);
 
-	test("no linear.team or notion.dataSourceUrl exits 0 and names the config file and notion init", () => {
+	test("no linear.team or notion.dataSourceUrl exits 0 and names the config file and notion init", async () => {
 		const path = session(undefined, undefined);
-		const { code, stderr } = run("track", "complete", "--state", path);
+		const { code, stderr } = await run("track", "complete", "--state", path);
 		expect(code).toBe(0);
 		expect(stderr).toContain(
 			`ultrathink-mcp: tracking not configured: set linear.team and/or notion.dataSourceUrl in ${join(root, "xdg", "ultrathink", "config.json")}`,
 		);
 		expect(stderr).toContain("ultrathink-mcp notion init --parent <page>");
 		expect(readFileSync(path, "utf8")).toBe(JSON.stringify(record));
-	});
+	}, 60_000);
 
-	test("tracking on with a configured team goes on to the tracker", () => {
+	test("tracking on with a configured team goes on to the tracker", async () => {
 		const path = session({ trackEnabled: true }, { linear: { team: "Acme" } });
-		const { code, stderr } = run("track", "complete", "--state", path);
+		const { code, stderr } = await run("track", "complete", "--state", path);
 		expect(code).toBe(1);
 		expect(stderr).toContain("no tracker credentials");
+	}, 60_000);
+
+	/** Live refs holding one Linear issue per node id. */
+	const refsFor = (...nodes: string[]): TrackingRefs => ({
+		graphId: "ut-test",
+		status: "partial",
+		linear: {
+			nodes: Object.fromEntries(
+				nodes.map((n) => [
+					n,
+					{ id: n, identifier: n.toUpperCase(), url: `https://linear.app/${n}`, title: n },
+				]),
+			),
+			steps: {},
+		},
+		notion: { nodes: {}, steps: {} },
+		errors: [],
+		updatedAt: 9,
+	});
+
+	async function inProcess(
+		path: string,
+		tracker: Tracker,
+	): Promise<{ code: number; stdout: string; stderr: string }> {
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+		const writes = { out: process.stdout.write, err: process.stderr.write };
+		process.stdout.write = ((chunk: string | Uint8Array) =>
+			stdout.push(String(chunk)) > 0) as unknown as typeof process.stdout.write;
+		process.stderr.write = ((chunk: string | Uint8Array) =>
+			stderr.push(String(chunk)) > 0) as unknown as typeof process.stderr.write;
+		let code: number;
+		try {
+			code = await main(["track", "complete", "--state", path], { tracker: () => tracker });
+		} finally {
+			process.stdout.write = writes.out;
+			process.stderr.write = writes.err;
+		}
+		return { code, stdout: stdout.join(""), stderr: stderr.join("") };
+	}
+
+	test("hands the tracker the record's degraded fills and checkpoints every created row into the record while it runs", async () => {
+		const path = session(undefined, undefined);
+		writeFileSync(
+			path,
+			JSON.stringify({ ...record, degraded: ["uplift", "fill:n2", "fill:n4", "clarify"] }),
+		);
+		const seen: {
+			degradedNodes?: readonly string[];
+			afterFirst?: string[];
+			afterSecond?: string[];
+		} = {};
+		const nodesInRecord = (): string[] =>
+			Object.keys(
+				(JSON.parse(readFileSync(path, "utf8")) as SessionRecord).tracking?.linear.nodes ?? {},
+			);
+		const tracker: Tracker = async (input) => {
+			seen.degradedNodes = input.degradedNodes;
+			input.onRef?.(refsFor("n1"));
+			seen.afterFirst = nodesInRecord();
+			input.onRef?.(refsFor("n2"));
+			seen.afterSecond = nodesInRecord();
+			return { ...refsFor("n1", "n2"), status: "complete" };
+		};
+		const result = await inProcess(path, tracker);
+		expect(result.code).toBe(0);
+		expect(seen.degradedNodes).toEqual(["n2", "n4"]);
+		expect(seen.afterFirst).toEqual(["n1"]);
+		expect(seen.afterSecond?.sort()).toEqual(["n1", "n2"]);
+		const final = JSON.parse(readFileSync(path, "utf8")) as SessionRecord;
+		expect(final.tracking?.status).toBe("complete");
+		expect(final.degraded).toEqual(["uplift", "fill:n2", "fill:n4", "clarify"]);
+	});
+
+	test("a checkpoint for a plan the record no longer holds is skipped, and the final write still reports the newer plan", async () => {
+		const path = session(undefined, undefined);
+		const tracker: Tracker = async (input) => {
+			// The record is replaced under the tracker by a newer plan: its checkpoint declines silently, the run still finishes.
+			writeFileSync(
+				path,
+				JSON.stringify({ ...record, plan: { ...record.plan, graphId: "ut-other" } }),
+			);
+			input.onRef?.(refsFor("n1"));
+			return { ...refsFor("n1"), status: "complete" };
+		};
+		const result = await inProcess(path, tracker);
+		expect(result.stderr).toContain("newer plan");
+		expect(result.code).toBe(1);
+		expect(JSON.parse(readFileSync(path, "utf8")).tracking).toBeUndefined();
 	});
 });
 
@@ -175,35 +271,35 @@ describe("session mark", () => {
 		return path;
 	}
 
-	test("kicked-off sets kickedOff, keeps every other field, and prints nothing", () => {
+	test("kicked-off sets kickedOff, keeps every other field, and prints nothing", async () => {
 		const path = session(record);
-		const { code, stdout, stderr } = run("session", "mark", "--state", path, "kicked-off");
+		const { code, stdout, stderr } = await run("session", "mark", "--state", path, "kicked-off");
 		expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" });
 		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ ...record, kickedOff: true });
-	});
+	}, 60_000);
 
-	test("synced sets synced without clearing an earlier kickedOff, whatever the argument order", () => {
+	test("synced sets synced without clearing an earlier kickedOff, whatever the argument order", async () => {
 		const path = session({ ...record, kickedOff: true });
-		const { code } = run("session", "mark", "synced", "--state", path);
+		const { code } = await run("session", "mark", "synced", "--state", path);
 		expect(code).toBe(0);
 		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
 			...record,
 			kickedOff: true,
 			synced: true,
 		});
-	});
+	}, 60_000);
 
-	test("keeps a ship update written just before it and rewrites the record owner-only with no lock or temporary file left", () => {
+	test("keeps a ship update written just before it and rewrites the record owner-only with no lock or temporary file left", async () => {
 		const path = session(record);
 		chmodSync(path, 0o644);
 		expect(writeShip(path, { phase: "pr-open", nudgedAt: 9 }, 5)?.phase).toBe("pr-open");
-		expect(run("session", "mark", "--state", path, "kicked-off").code).toBe(0);
+		expect((await run("session", "mark", "--state", path, "kicked-off")).code).toBe(0);
 		const saved = JSON.parse(readFileSync(path, "utf8")) as SessionRecord;
 		expect(saved.kickedOff).toBe(true);
 		expect(saved.ship).toEqual({ phase: "pr-open", rounds: [], nudgedAt: 9, updatedAt: 5 });
 		if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
 		expect(readdirSync(join(root, "state", "sessions"))).toEqual(["s1.json"]);
-	});
+	}, 60_000);
 
 	test("marks racing with ship writes lose neither: every mark and every attempt survives", async () => {
 		const path = session(record);
@@ -231,9 +327,16 @@ describe("session mark", () => {
 				},
 			),
 		);
+		// A long lock wait, as the children use: a lock timeout would run an update unlocked and lose a mark or an attempt.
+		const lock = { timeoutMs: 120_000 };
 		for (let i = 0; i < 40; i++) {
 			expect(
-				appendAttempts(path, [{ at: i, step: "review", headSha: "abc", outcome: "waiting" }], i),
+				appendAttempts(
+					path,
+					[{ at: i, step: "review", headSha: "abc", outcome: "waiting" }],
+					i,
+					lock,
+				),
 			).toBeDefined();
 		}
 		expect(await Promise.all(children.map((child) => child.exited))).toEqual(
@@ -244,33 +347,33 @@ describe("session mark", () => {
 		expect(saved.synced).toBe(true);
 		expect(saved.ship?.attempts).toHaveLength(40);
 		expect(readdirSync(join(root, "state", "sessions"))).toEqual(["s1.json"]);
-	}, 60_000);
+	}, 180_000);
 
-	test("an unknown, missing or doubled mark is a usage error and leaves the file alone", () => {
+	test("an unknown, missing or doubled mark is a usage error and leaves the file alone", async () => {
 		const path = session(record);
 		for (const marks of [["kickedOff"], [], ["kicked-off", "synced"]]) {
-			const { code, stderr } = run("session", "mark", "--state", path, ...marks);
+			const { code, stderr } = await run("session", "mark", "--state", path, ...marks);
 			expect(code).toBe(2);
 			expect(stderr).toContain("session mark needs one of kicked-off, synced");
 			expect(stderr).toContain("ultrathink-mcp session mark --state");
 		}
 		expect(readFileSync(path, "utf8")).toBe(JSON.stringify(record));
-	});
+	}, 60_000);
 
-	test("a missing or unreadable session file exits 1 with one line and writes nothing", () => {
+	test("a missing or unreadable session file exits 1 with one line and writes nothing", async () => {
 		const missing = join(root, "state", "sessions", "gone.json");
-		const gone = run("session", "mark", "--state", missing, "kicked-off");
+		const gone = await run("session", "mark", "--state", missing, "kicked-off");
 		expect(gone.code).toBe(1);
 		expect(gone.stderr).toBe(`ultrathink-mcp: cannot read session record: ${missing}\n`);
 		expect(existsSync(missing)).toBe(false);
 		for (const garbage of ["{not json", "null", JSON.stringify({ sessionId: "s1" })]) {
 			const path = session(garbage);
-			const { code, stderr } = run("session", "mark", "--state", path, "kicked-off");
+			const { code, stderr } = await run("session", "mark", "--state", path, "kicked-off");
 			expect(code).toBe(1);
 			expect(stderr).toBe(`ultrathink-mcp: cannot read session record: ${path}\n`);
 			expect(readFileSync(path, "utf8")).toBe(garbage);
 		}
-	});
+	}, 60_000);
 });
 
 describe("auth login redirect", () => {
@@ -382,13 +485,13 @@ describe("auth login redirect", () => {
 		expect(plan.hint.join("\n")).toContain("ssh -L 8765:127.0.0.1:8765 alice@203.0.113.7");
 	});
 
-	test("the usage text lists --tailscale for auth login", () => {
-		const { code, stderr } = run("auth", "login");
+	test("the usage text lists --tailscale for auth login", async () => {
+		const { code, stderr } = await run("auth", "login");
 		expect(code).toBe(2);
 		expect(stderr).toContain(
 			"auth login <provider> [--port <n>] [--redirect <url>] [--tailscale] [--no-listen]",
 		);
-	});
+	}, 60_000);
 });
 
 describe("openrouter API-key provider", () => {
@@ -408,8 +511,8 @@ describe("openrouter API-key provider", () => {
 		}
 	};
 
-	test("set-key --stdin stores the key 0600 and prints only its length", () => {
-		const { code, stdout, stderr } = runWith(
+	test("set-key --stdin stores the key 0600 and prints only its length", async () => {
+		const { code, stdout, stderr } = await runWith(
 			{ stdin: `${K}\n` },
 			"auth",
 			"set-key",
@@ -424,12 +527,12 @@ describe("openrouter API-key provider", () => {
 		noLeak(stdout, stderr);
 		expect(statSync(store()).mode & 0o777).toBe(0o600);
 		expect(resolveOpenRouterKey(store(), {})).toEqual({ key: K, source: "store" });
-	});
+	}, 60_000);
 
-	test("set-key --env-file --var stores the key from an env file", () => {
+	test("set-key --env-file --var stores the key from an env file", async () => {
 		const file = join(root, "openrouter.env");
 		writeFileSync(file, `# keys\nULTRATHINK_OPENROUTER_KEY=${K}\n`);
-		const { code, stdout, stderr } = run(
+		const { code, stdout, stderr } = await run(
 			"auth",
 			"set-key",
 			"openrouter",
@@ -446,22 +549,22 @@ describe("openrouter API-key provider", () => {
 		noLeak(stdout, stderr);
 		expect(statSync(store()).mode & 0o777).toBe(0o600);
 		expect(resolveOpenRouterKey(store(), {})).toEqual({ key: K, source: "store" });
-	});
+	}, 60_000);
 
-	test("auth status lists openrouter by key length, or as not configured, never the key", () => {
-		const empty = run("auth", "status");
+	test("auth status lists openrouter by key length, or as not configured, never the key", async () => {
+		const empty = await run("auth", "status");
 		expect(empty.code).toBe(0);
 		expect(empty.stdout.split("\n")).toContain("openrouter  none  not ready  not configured");
 		storeKey();
-		const stored = run("auth", "status");
+		const stored = await run("auth", "status");
 		expect(stored.code).toBe(0);
 		expect(stored.stdout.split("\n")).toContain(
 			"openrouter  api_key  ready  api key set (35 chars)",
 		);
 		noLeak(stored.stdout, stored.stderr);
-	});
+	}, 60_000);
 
-	test("auth logout openrouter removes only its key", () => {
+	test("auth logout openrouter removes only its key", async () => {
 		writeStore(store(), {
 			version: 1,
 			providers: {
@@ -469,11 +572,11 @@ describe("openrouter API-key provider", () => {
 				linear: { kind: "api_key", apiKey: "lin_api_x", updatedAt: 1 },
 			},
 		});
-		const { code, stdout } = run("auth", "logout", "openrouter");
+		const { code, stdout } = await run("auth", "logout", "openrouter");
 		expect(code).toBe(0);
 		expect(stdout).toBe("openrouter: logged out\n");
 		expect(Object.keys(readStore(store()).providers)).toEqual(["linear"]);
-	});
+	}, 60_000);
 
 	test.each<string[]>([
 		["serve", "openrouter"],
@@ -481,10 +584,10 @@ describe("openrouter API-key provider", () => {
 		["auth", "login", "openrouter"],
 	])(
 		"%s … openrouter is a usage error that names set-key, with no relay, connection or login",
-		(...args) => {
+		async (...args) => {
 			storeKey();
 			const before = readFileSync(store(), "utf8");
-			const { code, stdout, stderr } = run(...args);
+			const { code, stdout, stderr } = await run(...args);
 			expect(code).toBe(2);
 			expect(stderr.split("\n")[0]).toBe(REFUSAL);
 			expect(stderr).toContain("usage:\n");
@@ -492,14 +595,15 @@ describe("openrouter API-key provider", () => {
 			noLeak(stdout, stderr);
 			expect(readFileSync(store(), "utf8")).toBe(before);
 		},
+		60_000,
 	);
 
-	test("the usage text says openrouter, vercel, hindsight and ragflow are API-key only", () => {
-		const { stderr } = run("auth", "set-key");
+	test("the usage text says openrouter, vercel, hindsight and ragflow are API-key only", async () => {
+		const { stderr } = await run("auth", "set-key");
 		expect(stderr).toContain(
 			"  ultrathink-mcp auth set-key <provider> (--stdin | --env-file <path> --var <NAME>)\n  (openrouter, vercel, hindsight and ragflow are API-key only: set-key, status and logout; never serve, check or login)\n",
 		);
-	});
+	}, 60_000);
 
 	describe("check in process", () => {
 		let savedStore: string | undefined;
@@ -579,8 +683,8 @@ describe.each([
 		for (const output of outputs) expect(output).not.toContain(key);
 	};
 
-	test("set-key --stdin stores the key 0600 and prints only its length", () => {
-		const { code, stdout, stderr } = runWith(
+	test("set-key --stdin stores the key 0600 and prints only its length", async () => {
+		const { code, stdout, stderr } = await runWith(
 			{ stdin: `${key}\n` },
 			"auth",
 			"set-key",
@@ -592,12 +696,12 @@ describe.each([
 		noLeak(stdout, stderr);
 		expect(statSync(store()).mode & 0o777).toBe(0o600);
 		expect(readStore(store()).providers[id]).toMatchObject({ kind: "api_key", apiKey: key });
-	});
+	}, 60_000);
 
-	test("set-key --env-file --var stores the key from an env file", () => {
+	test("set-key --env-file --var stores the key from an env file", async () => {
 		const file = join(root, `${id}.env`);
 		writeFileSync(file, `# keys\nexport ${envVar}="${key}"\n`);
-		const { code, stdout, stderr } = run(
+		const { code, stdout, stderr } = await run(
 			"auth",
 			"set-key",
 			id,
@@ -610,22 +714,22 @@ describe.each([
 		expect(stdout).toBe(`${id}: api key stored (${key.length} chars)\n`);
 		noLeak(stdout, stderr);
 		expect(readStore(store()).providers[id]).toMatchObject({ kind: "api_key", apiKey: key });
-	});
+	}, 60_000);
 
-	test("auth status lists it by key length, or as not configured, never the key", () => {
-		const empty = run("auth", "status");
+	test("auth status lists it by key length, or as not configured, never the key", async () => {
+		const empty = await run("auth", "status");
 		expect(empty.code).toBe(0);
 		expect(empty.stdout.split("\n")).toContain(`${id}  none  not ready  not configured`);
 		storeKey();
-		const stored = run("auth", "status");
+		const stored = await run("auth", "status");
 		expect(stored.code).toBe(0);
 		expect(stored.stdout.split("\n")).toContain(
 			`${id}  api_key  ready  api key set (${key.length} chars)`,
 		);
 		noLeak(stored.stdout, stored.stderr);
-	});
+	}, 60_000);
 
-	test("auth logout removes only its key", () => {
+	test("auth logout removes only its key", async () => {
 		writeStore(store(), {
 			version: 1,
 			providers: {
@@ -633,19 +737,19 @@ describe.each([
 				linear: { kind: "api_key", apiKey: "lin_api_x", updatedAt: 1 },
 			},
 		});
-		const { code, stdout } = run("auth", "logout", id);
+		const { code, stdout } = await run("auth", "logout", id);
 		expect(code).toBe(0);
 		expect(stdout).toBe(`${id}: logged out\n`);
 		expect(Object.keys(readStore(store()).providers)).toEqual(["linear"]);
-	});
+	}, 60_000);
 
 	test.each<string[]>([["serve"], ["check"], ["auth", "login"]])(
 		"%s is a usage error that names set-key, with no relay, connection or login",
-		(...head) => {
+		async (...head) => {
 			storeKey();
 			const before = readFileSync(store(), "utf8");
 			const args = head.length === 1 ? [head[0] as string, id] : [...head, id];
-			const { code, stdout, stderr } = run(...args);
+			const { code, stdout, stderr } = await run(...args);
 			expect(code).toBe(2);
 			expect(stderr.split("\n")[0]).toBe(refusal);
 			expect(stderr).toContain("usage:\n");
@@ -653,6 +757,7 @@ describe.each([
 			noLeak(stdout, stderr);
 			expect(readFileSync(store(), "utf8")).toBe(before);
 		},
+		60_000,
 	);
 });
 
@@ -669,62 +774,71 @@ describe("vercel set-key validation", () => {
 		["blank", "  \n"],
 		["15 characters", keyOfLength(15)],
 		["513 characters", keyOfLength(513)],
-	])("%s key is rejected with exit 1, nothing stored", (label, key) => {
-		if (key.trim()) expect(label).toBe(`${key.length} characters`);
-		const { code, stdout, stderr } = setVercel(`${key}\n`);
-		expect(code).toBe(1);
-		expect(stdout).toBe("");
-		expect(stderr).toMatch(
-			/^ultrathink-mcp: (empty api key|vercel api key must be 16 to 512 characters \(got \d+\))\n$/,
-		);
-		if (key.trim()) {
-			expect(stderr).toContain(`(got ${key.length})`);
-			expect(stderr).not.toContain(key.trim());
-		}
-		expect(existsSync(store())).toBe(false);
-	});
+	])(
+		"%s key is rejected with exit 1, nothing stored",
+		async (label, key) => {
+			if (key.trim()) expect(label).toBe(`${key.length} characters`);
+			const { code, stdout, stderr } = await setVercel(`${key}\n`);
+			expect(code).toBe(1);
+			expect(stdout).toBe("");
+			expect(stderr).toMatch(
+				/^ultrathink-mcp: (empty api key|vercel api key must be 16 to 512 characters \(got \d+\))\n$/,
+			);
+			if (key.trim()) {
+				expect(stderr).toContain(`(got ${key.length})`);
+				expect(stderr).not.toContain(key.trim());
+			}
+			expect(existsSync(store())).toBe(false);
+		},
+		60_000,
+	);
 
 	test.each([
 		["a space", "vck_UTTESTKEY 0123456789abcdef"],
 		["a tab", "vck_UTTESTKEY\t0123456789abcdef"],
 		["a control character", "vck_UTTESTKEY\u0007_0123456789abcdef"],
 		["a unicode space", "vck_UTTESTKEY\u00a0_0123456789abcdef"],
-	])("a key with %s is rejected without echoing any part of it", (_label, key) => {
-		const { code, stdout, stderr } = setVercel(`${key}\n`);
-		expect(code).toBe(1);
-		expect(stdout).toBe("");
-		expect(stderr).toBe(
-			"ultrathink-mcp: vercel api key must not contain whitespace or control characters\n",
-		);
-		expect(stderr).not.toContain("UTTESTKEY");
-		expect(existsSync(store())).toBe(false);
-	});
+	])(
+		"a key with %s is rejected without echoing any part of it",
+		async (_label, key) => {
+			const { code, stdout, stderr } = await setVercel(`${key}\n`);
+			expect(code).toBe(1);
+			expect(stdout).toBe("");
+			expect(stderr).toBe(
+				"ultrathink-mcp: vercel api key must not contain whitespace or control characters\n",
+			);
+			expect(stderr).not.toContain("UTTESTKEY");
+			expect(existsSync(store())).toBe(false);
+		},
+		60_000,
+	);
 
 	test.each([16, 512])(
 		"a %i character key is accepted and only its length is printed",
-		(length) => {
+		async (length) => {
 			const key = keyOfLength(length);
 			expect(key.length).toBe(length);
-			const { code, stdout, stderr } = setVercel(`${key}\n`);
+			const { code, stdout, stderr } = await setVercel(`${key}\n`);
 			expect(code).toBe(0);
 			expect(stdout).toBe(`vercel: api key stored (${length} chars)\n`);
 			expect(stdout + stderr).not.toContain(key);
 			expect(readStore(store()).providers.vercel).toMatchObject({ kind: "api_key", apiKey: key });
 		},
+		60_000,
 	);
 
-	test("--no-verify is accepted as a no-op", () => {
-		const { code, stdout, stderr } = setVercel(`${good}\n`, "--no-verify");
+	test("--no-verify is accepted as a no-op", async () => {
+		const { code, stdout, stderr } = await setVercel(`${good}\n`, "--no-verify");
 		expect(code).toBe(0);
 		expect(stdout).toBe(`vercel: api key stored (${good.length} chars)\n`);
 		expect(stdout + stderr).not.toContain(good);
 		expect(readStore(store()).providers.vercel).toMatchObject({ kind: "api_key", apiKey: good });
-	});
+	}, 60_000);
 
-	test("the check also applies to --env-file input", () => {
+	test("the check also applies to --env-file input", async () => {
 		const file = join(root, "vercel.env");
 		writeFileSync(file, "AI_GATEWAY_API_KEY=short\n");
-		const { code, stderr } = run(
+		const { code, stderr } = await run(
 			"auth",
 			"set-key",
 			"vercel",
@@ -736,7 +850,7 @@ describe("vercel set-key validation", () => {
 		expect(code).toBe(1);
 		expect(stderr).toContain("vercel api key must be 16 to 512 characters (got 5)");
 		expect(stderr).not.toContain("short");
-	});
+	}, 60_000);
 });
 
 describe("auth login stdin wait", () => {

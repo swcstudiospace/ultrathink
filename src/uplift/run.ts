@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+import { isAbortError } from "../shared.ts";
 import type { CompletionReport, UpliftResult } from "../types.ts";
 import { fallbackUplift } from "./fallback.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "./prompt.ts";
-import { sanitizeUpliftXml } from "./xml.ts";
+import { checkUpliftXml } from "./xml.ts";
 
-/** Input gate in characters; 0 means no gate. A positive value is an explicit cap. */
+/** Input gate in characters; 0 means no gate. A positive value is an explicit cap; config supplies 200000 by default. */
 const DEFAULT_MAX_CHARS = 0;
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
-}
 
 function buildPayload(original: string, conversation?: string): string {
 	if (conversation?.trim()) {
@@ -60,18 +57,44 @@ export async function runUplift(input: {
 			attempts: 0,
 		};
 
+	// The report seam is the completer's own bookkeeping: a throwing one reads as absent and never escapes.
+	const readReport = (): CompletionReport | undefined => {
+		try {
+			return input.report?.();
+		} catch {
+			// reason: fail-open: a broken report seam must not turn an uplift into a failed flight
+			return undefined;
+		}
+	};
+
+	let raw: unknown;
 	try {
-		const raw = await input.complete(
+		raw = await input.complete(
 			UPLIFT_SYSTEM_PROMPT,
 			buildPayload(original, input.conversation),
 			input.signal,
 		);
-		const report = input.report?.();
-		const attempts = report?.attempts ?? 1;
-		const reply = raw ?? "";
+	} catch (error) {
+		if (isAbortError(error)) throw error;
+		const report = readReport();
+		return fallbackWith(original, providerReason(report), 0, report?.attempts ?? 1);
+	}
+
+	const report = readReport();
+	const attempts = report?.attempts ?? 1;
+	if (raw !== undefined && raw !== null && typeof raw !== "string") {
+		return fallbackWith(original, "engine_error", 0, attempts);
+	}
+	const reply = raw ?? "";
+	try {
 		if (!reply.trim()) return fallbackWith(original, "empty_reply", reply.length, attempts);
-		const xml = sanitizeUpliftXml(raw, original);
-		if (!xml) return fallbackWith(original, "unparseable_reply", reply.length, attempts);
+		const checked = checkUpliftXml(reply, original);
+		if (!checked.ok) {
+			// A root opened and never closed is a cut-off reply; everything else is a reply that is not an uplift.
+			const reason = checked.reason === "unclosed_root" ? "truncated_reply" : "unparseable_reply";
+			return fallbackWith(original, reason, reply.length, attempts);
+		}
+		const xml = checked.xml;
 		return {
 			xml,
 			original,
@@ -79,9 +102,8 @@ export async function runUplift(input: {
 			source: "llm",
 			...(report ? { attempts } : {}),
 		};
-	} catch (error) {
-		if (isAbortError(error)) throw error;
-		const report = input.report?.();
-		return fallbackWith(original, providerReason(report), 0, report?.attempts ?? 1);
+	} catch {
+		// reason: fail-open: an engine bug while post-processing a reply falls back instead of failing the flight
+		return fallbackWith(original, "engine_error", reply.length, attempts);
 	}
 }

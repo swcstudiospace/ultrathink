@@ -13,6 +13,7 @@ import {
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
+import { processIdentity } from "../swarm/lane.ts";
 import type { ProviderId } from "./providers.ts";
 
 export interface OAuthClient {
@@ -53,21 +54,48 @@ export function storePath(env: Record<string, string | undefined> = process.env)
 	return join(base, "ultrathink", "mcp-credentials.json");
 }
 
-export function readStore(path: string): CredentialStore {
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CredentialStore>;
-		if (
-			parsed &&
-			parsed.version === 1 &&
-			parsed.providers &&
-			typeof parsed.providers === "object"
-		) {
-			return { version: 1, providers: parsed.providers };
-		}
-	} catch {
-		// reason: a missing or corrupt store reads as empty, so a corrupt credential file looks like no credentials. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
+/** Why a strict read refused a store; a short code, never any of the file's content. */
+type StoreReadFailure = "invalid_json" | "unsupported_shape" | "unreadable";
+
+/** A strict read found a store it cannot trust. Carries the reason code only: the content may hold secrets. */
+export class StoreReadError extends Error {
+	constructor(
+		readonly code: StoreReadFailure,
+		path: string,
+		override readonly cause?: unknown,
+	) {
+		super(`credential store ${path} is unreadable (${code})`);
+		this.name = "StoreReadError";
 	}
-	return { version: 1, providers: {} };
+}
+
+/**
+ * The credential store. Lenient by default: a missing or corrupt file reads as empty, which is right for a status
+ * line or a settings probe. `strict` is for a read that a write follows: only a missing file (ENOENT) is empty, any
+ * other failure throws {@link StoreReadError}, so a failed read can never be persisted as an empty store.
+ */
+export function readStore(path: string, opts: { strict?: boolean } = {}): CredentialStore {
+	let raw: string;
+	try {
+		raw = readFileSync(path, "utf8");
+	} catch (error) {
+		if (!opts.strict || (error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { version: 1, providers: {} };
+		}
+		throw new StoreReadError("unreadable", path, error);
+	}
+	let parsed: Partial<CredentialStore> | null;
+	try {
+		parsed = JSON.parse(raw) as Partial<CredentialStore> | null;
+	} catch (error) {
+		if (!opts.strict) return { version: 1, providers: {} };
+		throw new StoreReadError("invalid_json", path, error);
+	}
+	if (parsed && parsed.version === 1 && parsed.providers && typeof parsed.providers === "object") {
+		return { version: 1, providers: parsed.providers };
+	}
+	if (!opts.strict) return { version: 1, providers: {} };
+	throw new StoreReadError("unsupported_shape", path);
 }
 
 export interface StoreStatus {
@@ -113,12 +141,60 @@ export function writeStore(path: string, store: CredentialStore): void {
 
 const OWNER_FILE = "owner";
 
+/** What the owner file holds: who holds the lock (pid and process start identity) and its unique token. */
+interface LockOwner {
+	pid: number;
+	startTime: string;
+}
+
 function readOwner(dir: string): string | undefined {
 	try {
 		return readFileSync(join(dir, OWNER_FILE), "utf8");
 	} catch {
 		return undefined;
 	}
+}
+
+/** The holder named by an owner file, or undefined for a legacy bare-token file or any other content. */
+function parseOwner(raw: string | undefined): LockOwner | undefined {
+	if (raw === undefined) return undefined;
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		// reason: a legacy bare-token owner file is not JSON; the lock then ages out by its mtime
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null) return undefined;
+	const { pid, startTime } = value as Record<string, unknown>;
+	if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
+	if (typeof startTime !== "string") return undefined;
+	return { pid, startTime };
+}
+
+/** Seams for the holder-liveness check; the defaults read the real process table. */
+interface HolderLiveness {
+	/** Whether the pid is running (default `process.kill(pid, 0)`; EPERM counts as running). */
+	alive?: (pid: number) => boolean;
+	/** The process's start identity, undefined when unreadable (default `processIdentity`). */
+	identity?: (pid: number) => string | undefined;
+}
+
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+/** True only when the holder is provably gone: its pid is not running, or the pid now belongs to another process. */
+function holderGone(owner: LockOwner, seams: HolderLiveness): boolean {
+	if (!(seams.alive ?? pidAlive)(owner.pid)) return true;
+	if (owner.startTime === "") return false;
+	const current = (seams.identity ?? processIdentity)(owner.pid);
+	return current !== undefined && current !== owner.startTime;
 }
 
 /**
@@ -153,7 +229,9 @@ export async function withStoreLock<T>(
 	path: string,
 	fn: () => Promise<T>,
 	opts: {
+		/** A lock whose holder cannot be shown dead is taken over once this old (default 60 s); the heartbeat keeps a live one fresh. */
 		staleMs?: number;
+		/** How long to wait for the lock; at least the stale window by default (65 s), so a stale lock is taken over, not waited out. */
 		waitMs?: number;
 		pollMs?: number;
 		/** Clock for the lock deadline, staleness and heartbeat stamps; defaults to `Date.now`. */
@@ -162,10 +240,12 @@ export async function withStoreLock<T>(
 		sleep?: (ms: number) => Promise<void>;
 		/** Interval port for the heartbeat that keeps a held lock fresh; defaults to the platform timers. */
 		timers?: LockTimers;
+		/** Seams for the holder-liveness check. */
+		holder?: HolderLiveness;
 	} = {},
 ): Promise<T> {
 	const staleMs = opts.staleMs ?? 60_000;
-	const waitMs = opts.waitMs ?? 30_000;
+	const waitMs = opts.waitMs ?? staleMs + 5_000;
 	const pollMs = opts.pollMs ?? 100;
 	const now = opts.now ?? Date.now;
 	const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
@@ -173,14 +253,20 @@ export async function withStoreLock<T>(
 		setInterval: (fn, ms) => setInterval(fn, ms),
 		clearInterval: (handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]),
 	};
+	const seams = opts.holder ?? {};
 	const lock = `${path}.lock`;
-	const nonce = randomBytes(16).toString("hex");
+	// The whole owner file is the token: the heartbeat and the release compare it byte for byte.
+	const token = JSON.stringify({
+		pid: process.pid,
+		startTime: processIdentity(process.pid) ?? "",
+		token: randomBytes(16).toString("hex"),
+	});
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	const deadline = now() + waitMs;
 	for (;;) {
 		try {
 			mkdirSync(lock);
-			writeFileSync(join(lock, OWNER_FILE), nonce);
+			writeFileSync(join(lock, OWNER_FILE), token);
 			break;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -188,7 +274,12 @@ export async function withStoreLock<T>(
 		let judged: { owner: string | undefined; mtimeMs: number } | undefined;
 		try {
 			const mtimeMs = statSync(lock).mtimeMs;
-			if (now() - mtimeMs > staleMs) judged = { owner: readOwner(lock), mtimeMs };
+			const raw = readOwner(lock);
+			const holder = parseOwner(raw);
+			// A holder that is provably gone loses the lock at once; any other lock ages out by its mtime.
+			if ((holder !== undefined && holderGone(holder, seams)) || now() - mtimeMs > staleMs) {
+				judged = { owner: raw, mtimeMs };
+			}
 		} catch {
 			// reason: the lock vanished between the mkdir and the stat; the loop retries the acquire
 			continue;
@@ -202,7 +293,7 @@ export async function withStoreLock<T>(
 	}
 	const heartbeat = timers.setInterval(
 		() => {
-			if (readOwner(lock) !== nonce) return;
+			if (readOwner(lock) !== token) return;
 			try {
 				const stamp = new Date(now());
 				utimesSync(lock, stamp, stamp);
@@ -216,6 +307,6 @@ export async function withStoreLock<T>(
 		return await fn();
 	} finally {
 		timers.clearInterval(heartbeat);
-		if (readOwner(lock) === nonce) rmSync(lock, { recursive: true, force: true });
+		if (readOwner(lock) === token) rmSync(lock, { recursive: true, force: true });
 	}
 }

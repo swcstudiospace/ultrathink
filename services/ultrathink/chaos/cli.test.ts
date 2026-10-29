@@ -9,6 +9,7 @@ import { makeTempDir } from "../test.helpers.ts";
 import { type CliDeps, runCli } from "./cli.ts";
 import { appendHistory } from "./history.ts";
 import type { HttpFetch, HttpRequestInit } from "./observe.ts";
+import type { Pressure, PressureSpec } from "./pipeline/pressure.ts";
 import type { RunResult } from "./run.ts";
 
 const EXPERIMENTS = join(import.meta.dir, "experiments");
@@ -38,6 +39,8 @@ interface HarnessOptions {
 	sleep?: CliDeps["sleep"];
 	/** HTTP status for a path; defaults to 200 everywhere. */
 	statusFor?: (path: string) => number;
+	/** Replaces the Bun-worker pressure helper, so no test spins a real worker. */
+	startPressure?: CliDeps["startPressure"];
 }
 
 function harness(options: HarnessOptions = {}): Harness {
@@ -70,6 +73,7 @@ function harness(options: HarnessOptions = {}): Harness {
 		sleep: options.sleep ?? (() => Promise.resolve()),
 		templatesDir: EXPERIMENTS,
 		historyPath,
+		...(options.startPressure ? { startPressure: options.startPressure } : {}),
 	};
 	return { deps, stdout: () => out.join(""), stderr: () => err.join(""), events, historyPath };
 }
@@ -480,5 +484,309 @@ describe("run: TLS probe flags", () => {
 		expect(code).toBe(2);
 		expect(h.stderr()).toContain(`--ca-file cannot read ${missing}`);
 		expect(h.events).toEqual([]);
+	});
+});
+
+function stubPressure(ratio: number, asked: PressureSpec[] = []): (spec: PressureSpec) => Pressure {
+	return (spec) => {
+		asked.push(spec);
+		return {
+			achieved: () => ({ cpuMs: ratio * 1000, wallMs: 1000, ratio, stallMaxMs: 0 }),
+			stop: async () => undefined,
+			ballastBytes: () => 0,
+		};
+	};
+}
+
+describe("pipeline templates", () => {
+	test("lists the five load scenarios with their prompts and concurrency", async () => {
+		const h = harness();
+
+		const code = await runCli(["pipeline", "templates"], h.deps);
+
+		expect(code).toBe(0);
+		const rows = h
+			.stdout()
+			.trim()
+			.split("\n")
+			.map((line) => line.split("\t"));
+		expect(rows.map((row) => [row[0], row[2], row[3]])).toEqual([
+			["nominal", "500", "25"],
+			["recovery", "5", "1"],
+			["smoke", "50", "5"],
+			["spike", "1000", "100"],
+			["stress", "2000", "100"],
+		]);
+		expect(rows.every((row) => (row[1] ?? "").length > 0)).toBe(true);
+	});
+
+	test("takes no arguments", async () => {
+		const h = harness();
+
+		expect(await runCli(["pipeline", "templates", "extra"], h.deps)).toBe(2);
+	});
+});
+
+describe("pipeline run and score", () => {
+	test("runs a resized smoke scenario, prints the verdict, records history and exits 0", async () => {
+		const h = harness();
+
+		const code = await runCli(
+			["pipeline", "run", "smoke", "--prompts", "4", "--concurrency", "2", "--seed", "5"],
+			h.deps,
+		);
+
+		expect(code).toBe(0);
+		expect(h.stdout()).toContain("smoke via pipeline: PASSED, score 100");
+		expect(h.stdout()).toContain("  pass terminal");
+		expect(h.stdout()).toContain(`recorded seq 1 in ${h.historyPath}`);
+		const history = readFileSync(h.historyPath, "utf8").trim().split("\n");
+		expect(history).toHaveLength(1);
+		expect(JSON.parse(history[0] ?? "{}")).toMatchObject({
+			templateId: "smoke",
+			driver: "pipeline",
+			score: 100,
+			seq: 1,
+		});
+		expect(h.events).toEqual([]);
+	});
+
+	test("--trace-heap is accepted and prints the heap trace lines", async () => {
+		const h = harness();
+
+		const code = await runCli(
+			["pipeline", "run", "smoke", "--prompts", "2", "--trace-heap"],
+			h.deps,
+		);
+
+		expect(code).toBe(0);
+		expect(h.stdout()).toContain("smoke via pipeline: PASSED");
+		expect(await runCli(["pipeline", "run", "smoke", "--trace-heap=yes"], harness().deps)).toBe(2);
+	});
+
+	test("--watchdog-ms (ceiling) and --stall-ms set the budgets the run prints, with the abort counts and the probe latency", async () => {
+		const plain = harness();
+		const custom = harness();
+
+		expect(await runCli(["pipeline", "run", "smoke", "--prompts", "2"], plain.deps)).toBe(0);
+		expect(
+			await runCli(
+				[
+					"pipeline",
+					"run",
+					"smoke",
+					"--prompts",
+					"2",
+					"--watchdog-ms",
+					"45000",
+					"--stall-ms",
+					"9000",
+				],
+				custom.deps,
+			),
+		).toBe(0);
+
+		expect(plain.stdout()).toContain(
+			"stall watchdog 60000 ms, ceiling 900000 ms, stall aborts 0, ceiling aborts 0",
+		);
+		expect(plain.stdout()).toMatch(
+			/probe latency real median \d+ ms of 5 \(min \d+, max \d+\) baseline none ratio n\/a bound n\/a/,
+		);
+		expect(custom.stdout()).toContain(
+			"stall watchdog 9000 ms, ceiling 45000 ms, stall aborts 0, ceiling aborts 0",
+		);
+		const recorded = JSON.parse(readFileSync(custom.historyPath, "utf8").trim()) as {
+			details: Record<string, number>;
+		};
+		expect(recorded.details.watchdogMs).toBe(45000);
+		expect(recorded.details.stallMs).toBe(9000);
+	});
+
+	test("--watchdog-ms and --stall-ms out of range or malformed exit 2", async () => {
+		for (const flag of ["--watchdog-ms", "--stall-ms"]) {
+			for (const value of ["500", "abc", "-1", "3600001"]) {
+				const h = harness();
+				expect(await runCli(["pipeline", "run", "smoke", flag, value], h.deps)).toBe(2);
+				expect(existsSync(h.historyPath)).toBe(false);
+			}
+		}
+	});
+
+	test("--history overrides the default history file", async () => {
+		const h = harness();
+		const custom = join(freshDir(), "custom.jsonl");
+
+		const code = await runCli(
+			["pipeline", "run", "smoke", "--prompts", "2", "--history", custom],
+			h.deps,
+		);
+
+		expect(code).toBe(0);
+		expect(existsSync(custom)).toBe(true);
+		expect(existsSync(h.historyPath)).toBe(false);
+	});
+
+	test("score reads the recorded pipeline runs back", async () => {
+		const h = harness();
+		appendHistory(h.historyPath, { ...runRecord("smoke", 100), driver: "pipeline" });
+		appendHistory(h.historyPath, { ...runRecord("smoke", 90), driver: "pipeline" });
+
+		const code = await runCli(["pipeline", "score", "smoke"], h.deps);
+
+		expect(code).toBe(0);
+		expect(h.stdout()).toContain("smoke: runs 2");
+		expect(h.stdout()).toContain("mean 95");
+		expect(await runCli(["pipeline", "score", "nominal"], h.deps)).toBe(0);
+		expect(h.stdout()).toContain("nominal: no runs recorded");
+	});
+
+	test("--pressure asks the helper for the scenario's pressure and a met floor passes", async () => {
+		const asked: PressureSpec[] = [];
+		const h = harness({ startPressure: stubPressure(2, asked) });
+
+		const code = await runCli(["pipeline", "run", "smoke", "--prompts", "2", "--pressure"], h.deps);
+
+		expect(code).toBe(0);
+		expect(asked).toHaveLength(1);
+		expect(asked[0]?.duty).toBe(1);
+		expect(h.stdout()).toContain("  pass pressure");
+	});
+
+	test("--pressure that the host did not deliver fails the run with pressure-not-applied", async () => {
+		const h = harness({ startPressure: stubPressure(0.01) });
+
+		const code = await runCli(["pipeline", "run", "smoke", "--prompts", "2", "--pressure"], h.deps);
+
+		expect(code).toBe(1);
+		expect(h.stdout()).toContain("fail pressure (pressure-not-applied");
+		expect(h.stdout()).toContain("FAILED");
+	});
+
+	test("usage errors exit 2 and run nothing", async () => {
+		const bad: string[][] = [
+			["pipeline"],
+			["pipeline", "bogus"],
+			["pipeline", "run"],
+			["pipeline", "run", "no-such-scenario"],
+			["pipeline", "run", "smoke", "--prompts", "0"],
+			["pipeline", "run", "smoke", "--prompts", "abc"],
+			["pipeline", "run", "smoke", "--concurrency", "129"],
+			["pipeline", "run", "smoke", "--seed", "-1"],
+			["pipeline", "run", "smoke", "--frobnicate", "1"],
+			["pipeline", "run", "smoke", "--provider", "fake"],
+			["pipeline", "run", "smoke", "--max-calls", "5"],
+			["pipeline", "run", "smoke", "--provider", "real", "--max-calls", "0"],
+			["pipeline", "run", "smoke", "extra", "args"],
+			["pipeline", "score"],
+			["pipeline", "score", "smoke", "--prompts", "3"],
+		];
+
+		for (const argv of bad) {
+			const h = harness();
+			expect(await runCli(argv, h.deps)).toBe(2);
+			expect(existsSync(h.historyPath)).toBe(false);
+		}
+	});
+
+	test("--prompts out of range names the field and not the value", async () => {
+		const h = harness();
+
+		expect(await runCli(["pipeline", "run", "smoke", "--prompts", "9999"], h.deps)).toBe(2);
+		expect(h.stderr()).toContain("prompts.count must be between 1 and 5000");
+		expect(h.stderr()).not.toContain("9999");
+	});
+});
+
+describe("pipeline run: the real-provider guard", () => {
+	test("--provider real without ULTRATHINK_CHAOS_REAL=1 is refused with exit 2 and nothing is recorded", async () => {
+		const h = harness();
+
+		const code = await runCli(["pipeline", "run", "smoke", "--provider", "real"], h.deps);
+
+		expect(code).toBe(2);
+		expect(h.stderr()).toContain("ULTRATHINK_CHAOS_REAL=1");
+		expect(existsSync(h.historyPath)).toBe(false);
+	});
+
+	test("the environment flag alone does not turn the real provider on", async () => {
+		const h = harness({ env: { ULTRATHINK_CHAOS_REAL: "1" } });
+
+		const code = await runCli(["pipeline", "run", "smoke", "--prompts", "2"], h.deps);
+
+		expect(code).toBe(0);
+		expect(h.stdout()).not.toContain("calls made");
+	});
+
+	test("stress and spike are refused even with both gates", async () => {
+		for (const id of ["stress", "spike"]) {
+			const h = harness({ env: { ULTRATHINK_CHAOS_REAL: "1" } });
+
+			const code = await runCli(["pipeline", "run", id, "--provider", "real"], h.deps);
+
+			expect(code).toBe(2);
+			expect(h.stderr()).toContain(`refuses the ${id} scenario`);
+			expect(existsSync(h.historyPath)).toBe(false);
+		}
+	});
+});
+
+describe("pipeline pressure", () => {
+	test("holds the requested pressure on the injected sleep, prints cpuMs wallMs ratio and exits 0", async () => {
+		const asked: PressureSpec[] = [];
+		const slept: number[] = [];
+		const h = harness({
+			startPressure: stubPressure(1.5, asked),
+			sleep: async (ms) => {
+				slept.push(ms);
+			},
+		});
+
+		const code = await runCli(
+			["pipeline", "pressure", "--workers", "2", "--seconds", "3", "--memory-mb", "16"],
+			h.deps,
+		);
+
+		expect(code).toBe(0);
+		expect(slept).toEqual([3000]);
+		expect(asked[0]).toMatchObject({ workers: 2, duty: 1, memMB: 16 });
+		expect(h.stdout()).toBe("pressure held 3s: cpuMs 1500 wallMs 1000 ratio 1.5\n");
+		expect(existsSync(h.historyPath)).toBe(false);
+	});
+
+	test("a ratio under the floor exits 2 with pressure not applied; --floor lowers the bar", async () => {
+		const slow = harness({ startPressure: stubPressure(0.01) });
+		const lowered = harness({ startPressure: stubPressure(0.01) });
+
+		expect(
+			await runCli(["pipeline", "pressure", "--workers", "2", "--seconds", "1"], slow.deps),
+		).toBe(2);
+		expect(slow.stderr()).toContain("pressure not applied");
+		expect(
+			await runCli(
+				["pipeline", "pressure", "--workers", "2", "--seconds", "1", "--floor", "0.005"],
+				lowered.deps,
+			),
+		).toBe(0);
+	});
+
+	test("usage errors exit 2 before any pressure starts", async () => {
+		const bad: string[][] = [
+			["pipeline", "pressure"],
+			["pipeline", "pressure", "--workers", "2"],
+			["pipeline", "pressure", "--seconds", "3"],
+			["pipeline", "pressure", "--workers", "0", "--seconds", "3"],
+			["pipeline", "pressure", "--workers", "2", "--seconds", "0"],
+			["pipeline", "pressure", "--workers", "two", "--seconds", "3"],
+			["pipeline", "pressure", "--workers", "2", "--seconds", "3", "--floor", "high"],
+			["pipeline", "pressure", "--workers", "2", "--seconds", "3", "--duty", "1"],
+			["pipeline", "pressure", "extra", "--workers", "2", "--seconds", "3"],
+		];
+
+		for (const argv of bad) {
+			const asked: PressureSpec[] = [];
+			const h = harness({ startPressure: stubPressure(5, asked) });
+			expect(await runCli(argv, h.deps)).toBe(2);
+			expect(asked).toEqual([]);
+		}
 	});
 });

@@ -19,7 +19,9 @@ const DAY_MS = 24 * HOUR_MS;
 /** Group- or other-readable permission bits. */
 const LOOSE_MODE = 0o044;
 /** State and control files written next to `sessions/`. */
-const CARRIER_FILES = ["last.json", "last-plan.json", "control.json"] as const;
+const CARRIER_FILES = ["last.json", "control.json"] as const;
+/** The plan carrier: one `last-plan.<sessionId>.json` per session, plus the single `last-plan.json` of earlier builds. */
+const PLAN_CARRIER_RE = /^last-plan(?:\..+)?\.json$/;
 
 function statOrUndefined(path: string): Stats | undefined {
 	try {
@@ -179,18 +181,22 @@ export function checkState(deps: DoctorDeps): Finding[] {
 		}
 		if ((name.endsWith(".json") || name.endsWith(".xml")) && stats.mode & LOOSE_MODE) loose++;
 	}
-	for (const name of CARRIER_FILES) {
+	let rootNames: string[] = [];
+	try {
+		rootNames = readdirSync(dir);
+	} catch {
+		// reason: Metadata-only diagnosis stays best-effort when the state root cannot be listed.
+	}
+	const carrierNames = new Set<string>(CARRIER_FILES);
+	for (const name of rootNames) if (PLAN_CARRIER_RE.test(name)) carrierNames.add(name);
+	for (const name of carrierNames) {
 		const stats = statOrUndefined(join(dir, name));
 		if (stats?.isFile() && stats.mode & LOOSE_MODE) loose++;
 	}
-	try {
-		for (const name of readdirSync(dir)) {
-			if (!/\.(tmp|lock)$/.test(name)) continue;
-			const stats = statOrUndefined(join(dir, name));
-			if (stats?.isFile() && now - stats.mtimeMs > ORPHAN_AGE_MS) orphans++;
-		}
-	} catch {
-		// reason: Metadata-only diagnosis stays best-effort when the state root cannot be listed.
+	for (const name of rootNames) {
+		if (!/\.(tmp|lock)$/.test(name)) continue;
+		const stats = statOrUndefined(join(dir, name));
+		if (stats?.isFile() && now - stats.mtimeMs > ORPHAN_AGE_MS) orphans++;
 	}
 
 	// When the sessions directory itself is broken an error above already explains why nothing could be counted.

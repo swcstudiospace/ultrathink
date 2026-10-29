@@ -3,12 +3,12 @@
 
 /**
  * The tool side of the MCP connector, shared by every transport: the HTTP router builds it with a planner, its metrics
- * and its ledger; a stdio server builds the same host without a planner. It runs the ten tools, never speaks JSON-RPC
+ * and its ledger; a stdio server builds the same host without a planner. It runs the eleven tools, never speaks JSON-RPC
  * (mcp.ts does) and never logs or counts on its own: the caller wraps `call` for that, and `onPlanFinished` reports
  * each finished server plan once.
  */
 
-import type { HeadlessPlanner, ResultView } from "../engine/headless.ts";
+import type { HeadlessPlanner, JobOutcome, ResultView, StartResult } from "../engine/headless.ts";
 import {
 	type JournalOptions,
 	type JournalResult,
@@ -24,6 +24,7 @@ import type { CommandCatalog } from "./commands.ts";
 import type { McpToolHost, ToolOutcome } from "./mcp.ts";
 import type { ResourceRegistry } from "./resources.ts";
 import {
+	CANCEL_TOOL,
 	COMMAND_TOOL,
 	GRAPH_TOOL,
 	type PlanningInfo,
@@ -49,14 +50,25 @@ export interface ToolHostDeps {
 
 export interface ToolHost extends McpToolHost {
 	capabilities(): { serverPlanning: boolean };
+	/** Counts a server job that reached its final status, once; a later poll of the same plan does not count it again. */
+	recordOutcome(outcome: JobOutcome): void;
 }
 
-export function toOutcome(result: JournalResult<unknown>): ToolOutcome {
+/**
+ * A journal result as a tool outcome. A refusal that carries `retryAfterSec` names it as its last error line, since the
+ * MCP result has no other field for it.
+ */
+export function toOutcome(result: JournalResult<unknown> | StartResult): ToolOutcome {
 	if (result.ok) return { ok: true, data: result.data as Record<string, unknown> };
+	const hint = "retryAfterSec" in result ? result.retryAfterSec : undefined;
+	const errors = [
+		...(result.errors ?? []),
+		...(hint === undefined ? [] : [`retry after ${hint}s`]),
+	];
 	return {
 		ok: false,
 		code: result.code,
-		...(result.errors !== undefined ? { errors: result.errors } : {}),
+		...(errors.length > 0 ? { errors } : {}),
 	};
 }
 
@@ -74,6 +86,22 @@ export function createToolHost(deps: ToolHostDeps): ToolHost {
 			if (oldest !== undefined) countedPlans.delete(oldest);
 		}
 		deps.onPlanFinished?.(view);
+	}
+
+	/** A finished job as the view the plan metrics read: counts and the status, no text. */
+	function recordOutcome(outcome: JobOutcome): void {
+		recordFinished({
+			sessionId: outcome.sessionId,
+			status: outcome.status,
+			mode: "server",
+			text: "",
+			usage: {
+				calls: outcome.calls,
+				inputTokens: outcome.inputTokens,
+				outputTokens: outcome.outputTokens,
+			},
+			...(outcome.error === undefined ? {} : { error: outcome.error }),
+		});
 	}
 
 	const connector = createConnectorHandlers({
@@ -156,6 +184,10 @@ export function createToolHost(deps: ToolHostDeps): ToolHost {
 				// The text stays in the structured data: Claude Code shows the model structuredContent instead of content.
 				return textOutcome({ ...result.data }, result.data.text);
 			}
+			case CANCEL_TOOL: {
+				if (planner?.cancel === undefined) return { ok: false, code: "disabled" };
+				return toOutcome(planner.cancel({ sessionId: args.sessionId }));
+			}
 			case GRAPH_TOOL:
 				return connector.graph(args);
 			case SESSIONS_TOOL:
@@ -169,6 +201,7 @@ export function createToolHost(deps: ToolHostDeps): ToolHost {
 
 	const host: ToolHost = {
 		capabilities: () => ({ serverPlanning: planner?.enabled === true }),
+		recordOutcome,
 		call,
 	};
 	if (deps.resources) host.resources = deps.resources;

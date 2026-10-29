@@ -13,7 +13,17 @@
  */
 
 import { redactSecrets } from "../redact.ts";
+import { childFailure, runChild } from "../resilience/child.ts";
+import {
+	isTransientFailure,
+	RetryExhaustedError,
+	type RetrySeams,
+	unwrapRetryError,
+	withRetry,
+} from "../resilience/retry.ts";
 import { dropJevKeys } from "../route-defaults.ts";
+import { isAbortError } from "../shared.ts";
+import { attachReport, readReport } from "../types.ts";
 
 export const CHILD_ENV = "ULTRATHINK_CHILD";
 
@@ -66,6 +76,8 @@ export interface ClaudeCompleteOptions {
 	onResult?: (info: ClaudeCallInfo) => void;
 	/** Output token cap for the reply (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`); floored, ignored unless a positive integer. */
 	maxOutputTokens?: number;
+	/** Test seams for the retry backoff (sleep, random); production uses the kernel defaults. */
+	retrySeams?: RetrySeams;
 }
 
 export type ClaudeCompleter = (
@@ -105,6 +117,7 @@ interface ClaudeResultRecord {
 	is_error?: unknown;
 	subtype?: unknown;
 	api_error_status?: unknown;
+	stop_reason?: unknown;
 	usage?: unknown;
 	modelUsage?: unknown;
 }
@@ -210,7 +223,72 @@ async function claudeComplete(
 	dropJevKeys(childEnv);
 	const cap = opts.maxOutputTokens === undefined ? 0 : Math.floor(opts.maxOutputTokens);
 	if (Number.isFinite(cap) && cap > 0) childEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(cap);
-	return claudeAttempt(system, user, opts, childEnv);
+	return withCompletionReport(
+		() => claudeAttempt(system, user, opts, childEnv),
+		opts.signal,
+		opts.retrySeams,
+	);
+}
+
+/** Output cap for a CLI child's stdout and stderr, the same 4 MB as `net/body`. */
+export const CHILD_OUTPUT_CAP_BYTES = 4 * 1024 * 1024;
+
+const TRUNCATED_REPLY = "truncated_reply";
+const RETRY_POLICY = { maxAttempts: 3, baseMs: 1000, capMs: 8000 } as const;
+const TIMEOUT_TEXT = /timed out after \d+ms/;
+
+/** A reply the model cut short or left empty: a failed attempt whose report cause is `truncated_reply`. */
+export function truncatedReplyError(message: string): Error {
+	const error = new Error(message);
+	attachReport(error, { attempts: 1, cause: TRUNCATED_REPLY });
+	return error;
+}
+
+function classify(error: unknown, now?: number): ReturnType<typeof isTransientFailure> {
+	if (isAbortError(error)) return { transient: false, reason: "aborted" };
+	const message = error instanceof Error ? error.message : "";
+	if (TIMEOUT_TEXT.test(message)) return { transient: false, reason: "timed out" };
+	if (readReport(error)?.cause === TRUNCATED_REPLY) {
+		return { transient: true, reason: TRUNCATED_REPLY };
+	}
+	if (error instanceof ClaudeResultError && error.apiErrorStatus !== undefined) {
+		return isTransientFailure({ status: error.apiErrorStatus, message }, now);
+	}
+	return isTransientFailure(error, now);
+}
+
+function oneLine(text: string): string {
+	return redactSecrets(text).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/**
+ * Runs one completion attempt through the kernel retry (3 attempts, same model). A failure leaves with a
+ * `CompletionReport` attached to the ORIGINAL error (never the retry wrapper); an abort leaves bare.
+ */
+export async function withCompletionReport<T>(
+	attempt: () => Promise<T>,
+	signal: AbortSignal | undefined,
+	seams: RetrySeams | undefined,
+): Promise<T> {
+	try {
+		return (await withRetry(attempt, RETRY_POLICY, { ...seams, signal, classify })).value;
+	} catch (error) {
+		const root = unwrapRetryError(error);
+		if (isAbortError(root)) throw root;
+		const attempts = error instanceof RetryExhaustedError ? error.attempts : 1;
+		const message = root instanceof Error ? root.message : String(root);
+		const truncated = readReport(root)?.cause === TRUNCATED_REPLY;
+		const retryAfterMs = isTransientFailure(root).retryAfterMs;
+		attachReport(root, {
+			attempts,
+			...(root instanceof ClaudeResultError && root.apiErrorStatus !== undefined
+				? { httpStatus: root.apiErrorStatus }
+				: {}),
+			...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+			cause: truncated ? TRUNCATED_REPLY : oneLine(message),
+		});
+		throw root;
+	}
 }
 
 async function claudeAttempt(
@@ -220,55 +298,38 @@ async function claudeAttempt(
 	env: Record<string, string | undefined>,
 ): Promise<string> {
 	const bin = opts.bin?.trim() || "claude";
-	const proc = Bun.spawn([bin, ...buildClaudeArgs(system, opts)], {
+	const result = await runChild({
+		cmd: [bin, ...buildClaudeArgs(system, opts)],
 		cwd: opts.cwd,
 		env,
-		stdin: Buffer.from(user, "utf8"),
-		stdout: "pipe",
-		stderr: "pipe",
+		stdin: user,
+		...(opts.timeoutMs && opts.timeoutMs > 0 ? { timeoutMs: opts.timeoutMs } : {}),
+		signal: opts.signal,
+		maxStdoutBytes: CHILD_OUTPUT_CAP_BYTES,
+		maxStderrBytes: CHILD_OUTPUT_CAP_BYTES,
 	});
-
-	let timedOut = false;
-	let aborted = false;
-	const timer =
-		opts.timeoutMs && opts.timeoutMs > 0
-			? setTimeout(() => {
-					timedOut = true;
-					proc.kill();
-				}, opts.timeoutMs)
-			: undefined;
-	const onAbort = (): void => {
-		aborted = true;
-		proc.kill();
-	};
-	opts.signal?.addEventListener("abort", onAbort, { once: true });
-
-	try {
-		const [stdout, stderr, code] = await Promise.all([
-			new Response(proc.stdout).text(),
-			new Response(proc.stderr).text(),
-			proc.exited,
-		]);
-		if (aborted) throw abortError();
-		if (timedOut) throw new Error(`claude timed out after ${opts.timeoutMs}ms`);
-		if (code !== 0 && !stdout.trim()) {
-			throw new Error(redactSecrets(stderr.trim()) || `claude exited ${code}`);
-		}
-		if (opts.onResult) {
-			const info = readInfoQuietly(stdout);
-			if (info) {
-				try {
-					opts.onResult(info);
-				} catch {
-					// reason: a reporting hook must never change the completion outcome
-				}
+	const { stdout, stderr, code } = result;
+	if (result.aborted || opts.signal?.aborted) throw abortError();
+	if (result.timedOut) throw new Error(`claude timed out after ${opts.timeoutMs}ms`);
+	if (code !== 0 && !stdout.trim()) {
+		throw childFailure("claude", result, redactSecrets(stderr.trim()));
+	}
+	if (opts.onResult) {
+		const info = readInfoQuietly(stdout);
+		if (info) {
+			try {
+				opts.onResult(info);
+			} catch {
+				// reason: a reporting hook must never change the completion outcome
 			}
 		}
-		return parseClaudeResult(stdout).text;
-	} finally {
-		clearTimeout(timer);
-		opts.signal?.removeEventListener("abort", onAbort);
 	}
+	const text = parseClaudeResult(stdout).text;
+	if (parseResultRecord(stdout).stop_reason === "max_tokens") {
+		throw truncatedReplyError("claude reply was truncated (max_tokens)");
+	}
+	if (!text) throw truncatedReplyError("claude returned no text");
+	return text;
 }
 
 export function createClaudeCompleter(

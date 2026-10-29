@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	closeSync,
@@ -17,8 +17,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type SessionRecord, writeControl, writeSession } from "../claude/state.ts";
+import { LockTimeoutError } from "../claude/atomic.ts";
+import {
+	type LastLockOptions,
+	type SessionRecord,
+	writeControl,
+	writeSession,
+} from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
+import { FIELD_CAPS } from "../resilience/limits.ts";
 import { NODE, UPLIFT } from "../test.helpers.ts";
 import type { TrackingRefs } from "../track/types.ts";
 import { escapeXml } from "../uplift/xml.ts";
@@ -42,7 +49,12 @@ import {
 	validateNodeFill,
 	validateUplift,
 } from "./grokbot.ts";
-import { buildTrackPayloads, graphRegisterPayload, recordRefs } from "./grokbot-track.ts";
+import {
+	buildTrackPayloads,
+	graphRegisterPayload,
+	recordRefs,
+	type TrackPayloads,
+} from "./grokbot-track.ts";
 import {
 	buildCloudPrompt,
 	DEFAULT_DESK_RULES,
@@ -75,8 +87,21 @@ const tmp = (): string => {
 };
 afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-	setSystemTime();
 });
+
+/**
+ * The wait for a busy last.json lock on a virtual clock that each sleep advances: the 3 s deadline passes at once, with
+ * the same attempts a real wait makes, instead of holding the test for 3 s of wall time per write.
+ */
+function virtualLastLock(): LastLockOptions {
+	let clock = 0;
+	return {
+		now: () => clock,
+		sleep: (ms) => {
+			clock += ms;
+		},
+	};
+}
 
 const testEnv = (root: string): Record<string, string | undefined> => ({
 	HOME: root,
@@ -304,7 +329,9 @@ describe("grok-bot journal driver", () => {
 		});
 		const dir = journalDir(stateDir, "s1");
 		const [request] = listPending(dir);
-		const bad = storeAnswer(dir, request!.key, UPLIFT("a paraphrase of the request"));
+		// The pipeline owns ORIGINAL, so a paraphrase there is replaced, not rejected; an uplift missing a required section is.
+		const incomplete = UPLIFT(PROMPT).replace(/<ACCEPTANCE_CRITERIA>.*<\/ACCEPTANCE_CRITERIA>/, "");
+		const bad = storeAnswer(dir, request!.key, incomplete);
 		expect(bad.ok).toBe(false);
 		expect(existsSync(join(dir, "answers"))).toBe(false);
 		expect(listPending(dir)).toHaveLength(1);
@@ -348,6 +375,40 @@ describe("grok-bot validators", () => {
 				"decompose",
 			).errors.join(),
 		).toMatch(/XML-escape/);
+	});
+	test("a long valid synthesize or critique answer is judged on its full text, not a clipped one (G-6)", () => {
+		const longBody = Array.from(
+			{ length: 90 },
+			(_, i) => `Wave ${(i % 3) + 1}: task-${i} — files: src/t${i}.ts — done when: tests pass`,
+		).join("\n");
+		const steps = NODE("n5", "decompose", 6).match(/<rationale>[\s\S]*<\/rationale>/)?.[0] ?? "";
+		const synthesize = `<node>${steps}<conclusion>Plan.\nWORKFLOW\n${longBody}\nVerify: bun test</conclusion></node>`;
+		expect(synthesize.length).toBeGreaterThan(5000);
+		expect(validateNodeFill(synthesize, "synthesize")).toMatchObject({ ok: true, errors: [] });
+		const critique = `<node>${steps}<conclusion>${longBody}\nOpen questions:\n- JSON lines or array?</conclusion></node>`;
+		expect(validateNodeFill(critique, "critique")).toMatchObject({ ok: true, errors: [] });
+	});
+
+	test("a fill over the stored field limits is refused by name, never silently clipped (G-6)", () => {
+		const steps = NODE("n2", "decompose", 6).match(/<rationale>[\s\S]*<\/rationale>/)?.[0] ?? "";
+		const huge = `<node>${steps}<conclusion>${"x".repeat(FIELD_CAPS.conclusion + 1)}</conclusion></node>`;
+		expect(validateNodeFill(huge, "decompose").errors.join()).toMatch(
+			new RegExp(`conclusion.*${FIELD_CAPS.conclusion}`),
+		);
+	});
+
+	test("an uplift refusal names the missing child or the cut-off root (G-6)", () => {
+		for (const child of ["SYSTEM_ROLE", "SCOPE", "CONSTRAINTS", "ACCEPTANCE_CRITERIA"]) {
+			const without = UPLIFT(PROMPT).replace(new RegExp(`<${child}>.*?</${child}>`), "");
+			const errors = validateUplift(without, PROMPT).errors.join();
+			expect(errors).toContain(child);
+			expect(errors).not.toContain("not an uplift XML document");
+		}
+		const noContext = UPLIFT(PROMPT).replace(/<APP_CONTEXT>.*?<\/APP_CONTEXT>/, "");
+		expect(validateUplift(noContext, PROMPT).errors.join()).toContain("CONTEXT");
+		const cutOff = UPLIFT(PROMPT).replace("</BUILD_PROMPT>", "");
+		expect(validateUplift(cutOff, PROMPT).errors.join()).toMatch(/not closed|cut off/);
+		expect(validateUplift("plain prose", PROMPT).errors.join()).toContain("root");
 	});
 	test("clarify allows at most 4 questions", () => {
 		expect(validateClarify(CLARIFY).ok).toBe(true);
@@ -524,6 +585,49 @@ describe("grok-bot track bridge", () => {
 		expect(once).toContain("SPE-9000");
 	});
 
+	test("the dry run marks the rows of a degraded fill, from the record's degraded list", async () => {
+		const root = tmp();
+		const { result } = await drive(join(root, "state"), root, hostModel(5));
+		const statePath = result.response?.statePath as string;
+		const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
+		const options = { linearTeam: "Team", notionDataSource: "collection://abc", agent: "grok-bot" };
+		const marked = (payloads: TrackPayloads): string[] =>
+			payloads.calls
+				.filter((call) => call.tool === "save_issue" && !String(call.keys[0]).includes("."))
+				.filter((call) => String(call.args.title).includes("[degraded fill]"))
+				.map((call) => String(call.keys[0]));
+		expect(marked(await buildTrackPayloads(record, options))).toEqual([]);
+		const degraded = await buildTrackPayloads(
+			{ ...record, degraded: ["uplift", "fill:n2"] },
+			options,
+		);
+		expect(marked(degraded)).toEqual(["n2"]);
+	});
+
+	test("a lock held past the wait fails the real-ref write instead of writing unlocked over a concurrent update", async () => {
+		const root = tmp();
+		const { result } = await drive(join(root, "state"), root, hostModel(5));
+		const statePath = result.response?.statePath as string;
+		const before = readFileSync(statePath, "utf8");
+		// A live holder that never lets go: pid alive, start identity unverifiable, never stale.
+		writeFileSync(
+			`${statePath}.lock`,
+			JSON.stringify({ pid: process.pid, startTime: "", token: "held" }),
+		);
+		let clock = 0;
+		expect(() =>
+			recordRefs(statePath, { errors: ["x"] }, Date.now(), {
+				now: () => clock,
+				sleep: (ms) => {
+					clock += ms;
+				},
+				staleMs: Number.MAX_SAFE_INTEGER,
+				liveness: { killAlive: () => true },
+			}),
+		).toThrow(LockTimeoutError);
+		expect(readFileSync(statePath, "utf8")).toBe(before);
+	});
+
 	test("a second payload build skips rows that already exist, and one configured tracker can finish", async () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
@@ -546,7 +650,8 @@ describe("grok-bot track bridge", () => {
 				id: "id0",
 				identifier: "SPE-1",
 				url: "https://linear.app/x/issue/SPE-1/t",
-				title: "t",
+				// The row carries the title the plan gives it: a ref with another title is stale, and a second run recreates it.
+				title: String(issue?.args.title),
 			},
 		};
 		const partial = recordRefs(statePath, { linear });
@@ -584,7 +689,7 @@ describe("grok-bot track bridge", () => {
 					id: `id${i}`,
 					identifier: `SPE-${i}`,
 					url: `https://linear.app/x/issue/SPE-${i}/t`,
-					title: "t",
+					title: String(call.args.title),
 				};
 			});
 		const linearOnly = recordRefs(otherPath, {
@@ -1262,6 +1367,64 @@ describe("grok-bot answers", () => {
 		expect(existsSync(`${statePath}.lock`)).toBe(false);
 	}, 15_000);
 
+	test("answers outlast a 3 s hold of the session lock: both the holder's mutation and the answer survive", async () => {
+		const root = tmp();
+		const stateDir = join(root, "state");
+		const { result } = await drive(stateDir, root, hostModel(6));
+		const statePath = result.response?.statePath as string;
+		// A live helper process holds the session lock past the old 2 s cap (a real hold: the writer's wait is wall-clock).
+		const holder = Bun.spawn(
+			[
+				process.execPath,
+				"-e",
+				`
+			import { readSync } from "node:fs";
+			import { updateSession } from ${JSON.stringify(join(import.meta.dir, "../claude/state.ts"))};
+			updateSession(${JSON.stringify(stateDir)}, "s1", record => {
+				process.stdout.write("ready");
+				readSync(0, new Uint8Array(1), 0, 1, null);
+				return { ...record, engine: "held-for-3s" };
+			});
+		`,
+			],
+			{ stdin: "pipe", stdout: "pipe", stderr: "pipe", env: testEnv(root) },
+		);
+		const reader = holder.stdout.getReader();
+		let worker: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
+		try {
+			let ready = "";
+			while (ready.length < "ready".length) {
+				const chunk = await reader.read();
+				if (chunk.done) break;
+				ready += new TextDecoder().decode(chunk.value);
+			}
+			expect(ready).toBe("ready");
+			worker = Bun.spawn(
+				[
+					process.execPath,
+					"-e",
+					`import { recordAnswers } from ${JSON.stringify(join(import.meta.dir, "grokbot-hitl.ts"))}; recordAnswers(${JSON.stringify(statePath)}, { answers: { q1: "after the hold" } }, 401);`,
+				],
+				{ stdin: "ignore", stdout: "pipe", stderr: "pipe", env: testEnv(root) },
+			);
+			await new Promise((resolve) => setTimeout(resolve, 3_000));
+			// Still blocked on the lock: nothing of the answer is on disk yet.
+			expect(readFileSync(statePath, "utf8")).not.toContain("after the hold");
+		} finally {
+			reader.releaseLock();
+			holder.stdin.write("go");
+			holder.stdin.end();
+			await holder.exited;
+			if (worker) await worker.exited;
+		}
+		expect(holder.exitCode).toBe(0);
+		expect(worker?.exitCode).toBe(0);
+		expect(await new Response(worker?.stderr).text()).toBe("");
+		const saved = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
+		expect(saved.engine).toBe("held-for-3s");
+		expect(saved.clarifications?.[0]).toMatchObject({ answer: "after the hold", answeredAt: 401 });
+	}, 30_000);
+
 	test("a busy last mirror saves answers and refs but leaves the held copy untouched", async () => {
 		const root = tmp();
 		const stateDir = join(root, "state");
@@ -1271,11 +1434,17 @@ describe("grok-bot answers", () => {
 		const before = readFileSync(lastPath, "utf8");
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
 		try {
-			expect(() => recordAnswers(statePath, { answers: { q1: "JSON lines" } }, 301)).toThrow(
-				/could not refresh/,
-			);
 			expect(() =>
-				recordRefs(statePath, { notion: { task: "https://www.notion.so/saved-task" } }, 302),
+				recordAnswers(statePath, { answers: { q1: "JSON lines" } }, 301, virtualLastLock()),
+			).toThrow(/could not refresh/);
+			expect(() =>
+				recordRefs(
+					statePath,
+					{ notion: { task: "https://www.notion.so/saved-task" } },
+					302,
+					undefined,
+					virtualLastLock(),
+				),
 			).toThrow(/could not refresh/);
 			const saved = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
 			expect(saved.clarifications?.[0]?.answer).toBe("JSON lines");
@@ -1321,11 +1490,13 @@ describe("grok-bot answers", () => {
 		const fd = openSync(`${lastPath}.lock`, "wx");
 		writeSync(fd, String(process.pid));
 		try {
-			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(
+			expect(() =>
+				mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 }, virtualLastLock()),
+			).toThrow(/could not refresh/);
+			expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
+			expect(writeSession(stateDir, { ...record, at: 3 }, virtualLastLock())).toMatch(
 				/could not refresh/,
 			);
-			expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
-			expect(writeSession(stateDir, { ...record, at: 3 })).toMatch(/could not refresh/);
 			expect(JSON.parse(readFileSync(join(stateDir, "sessions", "s1.json"), "utf8")).at).toBe(3);
 			expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
 		} finally {
@@ -1349,16 +1520,17 @@ describe("grok-bot answers", () => {
 		const lastPath = join(stateDir, "last.json");
 		const before = readFileSync(lastPath, "utf8");
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
-		const FIXED = new Date("2026-01-01T00:00:00Z");
-		const old = new Date(FIXED.getTime() - 60_000);
+		// The holder is alive however old its lock is, so the refresh waits out its whole deadline (a virtual one).
+		const old = new Date(Date.now() - 60_000);
 		utimesSync(`${lastPath}.lock`, old, old);
 		const lockMtime = statSync(`${lastPath}.lock`).mtimeMs;
-		setSystemTime(FIXED);
 		try {
-			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(
+			expect(() =>
+				mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 }, virtualLastLock()),
+			).toThrow(/could not refresh/);
+			expect(writeSession(stateDir, { ...record, at: 3 }, virtualLastLock())).toMatch(
 				/could not refresh/,
 			);
-			expect(writeSession(stateDir, { ...record, at: 3 })).toMatch(/could not refresh/);
 			expect(readFileSync(lastPath, "utf8")).toBe(before);
 			expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe(String(process.pid));
 			expect(statSync(`${lastPath}.lock`).mtimeMs).toBe(lockMtime);
@@ -1379,12 +1551,13 @@ describe("grok-bot answers", () => {
 		writeSession(stateDir, record);
 		const lastPath = join(stateDir, "last.json");
 		writeFileSync(`${lastPath}.lock`, "");
-		const FIXED = new Date("2026-01-01T00:00:00Z");
-		setSystemTime(FIXED);
-		expect(writeSession(stateDir, { ...record, at: 2 })).toMatch(/could not refresh/);
+		// The empty lock is fresh, so the refresh waits out its whole deadline (a virtual one).
+		expect(writeSession(stateDir, { ...record, at: 2 }, virtualLastLock())).toMatch(
+			/could not refresh/,
+		);
 		expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
 		expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe("");
-		const stale = new Date(FIXED.getTime() - 6_000);
+		const stale = new Date(Date.now() - 6_000);
 		utimesSync(`${lastPath}.lock`, stale, stale);
 		expect(writeSession(stateDir, { ...record, at: 4 })).toBeUndefined();
 		expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(4);
@@ -1822,5 +1995,15 @@ describe("grok-bot graph_register payload", () => {
 		expect(graphRegisterPayload(after, { surface: "omp" }).surface).toBe("omp");
 		expect(graphRegisterPayload(after, { surface: "prime-agent" }).surface).toBe("pi");
 		expect(graphRegisterPayload(after, { surface: "no-such-host" }).surface).toBe("claude-code");
+	});
+});
+
+describe("grok-bot cli child reaper", () => {
+	test("the entry installs it with signals before it runs a command that may spawn a completer child", () => {
+		const source = readFileSync(new URL("./grokbot-cli.ts", import.meta.url), "utf8");
+		const entry = source.slice(source.indexOf("if (import.meta.main) {"));
+		expect(entry).toMatch(
+			/if \(import\.meta\.main\) \{\s*installChildReaper\(\{ signals: true \}\);\s*main\(/,
+		);
 	});
 });

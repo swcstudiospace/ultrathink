@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 import { appendHistory, readHistory } from "./history.ts";
 import { createInProcessTarget } from "./inprocess.ts";
 import { type ChaosTarget, type HttpFetch, type HttpTlsOptions, httpTarget } from "./observe.ts";
+import { type Pressure, type PressureSpec, runPressureCommand } from "./pipeline/pressure.ts";
+import { runPipeline } from "./pipeline/run.ts";
+import { parseScenario, parseScenarios, type Scenario } from "./pipeline/scenario.ts";
 import { type RunResult, runTemplate } from "./run.ts";
 import { type ExperimentTemplate, loadTemplates } from "./schema.ts";
 import { resilience } from "./score.ts";
@@ -31,17 +34,41 @@ export interface CliDeps {
 	sleep: (ms: number) => Promise<void>;
 	templatesDir: string;
 	historyPath: string;
+	/** Pipeline load scenarios; defaults to `pipeline/scenarios` next to `templatesDir`. */
+	scenariosDir?: string;
+	/** Test seam for `pipeline run --pressure`; defaults to the Bun-worker helper. */
+	startPressure?: (spec: PressureSpec) => Pressure;
 }
 
 const USAGE = [
 	"usage: chaos templates",
 	"       chaos run <id> --driver inprocess|http [--base-url URL] [--ca-file PEM] [--client-cert PEM --client-key PEM] [--history PATH] [--rollback-argv JSON]",
 	"       chaos score <id> [--history PATH]",
+	"       chaos pipeline templates",
+	"       chaos pipeline run <id> [--prompts N] [--concurrency C] [--seed S] [--history PATH] [--pressure] [--trace-heap] [--watchdog-ms MS] [--stall-ms MS] [--provider real [--max-calls N]]",
+	"       chaos pipeline score <id> [--history PATH]",
+	"       chaos pipeline pressure --workers N --seconds S [--memory-mb M] [--floor R]",
 ].join("\n");
 
 const TLS_FLAGS = ["--ca-file", "--client-cert", "--client-key"] as const;
 const RUN_FLAGS = ["--driver", "--base-url", "--history", "--rollback-argv", ...TLS_FLAGS] as const;
 const SCORE_FLAGS = ["--history"] as const;
+const PIPELINE_RUN_FLAGS = [
+	"--prompts",
+	"--concurrency",
+	"--seed",
+	"--history",
+	"--pressure",
+	"--trace-heap",
+	"--watchdog-ms",
+	"--stall-ms",
+	"--provider",
+	"--max-calls",
+] as const;
+const PIPELINE_BOOLEAN_FLAGS = ["--pressure", "--trace-heap"] as const;
+const PRESSURE_FLAGS = ["--workers", "--seconds", "--memory-mb", "--floor"] as const;
+/** The live engine run stops after this many requests to the `claude` CLI, retries included, unless `--max-calls` says otherwise. */
+const DEFAULT_MAX_CALLS = 40;
 
 class UsageError extends Error {}
 
@@ -51,6 +78,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 		if (command === "templates") return listTemplates(rest, deps);
 		if (command === "run") return await runCommand(rest, deps);
 		if (command === "score") return scoreCommand(rest, deps);
+		if (command === "pipeline") return await pipelineCommand(rest, deps);
 		throw new UsageError(command === undefined ? "missing command" : `unknown command ${command}`);
 	} catch (error) {
 		if (error instanceof UsageError) {
@@ -70,6 +98,129 @@ function listTemplates(args: string[], deps: CliDeps): number {
 		);
 	}
 	return 0;
+}
+
+function scenariosDirOf(deps: CliDeps): string {
+	return deps.scenariosDir ?? join(dirname(deps.templatesDir), "pipeline", "scenarios");
+}
+
+async function pipelineCommand(args: string[], deps: CliDeps): Promise<number> {
+	const [sub, ...rest] = args;
+	if (sub === "templates") {
+		if (rest.length > 0) throw new UsageError("pipeline templates takes no arguments");
+		for (const scenario of parseScenarios(scenariosDirOf(deps))) {
+			deps.stdout(
+				`${scenario.id}\t${scenario.title}\t${scenario.prompts.count}\t${scenario.prompts.concurrency}\n`,
+			);
+		}
+		return 0;
+	}
+	if (sub === "run") return await pipelineRun(rest, deps);
+	if (sub === "score") return scoreCommand(rest, deps);
+	if (sub === "pressure") return await pressureCommand(rest, deps);
+	throw new UsageError(
+		sub === undefined ? "pipeline needs a subcommand" : `unknown pipeline subcommand ${sub}`,
+	);
+}
+
+async function pressureCommand(args: string[], deps: CliDeps): Promise<number> {
+	const { positional, flags } = parseArgs(args, PRESSURE_FLAGS);
+	if (positional.length > 0)
+		throw new UsageError("pipeline pressure takes no positional arguments");
+	const workers = flags.get("--workers");
+	const seconds = flags.get("--seconds");
+	if (workers === undefined || seconds === undefined)
+		throw new UsageError("pipeline pressure needs --workers and --seconds");
+	const memoryMb = flags.get("--memory-mb");
+	const floor = flags.get("--floor");
+	if (floor !== undefined && !/^\d+(\.\d+)?$/.test(floor))
+		throw new UsageError("--floor must be a non-negative number");
+	return runPressureCommand(
+		{
+			workers: integerFlag("--workers", workers, 1),
+			seconds: integerFlag("--seconds", seconds, 1),
+			...(memoryMb === undefined ? {} : { memoryMb: integerFlag("--memory-mb", memoryMb, 0) }),
+			...(floor === undefined ? {} : { floor: Number(floor) }),
+		},
+		{
+			...(deps.startPressure ? { startPressure: deps.startPressure } : {}),
+			stdout: deps.stdout,
+			stderr: deps.stderr,
+			sleep: deps.sleep,
+		},
+	);
+}
+
+function integerFlag(name: string, value: string, min: number): number {
+	if (!/^\d+$/.test(value)) throw new UsageError(`${name} must be a non-negative integer`);
+	const parsed = Number(value);
+	if (parsed < min) throw new UsageError(`${name} must be at least ${min}`);
+	return parsed;
+}
+
+/** The scenario with the flags' size and seed, re-validated by the scenario parser so a range error names its field. */
+function resized(scenario: Scenario, flags: Map<string, string>): Scenario {
+	const prompts = flags.get("--prompts");
+	const concurrency = flags.get("--concurrency");
+	const seed = flags.get("--seed");
+	const watchdog = flags.get("--watchdog-ms");
+	const stall = flags.get("--stall-ms");
+	if (
+		prompts === undefined &&
+		concurrency === undefined &&
+		seed === undefined &&
+		watchdog === undefined &&
+		stall === undefined
+	)
+		return scenario;
+	return parseScenario(
+		{
+			...scenario,
+			...(seed === undefined ? {} : { seed: integerFlag("--seed", seed, 0) }),
+			...(watchdog === undefined ? {} : { watchdogMs: integerFlag("--watchdog-ms", watchdog, 0) }),
+			...(stall === undefined ? {} : { stallMs: integerFlag("--stall-ms", stall, 0) }),
+			prompts: {
+				...scenario.prompts,
+				...(prompts === undefined ? {} : { count: integerFlag("--prompts", prompts, 0) }),
+				...(concurrency === undefined
+					? {}
+					: { concurrency: integerFlag("--concurrency", concurrency, 0) }),
+			},
+		},
+		"pipeline run flags",
+	);
+}
+
+async function pipelineRun(args: string[], deps: CliDeps): Promise<number> {
+	const { positional, flags } = parseArgs(args, PIPELINE_RUN_FLAGS, PIPELINE_BOOLEAN_FLAGS);
+	const [id, ...extra] = positional;
+	if (id === undefined || extra.length > 0)
+		throw new UsageError("pipeline run needs exactly one scenario id");
+	const provider = flags.get("--provider");
+	if (provider !== undefined && provider !== "real")
+		throw new UsageError("--provider must be real");
+	const maxCallsFlag = flags.get("--max-calls");
+	if (maxCallsFlag !== undefined && provider !== "real")
+		throw new UsageError("--max-calls applies to --provider real only");
+	const maxCalls =
+		maxCallsFlag === undefined ? DEFAULT_MAX_CALLS : integerFlag("--max-calls", maxCallsFlag, 1);
+	const found = parseScenarios(scenariosDirOf(deps)).find((candidate) => candidate.id === id);
+	if (found === undefined) throw new UsageError(`no scenario ${id}`);
+	const scenario = resized(found, flags);
+
+	const historyPath = flags.get("--history") ?? deps.historyPath;
+	const record = await runPipeline(scenario, {
+		historyPath,
+		now: deps.now,
+		pressure: flags.has("--pressure"),
+		...(flags.has("--trace-heap") ? { traceHeap: (line: string) => deps.stdout(`${line}\n`) } : {}),
+		...(deps.startPressure ? { startPressure: deps.startPressure } : {}),
+		real: { requested: provider === "real", envFlag: deps.env.ULTRATHINK_CHAOS_REAL, maxCalls },
+		notes: (line) => deps.stdout(`${line}\n`),
+	});
+	printRun(record, deps);
+	deps.stdout(`recorded seq ${record.seq} in ${historyPath}\n`);
+	return record.passed ? 0 : 1;
 }
 
 async function runCommand(args: string[], deps: CliDeps): Promise<number> {
@@ -205,6 +356,7 @@ function printRun(result: RunResult, deps: CliDeps): void {
 function parseArgs(
 	args: string[],
 	allowed: readonly string[],
+	booleans: readonly string[] = [],
 ): { positional: string[]; flags: Map<string, string> } {
 	const positional: string[] = [];
 	const flags = new Map<string, string>();
@@ -217,6 +369,12 @@ function parseArgs(
 		const equals = arg.indexOf("=");
 		const name = equals === -1 ? arg : arg.slice(0, equals);
 		if (!allowed.includes(name)) throw new UsageError(`unknown option ${name}`);
+		if (booleans.includes(name)) {
+			if (equals !== -1) throw new UsageError(`${name} takes no value`);
+			if (flags.has(name)) throw new UsageError(`${name} is given twice`);
+			flags.set(name, "true");
+			continue;
+		}
 		const value = equals === -1 ? args[i + 1] : arg.slice(equals + 1);
 		if (equals === -1) i += 1;
 		if (value === undefined || value === "" || value.startsWith("--"))

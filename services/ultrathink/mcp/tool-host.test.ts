@@ -12,6 +12,7 @@ import type { ThoughtGraph } from "../../../src/think/types.ts";
 import { buildGraphView } from "../engine/graph-view.ts";
 import type { HeadlessPlanner, ResultView } from "../engine/headless.ts";
 import type { JournalOptions } from "../engine/journal.ts";
+import { type RequestContext, runWithRequestContext } from "../obs/context.ts";
 import type { ToolOutcome } from "./mcp.ts";
 import { createResourceRegistry } from "./resources.ts";
 import { type ToolHostDeps, createToolHost, toOutcome } from "./tool-host.ts";
@@ -402,5 +403,193 @@ describe("the connector tools", () => {
 		const help = okOf(await host.call("ultrathink_command", { command: "help" }));
 		expect(help.data.support).toBe("native");
 		expect(help.data.text).toBe(help.text);
+	});
+});
+
+describe("ultrathink_cancel", () => {
+	test("needs a planner that can cancel", async () => {
+		const sessionId = randomUUID();
+		expect(await setup().host.call("ultrathink_cancel", { sessionId })).toEqual({
+			ok: false,
+			code: "disabled",
+		});
+		expect(
+			await setup({ planner: stubPlanner(true) }).host.call("ultrathink_cancel", { sessionId }),
+		).toEqual({ ok: false, code: "disabled" });
+	});
+
+	test("asks the planner to cancel the session and reports its answer", async () => {
+		const planner = stubPlanner(true);
+		const cancels: unknown[] = [];
+		planner.cancel = (input) => {
+			cancels.push(input);
+			return {
+				ok: true,
+				data: { sessionId: String(input.sessionId), status: "failed", error: "aborted" },
+			};
+		};
+		const { host } = setup({ planner });
+		const sessionId = randomUUID();
+		expect(await host.call("ultrathink_cancel", { sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", error: "aborted" },
+		});
+		expect(cancels).toEqual([{ sessionId }]);
+	});
+
+	test("an unknown or finished session is the planner's not_found", async () => {
+		const planner = stubPlanner(true);
+		planner.cancel = () => ({ ok: false, code: "not_found" });
+		const { host } = setup({ planner });
+		expect(await host.call("ultrathink_cancel", { sessionId: randomUUID() })).toEqual({
+			ok: false,
+			code: "not_found",
+		});
+	});
+});
+
+describe("refusal hints and job outcomes", () => {
+	test("toOutcome carries a retry hint as an error line", () => {
+		expect(toOutcome({ ok: false, code: "busy", retryAfterSec: 30 })).toEqual({
+			ok: false,
+			code: "busy",
+			errors: ["retry after 30s"],
+		});
+		expect(
+			toOutcome({ ok: false, code: "busy", errors: ["queue full"], retryAfterSec: 30 }),
+		).toEqual({ ok: false, code: "busy", errors: ["queue full", "retry after 30s"] });
+	});
+
+	test("ultrathink_uplift passes the planner's retry hint to the client", async () => {
+		const planner = stubPlanner(true);
+		planner.start = async () => ({ ok: false, code: "upstream_unavailable", retryAfterSec: 12 });
+		const { host } = setup({ planner });
+		expect(await host.call("ultrathink_uplift", { prompt: "plan it" })).toEqual({
+			ok: false,
+			code: "upstream_unavailable",
+			errors: ["retry after 12s"],
+		});
+	});
+
+	test("a job outcome is counted once, and a later poll of the same plan does not count it again", async () => {
+		const planner = stubPlanner(true);
+		const { host, finished } = setup({ planner });
+		const sessionId = randomUUID();
+		host.recordOutcome({
+			sessionId,
+			status: "planned",
+			calls: 9,
+			inputTokens: 100,
+			outputTokens: 50,
+			ms: 1234,
+		});
+		expect(finished).toHaveLength(1);
+		expect(finished[0]).toMatchObject({
+			sessionId,
+			status: "planned",
+			mode: "server",
+			usage: { calls: 9, inputTokens: 100, outputTokens: 50 },
+		});
+		await host.call("ultrathink_result", { sessionId, waitSeconds: 0 });
+		expect(finished).toHaveLength(1);
+	});
+
+	test("a failed outcome keeps its error", () => {
+		const { host, finished } = setup({ planner: stubPlanner(true) });
+		host.recordOutcome({
+			sessionId: randomUUID(),
+			status: "failed",
+			error: "timeout",
+			calls: 2,
+			inputTokens: 0,
+			outputTokens: 0,
+			ms: 10,
+		});
+		expect(finished[0]).toMatchObject({ status: "failed", error: "timeout" });
+	});
+});
+
+describe("client journals record their principal", () => {
+	const admitted = (principal: string) => ({
+		reqId: randomUUID(),
+		traceId: "0".repeat(32),
+		spanId: "0".repeat(16),
+		admission: { principal, class: "connector" as const },
+	});
+	const ownerContext: RequestContext = {
+		...admitted("owner"),
+		admission: { principal: "owner", class: "owner" },
+	};
+	const metaOf = (stateDir: string, sessionId: string): Record<string, unknown> =>
+		JSON.parse(readFileSync(join(journalDir(stateDir, sessionId), "meta.json"), "utf8")) as Record<
+			string,
+			unknown
+		>;
+
+	test("a session started by an admitted request names its principal in the journal meta, and answers keep it", async () => {
+		const { host, stateDir } = setup();
+		const started = await runWithRequestContext(admitted("key:alice"), () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout" }),
+		);
+		const sessionId = String(okOf(started).data.sessionId);
+		expect(metaOf(stateDir, sessionId).principal).toBe("key:alice");
+		const again = await runWithRequestContext(admitted("key:bob"), () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout", sessionId }),
+		);
+		expect(again.ok).toBe(true);
+		expect(metaOf(stateDir, sessionId).principal).toBe("key:alice");
+	});
+
+	test("a session started without an admission records none", async () => {
+		const { host, stateDir } = setup();
+		const sessionId = String(
+			okOf(await host.call("ultrathink_plan", { prompt: "plan the rollout" })).data.sessionId,
+		);
+		expect("principal" in metaOf(stateDir, sessionId)).toBe(false);
+	});
+
+	test("a journal whose run throws is still the caller's: another connector principal never lists it, an owner and stdio do", async () => {
+		const stateDir = tmp();
+		const host = createToolHost({
+			journalOpts: {
+				...journalOptions(stateDir),
+				plan: async () => {
+					throw new Error("the client journal died mid-run");
+				},
+			},
+			catalog: catalogFromOverlay(),
+		});
+		const sessionId = randomUUID();
+		const started = await runWithRequestContext(admitted("key:alice"), () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout", sessionId }),
+		);
+		expect(started).toMatchObject({ ok: false, code: "engine_error" });
+		const listed = async (ctx?: RequestContext): Promise<string[]> => {
+			const run = () => host.call("ultrathink_sessions", {});
+			const outcome = okOf(await (ctx === undefined ? run() : runWithRequestContext(ctx, run)));
+			return (outcome.data.sessions as Array<{ sessionId: string }>).map((s) => s.sessionId);
+		};
+		expect(await listed(admitted("key:alice"))).toEqual([sessionId]);
+		expect(await listed(admitted("key:bob"))).toEqual([]);
+		expect(await listed(ownerContext)).toEqual([sessionId]);
+		expect(await listed()).toEqual([sessionId]);
+	});
+
+	test("a principal-less journal is hidden from a connector-key caller and shown to an owner and to stdio", async () => {
+		const { host, stateDir } = setup();
+		const sessionId = randomUUID();
+		writeMeta(journalDir(stateDir, sessionId), {
+			sessionId,
+			original: "Build the converter",
+			status: "planned",
+		});
+		const listed = async (ctx?: RequestContext): Promise<string[]> => {
+			const run = () => host.call("ultrathink_sessions", {});
+			const outcome = okOf(await (ctx === undefined ? run() : runWithRequestContext(ctx, run)));
+			return (outcome.data.sessions as Array<{ sessionId: string }>).map((s) => s.sessionId);
+		};
+		expect(await listed(admitted("key:connector"))).toEqual([]);
+		expect(await listed(ownerContext)).toEqual([sessionId]);
+		expect(await listed()).toEqual([sessionId]);
 	});
 });

@@ -164,3 +164,38 @@ describe("stop hook teach capture", () => {
 		}
 	});
 });
+
+describe("the stop hook entry", () => {
+	test("its output line arrives whole through a pipe, and the entry exits 0 after it", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-stop-entry-"));
+		try {
+			const stateDir = join(root, "state");
+			const home = join(root, "home");
+			writeSession(stateDir, {
+				sessionId: "s9",
+				at: 1,
+				result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
+				plan: { graphId: "g-entry" } as TrackPlan,
+			} as unknown as Parameters<typeof writeSession>[1]);
+			const proc = Bun.spawn(["bun", "--no-env-file", join(import.meta.dir, "stop.ts")], {
+				stdin: new Blob([JSON.stringify({ session_id: "s9", cwd: root, reason: "shutdown" })]),
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					...process.env,
+					HOME: home,
+					ULTRATHINK_STATE_DIR: stateDir,
+					ULTRATHINK_TEACH: "0",
+					ULTRATHINK_HOST: "claude-code",
+				},
+			});
+			const out = await new Response(proc.stdout).text();
+			expect(await proc.exited).toBe(0);
+			expect(JSON.parse(out)).toEqual({
+				systemMessage: expect.stringContaining("graphId=g-entry"),
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+});

@@ -23,7 +23,7 @@ type RollbackStatus =
 
 export interface RunResult {
 	templateId: string;
-	driver: "inprocess" | "http";
+	driver: "inprocess" | "http" | "pipeline";
 	startedAt: string;
 	finishedAt: string;
 	settled: boolean | "not_configured";
@@ -32,6 +32,8 @@ export interface RunResult {
 	score: number;
 	rollback: RollbackStatus;
 	rollbackExitCode?: number;
+	/** Run figures that are not pass/fail checks (pipeline runs: status counts, watchdog budget, probe latencies). */
+	details?: Record<string, string | number | number[]>;
 }
 
 export interface HistoryRecord extends RunResult {

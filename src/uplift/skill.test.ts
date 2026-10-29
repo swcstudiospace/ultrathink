@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { decideUplift } from "./detect.ts";
 import {
 	CHILD_PROMPT_SENTINEL,
+	grokUserQuery,
 	isNestedChildPrompt,
 	parseSkillScaffold,
 	parseSlashCommand,
@@ -394,10 +395,12 @@ describe("planningTarget", () => {
 		put(join(home, ".claude/skills/a/SKILL.md"), "---\ndescription: skill a\n---\n");
 		put(join(home, ".claude/skills/b/SKILL.md"), "---\ndescription: skill b\n---\n");
 		expect(planningTarget("/a /notaskill do x", { cwd, home })).toMatchObject({
-			text: "/notaskill do x",
+			text: 'Run the "a" skill. /notaskill do x',
+			skill: { instruction: "/notaskill do x" },
 		});
 		expect(planningTarget("/a /notaskill /b do x", { cwd, home })).toMatchObject({
-			text: "/notaskill /b do x",
+			text: 'Run the "a" skill. /notaskill /b do x',
+			skill: { instruction: "/notaskill /b do x" },
 		});
 	});
 
@@ -405,7 +408,8 @@ describe("planningTarget", () => {
 		for (const name of ["a", "b", "c", "d", "e", "f"])
 			put(join(home, `.claude/skills/${name}/SKILL.md`), `---\ndescription: ${name}\n---\n`);
 		expect(planningTarget("/a /b /c /d /e /f do x", { cwd, home })).toMatchObject({
-			text: "/f do x",
+			text: 'Run the "a" skill. /f do x',
+			skill: { instruction: "/f do x" },
 		});
 	});
 
@@ -489,19 +493,21 @@ describe("Cursor skill and command folders and the pstack plugin cache", () => {
 		});
 	});
 
-	test("the other hosts do not search Cursor's folders or cache, so the same names still skip", () => {
+	test("the other hosts do not search Cursor's folders or cache, so the same names resolve to no skill", () => {
 		put(
 			join(home, ".cursor", "skills", "personalskill", "SKILL.md"),
 			"---\ndescription: personal skill\n---\n",
 		);
 		pstackPlugin("1.0.0", "architect");
-		expect(planningTarget("/personalskill do x", { cwd, home, host: "claude-code" })).toEqual({
-			skip: "slash-command",
-		});
-		expect(planningTarget("/architect design", { cwd, home })).toEqual({ skip: "slash-command" });
-		expect(planningTarget("/architect design", { cwd, home, host: "omp" })).toEqual({
-			skip: "slash-command",
-		});
+		for (const [prompt, host] of [
+			["/personalskill do x", "claude-code"],
+			["/architect design", undefined],
+			["/architect design", "omp"],
+		] as const) {
+			const target = planningTarget(prompt, { cwd, home, host });
+			expect("skill" in target).toBe(false);
+			expect("text" in target && target.text.startsWith("Unrecognised command")).toBe(true);
+		}
 	});
 
 	test("resolveSkillFile names the pstack skill file under the newest completed version", () => {
@@ -521,5 +527,75 @@ describe("Cursor skill and command folders and the pstack plugin cache", () => {
 			),
 		);
 		expect(resolveSkillFile("architect", { cwd, home })).toBeUndefined();
+	});
+});
+
+describe("planning decisions (D-05)", () => {
+	test("a scaffold instruction that starts with / plans with the Run the skill guard (L2-03)", () => {
+		const target = planningTarget(ompScaffold("review", OMP_BODY, "/root/src/x.ts is broken"), {
+			cwd,
+			home,
+		});
+		expect("text" in target).toBe(true);
+		if ("text" in target) {
+			expect(target.text.startsWith("/")).toBe(false);
+			expect(target.text).toContain('Run the "review" skill.');
+			expect(target.text).toContain("/root/src/x.ts is broken");
+		}
+	});
+
+	test("path-led input plans as prose, also inside Grok's user_query wrapper", () => {
+		expect(planningTarget("/root/src/x.ts is broken", { cwd, home })).toEqual({
+			text: "/root/src/x.ts is broken",
+		});
+		const wrapped = "<user_query>\n/root/src/x.ts is broken\n</user_query>";
+		expect(planningTarget(wrapped, { cwd, home })).toEqual({ text: wrapped });
+	});
+
+	test("an existing bare path such as /tmp plans as prose", () => {
+		expect(planningTarget("/tmp is full", { cwd, home })).toEqual({ text: "/tmp is full" });
+	});
+
+	test("an UNKNOWN bare /frobnicate (no command, no skill) is planned, not skipped", () => {
+		const target = planningTarget("/frobnicate do the thing", { cwd, home });
+		expect("skip" in target).toBe(false);
+		expect("text" in target).toBe(true);
+		if ("text" in target) {
+			expect(target.text.startsWith("/")).toBe(false);
+			expect(target.text).toContain("frobnicate");
+			expect(target.text).toContain("do the thing");
+			// The text that reaches decideUplift is no longer slash-led, so it plans.
+			expect(
+				decideUplift(
+					{ text: target.text, source: "user" },
+					{
+						enabled: true,
+						skipOnce: false,
+						skipTrivial: true,
+					},
+				),
+			).toEqual({ action: "uplift", text: target.text });
+		}
+	});
+
+	test("known host commands and plugin-namespaced commands still skip", () => {
+		expect(planningTarget("/model sonnet", { cwd, home })).toEqual({ skip: "slash-command" });
+		expect(planningTarget("/clear", { cwd, home })).toEqual({ skip: "slash-command" });
+		expect(planningTarget("/all-in-one:issues list", { cwd, home })).toEqual({
+			skip: "slash-command",
+		});
+	});
+
+	test("grokUserQuery on a 20000-space run is linear-time bounded (L2-11)", () => {
+		const hostile = (n: number) => `<user_query>${" ".repeat(n)}x`;
+		const time = (n: number) => {
+			const start = performance.now();
+			grokUserQuery(hostile(n));
+			parseSlashCommand(`/a${" ".repeat(n)}`);
+			return performance.now() - start;
+		};
+		time(500);
+		const small = Math.max(time(5_000), 0.05);
+		expect(time(20_000) / small).toBeLessThan(8);
 	});
 });

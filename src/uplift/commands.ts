@@ -7,6 +7,7 @@
  */
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { displayId, formatModelSelection, OPAQUE_MODEL } from "../claude/output.ts";
+import { LockTimeoutError, type LockOptions } from "../claude/atomic.ts";
 import {
 	armSkipOnce,
 	type ControlState,
@@ -47,6 +48,7 @@ import { resolveSubstrate } from "../substrate/brief.ts";
 import { runTeachCommand } from "../teach/cli.ts";
 import { teachStatusLine } from "../teach/status.ts";
 import { graphSketch } from "../think/graph.ts";
+import { lastSkipLine } from "./skip.ts";
 import { grokUserQuery, parseSlashCommand } from "./skill.ts";
 
 export type UltrathinkVerb = "quick" | "skip" | "off" | "on" | "track" | "status";
@@ -309,7 +311,151 @@ async function statusText(
 		);
 	const planned = projectResolution(last?.modelResolution);
 	if (planned) lines.push(`Last planned resolution: ${formatModelSelection(planned)}`);
+	const skipped = lastSkipLine(stateDir);
+	if (skipped) lines.push(skipped);
 	return lines.join("\n");
+}
+
+/** What `runControl` needs: the state and working directories, the host, and the session the command is for. */
+interface ControlInput {
+	stateDir: string;
+	cwd: string;
+	host?: HostId;
+	modelResolution?: ModelResolution;
+	sessionId?: string;
+	/** Lock options for the control.json writes (tests inject a clock; callers leave it unset). */
+	controlLock?: LockOptions;
+}
+
+async function controlText(args: string[], input: ControlInput): Promise<string> {
+	const { stateDir, cwd } = input;
+	const host = input.host ?? detectHost();
+	const live = projectResolution(input.modelResolution);
+	// The armed skip belongs to one session. Without its id there is no session to arm or to show as armed.
+	const sessionId = input.sessionId?.trim() || undefined;
+	const [command = "status", verb = "status", value] = args
+		.map((arg) => arg.trim().toLowerCase())
+		.filter(Boolean);
+	const config = loadConfig(claudeConfigPaths(cwd));
+	const state = readControl(stateDir);
+	switch (command) {
+		case "status":
+			return await statusText(
+				config,
+				state,
+				stateDir,
+				host,
+				live,
+				sessionId !== undefined && readSkipOnce(stateDir, sessionId),
+			);
+		case "on":
+		case "off":
+			writeControl(stateDir, { enabled: command === "on" }, input.controlLock);
+			return `Prompt Uplift ${command}`;
+		case "skip":
+			if (sessionId === undefined)
+				return "Prompt Uplift skip needs a session id (--session <id>); none was given, so nothing was armed.";
+			armSkipOnce(stateDir, sessionId);
+			return "Prompt Uplift will skip the next prompt in this session";
+		case "last": {
+			const last = readLast(stateDir);
+			return last
+				? `${last.result.root} · ${last.result.source}\n\n${last.result.xml}`
+				: "No uplift recorded yet";
+		}
+		case "track":
+			switch (verb) {
+				case "on":
+				case "off":
+					return trackingLines(
+						config,
+						writeControl(stateDir, { trackEnabled: verb === "on" }, input.controlLock),
+					).join("\n");
+				case "status":
+					return trackingLines(config, state).join("\n");
+				default:
+					return "Usage: track on|off|status";
+			}
+		case "think":
+			switch (verb) {
+				case "on":
+				case "off":
+					writeControl(stateDir, { thinkEnabled: verb === "on" }, input.controlLock);
+					return `Graph of Thought ${verb}`;
+				case "last": {
+					const last = readLast(stateDir);
+					return last?.graph
+						? `${last.graph.goal}\n\n${graphSketch(last.graph)}`
+						: "No thought graph recorded yet";
+				}
+				case "status":
+					return `Graph of Thought ${flag(state.thinkEnabled, config.think.enabled)}`;
+				default:
+					return "Usage: think on|off|last|status";
+			}
+		case "hitl":
+			switch (verb) {
+				case "on":
+				case "off":
+					writeControl(stateDir, { hitlEnabled: verb === "on" }, input.controlLock);
+					return `HITL clarifications ${verb}`;
+				case "last":
+					return formatHitlEcho(readLast(stateDir)?.clarifications ?? []);
+				case "status":
+					return `HITL clarifications ${flag(state.hitlEnabled, config.hitl.enabled)} · max ${config.hitl.maxQuestions}`;
+				default:
+					return "Usage: hitl on|off|last|status";
+			}
+		case "grok":
+			switch (verb) {
+				case "engine": {
+					if (!THINK_ENGINES.includes(value as ThinkEngine))
+						return "Usage: grok engine auto|claude|grok|muse";
+					writeControl(stateDir, { engine: value as ThinkEngine }, input.controlLock);
+					return `Thinking engine set to ${engineLabel(config, { ...state, engine: value as ThinkEngine }, host, live)}`;
+				}
+				case "status":
+					return [
+						`Engine: ${engineLabel(config, state, host, live)}`,
+						claudeStatusLine(config),
+						grokTransportLine(config),
+						await grokOauthLine(config),
+					].join("\n");
+				case "login":
+				case "check":
+					// `args` still holds the caller's case; `verb` above is lower-cased.
+					return (
+						await runGrokCommand(args.filter((arg) => arg.trim()).slice(1), {
+							cwd,
+							env: process.env,
+						})
+					).text;
+				default:
+					return "Usage: grok [status | engine auto|claude|grok|muse | login | check]";
+			}
+		default:
+			return USAGE;
+	}
+}
+
+/** One line for a failed control command, secrets redacted; a held control.json lock gets its own wording. */
+function controlFailureText(error: unknown): string {
+	if (error instanceof LockTimeoutError)
+		return "ultrathink: control.json is locked by another process; nothing was changed, try again in a moment";
+	const message = redactSecrets(error instanceof Error ? error.message : String(error));
+	return `ultrathink: ${message.split("\n")[0]}`;
+}
+
+/** `runControl` with the failure kept apart from the text: the CLI exits non-zero on `failed`. Never throws. */
+export async function runControlResult(
+	args: string[],
+	input: ControlInput,
+): Promise<{ text: string; failed: boolean }> {
+	try {
+		return { text: await controlText(args, input), failed: false };
+	} catch (error) {
+		return { text: controlFailureText(error), failed: true };
+	}
 }
 
 /**
@@ -318,130 +464,10 @@ async function statusText(
  * `host` defaults to the detected host. `modelResolution` is the host's live
  * projection of its latest observed resolution (Omp keeps it in extension
  * memory); status shows it without any native lookup or auth.
- * Never throws: an error becomes a message.
+ * Never throws: an error becomes a one-line message.
  */
-export async function runControl(
-	args: string[],
-	input: {
-		stateDir: string;
-		cwd: string;
-		host?: HostId;
-		modelResolution?: ModelResolution;
-		sessionId?: string;
-	},
-): Promise<string> {
-	try {
-		const { stateDir, cwd } = input;
-		const host = input.host ?? detectHost();
-		const live = projectResolution(input.modelResolution);
-		// The armed skip belongs to one session. Without its id there is no session to arm or to show as armed.
-		const sessionId = input.sessionId?.trim() || undefined;
-		const [command = "status", verb = "status", value] = args
-			.map((arg) => arg.trim().toLowerCase())
-			.filter(Boolean);
-		const config = loadConfig(claudeConfigPaths(cwd));
-		const state = readControl(stateDir);
-		switch (command) {
-			case "status":
-				return await statusText(
-					config,
-					state,
-					stateDir,
-					host,
-					live,
-					sessionId !== undefined && readSkipOnce(stateDir, sessionId),
-				);
-			case "on":
-			case "off":
-				writeControl(stateDir, { enabled: command === "on" });
-				return `Prompt Uplift ${command}`;
-			case "skip":
-				if (sessionId === undefined)
-					return "Prompt Uplift skip needs a session id (--session <id>); none was given, so nothing was armed.";
-				armSkipOnce(stateDir, sessionId);
-				return "Prompt Uplift will skip the next prompt in this session";
-			case "last": {
-				const last = readLast(stateDir);
-				return last
-					? `${last.result.root} · ${last.result.source}\n\n${last.result.xml}`
-					: "No uplift recorded yet";
-			}
-			case "track":
-				switch (verb) {
-					case "on":
-					case "off":
-						return trackingLines(
-							config,
-							writeControl(stateDir, { trackEnabled: verb === "on" }),
-						).join("\n");
-					case "status":
-						return trackingLines(config, state).join("\n");
-					default:
-						return "Usage: track on|off|status";
-				}
-			case "think":
-				switch (verb) {
-					case "on":
-					case "off":
-						writeControl(stateDir, { thinkEnabled: verb === "on" });
-						return `Graph of Thought ${verb}`;
-					case "last": {
-						const last = readLast(stateDir);
-						return last?.graph
-							? `${last.graph.goal}\n\n${graphSketch(last.graph)}`
-							: "No thought graph recorded yet";
-					}
-					case "status":
-						return `Graph of Thought ${flag(state.thinkEnabled, config.think.enabled)}`;
-					default:
-						return "Usage: think on|off|last|status";
-				}
-			case "hitl":
-				switch (verb) {
-					case "on":
-					case "off":
-						writeControl(stateDir, { hitlEnabled: verb === "on" });
-						return `HITL clarifications ${verb}`;
-					case "last":
-						return formatHitlEcho(readLast(stateDir)?.clarifications ?? []);
-					case "status":
-						return `HITL clarifications ${flag(state.hitlEnabled, config.hitl.enabled)} · max ${config.hitl.maxQuestions}`;
-					default:
-						return "Usage: hitl on|off|last|status";
-				}
-			case "grok":
-				switch (verb) {
-					case "engine": {
-						if (!THINK_ENGINES.includes(value as ThinkEngine))
-							return "Usage: grok engine auto|claude|grok|muse";
-						writeControl(stateDir, { engine: value as ThinkEngine });
-						return `Thinking engine set to ${engineLabel(config, { ...state, engine: value as ThinkEngine }, host, live)}`;
-					}
-					case "status":
-						return [
-							`Engine: ${engineLabel(config, state, host, live)}`,
-							claudeStatusLine(config),
-							grokTransportLine(config),
-							await grokOauthLine(config),
-						].join("\n");
-					case "login":
-					case "check":
-						// `args` still holds the caller's case; `verb` above is lower-cased.
-						return (
-							await runGrokCommand(args.filter((arg) => arg.trim()).slice(1), {
-								cwd,
-								env: process.env,
-							})
-						).text;
-					default:
-						return "Usage: grok [status | engine auto|claude|grok|muse | login | check]";
-				}
-			default:
-				return USAGE;
-		}
-	} catch (error) {
-		return `ultrathink: ${redactSecrets(error instanceof Error ? error.message : String(error))}`;
-	}
+export async function runControl(args: string[], input: ControlInput): Promise<string> {
+	return (await runControlResult(args, input)).text;
 }
 
 /**
@@ -596,9 +622,9 @@ if (import.meta.main) {
 		});
 	} else {
 		const { sessionId, args } = takeSessionFlag(argv);
-		runControl(args, { stateDir: resolveStateDir(), cwd: process.cwd(), sessionId }).then(
-			(text) => {
-				process.stdout.write(`${text}\n`, () => process.exit(0));
+		runControlResult(args, { stateDir: resolveStateDir(), cwd: process.cwd(), sessionId }).then(
+			({ text, failed }) => {
+				process.stdout.write(`${text}\n`, () => process.exit(failed ? 1 : 0));
 			},
 		);
 	}

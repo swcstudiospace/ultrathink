@@ -1,0 +1,24 @@
+{
+	"id": "recovery",
+	"title": "A probe batch of 5 prompts after the load whose latency must be back within 1.25x the nominal baseline",
+	"failureMode": "pipeline-load",
+	"seed": 15,
+	"prompts": {
+		"count": 5,
+		"concurrency": 1
+	},
+	"faults": [],
+	"invariants": [
+		"terminal",
+		"original",
+		"uplift",
+		"degraded",
+		"cot",
+		"isolation",
+		"resources",
+		"recovery",
+		"persisted",
+		"calls"
+	],
+	"baselineOf": "nominal"
+}

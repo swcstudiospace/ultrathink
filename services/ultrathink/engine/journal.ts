@@ -10,8 +10,10 @@ import {
 	readMeta,
 	runGrokbotPlan,
 	storeAnswer,
+	writeMeta,
 } from "../../../src/host/grokbot.ts";
 import type { planPrompt } from "../../../src/host/plan.ts";
+import { currentRequestContext } from "../obs/context.ts";
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -158,6 +160,26 @@ export async function startPlan(
 	return result;
 }
 
+/**
+ * Records the principal of the admitted request that started the session in its journal meta, once and BEFORE the run
+ * starts, so a journal whose run throws or whose process dies is already scoped to its caller, and session lookups
+ * without an id can be scoped as they are for server jobs. The run's own meta writes keep it (they spread the meta
+ * they read, and its conflict check reads only `original`). Nothing is recorded without an admission (stdio, tests); a
+ * session with no principal is visible only to an owner and to stdio. A failure here never fails the plan.
+ */
+function stampPrincipal(stateDir: string, sessionId: string): void {
+	const principal = currentRequestContext()?.admission?.principal;
+	if (principal === undefined) return;
+	try {
+		const dir = journalDir(stateDir, sessionId);
+		const meta = readMeta(dir);
+		if (meta?.principal !== undefined) return;
+		writeMeta(dir, { ...meta, sessionId, principal });
+	} catch {
+		// reason: the journal stays valid without a principal; it is then visible only to an owner and to stdio.
+	}
+}
+
 async function runPlan(
 	opts: JournalOptions,
 	sessionId: string,
@@ -166,6 +188,7 @@ async function runPlan(
 	try {
 		const cwd = join(opts.stateDir, "cwd");
 		mkdirSync(cwd, { recursive: true });
+		stampPrincipal(opts.stateDir, sessionId);
 		const run = await runGrokbotPlan({
 			sessionId,
 			prompt,

@@ -272,13 +272,15 @@ describe("checkState", () => {
 		put("sessions/private.json", { mode: 0o600 });
 		put("sessions/private.xml", { mode: 0o600 });
 		put("last-plan.json", { mode: 0o644 });
+		put("last-plan.sess-1.json", { mode: 0o644 });
+		put("last-plan.sess-2.json", { mode: 0o600 });
 		put("last.json", { mode: 0o600 });
 		put("control.json", { mode: 0o644 });
 		put("sessions/stale.tmp", { mode: 0o644 });
 		const finding = byId(checkState(deps), "state.permissions");
 		expect(finding).toMatchObject({
 			level: "warn",
-			title: "5 session, carrier or control files readable by group or others",
+			title: "6 session, carrier or control files readable by group or others",
 			fix: `chmod -R go-rwx ${stateDir}`,
 		});
 		expect(finding.detail).toContain("0600");
@@ -289,6 +291,7 @@ describe("checkState", () => {
 		put("sessions/a.xml");
 		put("last.json");
 		put("last-plan.json");
+		put("last-plan.sess-1.json");
 		put("control.json");
 		expect(ids(checkState(deps))).not.toContain("state.permissions");
 	});
@@ -356,7 +359,7 @@ describe("checkState", () => {
 		const target = join(dir, "external.json");
 		writeFileSync(target, PROMPT, { mode: 0o644 });
 		chmodSync(target, 0o644);
-		for (const name of ["control.json", "last.json", "last-plan.json"])
+		for (const name of ["control.json", "last.json", "last-plan.json", "last-plan.sess-1.json"])
 			symlinkSync(target, join(stateDir, name));
 		expect(ids(checkState(deps))).not.toContain("state.permissions");
 	});

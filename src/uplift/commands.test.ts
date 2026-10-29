@@ -22,12 +22,14 @@ import {
 import {
 	parseUltrathinkCommand,
 	runControl,
+	runControlResult,
 	runGrokCommand,
 	trackingEnabled,
 	trackingOff,
 	type UltrathinkCommand,
 	ULTRATHINK_VERBS,
 } from "./commands.ts";
+import { recordLastSkip } from "./skip.ts";
 
 function config(
 	patch: { track?: boolean; notion?: string; linear?: string } = {},
@@ -240,6 +242,39 @@ describe("runControl", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	test("a control.json lock that stays held fails the toggle with one line and a failed result, writing nothing", async () => {
+		mkdirSync(io.stateDir, { recursive: true });
+		writeFileSync(join(io.stateDir, "control.json.lock"), String(process.pid), { mode: 0o600 });
+		let clock = 0;
+		const controlLock = {
+			timeoutMs: 1_000,
+			now: () => clock,
+			sleep: (ms: number) => {
+				clock += ms;
+			},
+		};
+		const result = await runControlResult(["off"], { ...io, controlLock });
+		expect(result.failed).toBe(true);
+		expect(result.text).toStartWith("ultrathink: control.json is locked by another process");
+		expect(result.text).not.toContain("\n");
+		expect(existsSync(join(io.stateDir, "control.json"))).toBe(false);
+		// runControl keeps its string contract and never throws.
+		expect(await runControl(["track", "off"], { ...io, controlLock })).toBe(result.text);
+		expect(await runControlResult(["status"], io)).toEqual({
+			text: expect.stringContaining("Prompt Uplift"),
+			failed: false,
+		});
+	});
+
+	test("an unreadable control.json fails the toggle with one line and keeps the file", async () => {
+		mkdirSync(join(io.stateDir, "control.json"), { recursive: true });
+		const result = await runControlResult(["think", "on"], io);
+		expect(result.failed).toBe(true);
+		expect(result.text).toStartWith("ultrathink: control.json could not be read");
+		expect(result.text).not.toContain("\n");
+		expect(existsSync(join(io.stateDir, "control.json"))).toBe(true);
+	});
+
 	test("off, on, skip, track off and track on persist in the state dir", async () => {
 		expect(await runControl(["off"], io)).toBe("Prompt Uplift off");
 		expect(readControl(io.stateDir)).toEqual({ enabled: false });
@@ -263,6 +298,12 @@ describe("runControl", () => {
 			"Prompt Uplift on (skipping next prompt)",
 		);
 		expect(await runControl(["status"], io)).not.toContain("skipping next prompt");
+	});
+
+	test("status shows the last skip with its reason and age, and nothing before the first skip (G-2)", async () => {
+		expect(await runControl(["status"], io)).not.toContain("last skip:");
+		recordLastSkip(io.stateDir, "graph-reference");
+		expect(await runControl(["status"], io)).toMatch(/\nlast skip: graph-reference \d+s ago$/);
 	});
 
 	test("status reports tracking and names what is not configured", async () => {
@@ -1288,7 +1329,7 @@ describe("runControl", () => {
 		expect(proc.stdout.toString()).toBe(
 			"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json> | ultrathink decisions usage [--days N] [--json]\n",
 		);
-	});
+	}, 60_000);
 
 	test.each(["hindsight", "ragflow", "teach"])(
 		"bin/ultrathink %s goes to its own command, not the control verbs",
@@ -1312,6 +1353,7 @@ describe("runControl", () => {
 			expect(proc.stdout.toString()).not.toStartWith("Usage: ultrathink <command>");
 			expect(proc.exitCode).not.toBe(0);
 		},
+		60_000,
 	);
 
 	test("the usage text lists doctor", async () => {
@@ -1397,14 +1439,33 @@ describe("runControl", () => {
 	describe("bin/ultrathink doctor", () => {
 		const FAKE_KEY = "sk-test-not-a-real-key-0123456789";
 
+		/** A bin dir whose stub `python3` and `claude` answer at once, so the doctor never runs the host's own tools. `authDelaySeconds` makes `claude auth status` slow. */
+		function stubBin(authDelaySeconds = 0): string {
+			const bin = join(dir, `stub-bin-${authDelaySeconds}`);
+			mkdirSync(bin, { recursive: true });
+			writeFileSync(join(bin, "python3"), "#!/bin/sh\necho 'Python 3.12.0'\n", { mode: 0o755 });
+			writeFileSync(
+				join(bin, "claude"),
+				`#!/bin/sh
+case "$1" in
+--version) echo '2.1.0 (Claude Code)' ;;
+auth) ${authDelaySeconds > 0 ? `sleep ${authDelaySeconds}; ` : ""}echo '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}' ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+			return bin;
+		}
+
 		/**
 		 * The doctor's `stack` section makes real probes (Substrate brief, Hindsight, the Swarm classifier, the Realm
 		 * socket). Every member is disabled or pointed at nothing here, and no directory of the host is in reach, so
-		 * the run depends on this temp dir only.
+		 * the run depends on this temp dir only. `bin` leads PATH so the stub python3 and claude shadow the host's.
 		 */
-		function hermeticDoctorEnv(): Record<string, string | undefined> {
+		function hermeticDoctorEnv(bin: string): Record<string, string | undefined> {
 			const env: Record<string, string | undefined> = {
 				...process.env,
+				PATH: `${bin}:${process.env.PATH ?? ""}`,
 				HOME: join(dir, "home"),
 				XDG_CONFIG_HOME: join(dir, "xdg"),
 				ULTRATHINK_STATE_DIR: join(dir, "state"),
@@ -1436,41 +1497,57 @@ describe("runControl", () => {
 			return env;
 		}
 
-		function runDoctor(args: string[]): { stdout: string; exitCode: number | null } {
-			const proc = Bun.spawnSync(
+		/** Async, so the event loop stays free while the cold doctor child starts; a blocking spawn made these tests depend on host load. */
+		async function runDoctor(
+			args: string[],
+			bin = stubBin(),
+		): Promise<{ stdout: string; exitCode: number | null }> {
+			const proc = Bun.spawn(
 				[process.execPath, join(import.meta.dir, "commands.ts"), "doctor", ...args],
 				{
 					cwd: io.cwd,
-					env: hermeticDoctorEnv(),
+					env: hermeticDoctorEnv(bin),
 					stdin: "ignore",
 					stdout: "pipe",
 					stderr: "pipe",
 				},
 			);
-			return { stdout: proc.stdout.toString(), exitCode: proc.exitCode };
+			const [stdout, , exitCode] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+			return { stdout, exitCode };
 		}
 
-		test("goes to the doctor command and prints a report without any key", () => {
-			const { stdout, exitCode } = runDoctor([]);
+		test("goes to the doctor command and prints a report without any key", async () => {
+			const { stdout, exitCode } = await runDoctor([]);
 			expect(stdout).toStartWith("ultrathink doctor\n");
 			expect(stdout).toMatch(/\d+ errors?, \d+ warnings?\n$/);
 			expect(stdout).not.toContain(FAKE_KEY);
 			expect(exitCode).toBe(stdout.includes("✗") ? 1 : 0);
-		});
+		}, 60_000);
 
-		test("--json prints one object", () => {
-			const { stdout } = runDoctor(["--json"]);
+		test("--json prints one object", async () => {
+			const { stdout } = await runDoctor(["--json"]);
 			const report: DoctorReport = JSON.parse(stdout);
 			expect(typeof report.ok).toBe("boolean");
 			expect(report.findings.length).toBeGreaterThan(0);
 			expect(stdout).not.toContain(FAKE_KEY);
-		});
+		}, 60_000);
 
-		test("an unknown flag is a usage error", () => {
-			const { stdout, exitCode } = runDoctor(["--no-such-flag"]);
+		test("an unknown flag is a usage error", async () => {
+			const { stdout, exitCode } = await runDoctor(["--no-such-flag"]);
 			expect(stdout).toBe("Usage: ultrathink doctor [--json]\n");
 			expect(exitCode).toBe(2);
-		});
+		}, 60_000);
+
+		test("a slow claude login probe still ends in a report, without blocking the test process", async () => {
+			const { stdout, exitCode } = await runDoctor([], stubBin(6));
+			expect(stdout).toStartWith("ultrathink doctor\n");
+			expect(stdout).toMatch(/\d+ errors?, \d+ warnings?\n$/);
+			expect(exitCode).toBe(stdout.includes("✗") ? 1 : 0);
+		}, 60_000);
 	});
 
 	test("the usage text lists prune", async () => {
@@ -1481,8 +1558,8 @@ describe("runControl", () => {
 		const SECRET_PROMPT = "a prompt that must never be printed";
 		const PRUNE_NOW = Date.UTC(2026, 9, 9, 12);
 
-		function runPrune(args: string[]): { stdout: string; exitCode: number | null } {
-			const proc = Bun.spawnSync(
+		async function runPrune(args: string[]): Promise<{ stdout: string; exitCode: number | null }> {
+			const proc = Bun.spawn(
 				[process.execPath, join(import.meta.dir, "commands.ts"), "prune", ...args],
 				{
 					cwd: io.cwd,
@@ -1497,7 +1574,12 @@ describe("runControl", () => {
 					stderr: "pipe",
 				},
 			);
-			return { stdout: proc.stdout.toString(), exitCode: proc.exitCode };
+			const [stdout, , exitCode] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+			return { stdout, exitCode };
 		}
 
 		function seedSession(id: string, ageDays: number): string {
@@ -1517,37 +1599,37 @@ describe("runControl", () => {
 			return path;
 		}
 
-		test("--dry-run reports the old session and removes nothing; without it the session goes and the new one stays", () => {
+		test("--dry-run reports the old session and removes nothing; without it the session goes and the new one stays", async () => {
 			const old = seedSession("old-session", 60);
 			const fresh = seedSession("fresh-session", 1);
-			const preview = runPrune(["--older-than", "30", "--dry-run"]);
+			const preview = await runPrune(["--older-than", "30", "--dry-run"]);
 			expect(preview.exitCode).toBe(0);
 			expect(preview.stdout).toStartWith("Would prune 1 session");
 			expect(preview.stdout).toContain("old-session");
 			expect(preview.stdout).not.toContain(SECRET_PROMPT);
 			expect(existsSync(old)).toBe(true);
-			const real = runPrune(["--older-than", "30"]);
+			const real = await runPrune(["--older-than", "30"]);
 			expect(real.exitCode).toBe(0);
 			expect(real.stdout).toStartWith("Pruned 1 session");
 			expect(existsSync(old)).toBe(false);
 			expect(existsSync(fresh)).toBe(true);
-		});
+		}, 60_000);
 
-		test("without a cutoff anywhere it refuses and removes nothing", () => {
+		test("without a cutoff anywhere it refuses and removes nothing", async () => {
 			const old = seedSession("old-session", 400);
-			const { stdout, exitCode } = runPrune([]);
+			const { stdout, exitCode } = await runPrune([]);
 			expect(exitCode).toBe(2);
 			expect(stdout).toContain("no cutoff");
 			expect(existsSync(old)).toBe(true);
-		});
+		}, 60_000);
 
-		test("a cutoff below one day is refused", () => {
+		test("a cutoff below one day is refused", async () => {
 			const old = seedSession("old-session", 400);
-			const { stdout, exitCode } = runPrune(["--older-than", "0"]);
+			const { stdout, exitCode } = await runPrune(["--older-than", "0"]);
 			expect(exitCode).toBe(2);
 			expect(stdout).toContain("refusing to prune everything");
 			expect(existsSync(old)).toBe(true);
-		});
+		}, 60_000);
 	});
 });
 

@@ -344,6 +344,44 @@ const EMPTY: SweepResult = {
 	disabled: false,
 };
 
+describe("stuck client journals", () => {
+	test("a journal stuck in progress for more than four times the retention is removed; a younger one and a running server job stay", () => {
+		const stateDir = tmp();
+		const stuck = randomUUID();
+		const slow = randomUUID();
+		const boundary = randomUUID();
+		const runningJob = randomUUID();
+		const stuckNoStatus = randomUUID();
+		const veryOld = NOW - 29 * DAY;
+		writeJournal(stateDir, stuck, veryOld, { status: "answering" });
+		writeJournal(stateDir, stuckNoStatus, veryOld, {});
+		// Ten days old: in progress and well inside four times the 7-day retention.
+		writeJournal(stateDir, slow, OLD, { status: "answering" });
+		// Exactly four times the retention is kept, as an entry at the cutoff is.
+		writeJournal(stateDir, boundary, NOW - 28 * DAY, { status: "answering" });
+		writeJob(stateDir, runningJob, "running", veryOld);
+
+		const result = sweepStateDir({ stateDir, ...RETENTION });
+
+		expect(result.removed.journals).toBe(2);
+		for (const gone of [stuck, stuckNoStatus])
+			expect(existsSync(join(stateDir, "journal", gone))).toBe(false);
+		for (const kept of [slow, boundary])
+			expect(existsSync(join(stateDir, "journal", kept))).toBe(true);
+		expect(existsSync(join(stateDir, "jobs", `${runningJob}.json`))).toBe(true);
+		expect(result.removed.jobs).toBe(0);
+	});
+
+	test("with retention off nothing is swept, stuck or not", () => {
+		const stateDir = tmp();
+		const stuck = randomUUID();
+		writeJournal(stateDir, stuck, NOW - 400 * DAY, { status: "answering" });
+		const result = sweepStateDir({ stateDir, retentionDays: 0, now: () => NOW });
+		expect(result.disabled).toBe(true);
+		expect(existsSync(join(stateDir, "journal", stuck))).toBe(true);
+	});
+});
+
 describe("createSweeper", () => {
 	test("does not run at construction; the first run is one interval after start", () => {
 		let calls = 0;

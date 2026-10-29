@@ -22,6 +22,7 @@ import { createGrokCompleter } from "../grok/complete.ts";
 import { grokEngineLabel } from "../grok/label.ts";
 import type { GrokTransport } from "../grok/types.ts";
 import { type ClaudeCompleter, createClaudeCompleter } from "../claude/complete.ts";
+import type { FlightThrottle } from "../resilience/throttle.ts";
 import { displayId, displayLabel } from "../claude/output.ts";
 import { createMuseCompleter } from "../muse/complete.ts";
 import { hasControlCharacter, normalizeSelectorField } from "../config.ts";
@@ -34,7 +35,11 @@ import { detectHost } from "./detect.ts";
 import type { HostId } from "./types.ts";
 import { assertMemoryChain, MEMORY_CHAIN, memoryChainFor } from "./memory-chain.ts";
 import { MAX_ENGINE_ERROR_CHARS } from "./display-limits.ts";
-import type { CompletionReport } from "../types.ts";
+import { unwrapRetryError } from "../resilience/retry.ts";
+import { type CompletionReport, readReport } from "../types.ts";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { resolveStateDir } from "./paths.ts";
 
 type ModelResolutionState = "override" | "detected" | "default" | "unresolved";
 type PlanningTransport =
@@ -121,6 +126,8 @@ export interface SelectedEngine {
 	report?: () => CompletionReport | undefined;
 	/** `<first> → <answering> (<class>)` once a later candidate answered; absent on single-candidate routes. */
 	failover?: () => string | undefined;
+	/** The flight's one limiter when the route's completer owns it (Omp's native binding takes a slot per call); the planner then builds none. */
+	throttle?: FlightThrottle;
 	resolution: ModelResolution;
 }
 
@@ -183,6 +190,40 @@ export const HOST_DEFAULT_ENGINES: Record<HostId, LegacyRoute> = {
 	cursor: "claude",
 };
 
+const MAX_REPORT_CAUSE_CHARS = 200;
+
+function statusOf(error: unknown): number | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	for (const key of ["apiErrorStatus", "status"]) {
+		const value: unknown = Reflect.get(error, key);
+		if (typeof value === "number" && Number.isInteger(value)) return value;
+	}
+	return undefined;
+}
+
+/** Where failover cooldowns live between hook processes. */
+function cooldownPersist(): { path: string } {
+	return { path: join(resolveStateDir(), "failover-cooldowns.json") };
+}
+
+/**
+ * A short, secret-free identity of the access path a candidate calls: the same model name behind another transport,
+ * endpoint, binary or login home must not share a persisted cooldown with it. The parts (URLs, paths) are hashed, never
+ * stored.
+ */
+function routeIdentity(kind: string, ...parts: readonly string[]): string {
+	return `${kind}:${createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 12)}`;
+}
+
+function claudeRouteIdentity(config: UltrathinkConfig): string {
+	return routeIdentity("cli", config.claude.bin, config.claude.auth);
+}
+
+function grokRouteIdentity(config: UltrathinkConfig): string {
+	const { transport, baseUrl, bin, home, shuntBaseUrl, shuntModel } = config.grok;
+	return routeIdentity(transport, baseUrl, bin, home, shuntBaseUrl, shuntModel);
+}
+
 export function captureFirstError(
 	label: string,
 	complete: ClaudeCompleter,
@@ -190,9 +231,11 @@ export function captureFirstError(
 	failover?: () => string | undefined,
 ): SelectedEngine {
 	let first: string | undefined;
+	let lastReport: CompletionReport | undefined;
 	return {
 		label,
 		complete: async (system, user, signal) => {
+			lastReport = undefined;
 			try {
 				return await complete(system, user, signal);
 			} catch (error) {
@@ -204,10 +247,22 @@ export function captureFirstError(
 						MAX_ENGINE_ERROR_CHARS,
 					),
 				);
+				const root = unwrapRetryError(error);
+				const status = statusOf(root);
+				lastReport = readReport(root) ?? {
+					attempts: 1,
+					...(status === undefined ? {} : { httpStatus: status }),
+					cause: redactSecrets(
+						redactLine(root instanceof Error ? root.message : String(root), MAX_REPORT_CAUSE_CHARS),
+					)
+						.replace(/\s+/g, " ")
+						.slice(0, MAX_REPORT_CAUSE_CHARS),
+				};
 				throw error;
 			}
 		},
 		error: () => first,
+		report: () => lastReport,
 		resolution,
 		...(failover ? { failover } : {}),
 	};
@@ -391,7 +446,10 @@ async function claudeRoute(
 		const grokModels = unique([config.grok.model, ...config.grok.fallbackModels]);
 		const grok = grokCandidates(config, cwd, grokModels);
 		if (grok.length > 0) {
-			const chain = createFailoverCompleter([{ id: label, label, complete: claude }, ...grok]);
+			const chain = createFailoverCompleter(
+				[{ id: label, label, complete: claude, route: claudeRouteIdentity(config) }, ...grok],
+				{ persist: cooldownPersist() },
+			);
 			return captureFirstError(label, chain.complete, resolution, chain.failover);
 		}
 	}
@@ -433,6 +491,7 @@ function grokCandidates(
 			{
 				id: label,
 				label,
+				route: grokRouteIdentity(config),
 				complete: createGrokCompleter({
 					baseUrl: config.grok.baseUrl,
 					model,
@@ -498,12 +557,14 @@ async function memoryRoute(
 	});
 	const label = `${MEMORY_CHAIN.primary.vendor}:${model}`;
 	const claude = claudeCli(config, cwd, model);
-	const candidates: FailoverCandidate[] = [{ id: label, label, complete: claude }];
+	const candidates: FailoverCandidate[] = [
+		{ id: label, label, complete: claude, route: claudeRouteIdentity(config) },
+	];
 	if (memoryChainFor(config).length > 1 && (await grokUsable(config)))
 		candidates.push(...grokCandidates(config, cwd, [MEMORY_CHAIN.fallback.model]));
 	assertMemoryCandidates(candidates);
 	if (candidates.length === 1) return captureFirstError(label, claude, resolution);
-	const chain = createFailoverCompleter(candidates);
+	const chain = createFailoverCompleter(candidates, { persist: cooldownPersist() });
 	return captureFirstError(label, chain.complete, resolution, chain.failover);
 }
 
@@ -692,7 +753,7 @@ export async function selectEngine(
 			unique([choice.model, ...config.grok.fallbackModels]),
 		);
 		if (candidates.length > 1) {
-			const chain = createFailoverCompleter(candidates);
+			const chain = createFailoverCompleter(candidates, { persist: cooldownPersist() });
 			return captureFirstError(label, chain.complete, resolution, chain.failover);
 		}
 	}

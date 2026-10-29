@@ -41,6 +41,8 @@ const T2 = Date.parse("2026-10-20T11:00:00Z");
 // Account that does not exist, so the service-user branch (compat as that user, chown) is never taken in tests.
 const ABSENT_USER = "ultrathink-test-absent";
 const SLOW = 30_000;
+/** sealedAuditChain fsyncs 2500 audit records (one fsync each); on a loaded or nearly full disk that alone takes minutes. */
+const SEALED_CHAIN_SLOW = 240_000;
 
 let work = "";
 
@@ -426,7 +428,7 @@ describe.skipIf(process.platform !== "linux")("restore", () => {
 			);
 			expect(verifyAuditFile(join(s.state, "audit.jsonl")).ok).toBe(true);
 		},
-		SLOW,
+		SEALED_CHAIN_SLOW,
 	);
 
 	test(

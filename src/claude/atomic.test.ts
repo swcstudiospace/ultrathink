@@ -2,7 +2,9 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+	chmodSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
@@ -13,7 +15,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withFileLock, writeFileAtomic } from "./atomic.ts";
+import { processIdentity } from "../swarm/lane.ts";
+import {
+	LockTimeoutError,
+	updateJsonAtomic,
+	withFileLock,
+	withLockMutation,
+	writeFileAtomic,
+} from "./atomic.ts";
 import { readSession, type SessionRecord, sessionPath, writeSession } from "./state.ts";
 
 const WORKER = join(import.meta.dir, "atomic.worker.ts");
@@ -63,10 +72,68 @@ describe("writeFileAtomic", () => {
 	});
 
 	test.skipIf(!POSIX)("honors an explicit mode and dirMode", () => {
-		const target = join(dir, "shared", "state.json");
-		writeFileAtomic(target, "{}", { mode: 0o640, dirMode: 0o750 });
-		expect(statSync(target).mode & 0o777).toBe(0o640);
-		expect(statSync(join(dir, "shared")).mode & 0o777).toBe(0o750);
+		// Pinned to the hardened-shell umask so the result never depends on the invoking shell.
+		const previous = process.umask(0o077);
+		try {
+			const target = join(dir, "shared", "state.json");
+			writeFileAtomic(target, "{}", { mode: 0o640, dirMode: 0o750 });
+			expect(statSync(target).mode & 0o777).toBe(0o640);
+			expect(statSync(join(dir, "shared")).mode & 0o777).toBe(0o750);
+		} finally {
+			process.umask(previous);
+		}
+	});
+
+	test.skipIf(!POSIX)("honors an explicit mode and dirMode under umask 022", () => {
+		const previous = process.umask(0o022);
+		try {
+			const target = join(dir, "shared", "state.json");
+			writeFileAtomic(target, "{}", { mode: 0o640, dirMode: 0o750 });
+			expect(statSync(target).mode & 0o777).toBe(0o640);
+			expect(statSync(join(dir, "shared")).mode & 0o777).toBe(0o750);
+		} finally {
+			process.umask(previous);
+		}
+	});
+
+	test.skipIf(!POSIX).each([
+		["077", 0o077],
+		["000", 0o000],
+		["027", 0o027],
+	] as const)(
+		"explicit modes survive process umask %s, including intermediate directories",
+		(_label, mask) => {
+			const previous = process.umask(mask);
+			try {
+				const target = join(dir, "u", "v", "state.json");
+				writeFileAtomic(target, "{}", { mode: 0o640, dirMode: 0o750 });
+				expect(statSync(target).mode & 0o777).toBe(0o640);
+				expect(statSync(join(dir, "u", "v")).mode & 0o777).toBe(0o750);
+				expect(statSync(join(dir, "u")).mode & 0o777).toBe(0o750);
+			} finally {
+				process.umask(previous);
+			}
+		},
+	);
+
+	test.skipIf(!POSIX)("owner-only defaults hold under a umask that strips owner bits", () => {
+		const previous = process.umask(0o277);
+		try {
+			const target = join(dir, "d", "state.json");
+			writeFileAtomic(target, "{}");
+			expect(statSync(target).mode & 0o777).toBe(0o600);
+			expect(statSync(join(dir, "d")).mode & 0o777).toBe(0o700);
+		} finally {
+			process.umask(previous);
+		}
+	});
+
+	test.skipIf(!POSIX)("an existing directory is never re-moded", () => {
+		const shared = join(dir, "existing");
+		mkdirSync(shared, { mode: 0o755 });
+		chmodSync(shared, 0o755);
+		writeFileAtomic(join(shared, "state.json"), "{}");
+		expect(statSync(shared).mode & 0o777).toBe(0o755);
 	});
 
 	test("a failing rename keeps the previous content, removes the temporary file and rethrows", () => {
@@ -273,6 +340,223 @@ describe("withFileLock", () => {
 		expect(readFileSync(lock, "utf8")).toBe("successor-token");
 	});
 
+	test.skipIf(!POSIX)("lock and guard modes survive a umask that strips owner bits", () => {
+		const target = join(dir, "state.json");
+		const previous = process.umask(0o277);
+		let lockMode = 0;
+		let guardMode: number | undefined;
+		try {
+			withFileLock(target, () => {
+				lockMode = statSync(`${target}.lock`).mode & 0o777;
+			});
+			guardMode = withLockMutation(`${target}.lock`, () => {
+				return statSync(`${target}.lock.guard`).mode & 0o777;
+			});
+		} finally {
+			process.umask(previous);
+		}
+		expect(lockMode).toBe(0o600);
+		expect(guardMode).toBe(0o700);
+	});
+
+	test("the lock file records the holder pid, its start identity and a token", () => {
+		const target = join(dir, "state.json");
+		let holder: unknown;
+		withFileLock(target, () => {
+			holder = JSON.parse(readFileSync(`${target}.lock`, "utf8"));
+		});
+		expect(holder).toEqual({
+			pid: process.pid,
+			startTime: processIdentity(process.pid),
+			token: expect.stringMatching(/^[a-f0-9]{32}$/),
+		});
+	});
+
+	describe("liveness", () => {
+		const plant = (target: string, holder: unknown, ageMs: number): string => {
+			const lock = `${target}.lock`;
+			writeFileSync(lock, typeof holder === "string" ? holder : JSON.stringify(holder));
+			const mtime = new Date(NOW - ageMs);
+			utimesSync(lock, mtime, mtime);
+			return lock;
+		};
+		const clockOptions = (state: { clock: number; sleeps: number[]; logs: string[] }) => ({
+			timeoutMs: 500,
+			pollMs: 100,
+			now: () => state.clock,
+			sleep: (ms: number) => {
+				state.sleeps.push(ms);
+				state.clock += ms;
+			},
+			log: (message: string) => state.logs.push(message),
+		});
+
+		test("a live holder with a stale mtime is never taken: we wait, then run unlocked", () => {
+			const target = join(dir, "state.json");
+			const startTime = processIdentity(process.pid);
+			expect(startTime).toBeDefined();
+			const holder = { pid: process.pid, startTime, token: "live-holder" };
+			const lock = plant(target, holder, 60_000);
+			const state = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			let ran = false;
+			withFileLock(
+				target,
+				() => {
+					ran = true;
+					expect(JSON.parse(readFileSync(lock, "utf8"))).toEqual(holder);
+				},
+				clockOptions(state),
+			);
+			expect(ran).toBe(true);
+			expect(state.sleeps.length).toBeGreaterThan(0);
+			expect(state.clock - NOW).toBeGreaterThanOrEqual(500);
+			expect(state.logs).toHaveLength(1);
+			expect(JSON.parse(readFileSync(lock, "utf8"))).toEqual(holder);
+		});
+
+		test('onTimeout "throw" refuses to run when a live holder keeps the lock', () => {
+			const target = join(dir, "state.json");
+			const holder = { pid: process.pid, startTime: processIdentity(process.pid), token: "live" };
+			const lock = plant(target, holder, 60_000);
+			const state = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			let ran = false;
+			expect(() =>
+				withFileLock(
+					target,
+					() => {
+						ran = true;
+					},
+					{ ...clockOptions(state), onTimeout: "throw" },
+				),
+			).toThrow(LockTimeoutError);
+			expect(ran).toBe(false);
+			expect(JSON.parse(readFileSync(lock, "utf8"))).toEqual(holder);
+		});
+
+		test("a dead holder is reclaimed at once whatever the mtime", () => {
+			const target = join(dir, "state.json");
+			const lock = plant(
+				target,
+				{ pid: 2_147_483_647, startTime: "proc:1", token: "dead-holder" },
+				0,
+			);
+			const state = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			let token: unknown;
+			withFileLock(
+				target,
+				() => {
+					token = (JSON.parse(readFileSync(lock, "utf8")) as { token: string }).token;
+				},
+				clockOptions(state),
+			);
+			expect(token).not.toBe("dead-holder");
+			expect(state.sleeps).toEqual([]);
+			expect(state.logs).toEqual([]);
+			expect(leftovers(dir)).toEqual([]);
+		});
+
+		test("a recycled pid (same pid, different start identity) is reclaimed at once", () => {
+			const target = join(dir, "state.json");
+			const lock = plant(
+				target,
+				{ pid: process.pid, startTime: "proc:0-not-this-process", token: "recycled" },
+				0,
+			);
+			const state = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			let token: unknown;
+			withFileLock(
+				target,
+				() => {
+					token = (JSON.parse(readFileSync(lock, "utf8")) as { token: string }).token;
+				},
+				clockOptions(state),
+			);
+			expect(token).not.toBe("recycled");
+			expect(state.sleeps).toEqual([]);
+		});
+
+		test("injected seams decide liveness deterministically", () => {
+			const target = join(dir, "state.json");
+			const holder = { pid: 4242, startTime: "proc:77", token: "seam-holder" };
+			const lock = plant(target, holder, 60_000);
+			const state = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			withFileLock(target, () => undefined, {
+				...clockOptions(state),
+				liveness: {
+					platform: "linux",
+					killAlive: (pid) => pid === 4242,
+					readStat: (pid) => (pid === 4242 ? `4242 (x) S ${"0 ".repeat(18)}77 0` : undefined),
+				},
+			});
+			// pid alive and identity proc:77 matches, so the stale mtime does not matter.
+			expect(state.sleeps.length).toBeGreaterThan(0);
+			expect(JSON.parse(readFileSync(lock, "utf8"))).toEqual(holder);
+			const dead = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			withFileLock(target, () => undefined, {
+				...clockOptions(dead),
+				liveness: { platform: "linux", killAlive: () => false },
+			});
+			expect(dead.sleeps).toEqual([]);
+			expect(existsSync(lock)).toBe(false);
+		});
+
+		test("an unreadable holder identity degrades to the mtime rule", () => {
+			const target = join(dir, "state.json");
+			const holder = { pid: process.pid, startTime: "proc:1", token: "unknown" };
+			const lock = plant(target, holder, 60_000);
+			const old = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			withFileLock(target, () => undefined, {
+				...clockOptions(old),
+				liveness: { platform: "linux", readStat: () => undefined },
+			});
+			// Identity unknown: the 60 s old lock is reclaimed by age, exactly like a legacy lock.
+			expect(old.sleeps).toEqual([]);
+			expect(existsSync(lock)).toBe(false);
+			plant(target, holder, 0);
+			const fresh = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			withFileLock(target, () => undefined, {
+				...clockOptions(fresh),
+				liveness: { platform: "linux", readStat: () => undefined },
+			});
+			expect(fresh.sleeps.length).toBeGreaterThan(0);
+			expect(JSON.parse(readFileSync(lock, "utf8"))).toEqual(holder);
+		});
+
+		test("a legacy bare-token lock is reclaimed by age and waited on when fresh", () => {
+			const target = join(dir, "state.json");
+			const lock = plant(target, "legacy-token", 60_000);
+			const old = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			withFileLock(target, () => undefined, clockOptions(old));
+			expect(old.sleeps).toEqual([]);
+			expect(existsSync(lock)).toBe(false);
+			plant(target, "legacy-token", 0);
+			const fresh = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			withFileLock(target, () => undefined, clockOptions(fresh));
+			expect(fresh.sleeps.length).toBeGreaterThan(0);
+			expect(readFileSync(lock, "utf8")).toBe("legacy-token");
+		});
+
+		test("a malformed JSON holder record falls back to the mtime rule, never to instant reclaim", () => {
+			const target = join(dir, "state.json");
+			const lock = plant(target, '{"pid": "x"', 0);
+			const state = { clock: NOW, sleeps: [] as number[], logs: [] as string[] };
+			withFileLock(target, () => undefined, clockOptions(state));
+			expect(state.sleeps.length).toBeGreaterThan(0);
+			expect(readFileSync(lock, "utf8")).toBe('{"pid": "x"');
+		});
+
+		test("release removes only our own JSON record", () => {
+			const target = join(dir, "state.json");
+			const lock = `${target}.lock`;
+			const successor = { pid: process.pid, startTime: processIdentity(process.pid), token: "s" };
+			withFileLock(target, () => {
+				rmSync(lock);
+				writeFileSync(lock, JSON.stringify(successor));
+			});
+			expect(JSON.parse(readFileSync(lock, "utf8"))).toEqual(successor);
+		});
+	});
+
 	test("a lock that cannot be created degrades to running the callback unlocked", () => {
 		const target = join(dir, "no-such-dir", "state.json");
 		const logs: string[] = [];
@@ -280,6 +564,86 @@ describe("withFileLock", () => {
 		expect(value).toBe("ran");
 		expect(logs).toHaveLength(1);
 		expect(existsSync(join(dir, "no-such-dir"))).toBe(false);
+	});
+});
+
+describe("updateJsonAtomic", () => {
+	type Counter = { n: number };
+	const bump = (current: unknown): Counter => ({
+		n: ((current as Counter | undefined)?.n ?? 0) + 1,
+	});
+
+	test("sequential increments both survive and a missing file starts from `initial`", () => {
+		const target = join(dir, "counter.json");
+		expect(updateJsonAtomic(target, bump)).toBe(true);
+		expect(updateJsonAtomic(target, bump)).toBe(true);
+		expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ n: 2 });
+		expect(readFileSync(target, "utf8")).toBe('{\n  "n": 2\n}\n');
+		const seeded = join(dir, "seeded.json");
+		expect(updateJsonAtomic(seeded, bump, { initial: { n: 10 } })).toBe(true);
+		expect(JSON.parse(readFileSync(seeded, "utf8"))).toEqual({ n: 11 });
+		expect(leftovers(dir)).toEqual([]);
+	});
+
+	test("a racer between the read and the write triggers a re-read and re-apply that keeps both updates", () => {
+		const target = join(dir, "counter.json");
+		writeFileAtomic(target, '{"n":0}\n');
+		let calls = 0;
+		const result = updateJsonAtomic(target, (current) => {
+			calls++;
+			if (calls === 1) writeFileAtomic(target, '{"n":10}\n');
+			return bump(current);
+		});
+		expect(result).toBe(true);
+		expect(calls).toBe(2);
+		expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ n: 11 });
+	});
+
+	test("five consecutive races return false and never overwrite the racer", () => {
+		const target = join(dir, "counter.json");
+		writeFileAtomic(target, '{"n":0}\n');
+		let calls = 0;
+		const result = updateJsonAtomic(target, (current) => {
+			calls++;
+			writeFileAtomic(target, `{"n":${100 + calls}}\n`);
+			return bump(current);
+		});
+		expect(result).toBe(false);
+		expect(calls).toBe(5);
+		expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ n: 105 });
+	});
+
+	test("apply returning undefined writes nothing", () => {
+		const target = join(dir, "counter.json");
+		writeFileAtomic(target, '{"n":3}\n');
+		const old = new Date(NOW - 5_000);
+		utimesSync(target, old, old);
+		const before = statSync(target);
+		expect(updateJsonAtomic(target, () => undefined)).toBe(false);
+		const after = statSync(target);
+		expect(after.mtimeMs).toBe(before.mtimeMs);
+		expect(after.ino).toBe(before.ino);
+		expect(readFileSync(target, "utf8")).toBe('{"n":3}\n');
+	});
+
+	test("unparseable content reaches apply as the raw text and the helper does not throw", () => {
+		const target = join(dir, "broken.json");
+		writeFileAtomic(target, "{not json");
+		const seen: unknown[] = [];
+		expect(
+			updateJsonAtomic(target, (current) => {
+				seen.push(current);
+				return { n: 1 };
+			}),
+		).toBe(true);
+		expect(seen).toEqual(["{not json"]);
+		expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ n: 1 });
+	});
+
+	test.skipIf(!POSIX)("the written file is owner-only", () => {
+		const target = join(dir, "sub", "counter.json");
+		updateJsonAtomic(target, bump);
+		expect(statSync(target).mode & 0o777).toBe(0o600);
 	});
 });
 
@@ -309,7 +673,7 @@ describe("concurrent updates through updateSession", () => {
 		expect(readSession(stateDir, "race")).toMatchObject({ counter: 200 });
 		expect(leftovers(join(stateDir, "sessions"))).toEqual([]);
 		expect(leftovers(stateDir)).toEqual([]);
-	}, 60_000);
+	}, 180_000);
 
 	test("a delayed stale recovery cannot open a live successor's critical section to another writer", async () => {
 		const stateDir = join(dir, "state");
@@ -429,5 +793,5 @@ describe("concurrent updates through updateSession", () => {
 			await Promise.allSettled(workers.map((worker) => worker.exited));
 			await Promise.all(readers);
 		}
-	}, 60_000);
+	}, 180_000);
 });

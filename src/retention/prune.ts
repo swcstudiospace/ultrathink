@@ -20,7 +20,6 @@ import {
 import { basename, join } from "node:path";
 import { removeDeadLockCandidate, withFileLock, withLockMutation } from "../claude/atomic.ts";
 import { lastLockHeld, legacySessionPath, sessionPath } from "../claude/state.ts";
-import { carrierPath } from "../host/carrier.ts";
 
 const DAY_MS = 86_400_000;
 const ORPHAN_AGE_MS = 3_600_000;
@@ -339,7 +338,26 @@ function hasActiveShip(record: Record<string, unknown>): boolean {
 	return Boolean(pr) && phase !== "merged" && phase !== "blocked";
 }
 
-/** Stems of the sessions `last.json` and the plan carrier point at; those are what the next turn reads. */
+/** The plan carriers of a state directory: the single file of earlier builds and one per session, `last-plan.<session>.json`. */
+const CARRIER_FILE = /^last-plan(?:\..+)?\.json$/;
+
+/**
+ * The files whose records name the sessions the next turn reads: `last.json` and every plan carrier. The directory is
+ * scanned here on purpose, not through the carrier module: a carrier written by any session counts, whatever name it
+ * was given. An unreadable directory contributes no carrier.
+ */
+function protectingRecords(stateDir: string): string[] {
+	const paths = [join(stateDir, "last.json")];
+	try {
+		for (const name of readdirSync(stateDir).sort())
+			if (CARRIER_FILE.test(name)) paths.push(join(stateDir, name));
+	} catch {
+		// reason: no readable directory means no carrier to protect; last.json is still read.
+	}
+	return paths;
+}
+
+/** Stems of the sessions `last.json` and the plan carriers point at; those are what the next turn reads. */
 function protectedStems(stateDir: string): Set<string> {
 	const stems = new Set<string>();
 	const addPath = (value: unknown): void => {
@@ -348,7 +366,7 @@ function protectedStems(stateDir: string): Set<string> {
 		const stem = name.replace(/\.(json|xml)$/, "");
 		if (stem !== name && stem) stems.add(stem);
 	};
-	for (const path of [join(stateDir, "last.json"), carrierPath(stateDir)]) {
+	for (const path of protectingRecords(stateDir)) {
 		const record = readRecord(path);
 		if (!record) continue;
 		if (typeof record.sessionId === "string" && record.sessionId) {

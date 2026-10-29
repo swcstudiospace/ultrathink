@@ -1,0 +1,46 @@
+{
+	"id": "stress",
+	"title": "2000 prompts at concurrency 100 with every 4th prompt's fills failing 429 and every 5th prompt's first fill failing 503",
+	"failureMode": "pipeline-load",
+	"seed": 13,
+	"prompts": {
+		"count": 2000,
+		"concurrency": 100
+	},
+	"faults": [
+		{
+			"stage": "fill",
+			"every": 4,
+			"effect": {
+				"kind": "error",
+				"status": 429,
+				"retryAfterSec": 2,
+				"message": "rate limited"
+			},
+			"count": "forever"
+		},
+		{
+			"stage": "fill",
+			"every": 5,
+			"nth": 1,
+			"effect": {
+				"kind": "error",
+				"status": 503,
+				"message": "overloaded"
+			},
+			"count": "forever"
+		}
+	],
+	"invariants": [
+		"terminal",
+		"original",
+		"uplift",
+		"degraded",
+		"cot",
+		"isolation",
+		"resources",
+		"recovery",
+		"persisted",
+		"calls"
+	]
+}

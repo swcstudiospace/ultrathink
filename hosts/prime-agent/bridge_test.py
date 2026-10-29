@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -47,6 +49,24 @@ def base_env(home: str) -> dict[str, str]:
 
 def is_ambient(name: str) -> bool:
 	return name.startswith(AMBIENT_PREFIXES) or name in AMBIENT_NAMES
+
+
+def _gone(pid: int, wait: float = 3.0) -> bool:
+	"""Whether pid is gone (a zombie counts as gone), polling up to `wait` seconds."""
+	give_up = time.monotonic() + wait
+	while True:
+		try:
+			os.kill(pid, 0)
+			state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+			if state == "Z":
+				return True
+		except (ProcessLookupError, FileNotFoundError):
+			return True
+		except (PermissionError, OSError, IndexError):
+			pass  # reason: not probeable here; treat as alive until the deadline
+		if time.monotonic() >= give_up:
+			return False
+		time.sleep(0.05)
 
 
 class Bridge(unittest.TestCase):
@@ -142,6 +162,50 @@ class Bridge(unittest.TestCase):
 		missing = bridge.plan("x", env={**self.env, "ULTRATHINK_PLUGIN_ROOT": self.tmp.name})
 		self.assertEqual(missing["skipped"], "engine-missing")
 
+	def test_timeout_lets_the_engine_stop_the_model_groups_it_started_before_any_force_kill(self) -> None:
+		# The engine starts each model CLI in a session of its own, which a signal to the engine's group never
+		# reaches; only the engine's SIGTERM reaper stops it, and SIGKILL would skip that cleanup.
+		pid_file = Path(self.tmp.name) / "model.pid"
+		engine = Path(self.tmp.name) / "reaping-bun"
+		engine.write_text(
+			"#!/usr/bin/env python3\nimport os, pathlib, signal, subprocess, sys, time\n"
+			"child = []\n"
+			"def stop(signum, frame):\n"
+			"\tfor proc in child:\n"
+			"\t\tos.killpg(proc.pid, signal.SIGKILL)\n"
+			"\tos._exit(143)\n"
+			"signal.signal(signal.SIGTERM, stop)\n"
+			"sys.stdin.read()\n"
+			"child.append(subprocess.Popen(['sleep', '60'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))\n"
+			f"pathlib.Path({str(pid_file)!r}).write_text(str(child[0].pid))\n"
+			"time.sleep(60)\n"
+		)
+		engine.chmod(engine.stat().st_mode | stat.S_IEXEC)
+		slow = bridge.plan("anything", env={**self.env, "BUN": str(engine)}, timeout=4.0)
+		self.assertEqual(slow["skipped"], "timeout")
+		model = int(pid_file.read_text())
+		try:
+			self.assertTrue(_gone(model), "the model process survived the planning timeout")
+		finally:
+			if not _gone(model, wait=0):
+				os.kill(model, signal.SIGKILL)
+
+	def test_timeout_still_force_kills_an_engine_that_ignores_sigterm(self) -> None:
+		pid_file = Path(self.tmp.name) / "engine.pid"
+		engine = Path(self.tmp.name) / "stubborn-bun"
+		engine.write_text(
+			"#!/usr/bin/env python3\nimport os, pathlib, signal, sys, time\n"
+			"signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+			f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+			"sys.stdin.read()\n"
+			"time.sleep(60)\n"
+		)
+		engine.chmod(engine.stat().st_mode | stat.S_IEXEC)
+		with mock.patch.object(bridge, "TERM_GRACE_S", 0.5):
+			slow = bridge.plan("anything", env={**self.env, "BUN": str(engine)}, timeout=2.0)
+		self.assertEqual(slow["skipped"], "timeout")
+		self.assertTrue(_gone(int(pid_file.read_text())))
+
 	def test_child_marker_never_reaches_the_engine_and_host_is_fixed(self) -> None:
 		env = bridge._env({"ULTRATHINK_CHILD": "1", "ULTRATHINK_HOST": "hermes"})
 		self.assertNotIn("ULTRATHINK_CHILD", env)
@@ -151,13 +215,70 @@ class Bridge(unittest.TestCase):
 		# A fresh directory under the test's own temporary directory, so the carrier is read from where this test wrote it.
 		state = Path(self.tmp.name) / "state"
 		state.mkdir(parents=True, exist_ok=True)
-		env = {**self.env, "ULTRATHINK_STATE_DIR": str(state)}
+		# No session at all: the legacy single file of an earlier build is the only carrier there can be.
+		env = {k: v for k, v in {**self.env, "ULTRATHINK_STATE_DIR": str(state)}.items() if k != "RLM_SESSION_DIR"}
 		self.assertEqual(bridge.state_dir(env), state)
 		(state / "last-plan.json").write_text(json.dumps({"host": "prime-agent", "specPath": str(self.spec)}))
 		self.assertEqual(bridge.last(env)["host"], "prime-agent")
 		self.assertIn("<ORIGINAL>", bridge.spec(env))
 		(state / "last-plan.json").write_text("{")
 		self.assertIsNone(bridge.last(env))
+
+	def _carrier(self, state: Path, name: str, **fields: object) -> None:
+		state.mkdir(parents=True, exist_ok=True)
+		(state / name).write_text(json.dumps({"host": "prime-agent", "specPath": str(self.spec), **fields}))
+
+	def test_last_with_a_session_reads_that_sessions_carrier_only(self) -> None:
+		state = Path(self.tmp.name) / "scoped"
+		env = {**self.env, "ULTRATHINK_STATE_DIR": str(state)}
+		self._carrier(state, "last-plan.A.json", sessionId="A", context="plan A")
+		self._carrier(state, "last-plan.B.json", sessionId="B", context="plan B")
+		self.assertEqual(bridge.last(env, session_id="A")["context"], "plan A")
+		self.assertEqual(bridge.last(env, session_id="B")["context"], "plan B")
+		self.assertIsNone(bridge.last(env, session_id="C"))
+		self.assertIn("<ORIGINAL>", bridge.spec(env, session_id="A"))
+		self.assertIsNone(bridge.spec(env, session_id="C"))
+
+	def test_last_rejects_a_carrier_that_names_another_session(self) -> None:
+		state = Path(self.tmp.name) / "mismatch"
+		env = {**self.env, "ULTRATHINK_STATE_DIR": str(state)}
+		self._carrier(state, "last-plan.A.json", sessionId="B", context="plan B")
+		self.assertIsNone(bridge.last(env, session_id="A"))
+		# Ids that sanitize to one file name never read each other's carrier.
+		self._carrier(state, "last-plan.a_b.json", sessionId="a.b", context="dotted")
+		self.assertEqual(bridge.last(env, session_id="a.b")["context"], "dotted")
+		self.assertIsNone(bridge.last(env, session_id="a:b"))
+
+	def test_carrier_file_names_follow_the_typescript_sanitizer(self) -> None:
+		self.assertEqual(bridge.carrier_name("Abc_9-z"), "last-plan.Abc_9-z.json")
+		self.assertEqual(bridge.carrier_name("a/../b c"), "last-plan.a____b_c.json")
+		self.assertEqual(bridge.carrier_name("é"), "last-plan._.json")
+		# JavaScript counts UTF-16 units: one astral character is two underscores there.
+		self.assertEqual(bridge.carrier_name("\U0001f600x"), "last-plan.__x.json")
+		self.assertEqual(bridge.carrier_name("a" * 80), "last-plan." + "a" * 64 + ".json")
+
+	def test_last_without_a_session_never_reads_across_sessions(self) -> None:
+		state = Path(self.tmp.name) / "ambiguous"
+		env = {k: v for k, v in {**self.env, "ULTRATHINK_STATE_DIR": str(state)}.items() if k != "RLM_SESSION_DIR"}
+		self._carrier(state, "last-plan.json", sessionId="old", context="legacy")
+		self.assertEqual(bridge.last(env)["context"], "legacy")
+		self._carrier(state, "last-plan.A.json", sessionId="A", context="plan A")
+		self.assertIsNone(bridge.last(env))
+		# The kernel's own session is the default when the caller names none.
+		self.assertEqual(bridge.last({**env, "ULTRATHINK_SESSION_ID": "A"})["context"], "plan A")
+		self.assertIsNone(bridge.last({**env, "ULTRATHINK_SESSION_ID": "B"}))
+
+	def test_a_known_session_never_reads_a_legacy_carrier_of_another_session(self) -> None:
+		state = Path(self.tmp.name) / "legacy-session"
+		env = {**self.env, "ULTRATHINK_STATE_DIR": str(state)}
+		self._carrier(state, "last-plan.json", sessionId="old", context="legacy of old")
+		# The kernel's own session has no carrier file; the single file of an earlier build names another session.
+		self.assertIsNone(bridge.last({**env, "ULTRATHINK_SESSION_ID": "A"}))
+		self.assertIsNone(bridge.last(env, session_id="A"))
+		self.assertIsNone(bridge.spec({**env, "ULTRATHINK_SESSION_ID": "A"}))
+		# A legacy file that names the session is that session's plan.
+		self._carrier(state, "last-plan.json", sessionId="A", context="legacy of A")
+		self.assertEqual(bridge.last({**env, "ULTRATHINK_SESSION_ID": "A"})["context"], "legacy of A")
 
 	def test_ctl_and_teach_report_a_missing_clone(self) -> None:
 		env = {**self.env, "ULTRATHINK_PLUGIN_ROOT": self.tmp.name}

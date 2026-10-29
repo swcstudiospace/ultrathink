@@ -1,0 +1,23 @@
+{
+	"id": "nominal",
+	"title": "500 varied prompts at concurrency 25 with no faults",
+	"failureMode": "pipeline-load",
+	"seed": 12,
+	"prompts": {
+		"count": 500,
+		"concurrency": 25
+	},
+	"faults": [],
+	"invariants": [
+		"terminal",
+		"original",
+		"uplift",
+		"degraded",
+		"cot",
+		"isolation",
+		"resources",
+		"recovery",
+		"persisted",
+		"calls"
+	]
+}

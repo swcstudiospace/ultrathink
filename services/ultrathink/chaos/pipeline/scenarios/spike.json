@@ -1,0 +1,47 @@
+{
+	"id": "spike",
+	"title": "A 10x burst of 1000 prompts at concurrency 100 with slow then rate-limited uplifts and garbage graphs, then one probe prompt",
+	"failureMode": "pipeline-load",
+	"seed": 14,
+	"prompts": {
+		"count": 1000,
+		"concurrency": 100
+	},
+	"faults": [
+		{
+			"stage": "uplift",
+			"every": 3,
+			"effect": {
+				"kind": "delay",
+				"ms": 1500,
+				"after": {
+					"kind": "error",
+					"status": 429,
+					"retryAfterSec": 1
+				}
+			},
+			"count": "forever"
+		},
+		{
+			"stage": "graph",
+			"every": 7,
+			"effect": {
+				"kind": "garbage",
+				"text": "not json at all"
+			},
+			"count": "forever"
+		}
+	],
+	"invariants": [
+		"terminal",
+		"original",
+		"uplift",
+		"degraded",
+		"cot",
+		"isolation",
+		"resources",
+		"recovery",
+		"persisted",
+		"calls"
+	]
+}

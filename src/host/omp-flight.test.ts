@@ -141,7 +141,12 @@ describe("flight lifecycle (D-12)", () => {
 		const live = fakeModel("acme", "sol-1");
 		const { runtime } = fakeRuntime([live]);
 		const never = Promise.withResolvers<AssistantMessage>();
-		const rec = recorder(() => never.promise);
+		const called = Promise.withResolvers<void>();
+		const rec = recorder(() => {
+			called.resolve();
+			return never.promise;
+		});
+		const manual = manualTimers();
 		const stopped = Promise.withResolvers<void>();
 		let request: OmpPlanRequest | undefined;
 		let signal: AbortSignal | undefined;
@@ -167,11 +172,16 @@ describe("flight lifecycle (D-12)", () => {
 				return { context: await selected.complete("SYSTEM", "USER", flightSignal) };
 			},
 			1,
-			{ maxRunMs: 20 },
+			{ maxRunMs: 20, timers: manual.timers },
 			{ model: live, ...runtime },
 		);
-		expect(await run()).toEqual(PENDING_RESULT);
+		const racing = run();
+		await manual.fire(1);
+		expect(await racing).toEqual(PENDING_RESULT);
+		await called.promise;
 		expect(rec.calls).toHaveLength(1);
+		// The deadline is fired by hand once the call is in flight: no real clock decides whether the call was made.
+		await manual.fire(20);
 		await stopped.promise;
 		await flush();
 		expect(signal?.aborted).toBe(true);
@@ -180,7 +190,7 @@ describe("flight lifecycle (D-12)", () => {
 		expect(await run()).toBeUndefined();
 		expect(rec.calls).toHaveLength(1);
 		expect(sent).toEqual([aside(NO_PLAN)]);
-	}, 1_000);
+	}, 10_000);
 
 	test("deadline delivery and timeout state ignore synchronous abort progress, late progress and a late plan", async () => {
 		const t = tuiCtx();
@@ -601,7 +611,12 @@ describe("flight lifecycle (D-12)", () => {
 					expect(lookupAbortedAtObservation).toBe(invalid);
 					expect(levelReads).toBe(1);
 					expect(rec.calls).toHaveLength(1);
-					for (const path of ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.json"])
+					for (const path of [
+						"sessions/s1.json",
+						"sessions/s1.xml",
+						"last.json",
+						"last-plan.s1.json",
+					])
 						expect(existsSync(join(stateDir, path))).toBe(!invalid);
 					if (invalid) {
 						expect(response).toMatchObject({ context: "", skipped: "aborted" });
@@ -1302,7 +1317,7 @@ describe("flight lifecycle (D-12)", () => {
 					(entry) => entry.type === "stage" && (entry.stage === "track" || entry.stage === "state"),
 				),
 			).toEqual([]);
-			for (const path of ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.json"])
+			for (const path of ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.s1.json"])
 				expect(existsSync(join(stateDir, path))).toBe(false);
 			expect(h.sent).toEqual([]);
 			h.emit("session_shutdown");
@@ -1573,4 +1588,39 @@ describe("flight lifecycle (D-12)", () => {
 			nativeCalls: 1,
 		});
 	}, 180_000);
+
+	test("the race timer is armed before the planner's synchronous prefix can run (L6-06)", async () => {
+		const manual = manualTimers();
+		let pendingAtPlan = -1;
+		const { run } = setup(
+			() => {
+				pendingAtPlan = manual.pending();
+				return new Promise<string>(() => undefined);
+			},
+			1,
+			{ timers: manual.timers },
+		);
+		const racing = run();
+		expect(pendingAtPlan).toBe(1);
+		await manual.fire(1);
+		expect(await racing).toEqual(PENDING_RESULT);
+	});
+
+	test("a rejected aside reads aside-failed, never delivered, and the plan stays deliverable (L6-09)", async () => {
+		const t = tuiCtx();
+		const gate = Promise.withResolvers<string>();
+		// reason: the harness types its API extras as the thinking-level getter only; a rejecting sendMessage replaces its recorder
+		const rejecting = {
+			sendMessage: () => Promise.reject(new Error("refused")),
+		} as unknown as Parameters<typeof setup>[4];
+		const { run, emit } = setup(() => gate.promise, 1, {}, t.ctx, rejecting);
+		emit("session_start");
+		expect(await run()).toEqual(PENDING_RESULT);
+		gate.resolve("PLAN");
+		await flush();
+		expect(t.line()).toContain("skipped · aside failed");
+		expect(t.line()).not.toContain("delivered");
+		// The same submission's next before_agent_start still delivers the plan, inline.
+		expect(await run()).toMatchObject({ message: { content: "PLAN" } });
+	});
 });

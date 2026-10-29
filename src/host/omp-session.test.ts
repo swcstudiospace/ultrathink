@@ -5,8 +5,6 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isOmpSubagentSessionId } from "./omp-session.ts";
-import { planPrompt } from "./plan.ts";
-import type { ProgressEvent } from "./progress.ts";
 
 let agentDir: string;
 let root: string;
@@ -70,21 +68,5 @@ describe("isOmpSubagentSessionId", () => {
 		expect(isOmpSubagentSessionId("abc-1/..", { root })).toBe(false);
 		expect(isOmpSubagentSessionId("", { root })).toBe(false);
 		expect(isOmpSubagentSessionId("   ", { root })).toBe(false);
-	});
-});
-
-describe("planPrompt omp subagent guard", () => {
-	test("an omp subagent session skips before planning", async () => {
-		writeSession("-proj/2026_parent/Worker.jsonl", "abc-1");
-		const events: ProgressEvent[] = [];
-		const response = await planPrompt(
-			{ host: "omp", session_id: "abc-1", prompt: "build it" },
-			{ PI_CODING_AGENT_DIR: agentDir },
-			{ progress: (e) => events.push(e) },
-		);
-		expect(response).toEqual({ context: "", skipped: "subagent" });
-		expect(events).toEqual([
-			expect.objectContaining({ type: "end", outcome: "skipped", detail: "subagent" }),
-		]);
 	});
 });

@@ -5,6 +5,8 @@ import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultConfig, mergeConfig } from "../config.ts";
+import { RetryExhaustedError, unwrapRetryError, withRetry } from "../resilience/retry.ts";
+import { attachReport } from "../types.ts";
 import {
 	captureFirstError,
 	engineForSessionModel,
@@ -492,5 +494,96 @@ describe("selectEngine first-error capture", () => {
 		await expect(wrapped.complete("s", "u")).rejects.toThrow("failure 1");
 		await expect(wrapped.complete("s", "u")).rejects.toThrow("failure 2");
 		expect(wrapped.error()).toBe("failure 1");
+	});
+
+	test("report() exposes the last failure's attempts through the real retry kernel while error() keeps the first text", async () => {
+		const resolution = await resolutionOf(defaultConfig(), {}, "claude-code");
+		let call = 0;
+		const policy = { maxAttempts: 3, baseMs: 1, capMs: 1 };
+		const completer = async () => {
+			call++;
+			const text = `socket hang up #${call}`;
+			let tries = 0;
+			try {
+				await withRetry(
+					async () => {
+						tries++;
+						throw Object.assign(new Error(`${text}.${tries}`), { status: 503 });
+					},
+					policy,
+					{ sleep: async () => undefined, random: () => 0 },
+				);
+			} catch (wrapper) {
+				const root = unwrapRetryError(wrapper);
+				attachReport(root, { attempts: tries, httpStatus: 503, cause: `${text}.${tries}` });
+				throw root;
+			}
+			return "unreachable";
+		};
+		const wrapped = captureFirstError("stub", completer, resolution);
+		expect(wrapped.report?.()).toBeUndefined();
+		await expect(wrapped.complete("s", "u")).rejects.toThrow("socket hang up #1.3");
+		await expect(wrapped.complete("s", "u")).rejects.toThrow("socket hang up #2.3");
+		expect(wrapped.report?.()).toEqual({
+			attempts: 3,
+			httpStatus: 503,
+			cause: "socket hang up #2.3",
+		});
+		expect(wrapped.error()).toBe("socket hang up #1.3");
+	});
+
+	test("a failure without an attached report gets a one-line redacted fallback with its status", async () => {
+		const resolution = await resolutionOf(defaultConfig(), {}, "claude-code");
+		const leak = "Bearer abcdefghijklmnopqrstuvwxyz0123456789";
+		const wrapped = captureFirstError(
+			"stub",
+			async () => {
+				throw Object.assign(new Error(`upstream said\n${leak} ${"x".repeat(400)}`), {
+					apiErrorStatus: 529,
+				});
+			},
+			resolution,
+		);
+		await expect(wrapped.complete("s", "u")).rejects.toThrow();
+		const report = wrapped.report?.();
+		expect(report?.attempts).toBe(1);
+		expect(report?.httpStatus).toBe(529);
+		expect(report?.cause).not.toContain(leak);
+		expect(report?.cause).not.toContain("\n");
+		expect(report?.cause?.length).toBeLessThanOrEqual(200);
+	});
+
+	test("a raw retry wrapper is unwrapped before the report is read and the original error is rethrown", async () => {
+		const resolution = await resolutionOf(defaultConfig(), {}, "claude-code");
+		const root = new Error("root cause");
+		attachReport(root, { attempts: 2, httpStatus: 502, cause: "root cause" });
+		const wrapper = new RetryExhaustedError(root, 2);
+		const wrapped = captureFirstError(
+			"stub",
+			async () => {
+				throw wrapper;
+			},
+			resolution,
+		);
+		await expect(wrapped.complete("s", "u")).rejects.toBe(wrapper);
+		expect(wrapped.report?.()).toEqual({ attempts: 2, httpStatus: 502, cause: "root cause" });
+	});
+
+	test("a call that succeeds clears the previous call's report", async () => {
+		const resolution = await resolutionOf(defaultConfig(), {}, "claude-code");
+		let fail = true;
+		const wrapped = captureFirstError(
+			"stub",
+			async () => {
+				if (fail) throw new Error("down");
+				return "ok";
+			},
+			resolution,
+		);
+		await expect(wrapped.complete("s", "u")).rejects.toThrow("down");
+		expect(wrapped.report?.()?.attempts).toBe(1);
+		fail = false;
+		expect(await wrapped.complete("s", "u")).toBe("ok");
+		expect(wrapped.report?.()).toBeUndefined();
 	});
 });

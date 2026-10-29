@@ -40,15 +40,27 @@ function askedQuestions(input: AskUserQuestionInput | undefined): AskedQuestion[
 	return asked;
 }
 
+/** Exact id first, then normalised exact question text. Never a substring: a longer, different question must not take another's answer. */
 function findMatch(list: Clarification[], key: string): Clarification | undefined {
+	const trimmed = key.trim();
+	const byId = list.find((item) => item.id === trimmed);
+	if (byId) return byId;
 	const wanted = normalizeQuestion(key);
 	if (!wanted) return undefined;
-	const exact = list.find((item) => normalizeQuestion(item.question) === wanted);
-	if (exact) return exact;
-	return list.find((item) => {
-		const have = normalizeQuestion(item.question);
-		return have.length > 0 && (have.includes(wanted) || wanted.includes(have));
-	});
+	return list.find((item) => normalizeQuestion(item.question) === wanted);
+}
+
+const FREE_FORM_QUESTION = "Free-form response";
+const ID_NUMBER = /^[qk](\d+)$/;
+
+/** Highest numeric part of the `q`/`k` ids in `list`; 0 when none. */
+function maxNumericId(list: Clarification[]): number {
+	let max = 0;
+	for (const item of list) {
+		const match = ID_NUMBER.exec(item.id);
+		if (match) max = Math.max(max, Number(match[1]));
+	}
+	return max;
 }
 
 function newClarification(
@@ -89,6 +101,8 @@ export function applyAnswers(
 	const asked = askedQuestions(input);
 
 	const record = (target: Clarification, answer: string): void => {
+		// A user's (or assumed) answer is a settled decision; only a knowledge-base claim, which is untrusted evidence, may be replaced by the user's own answer.
+		if (target.answer !== undefined && target.source !== "knowledge") return;
 		target.answer = answer;
 		target.answeredAt = now;
 		target.source = "user";
@@ -97,9 +111,23 @@ export function applyAnswers(
 	};
 
 	const append = (from: AskedQuestion | undefined, question: string, answer: string): void => {
-		const item = newClarification(`q${next.length + 1}`, from, question, answer, now);
+		const item = newClarification(`q${maxNumericId(next) + 1}`, from, question, answer, now);
 		next.push(item);
 		matched.push(item);
+	};
+
+	/** One free-form item is reused, newest wins, so repeated replies cannot grow the list. */
+	const freeForm = (answer: string): void => {
+		const existing = next.find(
+			(item) => item.question === FREE_FORM_QUESTION && item.source === "user",
+		);
+		if (!existing) {
+			append(undefined, FREE_FORM_QUESTION, answer);
+			return;
+		}
+		existing.answer = answer;
+		existing.answeredAt = now;
+		if (!matched.includes(existing)) matched.push(existing);
 	};
 
 	const settle = (key: string, answer: string): void => {
@@ -124,7 +152,7 @@ export function applyAnswers(
 				return !target || target.answer === undefined;
 			});
 			if (unanswered.length === 1) settle(unanswered[0]!.question, text);
-			else append(undefined, "Free-form response", text);
+			else freeForm(text);
 		}
 		return { list: next, matched };
 	}
@@ -142,7 +170,7 @@ export function applyAnswers(
 			.map((item) => findMatch(next, item.question))
 			.find((item): item is Clarification => item !== undefined && item.answer === undefined);
 		if (pending) record(pending, freeform);
-		else append(undefined, "Free-form response", freeform);
+		else freeForm(freeform);
 	}
 
 	return { list: next, matched };

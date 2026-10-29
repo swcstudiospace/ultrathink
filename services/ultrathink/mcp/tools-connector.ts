@@ -20,7 +20,14 @@ import {
 } from "../engine/graph-view.ts";
 import type { HeadlessPlanner, ResultView } from "../engine/headless.ts";
 import { isSessionId } from "../engine/journal.ts";
-import { listSessions, newestPlannedSessionId, type SessionSummary } from "../engine/sessions.ts";
+import {
+	listSessions,
+	newestPlannedSessionId,
+	type SessionCaller,
+	type SessionSummary,
+	sessionVisibleTo,
+} from "../engine/sessions.ts";
+import { currentRequestContext } from "../obs/context.ts";
 import { createLogger } from "../obs/log.ts";
 import { GRAPH_APP_URI } from "../ui/graph-app.ts";
 import { isRecord } from "../../../src/shared.ts";
@@ -59,8 +66,21 @@ export const LARGE_RESULT_META: Record<string, unknown> = {
 export const GRAPH_TOOL = "ultrathink_graph";
 export const SESSIONS_TOOL = "ultrathink_sessions";
 export const COMMAND_TOOL = "ultrathink_command";
+export const CANCEL_TOOL = "ultrathink_cancel";
 
-/** The three tools, always listed: a client that never refreshes tools/list must not miss them. */
+/** A tool that changes state, and does so idempotently: cancelling a session twice leaves it cancelled. */
+const CANCEL_ANNOTATIONS = {
+	readOnlyHint: false,
+	destructiveHint: false,
+	idempotentHint: true,
+	openWorldHint: false,
+};
+
+/**
+ * The three slash-command tools are always listed: a client that never refreshes tools/list must not miss them.
+ * `ultrathink_cancel` ends a server plan, so mcp.ts lists it only where the host plans on the server, as it does
+ * `ultrathink_uplift`.
+ */
 export const CONNECTOR_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 	{
 		name: GRAPH_TOOL,
@@ -136,6 +156,21 @@ export const CONNECTOR_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 		annotations: READ_ONLY,
 		_meta: LARGE_RESULT_META,
 	},
+	{
+		name: CANCEL_TOOL,
+		title: "Cancel a running server plan",
+		description:
+			"Stops a plan that ultrathink_uplift started and that is still running, frees its place for the next plan and leaves the session failed with the error aborted. Call it with the sessionId when the user abandons a plan or asks to stop it. A session that is unknown, already finished or not yours answers not_found. Only server planning has plans to cancel.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				sessionId: { type: "string", description: "Session id returned by ultrathink_uplift." },
+			},
+			required: ["sessionId"],
+			additionalProperties: false,
+		},
+		annotations: CANCEL_ANNOTATIONS,
+	},
 ];
 
 /** What ultrathink_sessions reports about planning. Ceilings and usage exist only when the host plans on the server. */
@@ -157,6 +192,11 @@ export interface ConnectorDeps {
 	planningInfo?: () => PlanningInfo;
 	/** Called with every finished server plan the graph tool reads, so the host can count it once. */
 	onFinished?: (view: ResultView) => void;
+	/**
+	 * Who is calling, for scoping the session lookups. Defaults to the admission of the request being served (an owner sees
+	 * every session; a principal only its own); a host with no request context, such as stdio, scopes nothing.
+	 */
+	caller?: () => SessionCaller | undefined;
 }
 
 export interface ConnectorHandlers {
@@ -331,8 +371,17 @@ function thinkArguments(text: string | undefined): { sessionId?: string; node?: 
 	return node === "" ? { sessionId: first } : { sessionId: first, node };
 }
 
+/** The caller of the request being served, from the admission the router put on its context. */
+function requestCaller(): SessionCaller | undefined {
+	const admission = currentRequestContext()?.admission;
+	return admission === undefined
+		? undefined
+		: { principal: admission.principal, owner: admission.class === "owner" };
+}
+
 export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers {
 	const { stateDir, planner, catalog } = deps;
+	const caller = deps.caller ?? requestCaller;
 
 	function planning(): PlanningInfo {
 		const fallback: PlanningInfo = { serverPlanning: planner?.enabled === true };
@@ -357,10 +406,13 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 		if (!given.ok) return { ok: false, code: "invalid_session_id" };
 		let sessionId = given.value;
 		if (sessionId === undefined) {
-			sessionId = newestPlannedSessionId(stateDir, connectorLogger);
+			sessionId = newestPlannedSessionId(stateDir, connectorLogger, caller());
 			if (sessionId === undefined) return textOutcome({ status: "none" }, NO_PLANNED_SESSION);
 		} else if (!isSessionId(sessionId)) {
 			return { ok: false, code: "invalid_session_id" };
+		} else if (!sessionVisibleTo(stateDir, sessionId, caller())) {
+			// Another principal's session reads exactly like one that does not exist: nothing of it is looked up.
+			return { ok: false, code: "not_found" };
 		}
 
 		// The plan text of the view is not used here; brief keeps the render cheap.
@@ -400,9 +452,11 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 		) {
 			return invalid("limit must be a number; it is clamped to 1..20");
 		}
+		const who = caller();
 		const list = listSessions(stateDir, {
 			...(typeof limit === "number" ? { limit } : {}),
 			logger: connectorLogger,
+			...(who === undefined ? {} : { caller: who }),
 		});
 		const info = planning();
 		return textOutcome({ sessions: list, planning: info }, sessionsText(list, info));

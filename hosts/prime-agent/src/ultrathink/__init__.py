@@ -53,6 +53,27 @@ DEFAULT_TIMEOUT_S = 600.0
 CONTROL_TIMEOUT_S = 30.0
 TEACH_TIMEOUT_S = 120.0
 SPEC_MAX_CHARS = 200_000
+# After SIGTERM the engine gets this long to stop the model CLIs it started before its group is force-killed.
+TERM_GRACE_S = 3.0
+
+
+def _stop_engine(proc: "subprocess.Popen[str]") -> None:
+	"""End a timed-out engine. SIGTERM goes to its process group first: the engine's child reaper then kills the
+	model CLIs it started, each in a session of its own that a signal to the engine's group does not reach (and
+	SIGKILL would skip that cleanup). After TERM_GRACE_S the group is force-killed, which also sweeps anything of
+	the engine's own group that outlived it."""
+	try:
+		os.killpg(proc.pid, signal.SIGTERM)
+	except (ProcessLookupError, PermissionError):
+		pass
+	try:
+		proc.wait(timeout=TERM_GRACE_S)
+	except subprocess.TimeoutExpired:
+		pass
+	try:
+		os.killpg(proc.pid, signal.SIGKILL)
+	except (ProcessLookupError, PermissionError):
+		pass
 
 
 def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -82,7 +103,7 @@ def _is_planning_path(path: str) -> bool:
 
 
 def state_dir(env: dict[str, str] | None = None) -> Path:
-	"""Where the engine keeps control, sessions, specs and ``last-plan.json`` for Prime Agent, located the way
+	"""Where the engine keeps control, sessions, specs and ``last-plan.<session>.json`` for Prime Agent, located the way
 	``src/host/paths.ts`` does: ``ULTRATHINK_STATE_DIR`` unless it points into a ``.planning`` tree, else
 	``${PRIME_AGENT_CODING_AGENT_DIR:-~/.prime/agent}/ultrathink``."""
 	merged = _env(env)
@@ -194,10 +215,7 @@ def plan(
 	try:
 		stdout, stderr = proc.communicate(input=json.dumps(request), timeout=timeout)
 	except subprocess.TimeoutExpired:
-		try:
-			os.killpg(proc.pid, signal.SIGKILL)
-		except (ProcessLookupError, PermissionError):
-			pass
+		_stop_engine(proc)
 		proc.communicate()
 		return _skip("timeout", error=f"no plan after {timeout:g}s", elapsed_s=round(time.monotonic() - started, 1))
 	elapsed = round(time.monotonic() - started, 1)
@@ -330,9 +348,16 @@ def status(env: dict[str, str] | None = None) -> dict[str, Any]:
 	}
 
 
-def last(env: dict[str, str] | None = None) -> dict[str, Any] | None:
-	"""The carrier of the last planned prompt (``last-plan.json``: session, spec path, graph id, context), or None."""
-	path = state_dir(env) / "last-plan.json"
+def carrier_name(session: str) -> str:
+	"""The carrier file name of a session, spelled as ``src/host/carrier.ts`` does: every character outside
+	``[A-Za-z0-9_-]`` becomes ``_`` (one per UTF-16 unit, as JavaScript counts), at most 64 of them."""
+	safe = "".join(
+		ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "_" * (2 if ord(ch) > 0xFFFF else 1) for ch in session
+	)[:64]
+	return f"last-plan.{safe or '_'}.json"
+
+
+def _read_carrier(path: Path) -> dict[str, Any] | None:
 	try:
 		parsed = json.loads(path.read_text(encoding="utf-8"))
 	except (OSError, json.JSONDecodeError):
@@ -340,9 +365,35 @@ def last(env: dict[str, str] | None = None) -> dict[str, Any] | None:
 	return parsed if isinstance(parsed, dict) else None
 
 
-def spec(env: dict[str, str] | None = None) -> str | None:
-	"""The XML spec of the last planned prompt, or None."""
-	carrier = last(env)
+def last(env: dict[str, str] | None = None, session_id: str | None = None) -> dict[str, Any] | None:
+	"""The carrier of a session's last planned prompt (``last-plan.<session>.json``: session, spec path, graph id,
+	context), or None. A named ``session_id`` reads that session's file only, and a file that names another session is
+	never returned. Without one, this kernel's session is read first; failing that, the single-file carrier of an
+	earlier build is returned only while no session has a carrier of its own, and, for a known session, only when it names
+	that session, so one state directory shared by several sessions never hands out another session's plan."""
+	directory = state_dir(env)
+	session = session_id or _kernel_session(env)
+	if session:
+		carrier = _read_carrier(directory / carrier_name(session))
+		if carrier is not None and carrier.get("sessionId") == session:
+			return carrier
+		if session_id:
+			return None
+	try:
+		if any(directory.glob("last-plan.*.json")):
+			return None
+	except OSError:
+		return None
+	legacy = _read_carrier(directory / "last-plan.json")
+	# With a known session the earlier build's single file is that session's plan only when it says so.
+	if session and legacy is not None and legacy.get("sessionId") != session:
+		return None
+	return legacy
+
+
+def spec(env: dict[str, str] | None = None, session_id: str | None = None) -> str | None:
+	"""The XML spec of this session's last planned prompt, or None."""
+	carrier = last(env, session_id)
 	return _read_text(carrier.get("specPath")) if carrier else None
 
 

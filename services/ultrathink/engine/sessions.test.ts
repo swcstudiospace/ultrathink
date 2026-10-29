@@ -2,7 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeSession } from "../../../src/claude/state.ts";
@@ -11,7 +19,12 @@ import { type JournalMeta, journalDir, writeMeta } from "../../../src/host/grokb
 import { FALLBACK_GRAPH } from "../../../src/think/types.ts";
 import type { ThoughtGraph } from "../../../src/think/types.ts";
 import { redactText } from "../../../src/teach/redact.ts";
-import { GOAL_MAX_CHARS, listSessions, newestPlannedSessionId } from "./sessions.ts";
+import {
+	GOAL_MAX_CHARS,
+	listSessions,
+	newestPlannedSessionId,
+	sessionVisibleTo,
+} from "./sessions.ts";
 
 const dirs: string[] = [];
 const tmp = (): string => {
@@ -568,5 +581,136 @@ describe("sessions boundary failures", () => {
 		};
 		expect(listSessions(join(tmp(), "absent"), { logger })).toEqual([]);
 		expect(lines).toEqual([]);
+	});
+});
+
+describe("caller scoping", () => {
+	const alice = { principal: "key:alice", owner: false };
+	const bob = { principal: "key:bob", owner: false };
+	const owner = { principal: "owner", owner: true };
+
+	/** A job file as the planner writes it for an admitted start: it names its principal. */
+	function writeJobFor(
+		stateDir: string,
+		sessionId: string,
+		principal: string | undefined,
+		updatedAt: number,
+	): void {
+		writeJob(stateDir, sessionId, "planned", updatedAt);
+		if (principal === undefined) return;
+		const path = join(stateDir, "jobs", `${sessionId}.json`);
+		const body = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		writeFileSync(path, `${JSON.stringify({ ...body, principal })}\n`);
+		touch(path, updatedAt);
+	}
+
+	test("the newest planned session of a caller is one of its own, never another principal's", () => {
+		const state = tmp();
+		const [mine, theirs] = [randomUUID(), randomUUID()];
+		writeJobFor(state, mine, alice.principal, NOW - 2000);
+		writeJobFor(state, theirs, bob.principal, NOW - 1000);
+		expect(newestPlannedSessionId(state, undefined, alice)).toBe(mine);
+		expect(newestPlannedSessionId(state, undefined, bob)).toBe(theirs);
+		expect(newestPlannedSessionId(state, undefined, owner)).toBe(theirs);
+		// No caller is the stdio and legacy path: nothing is scoped.
+		expect(newestPlannedSessionId(state)).toBe(theirs);
+	});
+
+	test("a principal with no session of its own resolves nothing instead of someone else's plan", () => {
+		const state = tmp();
+		writeJobFor(state, randomUUID(), bob.principal, NOW);
+		expect(newestPlannedSessionId(state, undefined, alice)).toBeUndefined();
+	});
+
+	test("the listing holds only the caller's sessions; an owner and a caller-less listing see all", () => {
+		const state = tmp();
+		const [mine, theirs] = [randomUUID(), randomUUID()];
+		writeJobFor(state, mine, alice.principal, NOW - 2000);
+		writeJobFor(state, theirs, bob.principal, NOW - 1000);
+		expect(listSessions(state, { caller: alice }).map((s) => s.sessionId)).toEqual([mine]);
+		expect(listSessions(state, { caller: bob }).map((s) => s.sessionId)).toEqual([theirs]);
+		expect(listSessions(state, { caller: owner }).map((s) => s.sessionId)).toEqual([theirs, mine]);
+		expect(listSessions(state).map((s) => s.sessionId)).toEqual([theirs, mine]);
+	});
+
+	/** A client journal whose meta names `principal`, or none. */
+	function writeClientFor(
+		stateDir: string,
+		sessionId: string,
+		principal: string | undefined,
+		updatedAt: number,
+	): void {
+		writeClient(stateDir, sessionId, "planned", updatedAt);
+		if (principal === undefined) return;
+		const path = join(stateDir, "journal", sessionId, "meta.json");
+		const body = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		writeFileSync(path, `${JSON.stringify({ ...body, principal })}\n`);
+		touch(path, updatedAt);
+	}
+
+	test("a legacy job file with no principal is visible to an owner and to a caller-less (stdio) listing, not to a principal", () => {
+		const state = tmp();
+		const legacy = randomUUID();
+		writeJobFor(state, legacy, undefined, NOW - 1000);
+		expect(listSessions(state, { caller: alice })).toEqual([]);
+		expect(newestPlannedSessionId(state, undefined, alice)).toBeUndefined();
+		expect(listSessions(state, { caller: owner }).map((s) => s.sessionId)).toEqual([legacy]);
+		expect(newestPlannedSessionId(state, undefined, owner)).toBe(legacy);
+		expect(listSessions(state).map((s) => s.sessionId)).toEqual([legacy]);
+		expect(newestPlannedSessionId(state)).toBe(legacy);
+		expect(sessionVisibleTo(state, legacy, alice)).toBe(false);
+		expect(sessionVisibleTo(state, legacy, owner)).toBe(true);
+		expect(sessionVisibleTo(state, legacy, undefined)).toBe(true);
+	});
+
+	test("a client journal that names a principal is that principal's; one that names none is visible to an owner and to stdio only", () => {
+		const state = tmp();
+		const [mine, theirs, unnamed] = [randomUUID(), randomUUID(), randomUUID()];
+		writeClientFor(state, mine, alice.principal, NOW - 1000);
+		writeClientFor(state, theirs, bob.principal, NOW - 2000);
+		writeClientFor(state, unnamed, undefined, NOW - 3000);
+		expect(listSessions(state, { caller: alice }).map((s) => s.sessionId)).toEqual([mine]);
+		expect(newestPlannedSessionId(state, undefined, bob)).toBe(theirs);
+		expect(listSessions(state, { caller: owner }).map((s) => s.sessionId)).toEqual([
+			mine,
+			theirs,
+			unnamed,
+		]);
+		expect(listSessions(state).map((s) => s.sessionId)).toEqual([mine, theirs, unnamed]);
+		expect(sessionVisibleTo(state, mine, alice)).toBe(true);
+		expect(sessionVisibleTo(state, mine, bob)).toBe(false);
+		expect(sessionVisibleTo(state, theirs, alice)).toBe(false);
+		expect(sessionVisibleTo(state, unnamed, alice)).toBe(false);
+		expect(sessionVisibleTo(state, unnamed, owner)).toBe(true);
+		expect(sessionVisibleTo(state, unnamed, undefined)).toBe(true);
+	});
+
+	test("an explicit session id is visible to its principal and to an owner only", () => {
+		const state = tmp();
+		const mine = randomUUID();
+		writeJobFor(state, mine, alice.principal, NOW);
+		expect(sessionVisibleTo(state, mine, alice)).toBe(true);
+		expect(sessionVisibleTo(state, mine, bob)).toBe(false);
+		expect(sessionVisibleTo(state, mine, owner)).toBe(true);
+		expect(sessionVisibleTo(state, mine, undefined)).toBe(true);
+		// A session with neither a job file nor a journal has nothing to leak: the views report it not found.
+		expect(sessionVisibleTo(state, randomUUID(), bob)).toBe(true);
+	});
+
+	test("newer sessions of other principals never push a caller's own sessions out of its listing", () => {
+		const state = tmp();
+		const mine = randomUUID();
+		writeJobFor(state, mine, alice.principal, NOW - 100_000);
+		for (let i = 0; i < 30; i++) writeJobFor(state, randomUUID(), bob.principal, NOW - i);
+		expect(listSessions(state, { caller: alice }).map((s) => s.sessionId)).toEqual([mine]);
+		expect(listSessions(state, { caller: owner })).toHaveLength(5);
+	});
+
+	test("the caller's newest planned session is found behind more than 200 newer sessions of others", () => {
+		const state = tmp();
+		const mine = randomUUID();
+		writeJobFor(state, mine, alice.principal, NOW - 100_000);
+		for (let i = 0; i < 250; i++) writeJobFor(state, randomUUID(), bob.principal, NOW - i);
+		expect(newestPlannedSessionId(state, undefined, alice)).toBe(mine);
 	});
 });

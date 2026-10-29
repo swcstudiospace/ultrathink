@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import { FIELD_CAPS } from "../resilience/limits.ts";
+import { splitRationaleSteps } from "../track/plan.ts";
 import {
 	dependencyLevels,
 	extractJsonObject,
@@ -155,8 +157,9 @@ describe("normalizeGraph", () => {
 		expect(out.nodes[0]?.title).toBe("A");
 		expect(out.nodes[1]?.dependsOn).toEqual(["n1"]);
 		expect(out.nodes[2]?.dependsOn).toEqual(["n2", "n1"]);
-		expect(out.nodes[3]?.dependsOn).toEqual(["n3", "keep_this-1"]);
-		expect(out.nodes[4]?.dependsOn).toEqual([]);
+		expect(out.nodes[3]?.dependsOn).toEqual(["n3"]);
+		// keep_this-1 is written last and depends on nothing, so it synthesizes the only leaf, n4.
+		expect(out.nodes[4]?.dependsOn).toEqual(["n4"]);
 		for (const node of out.nodes) expect(Object.hasOwn(Object.prototype, node.id)).toBe(false);
 	});
 
@@ -242,30 +245,322 @@ describe("graphToXml", () => {
 	});
 });
 
+const FIVE_STEPS = "1. read\n2. plan\n3. build\n4. test\n5. ship";
+const FIVE_STEP_LIST = ["read", "plan", "build", "test", "ship"];
+const REJECTED = { ok: false, thinking: "", conclusion: "", steps: [] };
+
 describe("parseNodeFill", () => {
-	test("reads rationale and conclusion", () => {
+	test("accepts a closed rationale of 5 steps plus a closed conclusion", () => {
 		expect(
-			parseNodeFill("<node><rationale>step 1</rationale><conclusion>do x</conclusion></node>"),
-		).toEqual({
-			thinking: "step 1",
-			conclusion: "do x",
-		});
+			parseNodeFill(
+				`<node><rationale>${FIVE_STEPS}</rationale><conclusion>do x</conclusion></node>`,
+			),
+		).toEqual({ ok: true, thinking: FIVE_STEPS, conclusion: "do x", steps: FIVE_STEP_LIST });
 	});
 
-	test("still reads the older <thinking> tag for back-compat", () => {
+	test("still reads the older <thinking> tag and the <answer> tag", () => {
 		expect(
-			parseNodeFill("<node><thinking>step 1</thinking><conclusion>do x</conclusion></node>"),
-		).toEqual({
-			thinking: "step 1",
-			conclusion: "do x",
-		});
+			parseNodeFill(`<node><thinking>${FIVE_STEPS}</thinking><answer>do x</answer></node>`),
+		).toEqual({ ok: true, thinking: FIVE_STEPS, conclusion: "do x", steps: FIVE_STEP_LIST });
 	});
 
-	test("falls back to whole text", () => {
-		expect(parseNodeFill("plain answer")).toEqual({
-			thinking: "plain answer",
-			conclusion: "plain answer",
+	test("accepts 8 steps and rejects 4 and 9", () => {
+		const list = (count: number): string =>
+			Array.from({ length: count }, (_, i) => `${i + 1}. s${i + 1}`).join("\n");
+		const fill = (count: number): string =>
+			`<node><rationale>${list(count)}</rationale><conclusion>c</conclusion></node>`;
+		expect(parseNodeFill(fill(8)).ok).toBe(true);
+		expect(parseNodeFill(fill(8)).steps).toHaveLength(8);
+		expect(parseNodeFill(fill(4))).toEqual(REJECTED);
+		expect(parseNodeFill(fill(9))).toEqual(REJECTED);
+	});
+
+	test("a refusal, error JSON, truncated markup and free text are all rejected", () => {
+		expect(parseNodeFill("I'm sorry, I can't help with that request.")).toEqual(REJECTED);
+		expect(parseNodeFill('{"error":{"type":"overloaded_error","message":"Overloaded"}}')).toEqual(
+			REJECTED,
+		);
+		expect(parseNodeFill("<node><rationale>1. a\n2. b\n3. c\n4. d\n5. e")).toEqual(REJECTED);
+		expect(parseNodeFill(`<node><rationale>${FIVE_STEPS}</rationale><conclusion>cut off`)).toEqual(
+			REJECTED,
+		);
+		expect(parseNodeFill(`<node><rationale>${FIVE_STEPS}</rationale></node>`)).toEqual(REJECTED);
+		expect(parseNodeFill(`<node><conclusion>c</conclusion></node>`)).toEqual(REJECTED);
+		expect(parseNodeFill(`${FIVE_STEPS}\nso do it`)).toEqual(REJECTED);
+		expect(parseNodeFill("plain answer")).toEqual(REJECTED);
+		expect(parseNodeFill("")).toEqual(REJECTED);
+	});
+
+	test("a realistic 4,500-character synthesize conclusion ending in Verify: passes the node cap untouched (F-1)", () => {
+		let body = "Plan.\nWORKFLOW";
+		for (let i = 0; body.length < 4400; i++)
+			body += `\nWave ${(i % 3) + 1}: task-${i} — files: src/t${i}.ts — done when: tests pass`;
+		const conclusion = `${body}\nVerify: bun test`;
+		const fill = parseNodeFill(
+			`<node><rationale>${FIVE_STEPS}</rationale><conclusion>${conclusion}</conclusion></node>`,
+		);
+		expect(fill.ok).toBe(true);
+		expect(fill.conclusion).toBe(conclusion);
+		expect(fill.conclusion.endsWith("Verify: bun test")).toBe(true);
+		const open = `${"Finding.\n".repeat(600)}Open questions:\n- JSON lines or array?`;
+		const critique = parseNodeFill(
+			`<node><rationale>${FIVE_STEPS}</rationale><conclusion>${open}</conclusion></node>`,
+		);
+		expect(critique.conclusion).toBe(open);
+	});
+
+	test("caps thinking, conclusion and each step at parse", () => {
+		const long = Array.from({ length: 5 }, (_, i) => `${i + 1}. ${"x".repeat(2500)}`).join("\n");
+		const fill = parseNodeFill(
+			`<node><rationale>${long}</rationale><conclusion>${"y".repeat(FIELD_CAPS.conclusion + 1000)}</conclusion></node>`,
+		);
+		expect(fill.ok).toBe(true);
+		expect(fill.thinking.length).toBeLessThanOrEqual(FIELD_CAPS.thinking);
+		expect(fill.conclusion.length).toBe(FIELD_CAPS.conclusion);
+		expect(fill.conclusion.length).toBeLessThanOrEqual(FIELD_CAPS.conclusion);
+		expect(fill.steps).toHaveLength(5);
+		for (const step of fill.steps) expect(step.length).toBeLessThanOrEqual(FIELD_CAPS.step);
+	});
+
+	test.each([5, 6, 8])(
+		"%i steps of 2,500 characters keep every step in the stored rationale (greptile r1 #4)",
+		(count) => {
+			const long = Array.from(
+				{ length: count },
+				(_, i) => `${i + 1}. ${String.fromCharCode(97 + i).repeat(2500)}`,
+			).join("\n");
+			const fill = parseNodeFill(
+				`<node><rationale>${long}</rationale><conclusion>c</conclusion></node>`,
+			);
+			expect(fill.ok).toBe(true);
+			expect(fill.steps).toHaveLength(count);
+			expect(fill.thinking.length).toBeLessThanOrEqual(FIELD_CAPS.thinking);
+			// The stored rationale is what trackers and hosted plans re-split: it must hold exactly the accepted steps.
+			const stored = splitRationaleSteps(fill.thinking);
+			expect(stored).toHaveLength(count);
+			expect(stored).toEqual(fill.steps);
+			for (const [i, step] of fill.steps.entries())
+				expect(step.startsWith(String.fromCharCode(97 + i))).toBe(true);
+		},
+	);
+
+	test("a rationale under the cap is stored exactly as written even when one step is over the step cap", () => {
+		const text = `1. ${"a".repeat(700)}\n2. b\n3. c\n4. d\n5. e`;
+		const fill = parseNodeFill(
+			`<node><rationale>${text}</rationale><conclusion>c</conclusion></node>`,
+		);
+		expect(fill.ok).toBe(true);
+		expect(fill.thinking).toBe(text);
+		expect(fill.steps[0]!.length).toBe(FIELD_CAPS.step);
+	});
+});
+
+describe("graph integrity", () => {
+	const spec = (id: string, deps: string[], extra: Record<string, unknown> = {}) => ({
+		id,
+		title: id.toUpperCase(),
+		kind: "generate",
+		question: `q ${id}`,
+		depends_on: deps,
+		...extra,
+	});
+	const levelOf = (nodes: ThoughtNode[]): Map<string, number> => {
+		const levels = new Map<string, number>();
+		for (const [index, group] of dependencyLevels(topoSort(nodes)).entries()) {
+			for (const node of group) levels.set(node.id, index);
+		}
+		return levels;
+	};
+	const expectLeveled = (nodes: ThoughtNode[]): void => {
+		const levels = levelOf(nodes);
+		expect(levels.size).toBe(nodes.length);
+		for (const node of nodes) {
+			for (const dep of node.dependsOn) {
+				expect(levels.get(dep)!).toBeLessThan(levels.get(node.id)!);
+			}
+		}
+	};
+
+	test("a cycle n1-n2-n3-n1 is broken and every node levels after its dependencies (GOT-03)", () => {
+		const out = normalizeGraph(
+			{
+				goal: "g",
+				nodes: [
+					spec("n1", ["n3"]),
+					spec("n2", ["n1"]),
+					spec("n3", ["n2"]),
+					spec("n4", ["n3"]),
+					spec("n5", ["n4"]),
+				],
+			},
+			"fb",
+			5,
+			8,
+		);
+		expect(out.nodes[0]?.dependsOn).toEqual([]);
+		expectLeveled(out.nodes);
+	});
+
+	test("dependencyLevels never places a node before its dependency, even for unordered hostile input", () => {
+		const hostile: ThoughtNode[] = [
+			{ id: "n3", title: "C", kind: "synthesize", question: "c", dependsOn: ["n1", "n2"] },
+			{ id: "n1", title: "A", kind: "understand", question: "a", dependsOn: ["n3"] },
+			{ id: "n2", title: "B", kind: "generate", question: "b", dependsOn: ["n1"] },
+			{ id: "n4", title: "D", kind: "generate", question: "d", dependsOn: ["n4", "ghost"] },
+		];
+		const forward: ThoughtNode[] = [
+			{ id: "n3", title: "C", kind: "synthesize", question: "c", dependsOn: ["n1", "n2"] },
+			{ id: "n2", title: "B", kind: "generate", question: "b", dependsOn: ["n1"] },
+			{ id: "n1", title: "A", kind: "understand", question: "a", dependsOn: [] },
+		];
+		expect(dependencyLevels(forward).map((group) => group.map((node) => node.id))).toEqual([
+			["n1"],
+			["n2"],
+			["n3"],
+		]);
+		const flat = dependencyLevels(hostile).flat();
+		expect(flat).toHaveLength(hostile.length);
+		expect(new Set(flat.map((node) => node.id)).size).toBe(hostile.length);
+	});
+
+	test("a forward reference is dropped so the model order stays topological (GOT-03)", () => {
+		const out = normalizeGraph(
+			{
+				goal: "g",
+				nodes: [
+					spec("n1", ["n2"]),
+					spec("n2", []),
+					spec("n3", ["n1"]),
+					spec("n4", ["n3"]),
+					spec("n5", ["n4"]),
+				],
+			},
+			"fb",
+			5,
+			8,
+		);
+		expect(out.nodes[0]?.dependsOn).toEqual([]);
+		expect(out.nodes[2]?.dependsOn).toEqual(["n1"]);
+		expectLeveled(out.nodes);
+	});
+
+	test("300 duplicate dependencies collapse to the distinct ones in first-seen order (GOT-04)", () => {
+		const deps = Array.from({ length: 300 }, (_, i) => (i % 2 === 0 ? "n1" : "n2"));
+		const out = normalizeGraph(
+			{
+				goal: "g",
+				nodes: [
+					spec("n1", []),
+					spec("n2", ["n1"]),
+					spec("n3", deps),
+					spec("n4", ["n3"]),
+					spec("n5", ["n4"]),
+				],
+			},
+			"fb",
+			5,
+			8,
+		);
+		expect(out.nodes[2]?.dependsOn).toEqual(["n1", "n2"]);
+	});
+
+	test("the last node synthesizes and depends on every leaf (GOT-09)", () => {
+		const flat = normalizeGraph(
+			{ goal: "g", nodes: ["n1", "n2", "n3", "n4", "n5"].map((id) => spec(id, [])) },
+			"fb",
+			5,
+			8,
+		);
+		expect(flat.nodes[4]?.kind).toBe("synthesize");
+		expect(flat.nodes[4]?.dependsOn).toEqual(["n1", "n2", "n3", "n4"]);
+
+		const branched = normalizeGraph(
+			{
+				goal: "g",
+				nodes: [
+					spec("n1", []),
+					spec("n2", ["n1"]),
+					spec("n3", ["n1"]),
+					spec("n4", ["n2"]),
+					spec("n5", ["n4"]),
+				],
+			},
+			"fb",
+			5,
+			8,
+		);
+		// n3 has no dependent, so it is a leaf the synthesis must read; n4 is already covered through n5's own dep.
+		expect(branched.nodes[4]?.dependsOn).toEqual(["n4", "n3"]);
+	});
+
+	test("oversize title, question and goal are clipped at parse (GOT-04)", () => {
+		const out = normalizeGraph(
+			{
+				goal: "g".repeat(5000),
+				nodes: ["n1", "n2", "n3", "n4", "n5"].map((id, i) =>
+					spec(id, i === 0 ? [] : [`n${i}`], {
+						title: "t".repeat(900),
+						question: "q".repeat(5000),
+					}),
+				),
+			},
+			"fb",
+			5,
+			8,
+		);
+		expect(out.goal.length).toBeLessThanOrEqual(FIELD_CAPS.goal);
+		for (const node of out.nodes) {
+			expect(node.title.length).toBeLessThanOrEqual(FIELD_CAPS.title);
+			expect(node.question.length).toBeLessThanOrEqual(FIELD_CAPS.question);
+		}
+	});
+
+	test("a degraded node carries degraded=true in the spec XML and a healthy one does not", () => {
+		const xml = graphToXml({
+			goal: "g",
+			nodes: [
+				{ id: "n1", title: "A", kind: "understand", question: "a", dependsOn: [], degraded: true },
+				{ id: "n2", title: "B", kind: "synthesize", question: "b", dependsOn: ["n1"] },
+			],
 		});
+		expect(xml.match(/degraded="true"/g)).toHaveLength(1);
+		expect(xml).toMatch(/<NODE id="n1"[^>]*degraded="true"/);
+		expect(xml).not.toMatch(/<NODE id="n2"[^>]*degraded/);
+	});
+
+	test("graphSketch keeps one line per node whatever the title holds (GOT-10)", () => {
+		const sketch = graphSketch({
+			goal: "g",
+			nodes: [
+				{
+					id: "n1",
+					title: "A\n<injected>\r\n  B",
+					kind: "understand",
+					question: "a",
+					dependsOn: [],
+				},
+				{ id: "n2", title: "C", kind: "synthesize", question: "c", dependsOn: ["n1"] },
+			],
+		});
+		expect(sketch.split("\n")).toHaveLength(2);
+		expect(sketch.split("\n")[0]).toBe("n1  A <injected> B  understand");
+	});
+});
+
+describe("injectGraphXml dollar sequences", () => {
+	const goal = "cost is $& and $$ and $` and $' and $1";
+	const graph = { goal, nodes: DIAMOND };
+
+	test("a replaced GRAPH_OF_THOUGHT block keeps every $ sequence byte-identical (GOT-02)", () => {
+		const xml =
+			"<BUILD_PROMPT><ORIGINAL>x</ORIGINAL><GRAPH_OF_THOUGHT><GOAL>old</GOAL></GRAPH_OF_THOUGHT></BUILD_PROMPT>";
+		const out = injectGraphXml(xml, graph);
+		expect(out).toBe(`<BUILD_PROMPT><ORIGINAL>x</ORIGINAL>${graphToXml(graph)}</BUILD_PROMPT>`);
+	});
+
+	test("a graph wrapped before the root close tag keeps every $ sequence byte-identical (GOT-02)", () => {
+		const out = injectGraphXml("<BUILD_PROMPT><ORIGINAL>x</ORIGINAL></BUILD_PROMPT>", graph);
+		expect(out).toBe(`<BUILD_PROMPT><ORIGINAL>x</ORIGINAL>\n${graphToXml(graph)}\n</BUILD_PROMPT>`);
 	});
 });
 

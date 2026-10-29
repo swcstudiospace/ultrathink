@@ -33,8 +33,14 @@ type ScanOutcome =
 /** A scan's verdict on the observed state, or `raced` when the chain changed under the scan and nothing can be concluded. */
 export type ScanReply = ScanOutcome | "raced";
 
+/**
+ * `chain_broken` and `head_mismatch` are tamper conditions (severity `critical`): the chain was verified and does not
+ * match. `verifier_unavailable` (severity `warn`) says the verifier could not run, a timeout or a worker failure, so the
+ * chain is unchecked rather than known to be broken.
+ */
 export interface WatchAlert {
-	readonly kind: "chain_broken" | "head_mismatch";
+	readonly kind: "chain_broken" | "head_mismatch" | "verifier_unavailable";
+	readonly severity: "critical" | "warn";
 	readonly reason: string;
 }
 
@@ -105,11 +111,13 @@ function judge(outcome: ScanOutcome, ack: Acknowledged): WatchAlert | undefined 
 	if (!outcome.ok)
 		return {
 			kind: "chain_broken",
+			severity: "critical",
 			reason: `chain broken at record ${outcome.brokenAt}: ${outcome.reason}`,
 		};
 	if (outcome.lastHash !== ack.hash)
 		return {
 			kind: "head_mismatch",
+			severity: "critical",
 			reason: `last record on disk is not the acknowledged head, record ${ack.seq}`,
 		};
 	return undefined;
@@ -185,7 +193,8 @@ export function createAuditWatch(options: AuditWatchOptions): AuditWatch {
 					if (full) fullScanOwed = true;
 					decided = undefined;
 					apply({
-						kind: "chain_broken",
+						kind: "verifier_unavailable",
+						severity: "warn",
 						reason: `verifier failed: ${error instanceof Error ? error.message : String(error)}`,
 					});
 				},
@@ -210,6 +219,7 @@ export function createAuditWatch(options: AuditWatchOptions): AuditWatch {
 			if (ack.seq > 0)
 				apply({
 					kind: "head_mismatch",
+					severity: "critical",
 					reason: `audit file is missing; acknowledged head is record ${ack.seq}`,
 				});
 			else if (fullScan) apply(undefined);

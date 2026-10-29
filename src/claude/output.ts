@@ -31,6 +31,8 @@ import type { UpliftResult } from "../types.ts";
 import type { DocsLookup } from "../ragflow/types.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
 
+/** Longest cause the degradation notice shows next to a stage. */
+const MAX_STAGE_CAUSE_CHARS = 200;
 /** Ceiling for the injected specification; 0 means no truncation. A positive value is an explicit cap: RATIONALE bodies go first, then the tail. */
 const DEFAULT_CONTEXT_CHARS = 0;
 const BRIEF_CUT = "\n(brief truncated)";
@@ -251,8 +253,10 @@ export interface PromptContextInput {
 	modelResolution?: ModelResolution;
 	/** First engine error message; with a fallback result it adds the degradation notice. */
 	engineError?: string;
-	/** Plan stages that fell back to boilerplate ("uplift", "graph", "fill:<nodeId>"); drives the notice wording. */
+	/** Plan stages that fell back or failed ("uplift", "graph", "fill:<nodeId>", "clarify", "think"); drives the notice wording. */
 	degraded?: string[];
+	/** Redacted, bounded cause per degraded token (or per node id for a fill); the notice names it next to the stage. */
+	causes?: Record<string, string>;
 	graph?: ThoughtGraph;
 	clarifications?: Clarification[];
 	/** Agent Substrate briefing; empty or absent when the substrate is unreachable. */
@@ -373,17 +377,30 @@ function formatLinkedIssues(
 	].join("\n");
 }
 
+/** One single-line, bounded cause: upstream already redacts and bounds it; a stale or hand-built value cannot break the line. */
+function boundedCause(cause: string): string {
+	return cause.replace(/\s+/g, " ").trim().slice(0, MAX_STAGE_CAUSE_CHARS);
+}
+
 function degradedStageName(token: string): string {
 	if (token === "graph") return "the graph structure";
 	if (token.startsWith("fill:")) return `the ${token.slice("fill:".length)} fill`;
 	return `the ${token} step`;
 }
 
+/** The stage's name plus its cause: `the n2 fill (cause)`, `the clarify step (cause)`. A missing cause is the bare name. */
+function degradedStage(token: string, causes: Record<string, string> | undefined): string {
+	const name = degradedStageName(token);
+	const raw = causes?.[token] ?? (token.startsWith("fill:") ? causes?.[token.slice(5)] : undefined);
+	const cause = raw === undefined ? "" : boundedCause(raw);
+	return cause ? `${name} (${cause})` : name;
+}
+
 /**
  * Warns the agent that parts of the plan are boilerplate: a failed uplift (with or without a
  * recorded engine error), or — under a real spec — the think stages that fell back.
  */
-function degradationNotice(
+function planningNotice(
 	input: Pick<
 		PromptContextInput,
 		| "result"
@@ -391,6 +408,8 @@ function degradationNotice(
 		| "modelResolution"
 		| "engineError"
 		| "degraded"
+		| "causes"
+		| "graph"
 		| "tracking"
 		| "trackingOff"
 	>,
@@ -424,21 +443,61 @@ function degradationNotice(
 			`Planning produced no usable model output (an empty or invalid completion), so the specification below is generic fallback text, not a real plan; treat the attached graph as unverified. No tracker rows were created for it. Shorten the prompt or fix the engine and resend to get a real plan.`,
 		].join("\n");
 	}
-	const degraded = input.degraded ?? [];
+	const degraded = (input.degraded ?? []).filter((token) => token !== "state");
 	if (degraded.length === 0) return undefined;
-	const stages = degraded.map(degradedStageName).join(", ");
+	// A clarify that was never attempted (the provider had just failed every retry) is named apart from one that failed.
+	const clarifySkipped =
+		degraded.includes("clarify") && input.causes?.clarify?.startsWith("skipped:") === true;
+	// Boilerplate content versus steps that failed outright: a failed clarify or think produced nothing to call "fallback".
+	const stepTokens = degraded.filter(
+		(token) => (token === "clarify" && !clarifySkipped) || token === "think",
+	);
+	const contentTokens = degraded.filter((token) => token !== "clarify" && token !== "think");
+	const named = (tokens: string[]): string =>
+		tokens.map((token) => degradedStage(token, input.causes)).join(", ");
+	// A boilerplate graph, or a think stage that left no graph, never gets tracker rows (the hook builds no plan for it).
+	const noRows = degraded.includes("graph") || (degraded.includes("think") && !input.graph);
+	const stateFailed = (input.degraded ?? []).includes("state");
 	const rows = input.trackingOff
 		? "No tracker rows were created (tracking is off)."
 		: input.tracking?.status === "complete"
 			? "Tracker rows were created; rows under the unverified parts carry boilerplate."
 			: input.tracking
 				? `Tracker rows are incomplete (${input.tracking.status}); rows under the unverified parts carry boilerplate.`
-				: "Tracker rows are left for ultrathink-kickoff; rows under the unverified parts will carry boilerplate.";
-	return [
-		"## Planning degraded",
-		"",
-		`Some ${engine} planning calls failed${failure}: ${stages} use fallback content — treat those parts as unverified. ${rows}`,
-	].join("\n");
+				: noRows || stateFailed
+					? "No tracker rows were created for this plan, and none will be."
+					: "Tracker rows are left for ultrathink-kickoff; rows under the unverified parts will carry boilerplate.";
+	const lead =
+		contentTokens.length > 0
+			? `Some ${engine} planning calls failed${failure}: ${named(contentTokens)} use fallback content — treat those parts as unverified.`
+			: `Some ${engine} planning steps failed${failure}.`;
+	const failedSteps =
+		stepTokens.length > 0
+			? ` Failed: ${named(stepTokens)} — the plan lacks their output; treat it as unverified there.`
+			: "";
+	const skippedSteps = clarifySkipped
+		? ` Skipped: the clarify step (${boundedCause(input.causes?.clarify ?? "").replace(/^skipped:\s*/, "")}) — no clarifying questions were asked, so the plan's open assumptions are unconfirmed.`
+		: "";
+	return ["## Planning degraded", "", `${lead}${failedSteps}${skippedSteps} ${rows}`].join("\n");
+}
+
+/** The one line the notice adds when the plan could not be saved: no record, no spec file, and no tracker rows made first. */
+function stateNotice(
+	degraded: readonly string[],
+	causes: Record<string, string> | undefined,
+): string | undefined {
+	if (!degraded.includes("state")) return undefined;
+	const raw = causes?.state;
+	const cause = raw === undefined ? "" : boundedCause(raw);
+	return `The plan state could not be saved${cause ? ` (${cause})` : ""}: the session record and the specification file are missing, so the specification above is inline only. Tracker rows are not created while the record cannot be saved. Fix the state directory (ULTRATHINK_STATE_DIR) and resend the prompt.`;
+}
+
+function degradationNotice(input: Parameters<typeof planningNotice>[0]): string | undefined {
+	const state = stateNotice(input.degraded ?? [], input.causes);
+	const planning = planningNotice(input);
+	if (state === undefined) return planning;
+	if (planning === undefined) return ["## Planning degraded", "", state].join("\n");
+	return `${planning}\n\n${state}`;
 }
 
 export function formatPromptContext(input: PromptContextInput): string {

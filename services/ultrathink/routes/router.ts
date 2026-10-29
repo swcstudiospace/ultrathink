@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { accessSync, constants, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -14,6 +15,7 @@ import { type BreakerState, createCircuitBreaker } from "../engine/breaker.ts";
 import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
 import {
 	type HeadlessPlanner,
+	type JobOutcome,
 	type ResultView,
 	createHeadlessPlanner,
 } from "../engine/headless.ts";
@@ -115,6 +117,11 @@ export interface RouterDeps {
 	spans?: SpanSink;
 	/** Test seam. Called as each admission enters the HTTP pool, before it may wait. */
 	onPoolEntry?: () => void;
+	/**
+	 * Whether a worker entrypoint exists that executes queued runs. No such entrypoint ships with the service, so the
+	 * default is false and `POST /ultrathink` answers 501 instead of accepting a run nothing would execute.
+	 */
+	hasWorker?: () => boolean;
 }
 
 export interface App {
@@ -122,7 +129,7 @@ export interface App {
 	handle(req: Request, peerIp: string, peer?: { spiffeId: string | null }): Promise<Response>;
 	/** Starts the runtime probe and, when retention is on, the sweep; reads store integrity. Idempotent. */
 	start(): void;
-	/** Fails /readyz so the load balancer stops routing here; /healthz keeps answering. Idempotent. */
+	/** Fails /readyz so the load balancer stops routing here and closes the planner to new plans; /healthz keeps answering. Idempotent. */
 	beginDrain(): void;
 	/** Stops the probe and sweep, closes the audit log, then stops accepting planner work and ends running jobs. The caller closes the store. */
 	shutdown(): Promise<void>;
@@ -196,6 +203,12 @@ const METHODS: Record<Endpoint, readonly string[]> = {
 const RUN_PATH = /^\/ultrathink\/runs\/([^/]+)$/;
 
 const CONNECTOR_RATE_OWNER = "connector";
+
+/** Where the planner finds the abort signal of the request it is serving; set around the work of an admitted request. */
+const requestSignals = new AsyncLocalStorage<AbortSignal>();
+
+/** Where the runbook describes the run API's missing worker; named in the 501 so an operator can find it. */
+const RUNBOOK_PATH = "docs/ops/runbook-ultrathink.md";
 
 // Probes and scrapes are never shed: an overloaded process must still answer its orchestrator.
 const UNGATED: Partial<Record<Endpoint, true>> = { healthz: true, readyz: true, metrics: true };
@@ -711,6 +724,11 @@ export function createApp(deps: RouterDeps): App {
 		}
 	}
 
+	/** The verifier could not run (a timeout or a worker failure): the chain is unchecked, not known to be broken. */
+	function raiseVerifierUnavailable(reason: string): void {
+		logger.warn("audit_verifier_unavailable", { reason });
+	}
+
 	function raiseTamper(reason: string): void {
 		logger.error("audit_tamper_detected", { reason });
 		metrics.inc("ultrathink_audit_tamper_alerts_total");
@@ -792,6 +810,8 @@ export function createApp(deps: RouterDeps): App {
 						metrics.inc("ultrathink_otel_spans_dropped_total", { reason: "queue_full" }),
 					onFailure: () => metrics.inc("ultrathink_otel_export_failures_total"),
 				}));
+	/** Bound once the tool host exists; a job that ends before that (none can) would simply not be counted. */
+	let outcomeSink: ((outcome: JobOutcome) => void) | undefined;
 	const planner =
 		deps.planner ??
 		createHeadlessPlanner({
@@ -805,6 +825,8 @@ export function createApp(deps: RouterDeps): App {
 			...(deps.planBackend ? { planBackend: deps.planBackend } : {}),
 			...(deps.sleep ? { sleep: deps.sleep } : {}),
 			...(spans === undefined ? {} : { spans }),
+			requestSignal: () => requestSignals.getStore(),
+			onOutcome: (outcome) => outcomeSink?.(outcome),
 			onCall: (call) => {
 				metrics.inc("ultrathink_planner_calls_total", { outcome: call.outcome });
 				metrics.observe("ultrathink_planner_call_duration_seconds", call.ms / 1000, {
@@ -907,7 +929,8 @@ export function createApp(deps: RouterDeps): App {
 		const context = currentRequestContext();
 		if (context) context.admission = admission;
 		try {
-			return await work();
+			// The planner reads the request's signal from here: a client that disconnects ends the plan it started.
+			return await requestSignals.run(signal, work);
 		} finally {
 			if (context) context.admission = undefined;
 			// Outer first: a waiter woken by the share release must see the outer slot already free, or its re-entry fails.
@@ -1074,6 +1097,14 @@ export function createApp(deps: RouterDeps): App {
 				? { route: explicitRoute, reason: "route set by flag" }
 				: selectRoute(input.text);
 
+		// Nothing executes a queued run yet: refuse instead of answering 202 for work that would never start.
+		if (deps.hasWorker?.() !== true) {
+			return respond(501, {
+				error: "run_api_unavailable",
+				detail: `no worker executes queued runs; see ${RUNBOOK_PATH}`,
+			});
+		}
+
 		let run: Run;
 		try {
 			run = store.createRun({ ownerId: session.ownerId, request: input.text, route: choice.route });
@@ -1218,6 +1249,7 @@ export function createApp(deps: RouterDeps): App {
 		planningInfo,
 		onPlanFinished: recordFinished,
 	});
+	outcomeSink = toolHost.recordOutcome;
 
 	const mcpHost: McpToolHost = {
 		capabilities: toolHost.capabilities,
@@ -1682,7 +1714,10 @@ export function createApp(deps: RouterDeps): App {
 						activeIno: observed.ino,
 						identity: chainIdentity(log.path),
 					}),
-				onAlert: (alert) => raiseTamper(alert.reason),
+				onAlert: (alert) =>
+					alert.kind === "verifier_unavailable"
+						? raiseVerifierUnavailable(alert.reason)
+						: raiseTamper(alert.reason),
 				onRecover: () => logger.info("audit_tamper_cleared", {}),
 				onError: (error) => logger.error("audit_watch_failed", { error: errorMessage(error) }),
 				...timerSeams,
@@ -1714,6 +1749,7 @@ export function createApp(deps: RouterDeps): App {
 		runSweepNow,
 		beginDrain() {
 			drain.begin();
+			planner.beginDrain?.();
 		},
 		async shutdown() {
 			stopProbe?.();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+import { clip } from "../resilience/limits.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import type { Clarification, ClarificationOption } from "./types.ts";
 
@@ -50,7 +51,7 @@ export function injectClarificationsXml(upliftXml: string, list: Clarification[]
 	if (CLARIFICATIONS_BLOCK_RE.test(upliftXml)) {
 		if (!block)
 			return upliftXml.replace(/\n?[ \t]*<CLARIFICATIONS\b[\s\S]*?<\/CLARIFICATIONS>/i, "");
-		return upliftXml.replace(CLARIFICATIONS_BLOCK_RE, block);
+		return upliftXml.replace(CLARIFICATIONS_BLOCK_RE, () => block);
 	}
 	if (!block) return upliftXml;
 
@@ -61,17 +62,29 @@ export function injectClarificationsXml(upliftXml: string, list: Clarification[]
 	const tag = open[1]!;
 	const closeRe = new RegExp(`</${tag}\\s*>\\s*$`, "i");
 	if (!closeRe.test(trimmed)) return `${trimmed}\n${block}`;
-	return trimmed.replace(closeRe, `\n${block}\n</${tag}>`);
+	return trimmed.replace(closeRe, () => `\n${block}\n</${tag}>`);
+}
+
+const MAX_LABEL_CHARS = 120;
+const MAX_TEXT_CHARS = 600;
+
+/** Whitespace collapsed to single spaces and capped, so model-controlled text cannot open a new markdown line or heading in the agent's context. */
+function oneLine(text: string, max: number): string {
+	return clip(text.replace(/\s+/g, " ").trim(), max).text;
 }
 
 function optionsLine(item: Clarification): string {
-	const labels = item.options.map((option) => option.label).join(" | ");
-	const recommended = item.default ? ` (recommended: ${item.default})` : "";
+	const labels = item.options.map((option) => oneLine(option.label, MAX_LABEL_CHARS)).join(" | ");
+	const recommended = item.default
+		? ` (recommended: ${oneLine(item.default, MAX_LABEL_CHARS)})`
+		: "";
 	return `${labels}${recommended}`;
 }
 
 function knowledgeSuffix(item: Clarification, label: string): string {
-	return item.source === "knowledge" && item.evidence ? ` (${label}: ${item.evidence})` : "";
+	return item.source === "knowledge" && item.evidence
+		? ` (${label}: ${oneLine(item.evidence, MAX_TEXT_CHARS)})`
+		: "";
 }
 
 export interface HitlAddendumOptions {
@@ -120,16 +133,23 @@ export function formatHitlAddendum(
 	if (blocking.length > 0) {
 		lines.push("", "### Open (blocking)", "");
 		for (const item of blocking)
-			lines.push(`- [${item.id}] ${item.question} — options: ${optionsLine(item)}`);
+			lines.push(
+				`- [${item.id}] ${oneLine(item.question, MAX_TEXT_CHARS)} — options: ${optionsLine(item)}`,
+			);
 	}
 	if (nonBlocking.length > 0) {
 		lines.push("", "### Open (non-blocking)", "");
 		for (const item of nonBlocking)
-			lines.push(`- [${item.id}] ${item.question} — options: ${optionsLine(item)}`);
+			lines.push(
+				`- [${item.id}] ${oneLine(item.question, MAX_TEXT_CHARS)} — options: ${optionsLine(item)}`,
+			);
 	}
 	if (answered.length > 0) {
 		lines.push("", "### Answered", "");
-		for (const item of answered) lines.push(`- [${item.id}] ${item.question} → ${item.answer}`);
+		for (const item of answered)
+			lines.push(
+				`- [${item.id}] ${oneLine(item.question, MAX_TEXT_CHARS)} → ${oneLine(item.answer ?? "", MAX_TEXT_CHARS)}`,
+			);
 	}
 	if (settled.length > 0) {
 		lines.push(
@@ -141,7 +161,7 @@ export function formatHitlAddendum(
 		);
 		for (const item of settled)
 			lines.push(
-				`- [${item.id}] ${item.question} → ${item.answer}${knowledgeSuffix(item, "Greptile knowledge base")}`,
+				`- [${item.id}] ${oneLine(item.question, MAX_TEXT_CHARS)} → ${oneLine(item.answer ?? "", MAX_TEXT_CHARS)}${knowledgeSuffix(item, "Greptile knowledge base")}`,
 			);
 	}
 	lines.push("");
@@ -153,16 +173,20 @@ export function formatHitlEcho(list: Clarification[]): string {
 	return list
 		.map((item) => {
 			const flag = item.blocking ? " [blocking]" : "";
-			const options = item.options.map((option) => option.label).join(" | ");
-			const defaultBit = item.default ? ` (default: ${item.default})` : "";
+			const options = item.options
+				.map((option) => oneLine(option.label, MAX_LABEL_CHARS))
+				.join(" | ");
+			const defaultBit = item.default
+				? ` (default: ${oneLine(item.default, MAX_LABEL_CHARS)})`
+				: "";
 			const lines = [
-				`${item.id}${flag} ${item.header}: ${item.question}`,
+				`${item.id}${flag} ${oneLine(item.header, 40)}: ${oneLine(item.question, MAX_TEXT_CHARS)}`,
 				`   options: ${options}${defaultBit}`,
 			];
 			if (item.answer !== undefined) {
 				const source =
 					item.source === "assumed" ? " (assumed)" : knowledgeSuffix(item, "knowledge base");
-				lines.push(`   answer: ${item.answer}${source}`);
+				lines.push(`   answer: ${oneLine(item.answer, MAX_TEXT_CHARS)}${source}`);
 			}
 			return lines.join("\n");
 		})

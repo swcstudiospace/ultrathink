@@ -14,6 +14,7 @@
  */
 import { resolve } from "node:path";
 import { isChildInvocation } from "../src/claude/complete.ts";
+import { installChildReaper } from "../src/resilience/child.ts";
 import { defaultStateDir, readSession, sessionRecordPath } from "../src/claude/state.ts";
 import { isSubagentEnvelope, parseEnvelope, responseText } from "../src/host/envelope.ts";
 import { extractPrFromOutput, isPrCreationTool } from "../src/track/pr-detect.ts";
@@ -48,15 +49,23 @@ async function main(): Promise<void> {
 	const prNote = pr ? ` (${pr.url})` : "";
 	const stateFile = resolve(sessionRecordPath(stateDir, input.session_id));
 	const prArg = pr ? ` and prUrl=${pr.url}` : " and the PR URL";
-	console.log(
-		JSON.stringify({
+	await Bun.write(
+		Bun.stdout,
+		`${JSON.stringify({
 			systemMessage: `Ultrathink · a pull request was opened for a tracked task${prNote}. Invoke the ultrathink-sync skill now (graphId=${record.plan.graphId}) to write the PR URL/number/branch back onto the Notion Task row and Linear issue.`,
 			hookSpecificOutput: {
 				hookEventName: "PostToolUse",
 				additionalContext: `Ultrathink: a pull request was opened for the tracked task${prNote}. Invoke the ultrathink-sync skill now with stateFile=${stateFile}${prArg}, so the tracked Notion Task row and Linear issues get the PR URL/number/branch and status. ultrathink-sync only updates existing rows; do not create new Notion rows or Linear issues.`,
 			},
-		}),
+		})}\n`,
 	);
 }
 
-main().catch(() => process.exit(0));
+installChildReaper({ signals: true });
+main()
+	.catch(() => {
+		// reason: fail-open: a PostToolUse hook never fails the tool call
+	})
+	.finally(() => {
+		process.exit(0);
+	});

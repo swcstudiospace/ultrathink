@@ -11,6 +11,7 @@
  */
 import { planPrompt, type PlanRequest } from "../src/host/plan.ts";
 import { createFdProgressSink } from "../src/host/progress.ts";
+import { installChildReaper } from "../src/resilience/child.ts";
 import { isHostId } from "../src/host/types.ts";
 
 export function requestFrom(value: unknown): PlanRequest {
@@ -83,6 +84,7 @@ export async function emit(response: unknown): Promise<void> {
 }
 
 if (import.meta.main) {
+	installChildReaper({ signals: true });
 	main()
 		.catch(() => emit({ context: "", skipped: "engine-error" }))
 		.catch(() => {

@@ -2,14 +2,18 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterEach, describe, expect, test } from "bun:test";
+import * as nodeFs from "node:fs";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { bulk } from "../../../src/test.helpers.ts";
+import { bulk, waitUntil } from "../../../src/test.helpers.ts";
 import { makeTempDir } from "../test.helpers.ts";
-import { auditPath, createAuditLog, verifyAuditFile } from "./audit.ts";
+import { type AuditFs, auditPath, createAuditLog, verifyAuditFile } from "./audit.ts";
 import { chainIdentity, createAuditVerifier, verifyObserved } from "./audit-verify.ts";
 import { type ScanReply, type WatchAlert, createAuditWatch } from "./audit-watch.ts";
+
+/** Nothing here is about durability, so a record never waits for a real fsync. */
+const NO_FSYNC: AuditFs = { ...nodeFs, fsyncSync: () => undefined };
 
 const START = 1_700_000_000_000;
 const dirs: string[] = [];
@@ -84,7 +88,7 @@ describe("observed scans", () => {
 
 		verifier.close();
 		expect(await verifier.verify(request)).toBe("raced");
-	});
+	}, 60_000);
 });
 
 describe("a prune between the observation and the worker", () => {
@@ -93,7 +97,7 @@ describe("a prune between the observation and the worker", () => {
 	test("is raced, not reported as a broken chain, when the sealed list changed before the worker read the chain", async () => {
 		const dir = tempDir();
 		const path = auditPath(dir);
-		const log = createAuditLog({ path, now: clock(), segmentBytes: MIB });
+		const log = createAuditLog({ path, now: clock(), segmentBytes: MIB, fs: NO_FSYNC });
 		for (let i = 1; i <= 300; i += 1) log.record("login_ok", bulk(i));
 		// The watch observes the active bytes and the chain together, then asks for a scan.
 		const observed = statSync(path);
@@ -120,25 +124,43 @@ describe("a worker that does not answer", () => {
 	test("fails the scan at the deadline, and the next tick scans again on a fresh worker", async () => {
 		const dir = tempDir();
 		const path = auditPath(dir);
-		const log = createAuditLog({ path, now: clock() });
+		const log = createAuditLog({ path, now: clock(), fs: NO_FSYNC });
 		log.record("login_ok", { n: 1 });
 		log.record("login_ok", { n: 2 });
 		const head = log.head();
 		// The worker ignores requests while this flag exists. Every worker is a new thread, so the flag is what persists between them.
 		const hold = join(dir, "hold");
 		writeFileSync(hold, "");
+		// The worker appends a line here for every request it receives, before it looks at the flag.
+		const received = join(dir, "received");
+		writeFileSync(received, "");
 		const script = join(dir, "verify.worker.ts");
 		writeFileSync(
 			script,
-			`import { existsSync } from "node:fs";
+			`import { appendFileSync, existsSync } from "node:fs";
 import { verifyObserved } from ${JSON.stringify(fileURLToPath(new URL("./audit-verify.ts", import.meta.url)))};
 self.onmessage = (event) => {
+	appendFileSync(${JSON.stringify(received)}, "request\\n");
 	if (existsSync(${JSON.stringify(hold)})) return;
 	self.postMessage(verifyObserved(event.data));
 };
 `,
 		);
-		const verifier = createAuditVerifier({ workerUrl: pathToFileURL(script), deadlineMs: 500 });
+		// The deadline is armed on a fake timer: it fires when the test says so, never because a cold worker was slow.
+		const timers: Array<{ readonly run: () => void; readonly ms: number }> = [];
+		const cleared = new Set<object>();
+		const verifier = createAuditVerifier({
+			workerUrl: pathToFileURL(script),
+			deadlineMs: 500,
+			setTimer: (run, ms) => {
+				const timer = { run, ms };
+				timers.push(timer);
+				return timer;
+			},
+			clearTimer: (handle) => {
+				cleared.add(handle);
+			},
+		});
 		const alerts: WatchAlert[] = [];
 		let recovers = 0;
 		const watch = createAuditWatch({
@@ -162,18 +184,33 @@ self.onmessage = (event) => {
 			},
 		});
 
-		await watch.tick();
+		const first = watch.tick();
+		// The worker has the request and is holding it. Only now does the deadline pass.
+		await waitUntil(() => readFileSync(received, "utf8") === "request\n", {
+			name: "the held worker to receive the first request",
+			timeoutMs: 90_000,
+		});
+		expect(timers.map((timer) => [timer.ms, cleared.has(timer)])).toEqual([[500, false]]);
+		timers[0]?.run();
+		await first;
 		expect(alerts).toEqual([
-			{ kind: "chain_broken", reason: "verifier failed: timed out after 500 ms" },
+			{
+				kind: "verifier_unavailable",
+				severity: "warn",
+				reason: "verifier failed: timed out after 500 ms",
+			},
 		]);
 
 		// The hold lifts. The next tick scans again on a fresh worker, and its verdict matches the acknowledged head.
 		rmSync(hold);
 		await watch.tick();
+		expect(readFileSync(received, "utf8")).toBe("request\nrequest\n");
+		expect(timers).toHaveLength(2);
+		expect(cleared.has(timers[1] as object)).toBe(true);
 		expect(alerts).toHaveLength(1);
 		expect(recovers).toBe(1);
 		verifier.close();
-	});
+	}, 120_000);
 });
 
 describe("a dispatch that fails", () => {

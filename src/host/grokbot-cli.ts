@@ -33,6 +33,7 @@ import {
 	thinkingOff,
 } from "./grokbot.ts";
 import { buildTrackPayloads, graphRegisterPayload, recordRefs } from "./grokbot-track.ts";
+import { installChildReaper } from "../resilience/child.ts";
 import { buildCloudPrompt, type UnitDispatch, validateCloudPrompt } from "./grokbot-prompts.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { parseAnswersInput, recordAnswers } from "./grokbot-hitl.ts";
@@ -631,6 +632,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 }
 
 if (import.meta.main) {
+	installChildReaper({ signals: true });
 	main(process.argv.slice(2))
 		.then(({ code, text }) => process.stdout.write(`${text}\n`, () => process.exit(code)))
 		.catch((error: unknown) => {

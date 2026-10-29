@@ -52,6 +52,7 @@ RUN_BUN = REPO_ROOT / "bin" / "run-bun"
 CLI = REPO_ROOT / "bin" / "ultrathink"
 DEFAULT_TIMEOUT_S = 540  # planning takes minutes; stay below Hermes' 600s hook cap maximum
 HOOK_MARGIN_S = 15  # the bridge's deadline ends this long before Hermes abandons the hook
+TERM_GRACE_S = 3.0  # how long the engine gets to stop its model children after SIGTERM before SIGKILL; well inside HOOK_MARGIN_S
 MIN_PLAN_S = 90  # below this a plan cannot finish, so Bun is not started at all
 HERMES_DEFAULT_CAP_S = 30.0  # Hermes' plugins.hook_callback_timeout when its config sets none
 HERMES_MAX_CAP_S = 600.0  # Hermes clamps a larger plugins.hook_callback_timeout to this
@@ -318,6 +319,37 @@ def session_sender() -> str:
 		return ""
 
 
+def _signal_group(proc: "subprocess.Popen[str]", name: int) -> None:
+	try:
+		os.killpg(proc.pid, name)
+	except (ProcessLookupError, PermissionError):
+		pass
+
+
+def _reap(proc: "subprocess.Popen[str]") -> None:
+	"""Stop the engine when it is still running, then wait for it so no zombie is left. SIGTERM goes to its process
+	group first: the engine's child reaper then kills the model CLIs it started, each in a session of its own that
+	a signal to the engine's group does not reach (and SIGKILL would skip that cleanup). After TERM_GRACE_S the
+	group is force-killed, which also sweeps anything of the engine's own group that outlived it."""
+	if proc.poll() is None:
+		_signal_group(proc, signal.SIGTERM)
+		try:
+			proc.wait(timeout=TERM_GRACE_S)
+		except subprocess.TimeoutExpired:
+			pass
+		_signal_group(proc, signal.SIGKILL)
+	try:
+		proc.wait(timeout=10)
+	except subprocess.TimeoutExpired:
+		logger.warning("ultrathink: the engine process %s did not exit after SIGKILL", proc.pid)
+	for stream in (proc.stdin, proc.stdout, proc.stderr):
+		if stream is not None:
+			try:
+				stream.close()
+			except OSError:
+				pass
+
+
 def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 	"""Return context to inject, or "" when the engine should not run."""
 	parent = payload.get("parent_session_id") or payload.get("parentSessionId")
@@ -389,7 +421,9 @@ def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 			stdin=subprocess.PIPE,
 			stdout=subprocess.PIPE,
 			stderr=subprocess.PIPE,
-			text=True,
+			# Bytes the engine never meant as text must not raise out of the hook: they decode to U+FFFD.
+			encoding="utf-8",
+			errors="replace",
 			env=child_env,
 			cwd=str(REPO_ROOT),
 			start_new_session=True,
@@ -399,12 +433,16 @@ def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 	try:
 		stdout, _ = proc.communicate(input=json.dumps(request), timeout=deadline)
 	except subprocess.TimeoutExpired:
-		try:
-			os.killpg(proc.pid, signal.SIGKILL)
-		except (ProcessLookupError, PermissionError):
-			pass
-		proc.communicate()
+		logger.warning(
+			"ultrathink: planning for hermes session %s stopped at its %ss deadline; the prompt runs unplanned",
+			request["session_id"] or "(none)",
+			f"{deadline:g}",
+		)
 		return ""
+	finally:
+		# Every path leaves no child behind: a finished one is already reaped, anything else (deadline, an exception out
+		# of communicate) takes its whole process group down and is waited for.
+		_reap(proc)
 	try:
 		parsed = json.loads(stdout or "{}")
 	except json.JSONDecodeError:

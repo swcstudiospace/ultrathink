@@ -74,6 +74,11 @@ export interface TrackingRefs {
 	/** `steps` is keyed by stepKey(nodeId, step) = `${nodeId}.${step}`. */
 	linear: { nodes: Record<string, IssueRef>; steps: Record<string, IssueRef> };
 	notion: { taskUrl?: string; nodes: Record<string, string>; steps: Record<string, string> };
+	/**
+	 * Linear `blockedBy` links still to make, by node id: the ids of the dependencies that had no issue when the node's issue
+	 * was created. A later run adds each link to the existing issue once the dependency has one, then drops it from here.
+	 */
+	pendingLinks?: Record<string, string[]>;
 	/** Short, secret-free error notes, e.g. "notion: login required". */
 	errors: string[];
 	updatedAt: number;

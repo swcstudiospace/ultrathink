@@ -5,6 +5,9 @@ import { fallbackUplift } from "./fallback.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "./prompt.ts";
 import { runUplift } from "./run.ts";
 
+const children =
+	"<SYSTEM_ROLE>r</SYSTEM_ROLE><CONTEXT>c</CONTEXT><SCOPE>list</SCOPE><CONSTRAINTS>k</CONSTRAINTS><ACCEPTANCE_CRITERIA>a</ACCEPTANCE_CRITERIA>";
+
 describe("runUplift", () => {
 	test("llm success uses sanitized model xml", async () => {
 		const original = "add a clients list page";
@@ -16,7 +19,7 @@ describe("runUplift", () => {
 			complete: async (nextSystem, nextUser) => {
 				system = nextSystem;
 				user = nextUser;
-				return "<BUILD_PROMPT><SCOPE>list</SCOPE></BUILD_PROMPT>";
+				return `<BUILD_PROMPT>${children}</BUILD_PROMPT>`;
 			},
 		});
 		expect(system).toBe(UPLIFT_SYSTEM_PROMPT);
@@ -111,7 +114,7 @@ describe("runUplift", () => {
 			maxChars: original.length,
 			complete: async () => {
 				called += 1;
-				return "<RESEARCH_PROMPT><Q>x</Q></RESEARCH_PROMPT>";
+				return `<RESEARCH_PROMPT>${children}</RESEARCH_PROMPT>`;
 			},
 		});
 		expect(called).toBe(1);
@@ -126,7 +129,7 @@ describe("runUplift", () => {
 			original,
 			complete: async () => {
 				called += 1;
-				return "<RESEARCH_PROMPT><Q>x</Q></RESEARCH_PROMPT>";
+				return `<RESEARCH_PROMPT>${children}</RESEARCH_PROMPT>`;
 			},
 		});
 		expect(called).toBe(1);
@@ -143,7 +146,7 @@ describe("runUplift", () => {
 			maxChars: 100,
 			complete: async () => {
 				called += 1;
-				return "<RESEARCH_PROMPT><Q>x</Q></RESEARCH_PROMPT>";
+				return `<RESEARCH_PROMPT>${children}</RESEARCH_PROMPT>`;
 			},
 		});
 		expect(called).toBe(0);
@@ -169,6 +172,24 @@ describe("runUplift", () => {
 		expect(result.xml).toBe(fallbackUplift(original));
 	});
 
+	test("an unclosed known root falls back with truncated_reply; error and html bodies stay unparseable_reply (G-7)", async () => {
+		const original = "add a clients list page";
+		const cases: [string, string][] = [
+			["<UPLIFTED_PROMPT><SYSTEM_ROLE>r</SYSTEM_ROLE><CONTEXT>c", "truncated_reply"],
+			["<BUILD_PROMPT><SYSTEM_ROLE>r</SYSTEM_ROLE><SCOPE>s</SCOPE", "truncated_reply"],
+			["<error>rate limited</error>", "unparseable_reply"],
+			["<html><body>502 Bad Gateway</body></html>", "unparseable_reply"],
+			["<UPLIFTED_PROMPT><SYSTEM_ROLE>r</SYSTEM_ROLE></UPLIFTED_PROMPT>", "unparseable_reply"],
+		];
+		for (const [reply, reason] of cases) {
+			const result = await runUplift({ original, complete: async () => reply });
+			expect(result.source).toBe("fallback");
+			expect(result.fallbackReason).toBe(reason);
+			expect(result.rawReplyChars).toBe(reply.length);
+			expect(result.xml).toBe(fallbackUplift(original));
+		}
+	});
+
 	test("records unparseable_reply when the completion has no root element", async () => {
 		const original = "add a clients list page";
 		const reply = "Sorry, I cannot turn that into a prompt.";
@@ -180,5 +201,66 @@ describe("runUplift", () => {
 		expect(result.fallbackReason).toBe("unparseable_reply");
 		expect(result.rawReplyChars).toBe(reply.length);
 		expect(result.xml).toBe(fallbackUplift(original));
+	});
+
+	test("a non-string reply falls back engine_error with attempts from the report", async () => {
+		const original = "add a clients list page";
+		const result = await runUplift({
+			original,
+			complete: async () => ({ text: "<BUILD_PROMPT/>" }) as unknown as string,
+			report: () => ({ attempts: 3 }),
+		});
+		expect(result.source).toBe("fallback");
+		expect(result.fallbackReason).toBe("engine_error");
+		expect(result.attempts).toBe(3);
+		expect(result.xml).toBe(fallbackUplift(original));
+	});
+
+	test("a throwing report() still falls back and never escapes", async () => {
+		const original = "add a clients list page";
+		const ok = await runUplift({
+			original,
+			complete: async () => "Sorry, no.",
+			report: () => {
+				throw new Error("report broke");
+			},
+		});
+		expect(ok.source).toBe("fallback");
+		expect(ok.fallbackReason).toBe("unparseable_reply");
+		expect(ok.attempts).toBe(1);
+		const failed = await runUplift({
+			original,
+			complete: async () => {
+				throw Object.assign(new Error("boom"), { status: 500 });
+			},
+			report: () => {
+				throw new Error("report broke");
+			},
+		});
+		expect(failed.source).toBe("fallback");
+		expect(failed.fallbackReason).toBe("provider_error");
+		expect(failed.attempts).toBe(1);
+	});
+
+	test("input_over_limit records zero attempts and the 200000 default gate applies", async () => {
+		const result = await runUplift({
+			original: "x".repeat(200_001),
+			maxChars: 200_000,
+			complete: async () => "never",
+		});
+		expect(result.fallbackReason).toBe("input_over_limit");
+		expect(result.attempts).toBe(0);
+	});
+
+	test("an AbortError-shaped non-Error object is rethrown", async () => {
+		const abort = { name: "AbortError", message: "aborted" };
+		await expect(
+			runUplift({
+				original: "x",
+				complete: async () => {
+					throw abort;
+				},
+			}),
+		).rejects.toBe(abort);
 	});
 });

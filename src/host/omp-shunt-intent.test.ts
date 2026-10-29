@@ -18,6 +18,7 @@ import {
 	setup,
 	tuiCtx,
 } from "./omp-test.helpers.ts";
+import { UPLIFT } from "../test.helpers.ts";
 import { planPrompt } from "./plan.ts";
 import type { PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
@@ -60,8 +61,8 @@ function pipeline(alias: string, input: ConfigInput) {
 	const root = mkdtempSync(join(tmpdir(), "ut-omp-shunt-intent-"));
 	const env = isolatedPlanEnv(root);
 	const stateDir = join(root, "state");
-	const paths = ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.json"].map((path) =>
-		join(stateDir, path),
+	const paths = ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.s1.json"].map(
+		(path) => join(stateDir, path),
 	);
 	const calls: Array<{ path: string; model?: string; user?: string }> = [];
 	const server = Bun.serve({
@@ -82,7 +83,10 @@ function pipeline(alias: string, input: ConfigInput) {
 				content: [
 					{
 						type: "text",
-						text: `<BUILD_PROMPT><SCOPE>SHUNT_VALID_SPEC_${calls.length}</SCOPE></BUILD_PROMPT>`,
+						text: UPLIFT("", `SHUNT_VALID_SPEC_${calls.length}`).replace(
+							"<ORIGINAL></ORIGINAL>",
+							"",
+						),
 					},
 				],
 			});

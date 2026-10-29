@@ -68,6 +68,34 @@ describe("mergeConfig", () => {
 		expect(merged.uplift).toEqual(base.uplift);
 	});
 
+	test("defaults: uplift gate 200000, think fillRetries 2 and repair true", () => {
+		const base = defaultConfig();
+		expect(base.uplift.maxChars).toBe(200_000);
+		expect(base.think).toMatchObject({ fillRetries: 2, repair: true });
+	});
+
+	test("an explicit uplift.maxChars of 0 still disables the gate", () => {
+		expect(mergeConfig({ uplift: { maxChars: 0 } }, defaultConfig()).uplift.maxChars).toBe(0);
+	});
+
+	test("think fillRetries accepts a positive integer and repair a boolean; anything else keeps the defaults", () => {
+		const base = defaultConfig();
+		expect(mergeConfig({ think: { fillRetries: 4, repair: false } }, base).think).toMatchObject({
+			fillRetries: 4,
+			repair: false,
+		});
+		for (const bad of [0, -1, 1.5, "3", null]) {
+			expect(mergeConfig({ think: { fillRetries: bad } }, base).think).toMatchObject({
+				fillRetries: 2,
+			});
+		}
+		expect(mergeConfig({ think: { repair: "no" } }, base).think).toMatchObject({ repair: true });
+		expect(mergeConfig({ think: { engine: "grok" } }, base).think).toMatchObject({
+			fillRetries: 2,
+			repair: true,
+		});
+	});
+
 	test("think engine only accepts auto, claude, grok or muse", () => {
 		const base = defaultConfig();
 		expect(mergeConfig({ think: { engine: "grok" } }, base).think.engine).toBe("grok");

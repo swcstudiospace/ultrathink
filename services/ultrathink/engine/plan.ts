@@ -20,6 +20,7 @@ import {
 	type GrokCompleteOptions,
 } from "../../../src/grok/complete.ts";
 import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
+import { attachReport, readReport } from "../../../src/types.ts";
 
 /**
  * The hosted service's coding-plan backend: `claude -p` on the plan holder's login, optionally
@@ -142,7 +143,10 @@ function codeFor(failure: FailureClass): PlanErrorCode {
 function toPlanError(error: unknown): PlanCompleterError {
 	if (error instanceof PlanCompleterError) return error;
 	const failure = classifyFailure(error);
-	return new PlanCompleterError(codeFor(failure), failure, error);
+	const planError = new PlanCompleterError(codeFor(failure), failure, error);
+	// The think stage judges a failed fill by the completer's report: a failure it already retried must not be retried again.
+	attachReport(planError, readReport(error) ?? { attempts: 1 });
+	return planError;
 }
 
 function abortedError(): PlanCompleterError {

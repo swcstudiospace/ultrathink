@@ -12,13 +12,20 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	renameSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
-import { join } from "node:path";
-import { type LockOptions, withFileLock, writeFileAtomic, withLockMutation } from "./atomic.ts";
+import { basename, dirname, join } from "node:path";
+import {
+	type LockOptions,
+	errorCode,
+	withFileLock,
+	withLockMutation,
+	writeFileAtomic,
+} from "./atomic.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
 import type { Clarification } from "../hitl/types.ts";
 import { THINK_ENGINES, type ThinkEngine, type ThoughtGraph } from "../think/types.ts";
@@ -56,7 +63,7 @@ export interface SessionRecord {
 	engineError?: string;
 	/** A successful failover this prompt, e.g. "claude:<model> → grok:<model> (plan-limit)"; not an error. */
 	engineFailover?: string;
-	/** Plan stages that fell back to boilerplate, in run order: "uplift", "graph", "fill:<nodeId>". Absent when every stage used LLM output. */
+	/** Stages that fell back or failed, in run order: "uplift", "graph", "fill:<nodeId>", "think", "clarify". Absent when every stage used LLM output. */
 	degraded?: string[];
 	/** Host that planned this prompt. Absent on records written before multi-host support. */
 	host?: string;
@@ -109,9 +116,44 @@ export function controlPath(dir: string): string {
 	return join(dir, "control.json");
 }
 
-export function readControl(dir: string): ControlState {
-	const raw = readJson(controlPath(dir));
-	if (!raw || typeof raw !== "object") return {};
+/**
+ * The toggles in control.json. A missing file is `{}`. A file whose content is not a JSON object is corrupt: the
+ * flight reads `{}` (nothing is guessed from a torn file), the bad file is renamed to `control.json.corrupt-<epochMs>`
+ * so it is never mistaken for state again, and `log` is told where it went. The next `writeControl` therefore
+ * persists only the toggles it is asked for, never an accidental wipe made by a read failure. A file that cannot be
+ * read at all (permissions, I/O) is reported and read as `{}` but left in place: it may read fine next time. With
+ * `strict` (the read inside `writeControl`'s lock) such a failure throws instead, so a write never builds on `{}`.
+ */
+export function readControl(
+	dir: string,
+	opts: { log?: (message: string) => void; strict?: boolean } = {},
+): ControlState {
+	const path = controlPath(dir);
+	let text: string;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch (error) {
+		if (errorCode(error) !== "ENOENT") {
+			if (opts.strict)
+				throw new Error(
+					`control.json could not be read (${errorCode(error) ?? String(error)}); nothing was written, so the other toggles are kept. Fix ${path} and retry`,
+					{ cause: error },
+				);
+			opts.log?.(`control.json unreadable, using no toggles for this prompt: ${String(error)}`);
+		}
+		return {};
+	}
+	let raw: unknown;
+	try {
+		raw = JSON.parse(text);
+	} catch {
+		// reason: a torn or hand-damaged file is quarantined below
+		raw = undefined;
+	}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		quarantineControl(path, opts.log);
+		return {};
+	}
 	const rec = raw as Record<string, unknown>;
 	const out: ControlState = {};
 	if (typeof rec.enabled === "boolean") out.enabled = rec.enabled;
@@ -122,19 +164,44 @@ export function readControl(dir: string): ControlState {
 	return out;
 }
 
-/** Merges `patch` into control.json; the read-merge-write runs under the file's lock so two toggles never undo each other. */
-export function writeControl(dir: string, patch: ControlState): ControlState {
+/** Renames a corrupt control.json aside and says where it went; a failed rename is reported, never thrown. */
+function quarantineControl(path: string, log: ((message: string) => void) | undefined): void {
+	const stem = `${path}.corrupt-${Date.now()}`;
+	let target = stem;
+	// Several corrupt files in one millisecond must not overwrite each other's quarantine.
+	for (let n = 1; existsSync(target); n++) target = `${stem}-${n}`;
+	try {
+		renameSync(path, target);
+		log?.(
+			`control.json was corrupt: moved to ${basename(target)}; this prompt runs with no toggles, so re-apply any /ultrathink on|off|think|hitl|track|engine setting`,
+		);
+	} catch (error) {
+		log?.(`control.json is corrupt and could not be moved aside: ${String(error)}`);
+	}
+}
+
+/**
+ * Merges `patch` into control.json under the file's lock, so two toggles never undo each other. A held lock is waited
+ * for up to 30 s and then reported as a `LockTimeoutError`: a toggle is never written without the lock, because that is
+ * how a concurrent toggle is lost. A hook path that prefers an unlocked write over a failure passes
+ * `{ onTimeout: "run-unlocked" }`.
+ */
+export function writeControl(dir: string, patch: ControlState, lock?: LockOptions): ControlState {
 	// The lock file lives next to control.json, so the directory must exist before the lock is taken.
 	try {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 	} catch {
 		// reason: writeJson reports the same failure below
 	}
-	return withFileLock(controlPath(dir), () => {
-		const next = { ...readControl(dir), ...patch };
-		writeJson(controlPath(dir), next);
-		return next;
-	});
+	return withFileLock(
+		controlPath(dir),
+		() => {
+			const next = { ...readControl(dir, { log: lock?.log, strict: true }), ...patch };
+			writeJson(controlPath(dir), next);
+			return next;
+		},
+		{ timeoutMs: 30_000, onTimeout: "throw", ...lock },
+	);
 }
 
 /** A plain session id keeps its name: lowercase, letters, digits, `_`, `.`, `-`, at most 120 characters. */
@@ -253,9 +320,16 @@ export function readSession(dir: string, sessionId: string): SessionRecord | und
 }
 
 const LAST_LOCK_WAIT_MS = 5;
-const LAST_LOCK_ATTEMPTS = 40;
+/** How long a refresh waits for a live holder, by the wall clock: a loaded host stretches attempts, not this. */
+const LAST_LOCK_DEADLINE_MS = 3_000;
 const LAST_LOCK_STALE_MS = 5_000;
 const LAST_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+/** Seams of {@link withLastLock}: a clock and a blocking sleep (default: `Date.now`, `Atomics.wait`). */
+export interface LastLockOptions {
+	now?: () => number;
+	sleep?: (ms: number) => void;
+}
 
 /** True for a live PID, a fresh empty lock, or an existing lock that cannot be safely inspected. */
 export function lastLockHeld(lockPath: string): boolean {
@@ -285,13 +359,20 @@ export function lastLockHeld(lockPath: string): boolean {
 /**
  * Exclusive lock for `last.json`. A busy lock does not run `body`: replacing the current plan is worse than
  * leaving the previous copy, so this does not degrade to an unlocked write the way `withFileLock` does.
- * Returns false when the lock cannot be taken within 200ms. A dead pid is reclaimed immediately and an empty
- * lock after 5s; a live pid stays protected regardless of the lock's age.
+ * Returns false when the lock cannot be taken within 3 s of wall-clock time. A dead pid is reclaimed immediately and
+ * an empty lock after 5s; a live pid stays protected regardless of the lock's age.
  */
-export function withLastLock(lastPath: string, body: () => void): boolean {
+export function withLastLock(
+	lastPath: string,
+	body: () => void,
+	opts: LastLockOptions = {},
+): boolean {
 	const lockPath = `${lastPath}.lock`;
+	const now = opts.now ?? Date.now;
+	const sleep = opts.sleep ?? ((ms: number) => void Atomics.wait(LAST_LOCK_SLEEP, 0, 0, ms));
+	const deadline = now() + LAST_LOCK_DEADLINE_MS;
 	let fd: number | undefined;
-	for (let attempt = 0; attempt < LAST_LOCK_ATTEMPTS && fd === undefined; attempt++) {
+	for (let waiting = true; waiting && fd === undefined; ) {
 		try {
 			fd = withLockMutation(lockPath, () => {
 				if (lastLockHeld(lockPath)) return undefined;
@@ -313,7 +394,9 @@ export function withLastLock(lastPath: string, body: () => void): boolean {
 		} catch {
 			return false;
 		}
-		if (fd === undefined) Atomics.wait(LAST_LOCK_SLEEP, 0, 0, LAST_LOCK_WAIT_MS);
+		if (fd !== undefined) break;
+		waiting = now() < deadline;
+		if (waiting) sleep(LAST_LOCK_WAIT_MS);
 	}
 	if (fd === undefined) return false;
 	const ownedFd = fd;
@@ -350,17 +433,35 @@ export function lastRefreshMessage(lastPath: string): string {
 	return `could not refresh ${lastPath}; the session was saved, but ctl last may still show the previous plan`;
 }
 
-/** Writes `record` to `path` and mirrors it to last.json. Returns a warning when `last.json` could not be refreshed; the record file is still saved. */
-function saveSessionFile(dir: string, path: string, record: SessionRecord): string | undefined {
+/** Writes `record` to `path` and mirrors it to last.json. Returns a warning when `last.json` could not be refreshed (busy lock or failed write); the record file is still saved. */
+function saveSessionFile(
+	dir: string,
+	path: string,
+	record: SessionRecord,
+	lastLock?: LastLockOptions,
+): string | undefined {
 	writeJson(path, record);
 	const last = join(dir, "last.json");
-	if (!withLastLock(last, () => writeJson(last, record))) return lastRefreshMessage(last);
+	try {
+		if (!withLastLock(last, () => writeJson(last, record), lastLock))
+			return lastRefreshMessage(last);
+	} catch {
+		// reason: the session file is saved; a failed mirror must not drop the plan pointer the caller holds
+		return lastRefreshMessage(last);
+	}
 	return undefined;
 }
 
-/** Writes the session. Returns a warning when `last.json` could not be refreshed; the session file is still saved. */
-export function writeSession(dir: string, record: SessionRecord): string | undefined {
-	return saveSessionFile(dir, sessionPath(dir, record.sessionId), record);
+/**
+ * Writes the session. Returns a warning when `last.json` could not be refreshed; the session file is still saved.
+ * `lastLock` carries the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s).
+ */
+export function writeSession(
+	dir: string,
+	record: SessionRecord,
+	lastLock?: LastLockOptions,
+): string | undefined {
+	return saveSessionFile(dir, sessionPath(dir, record.sessionId), record, lastLock);
 }
 
 /**
@@ -368,7 +469,10 @@ export function writeSession(dir: string, record: SessionRecord): string | undef
  * undefined without writing when the record is missing or `mutate` returns undefined. `mutate` receives the path
  * readers resolve for this id (`sessionRecordPath`), so any sidecar it writes beside the JSON pairs with it. The
  * record is written back to that same path: a record still under its earlier name keeps its JSON beside its XML, and
- * never splits onto the new name. `mutate` must not write the record file itself.
+ * never splits onto the new name. `mutate` must not write the record file itself. Without `lock` a held lock is waited for 2 s and
+ * then the update runs unlocked, which can lose a concurrent update; that is reported in one line on stderr unless
+ * `lock.log` takes it. A production caller passes its process kind's policy instead: `HOOK_LOCK` (hook entrypoints),
+ * `CLI_LOCK` (a writer that must not lose an update) or `OMP_LOCK` (the TUI process).
  */
 export function updateSession(
 	dir: string,
@@ -376,8 +480,11 @@ export function updateSession(
 	mutate: (record: SessionRecord, recordPath: string) => SessionRecord | undefined,
 	lock?: LockOptions,
 ): SessionRecord | undefined {
+	const lockTarget = sessionPath(dir, sessionId);
+	// No sessions directory, no record to update: nothing to lock, and no lock file could be made there to report.
+	if (!existsSync(dirname(lockTarget))) return undefined;
 	return withFileLock(
-		sessionPath(dir, sessionId),
+		lockTarget,
 		() => {
 			const recordPath = sessionRecordPath(dir, sessionId);
 			const record = readSession(dir, sessionId);
@@ -387,8 +494,85 @@ export function updateSession(
 			saveSessionFile(dir, recordPath, next);
 			return next;
 		},
-		lock,
+		{ log: logUnlockedWrite, ...lock },
 	);
+}
+
+function logUnlockedWrite(message: string): void {
+	process.stderr.write(`[ultrathink] ${message}\n`);
+}
+
+/**
+ * Lock policy of a writer outside every hook (the ultrathink-mcp and grok-bot CLIs): wait up to 30 s for a live holder, then
+ * fail with a `LockTimeoutError` rather than write unlocked. A hook prefers an unlocked write over a failure and keeps the
+ * default; a CLI has nobody waiting on a deadline, and an unlocked write is how a concurrent update is lost.
+ */
+export const CLI_LOCK: LockOptions = { timeoutMs: 30_000, onTimeout: "throw" };
+
+/**
+ * Lock policy of a hook entrypoint (its own short-lived process: `hooks/answers.ts`, `hooks/stop.ts`, `hooks/engine.ts`):
+ * wait up to 15 s, then run unlocked with one logged line. A live holder's lock is never taken, so a long wait only costs
+ * time when someone really holds it, and a cold worker on a loaded host no longer misses a 2 s window and loses an update.
+ */
+export const HOOK_LOCK: LockOptions = { timeoutMs: 15_000 };
+
+/**
+ * Lock policy of the Omp extension, which runs in the TUI process and blocks its event loop while it waits: keep the 2 s
+ * bound, because freezing the TUI for 15 s is worse than the rare logged lost update.
+ */
+export const OMP_LOCK: LockOptions = { timeoutMs: 2_000 };
+
+/** The node ids whose fill degraded, from the `fill:<id>` tokens of a record's `degraded` list; the tracker marks their rows. */
+export function degradedNodeIds(record: Pick<SessionRecord, "degraded"> | undefined): string[] {
+	return (record?.degraded ?? [])
+		.filter((token) => token.startsWith("fill:"))
+		.map((token) => token.slice("fill:".length));
+}
+
+/** A checkpoint's refs: everything the record already holds stays, the live refs are added over it. Never fewer refs. */
+function mergeTrackingRefs(prior: TrackingRefs | undefined, live: TrackingRefs): TrackingRefs {
+	const taskUrl = live.notion.taskUrl ?? prior?.notion.taskUrl;
+	const linearTeam = live.linearTeam ?? prior?.linearTeam;
+	// The live run owns the links still to make (it starts from the record's and removes the ones it made).
+	const pendingLinks = live.pendingLinks ?? prior?.pendingLinks;
+	return {
+		graphId: live.graphId,
+		status: "partial",
+		...(linearTeam ? { linearTeam } : {}),
+		linear: {
+			nodes: { ...prior?.linear.nodes, ...live.linear.nodes },
+			steps: { ...prior?.linear.steps, ...live.linear.steps },
+		},
+		notion: {
+			...(taskUrl ? { taskUrl } : {}),
+			nodes: { ...prior?.notion.nodes, ...live.notion.nodes },
+			steps: { ...prior?.notion.steps, ...live.notion.steps },
+		},
+		...(pendingLinks && Object.keys(pendingLinks).length > 0 ? { pendingLinks } : {}),
+		errors: [...live.errors],
+		updatedAt: live.updatedAt,
+	};
+}
+
+/**
+ * The record mutation behind every tracking checkpoint (the `onRef` of `createTracking`): the live refs are merged over the
+ * refs the record holds, so a flight killed between two rows keeps the rows made so far. Run it under the record's lock
+ * (`updateSession`, or the CLI's locked update). A record that now holds another plan's graph is left alone.
+ */
+export function trackingCheckpoint(
+	graphId: string,
+	live: TrackingRefs,
+): (record: SessionRecord) => SessionRecord | undefined {
+	return (current) =>
+		current.plan?.graphId === graphId
+			? {
+					...current,
+					tracking: mergeTrackingRefs(
+						current.tracking?.graphId === graphId ? current.tracking : undefined,
+						live,
+					),
+				}
+			: undefined;
 }
 
 export function readLast(dir: string): SessionRecord | undefined {

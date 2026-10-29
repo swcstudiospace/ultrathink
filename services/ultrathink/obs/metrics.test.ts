@@ -85,6 +85,22 @@ describe("histogram", () => {
 		expect(out).toContain("h_count 7");
 	});
 
+	test("a call of minutes lands in a finite bucket, not only +Inf", () => {
+		const m = createMetrics();
+		m.observe("ultrathink_planner_call_duration_seconds", 200, { outcome: "ok" });
+		const out = linesOf(m.render());
+		const bucket = (le: string) =>
+			out.find((l) =>
+				l.startsWith(`ultrathink_planner_call_duration_seconds_bucket{outcome="ok",le="${le}"}`),
+			);
+		expect(bucket("120")?.endsWith(" 0")).toBe(true);
+		expect(bucket("300")?.endsWith(" 1")).toBe(true);
+		expect(bucket("600")?.endsWith(" 1")).toBe(true);
+		expect(bucket("+Inf")?.endsWith(" 1")).toBe(true);
+		// The existing bounds are kept.
+		for (const le of ["0.005", "1", "30", "60"]) expect(bucket(le)).toBeDefined();
+	});
+
 	test("without labels the le label stands alone, and a caller label named le is ignored", () => {
 		const m = createMetrics();
 		m.observe("h", 1);

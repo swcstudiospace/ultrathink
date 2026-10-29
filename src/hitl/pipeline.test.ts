@@ -312,7 +312,7 @@ describe("normalizeClarifications with knowledge-base answers", () => {
 describe("runClarify", () => {
 	test("parses fenced JSON from the completer and passes spec, answered, and max to the model", async () => {
 		const calls: { system: string; user: string }[] = [];
-		const list = await runClarify({
+		const { items: list } = await runClarify({
 			uplift,
 			answered: [
 				{
@@ -357,7 +357,7 @@ describe("runClarify", () => {
 		});
 		expect(list).toHaveLength(1);
 		expect(list[0]).toMatchObject({
-			id: "q1",
+			id: "q10",
 			header: "Database",
 			default: "SQLite",
 			blocking: true,
@@ -371,7 +371,7 @@ describe("runClarify", () => {
 		expect(calls[0]?.user).toContain("<max_questions>3</max_questions>");
 	});
 
-	test("returns [] on garbage output or a thrown error and reports the failure via onProgress", async () => {
+	test("returns failed on garbage output or a thrown error and reports the failure via onProgress", async () => {
 		const progress: string[] = [];
 		expect(
 			await runClarify({
@@ -379,7 +379,7 @@ describe("runClarify", () => {
 				complete: async () => "not json at all",
 				onProgress: (m) => progress.push(m),
 			}),
-		).toEqual([]);
+		).toEqual({ items: [], failed: "unparsable JSON" });
 		expect(progress[0]).toBe("Clarifications…");
 		expect(progress.some((m) => m.startsWith("clarify failed: "))).toBe(true);
 		expect(
@@ -390,13 +390,13 @@ describe("runClarify", () => {
 				},
 				onProgress: (m) => progress.push(m),
 			}),
-		).toEqual([]);
+		).toEqual({ items: [], failed: "boom" });
 		expect(progress.at(-1)).toBe("clarify failed: boom");
 	});
 
 	test("reports the question count via onProgress on success", async () => {
 		const progress: string[] = [];
-		const list = await runClarify({
+		const { items: list } = await runClarify({
 			uplift,
 			complete: async () =>
 				JSON.stringify({
@@ -446,7 +446,7 @@ describe("runClarify", () => {
 			onProgress: (m: string) => progress.push(m),
 		};
 
-		const withKb = await runClarify({
+		const { items: withKb } = await runClarify({
 			...base,
 			knowledge: {
 				digest: "\n### docs/storage.md\nRecords live in SQLite.\n",
@@ -465,7 +465,7 @@ describe("runClarify", () => {
 			"</graph_conclusions>\n\n<knowledge_base>\n### docs/storage.md\nRecords live in SQLite.\n</knowledge_base>",
 		);
 
-		const withoutKb = await runClarify(base);
+		const { items: withoutKb } = await runClarify(base);
 		expect(withoutKb.map((item) => item.id)).toEqual(["q1"]);
 		expect(progress.at(-1)).toBe("Clarifications → 1");
 		expect(calls[1]?.system).toBe(clarifySystemPrompt(4));
@@ -675,7 +675,7 @@ interface ClarifyRun {
 async function clarify(reply: unknown, opts: Partial<RunClarifyOptions> = {}): Promise<ClarifyRun> {
 	const records: DecisionRecord[] = [];
 	const progress: string[] = [];
-	const list = await runClarify({
+	const { items: list } = await runClarify({
 		uplift,
 		complete: async () => JSON.stringify(reply),
 		onProgress: (message) => progress.push(message),
@@ -1417,5 +1417,244 @@ describe("runClarify with Jev decisions", () => {
 				["blocking", "keep"],
 			]);
 		});
+	});
+
+	describe("a reply cut off mid-array still gets the Jev checks (greptile r1 #5)", () => {
+		const truncated = (items: unknown[]): string => {
+			const full = JSON.stringify({ questions: [...items, openItem("Cut off after this?")] });
+			return full.slice(0, full.length - 25);
+		};
+		const clarifyText = async (text: string, opts: Partial<RunClarifyOptions>) => {
+			const records: DecisionRecord[] = [];
+			const result = await runClarify({
+				uplift,
+				complete: async () => text,
+				onDecision: (record) => records.push(record),
+				...opts,
+			});
+			return { ...result, records };
+		};
+
+		test("an unsupported settled claim in the recovered items is asked, not left settled", async () => {
+			const r = recordingFetch([JEV(0.05, "supported")]);
+			const run = await clarifyText(truncated([kbClaim(SESSIONS_Q)]), {
+				knowledge: kb(),
+				decisions: jev(r.fetch, ["knowledge"]).decisions,
+			});
+			expect(run.failed).toContain("reply truncated: kept 1 complete question");
+			expect(r.calls).toHaveLength(1);
+			expect(run.items).toEqual([
+				{
+					id: "q1",
+					question: SESSIONS_Q,
+					header: "Auth",
+					why: "shapes the session model",
+					options: [{ label: "As stated", description: SESSIONS_A }, { label: "Something else" }],
+					default: "As stated",
+					blocking: false,
+				},
+			]);
+			expect(run.records).toMatchObject([{ point: "knowledge", action: "reject-claim" }]);
+		});
+
+		test("a risky default in the recovered items is promoted to blocking", async () => {
+			const r = recordingFetch([JEV(0.68, "risky")]);
+			const run = await clarifyText(truncated([openItem()]), {
+				decisions: jev(r.fetch, ["blocking"]).decisions,
+			});
+			expect(run.failed).toContain("reply truncated");
+			expect(r.calls).toHaveLength(1);
+			expect(run.items.map((item) => [item.question, item.blocking])).toEqual([[COLUMN_Q, true]]);
+			expect(run.records).toMatchObject([{ point: "blocking", action: "promote" }]);
+		});
+
+		test("with Jev off the recovered items are returned exactly as before", async () => {
+			const r = recordingFetch([JEV(0.68, "risky")]);
+			const run = await clarifyText(truncated([kbClaim(SESSIONS_Q), openItem()]), {
+				knowledge: kb(),
+				decisions: jevOff(r.fetch, ["knowledge", "blocking"]).decisions,
+			});
+			expect(r.calls).toHaveLength(0);
+			expect(run.items.map((item) => [item.id, item.source, item.blocking])).toEqual([
+				["q1", undefined, false],
+				["k1", "knowledge", false],
+			]);
+		});
+	});
+});
+
+describe("runClarify failure contract and salvage", () => {
+	const q = (n: number, extra = "") => ({
+		question: `Question number ${n}?`,
+		header: `H${n}`,
+		why: `reason ${n} ${extra}`,
+		options: twoOptions,
+		default: "SQLite",
+		blocking: false,
+	});
+	const longPad = "x".repeat(140);
+	const threeReply = JSON.stringify({ questions: [q(1), q(2), q(3, longPad)] });
+
+	test("a provider error returns failed with a redacted single-line cause and no items", async () => {
+		const result = await runClarify({
+			uplift,
+			complete: async () => {
+				throw new Error(
+					"upstream 503\nAuthorization: Bearer abcdef1234567890abcdef1234\nretry later",
+				);
+			},
+		});
+		expect(result.items).toEqual([]);
+		expect(result.failed).toBeDefined();
+		expect(result.failed).not.toContain("\n");
+		expect(result.failed).not.toContain("abcdef1234567890abcdef1234");
+		expect(result.failed).toContain("upstream 503");
+		expect((result.failed ?? "").length).toBeLessThanOrEqual(200);
+	});
+
+	test("a non-abort timeout error maps to failed; an abort still rethrows", async () => {
+		const timeout = Object.assign(new Error("request timed out after 30000ms"), {
+			name: "TimeoutError",
+		});
+		const result = await runClarify({
+			uplift,
+			complete: async () => {
+				throw timeout;
+			},
+		});
+		expect(result.items).toEqual([]);
+		expect(result.failed).toContain("timed out");
+		const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
+		await expect(
+			runClarify({
+				uplift,
+				complete: async () => {
+					throw abort;
+				},
+			}),
+		).rejects.toBe(abort);
+	});
+
+	test("an unparseable or empty reply returns failed, not an empty ok list", async () => {
+		for (const reply of ["I think you should ask about the database.", ""]) {
+			const result = await runClarify({ uplift, complete: async () => reply });
+			expect(result.items).toEqual([]);
+			expect(result.failed).toBeDefined();
+			expect(result.failed).not.toContain("database");
+		}
+	});
+
+	test("a legitimately empty questions array is ok, not failed", async () => {
+		const result = await runClarify({
+			uplift,
+			complete: async () => JSON.stringify({ questions: [] }),
+		});
+		expect(result.items).toEqual([]);
+		expect(result.failed).toBeUndefined();
+	});
+
+	test.each([60, 90])(
+		"a reply cut %i chars short keeps the complete leading items",
+		async (cut) => {
+			const text = threeReply.slice(0, threeReply.length - cut);
+			expect(text.length).toBeGreaterThan(threeReply.indexOf("Question number 3"));
+			const result = await runClarify({ uplift, complete: async () => text });
+			expect(result.items.map((item) => item.question)).toEqual([
+				"Question number 1?",
+				"Question number 2?",
+			]);
+			expect(result.items.map((item) => item.id)).toEqual(["q1", "q2"]);
+			expect(result.failed).toBeDefined();
+			expect(result.failed).not.toContain("Question number");
+		},
+	);
+
+	test("a fenced reply truncated without its closing fence is salvaged", async () => {
+		const text = `\`\`\`json\n${threeReply.slice(0, threeReply.length - 60)}`;
+		const result = await runClarify({ uplift, complete: async () => text });
+		expect(result.items).toHaveLength(2);
+		expect(result.failed).toBeDefined();
+	});
+
+	test("a 200k-char question, label, description and why are capped", async () => {
+		const huge = "A".repeat(200_000);
+		const result = await runClarify({
+			uplift,
+			complete: async () =>
+				JSON.stringify({
+					questions: [
+						{
+							question: huge,
+							why: huge,
+							options: [{ label: huge, description: huge }, { label: "b\n## Injected heading" }],
+						},
+					],
+				}),
+		});
+		const item = result.items[0]!;
+		expect(item.question.length).toBeLessThanOrEqual(700);
+		expect(item.why.length).toBeLessThanOrEqual(700);
+		expect(item.options[0]!.label.length).toBeLessThanOrEqual(120);
+		expect(item.options[0]!.description?.length ?? 0).toBeLessThanOrEqual(400);
+		expect(item.options[1]!.label).toBe("b ## Injected heading");
+	});
+
+	test("a second turn continues numbering after the answered items", async () => {
+		const answered: Clarification[] = ["q1", "q2"].map((id) => ({
+			id,
+			question: `Old ${id}?`,
+			header: "Old",
+			why: "",
+			options: twoOptions,
+			blocking: false,
+			answer: "SQLite",
+		}));
+		const result = await runClarify({
+			uplift,
+			answered,
+			complete: async () => JSON.stringify({ questions: [q(1), q(2)] }),
+		});
+		expect(result.items.map((item) => item.id)).toEqual(["q3", "q4"]);
+		expect(result.failed).toBeUndefined();
+	});
+
+	test("hostile graph titles and answered text stay single-line and capped in the payload", async () => {
+		const users: string[] = [];
+		await runClarify({
+			uplift,
+			graph: {
+				goal: "g",
+				nodes: [
+					{
+						id: "n1",
+						title: `Title\n## Injected ${"T".repeat(5000)}`,
+						kind: "understand",
+						question: "?",
+						dependsOn: [],
+						conclusion: "ok",
+					},
+				],
+			},
+			answered: [
+				{
+					id: "q1",
+					question: "Old\n## heading?",
+					header: "Old",
+					why: "",
+					options: twoOptions,
+					blocking: false,
+					answer: "line1\n## forged",
+				},
+			],
+			complete: async (_system, user) => {
+				users.push(user);
+				return JSON.stringify({ questions: [] });
+			},
+		});
+		const user = users[0]!;
+		expect(user).not.toContain("\n## Injected");
+		expect(user).toContain("[n1] Title ## Injected");
+		expect(user).not.toContain("T".repeat(200));
+		expect(user).toContain("Old ## heading? → line1 ## forged");
 	});
 });

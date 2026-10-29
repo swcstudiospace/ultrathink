@@ -26,6 +26,7 @@ import {
 	setup,
 	tuiCtx,
 } from "./omp-test.helpers.ts";
+import { UPLIFT } from "../test.helpers.ts";
 import { planPrompt } from "./plan.ts";
 import type { PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
@@ -219,7 +220,10 @@ describe("named legacy flight identity (REV15-005)", () => {
 					};
 					calls.push({ path, model: body.model, user: body.input ?? body.messages?.[0]?.content });
 					// No ORIGINAL echo: the real uplift sanitizer must preserve the submitted user's words.
-					const xml = `<BUILD_PROMPT><SCOPE>${path === oldPath ? oldMarker : currentMarker}</SCOPE></BUILD_PROMPT>`;
+					const xml = UPLIFT("", path === oldPath ? oldMarker : currentMarker).replace(
+						"<ORIGINAL></ORIGINAL>",
+						"",
+					);
 					return Response.json(
 						transport === "shunt"
 							? { type: "message", role: "assistant", content: [{ type: "text", text: xml }] }
@@ -323,7 +327,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 				{ cwd: root, model: fakeModel("acme", "unchanged-session-model"), ...t.ctx },
 			);
 			const pending = { message: expect.objectContaining({ customType: "ultrathink-pending" }) };
-			const paths = ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.json"].map(
+			const paths = ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.s1.json"].map(
 				(path) => join(stateDir, path),
 			);
 			emit("session_start");

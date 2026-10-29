@@ -116,7 +116,11 @@ async function getJson(url: string, deps: AuthDeps): Promise<Record<string, unkn
 	return readJsonObject(response);
 }
 
-/** Store mutations always re-read inside the lock so a stale snapshot is never written. */
+/**
+ * Store mutations always re-read inside the lock so a stale snapshot is never written. The in-lock read is strict: a
+ * store that cannot be read throws and is left as it is, so a failed read never becomes a persisted empty store. A
+ * mutation that changed nothing writes nothing.
+ */
 async function mutateStore<T>(
 	deps: AuthDeps,
 	fn: (store: CredentialStore) => Promise<T> | T,
@@ -124,9 +128,10 @@ async function mutateStore<T>(
 	return withStoreLock(
 		deps.storePath,
 		async () => {
-			const store = readStore(deps.storePath);
+			const store = readStore(deps.storePath, { strict: true });
+			const before = JSON.stringify(store);
 			const result = await fn(store);
-			writeStore(deps.storePath, store);
+			if (JSON.stringify(store) !== before) writeStore(deps.storePath, store);
 			return result;
 		},
 		{ ...deps.lock, now: deps.now, sleep: deps.sleep },
@@ -430,7 +435,7 @@ export async function resolveAuthHeader(
 		return undefined;
 	}
 	const now = deps.now ?? Date.now;
-	const credential = readStore(deps.storePath).providers[provider];
+	const credential = readStore(deps.storePath, { strict: true }).providers[provider];
 	if (!credential) return undefined;
 	if (credential.kind === "api_key") return `Bearer ${credential.apiKey}`;
 	if (credential.needsLogin || !credential.tokens) return undefined;

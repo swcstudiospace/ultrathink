@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { resolvePstack } from "../cursor/pstack.ts";
-import { isCommandPrompt, isTrivial } from "./detect.ts";
+import { isTrivial } from "./detect.ts";
 
 export interface SkillInvocation {
 	/** As invoked, without a leading "/" or the Omp / Prime Agent "skill:" prefix; Claude plugin skills keep "plugin:skill". */
@@ -186,22 +186,33 @@ function normalizeName(raw: string): string {
 export function parseSlashCommand(prompt: string): { name: string; args?: string } | undefined {
 	const text = prompt.trim();
 	if (text.startsWith("/")) {
-		const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
-		const name = match ? normalizeName(`/${match[1] ?? ""}`) : "";
-		if (!name) return undefined;
-		return { name, args: nonEmpty(match?.[2]) };
+		const space = text.search(/\s/);
+		const name = normalizeName(space === -1 ? text : text.slice(0, space));
+		if (!name || name === "/") return undefined;
+		return { name, args: space === -1 ? undefined : nonEmpty(text.slice(space)) };
 	}
 	if (!/^<command-(?:name|message)\b/i.test(text)) return undefined;
-	const command = /<command-name>\s*([\s\S]*?)\s*<\/command-name>/i.exec(text);
-	const name = normalizeName(command?.[1] ?? "");
+	const name = normalizeName(tagInner(text, "command-name") ?? "");
 	if (!name) return undefined;
-	const args = /<command-args>([\s\S]*?)<\/command-args>/i.exec(text);
-	return { name, args: nonEmpty(args?.[1]) };
+	return { name, args: nonEmpty(tagInner(text, "command-args")) };
+}
+
+/** Text between `<tag>` and `</tag>` (case-insensitive, first pair), trimmed. Index scans only, so whitespace runs stay linear. */
+function tagInner(text: string, tag: string): string | undefined {
+	const open = new RegExp(`<${tag}>`, "i").exec(text);
+	if (!open) return undefined;
+	const from = open.index + open[0].length;
+	const close = new RegExp(`</${tag}>`, "i").exec(text.slice(from));
+	return close ? text.slice(from, from + close.index).trim() : undefined;
 }
 
 /** The typed text inside the `<user_query>` wrapper Grok puts first in the prompt its hooks receive (skill and context blocks follow). Pure. */
 export function grokUserQuery(prompt: string): string | undefined {
-	return /^<user_query>\s*([\s\S]*?)\s*<\/user_query>/.exec(prompt.trimStart())?.[1];
+	const text = prompt.trimStart();
+	const open = "<user_query>";
+	if (!text.startsWith(open)) return undefined;
+	const close = text.indexOf("</user_query>", open.length);
+	return close === -1 ? undefined : text.slice(open.length, close).trim();
 }
 
 function readSkill(path: string): { path: string; summary?: string } | undefined {
@@ -315,27 +326,39 @@ function ownFile(
 	}
 }
 
+/**
+ * What a skill invocation plans. An instruction that begins with `/` (a stacked command, a path, a scaffold's own
+ * line) never becomes planning text as is: it gets the `Run the "<name>" skill.` lead so no layer reads it as a command.
+ */
 function targetFor(skill: SkillInvocation): { text: string; skill: SkillInvocation } {
 	const text =
 		skill.instruction && !isTrivial(skill.instruction)
 			? skill.instruction
 			: `Run the "${skill.name}" skill.${skill.summary ? ` ${skill.summary}` : ""}`;
-	return { text, skill };
+	return { text: text.startsWith("/") ? `Run the "${skill.name}" skill. ${text}` : text, skill };
 }
 
-/**
- * A `/gsd-*` prompt with no skill file is still planning input. The task is the text after the
- * command. When that text is itself a slash command, keep it, but do not let the planning text
- * start with `/` — `decideUplift` would then skip it as an unknown command.
- */
+/** A `/gsd-*` prompt with no skill file is still planning input; the task is the text after the command. */
 function gsdPlanningTarget(
 	name: string,
 	instruction?: string,
 ): { text: string; skill: SkillInvocation } {
-	const skill: SkillInvocation = { name, ...(instruction ? { instruction } : {}), source: "slash" };
-	const planned = targetFor(skill);
-	if (!isCommandPrompt(planned.text)) return planned;
-	return { text: `Run the "${name}" skill. ${planned.text}`, skill };
+	return targetFor({ name, ...(instruction ? { instruction } : {}), source: "slash" });
+}
+
+/**
+ * Commands the host itself answers (Claude Code, Omp, Grok and Hermes built-ins). They have no file on disk, so a name
+ * list is the only way to tell `/clear` from a word the user simply began a sentence with. Plugin-namespaced names
+ * (`plugin:command`) are host commands too.
+ */
+const HOST_COMMANDS: ReadonlySet<string> = new Set(
+	"help clear compact model cost config init login logout mcp memory permissions status doctor agents hooks ide resume rewind export usage theme context exit quit plugin plugins review bug vim fast effort uplift add-dir terminal-setup statusline output-style todos upgrade release-notes privacy-settings settings skills new undo redo reload tools copy diff sandbox rename feedback btw".split(
+		" ",
+	),
+);
+
+function isHostCommand(name: string): boolean {
+	return name.includes(":") || HOST_COMMANDS.has(name.toLowerCase());
 }
 
 type SkipReason = "slash-command" | "ultrathink-skill" | "ultrathink-command" | "nested-child";
@@ -386,6 +409,8 @@ export function planningTarget(
 	// Grok wraps what the user typed in <user_query>; ultrathink's own skills and commands must not plan there either.
 	const typed = command ?? parseSlashCommand(grokUserQuery(prompt) ?? "");
 	if (!typed) return { text: prompt };
+	// `/root/src/x.ts is broken` is a path-led sentence, not a command, also inside Grok's <user_query> wrapper.
+	if (typed.name.includes("/")) return { text: prompt };
 	if (isUltrathinkSkill(typed.name)) return { skip: "ultrathink-skill" };
 	if (ULTRATHINK_COMMAND_RE.test(typed.name)) return { skip: "ultrathink-command" };
 	const file = resolveSkillFile(typed.name, lookup);
@@ -399,7 +424,15 @@ export function planningTarget(
 		const walked = walkStacked(command.args, lookup);
 		return "skip" in walked ? walked : gsdPlanningTarget(gsdName, command.args);
 	}
-	if (!file) return { skip: "slash-command" };
+	if (!file) {
+		if (isHostCommand(command.name)) return { skip: "slash-command" };
+		// An existing path such as `/tmp` begins a sentence; an unknown word is neither a command nor a skill. Both plan,
+		// with text that no longer starts with `/`, so decideUplift's lookup-free command check lets it through.
+		if (existsSync(`/${command.name}`)) return { text: prompt };
+		return {
+			text: `Unrecognised command "/${command.name}"${command.args ? `: ${command.args}` : ""}`,
+		};
+	}
 	const walked = walkStacked(command.args, lookup);
 	if ("skip" in walked) return walked;
 	return targetFor({

@@ -10,6 +10,7 @@
  */
 import { join } from "node:path";
 import { isChildInvocation } from "../src/claude/complete.ts";
+import { installChildReaper } from "../src/resilience/child.ts";
 import { defaultStateDir } from "../src/claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../src/config.ts";
 import {
@@ -60,7 +61,8 @@ export interface FlowHookDeps {
 	evaluate: (input: FlowEvalInput) => Promise<FlowRecord>;
 	lookup: (path: string, hash: string) => FlowRecord | undefined;
 	append: (path: string, record: FlowRecord) => void;
-	log: (line: string) => void;
+	/** Writes one hook output line; the entry awaits it, so a long line is never cut by the exit. */
+	log: (line: string) => void | Promise<void>;
 }
 
 /**
@@ -90,7 +92,7 @@ export async function evaluateFlowHook(input: HookInput, deps: FlowHookDeps): Pr
 	const note = formatFlowNote(record);
 	if (note === undefined) return;
 	if (!cached) deps.append(logPath, record);
-	deps.log(JSON.stringify({ additionalContext: note }));
+	await deps.log(JSON.stringify({ additionalContext: note }));
 }
 
 async function main(): Promise<void> {
@@ -111,8 +113,17 @@ async function main(): Promise<void> {
 		evaluate: evaluateFlowOutput,
 		lookup: lookupFlowScore,
 		append: appendFlowScore,
-		log: (line) => console.log(line),
+		log: (line) => Bun.write(Bun.stdout, `${line}\n`).then(() => undefined),
 	});
 }
 
-if (import.meta.main) main().catch(() => process.exit(0));
+if (import.meta.main) {
+	installChildReaper({ signals: true });
+	main()
+		.catch(() => {
+			// reason: fail-open: a hook never fails the tool call
+		})
+		.finally(() => {
+			process.exit(0);
+		});
+}

@@ -7,10 +7,10 @@
  * Deterministic skips run before an engine is selected; one selected engine
  * then serves every stage, and its safe resolution record travels with the plan.
  */
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { redactSecrets } from "../redact.ts";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { isChildInvocation } from "../claude/complete.ts";
+import type { LockOptions } from "../claude/atomic.ts";
 import { type HookDeps, runPromptSubmit } from "../claude/hook.ts";
 import {
 	clearSkipOnce,
@@ -23,6 +23,7 @@ import {
 } from "../claude/state.ts";
 import { recentConversationFromTranscript } from "../claude/transcript.ts";
 import { parseUltrathinkCommand, trackingEnabled, trackingOff } from "../uplift/commands.ts";
+import { recordLastSkip } from "../uplift/skip.ts";
 import { decideUplift, isTrivial } from "../uplift/detect.ts";
 import { planningTarget, type SkillInvocation } from "../uplift/skill.ts";
 import { fetchBrief } from "../substrate/brief.ts";
@@ -30,11 +31,11 @@ import { writePlanCarrier } from "./carrier.ts";
 import { createGatewayTracker, trackCommand, type Tracker } from "../track/gateway.ts";
 import { detectHost } from "./detect.ts";
 import { type ModelResolution, type NativeEngineSelector, selectEngine } from "./engine.ts";
-import { isOmpSubagentSessionId } from "./omp-session.ts";
 import { resolveStateDir } from "./paths.ts";
 import type { ProgressSink } from "./progress.ts";
 import type { HostId } from "./types.ts";
 import type { UpliftState } from "../types.ts";
+import { isAbortError } from "../shared.ts";
 import { buildPlanView, type PlanView } from "./view.ts";
 
 export interface PlanRequest {
@@ -84,13 +85,28 @@ export interface PlanOptions {
 	control?: ControlState;
 	/** State directory for control, sessions, specs and the carrier; defaults to the host's resolved state directory. */
 	stateDir?: string;
-	/** Test seam for the hook-side tracker; defaults to `createGatewayTracker`. */
-	createTracker?: (config: UltrathinkConfig) => Tracker | undefined;
+	/** Lock policy of the plan save and tracker checkpoints. Absent: `runPromptSubmit` uses `HOOK_LOCK` (a hook process); Omp passes `OMP_LOCK`. */
+	stateLock?: LockOptions;
+	/** Test seam for the hook-side tracker; defaults to `createGatewayTracker`. `deps.log` receives credential and setup errors. */
+	createTracker?: (
+		config: UltrathinkConfig,
+		deps?: { log?: (message: string) => void },
+	) => Tracker | undefined;
 	/** Test seams for the lessons and RAGFlow lookups (see HookDeps); default to the configured Teachable Moments and RAGFlow. */
 	recall?: HookDeps["recall"];
 	ground?: HookDeps["ground"];
 	/** Test seam for the Realm probe (see HookDeps); defaults to the real, free, read-only probe. */
 	realmProbe?: HookDeps["realmProbe"];
+	/** Test seam for the Graph of Thought (see HookDeps); defaults to `runThink`. */
+	think?: HookDeps["think"];
+}
+
+/** One diagnostic line on stderr when `ULTRATHINK_DEBUG=1`, like the hook entries' own log. */
+function debugLog(env: Record<string, string | undefined>): (message: string) => void {
+	return (message) => {
+		if (env.ULTRATHINK_DEBUG === "1")
+			process.stderr.write(`[ultrathink] ${redactSecrets(message)}\n`);
+	};
 }
 
 function skipReason(
@@ -106,20 +122,37 @@ function skipReason(
 	return undefined;
 }
 
+/** A redacted, single-line, bounded label of why planning failed: the error's name (or string code), never its message. */
+function causeOf(error: unknown): string {
+	let label = "error";
+	if (error instanceof Error) {
+		label = error.name || "Error";
+		if ("code" in error && typeof error.code === "string" && error.code)
+			label = `${label}/${error.code}`;
+	}
+	return redactSecrets(label).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
 export async function planPrompt(
 	request: PlanRequest,
 	env: Record<string, string | undefined> = process.env,
 	options: PlanOptions = {},
 ): Promise<PlanResponse> {
 	const started = Date.now();
-	const skip = (reason: string | undefined, modelResolution?: ModelResolution): PlanResponse => {
+	const skip = (
+		reason: string | undefined,
+		modelResolution?: ModelResolution,
+		cause?: string,
+	): PlanResponse => {
 		const withResolution = modelResolution ? { modelResolution } : {};
 		try {
+			// The end event may name the cause; the response keeps the bare stable code.
+			const detail = reason && cause ? `${reason} (${cause})` : reason;
 			options.progress?.({
 				type: "end",
 				at: Date.now(),
 				outcome: "skipped",
-				...(reason ? { detail: reason } : {}),
+				...(detail ? { detail } : {}),
 				...withResolution,
 			});
 		} catch {
@@ -127,6 +160,7 @@ export async function planPrompt(
 		}
 		return { context: "", skipped: reason, ...withResolution };
 	};
+	const log = debugLog(env);
 	const host = request.host ?? detectHost(env);
 	const skipped = skipReason(request, env);
 	if (skipped) return skip(skipped);
@@ -162,15 +196,8 @@ export async function planPrompt(
 			return skip("engine-error");
 		}
 	}
-	if (host === "omp") {
-		try {
-			const agentDir = env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".omp", "agent");
-			if (isOmpSubagentSessionId(request.session_id ?? "", { root: join(agentDir, "sessions") }))
-				return skip("subagent");
-		} catch {
-			// reason: fail-open: a throwing guard means "not a subagent"
-		}
-	}
+	// An Omp subagent never reaches this point: the extension (`isSubagentSession`, O(1)) gates it before it plans, so
+	// there is no synchronous session-store scan here.
 	let text = request.prompt ?? "";
 	let skill: SkillInvocation | undefined;
 	// Supplied config, control and stateDir are this flight's captured values, never alternate stores. The armed skip is
@@ -185,7 +212,7 @@ export async function planPrompt(
 		if ("skip" in target) return skip(target.skip);
 		text = target.text;
 		skill = target.skill;
-		control = options.control ?? readControl(stateDir);
+		control = options.control ?? readControl(stateDir, { log });
 		// A Hermes skill loaded with no task (or only an ack) is a preamble, not a request to plan. An armed
 		// /ultrathink-skip must still be consumed by runPromptSubmit, as a trivial prompt consumes it on Claude.
 		if (
@@ -217,7 +244,12 @@ export async function planPrompt(
 				// reason: fail-open: the skip still applies to this prompt
 			}
 		}
-		if (decision.action !== "uplift") return skip(`precheck-${decision.action}`);
+		if (decision.action !== "uplift") {
+			// The response names the real reason (`precheck-trivial`, `precheck-graph-reference`, ...), and `ultrathink status` shows it.
+			const why = decision.action === "skip" ? decision.reason : decision.action;
+			recordLastSkip(stateDir, why);
+			return skip(`precheck-${why}`);
+		}
 		// Only eligible input reaches selection, so a skipped prompt never meets the native selector or cancellation. A
 		// flight cancelled already selects nothing: no native lookup, auth or inference.
 		if (options.signal?.aborted) return skip("aborted");
@@ -254,8 +286,11 @@ export async function planPrompt(
 				engineError: engine.error,
 				engineFailover: engine.failover,
 				engineReport: engine.report,
+				// One limiter per flight: the engine route's own (Omp's native binding feeds it), reused by the think stage.
+				...(engine.throttle ? { throttle: engine.throttle } : {}),
 				modelResolution: resolution,
 				stateDir,
+				...(options.stateLock ? { stateLock: options.stateLock } : {}),
 				armedSkip: skipArmed,
 				surface: host,
 				conversation: recentConversationFromTranscript,
@@ -267,7 +302,7 @@ export async function planPrompt(
 				// On Hermes the kickoff skill creates rows through `track complete`, so an abandoned or killed hook never leaves orphan rows.
 				track:
 					host !== "hermes" && trackingEnabled(config, control, env)
-						? (options.createTracker ?? createGatewayTracker)(config)
+						? (options.createTracker ?? createGatewayTracker)(config, { log })
 						: undefined,
 				trackingOff: trackingOff(config, control),
 				trackCommand: trackCommand(),
@@ -277,6 +312,7 @@ export async function planPrompt(
 				...(options.recall ? { recall: options.recall } : {}),
 				...(options.ground ? { ground: options.ground } : {}),
 				...(options.realmProbe ? { realmProbe: options.realmProbe } : {}),
+				...(options.think ? { think: options.think } : {}),
 				signal: options.signal,
 			},
 		);
@@ -317,14 +353,7 @@ export async function planPrompt(
 		};
 	} catch (error) {
 		// Provider cancellation need not abort the caller's signal. Preserve it here with only the safe selection record.
-		if (
-			options.signal?.aborted ||
-			(typeof error === "object" &&
-				error !== null &&
-				"name" in error &&
-				error.name === "AbortError")
-		)
-			return skip("aborted", resolution);
-		return skip("engine-error", resolution);
+		if (options.signal?.aborted || isAbortError(error)) return skip("aborted", resolution);
+		return skip("engine-error", resolution, causeOf(error));
 	}
 }

@@ -291,3 +291,14 @@ describe("emit", () => {
 		}
 	});
 });
+
+describe("child reaper", () => {
+	test("the entry installs it with signals before it plans, because it spawns detached completer children", () => {
+		const source = readFileSync(new URL("./engine.ts", import.meta.url), "utf8");
+		const main = source.slice(source.indexOf("if (import.meta.main) {"));
+		expect(main).toMatch(
+			/if \(import\.meta\.main\) \{\s*installChildReaper\(\{ signals: true \}\);\s*main\(\)/,
+		);
+		expect(source).toContain('import { installChildReaper } from "../src/resilience/child.ts";');
+	});
+});

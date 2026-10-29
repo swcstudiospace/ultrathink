@@ -24,6 +24,39 @@ export function yieldTurn(): Promise<void> {
 	return promise;
 }
 
+interface WaitUntilOptions {
+	/** Give up after this many milliseconds; default 30000. */
+	timeoutMs?: number;
+	/** Poll period in milliseconds; default 10. */
+	intervalMs?: number;
+	/** Names the condition in the timeout error; defaults to the predicate source. */
+	name?: string;
+	/** Clock seam; defaults to Date.now. */
+	now?: () => number;
+	/** Sleep seam; defaults to a real timer. */
+	sleep?: (ms: number) => Promise<void>;
+}
+
+/** Polls a predicate until it is true; rejects with an error naming the condition after timeoutMs. It never measures or asserts elapsed time itself. */
+export async function waitUntil(
+	predicate: () => boolean | Promise<boolean>,
+	opts: WaitUntilOptions = {},
+): Promise<void> {
+	const timeoutMs = opts.timeoutMs ?? 30_000;
+	const intervalMs = opts.intervalMs ?? 10;
+	const now = opts.now ?? Date.now;
+	const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const deadline = now() + timeoutMs;
+	while (!(await predicate())) {
+		if (now() >= deadline) {
+			throw new Error(
+				`waitUntil timed out after ${timeoutMs} ms waiting for: ${opts.name ?? (predicate.name || predicate.toString())}`,
+			);
+		}
+		await sleep(intervalMs);
+	}
+}
+
 /** A PHC-shaped argon2id string with random salt and digest; it is not a hash of any password. */
 export function randomHash(): string {
 	// PHC strings use standard base64 without padding, as Bun.password.hash writes them.
@@ -32,8 +65,9 @@ export function randomHash(): string {
 	return `$argon2id$v=19$m=65536,t=2,p=1$${salt}$${digest}`;
 }
 
-export const UPLIFT = (original: string) =>
-	`<BUILD_PROMPT><ORIGINAL>${escapeXml(original)}</ORIGINAL><SYSTEM_ROLE>Senior TypeScript engineer.</SYSTEM_ROLE><APP_CONTEXT>A standalone CLI.</APP_CONTEXT><SCOPE>CSV to JSON with streaming.</SCOPE><CONSTRAINTS>Do not invent repo facts.</CONSTRAINTS><ACCEPTANCE_CRITERIA>Converts a 1 GB file in bounded memory.</ACCEPTANCE_CRITERIA><OUT_OF_SCOPE>XLSX input.</OUT_OF_SCOPE></BUILD_PROMPT>`;
+/** A valid uplift reply: a closed known root carrying every required child. `scope` marks one reply apart from another. */
+export const UPLIFT = (original: string, scope = "CSV to JSON with streaming.") =>
+	`<BUILD_PROMPT><ORIGINAL>${escapeXml(original)}</ORIGINAL><SYSTEM_ROLE>Senior TypeScript engineer.</SYSTEM_ROLE><APP_CONTEXT>A standalone CLI.</APP_CONTEXT><SCOPE>${scope}</SCOPE><CONSTRAINTS>Do not invent repo facts.</CONSTRAINTS><ACCEPTANCE_CRITERIA>Converts a 1 GB file in bounded memory.</ACCEPTANCE_CRITERIA><OUT_OF_SCOPE>XLSX input.</OUT_OF_SCOPE></BUILD_PROMPT>`;
 
 const steps = (n: number, id: string) =>
 	Array.from(
@@ -61,7 +95,7 @@ export function thrownBy(run: () => void): unknown {
 	return undefined;
 }
 
-/** About 8 KB of primitives per record (32 keys, 250 characters each), so a 1 MiB segment holds about 125 records. */
+/** About 8 KB of primitives per record (32 keys, 250 characters each), so a 1 MiB segment holds about 125 records. The audit log clips strings to 256 characters and keeps 32 keys, so a record cannot be larger. */
 export function bulk(i: number): Record<string, string | number> {
 	const fields: Record<string, string | number> = { n: i };
 	for (let k = 0; k < 31; k += 1) fields[`k${k}`] = "x".repeat(250);

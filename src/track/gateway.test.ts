@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, type UltrathinkConfig } from "../config.ts";
@@ -199,5 +199,91 @@ describe("createGatewayTracker", () => {
 		const result = await tracking;
 		expect(urls).toContain("https://mcp.notion.com/token");
 		expect(result).toBeDefined();
+	});
+
+	test("a credential lookup error is logged per provider, never as login required", async () => {
+		writeFileSync(
+			path,
+			'{"version":1,"providers":{"linear":{"kind":"api_key","apiKey":"top-secret"',
+		);
+		const lines: string[] = [];
+		const tracker = createGatewayTracker(configured(), {
+			storePath: path,
+			log: (line) => lines.push(line),
+		})!;
+		expect(await tracker({ plan })).toBeUndefined();
+		const linearLine = lines.find(
+			(line) => line.includes("linear") && line.includes("credential error"),
+		);
+		const notionLine = lines.find(
+			(line) => line.includes("notion") && line.includes("credential error"),
+		);
+		expect(linearLine).toBeDefined();
+		expect(notionLine).toBeDefined();
+		expect(lines.join("\n")).not.toContain("top-secret");
+		expect(lines.join("\n")).not.toContain("login required");
+	});
+
+	test("an unconfigured provider is never reported, a configured one without credentials says login required", async () => {
+		const lines: string[] = [];
+		const tracker = createGatewayTracker(configured({ team: "Team" }), {
+			storePath: path,
+			log: (line) => lines.push(line),
+		})!;
+		expect(await tracker({ plan })).toBeUndefined();
+		expect(lines.some((line) => line.includes("linear") && line.includes("login required"))).toBe(
+			true,
+		);
+		expect(lines.some((line) => line.includes("notion"))).toBe(false);
+	});
+
+	test("one provider's credential error reaches the refs while the other provider proceeds", async () => {
+		writeStore(path, {
+			version: 1,
+			providers: {
+				linear: { kind: "api_key", apiKey: "k", updatedAt: 1 },
+				notion: expiredOauth("https://mcp.notion.com", FIXED),
+			},
+		});
+		const lines: string[] = [];
+		const tracker = createGatewayTracker(configured(), {
+			storePath: path,
+			fetch: recordingFetch([]),
+			log: (line) => lines.push(line),
+		})!;
+		const emptyPlan: TrackPlan = {
+			...plan,
+			issues: [],
+			subIssues: [],
+			linearIssues: [],
+			linearSubIssues: [],
+		};
+		const refs = await tracker({ plan: emptyPlan });
+		expect(refs?.errors.some((error) => error.startsWith("notion: credential error:"))).toBe(true);
+		expect(refs?.errors).not.toContain("notion: login required");
+		expect(lines.some((line) => line.includes("notion") && line.includes("credential error"))).toBe(
+			true,
+		);
+	});
+
+	test("the budget abort listener does not accumulate on a long-lived signal", async () => {
+		writeStore(path, {
+			version: 1,
+			providers: { linear: { kind: "api_key", apiKey: "k", updatedAt: 1 } },
+		});
+		const tracker = createGatewayTracker(configured({ team: "Team" }), { storePath: path })!;
+		const emptyPlan: TrackPlan = {
+			...plan,
+			issues: [],
+			subIssues: [],
+			linearIssues: [],
+			linearSubIssues: [],
+		};
+		const controller = new AbortController();
+		const added = spyOn(controller.signal, "addEventListener");
+		const removed = spyOn(controller.signal, "removeEventListener");
+		for (let call = 0; call < 1000; call++)
+			await tracker({ plan: emptyPlan, signal: controller.signal });
+		expect(added.mock.calls.length - removed.mock.calls.length).toBe(0);
 	});
 });

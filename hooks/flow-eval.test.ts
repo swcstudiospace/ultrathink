@@ -75,7 +75,9 @@ function harness(
 			evaluate: (input) => evaluateFlowOutput({ ...input, fetch: fetchImpl }),
 			lookup: lookupFlowScore,
 			append: appendFlowScore,
-			log: (line) => lines.push(line),
+			log: (line) => {
+				lines.push(line);
+			},
 		},
 		lines,
 		get fetchCalls() {

@@ -9,11 +9,12 @@ import { join } from "node:path";
 import { type Auth, createAuth } from "../auth/auth.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import type { HeadlessPlanner } from "../engine/headless.ts";
+import { PlanCompleterError } from "../engine/plan.ts";
 import { type Store, openStore } from "../store/store.ts";
 import { createLogger } from "../obs/log.ts";
 import { createMetrics, type Metrics } from "../obs/metrics.ts";
 import type { RuntimeSample } from "../obs/runtime.ts";
-import { type App, SECURITY_HEADERS, createApp, createHandler } from "./router.ts";
+import { type App, SECURITY_HEADERS, type RouterDeps, createApp, createHandler } from "./router.ts";
 import { getSecurityLogger } from "../security/events.ts";
 import { redactText } from "../../../src/teach/redact.ts";
 
@@ -117,7 +118,8 @@ beforeAll(async () => {
 	};
 	auth = createAuth({ ownerPasswordHash, sessionSecret, cookieSecure: true });
 	store = openStore(config.dbPath);
-	handler = createHandler({ config, store, auth, logger: silent });
+	// These tests exercise the run API, so a worker is declared; the 501 tests build their own handler without one.
+	handler = createHandler({ config, store, auth, logger: silent, hasWorker: () => true });
 
 	const login = await handler(
 		new Request(`${PUBLIC_ORIGIN}/login`, {
@@ -450,7 +452,13 @@ describe("router", () => {
 		test("POST returns 503 and healthz returns 503 when the store is closed", async () => {
 			const closed = openStore(join(dir, "closed.db"));
 			closed.close();
-			const closedHandler = createHandler({ config, store: closed, auth, logger: silent });
+			const closedHandler = createHandler({
+				config,
+				store: closed,
+				auth,
+				logger: silent,
+				hasWorker: () => true,
+			});
 
 			const health = await closedHandler(new Request(`${PUBLIC_ORIGIN}/healthz`), PEER_IP);
 			expect(health.status).toBe(503);
@@ -732,6 +740,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 			logger: createLogger({ write: (line) => logLines.push(line) }),
 			metrics,
 			now: () => clock.ms,
+			hasWorker: () => true,
 			...(extras.planner === undefined ? {} : { planner: extras.planner }),
 			...(extras.onPoolEntry === undefined ? {} : { onPoolEntry: extras.onPoolEntry }),
 		});
@@ -1246,5 +1255,168 @@ describe("router boundary failures", () => {
 			store.close();
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("run API without a worker", () => {
+	test("POST /ultrathink answers 501 run_api_unavailable and creates no run row", async () => {
+		const bare = createHandler({ config, store, auth, logger: silent });
+		const before = runCount();
+		const res = await bare(
+			ultrathinkPost(JSON.stringify({ input: "plan the billing rollout" })),
+			PEER_IP,
+		);
+		expect(res.status).toBe(501);
+		const body = (await res.json()) as { error: string; detail?: string };
+		expect(body.error).toBe("run_api_unavailable");
+		expect(body.detail).toContain("runbook");
+		expect(runCount()).toBe(before);
+	});
+
+	test("input is still validated first: an oversized input is 413, not 501", async () => {
+		const bare = createHandler({ config, store, auth, logger: silent });
+		const res = await bare(
+			ultrathinkPost(JSON.stringify({ input: `plan ${"a".repeat(MAX_INPUT_CHARS)}` })),
+			PEER_IP,
+		);
+		expect(res.status).toBe(413);
+	});
+});
+
+describe("hosted planner lifecycle", () => {
+	const KEY = "k".repeat(32);
+	const flushTurns = async (): Promise<void> => {
+		for (let i = 0; i < 6; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+	};
+	// Only the 15 s start window ends by itself; every other wait ends when its signal aborts.
+	const startWindowSleep = (ms: number, signal?: AbortSignal): Promise<void> => {
+		if (ms === 15_000) return Promise.resolve();
+		return new Promise<void>((resolve) =>
+			signal?.addEventListener("abort", () => resolve(), { once: true }),
+		);
+	};
+	const abortOnlySleep = (_ms: number, signal?: AbortSignal): Promise<void> =>
+		new Promise<void>((resolve) =>
+			signal?.addEventListener("abort", () => resolve(), { once: true }),
+		);
+
+	function lifecycleApp(extra: Partial<RouterDeps> = {}) {
+		const metrics = createMetrics();
+		const stateDir = mkdtempSync(join(tmpdir(), "ultrathink-lifecycle-"));
+		const app = createApp({
+			config: {
+				...config,
+				stateDir,
+				serverPlanning: true,
+				connectorKey: KEY,
+				planTimeoutMs: 0,
+				modelTimeoutMs: 0,
+			},
+			store,
+			auth,
+			logger: silent,
+			metrics,
+			...extra,
+		});
+		return { app, metrics, stateDir };
+	}
+
+	function uplift(signal?: AbortSignal): Request {
+		return new Request(`${PUBLIC_ORIGIN}/mcp`, {
+			method: "POST",
+			...(signal === undefined ? {} : { signal }),
+			headers: { "Content-Type": "application/json", "x-connector-key": KEY },
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "ultrathink_uplift", arguments: { prompt: "plan the billing rollout" } },
+			}),
+		});
+	}
+
+	async function toolResult(response: Response): Promise<ToolResult> {
+		const body = (await response.json()) as { result: ToolResult };
+		return body.result;
+	}
+
+	test("beginDrain closes the planner to new plans", () => {
+		let draining = 0;
+		const planner: HeadlessPlanner = {
+			enabled: true,
+			async start() {
+				throw new Error("not used");
+			},
+			async result() {
+				throw new Error("not used");
+			},
+			status: () => null,
+			async shutdown() {
+				// reason: the stub holds no resources to release.
+			},
+			beginDrain: () => {
+				draining += 1;
+			},
+			upstream: () => undefined,
+			backendReady: () => ({ ok: true }),
+		};
+		const { app } = lifecycleApp({ planner });
+		app.beginDrain();
+		expect(draining).toBe(1);
+	});
+
+	test("a plan started after beginDrain is refused not_ready", async () => {
+		const { app } = lifecycleApp({
+			completer: async () => {
+				throw new PlanCompleterError("auth", "auth");
+			},
+			sleep: startWindowSleep,
+		});
+		app.beginDrain();
+		const result = await toolResult(await app.handle(uplift(), PEER_IP));
+		expect(result.isError).toBe(true);
+		expect(result.structuredContent.error).toBe("not_ready");
+		await app.shutdown();
+	});
+
+	test("a client that disconnects ends its hosted plan and frees the slot", async () => {
+		const { app } = lifecycleApp({
+			completer: () => new Promise<string>(() => undefined),
+			sleep: abortOnlySleep,
+		});
+		const request = new AbortController();
+		const pending = app.handle(uplift(request.signal), PEER_IP);
+		let settled = false;
+		void pending.then(() => {
+			settled = true;
+		});
+		await flushTurns();
+		request.abort();
+		await flushTurns();
+		expect(settled).toBe(true);
+		const result = await toolResult(await pending);
+		expect(result.structuredContent).toMatchObject({ status: "failed", error: "aborted" });
+		await app.shutdown();
+	});
+
+	test("a plan that ends while nobody polls is counted at its end", async () => {
+		const gate = Promise.withResolvers<void>();
+		const { app, metrics } = lifecycleApp({
+			completer: async () => {
+				await gate.promise;
+				throw new PlanCompleterError("auth", "auth");
+			},
+			sleep: startWindowSleep,
+		});
+		const started = await toolResult(await app.handle(uplift(), PEER_IP));
+		expect(started.structuredContent.status).toBe("running");
+		expect(metrics.sum("ultrathink_plan_jobs_total")).toBe(0);
+		gate.resolve();
+		await app.planner.result({
+			sessionId: String(started.structuredContent.sessionId),
+			waitSeconds: 30,
+		});
+		expect(metrics.sum("ultrathink_plan_jobs_total", { status: "failed" })).toBe(1);
+		await app.shutdown();
 	});
 });

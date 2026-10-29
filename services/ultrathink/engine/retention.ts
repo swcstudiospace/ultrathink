@@ -69,6 +69,11 @@ const DEFAULT_MAX_ENTRIES = 5000;
 /** Larger job and meta files are not parsed; a record the planner wrote stays far below this. */
 const MAX_FILE_BYTES = 1024 * 1024;
 const JSON_SUFFIX = ".json";
+/**
+ * A client journal still "in progress" after this many retention periods is stuck, not slow: the client that was driving
+ * it is gone, so it is swept like a finished one. Server jobs that are running are never swept (the planner owns them).
+ */
+const STUCK_JOURNAL_FACTOR = 4;
 
 /** Journal statuses that mean the session is finished; anything else (or absent) is in progress, as in sessions.ts. */
 const FINISHED_CLIENT_STATUSES: Record<string, true> = {
@@ -90,6 +95,8 @@ interface Tally {
 interface Walk {
 	tally: Tally;
 	cutoff: number;
+	/** Cutoff for a journal that never finished; older than `cutoff` by STUCK_JOURNAL_FACTOR. */
+	stuckCutoff: number;
 	maxEntries: number;
 }
 
@@ -260,8 +267,9 @@ function sweepJobs(stateDir: string, walk: Walk): void {
 
 /**
  * Client journals: `journal/<id>/`, aged by the newer of the directory's and its `meta.json`'s modification time.
- * A journal whose meta reports an in-progress session (any status but planned/invalid/skipped) is kept; a meta that
- * is a symlink, oversized or not a JSON object skips the journal. A journal with no meta at all is removed by age.
+ * A journal whose meta reports an in-progress session (any status but planned/invalid/skipped) is kept until it is
+ * STUCK_JOURNAL_FACTOR times older than the retention window, then removed as stuck; a meta that is a symlink,
+ * oversized or not a JSON object skips the journal. A journal with no meta at all is removed by age.
  */
 function sweepJournals(stateDir: string, walk: Walk): void {
 	const { tally } = walk;
@@ -296,14 +304,17 @@ function sweepJournals(stateDir: string, walk: Walk): void {
 				tally.skipped += 1;
 				continue;
 			}
+			time = Math.max(time, meta.mtime);
 			if (
 				typeof parsed.status !== "string" ||
 				!Object.hasOwn(FINISHED_CLIENT_STATUSES, parsed.status)
 			) {
-				tally.kept += 1;
-				continue;
+				// Unfinished: only a journal stuck for several retention windows goes.
+				if (time >= walk.stuckCutoff) {
+					tally.kept += 1;
+					continue;
+				}
 			}
-			time = Math.max(time, meta.mtime);
 		}
 		if (time >= walk.cutoff) {
 			tally.kept += 1;
@@ -350,7 +361,13 @@ export function sweepStateDir(options: SweepOptions): SweepResult {
 	if (options.retentionDays === 0) return { ...tally, disabled: true };
 
 	const now = options.now ?? Date.now;
-	const walk: Walk = { tally, cutoff: now() - options.retentionDays * DAY_MS, maxEntries };
+	const at = now();
+	const walk: Walk = {
+		tally,
+		cutoff: at - options.retentionDays * DAY_MS,
+		stuckCutoff: at - STUCK_JOURNAL_FACTOR * options.retentionDays * DAY_MS,
+		maxEntries,
+	};
 	sweepJobs(options.stateDir, walk);
 	sweepJournals(options.stateDir, walk);
 	sweepSessions(options.stateDir, walk);

@@ -518,10 +518,10 @@ describe("tool surface", () => {
 		expect(body.error?.code).toBe(-32602);
 	});
 
-	test("with an enabled planner the list has ten tools including ultrathink_uplift", async () => {
+	test("with an enabled planner the list has eleven tools including ultrathink_uplift", async () => {
 		const h = harness({ deps: { planner: stubPlanner(true) } });
 		const names = await toolNames(h);
-		expect(names).toHaveLength(10);
+		expect(names).toHaveLength(11);
 		expect(names).toContain("ultrathink_uplift");
 		expect(h.app.planner.enabled).toBe(true);
 		expect(sample(h, "ultrathink_planner_enabled")).toBe(1);
@@ -957,13 +957,17 @@ describe("command surface", () => {
 		],
 	} satisfies NonNullable<SessionRecord["graph"]>;
 
-	/** A finished client-driven session on disk, as the grok-bot adapter leaves it. */
-	function seedPlanned(h: Harness): string {
+	/**
+	 * A finished client-driven session on disk, as the grok-bot adapter leaves it. A journal started by an admitted
+	 * request names that request's principal; `principal` is the connector key's unless a test seeds another, or `null` for none.
+	 */
+	function seedPlanned(h: Harness, principal: string | null = "key:connector"): string {
 		const sessionId = randomSessionId();
 		writeMeta(journalDir(h.dir, sessionId), {
 			sessionId,
 			original: "Build the converter",
 			status: "planned",
+			...(principal === null ? {} : { principal }),
 		});
 		writeSession(h.dir, {
 			sessionId,
@@ -1028,7 +1032,7 @@ describe("command surface", () => {
 			"tools/list",
 		);
 		const tools = result?.tools ?? [];
-		expect(tools).toHaveLength(10);
+		expect(tools).toHaveLength(11);
 		const withUi = tools.filter((tool) => tool._meta?.ui !== undefined).map((tool) => tool.name);
 		expect(withUi).toEqual(["ultrathink_uplift", "ultrathink_graph"]);
 		expect(tools.find((tool) => tool.name === "ultrathink_graph")?._meta).toEqual({
@@ -1182,6 +1186,24 @@ describe("command surface", () => {
 		expect(
 			sample(h, "ultrathink_mcp_tool_calls_total", { tool: "ultrathink_graph", outcome: "error" }),
 		).toBe(1);
+	});
+
+	test("a seeded session that names no principal, or another one, is neither listed nor drawn for the connector key", async () => {
+		const h = harness();
+		const unnamed = seedPlanned(h, null);
+		const theirs = seedPlanned(h, "key:other");
+		const sessions = await callTool(h, "ultrathink_sessions", {});
+		expect(sessions.structuredContent.sessions).toEqual([]);
+		const newest = await callTool(h, "ultrathink_graph", {});
+		expect(newest.structuredContent.status).toBe("none");
+		for (const sessionId of [unnamed, theirs]) {
+			const graph = await callTool(h, "ultrathink_graph", { sessionId });
+			expect(graph.isError).toBe(true);
+			expect(graph.structuredContent.error).toBe("not_found");
+		}
+		const own = seedPlanned(h);
+		const listed = await callTool(h, "ultrathink_sessions", {});
+		expect(listed.structuredContent.sessions).toMatchObject([{ sessionId: own }]);
 	});
 
 	test("ultrathink_command lists every command, runs think and returns the planning call", async () => {

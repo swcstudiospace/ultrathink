@@ -2,7 +2,8 @@
 // Copyright (C) 2026 SWC Studio
 /** Read-modify-write of the `ship` section inside a session state file. One locked cycle per call. Never throws. */
 import { readFileSync } from "node:fs";
-import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
+import { type LockOptions, withFileLock, writeFileAtomic } from "../claude/atomic.ts";
+import { HOOK_LOCK } from "../claude/state.ts";
 import { MAX_ATTEMPTS, MAX_SHIP_HISTORY } from "./types.ts";
 import type { ShipAttempt, ShipState } from "./types.ts";
 
@@ -44,27 +45,39 @@ function priorShip(record: Record<string, unknown>): Partial<ShipState> {
 function updateShip(
 	statePath: string,
 	build: (record: Record<string, unknown>) => ShipState,
+	// The ship CLI and the stop hook run in their own short-lived processes and these writers never throw: wait long for a live
+	// holder, then fall back to the unlocked write. The Omp extension passes `OMP_LOCK` explicitly to keep its 2 s bound.
+	lock: LockOptions = HOOK_LOCK,
 ): ShipState | undefined {
-	return withFileLock(statePath, () => {
-		const record = readRecord(statePath);
-		if (!record) return undefined;
-		const ship = build(record);
-		return writeRecord(statePath, { ...record, ship }) ? ship : undefined;
-	});
+	return withFileLock(
+		statePath,
+		() => {
+			const record = readRecord(statePath);
+			if (!record) return undefined;
+			const ship = build(record);
+			return writeRecord(statePath, { ...record, ship }) ? ship : undefined;
+		},
+		lock,
+	);
 }
 
 export function writeShip(
 	statePath: string,
 	patch: Partial<ShipState>,
 	now: number = Date.now(),
+	lock?: LockOptions,
 ): ShipState | undefined {
-	return updateShip(statePath, (record) => ({
-		phase: "not-done",
-		rounds: [],
-		...priorShip(record),
-		...patch,
-		updatedAt: now,
-	}));
+	return updateShip(
+		statePath,
+		(record) => ({
+			phase: "not-done",
+			rounds: [],
+			...priorShip(record),
+			...patch,
+			updatedAt: now,
+		}),
+		lock,
+	);
 }
 
 /**
@@ -91,6 +104,7 @@ export function appendAttempts(
 	statePath: string,
 	attempts: ShipAttempt[],
 	now: number = Date.now(),
+	lock?: LockOptions,
 ): ShipState | undefined {
 	// Details are one line of at most MAX_DETAIL characters.
 	const added = attempts.map((attempt) =>
@@ -98,11 +112,15 @@ export function appendAttempts(
 			? attempt
 			: { ...attempt, detail: attempt.detail.replace(/\s+/g, " ").trim().slice(0, MAX_DETAIL) },
 	);
-	return updateShip(statePath, (record) => {
-		const prior = priorShip(record);
-		const log = [...(Array.isArray(prior.attempts) ? prior.attempts : []), ...added].slice(
-			-MAX_ATTEMPTS,
-		);
-		return { phase: "not-done", rounds: [], ...prior, attempts: log, updatedAt: now };
-	});
+	return updateShip(
+		statePath,
+		(record) => {
+			const prior = priorShip(record);
+			const log = [...(Array.isArray(prior.attempts) ? prior.attempts : []), ...added].slice(
+				-MAX_ATTEMPTS,
+			);
+			return { phase: "not-done", rounds: [], ...prior, attempts: log, updatedAt: now };
+		},
+		lock,
+	);
 }

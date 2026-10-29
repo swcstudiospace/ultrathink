@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { UPLIFT } from "../test.helpers.ts";
 import { defaultConfig } from "../config.ts";
 import type { UltrathinkConfig } from "../config.ts";
 import { createOmpExtension } from "./omp.ts";
@@ -312,11 +313,7 @@ export function userText(call: NativeCall): string {
 
 /** Answers uplift, Graph, node fill and clarify calls by payload, as the shared host suite does, and names the stage. */
 export function stageAnswer(user: string): { stage: string; text: string } {
-	if (user.includes("<user_request>"))
-		return {
-			stage: "uplift",
-			text: "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>",
-		};
+	if (user.includes("<user_request>")) return { stage: "uplift", text: UPLIFT("add a widget") };
 	if (user.startsWith("<spec>"))
 		return { stage: "clarify", text: JSON.stringify({ questions: [] }) };
 	if (user.includes("current_node")) {
@@ -818,7 +815,7 @@ function childLifetimeSource(
 		"		await new Promise<void>((resolve) => realSetTimeout(resolve, 50));",
 		"		check(h.sent.length === (inlineDelivered ? 0 : 1), 'cancelled flight delivered late');",
 		"		check(tracks === 0, 'cancelled flight admitted tracker rows');",
-		"		for (const path of ['sessions/s1.json', 'sessions/s1.xml', 'last.json', 'last-plan.json']) {",
+		"		for (const path of ['sessions/s1.json', 'sessions/s1.xml', 'last.json', 'last-plan.s1.json']) {",
 		"			check(!existsSync(join(stateDir, path)), 'cancelled flight wrote ' + path);",
 		"		}",
 		"		return { planAsides: inlineDelivered ? 0 : 1, nativeCalls };",
@@ -857,7 +854,7 @@ function childLifetimeSource(
 		"	check(JSON.stringify(response).indexOf('SECRET') === -1, 'secret material escaped into the plan response');",
 		"	check(JSON.stringify(events).indexOf('SECRET') === -1, 'secret material escaped into progress events');",
 		"	check(tracks === 1, 'expected one tracker admission, saw ' + tracks);",
-		"	for (const path of ['sessions/s1.json', 'sessions/s1.xml', 'last.json', 'last-plan.json']) {",
+		"	for (const path of ['sessions/s1.json', 'sessions/s1.xml', 'last.json', 'last-plan.s1.json']) {",
 		"		check(existsSync(join(stateDir, path)), 'successful pipeline missing ' + path);",
 		"	}",
 		"	const again: unknown = await h.run('add a widget');",

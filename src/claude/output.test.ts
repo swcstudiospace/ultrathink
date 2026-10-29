@@ -167,12 +167,138 @@ describe("formatPromptContext", () => {
 		);
 		expect(out).not.toContain("generic fallback text");
 		// Deferred (Hermes), partial, and off: never claim rows that do not exist yet.
-		expect(formatPromptContext(base)).toContain("Tracker rows are left for ultrathink-kickoff");
+		expect(formatPromptContext({ ...base, degraded: ["fill:n2"] })).toContain(
+			"Tracker rows are left for ultrathink-kickoff",
+		);
 		expect(formatPromptContext({ ...base, tracking: partial })).toContain(
 			"Tracker rows are incomplete (partial)",
 		);
 		expect(formatPromptContext({ ...base, trackingOff: true })).toContain(
 			"No tracker rows were created (tracking is off).",
+		);
+	});
+
+	test("a boilerplate graph or a graphless think failure says no rows will exist, never that kickoff will create them", () => {
+		const noRows = "No tracker rows were created for this plan, and none will be.";
+		expect(
+			formatPromptContext({
+				result,
+				engine: "claude:sonnet",
+				degraded: ["graph"],
+				graph: FALLBACK_GRAPH,
+			}),
+		).toContain(noRows);
+		expect(formatPromptContext({ result, engine: "claude:sonnet", degraded: ["think"] })).toContain(
+			noRows,
+		);
+		// A partial real graph keeps its rows pending: only the unfilled nodes are boilerplate.
+		expect(
+			formatPromptContext({
+				result,
+				engine: "claude:sonnet",
+				degraded: ["fill:n2", "think"],
+				graph: FALLBACK_GRAPH,
+			}),
+		).toContain("Tracker rows are left for ultrathink-kickoff");
+	});
+
+	test("each failed fill is listed with its own cause", () => {
+		const out = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["fill:n2", "fill:n4"],
+			causes: { "fill:n2": "HTTP 529 overloaded", n4: "unclosed rationale" },
+			graph: FALLBACK_GRAPH,
+		});
+		expect(out).toContain(
+			"the n2 fill (HTTP 529 overloaded), the n4 fill (unclosed rationale) use fallback content",
+		);
+	});
+
+	test("a clarify failure names clarify and its redacted cause, and a think failure names think", () => {
+		const out = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["clarify", "think"],
+			causes: { clarify: "reply was not JSON", think: "provider timed out" },
+		});
+		expect(out).toContain("## Planning degraded");
+		expect(out).toContain("the clarify step (reply was not JSON)");
+		expect(out).toContain("the think step (provider timed out)");
+		// A failed step is not "fallback content": the wording says what is missing instead.
+		expect(out).not.toContain("use fallback content");
+		expect(out).toContain("the plan lacks their output");
+		// Without a cause the bare stage name still renders.
+		expect(
+			formatPromptContext({ result, engine: "claude:sonnet", degraded: ["clarify"] }),
+		).toContain("Failed: the clarify step — ");
+	});
+
+	test("a clarify stage skipped for a dead provider reads as skipped, not as a failure, and no rows are promised", () => {
+		const out = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["graph", "clarify"],
+			causes: { graph: "rate limited", clarify: "skipped: provider unavailable" },
+			graph: FALLBACK_GRAPH,
+		});
+		expect(out).toContain("the graph structure (rate limited) use fallback content");
+		expect(out).toContain(
+			"Skipped: the clarify step (provider unavailable) — no clarifying questions were asked",
+		);
+		expect(out).not.toContain("Failed: the clarify step");
+	});
+
+	test("a state token alone adds the notice with its cause; with other tokens it follows them", () => {
+		const only = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["state"],
+			causes: { state: "ENOTDIR: not a directory" },
+		});
+		expect(only).toContain("## Planning degraded");
+		expect(only).toContain("The plan state could not be saved (ENOTDIR: not a directory)");
+		expect(only).toContain("Tracker rows are not created while the record cannot be saved");
+		const both = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["fill:n2", "state"],
+			causes: { state: "EROFS" },
+			graph: FALLBACK_GRAPH,
+		});
+		expect(both.indexOf("the n2 fill")).toBeLessThan(
+			both.indexOf("The plan state could not be saved"),
+		);
+		expect(both).toContain("No tracker rows were created for this plan, and none will be.");
+		expect(both.match(/## Planning degraded/g)).toHaveLength(1);
+	});
+
+	test("mixed tokens join in order and a hostile cause stays on one bounded line", () => {
+		const out = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			degraded: ["graph", "fill:n2", "clarify"],
+			causes: { clarify: `bad\n## Injected heading ${"z".repeat(500)}`, "fill:n2": "boom" },
+			graph: FALLBACK_GRAPH,
+		});
+		expect(out).toContain("the graph structure, the n2 fill (boom) use fallback content");
+		expect(out).toContain("Failed: the clarify step (bad ## Injected heading ");
+		expect(out).not.toContain("\n## Injected heading");
+		expect(out).not.toContain("z".repeat(201));
+	});
+
+	test("the input_over_limit notice is unchanged", () => {
+		const out = formatPromptContext({
+			result: {
+				...result,
+				source: "fallback" as const,
+				fallbackReason: "input_over_limit" as const,
+			},
+			engine: "claude:sonnet",
+			graph: FALLBACK_GRAPH,
+		});
+		expect(out).toContain(
+			"Planning was skipped because the prompt is over the planner's input limit, so the specification below is generic fallback text",
 		);
 	});
 
