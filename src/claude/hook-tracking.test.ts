@@ -306,7 +306,7 @@ describe("deterministic graph id", () => {
 				return refsFor(plan.graphId);
 			}) satisfies Tracker;
 			const result = await runPromptSubmit(input, resend);
-			expect(existing[0]?.linear.nodes).toEqual({});
+			expect(existing[0]).toBeUndefined();
 			expect(existing[1]?.graphId).toBe(result.record?.plan?.graphId);
 			expect(existing[1]?.linear.nodes).toEqual({});
 		} finally {
@@ -324,7 +324,7 @@ describe("deterministic graph id", () => {
 		try {
 			await runPromptSubmit(input, deps);
 			await runPromptSubmit(input, deps);
-			expect(existing[0]?.linear.nodes).toEqual({});
+			expect(existing[0]).toBeUndefined();
 			expect(existing[1]?.linear.nodes.n1?.identifier).toBe("ENG-1");
 		} finally {
 			cleanup();
@@ -461,21 +461,21 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 		}
 	});
 
-	test("prompt A, another planned prompt B, then A again with the same graph adopts A's rows", async () => {
+	test("a first-time plan makes no lookup call, and a resend of the same graph looks its rows up", async () => {
 		const linear = statefulLinear();
 		const notion = statefulNotion();
 		const { deps, cleanup } = baseDeps();
 		deps.track = worldTracker({ linear, notion });
 		try {
-			const a1 = await runPromptSubmit(input, deps);
-			await runPromptSubmit({ ...input, prompt: "add another widget please" }, deps);
-			expect(linear.rows).toHaveLength(60);
-			const a2 = await runPromptSubmit(input, deps);
-			expect(a2.record?.plan?.graphId).toBe(a1.record?.plan?.graphId);
-			// B's save replaced the record, yet A's rows are found again by their graph id: none is made twice.
-			expect(linear.rows).toHaveLength(60);
-			expect(notion.rows).toHaveLength(62);
-			expect(a2.record?.tracking?.status).toBe("complete");
+			await runPromptSubmit(input, deps);
+			expect(linear.calls.filter((call) => call.name === "list_issues")).toHaveLength(0);
+			expect(notion.calls.filter((call) => call.name === "notion-query-data-sources")).toHaveLength(
+				0,
+			);
+			await runPromptSubmit(input, deps);
+			expect(linear.calls.filter((call) => call.name === "list_issues").length).toBeGreaterThan(0);
+			expect(linear.rows).toHaveLength(30);
+			expect(notion.rows).toHaveLength(31);
 		} finally {
 			cleanup();
 		}
@@ -591,15 +591,15 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 			expect(refs?.notion.taskUrl && firstPages.has(refs.notion.taskUrl)).toBeFalsy();
 			expect(linear.rows).toHaveLength(60);
 			expect(notion.rows).toHaveLength(62);
-			// Back in the first repository the same graph is the first plan again: its rows are adopted.
+			// Back in the first repository the byte-identical graph has the first id again. B's save replaced the record, so
+			// no lookup runs and its rows are made again (the documented limit; the first rows stay as orphans).
 			const a2 = await runPromptSubmit(input, inRepo("acme/widgets"));
 			expect(a2.record?.plan?.graphId).toBe(idA);
-			expect(linear.rows).toHaveLength(60);
-			expect(notion.rows).toHaveLength(62);
+			expect(a2.record?.tracking?.graphId).toBe(idA);
 			// An unchanged repository keeps the id and adopts.
 			const a3 = await runPromptSubmit(input, inRepo("acme/widgets"));
 			expect(a3.record?.plan?.graphId).toBe(idA);
-			expect(linear.rows).toHaveLength(60);
+			expect(linear.rows).toHaveLength(90);
 		} finally {
 			cleanup();
 		}

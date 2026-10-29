@@ -334,7 +334,6 @@ interface PlanTitles {
 	linearSteps: Map<string, string>;
 	notionNodes: Map<string, string[]>;
 	notionSteps: Map<string, string[]>;
-	notionTask: string[];
 }
 
 function planTitles(plan: TrackPlan): PlanTitles {
@@ -348,9 +347,6 @@ function planTitles(plan: TrackPlan): PlanTitles {
 		linearSteps: new Map(
 			plan.linearSubIssues.map((sub) => [stepKey(sub.nodeId, sub.step), sub.title]),
 		),
-		// createTracking never throws and reports credential errors even for a plan with no rows: a plan without a task
-		// row (a partial plan) must not make the title bookkeeping throw before any provider was reached.
-		notionTask: plan.task ? [clip(plan.task.item, FIELD_CAPS.title).text] : [],
 		notionNodes: new Map(plan.issues.map((row) => [row.nodeId, notionNodeItems(row)])),
 		notionSteps: new Map(
 			plan.subIssues.map((row) => [stepKey(row.nodeId, row.step), [notionStepItem(row)]]),
@@ -757,8 +753,7 @@ async function adoptNotion(
 	const listed = new Set<string>();
 	for (const row of rows) {
 		if (row.level === "Task") {
-			if (matchesAny(row.item, titles.notionTask)) refs.notion.taskUrl ??= row.url;
-			else if (samePage(refs.notion.taskUrl, row.url)) delete refs.notion.taskUrl;
+			refs.notion.taskUrl ??= row.url;
 		} else if (row.nodeId === undefined) {
 			// reason: a row without a node id belongs to no node, so there is nothing to adopt
 		} else if (row.level === "Issue") {
@@ -984,44 +979,16 @@ export async function createTracking(
 		linear: guarded("linear", deps.linear),
 		notion: guarded("notion", deps.notion),
 	};
-	/** A provider whose adoption lookup failed gets no new rows this run: they could duplicate rows it could not see. */
-	const skipped: Partial<Record<Provider, true>> = {};
-
 	try {
-		if (existing) {
-			await Promise.all([
-				run.linear && deps.linearTeam
-					? adoptLinear(plan, refs, run.linear, signal, emitIssue, titles).catch(
-							(error: unknown) => {
-								skipped.linear = true;
-								report("linear adopt", error);
-							},
-						)
-					: undefined,
-				run.notion && deps.notionDataSource
-					? adoptNotion(plan, graph, refs, run.notion, deps.notionDataSource, signal, titles).catch(
-							(error: unknown) => {
-								skipped.notion = true;
-								report("notion adopt", error);
-							},
-						)
-					: undefined,
-			]);
-			prunePending(refs, plan, graph);
-			emit();
-		}
-		/**
-		 * The nodes that have an issue now, adopted ones included: a dependency that gets one later in this run was not linked
-		 * to them, whether they were made by an earlier run or found in the tracker.
-		 */
-		const entered = new Set(Object.keys(refs.linear.nodes));
 		const settle = (work: Promise<void>): Promise<void> =>
 			work.catch((error: unknown) => fail(`tracking: ${shortError(error)}`));
-		// Both providers start at once; Notion only waits (bounded) for the Linear links it prints on its rows.
+		// Each provider is its own branch: lookup, adopt, create. A lookup that is slow or never answers holds up that
+		// provider only (until the budget ends it), never the other one. A provider whose lookup failed gets no new rows
+		// this run: they could duplicate rows it could not see.
 		const ctx: RunContext = {
 			plan,
 			refs,
-			entered,
+			entered: new Set(),
 			deps: run,
 			signal,
 			fail,
@@ -1030,18 +997,55 @@ export async function createTracking(
 			emitIssue,
 		};
 		const nodesDone = Promise.withResolvers<void>();
-		const linearRun =
-			deps.linearTeam && !skipped.linear
-				? settle(
-						createLinear(ctx, graph, () => nodesDone.resolve()).finally(() => nodesDone.resolve()),
-					)
-				: undefined;
-		const notionRun =
-			deps.notionDataSource && !skipped.notion
-				? settle(
-						createNotion(ctx, linearRun ? { nodes: nodesDone.promise, all: linearRun } : undefined),
-					)
-				: undefined;
+		const linearRun = deps.linearTeam
+			? settle(
+					(async () => {
+						if (existing && run.linear) {
+							try {
+								await adoptLinear(plan, refs, run.linear, signal, emitIssue, titles);
+							} catch (error) {
+								report("linear adopt", error);
+								return;
+							}
+							prunePending(refs, plan, graph);
+							emit();
+						}
+						/**
+						 * The nodes that have an issue now, adopted ones included: a dependency that gets one later in this run
+						 * was not linked to them, whether they were made by an earlier run or found in the tracker.
+						 */
+						const entered = new Set(Object.keys(refs.linear.nodes));
+						await createLinear({ ...ctx, entered }, graph, () => nodesDone.resolve());
+					})().finally(() => nodesDone.resolve()),
+				)
+			: undefined;
+		const notionRun = deps.notionDataSource
+			? settle(
+					(async () => {
+						if (existing && run.notion) {
+							try {
+								await adoptNotion(
+									plan,
+									graph,
+									refs,
+									run.notion,
+									deps.notionDataSource as string,
+									signal,
+									titles,
+								);
+							} catch (error) {
+								report("notion adopt", error);
+								return;
+							}
+							emit();
+						}
+						await createNotion(
+							ctx,
+							linearRun ? { nodes: nodesDone.promise, all: linearRun } : undefined,
+						);
+					})(),
+				)
+			: undefined;
 		await Promise.all([linearRun, notionRun]);
 	} catch (error) {
 		// reason: the failure is recorded through fail() as a tracking error; the run continues to the status below
@@ -1346,7 +1350,7 @@ async function createNotionRows(
 		row.level === spec.level &&
 		row.nodeId === spec.nodeId &&
 		row.step === spec.step &&
-		sameTitle(row.item, spec.item) &&
+		(spec.level === "Task" || sameTitle(row.item, spec.item)) &&
 		(spec.parent === undefined ||
 			row.parents.length === 0 ||
 			row.parents.includes(pageKey(spec.parent)));

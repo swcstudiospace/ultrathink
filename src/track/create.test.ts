@@ -2033,60 +2033,46 @@ describe("createTracking compares Notion pages by id (greptile r3 pre-review)", 
 	});
 });
 
-describe("createTracking Task row title (r3 pre-review round 2)", () => {
-	const shell = (): TrackingRefs => ({
-		graphId: "g-1",
-		status: "failed",
-		linear: { nodes: {}, steps: {} },
-		notion: { nodes: {}, steps: {} },
-		errors: [],
-		updatedAt: 1,
-	});
-
-	test("a Task row with another title is not adopted: a new Task row is made", async () => {
+describe("createTracking provider branches are independent (greptile r5 #0)", () => {
+	test("a Linear lookup that never settles does not hold up Notion: its rows are still made and Linear reports the budget", async () => {
+		const hang: ToolCaller = { call: () => Promise.withResolvers<unknown>().promise };
 		const notion = statefulNotion();
-		notion.rows.push({
-			url: `https://www.notion.so/Old-${"c".repeat(32)}`,
-			Level: "Task",
-			Item: "Some other task",
+		const armed = new Map<number, () => void>();
+		const linkTimerArmed = Promise.withResolvers<void>();
+		const timers = {
+			setTimeout: (fn: () => void, ms: number) => {
+				armed.set(ms, fn);
+				if (ms === 777) linkTimerArmed.resolve();
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		};
+		const shell: TrackingRefs = {
 			graphId: "g-1",
-		});
-		const refs = await createTracking(
+			status: "failed",
+			linear: { nodes: {}, steps: {} },
+			notion: { nodes: {}, steps: {} },
+			errors: [],
+			updatedAt: 1,
+		};
+		const tracking = createTracking(
 			makePlan(),
 			GRAPH,
-			shell(),
-			deps({ notion, linearTeam: undefined }),
+			shell,
+			deps({ linear: hang, notion, timers, budgetMs: 5_000, linkWaitMs: 777 }),
 		);
-		expect(refs.notion.taskUrl).toBeDefined();
-		expect(refs.notion.taskUrl).not.toBe(`https://www.notion.so/Old-${"c".repeat(32)}`);
-		expect(notion.rows.filter((row) => row.Level === "Task")).toHaveLength(2);
-	});
-
-	test("a Task row with the current title is adopted; a recorded Task ref whose row says another title is dropped", async () => {
-		const notion = statefulNotion();
-		const first = await createTracking(
-			makePlan(),
-			GRAPH,
-			undefined,
-			deps({ notion, linearTeam: undefined }),
-		);
-		const lost = { ...structuredClone(first), notion: { nodes: {}, steps: {} } } as TrackingRefs;
-		const adopted = await createTracking(
-			makePlan(),
-			GRAPH,
-			lost,
-			deps({ notion, linearTeam: undefined }),
-		);
-		expect(adopted.notion.taskUrl).toBe(first.notion.taskUrl);
+		// Notion looked its rows up and created the task without waiting for Linear; it now waits (bounded) for Linear's links.
+		await linkTimerArmed.promise;
 		expect(notion.rows.filter((row) => row.Level === "Task")).toHaveLength(1);
-		const changed = { ...makePlan(), task: { ...makePlan().task, item: "A different task" } };
-		const again = await createTracking(
-			changed,
-			GRAPH,
-			structuredClone(first),
-			deps({ notion, linearTeam: undefined }),
-		);
-		expect(again.notion.taskUrl).not.toBe(first.notion.taskUrl);
-		expect(notion.rows.filter((row) => row.Level === "Task")).toHaveLength(2);
+		armed.get(777)?.();
+		// Let Notion finish its rows, then the budget ends the stuck Linear lookup.
+		for (let i = 0; i < 50 && notion.rows.length < 10; i++)
+			await new Promise((r) => setTimeout(r, 0));
+		armed.get(5_000)?.();
+		const refs = await tracking;
+		expect(notion.rows).toHaveLength(10);
+		expect(Object.keys(refs.notion.nodes).sort()).toEqual(["n1", "n2", "n3"]);
+		expect(refs.errors.some((error) => error.startsWith("linear adopt:"))).toBe(true);
+		expect(Object.keys(refs.linear.nodes)).toEqual([]);
 	});
 });

@@ -1420,9 +1420,10 @@ export async function runPromptSubmit(
 			// creating them again; one that produces another graph gets another id and adopts none of them.
 			const prior = readSession(deps.stateDir, sessionId);
 			const priorRefs = prior?.tracking?.graphId === plan.graphId ? prior.tracking : undefined;
-			// Always an `existing` (a shell when the record holds nothing for this id): the tracker looks the graph id up
-			// before creating, so rows that an earlier save of another plan left unrecorded are adopted, not made twice.
-			existing = priorRefs ?? emptyTracking(plan.graphId, now());
+			// The adoption lookup runs only when the record already holds this graph id (a resend of the same graph, or a
+			// saved record): a first-time plan makes no lookup call and never waits on one before it creates rows.
+			const sameGraph = prior?.plan?.graphId === plan.graphId;
+			existing = priorRefs ?? (sameGraph ? emptyTracking(plan.graphId, now()) : undefined);
 			if (priorRefs) record = { ...record, tracking: priorRefs };
 			try {
 				persist();
