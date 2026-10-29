@@ -18,6 +18,7 @@ const AT_DIGITS = 13;
 const RUN_FILE = /^\d{13,}-[0-9a-f]{8}\.json$/;
 const SKIPPED_CHARS = 80;
 const DETAIL_CHARS = 160;
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
 
 export interface ObserveRun {
 	at: number; // epoch ms
@@ -30,6 +31,11 @@ export interface ObserveRun {
 
 function runsDir(stateDir: string): string {
 	return join(stateDir, "teach", "runs");
+}
+
+/** One printable line: the reason comes from a child process, so ESC, backspace and other controls must not reach a terminal. */
+function displayable(text: string): string {
+	return redactLine(text.replace(CONTROLS, " "), 80).replace(/\s+/g, " ").trim() || "unknown cause";
 }
 
 /** Skip reasons recorded before the distiller was asked: they say nothing about its health either way. */
@@ -164,7 +170,7 @@ export interface FailureStreak {
 	truncated: boolean;
 	/** Epoch ms of the oldest failure in the streak. */
 	since: number;
-	/** Redacted detail (or skip reason) of the newest failure, at most 80 chars. */
+	/** Redacted, control-free detail (or skip reason) of the newest failure, at most 80 chars. */
 	reason: string;
 }
 
@@ -195,7 +201,7 @@ export function failureStreak(runs: readonly ObserveRun[]): FailureStreak | unde
 		count,
 		truncated: !broken && count >= MAX_RUNS,
 		since,
-		reason: redactLine(reason ?? "unknown cause", 80),
+		reason: displayable(reason ?? "unknown cause"),
 	};
 }
 

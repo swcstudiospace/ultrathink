@@ -232,4 +232,10 @@ describe("failure streak", () => {
 		expect(runFiles(dir)).toHaveLength(50);
 		expect(readRuns(dir)[0]?.at).toBe(4);
 	});
+
+	test("terminal controls in a failure reason never reach the status text", () => {
+		const streak = failureStreak([failed(1, "\u001b[2Kcredit\u0008 balance\r\nlow\u009b")]);
+		expect(streak?.reason).toBe("[2Kcredit balance low");
+		expect(streak && failureStreakText(streak)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+	});
 });
