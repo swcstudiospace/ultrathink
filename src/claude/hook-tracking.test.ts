@@ -306,7 +306,7 @@ describe("deterministic graph id", () => {
 				return refsFor(plan.graphId);
 			}) satisfies Tracker;
 			const result = await runPromptSubmit(input, resend);
-			expect(existing[0]).toBeUndefined();
+			expect(existing[0]?.linear.nodes).toEqual({});
 			expect(existing[1]?.graphId).toBe(result.record?.plan?.graphId);
 			expect(existing[1]?.linear.nodes).toEqual({});
 		} finally {
@@ -324,7 +324,7 @@ describe("deterministic graph id", () => {
 		try {
 			await runPromptSubmit(input, deps);
 			await runPromptSubmit(input, deps);
-			expect(existing[0]).toBeUndefined();
+			expect(existing[0]?.linear.nodes).toEqual({});
 			expect(existing[1]?.linear.nodes.n1?.identifier).toBe("ENG-1");
 		} finally {
 			cleanup();
@@ -425,20 +425,57 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 		}
 	});
 
-	test("fills, conclusions and other attempt noise are not identity: the same graph with other fills keeps the id", async () => {
+	test("the fills are identity too: the same skeleton with other fills gets another id, so no row of the first attempt is adopted", async () => {
 		let variant: "a" | "fills" = "a";
-		const ids: string[] = [];
+		const linear = statefulLinear();
+		const notion = statefulNotion();
 		const { deps, cleanup } = baseDeps({ complete: modelFor(() => variant) });
-		deps.track = (async ({ plan }) => {
-			ids.push(plan.graphId);
-			return undefined;
-		}) satisfies Tracker;
+		deps.track = worldTracker({ linear, notion });
 		try {
-			await runPromptSubmit(input, deps);
+			const first = await runPromptSubmit(input, deps);
 			variant = "fills";
-			await runPromptSubmit(input, deps);
-			expect(ids).toHaveLength(2);
-			expect(ids[1]).toBe(ids[0]);
+			const second = await runPromptSubmit(input, deps);
+			expect(second.record?.plan?.graphId).not.toBe(first.record?.plan?.graphId);
+			// A whole second set under its own id: no step row is created under an adopted node of the first attempt.
+			expect(linear.rows).toHaveLength(60);
+			expect(notion.rows).toHaveLength(62);
+			expect(second.record?.tracking?.status).toBe("complete");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a byte-identical graph with the same fills gets the same id and adopts every row", async () => {
+		const linear = statefulLinear();
+		const notion = statefulNotion();
+		const { deps, cleanup } = baseDeps();
+		deps.track = worldTracker({ linear, notion });
+		try {
+			const first = await runPromptSubmit(input, deps);
+			const second = await runPromptSubmit(input, deps);
+			expect(second.record?.plan?.graphId).toBe(first.record?.plan?.graphId);
+			expect(linear.rows).toHaveLength(30);
+			expect(notion.rows).toHaveLength(31);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("prompt A, another planned prompt B, then A again with the same graph adopts A's rows", async () => {
+		const linear = statefulLinear();
+		const notion = statefulNotion();
+		const { deps, cleanup } = baseDeps();
+		deps.track = worldTracker({ linear, notion });
+		try {
+			const a1 = await runPromptSubmit(input, deps);
+			await runPromptSubmit({ ...input, prompt: "add another widget please" }, deps);
+			expect(linear.rows).toHaveLength(60);
+			const a2 = await runPromptSubmit(input, deps);
+			expect(a2.record?.plan?.graphId).toBe(a1.record?.plan?.graphId);
+			// B's save replaced the record, yet A's rows are found again by their graph id: none is made twice.
+			expect(linear.rows).toHaveLength(60);
+			expect(notion.rows).toHaveLength(62);
+			expect(a2.record?.tracking?.status).toBe("complete");
 		} finally {
 			cleanup();
 		}
@@ -521,6 +558,86 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 			const result = await runPromptSubmit(input, deps);
 			expect(calls).toEqual([]);
 			expect(result.record?.plan).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("the same prompt and graph in another repository gets another id and new rows; the same repository adopts", async () => {
+		const linear = statefulLinear();
+		const notion = statefulNotion();
+		const { deps, cleanup } = baseDeps();
+		deps.track = worldTracker({ linear, notion });
+		const inRepo = (repo: string) => ({ ...deps, git: () => ({ repo, branch: "main" }) });
+		try {
+			const a1 = await runPromptSubmit(input, inRepo("acme/widgets"));
+			const idA = a1.record?.plan?.graphId ?? "";
+			const firstUrls = new Set(linear.rows.map((row) => row.url));
+			const firstPages = new Set(notion.rows.map((row) => row.url));
+			const b = await runPromptSubmit(input, inRepo("acme/gadgets"));
+			const idB = b.record?.plan?.graphId ?? "";
+			expect(idB).not.toBe(idA);
+			expect(idB).toMatch(GRAPH_ID_PATTERN);
+			expect(idB.slice(0, 13)).toBe(idA.slice(0, 13));
+			// The record's refs are the new id's: nothing of the first repository's rows is adopted.
+			expect(b.record?.tracking?.graphId).toBe(idB);
+			const refs = b.record?.tracking;
+			expect(Object.values(refs?.linear.nodes ?? {}).some((ref) => firstUrls.has(ref.url))).toBe(
+				false,
+			);
+			expect(Object.values(refs?.notion.nodes ?? {}).some((url) => firstPages.has(url))).toBe(
+				false,
+			);
+			expect(refs?.notion.taskUrl && firstPages.has(refs.notion.taskUrl)).toBeFalsy();
+			expect(linear.rows).toHaveLength(60);
+			expect(notion.rows).toHaveLength(62);
+			// Back in the first repository the same graph is the first plan again: its rows are adopted.
+			const a2 = await runPromptSubmit(input, inRepo("acme/widgets"));
+			expect(a2.record?.plan?.graphId).toBe(idA);
+			expect(linear.rows).toHaveLength(60);
+			expect(notion.rows).toHaveLength(62);
+			// An unchanged repository keeps the id and adopts.
+			const a3 = await runPromptSubmit(input, inRepo("acme/widgets"));
+			expect(a3.record?.plan?.graphId).toBe(idA);
+			expect(linear.rows).toHaveLength(60);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("without a repository slug the working directory is the repository identity", async () => {
+		const ids: string[] = [];
+		const { deps, cleanup } = baseDeps({ git: () => ({}) });
+		deps.track = (async ({ plan }) => {
+			ids.push(plan.graphId);
+			return undefined;
+		}) satisfies Tracker;
+		try {
+			await runPromptSubmit({ ...input, cwd: "/work/one" }, deps);
+			await runPromptSubmit({ ...input, cwd: "/work/one" }, deps);
+			await runPromptSubmit({ ...input, cwd: "/work/two" }, deps);
+			expect(ids[1]).toBe(ids[0]);
+			expect(ids[2]).not.toBe(ids[0]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("with thinking off (no graph) the id still depends on the prompt and the repository, and only the Task row is made", async () => {
+		const linear = statefulLinear();
+		const notion = statefulNotion();
+		const { deps, cleanup } = baseDeps({ control: { thinkEnabled: false } });
+		deps.track = worldTracker({ linear, notion });
+		const inRepo = (repo: string) => ({ ...deps, git: () => ({ repo, branch: "main" }) });
+		try {
+			const a1 = await runPromptSubmit(input, inRepo("acme/widgets"));
+			const a2 = await runPromptSubmit(input, inRepo("acme/widgets"));
+			const b = await runPromptSubmit(input, inRepo("acme/gadgets"));
+			expect(a1.record?.graph).toBeUndefined();
+			expect(a2.record?.plan?.graphId).toBe(a1.record?.plan?.graphId);
+			expect(b.record?.plan?.graphId).not.toBe(a1.record?.plan?.graphId);
+			expect(linear.rows).toHaveLength(0);
+			expect(notion.rows.map((row) => row.Level)).toEqual(["Task", "Task"]);
 		} finally {
 			cleanup();
 		}

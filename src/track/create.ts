@@ -334,6 +334,7 @@ interface PlanTitles {
 	linearSteps: Map<string, string>;
 	notionNodes: Map<string, string[]>;
 	notionSteps: Map<string, string[]>;
+	notionTask: string[];
 }
 
 function planTitles(plan: TrackPlan): PlanTitles {
@@ -347,6 +348,7 @@ function planTitles(plan: TrackPlan): PlanTitles {
 		linearSteps: new Map(
 			plan.linearSubIssues.map((sub) => [stepKey(sub.nodeId, sub.step), sub.title]),
 		),
+		notionTask: [clip(plan.task.item, FIELD_CAPS.title).text],
 		notionNodes: new Map(plan.issues.map((row) => [row.nodeId, notionNodeItems(row)])),
 		notionSteps: new Map(
 			plan.subIssues.map((row) => [stepKey(row.nodeId, row.step), [notionStepItem(row)]]),
@@ -753,7 +755,8 @@ async function adoptNotion(
 	const listed = new Set<string>();
 	for (const row of rows) {
 		if (row.level === "Task") {
-			refs.notion.taskUrl ??= row.url;
+			if (matchesAny(row.item, titles.notionTask)) refs.notion.taskUrl ??= row.url;
+			else if (samePage(refs.notion.taskUrl, row.url)) delete refs.notion.taskUrl;
 		} else if (row.nodeId === undefined) {
 			// reason: a row without a node id belongs to no node, so there is nothing to adopt
 		} else if (row.level === "Issue") {
@@ -1341,7 +1344,7 @@ async function createNotionRows(
 		row.level === spec.level &&
 		row.nodeId === spec.nodeId &&
 		row.step === spec.step &&
-		(spec.level === "Task" || sameTitle(row.item, spec.item)) &&
+		sameTitle(row.item, spec.item) &&
 		(spec.parent === undefined ||
 			row.parents.length === 0 ||
 			row.parents.includes(pageKey(spec.parent)));

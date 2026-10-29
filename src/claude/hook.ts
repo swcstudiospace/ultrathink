@@ -9,6 +9,7 @@
  * AbortError, aborting sibling work and preventing later inference or side effects.
  */
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 import type { UltrathinkConfig } from "../config.ts";
 import { createDecisions, type DecisionsDeps, decisionsKilled } from "../decisions/gate.ts";
 import { takeJevWarning } from "../decisions/health.ts";
@@ -227,25 +228,36 @@ function specFile(stateDir: string, sessionId: string): string {
  * The id every tracker row of one plan carries, in the shape every graph-id consumer expects
  * (`ut-<token>-<8 hex>`: the gateway's GRAPH_ID_PATTERN, the swarm lane brief, the hand-off guard in uplift/detect).
  * The first 10 hex digits are the session's hash of the user's original prompt:
- * `sha256(sessionId + "\n" + sha256(original))`. The 8 after the dash are a hash of that and the graph's identity, for
- * each node in order its id, kind, title, question and dependencies. The fills, conclusions and degraded flags are not
- * identity: they vary between attempts at the same graph. So a resend that produces the same graph gets the same id and
- * adopts the rows a killed flight already made, and one that produces a different graph gets a different id and can
- * never adopt the rows of the earlier graph (they are left alone in the tracker).
+ * `sha256(sessionId + "\n" + sha256(original))`. The 8 after the dash are a hash of that, the repository the plan labels
+ * its rows with (the resolved `owner/name` slug, else the resolved working directory) and the graph's text, for each
+ * node in order its id, kind, title, question, dependencies, thinking and conclusion: everything the tracker's rows are
+ * built from (step titles come from the thinking, descriptions from the conclusion). So equal ids mean identical row
+ * titles and bodies for the same repository. A byte-identical resend adopts the rows a killed flight already made; any
+ * other graph or another repository gets a different id and can never adopt an earlier plan's rows (they are left alone
+ * in the tracker). Without a graph (thinking off) the id is the prompt and the repository. The `degraded` flag is not in
+ * it: a degraded node has empty fills, which differ on their own.
  */
 function deterministicGraphId(
 	sessionId: string,
 	original: string,
 	graph: ThoughtGraph | undefined,
+	repository: string,
 ): string {
 	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 	const hex = digest(`${sessionId}\n${digest(original)}`);
-	const identity = graph
-		? JSON.stringify(
-				graph.nodes.map((node) => [node.id, node.kind, node.title, node.question, node.dependsOn]),
-			)
-		: "";
-	return `ut-${hex.slice(0, 10)}-${digest(`${hex}\n${identity}`).slice(0, 8)}`;
+	const nodes = graph
+		? graph.nodes.map((node) => [
+				node.id,
+				node.kind,
+				node.title,
+				node.question,
+				node.dependsOn,
+				node.thinking ?? "",
+				node.conclusion ?? "",
+			])
+		: null;
+	// One JSON array, so no two inputs can concatenate to the same text.
+	return `ut-${hex.slice(0, 10)}-${digest(JSON.stringify([hex, repository, nodes])).slice(0, 8)}`;
 }
 
 /** A tracking record with no refs: tells the tracker a flight of this graph id may already have created rows to adopt. */
@@ -1301,7 +1313,12 @@ export async function runPromptSubmit(
 					clarifications,
 					repo: git.repo,
 					branch: git.branch,
-					graphId: deterministicGraphId(sessionId, result.original, graph),
+					graphId: deterministicGraphId(
+						sessionId,
+						result.original,
+						graph,
+						git.repo ?? resolve(cwd),
+					),
 					agent: deps.surface ?? "claude-code",
 				});
 				stage(
@@ -1402,9 +1419,10 @@ export async function runPromptSubmit(
 			// gets the same graph id (the id is content-addressed, see `deterministicGraphId`) and adopts the rows instead of
 			// creating them again; one that produces another graph gets another id and adopts none of them.
 			const prior = readSession(deps.stateDir, sessionId);
-			const sameGraph = prior?.plan?.graphId === plan.graphId;
 			const priorRefs = prior?.tracking?.graphId === plan.graphId ? prior.tracking : undefined;
-			existing = priorRefs ?? (sameGraph ? emptyTracking(plan.graphId, now()) : undefined);
+			// Always an `existing` (a shell when the record holds nothing for this id): the tracker looks the graph id up
+			// before creating, so rows that an earlier save of another plan left unrecorded are adopted, not made twice.
+			existing = priorRefs ?? emptyTracking(plan.graphId, now());
 			if (priorRefs) record = { ...record, tracking: priorRefs };
 			try {
 				persist();

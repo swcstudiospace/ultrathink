@@ -2032,3 +2032,61 @@ describe("createTracking compares Notion pages by id (greptile r3 pre-review)", 
 		}
 	});
 });
+
+describe("createTracking Task row title (r3 pre-review round 2)", () => {
+	const shell = (): TrackingRefs => ({
+		graphId: "g-1",
+		status: "failed",
+		linear: { nodes: {}, steps: {} },
+		notion: { nodes: {}, steps: {} },
+		errors: [],
+		updatedAt: 1,
+	});
+
+	test("a Task row with another title is not adopted: a new Task row is made", async () => {
+		const notion = statefulNotion();
+		notion.rows.push({
+			url: `https://www.notion.so/Old-${"c".repeat(32)}`,
+			Level: "Task",
+			Item: "Some other task",
+			graphId: "g-1",
+		});
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			shell(),
+			deps({ notion, linearTeam: undefined }),
+		);
+		expect(refs.notion.taskUrl).toBeDefined();
+		expect(refs.notion.taskUrl).not.toBe(`https://www.notion.so/Old-${"c".repeat(32)}`);
+		expect(notion.rows.filter((row) => row.Level === "Task")).toHaveLength(2);
+	});
+
+	test("a Task row with the current title is adopted; a recorded Task ref whose row says another title is dropped", async () => {
+		const notion = statefulNotion();
+		const first = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ notion, linearTeam: undefined }),
+		);
+		const lost = { ...structuredClone(first), notion: { nodes: {}, steps: {} } } as TrackingRefs;
+		const adopted = await createTracking(
+			makePlan(),
+			GRAPH,
+			lost,
+			deps({ notion, linearTeam: undefined }),
+		);
+		expect(adopted.notion.taskUrl).toBe(first.notion.taskUrl);
+		expect(notion.rows.filter((row) => row.Level === "Task")).toHaveLength(1);
+		const changed = { ...makePlan(), task: { ...makePlan().task, item: "A different task" } };
+		const again = await createTracking(
+			changed,
+			GRAPH,
+			structuredClone(first),
+			deps({ notion, linearTeam: undefined }),
+		);
+		expect(again.notion.taskUrl).not.toBe(first.notion.taskUrl);
+		expect(notion.rows.filter((row) => row.Level === "Task")).toHaveLength(2);
+	});
+});
