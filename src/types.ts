@@ -31,6 +31,42 @@ export interface CompletionReport {
 	cause?: string;
 }
 
+const REPORT_KEY = Symbol.for("ultrathink.completionReport");
+
+/**
+ * Attaches a completion report to the error a completer throws, so the stage that catches it can say why the call failed.
+ * Non-enumerable, so message snapshots and JSON stay clean; `Symbol.for` so two loaded copies of this module agree.
+ */
+export function attachReport(error: unknown, report: CompletionReport): void {
+	if (typeof error !== "object" || error === null) return;
+	try {
+		Object.defineProperty(error, REPORT_KEY, {
+			value: report,
+			enumerable: false,
+			configurable: true,
+			writable: true,
+		});
+	} catch {
+		// reason: a frozen or exotic error object cannot carry the report; the caller keeps its own bookkeeping
+	}
+}
+
+/** The report attached by `attachReport`, or `undefined` when there is none or it is not shaped like one. Never throws. */
+export function readReport(error: unknown): CompletionReport | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	try {
+		const value = (error as Record<symbol, unknown>)[REPORT_KEY];
+		if (typeof value !== "object" || value === null) return undefined;
+		const report = value as Partial<CompletionReport>;
+		return typeof report.attempts === "number" && Number.isFinite(report.attempts)
+			? (report as CompletionReport)
+			: undefined;
+	} catch {
+		// reason: a hostile getter must not turn error reporting into a second failure
+		return undefined;
+	}
+}
+
 export interface UpliftState {
 	enabled: boolean;
 	skipOnce: boolean;
