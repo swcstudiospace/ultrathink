@@ -348,7 +348,9 @@ function planTitles(plan: TrackPlan): PlanTitles {
 		linearSteps: new Map(
 			plan.linearSubIssues.map((sub) => [stepKey(sub.nodeId, sub.step), sub.title]),
 		),
-		notionTask: [clip(plan.task.item, FIELD_CAPS.title).text],
+		// createTracking never throws and reports credential errors even for a plan with no rows: a plan without a task
+		// row (a partial plan) must not make the title bookkeeping throw before any provider was reached.
+		notionTask: plan.task ? [clip(plan.task.item, FIELD_CAPS.title).text] : [],
 		notionNodes: new Map(plan.issues.map((row) => [row.nodeId, notionNodeItems(row)])),
 		notionSteps: new Map(
 			plan.subIssues.map((row) => [stepKey(row.nodeId, row.step), [notionStepItem(row)]]),
