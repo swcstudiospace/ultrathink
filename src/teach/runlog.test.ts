@@ -4,7 +4,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
-import { appendRun, type ObserveRun, readRuns } from "./runlog.ts";
+import {
+	appendRun,
+	failureStreak,
+	failureStreakText,
+	isObserveFailure,
+	type ObserveRun,
+	readRuns,
+	shouldNotifyFailure,
+} from "./runlog.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -138,5 +146,117 @@ describe("observe run log", () => {
 		expect(row?.detail?.length).toBeLessThanOrEqual(160);
 		const [file] = runFiles(dir);
 		expect(readFileSync(join(dir, "teach", "runs", file ?? ""), "utf8")).not.toContain(key);
+	});
+});
+
+describe("failure streak", () => {
+	const failed = (at: number, detail = "Credit balance is too low"): ObserveRun =>
+		run(at, { outcome: "skipped", captured: 0, skipped: "distiller failed", detail });
+	const skippedFor = (at: number, skipped: string): ObserveRun =>
+		run(at, { outcome: "skipped", captured: 0, skipped });
+
+	test("which skip reasons are failures", () => {
+		for (const reason of ["distiller failed", "lesson not saved", "error", "no engine: none"])
+			expect(isObserveFailure(reason)).toBe(true);
+		for (const reason of [undefined, "no signal", "too few tool calls", "nothing teachable"])
+			expect(isObserveFailure(reason)).toBe(false);
+	});
+
+	test("no runs, or a newest answered run, is no streak", () => {
+		expect(failureStreak([])).toBeUndefined();
+		expect(failureStreak([failed(1), run(2)])).toBeUndefined();
+		expect(failureStreak([failed(1), skippedFor(2, "nothing teachable")])).toBeUndefined();
+	});
+
+	test("counts the trailing failures, starts at the oldest and reports the newest reason", () => {
+		const streak = failureStreak([run(1), failed(2, "first reason"), failed(3, "newest reason")]);
+		expect(streak).toEqual({ count: 2, truncated: false, since: 2, reason: "newest reason" });
+		expect(streak && failureStreakText(streak)).toBe(
+			"observe failing ×2 since 1970-01-01 00:00 UTC (newest reason)",
+		);
+	});
+
+	test("a run skipped before the distiller was asked does not break or extend the streak", () => {
+		const streak = failureStreak([
+			failed(1),
+			skippedFor(2, "too few tool calls"),
+			skippedFor(3, "no signal"),
+			failed(4),
+		]);
+		expect(streak).toMatchObject({ count: 2, since: 1 });
+	});
+
+	test("a log of nothing but failures is a lower bound", () => {
+		const runs = Array.from({ length: 50 }, (_, i) => failed(i + 1));
+		const streak = failureStreak(runs);
+		expect(streak).toMatchObject({ count: 50, truncated: true });
+		expect(streak && failureStreakText(streak)).toContain("×50+");
+		expect(shouldNotifyFailure(streak)).toBe(false);
+	});
+
+	test("receipts for the first failure and every tenth", () => {
+		const at = (count: number) =>
+			failureStreak(Array.from({ length: count }, (_, i) => failed(i + 1)));
+		expect([1, 2, 9, 10, 11, 20].map((n) => shouldNotifyFailure(at(n)))).toEqual([
+			true,
+			false,
+			false,
+			true,
+			false,
+			true,
+		]);
+		expect(shouldNotifyFailure(undefined)).toBe(false);
+	});
+
+	test("skipped runs cannot push an unresolved failure out of the 50-run log", () => {
+		const dir = stateDir();
+		appendRun(dir, failed(1));
+		for (let i = 2; i <= 70; i++)
+			appendRun(dir, skippedFor(i, i % 2 === 0 ? "no signal" : "too few tool calls"));
+		expect(runFiles(dir)).toHaveLength(50);
+		const runs = readRuns(dir);
+		expect(runs[0]).toEqual(failed(1));
+		expect(runs.at(-1)?.at).toBe(70);
+		const streak = failureStreak(runs);
+		expect(streak).toMatchObject({ count: 1, since: 1, truncated: false });
+		appendRun(dir, failed(71));
+		expect(failureStreak(readRuns(dir))).toMatchObject({ count: 2, since: 1 });
+		expect(shouldNotifyFailure(failureStreak(readRuns(dir)))).toBe(false);
+	});
+
+	test("real runs are still dropped oldest first when no skipped run can go", () => {
+		const dir = stateDir();
+		for (let i = 1; i <= 52; i++) appendRun(dir, failed(i));
+		expect(readRuns(dir).map((r) => r.at)).toEqual(Array.from({ length: 50 }, (_, i) => i + 3));
+		appendRun(dir, skippedFor(53, "no signal"));
+		expect(runFiles(dir)).toHaveLength(50);
+		expect(readRuns(dir)[0]?.at).toBe(4);
+	});
+
+	test("terminal controls in a failure reason never reach the status text", () => {
+		const streak = failureStreak([failed(1, "\u001b[2Kcredit\u0008 balance\r\nlow\u009b")]);
+		expect(streak?.reason).toBe("[2Kcredit balance low");
+		expect(streak && failureStreakText(streak)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+	});
+
+	test("overlapping observers in separate processes never lose the newest run", async () => {
+		const dir = stateDir();
+		for (let i = 1; i <= 50; i++) appendRun(dir, run(i));
+		const module = join(import.meta.dir, "runlog.ts");
+		const children = [0, 1, 2].map((id) => {
+			const script = join(dir, `${id}.ts`);
+			writeFileSync(
+				script,
+				`import { appendRun } from ${JSON.stringify(module)};\nfor (let i = 0; i < 10; i++) appendRun(${JSON.stringify(dir)}, { at: Date.now(), sessionId: "child-${id}", outcome: "skipped", captured: 0, skipped: "no signal" });\n`,
+			);
+			return Bun.spawn([process.execPath, script], { stdout: "ignore", stderr: "ignore" });
+		});
+		expect(await Promise.all(children.map((child) => child.exited))).toEqual([0, 0, 0]);
+		expect(runFiles(dir)).toHaveLength(50);
+		const runs = readRuns(dir);
+		// A full log of answered runs drops skipped ones first, but the newest run always survives.
+		expect(runs.at(-1)?.sessionId).toStartWith("child-");
+		expect(runs.filter((r) => r.sessionId.startsWith("child-"))).toHaveLength(1);
+		expect(runs.filter((r) => r.sessionId.startsWith("s"))).toHaveLength(49);
 	});
 });

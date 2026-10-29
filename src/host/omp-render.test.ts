@@ -1340,6 +1340,14 @@ describe("activity card", () => {
 			detail: "playbook · confirmed · retain retained",
 			names: ["Retry fetch"],
 		};
+		const failed = {
+			v: 1,
+			kind: "teachable-failed",
+			title: "Teachable Moments distiller failed",
+			outcome: "failed",
+			count: 3,
+			detail: "Credit balance is too low",
+		};
 		const skill = {
 			v: 1,
 			kind: "skill-recalled",
@@ -1359,6 +1367,7 @@ describe("activity card", () => {
 		for (const [details, header] of [
 			[recall, "Lesson recalled"],
 			[created, "Teachable moment"],
+			[failed, "Teachable Moments failed"],
 			[skill, "Skill recalled"],
 			[resource, "RAGFlow"],
 		] as const) {
@@ -1373,6 +1382,7 @@ describe("activity card", () => {
 		expect(recalled.plain).toContain("Retry fetch");
 		expect(recalled.plain).toContain("Pin the lockfile");
 		expect(cardOf(created).plain).toContain("retain retained");
+		expect(cardOf(failed).plain).toContain("Credit balance is too low");
 		expect(cardOf(resource).plain).toContain("RAGFlow");
 	});
 

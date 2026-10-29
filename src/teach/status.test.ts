@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_HINDSIGHT_CONFIG } from "../hindsight/types.ts";
 import type { HindsightConfig } from "../hindsight/types.ts";
+import { appendRun } from "./runlog.ts";
 import { momentCounts, teachStatusLine } from "./status.ts";
 import { openStore, storeDir } from "./store.ts";
 import { DEFAULT_TEACH_CONFIG } from "./types.ts";
@@ -97,6 +98,43 @@ describe("teachStatusLine", () => {
 		expect(line).toBe(
 			"Teach: on · capture observe · recall off · 2 confirmed, 1 candidate · Hindsight off · outbox 1",
 		);
+	});
+
+	test("a failing observe distiller is shown with its streak and reason", () => {
+		const run = (at: string, skipped: string, detail: string) =>
+			appendRun(stateDir, {
+				at: Date.parse(at),
+				sessionId: "sess-1",
+				outcome: "skipped",
+				captured: 0,
+				skipped,
+				detail,
+			});
+		run("2026-10-20T07:07:49.000Z", "distiller failed", "credit balance is too low");
+		run("2026-10-21T07:07:49.000Z", "too few tool calls", "");
+		run("2026-10-22T07:07:49.000Z", "distiller failed", "credit balance is too low");
+		const line = teachStatusLine(config(), {}, storePath, stateDir);
+		expect(line).toBe(
+			"Teach: on · capture auto · recall on · 0 confirmed, 0 candidate · Hindsight off · outbox 0 · observe failing ×2 since 2026-10-20 07:07 UTC (credit balance is too low)",
+		);
+	});
+
+	test("an answered run ends the streak and the status line says nothing", () => {
+		appendRun(stateDir, {
+			at: 1_700_000_000_000,
+			sessionId: "sess-1",
+			outcome: "skipped",
+			captured: 0,
+			skipped: "distiller failed",
+			detail: "credit balance is too low",
+		});
+		appendRun(stateDir, {
+			at: 1_700_000_001_000,
+			sessionId: "sess-1",
+			outcome: "captured",
+			captured: 1,
+		});
+		expect(teachStatusLine(config(), {}, storePath, stateDir)).not.toContain("observe failing");
 	});
 
 	test("an absent store reads as zero and is not created", () => {

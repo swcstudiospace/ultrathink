@@ -10,7 +10,7 @@ import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
-import { type ObserveRun, readRuns } from "../teach/runlog.ts";
+import { isObserveFailure, type ObserveRun, readRuns } from "../teach/runlog.ts";
 import { storeDir } from "../teach/store.ts";
 import { type CaptureMode, TEACH_KILL_ENV } from "../teach/types.ts";
 import { formatAge } from "./state-check.ts";
@@ -95,15 +95,6 @@ function outboxFinding(dir: string, now: number): Finding {
 	};
 }
 
-function isFailure(skipped: string | undefined): boolean {
-	return (
-		skipped === "distiller failed" ||
-		skipped === "lesson not saved" ||
-		skipped === "error" ||
-		(skipped?.startsWith("no engine") ?? false)
-	);
-}
-
 function observeFinding(runs: readonly ObserveRun[], now: number): Finding {
 	const newest = runs.at(-1);
 	if (!newest) {
@@ -118,7 +109,7 @@ function observeFinding(runs: readonly ObserveRun[], now: number): Finding {
 	const streak = runs.slice(-FAILURE_STREAK);
 	if (
 		streak.length === FAILURE_STREAK &&
-		streak.every((run) => run.outcome === "skipped" && isFailure(run.skipped))
+		streak.every((run) => run.outcome === "skipped" && isObserveFailure(run.skipped))
 	) {
 		return {
 			id: "memory.observe",

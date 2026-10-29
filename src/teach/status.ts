@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import type { GatewayConfig } from "../gateway/types.ts";
 import { resolveHindsight } from "../hindsight/settings.ts";
 import type { HindsightConfig, HindsightReadiness } from "../hindsight/types.ts";
+import { failureStreak, failureStreakText, readRuns } from "./runlog.ts";
 import { openStore, storeDir } from "./store.ts";
 import { MOMENT_STATUSES, TEACH_KILL_ENV } from "./types.ts";
 import type { MomentStatus, TeachConfig } from "./types.ts";
@@ -60,7 +61,10 @@ function hindsightWord(readiness: HindsightReadiness): string {
 	return words[readiness.reason];
 }
 
-/** `Teach: off (...)` or `Teach: on · capture <mode> · recall on|off[ · <n> confirmed, <m> candidate][ · Hindsight <state> · outbox <k>]`. Counts need `stateDir`. */
+/**
+ * `Teach: off (...)` or `Teach: on · capture <mode> · recall on|off[ · <n> confirmed, <m> candidate][ · Hindsight <state> · outbox <k>][ · observe failing ×<n> since <t> UTC (<reason>)]`.
+ * Counts and the observe run log need `stateDir`.
+ */
 export function teachStatusLine(
 	config: { teach: TeachConfig; hindsight: HindsightConfig; gateway?: GatewayConfig },
 	env: NodeJS.ProcessEnv,
@@ -84,5 +88,9 @@ export function teachStatusLine(
 		`Hindsight ${hindsightWord(hindsightReadiness(config.hindsight, env, storePath, config.gateway))}`,
 	);
 	if (outbox !== undefined) parts.push(`outbox ${outbox}`);
+	if (stateDir !== undefined) {
+		const streak = failureStreak(readRuns(stateDir));
+		if (streak) parts.push(failureStreakText(streak));
+	}
 	return parts.join(" · ");
 }
