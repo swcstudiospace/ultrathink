@@ -176,6 +176,16 @@ describe("parseScenario", () => {
 		);
 	});
 
+	test("accepts stallMs and range-checks it", () => {
+		expect(parseScenario({ ...valid(), stallMs: 30000 }, "tiny.json").stallMs).toBe(30000);
+		expect(parseScenario(valid(), "tiny.json").stallMs).toBeUndefined();
+		for (const stallMs of [999, 3_600_001]) {
+			expect(messageOf(() => parseScenario({ ...valid(), stallMs }, "tiny.json"))).toBe(
+				"tiny.json: stallMs must be between 1000 and 3600000",
+			);
+		}
+	});
+
 	test("rejects a prompt id that is not a fixed-width nonce", () => {
 		const input = {
 			...valid(),

@@ -370,8 +370,39 @@ describe("the real-provider guard", () => {
 	});
 });
 
-describe("watchdog and the run's figures", () => {
-	test("the budget is printed with the abort count and recorded in the history details", async () => {
+/** Hand-driven stall sampler: `advance` moves its clock one sample and runs the registered tick. */
+function stallRig(sampleMs = 1000) {
+	const state = { at: 0, cpuMs: 0 };
+	let tick: (() => void) | undefined;
+	return {
+		seams: {
+			sampleMs,
+			stallNow: () => state.at,
+			cpuMs: () => state.cpuMs,
+			intervalTimers: {
+				setInterval: (callback: () => void) => {
+					tick = callback;
+					return 1;
+				},
+				clearInterval: () => undefined,
+			},
+		},
+		advance: (cpuShare = 0) => {
+			state.at += sampleMs;
+			state.cpuMs += cpuShare * sampleMs;
+			tick?.();
+		},
+	};
+}
+
+function macrotask(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setTimeout(resolve, 2);
+	return promise;
+}
+
+describe("the stall watchdog and the run's figures", () => {
+	test("the budgets are printed with the abort counts and recorded in the history details", async () => {
 		const { historyPath, stateRoot } = paths();
 		const notes: string[] = [];
 
@@ -383,14 +414,21 @@ describe("watchdog and the run's figures", () => {
 			notes: (line) => notes.push(line),
 		});
 
-		expect(notes).toContain("watchdog budget 120000 ms, aborts 0");
+		expect(notes).toContain(
+			"stall watchdog 60000 ms, ceiling 900000 ms, stall aborts 0, ceiling aborts 0",
+		);
 		expect(
 			notes.some((line) =>
-				/^probe latency real \d+ ms baseline none ratio n\/a \(virtual \d+ ms\)$/.test(line),
+				/^probe latency real median \d+ ms of 5 \(min \d+, max \d+\) baseline none ratio n\/a bound n\/a$/.test(
+					line,
+				),
 			),
 		).toBe(true);
 		expect(result.details).toMatchObject({
-			watchdogMs: 120000,
+			stallMs: 60000,
+			watchdogMs: 900000,
+			stallAborts: 0,
+			ceilingAborts: 0,
 			planned: 2,
 			skipped: 1,
 			aborted: 0,
@@ -398,16 +436,19 @@ describe("watchdog and the run's figures", () => {
 		});
 		expect(typeof result.details?.probeRealMs).toBe("number");
 		const terminal = result.hypotheses.find((hypothesis) => hypothesis.id === "terminal");
-		expect(terminal?.observed).toBe("3/3 terminal: 2 planned, 1 skipped (by design), 0 aborted");
+		expect(terminal?.observed).toBe(
+			"3/3 terminal: 2 planned, 1 skipped (by design), 0 aborted, stall aborts 0, ceiling aborts 0",
+		);
+		expect(typeof result.details?.loadAvg1).toBe("number");
 	});
 
-	test("the scenario's watchdogMs and the concurrency scaling set the budget", async () => {
+	test("the scenario's stallMs and watchdogMs and the concurrency scaling set the budgets", async () => {
 		const a = paths();
 		const b = paths();
 		const notesA: string[] = [];
 		const notesB: string[] = [];
 
-		await runPipeline(tiny({ watchdogMs: 7000 }), {
+		await runPipeline(tiny({ watchdogMs: 7000, stallMs: 4000 }), {
 			historyPath: a.historyPath,
 			stateRoot: a.stateRoot,
 			ompPrompts: 0,
@@ -420,11 +461,104 @@ describe("watchdog and the run's figures", () => {
 			notes: (line) => notesB.push(line),
 		});
 
-		expect(notesA).toContain("watchdog budget 7000 ms, aborts 0");
-		expect(notesB).toContain("watchdog budget 400000 ms, aborts 0");
+		expect(notesA).toContain(
+			"stall watchdog 4000 ms, ceiling 7000 ms, stall aborts 0, ceiling aborts 0",
+		);
+		expect(notesB).toContain(
+			"stall watchdog 60000 ms, ceiling 900000 ms, stall aborts 0, ceiling aborts 0",
+		);
 	});
 
-	test("a prompt an injected hang targets is aborted by the watchdog, counted and not a finding", async () => {
+	test("the ceiling scales with concurrency above 112 slots: 8 s per slot", async () => {
+		const { historyPath, stateRoot } = paths();
+		const notes: string[] = [];
+
+		await runPipeline(tiny({ prompts: { count: 2, concurrency: 128, corpus: ["add a widget"] } }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			notes: (line) => notes.push(line),
+		});
+
+		expect(notes).toContain(
+			"stall watchdog 60000 ms, ceiling 1024000 ms, stall aborts 0, ceiling aborts 0",
+		);
+	});
+
+	test("a prompt blocked on an injected hang with no CPU progress is aborted as stalled and passes the oracle", async () => {
+		const { historyPath, stateRoot } = paths();
+		const notes: string[] = [];
+		const rig = stallRig();
+
+		const running = runPipeline(tiny({ stallMs: 3000 }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			...rig.seams,
+			notes: (line) => notes.push(line),
+			providerRules: [{ stage: "graph", promptId: 0, effect: { kind: "hang" }, count: "forever" }],
+		});
+		let done = false;
+		void running.finally(() => {
+			done = true;
+		});
+		for (let i = 0; i < 60 && !done; i += 1) {
+			await macrotask();
+			rig.advance(0);
+		}
+		const result = await running;
+
+		expect(notes).toContain(
+			"stall watchdog 3000 ms, ceiling 900000 ms, stall aborts 1, ceiling aborts 0",
+		);
+		expect(result.details).toMatchObject({
+			aborted: 1,
+			stallAborts: 1,
+			ceilingAborts: 0,
+			planned: 1,
+		});
+		const terminal = result.hypotheses.find((hypothesis) => hypothesis.id === "terminal");
+		expect(terminal?.passed).toBe(true);
+		expect(terminal?.observed).toBe(
+			"3/3 terminal: 1 planned, 1 skipped (by design), 1 aborted (1 allowed), stall aborts 1, ceiling aborts 0",
+		);
+		expect(result.passed).toBe(true);
+	});
+
+	test("a hang-targeted prompt whose CPU keeps advancing is not stalled; the ceiling still ends it and is counted", async () => {
+		const { historyPath, stateRoot } = paths();
+		const notes: string[] = [];
+		const rig = stallRig();
+
+		const running = runPipeline(tiny({ stallMs: 3000 }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			watchdogMs: 80,
+			...rig.seams,
+			notes: (line) => notes.push(line),
+			providerRules: [{ stage: "graph", promptId: 0, effect: { kind: "hang" }, count: "forever" }],
+		});
+		let done = false;
+		void running.finally(() => {
+			done = true;
+		});
+		for (let i = 0; i < 400 && !done; i += 1) {
+			await macrotask();
+			rig.advance(0.5);
+		}
+		const result = await running;
+
+		expect(notes).toContain(
+			"stall watchdog 3000 ms, ceiling 80 ms, stall aborts 0, ceiling aborts 1",
+		);
+		expect(result.details).toMatchObject({ aborted: 1, stallAborts: 0, ceilingAborts: 1 });
+		expect(result.passed).toBe(true);
+	});
+
+	test("a prompt an injected hang targets is aborted by the ceiling, counted and not a finding", async () => {
 		const { historyPath, stateRoot } = paths();
 		const notes: string[] = [];
 
@@ -438,12 +572,14 @@ describe("watchdog and the run's figures", () => {
 			providerRules: [{ stage: "graph", promptId: 0, effect: { kind: "hang" }, count: "forever" }],
 		});
 
-		expect(notes).toContain("watchdog budget 50 ms, aborts 1");
+		expect(notes).toContain(
+			"stall watchdog 60000 ms, ceiling 50 ms, stall aborts 0, ceiling aborts 1",
+		);
 		expect(result.details).toMatchObject({ aborted: 1, planned: 1 });
 		const terminal = result.hypotheses.find((hypothesis) => hypothesis.id === "terminal");
 		expect(terminal?.passed).toBe(true);
 		expect(terminal?.observed).toBe(
-			"3/3 terminal: 1 planned, 1 skipped (by design), 1 aborted (1 allowed)",
+			"3/3 terminal: 1 planned, 1 skipped (by design), 1 aborted (1 allowed), stall aborts 0, ceiling aborts 1",
 		);
 	});
 
@@ -452,7 +588,7 @@ describe("watchdog and the run's figures", () => {
 		appendHistory(historyPath, { ...record("nominal", 1, 0), details: { probeRealMs: 100 } });
 		let tick = 0;
 		const realNow = () => {
-			tick += 1000;
+			tick += 3000;
 			return tick;
 		};
 
@@ -467,8 +603,179 @@ describe("watchdog and the run's figures", () => {
 		const recovery = slow.hypotheses.find((hypothesis) => hypothesis.id === "recovery");
 		expect(recovery?.passed).toBe(false);
 		expect(recovery?.reason).toContain("of real time");
-		expect(recovery?.observed).toContain("baseline 100 ms ratio 10");
-		expect(slow.details?.probeRealMs).toBe(1000);
+		expect(recovery?.observed).toBe(
+			"probe latency real median 3000 ms of 5 (min 3000, max 3000) baseline 100 ms ratio 30 bound 1000 ms",
+		);
+		expect(slow.details?.probeRealMs).toBe(3000);
+		expect(slow.details?.probeRealMsAll).toEqual([3000, 3000, 3000, 3000, 3000]);
+	});
+
+	test("a baseline measured under a very different load is not compared on real time; the note says so and nothing fails on it", async () => {
+		const { historyPath, stateRoot } = paths();
+		appendHistory(historyPath, {
+			...record("nominal", 1, 0),
+			details: { probeRealMs: 100, loadAvg1: 2 },
+		});
+		let tick = 0;
+		const notes: string[] = [];
+
+		const result = await runPipeline(tiny({ baselineOf: "nominal" }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			realNow: () => {
+				tick += 1000;
+				return tick;
+			},
+			loadAvg: () => 20,
+			notes: (line) => notes.push(line),
+		});
+
+		expect(notes).toContain(
+			"recovery latency comparison skipped: load differed (baseline 2, now 20)",
+		);
+		const recovery = result.hypotheses.find((hypothesis) => hypothesis.id === "recovery");
+		expect(recovery?.passed).toBe(true);
+		expect(recovery?.observed).toContain("baseline none ratio n/a");
+		expect(result.details?.loadAvg1).toBe(20);
+	});
+
+	/** A real clock whose k-th prompt takes `durations[k]` ms: the batch prompt first, then the probes in order. */
+	function scriptedClock(durations: number[]): () => number {
+		let calls = 0;
+		let time = 0;
+		return () => {
+			calls += 1;
+			if (calls % 2 === 0) time += durations[calls / 2 - 1] ?? 0;
+			return time;
+		};
+	}
+
+	const ONE = { prompts: { count: 1, concurrency: 1, corpus: ["add a widget"] } };
+
+	test("a single noisy probe among five does not fail the run: the median is what is compared and recorded", async () => {
+		const { historyPath, stateRoot } = paths();
+		appendHistory(historyPath, { ...record("nominal", 1, 0), details: { probeRealMs: 100 } });
+
+		const result = await runPipeline(tiny({ ...ONE, baselineOf: "nominal" }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			realNow: scriptedClock([100, 100, 900, 100, 100, 100]),
+		});
+
+		const recovery = result.hypotheses.find((hypothesis) => hypothesis.id === "recovery");
+		expect(recovery?.passed).toBe(true);
+		expect(recovery?.observed).toBe(
+			"probe latency real median 100 ms of 5 (min 100, max 900) baseline 100 ms ratio 1 bound 1000 ms",
+		);
+		expect(result.details?.probeRealMs).toBe(100);
+		expect(result.details?.probeRealMsAll).toEqual([100, 900, 100, 100, 100]);
+		expect(result.passed).toBe(true);
+	});
+
+	test("a real regression (every probe 3x over the 1 s floor) fails the run", async () => {
+		const { historyPath, stateRoot } = paths();
+		appendHistory(historyPath, { ...record("nominal", 1, 0), details: { probeRealMs: 1000 } });
+
+		const result = await runPipeline(tiny({ ...ONE, baselineOf: "nominal" }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			realNow: scriptedClock([100, 3000, 3000, 3000, 3000, 3000]),
+		});
+
+		const recovery = result.hypotheses.find((hypothesis) => hypothesis.id === "recovery");
+		expect(recovery?.passed).toBe(false);
+		expect(recovery?.reason).toContain("probe median 3000 ms of real time");
+		expect(recovery?.reason).toContain("over the bound 1500 ms");
+		expect(result.passed).toBe(false);
+	});
+
+	test("a sub-second batch passes even when the baseline was 95 ms", async () => {
+		const { historyPath, stateRoot } = paths();
+		appendHistory(historyPath, { ...record("nominal", 1, 0), details: { probeRealMs: 95 } });
+
+		const result = await runPipeline(tiny({ ...ONE, baselineOf: "nominal" }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			realNow: scriptedClock([100, 800, 800, 800, 800, 800]),
+		});
+
+		expect(result.hypotheses.find((hypothesis) => hypothesis.id === "recovery")?.passed).toBe(true);
+	});
+
+	test("a baseline under a load within a factor of 2 is compared on real time", async () => {
+		const { historyPath, stateRoot } = paths();
+		appendHistory(historyPath, {
+			...record("nominal", 1, 0),
+			details: { probeRealMs: 100, loadAvg1: 10 },
+		});
+		let tick = 0;
+		const notes: string[] = [];
+
+		const result = await runPipeline(tiny({ baselineOf: "nominal" }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			realNow: () => {
+				tick += 3000;
+				return tick;
+			},
+			loadAvg: () => 20,
+			notes: (line) => notes.push(line),
+		});
+
+		expect(notes.some((line) => line.includes("comparison skipped"))).toBe(false);
+		expect(result.hypotheses.find((hypothesis) => hypothesis.id === "recovery")?.passed).toBe(
+			false,
+		);
+	});
+
+	test("loads under 1 count as 1: an idle baseline and a quiet host are comparable", async () => {
+		const { historyPath, stateRoot } = paths();
+		appendHistory(historyPath, {
+			...record("nominal", 1, 0),
+			details: { probeRealMs: 100, loadAvg1: 0.1 },
+		});
+		const notes: string[] = [];
+
+		await runPipeline(tiny({ baselineOf: "nominal" }), {
+			historyPath,
+			stateRoot,
+			ompPrompts: 0,
+			now: NOW,
+			loadAvg: () => 1.9,
+			notes: (line) => notes.push(line),
+		});
+
+		expect(notes.some((line) => line.includes("comparison skipped"))).toBe(false);
+	});
+
+	test("a record with the median and all five figures yields the median; one without probeRealMsAll (old) still yields a baseline", () => {
+		const modern = {
+			...record("nominal", 2, undefined),
+			details: { probeRealMs: 120, probeRealMsAll: [80, 120, 90, 500, 130] },
+		};
+		const old = { ...record("nominal", 1, undefined), details: { probeRealMs: 95 } };
+
+		expect(baselineFromHistory([modern], "nominal")).toEqual({ realMs: 120 });
+		expect(baselineFromHistory([old], "nominal")).toEqual({ realMs: 95 });
+		expect(baselineFromHistory([old, modern], "nominal")).toEqual({ realMs: 120 });
+	});
+
+	test("a recorded loadAvg1 is read back as part of the baseline", () => {
+		const records = [
+			{ ...record("nominal", 1, undefined), details: { probeRealMs: 90, loadAvg1: 12.5 } },
+		];
+
+		expect(baselineFromHistory(records, "nominal")).toEqual({ realMs: 90, loadAvg1: 12.5 });
 	});
 });
 

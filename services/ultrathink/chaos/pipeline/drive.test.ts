@@ -10,8 +10,9 @@ import {
 	defaultWatchdogMs,
 	expectedPlanned,
 	nonceFor,
-	runProbe,
+	runProbes,
 	runPrompts,
+	stallBudgetMs,
 	watchdogBudgetMs,
 } from "./drive.ts";
 import { createJudge } from "./oracle.ts";
@@ -382,11 +383,17 @@ describe("the Omp planner path", () => {
 });
 
 describe("watchdog budget", () => {
-	test("scales with concurrency: the larger of 120 s and 4 s per slot", () => {
-		expect(defaultWatchdogMs(5)).toBe(120_000);
-		expect(defaultWatchdogMs(30)).toBe(120_000);
-		expect(defaultWatchdogMs(100)).toBe(400_000);
-		expect(defaultWatchdogMs(128)).toBe(512_000);
+	test("the livelock ceiling scales with concurrency: the larger of 900 s and 8 s per slot", () => {
+		expect(defaultWatchdogMs(5)).toBe(900_000);
+		expect(defaultWatchdogMs(100)).toBe(900_000);
+		expect(defaultWatchdogMs(112)).toBe(900_000);
+		expect(defaultWatchdogMs(128)).toBe(1_024_000);
+	});
+
+	test("the stall window: the caller's, else the scenario's, else 60 s", () => {
+		expect(stallBudgetMs(tiny({ stallMs: 9000 }), { stallMs: 1234 })).toBe(1234);
+		expect(stallBudgetMs(tiny({ stallMs: 9000 }), {})).toBe(9000);
+		expect(stallBudgetMs(tiny(), {})).toBe(60_000);
 	});
 
 	test("the caller's budget wins over the scenario's, which wins over the default", () => {
@@ -394,7 +401,235 @@ describe("watchdog budget", () => {
 
 		expect(watchdogBudgetMs(scenario, { watchdogMs: 1234 })).toBe(1234);
 		expect(watchdogBudgetMs(scenario, {})).toBe(9000);
-		expect(watchdogBudgetMs(tiny({ prompts: { count: 1, concurrency: 100 } }), {})).toBe(400_000);
+		expect(watchdogBudgetMs(tiny({ prompts: { count: 1, concurrency: 100 } }), {})).toBe(900_000);
+	});
+});
+
+/** Hand-driven stall sampler: `advance` moves its clock one sample and runs the registered tick. */
+function stallRig(sampleMs = 5000) {
+	const state = { at: 0, cpuMs: 0 };
+	let tick: (() => void) | undefined;
+	return {
+		seams: {
+			sampleMs,
+			stallMs: 60_000,
+			stallNow: () => state.at,
+			cpuMs: () => state.cpuMs,
+			intervalTimers: {
+				setInterval: (callback: () => void) => {
+					tick = callback;
+					return 1;
+				},
+				clearInterval: () => undefined,
+			},
+		},
+		advance: (cpuShare = 0) => {
+			state.at += sampleMs;
+			state.cpuMs += cpuShare * sampleMs;
+			tick?.();
+		},
+	};
+}
+
+function macrotask(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setTimeout(resolve, 2);
+	return promise;
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+	for (let i = 0; i < 2000 && !condition(); i += 1) await macrotask();
+	expect(condition()).toBe(true);
+}
+
+/** A provider whose `delay` effect waits on a gate the test opens (abort-aware): a prompt blocked with no `hang` injected. */
+function gatedProvider(scenario: Scenario) {
+	const gate = Promise.withResolvers<void>();
+	const sleep = (_ms: number, signal?: AbortSignal): Promise<void> => {
+		const { promise, resolve, reject } = Promise.withResolvers<void>();
+		const aborted = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+		if (signal?.aborted) aborted();
+		signal?.addEventListener("abort", aborted, { once: true });
+		void gate.promise.then(resolve);
+		return promise;
+	};
+	const provider = createScriptedProvider(
+		[{ stage: "graph", promptId: 0, effect: { kind: "delay", ms: 10 }, count: "forever" }],
+		{ sleep, seed: scenario.seed },
+	);
+	return { provider, release: () => gate.resolve() };
+}
+
+describe("the stall watchdog", () => {
+	test("aborts a prompt blocked on an injected hang with no CPU progress, as stalled, and the judge accepts it", async () => {
+		const scenario = tiny({
+			prompts: { count: 2, concurrency: 2, corpus: ["add a thing", "add another thing"] },
+			faults: [{ stage: "graph", promptId: 0, effect: { kind: "hang" }, count: "forever" }],
+		});
+		const { deps, provider, stateRoot } = rig(scenario);
+		const stall = stallRig();
+
+		let done = 0;
+		const running = runPrompts(scenario, {
+			...deps,
+			...stall.seams,
+			judge: createJudge({}),
+			onPromptDone: () => (done += 1),
+		});
+		await waitFor(() => done === 1);
+		for (let i = 0; i < 15; i += 1) {
+			stall.advance(0);
+			await macrotask();
+		}
+		const report = await running;
+
+		const [aborted, planned] = report.outcomes;
+		expect(aborted?.terminal).toBe("aborted");
+		expect(aborted?.abortKind).toBe("stalled");
+		expect(aborted?.abortReason).toMatch(
+			/^stalled: no CPU progress for 60 s with 1 prompts in flight \(0 ms CPU, 1 prompts done, \d+ provider calls, max loop lag 0 ms\)$/,
+		);
+		expect(aborted?.verdict).toMatchObject({ allowedAbort: true, terminal: [] });
+		expect(planned?.terminal).toBe("planned");
+		expect(planned?.abortKind).toBeUndefined();
+		expect(provider.byPrompt(nonceOf(7, 0)).at(-1)?.outcome).toBe("aborted");
+		expect(readdirSync(stateRoot)).toEqual([]);
+	});
+
+	test("the same stall without an injected hang is a finding that says stalled and names the numbers", async () => {
+		const scenario = tiny({
+			prompts: { count: 2, concurrency: 2, corpus: ["add a thing", "add another thing"] },
+			faults: [],
+		});
+		const { deps } = rig(scenario);
+		const { provider } = gatedProvider(scenario);
+		const stall = stallRig();
+
+		let done = 0;
+		const running = runPrompts(scenario, {
+			...deps,
+			provider,
+			...stall.seams,
+			judge: createJudge({}),
+			onPromptDone: () => (done += 1),
+		});
+		await waitFor(() => done === 1);
+		for (let i = 0; i < 15; i += 1) {
+			stall.advance(0);
+			await macrotask();
+		}
+		const report = await running;
+
+		const aborted = report.outcomes[0];
+		expect(aborted?.abortKind).toBe("stalled");
+		expect(aborted?.verdict?.allowedAbort).toBe(false);
+		expect(aborted?.verdict?.terminal[0]).toMatch(
+			/^prompt 0: aborted \(stalled: no CPU progress for 60 s with 1 prompts in flight .*\) and no injected hang targeted it$/,
+		);
+	});
+
+	test("a slow prompt whose CPU keeps advancing for ten stall windows is never aborted", async () => {
+		const scenario = tiny({
+			prompts: { count: 1, concurrency: 1, corpus: ["add a thing"] },
+			faults: [],
+		});
+		const { deps } = rig(scenario);
+		const { provider, release } = gatedProvider(scenario);
+		const stall = stallRig();
+
+		const running = runPrompts(scenario, { ...deps, provider, ...stall.seams });
+		await waitFor(() => provider.inflight().now === 1);
+		// Ten windows of 12 samples each; the process gets 3 percent of one CPU and nothing finishes.
+		for (let i = 0; i < 120; i += 1) {
+			stall.advance(0.03);
+			await macrotask();
+			expect(provider.byPrompt(nonceOf(7, 0)).at(-1)?.outcome).toBe("pending");
+		}
+		release();
+		const report = await running;
+
+		expect(report.outcomes[0]?.terminal).toBe("planned");
+		expect(report.outcomes[0]?.abortKind).toBeUndefined();
+	});
+
+	test("the stall abort carries over to every unfinished prompt and the batch still ends", async () => {
+		const scenario = tiny({
+			prompts: { count: 3, concurrency: 3, corpus: ["add a", "add b", "add c"] },
+			faults: [
+				{ stage: "graph", promptId: 0, effect: { kind: "hang" }, count: "forever" },
+				{ stage: "graph", promptId: 1, effect: { kind: "hang" }, count: "forever" },
+			],
+		});
+		const { deps } = rig(scenario);
+		const stall = stallRig();
+
+		let done = 0;
+		const running = runPrompts(scenario, {
+			...deps,
+			...stall.seams,
+			onPromptDone: () => (done += 1),
+		});
+		await waitFor(() => done === 1);
+		for (let i = 0; i < 15; i += 1) {
+			stall.advance(0);
+			await macrotask();
+		}
+		const report = await running;
+
+		expect(report.outcomes.map((outcome) => outcome.terminal)).toEqual([
+			"aborted",
+			"aborted",
+			"planned",
+		]);
+		expect(report.outcomes.slice(0, 2).every((outcome) => outcome.abortKind === "stalled")).toBe(
+			true,
+		);
+		expect(report.outcomes[0]?.abortReason).toContain("with 2 prompts in flight");
+	});
+
+	test("the ceiling is a separate abort: it says ceiling and is not stalled", async () => {
+		const scenario = tiny({
+			prompts: { count: 1, concurrency: 1, corpus: ["add a thing"] },
+			faults: [{ stage: "graph", promptId: 0, effect: { kind: "hang" }, count: "forever" }],
+		});
+		const { deps, provider } = rig(scenario);
+		const pending: Array<() => void> = [];
+		const timers = {
+			setTimeout: (callback: () => void) => {
+				pending.push(callback);
+				return pending.length as unknown as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		};
+
+		const running = runPrompts(scenario, {
+			...deps,
+			timers,
+			watchdogMs: 777_000,
+			judge: createJudge({}),
+		});
+		await waitFor(() => provider.inflight().now === 1);
+		for (const fire of pending) fire();
+		const report = await running;
+
+		expect(report.outcomes[0]?.abortKind).toBe("ceiling");
+		expect(report.outcomes[0]?.abortReason).toBe("ceiling: still running after 777000 ms");
+	});
+
+	test("without a stall the sampler is stopped when the batch ends", async () => {
+		const scenario = tiny({
+			prompts: { count: 1, concurrency: 1, corpus: ["add a thing"] },
+			faults: [],
+		});
+		const { deps } = rig(scenario);
+		let cleared = 0;
+
+		await runPrompts(scenario, {
+			...deps,
+			intervalTimers: { setInterval: () => 1, clearInterval: () => (cleared += 1) },
+		});
+
+		expect(cleared).toBe(1);
 	});
 });
 
@@ -543,21 +778,59 @@ describe("judging and compacting", () => {
 	});
 });
 
-describe("runProbe", () => {
-	test("a clean probe prompt plans from the model after the faults are quiesced", async () => {
+describe("runProbes", () => {
+	test("a batch of clean probe prompts plans from the model after the faults are quiesced, one after the other", async () => {
 		const scenario = tiny();
 		const { deps, provider } = rig(scenario);
 		await runPrompts(scenario, deps);
 		provider.quiesce();
+		const before = provider.inflight().peak;
 
-		const probe = await runProbe(scenario, deps);
+		const probes = await runProbes(scenario, deps, 5);
 
-		expect(probe.promptId).toBe(4);
-		expect(probe.nonce).toBe(nonceOf(7, 4));
-		expect(probe.terminal).toBe("planned");
-		expect(probe.record?.result.source).toBe("llm");
-		expect(probe.degraded).toEqual([]);
-		expect(probe.ms).toBeGreaterThanOrEqual(0);
+		expect(probes.map((probe) => probe.promptId)).toEqual([4, 5, 6, 7, 8]);
+		expect(probes.map((probe) => probe.nonce)).toEqual(
+			[4, 5, 6, 7, 8].map((index) => nonceOf(7, index)),
+		);
+		for (const probe of probes) {
+			expect(probe.terminal).toBe("planned");
+			expect(probe.record?.result.source).toBe("llm");
+			expect(probe.degraded).toEqual([]);
+			expect(probe.ms).toBeGreaterThanOrEqual(0);
+			expect(probe.realMs).toBeGreaterThanOrEqual(0);
+		}
+		// Sequential: the batch never raised the peak of calls in flight above the run's own.
+		expect(provider.inflight().peak).toBe(before);
+	});
+
+	test("each probe records its own real-clock time", async () => {
+		const scenario = tiny({
+			prompts: { count: 1, concurrency: 1, corpus: ["add a widget"] },
+			faults: [],
+		});
+		const { deps } = rig(scenario);
+		let tick = 0;
+
+		const probes = await runProbes(
+			scenario,
+			{
+				...deps,
+				realNow: () => {
+					tick += 100;
+					return tick;
+				},
+			},
+			3,
+		);
+
+		expect(probes.map((probe) => probe.realMs)).toEqual([100, 100, 100]);
+	});
+
+	test("a count of zero is an empty batch", async () => {
+		const scenario = tiny();
+		const { deps } = rig(scenario);
+
+		expect(await runProbes(scenario, deps, 0)).toEqual([]);
 	});
 });
 

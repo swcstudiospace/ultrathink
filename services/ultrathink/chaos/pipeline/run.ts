@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { mkdtempSync, rmSync } from "node:fs";
-import { availableParallelism, tmpdir } from "node:os";
+import { availableParallelism, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { selectEngine } from "../../../../src/host/engine.ts";
 import type { HostId } from "../../../../src/host/types.ts";
@@ -12,11 +12,13 @@ import { scoreRun } from "../score.ts";
 import {
 	type DriveDeps,
 	expectedPlanned,
-	runProbe,
+	type PromptOutcome,
+	runProbes,
 	runPrompts,
+	stallBudgetMs,
 	watchdogBudgetMs,
 } from "./drive.ts";
-import { checkInvariants, createJudge, snapshotResources } from "./oracle.ts";
+import { checkInvariants, createJudge, median, snapshotResources } from "./oracle.ts";
 import {
 	type Pressure,
 	type PressureSpec,
@@ -47,8 +49,17 @@ interface PipelineDeps {
 	baselineRealMs?: number;
 	/** Real clock in ms for the probe and per-prompt wall time; default `performance.now`. */
 	realNow?: () => number;
-	/** Watchdog budget in real ms; defaults to the scenario's `watchdogMs`, else the concurrency-scaled default. */
+	/** Livelock ceiling in real ms; defaults to the scenario's `watchdogMs`, else the concurrency-scaled default. */
 	watchdogMs?: number;
+	/** Stall window of the hang detector in real ms; defaults to the scenario's `stallMs`, else 60000. */
+	stallMs?: number;
+	/** Test seams of the hang detector: sample interval, process CPU in ms, its clock and its interval timers. */
+	sampleMs?: number;
+	cpuMs?: DriveDeps["cpuMs"];
+	stallNow?: DriveDeps["stallNow"];
+	intervalTimers?: DriveDeps["intervalTimers"];
+	/** One-minute load average at the start of the run; default `os.loadavg()[0]`. */
+	loadAvg?: () => number;
 	stateRoot?: string;
 	/** Prompts that take the Omp planner path. Default: a quarter of the batch, at most 10. */
 	ompPrompts?: number;
@@ -68,6 +79,8 @@ const DEFAULT_PRESSURE_FLOOR = 0.5;
 // The helper's workers stop themselves; a long scenario needs them to outlive the default 30 s.
 const PRESSURE_MAX_MS = 15 * 60_000;
 const MAX_OMP_PROMPTS = 10;
+/** Probe prompts sent after the load: the recovery figure is the median of their real latencies. A live engine gets one (every call spends tokens). */
+const PROBE_COUNT = 5;
 
 function guardReal(scenario: Scenario, real: PipelineDeps["real"]): void {
 	if (!real?.requested) return;
@@ -88,6 +101,8 @@ interface Baseline {
 	virtualMs?: number;
 	/** Probe time on the real clock. */
 	realMs?: number;
+	/** One-minute load average when the baseline run started. */
+	loadAvg1?: number;
 }
 
 function finite(value: unknown): number | undefined {
@@ -96,7 +111,7 @@ function finite(value: unknown): number | undefined {
 
 /**
  * The recovery probe times of the latest recorded pipeline run of `id`: what a later run's probe is compared with. The
- * real-clock figure is `details.probeRealMs`; a run recorded before it existed carries only a numeric `recovery`
+ * real-clock figure is `details.probeRealMs` (the median of the probe batch, or the single probe of an older record); a run recorded before it existed carries only a numeric `recovery`
  * observation, read as the scripted-clock figure. A run with neither is passed over.
  */
 export function baselineFromHistory(records: HistoryRecord[], id: string): Baseline | undefined {
@@ -105,6 +120,7 @@ export function baselineFromHistory(records: HistoryRecord[], id: string): Basel
 		.sort((a, b) => b.seq - a.seq);
 	for (const run of runs) {
 		const realMs = finite(run.details?.probeRealMs);
+		const loadAvg1 = finite(run.details?.loadAvg1);
 		const virtualMs =
 			finite(run.details?.probeVirtualMs) ??
 			finite(run.hypotheses.find((hypothesis) => hypothesis.id === "recovery")?.observed);
@@ -112,6 +128,7 @@ export function baselineFromHistory(records: HistoryRecord[], id: string): Basel
 			return {
 				...(virtualMs === undefined ? {} : { virtualMs }),
 				...(realMs === undefined ? {} : { realMs }),
+				...(loadAvg1 === undefined ? {} : { loadAvg1 }),
 			};
 		}
 	}
@@ -143,22 +160,42 @@ function mib(bytes: number): number {
 }
 
 /** Outcome counts by status, with a `skipped:<reason>` count per skip reason. */
-function countStatuses(terminals: Array<string | undefined>): {
+function countStatuses(outcomes: Array<PromptOutcome | undefined>): {
 	planned: number;
 	skipped: number;
 	aborted: number;
+	stalled: number;
+	ceiling: number;
 	reasons: Record<string, number>;
 } {
-	const counts = { planned: 0, skipped: 0, aborted: 0, reasons: {} as Record<string, number> };
-	for (const terminal of terminals) {
+	const counts = {
+		planned: 0,
+		skipped: 0,
+		aborted: 0,
+		stalled: 0,
+		ceiling: 0,
+		reasons: {} as Record<string, number>,
+	};
+	for (const outcome of outcomes) {
+		const terminal = outcome?.terminal;
 		if (terminal === "planned") counts.planned += 1;
-		else if (terminal === "aborted") counts.aborted += 1;
-		else if (terminal?.startsWith("skipped:")) {
+		else if (terminal === "aborted") {
+			counts.aborted += 1;
+			if (outcome?.abortKind === "stalled") counts.stalled += 1;
+			else if (outcome?.abortKind === "ceiling") counts.ceiling += 1;
+		} else if (terminal?.startsWith("skipped:")) {
 			counts.skipped += 1;
 			counts.reasons[terminal] = (counts.reasons[terminal] ?? 0) + 1;
 		}
 	}
 	return counts;
+}
+
+/** Whether two load averages differ by more than a factor of 2, loads under 1 counted as 1 (an idle host is idle). */
+function loadDiffers(a: number, b: number): boolean {
+	const high = Math.max(a, b, 1);
+	const low = Math.max(Math.min(a, b), 1);
+	return high / low > 2;
 }
 
 function pressureSpecOf(scenario: Scenario): PressureSpec {
@@ -190,10 +227,11 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 		...(real && deps.real ? { maxCalls: deps.real.maxCalls } : {}),
 	});
 	const watchdogMs = watchdogBudgetMs(scenario, deps);
+	const stallMs = stallBudgetMs(scenario, deps);
+	const loadNow = Math.round((deps.loadAvg ?? (() => loadavg()[0] ?? 0))() * 100) / 100;
 	const judge = createJudge({
 		minNodes: nodeRange[0],
 		maxNodes: nodeRange[1],
-		watchdogMs,
 		...(scenario.allowAborts === undefined ? {} : { allowAborts: scenario.allowAborts }),
 		...(real ? { real } : {}),
 	});
@@ -206,6 +244,11 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 		now: clock.now,
 		...(deps.realNow ? { realNow: deps.realNow } : {}),
 		watchdogMs,
+		stallMs,
+		...(deps.sampleMs === undefined ? {} : { sampleMs: deps.sampleMs }),
+		...(deps.cpuMs ? { cpuMs: deps.cpuMs } : {}),
+		...(deps.stallNow ? { stallNow: deps.stallNow } : {}),
+		...(deps.intervalTimers ? { intervalTimers: deps.intervalTimers } : {}),
 		stateRoot,
 		ompPrompts: deps.ompPrompts ?? Math.min(MAX_OMP_PROMPTS, Math.ceil(scenario.prompts.count / 4)),
 		// Each prompt is judged as it completes and then reduced to its verdict, so the run holds no records to the end.
@@ -241,25 +284,39 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 			);
 		}
 		provider.quiesce();
-		const probe = await runProbe(scenario, drive);
+		const probes = await runProbes(scenario, drive, real ? 1 : PROBE_COUNT);
+		const probe = probes[0];
+		if (probe === undefined) throw new Error("the probe batch is empty");
 		const capped = provider.capped();
 		const recorded =
 			scenario.baselineOf === undefined
 				? undefined
 				: baselineFromHistory(readHistory(deps.historyPath).records, scenario.baselineOf);
 		const baselineMs = deps.baselineMs ?? recorded?.virtualMs;
-		const baselineRealMs = deps.baselineRealMs ?? recorded?.realMs;
+		let baselineRealMs = deps.baselineRealMs ?? recorded?.realMs;
+		// A latency ratio is only meaningful when the baseline was measured under comparable load: a probe on a host twice as
+		// busy (or half as busy) than the baseline's would measure the host. The scripted-clock comparison stays.
+		if (
+			baselineRealMs !== undefined &&
+			recorded?.loadAvg1 !== undefined &&
+			loadDiffers(recorded.loadAvg1, loadNow)
+		) {
+			deps.notes?.(
+				`recovery latency comparison skipped: load differed (baseline ${recorded.loadAvg1}, now ${loadNow})`,
+			);
+			baselineRealMs = undefined;
+		}
 		const hypotheses: RunResult["hypotheses"] = checkInvariants(report, {
 			stateRoot,
 			historyPath: deps.historyPath,
 			baseline,
 			probe,
+			probes,
 			...(baselineMs === undefined ? {} : { baselineMs }),
 			...(baselineRealMs === undefined ? {} : { baselineRealMs }),
 			expectedPrompts: scenario.prompts.count,
 			// A live engine's prompts are not the corpus' planned share (the call cap skips some), so only the mock run expects it.
 			...(real ? {} : { expectedPlanned: expectedPlanned(scenario) }),
-			watchdogMs,
 			...(scenario.allowAborts === undefined ? {} : { allowAborts: scenario.allowAborts }),
 			// A capped real run could not send its probe, so recovery cannot be judged.
 			invariants: scenario.invariants.filter((id) => !(capped && id === "recovery")),
@@ -285,8 +342,10 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 						},
 			);
 		}
-		const statuses = countStatuses(report.outcomes.map((outcome) => outcome?.terminal));
-		deps.notes?.(`watchdog budget ${watchdogMs} ms, aborts ${statuses.aborted}`);
+		const statuses = countStatuses(report.outcomes);
+		deps.notes?.(
+			`stall watchdog ${stallMs} ms, ceiling ${watchdogMs} ms, stall aborts ${statuses.stalled}, ceiling aborts ${statuses.ceiling}`,
+		);
 		const recoveryObserved = hypotheses.find(
 			(hypothesis) => hypothesis.id === "recovery",
 		)?.observed;
@@ -307,13 +366,19 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 			score: scoreRun(hypotheses),
 			rollback: "skipped:not_requested",
 			details: {
+				stallMs,
 				watchdogMs,
+				loadAvg1: loadNow,
 				planned: statuses.planned,
 				skipped: statuses.skipped,
 				aborted: statuses.aborted,
+				stallAborts: statuses.stalled,
+				ceilingAborts: statuses.ceiling,
 				...statuses.reasons,
-				probeVirtualMs: Math.round(probe.ms),
-				probeRealMs: Math.round(probe.realMs),
+				probeVirtualMs: Math.round(median(probes.map((entry) => entry.ms))),
+				// The median real latency of the batch is the recovery figure and the next run's baseline; all of them are kept.
+				probeRealMs: Math.round(median(probes.map((entry) => entry.realMs))),
+				probeRealMsAll: probes.map((entry) => Math.round(entry.realMs)),
 			},
 		};
 		return appendHistory(deps.historyPath, result);

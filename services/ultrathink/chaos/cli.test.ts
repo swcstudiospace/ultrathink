@@ -564,34 +564,51 @@ describe("pipeline run and score", () => {
 		expect(await runCli(["pipeline", "run", "smoke", "--trace-heap=yes"], harness().deps)).toBe(2);
 	});
 
-	test("--watchdog-ms sets the budget the run prints; the run always prints the budget, the abort count and the probe latency", async () => {
+	test("--watchdog-ms (ceiling) and --stall-ms set the budgets the run prints, with the abort counts and the probe latency", async () => {
 		const plain = harness();
 		const custom = harness();
 
 		expect(await runCli(["pipeline", "run", "smoke", "--prompts", "2"], plain.deps)).toBe(0);
 		expect(
 			await runCli(
-				["pipeline", "run", "smoke", "--prompts", "2", "--watchdog-ms", "45000"],
+				[
+					"pipeline",
+					"run",
+					"smoke",
+					"--prompts",
+					"2",
+					"--watchdog-ms",
+					"45000",
+					"--stall-ms",
+					"9000",
+				],
 				custom.deps,
 			),
 		).toBe(0);
 
-		expect(plain.stdout()).toContain("watchdog budget 120000 ms, aborts 0");
-		expect(plain.stdout()).toMatch(
-			/probe latency real \d+ ms baseline none ratio n\/a \(virtual \d+ ms\)/,
+		expect(plain.stdout()).toContain(
+			"stall watchdog 60000 ms, ceiling 900000 ms, stall aborts 0, ceiling aborts 0",
 		);
-		expect(custom.stdout()).toContain("watchdog budget 45000 ms, aborts 0");
+		expect(plain.stdout()).toMatch(
+			/probe latency real median \d+ ms of 5 \(min \d+, max \d+\) baseline none ratio n\/a bound n\/a/,
+		);
+		expect(custom.stdout()).toContain(
+			"stall watchdog 9000 ms, ceiling 45000 ms, stall aborts 0, ceiling aborts 0",
+		);
 		const recorded = JSON.parse(readFileSync(custom.historyPath, "utf8").trim()) as {
 			details: Record<string, number>;
 		};
 		expect(recorded.details.watchdogMs).toBe(45000);
+		expect(recorded.details.stallMs).toBe(9000);
 	});
 
-	test("--watchdog-ms out of range or malformed exits 2", async () => {
-		for (const value of ["500", "abc", "-1"]) {
-			const h = harness();
-			expect(await runCli(["pipeline", "run", "smoke", "--watchdog-ms", value], h.deps)).toBe(2);
-			expect(existsSync(h.historyPath)).toBe(false);
+	test("--watchdog-ms and --stall-ms out of range or malformed exit 2", async () => {
+		for (const flag of ["--watchdog-ms", "--stall-ms"]) {
+			for (const value of ["500", "abc", "-1", "3600001"]) {
+				const h = harness();
+				expect(await runCli(["pipeline", "run", "smoke", flag, value], h.deps)).toBe(2);
+				expect(existsSync(h.historyPath)).toBe(false);
+			}
 		}
 	});
 

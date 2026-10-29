@@ -33,7 +33,7 @@ export interface RunResult {
 	rollback: RollbackStatus;
 	rollbackExitCode?: number;
 	/** Run figures that are not pass/fail checks (pipeline runs: status counts, watchdog budget, probe latencies). */
-	details?: Record<string, string | number>;
+	details?: Record<string, string | number | number[]>;
 }
 
 export interface HistoryRecord extends RunResult {

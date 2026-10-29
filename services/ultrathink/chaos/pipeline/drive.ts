@@ -29,6 +29,7 @@ import {
 	type StageName,
 } from "./provider.ts";
 import type { Scenario } from "./scenario.ts";
+import { startStallMonitor } from "./stall.ts";
 
 /** What a prompt's temp state directory held when its flight ended, before the directory was removed. */
 interface StateScan {
@@ -58,6 +59,9 @@ export interface PromptVerdict {
 	calls: string[];
 }
 
+/** Why the driver aborted a prompt: no progress anywhere in the run (a hang) or the per-prompt livelock ceiling. */
+export type AbortKind = "stalled" | "ceiling";
+
 export interface PromptOutcome {
 	promptId: number;
 	nonce: string;
@@ -77,6 +81,10 @@ export interface PromptOutcome {
 	/** The track plans the tracker stub received, serialized. */
 	rows: string[];
 	state?: StateScan;
+	/** Set with `terminal: "aborted"` when the driver did the aborting. */
+	abortKind?: AbortKind;
+	/** `stalled: ...` or `ceiling: ...` with the numbers behind the decision. */
+	abortReason?: string;
 	/** Time the prompt took on the injected clock (the scripted provider's delays and backoffs; informational). */
 	ms: number;
 	/** Time the prompt took on the real clock: what the host and the code under test actually spent. */
@@ -123,24 +131,48 @@ export interface DriveDeps {
 	/** Most prompts that take the Omp planner path when no selector is given. Default 10; 0 keeps every prompt on the hook. */
 	ompPrompts?: number;
 	/**
-	 * Aborts a flight that is still running after this many real milliseconds: the hang detector. Default: the scenario's
-	 * `watchdogMs`, else {@link defaultWatchdogMs} of its concurrency.
+	 * The livelock ceiling: aborts a flight still running after this many real milliseconds, whatever the run is doing.
+	 * Default: the scenario's `watchdogMs`, else {@link defaultWatchdogMs} of its concurrency. It is not the hang detector.
 	 */
 	watchdogMs?: number;
+	/** Per-prompt ceiling timers. */
 	timers?: WatchdogTimers;
+	/**
+	 * The hang detector: the run is stalled when prompts are unfinished and, for this many real milliseconds, none finished,
+	 * no provider call was made and the process CPU advanced by under 1 percent. Default: the scenario's `stallMs`, else 60000.
+	 */
+	stallMs?: number;
+	/** Real time between progress samples. Default 5000. */
+	sampleMs?: number;
+	/** Process CPU time (user plus system) in ms; default `process.cpuUsage`. */
+	cpuMs?: () => number;
+	/** Real clock of the progress sampler; default `performance.now`. */
+	stallNow?: () => number;
+	/** Interval timers of the progress sampler. */
+	intervalTimers?: {
+		setInterval(callback: () => void, ms: number): unknown;
+		clearInterval(handle: unknown): void;
+	};
 }
 
 const DEFAULT_OMP_PROMPTS = 10;
-const MIN_WATCHDOG_MS = 120_000;
-const WATCHDOG_MS_PER_SLOT = 4_000;
+const MIN_CEILING_MS = 900_000;
+const CEILING_MS_PER_SLOT = 8_000;
+const DEFAULT_STALL_MS = 60_000;
+const DEFAULT_SAMPLE_MS = 5_000;
 const CWD = "/chaos/pipeline";
 
-/** The larger of 120 s and 4 s per concurrent slot, so a wide batch on a busy host is not cut off by accident. */
+/** The livelock ceiling default: the larger of 900 s and 8 s per concurrent slot. Slowness alone is the stall monitor's business, not this. */
 export function defaultWatchdogMs(concurrency: number): number {
-	return Math.max(MIN_WATCHDOG_MS, WATCHDOG_MS_PER_SLOT * concurrency);
+	return Math.max(MIN_CEILING_MS, CEILING_MS_PER_SLOT * concurrency);
 }
 
-/** The watchdog budget a run uses: the caller's, else the scenario's, else the concurrency-scaled default. */
+/** The stall window a run uses: the caller's, else the scenario's, else 60 s. */
+export function stallBudgetMs(scenario: Scenario, deps: Pick<DriveDeps, "stallMs">): number {
+	return deps.stallMs ?? scenario.stallMs ?? DEFAULT_STALL_MS;
+}
+
+/** The livelock ceiling a run uses: the caller's, else the scenario's, else the concurrency-scaled default. */
 export function watchdogBudgetMs(scenario: Scenario, deps: Pick<DriveDeps, "watchdogMs">): number {
 	return deps.watchdogMs ?? scenario.watchdogMs ?? defaultWatchdogMs(scenario.prompts.concurrency);
 }
@@ -328,6 +360,8 @@ interface Resolved {
 	timers: WatchdogTimers;
 	watchdogMs: number;
 	random: () => number;
+	/** Unfinished prompts, each with the function that aborts it and records why. */
+	inflight: Map<number, (kind: AbortKind, reason: string) => void>;
 }
 
 function resolve(scenario: Scenario, deps: DriveDeps): Resolved {
@@ -342,6 +376,7 @@ function resolve(scenario: Scenario, deps: DriveDeps): Resolved {
 		timers: deps.timers ?? platformTimers,
 		watchdogMs: watchdogBudgetMs(scenario, deps),
 		random: seededRandom(scenario.seed),
+		inflight: new Map(),
 	};
 }
 
@@ -503,7 +538,18 @@ async function drivePrompt(
 	const scratch = mkdtempSync(join(stateRoot, `drive-${item.nonce}-env-`));
 	const sessionId = `chaos-${item.nonce}`;
 	const controller = new AbortController();
-	const watchdog = timers.setTimeout(() => controller.abort(), ctx.watchdogMs);
+	const abort: { kind?: AbortKind; reason?: string } = {};
+	const abortWith = (kind: AbortKind, reason: string): void => {
+		if (controller.signal.aborted) return;
+		abort.kind = kind;
+		abort.reason = reason;
+		controller.abort();
+	};
+	ctx.inflight.set(item.index, abortWith);
+	const watchdog = timers.setTimeout(
+		() => abortWith("ceiling", `ceiling: still running after ${ctx.watchdogMs} ms`),
+		ctx.watchdogMs,
+	);
 	const rows: string[] = [];
 	const startedAt = now();
 	const realStartedAt = ctx.realNow();
@@ -540,6 +586,7 @@ async function drivePrompt(
 					: "unknown failure";
 	} finally {
 		timers.clearTimeout(watchdog);
+		ctx.inflight.delete(item.index);
 	}
 	const specXml = readSpec(stateDir, sessionId);
 	const state = scanState(stateDir);
@@ -554,6 +601,9 @@ async function drivePrompt(
 		calls: callsOf(deps.provider, item.nonce),
 		degraded: record?.degraded ?? [],
 		...(error === undefined ? {} : { error }),
+		...(terminal === "aborted" && abort.kind
+			? { abortKind: abort.kind, abortReason: abort.reason }
+			: {}),
 		rows,
 		state,
 		ms: now() - startedAt,
@@ -638,7 +688,41 @@ export async function runPrompts(scenario: Scenario, deps: DriveDeps): Promise<D
 			await yieldTurn();
 		}
 	};
-	await Promise.all(Array.from({ length: Math.min(scenario.prompts.concurrency, total) }, worker));
+	const stalled = (info: {
+		windowMs: number;
+		inflight: number;
+		cpuMs: number;
+		maxLagMs: number;
+	}): void => {
+		const reason = `stalled: no CPU progress for ${Math.round(info.windowMs / 1000)} s with ${info.inflight} prompts in flight (${Math.round(info.cpuMs)} ms CPU, ${completed} prompts done, ${deps.provider.count()} provider calls, max loop lag ${Math.round(info.maxLagMs)} ms)`;
+		for (const abortWith of [...ctx.inflight.values()]) abortWith("stalled", reason);
+	};
+	const monitor = startStallMonitor({
+		stallMs: stallBudgetMs(scenario, deps),
+		sampleMs: deps.sampleMs ?? DEFAULT_SAMPLE_MS,
+		now: deps.stallNow ?? (() => performance.now()),
+		cpuMs:
+			deps.cpuMs ??
+			(() => {
+				const usage = process.cpuUsage();
+				return (usage.user + usage.system) / 1000;
+			}),
+		completed: () => completed,
+		calls: () => deps.provider.count(),
+		inflight: () => ctx.inflight.size,
+		onStall: stalled,
+		timers: deps.intervalTimers ?? {
+			setInterval: (callback, ms) => setInterval(callback, ms),
+			clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+		},
+	});
+	try {
+		await Promise.all(
+			Array.from({ length: Math.min(scenario.prompts.concurrency, total) }, worker),
+		);
+	} finally {
+		monitor.stop();
+	}
 	return {
 		outcomes,
 		calls: deps.provider.calls(),
@@ -648,9 +732,9 @@ export async function runPrompts(scenario: Scenario, deps: DriveDeps): Promise<D
 	};
 }
 
-/** One ordinary prompt (the index after the batch) on the hook path: does the pipeline plan normally after the load? */
-export function runProbe(scenario: Scenario, deps: DriveDeps): Promise<PromptOutcome> {
-	const index = scenario.prompts.count;
+/** One ordinary prompt (`offset` past the batch) on the hook path: does the pipeline plan normally after the load? */
+function runProbe(scenario: Scenario, deps: DriveDeps, offset: number): Promise<PromptOutcome> {
+	const index = scenario.prompts.count + offset;
 	const nonce = nonceFor(scenario.seed, index);
 	const text = textFor("typical", index, nonce);
 	const item: PromptItem = { index, nonce, kind: "typical", text, expected: text.trim() };
@@ -659,4 +743,18 @@ export function runProbe(scenario: Scenario, deps: DriveDeps): Promise<PromptOut
 		item,
 		deps.engineSelector === undefined ? "hook" : "omp",
 	);
+}
+
+/** `count` ordinary prompts, one after the other (never concurrently), each its own probe with its own nonce. */
+export async function runProbes(
+	scenario: Scenario,
+	deps: DriveDeps,
+	count: number,
+): Promise<PromptOutcome[]> {
+	const probes: PromptOutcome[] = [];
+	for (let offset = 0; offset < count; offset += 1) {
+		probes.push(await runProbe(scenario, deps, offset));
+		await yieldTurn();
+	}
+	return probes;
 }

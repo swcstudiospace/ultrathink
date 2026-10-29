@@ -61,6 +61,8 @@ export interface ScriptedProvider {
 	/** The same scripted faults over another completer: an `ok` effect calls `inner` instead of writing a reply. */
 	wrap(inner: ClaudeCompleter): ClaudeCompleter;
 	calls(): CallLog[];
+	/** How many calls were made so far; cheap, for progress sampling. */
+	count(): number;
 	byPrompt(key: string): CallLog[];
 	byStage(stage: StageName): CallLog[];
 	inflight(): { now: number; peak: number };
@@ -376,6 +378,7 @@ export function createScriptedProvider(rules: Rule[], seams: ProviderSeams = {})
 	return {
 		complete: (system, user, signal) => run(undefined, system, user, signal),
 		wrap: (inner) => (system, user, signal) => run(inner, system, user, signal),
+		count: () => log.length,
 		calls: () => log.map((entry) => ({ ...entry, foreign: [...entry.foreign] })),
 		byPrompt: (key) => log.filter((entry) => entry.key === key).map((entry) => ({ ...entry })),
 		byStage: (stage) => log.filter((entry) => entry.stage === stage).map((entry) => ({ ...entry })),

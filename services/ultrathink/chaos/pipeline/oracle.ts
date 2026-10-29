@@ -37,9 +37,7 @@ interface JudgeOptions {
 	maxNodes?: number;
 	/** The prompts went to a live engine: its text carries no nonce, so the nonce-presence check is skipped. */
 	real?: boolean;
-	/** The per-prompt watchdog budget in ms, named in the finding for a prompt it aborted. */
-	watchdogMs?: number;
-	/** Any watchdog abort is accepted. Otherwise only a prompt an injected `hang` targeted may be aborted. */
+	/** Any driver abort (stalled or ceiling) is accepted. Otherwise only a prompt an injected `hang` targeted may be aborted. */
 	allowAborts?: boolean;
 }
 
@@ -48,11 +46,13 @@ export interface OracleContext extends JudgeOptions {
 	historyPath: string;
 	/** Taken before the run with {@link snapshotResources}. */
 	baseline: ResourceSnapshot;
-	/** One ordinary prompt planned after the load, with the faults quiesced. */
+	/** One ordinary prompt planned after the load, with the faults quiesced (the first of `probes`). */
 	probe: PromptOutcome;
+	/** The probe batch, sequential, faults off. Its median real latency is the recovery figure. Default: just `probe`. */
+	probes?: PromptOutcome[];
 	/** Probe time on the scripted provider's clock of the baseline run (informational; used when no real baseline exists). */
 	baselineMs?: number;
-	/** Probe time on the real clock of the baseline run (the nominal scenario): the probe must be within 1.25x plus 250 ms. */
+	/** Median probe time on the real clock of the baseline run (the nominal scenario): the median must be within max(1.25x plus 250 ms, 1 s). */
 	baselineRealMs?: number;
 	/** Prompts the corpus asks to be planned ({@link expectedPlanned} in drive.ts); fewer planned than this is a finding. */
 	expectedPlanned?: number;
@@ -100,6 +100,8 @@ const NATIVE_ATTEMPTS = 3;
 const LATENCY_FACTOR = 1.25;
 /** Absolute allowance on top of the ratio, so a fast baseline (tens of ms) does not make host noise a regression. */
 const LATENCY_ALLOWANCE_MS = 250;
+/** A probe batch whose median is under this recovered, whatever the baseline was. */
+const LATENCY_FLOOR_MS = 1000;
 const SHOWN = 3;
 
 /** The process figures and what the driver's state directories under `stateRoot` still hold. */
@@ -157,8 +159,8 @@ function terminalOf(outcome: PromptOutcome, calls: CallLog[], options: JudgeOpti
 	}
 	if (outcome.terminal === "aborted") {
 		if (abortAllowed(outcome, calls, options)) return [];
-		const budget = options.watchdogMs === undefined ? "" : ` (budget ${options.watchdogMs} ms)`;
-		return [`prompt ${id}: aborted by the watchdog${budget} and no injected hang targeted it`];
+		const why = outcome.abortReason ?? "no recorded reason";
+		return [`prompt ${id}: aborted (${why}) and no injected hang targeted it`];
 	}
 	if (Object.hasOwn(SKIP_REASONS, outcome.terminal.slice("skipped:".length))) return [];
 	return [`prompt ${id}: unexpected terminal status ${outcome.terminal}`];
@@ -425,6 +427,8 @@ function terminal(
 	let skipped = 0;
 	let aborted = 0;
 	let allowedAborts = 0;
+	let stallAborts = 0;
+	let ceilingAborts = 0;
 	for (const [index, verdict] of verdicts.entries()) {
 		if (verdict === undefined) {
 			violations.push(`prompt ${index}: no outcome`);
@@ -437,6 +441,8 @@ function terminal(
 		else if (status === "aborted") {
 			aborted += 1;
 			if (verdict.allowedAbort) allowedAborts += 1;
+			if (outcomes[index]?.abortKind === "stalled") stallAborts += 1;
+			else if (outcomes[index]?.abortKind === "ceiling") ceilingAborts += 1;
 		} else if (status?.startsWith("skipped:") && verdict.terminal.length === 0) skipped += 1;
 	}
 	const pending = report.calls.filter((call) => call.outcome === "pending").length;
@@ -449,7 +455,7 @@ function terminal(
 	const injected = allowedAborts > 0 ? ` (${allowedAborts} allowed)` : "";
 	return {
 		violations,
-		observed: `${settled}/${outcomes.length} terminal: ${planned} planned, ${skipped} skipped (by design), ${aborted} aborted${injected}`,
+		observed: `${settled}/${outcomes.length} terminal: ${planned} planned, ${skipped} skipped (by design), ${aborted} aborted${injected}, stall aborts ${stallAborts}, ceiling aborts ${ceilingAborts}`,
 	};
 }
 
@@ -509,28 +515,52 @@ function resources(report: DriveReport, ctx: OracleContext): Verdict {
 	};
 }
 
+/** The middle value (the mean of the two middle ones for an even count). */
+export function median(values: number[]): number {
+	const sorted = [...values].sort((x, y) => x - y);
+	const mid = Math.floor(sorted.length / 2);
+	return sorted.length % 2 === 1
+		? (sorted[mid] ?? 0)
+		: ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+}
+
+/**
+ * The recovery latency bound: 1.25 times the baseline median plus 250 ms, and never under one second. A sub-second probe
+ * counts as recovered: below that the host's scheduling noise dominates any ratio.
+ */
+function recoveryBoundMs(baselineMedianMs: number): number {
+	return Math.max(baselineMedianMs * LATENCY_FACTOR + LATENCY_ALLOWANCE_MS, LATENCY_FLOOR_MS);
+}
+
 function recovery(ctx: OracleContext): Verdict {
-	const probe = ctx.probe;
+	const probes = ctx.probes ?? [ctx.probe];
 	const violations: string[] = [];
-	if (probe.error !== undefined) violations.push(`probe threw ${probe.error}`);
-	else if (probe.terminal !== "planned") violations.push(`probe ended ${probe.terminal}`);
-	else if (probe.record?.result.source !== "llm")
-		violations.push("probe fell back instead of planning from the model");
-	else if (probe.degraded.length > 0)
-		violations.push(`probe degraded: ${probe.degraded.join(", ")}`);
-	const real = Math.round(probe.realMs);
+	for (const [index, probe] of probes.entries()) {
+		const label = probes.length > 1 ? `probe ${index + 1}` : "probe";
+		if (probe.error !== undefined) violations.push(`${label} threw ${probe.error}`);
+		else if (probe.terminal !== "planned") violations.push(`${label} ended ${probe.terminal}`);
+		else if (probe.record?.result.source !== "llm")
+			violations.push(`${label} fell back instead of planning from the model`);
+		else if (probe.degraded.length > 0)
+			violations.push(`${label} degraded: ${probe.degraded.join(", ")}`);
+	}
+	const reals = probes.map((probe) => Math.round(probe.realMs));
+	const real = Math.round(median(reals));
+	const virtual = Math.round(median(probes.map((probe) => probe.ms)));
 	const baselineReal =
 		ctx.baselineRealMs === undefined ? undefined : Math.round(ctx.baselineRealMs);
-	if (baselineReal !== undefined) {
-		// The real clock decides: the scripted provider's clock only moves when a wait is injected, so it is vacuous here.
-		if (real > baselineReal * LATENCY_FACTOR + LATENCY_ALLOWANCE_MS) {
+	const bound = baselineReal === undefined ? undefined : Math.round(recoveryBoundMs(baselineReal));
+	if (baselineReal !== undefined && bound !== undefined) {
+		// The real clock decides, on the median of the batch: the scripted provider's clock only moves when a wait is
+		// injected, so it is vacuous here, and one probe on a shared host is mostly scheduling noise.
+		if (real > bound) {
 			violations.push(
-				`probe took ${real} ms of real time, over ${LATENCY_FACTOR}x the ${baselineReal} ms baseline plus ${LATENCY_ALLOWANCE_MS} ms`,
+				`probe median ${real} ms of real time (of ${reals.join(", ")}), over the bound ${bound} ms: max(${LATENCY_FACTOR}x the ${baselineReal} ms baseline median plus ${LATENCY_ALLOWANCE_MS} ms, ${LATENCY_FLOOR_MS} ms)`,
 			);
 		}
-	} else if (ctx.baselineMs !== undefined && probe.ms > ctx.baselineMs * LATENCY_FACTOR) {
+	} else if (ctx.baselineMs !== undefined && virtual > ctx.baselineMs * LATENCY_FACTOR) {
 		violations.push(
-			`probe took ${probe.ms} ms, over ${LATENCY_FACTOR}x the ${ctx.baselineMs} ms baseline`,
+			`probe took ${virtual} ms, over ${LATENCY_FACTOR}x the ${ctx.baselineMs} ms baseline`,
 		);
 	}
 	const ratio =
@@ -539,7 +569,7 @@ function recovery(ctx: OracleContext): Verdict {
 			: String(Math.round((real / baselineReal) * 100) / 100);
 	return {
 		violations,
-		observed: `probe latency real ${real} ms baseline ${baselineReal === undefined ? "none" : `${baselineReal} ms`} ratio ${ratio} (virtual ${probe.ms} ms)`,
+		observed: `probe latency real median ${real} ms of ${probes.length} (min ${Math.min(...reals)}, max ${Math.max(...reals)}) baseline ${baselineReal === undefined ? "none" : `${baselineReal} ms`} ratio ${ratio} bound ${bound === undefined ? "n/a" : `${bound} ms`}`,
 	};
 }
 
@@ -575,8 +605,9 @@ function calls(
 	verdicts: Array<PromptVerdict | undefined>,
 ): Verdict {
 	const { violations } = collect(verdicts, (verdict) => verdict.calls);
-	violations.push(...callsOf(ctx.probe, ctx));
-	let counted = 1;
+	const probes = ctx.probes ?? [ctx.probe];
+	for (const probe of probes) violations.push(...callsOf(probe, ctx));
+	let counted = probes.length;
 	for (const outcome of report.outcomes) {
 		if (outcome === undefined) continue;
 		counted += 1;
