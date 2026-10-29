@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The hosted service's server-side plan now keeps the 2 s state-lock bound (`OMP_LOCK`) instead of the 15 s hook default: a live external process holding a session lock in the service's state directory can no longer freeze the service's event loop for up to 15 s in the synchronous lock wait.
 - Two concurrent `ultrathink_plan` starts with one session id no longer overwrite each other when the plan slots are full: after the wait for a slot the start re-checks the id, so exactly one job is created, a start with another prompt answers `session_conflict`, a start with the same prompt joins the first job, and the extra slot is released.
 - `ultrathink_sessions` and the latest-plan lookup are scoped before they are limited: newer sessions of other principals no longer make a caller's own history look empty or hide its newest plan (the scan stays bounded at 1,000 sessions read).
 - A node rationale of five to eight long steps no longer loses its tail: when the whole text is over the 8,000-character cap it is rebuilt from the steps (each clipped to 600), so the stored rationale, the trackers and hosted plans all see every accepted step.

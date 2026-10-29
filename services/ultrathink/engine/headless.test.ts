@@ -1393,6 +1393,22 @@ describe("headless planner: isolation", () => {
 		});
 	});
 
+	test("the plan carries the 2 s Omp lock bound: a long lock wait would freeze the server's event loop", async () => {
+		let stateLock: { timeoutMs?: number } | undefined;
+		const h = setup(
+			{},
+			{
+				// Not the real planPrompt: only the options it receives are inspected.
+				plan: async (_request, _env, options) => {
+					stateLock = options?.stateLock;
+					return { context: "", skipped: "precheck-skip" };
+				},
+			},
+		);
+		await h.planner.start({ prompt: PROMPT });
+		expect(stateLock?.timeoutMs).toBe(2_000);
+	});
+
 	test("ULTRATHINK_SERVER_DECISIONS in the environment never gives a server plan a provider key or Jev", async () => {
 		let env: Record<string, string | undefined> = {};
 		let decisions: boolean | undefined;
