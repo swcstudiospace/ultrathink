@@ -33,13 +33,17 @@ function fakeGit(responses: Record<string, { exitCode?: number; stdout?: string 
 }
 
 describe("shipPrecheck", () => {
-	const originHead = { "symbolic-ref --short refs/remotes/origin/HEAD": { stdout: "origin/master\n" } };
+	const originHead = {
+		"symbolic-ref --short refs/remotes/origin/HEAD": { stdout: "origin/master\n" },
+	};
 	test("on base branch is not ok", () => {
 		const run = fakeGit({ "rev-parse --abbrev-ref HEAD": { stdout: "master\n" }, ...originHead });
 		expect(shipPrecheck("/x", run)).toMatchObject({ ok: false, base: "master" });
 	});
 	test("detached HEAD is not ok", () => {
-		expect(shipPrecheck("/x", fakeGit({ "rev-parse --abbrev-ref HEAD": { stdout: "HEAD\n" } })).ok).toBe(false);
+		expect(
+			shipPrecheck("/x", fakeGit({ "rev-parse --abbrev-ref HEAD": { stdout: "HEAD\n" } })).ok,
+		).toBe(false);
 	});
 	test("zero commits ahead is not ok", () => {
 		const run = fakeGit({
@@ -55,7 +59,12 @@ describe("shipPrecheck", () => {
 			"symbolic-ref --short refs/remotes/origin/HEAD": { stdout: "origin/trunk\n" },
 			"rev-list --count origin/trunk..HEAD": { stdout: "3\n" },
 		});
-		expect(shipPrecheck("/x", run)).toMatchObject({ ok: true, branch: "feat", base: "trunk", ahead: 3 });
+		expect(shipPrecheck("/x", run)).toMatchObject({
+			ok: true,
+			branch: "feat",
+			base: "trunk",
+			ahead: 3,
+		});
 	});
 	test("missing origin/HEAD falls back to existing origin/master", () => {
 		const run = fakeGit({

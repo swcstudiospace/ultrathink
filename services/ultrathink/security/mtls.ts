@@ -49,7 +49,36 @@ const DROPPED_REQUEST_HEADERS: Record<string, true> = {
 	upgrade: true,
 };
 
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
+
+/** Arms a socket's inactivity deadline: the socket's own timer by default, or a test double. */
+type SocketDeadlinePort = {
+	arm(socket: NetSocket, ms: number, onTimeout: () => void): void;
+};
+
+const nativeDeadlines: SocketDeadlinePort = {
+	arm: (socket, ms, onTimeout) => {
+		socket.setTimeout(ms);
+		socket.on("timeout", onTimeout);
+	},
+};
+
 export interface MtlsServerOptions {
+	/** Timer port for the data-driven request deadline; defaults to the platform timers. */
+	timers?: TimerPort;
+	/** Arms the idle deadline on each verified TLS socket; defaults to the socket's own inactivity timer. */
+	idleTimers?: SocketDeadlinePort;
+	/** Arms the handshake deadline on each accepted connection; defaults to the socket's own inactivity timer. */
+	handshakeTimers?: SocketDeadlinePort;
 	port: number;
 	certFile: string;
 	keyFile: string;
@@ -79,7 +108,7 @@ export interface MtlsServer {
 }
 
 /** URI SAN values of the verified peer certificate on `socket`, without the `URI:` label. */
-export function uriSansFromSocket(socket: TLSSocket): string[] {
+function uriSansFromSocket(socket: TLSSocket): string[] {
 	const san = socket.getPeerCertificate(true).subjectaltname;
 	if (typeof san !== "string" || san.length === 0) return [];
 	const uris: string[] = [];
@@ -224,7 +253,8 @@ async function serveRequest(
 
 /** Oldest Bun that serves requests through this adapter. Older runtimes hang on them (see the runtime floor note). */
 export const MTLS_MIN_BUN: readonly [number, number, number] = [1, 4, 0];
-const MTLS_RUNTIME_MESSAGE = "mTLS requires Bun 1.4.0 or newer; on older runtimes requests through the adapter hang.";
+const MTLS_RUNTIME_MESSAGE =
+	"mTLS requires Bun 1.4.0 or newer; on older runtimes requests through the adapter hang.";
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
 
 /**
@@ -250,7 +280,10 @@ export function assertMtlsRuntime(): void {
  * `clientCaFile`, so `handle` runs only for verified peers. `port: 0` binds an ephemeral port.
  * Resolves once the listener is bound; a bind failure rejects with the listener's error.
  */
-export async function startMtlsServer(options: MtlsServerOptions, handle: MtlsHandler): Promise<MtlsServer> {
+export async function startMtlsServer(
+	options: MtlsServerOptions,
+	handle: MtlsHandler,
+): Promise<MtlsServer> {
 	assertMtlsRuntime();
 	const hostname = options.hostname ?? LOOPBACK;
 	if (hostname !== LOOPBACK) throw new RangeError("mTLS listener binds 127.0.0.1 only");
@@ -265,6 +298,9 @@ export async function startMtlsServer(options: MtlsServerOptions, handle: MtlsHa
 	}
 	const idleMs = options.idleTimeoutSec * 1000;
 	const maxBodyBytes = options.maxBodyBytes;
+	const timers = options.timers ?? platformTimers;
+	const idleDeadlines = options.idleTimers ?? nativeDeadlines;
+	const handshakeDeadlines = options.handshakeTimers ?? nativeDeadlines;
 
 	/** Clears the request deadline of a socket once its response has finished. */
 	const disarmDeadline = new WeakMap<TLSSocket, () => void>();
@@ -292,16 +328,15 @@ export async function startMtlsServer(options: MtlsServerOptions, handle: MtlsHa
 				socket.destroy();
 				return;
 			}
-			socket.setTimeout(idleMs);
-			socket.on("timeout", () => socket.destroy());
+			idleDeadlines.arm(socket, idleMs, () => socket.destroy());
 			let deadline: NodeJS.Timeout | undefined;
 			const disarm = () => {
-				clearTimeout(deadline);
+				timers.clearTimeout(deadline);
 				deadline = undefined;
 			};
 			// The first byte of a request arms its deadline; the response finishing disarms it.
 			socket.on("data", () => {
-				deadline ??= setTimeout(() => socket.destroy(), idleMs);
+				deadline ??= timers.setTimeout(() => socket.destroy(), idleMs);
 			});
 			socket.once("close", disarm);
 			disarmDeadline.set(socket, disarm);
@@ -314,10 +349,12 @@ export async function startMtlsServer(options: MtlsServerOptions, handle: MtlsHa
 	tlsServer.on("connection", (raw) => {
 		connections.add(raw);
 		raw.once("close", () => connections.delete(raw));
-		raw.setTimeout(idleMs, () => raw.destroy());
+		handshakeDeadlines.arm(raw, idleMs, () => raw.destroy());
 		// A refused handshake emits its error on this raw socket. Bun 1.2.23 does not route it to tlsClientError, so
 		// without a listener it escalates as an unhandled error. The failed handshake already closes the socket.
-		raw.on("error", () => {});
+		raw.on("error", () => {
+			// reason: a refused handshake's error is expected here, and the failed handshake already closes the socket
+		});
 	});
 
 	const { promise, resolve, reject } = Promise.withResolvers<MtlsServer>();
@@ -341,7 +378,9 @@ export async function startMtlsServer(options: MtlsServerOptions, handle: MtlsHa
 			errorLogged = true;
 			console.error("mtls listener error", error);
 		}
-		stop().catch(() => {});
+		stop().catch(() => {
+			// reason: stop after a listener error; that error is logged above and a failed close has nothing further to report
+		});
 	});
 	tlsServer.listen(options.port, LOOPBACK, () => {
 		listening = true;

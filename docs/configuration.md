@@ -42,7 +42,7 @@ How the merge works (`src/config.ts`):
 - A value with the wrong type or outside its allowed range is ignored, and the value from the earlier file (or the default) stays.
 - Some string keys only accept a non-empty value, so an empty string in a later file does not clear a value an earlier file set: `notion.dataSourceUrl`, `linear.team`, `grok.baseUrl`, `grok.model`, `grok.bin`, `grok.shuntModel`, `claude.bin`, `decisions.model`, `hindsight.url`, `hindsight.bank`, `ragflow.url`, and the URL keys `grok.shuntBaseUrl` and `substrate.url`. To stop row creation, use `/ultrathink-track off` (see [Turning tracking off](tracking.md#turning-tracking-off)). To turn the Agent Substrate brief off, set `SUBSTRATE_DISABLED=1`.
 - The URL keys `grok.shuntBaseUrl` and `substrate.url` must be `http://` or `https://` URLs. Trailing slashes are removed.
-- The project file cannot set `claude.bin`, `claude.settingSources`, `grok.bin`, `grok.home`, `grok.baseUrl`, `grok.shuntBaseUrl` or `muse.bin`. Together they choose which program runs, where your Grok login is read from, and which URLs receive your prompts and Grok token. A cloned repository must not choose these, so only the two user files set them and a project value is ignored. `grok.baseUrl` and `grok.shuntBaseUrl` must be `http://` or `https://` URLs.
+- The project file cannot set `claude.bin`, `claude.auth`, `claude.fallbackToGrok`, `claude.settingSources`, `grok.bin`, `grok.home`, `grok.baseUrl`, `grok.shuntBaseUrl`, `substrate.url` or `muse.bin`. Together they choose which program runs, which credential the `claude` child uses, whether a failed Claude call sends your prompt text to xAI, where your Grok login is read from, and which URLs receive your prompts, your Grok token and your Agent Substrate token. A cloned repository must not choose these, so only the two user files set them and a project value is ignored. `grok.baseUrl` and `grok.shuntBaseUrl` must be `http://` or `https://` URLs.
 - Millisecond budgets are capped at 2147483647 ms, the timer maximum. A larger value is set to the cap, not rejected, and `0` still means no timer. The capped keys are `claude.callTimeoutMs`, `claude.budgetMs`, `grok.callTimeoutMs`, `muse.callTimeoutMs` and `track.budgetMs`.
 - `pstack` is user-only. The merge ignores a project file's whole `pstack` section, so `pstack.enabled: true` there does not turn the Cursor bridge on. The Cursor hook never reads the project file. See [`pstack`](#pstack-cursor-bridge).
 - The project file can only make Jev decisions more restrictive: there, `decisions.zdr` can only turn zero data retention on (a `false` is ignored), and `decisions.points` can only drop points (it is intersected with the list from the earlier files, or the default). `decisions.enabled` is ignored in every file: Jev is always on, and only `ULTRATHINK_DECISIONS=0` turns it off. The other `decisions` keys (`provider`, `model`, `timeoutMs` and the thresholds) merge as usual, and the two user files merge every key as usual. See [`decisions`](#decisions-jev-decisions-openrouter-decisions-api).
@@ -61,7 +61,7 @@ Types: "integer" means a whole JSON number; "number" allows fractions. Ranges ar
 |---|---|---|---|
 | `enabled` | boolean | `true` | Plan prompts. When `false`, only prompts that start with `uplift:` are planned. `/ultrathink-off` and `/ultrathink-on` override this per host. |
 | `skipTrivial` | boolean | `true` | Skip trivial acknowledgements such as `ok` or `lgtm`. |
-| `maxChars` | number, >= 0 | `20000` | Prompts longer than this are not sent to the engine; they get the conservative fallback spec, and no rows are created. |
+| `maxChars` | number, >= 0 | `0` | `0` means no limit: every prompt is sent to the engine. A positive value caps the uplift call: a longer prompt is not sent, gets the conservative fallback spec, and creates no rows. |
 | `echo` | boolean | `true` | Accepted but not read. The one-line summary after each plan is controlled by `claude.echo`. |
 
 ### `think`: Graph of Thought
@@ -94,18 +94,30 @@ How the knowledge-base read works when `knowledgeBase` is `true` (see [Use the G
 
 ### `claude`: the Claude engine
 
-The Claude engine runs the `claude` CLI headless. It uses your existing Claude Code login.
+The Claude engine runs the `claude` CLI headless. It uses your Claude plan login (Pro, Max, Team or Enterprise) by default; see `claude.auth` below.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `bin` | string | `"claude"` | The `claude` binary. |
-| `model` | string | `"sonnet"` | Model alias or name for the planning calls. `""` uses the CLI's default model. |
+| `auth` | `"plan"` or `"api-key"` | `"plan"` | Which credential the `claude` child uses. `plan` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and `CLAUDE_CODE_USE_FOUNDRY` from the child's environment, so your plan login (or `CLAUDE_CODE_OAUTH_TOKEN`) authenticates. `api-key` passes the environment through unchanged. User files only; a project file cannot set it. |
+| `fallbackToGrok` | boolean | `false` | When a `claude` call fails for a reason that can clear on another vendor (authentication, billing, plan limit, rate limit, overload, model unavailable, CLI missing, network error), plan that call with the Grok route instead. Your prompt text then goes to xAI, so it is an explicit opt-in. User files only; a project file cannot set it. See [failover](#claude-and-grok-failover). |
+| `model` | string | `"claude-haiku-5-5"` | Model alias or name for the planning calls. `""` uses the CLI's default model. `claude-haiku-5-5` needs Claude Code 2.1.293 or newer. |
 | `thinking` | boolean | `false` | Allow extended thinking in the planning calls. Slower. When `false`, the child calls run with `MAX_THINKING_TOKENS=0`. |
 | `settingSources` | string | `""` | Passed as `--setting-sources` to the planning calls. `""` loads none, which is fastest and keeps other hooks out of the child calls. |
 | `callTimeoutMs` | number, >= 0 | `0` | Timeout for one planning call. `0` means no timer. |
 | `budgetMs` | number, >= 0 | `0` | Budget for the whole planning pass. `0` means run until the host's hook timeout. |
 | `concurrency` | number, > 0 | `3` | Node fills that run in parallel within one dependency level. Rounded down, at least 1. |
 | `echo` | boolean | `true` | Show a one-line summary to the user after each plan. |
+
+`claude.auth: "plan"` is the default because the `claude` CLI ranks credentials as: cloud provider, then `ANTHROPIC_AUTH_TOKEN`, then `ANTHROPIC_API_KEY` (always used in `-p` mode), then `apiKeyHelper`, then `CLAUDE_CODE_OAUTH_TOKEN`, then your `/login` subscription. An exported `ANTHROPIC_API_KEY` therefore always wins over your plan login in `claude -p`; when that key has no credit, every call fails with `Credit balance is too low`. With `auth: "plan"` the key never reaches the child, so the call runs on your plan and counts against its usage limits (the 5-hour session and weekly limits). Max and Team monthly API credits do not cover plan-login `claude -p`. For a headless machine, run `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN`; the plan mode keeps it. This applies to every `claude` CLI call: the planner, the Teachable Moments lesson distiller and the ship judge. Other tools on the machine, including an interactive `claude`, still use `ANTHROPIC_API_KEY` if it is exported. Set `auth: "api-key"` only if you really bill planning to an API key.
+
+The plan is the plan holder's own. Anthropic does not permit routing other people's requests through plan credentials, so do not use this for a shared or multi-user setup. `claude.fallbackToLogin`, from an earlier unreleased build, was removed and replaced by `claude.auth`; an old key in a config file is ignored.
+
+#### Claude and Grok failover
+
+With `claude.fallbackToGrok: true`, a failed Claude call is retried on the Grok route (`grok.model`, then any `grok.fallbackModels` you set) when the Grok route is usable: a signed-in, unexpired `grok login` session for `http` and `cli`, or `grok.shuntBaseUrl` for `shunt`. Failures that fail over: authentication, billing, plan limit, rate limit, overload, model unavailable, CLI missing and network error. Timeouts, aborts and other errors do not. Within one failover chain, that is one planning run in one process, a failed candidate is skipped for a cooldown so the later stage calls of that run do not retry it: authentication 10 minutes, billing 60 minutes, plan limit 15 minutes, rate limit 60 seconds, overload 30 seconds, model unavailable 60 minutes, CLI missing 60 minutes, network error 30 seconds. The cooldown is not kept across prompts: each new hook process tries the configured model once, and a refused model costs one quick failed request before the fallback answers. The hosted service keeps its chain for the life of the process. A successful failover is not an error: the summary shows `Failover · claude:claude-haiku-5-5 → grok:grok-build-0.1 (plan-limit)` and the session record stores it as `engineFailover`, on the hosted service as well as locally. When every candidate fails, the summary reports `Engine error · ...` as before.
+
+Memory-bank calls (the Teachable Moments distiller behind `teach observe`) do not follow these keys. Their chain is pinned in code and is not configurable: `claude-haiku-5-5` first, then `grok-build-0.1` only when `claude.fallbackToGrok` is on, `grok.enabled` is on, the transport is not `shunt` and the Grok lane (see `grok.home`) is signed in. `claude.model`, `grok.model`, `grok.fallbackModels`, `models.hosts.<host>.model` and `think.engine` apply to planning and the other helpers, not to memory-bank calls. Hindsight itself needs no inference: it runs in chunks mode.
 
 ### `grok`: the Grok engine
 
@@ -116,17 +128,20 @@ Used when the engine resolves to Grok: on Grok Build by default, or anywhere wit
 | `enabled` | boolean | `true` | When `false`, the Claude engine is used even if `think.engine` is `"grok"`. The plan's model line then reads `claude:<model> [configured fallback · grok unavailable]`. |
 | `transport` | `"http"`, `"cli"` or `"shunt"` | `"http"` | `http`: POST `{baseUrl}/responses` with your `grok login` token. `cli`: run the `grok` binary. `shunt`: POST `{shuntBaseUrl}/v1/messages` on an Anthropic-compatible gateway that you run, with no auth. |
 | `baseUrl` | string | `"https://cli-chat-proxy.grok.com/v1"` | Base URL for the `http` transport. Trailing slashes are removed. |
-| `model` | string | `"grok-4.7"` | Model for `http` and `cli`, and for `shunt` when `shuntModel` is empty. |
-| `reasoningEffort` | `"low"`, `"medium"`, `"high"` or `"xhigh"` | `"xhigh"` | Reasoning effort for `http` and `cli`. |
+| `model` | string | `"grok-build-0.1"` | Model for `http` and `cli`, and for `shunt` when `shuntModel` is empty. A model the login cannot use (HTTP 429 with a limit of 0, HTTP 403 "requires a Grok subscription", or the CLI's "unknown model id") is skipped and the route continues with `fallbackModels`, if you set any. |
+| `fallbackModels` | array of strings | `[]` | Models tried, in order, after `model` for `http` and `cli`. Empty by default, so a refused `grok.model` fails instead of silently moving to a pricier model; set it yourself to opt in, for example `["grok-4.7"]`. Entries are trimmed and deduplicated, at most 8. A project file may set it, like `grok.model`. |
+| `reasoningEffort` | `"low"`, `"medium"`, `"high"` or `"xhigh"` | `"xhigh"` | Reasoning effort for `http` and `cli`. Sent only to `grok-4.5`, `grok-4.6` and `grok-4.7` (`grok-4.5` treats `xhigh` as `high`). Other models, including `grok-build-0.1`, get no effort, and their labels carry no `@effort`. |
 | `bin` | string | `"grok"` | The `grok` binary. |
-| `home` | string | `""` | Grok home directory, used to find the `grok login` session. `""` means `$GROK_HOME`, else `~/.grok`. |
+| `home` | string | `""` | Grok home directory, used to find the Grok login session, and the dedicated Grok Build login lane. `""` means `$GROK_HOME`, else `~/.grok`. Set it to an absolute directory that holds a login of the xAI account entitled to Grok Build; `ultrathink grok login` creates that login and `--write-config` stores the path here. The CLI transport runs `grok` with `GROK_HOME` set to it. User files only; a project file cannot set it. |
 | `callTimeoutMs` | number, >= 0 | `0` | Timeout for one call. `0` means no timer; the host's hook timeout is the limit. |
-| `fallbackToClaude` | boolean | `false` | When the Grok login is missing or expired (`http` and `cli` transports), plan with Claude instead; the plan's model line then reads `claude:<model> [configured fallback · grok unavailable]`. When `false`, the prompt is not planned and the hook reports ``Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)``. This applies on Grok Build under `auto` too. |
+| `fallbackToClaude` | boolean | `false` | When the Grok login is missing or expired (`http` and `cli` transports), plan with Claude instead; the plan's model line then reads `claude:<model> [configured fallback · grok unavailable]`. When `false`, the prompt is not planned and the hook reports ``Prompt Uplift skipped · Grok login required (run `grok login`)``. This applies on Grok Build under `auto` too. |
 | `shuntBaseUrl` | http(s) URL | `""` | Base URL of your gateway for `shunt`; `/v1/messages` is appended. There is no built-in gateway: with `transport: "shunt"` and this key empty, the prompt is not planned and nothing is sent. The hook reports ``Prompt Uplift skipped · grok:unresolved [transport-incompatible]``, and no rows are created. Claude is not used instead: `fallbackToClaude` only applies to a missing Grok login. |
 | `shuntModel` | string | `""` | Model name sent to the gateway. `""` sends `model`. |
 | `shuntMaxTokens` | integer, > 0 | `8192` | `max_tokens` for `shunt` calls. |
 
 The `http` and `cli` transports need `grok login`. `shunt` does not; the gateway owns the upstream credentials.
+
+Use a dedicated `grok.home` when the xAI account that holds Grok Build is not the account your default `grok` CLI login uses. xAI rotates the refresh token every time it refreshes and retires the old one, so two applications must never share one login: `ultrathink grok login` signs the lane in with its own device login and never reads or writes `~/.grok`. `ultrathink grok check` runs a one-word probe through the configured route and says whether the login is entitled to the model. See [Commands](commands.md#binultrathink).
 
 ### `muse`: the Muse engine
 
@@ -145,10 +160,10 @@ With `think.engine` set to `"auto"` (the default), each host plans with its own 
 
 | Host | Engine | Model |
 |---|---|---|
-| Claude Code | Claude | `claude.model` (`"sonnet"`) |
+| Claude Code | Claude | `claude.model` (`"claude-haiku-5-5"`) |
 | Hermes Agent | Chosen by the session model's family | The Claude, Grok or Muse route, picked from the model id Hermes sends; Claude when the family is unknown. The route then uses its own model key. |
 | Omp | Native | The session's own live model, called inside Omp through Omp's own provider and login. See [`models`](#models-planning-model-selection). |
-| Grok Build | Grok | `grok.model` (`"grok-4.7"`) |
+| Grok Build | Grok | `grok.model` (`"grok-build-0.1"`, then `grok.fallbackModels` when you set it) |
 | Muse Code | Muse | `muse.model` (`"muse-spark-1.3-contributor"`) |
 
 On Omp, `auto` plans natively. ultrathink copies the session's live model once per prompt and runs the uplift, the graph, every node fill and the clarifying questions on that copy, through Omp's own provider and login. Nothing is read from Omp's saved session history, and the model is not mapped to a Claude, Grok or Muse family. When no model can be used, the prompt goes through unplanned and the reason is shown (see [the four states](how-to/choose-engine.md#planning-model-states)). A named engine (`think.engine`, or `bin/ultrathink grok engine …` for Omp) opts Omp out of native planning and uses that engine's CLI route. Omp's auxiliary helpers, the ship done check and the Teachable Moments distiller, are never native: they use the Claude CLI route under `auto`, or the named engine.
@@ -161,7 +176,7 @@ Hermes sends its session's model id, and ultrathink picks the Claude, Grok or Mu
 
 Claude replaces a selected Grok route only through the two explicit, labeled user switches: `grok.fallbackToClaude: true` (HTTP/CLI login missing or expired) and `grok.enabled: false` (documented ‘forces Claude even when Grok is selected’). Without them, a missing or expired Grok login skips planning with the unchanged `GROK_LOGIN_REQUIRED` notice. Naming `think.engine: "claude"` is a deliberate engine choice, not a replacement.
 
-The notice reads ``Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)``. Set `think.engine` to a named engine to plan with one engine on every host. Teachable Moments are stored per host (see [`teach`](#teach-teachable-moments)), so every host keeps its own lessons whichever engine it plans with.
+The notice reads ``Prompt Uplift skipped · Grok login required (run `grok login`)``. Set `think.engine` to a named engine to plan with one engine on every host. Teachable Moments are stored per host (see [`teach`](#teach-teachable-moments)), so every host keeps its own lessons whichever engine it plans with.
 
 ### Route defaults
 
@@ -169,11 +184,11 @@ The CLI routes take their built-in model from one version-controlled map, `ROUTE
 
 | Route | Built-in model | Key that replaces it |
 |---|---|---|
-| `claude` | `sonnet` | `claude.model` |
-| `grok` | `grok-4.7` | `grok.model` (on `shunt`, a non-empty `grok.shuntModel` is sent instead) |
+| `claude` | `claude-haiku-5-5` | `claude.model` |
+| `grok` | `grok-build-0.1` | `grok.model` (on `shunt`, a non-empty `grok.shuntModel` is sent instead) |
 | `muse` | `muse-spark-1.3-contributor` | `muse.model` |
 
-- Unset in every config file, a route uses its map entry. The record says `default`, source `route-default`, and the label reads, for example, `claude:sonnet [route default]`.
+- Unset in every config file, a route uses its map entry. The record says `default`, source `route-default`, and the label reads, for example, `claude:claude-haiku-5-5 [route default]`.
 - Set in any config file, the value is an override (`override`, source `engine-model`), even when it equals the built-in model.
 - `""` for `claude.model` or `muse.model` omits `--model`, so the CLI's own default model answers: `claude:CLI default (model unobserved)`. A blank `grok.model` or `grok.shuntModel` is ignored, as before.
 - Nonblank legacy model and shunt-alias values retain leading or trailing control characters for `selector-invalid` rejection before auth or execution; trimming cannot turn an invalid selector into a valid target. Whitespace-only values keep the clearing and lower-pin rules above.
@@ -271,7 +286,7 @@ Agent Substrate is an optional service that tells the planner what other agents 
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `url` | http(s) URL | `""` | Base URL of your Agent Substrate server. ultrathink sends `POST <url>/brief` with the repository (`owner/repo`), the branch and the host name, and, after planning, `POST <url>/events` with the Graph ID, the session id, the host name, the repository, the branch and the node count. `""` means the service is never contacted. `SUBSTRATE_URL` wins over this key, and `SUBSTRATE_DISABLED=1` turns both off. Ignored when `backend` is `gateway`. |
+| `url` | http(s) URL | `""` | Base URL of your Agent Substrate server. User files only: a project file's value is ignored, so a cloned repository cannot redirect the bearer token. ultrathink sends `POST <url>/brief` with the repository (`owner/repo`), the branch and the host name, and, after planning, `POST <url>/events` with the Graph ID, the session id, the host name, the repository, the branch and the node count. When a bearer token is sent the URL must be `https://`, or `http://` only to localhost, a `*.ts.net` name or 100.64.0.0/10, with no user name, password, query or fragment; otherwise nothing is sent and the brief reads `url refused`, and a redirect is never followed (`redirect refused`). `""` means the service is never contacted. `SUBSTRATE_URL` wins over this key, and `SUBSTRATE_DISABLED=1` turns both off. Ignored when `backend` is `gateway`. |
 | `backend` | `"direct"` or `"gateway"` | `"direct"` | `"direct"` is the client above. `"gateway"` calls the desk gateway (see [`gateway`](#gateway-desk-gateway)). User files only. `ULTRATHINK_SUBSTRATE_BACKEND` overrides it. `ULTRATHINK_GATEWAY=0` forces `"direct"`. |
 
 Each request times out after 1.5 seconds (`SUBSTRATE_TIMEOUT_MS` changes that). A missing, slow or failing server never blocks a prompt: the plan is built without the brief, and a refused or lost event is dropped. The event goes out after planning, so a server that accepts the connection and never answers adds up to one timeout before the plan is returned. `bin/ultrathink status` shows the `Substrate:` line with the URL in use and where it came from.
@@ -297,7 +312,7 @@ Decisions are always on. With a Jev key, ultrathink asks Jev, a decision model f
 |---|---|---|---|
 | `enabled` | boolean | `true` | Always on; the value in files is ignored, in every layer. Kept for compatibility. `ULTRATHINK_DECISIONS=0` in the environment is the only way to turn every point off. |
 | `provider` | `"auto"`, `"openrouter"` or `"vercel"` | `"auto"` | Which rail Jev calls take. `auto` uses Vercel when a Vercel key is present (stored `vercel` key or `AI_GATEWAY_API_KEY`), else OpenRouter. `"openrouter"` and `"vercel"` pin that rail; without its key, no point sends a request. Merges as usual in every file. |
-| `model` | non-empty string | `"~typesafe/jev-latest"` | Decisions model id or alias. The alias follows the latest Jev; set `"typesafe/jev-1.13"` to pin the version the default thresholds were probed on. On the OpenRouter rail the model is sent as-is; on the Vercel rail the default alias is sent as `typesafe-ai/jev` in the `ai-model-id` header and an explicit model verbatim. Every decision records the resolved model, for example `typesafe/jev-1.13-20260917`. |
+| `model` | non-empty string, `typesafe/jev*` only | `"~typesafe/jev-latest"` | Decisions model id or alias. Only Jev's family is accepted (`~typesafe/jev-latest`, `typesafe/jev-1.13`, `typesafe/jev-1.13-20260917`, Vercel's `typesafe-ai/jev`); any other id, in any layer including the project file, is ignored: that layer leaves the value from the earlier layers in place (so an invalid project value keeps a user's pinned Jev version), and only when no layer holds a valid Jev id does the default alias apply. No request ever carries another model. The alias follows the latest Jev; set `"typesafe/jev-1.13"` to pin the version the default thresholds were probed on. On the OpenRouter rail the model is sent as-is; on the Vercel rail the default alias is sent as `typesafe-ai/jev` in the `ai-model-id` header and an explicit model verbatim. Every decision records the resolved model, for example `typesafe/jev-1.13-20260917`. |
 | `points` | array of `"plan"`, `"ship"`, `"knowledge"`, `"blocking"`, `"teachable"`, `"skillworthy"` | `["plan", "ship", "knowledge", "blocking", "teachable", "skillworthy"]` | Which decision points ask Jev. Unknown names and repeats are dropped; `[]` means none. The project file can only remove points: its list is intersected with the one from the earlier files. |
 | `timeoutMs` | number, > 0 and <= 30000 | `3000` | Total budget for one decision in milliseconds, the retry included. |
 | `zdr` | boolean | `true` | On the OpenRouter rail, send `provider: {"zdr": true, "data_collection": "deny"}`, so OpenRouter routes only to zero-data-retention endpoints and denies data collection. `false` sends no provider preferences. In the project file only `true` counts. The Vercel rail has no such fields, so this key does not affect it. |
@@ -314,7 +329,9 @@ How Decisions work:
 
 - `ULTRATHINK_DECISIONS=0` in the environment turns every point off for that process, whatever the config says: no request, no record, no plan-skip notice and no `Decisions ·` segment. `bin/ultrathink status` then shows `Decisions: off (ULTRATHINK_DECISIONS=0)`. It is the only off switch.
 - The project file can drop points, set `zdr` to `true`, and change `provider`, `model`, `timeoutMs` and the thresholds, but it cannot add points or turn `zdr` off. Points need a key to send anything, and keys live only in your credential store and environment, so a repository you open sends nothing to either rail unless you stored or set a key.
-- The key comes from the credential store (`bin/ultrathink-mcp auth set-key vercel --stdin` or `bin/ultrathink-mcp auth set-key openrouter --stdin`), else from `AI_GATEWAY_API_KEY` or `OPENROUTER_API_KEY`. The stored key wins on its rail. Without a key for the resolved rail, no point sends a request, and `bin/ultrathink status` says so.
+- The key comes from the credential store (`bin/ultrathink-mcp auth set-key vercel --stdin` or `bin/ultrathink-mcp auth set-key openrouter --stdin`), else from `AI_GATEWAY_API_KEY` or `ULTRATHINK_OPENROUTER_KEY`. The stored key wins on its rail. The generic `OPENROUTER_API_KEY` is no longer read. Without a key for the resolved rail, no point sends a request, and `bin/ultrathink status` says so.
+- The OpenRouter key is for Jev only: one client, Jev's model family only, no fallback to another model, provider or key. Every model CLI ultrathink starts runs without `ULTRATHINK_OPENROUTER_KEY` and `OPENROUTER_API_KEY` in its environment.
+- A persisted health breaker, one per rail, stops requests while that rail's account or key is the problem. HTTP 402 (insufficient credits) or 401/403 (key rejected) opens it; a timeout, 429 or 5xx does not. While it is open no request is sent and every point uses its existing default (the plan gate plans every prompt). It retries after 5 minutes, doubling to a cap of 6 hours; only the claimed probe, or an explicit `bin/ultrathink decisions check` or `probe`, closes it. It shows once per cause as a warning in the planning summary (not while `ULTRATHINK_DECISIONS=0`), and in `bin/ultrathink status` and `bin/ultrathink doctor`, naming the failing rail and its fix. State: `<state dir>/decisions-health-openrouter.json` and `<state dir>/decisions-health-vercel.json` (the old `decisions-health.json` is no longer read). Usage ledger for reconciling with the OpenRouter dashboard, one line per real HTTP request (retries, `check` and `probe` included): `<state dir>/decisions-usage.jsonl`, summarised by `bin/ultrathink decisions usage`. See [Use Jev decisions](how-to/use-jev-decisions.md#when-jev-is-unavailable).
 - There is no config key for the endpoint. Any other key under `decisions` (a `url` or `endpoint`, for example) is ignored, so a project file cannot send your key anywhere else. Only `ULTRATHINK_DECISIONS_URL` in the environment changes the endpoint, and only on the OpenRouter rail, and only to an `https://openrouter.ai/…` URL or a loopback URL (see [Environment variables](#environment-variables)). The Vercel endpoint is fixed. A request never follows an HTTP redirect.
 - `teachable` asks "Is this candidate a reusable lesson that a future agent on this repository would otherwise have to rediscover?" It runs when `observe` distills candidates and Decisions are on. Below `teachableBelow` the candidate is not stored. In `auto` capture, confirmation also needs P at or above `teachableAutoAt`. `skillworthy` asks "Does this lesson describe a repeatable procedure or rule worth a standing skill?" `promote --due` and automatic promotion leave a moment out when P is below `skillworthyAt`. Any failure of either point behaves as with that point off: the candidate is kept, and auto confirmation follows the confidence bar alone.
 - The other four points: `plan` can skip planning for a message the rules would plan; `ship` can veto an LLM "done", or decide when there is no usable LLM verdict and `ship.autoMerge` is off; `knowledge` can take back a question the knowledge base settled, which is then asked if a question slot is free; `blocking` can make a non-blocking question blocking. A skill invocation (every `/gsd-*` run included) and a message that starts with `uplift:` make no `plan` decision, but their clarifying questions can still get `knowledge` and `blocking` decisions, and each ship `assess` whose rule checks pass makes one `ship` decision, GSD runs included. A message the deterministic rules skip makes none.
@@ -418,7 +435,7 @@ Teachable Moments are on by default: finished turns are distilled into lessons a
 
 `ULTRATHINK_TEACH=0` is checked after `enabled`. While `enabled` is false the status line says `Teach: off (opt-in: set teach.enabled)` even if the variable is set. When `enabled` is true and the variable is `0`, the line is `Teach: off (ULTRATHINK_TEACH=0)`.
 
-Lessons are written under the host state directory, `<stateDir>/teach/`: one JSON file per moment in `moments/`, pending Hindsight writes in `outbox/`, observe digests in `inbox/`, and skill drafts in `skill-drafts/<name>/SKILL.md`. `ULTRATHINK_STATE_DIR` is honored, and a path inside `.planning` is ignored. Nothing is written into `<cwd>/.planning` or a repository working tree. A Hindsight failure queues an outbox entry (backoff 1 minute, doubling, capped at 6 hours) and does not block the caller. `teach sync` drains the outbox.
+Lessons are written under the host state directory, `<stateDir>/teach/`: one JSON file per moment in `moments/`, pending Hindsight writes in `outbox/`, observe digests in `inbox/`, the newest 50 `teach observe` runs in `runs/` (one small JSON file per run with `at`, `sessionId`, `outcome`, `captured`, `skipped` and `detail`, never lesson text), and skill drafts in `skill-drafts/<name>/SKILL.md`. `ULTRATHINK_STATE_DIR` is honored, and a path inside `.planning` is ignored. Nothing is written into `<cwd>/.planning` or a repository working tree. A Hindsight failure queues an outbox entry (backoff 1 minute, doubling, capped at 6 hours) and does not block the caller. Every `teach observe` run drains due outbox entries (at most 20, within 30 s), and `teach sync` forces it.
 
 Before anything is stored or sent, text is redacted. `Bearer` followed by a short English word is left alone (`the Bearer key`, `Bearer token rotation`). `Bearer` followed by a token is replaced with `[redacted]` when the token is at least 16 characters, or at least 6 characters and contains a digit. Trailing dots stay. See [Troubleshooting](troubleshooting.md#redaction).
 
@@ -426,9 +443,9 @@ Before anything is stored or sent, text is redacted. `Bearer` followed by a shor
 
 - `Teach: off (opt-in: set teach.enabled)`
 - `Teach: off (ULTRATHINK_TEACH=0)`
-- `Teach: on · capture <explicit|observe|auto> · recall on|off · <n> confirmed, <m> candidate · Hindsight <ready|off|no URL|bad URL|no key> · outbox <k>`
+- `Teach: on · capture <explicit|observe|auto> · recall on|off · <n> confirmed, <m> candidate · Hindsight <ready|off|no URL|bad URL|no key> · outbox <k>[ · observe failing ×<n> since <time> UTC (<reason>)]`
 
-The confirmed/candidate counts and the outbox count are included when the status command knows the state directory, which `bin/ultrathink status` does. `Hindsight` here is the readiness word, not the `Hindsight:` line.
+The confirmed/candidate counts and the outbox count are included when the status command knows the state directory, which `bin/ultrathink status` does. `Hindsight` here is the readiness word, not the `Hindsight:` line. The `observe failing` part appears while the newest `teach observe` runs in `teach/runs/` failed (the distiller could not answer, no engine, or the store refused the lesson) and ends with the first run that was answered; runs skipped before the distiller was asked do not count either way. `×50+` means every kept run failed.
 
 ### `state`: session retention
 
@@ -463,12 +480,14 @@ All keys are optional; write only the ones you change. This file shows every key
 
 ```json
 {
-  "uplift": { "enabled": true, "skipTrivial": true, "maxChars": 20000, "echo": true },
+  "uplift": { "enabled": true, "skipTrivial": true, "maxChars": 0, "echo": true },
   "think": { "enabled": true, "minNodes": 5, "maxNodes": 8, "engine": "auto" },
   "hitl": { "enabled": true, "maxQuestions": 4, "knowledgeBase": false },
   "claude": {
     "bin": "claude",
-    "model": "sonnet",
+    "auth": "plan",
+    "fallbackToGrok": false,
+    "model": "claude-haiku-5-5",
     "thinking": false,
     "settingSources": "",
     "callTimeoutMs": 0,
@@ -480,7 +499,8 @@ All keys are optional; write only the ones you change. This file shows every key
     "enabled": true,
     "transport": "http",
     "baseUrl": "https://cli-chat-proxy.grok.com/v1",
-    "model": "grok-4.7",
+    "model": "grok-build-0.1",
+    "fallbackModels": [],
     "reasoningEffort": "xhigh",
     "bin": "grok",
     "home": "",
@@ -499,7 +519,7 @@ All keys are optional; write only the ones you change. This file shows every key
   "models": { "hosts": {}, "providerDefaults": {} },
   "notion": { "dataSourceUrl": "collection://<data source id>" },
   "linear": { "team": "<your Linear team>" },
-  "track": { "enabled": true, "budgetMs": 60000, "concurrency": 6 },
+  "track": { "enabled": true, "budgetMs": 0, "concurrency": 6 },
   "ship": {
     "enabled": false,
     "autoMerge": false,
@@ -598,7 +618,7 @@ Read the repository's Greptile knowledge base before the clarifying questions. S
 { "hitl": { "knowledgeBase": true }, "ship": { "greptileOrganization": "<your Greptile organization>" } }
 ```
 
-Ask Jev at the six decision points. No config is needed: Jev is always on, so storing a key is enough. Store a Vercel key with `bin/ultrathink-mcp auth set-key vercel --stdin` (or set `AI_GATEWAY_API_KEY`), or an OpenRouter key with `bin/ultrathink-mcp auth set-key openrouter --stdin` (or set `OPENROUTER_API_KEY`); with both stored, `auto` picks Vercel. `"model": "typesafe/jev-1.13"` pins the version the default thresholds were probed on, and `"provider": "openrouter"` pins the rail:
+Ask Jev at the six decision points. No config is needed: Jev is always on, so storing a key is enough. Store a Vercel key with `bin/ultrathink-mcp auth set-key vercel --stdin` (or set `AI_GATEWAY_API_KEY`), or an OpenRouter key with `bin/ultrathink-mcp auth set-key openrouter --stdin` (or set `ULTRATHINK_OPENROUTER_KEY`); with both stored, `auto` picks Vercel. `"model": "typesafe/jev-1.13"` pins the version the default thresholds were probed on, and `"provider": "openrouter"` pins the rail:
 
 ```json
 { "decisions": { "provider": "openrouter", "model": "typesafe/jev-1.13" } }
@@ -619,6 +639,8 @@ Ground plans with RAGFlow excerpts. `ground` sends the prompt to RAGFlow, so onl
 ## Environment variables
 
 Every variable ultrathink reads, grouped by who sets it. Variables that expect `1` or `0` compare the exact string: `ULTRATHINK_SHIP=false` does nothing.
+
+The complete reference, one table per scope with each variable's kind, default and whether it is a secret, is [environment.md](environment.md). It is generated from the registry in `src/env-registry.ts`. [`.env.example`](../.env.example) lists every variable with a placeholder value. `ultrathink doctor` checks the registered variables and lists every invalid value, wrong kill-switch value and alias conflict at once, as `env.<NAME>` findings, without printing a value. The checks only report: an invalid value is still ignored, or falls back to its default, exactly as before.
 
 ### Variables you may set
 
@@ -661,7 +683,7 @@ Every variable ultrathink reads, grouped by who sets it. Variables that expect `
 | `SUBSTRATE_DISABLED=1` | Never contact Agent Substrate, even when `SUBSTRATE_URL` or `substrate.url` is set. |
 | `GSD_TOOLS` | Path of `gsd-tools.cjs`, which the ship assessment runs to read a GSD roadmap. See [GSD tools lookup](#gsd-tools-lookup). |
 | `BUN` | Path of the `bun` binary. See [Finding Bun](#finding-bun). |
-| `OPENROUTER_API_KEY` | OpenRouter API key for Jev decisions, used only when no `openrouter` key is stored with `bin/ultrathink-mcp auth set-key openrouter`. The stored key wins. Empty or whitespace-only counts as unset. `bin/ultrathink status` shows `key from OPENROUTER_API_KEY` when it is the one in use, never the key. |
+| `ULTRATHINK_OPENROUTER_KEY` | OpenRouter API key for Jev decisions, used only when no `openrouter` key is stored with `bin/ultrathink-mcp auth set-key openrouter --stdin`. The stored key wins. Empty or whitespace-only counts as unset. `bin/ultrathink status` shows `key from ULTRATHINK_OPENROUTER_KEY` when it is the one in use, never the key. The generic `OPENROUTER_API_KEY` is no longer read: other tools pick that name up on their own, so exporting it lets them spend the key. Remove the export; `bin/ultrathink doctor` warns while it is set. Model CLIs ultrathink starts never inherit either variable. |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key for Jev decisions, used only when no `vercel` key is stored with `bin/ultrathink-mcp auth set-key vercel`. The stored key wins. Empty or whitespace-only counts as unset. With `decisions.provider: "auto"` (the default), its presence picks the Vercel rail. `bin/ultrathink status` shows `key from AI_GATEWAY_API_KEY` when it is the one in use, never the key. |
 | `ULTRATHINK_DECISIONS_URL` | Replaces the Decisions endpoint on the OpenRouter rail (`https://openrouter.ai/api/alpha/decisions`), for a local proxy or a test server. It is accepted only as an `https://` URL on `openrouter.ai`, or an `http://` or `https://` URL on `localhost`, `127.0.0.1` or `[::1]`, and never with a user name or password in it; any other value is ignored and the default endpoint is used. Only its origin and path are used and printed: a query or fragment is dropped. Environment only: there is no config key for it, so a project file cannot redirect your OpenRouter key. The Vercel rail ignores it (its endpoint is fixed) and never shows it. On the OpenRouter rail, when it is in effect, the `Decisions:` status line (when Decisions are on with a key) and the `decisions check` line end with ` · url <origin and path>`; when it is set but ignored, they end with ` · ULTRATHINK_DECISIONS_URL ignored (must be https://openrouter.ai/… or a loopback URL)`. |
 
@@ -690,6 +712,16 @@ When a roadmap exists and none of these is found, the assessment reports the gap
 #### Finding Bun
 
 The launcher `bin/run-bun` looks for `bun` in this order: `$BUN`, `PATH`, `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, `/usr/local/bin/bun`, `/opt/homebrew/bin/bun`, then `~/.local/share/*/bun/bin/bun`. It adds the directory it found to `PATH` for everything Bun starts, and starts Bun with `--no-env-file`, so Bun 1.3.3 and later load no `.env*` files from the working directory (your repository) into ultrathink; Bun 1.2.x ignores the flag and still loads them. When there is no Bun, it prints `ultrathink: bun not found. Install Bun 1.2 or later (https://bun.sh) or set BUN=/path/to/bun`; the hooks then exit 0 so the prompt still goes through, and the three CLIs exit 127. The Hermes plugin runs `$BUN` directly when it is set, else `bin/run-bun`, both from the ultrathink clone, so a repository's `.env*` files never reach it.
+
+### Alias names and per-surface tokens
+
+Three settings can be given under more than one name. When both names are set, the canonical name wins, and `ultrathink doctor` warns when the two disagree (it never changes which one is read).
+
+| Setting | Order, first non-empty value wins | Notes |
+|---|---|---|
+| Hindsight URL | `hindsight.url` in a config file, then `HINDSIGHT_API_URL`, then `HINDSIGHT_URL` | `HINDSIGHT_URL` is read only when `HINDSIGHT_API_URL` is empty or blank. A blank value counts as unset. The URL rules of `hindsight.url` apply to whichever name supplies it. |
+| Swarm root | `ULTRATHINK_SWARM_ROOT`, then `SWARM_ROOT` | `SWARM_ROOT` is read only when `ULTRATHINK_SWARM_ROOT` is empty or blank. The value must be an absolute path to an agent-swarm checkout that contains `hooks/autonomous_run.py`. `scripts/cursor-plugin.ts` reads `SWARM_ROOT` too, for its install step. |
+| Agent Substrate bearer token | `SUBSTRATE_TOKEN`, then the first line of the file named by `SUBSTRATE_TOKEN_FILE`, then the first line of `<SUBSTRATE_TOKENS_DIR>/<surface>` | A direct token beats the file, and the file beats the per-surface directory. `SUBSTRATE_TOKENS_DIR` defaults to `/etc/substrate/tokens`. The surface is the host name: `claude-code`, `grok-build`, `hermes`, `muse`, `omp` and `cursor` are surfaces themselves, `prime-agent` uses `pi`, and any other host uses `claude-code`. A surface name must match `[a-z0-9][a-z0-9-]{0,63}`. A file that is missing, empty, larger than 4096 bytes or unreadable gives no token, and the request is sent without an `Authorization` header. |
 
 ### Internal variables
 

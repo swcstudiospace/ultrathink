@@ -44,7 +44,11 @@ function put(root: string, file: string, text: string): void {
 }
 
 function marketplace(version: string): string {
-	return JSON.stringify({ name: "fx", metadata: { version }, plugins: [{ name: "fx", source: "./", version }] }, null, "\t");
+	return JSON.stringify(
+		{ name: "fx", metadata: { version }, plugins: [{ name: "fx", source: "./", version }] },
+		null,
+		"\t",
+	);
 }
 
 /** A minimal repository whose every source says `version` and whose changelog documents it. */
@@ -57,7 +61,11 @@ function fixture(version = VERSION): string {
 	put(root, ".omp-plugin/marketplace.json", marketplace(version));
 	put(root, ".muse-plugin/plugin.json", JSON.stringify({ name: "fx", version }, null, "\t"));
 	put(root, ".cursor-plugin/plugin.json", JSON.stringify({ name: "fx", version }, null, "\t"));
-	put(root, "hosts/hermes/plugin.yaml", `name: fx\nversion: ${version}\ndescription: "version: 9.9.9 appears in prose"\n`);
+	put(
+		root,
+		"hosts/hermes/plugin.yaml",
+		`name: fx\nversion: ${version}\ndescription: "version: 9.9.9 appears in prose"\n`,
+	);
 	put(
 		root,
 		"hosts/prime-agent/pyproject.toml",
@@ -82,8 +90,16 @@ function bumpJson(root: string, file: string, which: "first" | "last"): void {
 }
 
 async function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-	const proc = Bun.spawn([process.execPath, SCRIPT, ...args], { env: {}, stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+	const proc = Bun.spawn([process.execPath, SCRIPT, ...args], {
+		env: {},
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, code] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
 	return { code, stdout, stderr };
 }
 
@@ -93,7 +109,9 @@ describe("this repository", () => {
 		expect(report.problems).toEqual([]);
 		expect(report.ok).toBe(true);
 		expect(report.version).toMatch(/^\d+\.\d+\.\d+/);
-		expect(report.sources.map((source) => source.file)).toContain("hosts/prime-agent/pyproject.toml");
+		expect(report.sources.map((source) => source.file)).toContain(
+			"hosts/prime-agent/pyproject.toml",
+		);
 	});
 });
 
@@ -117,9 +135,17 @@ describe("collectVersions", () => {
 
 	test("reads a version from the Hermes and Prime Agent files only where it is declared", () => {
 		const root = fixture();
-		rewrite(root, "hosts/hermes/plugin.yaml", (text) => text.replace(`version: ${VERSION}\n`, `version: "${VERSION}" # released\n`));
-		rewrite(root, "hosts/prime-agent/pyproject.toml", (text) => text.replace(`version = "${VERSION}"\n`, "").replace("[project]\n", `[project]\nversion = "7.7.7"\n`));
-		const byFile = Object.fromEntries(collectVersions(root).map((source) => [source.file, source.version]));
+		rewrite(root, "hosts/hermes/plugin.yaml", (text) =>
+			text.replace(`version: ${VERSION}\n`, `version: "${VERSION}" # released\n`),
+		);
+		rewrite(root, "hosts/prime-agent/pyproject.toml", (text) =>
+			text
+				.replace(`version = "${VERSION}"\n`, "")
+				.replace("[project]\n", `[project]\nversion = "7.7.7"\n`),
+		);
+		const byFile = Object.fromEntries(
+			collectVersions(root).map((source) => [source.file, source.version]),
+		);
 		expect(byFile["hosts/hermes/plugin.yaml"]).toBe(VERSION);
 		expect(byFile["hosts/prime-agent/pyproject.toml"]).toBe("7.7.7");
 	});
@@ -133,16 +159,37 @@ describe("checkRelease", () => {
 
 	const mismatches: [string, (root: string) => void][] = [
 		[".claude-plugin/plugin.json", (root) => bumpJson(root, ".claude-plugin/plugin.json", "first")],
-		[".claude-plugin/marketplace.json (metadata)", (root) => bumpJson(root, ".claude-plugin/marketplace.json", "first")],
-		[".claude-plugin/marketplace.json (plugin entry)", (root) => bumpJson(root, ".claude-plugin/marketplace.json", "last")],
-		[".omp-plugin/marketplace.json (metadata)", (root) => bumpJson(root, ".omp-plugin/marketplace.json", "first")],
-		[".omp-plugin/marketplace.json (plugin entry)", (root) => bumpJson(root, ".omp-plugin/marketplace.json", "last")],
+		[
+			".claude-plugin/marketplace.json (metadata)",
+			(root) => bumpJson(root, ".claude-plugin/marketplace.json", "first"),
+		],
+		[
+			".claude-plugin/marketplace.json (plugin entry)",
+			(root) => bumpJson(root, ".claude-plugin/marketplace.json", "last"),
+		],
+		[
+			".omp-plugin/marketplace.json (metadata)",
+			(root) => bumpJson(root, ".omp-plugin/marketplace.json", "first"),
+		],
+		[
+			".omp-plugin/marketplace.json (plugin entry)",
+			(root) => bumpJson(root, ".omp-plugin/marketplace.json", "last"),
+		],
 		[".muse-plugin/plugin.json", (root) => bumpJson(root, ".muse-plugin/plugin.json", "first")],
 		[".cursor-plugin/plugin.json", (root) => bumpJson(root, ".cursor-plugin/plugin.json", "first")],
-		["hosts/hermes/plugin.yaml", (root) => rewrite(root, "hosts/hermes/plugin.yaml", (text) => text.replace(`version: ${VERSION}\n`, "version: 9.9.9\n"))],
+		[
+			"hosts/hermes/plugin.yaml",
+			(root) =>
+				rewrite(root, "hosts/hermes/plugin.yaml", (text) =>
+					text.replace(`version: ${VERSION}\n`, "version: 9.9.9\n"),
+				),
+		],
 		[
 			"hosts/prime-agent/pyproject.toml",
-			(root) => rewrite(root, "hosts/prime-agent/pyproject.toml", (text) => text.replace(`version = "${VERSION}"`, 'version = "9.9.9"')),
+			(root) =>
+				rewrite(root, "hosts/prime-agent/pyproject.toml", (text) =>
+					text.replace(`version = "${VERSION}"`, 'version = "9.9.9"'),
+				),
 		],
 	];
 
@@ -165,7 +212,9 @@ describe("checkRelease", () => {
 		rewrite(root, "package.json", (text) => text.replace(VERSION, "1.2.4"));
 		const report = checkRelease(root);
 		expect(report.version).toBe("1.2.4");
-		expect(report.problems.some((line) => line.startsWith(".claude-plugin/plugin.json"))).toBe(true);
+		expect(report.problems.some((line) => line.startsWith(".claude-plugin/plugin.json"))).toBe(
+			true,
+		);
 		expect(report.problems.some((line) => line.startsWith("hosts/hermes/plugin.yaml"))).toBe(true);
 		expect(report.problems.some((line) => line.startsWith("CHANGELOG.md"))).toBe(true);
 	});
@@ -201,7 +250,9 @@ describe("checkRelease", () => {
 		const root = fixture("1.2");
 		const report = checkRelease(root);
 		expect(report.ok).toBe(false);
-		expect(report.problems.some((line) => line.includes("package.json") && line.includes('"1.2"'))).toBe(true);
+		expect(
+			report.problems.some((line) => line.includes("package.json") && line.includes('"1.2"')),
+		).toBe(true);
 	});
 
 	test("a prerelease version is a valid semver", () => {
@@ -319,7 +370,9 @@ describe("command line", () => {
 
 	test("--notes exits 1 with a message on stderr when the section is missing", async () => {
 		const root = fixture();
-		rewrite(root, "CHANGELOG.md", (text) => text.replace("## [1.2.3] - 2026-01-02", "## [1.2.4] - 2026-01-02"));
+		rewrite(root, "CHANGELOG.md", (text) =>
+			text.replace("## [1.2.3] - 2026-01-02", "## [1.2.4] - 2026-01-02"),
+		);
 		const result = await runCli(["--root", root, "--notes"]);
 		expect(result.code).toBe(1);
 		expect(result.stdout).toBe("");

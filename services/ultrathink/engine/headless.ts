@@ -2,11 +2,13 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * Server-side planner: runs the plugin's own pipeline (`planPrompt`: uplift, Graph of Thought, Chain of Thought,
- * clarify) against an OpenRouter chat model, as a background job with long-polled results.
+ * clarify) against the plan-login `claude -p` backend (with the optional `grok` fallback), as a background job with
+ * long-polled results.
  *
  * The plan never reads the operator's personal config or control state: the plugin config is built here and handed
  * over captured, the env is built from scratch, and tracking, substrate, Hindsight, RAGFlow, shipping, lessons and
- * Jev stay off. The only outbound traffic is the OpenRouter completer.
+ * Jev stay off. The only outbound traffic is the `claude` CLI child (plus the `grok` CLI when the Grok fallback is
+ * on), each with an allowlisted env.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -15,20 +17,39 @@ import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
 import { readSession } from "../../../src/claude/state.ts";
 import { defaultConfig, type UltrathinkConfig as PluginConfig } from "../../../src/config.ts";
 import type { ModelResolution, SelectedEngine } from "../../../src/host/engine.ts";
-import { GROKBOT_ENGINE_HOST, checkRecord, journalDir, readMeta } from "../../../src/host/grokbot.ts";
+import {
+	GROKBOT_ENGINE_HOST,
+	checkRecord,
+	journalDir,
+	readMeta,
+} from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
-import { CeilingError, type Ledger } from "../cost/ledger.ts";
+import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
 import { createFairShare } from "../obs/fair-share.ts";
-import type { Logger } from "../obs/log.ts";
+import { failureLabel, type Logger } from "../obs/log.ts";
 import type { SpanSink } from "../obs/otel.ts";
+import { childSpan } from "../obs/trace.ts";
 import type { Store } from "../store/store.ts";
-import type { BreakerState, CircuitBreaker } from "./breaker.ts";
+import type { BreakerState, CircuitBreaker, ReleaseOutcome } from "./breaker.ts";
 import type { GraphView } from "./graph-view.ts";
-import { type JournalErrorCode, type JournalResult, type SessionView, cleanText, isSessionId, isolatedConfigEnv } from "./journal.ts";
-import { OpenRouterError, type OpenRouterFetch, type OpenRouterUsage, createOpenRouterCompleter } from "./openrouter.ts";
+import {
+	type JournalResult,
+	type SessionView,
+	cleanText,
+	isSessionId,
+	isolatedConfigEnv,
+	fail,
+} from "./journal.ts";
 import { clientPlanView, serverPlanView } from "./plan-view.ts";
+import {
+	type PlanBackend,
+	PlanCompleterError,
+	type PlanErrorCode,
+	type PlanUsage,
+	createPlanBackend,
+} from "./plan.ts";
 import type { ChatQuestion } from "./render.ts";
 
 export type JobStatus = "running" | "planned" | "failed" | "invalid" | "skipped";
@@ -37,7 +58,6 @@ export interface JobUsage {
 	calls: number;
 	inputTokens: number;
 	outputTokens: number;
-	costUsd?: number;
 }
 
 export interface ResultView {
@@ -67,13 +87,19 @@ export interface HeadlessPlanner {
 	/** `config.serverPlanning`. */
 	readonly enabled: boolean;
 	start(input: { prompt: unknown; sessionId?: unknown }): Promise<JournalResult<StartView>>;
-	result(input: { sessionId: unknown; waitSeconds?: unknown; detail?: unknown }): Promise<JournalResult<ResultView>>;
+	result(input: {
+		sessionId: unknown;
+		waitSeconds?: unknown;
+		detail?: unknown;
+	}): Promise<JournalResult<ResultView>>;
 	/** Null when the session is not a server job (including malformed ids, which the journal reports). */
 	status(input: { sessionId: unknown }): JournalResult<SessionView> | null;
 	/** Aborts running jobs, waits up to 5 s, then marks what is left failed with error "interrupted". */
 	shutdown(): Promise<void>;
 	/** Upstream circuit breaker state and failure count for health reporting; undefined when the planner has no breaker. */
 	upstream(): { state: BreakerState; failures: number } | undefined;
+	/** Readiness of the plan backend: the `claude` CLI check; always ok when a test completer replaces the backend. */
+	backendReady(): { ok: boolean; detail?: string };
 }
 
 export interface PlannerCall {
@@ -84,19 +110,19 @@ export interface PlannerCall {
 	attempts: number;
 	inputTokens: number;
 	outputTokens: number;
-	costUsd?: number;
 }
 
 export interface HeadlessOptions {
 	config: UltrathinkConfig;
 	store: Store;
 	ledger: Ledger;
-	fetch?: OpenRouterFetch;
 	now?: () => number;
 	/** Resolves early when `signal` aborts. Drives the start window, the long poll, the plan timeout and the shutdown wait. */
 	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-	/** Replaces the OpenRouter completer (tests). Its calls are still reserved and settled in the ledger. */
+	/** Replaces the plan backend's `complete` (tests); the plan backend readiness check is skipped. Its calls are still reserved and settled in the ledger. */
 	completer?: ClaudeCompleter;
+	/** Replaces the plan-login backend (tests). */
+	planBackend?: PlanBackend;
 	/** Environment the planner's allowlisted pass-through keys are read from; defaults to process.env. */
 	env?: Record<string, string | undefined>;
 	/** Plugin entry point; defaults to `planPrompt`. A test seam, never a behavior switch. */
@@ -105,9 +131,9 @@ export interface HeadlessOptions {
 	onCall?: (call: PlannerCall) => void;
 	/** Receives one `job_persist_failed` event per settled job whose file could not be written; never prompts or keys. */
 	logger?: Logger;
-	/** Upstream circuit breaker handed to every OpenRouter completer; a refused call fails the job with `upstream_unavailable`. */
+	/** Upstream circuit breaker guarding every model call; a refused call fails the job with `upstream_unavailable`. */
 	breaker?: CircuitBreaker;
-	/** Receives one CLIENT span per model HTTP attempt made under a sampled request context; never sees URLs, keys or headers. */
+	/** Receives one CLIENT span per model call made under a sampled request context; never sees prompts, replies or env. */
 	spans?: SpanSink;
 }
 
@@ -135,6 +161,8 @@ interface Job extends JobFile {
 	finish: () => void;
 	/** Releases the plan slot taken from the fair-share pool; absent for starts without an admission. */
 	slotRelease?: () => void;
+	/** Failover summary the plan backend reported (first one wins); memory only, never persisted. */
+	failover?: string;
 }
 
 interface Outcome {
@@ -150,16 +178,62 @@ const POLL_AFTER_SEC = 5;
 const CHARS_PER_TOKEN = 3;
 const MAX_ERROR_CHARS = 300;
 const PLANNER_OWNER = "ultrathink-server-planner";
+/**
+ * Accounting allowance reserved for the reply when the output cap is unlimited (0). It is an estimate, not an output
+ * cap: a completion call without a cap sends no max_tokens.
+ */
+const RESERVATION_ALLOWANCE_TOKENS = 16000;
 /** Settled jobs whose file could not be written stay readable in memory up to this many; the oldest are dropped. */
 export const UNPERSISTED_JOBS_MAX = 50;
-const JOB_STATUSES: Record<string, true> = { running: true, planned: true, failed: true, invalid: true, skipped: true };
+const JOB_STATUSES: Record<string, true> = {
+	running: true,
+	planned: true,
+	failed: true,
+	invalid: true,
+	skipped: true,
+};
 /** Skips that mean the engine failed rather than that the request was declined. */
 const ENGINE_SKIPS: Record<string, true> = { "uplift-failed": true, "engine-error": true };
+/** Codes a plan-login completer failure carries. */
+const PLAN_ERROR_CODES: Readonly<Record<PlanErrorCode, true>> = {
+	auth: true,
+	rate_limited: true,
+	upstream: true,
+	timeout: true,
+	aborted: true,
+	upstream_unavailable: true,
+};
+
+/** The classified code of a completer failure: the closed-set `code` of a `PlanCompleterError`. */
+function failureCode(error: unknown): string | undefined {
+	if (!(error instanceof Error) || !("code" in error)) return undefined;
+	const { code } = error;
+	return typeof code === "string" && Object.hasOwn(PLAN_ERROR_CODES, code) ? code : undefined;
+}
+
+/**
+ * What one call tells the breaker: a reply counts as a success, an unreachable, slow or overloaded upstream as a
+ * failure, and anything the upstream is not responsible for (the caller's abort, an unclassified error) as neither.
+ */
+function releaseFor(code: string | undefined): ReleaseOutcome {
+	switch (code) {
+		case "upstream":
+		case "timeout":
+		case "rate_limited":
+			return "failure";
+		default:
+			return "ignored";
+	}
+}
+
+/** Sum of two optional token counts; a count nobody reported stays absent. */
+function addCount(a: number | undefined, b: number | undefined): number | undefined {
+	if (a === undefined) return b;
+	return b === undefined ? a : a + b;
+}
+
 /** Variables with no secret and no config meaning that a plan may inherit. */
 const PASS_THROUGH_ENV = ["PATH", "TZ", "LANG", "LC_ALL", "TMPDIR"] as const;
-
-const fail = (code: JournalErrorCode, errors?: string[]): JournalResult<never> =>
-	errors ? { ok: false, code, errors } : { ok: false, code };
 
 const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> => {
 	const { promise, resolve } = Promise.withResolvers<void>();
@@ -222,6 +296,21 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 	const sleep = opts.sleep ?? defaultSleep;
 	const plan = opts.plan ?? planPrompt;
 	const stateDir = config.stateDir;
+	const planModel = config.planningModel;
+	let backend: PlanBackend | undefined;
+	/** Built once, on first use, so a test that injects a completer never touches the plan module's process checks. */
+	function planBackend(): PlanBackend {
+		backend ??=
+			opts.planBackend ??
+			createPlanBackend({
+				model: planModel,
+				fallback: config.planFallback ?? "none",
+				concurrency: config.planConcurrency ?? 2,
+				timeoutMs: config.modelTimeoutMs,
+				env: opts.env ?? process.env,
+			});
+		return backend;
+	}
 	const jobsDir = join(stateDir, "jobs");
 	const cwd = join(stateDir, "cwd");
 	const jobs = new Map<string, Job>();
@@ -279,13 +368,16 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (file?.status !== "running") continue;
 			try {
 				persist({ ...file, status: "failed", error: "interrupted", updatedAt: now() });
-			} catch {
+			} catch (error) {
+				// reason: the file keeps its running status; the other jobs are still recovered.
+				opts.logger?.error(`recoverInterrupted: ${failureLabel(error)}`);
 				continue;
 			}
 			try {
 				store.updateRun(file.runId, { status: "failed", reason: "interrupted" });
-			} catch {
-				// the run row is bookkeeping only
+			} catch (error) {
+				// reason: the run row is bookkeeping only.
+				opts.logger?.error(`recoverInterrupted: ${failureLabel(error)}`);
 			}
 		}
 	}
@@ -305,7 +397,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			ULTRATHINK_DECISIONS: "0",
 			SUBSTRATE_DISABLED: "1",
 		});
-		// The OpenRouter key never reaches a plan: decision spend is not metered, so Jev stays off here.
+		// Decision spend is not metered, so Jev stays off here.
 		// ULTRATHINK_CHILD and ULTRATHINK_UPLIFT are not on the allowlist, so they cannot reach the plan.
 		return env;
 	}
@@ -320,94 +412,199 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			engineSelection: { engine: "auto", source: "config", nativeOptOut: false },
 			modelKnown: true,
 			modelId: model,
-			label: `openrouter:${model}`,
+			label: `plan:${model}`,
 		};
+	}
+
+	/**
+	 * One model call behind the circuit breaker, recorded as one CLIENT span under a sampled request context.
+	 * No traceparent goes anywhere: the model is a CLI child, not an HTTP hop.
+	 */
+	async function guarded(model: string, call: () => Promise<string>): Promise<string> {
+		const slot = opts.breaker?.tryAcquire();
+		if (slot !== undefined && !slot.ok)
+			throw new PlanCompleterError(
+				"upstream_unavailable",
+				"unavailable",
+				undefined,
+				slot.retryAfterMs,
+			);
+		const ctx = currentRequestContext();
+		const spanId =
+			ctx === undefined || ctx.sampled === false || opts.spans === undefined
+				? undefined
+				: childSpan({ traceId: ctx.traceId, spanId: ctx.spanId, sampled: true }).spanId;
+		const startWall = Date.now();
+		const startMono = performance.now();
+		let release: ReleaseOutcome = "ignored";
+		try {
+			const text = await call();
+			release = "success";
+			return text;
+		} catch (error) {
+			release = releaseFor(failureCode(error));
+			throw error;
+		} finally {
+			slot?.release(release);
+			if (ctx !== undefined && spanId !== undefined) {
+				const startUnixNano = BigInt(startWall) * 1_000_000n;
+				try {
+					opts.spans?.record({
+						traceId: ctx.traceId,
+						spanId,
+						parentSpanId: ctx.spanId,
+						name: "plan complete",
+						kind: 3,
+						startUnixNano,
+						endUnixNano:
+							startUnixNano + BigInt(Math.round((performance.now() - startMono) * 1_000_000)),
+						attributes: {
+							"ultrathink.engine": "plan",
+							"ultrathink.model": model,
+							"ultrathink.attempt": 1,
+						},
+						error: release === "failure",
+					});
+				} catch {
+					// reason: a throwing sink must not change the call's result.
+				}
+			}
+		}
 	}
 
 	/** One model call, reserved before and settled after in the ledger; a ceiling ends the whole job. */
 	function meteredCompleter(job: Job, model: string): ClaudeCompleter {
 		return async (system, user, signal) => {
-			if (signal?.aborted || job.controller.signal.aborted) throw new DOMException("plan aborted", "AbortError");
-			const estimated = Math.ceil((system.length + user.length) / CHARS_PER_TOKEN) + config.modelMaxOutputTokens;
+			if (signal?.aborted || job.controller.signal.aborted)
+				throw new DOMException("plan aborted", "AbortError");
+			const inputEstimate = Math.ceil((system.length + user.length) / CHARS_PER_TOKEN);
+			let outputCap: number | undefined;
+			let estimated = 0;
 			let reservationId: number;
 			try {
-				reservationId = ledger.reserve({ runId: job.runId, phase: `model-${++job.seq}`, attempt: 1, estimatedTokens: estimated }).reservationId;
+				const budget = ledger.headroom(job.runId);
+				if (config.modelMaxOutputTokens > 0) {
+					outputCap = config.modelMaxOutputTokens;
+				} else if (budget !== undefined) {
+					const derived = Math.min(budget.tokens - inputEstimate, RESERVATION_ALLOWANCE_TOKENS);
+					if (derived < 1) throw new CeilingError(budget.reason);
+					outputCap = derived;
+				}
+				estimated = inputEstimate + (outputCap ?? RESERVATION_ALLOWANCE_TOKENS);
+				reservationId = ledger.reserve({
+					runId: job.runId,
+					phase: `model-${++job.seq}`,
+					attempt: 1,
+					estimatedTokens: estimated,
+				}).reservationId;
 			} catch (error) {
 				job.reason ??= error instanceof CeilingError ? "budget_exceeded" : "ledger_unavailable";
 				job.controller.abort();
-				throw error;
+				if (error instanceof CeilingError || error instanceof LedgerWriteError) throw error;
+				throw new Error(`meteredCompleter: ${failureLabel(error)}`, { cause: error });
 			}
-			const reported: { usage?: OpenRouterUsage; call?: { ms: number; outcome: string; attempts: number } } = {};
+			const reported: { usage?: PlanUsage } = {};
 			const startedAt = now();
-			const emit = (outcome: string, usage?: OpenRouterUsage): void => {
+			const emit = (outcome: string, usage?: PlanUsage): void => {
 				if (!opts.onCall) return;
-				const call = reported.call;
 				try {
 					opts.onCall({
 						sessionId: job.sessionId,
 						model,
-						ms: call?.ms ?? Math.max(0, now() - startedAt),
-						outcome: call?.outcome ?? outcome,
-						attempts: call?.attempts ?? 1,
+						ms: Math.max(0, now() - startedAt),
+						outcome,
+						attempts: 1,
 						inputTokens: usage?.promptTokens ?? 0,
 						outputTokens: usage?.completionTokens ?? 0,
-						...(usage?.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
 					});
 				} catch {
-					// telemetry must never affect the job
+					// reason: telemetry must never affect the job.
 				}
 			};
-			try {
-				const complete =
-					opts.completer ??
-					createOpenRouterCompleter({
-						apiKey: config.openRouterApiKey ?? "",
-						baseUrl: config.openRouterBaseUrl,
-						model,
-						maxOutputTokens: config.modelMaxOutputTokens,
-						timeoutMs: config.modelTimeoutMs,
-						referer: config.publicOrigin,
-						...(config.modelReasoningEffort === undefined ? {} : { reasoningEffort: config.modelReasoningEffort }),
-						sleep,
-						...(opts.fetch ? { fetch: opts.fetch } : {}),
-						...(opts.breaker ? { breaker: opts.breaker } : {}),
-						...(opts.spans ? { spans: opts.spans } : {}),
-						onUsage: (usage) => {
-							reported.usage = usage;
-						},
-						onCall: (info) => {
-							reported.call = { ms: info.ms, outcome: info.outcome, attempts: info.attempts };
-						},
-					});
-				const text = await complete(system, user, signal);
+
+			/** Books one model call: its usage joins the job totals and the reservation settles to the actual tokens. */
+			const bill = (usage: PlanUsage | undefined, reservation: number): void => {
 				job.usage.calls += 1;
-				const { usage } = reported;
-				emit("ok", usage);
-				const known = (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0);
 				if (usage) {
 					job.usage.inputTokens += usage.promptTokens ?? 0;
 					job.usage.outputTokens += usage.completionTokens ?? 0;
-					if (usage.costUsd !== undefined) job.usage.costUsd = (job.usage.costUsd ?? 0) + usage.costUsd;
 				}
+				const known = (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0);
 				// An endpoint that omits a count has not said the call was free: the reservation (the worst-case estimate) stays, so the ceilings keep counting.
-				const countsKnown = usage?.promptTokens !== undefined && usage.completionTokens !== undefined;
+				const countsKnown =
+					usage?.promptTokens !== undefined && usage.completionTokens !== undefined;
 				const actual = countsKnown ? known : Math.max(known, estimated);
 				try {
-					ledger.settle(reservationId, Math.max(0, Math.round(actual)));
+					ledger.settle(reservation, Math.max(0, Math.round(actual)));
 				} catch {
-					// the reservation keeps counting, which only errs on the safe side
+					// reason: the reservation keeps counting, which only errs on the safe side.
 				}
+			};
+			// False when the breaker refuses the call: nothing reached the backend, so nothing was spent.
+			let dispatched = false;
+			try {
+				const complete: ClaudeCompleter =
+					opts.completer ??
+					((planSystem, planUser, planSignal) =>
+						planBackend().complete(planSystem, planUser, planSignal, {
+							...(outputCap === undefined ? {} : { maxOutputTokens: outputCap }),
+							// One report per attempt: they add up, so a failed attempt plus an answering one bill both.
+							onUsage: (usage) => {
+								const sum = reported.usage ?? {};
+								const promptTokens = addCount(sum.promptTokens, usage.promptTokens);
+								const completionTokens = addCount(sum.completionTokens, usage.completionTokens);
+								reported.usage = {
+									...(promptTokens === undefined ? {} : { promptTokens }),
+									...(completionTokens === undefined ? {} : { completionTokens }),
+								};
+							},
+							onFailover: (summary) => {
+								job.failover ??= summary;
+							},
+						}));
+				const text = await guarded(model, () => {
+					dispatched = true;
+					return complete(system, user, signal);
+				});
+				const { usage } = reported;
+				emit("ok", usage);
+				bill(usage, reservationId);
 				return text;
 			} catch (error) {
-				const failure = error instanceof OpenRouterError ? error.code : error instanceof Error && error.name === "AbortError" ? "aborted" : "engine_error";
-				emit(failure);
-				try {
-					ledger.abandon(reservationId);
-				} catch {
-					// as above
+				const code = failureCode(error);
+				const failure =
+					code ??
+					(error instanceof Error && error.name === "AbortError" ? "aborted" : "engine_error");
+				// A reply cut at its output limit reports what it cost, so that call is billed like a completed one.
+				const cut =
+					reported.usage?.promptTokens !== undefined ||
+					reported.usage?.completionTokens !== undefined
+						? reported.usage
+						: undefined;
+				emit(failure, cut);
+				if (!dispatched) {
+					// A refusal spends no tokens: releasing it in full keeps an outage from eating the daily ceiling.
+					try {
+						ledger.settle(reservationId, 0);
+					} catch {
+						// reason: the reservation keeps counting, which only errs on the safe side.
+					}
+				} else if (cut) {
+					bill(cut, reservationId);
+				} else {
+					try {
+						ledger.abandon(reservationId);
+					} catch {
+						// reason: the reservation keeps counting, which only errs on the safe side.
+					}
 				}
-				const aborted = error instanceof OpenRouterError ? error.code === "aborted" : error instanceof Error && error.name === "AbortError";
-				if (!aborted) job.firstError ??= error instanceof OpenRouterError ? error.code : "engine_error";
+				const aborted =
+					code === undefined
+						? error instanceof Error && error.name === "AbortError"
+						: code === "aborted";
+				if (!aborted) job.firstError ??= code ?? "engine_error";
+				if (!aborted && code === undefined)
+					throw new Error(`meteredCompleter: ${failureLabel(error)}`, { cause: error });
 				throw error;
 			}
 		};
@@ -430,8 +627,10 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 
 	function judge(job: Job, response: PlanResponse): Outcome {
 		if (job.reason !== undefined || response.skipped === "aborted") return abortOutcome(job);
-		if (response.skipped !== undefined && !Object.hasOwn(ENGINE_SKIPS, response.skipped)) return { status: "skipped", error: response.skipped };
-		if (response.skipped !== undefined || response.statePath === undefined) return { status: "failed", error: job.firstError ?? response.skipped ?? "engine_error" };
+		if (response.skipped !== undefined && !Object.hasOwn(ENGINE_SKIPS, response.skipped))
+			return { status: "skipped", error: response.skipped };
+		if (response.skipped !== undefined || response.statePath === undefined)
+			return { status: "failed", error: job.firstError ?? response.skipped ?? "engine_error" };
 		const record = readSession(stateDir, job.sessionId);
 		if (!record) return { status: "failed", error: job.firstError ?? "engine_error" };
 		const check = checkRecord(record, { thinkOff: false });
@@ -439,15 +638,22 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		// The engine's own failure explains a degraded record better than the degradation does.
 		if (job.firstError !== undefined) return { status: "failed", error: job.firstError };
 		const detail = check.errors.join("; ");
-		return { status: "invalid", error: detail.length > MAX_ERROR_CHARS ? `${detail.slice(0, MAX_ERROR_CHARS)}...` : detail };
+		return {
+			status: "invalid",
+			error: detail.length > MAX_ERROR_CHARS ? `${detail.slice(0, MAX_ERROR_CHARS)}...` : detail,
+		};
 	}
 
 	/** A settled job without a file is served from memory for a while; the map must not grow for the process lifetime. */
 	function retainUnpersisted(job: Job, error: unknown): void {
 		try {
-			opts.logger?.error("job_persist_failed", { sessionId: job.sessionId, status: job.status, error });
+			opts.logger?.error("job_persist_failed", {
+				sessionId: job.sessionId,
+				status: job.status,
+				error,
+			});
 		} catch {
-			// logging must never affect the job
+			// reason: logging must never affect the job.
 		}
 		unpersisted.push(job.sessionId);
 		while (unpersisted.length > UNPERSISTED_JOBS_MAX) {
@@ -469,13 +675,20 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		try {
 			persist(job);
 		} catch (error) {
+			// reason: the error is kept and logged by retainUnpersisted (job_persist_failed); the job stays in memory.
 			written = false;
 			persistError = error;
 		}
 		try {
-			store.updateRun(job.runId, outcome.status === "planned" ? { status: "complete", reason: null } : { status: "failed", reason: outcome.error ?? outcome.status });
-		} catch {
-			// bookkeeping only
+			store.updateRun(
+				job.runId,
+				outcome.status === "planned"
+					? { status: "complete", reason: null }
+					: { status: "failed", reason: outcome.error ?? outcome.status },
+			);
+		} catch (error) {
+			// reason: the run row is bookkeeping only; the job outcome is already set above.
+			opts.logger?.error(`finalize: ${failureLabel(error)}`);
 		}
 		if (written) jobs.delete(job.sessionId);
 		else retainUnpersisted(job, persistError);
@@ -484,31 +697,44 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 
 	async function execute(job: Job, prompt: string, model: string): Promise<void> {
 		const timer = new AbortController();
-		sleep(config.planTimeoutMs, timer.signal)
-			.then(() => {
-				if (timer.signal.aborted || job.settled) return;
-				job.reason ??= "timeout";
-				job.controller.abort();
-			})
-			.catch(() => {});
+		if (config.planTimeoutMs > 0) {
+			sleep(config.planTimeoutMs, timer.signal)
+				.then(() => {
+					if (timer.signal.aborted || job.settled) return;
+					job.reason ??= "timeout";
+					job.controller.abort();
+				})
+				.catch(() => {
+					// reason: sleep rejects only on abort, which is the intended cancellation.
+				});
+		}
 		let outcome: Outcome;
 		try {
-			const response = await plan({ host: GROKBOT_ENGINE_HOST, session_id: job.sessionId, prompt, cwd }, plannerEnv(), {
-				stateDir,
-				signal: job.controller.signal,
-				config: pluginConfig(),
-				control: { enabled: true },
-				createTracker: () => undefined,
-				selectEngine: async (): Promise<SelectedEngine> => ({
-					label: `openrouter:${model}`,
-					complete: meteredCompleter(job, model),
-					error: () => job.firstError,
-					resolution: resolutionFor(model),
-				}),
-			});
+			const response = await plan(
+				{ host: GROKBOT_ENGINE_HOST, session_id: job.sessionId, prompt, cwd },
+				plannerEnv(),
+				{
+					stateDir,
+					signal: job.controller.signal,
+					config: pluginConfig(),
+					control: { enabled: true },
+					createTracker: () => undefined,
+					selectEngine: async (): Promise<SelectedEngine> => ({
+						label: `plan:${model}`,
+						complete: meteredCompleter(job, model),
+						error: () => job.firstError,
+						failover: () => job.failover,
+						resolution: resolutionFor(model),
+					}),
+				},
+			);
 			outcome = judge(job, response);
 		} catch {
-			outcome = job.reason === undefined ? { status: "failed", error: job.firstError ?? "engine_error" } : abortOutcome(job);
+			// reason: a plan failure is carried by job.firstError (set when the completer fails) or by job.reason (set on abort).
+			outcome =
+				job.reason === undefined
+					? { status: "failed", error: job.firstError ?? "engine_error" }
+					: abortOutcome(job);
 		} finally {
 			timer.abort();
 		}
@@ -544,11 +770,11 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (!isSessionId(sessionId)) return fail("invalid_session_id");
 			if (typeof input.prompt !== "string") return fail("invalid_input");
 			const prompt = cleanText(input.prompt);
-			if (prompt.length === 0 || prompt.length > config.maxInputChars) return fail("invalid_input");
+			if (prompt.length === 0 || (config.maxInputChars > 0 && prompt.length > config.maxInputChars))
+				return fail("invalid_input");
 			if (!enabled) return fail("disabled");
 			if (closed) return fail("not_ready");
-			const model = config.planningModel;
-			if (opts.completer === undefined && (config.openRouterApiKey === undefined || model === undefined)) return fail("not_ready");
+			if (opts.completer === undefined && !planBackend().ready().ok) return fail("not_ready");
 
 			const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 			const existing = jobs.get(sessionId) ?? readJobFile(sessionId);
@@ -578,8 +804,16 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				// A claimable status would let a queue worker adopt the row; paused-for-blocker is never claimed.
 				const run = store.db
 					.transaction(() => {
-						const created = store.createRun({ ownerId: PLANNER_OWNER, request: `server plan ${sessionId}`, route: "server-planning" });
-						store.updateRun(created.id, { status: "paused-for-blocker", reason: "server_planning", currentPhase: "plan" });
+						const created = store.createRun({
+							ownerId: PLANNER_OWNER,
+							request: `server plan ${sessionId}`,
+							route: "server-planning",
+						});
+						store.updateRun(created.id, {
+							status: "paused-for-blocker",
+							reason: "server_planning",
+							currentPhase: "plan",
+						});
 						return created;
 					})
 					.immediate();
@@ -605,7 +839,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 				return fail("engine_error");
 			}
 			jobs.set(sessionId, job);
-			void execute(job, prompt, model ?? "custom");
+			void execute(job, prompt, planModel);
 			await waitFor(job, START_WAIT_MS);
 			return { ok: true, data: startView(job) };
 		},
@@ -615,16 +849,20 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (!isSessionId(sessionId)) return fail("invalid_session_id");
 			let waitSeconds = DEFAULT_WAIT_SECONDS;
 			if (input.waitSeconds !== undefined) {
-				if (typeof input.waitSeconds !== "number" || Number.isNaN(input.waitSeconds)) return fail("invalid_input");
+				if (typeof input.waitSeconds !== "number" || Number.isNaN(input.waitSeconds))
+					return fail("invalid_input");
 				waitSeconds = Math.min(MAX_WAIT_SECONDS, Math.max(0, Math.floor(input.waitSeconds)));
 			}
-			if (input.detail !== undefined && input.detail !== "brief" && input.detail !== "full") return fail("invalid_input");
+			if (input.detail !== undefined && input.detail !== "brief" && input.detail !== "full")
+				return fail("invalid_input");
 			const detail: "brief" | "full" = input.detail === "full" ? "full" : "brief";
 			try {
 				const live = jobs.get(sessionId);
 				if (live) await waitFor(live, waitSeconds * 1000);
 				const file = live ?? readJobFile(sessionId);
-				return file ? serverPlanView(stateDir, file, detail) : clientPlanView(stateDir, sessionId, detail);
+				return file
+					? serverPlanView(stateDir, file, detail)
+					: clientPlanView(stateDir, sessionId, detail);
 			} catch {
 				return fail("engine_error");
 			}
@@ -636,6 +874,10 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			const file = jobs.get(sessionId) ?? readJobFile(sessionId);
 			if (!file) return null;
 			return { ok: true, data: { sessionId, status: file.status, pendingCount: 0, pending: [] } };
+		},
+
+		backendReady() {
+			return opts.completer === undefined ? planBackend().ready() : { ok: true };
 		},
 
 		upstream() {
@@ -654,7 +896,10 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			}
 			const wait = new AbortController();
 			try {
-				await Promise.race([Promise.all(running.map((job) => job.done)), sleep(SHUTDOWN_WAIT_MS, wait.signal)]);
+				await Promise.race([
+					Promise.all(running.map((job) => job.done)),
+					sleep(SHUTDOWN_WAIT_MS, wait.signal),
+				]);
 			} finally {
 				wait.abort();
 			}

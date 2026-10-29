@@ -9,13 +9,23 @@ import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { DEFAULT_GATEWAY_CONFIG } from "../gateway/types.ts";
 import { type DecisionOutcome, type Decisions, createDecisions } from "../decisions/gate.ts";
 import type { DecisionStates } from "../decisions/questions.ts";
-import { DEFAULT_DECISIONS_CONFIG, type DecisionAction, type DecisionPoint, formatP } from "../decisions/types.ts";
+import {
+	DEFAULT_DECISIONS_CONFIG,
+	type DecisionAction,
+	type DecisionPoint,
+	formatP,
+} from "../decisions/types.ts";
 import { resolveHindsight } from "../hindsight/settings.ts";
 import { DEFAULT_HINDSIGHT_CONFIG, type HindsightClient } from "../hindsight/types.ts";
 import { resolveStateDir } from "../host/paths.ts";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
 import { openStore, storeDir } from "./store.ts";
-import { DEFAULT_TEACH_CONFIG, TEACH_KILL_ENV, type TeachContext, type TeachStore } from "./types.ts";
+import {
+	DEFAULT_TEACH_CONFIG,
+	TEACH_KILL_ENV,
+	type TeachContext,
+	type TeachStore,
+} from "./types.ts";
 
 export interface TeachContextOptions {
 	host?: string;
@@ -36,7 +46,12 @@ export interface TeachContextOptions {
 function loadTeachConfig(cwd: string, env: NodeJS.ProcessEnv): TeachContext["config"] {
 	try {
 		const config = loadConfig(claudeConfigPaths(cwd, env));
-		return { teach: config.teach, hindsight: config.hindsight, decisions: config.decisions, gateway: config.gateway };
+		return {
+			teach: config.teach,
+			hindsight: config.hindsight,
+			decisions: config.decisions,
+			gateway: config.gateway,
+		};
 	} catch {
 		return {
 			teach: { ...DEFAULT_TEACH_CONFIG },
@@ -86,13 +101,19 @@ export function tryStore(ctx: TeachContext): TeachStore | undefined {
  * The Hindsight client for this context, or why there is none (a line for `reason`). `options.timeoutMs` lowers the
  * per-request budget (a planner that has 2.5 s must not wait 5 s on one request); `options.signal` replaces the context's.
  */
-export function hindsightFor(ctx: TeachContext, options: { timeoutMs?: number; signal?: AbortSignal } = {}): { client?: HindsightClient; reason?: string } {
+export function hindsightFor(
+	ctx: TeachContext,
+	options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): { client?: HindsightClient; reason?: string } {
 	if (ctx.hindsight) return { client: ctx.hindsight };
 	try {
 		const config = { ...ctx.config.hindsight };
 		if (options.timeoutMs !== undefined) {
 			config.timeoutMs = Math.max(1, Math.min(config.timeoutMs, Math.floor(options.timeoutMs)));
-			config.retainTimeoutMs = Math.max(1, Math.min(config.retainTimeoutMs, Math.floor(options.timeoutMs)));
+			config.retainTimeoutMs = Math.max(
+				1,
+				Math.min(config.retainTimeoutMs, Math.floor(options.timeoutMs)),
+			);
 		}
 		const { readiness, client } = resolveHindsight(config, ctx.env, {
 			storePath: ctx.storePath,
@@ -102,7 +123,9 @@ export function hindsightFor(ctx: TeachContext, options: { timeoutMs?: number; s
 		});
 		if (readiness.state === "ready" && client) return { client };
 		if (readiness.state === "off") return { reason: `hindsight is off (${readiness.reason})` };
-		return { reason: `hindsight is not ready (${readiness.state === "unready" ? readiness.reason : "no client"})` };
+		return {
+			reason: `hindsight is not ready (${readiness.state === "unready" ? readiness.reason : "no client"})`,
+		};
 	} catch {
 		return { reason: "hindsight is not ready (settings error)" };
 	}
@@ -116,6 +139,7 @@ export function lessonDecisions(ctx: TeachContext): Decisions | undefined {
 		return createDecisions({
 			config,
 			env: ctx.env,
+			stateDir: ctx.stateDir,
 			...(ctx.storePath !== undefined ? { storePath: ctx.storePath } : {}),
 			...(ctx.fetch ? { fetch: ctx.fetch } : {}),
 			...(ctx.now ? { now: ctx.now } : {}),
@@ -139,7 +163,10 @@ export async function askLesson<P extends "teachable" | "skillworthy">(
 ): Promise<DecisionOutcome> {
 	if (!decisions) return { status: "inactive" };
 	try {
-		return await decisions.run(point, state, { ...rule, ...(ctx.signal ? { signal: ctx.signal } : {}) });
+		return await decisions.run(point, state, {
+			...rule,
+			...(ctx.signal ? { signal: ctx.signal } : {}),
+		});
 	} catch {
 		return { status: "inactive" };
 	}
@@ -152,7 +179,13 @@ export interface DecisionSummary {
 	action: DecisionAction;
 }
 
-export function summarizeDecision(outcome: Exclude<DecisionOutcome, { status: "inactive" }>): DecisionSummary {
+export function summarizeDecision(
+	outcome: Exclude<DecisionOutcome, { status: "inactive" }>,
+): DecisionSummary {
 	const { record } = outcome;
-	return { point: record.point, ...(record.p !== undefined ? { p: Number(formatP(record.p)) } : {}), action: record.action };
+	return {
+		point: record.point,
+		...(record.p !== undefined ? { p: Number(formatP(record.p)) } : {}),
+		action: record.action,
+	};
 }

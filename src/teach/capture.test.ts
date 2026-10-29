@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import {
 	DEFAULT_HINDSIGHT_CONFIG,
 	type HindsightClient,
@@ -12,17 +12,29 @@ import {
 	type RetainItem,
 	type RetainOutcome,
 } from "../hindsight/types.ts";
-import { captureMoment, confirmMoment, forgetMoment, syncOutbox, TeachInputError } from "./capture.ts";
+import {
+	captureMoment,
+	confirmMoment,
+	forgetMoment,
+	syncOutbox,
+	TeachInputError,
+} from "./capture.ts";
 import { contentFor, dedupeKeyFor, documentIdFor } from "./mapping.ts";
 import { openStore, storeDir } from "./store.ts";
-import { DEFAULT_TEACH_CONFIG, MAX_BODY_CHARS, MAX_DESCRIPTION_CHARS, MAX_NAME_CHARS, type CaptureInput, type TeachContext, type TeachableMoment } from "./types.ts";
+import {
+	DEFAULT_TEACH_CONFIG,
+	MAX_BODY_CHARS,
+	MAX_DESCRIPTION_CHARS,
+	MAX_NAME_CHARS,
+	type CaptureInput,
+	type TeachContext,
+	type TeachableMoment,
+} from "./types.ts";
 
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-teach-capture-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-teach-capture-", dirs);
 }
 
 afterEach(() => {
@@ -30,25 +42,37 @@ afterEach(() => {
 });
 
 const ok = <T>(value: T): HindsightResult<T> => ({ ok: true, value });
-const err = (kind: HindsightError["kind"], message = "boom"): HindsightResult<never> => ({ ok: false, error: { kind, message } });
+const err = (kind: HindsightError["kind"], message = "boom"): HindsightResult<never> => ({
+	ok: false,
+	error: { kind, message },
+});
 
 interface FakeOptions {
 	bank?: string;
-	retain?: (item: RetainItem) => HindsightResult<RetainOutcome>;
+	retain?: (
+		item: RetainItem,
+	) => HindsightResult<RetainOutcome> | Promise<HindsightResult<RetainOutcome>>;
 	deleteDocument?: (id: string) => HindsightResult<boolean>;
 	setDocumentTags?: (id: string, tags: string[]) => HindsightResult<true>;
 }
 
 function fakeClient(options: FakeOptions = {}) {
-	const calls = { retain: [] as RetainItem[], deleteDocument: [] as string[], setDocumentTags: [] as { id: string; tags: string[] }[] };
+	const calls = {
+		retain: [] as RetainItem[],
+		deleteDocument: [] as string[],
+		setDocumentTags: [] as { id: string; tags: string[] }[],
+	};
 	const bank = options.bank ?? "ultrathink";
 	const client: HindsightClient = {
 		bank,
-		health: async () => ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
+		health: async () =>
+			ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
 		ensureBank: async () => ok({ bankId: bank, created: false, extractionMode: "chunks" }),
 		retain: async (item) => {
 			calls.retain.push(item);
-			return options.retain ? options.retain(item) : ok({ bankId: bank, documentId: item.documentId, itemsCount: 1 });
+			return options.retain
+				? options.retain(item)
+				: ok({ bankId: bank, documentId: item.documentId, itemsCount: 1 });
 		},
 		recall: async () => ok([]),
 		getDocument: async () => ok(null),
@@ -74,7 +98,10 @@ function setup(options: { hindsight?: HindsightClient; enabled?: boolean } = {})
 	const ctx: TeachContext = {
 		host: "omp",
 		cwd,
-		config: { teach: { ...DEFAULT_TEACH_CONFIG, enabled: options.enabled ?? true }, hindsight: { ...DEFAULT_HINDSIGHT_CONFIG } },
+		config: {
+			teach: { ...DEFAULT_TEACH_CONFIG, enabled: options.enabled ?? true },
+			hindsight: { ...DEFAULT_HINDSIGHT_CONFIG },
+		},
 		env: { HOME: root },
 		stateDir: join(root, "state"),
 		now: () => clock.now,
@@ -84,7 +111,11 @@ function setup(options: { hindsight?: HindsightClient; enabled?: boolean } = {})
 }
 
 function lesson(overrides: Partial<CaptureInput> = {}): CaptureInput {
-	return { name: "tsc rejects value imports of types", body: "Use import type for type-only imports.", ...overrides };
+	return {
+		name: "tsc rejects value imports of types",
+		body: "Use import type for type-only imports.",
+		...overrides,
+	};
 }
 
 describe("captureMoment: off and validation", () => {
@@ -113,25 +144,40 @@ describe("captureMoment: off and validation", () => {
 		["empty body", { body: "\n\t " }, "body is required"],
 		["unknown kind", { kind: "weird" as never }, "kind must be one of"],
 		["unknown origin", { origin: "web" as never }, "origin must be one of"],
-		["a status capture cannot set", { status: "promoted" }, "status must be candidate or confirmed"],
+		[
+			"a status capture cannot set",
+			{ status: "promoted" },
+			"status must be candidate or confirmed",
+		],
 		["a non-numeric confidence", { confidence: Number.NaN }, "confidence must be a number"],
-		["a supersedes that is not an id", { supersedes: "../other" }, "supersedes must be a moment id"],
-	])("invalid input throws TeachInputError and stores nothing: %s", async (_label, overrides, message) => {
-		const { client, calls } = fakeClient();
-		const { ctx, store } = setup({ hindsight: client });
-		const promise = captureMoment(lesson(overrides), ctx);
-		await expect(promise).rejects.toBeInstanceOf(TeachInputError);
-		await expect(promise).rejects.toThrow(message);
-		expect(store.list()).toEqual([]);
-		expect(calls.retain).toHaveLength(0);
-	});
+		[
+			"a supersedes that is not an id",
+			{ supersedes: "../other" },
+			"supersedes must be a moment id",
+		],
+	])(
+		"invalid input throws TeachInputError and stores nothing: %s",
+		async (_label, overrides, message) => {
+			const { client, calls } = fakeClient();
+			const { ctx, store } = setup({ hindsight: client });
+			const promise = captureMoment(lesson(overrides), ctx);
+			await expect(promise).rejects.toBeInstanceOf(TeachInputError);
+			await expect(promise).rejects.toThrow(message);
+			expect(store.list()).toEqual([]);
+			expect(calls.retain).toHaveLength(0);
+		},
+	);
 });
 
 describe("captureMoment: normalization and redaction", () => {
 	test("defaults, caps and identity fields", async () => {
 		const { ctx } = setup();
 		const outcome = await captureMoment(
-			{ name: `${"N".repeat(200)}\n second line`, description: "D".repeat(500), body: `${"b".repeat(3000)}\r\nmore` },
+			{
+				name: `${"N".repeat(200)}\n second line`,
+				description: "D".repeat(500),
+				body: `${"b".repeat(3000)}\r\nmore`,
+			},
 			ctx,
 		);
 		const m = outcome.moment;
@@ -173,7 +219,12 @@ describe("captureMoment: normalization and redaction", () => {
 			ctx,
 		);
 		const m = outcome.moment;
-		const everything = JSON.stringify(m) + JSON.stringify(calls.retain) + readdirSync(join(store.dir, "moments")).map((f) => readFileSync(join(store.dir, "moments", f), "utf8")).join("");
+		const everything =
+			JSON.stringify(m) +
+			JSON.stringify(calls.retain) +
+			readdirSync(join(store.dir, "moments"))
+				.map((f) => readFileSync(join(store.dir, "moments", f), "utf8"))
+				.join("");
 		expect(everything).not.toContain(secret);
 		expect(everything).not.toContain("u:pw");
 		expect(m.name).toBe("Rotate [redacted] after leak");
@@ -182,19 +233,33 @@ describe("captureMoment: normalization and redaction", () => {
 		expect(m.body).toContain("~/.ssh/id_rsa");
 		expect(m.sourceArtifacts).toEqual(["~/.../deep/file.ts"]);
 		// Hashing happened after redaction, so two different leaked keys are one lesson.
-		const other = await captureMoment({ name: `Rotate sk-${"m3X9".repeat(6)} after leak`, body: "again" }, ctx);
+		const other = await captureMoment(
+			{ name: `Rotate sk-${"m3X9".repeat(6)} after leak`, body: "again" },
+			ctx,
+		);
 		expect(other.moment.id).toBe(m.id);
 		expect(other.created).toBe(false);
 	});
 
 	test("field caps hold at the limit and just over it", async () => {
 		const { ctx } = setup();
-		const exact = await captureMoment({ name: "N".repeat(MAX_NAME_CHARS), description: "D".repeat(MAX_DESCRIPTION_CHARS), body: "b".repeat(MAX_BODY_CHARS) }, ctx);
+		const exact = await captureMoment(
+			{
+				name: "N".repeat(MAX_NAME_CHARS),
+				description: "D".repeat(MAX_DESCRIPTION_CHARS),
+				body: "b".repeat(MAX_BODY_CHARS),
+			},
+			ctx,
+		);
 		expect(exact.moment.name).toHaveLength(MAX_NAME_CHARS);
 		expect(exact.moment.description).toHaveLength(MAX_DESCRIPTION_CHARS);
 		expect(exact.moment.body).toHaveLength(MAX_BODY_CHARS);
 		const over = await captureMoment(
-			{ name: `other ${"N".repeat(MAX_NAME_CHARS)}`, description: "D".repeat(MAX_DESCRIPTION_CHARS + 1), body: `z${"b".repeat(MAX_BODY_CHARS)}` },
+			{
+				name: `other ${"N".repeat(MAX_NAME_CHARS)}`,
+				description: "D".repeat(MAX_DESCRIPTION_CHARS + 1),
+				body: `z${"b".repeat(MAX_BODY_CHARS)}`,
+			},
 			ctx,
 		);
 		expect(over.moment.name).toHaveLength(MAX_NAME_CHARS);
@@ -206,7 +271,11 @@ describe("captureMoment: normalization and redaction", () => {
 	test("related ids are kept only when they are valid ids, tags and artifacts are capped lists of lines", async () => {
 		const { ctx } = setup();
 		const { moment } = await captureMoment(
-			lesson({ relatedIds: ["ok-1", "../bad", "also.ok"], tags: ["a", "a", "  b  "], sourceArtifacts: Array.from({ length: 40 }, (_, i) => `f${i}.ts`) }),
+			lesson({
+				relatedIds: ["ok-1", "../bad", "also.ok"],
+				tags: ["a", "a", "  b  "],
+				sourceArtifacts: Array.from({ length: 40 }, (_, i) => `f${i}.ts`),
+			}),
 			ctx,
 		);
 		expect(moment.relatedIds).toEqual(["ok-1", "also.ok"]);
@@ -217,8 +286,15 @@ describe("captureMoment: normalization and redaction", () => {
 	test("origin observe defaults to a 0.5 confidence candidate; explicit values win", async () => {
 		const { ctx } = setup();
 		const observed = await captureMoment(lesson({ origin: "observe" }), ctx);
-		expect(observed.moment).toMatchObject({ status: "candidate", confidence: 0.5, origin: "observe" });
-		const imported = await captureMoment(lesson({ name: "other", origin: "import", confidence: 7 }), ctx);
+		expect(observed.moment).toMatchObject({
+			status: "candidate",
+			confidence: 0.5,
+			origin: "observe",
+		});
+		const imported = await captureMoment(
+			lesson({ name: "other", origin: "import", confidence: 7 }),
+			ctx,
+		);
 		expect(imported.moment).toMatchObject({ status: "confirmed", confidence: 1, origin: "import" });
 	});
 });
@@ -227,7 +303,10 @@ describe("captureMoment: Hindsight paths", () => {
 	test("a confirmed moment is retained with document id tm:<id>, tags, string metadata and capped content", async () => {
 		const { client, calls } = fakeClient({ bank: "lessons" });
 		const { ctx, store, clock } = setup({ hindsight: client });
-		const outcome = await captureMoment(lesson({ tags: ["Needs Review"], body: "x".repeat(2400) }), ctx);
+		const outcome = await captureMoment(
+			lesson({ tags: ["Needs Review"], body: "x".repeat(2400) }),
+			ctx,
+		);
 		expect(outcome.retain).toBe("retained");
 		expect(outcome.reason).toBeUndefined();
 		const item = calls.retain[0] as RetainItem;
@@ -247,21 +326,38 @@ describe("captureMoment: Hindsight paths", () => {
 		expect(item.content.length).toBeLessThanOrEqual(3000);
 		expect(item.content).toBe(contentFor(outcome.moment));
 		expect(item.content.startsWith("# tsc rejects value imports of types\n\n")).toBe(true);
-		expect(Object.values(item.metadata ?? {}).every((value) => typeof value === "string")).toBe(true);
-		expect(item.metadata).toMatchObject({ tm_id: outcome.moment.id, schema: "tm/2", status: "confirmed", project: "proj", host: "omp", occurrences: "1" });
+		expect(Object.values(item.metadata ?? {}).every((value) => typeof value === "string")).toBe(
+			true,
+		);
+		expect(item.metadata).toMatchObject({
+			tm_id: outcome.moment.id,
+			schema: "tm/2",
+			status: "confirmed",
+			project: "proj",
+			host: "omp",
+			occurrences: "1",
+		});
 		const stored = store.get(outcome.moment.id);
-		expect(stored?.retained).toEqual({ at: new Date(clock.now).toISOString(), bank: "lessons", documentId: item.documentId });
+		expect(stored?.retained).toEqual({
+			at: new Date(clock.now).toISOString(),
+			bank: "lessons",
+			documentId: item.documentId,
+		});
 		expect(store.outbox()).toEqual([]);
 	});
 
 	test("a failed retain is queued with a one-line redacted reason and the moment stays stored", async () => {
-		const { client } = fakeClient({ retain: () => err("server", "upstream said\nBearer abc123secret") });
+		const { client } = fakeClient({
+			retain: () => err("server", "upstream said\nBearer abc123secret"),
+		});
 		const { ctx, store } = setup({ hindsight: client });
 		const outcome = await captureMoment(lesson(), ctx);
 		expect(outcome.retain).toBe("queued");
 		expect(outcome.reason).toBe("retain failed (server): upstream said [redacted]");
 		expect(store.get(outcome.moment.id)?.retained).toBeUndefined();
-		expect(store.outbox().map((entry) => entry.op)).toEqual([{ op: "retain", momentId: outcome.moment.id }]);
+		expect(store.outbox().map((entry) => entry.op)).toEqual([
+			{ op: "retain", momentId: outcome.moment.id },
+		]);
 	});
 
 	test("a client that throws is treated like a failed retain", async () => {
@@ -279,13 +375,20 @@ describe("captureMoment: Hindsight paths", () => {
 	test("with no ready client the moment is local-only with the reason and no outbox entry", async () => {
 		const { ctx, store } = setup();
 		const outcome = await captureMoment(lesson(), ctx);
-		expect(outcome).toMatchObject({ created: true, retain: "local-only", reason: "hindsight is off (disabled)" });
+		expect(outcome).toMatchObject({
+			created: true,
+			retain: "local-only",
+			reason: "hindsight is off (disabled)",
+		});
 		expect(store.list()).toHaveLength(1);
 		expect(store.outbox()).toEqual([]);
 
 		ctx.config.hindsight = { ...DEFAULT_HINDSIGHT_CONFIG, enabled: true };
 		const unready = await captureMoment(lesson({ name: "second lesson" }), ctx);
-		expect(unready).toMatchObject({ retain: "local-only", reason: "hindsight is not ready (no-url)" });
+		expect(unready).toMatchObject({
+			retain: "local-only",
+			reason: "hindsight is not ready (no-url)",
+		});
 		expect(store.outbox()).toEqual([]);
 	});
 
@@ -306,7 +409,11 @@ describe("captureMoment: Hindsight paths", () => {
 		mkdirSync(join(cwd, ".planning"));
 		ctx.stateDir = join(cwd, ".planning", "state");
 		const outcome = await captureMoment(lesson(), ctx);
-		expect(outcome).toMatchObject({ created: false, retain: "off", reason: "teach store is unavailable" });
+		expect(outcome).toMatchObject({
+			created: false,
+			retain: "off",
+			reason: "teach store is unavailable",
+		});
 		expect(readdirSync(join(cwd, ".planning"))).toEqual([]);
 	});
 
@@ -326,10 +433,21 @@ describe("captureMoment: repeats", () => {
 	test("the same lesson merges: occurrences, lastSeenAt, unions, better body, and a fresh retain of the same document", async () => {
 		const { client, calls } = fakeClient();
 		const { ctx, store, clock } = setup({ hindsight: client });
-		const first = await captureMoment(lesson({ tags: ["a"], sourceArtifacts: ["x.ts"], confidence: 0.6, body: "old body" }), ctx);
+		const first = await captureMoment(
+			lesson({ tags: ["a"], sourceArtifacts: ["x.ts"], confidence: 0.6, body: "old body" }),
+			ctx,
+		);
 		clock.now += 60_000;
 		const second = await captureMoment(
-			lesson({ name: "TSC rejects value-imports of types!", tags: ["b"], sourceArtifacts: ["y.ts"], relatedIds: ["r1"], confidence: 0.8, body: "new body", description: "new description" }),
+			lesson({
+				name: "TSC rejects value-imports of types!",
+				tags: ["b"],
+				sourceArtifacts: ["y.ts"],
+				relatedIds: ["r1"],
+				confidence: 0.8,
+				body: "new body",
+				description: "new description",
+			}),
 			ctx,
 		);
 		expect(second.created).toBe(false);
@@ -348,7 +466,10 @@ describe("captureMoment: repeats", () => {
 		});
 		expect(store.list()).toHaveLength(1);
 		expect(second.retain).toBe("retained");
-		expect(calls.retain.map((item) => item.documentId)).toEqual([documentIdFor(first.moment.id), documentIdFor(first.moment.id)]);
+		expect(calls.retain.map((item) => item.documentId)).toEqual([
+			documentIdFor(first.moment.id),
+			documentIdFor(first.moment.id),
+		]);
 		expect(calls.retain[1]?.metadata?.occurrences).toBe("2");
 	});
 
@@ -361,12 +482,18 @@ describe("captureMoment: repeats", () => {
 		expect(second.moment.id).toBe(first.moment.id);
 		expect(second.moment.occurrences).toBe(2);
 		expect(readdirSync(join(store.dir, "moments"))).toEqual([`${first.moment.id}.json`]);
-		const onDisk = JSON.parse(readFileSync(join(store.dir, "moments", `${first.moment.id}.json`), "utf8")) as TeachableMoment;
+		const onDisk = JSON.parse(
+			readFileSync(join(store.dir, "moments", `${first.moment.id}.json`), "utf8"),
+		) as TeachableMoment;
 		expect(onDisk).toMatchObject({ id: first.moment.id, occurrences: 2 });
 		// The repeat re-retains the updated moment, but it is one document: same tm:<id> every time.
 		expect(calls.retain.length).toBeGreaterThan(0);
-		expect(new Set(calls.retain.map((item) => item.documentId))).toEqual(new Set([`tm:${first.moment.id}`]));
-		expect(readdirSync(join(store.dir, "moments")).filter((file) => file.endsWith(".tmp"))).toEqual([]);
+		expect(new Set(calls.retain.map((item) => item.documentId))).toEqual(
+			new Set([`tm:${first.moment.id}`]),
+		);
+		expect(readdirSync(join(store.dir, "moments")).filter((file) => file.endsWith(".tmp"))).toEqual(
+			[],
+		);
 	});
 
 	test("a lower-confidence repeat counts but does not replace the body", async () => {
@@ -387,7 +514,11 @@ describe("captureMoment: repeats", () => {
 		const observedAgain = await captureMoment(lesson({ origin: "observe" }), ctx);
 		expect(observedAgain.moment).toMatchObject({ status: "confirmed", occurrences: 3 });
 
-		store.put({ ...observedAgain.moment, status: "promoted", promoted: { at: "2026-06-02T00:00:00.000Z", skill: "s", target: "omp" } });
+		store.put({
+			...observedAgain.moment,
+			status: "promoted",
+			promoted: { at: "2026-06-02T00:00:00.000Z", skill: "s", target: "omp" },
+		});
 		const repeat = await captureMoment(lesson(), ctx);
 		expect(repeat.moment.status).toBe("promoted");
 		expect(repeat.moment.promoted?.skill).toBe("s");
@@ -437,7 +568,10 @@ describe("captureMoment: supersedes", () => {
 		await captureMoment(lesson({ name: "new way", supersedes: old.moment.id }), ctx);
 		expect(store.get(old.moment.id)?.status).toBe("superseded");
 		expect(store.outbox()).toEqual([]);
-		const orphan = await captureMoment(lesson({ name: "third way", supersedes: "no-such-id" }), ctx);
+		const orphan = await captureMoment(
+			lesson({ name: "third way", supersedes: "no-such-id" }),
+			ctx,
+		);
 		expect(orphan.created).toBe(true);
 		expect(store.list()).toHaveLength(3);
 	});
@@ -517,7 +651,10 @@ describe("forgetMoment", () => {
 		const { client, calls } = fakeClient({ deleteDocument: () => ok(false) });
 		const { ctx, store } = setup({ hindsight: client });
 		const retained = await captureMoment(lesson(), ctx);
-		expect(await forgetMoment(retained.moment.id, ctx)).toEqual({ removed: true, remote: "deleted" });
+		expect(await forgetMoment(retained.moment.id, ctx)).toEqual({
+			removed: true,
+			remote: "deleted",
+		});
 		expect(calls.deleteDocument).toEqual([`tm:${retained.moment.id}`]);
 		expect(store.list()).toEqual([]);
 		expect(store.outbox()).toEqual([]);
@@ -527,14 +664,22 @@ describe("forgetMoment", () => {
 		const failing = fakeClient({ deleteDocument: () => err("server") });
 		const a = setup({ hindsight: failing.client });
 		const retained = await captureMoment(lesson(), a.ctx);
-		expect(await forgetMoment(retained.moment.id, a.ctx)).toEqual({ removed: true, remote: "queued" });
-		expect(a.store.outbox().map((e) => e.op)).toEqual([{ op: "delete", documentId: `tm:${retained.moment.id}` }]);
+		expect(await forgetMoment(retained.moment.id, a.ctx)).toEqual({
+			removed: true,
+			remote: "queued",
+		});
+		expect(a.store.outbox().map((e) => e.op)).toEqual([
+			{ op: "delete", documentId: `tm:${retained.moment.id}` },
+		]);
 
 		const { client } = fakeClient();
 		const b = setup({ hindsight: client });
 		const second = await captureMoment(lesson(), b.ctx);
 		delete b.ctx.hindsight;
-		expect(await forgetMoment(second.moment.id, b.ctx)).toEqual({ removed: true, remote: "queued" });
+		expect(await forgetMoment(second.moment.id, b.ctx)).toEqual({
+			removed: true,
+			remote: "queued",
+		});
 		expect(b.store.outbox()).toHaveLength(1);
 	});
 
@@ -543,7 +688,10 @@ describe("forgetMoment", () => {
 		const { ctx, store } = setup({ hindsight: failing.client });
 		const pending = await captureMoment(lesson(), ctx);
 		expect(store.outbox().map((e) => e.op.op)).toEqual(["retain"]);
-		expect(await forgetMoment(pending.moment.id, ctx)).toEqual({ removed: true, remote: "deleted" });
+		expect(await forgetMoment(pending.moment.id, ctx)).toEqual({
+			removed: true,
+			remote: "deleted",
+		});
 		expect(store.outbox()).toEqual([]);
 		expect(failing.calls.deleteDocument).toEqual([`tm:${pending.moment.id}`]);
 	});
@@ -553,7 +701,10 @@ describe("forgetMoment", () => {
 		const { ctx, store } = setup({ hindsight: client });
 		const retained = await captureMoment(lesson(), ctx);
 		ctx.env.ULTRATHINK_TEACH = "0";
-		expect(await forgetMoment(retained.moment.id, ctx)).toEqual({ removed: true, remote: "queued" });
+		expect(await forgetMoment(retained.moment.id, ctx)).toEqual({
+			removed: true,
+			remote: "queued",
+		});
 		expect(calls.deleteDocument).toEqual([]);
 		expect(store.outbox()).toHaveLength(1);
 	});
@@ -582,7 +733,11 @@ describe("syncOutbox", () => {
 		const first = await syncOutbox(box.ctx);
 		expect(first).toMatchObject({ done: 0, pending: 1, reason: "retain failed (server): boom" });
 		const entry = box.store.outbox()[0];
-		expect(entry).toMatchObject({ attempts: 1, nextAt: box.clock.now + 60_000, lastError: "retain failed (server): boom" });
+		expect(entry).toMatchObject({
+			attempts: 1,
+			nextAt: box.clock.now + 60_000,
+			lastError: "retain failed (server): boom",
+		});
 
 		expect(failing.calls.retain).toHaveLength(2);
 		const second = await syncOutbox(box.ctx);
@@ -607,7 +762,9 @@ describe("syncOutbox", () => {
 	});
 
 	test("delete and tags entries are replayed; a tags entry for a vanished document is done", async () => {
-		const { client, calls } = fakeClient({ setDocumentTags: (id) => (id === "tm:gone" ? err("not-found") : ok(true as const)) });
+		const { client, calls } = fakeClient({
+			setDocumentTags: (id) => (id === "tm:gone" ? err("not-found") : ok(true as const)),
+		});
 		const { ctx, store } = setup({ hindsight: client });
 		const past = (ctx.now?.() ?? 0) - 1000;
 		store.enqueue({ op: "delete", documentId: "tm:a" }, past);
@@ -619,7 +776,10 @@ describe("syncOutbox", () => {
 	});
 
 	test("the first auth error stops the run: later entries are not attempted and no backfill follows", async () => {
-		const auth = fakeClient({ deleteDocument: () => err("auth", "key rejected"), retain: () => err("auth", "key rejected") });
+		const auth = fakeClient({
+			deleteDocument: () => err("auth", "key rejected"),
+			retain: () => err("auth", "key rejected"),
+		});
 		const { ctx, store } = setup({ hindsight: auth.client });
 		const past = (ctx.now?.() ?? 0) - 1000;
 		store.enqueue({ op: "delete", documentId: "tm:a" }, past);
@@ -644,10 +804,90 @@ describe("syncOutbox", () => {
 		store.put({ ...d.moment, status: "superseded" });
 		ctx.hindsight = client;
 		expect(await syncOutbox(ctx)).toEqual({ done: 2, pending: 0 });
-		expect(calls.retain.map((item) => item.documentId).sort()).toEqual([`tm:${a.moment.id}`, `tm:${b.moment.id}`].sort());
+		expect(calls.retain.map((item) => item.documentId).sort()).toEqual(
+			[`tm:${a.moment.id}`, `tm:${b.moment.id}`].sort(),
+		);
 		expect(store.get(c.moment.id)?.retained).toBeUndefined();
 		expect(store.get(d.moment.id)?.retained).toBeUndefined();
 		expect(await syncOutbox(ctx)).toEqual({ done: 0, pending: 0 });
+	});
+
+	describe("a lesson forgotten while its retain is in flight", () => {
+		async function raceForget(deleteDocument?: FakeOptions["deleteDocument"]) {
+			const box = setup();
+			const created = await captureMoment(lesson(), box.ctx);
+			const id = created.moment.id;
+			const fake = fakeClient({
+				retain: async (item) => {
+					await forgetMoment(id, box.ctx);
+					return ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 });
+				},
+				...(deleteDocument ? { deleteDocument } : {}),
+			});
+			box.ctx.hindsight = fake.client;
+			const outcome = await syncOutbox(box.ctx);
+			return { ...box, ...fake, id, outcome };
+		}
+
+		test("is not revived locally and its remote document is deleted", async () => {
+			const { store, calls, id, outcome } = await raceForget();
+			expect(calls.retain).toHaveLength(1);
+			expect(store.get(id)).toBeUndefined();
+			expect(store.list()).toEqual([]);
+			expect(calls.deleteDocument).toEqual([`tm:${id}`]);
+			expect(store.outbox()).toEqual([]);
+			expect(outcome).toEqual({ done: 0, pending: 0 });
+		});
+
+		test("queues the remote delete when it fails", async () => {
+			const { store, calls, id, outcome } = await raceForget(() => err("server"));
+			expect(store.get(id)).toBeUndefined();
+			expect(calls.deleteDocument).toEqual([`tm:${id}`]);
+			expect(store.outbox().map((entry) => entry.op)).toEqual([
+				{ op: "delete", documentId: `tm:${id}` },
+			]);
+			expect(outcome).toEqual({ done: 0, pending: 1 });
+		});
+
+		test("a capture or confirm reports it as not kept", async () => {
+			const box = setup();
+			const created = await captureMoment(lesson({ origin: "observe" }), box.ctx);
+			const id = created.moment.id;
+			const fake = fakeClient({
+				retain: async (item) => {
+					await forgetMoment(id, box.ctx);
+					return ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 });
+				},
+			});
+			box.ctx.hindsight = fake.client;
+			const confirmed = await confirmMoment(id, box.ctx);
+			expect(confirmed).toMatchObject({ retain: "off" });
+			expect(confirmed?.reason).toContain("forgotten");
+			expect(box.store.get(id)).toBeUndefined();
+			expect(fake.calls.deleteDocument).toEqual([`tm:${id}`]);
+			expect(box.store.outbox()).toEqual([]);
+		});
+
+		test("an unreadable local lesson is kept and its remote copy is not deleted", async () => {
+			const box = setup();
+			const created = await captureMoment(lesson(), box.ctx);
+			const id = created.moment.id;
+			const file = join(box.store.dir, "moments", `${id}.json`);
+			const fake = fakeClient({
+				retain: async (item) => {
+					writeFileSync(file, "{not json");
+					return ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 });
+				},
+			});
+			box.ctx.hindsight = fake.client;
+			const outcome = await syncOutbox(box.ctx);
+			expect(fake.calls.retain).toHaveLength(1);
+			expect(fake.calls.deleteDocument).toEqual([]);
+			expect(readFileSync(file, "utf8")).toBe("{not json");
+			expect(box.store.outbox().map((entry) => entry.op.op)).toEqual(["retain"]);
+			expect(outcome).toMatchObject({ done: 0, pending: 1 });
+			expect(outcome.reason).toContain("unreadable");
+		});
 	});
 
 	test("a failed backfill is queued with backoff instead of being retried on every sync", async () => {
@@ -684,7 +924,11 @@ describe("syncOutbox", () => {
 	test("it reports why nothing happened when off or without a client, and never throws", async () => {
 		const { ctx, store } = setup();
 		store.enqueue({ op: "delete", documentId: "tm:a" }, 0);
-		expect(await syncOutbox(ctx)).toEqual({ done: 0, pending: 1, reason: "hindsight is off (disabled)" });
+		expect(await syncOutbox(ctx)).toEqual({
+			done: 0,
+			pending: 1,
+			reason: "hindsight is off (disabled)",
+		});
 		ctx.config.teach.enabled = false;
 		expect(await syncOutbox(ctx)).toEqual({ done: 0, pending: 1, reason: "teach is off" });
 		const { cwd, ctx: broken } = setup();
@@ -735,7 +979,9 @@ describe("aborted lifetimes leave no late writes", () => {
 		await gated.called;
 		expect(gated.seen).toHaveLength(1);
 		controller.abort();
-		gated.release(ok({ bankId: "ultrathink", documentId: documentIdFor(created.moment.id), itemsCount: 1 }));
+		gated.release(
+			ok({ bankId: "ultrathink", documentId: documentIdFor(created.moment.id), itemsCount: 1 }),
+		);
 		const outcome = await pending;
 		expect(outcome?.retain).toBe("local-only");
 		expect(outcome?.reason).toContain("cancelled");
@@ -768,10 +1014,14 @@ describe("aborted lifetimes leave no late writes", () => {
 		const created = await captureMoment({ ...lesson(), status: "candidate" }, ctx);
 		const pending = confirmMoment(created.moment.id, ctx);
 		await gated.called;
-		gated.release(ok({ bankId: "ultrathink", documentId: documentIdFor(created.moment.id), itemsCount: 1 }));
+		gated.release(
+			ok({ bankId: "ultrathink", documentId: documentIdFor(created.moment.id), itemsCount: 1 }),
+		);
 		const outcome = await pending;
 		expect(outcome?.retain).toBe("retained");
-		expect(store.get(created.moment.id)?.retained?.documentId).toBe(documentIdFor(created.moment.id));
+		expect(store.get(created.moment.id)?.retained?.documentId).toBe(
+			documentIdFor(created.moment.id),
+		);
 		expect(store.outbox()).toEqual([]);
 	});
 
@@ -784,7 +1034,9 @@ describe("aborted lifetimes leave no late writes", () => {
 		const current = store.get(created.moment.id);
 		if (!current) throw new Error("confirmation seeding failed");
 		store.put({ ...current, occurrences: 42 });
-		gated.release(ok({ bankId: "ultrathink", documentId: documentIdFor(created.moment.id), itemsCount: 1 }));
+		gated.release(
+			ok({ bankId: "ultrathink", documentId: documentIdFor(created.moment.id), itemsCount: 1 }),
+		);
 		const outcome = await pending;
 		expect(outcome?.retain).toBe("retained");
 		expect(outcome?.moment.occurrences).toBe(42);
@@ -803,7 +1055,9 @@ describe("aborted lifetimes leave no late writes", () => {
 		const current = store.get(created.moment.id);
 		if (!current) throw new Error("confirmation seeding failed");
 		store.put({ ...current, body: "Newer body wins." });
-		gated.release(ok({ bankId: "ultrathink", documentId: documentIdFor(created.moment.id), itemsCount: 1 }));
+		gated.release(
+			ok({ bankId: "ultrathink", documentId: documentIdFor(created.moment.id), itemsCount: 1 }),
+		);
 		const outcome = await pending;
 		expect(outcome?.retain).toBe("queued");
 		expect(outcome?.reason).toContain("older revision");
@@ -815,7 +1069,9 @@ describe("aborted lifetimes leave no late writes", () => {
 		const healthy = fakeClient();
 		ctx.hindsight = healthy.client;
 		expect(await syncOutbox(ctx)).toEqual({ done: 1, pending: 0 });
-		expect(store.get(created.moment.id)?.retained?.documentId).toBe(documentIdFor(created.moment.id));
+		expect(store.get(created.moment.id)?.retained?.documentId).toBe(
+			documentIdFor(created.moment.id),
+		);
 		expect(healthy.calls.retain).toHaveLength(1);
 		expect(healthy.calls.retain[0]?.content).toContain("Newer body wins.");
 	});

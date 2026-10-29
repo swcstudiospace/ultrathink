@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAuth } from "../auth/auth.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
-import type { OpenRouterFetch } from "../engine/openrouter.ts";
+import { type PlanBackend, PlanCompleterError } from "../engine/plan.ts";
 import { createLogger } from "../obs/log.ts";
 import type { FinishedSpan, SpanSink } from "../obs/otel.ts";
 import type { RuntimeSample } from "../obs/runtime.ts";
@@ -20,7 +20,16 @@ const PEER = "127.0.0.1";
 const CONNECTOR_KEY = randomBytes(24).toString("hex");
 const OWNER_HASH = await Bun.password.hash(randomBytes(24).toString("base64url"));
 const SESSION_SECRET = randomBytes(32).toString("hex");
-const FAKE_KEY = "sk-or-fake-key-0123456789abcdef";
+/** A plan backend that is ready and fails every call with the given error. */
+function failingBackend(error: PlanCompleterError): PlanBackend {
+	return {
+		label: "plan:claude-haiku-5-5",
+		ready: () => ({ ok: true }),
+		complete: async () => {
+			throw error;
+		},
+	};
+}
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const PARENT_SPAN = "00f067aa0ba902b7";
 const PROMPT = "Build a small TypeScript CLI that converts CSV files to JSON.";
@@ -37,7 +46,7 @@ afterAll(() => {
 		try {
 			store.close();
 		} catch {
-			// already closed
+			// reason: already closed
 		}
 	}
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -48,7 +57,10 @@ interface Harness {
 	logs: LogLine[];
 }
 
-function harness(configOverrides: Partial<UltrathinkConfig> = {}, deps: Partial<RouterDeps> = {}): Harness {
+function harness(
+	configOverrides: Partial<UltrathinkConfig> = {},
+	deps: Partial<RouterDeps> = {},
+): Harness {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-obs-"));
 	dirs.push(dir);
 	const config: UltrathinkConfig = {
@@ -63,12 +75,11 @@ function harness(configOverrides: Partial<UltrathinkConfig> = {}, deps: Partial<
 		maxBodyBytes: 65536,
 		runTokenCeiling: 5_000_000,
 		dailyTokenCeiling: 50_000_000,
-		planningModel: undefined,
+		planningModel: "claude-haiku-5-5",
 		connectorKey: CONNECTOR_KEY,
 		allowedOrigins: [],
 		oauthRedirectOrigins: [],
-		openRouterApiKey: undefined,
-		openRouterBaseUrl: "https://openrouter.test/api/v1",
+		legacyEnvIgnored: [],
 		serverPlanning: false,
 		maxConcurrentPlans: 2,
 		modelTimeoutMs: 5000,
@@ -104,7 +115,11 @@ function harness(configOverrides: Partial<UltrathinkConfig> = {}, deps: Partial<
 	};
 	const store = openStore(config.dbPath);
 	stores.push(store);
-	const auth = createAuth({ ownerPasswordHash: OWNER_HASH, sessionSecret: SESSION_SECRET, cookieSecure: true });
+	const auth = createAuth({
+		ownerPasswordHash: OWNER_HASH,
+		sessionSecret: SESSION_SECRET,
+		cookieSecure: true,
+	});
 	const logs: LogLine[] = [];
 	const logger = createLogger({ write: (line) => logs.push(JSON.parse(line) as LogLine) });
 	const app = createApp({ config, store, auth, logger, ...deps });
@@ -174,7 +189,9 @@ describe("request spans and correlation", () => {
 		const sink = recordingSink();
 		const h = harness({}, { spans: sink });
 		const response = await h.app.handle(
-			new Request(`${ORIGIN}/healthz`, { headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-01`, tracestate: "vendor=x" } }),
+			new Request(`${ORIGIN}/healthz`, {
+				headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-01`, tracestate: "vendor=x" },
+			}),
 			PEER,
 		);
 		const echoed = response.headers.get("traceparent") ?? "";
@@ -189,24 +206,44 @@ describe("request spans and correlation", () => {
 			name: "GET healthz",
 			kind: 2,
 			error: false,
-			attributes: { "http.request.method": "GET", "http.response.status_code": 200, "ultrathink.endpoint": "healthz" },
+			attributes: {
+				"http.request.method": "GET",
+				"http.response.status_code": 200,
+				"ultrathink.endpoint": "healthz",
+			},
 		});
 	});
 
 	test("the request log line carries the reqId, traceId and spanId that the response headers carry", async () => {
 		const h = harness();
-		const response = await h.app.handle(new Request(`${ORIGIN}/healthz`, { headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-01` } }), PEER);
+		const response = await h.app.handle(
+			new Request(`${ORIGIN}/healthz`, {
+				headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-01` },
+			}),
+			PEER,
+		);
 		const reqId = response.headers.get("x-request-id");
 		const line = logsOf(h, "request").find((entry) => entry.reqId === reqId);
 		expect(line).toBeDefined();
-		expect(line).toMatchObject({ traceId: TRACE_ID, spanId: response.headers.get("traceparent")?.split("-")[2], status: 200 });
+		expect(line).toMatchObject({
+			traceId: TRACE_ID,
+			spanId: response.headers.get("traceparent")?.split("-")[2],
+			status: 200,
+		});
 	});
 
 	test("an unsampled inbound traceparent records no span and answers with flags 00", async () => {
 		const sink = recordingSink();
 		const h = harness({}, { spans: sink });
-		const response = await h.app.handle(new Request(`${ORIGIN}/healthz`, { headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-00` } }), PEER);
-		expect(response.headers.get("traceparent")).toMatch(new RegExp(`^00-${TRACE_ID}-[0-9a-f]{16}-00$`));
+		const response = await h.app.handle(
+			new Request(`${ORIGIN}/healthz`, {
+				headers: { traceparent: `00-${TRACE_ID}-${PARENT_SPAN}-00` },
+			}),
+			PEER,
+		);
+		expect(response.headers.get("traceparent")).toMatch(
+			new RegExp(`^00-${TRACE_ID}-[0-9a-f]{16}-00$`),
+		);
 		expect(sink.recorded).toHaveLength(0);
 	});
 
@@ -215,42 +252,75 @@ describe("request spans and correlation", () => {
 		const h = harness({}, { spans: sink });
 		const token = `bt_${randomBytes(16).toString("hex")}`;
 		const peerIp = "203.0.113.77";
-		const response = await h.app.handle(new Request(`${ORIGIN}/ultrathink`, { headers: { Authorization: `Bearer ${token}` } }), peerIp);
+		const response = await h.app.handle(
+			new Request(`${ORIGIN}/ultrathink`, { headers: { Authorization: `Bearer ${token}` } }),
+			peerIp,
+		);
 		expect(response.status).toBe(401);
 
 		expect(sink.recorded).toHaveLength(1);
 		// Span times are bigints, which JSON cannot encode; they are written out as decimal strings for the search.
-		const exported = JSON.stringify(sink.recorded, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value));
+		const exported = JSON.stringify(sink.recorded, (_key, value: unknown) =>
+			typeof value === "bigint" ? value.toString() : value,
+		);
 		expect(exported).not.toContain(token);
 		expect(exported).not.toContain(peerIp);
 	});
 });
 
 describe("runtime-fed signals", () => {
-	test("upstream failures past breakerFailures are counted as one closed-to-open transition on /metrics", async () => {
-		const failing: OpenRouterFetch = async () => new Response("upstream down", { status: 500 });
+	test("upstream failures past breakerFailures are counted as one closed-to-open transition on /metrics, and the open breaker refuses the next call", async () => {
+		let backendCalls = 0;
+		const failing = failingBackend(new PlanCompleterError("upstream", "unavailable"));
+		const planBackend: PlanBackend = {
+			...failing,
+			complete: (...args) => {
+				backendCalls += 1;
+				return failing.complete(...args);
+			},
+		};
 		const h = harness(
-			{ serverPlanning: true, planningModel: "x-ai/grok-test", openRouterApiKey: FAKE_KEY, breakerFailures: 3 },
-			{ fetch: failing, sleep: instantBackoff },
+			{ serverPlanning: true, planningModel: "claude-haiku-5-5", breakerFailures: 3 },
+			{ planBackend, sleep: instantBackoff },
 		);
-		await h.app.handle(
-			new Request(`${ORIGIN}/mcp`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY },
-				body: JSON.stringify({
-					jsonrpc: "2.0",
-					id: 1,
-					method: "tools/call",
-					params: { name: "ultrathink_uplift", arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() } },
+		const uplift = (): Promise<Response> =>
+			h.app.handle(
+				new Request(`${ORIGIN}/mcp`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY },
+					body: JSON.stringify({
+						jsonrpc: "2.0",
+						id: 1,
+						method: "tools/call",
+						params: {
+							name: "ultrathink_uplift",
+							arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() },
+						},
+					}),
 				}),
-			}),
-			PEER,
-		);
+				PEER,
+			);
+		// No retry layer: each failing call is exactly one breaker failure.
+		for (let i = 0; i < 3; i += 1) await uplift();
 
 		const scrape = await h.app.handle(new Request(`${ORIGIN}/metrics`), PEER);
 		expect(scrape.status).toBe(200);
-		expect(sample(h, "ultrathink_upstream_breaker_transitions_total", { from: "closed", to: "open" })).toBe(1);
+		expect(backendCalls).toBe(3);
+		expect(
+			sample(h, "ultrathink_upstream_breaker_transitions_total", { from: "closed", to: "open" }),
+		).toBe(1);
 		expect(sample(h, "ultrathink_upstream_breaker_state", { state: "open" })).toBe(1);
+
+		const refusedBefore =
+			sample(h, "ultrathink_planner_calls_total", { outcome: "upstream_unavailable" }) ?? 0;
+		await uplift();
+		// The pipeline degrades stage by stage instead of stopping, so one refused uplift records one refusal per
+		// stage it still attempts (as the OpenRouter path did); none of them may reach the backend.
+		expect(backendCalls).toBe(3);
+		expect(
+			sample(h, "ultrathink_planner_calls_total", { outcome: "upstream_unavailable" }),
+		).toBeGreaterThan(refusedBefore);
+		expect(sample(h, "ultrathink_planner_calls_total", { outcome: "upstream" })).toBe(3);
 		await h.app.shutdown();
 	});
 
@@ -261,7 +331,9 @@ describe("runtime-fed signals", () => {
 
 		for (let i = 0; i < 5; i += 1) h.app.observeRuntime(runtime(30));
 		expect(sample(h, "ultrathink_anomaly_active", { signal: "event_loop_lag" })).toBe(1);
-		expect(sample(h, "ultrathink_anomaly_transitions_total", { signal: "event_loop_lag", to: "raised" })).toBe(1);
+		expect(
+			sample(h, "ultrathink_anomaly_transitions_total", { signal: "event_loop_lag", to: "raised" }),
+		).toBe(1);
 
 		const lines = logsOf(h, "anomaly");
 		expect(lines).toHaveLength(1);
@@ -282,9 +354,15 @@ describe("runtime-fed signals", () => {
 
 		// Three requests so far, one of them 5xx: the bad share is 1/3 against a 1 % allowance.
 		const badShare = 1 / 3;
-		expect(sample(h, "ultrathink_slo_error_budget_remaining_ratio", { slo: "http_availability" })).toBeCloseTo(1 - badShare / 0.01, 4);
-		expect(sample(h, "ultrathink_slo_burn_rate", { slo: "http_availability", window: "5m" })).toBeCloseTo(badShare / 0.01, 4);
-		expect(sample(h, "ultrathink_slo_observed_seconds", { slo: "http_availability" })).toBeDefined();
+		expect(
+			sample(h, "ultrathink_slo_error_budget_remaining_ratio", { slo: "http_availability" }),
+		).toBeCloseTo(1 - badShare / 0.01, 4);
+		expect(
+			sample(h, "ultrathink_slo_burn_rate", { slo: "http_availability", window: "5m" }),
+		).toBeCloseTo(badShare / 0.01, 4);
+		expect(
+			sample(h, "ultrathink_slo_observed_seconds", { slo: "http_availability" }),
+		).toBeDefined();
 	});
 });
 
@@ -296,20 +374,29 @@ describe("retention sweep, planner correlation and shutdown", () => {
 	});
 
 	test("a plan started by a request logs its planner_call line under that request's reqId", async () => {
-		const rejected: OpenRouterFetch = async () => new Response("bad request", { status: 400 });
 		const h = harness(
-			{ serverPlanning: true, planningModel: "x-ai/grok-test", openRouterApiKey: FAKE_KEY },
-			{ fetch: rejected, sleep: instantBackoff },
+			{ serverPlanning: true, planningModel: "claude-haiku-5-5" },
+			{
+				planBackend: failingBackend(new PlanCompleterError("auth", "auth")),
+				sleep: instantBackoff,
+			},
 		);
 		const started = await h.app.handle(
 			new Request(`${ORIGIN}/mcp`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY, "x-request-id": "req-plan-0001" },
+				headers: {
+					"Content-Type": "application/json",
+					"x-connector-key": CONNECTOR_KEY,
+					"x-request-id": "req-plan-0001",
+				},
 				body: JSON.stringify({
 					jsonrpc: "2.0",
 					id: 1,
 					method: "tools/call",
-					params: { name: "ultrathink_uplift", arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() } },
+					params: {
+						name: "ultrathink_uplift",
+						arguments: { prompt: PROMPT, sessionId: crypto.randomUUID() },
+					},
 				}),
 			}),
 			PEER,

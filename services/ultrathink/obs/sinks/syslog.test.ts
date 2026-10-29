@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import net from "node:net";
-import { createSyslogTransport, encodeSyslogFrame } from "./syslog.ts";
+import { createSyslogTransport, encodeSyslogFrame, type SyslogTransportOptions } from "./syslog.ts";
 import type { SinkEnvelope } from "./types.ts";
 
 interface Listener {
@@ -20,7 +20,11 @@ afterEach(() => {
 	for (const stop of stops.splice(0)) stop();
 });
 
-function envelope(seq: number, kind: SinkEnvelope["kind"] = "audit", body: Record<string, unknown> = {}): SinkEnvelope {
+function envelope(
+	seq: number,
+	kind: SinkEnvelope["kind"] = "audit",
+	body: Record<string, unknown> = {},
+): SinkEnvelope {
 	return { kind, at: "2026-01-01T00:00:00.000Z", body: { seq, ...body } };
 }
 
@@ -68,7 +72,15 @@ function startListener(port: number): Listener {
 }
 
 function freePort(): number {
-	const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+	const probe = Bun.listen({
+		hostname: "127.0.0.1",
+		port: 0,
+		socket: {
+			data() {
+				// reason: test double, the probe only reserves a port and never receives data
+			},
+		},
+	});
 	const port = probe.port;
 	probe.stop(true);
 	return port;
@@ -87,15 +99,19 @@ async function startPausedReceiver(): Promise<PausedReceiver> {
 	let total = 0;
 	let onData: (() => void) | undefined;
 	let reader: net.Socket | undefined;
+	let resumeRequested = false;
 	const server = net.createServer((sock) => {
 		reader = sock;
-		sock.on("error", () => {});
+		sock.on("error", () => {
+			// reason: a reset after the bytes are read is not under test; the assertions read only what arrived
+		});
 		sock.on("data", (chunk: Buffer) => {
 			chunks.push(chunk);
 			total += chunk.byteLength;
 			onData?.();
 		});
 		sock.pause();
+		if (resumeRequested) sock.resume();
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
 	stops.push(() => {
@@ -105,7 +121,10 @@ async function startPausedReceiver(): Promise<PausedReceiver> {
 	const { port } = server.address() as net.AddressInfo;
 	return {
 		port,
-		resume: () => reader?.resume(),
+		resume: () => {
+			resumeRequested = true;
+			reader?.resume();
+		},
 		async waitForBytes(count) {
 			while (total < count) {
 				await new Promise<void>((resolve) => {
@@ -114,6 +133,25 @@ async function startPausedReceiver(): Promise<PausedReceiver> {
 			}
 		},
 		received: () => Buffer.concat(chunks),
+	};
+}
+
+/**
+ * The default connect, plus one report: the first write the kernel accepts only in part. The socket is otherwise the
+ * real one, so the transport's own drain handling runs unchanged.
+ */
+function connectReportingPartialWrite(
+	onPartial: () => void,
+): NonNullable<SyslogTransportOptions["socket"]> {
+	return async (options) => {
+		const socket = await Bun.connect(options);
+		const write = socket.write.bind(socket);
+		socket.write = (data, offset, length) => {
+			const written = write(data, offset, length);
+			if (length !== undefined && written < length) onPartial();
+			return written;
+		};
+		return socket;
 	};
 }
 
@@ -174,7 +212,9 @@ describe("encodeSyslogFrame", () => {
 
 	test("the severity maps audit to 134, security to 132 and alert to 130", () => {
 		const pri = (kind: SinkEnvelope["kind"]): number =>
-			parseMessage(parseFrames(encodeSyslogFrame(envelope(1, kind), "host.test", "ultrathink"))[0] ?? "").pri;
+			parseMessage(
+				parseFrames(encodeSyslogFrame(envelope(1, kind), "host.test", "ultrathink"))[0] ?? "",
+			).pri;
 
 		expect(pri("audit")).toBe(134);
 		expect(pri("security")).toBe(132);
@@ -182,7 +222,11 @@ describe("encodeSyslogFrame", () => {
 	});
 
 	test("the JSON after the header parses back to the same envelope", () => {
-		const env = envelope(9, "security", { ip: "203.0.113.7", tags: ["a", "b"], quote: 'say "hi"\\' });
+		const env = envelope(9, "security", {
+			ip: "203.0.113.7",
+			tags: ["a", "b"],
+			quote: 'say "hi"\\',
+		});
 		const [message] = parseFrames(encodeSyslogFrame(env, "host.test", "ultrathink"));
 		const parsed = parseMessage(message ?? "");
 
@@ -218,8 +262,12 @@ describe("createSyslogTransport", () => {
 		const batch = [envelope(1), envelope(2, "alert", { note: "é 🎉" }), envelope(3, "security")];
 		const expected = batch.reduce((sum, env) => sum + frameLength(env), 0);
 
-		expect(await transport.send(batch.slice(0, 2), new AbortController().signal)).toEqual({ ok: true });
-		expect(await transport.send(batch.slice(2), new AbortController().signal)).toEqual({ ok: true });
+		expect(await transport.send(batch.slice(0, 2), new AbortController().signal)).toEqual({
+			ok: true,
+		});
+		expect(await transport.send(batch.slice(2), new AbortController().signal)).toEqual({
+			ok: true,
+		});
 		await listener.waitForBytes(expected);
 
 		const messages = parseFrames(listener.received()).map(parseMessage);
@@ -230,7 +278,12 @@ describe("createSyslogTransport", () => {
 
 	test("a closed port is retryable, and the next send succeeds once a listener is up", async () => {
 		const port = freePort();
-		const transport = createSyslogTransport({ host: "127.0.0.1", port, hostname: "host.test", appName: "ultrathink" });
+		const transport = createSyslogTransport({
+			host: "127.0.0.1",
+			port,
+			hostname: "host.test",
+			appName: "ultrathink",
+		});
 		const env = envelope(5, "alert");
 
 		const first = await transport.send([env], new AbortController().signal);
@@ -242,7 +295,11 @@ describe("createSyslogTransport", () => {
 		const listener = startListener(port);
 		expect(await transport.send([env], new AbortController().signal)).toEqual({ ok: true });
 		await listener.waitForBytes(frameLength(env));
-		expect(parseFrames(listener.received()).map(parseMessage).map((msg) => msg.body)).toEqual([env]);
+		expect(
+			parseFrames(listener.received())
+				.map(parseMessage)
+				.map((msg) => msg.body),
+		).toEqual([env]);
 	});
 
 	test("an already-aborted signal is retryable and opens no connection", async () => {
@@ -265,18 +322,79 @@ describe("createSyslogTransport", () => {
 	});
 
 	test("a partial write waits for the socket to drain, so every byte of a batch larger than the socket buffers arrives", async () => {
-		const receiver = await startPausedReceiver();
-		const transport = createSyslogTransport({ host: "127.0.0.1", port: receiver.port, hostname: "host.test", appName: "ultrathink" });
-		// 32 envelopes of 1 MiB: the first write accepts only a few MiB, so the rest of the batch must wait for drain.
-		const batch = Array.from({ length: 32 }, (_, seq) => envelope(seq, "audit", { pad: "x".repeat(1024 * 1024) }));
+		// The socket is a test double. Its first write accepts only half the offered bytes, so the send has to wait for
+		// drain; the test fires drain itself once the first write has come back. No receiver, kernel buffer or delay.
+		const firstWrite = Promise.withResolvers<void>();
+		const written: Uint8Array[] = [];
+		const socket = {
+			data: { alive: true } as { alive: boolean },
+			write: writeHalfThenAll,
+			end() {
+				// reason: the socket double has nothing to flush; the test asserts on the bytes already written.
+			},
+		};
+		let writes = 0;
+		function writeHalfThenAll(bytes: Uint8Array, offset: number, length: number): number {
+			writes += 1;
+			const accepted = writes === 1 ? Math.floor(length / 2) : length;
+			written.push(bytes.subarray(offset, offset + accepted));
+			if (writes === 1) firstWrite.resolve();
+			return accepted;
+		}
+		let drain: ((socket: never) => void) | undefined;
+		const connect: NonNullable<SyslogTransportOptions["socket"]> = (options) => {
+			// reason: the transport hands the double its Link, which the double only stores; the test reads it as its own shape.
+			socket.data = options.data as unknown as { alive: boolean };
+			drain = options.socket?.drain;
+			return Promise.resolve(socket as never);
+		};
+		const transport = createSyslogTransport({
+			host: "127.0.0.1",
+			port: 5514,
+			hostname: "host.test",
+			appName: "ultrathink",
+			socket: connect,
+		});
+		// 32 envelopes of 1 MiB: the first write accepts only half of the first frame, so the rest must wait for drain.
+		const batch = Array.from({ length: 32 }, (_, seq) =>
+			envelope(seq, "audit", { pad: "x".repeat(1024 * 1024) }),
+		);
 		const sending = transport.send(batch, new AbortController().signal);
-		// Kernel socket buffers cannot be observed from here, so the receiver stays paused briefly to let the
-		// sender's first write come back partial. No event marks that point.
-		await Bun.sleep(100);
+		await firstWrite.promise;
+		drain?.(socket as never);
+		expect(await sending).toEqual({ ok: true });
+		expect(
+			parseFrames(Buffer.concat(written))
+				.map(parseMessage)
+				.map((msg) => msg.body),
+		).toEqual(batch);
+	});
+
+	test("a partial write over a real socket to a paused receiver delivers every byte of a batch larger than the socket buffers", async () => {
+		const receiver = await startPausedReceiver();
+		const firstPartial = Promise.withResolvers<void>();
+		const transport = createSyslogTransport({
+			host: "127.0.0.1",
+			port: receiver.port,
+			hostname: "host.test",
+			appName: "ultrathink",
+			socket: connectReportingPartialWrite(() => firstPartial.resolve()),
+		});
+		// 32 envelopes of 1 MiB: the receiver reads nothing, so the kernel buffers fill and a write comes back short.
+		const batch = Array.from({ length: 32 }, (_, seq) =>
+			envelope(seq, "audit", { pad: "x".repeat(1024 * 1024) }),
+		);
+		const sending = transport.send(batch, new AbortController().signal);
+		// The receiver resumes only once a write has come back partial, so the rest of the batch is waiting for drain.
+		await firstPartial.promise;
 		receiver.resume();
 		expect(await sending).toEqual({ ok: true });
 		await receiver.waitForBytes(batch.reduce((sum, env) => sum + frameLength(env), 0));
-		expect(parseFrames(receiver.received()).map(parseMessage).map((msg) => msg.body)).toEqual(batch);
+		expect(
+			parseFrames(receiver.received())
+				.map(parseMessage)
+				.map((msg) => msg.body),
+		).toEqual(batch);
 	});
 
 	test("an empty batch is ok and sends nothing", async () => {

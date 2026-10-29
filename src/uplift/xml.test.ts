@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { escapeXml, ensureOriginal, looksLikeUpliftXml, sanitizeUpliftXml, stripFences } from "./xml.ts";
+import {
+	escapeXml,
+	ensureOriginal,
+	looksLikeUpliftXml,
+	sanitizeUpliftXml,
+	stripFences,
+} from "./xml.ts";
 
 describe("escapeXml", () => {
 	test("escapes amp lt gt quot in order", () => {
@@ -55,7 +61,10 @@ describe("ensureOriginal", () => {
 
 describe("sanitizeUpliftXml", () => {
 	test("strips fences then keeps a known root", () => {
-		const out = sanitizeUpliftXml("```xml\n<BUILD_PROMPT><SCOPE>a</SCOPE></BUILD_PROMPT>\n```", "orig");
+		const out = sanitizeUpliftXml(
+			"```xml\n<BUILD_PROMPT><SCOPE>a</SCOPE></BUILD_PROMPT>\n```",
+			"orig",
+		);
 		expect(out).not.toBeNull();
 		expect(out!.includes("```")).toBe(false);
 		expect(out!).toContain("<BUILD_PROMPT>");
@@ -63,7 +72,7 @@ describe("sanitizeUpliftXml", () => {
 	});
 
 	test("injects missing ORIGINAL escaped as first child", () => {
-		const out = sanitizeUpliftXml("<FIX_PROMPT><SCOPE>a</SCOPE></FIX_PROMPT>", "hello <x> & \"y\"");
+		const out = sanitizeUpliftXml("<FIX_PROMPT><SCOPE>a</SCOPE></FIX_PROMPT>", 'hello <x> & "y"');
 		expect(out).toContain(`<ORIGINAL>hello &lt;x&gt; &amp; &quot;y&quot;</ORIGINAL>`);
 		expect(out).toContain("<SCOPE>a</SCOPE>");
 		expect(out!.includes("<x>")).toBe(false);
@@ -79,7 +88,9 @@ describe("sanitizeUpliftXml", () => {
 
 	test("does not wrap known extra roots uplifted/ultrathink", () => {
 		expect(sanitizeUpliftXml("<uplifted><X/></uplifted>", "o")).toContain("<uplifted>");
-		expect(sanitizeUpliftXml("<uplifted><X/></uplifted>", "o")?.includes("UPLIFTED_PROMPT")).toBe(false);
+		expect(sanitizeUpliftXml("<uplifted><X/></uplifted>", "o")?.includes("UPLIFTED_PROMPT")).toBe(
+			false,
+		);
 		expect(sanitizeUpliftXml("<ultrathink><X/></ultrathink>", "o")).toContain("<ultrathink>");
 	});
 

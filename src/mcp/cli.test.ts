@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionRecord } from "../claude/state.ts";
 import { resolveOpenRouterKey } from "../decisions/gate.ts";
 import { appendAttempts, writeShip } from "../ship/state.ts";
-import { main, prepareRedirect } from "./cli.ts";
+import { feedLoginInput, main, prepareRedirect } from "./cli.ts";
 import type { McpProviderId } from "./providers.ts";
 import type { Run } from "./redirect.ts";
 import { readStore, writeStore } from "./store.ts";
@@ -25,8 +35,15 @@ function run(...args: string[]): { code: number | null; stdout: string; stderr: 
 	return runWith({}, ...args);
 }
 
-function runWith(opts: { stdin?: string }, ...args: string[]): { code: number | null; stdout: string; stderr: string } {
-	const { OPENROUTER_API_KEY: _machineKey, ...env } = process.env;
+function runWith(
+	opts: { stdin?: string },
+	...args: string[]
+): { code: number | null; stdout: string; stderr: string } {
+	const {
+		OPENROUTER_API_KEY: _legacyKey,
+		ULTRATHINK_OPENROUTER_KEY: _jevKey,
+		...env
+	} = process.env;
 	const proc = Bun.spawnSync([process.execPath, CLI, ...args], {
 		cwd: root,
 		env: {
@@ -58,7 +75,13 @@ describe("notion init", () => {
 	});
 
 	test("without a Notion login fails with the login command and writes no config", () => {
-		const { code, stderr } = run("notion", "init", "--parent", "0123456789abcdef0123456789abcdef", "--write-config");
+		const { code, stderr } = run(
+			"notion",
+			"init",
+			"--parent",
+			"0123456789abcdef0123456789abcdef",
+			"--write-config",
+		);
 		expect(code).toBe(1);
 		expect(stderr).toContain("notion is not logged in: run: ultrathink-mcp auth login notion");
 		expect(stderr).not.toContain("set-key");
@@ -91,7 +114,10 @@ describe("track complete", () => {
 	};
 
 	/** A session file in <root>/state/sessions, with control.json beside sessions/ and an optional user config. */
-	function session(control: Record<string, unknown> | undefined, config: Record<string, unknown> | undefined): string {
+	function session(
+		control: Record<string, unknown> | undefined,
+		config: Record<string, unknown> | undefined,
+	): string {
 		const stateDir = join(root, "state");
 		mkdirSync(join(stateDir, "sessions"), { recursive: true });
 		if (control) writeFileSync(join(stateDir, "control.json"), JSON.stringify(control));
@@ -160,7 +186,11 @@ describe("session mark", () => {
 		const path = session({ ...record, kickedOff: true });
 		const { code } = run("session", "mark", "synced", "--state", path);
 		expect(code).toBe(0);
-		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ ...record, kickedOff: true, synced: true });
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+			...record,
+			kickedOff: true,
+			synced: true,
+		});
 	});
 
 	test("keeps a ship update written just before it and rewrites the record owner-only with no lock or temporary file left", () => {
@@ -178,17 +208,37 @@ describe("session mark", () => {
 	test("marks racing with ship writes lose neither: every mark and every attempt survives", async () => {
 		const path = session(record);
 		const children = Array.from({ length: 8 }, (_, i) =>
-			Bun.spawn([process.execPath, CLI, "session", "mark", "--state", path, i % 2 === 0 ? "kicked-off" : "synced"], {
-				cwd: root,
-				env: { PATH: process.env.PATH, HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "xdg"), CLAUDE_CONFIG_DIR: join(root, "claude") },
-				stdout: "pipe",
-				stderr: "pipe",
-			}),
+			Bun.spawn(
+				[
+					process.execPath,
+					CLI,
+					"session",
+					"mark",
+					"--state",
+					path,
+					i % 2 === 0 ? "kicked-off" : "synced",
+				],
+				{
+					cwd: root,
+					env: {
+						PATH: process.env.PATH,
+						HOME: join(root, "home"),
+						XDG_CONFIG_HOME: join(root, "xdg"),
+						CLAUDE_CONFIG_DIR: join(root, "claude"),
+					},
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			),
 		);
 		for (let i = 0; i < 40; i++) {
-			expect(appendAttempts(path, [{ at: i, step: "review", headSha: "abc", outcome: "waiting" }], i)).toBeDefined();
+			expect(
+				appendAttempts(path, [{ at: i, step: "review", headSha: "abc", outcome: "waiting" }], i),
+			).toBeDefined();
 		}
-		expect(await Promise.all(children.map((child) => child.exited))).toEqual(Array<number>(8).fill(0));
+		expect(await Promise.all(children.map((child) => child.exited))).toEqual(
+			Array<number>(8).fill(0),
+		);
 		const saved = JSON.parse(readFileSync(path, "utf8")) as SessionRecord;
 		expect(saved.kickedOff).toBe(true);
 		expect(saved.synced).toBe(true);
@@ -226,17 +276,30 @@ describe("session mark", () => {
 describe("auth login redirect", () => {
 	const DNS = "vps.example.ts.net";
 	const sshEnv = { SSH_CONNECTION: "198.51.100.4 51234 203.0.113.7 22", USER: "alice" };
-	const SERVE = ["tailscale", "serve", "--bg", "--https=443", "--set-path=/ultrathink-oauth", "http://127.0.0.1:8765"];
+	const SERVE = [
+		"tailscale",
+		"serve",
+		"--bg",
+		"--https=443",
+		"--set-path=/ultrathink-oauth",
+		"http://127.0.0.1:8765",
+	];
 
 	/** A host where Tailscale is running with HTTPS certificates; `serveExit` is what `tailscale serve` returns. */
 	function tailnetHost(serveExit = 0): { run: Run; calls: string[][] } {
 		const calls: string[][] = [];
-		const status = JSON.stringify({ BackendState: "Running", Self: { DNSName: `${DNS}.` }, CertDomains: [DNS] });
+		const status = JSON.stringify({
+			BackendState: "Running",
+			Self: { DNSName: `${DNS}.` },
+			CertDomains: [DNS],
+		});
 		return {
 			calls,
 			run: (argv) => {
 				calls.push(argv);
-				return argv[1] === "status" ? { exitCode: 0, stdout: status } : { exitCode: serveExit, stdout: "" };
+				return argv[1] === "status"
+					? { exitCode: 0, stdout: status }
+					: { exitCode: serveExit, stdout: "" };
 			},
 		};
 	}
@@ -246,7 +309,11 @@ describe("auth login redirect", () => {
 		const { plan, mount } = prepareRedirect({ args: [], env: sshEnv, port: 8765, run });
 		expect(calls).toEqual([]);
 		expect(mount).toBeUndefined();
-		expect(plan).toMatchObject({ mode: "loopback", redirectUri: "http://127.0.0.1:8765/callback", remote: true });
+		expect(plan).toMatchObject({
+			mode: "loopback",
+			redirectUri: "http://127.0.0.1:8765/callback",
+			remote: true,
+		});
 		const hint = plan.hint.join("\n");
 		expect(hint).toContain("ssh -L 8765:127.0.0.1:8765 alice@203.0.113.7");
 		expect(hint).toContain("pasting the redirected URL");
@@ -262,14 +329,26 @@ describe("auth login redirect", () => {
 			const { run, calls } = tailnetHost();
 			const { plan, mount } = prepareRedirect({ args, env, port: 8765, run });
 			expect(calls).toEqual([["tailscale", "status", "--json"], SERVE]);
-			expect(mount).toEqual({ https: 443, path: "/ultrathink-oauth", target: "http://127.0.0.1:8765" });
-			expect(plan).toMatchObject({ mode: "tailscale", redirectUri: `https://${DNS}/ultrathink-oauth/callback` });
+			expect(mount).toEqual({
+				https: 443,
+				path: "/ultrathink-oauth",
+				target: "http://127.0.0.1:8765",
+			});
+			expect(plan).toMatchObject({
+				mode: "tailscale",
+				redirectUri: `https://${DNS}/ultrathink-oauth/callback`,
+			});
 		}
 	});
 
 	test("ULTRATHINK_OAUTH_TAILSCALE other than 1 is not an opt-in", () => {
 		const { run, calls } = tailnetHost();
-		const { plan } = prepareRedirect({ args: [], env: { ...sshEnv, ULTRATHINK_OAUTH_TAILSCALE: "0" }, port: 8765, run });
+		const { plan } = prepareRedirect({
+			args: [],
+			env: { ...sshEnv, ULTRATHINK_OAUTH_TAILSCALE: "0" },
+			port: 8765,
+			run,
+		});
 		expect(calls).toEqual([]);
 		expect(plan.mode).toBe("loopback");
 	});
@@ -289,7 +368,12 @@ describe("auth login redirect", () => {
 
 	test("a failed tailscale serve falls back to the loopback route and reports why", () => {
 		const { run, calls } = tailnetHost(1);
-		const { plan, mount } = prepareRedirect({ args: ["--tailscale"], env: sshEnv, port: 8765, run });
+		const { plan, mount } = prepareRedirect({
+			args: ["--tailscale"],
+			env: sshEnv,
+			port: 8765,
+			run,
+		});
 		expect(calls).toEqual([["tailscale", "status", "--json"], SERVE]);
 		expect(mount).toBeUndefined();
 		expect(plan).toMatchObject({ mode: "loopback", redirectUri: "http://127.0.0.1:8765/callback" });
@@ -301,7 +385,9 @@ describe("auth login redirect", () => {
 	test("the usage text lists --tailscale for auth login", () => {
 		const { code, stderr } = run("auth", "login");
 		expect(code).toBe(2);
-		expect(stderr).toContain("auth login <provider> [--port <n>] [--redirect <url>] [--tailscale] [--no-listen]");
+		expect(stderr).toContain(
+			"auth login <provider> [--port <n>] [--redirect <url>] [--tailscale] [--no-listen]",
+		);
 	});
 });
 
@@ -311,7 +397,10 @@ describe("openrouter API-key provider", () => {
 		"ultrathink-mcp: openrouter is an API-key provider, not an MCP server: store its key with ultrathink-mcp auth set-key openrouter --stdin";
 	const store = (): string => join(root, "credentials.json");
 	const storeKey = (): void =>
-		writeStore(store(), { version: 1, providers: { openrouter: { kind: "api_key", apiKey: K, updatedAt: 1 } } });
+		writeStore(store(), {
+			version: 1,
+			providers: { openrouter: { kind: "api_key", apiKey: K, updatedAt: 1 } },
+		});
 	const noLeak = (...outputs: string[]): void => {
 		for (const output of outputs) {
 			expect(output).not.toContain(K);
@@ -320,9 +409,18 @@ describe("openrouter API-key provider", () => {
 	};
 
 	test("set-key --stdin stores the key 0600 and prints only its length", () => {
-		const { code, stdout, stderr } = runWith({ stdin: `${K}\n` }, "auth", "set-key", "openrouter", "--stdin");
+		const { code, stdout, stderr } = runWith(
+			{ stdin: `${K}\n` },
+			"auth",
+			"set-key",
+			"openrouter",
+			"--stdin",
+			"--no-verify",
+		);
 		expect(code).toBe(0);
-		expect(stdout).toBe("openrouter: api key stored (35 chars)\n");
+		expect(stdout).toBe(
+			"openrouter: api key stored (35 chars)\nJev reads it from the credential store first, then ULTRATHINK_OPENROUTER_KEY.\n",
+		);
 		noLeak(stdout, stderr);
 		expect(statSync(store()).mode & 0o777).toBe(0o600);
 		expect(resolveOpenRouterKey(store(), {})).toEqual({ key: K, source: "store" });
@@ -330,10 +428,21 @@ describe("openrouter API-key provider", () => {
 
 	test("set-key --env-file --var stores the key from an env file", () => {
 		const file = join(root, "openrouter.env");
-		writeFileSync(file, `# keys\nOPENROUTER_API_KEY=${K}\n`);
-		const { code, stdout, stderr } = run("auth", "set-key", "openrouter", "--env-file", file, "--var", "OPENROUTER_API_KEY");
+		writeFileSync(file, `# keys\nULTRATHINK_OPENROUTER_KEY=${K}\n`);
+		const { code, stdout, stderr } = run(
+			"auth",
+			"set-key",
+			"openrouter",
+			"--env-file",
+			file,
+			"--var",
+			"ULTRATHINK_OPENROUTER_KEY",
+			"--no-verify",
+		);
 		expect(code).toBe(0);
-		expect(stdout).toBe("openrouter: api key stored (35 chars)\n");
+		expect(stdout).toBe(
+			"openrouter: api key stored (35 chars)\nJev reads it from the credential store first, then ULTRATHINK_OPENROUTER_KEY.\n",
+		);
 		noLeak(stdout, stderr);
 		expect(statSync(store()).mode & 0o777).toBe(0o600);
 		expect(resolveOpenRouterKey(store(), {})).toEqual({ key: K, source: "store" });
@@ -346,7 +455,9 @@ describe("openrouter API-key provider", () => {
 		storeKey();
 		const stored = run("auth", "status");
 		expect(stored.code).toBe(0);
-		expect(stored.stdout.split("\n")).toContain("openrouter  api_key  ready  api key set (35 chars)");
+		expect(stored.stdout.split("\n")).toContain(
+			"openrouter  api_key  ready  api key set (35 chars)",
+		);
 		noLeak(stored.stdout, stored.stderr);
 	});
 
@@ -368,17 +479,20 @@ describe("openrouter API-key provider", () => {
 		["serve", "openrouter"],
 		["check", "openrouter"],
 		["auth", "login", "openrouter"],
-	])("%s … openrouter is a usage error that names set-key, with no relay, connection or login", (...args) => {
-		storeKey();
-		const before = readFileSync(store(), "utf8");
-		const { code, stdout, stderr } = run(...args);
-		expect(code).toBe(2);
-		expect(stderr.split("\n")[0]).toBe(REFUSAL);
-		expect(stderr).toContain("usage:\n");
-		expect(stdout).toBe("");
-		noLeak(stdout, stderr);
-		expect(readFileSync(store(), "utf8")).toBe(before);
-	});
+	])(
+		"%s … openrouter is a usage error that names set-key, with no relay, connection or login",
+		(...args) => {
+			storeKey();
+			const before = readFileSync(store(), "utf8");
+			const { code, stdout, stderr } = run(...args);
+			expect(code).toBe(2);
+			expect(stderr.split("\n")[0]).toBe(REFUSAL);
+			expect(stderr).toContain("usage:\n");
+			expect(stdout).toBe("");
+			noLeak(stdout, stderr);
+			expect(readFileSync(store(), "utf8")).toBe(before);
+		},
+	);
 
 	test("the usage text says openrouter, vercel, hindsight and ragflow are API-key only", () => {
 		const { stderr } = run("auth", "set-key");
@@ -400,13 +514,17 @@ describe("openrouter API-key provider", () => {
 		});
 
 		/** main() with stdout/stderr captured and every provider check recorded instead of connecting. */
-		async function check(argv: string[]): Promise<{ code: number; stdout: string; stderr: string; attempted: McpProviderId[] }> {
+		async function check(
+			argv: string[],
+		): Promise<{ code: number; stdout: string; stderr: string; attempted: McpProviderId[] }> {
 			const attempted: McpProviderId[] = [];
 			const stdout: string[] = [];
 			const stderr: string[] = [];
 			const writes = { out: process.stdout.write, err: process.stderr.write };
-			process.stdout.write = ((chunk: string | Uint8Array) => stdout.push(String(chunk)) > 0) as unknown as typeof process.stdout.write;
-			process.stderr.write = ((chunk: string | Uint8Array) => stderr.push(String(chunk)) > 0) as unknown as typeof process.stderr.write;
+			process.stdout.write = ((chunk: string | Uint8Array) =>
+				stdout.push(String(chunk)) > 0) as unknown as typeof process.stdout.write;
+			process.stderr.write = ((chunk: string | Uint8Array) =>
+				stderr.push(String(chunk)) > 0) as unknown as typeof process.stderr.write;
 			let code: number;
 			try {
 				code = await main(argv, {
@@ -432,7 +550,10 @@ describe("openrouter API-key provider", () => {
 		});
 
 		test("check openrouter, alone or among MCP ids, fails before any connection attempt", async () => {
-			for (const argv of [["check", "openrouter"], ["check", "linear", "openrouter"]]) {
+			for (const argv of [
+				["check", "openrouter"],
+				["check", "linear", "openrouter"],
+			]) {
 				const result = await check(argv);
 				expect(result.code).toBe(2);
 				expect(result.attempted).toEqual([]);
@@ -449,13 +570,23 @@ describe.each([
 ] as const)("$id API-key provider", ({ id, envVar, key }) => {
 	const refusal = `ultrathink-mcp: ${id} is an API-key provider, not an MCP server: store its key with ultrathink-mcp auth set-key ${id} --stdin`;
 	const store = (): string => join(root, "credentials.json");
-	const storeKey = (): void => writeStore(store(), { version: 1, providers: { [id]: { kind: "api_key", apiKey: key, updatedAt: 1 } } });
+	const storeKey = (): void =>
+		writeStore(store(), {
+			version: 1,
+			providers: { [id]: { kind: "api_key", apiKey: key, updatedAt: 1 } },
+		});
 	const noLeak = (...outputs: string[]): void => {
 		for (const output of outputs) expect(output).not.toContain(key);
 	};
 
 	test("set-key --stdin stores the key 0600 and prints only its length", () => {
-		const { code, stdout, stderr } = runWith({ stdin: `${key}\n` }, "auth", "set-key", id, "--stdin");
+		const { code, stdout, stderr } = runWith(
+			{ stdin: `${key}\n` },
+			"auth",
+			"set-key",
+			id,
+			"--stdin",
+		);
 		expect(code).toBe(0);
 		expect(stdout).toBe(`${id}: api key stored (${key.length} chars)\n`);
 		noLeak(stdout, stderr);
@@ -466,7 +597,15 @@ describe.each([
 	test("set-key --env-file --var stores the key from an env file", () => {
 		const file = join(root, `${id}.env`);
 		writeFileSync(file, `# keys\nexport ${envVar}="${key}"\n`);
-		const { code, stdout, stderr } = run("auth", "set-key", id, "--env-file", file, "--var", envVar);
+		const { code, stdout, stderr } = run(
+			"auth",
+			"set-key",
+			id,
+			"--env-file",
+			file,
+			"--var",
+			envVar,
+		);
 		expect(code).toBe(0);
 		expect(stdout).toBe(`${id}: api key stored (${key.length} chars)\n`);
 		noLeak(stdout, stderr);
@@ -480,7 +619,9 @@ describe.each([
 		storeKey();
 		const stored = run("auth", "status");
 		expect(stored.code).toBe(0);
-		expect(stored.stdout.split("\n")).toContain(`${id}  api_key  ready  api key set (${key.length} chars)`);
+		expect(stored.stdout.split("\n")).toContain(
+			`${id}  api_key  ready  api key set (${key.length} chars)`,
+		);
 		noLeak(stored.stdout, stored.stderr);
 	});
 
@@ -498,16 +639,123 @@ describe.each([
 		expect(Object.keys(readStore(store()).providers)).toEqual(["linear"]);
 	});
 
-	test.each<string[]>([["serve"], ["check"], ["auth", "login"]])("%s is a usage error that names set-key, with no relay, connection or login", (...head) => {
-		storeKey();
-		const before = readFileSync(store(), "utf8");
-		const args = head.length === 1 ? [head[0] as string, id] : [...head, id];
-		const { code, stdout, stderr } = run(...args);
-		expect(code).toBe(2);
-		expect(stderr.split("\n")[0]).toBe(refusal);
-		expect(stderr).toContain("usage:\n");
+	test.each<string[]>([["serve"], ["check"], ["auth", "login"]])(
+		"%s is a usage error that names set-key, with no relay, connection or login",
+		(...head) => {
+			storeKey();
+			const before = readFileSync(store(), "utf8");
+			const args = head.length === 1 ? [head[0] as string, id] : [...head, id];
+			const { code, stdout, stderr } = run(...args);
+			expect(code).toBe(2);
+			expect(stderr.split("\n")[0]).toBe(refusal);
+			expect(stderr).toContain("usage:\n");
+			expect(stdout).toBe("");
+			noLeak(stdout, stderr);
+			expect(readFileSync(store(), "utf8")).toBe(before);
+		},
+	);
+});
+
+describe("vercel set-key validation", () => {
+	const store = (): string => join(root, "credentials.json");
+	const good = "vck_UTTESTKEY0123456789abcdef";
+	/** A key of exactly `length` characters; each test asserts `.length` so a label can never drift from its data. */
+	const keyOfLength = (length: number): string => `vck_${"a".repeat(length - 4)}`;
+	const setVercel = (stdin: string, ...extra: string[]) =>
+		runWith({ stdin }, "auth", "set-key", "vercel", "--stdin", ...extra);
+
+	test.each([
+		["empty", ""],
+		["blank", "  \n"],
+		["15 characters", keyOfLength(15)],
+		["513 characters", keyOfLength(513)],
+	])("%s key is rejected with exit 1, nothing stored", (label, key) => {
+		if (key.trim()) expect(label).toBe(`${key.length} characters`);
+		const { code, stdout, stderr } = setVercel(`${key}\n`);
+		expect(code).toBe(1);
 		expect(stdout).toBe("");
-		noLeak(stdout, stderr);
-		expect(readFileSync(store(), "utf8")).toBe(before);
+		expect(stderr).toMatch(
+			/^ultrathink-mcp: (empty api key|vercel api key must be 16 to 512 characters \(got \d+\))\n$/,
+		);
+		if (key.trim()) {
+			expect(stderr).toContain(`(got ${key.length})`);
+			expect(stderr).not.toContain(key.trim());
+		}
+		expect(existsSync(store())).toBe(false);
+	});
+
+	test.each([
+		["a space", "vck_UTTESTKEY 0123456789abcdef"],
+		["a tab", "vck_UTTESTKEY\t0123456789abcdef"],
+		["a control character", "vck_UTTESTKEY\u0007_0123456789abcdef"],
+		["a unicode space", "vck_UTTESTKEY\u00a0_0123456789abcdef"],
+	])("a key with %s is rejected without echoing any part of it", (_label, key) => {
+		const { code, stdout, stderr } = setVercel(`${key}\n`);
+		expect(code).toBe(1);
+		expect(stdout).toBe("");
+		expect(stderr).toBe(
+			"ultrathink-mcp: vercel api key must not contain whitespace or control characters\n",
+		);
+		expect(stderr).not.toContain("UTTESTKEY");
+		expect(existsSync(store())).toBe(false);
+	});
+
+	test.each([16, 512])(
+		"a %i character key is accepted and only its length is printed",
+		(length) => {
+			const key = keyOfLength(length);
+			expect(key.length).toBe(length);
+			const { code, stdout, stderr } = setVercel(`${key}\n`);
+			expect(code).toBe(0);
+			expect(stdout).toBe(`vercel: api key stored (${length} chars)\n`);
+			expect(stdout + stderr).not.toContain(key);
+			expect(readStore(store()).providers.vercel).toMatchObject({ kind: "api_key", apiKey: key });
+		},
+	);
+
+	test("--no-verify is accepted as a no-op", () => {
+		const { code, stdout, stderr } = setVercel(`${good}\n`, "--no-verify");
+		expect(code).toBe(0);
+		expect(stdout).toBe(`vercel: api key stored (${good.length} chars)\n`);
+		expect(stdout + stderr).not.toContain(good);
+		expect(readStore(store()).providers.vercel).toMatchObject({ kind: "api_key", apiKey: good });
+	});
+
+	test("the check also applies to --env-file input", () => {
+		const file = join(root, "vercel.env");
+		writeFileSync(file, "AI_GATEWAY_API_KEY=short\n");
+		const { code, stderr } = run(
+			"auth",
+			"set-key",
+			"vercel",
+			"--env-file",
+			file,
+			"--var",
+			"AI_GATEWAY_API_KEY",
+		);
+		expect(code).toBe(1);
+		expect(stderr).toContain("vercel api key must be 16 to 512 characters (got 5)");
+		expect(stderr).not.toContain("short");
+	});
+});
+
+describe("auth login stdin wait", () => {
+	test("a stdin read error with no callback listener rejects the wait with that error", async () => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("stdin broke"));
+			},
+		});
+		const rejections: unknown[] = [];
+		await feedLoginInput(stream, new AbortController().signal, false, {
+			resolve() {
+				// reason: this test only records rejections; a resolved line is not under test here
+			},
+			reject: (reason) => {
+				rejections.push(reason);
+			},
+		});
+		expect(rejections).toHaveLength(1);
+		expect((rejections[0] as Error).message).toBe("stdin broke");
 	});
 });

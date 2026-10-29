@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadConfig, userConfigPath } from "../config.ts";
-import { initTaskGraphDatabase, notionPageId, taskGraphDdl, writeNotionConfig } from "./notion-db.ts";
+import {
+	initTaskGraphDatabase,
+	notionPageId,
+	taskGraphDdl,
+	writeNotionConfig,
+} from "./notion-db.ts";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 
 const PAGE = "0123456789abcdef0123456789abcdef";
 const PAGE_ID = "01234567-89ab-cdef-0123-456789abcdef";
@@ -18,9 +23,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ut-notion-db-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ut-notion-db-", dirs);
 }
 
 function fakeNotion(reply: (name: string) => unknown) {
@@ -39,8 +42,10 @@ describe("taskGraphDdl", () => {
 		const columns: Record<string, string> = {
 			Item: "TITLE",
 			Level: "SELECT('Task':blue, 'Issue':purple, 'Sub-Issue':gray)",
-			Status: "SELECT('Planning':gray, 'Implementing':blue, 'Blocked':orange, 'Failed':red, 'Done':green, 'Merged':purple)",
-			"Linear State": "SELECT('Backlog':gray, 'Todo':blue, 'In Progress':yellow, 'In Review':orange, 'Done':green, 'Canceled':red)",
+			Status:
+				"SELECT('Planning':gray, 'Implementing':blue, 'Blocked':orange, 'Failed':red, 'Done':green, 'Merged':purple)",
+			"Linear State":
+				"SELECT('Backlog':gray, 'Todo':blue, 'In Progress':yellow, 'In Review':orange, 'Done':green, 'Canceled':red)",
 			"Graph ID": "RICH_TEXT",
 			Description: "RICH_TEXT",
 			"Uplifted Prompt": "RICH_TEXT",
@@ -80,22 +85,30 @@ describe("notionPageId", () => {
 		expect(notionPageId(input)).toBe(expected);
 	});
 
-	test.each(["https://www.notion.so/acme", "Home", `${PAGE}0`, `Home-${PAGE.slice(1)}`, ""])("%p has no page id", (input) => {
-		expect(notionPageId(input)).toBeUndefined();
-	});
+	test.each(["https://www.notion.so/acme", "Home", `${PAGE}0`, `Home-${PAGE.slice(1)}`, ""])(
+		"%p has no page id",
+		(input) => {
+			expect(notionPageId(input)).toBeUndefined();
+		},
+	);
 });
 
 describe("initTaskGraphDatabase", () => {
 	const created = `Created the database.\n<database url="{{${DB_URL}}}">\n<data-source url="{{collection://${DS}}}">\n<sqlite-table>CREATE TABLE IF NOT EXISTS "collection://${DS}" (url TEXT UNIQUE)</sqlite-table>\n</data-source>\n</database>`;
 
 	test("creates the database under the parent page, then adds the Parent Item ⇄ Sub-Items self-relation", async () => {
-		const { calls, client } = fakeNotion((name) => (name === "notion-create-database" ? { result: created } : "Updated the data source."));
+		const { calls, client } = fakeNotion((name) =>
+			name === "notion-create-database" ? { result: created } : "Updated the data source.",
+		);
 		const result = await initTaskGraphDatabase(client, {
 			parent: `https://www.notion.so/acme/Agent-Command-Center-${PAGE}?pvs=4`,
 			title: "Agent Task Graph",
 		});
 		expect(calls).toEqual([
-			{ name: "notion-create-database", args: { parent: { page_id: PAGE_ID }, title: "Agent Task Graph", schema: taskGraphDdl() } },
+			{
+				name: "notion-create-database",
+				args: { parent: { page_id: PAGE_ID }, title: "Agent Task Graph", schema: taskGraphDdl() },
+			},
 			{
 				name: "notion-update-data-source",
 				args: {
@@ -111,21 +124,31 @@ describe("initTaskGraphDatabase", () => {
 		["plain Markdown", created],
 		["JSON with a url field", { text: `<data-source url="{{collection://${DS}}}">`, url: DB_URL }],
 		["structured content", { dataSources: [{ url: `collection://${DS}` }] }],
-		["an undashed upper-case id", `<data-source url="collection://${DS.replaceAll("-", "").toUpperCase()}">`],
+		[
+			"an undashed upper-case id",
+			`<data-source url="collection://${DS.replaceAll("-", "").toUpperCase()}">`,
+		],
 	])("reads the data source from %s", async (_shape, reply) => {
 		const { client } = fakeNotion((name) => (name === "notion-create-database" ? reply : "ok"));
-		expect((await initTaskGraphDatabase(client, { parent: PAGE, title: "T" })).dataSourceUrl).toBe(`collection://${DS}`);
+		expect((await initTaskGraphDatabase(client, { parent: PAGE, title: "T" })).dataSourceUrl).toBe(
+			`collection://${DS}`,
+		);
 	});
 
 	test("a reply without a data source fails after the create, naming the database, and adds no relation", async () => {
-		const { calls, client } = fakeNotion(() => ({ result: `Created <database url="{{${DB_URL}}}">` }));
-		await expect(initTaskGraphDatabase(client, { parent: PAGE, title: "T" })).rejects.toThrow(`(database ${DB_URL})`);
+		const { calls, client } = fakeNotion(() => ({
+			result: `Created <database url="{{${DB_URL}}}">`,
+		}));
+		await expect(initTaskGraphDatabase(client, { parent: PAGE, title: "T" })).rejects.toThrow(
+			`(database ${DB_URL})`,
+		);
 		expect(calls.map((call) => call.name)).toEqual(["notion-create-database"]);
 	});
 
 	test("a failed self-relation still returns the created data source, with the error", async () => {
 		const { client } = fakeNotion((name) => {
-			if (name === "notion-update-data-source") throw new Error("notion-update-data-source: relation rejected");
+			if (name === "notion-update-data-source")
+				throw new Error("notion-update-data-source: relation rejected");
 			return `<data-source url="{{collection://${DS}}}">`;
 		});
 		expect(await initTaskGraphDatabase(client, { parent: PAGE, title: "T" })).toEqual({
@@ -136,7 +159,9 @@ describe("initTaskGraphDatabase", () => {
 
 	test("a parent without a page id fails before calling Notion", async () => {
 		const { calls, client } = fakeNotion(() => "");
-		await expect(initTaskGraphDatabase(client, { parent: "https://www.notion.so/acme", title: "T" })).rejects.toThrow("not a Notion page url or id");
+		await expect(
+			initTaskGraphDatabase(client, { parent: "https://www.notion.so/acme", title: "T" }),
+		).rejects.toThrow("not a Notion page url or id");
 		expect(calls).toEqual([]);
 	});
 });
@@ -145,9 +170,20 @@ describe("writeNotionConfig", () => {
 	test("merges into an existing user config, keeping every other key, as 2-space JSON", () => {
 		const path = userConfigPath({ XDG_CONFIG_HOME: tempDir() });
 		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, JSON.stringify({ linear: { team: "Acme" }, notion: { dataSourceUrl: "collection://old", note: "kept" }, hitl: { maxQuestions: 1 } }));
+		writeFileSync(
+			path,
+			JSON.stringify({
+				linear: { team: "Acme" },
+				notion: { dataSourceUrl: "collection://old", note: "kept" },
+				hitl: { maxQuestions: 1 },
+			}),
+		);
 		writeNotionConfig(path, `collection://${DS}`);
-		const expected = { linear: { team: "Acme" }, notion: { dataSourceUrl: `collection://${DS}`, note: "kept" }, hitl: { maxQuestions: 1 } };
+		const expected = {
+			linear: { team: "Acme" },
+			notion: { dataSourceUrl: `collection://${DS}`, note: "kept" },
+			hitl: { maxQuestions: 1 },
+		};
 		expect(readFileSync(path, "utf8")).toBe(`${JSON.stringify(expected, null, 2)}\n`);
 		const config = loadConfig([path]);
 		expect(config.notion.dataSourceUrl).toBe(`collection://${DS}`);
@@ -158,13 +194,18 @@ describe("writeNotionConfig", () => {
 	test("creates the config directory and file when missing", () => {
 		const path = userConfigPath({ XDG_CONFIG_HOME: join(tempDir(), "fresh") });
 		writeNotionConfig(path, `collection://${DS}`);
-		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ notion: { dataSourceUrl: `collection://${DS}` } });
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+			notion: { dataSourceUrl: `collection://${DS}` },
+		});
 	});
 
-	test.each(["{ not json", "[1, 2]", "null"])("leaves a config that is not a JSON object untouched: %s", (content) => {
-		const path = join(tempDir(), "config.json");
-		writeFileSync(path, content);
-		expect(() => writeNotionConfig(path, `collection://${DS}`)).toThrow("is not a JSON object");
-		expect(readFileSync(path, "utf8")).toBe(content);
-	});
+	test.each(["{ not json", "[1, 2]", "null"])(
+		"leaves a config that is not a JSON object untouched: %s",
+		(content) => {
+			const path = join(tempDir(), "config.json");
+			writeFileSync(path, content);
+			expect(() => writeNotionConfig(path, `collection://${DS}`)).toThrow("is not a JSON object");
+			expect(readFileSync(path, "utf8")).toBe(content);
+		},
+	);
 });

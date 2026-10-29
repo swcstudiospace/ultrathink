@@ -31,7 +31,11 @@ describe("originAllowed", () => {
 	});
 
 	test("an unlisted origin is refused", () => {
-		for (const origin of ["https://evil.example", "https://claude.ai.evil.example", "https://sub.claude.ai"]) {
+		for (const origin of [
+			"https://evil.example",
+			"https://claude.ai.evil.example",
+			"https://sub.claude.ai",
+		]) {
 			expect(originAllowed(origin, ALLOWED)).toBe(false);
 		}
 		expect(originAllowed("https://claude.ai", [])).toBe(false);
@@ -97,7 +101,15 @@ describe("resolveProtocolVersion", () => {
 	});
 
 	test("an unsupported, empty or malformed version is refused", () => {
-		for (const header of ["2024-11-05", "2026-07-28", "", "latest", " 2025-06-18", "2025-06-18 ", "2025-6-18"]) {
+		for (const header of [
+			"2024-11-05",
+			"2026-07-28",
+			"",
+			"latest",
+			" 2025-06-18",
+			"2025-06-18 ",
+			"2025-6-18",
+		]) {
 			expect(resolveProtocolVersion(header)).toEqual({ ok: false });
 		}
 	});

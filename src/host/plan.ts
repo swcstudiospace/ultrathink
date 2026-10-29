@@ -12,7 +12,15 @@ import { join } from "node:path";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { isChildInvocation } from "../claude/complete.ts";
 import { type HookDeps, runPromptSubmit } from "../claude/hook.ts";
-import { clearSkipOnce, hostSessionId, newTurnSessionId, type ControlState, readControl, readSkipOnce, sessionPath } from "../claude/state.ts";
+import {
+	clearSkipOnce,
+	hostSessionId,
+	newTurnSessionId,
+	type ControlState,
+	readControl,
+	readSkipOnce,
+	sessionPath,
+} from "../claude/state.ts";
 import { recentConversationFromTranscript } from "../claude/transcript.ts";
 import { parseUltrathinkCommand, trackingEnabled, trackingOff } from "../uplift/commands.ts";
 import { decideUplift, isTrivial } from "../uplift/detect.ts";
@@ -81,10 +89,16 @@ export interface PlanOptions {
 	/** Test seams for the lessons and RAGFlow lookups (see HookDeps); default to the configured Teachable Moments and RAGFlow. */
 	recall?: HookDeps["recall"];
 	ground?: HookDeps["ground"];
+	/** Test seam for the Realm probe (see HookDeps); defaults to the real, free, read-only probe. */
+	realmProbe?: HookDeps["realmProbe"];
 }
 
-function skipReason(request: PlanRequest, env: Record<string, string | undefined>): string | undefined {
-	if (env.ULTRATHINK_UPLIFT === "0" || env.ULTRATHINK_CHILD === "1" || isChildInvocation()) return "child-or-disabled";
+function skipReason(
+	request: PlanRequest,
+	env: Record<string, string | undefined>,
+): string | undefined {
+	if (env.ULTRATHINK_UPLIFT === "0" || env.ULTRATHINK_CHILD === "1" || isChildInvocation())
+		return "child-or-disabled";
 	if (request.parent_session_id?.trim()) return "parent-session";
 	if (request.platform?.trim() === "cron") return "cron";
 	const prompt = request.prompt ?? "";
@@ -101,9 +115,15 @@ export async function planPrompt(
 	const skip = (reason: string | undefined, modelResolution?: ModelResolution): PlanResponse => {
 		const withResolution = modelResolution ? { modelResolution } : {};
 		try {
-			options.progress?.({ type: "end", at: Date.now(), outcome: "skipped", ...(reason ? { detail: reason } : {}), ...withResolution });
+			options.progress?.({
+				type: "end",
+				at: Date.now(),
+				outcome: "skipped",
+				...(reason ? { detail: reason } : {}),
+				...withResolution,
+			});
 		} catch {
-			// fail-open: progress is display only
+			// reason: fail-open: progress is display only
 		}
 		return { context: "", skipped: reason, ...withResolution };
 	};
@@ -126,11 +146,18 @@ export async function planPrompt(
 				host: "unknown",
 				source: "none",
 				reason: "unsupported-host",
-				engineSelection: { engine: requested ?? config.think.engine, source: requested === undefined ? "config" : "control", nativeOptOut: false },
+				engineSelection: {
+					engine: requested ?? config.think.engine,
+					source: requested === undefined ? "config" : "control",
+					nativeOptOut: false,
+				},
 				modelKnown: false,
 				label: "unknown:unresolved [unsupported-host]",
 			};
-			return { ...skip(unsupported.reason, unsupported), summary: `Prompt Uplift skipped · ${unsupported.label}` };
+			return {
+				...skip(unsupported.reason, unsupported),
+				summary: `Prompt Uplift skipped · ${unsupported.label}`,
+			};
 		} catch {
 			return skip("engine-error");
 		}
@@ -138,9 +165,10 @@ export async function planPrompt(
 	if (host === "omp") {
 		try {
 			const agentDir = env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".omp", "agent");
-			if (isOmpSubagentSessionId(request.session_id ?? "", { root: join(agentDir, "sessions") })) return skip("subagent");
+			if (isOmpSubagentSessionId(request.session_id ?? "", { root: join(agentDir, "sessions") }))
+				return skip("subagent");
 		} catch {
-			// fail-open: a throwing guard means "not a subagent"
+			// reason: fail-open: a throwing guard means "not a subagent"
 		}
 	}
 	let text = request.prompt ?? "";
@@ -160,10 +188,15 @@ export async function planPrompt(
 		control = options.control ?? readControl(stateDir);
 		// A Hermes skill loaded with no task (or only an ack) is a preamble, not a request to plan. An armed
 		// /ultrathink-skip must still be consumed by runPromptSubmit, as a trivial prompt consumes it on Claude.
-		if (!skipArmed && host === "hermes" && skill && (!skill.instruction || isTrivial(skill.instruction)))
+		if (
+			!skipArmed &&
+			host === "hermes" &&
+			skill &&
+			(!skill.instruction || isTrivial(skill.instruction))
+		)
 			return skip("skill-preamble");
 	} catch {
-		// fail-open: a throwing skill parser plans the prompt as written
+		// reason: fail-open: a throwing skill parser plans the prompt as written
 	}
 	let resolution: ModelResolution | undefined;
 	try {
@@ -181,7 +214,7 @@ export async function planPrompt(
 			try {
 				clearSkipOnce(stateDir, sessionId);
 			} catch {
-				// fail-open: the skip still applies to this prompt
+				// reason: fail-open: the skip still applies to this prompt
 			}
 		}
 		if (decision.action !== "uplift") return skip(`precheck-${decision.action}`);
@@ -200,7 +233,10 @@ export async function planPrompt(
 		resolution = engine.resolution;
 		// A selection skip (unresolved): empty context, the stable reason code, the safe notice and the record.
 		if ("skipped" in engine)
-			return { ...skip(engine.skipped, resolution), summary: engine.notice ?? `Prompt Uplift skipped · ${resolution.label}` };
+			return {
+				...skip(engine.skipped, resolution),
+				summary: engine.notice ?? `Prompt Uplift skipped · ${resolution.label}`,
+			};
 		if (options.signal?.aborted) return skip("aborted", resolution);
 		const result = await runPromptSubmit(
 			{
@@ -216,13 +252,18 @@ export async function planPrompt(
 				complete: engine.complete,
 				engine: engine.label,
 				engineError: engine.error,
+				engineFailover: engine.failover,
+				engineReport: engine.report,
 				modelResolution: resolution,
 				stateDir,
 				armedSkip: skipArmed,
 				surface: host,
 				conversation: recentConversationFromTranscript,
 				brief: (input) =>
-					fetchBrief(input, env, config.substrate.url, { backend: config.substrate.backend, gateway: config.gateway }),
+					fetchBrief(input, env, config.substrate.url, {
+						backend: config.substrate.backend,
+						gateway: config.gateway,
+					}),
 				// On Hermes the kickoff skill creates rows through `track complete`, so an abandoned or killed hook never leaves orphan rows.
 				track:
 					host !== "hermes" && trackingEnabled(config, control, env)
@@ -235,12 +276,17 @@ export async function planPrompt(
 				decisionsDeps: { env },
 				...(options.recall ? { recall: options.recall } : {}),
 				...(options.ground ? { ground: options.ground } : {}),
+				...(options.realmProbe ? { realmProbe: options.realmProbe } : {}),
 				signal: options.signal,
 			},
 		);
 		// A flight cancelled once its plan was built delivers nothing: no carrier, no context.
 		if (options.signal?.aborted) return skip("aborted", resolution);
-		if (result.skipped || !result.output) return { ...skip(result.skipped, resolution), ...(result.notice ? { summary: result.notice } : {}) };
+		if (result.skipped || !result.output)
+			return {
+				...skip(result.skipped, resolution),
+				...(result.notice ? { summary: result.notice } : {}),
+			};
 		const context = result.output.hookSpecificOutput.additionalContext;
 		const specPath = sessionPath(stateDir, sessionId).replace(/\.json$/, ".xml");
 		const statePath = sessionPath(stateDir, sessionId);
@@ -257,7 +303,7 @@ export async function planPrompt(
 				context,
 			});
 		} catch {
-			// fail-open: the carrier is a pointer for hosts that drop context; the plan still stands
+			// reason: fail-open: the carrier is a pointer for hosts that drop context; the plan still stands
 		}
 		return {
 			context,
@@ -271,7 +317,14 @@ export async function planPrompt(
 		};
 	} catch (error) {
 		// Provider cancellation need not abort the caller's signal. Preserve it here with only the safe selection record.
-		if (options.signal?.aborted || (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError")) return skip("aborted", resolution);
+		if (
+			options.signal?.aborted ||
+			(typeof error === "object" &&
+				error !== null &&
+				"name" in error &&
+				error.name === "AbortError")
+		)
+			return skip("aborted", resolution);
 		return skip("engine-error", resolution);
 	}
 }

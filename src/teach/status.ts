@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import type { GatewayConfig } from "../gateway/types.ts";
 import { resolveHindsight } from "../hindsight/settings.ts";
 import type { HindsightConfig, HindsightReadiness } from "../hindsight/types.ts";
-import { observeHealthPart } from "./observe-health.ts";
+import { failureStreak, failureStreakText, readRuns } from "./runlog.ts";
 import { openStore, storeDir } from "./store.ts";
 import { MOMENT_STATUSES, TEACH_KILL_ENV } from "./types.ts";
 import type { MomentStatus, TeachConfig } from "./types.ts";
@@ -22,7 +22,10 @@ export interface MomentCounts {
 
 /** Counts per status and the outbox size from `<stateDir>/teach`; zeros when the store does not exist or cannot be read. */
 export function momentCounts(stateDir: string): MomentCounts {
-	const moments = Object.fromEntries(MOMENT_STATUSES.map((status) => [status, 0])) as Record<MomentStatus, number>;
+	const moments = Object.fromEntries(MOMENT_STATUSES.map((status) => [status, 0])) as Record<
+		MomentStatus,
+		number
+	>;
 	const dir = storeDir(stateDir);
 	if (!existsSync(dir)) return { moments, outbox: 0 };
 	try {
@@ -40,18 +43,27 @@ export function hindsightReadiness(
 	storePath?: string,
 	gateway?: GatewayConfig,
 ): HindsightReadiness {
-	return resolveHindsight(config, env, storePath === undefined ? { gateway } : { storePath, gateway }).readiness;
+	return resolveHindsight(
+		config,
+		env,
+		storePath === undefined ? { gateway } : { storePath, gateway },
+	).readiness;
 }
 
 function hindsightWord(readiness: HindsightReadiness): string {
 	if (readiness.state !== "unready") return readiness.state;
-	const words = { "no-url": "no URL", "bad-url": "bad URL", "no-key": "no key", "no-token": "no token" } as const;
+	const words = {
+		"no-url": "no URL",
+		"bad-url": "bad URL",
+		"no-key": "no key",
+		"no-token": "no token",
+	} as const;
 	return words[readiness.reason];
 }
 
 /**
  * `Teach: off (...)` or `Teach: on · capture <mode> · recall on|off[ · <n> confirmed, <m> candidate][ · Hindsight <state> · outbox <k>][ · observe failing ×<n> since <t> UTC (<reason>)]`.
- * Counts and the observe health need `stateDir`.
+ * Counts and the observe run log need `stateDir`.
  */
 export function teachStatusLine(
 	config: { teach: TeachConfig; hindsight: HindsightConfig; gateway?: GatewayConfig },
@@ -72,11 +84,13 @@ export function teachStatusLine(
 		parts.push(`${counts.moments.confirmed} confirmed, ${counts.moments.candidate} candidate`);
 		outbox = counts.outbox;
 	}
-	parts.push(`Hindsight ${hindsightWord(hindsightReadiness(config.hindsight, env, storePath, config.gateway))}`);
+	parts.push(
+		`Hindsight ${hindsightWord(hindsightReadiness(config.hindsight, env, storePath, config.gateway))}`,
+	);
 	if (outbox !== undefined) parts.push(`outbox ${outbox}`);
 	if (stateDir !== undefined) {
-		const failing = observeHealthPart(stateDir);
-		if (failing) parts.push(failing);
+		const streak = failureStreak(readRuns(stateDir));
+		if (streak) parts.push(failureStreakText(streak));
 	}
 	return parts.join(" · ");
 }

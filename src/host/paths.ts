@@ -15,7 +15,10 @@ export function isPlanningPath(dir: string): boolean {
 	return norm === ".planning" || norm.endsWith("/.planning") || norm.includes("/.planning/");
 }
 
-export function stateDirForHost(host: HostId, env: Record<string, string | undefined> = process.env): string {
+export function stateDirForHost(
+	host: HostId,
+	env: Record<string, string | undefined> = process.env,
+): string {
 	switch (host) {
 		case "grok-build": {
 			const data = env.GROK_PLUGIN_DATA?.trim();

@@ -7,7 +7,17 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sessionPath } from "../claude/state.ts";
@@ -50,7 +60,9 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-function makeCtx(overrides: { teach?: Partial<TeachConfig>; env?: NodeJS.ProcessEnv; decisions?: boolean } = {}): TeachContext {
+function makeCtx(
+	overrides: { teach?: Partial<TeachConfig>; env?: NodeJS.ProcessEnv; decisions?: boolean } = {},
+): TeachContext {
 	return {
 		host: "omp",
 		cwd,
@@ -70,7 +82,10 @@ function scopeFor(sessionId: string, dir: string = cwd): InsightScope {
 
 function writeSessionRecord(sessionId: string, decisions: unknown): void {
 	mkdirSync(join(stateDir, "sessions"), { recursive: true });
-	writeFileSync(sessionPath(stateDir, sessionId), JSON.stringify({ sessionId, at: 1, result: {}, decisions }));
+	writeFileSync(
+		sessionPath(stateDir, sessionId),
+		JSON.stringify({ sessionId, at: 1, result: {}, decisions }),
+	);
 }
 
 let momentSeq = 0;
@@ -135,7 +150,10 @@ function snapshotFiles(dir: string): Map<string, string> {
 			const stat = lstatSync(full);
 			if (stat.isDirectory()) walk(full);
 			else if (stat.isFile()) {
-				out.set(full, `${stat.mtimeMs}:${stat.size}:${createHash("sha256").update(readFileSync(full)).digest("hex")}`);
+				out.set(
+					full,
+					`${stat.mtimeMs}:${stat.size}:${createHash("sha256").update(readFileSync(full)).digest("hex")}`,
+				);
 			} else {
 				out.set(full, `other:${stat.mtimeMs}`);
 			}
@@ -154,7 +172,9 @@ describe("sanitizeInsightText", () => {
 	});
 
 	test("osc hyperlink payloads and csi colors are removed, text survives", () => {
-		const clean = sanitizeInsightText(`${OSC_OPEN}${BEL}click${ESC}\\ here ${CSI}red`, { maxChars: 500 });
+		const clean = sanitizeInsightText(`${OSC_OPEN}${BEL}click${ESC}\\ here ${CSI}red`, {
+			maxChars: 500,
+		});
 		expect(clean).not.toContain(ESC);
 		expect(clean).toContain("click");
 		expect(clean).toContain("here");
@@ -172,13 +192,17 @@ describe("sanitizeInsightText", () => {
 		const cleanedKey = sanitizeInsightText(key, { maxChars: 500 });
 		expect(cleanedKey).toContain("[redacted]");
 		expect(cleanedKey).not.toContain("BEGIN PRIVATE KEY");
-		const url = sanitizeInsightText("fetch https://alice:s3cret@example.com/path now", { maxChars: 500 });
+		const url = sanitizeInsightText("fetch https://alice:s3cret@example.com/path now", {
+			maxChars: 500,
+		});
 		expect(url).not.toContain("s3cret");
 		expect(url).toContain("example.com");
 	});
 
 	test("multiline keeps newlines, single-line folds them", () => {
-		expect(sanitizeInsightText("line1\nline2", { multiline: true, maxChars: 500 })).toBe("line1\nline2");
+		expect(sanitizeInsightText("line1\nline2", { multiline: true, maxChars: 500 })).toBe(
+			"line1\nline2",
+		);
 		expect(sanitizeInsightText("line1\nline2", { maxChars: 500 })).toBe("line1 line2");
 	});
 
@@ -251,7 +275,10 @@ describe("readInsightSnapshot Jev scope", () => {
 	test("another session's last.json is never consulted", () => {
 		return (async () => {
 			mkdirSync(stateDir, { recursive: true });
-			writeFileSync(join(stateDir, "last.json"), JSON.stringify({ sessionId: "other", at: 1, result: {}, decisions: [decision()] }));
+			writeFileSync(
+				join(stateDir, "last.json"),
+				JSON.stringify({ sessionId: "other", at: 1, result: {}, decisions: [decision()] }),
+			);
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			expect(snap.decisions).toEqual([]);
 		})();
@@ -287,7 +314,9 @@ describe("readInsightSnapshot Jev scope", () => {
 
 	test("zero attempts, latency and p survive; recorded p is never recomputed", () => {
 		return (async () => {
-			writeSessionRecord("sess-a", [decision({ p: 0, attempts: 0, latencyMs: 0, cost: 0, probabilities: {} })]);
+			writeSessionRecord("sess-a", [
+				decision({ p: 0, attempts: 0, latencyMs: 0, cost: 0, probabilities: {} }),
+			]);
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			expect(snap.decisions.length).toBe(1);
 			expect(snap.decisions[0]?.p).toBe(0);
@@ -326,7 +355,18 @@ describe("readInsightSnapshot Jev scope", () => {
 	test("error rows keep kind with zero attempts; missing p stays missing", () => {
 		return (async () => {
 			writeSessionRecord("sess-a", [
-				{ point: "plan", outcome: "error", model: "m", probabilities: {}, threshold: 0.2, action: "fail-open", latencyMs: 5, attempts: 0, at: 9, error: "timeout" },
+				{
+					point: "plan",
+					outcome: "error",
+					model: "m",
+					probabilities: {},
+					threshold: 0.2,
+					action: "fail-open",
+					latencyMs: 5,
+					attempts: 0,
+					at: 9,
+					error: "timeout",
+				},
 			]);
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			expect(snap.decisions.length).toBe(1);
@@ -338,7 +378,9 @@ describe("readInsightSnapshot Jev scope", () => {
 
 	test("collections cap at one hundred newest with a disclosed limit", () => {
 		return (async () => {
-			const rows = Array.from({ length: 101 }, (_, index) => decision({ at: 1000 + index, p: 0.5 }));
+			const rows = Array.from({ length: 101 }, (_, index) =>
+				decision({ at: 1000 + index, p: 0.5 }),
+			);
 			writeSessionRecord("sess-a", rows);
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			expect(snap.decisions.length).toBe(100);
@@ -369,9 +411,14 @@ describe("readInsightSnapshot lessons", () => {
 			writeFileSync(join(stateDir, "teach", "moments", "bad-1.json"), "{not json");
 			const big = { ...writeMoment({ id: "big-1" }), body: "x".repeat(70_000) };
 			writeFileSync(join(stateDir, "teach", "moments", "big-1.json"), JSON.stringify(big));
-			symlinkSync(join(stateDir, "teach", "moments", "good-1.json"), join(stateDir, "teach", "moments", "link-1.json"));
+			symlinkSync(
+				join(stateDir, "teach", "moments", "good-1.json"),
+				join(stateDir, "teach", "moments", "link-1.json"),
+			);
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
-			expect(snap.lessons.map((lesson) => lesson.id).sort()).toEqual(["big-1", "good-1"].sort().filter((id) => id === "good-1"));
+			expect(snap.lessons.map((lesson) => lesson.id).sort()).toEqual(
+				["big-1", "good-1"].sort().filter((id) => id === "good-1"),
+			);
 			expect(snap.partial).toBe(true);
 		})();
 	});
@@ -383,7 +430,9 @@ describe("readInsightSnapshot lessons", () => {
 			const unreadable = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			expect(unreadable.lessons).toEqual([]);
 			expect(unreadable.partial).toBe(true);
-			expect(unreadable.limitations.some((note) => note.includes("lesson directory could not be read"))).toBe(true);
+			expect(
+				unreadable.limitations.some((note) => note.includes("lesson directory could not be read")),
+			).toBe(true);
 			rmSync(join(stateDir, "teach", "moments"), { force: true });
 			const missing = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			expect(missing.lessons).toEqual([]);
@@ -415,7 +464,10 @@ describe("readInsightSnapshot lessons", () => {
 			writeMoment({ id: "item-1", createdAt: "2026-01-01T00:00:00.000Z" });
 			writeMoment({ id: "item-10", createdAt: "2026-01-02T00:00:00.000Z" });
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
-			expect(snap.lessons.map((lesson) => lesson.selection.id).sort()).toEqual(["item-1", "item-10"]);
+			expect(snap.lessons.map((lesson) => lesson.selection.id).sort()).toEqual([
+				"item-1",
+				"item-10",
+			]);
 		})();
 	});
 
@@ -438,7 +490,13 @@ describe("readInsightSnapshot lessons", () => {
 			writeMoment({ id: "play", status: "confirmed", kind: "playbook", occurrences: 1 });
 			writeMoment({ id: "cand", status: "candidate", kind: "pattern", occurrences: 99 });
 			writeMoment({ id: "sup", status: "superseded", kind: "pattern", occurrences: 99 });
-			writeMoment({ id: "done", status: "promoted", kind: "pattern", occurrences: 9, promoted: { at: "2026-01-01T00:00:00.000Z", skill: "s", target: "omp" } });
+			writeMoment({
+				id: "done",
+				status: "promoted",
+				kind: "pattern",
+				occurrences: 9,
+				promoted: { at: "2026-01-01T00:00:00.000Z", skill: "s", target: "omp" },
+			});
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), ctx);
 			const byId = new Map(snap.lessons.map((lesson) => [lesson.id, lesson]));
 			expect(byId.get("below")?.eligible).toBe(false);
@@ -460,7 +518,12 @@ describe("readInsightSnapshot lessons", () => {
 				status: "promoted",
 				occurrences: 5,
 				recalled: 0,
-				promoted: { at: "2026-02-02T00:00:00.000Z", skill: "my-skill", target: "omp", path: "/skills/my-skill" },
+				promoted: {
+					at: "2026-02-02T00:00:00.000Z",
+					skill: "my-skill",
+					target: "omp",
+					path: "/skills/my-skill",
+				},
 			});
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			const lesson = snap.lessons.find((row) => row.id === "prom-1");
@@ -513,9 +576,15 @@ describe("readInsightSnapshot lessons", () => {
 
 	test("policy reflects effective config, kill switch and jev presence", () => {
 		return (async () => {
-			const off = await readInsightSnapshot(scopeFor("sess-a"), makeCtx({ env: { ULTRATHINK_TEACH: "0" } }));
+			const off = await readInsightSnapshot(
+				scopeFor("sess-a"),
+				makeCtx({ env: { ULTRATHINK_TEACH: "0" } }),
+			);
 			expect(off.policy.enabled).toBe(false);
-			const on = await readInsightSnapshot(scopeFor("sess-a"), makeCtx({ teach: { capture: "explicit", autoPromote: false, promoteAfter: 7 } }));
+			const on = await readInsightSnapshot(
+				scopeFor("sess-a"),
+				makeCtx({ teach: { capture: "explicit", autoPromote: false, promoteAfter: 7 } }),
+			);
 			expect(on.policy.enabled).toBe(true);
 			expect(on.policy.capture).toBe("explicit");
 			expect(on.policy.autoPromote).toBe(false);
@@ -535,26 +604,49 @@ describe("readInsightSnapshot lessons", () => {
 			{ kill: "1", configured: true, off: false },
 			{ kill: "1", configured: false, off: true },
 		]) {
-			const ctx = makeCtx({ env: { ULTRATHINK_DECISIONS: entry.kill }, decisions: entry.configured });
+			const ctx = makeCtx({
+				env: { ULTRATHINK_DECISIONS: entry.kill },
+				decisions: entry.configured,
+			});
 			const scope = scopeFor("sess-a");
 			const snap = await readInsightSnapshot(scope, ctx);
-			const ui = createInsightDashboard(snap, {
-				refresh: () => readInsightSnapshot(scope, ctx),
-				confirmCandidate: async () => { throw new Error("inspection must not confirm"); },
-				previewSkill: async () => { throw new Error("inspection must not preview"); },
-				installPreview: async () => { throw new Error("inspection must not install"); },
-				publishCard: async () => { throw new Error("inspection must not publish"); },
-				close: () => { throw new Error("inspection must not close"); },
-			}, { theme: {}, rows: () => 40 });
+			const ui = createInsightDashboard(
+				snap,
+				{
+					refresh: () => readInsightSnapshot(scope, ctx),
+					confirmCandidate: async () => {
+						throw new Error("inspection must not confirm");
+					},
+					previewSkill: async () => {
+						throw new Error("inspection must not preview");
+					},
+					installPreview: async () => {
+						throw new Error("inspection must not install");
+					},
+					publishCard: async () => {
+						throw new Error("inspection must not publish");
+					},
+					close: () => {
+						throw new Error("inspection must not close");
+					},
+				},
+				{ theme: {}, rows: () => 40 },
+			);
 			const overview = Bun.stripANSI(ui.render(120).join("\n"));
 			expect(/\bJev\b.*\boff\b/i.test(overview)).toBe(entry.off);
 			expect(overview).toContain("0.19");
 			ui.dispose();
 			let expanded = "";
-			registerUltrathinkRenderers({ registerMessageRenderer: (type, render) => {
-				if (type !== INSIGHT_TYPE) return;
-				expanded = Bun.stripANSI(render({ content: "", details: toInsightCardSnapshot(snap) }, { expanded: true }, {})?.render(120).join("\n") ?? "");
-			} });
+			registerUltrathinkRenderers({
+				registerMessageRenderer: (type, render) => {
+					if (type !== INSIGHT_TYPE) return;
+					expanded = Bun.stripANSI(
+						render({ content: "", details: toInsightCardSnapshot(snap) }, { expanded: true }, {})
+							?.render(120)
+							.join("\n") ?? "",
+					);
+				},
+			});
 			expect(expanded).toMatch(entry.off ? /\bJev off\b/ : /\bJev on\b/);
 			expect(expanded).toContain("0.19");
 			expect(readFileSync(sessionPath(stateDir, "sess-a"))).toEqual(saved);
@@ -565,7 +657,11 @@ describe("readInsightSnapshot lessons", () => {
 		return (async () => {
 			writeMoment({ id: "c-1", status: "candidate" });
 			writeMoment({ id: "c-2", status: "confirmed", occurrences: 1 });
-			writeMoment({ id: "c-3", status: "promoted", promoted: { at: "2026-01-01T00:00:00.000Z", skill: "s", target: "omp" } });
+			writeMoment({
+				id: "c-3",
+				status: "promoted",
+				promoted: { at: "2026-01-01T00:00:00.000Z", skill: "s", target: "omp" },
+			});
 			writeMoment({ id: "c-4", status: "superseded" });
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			expect(snap.counts).toEqual({ candidate: 1, confirmed: 1, promoted: 1, superseded: 1 });
@@ -577,7 +673,12 @@ describe("toInsightCardSnapshot", () => {
 	test("bodies, revisions and runtime scope are excluded while rows survive", () => {
 		return (async () => {
 			writeSessionRecord("sess-a", [decision({ p: 0.42 })]);
-			writeMoment({ id: "card-1", body: "SENTINEL-BODY-9f8e7d", status: "confirmed", occurrences: 9 });
+			writeMoment({
+				id: "card-1",
+				body: "SENTINEL-BODY-9f8e7d",
+				status: "confirmed",
+				occurrences: 9,
+			});
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			const card = toInsightCardSnapshot(snap);
 			const serialized = JSON.stringify(card);
@@ -596,7 +697,11 @@ describe("toInsightCardSnapshot", () => {
 
 	test("untrusted persisted details are re-sanitized on intake", () => {
 		return (async () => {
-			writeMoment({ id: "evil-1", name: `nice${ESC}[31m api_key=topsecretvalue`, status: "candidate" });
+			writeMoment({
+				id: "evil-1",
+				name: `nice${ESC}[31m api_key=topsecretvalue`,
+				status: "candidate",
+			});
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			const card = toInsightCardSnapshot({ ...snap, project: `p${ESC}[2K` });
 			expect(JSON.stringify(card)).not.toContain(ESC);
@@ -607,7 +712,10 @@ describe("toInsightCardSnapshot", () => {
 	test("card rows stay bounded for transcript persistence", () => {
 		return (async () => {
 			for (let index = 0; index < 30; index += 1) {
-				writeMoment({ id: `bulk-${index}`, createdAt: `2026-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z` });
+				writeMoment({
+					id: `bulk-${index}`,
+					createdAt: `2026-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`,
+				});
 			}
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			expect(snap.lessons.length).toBe(30);
@@ -622,7 +730,10 @@ describe("toInsightCardSnapshot", () => {
 				Array.from({ length: 30 }, (_, index) => decision({ at: 1000 + index })),
 			);
 			for (let index = 0; index < 30; index += 1) {
-				writeMoment({ id: `bulk-${index}`, createdAt: `2026-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z` });
+				writeMoment({
+					id: `bulk-${index}`,
+					createdAt: `2026-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`,
+				});
 			}
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			const card = toInsightCardSnapshot(snap);
@@ -637,11 +748,18 @@ describe("toInsightCardSnapshot", () => {
 
 	test("question keys and promotion pointers are re-sanitized with no path leak", () => {
 		return (async () => {
-			writeSessionRecord("sess-a", [decision({ probabilities: { ok: 0.5, [`bad${ESC}[31mkey`]: 0.7 } })]);
+			writeSessionRecord("sess-a", [
+				decision({ probabilities: { ok: 0.5, [`bad${ESC}[31mkey`]: 0.7 } }),
+			]);
 			writeMoment({
 				id: "promo-1",
 				status: "promoted",
-				promoted: { at: "2026-01-04T00:00:00Z", skill: "some-skill", target: "omp", path: "/secret/SENTINEL-PATH-4d2c" },
+				promoted: {
+					at: "2026-01-04T00:00:00Z",
+					skill: "some-skill",
+					target: "omp",
+					path: "/secret/SENTINEL-PATH-4d2c",
+				},
 			});
 			const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 			const card = toInsightCardSnapshot(snap);
@@ -659,7 +777,9 @@ describe("formatInsightText", () => {
 		const snap = await readInsightSnapshot(scopeFor("sess-a"), makeCtx());
 		const rows = formatInsightText(snap).split("\n");
 		const displayed = rows.filter((row) => row.startsWith("- [")).length;
-		expect(rows.find((row) => row.startsWith("Lessons for"))).toContain(`(${displayed} of 30 shown)`);
+		expect(rows.find((row) => row.startsWith("Lessons for"))).toContain(
+			`(${displayed} of 30 shown)`,
+		);
 		expect(rows.join("\n")).toContain(`${30 - displayed} more lessons omitted`);
 		expect(displayed).toBeLessThan(30);
 		expect(rows.length).toBeLessThanOrEqual(24);

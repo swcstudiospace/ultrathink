@@ -20,7 +20,7 @@ export function extractJsonObject(text: string): unknown {
 	try {
 		return JSON.parse(raw);
 	} catch {
-		// fall through
+		// reason: fall through
 	}
 	const start = raw.indexOf("{");
 	const end = raw.lastIndexOf("}");
@@ -71,7 +71,8 @@ export function normalizeGraph(
 	// Valid ids the model wrote are kept, so a positional fallback must skip every one of them and every id already used.
 	const reserved = new Set<string>();
 	for (const entry of sourceNodes) {
-		const raw = entry && typeof entry === "object" ? asString((entry as Record<string, unknown>).id) : "";
+		const raw =
+			entry && typeof entry === "object" ? asString((entry as Record<string, unknown>).id) : "";
 		if (NODE_ID.test(raw) && !Object.hasOwn(Object.prototype, raw)) reserved.add(raw);
 	}
 	const freshId = (index: number): string => {
@@ -84,7 +85,8 @@ export function normalizeGraph(
 		if (!entry || typeof entry !== "object") continue;
 		const rec = entry as Record<string, unknown>;
 		const rawId = asString(rec.id);
-		const id = NODE_ID.test(rawId) && !Object.hasOwn(Object.prototype, rawId) ? rawId : freshId(index);
+		const id =
+			NODE_ID.test(rawId) && !Object.hasOwn(Object.prototype, rawId) ? rawId : freshId(index);
 		if (seen.has(id)) continue;
 		seen.add(id);
 		if (rawId && rawId !== id && !renamed.has(rawId)) renamed.set(rawId, id);
@@ -109,7 +111,9 @@ export function normalizeGraph(
 
 	const ids = new Set(nodes.map((node) => node.id));
 	for (const node of nodes) {
-		node.dependsOn = node.dependsOn.map((dep) => renamed.get(dep) ?? dep).filter((dep) => ids.has(dep) && dep !== node.id);
+		node.dependsOn = node.dependsOn
+			.map((dep) => renamed.get(dep) ?? dep)
+			.filter((dep) => ids.has(dep) && dep !== node.id);
 	}
 
 	const last = nodes[nodes.length - 1];
@@ -126,10 +130,16 @@ export function normalizeGraph(
  * than minNodes parse, so a model echoing it verbatim is boilerplate too and reports the same.
  */
 export function isFallbackGraph(graph: ThoughtGraph): boolean {
-	if (graph.goal !== FALLBACK_GRAPH.goal || graph.nodes.length !== FALLBACK_GRAPH.nodes.length) return false;
+	if (graph.goal !== FALLBACK_GRAPH.goal || graph.nodes.length !== FALLBACK_GRAPH.nodes.length)
+		return false;
 	return FALLBACK_GRAPH.nodes.every((node, index) => {
 		const item = graph.nodes[index];
-		return item !== undefined && item.id === node.id && item.kind === node.kind && item.question === node.question;
+		return (
+			item !== undefined &&
+			item.id === node.id &&
+			item.kind === node.kind &&
+			item.question === node.question
+		);
 	});
 }
 
@@ -207,7 +217,10 @@ export function workflowWaves(graph: ThoughtGraph): WorkflowWave[] {
 export function parseNodeFill(xml: string): { thinking: string; conclusion: string } {
 	const body = extractTag(xml, "node") || xml;
 	// "rationale" is current; "thinking"/"chain_of_thought" accepted for back-compat with older completions.
-	const thinking = extractTag(body, "rationale") || extractTag(body, "thinking") || extractTag(body, "chain_of_thought");
+	const thinking =
+		extractTag(body, "rationale") ||
+		extractTag(body, "thinking") ||
+		extractTag(body, "chain_of_thought");
 	const conclusion = extractTag(body, "conclusion") || extractTag(body, "answer");
 	if (thinking || conclusion) {
 		return { thinking: thinking || conclusion, conclusion: conclusion || thinking };
@@ -235,7 +248,8 @@ function workflowXml(graph: ThoughtGraph): string[] {
 	return [
 		"	<WORKFLOW>",
 		...workflowWaves(graph).map(
-			(wave) => `		<WAVE n="${wave.wave}" parallel="${wave.parallel}">${escapeXml(wave.ids.join(", "))}</WAVE>`,
+			(wave) =>
+				`		<WAVE n="${wave.wave}" parallel="${wave.parallel}">${escapeXml(wave.ids.join(", "))}</WAVE>`,
 		),
 		"	</WORKFLOW>",
 	];

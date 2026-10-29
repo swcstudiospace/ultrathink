@@ -77,14 +77,21 @@ function jsonSources(root: string, file: string): VersionSource[] {
 /** A marketplace carries its own version under `metadata` and one per listed plugin. */
 function marketplaceSources(root: string, file: string): VersionSource[] {
 	const parsed = readJson(join(root, file));
-	const sources: VersionSource[] = [{ file, label: "metadata.version", version: isPlainObject(parsed) ? versionOf(parsed.metadata) : undefined }];
+	const sources: VersionSource[] = [
+		{
+			file,
+			label: "metadata.version",
+			version: isPlainObject(parsed) ? versionOf(parsed.metadata) : undefined,
+		},
+	];
 	const plugins = isPlainObject(parsed) && Array.isArray(parsed.plugins) ? parsed.plugins : [];
 	if (plugins.length === 0) {
 		sources.push({ file, label: "plugins[]", version: undefined });
 		return sources;
 	}
 	for (const [index, plugin] of plugins.entries()) {
-		const name = isPlainObject(plugin) && typeof plugin.name === "string" ? plugin.name : String(index);
+		const name =
+			isPlainObject(plugin) && typeof plugin.name === "string" ? plugin.name : String(index);
 		sources.push({ file, label: `plugins[${name}].version`, version: versionOf(plugin) });
 	}
 	return sources;
@@ -93,7 +100,8 @@ function marketplaceSources(root: string, file: string): VersionSource[] {
 function hermesSource(root: string): VersionSource {
 	const file = "hosts/hermes/plugin.yaml";
 	const text = readText(join(root, file));
-	const match = text === undefined ? null : /^version:[ \t]*["']?([^"'\s#]+)["']?[ \t]*(?:#.*)?$/m.exec(text);
+	const match =
+		text === undefined ? null : /^version:[ \t]*["']?([^"'\s#]+)["']?[ \t]*(?:#.*)?$/m.exec(text);
 	return { file, label: "version", version: match?.[1] };
 }
 
@@ -133,7 +141,10 @@ export function changelogSection(root: string, version: string): string | undefi
 	if (start === -1) return undefined;
 	let end = lines.findIndex((line, index) => index > start && line.startsWith("## ["));
 	if (end === -1) end = lines.length;
-	return lines.slice(start + 1, end).join("\n").trim();
+	return lines
+		.slice(start + 1, end)
+		.join("\n")
+		.trim();
 }
 
 function describe(source: VersionSource): string {
@@ -150,7 +161,9 @@ export function checkRelease(root: string, options: { tag?: string } = {}): Rele
 	if (version === undefined) {
 		problems.push(`${AUTHORITY_FILE}: no version found, so nothing can be compared`);
 	} else if (!SEMVER.test(version)) {
-		problems.push(`${AUTHORITY_FILE}: version "${version}" is not a semantic version (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-prerelease)`);
+		problems.push(
+			`${AUTHORITY_FILE}: version "${version}" is not a semantic version (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-prerelease)`,
+		);
 	}
 
 	if (version !== undefined) {
@@ -158,16 +171,22 @@ export function checkRelease(root: string, options: { tag?: string } = {}): Rele
 			if (source.version === undefined) {
 				problems.push(`${describe(source)}: no version found, but ${AUTHORITY_FILE} is ${version}`);
 			} else if (source.version !== version) {
-				problems.push(`${describe(source)}: version ${source.version} but ${AUTHORITY_FILE} is ${version}`);
+				problems.push(
+					`${describe(source)}: version ${source.version} but ${AUTHORITY_FILE} is ${version}`,
+				);
 			}
 		}
 
 		const changelog = readText(join(root, CHANGELOG_FILE));
 		if (changelog === undefined) {
-			problems.push(`${CHANGELOG_FILE}: file not found, expected a "## [${version}] - YYYY-MM-DD" section`);
+			problems.push(
+				`${CHANGELOG_FILE}: file not found, expected a "## [${version}] - YYYY-MM-DD" section`,
+			);
 		} else {
 			if (changelogSection(root, version) === undefined) {
-				problems.push(`${CHANGELOG_FILE}: no "## [${version}] - YYYY-MM-DD" heading for ${AUTHORITY_FILE} version ${version}`);
+				problems.push(
+					`${CHANGELOG_FILE}: no "## [${version}] - YYYY-MM-DD" heading for ${AUTHORITY_FILE} version ${version}`,
+				);
 			}
 			if (!/^## \[Unreleased\][ \t]*\r?$/m.test(changelog)) {
 				problems.push(`${CHANGELOG_FILE}: no "## [Unreleased]" heading`);
@@ -175,7 +194,9 @@ export function checkRelease(root: string, options: { tag?: string } = {}): Rele
 		}
 
 		if (options.tag !== undefined && options.tag !== `v${version}`) {
-			problems.push(`tag ${options.tag}: expected v${version} to match ${AUTHORITY_FILE} version ${version}`);
+			problems.push(
+				`tag ${options.tag}: expected v${version} to match ${AUTHORITY_FILE} version ${version}`,
+			);
 		}
 	}
 
@@ -229,7 +250,8 @@ export function main(argv: readonly string[], io: CliIo): number {
 
 	const report = checkRelease(root, args.tag === undefined ? {} : { tag: args.tag });
 	for (const source of report.sources) {
-		const status = source.version !== undefined && source.version === report.version ? "ok      " : "MISMATCH";
+		const status =
+			source.version !== undefined && source.version === report.version ? "ok      " : "MISMATCH";
 		io.out(`${status} ${describe(source)} ${source.version ?? "missing"}`);
 	}
 	if (report.ok) {
@@ -237,7 +259,9 @@ export function main(argv: readonly string[], io: CliIo): number {
 		return 0;
 	}
 	for (const problem of report.problems) io.err(`release-check: ${problem}`);
-	io.err(`release-check: failed (${report.problems.length} ${report.problems.length === 1 ? "problem" : "problems"})`);
+	io.err(
+		`release-check: failed (${report.problems.length} ${report.problems.length === 1 ? "problem" : "problems"})`,
+	);
 	return 1;
 }
 

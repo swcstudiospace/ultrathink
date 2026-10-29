@@ -5,7 +5,18 @@
  * processes, so this lives under ~/.claude/ultrathink instead of in-session.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	fstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { type LockOptions, withFileLock, writeFileAtomic, withLockMutation } from "./atomic.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
@@ -17,6 +28,7 @@ import type { SkillInvocation } from "../uplift/skill.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { resolveStateDir } from "../host/paths.ts";
 import type { ShipState } from "../ship/types.ts";
+import { readJson } from "../shared.ts";
 import type { KnowledgeLookup } from "../greptile/knowledge.ts";
 import type { DocsLookup } from "../ragflow/types.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
@@ -42,6 +54,8 @@ export interface SessionRecord {
 	modelResolution?: ModelResolution;
 	/** First engine error message (redacted), when a plan call threw; explains a fallback source. */
 	engineError?: string;
+	/** A successful failover this prompt, e.g. "claude:<model> → grok:<model> (plan-limit)"; not an error. */
+	engineFailover?: string;
 	/** Plan stages that fell back to boilerplate, in run order: "uplift", "graph", "fill:<nodeId>". Absent when every stage used LLM output. */
 	degraded?: string[];
 	/** Host that planned this prompt. Absent on records written before multi-host support. */
@@ -86,15 +100,6 @@ export function defaultStateDir(env: Record<string, string | undefined> = proces
 	return resolveStateDir(env);
 }
 
-function readJson(path: string): unknown {
-	try {
-		if (!existsSync(path)) return undefined;
-		return JSON.parse(readFileSync(path, "utf8")) as unknown;
-	} catch {
-		return undefined;
-	}
-}
-
 /** Owner-only and atomic: a crash mid-write leaves the previous file, never a truncated one. */
 function writeJson(path: string, value: unknown): void {
 	writeFileAtomic(path, `${JSON.stringify(value, null, "\t")}\n`);
@@ -123,7 +128,7 @@ export function writeControl(dir: string, patch: ControlState): ControlState {
 	try {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 	} catch {
-		// writeJson reports the same failure below
+		// reason: writeJson reports the same failure below
 	}
 	return withFileLock(controlPath(dir), () => {
 		const next = { ...readControl(dir), ...patch };
@@ -143,7 +148,9 @@ const PLAIN_SESSION_ID_RE = /^[a-z0-9_.-]{1,120}$/;
  */
 function safeSessionId(id: string): string {
 	if (PLAIN_SESSION_ID_RE.test(id)) return id;
-	const slug = Array.from(id, (char) => (/[A-Za-z0-9_.-]/.test(char) ? char.toLowerCase() : "_")).join("").slice(0, 80);
+	const slug = Array.from(id, (char) => (/[A-Za-z0-9_.-]/.test(char) ? char.toLowerCase() : "_"))
+		.join("")
+		.slice(0, 80);
 	return `${slug}~${createHash("sha256").update(id).digest("hex").slice(0, 16)}`;
 }
 
@@ -166,7 +173,11 @@ export function sessionPath(dir: string, sessionId: string): string {
  * case-insensitive file system `Claude-A.json` is also `claude-a.json`.
  */
 export function legacySessionPath(dir: string, sessionId: string): string {
-	return join(dir, "sessions", `${sessionId.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120) || "unknown"}.json`);
+	return join(
+		dir,
+		"sessions",
+		`${sessionId.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120) || "unknown"}.json`,
+	);
 }
 
 /**
@@ -210,7 +221,9 @@ export function readSkipOnce(dir: string, sessionId: string): boolean {
 export function armSkipOnce(dir: string, sessionId: string): void {
 	// The session's record lock, which prune holds while it decides on and deletes a stale flag: an arm never lands between
 	// that decision and its delete. A lock that cannot be taken runs unlocked, as every session write does.
-	withFileLock(sessionPath(dir, sessionId), () => writeFileAtomic(skipOncePath(dir, sessionId), "skip\n"));
+	withFileLock(sessionPath(dir, sessionId), () =>
+		writeFileAtomic(skipOncePath(dir, sessionId), "skip\n"),
+	);
 }
 
 /** Clears the session's armed skip; an already clear session is left as it is. */
@@ -222,13 +235,21 @@ export function clearSkipOnce(dir: string, sessionId: string): void {
 	}
 }
 
+/** `engineFailover` is only ever a string; a hand-edited or corrupt record loses a non-string value. */
+function dropBadFailover(record: SessionRecord): SessionRecord {
+	if (record.engineFailover !== undefined && typeof record.engineFailover !== "string")
+		delete record.engineFailover;
+	return record;
+}
+
 export function readSession(dir: string, sessionId: string): SessionRecord | undefined {
 	const raw = readJson(sessionRecordPath(dir, sessionId));
 	if (!raw || typeof raw !== "object") return undefined;
 	const rec = raw as Partial<SessionRecord>;
 	// A file names its session: on a case-insensitive file system another id's record can share this file's name.
-	if (rec.sessionId !== sessionId || !rec.result || typeof rec.result !== "object") return undefined;
-	return rec as SessionRecord;
+	if (rec.sessionId !== sessionId || !rec.result || typeof rec.result !== "object")
+		return undefined;
+	return dropBadFailover(rec as SessionRecord);
 }
 
 const LAST_LOCK_WAIT_MS = 5;
@@ -305,7 +326,7 @@ export function withLastLock(lastPath: string, body: () => void): boolean {
 			// A live host PID must not keep a finished writer held, and a successor inode is untouched.
 			writeSync(ownedFd, "!", 0, "utf8");
 		} catch {
-			// Still attempt guarded removal when the completion marker could not be written.
+			// reason: Still attempt guarded removal when the completion marker could not be written.
 		}
 		try {
 			withLockMutation(lockPath, () => {
@@ -314,9 +335,13 @@ export function withLastLock(lastPath: string, body: () => void): boolean {
 				if (current.dev === owned.dev && current.ino === owned.ino) unlinkSync(lockPath);
 			});
 		} catch {
-			// The next acquisition or orphan sweep can remove the completed marker under the guard.
+			// reason: The next acquisition or orphan sweep can remove the completed marker under the guard.
 		} finally {
-			try { closeSync(ownedFd); } catch { /* do not replace a body error with a cleanup error */ }
+			try {
+				closeSync(ownedFd);
+			} catch {
+				/* reason: do not replace a body error with a cleanup error */
+			}
 		}
 	}
 }
@@ -371,5 +396,5 @@ export function readLast(dir: string): SessionRecord | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
 	const rec = raw as Partial<SessionRecord>;
 	if (!rec.result || typeof rec.result !== "object") return undefined;
-	return rec as SessionRecord;
+	return dropBadFailover(rec as SessionRecord);
 }

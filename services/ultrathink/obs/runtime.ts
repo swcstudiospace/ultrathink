@@ -100,7 +100,7 @@ export interface RuntimeSample {
 }
 
 /** Timer handle as returned by `setTimer`; `unref` is optional for injected timers. */
-export type RuntimeTimerHandle = { unref?: () => void } & object;
+type RuntimeTimerHandle = { unref?: () => void } & object;
 
 export interface RuntimeProbeOptions {
 	/** Sampling period in milliseconds; must be a positive finite number. */
@@ -150,11 +150,15 @@ function nonNegative(value: number): number {
 export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 	const { intervalMs, onSample } = options;
 	if (typeof intervalMs !== "number" || !Number.isFinite(intervalMs) || intervalMs <= 0) {
-		throw new RangeError(`createRuntimeProbe: intervalMs must be a positive finite number, got ${String(intervalMs)}`);
+		throw new RangeError(
+			`createRuntimeProbe: intervalMs must be a positive finite number, got ${String(intervalMs)}`,
+		);
 	}
-	if (typeof onSample !== "function") throw new TypeError("createRuntimeProbe: onSample must be a function");
+	if (typeof onSample !== "function")
+		throw new TypeError("createRuntimeProbe: onSample must be a function");
 	const setTimer = options.setTimer ?? ((run: () => void, ms: number) => setTimeout(run, ms));
-	const clearTimer = options.clearTimer ?? ((handle: object) => clearTimeout(handle as NodeJS.Timeout));
+	const clearTimer =
+		options.clearTimer ?? ((handle: object) => clearTimeout(handle as NodeJS.Timeout));
 	const now = options.now ?? (() => performance.now());
 	const memory = options.memory ?? (() => process.memoryUsage());
 	const uptime = options.uptime ?? (() => process.uptime());
@@ -184,13 +188,14 @@ export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 			try {
 				sample = sampleOnce();
 			} catch {
+				// reason: a failing sample is skipped and the timer keeps its schedule; a direct sampleOnce caller gets the error
 				sample = undefined;
 			}
 			if (sample !== undefined) {
 				try {
 					onSample(sample);
 				} catch {
-					// Observers must never break the sampler.
+					// reason: Observers must never break the sampler.
 				}
 			}
 			if (gen === generation) schedule(gen);
@@ -213,7 +218,7 @@ export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 					try {
 						clearTimer(pending);
 					} catch {
-						// A failing clearTimer leaves a dead timer; the generation guard ignores it.
+						// reason: A failing clearTimer leaves a dead timer; the generation guard ignores it.
 					}
 				}
 			};

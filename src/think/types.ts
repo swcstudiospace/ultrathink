@@ -6,8 +6,6 @@ export const MAX_NODES = 8;
 /** Numbered rationale steps the CoT fill must produce per node; each step becomes one Sub-Issue. */
 export const MIN_STEPS = 5;
 export const MAX_STEPS = 8;
-/** Rationale budget sized for MAX_STEPS one-to-two-sentence steps (~250 chars each). */
-export const MAX_RATIONALE_CHARS = 2000;
 
 export type NodeKind =
 	| "understand"
@@ -84,7 +82,8 @@ export const FALLBACK_GRAPH: ThoughtGraph = {
 			id: "n4",
 			title: "Risks",
 			kind: "critique",
-			question: "What could go wrong: missing constraints, edge cases, regressions, or over-scoping?",
+			question:
+				"What could go wrong: missing constraints, edge cases, regressions, or over-scoping?",
 			dependsOn: ["n3"],
 		},
 		{

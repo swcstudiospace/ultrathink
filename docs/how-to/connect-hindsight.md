@@ -4,6 +4,14 @@ Hindsight is the optional memory server Teachable Moments uses to share confirme
 
 When a retain fails, the lesson stays on this machine and planning continues. Nothing here blocks a prompt.
 
+Three separate pieces make up the memory bank, and only one of them uses a model:
+
+| Piece | What it needs | Why |
+|---|---|---|
+| Hindsight **server** | LLM provider `none` (`HINDSIGHT_API_LLM_PROVIDER=none`, chunks mode) | Retain stores the lesson text as chunks and recall searches them: no model call, no model key on the server. |
+| ultrathink **client** | The server's base URL (`hindsight.url`, else `HINDSIGHT_API_URL`, else `HINDSIGHT_URL`) and the service API key (the credential store, else `HINDSIGHT_API_KEY`, else `HINDSIGHT_API_TOKEN`) | The only credentials ultrathink sends to Hindsight. The key goes only to `/v1/**`; `/health` and `/version` take none. |
+| **Distill** (`teach observe`) | Plan logins on your machine: the `claude` CLI (Claude Code 2.1.293 or newer) for Haiku 5.5, then optionally the Grok Build lane | Turning a session into lessons is the one model call; it runs locally, not on the Hindsight server. See [Memory-bank chain](choose-engine.md#memory-bank-chain). |
+
 `<clone>` is the directory you cloned ultrathink into. Replace `https://hindsight.example` below with the base URL of the server you run. Do not put a user name, a password, a query or a fragment in that URL.
 
 - [1. Check the requirements](#1-check-the-requirements)
@@ -57,7 +65,7 @@ Add a `hindsight` section to your user config, `${XDG_CONFIG_HOME:-~/.config}/ul
 }
 ```
 
-`url` is the server's base URL. When `hindsight.url` is empty, `HINDSIGHT_API_URL` fills it in. No config file a repository controls can set the URL, so opening a repository cannot redirect the key.
+`url` is the server's base URL. When `hindsight.url` is empty, the environment fills it in: `HINDSIGHT_API_URL` first, then `HINDSIGHT_URL` if that is unset or blank. Both names mean the same thing; the canonical name `HINDSIGHT_API_URL` wins when both are set. No config file a repository controls can set the URL, so opening a repository cannot redirect the key.
 
 `bank` defaults to `ultrathink`. Set it only in a user file, and only as 1 to 64 characters that start with a letter or digit and then contain only letters, digits, `.`, `_` and `-`. Any other value is ignored and the earlier value stays.
 
@@ -119,6 +127,12 @@ The round trip uses a throwaway bank named `ultrathink-smoke-` plus 8 hex charac
 The client creates the configured bank on the first retain, not during a plain `hindsight check`. It `PUT`s the bank if it is missing, then sets `retain_extraction_mode` to `chunks` when that is not already the mode.
 
 That mode is required. The server ultrathink is written for has no LLM, and a retain in any other extraction mode would call one. A retain into a missing bank would also let the server create the bank in its default (LLM) mode, so the client creates the bank and sets `chunks` first. `chunks` stores the lesson text as-is. The `--roundtrip` "ensure bank" step does the same thing in the throwaway bank, then deletes that bank.
+
+## Hindsight needs no inference
+
+Connecting Hindsight costs no model tokens. The server runs with its LLM provider set to `none` (`HINDSIGHT_API_LLM_PROVIDER=none`, "chunks mode"), the client forces `retain_extraction_mode=chunks`, and ultrathink never calls reflect or consolidation. Retain stores the lesson text as chunks and recall searches them, both with no LLM call. `bin/ultrathink hindsight check` prints `observations off · worker off` for such a server.
+
+Hindsight's own `claude-code` and `xai-oauth` providers are deliberately unused. Either would need a plan login on the server host, and Hindsight's documentation marks `claude-code` as local, personal use only. The one model call in the memory bank is the local `teach observe` distill, which runs on your machine through the official CLIs; see [Memory-bank chain](choose-engine.md#memory-bank-chain).
 
 ## Turn it off again
 

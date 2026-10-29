@@ -6,11 +6,17 @@
  */
 import { redactLine } from "../teach/redact.ts";
 
-export const ACTIVITY_KINDS = ["teachable-created", "teachable-failed", "teachable-recalled", "skill-recalled", "resource"] as const;
-export const ACTIVITY_SOURCES = ["hindsight", "local", "substrate", "ragflow", "greptile"] as const;
+const ACTIVITY_KINDS = [
+	"teachable-created",
+	"teachable-failed",
+	"teachable-recalled",
+	"skill-recalled",
+	"resource",
+] as const;
+const ACTIVITY_SOURCES = ["hindsight", "local", "substrate", "ragflow", "greptile"] as const;
 
-export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
-export type ActivitySource = (typeof ACTIVITY_SOURCES)[number];
+type ActivityKind = (typeof ACTIVITY_KINDS)[number];
+type ActivitySource = (typeof ACTIVITY_SOURCES)[number];
 
 export interface ActivityNotice {
 	v: 1;
@@ -35,7 +41,12 @@ const ABSOLUTE_PATH = /(?<![\w.~/])~?\/[^\s]+/g;
 function scrub(value: unknown, max: number): string | undefined {
 	if (typeof value !== "string" || value === "") return undefined;
 	try {
-		const cleaned = redactLine(value, max).replace(ABSOLUTE_PATH, " ").replace(CONTROLS, "").replace(/\s+/g, " ").trim().slice(0, max);
+		const cleaned = redactLine(value, max)
+			.replace(ABSOLUTE_PATH, " ")
+			.replace(CONTROLS, "")
+			.replace(/\s+/g, " ")
+			.trim()
+			.slice(0, max);
 		return cleaned === "" ? undefined : cleaned;
 	} catch {
 		return undefined;
@@ -43,11 +54,15 @@ function scrub(value: unknown, max: number): string | undefined {
 }
 
 function kindOf(value: unknown): ActivityKind | undefined {
-	return typeof value === "string" && ACTIVITY_KINDS.includes(value as ActivityKind) ? (value as ActivityKind) : undefined;
+	return typeof value === "string" && ACTIVITY_KINDS.includes(value as ActivityKind)
+		? (value as ActivityKind)
+		: undefined;
 }
 
 function sourceOf(value: unknown): ActivitySource | undefined {
-	return typeof value === "string" && ACTIVITY_SOURCES.includes(value as ActivitySource) ? (value as ActivitySource) : undefined;
+	return typeof value === "string" && ACTIVITY_SOURCES.includes(value as ActivitySource)
+		? (value as ActivitySource)
+		: undefined;
 }
 
 /** Validated, bounded notice. Undefined when the value is not a v1 activity notice. Never throws. */
@@ -68,7 +83,13 @@ export function toActivityNotice(value: unknown): ActivityNotice | undefined {
 			const outcome = scrub(value.outcome, OUTCOME_CHARS);
 			if (outcome) notice.outcome = outcome;
 		}
-		if ("count" in value && typeof value.count === "number" && Number.isInteger(value.count) && value.count >= 0 && value.count <= Number.MAX_SAFE_INTEGER) {
+		if (
+			"count" in value &&
+			typeof value.count === "number" &&
+			Number.isInteger(value.count) &&
+			value.count >= 0 &&
+			value.count <= Number.MAX_SAFE_INTEGER
+		) {
 			notice.count = value.count;
 		}
 		if ("names" in value && Array.isArray(value.names)) {

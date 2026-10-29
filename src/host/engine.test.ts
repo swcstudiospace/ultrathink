@@ -16,7 +16,18 @@ import {
 	selectNativeEngine,
 } from "./engine.ts";
 import { MAX_ENGINE_ERROR_CHARS } from "./display-limits.ts";
-import { binder, configWith, createEngineFixtures, engineOf, fakeModel, fakeQuery, intentWith, labelOf, resolutionOf, shunt } from "./engine-test.helpers.ts";
+import {
+	binder,
+	configWith,
+	createEngineFixtures,
+	engineOf,
+	fakeModel,
+	fakeQuery,
+	intentWith,
+	labelOf,
+	resolutionOf,
+	shunt,
+} from "./engine-test.helpers.ts";
 
 const { tempDir, emptyHome, cleanup } = createEngineFixtures();
 afterEach(cleanup);
@@ -28,22 +39,24 @@ describe("selectEngine host defaults (think.engine auto)", () => {
 
 	test("claude-code and hermes hosts route to Claude at its route default", async () => {
 		for (const host of ["claude-code", "hermes"] as const) {
-			expect(await labelOf(configWith({}), {}, host)).toBe("claude:sonnet");
+			expect(await labelOf(configWith({}), {}, host)).toBe("claude:claude-haiku-5-5");
 		}
 	});
 
-	test("grok-build inherits grok at grok-4.7 when usable (shunt needs no login)", async () => {
-		expect(await labelOf(shunt(), {}, "grok-build")).toBe("grok-4.7@shunt");
+	test("grok-build inherits grok at grok-build-0.1 when usable (shunt needs no login)", async () => {
+		expect(await labelOf(shunt(), {}, "grok-build")).toBe("grok-build-0.1@shunt");
 	});
 
 	test("grok-build without a grok login skips visibly instead of switching to Claude (AD-2a)", async () => {
-		const config = configWith({ grok: { ...defaultConfig().grok, home: emptyHome(), fallbackToClaude: false } });
+		const config = configWith({
+			grok: { ...defaultConfig().grok, home: emptyHome(), fallbackToClaude: false },
+		});
 		expect(await labelOf(config, {}, "grok-build")).toBe(`skipped:${GROK_LOGIN_REQUIRED}`);
 	});
 
 	test("grok-build with grok disabled keeps the documented Claude route", async () => {
 		const config = configWith({ grok: { ...defaultConfig().grok, enabled: false } });
-		expect(await labelOf(config, {}, "grok-build")).toBe("claude:sonnet");
+		expect(await labelOf(config, {}, "grok-build")).toBe("claude:claude-haiku-5-5");
 	});
 });
 
@@ -54,19 +67,28 @@ describe("selectEngine explicit pins", () => {
 			expect(await labelOf(config, {}, host)).toBe("muse:muse-spark-1.3-contributor");
 		}
 		const claude = configWith({ think: { ...defaultConfig().think, engine: "claude" } });
-		expect(await labelOf(claude, {}, "muse")).toBe("claude:sonnet");
+		expect(await labelOf(claude, {}, "muse")).toBe("claude:claude-haiku-5-5");
 	});
 
 	test("explicit model wins over the host default model", async () => {
 		const config = configWith({ muse: { ...defaultConfig().muse, model: "other-model" } });
 		expect(await labelOf(config, {}, "muse")).toBe("muse:other-model");
-		expect(await resolutionOf(config, {}, "muse")).toMatchObject({ state: "override", source: "engine-model", reason: "explicit-model", modelId: "other-model" });
+		expect(await resolutionOf(config, {}, "muse")).toMatchObject({
+			state: "override",
+			source: "engine-model",
+			reason: "explicit-model",
+			modelId: "other-model",
+		});
 	});
 
 	test("control state engine wins over config", async () => {
 		const config = configWith({ think: { ...defaultConfig().think, engine: "claude" } });
-		expect(await labelOf(config, { engine: "muse" }, "claude-code")).toBe("muse:muse-spark-1.3-contributor");
-		expect((await resolutionOf(config, { engine: "muse" }, "claude-code")).engineSelection).toEqual({ engine: "muse", source: "control", nativeOptOut: false });
+		expect(await labelOf(config, { engine: "muse" }, "claude-code")).toBe(
+			"muse:muse-spark-1.3-contributor",
+		);
+		expect((await resolutionOf(config, { engine: "muse" }, "claude-code")).engineSelection).toEqual(
+			{ engine: "muse", source: "control", nativeOptOut: false },
+		);
 	});
 
 	test("empty muse model inherits the CLI session default in the label", async () => {
@@ -91,7 +113,9 @@ describe("selectEngine grok login handling", () => {
 			think: { ...defaultConfig().think, engine: "grok" },
 			grok: { ...defaultConfig().grok, home: emptyHome(), fallbackToClaude: true },
 		});
-		expect(await labelOf(config, {}, "claude-code")).toBe("claude:sonnet (grok fallback)");
+		expect(await labelOf(config, {}, "claude-code")).toBe(
+			"claude:claude-haiku-5-5 (grok fallback)",
+		);
 		expect(await resolutionOf(config, {}, "claude-code")).toEqual({
 			version: "1.0.0",
 			state: "default",
@@ -100,16 +124,24 @@ describe("selectEngine grok login handling", () => {
 			source: "configured-fallback",
 			reason: "grok-unavailable",
 			engineSelection: { engine: "grok", source: "config", nativeOptOut: false },
-			modelId: "sonnet",
+			modelId: "claude-haiku-5-5",
 			modelKnown: true,
-			label: "claude:sonnet [configured fallback · grok unavailable]",
+			label: "claude:claude-haiku-5-5 [configured fallback · grok unavailable]",
 		});
 	});
 });
 
 describe("HOST_DEFAULT_ENGINES", () => {
 	test("covers every host", () => {
-		expect(Object.keys(HOST_DEFAULT_ENGINES).sort()).toEqual(["claude-code", "cursor", "grok-build", "hermes", "muse", "omp", "prime-agent"]);
+		expect(Object.keys(HOST_DEFAULT_ENGINES).sort()).toEqual([
+			"claude-code",
+			"cursor",
+			"grok-build",
+			"hermes",
+			"muse",
+			"omp",
+			"prime-agent",
+		]);
 		expect(HOST_DEFAULT_ENGINES["prime-agent"]).toBe("claude");
 		expect(HOST_DEFAULT_ENGINES.cursor).toBe("claude");
 	});
@@ -119,18 +151,38 @@ describe("engineLabel", () => {
 	test("mirrors selection without auth checks", () => {
 		const config = defaultConfig();
 		expect(engineLabel(config, {}, "muse")).toBe("muse:muse-spark-1.3-contributor");
-		expect(engineLabel(config, {}, "claude-code")).toBe("claude:sonnet");
-		expect(engineLabel(config, {}, "grok-build")).toBe("grok-4.7@xhigh");
-		expect(engineLabel(config, { engine: "muse" }, "claude-code")).toBe("muse:muse-spark-1.3-contributor");
+		expect(engineLabel(config, {}, "claude-code")).toBe("claude:claude-haiku-5-5");
+		expect(engineLabel(config, {}, "grok-build")).toBe("grok-build-0.1");
+		expect(engineLabel(config, { engine: "muse" }, "claude-code")).toBe(
+			"muse:muse-spark-1.3-contributor",
+		);
 		// A models.hosts wire model replaces the route's engine model, as selection does; a provider constraint has no
 		// legacy binding and shows unresolved; a disabled Grok route keeps Claude's own model, never the host override.
-		const wire = mergeConfig({ models: { hosts: { "claude-code": { model: "wire-c" }, muse: { model: "wire-m" }, "grok-build": { model: "wire-g" } } } }, config);
+		const wire = mergeConfig(
+			{
+				models: {
+					hosts: {
+						"claude-code": { model: "wire-c" },
+						muse: { model: "wire-m" },
+						"grok-build": { model: "wire-g" },
+					},
+				},
+			},
+			config,
+		);
 		expect(engineLabel(wire, {}, "claude-code")).toBe("claude:wire-c");
 		expect(engineLabel(wire, {}, "muse")).toBe("muse:wire-m");
-		expect(engineLabel(wire, {}, "grok-build")).toBe("wire-g@xhigh");
-		expect(engineLabel(mergeConfig({ grok: { enabled: false } }, wire), {}, "grok-build")).toBe("claude:sonnet");
-		const constrained = mergeConfig({ models: { hosts: { "claude-code": { provider: "anthropic" } } } }, config);
-		expect(engineLabel(constrained, {}, "claude-code")).toBe("claude:unresolved [transport-incompatible]");
+		expect(engineLabel(wire, {}, "grok-build")).toBe("wire-g");
+		expect(engineLabel(mergeConfig({ grok: { enabled: false } }, wire), {}, "grok-build")).toBe(
+			"claude:claude-haiku-5-5",
+		);
+		const constrained = mergeConfig(
+			{ models: { hosts: { "claude-code": { provider: "anthropic" } } } },
+			config,
+		);
+		expect(engineLabel(constrained, {}, "claude-code")).toBe(
+			"claude:unresolved [transport-incompatible]",
+		);
 	});
 
 	test("Omp auto is native: an observed record names its model, without one the live model is not observed (§9 path 6)", () => {
@@ -149,12 +201,20 @@ describe("engineLabel", () => {
 			label: "omp-native:anthropic/claude-x [detected]",
 		};
 		expect(engineLabel(config, {}, "omp")).toBe("omp-native:auto (live model not observed)");
-		expect(engineLabel(config, {}, "omp", observed)).toBe("omp-native:anthropic/claude-x [detected]");
-		expect(engineLabel(config, { engine: "auto" }, "omp", observed)).toBe("omp-native:anthropic/claude-x [detected]");
+		expect(engineLabel(config, {}, "omp", observed)).toBe(
+			"omp-native:anthropic/claude-x [detected]",
+		);
+		expect(engineLabel(config, { engine: "auto" }, "omp", observed)).toBe(
+			"omp-native:anthropic/claude-x [detected]",
+		);
 		// A record observed for another engine request or host is not the current selection: the static label stands.
-		expect(engineLabel(config, { engine: "claude" }, "omp", observed)).toBe("claude:sonnet");
-		expect(engineLabel(config, {}, "hermes", observed)).toBe("claude:sonnet (follows session model)");
-		expect(engineLabel(config, {}, "claude-code", observed)).toBe("claude:sonnet");
+		expect(engineLabel(config, { engine: "claude" }, "omp", observed)).toBe(
+			"claude:claude-haiku-5-5",
+		);
+		expect(engineLabel(config, {}, "hermes", observed)).toBe(
+			"claude:claude-haiku-5-5 (follows session model)",
+		);
+		expect(engineLabel(config, {}, "claude-code", observed)).toBe("claude:claude-haiku-5-5");
 		// A named Omp engine opted out of native planning; its own observed legacy record names the route and default.
 		const named: ModelResolution = {
 			version: "1.0.0",
@@ -167,7 +227,9 @@ describe("engineLabel", () => {
 			modelKnown: false,
 			label: "claude:CLI default (model unobserved)",
 		};
-		expect(engineLabel(config, { engine: "claude" }, "omp", named)).toBe("claude:CLI default (model unobserved)");
+		expect(engineLabel(config, { engine: "claude" }, "omp", named)).toBe(
+			"claude:CLI default (model unobserved)",
+		);
 	});
 
 	test("supplied observed labels are projected before direct status rendering", async () => {
@@ -195,8 +257,16 @@ describe("engineLabel", () => {
 			expect(engineLabel(config, {}, "grok-build", resolution)).toBe(resolution.label);
 		}
 		const live = fakeModel("gate way", "https://model.invalid/path");
-		const selected = engineOf(await selectNativeEngine(intentWith(), fakeQuery({ live: { model: live, source: "ctx.model" } }).query, binder().bind));
-		expect(engineLabel(defaultConfig(), {}, "omp", selected.resolution)).toBe(selected.resolution.label);
+		const selected = engineOf(
+			await selectNativeEngine(
+				intentWith(),
+				fakeQuery({ live: { model: live, source: "ctx.model" } }).query,
+				binder().bind,
+			),
+		);
+		expect(engineLabel(defaultConfig(), {}, "omp", selected.resolution)).toBe(
+			selected.resolution.label,
+		);
 	});
 });
 
@@ -237,7 +307,13 @@ describe("Vercel is Jev-only: engine code never references it (JEV-03)", () => {
 			rel === "mcp/providers.ts" ||
 			rel === "mcp/cli.ts" ||
 			rel === "config.ts" ||
-			rel === "uplift/commands.ts";
+			rel === "uplift/commands.ts" ||
+			// The Jev child-env scrub list names AI_GATEWAY_API_KEY so it never reaches an engine subprocess.
+			rel === "route-defaults.ts" ||
+			// The variable registry documents AI_GATEWAY_API_KEY like every other configuration variable.
+			rel === "env-registry.ts" ||
+			// The `ultrathink stack` Decisions probe reports the Decisions (Vercel gateway) member.
+			rel === "stack/decisions.ts";
 		const matches: string[] = [];
 		const offenders: string[] = [];
 		let visited = 0;
@@ -259,7 +335,13 @@ describe("Vercel is Jev-only: engine code never references it (JEV-03)", () => {
 describe("selectEngine with only a Vercel key present (JEV-03)", () => {
 	test("auto still resolves per host and no label mentions vercel or gateway", async () => {
 		const saved = new Map<string, string | undefined>();
-		for (const name of ["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HINDSIGHT_API_KEY", "RAGFLOW_API_KEY"]) {
+		for (const name of [
+			"ULTRATHINK_OPENROUTER_KEY",
+			"OPENROUTER_API_KEY",
+			"AI_GATEWAY_API_KEY",
+			"HINDSIGHT_API_KEY",
+			"RAGFLOW_API_KEY",
+		]) {
 			saved.set(name, process.env[name]);
 			delete process.env[name];
 		}
@@ -268,7 +350,9 @@ describe("selectEngine with only a Vercel key present (JEV-03)", () => {
 			const labels = {
 				muse: await labelOf(configWith({}), {}, "muse"),
 				grokBuild: await labelOf(
-					configWith({ grok: { ...defaultConfig().grok, home: emptyHome(), fallbackToClaude: false } }),
+					configWith({
+						grok: { ...defaultConfig().grok, home: emptyHome(), fallbackToClaude: false },
+					}),
 					{},
 					"grok-build",
 				),
@@ -279,8 +363,8 @@ describe("selectEngine with only a Vercel key present (JEV-03)", () => {
 			expect(labels).toEqual({
 				muse: "muse:muse-spark-1.3-contributor",
 				grokBuild: `skipped:${GROK_LOGIN_REQUIRED}`,
-				claudeCode: "claude:sonnet",
-				hermes: "claude:sonnet",
+				claudeCode: "claude:claude-haiku-5-5",
+				hermes: "claude:claude-haiku-5-5",
 				omp: "skipped:native-unavailable",
 			});
 			for (const label of Object.values(labels)) {
@@ -315,11 +399,13 @@ describe("engineForSessionModel", () => {
 
 	test("the status label names the default honestly on session-model hosts; Omp auto never guesses a CLI route", () => {
 		const config = configWith({});
-		expect(engineLabel(config, {}, "hermes")).toBe("claude:sonnet (follows session model)");
+		expect(engineLabel(config, {}, "hermes")).toBe(
+			"claude:claude-haiku-5-5 (follows session model)",
+		);
 		expect(engineLabel(config, {}, "omp")).toBe("omp-native:auto (live model not observed)");
-		expect(engineLabel(config, { engine: "claude" }, "omp")).toBe("claude:sonnet");
-		expect(engineLabel(config, { engine: "grok" }, "hermes")).toBe("grok-4.7@xhigh");
-		expect(engineLabel(config, {}, "claude-code")).toBe("claude:sonnet");
+		expect(engineLabel(config, { engine: "claude" }, "omp")).toBe("claude:claude-haiku-5-5");
+		expect(engineLabel(config, { engine: "grok" }, "hermes")).toBe("grok-build-0.1");
+		expect(engineLabel(config, {}, "claude-code")).toBe("claude:claude-haiku-5-5");
 	});
 
 	test("unknown families, Kimi included, keep the host default", () => {
@@ -331,25 +417,38 @@ describe("engineForSessionModel", () => {
 
 describe("selectEngine session-model routing (Hermes only, AD-3)", () => {
 	test("hermes follows the session model family under auto", async () => {
-		expect(await labelOf(shunt(), {}, "hermes", "xai-oauth/grok-4.6")).toBe("grok-4.7@shunt");
-		expect(await labelOf(shunt(), {}, "hermes", "claude-sonnet-4-5")).toBe("claude:sonnet");
-		expect(await labelOf(shunt(), {}, "hermes", "muse-spark-1.3-contributor")).toBe("muse:muse-spark-1.3-contributor");
+		expect(await labelOf(shunt(), {}, "hermes", "xai-oauth/grok-4.6")).toBe("grok-build-0.1@shunt");
+		expect(await labelOf(shunt(), {}, "hermes", "claude-sonnet-4-5")).toBe(
+			"claude:claude-haiku-5-5",
+		);
+		expect(await labelOf(shunt(), {}, "hermes", "muse-spark-1.3-contributor")).toBe(
+			"muse:muse-spark-1.3-contributor",
+		);
 	});
 
 	test("unknown or missing models fall back to the host default", async () => {
 		for (const model of ["kimi-k2", "gpt-5", "", undefined] as const) {
-			expect(await labelOf(shunt(), {}, "hermes", model)).toBe("claude:sonnet");
+			expect(await labelOf(shunt(), {}, "hermes", model)).toBe("claude:claude-haiku-5-5");
 		}
 	});
 
 	test("an explicit engine pin wins over the session model", async () => {
-		const config = configWith({ ...shunt(), think: { ...defaultConfig().think, engine: "claude" } });
-		expect(await labelOf(config, {}, "hermes", "xai-oauth/grok-4.6")).toBe("claude:sonnet");
+		const config = configWith({
+			...shunt(),
+			think: { ...defaultConfig().think, engine: "claude" },
+		});
+		expect(await labelOf(config, {}, "hermes", "xai-oauth/grok-4.6")).toBe(
+			"claude:claude-haiku-5-5",
+		);
 	});
 
 	test("other hosts ignore the session model", async () => {
-		expect(await labelOf(shunt(), {}, "claude-code", "xai-oauth/grok-4.6")).toBe("claude:sonnet");
-		expect(await labelOf(shunt(), {}, "muse", "xai-oauth/grok-4.6")).toBe("muse:muse-spark-1.3-contributor");
+		expect(await labelOf(shunt(), {}, "claude-code", "xai-oauth/grok-4.6")).toBe(
+			"claude:claude-haiku-5-5",
+		);
+		expect(await labelOf(shunt(), {}, "muse", "xai-oauth/grok-4.6")).toBe(
+			"muse:muse-spark-1.3-contributor",
+		);
 	});
 });
 

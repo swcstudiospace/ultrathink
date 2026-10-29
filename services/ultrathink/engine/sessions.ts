@@ -8,13 +8,15 @@
  * so it only enriches the goal and counts of a session found elsewhere. Only summaries leave this module: a one-line
  * goal, counts and a status. Prompts, specifications, answers and error text stay on disk.
  */
-import { type Dir, lstatSync, opendirSync, readFileSync } from "node:fs";
+import { type Dir, lstatSync, opendirSync } from "node:fs";
 import { join } from "node:path";
+import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { isFallbackGraph } from "../../../src/think/graph.ts";
 import type { ThoughtGraph } from "../../../src/think/types.ts";
+import { readJson } from "../../../src/shared.ts";
 import { isSessionId } from "./journal.ts";
 
-export type SessionStatus = "running" | "planned" | "failed" | "invalid" | "skipped";
+type SessionStatus = "running" | "planned" | "failed" | "invalid" | "skipped";
 
 export interface SessionSummary {
 	sessionId: string;
@@ -31,8 +33,8 @@ export interface SessionSummary {
 }
 
 export const GOAL_MAX_CHARS = 120;
-export const DEFAULT_LIMIT = 5;
-export const MAX_LIMIT = 20;
+const DEFAULT_LIMIT = 5;
+const MAX_LIMIT = 20;
 
 /** Directory entries read per directory; a hostile or runaway directory cannot make a listing unbounded. */
 const MAX_DIR_ENTRIES = 5000;
@@ -41,7 +43,13 @@ const MAX_CANDIDATES = 200;
 const MAX_FILE_BYTES = 1024 * 1024;
 /** Text is cut to this many characters before it is normalised, so a megabyte goal costs nothing. */
 const GOAL_SCAN_CHARS = 2048;
-const JOB_STATUSES: Record<string, true> = { running: true, planned: true, failed: true, invalid: true, skipped: true };
+const JOB_STATUSES: Record<string, true> = {
+	running: true,
+	planned: true,
+	failed: true,
+	invalid: true,
+	skipped: true,
+};
 const JSON_SUFFIX = ".json";
 
 interface Sources {
@@ -59,7 +67,8 @@ interface RecordView {
 	hasGraph: boolean;
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
 
 function clampLimit(limit: unknown): number {
 	if (typeof limit !== "number" || !Number.isFinite(limit)) return DEFAULT_LIMIT;
@@ -71,8 +80,10 @@ function oneLine(value: unknown): string {
 	if (typeof value !== "string") return "";
 	const head = value.slice(0, GOAL_SCAN_CHARS);
 	for (const line of head.split(/[\r\n\u2028\u2029]/)) {
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are exactly what is removed
-		const text = line.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+		const text = line
+			.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+			.replace(/\s+/g, " ")
+			.trim();
 		if (text.length === 0) continue;
 		if (text.length <= GOAL_MAX_CHARS) return text;
 		let cut = text.slice(0, GOAL_MAX_CHARS - 1);
@@ -85,19 +96,26 @@ function oneLine(value: unknown): string {
 }
 
 /** Names of a directory, at most MAX_DIR_ENTRIES of them; empty when the directory is missing or unreadable. */
-function listNames(dir: string): string[] {
+function listNames(dir: string, logger: Logger): string[] {
 	const names: string[] = [];
 	let handle: Dir | undefined;
 	try {
 		handle = opendirSync(dir);
-		for (let entry = handle.readSync(); entry !== null && names.length < MAX_DIR_ENTRIES; entry = handle.readSync()) names.push(entry.name);
-	} catch {
-		// A partial listing is still a valid listing.
+		for (
+			let entry = handle.readSync();
+			entry !== null && names.length < MAX_DIR_ENTRIES;
+			entry = handle.readSync()
+		)
+			names.push(entry.name);
+	} catch (error) {
+		// reason: A partial listing is still a valid listing; a missing directory is simply empty.
+		const label = failureLabel(error);
+		if (label !== "ENOENT") logger.error(`listNames: ${label}`);
 	} finally {
 		try {
 			handle?.closeSync();
 		} catch {
-			// Nothing left to release.
+			// reason: Nothing left to release.
 		}
 	}
 	return names;
@@ -122,16 +140,8 @@ function isRealDirectory(path: string): boolean {
 	}
 }
 
-function readJson(path: string): unknown {
-	try {
-		return JSON.parse(readFileSync(path, "utf8")) as unknown;
-	} catch {
-		return undefined;
-	}
-}
-
 /** Every session id found in any of the three places, with the modification time of each file it was found in. */
-function scan(stateDir: string): Sources[] {
+function scan(stateDir: string, logger: Logger): Sources[] {
 	const found = new Map<string, Sources>();
 	const entry = (id: string): Sources => {
 		let sources = found.get(id);
@@ -143,7 +153,7 @@ function scan(stateDir: string): Sources[] {
 	};
 
 	const jobsDir = join(stateDir, "jobs");
-	for (const name of listNames(jobsDir)) {
+	for (const name of listNames(jobsDir, logger)) {
 		if (!name.endsWith(JSON_SUFFIX)) continue;
 		const id = name.slice(0, -JSON_SUFFIX.length);
 		if (!isSessionId(id)) continue;
@@ -152,7 +162,7 @@ function scan(stateDir: string): Sources[] {
 	}
 
 	const journalRoot = join(stateDir, "journal");
-	for (const name of listNames(journalRoot)) {
+	for (const name of listNames(journalRoot, logger)) {
 		if (!isSessionId(name)) continue;
 		const dir = join(journalRoot, name);
 		if (!isRealDirectory(dir)) continue;
@@ -161,7 +171,7 @@ function scan(stateDir: string): Sources[] {
 	}
 
 	const recordsDir = join(stateDir, "sessions");
-	for (const name of listNames(recordsDir)) {
+	for (const name of listNames(recordsDir, logger)) {
 		if (!name.endsWith(JSON_SUFFIX)) continue;
 		const id = name.slice(0, -JSON_SUFFIX.length);
 		if (!isSessionId(id)) continue;
@@ -182,13 +192,20 @@ function readRecord(path: string): RecordView | undefined {
 	if (!isObject(raw) || !isObject(raw.result)) return undefined;
 	const view: RecordView = {
 		graphGoal: "",
-		original: typeof raw.result.original === "string" ? raw.result.original.slice(0, GOAL_SCAN_CHARS) : "",
+		original:
+			typeof raw.result.original === "string" ? raw.result.original.slice(0, GOAL_SCAN_CHARS) : "",
 		nodeCount: 0,
 		hasGraph: false,
 	};
 	const graph = raw.graph;
 	// Nodes that are not objects mean a hand-edited or foreign file: it has no graph worth summarising.
-	if (isObject(graph) && typeof graph.goal === "string" && Array.isArray(graph.nodes) && graph.nodes.every(isObject) && !isFallbackGraph(graph as unknown as ThoughtGraph)) {
+	if (
+		isObject(graph) &&
+		typeof graph.goal === "string" &&
+		Array.isArray(graph.nodes) &&
+		graph.nodes.every(isObject) &&
+		!isFallbackGraph(graph as unknown as ThoughtGraph)
+	) {
 		view.graphGoal = graph.goal.slice(0, GOAL_SCAN_CHARS);
 		view.hasGraph = graph.nodes.length > 0;
 		view.nodeCount = graph.nodes.length;
@@ -203,7 +220,10 @@ function clientStatus(status: unknown): SessionStatus {
 
 function summarize(stateDir: string, sources: Sources): SessionSummary | undefined {
 	const { id } = sources;
-	const record = sources.recordMtime === undefined ? undefined : readRecord(join(stateDir, "sessions", `${id}${JSON_SUFFIX}`));
+	const record =
+		sources.recordMtime === undefined
+			? undefined
+			: readRecord(join(stateDir, "sessions", `${id}${JSON_SUFFIX}`));
 
 	let status: SessionStatus | undefined;
 	let mode: "server" | "client" = "server";
@@ -213,7 +233,13 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 	if (sources.jobMtime !== undefined) {
 		const job = readJson(join(stateDir, "jobs", `${id}${JSON_SUFFIX}`));
 		// The shape check mirrors the planner's own: a file it would refuse to serve is not listed as a job.
-		if (isObject(job) && typeof job.status === "string" && Object.hasOwn(JOB_STATUSES, job.status) && typeof job.updatedAt === "number" && Number.isFinite(job.updatedAt)) {
+		if (
+			isObject(job) &&
+			typeof job.status === "string" &&
+			Object.hasOwn(JOB_STATUSES, job.status) &&
+			typeof job.updatedAt === "number" &&
+			Number.isFinite(job.updatedAt)
+		) {
 			status = job.status as SessionStatus;
 			updatedAt = job.updatedAt;
 		}
@@ -224,7 +250,10 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 		if (isObject(meta)) {
 			status = clientStatus(meta.status);
 			mode = "client";
-			updatedAt = typeof meta.updatedAt === "number" && Number.isFinite(meta.updatedAt) ? meta.updatedAt : sources.metaMtime;
+			updatedAt =
+				typeof meta.updatedAt === "number" && Number.isFinite(meta.updatedAt)
+					? meta.updatedAt
+					: sources.metaMtime;
 			if (typeof meta.original === "string") metaOriginal = meta.original.slice(0, GOAL_SCAN_CHARS);
 		}
 	}
@@ -233,30 +262,50 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 	if (status === undefined) return undefined;
 
 	const goal = oneLine(record?.graphGoal) || oneLine(record?.original) || oneLine(metaOriginal);
-	return { sessionId: id, status, mode, updatedAt: Math.trunc(updatedAt), goal, nodeCount: record?.nodeCount ?? 0, hasGraph: record?.hasGraph ?? false };
+	return {
+		sessionId: id,
+		status,
+		mode,
+		updatedAt: Math.trunc(updatedAt),
+		goal,
+		nodeCount: record?.nodeCount ?? 0,
+		hasGraph: record?.hasGraph ?? false,
+	};
 }
 
 /** The `candidates` most recently touched sessions, newest first by file modification time. */
-function newestSources(stateDir: string, candidates: number): Array<{ id: string; time: number; sources: Sources }> {
-	return scan(stateDir)
-		.map((sources) => ({ id: sources.id, time: Math.max(sources.jobMtime ?? 0, sources.metaMtime ?? 0, sources.recordMtime ?? 0), sources }))
+function newestSources(
+	stateDir: string,
+	candidates: number,
+	logger: Logger,
+): Array<{ id: string; time: number; sources: Sources }> {
+	return scan(stateDir, logger)
+		.map((sources) => ({
+			id: sources.id,
+			time: Math.max(sources.jobMtime ?? 0, sources.metaMtime ?? 0, sources.recordMtime ?? 0),
+			sources,
+		}))
 		.sort(byRecency)
 		.slice(0, candidates);
 }
 
 /** Summaries of the `candidates` most recently touched sessions, newest first by their own timestamp. */
-function collect(stateDir: string, candidates: number): SessionSummary[] {
-	const newest = newestSources(stateDir, candidates);
+function collect(stateDir: string, candidates: number, logger: Logger): SessionSummary[] {
+	const newest = newestSources(stateDir, candidates, logger);
 	const summaries: SessionSummary[] = [];
 	for (const { sources } of newest) {
 		try {
 			const summary = summarize(stateDir, sources);
 			if (summary) summaries.push(summary);
-		} catch {
-			// One unreadable session never hides the others.
+		} catch (error) {
+			// reason: One unreadable session never hides the others.
+			logger.error(`collect: ${failureLabel(error)}`);
 		}
 	}
-	return summaries.map((summary) => ({ id: summary.sessionId, time: summary.updatedAt, summary })).sort(byRecency).map((item) => item.summary);
+	return summaries
+		.map((summary) => ({ id: summary.sessionId, time: summary.updatedAt, summary }))
+		.sort(byRecency)
+		.map((item) => item.summary);
 }
 
 /**
@@ -264,10 +313,17 @@ function collect(stateDir: string, candidates: number): SessionSummary[] {
  * malformed file and a name that is not a session id are all skipped. `limit` is clamped to 1..20 (default 5); at
  * most min(200, limit * 4) sessions are parsed, chosen by file modification time.
  */
-export function listSessions(stateDir: string, options: { limit?: number } = {}): SessionSummary[] {
+export function listSessions(
+	stateDir: string,
+	options: { limit?: number; logger?: Logger } = {},
+): SessionSummary[] {
 	try {
 		const limit = clampLimit(options.limit);
-		return collect(stateDir, Math.min(MAX_CANDIDATES, limit * 4)).slice(0, limit);
+		return collect(
+			stateDir,
+			Math.min(MAX_CANDIDATES, limit * 4),
+			options.logger ?? createLogger(),
+		).slice(0, limit);
 	} catch {
 		return [];
 	}
@@ -278,14 +334,18 @@ export function listSessions(stateDir: string, options: { limit?: number } = {})
  * visited newest first and the walk stops at the first planned one, so a state directory full of unfinished sessions
  * costs reads only until that session.
  */
-export function newestPlannedSessionId(stateDir: string): string | undefined {
+export function newestPlannedSessionId(
+	stateDir: string,
+	logger: Logger = createLogger(),
+): string | undefined {
 	try {
-		for (const { sources } of newestSources(stateDir, MAX_CANDIDATES)) {
+		for (const { sources } of newestSources(stateDir, MAX_CANDIDATES, logger)) {
 			try {
 				const summary = summarize(stateDir, sources);
 				if (summary?.status === "planned") return summary.sessionId;
-			} catch {
-				// One unreadable session never hides the others.
+			} catch (error) {
+				// reason: One unreadable session never hides the others.
+				logger.error(`newestPlannedSessionId: ${failureLabel(error)}`);
 			}
 		}
 		return undefined;

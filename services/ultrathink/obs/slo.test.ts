@@ -89,11 +89,21 @@ describe("createSloTracker budget math", () => {
 	});
 
 	test("invalid objective, window or capacity throws RangeError", () => {
-		expect(() => createSloTracker({ ...definition, objective: 0 }, { maxSamples: 10 })).toThrow(RangeError);
-		expect(() => createSloTracker({ ...definition, objective: 1 }, { maxSamples: 10 })).toThrow(RangeError);
-		expect(() => createSloTracker({ ...definition, objective: Number.NaN }, { maxSamples: 10 })).toThrow(RangeError);
-		expect(() => createSloTracker({ ...definition, windowMs: 0 }, { maxSamples: 10 })).toThrow(RangeError);
-		expect(() => createSloTracker({ ...definition, windowMs: -1 }, { maxSamples: 10 })).toThrow(RangeError);
+		expect(() => createSloTracker({ ...definition, objective: 0 }, { maxSamples: 10 })).toThrow(
+			RangeError,
+		);
+		expect(() => createSloTracker({ ...definition, objective: 1 }, { maxSamples: 10 })).toThrow(
+			RangeError,
+		);
+		expect(() =>
+			createSloTracker({ ...definition, objective: Number.NaN }, { maxSamples: 10 }),
+		).toThrow(RangeError);
+		expect(() => createSloTracker({ ...definition, windowMs: 0 }, { maxSamples: 10 })).toThrow(
+			RangeError,
+		);
+		expect(() => createSloTracker({ ...definition, windowMs: -1 }, { maxSamples: 10 })).toThrow(
+			RangeError,
+		);
 		expect(() => createSloTracker(definition, { maxSamples: 1 })).toThrow(RangeError);
 		expect(() => createSloTracker(definition, { maxSamples: 2.5 })).toThrow(RangeError);
 		expect(() => createSloTracker(definition, { maxSamples: 10 }).budget(0, 0)).toThrow(RangeError);

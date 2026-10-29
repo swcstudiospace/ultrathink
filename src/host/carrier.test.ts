@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readSkipOnce } from "../claude/state.ts";
@@ -23,7 +32,12 @@ afterEach(() => {
 });
 
 function writeStalePlan(): string {
-	const path = writePlanCarrier({ host: "grok-build", stateDir, sessionId: "s0", context: "<spec>old prompt</spec>" });
+	const path = writePlanCarrier({
+		host: "grok-build",
+		stateDir,
+		sessionId: "s0",
+		context: "<spec>old prompt</spec>",
+	});
 	if (!path) throw new Error("stale carrier not written");
 	return path;
 }
@@ -45,28 +59,56 @@ describe("clearPlanCarrier", () => {
 
 describe("writePlanCarrier", () => {
 	test("writes the carrier owner-only in a new owner-only state dir, replacing the previous one whole", () => {
-		const path = writePlanCarrier({ host: "grok-build", stateDir, sessionId: "s1", specPath: "/s/s1.xml", statePath: "/s/s1.json", graphId: "ut-1", context: "first" });
+		const path = writePlanCarrier({
+			host: "grok-build",
+			stateDir,
+			sessionId: "s1",
+			specPath: "/s/s1.xml",
+			statePath: "/s/s1.json",
+			graphId: "ut-1",
+			context: "first",
+		});
 		expect(path).toBe(carrierPath(stateDir));
-		expect(JSON.parse(readFileSync(carrierPath(stateDir), "utf8"))).toMatchObject({ host: "grok-build", sessionId: "s1", specPath: "/s/s1.xml", graphId: "ut-1", context: "first" });
+		expect(JSON.parse(readFileSync(carrierPath(stateDir), "utf8"))).toMatchObject({
+			host: "grok-build",
+			sessionId: "s1",
+			specPath: "/s/s1.xml",
+			graphId: "ut-1",
+			context: "first",
+		});
 		if (process.platform !== "win32") {
 			expect(statSync(carrierPath(stateDir)).mode & 0o777).toBe(0o600);
 			expect(statSync(stateDir).mode & 0o777).toBe(0o700);
 		}
 		writePlanCarrier({ host: "grok-build", stateDir, sessionId: "s2", context: "second" });
-		expect(JSON.parse(readFileSync(carrierPath(stateDir), "utf8"))).toMatchObject({ sessionId: "s2", context: "second" });
+		expect(JSON.parse(readFileSync(carrierPath(stateDir), "utf8"))).toMatchObject({
+			sessionId: "s2",
+			context: "second",
+		});
 		expect(readdirSync(stateDir)).toEqual(["last-plan.json"]);
 	});
 
-	test.skipIf(process.platform === "win32")("a 0644 carrier from an older version is 0600 after the next write", () => {
-		mkdirSync(stateDir, { recursive: true });
-		writeFileSync(carrierPath(stateDir), "{}", { mode: 0o644 });
-		writePlanCarrier({ host: "omp", stateDir, sessionId: "s1", context: "ctx" });
-		expect(statSync(carrierPath(stateDir)).mode & 0o777).toBe(0o600);
-	});
+	test.skipIf(process.platform === "win32")(
+		"a 0644 carrier from an older version is 0600 after the next write",
+		() => {
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(carrierPath(stateDir), "{}", { mode: 0o644 });
+			writePlanCarrier({ host: "omp", stateDir, sessionId: "s1", context: "ctx" });
+			expect(statSync(carrierPath(stateDir)).mode & 0o777).toBe(0o600);
+		},
+	);
 
 	test("an absent session id (blank, or Prime's unknown placeholder) writes no carrier, since no record could be matched to it", () => {
 		for (const sessionId of ["", "  ", "unknown"]) {
-			expect(writePlanCarrier({ host: "prime-agent", stateDir, sessionId, specPath: "/s/x.xml", context: "ctx" })).toBeUndefined();
+			expect(
+				writePlanCarrier({
+					host: "prime-agent",
+					stateDir,
+					sessionId,
+					specPath: "/s/x.xml",
+					context: "ctx",
+				}),
+			).toBeUndefined();
 		}
 		expect(existsSync(carrierPath(stateDir))).toBe(false);
 	});
@@ -78,12 +120,21 @@ describe("uplift hook on Grok, Claude and Muse", () => {
 		mkdirSync(home, { recursive: true });
 		const env: Record<string, string | undefined> = {};
 		for (const [key, value] of Object.entries(process.env)) {
-			if (!key.startsWith("ULTRATHINK_") && !key.startsWith("GROK_") && key !== "CLAUDE_CONFIG_DIR") env[key] = value;
+			if (!key.startsWith("ULTRATHINK_") && !key.startsWith("GROK_") && key !== "CLAUDE_CONFIG_DIR")
+				env[key] = value;
 		}
 		const proc = Bun.spawnSync([process.execPath, HOOK], {
 			cwd: dir,
-			env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), ULTRATHINK_HOST: host, ULTRATHINK_STATE_DIR: stateDir },
-			stdin: Buffer.from(JSON.stringify({ hookEventName: "user_prompt_submit", cwd: dir, ...envelope })),
+			env: {
+				...env,
+				HOME: home,
+				XDG_CONFIG_HOME: join(home, ".config"),
+				ULTRATHINK_HOST: host,
+				ULTRATHINK_STATE_DIR: stateDir,
+			},
+			stdin: Buffer.from(
+				JSON.stringify({ hookEventName: "user_prompt_submit", cwd: dir, ...envelope }),
+			),
 			stdout: "pipe",
 			stderr: "pipe",
 			timeout: 30_000,
@@ -102,29 +153,49 @@ describe("uplift hook on Grok, Claude and Muse", () => {
 
 	test("control commands and prompts while planning is off remove the carrier", () => {
 		const path = writeStalePlan();
-		expect(JSON.parse(runHook({ sessionId: "s1", promptId: "p1", userPrompt: "/ultrathink-off" }))).toMatchObject({ decision: "block" });
+		expect(
+			JSON.parse(runHook({ sessionId: "s1", promptId: "p1", userPrompt: "/ultrathink-off" })),
+		).toMatchObject({ decision: "block" });
 		expect(existsSync(path)).toBe(false);
 		writeStalePlan();
-		runHook({ sessionId: "s1", promptId: "p2", userPrompt: "refactor the billing module to use the new ledger api" });
+		runHook({
+			sessionId: "s1",
+			promptId: "p2",
+			userPrompt: "refactor the billing module to use the new ledger api",
+		});
 		expect(existsSync(path)).toBe(false);
 	});
 
 	test("a duplicate dispatch of a claimed turn leaves the owner's carrier alone", () => {
 		const path = writeStalePlan();
 		expect(claimTurn(stateDir, "s1:p1")).toBe(true);
-		runHook({ sessionId: "s1", promptId: "p1", userPrompt: "refactor the billing module to use the new ledger api" });
+		runHook({
+			sessionId: "s1",
+			promptId: "p1",
+			userPrompt: "refactor the billing module to use the new ledger api",
+		});
 		expect(existsSync(path)).toBe(true);
 	});
 
 	test("a subagent prompt leaves the main session's carrier alone", () => {
 		const path = writeStalePlan();
-		runHook({ sessionId: "s1", promptId: "p2", subagentType: "explore", userPrompt: "/ultrathink-quick look around" });
+		runHook({
+			sessionId: "s1",
+			promptId: "p2",
+			subagentType: "explore",
+			userPrompt: "/ultrathink-quick look around",
+		});
 		expect(existsSync(path)).toBe(true);
 	});
 
 	test("/ultrathink-skip arms exactly the session the envelope names, case included", () => {
-		const output = JSON.parse(runHook({ sessionId: "Grok-S1", promptId: "p9", userPrompt: "/ultrathink-skip" }));
-		expect(output).toMatchObject({ decision: "block", reason: "Prompt Uplift will skip the next prompt in this session" });
+		const output = JSON.parse(
+			runHook({ sessionId: "Grok-S1", promptId: "p9", userPrompt: "/ultrathink-skip" }),
+		);
+		expect(output).toMatchObject({
+			decision: "block",
+			reason: "Prompt Uplift will skip the next prompt in this session",
+		});
 		expect(readSkipOnce(stateDir, "Grok-S1")).toBe(true);
 		expect(readSkipOnce(stateDir, "grok-s1")).toBe(false);
 	});
@@ -134,13 +205,21 @@ describe("uplift hook on Grok, Claude and Muse", () => {
 		mkdirSync(home, { recursive: true });
 		const proc = Bun.spawnSync([process.execPath, HOOK, "--ctl", "skip", "--session", "Ctl-S1"], {
 			cwd: dir,
-			env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), ULTRATHINK_HOST: "grok-build", ULTRATHINK_STATE_DIR: stateDir },
+			env: {
+				...process.env,
+				HOME: home,
+				XDG_CONFIG_HOME: join(home, ".config"),
+				ULTRATHINK_HOST: "grok-build",
+				ULTRATHINK_STATE_DIR: stateDir,
+			},
 			stdout: "pipe",
 			stderr: "pipe",
 			timeout: 30_000,
 		});
 		expect(proc.exitCode).toBe(0);
-		expect(proc.stdout.toString()).toContain("Prompt Uplift will skip the next prompt in this session");
+		expect(proc.stdout.toString()).toContain(
+			"Prompt Uplift will skip the next prompt in this session",
+		);
 		expect(readSkipOnce(stateDir, "Ctl-S1")).toBe(true);
 		expect(readSkipOnce(stateDir, "ctl-s1")).toBe(false);
 	});
@@ -148,8 +227,13 @@ describe("uplift hook on Grok, Claude and Muse", () => {
 	test("the normal command branch arms the session its session_id names on every host that routes through this hook; without one it refuses", () => {
 		for (const host of ["claude-code", "muse", "grok-build"]) {
 			const sessionId = `${host}-Sess`;
-			const output = JSON.parse(runHook({ session_id: sessionId, prompt: "/ultrathink-skip" }, host));
-			expect(output).toMatchObject({ decision: "block", reason: "Prompt Uplift will skip the next prompt in this session" });
+			const output = JSON.parse(
+				runHook({ session_id: sessionId, prompt: "/ultrathink-skip" }, host),
+			);
+			expect(output).toMatchObject({
+				decision: "block",
+				reason: "Prompt Uplift will skip the next prompt in this session",
+			});
 			expect(readSkipOnce(stateDir, sessionId)).toBe(true);
 		}
 		const refused = JSON.parse(runHook({ prompt: "/ultrathink-skip" }, "claude-code"));
@@ -160,10 +244,15 @@ describe("uplift hook on Grok, Claude and Muse", () => {
 describe("uplift hook with a Jev plan skip", () => {
 	const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 	const ACK = "thanks, that works now";
-	const NOTICE_004 = "Prompt Uplift · not planned: Jev judged this is not new multi-step work (0.04) · start with uplift: to plan it";
+	const NOTICE_004 =
+		"Prompt Uplift · not planned: Jev judged this is not new multi-step work (0.04) · start with uplift: to plan it";
 
 	/** A loopback Decisions endpoint that always answers JEV(p) and records each request body. */
-	function fakeJev(p: number): { url: string; requests: Array<Record<string, unknown>>; stop: () => void } {
+	function fakeJev(p: number): {
+		url: string;
+		requests: Array<Record<string, unknown>>;
+		stop: () => void;
+	} {
 		const requests: Array<Record<string, unknown>> = [];
 		const server = Bun.serve({
 			hostname: "127.0.0.1",
@@ -179,7 +268,11 @@ describe("uplift hook with a Jev plan skip", () => {
 				});
 			},
 		});
-		return { url: `http://127.0.0.1:${server.port}/decisions`, requests, stop: () => server.stop(true) };
+		return {
+			url: `http://127.0.0.1:${server.port}/decisions`,
+			requests,
+			stop: () => server.stop(true),
+		};
 	}
 
 	/**
@@ -195,10 +288,22 @@ describe("uplift hook with a Jev plan skip", () => {
 	): Promise<{ stdout: string; stderr: string }> {
 		const home = join(dir, "home");
 		mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
-		writeFileSync(join(home, ".config", "ultrathink", "config.json"), JSON.stringify({ ...config, claude: { bin: join(dir, "no-claude"), ...(config.claude as object | undefined) } }));
+		writeFileSync(
+			join(home, ".config", "ultrathink", "config.json"),
+			JSON.stringify({
+				...config,
+				claude: { bin: join(dir, "no-claude"), ...(config.claude as object | undefined) },
+			}),
+		);
 		const env: Record<string, string | undefined> = {};
 		for (const [key, value] of Object.entries(process.env)) {
-			if (!key.startsWith("ULTRATHINK_") && !key.startsWith("GROK_") && key !== "CLAUDE_CONFIG_DIR" && key !== "OPENROUTER_API_KEY") env[key] = value;
+			if (
+				!key.startsWith("ULTRATHINK_") &&
+				!key.startsWith("GROK_") &&
+				key !== "CLAUDE_CONFIG_DIR" &&
+				key !== "OPENROUTER_API_KEY"
+			)
+				env[key] = value;
 		}
 		const proc = Bun.spawn([process.execPath, HOOK], {
 			cwd: dir,
@@ -210,70 +315,86 @@ describe("uplift hook with a Jev plan skip", () => {
 				ULTRATHINK_STATE_DIR: stateDir,
 				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
 				ULTRATHINK_DECISIONS_URL: jevUrl,
-				OPENROUTER_API_KEY: K,
+				ULTRATHINK_OPENROUTER_KEY: K,
 				SUBSTRATE_DISABLED: "1",
 			},
 			stdin: new Blob([JSON.stringify({ cwd: dir, ...envelope })]),
 			stdout: "pipe",
 			stderr: "pipe",
 		});
-		const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+		const [stdout, stderr] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
 		expect(await proc.exited).toBe(0);
 		expect(`${stdout}${stderr}`).not.toContain(K);
 		expect(`${stdout}${stderr}`).not.toContain("Bearer sk-or-");
 		return { stdout, stderr };
 	}
 
-	test(
-		"on Claude a Jev skip prints only the notice, and nothing with echo off, like a deterministic skip (AC-3.1, AC-3.3)",
-		async () => {
-			const jev = fakeJev(0.04);
-			try {
-				const claude = (prompt: string) => ({ hook_event_name: "UserPromptSubmit", session_id: "s1", prompt });
-				const trivial = await runJevHook("claude-code", claude("thanks"), jev.url, { decisions: { enabled: true } });
-				expect(trivial.stdout).toBe("");
-				expect(jev.requests).toHaveLength(0);
+	test("on Claude a Jev skip prints only the notice, and nothing with echo off, like a deterministic skip (AC-3.1, AC-3.3)", async () => {
+		const jev = fakeJev(0.04);
+		try {
+			const claude = (prompt: string) => ({
+				hook_event_name: "UserPromptSubmit",
+				session_id: "s1",
+				prompt,
+			});
+			const trivial = await runJevHook("claude-code", claude("thanks"), jev.url, {
+				decisions: { enabled: true },
+			});
+			expect(trivial.stdout).toBe("");
+			expect(jev.requests).toHaveLength(0);
 
-				const skipped = await runJevHook("claude-code", claude(ACK), jev.url, { decisions: { enabled: true } });
-				expect(jev.requests).toHaveLength(1);
-				expect(jev.requests[0]?.session_id).toBe("s1");
-				// No hookSpecificOutput: the prompt reaches the model unchanged.
-				expect(JSON.parse(skipped.stdout)).toEqual({ systemMessage: NOTICE_004 });
-				expect(existsSync(join(stateDir, "sessions", "s1.json"))).toBe(false);
+			const skipped = await runJevHook("claude-code", claude(ACK), jev.url, {
+				decisions: { enabled: true },
+			});
+			expect(jev.requests).toHaveLength(1);
+			expect(jev.requests[0]?.session_id).toBe("s1");
+			// No hookSpecificOutput: the prompt reaches the model unchanged.
+			expect(JSON.parse(skipped.stdout)).toEqual({ systemMessage: NOTICE_004 });
+			expect(existsSync(join(stateDir, "sessions", "s1.json"))).toBe(false);
 
-				const quiet = await runJevHook("claude-code", claude(ACK), jev.url, { decisions: { enabled: true }, claude: { echo: false } });
-				expect(jev.requests).toHaveLength(2);
-				expect(quiet.stdout).toBe("");
-				expect(existsSync(join(stateDir, "sessions", "s1.json"))).toBe(false);
-			} finally {
-				jev.stop();
-			}
-		},
-		30_000,
-	);
+			const quiet = await runJevHook("claude-code", claude(ACK), jev.url, {
+				decisions: { enabled: true },
+				claude: { echo: false },
+			});
+			expect(jev.requests).toHaveLength(2);
+			expect(quiet.stdout).toBe("");
+			expect(existsSync(join(stateDir, "sessions", "s1.json"))).toBe(false);
+		} finally {
+			jev.stop();
+		}
+	}, 30_000);
 
-	test(
-		"on Grok a Jev skip leaves last-plan.json exactly as a deterministic TRIVIAL_RE skip does (AC-3.2)",
-		async () => {
-			const jev = fakeJev(0.04);
-			const path = carrierPath(stateDir);
-			try {
-				writeStalePlan();
-				// shunt has no Grok login check, so selection reaches the Jev gate without a login (AD-2a removed the auto Claude switch).
-				const grokShunt = { transport: "shunt", shuntBaseUrl: "http://127.0.0.1:9" };
-				await runJevHook("grok-build", { sessionId: "s1", promptId: "p1", userPrompt: "thanks" }, jev.url, { decisions: { enabled: true }, grok: grokShunt });
-				const afterTrivial = existsSync(path) ? readFileSync(path, "utf8") : null;
-				expect(jev.requests).toHaveLength(0);
+	test("on Grok a Jev skip leaves last-plan.json exactly as a deterministic TRIVIAL_RE skip does (AC-3.2)", async () => {
+		const jev = fakeJev(0.04);
+		const path = carrierPath(stateDir);
+		try {
+			writeStalePlan();
+			// shunt has no Grok login check, so selection reaches the Jev gate without a login (AD-2a removed the auto Claude switch).
+			const grokShunt = { transport: "shunt", shuntBaseUrl: "http://127.0.0.1:9" };
+			await runJevHook(
+				"grok-build",
+				{ sessionId: "s1", promptId: "p1", userPrompt: "thanks" },
+				jev.url,
+				{ decisions: { enabled: true }, grok: grokShunt },
+			);
+			const afterTrivial = existsSync(path) ? readFileSync(path, "utf8") : null;
+			expect(jev.requests).toHaveLength(0);
 
-				writeStalePlan();
-				await runJevHook("grok-build", { sessionId: "s1", promptId: "p2", userPrompt: ACK }, jev.url, { decisions: { enabled: true }, grok: grokShunt });
-				expect(jev.requests).toHaveLength(1);
-				expect(existsSync(path) ? readFileSync(path, "utf8") : null).toEqual(afterTrivial);
-				expect(afterTrivial).toBeNull();
-			} finally {
-				jev.stop();
-			}
-		},
-		30_000,
-	);
+			writeStalePlan();
+			await runJevHook(
+				"grok-build",
+				{ sessionId: "s1", promptId: "p2", userPrompt: ACK },
+				jev.url,
+				{ decisions: { enabled: true }, grok: grokShunt },
+			);
+			expect(jev.requests).toHaveLength(1);
+			expect(existsSync(path) ? readFileSync(path, "utf8") : null).toEqual(afterTrivial);
+			expect(afterTrivial).toBeNull();
+		} finally {
+			jev.stop();
+		}
+	}, 30_000);
 });

@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import { VEV } from "../test.helpers.ts";
 import { QUESTIONS } from "./questions.ts";
 import type { DecisionQuestion, DecisionsRequest } from "./types.ts";
 import { VERCEL_DECISIONS_URL } from "./types.ts";
-import { buildVercelBody, decideVercel, parseVercelResponse, resolveGatewayModel, vercelHeaders } from "./vercel.ts";
+import {
+	buildVercelBody,
+	decideVercel,
+	parseVercelResponse,
+	resolveGatewayModel,
+	vercelHeaders,
+} from "./vercel.ts";
 
 const K = "vck_test_key_do_not_use";
 const MODEL = "~typesafe/jev-latest";
 
-function request(questions: DecisionsRequest["questions"] = { plan_worthy: QUESTIONS.plan }): DecisionsRequest {
+function request(
+	questions: DecisionsRequest["questions"] = { plan_worthy: QUESTIONS.plan },
+): DecisionsRequest {
 	return { model: MODEL, state: { message: "hi" }, questions };
 }
 
@@ -46,7 +55,11 @@ describe("buildVercelBody", () => {
 		expect(body).toEqual({
 			state: { message: "hi" },
 			questions: {
-				plan_worthy: { type: "boolean", instructions: QUESTIONS.plan.instructions, criteria: QUESTIONS.plan.criteria },
+				plan_worthy: {
+					type: "boolean",
+					instructions: QUESTIONS.plan.instructions,
+					criteria: QUESTIONS.plan.criteria,
+				},
 			},
 		});
 	});
@@ -118,7 +131,9 @@ describe("parseVercelResponse", () => {
 	});
 
 	test("a non-unit confidence is dropped, not an error", () => {
-		const qs: Record<string, DecisionQuestion> = { c: { type: "choice", instructions: "i", criteria: { x: "X", y: "Y" } } };
+		const qs: Record<string, DecisionQuestion> = {
+			c: { type: "choice", instructions: "i", criteria: { x: "X", y: "Y" } },
+		};
 		const response = parseVercelResponse(
 			{
 				answers: { c: { type: "choice", choice: "x" } },
@@ -133,7 +148,11 @@ describe("parseVercelResponse", () => {
 	test.each([
 		["not an object", 42, "response must be a JSON object"],
 		["answers not an object", { answers: [] }, "answers must be an object"],
-		["unasked answer", { answers: { nope: { type: "boolean", probability: 1 } } }, "answers.nope was not asked"],
+		[
+			"unasked answer",
+			{ answers: { nope: { type: "boolean", probability: 1 } } },
+			"answers.nope was not asked",
+		],
 		["missing answer", { answers: {} }, "answers.plan_worthy is missing"],
 		[
 			"wrong answer type",
@@ -156,7 +175,9 @@ describe("parseVercelResponse", () => {
 			"usage.inputTokens must be a finite number >= 0",
 		],
 	])("rejects %s", (_name, body, rule) => {
-		expect(() => parseVercelResponse(body, questions, "typesafe-ai/jev")).toThrow(`decisions invalid-response: ${rule}`);
+		expect(() => parseVercelResponse(body, questions, "typesafe-ai/jev")).toThrow(
+			`decisions invalid-response: ${rule}`,
+		);
 	});
 });
 
@@ -166,7 +187,10 @@ describe("decideVercel", () => {
 		headers: Record<string, string>;
 		body: unknown;
 	}
-	function recordingFetch(queue: Array<() => Response>): { fetch: typeof fetch; calls: Recorded[] } {
+	function recordingFetch(queue: Array<() => Response>): {
+		fetch: typeof fetch;
+		calls: Recorded[];
+	} {
 		const calls: Recorded[] = [];
 		const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
 			const headers: Record<string, string> = {};
@@ -180,12 +204,8 @@ describe("decideVercel", () => {
 		}) as typeof fetch;
 		return { fetch: fetchImpl, calls };
 	}
-	const VEV = (p: number) => () =>
-		Response.json({
-			answers: { plan_worthy: { type: "boolean", probability: p } },
-			usage: { inputTokens: 100, outputTokens: 5 },
-		});
-	const ERR = (s: number) => () => Response.json({ error: { message: `no for ${K}` } }, { status: s });
+	const ERR = (s: number) => () =>
+		Response.json({ error: { message: `no for ${K}` } }, { status: s });
 
 	test("posts the v4 endpoint with the gateway headers and a model-free body", async () => {
 		const r = recordingFetch([VEV(0.97)]);
@@ -203,7 +223,11 @@ describe("decideVercel", () => {
 		expect(call.body).toEqual({
 			state: { message: "hi" },
 			questions: {
-				plan_worthy: { type: "boolean", instructions: QUESTIONS.plan.instructions, criteria: QUESTIONS.plan.criteria },
+				plan_worthy: {
+					type: "boolean",
+					instructions: QUESTIONS.plan.instructions,
+					criteria: QUESTIONS.plan.criteria,
+				},
 			},
 		});
 		if (!outcome.ok) throw new Error("expected ok");
@@ -215,19 +239,56 @@ describe("decideVercel", () => {
 		expect(outcome.attempts).toBe(1);
 	});
 
-	test("an explicit model travels verbatim in ai-model-id", async () => {
+	test("an explicit Jev model travels verbatim in ai-model-id", async () => {
 		const r = recordingFetch([VEV(0.5)]);
-		await decideVercel({ ...request(), model: "custom/jev" }, { apiKey: K, timeoutMs: 3000, fetch: r.fetch });
-		expect(r.calls[0]?.headers?.["ai-model-id"]).toBe("custom/jev");
+		await decideVercel(
+			{ ...request(), model: "typesafe/jev-1.13-20260917" },
+			{ apiKey: K, timeoutMs: 3000, fetch: r.fetch },
+		);
+		expect(r.calls[0]?.headers?.["ai-model-id"]).toBe("typesafe/jev-1.13-20260917");
+	});
+
+	test("a non-Jev model is refused with kind model and zero calls", async () => {
+		const r = recordingFetch([VEV(0.5)]);
+		const outcome = await decideVercel(
+			{ ...request(), model: "anthropic/claude-opus-5.5" },
+			{ apiKey: K, timeoutMs: 3000, fetch: r.fetch },
+		);
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) throw new Error("expected error");
+		expect(outcome.error.kind).toBe("model");
+		expect(outcome.error.message).toContain("anthropic/claude-opus-5.5");
+		expect(outcome.attempts).toBe(0);
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("after a 402 nothing else is tried: one call with the same model, URL and key", async () => {
+		const r = recordingFetch([ERR(402), VEV(0.5)]);
+		const outcome = await decideVercel(request(), { apiKey: K, timeoutMs: 3000, fetch: r.fetch });
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) throw new Error("expected error");
+		expect(outcome.error.kind).toBe("credits");
+		expect(r.calls).toHaveLength(1);
+		expect(r.calls[0]?.url).toBe(VERCEL_DECISIONS_URL);
+		expect(r.calls[0]?.headers["ai-model-id"]).toBe("typesafe-ai/jev");
+		expect(r.calls[0]?.headers.authorization).toBe(`Bearer ${K}`);
 	});
 
 	test("shares the core's retry and error discipline: 503 retries once, 401 maps to auth", async () => {
 		const retry = recordingFetch([ERR(503), VEV(0.5)]);
-		const retried = await decideVercel(request(), { apiKey: K, timeoutMs: 10_000, fetch: retry.fetch });
+		const retried = await decideVercel(request(), {
+			apiKey: K,
+			timeoutMs: 10_000,
+			fetch: retry.fetch,
+		});
 		expect(retried.ok).toBe(true);
 		expect(retried.attempts).toBe(2);
 		const auth = recordingFetch([ERR(401), VEV(0.5)]);
-		const denied = await decideVercel(request(), { apiKey: K, timeoutMs: 10_000, fetch: auth.fetch });
+		const denied = await decideVercel(request(), {
+			apiKey: K,
+			timeoutMs: 10_000,
+			fetch: auth.fetch,
+		});
 		expect(denied.ok).toBe(false);
 		if (denied.ok) throw new Error("expected error");
 		expect(denied.error.kind).toBe("auth");
@@ -237,7 +298,10 @@ describe("decideVercel", () => {
 
 	test("a locally invalid request fails without a call", async () => {
 		const r = recordingFetch([VEV(0.5)]);
-		const outcome = await decideVercel({ ...request(), questions: {} }, { apiKey: K, timeoutMs: 3000, fetch: r.fetch });
+		const outcome = await decideVercel(
+			{ ...request(), questions: {} },
+			{ apiKey: K, timeoutMs: 3000, fetch: r.fetch },
+		);
 		expect(outcome.ok).toBe(false);
 		expect(outcome.attempts).toBe(0);
 		expect(r.calls).toHaveLength(0);

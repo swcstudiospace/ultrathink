@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeConfigPaths, defaultConfig, loadConfig } from "../config.ts";
+import { byId } from "../test.helpers.ts";
 import { checkConfig, suggestName } from "./config-check.ts";
 import { buildReport, formatReport, reportJson } from "./report.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
@@ -32,12 +33,6 @@ describe("checkConfig", () => {
 		return findings.filter((finding) => finding.level === "warn" || finding.level === "error");
 	}
 
-	function byId(findings: Finding[], id: string): Finding {
-		const found = findings.find((finding) => finding.id === id);
-		if (!found) throw new Error(`no finding ${id} in ${findings.map((finding) => finding.id).join(", ")}`);
-		return found;
-	}
-
 	/** `defaultConfig()` as a user would write it: everything except the in-memory model provenance. */
 	function defaultsAsFile(): Record<string, unknown> {
 		const file: Record<string, unknown> = { ...defaultConfig() };
@@ -49,7 +44,11 @@ describe("checkConfig", () => {
 		dir = mkdtempSync(join(tmpdir(), "ut-doctor-config-"));
 		mkdirSync(join(dir, "project"), { recursive: true });
 		deps = {
-			env: { HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "xdg"), CLAUDE_CONFIG_DIR: join(dir, "claude") },
+			env: {
+				HOME: join(dir, "home"),
+				XDG_CONFIG_HOME: join(dir, "xdg"),
+				CLAUDE_CONFIG_DIR: join(dir, "claude"),
+			},
 			cwd: join(dir, "project"),
 			now: () => 0,
 			which: () => undefined,
@@ -72,17 +71,24 @@ describe("checkConfig", () => {
 		expect(byId(findings, "config.project.missing").detail).toContain(path("project"));
 	});
 
-	test.each<Layer>(["user", "claude", "project"])("a %s file written from defaultConfig() has nothing above info (guards schema drift)", (layer) => {
-		write(layer, defaultsAsFile());
-		const findings = checkConfig(deps);
-		expect(aboveInfo(findings)).toEqual([]);
-		expect(findings.some((finding) => finding.id.includes("project-restricted"))).toBe(false);
-		expect(findings.some((finding) => finding.level === "ok")).toBe(true);
-	});
+	test.each<Layer>(["user", "claude", "project"])(
+		"a %s file written from defaultConfig() has nothing above info (guards schema drift)",
+		(layer) => {
+			write(layer, defaultsAsFile());
+			const findings = checkConfig(deps);
+			expect(aboveInfo(findings)).toEqual([]);
+			expect(findings.some((finding) => finding.id.includes("project-restricted"))).toBe(false);
+			expect(findings.some((finding) => finding.level === "ok")).toBe(true);
+		},
+	);
 
 	test("documented pstack.cursorDir and pstack.mapping are known settings", () => {
 		write("user", {
-			pstack: { enabled: true, cursorDir: "/opt/cursor", mapping: { plan: ["how"], review: ["interrogate"] } },
+			pstack: {
+				enabled: true,
+				cursorDir: "/opt/cursor",
+				mapping: { plan: ["how"], review: ["interrogate"] },
+			},
 		});
 		const findings = checkConfig(deps);
 		expect(findings.filter((finding) => finding.id.includes("unknown"))).toEqual([]);
@@ -91,67 +97,115 @@ describe("checkConfig", () => {
 
 	test("every default key is known, so a new default key needs no edit here", () => {
 		const defaults = defaultsAsFile();
-		const keys = Object.entries(defaults).flatMap(([section, value]) => Object.keys(value as Record<string, unknown>).map((key) => `${section}.${key}`));
+		const keys = Object.entries(defaults).flatMap(([section, value]) =>
+			Object.keys(value as Record<string, unknown>).map((key) => `${section}.${key}`),
+		);
 		expect(keys.length).toBeGreaterThan(50);
 		write("user", defaults);
 		expect(checkConfig(deps).filter((finding) => finding.id.includes("unknown"))).toEqual([]);
 	});
 
 	test("a key written with the value it already defaults to, padded or with a trailing slash, is not a finding", () => {
-		write("user", { grok: { baseUrl: `${defaultConfig().grok.baseUrl}/`, bin: "  grok " }, ship: { autoMerge: false } });
+		write("user", {
+			grok: { baseUrl: `${defaultConfig().grok.baseUrl}/`, bin: "  grok " },
+			ship: { autoMerge: false },
+		});
 		expect(aboveInfo(checkConfig(deps))).toEqual([]);
 	});
 
-	test.each<"direct" | "gateway">(["direct", "gateway"])("supported optional %s backends are known and honored in user layers", (backend) => {
-		write("user", { hindsight: { backend: "gateway" }, ragflow: { backend: "gateway" }, substrate: { backend: "gateway" } });
-		write("claude", { hindsight: { backend }, ragflow: { backend }, substrate: { backend } });
-		const findings = checkConfig(deps);
-		expect(aboveInfo(findings)).toEqual([]);
-		expect(findings.filter((finding) => finding.id.includes("unknown-key"))).toEqual([]);
-		const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
-		for (const section of ["hindsight", "ragflow", "substrate"] as const) {
-			expect(effective[section].backend ?? "direct").toBe(backend);
-		}
-	});
+	test.each<"direct" | "gateway">(["direct", "gateway"])(
+		"supported optional %s backends are known and honored in user layers",
+		(backend) => {
+			write("user", {
+				hindsight: { backend: "gateway" },
+				ragflow: { backend: "gateway" },
+				substrate: { backend: "gateway" },
+			});
+			write("claude", { hindsight: { backend }, ragflow: { backend }, substrate: { backend } });
+			const findings = checkConfig(deps);
+			expect(aboveInfo(findings)).toEqual([]);
+			expect(findings.filter((finding) => finding.id.includes("unknown-key"))).toEqual([]);
+			const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
+			for (const section of ["hindsight", "ragflow", "substrate"] as const) {
+				expect(effective[section].backend ?? "direct").toBe(backend);
+			}
+		},
+	);
 
 	test("invalid optional backend choices warn with the retained effective selection, not an unknown key", () => {
 		write("user", { hindsight: { backend: "gateway" }, ragflow: { backend: "gateway" } });
-		write("claude", { hindsight: { backend: "auto" }, ragflow: { backend: " gateway " }, substrate: { backend: " direct " } });
+		write("claude", {
+			hindsight: { backend: "auto" },
+			ragflow: { backend: " gateway " },
+			substrate: { backend: " direct " },
+		});
 		const findings = checkConfig(deps);
 		expect(findings.filter((finding) => finding.id.includes("unknown-key"))).toEqual([]);
 		for (const section of ["hindsight", "ragflow", "substrate"]) {
-			expect(byId(findings, `config.claude-user.ignored.${section}.backend`)).toMatchObject({ level: "warn" });
+			expect(byId(findings, `config.claude-user.ignored.${section}.backend`)).toMatchObject({
+				level: "warn",
+			});
 			expect(byId(findings, `config.claude-user.ignored.${section}.backend`).title).toContain(
 				`effective value is "${section === "substrate" ? "direct" : "gateway"}"`,
 			);
 		}
-		write("claude", { hindsight: { backend: false }, ragflow: { backend: [] }, substrate: { backend: null } });
+		write("claude", {
+			hindsight: { backend: false },
+			ragflow: { backend: [] },
+			substrate: { backend: null },
+		});
 		const wrongTypes = checkConfig(deps);
 		for (const section of ["hindsight", "ragflow", "substrate"]) {
-			expect(byId(wrongTypes, `config.claude-user.wrong-type.${section}.backend`).level).toBe("warn");
+			expect(byId(wrongTypes, `config.claude-user.wrong-type.${section}.backend`).level).toBe(
+				"warn",
+			);
 		}
 	});
 
 	test("project optional backends retain the lower selection and report the existing restriction IDs", () => {
-		write("user", { hindsight: { backend: "gateway" }, ragflow: { backend: "gateway" }, substrate: { backend: "gateway" } });
-		write("project", { hindsight: { backend: "direct" }, ragflow: { backend: "direct" }, substrate: { backend: "direct" } });
+		write("user", {
+			hindsight: { backend: "gateway" },
+			ragflow: { backend: "gateway" },
+			substrate: { backend: "gateway" },
+		});
+		write("project", {
+			hindsight: { backend: "direct" },
+			ragflow: { backend: "direct" },
+			substrate: { backend: "direct" },
+		});
 		const findings = checkConfig(deps);
 		expect(aboveInfo(findings)).toEqual([]);
 		const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
 		for (const section of ["hindsight", "ragflow", "substrate"] as const) {
-			expect(byId(findings, `config.project.project-restricted.${section}.backend`).level).toBe("info");
+			expect(byId(findings, `config.project.project-restricted.${section}.backend`).level).toBe(
+				"info",
+			);
 			expect(effective[section].backend).toBe("gateway");
 		}
 	});
 
 	test("adjusted values use all preceding layers rather than fresh defaults", () => {
-		write("user", { ship: { minScore: 4 }, hindsight: { enabled: true }, teach: { recallLimit: 8 } });
+		write("user", {
+			ship: { minScore: 4 },
+			hindsight: { enabled: true },
+			teach: { recallLimit: 8 },
+		});
 		write("claude", { ship: { minScore: 3 }, teach: { recallLimit: 99 } });
-		write("project", { ship: { minScore: 6 }, hindsight: { enabled: false }, teach: { recallLimit: 9 } });
+		write("project", {
+			ship: { minScore: 6 },
+			hindsight: { enabled: false },
+			teach: { recallLimit: 9 },
+		});
 		const findings = checkConfig(deps);
-		expect(byId(findings, "config.claude-user.ignored.teach.recallLimit").title).toContain("effective value is 8");
-		expect(byId(findings, "config.project.ignored.ship.minScore").title).toContain("effective value is 3");
-		expect(byId(findings, "config.project.project-restricted.teach.recallLimit").level).toBe("info");
+		expect(byId(findings, "config.claude-user.ignored.teach.recallLimit").title).toContain(
+			"effective value is 8",
+		);
+		expect(byId(findings, "config.project.ignored.ship.minScore").title).toContain(
+			"effective value is 3",
+		);
+		expect(byId(findings, "config.project.project-restricted.teach.recallLimit").level).toBe(
+			"info",
+		);
 		expect(findings.some((finding) => finding.id.endsWith("hindsight.enabled"))).toBe(false);
 		const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
 		expect(effective.ship.minScore).toBe(3);
@@ -159,17 +213,24 @@ describe("checkConfig", () => {
 		expect(effective.hindsight.enabled).toBe(false);
 	});
 
-	test.each(["missing", "invalid-json", "not-object", "unreadable"] as const)("a %s intermediate layer preserves lower effective values", (kind) => {
-		write("user", { ship: { minScore: 4 } });
-		if (kind === "invalid-json") write("claude", "{");
-		else if (kind === "not-object") write("claude", []);
-		else if (kind === "unreadable") mkdirSync(path("claude"), { recursive: true });
-		write("project", { ship: { minScore: 6 } });
-		const findings = checkConfig(deps);
-		expect(byId(findings, `config.claude-user.${kind}`).level).toBe(kind === "missing" ? "info" : "error");
-		expect(byId(findings, "config.project.ignored.ship.minScore").title).toContain("effective value is 4");
-		expect(loadConfig(claudeConfigPaths(deps.cwd, deps.env)).ship.minScore).toBe(4);
-	});
+	test.each(["missing", "invalid-json", "not-object", "unreadable"] as const)(
+		"a %s intermediate layer preserves lower effective values",
+		(kind) => {
+			write("user", { ship: { minScore: 4 } });
+			if (kind === "invalid-json") write("claude", "{");
+			else if (kind === "not-object") write("claude", []);
+			else if (kind === "unreadable") mkdirSync(path("claude"), { recursive: true });
+			write("project", { ship: { minScore: 6 } });
+			const findings = checkConfig(deps);
+			expect(byId(findings, `config.claude-user.${kind}`).level).toBe(
+				kind === "missing" ? "info" : "error",
+			);
+			expect(byId(findings, "config.project.ignored.ship.minScore").title).toContain(
+				"effective value is 4",
+			);
+			expect(loadConfig(claudeConfigPaths(deps.cwd, deps.env)).ship.minScore).toBe(4);
+		},
+	);
 
 	test("ship.autoMerg is an unknown key and suggests ship.autoMerge", () => {
 		write("user", { ship: { autoMerg: true } });
@@ -207,17 +268,26 @@ describe("checkConfig", () => {
 	});
 
 	test("an effective value that differs from the written one is named for numbers, enums and arrays", () => {
-		write("user", { ship: { mergeMethod: "fast-forward", skills: ["gsd-", 7], minScore: 6 }, think: { engine: "gpt" } });
+		write("user", {
+			ship: { mergeMethod: "fast-forward", skills: ["gsd-", 7], minScore: 6 },
+			think: { engine: "gpt" },
+		});
 		const findings = checkConfig(deps);
 		expect(byId(findings, "config.user.ignored.ship.mergeMethod").title).toContain('"squash"');
 		expect(byId(findings, "config.user.ignored.ship.skills").title).toContain('["gsd-"]');
-		expect(byId(findings, "config.user.ignored.ship.minScore").title).toContain("effective value is 5");
+		expect(byId(findings, "config.user.ignored.ship.minScore").title).toContain(
+			"effective value is 5",
+		);
 		expect(byId(findings, "config.user.ignored.think.engine").title).toContain('"auto"');
 	});
 
 	test.each([
 		["plain", "doctor-dummy-user", "doctor-dummy-password"],
-		["encoded", "%64%6f%63%74%6f%72%2d%64%75%6d%6d%79%2d%75%73%65%72", "%64%6f%63%74%6f%72%2d%64%75%6d%6d%79%2d%70%61%73%73%77%6f%72%64"],
+		[
+			"encoded",
+			"%64%6f%63%74%6f%72%2d%64%75%6d%6d%79%2d%75%73%65%72",
+			"%64%6f%63%74%6f%72%2d%64%75%6d%6d%79%2d%70%61%73%73%77%6f%72%64",
+		],
 		["username-only", "doctor-dummy-user", ""],
 		["password-only", "", "doctor-dummy-password"],
 		["long", "doctor-dummy-user", `doctor-dummy-password${"x".repeat(100)}`],
@@ -235,7 +305,12 @@ describe("checkConfig", () => {
 			expect(output).toContain("substrate.url");
 			expect(output).toContain("ignored");
 			expect(output).toContain("gateway.test");
-			for (const secret of ["doctor-dummy-user", "doctor-dummy-password", username, password].filter(Boolean)) {
+			for (const secret of [
+				"doctor-dummy-user",
+				"doctor-dummy-password",
+				username,
+				password,
+			].filter(Boolean)) {
 				expect(output).not.toContain(secret);
 				expect(decodeURIComponent(output)).not.toContain(decodeURIComponent(secret));
 			}
@@ -247,9 +322,15 @@ describe("checkConfig", () => {
 	test("a wrong type is reported with the expected and the actual type", () => {
 		write("user", { ship: { autoMerge: "yes", skills: "gsd-" }, hitl: "on" });
 		const findings = checkConfig(deps);
-		expect(byId(findings, "config.user.wrong-type.ship.autoMerge").title).toContain("expected boolean, got string");
-		expect(byId(findings, "config.user.wrong-type.ship.skills").title).toContain("expected array, got string");
-		expect(byId(findings, "config.user.wrong-type.hitl").title).toContain("expected object, got string");
+		expect(byId(findings, "config.user.wrong-type.ship.autoMerge").title).toContain(
+			"expected boolean, got string",
+		);
+		expect(byId(findings, "config.user.wrong-type.ship.skills").title).toContain(
+			"expected array, got string",
+		);
+		expect(byId(findings, "config.user.wrong-type.hitl").title).toContain(
+			"expected object, got string",
+		);
 	});
 
 	test("decisions.enabled false gets the special message, in a user and a project file", () => {
@@ -259,7 +340,9 @@ describe("checkConfig", () => {
 		for (const layer of ["user", "project"]) {
 			const finding = byId(findings, `config.${layer}.ignored.decisions.enabled`);
 			expect(finding.level).toBe("warn");
-			expect(finding.title).toContain("Jev is always on; set ULTRATHINK_DECISIONS=0 to turn it off");
+			expect(finding.title).toContain(
+				"Jev is always on; set ULTRATHINK_DECISIONS=0 to turn it off",
+			);
 		}
 	});
 
@@ -298,7 +381,13 @@ describe("checkConfig", () => {
 		});
 		const findings = checkConfig(deps);
 		expect(aboveInfo(findings)).toEqual([]);
-		for (const id of ["hindsight.url", "hindsight.enabled", "teach.recallLimit", "decisions.zdr", "ragflow.url"]) {
+		for (const id of [
+			"hindsight.url",
+			"hindsight.enabled",
+			"teach.recallLimit",
+			"decisions.zdr",
+			"ragflow.url",
+		]) {
 			const finding = byId(findings, `config.project.project-restricted.${id}`);
 			expect(finding.level).toBe("info");
 			expect(finding.title).toContain("ignored in a project file by design");
@@ -308,12 +397,25 @@ describe("checkConfig", () => {
 	test("a project file that picks the executables, grok home/URLs or claude settingSources gets the by-design info (SPE-17435)", () => {
 		write("project", {
 			claude: { bin: "./node_modules/.bin/claude", settingSources: "project", model: "opus" },
-			grok: { bin: "./grok", home: "./.grok", baseUrl: "https://evil.example/v1", shuntBaseUrl: "https://evil.example" },
+			grok: {
+				bin: "./grok",
+				home: "./.grok",
+				baseUrl: "https://evil.example/v1",
+				shuntBaseUrl: "https://evil.example",
+			},
 			muse: { bin: "./muse" },
 		});
 		const findings = checkConfig(deps);
 		expect(aboveInfo(findings)).toEqual([]);
-		for (const id of ["claude.bin", "claude.settingSources", "grok.bin", "grok.home", "grok.baseUrl", "grok.shuntBaseUrl", "muse.bin"]) {
+		for (const id of [
+			"claude.bin",
+			"claude.settingSources",
+			"grok.bin",
+			"grok.home",
+			"grok.baseUrl",
+			"grok.shuntBaseUrl",
+			"muse.bin",
+		]) {
 			const finding = byId(findings, `config.project.project-restricted.${id}`);
 			expect(finding.level).toBe("info");
 			expect(finding.title).toContain("ignored in a project file by design");
@@ -321,12 +423,21 @@ describe("checkConfig", () => {
 		expect(findings.some((finding) => finding.id.endsWith("claude.model"))).toBe(false);
 		const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
 		expect(effective.claude).toMatchObject({ bin: "claude", settingSources: "", model: "opus" });
-		expect(effective.grok).toMatchObject({ bin: "grok", home: "", baseUrl: defaultConfig().grok.baseUrl, shuntBaseUrl: "" });
+		expect(effective.grok).toMatchObject({
+			bin: "grok",
+			home: "",
+			baseUrl: defaultConfig().grok.baseUrl,
+			shuntBaseUrl: "",
+		});
 		expect(effective.muse.bin).toBe("muse");
 	});
 
 	test("the same keys in a user file are honored and produce nothing above info", () => {
-		write("user", { hindsight: { url: "https://hindsight.example", enabled: true }, teach: { recallLimit: 9 }, decisions: { zdr: false } });
+		write("user", {
+			hindsight: { url: "https://hindsight.example", enabled: true },
+			teach: { recallLimit: 9 },
+			decisions: { zdr: false },
+		});
 		const findings = checkConfig(deps);
 		expect(aboveInfo(findings)).toEqual([]);
 		expect(findings.some((finding) => finding.id.includes("project-restricted"))).toBe(false);
@@ -340,62 +451,102 @@ describe("checkConfig", () => {
 
 	describe("models", () => {
 		test("an unknown host is a warning with a suggestion; a known host with provider and model is clean", () => {
-			write("user", { models: { hosts: { nonsense: { model: "x" }, ompp: { model: "x" }, omp: { provider: "openrouter", model: "gpt" } } } });
+			write("user", {
+				models: {
+					hosts: {
+						nonsense: { model: "x" },
+						ompp: { model: "x" },
+						omp: { provider: "openrouter", model: "gpt" },
+					},
+				},
+			});
 			const findings = checkConfig(deps);
 			expect(byId(findings, "config.user.unknown-host.models.hosts.nonsense").level).toBe("warn");
-			expect(byId(findings, "config.user.unknown-host.models.hosts.nonsense").detail).toContain("claude-code");
-			expect(byId(findings, "config.user.unknown-host.models.hosts.ompp").fix).toBe("Did you mean models.hosts.omp?");
+			expect(byId(findings, "config.user.unknown-host.models.hosts.nonsense").detail).toContain(
+				"claude-code",
+			);
+			expect(byId(findings, "config.user.unknown-host.models.hosts.ompp").fix).toBe(
+				"Did you mean models.hosts.omp?",
+			);
 			expect(findings.filter((finding) => /models\.hosts\.omp(\.|$)/.test(finding.id))).toEqual([]);
 		});
 
 		test("a host entry may hold only provider and model strings", () => {
 			write("user", { models: { hosts: { omp: { modle: "x", provider: 3 }, muse: "x" } } });
 			const findings = checkConfig(deps);
-			expect(byId(findings, "config.user.unknown-key.models.hosts.omp.modle").fix).toBe("Did you mean models.hosts.omp.model?");
-			expect(byId(findings, "config.user.wrong-type.models.hosts.omp.provider").title).toContain("expected string, got number");
-			expect(byId(findings, "config.user.wrong-type.models.hosts.muse").title).toContain("expected object, got string");
+			expect(byId(findings, "config.user.unknown-key.models.hosts.omp.modle").fix).toBe(
+				"Did you mean models.hosts.omp.model?",
+			);
+			expect(byId(findings, "config.user.wrong-type.models.hosts.omp.provider").title).toContain(
+				"expected string, got number",
+			);
+			expect(byId(findings, "config.user.wrong-type.models.hosts.muse").title).toContain(
+				"expected object, got string",
+			);
 		});
 
-		test.each(["\u0000", "\n", "\t", "\u001b", "\u007f", "\u0085"])("nonblank selectors carrying control %j name the actual rejection cause", (control) => {
-			const provider = `${control}doctor-invalid-provider`;
-			const model = `doctor-invalid${control}model`;
-			const providerDefault = `doctor-invalid-default${control}`;
-			write("user", { models: { hosts: { omp: { provider, model } }, providerDefaults: { "my-gateway": providerDefault } } });
-			const findings = checkConfig(deps);
-			for (const key of ["hosts.omp.provider", "hosts.omp.model", "providerDefaults.my-gateway"]) {
-				const finding = byId(findings, `config.user.selector-invalid.models.${key}`);
-				expect(finding.level).toBe("warn");
-				expect(finding.title).toContain("control character");
-				expect(finding.detail).toContain("selection");
-				expect(findings.some((candidate) => candidate.id === `config.user.ignored.models.${key}`)).toBe(false);
-			}
-			const report = buildReport(findings);
-			for (const output of [formatReport(report), reportJson(report)]) {
-				expect(output).toContain("control character");
-				expect(output).not.toContain("reserved provider");
-				expect(output).not.toContain("doctor-invalid");
-			}
-			const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
-			expect(effective.models.hosts.omp).toEqual({ provider, model });
-			expect(effective.models.providerDefaults["my-gateway"]).toBe(providerDefault);
-		});
+		test.each(["\u0000", "\n", "\t", "\u001b", "\u007f", "\u0085"])(
+			"nonblank selectors carrying control %j name the actual rejection cause",
+			(control) => {
+				const provider = `${control}doctor-invalid-provider`;
+				const model = `doctor-invalid${control}model`;
+				const providerDefault = `doctor-invalid-default${control}`;
+				write("user", {
+					models: {
+						hosts: { omp: { provider, model } },
+						providerDefaults: { "my-gateway": providerDefault },
+					},
+				});
+				const findings = checkConfig(deps);
+				for (const key of [
+					"hosts.omp.provider",
+					"hosts.omp.model",
+					"providerDefaults.my-gateway",
+				]) {
+					const finding = byId(findings, `config.user.selector-invalid.models.${key}`);
+					expect(finding.level).toBe("warn");
+					expect(finding.title).toContain("control character");
+					expect(finding.detail).toContain("selection");
+					expect(
+						findings.some((candidate) => candidate.id === `config.user.ignored.models.${key}`),
+					).toBe(false);
+				}
+				const report = buildReport(findings);
+				for (const output of [formatReport(report), reportJson(report)]) {
+					expect(output).toContain("control character");
+					expect(output).not.toContain("reserved provider");
+					expect(output).not.toContain("doctor-invalid");
+				}
+				const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
+				expect(effective.models.hosts.omp).toEqual({ provider, model });
+				expect(effective.models.providerDefaults["my-gateway"]).toBe(providerDefault);
+			},
+		);
 
 		test("valid selectors and entirely blank resets retain normalization and layer precedence without warnings", () => {
 			write("user", {
 				models: {
-					hosts: { omp: { provider: "  openrouter  ", model: " openrouter/anthropic/claude-x:beta " } },
+					hosts: {
+						omp: { provider: "  openrouter  ", model: " openrouter/anthropic/claude-x:beta " },
+					},
 					providerDefaults: { openrouter: " anthropic/claude-x:beta ", "my-gateway": " model-a " },
 				},
 			});
 			expect(aboveInfo(checkConfig(deps))).toEqual([]);
 			const lower = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
-			expect(lower.models.hosts.omp).toEqual({ provider: "openrouter", model: "openrouter/anthropic/claude-x:beta" });
+			expect(lower.models.hosts.omp).toEqual({
+				provider: "openrouter",
+				model: "openrouter/anthropic/claude-x:beta",
+			});
 			expect(lower.models.providerDefaults.openrouter).toBe("anthropic/claude-x:beta");
 			write("claude", {
 				models: { hosts: { omp: { model: "\n\t " } }, providerDefaults: { openrouter: "\n\t " } },
 			});
 			write("project", {
-				models: { hosts: { omp: { provider: "" } }, providerDefaults: { "my-gateway": " model-b " } },
+				models: {
+					hosts: { omp: { provider: "" } },
+					providerDefaults: { "my-gateway": " model-b " },
+				},
 			});
 			expect(aboveInfo(checkConfig(deps))).toEqual([]);
 			const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
@@ -405,11 +556,16 @@ describe("checkConfig", () => {
 		});
 
 		test("providerDefaults keys are free, values must be strings, reserved names are ignored", () => {
-			write("user", `{"models":{"providerDefaults":{"my-gateway":"model-a","blank":"  ","numeric":4,"__proto__":"x","constructor":"x","prototype":"x"}}}`);
+			write(
+				"user",
+				`{"models":{"providerDefaults":{"my-gateway":"model-a","blank":"  ","numeric":4,"__proto__":"x","constructor":"x","prototype":"x"}}}`,
+			);
 			const findings = checkConfig(deps);
 			expect(findings.some((finding) => finding.id.includes("my-gateway"))).toBe(false);
 			expect(findings.some((finding) => finding.id.endsWith("providerDefaults.blank"))).toBe(false);
-			expect(byId(findings, "config.user.wrong-type.models.providerDefaults.numeric").level).toBe("warn");
+			expect(byId(findings, "config.user.wrong-type.models.providerDefaults.numeric").level).toBe(
+				"warn",
+			);
 			for (const provider of ["__proto__", "constructor", "prototype"]) {
 				const finding = byId(findings, `config.user.ignored.models.providerDefaults.${provider}`);
 				expect(finding.level).toBe("warn");
@@ -423,8 +579,12 @@ describe("checkConfig", () => {
 			write("user", { models: { host: {} } });
 			write("claude", { models: [] });
 			const findings = checkConfig(deps);
-			expect(byId(findings, "config.user.unknown-key.models.host").fix).toBe("Did you mean models.hosts?");
-			expect(byId(findings, "config.claude-user.wrong-type.models").title).toContain("expected object, got array");
+			expect(byId(findings, "config.user.unknown-key.models.host").fix).toBe(
+				"Did you mean models.hosts?",
+			);
+			expect(byId(findings, "config.claude-user.wrong-type.models").title).toContain(
+				"expected object, got array",
+			);
 		});
 	});
 

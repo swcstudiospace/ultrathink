@@ -4,7 +4,13 @@ import { describe, expect, test } from "bun:test";
 import type { Clarification } from "../hitl/types.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
-import { buildTrackPlan, generateGraphId, MAX_UPLIFTED_PROMPT_CHARS, nodeStepTitles, splitRationaleSteps } from "./plan.ts";
+import {
+	buildTrackPlan,
+	generateGraphId,
+	MAX_UPLIFTED_PROMPT_CHARS,
+	nodeStepTitles,
+	splitRationaleSteps,
+} from "./plan.ts";
 
 const uplift: UpliftResult = {
 	xml: "<BUILD_PROMPT><ORIGINAL>Add a widget list page</ORIGINAL></BUILD_PROMPT>",
@@ -25,7 +31,15 @@ const graph: ThoughtGraph = {
 			thinking: "Read the request",
 			conclusion: "Add a paginated list",
 		},
-		{ id: "n2", title: "Plan", kind: "synthesize", question: "What is the plan?", dependsOn: ["n1"], thinking: "", conclusion: "" },
+		{
+			id: "n2",
+			title: "Plan",
+			kind: "synthesize",
+			question: "What is the plan?",
+			dependsOn: ["n1"],
+			thinking: "",
+			conclusion: "",
+		},
 	],
 };
 
@@ -62,7 +76,12 @@ describe("buildTrackPlan", () => {
 		});
 
 		expect(plan.issues).toEqual([
-			{ graphId: "ut-fixed", nodeId: "n1", item: "[n1] Understand", thought: "Add a paginated list" },
+			{
+				graphId: "ut-fixed",
+				nodeId: "n1",
+				item: "[n1] Understand",
+				thought: "Add a paginated list",
+			},
 			{ graphId: "ut-fixed", nodeId: "n2", item: "[n2] Plan", thought: "What is the plan?" },
 		]);
 
@@ -85,8 +104,18 @@ describe("buildTrackPlan", () => {
 
 		expect(plan.linearIssues.map((i) => i.nodeId)).toEqual(["n1", "n2"]);
 		expect(plan.linearSubIssues).toEqual([
-			{ nodeId: "n1", step: 1, title: "Understand — Step 1: Read the request", description: "Read the request" },
-			{ nodeId: "n2", step: 1, title: "Plan — Step 1: What is the plan?", description: "What is the plan?" },
+			{
+				nodeId: "n1",
+				step: 1,
+				title: "Understand — Step 1: Read the request",
+				description: "Read the request",
+			},
+			{
+				nodeId: "n2",
+				step: 1,
+				title: "Plan — Step 1: What is the plan?",
+				description: "What is the plan?",
+			},
 		]);
 	});
 
@@ -138,7 +167,11 @@ describe("buildTrackPlan", () => {
 
 	test("truncates a long original into a 120-char task title, keeping the full text in description", () => {
 		const long = "x".repeat(200);
-		const plan = buildTrackPlan({ uplift: { ...uplift, original: long }, clarifications: [], graphId: "ut-fixed" });
+		const plan = buildTrackPlan({
+			uplift: { ...uplift, original: long },
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
 		expect(plan.task.item).toHaveLength(120);
 		expect(plan.task.item.endsWith("...")).toBe(true);
 		expect(plan.task.description).toBe(long);
@@ -156,7 +189,11 @@ describe("buildTrackPlan", () => {
 
 	test("uplifted XML over the Notion rich-text cap is truncated with a marker, staying under the cap", () => {
 		const longXml = `<BUILD_PROMPT><ORIGINAL>${"x".repeat(5000)}</ORIGINAL></BUILD_PROMPT>`;
-		const plan = buildTrackPlan({ uplift: { ...uplift, xml: longXml }, clarifications: [], graphId: "ut-fixed" });
+		const plan = buildTrackPlan({
+			uplift: { ...uplift, xml: longXml },
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
 		expect(plan.task.upliftedPrompt.length).toBeLessThanOrEqual(MAX_UPLIFTED_PROMPT_CHARS);
 		expect(plan.task.upliftedPrompt).toContain("truncated");
 		expect(plan.task.upliftedPrompt.startsWith(longXml.slice(0, 100))).toBe(true);
@@ -194,11 +231,17 @@ describe("splitRationaleSteps", () => {
 		expect(splitRationaleSteps("**1.** a\n**2.** b")).toEqual(["a", "b"]);
 		expect(splitRationaleSteps("Step 1: a\nStep 2 - b\nstep 3. c")).toEqual(["a", "b", "c"]);
 		// Indented list lines (as the CoT prompt's template shows them) still split per line.
-		expect(splitRationaleSteps("1. a\n    2. b has 3. inside\n    3. c")).toEqual(["a", "b has 3. inside", "c"]);
+		expect(splitRationaleSteps("1. a\n    2. b has 3. inside\n    3. c")).toEqual([
+			"a",
+			"b has 3. inside",
+			"c",
+		]);
 	});
 
 	test("unnumbered text is a single step; empty text is no steps", () => {
-		expect(splitRationaleSteps("Just reasoning with 1 idea.")).toEqual(["Just reasoning with 1 idea."]);
+		expect(splitRationaleSteps("Just reasoning with 1 idea.")).toEqual([
+			"Just reasoning with 1 idea.",
+		]);
 		expect(splitRationaleSteps("   ")).toEqual([]);
 		expect(splitRationaleSteps("1. only one step")).toEqual(["only one step"]);
 	});
@@ -226,7 +269,12 @@ describe("buildTrackPlan per-step Sub-Issues", () => {
 	}
 
 	test("one Sub-Issue and one Linear sub-issue per numbered step, at the 5 and 8 boundaries", () => {
-		const plan = buildTrackPlan({ uplift, graph: graphWith({ n1: 5, n2: 8 }), clarifications: [], graphId: "ut-fixed" });
+		const plan = buildTrackPlan({
+			uplift,
+			graph: graphWith({ n1: 5, n2: 8 }),
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
 
 		expect(plan.issues).toHaveLength(2);
 		expect(plan.subIssues).toHaveLength(13);
@@ -253,23 +301,40 @@ describe("buildTrackPlan per-step Sub-Issues", () => {
 		});
 		// Every row still carries the graph id and stays grouped under its own node.
 		expect(plan.subIssues.every((row) => row.graphId === "ut-fixed")).toBe(true);
-		expect(plan.subIssues.map((row) => row.nodeId)).toEqual([...Array(5).fill("n1"), ...Array(8).fill("n2")]);
+		expect(plan.subIssues.map((row) => row.nodeId)).toEqual([
+			...Array(5).fill("n1"),
+			...Array(8).fill("n2"),
+		]);
 	});
 
 	test("nodeStepTitles are exactly the step titles inside the node's Linear sub-issues", () => {
 		const stepped = graphWith({ n1: 3, n2: 1 });
 		stepped.nodes[1]!.thinking = "";
-		const plan = buildTrackPlan({ uplift, graph: stepped, clarifications: [], graphId: "ut-fixed" });
+		const plan = buildTrackPlan({
+			uplift,
+			graph: stepped,
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
 		for (const node of stepped.nodes) {
-			const titles = plan.linearSubIssues.filter((row) => row.nodeId === node.id).map((row) => row.title.slice(`${node.title} — `.length));
+			const titles = plan.linearSubIssues
+				.filter((row) => row.nodeId === node.id)
+				.map((row) => row.title.slice(`${node.title} — `.length));
 			expect(nodeStepTitles(node)).toEqual(titles);
 		}
 		expect(nodeStepTitles(stepped.nodes[1]!)).toEqual(["Step 1: C n2"]);
 	});
 
 	test("Issue rows are unchanged by the split: still one per node carrying the conclusion", () => {
-		const plan = buildTrackPlan({ uplift, graph: graphWith({ n1: 6 }), clarifications: [], graphId: "ut-fixed" });
-		expect(plan.issues).toEqual([{ graphId: "ut-fixed", nodeId: "n1", item: "[n1] Title n1", thought: "C n1" }]);
+		const plan = buildTrackPlan({
+			uplift,
+			graph: graphWith({ n1: 6 }),
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
+		expect(plan.issues).toEqual([
+			{ graphId: "ut-fixed", nodeId: "n1", item: "[n1] Title n1", thought: "C n1" },
+		]);
 		expect(plan.linearIssues).toEqual([{ nodeId: "n1", title: "Title n1", description: "C n1" }]);
 	});
 
@@ -277,7 +342,17 @@ describe("buildTrackPlan per-step Sub-Issues", () => {
 		const long = `1. ${"x".repeat(200)} 2. short`;
 		const graph: ThoughtGraph = {
 			goal: "g",
-			nodes: [{ id: "n1", title: "T", kind: "synthesize", question: "Q", dependsOn: [], thinking: long, conclusion: "C" }],
+			nodes: [
+				{
+					id: "n1",
+					title: "T",
+					kind: "synthesize",
+					question: "Q",
+					dependsOn: [],
+					thinking: long,
+					conclusion: "C",
+				},
+			],
 		};
 		const plan = buildTrackPlan({ uplift, graph, clarifications: [], graphId: "ut-fixed" });
 		expect(plan.subIssues[0]?.thought).toBe("x".repeat(200));

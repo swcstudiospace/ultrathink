@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -17,26 +17,32 @@ import { MAX_ENGINE_ERROR_CHARS } from "../host/display-limits.ts";
 import type { HostId } from "../host/types.ts";
 import { FALLBACK_GRAPH } from "../think/types.ts";
 import type { DecisionPoint, DecisionRecord, DecisionsErrorKind } from "../decisions/types.ts";
+import { openJevHealth, takeJevWarning } from "../decisions/health.ts";
 import {
 	formatDecisionsBit,
 	formatModelSelection,
 	formatPlanSkipNotice,
 	formatPromptContext,
 	formatSummary,
-	HANDOFF_MAX_CHARS,
 	SKILL_CONTEXT_HEADER,
 	SUBSTRATE_CONTEXT_HEADER,
 	TRACKING_OFF_NOTE,
 	truncateXml,
 	UPLIFT_CONTEXT_HEADER,
 } from "./output.ts";
+import { HANDOFF_MAX_CHARS } from "../host/display-limits.ts";
 import type { ControlState } from "./state.ts";
 import type { TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { KnowledgeLookup } from "../greptile/knowledge.ts";
 import type { DocsLookup } from "../ragflow/types.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
 
-const result = { xml: "<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n</BUILD_PROMPT>", original: "x", root: "BUILD_PROMPT", source: "llm" as const };
+const result = {
+	xml: "<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n</BUILD_PROMPT>",
+	original: "x",
+	root: "BUILD_PROMPT",
+	source: "llm" as const,
+};
 
 const clarifications: Clarification[] = [
 	{
@@ -94,52 +100,89 @@ describe("formatPromptContext", () => {
 	test("adds the HITL addendum after the graph addendum when clarifications exist", () => {
 		const out = formatPromptContext({ result, graph: FALLBACK_GRAPH, clarifications });
 		expect(out).toContain("## Clarifications (HITL)");
-		expect(out.indexOf("## Graph of Thought")).toBeLessThan(out.indexOf("## Clarifications (HITL)"));
-		expect(formatPromptContext({ result, clarifications: [] })).not.toContain("## Clarifications (HITL)");
+		expect(out.indexOf("## Graph of Thought")).toBeLessThan(
+			out.indexOf("## Clarifications (HITL)"),
+		);
+		expect(formatPromptContext({ result, clarifications: [] })).not.toContain(
+			"## Clarifications (HITL)",
+		);
 	});
 
 	test("adds the ultrathink-kickoff instruction last, naming the state file", () => {
-		const out = formatPromptContext({ result, graph: FALLBACK_GRAPH, clarifications, statePath: "/s/session.json" });
+		const out = formatPromptContext({
+			result,
+			graph: FALLBACK_GRAPH,
+			clarifications,
+			statePath: "/s/session.json",
+		});
 		expect(out).toContain("## Ultrathink tracking");
 		expect(out).toContain("invoke the ultrathink-kickoff skill with stateFile=/s/session.json");
-		expect(out.indexOf("## Clarifications (HITL)")).toBeLessThan(out.indexOf("## Ultrathink tracking"));
+		expect(out.indexOf("## Clarifications (HITL)")).toBeLessThan(
+			out.indexOf("## Ultrathink tracking"),
+		);
 	});
 
 	test("a failed engine adds a degradation notice before the boilerplate spec", () => {
 		const fallback = { ...result, source: "fallback" as const };
-		const out = formatPromptContext({ result: fallback, engine: "claude:sonnet", engineError: "claude exited 1", graph: FALLBACK_GRAPH });
+		const out = formatPromptContext({
+			result: fallback,
+			engine: "claude:sonnet",
+			engineError: "claude exited 1",
+			graph: FALLBACK_GRAPH,
+		});
 		expect(out).toContain("## Planning degraded");
 		expect(out).toContain("claude:sonnet");
 		expect(out).toContain("claude exited 1");
 		expect(out).toContain("generic fallback text");
 		expect(out.indexOf("## Planning degraded")).toBeLessThan(out.indexOf(result.xml));
 		// A fallback with no recorded error still warns, without blaming a call that never threw.
-		const quiet = formatPromptContext({ result: fallback, engine: "claude:sonnet", graph: FALLBACK_GRAPH });
+		const quiet = formatPromptContext({
+			result: fallback,
+			engine: "claude:sonnet",
+			graph: FALLBACK_GRAPH,
+		});
 		expect(quiet).toContain("## Planning degraded");
 		expect(quiet).toContain("no usable model output");
 		expect(quiet).not.toContain("planning call failed");
 		// Real output with no degraded stage stays quiet, even with a recorded error.
-		expect(formatPromptContext({ result, engine: "claude:sonnet", engineError: "claude exited 1" })).not.toContain(
-			"## Planning degraded",
-		);
+		expect(
+			formatPromptContext({ result, engine: "claude:sonnet", engineError: "claude exited 1" }),
+		).not.toContain("## Planning degraded");
 	});
 
 	test("a real spec with degraded think stages names them and reflects the tracking state", () => {
-		const base = { result, engine: "claude:sonnet", engineError: "boom", degraded: ["graph", "fill:n2"], graph: FALLBACK_GRAPH };
+		const base = {
+			result,
+			engine: "claude:sonnet",
+			engineError: "boom",
+			degraded: ["graph", "fill:n2"],
+			graph: FALLBACK_GRAPH,
+		};
 		const out = formatPromptContext({ ...base, tracking: complete });
 		expect(out).toContain("## Planning degraded");
 		expect(out).toContain("the graph structure, the n2 fill use fallback content");
 		expect(out).toContain("(boom)");
-		expect(out).toContain("Tracker rows were created; rows under the unverified parts carry boilerplate.");
+		expect(out).toContain(
+			"Tracker rows were created; rows under the unverified parts carry boilerplate.",
+		);
 		expect(out).not.toContain("generic fallback text");
 		// Deferred (Hermes), partial, and off: never claim rows that do not exist yet.
 		expect(formatPromptContext(base)).toContain("Tracker rows are left for ultrathink-kickoff");
-		expect(formatPromptContext({ ...base, tracking: partial })).toContain("Tracker rows are incomplete (partial)");
-		expect(formatPromptContext({ ...base, trackingOff: true })).toContain("No tracker rows were created (tracking is off).");
+		expect(formatPromptContext({ ...base, tracking: partial })).toContain(
+			"Tracker rows are incomplete (partial)",
+		);
+		expect(formatPromptContext({ ...base, trackingOff: true })).toContain(
+			"No tracker rows were created (tracking is off).",
+		);
 	});
 
 	test("a long engine error is bounded in the notice so handoffs cannot spill", () => {
-		const out = formatPromptContext({ result, engine: "claude:sonnet", engineError: "e".repeat(2000), degraded: ["graph"] });
+		const out = formatPromptContext({
+			result,
+			engine: "claude:sonnet",
+			engineError: "e".repeat(2000),
+			degraded: ["graph"],
+		});
 		expect(out).toContain("## Planning degraded");
 		expect(out).not.toContain("e".repeat(501));
 		expect(out).toContain(`(${"e".repeat(500)})`);
@@ -149,12 +192,18 @@ describe("formatPromptContext", () => {
 		const bare = formatPromptContext({ result, graph: FALLBACK_GRAPH });
 		expect(bare).toContain("## Graph of Thought");
 		expect(bare).not.toContain("matching issue link");
-		expect(formatPromptContext({ result, graph: FALLBACK_GRAPH, plan })).toContain("matching issue link");
+		expect(formatPromptContext({ result, graph: FALLBACK_GRAPH, plan })).toContain(
+			"matching issue link",
+		);
 	});
 
 	test("without a track plan the tracking tail says no rows will exist, not that they are missing", () => {
 		const fallback = { ...result, source: "fallback" as const };
-		const out = formatPromptContext({ result: fallback, graph: FALLBACK_GRAPH, statePath: "/s/session.json" });
+		const out = formatPromptContext({
+			result: fallback,
+			graph: FALLBACK_GRAPH,
+			statePath: "/s/session.json",
+		});
 		expect(out).toContain("## Ultrathink tracking");
 		expect(out).toContain("No tracker rows were created for this plan, and none will be.");
 		expect(out).toContain("it must not create rows");
@@ -163,20 +212,56 @@ describe("formatPromptContext", () => {
 	});
 
 	test("truncates oversized xml at a line boundary and points at the spec file", () => {
-		const big = { ...result, xml: Array.from({ length: 500 }, (_, i) => `<L${i}>${"y".repeat(100)}</L${i}>`).join("\n") };
+		const big = {
+			...result,
+			xml: Array.from({ length: 500 }, (_, i) => `<L${i}>${"y".repeat(100)}</L${i}>`).join("\n"),
+		};
 		const out = formatPromptContext({ result: big, specPath: "/s/big.xml", maxChars: 8_000 });
 		expect(out.length).toBeLessThan(8_300);
 		expect(out).toContain("truncated by Prompt Uplift. Full specification: /s/big.xml");
 		expect(truncateXml("short", 100)).toBe("short");
 	});
 
-	test("lists workflow waves, marking parallel waves, and keeps them past truncation", () => {
-		const node = (id: string, dependsOn: string[]) => ({ id, title: id, kind: "understand" as const, question: "?", dependsOn });
-		const diamond = { goal: "g", nodes: [node("n1", []), node("n2", ["n1"]), node("n3", ["n1"]), node("n4", ["n2", "n3"])] };
-		expect(formatPromptContext({ result, graph: diamond })).toContain("Workflow waves: 1: n1 · 2: n2, n3 (parallel) · 3: n4");
+	test("a specification over 90,000 characters is not truncated when the limit is 0", () => {
+		const long = {
+			...result,
+			xml: Array.from({ length: 1_000 }, (_, i) => `<L${i}>${"y".repeat(100)}</L${i}>`).join("\n"),
+		};
+		expect(long.xml.length).toBeGreaterThan(90_000);
+		for (const limit of [undefined, 0]) {
+			const out = formatPromptContext({ result: long, specPath: "/s/long.xml", maxChars: limit });
+			expect(out).toContain(long.xml);
+			expect(out).not.toContain("truncated by Prompt Uplift");
+		}
+	});
 
-		const big = { ...result, xml: Array.from({ length: 500 }, (_, i) => `<L${i}>${"y".repeat(100)}</L${i}>`).join("\n") };
-		const out = formatPromptContext({ result: big, graph: diamond, clarifications, specPath: "/s/big.xml", maxChars: 3_000 });
+	test("lists workflow waves, marking parallel waves, and keeps them past truncation", () => {
+		const node = (id: string, dependsOn: string[]) => ({
+			id,
+			title: id,
+			kind: "understand" as const,
+			question: "?",
+			dependsOn,
+		});
+		const diamond = {
+			goal: "g",
+			nodes: [node("n1", []), node("n2", ["n1"]), node("n3", ["n1"]), node("n4", ["n2", "n3"])],
+		};
+		expect(formatPromptContext({ result, graph: diamond })).toContain(
+			"Workflow waves: 1: n1 · 2: n2, n3 (parallel) · 3: n4",
+		);
+
+		const big = {
+			...result,
+			xml: Array.from({ length: 500 }, (_, i) => `<L${i}>${"y".repeat(100)}</L${i}>`).join("\n"),
+		};
+		const out = formatPromptContext({
+			result: big,
+			graph: diamond,
+			clarifications,
+			specPath: "/s/big.xml",
+			maxChars: 3_000,
+		});
 		expect(out).toContain("truncated by Prompt Uplift");
 		expect(out).toContain("Workflow waves: 1: n1 · 2: n2, n3 (parallel) · 3: n4");
 		expect(out).toContain("## Clarifications (HITL)");
@@ -186,12 +271,22 @@ describe("formatPromptContext", () => {
 describe("ship", () => {
 	test("the Ship section appears only with ship + statePath, last, and survives truncation", () => {
 		const big = { ...result, xml: `<BUILD_PROMPT>${"x".repeat(10_000)}</BUILD_PROMPT>` };
-		const out = formatPromptContext({ result: big, skill: "gsd-quick", statePath: "/s/x.json", ship: true, maxChars: 3_000 });
+		const out = formatPromptContext({
+			result: big,
+			skill: "gsd-quick",
+			statePath: "/s/x.json",
+			ship: true,
+			maxChars: 3_000,
+		});
 		expect(out).toContain("## Ship");
 		expect(out).toContain("invoke the ultrathink-ship skill with stateFile=/s/x.json");
 		expect(out.indexOf("## Ultrathink tracking")).toBeLessThan(out.indexOf("## Ship"));
-		expect(formatPromptContext({ result, skill: "gsd-quick", statePath: "/s/x.json" })).not.toContain("## Ship");
-		expect(formatPromptContext({ result, skill: "gsd-quick", ship: true })).not.toContain("## Ship");
+		expect(
+			formatPromptContext({ result, skill: "gsd-quick", statePath: "/s/x.json" }),
+		).not.toContain("## Ship");
+		expect(formatPromptContext({ result, skill: "gsd-quick", ship: true })).not.toContain(
+			"## Ship",
+		);
 	});
 });
 
@@ -209,7 +304,13 @@ describe("truncateXml", () => {
 		"</BUILD_PROMPT>",
 	].join("\n");
 	const spec = (thinking: number, nodes = 3) =>
-		["<BUILD_PROMPT>", "<ORIGINAL>x</ORIGINAL>", "<GRAPH_OF_THOUGHT>", ...Array.from({ length: nodes }, (_, i) => node(`n${i + 1}`, thinking)), tail].join("\n");
+		[
+			"<BUILD_PROMPT>",
+			"<ORIGINAL>x</ORIGINAL>",
+			"<GRAPH_OF_THOUGHT>",
+			...Array.from({ length: nodes }, (_, i) => node(`n${i + 1}`, thinking)),
+			tail,
+		].join("\n");
 
 	test("small xml is returned untouched", () => {
 		const xml = spec(50);
@@ -221,7 +322,9 @@ describe("truncateXml", () => {
 		const out = truncateXml(spec(5_000), 4_000, "/s/x.xml");
 		expect(out.length).toBeLessThanOrEqual(4_000);
 		expect(out).not.toContain("ttttt");
-		expect(out.match(/<RATIONALE>\(omitted — full text in the specification file\)<\/RATIONALE>/g)).toHaveLength(3);
+		expect(
+			out.match(/<RATIONALE>\(omitted — full text in the specification file\)<\/RATIONALE>/g),
+		).toHaveLength(3);
 		expect(out).toContain("done n3");
 		expect(out).toContain('<WAVE n="1" parallel="true">n1, n2</WAVE>');
 		expect(out).toContain("<CLARIFICATIONS>");
@@ -235,7 +338,9 @@ describe("truncateXml", () => {
 		expect(out.length).toBeLessThan(2_100);
 		expect(out).not.toContain("ttttt");
 		expect(out).toContain("(omitted — full text in the specification file)");
-		expect(out.endsWith("<!-- truncated by Prompt Uplift. Full specification: /s/x.xml -->")).toBe(true);
+		expect(out.endsWith("<!-- truncated by Prompt Uplift. Full specification: /s/x.xml -->")).toBe(
+			true,
+		);
 		expect(out).not.toContain("<CLARIFICATIONS>");
 	});
 });
@@ -254,6 +359,65 @@ describe("formatSummary", () => {
 		);
 	});
 
+	test("Failover bit follows the model selection and is absent by default", () => {
+		const failover = "claude:claude-haiku-5-5 → grok:grok-4.7 (plan-limit)";
+		expect(formatSummary({ result, engine: "claude:x", engineFailover: failover })).toBe(
+			`Prompt Uplift · BUILD_PROMPT · llm · claude:x · Failover · ${failover}`,
+		);
+		expect(
+			formatSummary({ result, engine: "claude:x", engineFailover: failover, skill: "gsd-quick" }),
+		).toBe(
+			`Prompt Uplift · BUILD_PROMPT · llm · claude:x · Failover · ${failover} · Skill · gsd-quick`,
+		);
+		expect(formatSummary({ result, engine: "claude:x" })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · claude:x",
+		);
+	});
+
+	test("Jev bit shows the breaker's one-time warning and nothing otherwise", () => {
+		const warning = "Jev unavailable: OpenRouter reports insufficient credits since 2026-10-28.";
+		expect(formatSummary({ result, engine: "claude:x", jevWarning: warning })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · claude:x · Jev · unavailable: OpenRouter reports insufficient credits since 2026-10-28.",
+		);
+		expect(formatSummary({ result, engine: "claude:x" })).not.toContain("Jev ·");
+	});
+
+	test("fed by takeJevWarning, the Jev bit appears once per cause entry and never while closed", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ut-summary-jev-"));
+		try {
+			const now = 1_000_000;
+			const summary = (): string =>
+				formatSummary({ result, engine: "claude:x", jevWarning: takeJevWarning(dir, now) });
+			const health = openJevHealth(dir, "openrouter");
+			expect(summary()).not.toContain("Jev ·");
+			health.recordFailure("credits", now);
+			expect(summary()).toContain("Jev · unavailable: OpenRouter reports insufficient credits");
+			expect(summary()).not.toContain("Jev ·");
+			// Only the claimed probe's success ends the spell.
+			const due = health.read().nextProbeAt ?? 0;
+			const probe = health.shouldCall(due);
+			if (!probe.call) throw new Error("expected the probe to be allowed");
+			health.recordSuccess(due, probe);
+			expect(summary()).not.toContain("Jev ·");
+			writeFileSync(join(dir, "decisions-health-openrouter.json"), "{corrupt");
+			expect(summary()).not.toContain("Jev ·");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a failing Vercel rail is named as Vercel in the summary bit", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ut-summary-jev-"));
+		try {
+			openJevHealth(dir, "vercel").recordFailure("auth", 1_000_000);
+			expect(
+				formatSummary({ result, engine: "claude:x", jevWarning: takeJevWarning(dir, 1_000_001) }),
+			).toContain("Jev · unavailable: Vercel AI Gateway rejected the key");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("adds engine, open HITL count and engine error bits only when provided", () => {
 		expect(
 			formatSummary({
@@ -267,13 +431,26 @@ describe("formatSummary", () => {
 		).toBe(
 			"Prompt Uplift · BUILD_PROMPT · llm · claude:sonnet · Graph of Thought · 5 nodes · HITL · 1 question(s) · Engine error · claude timed out after 5ms · 1.0s",
 		);
-		expect(formatSummary({ result, clarifications: [] })).toBe("Prompt Uplift · BUILD_PROMPT · llm");
+		expect(formatSummary({ result, clarifications: [] })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm",
+		);
 	});
 });
 
 describe("Decisions summary bit and plan-skip notice", () => {
-	const KEYS: Record<DecisionPoint, string> = { plan: "plan_worthy", ship: "complete", knowledge: "supported", blocking: "risky", teachable: "teachable", skillworthy: "skillworthy" };
-	const ok = (point: DecisionPoint, p: number, action: DecisionRecord["action"]): DecisionRecord => ({
+	const KEYS: Record<DecisionPoint, string> = {
+		plan: "plan_worthy",
+		ship: "complete",
+		knowledge: "supported",
+		blocking: "risky",
+		teachable: "teachable",
+		skillworthy: "skillworthy",
+	};
+	const ok = (
+		point: DecisionPoint,
+		p: number,
+		action: DecisionRecord["action"],
+	): DecisionRecord => ({
 		point,
 		outcome: "ok",
 		model: "typesafe/jev-1.13-20260917",
@@ -303,11 +480,15 @@ describe("Decisions summary bit and plan-skip notice", () => {
 	test("each point reads as its pinned bit", () => {
 		expect(formatDecisionsBit([ok("plan", 0.97, "plan")])).toBe("Decisions · plan 0.97");
 		expect(formatDecisionsBit([failed("plan", "credits")])).toBe("Decisions · error (credits)");
-		expect(formatDecisionsBit([ok("knowledge", 0.93, "keep"), ok("knowledge", 0.31, "reject-claim")])).toBe(
-			"Decisions · knowledge 1/2 kept",
-		);
 		expect(
-			formatDecisionsBit([ok("blocking", 0.8, "promote"), ok("blocking", 0.1, "keep"), ok("blocking", 0.2, "keep")]),
+			formatDecisionsBit([ok("knowledge", 0.93, "keep"), ok("knowledge", 0.31, "reject-claim")]),
+		).toBe("Decisions · knowledge 1/2 kept");
+		expect(
+			formatDecisionsBit([
+				ok("blocking", 0.8, "promote"),
+				ok("blocking", 0.1, "keep"),
+				ok("blocking", 0.2, "keep"),
+			]),
 		).toBe("Decisions · blocking 1/3 promoted");
 	});
 
@@ -321,34 +502,62 @@ describe("Decisions summary bit and plan-skip notice", () => {
 			ok("blocking", 0.1, "keep"),
 			ok("blocking", 0.2, "keep"),
 		];
-		expect(formatDecisionsBit(records)).toBe("Decisions · plan 0.97 · knowledge 1/2 kept · blocking 1/3 promoted · error (timeout)");
+		expect(formatDecisionsBit(records)).toBe(
+			"Decisions · plan 0.97 · knowledge 1/2 kept · blocking 1/3 promoted · error (timeout)",
+		);
 	});
 
 	test("error kinds are listed once each, in record order", () => {
-		const records = [failed("knowledge", "timeout"), failed("blocking", "credits"), failed("blocking", "timeout")];
+		const records = [
+			failed("knowledge", "timeout"),
+			failed("blocking", "credits"),
+			failed("blocking", "timeout"),
+		];
 		expect(formatDecisionsBit(records)).toBe("Decisions · error (timeout, credits)");
 	});
 
 	test("every failure kind of the plan point reads Decisions · error (<kind>)", () => {
-		for (const kind of ["auth", "credits", "bad-request", "rate-limit", "upstream", "timeout", "invalid-response"] as const) {
+		for (const kind of [
+			"auth",
+			"credits",
+			"bad-request",
+			"rate-limit",
+			"upstream",
+			"timeout",
+			"invalid-response",
+		] as const) {
 			expect(formatDecisionsBit([failed("plan", kind)])).toBe(`Decisions · error (${kind})`);
 		}
 	});
 
 	test("ship records and an empty list add no bit, so the summary is unchanged", () => {
 		expect(formatDecisionsBit([])).toBeUndefined();
-		expect(formatDecisionsBit([ok("ship", 0.94, "none"), failed("ship", "credits")])).toBeUndefined();
-		expect(formatSummary({ result, clarifications, decisions: [] })).toBe(formatSummary({ result, clarifications }));
-		expect(formatSummary({ result, decisions: [ok("ship", 0.94, "none")] })).toBe("Prompt Uplift · BUILD_PROMPT · llm");
+		expect(
+			formatDecisionsBit([ok("ship", 0.94, "none"), failed("ship", "credits")]),
+		).toBeUndefined();
+		expect(formatSummary({ result, clarifications, decisions: [] })).toBe(
+			formatSummary({ result, clarifications }),
+		);
+		expect(formatSummary({ result, decisions: [ok("ship", 0.94, "none")] })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm",
+		);
 	});
 
 	test("the bit follows the HITL bit and precedes the Tracking bit", () => {
-		expect(formatSummary({ result, clarifications, decisions: [ok("plan", 0.97, "plan")], tracked: true, elapsedMs: 1_000 })).toBe(
+		expect(
+			formatSummary({
+				result,
+				clarifications,
+				decisions: [ok("plan", 0.97, "plan")],
+				tracked: true,
+				elapsedMs: 1_000,
+			}),
+		).toBe(
 			"Prompt Uplift · BUILD_PROMPT · llm · HITL · 1 question(s) · Decisions · plan 0.97 · Tracking · ultrathink-kickoff pending · 1.0s",
 		);
-		expect(formatSummary({ result, decisions: [failed("plan", "credits")], trackingOff: true })).toBe(
-			"Prompt Uplift · BUILD_PROMPT · llm · Decisions · error (credits) · Tracking · off",
-		);
+		expect(
+			formatSummary({ result, decisions: [failed("plan", "credits")], trackingOff: true }),
+		).toBe("Prompt Uplift · BUILD_PROMPT · llm · Decisions · error (credits) · Tracking · off");
 	});
 
 	test("P prints truncated to two decimals, so a printed value never crosses its threshold", () => {
@@ -365,9 +574,17 @@ describe("Decisions summary bit and plan-skip notice", () => {
 });
 
 describe("Greptile knowledge base", () => {
-	const used: KnowledgeLookup = { outcome: "used", repo: "acme/widgets", docs: ["index.md", "docs/shipping-workflow.md"], chars: 900, ms: 40, settled: 0 };
+	const used: KnowledgeLookup = {
+		outcome: "used",
+		repo: "acme/widgets",
+		docs: ["index.md", "docs/shipping-workflow.md"],
+		chars: 900,
+		ms: 40,
+		settled: 0,
+	};
 	const heading = "## Greptile knowledge base";
-	const settledSentence = 'Clarifications marked "Greptile knowledge base" were settled from these documents and were not asked.';
+	const settledSentence =
+		'Clarifications marked "Greptile knowledge base" were settled from these documents and were not asked.';
 
 	test("the context section appears only for a used lookup, before the HITL addendum", () => {
 		const out = formatPromptContext({ result, clarifications, knowledge: used });
@@ -384,28 +601,53 @@ describe("Greptile knowledge base", () => {
 	});
 
 	test("settled questions add the not-asked sentence", () => {
-		expect(formatPromptContext({ result, knowledge: { ...used, settled: 2 } })).toContain(`Prefer the repository itself where they disagree. ${settledSentence}`);
+		expect(formatPromptContext({ result, knowledge: { ...used, settled: 2 } })).toContain(
+			`Prefer the repository itself where they disagree. ${settledSentence}`,
+		);
 	});
 
 	test("the section survives a Hermes handoff", () => {
-		const out = formatPromptContext({ result, specPath: "/s/spec.xml", statePath: "/s/x.json", handoff: true, knowledge: used });
+		const out = formatPromptContext({
+			result,
+			specPath: "/s/spec.xml",
+			statePath: "/s/x.json",
+			handoff: true,
+			knowledge: used,
+		});
 		expect(out).toContain(heading);
 	});
 
 	test("summary bit follows the Substrate bit and names the outcome", () => {
-		const summary = (knowledge: KnowledgeLookup) => formatSummary({ result, brief: "a\nb", knowledge });
-		expect(summary(used)).toBe("Prompt Uplift · BUILD_PROMPT · llm · Substrate · brief 2 lines · Knowledge · 2 docs");
-		expect(summary({ ...used, settled: 1 })).toContain("Substrate · brief 2 lines · Knowledge · 2 docs · 1 settled");
+		const summary = (knowledge: KnowledgeLookup) =>
+			formatSummary({ result, brief: "a\nb", knowledge });
+		expect(summary(used)).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · Substrate · brief 2 lines · Knowledge · 2 docs",
+		);
+		expect(summary({ ...used, settled: 1 })).toContain(
+			"Substrate · brief 2 lines · Knowledge · 2 docs · 1 settled",
+		);
 		expect(summary({ outcome: "none", docs: [], chars: 0, ms: 1 })).toContain("· Knowledge · none");
-		expect(summary({ outcome: "off", docs: [], chars: 0, ms: 0 })).toContain("· Knowledge · off (no Greptile login)");
-		expect(summary({ outcome: "error", docs: [], chars: 0, ms: 1 })).toContain("· Knowledge · error");
+		expect(summary({ outcome: "off", docs: [], chars: 0, ms: 0 })).toContain(
+			"· Knowledge · off (no Greptile login)",
+		);
+		expect(summary({ outcome: "error", docs: [], chars: 0, ms: 1 })).toContain(
+			"· Knowledge · error",
+		);
 		expect(formatSummary({ result })).not.toContain("Knowledge");
 	});
 });
 
 const plan: TrackPlan = {
 	graphId: "g1",
-	task: { graphId: "g1", item: "Task", description: "d", upliftedPrompt: "p", agent: "claude", status: "Planned", linearState: "Todo" },
+	task: {
+		graphId: "g1",
+		item: "Task",
+		description: "d",
+		upliftedPrompt: "p",
+		agent: "claude",
+		status: "Planned",
+		linearState: "Todo",
+	},
 	issues: [
 		{ graphId: "g1", nodeId: "n1", item: "[n1] Understand", thought: "t" },
 		{ graphId: "g1", nodeId: "n2", item: "[n2] Build", thought: "t" },
@@ -415,12 +657,21 @@ const plan: TrackPlan = {
 	linearSubIssues: [],
 	hitl: { blocking: [], nonBlocking: [] },
 };
-const ref = (identifier: string) => ({ id: identifier, identifier, url: `https://linear.app/o/issue/${identifier}`, title: identifier });
+const ref = (identifier: string) => ({
+	id: identifier,
+	identifier,
+	url: `https://linear.app/o/issue/${identifier}`,
+	title: identifier,
+});
 const complete: TrackingRefs = {
 	graphId: "g1",
 	status: "complete",
 	linear: { nodes: { n1: ref("ENG-1"), n2: ref("ENG-2") }, steps: { "n1.1": ref("ENG-3") } },
-	notion: { taskUrl: "https://www.notion.so/t", nodes: { n1: "https://www.notion.so/1", n2: "https://www.notion.so/2" }, steps: { "n1.1": "https://www.notion.so/3" } },
+	notion: {
+		taskUrl: "https://www.notion.so/t",
+		nodes: { n1: "https://www.notion.so/1", n2: "https://www.notion.so/2" },
+		steps: { "n1.1": "https://www.notion.so/3" },
+	},
 	errors: [],
 	updatedAt: 1,
 };
@@ -434,34 +685,64 @@ const partial: TrackingRefs = {
 
 describe("tracking", () => {
 	test("Linked issues sit after the workflow waves and before the HITL addendum", () => {
-		const out = formatPromptContext({ result, graph: FALLBACK_GRAPH, clarifications, plan, tracking: complete, statePath: "/s/x.json" });
+		const out = formatPromptContext({
+			result,
+			graph: FALLBACK_GRAPH,
+			clarifications,
+			plan,
+			tracking: complete,
+			statePath: "/s/x.json",
+		});
 		expect(out).toContain(
 			"Tracker rows created before this turn: 2 Linear issues, 1 sub-issues, Notion task https://www.notion.so/t (graph g1, status complete).",
 		);
-		expect(out).toContain("- [ ] n1 · [ENG-1](https://linear.app/o/issue/ENG-1) · Understand · notion: https://www.notion.so/1");
+		expect(out).toContain(
+			"- [ ] n1 · [ENG-1](https://linear.app/o/issue/ENG-1) · Understand · notion: https://www.notion.so/1",
+		);
 		expect(out).toContain("`Refs ENG-12`");
 		expect(out.indexOf("Workflow waves:")).toBeLessThan(out.indexOf("## Linked issues"));
 		expect(out.indexOf("## Linked issues")).toBeLessThan(out.indexOf("## Clarifications (HITL)"));
 	});
 
 	test("the Linked issues section survives a tiny budget", () => {
-		const big = { ...result, xml: `<BUILD_PROMPT>\n${"<X>filler</X>\n".repeat(2_000)}</BUILD_PROMPT>` };
+		const big = {
+			...result,
+			xml: `<BUILD_PROMPT>\n${"<X>filler</X>\n".repeat(2_000)}</BUILD_PROMPT>`,
+		};
 		const out = formatPromptContext({ result: big, plan, tracking: partial, maxChars: 500 });
 		expect(out).toContain("  - [ ] n1.1 · (pending) · Step 1: read");
 		expect(out).toContain("Notion task pending (graph g1, status partial)");
-		expect(out).toContain("This list is provisional — use the lines printed by kickoff's `track complete` run");
+		expect(out).toContain(
+			"This list is provisional — use the lines printed by kickoff's `track complete` run",
+		);
 		expect(formatPromptContext({ result, plan, tracking: complete })).not.toContain("provisional");
 	});
 
 	test("complete tracking: kickoff only resolves clarifications and must not create rows", () => {
-		const out = formatPromptContext({ result, plan, tracking: complete, statePath: "/s/x.json", trackCommand: "/r/bin/ultrathink-mcp track complete" });
-		expect(out).toContain("stateFile=/s/x.json only to resolve any blocking clarifications and set the Task to Implementing; it must not create rows");
+		const out = formatPromptContext({
+			result,
+			plan,
+			tracking: complete,
+			statePath: "/s/x.json",
+			trackCommand: "/r/bin/ultrathink-mcp track complete",
+		});
+		expect(out).toContain(
+			"stateFile=/s/x.json only to resolve any blocking clarifications and set the Task to Implementing; it must not create rows",
+		);
 		expect(out).not.toContain("/r/bin/ultrathink-mcp");
 	});
 
 	test("partial or absent tracking: kickoff runs the track command first when known", () => {
-		const withCmd = formatPromptContext({ result, plan, tracking: partial, statePath: "/s/x.json", trackCommand: "/r/bin/ultrathink-mcp track complete" });
-		expect(withCmd).toContain("stateFile=/s/x.json, which first runs `/r/bin/ultrathink-mcp track complete --state /s/x.json` to finish the missing");
+		const withCmd = formatPromptContext({
+			result,
+			plan,
+			tracking: partial,
+			statePath: "/s/x.json",
+			trackCommand: "/r/bin/ultrathink-mcp track complete",
+		});
+		expect(withCmd).toContain(
+			"stateFile=/s/x.json, which first runs `/r/bin/ultrathink-mcp track complete --state /s/x.json` to finish the missing",
+		);
 		const without = formatPromptContext({ result, plan, statePath: "/s/x.json" });
 		expect(without).toContain("stateFile=/s/x.json, which first finishes the missing");
 		expect(without).not.toContain("--state");
@@ -470,18 +751,34 @@ describe("tracking", () => {
 
 	test("a state file path with a space is single-quoted in the track command", () => {
 		const statePath = "/Users/Jane Doe/.claude/ultrathink/sessions/x.json";
-		const out = formatPromptContext({ result, plan, tracking: partial, statePath, trackCommand: "/r/bin/ultrathink-mcp track complete" });
+		const out = formatPromptContext({
+			result,
+			plan,
+			tracking: partial,
+			statePath,
+			trackCommand: "/r/bin/ultrathink-mcp track complete",
+		});
 		expect(out).toContain(`\`/r/bin/ultrathink-mcp track complete --state '${statePath}'\``);
 	});
 
 	test("skill hints: a host that does not list plugin skills gets each skill's load call and an existing SKILL.md path", () => {
-		const out = formatPromptContext({ result, plan, tracking: partial, statePath: "/s/x.json", trackCommand: "/r/bin/ultrathink-mcp track complete", ship: true, skillHints: true });
+		const out = formatPromptContext({
+			result,
+			plan,
+			tracking: partial,
+			statePath: "/s/x.json",
+			trackCommand: "/r/bin/ultrathink-mcp track complete",
+			ship: true,
+			skillHints: true,
+		});
 		for (const name of ["ultrathink-kickoff", "ultrathink-ship"]) {
 			expect(out).toContain(`skill_view name="ultrathink:${name}"`);
 			const path = new RegExp(`read (/\\S+/skills/${name}/SKILL\\.md)\\)`).exec(out)?.[1];
 			expect(path && existsSync(path)).toBe(true);
 		}
-		expect(out).toContain("stateFile=/s/x.json, which first runs `/r/bin/ultrathink-mcp track complete --state /s/x.json`");
+		expect(out).toContain(
+			"stateFile=/s/x.json, which first runs `/r/bin/ultrathink-mcp track complete --state /s/x.json`",
+		);
 		expect(out).not.toContain("if your host does not list that skill");
 		const plain = formatPromptContext({ result, statePath: "/s/x.json", ship: true });
 		expect(plain).not.toContain("skill_view");
@@ -489,8 +786,17 @@ describe("tracking", () => {
 	});
 
 	test("truncation keeps the ISSUES block and re-appends it before the root close", () => {
-		const issues = '<ISSUES graphId="g1" status="complete">\n\t<ISSUE node="n1" identifier="ENG-1">[n1] A</ISSUE>\n</ISSUES>';
-		const xml = ["<BUILD_PROMPT>", "<GRAPH_OF_THOUGHT>", "<N>x</N>\n".repeat(500), "</GRAPH_OF_THOUGHT>", issues, "<Z>tail</Z>\n".repeat(500), "</BUILD_PROMPT>"].join("\n");
+		const issues =
+			'<ISSUES graphId="g1" status="complete">\n\t<ISSUE node="n1" identifier="ENG-1">[n1] A</ISSUE>\n</ISSUES>';
+		const xml = [
+			"<BUILD_PROMPT>",
+			"<GRAPH_OF_THOUGHT>",
+			"<N>x</N>\n".repeat(500),
+			"</GRAPH_OF_THOUGHT>",
+			issues,
+			"<Z>tail</Z>\n".repeat(500),
+			"</BUILD_PROMPT>",
+		].join("\n");
 		const out = truncateXml(xml, 600, "/s/spec.xml");
 		expect(out.length).toBeLessThanOrEqual(600);
 		expect(out).toContain(issues);
@@ -500,7 +806,14 @@ describe("tracking", () => {
 	});
 
 	test("a raw <ISSUES> in the user's ORIGINAL is not mistaken for the plugin block", () => {
-		const xml = ["<BUILD_PROMPT>", "<ORIGINAL>see <ISSUES> in my notes</ORIGINAL>", "<Z>tail</Z>\n".repeat(500), "<SCOPE>s</SCOPE>", "</ISSUES> end", "</BUILD_PROMPT>"].join("\n");
+		const xml = [
+			"<BUILD_PROMPT>",
+			"<ORIGINAL>see <ISSUES> in my notes</ORIGINAL>",
+			"<Z>tail</Z>\n".repeat(500),
+			"<SCOPE>s</SCOPE>",
+			"</ISSUES> end",
+			"</BUILD_PROMPT>",
+		].join("\n");
 		const out = truncateXml(xml, 600, "/s/spec.xml");
 		expect(out.length).toBeLessThanOrEqual(600);
 		expect(out).toContain("<ORIGINAL>see <ISSUES> in my notes</ORIGINAL>");
@@ -514,37 +827,87 @@ describe("tracking", () => {
 		expect(formatSummary({ result, tracked: true, tracking: partial, plan })).toBe(
 			"Prompt Uplift · BUILD_PROMPT · llm · Tracking · partial (6 missing) · kickoff will finish",
 		);
-		expect(formatSummary({ result, tracked: true })).toBe("Prompt Uplift · BUILD_PROMPT · llm · Tracking · ultrathink-kickoff pending");
+		expect(formatSummary({ result, tracked: true })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · Tracking · ultrathink-kickoff pending",
+		);
 	});
 
 	test("missing rows and linked counts cover only the configured providers", () => {
 		// Linear only: n2 + n1.1 missing; Notion rows are never created, so never missing.
-		expect(formatSummary({ result, tracking: partial, plan, providers: { linear: true, notion: false } })).toContain("partial (2 missing)");
+		expect(
+			formatSummary({
+				result,
+				tracking: partial,
+				plan,
+				providers: { linear: true, notion: false },
+			}),
+		).toContain("partial (2 missing)");
 		// Notion only: task + n1 + n2 + n1.1 missing.
-		expect(formatSummary({ result, tracking: partial, plan, providers: { linear: false, notion: true } })).toContain("partial (4 missing)");
-		expect(formatSummary({ result, tracking: complete, providers: { linear: false, notion: true } })).toContain("Tracking · 2 issues · 1 sub-issues linked");
-		const linearOnly = formatPromptContext({ result, plan, tracking: complete, statePath: "/s/x.json", providers: { linear: true, notion: false } });
-		expect(linearOnly).toContain("Tracker rows created before this turn: 2 Linear issues, 1 sub-issues (graph g1, status complete).");
+		expect(
+			formatSummary({
+				result,
+				tracking: partial,
+				plan,
+				providers: { linear: false, notion: true },
+			}),
+		).toContain("partial (4 missing)");
+		expect(
+			formatSummary({ result, tracking: complete, providers: { linear: false, notion: true } }),
+		).toContain("Tracking · 2 issues · 1 sub-issues linked");
+		const linearOnly = formatPromptContext({
+			result,
+			plan,
+			tracking: complete,
+			statePath: "/s/x.json",
+			providers: { linear: true, notion: false },
+		});
+		expect(linearOnly).toContain(
+			"Tracker rows created before this turn: 2 Linear issues, 1 sub-issues (graph g1, status complete).",
+		);
 		expect(linearOnly).toContain("already exist in Linear (see Linked issues)");
-		const notionOnly = formatPromptContext({ result, plan, tracking: complete, providers: { linear: false, notion: true } });
-		expect(notionOnly).toContain("Tracker rows created before this turn: Notion task https://www.notion.so/t (graph g1, status complete).");
+		const notionOnly = formatPromptContext({
+			result,
+			plan,
+			tracking: complete,
+			providers: { linear: false, notion: true },
+		});
+		expect(notionOnly).toContain(
+			"Tracker rows created before this turn: Notion task https://www.notion.so/t (graph g1, status complete).",
+		);
 	});
 
 	test("tracking off drops kickoff, Linked issues and the provisional list for one short note", () => {
-		const out = formatPromptContext({ result, plan, tracking: partial, statePath: "/s/x.json", trackCommand: "/r/bin/ultrathink-mcp track complete", trackingOff: true, ship: true, skill: "gsd-quick" });
+		const out = formatPromptContext({
+			result,
+			plan,
+			tracking: partial,
+			statePath: "/s/x.json",
+			trackCommand: "/r/bin/ultrathink-mcp track complete",
+			trackingOff: true,
+			ship: true,
+			skill: "gsd-quick",
+		});
 		expect(out).not.toContain("## Ultrathink tracking");
 		expect(out).not.toContain("ultrathink-kickoff");
 		expect(out).not.toContain("## Linked issues");
 		expect(out).not.toContain("provisional");
 		expect(out).toContain(TRACKING_OFF_NOTE);
 		expect(out).toContain("invoke the ultrathink-ship skill with stateFile=/s/x.json");
-		expect(formatSummary({ result, tracked: false, trackingOff: true })).toBe("Prompt Uplift · BUILD_PROMPT · llm · Tracking · off");
+		expect(formatSummary({ result, tracked: false, trackingOff: true })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · Tracking · off",
+		);
 	});
 });
 
 describe("handoff", () => {
 	const bigXml = `<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n<GRAPH_OF_THOUGHT>\n${"<N>node rationale</N>\n".repeat(3_000)}</GRAPH_OF_THOUGHT>\n</BUILD_PROMPT>`;
-	const spec = { result: { ...result, xml: bigXml }, specPath: "/s/spec.xml", statePath: "/s/x.json", trackCommand: "/r/bin/ultrathink-mcp track complete", handoff: true };
+	const spec = {
+		result: { ...result, xml: bigXml },
+		specPath: "/s/spec.xml",
+		statePath: "/s/x.json",
+		trackCommand: "/r/bin/ultrathink-mcp track complete",
+		handoff: true,
+	};
 
 	test("points at the spec, state file and Graph ID instead of carrying the XML, and names each skill's load call and SKILL.md", () => {
 		const out = formatPromptContext({ ...spec, graph: FALLBACK_GRAPH, plan, ship: true });
@@ -552,7 +915,8 @@ describe("handoff", () => {
 		expect(out).toContain("State file: /s/x.json");
 		expect(out).toContain("Graph ID: g1");
 		expect(out).toContain("Read that file in full before starting");
-		for (const tag of ["<UPLIFTED_PROMPT", "<BUILD_PROMPT", "<GRAPH_OF_THOUGHT", "<ORIGINAL>"]) expect(out).not.toContain(tag);
+		for (const tag of ["<UPLIFTED_PROMPT", "<BUILD_PROMPT", "<GRAPH_OF_THOUGHT", "<ORIGINAL>"])
+			expect(out).not.toContain(tag);
 		for (const name of ["ultrathink-kickoff", "ultrathink-ship"]) {
 			expect(out).toContain(`skill_view name="ultrathink:${name}"`);
 			const path = new RegExp(`read (/\\S+/skills/${name}/SKILL\\.md)\\)`).exec(out)?.[1];
@@ -564,8 +928,12 @@ describe("handoff", () => {
 	});
 
 	test("Graph ID falls back to the tracking refs and is omitted when neither is known", () => {
-		expect(formatPromptContext({ ...spec, tracking: { ...complete, graphId: "g9" } })).toContain("Graph ID: g9");
-		expect(formatPromptContext({ ...spec, plan, tracking: { ...complete, graphId: "g9" } })).toContain("Graph ID: g1");
+		expect(formatPromptContext({ ...spec, tracking: { ...complete, graphId: "g9" } })).toContain(
+			"Graph ID: g9",
+		);
+		expect(
+			formatPromptContext({ ...spec, plan, tracking: { ...complete, graphId: "g9" } }),
+		).toContain("Graph ID: g1");
 		expect(formatPromptContext({ ...spec })).not.toContain("Graph ID:");
 	});
 
@@ -597,9 +965,21 @@ describe("handoff", () => {
 			id: `q${i}`,
 			question: `Which database should the new service layer use, question ${i}?`,
 			why: "Schema, migrations and the deployment topology all depend on it",
-			options: [{ label: "Postgres" }, { label: "SQLite" }, { label: "MySQL" }, { label: "DynamoDB" }],
+			options: [
+				{ label: "Postgres" },
+				{ label: "SQLite" },
+				{ label: "MySQL" },
+				{ label: "DynamoDB" },
+			],
 		}));
-		const out = formatPromptContext({ ...spec, graph, clarifications: blocking, plan, skill: "gsd-quick", ship: true });
+		const out = formatPromptContext({
+			...spec,
+			graph,
+			clarifications: blocking,
+			plan,
+			skill: "gsd-quick",
+			ship: true,
+		});
 		expect(out).toContain("## Clarifications (HITL)");
 		expect(out.length).toBeLessThan(6_000);
 	});
@@ -609,9 +989,17 @@ describe("handoff", () => {
 			const out = formatPromptContext({ ...hermes, graph: FALLBACK_GRAPH, clarifications, plan });
 			expect(out).toContain("`clarify` tool ONCE");
 			expect(out).not.toContain("AskUserQuestion");
-			expect(out).toContain("On Hermes, TodoWrite is the `todo` tool and Task subagents are `delegate_task`.");
+			expect(out).toContain(
+				"On Hermes, TodoWrite is the `todo` tool and Task subagents are `delegate_task`.",
+			);
 		}
-		const claude = formatPromptContext({ result, statePath: "/s/x.json", graph: FALLBACK_GRAPH, clarifications, plan });
+		const claude = formatPromptContext({
+			result,
+			statePath: "/s/x.json",
+			graph: FALLBACK_GRAPH,
+			clarifications,
+			plan,
+		});
 		expect(claude).toContain("`AskUserQuestion` tool ONCE");
 		expect(claude).not.toContain("clarify");
 		expect(claude).not.toContain("On Hermes");
@@ -622,15 +1010,35 @@ describe("handoff", () => {
 		const bigPlan = {
 			...plan,
 			graphId: "g1",
-			issues: nodes.map((nodeId) => ({ graphId: "g1", nodeId, item: `Item ${nodeId} ${"x".repeat(80)}`, thought: "t" })),
-			subIssues: nodes.flatMap((nodeId) => Array.from({ length: 8 }, (_, s) => ({ graphId: "g1", nodeId, item: `Step ${s + 1} ${"y".repeat(80)}`, step: s + 1, thought: "t" }))),
+			issues: nodes.map((nodeId) => ({
+				graphId: "g1",
+				nodeId,
+				item: `Item ${nodeId} ${"x".repeat(80)}`,
+				thought: "t",
+			})),
+			subIssues: nodes.flatMap((nodeId) =>
+				Array.from({ length: 8 }, (_, s) => ({
+					graphId: "g1",
+					nodeId,
+					item: `Step ${s + 1} ${"y".repeat(80)}`,
+					step: s + 1,
+					thought: "t",
+				})),
+			),
 		};
-		const ref = (id: string) => ({ id, identifier: id, url: `https://linear.app/o/issue/${id}/${"slug-".repeat(12)}`, title: id });
+		const ref = (id: string) => ({
+			id,
+			identifier: id,
+			url: `https://linear.app/o/issue/${id}/${"slug-".repeat(12)}`,
+			title: id,
+		});
 		const bigTracking: TrackingRefs = {
 			...complete,
 			linear: {
 				nodes: Object.fromEntries(nodes.map((n) => [n, ref(`ENG-${n}`)])),
-				steps: Object.fromEntries(bigPlan.subIssues.map((s) => [`${s.nodeId}.${s.step}`, ref(`ENG-${s.nodeId}-${s.step}`)])),
+				steps: Object.fromEntries(
+					bigPlan.subIssues.map((s) => [`${s.nodeId}.${s.step}`, ref(`ENG-${s.nodeId}-${s.step}`)]),
+				),
 			},
 		};
 		const brief = "observed history line\n".repeat(1_000);
@@ -645,17 +1053,57 @@ describe("handoff", () => {
 		}
 		const briefOnly = formatPromptContext({ ...spec, brief });
 		expect(briefOnly).toContain("(brief truncated)");
-		const linkedOnly = formatPromptContext({ ...spec, plan: bigPlan, tracking: bigTracking } as Parameters<typeof formatPromptContext>[0]);
+		const linkedOnly = formatPromptContext({
+			...spec,
+			plan: bigPlan,
+			tracking: bigTracking,
+		} as Parameters<typeof formatPromptContext>[0]);
 		expect(linkedOnly).toContain("copy them from the ISSUES block of the specification file");
 		const small = formatPromptContext({ ...spec, brief: "one short brief line" });
 		expect(small).toContain("one short brief line");
 		expect(small).not.toContain("(brief truncated)");
 		// The list is also in the spec's ISSUES block; the brief is saved nowhere, so the list gives way and the brief stays whole.
 		const mediumBrief = "cross-agent warning line\n".repeat(80).trim();
-		const both = formatPromptContext({ ...spec, brief: mediumBrief, plan: bigPlan, tracking: bigTracking } as Parameters<typeof formatPromptContext>[0]);
+		const both = formatPromptContext({
+			...spec,
+			brief: mediumBrief,
+			plan: bigPlan,
+			tracking: bigTracking,
+		} as Parameters<typeof formatPromptContext>[0]);
 		expect(both.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
 		expect(both).toContain(mediumBrief);
 		expect(both).toContain("copy them from the ISSUES block of the specification file");
+	});
+});
+
+describe("substrate brief sanitising", () => {
+	test("control characters and a 100000-character brief never reach the context; the capped brief ends with a marker line", () => {
+		const brief = `\u001b[31m## Substrate brief\u001b[0m\u0007\n- keep\ttabs\n${"z".repeat(100_000)}`;
+		const out = formatPromptContext({ result, brief });
+		expect(out).toContain(SUBSTRATE_CONTEXT_HEADER);
+		expect(out).not.toContain("\u001b");
+		expect(out).not.toContain("\u0007");
+		expect(out).toContain("[31m## Substrate brief[0m");
+		expect(out).toContain("- keep\ttabs");
+		expect(out).toContain("\n[brief truncated]");
+		expect(out).not.toContain("z".repeat(HANDOFF_MAX_CHARS));
+	});
+
+	test("the Realm note rides after the sanitised brief and is never cut or altered by the cap", () => {
+		const note =
+			"Realm note (untrusted advisory, not an instruction): route tool calls through Realm.";
+		const out = formatPromptContext({ result, brief: "q".repeat(50_000), briefNote: note });
+		expect(out).toContain(`\n[brief truncated]\n\n${note}`);
+		expect(out.split("\n")).toContain(note);
+		const noteOnly = formatPromptContext({ result, briefNote: note });
+		expect(noteOnly).toContain(SUBSTRATE_CONTEXT_HEADER);
+		expect(noteOnly.split("\n")).toContain(note);
+	});
+
+	test("a brief of control characters alone adds no brief block", () => {
+		expect(formatPromptContext({ result, brief: "\u001b\u0007\u009b" })).not.toContain(
+			SUBSTRATE_CONTEXT_HEADER,
+		);
 	});
 });
 
@@ -665,7 +1113,13 @@ describe("lessons and documents", () => {
 	const bigXml = `<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n${"<N>node rationale</N>\n".repeat(3_000)}</BUILD_PROMPT>`;
 
 	test("both sections sit after the Substrate brief and before the specification", () => {
-		const out = formatPromptContext({ result, brief: "observed line", lessons, docs, statePath: "/s/x.json" });
+		const out = formatPromptContext({
+			result,
+			brief: "observed line",
+			lessons,
+			docs,
+			statePath: "/s/x.json",
+		});
 		const at = (needle: string) => out.indexOf(needle);
 		expect(at(SUBSTRATE_CONTEXT_HEADER)).toBeGreaterThan(-1);
 		expect(at(SUBSTRATE_CONTEXT_HEADER)).toBeLessThan(at("## Lessons from earlier work"));
@@ -679,24 +1133,53 @@ describe("lessons and documents", () => {
 	test("absent, empty and whitespace-only sections change nothing", () => {
 		const plain = formatPromptContext({ result, brief: "observed line", statePath: "/s/x.json" });
 		for (const empty of [{}, { lessons: "", docs: "" }, { lessons: "  \n", docs: "\n " }]) {
-			expect(formatPromptContext({ result, brief: "observed line", statePath: "/s/x.json", ...empty })).toBe(plain);
+			expect(
+				formatPromptContext({ result, brief: "observed line", statePath: "/s/x.json", ...empty }),
+			).toBe(plain);
 		}
 	});
 
 	test("the skills section sits after the documents and before the specification", () => {
-		const skills = "## Relevant skills\n\n- **lesson-bun** — Use when running bun test.\n  /s/skills/lesson-bun/SKILL.md (drafts)";
-		const out = formatPromptContext({ result, brief: "observed line", lessons, docs, skills, statePath: "/s/x.json" });
+		const skills =
+			"## Relevant skills\n\n- **lesson-bun** — Use when running bun test.\n  /s/skills/lesson-bun/SKILL.md (drafts)";
+		const out = formatPromptContext({
+			result,
+			brief: "observed line",
+			lessons,
+			docs,
+			skills,
+			statePath: "/s/x.json",
+		});
 		const at = (needle: string) => out.indexOf(needle);
 		expect(at("## Documents (RAGFlow)")).toBeLessThan(at("## Relevant skills"));
 		expect(at("## Relevant skills")).toBeLessThan(at("<BUILD_PROMPT>"));
 		expect(out).toContain(skills);
-		const plain = formatPromptContext({ result, brief: "observed line", lessons, docs, statePath: "/s/x.json" });
-		expect(formatPromptContext({ result, brief: "observed line", lessons, docs, skills: "  \n", statePath: "/s/x.json" })).toBe(plain);
+		const plain = formatPromptContext({
+			result,
+			brief: "observed line",
+			lessons,
+			docs,
+			statePath: "/s/x.json",
+		});
+		expect(
+			formatPromptContext({
+				result,
+				brief: "observed line",
+				lessons,
+				docs,
+				skills: "  \n",
+				statePath: "/s/x.json",
+			}),
+		).toBe(plain);
 	});
 
 	test("a plain prompt keeps its cap: the specification gives way, the sections do not", () => {
 		const small = { lessons: lessons.slice(0, 400), docs: docs.slice(0, 350) };
-		const out = formatPromptContext({ result: { ...result, xml: bigXml }, ...small, maxChars: 4_000 });
+		const out = formatPromptContext({
+			result: { ...result, xml: bigXml },
+			...small,
+			maxChars: 4_000,
+		});
 		expect(out.length).toBeLessThanOrEqual(4_000);
 		expect(out).toContain(small.lessons);
 		expect(out).toContain(small.docs);
@@ -704,24 +1187,42 @@ describe("lessons and documents", () => {
 	});
 
 	describe("handoff budget", () => {
-		const spec = { result, specPath: "/s/spec.xml", statePath: "/s/x.json", trackCommand: "/r/bin/ultrathink-mcp track complete", handoff: true };
+		const spec = {
+			result,
+			specPath: "/s/spec.xml",
+			statePath: "/s/x.json",
+			trackCommand: "/r/bin/ultrathink-mcp track complete",
+			handoff: true,
+		};
 		const brief = "b".repeat(1_000);
 		const longLessons = `## Lessons from earlier work\n\n${"l".repeat(1_500)}`;
 		const longDocs = `## Documents (RAGFlow)\n\n${"d".repeat(1_500)}`;
 		/** Length of the handoff when nothing needs to give way. */
 		const natural = (extra: Partial<Parameters<typeof formatPromptContext>[0]>): number =>
 			formatPromptContext({ ...spec, ...extra, maxChars: 1_000_000 }).length;
-		const fit = (limit: number, extra: Partial<Parameters<typeof formatPromptContext>[0]>): string =>
-			formatPromptContext({ ...spec, ...extra, maxChars: limit });
+		const fit = (
+			limit: number,
+			extra: Partial<Parameters<typeof formatPromptContext>[0]>,
+		): string => formatPromptContext({ ...spec, ...extra, maxChars: limit });
 
 		test("everything fits: all sections, brief first, untouched", () => {
-			const out = fit(natural({ brief, lessons: longLessons, docs: longDocs }), { brief, lessons: longLessons, docs: longDocs });
+			const out = fit(natural({ brief, lessons: longLessons, docs: longDocs }), {
+				brief,
+				lessons: longLessons,
+				docs: longDocs,
+			});
 			expect(out).toContain(brief);
 			expect(out).toContain(longLessons);
 			expect(out).toContain(longDocs);
-			expect(out.indexOf(SUBSTRATE_CONTEXT_HEADER)).toBeLessThan(out.indexOf("## Lessons from earlier work"));
-			expect(out.indexOf("## Lessons from earlier work")).toBeLessThan(out.indexOf("## Documents (RAGFlow)"));
-			expect(out.indexOf("## Documents (RAGFlow)")).toBeLessThan(out.indexOf("## Ultrathink tracking"));
+			expect(out.indexOf(SUBSTRATE_CONTEXT_HEADER)).toBeLessThan(
+				out.indexOf("## Lessons from earlier work"),
+			);
+			expect(out.indexOf("## Lessons from earlier work")).toBeLessThan(
+				out.indexOf("## Documents (RAGFlow)"),
+			);
+			expect(out.indexOf("## Documents (RAGFlow)")).toBeLessThan(
+				out.indexOf("## Ultrathink tracking"),
+			);
 		});
 
 		test("the skills pointers are dropped before the documents shrink", () => {
@@ -790,18 +1291,48 @@ describe("lessons and documents", () => {
 			const bigPlan = {
 				...plan,
 				graphId: "g1",
-				issues: nodes.map((nodeId) => ({ graphId: "g1", nodeId, item: `Item ${nodeId} ${"x".repeat(80)}`, thought: "t" })),
-				subIssues: nodes.flatMap((nodeId) => Array.from({ length: 8 }, (_, s) => ({ graphId: "g1", nodeId, item: `Step ${s + 1} ${"y".repeat(80)}`, step: s + 1, thought: "t" }))),
+				issues: nodes.map((nodeId) => ({
+					graphId: "g1",
+					nodeId,
+					item: `Item ${nodeId} ${"x".repeat(80)}`,
+					thought: "t",
+				})),
+				subIssues: nodes.flatMap((nodeId) =>
+					Array.from({ length: 8 }, (_, s) => ({
+						graphId: "g1",
+						nodeId,
+						item: `Step ${s + 1} ${"y".repeat(80)}`,
+						step: s + 1,
+						thought: "t",
+					})),
+				),
 			};
-			const ref = (id: string) => ({ id, identifier: id, url: `https://linear.app/o/issue/${id}/${"slug-".repeat(12)}`, title: id });
+			const ref = (id: string) => ({
+				id,
+				identifier: id,
+				url: `https://linear.app/o/issue/${id}/${"slug-".repeat(12)}`,
+				title: id,
+			});
 			const bigTracking: TrackingRefs = {
 				...complete,
 				linear: {
 					nodes: Object.fromEntries(nodes.map((n) => [n, ref(`ENG-${n}`)])),
-					steps: Object.fromEntries(bigPlan.subIssues.map((s) => [`${s.nodeId}.${s.step}`, ref(`ENG-${s.nodeId}-${s.step}`)])),
+					steps: Object.fromEntries(
+						bigPlan.subIssues.map((s) => [
+							`${s.nodeId}.${s.step}`,
+							ref(`ENG-${s.nodeId}-${s.step}`),
+						]),
+					),
 				},
 			};
-			const out = formatPromptContext({ ...spec, plan: bigPlan, tracking: bigTracking, brief, lessons: longLessons, docs: longDocs } as Parameters<typeof formatPromptContext>[0]);
+			const out = formatPromptContext({
+				...spec,
+				plan: bigPlan,
+				tracking: bigTracking,
+				brief,
+				lessons: longLessons,
+				docs: longDocs,
+			} as Parameters<typeof formatPromptContext>[0]);
 			expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
 			expect(out).toContain("copy them from the ISSUES block of the specification file");
 			expect(out).toContain(brief);
@@ -809,8 +1340,19 @@ describe("lessons and documents", () => {
 		});
 
 		test("long lessons, documents, brief and Linked issues together stay inside the 9,000-character handoff", () => {
-			const extra = { brief: "observed history line\n".repeat(1_000), lessons: `## Lessons from earlier work\n\n${"l".repeat(3_000)}`, docs: `## Documents (RAGFlow)\n\n${"d".repeat(3_000)}` };
-			const out = formatPromptContext({ ...spec, graph: FALLBACK_GRAPH, plan, tracking: complete, ship: true, ...extra });
+			const extra = {
+				brief: "observed history line\n".repeat(1_000),
+				lessons: `## Lessons from earlier work\n\n${"l".repeat(3_000)}`,
+				docs: `## Documents (RAGFlow)\n\n${"d".repeat(3_000)}`,
+			};
+			const out = formatPromptContext({
+				...spec,
+				graph: FALLBACK_GRAPH,
+				plan,
+				tracking: complete,
+				ship: true,
+				...extra,
+			});
 			expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
 			expect(out).toContain('skill_view name="ultrathink:ultrathink-kickoff"');
 			expect(out).toContain("## Ship");
@@ -818,25 +1360,52 @@ describe("lessons and documents", () => {
 	});
 
 	describe("summary segments", () => {
-		const lessonsLookup = (over: Partial<LessonsLookup>): LessonsLookup => ({ outcome: "used", count: 3, ids: ["a", "b", "c"], chars: 900, ms: 20, source: "hindsight", ...over });
-		const docsLookup = (over: Partial<DocsLookup>): DocsLookup => ({ status: "used", count: 4, chars: 1_200, ms: 30, datasets: 1, ...over });
+		const lessonsLookup = (over: Partial<LessonsLookup>): LessonsLookup => ({
+			outcome: "used",
+			count: 3,
+			ids: ["a", "b", "c"],
+			chars: 900,
+			ms: 20,
+			source: "hindsight",
+			...over,
+		});
+		const docsLookup = (over: Partial<DocsLookup>): DocsLookup => ({
+			status: "used",
+			count: 4,
+			chars: 1_200,
+			ms: 30,
+			datasets: 1,
+			...over,
+		});
 
 		test("lessons: count and source, or the error reason; nothing for off or none", () => {
 			const summary = (lookup: LessonsLookup) => formatSummary({ result, lessons: lookup });
-			expect(summary(lessonsLookup({}))).toBe("Prompt Uplift · BUILD_PROMPT · llm · Lessons · 3 recalled (hindsight)");
-			expect(summary(lessonsLookup({ count: 2, source: "local" }))).toContain("· Lessons · 2 recalled (local)");
-			expect(summary(lessonsLookup({ outcome: "error", count: 0, source: "none", reason: "timeout" }))).toContain("· Lessons · error (timeout)");
+			expect(summary(lessonsLookup({}))).toBe(
+				"Prompt Uplift · BUILD_PROMPT · llm · Lessons · 3 recalled (hindsight)",
+			);
+			expect(summary(lessonsLookup({ count: 2, source: "local" }))).toContain(
+				"· Lessons · 2 recalled (local)",
+			);
+			expect(
+				summary(lessonsLookup({ outcome: "error", count: 0, source: "none", reason: "timeout" })),
+			).toContain("· Lessons · error (timeout)");
 			for (const outcome of ["off", "none"] as const) {
-				expect(summary(lessonsLookup({ outcome, count: 0, source: "none" }))).not.toContain("Lessons");
+				expect(summary(lessonsLookup({ outcome, count: 0, source: "none" }))).not.toContain(
+					"Lessons",
+				);
 			}
 			expect(formatSummary({ result })).not.toContain("Lessons");
 		});
 
 		test("docs: excerpt count, or the error reason; nothing for off or none", () => {
 			const summary = (lookup: DocsLookup) => formatSummary({ result, docs: lookup });
-			expect(summary(docsLookup({}))).toBe("Prompt Uplift · BUILD_PROMPT · llm · Docs · 4 excerpts (RAGFlow)");
+			expect(summary(docsLookup({}))).toBe(
+				"Prompt Uplift · BUILD_PROMPT · llm · Docs · 4 excerpts (RAGFlow)",
+			);
 			expect(summary(docsLookup({ count: 1 }))).toContain("· Docs · 1 excerpt (RAGFlow)");
-			expect(summary(docsLookup({ status: "error", count: 0, reason: "auth" }))).toContain("· Docs · error (auth)");
+			expect(summary(docsLookup({ status: "error", count: 0, reason: "auth" }))).toContain(
+				"· Docs · error (auth)",
+			);
 			for (const status of ["off", "none"] as const) {
 				expect(summary(docsLookup({ status, count: 0 }))).not.toContain("Docs");
 			}
@@ -847,18 +1416,39 @@ describe("lessons and documents", () => {
 			const out = formatSummary({
 				result,
 				brief: "a\nb",
-				knowledge: { outcome: "used", repo: "acme/widgets", docs: ["index.md"], chars: 10, ms: 1, settled: 0 },
+				knowledge: {
+					outcome: "used",
+					repo: "acme/widgets",
+					docs: ["index.md"],
+					chars: 10,
+					ms: 1,
+					settled: 0,
+				},
 				lessons: lessonsLookup({}),
 				docs: docsLookup({}),
 			});
-			expect(out).toBe("Prompt Uplift · BUILD_PROMPT · llm · Substrate · brief 2 lines · Knowledge · 1 docs · Lessons · 3 recalled (hindsight) · Docs · 4 excerpts (RAGFlow)");
+			expect(out).toBe(
+				"Prompt Uplift · BUILD_PROMPT · llm · Substrate · brief 2 lines · Knowledge · 1 docs · Lessons · 3 recalled (hindsight) · Docs · 4 excerpts (RAGFlow)",
+			);
 		});
 
 		test("skills: recall count, or the error reason; nothing for off or none", () => {
-			const skillsLookup = (over: Partial<SkillsLookup>): SkillsLookup => ({ outcome: "used", count: 2, names: ["a", "b"], chars: 300, ms: 5, ...over });
-			const summary = (lookup: SkillsLookup) => formatSummary({ result, docs: docsLookup({}), skills: lookup });
-			expect(summary(skillsLookup({}))).toContain("· Docs · 4 excerpts (RAGFlow) · Skills · 2 recalled");
-			expect(summary(skillsLookup({ outcome: "error", count: 0, names: [], reason: "timeout" }))).toContain("· Skills · error (timeout)");
+			const skillsLookup = (over: Partial<SkillsLookup>): SkillsLookup => ({
+				outcome: "used",
+				count: 2,
+				names: ["a", "b"],
+				chars: 300,
+				ms: 5,
+				...over,
+			});
+			const summary = (lookup: SkillsLookup) =>
+				formatSummary({ result, docs: docsLookup({}), skills: lookup });
+			expect(summary(skillsLookup({}))).toContain(
+				"· Docs · 4 excerpts (RAGFlow) · Skills · 2 recalled",
+			);
+			expect(
+				summary(skillsLookup({ outcome: "error", count: 0, names: [], reason: "timeout" })),
+			).toContain("· Skills · error (timeout)");
 			for (const outcome of ["off", "none"] as const) {
 				expect(summary(skillsLookup({ outcome, count: 0, names: [] }))).not.toContain("Skills");
 			}
@@ -874,67 +1464,122 @@ describe("model selection labels (§9 path 3, D-11)", () => {
 	});
 
 	/** The safe record selection itself generates for this config, control state and host: no auth, no inference. */
-	async function recordOf(config: UltrathinkConfig, state: ControlState, host: HostId): Promise<ModelResolution> {
+	async function recordOf(
+		config: UltrathinkConfig,
+		state: ControlState,
+		host: HostId,
+	): Promise<ModelResolution> {
 		return (await selectEngine(config, state, "/repo", { host })).resolution;
 	}
 
-	const ROUTE_DEFAULT_LINE = "claude:sonnet [route default] · reason route-default-model · engine auto (config)";
+	const ROUTE_DEFAULT_LINE =
+		"claude:claude-haiku-5-5 [route default] · reason route-default-model · engine auto (config)";
 
 	test("summary and context show the generated label, the model reason and the engine request apart from model state", async () => {
 		const resolution = await recordOf(defaultConfig(), {}, "claude-code");
-		expect(resolution.label).toBe("claude:sonnet [route default]");
+		expect(resolution.label).toBe("claude:claude-haiku-5-5 [route default]");
 		expect(formatModelSelection(resolution)).toBe(ROUTE_DEFAULT_LINE);
-		expect(formatSummary({ result, engine: "claude:sonnet", modelResolution: resolution, skill: "gsd-quick" })).toBe(
-			`Prompt Uplift · BUILD_PROMPT · llm · ${ROUTE_DEFAULT_LINE} · Skill · gsd-quick`,
+		expect(
+			formatSummary({
+				result,
+				engine: "claude:sonnet",
+				modelResolution: resolution,
+				skill: "gsd-quick",
+			}),
+		).toBe(`Prompt Uplift · BUILD_PROMPT · llm · ${ROUTE_DEFAULT_LINE} · Skill · gsd-quick`);
+		const context = formatPromptContext({
+			result,
+			specPath: "/s/x.xml",
+			modelResolution: resolution,
+		});
+		expect(context).toContain(
+			`Specification file: /s/x.xml\n\nPlanning model: ${ROUTE_DEFAULT_LINE}`,
 		);
-		const context = formatPromptContext({ result, specPath: "/s/x.xml", modelResolution: resolution });
-		expect(context).toContain(`Specification file: /s/x.xml\n\nPlanning model: ${ROUTE_DEFAULT_LINE}`);
 		expect(context.indexOf("Planning model:")).toBeLessThan(context.indexOf(result.xml));
 		expect(context).toContain(result.xml);
 		// Without a record the existing outputs are unchanged.
 		expect(formatPromptContext({ result, specPath: "/s/x.xml" })).not.toContain("Planning model:");
-		expect(formatSummary({ result, engine: "claude:sonnet" })).toBe("Prompt Uplift · BUILD_PROMPT · llm · claude:sonnet");
+		expect(formatSummary({ result, engine: "claude:sonnet" })).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · claude:sonnet",
+		);
 	});
 
 	test("the Hermes handoff keeps the selection line next to its file pointers", async () => {
 		const resolution = await recordOf(defaultConfig(), {}, "hermes");
-		const out = formatPromptContext({ result, specPath: "/s/spec.xml", statePath: "/s/x.json", handoff: true, modelResolution: resolution });
-		expect(out).toContain(`Specification file: /s/spec.xml\n\nPlanning model: ${ROUTE_DEFAULT_LINE}`);
+		const out = formatPromptContext({
+			result,
+			specPath: "/s/spec.xml",
+			statePath: "/s/x.json",
+			handoff: true,
+			modelResolution: resolution,
+		});
+		expect(out).toContain(
+			`Specification file: /s/spec.xml\n\nPlanning model: ${ROUTE_DEFAULT_LINE}`,
+		);
 		expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
 	});
 
 	test("a named Omp engine with CLI omission says model unobserved and default, with its native opt-out", async () => {
-		const resolution = await recordOf(mergeConfig({ claude: { model: "" } }, defaultConfig()), { engine: "claude" }, "omp");
+		const resolution = await recordOf(
+			mergeConfig({ claude: { model: "" } }, defaultConfig()),
+			{ engine: "claude" },
+			"omp",
+		);
 		expect(formatModelSelection(resolution)).toBe(
 			"claude:CLI default (model unobserved) · reason cli-delegation · engine claude (control, native opt-out)",
 		);
 	});
 
 	test("unresolved and Grok records show the label as generated: the reason once, never provider-disabled (AD-2a)", async () => {
-		expect(formatModelSelection(await recordOf(defaultConfig(), {}, "omp"))).toBe("omp-native:unresolved [native-unavailable] · engine auto (config)");
+		expect(formatModelSelection(await recordOf(defaultConfig(), {}, "omp"))).toBe(
+			"omp-native:unresolved [native-unavailable] · engine auto (config)",
+		);
 		const home = mkdtempSync(join(tmpdir(), "ultrathink-output-grok-"));
 		dirs.push(home);
-		const unavailable = await recordOf(mergeConfig({ grok: { home } }, defaultConfig()), {}, "grok-build");
-		expect(formatModelSelection(unavailable)).toBe("grok:unresolved [grok-unavailable] · engine auto (config)");
-		const fallback = await recordOf(mergeConfig({ grok: { enabled: false } }, defaultConfig()), {}, "grok-build");
+		const unavailable = await recordOf(
+			mergeConfig({ grok: { home } }, defaultConfig()),
+			{},
+			"grok-build",
+		);
+		expect(formatModelSelection(unavailable)).toBe(
+			"grok:unresolved [grok-unavailable] · engine auto (config)",
+		);
+		const fallback = await recordOf(
+			mergeConfig({ grok: { enabled: false } }, defaultConfig()),
+			{},
+			"grok-build",
+		);
 		expect(formatModelSelection(fallback)).toBe(
-			"claude:sonnet [configured fallback · grok unavailable] · reason grok-unavailable · engine auto (config)",
+			"claude:claude-haiku-5-5 [configured fallback · grok unavailable] · reason grok-unavailable · engine auto (config)",
 		);
 		for (const record of [unavailable, fallback]) {
 			expect(formatSummary({ result, modelResolution: record })).not.toContain("provider-disabled");
-			expect(formatPromptContext({ result, modelResolution: record })).not.toContain("provider-disabled");
+			expect(formatPromptContext({ result, modelResolution: record })).not.toContain(
+				"provider-disabled",
+			);
 		}
 	});
 
 	test("degraded execution stays distinct from the selection state: the notice names the label, the state is not relabeled", async () => {
 		const resolution = await recordOf(defaultConfig(), {}, "claude-code");
 		const fallback = { ...result, source: "fallback" as const };
-		const out = formatPromptContext({ result: fallback, engine: "claude:sonnet", modelResolution: resolution, engineError: "claude exited 1" });
-		expect(out).toContain("The claude:sonnet [route default] planning call failed (claude exited 1).");
+		const out = formatPromptContext({
+			result: fallback,
+			engine: "claude:sonnet",
+			modelResolution: resolution,
+			engineError: "claude exited 1",
+		});
+		expect(out).toContain(
+			"The claude:claude-haiku-5-5 [route default] planning call failed (claude exited 1).",
+		);
 		expect(out).toContain(`Planning model: ${ROUTE_DEFAULT_LINE}`);
 		// A default selection with a real plan is not degradation, and the engine error keeps its own summary bit.
-		expect(formatPromptContext({ result, modelResolution: resolution })).not.toContain("## Planning degraded");
-		expect(formatSummary({ result, modelResolution: resolution, engineError: "claude exited 1" })).toBe(
+		expect(formatPromptContext({ result, modelResolution: resolution })).not.toContain(
+			"## Planning degraded",
+		);
+		expect(
+			formatSummary({ result, modelResolution: resolution, engineError: "claude exited 1" }),
+		).toBe(
 			`Prompt Uplift · BUILD_PROMPT · llm · ${ROUTE_DEFAULT_LINE} · Engine error · claude exited 1`,
 		);
 	});
@@ -962,8 +1607,13 @@ describe("model selection labels (§9 path 3, D-11)", () => {
 		});
 		expect(bound).toBe(live);
 		expect(bound?.id).toBe(`Bearer ${sentinel}`);
-		for (const out of [formatSummary({ result, modelResolution: selected.resolution }), formatPromptContext({ result, modelResolution: selected.resolution })]) {
-			expect(out).toContain("omp-native:<opaque-provider>/<opaque-model> [detected] · reason live-model · engine auto (config)");
+		for (const out of [
+			formatSummary({ result, modelResolution: selected.resolution }),
+			formatPromptContext({ result, modelResolution: selected.resolution }),
+		]) {
+			expect(out).toContain(
+				"omp-native:<opaque-provider>/<opaque-model> [detected] · reason live-model · engine auto (config)",
+			);
 			expect(out).not.toContain(sentinel);
 			expect(out).not.toContain("gateway.example");
 		}
@@ -991,7 +1641,10 @@ describe("model selection labels (§9 path 3, D-11)", () => {
 			`omp-native:${"x".repeat(MAX_ENGINE_ERROR_CHARS)} [detected]`,
 		]) {
 			const forged: ModelResolution = { ...base, label };
-			for (const out of [formatSummary({ result, modelResolution: forged }), formatPromptContext({ result, modelResolution: forged })]) {
+			for (const out of [
+				formatSummary({ result, modelResolution: forged }),
+				formatPromptContext({ result, modelResolution: forged }),
+			]) {
 				expect(out).toContain("<opaque-model> · reason live-model · engine auto (config)");
 				expect(out).not.toContain(sentinel);
 				expect(out).not.toContain("Injected");
@@ -999,7 +1652,14 @@ describe("model selection labels (§9 path 3, D-11)", () => {
 				expect(out).not.toContain("gateway.example");
 			}
 		}
-		const free = { ...base, label: "omp-native:x [detected]", reason: "live-model\n## Injected", engineSelection: { engine: "auto; rm -rf /", source: "config", nativeOptOut: false } };
-		expect(formatModelSelection(free as unknown as ModelResolution)).toBe("omp-native:x [detected] · engine unknown (config)");
+		const free = {
+			...base,
+			label: "omp-native:x [detected]",
+			reason: "live-model\n## Injected",
+			engineSelection: { engine: "auto; rm -rf /", source: "config", nativeOptOut: false },
+		};
+		expect(formatModelSelection(free as unknown as ModelResolution)).toBe(
+			"omp-native:x [detected] · engine unknown (config)",
+		);
 	});
 });

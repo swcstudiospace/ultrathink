@@ -4,7 +4,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMcpClient, createMcpClientIfCredentialed, hasUsableCredential, loginHint, MAX_TOOL_PAGES } from "./client.ts";
+import {
+	createMcpClient,
+	createMcpClientIfCredentialed,
+	hasUsableCredential,
+	loginHint,
+	MAX_TOOL_PAGES,
+} from "./client.ts";
 import type { McpProviderId } from "./providers.ts";
 import { writeStore } from "./store.ts";
 
@@ -24,7 +30,10 @@ function store(): string {
 	const dir = mkdtempSync(join(tmpdir(), "mcp-client-"));
 	dirs.push(dir);
 	const path = join(dir, "creds.json");
-	writeStore(path, { version: 1, providers: { linear: { kind: "api_key", apiKey: "k", updatedAt: 0 } } });
+	writeStore(path, {
+		version: 1,
+		providers: { linear: { kind: "api_key", apiKey: "k", updatedAt: 0 } },
+	});
 	return path;
 }
 
@@ -37,7 +46,9 @@ function fakeFetch(onTool: Handler): { fetch: typeof fetch; methods: string[] } 
 		methods.push(rpc.method);
 		if (rpc.id === undefined) return new Response(null, { status: 202 });
 		const result =
-			rpc.method === "initialize" ? { protocolVersion: "2025-06-18", capabilities: {} } : await onTool(rpc, init?.signal ?? undefined);
+			rpc.method === "initialize"
+				? { protocolVersion: "2025-06-18", capabilities: {} }
+				: await onTool(rpc, init?.signal ?? undefined);
 		return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
 	};
 	return { fetch: impl as unknown as typeof fetch, methods };
@@ -75,7 +86,7 @@ describe("createMcpClient", () => {
 	test("prefers structuredContent, falls back to raw text", async () => {
 		const fake = fakeFetch((rpc) =>
 			rpc.params?.name === "structured"
-				? { ...text("{\"ignored\":true}"), structuredContent: { id: "x" } }
+				? { ...text('{"ignored":true}'), structuredContent: { id: "x" } }
 				: text("plain words"),
 		);
 		const client = createMcpClient("linear", { storePath: store(), fetch: fake.fetch });
@@ -97,22 +108,26 @@ describe("createMcpClient", () => {
 	test.each([
 		["linear", "Linear"],
 		["greptile", "Greptile"],
-	] as const)("a %s call without credentials names OAuth login and the settings API key", async (provider, label) => {
-		const dir = mkdtempSync(join(tmpdir(), "mcp-client-"));
-		dirs.push(dir);
-		const storePath = join(dir, "creds.json");
-		writeStore(storePath, { version: 1, providers: {} });
-		const unauthorized = (async () => new Response(null, { status: 401 })) as unknown as typeof fetch;
-		const client = createMcpClient(provider, { storePath, fetch: unauthorized });
-		const error = await client.call("list_issues", {}).catch((e: unknown) => e as Error);
-		expect(error).toBeInstanceOf(Error);
-		const message = (error as Error).message;
-		expect(message).toContain("authentication required");
-		expect(message).toContain(`ultrathink-mcp auth login ${provider}`);
-		expect(message).toContain(`ultrathink-mcp auth set-key ${provider} --stdin`);
-		expect(message).toContain(`${label} account settings`);
-		client.close();
-	});
+	] as const)(
+		"a %s call without credentials names OAuth login and the settings API key",
+		async (provider, label) => {
+			const dir = mkdtempSync(join(tmpdir(), "mcp-client-"));
+			dirs.push(dir);
+			const storePath = join(dir, "creds.json");
+			writeStore(storePath, { version: 1, providers: {} });
+			const unauthorized = (async () =>
+				new Response(null, { status: 401 })) as unknown as typeof fetch;
+			const client = createMcpClient(provider, { storePath, fetch: unauthorized });
+			const error = await client.call("list_issues", {}).catch((e: unknown) => e as Error);
+			expect(error).toBeInstanceOf(Error);
+			const message = (error as Error).message;
+			expect(message).toContain("authentication required");
+			expect(message).toContain(`ultrathink-mcp auth login ${provider}`);
+			expect(message).toContain(`ultrathink-mcp auth set-key ${provider} --stdin`);
+			expect(message).toContain(`${label} account settings`);
+			client.close();
+		},
+	);
 
 	test("the notion hint offers OAuth login only", () => {
 		const hint = loginHint("notion");
@@ -124,7 +139,7 @@ describe("createMcpClient", () => {
 	test("the openrouter hint names set-key and the env variable, never a login", () => {
 		const hint = loginHint("openrouter");
 		expect(hint).toBe(
-			"run: ultrathink-mcp auth set-key openrouter --stdin (API key from your OpenRouter account settings; or set OPENROUTER_API_KEY)",
+			"run: ultrathink-mcp auth set-key openrouter --stdin (API key from your OpenRouter account settings; or set ULTRATHINK_OPENROUTER_KEY)",
 		);
 		expect(hint).not.toContain("auth login openrouter");
 	});
@@ -134,7 +149,10 @@ describe("createMcpClient", () => {
 		const dir = mkdtempSync(join(tmpdir(), "mcp-client-"));
 		dirs.push(dir);
 		const storePath = join(dir, "creds.json");
-		writeStore(storePath, { version: 1, providers: { openrouter: { kind: "api_key", apiKey: K, updatedAt: 0 } } });
+		writeStore(storePath, {
+			version: 1,
+			providers: { openrouter: { kind: "api_key", apiKey: K, updatedAt: 0 } },
+		});
 		const calls: unknown[] = [];
 		const recording = (async (url: unknown) => {
 			calls.push(url);
@@ -162,7 +180,11 @@ describe("createMcpClient", () => {
 			await never.promise;
 			return text("{}");
 		});
-		const client = createMcpClient("linear", { storePath: store(), fetch: fake.fetch, callTimeoutMs: 20 });
+		const client = createMcpClient("linear", {
+			storePath: store(),
+			fetch: fake.fetch,
+			callTimeoutMs: 20,
+		});
 		await expect(client.call("slow", {})).rejects.toThrow("timed out");
 		client.close();
 		never.resolve();
@@ -186,7 +208,11 @@ describe("createMcpClient", () => {
 			fetchAborted[name]?.resolve();
 			throw new Error("aborted");
 		});
-		const client = createMcpClient("linear", { storePath: store(), fetch: fake.fetch, callTimeoutMs: 20 });
+		const client = createMcpClient("linear", {
+			storePath: store(),
+			fetch: fake.fetch,
+			callTimeoutMs: 20,
+		});
 		const controller = new AbortController();
 		const byCaller = client.call("caller", {}, controller.signal);
 		await reached.caller?.promise;
@@ -207,13 +233,20 @@ describe("createMcpClient", () => {
 			const rpc = JSON.parse(String(init?.body)) as Rpc;
 			if (rpc.id === undefined) return new Response(null, { status: 202 });
 			if (rpc.method === "initialize")
-				return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: "2025-06-18" } });
+				return Response.json({
+					jsonrpc: "2.0",
+					id: rpc.id,
+					result: { protocolVersion: "2025-06-18" },
+				});
 			const body =
 				`data: ${JSON.stringify({ jsonrpc: "2.0", id: rpc.id, method: "ping" })}\n\n` +
 				`data: ${JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: { structuredContent: { ok: 1 } } })}\n\n`;
 			return new Response(body, { headers: { "content-type": "text/event-stream" } });
 		};
-		const client = createMcpClient("linear", { storePath: store(), fetch: impl as unknown as typeof fetch });
+		const client = createMcpClient("linear", {
+			storePath: store(),
+			fetch: impl as unknown as typeof fetch,
+		});
 		expect(await client.call("save_issue", {})).toEqual({ ok: 1 });
 		client.close();
 	});
@@ -290,10 +323,28 @@ describe("hasUsableCredential", () => {
 
 	test("OAuth tokens are usable until a new login is needed", () => {
 		const tokens = { accessToken: "a" };
-		expect(hasUsableCredential("greptile", storeWith({ greptile: { kind: "oauth", client: oauthClient, tokens, updatedAt: 0 } }))).toBe(true);
-		const stale = storeWith({ greptile: { kind: "oauth", client: oauthClient, tokens, needsLogin: "refresh rejected", updatedAt: 0 } });
+		expect(
+			hasUsableCredential(
+				"greptile",
+				storeWith({ greptile: { kind: "oauth", client: oauthClient, tokens, updatedAt: 0 } }),
+			),
+		).toBe(true);
+		const stale = storeWith({
+			greptile: {
+				kind: "oauth",
+				client: oauthClient,
+				tokens,
+				needsLogin: "refresh rejected",
+				updatedAt: 0,
+			},
+		});
 		expect(hasUsableCredential("greptile", stale)).toBe(false);
-		expect(hasUsableCredential("greptile", storeWith({ greptile: { kind: "oauth", client: oauthClient, updatedAt: 0 } }))).toBe(false);
+		expect(
+			hasUsableCredential(
+				"greptile",
+				storeWith({ greptile: { kind: "oauth", client: oauthClient, updatedAt: 0 } }),
+			),
+		).toBe(false);
 	});
 
 	test("a provider without a stored credential, or no store at all, is not usable", () => {

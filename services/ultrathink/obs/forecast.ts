@@ -104,7 +104,8 @@ function historyOver(state: RingState): LoadHistory {
 
 			// Same 15 minutes one day earlier: a seasonal floor for the forecast.
 			let yesterday = 0;
-			for (let h = 1; h <= HORIZON_MINUTES; h++) yesterday = Math.max(yesterday, countAt(now + h - SLOTS));
+			for (let h = 1; h <= HORIZON_MINUTES; h++)
+				yesterday = Math.max(yesterday, countAt(now + h - SLOTS));
 			if (yesterday > peak) return { rps: yesterday / 60, source: "holt+yesterday" };
 			return { rps: peak / 60, source: "holt" };
 		},
@@ -125,12 +126,14 @@ function parseState(text: string): RingState | null {
 	}
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
 	const { last, counts } = raw as { last?: unknown; counts?: unknown };
-	const validCounts = Array.isArray(counts)
-		&& counts.length === SLOTS
-		&& counts.every((count) => typeof count === "number" && Number.isSafeInteger(count) && count >= 0);
+	const validCounts =
+		Array.isArray(counts) &&
+		counts.length === SLOTS &&
+		counts.every((count) => typeof count === "number" && Number.isSafeInteger(count) && count >= 0);
 	if (!validCounts) return null;
 	const ring = counts as number[];
-	if (last === null) return ring.every((count) => count === 0) ? { last: null, counts: ring } : null;
+	if (last === null)
+		return ring.every((count) => count === 0) ? { last: null, counts: ring } : null;
 	if (typeof last !== "number" || !Number.isSafeInteger(last)) return null;
 	return { last, counts: ring };
 }

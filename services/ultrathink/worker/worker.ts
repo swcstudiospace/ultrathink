@@ -3,22 +3,29 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CEILING_DAY, CEILING_RUN, CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
-import type { RunStatus, Store } from "../store/store.ts";
+import {
+	CEILING_DAY,
+	CEILING_RUN,
+	CeilingError,
+	type Ledger,
+	LedgerWriteError,
+} from "../cost/ledger.ts";
+import { DuplicatePhaseError, type RunStatus, type Store } from "../store/store.ts";
 import { writeAtomic } from "./atomic.ts";
 
 export const PHASES = ["discover", "discuss", "plan", "execute"] as const;
-export type Phase = (typeof PHASES)[number];
+type Phase = (typeof PHASES)[number];
 
 export interface PlanningModel {
 	complete(input: {
 		system: string;
 		prompt: string;
-		maxOutputTokens: number;
+		/** The reply's output limit in tokens. Present only when a token ceiling bounds the reply. */
+		maxOutputTokens?: number;
 	}): Promise<{ text: string; tokensUsed: number }>;
 }
 
-export type TickResult = "idle" | "paused" | "complete" | "failed";
+type TickResult = "idle" | "paused" | "complete" | "failed";
 
 export interface WorkerOptions {
 	store: Store;
@@ -41,18 +48,45 @@ export interface Worker {
 	runUntilAborted(signal: AbortSignal): Promise<void>;
 }
 
-export class LeaseLostError extends Error {
+class LeaseLostError extends Error {
 	constructor(runId: string) {
 		super(`lease lost for run ${runId}`);
 		this.name = "LeaseLostError";
 	}
 }
 
+/** Errors this module has already named, so an outer rethrow does not wrap them twice. */
+const namedErrors = new WeakSet<object>();
+
+/**
+ * D-05: an untyped error becomes `<operation>: <class or code>` with the underlying error in `cause`, so no message
+ * text or input value is copied. Typed errors (D-13) and already-named errors are returned unchanged.
+ */
+function boundaryError(operation: string, error: unknown): unknown {
+	const typed =
+		error instanceof LeaseLostError ||
+		error instanceof CeilingError ||
+		error instanceof LedgerWriteError ||
+		error instanceof DuplicatePhaseError;
+	if (typed || (typeof error === "object" && error !== null && namedErrors.has(error)))
+		return error;
+	const code = error instanceof Error && "code" in error ? error.code : undefined;
+	const detail = typeof code === "string" ? code : error instanceof Error ? error.name : "NonError";
+	const named = new Error(`${operation}: ${detail}`, { cause: error });
+	namedErrors.add(named);
+	return named;
+}
+
 export type AnswerResult =
 	| { ok: true }
 	| { ok: false; code: "not_found" | "not_waiting" | "invalid_answer" };
 
-const MAX_OUTPUT_TOKENS = 2000;
+/**
+ * Accounting allowance added to each reservation when no token ceiling applies. It is an estimate: with no
+ * ceiling the completion call sends no max_tokens. Under a ceiling each reply is capped to the budget left and to
+ * this allowance, so a reservation never exceeds input plus the allowance and concurrent calls share the budget.
+ */
+const RESERVATION_ALLOWANCE_TOKENS = 16000;
 const CHARS_PER_TOKEN = 3;
 const MIN_DECISION_OPTIONS = 2;
 const MAX_DECISION_OPTIONS = 5;
@@ -115,13 +149,19 @@ interface OwnerAnswer {
 interface ModelInput {
 	system: string;
 	prompt: string;
-	maxOutputTokens: number;
+	maxOutputTokens?: number;
 }
 
 interface ModelReply {
 	text: string;
 	tokensUsed: number;
 }
+
+/** Outcome of one model call after retries. A truncated reply is a definitive failure, not retried. */
+type ModelOutcome =
+	| { kind: "reply"; reply: ModelReply }
+	| { kind: "truncated" }
+	| { kind: "unavailable" };
 
 interface DecisionOption {
 	label: string;
@@ -247,7 +287,9 @@ export function createWorker(options: WorkerOptions): Worker {
 	const db = store.db;
 
 	if (!(leaseMs > 0) || !(heartbeatMs > 0) || !(maxModelAttempts >= 1)) {
-		throw new RangeError("leaseMs and heartbeatMs must be positive; maxModelAttempts must be at least 1");
+		throw new RangeError(
+			"leaseMs and heartbeatMs must be positive; maxModelAttempts must be at least 1",
+		);
 	}
 
 	db.exec(WORKER_SCHEMA);
@@ -350,12 +392,14 @@ export function createWorker(options: WorkerOptions): Worker {
 
 	/**
 	 * Calls the model with retries and exponential backoff. The lease is renewed on a
-	 * heartbeat for the whole call. Returns null when every attempt fails.
+	 * heartbeat for the whole call. A truncated reply is not retried; unavailable means every attempt failed.
 	 */
-	async function callModel(runId: string, input: ModelInput): Promise<ModelReply | null> {
+	async function callModel(runId: string, input: ModelInput): Promise<ModelOutcome> {
 		const heartbeat = { error: null as unknown };
 		const { promise: lease, reject: rejectLease } = Promise.withResolvers<never>();
-		lease.catch(() => {});
+		lease.catch(() => {
+			// reason: the next attempt's Promise.race observes this rejection and rethrows heartbeat.error; this handler only stops an unhandled rejection during the backoff sleep
+		});
 
 		const timer = setInterval(() => {
 			try {
@@ -370,10 +414,19 @@ export function createWorker(options: WorkerOptions): Worker {
 		try {
 			for (let attempt = 1; ; attempt++) {
 				try {
-					return await Promise.race([model.complete(input), lease]);
+					return { kind: "reply", reply: await Promise.race([model.complete(input), lease]) };
 				} catch (error) {
-					if (heartbeat.error !== null) throw heartbeat.error;
-					if (attempt >= maxModelAttempts) return null;
+					if (heartbeat.error !== null) throw boundaryError("callModel", heartbeat.error);
+					// The adapter reports a reply cut at its own output limit with error code `truncated`.
+					if (
+						typeof error === "object" &&
+						error !== null &&
+						"code" in error &&
+						error.code === "truncated"
+					) {
+						return { kind: "truncated" };
+					}
+					if (attempt >= maxModelAttempts) return { kind: "unavailable" };
 					await sleep(backoffMs * 2 ** (attempt - 1));
 				}
 			}
@@ -401,11 +454,25 @@ export function createWorker(options: WorkerOptions): Worker {
 		const attempt = nextAttempt(run.id, phase);
 		const system = SYSTEM_PROMPTS[phase];
 		const prompt = buildPrompt(run.request, phase, outputs, latestAnswer(run.id, phase));
-		const estimatedTokens = Math.ceil((system.length + prompt.length) / CHARS_PER_TOKEN) + MAX_OUTPUT_TOKENS;
+		const inputEstimate = Math.ceil((system.length + prompt.length) / CHARS_PER_TOKEN);
 
 		let reservationId: number;
+		let maxOutputTokens: number | undefined;
 		try {
-			reservationId = ledger.reserve({ runId: run.id, phase, attempt, estimatedTokens }).reservationId;
+			const budget = ledger.headroom(run.id);
+			let estimatedTokens = inputEstimate + RESERVATION_ALLOWANCE_TOKENS;
+			if (budget !== undefined) {
+				const derived = Math.min(budget.tokens - inputEstimate, RESERVATION_ALLOWANCE_TOKENS);
+				if (derived < 1) throw new CeilingError(budget.reason);
+				maxOutputTokens = derived;
+				estimatedTokens = inputEstimate + derived;
+			}
+			reservationId = ledger.reserve({
+				runId: run.id,
+				phase,
+				attempt,
+				estimatedTokens,
+			}).reservationId;
 		} catch (error) {
 			if (error instanceof CeilingError) {
 				if (error.reason === CEILING_RUN) {
@@ -419,19 +486,23 @@ export function createWorker(options: WorkerOptions): Worker {
 				setTerminalStatus(run.id, { status: "paused-for-blocker", reason: "ledger_unavailable" });
 				return { done: false, result: "paused" };
 			}
-			throw error;
+			throw boundaryError("runPhase", error);
 		}
 		state.reservationId = reservationId;
 		store.updateRun(run.id, { status: PHASE_STATUS[phase], currentPhase: phase });
 
-		const reply = await callModel(run.id, { system, prompt, maxOutputTokens: MAX_OUTPUT_TOKENS });
-		if (reply === null) {
+		const input: ModelInput = { system, prompt };
+		if (maxOutputTokens !== undefined) input.maxOutputTokens = maxOutputTokens;
+		const outcome = await callModel(run.id, input);
+		if (outcome.kind !== "reply") {
 			// The fenced status write goes first, so a lost lease leaves the reservation for tickOnce to abandon.
-			setTerminalStatus(run.id, { status: "paused-for-blocker", reason: "model_unavailable" });
+			const reason = outcome.kind === "truncated" ? "output_truncated" : "model_unavailable";
+			setTerminalStatus(run.id, { status: "paused-for-blocker", reason });
 			abandonReservation(reservationId);
 			state.reservationId = null;
 			return { done: false, result: "paused" };
 		}
+		const reply = outcome.reply;
 
 		// Each commit is fenced by a lease renewal, so a worker that lost its lease mid-call cannot record.
 		const decision = parseDecision(reply.text);
@@ -502,13 +573,13 @@ export function createWorker(options: WorkerOptions): Worker {
 					try {
 						abandonReservation(state.reservationId);
 					} catch {
-						// abandonReservation is a no-op for a row the new holder already settled or abandoned, so only
+						// reason: abandonReservation is a no-op for a row the new holder already settled or abandoned, so only
 						// a ledger write error reaches here; the new holder's claim-time sweep covers that case.
 					}
 				}
 				return "idle";
 			}
-			throw error;
+			throw boundaryError("tickOnce", error);
 		} finally {
 			db.query("DELETE FROM run_leases WHERE run_id = ? AND holder = ?").run(run.id, holderId);
 		}
@@ -520,8 +591,14 @@ export function createWorker(options: WorkerOptions): Worker {
 			try {
 				result = await tickOnce();
 			} catch (error) {
-				const name = error instanceof Error ? error.name : "UnknownError";
-				console.error(`worker tick failed: ${name}`);
+				// Boundary errors carry only `<operation>: <class or code>` in their message, never raw cause text.
+				const label =
+					error instanceof Error && namedErrors.has(error)
+						? error.message
+						: error instanceof Error
+							? error.name
+							: "UnknownError";
+				console.error(`worker tick failed: ${label}`);
 				await sleep(pollMs);
 				continue;
 			}

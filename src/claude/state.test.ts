@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DecisionRecord } from "../decisions/types.ts";
@@ -22,7 +31,7 @@ import {
 	updateSession,
 	writeControl,
 	writeSession,
-    withLastLock,
+	withLastLock,
 } from "./state.ts";
 
 const ANSWERS_HOOK = join(import.meta.dir, "..", "..", "hooks", "answers.ts");
@@ -91,13 +100,20 @@ describe("session records", () => {
 	test("a record saved under the earlier file name is read back for its own id; a file naming another id is not", () => {
 		const dir = tempDir();
 		mkdirSync(join(dir, "sessions"), { recursive: true });
-		const saved = { sessionId: "Claude-A", at: 1, result: { xml: "<X/>", original: "old answers", root: "X", source: "llm" as const } };
+		const saved = {
+			sessionId: "Claude-A",
+			at: 1,
+			result: { xml: "<X/>", original: "old answers", root: "X", source: "llm" as const },
+		};
 		writeFileSync(legacySessionPath(dir, "Claude-A"), JSON.stringify(saved));
 		expect(legacySessionPath(dir, "Claude-A")).not.toBe(sessionPath(dir, "Claude-A"));
 		expect(sessionRecordPath(dir, "Claude-A")).toBe(legacySessionPath(dir, "Claude-A"));
 		expect(readSession(dir, "Claude-A")).toEqual(saved);
 		// On a case-insensitive file system the earlier name of `claude-a` is the same file, but it records another id.
-		writeFileSync(legacySessionPath(dir, "claude-a"), JSON.stringify({ ...saved, sessionId: "Claude-A" }));
+		writeFileSync(
+			legacySessionPath(dir, "claude-a"),
+			JSON.stringify({ ...saved, sessionId: "Claude-A" }),
+		);
 		expect(readSession(dir, "claude-a")).toBeUndefined();
 		// A replan writes the current name, and from then on that record is the one read.
 		const replanned = { ...saved, at: 2 };
@@ -145,7 +161,12 @@ describe("session records and Jev decisions", () => {
 		at: 1_759_000_000_000,
 		engine: "claude:sonnet",
 		host: "claude-code",
-		result: { xml: "<BUILD_PROMPT/>", original: "run the phase", root: "BUILD_PROMPT", source: "llm" },
+		result: {
+			xml: "<BUILD_PROMPT/>",
+			original: "run the phase",
+			root: "BUILD_PROMPT",
+			source: "llm",
+		},
 		plan: {
 			graphId: "ut-old",
 			task: {
@@ -245,13 +266,24 @@ describe("session records and Jev decisions", () => {
 });
 
 describe("session records and lessons/docs lookups", () => {
-	const base: SessionRecord = { sessionId: "lk-1", at: 3, result: { xml: "<X/>", original: "x", root: "X", source: "llm" } };
+	const base: SessionRecord = {
+		sessionId: "lk-1",
+		at: 3,
+		result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+	};
 
 	test("both lookups round-trip through the session file and last.json", () => {
 		const dir = tempDir();
 		const record: SessionRecord = {
 			...base,
-			lessons: { outcome: "used", count: 2, ids: ["a1", "b2"], chars: 640, ms: 31, source: "hindsight" },
+			lessons: {
+				outcome: "used",
+				count: 2,
+				ids: ["a1", "b2"],
+				chars: 640,
+				ms: 31,
+				source: "hindsight",
+			},
 			docs: { status: "error", count: 0, chars: 0, ms: 9, datasets: 2, reason: "auth" },
 		};
 		writeSession(dir, record);
@@ -262,7 +294,16 @@ describe("session records and lessons/docs lookups", () => {
 	test("a record written before they existed reads back without them", () => {
 		const dir = tempDir();
 		mkdirSync(join(dir, "sessions"), { recursive: true });
-		writeFileSync(sessionPath(dir, "old-2"), JSON.stringify({ sessionId: "old-2", at: 1, engine: "claude:sonnet", result: base.result, knowledge: { outcome: "none", docs: [], chars: 0, ms: 1 } }));
+		writeFileSync(
+			sessionPath(dir, "old-2"),
+			JSON.stringify({
+				sessionId: "old-2",
+				at: 1,
+				engine: "claude:sonnet",
+				result: base.result,
+				knowledge: { outcome: "none", docs: [], chars: 0, ms: 1 },
+			}),
+		);
 		const record = readSession(dir, "old-2");
 		expect(record?.sessionId).toBe("old-2");
 		expect(record?.knowledge?.outcome).toBe("none");
@@ -274,7 +315,12 @@ describe("session records and lessons/docs lookups", () => {
 });
 
 describe("session records and the model resolution record", () => {
-	const base: SessionRecord = { sessionId: "mr-1", at: 4, engine: "claude:<model>", result: { xml: "<X/>", original: "x", root: "X", source: "llm" } };
+	const base: SessionRecord = {
+		sessionId: "mr-1",
+		at: 4,
+		engine: "claude:<model>",
+		result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+	};
 	const resolution: ModelResolution = {
 		version: "1.0.0",
 		state: "detected",
@@ -297,13 +343,18 @@ describe("session records and the model resolution record", () => {
 		writeSession(dir, record);
 		expect(readSession(dir, "mr-1")).toEqual(record);
 		expect(readLast(dir)).toEqual(record);
-		expect(Object.keys(readSession(dir, "mr-1")?.modelResolution ?? {}).sort()).toEqual(Object.keys(resolution).sort());
+		expect(Object.keys(readSession(dir, "mr-1")?.modelResolution ?? {}).sort()).toEqual(
+			Object.keys(resolution).sort(),
+		);
 	});
 
 	test("a record written before it existed reads back without it and stays valid", () => {
 		const dir = tempDir();
 		mkdirSync(join(dir, "sessions"), { recursive: true });
-		writeFileSync(sessionPath(dir, "old-3"), JSON.stringify({ sessionId: "old-3", at: 1, engine: "claude:<model>", result: base.result }));
+		writeFileSync(
+			sessionPath(dir, "old-3"),
+			JSON.stringify({ sessionId: "old-3", at: 1, engine: "claude:<model>", result: base.result }),
+		);
 		const record = readSession(dir, "old-3");
 		expect(record?.sessionId).toBe("old-3");
 		expect(record).not.toHaveProperty("modelResolution");
@@ -317,38 +368,57 @@ describe("session records and the model resolution record", () => {
 			writeControl(dir, { engine });
 			expect(readControl(dir).engine).toBe(engine);
 		}
-		writeFileSync(controlPath(dir), JSON.stringify({ engine: "omp-native", modelResolution: resolution }));
+		writeFileSync(
+			controlPath(dir),
+			JSON.stringify({ engine: "omp-native", modelResolution: resolution }),
+		);
 		expect(readControl(dir)).toEqual({});
 	});
 });
 
 describe("private, atomic state files", () => {
-	const record: SessionRecord = { sessionId: "p1", at: 5, result: { xml: "<X/>", original: "a verbatim prompt", root: "X", source: "llm" } };
+	const record: SessionRecord = {
+		sessionId: "p1",
+		at: 5,
+		result: { xml: "<X/>", original: "a verbatim prompt", root: "X", source: "llm" },
+	};
 
-	test.skipIf(process.platform === "win32")("session, last and control files are 0600 in 0700 directories", () => {
-		const dir = tempDir();
-		writeSession(dir, record);
-		writeControl(dir, { enabled: true });
-		for (const path of [sessionPath(dir, "p1"), join(dir, "last.json"), controlPath(dir)]) expect(statSync(path).mode & 0o777).toBe(0o600);
-		for (const path of [dir, join(dir, "sessions")]) expect(statSync(path).mode & 0o777).toBe(0o700);
-	});
+	test.skipIf(process.platform === "win32")(
+		"session, last and control files are 0600 in 0700 directories",
+		() => {
+			const dir = tempDir();
+			writeSession(dir, record);
+			writeControl(dir, { enabled: true });
+			for (const path of [sessionPath(dir, "p1"), join(dir, "last.json"), controlPath(dir)])
+				expect(statSync(path).mode & 0o777).toBe(0o600);
+			for (const path of [dir, join(dir, "sessions")])
+				expect(statSync(path).mode & 0o777).toBe(0o700);
+		},
+	);
 
-	test.skipIf(process.platform === "win32")("a 0644 file written by an older version is 0600 after its next rewrite", () => {
-		const dir = tempDir();
-		mkdirSync(join(dir, "sessions"), { recursive: true });
-		writeFileSync(sessionPath(dir, "p1"), JSON.stringify(record), { mode: 0o644 });
-		writeSession(dir, record);
-		expect(statSync(sessionPath(dir, "p1")).mode & 0o777).toBe(0o600);
-	});
+	test.skipIf(process.platform === "win32")(
+		"a 0644 file written by an older version is 0600 after its next rewrite",
+		() => {
+			const dir = tempDir();
+			mkdirSync(join(dir, "sessions"), { recursive: true });
+			writeFileSync(sessionPath(dir, "p1"), JSON.stringify(record), { mode: 0o644 });
+			writeSession(dir, record);
+			expect(statSync(sessionPath(dir, "p1")).mode & 0o777).toBe(0o600);
+		},
+	);
 
 	test("writes keep the tab-indented JSON format and leave no temporary or lock files", () => {
 		const dir = tempDir();
 		writeSession(dir, record);
 		writeControl(dir, { enabled: false });
-		expect(readFileSync(sessionPath(dir, "p1"), "utf8")).toBe(`${JSON.stringify(record, null, "\t")}\n`);
+		expect(readFileSync(sessionPath(dir, "p1"), "utf8")).toBe(
+			`${JSON.stringify(record, null, "\t")}\n`,
+		);
 		expect(readFileSync(controlPath(dir), "utf8")).toBe('{\n\t"enabled": false\n}\n');
 		for (const where of [dir, join(dir, "sessions")]) {
-			expect(readdirSync(where).filter((name) => name.endsWith(".tmp") || name.endsWith(".lock"))).toEqual([]);
+			expect(
+				readdirSync(where).filter((name) => name.endsWith(".tmp") || name.endsWith(".lock")),
+			).toEqual([]);
 		}
 	});
 
@@ -363,7 +433,11 @@ describe("private, atomic state files", () => {
 });
 
 describe("updateSession", () => {
-	const record: SessionRecord = { sessionId: "u1", at: 1, result: { xml: "<X/>", original: "x", root: "X", source: "llm" } };
+	const record: SessionRecord = {
+		sessionId: "u1",
+		at: 1,
+		result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+	};
 
 	test("returns the mutated record, writing the session file and last.json", () => {
 		const dir = tempDir();
@@ -417,13 +491,19 @@ describe("strict last-lock completion", () => {
 		const last = join(dir, "last.json");
 		const guard = `${last}.lock.guard`;
 		const owner = `${process.pid}.${"a".repeat(32)}`;
-		const before: SessionRecord = { sessionId: "before", at: 1, result: { xml: "<X/>", original: "x", root: "X", source: "llm" } };
+		const before: SessionRecord = {
+			sessionId: "before",
+			at: 1,
+			result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+		};
 		const after: SessionRecord = { ...before, sessionId: "after" };
-		expect(withLastLock(last, () => {
-			writeFileSync(last, JSON.stringify(before));
-			mkdirSync(guard, { mode: 0o700 });
-			writeFileSync(join(guard, owner), "", { mode: 0o600 });
-		})).toBe(true);
+		expect(
+			withLastLock(last, () => {
+				writeFileSync(last, JSON.stringify(before));
+				mkdirSync(guard, { mode: 0o700 });
+				writeFileSync(join(guard, owner), "", { mode: 0o600 });
+			}),
+		).toBe(true);
 		expect(writeSession(dir, after)).toBeDefined();
 		expect(readSession(dir, "after")).toEqual(after);
 		expect(readLast(dir)).toEqual(before);
@@ -438,12 +518,18 @@ describe("strict last-lock completion", () => {
 		mkdirSync(dir, { recursive: true });
 		const last = join(dir, "last.json");
 		const lock = `${last}.lock`;
-		const before: SessionRecord = { sessionId: "before", at: 1, result: { xml: "<X/>", original: "x", root: "X", source: "llm" } };
-		expect(withLastLock(last, () => {
-			writeFileSync(last, JSON.stringify(before));
-			rmSync(lock);
-			writeFileSync(lock, String(process.pid), { mode: 0o600 });
-		})).toBe(true);
+		const before: SessionRecord = {
+			sessionId: "before",
+			at: 1,
+			result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+		};
+		expect(
+			withLastLock(last, () => {
+				writeFileSync(last, JSON.stringify(before));
+				rmSync(lock);
+				writeFileSync(lock, String(process.pid), { mode: 0o600 });
+			}),
+		).toBe(true);
 		expect(withLastLock(last, () => writeFileSync(last, '{"sessionId":"incorrect"}'))).toBe(false);
 		expect(readLast(dir)).toEqual(before);
 		expect(readFileSync(lock, "utf8")).toBe(String(process.pid));
@@ -457,13 +543,26 @@ describe("the HITL answers hook", () => {
 			sessionId: "h1",
 			at: 1,
 			kickedOff: true,
-			result: { xml: "<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n</BUILD_PROMPT>", original: "x", root: "BUILD_PROMPT", source: "llm" },
+			result: {
+				xml: "<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n</BUILD_PROMPT>",
+				original: "x",
+				root: "BUILD_PROMPT",
+				source: "llm",
+			},
 		};
 		writeSession(dir, record);
 		const envelope = {
 			session_id: "h1",
 			tool_name: "AskUserQuestion",
-			tool_input: { questions: [{ question: "Which database?", header: "Database", options: [{ label: "Postgres" }, { label: "SQLite" }] }] },
+			tool_input: {
+				questions: [
+					{
+						question: "Which database?",
+						header: "Database",
+						options: [{ label: "Postgres" }, { label: "SQLite" }],
+					},
+				],
+			},
 			tool_response: { answers: { "Which database?": "Postgres" } },
 		};
 		const proc = Bun.spawn([process.execPath, ANSWERS_HOOK], {
@@ -480,7 +579,11 @@ describe("the HITL answers hook", () => {
 		const saved = readSession(dir, "h1");
 		expect(saved?.kickedOff).toBe(true);
 		expect(saved?.clarifications).toHaveLength(1);
-		expect(saved?.clarifications?.[0]).toMatchObject({ question: "Which database?", answer: "Postgres", source: "user" });
+		expect(saved?.clarifications?.[0]).toMatchObject({
+			question: "Which database?",
+			answer: "Postgres",
+			source: "user",
+		});
 		expect(saved?.result.xml).toContain("Postgres");
 		const specPath = sessionPath(dir, "h1").replace(/\.json$/, ".xml");
 		expect(readFileSync(specPath, "utf8")).toBe(`${saved?.result.xml}\n`);
@@ -497,7 +600,12 @@ describe("the HITL answers hook", () => {
 			cwd: join(dir, ".."),
 			env: { PATH: process.env.PATH, HOME: dir, ULTRATHINK_STATE_DIR: dir },
 			stdin: new TextEncoder().encode(
-				JSON.stringify({ session_id: "ghost", tool_name: "AskUserQuestion", tool_input: {}, tool_response: { answers: { Q: "a" } } }),
+				JSON.stringify({
+					session_id: "ghost",
+					tool_name: "AskUserQuestion",
+					tool_input: {},
+					tool_response: { answers: { Q: "a" } },
+				}),
 			),
 			stdout: "pipe",
 			stderr: "pipe",
@@ -517,14 +625,30 @@ describe("a legacy-only session record through the answers hook", () => {
 		const legacy = legacySessionPath(dir, sessionId);
 		const legacyXml = legacy.replace(/\.json$/, ".xml");
 		const xml = "<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n</BUILD_PROMPT>";
-		writeFileSync(legacy, JSON.stringify({ sessionId, at: 1, kickedOff: false, result: { xml, original: "x", root: "BUILD_PROMPT", source: "llm" } }));
+		writeFileSync(
+			legacy,
+			JSON.stringify({
+				sessionId,
+				at: 1,
+				kickedOff: false,
+				result: { xml, original: "x", root: "BUILD_PROMPT", source: "llm" },
+			}),
+		);
 		writeFileSync(legacyXml, `${xml}\n`);
 		expect(sessionRecordPath(dir, sessionId)).toBe(legacy);
 
 		const envelope = {
 			session_id: sessionId,
 			tool_name: "AskUserQuestion",
-			tool_input: { questions: [{ question: "Which database?", header: "Database", options: [{ label: "Postgres" }, { label: "SQLite" }] }] },
+			tool_input: {
+				questions: [
+					{
+						question: "Which database?",
+						header: "Database",
+						options: [{ label: "Postgres" }, { label: "SQLite" }],
+					},
+				],
+			},
 			tool_response: { answers: { "Which database?": "Postgres" } },
 		};
 		const proc = Bun.spawn([process.execPath, ANSWERS_HOOK], {
@@ -542,7 +666,10 @@ describe("a legacy-only session record through the answers hook", () => {
 		expect(sessionRecordPath(dir, sessionId)).toBe(legacy);
 		expect(existsSync(sessionPath(dir, sessionId))).toBe(false);
 		const answered = readSession(dir, sessionId);
-		expect(answered?.clarifications?.[0]).toMatchObject({ question: "Which database?", answer: "Postgres" });
+		expect(answered?.clarifications?.[0]).toMatchObject({
+			question: "Which database?",
+			answer: "Postgres",
+		});
 		expect(answered?.result.xml).toContain("Postgres");
 		expect(readFileSync(legacyXml, "utf8")).toBe(`${answered?.result.xml}\n`);
 
@@ -552,7 +679,10 @@ describe("a legacy-only session record through the answers hook", () => {
 		expect(existsSync(sessionPath(dir, sessionId))).toBe(false);
 		const marked = readSession(dir, sessionId);
 		expect(marked?.kickedOff).toBe(true);
-		expect(marked?.clarifications?.[0]).toMatchObject({ question: "Which database?", answer: "Postgres" });
+		expect(marked?.clarifications?.[0]).toMatchObject({
+			question: "Which database?",
+			answer: "Postgres",
+		});
 		expect(readFileSync(legacyXml, "utf8")).toBe(`${marked?.result.xml}\n`);
 	});
 });

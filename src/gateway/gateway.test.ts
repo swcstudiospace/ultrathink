@@ -41,11 +41,15 @@ function headerRecord(headers: RequestInit["headers"]): Record<string, string> {
 		for (const [key, value] of headers) out[key] = value;
 		return out;
 	}
-	for (const [key, value] of Object.entries(headers)) out[key] = Array.isArray(value) ? value.join(",") : String(value);
+	for (const [key, value] of Object.entries(headers))
+		out[key] = Array.isArray(value) ? value.join(",") : String(value);
 	return out;
 }
 
-function trackedEnv(values: Record<string, string | undefined>): { env: NodeJS.ProcessEnv; seen: Set<string> } {
+function trackedEnv(values: Record<string, string | undefined>): {
+	env: NodeJS.ProcessEnv;
+	seen: Set<string>;
+} {
 	const seen = new Set<string>();
 	const env = new Proxy(values, {
 		get(target, prop, receiver) {
@@ -66,7 +70,10 @@ function storeWith(token: string): string {
 	return path;
 }
 
-function scripted(handler: (sent: Sent) => Response | Promise<Response>): { fetch: typeof fetch; sent: Sent[] } {
+function scripted(handler: (sent: Sent) => Response | Promise<Response>): {
+	fetch: typeof fetch;
+	sent: Sent[];
+} {
 	const sent: Sent[] = [];
 	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
 		const headers = headerRecord(init?.headers);
@@ -103,7 +110,12 @@ function expectTool(sent: Sent | undefined, name: string): Record<string, unknow
 }
 
 const hindsightOn = { ...DEFAULT_HINDSIGHT_CONFIG, enabled: true, backend: "gateway" as const };
-const ragflowOn = { ...DEFAULT_RAGFLOW_CONFIG, enabled: true, ground: true, backend: "gateway" as const };
+const ragflowOn = {
+	...DEFAULT_RAGFLOW_CONFIG,
+	enabled: true,
+	ground: true,
+	backend: "gateway" as const,
+};
 
 describe("gateway backend", () => {
 	test("recall and retain send desk tools and never read a Hindsight or RAGFlow key", async () => {
@@ -116,18 +128,40 @@ describe("gateway backend", () => {
 		const recallFetch = scripted(() =>
 			toolReply({
 				banks: ["pd-lead"],
-				results: [{ bank: "pd-lead", ok: true, status: "ok", body: { results: [{ id: "m1", text: "a remembered fact", tags: ["seat:lead"] }] } }],
+				results: [
+					{
+						bank: "pd-lead",
+						ok: true,
+						status: "ok",
+						body: { results: [{ id: "m1", text: "a remembered fact", tags: ["seat:lead"] }] },
+					},
+				],
 			}),
 		);
-		const resolution = resolveHindsight(hindsightOn, env, { storePath: storeWith(""), fetch: recallFetch.fetch, gateway: GATEWAY });
-		expect(resolution.readiness).toMatchObject({ state: "ready", backend: "gateway", seat: "lead", tokenSource: "DESK_GATEWAY_TOKEN" });
+		const resolution = resolveHindsight(hindsightOn, env, {
+			storePath: storeWith(""),
+			fetch: recallFetch.fetch,
+			gateway: GATEWAY,
+		});
+		expect(resolution.readiness).toMatchObject({
+			state: "ready",
+			backend: "gateway",
+			seat: "lead",
+			tokenSource: "DESK_GATEWAY_TOKEN",
+		});
 		const recalled = await resolution.client?.recall({ query: "remembered fact", maxTokens: 800 });
-		expect(recalled).toEqual({ ok: true, value: [{ id: "m1", text: "a remembered fact", tags: ["seat:lead"], metadata: {} }] });
+		expect(recalled).toEqual({
+			ok: true,
+			value: [{ id: "m1", text: "a remembered fact", tags: ["seat:lead"], metadata: {} }],
+		});
 		const recallArgs = expectTool(recallFetch.sent[0], "desk_memory_recall");
 		expect(recallArgs).toEqual({ query: "remembered fact", include_shared: true, limit: 2 });
 
 		const retainFetch = scripted(() => toolReply({ ok: true, bank: "pd-lead" }));
-		const retain = await resolveHindsight(hindsightOn, env, { fetch: retainFetch.fetch, gateway: GATEWAY }).client?.retain({
+		const retain = await resolveHindsight(hindsightOn, env, {
+			fetch: retainFetch.fetch,
+			gateway: GATEWAY,
+		}).client?.retain({
 			documentId: "doc-1",
 			content: "kept this decision",
 			tags: ["plan"],
@@ -145,14 +179,32 @@ describe("gateway backend", () => {
 	});
 
 	test("document search uses desk_docs_search and does not send dataset ids or a RAGFlow key", async () => {
-		const { env, seen } = trackedEnv({ RAGFLOW_API_KEY: RF_KEY, HINDSIGHT_API_KEY: HS_KEY, DESK_GATEWAY_TOKEN: TOKEN });
+		const { env, seen } = trackedEnv({
+			RAGFLOW_API_KEY: RF_KEY,
+			HINDSIGHT_API_KEY: HS_KEY,
+			DESK_GATEWAY_TOKEN: TOKEN,
+		});
 		const fetchImpl = scripted(() =>
-			toolReply({ results: [{ content: "a chunk", document: "docs/readme.md", dataset_id: "ds", score: 0.4 }] }),
+			toolReply({
+				results: [{ content: "a chunk", document: "docs/readme.md", dataset_id: "ds", score: 0.4 }],
+			}),
 		);
 		const resolution = resolveRagflow(ragflowOn, env, { fetch: fetchImpl.fetch, gateway: GATEWAY });
-		const found = await resolution.client?.retrieve({ question: "where is the brief", datasetIds: ["should-not-be-sent"], topK: 5 });
-		expect(found).toMatchObject({ ok: true, value: [{ content: "a chunk", documentName: "docs/readme.md", datasetId: "ds", similarity: 0.4 }] });
-		expect(expectTool(fetchImpl.sent[0], "desk_docs_search")).toEqual({ query: "where is the brief", limit: 5 });
+		const found = await resolution.client?.retrieve({
+			question: "where is the brief",
+			datasetIds: ["should-not-be-sent"],
+			topK: 5,
+		});
+		expect(found).toMatchObject({
+			ok: true,
+			value: [
+				{ content: "a chunk", documentName: "docs/readme.md", datasetId: "ds", similarity: 0.4 },
+			],
+		});
+		expect(expectTool(fetchImpl.sent[0], "desk_docs_search")).toEqual({
+			query: "where is the brief",
+			limit: 5,
+		});
 		expect(seen.has("RAGFLOW_API_KEY")).toBe(false);
 		expect(seen.has("HINDSIGHT_API_KEY")).toBe(false);
 	});
@@ -160,29 +212,104 @@ describe("gateway backend", () => {
 	test("brief and events use desk_brief and desk_event_emit", async () => {
 		const env = { DESK_GATEWAY_TOKEN: TOKEN };
 		const binding = { backend: "gateway" as const, gateway: GATEWAY };
-		const briefFetch = scripted(() => toolReply({ substrate: { ok: true, brief: "other agents already landed the cache" } }));
-		const brief = await fetchBrief({ repo: "swcstudiospace/claude-ultrathink", graphId: GRAPH }, env, "", { ...binding, fetch: briefFetch.fetch });
-		expect(brief).toBe("other agents already landed the cache");
+		const briefFetch = scripted(() =>
+			toolReply({ substrate: { ok: true, brief: "other agents already landed the cache" } }),
+		);
+		const brief = await fetchBrief(
+			{ repo: "swcstudiospace/claude-ultrathink", graphId: GRAPH },
+			env,
+			"",
+			{ ...binding, fetch: briefFetch.fetch },
+		);
+		expect(brief).toEqual({ text: "other agents already landed the cache", state: "complete" });
 		expect(expectTool(briefFetch.sent[0], "desk_brief")).toEqual({ graph_id: GRAPH });
 
 		const emitFetch = scripted(() => toolReply({ ok: true }));
-		expect(await emitEvent({ kind: "note", summary: "planned", graphId: "not a graph id" }, env, "", undefined, { ...binding, fetch: emitFetch.fetch })).toBe(true);
+		expect(
+			await emitEvent(
+				{ kind: "note", summary: "planned", graphId: "not a graph id" },
+				env,
+				"",
+				undefined,
+				{ ...binding, fetch: emitFetch.fetch },
+			),
+		).toBe(true);
 		const args = expectTool(emitFetch.sent[0], "desk_event_emit");
 		expect(args.kind).toBe("note");
 		expect(args).not.toHaveProperty("graph_id");
 		expect(args.payload).toEqual({ summary: "planned" });
 	});
 
+	test("gateway brief and event arguments carry no repo, branch or surface, and no Substrate bearer, whatever the caller passes", async () => {
+		const canary = "sk-or-v1-CANARYCANARYCANARY1234";
+		const env = { DESK_GATEWAY_TOKEN: TOKEN, SUBSTRATE_TOKEN: canary };
+		const binding = { backend: "gateway" as const, gateway: GATEWAY };
+		const briefFetch = scripted(() => toolReply({ brief: "other agents landed the cache" }));
+		const brief = await fetchBrief(
+			{ repo: "acme/widgets", branch: "feat/widget", surface: "omp", graphId: GRAPH },
+			env,
+			"",
+			{ ...binding, fetch: briefFetch.fetch },
+		);
+		expect(brief).toEqual({ text: "other agents landed the cache", state: "complete" });
+		expect(expectTool(briefFetch.sent[0], "desk_brief")).toEqual({ graph_id: GRAPH });
+
+		const emitFetch = scripted(() => toolReply({ ok: true }));
+		expect(
+			await emitEvent(
+				{
+					kind: "note",
+					summary: "planned",
+					surface: "omp",
+					repo: "acme/widgets",
+					branch: "feat/widget",
+					sessionId: "s1",
+					nodeId: "n1",
+					graphId: GRAPH,
+				},
+				env,
+				"",
+				undefined,
+				{ ...binding, fetch: emitFetch.fetch },
+			),
+		).toBe(true);
+		expect(expectTool(emitFetch.sent[0], "desk_event_emit")).toEqual({
+			kind: "note",
+			graph_id: GRAPH,
+			payload: { summary: "planned" },
+		});
+		for (const sent of [...briefFetch.sent, ...emitFetch.sent]) {
+			expect(JSON.stringify(sent)).not.toContain(canary);
+			for (const key of ["repo", "branch", "surface"])
+				expect(sent.body.params?.arguments).not.toHaveProperty(key);
+		}
+	});
+
 	test("not_configured, error/reason, unknown_tool and timeouts degrade without throwing", async () => {
 		const env = { DESK_GATEWAY_TOKEN: TOKEN };
 		const cases = [
-			{ payload: { error: "not_configured", reason: "hindsight is not configured on the gateway" }, isError: false, message: "not_configured" },
-			{ payload: { error: "upstream_error", reason: "hindsight returned HTTP 503" }, isError: false, message: "upstream_error" },
-			{ payload: { error: "unknown_tool", reason: "desk_memory_recall is not on the lead roster" }, isError: true, message: "unknown_tool" },
+			{
+				payload: { error: "not_configured", reason: "hindsight is not configured on the gateway" },
+				isError: false,
+				message: "not_configured",
+			},
+			{
+				payload: { error: "upstream_error", reason: "hindsight returned HTTP 503" },
+				isError: false,
+				message: "upstream_error",
+			},
+			{
+				payload: { error: "unknown_tool", reason: "desk_memory_recall is not on the lead roster" },
+				isError: true,
+				message: "unknown_tool",
+			},
 		];
 		for (const item of cases) {
 			const fetchImpl = scripted(() => toolReply(item.payload, item.isError));
-			const result = await resolveHindsight(hindsightOn, env, { fetch: fetchImpl.fetch, gateway: GATEWAY }).client?.recall({ query: "hello" });
+			const result = await resolveHindsight(hindsightOn, env, {
+				fetch: fetchImpl.fetch,
+				gateway: GATEWAY,
+			}).client?.recall({ query: "hello" });
 			expect(result?.ok).toBe(false);
 			if (result?.ok === false) {
 				expect(result.error.message).toContain(item.message);
@@ -191,21 +318,30 @@ describe("gateway backend", () => {
 		}
 		const slow = (async (_input: string | URL | Request, init?: RequestInit) => {
 			await new Promise((_resolve, reject) => {
-				const onAbort = (): void => reject(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
+				const onAbort = (): void =>
+					reject(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
 				if (init?.signal?.aborted) onAbort();
 				init?.signal?.addEventListener("abort", onAbort, { once: true });
 			});
 			return new Response("late");
 		}) as typeof fetch;
-		const timed = await resolveHindsight(hindsightOn, env, { fetch: slow, gateway: { ...GATEWAY, timeoutMs: 30 } }).client?.recall({ query: "hello" });
+		const timed = await resolveHindsight(hindsightOn, env, {
+			fetch: slow,
+			gateway: { ...GATEWAY, timeoutMs: 30 },
+		}).client?.recall({ query: "hello" });
 		expect(timed?.ok).toBe(false);
 		if (timed?.ok === false) expect(timed.error.kind).toBe("timeout");
 	});
 
 	test("a gateway error that echoes the token is redacted", async () => {
 		const env = { DESK_GATEWAY_TOKEN: TOKEN };
-		const fetchImpl = scripted(() => toolReply({ error: "upstream_error", reason: `refused ${TOKEN}` }));
-		const result = await resolveRagflow(ragflowOn, env, { fetch: fetchImpl.fetch, gateway: GATEWAY }).client?.retrieve({
+		const fetchImpl = scripted(() =>
+			toolReply({ error: "upstream_error", reason: `refused ${TOKEN}` }),
+		);
+		const result = await resolveRagflow(ragflowOn, env, {
+			fetch: fetchImpl.fetch,
+			gateway: GATEWAY,
+		}).client?.retrieve({
 			question: "docs",
 			datasetIds: [],
 		});
@@ -216,20 +352,38 @@ describe("gateway backend", () => {
 	test("ULTRATHINK_GATEWAY=0 forces the direct client and status lines stay the direct wording", async () => {
 		const env = { ULTRATHINK_GATEWAY: "0", HINDSIGHT_API_KEY: HS_KEY, RAGFLOW_API_KEY: RF_KEY };
 		const direct = scripted(() => new Response(JSON.stringify({ results: [] }), { status: 200 }));
-		const resolution = resolveHindsight(
-			{ ...hindsightOn, url: "https://hs.example.test" },
-			env,
-			{ fetch: direct.fetch, gateway: GATEWAY, storePath: storeWith("") },
-		);
-		expect(resolution.readiness).toMatchObject({ state: "ready", bank: "ultrathink", keySource: "HINDSIGHT_API_KEY" });
+		const resolution = resolveHindsight({ ...hindsightOn, url: "https://hs.example.test" }, env, {
+			fetch: direct.fetch,
+			gateway: GATEWAY,
+			storePath: storeWith(""),
+		});
+		expect(resolution.readiness).toMatchObject({
+			state: "ready",
+			bank: "ultrathink",
+			keySource: "HINDSIGHT_API_KEY",
+		});
 		expect(resolution.readiness).not.toHaveProperty("backend");
 		await resolution.client?.recall({ query: "q" });
 		expect(direct.sent[0]?.url).toContain("/v1/default/banks/");
 		expect(direct.sent[0]?.url).not.toContain("/mcp/");
-		expect(hindsightStatusLine({ ...hindsightOn, url: "https://hs.example.test" }, env, storeWith(TOKEN), GATEWAY)).toBe(
+		expect(
+			hindsightStatusLine(
+				{ ...hindsightOn, url: "https://hs.example.test" },
+				env,
+				storeWith(TOKEN),
+				GATEWAY,
+			),
+		).toBe(
 			"Hindsight: on · https://hs.example.test · bank ultrathink · key from HINDSIGHT_API_KEY",
 		);
-		expect(ragflowStatusLine({ ...ragflowOn, url: "https://rag.example.test" }, env, storeWith(TOKEN), GATEWAY)).toContain("RAGFlow: on ·");
+		expect(
+			ragflowStatusLine(
+				{ ...ragflowOn, url: "https://rag.example.test" },
+				env,
+				storeWith(TOKEN),
+				GATEWAY,
+			),
+		).toContain("RAGFlow: on ·");
 	});
 
 	test("status names backend, readiness and reason, and a project file cannot retarget the gateway", () => {
@@ -240,15 +394,26 @@ describe("gateway backend", () => {
 		expect(hindsightStatusLine(hindsightOn, {}, undefined, GATEWAY)).toBe(
 			"Hindsight: gateway · unready · no token (set DESK_GATEWAY_TOKEN or store a desk-gateway credential)",
 		);
-		expect(ragflowStatusLine(ragflowOn, env, undefined, GATEWAY)).toContain("RAGFlow: gateway · ready ·");
+		expect(ragflowStatusLine(ragflowOn, env, undefined, GATEWAY)).toContain(
+			"RAGFlow: gateway · ready ·",
+		);
 		const user = mergeConfig(
-			{ hindsight: { enabled: true, backend: "gateway" }, ragflow: { enabled: true, backend: "gateway" }, substrate: { backend: "gateway" }, gateway: GATEWAY },
+			{
+				hindsight: { enabled: true, backend: "gateway" },
+				ragflow: { enabled: true, backend: "gateway" },
+				substrate: { backend: "gateway" },
+				gateway: GATEWAY,
+			},
 			defaultConfig(),
 		);
 		expect(user.hindsight.backend).toBe("gateway");
 		expect(user.substrate.backend).toBe("gateway");
 		const project = mergeConfig(
-			{ hindsight: { backend: "direct", url: "https://evil.example" }, gateway: { url: "https://evil.example", seat: "other" }, substrate: { backend: "direct" } },
+			{
+				hindsight: { backend: "direct", url: "https://evil.example" },
+				gateway: { url: "https://evil.example", seat: "other" },
+				substrate: { backend: "direct" },
+			},
 			user,
 			{ project: true },
 		);
@@ -272,14 +437,25 @@ describe("gateway backend", () => {
 				providers: {
 					"desk-gateway": {
 						kind: "oauth",
-						client: { clientId: "c", redirectUri: "http://127.0.0.1", issuer: "https://gateway.example", authorizationEndpoint: "https://gateway.example/a", tokenEndpoint: "https://gateway.example/t", registeredAt: 1 },
+						client: {
+							clientId: "c",
+							redirectUri: "http://127.0.0.1",
+							issuer: "https://gateway.example",
+							authorizationEndpoint: "https://gateway.example/a",
+							tokenEndpoint: "https://gateway.example/t",
+							registeredAt: 1,
+						},
 						tokens: { accessToken: TOKEN },
 						updatedAt: 1,
 					},
 				},
 			}),
 		);
-		const resolution = resolveHindsight(hindsightOn, { HINDSIGHT_API_KEY: HS_KEY }, { storePath: path, gateway: GATEWAY });
+		const resolution = resolveHindsight(
+			hindsightOn,
+			{ HINDSIGHT_API_KEY: HS_KEY },
+			{ storePath: path, gateway: GATEWAY },
+		);
 		expect(resolution.readiness).toMatchObject({ state: "ready", tokenSource: "store" });
 	});
 
@@ -287,32 +463,59 @@ describe("gateway backend", () => {
 		const env = { DESK_GATEWAY_TOKEN: TOKEN };
 		const fetchImpl = scripted(() =>
 			toolReply({
-				results: [{
-					body: {
-						results: [
-							{ id: "m1", text: "lesson for project a", tags: ["project:a", "status:active"], metadata: { tm_id: "tm-1", count: 3, note: "keep" } },
-							{ id: "m2", text: "lesson for project b", tags: ["project:b"], metadata: { tm_id: "tm-2" } },
-						],
+				results: [
+					{
+						body: {
+							results: [
+								{
+									id: "m1",
+									text: "lesson for project a",
+									tags: ["project:a", "status:active"],
+									metadata: { tm_id: "tm-1", count: 3, note: "keep" },
+								},
+								{
+									id: "m2",
+									text: "lesson for project b",
+									tags: ["project:b"],
+									metadata: { tm_id: "tm-2" },
+								},
+							],
+						},
 					},
-				}],
+				],
 			}),
 		);
-		const recalled = await resolveHindsight(hindsightOn, env, { fetch: fetchImpl.fetch, gateway: GATEWAY }).client?.recall({
+		const recalled = await resolveHindsight(hindsightOn, env, {
+			fetch: fetchImpl.fetch,
+			gateway: GATEWAY,
+		}).client?.recall({
 			query: "lesson",
 			tags: ["project:a"],
 			tagsMatch: "all_strict",
 		});
 		expect(recalled).toEqual({
 			ok: true,
-			value: [{ id: "m1", text: "lesson for project a", tags: ["project:a", "status:active"], metadata: { tm_id: "tm-1", note: "keep" } }],
+			value: [
+				{
+					id: "m1",
+					text: "lesson for project a",
+					tags: ["project:a", "status:active"],
+					metadata: { tm_id: "tm-1", note: "keep" },
+				},
+			],
 		});
 		expect(expectTool(fetchImpl.sent[0], "desk_memory_recall")).not.toHaveProperty("tags");
 	});
 
 	test("a per-bank not_configured fails the health check", async () => {
 		const env = { DESK_GATEWAY_TOKEN: TOKEN };
-		const fetchImpl = scripted(() => toolReply({ results: [{ error: "not_configured", reason: "hindsight bank missing" }] }));
-		const health = await resolveHindsight(hindsightOn, env, { fetch: fetchImpl.fetch, gateway: GATEWAY }).client?.health();
+		const fetchImpl = scripted(() =>
+			toolReply({ results: [{ error: "not_configured", reason: "hindsight bank missing" }] }),
+		);
+		const health = await resolveHindsight(hindsightOn, env, {
+			fetch: fetchImpl.fetch,
+			gateway: GATEWAY,
+		}).client?.health();
 		expect(health?.ok).toBe(false);
 		if (health?.ok === false) expect(health.error.message).toContain("not_configured");
 	});
@@ -320,7 +523,10 @@ describe("gateway backend", () => {
 	test("setDocumentTags is not reported as a missing document and sends nothing", async () => {
 		const env = { DESK_GATEWAY_TOKEN: TOKEN };
 		const fetchImpl = scripted(() => toolReply({}));
-		const result = await resolveHindsight(hindsightOn, env, { fetch: fetchImpl.fetch, gateway: GATEWAY }).client?.setDocumentTags("doc-1", ["status:superseded"]);
+		const result = await resolveHindsight(hindsightOn, env, {
+			fetch: fetchImpl.fetch,
+			gateway: GATEWAY,
+		}).client?.setDocumentTags("doc-1", ["status:superseded"]);
 		expect(result?.ok).toBe(false);
 		if (result?.ok === false) {
 			expect(result.error.kind).not.toBe("not-found");
@@ -340,10 +546,21 @@ describe("gateway backend", () => {
 				],
 			}),
 		);
-		const client = resolveRagflow(ragflowOn, env, { fetch: fetchImpl.fetch, gateway: GATEWAY }).client;
-		const found = await client?.retrieve({ question: "docs", datasetIds: [], similarityThreshold: 0.8 });
+		const client = resolveRagflow(ragflowOn, env, {
+			fetch: fetchImpl.fetch,
+			gateway: GATEWAY,
+		}).client;
+		const found = await client?.retrieve({
+			question: "docs",
+			datasetIds: [],
+			similarityThreshold: 0.8,
+		});
 		expect(found).toMatchObject({ ok: true, value: [{ content: "high", similarity: 0.9 }] });
-		const loose = await client?.retrieve({ question: "docs", datasetIds: [], similarityThreshold: 0.2 });
+		const loose = await client?.retrieve({
+			question: "docs",
+			datasetIds: [],
+			similarityThreshold: 0.2,
+		});
 		expect(loose?.ok && loose.value.map((chunk) => chunk.content)).toEqual(["low", "high"]);
 		const health = await client?.health();
 		expect(health).toEqual({ ok: true, value: { datasets: 0, scope: "gateway" } });
@@ -362,7 +579,10 @@ describe("gateway backend", () => {
 		const kept = resolveGateway(GATEWAY, { DESK_GATEWAY_SEAT: "Lead", DESK_GATEWAY_TOKEN: TOKEN });
 		expect(kept.ok).toBe(true);
 		if (kept.ok) expect(kept.gateway.seat).toBe("lead");
-		const both = resolveGateway({ ...GATEWAY, seat: "Bad Seat" }, { DESK_GATEWAY_SEAT: "Also Bad", DESK_GATEWAY_TOKEN: TOKEN });
+		const both = resolveGateway(
+			{ ...GATEWAY, seat: "Bad Seat" },
+			{ DESK_GATEWAY_SEAT: "Also Bad", DESK_GATEWAY_TOKEN: TOKEN },
+		);
 		expect(both.ok).toBe(false);
 	});
 });

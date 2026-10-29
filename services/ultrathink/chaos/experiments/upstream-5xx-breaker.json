@@ -3,9 +3,9 @@
 	"title": "Upstream 5xx storm opens the upstream breaker while /healthz keeps answering",
 	"failureMode": "upstream_5xx",
 	"kind": "inprocess",
-	"plan": { "steps": [{ "count": "forever", "fault": { "kind": "status", "status": 503, "retryAfterSec": 0 } }] },
+	"plan": { "steps": [{ "count": "forever", "fault": { "kind": "status", "status": 503 } }] },
 	"config": { "breakerFailures": 3, "breakerOpenMs": 60000 },
-	"notes": "Load is POST /mcp, a JSON-RPC tools/call of ultrathink_uplift (mcp/mcp.ts UPLIFT_TOOL, routes/router.ts mcpRoute). It is the only HTTP route that starts a headless planner job: POST /ultrathink only queues a run and never reaches the upstream. The completer makes at most three attempts per call (MAX_RETRIES 2, engine/openrouter.ts). The third 503 opens the breaker on the last attempt, so call 1 reports outcome upstream, and calls 2 to 6 are refused by the open breaker and report upstream_unavailable; settle therefore counts requests minus one. Load runs one request at a time so that call 1 is unambiguous. The harness must enable server planning and present the connector key; this template holds no credential.",
+	"notes": "Load is POST /mcp, a JSON-RPC tools/call of ultrathink_uplift (mcp/mcp.ts UPLIFT_TOOL, routes/router.ts mcpRoute). It is the only HTTP route that starts a headless planner job: POST /ultrathink only queues a run and never reaches the upstream. The fault sits in the plan backend's claude seam (chaos/faults.ts createFaultyClaude): each injected 503 is the error the CLI raises for an API failure and reaches the planner as a PlanCompleterError of class upstream. The planner reports one breaker failure per call, with no retry layer, so the third failed call opens the breaker (breakerFailures 3) and the calls after it are refused with outcome upstream_unavailable; settle therefore counts requests minus breakerFailures. Load runs one request at a time so the order of calls is unambiguous. The harness must enable server planning and present the connector key; this template holds no credential.",
 	"load": {
 		"method": "POST",
 		"path": "/mcp",
@@ -18,7 +18,7 @@
 		"requests": 6,
 		"concurrency": 1
 	},
-	"settle": { "metric": "ultrathink_planner_calls_total", "labels": { "outcome": "upstream_unavailable" }, "atLeast": 5 },
+	"settle": { "metric": "ultrathink_planner_calls_total", "labels": { "outcome": "upstream_unavailable" }, "atLeast": 3 },
 	"hypotheses": [
 		{
 			"id": "breaker-open",

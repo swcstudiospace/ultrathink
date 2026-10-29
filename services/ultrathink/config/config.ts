@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { isAbsolute } from "node:path";
+import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
 import { type AnomalyRule, parseAnomalyRules } from "../obs/anomaly.ts";
 
 export class ConfigError extends Error {
@@ -11,10 +12,10 @@ export class ConfigError extends Error {
 	}
 }
 
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+type PlanFallback = "none" | "grok";
 
 /** `host:port` of the syslog audit sink. */
-export interface AuditSyslogTarget {
+interface AuditSyslogTarget {
 	readonly host: string;
 	readonly port: number;
 }
@@ -40,19 +41,21 @@ export interface UltrathinkConfig {
 	maxBodyBytes: number;
 	runTokenCeiling: number;
 	dailyTokenCeiling: number;
-	planningModel: string | undefined;
+	planningModel: string;
 	connectorKey: string | undefined;
 	allowedOrigins: string[];
 	oauthRedirectOrigins: string[];
-	openRouterApiKey: string | undefined;
-	openRouterBaseUrl: string;
 	serverPlanning: boolean;
+	/** Whether a failed Claude call fails over to Grok. Absent means `none`. */
+	planFallback?: PlanFallback;
+	/** Most `claude` children in flight at once. Absent means 2. */
+	planConcurrency?: number;
 	maxConcurrentPlans: number;
 	modelTimeoutMs: number;
 	planTimeoutMs: number;
 	modelMaxOutputTokens: number;
-	/** Absent means the `reasoning` request parameter is not sent. */
-	modelReasoningEffort?: ReasoningEffort;
+	/** Names of removed OpenRouter-era variables that are still set; names only, never values. */
+	legacyEnvIgnored: string[];
 	/** Failures counted within `breakerWindowMs` that open the upstream breaker; 0 disables it. */
 	breakerFailures: number;
 	/** Window in which upstream failures are counted. */
@@ -125,37 +128,37 @@ export interface UltrathinkConfig {
 
 const DEFAULT_STATE_DIR = "/var/lib/ultrathink";
 const DEFAULT_PORT = 8795;
-const DEFAULT_MAX_INPUT_CHARS = 8000;
+// Far above any model context. 0 means no limit; MAX_BODY_BYTES still bounds a request.
+const DEFAULT_MAX_INPUT_CHARS = 4000000;
 const DEFAULT_MAX_ANSWER_CHARS = 20000;
-const MAX_BODY_BYTES = 65536;
-// Prompts and answers travel inside a JSON request body that Bun caps at MAX_BODY_BYTES, so both
-// char limits must fit it or Bun answers 413 before the app can say input_too_long/answer_too_long.
-// A length counts UTF-16 code units; each encodes to at most 3 UTF-8 bytes (an astral code point is
-// two units for four bytes). The rest is the allowance for the JSON-RPC envelope and JSON escaping,
-// sized so the ceiling is 20000 chars: the documented maximum, and the default answer limit.
-const MAX_UTF8_BYTES_PER_CHAR = 3;
-const BODY_ENVELOPE_BYTES = 5536;
-const MAX_BODY_CHARS = Math.floor((MAX_BODY_BYTES - BODY_ENVELOPE_BYTES) / MAX_UTF8_BYTES_PER_CHAR);
-const DEFAULT_RUN_TOKEN_CEILING = 150000;
-const DEFAULT_DAILY_TOKEN_CEILING = 1000000;
+const MAX_BODY_BYTES = 1048576;
+// 0 means unlimited for both token ceilings.
+const DEFAULT_RUN_TOKEN_CEILING = 0;
+const DEFAULT_DAILY_TOKEN_CEILING = 0;
 const MIN_SESSION_SECRET_LENGTH = 32;
 const MIN_CONNECTOR_KEY_LENGTH = 32;
 const MAX_PREVIOUS_SESSION_SECRETS = 4;
 const INTEGER_PATTERN = /^[0-9]+$/;
-const PLANNING_MODEL_PATTERN = /^[A-Za-z0-9._:\/-]{1,80}$/;
-const MIN_OPENROUTER_KEY_LENGTH = 20;
-const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const PLANNING_MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,80}$/;
 const DEFAULT_MAX_CONCURRENT_PLANS = 2;
-const DEFAULT_MODEL_TIMEOUT_MS = 240000;
-const DEFAULT_PLAN_TIMEOUT_MS = 600000;
-const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8000;
-const REASONING_EFFORTS: readonly ReasoningEffort[] = ["minimal", "low", "medium", "high"];
-const DEFAULT_REASONING_EFFORT: ReasoningEffort = "low";
+const DEFAULT_PLAN_CONCURRENCY = 2;
+const MAX_PLAN_CONCURRENCY = 6;
+// 0 means unlimited; a positive value is an explicit cap.
+const DEFAULT_MODEL_TIMEOUT_MS = 0;
+const DEFAULT_PLAN_TIMEOUT_MS = 0;
+// 0 means no configured cap; with a token ceiling set, each call is capped to the budget left, and to at most 16000 tokens.
+const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 0;
+/** Removed variables (the OpenRouter key/base URL family and the reasoning effort); matched by pattern so no name is spelled out here. */
+const LEGACY_ENV_PATTERN = /openrouter|^ULTRATHINK_MODEL_REASONING_EFFORT$/i;
 // The formats Bun.password.verify accepts: PHC argon2 strings and modular-crypt bcrypt strings.
 const OWNER_HASH_FORMAT =
 	/^(?:\$argon2(?:id|i|d)\$v=\d+\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/]+\$[A-Za-z0-9+/]+|\$2[abxy]\$\d{2}\$[./A-Za-z0-9]{53})$/;
 const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true };
-const OTLP_LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true, "[::1]": true };
+const OTLP_LOOPBACK_HOSTS: Record<string, true> = {
+	localhost: true,
+	"127.0.0.1": true,
+	"[::1]": true,
+};
 const DEFAULT_AUDIT_ANCHOR_EVERY = 1000;
 const DEFAULT_AUDIT_SEGMENT_BYTES = 67108864;
 const DEFAULT_AUDIT_RETENTION_DAYS = 365;
@@ -164,20 +167,34 @@ const DEFAULT_AUDIT_SINK_QUEUE = 10000;
 const MIN_AUDIT_HTTP_TOKEN_LENGTH = 16;
 const DEFAULT_SPIFFE_TRUST_DOMAIN = "ultrathink.internal";
 const TRUST_DOMAIN_PATTERN = /^[a-z0-9._-]{1,255}$/;
-const TLS_VARIABLES = ["ULTRATHINK_TLS_CERT", "ULTRATHINK_TLS_KEY", "ULTRATHINK_TLS_CLIENT_CA"] as const;
+const TLS_VARIABLES = [
+	"ULTRATHINK_TLS_CERT",
+	"ULTRATHINK_TLS_KEY",
+	"ULTRATHINK_TLS_CLIENT_CA",
+] as const;
 
-function readOptional(
-	env: Record<string, string | undefined>,
-	name: string,
-): string | undefined {
+/**
+ * Runs one reader. A ConfigError is recorded in `problems` and `fallback` is returned so the load carries on and every
+ * problem is reported together; the fallback never escapes because loadConfig throws whenever `problems` is non-empty.
+ */
+function collect<T>(problems: string[], fallback: T, read: () => T): T {
+	try {
+		return read();
+	} catch (error) {
+		if (error instanceof ConfigError) {
+			problems.push(error.message);
+			return fallback;
+		}
+		throw error;
+	}
+}
+
+function readOptional(env: Record<string, string | undefined>, name: string): string | undefined {
 	const trimmed = env[name]?.trim();
 	return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
-function readRequired(
-	env: Record<string, string | undefined>,
-	name: string,
-): string {
+function readRequired(env: Record<string, string | undefined>, name: string): string {
 	const value = readOptional(env, name);
 	if (value === undefined) {
 		throw new ConfigError(`${name} is required`);
@@ -207,17 +224,33 @@ function readInteger(
 	return value;
 }
 
+/** Like readInteger, but `0` is accepted and means unlimited; any other value must lie in min..max. */
+function readLimit(
+	env: Record<string, string | undefined>,
+	name: string,
+	fallback: number,
+	min: number,
+	max: number,
+): number {
+	const raw = readOptional(env, name);
+	if (raw !== undefined && INTEGER_PATTERN.test(raw) && Number(raw) === 0) {
+		return 0;
+	}
+	return readInteger(env, name, fallback, min, max);
+}
+
 function readPublicOrigin(env: Record<string, string | undefined>): string {
 	const raw = readRequired(env, "ULTRATHINK_PUBLIC_ORIGIN");
 	let url: URL;
 	try {
 		url = new URL(raw);
 	} catch {
-		throw new ConfigError(
-			"ULTRATHINK_PUBLIC_ORIGIN must be an absolute https:// URL",
-		);
+		throw new ConfigError("ULTRATHINK_PUBLIC_ORIGIN must be an absolute https:// URL");
 	}
-	if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)) {
+	if (
+		url.protocol !== "https:" &&
+		!(url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)
+	) {
 		throw new ConfigError(
 			"ULTRATHINK_PUBLIC_ORIGIN must use https:// (http:// is allowed only for localhost or 127.0.0.1)",
 		);
@@ -225,7 +258,13 @@ function readPublicOrigin(env: Record<string, string | undefined>): string {
 	// Consumers build "<origin>/mcp" and compare it with the browser's Origin
 	// header, so only scheme, host and port may be configured; a trailing slash
 	// is dropped and the host is lower-cased by url.origin.
-	if (url.username !== "" || url.password !== "" || url.pathname !== "/" || raw.includes("?") || raw.includes("#")) {
+	if (
+		url.username !== "" ||
+		url.password !== "" ||
+		url.pathname !== "/" ||
+		raw.includes("?") ||
+		raw.includes("#")
+	) {
 		throw new ConfigError(
 			"ULTRATHINK_PUBLIC_ORIGIN must be an origin only (scheme, host and optional port, with no credentials, path, query or fragment)",
 		);
@@ -277,46 +316,52 @@ function readPreviousSessionSecrets(env: Record<string, string | undefined>): st
 	return secrets;
 }
 
-function readPlanningModel(
-	env: Record<string, string | undefined>,
-): string | undefined {
+/** The model runs on the Claude plan login, so an OpenRouter-style `vendor/model` id can never work. */
+function readPlanningModel(env: Record<string, string | undefined>): string {
 	const model = readOptional(env, "ULTRATHINK_PLANNING_MODEL");
-	if (model !== undefined && !PLANNING_MODEL_PATTERN.test(model)) {
+	if (model?.includes("/")) {
 		throw new ConfigError(
-			"ULTRATHINK_PLANNING_MODEL must be 1-80 characters from A-Z, a-z, 0-9, '.', '_', ':', '/', '-'",
+			"ULTRATHINK_PLANNING_MODEL names an OpenRouter-style model id; the hosted planner runs on the Claude plan login (default claude-haiku-5-5). Remove the line or set a Claude model id.",
 		);
 	}
-	return model;
+	if (model !== undefined && !PLANNING_MODEL_PATTERN.test(model)) {
+		throw new ConfigError(
+			"ULTRATHINK_PLANNING_MODEL must be 1-80 characters from A-Z, a-z, 0-9, '.', '_', ':', '-'",
+		);
+	}
+	return model ?? ROUTE_DEFAULT_MODELS.claude;
+}
+
+function rejectRemovedPlanningBackend(env: Record<string, string | undefined>): void {
+	if (readOptional(env, "ULTRATHINK_PLANNING_BACKEND") !== undefined) {
+		throw new ConfigError(
+			"ULTRATHINK_PLANNING_BACKEND was removed: the hosted planner always runs on the Claude plan login; OpenRouter is reserved for Jev decisions. Remove the line.",
+		);
+	}
+}
+
+function readPlanFallback(env: Record<string, string | undefined>): PlanFallback {
+	const raw = readOptional(env, "ULTRATHINK_PLANNING_FALLBACK");
+	if (raw === undefined) {
+		return "none";
+	}
+	if (raw !== "none" && raw !== "grok") {
+		throw new ConfigError("ULTRATHINK_PLANNING_FALLBACK must be none or grok");
+	}
+	return raw;
 }
 
 function readConnectorKey(env: Record<string, string | undefined>): string | undefined {
 	const key = readOptional(env, "ULTRATHINK_CONNECTOR_KEY");
 	if (key !== undefined && key.length < MIN_CONNECTOR_KEY_LENGTH) {
-		throw new ConfigError(`ULTRATHINK_CONNECTOR_KEY must be at least ${MIN_CONNECTOR_KEY_LENGTH} characters`);
+		throw new ConfigError(
+			`ULTRATHINK_CONNECTOR_KEY must be at least ${MIN_CONNECTOR_KEY_LENGTH} characters`,
+		);
 	}
 	return key;
 }
 
-/** Unset means `low`: the pipeline already writes its reasoning out, so hidden reasoning only adds latency. `default` omits the parameter. */
-function readReasoningEffort(env: Record<string, string | undefined>): ReasoningEffort | undefined {
-	const name = "ULTRATHINK_MODEL_REASONING_EFFORT";
-	const raw = readOptional(env, name);
-	if (raw === undefined) {
-		return DEFAULT_REASONING_EFFORT;
-	}
-	if (raw === "default") {
-		return undefined;
-	}
-	if (!REASONING_EFFORTS.includes(raw as ReasoningEffort)) {
-		throw new ConfigError(`${name} must be one of minimal, low, medium, high or default`);
-	}
-	return raw as ReasoningEffort;
-}
-
-function readFlag(
-	env: Record<string, string | undefined>,
-	name: string,
-): boolean | undefined {
+function readFlag(env: Record<string, string | undefined>, name: string): boolean | undefined {
 	const raw = readOptional(env, name);
 	if (raw === undefined) {
 		return undefined;
@@ -328,59 +373,6 @@ function readFlag(
 		return false;
 	}
 	throw new ConfigError(`${name} must be 0 or 1`);
-}
-
-function readOpenRouterApiKey(env: Record<string, string | undefined>): string | undefined {
-	const key = readOptional(env, "OPENROUTER_API_KEY");
-	if (key !== undefined && key.length < MIN_OPENROUTER_KEY_LENGTH) {
-		throw new ConfigError(`OPENROUTER_API_KEY must be at least ${MIN_OPENROUTER_KEY_LENGTH} characters`);
-	}
-	return key;
-}
-
-function readOpenRouterBaseUrl(env: Record<string, string | undefined>): string {
-	const name = "ULTRATHINK_OPENROUTER_BASE_URL";
-	const raw = readOptional(env, name);
-	if (raw === undefined) {
-		return DEFAULT_OPENROUTER_BASE_URL;
-	}
-	let url: URL;
-	try {
-		url = new URL(raw);
-	} catch {
-		throw new ConfigError(`${name} must be an absolute https:// URL`);
-	}
-	if (
-		url.protocol !== "https:" ||
-		url.username !== "" ||
-		url.password !== "" ||
-		url.search !== "" ||
-		url.hash !== "" ||
-		raw.includes("?") ||
-		raw.includes("#")
-	) {
-		throw new ConfigError(
-			`${name} must be an https:// URL without credentials, query or fragment`,
-		);
-	}
-	return raw.replace(/\/+$/, "");
-}
-
-function readServerPlanning(
-	env: Record<string, string | undefined>,
-	apiKey: string | undefined,
-	planningModel: string | undefined,
-): boolean {
-	const flag = readFlag(env, "ULTRATHINK_SERVER_PLANNING");
-	if (flag === true) {
-		if (apiKey === undefined) {
-			throw new ConfigError("ULTRATHINK_SERVER_PLANNING=1 requires OPENROUTER_API_KEY");
-		}
-		if (planningModel === undefined) {
-			throw new ConfigError("ULTRATHINK_SERVER_PLANNING=1 requires ULTRATHINK_PLANNING_MODEL");
-		}
-	}
-	return flag !== false && apiKey !== undefined && planningModel !== undefined;
 }
 
 /** Comma list of bare origins (scheme://host[:port], no path, query, fragment or credentials), normalized and de-duplicated. */
@@ -412,7 +404,7 @@ function readOriginList(
 			!protocols.includes(url.protocol) ||
 			!entry.toLowerCase().startsWith(`${url.protocol}//`) ||
 			authority === "" ||
-			/[\/?#@\\]/.test(authority)
+			/[/?#@\\]/.test(authority)
 		) {
 			throw new ConfigError(message);
 		}
@@ -448,7 +440,10 @@ function readSinkUrl(env: Record<string, string | undefined>, name: string): str
 	if (url.username !== "" || url.password !== "") {
 		throw new ConfigError(`${name} must not contain credentials`);
 	}
-	if (url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)) {
+	if (
+		url.protocol === "https:" ||
+		(url.protocol === "http:" && LOOPBACK_HOSTS[url.hostname] === true)
+	) {
 		return raw;
 	}
 	throw new ConfigError(`${name} must use https://, or http:// to 127.0.0.1 or localhost`);
@@ -470,7 +465,10 @@ function readOtlpEndpoint(env: Record<string, string | undefined>): string | und
 	} catch {
 		throw new ConfigError(`${name} must be an absolute URL`);
 	}
-	if (url.protocol !== "https:" && !(url.protocol === "http:" && OTLP_LOOPBACK_HOSTS[url.hostname] === true)) {
+	if (
+		url.protocol !== "https:" &&
+		!(url.protocol === "http:" && OTLP_LOOPBACK_HOSTS[url.hostname] === true)
+	) {
 		throw new ConfigError(`${name} must use https://, or http:// to 127.0.0.1, localhost or [::1]`);
 	}
 	if (url.username !== "" || url.password !== "" || raw.includes("?") || raw.includes("#")) {
@@ -534,20 +532,31 @@ function readAuditRules(env: Record<string, string | undefined>): AnomalyRule[] 
 	try {
 		return parseAnomalyRules(value);
 	} catch (error) {
-		const reason = error instanceof Error ? error.message : "invalid rule";
+		// The validator's text quotes the operator's rule and field names; keep the position and the expectation only.
+		const reason = (error instanceof Error ? error.message : "invalid rule")
+			.replace(/"[^"]*"/g, '"…"')
+			.replace(/where\.\S+/g, "where.…");
 		throw new ConfigError(`${name} is invalid: ${reason}`);
 	}
 }
 
 /** The Kafka REST sink needs both its URL and its topic, or neither. */
-function readKafkaSink(env: Record<string, string | undefined>): {
+function readKafkaSink(
+	env: Record<string, string | undefined>,
+	problems: string[],
+): {
 	auditKafkaRestUrl: string | undefined;
 	auditKafkaTopic: string | undefined;
 } {
-	const auditKafkaRestUrl = readSinkUrl(env, "ULTRATHINK_AUDIT_KAFKA_REST_URL");
+	const before = problems.length;
+	const auditKafkaRestUrl = collect(problems, undefined, () =>
+		readSinkUrl(env, "ULTRATHINK_AUDIT_KAFKA_REST_URL"),
+	);
 	const auditKafkaTopic = readOptional(env, "ULTRATHINK_AUDIT_KAFKA_TOPIC");
-	if ((auditKafkaRestUrl === undefined) !== (auditKafkaTopic === undefined)) {
-		throw new ConfigError(
+	// A rejected URL says nothing about whether it was set, so the pairing is judged only when it parsed.
+	const urlParsed = problems.length === before;
+	if (urlParsed && (auditKafkaRestUrl === undefined) !== (auditKafkaTopic === undefined)) {
+		problems.push(
 			"ULTRATHINK_AUDIT_KAFKA_REST_URL and ULTRATHINK_AUDIT_KAFKA_TOPIC must be set together",
 		);
 	}
@@ -555,14 +564,22 @@ function readKafkaSink(env: Record<string, string | undefined>): {
 }
 
 /** Penalty blocks: the cap may not sit below the first block, or every escalation would be capped from the start. */
-function readPenaltyBlocks(env: Record<string, string | undefined>): {
+function readPenaltyBlocks(
+	env: Record<string, string | undefined>,
+	problems: string[],
+): {
 	penaltyBaseSec: number;
 	penaltyMaxSec: number;
 } {
-	const penaltyBaseSec = readInteger(env, "ULTRATHINK_PENALTY_BASE_SEC", 60, 1, 86400);
-	const penaltyMaxSec = readInteger(env, "ULTRATHINK_PENALTY_MAX_SEC", 3600, 1, 86400);
-	if (penaltyMaxSec < penaltyBaseSec) {
-		throw new ConfigError(
+	const before = problems.length;
+	const penaltyBaseSec = collect(problems, 60, () =>
+		readInteger(env, "ULTRATHINK_PENALTY_BASE_SEC", 60, 1, 86400),
+	);
+	const penaltyMaxSec = collect(problems, 3600, () =>
+		readInteger(env, "ULTRATHINK_PENALTY_MAX_SEC", 3600, 1, 86400),
+	);
+	if (problems.length === before && penaltyMaxSec < penaltyBaseSec) {
+		problems.push(
 			"ULTRATHINK_PENALTY_MAX_SEC must be greater than or equal to ULTRATHINK_PENALTY_BASE_SEC",
 		);
 	}
@@ -580,36 +597,44 @@ function readAbsoluteFile(env: Record<string, string | undefined>, name: string)
 
 /**
  * The three mTLS files are one set. Unset is allowed only with the plaintext loopback opt-in, the single way to run
- * without TLS; a partial set is refused even with it.
+ * without TLS; a partial set is refused even with it. `plaintextLoopback` is undefined when that flag itself was
+ * rejected: whether TLS is then required is unknown, so only the files that are set are judged.
  */
 function readTlsFiles(
 	env: Record<string, string | undefined>,
-	plaintextLoopback: boolean,
+	plaintextLoopback: boolean | undefined,
+	problems: string[],
 ): TlsFiles | undefined {
 	const present = TLS_VARIABLES.filter((name) => readOptional(env, name) !== undefined);
 	if (present.length === 0) {
-		if (plaintextLoopback) {
+		if (plaintextLoopback !== false) {
 			return undefined;
 		}
-		throw new ConfigError(
+		problems.push(
 			`${TLS_VARIABLES.join(", ")} must be set to absolute paths; ULTRATHINK_PLAINTEXT_LOOPBACK=1 allows plaintext for dev and local smoke only`,
 		);
+		return undefined;
 	}
 	const missing = TLS_VARIABLES.filter((name) => !present.includes(name));
 	if (missing.length > 0) {
-		throw new ConfigError(`${TLS_VARIABLES.join(", ")} must be set together; missing ${missing.join(", ")}`);
+		problems.push(
+			`${TLS_VARIABLES.join(", ")} must be set together; missing ${missing.join(", ")}`,
+		);
+		return undefined;
 	}
 	return {
-		certFile: readAbsoluteFile(env, "ULTRATHINK_TLS_CERT"),
-		keyFile: readAbsoluteFile(env, "ULTRATHINK_TLS_KEY"),
-		clientCaFile: readAbsoluteFile(env, "ULTRATHINK_TLS_CLIENT_CA"),
+		certFile: collect(problems, "", () => readAbsoluteFile(env, "ULTRATHINK_TLS_CERT")),
+		keyFile: collect(problems, "", () => readAbsoluteFile(env, "ULTRATHINK_TLS_KEY")),
+		clientCaFile: collect(problems, "", () => readAbsoluteFile(env, "ULTRATHINK_TLS_CLIENT_CA")),
 	};
 }
 
 function readSpiffeTrustDomain(env: Record<string, string | undefined>): string {
 	const domain = readOptional(env, "ULTRATHINK_SPIFFE_TRUST_DOMAIN") ?? DEFAULT_SPIFFE_TRUST_DOMAIN;
 	if (!TRUST_DOMAIN_PATTERN.test(domain)) {
-		throw new ConfigError("ULTRATHINK_SPIFFE_TRUST_DOMAIN must be 1-255 characters from a-z, 0-9, '.', '_' and '-'");
+		throw new ConfigError(
+			"ULTRATHINK_SPIFFE_TRUST_DOMAIN must be 1-255 characters from a-z, 0-9, '.', '_' and '-'",
+		);
 	}
 	return domain;
 }
@@ -618,156 +643,177 @@ function readSpiffeTrustDomain(env: Record<string, string | undefined>): string 
  * Chaos gate. Fault injection is off unless ULTRATHINK_CHAOS=1. It is armed only with ULTRATHINK_CHAOS_ENV=staging and
  * an absolute ULTRATHINK_CHAOS_PLAN. A plan path without the flag is refused, so a stray variable cannot arm it.
  */
-function readChaosGate(env: Record<string, string | undefined>): {
+function readChaosGate(
+	env: Record<string, string | undefined>,
+	problems: string[],
+): {
 	chaosEnabled: boolean;
 	chaosEnv: string | undefined;
 	chaosPlanPath: string | undefined;
 } {
-	const chaosEnabled = readFlag(env, "ULTRATHINK_CHAOS") ?? false;
+	const before = problems.length;
+	const flag = collect<boolean | undefined>(problems, undefined, () =>
+		readFlag(env, "ULTRATHINK_CHAOS"),
+	);
+	const chaosEnabled = flag ?? false;
 	const chaosEnv = readOptional(env, "ULTRATHINK_CHAOS_ENV");
 	const chaosPlanPath = readOptional(env, "ULTRATHINK_CHAOS_PLAN");
+	// A rejected flag leaves the gate state unknown, so the checks that depend on it are skipped.
+	if (problems.length > before) {
+		return { chaosEnabled, chaosEnv, chaosPlanPath };
+	}
 	if (!chaosEnabled) {
 		if (chaosPlanPath !== undefined) {
-			throw new ConfigError("ULTRATHINK_CHAOS_PLAN requires ULTRATHINK_CHAOS=1");
+			problems.push("ULTRATHINK_CHAOS_PLAN requires ULTRATHINK_CHAOS=1");
 		}
 		return { chaosEnabled, chaosEnv, chaosPlanPath };
 	}
 	if (chaosEnv !== "staging") {
-		throw new ConfigError("ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_ENV=staging; chaos never runs outside staging");
+		problems.push(
+			"ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_ENV=staging; chaos never runs outside staging",
+		);
 	}
 	if (chaosPlanPath === undefined) {
-		throw new ConfigError("ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_PLAN to be set");
-	}
-	if (!isAbsolute(chaosPlanPath)) {
-		throw new ConfigError("ULTRATHINK_CHAOS_PLAN must be an absolute path");
+		problems.push("ULTRATHINK_CHAOS=1 requires ULTRATHINK_CHAOS_PLAN to be set");
+	} else if (!isAbsolute(chaosPlanPath)) {
+		problems.push("ULTRATHINK_CHAOS_PLAN must be an absolute path");
 	}
 	return { chaosEnabled, chaosEnv, chaosPlanPath };
 }
 
+/**
+ * Reads every variable and reports every problem at once. One `ConfigError` is thrown after the last reader: its first
+ * line is `ultrathink: N configuration problems`, then one indented line per problem in reader order. Each line names
+ * a variable and what it expects, never a value.
+ */
 export function loadConfig(
 	env: Record<string, string | undefined> = process.env,
 ): UltrathinkConfig {
-	const stateDir = readStateDir(env);
-	const planningModel = readPlanningModel(env);
-	const openRouterApiKey = readOpenRouterApiKey(env);
-	const plaintextLoopback = readFlag(env, "ULTRATHINK_PLAINTEXT_LOOPBACK") === true;
-	return {
-		publicOrigin: readPublicOrigin(env),
-		ownerPasswordHash: readOwnerPasswordHash(env),
-		sessionSecret: readSessionSecret(env),
-		sessionSecretPrevious: readPreviousSessionSecrets(env),
+	const problems: string[] = [];
+	const int = (name: string, fallback: number, min: number, max: number): number =>
+		collect(problems, fallback, () => readInteger(env, name, fallback, min, max));
+	const limit = (name: string, fallback: number, min: number, max: number): number =>
+		collect(problems, fallback, () => readLimit(env, name, fallback, min, max));
+	const flag = (name: string): boolean | undefined =>
+		collect<boolean | undefined>(problems, undefined, () => readFlag(env, name));
+	const stateDir = collect(problems, DEFAULT_STATE_DIR, () => readStateDir(env));
+	collect(problems, undefined, () => {
+		rejectRemovedPlanningBackend(env);
+		return undefined;
+	});
+	const planningModel = collect(problems, ROUTE_DEFAULT_MODELS.claude, () =>
+		readPlanningModel(env),
+	);
+	const plaintextBefore = problems.length;
+	const plaintextFlag = flag("ULTRATHINK_PLAINTEXT_LOOPBACK");
+	const plaintextRejected = problems.length > plaintextBefore;
+	const plaintextLoopback = plaintextFlag === true;
+	const config: UltrathinkConfig = {
+		publicOrigin: collect(problems, "", () => readPublicOrigin(env)),
+		ownerPasswordHash: collect(problems, "", () => readOwnerPasswordHash(env)),
+		sessionSecret: collect(problems, "", () => readSessionSecret(env)),
+		sessionSecretPrevious: collect(problems, [], () => readPreviousSessionSecrets(env)),
 		stateDir,
 		dbPath: `${stateDir}/ultrathink.sqlite`,
-		port: readInteger(env, "ULTRATHINK_PORT", DEFAULT_PORT, 1024, 65535),
-		maxInputChars: readInteger(
-			env,
+		port: int("ULTRATHINK_PORT", DEFAULT_PORT, 1024, 65535),
+		maxInputChars: limit(
 			"ULTRATHINK_MAX_INPUT_CHARS",
 			DEFAULT_MAX_INPUT_CHARS,
 			1,
-			MAX_BODY_CHARS,
+			Number.MAX_SAFE_INTEGER,
 		),
-		maxAnswerChars: readInteger(
-			env,
-			"ULTRATHINK_MAX_ANSWER_CHARS",
-			DEFAULT_MAX_ANSWER_CHARS,
-			1,
-			MAX_BODY_CHARS,
-		),
+		maxAnswerChars: int("ULTRATHINK_MAX_ANSWER_CHARS", DEFAULT_MAX_ANSWER_CHARS, 1, 200000),
 		maxBodyBytes: MAX_BODY_BYTES,
-		runTokenCeiling: readInteger(
-			env,
+		runTokenCeiling: limit(
 			"ULTRATHINK_RUN_TOKEN_CEILING",
 			DEFAULT_RUN_TOKEN_CEILING,
 			1,
 			Number.MAX_SAFE_INTEGER,
 		),
-		dailyTokenCeiling: readInteger(
-			env,
+		dailyTokenCeiling: limit(
 			"ULTRATHINK_DAILY_TOKEN_CEILING",
 			DEFAULT_DAILY_TOKEN_CEILING,
 			1,
 			Number.MAX_SAFE_INTEGER,
 		),
 		planningModel,
-		connectorKey: readConnectorKey(env),
-		allowedOrigins: readOriginList(env, "ULTRATHINK_ALLOWED_ORIGINS", ["https:", "http:"]),
-		oauthRedirectOrigins: readOriginList(env, "ULTRATHINK_OAUTH_REDIRECT_ORIGINS", ["https:"]),
-		openRouterApiKey,
-		openRouterBaseUrl: readOpenRouterBaseUrl(env),
-		serverPlanning: readServerPlanning(env, openRouterApiKey, planningModel),
-		maxConcurrentPlans: readInteger(
-			env,
-			"ULTRATHINK_MAX_CONCURRENT_PLANS",
-			DEFAULT_MAX_CONCURRENT_PLANS,
+		connectorKey: collect(problems, undefined, () => readConnectorKey(env)),
+		allowedOrigins: collect(problems, [], () =>
+			readOriginList(env, "ULTRATHINK_ALLOWED_ORIGINS", ["https:", "http:"]),
+		),
+		oauthRedirectOrigins: collect(problems, [], () =>
+			readOriginList(env, "ULTRATHINK_OAUTH_REDIRECT_ORIGINS", ["https:"]),
+		),
+		serverPlanning: flag("ULTRATHINK_SERVER_PLANNING") === true,
+		planFallback: collect<PlanFallback>(problems, "none", () => readPlanFallback(env)),
+		planConcurrency: int(
+			"ULTRATHINK_PLAN_CONCURRENCY",
+			DEFAULT_PLAN_CONCURRENCY,
 			1,
-			8,
+			MAX_PLAN_CONCURRENCY,
 		),
-		modelTimeoutMs: readInteger(
-			env,
-			"ULTRATHINK_MODEL_TIMEOUT_MS",
-			DEFAULT_MODEL_TIMEOUT_MS,
-			5000,
-			600000,
-		),
-		planTimeoutMs: readInteger(
-			env,
-			"ULTRATHINK_PLAN_TIMEOUT_MS",
-			DEFAULT_PLAN_TIMEOUT_MS,
-			30000,
-			1800000,
-		),
-		modelMaxOutputTokens: readInteger(
-			env,
+		maxConcurrentPlans: int("ULTRATHINK_MAX_CONCURRENT_PLANS", DEFAULT_MAX_CONCURRENT_PLANS, 1, 8),
+		modelTimeoutMs: limit("ULTRATHINK_MODEL_TIMEOUT_MS", DEFAULT_MODEL_TIMEOUT_MS, 5000, 600000),
+		planTimeoutMs: limit("ULTRATHINK_PLAN_TIMEOUT_MS", DEFAULT_PLAN_TIMEOUT_MS, 30000, 1800000),
+		modelMaxOutputTokens: limit(
 			"ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS",
 			DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
 			256,
 			32000,
 		),
-		modelReasoningEffort: readReasoningEffort(env),
-		breakerFailures: readInteger(env, "ULTRATHINK_BREAKER_FAILURES", 5, 0, 100),
-		breakerWindowMs: readInteger(env, "ULTRATHINK_BREAKER_WINDOW_MS", 60000, 1000, 3600000),
-		breakerOpenMs: readInteger(env, "ULTRATHINK_BREAKER_OPEN_MS", 30000, 1000, 600000),
-		maxInflight: readInteger(env, "ULTRATHINK_MAX_INFLIGHT", 256, 1, 10000),
-		priorityReservePct: readInteger(env, "ULTRATHINK_PRIORITY_RESERVE_PCT", 25, 0, 90),
-		fairQueueDepth: readInteger(env, "ULTRATHINK_FAIR_QUEUE_DEPTH", 16, 0, 1000),
-		fairQueueWaitMs: readInteger(env, "ULTRATHINK_FAIR_QUEUE_WAIT_MS", 1500, 1, 60000),
-		adaptiveQuotaMinPct: readInteger(env, "ULTRATHINK_ADAPTIVE_QUOTA_MIN_PCT", 50, 10, 100),
-		lagTargetMs: readInteger(env, "ULTRATHINK_LAG_TARGET_MS", 100, 10, 5000),
-		replicaCapacityRps: readInteger(env, "ULTRATHINK_REPLICA_CAPACITY_RPS", 20, 1, 100000),
-		abuseFailuresPerMinute: readInteger(env, "ULTRATHINK_ABUSE_FAILURES_PER_MINUTE", 20, 1, 10000),
-		...readPenaltyBlocks(env),
-		drainMs: readInteger(env, "ULTRATHINK_DRAIN_MS", 5000, 0, 60000),
-		retentionDays: readInteger(env, "ULTRATHINK_RETENTION_DAYS", 30, 0, 3650),
-		auditLog: readFlag(env, "ULTRATHINK_AUDIT_LOG") ?? true,
-		auditAnchorEvery: readInteger(env, "ULTRATHINK_AUDIT_ANCHOR_EVERY", DEFAULT_AUDIT_ANCHOR_EVERY, 1, 1000000),
-		auditSegmentBytes: readInteger(
-			env,
+		legacyEnvIgnored: Object.keys(env)
+			.filter((name) => LEGACY_ENV_PATTERN.test(name) && readOptional(env, name) !== undefined)
+			.sort(),
+		breakerFailures: int("ULTRATHINK_BREAKER_FAILURES", 5, 0, 100),
+		breakerWindowMs: int("ULTRATHINK_BREAKER_WINDOW_MS", 60000, 1000, 3600000),
+		breakerOpenMs: int("ULTRATHINK_BREAKER_OPEN_MS", 30000, 1000, 600000),
+		maxInflight: int("ULTRATHINK_MAX_INFLIGHT", 256, 1, 10000),
+		priorityReservePct: int("ULTRATHINK_PRIORITY_RESERVE_PCT", 25, 0, 90),
+		fairQueueDepth: int("ULTRATHINK_FAIR_QUEUE_DEPTH", 16, 0, 1000),
+		fairQueueWaitMs: int("ULTRATHINK_FAIR_QUEUE_WAIT_MS", 1500, 1, 60000),
+		adaptiveQuotaMinPct: int("ULTRATHINK_ADAPTIVE_QUOTA_MIN_PCT", 50, 10, 100),
+		lagTargetMs: int("ULTRATHINK_LAG_TARGET_MS", 100, 10, 5000),
+		replicaCapacityRps: int("ULTRATHINK_REPLICA_CAPACITY_RPS", 20, 1, 100000),
+		abuseFailuresPerMinute: int("ULTRATHINK_ABUSE_FAILURES_PER_MINUTE", 20, 1, 10000),
+		...readPenaltyBlocks(env, problems),
+		drainMs: int("ULTRATHINK_DRAIN_MS", 5000, 0, 60000),
+		retentionDays: int("ULTRATHINK_RETENTION_DAYS", 30, 0, 3650),
+		auditLog: flag("ULTRATHINK_AUDIT_LOG") ?? true,
+		auditAnchorEvery: int("ULTRATHINK_AUDIT_ANCHOR_EVERY", DEFAULT_AUDIT_ANCHOR_EVERY, 1, 1000000),
+		auditSegmentBytes: int(
 			"ULTRATHINK_AUDIT_SEGMENT_BYTES",
 			DEFAULT_AUDIT_SEGMENT_BYTES,
 			1048576,
 			4294967296,
 		),
-		auditRetentionDays: readInteger(env, "ULTRATHINK_AUDIT_RETENTION_DAYS", DEFAULT_AUDIT_RETENTION_DAYS, 0, 36500),
-		auditWatchMs: readInteger(env, "ULTRATHINK_AUDIT_WATCH_MS", DEFAULT_AUDIT_WATCH_MS, 100, 1000),
-		auditSinkQueue: readInteger(env, "ULTRATHINK_AUDIT_SINK_QUEUE", DEFAULT_AUDIT_SINK_QUEUE, 1, 1000000),
-		auditRules: readAuditRules(env),
-		auditHttpUrl: readSinkUrl(env, "ULTRATHINK_AUDIT_HTTP_URL"),
-		auditHttpToken: readAuditHttpToken(env),
-		auditSyslog: readAuditSyslog(env),
-		otlpEndpoint: readOtlpEndpoint(env),
-		tls: readTlsFiles(env, plaintextLoopback),
-		spiffeTrustDomain: readSpiffeTrustDomain(env),
+		auditRetentionDays: int(
+			"ULTRATHINK_AUDIT_RETENTION_DAYS",
+			DEFAULT_AUDIT_RETENTION_DAYS,
+			0,
+			36500,
+		),
+		auditWatchMs: int("ULTRATHINK_AUDIT_WATCH_MS", DEFAULT_AUDIT_WATCH_MS, 100, 1000),
+		auditSinkQueue: int("ULTRATHINK_AUDIT_SINK_QUEUE", DEFAULT_AUDIT_SINK_QUEUE, 1, 1000000),
+		auditRules: collect(problems, undefined, () => readAuditRules(env)),
+		auditHttpUrl: collect(problems, undefined, () => readSinkUrl(env, "ULTRATHINK_AUDIT_HTTP_URL")),
+		auditHttpToken: collect(problems, undefined, () => readAuditHttpToken(env)),
+		auditSyslog: collect(problems, undefined, () => readAuditSyslog(env)),
+		otlpEndpoint: collect(problems, undefined, () => readOtlpEndpoint(env)),
+		tls: readTlsFiles(env, plaintextRejected ? undefined : plaintextLoopback, problems),
+		spiffeTrustDomain: collect(problems, DEFAULT_SPIFFE_TRUST_DOMAIN, () =>
+			readSpiffeTrustDomain(env),
+		),
 		plaintextLoopback,
-		...readChaosGate(env),
-		...readKafkaSink(env),
+		...readChaosGate(env, problems),
+		...readKafkaSink(env, problems),
 	};
-}
-
-export function requirePlanningModel(config: UltrathinkConfig): string {
-	if (config.planningModel === undefined) {
+	if (problems.length > 0) {
 		throw new ConfigError(
-			"ULTRATHINK_PLANNING_MODEL is required before planning can run",
+			[
+				`ultrathink: ${problems.length} configuration problems`,
+				...problems.map((problem) => `  ${problem}`),
+			].join("\n"),
 		);
 	}
-	return config.planningModel;
+	return config;
 }

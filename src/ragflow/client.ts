@@ -7,9 +7,9 @@
  * free of the key and the question. The health probe is a one-row dataset listing: the documented healthz route blocks
  * the operator's single API worker for minutes (see ./types.ts).
  */
-import { redactSecrets } from "../grok/auth.ts";
 import { type HttpOutcome, requestJson } from "../net/http.ts";
 import { checkServiceUrl } from "../net/safe-url.ts";
+import { redactSecrets } from "../redact.ts";
 import type {
 	RagflowChunk,
 	RagflowClient,
@@ -20,6 +20,7 @@ import type {
 	RagflowResult,
 	RetrieveQuery,
 } from "./types.ts";
+import { isRecord } from "../shared.ts";
 
 const MAX_MESSAGE_CHARS = 200;
 const PAGE_SIZE = 100;
@@ -29,17 +30,23 @@ const DEFAULT_SIMILARITY = 0.2;
 
 type Body = Record<string, unknown>;
 
-function isRecord(value: unknown): value is Body {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);
 }
 
-function failure(kind: RagflowErrorKind, detail: string, extra: { status?: number; code?: number } = {}): RagflowResult<never> {
+function failure(
+	kind: RagflowErrorKind,
+	detail: string,
+	extra: { status?: number; code?: number } = {},
+): RagflowResult<never> {
 	const message = `ragflow ${kind}: ${detail}`;
-	const error: RagflowError = { kind, message: message.length > MAX_MESSAGE_CHARS ? `${message.slice(0, MAX_MESSAGE_CHARS - 3)}...` : message };
+	const error: RagflowError = {
+		kind,
+		message:
+			message.length > MAX_MESSAGE_CHARS
+				? `${message.slice(0, MAX_MESSAGE_CHARS - 3)}...`
+				: message,
+	};
 	if (extra.status !== undefined) error.status = extra.status;
 	if (extra.code !== undefined) error.code = extra.code;
 	return { ok: false, error };
@@ -67,11 +74,11 @@ export function createRagflowClient(options: RagflowClientOptions): RagflowClien
 	if (apiKey === "") throw new Error("ragflow: api key is empty");
 	const base = checked.url;
 
-	/** One line of server text with the key (and anything the caller marks secret) removed. */
+	/** One line of server text with the key removed by `redactSecrets`, and anything the caller marks secret (any length) masked first. */
 	const clean = (text: string, secrets: readonly string[]): string => {
-		let out = text.replaceAll(apiKey, "[redacted]");
+		let out = text;
 		for (const secret of secrets) if (secret.length > 0) out = out.replaceAll(secret, "[redacted]");
-		return redactSecrets(out).replace(/\s+/g, " ").trim();
+		return redactSecrets(out, apiKey).replace(/\s+/g, " ").trim();
 	};
 
 	/** The `{code:0,...}` body of a successful call, or the classified failure. `secrets` are masked in error detail. */
@@ -88,26 +95,34 @@ export function createRagflowClient(options: RagflowClientOptions): RagflowClien
 			signal: options.signal,
 			fetch: options.fetch,
 		});
-		if (outcome.kind === "timeout") return failure("timeout", `no response within ${options.timeoutMs} ms`);
-		if (outcome.kind === "network") return failure("network", clean(outcome.message, secrets) || "request failed");
+		if (outcome.kind === "timeout")
+			return failure("timeout", `no response within ${options.timeoutMs} ms`);
+		if (outcome.kind === "network")
+			return failure("network", clean(outcome.message, secrets) || "request failed");
 		const { status, json } = outcome;
 		const record = isRecord(json) ? json : undefined;
 		const code = record && isNumber(record.code) ? record.code : undefined;
-		const detail = record && typeof record.message === "string" ? clean(record.message, secrets) : "";
+		const detail =
+			record && typeof record.message === "string" ? clean(record.message, secrets) : "";
 		const extra = { status, ...(code !== undefined ? { code } : {}) };
 		if (status < 200 || status >= 300) {
 			return failure(statusKind(status) ?? "api-error", detail || `HTTP ${status}`, extra);
 		}
-		if (!record || code === undefined) return failure("invalid-response", "response is not a {code, data} object", { status });
+		if (!record || code === undefined)
+			return failure("invalid-response", "response is not a {code, data} object", { status });
 		if (code !== 0) return failure(codeKind(code), detail || `code ${code}`, extra);
 		return { ok: true, value: { body: record, ms: outcome.ms } };
 	}
 
-	async function listPage(page: number, pageSize: number): Promise<RagflowResult<{ items: unknown[]; total?: number }>> {
+	async function listPage(
+		page: number,
+		pageSize: number,
+	): Promise<RagflowResult<{ items: unknown[]; total?: number }>> {
 		const result = await call(`/api/v1/datasets?page=${page}&page_size=${pageSize}`, undefined, []);
 		if (!result.ok) return result;
 		const { data, total } = result.value.body;
-		if (!Array.isArray(data)) return failure("invalid-response", "datasets response has no data array");
+		if (!Array.isArray(data))
+			return failure("invalid-response", "datasets response has no data array");
 		return { ok: true, value: { items: data, total: isNumber(total) ? total : undefined } };
 	}
 
@@ -129,11 +144,15 @@ export function createRagflowClient(options: RagflowClientOptions): RagflowClien
 				seen += items.length;
 				for (const item of items) {
 					if (!isRecord(item) || typeof item.id !== "string") continue;
-					const dataset: RagflowDataset = { id: item.id, name: typeof item.name === "string" ? item.name : item.id };
+					const dataset: RagflowDataset = {
+						id: item.id,
+						name: typeof item.name === "string" ? item.name : item.id,
+					};
 					if (typeof item.description === "string") dataset.description = item.description;
 					if (isNumber(item.chunk_count)) dataset.chunkCount = item.chunk_count;
 					if (isNumber(item.document_count)) dataset.documentCount = item.document_count;
-					if (typeof item.embedding_model === "string") dataset.embeddingModel = item.embedding_model;
+					if (typeof item.embedding_model === "string")
+						dataset.embeddingModel = item.embedding_model;
 					datasets.push(dataset);
 				}
 				if (items.length < PAGE_SIZE || (total !== undefined && seen >= total)) break;
@@ -160,10 +179,12 @@ export function createRagflowClient(options: RagflowClientOptions): RagflowClien
 			);
 			if (!result.ok) return result;
 			const data = result.value.body.data;
-			if (!isRecord(data) || !Array.isArray(data.chunks)) return failure("invalid-response", "retrieval response has no data.chunks array");
+			if (!isRecord(data) || !Array.isArray(data.chunks))
+				return failure("invalid-response", "retrieval response has no data.chunks array");
 			const chunks: RagflowChunk[] = [];
 			for (const item of data.chunks) {
-				if (!isRecord(item) || typeof item.id !== "string" || typeof item.content !== "string") continue;
+				if (!isRecord(item) || typeof item.id !== "string" || typeof item.content !== "string")
+					continue;
 				const chunk: RagflowChunk = { id: item.id, content: item.content };
 				if (typeof item.document_id === "string") chunk.documentId = item.document_id;
 				if (typeof item.document_keyword === "string") chunk.documentName = item.document_keyword;

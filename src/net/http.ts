@@ -5,8 +5,8 @@
  * bearer key to another origin), a bounded response, and a result value instead of an exception. The only rejection is
  * an AbortError when the caller's own signal aborts. Error text is run through `redactSecrets`.
  */
-import { redactSecrets } from "../grok/auth.ts";
 import { USER_AGENT } from "../mcp/providers.ts";
+import { redactSecrets } from "../redact.ts";
 import { readBodyPrefix } from "./body.ts";
 
 /** Bytes buffered from a response before it is refused as too large; the rest of the stream is cancelled unread. */
@@ -14,12 +14,26 @@ export const MAX_RESPONSE_CHARS = 4_000_000;
 /** setTimeout/AbortSignal.timeout reject delays above the signed 32-bit range. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
+export type DeadlineLabel = "retain" | "request";
+
+/** Supplies the abort signal that enforces a request's time budget. Defaults to `AbortSignal.timeout`. */
+export interface Deadlines {
+	arm(label: DeadlineLabel, ms: number): AbortSignal;
+}
+
+const platformDeadlines: Deadlines = {
+	arm: (_label, ms) => AbortSignal.timeout(ms),
+};
+
 export interface HttpRequest {
 	method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 	headers?: Record<string, string>;
 	/** Serialized with JSON.stringify when present. */
 	body?: unknown;
 	timeoutMs: number;
+	/** Which budget this request runs under; passed to `deadlines.arm`. Defaults to "request". */
+	label?: DeadlineLabel;
+	deadlines?: Deadlines;
 	signal?: AbortSignal;
 	fetch?: typeof fetch;
 }
@@ -55,9 +69,13 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 export async function requestJson(url: string, request: HttpRequest): Promise<HttpOutcome> {
 	const started = Date.now();
 	const budget = Math.min(Math.max(1, request.timeoutMs), MAX_TIMEOUT_MS);
-	const timeout = AbortSignal.timeout(budget);
+	const timeout = (request.deadlines ?? platformDeadlines).arm(request.label ?? "request", budget);
 	const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
-	const headers: Record<string, string> = { "User-Agent": USER_AGENT, Accept: "application/json", ...request.headers };
+	const headers: Record<string, string> = {
+		"User-Agent": USER_AGENT,
+		Accept: "application/json",
+		...request.headers,
+	};
 	if (request.body !== undefined) headers["Content-Type"] = "application/json";
 	try {
 		const response = await abortable(
@@ -73,7 +91,13 @@ export async function requestJson(url: string, request: HttpRequest): Promise<Ht
 		const body = await abortable(readBodyPrefix(response, MAX_RESPONSE_CHARS, signal), signal);
 		const ms = Date.now() - started;
 		if (!body.complete) return { kind: "network", message: "response too large", ms };
-		return { kind: "response", status: response.status, json: parseJson(body.text), text: body.text, ms };
+		return {
+			kind: "response",
+			status: response.status,
+			json: parseJson(body.text),
+			text: body.text,
+			ms,
+		};
 	} catch (error) {
 		if (request.signal?.aborted) throw error;
 		const ms = Date.now() - started;

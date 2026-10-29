@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import {
 	DEFAULT_HINDSIGHT_CONFIG,
 	type HindsightClient,
@@ -14,14 +14,20 @@ import {
 import { contentFor, documentIdFor, metadataFor, tagsFor } from "./mapping.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "./recall.ts";
 import { openStore, storeDir } from "./store.ts";
-import { DEFAULT_TEACH_CONFIG, type RecalledLesson, type RecallOutcome, type TeachableMoment, type TeachContext, type TeachStore } from "./types.ts";
+import { moment } from "../test.helpers.ts";
+import {
+	DEFAULT_TEACH_CONFIG,
+	type RecalledLesson,
+	type RecallOutcome,
+	type TeachableMoment,
+	type TeachContext,
+	type TeachStore,
+} from "./types.ts";
 
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-teach-recall-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-teach-recall-", dirs);
 }
 
 afterEach(() => {
@@ -34,9 +40,11 @@ function fakeClient(recall: (query: RecallQuery) => Promise<HindsightResult<Reca
 	const calls: RecallQuery[] = [];
 	const client: HindsightClient = {
 		bank: "ultrathink",
-		health: async () => ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
+		health: async () =>
+			ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
 		ensureBank: async () => ok({ bankId: "ultrathink", created: false, extractionMode: "chunks" }),
-		retain: async (item) => ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 }),
+		retain: async (item) =>
+			ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 }),
 		recall: async (query) => {
 			calls.push(query);
 			return recall(query);
@@ -49,44 +57,30 @@ function fakeClient(recall: (query: RecallQuery) => Promise<HindsightResult<Reca
 	return { client, calls };
 }
 
-function moment(id: string, overrides: Partial<TeachableMoment> = {}): TeachableMoment {
+function hitFor(m: TeachableMoment, overrides: Partial<RecallHit> = {}): RecallHit {
 	return {
-		id,
-		name: `lesson ${id}`,
-		description: "",
-		body: "",
-		sourcePhase: "",
-		sourceArtifacts: [],
-		createdAt: "2026-01-01T00:00:00.000Z",
-		tags: [],
-		relatedIds: [],
-		schema: 2,
-		kind: "pitfall",
-		status: "confirmed",
-		origin: "explicit",
-		project: "proj",
-		host: "omp",
-		confidence: 1,
-		occurrences: 1,
-		lastSeenAt: "2026-01-01T00:00:00.000Z",
-		dedupeKey: `key-${id}`,
-		recalled: 0,
+		id: `unit-${m.id}`,
+		text: contentFor(m),
+		documentId: documentIdFor(m.id),
+		tags: tagsFor(m),
+		metadata: metadataFor(m),
 		...overrides,
 	};
 }
 
-function hitFor(m: TeachableMoment, overrides: Partial<RecallHit> = {}): RecallHit {
-	return { id: `unit-${m.id}`, text: contentFor(m), documentId: documentIdFor(m.id), tags: tagsFor(m), metadata: metadataFor(m), ...overrides };
-}
-
-function setup(options: { client?: HindsightClient; teach?: Partial<typeof DEFAULT_TEACH_CONFIG> } = {}) {
+function setup(
+	options: { client?: HindsightClient; teach?: Partial<typeof DEFAULT_TEACH_CONFIG> } = {},
+) {
 	const root = tempDir();
 	const cwd = join(root, "proj");
 	mkdirSync(join(cwd, ".git"), { recursive: true });
 	const ctx: TeachContext = {
 		host: "omp",
 		cwd,
-		config: { teach: { ...DEFAULT_TEACH_CONFIG, enabled: true, ...options.teach }, hindsight: { ...DEFAULT_HINDSIGHT_CONFIG } },
+		config: {
+			teach: { ...DEFAULT_TEACH_CONFIG, enabled: true, ...options.teach },
+			hindsight: { ...DEFAULT_HINDSIGHT_CONFIG },
+		},
 		env: { HOME: root },
 		stateDir: join(root, "state"),
 		now: () => Date.parse("2026-06-01T00:00:00.000Z"),
@@ -119,9 +113,18 @@ describe("recallLessons: off and empty", () => {
 	test("off unless Teachable Moments and recall are on; the kill switch wins", async () => {
 		const { client, calls } = fakeClient(async () => ok([]));
 		const disabled = setup({ client, teach: { enabled: false } });
-		expect(await recallLessons({ query: "anything" }, disabled.ctx)).toMatchObject({ status: "off", reason: "teach is off", lessons: [], source: "none", chars: 0 });
+		expect(await recallLessons({ query: "anything" }, disabled.ctx)).toMatchObject({
+			status: "off",
+			reason: "teach is off",
+			lessons: [],
+			source: "none",
+			chars: 0,
+		});
 		const noRecall = setup({ client, teach: { recall: false } });
-		expect(await recallLessons({ query: "anything" }, noRecall.ctx)).toMatchObject({ status: "off", reason: "recall is off" });
+		expect(await recallLessons({ query: "anything" }, noRecall.ctx)).toMatchObject({
+			status: "off",
+			reason: "recall is off",
+		});
 		const killed = setup({ client });
 		killed.ctx.env.ULTRATHINK_TEACH = "0";
 		expect((await recallLessons({ query: "anything" }, killed.ctx)).status).toBe("off");
@@ -131,7 +134,11 @@ describe("recallLessons: off and empty", () => {
 	test("an empty or whitespace query is none and asks nothing", async () => {
 		const { client, calls } = fakeClient(async () => ok([]));
 		const { ctx } = setup({ client });
-		expect(await recallLessons({ query: "  \n " }, ctx)).toMatchObject({ status: "none", lessons: [], source: "none" });
+		expect(await recallLessons({ query: "  \n " }, ctx)).toMatchObject({
+			status: "none",
+			lessons: [],
+			source: "none",
+		});
 		expect(calls).toHaveLength(0);
 	});
 });
@@ -154,12 +161,19 @@ describe("recallLessons: Hindsight", () => {
 		expect(outcome.status).toBe("used");
 		expect(outcome.source).toBe("hindsight");
 		expect(outcome.lessons.map((l) => l.id)).toEqual(["a", "b"]);
-		expect(outcome.lessons[0]).toMatchObject({ name: "first lesson", description: "d1", body: "b1", occurrences: 2, project: "proj", source: "hindsight" });
+		expect(outcome.lessons[0]).toMatchObject({
+			name: "first lesson",
+			description: "d1",
+			body: "b1",
+			occurrences: 2,
+			project: "proj",
+			source: "hindsight",
+		});
 		expect(outcome.chars).toBe(formatLessonsSection(outcome, ctx.config.teach.recallChars).length);
 		expect(outcome.chars).toBeGreaterThan(0);
 	});
 
-	test("project scoping: an explicit project is tagged (sanitized), \"*\" drops the project tag", async () => {
+	test('project scoping: an explicit project is tagged (sanitized), "*" drops the project tag', async () => {
 		const { client, calls } = fakeClient(async () => ok([]));
 		const { ctx } = setup({ client });
 		await recallLessons({ query: "q", project: "Other Proj" }, ctx);
@@ -212,14 +226,36 @@ describe("recallLessons: Hindsight", () => {
 
 describe("recallLessons: local fallback", () => {
 	function seed(store: TeachStore) {
-		store.put(moment("name-hit", { name: "Mock hoisting breaks vitest", description: "unrelated", body: "unrelated" }));
-		store.put(moment("desc-hit", { name: "Something else", description: "mock hoisting order", body: "unrelated" }));
-		store.put(moment("body-hit", { name: "Third", description: "third", body: "mock hoisting is the cause" }));
-		store.put(moment("miss", { name: "Docker layers", description: "cache", body: "order of COPY" }));
+		store.put(
+			moment("name-hit", {
+				name: "Mock hoisting breaks vitest",
+				description: "unrelated",
+				body: "unrelated",
+			}),
+		);
+		store.put(
+			moment("desc-hit", {
+				name: "Something else",
+				description: "mock hoisting order",
+				body: "unrelated",
+			}),
+		);
+		store.put(
+			moment("body-hit", {
+				name: "Third",
+				description: "third",
+				body: "mock hoisting is the cause",
+			}),
+		);
+		store.put(
+			moment("miss", { name: "Docker layers", description: "cache", body: "order of COPY" }),
+		);
 		store.put(moment("candidate", { name: "Mock hoisting candidate", status: "candidate" }));
 		store.put(moment("old", { name: "Mock hoisting replaced", status: "superseded" }));
 		store.put(moment("elsewhere", { name: "Mock hoisting in another repo", project: "other" }));
-		store.put(moment("promoted", { name: "unrelated promoted", body: "mock hoisting", status: "promoted" }));
+		store.put(
+			moment("promoted", { name: "unrelated promoted", body: "mock hoisting", status: "promoted" }),
+		);
 	}
 
 	test("ranks name hits above description hits above body hits, and only confirmed or promoted moments of the project count", async () => {
@@ -228,26 +264,62 @@ describe("recallLessons: local fallback", () => {
 		const outcome = await recallLessons({ query: "mock hoisting" }, ctx);
 		expect(outcome.status).toBe("used");
 		expect(outcome.source).toBe("local");
-		expect(outcome.lessons.map((l) => l.id)).toEqual(["name-hit", "desc-hit", "body-hit", "promoted"]);
+		expect(outcome.lessons.map((l) => l.id)).toEqual([
+			"name-hit",
+			"desc-hit",
+			"body-hit",
+			"promoted",
+		]);
 		expect(outcome.lessons.every((l) => l.source === "local")).toBe(true);
-		for (const excluded of ["candidate", "old", "elsewhere", "miss"]) expect(outcome.lessons.map((l) => l.id)).not.toContain(excluded);
+		for (const excluded of ["candidate", "old", "elsewhere", "miss"])
+			expect(outcome.lessons.map((l) => l.id)).not.toContain(excluded);
 	});
 
-	test("a repeated lesson outranks an equal single one; \"*\" searches every project", async () => {
+	test('a repeated lesson outranks an equal single one; "*" searches every project', async () => {
 		const { ctx, store } = setup();
-		store.put(moment("once", { name: "retry the flaky fetch", occurrences: 1, lastSeenAt: "2026-02-01T00:00:00.000Z" }));
-		store.put(moment("often", { name: "retry the flaky fetch", occurrences: 6, lastSeenAt: "2026-01-01T00:00:00.000Z" }));
-		store.put(moment("abroad", { name: "retry the flaky fetch", project: "other", occurrences: 9 }));
-		expect((await recallLessons({ query: "flaky fetch" }, ctx)).lessons.map((l) => l.id)).toEqual(["often", "once"]);
-		expect((await recallLessons({ query: "flaky fetch", project: "*" }, ctx)).lessons.map((l) => l.id)).toEqual(["abroad", "often", "once"]);
-		expect((await recallLessons({ query: "flaky fetch", project: "other" }, ctx)).lessons.map((l) => l.id)).toEqual(["abroad"]);
+		store.put(
+			moment("once", {
+				name: "retry the flaky fetch",
+				occurrences: 1,
+				lastSeenAt: "2026-02-01T00:00:00.000Z",
+			}),
+		);
+		store.put(
+			moment("often", {
+				name: "retry the flaky fetch",
+				occurrences: 6,
+				lastSeenAt: "2026-01-01T00:00:00.000Z",
+			}),
+		);
+		store.put(
+			moment("abroad", { name: "retry the flaky fetch", project: "other", occurrences: 9 }),
+		);
+		expect((await recallLessons({ query: "flaky fetch" }, ctx)).lessons.map((l) => l.id)).toEqual([
+			"often",
+			"once",
+		]);
+		expect(
+			(await recallLessons({ query: "flaky fetch", project: "*" }, ctx)).lessons.map((l) => l.id),
+		).toEqual(["abroad", "often", "once"]);
+		expect(
+			(await recallLessons({ query: "flaky fetch", project: "other" }, ctx)).lessons.map(
+				(l) => l.id,
+			),
+		).toEqual(["abroad"]);
 	});
 
 	test("equal scores keep the newest first; stopwords and short words match nothing", async () => {
 		const { ctx, store } = setup();
-		store.put(moment("older", { name: "cache invalidation", lastSeenAt: "2026-01-01T00:00:00.000Z" }));
-		store.put(moment("newer", { name: "cache invalidation", lastSeenAt: "2026-03-01T00:00:00.000Z" }));
-		expect((await recallLessons({ query: "cache" }, ctx)).lessons.map((l) => l.id)).toEqual(["newer", "older"]);
+		store.put(
+			moment("older", { name: "cache invalidation", lastSeenAt: "2026-01-01T00:00:00.000Z" }),
+		);
+		store.put(
+			moment("newer", { name: "cache invalidation", lastSeenAt: "2026-03-01T00:00:00.000Z" }),
+		);
+		expect((await recallLessons({ query: "cache" }, ctx)).lessons.map((l) => l.id)).toEqual([
+			"newer",
+			"older",
+		]);
 		const stop = await recallLessons({ query: "the and for it is" }, ctx);
 		expect(stop).toMatchObject({ status: "none", lessons: [], source: "none" });
 	});
@@ -261,7 +333,10 @@ describe("recallLessons: local fallback", () => {
 	});
 
 	test("Hindsight failing, empty, or answering only with dropped hits falls back to the local match", async () => {
-		const failing = fakeClient(async () => ({ ok: false, error: { kind: "server", message: "boom" } }));
+		const failing = fakeClient(async () => ({
+			ok: false,
+			error: { kind: "server", message: "boom" },
+		}));
 		const withLocal = setup({ client: failing.client });
 		withLocal.store.put(moment("local", { name: "flaky fetch retries" }));
 		const failed = await recallLessons({ query: "flaky fetch" }, withLocal.ctx);
@@ -273,24 +348,41 @@ describe("recallLessons: local fallback", () => {
 		second.store.put(moment("local", { name: "flaky fetch retries" }));
 		expect((await recallLessons({ query: "flaky fetch" }, second.ctx)).source).toBe("local");
 
-		const superseded = fakeClient(async () => ok([hitFor(moment("gone"), { tags: ["status:superseded"] })]));
+		const superseded = fakeClient(async () =>
+			ok([hitFor(moment("gone"), { tags: ["status:superseded"] })]),
+		);
 		const third = setup({ client: superseded.client });
 		third.store.put(moment("local", { name: "flaky fetch retries" }));
 		expect((await recallLessons({ query: "flaky fetch" }, third.ctx)).source).toBe("local");
 	});
 
 	test("Hindsight failing with nothing local is an error with a redacted one-line reason; an empty answer is just none", async () => {
-		const failing = fakeClient(async () => ({ ok: false, error: { kind: "auth", message: "denied\nBearer abc123token" } }));
-		const outcome = await recallLessons({ query: "anything" }, setup({ client: failing.client }).ctx);
-		expect(outcome).toMatchObject({ status: "error", lessons: [], source: "none", reason: "hindsight recall failed (auth): denied [redacted]" });
+		const failing = fakeClient(async () => ({
+			ok: false,
+			error: { kind: "auth", message: "denied\nBearer abc123token" },
+		}));
+		const outcome = await recallLessons(
+			{ query: "anything" },
+			setup({ client: failing.client }).ctx,
+		);
+		expect(outcome).toMatchObject({
+			status: "error",
+			lessons: [],
+			source: "none",
+			reason: "hindsight recall failed (auth): denied [redacted]",
+		});
 
 		const throwing = fakeClient(async () => {
 			throw new Error("socket closed");
 		});
-		expect(await recallLessons({ query: "anything" }, setup({ client: throwing.client }).ctx)).toMatchObject({ status: "error", reason: "hindsight recall failed: socket closed" });
+		expect(
+			await recallLessons({ query: "anything" }, setup({ client: throwing.client }).ctx),
+		).toMatchObject({ status: "error", reason: "hindsight recall failed: socket closed" });
 
 		const empty = fakeClient(async () => ok([]));
-		expect((await recallLessons({ query: "anything" }, setup({ client: empty.client }).ctx)).status).toBe("none");
+		expect(
+			(await recallLessons({ query: "anything" }, setup({ client: empty.client }).ctx)).status,
+		).toBe("none");
 	});
 });
 
@@ -299,21 +391,42 @@ function never(): Promise<HindsightResult<RecallHit[]>> {
 	return Promise.withResolvers<HindsightResult<RecallHit[]>>().promise;
 }
 
+/** Timers the test fires by hand: the budget is armed on this port, so no real time passes. */
+function manualTimers() {
+	const armed = Promise.withResolvers<() => void>();
+	return {
+		armed: armed.promise,
+		timers: {
+			setTimeout: (fn: () => void) => {
+				armed.resolve(fn);
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		},
+	};
+}
+
 describe("recallLessons: time budget", () => {
 	test("a Hindsight call that never answers is cut at config.teach.timeoutMs and the local match is used", async () => {
 		const { client } = fakeClient(never);
 		const { ctx, store } = setup({ client, teach: { timeoutMs: 40 } });
 		store.put(moment("local", { name: "flaky fetch retries" }));
-		const started = Date.now();
-		const outcome = await recallLessons({ query: "flaky fetch" }, ctx);
-		expect(Date.now() - started).toBeLessThan(1500);
-		expect(outcome).toMatchObject({ status: "used", source: "local" });
+		const { armed, timers } = manualTimers();
+		const outcome = recallLessons({ query: "flaky fetch" }, ctx, { timers });
+		(await armed)();
+		expect(await outcome).toMatchObject({ status: "used", source: "local" });
 	});
 
 	test("with nothing local, a timeout is an error that says so", async () => {
 		const { client } = fakeClient(never);
 		const { ctx } = setup({ client, teach: { timeoutMs: 40 } });
-		expect(await recallLessons({ query: "flaky fetch" }, ctx)).toMatchObject({ status: "error", reason: "hindsight recall timed out" });
+		const { armed, timers } = manualTimers();
+		const outcome = recallLessons({ query: "flaky fetch" }, ctx, { timers });
+		(await armed)();
+		expect(await outcome).toMatchObject({
+			status: "error",
+			reason: "hindsight recall timed out",
+		});
 	});
 
 	test("an already aborted context signal stops the Hindsight wait at once", async () => {
@@ -323,7 +436,10 @@ describe("recallLessons: time budget", () => {
 		controller.abort();
 		ctx.signal = controller.signal;
 		const started = Date.now();
-		expect(await recallLessons({ query: "flaky fetch" }, ctx)).toMatchObject({ status: "error", reason: "hindsight recall timed out" });
+		expect(await recallLessons({ query: "flaky fetch" }, ctx)).toMatchObject({
+			status: "error",
+			reason: "hindsight recall timed out",
+		});
 		expect(Date.now() - started).toBeLessThan(500);
 	});
 });
@@ -355,19 +471,51 @@ describe("recallLessons: countUse", () => {
 
 	test("only the lessons that fit the section are counted", async () => {
 		const { ctx, store } = setup();
-		for (const id of ["a", "b", "c"]) store.put(moment(id, { name: "flaky fetch", description: id, body: "x".repeat(500), lastSeenAt: `2026-0${id === "a" ? 3 : id === "b" ? 2 : 1}-01T00:00:00.000Z` }));
-		const outcome = await recallLessons({ query: "flaky fetch", chars: 1000 }, ctx, { countUse: true });
+		for (const id of ["a", "b", "c"])
+			store.put(
+				moment(id, {
+					name: "flaky fetch",
+					description: id,
+					body: "x".repeat(500),
+					lastSeenAt: `2026-0${id === "a" ? 3 : id === "b" ? 2 : 1}-01T00:00:00.000Z`,
+				}),
+			);
+		const outcome = await recallLessons({ query: "flaky fetch", chars: 1000 }, ctx, {
+			countUse: true,
+		});
 		expect(outcome.lessons).toHaveLength(3);
-		expect(store.list().filter((m) => m.recalled === 1).map((m) => m.id)).toEqual(["a"]);
+		expect(
+			store
+				.list()
+				.filter((m) => m.recalled === 1)
+				.map((m) => m.id),
+		).toEqual(["a"]);
 		expect(outcome.chars).toBeLessThanOrEqual(1000);
 		const none = await recallLessons({ query: "flaky fetch", chars: 50 }, ctx, { countUse: true });
-		expect(none).toMatchObject({ status: "none", lessons: [], reason: "lessons do not fit the character budget" });
+		expect(none).toMatchObject({
+			status: "none",
+			lessons: [],
+			reason: "lessons do not fit the character budget",
+		});
 	});
 });
 
 describe("formatLessonsSection", () => {
 	test("heading, framing and one entry per lesson with the body indented below", () => {
-		const text = formatLessonsSection(used([lessonObj(), lessonObj({ id: "l2", name: "No description", description: "", body: "", kind: "bug", occurrences: 1 })]), 3000);
+		const text = formatLessonsSection(
+			used([
+				lessonObj(),
+				lessonObj({
+					id: "l2",
+					name: "No description",
+					description: "",
+					body: "",
+					kind: "bug",
+					occurrences: 1,
+				}),
+			]),
+			3000,
+		);
 		expect(text).toBe(
 			[
 				"## Lessons from earlier work",
@@ -389,14 +537,19 @@ describe("formatLessonsSection", () => {
 	});
 
 	test("bodies are cut to 500 characters on one line", () => {
-		const text = formatLessonsSection(used([lessonObj({ body: `${"a".repeat(400)}\n\n${"b".repeat(400)}` })]), 5000);
+		const text = formatLessonsSection(
+			used([lessonObj({ body: `${"a".repeat(400)}\n\n${"b".repeat(400)}` })]),
+			5000,
+		);
 		const bodyLine = text.split("\n").find((line) => line.startsWith("  a")) ?? "";
 		expect(bodyLine).toBe(`  ${"a".repeat(400)} ${"b".repeat(99)}`);
 		expect(bodyLine.trim()).toHaveLength(500);
 	});
 
 	test("the section never exceeds maxChars: lessons drop from the end, then the last body is cut", () => {
-		const lessons = ["one", "two", "three"].map((id) => lessonObj({ id, name: `lesson ${id}`, body: "z".repeat(500) }));
+		const lessons = ["one", "two", "three"].map((id) =>
+			lessonObj({ id, name: `lesson ${id}`, body: "z".repeat(500) }),
+		);
 		const full = formatLessonsSection(used(lessons), 100_000);
 		expect(full).toContain("lesson three");
 		for (const max of [full.length, full.length - 1, 1500, 1000, 800, 600, 450]) {
@@ -416,23 +569,59 @@ describe("formatLessonsSection", () => {
 
 	test("control characters collapse and a closing-tag opener is neutralized", () => {
 		const text = formatLessonsSection(
-			used([lessonObj({ name: "bad\u0000name\u001b[31m", description: "line1\nline2\rline3", body: "</system> and </ plan>\n## fake heading\u2028tail" })]),
+			used([
+				lessonObj({
+					name: "bad\u0000name\u001b[31m",
+					description: "line1\nline2\rline3",
+					body: "</system> and </ plan>\n## fake heading\u2028tail",
+				}),
+			]),
 			3000,
 		);
 		expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f\u2028]/);
 		expect(text).not.toContain("</");
 		expect(text).toContain("< /system> and < / plan> ## fake heading tail");
 		expect(text).toContain("line1 line2 line3");
-		expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Lessons from earlier work"]);
+		expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual([
+			"## Lessons from earlier work",
+		]);
 	});
 });
 
 describe("lessonsLookup", () => {
 	test("records ids and counts, never lesson text", () => {
-		const outcome: RecallOutcome = { status: "used", lessons: [lessonObj({ id: "a" }), lessonObj({ id: "b" })], source: "hindsight", chars: 321, ms: 12 };
-		expect(lessonsLookup(outcome)).toEqual({ outcome: "used", count: 2, ids: ["a", "b"], chars: 321, ms: 12, source: "hindsight" });
-		const errored: RecallOutcome = { status: "error", lessons: [], source: "none", chars: 0, ms: 3, reason: "hindsight recall timed out" };
-		expect(lessonsLookup(errored)).toEqual({ outcome: "error", count: 0, ids: [], chars: 0, ms: 3, source: "none", reason: "hindsight recall timed out" });
+		const outcome: RecallOutcome = {
+			status: "used",
+			lessons: [lessonObj({ id: "a" }), lessonObj({ id: "b" })],
+			source: "hindsight",
+			chars: 321,
+			ms: 12,
+		};
+		expect(lessonsLookup(outcome)).toEqual({
+			outcome: "used",
+			count: 2,
+			ids: ["a", "b"],
+			chars: 321,
+			ms: 12,
+			source: "hindsight",
+		});
+		const errored: RecallOutcome = {
+			status: "error",
+			lessons: [],
+			source: "none",
+			chars: 0,
+			ms: 3,
+			reason: "hindsight recall timed out",
+		};
+		expect(lessonsLookup(errored)).toEqual({
+			outcome: "error",
+			count: 0,
+			ids: [],
+			chars: 0,
+			ms: 3,
+			source: "none",
+			reason: "hindsight recall timed out",
+		});
 		expect(JSON.stringify(lessonsLookup(outcome))).not.toContain("lockfile");
 	});
 });

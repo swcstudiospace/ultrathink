@@ -10,6 +10,7 @@ import type { SessionRecord } from "../../../src/claude/state.ts";
 import { type JournalMeta, journalDir, writeMeta } from "../../../src/host/grokbot.ts";
 import { FALLBACK_GRAPH } from "../../../src/think/types.ts";
 import type { ThoughtGraph } from "../../../src/think/types.ts";
+import { redactText } from "../../../src/teach/redact.ts";
 import { GOAL_MAX_CHARS, listSessions, newestPlannedSessionId } from "./sessions.ts";
 
 const dirs: string[] = [];
@@ -33,7 +34,13 @@ function touch(path: string, ms: number): void {
 }
 
 /** `jobs/<id>.json` exactly as the headless planner persists it. */
-function writeJob(stateDir: string, sessionId: string, status: string, updatedAt: number, error?: string): void {
+function writeJob(
+	stateDir: string,
+	sessionId: string,
+	status: string,
+	updatedAt: number,
+	error?: string,
+): void {
 	mkdirSync(join(stateDir, "jobs"), { recursive: true });
 	const path = join(stateDir, "jobs", `${sessionId}.json`);
 	const body = {
@@ -51,27 +58,52 @@ function writeJob(stateDir: string, sessionId: string, status: string, updatedAt
 }
 
 /** `journal/<id>/meta.json` through the real writer, then pinned to a known timestamp. */
-function writeClient(stateDir: string, sessionId: string, status: JournalMeta["status"] | string, updatedAt: number, original = SECRET_PROMPT): void {
+function writeClient(
+	stateDir: string,
+	sessionId: string,
+	status: JournalMeta["status"] | string,
+	updatedAt: number,
+	original = SECRET_PROMPT,
+): void {
 	const dir = journalDir(stateDir, sessionId);
 	writeMeta(dir, { sessionId, original, cwd: "/work", status: status as JournalMeta["status"] });
 	const path = join(dir, "meta.json");
-	writeFileSync(path, `${JSON.stringify({ sessionId, original, cwd: "/work", status, updatedAt }, null, 2)}\n`);
+	writeFileSync(
+		path,
+		`${JSON.stringify({ sessionId, original, cwd: "/work", status, updatedAt }, null, 2)}\n`,
+	);
 	touch(path, updatedAt);
 }
 
 function graph(goal: string, count = 3): ThoughtGraph {
 	return {
 		goal,
-		nodes: Array.from({ length: count }, (_, i) => ({ id: `n${i + 1}`, title: `Node ${i + 1}`, kind: "decompose" as const, question: `Question ${i + 1}?`, dependsOn: [] })),
+		nodes: Array.from({ length: count }, (_, i) => ({
+			id: `n${i + 1}`,
+			title: `Node ${i + 1}`,
+			kind: "decompose" as const,
+			question: `Question ${i + 1}?`,
+			dependsOn: [],
+		})),
 	};
 }
 
 /** `sessions/<id>.json` through the real writer, then pinned to a known timestamp. */
-function writeRecord(stateDir: string, sessionId: string, at: number, options: { graph?: ThoughtGraph; original?: string } = {}): void {
+function writeRecord(
+	stateDir: string,
+	sessionId: string,
+	at: number,
+	options: { graph?: ThoughtGraph; original?: string } = {},
+): void {
 	const record: SessionRecord = {
 		sessionId,
 		at,
-		result: { xml: SECRET_SPEC, original: options.original ?? SECRET_PROMPT, root: "BUILD_PROMPT", source: "llm" },
+		result: {
+			xml: SECRET_SPEC,
+			original: options.original ?? SECRET_PROMPT,
+			root: "BUILD_PROMPT",
+			source: "llm",
+		},
 		...(options.graph ? { graph: options.graph } : {}),
 	};
 	writeSession(stateDir, record);
@@ -97,9 +129,33 @@ describe("listSessions", () => {
 
 		const list = listSessions(state);
 		expect(list.map((s) => s.sessionId)).toEqual([running, server, client]);
-		expect(list[0]).toEqual({ sessionId: running, status: "running", mode: "server", updatedAt: NOW, goal: "", nodeCount: 0, hasGraph: false });
-		expect(list[1]).toEqual({ sessionId: server, status: "planned", mode: "server", updatedAt: NOW - 1000, goal: "Ship the CSV converter", nodeCount: 5, hasGraph: true });
-		expect(list[2]).toEqual({ sessionId: client, status: "planned", mode: "client", updatedAt: NOW - 2000, goal: "Refactor the parser", nodeCount: 4, hasGraph: true });
+		expect(list[0]).toEqual({
+			sessionId: running,
+			status: "running",
+			mode: "server",
+			updatedAt: NOW,
+			goal: "",
+			nodeCount: 0,
+			hasGraph: false,
+		});
+		expect(list[1]).toEqual({
+			sessionId: server,
+			status: "planned",
+			mode: "server",
+			updatedAt: NOW - 1000,
+			goal: "Ship the CSV converter",
+			nodeCount: 5,
+			hasGraph: true,
+		});
+		expect(list[2]).toEqual({
+			sessionId: client,
+			status: "planned",
+			mode: "client",
+			updatedAt: NOW - 2000,
+			goal: "Refactor the parser",
+			nodeCount: 4,
+			hasGraph: true,
+		});
 	});
 
 	test("a plan record with neither a job nor a journal is not listed and is never the newest planned session", () => {
@@ -123,7 +179,13 @@ describe("listSessions", () => {
 			writeJob(state, ids[status], status, NOW - offset++);
 		}
 		const list = listSessions(state, { limit: 20 });
-		expect(list.map((s) => s.status)).toEqual(["running", "planned", "failed", "invalid", "skipped"]);
+		expect(list.map((s) => s.status)).toEqual([
+			"running",
+			"planned",
+			"failed",
+			"invalid",
+			"skipped",
+		]);
 		expect(list.every((s) => s.mode === "server")).toBe(true);
 	});
 
@@ -137,7 +199,13 @@ describe("listSessions", () => {
 			writeClient(state, id, status, NOW - i);
 		});
 		const list = listSessions(state, { limit: 20 });
-		expect(list.map((s) => s.status)).toEqual(["running", "planned", "invalid", "skipped", "running"]);
+		expect(list.map((s) => s.status)).toEqual([
+			"running",
+			"planned",
+			"invalid",
+			"skipped",
+			"running",
+		]);
 		expect(list.every((s) => s.mode === "client")).toBe(true);
 		// The goal of an unplanned client session is the first line of its request, never the whole prompt.
 		expect(list[0]?.goal).toBe("SECRET-PROMPT-BODY please do the thing");
@@ -161,16 +229,31 @@ describe("listSessions", () => {
 		writeClient(state, id, "planned", NOW - 5);
 		writeRecord(state, id, NOW - 1, { graph: graph("Goal from the record", 2) });
 		const list = listSessions(state);
-		expect(list).toEqual([{ sessionId: id, status: "failed", mode: "server", updatedAt: NOW - 10, goal: "Goal from the record", nodeCount: 2, hasGraph: true }]);
+		expect(list).toEqual([
+			{
+				sessionId: id,
+				status: "failed",
+				mode: "server",
+				updatedAt: NOW - 10,
+				goal: "Goal from the record",
+				nodeCount: 2,
+				hasGraph: true,
+			},
+		]);
 	});
 
 	test("a job whose file is not a valid job falls back to the journal", () => {
 		const state = tmp();
 		const id = randomUUID();
 		mkdirSync(join(state, "jobs"), { recursive: true });
-		writeFileSync(join(state, "jobs", `${id}.json`), JSON.stringify({ sessionId: id, status: "exploded", updatedAt: 1 }));
+		writeFileSync(
+			join(state, "jobs", `${id}.json`),
+			JSON.stringify({ sessionId: id, status: "exploded", updatedAt: 1 }),
+		);
 		writeClient(state, id, "planned", NOW);
-		expect(listSessions(state)).toMatchObject([{ sessionId: id, mode: "client", status: "planned" }]);
+		expect(listSessions(state)).toMatchObject([
+			{ sessionId: id, mode: "client", status: "planned" },
+		]);
 	});
 
 	test("clamps limit to 1..20 and falls back to 5 for non-numbers", () => {
@@ -202,7 +285,10 @@ describe("listSessions", () => {
 		writeFileSync(join(state, "jobs", `${randomUUID()}.json`), "{not json");
 		writeFileSync(join(state, "jobs", `${randomUUID()}.json`), "");
 		writeFileSync(join(state, "jobs", `${randomUUID()}.json`), "null");
-		writeFileSync(join(state, "sessions", `${randomUUID()}.json`), JSON.stringify({ sessionId: "x", result: "not an object" }));
+		writeFileSync(
+			join(state, "sessions", `${randomUUID()}.json`),
+			JSON.stringify({ sessionId: "x", result: "not an object" }),
+		);
 		writeFileSync(join(state, "sessions", `${randomUUID()}.json`), "[1,2,3]");
 		const brokenMeta = journalDir(state, randomUUID());
 		mkdirSync(brokenMeta, { recursive: true });
@@ -216,13 +302,26 @@ describe("listSessions", () => {
 		const [small, huge] = [randomUUID(), randomUUID()];
 		writeJob(state, small, "planned", NOW - 1);
 		const path = join(state, "jobs", `${huge}.json`);
-		const body = { sessionId: huge, runId: randomUUID(), status: "planned", createdAt: NOW - 1000, updatedAt: NOW, padding: "" };
+		const body = {
+			sessionId: huge,
+			runId: randomUUID(),
+			status: "planned",
+			createdAt: NOW - 1000,
+			updatedAt: NOW,
+			padding: "",
+		};
 		const overhead = JSON.stringify(body).length + 1;
-		writeFileSync(path, `${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 + 1 - overhead) })}\n`);
+		writeFileSync(
+			path,
+			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 + 1 - overhead) })}\n`,
+		);
 		touch(path, NOW);
 		expect(listSessions(state).map((s) => s.sessionId)).toEqual([small]);
 		expect(newestPlannedSessionId(state)).toBe(small);
-		writeFileSync(path, `${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 - overhead) })}\n`);
+		writeFileSync(
+			path,
+			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 - overhead) })}\n`,
+		);
 		touch(path, NOW);
 		expect(listSessions(state).map((s) => s.sessionId)).toEqual([huge, small]);
 	});
@@ -232,9 +331,24 @@ describe("listSessions", () => {
 		const id = randomUUID();
 		writeJob(state, id, "planned", NOW);
 		mkdirSync(join(state, "sessions"), { recursive: true });
-		const record = { sessionId: id, at: NOW, result: { xml: "", original: "Plan the release", root: "BUILD_PROMPT", source: "llm" }, graph: { goal: "G", nodes: [null, 3] } };
+		const record = {
+			sessionId: id,
+			at: NOW,
+			result: { xml: "", original: "Plan the release", root: "BUILD_PROMPT", source: "llm" },
+			graph: { goal: "G", nodes: [null, 3] },
+		};
 		writeFileSync(join(state, "sessions", `${id}.json`), JSON.stringify(record));
-		expect(listSessions(state)).toEqual([{ sessionId: id, status: "planned", mode: "server", updatedAt: NOW, goal: "Plan the release", nodeCount: 0, hasGraph: false }]);
+		expect(listSessions(state)).toEqual([
+			{
+				sessionId: id,
+				status: "planned",
+				mode: "server",
+				updatedAt: NOW,
+				goal: "Plan the release",
+				nodeCount: 0,
+				hasGraph: false,
+			},
+		]);
 	});
 
 	test("ignores names that are not session ids and never reads outside the state directory", () => {
@@ -242,18 +356,56 @@ describe("listSessions", () => {
 		const state = join(root, "state");
 		const outside = join(root, "x");
 		mkdirSync(outside, { recursive: true });
-		writeFileSync(join(outside, "meta.json"), JSON.stringify({ sessionId: "x", status: "planned", original: "outside" }));
-		writeFileSync(join(root, "outside.json"), JSON.stringify({ sessionId: "y", status: "planned", updatedAt: NOW, usage: {}, createdAt: 1, promptSha256: "" }));
+		writeFileSync(
+			join(outside, "meta.json"),
+			JSON.stringify({ sessionId: "x", status: "planned", original: "outside" }),
+		);
+		writeFileSync(
+			join(root, "outside.json"),
+			JSON.stringify({
+				sessionId: "y",
+				status: "planned",
+				updatedAt: NOW,
+				usage: {},
+				createdAt: 1,
+				promptSha256: "",
+			}),
+		);
 
 		mkdirSync(join(state, "journal"), { recursive: true });
 		mkdirSync(join(state, "jobs"), { recursive: true });
 		mkdirSync(join(state, "sessions"), { recursive: true });
 		// The hostile names a listing could meet; each fails isSessionId before any path is built.
-		for (const name of ["..", ".", "x", "..x", "%2e%2e%2fx", "not-a-session", randomUUID().toUpperCase(), `${randomUUID()}x`]) {
+		for (const name of [
+			"..",
+			".",
+			"x",
+			"..x",
+			"%2e%2e%2fx",
+			"not-a-session",
+			randomUUID().toUpperCase(),
+			`${randomUUID()}x`,
+		]) {
 			mkdirSync(join(state, "journal", name), { recursive: true });
-			writeFileSync(join(state, "journal", name, "meta.json"), JSON.stringify({ sessionId: name, status: "planned", original: "hostile" }));
-			writeFileSync(join(state, "jobs", `${name}.json`), JSON.stringify({ sessionId: name, status: "planned", updatedAt: NOW, usage: {}, createdAt: 1, promptSha256: "" }));
-			writeFileSync(join(state, "sessions", `${name}.json`), JSON.stringify({ sessionId: name, at: NOW, result: { original: "hostile" } }));
+			writeFileSync(
+				join(state, "journal", name, "meta.json"),
+				JSON.stringify({ sessionId: name, status: "planned", original: "hostile" }),
+			);
+			writeFileSync(
+				join(state, "jobs", `${name}.json`),
+				JSON.stringify({
+					sessionId: name,
+					status: "planned",
+					updatedAt: NOW,
+					usage: {},
+					createdAt: 1,
+					promptSha256: "",
+				}),
+			);
+			writeFileSync(
+				join(state, "sessions", `${name}.json`),
+				JSON.stringify({ sessionId: name, at: NOW, result: { original: "hostile" } }),
+			);
 		}
 		// Symlinks that carry a valid id but point outside the state directory are not followed.
 		const linkedDir = randomUUID();
@@ -300,8 +452,21 @@ describe("listSessions", () => {
 		const state = tmp();
 		const id = randomUUID();
 		writeJob(state, id, "planned", NOW);
-		writeRecord(state, id, NOW, { graph: structuredClone(FALLBACK_GRAPH), original: "Migrate the billing tables" });
-		expect(listSessions(state)).toEqual([{ sessionId: id, status: "planned", mode: "server", updatedAt: NOW, goal: "Migrate the billing tables", nodeCount: 0, hasGraph: false }]);
+		writeRecord(state, id, NOW, {
+			graph: structuredClone(FALLBACK_GRAPH),
+			original: "Migrate the billing tables",
+		});
+		expect(listSessions(state)).toEqual([
+			{
+				sessionId: id,
+				status: "planned",
+				mode: "server",
+				updatedAt: NOW,
+				goal: "Migrate the billing tables",
+				nodeCount: 0,
+				hasGraph: false,
+			},
+		]);
 	});
 
 	test("never returns a prompt body, specification, answer or error text", () => {
@@ -314,15 +479,30 @@ describe("listSessions", () => {
 		mkdirSync(join(journalDir(state, client), "answers"), { recursive: true });
 		writeFileSync(join(journalDir(state, client), "answers", "k.txt"), "SECRET-ANSWER");
 		const text = JSON.stringify(listSessions(state, { limit: 20 }));
-		for (const secret of [SECRET_ERROR, SECRET_SPEC, "SECRET-ANSWER", "second line of the prompt"]) expect(text).not.toContain(secret);
-		expect(Object.keys(listSessions(state)[0] ?? {}).sort()).toEqual(["goal", "hasGraph", "mode", "nodeCount", "sessionId", "status", "updatedAt"]);
+		for (const secret of [SECRET_ERROR, SECRET_SPEC, "SECRET-ANSWER", "second line of the prompt"])
+			expect(text).not.toContain(secret);
+		expect(Object.keys(listSessions(state)[0] ?? {}).sort()).toEqual([
+			"goal",
+			"hasGraph",
+			"mode",
+			"nodeCount",
+			"sessionId",
+			"status",
+			"updatedAt",
+		]);
 	});
 });
 
 describe("newestPlannedSessionId", () => {
 	test("ignores running and failed sessions and picks the newest planned one", () => {
 		const state = tmp();
-		const [older, newer, running, failed, invalid] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+		const [older, newer, running, failed, invalid] = [
+			randomUUID(),
+			randomUUID(),
+			randomUUID(),
+			randomUUID(),
+			randomUUID(),
+		];
 		writeJob(state, older, "planned", NOW - 5000);
 		writeClient(state, newer, "planned", NOW - 4000);
 		writeJob(state, running, "running", NOW - 1000);
@@ -345,5 +525,48 @@ describe("newestPlannedSessionId", () => {
 		writeJob(state, randomUUID(), "failed", NOW - 1);
 		writeClient(state, randomUUID(), "needs-model", NOW - 2);
 		expect(newestPlannedSessionId(state)).toBeUndefined();
+	});
+});
+
+describe("sessions boundary failures", () => {
+	test("an unreadable listing is logged under listNames without the echoed secret", () => {
+		const SECRET = "sk-test-FIXTURE0000000000000000";
+		const state = tmp();
+		writeFileSync(join(state, "jobs"), `token=${SECRET}`);
+		const lines: string[] = [];
+		const logger = {
+			info: () => {
+				// reason: info logs are irrelevant to the redaction assertion; only error lines are collected
+			},
+			warn: () => {
+				// reason: warn logs are irrelevant to the redaction assertion; only error lines are collected
+			},
+			error: (event: string) => {
+				lines.push(event);
+			},
+		};
+		expect(listSessions(state, { logger })).toEqual([]);
+		expect(lines).toEqual(["listNames: ENOTDIR"]);
+		for (const line of lines) {
+			expect(line).not.toContain(SECRET);
+			expect(redactText(line, { home: "" })).toBe(line);
+		}
+	});
+
+	test("a missing state directory is listed as empty without a log line", () => {
+		const lines: string[] = [];
+		const logger = {
+			info: () => {
+				// reason: info logs are irrelevant to the redaction assertion; only error lines are collected
+			},
+			warn: () => {
+				// reason: warn logs are irrelevant to the redaction assertion; only error lines are collected
+			},
+			error: (event: string) => {
+				lines.push(event);
+			},
+		};
+		expect(listSessions(join(tmp(), "absent"), { logger })).toEqual([]);
+		expect(lines).toEqual([]);
 	});
 });

@@ -9,7 +9,11 @@ const LINE_LIMIT = new NumberValidator({ integer: true, min: 1 });
 
 /** Records a refusal on the security feed with its field and validator code. The data itself is never recorded. */
 function refused(field: string, code: string): void {
-	getSecurityLogger().logValidationFailure({ source: "mcp_sse", resource: "sse", details: { field, code } });
+	getSecurityLogger().logValidationFailure({
+		source: "mcp_sse",
+		resource: "sse",
+		details: { field, code },
+	});
 }
 
 /**

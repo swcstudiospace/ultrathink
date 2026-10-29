@@ -1,8 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setSystemTime, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSweeper, type SweepResult, sweepStateDir } from "./retention.ts";
@@ -28,10 +37,19 @@ function touch(path: string, ms: number): void {
 }
 
 /** `jobs/<id>.json` as the headless planner persists it; `updatedAt` and the file mtime agree unless `mtime` says otherwise. */
-function writeJob(stateDir: string, id: string, status: string, updatedAt: number, mtime = updatedAt): void {
+function writeJob(
+	stateDir: string,
+	id: string,
+	status: string,
+	updatedAt: number,
+	mtime = updatedAt,
+): void {
 	mkdirSync(join(stateDir, "jobs"), { recursive: true });
 	const path = join(stateDir, "jobs", `${id}.json`);
-	writeFileSync(path, `${JSON.stringify({ sessionId: id, runId: randomUUID(), status, createdAt: updatedAt - 1000, updatedAt, usage: { calls: 1, inputTokens: 1, outputTokens: 1 }, promptSha256: "0".repeat(64) })}\n`);
+	writeFileSync(
+		path,
+		`${JSON.stringify({ sessionId: id, runId: randomUUID(), status, createdAt: updatedAt - 1000, updatedAt, usage: { calls: 1, inputTokens: 1, outputTokens: 1 }, promptSha256: "0".repeat(64) })}\n`,
+	);
 	touch(path, mtime);
 }
 
@@ -57,7 +75,12 @@ function writeJournal(stateDir: string, id: string, mtime: number, meta?: string
 	touch(join(dir, "answers.json"), mtime);
 	if (meta !== undefined) {
 		const path = join(dir, "meta.json");
-		writeFileSync(path, typeof meta === "string" ? meta : `${JSON.stringify({ sessionId: id, original: "goal", cwd: "/work", updatedAt: mtime, ...meta })}\n`);
+		writeFileSync(
+			path,
+			typeof meta === "string"
+				? meta
+				: `${JSON.stringify({ sessionId: id, original: "goal", cwd: "/work", updatedAt: mtime, ...meta })}\n`,
+		);
 		touch(path, mtime);
 	}
 	touch(dir, mtime);
@@ -87,7 +110,12 @@ describe("sweepStateDir", () => {
 		writeJob(stateDir, oldRunning, "running", OLD);
 		writeJob(stateDir, freshPlanned, "planned", FRESH);
 		writeRawJob(stateDir, `${unparsable}.json`, "{not json", OLD);
-		writeRawJob(stateDir, `${mtimeOnly}.json`, JSON.stringify({ status: "skipped", updatedAt: "yesterday" }), OLD);
+		writeRawJob(
+			stateDir,
+			`${mtimeOnly}.json`,
+			JSON.stringify({ status: "skipped", updatedAt: "yesterday" }),
+			OLD,
+		);
 		writeRawJob(stateDir, "notes.json", JSON.stringify({ status: "planned", updatedAt: OLD }), OLD);
 		// updatedAt wins over mtime in both directions: a stale file with a fresh record stays, a fresh file with a stale record goes.
 		const freshRecordStaleFile = randomUUID();
@@ -124,14 +152,21 @@ describe("sweepStateDir", () => {
 
 		// kept: running, fresh, fresh-record jobs; in-progress and fresh journals; fresh record.
 		// skipped: unparsable, notes.json and symlink jobs; broken meta, not-a-session and symlink journals; README and symlink records.
-		expect(result).toEqual({ removed: { jobs: 4, sessions: 1, journals: 3 }, kept: 6, skipped: 8, errors: 0, disabled: false });
+		expect(result).toEqual({
+			removed: { jobs: 4, sessions: 1, journals: 3 },
+			kept: 6,
+			skipped: 8,
+			errors: 0,
+			disabled: false,
+		});
 		expect(names(join(stateDir, "jobs"))).toHaveLength(6);
 		expect(existsSync(join(stateDir, "jobs", `${oldRunning}.json`))).toBe(true);
 		expect(existsSync(join(stateDir, "jobs", `${freshPlanned}.json`))).toBe(true);
 		expect(existsSync(join(stateDir, "jobs", `${unparsable}.json`))).toBe(true);
 		expect(existsSync(join(stateDir, "jobs", `${freshRecordStaleFile}.json`))).toBe(true);
 		expect(existsSync(join(stateDir, "jobs", "notes.json"))).toBe(true);
-		for (const gone of [oldPlanned, oldFailed, mtimeOnly, staleRecordFreshFile]) expect(existsSync(join(stateDir, "jobs", `${gone}.json`))).toBe(false);
+		for (const gone of [oldPlanned, oldFailed, mtimeOnly, staleRecordFreshFile])
+			expect(existsSync(join(stateDir, "jobs", `${gone}.json`))).toBe(false);
 
 		expect(names(join(stateDir, "sessions"))).toHaveLength(3);
 		expect(existsSync(join(stateDir, "sessions", `${oldRecord}.json`))).toBe(false);
@@ -139,8 +174,10 @@ describe("sweepStateDir", () => {
 		expect(existsSync(join(stateDir, "sessions", "README.md"))).toBe(true);
 
 		expect(names(join(stateDir, "journal"))).toHaveLength(5);
-		for (const gone of [oldFinished, oldNoMeta, oldInvalid]) expect(existsSync(join(stateDir, "journal", gone))).toBe(false);
-		for (const kept of [oldInProgress, freshFinished, brokenMeta, "not-a-session"]) expect(existsSync(join(stateDir, "journal", kept))).toBe(true);
+		for (const gone of [oldFinished, oldNoMeta, oldInvalid])
+			expect(existsSync(join(stateDir, "journal", gone))).toBe(false);
+		for (const kept of [oldInProgress, freshFinished, brokenMeta, "not-a-session"])
+			expect(existsSync(join(stateDir, "journal", kept))).toBe(true);
 
 		// Symlink targets outside the state directory are untouched, and the links themselves are still there.
 		expect(existsSync(join(outside, "victim.json"))).toBe(true);
@@ -177,17 +214,33 @@ describe("sweepStateDir", () => {
 		writeJob(stateDir, id, "planned", OLD);
 		writeRecord(stateDir, id, OLD);
 		writeJournal(stateDir, id, OLD, { status: "planned" });
-		expect(sweepStateDir({ stateDir, retentionDays: 0, now: () => NOW })).toEqual({ removed: { jobs: 0, sessions: 0, journals: 0 }, kept: 0, skipped: 0, errors: 0, disabled: true });
+		expect(sweepStateDir({ stateDir, retentionDays: 0, now: () => NOW })).toEqual({
+			removed: { jobs: 0, sessions: 0, journals: 0 },
+			kept: 0,
+			skipped: 0,
+			errors: 0,
+			disabled: true,
+		});
 		expect(existsSync(join(stateDir, "jobs", `${id}.json`))).toBe(true);
 		expect(existsSync(join(stateDir, "sessions", `${id}.json`))).toBe(true);
 		expect(existsSync(join(stateDir, "journal", id, "meta.json"))).toBe(true);
 	});
 
 	test("a missing state directory or sub-directory is an empty sweep, not an error", () => {
-		expect(sweepStateDir({ stateDir: join(tmp(), "never-created"), ...RETENTION })).toEqual({ removed: { jobs: 0, sessions: 0, journals: 0 }, kept: 0, skipped: 0, errors: 0, disabled: false });
+		expect(sweepStateDir({ stateDir: join(tmp(), "never-created"), ...RETENTION })).toEqual({
+			removed: { jobs: 0, sessions: 0, journals: 0 },
+			kept: 0,
+			skipped: 0,
+			errors: 0,
+			disabled: false,
+		});
 		const stateDir = tmp();
 		writeRecord(stateDir, randomUUID(), OLD);
-		expect(sweepStateDir({ stateDir, ...RETENTION }).removed).toEqual({ jobs: 0, sessions: 1, journals: 0 });
+		expect(sweepStateDir({ stateDir, ...RETENTION }).removed).toEqual({
+			jobs: 0,
+			sessions: 1,
+			journals: 0,
+		});
 	});
 
 	test("a sub-directory that is a symlink is skipped whole", () => {
@@ -196,7 +249,13 @@ describe("sweepStateDir", () => {
 		writeRecord(outside, randomUUID(), OLD);
 		symlinkSync(join(outside, "sessions"), join(stateDir, "sessions"));
 		const result = sweepStateDir({ stateDir, ...RETENTION });
-		expect(result).toEqual({ removed: { jobs: 0, sessions: 0, journals: 0 }, kept: 0, skipped: 1, errors: 0, disabled: false });
+		expect(result).toEqual({
+			removed: { jobs: 0, sessions: 0, journals: 0 },
+			kept: 0,
+			skipped: 1,
+			errors: 0,
+			disabled: false,
+		});
 		expect(names(join(outside, "sessions"))).toHaveLength(1);
 	});
 
@@ -214,7 +273,8 @@ describe("sweepStateDir", () => {
 		const stateDir = tmp();
 		for (let i = 0; i < 7; i += 1) writeRecord(stateDir, randomUUID(), OLD);
 		let removed = 0;
-		for (let run = 0; run < 3; run += 1) removed += sweepStateDir({ stateDir, ...RETENTION, maxEntries: 3 }).removed.sessions;
+		for (let run = 0; run < 3; run += 1)
+			removed += sweepStateDir({ stateDir, ...RETENTION, maxEntries: 3 }).removed.sessions;
 		expect(removed).toBe(7);
 		expect(names(join(stateDir, "sessions"))).toHaveLength(0);
 	});
@@ -223,10 +283,15 @@ describe("sweepStateDir", () => {
 		const stateDir = tmp();
 		const stale = randomUUID();
 		const live = randomUUID();
-		writeRecord(stateDir, stale, Date.now() - 30 * DAY);
-		writeRecord(stateDir, live, Date.now());
-		expect(sweepStateDir({ stateDir, retentionDays: 7 }).removed.sessions).toBe(1);
-		expect(existsSync(join(stateDir, "sessions", `${live}.json`))).toBe(true);
+		setSystemTime(new Date(NOW));
+		try {
+			writeRecord(stateDir, stale, NOW - 30 * DAY);
+			writeRecord(stateDir, live, NOW);
+			expect(sweepStateDir({ stateDir, retentionDays: 7 }).removed.sessions).toBe(1);
+			expect(existsSync(join(stateDir, "sessions", `${live}.json`))).toBe(true);
+		} finally {
+			setSystemTime();
+		}
 	});
 
 	test("invalid options are rejected before anything is read", () => {
@@ -235,7 +300,9 @@ describe("sweepStateDir", () => {
 		expect(() => sweepStateDir({ stateDir: "", ...RETENTION })).toThrow(TypeError);
 		expect(() => sweepStateDir({ stateDir, retentionDays: -1 })).toThrow(RangeError);
 		expect(() => sweepStateDir({ stateDir, retentionDays: Number.NaN })).toThrow(RangeError);
-		expect(() => sweepStateDir({ stateDir, retentionDays: Number.POSITIVE_INFINITY })).toThrow(RangeError);
+		expect(() => sweepStateDir({ stateDir, retentionDays: Number.POSITIVE_INFINITY })).toThrow(
+			RangeError,
+		);
 		expect(() => sweepStateDir({ stateDir, ...RETENTION, maxEntries: 0 })).toThrow(RangeError);
 		expect(() => sweepStateDir({ stateDir, ...RETENTION, maxEntries: 1.5 })).toThrow(RangeError);
 		expect(names(join(stateDir, "sessions"))).toHaveLength(1);
@@ -269,7 +336,13 @@ function harness(sweep: () => SweepResult) {
 	return { sweeper, timers, results, errors };
 }
 
-const EMPTY: SweepResult = { removed: { jobs: 0, sessions: 0, journals: 0 }, kept: 0, skipped: 0, errors: 0, disabled: false };
+const EMPTY: SweepResult = {
+	removed: { jobs: 0, sessions: 0, journals: 0 },
+	kept: 0,
+	skipped: 0,
+	errors: 0,
+	disabled: false,
+};
 
 describe("createSweeper", () => {
 	test("does not run at construction; the first run is one interval after start", () => {
@@ -352,7 +425,9 @@ describe("createSweeper", () => {
 				throw new Error("hook broke harder");
 			},
 			setTimer: () => ({}),
-			clearTimer: () => {},
+			clearTimer: () => {
+				// reason: test double, setTimer returns an inert handle so nothing needs clearing
+			},
 		});
 		expect(sweeper.runNow()).toBeUndefined();
 		expect(errors.map((error) => error.message)).toEqual(["hook broke"]);
@@ -371,7 +446,9 @@ describe("createSweeper", () => {
 	test("invalid options are rejected at construction", () => {
 		expect(() => createSweeper({ sweep: () => EMPTY, intervalMs: 0 })).toThrow(RangeError);
 		expect(() => createSweeper({ sweep: () => EMPTY, intervalMs: Number.NaN })).toThrow(RangeError);
-		expect(() => createSweeper({ sweep: "nope" as unknown as () => SweepResult, intervalMs: 1000 })).toThrow(TypeError);
+		expect(() =>
+			createSweeper({ sweep: "nope" as unknown as () => SweepResult, intervalMs: 1000 }),
+		).toThrow(TypeError);
 	});
 
 	test("the default timer is unref'd so it never keeps the process alive", () => {

@@ -34,7 +34,11 @@ const NUMBER = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
  * empty set), so `foo{a="1",b="2"}` does not match `{a: "1"}`. Comment and blank lines are ignored. An absent series is
  * `undefined`, never 0.
  */
-export function parsePrometheusValue(text: string, name: string, labels: Record<string, string> = {}): number | undefined {
+export function parsePrometheusValue(
+	text: string,
+	name: string,
+	labels: Record<string, string> = {},
+): number | undefined {
 	for (const line of text.split("\n")) {
 		const sample = parseSample(line);
 		if (sample && sample.name === name && sameLabels(sample.labels, labels)) return sample.value;
@@ -188,16 +192,26 @@ export function httpTarget(baseUrl: string, options: HttpTargetOptions = {}): Ch
 			const url = new URL(path.replace(/^\/+/, ""), root);
 			const signal = AbortSignal.timeout(timeoutMs);
 			const deadlineMessage = `${method} ${path} got no complete response within ${timeoutMs} ms`;
-			const response = await untilAborted(fetchImpl(url.href, { method, headers, body: payload, signal, ...tlsInit }), signal, deadlineMessage);
+			const response = await untilAborted(
+				fetchImpl(url.href, { method, headers, body: payload, signal, ...tlsInit }),
+				signal,
+				deadlineMessage,
+			);
 			const text = await untilAborted(response.text(), signal, deadlineMessage);
 			return { status: response.status, headers: response.headers, text };
 		},
-		async close() {},
+		async close() {
+			// reason: each request is its own fetch with a deadline; no connection is held open
+		},
 	};
 }
 
 // Settles with `work`, or rejects with an Error(`deadlineMessage`) once `signal` aborts first. The same signal cancels a real fetch.
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal, deadlineMessage: string): Promise<T> {
+function untilAborted<T>(
+	work: Promise<T>,
+	signal: AbortSignal,
+	deadlineMessage: string,
+): Promise<T> {
 	const { promise, resolve, reject } = Promise.withResolvers<T>();
 	const onAbort = () => reject(new Error(deadlineMessage));
 	if (signal.aborted) onAbort();

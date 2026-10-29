@@ -5,13 +5,6 @@
  * Provides safe reading of HTTP response/request bodies with size limits
  */
 
-export interface BodyPrefix {
-	/** The first `limit` bytes decoded as UTF-8. */
-	text: string;
-	/** True when the stream ended within `limit` bytes; false when the body is longer (the rest was cancelled). */
-	complete: boolean;
-}
-
 type ChunkResult = { done: false; value: Uint8Array } | { done: true; value?: Uint8Array };
 type ChunkReader = Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "cancel" | "releaseLock">;
 
@@ -24,7 +17,9 @@ function readChunk(reader: ChunkReader, signal?: AbortSignal): Promise<ChunkResu
 	if (signal.aborted) return Promise.reject(signal.reason);
 	const { promise, resolve, reject } = Promise.withResolvers<ChunkResult>();
 	const onAbort = () => {
-		reader.cancel(signal.reason).catch(() => {});
+		reader.cancel(signal.reason).catch(() => {
+			// reason: the abort has already rejected the read; a failed cancel of a stream being discarded changes nothing.
+		});
 		reject(signal.reason);
 	};
 	signal.addEventListener("abort", onAbort, { once: true });
@@ -46,7 +41,11 @@ function readChunk(reader: ChunkReader, signal?: AbortSignal): Promise<ChunkResu
  * An abort of `signal` cancels a pending read and rejects with the signal's reason;
  * a stream error is rethrown. The reader lock is always released.
  */
-export async function readBodyPrefix(response: Response, limit: number, signal?: AbortSignal): Promise<{ text: string; complete: boolean }> {
+export async function readBodyPrefix(
+	response: Response,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<{ text: string; complete: boolean }> {
 	signal?.throwIfAborted();
 	if (!response.body) return { text: "", complete: true };
 	const reader: ChunkReader = response.body.getReader();
@@ -71,7 +70,9 @@ export async function readBodyPrefix(response: Response, limit: number, signal?:
 		}
 		return { text: text + decoder.decode(), complete };
 	} finally {
-		await reader.cancel().catch(() => {});
+		await reader.cancel().catch(() => {
+			// reason: the body is discarded here; a failed cancel leaves nothing to release, and the lock is released next.
+		});
 		reader.releaseLock();
 	}
 }
@@ -80,10 +81,14 @@ export async function readBodyPrefix(response: Response, limit: number, signal?:
  * Reads the full body as text with a size limit.
  * Returns the body text or throws if the body exceeds the limit.
  */
-export async function readBodyText(response: Response, limit: number, signal?: AbortSignal): Promise<string> {
+export async function readBodyText(
+	response: Response,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<string> {
 	const result = await readBodyPrefix(response, limit, signal);
 	if (!result.complete) {
-		throw new Error(`Response body exceeds limit of ${limit} bytes`);
+		throw new Error(`readBodyText: exceeds limit of ${limit} bytes`);
 	}
 	return result.text;
 }
@@ -92,20 +97,18 @@ export async function readBodyText(response: Response, limit: number, signal?: A
  * Reads and parses JSON with a size limit.
  * Returns the parsed object or throws if the body exceeds the limit or is not valid JSON.
  */
-export async function readJsonBody<T = unknown>(response: Response, limit: number, signal?: AbortSignal): Promise<T> {
+export async function readJsonBody<T = unknown>(
+	response: Response,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<T> {
 	const result = await readBodyPrefix(response, limit, signal);
 	if (!result.complete) {
-		throw new Error(`Response body exceeds limit of ${limit} bytes`);
+		throw new Error(`readJsonBody: exceeds limit of ${limit} bytes`);
 	}
 	try {
 		return JSON.parse(result.text) as T;
-	} catch {
-		throw new Error('Response body is not valid JSON');
+	} catch (error) {
+		throw new Error("readJsonBody: invalid JSON (SyntaxError)", { cause: error });
 	}
 }
-
-export default {
-	readBodyPrefix,
-	readBodyText,
-	readJsonBody,
-};

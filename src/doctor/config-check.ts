@@ -8,7 +8,13 @@
  * Findings carry key names, types and effective values, never the written value or the file content.
  */
 import { readFileSync } from "node:fs";
-import { claudeConfigPaths, defaultConfig, hasControlCharacter, mergeConfig, type UltrathinkConfig } from "../config.ts";
+import {
+	claudeConfigPaths,
+	defaultConfig,
+	hasControlCharacter,
+	mergeConfig,
+	type UltrathinkConfig,
+} from "../config.ts";
 import { isPlainObject } from "../decisions/client.ts";
 import { HOSTS, isHostId } from "../host/types.ts";
 import { redactText } from "../teach/redact.ts";
@@ -82,7 +88,7 @@ function describeValue(value: unknown): string {
 				display = url.toString();
 			}
 		} catch {
-			// Non-URL effective values still use the shared secret redactor below.
+			// reason: Non-URL effective values still use the shared secret redactor below.
 		}
 	}
 	// Redact before truncation so a long credential cannot leave a visible prefix.
@@ -112,7 +118,14 @@ interface Layer {
 interface Collector {
 	findings: Finding[];
 	layer: Layer;
-	add: (level: DoctorLevel, kind: string, keyPath: string, title: string, detail?: string, fix?: string) => void;
+	add: (
+		level: DoctorLevel,
+		kind: string,
+		keyPath: string,
+		title: string,
+		detail?: string,
+		fix?: string,
+	) => void;
 }
 
 function collector(layer: Layer): Collector {
@@ -133,7 +146,13 @@ function collector(layer: Layer): Collector {
 	};
 }
 
-function unknownName(out: Collector, kind: "section" | "key", keyPath: string, candidates: readonly string[], prefix: string): void {
+function unknownName(
+	out: Collector,
+	kind: "section" | "key",
+	keyPath: string,
+	candidates: readonly string[],
+	prefix: string,
+): void {
 	const internal = kind === "section" && keyPath === "modelProvenance";
 	const name = prefix ? keyPath.slice(prefix.length + 1) : keyPath;
 	const suggestion = internal ? undefined : suggestName(name, candidates);
@@ -152,15 +171,29 @@ function unknownName(out: Collector, kind: "section" | "key", keyPath: string, c
 
 function checkModels(out: Collector, value: unknown, effective: Json): void {
 	if (!isPlainObject(value)) {
-		out.add("warn", "wrong-type", "models", `models ignored: expected object, got ${kindOf(value)}`, `File: ${out.layer.path}`);
+		out.add(
+			"warn",
+			"wrong-type",
+			"models",
+			`models ignored: expected object, got ${kindOf(value)}`,
+			`File: ${out.layer.path}`,
+		);
 		return;
 	}
 	const effectiveModels = isPlainObject(effective.models) ? effective.models : {};
-	const effectiveDefaults = isPlainObject(effectiveModels.providerDefaults) ? effectiveModels.providerDefaults : {};
+	const effectiveDefaults = isPlainObject(effectiveModels.providerDefaults)
+		? effectiveModels.providerDefaults
+		: {};
 	for (const [key, section] of Object.entries(value)) {
 		if (key === "hosts") {
 			if (!isPlainObject(section)) {
-				out.add("warn", "wrong-type", "models.hosts", `models.hosts ignored: expected object, got ${kindOf(section)}`, `File: ${out.layer.path}`);
+				out.add(
+					"warn",
+					"wrong-type",
+					"models.hosts",
+					`models.hosts ignored: expected object, got ${kindOf(section)}`,
+					`File: ${out.layer.path}`,
+				);
 				continue;
 			}
 			for (const [host, entry] of Object.entries(section)) {
@@ -178,7 +211,13 @@ function checkModels(out: Collector, value: unknown, effective: Json): void {
 					continue;
 				}
 				if (!isPlainObject(entry)) {
-					out.add("warn", "wrong-type", keyPath, `${keyPath} ignored: expected object, got ${kindOf(entry)}`, `File: ${out.layer.path}`);
+					out.add(
+						"warn",
+						"wrong-type",
+						keyPath,
+						`${keyPath} ignored: expected object, got ${kindOf(entry)}`,
+						`File: ${out.layer.path}`,
+					);
 					continue;
 				}
 				for (const [field, selector] of Object.entries(entry)) {
@@ -186,7 +225,13 @@ function checkModels(out: Collector, value: unknown, effective: Json): void {
 					if (!(HOST_OVERRIDE_KEYS as readonly string[]).includes(field)) {
 						unknownName(out, "key", fieldPath, HOST_OVERRIDE_KEYS, keyPath);
 					} else if (typeof selector !== "string") {
-						out.add("warn", "wrong-type", fieldPath, `${fieldPath} ignored: expected string, got ${kindOf(selector)}`, `File: ${out.layer.path}`);
+						out.add(
+							"warn",
+							"wrong-type",
+							fieldPath,
+							`${fieldPath} ignored: expected string, got ${kindOf(selector)}`,
+							`File: ${out.layer.path}`,
+						);
 					} else if (selector.trim() !== "" && hasControlCharacter(selector)) {
 						out.add(
 							"warn",
@@ -212,7 +257,13 @@ function checkModels(out: Collector, value: unknown, effective: Json): void {
 			for (const [provider, selector] of Object.entries(section)) {
 				const keyPath = `models.providerDefaults.${provider}`;
 				if (typeof selector !== "string") {
-					out.add("warn", "wrong-type", keyPath, `${keyPath} ignored: expected string, got ${kindOf(selector)}`, `File: ${out.layer.path}`);
+					out.add(
+						"warn",
+						"wrong-type",
+						keyPath,
+						`${keyPath} ignored: expected string, got ${kindOf(selector)}`,
+						`File: ${out.layer.path}`,
+					);
 				} else if (selector.trim() !== "" && hasControlCharacter(selector)) {
 					out.add(
 						"warn",
@@ -222,7 +273,13 @@ function checkModels(out: Collector, value: unknown, effective: Json): void {
 						`Model selection rejects this value before resolution. File: ${out.layer.path}`,
 					);
 				} else if (selector.trim() !== "" && effectiveDefaults[provider] !== selector.trim()) {
-					out.add("warn", "ignored", keyPath, `${keyPath} ignored by the merge`, `A reserved provider name is never merged. File: ${out.layer.path}`);
+					out.add(
+						"warn",
+						"ignored",
+						keyPath,
+						`${keyPath} ignored by the merge`,
+						`A reserved provider name is never merged. File: ${out.layer.path}`,
+					);
 				}
 			}
 		} else {
@@ -231,7 +288,15 @@ function checkModels(out: Collector, value: unknown, effective: Json): void {
 	}
 }
 
-function checkLeaf(out: Collector, section: string, key: string, written: unknown, fallback: unknown, merged: Json, asUser: Json): void {
+function checkLeaf(
+	out: Collector,
+	section: string,
+	key: string,
+	written: unknown,
+	fallback: unknown,
+	merged: Json,
+	asUser: Json,
+): void {
 	const keyPath = `${section}.${key}`;
 	const expected = kindOf(fallback);
 	const got = kindOf(written);
@@ -283,7 +348,13 @@ function checkLeaf(out: Collector, section: string, key: string, written: unknow
 	);
 }
 
-function checkLayer(layer: Layer, data: Json, known: Json, base: UltrathinkConfig, merged: Json): Finding[] {
+function checkLayer(
+	layer: Layer,
+	data: Json,
+	known: Json,
+	base: UltrathinkConfig,
+	merged: Json,
+): Finding[] {
 	const out = collector(layer);
 	const asUser: Json = layer.project ? { ...mergeConfig(data, base, { project: false }) } : merged;
 	const sections = Object.keys(known);
@@ -298,7 +369,13 @@ function checkLayer(layer: Layer, data: Json, known: Json, base: UltrathinkConfi
 		}
 		const defaults = known[section] as Json;
 		if (!isPlainObject(value)) {
-			out.add("warn", "wrong-type", section, `${section} ignored: expected object, got ${kindOf(value)}`, `File: ${layer.path}`);
+			out.add(
+				"warn",
+				"wrong-type",
+				section,
+				`${section} ignored: expected object, got ${kindOf(value)}`,
+				`File: ${layer.path}`,
+			);
 			continue;
 		}
 		for (const [key, written] of Object.entries(value)) {
@@ -319,7 +396,8 @@ function checkLayer(layer: Layer, data: Json, known: Json, base: UltrathinkConfi
 export function checkConfig(deps: DoctorDeps): Finding[] {
 	const known: Json = { ...defaultConfig() };
 	delete known.modelProvenance;
-	for (const section of BACKEND_SECTIONS) known[section] = { ...(known[section] as Json), backend: "direct" };
+	for (const section of BACKEND_SECTIONS)
+		known[section] = { ...(known[section] as Json), backend: "direct" };
 	// cursorDir and mapping are documented and accepted by the merge, but defaultConfig() omits them
 	// because unset is not the same as an empty value. Doctor still has to recognize them.
 	known.pstack = { ...(known.pstack as Json), cursorDir: "", mapping: {} };
@@ -345,7 +423,13 @@ export function checkConfig(deps: DoctorDeps): Finding[] {
 			const rawCode = error instanceof Error && "code" in error ? error.code : undefined;
 			const code = typeof rawCode === "string" ? rawCode : undefined;
 			if (code === "ENOENT") fail("info", "missing", "not found (optional)", `File: ${layer.path}`);
-			else fail("error", "unreadable", `cannot be read (${code ?? "unknown error"})`, `File: ${layer.path}`);
+			else
+				fail(
+					"error",
+					"unreadable",
+					`cannot be read (${code ?? "unknown error"})`,
+					`File: ${layer.path}`,
+				);
 			return;
 		}
 		let parsed: unknown;
@@ -353,12 +437,25 @@ export function checkConfig(deps: DoctorDeps): Finding[] {
 			parsed = JSON.parse(text);
 		} catch (error) {
 			// Some runtimes quote the offending token in the message; a quoted token could be a pasted secret, so it is dropped.
-			const message = (error instanceof Error ? error.message : String(error)).replace(/"[^"]*"|'[^']*'/g, "…");
-			fail("error", "invalid-json", "not valid JSON; every key in it is ignored", `File: ${layer.path}\n${message.slice(0, MAX_PARSE_MESSAGE_CHARS)}`);
+			const message = (error instanceof Error ? error.message : String(error)).replace(
+				/"[^"]*"|'[^']*'/g,
+				"…",
+			);
+			fail(
+				"error",
+				"invalid-json",
+				"not valid JSON; every key in it is ignored",
+				`File: ${layer.path}\n${message.slice(0, MAX_PARSE_MESSAGE_CHARS)}`,
+			);
 			return;
 		}
 		if (!isPlainObject(parsed)) {
-			fail("error", "not-object", `top level is ${kindOf(parsed)}, expected an object; every key in it is ignored`, `File: ${layer.path}`);
+			fail(
+				"error",
+				"not-object",
+				`top level is ${kindOf(parsed)}, expected an object; every key in it is ignored`,
+				`File: ${layer.path}`,
+			);
 			return;
 		}
 		const merged = mergeConfig(parsed, effective, { project });

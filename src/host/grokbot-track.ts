@@ -17,15 +17,36 @@ import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 import { createTracking, type ToolCaller } from "../track/create.ts";
 import { formatTrackingTodos, injectTrackingXml } from "../track/render.ts";
 import { mirrorLast } from "./grokbot-hitl.ts";
+import { hostToSurface } from "../substrate/surface.ts";
 import type { IssueRef, TrackingRefs } from "../track/types.ts";
 
 /** Notion Agent Task Graph columns (docs/tracking.md); the dry run reports every one so no property is dropped. */
-export const NOTION_COLUMNS = [
-	"Item", "Level", "Status", "Linear State", "Graph ID", "Description", "Uplifted Prompt", "Agent", "Thought", "Step",
-	"Linear URL", "Issue ID", "Repo", "Branch", "PR URL", "PR #", "PR State", "Checks", "Reviewers", "Completed", "Parent Item", "Sub-Items",
+const NOTION_COLUMNS = [
+	"Item",
+	"Level",
+	"Status",
+	"Linear State",
+	"Graph ID",
+	"Description",
+	"Uplifted Prompt",
+	"Agent",
+	"Thought",
+	"Step",
+	"Linear URL",
+	"Issue ID",
+	"Repo",
+	"Branch",
+	"PR URL",
+	"PR #",
+	"PR State",
+	"Checks",
+	"Reviewers",
+	"Completed",
+	"Parent Item",
+	"Sub-Items",
 ] as const;
 
-export interface RecordedCall {
+interface RecordedCall {
 	seq: number;
 	provider: "linear" | "notion";
 	tool: string;
@@ -42,7 +63,13 @@ export interface TrackPayloads {
 	project?: string;
 	notionDataSource?: string;
 	calls: RecordedCall[];
-	counts: { linearIssues: number; linearSubIssues: number; notionTask: number; notionIssues: number; notionSubIssues: number };
+	counts: {
+		linearIssues: number;
+		linearSubIssues: number;
+		notionTask: number;
+		notionIssues: number;
+		notionSubIssues: number;
+	};
 }
 
 const FOOTER_RE = /ultrathink graph \S+ · node (\S+?)(?: · step (\d+))?$/m;
@@ -54,7 +81,9 @@ export async function buildTrackPayloads(
 	const recorded = record.plan;
 	if (!recorded) throw new Error("session record has no plan");
 	// The adapter plans under the prime-agent engine family; the Notion Agent column names the real caller.
-	const plan = options.agent ? { ...recorded, task: { ...recorded.task, agent: options.agent } } : recorded;
+	const plan = options.agent
+		? { ...recorded, task: { ...recorded.task, agent: options.agent } }
+		: recorded;
 	const calls: RecordedCall[] = [];
 	let linearSeq = 0;
 	let notionSeq = 0;
@@ -68,9 +97,20 @@ export async function buildTrackPayloads(
 			const id = `PEND-${++linearSeq}`;
 			const description = typeof args.description === "string" ? args.description : "";
 			const match = description.match(FOOTER_RE);
-			const key = match ? (match[2] ? `${match[1]}.${match[2]}` : (match[1] as string)) : `?${linearSeq}`;
+			const key = match
+				? match[2]
+					? `${match[1]}.${match[2]}`
+					: (match[1] as string)
+				: `?${linearSeq}`;
 			const withProject = options.project ? { ...args, project: options.project } : args;
-			calls.push({ seq, provider: "linear", tool: name, args: withProject, defines: [id], keys: [key] });
+			calls.push({
+				seq,
+				provider: "linear",
+				tool: name,
+				args: withProject,
+				defines: [id],
+				keys: [key],
+			});
 			return { id, identifier: id, url: `https://linear.app/pending/issue/${id}/pending` };
 		},
 	};
@@ -79,10 +119,16 @@ export async function buildTrackPayloads(
 			const seq = calls.length + 1;
 			if (name === "notion-fetch") {
 				calls.push({ seq, provider: "notion", tool: name, args, defines: [], keys: [] });
-				return { properties: Object.fromEntries(NOTION_COLUMNS.map((column) => [column, { type: "rich_text" }])) };
+				return {
+					properties: Object.fromEntries(
+						NOTION_COLUMNS.map((column) => [column, { type: "rich_text" }]),
+					),
+				};
 			}
 			if (name === "notion-create-pages") {
-				const pages = Array.isArray(args.pages) ? (args.pages as Array<{ properties?: Record<string, unknown> }>) : [];
+				const pages = Array.isArray(args.pages)
+					? (args.pages as Array<{ properties?: Record<string, unknown> }>)
+					: [];
 				const urls: string[] = [];
 				const keys: string[] = [];
 				for (const page of pages) {
@@ -90,7 +136,11 @@ export async function buildTrackPayloads(
 					const props = page.properties ?? {};
 					const level = String(props.Level ?? "");
 					const step = props.Step;
-					keys.push(level === "Task" ? "task" : `${String(props.Item ?? "").match(/^\[(n\d+)\]/)?.[1] ?? "?"}${level === "Sub-Issue" && step !== undefined ? `.${String(step)}` : ""}`);
+					keys.push(
+						level === "Task"
+							? "task"
+							: `${String(props.Item ?? "").match(/^\[(n\d+)\]/)?.[1] ?? "?"}${level === "Sub-Issue" && step !== undefined ? `.${String(step)}` : ""}`,
+					);
 				}
 				calls.push({ seq, provider: "notion", tool: name, args, defines: urls, keys });
 				return { pages: urls.map((url) => ({ url })) };
@@ -103,12 +153,20 @@ export async function buildTrackPayloads(
 		linear,
 		notion,
 		...(options.linearTeam ? { linearTeam: options.linearTeam } : {}),
-		...(options.notionDataSource ? { notionDataSource: options.notionDataSource.replace(/^collection:\/\//, "") } : {}),
+		...(options.notionDataSource
+			? { notionDataSource: options.notionDataSource.replace(/^collection:\/\//, "") }
+			: {}),
 		concurrency: 1,
 		budgetMs: 600_000,
 	});
-	const emitted = calls.filter((call) => call.tool === "save_issue" || call.tool === "notion-create-pages" || call.tool === "notion-fetch");
-	const created = (provider: "linear" | "notion", tool: string) => emitted.filter((c) => c.provider === provider && c.tool === tool);
+	const emitted = calls.filter(
+		(call) =>
+			call.tool === "save_issue" ||
+			call.tool === "notion-create-pages" ||
+			call.tool === "notion-fetch",
+	);
+	const created = (provider: "linear" | "notion", tool: string) =>
+		emitted.filter((c) => c.provider === provider && c.tool === tool);
 	const linearCreates = created("linear", "save_issue");
 	const notionKeys = created("notion", "notion-create-pages").flatMap((c) => c.keys);
 	return {
@@ -138,7 +196,11 @@ export interface RealRefs {
 }
 
 /** Writes real refs into the record's tracking and re-renders the spec, like `ultrathink-mcp track complete`. */
-export function recordRefs(statePath: string, refs: RealRefs, now = Date.now()): { tracking: TrackingRefs; todos: string } {
+export function recordRefs(
+	statePath: string,
+	refs: RealRefs,
+	now = Date.now(),
+): { tracking: TrackingRefs; todos: string } {
 	return withFileLock(statePath, () => {
 		const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
 		const plan = record.plan;
@@ -149,7 +211,11 @@ export function recordRefs(statePath: string, refs: RealRefs, now = Date.now()):
 			status: "failed",
 			...(previous?.linearTeam ? { linearTeam: previous.linearTeam } : {}),
 			linear: { nodes: { ...previous?.linear.nodes }, steps: { ...previous?.linear.steps } },
-			notion: { ...(previous?.notion.taskUrl ? { taskUrl: previous.notion.taskUrl } : {}), nodes: { ...previous?.notion.nodes }, steps: { ...previous?.notion.steps } },
+			notion: {
+				...(previous?.notion.taskUrl ? { taskUrl: previous.notion.taskUrl } : {}),
+				nodes: { ...previous?.notion.nodes },
+				steps: { ...previous?.notion.steps },
+			},
 			errors: [...(refs.errors ?? [])],
 			updatedAt: now,
 		};
@@ -164,9 +230,19 @@ export function recordRefs(statePath: string, refs: RealRefs, now = Date.now()):
 		}
 		const linearConfigured = refs.trackers ? refs.trackers.linear === true : true;
 		const notionConfigured = refs.trackers ? refs.trackers.notion === true : true;
-		const linearDone = !linearConfigured || (plan.linearIssues.every((i) => tracking.linear.nodes[i.nodeId]) && plan.linearSubIssues.every((s) => tracking.linear.steps[`${s.nodeId}.${s.step}`]));
-		const notionDone = !notionConfigured || (!!tracking.notion.taskUrl && plan.issues.every((r) => tracking.notion.nodes[r.nodeId]) && plan.subIssues.every((r) => tracking.notion.steps[`${r.nodeId}.${r.step}`]));
-		const any = Object.keys(tracking.linear.nodes).length + Object.keys(tracking.notion.nodes).length + (tracking.notion.taskUrl ? 1 : 0);
+		const linearDone =
+			!linearConfigured ||
+			(plan.linearIssues.every((i) => tracking.linear.nodes[i.nodeId]) &&
+				plan.linearSubIssues.every((s) => tracking.linear.steps[`${s.nodeId}.${s.step}`]));
+		const notionDone =
+			!notionConfigured ||
+			(!!tracking.notion.taskUrl &&
+				plan.issues.every((r) => tracking.notion.nodes[r.nodeId]) &&
+				plan.subIssues.every((r) => tracking.notion.steps[`${r.nodeId}.${r.step}`]));
+		const any =
+			Object.keys(tracking.linear.nodes).length +
+			Object.keys(tracking.notion.nodes).length +
+			(tracking.notion.taskUrl ? 1 : 0);
 		tracking.status = linearDone && notionDone ? "complete" : any > 0 ? "partial" : "failed";
 		record.tracking = tracking;
 		const xml = injectTrackingXml(record.result.xml, plan, tracking);
@@ -178,32 +254,106 @@ export function recordRefs(statePath: string, refs: RealRefs, now = Date.now()):
 	});
 }
 
+/** Substrate's Linear workflow states (agent-substrate `types.ts` NODE_STATES), the only values `state` accepts. */
+type NodeState =
+	| "backlog"
+	| "unstarted"
+	| "started"
+	| "started_review"
+	| "completed"
+	| "canceled"
+	| "duplicate";
+
+/** Record status words (compared case-insensitively, hyphens and runs of whitespace folded to one space) that name a Substrate node state. */
+const NODE_STATE_BY_STATUS: Readonly<Record<string, NodeState>> = {
+	backlog: "backlog",
+	unstarted: "unstarted",
+	todo: "unstarted",
+	started: "started",
+	"in progress": "started",
+	implementing: "started",
+	started_review: "started_review",
+	"in review": "started_review",
+	completed: "completed",
+	done: "completed",
+	canceled: "canceled",
+	cancelled: "canceled",
+	duplicate: "duplicate",
+};
+
+/** The Substrate node state for a record status, or undefined when the status names none (the state is then omitted, never coerced). */
+function nodeStateOf(status: string | undefined): NodeState | undefined {
+	if (!status) return undefined;
+	const key = status
+		.trim()
+		.toLowerCase()
+		.replace(/[-\s]+/g, " ");
+	return Object.hasOwn(NODE_STATE_BY_STATUS, key) ? NODE_STATE_BY_STATUS[key] : undefined;
+}
+
 /**
  * The upstream kickoff skill's optional `graph_register` call (Agent Substrate), built from the tracking refs with absent
- * fields left out. Desk Lead sends it through its desk gateway (`desk_graph_register`). `nodes`/`steps` are omitted
- * unless asked for: the desk gateway currently rejects them (see FULL-REVIEW.md), and the call is idempotent by graph_id.
+ * fields left out. Desk Lead sends it through its desk gateway (`desk_graph_register`). It carries only the fields the
+ * Substrate schema accepts (mcp.ts `graph_register` inputSchema): top level `graph_id`, `notion_task_page`, `repo`,
+ * `branch`, `surface`, `status`, `pr_url`; nodes `node_id`, `linear_issue_id`, `linear_identifier`, `notion_page`, `state`;
+ * steps `node_id`, `step`, `linear_sub_issue_id`, `notion_page`, `state`; edges `from_node`, `to_node`, `kind`. `surface`
+ * goes through {@link hostToSurface}, so a host that is not a Substrate surface still sends a valid one. `nodes`, `steps`
+ * and `edges` are omitted unless asked for: the desk gateway currently rejects them (see FULL-REVIEW.md), and the call is
+ * idempotent by graph_id. An edge `requires` runs from the dependent node to the node it depends on.
  */
-export function graphRegisterPayload(record: SessionRecord, options: { surface?: string; withNodes?: boolean } = {}): Record<string, unknown> {
+export function graphRegisterPayload(
+	record: SessionRecord,
+	options: { surface?: string; withNodes?: boolean } = {},
+): Record<string, unknown> {
 	const plan = record.plan;
 	if (!plan) throw new Error("session record has no plan");
 	const t = record.tracking;
-	const task = plan.task as { repo?: string; branch?: string; status?: string };
-	const payload: Record<string, unknown> = { graph_id: plan.graphId, surface: options.surface ?? "grok-bot" };
+	const task = plan.task;
+	const prUrl = record.ship?.pr?.url;
+	const payload: Record<string, unknown> = {
+		graph_id: plan.graphId,
+		surface: hostToSurface(options.surface ?? "grok-bot"),
+	};
 	if (t?.notion.taskUrl) payload.notion_task_page = t.notion.taskUrl;
 	if (task.repo) payload.repo = task.repo;
 	if (task.branch) payload.branch = task.branch;
 	if (task.status) payload.status = task.status;
+	if (prUrl) payload.pr_url = prUrl;
 	if (options.withNodes && t) {
-		const clean = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== ""));
+		const clean = (o: Record<string, unknown>) =>
+			Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== ""));
+		const state = nodeStateOf(task.status);
 		payload.nodes = plan.issues.map((issue) => {
 			const ref = t.linear.nodes[issue.nodeId];
-			return clean({ node_id: issue.nodeId, linear_issue_id: ref?.id, linear_identifier: ref?.identifier, linear_url: ref?.url, notion_page: t.notion.nodes[issue.nodeId] });
+			return clean({
+				node_id: issue.nodeId,
+				linear_issue_id: ref?.id,
+				linear_identifier: ref?.identifier,
+				notion_page: t.notion.nodes[issue.nodeId],
+				state,
+			});
 		});
 		payload.steps = plan.subIssues.map((sub) => {
 			const key = `${sub.nodeId}.${sub.step}`;
 			const ref = t.linear.steps[key];
-			return clean({ node_id: sub.nodeId, step: sub.step, linear_sub_issue_id: ref?.id, linear_identifier: ref?.identifier, linear_url: ref?.url, notion_page: t.notion.steps[key] });
+			return clean({
+				node_id: sub.nodeId,
+				step: sub.step,
+				linear_sub_issue_id: ref?.id,
+				notion_page: t.notion.steps[key],
+				state,
+			});
 		});
+		const known = new Set(plan.issues.map((issue) => issue.nodeId));
+		const edges: Array<{ from_node: string; to_node: string; kind: "requires" }> = [];
+		for (const node of record.graph?.nodes ?? []) {
+			if (!known.has(node.id)) continue;
+			for (const dep of new Set(node.dependsOn)) {
+				if (dep !== node.id && known.has(dep))
+					edges.push({ from_node: node.id, to_node: dep, kind: "requires" });
+			}
+		}
+		if (edges.length > 0) payload.edges = edges;
 	}
 	return payload;
 }

@@ -7,12 +7,24 @@
  */
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { displayId, formatModelSelection, OPAQUE_MODEL } from "../claude/output.ts";
-import { armSkipOnce, type ControlState, readControl, readLast, readSkipOnce, writeControl } from "../claude/state.ts";
+import {
+	armSkipOnce,
+	type ControlState,
+	readControl,
+	readLast,
+	readSkipOnce,
+	writeControl,
+} from "../claude/state.ts";
 import { DECISIONS_URL_IGNORED, resolveDecisionsUrl } from "../decisions/client.ts";
 import { runDecisionsCommand } from "../decisions/cli.ts";
 import { runDoctorCommand } from "../doctor/cli.ts";
+import { describeJevHealth } from "../decisions/health.ts";
 import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
-import { grokAuthStatusFresh, redactSecrets } from "../grok/auth.ts";
+import { grokAuthStatusFresh } from "../grok/auth.ts";
+import { type GrokCheckOptions, runGrokCheck } from "../grok/check.ts";
+import { type GrokLoginOptions, runGrokLogin } from "../grok/login.ts";
+import { grokWireEffort } from "../grok/types.ts";
+import { redactSecrets } from "../redact.ts";
 import { formatHitlEcho } from "../hitl/format.ts";
 import { detectHost } from "../host/detect.ts";
 import { engineLabel, type ModelResolution } from "../host/engine.ts";
@@ -29,6 +41,8 @@ import { runPruneCommand } from "../retention/cli.ts";
 import { ragflowStatusLine } from "../ragflow/settings.ts";
 import { gatewayStatus, resolveGateway, serviceBackend } from "../gateway/settings.ts";
 import { SUBSTRATE_BACKEND_ENV } from "../gateway/types.ts";
+import { dispatchStack } from "../stack/cli.ts";
+import { stackSummaryLine } from "../stack/summary.ts";
 import { resolveSubstrate } from "../substrate/brief.ts";
 import { runTeachCommand } from "../teach/cli.ts";
 import { teachStatusLine } from "../teach/status.ts";
@@ -37,7 +51,14 @@ import { grokUserQuery, parseSlashCommand } from "./skill.ts";
 
 export type UltrathinkVerb = "quick" | "skip" | "off" | "on" | "track" | "status";
 
-export const ULTRATHINK_VERBS: readonly UltrathinkVerb[] = ["quick", "skip", "off", "on", "track", "status"];
+export const ULTRATHINK_VERBS: readonly UltrathinkVerb[] = [
+	"quick",
+	"skip",
+	"off",
+	"on",
+	"track",
+	"status",
+];
 
 export interface UltrathinkCommand {
 	verb: UltrathinkVerb;
@@ -53,15 +74,16 @@ const USAGE = [
 	"  last                   the last uplifted spec",
 	"  think on|off|last      Graph of Thought",
 	"  hitl on|off|last       HITL clarifications",
-	"  grok [engine auto|claude|grok|muse]",
+	"  grok [status | engine auto|claude|grok|muse | login | check]",
 	"  decisions check        one live Jev decision: resolved model, latency, cost",
 	"  decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json>",
 	"  hindsight check        Hindsight memory server: readiness, health, optional round trip",
-	"  ragflow check|datasets|search \"<query>\"   RAGFlow document search",
+	'  ragflow check|datasets|search "<query>"   RAGFlow document search',
 	"  teach status|list|show|capture|recall|confirm|forget|sync|observe|promote|export   Teachable Moments",
 	"In an agent: /ultrathink-status, /ultrathink-off, /ultrathink-on, /ultrathink-skip, /ultrathink-track off|on,",
 	"and /ultrathink-quick <message> sends one message as typed (no planning, no Linear/Notion rows).",
 	"  doctor [--json]        check config files, credentials, state and environment",
+	"  stack [--live] [--json] [--strict] [--only <member>] [--timeout <ms>]   five stack links with reason and fix",
 	"  prune [--older-than <days>] [--dry-run]   remove session records older than that many days (nothing is removed by default)",
 ].join("\n");
 
@@ -103,7 +125,10 @@ export function trackingEnabled(
 
 /** Rows are not wanted at all: tracking turned off, or neither Notion nor Linear configured. Kickoff must not create them either. */
 export function trackingOff(config: UltrathinkConfig, control: ControlState): boolean {
-	return control.trackEnabled === false || (!config.notion.dataSourceUrl.trim() && !config.linear.team.trim());
+	return (
+		control.trackEnabled === false ||
+		(!config.notion.dataSourceUrl.trim() && !config.linear.team.trim())
+	);
 }
 
 function flag(value: boolean | undefined, fallback: boolean): string {
@@ -114,8 +139,11 @@ function flag(value: boolean | undefined, fallback: boolean): string {
 function trackingLines(config: UltrathinkConfig, state: ControlState): string[] {
 	let line = "Tracking: on (Linear/Notion rows)";
 	if (state.trackEnabled === false) line = "Tracking: off (Linear/Notion rows)";
-	else if (trackingOff(config, state)) line = "Tracking: on (not configured: set notion.dataSourceUrl / linear.team)";
-	else if (!trackingEnabled(config, state)) line = "Tracking: kickoff (planner-side row creation off; /ultrathink-track off stops all rows)";
+	else if (trackingOff(config, state))
+		line = "Tracking: on (not configured: set notion.dataSourceUrl / linear.team)";
+	else if (!trackingEnabled(config, state))
+		line =
+			"Tracking: kickoff (planner-side row creation off; /ultrathink-track off stops all rows)";
 	return [
 		line,
 		`Notion: ${config.notion.dataSourceUrl.trim() || "not configured"}`,
@@ -123,12 +151,29 @@ function trackingLines(config: UltrathinkConfig, state: ControlState): string[] 
 	];
 }
 
-/** `Grok: <model> @ <effort> · transport <t>` plus the gateway URL and wire model when shunt is active. */
+/** `Claude: <model> · auth <auth> · fallback to Grok <on|off>`. */
+function claudeStatusLine(config: UltrathinkConfig): string {
+	const { claude } = config;
+	return `Claude: ${displayId(claude.model, OPAQUE_MODEL)} · auth ${claude.auth} · fallback to Grok ${claude.fallbackToGrok ? "on" : "off"}`;
+}
+
+/** `Grok: <model> [@ <effort>] · transport <t> [· home <dir>] [· then <fallbacks>]`, plus the shunt gateway when active. */
 function grokTransportLine(config: UltrathinkConfig): string {
 	const { grok } = config;
-	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)} @ ${grok.reasoningEffort} · transport ${grok.transport}`;
+	const effort = grokWireEffort(grok.model, grok.reasoningEffort);
+	const then =
+		grok.fallbackModels.length > 0
+			? ` · then ${grok.fallbackModels.map((model) => displayId(model, OPAQUE_MODEL)).join(", ")}`
+			: "";
+	// grok.home is user-config only; a path is not a model id, so displayId would mask every absolute path.
+	const home = grok.home.trim()
+		? ` · home ${redactSecrets(grok.home.trim().replace(/\s+/g, " "))}`
+		: "";
+	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)}${effort ? ` @ ${effort}` : ""} · transport ${grok.transport}${home}${then}`;
 	if (grok.transport !== "shunt") return base;
-	const gateway = grok.shuntBaseUrl ? `${grok.shuntBaseUrl}/v1/messages` : "shunt gateway not configured (set grok.shuntBaseUrl)";
+	const gateway = grok.shuntBaseUrl
+		? `${grok.shuntBaseUrl}/v1/messages`
+		: "shunt gateway not configured (set grok.shuntBaseUrl)";
 	return `${base} · ${gateway} · wire model ${displayId(grok.shuntModel || grok.model, OPAQUE_MODEL)} · max_tokens ${grok.shuntMaxTokens}`;
 }
 
@@ -140,7 +185,9 @@ function substrateLine(config: UltrathinkConfig, env: Record<string, string | un
 		return `Substrate: gateway · ${gatewayStatus(resolved)}`;
 	}
 	const target = resolveSubstrate(env, config.substrate.url);
-	return target ? `Substrate: ${target.url} (${target.source})` : "Substrate: off (optional: set substrate.url or SUBSTRATE_URL)";
+	return target
+		? `Substrate: ${target.url} (${target.source})`
+		: "Substrate: off (optional: set substrate.url or SUBSTRATE_URL)";
 }
 
 /** Ship is opt-in; `ULTRATHINK_SHIP=0` turns it off for this shell whatever the config says. */
@@ -152,9 +199,14 @@ function shipLine(config: UltrathinkConfig, env: Record<string, string | undefin
 }
 
 /** The knowledge-base prefetch is opt-in and runs only with HITL on and a stored Greptile credential. */
-function knowledgeLine(config: UltrathinkConfig, state: ControlState, env: Record<string, string | undefined>): string {
+function knowledgeLine(
+	config: UltrathinkConfig,
+	state: ControlState,
+	env: Record<string, string | undefined>,
+): string {
 	if (!config.hitl.knowledgeBase) return "Knowledge base: off (opt-in: set hitl.knowledgeBase)";
-	if (!(state.hitlEnabled ?? config.hitl.enabled)) return "Knowledge base: on · not read while HITL is off";
+	if (!(state.hitlEnabled ?? config.hitl.enabled))
+		return "Knowledge base: on · not read while HITL is off";
 	if (!hasUsableCredential("greptile", storePath(env))) {
 		return "Knowledge base: on · no Greptile credential (run bin/ultrathink-mcp auth login greptile)";
 	}
@@ -164,12 +216,16 @@ function knowledgeLine(config: UltrathinkConfig, state: ControlState, env: Recor
 
 /** Jev Decisions are always on and need a key; the key's source is shown, never the key. `ULTRATHINK_DECISIONS=0`
  *  turns them off for this shell whatever the config says. */
-function decisionsLine(config: UltrathinkConfig, env: Record<string, string | undefined>): string {
+function decisionsLine(
+	config: UltrathinkConfig,
+	env: Record<string, string | undefined>,
+	stateDir: string,
+): string {
 	const { decisions } = config;
 	if (decisionsKilled(env)) return "Decisions: off (ULTRATHINK_DECISIONS=0)";
 	const picked = resolveDecisionsKeys(decisions, storePath(env), env);
 	if (!picked.key) {
-		return "Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or OPENROUTER_API_KEY)";
+		return "Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 	}
 	const points = decisions.points.length ? decisions.points.join(", ") : "no points";
 	const endpoint = resolveDecisionsUrl(env);
@@ -181,12 +237,18 @@ function decisionsLine(config: UltrathinkConfig, env: Record<string, string | un
 					? DECISIONS_URL_IGNORED
 					: ""
 			: "";
-	return `Decisions: on · ${decisions.model} · ${points} · provider ${picked.provider} · key from ${picked.key.source} · zdr ${decisions.zdr ? "on" : "off"}${url}`;
+	const breaker = describeJevHealth(stateDir, Date.now());
+	const zdr = picked.provider === "vercel" ? "n/a (vercel)" : decisions.zdr ? "on" : "off";
+	return `Decisions: on · ${decisions.model} · ${points} · provider ${picked.provider} · key from ${picked.key.source} · zdr ${zdr}${url}${breaker ? ` · ${breaker}` : ""}`;
 }
 
 async function grokOauthLine(config: UltrathinkConfig): Promise<string> {
-	if (config.grok.transport === "shunt") return "SuperGrok OAuth: not used (shunt gateway owns upstream auth)";
-	const auth = await grokAuthStatusFresh({ home: config.grok.home || undefined, bin: config.grok.bin });
+	if (config.grok.transport === "shunt")
+		return "SuperGrok OAuth: not used (shunt gateway owns upstream auth)";
+	const auth = await grokAuthStatusFresh({
+		home: config.grok.home || undefined,
+		bin: config.grok.bin,
+	});
 	if (!auth.loggedIn) return "SuperGrok OAuth: not logged in (run grok login)";
 	if (auth.expired) return "SuperGrok OAuth: expired (run grok login)";
 	return `SuperGrok OAuth: ${auth.email ?? "logged in"}${auth.expiresAt ? ` · expires ${auth.expiresAt}` : ""}`;
@@ -207,11 +269,19 @@ function engineRequestLine(config: UltrathinkConfig, state: ControlState, host: 
  * nothing here looks a model up or authenticates for it. The saved successful plan's record shows as `Last planned
  * resolution`, never as current detection (§9 path 6); together they replace the universal `Model: <claude.model>` line.
  */
-async function statusText(config: UltrathinkConfig, state: ControlState, stateDir: string, host: HostId, live?: ModelResolution, skipArmed = false): Promise<string> {
+async function statusText(
+	config: UltrathinkConfig,
+	state: ControlState,
+	stateDir: string,
+	host: HostId,
+	live?: ModelResolution,
+	skipArmed = false,
+): Promise<string> {
 	const last = readLast(stateDir);
 	const lines = [
 		`Prompt Uplift ${flag(state.enabled, config.uplift.enabled)}${skipArmed ? " (skipping next prompt)" : ""}`,
 		`Engine: ${engineLabel(config, state, host, live)}`,
+		claudeStatusLine(config),
 		grokTransportLine(config),
 		await grokOauthLine(config),
 		`Graph of Thought ${flag(state.thinkEnabled, config.think.enabled)}`,
@@ -220,14 +290,23 @@ async function statusText(config: UltrathinkConfig, state: ControlState, stateDi
 		substrateLine(config, process.env),
 		shipLine(config, process.env),
 		knowledgeLine(config, state, process.env),
-		decisionsLine(config, process.env),
+		decisionsLine(config, process.env, stateDir),
 		hindsightStatusLine(config.hindsight, process.env, storePath(process.env), config.gateway),
 		ragflowStatusLine(config.ragflow, process.env, storePath(process.env), config.gateway),
-		teachStatusLine({ teach: config.teach, hindsight: config.hindsight, gateway: config.gateway }, process.env, storePath(process.env), stateDir),
+		teachStatusLine(
+			{ teach: config.teach, hindsight: config.hindsight, gateway: config.gateway },
+			process.env,
+			storePath(process.env),
+			stateDir,
+		),
+		stackSummaryLine(config, process.env),
 		engineRequestLine(config, state, host),
 		`State: ${stateDir}`,
 	];
-	if (last) lines.push(`Last: ${last.result.root} · ${last.result.source}${last.graph ? ` · ${last.graph.nodes.length} nodes` : ""}`);
+	if (last)
+		lines.push(
+			`Last: ${last.result.root} · ${last.result.source}${last.graph ? ` · ${last.graph.nodes.length} nodes` : ""}`,
+		);
 	const planned = projectResolution(last?.modelResolution);
 	if (planned) lines.push(`Last planned resolution: ${formatModelSelection(planned)}`);
 	return lines.join("\n");
@@ -243,7 +322,13 @@ async function statusText(config: UltrathinkConfig, state: ControlState, stateDi
  */
 export async function runControl(
 	args: string[],
-	input: { stateDir: string; cwd: string; host?: HostId; modelResolution?: ModelResolution; sessionId?: string },
+	input: {
+		stateDir: string;
+		cwd: string;
+		host?: HostId;
+		modelResolution?: ModelResolution;
+		sessionId?: string;
+	},
 ): Promise<string> {
 	try {
 		const { stateDir, cwd } = input;
@@ -251,29 +336,44 @@ export async function runControl(
 		const live = projectResolution(input.modelResolution);
 		// The armed skip belongs to one session. Without its id there is no session to arm or to show as armed.
 		const sessionId = input.sessionId?.trim() || undefined;
-		const [command = "status", verb = "status", value] = args.map((arg) => arg.trim().toLowerCase()).filter(Boolean);
+		const [command = "status", verb = "status", value] = args
+			.map((arg) => arg.trim().toLowerCase())
+			.filter(Boolean);
 		const config = loadConfig(claudeConfigPaths(cwd));
 		const state = readControl(stateDir);
 		switch (command) {
 			case "status":
-				return await statusText(config, state, stateDir, host, live, sessionId !== undefined && readSkipOnce(stateDir, sessionId));
+				return await statusText(
+					config,
+					state,
+					stateDir,
+					host,
+					live,
+					sessionId !== undefined && readSkipOnce(stateDir, sessionId),
+				);
 			case "on":
 			case "off":
 				writeControl(stateDir, { enabled: command === "on" });
 				return `Prompt Uplift ${command}`;
 			case "skip":
-				if (sessionId === undefined) return "Prompt Uplift skip needs a session id (--session <id>); none was given, so nothing was armed.";
+				if (sessionId === undefined)
+					return "Prompt Uplift skip needs a session id (--session <id>); none was given, so nothing was armed.";
 				armSkipOnce(stateDir, sessionId);
 				return "Prompt Uplift will skip the next prompt in this session";
 			case "last": {
 				const last = readLast(stateDir);
-				return last ? `${last.result.root} · ${last.result.source}\n\n${last.result.xml}` : "No uplift recorded yet";
+				return last
+					? `${last.result.root} · ${last.result.source}\n\n${last.result.xml}`
+					: "No uplift recorded yet";
 			}
 			case "track":
 				switch (verb) {
 					case "on":
 					case "off":
-						return trackingLines(config, writeControl(stateDir, { trackEnabled: verb === "on" })).join("\n");
+						return trackingLines(
+							config,
+							writeControl(stateDir, { trackEnabled: verb === "on" }),
+						).join("\n");
 					case "status":
 						return trackingLines(config, state).join("\n");
 					default:
@@ -287,7 +387,9 @@ export async function runControl(
 						return `Graph of Thought ${verb}`;
 					case "last": {
 						const last = readLast(stateDir);
-						return last?.graph ? `${last.graph.goal}\n\n${graphSketch(last.graph)}` : "No thought graph recorded yet";
+						return last?.graph
+							? `${last.graph.goal}\n\n${graphSketch(last.graph)}`
+							: "No thought graph recorded yet";
 					}
 					case "status":
 						return `Graph of Thought ${flag(state.thinkEnabled, config.think.enabled)}`;
@@ -310,14 +412,29 @@ export async function runControl(
 			case "grok":
 				switch (verb) {
 					case "engine": {
-						if (!THINK_ENGINES.includes(value as ThinkEngine)) return "Usage: grok engine auto|claude|grok|muse";
+						if (!THINK_ENGINES.includes(value as ThinkEngine))
+							return "Usage: grok engine auto|claude|grok|muse";
 						writeControl(stateDir, { engine: value as ThinkEngine });
 						return `Thinking engine set to ${engineLabel(config, { ...state, engine: value as ThinkEngine }, host, live)}`;
 					}
 					case "status":
-						return [`Engine: ${engineLabel(config, state, host, live)}`, grokTransportLine(config), await grokOauthLine(config)].join("\n");
+						return [
+							`Engine: ${engineLabel(config, state, host, live)}`,
+							claudeStatusLine(config),
+							grokTransportLine(config),
+							await grokOauthLine(config),
+						].join("\n");
+					case "login":
+					case "check":
+						// `args` still holds the caller's case; `verb` above is lower-cased.
+						return (
+							await runGrokCommand(args.filter((arg) => arg.trim()).slice(1), {
+								cwd,
+								env: process.env,
+							})
+						).text;
 					default:
-						return "Usage: grok [status | engine auto|claude|grok|muse]";
+						return "Usage: grok [status | engine auto|claude|grok|muse | login | check]";
 				}
 			default:
 				return USAGE;
@@ -334,17 +451,123 @@ export async function runControl(
 export function takeSessionFlag(args: readonly string[]): { sessionId?: string; args: string[] } {
 	const at = args.indexOf("--session");
 	if (at === -1) return { args: [...args] };
-	return { sessionId: args[at + 1]?.trim() || undefined, args: [...args.slice(0, at), ...args.slice(at + 2)] };
+	return {
+		sessionId: args[at + 1]?.trim() || undefined,
+		args: [...args.slice(0, at), ...args.slice(at + 2)],
+	};
+}
+
+const GROK_LOGIN_USAGE = "Usage: grok login [--home <dir>] [--write-config]";
+const GROK_CHECK_USAGE = "Usage: grok check [--model <id>] [--transport http|cli] [--json]";
+
+/** `login` and `check` need the caller's raw args and an exit code, so they bypass the lower-casing control path. */
+function isGrokLaneVerb(verb: string | undefined): boolean {
+	const name = verb?.trim().toLowerCase();
+	return name === "login" || name === "check";
+}
+
+/** A flag's value, or undefined when the flag is last or its value looks like another flag. */
+function flagValue(args: readonly string[], at: number): string | undefined {
+	const value = args[at + 1];
+	return value === undefined || value.startsWith("--") || !value.trim() ? undefined : value;
+}
+
+/** `grok login` flags; undefined on any unknown flag, stray argument, repeat or missing value. */
+function parseGrokLoginArgs(args: readonly string[]): GrokLoginOptions | undefined {
+	const opts: GrokLoginOptions = {};
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--write-config" && opts.writeConfig === undefined) {
+			opts.writeConfig = true;
+		} else if (args[i] === "--home" && opts.home === undefined) {
+			const value = flagValue(args, i);
+			if (value === undefined) return undefined;
+			opts.home = value;
+			i++;
+		} else {
+			return undefined;
+		}
+	}
+	return opts;
+}
+
+/** `grok check` flags; undefined on any unknown flag, stray argument, repeat, missing value or transport other than http|cli. */
+function parseGrokCheckArgs(args: readonly string[]): GrokCheckOptions | undefined {
+	const opts: GrokCheckOptions = {};
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--json" && opts.json === undefined) {
+			opts.json = true;
+		} else if (args[i] === "--model" && opts.model === undefined) {
+			const value = flagValue(args, i);
+			if (value === undefined) return undefined;
+			opts.model = value.trim();
+			i++;
+		} else if (args[i] === "--transport" && opts.transport === undefined) {
+			const value = flagValue(args, i);
+			if (value !== "http" && value !== "cli") return undefined;
+			opts.transport = value;
+			i++;
+		} else {
+			return undefined;
+		}
+	}
+	return opts;
+}
+
+/**
+ * `grok login|check` with the caller's raw args (case and paths intact). Exit codes come from the modules; a usage
+ * error is 2. The module seams exist for tests. Never throws: an error becomes a message with exit 1.
+ */
+export async function runGrokCommand(
+	args: readonly string[],
+	input: {
+		cwd: string;
+		env?: Record<string, string | undefined>;
+		check?: typeof runGrokCheck;
+		login?: typeof runGrokLogin;
+	},
+): Promise<{ code: number; text: string }> {
+	try {
+		const [verb, ...rest] = args;
+		const grok = loadConfig(claudeConfigPaths(input.cwd)).grok;
+		if (verb?.trim().toLowerCase() === "login") {
+			const opts = parseGrokLoginArgs(rest);
+			if (!opts) return { code: 2, text: GROK_LOGIN_USAGE };
+			const result = await (input.login ?? runGrokLogin)({ grok, env: input.env }, opts);
+			return { code: result.exitCode, text: result.text };
+		}
+		if (verb?.trim().toLowerCase() === "check") {
+			const opts = parseGrokCheckArgs(rest);
+			if (!opts) return { code: 2, text: GROK_CHECK_USAGE };
+			const result = await (input.check ?? runGrokCheck)({ grok }, opts);
+			return { code: result.exitCode, text: opts.json ? JSON.stringify(result.json) : result.text };
+		}
+		return { code: 2, text: `${GROK_LOGIN_USAGE}\n${GROK_CHECK_USAGE}` };
+	} catch (error) {
+		return {
+			code: 1,
+			text: `ultrathink: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+		};
+	}
+}
+
+/** `ULTRATHINK_PRUNE_NOW_MS`: a fixed epoch-ms clock for `prune` (tests); unset or not an integer means the wall clock. */
+function pruneClock(env: Record<string, string | undefined>): (() => number) | undefined {
+	const raw = env.ULTRATHINK_PRUNE_NOW_MS?.trim();
+	if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
+	const fixed = Number(raw);
+	// Number() of a long digit string is Infinity, and a value past the Date range is not a clock: both fall back to the wall clock.
+	if (!Number.isSafeInteger(fixed) || fixed > 8.64e15) return undefined;
+	return () => fixed;
 }
 
 // `bin/ultrathink <verb> [args…]`: the host state dir comes from ULTRATHINK_HOST, else the detected host.
-// `decisions`, `hindsight`, `ragflow`, `teach`, `doctor` and `prune` bypass runControl, which lower-cases its args (probe takes a file path).
+// `decisions`, `hindsight`, `ragflow`, `teach`, `doctor`, `stack`, `prune` and `grok login|check` bypass runControl, which lower-cases its args (probe takes a file path; login takes a directory; check takes a model id) and returns no exit code.
 if (import.meta.main) {
 	const argv = process.argv.slice(2);
 	const service = argv[0]?.trim().toLowerCase();
 	const command =
 		service === "decisions"
-			? runDecisionsCommand(argv.slice(1), { cwd: process.cwd() })
+			? runDecisionsCommand(argv.slice(1), { cwd: process.cwd(), stateDir: resolveStateDir() })
 			: service === "hindsight"
 				? runHindsightCommand(argv.slice(1), { cwd: process.cwd(), env: process.env })
 				: service === "ragflow"
@@ -352,18 +575,31 @@ if (import.meta.main) {
 					: service === "teach"
 						? runTeachCommand(argv.slice(1), { cwd: process.cwd(), env: process.env })
 						: service === "doctor"
-							? runDoctorCommand(argv.slice(1)).then(({ output, exitCode }) => ({ code: exitCode, text: output }))
-							: service === "prune"
-								? runPruneCommand(argv.slice(1), { cwd: process.cwd(), env: process.env }).then(({ output, exitCode }) => ({ code: exitCode, text: output }))
-								: undefined;
+							? runDoctorCommand(argv.slice(1)).then(({ output, exitCode }) => ({
+									code: exitCode,
+									text: output,
+								}))
+							: service === "stack"
+								? dispatchStack(argv.slice(1), { cwd: process.cwd(), env: process.env })
+								: service === "prune"
+									? runPruneCommand(argv.slice(1), {
+											cwd: process.cwd(),
+											env: process.env,
+											now: pruneClock(process.env),
+										}).then(({ output, exitCode }) => ({ code: exitCode, text: output }))
+									: service === "grok" && isGrokLaneVerb(argv[1])
+										? runGrokCommand(argv.slice(1), { cwd: process.cwd(), env: process.env })
+										: undefined;
 	if (command) {
 		command.then(({ code, text }) => {
 			process.stdout.write(`${text}\n`, () => process.exit(code));
 		});
 	} else {
 		const { sessionId, args } = takeSessionFlag(argv);
-		runControl(args, { stateDir: resolveStateDir(), cwd: process.cwd(), sessionId }).then((text) => {
-			process.stdout.write(`${text}\n`, () => process.exit(0));
-		});
+		runControl(args, { stateDir: resolveStateDir(), cwd: process.cwd(), sessionId }).then(
+			(text) => {
+				process.stdout.write(`${text}\n`, () => process.exit(0));
+			},
+		);
 	}
 }

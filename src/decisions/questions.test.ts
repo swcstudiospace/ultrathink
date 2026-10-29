@@ -37,7 +37,8 @@ describe("QUESTIONS (brief §2, verbatim)", () => {
 				"Does `message`, read together with `recent_conversation`, ask the coding agent to start new engineering work that takes several steps, files or decisions, so that writing a plan first would help?",
 			criteria: {
 				true: "The message asks for new work such as building a feature, fixing or investigating a bug, refactoring, migrating, or researching and writing up a design, or it approves a new multi-step proposal that the agent made in `recent_conversation`.",
-				false: "The message acknowledges, thanks or greets; tells the agent to keep going with work already under way; asks a question that needs only an answer or an explanation; asks to show, run or repeat something; or asks for one small edit such as fixing a typo.",
+				false:
+					"The message acknowledges, thanks or greets; tells the agent to keep going with work already under way; asks a question that needs only an answer or an explanation; asks to show, run or repeat something; or asks for one small edit such as fixing a typo.",
 			},
 		});
 	});
@@ -49,7 +50,8 @@ describe("QUESTIONS (brief §2, verbatim)", () => {
 				"Does the change in `patch` fully deliver the work that `request` asks for, meeting every item in `acceptance_criteria`, with no part left missing, stubbed or marked TODO?",
 			criteria: {
 				true: "Every requirement in `request` and every item in `acceptance_criteria` is implemented by real code in `patch`.",
-				false: "At least one requirement is missing, only partly done, stubbed, left as a TODO or placeholder, or `patch` changes something unrelated to `request`.",
+				false:
+					"At least one requirement is missing, only partly done, stubbed, left as a TODO or placeholder, or `patch` changes something unrelated to `request`.",
 			},
 		});
 	});
@@ -60,7 +62,8 @@ describe("QUESTIONS (brief §2, verbatim)", () => {
 			instructions: "Is `answer` a correct answer to `question` according to `document`?",
 			criteria: {
 				true: "`document` contains information that directly supports `answer` as the answer to `question`.",
-				false: "`document` does not cover `question`, contradicts `answer`, supports a different answer, or supports only part of `answer`.",
+				false:
+					"`document` does not cover `question`, contradicts `answer`, supports a different answer, or supports only part of `answer`.",
 			},
 		});
 	});
@@ -72,7 +75,8 @@ describe("QUESTIONS (brief §2, verbatim)", () => {
 				"If `default` turns out to be the wrong answer to `question`, would going ahead with it while doing `task` cause damage that is hard to undo?",
 			criteria: {
 				true: "Acting on a wrong `default` would lose or corrupt data, break callers of a public API, run a migration that cannot be reversed, or change the wrong system.",
-				false: "Acting on a wrong `default` only produces code or settings that are easy to change in a later edit.",
+				false:
+					"Acting on a wrong `default` only produces code or settings that are easy to change in a later edit.",
 			},
 		});
 	});
@@ -81,7 +85,9 @@ describe("QUESTIONS (brief §2, verbatim)", () => {
 		expect(QUESTIONS.teachable.instructions).toBe(
 			"Is this candidate a reusable lesson that a future agent on this repository would otherwise have to rediscover?",
 		);
-		expect(QUESTIONS.skillworthy.instructions).toBe("Does this lesson describe a repeatable procedure or rule worth a standing skill?");
+		expect(QUESTIONS.skillworthy.instructions).toBe(
+			"Does this lesson describe a repeatable procedure or rule worth a standing skill?",
+		);
 		expect(QUESTIONS.teachable.criteria?.true).toBeTruthy();
 		expect(QUESTIONS.skillworthy.criteria?.false).toBeTruthy();
 	});
@@ -95,11 +101,15 @@ describe("plan state", () => {
 		expect(Object.keys(state).sort()).toEqual(["message", "recent_conversation"]);
 		expect(state.message).toBe(message.slice(0, 4000));
 		expect(state.recent_conversation).toBe(`TAIL${"t".repeat(1996)}`);
-		expect(buildPlanState({ message: "hi", recentConversation: "" })).toEqual({ message: "hi", recent_conversation: "" });
+		expect(buildPlanState({ message: "hi", recentConversation: "" })).toEqual({
+			message: "hi",
+			recent_conversation: "",
+		});
 	});
 
 	test("lastAssistantTurn returns the last assistant chunk up to the next user chunk", () => {
-		const history = "User: plan it\n\nAssistant: first idea\n\nUser: better?\n\nAssistant: Proposal: split into 3 services.\nStep 1.\n\nUser: yes please";
+		const history =
+			"User: plan it\n\nAssistant: first idea\n\nUser: better?\n\nAssistant: Proposal: split into 3 services.\nStep 1.\n\nUser: yes please";
 		expect(lastAssistantTurn(history)).toBe("Assistant: Proposal: split into 3 services.\nStep 1.");
 		expect(lastAssistantTurn("Assistant: only turn  ")).toBe("Assistant: only turn");
 		expect(lastAssistantTurn("User: hello")).toBe("");
@@ -115,12 +125,23 @@ describe("ship state", () => {
 			<CRITERION>Quotes &quot;ok&quot; &amp; &apos;fine&apos; &#39;too&#39;</CRITERION>
 			<CRITERION>   </CRITERION>
 		</ACCEPTANCE_CRITERIA></SPEC>`;
-		expect(extractAcceptanceCriteria(spec)).toEqual(["Flag --verbose prints <debug> lines", `Quotes "ok" & 'fine' 'too'`]);
+		expect(extractAcceptanceCriteria(spec)).toEqual([
+			"Flag --verbose prints <debug> lines",
+			`Quotes "ok" & 'fine' 'too'`,
+		]);
 	});
 
 	test("extractAcceptanceCriteria reads one item per non-empty line without its bullet", () => {
-		const spec = "<acceptance_criteria>\n- first\n* second\n\n1. third\n2) fourth\n• fifth\nplain sixth\n</acceptance_criteria>";
-		expect(extractAcceptanceCriteria(spec)).toEqual(["first", "second", "third", "fourth", "fifth", "plain sixth"]);
+		const spec =
+			"<acceptance_criteria>\n- first\n* second\n\n1. third\n2) fourth\n• fifth\nplain sixth\n</acceptance_criteria>";
+		expect(extractAcceptanceCriteria(spec)).toEqual([
+			"first",
+			"second",
+			"third",
+			"fourth",
+			"fifth",
+			"plain sixth",
+		]);
 	});
 
 	test("extractAcceptanceCriteria returns [] without the element", () => {
@@ -130,7 +151,11 @@ describe("ship state", () => {
 	test("buildShipState caps criteria at 20 items of 500 chars and keeps the request", () => {
 		const criteria = Array.from({ length: 25 }, (_, i) => `${i}`.padEnd(800, "a"));
 		const request = "r".repeat(9000);
-		const { state, truncated } = buildShipState({ request, acceptanceCriteria: criteria, patch: "" });
+		const { state, truncated } = buildShipState({
+			request,
+			acceptanceCriteria: criteria,
+			patch: "",
+		});
 		expect(Object.keys(state).sort()).toEqual(["acceptance_criteria", "patch", "request"]);
 		expect(state.request).toBe(request);
 		expect(state.acceptance_criteria).toHaveLength(20);
@@ -140,7 +165,8 @@ describe("ship state", () => {
 	});
 
 	test("buildShipState removes lockfile sections like the judge's git diff", () => {
-		const section = (path: string, body: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n+${body}\n`;
+		const section = (path: string, body: string) =>
+			`diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n+${body}\n`;
 		const patch = [
 			section("src/app.ts", "APP"),
 			section("bun.lock", "LOCK1"),
@@ -150,7 +176,9 @@ describe("ship state", () => {
 			section("src/lock.ts", "NOT-A-LOCKFILE"),
 		].join("");
 		const { state, truncated } = buildShipState({ request: "r", acceptanceCriteria: [], patch });
-		expect(state.patch).toBe(section("src/app.ts", "APP") + section("src/lock.ts", "NOT-A-LOCKFILE"));
+		expect(state.patch).toBe(
+			section("src/app.ts", "APP") + section("src/lock.ts", "NOT-A-LOCKFILE"),
+		);
 		expect(truncated).toBe(false);
 	});
 
@@ -164,23 +192,44 @@ describe("ship state", () => {
 	});
 
 	test("buildShipState keeps an upstream truncation flag", () => {
-		expect(buildShipState({ request: "r", acceptanceCriteria: [], patch: "small", patchTruncated: true }).truncated).toBe(true);
-		expect(buildShipState({ request: "r", acceptanceCriteria: [], patch: "small", patchTruncated: false }).truncated).toBe(false);
+		expect(
+			buildShipState({ request: "r", acceptanceCriteria: [], patch: "small", patchTruncated: true })
+				.truncated,
+		).toBe(true);
+		expect(
+			buildShipState({
+				request: "r",
+				acceptanceCriteria: [],
+				patch: "small",
+				patchTruncated: false,
+			}).truncated,
+		).toBe(false);
 	});
 
 	test("LOCKFILE_PATTERNS match the judge's excluded lockfiles only", () => {
 		const matches = (path: string) => LOCKFILE_PATTERNS.some((pattern) => pattern.test(path));
-		for (const path of ["bun.lock", "a/yarn.lock", "bun.lockb", "package-lock.json", "web/pnpm-lock.yaml"]) expect(matches(path)).toBe(true);
-		for (const path of ["src/lock.ts", "package.json", "my-package-lock.json"]) expect(matches(path)).toBe(false);
+		for (const path of [
+			"bun.lock",
+			"a/yarn.lock",
+			"bun.lockb",
+			"package-lock.json",
+			"web/pnpm-lock.yaml",
+		])
+			expect(matches(path)).toBe(true);
+		for (const path of ["src/lock.ts", "package.json", "my-package-lock.json"])
+			expect(matches(path)).toBe(false);
 	});
 });
 
 describe("knowledge state", () => {
 	const docs = ["docs/auth.md", "docs/db.md"];
-	const digest = "Untrusted evidence.\n\n### docs/auth.md\n\nTokens last 1 hour.\n\n### Not a doc heading\n\nstill auth\n\n### docs/db.md\n\nPostgres 16.";
+	const digest =
+		"Untrusted evidence.\n\n### docs/auth.md\n\nTokens last 1 hour.\n\n### Not a doc heading\n\nstill auth\n\n### docs/db.md\n\nPostgres 16.";
 
 	test("extractDigestDocument returns the cited section up to the next listed document", () => {
-		expect(extractDigestDocument(digest, "docs/auth.md", docs)).toBe("Tokens last 1 hour.\n\n### Not a doc heading\n\nstill auth");
+		expect(extractDigestDocument(digest, "docs/auth.md", docs)).toBe(
+			"Tokens last 1 hour.\n\n### Not a doc heading\n\nstill auth",
+		);
 		expect(extractDigestDocument(digest, "docs/db.md", docs)).toBe("Postgres 16.");
 		expect(extractDigestDocument(digest, "docs/missing.md", docs)).toBe("");
 	});
@@ -202,7 +251,9 @@ describe("blocking state", () => {
 	];
 
 	test("formatDefaultOption names the default option's label and description", () => {
-		expect(formatDefaultOption("Drop the column", options)).toBe("Drop the column: removes legacy_email");
+		expect(formatDefaultOption("Drop the column", options)).toBe(
+			"Drop the column: removes legacy_email",
+		);
 		expect(formatDefaultOption("Ask later", options)).toBe("Ask later");
 		expect(formatDefaultOption("Unknown", options)).toBe("Keep the column: no schema change");
 		expect(formatDefaultOption(undefined, options)).toBe("Keep the column: no schema change");
@@ -211,13 +262,26 @@ describe("blocking state", () => {
 	});
 
 	test("buildBlockingState caps the task at 4000 chars", () => {
-		const state = buildBlockingState({ task: "t".repeat(10_000), question: "Drop it?", defaultText: "Drop the column: removes legacy_email" });
-		expect(state).toEqual({ task: "t".repeat(4000), question: "Drop it?", default: "Drop the column: removes legacy_email" });
+		const state = buildBlockingState({
+			task: "t".repeat(10_000),
+			question: "Drop it?",
+			defaultText: "Drop the column: removes legacy_email",
+		});
+		expect(state).toEqual({
+			task: "t".repeat(4000),
+			question: "Drop it?",
+			default: "Drop the column: removes legacy_email",
+		});
 	});
 });
 
 describe("lesson states", () => {
-	const lesson = { name: "Use import type", description: "tsc rejects value imports of types", body: "b".repeat(2000), kind: "pitfall" };
+	const lesson = {
+		name: "Use import type",
+		description: "tsc rejects value imports of types",
+		body: "b".repeat(2000),
+		kind: "pitfall",
+	};
 
 	test("buildTeachableState sends name, description, kind and the body cut to 800 chars, nothing else", () => {
 		expect(buildTeachableState({ ...lesson, extra: "x" } as typeof lesson)).toEqual({

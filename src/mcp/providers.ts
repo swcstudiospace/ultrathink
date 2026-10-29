@@ -6,7 +6,7 @@
  * evaluation-model endpoint, the Hindsight and RAGFlow HTTP APIs) and are never served or connected.
  */
 export type McpProviderId = "notion" | "linear" | "greptile";
-export type KeyProviderId = "openrouter" | "vercel" | "hindsight" | "ragflow";
+type KeyProviderId = "openrouter" | "vercel" | "hindsight" | "ragflow";
 export type ProviderId = McpProviderId | KeyProviderId;
 
 export interface McpProvider {
@@ -21,7 +21,7 @@ export interface McpProvider {
 	scopes: string[];
 }
 
-export interface KeyProvider {
+interface KeyProvider {
 	kind: "key";
 	id: KeyProviderId;
 	label: string;
@@ -69,11 +69,39 @@ export const MCP_PROVIDERS: Record<McpProviderId, McpProvider> = {
 	},
 };
 
-export const KEY_PROVIDERS: Record<KeyProviderId, KeyProvider> = {
-	openrouter: { kind: "key", id: "openrouter", label: "OpenRouter", apiKey: true, oauth: false, envVar: "OPENROUTER_API_KEY" },
-	vercel: { kind: "key", id: "vercel", label: "Vercel AI Gateway", apiKey: true, oauth: false, envVar: "AI_GATEWAY_API_KEY" },
-	hindsight: { kind: "key", id: "hindsight", label: "Hindsight", apiKey: true, oauth: false, envVar: "HINDSIGHT_API_KEY" },
-	ragflow: { kind: "key", id: "ragflow", label: "RAGFlow", apiKey: true, oauth: false, envVar: "RAGFLOW_API_KEY" },
+const KEY_PROVIDERS: Record<KeyProviderId, KeyProvider> = {
+	openrouter: {
+		kind: "key",
+		id: "openrouter",
+		label: "OpenRouter",
+		apiKey: true,
+		oauth: false,
+		envVar: "ULTRATHINK_OPENROUTER_KEY",
+	},
+	vercel: {
+		kind: "key",
+		id: "vercel",
+		label: "Vercel AI Gateway",
+		apiKey: true,
+		oauth: false,
+		envVar: "AI_GATEWAY_API_KEY",
+	},
+	hindsight: {
+		kind: "key",
+		id: "hindsight",
+		label: "Hindsight",
+		apiKey: true,
+		oauth: false,
+		envVar: "HINDSIGHT_API_KEY",
+	},
+	ragflow: {
+		kind: "key",
+		id: "ragflow",
+		label: "RAGFlow",
+		apiKey: true,
+		oauth: false,
+		envVar: "RAGFLOW_API_KEY",
+	},
 };
 
 /** Every provider in table order: the MCP servers first, then the API-key-only providers. */

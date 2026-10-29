@@ -1,25 +1,74 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { type PstackStage } from "./cursor/pstack.ts";
+import { CLAUDE_AUTH_MODES, type ClaudeAuthMode } from "./claude/complete.ts";
+import type { PstackStage } from "./cursor/pstack.ts";
 import { DEFAULT_GATEWAY_CONFIG, SEAT_PATTERN, type GatewayConfig } from "./gateway/types.ts";
 import { DEFAULT_HINDSIGHT_CONFIG, type HindsightConfig } from "./hindsight/types.ts";
 import { DEFAULT_RAGFLOW_CONFIG, type RagflowConfig } from "./ragflow/types.ts";
-import { DECISION_POINTS, DECISIONS_PROVIDERS, DEFAULT_DECISIONS_CONFIG, type DecisionPoint, type DecisionsConfig, type DecisionsProvider } from "./decisions/types.ts";
-import { DEFAULT_GROK_CONFIG, GROK_EFFORTS, GROK_TRANSPORTS, type GrokConfig, type GrokEffort, type GrokTransport } from "./grok/types.ts";
+import {
+	DECISION_POINTS,
+	DECISIONS_PROVIDERS,
+	DEFAULT_DECISIONS_CONFIG,
+	type DecisionPoint,
+	type DecisionsConfig,
+	type DecisionsProvider,
+	isJevModelId,
+} from "./decisions/types.ts";
+import {
+	DEFAULT_GROK_CONFIG,
+	GROK_EFFORTS,
+	GROK_TRANSPORTS,
+	type GrokConfig,
+	type GrokEffort,
+	type GrokTransport,
+} from "./grok/types.ts";
 import { DEFAULT_HITL_CONFIG, type HitlConfig } from "./hitl/types.ts";
-import { DEFAULT_SHIP_CONFIG, GREPTILE_MAX_SCORE, JUDGE_MODES, type JudgeMode, MERGE_METHODS, type ShipConfig } from "./ship/types.ts";
-import { DEFAULT_MUSE_CONFIG, MUSE_EFFORTS, type MuseConfig, type MuseEffort } from "./muse/types.ts";
-import { CAPTURE_MODES, DEFAULT_TEACH_CONFIG, type CaptureMode, type TeachConfig } from "./teach/types.ts";
-import { MAX_NODES, MIN_NODES, THINK_ENGINES, type ThinkConfig, type ThinkEngine } from "./think/types.ts";
+import {
+	DEFAULT_SHIP_CONFIG,
+	GREPTILE_MAX_SCORE,
+	JUDGE_MODES,
+	type JudgeMode,
+	MERGE_METHODS,
+	type ShipConfig,
+} from "./ship/types.ts";
+import {
+	DEFAULT_MUSE_CONFIG,
+	MUSE_EFFORTS,
+	type MuseConfig,
+	type MuseEffort,
+} from "./muse/types.ts";
+import {
+	CAPTURE_MODES,
+	DEFAULT_TEACH_CONFIG,
+	type CaptureMode,
+	type TeachConfig,
+} from "./teach/types.ts";
+import {
+	MAX_NODES,
+	MIN_NODES,
+	THINK_ENGINES,
+	type ThinkConfig,
+	type ThinkEngine,
+} from "./think/types.ts";
 import { type HostId, isHostId } from "./host/types.ts";
 import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
+import { readJson } from "./shared.ts";
 
-export interface ClaudeConfig {
+interface ClaudeConfig {
 	/** `claude` binary used for headless completions. A project file cannot set this. */
 	bin: string;
+	/**
+	 * How the headless `claude -p` child authenticates. `plan` (default) strips API-key and cloud-provider env so the
+	 * signed-in Claude plan login is used; `api-key` passes the environment through unchanged. A project file cannot set this.
+	 */
+	auth: ClaudeAuthMode;
+	/**
+	 * When a Claude call fails (plan limit, auth, outage), fail over to the Grok route. Off by default because prompt
+	 * text then leaves Anthropic for xAI. A project file cannot set this.
+	 */
+	fallbackToGrok: boolean;
 	/** Model alias/name for the uplift and thinking calls; empty inherits the user default. */
 	model: string;
 	/** Allow extended thinking in child calls (slower). */
@@ -36,15 +85,10 @@ export interface ClaudeConfig {
 	echo: boolean;
 }
 
-/**
- * Claude Code UserPromptSubmit timeout in seconds (`hooks/hooks.json`).
- * The host discards hook stdout if we exceed this. 0 is not unlimited there —
- * Claude Code would fall back to the 30s UserPromptSubmit default.
- */
-export const CLAUDE_USER_PROMPT_HOOK_TIMEOUT_SEC = 86_400;
-
-export const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
+const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	bin: "claude",
+	auth: "plan",
+	fallbackToGrok: false,
 	model: ROUTE_DEFAULT_MODELS.claude,
 	thinking: false,
 	settingSources: "",
@@ -54,40 +98,40 @@ export const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	echo: true,
 };
 
-export interface NotionConfig {
+interface NotionConfig {
 	/** Data source URL for the "Agent Task Graph" database (`collection://<id>`); "" = Notion tracking not configured. */
 	dataSourceUrl: string;
 }
 
-export const DEFAULT_NOTION_CONFIG: NotionConfig = {
+const DEFAULT_NOTION_CONFIG: NotionConfig = {
 	dataSourceUrl: "",
 };
 
-export interface LinearConfig {
+interface LinearConfig {
 	/** Linear team name that Issues/Sub-Issues are created under; "" = Linear tracking not configured. */
 	team: string;
 }
 
-export const DEFAULT_LINEAR_CONFIG: LinearConfig = {
+const DEFAULT_LINEAR_CONFIG: LinearConfig = {
 	team: "",
 };
 
-export interface TrackConfig {
+interface TrackConfig {
 	/** Create Linear/Notion rows from the hook before the agent sees the prompt. */
 	enabled: boolean;
-	/** Whole tracker-creation budget in ms; capped at `MAX_TIMER_MS`. */
+	/** Whole tracker-creation budget in ms. 0 = no limit: no timer is created and the run waits for every row. Capped at `MAX_TIMER_MS`. */
 	budgetMs: number;
 	/** Parallel tracker calls. */
 	concurrency: number;
 }
 
-export const DEFAULT_TRACK_CONFIG: TrackConfig = {
+const DEFAULT_TRACK_CONFIG: TrackConfig = {
 	enabled: true,
-	budgetMs: 60_000,
+	budgetMs: 0,
 	concurrency: 6,
 };
 
-export interface SubstrateConfig {
+interface SubstrateConfig {
 	/** Agent Substrate service base URL (`POST <url>/brief`); "" = never contacted. `SUBSTRATE_URL` overrides it. */
 	url: string;
 	/**
@@ -97,16 +141,16 @@ export interface SubstrateConfig {
 	backend?: "direct" | "gateway";
 }
 
-export const DEFAULT_SUBSTRATE_CONFIG: SubstrateConfig = {
+const DEFAULT_SUBSTRATE_CONFIG: SubstrateConfig = {
 	url: "",
 };
 
-export interface StateConfig {
+interface StateConfig {
 	/** Days a session record is kept before the scheduled prune may remove it; 0 = keep forever. User files only. */
 	retentionDays: number;
 }
 
-export const DEFAULT_STATE_CONFIG: StateConfig = {
+const DEFAULT_STATE_CONFIG: StateConfig = {
 	retentionDays: 0,
 };
 
@@ -117,7 +161,7 @@ type PstackMappingStage = Exclude<PstackStage, "orchestrate">;
  * Cursor pstack bridge (`src/cursor/pstack.ts`): `/gsd-*` slash commands detected in Cursor's beforeSubmitPrompt
  * hook. Opt-in and user-only — every key comes from user files; a project layer is ignored entirely.
  */
-export interface PstackConfig {
+interface PstackConfig {
 	/** Whether the bridge injects pstack skill instructions; only a user file can turn this on. */
 	enabled: boolean;
 	/** Absolute Cursor directory to resolve pstack from; absent uses the hook's own resolution. */
@@ -128,7 +172,7 @@ export interface PstackConfig {
 	contextCapChars?: number;
 }
 
-export const DEFAULT_PSTACK_CONFIG: PstackConfig = {
+const DEFAULT_PSTACK_CONFIG: PstackConfig = {
 	enabled: false,
 	contextCapChars: 2000,
 };
@@ -138,12 +182,12 @@ export const DEFAULT_PSTACK_CONFIG: PstackConfig = {
  * explicit `/ultrathink-swarm` command. Opt-in and user-only — every key comes from user files; a project layer is
  * ignored entirely, so a cloned repository cannot turn auto-spawning on.
  */
-export interface SwarmConfig {
+interface SwarmConfig {
 	/** Whether SDLC-sounding prompts auto-spawn swarm lanes; only a user file can turn this on. */
 	autoRun: boolean;
 }
 
-export const DEFAULT_SWARM_CONFIG: SwarmConfig = {
+const DEFAULT_SWARM_CONFIG: SwarmConfig = {
 	autoRun: false,
 };
 
@@ -160,7 +204,7 @@ export interface HostModelOverride {
  * exact credential provider id to the selector native Omp planning uses when the live model is unusable. Neither can
  * define endpoints, headers or credentials, and no legacy CLI route consumes `providerDefaults` (its eligible set is empty).
  */
-export interface ModelsConfig {
+interface ModelsConfig {
 	hosts: Partial<Record<HostId, HostModelOverride>>;
 	providerDefaults: Record<string, string>;
 }
@@ -210,7 +254,7 @@ export function defaultConfig(): UltrathinkConfig {
 		uplift: {
 			enabled: true,
 			skipTrivial: true,
-			maxChars: 20000,
+			maxChars: 0,
 			echo: true,
 		},
 		think: {
@@ -220,7 +264,7 @@ export function defaultConfig(): UltrathinkConfig {
 			engine: "auto",
 		},
 		claude: { ...DEFAULT_CLAUDE_CONFIG },
-		grok: { ...DEFAULT_GROK_CONFIG },
+		grok: { ...DEFAULT_GROK_CONFIG, fallbackModels: [...DEFAULT_GROK_CONFIG.fallbackModels] },
 		muse: { ...DEFAULT_MUSE_CONFIG },
 		hitl: { ...DEFAULT_HITL_CONFIG },
 		notion: { ...DEFAULT_NOTION_CONFIG },
@@ -246,15 +290,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value as Record<string, unknown>;
 }
 
-function readJson(path: string): unknown {
-	try {
-		if (!existsSync(path)) return undefined;
-		return JSON.parse(readFileSync(path, "utf8")) as unknown;
-	} catch {
-		return undefined;
-	}
-}
-
 function mergeUplift(
 	uplift: Record<string, unknown> | undefined,
 	defaults: UltrathinkConfig["uplift"],
@@ -262,30 +297,40 @@ function mergeUplift(
 	if (!uplift) return defaults;
 	return {
 		enabled: typeof uplift.enabled === "boolean" ? uplift.enabled : defaults.enabled,
-		skipTrivial: typeof uplift.skipTrivial === "boolean" ? uplift.skipTrivial : defaults.skipTrivial,
+		skipTrivial:
+			typeof uplift.skipTrivial === "boolean" ? uplift.skipTrivial : defaults.skipTrivial,
 		maxChars:
-			typeof uplift.maxChars === "number" && Number.isFinite(uplift.maxChars) && uplift.maxChars >= 0
+			typeof uplift.maxChars === "number" &&
+			Number.isFinite(uplift.maxChars) &&
+			uplift.maxChars >= 0
 				? uplift.maxChars
 				: defaults.maxChars,
 		echo: typeof uplift.echo === "boolean" ? uplift.echo : defaults.echo,
 	};
 }
 
-function mergeThink(think: Record<string, unknown> | undefined, defaults: ThinkConfig): ThinkConfig {
+function mergeThink(
+	think: Record<string, unknown> | undefined,
+	defaults: ThinkConfig,
+): ThinkConfig {
 	if (!think) return defaults;
 	const minNodes =
 		typeof think.minNodes === "number" && Number.isInteger(think.minNodes) && think.minNodes >= 1
 			? think.minNodes
 			: defaults.minNodes;
 	const maxNodes =
-		typeof think.maxNodes === "number" && Number.isInteger(think.maxNodes) && think.maxNodes >= minNodes
+		typeof think.maxNodes === "number" &&
+		Number.isInteger(think.maxNodes) &&
+		think.maxNodes >= minNodes
 			? Math.min(think.maxNodes, MAX_NODES)
 			: defaults.maxNodes;
 	return {
 		enabled: typeof think.enabled === "boolean" ? think.enabled : defaults.enabled,
 		minNodes: Math.min(minNodes, maxNodes),
 		maxNodes,
-		engine: THINK_ENGINES.includes(think.engine as ThinkEngine) ? (think.engine as ThinkEngine) : defaults.engine,
+		engine: THINK_ENGINES.includes(think.engine as ThinkEngine)
+			? (think.engine as ThinkEngine)
+			: defaults.engine,
 	};
 }
 
@@ -296,20 +341,36 @@ function mergeThink(think: Record<string, unknown> | undefined, defaults: ThinkC
 export const MAX_TIMER_MS = 2_147_483_647;
 
 function nonNegativeMs(value: unknown, fallback: number): number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.min(value, MAX_TIMER_MS) : fallback;
+	return typeof value === "number" && Number.isFinite(value) && value >= 0
+		? Math.min(value, MAX_TIMER_MS)
+		: fallback;
 }
 
 /** `project` (a repository-controlled layer) cannot choose the executable or its setting sources; model/effort/timers stay open. */
-function mergeClaude(claude: Record<string, unknown> | undefined, defaults: ClaudeConfig, project: boolean): ClaudeConfig {
+function mergeClaude(
+	claude: Record<string, unknown> | undefined,
+	defaults: ClaudeConfig,
+	project: boolean,
+): ClaudeConfig {
 	if (!claude) return defaults;
 	const positive = (value: unknown, fallback: number): number =>
 		typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 	return {
 		bin: project ? defaults.bin : nonEmpty(claude.bin, defaults.bin),
+		auth:
+			!project && CLAUDE_AUTH_MODES.includes(claude.auth as ClaudeAuthMode)
+				? (claude.auth as ClaudeAuthMode)
+				: defaults.auth,
+		fallbackToGrok:
+			!project && typeof claude.fallbackToGrok === "boolean"
+				? claude.fallbackToGrok
+				: defaults.fallbackToGrok,
 		model: selectorField(claude.model) ?? defaults.model,
 		thinking: typeof claude.thinking === "boolean" ? claude.thinking : defaults.thinking,
 		settingSources:
-			!project && typeof claude.settingSources === "string" ? claude.settingSources.trim() : defaults.settingSources,
+			!project && typeof claude.settingSources === "string"
+				? claude.settingSources.trim()
+				: defaults.settingSources,
 		callTimeoutMs: nonNegativeMs(claude.callTimeoutMs, defaults.callTimeoutMs),
 		budgetMs: nonNegativeMs(claude.budgetMs, defaults.budgetMs),
 		concurrency: Math.max(1, Math.floor(positive(claude.concurrency, defaults.concurrency))),
@@ -321,8 +382,28 @@ function nonEmpty(value: unknown, fallback: string): string {
 	return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+const MAX_FALLBACK_MODELS = 8;
+
+/** Array of model ids: trimmed, blanks and control-character entries dropped, deduped in order, capped. Non-array keeps the default. */
+function mergeFallbackModels(value: unknown, fallback: string[]): string[] {
+	if (!Array.isArray(value)) return [...fallback];
+	const out: string[] = [];
+	for (const entry of value) {
+		if (typeof entry !== "string" || hasControlCharacter(entry)) continue;
+		const model = entry.trim();
+		if (!model || out.includes(model)) continue;
+		out.push(model);
+		if (out.length >= MAX_FALLBACK_MODELS) break;
+	}
+	return out;
+}
+
 /** Same trust rule as `mergeClaude`: a project layer keeps `bin`, `home`, `baseUrl` and `shuntBaseUrl` (where the CLI and traffic go). */
-function mergeGrok(grok: Record<string, unknown> | undefined, defaults: GrokConfig, project: boolean): GrokConfig {
+function mergeGrok(
+	grok: Record<string, unknown> | undefined,
+	defaults: GrokConfig,
+	project: boolean,
+): GrokConfig {
 	if (!grok) return defaults;
 	return {
 		enabled: typeof grok.enabled === "boolean" ? grok.enabled : defaults.enabled,
@@ -331,22 +412,36 @@ function mergeGrok(grok: Record<string, unknown> | undefined, defaults: GrokConf
 		reasoningEffort: GROK_EFFORTS.includes(grok.reasoningEffort as GrokEffort)
 			? (grok.reasoningEffort as GrokEffort)
 			: defaults.reasoningEffort,
-		transport: GROK_TRANSPORTS.includes(grok.transport as GrokTransport) ? (grok.transport as GrokTransport) : defaults.transport,
+		transport: GROK_TRANSPORTS.includes(grok.transport as GrokTransport)
+			? (grok.transport as GrokTransport)
+			: defaults.transport,
 		bin: project ? defaults.bin : nonEmpty(grok.bin, defaults.bin),
 		home: !project && typeof grok.home === "string" ? grok.home.trim() : defaults.home,
 		callTimeoutMs: nonNegativeMs(grok.callTimeoutMs, defaults.callTimeoutMs),
-		fallbackToClaude: typeof grok.fallbackToClaude === "boolean" ? grok.fallbackToClaude : defaults.fallbackToClaude,
-		shuntBaseUrl: project ? defaults.shuntBaseUrl : httpUrl(grok.shuntBaseUrl, defaults.shuntBaseUrl),
+		fallbackToClaude:
+			typeof grok.fallbackToClaude === "boolean"
+				? grok.fallbackToClaude
+				: defaults.fallbackToClaude,
+		shuntBaseUrl: project
+			? defaults.shuntBaseUrl
+			: httpUrl(grok.shuntBaseUrl, defaults.shuntBaseUrl),
+		fallbackModels: mergeFallbackModels(grok.fallbackModels, defaults.fallbackModels),
 		shuntModel: selectorField(grok.shuntModel) || defaults.shuntModel,
 		shuntMaxTokens:
-			typeof grok.shuntMaxTokens === "number" && Number.isInteger(grok.shuntMaxTokens) && grok.shuntMaxTokens > 0
+			typeof grok.shuntMaxTokens === "number" &&
+			Number.isInteger(grok.shuntMaxTokens) &&
+			grok.shuntMaxTokens > 0
 				? grok.shuntMaxTokens
 				: defaults.shuntMaxTokens,
 	};
 }
 
 /** Same trust rule as `mergeClaude`: a project layer cannot pick the `muse` executable. */
-function mergeMuse(muse: Record<string, unknown> | undefined, defaults: MuseConfig, project: boolean): MuseConfig {
+function mergeMuse(
+	muse: Record<string, unknown> | undefined,
+	defaults: MuseConfig,
+	project: boolean,
+): MuseConfig {
 	if (!muse) return defaults;
 	return {
 		bin: project ? defaults.bin : nonEmpty(muse.bin, defaults.bin),
@@ -397,7 +492,10 @@ function providerDictionary(entries: Readonly<Record<string, string>>): Record<s
  * Per-entry merge of `models` (D-05): a wrong type keeps the lower value, a blank host field clears it, a blank provider
  * default removes the lower selector (exposing the host-catalog tier), and unknown hosts, prototype keys and inherited fields are ignored.
  */
-function mergeModels(models: Record<string, unknown> | undefined, defaults: ModelsConfig): ModelsConfig {
+function mergeModels(
+	models: Record<string, unknown> | undefined,
+	defaults: ModelsConfig,
+): ModelsConfig {
 	if (!models) return defaults;
 	const hosts: Partial<Record<HostId, HostModelOverride>> = { ...defaults.hosts };
 	for (const [host, entry] of Object.entries(asRecord(models.hosts) ?? {})) {
@@ -407,7 +505,10 @@ function mergeModels(models: Record<string, unknown> | undefined, defaults: Mode
 		const model = Object.hasOwn(fields, "model") ? selectorField(fields.model) : undefined;
 		if (provider === undefined && model === undefined) continue;
 		const lower = hosts[host];
-		hosts[host] = { provider: provider ?? lower?.provider ?? "", model: model ?? lower?.model ?? "" };
+		hosts[host] = {
+			provider: provider ?? lower?.provider ?? "",
+			model: model ?? lower?.model ?? "",
+		};
 	}
 	const providerDefaults = providerDictionary(defaults.providerDefaults);
 	for (const [provider, selector] of Object.entries(asRecord(models.providerDefaults) ?? {})) {
@@ -420,7 +521,11 @@ function mergeModels(models: Record<string, unknown> | undefined, defaults: Mode
 }
 
 /** What a layer leaves on a legacy route model's provenance; a blank clears Claude and Muse, Grok's non-empty merge ignores it. */
-function modelPin(section: Record<string, unknown> | undefined, lower: LegacyModelProvenance, blankClears: boolean): LegacyModelProvenance {
+function modelPin(
+	section: Record<string, unknown> | undefined,
+	lower: LegacyModelProvenance,
+	blankClears: boolean,
+): LegacyModelProvenance {
 	const model = section?.model;
 	if (typeof model !== "string") return lower;
 	if (model.trim()) return "file-pin";
@@ -436,7 +541,12 @@ function httpUrl(value: unknown, fallback: string): string {
 		const url = new URL(trimmed);
 		if (url.protocol === "https:") return trimmed;
 		// Cleartext is allowed only to loopback and private (RFC 1918) addresses, which do not route on the public internet.
-		return url.protocol === "http:" && /^(localhost|127(\.\d{1,3}){3}|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|\[::1\])$/.test(url.hostname) ? trimmed : fallback;
+		return url.protocol === "http:" &&
+			/^(localhost|127(\.\d{1,3}){3}|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|\[::1\])$/.test(
+				url.hostname,
+			)
+			? trimmed
+			: fallback;
 	} catch {
 		return fallback;
 	}
@@ -453,37 +563,51 @@ function mergeHitl(hitl: Record<string, unknown> | undefined, defaults: HitlConf
 			hitl.maxQuestions <= 4
 				? hitl.maxQuestions
 				: defaults.maxQuestions,
-		knowledgeBase: typeof hitl.knowledgeBase === "boolean" ? hitl.knowledgeBase : defaults.knowledgeBase,
+		knowledgeBase:
+			typeof hitl.knowledgeBase === "boolean" ? hitl.knowledgeBase : defaults.knowledgeBase,
 	};
 }
 
-function mergeNotion(notion: Record<string, unknown> | undefined, defaults: NotionConfig): NotionConfig {
+function mergeNotion(
+	notion: Record<string, unknown> | undefined,
+	defaults: NotionConfig,
+): NotionConfig {
 	if (!notion) return defaults;
 	return { dataSourceUrl: nonEmpty(notion.dataSourceUrl, defaults.dataSourceUrl) };
 }
 
-function mergeLinear(linear: Record<string, unknown> | undefined, defaults: LinearConfig): LinearConfig {
+function mergeLinear(
+	linear: Record<string, unknown> | undefined,
+	defaults: LinearConfig,
+): LinearConfig {
 	if (!linear) return defaults;
 	return { team: nonEmpty(linear.team, defaults.team) };
 }
 
-function mergeTrack(track: Record<string, unknown> | undefined, defaults: TrackConfig): TrackConfig {
+function mergeTrack(
+	track: Record<string, unknown> | undefined,
+	defaults: TrackConfig,
+): TrackConfig {
 	if (!track) return defaults;
 	return {
 		enabled: typeof track.enabled === "boolean" ? track.enabled : defaults.enabled,
 		budgetMs:
-			typeof track.budgetMs === "number" && Number.isFinite(track.budgetMs) && track.budgetMs > 0
+			typeof track.budgetMs === "number" && Number.isFinite(track.budgetMs) && track.budgetMs >= 0
 				? Math.min(track.budgetMs, MAX_TIMER_MS)
 				: defaults.budgetMs,
 		concurrency:
-			typeof track.concurrency === "number" && Number.isFinite(track.concurrency) && track.concurrency >= 1
+			typeof track.concurrency === "number" &&
+			Number.isFinite(track.concurrency) &&
+			track.concurrency >= 1
 				? Math.floor(track.concurrency)
 				: defaults.concurrency,
 	};
 }
 
 function positiveInt(value: unknown, fallback: number): number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : fallback;
+	return typeof value === "number" && Number.isFinite(value) && value >= 1
+		? Math.floor(value)
+		: fallback;
 }
 
 function mergeShip(ship: Record<string, unknown> | undefined, defaults: ShipConfig): ShipConfig {
@@ -504,45 +628,73 @@ function mergeShip(ship: Record<string, unknown> | undefined, defaults: ShipConf
 				? ship.minScore
 				: defaults.minScore,
 		requireNoComments:
-			typeof ship.requireNoComments === "boolean" ? ship.requireNoComments : defaults.requireNoComments,
+			typeof ship.requireNoComments === "boolean"
+				? ship.requireNoComments
+				: defaults.requireNoComments,
 		maxRounds: positiveInt(ship.maxRounds, defaults.maxRounds),
 		mergeMethod: MERGE_METHODS.includes(ship.mergeMethod as ShipConfig["mergeMethod"])
 			? (ship.mergeMethod as ShipConfig["mergeMethod"])
 			: defaults.mergeMethod,
-		deleteBranch: typeof ship.deleteBranch === "boolean" ? ship.deleteBranch : defaults.deleteBranch,
+		deleteBranch:
+			typeof ship.deleteBranch === "boolean" ? ship.deleteBranch : defaults.deleteBranch,
 		greptileOrganization:
-			typeof ship.greptileOrganization === "string" ? ship.greptileOrganization.trim() : defaults.greptileOrganization,
+			typeof ship.greptileOrganization === "string"
+				? ship.greptileOrganization.trim()
+				: defaults.greptileOrganization,
 		reviewTimeoutMs: positiveInt(ship.reviewTimeoutMs, defaults.reviewTimeoutMs),
 		pollMs: positiveInt(ship.pollMs, defaults.pollMs),
 		waitMs: positiveInt(ship.waitMs, defaults.waitMs),
 		reviewRetries:
-			typeof ship.reviewRetries === "number" && Number.isFinite(ship.reviewRetries) && ship.reviewRetries >= 0
+			typeof ship.reviewRetries === "number" &&
+			Number.isFinite(ship.reviewRetries) &&
+			ship.reviewRetries >= 0
 				? Math.floor(ship.reviewRetries)
 				: defaults.reviewRetries,
 		mergeTimeoutMs: positiveInt(ship.mergeTimeoutMs, defaults.mergeTimeoutMs),
-		judge: JUDGE_MODES.includes(ship.judge as JudgeMode) ? (ship.judge as JudgeMode) : defaults.judge,
+		judge: JUDGE_MODES.includes(ship.judge as JudgeMode)
+			? (ship.judge as JudgeMode)
+			: defaults.judge,
 	};
 }
 
 /** `"gateway"` is kept. `"direct"` clears it. Anything else keeps the earlier layer. Absent means direct. */
-function backendField(value: unknown, fallback: "direct" | "gateway" | undefined): "gateway" | undefined {
+function backendField(
+	value: unknown,
+	fallback: "direct" | "gateway" | undefined,
+): "gateway" | undefined {
 	if (value === "direct") return undefined;
 	if (value === "gateway") return "gateway";
 	return fallback === "gateway" ? "gateway" : undefined;
 }
 
-function mergeSubstrate(substrate: Record<string, unknown> | undefined, defaults: SubstrateConfig, project: boolean): SubstrateConfig {
-	if (!substrate) return defaults;
+/**
+ * A project layer (a file a cloned repository controls) never reaches the service target: `url` is where the Substrate
+ * bearer token, the repository, the branch and the host name are sent, so only the user layers set it. The same trust
+ * rule as `mergeHindsight`; `backend` is user-only for the same reason.
+ */
+function mergeSubstrate(
+	substrate: Record<string, unknown> | undefined,
+	defaults: SubstrateConfig,
+	project: boolean,
+): SubstrateConfig {
+	if (!substrate || project) return defaults;
 	const url = httpUrl(substrate.url, defaults.url);
-	const backend = project ? defaults.backend : backendField(substrate.backend, defaults.backend);
+	const backend = backendField(substrate.backend, defaults.backend);
 	return backend === "gateway" ? { url, backend } : { url };
 }
 
-function mergeGateway(gateway: Record<string, unknown> | undefined, defaults: GatewayConfig, project: boolean): GatewayConfig {
+function mergeGateway(
+	gateway: Record<string, unknown> | undefined,
+	defaults: GatewayConfig,
+	project: boolean,
+): GatewayConfig {
 	if (!gateway || project) return defaults;
-	const seat = typeof gateway.seat === "string" && SEAT_PATTERN.test(gateway.seat) ? gateway.seat : defaults.seat;
+	const seat =
+		typeof gateway.seat === "string" && SEAT_PATTERN.test(gateway.seat)
+			? gateway.seat
+			: defaults.seat;
 	return {
-		url: urlAsWritten(gateway.url, defaults.url),
+		url: nonEmpty(gateway.url, defaults.url),
 		seat,
 		timeoutMs: intInRange(gateway.timeoutMs, 1, MAX_SERVICE_TIMEOUT_MS, defaults.timeoutMs),
 	};
@@ -550,7 +702,9 @@ function mergeGateway(gateway: Record<string, unknown> | undefined, defaults: Ga
 
 /** A finite number in [0, 1]; anything else falls back. */
 function unitInterval(value: unknown, fallback: number): number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+		? value
+		: fallback;
 }
 
 /** Upper bound for `decisions.timeoutMs`; a larger (or non-finite) value keeps the previous layer's (K4). */
@@ -558,16 +712,29 @@ const MAX_DECISIONS_TIMEOUT_MS = 30_000;
 
 /**
  * Per-field merge; only the fourteen known keys are read, so a layer can never add a URL (D1). `enabled` is ignored in
- * every layer: Jev is always on, and only ULTRATHINK_DECISIONS=0 disables it. A project layer (a file a cloned repository
+ * every layer: Jev is always on, and only ULTRATHINK_DECISIONS=0 disables it. `model` is accepted only when it is a Jev
+ * model id (the OpenRouter key is Jev's alone); in every layer, project files included, anything else keeps the earlier
+ * layer's value. A project layer (a file a cloned repository
  * controls) may only tighten consent (K5): `zdr` false→true, `points` narrowed to the intersection with the lower layers;
  * the remaining keys merge as usual.
  */
-function mergeDecisions(decisions: Record<string, unknown> | undefined, defaults: DecisionsConfig, project: boolean): DecisionsConfig {
+function mergeDecisions(
+	decisions: Record<string, unknown> | undefined,
+	defaults: DecisionsConfig,
+	project: boolean,
+): DecisionsConfig {
 	if (!decisions) return defaults;
 	let points = Array.isArray(decisions.points)
-		? [...new Set(decisions.points.filter((p): p is DecisionPoint => DECISION_POINTS.includes(p as DecisionPoint)))]
+		? [
+				...new Set(
+					decisions.points.filter((p): p is DecisionPoint =>
+						DECISION_POINTS.includes(p as DecisionPoint),
+					),
+				),
+			]
 		: defaults.points;
-	if (project && points !== defaults.points) points = defaults.points.filter((p) => points.includes(p));
+	if (project && points !== defaults.points)
+		points = defaults.points.filter((p) => points.includes(p));
 	const zdr = typeof decisions.zdr === "boolean" ? decisions.zdr : defaults.zdr;
 	return {
 		// Jev is always on: the file value is ignored in every layer; only ULTRATHINK_DECISIONS=0 disables.
@@ -575,7 +742,10 @@ function mergeDecisions(decisions: Record<string, unknown> | undefined, defaults
 		provider: DECISIONS_PROVIDERS.includes(decisions.provider as DecisionsProvider)
 			? (decisions.provider as DecisionsProvider)
 			: defaults.provider,
-		model: nonEmpty(decisions.model, defaults.model),
+		model:
+			typeof decisions.model === "string" && isJevModelId(decisions.model.trim())
+				? decisions.model.trim()
+				: defaults.model,
 		points,
 		timeoutMs:
 			typeof decisions.timeoutMs === "number" &&
@@ -598,12 +768,9 @@ function mergeDecisions(decisions: Record<string, unknown> | undefined, defaults
 
 /** An integer in [min, max]; anything else falls back. */
 function intInRange(value: unknown, min: number, max: number, fallback: number): number {
-	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
-}
-
-/** A URL is kept as written (trimmed): the resolver validates it and reports a bad one, so a typo is visible, not silent. */
-function urlAsWritten(value: unknown, fallback: string): string {
-	return typeof value === "string" && value.trim() ? value.trim() : fallback;
+	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
+		? value
+		: fallback;
 }
 
 function booleanOr(value: unknown, fallback: boolean): boolean {
@@ -619,37 +786,57 @@ const MAX_DATASET_IDS = 20;
  * A project layer (a file a cloned repository controls) never reaches the service target or turns anything on: it is
  * ignored apart from `enabled`, which can only go true -> false, so a repository cannot point memory traffic at its own host.
  */
-function mergeHindsight(hindsight: Record<string, unknown> | undefined, defaults: HindsightConfig, project: boolean): HindsightConfig {
+function mergeHindsight(
+	hindsight: Record<string, unknown> | undefined,
+	defaults: HindsightConfig,
+	project: boolean,
+): HindsightConfig {
 	if (!hindsight) return defaults;
 	const enabled = booleanOr(hindsight.enabled, defaults.enabled);
 	if (project) return { ...defaults, enabled: defaults.enabled && enabled };
 	const backend = backendField(hindsight.backend, defaults.backend);
 	const merged: HindsightConfig = {
 		enabled,
-		url: urlAsWritten(hindsight.url, defaults.url),
-		bank: typeof hindsight.bank === "string" && HINDSIGHT_BANK.test(hindsight.bank) ? hindsight.bank : defaults.bank,
+		url: nonEmpty(hindsight.url, defaults.url),
+		bank:
+			typeof hindsight.bank === "string" && HINDSIGHT_BANK.test(hindsight.bank)
+				? hindsight.bank
+				: defaults.bank,
 		timeoutMs: intInRange(hindsight.timeoutMs, 1, MAX_SERVICE_TIMEOUT_MS, defaults.timeoutMs),
-		retainTimeoutMs: intInRange(hindsight.retainTimeoutMs, 1, MAX_SERVICE_TIMEOUT_MS, defaults.retainTimeoutMs),
+		retainTimeoutMs: intInRange(
+			hindsight.retainTimeoutMs,
+			1,
+			MAX_SERVICE_TIMEOUT_MS,
+			defaults.retainTimeoutMs,
+		),
 	};
 	if (backend === "gateway") merged.backend = "gateway";
 	return merged;
 }
 
 /** Same trust rule as `mergeHindsight`; `ground` (sends the prompt to RAGFlow) can only be turned off by a project file. */
-function mergeRagflow(ragflow: Record<string, unknown> | undefined, defaults: RagflowConfig, project: boolean): RagflowConfig {
+function mergeRagflow(
+	ragflow: Record<string, unknown> | undefined,
+	defaults: RagflowConfig,
+	project: boolean,
+): RagflowConfig {
 	if (!ragflow) return defaults;
 	const enabled = booleanOr(ragflow.enabled, defaults.enabled);
 	const ground = booleanOr(ragflow.ground, defaults.ground);
-	if (project) return { ...defaults, enabled: defaults.enabled && enabled, ground: defaults.ground && ground };
+	if (project)
+		return { ...defaults, enabled: defaults.enabled && enabled, ground: defaults.ground && ground };
 	let datasetIds = defaults.datasetIds;
 	if (Array.isArray(ragflow.datasetIds)) {
-		const ids = ragflow.datasetIds.filter((id): id is string => typeof id === "string" && id.trim() !== "").map((id) => id.trim());
-		if (ids.length === ragflow.datasetIds.length && ids.length <= MAX_DATASET_IDS) datasetIds = [...new Set(ids)];
+		const ids = ragflow.datasetIds
+			.filter((id): id is string => typeof id === "string" && id.trim() !== "")
+			.map((id) => id.trim());
+		if (ids.length === ragflow.datasetIds.length && ids.length <= MAX_DATASET_IDS)
+			datasetIds = [...new Set(ids)];
 	}
 	const backend = backendField(ragflow.backend, defaults.backend);
 	const merged: RagflowConfig = {
 		enabled,
-		url: urlAsWritten(ragflow.url, defaults.url),
+		url: nonEmpty(ragflow.url, defaults.url),
 		datasetIds,
 		topK: intInRange(ragflow.topK, 1, 20, defaults.topK),
 		similarityThreshold: unitInterval(ragflow.similarityThreshold, defaults.similarityThreshold),
@@ -665,7 +852,11 @@ function mergeRagflow(ragflow: Record<string, unknown> | undefined, defaults: Ra
  * A project layer can only turn `enabled`, `recall` and `autoPromote` off and lower `capture` (auto -> observe -> explicit);
  * every other key is ignored there. `CAPTURE_MODES` is ordered lowest first.
  */
-function mergeTeach(teach: Record<string, unknown> | undefined, defaults: TeachConfig, project: boolean): TeachConfig {
+function mergeTeach(
+	teach: Record<string, unknown> | undefined,
+	defaults: TeachConfig,
+	project: boolean,
+): TeachConfig {
 	if (!teach) return defaults;
 	const enabled = booleanOr(teach.enabled, defaults.enabled);
 	const recall = booleanOr(teach.recall, defaults.recall);
@@ -673,7 +864,10 @@ function mergeTeach(teach: Record<string, unknown> | undefined, defaults: TeachC
 	const requested = CAPTURE_MODES.find((mode) => mode === teach.capture);
 	if (project) {
 		const capture: CaptureMode =
-			requested !== undefined && CAPTURE_MODES.indexOf(requested) < CAPTURE_MODES.indexOf(defaults.capture) ? requested : defaults.capture;
+			requested !== undefined &&
+			CAPTURE_MODES.indexOf(requested) < CAPTURE_MODES.indexOf(defaults.capture)
+				? requested
+				: defaults.capture;
 		return {
 			...defaults,
 			enabled: defaults.enabled && enabled,
@@ -699,7 +893,11 @@ function mergeTeach(teach: Record<string, unknown> | undefined, defaults: TeachC
  * A project layer (a file a cloned repository controls) is ignored entirely: a hostile `retentionDays: 1` would delete
  * the user's history. Only user files can opt in to the scheduled prune.
  */
-function mergeState(state: Record<string, unknown> | undefined, defaults: StateConfig, project: boolean): StateConfig {
+function mergeState(
+	state: Record<string, unknown> | undefined,
+	defaults: StateConfig,
+	project: boolean,
+): StateConfig {
 	if (!state || project) return defaults;
 	return { retentionDays: intInRange(state.retentionDays, 0, 3650, defaults.retentionDays) };
 }
@@ -712,10 +910,17 @@ function absolutePathField(value: unknown, fallback: string | undefined): string
 }
 
 /** The four stages a user mapping may remap; `orchestrate` routes over all of them and is not a mapping key. */
-const PSTACK_MAPPING_STAGES: readonly PstackMappingStage[] = ["discuss", "plan", "execute", "review"];
+const PSTACK_MAPPING_STAGES: readonly PstackMappingStage[] = [
+	"discuss",
+	"plan",
+	"execute",
+	"review",
+];
 
 /** A fresh mapping holding only the known stages and only their string entries; everything else is dropped. */
-function pstackMapping(mapping: unknown): Partial<Record<PstackMappingStage, string[]>> | undefined {
+function pstackMapping(
+	mapping: unknown,
+): Partial<Record<PstackMappingStage, string[]>> | undefined {
 	const record = asRecord(mapping);
 	if (!record) return undefined;
 	const merged: Partial<Record<PstackMappingStage, string[]>> = {};
@@ -731,7 +936,11 @@ function pstackMapping(mapping: unknown): Partial<Record<PstackMappingStage, str
  * The pstack bridge is opt-in and user-only: a project layer (a file a cloned repository controls) is ignored
  * entirely — its `enabled: true` stays the default false, and it can retarget neither cursorDir nor mapping.
  */
-function mergePstack(pstack: Record<string, unknown> | undefined, defaults: PstackConfig, project: boolean): PstackConfig {
+function mergePstack(
+	pstack: Record<string, unknown> | undefined,
+	defaults: PstackConfig,
+	project: boolean,
+): PstackConfig {
 	if (!pstack || project) return defaults;
 	// A later layer replaces only the stages it names. Omitting `mapping`, or naming no valid stage, keeps the earlier map.
 	const mapping = pstackMapping(pstack.mapping);
@@ -747,7 +956,11 @@ function mergePstack(pstack: Record<string, unknown> | undefined, defaults: Psta
  * Swarm auto-run is opt-in and user-only: a project layer (a file a cloned repository controls) is ignored
  * entirely, and a non-boolean `autoRun` keeps the lower layer's value.
  */
-function mergeSwarm(swarm: Record<string, unknown> | undefined, defaults: SwarmConfig, project: boolean): SwarmConfig {
+function mergeSwarm(
+	swarm: Record<string, unknown> | undefined,
+	defaults: SwarmConfig,
+	project: boolean,
+): SwarmConfig {
 	if (!swarm || project) return defaults;
 	return { autoRun: booleanOr(swarm.autoRun, defaults.autoRun) };
 }
@@ -793,16 +1006,27 @@ export function mergeConfig(
 
 /** Host-neutral user config: `${XDG_CONFIG_HOME || ~/.config}/ultrathink/config.json`. */
 export function userConfigPath(env: Record<string, string | undefined> = process.env): string {
-	return join(env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config"), "ultrathink", "config.json");
+	return join(
+		env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config"),
+		"ultrathink",
+		"config.json",
+	);
 }
 
 /** A config file: a plain path merges as a user layer; `{ path, project: true }` is a repository-controlled project layer. */
 export type ConfigSource = string | { path: string; project: true };
 
 /** Config files for ultrathink, lowest precedence first — later files win: user, then Claude user, then project. */
-export function claudeConfigPaths(cwd: string, env: Record<string, string | undefined> = process.env): ConfigSource[] {
+export function claudeConfigPaths(
+	cwd: string,
+	env: Record<string, string | undefined> = process.env,
+): ConfigSource[] {
 	const home = env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
-	return [userConfigPath(env), join(home, "ultrathink.json"), { path: join(cwd, ".claude", "ultrathink.json"), project: true }];
+	return [
+		userConfigPath(env),
+		join(home, "ultrathink.json"),
+		{ path: join(cwd, ".claude", "ultrathink.json"), project: true },
+	];
 }
 
 /** Loads config from `files` in order (later files win); defaults when none override. */

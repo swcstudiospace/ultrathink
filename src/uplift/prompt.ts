@@ -60,8 +60,3 @@ Shape hint — adaptive, not the only schema. Replace NAMED_SURFACE with real do
 </BUILD_PROMPT>
 
 Density bar: operational nested spec a senior would hand a teammate. Not a 10-field template. Not motivational filler.`;
-
-export const SYSTEM_ADDENDUM = `## Prompt Uplift
-
-The user message is an uplifted XML specification. Treat it as the source of truth. Execute it. Do not reprint the XML. Prefer repository evidence over inferred assumptions.
-`;

@@ -9,7 +9,12 @@ import type { SessionRecord } from "../claude/state.ts";
 import { createGatewayTracker } from "../track/gateway.ts";
 import { formatTrackingTodos, injectTrackingXml } from "../track/render.ts";
 import { createMcpClient, loginHint, MAX_TOOL_PAGES } from "./client.ts";
-import { DEFAULT_TASK_GRAPH_TITLE, initTaskGraphDatabase, notionPageId, writeNotionConfig } from "./notion-db.ts";
+import {
+	DEFAULT_TASK_GRAPH_TITLE,
+	initTaskGraphDatabase,
+	notionPageId,
+	writeNotionConfig,
+} from "./notion-db.ts";
 import {
 	beginLogin,
 	completeLogin,
@@ -20,9 +25,23 @@ import {
 	status,
 } from "./oauth.ts";
 import type { AuthDeps } from "./oauth.ts";
-import { isMcpProviderId, isProviderId, MCP_PROVIDER_IDS, MCP_PROVIDERS, notMcpServer, USER_AGENT } from "./providers.ts";
+import { checkOpenRouterKeyFormat, verifyOpenRouterKey } from "./openrouter-key.ts";
+import {
+	isMcpProviderId,
+	isProviderId,
+	MCP_PROVIDER_IDS,
+	MCP_PROVIDERS,
+	notMcpServer,
+	USER_AGENT,
+} from "./providers.ts";
 import type { McpProviderId, ProviderId } from "./providers.ts";
-import { defaultRun, mountTailscale, planRedirect, readTailscaleDns, unmountTailscale } from "./redirect.ts";
+import {
+	defaultRun,
+	mountTailscale,
+	planRedirect,
+	readTailscaleDns,
+	unmountTailscale,
+} from "./redirect.ts";
 import type { RedirectPlan, Run } from "./redirect.ts";
 import { createRelay, runStdioRelay } from "./relay.ts";
 import type { RelayAuth } from "./relay.ts";
@@ -33,6 +52,7 @@ const USAGE = `usage:
   ultrathink-mcp auth status
   ultrathink-mcp auth set-key <provider> (--stdin | --env-file <path> --var <NAME>)
   (openrouter, vercel, hindsight and ragflow are API-key only: set-key, status and logout; never serve, check or login)
+  (the openrouter key is Jev's alone: stored in the credential store, with ULTRATHINK_OPENROUTER_KEY as the fallback)
   ultrathink-mcp auth login <provider> [--port <n>] [--redirect <url>] [--tailscale] [--no-listen]
   ultrathink-mcp auth logout <provider>
   ultrathink-mcp check [provider...]
@@ -52,7 +72,8 @@ function err(line: string): void {
 
 /** Any credential provider: set-key, logout. */
 function provider(value: string | undefined): ProviderId {
-	if (!value || !isProviderId(value)) throw new UsageError(`unknown provider: ${value ?? "(none)"}`);
+	if (!value || !isProviderId(value))
+		throw new UsageError(`unknown provider: ${value ?? "(none)"}`);
 	return value;
 }
 
@@ -60,7 +81,9 @@ function provider(value: string | undefined): ProviderId {
 function mcpProvider(value: string | undefined): McpProviderId {
 	const id = provider(value);
 	if (!isMcpProviderId(id)) {
-		throw new UsageError(`${notMcpServer(id)}: store its key with ultrathink-mcp auth set-key ${id} --stdin`);
+		throw new UsageError(
+			`${notMcpServer(id)}: store its key with ultrathink-mcp auth set-key ${id} --stdin`,
+		);
 	}
 	return id;
 }
@@ -99,11 +122,21 @@ export function keyFromEnvFile(text: string, name: string): string | undefined {
 	return undefined;
 }
 
-async function readLine(stream: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<string | undefined> {
+async function readLine(
+	stream: ReadableStream<Uint8Array>,
+	signal: AbortSignal,
+): Promise<string | undefined> {
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
-	signal.addEventListener("abort", () => void reader.cancel().catch(() => {}), { once: true });
+	signal.addEventListener(
+		"abort",
+		() =>
+			void reader.cancel().catch(() => {
+				// reason: the cancel rejection is irrelevant once the signal has aborted
+			}),
+		{ once: true },
+	);
 	try {
 		while (!signal.aborted) {
 			const { value, done } = await reader.read();
@@ -116,6 +149,27 @@ async function readLine(stream: ReadableStream<Uint8Array>, signal: AbortSignal)
 	} finally {
 		reader.releaseLock();
 	}
+}
+
+/**
+ * Feeds the `auth login` wait from stdin: a pasted line completes it. A stdin read error rejects the wait with that
+ * error only when no callback listener is registered; with one, the callback path still completes the login.
+ */
+export function feedLoginInput(
+	stream: ReadableStream<Uint8Array>,
+	signal: AbortSignal,
+	listen: boolean,
+	received: { resolve(line: string): void; reject(reason: unknown): void },
+): Promise<void> {
+	return readLine(stream, signal).then(
+		(line) => {
+			if (line) received.resolve(line);
+			else if (!listen) received.reject(new Error("no callback URL provided"));
+		},
+		(error: unknown) => {
+			if (!listen) received.reject(error);
+		},
+	);
 }
 
 /**
@@ -134,7 +188,13 @@ export function prepareRedirect(input: {
 	const tailscale = input.args.includes("--tailscale") || env.ULTRATHINK_OAUTH_TAILSCALE === "1";
 	let plan: RedirectPlan;
 	try {
-		plan = planRedirect({ env, port, redirect, tailscale, tailscaleDns: () => readTailscaleDns(run) });
+		plan = planRedirect({
+			env,
+			port,
+			redirect,
+			tailscale,
+			tailscaleDns: () => readTailscaleDns(run),
+		});
 	} catch (error) {
 		throw new UsageError(error instanceof Error ? error.message : String(error));
 	}
@@ -156,7 +216,8 @@ export function prepareRedirect(input: {
 async function login(id: McpProviderId, args: string[], deps: AuthDeps): Promise<void> {
 	const portText = flag(args, "--port") ?? "8765";
 	const port = Number(portText);
-	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new UsageError(`invalid port: ${portText}`);
+	if (!Number.isInteger(port) || port < 1 || port > 65535)
+		throw new UsageError(`invalid port: ${portText}`);
 	const listen = !args.includes("--no-listen");
 	const { plan, mount } = prepareRedirect({ args, env: process.env, port, run: defaultRun });
 	let mounted = mount !== undefined;
@@ -178,7 +239,9 @@ async function login(id: McpProviderId, args: string[], deps: AuthDeps): Promise
 	let server: Bun.Server<undefined> | undefined;
 	try {
 		const pending = await beginLogin(id, { ...deps, redirectUri: plan.redirectUri });
-		out(`Open this URL in any browser to authorize ${MCP_PROVIDERS[id].label}:\n\n${pending.url}\n`);
+		out(
+			`Open this URL in any browser to authorize ${MCP_PROVIDERS[id].label}:\n\n${pending.url}\n`,
+		);
 		for (const line of plan.hint) out(line);
 		out(
 			listen
@@ -192,7 +255,8 @@ async function login(id: McpProviderId, args: string[], deps: AuthDeps): Promise
 				port: plan.port,
 				fetch(request) {
 					const url = new URL(request.url);
-					if (!callbackPaths.includes(url.pathname)) return new Response("not found", { status: 404 });
+					if (!callbackPaths.includes(url.pathname))
+						return new Response("not found", { status: 404 });
 					if (url.searchParams.get("state") !== pending.state) {
 						return new Response("state mismatch", { status: 400 });
 					}
@@ -203,13 +267,7 @@ async function login(id: McpProviderId, args: string[], deps: AuthDeps): Promise
 				},
 			});
 		}
-		readLine(Bun.stdin.stream(), abort.signal).then(
-			(line) => {
-				if (line) received.resolve(line);
-				else if (!listen) received.reject(new Error("no callback URL provided"));
-			},
-			() => {},
-		);
+		feedLoginInput(Bun.stdin.stream(), abort.signal, listen, received);
 		const input = await received.promise;
 		await completeLogin(pending, input, deps);
 	} finally {
@@ -222,6 +280,24 @@ async function login(id: McpProviderId, args: string[], deps: AuthDeps): Promise
 	out(`${id}: logged in`);
 }
 
+const VERCEL_KEY_MIN = 16;
+const VERCEL_KEY_MAX = 512;
+
+/** The message for a Vercel AI Gateway key that cannot be one, or undefined. It names the problem and the length, never the key. */
+function vercelKeyProblem(key: string): string | undefined {
+	if (key.length === 0) return "empty api key";
+	for (const ch of key) {
+		const code = ch.codePointAt(0) ?? 0;
+		if (code <= 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f) || /\s/u.test(ch)) {
+			return "vercel api key must not contain whitespace or control characters";
+		}
+	}
+	if (key.length < VERCEL_KEY_MIN || key.length > VERCEL_KEY_MAX) {
+		return `vercel api key must be ${VERCEL_KEY_MIN} to ${VERCEL_KEY_MAX} characters (got ${key.length})`;
+	}
+	return undefined;
+}
+
 async function setKey(id: ProviderId, args: string[], deps: AuthDeps): Promise<void> {
 	let key: string | undefined;
 	if (args.includes("--stdin")) {
@@ -229,13 +305,27 @@ async function setKey(id: ProviderId, args: string[], deps: AuthDeps): Promise<v
 	} else {
 		const file = flag(args, "--env-file");
 		const name = flag(args, "--var");
-		if (!file || !name) throw new UsageError("set-key needs --stdin or --env-file <path> --var <NAME>");
+		if (!file || !name)
+			throw new UsageError("set-key needs --stdin or --env-file <path> --var <NAME>");
 		key = keyFromEnvFile(readFileSync(file, "utf8"), name);
 		if (key === undefined) throw new Error(`${name} not found in ${file}`);
 	}
 	if (!key) throw new Error("empty api key");
+	if (id === "vercel") {
+		// The gateway key has no live verify endpoint, so --no-verify (accepted for symmetry) changes nothing.
+		const problem = vercelKeyProblem(key);
+		if (problem) throw new Error(problem);
+	}
+	if (id === "openrouter") {
+		const check = args.includes("--no-verify")
+			? checkOpenRouterKeyFormat(key)
+			: await verifyOpenRouterKey(key, { fetch: deps.fetch });
+		if (!check.ok) throw new Error(check.message);
+	}
 	await setApiKey(id, key, deps);
 	out(`${id}: api key stored (${key.length} chars)`);
+	if (id === "openrouter")
+		out("Jev reads it from the credential store first, then ULTRATHINK_OPENROUTER_KEY.");
 }
 
 interface RpcMessage {
@@ -257,7 +347,10 @@ async function checkOne(id: McpProviderId, deps: AuthDeps): Promise<number> {
 		},
 	});
 	let nextId = 1;
-	const request = async (method: string, params: Record<string, unknown>): Promise<NonNullable<RpcMessage["result"]>> => {
+	const request = async (
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<NonNullable<RpcMessage["result"]>> => {
 		const id = nextId++;
 		await relay.handle({ jsonrpc: "2.0", id, method, params });
 		const response = responses.get(id);
@@ -315,16 +408,23 @@ async function trackComplete(args: string[]): Promise<number> {
 	// The tracker call above can take long enough for another process to update the record (a ship step, a mark), so the
 	// record is read again under the lock and only the tracking and its spec XML are applied to it.
 	let planReplaced = false;
-	const saved = updateRecord(statePath, (current) => {
-		if (current.plan?.graphId !== plan.graphId) {
-			planReplaced = true;
-			return undefined;
-		}
-		const xml = injectTrackingXml(current.result.xml, plan, tracking);
-		return { ...current, tracking, result: { ...current.result, xml } };
-	}, (next) => next.result.xml);
+	const saved = updateRecord(
+		statePath,
+		(current) => {
+			if (current.plan?.graphId !== plan.graphId) {
+				planReplaced = true;
+				return undefined;
+			}
+			const xml = injectTrackingXml(current.result.xml, plan, tracking);
+			return { ...current, tracking, result: { ...current.result, xml } };
+		},
+		(next) => next.result.xml,
+	);
 	if (!saved) {
-		if (planReplaced) err(`ultrathink-mcp: the session record has a newer plan than the one tracked; rerun track complete: ${statePath}`);
+		if (planReplaced)
+			err(
+				`ultrathink-mcp: the session record has a newer plan than the one tracked; rerun track complete: ${statePath}`,
+			);
 		return 1;
 	}
 	out(
@@ -340,11 +440,16 @@ async function trackComplete(args: string[]): Promise<number> {
 function readRecord(statePath: string): SessionRecord | undefined {
 	try {
 		const record = JSON.parse(readFileSync(statePath, "utf8")) as Partial<SessionRecord> | null;
-		if (record && typeof record === "object" && record.result && typeof record.result === "object") {
+		if (
+			record &&
+			typeof record === "object" &&
+			record.result &&
+			typeof record.result === "object"
+		) {
 			return record as SessionRecord;
 		}
 	} catch {
-		// Reported below.
+		// reason: Reported below.
 	}
 	err(`ultrathink-mcp: cannot read session record: ${statePath}`);
 	return undefined;
@@ -355,7 +460,11 @@ function readRecord(statePath: string): SessionRecord | undefined {
  * An optional `xml` projection is written as the `.xml` sidecar inside the same lock, so the sidecar can never
  * lag a concurrent JSON update that lands between the record write and the sidecar write.
  */
-function updateRecord(statePath: string, mutate: (record: SessionRecord) => SessionRecord | undefined, xml?: (next: SessionRecord) => string | undefined): SessionRecord | undefined {
+function updateRecord(
+	statePath: string,
+	mutate: (record: SessionRecord) => SessionRecord | undefined,
+	xml?: (next: SessionRecord) => string | undefined,
+): SessionRecord | undefined {
 	return withFileLock(statePath, () => {
 		const record = readRecord(statePath);
 		if (!record) return undefined;
@@ -373,7 +482,10 @@ function sessionMark(args: string[]): number {
 	const marks = args.filter((arg, index) => arg !== "--state" && args[index - 1] !== "--state");
 	const mark = marks.length === 1 ? marks[0] : undefined;
 	const field = mark === "kicked-off" ? "kickedOff" : mark === "synced" ? "synced" : undefined;
-	if (!field) throw new UsageError(`session mark needs one of kicked-off, synced: ${marks.join(" ") || "(none)"}`);
+	if (!field)
+		throw new UsageError(
+			`session mark needs one of kicked-off, synced: ${marks.join(" ") || "(none)"}`,
+		);
 	// Plan-scoped: the mark describes the plan now in the record; the session's next planned prompt replaces the record
 	// with a new graph whose kickedOff and synced start false, because that graph has not been kicked off or synced.
 	const marked = updateRecord(statePath, (record) => {
@@ -387,7 +499,8 @@ function sessionMark(args: string[]): number {
 async function notionInit(args: string[], deps: AuthDeps): Promise<number> {
 	const parent = flag(args, "--parent");
 	if (!parent) throw new UsageError("notion init needs --parent <notion page url or id>");
-	if (notionPageId(parent) === undefined) throw new UsageError(`--parent is not a Notion page url or id: ${parent}`);
+	if (notionPageId(parent) === undefined)
+		throw new UsageError(`--parent is not a Notion page url or id: ${parent}`);
 	const title = flag(args, "--title") ?? DEFAULT_TASK_GRAPH_TITLE;
 	if ((await resolveAuthHeader("notion", deps)) === undefined) {
 		err(`ultrathink-mcp: notion is not logged in: ${loginHint("notion")}`);
@@ -395,7 +508,9 @@ async function notionInit(args: string[], deps: AuthDeps): Promise<number> {
 	}
 	// Generous timeout: a create that times out here may still land in Notion, and a rerun would duplicate it.
 	const client = createMcpClient("notion", { storePath: deps.storePath, callTimeoutMs: 120_000 });
-	const created = await initTaskGraphDatabase(client, { parent, title }).finally(() => client.close());
+	const created = await initTaskGraphDatabase(client, { parent, title }).finally(() =>
+		client.close(),
+	);
 	const configPath = userConfigPath();
 	out(`created Notion database "${title}"${created.url ? `: ${created.url}` : ""}`);
 	out(`data source: ${created.dataSourceUrl}`);
@@ -406,8 +521,12 @@ async function notionInit(args: string[], deps: AuthDeps): Promise<number> {
 		out(`wrote notion.dataSourceUrl to ${configPath}`);
 	}
 	if (created.relationError === undefined) return 0;
-	err(`ultrathink-mcp: the database exists, but adding its "Parent Item" self-relation failed: ${created.relationError}`);
-	err('ultrathink-mcp: rows stay flat until you add a two-way relation "Parent Item" (synced as "Sub-Items") from the database to itself in Notion');
+	err(
+		`ultrathink-mcp: the database exists, but adding its "Parent Item" self-relation failed: ${created.relationError}`,
+	);
+	err(
+		'ultrathink-mcp: rows stay flat until you add a two-way relation "Parent Item" (synced as "Sub-Items") from the database to itself in Notion',
+	);
 	return 1;
 }
 
@@ -440,6 +559,7 @@ export async function main(argv: string[], seams: CliSeams = {}): Promise<number
 				try {
 					out(`${id}: OK ${await check(id, deps)} tools`);
 				} catch (error) {
+					// reason: the failure is printed as FAIL and sets the exit status; the loop continues to the next server
 					failed = true;
 					out(`${id}: FAIL ${error instanceof Error ? error.message : String(error)}`);
 				}
@@ -452,7 +572,8 @@ export async function main(argv: string[], seams: CliSeams = {}): Promise<number
 		if (command === "auth") {
 			const [sub, ...args] = rest;
 			if (sub === "status") {
-				for (const s of status(deps)) out(`${s.provider}  ${s.kind}  ${s.ready ? "ready" : "not ready"}  ${s.detail}`);
+				for (const s of status(deps))
+					out(`${s.provider}  ${s.kind}  ${s.ready ? "ready" : "not ready"}  ${s.detail}`);
 				out(`store: ${deps.storePath}`);
 				return 0;
 			}
@@ -471,7 +592,9 @@ export async function main(argv: string[], seams: CliSeams = {}): Promise<number
 				return 0;
 			}
 		}
-		throw new UsageError(command ? `unknown command: ${[command, ...rest.slice(0, 1)].join(" ")}` : "missing command");
+		throw new UsageError(
+			command ? `unknown command: ${[command, ...rest.slice(0, 1)].join(" ")}` : "missing command",
+		);
 	} catch (error) {
 		if (error instanceof UsageError) {
 			err(`ultrathink-mcp: ${error.message}\n${USAGE}`);

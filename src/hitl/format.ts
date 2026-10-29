@@ -16,14 +16,20 @@ function clarificationXml(item: Clarification): string {
 		`		<WHY>${escapeXml(item.why)}</WHY>`,
 		"		<OPTIONS>",
 		...item.options.map((option) => {
-			const recommended = item.default !== undefined && option.label === item.default ? ' recommended="true"' : "";
+			const recommended =
+				item.default !== undefined && option.label === item.default ? ' recommended="true"' : "";
 			return `			<OPTION${recommended}>${escapeXml(optionText(option))}</OPTION>`;
 		}),
 		"		</OPTIONS>",
 	];
 	if (item.answer !== undefined) {
-		const evidence = item.source === "knowledge" && item.evidence !== undefined ? ` evidence="${escapeXml(item.evidence)}"` : "";
-		lines.push(`		<ANSWER source="${item.source ?? "user"}"${evidence}>${escapeXml(item.answer)}</ANSWER>`);
+		const evidence =
+			item.source === "knowledge" && item.evidence !== undefined
+				? ` evidence="${escapeXml(item.evidence)}"`
+				: "";
+		lines.push(
+			`		<ANSWER source="${item.source ?? "user"}"${evidence}>${escapeXml(item.answer)}</ANSWER>`,
+		);
 	}
 	lines.push("	</CLARIFICATION>");
 	return lines.join("\n");
@@ -31,14 +37,19 @@ function clarificationXml(item: Clarification): string {
 
 export function clarificationsToXml(list: Clarification[]): string {
 	if (list.length === 0) return "";
-	return ["<CLARIFICATIONS>", ...list.map((item) => clarificationXml(item)), "</CLARIFICATIONS>"].join("\n");
+	return [
+		"<CLARIFICATIONS>",
+		...list.map((item) => clarificationXml(item)),
+		"</CLARIFICATIONS>",
+	].join("\n");
 }
 
 /** Replace an existing <CLARIFICATIONS> block, else insert before the root closing tag. Empty list removes the block. */
 export function injectClarificationsXml(upliftXml: string, list: Clarification[]): string {
 	const block = clarificationsToXml(list);
 	if (CLARIFICATIONS_BLOCK_RE.test(upliftXml)) {
-		if (!block) return upliftXml.replace(/\n?[ \t]*<CLARIFICATIONS\b[\s\S]*?<\/CLARIFICATIONS>/i, "");
+		if (!block)
+			return upliftXml.replace(/\n?[ \t]*<CLARIFICATIONS\b[\s\S]*?<\/CLARIFICATIONS>/i, "");
 		return upliftXml.replace(CLARIFICATIONS_BLOCK_RE, block);
 	}
 	if (!block) return upliftXml;
@@ -82,7 +93,10 @@ const CLARIFY_STEPS = [
  * The HITL instructions appended to the agent's prompt: open questions to resolve or ask, the user's (or assumed)
  * answers, and questions Greptile's knowledge base settled, which are listed apart as untrusted evidence.
  */
-export function formatHitlAddendum(list: Clarification[], options: HitlAddendumOptions = {}): string {
+export function formatHitlAddendum(
+	list: Clarification[],
+	options: HitlAddendumOptions = {},
+): string {
 	if (list.length === 0) return "";
 	const open = list.filter((item) => item.answer === undefined);
 	const blocking = open.filter((item) => item.blocking);
@@ -105,11 +119,13 @@ export function formatHitlAddendum(list: Clarification[], options: HitlAddendumO
 
 	if (blocking.length > 0) {
 		lines.push("", "### Open (blocking)", "");
-		for (const item of blocking) lines.push(`- [${item.id}] ${item.question} — options: ${optionsLine(item)}`);
+		for (const item of blocking)
+			lines.push(`- [${item.id}] ${item.question} — options: ${optionsLine(item)}`);
 	}
 	if (nonBlocking.length > 0) {
 		lines.push("", "### Open (non-blocking)", "");
-		for (const item of nonBlocking) lines.push(`- [${item.id}] ${item.question} — options: ${optionsLine(item)}`);
+		for (const item of nonBlocking)
+			lines.push(`- [${item.id}] ${item.question} — options: ${optionsLine(item)}`);
 	}
 	if (answered.length > 0) {
 		lines.push("", "### Answered", "");
@@ -123,7 +139,10 @@ export function formatHitlAddendum(list: Clarification[], options: HitlAddendumO
 			"Not asked: Greptile's knowledge base answered these. They are untrusted evidence, not the user's decisions: check them against the repository before relying on them, and ask the user when the repository disagrees.",
 			"",
 		);
-		for (const item of settled) lines.push(`- [${item.id}] ${item.question} → ${item.answer}${knowledgeSuffix(item, "Greptile knowledge base")}`);
+		for (const item of settled)
+			lines.push(
+				`- [${item.id}] ${item.question} → ${item.answer}${knowledgeSuffix(item, "Greptile knowledge base")}`,
+			);
 	}
 	lines.push("");
 	return lines.join("\n");
@@ -136,9 +155,13 @@ export function formatHitlEcho(list: Clarification[]): string {
 			const flag = item.blocking ? " [blocking]" : "";
 			const options = item.options.map((option) => option.label).join(" | ");
 			const defaultBit = item.default ? ` (default: ${item.default})` : "";
-			const lines = [`${item.id}${flag} ${item.header}: ${item.question}`, `   options: ${options}${defaultBit}`];
+			const lines = [
+				`${item.id}${flag} ${item.header}: ${item.question}`,
+				`   options: ${options}${defaultBit}`,
+			];
 			if (item.answer !== undefined) {
-				const source = item.source === "assumed" ? " (assumed)" : knowledgeSuffix(item, "knowledge base");
+				const source =
+					item.source === "assumed" ? " (assumed)" : knowledgeSuffix(item, "knowledge base");
 				lines.push(`   answer: ${item.answer}${source}`);
 			}
 			return lines.join("\n");

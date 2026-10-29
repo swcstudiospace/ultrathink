@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createDecisions } from "../decisions/gate.ts";
 import { DEFAULT_DECISIONS_CONFIG } from "../decisions/types.ts";
 import type { DecisionsConfig, DecisionsErrorKind } from "../decisions/types.ts";
+import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
 import type { Github, ReviewThreads, ReviewThreadsOptions } from "./github.ts";
 import { assessDone } from "./assess.ts";
 import { runShip } from "./cli.ts";
@@ -14,7 +15,16 @@ import type { ShipDeps } from "./cli.ts";
 import { runReview } from "./greptile.ts";
 import { appendAttempts, archiveShip, readShip, writeShip } from "./state.ts";
 import { MAX_SHIP_HISTORY } from "./types.ts";
-import type { Assessment, GitSignals, PrRef, PrStatus, ReviewResult, ShipAttempt, ShipConfig, ShipSignals } from "./types.ts";
+import type {
+	Assessment,
+	GitSignals,
+	PrRef,
+	PrStatus,
+	ReviewResult,
+	ShipAttempt,
+	ShipConfig,
+	ShipSignals,
+} from "./types.ts";
 
 const CONFIG: ShipConfig = {
 	enabled: true,
@@ -34,7 +44,14 @@ const CONFIG: ShipConfig = {
 	judge: "gate",
 };
 const PR: PrRef = { number: 7, url: "https://github.com/o/r/pull/7", head: "feat", base: "master" };
-const PASSED: ReviewResult = { source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 };
+const PASSED: ReviewResult = {
+	source: "cli",
+	status: "completed",
+	score: 5,
+	comments: [],
+	headSha: "abc",
+	at: 1,
+};
 
 let dir: string;
 let statePath: string;
@@ -53,7 +70,15 @@ beforeEach(() => {
 	clock = 1000;
 	sleeps = [];
 	reviewInputs = [];
-	writeFileSync(statePath, JSON.stringify({ sessionId: "s", at: 1, result: { original: "ship it", uplifted: "ship it" }, kickedOff: true }));
+	writeFileSync(
+		statePath,
+		JSON.stringify({
+			sessionId: "s",
+			at: 1,
+			result: { original: "ship it", uplifted: "ship it" },
+			kickedOff: true,
+		}),
+	);
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -80,9 +105,25 @@ interface FakeOpts {
 
 function deps(o: FakeOpts = {}): ShipDeps {
 	if (o.now !== undefined) clock = o.now;
-	const git: GitSignals = { branch: "feat", base: "master", onBase: false, ahead: 1, dirty: [], untracked: 0, pushed: true, ...o.git };
+	const git: GitSignals = {
+		branch: "feat",
+		base: "master",
+		onBase: false,
+		ahead: 1,
+		dirty: [],
+		untracked: 0,
+		pushed: true,
+		...o.git,
+	};
 	const signals: ShipSignals = { git };
-	const status: PrStatus = { state: "OPEN", headSha: "abc", mergeable: "MERGEABLE", checks: "passing", url: PR.url, ...o.status };
+	const status: PrStatus = {
+		state: "OPEN",
+		headSha: "abc",
+		mergeable: "MERGEABLE",
+		checks: "passing",
+		url: PR.url,
+		...o.status,
+	};
 	const statuses = [...(o.statuses ?? [])];
 	const merges = [...(o.merges ?? [])];
 	const github: Github = {
@@ -106,13 +147,25 @@ function deps(o: FakeOpts = {}): ShipDeps {
 	};
 	return {
 		config: { ...CONFIG, ...o.config },
-		run: (argv) => ({ exitCode: 0, stdout: argv.join(" ") === "git rev-parse HEAD" ? `${o.head ?? status.headSha}\n` : "", stderr: "" }),
+		run: (argv) => ({
+			exitCode: 0,
+			stdout: argv.join(" ") === "git rev-parse HEAD" ? `${o.head ?? status.headSha}\n` : "",
+			stderr: "",
+		}),
 		now: () => clock,
 		github: () => github,
 		review: async (i) => (
 			calls.push(`review:${i.prNumber}:${i.headSha}`),
 			reviewInputs.push(i),
-			{ source: "cli", status: "completed", score: 5, comments: [], headSha: i.headSha, at: 1, ...o.review }
+			{
+				source: "cli",
+				status: "completed",
+				score: 5,
+				comments: [],
+				headSha: i.headSha,
+				at: 1,
+				...o.review,
+			}
 		),
 		assess: async (i) => ({
 			done: o.done ?? true,
@@ -151,27 +204,53 @@ describe("state", () => {
 	});
 	test("appendAttempts keeps the newest 50 attempts, each detail one line of at most 200 characters", () => {
 		writeShip(statePath, { pr: PR });
-		const attempt = (at: number): ShipAttempt => ({ at, step: "merge", headSha: "abc", outcome: "waiting", detail: `CI checks\npending ${at}` });
+		const attempt = (at: number): ShipAttempt => ({
+			at,
+			step: "merge",
+			headSha: "abc",
+			outcome: "waiting",
+			detail: `CI checks\npending ${at}`,
+		});
 		for (let at = 0; at < 45; at++) appendAttempts(statePath, [attempt(at)], 5);
-		const state = appendAttempts(statePath, [attempt(45), { ...attempt(46), detail: "x".repeat(300) }, attempt(47)], 6);
+		const state = appendAttempts(
+			statePath,
+			[attempt(45), { ...attempt(46), detail: "x".repeat(300) }, attempt(47)],
+			6,
+		);
 		expect(state?.attempts).toHaveLength(48);
-		const full = appendAttempts(statePath, Array.from({ length: 12 }, (_, i) => attempt(48 + i)), 7);
+		const full = appendAttempts(
+			statePath,
+			Array.from({ length: 12 }, (_, i) => attempt(48 + i)),
+			7,
+		);
 		expect(full?.attempts).toHaveLength(50);
 		expect(full?.attempts?.[0]?.at).toBe(10);
-		expect(full?.attempts?.at(-1)).toEqual({ at: 59, step: "merge", headSha: "abc", outcome: "waiting", detail: "CI checks pending 59" });
+		expect(full?.attempts?.at(-1)).toEqual({
+			at: 59,
+			step: "merge",
+			headSha: "abc",
+			outcome: "waiting",
+			detail: "CI checks pending 59",
+		});
 		expect(full?.attempts?.find((a) => a.at === 46)?.detail).toHaveLength(200);
 		expect(readShip(statePath)).toMatchObject({ pr: PR, updatedAt: 7 });
 	});
 	test("archiveShip replaces the ship with a fresh one and keeps the newest finished ships in history", () => {
 		for (let n = 1; n <= MAX_SHIP_HISTORY + 2; n++) {
-			writeShip(statePath, { pr: { ...PR, number: n }, phase: "merged", rounds: [PASSED], mergedAt: n }, n);
+			writeShip(
+				statePath,
+				{ pr: { ...PR, number: n }, phase: "merged", rounds: [PASSED], mergedAt: n },
+				n,
+			);
 			archiveShip(statePath, n);
 		}
 		const fresh = readShip(statePath);
 		expect(fresh).toMatchObject({ phase: "not-done", rounds: [], updatedAt: MAX_SHIP_HISTORY + 2 });
 		expect(fresh?.pr).toBeUndefined();
 		expect(fresh?.mergedAt).toBeUndefined();
-		expect(fresh?.history?.map((entry) => entry.pr?.number)).toEqual(Array.from({ length: MAX_SHIP_HISTORY }, (_, i) => i + 3));
+		expect(fresh?.history?.map((entry) => entry.pr?.number)).toEqual(
+			Array.from({ length: MAX_SHIP_HISTORY }, (_, i) => i + 3),
+		);
 		expect(fresh?.history?.every((entry) => !("history" in entry))).toBe(true);
 		expect(JSON.parse(readFileSync(statePath, "utf8")).sessionId).toBe("s");
 	});
@@ -194,9 +273,26 @@ describe("runShip", () => {
 
 	test("assess --ignore-gsd leaves the GSD roadmap out of the assessment and records it", async () => {
 		const gsd = { phaseCount: 3, completedPhases: 0, trusted: true };
-		const d = { ...deps(), signals: () => ({ git: { branch: "feat", base: "master", onBase: false, ahead: 1, dirty: [], untracked: 0, pushed: true }, gsd }) };
+		const d = {
+			...deps(),
+			signals: () => ({
+				git: {
+					branch: "feat",
+					base: "master",
+					onBase: false,
+					ahead: 1,
+					dirty: [],
+					untracked: 0,
+					pushed: true,
+				},
+				gsd,
+			}),
+		};
 		const seen: ShipSignals[] = [];
-		const capture = { ...d, assess: async (i: Parameters<ShipDeps["assess"]>[0]) => (seen.push(i.signals), d.assess(i)) };
+		const capture = {
+			...d,
+			assess: async (i: Parameters<ShipDeps["assess"]>[0]) => (seen.push(i.signals), d.assess(i)),
+		};
 		await runShip(["assess", "--state", statePath, "--cwd", dir], capture);
 		await runShip(["assess", "--state", statePath, "--cwd", dir, "--ignore-gsd"], capture);
 		expect(seen[0]).toMatchObject({ gsd });
@@ -207,9 +303,22 @@ describe("runShip", () => {
 	});
 
 	test("a roadmap without gsd-tools.cjs is a gap naming GSD_TOOLS; --ignore-gsd drops it", async () => {
-		const git = { branch: "feat", base: "master", onBase: false, ahead: 1, dirty: [], untracked: 0, pushed: true };
+		const git = {
+			branch: "feat",
+			base: "master",
+			onBase: false,
+			ahead: 1,
+			dirty: [],
+			untracked: 0,
+			pushed: true,
+		};
 		const gsd = { phaseCount: 0, completedPhases: 0, trusted: true, toolsMissing: true };
-		const d = { ...deps(), signals: () => ({ git, gsd }), assess: assessDone, engine: async () => undefined };
+		const d = {
+			...deps(),
+			signals: () => ({ git, gsd }),
+			assess: assessDone,
+			engine: async () => undefined,
+		};
 		const missing = await runShip(["assess", "--state", statePath, "--cwd", dir], d);
 		expect(missing.output.done).toBe(false);
 		expect(missing.output.gaps).toContain(
@@ -240,7 +349,10 @@ describe("runShip", () => {
 			[{}, { repo: "o/other" }, "blocked"],
 		];
 		for (const [prior, git, phase] of cases) {
-			writeFileSync(statePath, JSON.stringify({ sessionId: "s", at: 1, result: { original: "ship it" } }));
+			writeFileSync(
+				statePath,
+				JSON.stringify({ sessionId: "s", at: 1, result: { original: "ship it" } }),
+			);
 			writeShip(statePath, { pr: { ...PR, ...prior }, phase, rounds: [PASSED] }, 5);
 			const out = await ship("assess", deps({ git }));
 			expect(out.output).toMatchObject({ ok: true, done: true });
@@ -248,7 +360,11 @@ describe("runShip", () => {
 			expect(state).toMatchObject({ phase: "not-done", rounds: [], assessment: { done: true } });
 			expect(state?.pr).toBeUndefined();
 			expect(state?.history).toHaveLength(1);
-			expect(state?.history?.[0]).toMatchObject({ phase, pr: { ...PR, ...prior }, rounds: [PASSED] });
+			expect(state?.history?.[0]).toMatchObject({
+				phase,
+				pr: { ...PR, ...prior },
+				rounds: [PASSED],
+			});
 		}
 	});
 
@@ -289,7 +405,9 @@ describe("runShip", () => {
 	test("pr refuses on dirty tree and on base branch", async () => {
 		await ship("assess", deps());
 		expect((await ship("pr", deps({ git: { dirty: ["a.ts"] } }))).output.ok).toBe(false);
-		expect((await ship("pr", deps({ git: { onBase: true, branch: "master" } }))).output.ok).toBe(false);
+		expect((await ship("pr", deps({ git: { onBase: true, branch: "master" } }))).output.ok).toBe(
+			false,
+		);
 		expect(calls).toEqual([]);
 	});
 
@@ -313,7 +431,10 @@ describe("runShip", () => {
 		expect(first.output).toMatchObject({ ready: false, round: 1, maxRounds: 2 });
 		expect(String(first.output.next)).toContain("fix the listed findings");
 		expect(readShip(statePath)?.phase).toBe("needs-fixes");
-		const second = await ship("review", deps({ status: { headSha: "def" }, review: { score: 3, comments: [{ body: "fix" }] } }));
+		const second = await ship(
+			"review",
+			deps({ status: { headSha: "def" }, review: { score: 3, comments: [{ body: "fix" }] } }),
+		);
 		expect(String(second.output.next)).toStartWith("stop: max rounds reached");
 		expect(readShip(statePath)?.phase).toBe("blocked");
 
@@ -328,22 +449,46 @@ describe("runShip", () => {
 		const blocked = deps({ review: { status: "blocked", score: null, error: setup } });
 		writeShip(statePath, { pr: PR, phase: "pr-open" });
 		const out = await ship("review", blocked);
-		expect(out.output).toMatchObject({ ok: false, ready: false, blocked: true, status: "blocked", reason: setup, next: `stop: ${setup}` });
-		expect(readShip(statePath)).toMatchObject({ phase: "blocked", blockedReason: setup, rounds: [] });
+		expect(out.output).toMatchObject({
+			ok: false,
+			ready: false,
+			blocked: true,
+			status: "blocked",
+			reason: setup,
+			next: `stop: ${setup}`,
+		});
+		expect(readShip(statePath)).toMatchObject({
+			phase: "blocked",
+			blockedReason: setup,
+			rounds: [],
+		});
 		expect(comments).toEqual([]);
 
 		const run = await ship("run", blocked);
-		expect(run.output).toMatchObject({ ok: false, review: { blocked: true }, next: `stop: ${setup}` });
+		expect(run.output).toMatchObject({
+			ok: false,
+			review: { blocked: true },
+			next: `stop: ${setup}`,
+		});
 		expect(run.output.merge).toBeUndefined();
 		expect(calls.some((c) => c.startsWith("merge:"))).toBe(false);
 	});
 
 	test("a passing review that waits on CI or mergeability is not a failed round, even at maxRounds", async () => {
-		const old: ReviewResult = { source: "cli", status: "completed", score: 3, comments: [{ body: "fix" }], headSha: "old", at: 1 };
+		const old: ReviewResult = {
+			source: "cli",
+			status: "completed",
+			score: 3,
+			comments: [{ body: "fix" }],
+			headSha: "old",
+			at: 1,
+		};
 		writeShip(statePath, { pr: PR, phase: "needs-fixes", rounds: [old] });
 		const pending = await ship("review", deps({ status: { checks: "pending" } }));
 		expect(pending.output).toMatchObject({ ready: false, round: 2, maxRounds: 2, score: 5 });
-		expect(String(pending.output.next)).toBe("review passed; CI checks pending: wait, then run merge again");
+		expect(String(pending.output.next)).toBe(
+			"review passed; CI checks pending: wait, then run merge again",
+		);
 		expect(readShip(statePath)).toMatchObject({ phase: "pr-open" });
 		expect(readShip(statePath)?.blockedReason).toBeUndefined();
 		expect(comments).toEqual([]);
@@ -354,9 +499,23 @@ describe("runShip", () => {
 	});
 
 	test("a waiting round does not count later: one failed review after it is still below maxRounds", async () => {
-		const waited: ReviewResult = { source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 };
+		const waited: ReviewResult = {
+			source: "cli",
+			status: "completed",
+			score: 5,
+			comments: [],
+			headSha: "abc",
+			at: 1,
+		};
 		writeShip(statePath, { pr: PR, phase: "pr-open", rounds: [waited] });
-		const out = await ship("review", deps({ status: { headSha: "def" }, head: "def", review: { score: 3, comments: [{ body: "fix" }] } }));
+		const out = await ship(
+			"review",
+			deps({
+				status: { headSha: "def" },
+				head: "def",
+				review: { score: 3, comments: [{ body: "fix" }] },
+			}),
+		);
 		expect(out.output).toMatchObject({ round: 2, failedRounds: 1, maxRounds: 2 });
 		expect(readShip(statePath)?.phase).toBe("needs-fixes");
 		expect(comments).toEqual([]);
@@ -366,7 +525,10 @@ describe("runShip", () => {
 		writeShip(statePath, { pr: PR, phase: "pr-open" });
 		const closed = await ship("review", deps({ status: { state: "CLOSED" } }));
 		expect(String(closed.output.next)).toBe("stop: PR closed without merge");
-		expect(readShip(statePath)).toMatchObject({ phase: "blocked", blockedReason: "PR closed without merge" });
+		expect(readShip(statePath)).toMatchObject({
+			phase: "blocked",
+			blockedReason: "PR closed without merge",
+		});
 		expect(comments).toEqual([]);
 		writeShip(statePath, { rounds: [], phase: "pr-open", blockedReason: undefined });
 		const merged = await ship("review", deps({ status: { state: "MERGED" } }));
@@ -376,16 +538,29 @@ describe("runShip", () => {
 
 	test("run finishes the cleanup when the PR was merged outside the flow", async () => {
 		const out = await ship("run", deps({ existingPr: PR, status: { state: "MERGED" } }));
-		expect(out.output).toMatchObject({ ok: true, review: { ready: true }, merge: { ok: true, merged: true, alreadyMerged: true } });
+		expect(out.output).toMatchObject({
+			ok: true,
+			review: { ready: true },
+			merge: { ok: true, merged: true, alreadyMerged: true },
+		});
 		expect(calls).toContain("delete:feat");
 		expect(calls).toContain("sync:master");
 		expect(calls.some((c) => c.startsWith("merge:"))).toBe(false);
 	});
 
 	test("a PR merged outside the flow with a failing review is blocked, not ready, and run reports ok false", async () => {
-		const out = await ship("run", deps({ existingPr: PR, status: { state: "MERGED" }, review: { score: 3, comments: [{ body: "fix" }] } }));
+		const out = await ship(
+			"run",
+			deps({
+				existingPr: PR,
+				status: { state: "MERGED" },
+				review: { score: 3, comments: [{ body: "fix" }] },
+			}),
+		);
 		expect(out.output).toMatchObject({ ok: false, review: { ready: false, blocked: true } });
-		expect(String(out.output.next)).toBe("stop: PR was merged outside the ship flow before its review passed");
+		expect(String(out.output.next)).toBe(
+			"stop: PR was merged outside the ship flow before its review passed",
+		);
 		expect(out.output.merge).toBeUndefined();
 		expect(calls.some((c) => c.startsWith("delete:") || c.startsWith("sync:"))).toBe(false);
 		expect(comments).toEqual([]);
@@ -399,20 +574,35 @@ describe("runShip", () => {
 	});
 
 	test("merge refuses on gate failure", async () => {
-		writeShip(statePath, { pr: PR, rounds: [{ source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 }] });
+		writeShip(statePath, {
+			pr: PR,
+			rounds: [
+				{ source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 },
+			],
+		});
 		const out = await ship("merge", deps({ status: { checks: "failing" } }));
 		expect(out.output.ok).toBe(false);
 		expect(calls).toEqual([]);
 	});
 
 	test("merge refuses when head moved since the review", async () => {
-		writeShip(statePath, { pr: PR, rounds: [{ source: "cli", status: "completed", score: 5, comments: [], headSha: "old", at: 1 }] });
+		writeShip(statePath, {
+			pr: PR,
+			rounds: [
+				{ source: "cli", status: "completed", score: 5, comments: [], headSha: "old", at: 1 },
+			],
+		});
 		expect((await ship("merge", deps())).output.ok).toBe(false);
 		expect(calls).toEqual([]);
 	});
 
 	test("merge merges, syncs base, marks merged", async () => {
-		writeShip(statePath, { pr: PR, rounds: [{ source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 }] });
+		writeShip(statePath, {
+			pr: PR,
+			rounds: [
+				{ source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 },
+			],
+		});
 		const out = await ship("merge", deps());
 		expect(out.output).toMatchObject({ ok: true, merged: true });
 		expect(calls).toEqual(["merge:squash:abc", "delete:feat", "sync:master"]);
@@ -422,7 +612,14 @@ describe("runShip", () => {
 	test("run chains all steps to merge", async () => {
 		const out = await ship("run", deps());
 		expect(out.output.next).toBe("run ultrathink-sync");
-		expect(calls).toEqual(["push:feat", "create:master<-feat", "review:7:abc", "merge:squash:abc", "delete:feat", "sync:master"]);
+		expect(calls).toEqual([
+			"push:feat",
+			"create:master<-feat",
+			"review:7:abc",
+			"merge:squash:abc",
+			"delete:feat",
+			"sync:master",
+		]);
 	});
 
 	test("run stops at the first unmet step", async () => {
@@ -435,7 +632,14 @@ describe("runShip", () => {
 	});
 
 	test("run reports ok false when its review step fails", async () => {
-		const round: ReviewResult = { source: "pr", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 };
+		const round: ReviewResult = {
+			source: "pr",
+			status: "completed",
+			score: 5,
+			comments: [],
+			headSha: "abc",
+			at: 1,
+		};
 		writeShip(statePath, { pr: PR, rounds: [round] });
 		const out = await ship("run", deps({ existingPr: PR }));
 		expect(out.output).toMatchObject({ ok: false, review: { ok: false, ready: false } });
@@ -459,7 +663,12 @@ describe("runShip", () => {
 	});
 
 	test("review reuses a completed round for the same head", async () => {
-		writeShip(statePath, { pr: PR, rounds: [{ source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 }] });
+		writeShip(statePath, {
+			pr: PR,
+			rounds: [
+				{ source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 },
+			],
+		});
 		const out = await ship("review", deps({ head: "unpushed" }));
 		expect(out.output).toMatchObject({ reused: true, ready: true, round: 1 });
 		expect(calls).toEqual([]);
@@ -467,47 +676,96 @@ describe("runShip", () => {
 
 	test("a reused PR round re-reads threads: a resolved finding clears; a failed lookup is not ready and persists nothing", async () => {
 		const open = { body: "intended behavior", path: "a.ts", threadId: "T1" };
-		const round: ReviewResult = { source: "pr", status: "completed", score: 5, comments: [open], headSha: "abc", at: 1 };
+		const round: ReviewResult = {
+			source: "pr",
+			status: "completed",
+			score: 5,
+			comments: [open],
+			headSha: "abc",
+			at: 1,
+		};
 		writeShip(statePath, { pr: PR, rounds: [round] });
 		const failed = await ship("review", deps());
 		expect(failed.output).toMatchObject({ ok: false, ready: false });
 		expect(String(failed.output.reason)).toContain("could not read review threads");
 		expect(readShip(statePath)?.rounds).toMatchObject([{ comments: [open] }]);
-		const resolved = { id: "T1", isResolved: true, isOutdated: false, author: "greptile-apps", body: "intended behavior" };
+		const resolved = {
+			id: "T1",
+			isResolved: true,
+			isOutdated: false,
+			author: "greptile-apps",
+			body: "intended behavior",
+		};
 		const threads: ReviewThreads = { ok: true, threads: [resolved] };
 		const cleared = await ship("review", deps({ threads }));
 		expect(cleared.output).toMatchObject({ reused: true, ready: true, round: 1, comments: [] });
 		expect(readShip(statePath)?.rounds).toMatchObject([{ comments: [] }]);
 		expect((await ship("merge", deps())).output).toMatchObject({ ok: false, merged: false });
 		expect(calls.some((c) => c.startsWith("merge:"))).toBe(false);
-		expect((await ship("merge", deps({ threads }))).output).toMatchObject({ ok: true, merged: true });
+		expect((await ship("merge", deps({ threads }))).output).toMatchObject({
+			ok: true,
+			merged: true,
+		});
 	});
 
 	test("a clean stored PR round does not pass review or merge when the threads cannot be read", async () => {
-		const round: ReviewResult = { source: "pr", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 };
+		const round: ReviewResult = {
+			source: "pr",
+			status: "completed",
+			score: 5,
+			comments: [],
+			headSha: "abc",
+			at: 1,
+		};
 		writeShip(statePath, { pr: PR, rounds: [round] });
 		expect((await ship("review", deps())).output).toMatchObject({ ok: false, ready: false });
 		expect((await ship("merge", deps())).output).toMatchObject({ ok: false, merged: false });
-		const posted = { id: "T9", isResolved: false, isOutdated: false, author: "greptile-apps", body: "**New finding**" };
+		const posted = {
+			id: "T9",
+			isResolved: false,
+			isOutdated: false,
+			author: "greptile-apps",
+			body: "**New finding**",
+		};
 		const merge = await ship("merge", deps({ threads: { ok: true, threads: [posted] } }));
-		expect(merge.output).toMatchObject({ ok: false, merged: false, reason: "1 open review comment(s)" });
+		expect(merge.output).toMatchObject({
+			ok: false,
+			merged: false,
+			reason: "1 open review comment(s)",
+		});
 		expect(calls.some((c) => c.startsWith("merge:"))).toBe(false);
 	});
 
 	test("failed fresh thread scans do not spend review retries or restart a completed review", async () => {
-		writeShip(statePath, { pr: PR, phase: "pr-open", pending: { headSha: "abc", source: "pr", since: 0, runId: "completed" } });
+		writeShip(statePath, {
+			pr: PR,
+			phase: "pr-open",
+			pending: { headSha: "abc", source: "pr", since: 0, runId: "completed" },
+		});
 		const client = {
 			async call(name: string): Promise<unknown> {
-				if (name === "list_repositories") return { repositories: [{ name: "o/r", remote: "github", defaultBranch: PR.base }] };
-				if (name === "list_code_reviews") return { codeReviews: [{ id: "completed", commitSha: "abc", status: "COMPLETED" }] };
+				if (name === "list_repositories")
+					return { repositories: [{ name: "o/r", remote: "github", defaultBranch: PR.base }] };
+				if (name === "list_code_reviews")
+					return { codeReviews: [{ id: "completed", commitSha: "abc", status: "COMPLETED" }] };
 				if (name === "get_code_review") return { codeReview: { body: "Confidence Score: 5/5" } };
 				throw new Error(`completed review must remain reusable, not call ${name}`);
 			},
 		};
-		const failed: ShipDeps = { ...deps({ config: { reviewRetries: 0 } }), greptile: () => client, review: runReview };
+		const failed: ShipDeps = {
+			...deps({ config: { reviewRetries: 0 } }),
+			greptile: () => client,
+			review: runReview,
+		};
 		for (let i = 0; i < 2; i++) {
 			clock += CONFIG.reviewTimeoutMs + 1;
-			expect((await ship("review", failed)).output).toMatchObject({ ok: false, ready: false, status: "unverified", reviewId: "completed", round: 0 });
+			expect((await ship("review", failed)).output).toMatchObject({
+				ok: false,
+				ready: false,
+				status: "unverified",
+				reviewId: "completed",
+				round: 0,
+			});
 			expect(readShip(statePath)).toMatchObject({ phase: "pr-open", rounds: [] });
 			expect(readShip(statePath)?.pending).toBeUndefined();
 			expect((await ship("merge", failed)).output).toMatchObject({ ok: false, merged: false });
@@ -517,14 +775,28 @@ describe("runShip", () => {
 			greptile: () => client,
 			review: runReview,
 		};
-		expect((await ship("review", recovered)).output).toMatchObject({ ok: true, ready: true, passed: true, round: 1 });
-		expect(readShip(statePath)?.rounds).toMatchObject([{ status: "completed", reviewId: "completed", score: 5 }]);
+		expect((await ship("review", recovered)).output).toMatchObject({
+			ok: true,
+			ready: true,
+			passed: true,
+			round: 1,
+		});
+		expect(readShip(statePath)?.rounds).toMatchObject([
+			{ status: "completed", reviewId: "completed", score: 5 },
+		]);
 		expect((await ship("merge", recovered)).output).toMatchObject({ ok: true, merged: true });
 	});
 
 	test("review thread scans share the review call budget: an over-deadline scan stops fail-closed", async () => {
 		const open = { body: "intended behavior", path: "a.ts", threadId: "T1" };
-		const round: ReviewResult = { source: "pr", status: "completed", score: 5, comments: [open], headSha: "abc", at: 1 };
+		const round: ReviewResult = {
+			source: "pr",
+			status: "completed",
+			score: 5,
+			comments: [open],
+			headSha: "abc",
+			at: 1,
+		};
 		writeShip(statePath, { pr: PR, rounds: [round] });
 		// The refresh runs after entry, so the second clock read already passes the entry-now + waitMs deadline.
 		const base = deps({ threads: { ok: true, threads: [] } });
@@ -534,7 +806,6 @@ describe("runShip", () => {
 		expect(out.output).toMatchObject({ ok: false, ready: false });
 		expect(String(out.output.reason)).toContain("review threads scan exceeded its deadline");
 		expect(readShip(statePath)?.rounds).toMatchObject([{ comments: [open] }]);
-
 	});
 
 	test("review refuses when local HEAD differs from the PR head", async () => {
@@ -551,10 +822,20 @@ describe("runShip", () => {
 	});
 
 	describe("pending review", () => {
-		const pendingReview: Partial<ReviewResult> = { status: "pending", score: null, reviewId: "run-1" };
+		const pendingReview: Partial<ReviewResult> = {
+			status: "pending",
+			score: null,
+			reviewId: "run-1",
+		};
 
 		test("is not a round and keeps `since` for the same head", async () => {
-			writeShip(statePath, { pr: PR, phase: "needs-fixes", rounds: [{ source: "cli", status: "completed", score: 3, comments: [], headSha: "old", at: 1 }] });
+			writeShip(statePath, {
+				pr: PR,
+				phase: "needs-fixes",
+				rounds: [
+					{ source: "cli", status: "completed", score: 3, comments: [], headSha: "old", at: 1 },
+				],
+			});
 			const first = await ship("review", deps({ review: pendingReview, now: 2000 }));
 			expect(first.output).toMatchObject({
 				ok: true,
@@ -563,7 +844,10 @@ describe("runShip", () => {
 				round: 1,
 				next: "Greptile review still running; run review again (safe to repeat, it resumes the same review)",
 			});
-			const second = await ship("review", deps({ review: { ...pendingReview, reviewId: undefined }, now: 2900 }));
+			const second = await ship(
+				"review",
+				deps({ review: { ...pendingReview, reviewId: undefined }, now: 2900 }),
+			);
 			expect(second.output.status).toBe("pending");
 			expect(readShip(statePath)).toMatchObject({
 				phase: "needs-fixes",
@@ -575,11 +859,20 @@ describe("runShip", () => {
 		test("restarts `since` when the head moved", async () => {
 			writeShip(statePath, { pr: PR, pending: { headSha: "old", source: "cli", since: 1 } });
 			await ship("review", deps({ review: pendingReview, now: 5000 }));
-			expect(readShip(statePath)?.pending).toEqual({ headSha: "abc", source: "cli", since: 5000, runId: "run-1" });
+			expect(readShip(statePath)?.pending).toEqual({
+				headSha: "abc",
+				source: "cli",
+				since: 5000,
+				runId: "run-1",
+			});
 		});
 
 		test("becomes a timeout round after reviewTimeoutMs", async () => {
-			writeShip(statePath, { pr: PR, phase: "pr-open", pending: { headSha: "abc", source: "cli", since: 2000, runId: "run-1" } });
+			writeShip(statePath, {
+				pr: PR,
+				phase: "pr-open",
+				pending: { headSha: "abc", source: "cli", since: 2000, runId: "run-1" },
+			});
 			const out = await ship("review", deps({ review: pendingReview, now: 3001 }));
 			expect(out.output).toMatchObject({ status: "timeout", round: 1, ready: false });
 			const state = readShip(statePath);
@@ -590,12 +883,24 @@ describe("runShip", () => {
 
 		test("a tool error that persists to the timeout stays in the timed-out round's error", async () => {
 			writeShip(statePath, { pr: PR, pending: { headSha: "abc", source: "pr", since: 2000 } });
-			const failing = { ...pendingReview, source: "pr" as const, error: "list_code_reviews: Repository not found" };
+			const failing = {
+				...pendingReview,
+				source: "pr" as const,
+				error: "list_code_reviews: Repository not found",
+			};
 			const early = await ship("review", deps({ review: failing, now: 2500 }));
-			expect(early.output).toMatchObject({ status: "pending", error: "list_code_reviews: Repository not found", round: 0 });
+			expect(early.output).toMatchObject({
+				status: "pending",
+				error: "list_code_reviews: Repository not found",
+				round: 0,
+			});
 			await ship("review", deps({ review: failing, now: 3001 }));
 			expect(readShip(statePath)?.rounds).toMatchObject([
-				{ status: "timeout", error: "review still pending after 1000ms (last error: list_code_reviews: Repository not found)" },
+				{
+					status: "timeout",
+					error:
+						"review still pending after 1000ms (last error: list_code_reviews: Repository not found)",
+				},
 			]);
 		});
 
@@ -608,7 +913,9 @@ describe("runShip", () => {
 
 		test("run stops at a pending review", async () => {
 			const out = await ship("run", deps({ review: pendingReview }));
-			expect(out.output.next).toBe("Greptile review still running; run review again (safe to repeat, it resumes the same review)");
+			expect(out.output.next).toBe(
+				"Greptile review still running; run review again (safe to repeat, it resumes the same review)",
+			);
 			expect(calls).toEqual(["push:feat", "create:master<-feat", "review:7:abc"]);
 		});
 	});
@@ -618,7 +925,10 @@ describe("runShip", () => {
 		const finding = { path: "a.ts", line: 4, severity: "P1", body: "null deref" };
 		await ship("review", deps({ review: { score: 3, comments: [finding] } }));
 		expect(comments).toEqual([]);
-		await ship("review", deps({ status: { headSha: "def" }, review: { score: 3, comments: [finding] } }));
+		await ship(
+			"review",
+			deps({ status: { headSha: "def" }, review: { score: 3, comments: [finding] } }),
+		);
 		expect(comments).toHaveLength(1);
 		expect(comments[0]).toContain("a.ts:4 P1 null deref");
 		expect(comments[0]).toContain("Left open for human follow-up");
@@ -626,15 +936,33 @@ describe("runShip", () => {
 	});
 
 	test("review failing more than reviewRetries times on the same head blocks", async () => {
-		writeShip(statePath, { pr: PR, rounds: [{ source: "cli", status: "failed", score: null, comments: [], headSha: "abc", at: 1 }] });
-		const out = await ship("review", deps({ config: { maxRounds: 9, reviewRetries: 1 }, review: { status: "timeout", score: null } }));
-		expect(String(out.output.next)).toBe("stop: Greptile review timed out 2 times on abc (ship.reviewRetries 1)");
+		writeShip(statePath, {
+			pr: PR,
+			rounds: [
+				{ source: "cli", status: "failed", score: null, comments: [], headSha: "abc", at: 1 },
+			],
+		});
+		const out = await ship(
+			"review",
+			deps({
+				config: { maxRounds: 9, reviewRetries: 1 },
+				review: { status: "timeout", score: null },
+			}),
+		);
+		expect(String(out.output.next)).toBe(
+			"stop: Greptile review timed out 2 times on abc (ship.reviewRetries 1)",
+		);
 		expect(readShip(statePath)?.phase).toBe("blocked");
 		expect(comments).toHaveLength(1);
 	});
 
 	describe("failed Greptile review", () => {
-		const failed: Partial<ReviewResult> = { status: "failed", score: null, reviewId: "run-1", error: "Greptile review FAILED" };
+		const failed: Partial<ReviewResult> = {
+			status: "failed",
+			score: null,
+			reviewId: "run-1",
+			error: "Greptile review FAILED",
+		};
 
 		test("is re-triggered with the failed review marked stale and never counts toward maxRounds", async () => {
 			writeShip(statePath, { pr: PR, phase: "pr-open" });
@@ -650,14 +978,20 @@ describe("runShip", () => {
 			expect(reviewInputs[0]?.staleReviewIds).toEqual([]);
 			const second = await ship("review", deps({ review: { ...failed, reviewId: "run-2" } }));
 			expect(second.output).toMatchObject({ blocked: false, failedRounds: 0, round: 2 });
-			expect(String(second.output.next)).toEndWith("run review again to re-trigger it (retry 2 of 3)");
+			expect(String(second.output.next)).toEndWith(
+				"run review again to re-trigger it (retry 2 of 3)",
+			);
 			expect(reviewInputs[1]?.staleReviewIds).toEqual(["run-1"]);
 			expect(readShip(statePath)?.phase).toBe("needs-fixes");
 			expect(comments).toEqual([]);
 			const passed = await ship("review", deps());
 			expect(reviewInputs[2]?.staleReviewIds).toEqual(["run-1", "run-2"]);
 			expect(passed.output).toMatchObject({ ready: true, passed: true, failedRounds: 0, round: 3 });
-			expect(readShip(statePath)?.attempts?.map((a) => a.outcome)).toEqual(["failed", "failed", "passed"]);
+			expect(readShip(statePath)?.attempts?.map((a) => a.outcome)).toEqual([
+				"failed",
+				"failed",
+				"passed",
+			]);
 		});
 
 		test("blocks with one comment once the failures on one head exceed reviewRetries", async () => {
@@ -666,8 +1000,13 @@ describe("runShip", () => {
 			expect((await ship("review", retryOnce)).output).toMatchObject({ blocked: false });
 			expect(comments).toEqual([]);
 			const second = await ship("review", retryOnce);
-			const reason = "Greptile review failed 2 times on abc (ship.reviewRetries 1): Greptile review FAILED";
-			expect(second.output).toMatchObject({ blocked: true, failedRounds: 0, next: `stop: ${reason}` });
+			const reason =
+				"Greptile review failed 2 times on abc (ship.reviewRetries 1): Greptile review FAILED";
+			expect(second.output).toMatchObject({
+				blocked: true,
+				failedRounds: 0,
+				next: `stop: ${reason}`,
+			});
 			expect(readShip(statePath)).toMatchObject({ phase: "blocked", blockedReason: reason });
 			expect(comments).toHaveLength(1);
 			expect(comments[0]).toContain("Attempts:");
@@ -719,7 +1058,12 @@ describe("runShip", () => {
 		for (const rounds of [[], [PASSED]]) {
 			writeShip(statePath, { pr: PR, rounds, phase: "pr-open", blockedReason: undefined });
 			const out = await ship("merge", deps({ status: { state: "CLOSED" } }));
-			expect(out.output).toMatchObject({ ok: false, merged: false, blocked: true, reason: "PR closed without merge" });
+			expect(out.output).toMatchObject({
+				ok: false,
+				merged: false,
+				blocked: true,
+				reason: "PR closed without merge",
+			});
 			expect(readShip(statePath)?.phase).toBe("blocked");
 		}
 		expect(calls).toEqual([]);
@@ -727,7 +1071,15 @@ describe("runShip", () => {
 	});
 
 	describe("review restart for a failed round without a review id", () => {
-		const idless: ReviewResult = { source: "cli", status: "failed", score: null, comments: [], headSha: "abc", error: "no score", at: 1 };
+		const idless: ReviewResult = {
+			source: "cli",
+			status: "failed",
+			score: null,
+			comments: [],
+			headSha: "abc",
+			error: "no score",
+			at: 1,
+		};
 
 		test("the next review restarts; once its fresh review is pending it is resumed, not restarted", async () => {
 			writeShip(statePath, { pr: PR, rounds: [idless], phase: "needs-fixes" });
@@ -746,7 +1098,12 @@ describe("runShip", () => {
 	});
 
 	test("merge substitutes an allowed method", async () => {
-		writeShip(statePath, { pr: PR, rounds: [{ source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 }] });
+		writeShip(statePath, {
+			pr: PR,
+			rounds: [
+				{ source: "cli", status: "completed", score: 5, comments: [], headSha: "abc", at: 1 },
+			],
+		});
 		const out = await ship("merge", deps({ methods: ["rebase"], config: { deleteBranch: false } }));
 		expect(out.output.method).toBe("rebase");
 		expect(calls).toEqual(["merge:rebase:abc"]);
@@ -759,7 +1116,10 @@ describe("runShip", () => {
 		});
 
 		test("CI pending on the first polls, then passing: merges within one call", async () => {
-			const out = await ship("merge", deps({ statuses: [{ checks: "pending" }, { checks: "pending" }] }));
+			const out = await ship(
+				"merge",
+				deps({ statuses: [{ checks: "pending" }, { checks: "pending" }] }),
+			);
 			expect(out.output).toMatchObject({ ok: true, merged: true, next: "run ultrathink-sync" });
 			expect(sleeps).toEqual([10, 15]);
 			expect(calls).toEqual(["merge:squash:abc", "delete:feat", "sync:master"]);
@@ -770,17 +1130,32 @@ describe("runShip", () => {
 		test("a call that runs out of time waits without blocking; past mergeTimeoutMs on the head it blocks with one comment", async () => {
 			const pending = deps({ status: { checks: "pending" } });
 			const first = await ship("merge", pending);
-			expect(first.output).toMatchObject({ ok: false, merged: false, waiting: true, reason: "CI checks pending", polls: 6, waitedMs: 100 });
+			expect(first.output).toMatchObject({
+				ok: false,
+				merged: false,
+				waiting: true,
+				reason: "CI checks pending",
+				polls: 6,
+				waitedMs: 100,
+			});
 			expect(String(first.output.next)).toStartWith("run merge again: CI checks pending (waited ");
 			expect(first.output.blocked).toBeUndefined();
-			expect(readShip(statePath)).toMatchObject({ phase: "pr-open", waiting: { headSha: "abc", since: 1000 } });
+			expect(readShip(statePath)).toMatchObject({
+				phase: "pr-open",
+				waiting: { headSha: "abc", since: 1000 },
+			});
 			expect(readShip(statePath)?.blockedReason).toBeUndefined();
 			expect(outcomes()).toEqual(["waiting"]);
 			expect(comments).toEqual([]);
 
 			clock += CONFIG.mergeTimeoutMs;
 			const late = await ship("merge", pending);
-			expect(late.output).toMatchObject({ ok: false, merged: false, blocked: true, commented: true });
+			expect(late.output).toMatchObject({
+				ok: false,
+				merged: false,
+				blocked: true,
+				commented: true,
+			});
 			expect(String(late.output.reason)).toStartWith("merge still not possible after ");
 			expect(String(late.output.reason)).toEndWith(" min on abc: CI checks pending");
 			expect(readShip(statePath)?.phase).toBe("blocked");
@@ -795,9 +1170,15 @@ describe("runShip", () => {
 		});
 
 		test("a transient GitHub merge error is retried and merges in the same call", async () => {
-			const out = await ship("merge", deps({ merges: [{ ok: false, error: "GraphQL: something went wrong" }] }));
+			const out = await ship(
+				"merge",
+				deps({ merges: [{ ok: false, error: "GraphQL: something went wrong" }] }),
+			);
 			expect(out.output).toMatchObject({ ok: true, merged: true });
-			expect(calls.filter((c) => c.startsWith("merge:"))).toEqual(["merge:squash:abc", "merge:squash:abc"]);
+			expect(calls.filter((c) => c.startsWith("merge:"))).toEqual([
+				"merge:squash:abc",
+				"merge:squash:abc",
+			]);
 			expect(sleeps).toEqual([10]);
 			expect(readShip(statePath)?.attempts).toMatchObject([
 				{ step: "merge", outcome: "retry", detail: "merge failed: GraphQL: something went wrong" },
@@ -808,7 +1189,11 @@ describe("runShip", () => {
 		test("an access denial blocks with one comment", async () => {
 			const error = "GraphQL: Resource not accessible by integration (mergePullRequest)";
 			const out = await ship("merge", deps({ merges: [{ ok: false, error }] }));
-			expect(out.output).toMatchObject({ blocked: true, reason: `merge refused by GitHub: ${error}`, commented: true });
+			expect(out.output).toMatchObject({
+				blocked: true,
+				reason: `merge refused by GitHub: ${error}`,
+				commented: true,
+			});
 			expect(comments).toHaveLength(1);
 			expect(sleeps).toEqual([]);
 		});
@@ -817,7 +1202,13 @@ describe("runShip", () => {
 			const error = "At least 1 approving review is required by reviewers with write access.";
 			const out = await ship("merge", deps({ merges: [{ ok: false, error }] }));
 			const reason = `merge refused by GitHub: ${error}`;
-			expect(out.output).toMatchObject({ ok: false, merged: false, blocked: true, reason, next: `stop: ${reason}` });
+			expect(out.output).toMatchObject({
+				ok: false,
+				merged: false,
+				blocked: true,
+				reason,
+				next: `stop: ${reason}`,
+			});
 			expect(readShip(statePath)).toMatchObject({ phase: "blocked", blockedReason: reason });
 			expect(comments).toHaveLength(1);
 			expect(comments[0]).toContain(`**ultrathink-ship stopped:** ${reason}`);
@@ -827,7 +1218,12 @@ describe("runShip", () => {
 		test("a GitHub merge conflict goes back to the agent without blocking", async () => {
 			const error = "Pull Request has merge conflicts";
 			const out = await ship("merge", deps({ merges: [{ ok: false, error }] }));
-			expect(out.output).toMatchObject({ ok: false, merged: false, reason: error, next: `${error}; run review again` });
+			expect(out.output).toMatchObject({
+				ok: false,
+				merged: false,
+				reason: error,
+				next: `${error}; run review again`,
+			});
 			expect(out.output.blocked).toBeUndefined();
 			expect(readShip(statePath)?.phase).toBe("pr-open");
 			expect(outcomes()).toEqual(["needs-agent"]);
@@ -836,7 +1232,10 @@ describe("runShip", () => {
 
 		test("merge conflicts and failing CI go back to the agent without merging", async () => {
 			const cases: [Partial<PrStatus>, string][] = [
-				[{ mergeable: "CONFLICTING" }, "merge conflicts: resolve them against the base, push, then run review again"],
+				[
+					{ mergeable: "CONFLICTING" },
+					"merge conflicts: resolve them against the base, push, then run review again",
+				],
 				[{ checks: "failing" }, "CI checks failing: fix CI, commit, push, then run review again"],
 			];
 			for (const [status, next] of cases) {
@@ -850,10 +1249,16 @@ describe("runShip", () => {
 		});
 
 		test("a base branch policy refusal is retried until mergeTimeoutMs, then blocks with one comment", async () => {
-			const error = "X Pull request #7 is not mergeable: the base branch policy prohibits the merge.";
+			const error =
+				"X Pull request #7 is not mergeable: the base branch policy prohibits the merge.";
 			const refused = deps({ merges: Array.from({ length: 20 }, () => ({ ok: false, error })) });
 			const first = await ship("merge", refused);
-			expect(first.output).toMatchObject({ ok: false, merged: false, waiting: true, reason: `merge failed: ${error}` });
+			expect(first.output).toMatchObject({
+				ok: false,
+				merged: false,
+				waiting: true,
+				reason: `merge failed: ${error}`,
+			});
 			expect(readShip(statePath)?.phase).toBe("pr-open");
 			expect(comments).toEqual([]);
 			clock += CONFIG.mergeTimeoutMs;
@@ -893,7 +1298,10 @@ describe("runShip", () => {
 			clock += CONFIG.mergeTimeoutMs;
 			expect((await ship("merge", pending)).output).toMatchObject({ blocked: true });
 			expect(readShip(statePath)?.waiting).toBeUndefined();
-			expect((await ship("review", pending)).output).toMatchObject({ passed: true, blocked: false });
+			expect((await ship("review", pending)).output).toMatchObject({
+				passed: true,
+				blocked: false,
+			});
 			expect(readShip(statePath)?.phase).toBe("pr-open");
 			const again = await ship("merge", pending);
 			expect(again.output).toMatchObject({ ok: false, waiting: true });
@@ -904,13 +1312,21 @@ describe("runShip", () => {
 		test("merge without any review round goes back to the agent", async () => {
 			writeShip(statePath, { rounds: [] });
 			const out = await ship("merge", deps());
-			expect(out.output).toMatchObject({ ok: false, merged: false, reason: "no review has run", next: "no review has run; run review again" });
+			expect(out.output).toMatchObject({
+				ok: false,
+				merged: false,
+				reason: "no review has run",
+				next: "no review has run; run review again",
+			});
 			expect(calls).toEqual([]);
 		});
 
 		test("run merges once CI passes when the review passed while CI was pending", async () => {
 			writeShip(statePath, { pr: undefined, rounds: [], phase: "not-done" });
-			const out = await ship("run", deps({ statuses: [{ checks: "pending" }, { checks: "pending" }] }));
+			const out = await ship(
+				"run",
+				deps({ statuses: [{ checks: "pending" }, { checks: "pending" }] }),
+			);
 			expect(out.output).toMatchObject({
 				ok: true,
 				review: { passed: true, ready: false },
@@ -918,63 +1334,33 @@ describe("runShip", () => {
 				next: "run ultrathink-sync",
 			});
 			expect(sleeps).toEqual([10]);
-			expect(calls).toEqual(["push:feat", "create:master<-feat", "review:7:abc", "merge:squash:abc", "delete:feat", "sync:master"]);
+			expect(calls).toEqual([
+				"push:feat",
+				"create:master<-feat",
+				"review:7:abc",
+				"merge:squash:abc",
+				"delete:feat",
+				"sync:master",
+			]);
 		});
 	});
 });
 
 // Jev ship decision point through `ultrathink-ship assess` and `pr`. Canonical Decisions fixtures, defined per test file.
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
-interface Recorded {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body: unknown;
-}
-
-/** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): { fetch: typeof fetch; calls: Recorded[] } {
-	const calls: Recorded[] = [];
-	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-		const headers: Record<string, string> = {};
-		new Headers(init?.headers).forEach((value, key) => {
-			headers[key] = value;
-		});
-		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body;
-		calls.push({ url: String(input), method: init?.method ?? "GET", headers, body });
-		const next = queue[Math.min(calls.length, queue.length) - 1];
-		if (!next) throw new Error("empty queue");
-		return next();
-	}) as typeof fetch;
-	globalThis.fetch = fetchImpl;
-	return { fetch: fetchImpl, calls };
-}
-
-const JEV =
-	(p: number, key = "plan_worthy") =>
-	() =>
-		Response.json({
-			id: "gen-dec-test",
-			model: "typesafe/jev-1.13-20260917",
-			provider: "TypeSafe",
-			answers: { [key]: { type: "noul", noul: p } },
-			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
-		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
-	Response.json({ error: { code: s, message: `upstream said no for ${K}` } }, { status: s, headers });
-
-/** Never resolves; rejects with an AbortError when its signal fires (as src/grok/complete.test.ts hangingFetch). */
-function hangingFetch(onCall?: () => void): typeof fetch {
-	return ((_input: string | URL | Request, init?: RequestInit) =>
-		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-			onCall?.();
-		})) as typeof fetch;
-}
+	Response.json(
+		{ error: { code: s, message: `upstream said no for ${K}` } },
+		{ status: s, headers },
+	);
 
 const COMPLETE = "complete";
 const MODEL = "typesafe/jev-1.13-20260917";
-const JEV_ON: DecisionsConfig = { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: [...DEFAULT_DECISIONS_CONFIG.points] };
+const JEV_ON: DecisionsConfig = {
+	...DEFAULT_DECISIONS_CONFIG,
+	enabled: true,
+	points: [...DEFAULT_DECISIONS_CONFIG.points],
+};
 const DONE_REPLY = JSON.stringify({ done: true, confidence: 0.9, summary: "ok", gaps: [] });
 /** A session record the real judge can read (the shared fixture has no spec XML). */
 const SPEC_STATE = JSON.stringify({
@@ -986,7 +1372,12 @@ const SPEC_STATE = JSON.stringify({
 const realFetch = globalThis.fetch;
 
 /** Every failure of AC-4.1–4.9, as a fresh fetch per runtime. */
-const FAILURES: { name: string; kind: DecisionsErrorKind; fetch: () => typeof fetch; timeoutMs?: number }[] = [
+const FAILURES: {
+	name: string;
+	kind: DecisionsErrorKind;
+	fetch: () => typeof fetch;
+	timeoutMs?: number;
+}[] = [
 	{ name: "401", kind: "auth", fetch: () => recordingFetch([ERR(401)]).fetch },
 	{ name: "402", kind: "credits", fetch: () => recordingFetch([ERR(402)]).fetch },
 	{ name: "400", kind: "bad-request", fetch: () => recordingFetch([ERR(400)]).fetch },
@@ -997,16 +1388,29 @@ const FAILURES: { name: string; kind: DecisionsErrorKind; fetch: () => typeof fe
 		fetch: () => recordingFetch([ERR(status)]).fetch,
 	})),
 	{ name: "a hanging request", kind: "timeout", fetch: () => hangingFetch(), timeoutMs: 50 },
-	{ name: "a body that is not JSON", kind: "invalid-response", fetch: () => recordingFetch([() => new Response("{not json")]).fetch },
+	{
+		name: "a body that is not JSON",
+		kind: "invalid-response",
+		fetch: () => recordingFetch([() => new Response("{not json")]).fetch,
+	},
 	{
 		name: "a missing answer key",
 		kind: "invalid-response",
 		fetch: () =>
 			recordingFetch([
-				() => Response.json({ model: MODEL, answers: {}, usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 } }),
+				() =>
+					Response.json({
+						model: MODEL,
+						answers: {},
+						usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
+					}),
 			]).fetch,
 	},
-	{ name: "a noul out of range", kind: "invalid-response", fetch: () => recordingFetch([JEV(1.5, COMPLETE)]).fetch },
+	{
+		name: "a noul out of range",
+		kind: "invalid-response",
+		fetch: () => recordingFetch([JEV(1.5, COMPLETE)]).fetch,
+	},
 ];
 
 /** T6: the key and a bearer header never reach a collected output. */
@@ -1045,15 +1449,20 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 			...base,
 			assess: assessDone,
 			engine: async () => (judge === undefined ? undefined : async () => judge),
-			github: () => ({ ...github, createPr: (input) => (bodies.push(input.body), github.createPr(input)) }),
+			github: () => ({
+				...github,
+				createPr: (input) => (bodies.push(input.body), github.createPr(input)),
+			}),
 			decisions: (record) =>
 				createDecisions({
 					config: { ...JEV_ON, ...o.decisions },
 					sessionId: record.sessionId,
-					env: o.env ?? { OPENROUTER_API_KEY: K },
+					env: o.env ?? { ULTRATHINK_OPENROUTER_KEY: K },
 					storePath: join(dir, "mcp-credentials.json"),
 					fetch: o.fetch,
-					sleep: async () => {},
+					sleep: async () => {
+						// reason: test double, no backoff delay is wanted
+					},
 					random: () => 0.5,
 					debug: (line) => debug.push(line),
 				}),
@@ -1062,7 +1471,11 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 
 	test("Decisions killed: zero requests, and assess JSON and PR body equal the run without a Jev runtime", async () => {
 		const r = recordingFetch([JEV(0.03, COMPLETE)]);
-		const d = jevShip({ fetch: r.fetch, judge: DONE_REPLY, env: { OPENROUTER_API_KEY: K, ULTRATHINK_DECISIONS: "0" } });
+		const d = jevShip({
+			fetch: r.fetch,
+			judge: DONE_REPLY,
+			env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" },
+		});
 		const baseline = await ship("assess", { ...d, decisions: undefined });
 		expect((await ship("pr", { ...d, decisions: undefined })).output.ok).toBe(true);
 		writeFileSync(statePath, SPEC_STATE);
@@ -1090,23 +1503,46 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 		for (const [d, gap] of cases) {
 			writeFileSync(statePath, SPEC_STATE);
 			const out = await ship("assess", d);
-			expect(out.output).toMatchObject({ ok: true, done: false, decision: { p: 0.95, model: MODEL, action: "none" } });
+			expect(out.output).toMatchObject({
+				ok: true,
+				done: false,
+				decision: { p: 0.95, model: MODEL, action: "none" },
+			});
 			expect(out.output.gaps).toContain(gap);
 			expect("source" in out.output).toBe(false);
-			expect(readShip(statePath)?.assessment).toMatchObject({ done: false, decision: { action: "none" } });
-			expect((await ship("pr", d)).output).toMatchObject({ ok: false, reason: "task not assessed as done; run assess first" });
+			expect(readShip(statePath)?.assessment).toMatchObject({
+				done: false,
+				decision: { action: "none" },
+			});
+			expect((await ship("pr", d)).output).toMatchObject({
+				ok: false,
+				reason: "task not assessed as done; run assess first",
+			});
 		}
 		expect(bodies).toEqual([]);
 
 		writeFileSync(statePath, SPEC_STATE);
-		const vetoed = await ship("assess", jevShip({ fetch: recordingFetch([JEV(0.03, COMPLETE)]).fetch, judge: DONE_REPLY }));
-		expect(vetoed.output).toMatchObject({ ok: true, done: false, decision: { p: 0.03, action: "veto" } });
+		const vetoed = await ship(
+			"assess",
+			jevShip({ fetch: recordingFetch([JEV(0.03, COMPLETE)]).fetch, judge: DONE_REPLY }),
+		);
+		expect(vetoed.output).toMatchObject({
+			ok: true,
+			done: false,
+			decision: { p: 0.03, action: "veto" },
+		});
 	});
 
 	test("without autoMerge a Jev approval stands in for a missing judge (AC-6.4)", async () => {
 		const r = recordingFetch([JEV(0.79, COMPLETE)]);
 		const out = await ship("assess", jevShip({ fetch: r.fetch, config: { autoMerge: false } }));
-		expect(out.output).toMatchObject({ ok: true, done: true, source: "jev", gaps: [], decision: { p: 0.79, model: MODEL, action: "approve" } });
+		expect(out.output).toMatchObject({
+			ok: true,
+			done: true,
+			source: "jev",
+			gaps: [],
+			decision: { p: 0.79, model: MODEL, action: "approve" },
+		});
 		expect(readShip(statePath)?.assessment).toMatchObject({ done: true, source: "jev" });
 		expect(r.calls).toHaveLength(1);
 	});
@@ -1118,17 +1554,30 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 		];
 		for (const [p, line] of cases) {
 			writeFileSync(statePath, SPEC_STATE);
-			const d = jevShip({ fetch: recordingFetch([JEV(p, COMPLETE)]).fetch, judge: DONE_REPLY, config: { judge: "advisory" } });
+			const d = jevShip({
+				fetch: recordingFetch([JEV(p, COMPLETE)]).fetch,
+				judge: DONE_REPLY,
+				config: { judge: "advisory" },
+			});
 			const assess = await ship("assess", d);
-			expect(assess.output).toMatchObject({ ok: true, done: true, mode: "advisory", decision: { p, model: MODEL } });
+			expect(assess.output).toMatchObject({
+				ok: true,
+				done: true,
+				mode: "advisory",
+				decision: { p, model: MODEL },
+			});
 			expect((await ship("pr", d)).output.ok).toBe(true);
-			const section = bodies.at(-1)?.split("## Assessment\n\n")[1]?.split("\n\n")[0]?.trimEnd() ?? "";
+			const section =
+				bodies.at(-1)?.split("## Assessment\n\n")[1]?.split("\n\n")[0]?.trimEnd() ?? "";
 			expect(section.split("\n").at(-1)).toBe(line);
 		}
 	});
 
 	test("assess JSON carries the decision and the stored assessment the DecisionRecord (AC-6.11)", async () => {
-		const ok = await ship("assess", jevShip({ fetch: recordingFetch([JEV(0.94, COMPLETE)]).fetch, judge: DONE_REPLY }));
+		const ok = await ship(
+			"assess",
+			jevShip({ fetch: recordingFetch([JEV(0.94, COMPLETE)]).fetch, judge: DONE_REPLY }),
+		);
 		expect(ok.output).toMatchObject({ ok: true, done: true });
 		expect(ok.output.decision).toEqual({ p: 0.94, model: MODEL, action: "none" });
 		expect("source" in ok.output).toBe(false);
@@ -1147,7 +1596,10 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 		const okState = readFileSync(statePath, "utf8");
 
 		writeFileSync(statePath, SPEC_STATE);
-		const failed = await ship("assess", jevShip({ fetch: recordingFetch([ERR(402)]).fetch, judge: DONE_REPLY }));
+		const failed = await ship(
+			"assess",
+			jevShip({ fetch: recordingFetch([ERR(402)]).fetch, judge: DONE_REPLY }),
+		);
 		expect(failed.output).toMatchObject({ ok: true, done: true });
 		expect(failed.output.decision).toEqual({ action: "fail-open", error: "credits" });
 		expect(readShip(statePath)?.assessment?.decision).toMatchObject({
@@ -1163,7 +1615,10 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 
 	for (const failure of FAILURES) {
 		test(`${failure.name}: assess fails open and its JSON and PR body name the kind (AC-4.12)`, async () => {
-			const decisions: Partial<DecisionsConfig> = { points: ["ship"], ...(failure.timeoutMs ? { timeoutMs: failure.timeoutMs } : {}) };
+			const decisions: Partial<DecisionsConfig> = {
+				points: ["ship"],
+				...(failure.timeoutMs ? { timeoutMs: failure.timeoutMs } : {}),
+			};
 			const judged = jevShip({ fetch: failure.fetch(), judge: DONE_REPLY, decisions });
 			const baseline = await ship("assess", { ...judged, decisions: undefined });
 			const withJudge = await ship("assess", judged);
@@ -1184,7 +1639,13 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 			expect(bareRest).toEqual(bareBaseline.output);
 			expect(bareRest).toMatchObject({ done: false, gaps: ["no judge available"] });
 			expect(bareDecision).toEqual({ action: "fail-open", error: failure.kind });
-			expectNoKey(withJudge.output, withoutJudge.output, body, readFileSync(statePath, "utf8"), debug);
+			expectNoKey(
+				withJudge.output,
+				withoutJudge.output,
+				body,
+				readFileSync(statePath, "utf8"),
+				debug,
+			);
 		});
 	}
 });

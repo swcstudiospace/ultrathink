@@ -2,7 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fsyncDirectory } from "./durable.ts";
 

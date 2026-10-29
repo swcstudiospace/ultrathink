@@ -27,7 +27,10 @@ function headSessionId(path: string): string | undefined {
 	try {
 		const buffer = Buffer.alloc(HEAD_BYTES);
 		const read = readSync(fd, buffer, 0, HEAD_BYTES, 0);
-		const line = buffer.toString("utf8", 0, read).split("\n").find((l) => l.includes('"type":"session"'));
+		const line = buffer
+			.toString("utf8", 0, read)
+			.split("\n")
+			.find((l) => l.includes('"type":"session"'));
 		if (!line) return undefined;
 		const parsed: unknown = JSON.parse(line);
 		if (!parsed || typeof parsed !== "object" || !("id" in parsed)) return undefined;
@@ -37,20 +40,28 @@ function headSessionId(path: string): string | undefined {
 	}
 }
 
-export function isOmpSubagentSessionId(sessionId: string, opts: OmpSessionScanOptions = {}): boolean {
+export function isOmpSubagentSessionId(
+	sessionId: string,
+	opts: OmpSessionScanOptions = {},
+): boolean {
 	if (!SESSION_ID.test(sessionId)) return false;
 	try {
 		const root = opts.root ?? join(homedir(), ".omp", "agent", "sessions");
 		const now = opts.now ?? Date.now();
 		const maxAgeMs = opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
 		const glob = new Bun.Glob("*/*/*.jsonl");
-		for (const rel of glob.scanSync({ cwd: root, dot: true, followSymlinks: false, onlyFiles: true })) {
+		for (const rel of glob.scanSync({
+			cwd: root,
+			dot: true,
+			followSymlinks: false,
+			onlyFiles: true,
+		})) {
 			try {
 				const path = join(root, rel);
 				if (now - statSync(path).mtimeMs > maxAgeMs) continue;
 				if (headSessionId(path) === sessionId) return true;
 			} catch {
-				// fail-open: an unreadable or malformed session file is skipped
+				// reason: fail-open: an unreadable or malformed session file is skipped
 			}
 		}
 		return false;

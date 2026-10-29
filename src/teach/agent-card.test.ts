@@ -33,8 +33,14 @@ function moment(id: string, overrides: Partial<TeachableMoment> = {}): Teachable
 describe("A2A-DRAFT agent card", () => {
 	test("one moment becomes the only skill, with the body as its description and the draft markers set", () => {
 		const card = toAgentCard(moment("m1"));
-		expect(card).toMatchObject({ id: "claude-ultrathink", name: "claude-ultrathink", version: "0.1.0-draft" });
-		expect(card.skills).toEqual([{ id: "m1", name: "lesson m1", description: "body of m1", tags: ["t1"] }]);
+		expect(card).toMatchObject({
+			id: "claude-ultrathink",
+			name: "claude-ultrathink",
+			version: "0.1.0-draft",
+		});
+		expect(card.skills).toEqual([
+			{ id: "m1", name: "lesson m1", description: "body of m1", tags: ["t1"] },
+		]);
 		expect(card.metadata).toEqual({
 			sourcePhase: "phase-1",
 			createdAt: "2026-01-01T00:00:00.000Z",
@@ -60,7 +66,9 @@ describe("A2A-DRAFT agent card", () => {
 
 	test("no moments gives a card with a single placeholder skill", () => {
 		const card = toAgentCardFromMoments([]);
-		expect(card.skills).toEqual([{ id: "placeholder", name: "No teachable moments", description: "", tags: ["a2a-draft"] }]);
+		expect(card.skills).toEqual([
+			{ id: "placeholder", name: "No teachable moments", description: "", tags: ["a2a-draft"] },
+		]);
 		expect(card.metadata?._a2aDraft).toBe(true);
 	});
 });

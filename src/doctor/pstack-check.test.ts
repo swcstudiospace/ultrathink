@@ -30,7 +30,10 @@ function byId(findings: readonly Finding[], id: string): Finding {
 function plantPlugin(cursorDir: string, missing: string[] = []): string {
 	const root = join(cursorDir, "plugins", "cache", "cursor-public", "pstack", "synth");
 	mkdirSync(join(root, ".cursor-plugin"), { recursive: true });
-	writeFileSync(join(root, ".cursor-plugin", "plugin.json"), JSON.stringify({ name: "pstack", version: "1.2.3" }));
+	writeFileSync(
+		join(root, ".cursor-plugin", "plugin.json"),
+		JSON.stringify({ name: "pstack", version: "1.2.3" }),
+	);
 	writeFileSync(join(root, ".cache-complete"), "");
 	for (const name of SKILLS) {
 		if (missing.includes(name)) continue;
@@ -50,7 +53,11 @@ function plantHook(cursorDir: string): void {
 			hooks: {
 				beforeSubmitPrompt: [
 					{ type: "command", command: "node gsd.js", "gsd-managed": true },
-					{ type: "command", command: `node ${join(hooks, "ultrathink-cursor-pstack.js")}`, "ultrathink-managed": true },
+					{
+						type: "command",
+						command: `node ${join(hooks, "ultrathink-cursor-pstack.js")}`,
+						"ultrathink-managed": true,
+					},
 				],
 			},
 		}),
@@ -63,7 +70,9 @@ describe("checkPstack", () => {
 		try {
 			const findings = checkPstack(deps(dir));
 			expect(findings.every((finding) => finding.section === "pstack")).toBe(true);
-			expect(findings.some((finding) => finding.level === "warn" || finding.level === "error")).toBe(false);
+			expect(
+				findings.some((finding) => finding.level === "warn" || finding.level === "error"),
+			).toBe(false);
 			expect(byId(findings, "pstack.enabled")).toMatchObject({
 				level: "info",
 				title: "pstack bridge disabled",
@@ -86,22 +95,45 @@ describe("checkPstack", () => {
 			const configDir = join(dir, "xdg", "ultrathink");
 			mkdirSync(configDir, { recursive: true });
 			writeFileSync(join(configDir, "config.json"), JSON.stringify({ pstack: { enabled: true } }));
-			const env = { HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "xdg"), ULTRATHINK_PSTACK_CURSOR_DIR: cursorDir };
+			const env = {
+				HOME: join(dir, "home"),
+				XDG_CONFIG_HOME: join(dir, "xdg"),
+				ULTRATHINK_PSTACK_CURSOR_DIR: cursorDir,
+			};
 			const findings = checkPstack(deps(dir, env));
-			expect(byId(findings, "pstack.enabled")).toMatchObject({ level: "ok", detail: `Deciding source: ${join(configDir, "config.json")}` });
-			expect(byId(findings, "pstack.plugin")).toMatchObject({ level: "ok", title: "pstack 1.2.3", detail: root });
+			expect(byId(findings, "pstack.enabled")).toMatchObject({
+				level: "ok",
+				detail: `Deciding source: ${join(configDir, "config.json")}`,
+			});
+			expect(byId(findings, "pstack.plugin")).toMatchObject({
+				level: "ok",
+				title: "pstack 1.2.3",
+				detail: root,
+			});
 			expect(byId(findings, "pstack.skills")).toMatchObject({ level: "ok" });
-			expect(byId(findings, "pstack.skills").detail).toContain(join(root, "skills", "architect", "SKILL.md"));
+			expect(byId(findings, "pstack.skills").detail).toContain(
+				join(root, "skills", "architect", "SKILL.md"),
+			);
 			expect(byId(findings, "pstack.hook").level).toBe("ok");
 
-			const text = await runDoctorCommand([], { ...deps(dir, env), which: () => "/usr/bin/git", runVersion: () => "Python 3.12" });
+			const text = await runDoctorCommand([], {
+				...deps(dir, env),
+				which: () => "/usr/bin/git",
+				runVersion: () => "Python 3.12",
+			});
 			expect(text.exitCode).toBe(0);
 			expect(text.output).toContain("pstack\n");
 			expect(text.output).toContain("  ✓ pstack bridge enabled");
 			expect(text.output).toContain("  ✓ pstack 1.2.3");
-			const json = await runDoctorCommand(["--json"], { ...deps(dir, env), which: () => "/usr/bin/git", runVersion: () => "Python 3.12" });
+			const json = await runDoctorCommand(["--json"], {
+				...deps(dir, env),
+				which: () => "/usr/bin/git",
+				runVersion: () => "Python 3.12",
+			});
 			const report = JSON.parse(json.output) as { findings: Finding[] };
-			expect(report.findings.some((finding) => finding.id === "pstack.hook" && finding.level === "ok")).toBe(true);
+			expect(
+				report.findings.some((finding) => finding.id === "pstack.hook" && finding.level === "ok"),
+			).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -112,14 +144,26 @@ describe("checkPstack", () => {
 		try {
 			const home = join(dir, "home");
 			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
-			writeFileSync(join(home, ".config", "ultrathink", "config.json"), JSON.stringify({ ship: { enabled: false } }));
+			writeFileSync(
+				join(home, ".config", "ultrathink", "config.json"),
+				JSON.stringify({ ship: { enabled: false } }),
+			);
 			mkdirSync(join(home, ".claude"), { recursive: true });
-			writeFileSync(join(home, ".claude", "ultrathink.json"), JSON.stringify({ pstack: { enabled: true } }));
+			writeFileSync(
+				join(home, ".claude", "ultrathink.json"),
+				JSON.stringify({ pstack: { enabled: true } }),
+			);
 			const project = join(dir, "project", ".claude");
 			mkdirSync(project, { recursive: true });
-			writeFileSync(join(project, "ultrathink.json"), JSON.stringify({ pstack: { enabled: true } }));
+			writeFileSync(
+				join(project, "ultrathink.json"),
+				JSON.stringify({ pstack: { enabled: true } }),
+			);
 			const findings = checkPstack(deps(dir));
-			expect(byId(findings, "pstack.enabled")).toMatchObject({ level: "info", detail: expect.stringContaining(join(home, ".config", "ultrathink", "config.json")) });
+			expect(byId(findings, "pstack.enabled")).toMatchObject({
+				level: "info",
+				detail: expect.stringContaining(join(home, ".config", "ultrathink", "config.json")),
+			});
 			expect(byId(findings, "pstack.project-ignored").level).toBe("info");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -135,7 +179,9 @@ describe("checkPstack", () => {
 			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
 			writeFileSync(
 				join(home, ".config", "ultrathink", "config.json"),
-				JSON.stringify({ pstack: { enabled: true, mapping: { plan: ["architect", "not-a-skill"] } } }),
+				JSON.stringify({
+					pstack: { enabled: true, mapping: { plan: ["architect", "not-a-skill"] } },
+				}),
 			);
 			const findings = checkPstack(deps(dir, { ULTRATHINK_PSTACK_CURSOR_DIR: cursorDir }));
 			const skills = byId(findings, "pstack.skills");
@@ -152,14 +198,19 @@ describe("checkPstack", () => {
 		try {
 			const home = join(dir, "home");
 			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
-			writeFileSync(join(home, ".config", "ultrathink", "config.json"), JSON.stringify({ pstack: { enabled: true } }));
+			writeFileSync(
+				join(home, ".config", "ultrathink", "config.json"),
+				JSON.stringify({ pstack: { enabled: true } }),
+			);
 			const findings = checkPstack(deps(dir, { ULTRATHINK_PSTACK: "0" }));
 			expect(byId(findings, "pstack.enabled")).toMatchObject({
 				level: "info",
 				title: "pstack bridge disabled",
 				detail: expect.stringContaining("ULTRATHINK_PSTACK=0"),
 			});
-			expect(findings.some((finding) => finding.level === "warn" || finding.level === "error")).toBe(false);
+			expect(
+				findings.some((finding) => finding.level === "warn" || finding.level === "error"),
+			).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -172,7 +223,10 @@ describe("checkPstack", () => {
 			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
 			writeFileSync(join(home, ".config", "ultrathink", "config.json"), "null");
 			mkdirSync(join(home, ".claude"), { recursive: true });
-			writeFileSync(join(home, ".claude", "ultrathink.json"), JSON.stringify({ pstack: { enabled: true } }));
+			writeFileSync(
+				join(home, ".claude", "ultrathink.json"),
+				JSON.stringify({ pstack: { enabled: true } }),
+			);
 			const findings = checkPstack(deps(dir));
 			const enabled = byId(findings, "pstack.enabled");
 			expect(enabled.level).toBe("info");
@@ -193,7 +247,10 @@ describe("checkPstack", () => {
 			const claude = join(home, ".claude", "ultrathink.json");
 			writeFileSync(claude, JSON.stringify({ pstack: { enabled: true } }));
 			const findings = checkPstack(deps(dir));
-			expect(byId(findings, "pstack.enabled")).toMatchObject({ level: "ok", detail: expect.stringContaining(claude) });
+			expect(byId(findings, "pstack.enabled")).toMatchObject({
+				level: "ok",
+				detail: expect.stringContaining(claude),
+			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -209,7 +266,9 @@ describe("checkPstack", () => {
 			expect(skills.level).toBe("info");
 			expect(skills.title).toContain("architect");
 			expect(skills.fix).toBeUndefined();
-			expect(findings.some((finding) => finding.level === "warn" || finding.level === "error")).toBe(false);
+			expect(
+				findings.some((finding) => finding.level === "warn" || finding.level === "error"),
+			).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

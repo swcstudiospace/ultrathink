@@ -76,7 +76,8 @@ export function createPenaltyLadder(options: PenaltyOptions): PenaltyLadder {
 	const entries = new Map<string, Entry>();
 
 	const windowOf = (t: number): number => Math.floor(t / windowMs);
-	const secondsUntil = (blockedUntil: number, t: number): number => Math.ceil((blockedUntil - t) / 1000);
+	const secondsUntil = (blockedUntil: number, t: number): number =>
+		Math.ceil((blockedUntil - t) / 1000);
 
 	// Drops entries that carry no live state: no active block, no decay period
 	// still running, and a failure window that is no longer current.
@@ -95,12 +96,18 @@ export function createPenaltyLadder(options: PenaltyOptions): PenaltyLadder {
 			const t = now();
 			let entry = entries.get(key);
 			if (entry && entry.blockedUntil > t) {
-				return { blockedSec: secondsUntil(entry.blockedUntil, t), escalated: false, level: entry.level, tracked: true };
+				return {
+					blockedSec: secondsUntil(entry.blockedUntil, t),
+					escalated: false,
+					level: entry.level,
+					tracked: true,
+				};
 			}
 			if (!entry) {
 				if (entries.size >= maxKeys) {
 					prune(t);
-					if (entries.size >= maxKeys) return { blockedSec: 0, escalated: false, level: 0, tracked: false };
+					if (entries.size >= maxKeys)
+						return { blockedSec: 0, escalated: false, level: 0, tracked: false };
 				}
 				entry = { window: windowOf(t), count: 0, level: 0, blockedUntil: 0 };
 				entries.set(key, entry);
@@ -123,7 +130,11 @@ export function createPenaltyLadder(options: PenaltyOptions): PenaltyLadder {
 			entry.blockedUntil = t + seconds * 1000;
 			entry.count = 0;
 			const blockedSec = secondsUntil(entry.blockedUntil, t);
-			security?.logSuspiciousActivity({ name: "abuse.penalty_escalated", ip: key, details: { level: entry.level, blockedSec } });
+			security?.logSuspiciousActivity({
+				name: "abuse.penalty_escalated",
+				ip: key,
+				details: { level: entry.level, blockedSec },
+			});
 			return { blockedSec, escalated: true, level: entry.level, tracked: true };
 		},
 

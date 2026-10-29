@@ -9,16 +9,32 @@
  * each flight owns its own cancellation and outer time limit. A tool result that opens a PR for a planned session gets
  * an ultrathink-sync aside. `/ultrathink-<verb>` commands toggle control state or send one unplanned message.
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Api, AssistantMessage, Context, Effort, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import { isDirectory } from "../shared.ts";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Effort,
+	Model,
+	SimpleStreamOptions,
+} from "@oh-my-pi/pi-ai";
 import { resolvePstack } from "../cursor/pstack.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
-import { type ControlState, readControl, readSession, type SessionRecord, sessionRecordPath, updateSession } from "../claude/state.ts";
+import {
+	type ControlState,
+	readControl,
+	readSession,
+	type SessionRecord,
+	sessionRecordPath,
+	updateSession,
+} from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig, normalizeSelectorField } from "../config.ts";
 import type { LegacyModelProvenance, UltrathinkConfig } from "../config.ts";
+import type { CompletionReport } from "../types.ts";
 import { DEFAULT_GROK_CONFIG } from "../grok/types.ts";
 import { shipNudge } from "../ship/nudge.ts";
 import { shipApplies } from "../ship/policy.ts";
@@ -31,17 +47,28 @@ import { spawnObserveDetached } from "../teach/spawn.ts";
 import { status as authStatus } from "../mcp/oauth.ts";
 import { storePath } from "../mcp/store.ts";
 import {
+	filterSpawnable,
 	formatLaneHandles,
 	formatLaneStatusText,
 	isSdlcPrompt,
+	allLaneDirs,
+	type LaneClassify,
 	laneDirs,
+	type LaneHandle,
 	laneStatus,
+	type LanePlan,
 	maxLanes,
 	orchStatusRunner,
 	parseLaneArgs,
+	pidAlive,
 	planLanes,
+	resolveStopTargets,
 	resolveSwarmRoot,
+	spawnGuarded,
 	spawnLanes,
+	stopLanes,
+	swarmClassifier,
+	swarmRootMessage,
 	toSwarmSpawnCard,
 	toSwarmStatusCard,
 	TEAMS_USAGE,
@@ -49,17 +76,53 @@ import {
 import { extractPrFromOutput, isPrCreationTool } from "../track/pr-detect.ts";
 import { resolveRepoSlug } from "../track/git.ts";
 import { runControl, type UltrathinkVerb } from "../uplift/commands.ts";
-import { type ModelResolution, type NativeEngineSelector, type NativeModelQuery, selectNativeEngine } from "./engine.ts";
-import { type BarState, type BarStore, createBarComponent, createBarStore, parseSubstrateStatus, parseTokenSavings } from "./omp-ui.ts";
-import { ACTIVITY_DELIVERY, ACTIVITY_TYPE, activityFallbackLine, PENDING_TYPE, PLAN_TYPE, registerUltrathinkRenderers, SHIP_TYPE, SYNC_TYPE } from "./omp-render.ts";
+import {
+	type ModelResolution,
+	type NativeEngineSelector,
+	type NativeModelQuery,
+	selectNativeEngine,
+} from "./engine.ts";
+import {
+	type BarState,
+	type BarStore,
+	createBarComponent,
+	createBarStore,
+	parseSubstrateStatus,
+	parseTokenSavings,
+} from "./omp-ui.ts";
+import {
+	ACTIVITY_DELIVERY,
+	ACTIVITY_TYPE,
+	activityFallbackLine,
+	PENDING_TYPE,
+	PLAN_TYPE,
+	registerUltrathinkRenderers,
+	SHIP_TYPE,
+	SYNC_TYPE,
+} from "./omp-render.ts";
 import { resolveStateDir } from "./paths.ts";
 import { planPrompt, type PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 import { toActivityNotice } from "./activity-notice.ts";
 import { readActivity } from "../teach/activity.ts";
-import { confirmInsightLesson, installInsightSkill, previewInsightSkill, type InsightActionRuntime } from "./omp-insight-actions.ts";
-import { createInsightDashboard, type InsightDashboardCallbacks, type InsightPanel } from "./omp-dashboard.ts";
-import type { InsightActionResult, InsightScope, InsightSnapshot, LessonSelection, SkillPreview } from "./omp-insights.ts";
+import {
+	confirmInsightLesson,
+	installInsightSkill,
+	previewInsightSkill,
+	type InsightActionRuntime,
+} from "./omp-insight-actions.ts";
+import {
+	createInsightDashboard,
+	type InsightDashboardCallbacks,
+	type InsightPanel,
+} from "./omp-dashboard.ts";
+import type {
+	InsightActionResult,
+	InsightScope,
+	InsightSnapshot,
+	LessonSelection,
+	SkillPreview,
+} from "./omp-insights.ts";
 import { formatInsightText, readInsightSnapshot, toInsightCardSnapshot } from "./omp-insights.ts";
 import { paint, truncateToWidth } from "./omp-paint.ts";
 import { INSIGHT_TYPE, SWARM_TYPE } from "./omp-render.ts";
@@ -91,7 +154,11 @@ interface TuiLike {
 type WidgetFactory = (tui: TuiLike, theme: unknown) => { render(width: number): readonly string[] };
 
 interface ExtensionUI {
-	setWidget?(key: string, content: WidgetFactory | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }): void;
+	setWidget?(
+		key: string,
+		content: WidgetFactory | undefined,
+		options?: { placement?: "aboveEditor" | "belowEditor" },
+	): void;
 	notify?(message: string, type?: "info" | "warning" | "error"): void;
 	/**
 	 * Structural `ui.custom`: public factory order tui/theme/keybindings/done with optional signal.
@@ -194,7 +261,10 @@ export interface ExtensionAPI {
 	/** Returning undefined keeps the user's input unchanged. */
 	on(event: "input", handler: (event: unknown, ctx: ExtensionContext) => undefined): void;
 	/** Returning undefined keeps the tool result unchanged. */
-	on(event: "tool_result", handler: (event: ToolResultEvent, ctx: ExtensionContext) => undefined): void;
+	on(
+		event: "tool_result",
+		handler: (event: ToolResultEvent, ctx: ExtensionContext) => undefined,
+	): void;
 	sendMessage(
 		message: CustomMessage,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
@@ -208,13 +278,20 @@ export interface ExtensionAPI {
 		name: string,
 		options: {
 			description?: string;
-			getArgumentCompletions?: (argumentPrefix: string) => { value: string; label: string; description?: string }[] | null;
+			getArgumentCompletions?: (
+				argumentPrefix: string,
+			) => { value: string; label: string; description?: string }[] | null;
 			handler: (args: string, ctx: ExtensionContext) => Promise<void>;
 		},
 	): void;
-	registerMessageRenderer?: Parameters<typeof registerUltrathinkRenderers>[0]["registerMessageRenderer"];
+	registerMessageRenderer?: Parameters<
+		typeof registerUltrathinkRenderers
+	>[0]["registerMessageRenderer"];
 	/** Omp's shared event bus, absent on older hosts; handlers run synchronously inside `emit`. */
-	events?: { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void };
+	events?: {
+		emit(channel: string, data: unknown): void;
+		on(channel: string, handler: (data: unknown) => void): () => void;
+	};
 }
 
 export interface OmpPlanRequest {
@@ -235,6 +312,8 @@ export interface OmpPlanRequest {
 	stateDir?: string;
 	/** Flight validity, checked before and after every native call; false cancels the call. Never a model chooser. */
 	isCurrent?: () => boolean;
+	/** Absolute flight limit (ms since the epoch); a transient retry never waits past it. */
+	deadline?: number;
 }
 
 export interface OmpPlan {
@@ -254,7 +333,11 @@ export type OmpPlanner = (
 ) => Promise<OmpPlan>;
 
 /** `completeSimple` from `@oh-my-pi/pi-ai`, in the one call shape the native adapter makes. */
-export type CompleteSimple = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => Promise<AssistantMessage>;
+export type CompleteSimple = (
+	model: Model<Api>,
+	context: Context,
+	options?: SimpleStreamOptions,
+) => Promise<AssistantMessage>;
 
 /** Test seams of the native binding; production loads both lazily from the host-remapped packages. */
 export interface NativeEngineDeps {
@@ -263,6 +346,8 @@ export interface NativeEngineDeps {
 	providerDefaults?: Readonly<Record<string, string>>;
 	/** Flight validity, not a model chooser: false before or after a native call cancels it. */
 	isCurrent?: () => boolean;
+	/** Backoff wait between transient retries: resolves after `ms`, or ends at once when the signal aborts. Tests inject an instant one. */
+	sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 type McpState = NonNullable<BarState["mcp"]>;
@@ -290,7 +375,14 @@ function nativeFailure(message: string, cause?: unknown): Error {
 }
 
 function isModel(value: unknown): value is Model<Api> {
-	return typeof value === "object" && value !== null && "provider" in value && typeof value.provider === "string" && "id" in value && typeof value.id === "string";
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"provider" in value &&
+		typeof value.provider === "string" &&
+		"id" in value &&
+		typeof value.id === "string"
+	);
 }
 
 /**
@@ -314,12 +406,21 @@ const MAX_COMPARE_DEPTH = 32;
  */
 function sameData(a: unknown, b: unknown, depth = 0): boolean {
 	if (Object.is(a, b)) return true;
-	if (typeof a !== "object" || typeof b !== "object" || a === null || b === null || depth > MAX_COMPARE_DEPTH) return false;
+	if (
+		typeof a !== "object" ||
+		typeof b !== "object" ||
+		a === null ||
+		b === null ||
+		depth > MAX_COMPARE_DEPTH
+	)
+		return false;
 	if (Array.isArray(a) !== Array.isArray(b)) return false;
-	if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+	if (a instanceof Date || b instanceof Date)
+		return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
 	if (a instanceof Map || b instanceof Map) {
 		if (!(a instanceof Map && b instanceof Map) || a.size !== b.size) return false;
-		for (const [key, value] of a) if (!b.has(key) || !sameData(value, b.get(key), depth + 1)) return false;
+		for (const [key, value] of a)
+			if (!b.has(key) || !sameData(value, b.get(key), depth + 1)) return false;
 		return true;
 	}
 	if (a instanceof Set || b instanceof Set) {
@@ -331,20 +432,32 @@ function sameData(a: unknown, b: unknown, depth = 0): boolean {
 	const left = a as Record<string, unknown>;
 	const right = b as Record<string, unknown>;
 	const keys = Object.keys(left).filter((key) => left[key] !== undefined);
-	if (keys.length !== Object.keys(right).filter((key) => right[key] !== undefined).length) return false;
-	return keys.every((key) => Object.hasOwn(right, key) && sameData(left[key], right[key], depth + 1));
+	if (keys.length !== Object.keys(right).filter((key) => right[key] !== undefined).length)
+		return false;
+	return keys.every(
+		(key) => Object.hasOwn(right, key) && sameData(left[key], right[key], depth + 1),
+	);
 }
 
 /**
  * Whether a Model can serve native planning now. Authenticated availability comes from the query facade itself, which
  * resolves only available models: the exact `provider/id` reference must return that same provider and id.
  */
-function classify(models: OmpNativeRuntime["models"], model: Model<Api>): "usable" | "unavailable" | "unsupported" {
+function classify(
+	models: OmpNativeRuntime["models"],
+	model: Model<Api>,
+): "usable" | "unavailable" | "unsupported" {
 	// Only isolated chat/text planning is supported: a role-specific runner kind (no kind means chat) or text-less input is not.
-	if ((model.kind !== undefined && model.kind !== "chat") || (Array.isArray(model.input) && !model.input.includes("text"))) return "unsupported";
+	if (
+		(model.kind !== undefined && model.kind !== "chat") ||
+		(Array.isArray(model.input) && !model.input.includes("text"))
+	)
+		return "unsupported";
 	try {
 		const available = models.resolve(`${model.provider}/${model.id}`);
-		return isModel(available) && available.provider === model.provider && available.id === model.id ? "usable" : "unavailable";
+		return isModel(available) && available.provider === model.provider && available.id === model.id
+			? "usable"
+			: "unavailable";
 	} catch {
 		return "unavailable";
 	}
@@ -356,12 +469,21 @@ function classify(models: OmpNativeRuntime["models"], model: Model<Api>): "usabl
  * lowercased, truncated or reconstructed.
  */
 function qualify(selector: string, provider: string | undefined): string {
-	if (!provider || selector.startsWith("@") || selector.startsWith("pi/") || selector.startsWith(`${provider}/`)) return selector;
+	if (
+		!provider ||
+		selector.startsWith("@") ||
+		selector.startsWith("pi/") ||
+		selector.startsWith(`${provider}/`)
+	)
+		return selector;
 	return `${provider}/${selector}`;
 }
 
 /** Own-property lookup only: an inherited or non-string entry is no mapping. */
-function ownString(table: Readonly<Record<string, unknown>> | undefined, key: string): string | undefined {
+function ownString(
+	table: Readonly<Record<string, unknown>> | undefined,
+	key: string,
+): string | undefined {
 	const value = table && Object.hasOwn(table, key) ? table[key] : undefined;
 	return typeof value === "string" ? value : undefined;
 }
@@ -375,7 +497,9 @@ async function loadProviderDefaults(): Promise<Readonly<Record<string, unknown>>
 	try {
 		const catalog = await import("@oh-my-pi/pi-catalog/provider-models");
 		const table: unknown = catalog.DEFAULT_MODEL_PER_PROVIDER;
-		return typeof table === "object" && table !== null ? (table as Readonly<Record<string, unknown>>) : undefined;
+		return typeof table === "object" && table !== null
+			? (table as Readonly<Record<string, unknown>>)
+			: undefined;
 	} catch {
 		// A missing export disables only the catalog tier; live and configured resolution stay available.
 		return undefined;
@@ -385,12 +509,66 @@ async function loadProviderDefaults(): Promise<Readonly<Record<string, unknown>>
 /** Only `type: "text"` blocks, in order, with no invented separator; thinking, tool and image blocks never become plan text. */
 function textOf(result: AssistantMessage): string {
 	const content = Array.isArray(result?.content) ? result.content : [];
-	return content.map((block) => (block?.type === "text" && typeof block.text === "string" ? block.text : "")).join("");
+	return content
+		.map((block) => (block?.type === "text" && typeof block.text === "string" ? block.text : ""))
+		.join("");
+}
+
+/** A usable HTTP status (100-599) or nothing: only a real status names a retryable or permanent provider failure. */
+function httpStatusCode(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599
+		? value
+		: undefined;
 }
 
 function httpStatus(result: AssistantMessage): string {
-	const status = result?.errorStatus;
-	return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? `, HTTP ${status}` : "";
+	const status = httpStatusCode(result?.errorStatus);
+	return status === undefined ? "" : `, HTTP ${status}`;
+}
+
+/** A thrown provider error's HTTP status (`status`, or `statusCode`), when it carries one. */
+function thrownStatus(error: unknown): number | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	const { status, statusCode } = error as { status?: unknown; statusCode?: unknown };
+	return httpStatusCode(status) ?? httpStatusCode(statusCode);
+}
+
+/** Backoff before the second and third attempt; each wait gains up to `RETRY_JITTER` of itself. Three attempts in all. */
+const RETRY_BACKOFF_MS = [2000, 6000] as const;
+const RETRY_JITTER = 0.25;
+/** Refusals no retry can fix (subscription, permission, entitlement), whatever the status says. */
+const PERMANENT_FAILURE =
+	/subscription|permission|not entitled|forbidden|unauthori[sz]ed|insufficient[ _]quota|access denied/i;
+/** Network and timeout failures that carry no HTTP status. */
+const NETWORK_FAILURE =
+	/\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|EPIPE|ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH)\b|socket hang up|fetch failed|network error|connection (?:error|reset|closed)|Connection(?:Timeout)?Error|timed? ?out/i;
+
+/** Retry only what a later attempt can fix: 408, 429 and 5xx, or a network or timeout failure with no status. 401, 403 and 404 never retry. */
+function transientFailure(status: number | undefined, text: string): boolean {
+	if (status === 401 || status === 403 || status === 404) return false;
+	if (PERMANENT_FAILURE.test(text)) return false;
+	if (status !== undefined)
+		return status === 408 || status === 429 || (status >= 500 && status <= 599);
+	return NETWORK_FAILURE.test(text);
+}
+
+/** A real wait that ends at once when the signal aborts, so cancellation never sits out a backoff. */
+function sleepOrAbort(ms: number, signal: AbortSignal): Promise<void> {
+	const { promise, resolve, reject } = Promise.withResolvers<void>();
+	if (signal.aborted) {
+		reject(cancelled());
+		return promise;
+	}
+	const onAbort = (): void => {
+		clearTimeout(timer);
+		reject(cancelled());
+	};
+	const timer = setTimeout(() => {
+		signal.removeEventListener("abort", onAbort);
+		resolve();
+	}, ms);
+	signal.addEventListener("abort", onAbort, { once: true });
+	return promise;
 }
 
 /**
@@ -401,23 +579,52 @@ function httpStatus(result: AssistantMessage): string {
  * signal. Only text blocks become plan text; `error` is a safe classified failure and `aborted` or an aborted lifetime
  * is an `AbortError`.
  */
-export function createNativeEngineSelector(request: OmpPlanRequest, flightSignal: AbortSignal, deps: NativeEngineDeps = {}): NativeEngineSelector {
+export function createNativeEngineSelector(
+	request: OmpPlanRequest,
+	flightSignal: AbortSignal,
+	deps: NativeEngineDeps = {},
+): NativeEngineSelector {
 	// Match Omp's toReasoningEffort/shouldDisableReasoning convention, once for this native binding.
 	const level = request.thinkingLevel;
 	const thinking: Pick<SimpleStreamOptions, "reasoning" | "disableReasoning"> =
-		level === "off" ? { disableReasoning: true } : level === undefined || level === "inherit" ? {} : { reasoning: level };
+		level === "off"
+			? { disableReasoning: true }
+			: level === undefined || level === "inherit"
+				? {}
+				: { reasoning: level };
+	// Backoff waits go through the injected seam, or a real wait that ends at once on abort.
+	const sleep = deps.sleep ?? sleepOrAbort;
+	// The last settled call's report, read by the uplift stage right after its own call; a flight's stages run in turn.
+	let lastReport: CompletionReport | undefined;
+	/** Waits before a retry. False when the failure is final, the schedule is spent, or the wait would cross the flight deadline. */
+	const retryAfter = async (
+		attempt: number,
+		transient: boolean,
+		lifetime: AbortSignal,
+	): Promise<boolean> => {
+		const base = RETRY_BACKOFF_MS[attempt - 1];
+		if (!transient || base === undefined) return false;
+		const wait = Math.round(base * (1 + Math.random() * RETRY_JITTER));
+		if (request.deadline !== undefined && Date.now() + wait > request.deadline) return false;
+		await sleep(wait, lifetime);
+		if (lifetime.aborted || deps.isCurrent?.() === false) throw cancelled();
+		return true;
+	};
 	return async (intent, signal) => {
 		const runtime = request.native;
 		if (!runtime) throw nativeFailure("omp-native runtime unavailable");
 		if (flightSignal.aborted || signal?.aborted) throw cancelled();
 		const [complete, catalog] = await Promise.all([
 			// A literal dynamic specifier for the same reason as the catalog (D-03); tests inject a recorder instead.
-			deps.completeSimple ?? import("@oh-my-pi/pi-ai").then((ai): CompleteSimple => ai.completeSimple),
+			deps.completeSimple ??
+				import("@oh-my-pi/pi-ai").then((ai): CompleteSimple => ai.completeSimple),
 			deps.providerDefaults ?? loadProviderDefaults(),
 		]);
 		const sessionId = request.sessionId.trim() || undefined;
 		const query: NativeModelQuery<Model<Api>> = {
-			...(request.model ? { live: { model: request.model, source: request.modelSource ?? "ctx.model" } } : {}),
+			...(request.model
+				? { live: { model: request.model, source: request.modelSource ?? "ctx.model" } }
+				: {}),
 			check: (model) => classify(runtime.models, model),
 			resolve: async (selector, provider) => {
 				try {
@@ -435,24 +642,63 @@ export function createNativeEngineSelector(request: OmpPlanRequest, flightSignal
 			// One auth route per flight: the host resolver for exactly this snapshot and session, passed as the callable key.
 			const apiKey = runtime.modelRegistry.resolver(snapshot, sessionId);
 			return async (system, user, stageSignal) => {
-				const lifetime = stageSignal && stageSignal !== flightSignal ? AbortSignal.any([flightSignal, stageSignal]) : flightSignal;
+				const lifetime =
+					stageSignal && stageSignal !== flightSignal
+						? AbortSignal.any([flightSignal, stageSignal])
+						: flightSignal;
 				if (lifetime.aborted || deps.isCurrent?.() === false) throw cancelled();
-				const context: Context = { systemPrompt: [system], messages: [{ role: "user", content: user, timestamp: Date.now() }] };
-				let result: AssistantMessage;
-				try {
-					result = await complete(snapshot, context, { apiKey, signal: lifetime, ...thinking, ...(sessionId ? { sessionId } : {}) });
-				} catch (error) {
-					// AbortSignal.timeout's TimeoutError is cancellation too; any other rejection stays a rejection with a safe message.
-					if (lifetime.aborted || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))) throw cancelled();
-					throw nativeFailure("omp-native completion failed", error);
+				const context: Context = {
+					systemPrompt: [system],
+					messages: [{ role: "user", content: user, timestamp: Date.now() }],
+				};
+				for (let attempts = 1; ; attempts++) {
+					let result: AssistantMessage;
+					try {
+						result = await complete(snapshot, context, {
+							apiKey,
+							signal: lifetime,
+							...thinking,
+							...(sessionId ? { sessionId } : {}),
+						});
+					} catch (error) {
+						// AbortSignal.timeout's TimeoutError is cancellation too; any other rejection stays a rejection with a safe message.
+						if (
+							lifetime.aborted ||
+							(error instanceof Error &&
+								(error.name === "AbortError" || error.name === "TimeoutError"))
+						)
+							throw cancelled();
+						const status = thrownStatus(error);
+						const text = error instanceof Error ? `${error.name} ${error.message}` : "";
+						if (await retryAfter(attempts, transientFailure(status, text), lifetime)) continue;
+						lastReport = { attempts, ...(status === undefined ? {} : { httpStatus: status }) };
+						throw nativeFailure("omp-native completion failed", error);
+					}
+					// A provider that ignores the signal and still answers never turns a cancelled flight into a plan.
+					if (lifetime.aborted || deps.isCurrent?.() === false || result?.stopReason === "aborted")
+						throw cancelled();
+					if (result?.stopReason === "error") {
+						const status = httpStatusCode(result.errorStatus);
+						if (
+							await retryAfter(
+								attempts,
+								transientFailure(status, result.errorMessage ?? ""),
+								lifetime,
+							)
+						)
+							continue;
+						lastReport = { attempts, ...(status === undefined ? {} : { httpStatus: status }) };
+						throw nativeFailure(
+							`omp-native completion failed (provider error${httpStatus(result)})`,
+						);
+					}
+					lastReport = { attempts };
+					return textOf(result);
 				}
-				// A provider that ignores the signal and still answers never turns a cancelled flight into a plan.
-				if (lifetime.aborted || deps.isCurrent?.() === false || result?.stopReason === "aborted") throw cancelled();
-				if (result?.stopReason === "error") throw nativeFailure(`omp-native completion failed (provider error${httpStatus(result)})`);
-				return textOf(result);
 			};
 		};
-		return selectNativeEngine(intent, query, bind);
+		const selection = await selectNativeEngine(intent, query, bind);
+		return "skipped" in selection ? selection : { ...selection, report: () => lastReport };
 	};
 }
 
@@ -473,10 +719,17 @@ function toOmpPlan(response: PlanResponse): OmpPlan {
  * captured config, control and state directory. Without a native runtime the shared selection reports
  * `native-unavailable`; no subprocess, foreign CLI login or copied credential is involved. `env` is a test seam.
  */
-export function createNativeEnginePlanner(deps: Omit<NativeEngineDeps, "isCurrent"> & { env?: Record<string, string | undefined> } = {}): OmpPlanner {
+export function createNativeEnginePlanner(
+	deps: Omit<NativeEngineDeps, "isCurrent"> & { env?: Record<string, string | undefined> } = {},
+): OmpPlanner {
 	return async (request, signal, onEvent) => {
 		const { env, ...native } = deps;
-		const selector = request.native ? createNativeEngineSelector(request, signal, { ...native, ...(request.isCurrent ? { isCurrent: request.isCurrent } : {}) }) : undefined;
+		const selector = request.native
+			? createNativeEngineSelector(request, signal, {
+					...native,
+					...(request.isCurrent ? { isCurrent: request.isCurrent } : {}),
+				})
+			: undefined;
 		const response = await planPrompt(
 			{ host: "omp", session_id: request.sessionId, prompt: request.prompt, cwd: request.cwd },
 			env ?? { ...process.env, ULTRATHINK_HOST: "omp" },
@@ -503,7 +756,11 @@ const EDIT_HEADER_RE = /^\[(.+?)#[0-9A-Fa-f]{4}\]/gm;
  * Files a tool call changed, as absolute paths. `write` names its file in `path`; `edit` names each file in a hashline
  * header of its `input` string. Other tools, and input without a usable path, name none. Never throws.
  */
-export function editTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
+export function editTargets(
+	toolName: string,
+	input: Record<string, unknown>,
+	cwd: string,
+): string[] {
 	if (toolName === "write") {
 		const path = typeof input.path === "string" ? input.path.trim() : "";
 		// Omp's device calls (`write xd://<tool>`) name no local file, so they edit nothing on disk.
@@ -517,14 +774,6 @@ export function editTargets(toolName: string, input: Record<string, unknown>, cw
 		if (path) files.push(resolve(cwd, path));
 	}
 	return files;
-}
-
-function isDirectory(path: string): boolean {
-	try {
-		return statSync(path).isDirectory();
-	} catch {
-		return false;
-	}
 }
 
 /** Repo slug of the nearest existing directory at or above `file`; undefined outside a git repo with an origin. */
@@ -543,7 +792,11 @@ export function repoOfPath(file: string): string | undefined {
  * labelled repo, once per distinct edited set. Attribution only: the label and the edit itself are never changed.
  * A session with no record (never planned) or a file outside any repo changes nothing.
  */
-export function recordEditAttribution(dir: string, sessionId: string, file: string): string | undefined {
+export function recordEditAttribution(
+	dir: string,
+	sessionId: string,
+	file: string,
+): string | undefined {
 	const edited = repoOfPath(file);
 	if (edited === undefined) return undefined;
 	let warning: string | undefined;
@@ -567,7 +820,8 @@ export function recordEditAttribution(dir: string, sessionId: string, file: stri
 export function readMcpState(): McpState {
 	const mcp: McpState = { linear: "none", notion: "none", greptile: "none" };
 	for (const s of authStatus({ storePath: storePath() })) {
-		if (s.provider in mcp) mcp[s.provider as keyof McpState] = s.ready ? "ready" : s.kind === "none" ? "none" : "login";
+		if (s.provider in mcp)
+			mcp[s.provider as keyof McpState] = s.ready ? "ready" : s.kind === "none" ? "none" : "login";
 	}
 	return mcp;
 }
@@ -587,11 +841,15 @@ const LEASE_DIR = /^omp-(?:task|eval-agent)-\d+$/;
  * User forks carry `parentSession` too, but are not nested and keep the UI, so
  * they are still planned, as are top-level persisted sessions. Unsure -> false (plan).
  */
-export function isSubagentSession(ctx: ExtensionContext | undefined, exists: (path: string) => boolean = existsSync): boolean {
+export function isSubagentSession(
+	ctx: ExtensionContext | undefined,
+	exists: (path: string) => boolean = existsSync,
+): boolean {
 	try {
 		const file = ctx?.sessionManager?.getSessionFile?.();
 		const hasFile = typeof file === "string" && file !== "";
-		if (hasFile && (LEASE_DIR.test(basename(dirname(file))) || exists(`${dirname(file)}.jsonl`))) return true;
+		if (hasFile && (LEASE_DIR.test(basename(dirname(file))) || exists(`${dirname(file)}.jsonl`)))
+			return true;
 		if (ctx?.hasUI !== false) return false;
 		if (!hasFile) return true;
 		const parent = ctx.sessionManager?.getHeader?.()?.parentSession;
@@ -618,7 +876,8 @@ const pendingMessage = (): CustomMessage => ({
 
 /** Omp slash commands, registered as `ultrathink-<verb>`. */
 const COMMANDS: Record<UltrathinkVerb, string> = {
-	quick: "Send <message> to the agent as typed: no plan, no Graph of Thought, no Linear/Notion rows",
+	quick:
+		"Send <message> to the agent as typed: no plan, no Graph of Thought, no Linear/Notion rows",
 	skip: "Do not plan the next message",
 	off: "Turn planning off for Omp on this machine until turned on",
 	on: "Turn planning back on for Omp on this machine",
@@ -626,7 +885,8 @@ const COMMANDS: Record<UltrathinkVerb, string> = {
 	status: "Show the current ultrathink state",
 };
 
-export const QUICK_USAGE = "Usage: /ultrathink-quick <message>. Sends the message to the agent as typed, without planning.";
+export const QUICK_USAGE =
+	"Usage: /ultrathink-quick <message>. Sends the message to the agent as typed, without planning.";
 
 const TRACK_COMPLETIONS = [
 	{ value: "on", label: "on", description: "Create Linear/Notion rows for planned prompts" },
@@ -653,11 +913,15 @@ function observeLive(ctx: ExtensionContext | undefined): LiveTarget | undefined 
 	try {
 		const model = ctx?.model;
 		if (isModel(model)) return { model, source: "ctx.model" };
-	} catch {}
+	} catch {
+		// reason: a host model getter that throws means no live model from this source; the next source is tried
+	}
 	try {
 		const current = ctx?.models?.current?.();
 		if (isModel(current)) return { model: current, source: "ctx.models.current" };
-	} catch {}
+	} catch {
+		// reason: a host models getter that throws means no live model from this source; the result is undefined
+	}
 	return undefined;
 }
 
@@ -671,7 +935,12 @@ function nativeRuntime(ctx: ExtensionContext | undefined): OmpNativeRuntime | un
 	try {
 		const models = ctx?.models;
 		const modelRegistry = ctx?.modelRegistry;
-		if (typeof models?.current !== "function" || typeof models.resolve !== "function" || typeof modelRegistry?.resolver !== "function") return undefined;
+		if (
+			typeof models?.current !== "function" ||
+			typeof models.resolve !== "function" ||
+			typeof modelRegistry?.resolver !== "function"
+		)
+			return undefined;
 		return { models, modelRegistry };
 	} catch {
 		return undefined;
@@ -712,6 +981,7 @@ function trackQuery(models: OmpNativeRuntime["models"]): TrackedQuery {
 				try {
 					now = current.resolve(spec);
 				} catch {
+					// reason: a spec that cannot be resolved is treated as no current model, so the comparison reports a change
 					now = undefined;
 				}
 				if (!sameData(model, isModel(now) ? now : undefined)) return true;
@@ -749,9 +1019,13 @@ function intentOf(config: UltrathinkConfig, control: ControlState): FlightIntent
 	const override = config.models.hosts.omp;
 	const engine = control.engine ?? config.think.engine;
 	const grok = engine === "grok" ? config.grok : undefined;
-	const shuntModel = grok?.transport === "shunt" ? normalizeSelectorField(grok.shuntModel) : undefined;
+	const shuntModel =
+		grok?.transport === "shunt" ? normalizeSelectorField(grok.shuntModel) : undefined;
 	const legacy =
-		engine !== "auto" && !override?.provider && !override?.model && (!grok || (grok.enabled && !shuntModel))
+		engine !== "auto" &&
+		!override?.provider &&
+		!override?.model &&
+		(!grok || (grok.enabled && !shuntModel))
 			? { model: config[engine].model, provenance: config.modelProvenance[engine] }
 			: undefined;
 	return {
@@ -760,20 +1034,31 @@ function intentOf(config: UltrathinkConfig, control: ControlState): FlightIntent
 		override: { provider: override?.provider ?? "", model: override?.model ?? "" },
 		providerDefaults: Object.entries(config.models.providerDefaults),
 		legacy,
-		...(grok ? {
-			grok: {
-				enabled: grok.enabled,
-				transport: grok.transport,
-				endpoint: grok.enabled && grok.transport !== "cli"
-					? (grok.transport === "shunt" ? grok.shuntBaseUrl.trim() : grok.baseUrl.trim() || DEFAULT_GROK_CONFIG.baseUrl).replace(/\/+$/, "")
-					: undefined,
-				shuntModel,
-				fallbackToClaude: grok.fallbackToClaude,
-				...(!grok.enabled || (grok.transport !== "shunt" && grok.fallbackToClaude)
-					? { fallback: { model: config.claude.model, provenance: config.modelProvenance.claude } }
-					: {}),
-			},
-		} : {}),
+		...(grok
+			? {
+					grok: {
+						enabled: grok.enabled,
+						transport: grok.transport,
+						endpoint:
+							grok.enabled && grok.transport !== "cli"
+								? (grok.transport === "shunt"
+										? grok.shuntBaseUrl.trim()
+										: grok.baseUrl.trim() || DEFAULT_GROK_CONFIG.baseUrl
+									).replace(/\/+$/, "")
+								: undefined,
+						shuntModel,
+						fallbackToClaude: grok.fallbackToClaude,
+						...(!grok.enabled || (grok.transport !== "shunt" && grok.fallbackToClaude)
+							? {
+									fallback: {
+										model: config.claude.model,
+										provenance: config.modelProvenance.claude,
+									},
+								}
+							: {}),
+					},
+				}
+			: {}),
 	};
 }
 
@@ -782,12 +1067,24 @@ const MODEL_CHANGED = "superseded: the session model changed";
 const THINKING_CHANGED = "superseded: the session thinking level changed";
 const SESSION_ENDED = "cancelled: the session ended or switched";
 
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
+
 export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
 		raceMs?: number;
 		maxRunMs?: number;
 		now?: () => number;
+		/** Timer port for the remount, flight deadline and race timers; defaults to the platform timers. */
+		timers?: TimerPort;
 		ui?: boolean;
 		/** MCP readiness source; defaults to the local credential store. */
 		mcp?: () => McpState;
@@ -805,18 +1102,32 @@ export function createOmpExtension(
 		spawnObserve?: typeof spawnObserveDetached;
 		/** Ship config source; defaults to the merged Claude config files for the session cwd. */
 		shipConfig?: (cwd: string) => ShipConfig;
+		/** AgentSwarm lane seams: the classifier bound to a swarm root, and the lane spawner. Default to the real ones. */
+		swarm?: {
+			classify?: (swarmRoot: string) => LaneClassify;
+			spawn?: (plan: readonly LanePlan[]) => LaneHandle[];
+		};
 	} = {},
 ): (pi: ExtensionAPI) => void {
 	const plan = options.plan ?? nativeEnginePlanner;
 	const raceMs = options.raceMs ?? 25_000;
+	// 0 (the default) means no outer limit: no flight timer and no retry deadline.
 	const maxRunMs = options.maxRunMs ?? 0;
 	const now = options.now ?? Date.now;
+	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
 	const readMcp = options.mcp ?? readMcpState;
 	const exists = options.exists ?? existsSync;
 	const flightConfig = options.config ?? ((cwd: string) => loadConfig(claudeConfigPaths(cwd)));
 	// The host state dir for the session cwd, made absolute: planning, carriers and commands share it.
-	const stateDir = (cwd: string) => resolve(cwd, options.stateDir ?? resolveStateDir({ ...process.env, ULTRATHINK_HOST: "omp" }));
+	const stateDir = (cwd: string) =>
+		resolve(cwd, options.stateDir ?? resolveStateDir({ ...process.env, ULTRATHINK_HOST: "omp" }));
+	// Swarm seams: Swarm's own classifier and the lane spawner; the defaults are the real ones.
+	const classifierFor = options.swarm?.classify ?? swarmClassifier;
+	const spawnLaneSet = options.swarm?.spawn ?? spawnLanes;
+	/** One `<laneId>: <note>` line per lane that started with a remark (for example, `lane.json` was not written). */
+	const laneNotes = (handles: readonly LaneHandle[]): string[] =>
+		handles.flatMap((handle) => (handle.note ? [`${handle.laneId}: ${handle.note}`] : []));
 
 	return (pi) => {
 		interface Flight {
@@ -840,7 +1151,7 @@ export function createOmpExtension(
 			/** Settles the existing outcome and clears the optional outer handle; cancellation releases through this. */
 			finishFlight: (result: OmpPlan) => void;
 			/** The outer deadline handle, present only for a strictly positive maxRunMs. */
-			deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+			deadlineTimer: NodeJS.Timeout | undefined;
 			/** Pending was returned; the aside is the only delivery. */
 			deferred: boolean;
 			/** Start order; only the latest flight writes to the bar store. */
@@ -877,7 +1188,9 @@ export function createOmpExtension(
 				if (substrate !== undefined) store.setSubstrate(substrate);
 			});
 			pi.events?.emit("substrate:status-request", {});
-		} catch {}
+		} catch {
+			// reason: the substrate status channel is optional; a host without it shows no substrate state
+		}
 		try {
 			const live = join(homedir(), ".omp", "agent", "token-opt", "live.json");
 			if (existsSync(live)) {
@@ -885,14 +1198,16 @@ export function createOmpExtension(
 				if (savings !== undefined) store.setSavings(savings);
 			}
 		} catch {
-			// a missing or unreadable snapshot must not block planning
+			// reason: a missing or unreadable snapshot must not block planning
 		}
 		try {
 			pi.events?.on("token-opt:savings", (data) => {
 				const savings = parseTokenSavings(data);
 				if (savings !== undefined) store.setSavings(savings);
 			});
-		} catch {}
+		} catch {
+			// reason: the savings channel is optional; a host without it keeps the file snapshot
+		}
 		let ui: ExtensionUI | undefined;
 		let tuiRef: TuiLike | undefined;
 		let timerStarted = false;
@@ -905,7 +1220,9 @@ export function createOmpExtension(
 		const guard = (fn: () => void): void => {
 			try {
 				fn();
-			} catch {}
+			} catch {
+				// reason: a failing UI or store update must never break the host hook; the error is dropped by design
+			}
 		};
 		const refreshMcp = () => guard(() => store.setMcp(readMcp()));
 		const factory: WidgetFactory = (tui, theme) => {
@@ -919,7 +1236,8 @@ export function createOmpExtension(
 			};
 			return createBarComponent(store, theme, now, rows);
 		};
-		const mountBar = () => guard(() => ui?.setWidget?.("ultrathink", factory, { placement: "aboveEditor" }));
+		const mountBar = () =>
+			guard(() => ui?.setWidget?.("ultrathink", factory, { placement: "aboveEditor" }));
 		// Other extensions re-set their aboveEditor widgets inside the same handlers, which moves them
 		// between ours and the status band; one deferred remount per tick puts the bar back last.
 		let mountQueued = false;
@@ -927,24 +1245,29 @@ export function createOmpExtension(
 			if (!ui || mountQueued) return;
 			mountQueued = true;
 			try {
-				setTimeout(() => {
+				timers.setTimeout(() => {
 					try {
 						mountQueued = false;
 						mountBar();
-					} catch {}
+					} catch {
+						// reason: the deferred mount is best effort; a failed mount leaves the bar unmounted until the next event
+					}
 				}, 0);
 			} catch {
+				// reason: a scheduler that cannot be armed clears the queued flag so the next event retries
 				mountQueued = false;
 			}
 		};
 
 		if (uiEnabled) {
 			store.subscribe(() => guard(() => tuiRef?.requestRender()));
-			if (typeof pi.registerMessageRenderer === "function") guard(() => registerUltrathinkRenderers(pi as never));
+			if (typeof pi.registerMessageRenderer === "function")
+				guard(() => registerUltrathinkRenderers(pi as never));
 		}
 
 		/** The session's current flight, not cancelled: the only one that may write state, show progress or deliver. */
-		const owns = (flight: Flight): boolean => !flight.cancelled && flights.get(flight.sessionId) === flight;
+		const owns = (flight: Flight): boolean =>
+			!flight.cancelled && flights.get(flight.sessionId) === flight;
 		/** Cancels and suppresses a flight: aborts its lifetime and clears its delivery eligibility (§8 reentry 5). */
 		const cancel = (flight: Flight, note: string): void => {
 			if (flight.cancelled) return;
@@ -1005,7 +1328,8 @@ export function createOmpExtension(
 			"Native dashboard unavailable in this host. Showing a local read-only snapshot; use Omp TUI for guarded actions.";
 		const UI_SCOPE_COPY =
 			"Scope unavailable. Cross-project/session inspection and actions are disabled; reopen from a top-level Omp session.";
-		const UI_STALE_COPY = "Session changed. Dashboard closed; no further action was started for the old selection.";
+		const UI_STALE_COPY =
+			"Session changed. Dashboard closed; no further action was started for the old selection.";
 		const UI_LOADING_COPY = "Loading local snapshot… No model calls or lesson changes.";
 
 		/** Plain-text fallback budget (UI-SPEC): at most 24 rows of 120 visible columns. */
@@ -1014,11 +1338,17 @@ export function createOmpExtension(
 
 		/** Strip untrusted terminal controls from a short label; the read model owns body sanitization. */
 		const uiOneLine = (text: string): string =>
-			text.replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim();
+			text
+				.replace(/[\x00-\x1f\x7f]+/g, " ")
+				.replace(/\s+/g, " ")
+				.trim();
 
 		/** Clamp fallback text to the row/column budget, keeping the trailing explanation always visible. */
 		const clampUiFallback = (text: string, tail: string): string => {
-			const rows = text.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "").split("\n").slice(0, UI_FALLBACK_ROWS - 1);
+			const rows = text
+				.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "")
+				.split("\n")
+				.slice(0, UI_FALLBACK_ROWS - 1);
 			return [...rows, tail]
 				.slice(0, UI_FALLBACK_ROWS)
 				.map((row) => truncateToWidth(row, UI_FALLBACK_COLS))
@@ -1070,8 +1400,14 @@ export function createOmpExtension(
 			let config: TeachContext["config"] | undefined;
 			try {
 				const full = flightConfig(lifetime.cwd);
-				config = { teach: full.teach, hindsight: full.hindsight, decisions: full.decisions, gateway: full.gateway };
+				config = {
+					teach: full.teach,
+					hindsight: full.hindsight,
+					decisions: full.decisions,
+					gateway: full.gateway,
+				};
 			} catch {
+				// reason: an unreadable config yields no config snapshot; the card renders without config details
 				config = undefined;
 			}
 			return (options.teachContext ?? teachContext)({
@@ -1100,7 +1436,11 @@ export function createOmpExtension(
 		 * captured at entry, and a reply is suppressed when the extension shut down or the live session id
 		 * changed meanwhile — otherwise a switch during the wait delivers the reply into the NEW session.
 		 */
-		const sendSessionText = (sessionId: string, ctx: ExtensionContext | undefined, content: string): void => {
+		const sendSessionText = (
+			sessionId: string,
+			ctx: ExtensionContext | undefined,
+			content: string,
+		): void => {
 			if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return;
 			sendInsightText(content);
 		};
@@ -1111,21 +1451,37 @@ export function createOmpExtension(
 		 * otherwise. A stale session (switch or shutdown during an await) sends nothing — same rule as
 		 * {@link sendSessionText}.
 		 */
-		const sendSwarmCard = (sessionId: string, ctx: ExtensionContext | undefined, content: string, details: unknown): void => {
+		const sendSwarmCard = (
+			sessionId: string,
+			ctx: ExtensionContext | undefined,
+			content: string,
+			details: unknown,
+		): void => {
 			if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return;
-			guard(() => pi.sendMessage({ customType: SWARM_TYPE, content, display: true, details }, { triggerTurn: false }));
+			guard(() =>
+				pi.sendMessage(
+					{ customType: SWARM_TYPE, content, display: true, details },
+					{ triggerTurn: false },
+				),
+			);
 		};
 
 		/** Publish a captured summary card without a model turn. A stale lifetime sends nothing. */
-		const publishInsightCard = (lifetime: InsightLifetime, snapshot: InsightSnapshot): InsightActionResult => {
+		const publishInsightCard = (
+			lifetime: InsightLifetime,
+			snapshot: InsightSnapshot,
+		): InsightActionResult => {
 			if (!insightCurrent(lifetime)) return { status: "cancelled", message: UI_STALE_COPY };
 			let details: unknown;
 			try {
 				details = toInsightCardSnapshot(snapshot);
 			} catch {
+				// reason: a snapshot that cannot be converted renders without card details
 				details = undefined;
 			}
-			const label = uiOneLine(`Ultrathink insight — ${snapshot.project} · session ${snapshot.session}`);
+			const label = uiOneLine(
+				`Ultrathink insight — ${snapshot.project} · session ${snapshot.session}`,
+			);
 			guard(() =>
 				pi.sendMessage(
 					{
@@ -1141,12 +1497,16 @@ export function createOmpExtension(
 		};
 
 		/** Bounded read-only snapshot for unsupported hosts and mount failures, with the TUI-only explanation. */
-		const sendSnapshotFallback = (snapshot: InsightSnapshot | undefined, lifetime: InsightLifetime): void => {
+		const sendSnapshotFallback = (
+			snapshot: InsightSnapshot | undefined,
+			lifetime: InsightLifetime,
+		): void => {
 			if (!insightCurrent(lifetime)) return;
 			let text = "";
 			try {
 				if (snapshot) text = formatInsightText(snapshot);
 			} catch {
+				// reason: a snapshot that cannot be formatted falls back to the fixed unsupported copy
 				text = "";
 			}
 			sendInsightText(text ? clampUiFallback(text, UI_UNSUPPORTED_COPY) : UI_UNSUPPORTED_COPY);
@@ -1160,12 +1520,19 @@ export function createOmpExtension(
 			teardownInsight(previous);
 			try {
 				ctx?.ui?.notify?.(UI_STALE_COPY, "info");
-			} catch {}
+			} catch {
+				// reason: the stale notice is advisory; the old dashboard is already closed
+			}
 		};
 
-		const openInsightUi = async (args: string | undefined, ctx: ExtensionContext): Promise<void> => {
+		const openInsightUi = async (
+			args: string | undefined,
+			ctx: ExtensionContext,
+		): Promise<void> => {
 			const argv = (args ?? "").trim().split(/\s+/).filter(Boolean);
-			const panel: UiPanel = (UI_PANELS as readonly string[]).includes(argv[0] ?? "") ? (argv[0] as UiPanel) : "overview";
+			const panel: UiPanel = (UI_PANELS as readonly string[]).includes(argv[0] ?? "")
+				? (argv[0] as UiPanel)
+				: "overview";
 			// Guards precede everything: no component mount, no card, no model admission on refused paths.
 			if (!uiEnabled) {
 				sendInsightText(UI_OFF_COPY);
@@ -1198,24 +1565,42 @@ export function createOmpExtension(
 			const isCurrent = (): boolean => insightCurrent(lifetime);
 			const scope: InsightScope = { sessionId, cwd, stateDir: dir, epoch: lifetime.epoch };
 			const hostUi =
-				ctx?.hasUI && ctx.mode === "tui" && ctx.ui && typeof ctx.ui.custom === "function" ? ctx.ui : undefined;
+				ctx?.hasUI && ctx.mode === "tui" && ctx.ui && typeof ctx.ui.custom === "function"
+					? ctx.ui
+					: undefined;
 			if (hostUi?.setWidget) {
 				lifetime.loadingUi = hostUi;
-				guard(() => hostUi.setWidget?.(INSIGHT_TYPE, (_tui, theme) => {
-					const p = paint(theme);
-					return { render: (width) => [truncateToWidth(p.fg("muted", UI_LOADING_COPY), width)] };
-				}, { placement: "aboveEditor" }));
+				guard(() =>
+					hostUi.setWidget?.(
+						INSIGHT_TYPE,
+						(_tui, theme) => {
+							const p = paint(theme);
+							return {
+								render: (width) => [truncateToWidth(p.fg("muted", UI_LOADING_COPY), width)],
+							};
+						},
+						{ placement: "aboveEditor" },
+					),
+				);
 			} else if (hostUi) {
 				guard(() => hostUi.notify?.(UI_LOADING_COPY, "info"));
 			}
 			let snapshot: InsightSnapshot;
 			try {
-				snapshot = await readInsightSnapshot(scope, insightTeachContext(lifetime), lifetime.controller.signal);
+				snapshot = await readInsightSnapshot(
+					scope,
+					insightTeachContext(lifetime),
+					lifetime.controller.signal,
+				);
 			} catch (error) {
 				if (!isCurrent()) return;
 				teardownInsight(lifetime);
-				const reason = uiOneLine(error instanceof Error ? error.message : String(error)).slice(0, 200) || "unknown error";
-				sendInsightText(`Could not read local snapshot: ${reason}. No lesson changes were made by this read.`);
+				const reason =
+					uiOneLine(error instanceof Error ? error.message : String(error)).slice(0, 200) ||
+					"unknown error";
+				sendInsightText(
+					`Could not read local snapshot: ${reason}. No lesson changes were made by this read.`,
+				);
 				return;
 			}
 			if (!isCurrent()) return;
@@ -1238,12 +1623,19 @@ export function createOmpExtension(
 				isCurrent,
 				signal: lifetime.controller.signal,
 			});
-			const staleResult = (): InsightActionResult => ({ status: "cancelled", message: UI_STALE_COPY });
+			const staleResult = (): InsightActionResult => ({
+				status: "cancelled",
+				message: UI_STALE_COPY,
+			});
 			let finish: ((result: void) => void) | undefined;
 			const callbacks: InsightDashboardCallbacks = {
 				refresh: async (): Promise<InsightSnapshot> => {
 					const seq = ++lifetime.refreshSeq;
-					const fresh = await readInsightSnapshot(scope, insightTeachContext(lifetime), lifetime.controller.signal);
+					const fresh = await readInsightSnapshot(
+						scope,
+						insightTeachContext(lifetime),
+						lifetime.controller.signal,
+					);
 					// Latest request alone publishes: a late previous refresh keeps the current snapshot.
 					if (!isCurrent() || seq !== lifetime.refreshSeq) return lifetime.lastSnapshot ?? fresh;
 					lifetime.lastSnapshot = fresh;
@@ -1253,8 +1645,13 @@ export function createOmpExtension(
 					isCurrent() ? confirmInsightLesson(selection, runtime()) : Promise.resolve(staleResult()),
 				previewSkill: (selection: LessonSelection): Promise<InsightActionResult> =>
 					isCurrent() ? previewInsightSkill(selection, runtime()) : Promise.resolve(staleResult()),
-				installPreview: (preview: SkillPreview, confirmed: boolean): Promise<InsightActionResult> =>
-					isCurrent() ? installInsightSkill(preview, confirmed, runtime()) : Promise.resolve(staleResult()),
+				installPreview: (
+					preview: SkillPreview,
+					confirmed: boolean,
+				): Promise<InsightActionResult> =>
+					isCurrent()
+						? installInsightSkill(preview, confirmed, runtime())
+						: Promise.resolve(staleResult()),
 				publishCard: (next: InsightSnapshot): Promise<InsightActionResult> =>
 					Promise.resolve(publishInsightCard(lifetime, next)),
 				close: (): void => {
@@ -1272,7 +1669,9 @@ export function createOmpExtension(
 							requestRender: () => {
 								try {
 									tui.requestRender();
-								} catch {}
+								} catch {
+									// reason: a host redraw failure is best effort; the dashboard state is already updated
+								}
 							},
 							rows: () => {
 								try {
@@ -1289,7 +1688,7 @@ export function createOmpExtension(
 					{ signal: lifetime.controller.signal },
 				);
 			} catch {
-				// Live host failures degrade to text; stale/aborted closes stay silent.
+				// reason: Live host failures degrade to text; stale/aborted closes stay silent.
 				if (isCurrent()) sendSnapshotFallback(lifetime.lastSnapshot ?? snapshot, lifetime);
 			} finally {
 				teardownInsight(lifetime);
@@ -1298,7 +1697,13 @@ export function createOmpExtension(
 
 		const attach = (ctx: ExtensionContext) =>
 			guard(() => {
-				if (!uiEnabled || !ctx?.hasUI || ctx.mode !== "tui" || typeof ctx.ui?.setWidget !== "function") return;
+				if (
+					!uiEnabled ||
+					!ctx?.hasUI ||
+					ctx.mode !== "tui" ||
+					typeof ctx.ui?.setWidget !== "function"
+				)
+					return;
 				ui = ctx.ui;
 				refreshMcp();
 				mountBar();
@@ -1330,7 +1735,7 @@ export function createOmpExtension(
 			try {
 				for (const row of readActivity(dir)) activitySeen.add(row.id);
 			} catch {
-				// fail-open: a missing or unreadable receipt log must not block the poller
+				// reason: fail-open: the poller must not block on a missing or unreadable receipt log
 			}
 			const timer = setInterval(() => {
 				if (shutDown) return;
@@ -1346,13 +1751,18 @@ export function createOmpExtension(
 						const { id: _id, sessionId: _owner, ...notice } = row;
 						guard(() =>
 							pi.sendMessage(
-								{ customType: ACTIVITY_TYPE, content: truncateToWidth(activityFallbackLine(notice), UI_FALLBACK_COLS), display: true, details: notice },
+								{
+									customType: ACTIVITY_TYPE,
+									content: truncateToWidth(activityFallbackLine(notice), UI_FALLBACK_COLS),
+									display: true,
+									details: notice,
+								},
 								ACTIVITY_DELIVERY,
 							),
 						);
 					}
 				} catch {
-					// fail-open: a receipt is display only
+					// reason: fail-open: a receipt is display only
 				}
 			}, 2_000);
 			timer.unref?.();
@@ -1385,7 +1795,13 @@ export function createOmpExtension(
 				if (activeInsight) teardownInsight(activeInsight);
 			});
 		});
-		for (const event of ["agent_start", "agent_end", "turn_end", "tool_execution_start", "tool_execution_end"] as const) {
+		for (const event of [
+			"agent_start",
+			"agent_end",
+			"turn_end",
+			"tool_execution_start",
+			"tool_execution_end",
+		] as const) {
 			pi.on(event, (_event, ctx) => {
 				guard(() => observeFlights(ctx));
 				scheduleMount();
@@ -1424,8 +1840,16 @@ export function createOmpExtension(
 				if (event.isError) return;
 				const input = event.input ?? {};
 				const command = typeof input.command === "string" ? input.command : undefined;
-				if (!((event.toolName === "github" && input.op === "pr_create") || isPrCreationTool(event.toolName, command))) return;
-				const pr = extractPrFromOutput(event.content.map((part) => (part.type === "text" ? part.text : "")).join("\n"));
+				if (
+					!(
+						(event.toolName === "github" && input.op === "pr_create") ||
+						isPrCreationTool(event.toolName, command)
+					)
+				)
+					return;
+				const pr = extractPrFromOutput(
+					event.content.map((part) => (part.type === "text" ? part.text : "")).join("\n"),
+				);
 				if (!pr || syncedPrs.has(pr.url) || isSubagentSession(ctx, exists)) return;
 				const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
 				if (!sessionId) return;
@@ -1455,17 +1879,43 @@ export function createOmpExtension(
 		const observeAgentEnd = (event: unknown, ctx: ExtensionContext): void => {
 			if (isSubagentSession(ctx, exists)) return;
 			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
-			const messages = event && typeof event === "object" && "messages" in event ? event.messages : undefined;
+			const messages =
+				event && typeof event === "object" && "messages" in event ? event.messages : undefined;
 			if (!sessionId || !Array.isArray(messages)) return;
-			const lastAssistant: unknown = messages.findLast((m: unknown) => typeof m === "object" && m !== null && "role" in m && m.role === "assistant");
-			if (typeof lastAssistant === "object" && lastAssistant !== null && "stopReason" in lastAssistant && lastAssistant.stopReason === "aborted") return;
+			const lastAssistant: unknown = messages.findLast(
+				(m: unknown) =>
+					typeof m === "object" && m !== null && "role" in m && m.role === "assistant",
+			);
+			if (
+				typeof lastAssistant === "object" &&
+				lastAssistant !== null &&
+				"stopReason" in lastAssistant &&
+				lastAssistant.stopReason === "aborted"
+			)
+				return;
 			const cwd = ctx?.cwd || process.cwd();
 			const env = { ...process.env, ULTRATHINK_HOST: "omp" };
-			const teach = (options.teachContext ?? teachContext)({ host: "omp", cwd, env, sessionId, stateDir: stateDir(cwd) });
+			const teach = (options.teachContext ?? teachContext)({
+				host: "omp",
+				cwd,
+				env,
+				sessionId,
+				stateDir: stateDir(cwd),
+			});
 			if (!teachEnabled(teach) || teach.config.teach.capture === "explicit") return;
-			const digest = digestFromAgentMessages(messages, { host: "omp", sessionId, cwd, outcome: "completed" });
+			const digest = digestFromAgentMessages(messages, {
+				host: "omp",
+				sessionId,
+				cwd,
+				outcome: "completed",
+			});
 			if (!digest) return;
-			(options.spawnObserve ?? spawnObserveDetached)(digest, { repoRoot: ROOT, env, stateDir: teach.stateDir, host: "omp" });
+			(options.spawnObserve ?? spawnObserveDetached)(digest, {
+				repoRoot: ROOT,
+				env,
+				stateDir: teach.stateDir,
+				host: "omp",
+			});
 		};
 		pi.on("agent_end", (event, ctx) => {
 			guard(() => observeAgentEnd(event, ctx));
@@ -1477,8 +1927,11 @@ export function createOmpExtension(
 				const dir = stateDir(cwd);
 				const record: SessionRecord | undefined = readSession(dir, sessionId);
 				const graphId = record?.plan?.graphId;
-				if (!record || !graphId || nudgedGraphs.has(graphId) || record.ship?.nudgedAt !== undefined) return;
-				const config = options.shipConfig ? options.shipConfig(cwd) : loadConfig(claudeConfigPaths(cwd)).ship;
+				if (!record || !graphId || nudgedGraphs.has(graphId) || record.ship?.nudgedAt !== undefined)
+					return;
+				const config = options.shipConfig
+					? options.shipConfig(cwd)
+					: loadConfig(claudeConfigPaths(cwd)).ship;
 				if (!shipApplies(config, record.skill?.name)) return;
 				const precheck = (options.shipPrecheck ?? shipPrecheck)(cwd);
 				const statePath = sessionRecordPath(dir, sessionId);
@@ -1510,7 +1963,10 @@ export function createOmpExtension(
 					pi.registerCommand?.(name, {
 						description: COMMANDS[verb],
 						...(verb === "track"
-							? { getArgumentCompletions: (prefix: string) => TRACK_COMPLETIONS.filter((item) => item.value.startsWith(prefix.trim())) }
+							? {
+									getArgumentCompletions: (prefix: string) =>
+										TRACK_COMPLETIONS.filter((item) => item.value.startsWith(prefix.trim())),
+								}
 							: {}),
 						handler: async (args, ctx) => {
 							try {
@@ -1521,12 +1977,14 @@ export function createOmpExtension(
 								}
 								const text = (args ?? "").trim();
 								if (verb === "quick") {
-									if (!text || typeof pi.sendUserMessage !== "function") return ctx?.ui?.notify?.(QUICK_USAGE, "info");
+									if (!text || typeof pi.sendUserMessage !== "function")
+										return ctx?.ui?.notify?.(QUICK_USAGE, "info");
 									// Armed before sending: Omp may emit before_agent_start before sendUserMessage returns.
 									quick = { sessionId: ctx?.sessionManager?.getSessionId?.() ?? "", text };
 									try {
 										pi.sendUserMessage(text);
 									} catch {
+										// reason: a failed sendUserMessage clears the quick reply so the verb is not reported as sent
 										quick = undefined;
 									}
 									return;
@@ -1542,7 +2000,9 @@ export function createOmpExtension(
 									sessionId: ctx?.sessionManager?.getSessionId?.() || undefined,
 								});
 								ctx?.ui?.notify?.(reply, "info");
-							} catch {}
+							} catch {
+								// reason: a rejected verb must not throw into the host command runner; the reply is best effort
+							}
 						},
 					}),
 				);
@@ -1553,7 +2013,8 @@ export function createOmpExtension(
 			// model forwarding: unlike the verbs above, this path must not `sendUserMessage` anything.
 			guard(() =>
 				pi.registerCommand?.("ultrathink-ui", {
-					description: "Open the native Ultrathink dashboard (overview, jev, moments, skills) or publish a summary card",
+					description:
+						"Open the native Ultrathink dashboard (overview, jev, moments, skills) or publish a summary card",
 					getArgumentCompletions: (prefix: string) =>
 						UI_PANELS.filter((panel) => panel.startsWith(prefix.trim())).map((value) => ({
 							value,
@@ -1563,7 +2024,9 @@ export function createOmpExtension(
 					handler: async (args, ctx) => {
 						try {
 							await openInsightUi(args, ctx);
-						} catch {}
+						} catch {
+							// reason: a failed dashboard open must not reject into the host command runner
+						}
 					},
 				}),
 			);
@@ -1573,7 +2036,8 @@ export function createOmpExtension(
 			// display-only text (never a model turn); child sessions may use it like the verbs above.
 			guard(() =>
 				pi.registerCommand?.("ultrathink-swarm", {
-					description: "Fan out AgentSwarm lanes from `|`-separated briefs, or show lane status",
+					description:
+						"Fan out AgentSwarm lanes from `|`-separated briefs, show lane status, or `stop [laneId|all]`",
 					handler: async (args, ctx) => {
 						try {
 							// The session this command belongs to; replies computed across an await are dropped if it changed.
@@ -1581,26 +2045,100 @@ export function createOmpExtension(
 							const cwd = ctx?.cwd || process.cwd();
 							const dir = stateDir(cwd);
 							const parsed = parseLaneArgs(args ?? "", { maxLanes: maxLanes(process.env) });
-							if (parsed.kind === "usage") return sendInsightText(`${parsed.reason}. ${TEAMS_USAGE}`);
+							if (parsed.kind === "usage")
+								return sendInsightText(`${parsed.reason}. ${TEAMS_USAGE}`);
+							// `stop` never needs a valid swarm root: a user whose config broke must still be able to end lanes.
+							// Every kill goes through `stopLanes`: verified pid, then the lane's process group only.
+							if (parsed.kind === "stop") {
+								const resolved = resolveStopTargets(parsed.target, allLaneDirs(dir));
+								if ("reason" in resolved) return sendSessionText(sessionId, ctx, resolved.reason);
+								const lines = await stopLanes(resolved.targets, {
+									kill: (pid, signal) => process.kill(pid, signal as NodeJS.Signals),
+									waitMs: (ms) => {
+										const { promise, resolve } = Promise.withResolvers<void>();
+										// unref: a stop wait must never be what keeps the host's event loop alive.
+										setTimeout(resolve, ms).unref();
+										return promise;
+									},
+								});
+								return sendSessionText(sessionId, ctx, lines.join("\n"));
+							}
 							const root = resolveSwarmRoot(process.env);
-							if ("reason" in root) return sendInsightText(`AgentSwarm lanes unavailable: ${root.reason}`);
+							if ("reason" in root)
+								return sendInsightText(`AgentSwarm lanes unavailable: ${swarmRootMessage(root)}`);
 							if (parsed.kind === "status") {
 								const discovery = laneDirs(dir);
-								const rows = await laneStatus(discovery.lanes, orchStatusRunner({ swarmRoot: root.root, cwd, env: process.env }));
+								const rows = await laneStatus(
+									discovery.lanes,
+									orchStatusRunner({ swarmRoot: root.root, cwd, env: process.env }),
+								);
 								const full = formatLaneStatusText(rows, discovery.omitted);
 								// The card summarizes; the text listing is the complete enumeration (every reported
 								// lane with its counts or error and log path), so the two never point at each
 								// other circularly. Hosts without a card renderer get the listing alone.
-								if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") sendSwarmCard(sessionId, ctx, `Swarm lanes — ${rows.filter((row) => !("error" in row)).length}/${rows.length} reported${discovery.omitted > 0 ? ` · ${discovery.omitted} older not shown` : ""}`, toSwarmStatusCard(rows, discovery.omitted));
+								if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function")
+									sendSwarmCard(
+										sessionId,
+										ctx,
+										`Swarm lanes — ${rows.filter((row) => !("error" in row)).length}/${rows.length} reported${discovery.omitted > 0 ? ` · ${discovery.omitted} older not shown` : ""}`,
+										toSwarmStatusCard(rows, discovery.omitted),
+									);
 								return sendSessionText(sessionId, ctx, full);
 							}
 							const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
-							const plan = planLanes(parsed.briefs, { cwd, stateDir: dir, swarmRoot: root.root, env: process.env, pstack });
-							const handles = spawnLanes(plan);
+							// The Graph ID of the session's tracked plan (when there is one) becomes the lane brief's first line.
+							const graphId = sessionId ? readSession(dir, sessionId)?.plan?.graphId : undefined;
+							const planned = planLanes(parsed.briefs, {
+								cwd,
+								stateDir: dir,
+								swarmRoot: root.root,
+								env: process.env,
+								pstack,
+								graphId,
+							});
+							// Ask Swarm's own classifier about the exact lane text first, then refuse briefs that duplicate a
+							// live lane or exceed the live-lane cap; only the survivors spawn.
+							const preflight = await filterSpawnable(planned, classifierFor(root.root));
+							// Check, spawn and lane.json write are one locked step (spawnGuarded); the classifier await above
+							// stays outside the lock.
+							const guarded = spawnGuarded(preflight.spawn, {
+								stateDir: dir,
+								cwd,
+								cap: maxLanes(process.env),
+								isAlive: pidAlive,
+								spawn: spawnLaneSet,
+							});
+							const handles = guarded.handles;
+							const plan = guarded.spawn;
+							const refusals = [...preflight.refused, ...guarded.refused].map(
+								(refusal) => `${refusal.laneId}: ${refusal.reason}`,
+							);
+							const remarks = [...refusals, ...preflight.notes];
+							if (plan.length === 0)
+								return sendSessionText(
+									sessionId,
+									ctx,
+									[...refusals, ...(preflight.refused.length > 0 ? [TEAMS_USAGE] : [])].join("\n"),
+								);
 							const started = handles.filter((handle) => handle.pid !== undefined).length;
-							if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") sendSwarmCard(sessionId, ctx, `Swarm lanes — ${started}/${plan.length} spawned`, toSwarmSpawnCard(handles, plan));
-							else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
-						} catch {}
+							if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") {
+								sendSwarmCard(
+									sessionId,
+									ctx,
+									`Swarm lanes — ${started}/${plan.length} spawned`,
+									toSwarmSpawnCard(handles, plan),
+								);
+								const beside = [...laneNotes(handles), ...remarks];
+								if (beside.length > 0) sendSessionText(sessionId, ctx, beside.join("\n"));
+							} else
+								sendSessionText(
+									sessionId,
+									ctx,
+									[formatLaneHandles(handles), ...remarks].join("\n"),
+								);
+						} catch {
+							// reason: a failed swarm card must not reject into the host command runner
+						}
 					},
 				}),
 			);
@@ -1614,12 +2152,15 @@ export function createOmpExtension(
 			if (!current(flight)) return;
 			if (result?.modelResolution) observe(flight.sessionId, result.modelResolution);
 			barWrite(flight.generation, () => {
-				if (!flight.content) store.skipped(flight.timedOut ? "timed out" : (flight.endDetail ?? "no plan"), now());
+				if (!flight.content)
+					store.skipped(flight.timedOut ? "timed out" : (flight.endDetail ?? "no plan"), now());
 				else if (flight.deferred) store.delivered("aside", flight.view, now());
 			});
 			barWrite(flight.generation, refreshMcp);
 			if (!flight.deferred) return;
-			guard(() => pi.sendMessage(planMessage(flight.content || NO_PLAN, flight.view), { deliverAs: "aside" }));
+			guard(() =>
+				pi.sendMessage(planMessage(flight.content || NO_PLAN, flight.view), { deliverAs: "aside" }),
+			);
 		};
 
 		const start = (
@@ -1648,7 +2189,7 @@ export function createOmpExtension(
 				finishFlight: (result) => {
 					const timer = flight.deadlineTimer;
 					if (timer !== undefined) {
-						clearTimeout(timer);
+						timers.clearTimeout(timer);
 						flight.deadlineTimer = undefined;
 					}
 					outcome.resolve(result);
@@ -1672,7 +2213,8 @@ export function createOmpExtension(
 			const onEvent = (event: ProgressEvent) =>
 				guard(() => {
 					if (flight.timedOut || flight.settled || !owns(flight)) return;
-					if ((event.type === "begin" || event.type === "end") && event.modelResolution) observe(flight.sessionId, event.modelResolution);
+					if ((event.type === "begin" || event.type === "end") && event.modelResolution)
+						observe(flight.sessionId, event.modelResolution);
 					if (event.type === "activity") {
 						barWrite(generation, () => {
 							if (shutDown) return;
@@ -1680,7 +2222,12 @@ export function createOmpExtension(
 							if (!notice) return;
 							guard(() =>
 								pi.sendMessage(
-									{ customType: ACTIVITY_TYPE, content: truncateToWidth(activityFallbackLine(notice), UI_FALLBACK_COLS), display: true, details: notice },
+									{
+										customType: ACTIVITY_TYPE,
+										content: truncateToWidth(activityFallbackLine(notice), UI_FALLBACK_COLS),
+										display: true,
+										details: notice,
+									},
 									ACTIVITY_DELIVERY,
 								),
 							);
@@ -1692,18 +2239,27 @@ export function createOmpExtension(
 			// The outer deadline exists only for an explicit positive maxRunMs; omitted and zero leave planning unbounded.
 			// A positive deadline still settles independently of provider cooperation; only the inline race keeps the flight running.
 			if (maxRunMs > 0) {
-				const timer = setTimeout(() => {
+				const timer = timers.setTimeout(() => {
 					flight.timedOut = true;
 					flight.finishFlight({ context: "" });
 					guard(() => flight.controller.abort());
 				}, maxRunMs);
 				// Like the AbortSignal.timeout it replaces, the limit alone never keeps a process alive.
-				timer.unref?.();
+				(timer as { unref?: () => void } | undefined)?.unref?.();
 				flight.deadlineTimer = timer;
 			}
 			try {
-				plan({ ...request, isCurrent: () => !flight.timedOut && !flight.settled && current(flight) }, flight.controller.signal, onEvent).then(flight.finishFlight, () => flight.finishFlight({ context: "" }));
+				plan(
+					{
+						...request,
+						deadline: maxRunMs > 0 ? Date.now() + maxRunMs : undefined,
+						isCurrent: () => !flight.timedOut && !flight.settled && current(flight),
+					},
+					flight.controller.signal,
+					onEvent,
+				).then(flight.finishFlight, () => flight.finishFlight({ context: "" }));
 			} catch {
+				// reason: a planner that cannot start finishes the flight with empty context so the prompt proceeds unplanned
 				flight.finishFlight({ context: "" });
 			}
 			return flight;
@@ -1722,6 +2278,7 @@ export function createOmpExtension(
 			try {
 				snapshot = live && { model: snapshotModel(live.model), source: live.source };
 			} catch {
+				// reason: a model that cannot be snapshotted launches without a model snapshot
 				snapshot = undefined;
 			}
 			const runtime = nativeRuntime(ctx);
@@ -1731,46 +2288,104 @@ export function createOmpExtension(
 				...base,
 				...(snapshot ? { model: snapshot.model, modelSource: snapshot.source } : {}),
 				...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
-				...(runtime && selectors ? { native: { models: selectors.models, modelRegistry: runtime.modelRegistry } } : {}),
+				...(runtime && selectors
+					? { native: { models: selectors.models, modelRegistry: runtime.modelRegistry } }
+					: {}),
 				...(captured.config ? { config: captured.config } : {}),
 				...(captured.control ? { control: captured.control } : {}),
 			};
-			return start(request, submission, ctx, { live: snapshot, intent: captured.intent, selectors });
+			return start(request, submission, ctx, {
+				live: snapshot,
+				intent: captured.intent,
+				selectors,
+			});
 		};
 
 		/**
 		 * AgentSwarm auto-run: with `swarm.autoRun` on (user files only, default off) an SDLC-sounding prompt in a
 		 * top-level session fans out one detached lane for it, published exactly like the /ultrathink-swarm spawn
 		 * branch. Explicit /commands, child sessions, unconfigured swarm roots and repeat submissions never spawn;
-		 * every skip is silent and a spawn failure never breaks prompt submission (the guard below). When a lane
-		 * actually started it owns the request: the quick suppression /ultrathink-quick arms makes the session's own
-		 * planning skip the submission, and the caller returns without a plan. Returns whether the lane owns it.
+		 * the first-word `isSdlcPrompt` gate stays as the cheap pre-gate, then Swarm's own classifier is asked about
+		 * the exact lane text (a `skip` verdict, a duplicate of a live lane and the live-lane cap all refuse; an
+		 * unanswered classifier spawns). Every skip is silent and a failure never breaks prompt submission. When a
+		 * lane actually started it owns the request: the quick suppression /ultrathink-quick arms makes the
+		 * session's own planning skip the submission, and the caller returns without a plan. Returns `false`
+		 * synchronously when any cheap gate fails (a prompt that never auto-runs reaches its planner in the same
+		 * tick it always did: the flight lifecycle tests pin that), otherwise a promise of whether the lane owns it;
+		 * never rejects.
 		 * Fired from `before_agent_start` after its quick bypass, which this host delivers for every submitted prompt.
 		 */
 		let lastLane = "";
-		const maybeAutoRun = (prompt: string, ctx: ExtensionContext | undefined): boolean => {
-			let owned = false;
-			guard(() => {
-				const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
-				const cwd = ctx?.cwd || process.cwd();
-				// Dedupe per session+cwd+prompt: identical resubmissions never double-spawn, while the same text in
-				// another session or repo is a fresh request. The key lands only once a lane actually started, so a
-				// failed spawn stays retryable.
-				const key = `${sessionId}:${cwd}:${prompt}`;
-				if (!prompt || prompt.startsWith("/") || prompt === lastLane) return;
-				if (isSubagentSession(ctx, exists)) return;
-				if (flightConfig(cwd).swarm?.autoRun !== true) return;
-				const root = resolveSwarmRoot(process.env);
-				if ("reason" in root) return;
-				if (!isSdlcPrompt(prompt)) return;
-				if (!sessionId) return;
-				const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
-				const plan = planLanes([prompt.trim()], { cwd, stateDir: stateDir(cwd), swarmRoot: root.root, env: process.env, pstack });
-				const handles = spawnLanes(plan);
+		interface AutoRunStart {
+			sessionId: string;
+			cwd: string;
+			key: string;
+			dir: string;
+			swarmRoot: string;
+			planned: LanePlan[];
+		}
+		/** Every gate that needs no await; `undefined` means this prompt does not auto-run. */
+		const autoRunGate = (
+			prompt: string,
+			ctx: ExtensionContext | undefined,
+		): AutoRunStart | undefined => {
+			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+			const cwd = ctx?.cwd || process.cwd();
+			// Dedupe per session+cwd+prompt: identical resubmissions never double-spawn, while the same text in
+			// another session or repo is a fresh request. The key lands only once a lane actually started, so a
+			// failed spawn stays retryable.
+			const key = `${sessionId}:${cwd}:${prompt}`;
+			if (!prompt || prompt.startsWith("/") || key === lastLane) return undefined;
+			if (isSubagentSession(ctx, exists)) return undefined;
+			if (flightConfig(cwd).swarm?.autoRun !== true) return undefined;
+			const root = resolveSwarmRoot(process.env);
+			if ("reason" in root) return undefined;
+			if (!isSdlcPrompt(prompt)) return undefined;
+			if (!sessionId) return undefined;
+			const dir = stateDir(cwd);
+			const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
+			const planned = planLanes([prompt.trim()], {
+				cwd,
+				stateDir: dir,
+				swarmRoot: root.root,
+				env: process.env,
+				pstack,
+				// No graphId: auto-run returns before this prompt is planned, so the session's tracked plan
+				// belongs to earlier work; Swarm and Substrate mint the lane's own graph.
+			});
+			return { sessionId, cwd, key, dir, swarmRoot: root.root, planned };
+		};
+		const autoRunSpawn = async (
+			start: AutoRunStart,
+			prompt: string,
+			ctx: ExtensionContext | undefined,
+		): Promise<boolean> => {
+			try {
+				const { sessionId, cwd, key, dir, swarmRoot, planned } = start;
+				const preflight = await filterSpawnable(planned, classifierFor(swarmRoot));
+				// The classifier ran across an await: a shut-down extension or a switched session spawns nothing.
+				if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return false;
+				// Check, spawn and lane.json write are one locked step (spawnGuarded); the classifier await stays outside.
+				const { spawn: plan, handles } = spawnGuarded(preflight.spawn, {
+					stateDir: dir,
+					cwd,
+					cap: maxLanes(process.env),
+					isAlive: pidAlive,
+					spawn: spawnLaneSet,
+				});
+				if (plan.length === 0) return false; // Refused (not SDLC, duplicate or over the cap): silent, the turn proceeds.
 				const started = handles.filter((handle) => handle.pid !== undefined).length;
-				if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") sendSwarmCard(sessionId, ctx, `Swarm lanes — ${started}/${plan.length} spawned${started > 0 ? " — the AgentSwarm lane owns this request; monitor with /ultrathink-swarm status, do not implement it here" : ""}`, toSwarmSpawnCard(handles, plan));
-				else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
-				if (started === 0) return; // Nothing started: the normal turn proceeds and a resubmission may retry.
+				if (uiEnabled && ctx?.hasUI && typeof pi.registerMessageRenderer === "function") {
+					sendSwarmCard(
+						sessionId,
+						ctx,
+						`Swarm lanes — ${started}/${plan.length} spawned${started > 0 ? " — the AgentSwarm lane owns this request; monitor with /ultrathink-swarm status, do not implement it here" : ""}`,
+						toSwarmSpawnCard(handles, plan),
+					);
+					const notes = laneNotes(handles);
+					if (notes.length > 0) sendSessionText(sessionId, ctx, notes.join("\n"));
+				} else sendSessionText(sessionId, ctx, formatLaneHandles(handles));
+				if (started === 0) return false; // Nothing started: the normal turn proceeds and a resubmission may retry.
 				// The lane owns this submission: the caller's early return skips launch's supersede, so cancel any
 				// pending plan here — a stale one must not settle into this submission — then arm quick so neither
 				// this turn nor a resubmission of the same text plans the request (the quick bypass's bookkeeping).
@@ -1778,9 +2393,24 @@ export function createOmpExtension(
 				if (older) cancel(older, SUPERSEDED);
 				lastLane = key;
 				quick = { sessionId, text: prompt.trim(), submission: turns.get(sessionId) };
-				owned = true;
-			});
-			return owned;
+				return true;
+			} catch {
+				// reason: a failed lane spawn must never reject into prompt submission; the normal turn proceeds
+				return false;
+			}
+		};
+		const maybeAutoRun = (
+			prompt: string,
+			ctx: ExtensionContext | undefined,
+		): boolean | Promise<boolean> => {
+			let start: AutoRunStart | undefined;
+			try {
+				start = autoRunGate(prompt, ctx);
+			} catch {
+				// reason: a gate that throws must never reject into prompt submission; the normal turn proceeds
+				return false;
+			}
+			return start === undefined ? false : autoRunSpawn(start, prompt, ctx);
 		};
 
 		pi.on("before_agent_start", async (event, ctx) => {
@@ -1793,7 +2423,11 @@ export function createOmpExtension(
 				guard(() => store.setLiveSession(sessionId));
 				const submission = turns.get(sessionId) ?? 0;
 				if (quick) {
-					if (quick.sessionId === sessionId && quick.text === prompt.trim() && (quick.submission ?? submission) === submission) {
+					if (
+						quick.sessionId === sessionId &&
+						quick.text === prompt.trim() &&
+						(quick.submission ?? submission) === submission
+					) {
 						// The quick message is now the session's latest submission; an older pending plan must not land in it.
 						const older = quick.submission === undefined ? flights.get(sessionId) : undefined;
 						if (older) cancel(older, SUPERSEDED);
@@ -1804,26 +2438,35 @@ export function createOmpExtension(
 				}
 				// After the quick bypass, so an armed quick message never spawns a lane. When one did spawn it owns
 				// this submission: return without a plan so the planner never races the lane.
+				const autoRun = maybeAutoRun(prompt, ctx);
 				let lane = false;
-				guard(() => {
-					lane = maybeAutoRun(prompt, ctx);
-				});
+				if (typeof autoRun === "boolean") lane = autoRun;
+				else {
+					lane = await autoRun;
+					// The spawn step awaited the classifier: a session that shut down or switched meanwhile starts no
+					// plan (the shutdown already cleared the flights). The synchronous path never reaches this.
+					if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return;
+				}
 				if (lane) return;
 				const dir = stateDir(cwd);
-				let captured: { config?: UltrathinkConfig; control?: ControlState; intent?: FlightIntent } = {};
+				let captured: { config?: UltrathinkConfig; control?: ControlState; intent?: FlightIntent } =
+					{};
 				try {
 					const config = flightConfig(cwd);
 					const control = readControl(dir);
 					captured = { config, control, intent: intentOf(config, control) };
 				} catch {
-					// fail-open: the planner loads its own config and control
+					// reason: fail-open: the planner loads its own config and control
 				}
 				// Named legacy routes retain their own effort settings; only native planning inherits the session level.
 				const namedEngine = captured.intent && captured.intent.engine !== "auto";
 				const thinkingLevel = namedEngine ? undefined : pi.getThinkingLevel?.();
 				const live = observeLive(ctx);
 				const existing = flights.get(sessionId);
-				let same = existing?.submission === submission && existing.prompt === prompt && existing.cwd === cwd ? existing : undefined;
+				let same =
+					existing?.submission === submission && existing.prompt === prompt && existing.cwd === cwd
+						? existing
+						: undefined;
 				// Reuse only an unchanged target: the whole live Model, session effort, effective route/provenance and
 				// native selector results. Otherwise the old flight is suppressed and this prompt plans afresh.
 				if (same) {
@@ -1839,15 +2482,25 @@ export function createOmpExtension(
 					}
 				}
 				if (same?.deferred) return same.settled ? undefined : { message: pendingMessage() };
-				if (same?.settled) return same.content ? { message: planMessage(same.content, same.view) } : undefined;
-				const flight = same ?? launch(ctx, { prompt, cwd, sessionId, stateDir: dir }, submission, live, thinkingLevel, captured);
+				if (same?.settled)
+					return same.content ? { message: planMessage(same.content, same.view) } : undefined;
+				const flight =
+					same ??
+					launch(
+						ctx,
+						{ prompt, cwd, sessionId, stateDir: dir },
+						submission,
+						live,
+						thinkingLevel,
+						captured,
+					);
 				const timeout = Promise.withResolvers<null>();
-				const timer = setTimeout(() => timeout.resolve(null), raceMs);
+				const timer = timers.setTimeout(() => timeout.resolve(null), raceMs);
 				let result: OmpPlan | null;
 				try {
 					result = await Promise.race([flight.result, timeout.promise]);
 				} finally {
-					clearTimeout(timer);
+					timers.clearTimeout(timer);
 				}
 				if (flight.cancelled) return;
 				if (result === null) {

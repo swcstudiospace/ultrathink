@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { randomUUID } from "node:crypto";
+import { redactSecrets } from "../../../src/redact.ts";
 import { currentRequestContext } from "./context.ts";
 
 export type LogLevel = "info" | "warn" | "error";
@@ -32,15 +33,23 @@ function clip(value: string): string {
 }
 
 function serializeError(err: Error, withStack: boolean): Record<string, unknown> {
-	const out: Record<string, unknown> = { name: clip(String(err.name)), message: clip(String(err.message)) };
-	if (withStack && typeof err.stack === "string") out.stack = clip(err.stack);
+	const out: Record<string, unknown> = {
+		name: clip(String(err.name)),
+		message: clip(redactSecrets(String(err.message))),
+	};
+	if (withStack && typeof err.stack === "string") out.stack = clip(redactSecrets(err.stack));
 	return out;
 }
 
-function serialize(value: unknown, depth: number, seen: WeakSet<object>, withStack: boolean): unknown {
+function serialize(
+	value: unknown,
+	depth: number,
+	seen: WeakSet<object>,
+	withStack: boolean,
+): unknown {
 	switch (typeof value) {
 		case "string":
-			return clip(value);
+			return clip(redactSecrets(value));
 		case "number":
 			return Number.isFinite(value) ? value : String(value);
 		case "boolean":
@@ -56,14 +65,16 @@ function serialize(value: unknown, depth: number, seen: WeakSet<object>, withSta
 	if (value === null) return null;
 	const obj = value as object;
 	if (obj instanceof Error) return serializeError(obj, withStack);
-	if (obj instanceof Date) return Number.isNaN(obj.getTime()) ? "[invalid date]" : obj.toISOString();
+	if (obj instanceof Date)
+		return Number.isNaN(obj.getTime()) ? "[invalid date]" : obj.toISOString();
 	if (seen.has(obj)) return "[circular]";
 	if (depth >= MAX_DEPTH) return "[truncated]";
 	seen.add(obj);
 	try {
 		if (Array.isArray(obj)) {
 			const out: unknown[] = [];
-			for (const item of obj.slice(0, MAX_ARRAY)) out.push(serialize(item, depth + 1, seen, withStack) ?? null);
+			for (const item of obj.slice(0, MAX_ARRAY))
+				out.push(serialize(item, depth + 1, seen, withStack) ?? null);
 			if (obj.length > MAX_ARRAY) out.push(`[${obj.length - MAX_ARRAY} more]`);
 			return out;
 		}
@@ -88,6 +99,7 @@ function serializeFields(
 		try {
 			raw = fields[key];
 		} catch {
+			// reason: an unreadable field is logged as "[unreadable]", so the field shows without its value
 			raw = "[unreadable]";
 		}
 		const value = serialize(raw, depth, seen, withStack);
@@ -130,7 +142,7 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
 			const line = JSON.stringify({ ...body, ts: stamp(now), level, event: clip(String(event)) });
 			write(line);
 		} catch {
-			// Logging must never take a request down.
+			// reason: Logging must never take a request down.
 		}
 	}
 
@@ -148,4 +160,12 @@ export function sanitizeRequestId(raw: string | null): string | null {
 
 export function newRequestId(): string {
 	return randomUUID();
+}
+
+/** The class or code of a failure, never its message: messages can echo input values. */
+export function failureLabel(error: unknown): string {
+	if (!(error instanceof Error)) return "non-error value";
+	const code = "code" in error ? error.code : undefined;
+	if (typeof code === "string") return code;
+	return error.name === "Error" ? error.constructor.name : error.name;
 }

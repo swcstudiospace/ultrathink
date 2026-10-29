@@ -22,7 +22,12 @@ const SHA_PIN = /@[0-9a-f]{40}$/;
 const silent = createLogger({ write: () => undefined });
 
 /** The four workflows that existed before the policy job; the real repo now also carries policy.yml. */
-const ORIGINAL_WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml", ".github/workflows/release.yml", ".github/workflows/security-scan.yml"];
+const ORIGINAL_WORKFLOWS = [
+	".github/workflows/ci.yml",
+	".github/workflows/codeql.yml",
+	".github/workflows/release.yml",
+	".github/workflows/security-scan.yml",
+];
 
 const tempRoots: string[] = [];
 
@@ -63,8 +68,12 @@ describe("static collection of the real repository", () => {
 
 	test("reads the four original workflows and their pinned uses", () => {
 		for (const file of ORIGINAL_WORKFLOWS) expect(findWorkflow(input, file).file).toBe(file);
-		const uses = ORIGINAL_WORKFLOWS.flatMap((file) => Object.values(findWorkflow(input, file).jobs).flatMap((job) => job.uses));
-		expect(uses).toHaveLength(16);
+		const uses = ORIGINAL_WORKFLOWS.flatMap((file) =>
+			Object.values(findWorkflow(input, file).jobs).flatMap((job) => job.uses),
+		);
+		// 16 before task 00057, plus the SHA-pinned setup-node step in ci.yml and in release.yml (the Omega CI pool has no system Node),
+		// plus the one in codeql.yml (task 00066: CodeQL's TypeScript extractor starts Node).
+		expect(uses).toHaveLength(19);
 		for (const use of uses) expect(use).toMatch(SHA_PIN);
 	});
 
@@ -76,7 +85,8 @@ describe("static collection of the real repository", () => {
 	});
 
 	test("no workflow lists pull_request_target as a trigger", () => {
-		for (const workflow of input.workflows) expect(workflow.on).not.toContain("pull_request_target");
+		for (const workflow of input.workflows)
+			expect(workflow.on).not.toContain("pull_request_target");
 	});
 
 	test("release.yml keeps its job-level write scope and the top-level read scope", () => {
@@ -99,7 +109,8 @@ describe("static collection of the real repository", () => {
 		expect(input.source).toBe("static");
 		expect(input.expected).toEqual({ ...SECURITY_HEADERS });
 		const lowered: Record<string, string> = {};
-		for (const [name, value] of Object.entries(SECURITY_HEADERS)) lowered[name.toLowerCase()] = value;
+		for (const [name, value] of Object.entries(SECURITY_HEADERS))
+			lowered[name.toLowerCase()] = value;
 		expect(input.headers).toEqual(lowered);
 	});
 });
@@ -107,25 +118,42 @@ describe("static collection of the real repository", () => {
 describe("parseUnitFile", () => {
 	test("keeps repeated keys in file order and skips comments and blank lines", () => {
 		const sections = parseUnitFile(
-			["# leading comment", "", "[Service]", "SystemCallFilter=@system-service", "; another comment", "SystemCallFilter=~@privileged", ""].join("\n"),
+			[
+				"# leading comment",
+				"",
+				"[Service]",
+				"SystemCallFilter=@system-service",
+				"; another comment",
+				"SystemCallFilter=~@privileged",
+				"",
+			].join("\n"),
 			"x.service",
 		);
 		expect(sections.Service?.SystemCallFilter).toEqual(["@system-service", "~@privileged"]);
 	});
 
 	test("an empty value is one empty entry, and a bare key with spaces around = is trimmed", () => {
-		const sections = parseUnitFile("[Service]\nCapabilityBoundingSet=\nUMask =  0077  \n", "x.service");
+		const sections = parseUnitFile(
+			"[Service]\nCapabilityBoundingSet=\nUMask =  0077  \n",
+			"x.service",
+		);
 		expect(sections.Service?.CapabilityBoundingSet).toEqual([""]);
 		expect(sections.Service?.UMask).toEqual(["0077"]);
 	});
 
 	test("a trailing backslash joins the next physical line", () => {
-		const sections = parseUnitFile("[Service]\nRestrictAddressFamilies=AF_INET \\\n  AF_UNIX\n", "x.service");
+		const sections = parseUnitFile(
+			"[Service]\nRestrictAddressFamilies=AF_INET \\\n  AF_UNIX\n",
+			"x.service",
+		);
 		expect(sections.Service?.RestrictAddressFamilies).toEqual(["AF_INET", "AF_UNIX"]);
 	});
 
 	test("merges a section that appears twice", () => {
-		const sections = parseUnitFile("[Service]\nUser=a\n[Unit]\nDescription=x\n[Service]\nGroup=a\n", "x.service");
+		const sections = parseUnitFile(
+			"[Service]\nUser=a\n[Unit]\nDescription=x\n[Service]\nGroup=a\n",
+			"x.service",
+		);
 		expect(sections.Service).toEqual({ User: ["a"], Group: ["a"] });
 		expect(sections.Unit).toEqual({ Description: ["x"] });
 	});
@@ -135,14 +163,23 @@ describe("parseUnitFile", () => {
 	});
 
 	test("a line that is neither a section nor a setting is an error", () => {
-		expect(() => parseUnitFile("[Service]\nthis is not a setting\n", "x.service")).toThrow("x.service:2");
+		expect(() => parseUnitFile("[Service]\nthis is not a setting\n", "x.service")).toThrow(
+			"x.service:2",
+		);
 	});
 });
 
 describe("parseWorkflow", () => {
 	test("event names come from the parsed on key, not from comments that mention an event", () => {
 		const workflow = parseWorkflow(
-			["# pull_request_target would be dangerous here", "on:", "  push:", "    branches: [main]", "  pull_request:", ""].join("\n"),
+			[
+				"# pull_request_target would be dangerous here",
+				"on:",
+				"  push:",
+				"    branches: [main]",
+				"  pull_request:",
+				"",
+			].join("\n"),
 			"w.yml",
 		);
 		expect(workflow.on).toEqual(["push", "pull_request"]);
@@ -150,14 +187,22 @@ describe("parseWorkflow", () => {
 
 	test("on as a single event name or as a list both parse", () => {
 		expect(parseWorkflow("on: push\njobs: {}\n", "a.yml").on).toEqual(["push"]);
-		expect(parseWorkflow("on: [push, workflow_dispatch]\njobs: {}\n", "b.yml").on).toEqual(["push", "workflow_dispatch"]);
+		expect(parseWorkflow("on: [push, workflow_dispatch]\njobs: {}\n", "b.yml").on).toEqual([
+			"push",
+			"workflow_dispatch",
+		]);
 	});
 
 	test("a missing permissions key is null; a shorthand string is kept as written", () => {
-		const workflow = parseWorkflow("on: push\njobs:\n  a:\n    runs-on: x\n    steps: []\n", "w.yml");
+		const workflow = parseWorkflow(
+			"on: push\njobs:\n  a:\n    runs-on: x\n    steps: []\n",
+			"w.yml",
+		);
 		expect(workflow.permissions).toBeNull();
 		expect(workflow.jobs.a?.permissions).toBeNull();
-		expect(parseWorkflow("on: push\npermissions: write-all\njobs: {}\n", "w.yml").permissions).toBe("write-all");
+		expect(parseWorkflow("on: push\npermissions: write-all\njobs: {}\n", "w.yml").permissions).toBe(
+			"write-all",
+		);
 	});
 
 	test("job uses include a reusable-workflow ref and every step's uses, in file order", () => {
@@ -180,7 +225,9 @@ describe("parseWorkflow", () => {
 			"actions/checkout@0123456789abcdef0123456789abcdef01234567",
 			"actions/setup-node@89abcdef0123456789abcdef0123456789abcdef",
 		]);
-		expect(workflow.jobs.call?.uses).toEqual(["org/repo/.github/workflows/x.yml@fedcba9876543210fedcba9876543210fedcba98"]);
+		expect(workflow.jobs.call?.uses).toEqual([
+			"org/repo/.github/workflows/x.yml@fedcba9876543210fedcba9876543210fedcba98",
+		]);
 	});
 
 	test("malformed YAML is an error that names the file", () => {
@@ -188,14 +235,20 @@ describe("parseWorkflow", () => {
 	});
 
 	test("a duplicate key is an error, so a second on block cannot shadow the first", () => {
-		expect(() => parseWorkflow("on: push\non: pull_request_target\njobs: {}\n", "dup.yml")).toThrow();
+		expect(() =>
+			parseWorkflow("on: push\non: pull_request_target\njobs: {}\n", "dup.yml"),
+		).toThrow();
 	});
 });
 
 describe("static collection of a fixture repository", () => {
 	test("collects only ultrathink-* units and every workflow under .github/workflows", async () => {
 		const root = tempRoot();
-		writeRepoFile(root, ".github/workflows/ci.yml", "on: push\njobs:\n  t:\n    steps:\n      - uses: actions/checkout@v4\n");
+		writeRepoFile(
+			root,
+			".github/workflows/ci.yml",
+			"on: push\njobs:\n  t:\n    steps:\n      - uses: actions/checkout@v4\n",
+		);
 		writeRepoFile(root, "deploy/ultrathink-x.service", "[Service]\nUser=ultrathink\n");
 		writeRepoFile(root, "deploy/ultrathink-x.timer", "[Timer]\nPersistent=true\n");
 		writeRepoFile(root, "deploy/other.service", "[Service]\nUser=root\n");
@@ -203,18 +256,32 @@ describe("static collection of a fixture repository", () => {
 		const input = await collect({ root });
 		expect(input.workflows.map((workflow) => workflow.file)).toEqual([".github/workflows/ci.yml"]);
 		expect(input.workflows[0]?.jobs.t?.uses).toEqual(["actions/checkout@v4"]);
-		expect(input.units.map((unit) => unit.file)).toEqual(["deploy/ultrathink-x.service", "deploy/ultrathink-x.timer"]);
+		expect(input.units.map((unit) => unit.file)).toEqual([
+			"deploy/ultrathink-x.service",
+			"deploy/ultrathink-x.timer",
+		]);
 	});
 
 	test("collects workflows ending in .yml and .yaml, and ignores other files there", async () => {
 		const root = tempRoot();
-		writeRepoFile(root, ".github/workflows/ci.yml", "on: push\njobs:\n  t:\n    steps:\n      - uses: actions/checkout@v4\n");
-		writeRepoFile(root, ".github/workflows/release.yaml", "on: push\njobs:\n  r:\n    steps:\n      - uses: actions/checkout@v4\n");
+		writeRepoFile(
+			root,
+			".github/workflows/ci.yml",
+			"on: push\njobs:\n  t:\n    steps:\n      - uses: actions/checkout@v4\n",
+		);
+		writeRepoFile(
+			root,
+			".github/workflows/release.yaml",
+			"on: push\njobs:\n  r:\n    steps:\n      - uses: actions/checkout@v4\n",
+		);
 		writeRepoFile(root, ".github/workflows/notes.txt", "not a workflow\n");
 		writeRepoFile(root, "deploy/ultrathink-x.service", "[Service]\nUser=ultrathink\n");
 
 		const input = await collect({ root });
-		expect(input.workflows.map((workflow) => workflow.file)).toEqual([".github/workflows/ci.yml", ".github/workflows/release.yaml"]);
+		expect(input.workflows.map((workflow) => workflow.file)).toEqual([
+			".github/workflows/ci.yml",
+			".github/workflows/release.yaml",
+		]);
 		expect(input.workflows[1]?.jobs.r?.uses).toEqual(["actions/checkout@v4"]);
 	});
 
@@ -225,7 +292,165 @@ describe("static collection of a fixture repository", () => {
 	});
 
 	test("a root that is not a directory is an error", async () => {
-		await expect(collect({ root: join(tempRoot(), "does-not-exist") })).rejects.toThrow("not a directory");
+		await expect(collect({ root: join(tempRoot(), "does-not-exist") })).rejects.toThrow(
+			"not a directory",
+		);
+	});
+});
+
+describe("OpenRouter source scan", () => {
+	/** A fixture root that satisfies collect's own requirements (workflows and deploy) and holds only the given files. */
+	function scanRoot(files: Record<string, string>): string {
+		const root = tempRoot();
+		writeRepoFile(root, ".github/workflows/ci.yml", "on: push\njobs: {}\n");
+		writeRepoFile(root, "deploy/ultrathink-x.service", "[Service]\nUser=ultrathink\n");
+		for (const [file, text] of Object.entries(files)) writeRepoFile(root, file, text);
+		return root;
+	}
+
+	test("finds an OpenRouter host call in a source file and names its kind", async () => {
+		const root = scanRoot({
+			"src/a.ts": 'export const go = () => fetch("https://openrouter.ai/x");\n',
+		});
+		expect((await collect({ root })).sources).toEqual([{ file: "src/a.ts", refs: ["host"] }]);
+	});
+
+	test("reports every kind found in a file, in a fixed order, and sorts files", async () => {
+		const root = scanRoot({
+			"src/z.ts": "const k = process.env.OPENROUTER_API_KEY;\n",
+			"src/b.ts":
+				'const p = "openrouter";\nconst e = new OpenRouterError();\nconst u = "openrouter.ai";\n',
+			"services/s.ts": "const c = createOpenRouterCompleter;\n",
+			"deploy/unit.service": "[Service]\nEnvironment=ULTRATHINK_OPENROUTER_BASE_URL=x\n",
+			"package.json": '{"name": "x", "url": "https://openrouter.ai"}\n',
+			"bin/run": 'curl "https://openrouter.ai"\n',
+			".github/leak.yml": "env:\n  OPENROUTER_API_KEY: x\n",
+		});
+		expect((await collect({ root })).sources).toEqual([
+			{ file: ".github/leak.yml", refs: ["env"] },
+			{ file: "bin/run", refs: ["host"] },
+			{ file: "deploy/unit.service", refs: ["symbol"] },
+			{ file: "package.json", refs: ["host"] },
+			{ file: "services/s.ts", refs: ["symbol"] },
+			{ file: "src/b.ts", refs: ["host", "provider", "symbol"] },
+			{ file: "src/z.ts", refs: ["env"] },
+		]);
+	});
+
+	test("ignores test files, docs, markdown, node_modules and unscanned extensions", async () => {
+		const text = 'fetch("https://openrouter.ai/x");\n';
+		const root = scanRoot({
+			"src/a.test.ts": text,
+			"src/a.test.tsx": text,
+			"src/node_modules/dep/index.ts": text,
+			"src/docs/notes.ts": text,
+			"src/readme.md": text,
+			"src/data.txt": text,
+			"lib/other.ts": text,
+			"nested/package.json": text,
+		});
+		expect((await collect({ root })).sources).toEqual([]);
+	});
+
+	test("a root without src or any scanned directory gives an empty list", async () => {
+		expect((await collect({ root: scanRoot({}) })).sources).toEqual([]);
+	});
+
+	test("honors --root: the scan reads the given tree and not this repository", async () => {
+		const root = scanRoot({ "src/only-here.ts": 'const u = "https://openrouter.ai";\n' });
+		const proc = Bun.spawn([process.execPath, COLLECT, "--root", root], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+		expect(exitCode).toBe(0);
+		expect((JSON.parse(stdout) as PolicyInput).sources).toEqual([
+			{ file: "src/only-here.ts", refs: ["host"] },
+		]);
+	});
+
+	test("comments are not references: full-line, trailing and block comments, in code and in shell", async () => {
+		const root = scanRoot({
+			"src/c.ts": [
+				'// fetch("https://openrouter.ai/x")',
+				'/* const k = "OPENROUTER_API_KEY" */',
+				"/**",
+				' * The "openrouter" provider was removed; see OpenRouterError.',
+				" */",
+				"/*",
+				"openrouter.ai is named here without a star prefix",
+				"*/",
+				"const live = 1; // calls openrouter.ai and reads OPENROUTER_API_KEY",
+				"const inline = 2; /* OpenRouterFetch */ const after = 3;",
+				"",
+			].join("\n"),
+			"scripts/run.sh": '#!/bin/sh\n# curl https://openrouter.ai\necho "no model here"\n',
+			"deploy/note.service": "[Service]\n# OPENROUTER_API_KEY lives elsewhere\nUser=ultrathink\n",
+		});
+		expect((await collect({ root })).sources).toEqual([]);
+	});
+
+	test("TypeScript private class fields start with # and are code, not comments", async () => {
+		const root = scanRoot({
+			"src/private.ts": [
+				"class Client {",
+				'\t#url = "https://openrouter.ai/api/v1";',
+				'\t#key = process.env["ULTRATHINK_OPENROUTER_KEY"];',
+				"}",
+				"",
+			].join("\n"),
+			"src/shebang.ts": '#!/usr/bin/env bun\nconst quiet = "nothing";\n',
+		});
+		expect((await collect({ root })).sources).toEqual([
+			{ file: "src/private.ts", refs: ["host", "symbol"] },
+		]);
+	});
+
+	test("a mention only in a # comment is not a reference in shell and YAML, but a # line in TypeScript is code", async () => {
+		const root = scanRoot({
+			"scripts/note.sh":
+				'#!/bin/sh\n  # export OPENROUTER_API_KEY and call https://openrouter.ai\necho "ok"\n',
+			"deploy/ci-note.yml": "# OPENROUTER_API_KEY is not read here\nname: x\n",
+			"src/hash.ts": 'class A {\n\t#note = "openrouter.ai";\n}\n',
+		});
+		expect((await collect({ root })).sources).toEqual([{ file: "src/hash.ts", refs: ["host"] }]);
+	});
+
+	test("a mention only inside a // comment in TypeScript is not a reference", async () => {
+		const root = scanRoot({
+			"src/commented.ts": [
+				'// const url = "https://openrouter.ai/x";',
+				"\t// OPENROUTER_API_KEY was removed",
+				"const url = 1;",
+				"",
+			].join("\n"),
+		});
+		expect((await collect({ root })).sources).toEqual([]);
+	});
+
+	test("a // inside a string is code, and code after a closed block comment still counts", async () => {
+		const root = scanRoot({
+			"src/d.ts": 'const a = 1; /* note */ const u = "https://openrouter.ai/x"; // trailing\n',
+			"src/e.ts": "const t = `\n// still inside the template\nopenrouter.ai\n`;\n",
+			"scripts/f.sh": "curl https://openrouter.ai/x # fetch\n",
+		});
+		expect((await collect({ root })).sources).toEqual([
+			{ file: "scripts/f.sh", refs: ["host"] },
+			{ file: "src/d.ts", refs: ["host"] },
+			{ file: "src/e.ts", refs: ["host"] },
+		]);
+	});
+
+	test("the legacy-env regex /openrouter/i is not a reference; the quoted id and exact names are", async () => {
+		const root = scanRoot({
+			"src/legacy.ts": [
+				"const LEGACY_ENV_PATTERN = /openrouter/i;",
+				"const stale = Object.keys(env).filter((name) => LEGACY_ENV_PATTERN.test(name));",
+				"",
+			].join("\n"),
+			"src/named.ts": 'const names = ["OPENROUTER_API_KEY"];\n',
+		});
+		expect((await collect({ root })).sources).toEqual([{ file: "src/named.ts", refs: ["env"] }]);
 	});
 });
 
@@ -254,12 +479,11 @@ describe("live mode against the real router", () => {
 			maxBodyBytes: 1024,
 			runTokenCeiling: 150000,
 			dailyTokenCeiling: 1000000,
-			planningModel: undefined,
+			planningModel: "claude-haiku-5-5",
 			connectorKey: undefined,
 			allowedOrigins: [],
 			oauthRedirectOrigins: [],
-			openRouterApiKey: undefined,
-			openRouterBaseUrl: "https://openrouter.ai/api/v1",
+			legacyEnvIgnored: [],
 			serverPlanning: false,
 			maxConcurrentPlans: 2,
 			fairQueueDepth: 16,
@@ -309,14 +533,21 @@ describe("live mode against the real router", () => {
 		expect(input.source).toBe("live");
 		expect(input.expected).toEqual({ ...SECURITY_HEADERS });
 		for (const [name, value] of Object.entries(input.expected)) {
-			expect({ header: name, value: input.headers[name.toLowerCase()] }).toEqual({ header: name, value });
+			expect({ header: name, value: input.headers[name.toLowerCase()] }).toEqual({
+				header: name,
+				value,
+			});
 		}
 	});
 
 	test("live mode still collects the repository inputs", async () => {
 		const input = await collect({ root: REPO_ROOT, live: `${baseUrl}/healthz` });
-		expect(input.workflows.map((workflow) => workflow.file)).toEqual(expect.arrayContaining(ORIGINAL_WORKFLOWS));
-		expect(findUnit(input, "deploy/ultrathink-web.service").sections.Service?.User).toEqual(["ultrathink"]);
+		expect(input.workflows.map((workflow) => workflow.file)).toEqual(
+			expect.arrayContaining(ORIGINAL_WORKFLOWS),
+		);
+		expect(findUnit(input, "deploy/ultrathink-web.service").sections.Service?.User).toEqual([
+			"ultrathink",
+		]);
 	});
 });
 
@@ -327,7 +558,10 @@ describe("live mode against a server that omits HSTS", () => {
 		server = Bun.serve({
 			port: 0,
 			hostname: "127.0.0.1",
-			fetch: () => new Response("ok", { headers: { "Content-Type": "text/plain", "X-Frame-Options": "DENY" } }),
+			fetch: () =>
+				new Response("ok", {
+					headers: { "Content-Type": "text/plain", "X-Frame-Options": "DENY" },
+				}),
 		});
 	});
 
@@ -339,30 +573,41 @@ describe("live mode against a server that omits HSTS", () => {
 		const input = await collect({ root: REPO_ROOT, live: `http://127.0.0.1:${server.port}/` });
 		expect(input.headers).not.toHaveProperty("strict-transport-security");
 		expect(input.headers["x-frame-options"]).toBe("DENY");
-		expect(input.expected["Strict-Transport-Security"]).toBe(SECURITY_HEADERS["Strict-Transport-Security"] ?? "");
+		expect(input.expected["Strict-Transport-Security"]).toBe(
+			SECURITY_HEADERS["Strict-Transport-Security"] ?? "",
+		);
 	});
 
 	test("a live URL that is not http or https is rejected", async () => {
-		await expect(collect({ root: REPO_ROOT, live: "ftp://127.0.0.1/" })).rejects.toThrow("http or https");
+		await expect(collect({ root: REPO_ROOT, live: "ftp://127.0.0.1/" })).rejects.toThrow(
+			"http or https",
+		);
 	});
 
 	test("TLS files are refused for an http live URL, where they would be ignored", async () => {
-		await expect(collect({ root: REPO_ROOT, live: "http://127.0.0.1:1/", liveTls: { ca: "/no/such/ca.pem" } })).rejects.toThrow(
-			"need an https",
-		);
+		await expect(
+			collect({ root: REPO_ROOT, live: "http://127.0.0.1:1/", liveTls: { ca: "/no/such/ca.pem" } }),
+		).rejects.toThrow("need an https");
 	});
 
 	test("a client certificate without its key is refused before any connection is made", async () => {
-		await expect(collect({ root: REPO_ROOT, live: "https://127.0.0.1:1/", liveTls: { cert: "/no/such/cert.pem" } })).rejects.toThrow(
-			"given together",
-		);
+		await expect(
+			collect({
+				root: REPO_ROOT,
+				live: "https://127.0.0.1:1/",
+				liveTls: { cert: "/no/such/cert.pem" },
+			}),
+		).rejects.toThrow("given together");
 	});
 });
 
 describe("command line", () => {
 	test("an unknown --root exits non-zero and writes nothing to stdout", async () => {
 		const missing = join(tempRoot(), "no-such-dir");
-		const proc = Bun.spawn([process.execPath, COLLECT, "--root", missing], { stdout: "pipe", stderr: "pipe" });
+		const proc = Bun.spawn([process.execPath, COLLECT, "--root", missing], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
 		const [stdout, stderr, exitCode] = await Promise.all([
 			new Response(proc.stdout).text(),
 			new Response(proc.stderr).text(),
@@ -377,7 +622,10 @@ describe("command line", () => {
 		const root = tempRoot();
 		writeRepoFile(root, ".github/workflows/ci.yml", "on: push\njobs: {}\n");
 		writeRepoFile(root, "deploy/ultrathink-x.service", "[Service]\nUser=ultrathink\n");
-		const proc = Bun.spawn([process.execPath, COLLECT, "--root", root], { stdout: "pipe", stderr: "pipe" });
+		const proc = Bun.spawn([process.execPath, COLLECT, "--root", root], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
 		const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
 		expect(exitCode).toBe(0);
 		const parsed = JSON.parse(stdout) as PolicyInput;
@@ -387,7 +635,10 @@ describe("command line", () => {
 	});
 
 	test("an unknown flag is a usage error with nothing on stdout", async () => {
-		const proc = Bun.spawn([process.execPath, COLLECT, "--nope"], { stdout: "pipe", stderr: "pipe" });
+		const proc = Bun.spawn([process.execPath, COLLECT, "--nope"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
 		const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
 		expect(exitCode).toBe(2);
 		expect(stdout).toBe("");

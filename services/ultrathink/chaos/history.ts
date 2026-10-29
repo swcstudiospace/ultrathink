@@ -60,8 +60,15 @@ function parseLine(line: string): HistoryRecord | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const fields: Record<string, unknown> = { ...value };
 	if (typeof fields.templateId !== "string") return undefined;
-	if (typeof fields.score !== "number" || !Number.isFinite(fields.score) || fields.score < 0 || fields.score > 100) return undefined;
-	if (typeof fields.seq !== "number" || !Number.isSafeInteger(fields.seq) || fields.seq < 1) return undefined;
+	if (
+		typeof fields.score !== "number" ||
+		!Number.isFinite(fields.score) ||
+		fields.score < 0 ||
+		fields.score > 100
+	)
+		return undefined;
+	if (typeof fields.seq !== "number" || !Number.isSafeInteger(fields.seq) || fields.seq < 1)
+		return undefined;
 	if (!Array.isArray(fields.hypotheses)) return undefined;
 	// The four checks above are the whole contract for a history line; the rest is written by appendHistory.
 	return value as HistoryRecord;

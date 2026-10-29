@@ -36,20 +36,20 @@ import type {
 } from "../teach/types.ts";
 
 /** Rows kept per collection; anything beyond is disclosed, never silently dropped. */
-export const INSIGHT_MAX_ROWS = 100;
+const INSIGHT_MAX_ROWS = 100;
 /** Newest store files examined per snapshot (by file mtime), mirroring the skills lookup window. */
-export const INSIGHT_SCAN_WINDOW = 500;
+const INSIGHT_SCAN_WINDOW = 500;
 /** One moment file read per snapshot; anything larger was not written by the store. */
-export const INSIGHT_MOMENT_BYTES = 64 * 1024;
+const INSIGHT_MOMENT_BYTES = 64 * 1024;
 /** Probability rows kept per decision. */
-export const INSIGHT_MAX_QUESTIONS = 32;
+const INSIGHT_MAX_QUESTIONS = 32;
 /** Bounded collection sizes inside one lesson row. */
-export const INSIGHT_MAX_LIST_ITEMS = 32;
+const INSIGHT_MAX_LIST_ITEMS = 32;
 /** Rows and columns of the plain-text fallback. */
-export const INSIGHT_TEXT_MAX_ROWS = 24;
-export const INSIGHT_TEXT_MAX_COLS = 120;
+const INSIGHT_TEXT_MAX_ROWS = 24;
+const INSIGHT_TEXT_MAX_COLS = 120;
 /** Card snapshots keep at most this many rows per collection (transcript-persisted). */
-export const INSIGHT_CARD_MAX_ROWS = 24;
+const INSIGHT_CARD_MAX_ROWS = 24;
 
 /** Private runtime identity of the owning session; never serialized into message details. */
 export interface InsightScope {
@@ -65,7 +65,7 @@ export interface LessonSelection {
 	revision: string;
 }
 
-export interface InsightQuestionProbability {
+interface InsightQuestionProbability {
 	key: string;
 	p: number;
 }
@@ -87,7 +87,7 @@ export interface InsightDecision {
 	questions: InsightQuestionProbability[];
 }
 
-export interface InsightPromotion {
+interface InsightPromotion {
 	at: string;
 	skill: string;
 	target: SkillTarget;
@@ -120,7 +120,7 @@ export interface InsightLesson {
 	promoted?: InsightPromotion;
 }
 
-export interface InsightPolicy {
+interface InsightPolicy {
 	enabled: boolean;
 	capture: CaptureMode;
 	recall: boolean;
@@ -147,7 +147,7 @@ export interface InsightSnapshot {
 	limitations: string[];
 }
 
-export interface InsightCardLessonSummary {
+interface InsightCardLessonSummary {
 	id: string;
 	name: string;
 	status: MomentStatus;
@@ -186,7 +186,7 @@ export interface SkillPreview {
 	warnings: string[];
 }
 
-export interface InsightInstallResult {
+interface InsightInstallResult {
 	action: string;
 	skill?: string;
 	path?: string;
@@ -194,7 +194,14 @@ export interface InsightInstallResult {
 
 /** Normalized action outcome; transport completion is never equated with success. */
 export type InsightActionResult =
-	| { status: "ok"; message: string; lifecycle?: MomentStatus; retention?: RetainState; install?: InsightInstallResult; preview?: SkillPreview }
+	| {
+			status: "ok";
+			message: string;
+			lifecycle?: MomentStatus;
+			retention?: RetainState;
+			install?: InsightInstallResult;
+			preview?: SkillPreview;
+	  }
 	| { status: "refused"; message: string; lifecycle?: MomentStatus; preview?: SkillPreview }
 	| { status: "error"; message: string; lifecycle?: MomentStatus; preview?: SkillPreview }
 	| { status: "cancelled"; message: string };
@@ -237,8 +244,14 @@ const CSI_SEQUENCE = new RegExp(`${ESC}\\[[0-9;?]*[ -/]*[@-~]`, "g");
 const C1_CONTROLS = new RegExp(`[${String.fromCharCode(128)}-${String.fromCharCode(159)}]`, "g");
 const LONE_ESCAPE = new RegExp(ESC, "g");
 /** Directional-spoofing and invisible characters that survive plain control strips. */
-const BIDI_POINTS = [0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b, 0x200c, 0x200d, 0xfeff, 0x00ad];
-const BIDI_INVISIBLE = new RegExp(BIDI_POINTS.map((point) => String.fromCharCode(point)).join("|"), "g");
+const BIDI_POINTS = [
+	0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b,
+	0x200c, 0x200d, 0xfeff, 0x00ad,
+];
+const BIDI_INVISIBLE = new RegExp(
+	BIDI_POINTS.map((point) => String.fromCharCode(point)).join("|"),
+	"g",
+);
 const OTHER_CONTROLS = ((): RegExp => {
 	const chars: string[] = [];
 	for (let code = 0; code <= 31; code += 1) {
@@ -277,6 +290,7 @@ export function sanitizeInsightText(value: unknown, options: SanitizeOptions = {
 	try {
 		redacted = redactText(text, { home: options.home, repoRoot: options.repoRoot });
 	} catch {
+		// reason: a redaction failure falls back to a fixed placeholder so no raw text is emitted
 		redacted = "[redacted]";
 	}
 	return capCodePoints(redacted, Math.max(0, Math.floor(max)));
@@ -289,7 +303,16 @@ export function insightLessonRevision(moment: TeachableMoment): string {
 		: "";
 	return createHash("sha256")
 		.update(
-			[moment.id, moment.kind, moment.status, String(moment.occurrences), moment.name, moment.description, moment.body, promoted].join(" "),
+			[
+				moment.id,
+				moment.kind,
+				moment.status,
+				String(moment.occurrences),
+				moment.name,
+				moment.description,
+				moment.body,
+				promoted,
+			].join(" "),
 			"utf8",
 		)
 		.digest("hex");
@@ -299,10 +322,14 @@ function isFiniteInRange(value: unknown, min: number, max: number): value is num
 	return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
-function cleanProbabilities(raw: unknown): { probabilities: Record<string, number>; questions: InsightQuestionProbability[] } {
+function cleanProbabilities(raw: unknown): {
+	probabilities: Record<string, number>;
+	questions: InsightQuestionProbability[];
+} {
 	const probabilities: Record<string, number> = {};
 	const questions: InsightQuestionProbability[] = [];
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { probabilities, questions };
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+		return { probabilities, questions };
 	for (const [key, p] of Object.entries(raw)) {
 		if (questions.length >= INSIGHT_MAX_QUESTIONS) break;
 		if (key.length === 0 || key.length > 80) continue;
@@ -325,10 +352,16 @@ function projectDecision(raw: unknown, redact: SanitizeContext): InsightDecision
 	if (!(DECISION_POINTS as readonly unknown[]).includes(record.point)) return undefined;
 	if (record.outcome !== "ok" && record.outcome !== "error") return undefined;
 	if (typeof record.model !== "string" || record.model.length === 0) return undefined;
-	if (typeof record.action !== "string" || !DECISION_ACTION_LIST.includes(record.action)) return undefined;
+	if (typeof record.action !== "string" || !DECISION_ACTION_LIST.includes(record.action))
+		return undefined;
 	if (!isFiniteInRange(record.threshold, 0, 1)) return undefined;
 	if (!isFiniteInRange(record.latencyMs, 0, Number.MAX_SAFE_INTEGER)) return undefined;
-	if (typeof record.attempts !== "number" || !Number.isInteger(record.attempts) || record.attempts < 0) return undefined;
+	if (
+		typeof record.attempts !== "number" ||
+		!Number.isInteger(record.attempts) ||
+		record.attempts < 0
+	)
+		return undefined;
 	if (!isFiniteInRange(record.at, 0, Number.MAX_SAFE_INTEGER)) return undefined;
 	let p: number | undefined;
 	if (record.p !== undefined) {
@@ -375,7 +408,10 @@ function cleanStringList(raw: unknown, maxChars: number, redact: SanitizeContext
 	return out;
 }
 
-function projectPromotion(raw: TeachableMoment["promoted"], redact: SanitizeContext): InsightPromotion | undefined {
+function projectPromotion(
+	raw: TeachableMoment["promoted"],
+	redact: SanitizeContext,
+): InsightPromotion | undefined {
 	if (raw === undefined) return undefined;
 	if (!SKILL_TARGET_LIST.includes(raw.target)) return undefined;
 	const promotion: InsightPromotion = {
@@ -383,15 +419,28 @@ function projectPromotion(raw: TeachableMoment["promoted"], redact: SanitizeCont
 		skill: sanitizeInsightText(raw.skill, { ...redact, maxChars: 120 }),
 		target: raw.target,
 	};
-	if (raw.path !== undefined) promotion.path = sanitizeInsightText(raw.path, { ...redact, maxChars: 300 });
+	if (raw.path !== undefined)
+		promotion.path = sanitizeInsightText(raw.path, { ...redact, maxChars: 300 });
 	return promotion;
 }
 
-function isEligible(kind: TeachableMoment["kind"], status: MomentStatus, occurrences: number, promoted: boolean, promoteAfter: number): boolean {
-	return status === "confirmed" && !promoted && (occurrences >= promoteAfter || kind === "playbook");
+function isEligible(
+	kind: TeachableMoment["kind"],
+	status: MomentStatus,
+	occurrences: number,
+	promoted: boolean,
+	promoteAfter: number,
+): boolean {
+	return (
+		status === "confirmed" && !promoted && (occurrences >= promoteAfter || kind === "playbook")
+	);
 }
 
-function projectLesson(moment: TeachableMoment, promoteAfter: number, redact: SanitizeContext): InsightLesson {
+function projectLesson(
+	moment: TeachableMoment,
+	promoteAfter: number,
+	redact: SanitizeContext,
+): InsightLesson {
 	const promoted = projectPromotion(moment.promoted, redact);
 	const lesson: InsightLesson = {
 		id: moment.id,
@@ -411,16 +460,27 @@ function projectLesson(moment: TeachableMoment, promoteAfter: number, redact: Sa
 		tags: cleanStringList(moment.tags, 40, redact),
 		relatedIds: cleanStringList(moment.relatedIds, 80, redact),
 		selection: { id: moment.id, revision: insightLessonRevision(moment) },
-		eligible: isEligible(moment.kind, moment.status, moment.occurrences, promoted !== undefined, promoteAfter),
-		...(moment.supersedes !== undefined ? { supersedes: sanitizeInsightText(moment.supersedes, { ...redact, maxChars: 80 }) } : {}),
+		eligible: isEligible(
+			moment.kind,
+			moment.status,
+			moment.occurrences,
+			promoted !== undefined,
+			promoteAfter,
+		),
+		...(moment.supersedes !== undefined
+			? { supersedes: sanitizeInsightText(moment.supersedes, { ...redact, maxChars: 80 }) }
+			: {}),
 		...(promoted === undefined ? {} : { promoted }),
 	};
 	return lesson;
 }
 
-const TEACH_JEV_NOTE = "Teaching Jev history is not recorded. Lesson state is not a verdict receipt.";
-const WORKER_NOTE = "Detached worker outcomes are not recorded. No completion or install result can be inferred.";
-const PARTIAL_NOTE = "Partial snapshot — some local data could not be read. Available records remain visible; press r to refresh.";
+const TEACH_JEV_NOTE =
+	"Teaching Jev history is not recorded. Lesson state is not a verdict receipt.";
+const WORKER_NOTE =
+	"Detached worker outcomes are not recorded. No completion or install result can be inferred.";
+const PARTIAL_NOTE =
+	"Partial snapshot — some local data could not be read. Available records remain visible; press r to refresh.";
 const SCAN_LIMIT_NOTE = "Showing up to 100 local records; this is not a complete inventory.";
 /** Neutral display-cap disclosure: a complete read capped for display is healthy, never a failed read. */
 export const RECORD_LIMIT_NOTE = `Only the newest ${INSIGHT_MAX_ROWS} records are shown.`;
@@ -431,8 +491,15 @@ const CANCEL_NOTE = "Snapshot refresh was cancelled; showing available records."
  * another session's record), scans the existing store without creating it,
  * and reports honest missing/partial explanations instead of invented history.
  */
-export async function readInsightSnapshot(scope: InsightScope, ctx: TeachContext, signal?: AbortSignal): Promise<InsightSnapshot> {
-	const redact: SanitizeContext = { home: ctx.env.HOME ?? ctx.env.USERPROFILE, repoRoot: scope.cwd };
+export async function readInsightSnapshot(
+	scope: InsightScope,
+	ctx: TeachContext,
+	signal?: AbortSignal,
+): Promise<InsightSnapshot> {
+	const redact: SanitizeContext = {
+		home: ctx.env.HOME ?? ctx.env.USERPROFILE,
+		repoRoot: scope.cwd,
+	};
 	const project = projectOf(scope.cwd);
 	const session = sanitizeInsightText(scope.sessionId, { ...redact, maxChars: 120 });
 	const limitations: string[] = [TEACH_JEV_NOTE, WORKER_NOTE];
@@ -459,13 +526,17 @@ export async function readInsightSnapshot(scope: InsightScope, ctx: TeachContext
 		} else {
 			const record = readSession(scope.stateDir, scope.sessionId);
 			if (record === undefined || record.sessionId !== scope.sessionId) {
-				markPartial("Could not read local snapshot: the saved session record could not be parsed. Press r to refresh or Esc to close; no lesson changes were made by this read.");
+				markPartial(
+					"Could not read local snapshot: the saved session record could not be parsed. Press r to refresh or Esc to close; no lesson changes were made by this read.",
+				);
 			} else if (!("decisions" in record) || record.decisions === undefined) {
 				limitations.push(
 					"No saved Jev decisions for this session (the saved plan recorded no decisions). This view reads the latest saved plan, not a complete history.",
 				);
 			} else if (!Array.isArray(record.decisions)) {
-				markPartial("Could not read local snapshot: the saved decision list could not be read. Press r to refresh or Esc to close; no lesson changes were made by this read.");
+				markPartial(
+					"Could not read local snapshot: the saved decision list could not be read. Press r to refresh or Esc to close; no lesson changes were made by this read.",
+				);
 			} else if (record.decisions.length === 0) {
 				limitations.push(
 					"No saved Jev decisions for this session (the saved plan holds an empty decision list). This view reads the latest saved plan, not a complete history.",
@@ -490,11 +561,16 @@ export async function readInsightSnapshot(scope: InsightScope, ctx: TeachContext
 				} else {
 					decisions = valid;
 				}
-				if (rejected > 0) markPartial(`${rejected} saved decision row${rejected === 1 ? " was" : "s were"} excluded (unknown or out-of-range values are never clamped into verdicts).`);
+				if (rejected > 0)
+					markPartial(
+						`${rejected} saved decision row${rejected === 1 ? " was" : "s were"} excluded (unknown or out-of-range values are never clamped into verdicts).`,
+					);
 			}
 		}
 	} catch {
-		markPartial("Could not read local snapshot: the saved session record could not be read. Press r to refresh or Esc to close; no lesson changes were made by this read.");
+		markPartial(
+			"Could not read local snapshot: the saved session record could not be read. Press r to refresh or Esc to close; no lesson changes were made by this read.",
+		);
 		decisions = [];
 	}
 
@@ -508,10 +584,12 @@ export async function readInsightSnapshot(scope: InsightScope, ctx: TeachContext
 			let candidates = 0;
 			try {
 				const files = await readdir(`${dir}/moments`);
-				candidates = files.filter((file) => file.endsWith(".json") && isValidId(file.slice(0, -".json".length))).length;
+				candidates = files.filter(
+					(file) => file.endsWith(".json") && isValidId(file.slice(0, -".json".length)),
+				).length;
 			} catch (error) {
 				candidates = 0;
-				// A missing moments directory is an honestly empty store; any other read
+				// reason: A missing moments directory is an honestly empty store; any other read
 				// failure is disclosed instead of passing as an empty store.
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 					markPartial(
@@ -519,26 +597,40 @@ export async function readInsightSnapshot(scope: InsightScope, ctx: TeachContext
 					);
 				}
 			}
-			const scanned = await listRecentMoments(dir, { max: INSIGHT_SCAN_WINDOW, maxBytes: INSIGHT_MOMENT_BYTES, signal });
+			const scanned = await listRecentMoments(dir, {
+				max: INSIGHT_SCAN_WINDOW,
+				maxBytes: INSIGHT_MOMENT_BYTES,
+				signal,
+			});
 			if (cancelled()) markPartial(CANCEL_NOTE);
 			if (scanned.length < candidates) markPartial(PARTIAL_NOTE);
 			if (candidates > INSIGHT_SCAN_WINDOW) markPartial(SCAN_LIMIT_NOTE);
 			const promoteAfter = ctx.config.teach.promoteAfter;
 			const scoped = scanned.filter((moment) => moment.project === project);
-			scoped.sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? 1 : -1));
+			scoped.sort((a, b) =>
+				a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? 1 : -1,
+			);
 			if (scoped.length > INSIGHT_MAX_ROWS) {
-				lessons = scoped.slice(0, INSIGHT_MAX_ROWS).map((moment) => projectLesson(moment, promoteAfter, redact));
+				lessons = scoped
+					.slice(0, INSIGHT_MAX_ROWS)
+					.map((moment) => projectLesson(moment, promoteAfter, redact));
 				noteLimit(RECORD_LIMIT_NOTE);
 			} else {
 				lessons = scoped.map((moment) => projectLesson(moment, promoteAfter, redact));
 			}
 		}
 	} catch {
+		// reason: the failure is disclosed through the partial marker; lessons are reset to empty
 		markPartial(PARTIAL_NOTE);
 		lessons = [];
 	}
 
-	const counts: Record<MomentStatus, number> = { candidate: 0, confirmed: 0, promoted: 0, superseded: 0 };
+	const counts: Record<MomentStatus, number> = {
+		candidate: 0,
+		confirmed: 0,
+		promoted: 0,
+		superseded: 0,
+	};
 	for (const lesson of lessons) counts[lesson.status] += 1;
 	const eligible = lessons.filter((lesson) => lesson.eligible).length;
 	const promoted = lessons.filter((lesson) => lesson.promoted !== undefined).length;
@@ -552,7 +644,19 @@ export async function readInsightSnapshot(scope: InsightScope, ctx: TeachContext
 		promoteAfter: ctx.config.teach.promoteAfter,
 		jevEnabled: ctx.config.decisions !== undefined && !decisionsKilled(ctx.env),
 	};
-	return { project, session, at: Date.now(), decisions, lessons, policy, counts, eligible, promoted, partial, limitations };
+	return {
+		project,
+		session,
+		at: Date.now(),
+		decisions,
+		lessons,
+		policy,
+		counts,
+		eligible,
+		promoted,
+		partial,
+		limitations,
+	};
 }
 
 /** Re-sanitized question rows for transcript persistence; invalid rows are dropped, never clamped. */
@@ -583,39 +687,43 @@ function cleanCardProbabilities(raw: unknown): Record<string, number> {
 	return out;
 }
 
- /**
-  * Independent transcript-persisted card DTO. All free text is re-sanitized on
-  * intake (persisted cards are untrusted), and bodies, selection revisions,
-  * runtime scope and private objects are excluded by construction. Truncation
-  * to INSIGHT_CARD_MAX_ROWS per collection is disclosed with bounded omission
-  * notes in `limitations`; the DTO shape itself is unchanged.
-  */
- export function toInsightCardSnapshot(snapshot: InsightSnapshot): InsightCardSnapshot {
- 	const redact: SanitizeContext = {};
- 	const decisions = snapshot.decisions.slice(0, INSIGHT_CARD_MAX_ROWS).map((decision) => ({
- 		...decision,
- 		model: sanitizeInsightText(decision.model, { ...redact, maxChars: 200 }),
+/**
+ * Independent transcript-persisted card DTO. All free text is re-sanitized on
+ * intake (persisted cards are untrusted), and bodies, selection revisions,
+ * runtime scope and private objects are excluded by construction. Truncation
+ * to INSIGHT_CARD_MAX_ROWS per collection is disclosed with bounded omission
+ * notes in `limitations`; the DTO shape itself is unchanged.
+ */
+export function toInsightCardSnapshot(snapshot: InsightSnapshot): InsightCardSnapshot {
+	const redact: SanitizeContext = {};
+	const decisions = snapshot.decisions.slice(0, INSIGHT_CARD_MAX_ROWS).map((decision) => ({
+		...decision,
+		model: sanitizeInsightText(decision.model, { ...redact, maxChars: 200 }),
 		probabilities: cleanCardProbabilities(decision.probabilities),
 		questions: cleanCardQuestions(decision.questions),
- 	}));
- 	const lessons: InsightCardLessonSummary[] = snapshot.lessons.slice(0, INSIGHT_CARD_MAX_ROWS).map((lesson) => ({
- 		id: sanitizeInsightText(lesson.id, { ...redact, maxChars: 80 }),
- 		name: sanitizeInsightText(lesson.name, { ...redact, maxChars: 120 }),
- 		status: lesson.status,
- 		kind: lesson.kind,
- 		occurrences: lesson.occurrences,
- 		eligible: lesson.eligible,
- 		...(lesson.promoted === undefined
- 			? {}
- 			: {
- 					promoted: {
-						at: sanitizeInsightText(lesson.promoted.at, { ...redact, maxChars: 64 }),
- 						skill: sanitizeInsightText(lesson.promoted.skill, { ...redact, maxChars: 120 }),
- 						target: lesson.promoted.target,
- 					},
- 				}),
- 	}));
-	const limitations = snapshot.limitations.map((limitation) => sanitizeInsightText(limitation, { ...redact, maxChars: 300 }));
+	}));
+	const lessons: InsightCardLessonSummary[] = snapshot.lessons
+		.slice(0, INSIGHT_CARD_MAX_ROWS)
+		.map((lesson) => ({
+			id: sanitizeInsightText(lesson.id, { ...redact, maxChars: 80 }),
+			name: sanitizeInsightText(lesson.name, { ...redact, maxChars: 120 }),
+			status: lesson.status,
+			kind: lesson.kind,
+			occurrences: lesson.occurrences,
+			eligible: lesson.eligible,
+			...(lesson.promoted === undefined
+				? {}
+				: {
+						promoted: {
+							at: sanitizeInsightText(lesson.promoted.at, { ...redact, maxChars: 64 }),
+							skill: sanitizeInsightText(lesson.promoted.skill, { ...redact, maxChars: 120 }),
+							target: lesson.promoted.target,
+						},
+					}),
+		}));
+	const limitations = snapshot.limitations.map((limitation) =>
+		sanitizeInsightText(limitation, { ...redact, maxChars: 300 }),
+	);
 	const omittedDecisions = snapshot.decisions.length - decisions.length;
 	if (omittedDecisions > 0) {
 		limitations.push(
@@ -628,20 +736,20 @@ function cleanCardProbabilities(raw: unknown): Record<string, number> {
 			`${omittedLessons} more lesson${omittedLessons === 1 ? "" : "s"} omitted — card keeps ${INSIGHT_CARD_MAX_ROWS} per collection; open /ultrathink-ui for the full view.`,
 		);
 	}
- 	return {
- 		project: sanitizeInsightText(snapshot.project, { ...redact, maxChars: 120 }),
- 		session: sanitizeInsightText(snapshot.session, { ...redact, maxChars: 120 }),
- 		at: snapshot.at,
- 		decisions,
- 		lessons,
- 		policy: { ...snapshot.policy },
- 		counts: { ...snapshot.counts },
- 		eligible: snapshot.eligible,
- 		promoted: snapshot.promoted,
- 		partial: snapshot.partial,
+	return {
+		project: sanitizeInsightText(snapshot.project, { ...redact, maxChars: 120 }),
+		session: sanitizeInsightText(snapshot.session, { ...redact, maxChars: 120 }),
+		at: snapshot.at,
+		decisions,
+		lessons,
+		policy: { ...snapshot.policy },
+		counts: { ...snapshot.counts },
+		eligible: snapshot.eligible,
+		promoted: snapshot.promoted,
+		partial: snapshot.partial,
 		limitations,
- 	};
- }
+	};
+}
 
 function fitCell(text: string, width: number): string {
 	const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -670,24 +778,44 @@ export function formatInsightText(snapshot: InsightSnapshot): string {
 	const latest = snapshot.decisions[0];
 	if (latest) {
 		const p = latest.p === undefined ? "Not recorded" : formatP(latest.p);
-		rows.push(`Latest Jev: ${latest.point} ${latest.action} (P ${p})${latest.error ? ` [${latest.error}]` : ""}`);
+		rows.push(
+			`Latest Jev: ${latest.point} ${latest.action} (P ${p})${latest.error ? ` [${latest.error}]` : ""}`,
+		);
 	} else {
 		rows.push("No saved Jev decisions for this session");
 	}
 	rows.push(
 		`Autonomy: teaching ${snapshot.policy.enabled ? "on" : "off"}; capture ${snapshot.policy.capture}; eligible ${snapshot.eligible}; promoted ${snapshot.promoted}`,
 	);
-	const available = Math.max(0, INSIGHT_TEXT_MAX_ROWS - rows.length - snapshot.limitations.length - 2);
-	const shown = snapshot.lessons.slice(0, Math.max(0, available - (snapshot.lessons.length > available ? 1 : 0)));
-	rows.push(`Lessons for ${snapshot.project} (${shown.length} of ${snapshot.lessons.length} shown):`);
+	const available = Math.max(
+		0,
+		INSIGHT_TEXT_MAX_ROWS - rows.length - snapshot.limitations.length - 2,
+	);
+	const shown = snapshot.lessons.slice(
+		0,
+		Math.max(0, available - (snapshot.lessons.length > available ? 1 : 0)),
+	);
+	rows.push(
+		`Lessons for ${snapshot.project} (${shown.length} of ${snapshot.lessons.length} shown):`,
+	);
 	for (const lesson of shown) {
-		rows.push(`- [${lesson.status}] ${lesson.name} (x${lesson.occurrences})${lesson.eligible ? " — eligible by saved lesson rules" : ""}`);
+		rows.push(
+			`- [${lesson.status}] ${lesson.name} (x${lesson.occurrences})${lesson.eligible ? " — eligible by saved lesson rules" : ""}`,
+		);
 	}
-	if (shown.length < snapshot.lessons.length) rows.push(`Note: ${snapshot.lessons.length - shown.length} more lessons omitted from this text.`);
+	if (shown.length < snapshot.lessons.length)
+		rows.push(
+			`Note: ${snapshot.lessons.length - shown.length} more lessons omitted from this text.`,
+		);
 	for (const limitation of snapshot.limitations) rows.push(`Note: ${limitation}`);
 	rows.push("Guarded actions require the Omp TUI (/ultrathink-ui).");
 	return rows
 		.slice(0, INSIGHT_TEXT_MAX_ROWS)
-		.map((row) => fitCell(sanitizeInsightText(row, { maxChars: INSIGHT_TEXT_MAX_COLS * 4 }), INSIGHT_TEXT_MAX_COLS))
+		.map((row) =>
+			fitCell(
+				sanitizeInsightText(row, { maxChars: INSIGHT_TEXT_MAX_COLS * 4 }),
+				INSIGHT_TEXT_MAX_COLS,
+			),
+		)
 		.join("\n");
 }

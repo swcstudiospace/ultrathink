@@ -24,7 +24,7 @@ afterAll(() => {
 		try {
 			store.close();
 		} catch {
-			// already closed by the test
+			// reason: already closed by the test
 		}
 	}
 	rmSync(root, { recursive: true, force: true });
@@ -100,6 +100,106 @@ describe("token ledger", () => {
 		);
 		expect(error).toBeInstanceOf(CeilingError);
 		expect((error as CeilingError).reason).toBe(CEILING_DAY);
+	});
+
+	test("headroom is undefined when both ceilings are zero", () => {
+		const { ledger, runId } = setup({
+			runTokenCeiling: 0,
+			dailyTokenCeiling: 0,
+		});
+		expect(ledger.headroom(runId)).toBeUndefined();
+	});
+
+	test("headroom reports the run ceiling left after spend with CEILING_RUN", () => {
+		const { ledger, runId } = setup({
+			runTokenCeiling: 100,
+			dailyTokenCeiling: 0,
+		});
+		ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 60 });
+
+		expect(ledger.headroom(runId)).toEqual({ tokens: 40, reason: CEILING_RUN });
+	});
+
+	test("headroom reports the daily ceiling left for a run without a run ceiling with CEILING_DAY", () => {
+		const { store, ledger } = setup({
+			runTokenCeiling: 0,
+			dailyTokenCeiling: 100,
+		});
+		const spendingRun = store.createRun({
+			ownerId: "owner-a",
+			request: "first run",
+			route: "planning",
+		});
+		ledger.reserve({ runId: spendingRun.id, phase: "a", attempt: 1, estimatedTokens: 60 });
+
+		const otherRun = store.createRun({
+			ownerId: "owner-a",
+			request: "second run",
+			route: "research",
+		});
+		expect(ledger.headroom(otherRun.id)).toEqual({ tokens: 40, reason: CEILING_DAY });
+	});
+
+	test("headroom is zero, not negative, when spend equals the ceiling and reserve refuses any positive estimate", () => {
+		const { ledger, runId } = setup({
+			runTokenCeiling: 100,
+			dailyTokenCeiling: 0,
+		});
+		ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 100 });
+
+		expect(ledger.headroom(runId)).toEqual({ tokens: 0, reason: CEILING_RUN });
+		const error = captureError(() =>
+			ledger.reserve({ runId, phase: "b", attempt: 1, estimatedTokens: 1 }),
+		);
+		expect(error).toBeInstanceOf(CeilingError);
+		expect((error as CeilingError).reason).toBe(CEILING_RUN);
+	});
+
+	test("a zero ceiling is unlimited and never raises CeilingError", () => {
+		const { ledger, runId } = setup({
+			runTokenCeiling: 0,
+			dailyTokenCeiling: 0,
+		});
+		expect(() =>
+			ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10_000_000 }),
+		).not.toThrow();
+		expect(() =>
+			ledger.reserve({ runId, phase: "b", attempt: 1, estimatedTokens: 10_000_000 }),
+		).not.toThrow();
+		expect(ledger.spentForRun(runId)).toBe(20_000_000);
+	});
+
+	test("a zero run ceiling leaves the daily ceiling enforced", () => {
+		const { store, ledger, runId } = setup({
+			runTokenCeiling: 0,
+			dailyTokenCeiling: 100,
+		});
+		ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 60 });
+
+		const otherRun = store.createRun({
+			ownerId: "owner-a",
+			request: "second run",
+			route: "research",
+		});
+		const error = captureError(() =>
+			ledger.reserve({ runId: otherRun.id, phase: "a", attempt: 1, estimatedTokens: 50 }),
+		);
+		expect(error).toBeInstanceOf(CeilingError);
+		expect((error as CeilingError).reason).toBe(CEILING_DAY);
+	});
+
+	test("a zero daily ceiling leaves the run ceiling enforced", () => {
+		const { ledger, runId } = setup({
+			runTokenCeiling: 100,
+			dailyTokenCeiling: 0,
+		});
+		ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 60 });
+
+		const error = captureError(() =>
+			ledger.reserve({ runId, phase: "b", attempt: 1, estimatedTokens: 50 }),
+		);
+		expect(error).toBeInstanceOf(CeilingError);
+		expect((error as CeilingError).reason).toBe(CEILING_RUN);
 	});
 
 	test("the daily total resets on the next UTC day", () => {
@@ -190,9 +290,9 @@ describe("token ledger", () => {
 			dailyTokenCeiling: 1_000,
 		});
 		store.close();
-		expect(() =>
-			ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 }),
-		).toThrow(LedgerWriteError);
+		expect(() => ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 })).toThrow(
+			LedgerWriteError,
+		);
 	});
 
 	test("a duplicate (run, phase, attempt) reservation throws LedgerWriteError", () => {
@@ -201,9 +301,9 @@ describe("token ledger", () => {
 			dailyTokenCeiling: 1_000,
 		});
 		ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 });
-		expect(() =>
-			ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 }),
-		).toThrow(LedgerWriteError);
+		expect(() => ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 10 })).toThrow(
+			LedgerWriteError,
+		);
 		expect(ledger.spentForRun(runId)).toBe(10);
 	});
 

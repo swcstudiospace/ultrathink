@@ -4,10 +4,16 @@
 import pkg from "../../../package.json";
 import { promptDefinitions, renderPrompt } from "./prompts.ts";
 import type { ResourceRegistry } from "./resources.ts";
-import { CONNECTOR_TOOL_DEFINITIONS, GRAPH_UI_META, LARGE_RESULT_META, READ_ONLY } from "./tools-connector.ts";
+import {
+	CONNECTOR_TOOL_DEFINITIONS,
+	GRAPH_UI_META,
+	LARGE_RESULT_META,
+	READ_ONLY,
+} from "./tools-connector.ts";
 import { compileSchema, type Validator } from "./validate.ts";
 import { getSecurityLogger } from "../security/events.ts";
 import { StringValidator } from "../security/validation.ts";
+import { isRecord } from "../../../src/shared.ts";
 
 /** Newest first: initialize answers with the requested version when listed here, otherwise the first. */
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
@@ -69,15 +75,25 @@ const UI_EXTENSION = "io.modelcontextprotocol/ui";
 
 /** Text an id, a method or a text parameter may carry. Control characters are refused everywhere. */
 const NO_CONTROL = /^[^\x00-\x1f\x7f]*$/;
-const REQUEST_ID_TEXT = new StringValidator({ allowEmpty: true, maxLength: 256, pattern: NO_CONTROL });
+const REQUEST_ID_TEXT = new StringValidator({
+	allowEmpty: true,
+	maxLength: 256,
+	pattern: NO_CONTROL,
+});
 const METHOD_TEXT = new StringValidator({ allowEmpty: true, maxLength: 128, pattern: NO_CONTROL });
 const NAME_TEXT = new StringValidator({ allowEmpty: true, maxLength: 128, pattern: NO_CONTROL });
 /** The text parameter each method reads, with its bound. Only a string is checked; other values keep their existing handling. */
 const TEXT_PARAMS: Record<string, { field: string; validator: StringValidator }> = {
-	initialize: { field: "protocolVersion", validator: new StringValidator({ allowEmpty: true, maxLength: 64, pattern: NO_CONTROL }) },
+	initialize: {
+		field: "protocolVersion",
+		validator: new StringValidator({ allowEmpty: true, maxLength: 64, pattern: NO_CONTROL }),
+	},
 	"tools/call": { field: "name", validator: NAME_TEXT },
 	"prompts/get": { field: "name", validator: NAME_TEXT },
-	"resources/read": { field: "uri", validator: new StringValidator({ allowEmpty: true, maxLength: 2048, pattern: NO_CONTROL }) },
+	"resources/read": {
+		field: "uri",
+		validator: new StringValidator({ allowEmpty: true, maxLength: 2048, pattern: NO_CONTROL }),
+	},
 };
 
 // Claude Code cuts server instructions at 4096 characters; each mode stays under the 3500 the tests pin.
@@ -102,10 +118,25 @@ const INVALID_PARAMS = -32602;
 const RESOURCE_NOT_FOUND = -32002;
 const INTERNAL_ERROR = -32603;
 
-const READ_WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const READ_WRITE = {
+	readOnlyHint: false,
+	destructiveHint: false,
+	idempotentHint: true,
+	openWorldHint: false,
+};
 // A call without sessionId starts a new session, so repeating it is not free (for uplift it starts another paid plan).
-const START_NEW_SESSION = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
-const START_NEW_PAID_SESSION = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+const START_NEW_SESSION = {
+	readOnlyHint: false,
+	destructiveHint: false,
+	idempotentHint: false,
+	openWorldHint: false,
+};
+const START_NEW_PAID_SESSION = {
+	readOnlyHint: false,
+	destructiveHint: false,
+	idempotentHint: false,
+	openWorldHint: true,
+};
 
 /** Every tool the service can offer. Use toolDefinitions for the list a host actually serves. */
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
@@ -163,7 +194,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 	{
 		name: "ultrathink_show",
 		title: "Show a pending prompt",
-		description: "Return the system and user text of one pending prompt, to be answered by the calling model.",
+		description:
+			"Return the system and user text of one pending prompt, to be answered by the calling model.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -237,7 +269,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 	...CONNECTOR_TOOL_DEFINITIONS,
 ];
 
-const CLIENT_TOOL_DEFINITIONS: readonly ToolDefinition[] = TOOL_DEFINITIONS.filter((tool) => tool.name !== UPLIFT_TOOL);
+const CLIENT_TOOL_DEFINITIONS: readonly ToolDefinition[] = TOOL_DEFINITIONS.filter(
+	(tool) => tool.name !== UPLIFT_TOOL,
+);
 
 /** The tools a host serves: ultrathink_uplift exists only when the host plans on the server. */
 export function toolDefinitions(serverPlanning: boolean): readonly ToolDefinition[] {
@@ -335,7 +369,8 @@ async function handleMessage(host: McpToolHost, message: unknown): Promise<Handl
 		return { reply: invalidRequest(), status: 400 };
 	}
 	// A request cannot be a notification: the client waits for an answer.
-	if (method.startsWith(NOTIFICATION_PREFIX)) return { reply: rpcError(id, METHOD_NOT_FOUND, "method not found") };
+	if (method.startsWith(NOTIFICATION_PREFIX))
+		return { reply: rpcError(id, METHOD_NOT_FOUND, "method not found") };
 	const param = refusedParams(method, message.params);
 	if (param !== null) {
 		refusedRequest(param.field, param.code);
@@ -361,18 +396,28 @@ function refusedEnvelope(id: unknown, method: string): { field: string; code: st
 
 /** Records one refused request on the security feed. Only the field and the validator code are recorded, never the value. */
 function refusedRequest(field: string, code: string): void {
-	getSecurityLogger().logValidationFailure({ source: "mcp", resource: "mcp", details: { field, code } });
+	getSecurityLogger().logValidationFailure({
+		source: "mcp",
+		resource: "mcp",
+		details: { field, code },
+	});
 }
 
 /** The first text parameter a method reads, when it is a string too long or with a control character. Other values keep their existing handling. */
 function refusedParams(method: string, params: unknown): { field: string; code: string } | null {
 	const spec = Object.hasOwn(TEXT_PARAMS, method) ? TEXT_PARAMS[method] : undefined;
-	if (spec === undefined || !isRecord(params) || typeof params[spec.field] !== "string") return null;
+	if (spec === undefined || !isRecord(params) || typeof params[spec.field] !== "string")
+		return null;
 	const verdict = spec.validator.validate(params[spec.field]);
 	return verdict.valid ? null : { field: spec.field, code: verdict.errors[0]?.code ?? "INVALID" };
 }
 
-async function dispatch(host: McpToolHost, id: unknown, method: string, params: unknown): Promise<RpcResponse> {
+async function dispatch(
+	host: McpToolHost,
+	id: unknown,
+	method: string,
+	params: unknown,
+): Promise<RpcResponse> {
 	const serverPlanning = host.capabilities?.().serverPlanning === true;
 	switch (method) {
 		case "initialize":
@@ -401,7 +446,8 @@ async function dispatch(host: McpToolHost, id: unknown, method: string, params: 
 function initializeResult(params: unknown, serverPlanning: boolean) {
 	const requested = isRecord(params) ? params.protocolVersion : undefined;
 	const protocolVersion =
-		SUPPORTED_PROTOCOL_VERSIONS.find((version) => version === requested) ?? SUPPORTED_PROTOCOL_VERSIONS[0];
+		SUPPORTED_PROTOCOL_VERSIONS.find((version) => version === requested) ??
+		SUPPORTED_PROTOCOL_VERSIONS[0];
 	return {
 		protocolVersion,
 		// The UI extension is announced unconditionally: claude.ai web renders MCP Apps without sending the extension itself.
@@ -416,7 +462,10 @@ function readResource(host: McpToolHost, id: unknown, params: unknown): RpcRespo
 	const uri = isRecord(params) ? params.uri : undefined;
 	const read = host.resources
 		? host.resources.read(uri)
-		: { ok: false as const, code: typeof uri === "string" ? ("not_found" as const) : ("invalid_uri" as const) };
+		: {
+				ok: false as const,
+				code: typeof uri === "string" ? ("not_found" as const) : ("invalid_uri" as const),
+			};
 	if (read.ok) return rpcResult(id, { contents: read.contents });
 	return read.code === "not_found"
 		? rpcError(id, RESOURCE_NOT_FOUND, "resource not found")
@@ -449,7 +498,9 @@ async function callTool(
 	const given = isRecord(params) ? params.arguments : undefined;
 	const args = isRecord(params) && "arguments" in params ? given : {};
 	const tool =
-		typeof name === "string" ? toolDefinitions(serverPlanning).find((candidate) => candidate.name === name) : undefined;
+		typeof name === "string"
+			? toolDefinitions(serverPlanning).find((candidate) => candidate.name === name)
+			: undefined;
 	if (tool === undefined) {
 		// A name that is present but not a string is a refused request. A missing one is simply unknown.
 		if (name !== undefined && typeof name !== "string") refusedRequest("name", "TYPE_MISMATCH");
@@ -466,14 +517,22 @@ async function callTool(
 	const verdict = validatorFor(tool)(args);
 	if (!verdict.ok) {
 		refusedRequest("arguments", "INVALID_ARGUMENTS");
-		return rpcResult(id, toolResult({ ok: false, code: "invalid_arguments", errors: [`${verdict.path}: ${verdict.reason}`] }));
+		return rpcResult(
+			id,
+			toolResult({
+				ok: false,
+				code: "invalid_arguments",
+				errors: [`${verdict.path}: ${verdict.reason}`],
+			}),
+		);
 	}
 	return rpcResult(id, toolResult(await host.call(tool.name, args)));
 }
 
 /** Maps a host outcome to an MCP tool result. Throws on a malformed outcome, which becomes -32603. */
 function toolResult(outcome: unknown): ToolResult {
-	if (!isRecord(outcome) || typeof outcome.ok !== "boolean") throw new Error("malformed host outcome");
+	if (!isRecord(outcome) || typeof outcome.ok !== "boolean")
+		throw new Error("malformed host outcome");
 	if (outcome.ok) {
 		const { data, text } = outcome;
 		if (!isRecord(data)) throw new Error("malformed host outcome");
@@ -493,10 +552,6 @@ function toolResult(outcome: unknown): ToolResult {
 		structuredContent: { error: code, ...(errors !== undefined ? { errors } : {}) },
 		isError: true,
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isStringArray(value: unknown): value is string[] {

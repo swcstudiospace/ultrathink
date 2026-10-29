@@ -168,8 +168,28 @@ describe("Encoding", () => {
 
 	describe("escapeLdapDn", () => {
 		test("escapes special chars", () => {
-			expect(escapeLdapDn("cn=test,dc=example,dc=com")).toBe("cn=test,dc=example,dc=com");
+			expect(escapeLdapDn("cn=test,dc=example,dc=com")).toBe("cn=test\\,dc=example\\,dc=com");
 			expect(escapeLdapDn("cn=test*")).toBe("cn=test\\2a");
+		});
+
+		test("escapes each RFC 4514 special character with a backslash", () => {
+			expect(escapeLdapDn("a,b")).toBe("a\\,b");
+			expect(escapeLdapDn("a+b")).toBe("a\\+b");
+			expect(escapeLdapDn('a"b')).toBe('a\\"b');
+			expect(escapeLdapDn("a<b")).toBe("a\\<b");
+			expect(escapeLdapDn("a>b")).toBe("a\\>b");
+			expect(escapeLdapDn("a;b")).toBe("a\\;b");
+			expect(escapeLdapDn("a=b")).toBe("a=b");
+		});
+
+		test("escapes backslash, NUL, a leading or trailing space and a leading #", () => {
+			expect(escapeLdapDn("a\\b")).toBe("a\\5cb");
+			expect(escapeLdapDn("a\u0000b")).toBe("a\\00b");
+			expect(escapeLdapDn(" a")).toBe("\\ a");
+			expect(escapeLdapDn("a ")).toBe("a\\ ");
+			expect(escapeLdapDn("#a")).toBe("\\#a");
+			expect(escapeLdapDn("a#")).toBe("a#");
+			expect(escapeLdapDn("a b")).toBe("a b");
 		});
 	});
 
@@ -186,7 +206,7 @@ describe("Encoding", () => {
 		});
 
 		test("handles both quotes", () => {
-			expect(escapeXPath(`"test'`)).toBe('concat(\'"\', \'test\', "\'")');
+			expect(escapeXPath(`"test'`)).toBe("concat('\"', 'test', \"'\")");
 		});
 	});
 
@@ -244,7 +264,15 @@ describe("Encoding", () => {
 		});
 
 		test("output never contains angle brackets", () => {
-			const inputs = ["<<<>>>", "<<", ">>", "<a<b>c", "<<script>script>", "x<y>z>w<", "<\u0000<b>>"];
+			const inputs = [
+				"<<<>>>",
+				"<<",
+				">>",
+				"<a<b>c",
+				"<<script>script>",
+				"x<y>z>w<",
+				"<\u0000<b>>",
+			];
 			for (const input of inputs) {
 				const output = stripHtmlTags(input);
 				expect(output).not.toContain("<");

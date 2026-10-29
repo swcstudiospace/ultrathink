@@ -2,7 +2,16 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,8 +24,18 @@ import {
 import { captureMoment } from "../teach/capture.ts";
 import { renderSkillDraft } from "../teach/promote.ts";
 import { openStore, storeDir } from "../teach/store.ts";
-import { DEFAULT_TEACH_CONFIG, type CaptureInput, type TeachableMoment, type TeachContext, type TeachStore } from "../teach/types.ts";
-import { confirmInsightLesson, installInsightSkill, previewInsightSkill } from "./omp-insight-actions.ts";
+import {
+	DEFAULT_TEACH_CONFIG,
+	type CaptureInput,
+	type TeachableMoment,
+	type TeachContext,
+	type TeachStore,
+} from "../teach/types.ts";
+import {
+	confirmInsightLesson,
+	installInsightSkill,
+	previewInsightSkill,
+} from "./omp-insight-actions.ts";
 import type { InsightActionRuntime } from "./omp-insight-actions.ts";
 import { insightLessonRevision } from "./omp-insights.ts";
 import type { LessonSelection, SkillPreview } from "./omp-insights.ts";
@@ -31,9 +50,11 @@ const ok = <T>(value: T): HindsightResult<T> => ({ ok: true, value });
 function fullClient(overrides: Partial<HindsightClient> = {}): HindsightClient {
 	return {
 		bank: "ultrathink",
-		health: async () => ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
+		health: async () =>
+			ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
 		ensureBank: async () => ok({ bankId: "ultrathink", created: false, extractionMode: "chunks" }),
-		retain: async (item) => ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 }),
+		retain: async (item) =>
+			ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 }),
 		recall: async () => ok([]),
 		getDocument: async () => ok(null),
 		deleteDocument: async () => ok(true),
@@ -53,7 +74,14 @@ interface Harness {
 	store: TeachStore;
 }
 
-function harness(options: { hindsight?: HindsightClient; enabled?: boolean; killSwitch?: boolean; autoPromote?: boolean } = {}): Harness {
+function harness(
+	options: {
+		hindsight?: HindsightClient;
+		enabled?: boolean;
+		killSwitch?: boolean;
+		autoPromote?: boolean;
+	} = {},
+): Harness {
 	const root = mkdtempSync(join(tmpdir(), "ultrathink-insight-actions-"));
 	dirs.push(root);
 	const cwd = join(root, "proj");
@@ -64,7 +92,11 @@ function harness(options: { hindsight?: HindsightClient; enabled?: boolean; kill
 		host: "omp",
 		cwd,
 		config: {
-			teach: { ...DEFAULT_TEACH_CONFIG, enabled: options.enabled ?? true, autoPromote: options.autoPromote ?? true },
+			teach: {
+				...DEFAULT_TEACH_CONFIG,
+				enabled: options.enabled ?? true,
+				autoPromote: options.autoPromote ?? true,
+			},
 			hindsight: { ...DEFAULT_HINDSIGHT_CONFIG },
 		},
 		env,
@@ -83,17 +115,28 @@ function harness(options: { hindsight?: HindsightClient; enabled?: boolean; kill
 }
 
 function lessonInput(overrides: Partial<CaptureInput> = {}): CaptureInput {
-	return { name: "Retry with backoff", description: "Retry loop.", body: "Use capped exponential backoff around the fetch.", ...overrides };
+	return {
+		name: "Retry with backoff",
+		description: "Retry loop.",
+		body: "Use capped exponential backoff around the fetch.",
+		...overrides,
+	};
 }
 
-async function seedCandidate(h: Harness, overrides: Partial<CaptureInput> = {}): Promise<TeachableMoment> {
+async function seedCandidate(
+	h: Harness,
+	overrides: Partial<CaptureInput> = {},
+): Promise<TeachableMoment> {
 	const outcome = await captureMoment(lessonInput({ status: "candidate", ...overrides }), h.ctx);
 	const stored = h.store.get(outcome.moment.id);
 	if (!stored || stored.status !== "candidate") throw new Error("candidate seeding failed");
 	return stored;
 }
 
-async function seedEligible(h: Harness, overrides: Partial<CaptureInput> = {}): Promise<TeachableMoment> {
+async function seedEligible(
+	h: Harness,
+	overrides: Partial<CaptureInput> = {},
+): Promise<TeachableMoment> {
 	const outcome = await captureMoment(lessonInput(overrides), h.ctx);
 	const confirmed = { ...outcome.moment, occurrences: 3 };
 	h.store.put(confirmed);
@@ -119,7 +162,9 @@ describe("confirmInsightLesson", () => {
 	});
 
 	test("distinguishes queued retention from retained success", async () => {
-		const failing = fullClient({ retain: async () => ({ ok: false, error: { kind: "server", message: "down" } }) });
+		const failing = fullClient({
+			retain: async () => ({ ok: false, error: { kind: "server", message: "down" } }),
+		});
 		const h = harness({ hindsight: failing });
 		const moment = await seedCandidate(h);
 		const result = await confirmInsightLesson(selectionOf(moment), h.runtime);
@@ -127,7 +172,9 @@ describe("confirmInsightLesson", () => {
 		expect(result.message).toContain("Retention: queued.");
 		expect(h.store.get(moment.id)?.status).toBe("confirmed");
 		expect(h.store.get(moment.id)?.retained).toBeUndefined();
-		expect(h.store.outbox().map((entry) => entry.op)).toEqual([{ op: "retain", momentId: moment.id }]);
+		expect(h.store.outbox().map((entry) => entry.op)).toEqual([
+			{ op: "retain", momentId: moment.id },
+		]);
 	});
 
 	test("distinguishes local-only retention when no client is ready", async () => {
@@ -179,7 +226,10 @@ describe("confirmInsightLesson", () => {
 
 	test("refuses an unknown id without dispatching", async () => {
 		const h = harness({ hindsight: fullClient() });
-		const result = await confirmInsightLesson({ id: "missing0001", revision: "anything" }, h.runtime);
+		const result = await confirmInsightLesson(
+			{ id: "missing0001", revision: "anything" },
+			h.runtime,
+		);
 		expect(result.status).toBe("refused");
 		expect(result.message).toContain("no longer in this snapshot");
 	});
@@ -219,13 +269,18 @@ describe("confirmInsightLesson", () => {
 			}),
 		});
 		const first = await seedCandidate(h, { name: "First lesson", body: "First body text." });
-		const secondMoment = await seedCandidate(h, { name: "Second lesson", body: "Second body text." });
+		const secondMoment = await seedCandidate(h, {
+			name: "Second lesson",
+			body: "Second body text.",
+		});
 		const pending = confirmInsightLesson(selectionOf(first), h.runtime);
 		const duplicate = await confirmInsightLesson(selectionOf(secondMoment), h.runtime);
 		expect(duplicate.status).toBe("refused");
 		expect(duplicate.message).toContain("already running");
 		expect(seen).toHaveLength(1);
-		release(ok({ bankId: "ultrathink", documentId: (seen[0] as RetainItem).documentId, itemsCount: 1 }));
+		release(
+			ok({ bankId: "ultrathink", documentId: (seen[0] as RetainItem).documentId, itemsCount: 1 }),
+		);
 		const completed = await pending;
 		expect(completed.status).toBe("ok");
 		expect(h.store.get(first.id)?.status).toBe("confirmed");
@@ -241,10 +296,13 @@ describe("previewInsightSkill", () => {
 		const result = await previewInsightSkill(selectionOf(moment), h.runtime);
 		expect(result.status).toBe("ok");
 		expect(result.message).toContain("Preview only");
-		if (result.status !== "ok" || !result.preview) throw new Error("expected ok preview with receipt");
+		if (result.status !== "ok" || !result.preview)
+			throw new Error("expected ok preview with receipt");
 		const preview = result.preview;
 		expect(preview.selection).toEqual(selectionOf(h.store.get(moment.id) as TeachableMoment));
-		expect(preview.fingerprint).toBe(createHash("sha256").update(preview.content, "utf8").digest("hex"));
+		expect(preview.fingerprint).toBe(
+			createHash("sha256").update(preview.content, "utf8").digest("hex"),
+		);
 		expect(preview.content).toContain("ultrathink:teach");
 		expect(Buffer.byteLength(preview.content, "utf8")).toBeLessThanOrEqual(60_000);
 		expect(readdirSync(join(h.ctx.stateDir, "teach", "moments"))).toHaveLength(momentsBefore);
@@ -293,7 +351,10 @@ describe("previewInsightSkill", () => {
 });
 
 describe("installInsightSkill", () => {
-	async function previewed(h: Harness, overrides: Partial<CaptureInput> = {}): Promise<{ moment: TeachableMoment; preview: SkillPreview }> {
+	async function previewed(
+		h: Harness,
+		overrides: Partial<CaptureInput> = {},
+	): Promise<{ moment: TeachableMoment; preview: SkillPreview }> {
 		const moment = await seedEligible(h, overrides);
 		const result = await previewInsightSkill(selectionOf(moment), h.runtime);
 		if (result.status !== "ok" || !result.preview) throw new Error("preview seeding failed");
@@ -348,7 +409,10 @@ describe("installInsightSkill", () => {
 
 	test("refuses an authored slot without replacing it", async () => {
 		const h = harness();
-		const { moment, preview } = await previewed(h, { name: "Authored slot lesson", body: "Authored slot body." });
+		const { moment, preview } = await previewed(h, {
+			name: "Authored slot lesson",
+			body: "Authored slot body.",
+		});
 		const path = managedPath(h, preview.name);
 		mkdirSync(join(path, ".."), { recursive: true });
 		writeFileSync(path, "# Human skill\n\nHand-written content.\n");
@@ -369,13 +433,17 @@ describe("installInsightSkill", () => {
 		expect(firstResult.status).toBe("refused");
 		expect(h.store.get(first.moment.id)?.status).toBe("confirmed");
 
-		const secondSeed = await seedEligible(h, { name: "Unmarked slot lesson", body: "Unmarked slot body." });
+		const secondSeed = await seedEligible(h, {
+			name: "Unmarked slot lesson",
+			body: "Unmarked slot body.",
+		});
 		const secondDraft = renderSkillDraft([secondSeed], h.ctx);
 		const secondPath = managedPath(h, secondDraft.name);
 		mkdirSync(join(secondPath, ".."), { recursive: true });
 		writeFileSync(secondPath, "# Legacy\n\nBody.\n\n<!-- ultrathink:teach -->\n");
 		const secondOutcome = await previewInsightSkill(selectionOf(secondSeed), h.runtime);
-		if (secondOutcome.status !== "ok" || !secondOutcome.preview) throw new Error("preview seeding failed");
+		if (secondOutcome.status !== "ok" || !secondOutcome.preview)
+			throw new Error("preview seeding failed");
 		const secondPreview = secondOutcome.preview;
 		const secondResult = await installInsightSkill(secondPreview, true, h.runtime);
 		expect(secondResult.status).toBe("refused");
@@ -384,7 +452,10 @@ describe("installInsightSkill", () => {
 
 	test("refuses a symlinked skill slot", async () => {
 		const h = harness();
-		const { moment, preview } = await previewed(h, { name: "Symlink slot lesson", body: "Symlink slot body." });
+		const { moment, preview } = await previewed(h, {
+			name: "Symlink slot lesson",
+			body: "Symlink slot body.",
+		});
 		const managed = join(h.root, "omp-agent", "managed-skills");
 		mkdirSync(managed, { recursive: true });
 		const target = join(h.root, "real-skills", preview.name);

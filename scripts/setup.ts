@@ -18,7 +18,18 @@
  * ~/.claude/settings.json — this plugin has no env vars or local proxy to
  * wire up.
  */
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,7 +90,10 @@ export function readSetupState(env: Record<string, string | undefined> = process
 	}
 }
 
-export function writeSetupState(state: SetupState, env: Record<string, string | undefined> = process.env): void {
+export function writeSetupState(
+	state: SetupState,
+	env: Record<string, string | undefined> = process.env,
+): void {
 	const path = setupStatePath(env);
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, JSON.stringify(state));
@@ -98,7 +112,11 @@ export type Run = (cmd: string[]) => { stdout: string; stderr: string; code: num
 function defaultRun(cmd: string[]): { stdout: string; stderr: string; code: number } {
 	try {
 		const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
-		return { stdout: proc.stdout?.toString() ?? "", stderr: proc.stderr?.toString() ?? "", code: proc.exitCode ?? 1 };
+		return {
+			stdout: proc.stdout?.toString() ?? "",
+			stderr: proc.stderr?.toString() ?? "",
+			code: proc.exitCode ?? 1,
+		};
 	} catch {
 		// Bun.spawnSync throws when the binary is missing; report it the way a shell does.
 		return { stdout: "", stderr: `${cmd[0]}: not found`, code: 127 };
@@ -132,18 +150,30 @@ export function mcpServerConfigured(name: string, run: Run = defaultRun): boolea
 	return list.code === 0 && mcpListNames(list.stdout).includes(name);
 }
 
-export function ensureMcpServer(name: string, url: string, run: Run = defaultRun): { added: boolean; message: string } {
-	if (mcpServerConfigured(name, run)) return { added: false, message: `${name}: already configured` };
+export function ensureMcpServer(
+	name: string,
+	url: string,
+	run: Run = defaultRun,
+): { added: boolean; message: string } {
+	if (mcpServerConfigured(name, run))
+		return { added: false, message: `${name}: already configured` };
 	const add = run(["claude", "mcp", "add", "--transport", "http", "--scope", "user", name, url]);
-	if (add.code !== 0) return { added: false, message: `${name}: failed — ${add.stderr.trim() || add.stdout.trim()}` };
+	if (add.code !== 0)
+		return { added: false, message: `${name}: failed — ${add.stderr.trim() || add.stdout.trim()}` };
 	return { added: true, message: `${name}: added` };
 }
 
-export function ensurePluginInstalled(repoRoot: string, run: Run = defaultRun): { installed: boolean; message: string } {
+export function ensurePluginInstalled(
+	repoRoot: string,
+	run: Run = defaultRun,
+): { installed: boolean; message: string } {
 	run(["claude", "plugin", "marketplace", "add", repoRoot]);
 	const install = run(["claude", "plugin", "install", "ultrathink@ultrathink"]);
 	if (install.code !== 0 && !/already installed/i.test(install.stderr)) {
-		return { installed: false, message: `plugin install failed — ${install.stderr.trim() || install.stdout.trim()}` };
+		return {
+			installed: false,
+			message: `plugin install failed — ${install.stderr.trim() || install.stdout.trim()}`,
+		};
 	}
 	return { installed: true, message: "ultrathink@ultrathink installed" };
 }
@@ -191,6 +221,7 @@ export function linkDir(target: string, path: string): LinkResult {
 	try {
 		current = lstatSync(path);
 	} catch {
+		// reason: lstat fails when the path is absent; any other failure resurfaces at mkdirSync or symlinkSync
 		current = undefined;
 	}
 	if (current?.isSymbolicLink()) {
@@ -208,7 +239,10 @@ export function linkDir(target: string, path: string): LinkResult {
 export function agentSkillNames(repoRoot: string): string[] {
 	try {
 		return readdirSync(join(repoRoot, "skills"), { withFileTypes: true })
-			.filter((entry) => entry.isDirectory() && existsSync(join(repoRoot, "skills", entry.name, "SKILL.md")))
+			.filter(
+				(entry) =>
+					entry.isDirectory() && existsSync(join(repoRoot, "skills", entry.name, "SKILL.md")),
+			)
 			.map((entry) => entry.name)
 			.sort();
 	} catch {
@@ -220,7 +254,11 @@ export function agentSkillNames(repoRoot: string): string[] {
 export function commandSkillNames(repoRoot: string): string[] {
 	try {
 		return readdirSync(join(repoRoot, "hosts", "prime-agent", "commands"), { withFileTypes: true })
-			.filter((entry) => entry.isDirectory() && existsSync(join(repoRoot, "hosts", "prime-agent", "commands", entry.name, "SKILL.md")))
+			.filter(
+				(entry) =>
+					entry.isDirectory() &&
+					existsSync(join(repoRoot, "hosts", "prime-agent", "commands", entry.name, "SKILL.md")),
+			)
 			.map((entry) => entry.name)
 			.sort();
 	} catch {
@@ -232,14 +270,25 @@ export function commandSkillNames(repoRoot: string): string[] {
 function linkedSkillSources(repoRoot: string): Array<{ name: string; source: string }> {
 	return [
 		...agentSkillNames(repoRoot).map((name) => ({ name, source: join(repoRoot, "skills", name) })),
-		...commandSkillNames(repoRoot).map((name) => ({ name, source: join(repoRoot, "hosts", "prime-agent", "commands", name) })),
+		...commandSkillNames(repoRoot).map((name) => ({
+			name,
+			source: join(repoRoot, "hosts", "prime-agent", "commands", name),
+		})),
 	];
 }
 
-export function installPrimeAgent(repoRoot: string, env: Record<string, string | undefined> = process.env): PrimeAgentInstall {
-	const skill = linkDir(join(repoRoot, "hosts", "prime-agent"), join(primeAgentHome(env), "skills", "ultrathink"));
+export function installPrimeAgent(
+	repoRoot: string,
+	env: Record<string, string | undefined> = process.env,
+): PrimeAgentInstall {
+	const skill = linkDir(
+		join(repoRoot, "hosts", "prime-agent"),
+		join(primeAgentHome(env), "skills", "ultrathink"),
+	);
 	const skillsDir = agentSkillsDir(env);
-	const agentSkills = linkedSkillSources(repoRoot).map(({ name, source }) => linkDir(source, join(skillsDir, name)));
+	const agentSkills = linkedSkillSources(repoRoot).map(({ name, source }) =>
+		linkDir(source, join(skillsDir, name)),
+	);
 	return { skill, agentSkills };
 }
 
@@ -256,7 +305,13 @@ function unlinkOwn(repoRoot: string, path: string): boolean {
 	}
 }
 
-export function removePrimeAgent(repoRoot: string, env: Record<string, string | undefined> = process.env): { skill: { path: string; removed: boolean }; agentSkills: { path: string; removed: boolean }[] } {
+export function removePrimeAgent(
+	repoRoot: string,
+	env: Record<string, string | undefined> = process.env,
+): {
+	skill: { path: string; removed: boolean };
+	agentSkills: { path: string; removed: boolean }[];
+} {
 	const skillPath = join(primeAgentHome(env), "skills", "ultrathink");
 	const skillsDir = agentSkillsDir(env);
 	return {
@@ -269,22 +324,39 @@ export function removePrimeAgent(repoRoot: string, env: Record<string, string | 
 }
 
 function linkLine(label: string, link: LinkResult): string {
-	const state = { linked: "linked", already: "already linked", kept: "kept — not a symlink, link it yourself" }[link.status];
+	const state = {
+		linked: "linked",
+		already: "already linked",
+		kept: "kept — not a symlink, link it yourself",
+	}[link.status];
 	return `${label}: ${state} (${link.path} -> ${link.target})`;
 }
 
 export function primeAgentReport(result: PrimeAgentInstall): string[] {
 	const agent = result.agentSkills;
-	const summary = agent.length === 0 ? "none found" : `${agent.filter((l) => l.status !== "kept").length}/${agent.length} linked into ${dirname(agent[0]?.path ?? "")}`;
+	const summary =
+		agent.length === 0
+			? "none found"
+			: `${agent.filter((l) => l.status !== "kept").length}/${agent.length} linked into ${dirname(agent[0]?.path ?? "")}`;
 	return [
 		linkLine("Prime Agent skill", result.skill),
-		`Prime Agent agent skills: ${summary}${agent.some((l) => l.status === "kept") ? ` (kept: ${agent.filter((l) => l.status === "kept").map((l) => l.path).join(", ")})` : ""}`,
+		`Prime Agent agent skills: ${summary}${
+			agent.some((l) => l.status === "kept")
+				? ` (kept: ${agent
+						.filter((l) => l.status === "kept")
+						.map((l) => l.path)
+						.join(", ")})`
+				: ""
+		}`,
 		"Prime Agent: start a new session (or /reload) so the kernel installs the `ultrathink` skill; then `await ultrathink.status()`.",
 	];
 }
 
 /** Merges the packaged rule's marker block into the rule file; text a user added around the block stays. */
-export function installGrokRule(repoRoot: string, rulesDir: string): { path: string; changed: boolean } {
+export function installGrokRule(
+	repoRoot: string,
+	rulesDir: string,
+): { path: string; changed: boolean } {
 	const source = join(repoRoot, "hosts", "grok", "ultrathink.md");
 	const path = join(rulesDir, "ultrathink.md");
 	const block = BLOCK_RE.exec(existsSync(source) ? readFileSync(source, "utf8") : "")?.[0];
@@ -336,7 +408,10 @@ export function grokHooksConfig(repoRoot: string): { hooks: Record<string, unkno
 	return { hooks };
 }
 
-export function installGrokHooks(repoRoot: string, hooksDir: string): { path: string; changed: boolean } {
+export function installGrokHooks(
+	repoRoot: string,
+	hooksDir: string,
+): { path: string; changed: boolean } {
 	const path = join(hooksDir, "ultrathink.json");
 	const next = `${JSON.stringify(grokHooksConfig(repoRoot), null, 2)}\n`;
 	const before = existsSync(path) ? readFileSync(path, "utf8") : "";
@@ -373,12 +448,25 @@ export function apply(
 
 	// A re-run finds the servers it added earlier already present; keep them recorded so rollback still removes them.
 	const previous = readSetupState(env);
-	writeSetupState({ notionAdded: notion.added || previous.notionAdded, linearAdded: linear.added || previous.linearAdded }, env);
+	writeSetupState(
+		{
+			notionAdded: notion.added || previous.notionAdded,
+			linearAdded: linear.added || previous.linearAdded,
+		},
+		env,
+	);
 
-	return { claude: { notion, linear, plugin, claudeMd: { path, changed: after !== before } }, grok, primeAgent };
+	return {
+		claude: { notion, linear, plugin, claudeMd: { path, changed: after !== before } },
+		grok,
+		primeAgent,
+	};
 }
 
-export function status(env: Record<string, string | undefined> = process.env, run: Run = defaultRun): string {
+export function status(
+	env: Record<string, string | undefined> = process.env,
+	run: Run = defaultRun,
+): string {
 	const grokDir = grokHome(env);
 	const rulePath = join(grokDir, "rules", "ultrathink.md");
 	const hooksPath = join(grokDir, "hooks", "ultrathink.json");
@@ -407,14 +495,20 @@ function removeBlock(path: string, deleteEmpty: boolean): boolean {
 	if (!existsSync(path)) return false;
 	const before = readFileSync(path, "utf8");
 	if (!BLOCK_RE.test(before)) return false;
-	const stripped = before.replace(BLOCK_RE, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+	const stripped = before
+		.replace(BLOCK_RE, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trimEnd();
 	if (!stripped && deleteEmpty) rmSync(path, { force: true });
 	else writeFileSync(path, stripped ? `${stripped}\n` : "");
 	return true;
 }
 
 /** The hosted servers `apply` adds at user scope. */
-export const SETUP_MCP_URLS = { notion: "https://mcp.notion.com/mcp", linear: "https://mcp.linear.app/mcp" } as const;
+export const SETUP_MCP_URLS = {
+	notion: "https://mcp.notion.com/mcp",
+	linear: "https://mcp.linear.app/mcp",
+} as const;
 
 /**
  * `error`: the check or removal failed; the server stays recorded so a later rollback retries it.
@@ -437,7 +531,10 @@ export interface RollbackResult {
 }
 
 /** Plugin removal is left to the user: uninstalling from a running Claude Code session is theirs to decide. */
-export const PLUGIN_UNINSTALL_COMMANDS = ["claude plugin uninstall ultrathink@ultrathink", "claude plugin marketplace remove ultrathink"] as const;
+export const PLUGIN_UNINSTALL_COMMANDS = [
+	"claude plugin uninstall ultrathink@ultrathink",
+	"claude plugin marketplace remove ultrathink",
+] as const;
 
 function commandError(result: { stdout: string; stderr: string; code: number }): string {
 	return `exit ${result.code}: ${result.stderr.trim() || result.stdout.trim() || "no output"}`;
@@ -448,7 +545,10 @@ export function claudeJsonPath(env: Record<string, string | undefined> = process
 	return join(env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".claude.json");
 }
 
-type UserEntry = { found: false } | { found: true; type?: string; url?: string } | { error: string };
+type UserEntry =
+	| { found: false }
+	| { found: true; type?: string; url?: string }
+	| { error: string };
 
 /**
  * The user-scope entry for `name`. `claude mcp get` prints the entry that wins by precedence (local > project > user);
@@ -457,7 +557,8 @@ type UserEntry = { found: false } | { found: true; type?: string; url?: string }
 function userScopeEntry(name: string, run: Run, claudeJson: string): UserEntry {
 	const current = run(["claude", "mcp", "get", name]);
 	if (current.code !== 0) {
-		if (current.code !== 127 && /No MCP server named/i.test(`${current.stdout}\n${current.stderr}`)) return { found: false };
+		if (current.code !== 127 && /No MCP server named/i.test(`${current.stdout}\n${current.stderr}`))
+			return { found: false };
 		return { error: commandError(current) };
 	}
 	// `  Scope: User config (…)`, `  Type: http`, `  URL: …`; the first occurrence of each key is the server's own.
@@ -468,44 +569,67 @@ function userScopeEntry(name: string, run: Run, claudeJson: string): UserEntry {
 		const value = match?.[2];
 		if (key !== undefined && value !== undefined && !(key in fields)) fields[key] = value.trim();
 	}
-	if (/^User config\b/i.test(fields.Scope ?? "")) return { found: true, type: fields.Type?.toLowerCase(), url: fields.URL };
+	if (/^User config\b/i.test(fields.Scope ?? ""))
+		return { found: true, type: fields.Type?.toLowerCase(), url: fields.URL };
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(readFileSync(claudeJson, "utf8"));
 	} catch {
 		return { error: `could not read the user-scope entry from ${claudeJson}` };
 	}
-	if (typeof parsed !== "object" || parsed === null) return { error: `could not read the user-scope entry from ${claudeJson}` };
+	if (typeof parsed !== "object" || parsed === null)
+		return { error: `could not read the user-scope entry from ${claudeJson}` };
 	const servers = "mcpServers" in parsed ? parsed.mcpServers : undefined;
-	const entry = typeof servers === "object" && servers !== null && name in servers ? Reflect.get(servers, name) : undefined;
+	const entry =
+		typeof servers === "object" && servers !== null && name in servers
+			? Reflect.get(servers, name)
+			: undefined;
 	if (entry === undefined) return { found: false };
-	const type = typeof entry === "object" && entry !== null && "type" in entry ? entry.type : undefined;
+	const type =
+		typeof entry === "object" && entry !== null && "type" in entry ? entry.type : undefined;
 	const url = typeof entry === "object" && entry !== null && "url" in entry ? entry.url : undefined;
-	return { found: true, type: typeof type === "string" ? type.toLowerCase() : undefined, url: typeof url === "string" ? url : undefined };
+	return {
+		found: true,
+		type: typeof type === "string" ? type.toLowerCase() : undefined,
+		url: typeof url === "string" ? url : undefined,
+	};
 }
 
 /**
  * Removes a server `apply` added, but only while the user-scope entry is still setup's own (HTTP, the hosted URL) —
  * a server the user replaced since (e.g. with the gateway) stays, and a same-named local/project entry is never judged.
  */
-function removeMcpServer(name: keyof typeof SETUP_MCP_URLS, added: boolean, run: Run, claudeJson: string): McpRemoval {
+function removeMcpServer(
+	name: keyof typeof SETUP_MCP_URLS,
+	added: boolean,
+	run: Run,
+	claudeJson: string,
+): McpRemoval {
 	if (!added) return { removed: false };
 	const entry = userScopeEntry(name, run, claudeJson);
 	if ("error" in entry) return { removed: false, error: entry.error };
 	if (!entry.found) return { removed: false, kept: "gone" };
-	if (entry.type !== "http" || entry.url !== SETUP_MCP_URLS[name]) return { removed: false, kept: "changed" };
+	if (entry.type !== "http" || entry.url !== SETUP_MCP_URLS[name])
+		return { removed: false, kept: "changed" };
 	const result = run(["claude", "mcp", "remove", "--scope", "user", name]);
 	return result.code === 0 ? { removed: true } : { removed: false, error: commandError(result) };
 }
 
-export function rollback(env: Record<string, string | undefined> = process.env, run: Run = defaultRun, repoRoot: string = repoRootFromModule(import.meta.url)): RollbackResult {
+export function rollback(
+	env: Record<string, string | undefined> = process.env,
+	run: Run = defaultRun,
+	repoRoot: string = repoRootFromModule(import.meta.url),
+): RollbackResult {
 	const claudeMdChanged = removeBlock(claudeMdPath(env), false);
 	const state = readSetupState(env);
 	const claudeJson = claudeJsonPath(env);
 	const notion = removeMcpServer("notion", state.notionAdded, run, claudeJson);
 	const linear = removeMcpServer("linear", state.linearAdded, run, claudeJson);
 	const statePath = setupStatePath(env);
-	const left: SetupState = { notionAdded: notion.error !== undefined, linearAdded: linear.error !== undefined };
+	const left: SetupState = {
+		notionAdded: notion.error !== undefined,
+		linearAdded: linear.error !== undefined,
+	};
 	let stateStatus: RollbackResult["state"]["status"] = existsSync(statePath) ? "removed" : "absent";
 	if (left.notionAdded || left.linearAdded) {
 		writeSetupState(left, env);
@@ -524,7 +648,10 @@ export function rollback(env: Record<string, string | undefined> = process.env, 
 		linear,
 		state: { path: statePath, status: stateStatus },
 		// The rule is ours only through its marker block; text a user added around it stays.
-		grok: { rule: { path: rulePath, removed: removeBlock(rulePath, true) }, hooks: { path: hooksPath, removed: hadHooks } },
+		grok: {
+			rule: { path: rulePath, removed: removeBlock(rulePath, true) },
+			hooks: { path: hooksPath, removed: hadHooks },
+		},
 		primeAgent: removePrimeAgent(repoRoot, env),
 	};
 }
@@ -543,14 +670,21 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-export function hermesHint(repoRoot: string, env: Record<string, string | undefined> = process.env): string {
+export function hermesHint(
+	repoRoot: string,
+	env: Record<string, string | undefined> = process.env,
+): string {
 	const pluginsDir = join(hermesHome(env), "plugins");
 	// -n replaces an existing link instead of nesting a new one inside the linked directory on a re-paste; Hermes plugins are opt-in, hence enable.
 	const link = `mkdir -p ${shellQuote(pluginsDir)} && ln -sfn ${shellQuote(join(repoRoot, "hosts", "hermes"))} ${shellQuote(join(pluginsDir, "ultrathink"))} && hermes plugins enable ultrathink`;
 	return `Hermes: ${link}; then hermes config set plugins.hook_callback_timeout 600 — the hook cap must be at least 105 s, 600 recommended (Hermes drops slower hooks after 30 s by default; this is a global Hermes setting that applies to every plugin); then disable any other prompt-planning plugin so two planners do not plan the same turn.`;
 }
 
-export function applyReport(repoRoot: string, result: ApplyResult, env: Record<string, string | undefined> = process.env): string[] {
+export function applyReport(
+	repoRoot: string,
+	result: ApplyResult,
+	env: Record<string, string | undefined> = process.env,
+): string[] {
 	const { claude, grok, primeAgent } = result;
 	const lines = claude
 		? [
@@ -575,7 +709,8 @@ export function applyReport(repoRoot: string, result: ApplyResult, env: Record<s
 
 function mcpRemovalLine(label: string, name: string, removal: McpRemoval): string {
 	if (removal.removed) return `${label}: removed`;
-	if (removal.kept === "changed") return `${label}: left in place: ${name} was changed since setup added it`;
+	if (removal.kept === "changed")
+		return `${label}: left in place: ${name} was changed since setup added it`;
 	if (removal.kept === "gone") return `${label}: already removed`;
 	if (removal.error === undefined) return `${label}: left in place (setup did not add it)`;
 	return `${label}: removal failed (${removal.error}) — fix that, then re-run rollback or run: claude mcp remove --scope user ${name}`;

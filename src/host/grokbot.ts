@@ -17,7 +17,15 @@
  * `host:grok-bot`.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLARIFY_SYSTEM_PROMPT } from "../hitl/prompts.ts";
@@ -25,9 +33,14 @@ import { normalizeClarifications } from "../hitl/pipeline.ts";
 import { readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { DISTILL_SYSTEM } from "../teach/observe.ts";
-import { extractJsonObject, isFallbackGraph, normalizeGraph, parseNodeFill } from "../think/graph.ts";
+import {
+	extractJsonObject,
+	isFallbackGraph,
+	normalizeGraph,
+	parseNodeFill,
+} from "../think/graph.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../think/prompts.ts";
-import { MAX_NODES, MAX_RATIONALE_CHARS, MAX_STEPS, MIN_NODES, MIN_STEPS, type ThoughtNode } from "../think/types.ts";
+import { MAX_NODES, MAX_STEPS, MIN_NODES, MIN_STEPS, type ThoughtNode } from "../think/types.ts";
 import { nodeStepTitles, splitRationaleSteps } from "../track/plan.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../uplift/prompt.ts";
 import { escapeXml, sanitizeUpliftXml } from "../uplift/xml.ts";
@@ -37,13 +50,20 @@ import { type PlanResponse, planPrompt } from "./plan.ts";
 export const GROKBOT_LABEL = "host:grok-bot";
 /** The no-hook engine family the adapter plans under (state dir is always explicit). */
 export const GROKBOT_ENGINE_HOST = "prime-agent" as const;
-export const DENSITY_BAND: Readonly<Record<string, readonly [number, number]>> = {
+const DENSITY_BAND: Readonly<Record<string, readonly [number, number]>> = {
 	BUILD_PROMPT: [40, 64],
 	CHANGE_PROMPT: [40, 64],
 };
 const MAX_ANSWER_CHARS = 200_000;
 const ROOTS = ["BUILD_PROMPT", "FIX_PROMPT", "RESEARCH_PROMPT", "CHANGE_PROMPT", "UPLIFTED_PROMPT"];
-const REQUIRED_SECTIONS = [["SYSTEM_ROLE"], ["CONTEXT", "APP_CONTEXT"], ["SCOPE"], ["CONSTRAINTS"], ["ACCEPTANCE_CRITERIA"], ["OUT_OF_SCOPE"]];
+const REQUIRED_SECTIONS = [
+	["SYSTEM_ROLE"],
+	["CONTEXT", "APP_CONTEXT"],
+	["SCOPE"],
+	["CONSTRAINTS"],
+	["ACCEPTANCE_CRITERIA"],
+	["OUT_OF_SCOPE"],
+];
 
 export function grokbotStateDir(env: Record<string, string | undefined> = process.env): string {
 	const override = env.ULTRATHINK_STATE_DIR?.trim();
@@ -92,7 +112,7 @@ export interface JournalMeta {
 	updatedAt?: number;
 }
 
-export function sanitizeId(value: string): string {
+function sanitizeId(value: string): string {
 	return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "unknown";
 }
 
@@ -100,8 +120,13 @@ export function journalDir(stateDir: string, sessionId: string): string {
 	return join(stateDir, "journal", sanitizeId(sessionId));
 }
 
-export function requestKey(system: string, user: string): string {
-	return createHash("sha256").update(system).update("\u0000").update(user).digest("hex").slice(0, 32);
+function requestKey(system: string, user: string): string {
+	return createHash("sha256")
+		.update(system)
+		.update("\u0000")
+		.update(user)
+		.digest("hex")
+		.slice(0, 32);
 }
 
 function writeAtomic(path: string, text: string): void {
@@ -120,7 +145,10 @@ export function readMeta(dir: string): JournalMeta | undefined {
 }
 
 export function writeMeta(dir: string, meta: JournalMeta): void {
-	writeAtomic(join(dir, "meta.json"), `${JSON.stringify({ ...meta, updatedAt: Date.now() }, null, 2)}\n`);
+	writeAtomic(
+		join(dir, "meta.json"),
+		`${JSON.stringify({ ...meta, updatedAt: Date.now() }, null, 2)}\n`,
+	);
 }
 
 export function stageOf(system: string): Stage {
@@ -134,9 +162,15 @@ export function stageOf(system: string): Stage {
 
 const CURRENT_NODE_RE = /<current_node id="([^"]+)" kind="([^"]+)" title="([^"]*)">/;
 
-export function describeRequest(system: string, user: string, now = Date.now()): PendingRequest {
+function describeRequest(system: string, user: string, now = Date.now()): PendingRequest {
 	const stage = stageOf(system);
-	const request: PendingRequest = { key: requestKey(system, user), stage, system, user, createdAt: now };
+	const request: PendingRequest = {
+		key: requestKey(system, user),
+		stage,
+		system,
+		user,
+		createdAt: now,
+	};
 	if (stage === "cot") {
 		const match = user.match(CURRENT_NODE_RE);
 		if (match) {
@@ -157,7 +191,7 @@ export function listPending(dir: string): PendingRequest[] {
 		.sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
 }
 
-export function readAnswer(dir: string, key: string): string | undefined {
+function readAnswer(dir: string, key: string): string | undefined {
 	const path = join(dir, "answers", `${key}.txt`);
 	return existsSync(path) ? readFileSync(path, "utf8") : undefined;
 }
@@ -176,13 +210,27 @@ function abortError(): Error {
 	return error;
 }
 
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): unknown;
+	clearTimeout(handle: unknown): void;
+};
+
 /**
  * On a journal hit returns the stored answer. On a miss writes the pending request, schedules `controller.abort()`
  * after `debounceMs` (so sibling requests of the same dependency level are collected in one pass) and rejects with an
  * AbortError once the flight is cancelled.
  */
-export function createJournalCompleter(opts: { dir: string; controller?: AbortController; debounceMs?: number; now?: () => number }): JournalCompleter {
+export function createJournalCompleter(opts: {
+	dir: string;
+	controller?: AbortController;
+	debounceMs?: number;
+	/** Timer port for the debounce; defaults to the platform timers. */
+	timers?: TimerPort;
+	now?: () => number;
+}): JournalCompleter {
 	const missed: PendingRequest[] = [];
+	const timers = opts.timers ?? { setTimeout, clearTimeout };
 	let replayed = 0;
 	let scheduled = false;
 	const complete = async (system: string, user: string, signal?: AbortSignal): Promise<string> => {
@@ -199,11 +247,13 @@ export function createJournalCompleter(opts: { dir: string; controller?: AbortCo
 		if (!controller) throw abortError();
 		if (!scheduled) {
 			scheduled = true;
-			setTimeout(() => controller.abort(), opts.debounceMs ?? 250);
+			timers.setTimeout(() => controller.abort(), opts.debounceMs ?? 250);
 		}
 		const lifetime = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
 		if (lifetime.aborted) throw abortError();
-		await new Promise<void>((resolve) => lifetime.addEventListener("abort", () => resolve(), { once: true }));
+		await new Promise<void>((resolve) =>
+			lifetime.addEventListener("abort", () => resolve(), { once: true }),
+		);
 		throw abortError();
 	};
 	return { complete, missed: () => [...missed], replayed: () => replayed };
@@ -215,11 +265,20 @@ export function createJournalCompleter(opts: { dir: string; controller?: AbortCo
 const DECISION_HOSTS = ["openrouter.ai"];
 
 function decisionsUrl(input: unknown): string | undefined {
-	const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input instanceof Request ? input.url : undefined;
+	const raw =
+		typeof input === "string"
+			? input
+			: input instanceof URL
+				? input.href
+				: input instanceof Request
+					? input.url
+					: undefined;
 	if (!raw) return undefined;
 	try {
 		const url = new URL(raw);
-		return DECISION_HOSTS.includes(url.hostname) && url.pathname.includes("decision") ? url.href : undefined;
+		return DECISION_HOSTS.includes(url.hostname) && url.pathname.includes("decision")
+			? url.href
+			: undefined;
 	} catch {
 		return undefined;
 	}
@@ -243,24 +302,49 @@ const installedJournals: InstalledJournal[] = [];
  * while this wrapper still owns the global, otherwise it just drops out of the stack so the last restore leaves the
  * real fetch.
  */
-export function installDecisionsJournal(dir: string, base: typeof fetch = installedJournals[0]?.original ?? globalThis.fetch): () => void {
+export function installDecisionsJournal(
+	dir: string,
+	base: typeof fetch = installedJournals[0]?.original ?? globalThis.fetch,
+): () => void {
 	const original = globalThis.fetch;
-	const wrapped = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> => {
+	const wrapped = async (
+		input: Parameters<typeof fetch>[0],
+		init?: Parameters<typeof fetch>[1],
+	): Promise<Response> => {
 		const url = decisionsUrl(input);
 		const body = typeof init?.body === "string" ? init.body : undefined;
-		if (!url || body === undefined || (init?.method ?? "GET").toUpperCase() !== "POST") return base(input, init);
-		const key = createHash("sha256").update(url).update("\u0000").update(body).digest("hex").slice(0, 32);
+		if (!url || body === undefined || (init?.method ?? "GET").toUpperCase() !== "POST")
+			return base(input, init);
+		const key = createHash("sha256")
+			.update(url)
+			.update("\u0000")
+			.update(body)
+			.digest("hex")
+			.slice(0, 32);
 		const path = join(dir, "decisions", `${key}.json`);
 		if (existsSync(path)) {
 			const saved = JSON.parse(readFileSync(path, "utf8")) as { status: number; body: string };
-			return new Response(saved.body, { status: saved.status, headers: { "content-type": "application/json" } });
+			return new Response(saved.body, {
+				status: saved.status,
+				headers: { "content-type": "application/json" },
+			});
 		}
 		const response = await base(input, init);
 		const text = await response.text();
-		if (response.ok) writeAtomic(path, `${JSON.stringify({ status: response.status, body: text, at: Date.now() })}\n`);
-		return new Response(text, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+		if (response.ok)
+			writeAtomic(
+				path,
+				`${JSON.stringify({ status: response.status, body: text, at: Date.now() })}\n`,
+			);
+		return new Response(text, {
+			status: response.status,
+			headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
+		});
 	};
-	const entry: InstalledJournal = { wrapped: Object.assign(wrapped, { preconnect: original.preconnect }) as typeof fetch, original };
+	const entry: InstalledJournal = {
+		wrapped: Object.assign(wrapped, { preconnect: original.preconnect }) as typeof fetch,
+		original,
+	};
 	installedJournals.push(entry);
 	globalThis.fetch = entry.wrapped;
 	return () => {
@@ -290,11 +374,17 @@ function sectionPresent(xml: string, names: string[]): boolean {
 export function validateUplift(raw: string, original: string): Validation {
 	const errors: string[] = [];
 	const xml = sanitizeUpliftXml(raw, original);
-	if (!xml) return { ok: false, errors: ["not an uplift XML document (root must be one of the uplift roots)"] };
+	if (!xml)
+		return {
+			ok: false,
+			errors: ["not an uplift XML document (root must be one of the uplift roots)"],
+		};
 	const root = xml.match(/^<([A-Za-z_]+)/)?.[1] ?? "";
 	if (!ROOTS.includes(root)) errors.push(`root <${root}> is not one of ${ROOTS.join(", ")}`);
-	if (!xml.includes(`<ORIGINAL>${escapeXml(original)}</ORIGINAL>`)) errors.push("ORIGINAL must hold the user's request verbatim (XML-escaped), byte for byte");
-	for (const names of REQUIRED_SECTIONS) if (!sectionPresent(xml, names)) errors.push(`missing required section ${names.join(" or ")}`);
+	if (!xml.includes(`<ORIGINAL>${escapeXml(original)}</ORIGINAL>`))
+		errors.push("ORIGINAL must hold the user's request verbatim (XML-escaped), byte for byte");
+	for (const names of REQUIRED_SECTIONS)
+		if (!sectionPresent(xml, names)) errors.push(`missing required section ${names.join(" or ")}`);
 	return { ok: errors.length === 0, errors, info: { root, chars: xml.length } };
 }
 
@@ -303,13 +393,16 @@ export function validateGraph(raw: string, original: string): Validation {
 	const parsed = extractJsonObject(raw);
 	const nodes = (parsed as { nodes?: unknown } | undefined)?.nodes;
 	if (!Array.isArray(nodes)) return { ok: false, errors: ["graph JSON must have a nodes array"] };
-	if (nodes.length < MIN_NODES || nodes.length > MAX_NODES) errors.push(`graph must have ${MIN_NODES}-${MAX_NODES} nodes (got ${nodes.length})`);
+	if (nodes.length < MIN_NODES || nodes.length > MAX_NODES)
+		errors.push(`graph must have ${MIN_NODES}-${MAX_NODES} nodes (got ${nodes.length})`);
 	const graph = normalizeGraph(parsed, original, MIN_NODES, MAX_NODES);
 	if (isFallbackGraph(graph)) errors.push("graph normalized to the fallback graph");
-	if (graph.nodes.length !== nodes.length) errors.push(`normalization changed the node count (${nodes.length} -> ${graph.nodes.length})`);
+	if (graph.nodes.length !== nodes.length)
+		errors.push(`normalization changed the node count (${nodes.length} -> ${graph.nodes.length})`);
 	const kinds = graph.nodes.map((node) => node.kind);
 	if (kinds[0] !== "understand") errors.push("n1 must be kind understand");
-	if (kinds[kinds.length - 1] !== "synthesize") errors.push("the last node must be kind synthesize");
+	if (kinds[kinds.length - 1] !== "synthesize")
+		errors.push("the last node must be kind synthesize");
 	if (!kinds.includes("critique")) errors.push("at least one critique node is required");
 	return { ok: errors.length === 0, errors, info: { nodes: graph.nodes.length } };
 }
@@ -318,26 +411,44 @@ export function validateNodeFill(raw: string, kind: string | undefined): Validat
 	const errors: string[] = [];
 	const fill = parseNodeFill(raw);
 	const steps = splitRationaleSteps(fill.thinking);
-	if (!/<rationale>/i.test(raw) || !/<conclusion>/i.test(raw)) errors.push("answer must be <node><rationale>…</rationale><conclusion>…</conclusion></node>");
-	if (/&(?:lt|gt|amp|quot|apos);/.test(raw)) errors.push("do not XML-escape node text: parseNodeFill reads it raw, so entities would reach Linear and Notion verbatim");
-	if (steps.length < MIN_STEPS || steps.length > MAX_STEPS) errors.push(`rationale must have ${MIN_STEPS}-${MAX_STEPS} numbered steps (got ${steps.length})`);
-	if (fill.thinking.length > MAX_RATIONALE_CHARS) errors.push(`rationale exceeds ${MAX_RATIONALE_CHARS} chars (${fill.thinking.length})`);
-	const limit = kind === "synthesize" ? 3000 : 1200;
-	if (fill.conclusion.length > limit) errors.push(`conclusion exceeds ${limit} chars (${fill.conclusion.length})`);
+	if (!/<rationale>/i.test(raw) || !/<conclusion>/i.test(raw))
+		errors.push("answer must be <node><rationale>…</rationale><conclusion>…</conclusion></node>");
+	if (/&(?:lt|gt|amp|quot|apos);/.test(raw))
+		errors.push(
+			"do not XML-escape node text: parseNodeFill reads it raw, so entities would reach Linear and Notion verbatim",
+		);
+	if (steps.length < MIN_STEPS || steps.length > MAX_STEPS)
+		errors.push(
+			`rationale must have ${MIN_STEPS}-${MAX_STEPS} numbered steps (got ${steps.length})`,
+		);
 	if (kind === "synthesize") {
-		if (!/^\s*WORKFLOW\s*$/m.test(fill.conclusion)) errors.push("synthesize conclusion needs a WORKFLOW section");
+		if (!/^\s*WORKFLOW\s*$/m.test(fill.conclusion))
+			errors.push("synthesize conclusion needs a WORKFLOW section");
 		if (!/^\s*Wave \d+/m.test(fill.conclusion)) errors.push("synthesize WORKFLOW needs Wave lines");
-		if ((fill.conclusion.match(/^\s*Verify:/gm) ?? []).length !== 1) errors.push("synthesize WORKFLOW must end with exactly one Verify: line");
+		if ((fill.conclusion.match(/^\s*Verify:/gm) ?? []).length !== 1)
+			errors.push("synthesize WORKFLOW must end with exactly one Verify: line");
 	}
-	if (kind === "critique" && !/Open questions:/.test(fill.conclusion)) errors.push('critique conclusion must end with an "Open questions:" list');
-	return { ok: errors.length === 0, errors, info: { steps: steps.length, rationaleChars: fill.thinking.length, conclusionChars: fill.conclusion.length } };
+	if (kind === "critique" && !/Open questions:/.test(fill.conclusion))
+		errors.push('critique conclusion must end with an "Open questions:" list');
+	return {
+		ok: errors.length === 0,
+		errors,
+		info: {
+			steps: steps.length,
+			rationaleChars: fill.thinking.length,
+			conclusionChars: fill.conclusion.length,
+		},
+	};
 }
 
 export function validateClarify(raw: string, maxQuestions = 4): Validation {
 	const parsed = extractJsonObject(raw);
-	if (!parsed || typeof parsed !== "object") return { ok: false, errors: ["clarify answer must be a JSON object"] };
+	if (!parsed || typeof parsed !== "object")
+		return { ok: false, errors: ["clarify answer must be a JSON object"] };
 	const questions = normalizeClarifications(parsed, maxQuestions);
-	const rawCount = Array.isArray((parsed as { questions?: unknown }).questions) ? ((parsed as { questions: unknown[] }).questions.length) : -1;
+	const rawCount = Array.isArray((parsed as { questions?: unknown }).questions)
+		? (parsed as { questions: unknown[] }).questions.length
+		: -1;
 	const errors: string[] = [];
 	if (rawCount < 0) errors.push('clarify JSON needs a "questions" array (may be empty)');
 	if (rawCount > maxQuestions) errors.push(`at most ${maxQuestions} questions (got ${rawCount})`);
@@ -345,17 +456,25 @@ export function validateClarify(raw: string, maxQuestions = 4): Validation {
 	return { ok: errors.length === 0, errors, info: { questions: questions.length } };
 }
 
-export function validateDistill(raw: string): Validation {
+function validateDistill(raw: string): Validation {
 	const parsed = extractJsonObject(raw);
-	return parsed && typeof parsed === "object" ? { ok: true, errors: [] } : { ok: false, errors: ["distill answer must be JSON"] };
+	return parsed && typeof parsed === "object"
+		? { ok: true, errors: [] }
+		: { ok: false, errors: ["distill answer must be JSON"] };
 }
 
-export function validateAnswer(request: PendingRequest, raw: string, original: string | undefined): Validation {
+function validateAnswer(
+	request: PendingRequest,
+	raw: string,
+	original: string | undefined,
+): Validation {
 	if (!raw.trim()) return { ok: false, errors: ["empty answer"] };
 	if (raw.length > MAX_ANSWER_CHARS) return { ok: false, errors: ["answer too large"] };
 	switch (request.stage) {
 		case "uplift":
-			return original === undefined ? { ok: false, errors: ["session has no recorded original"] } : validateUplift(raw, original);
+			return original === undefined
+				? { ok: false, errors: ["session has no recorded original"] }
+				: validateUplift(raw, original);
 		case "graph":
 			return validateGraph(raw, original ?? "");
 		case "cot":
@@ -370,14 +489,24 @@ export function validateAnswer(request: PendingRequest, raw: string, original: s
 }
 
 /** Validates then stores an answer and removes its pending file. `replace` overwrites an existing answer (deepen). */
-export function storeAnswer(dir: string, key: string, raw: string, options: { replace?: boolean } = {}): Validation {
+export function storeAnswer(
+	dir: string,
+	key: string,
+	raw: string,
+	options: { replace?: boolean } = {},
+): Validation {
 	const pendingPath = join(dir, "pending", `${key}.json`);
 	const answerPath = join(dir, "answers", `${key}.txt`);
 	let request: PendingRequest | undefined;
-	if (existsSync(pendingPath)) request = JSON.parse(readFileSync(pendingPath, "utf8")) as PendingRequest;
-	else if (options.replace && existsSync(join(dir, "requests", `${key}.json`))) request = JSON.parse(readFileSync(join(dir, "requests", `${key}.json`), "utf8")) as PendingRequest;
+	if (existsSync(pendingPath))
+		request = JSON.parse(readFileSync(pendingPath, "utf8")) as PendingRequest;
+	else if (options.replace && existsSync(join(dir, "requests", `${key}.json`)))
+		request = JSON.parse(
+			readFileSync(join(dir, "requests", `${key}.json`), "utf8"),
+		) as PendingRequest;
 	if (!request) return { ok: false, errors: [`no pending request ${key}`] };
-	if (existsSync(answerPath) && !options.replace) return { ok: false, errors: [`request ${key} is already answered (use --replace)`] };
+	if (existsSync(answerPath) && !options.replace)
+		return { ok: false, errors: [`request ${key} is already answered (use --replace)`] };
 	const result = validateAnswer(request, raw, readMeta(dir)?.original);
 	if (!result.ok) return result;
 	writeAtomic(answerPath, raw);
@@ -402,7 +531,11 @@ export interface PlanCheck {
 }
 
 /** Thinking is off when the control says so, otherwise when the loaded config says so. */
-export function thinkingOff(stateDir: string, cwd: string, env?: Record<string, string | undefined>): boolean {
+export function thinkingOff(
+	stateDir: string,
+	cwd: string,
+	env?: Record<string, string | undefined>,
+): boolean {
 	const control = readControl(stateDir);
 	if (typeof control.thinkEnabled === "boolean") return control.thinkEnabled === false;
 	try {
@@ -412,7 +545,10 @@ export function thinkingOff(stateDir: string, cwd: string, env?: Record<string, 
 	}
 }
 
-export function checkRecord(record: SessionRecord, options: { thinkOff?: boolean } = {}): PlanCheck {
+export function checkRecord(
+	record: SessionRecord,
+	options: { thinkOff?: boolean } = {},
+): PlanCheck {
 	const errors: string[] = [];
 	const nodes: ThoughtNode[] = record.graph?.nodes ?? [];
 	const stepsPerNode: Record<string, number> = {};
@@ -422,12 +558,25 @@ export function checkRecord(record: SessionRecord, options: { thinkOff?: boolean
 	const graphFree = options.thinkOff === true && nodes.length === 0;
 	if (record.result.source !== "llm") errors.push(`uplift source is ${record.result.source}`);
 	if (degraded.length > 0) errors.push(`degraded stages: ${degraded.join(", ")}`);
-	if (!graphFree && (nodes.length < MIN_NODES || nodes.length > MAX_NODES)) errors.push(`graph has ${nodes.length} nodes`);
-	if (!graphFree) for (const [id, n] of Object.entries(stepsPerNode)) if (n < MIN_STEPS || n > MAX_STEPS) errors.push(`${id} has ${n} steps`);
+	if (!graphFree && (nodes.length < MIN_NODES || nodes.length > MAX_NODES))
+		errors.push(`graph has ${nodes.length} nodes`);
+	if (!graphFree)
+		for (const [id, n] of Object.entries(stepsPerNode))
+			if (n < MIN_STEPS || n > MAX_STEPS) errors.push(`${id} has ${n} steps`);
 	const root = record.result.root;
 	const band = DENSITY_BAND[root];
 	const belowBand = !!band && totalSteps < band[0];
-	return { ok: errors.length === 0, errors, root, nodes: nodes.length, stepsPerNode, totalSteps, ...(band ? { band } : {}), belowBand, degraded };
+	return {
+		ok: errors.length === 0,
+		errors,
+		root,
+		nodes: nodes.length,
+		stepsPerNode,
+		totalSteps,
+		...(band ? { band } : {}),
+		belowBand,
+		degraded,
+	};
 }
 
 /**
@@ -441,6 +590,7 @@ export function normalizeTranscript(source: string, dir: string): string {
 	try {
 		text = readFileSync(source, "utf8");
 	} catch {
+		// reason: an unreadable transcript normalizes to empty text; the caller reports no content
 		text = "";
 	}
 	const out: string[] = [];
@@ -451,16 +601,26 @@ export function normalizeTranscript(source: string, dir: string): string {
 		try {
 			entry = JSON.parse(trimmed);
 		} catch {
+			// reason: a malformed transcript line is skipped; the other lines still count
 			continue;
 		}
 		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
 		const rec = entry as { type?: unknown; role?: unknown; content?: unknown; message?: unknown };
-		if ((rec.type === "user" || rec.type === "assistant") && rec.message && typeof rec.message === "object") {
+		if (
+			(rec.type === "user" || rec.type === "assistant") &&
+			rec.message &&
+			typeof rec.message === "object"
+		) {
 			out.push(trimmed);
 			continue;
 		}
-		if ((rec.role === "user" || rec.role === "assistant") && (typeof rec.content === "string" || Array.isArray(rec.content))) {
-			out.push(JSON.stringify({ type: rec.role, message: { role: rec.role, content: rec.content } }));
+		if (
+			(rec.role === "user" || rec.role === "assistant") &&
+			(typeof rec.content === "string" || Array.isArray(rec.content))
+		) {
+			out.push(
+				JSON.stringify({ type: rec.role, message: { role: rec.role, content: rec.content } }),
+			);
 		}
 	}
 	mkdirSync(dir, { recursive: true });
@@ -477,6 +637,8 @@ export interface GrokbotPlanInput {
 	stateDir?: string;
 	env?: Record<string, string | undefined>;
 	debounceMs?: number;
+	/** Timer port for the debounce; defaults to the platform timers. */
+	timers?: TimerPort;
 	/** Re-run a planned session (after `answer --replace`); mints a new graph id. Without it a planned session is returned as is. */
 	replan?: boolean;
 	/** Plugin entry point; defaults to `planPrompt`. A test seam, never a behavior switch. */
@@ -495,31 +657,72 @@ export interface GrokbotPlanResult {
 }
 
 export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPlanResult> {
-	const env = { ...(input.env ?? process.env), ULTRATHINK_SHIP: "0", ULTRATHINK_HOST: GROKBOT_ENGINE_HOST };
+	const env = {
+		...(input.env ?? process.env),
+		ULTRATHINK_SHIP: "0",
+		ULTRATHINK_HOST: GROKBOT_ENGINE_HOST,
+	};
 	const stateDir = input.stateDir ?? grokbotStateDir(env);
 	const dir = journalDir(stateDir, input.sessionId);
 	const meta = readMeta(dir);
-	if (meta?.original !== undefined && meta.original !== input.prompt) throw new Error("session already holds a different original prompt; use a new session id");
+	if (meta?.original !== undefined && meta.original !== input.prompt)
+		throw new Error("session already holds a different original prompt; use a new session id");
 	const existing = sessionRecordPath(stateDir, input.sessionId);
 	if (meta?.status === "planned" && !input.replan && existsSync(existing)) {
 		const record = JSON.parse(readFileSync(existing, "utf8")) as SessionRecord;
-		return { status: "planned", sessionId: input.sessionId, journal: dir, pending: [], replayed: 0, check: checkRecord(record, { thinkOff: thinkingOff(stateDir, input.cwd, env) }), response: { statePath: existing, specPath: existing.replace(/\.json$/, ".xml") } as PlanResponse };
+		return {
+			status: "planned",
+			sessionId: input.sessionId,
+			journal: dir,
+			pending: [],
+			replayed: 0,
+			check: checkRecord(record, { thinkOff: thinkingOff(stateDir, input.cwd, env) }),
+			response: {
+				statePath: existing,
+				specPath: existing.replace(/\.json$/, ".xml"),
+			} as PlanResponse,
+		};
 	}
-	writeMeta(dir, { ...meta, sessionId: input.sessionId, original: input.prompt, cwd: input.cwd, ...(input.transcriptPath ? { transcriptPath: input.transcriptPath } : {}), status: "needs-model" });
+	writeMeta(dir, {
+		...meta,
+		sessionId: input.sessionId,
+		original: input.prompt,
+		cwd: input.cwd,
+		...(input.transcriptPath ? { transcriptPath: input.transcriptPath } : {}),
+		status: "needs-model",
+	});
 	rmSync(join(dir, "pending"), { recursive: true, force: true });
 	const controller = new AbortController();
-	const journal = createJournalCompleter({ dir, controller, debounceMs: input.debounceMs });
+	const journal = createJournalCompleter({
+		dir,
+		controller,
+		debounceMs: input.debounceMs,
+		timers: input.timers,
+	});
 	const restore = installDecisionsJournal(dir);
 	const resolution = hostResolution();
 	let response: PlanResponse;
 	try {
 		response = await (input.plan ?? planPrompt)(
-			{ host: GROKBOT_ENGINE_HOST, session_id: input.sessionId, prompt: input.prompt, cwd: input.cwd, ...(input.transcriptPath ? { transcript_path: normalizeTranscript(input.transcriptPath, dir) } : {}) },
+			{
+				host: GROKBOT_ENGINE_HOST,
+				session_id: input.sessionId,
+				prompt: input.prompt,
+				cwd: input.cwd,
+				...(input.transcriptPath
+					? { transcript_path: normalizeTranscript(input.transcriptPath, dir) }
+					: {}),
+			},
 			env,
 			{
 				stateDir,
 				signal: controller.signal,
-				selectEngine: async (): Promise<SelectedEngine> => ({ label: GROKBOT_LABEL, complete: journal.complete, error: () => undefined, resolution }),
+				selectEngine: async (): Promise<SelectedEngine> => ({
+					label: GROKBOT_LABEL,
+					complete: journal.complete,
+					error: () => undefined,
+					resolution,
+				}),
 				createTracker: () => undefined,
 			},
 		);
@@ -527,14 +730,30 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 		restore();
 	}
 	const missed = journal.missed();
-	const base = { sessionId: input.sessionId, journal: dir, replayed: journal.replayed(), pending: missed.map(({ key, stage, nodeId, nodeKind, nodeTitle }) => ({ key, stage, nodeId, nodeKind, nodeTitle })) };
+	const base = {
+		sessionId: input.sessionId,
+		journal: dir,
+		replayed: journal.replayed(),
+		pending: missed.map(({ key, stage, nodeId, nodeKind, nodeTitle }) => ({
+			key,
+			stage,
+			nodeId,
+			nodeKind,
+			nodeTitle,
+		})),
+	};
 	if (missed.length > 0) {
 		writeMeta(dir, { ...readMeta(dir), sessionId: input.sessionId, status: "needs-model" });
 		return { status: "needs-model", ...base };
 	}
 	if (response.skipped || !response.statePath) {
 		writeMeta(dir, { ...readMeta(dir), sessionId: input.sessionId, status: "skipped" });
-		return { status: "skipped", ...base, ...(response.skipped ? { skipped: response.skipped } : {}), response };
+		return {
+			status: "skipped",
+			...base,
+			...(response.skipped ? { skipped: response.skipped } : {}),
+			response,
+		};
 	}
 	const record = JSON.parse(readFileSync(response.statePath, "utf8")) as SessionRecord;
 	const check = checkRecord(record, { thinkOff: thinkingOff(stateDir, input.cwd, env) });

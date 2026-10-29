@@ -105,8 +105,12 @@ describe("createAdaptiveQuota option validation", () => {
 		expect(() => createAdaptiveQuota({ minFactor: 0, lagTargetMs: 100 })).toThrow(RangeError);
 		expect(() => createAdaptiveQuota({ minFactor: -0.5, lagTargetMs: 100 })).toThrow(RangeError);
 		expect(() => createAdaptiveQuota({ minFactor: 1.01, lagTargetMs: 100 })).toThrow(RangeError);
-		expect(() => createAdaptiveQuota({ minFactor: Number.NaN, lagTargetMs: 100 })).toThrow(RangeError);
-		expect(() => createAdaptiveQuota({ minFactor: Number.POSITIVE_INFINITY, lagTargetMs: 100 })).toThrow(RangeError);
+		expect(() => createAdaptiveQuota({ minFactor: Number.NaN, lagTargetMs: 100 })).toThrow(
+			RangeError,
+		);
+		expect(() =>
+			createAdaptiveQuota({ minFactor: Number.POSITIVE_INFINITY, lagTargetMs: 100 }),
+		).toThrow(RangeError);
 	});
 
 	test("minFactor 1 is accepted and pins the factor at 1", () => {
@@ -116,9 +120,15 @@ describe("createAdaptiveQuota option validation", () => {
 	});
 
 	test("lagTargetMs NaN, Infinity and negative throw RangeError", () => {
-		expect(() => createAdaptiveQuota({ minFactor: 0.5, lagTargetMs: Number.NaN })).toThrow(RangeError);
-		expect(() => createAdaptiveQuota({ minFactor: 0.5, lagTargetMs: Number.POSITIVE_INFINITY })).toThrow(RangeError);
-		expect(() => createAdaptiveQuota({ minFactor: 0.5, lagTargetMs: Number.NEGATIVE_INFINITY })).toThrow(RangeError);
+		expect(() => createAdaptiveQuota({ minFactor: 0.5, lagTargetMs: Number.NaN })).toThrow(
+			RangeError,
+		);
+		expect(() =>
+			createAdaptiveQuota({ minFactor: 0.5, lagTargetMs: Number.POSITIVE_INFINITY }),
+		).toThrow(RangeError);
+		expect(() =>
+			createAdaptiveQuota({ minFactor: 0.5, lagTargetMs: Number.NEGATIVE_INFINITY }),
+		).toThrow(RangeError);
 		expect(() => createAdaptiveQuota({ minFactor: 0.5, lagTargetMs: -1 })).toThrow(RangeError);
 	});
 

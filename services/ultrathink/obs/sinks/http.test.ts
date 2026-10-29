@@ -27,7 +27,10 @@ function envelope(seq: number, kind: SinkEnvelope["kind"] = "audit"): SinkEnvelo
 	return { kind, at: "2026-01-01T00:00:00.000Z", body: { seq } };
 }
 
-function serve(handler: (req: Request, captured: Captured) => Response): { server: Server<unknown>; calls: Captured[] } {
+function serve(handler: (req: Request, captured: Captured) => Response): {
+	server: Server<unknown>;
+	calls: Captured[];
+} {
 	const calls: Captured[] = [];
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -108,9 +111,13 @@ describe("createHttpTransport", () => {
 	test("a redirect to another origin is refused and the token never reaches it", async () => {
 		const target = serve(() => new Response("", { status: 200 }));
 		const origin = serve(
-			() => new Response("", { status: 302, headers: { location: `${baseUrl(target.server)}/steal` } }),
+			() =>
+				new Response("", { status: 302, headers: { location: `${baseUrl(target.server)}/steal` } }),
 		);
-		const transport = createHttpTransport({ url: `${baseUrl(origin.server)}/ingest`, token: TOKEN });
+		const transport = createHttpTransport({
+			url: `${baseUrl(origin.server)}/ingest`,
+			token: TOKEN,
+		});
 
 		const result = await transport.send([envelope(1)], new AbortController().signal);
 
@@ -122,7 +129,11 @@ describe("createHttpTransport", () => {
 		const leaky = (async () => {
 			throw new Error(`connect failed for token ${TOKEN}`);
 		}) as unknown as typeof fetch;
-		const transport = createHttpTransport({ url: "https://siem.example.test/ingest", token: TOKEN, fetch: leaky });
+		const transport = createHttpTransport({
+			url: "https://siem.example.test/ingest",
+			token: TOKEN,
+			fetch: leaky,
+		});
 
 		const result = await transport.send([envelope(1)], new AbortController().signal);
 
@@ -135,7 +146,10 @@ describe("createHttpTransport", () => {
 		const closed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
 		const port = closed.port;
 		closed.stop(true);
-		const transport = createHttpTransport({ url: `http://127.0.0.1:${port}/ingest?key=q-secret`, token: TOKEN });
+		const transport = createHttpTransport({
+			url: `http://127.0.0.1:${port}/ingest?key=q-secret`,
+			token: TOKEN,
+		});
 
 		const result = await transport.send([envelope(1)], new AbortController().signal);
 
@@ -152,7 +166,10 @@ describe("createHttpTransport", () => {
 			called += 1;
 			return new Response("");
 		}) as unknown as typeof fetch;
-		const transport = createHttpTransport({ url: "https://siem.example.test/ingest", fetch: counting });
+		const transport = createHttpTransport({
+			url: "https://siem.example.test/ingest",
+			fetch: counting,
+		});
 		const controller = new AbortController();
 		controller.abort();
 
@@ -172,8 +189,12 @@ describe("createHttpTransport", () => {
 
 	test("plain http to a non-loopback host, and URLs with credentials, are rejected", () => {
 		expect(() => createHttpTransport({ url: "http://example.com/ingest" })).toThrow(TypeError);
-		expect(() => createHttpTransport({ url: "https://user:pw@host.example.test/ingest" })).toThrow(TypeError);
-		expect(() => createHttpTransport({ url: "https://user@host.example.test/ingest" })).toThrow(TypeError);
+		expect(() => createHttpTransport({ url: "https://user:pw@host.example.test/ingest" })).toThrow(
+			TypeError,
+		);
+		expect(() => createHttpTransport({ url: "https://user@host.example.test/ingest" })).toThrow(
+			TypeError,
+		);
 		expect(() => createHttpTransport({ url: "not a url" })).toThrow(TypeError);
 	});
 
@@ -202,8 +223,14 @@ describe("createKafkaRestTransport", () => {
 			{ partition: 0, offset: 7, error_code: null, error: null },
 			{ partition: 0, offset: 8, error_code: null, error: null },
 		];
-		const { server, calls } = serve(() => new Response(JSON.stringify({ offsets }), { status: 200 }));
-		const transport = createKafkaRestTransport({ baseUrl: baseUrl(server), topic: "a/b", token: TOKEN });
+		const { server, calls } = serve(
+			() => new Response(JSON.stringify({ offsets }), { status: 200 }),
+		);
+		const transport = createKafkaRestTransport({
+			baseUrl: baseUrl(server),
+			topic: "a/b",
+			token: TOKEN,
+		});
 		const batch = [envelope(7), envelope(8, "security")];
 
 		const result = await transport.send(batch, new AbortController().signal);
@@ -215,7 +242,9 @@ describe("createKafkaRestTransport", () => {
 		expect(call?.contentType).toBe("application/vnd.kafka.json.v2+json");
 		expect(call?.accept).toBe("application/vnd.kafka.v2+json");
 		expect(call?.authorization).toBe(`Bearer ${TOKEN}`);
-		expect(JSON.parse(call?.body ?? "")).toEqual({ records: [{ value: batch[0] }, { value: batch[1] }] });
+		expect(JSON.parse(call?.body ?? "")).toEqual({
+			records: [{ value: batch[0] }, { value: batch[1] }],
+		});
 	});
 
 	test("a trailing slash on the base URL does not double up in the path", async () => {
@@ -231,20 +260,52 @@ describe("createKafkaRestTransport", () => {
 		const signal = new AbortController().signal;
 		const retryable = statusServer(503);
 		const fatal = statusServer(422);
-		const retryTransport = createKafkaRestTransport({ baseUrl: baseUrl(retryable.server), topic: "audit" });
-		const fatalTransport = createKafkaRestTransport({ baseUrl: baseUrl(fatal.server), topic: "audit" });
+		const retryTransport = createKafkaRestTransport({
+			baseUrl: baseUrl(retryable.server),
+			topic: "audit",
+		});
+		const fatalTransport = createKafkaRestTransport({
+			baseUrl: baseUrl(fatal.server),
+			topic: "audit",
+		});
 
-		expect(await retryTransport.send([envelope(1)], signal)).toEqual({ ok: false, retryable: true, reason: "http 503" });
-		expect(await fatalTransport.send([envelope(1)], signal)).toEqual({ ok: false, retryable: false, reason: "http 422" });
+		expect(await retryTransport.send([envelope(1)], signal)).toEqual({
+			ok: false,
+			retryable: true,
+			reason: "http 503",
+		});
+		expect(await fatalTransport.send([envelope(1)], signal)).toEqual({
+			ok: false,
+			retryable: false,
+			reason: "http 422",
+		});
 	});
 
 	test("a 200 whose body reports a record error fails the batch, classified by the Kafka error code", async () => {
 		const signal = new AbortController().signal;
 		const okRecord = { partition: 0, offset: 1, error_code: null, error: null };
-		const rejected = serve(() => new Response(JSON.stringify({ offsets: [okRecord, { error_code: 42201, error: "invalid record" }] }), { status: 200 }));
-		const unavailable = serve(() => new Response(JSON.stringify({ offsets: [{ error_code: 50002, error: "leader unavailable" }] }), { status: 200 }));
-		const rejectedTransport = createKafkaRestTransport({ baseUrl: baseUrl(rejected.server), topic: "audit" });
-		const unavailableTransport = createKafkaRestTransport({ baseUrl: baseUrl(unavailable.server), topic: "audit" });
+		const rejected = serve(
+			() =>
+				new Response(
+					JSON.stringify({ offsets: [okRecord, { error_code: 42201, error: "invalid record" }] }),
+					{ status: 200 },
+				),
+		);
+		const unavailable = serve(
+			() =>
+				new Response(
+					JSON.stringify({ offsets: [{ error_code: 50002, error: "leader unavailable" }] }),
+					{ status: 200 },
+				),
+		);
+		const rejectedTransport = createKafkaRestTransport({
+			baseUrl: baseUrl(rejected.server),
+			topic: "audit",
+		});
+		const unavailableTransport = createKafkaRestTransport({
+			baseUrl: baseUrl(unavailable.server),
+			topic: "audit",
+		});
 
 		expect(await rejectedTransport.send([envelope(1), envelope(2)], signal)).toEqual({
 			ok: false,
@@ -270,10 +331,14 @@ describe("createKafkaRestTransport", () => {
 	});
 
 	test("an empty topic, a plaintext remote URL, and URL credentials are rejected", () => {
-		expect(() => createKafkaRestTransport({ baseUrl: "https://kafka.example.test", topic: "" })).toThrow(RangeError);
-		expect(() => createKafkaRestTransport({ baseUrl: "http://kafka.example.test", topic: "audit" })).toThrow(TypeError);
-		expect(() => createKafkaRestTransport({ baseUrl: "https://u:p@kafka.example.test", topic: "audit" })).toThrow(
-			TypeError,
-		);
+		expect(() =>
+			createKafkaRestTransport({ baseUrl: "https://kafka.example.test", topic: "" }),
+		).toThrow(RangeError);
+		expect(() =>
+			createKafkaRestTransport({ baseUrl: "http://kafka.example.test", topic: "audit" }),
+		).toThrow(TypeError);
+		expect(() =>
+			createKafkaRestTransport({ baseUrl: "https://u:p@kafka.example.test", topic: "audit" }),
+		).toThrow(TypeError);
 	});
 });

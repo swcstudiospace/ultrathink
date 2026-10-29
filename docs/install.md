@@ -17,7 +17,7 @@ In the commands below, `<clone>` is the absolute path of your checkout. Paths wr
 
 ## Platforms
 
-ultrathink runs on Linux and macOS. On Windows, run it and your host inside WSL; native Windows is not supported. CI runs the test suite on Linux and macOS.
+ultrathink runs on Linux and macOS. On Windows, run it and your host inside WSL; native Windows is not supported. CI runs the test suite on Linux only; macOS is supported but not tested in CI.
 
 ## Tested with
 
@@ -77,7 +77,7 @@ Optional:
 | `gh`, logged in | [Ship](ship.md) (opt-in): pushing, opening and merging the PR |
 | Greptile CLI (`greptile login`) | Ship's CLI review mode |
 | Notion, Linear, Greptile credentials | [Tracking](tracking.md) and ship, through the [shared MCP gateway](#shared-mcp-gateway) |
-| A Jev key: a Vercel AI Gateway API key (`bin/ultrathink-mcp auth set-key vercel --stdin`, or `AI_GATEWAY_API_KEY`) or an OpenRouter API key (`bin/ultrathink-mcp auth set-key openrouter --stdin`, or `OPENROUTER_API_KEY`) | [Jev decisions](how-to/use-jev-decisions.md) (always on once a key exists): it is stored in the same credential store, but `vercel` and `openrouter` are not MCP servers and are never registered in a host |
+| A Jev key: a Vercel AI Gateway API key (`bin/ultrathink-mcp auth set-key vercel --stdin`, or `AI_GATEWAY_API_KEY`) or an OpenRouter API key (`bin/ultrathink-mcp auth set-key openrouter --stdin`, or `ULTRATHINK_OPENROUTER_KEY`) | [Jev decisions](how-to/use-jev-decisions.md) (always on once a key exists): it is stored in the same credential store, but `vercel` and `openrouter` are not MCP servers and are never registered in a host. The OpenRouter key is for Jev only; the generic `OPENROUTER_API_KEY` is not read (and is scrubbed from model-CLI children), so remove that export if you have one |
 | A Hindsight API key (`bin/ultrathink-mcp auth set-key hindsight --stdin`, or `HINDSIGHT_API_KEY` / `HINDSIGHT_API_TOKEN`) | [Hindsight](how-to/connect-hindsight.md) (opt-in, `hindsight.enabled`). Not an MCP server. |
 | A RAGFlow API key (`bin/ultrathink-mcp auth set-key ragflow --stdin`, or `RAGFLOW_API_KEY`) | [RAGFlow](how-to/connect-ragflow.md) (opt-in, `ragflow.enabled`). Not an MCP server. |
 
@@ -135,7 +135,7 @@ Start a new Claude Code session after installing.
 
 ### Verify
 
-1. Run `/ultrathink-status`. The plugin also lists it as `/ultrathink:ultrathink-status`. The prompt hook answers before any model turn and shows the engine (for example `Engine: claude:sonnet`), the engine request (`Engine request: auto (config) · concurrency 3`), the tracking state and the state directory. From a shell, `<clone>/bin/ultrathink status` prints the same thing.
+1. Run `/ultrathink-status`. The plugin also lists it as `/ultrathink:ultrathink-status`. The prompt hook answers before any model turn and shows the engine (for example `Engine: claude:claude-haiku-5-5`), the engine request (`Engine request: auto (config) · concurrency 3`), the tracking state and the state directory. From a shell, `<clone>/bin/ultrathink status` prints the same thing.
 2. Send a non-trivial prompt, such as a one-line feature request. The transcript shows a summary line that starts with `Prompt Uplift ·`, and the agent invokes `ultrathink-kickoff` before it does other work.
 
 Verified live on Claude Code 2.1.278: `/ultrathink-status` and `/ultrathink-quick` in `claude -p`. Headless, the status reply appears as "blocked by hook" text. A quick message was answered and no plan was written.
@@ -420,7 +420,7 @@ This registers three servers, `notion`, `linear` and `greptile`, each running `<
 <clone>/bin/ultrathink-mcp auth status
 ```
 
-Linear and Greptile also accept an OAuth login (`auth login linear`, `auth login greptile`) instead of an API key. `set-key` also accepts `--env-file <path> --var <NAME>` to read the key from a dotenv file. `auth login` starts a browser OAuth flow with a callback on `127.0.0.1:8765` on the machine running the command. For a login over SSH or on a machine without a browser, see [Set up Notion](how-to/set-up-notion.md) and [Troubleshooting](troubleshooting.md#notion-oauth-over-ssh). `auth logout <provider>` removes a provider's stored credentials.
+Linear and Greptile also accept an OAuth login (`auth login linear`, `auth login greptile`) instead of an API key. `set-key` also accepts `--env-file <path> --var <NAME>` to read the key from a dotenv file. An OpenRouter key is checked before it is stored: its format must be `sk-or-…`, and one non-destructive request to OpenRouter's key endpoint must accept it. A rejected key is not stored. Pass `--no-verify` to store it after the format check only (for an offline machine). `auth login` starts a browser OAuth flow with a callback on `127.0.0.1:8765` on the machine running the command. For a login over SSH or on a machine without a browser, see [Set up Notion](how-to/set-up-notion.md) and [Troubleshooting](troubleshooting.md#notion-oauth-over-ssh). `auth logout <provider>` removes a provider's stored credentials.
 
 ### Check it
 
@@ -455,8 +455,8 @@ To switch every host, set it in config, for example in `${XDG_CONFIG_HOME:-~/.co
 { "think": { "engine": "grok" } }
 ```
 
-- **Claude** runs the `claude` CLI headless (`claude -p`) with your existing Claude Code login. Its status label is `claude:<model>`, for example `claude:sonnet`.
-- **Grok** has three transports. `http` (default) and `cli` use your `grok login` session; if it is missing or expired, the prompt goes through unplanned with ``Prompt Uplift skipped · Grok 4.7 login required (run `grok login`)``, under `auto` on Grok Build too, unless one of the two switches above is set. `shunt` posts to an Anthropic-compatible gateway that you run and name in `grok.shuntBaseUrl`. There is no built-in gateway: with `shunt` selected and `grok.shuntBaseUrl` empty, the prompt goes through unplanned with ``Prompt Uplift skipped · grok:unresolved [transport-incompatible]`` and nothing is sent.
+- **Claude** runs the `claude` CLI headless (`claude -p`) on your own Claude plan login (sign in with `claude`, then `/login`; on a machine without a browser run `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN`). With the default `claude.auth: "plan"`, `ANTHROPIC_API_KEY` is kept away from the child process, because Claude Code always prefers that key to your plan login in `-p` mode. The default model `claude-haiku-5-5` needs Claude Code 2.1.293 or newer. Its status label is `claude:<model>`, for example `claude:claude-haiku-5-5`. `bin/ultrathink doctor` checks the version and the login.
+- **Grok** has three transports. `http` (default) and `cli` use your `grok login` session; if it is missing or expired, the prompt goes through unplanned with ``Prompt Uplift skipped · Grok login required (run `grok login`)``, under `auto` on Grok Build too, unless one of the two switches above is set. The default model is `grok-build-0.1`; where the session cannot use it, the route continues with `grok.fallbackModels` (`grok-4.7` by default). `shunt` posts to an Anthropic-compatible gateway that you run and name in `grok.shuntBaseUrl`. There is no built-in gateway: with `shunt` selected and `grok.shuntBaseUrl` empty, the prompt goes through unplanned with ``Prompt Uplift skipped · grok:unresolved [transport-incompatible]`` and nothing is sent.
 - **Omp's native planning** uses the session's own model and Omp's login, and shows labels such as `omp-native:<provider>/<model> [detected]`. See [Choose the planning engine](how-to/choose-engine.md#omp-the-sessions-own-model).
 - **Muse** runs the `muse` CLI headless (`muse exec --json`) for one agent turn per call, with the shell, file writes and web tools disabled. Its label is `muse:<model>`, for example `muse:muse-spark-1.3-contributor`.
 

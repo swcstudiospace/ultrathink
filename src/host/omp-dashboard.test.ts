@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { createInsightDashboard, type InsightDashboard, type InsightDashboardCallbacks, type InsightPanel } from "./omp-dashboard.ts";
+import {
+	createInsightDashboard,
+	type InsightDashboard,
+	type InsightDashboardCallbacks,
+	type InsightPanel,
+} from "./omp-dashboard.ts";
 import type { InsightActionResult, InsightLesson, InsightSnapshot } from "./omp-insights.ts";
 
 function mkLesson(id: string, name: string, overrides: Partial<InsightLesson> = {}): InsightLesson {
@@ -34,14 +39,61 @@ function snapshot(overrides: Partial<InsightSnapshot> = {}): InsightSnapshot {
 		session: "s1",
 		at: 1_700_000_000_000,
 		decisions: [
-			{ point: "teachable", outcome: "ok", model: "test-model", action: "auto-confirm", threshold: 0.5, latencyMs: 12, attempts: 1, at: 1_700_000_000_000, p: 0.75, probabilities: { teachable_worthy: 0.75 }, questions: [{ key: "teachable_worthy", p: 0.75 }] },
-			{ point: "skillworthy", outcome: "error", model: "test-model", action: "fail-open", threshold: 0.5, latencyMs: 3, attempts: 1, at: 1_699_999_999_000, error: "auth", probabilities: {}, questions: [] },
+			{
+				point: "teachable",
+				outcome: "ok",
+				model: "test-model",
+				action: "auto-confirm",
+				threshold: 0.5,
+				latencyMs: 12,
+				attempts: 1,
+				at: 1_700_000_000_000,
+				p: 0.75,
+				probabilities: { teachable_worthy: 0.75 },
+				questions: [{ key: "teachable_worthy", p: 0.75 }],
+			},
+			{
+				point: "skillworthy",
+				outcome: "error",
+				model: "test-model",
+				action: "fail-open",
+				threshold: 0.5,
+				latencyMs: 3,
+				attempts: 1,
+				at: 1_699_999_999_000,
+				error: "auth",
+				probabilities: {},
+				questions: [],
+			},
 		],
 		lessons: [
-			mkLesson("l1", "First lesson", { description: "details", body: "full body", selection: { id: "l1", revision: "r1" } }),
-			mkLesson("l2", "Second lesson", { description: "details", body: "full body", status: "confirmed", kind: "playbook", occurrences: 9, createdAt: "2026-01-03T00:00:00Z", lastSeenAt: "2026-01-04T00:00:00Z", eligible: true, selection: { id: "l2", revision: "r2" } }),
+			mkLesson("l1", "First lesson", {
+				description: "details",
+				body: "full body",
+				selection: { id: "l1", revision: "r1" },
+			}),
+			mkLesson("l2", "Second lesson", {
+				description: "details",
+				body: "full body",
+				status: "confirmed",
+				kind: "playbook",
+				occurrences: 9,
+				createdAt: "2026-01-03T00:00:00Z",
+				lastSeenAt: "2026-01-04T00:00:00Z",
+				eligible: true,
+				selection: { id: "l2", revision: "r2" },
+			}),
 		],
-		policy: { enabled: true, capture: "explicit", recall: true, recallLimit: 5, recallChars: 4000, autoPromote: false, promoteAfter: 3, jevEnabled: true },
+		policy: {
+			enabled: true,
+			capture: "explicit",
+			recall: true,
+			recallLimit: 5,
+			recallChars: 4000,
+			autoPromote: false,
+			promoteAfter: 3,
+			jevEnabled: true,
+		},
 		counts: { candidate: 1, confirmed: 1, promoted: 0, superseded: 0 },
 		eligible: 1,
 		promoted: 0,
@@ -69,11 +121,26 @@ function stubs(overrides: Partial<InsightDashboardCallbacks> = {}): RecordingCal
 		},
 		previewSkill: async () => {
 			calls.push("preview");
-			return { status: "ok", message: "ready", preview: { selection: { id: "l2", revision: "r2" }, fingerprint: "f", name: "draft", description: "d", content: "content", warnings: [] } };
+			return {
+				status: "ok",
+				message: "ready",
+				preview: {
+					selection: { id: "l2", revision: "r2" },
+					fingerprint: "f",
+					name: "draft",
+					description: "d",
+					content: "content",
+					warnings: [],
+				},
+			};
 		},
 		installPreview: async () => {
 			calls.push("install");
-			return { status: "ok", message: "Omp install recorded.", install: { action: "created", skill: "second-lesson" } };
+			return {
+				status: "ok",
+				message: "Omp install recorded.",
+				install: { action: "created", skill: "second-lesson" },
+			};
 		},
 		publishCard: async () => {
 			calls.push("publish");
@@ -94,21 +161,53 @@ const plain = (rows: readonly string[]): string[] => rows.map((row) => Bun.strip
 
 test("Jev details preserve numeric thresholds and zero cost with and without question rows", () => {
 	for (const threshold of [0.9, 0]) {
-		const overview = createInsightDashboard(snapshot({ decisions: [{
-			point: "plan", outcome: "ok", model: "fixture-model", action: "hold",
-			threshold, latencyMs: 0, attempts: 1, at: 1_700_000_000_000, p: 0,
-			probabilities: {}, questions: [],
-		}] }), stubs(), { theme: {}, initialPanel: "overview", rows: () => 40 });
+		const overview = createInsightDashboard(
+			snapshot({
+				decisions: [
+					{
+						point: "plan",
+						outcome: "ok",
+						model: "fixture-model",
+						action: "hold",
+						threshold,
+						latencyMs: 0,
+						attempts: 1,
+						at: 1_700_000_000_000,
+						p: 0,
+						probabilities: {},
+						questions: [],
+					},
+				],
+			}),
+			stubs(),
+			{ theme: {}, initialPanel: "overview", rows: () => 40 },
+		);
 		const summary = plain(overview.render(120)).join("\n");
 		expect(summary).toContain(`Jev threshold: ${threshold === 0 ? "0.00" : "0.90"}`);
 		expect(summary).toMatch(/not a complete history/i);
 		overview.dispose();
-		const ui = createInsightDashboard(snapshot({ decisions: [{
-			point: "plan", outcome: "ok", model: "fixture-model", action: "hold",
-			threshold, cost: 0, latencyMs: 0, attempts: 1, at: 1_700_000_000_000,
-			p: 0, probabilities: threshold === 0 ? { plan_worthy: 0 } : {},
-			questions: threshold === 0 ? [{ key: "plan_worthy", p: 0 }] : [],
-		}] }), stubs(), { theme: {}, initialPanel: "jev", rows: () => 40 });
+		const ui = createInsightDashboard(
+			snapshot({
+				decisions: [
+					{
+						point: "plan",
+						outcome: "ok",
+						model: "fixture-model",
+						action: "hold",
+						threshold,
+						cost: 0,
+						latencyMs: 0,
+						attempts: 1,
+						at: 1_700_000_000_000,
+						p: 0,
+						probabilities: threshold === 0 ? { plan_worthy: 0 } : {},
+						questions: threshold === 0 ? [{ key: "plan_worthy", p: 0 }] : [],
+					},
+				],
+			}),
+			stubs(),
+			{ theme: {}, initialPanel: "jev", rows: () => 40 },
+		);
 		ui.render(120);
 		ui.handleInput("\t");
 		ui.handleInput("\r");
@@ -120,7 +219,6 @@ test("Jev details preserve numeric thresholds and zero cost with and without que
 });
 
 describe("dashboard tabs and focus", () => {
-
 	test("tab focus cycles through regions without trapping", () => {
 		const ui = createInsightDashboard(snapshot(), stubs(), { theme: {}, initialPanel: "moments" });
 		ui.handleInput("tab");
@@ -175,7 +273,10 @@ describe("dashboard list keyboard behavior", () => {
 	});
 
 	test("empty panels have no cursor and enter is safe", () => {
-		const ui = createInsightDashboard(snapshot({ lessons: [], decisions: [] }), stubs(), { theme: {}, initialPanel: "moments" });
+		const ui = createInsightDashboard(snapshot({ lessons: [], decisions: [] }), stubs(), {
+			theme: {},
+			initialPanel: "moments",
+		});
 		const text = plain(ui.render(80)).join("\n");
 		expect(text).not.toContain(">");
 		ui.handleInput("enter");
@@ -194,8 +295,20 @@ describe("dashboard list keyboard behavior", () => {
 		expect(plain(ui.render(80)).join("\n")).toContain("> Second lesson");
 		current = snapshot({
 			lessons: [
-				mkLesson("l9", "Newcomer", { createdAt: "2026-02-01T00:00:00Z", lastSeenAt: "2026-02-01T00:00:00Z", selection: { id: "l9", revision: "r9" } }),
-				mkLesson("l2", "Second lesson", { status: "confirmed", kind: "playbook", occurrences: 9, createdAt: "2026-01-03T00:00:00Z", lastSeenAt: "2026-01-04T00:00:00Z", eligible: true, selection: { id: "l2", revision: "r2" } }),
+				mkLesson("l9", "Newcomer", {
+					createdAt: "2026-02-01T00:00:00Z",
+					lastSeenAt: "2026-02-01T00:00:00Z",
+					selection: { id: "l9", revision: "r9" },
+				}),
+				mkLesson("l2", "Second lesson", {
+					status: "confirmed",
+					kind: "playbook",
+					occurrences: 9,
+					createdAt: "2026-01-03T00:00:00Z",
+					lastSeenAt: "2026-01-04T00:00:00Z",
+					eligible: true,
+					selection: { id: "l2", revision: "r2" },
+				}),
 				mkLesson("l1", "First lesson", { selection: { id: "l1", revision: "r1" } }),
 			],
 		});
@@ -213,7 +326,13 @@ describe("dashboard list keyboard behavior", () => {
 		ui.handleInput("tab");
 		ui.handleInput("down");
 		current = snapshot({
-			lessons: [mkLesson("l9", "Only survivor", { createdAt: "2026-02-01T00:00:00Z", lastSeenAt: "2026-02-01T00:00:00Z", selection: { id: "l9", revision: "r9" } })],
+			lessons: [
+				mkLesson("l9", "Only survivor", {
+					createdAt: "2026-02-01T00:00:00Z",
+					lastSeenAt: "2026-02-01T00:00:00Z",
+					selection: { id: "l9", revision: "r9" },
+				}),
+			],
 		});
 		ui.handleInput("r");
 		await flush();
@@ -229,7 +348,13 @@ describe("dashboard list keyboard behavior", () => {
 describe("dashboard bounds and viewports", () => {
 	test("every width keeps rows within bounds including CJK and emoji", () => {
 		const wide = snapshot({
-			lessons: [mkLesson("l1", "数据库迁移：拆分用户表并回填历史订单数据 🚀 combined", { description: "x".repeat(400), body: "y".repeat(400), selection: { id: "l1", revision: "r1" } })],
+			lessons: [
+				mkLesson("l1", "数据库迁移：拆分用户表并回填历史订单数据 🚀 combined", {
+					description: "x".repeat(400),
+					body: "y".repeat(400),
+					selection: { id: "l1", revision: "r1" },
+				}),
+			],
 		});
 		for (const width of [0, 1, 7, 8, 40, 120]) {
 			const ui = createInsightDashboard(wide, stubs(), { theme: {}, initialPanel: "moments" });
@@ -245,10 +370,13 @@ describe("dashboard bounds and viewports", () => {
 		}
 	});
 
-
 	test("tiny viewports refuse mutation while browsing and escape stay live", () => {
 		const cb = stubs();
-		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments", rows: () => 30 });
+		const ui = createInsightDashboard(snapshot(), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 30,
+		});
 		const text = plain(ui.render(20)).join("\n");
 		expect(text).toMatch(/resize/i);
 		ui.handleInput("tab");
@@ -278,7 +406,9 @@ describe("dashboard bounds and viewports", () => {
 });
 
 describe("dashboard guarded confirmations", () => {
-	async function openCandidateConfirm(overrides: Partial<InsightDashboardCallbacks> = {}): Promise<{ ui: InsightDashboard; cb: RecordingCallbacks }> {
+	async function openCandidateConfirm(
+		overrides: Partial<InsightDashboardCallbacks> = {},
+	): Promise<{ ui: InsightDashboard; cb: RecordingCallbacks }> {
 		const cb = stubs(overrides);
 		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments" });
 		ui.handleInput("tab");
@@ -292,7 +422,7 @@ describe("dashboard guarded confirmations", () => {
 
 	test("candidate confirmation defaults to the non-mutating choice and arrows never confirm", async () => {
 		const { ui, cb } = await openCandidateConfirm();
-		let text = plain(ui.render(80)).join("\n");
+		const text = plain(ui.render(80)).join("\n");
 		expect(text).toContain("Confirm this candidate?");
 		ui.handleInput("enter");
 		await flush();
@@ -397,7 +527,11 @@ describe("dashboard guarded confirmations", () => {
 		const detached = plain(ui.render(80)).join("\n");
 		expect(detached).toContain("Escape dismissed the wait");
 		// The late completion lands nowhere: no receipt, no auto-refresh.
-		gate.resolve({ status: "ok", message: "LATE-INSTALL-RECEIPT", install: { action: "created", skill: "second-lesson" } });
+		gate.resolve({
+			status: "ok",
+			message: "LATE-INSTALL-RECEIPT",
+			install: { action: "created", skill: "second-lesson" },
+		});
 		await flush();
 		await flush();
 		const after = plain(ui.render(80)).join("\n");
@@ -434,7 +568,13 @@ describe("dashboard guarded confirmations", () => {
 		expect(detached).toContain("RECEIPT-KEEP");
 		expect(detached).toContain("Follow-up refresh cancelled");
 		// The late snapshot lands nowhere: no disappearance claim, no swap.
-		gate.resolve(snapshot({ lessons: [], counts: { candidate: 0, confirmed: 0, promoted: 0, superseded: 0 }, eligible: 0 }));
+		gate.resolve(
+			snapshot({
+				lessons: [],
+				counts: { candidate: 0, confirmed: 0, promoted: 0, superseded: 0 },
+				eligible: 0,
+			}),
+		);
 		await flush();
 		await flush();
 		const after = plain(ui.render(80)).join("\n");
@@ -472,7 +612,18 @@ describe("dashboard guarded confirmations", () => {
 				const gate = Promise.withResolvers<void>();
 				releases.push(gate.resolve);
 				await gate.promise;
-				return { status: "ok", message: "ready", preview: { selection: { id: "l2", revision: "r2" }, fingerprint: "f", name: "draft", description: "d", content: "c", warnings: [] } };
+				return {
+					status: "ok",
+					message: "ready",
+					preview: {
+						selection: { id: "l2", revision: "r2" },
+						fingerprint: "f",
+						name: "draft",
+						description: "d",
+						content: "c",
+						warnings: [],
+					},
+				};
 			},
 		});
 		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments" });
@@ -510,7 +661,17 @@ describe("dashboard untrusted text", () => {
 	test("hostile terminal sequences never reach painted rows", () => {
 		const hostile = "x\x1b[2Jcgi\x1b]0;pwned\x07y\u202e\u2066z";
 		const ui = createInsightDashboard(
-			snapshot({ lessons: [mkLesson("l1", hostile, { description: hostile, body: hostile, createdAt: hostile, lastSeenAt: hostile, selection: { id: "l1", revision: "r1" } })] }),
+			snapshot({
+				lessons: [
+					mkLesson("l1", hostile, {
+						description: hostile,
+						body: hostile,
+						createdAt: hostile,
+						lastSeenAt: hostile,
+						selection: { id: "l1", revision: "r1" },
+					}),
+				],
+			}),
 			stubs(),
 			{ theme: {}, initialPanel: "moments" },
 		);
@@ -558,7 +719,21 @@ describe("dashboard key protocols", () => {
 		const cb = stubs();
 		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments" });
 		const ctrlR = String.fromCharCode(1);
-		for (const sequence of [`${ESC}[1;5A`, `${ESC}[1;5B`, `${ESC}[1;3C`, `${ESC}[1;4D`, `${ESC}[13;2u`, `${ESC}[13;5u`, `${ESC}[9;5u`, `${ESC}[27;5;13~`, `${ESC}[13;1:3u`, `${ESC}[1;1:3A`, "R", ctrlR, `${ESC}[200~`]) {
+		for (const sequence of [
+			`${ESC}[1;5A`,
+			`${ESC}[1;5B`,
+			`${ESC}[1;3C`,
+			`${ESC}[1;4D`,
+			`${ESC}[13;2u`,
+			`${ESC}[13;5u`,
+			`${ESC}[9;5u`,
+			`${ESC}[27;5;13~`,
+			`${ESC}[13;1:3u`,
+			`${ESC}[1;1:3A`,
+			"R",
+			ctrlR,
+			`${ESC}[200~`,
+		]) {
 			ui.handleInput(sequence);
 		}
 		await flush();
@@ -623,8 +798,17 @@ describe("dashboard action receipts survive refresh", () => {
 		pending.shift()?.(
 			snapshot({
 				lessons: [
-					mkLesson("l1", "First lesson", { status: "confirmed", selection: { id: "l1", revision: "r1" } }),
-					mkLesson("l2", "Second lesson", { status: "confirmed", kind: "playbook", occurrences: 9, eligible: true, selection: { id: "l2", revision: "r2" } }),
+					mkLesson("l1", "First lesson", {
+						status: "confirmed",
+						selection: { id: "l1", revision: "r1" },
+					}),
+					mkLesson("l2", "Second lesson", {
+						status: "confirmed",
+						kind: "playbook",
+						occurrences: 9,
+						eligible: true,
+						selection: { id: "l2", revision: "r2" },
+					}),
 				],
 			}),
 		);
@@ -644,7 +828,11 @@ describe("dashboard action receipts survive refresh", () => {
 		const cb = stubs({
 			installPreview: async () => {
 				cb.calls.push("install");
-				return { status: "ok", message: RECEIPT, install: { action: "created", skill: "second-lesson" } };
+				return {
+					status: "ok",
+					message: RECEIPT,
+					install: { action: "created", skill: "second-lesson" },
+				};
 			},
 			refresh: () => {
 				cb.calls.push("refresh");
@@ -779,7 +967,13 @@ describe("dashboard physical viewport boundaries", () => {
 			kind: "pattern",
 			occurrences: 5,
 			eligible: true,
-			body: [`head ${"n".repeat(900)}`, `${"数据库迁移".repeat(60)} recall`, "middle", `${"y".repeat(900)}`, TAIL].join("\n"),
+			body: [
+				`head ${"n".repeat(900)}`,
+				`${"数据库迁移".repeat(60)} recall`,
+				"middle",
+				`${"y".repeat(900)}`,
+				TAIL,
+			].join("\n"),
 			selection: { id: "lb", revision: "rlb" },
 		});
 	}
@@ -788,7 +982,13 @@ describe("dashboard physical viewport boundaries", () => {
 		ui.handleInput("tab");
 		ui.handleInput("enter");
 	}
-	function scrollTo(text: string, ui: InsightDashboard, width: number, key: string, limit = 600): string {
+	function scrollTo(
+		text: string,
+		ui: InsightDashboard,
+		width: number,
+		key: string,
+		limit = 600,
+	): string {
 		let rendered = plain(ui.render(width)).join("\n");
 		for (let i = 0; i < limit && !rendered.includes(text); i += 1) {
 			ui.handleInput(key);
@@ -802,7 +1002,11 @@ describe("dashboard physical viewport boundaries", () => {
 	test("long unbroken, multiline, and CJK detail scrolls to the tail without row or height overflow", () => {
 		const height = 24;
 		const width = 80;
-		const ui = createInsightDashboard(snapshot({ lessons: [longBodyLesson()] }), stubs(), { theme: {}, initialPanel: "moments", rows: () => height });
+		const ui = createInsightDashboard(snapshot({ lessons: [longBodyLesson()] }), stubs(), {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => height,
+		});
 		openDetail(ui);
 		for (const rows of [plain(ui.render(width))]) {
 			expect(rows.length).toBeLessThanOrEqual(height);
@@ -816,18 +1020,32 @@ describe("dashboard physical viewport boundaries", () => {
 		ui.dispose();
 	});
 
-
 	test("a supported preview scrolls its ownership tail into view with install reachable", async () => {
 		const marker = "ownership: generated-by-ultrathink";
 		const content = `---\n${"draft line\n".repeat(200)}${marker}\n`;
 		const cb = stubs({
 			previewSkill: async () => {
 				cb.calls.push("preview");
-				return { status: "ok", message: "ready", preview: { selection: { id: "l2", revision: "r2" }, fingerprint: "f", name: "draft", description: "d", content, warnings: [] } };
+				return {
+					status: "ok",
+					message: "ready",
+					preview: {
+						selection: { id: "l2", revision: "r2" },
+						fingerprint: "f",
+						name: "draft",
+						description: "d",
+						content,
+						warnings: [],
+					},
+				};
 			},
 		});
 		const height = 24;
-		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments", rows: () => height });
+		const ui = createInsightDashboard(snapshot(), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => height,
+		});
 		ui.render(80);
 		ui.handleInput("tab");
 		ui.handleInput("down");
@@ -837,7 +1055,7 @@ describe("dashboard physical viewport boundaries", () => {
 		ui.handleInput("enter");
 		await flush();
 		await flush();
-		let text = scrollTo(marker, ui, 80, "down");
+		const text = scrollTo(marker, ui, 80, "down");
 		expect(text).toContain(marker);
 		const tailRows = plain(ui.render(80));
 		expect(tailRows.length).toBeLessThanOrEqual(height);
@@ -855,10 +1073,25 @@ describe("dashboard physical viewport boundaries", () => {
 		const cb = stubs({
 			previewSkill: async () => {
 				cb.calls.push("preview");
-				return { status: "ok", message: "ready", preview: { selection: { id: "l2", revision: "r2" }, fingerprint: "f", name: "draft", description: "d", content, warnings: [] } };
+				return {
+					status: "ok",
+					message: "ready",
+					preview: {
+						selection: { id: "l2", revision: "r2" },
+						fingerprint: "f",
+						name: "draft",
+						description: "d",
+						content,
+						warnings: [],
+					},
+				};
 			},
 		});
-		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const ui = createInsightDashboard(snapshot(), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		ui.render(80);
 		ui.handleInput("tab");
 		ui.handleInput("down");
@@ -886,7 +1119,11 @@ describe("dashboard physical viewport boundaries", () => {
 	test("short viewports refuse mutation while browsing and escape stay live", () => {
 		let height = 7;
 		const cb = stubs();
-		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments", rows: () => height });
+		const ui = createInsightDashboard(snapshot(), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => height,
+		});
 		const short = plain(ui.render(80));
 		expect(short.length).toBeLessThanOrEqual(7);
 		for (const row of short) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(80);
@@ -916,7 +1153,11 @@ describe("dashboard physical viewport boundaries", () => {
 			[40, 8, candidate, "Not eligible: status candidate", tail],
 		];
 		for (const [width, height, lesson, factPrefix, scrollTarget] of cases) {
-			const ui = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), { theme: {}, initialPanel: "moments", rows: () => height });
+			const ui = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), {
+				theme: {},
+				initialPanel: "moments",
+				rows: () => height,
+			});
 			ui.render(width);
 			ui.handleInput("tab");
 			ui.handleInput("enter");
@@ -936,7 +1177,11 @@ describe("dashboard physical viewport boundaries", () => {
 	});
 
 	test("overview scrolls to lesson totals and teaching settings at 40x12", () => {
-		const ui = createInsightDashboard(snapshot({ decisions: [] }), stubs(), { theme: {}, initialPanel: "overview", rows: () => 12 });
+		const ui = createInsightDashboard(snapshot({ decisions: [] }), stubs(), {
+			theme: {},
+			initialPanel: "overview",
+			rows: () => 12,
+		});
 		const first = plain(ui.render(40));
 		expect(first.length).toBeLessThanOrEqual(12);
 		// Clipping alone would drop the totals and settings below the fold;
@@ -955,7 +1200,11 @@ describe("dashboard physical viewport boundaries", () => {
 	test("skills panel shares one scroll budget between policy prefix and lesson list", () => {
 		// Tiny viewport: the policy prefix and the list fit one shared budget —
 		// the panel never overflows and at least one lesson row stays reachable.
-		const tiny = createInsightDashboard(snapshot(), stubs(), { theme: {}, initialPanel: "skills", rows: () => 8 });
+		const tiny = createInsightDashboard(snapshot(), stubs(), {
+			theme: {},
+			initialPanel: "skills",
+			rows: () => 8,
+		});
 		const tinyRows = plain(tiny.render(24));
 		expect(tinyRows.length).toBeLessThanOrEqual(8);
 		for (const row of tinyRows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(24);
@@ -964,7 +1213,11 @@ describe("dashboard physical viewport boundaries", () => {
 		tiny.dispose();
 		// Roomier viewport: the full policy prefix, the lesson, and the count
 		// line are all on screen within the shared budget.
-		const roomy = createInsightDashboard(snapshot(), stubs(), { theme: {}, initialPanel: "skills", rows: () => 20 });
+		const roomy = createInsightDashboard(snapshot(), stubs(), {
+			theme: {},
+			initialPanel: "skills",
+			rows: () => 20,
+		});
 		const roomyRows = plain(roomy.render(40));
 		expect(roomyRows.length).toBeLessThanOrEqual(20);
 		const roomyText = roomyRows.join("\n");
@@ -974,7 +1227,11 @@ describe("dashboard physical viewport boundaries", () => {
 		roomy.dispose();
 		// Empty collection: the why-empty message is reachable under the same
 		// shared budget instead of being clipped away by the policy prefix.
-		const empty = createInsightDashboard(snapshot({ lessons: [], eligible: 0 }), stubs(), { theme: {}, initialPanel: "skills", rows: () => 8 });
+		const empty = createInsightDashboard(snapshot({ lessons: [], eligible: 0 }), stubs(), {
+			theme: {},
+			initialPanel: "skills",
+			rows: () => 8,
+		});
 		const emptyRows = plain(empty.render(24));
 		expect(emptyRows.length).toBeLessThanOrEqual(8);
 		expect(emptyRows.join("\n")).toContain("No lessons meet the");
@@ -986,7 +1243,13 @@ describe("dashboard physical viewport boundaries", () => {
 		const longId = `l-${"x".repeat(300)}`;
 		let height = 12;
 		const ui = createInsightDashboard(
-			snapshot({ lessons: [mkLesson(longId, "A very long candidate title that wraps across many terminal rows", { selection: { id: longId, revision: "r" } })] }),
+			snapshot({
+				lessons: [
+					mkLesson(longId, "A very long candidate title that wraps across many terminal rows", {
+						selection: { id: longId, revision: "r" },
+					}),
+				],
+			}),
 			cb,
 			{ theme: {}, initialPanel: "moments", rows: () => height },
 		);
@@ -1022,7 +1285,11 @@ describe("dashboard physical viewport boundaries", () => {
 
 	test("resize clamps scroll and selection without changing data or permission", () => {
 		let height = 40;
-		const ui = createInsightDashboard(snapshot({ lessons: [longBodyLesson()] }), stubs(), { theme: {}, initialPanel: "moments", rows: () => height });
+		const ui = createInsightDashboard(snapshot({ lessons: [longBodyLesson()] }), stubs(), {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => height,
+		});
 		openDetail(ui);
 		for (let i = 0; i < 30; i += 1) ui.handleInput("down");
 		height = 10;
@@ -1048,7 +1315,11 @@ describe("dashboard physical viewport boundaries", () => {
 			},
 		});
 		const height = 12;
-		const ui = createInsightDashboard(snapshot({ lessons: [longBodyLesson()] }), cb, { theme: {}, initialPanel: "moments", rows: () => height });
+		const ui = createInsightDashboard(snapshot({ lessons: [longBodyLesson()] }), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => height,
+		});
 		openDetail(ui);
 		ui.handleInput("tab");
 		ui.handleInput("right");
@@ -1086,7 +1357,11 @@ describe("dashboard physical viewport boundaries", () => {
 			},
 		});
 		const height = 12;
-		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments", rows: () => height });
+		const ui = createInsightDashboard(snapshot(), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => height,
+		});
 		ui.render(80);
 		ui.handleInput("tab");
 		ui.handleInput("enter");
@@ -1121,7 +1396,11 @@ describe("dashboard physical viewport boundaries", () => {
 		const widths = [24, 40, 80];
 		const heights: Array<number | undefined> = [8, 12, 20, undefined];
 		const longId = `l-${"x".repeat(898)}`;
-		const longName = "A candidate identity long enough that its confirmation can never fit any matrix viewport".padEnd(120, ".");
+		const longName =
+			"A candidate identity long enough that its confirmation can never fit any matrix viewport".padEnd(
+				120,
+				".",
+			);
 		const offPolicy = { ...snapshot().policy!, enabled: false };
 		const bannerSnapshot = {
 			partial: true,
@@ -1130,15 +1409,51 @@ describe("dashboard physical viewport boundaries", () => {
 				"Detached worker outcomes are not recorded. No completion or install result can be inferred.",
 			],
 		};
-		const cells: Array<{ name: string; snap: InsightSnapshot; panel: InsightPanel; open: "browse" | "detail" | "confirm"; probe: string; guardConfirm?: boolean }> = [
-			{ name: "jev with latest-plan notes", snap: snapshot(), panel: "jev", open: "browse", probe: "teachable" },
-			{ name: "moments with partial banner", snap: snapshot(bannerSnapshot), panel: "moments", open: "browse", probe: "First lesson" },
-			{ name: "teaching-off candidate detail", snap: snapshot({ policy: offPolicy, lessons: [mkLesson("l1", "First lesson", { selection: { id: "l1", revision: "r1" } })] }), panel: "moments", open: "detail", probe: "First lesson" },
+		const cells: Array<{
+			name: string;
+			snap: InsightSnapshot;
+			panel: InsightPanel;
+			open: "browse" | "detail" | "confirm";
+			probe: string;
+			guardConfirm?: boolean;
+		}> = [
+			{
+				name: "jev with latest-plan notes",
+				snap: snapshot(),
+				panel: "jev",
+				open: "browse",
+				probe: "teachable",
+			},
+			{
+				name: "moments with partial banner",
+				snap: snapshot(bannerSnapshot),
+				panel: "moments",
+				open: "browse",
+				probe: "First lesson",
+			},
+			{
+				name: "teaching-off candidate detail",
+				snap: snapshot({
+					policy: offPolicy,
+					lessons: [mkLesson("l1", "First lesson", { selection: { id: "l1", revision: "r1" } })],
+				}),
+				panel: "moments",
+				open: "detail",
+				probe: "First lesson",
+			},
 			{
 				name: "teaching-off eligible detail",
 				snap: snapshot({
 					policy: offPolicy,
-					lessons: [mkLesson("l2", "Second lesson", { status: "confirmed", kind: "playbook", occurrences: 9, eligible: true, selection: { id: "l2", revision: "r2" } })],
+					lessons: [
+						mkLesson("l2", "Second lesson", {
+							status: "confirmed",
+							kind: "playbook",
+							occurrences: 9,
+							eligible: true,
+							selection: { id: "l2", revision: "r2" },
+						}),
+					],
 				}),
 				panel: "moments",
 				open: "detail",
@@ -1146,7 +1461,9 @@ describe("dashboard physical viewport boundaries", () => {
 			},
 			{
 				name: "confirm withheld",
-				snap: snapshot({ lessons: [mkLesson(longId, longName, { selection: { id: longId, revision: "r" } })] }),
+				snap: snapshot({
+					lessons: [mkLesson(longId, longName, { selection: { id: longId, revision: "r" } })],
+				}),
 				panel: "moments",
 				open: "confirm",
 				// The refusal's stable leading words: the strip label never
@@ -1169,7 +1486,11 @@ describe("dashboard physical viewport boundaries", () => {
 			for (const height of heights) {
 				for (const cell of cells) {
 					const cb = stubs();
-					const ui = createInsightDashboard(cell.snap, cb, { theme: {}, initialPanel: cell.panel, rows: height === undefined ? undefined : () => height });
+					const ui = createInsightDashboard(cell.snap, cb, {
+						theme: {},
+						initialPanel: cell.panel,
+						rows: height === undefined ? undefined : () => height,
+					});
 					ui.render(width);
 					if (cell.open === "browse") {
 						// Tab focuses the list; the selection row stays rendered.
@@ -1236,24 +1557,43 @@ describe("dashboard source fidelity and partial truth", () => {
 			kind: "pattern",
 			occurrences: 5,
 			eligible: true,
-			body: ["def check():", '    return "a  b"', "", "      nested: true", `${"filler ".repeat(120)}`, tail].join("\n"),
+			body: [
+				"def check():",
+				'    return "a  b"',
+				"",
+				"      nested: true",
+				`${"filler ".repeat(120)}`,
+				tail,
+			].join("\n"),
 			selection: { id: "ws", revision: "rws" },
 		});
-		const ui = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const ui = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		openFirstDetail(ui);
 		let text = plain(ui.render(40)).join("\n");
 		expect(text).toContain('    return "a  b"');
 		expect(text).toContain("      nested: true");
 		ui.dispose();
 		// Narrow reflow preserves leading spaces instead of folding them away.
-		const narrow = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const narrow = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		openFirstDetail(narrow);
 		text = plain(narrow.render(24)).join("\n");
 		expect(text).toContain("      nested: true");
 		narrow.dispose();
 		// The in-bound tail stays reachable by scrolling within bounds.
 		const height = 12;
-		const scrolled = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), { theme: {}, initialPanel: "moments", rows: () => height });
+		const scrolled = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => height,
+		});
 		openFirstDetail(scrolled);
 		let rendered = plain(scrolled.render(40)).join("\n");
 		for (let i = 0; i < 200 && !rendered.includes(tail); i += 1) {
@@ -1268,14 +1608,35 @@ describe("dashboard source fidelity and partial truth", () => {
 	});
 
 	test("preview draft keeps source indentation instead of folding lines into labels", async () => {
-		const content = ["---", "name: indented-draft", '  setting: "a  b"', "    deeper: true", "ownership: generated-by-ultrathink"].join("\n");
+		const content = [
+			"---",
+			"name: indented-draft",
+			'  setting: "a  b"',
+			"    deeper: true",
+			"ownership: generated-by-ultrathink",
+		].join("\n");
 		const cb = stubs({
 			previewSkill: async () => {
 				cb.calls.push("preview");
-				return { status: "ok", message: "ready", preview: { selection: { id: "l2", revision: "r2" }, fingerprint: "f", name: "draft", description: "d", content, warnings: [] } };
+				return {
+					status: "ok",
+					message: "ready",
+					preview: {
+						selection: { id: "l2", revision: "r2" },
+						fingerprint: "f",
+						name: "draft",
+						description: "d",
+						content,
+						warnings: [],
+					},
+				};
 			},
 		});
-		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const ui = createInsightDashboard(snapshot(), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		ui.render(80);
 		ui.handleInput("tab");
 		ui.handleInput("down");
@@ -1303,7 +1664,11 @@ describe("dashboard source fidelity and partial truth", () => {
 			],
 		});
 		for (const panel of ["overview", "jev", "moments", "skills"] as const) {
-			const ui = createInsightDashboard(partial, stubs(), { theme: {}, initialPanel: panel, rows: () => 40 });
+			const ui = createInsightDashboard(partial, stubs(), {
+				theme: {},
+				initialPanel: panel,
+				rows: () => 40,
+			});
 			const browse = plain(ui.render(80)).join("\n");
 			expect(browse.match(/Partial snapshot/g)).toHaveLength(1);
 			expect(browse).toContain("scan capped at 500 files");
@@ -1335,7 +1700,11 @@ describe("dashboard source fidelity and partial truth", () => {
 			promoted: { at: "2026-01-05T00:00:00Z", skill: "long-lesson", target: "omp", path: dest },
 			selection: { id: "lp", revision: "rlp" },
 		});
-		const ui = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const ui = createInsightDashboard(snapshot({ lessons: [lesson] }), stubs(), {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		ui.render(80);
 		ui.handleInput("tab");
 		ui.handleInput("enter");
@@ -1355,11 +1724,15 @@ describe("dashboard policy-off and layout guidance", () => {
 	test("known teaching-off disables confirm, preview, and install without dispatching", async () => {
 		const off = snapshot({ policy: { ...snapshot().policy, enabled: false } });
 		const cb = stubs();
-		const ui = createInsightDashboard(off, cb, { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const ui = createInsightDashboard(off, cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		ui.render(80);
 		ui.handleInput("tab");
 		ui.handleInput("enter");
-		let text = plain(ui.render(80)).join("\n");
+		const text = plain(ui.render(80)).join("\n");
 		expect(text).toMatch(/Teaching is off/);
 		// The candidate strip offers confirmation only as unavailable; firing
 		// it explains instead of dispatching.
@@ -1373,7 +1746,11 @@ describe("dashboard policy-off and layout guidance", () => {
 		ui.dispose();
 		// The eligible lesson offers preview only as unavailable; firing it
 		// explains instead of dispatching.
-		const previewUi = createInsightDashboard(off, cb, { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const previewUi = createInsightDashboard(off, cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		previewUi.render(80);
 		previewUi.handleInput("tab");
 		previewUi.handleInput("down");
@@ -1393,7 +1770,13 @@ describe("dashboard policy-off and layout guidance", () => {
 		let height = 12;
 		const cb = stubs();
 		const ui = createInsightDashboard(
-			snapshot({ lessons: [mkLesson(longId, "A very long candidate title that wraps across many terminal rows", { selection: { id: longId, revision: "r" } })] }),
+			snapshot({
+				lessons: [
+					mkLesson(longId, "A very long candidate title that wraps across many terminal rows", {
+						selection: { id: longId, revision: "r" },
+					}),
+				],
+			}),
 			cb,
 			{ theme: {}, initialPanel: "moments", rows: () => height },
 		);
@@ -1425,7 +1808,11 @@ describe("dashboard policy-off and layout guidance", () => {
 				return { status: "ok", message: RECEIPT, retention: "retained" as const };
 			},
 		});
-		const receiptUi = createInsightDashboard(snapshot(), receiptCb, { theme: {}, initialPanel: "moments", rows: () => currentHeight });
+		const receiptUi = createInsightDashboard(snapshot(), receiptCb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => currentHeight,
+		});
 		receiptUi.render(80);
 		receiptUi.handleInput("tab");
 		receiptUi.handleInput("enter");
@@ -1457,9 +1844,19 @@ describe("dashboard policy-off and layout guidance", () => {
 		expect(plain(ui.render(80)).join("\n")).toContain("Confirm this candidate?");
 		ui.dispose();
 		// Missing, invalid, and throwing heights fall back the same way.
-		const fallbacks: Array<() => number | undefined> = [() => undefined, () => Number.NaN, () => { throw new Error("rows unavailable"); }];
+		const fallbacks: Array<() => number | undefined> = [
+			() => undefined,
+			() => Number.NaN,
+			() => {
+				throw new Error("rows unavailable");
+			},
+		];
 		for (const rowsOf of fallbacks) {
-			const fallback = createInsightDashboard(snapshot(), stubs(), { theme: {}, initialPanel: "moments", rows: rowsOf });
+			const fallback = createInsightDashboard(snapshot(), stubs(), {
+				theme: {},
+				initialPanel: "moments",
+				rows: rowsOf,
+			});
 			const fallbackRows = plain(fallback.render(80));
 			expect(fallbackRows.length).toBeLessThanOrEqual(2 + 12 + 8);
 			fallback.dispose();
@@ -1470,13 +1867,21 @@ describe("dashboard policy-off and layout guidance", () => {
 describe("dashboard skills collections and preview navigation", () => {
 	test("skills labels eligible-empty and promoted-empty independently, including mixed collections", () => {
 		// Fully empty: both absence states are labeled.
-		const empty = createInsightDashboard(snapshot({ lessons: [], eligible: 0, promoted: 0 }), stubs(), { theme: {}, initialPanel: "skills", rows: () => 40 });
+		const empty = createInsightDashboard(
+			snapshot({ lessons: [], eligible: 0, promoted: 0 }),
+			stubs(),
+			{ theme: {}, initialPanel: "skills", rows: () => 40 },
+		);
 		const emptyText = plain(empty.render(80)).join("\n");
 		expect(emptyText).toContain("No lessons meet the promotion rules");
 		expect(emptyText).toContain("No promotions recorded for this project");
 		empty.dispose();
 		// Eligible-only: subset counts plus the promoted-empty state.
-		const eligibleOnly = createInsightDashboard(snapshot(), stubs(), { theme: {}, initialPanel: "skills", rows: () => 40 });
+		const eligibleOnly = createInsightDashboard(snapshot(), stubs(), {
+			theme: {},
+			initialPanel: "skills",
+			rows: () => 40,
+		});
 		const eligibleText = plain(eligibleOnly.render(80)).join("\n");
 		expect(eligibleText).toContain("Eligible: 1 shown");
 		expect(eligibleText).toContain("Promoted: 0 shown");
@@ -1488,7 +1893,11 @@ describe("dashboard skills collections and preview navigation", () => {
 			promoted: { at: "2026-01-05T00:00:00Z", skill: "promoted-lesson", target: "omp" },
 			selection: { id: "sp", revision: "rsp" },
 		});
-		const promotedOnly = createInsightDashboard(snapshot({ lessons: [promoted], eligible: 0, promoted: 1 }), stubs(), { theme: {}, initialPanel: "skills", rows: () => 40 });
+		const promotedOnly = createInsightDashboard(
+			snapshot({ lessons: [promoted], eligible: 0, promoted: 1 }),
+			stubs(),
+			{ theme: {}, initialPanel: "skills", rows: () => 40 },
+		);
 		const promotedText = plain(promotedOnly.render(80)).join("\n");
 		expect(promotedText).toContain("Eligible: 0 shown");
 		expect(promotedText).toContain("Promoted: 1 shown");
@@ -1505,7 +1914,11 @@ describe("dashboard skills collections and preview navigation", () => {
 				return { status: "refused", message };
 			},
 		});
-		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const ui = createInsightDashboard(snapshot(), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		ui.render(80);
 		ui.handleInput("tab");
 		ui.handleInput("down");
@@ -1533,7 +1946,11 @@ describe("dashboard skills collections and preview navigation", () => {
 
 	test("preview Back returns to lesson details and Tab stays in viewport and actions", async () => {
 		const cb = stubs();
-		const ui = createInsightDashboard(snapshot(), cb, { theme: {}, initialPanel: "moments", rows: () => 40 });
+		const ui = createInsightDashboard(snapshot(), cb, {
+			theme: {},
+			initialPanel: "moments",
+			rows: () => 40,
+		});
 		ui.render(80);
 		ui.handleInput("tab");
 		ui.handleInput("down");

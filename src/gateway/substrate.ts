@@ -7,6 +7,7 @@
 import { createGatewayClient } from "./client.ts";
 import type { ResolvedGateway } from "./settings.ts";
 import { GRAPH_ID_PATTERN } from "./types.ts";
+import { isRecord } from "../shared.ts";
 
 export interface GatewayBriefInput {
 	graphId?: string;
@@ -20,20 +21,21 @@ export interface GatewayEmitInput {
 	payload?: Record<string, unknown>;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 const KIND_PATTERN = /^[a-z][a-z0-9_.]{2,60}$/;
 
 function briefText(payload: Record<string, unknown>): string {
 	const substrate = isRecord(payload.substrate) ? payload.substrate : undefined;
-	if (substrate && typeof substrate.brief === "string" && substrate.brief.trim()) return substrate.brief.trim();
+	if (substrate && typeof substrate.brief === "string" && substrate.brief.trim())
+		return substrate.brief.trim();
 	if (typeof payload.brief === "string") return payload.brief.trim();
 	return "";
 }
 
-export async function gatewayBrief(gateway: ResolvedGateway, input: GatewayBriefInput, fetchImpl?: typeof fetch): Promise<string> {
+export async function gatewayBrief(
+	gateway: ResolvedGateway,
+	input: GatewayBriefInput,
+	fetchImpl?: typeof fetch,
+): Promise<string> {
 	if (input.signal?.aborted) return "";
 	const client = createGatewayClient({ ...gateway, fetch: fetchImpl, signal: input.signal });
 	const args: Record<string, unknown> = {};

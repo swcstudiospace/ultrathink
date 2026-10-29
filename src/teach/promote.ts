@@ -35,7 +35,14 @@ import { documentIdFor, tagsFor } from "./mapping.ts";
 import { redactText } from "./redact.ts";
 import { openStore, storeDir } from "./store.ts";
 import { TEACH_KILL_ENV } from "./types.ts";
-import type { InstallOutcome, MomentKind, SkillDraft, SkillTarget, TeachableMoment, TeachContext } from "./types.ts";
+import type {
+	InstallOutcome,
+	MomentKind,
+	SkillDraft,
+	SkillTarget,
+	TeachableMoment,
+	TeachContext,
+} from "./types.ts";
 
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** Hermes' limit for the description of a new skill. */
@@ -73,7 +80,12 @@ export function promotionCandidates(ctx: TeachContext): TeachableMoment[] {
 	try {
 		return openStore(storeDir(ctx.stateDir))
 			.list()
-			.filter((m) => m.status === "confirmed" && !m.promoted && (m.occurrences >= after || m.kind === "playbook"))
+			.filter(
+				(m) =>
+					m.status === "confirmed" &&
+					!m.promoted &&
+					(m.occurrences >= after || m.kind === "playbook"),
+			)
 			.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
 	} catch {
 		return [];
@@ -84,7 +96,10 @@ export function promotionCandidates(ctx: TeachContext): TeachableMoment[] {
  * Jev's veto over `promote --due` and `promoteDue`: a moment whose P(skillworthy) is below `decisions.skillworthyAt` is left out,
  * everything else (Jev off, no key, any failure) stays. An explicit `teach promote <id>` never goes through here: that is a human decision.
  */
-export async function filterSkillworthy(moments: TeachableMoment[], ctx: TeachContext): Promise<TeachableMoment[]> {
+export async function filterSkillworthy(
+	moments: TeachableMoment[],
+	ctx: TeachContext,
+): Promise<TeachableMoment[]> {
 	const jev = lessonDecisions(ctx);
 	if (!jev) return moments;
 	const at = ctx.config.decisions?.skillworthyAt ?? SKILLWORTHY_AT;
@@ -98,7 +113,10 @@ export async function filterSkillworthy(moments: TeachableMoment[], ctx: TeachCo
 			kind: moment.kind,
 			occurrences: moment.occurrences,
 		});
-		const verdict = await askLesson(ctx, jev, "skillworthy", state, { threshold: at, action: (p) => (p < at ? "skip" : "keep") });
+		const verdict = await askLesson(ctx, jev, "skillworthy", state, {
+			threshold: at,
+			action: (p) => (p < at ? "skip" : "keep"),
+		});
 		if (verdict.status === "ok" && verdict.p < at) continue;
 		kept.push(moment);
 	}
@@ -122,7 +140,10 @@ function markerId(id: string): string {
 /** The generated marker: `renderSkillDraft` writes it as the file's last line, so a marker quoted in a lesson body never counts. */
 function generatedMarker(text: string): RegExpMatchArray | null {
 	const trimmed = text.trimEnd();
-	return trimmed.slice(trimmed.lastIndexOf("\n") + 1).trim().match(MARKER_RE);
+	return trimmed
+		.slice(trimmed.lastIndexOf("\n") + 1)
+		.trim()
+		.match(MARKER_RE);
 }
 
 function idsOf(marker: RegExpMatchArray): string[] {
@@ -214,7 +235,10 @@ export function renderSkillDraft(moments: TeachableMoment[], ctx: TeachContext):
 	const midWord = full.length > NAME_MAX && full[NAME_MAX] !== "-" && boundary > "lesson-".length;
 	const name = (midWord ? cut.slice(0, boundary) : cut).replace(/-+$/, "");
 
-	const trigger = cutAtWord(clause(lead.name) || clause(lead.description), DESCRIPTION_MAX - TRIGGER.length - 1);
+	const trigger = cutAtWord(
+		clause(lead.name) || clause(lead.description),
+		DESCRIPTION_MAX - TRIGGER.length - 1,
+	);
 	if (trigger === "") throw new Error("lesson has no usable name or description");
 	const description = `${TRIGGER}${trigger}.`;
 
@@ -236,16 +260,25 @@ export function renderSkillDraft(moments: TeachableMoment[], ctx: TeachContext):
 		`- Occurrences: ${ordered.reduce((sum, m) => sum + m.occurrences, 0)}`,
 		`- Project: ${unique(ordered.map((m) => m.project)).join(", ")}`,
 		`- First seen: ${ordered.map((m) => m.createdAt).sort()[0]}`,
-		`- Last seen: ${ordered.map((m) => m.lastSeenAt).sort().reverse()[0]}`,
+		`- Last seen: ${
+			ordered
+				.map((m) => m.lastSeenAt)
+				.sort()
+				.reverse()[0]
+		}`,
 		...(phases.length > 0 ? [`- Source phase: ${phases.join(", ")}`] : []),
-		...(artifacts.length > 0 ? [`- Source artifacts: ${artifacts.slice(0, EVIDENCE_ARTIFACTS).join(", ")}`] : []),
+		...(artifacts.length > 0
+			? [`- Source artifacts: ${artifacts.slice(0, EVIDENCE_ARTIFACTS).join(", ")}`]
+			: []),
 		`- Moments: ${ids.join(", ")}`,
 	];
 
 	const body = [
 		`# ${lead.name}`,
 		"## When to use",
-		several ? when.map((w) => `- ${w.replace(/\s+/g, " ").trim()}`).join("\n") : (when[0] as string),
+		several
+			? when.map((w) => `- ${w.replace(/\s+/g, " ").trim()}`).join("\n")
+			: (when[0] as string),
 		...[...sections].map(([heading, parts]) => `## ${heading}\n\n${parts.join("\n\n")}`),
 		`## Evidence\n\n${evidence.join("\n")}`,
 		`<!-- ultrathink:teach ids=${ids.join(",")} -->`,
@@ -309,7 +342,8 @@ function installDraft(draft: SkillDraft, stateDir: string, target: SkillTarget):
 				target,
 				path,
 				action: "drafted",
-				reason: "install through Hermes skill_manage so skills.write_approval applies; ultrathink never writes ~/.hermes/skills",
+				reason:
+					"install through Hermes skill_manage so skills.write_approval applies; ultrathink never writes ~/.hermes/skills",
 			}
 		: { target, path, action: "drafted" };
 }
@@ -338,13 +372,19 @@ function slotOf(dir: string, path: string, ids: ReadonlySet<string>): Slot {
 		return "theirs";
 	}
 	const marker = generatedMarker(text);
-	if (!marker) return { refused: "a skill with this name exists and was not written by ultrathink" };
+	if (!marker)
+		return { refused: "a skill with this name exists and was not written by ultrathink" };
 	// Ours only when it was made from lessons this install includes; a marker without ids is theirs.
 	const held = idsOf(marker);
 	return held.length > 0 && held.every((id) => ids.has(id)) ? "ours" : "theirs";
 }
 
-function writeHostSkill(draft: SkillDraft, target: SkillTarget, dir: string, replace: boolean): InstallOutcome {
+function writeHostSkill(
+	draft: SkillDraft,
+	target: SkillTarget,
+	dir: string,
+	replace: boolean,
+): InstallOutcome {
 	const path = join(dir, "SKILL.md");
 	const refuse = (reason: string): InstallOutcome => ({ target, path, action: "refused", reason });
 	let tmp: string | undefined;
@@ -362,7 +402,8 @@ function writeHostSkill(draft: SkillDraft, target: SkillTarget, dir: string, rep
 		placeholder = false;
 		return { target, path, action: replace ? "updated" : "created" };
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EEXIST") return refuse("a skill with this name appeared meanwhile");
+		if ((error as NodeJS.ErrnoException).code === "EEXIST")
+			return refuse("a skill with this name appeared meanwhile");
 		return refuse(failure(error));
 	} finally {
 		if (tmp) rmSync(tmp, { force: true });
@@ -374,12 +415,22 @@ function installIntoHost(draft: SkillDraft, target: SkillTarget, root: string): 
 	const dir = join(root, draft.name);
 	const path = join(dir, "SKILL.md");
 	const slot = slotOf(dir, path, new Set(draft.sourceIds.map(markerId)));
-	if (slot === "theirs") return { target, path, action: "refused", reason: "name taken by a skill made from other lessons" };
+	if (slot === "theirs")
+		return {
+			target,
+			path,
+			action: "refused",
+			reason: "name taken by a skill made from other lessons",
+		};
 	if (typeof slot === "object") return { target, path, action: "refused", reason: slot.refused };
 	return writeHostSkill(draft, target, dir, slot === "ours");
 }
 
-export function installSkill(draft: SkillDraft, target: SkillTarget, ctx: TeachContext): InstallOutcome {
+export function installSkill(
+	draft: SkillDraft,
+	target: SkillTarget,
+	ctx: TeachContext,
+): InstallOutcome {
 	if (!SKILL_NAME_RE.test(draft.name) || draft.content.trim() === "") {
 		return { target, path: "", action: "refused", reason: "invalid skill draft" };
 	}
@@ -416,11 +467,17 @@ export function markPromoted(
 		const next: TeachableMoment = {
 			...moment,
 			status: "promoted",
-			promoted: { at, skill: info.skill, target: info.target, ...(info.path ? { path: info.path } : {}) },
+			promoted: {
+				at,
+				skill: info.skill,
+				target: info.target,
+				...(info.path ? { path: info.path } : {}),
+			},
 		};
 		store.put(next);
 		// The Hindsight copy carries `status:<status>`, so a retained moment needs its tags refreshed.
-		if (moment.retained) store.enqueue({ op: "tags", documentId: documentIdFor(id), tags: tagsFor(next) }, nowMs);
+		if (moment.retained)
+			store.enqueue({ op: "tags", documentId: documentIdFor(id), tags: tagsFor(next) }, nowMs);
 		updated.push(next);
 	}
 	return updated;
@@ -441,7 +498,9 @@ function freeName(draft: SkillDraft, taken: Set<string>): SkillDraft {
 	}
 }
 
-export async function promoteDue(ctx: TeachContext): Promise<{ drafted: InstallOutcome[]; installed: InstallOutcome[] }> {
+export async function promoteDue(
+	ctx: TeachContext,
+): Promise<{ drafted: InstallOutcome[]; installed: InstallOutcome[] }> {
 	const result = { drafted: [] as InstallOutcome[], installed: [] as InstallOutcome[] };
 	const { teach } = ctx.config;
 	if (!teach.autoPromote || !teach.enabled || ctx.env[TEACH_KILL_ENV] === "0") return result;
@@ -469,7 +528,7 @@ export async function promoteDue(ctx: TeachContext): Promise<{ drafted: InstallO
 				markPromoted([moment.id], { skill: draft.name, target, path: outcome.path }, ctx);
 			}
 		} catch {
-			// One unrenderable lesson must not stop the others.
+			// reason: an unrenderable lesson is dropped with no signal, so the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 		}
 	}
 	return result;

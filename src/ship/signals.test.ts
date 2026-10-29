@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import type { SessionRecord } from "../claude/state.ts";
 import { collectSignals, lookupGsdTools, resolveGsdTools } from "./signals.ts";
 import type { Run } from "./types.ts";
@@ -14,9 +14,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ship-signals-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ship-signals-", dirs);
 }
 
 /** Replies by joined argv; unknown commands fail (exit 1), so an unlisted `git ls-files --error-unmatch` means untracked. */
@@ -24,7 +22,9 @@ function fakeRun(table: Record<string, string | undefined>, argvs: string[][] = 
 	return (argv) => {
 		argvs.push(argv);
 		const out = table[argv.join(" ")];
-		return out === undefined ? { exitCode: 1, stdout: "", stderr: "no" } : { exitCode: 0, stdout: out, stderr: "" };
+		return out === undefined
+			? { exitCode: 1, stdout: "", stderr: "no" }
+			: { exitCode: 0, stdout: out, stderr: "" };
 	};
 }
 
@@ -44,15 +44,26 @@ describe("resolveGsdTools never picks a repository-tracked copy", () => {
 	test("a tracked project-local copy is skipped and reported; nothing else installed resolves to undefined", () => {
 		const asked: string[] = [];
 		const isTracked = (path: string) => (asked.push(path), true);
-		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === local, isTracked })).toBeUndefined();
+		expect(
+			resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === local, isTracked }),
+		).toBeUndefined();
 		expect(asked).toEqual([local]);
-		expect(lookupGsdTools({ cwd, home, env: {}, exists: (p) => p === local, isTracked })).toEqual({ path: undefined, tracked: [local] });
+		expect(lookupGsdTools({ cwd, home, env: {}, exists: (p) => p === local, isTracked })).toEqual({
+			path: undefined,
+			tracked: [local],
+		});
 	});
 
 	test("a tracked local copy falls through to the next untracked or home install", () => {
-		const installed: Record<string, true> = { [local]: true, [localLegacy]: true, [homeTool]: true };
+		const installed: Record<string, true> = {
+			[local]: true,
+			[localLegacy]: true,
+			[homeTool]: true,
+		};
 		const exists = (p: string) => installed[p] === true;
-		expect(resolveGsdTools({ cwd, home, env: {}, exists, isTracked: (p) => p === local })).toBe(localLegacy);
+		expect(resolveGsdTools({ cwd, home, env: {}, exists, isTracked: (p) => p === local })).toBe(
+			localLegacy,
+		);
 		expect(lookupGsdTools({ cwd, home, env: {}, exists, isTracked: () => true })).toEqual({
 			path: homeTool,
 			tracked: [local, localLegacy],
@@ -62,7 +73,15 @@ describe("resolveGsdTools never picks a repository-tracked copy", () => {
 	test("an untracked (locally installed) project copy is still used; only existing local candidates are checked", () => {
 		const asked: string[] = [];
 		const isTracked = (path: string) => (asked.push(path), false);
-		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === local || p === homeTool, isTracked })).toBe(local);
+		expect(
+			resolveGsdTools({
+				cwd,
+				home,
+				env: {},
+				exists: (p) => p === local || p === homeTool,
+				isTracked,
+			}),
+		).toBe(local);
 		expect(asked).toEqual([local]);
 	});
 
@@ -70,24 +89,45 @@ describe("resolveGsdTools never picks a repository-tracked copy", () => {
 		const isTracked = () => {
 			throw new Error("home install must not be checked");
 		};
-		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === homeTool, isTracked })).toBe(homeTool);
+		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === homeTool, isTracked })).toBe(
+			homeTool,
+		);
 		const cfg = "/cfg/claude/gsd-core/bin/gsd-tools.cjs";
-		expect(resolveGsdTools({ cwd, home, env: { CLAUDE_CONFIG_DIR: "/cfg/claude" }, exists: (p) => p === cfg, isTracked })).toBe(cfg);
+		expect(
+			resolveGsdTools({
+				cwd,
+				home,
+				env: { CLAUDE_CONFIG_DIR: "/cfg/claude" },
+				exists: (p) => p === cfg,
+				isTracked,
+			}),
+		).toBe(cfg);
 	});
 
 	test("GSD_TOOLS still wins, even when it points into the repository", () => {
 		const isTracked = () => true;
-		expect(resolveGsdTools({ cwd, home, env: { GSD_TOOLS: local }, exists: () => true, isTracked })).toBe(local);
-		expect(lookupGsdTools({ cwd, home, env: { GSD_TOOLS: local }, exists: () => true, isTracked })).toEqual({ path: local, tracked: [] });
+		expect(
+			resolveGsdTools({ cwd, home, env: { GSD_TOOLS: local }, exists: () => true, isTracked }),
+		).toBe(local);
+		expect(
+			lookupGsdTools({ cwd, home, env: { GSD_TOOLS: local }, exists: () => true, isTracked }),
+		).toEqual({ path: local, tracked: [] });
 	});
 
 	test("the default tracked check runs `git ls-files --error-unmatch <relative path>` in cwd through run", () => {
 		const argvs: string[][] = [];
-		const trackedRun = fakeRun({ "git ls-files --error-unmatch gsd-core/bin/gsd-tools.cjs": "gsd-core/bin/gsd-tools.cjs\n" }, argvs);
-		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === local, run: trackedRun })).toBeUndefined();
+		const trackedRun = fakeRun(
+			{ "git ls-files --error-unmatch gsd-core/bin/gsd-tools.cjs": "gsd-core/bin/gsd-tools.cjs\n" },
+			argvs,
+		);
+		expect(
+			resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === local, run: trackedRun }),
+		).toBeUndefined();
 		expect(argvs).toEqual([["git", "ls-files", "--error-unmatch", "gsd-core/bin/gsd-tools.cjs"]]);
 		// Any non-zero exit (untracked, or not a git repository at all) allows the local copy.
-		expect(resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === local, run: fakeRun({}) })).toBe(local);
+		expect(
+			resolveGsdTools({ cwd, home, env: {}, exists: (p) => p === local, run: fakeRun({}) }),
+		).toBe(local);
 	});
 });
 
@@ -97,7 +137,10 @@ describe("collectSignals with a repository-tracked gsd-tools.cjs", () => {
 		mkdirSync(join(cwd, ".planning"), { recursive: true });
 		writeFileSync(join(cwd, ".planning", "ROADMAP.md"), "# r");
 		mkdirSync(join(cwd, "gsd-core", "bin"), { recursive: true });
-		writeFileSync(join(cwd, "gsd-core", "bin", "gsd-tools.cjs"), 'require("fs").writeFileSync("/tmp/pwned", "1")');
+		writeFileSync(
+			join(cwd, "gsd-core", "bin", "gsd-tools.cjs"),
+			'require("fs").writeFileSync("/tmp/pwned", "1")',
+		);
 		const argvs: string[][] = [];
 		const run = fakeRun(
 			{
@@ -107,9 +150,17 @@ describe("collectSignals with a repository-tracked gsd-tools.cjs", () => {
 			argvs,
 		);
 		const s = collectSignals({ cwd, record: RECORD, run, env: {}, home: tempDir() });
-		expect(s.gsd).toMatchObject({ phaseCount: 0, completedPhases: 0, trusted: true, toolsMissing: true, toolsTracked: true });
+		expect(s.gsd).toMatchObject({
+			phaseCount: 0,
+			completedPhases: 0,
+			trusted: true,
+			toolsMissing: true,
+			toolsTracked: true,
+		});
 		expect(argvs.some((argv) => argv[0] === "node")).toBe(false);
-		expect(argvs.filter((argv) => argv[1] === "ls-files").map((argv) => argv[3])).toContain("gsd-core/bin/gsd-tools.cjs");
+		expect(argvs.filter((argv) => argv[1] === "ls-files").map((argv) => argv[3])).toContain(
+			"gsd-core/bin/gsd-tools.cjs",
+		);
 	});
 
 	test("an untracked local install is run as before and carries no tracked flag", () => {
@@ -121,7 +172,10 @@ describe("collectSignals with a repository-tracked gsd-tools.cjs", () => {
 		writeFileSync(tool, "");
 		const run = fakeRun({
 			"git check-ignore -q .planning": "",
-			[`node ${tool} query roadmap.analyze --cwd ${cwd}`]: JSON.stringify({ phase_count: 3, completed_phases: 1 }),
+			[`node ${tool} query roadmap.analyze --cwd ${cwd}`]: JSON.stringify({
+				phase_count: 3,
+				completed_phases: 1,
+			}),
 		});
 		const s = collectSignals({ cwd, record: RECORD, run, env: {}, home: tempDir() });
 		expect(s.gsd).toMatchObject({ phaseCount: 3, completedPhases: 1, trusted: true });
@@ -133,13 +187,23 @@ describe("collectSignals with a repository-tracked gsd-tools.cjs", () => {
 describe("default tracked check follows symlinks", () => {
 	test("a tracked symlink into tracked code does not hide the copy it leads to", () => {
 		const cwd = tempDir();
-		const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" });
+		const git = (...args: string[]) =>
+			Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" });
 		git("init", "-q");
 		mkdirSync(join(cwd, "other", "bin"), { recursive: true });
 		writeFileSync(join(cwd, "other", "bin", "gsd-tools.cjs"), "// committed\n");
 		symlinkSync("other", join(cwd, "gsd-core"));
 		git("add", "-A");
-		git("-c", "user.name=ship", "-c", "user.email=ship@example.invalid", "commit", "-q", "-m", "fixture");
+		git(
+			"-c",
+			"user.name=ship",
+			"-c",
+			"user.email=ship@example.invalid",
+			"commit",
+			"-q",
+			"-m",
+			"fixture",
+		);
 		const lookup = lookupGsdTools({ cwd, env: {}, home: tempDir() });
 		expect(lookup.path).toBeUndefined();
 		expect(lookup.tracked).toEqual([join(cwd, "gsd-core", "bin", "gsd-tools.cjs")]);

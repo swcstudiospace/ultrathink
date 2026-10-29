@@ -27,7 +27,12 @@ function fakeRun(result: { exitCode: number; stdout: string }): { run: Run; call
 }
 
 function tailscaleStatus(overrides: Record<string, unknown> = {}): string {
-	return JSON.stringify({ BackendState: "Running", Self: { DNSName: `${DNS}.` }, CertDomains: [DNS], ...overrides });
+	return JSON.stringify({
+		BackendState: "Running",
+		Self: { DNSName: `${DNS}.` },
+		CertDomains: [DNS],
+		...overrides,
+	});
 }
 
 function unreachable(): string | undefined {
@@ -36,7 +41,11 @@ function unreachable(): string | undefined {
 
 describe("parseSshConnection", () => {
 	test("parses IPv4 and IPv6", () => {
-		expect(parseSshConnection(SSH)).toEqual({ clientIp: "198.51.100.4", serverIp: "203.0.113.7", serverPort: 22 });
+		expect(parseSshConnection(SSH)).toEqual({
+			clientIp: "198.51.100.4",
+			serverIp: "203.0.113.7",
+			serverPort: 22,
+		});
 		expect(parseSshConnection("2001:db8::2 40000 2001:db8::1 2222")).toEqual({
 			clientIp: "2001:db8::2",
 			serverIp: "2001:db8::1",
@@ -135,24 +144,49 @@ describe("planRedirect", () => {
 			tailscale: true,
 			tailscaleDns: unreachable,
 		});
-		expect(plan).toMatchObject({ mode: "override", redirectUri: "http://localhost:9000/cb", port: 9000 });
+		expect(plan).toMatchObject({
+			mode: "override",
+			redirectUri: "http://localhost:9000/cb",
+			port: 9000,
+		});
 	});
 
 	test("accepts http only for loopback hosts", () => {
-		for (const redirect of ["http://127.0.0.1:8765/cb", "http://[::1]:8765/cb", "https://auth.example.com/cb"]) {
-			expect(planRedirect({ env: {}, port: 8765, redirect, tailscale: false, tailscaleDns: unreachable }).mode).toBe(
-				"override",
-			);
+		for (const redirect of [
+			"http://127.0.0.1:8765/cb",
+			"http://[::1]:8765/cb",
+			"https://auth.example.com/cb",
+		]) {
+			expect(
+				planRedirect({ env: {}, port: 8765, redirect, tailscale: false, tailscaleDns: unreachable })
+					.mode,
+			).toBe("override");
 		}
-		for (const redirect of ["http://auth.example.com/cb", "http://constructor/cb", "ftp://127.0.0.1/cb", "not a url"]) {
-			expect(() => planRedirect({ env: {}, port: 8765, redirect, tailscale: false, tailscaleDns: unreachable })).toThrow(
-				"invalid redirect URL",
-			);
+		for (const redirect of [
+			"http://auth.example.com/cb",
+			"http://constructor/cb",
+			"ftp://127.0.0.1/cb",
+			"not a url",
+		]) {
+			expect(() =>
+				planRedirect({
+					env: {},
+					port: 8765,
+					redirect,
+					tailscale: false,
+					tailscaleDns: unreachable,
+				}),
+			).toThrow("invalid redirect URL");
 		}
 	});
 
 	test("remote with Tailscale opted in routes the callback through a serve path handler", () => {
-		const plan = planRedirect({ env: remoteEnv, port: 8765, tailscale: true, tailscaleDns: () => DNS });
+		const plan = planRedirect({
+			env: remoteEnv,
+			port: 8765,
+			tailscale: true,
+			tailscaleDns: () => DNS,
+		});
 		expect(plan).toEqual({
 			mode: "tailscale",
 			redirectUri: `https://${DNS}/ultrathink-oauth/callback`,
@@ -166,7 +200,12 @@ describe("planRedirect", () => {
 	});
 
 	test("remote without the opt-in never probes Tailscale and explains port forwarding and --tailscale", () => {
-		const plan = planRedirect({ env: remoteEnv, port: 9123, tailscale: false, tailscaleDns: unreachable });
+		const plan = planRedirect({
+			env: remoteEnv,
+			port: 9123,
+			tailscale: false,
+			tailscaleDns: unreachable,
+		});
 		expect(plan).toMatchObject({
 			mode: "loopback",
 			redirectUri: "http://127.0.0.1:9123/callback",
@@ -184,8 +223,17 @@ describe("planRedirect", () => {
 	});
 
 	test("remote with the opt-in but no usable Tailscale falls back to port forwarding", () => {
-		const plan = planRedirect({ env: remoteEnv, port: 9123, tailscale: true, tailscaleDns: () => undefined });
-		expect(plan).toMatchObject({ mode: "loopback", redirectUri: "http://127.0.0.1:9123/callback", remote: true });
+		const plan = planRedirect({
+			env: remoteEnv,
+			port: 9123,
+			tailscale: true,
+			tailscaleDns: () => undefined,
+		});
+		expect(plan).toMatchObject({
+			mode: "loopback",
+			redirectUri: "http://127.0.0.1:9123/callback",
+			remote: true,
+		});
 		expect(plan.mount).toBeUndefined();
 		const hint = plan.hint.join("\n");
 		expect(hint).toContain("ssh -L 9123:127.0.0.1:9123 alice@203.0.113.7");
@@ -225,7 +273,14 @@ describe("tailscale serve mount", () => {
 		const { run, calls } = fakeRun({ exitCode: 0, stdout: "" });
 		expect(mountTailscale(MOUNT, run)).toBe(true);
 		expect(calls).toEqual([
-			["tailscale", "serve", "--bg", "--https=443", "--set-path=/ultrathink-oauth", "http://127.0.0.1:8765"],
+			[
+				"tailscale",
+				"serve",
+				"--bg",
+				"--https=443",
+				"--set-path=/ultrathink-oauth",
+				"http://127.0.0.1:8765",
+			],
 		]);
 	});
 
@@ -236,7 +291,9 @@ describe("tailscale serve mount", () => {
 	test("unmount removes only its path handler and swallows errors", () => {
 		const { run, calls } = fakeRun({ exitCode: 1, stdout: "" });
 		unmountTailscale(MOUNT, run);
-		expect(calls).toEqual([["tailscale", "serve", "--https=443", "--set-path=/ultrathink-oauth", "off"]]);
+		expect(calls).toEqual([
+			["tailscale", "serve", "--https=443", "--set-path=/ultrathink-oauth", "off"],
+		]);
 		expect(() =>
 			unmountTailscale(MOUNT, () => {
 				throw new Error("spawn failed");

@@ -4,7 +4,15 @@
 // Tests for deploy/ultrathink-cert-renew.sh. The PKI script (ULTRATHINK_PKI), systemctl and nginx are stubs, so nothing
 // here touches /etc, a service or a real certificate.
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 

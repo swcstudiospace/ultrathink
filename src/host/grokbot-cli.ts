@@ -21,7 +21,6 @@ import { UPLIFT_SYSTEM_PROMPT } from "../uplift/prompt.ts";
 import { runControl, takeSessionFlag, trackingOff } from "../uplift/commands.ts";
 import {
 	checkRecord,
-	createJournalCompleter,
 	deepenTargets,
 	GROKBOT_ENGINE_HOST,
 	grokbotStateDir,
@@ -51,7 +50,9 @@ const USAGE = `usage: ultrathink-grokbot <command>
   summary --session S                         graph summary: nodes, steps per node, total, waves, questions, spec path
   track payloads --session S [--out F] [--project P] [--agent A]   dry-run tracker calls (Linear + Notion), placeholders only
   track record --session S --refs F           write real refs (from Desk Lead's connector results) into state + spec
-  track register --session S [--with-nodes]   graph_register payload (graph id, Notion task, surface, status; nodes/steps opt-in)
+  track register --session S [--with-nodes]   graph_register payload: graph_id, surface, notion_task_page, repo, branch, status, pr_url;
+                                              --with-nodes adds nodes (node_id, linear_issue_id, linear_identifier, notion_page, state),
+                                              steps (node_id, step, linear_sub_issue_id, notion_page, state) and edges (from_node, to_node, kind)
   review read --repo owner/name --pr N [--from-dir D]   read-only Greptile score + open threads (public GitHub API)
   prompts [uplift|graph|cot|clarify|distill]  print the plugin's system prompts
   prompts build --session S --units units.json [--out-dir D]   cloud-agent prompts per graph node (validated; never launched)
@@ -92,7 +93,8 @@ const json = (value: unknown): string => JSON.stringify(value, null, 2);
 
 export function promoteGuard(argv: string[]): string | undefined {
 	if (argv[0] !== "promote") return undefined;
-	if (argv.includes("--install")) return "teach promote --install is disabled for grok-bot (drafts only; install needs Ming's approval)";
+	if (argv.includes("--install"))
+		return "teach promote --install is disabled for grok-bot (drafts only; install needs Ming's approval)";
 	if (argv.includes("--due")) return undefined;
 	const i = argv.indexOf("--target");
 	if (i < 0 || argv[i + 1] !== "drafts") return "teach promote needs --target drafts for grok-bot";
@@ -107,7 +109,8 @@ export function grokbotStatusLines(text: string): string {
 	let noted = false;
 	for (const line of lines) {
 		if (/^(?:Grok: |SuperGrok OAuth: )/.test(line)) {
-			if (!noted) out.push("Grok CLI: not used (grok-bot host: Desk Lead answers every planner request)");
+			if (!noted)
+				out.push("Grok CLI: not used (grok-bot host: Desk Lead answers every planner request)");
 			noted = true;
 			continue;
 		}
@@ -116,7 +119,11 @@ export function grokbotStatusLines(text: string): string {
 	return out.join("\n");
 }
 
-export async function summarize(stateDir: string, sessionId: string, cwd = process.cwd()): Promise<Record<string, unknown>> {
+export async function summarize(
+	stateDir: string,
+	sessionId: string,
+	cwd = process.cwd(),
+): Promise<Record<string, unknown>> {
 	const { record, path } = readRecord(stateDir, sessionId);
 	const check = checkRecord(record, { thinkOff: thinkingOff(stateDir, cwd) });
 	const graph = record.graph;
@@ -125,7 +132,13 @@ export async function summarize(stateDir: string, sessionId: string, cwd = proce
 		root: record.result.root,
 		uplift: record.result.source,
 		engine: record.engine,
-		nodes: graph?.nodes.map((n) => ({ id: n.id, kind: n.kind, title: n.title, dependsOn: n.dependsOn, steps: check.stepsPerNode[n.id] })),
+		nodes: graph?.nodes.map((n) => ({
+			id: n.id,
+			kind: n.kind,
+			title: n.title,
+			dependsOn: n.dependsOn,
+			steps: check.stepsPerNode[n.id],
+		})),
 		totalSteps: check.totalSteps,
 		band: check.band,
 		belowBand: check.belowBand,
@@ -156,17 +169,22 @@ export function dirFetcher(dir: string): typeof fetch {
 	}) as unknown as typeof fetch;
 }
 
-export async function reviewRead(repo: string, pr: string, fetcher: typeof fetch = fetch): Promise<Record<string, unknown>> {
+export async function reviewRead(
+	repo: string,
+	pr: string,
+	fetcher: typeof fetch = fetch,
+): Promise<Record<string, unknown>> {
 	const headers = { accept: "application/vnd.github+json", "user-agent": "ultrathink-grokbot" };
-	const get = async <T,>(path: string): Promise<{ value: T; link: string | null }> => {
+	const get = async <T>(path: string): Promise<{ value: T; link: string | null }> => {
 		const response = await fetcher(`https://api.github.com/repos/${repo}/${path}`, { headers });
 		if (!response.ok) throw new Error(`GitHub ${path}: HTTP ${response.status}`);
 		return { value: (await response.json()) as T, link: response.headers.get("link") };
 	};
 	/** Follows `rel="next"` and stops when a page is short of 100, so a fixture without a Link header is one page. */
-	const getAll = async <T,>(path: string, take: (value: unknown) => T[]): Promise<T[]> => {
+	const getAll = async <T>(path: string, take: (value: unknown) => T[]): Promise<T[]> => {
 		const out: T[] = [];
-		let next: string | undefined = `https://api.github.com/repos/${repo}/${path}${path.includes("?") ? "&" : "?"}per_page=100`;
+		let next: string | undefined =
+			`https://api.github.com/repos/${repo}/${path}${path.includes("?") ? "&" : "?"}per_page=100`;
 		for (let page = 0; page < 20 && next; page++) {
 			const response: Response = await fetcher(next, { headers });
 			if (!response.ok) throw new Error(`GitHub ${path}: HTTP ${response.status}`);
@@ -178,18 +196,26 @@ export async function reviewRead(repo: string, pr: string, fetcher: typeof fetch
 		return out;
 	};
 	type Item = Record<string, unknown>;
-	const isGreptile = (c: Item) => /greptile/i.test(String((c.user as { login?: string } | undefined)?.login ?? ""));
+	const isGreptile = (c: Item) =>
+		/greptile/i.test(String((c.user as { login?: string } | undefined)?.login ?? ""));
 	const pull = (await get<Item>(`pulls/${pr}`)).value;
 	const head = String((pull.head as { sha?: string } | undefined)?.sha ?? "");
 	const [issueComments, reviews, reviewComments, checkRuns] = await Promise.all([
-		getAll<Item>(`issues/${pr}/comments`, (value) => (Array.isArray(value) ? value as Item[] : [])),
-		getAll<Item>(`pulls/${pr}/reviews`, (value) => (Array.isArray(value) ? value as Item[] : [])),
-		getAll<Item>(`pulls/${pr}/comments`, (value) => (Array.isArray(value) ? value as Item[] : [])),
+		getAll<Item>(`issues/${pr}/comments`, (value) =>
+			Array.isArray(value) ? (value as Item[]) : [],
+		),
+		getAll<Item>(`pulls/${pr}/reviews`, (value) => (Array.isArray(value) ? (value as Item[]) : [])),
+		getAll<Item>(`pulls/${pr}/comments`, (value) =>
+			Array.isArray(value) ? (value as Item[]) : [],
+		),
 		head
 			? getAll<Item>(`commits/${head}/check-runs`, (value) => {
-				const runs = value && typeof value === "object" && !Array.isArray(value) ? (value as { check_runs?: Item[] }).check_runs : undefined;
-				return runs ?? [];
-			}).catch(() => [])
+					const runs =
+						value && typeof value === "object" && !Array.isArray(value)
+							? (value as { check_runs?: Item[] }).check_runs
+							: undefined;
+					return runs ?? [];
+				}).catch(() => [])
 			: Promise.resolve([]),
 	]);
 	const greptileReviews = reviews.filter(isGreptile);
@@ -221,7 +247,11 @@ export async function reviewRead(repo: string, pr: string, fetcher: typeof fetch
 		title: String(c.body ?? "").match(/\*\*([^*]+)\*\*/)?.[1],
 		replies: reviewComments.filter((r) => r.in_reply_to_id === c.id).length,
 	}));
-	const greptileCheck = checkRuns.filter((r) => /greptile/i.test(String(r.name ?? "") + String((r.app as { slug?: string } | undefined)?.slug ?? "")));
+	const greptileCheck = checkRuns.filter((r) =>
+		/greptile/i.test(
+			String(r.name ?? "") + String((r.app as { slug?: string } | undefined)?.slug ?? ""),
+		),
+	);
 	return {
 		repo,
 		pr: Number(pr),
@@ -229,14 +259,25 @@ export async function reviewRead(repo: string, pr: string, fetcher: typeof fetch
 		draft: pull.draft,
 		head: head.slice(0, 12),
 		score,
-		scoreSource: headScore !== null ? "head-review" : latestCommentScore !== undefined ? "latest-comment" : descriptionScore !== null ? "pr-description" : "none",
+		scoreSource:
+			headScore !== null
+				? "head-review"
+				: latestCommentScore !== undefined
+					? "latest-comment"
+					: descriptionScore !== null
+						? "pr-description"
+						: "none",
 		lastGreptileReviewCommit: String(lastReview?.commit_id ?? "").slice(0, 12),
 		reviewedHead: lastReview?.commit_id === head,
 		greptileThreadsTotal: threads.length,
 		greptileThreadsOnHead: threads.filter((t) => t.onHead).length,
 		note: "REST cannot see thread resolution; resolved state needs the GitHub connector (GraphQL).",
 		threads,
-		greptileCheckRuns: greptileCheck.map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion })),
+		greptileCheckRuns: greptileCheck.map((r) => ({
+			name: r.name,
+			status: r.status,
+			conclusion: r.conclusion,
+		})),
 		retrigger: "fallback: post an @greptileai comment (needs approval)",
 	};
 }
@@ -251,16 +292,51 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 	switch (command) {
 		case "plan": {
 			const file = flag(rest, "--prompt-file");
-			const prompt = file ? readFileSync(file, "utf8") : rest.includes("--stdin") ? await readStdin() : undefined;
+			const prompt = file
+				? readFileSync(file, "utf8")
+				: rest.includes("--stdin")
+					? await readStdin()
+					: undefined;
 			if (prompt === undefined) return { code: 2, text: "plan needs --prompt-file F or --stdin" };
 			const transcript = flag(rest, "--transcript");
-			const result = await runGrokbotPlan({ sessionId: session(rest), prompt, cwd, stateDir, env, replan: rest.includes("--replan"), ...(transcript ? { transcriptPath: resolve(transcript) } : {}) });
+			const result = await runGrokbotPlan({
+				sessionId: session(rest),
+				prompt,
+				cwd,
+				stateDir,
+				env,
+				replan: rest.includes("--replan"),
+				...(transcript ? { transcriptPath: resolve(transcript) } : {}),
+			});
 			const { response, ...view } = result;
-			return { code: result.status === "invalid" ? 1 : 0, text: json({ ...view, ...(response ? { statePath: response.statePath, specPath: response.specPath, skipped: response.skipped } : {}) }) };
+			return {
+				code: result.status === "invalid" ? 1 : 0,
+				text: json({
+					...view,
+					...(response
+						? {
+								statePath: response.statePath,
+								specPath: response.specPath,
+								skipped: response.skipped,
+							}
+						: {}),
+				}),
+			};
 		}
 		case "pending": {
 			const dir = journalDir(stateDir, session(rest));
-			return { code: 0, text: json(listPending(dir).map(({ key, stage, nodeId, nodeKind, nodeTitle }) => ({ key, stage, nodeId, nodeKind, nodeTitle }))) };
+			return {
+				code: 0,
+				text: json(
+					listPending(dir).map(({ key, stage, nodeId, nodeKind, nodeTitle }) => ({
+						key,
+						stage,
+						nodeId,
+						nodeKind,
+						nodeTitle,
+					})),
+				),
+			};
 		}
 		case "show": {
 			const dir = journalDir(stateDir, session(rest));
@@ -270,7 +346,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 			const part = flag(rest, "--part");
 			if (part === "system") return { code: 0, text: request.system };
 			if (part === "user") return { code: 0, text: request.user };
-			return { code: 0, text: `# stage ${request.stage}${request.nodeId ? ` · ${request.nodeId} (${request.nodeKind}) ${request.nodeTitle}` : ""}\n## SYSTEM\n${request.system}\n## USER\n${request.user}` };
+			return {
+				code: 0,
+				text: `# stage ${request.stage}${request.nodeId ? ` · ${request.nodeId} (${request.nodeKind}) ${request.nodeTitle}` : ""}\n## SYSTEM\n${request.system}\n## USER\n${request.user}`,
+			};
 		}
 		case "answer": {
 			const dir = journalDir(stateDir, session(rest));
@@ -284,32 +363,73 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 		case "answers": {
 			const id = session(rest);
 			const file = flag(rest, "--file");
-			const raw = file ? readFileSync(file, "utf8") : rest.includes("--stdin") ? await readStdin() : undefined;
+			const raw = file
+				? readFileSync(file, "utf8")
+				: rest.includes("--stdin")
+					? await readStdin()
+					: undefined;
 			if (raw === undefined) return { code: 2, text: "answers needs --file F or --stdin" };
 			const outcome = recordAnswers(statePathFor(stateDir, id), parseAnswersInput(JSON.parse(raw)));
-			if (outcome.unknownIds.length) return { code: 1, text: `unknown question id(s): ${outcome.unknownIds.join(", ")} (nothing recorded)` };
-			return { code: 0, text: `HITL · ${outcome.matched.length} answer(s) recorded\n${json(outcome.list.map(({ id, question, answer, default: def, blocking }) => ({ id, question, blocking, ...(answer ? { answer } : { default: def }) })))}` };
+			if (outcome.unknownIds.length)
+				return {
+					code: 1,
+					text: `unknown question id(s): ${outcome.unknownIds.join(", ")} (nothing recorded)`,
+				};
+			return {
+				code: 0,
+				text: `HITL · ${outcome.matched.length} answer(s) recorded\n${json(outcome.list.map(({ id, question, answer, default: def, blocking }) => ({ id, question, blocking, ...(answer ? { answer } : { default: def }) })))}`,
+			};
 		}
 		case "skills": {
-			if (rest[0] !== "status") return { code: 2, text: "skills status [--installed DIR] (read-only; installs need Ming's approval)" };
+			if (rest[0] !== "status")
+				return {
+					code: 2,
+					text: "skills status [--installed DIR] (read-only; installs need Ming's approval)",
+				};
 			const staged = resolve(import.meta.dir, "../../hosts/grok-bot/skills");
-			const report = skillsStatus(staged, resolve(flag(rest, "--installed") ?? DEFAULT_INSTALLED_SKILLS));
-			return { code: report.counts.drift || report.counts["not-installed"] ? 1 : 0, text: json(report) };
+			const report = skillsStatus(
+				staged,
+				resolve(flag(rest, "--installed") ?? DEFAULT_INSTALLED_SKILLS),
+			);
+			return {
+				code: report.counts.drift || report.counts["not-installed"] ? 1 : 0,
+				text: json(report),
+			};
 		}
 		case "status": {
 			const id = session(rest);
 			const dir = journalDir(stateDir, id);
 			let check: unknown;
 			try {
-				check = checkRecord(readRecord(stateDir, id).record, { thinkOff: thinkingOff(stateDir, cwd) });
+				check = checkRecord(readRecord(stateDir, id).record, {
+					thinkOff: thinkingOff(stateDir, cwd),
+				});
 			} catch {
+				// reason: an unreadable record yields no check result; the status output reports it as absent
 				check = undefined;
 			}
-			return { code: 0, text: json({ meta: { ...readMeta(dir), original: undefined }, pending: listPending(dir).length, check }) };
+			return {
+				code: 0,
+				text: json({
+					meta: { ...readMeta(dir), original: undefined },
+					pending: listPending(dir).length,
+					check,
+				}),
+			};
 		}
 		case "deepen": {
-			const check = checkRecord(readRecord(stateDir, session(rest)).record, { thinkOff: thinkingOff(stateDir, cwd) });
-			return { code: 0, text: json({ totalSteps: check.totalSteps, band: check.band, belowBand: check.belowBand, deepen: deepenTargets(check) }) };
+			const check = checkRecord(readRecord(stateDir, session(rest)).record, {
+				thinkOff: thinkingOff(stateDir, cwd),
+			});
+			return {
+				code: 0,
+				text: json({
+					totalSteps: check.totalSteps,
+					band: check.band,
+					belowBand: check.belowBand,
+					deepen: deepenTargets(check),
+				}),
+			};
 		}
 		case "summary":
 			return { code: 0, text: json(await summarize(stateDir, session(rest), cwd)) };
@@ -320,10 +440,32 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 			if (sub === "payloads") {
 				const config = loadConfig(claudeConfigPaths(cwd, env));
 				if (trackingOff(config, readControl(stateDir))) {
-					const empty = { graphId: record.plan?.graphId, calls: [] as unknown[], counts: { linearIssues: 0, linearSubIssues: 0, notionTask: 0, notionIssues: 0, notionSubIssues: 0 }, tracking: "off" as const };
+					const empty = {
+						graphId: record.plan?.graphId,
+						calls: [] as unknown[],
+						counts: {
+							linearIssues: 0,
+							linearSubIssues: 0,
+							notionTask: 0,
+							notionIssues: 0,
+							notionSubIssues: 0,
+						},
+						tracking: "off" as const,
+					};
 					const out = flag(rest, "--out");
 					if (out) writeFileSync(out, `${json(empty)}\n`);
-					return { code: 0, text: out ? json({ out, counts: empty.counts, calls: 0, graphId: empty.graphId, tracking: "off" }) : json(empty) };
+					return {
+						code: 0,
+						text: out
+							? json({
+									out,
+									counts: empty.counts,
+									calls: 0,
+									graphId: empty.graphId,
+									tracking: "off",
+								})
+							: json(empty),
+					};
 				}
 				const payloads = await buildTrackPayloads(record, {
 					linearTeam: config.linear.team,
@@ -334,37 +476,72 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 				const text = json(payloads);
 				const out = flag(rest, "--out");
 				if (out) writeFileSync(out, `${text}\n`);
-				return { code: 0, text: out ? json({ out, counts: payloads.counts, calls: payloads.calls.length, graphId: payloads.graphId }) : text };
+				return {
+					code: 0,
+					text: out
+						? json({
+								out,
+								counts: payloads.counts,
+								calls: payloads.calls.length,
+								graphId: payloads.graphId,
+							})
+						: text,
+				};
 			}
 			if (sub === "record") {
 				const refsFile = flag(rest, "--refs");
 				if (!refsFile) return { code: 2, text: "track record needs --refs F" };
 				const config = loadConfig(claudeConfigPaths(cwd, env));
-				const parsed = JSON.parse(readFileSync(refsFile, "utf8")) as Parameters<typeof recordRefs>[1];
+				const parsed = JSON.parse(readFileSync(refsFile, "utf8")) as Parameters<
+					typeof recordRefs
+				>[1];
 				const { tracking, todos } = recordRefs(path, {
 					...parsed,
-					trackers: parsed.trackers ?? { linear: config.linear.team.trim() !== "", notion: config.notion.dataSourceUrl.trim() !== "" },
+					trackers: parsed.trackers ?? {
+						linear: config.linear.team.trim() !== "",
+						notion: config.notion.dataSourceUrl.trim() !== "",
+					},
 				});
-				return { code: tracking.status === "failed" ? 1 : 0, text: `tracking ${tracking.status} · graph ${tracking.graphId}\n\n${todos}` };
+				return {
+					code: tracking.status === "failed" ? 1 : 0,
+					text: `tracking ${tracking.status} · graph ${tracking.graphId}\n\n${todos}`,
+				};
 			}
-			if (sub === "register") return { code: 0, text: json(graphRegisterPayload(record, { withNodes: rest.includes("--with-nodes") })) };
+			if (sub === "register")
+				return {
+					code: 0,
+					text: json(graphRegisterPayload(record, { withNodes: rest.includes("--with-nodes") })),
+				};
 			return { code: 2, text: "track payloads|record|register" };
 		}
 		case "review": {
-			if (rest[0] !== "read") return { code: 2, text: "review read --repo owner/name --pr N (read-only; never retriggers)" };
+			if (rest[0] !== "read")
+				return {
+					code: 2,
+					text: "review read --repo owner/name --pr N (read-only; never retriggers)",
+				};
 			const repo = flag(rest, "--repo");
 			const pr = flag(rest, "--pr");
 			if (!repo || !pr) return { code: 2, text: "review read needs --repo and --pr" };
 			const fromDir = flag(rest, "--from-dir");
-			return { code: 0, text: json(await reviewRead(repo, pr, fromDir ? dirFetcher(resolve(fromDir)) : fetch)) };
+			return {
+				code: 0,
+				text: json(await reviewRead(repo, pr, fromDir ? dirFetcher(resolve(fromDir)) : fetch)),
+			};
 		}
 		case "prompts": {
 			if (rest[0] === "build") {
 				const units = flag(rest, "--units");
-				if (!units) return { code: 2, text: "prompts build needs --session S --units units.json [--out-dir D] (units: [{unit, mode, repo, branch, agentId?, pr?, seat?, base?, verify?, notes?, file?}])" };
+				if (!units)
+					return {
+						code: 2,
+						text: "prompts build needs --session S --units units.json [--out-dir D] (units: [{unit, mode, repo, branch, agentId?, pr?, seat?, base?, verify?, notes?, file?}])",
+					};
 				const { record } = readRecord(stateDir, session(rest));
 				const outDir = resolve(flag(rest, "--out-dir") ?? ".");
-				const list = JSON.parse(readFileSync(units, "utf8")) as Array<UnitDispatch & { file?: string }>;
+				const list = JSON.parse(readFileSync(units, "utf8")) as Array<
+					UnitDispatch & { file?: string }
+				>;
 				const report: Array<Record<string, unknown>> = [];
 				let failed = 0;
 				for (const dispatch of list) {
@@ -373,19 +550,50 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 					const path = join(outDir, dispatch.file ?? `${dispatch.unit}.prompt.xml`);
 					if (check.ok) writeFileSync(path, xml);
 					else failed++;
-					report.push({ unit: dispatch.unit, mode: dispatch.mode, agent: dispatch.agentId, path: check.ok ? path : undefined, ...check });
+					report.push({
+						unit: dispatch.unit,
+						mode: dispatch.mode,
+						agent: dispatch.agentId,
+						path: check.ok ? path : undefined,
+						...check,
+					});
 				}
 				return { code: failed ? 1 : 0, text: json(report) };
 			}
-			const all: Record<string, string> = { uplift: UPLIFT_SYSTEM_PROMPT, graph: GRAPH_SYSTEM_PROMPT, cot: COT_SYSTEM_PROMPT, clarify: CLARIFY_SYSTEM_PROMPT, distill: DISTILL_SYSTEM };
+			const all: Record<string, string> = {
+				uplift: UPLIFT_SYSTEM_PROMPT,
+				graph: GRAPH_SYSTEM_PROMPT,
+				cot: COT_SYSTEM_PROMPT,
+				clarify: CLARIFY_SYSTEM_PROMPT,
+				distill: DISTILL_SYSTEM,
+			};
 			const which = rest[0];
-			if (which) return all[which] ? { code: 0, text: all[which] } : { code: 2, text: `unknown prompt ${which}` };
-			return { code: 0, text: Object.entries(all).map(([k, v]) => `## ${k}\n${v}`).join("\n\n") };
+			if (which)
+				return all[which]
+					? { code: 0, text: all[which] }
+					: { code: 2, text: `unknown prompt ${which}` };
+			return {
+				code: 0,
+				text: Object.entries(all)
+					.map(([k, v]) => `## ${k}\n${v}`)
+					.join("\n\n"),
+			};
 		}
 		case "ctl": {
 			// Grok Bot names no session to the CLI: the caller passes the planner's `--session` (the flag plan and show take).
 			const { sessionId, args } = takeSessionFlag(rest);
-			return { code: 0, text: grokbotStatusLines(await runControl(args, { stateDir, cwd, host: GROKBOT_ENGINE_HOST, modelResolution: hostResolution(), sessionId })) };
+			return {
+				code: 0,
+				text: grokbotStatusLines(
+					await runControl(args, {
+						stateDir,
+						cwd,
+						host: GROKBOT_ENGINE_HOST,
+						modelResolution: hostResolution(),
+						sessionId,
+					}),
+				),
+			};
 		}
 		case "decisions":
 			return await runDecisionsCommand(rest, { cwd });
@@ -398,20 +606,24 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 				const transcript = flag(rest, "--transcript");
 				if (!transcript) return { code: 2, text: "teach digest needs --session S --transcript F" };
 				const outcome = flag(rest, "--outcome");
-				if (outcome !== undefined && !["completed", "failed", "interrupted"].includes(outcome)) return { code: 2, text: "--outcome must be completed, failed or interrupted" };
-				const digest = grokbotDigest(resolve(transcript), { sessionId: session(rest), cwd, ...(outcome ? { outcome: outcome as "completed" } : {}) });
-				return digest ? { code: 0, text: json(digest) } : { code: 1, text: "transcript has no user/assistant turns" };
+				if (outcome !== undefined && !["completed", "failed", "interrupted"].includes(outcome))
+					return { code: 2, text: "--outcome must be completed, failed or interrupted" };
+				const digest = grokbotDigest(resolve(transcript), {
+					sessionId: session(rest),
+					cwd,
+					...(outcome ? { outcome: outcome as "completed" } : {}),
+				});
+				return digest
+					? { code: 0, text: json(digest) }
+					: { code: 1, text: "transcript has no user/assistant turns" };
 			}
 			const blocked = promoteGuard(rest);
 			if (blocked) return { code: 2, text: blocked };
-			const journal = createJournalCompleter({ dir: journalDir(stateDir, "teach") });
 			// Moments are captured as host grok-bot; an unknown host's promotion target is drafts, so even with
-			// teach.autoPromote on nothing is installed into another host's skill directory.
+			// teach.autoPromote on nothing is installed into another host's skill directory. No completer is injected:
+			// memory distillation is pinned to the memory chain (`selectEngine` purpose "memory"), never the bot's model.
 			const teachEnv = { ...env, ULTRATHINK_HOST: GROKBOT_TEACH_HOST };
-			const result = await runTeachCommand(rest, { cwd, env: teachEnv, stateDir, stdin: readStdin, complete: journal.complete });
-			const missed = journal.missed();
-			if (missed.length === 0) return result;
-			return { code: result.code, text: `${result.text}\n${json({ needsModel: missed.map(({ key, stage }) => ({ key, stage, session: "teach" })) })}` };
+			return await runTeachCommand(rest, { cwd, env: teachEnv, stateDir, stdin: readStdin });
 		}
 		default:
 			return { code: command ? 2 : 0, text: USAGE };
@@ -422,6 +634,9 @@ if (import.meta.main) {
 	main(process.argv.slice(2))
 		.then(({ code, text }) => process.stdout.write(`${text}\n`, () => process.exit(code)))
 		.catch((error: unknown) => {
-			process.stderr.write(`ultrathink-grokbot: ${error instanceof Error ? error.message : String(error)}\n`, () => process.exit(1));
+			process.stderr.write(
+				`ultrathink-grokbot: ${error instanceof Error ? error.message : String(error)}\n`,
+				() => process.exit(1),
+			);
 		});
 }

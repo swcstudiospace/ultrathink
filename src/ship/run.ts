@@ -18,6 +18,10 @@ export const defaultRun: Run = (argv, opts = {}) => {
 			stderr: proc.stderr?.toString() ?? "",
 		};
 	} catch (error) {
-		return { exitCode: 127, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+		return {
+			exitCode: 127,
+			stdout: "",
+			stderr: error instanceof Error ? error.message : String(error),
+		};
 	}
 };

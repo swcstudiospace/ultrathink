@@ -65,7 +65,7 @@ export interface IssueRef {
 	title: string;
 }
 
-export type TrackingStatus = "complete" | "partial" | "failed";
+type TrackingStatus = "complete" | "partial" | "failed";
 
 export interface TrackingRefs {
 	graphId: string;

@@ -71,7 +71,7 @@ LockPersonality=true
 # MemoryDenyWriteExecute is deliberately NOT set: Bun's JavaScriptCore JIT maps writable and executable memory.
 CapabilityBoundingSet=
 AmbientCapabilities=
-# TCP to OpenRouter and loopback listening, plus AF_UNIX for journald. No raw or netlink sockets.
+# TCP to the model providers the planner's CLI children reach and loopback listening, plus AF_UNIX for journald. No raw or netlink sockets.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
 # @system-service is the allow list for ordinary daemons; the second line removes privileged calls. @resources is

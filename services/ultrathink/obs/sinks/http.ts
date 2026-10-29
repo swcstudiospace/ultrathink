@@ -43,7 +43,8 @@ function parseEndpoint(raw: string, label: string): URL {
 		throw new TypeError(`${label} must not contain credentials`);
 	}
 	if (url.protocol === "https:") return url;
-	if (url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost")) return url;
+	if (url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
+		return url;
 	throw new TypeError(`${label} must use https, or http to 127.0.0.1 or localhost`);
 }
 
@@ -59,7 +60,8 @@ function validateToken(token: string | undefined): void {
 
 function classifyStatus(status: number): SendResult {
 	if (status >= 200 && status <= 299) return { ok: true };
-	const retryable = status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+	const retryable =
+		status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
 	return { ok: false, retryable, reason: `http ${status}` };
 }
 
@@ -67,7 +69,12 @@ function classifyStatus(status: number): SendResult {
 export function networkFailure(err: unknown, signal: AbortSignal): SendResult {
 	if (signal.aborted) return { ok: false, retryable: true, reason: "aborted" };
 	const code = (err as { code?: unknown } | null)?.code;
-	const label = typeof code === "string" && /^[A-Z_]{1,32}$/.test(code) ? code : err instanceof Error ? err.name : "Error";
+	const label =
+		typeof code === "string" && /^[A-Z_]{1,32}$/.test(code)
+			? code
+			: err instanceof Error
+				? err.name
+				: "Error";
 	return { ok: false, retryable: true, reason: `network error: ${label}` };
 }
 
@@ -117,15 +124,21 @@ function classifyKafkaProduce(text: string): SendResult {
 		return { ok: false, retryable: true, reason: "kafka response unreadable" };
 	}
 	const offsets = (body as { offsets?: unknown } | null)?.offsets;
-	if (!Array.isArray(offsets)) return { ok: false, retryable: true, reason: "kafka response unreadable" };
+	if (!Array.isArray(offsets))
+		return { ok: false, retryable: true, reason: "kafka response unreadable" };
 	for (const entry of offsets as unknown[]) {
 		const record = (entry ?? {}) as { error_code?: unknown; error?: unknown };
 		if ((record.error_code ?? null) === null && (record.error ?? null) === null) continue;
 		const code = record.error_code;
-		if (typeof code !== "number") return { ok: false, retryable: true, reason: "kafka record error" };
+		if (typeof code !== "number")
+			return { ok: false, retryable: true, reason: "kafka record error" };
 		// Kafka REST error codes start with the HTTP status they map to: 42201 is 422, 50002 is 500.
 		const verdict = classifyStatus(Math.floor(code / 100));
-		return { ok: false, retryable: verdict.ok === false && verdict.retryable, reason: `kafka record error ${code}` };
+		return {
+			ok: false,
+			retryable: verdict.ok === false && verdict.retryable,
+			reason: `kafka record error ${code}`,
+		};
 	}
 	return { ok: true };
 }

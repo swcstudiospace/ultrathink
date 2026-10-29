@@ -24,7 +24,9 @@ export interface PlanGateInput {
 	history: string;
 }
 
-export type PlanGateVerdict = { plan: true; record?: DecisionRecord } | { plan: false; p: number; record: DecisionRecord };
+export type PlanGateVerdict =
+	| { plan: true; record?: DecisionRecord }
+	| { plan: false; p: number; record: DecisionRecord };
 
 /**
  * Skill invocations (every `/gsd-*` included, D9), a typed slash command, `uplift:` and an inactive point plan without
@@ -32,7 +34,11 @@ export type PlanGateVerdict = { plan: true; record?: DecisionRecord } | { plan: 
  * one `plan` decision: P < planSkipBelow skips; P at or above it, or any failure, plans and keeps the record.
  * Rejects only with an AbortError (caller abort).
  */
-export async function planGate(input: PlanGateInput, decisions: Decisions, signal?: AbortSignal): Promise<PlanGateVerdict> {
+export async function planGate(
+	input: PlanGateInput,
+	decisions: Decisions,
+	signal?: AbortSignal,
+): Promise<PlanGateVerdict> {
 	if (input.skill) return { plan: true };
 	const typed = grokUserQuery(input.prompt) ?? input.prompt;
 	if (parseSlashCommand(typed) || stripPrefix(typed).force) return { plan: true };
@@ -44,6 +50,7 @@ export async function planGate(input: PlanGateInput, decisions: Decisions, signa
 		{ signal, threshold, action: (p) => (p < threshold ? "skip-plan" : "plan") },
 	);
 	if (outcome.status === "inactive") return { plan: true };
-	if (outcome.status === "ok" && outcome.p < threshold) return { plan: false, p: outcome.p, record: outcome.record };
+	if (outcome.status === "ok" && outcome.p < threshold)
+		return { plan: false, p: outcome.p, record: outcome.record };
 	return { plan: true, record: outcome.record };
 }

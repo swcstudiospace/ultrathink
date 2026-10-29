@@ -18,7 +18,10 @@ interface Call {
 /** Every URL any fake fetch in this file was asked for: the last test proves none of them is a healthz route. */
 const requestedUrls: string[] = [];
 
-function fakeFetch(handler: (call: Call, index: number) => Response | Promise<Response>): { fetch: typeof fetch; calls: Call[] } {
+function fakeFetch(handler: (call: Call, index: number) => Response | Promise<Response>): {
+	fetch: typeof fetch;
+	calls: Call[];
+} {
 	const calls: Call[] = [];
 	const impl = (async (input: string | URL | Request, init?: RequestInit) => {
 		const headers: Record<string, string> = {};
@@ -38,23 +41,45 @@ function fakeFetch(handler: (call: Call, index: number) => Response | Promise<Re
 	return { fetch: impl, calls };
 }
 
-function clientWith(fetchImpl: typeof fetch, overrides: { url?: string; timeoutMs?: number; signal?: AbortSignal } = {}): RagflowClient {
-	return createRagflowClient({ url: overrides.url ?? BASE, apiKey: KEY, timeoutMs: overrides.timeoutMs ?? 2_000, fetch: fetchImpl, signal: overrides.signal });
+function clientWith(
+	fetchImpl: typeof fetch,
+	overrides: { url?: string; timeoutMs?: number; signal?: AbortSignal } = {},
+): RagflowClient {
+	return createRagflowClient({
+		url: overrides.url ?? BASE,
+		apiKey: KEY,
+		timeoutMs: overrides.timeoutMs ?? 2_000,
+		fetch: fetchImpl,
+		signal: overrides.signal,
+	});
 }
 
 function datasets(start: number, count: number): Array<Record<string, unknown>> {
-	return Array.from({ length: count }, (_, i) => ({ id: `ds-${start + i}`, name: `Dataset ${start + i}`, chunk_count: 3, document_count: 1 }));
+	return Array.from({ length: count }, (_, i) => ({
+		id: `ds-${start + i}`,
+		name: `Dataset ${start + i}`,
+		chunk_count: 3,
+		document_count: 1,
+	}));
 }
 
 describe("createRagflowClient", () => {
 	test("refuses a URL the key may not travel to and an empty key", () => {
-		expect(() => createRagflowClient({ url: "http://example.com", apiKey: KEY, timeoutMs: 1000 })).toThrow(/ragflow url/);
-		expect(() => createRagflowClient({ url: "", apiKey: KEY, timeoutMs: 1000 })).toThrow(/ragflow url/);
-		expect(() => createRagflowClient({ url: BASE, apiKey: "   ", timeoutMs: 1000 })).toThrow(/api key/);
+		expect(() =>
+			createRagflowClient({ url: "http://example.com", apiKey: KEY, timeoutMs: 1000 }),
+		).toThrow(/ragflow url/);
+		expect(() => createRagflowClient({ url: "", apiKey: KEY, timeoutMs: 1000 })).toThrow(
+			/ragflow url/,
+		);
+		expect(() => createRagflowClient({ url: BASE, apiKey: "   ", timeoutMs: 1000 })).toThrow(
+			/api key/,
+		);
 	});
 
 	test("health: one-row dataset listing with the Bearer key; datasets comes from total", async () => {
-		const { fetch, calls } = fakeFetch(() => Response.json({ code: 0, data: datasets(0, 1), total: 42 }));
+		const { fetch, calls } = fakeFetch(() =>
+			Response.json({ code: 0, data: datasets(0, 1), total: 42 }),
+		);
 		const result = await clientWith(fetch).health();
 		expect(result).toEqual({ ok: true, value: { datasets: 42 } });
 		expect(calls).toHaveLength(1);
@@ -65,7 +90,9 @@ describe("createRagflowClient", () => {
 	});
 
 	test("health: without a numeric total the row count is used", async () => {
-		const { fetch } = fakeFetch(() => Response.json({ code: 0, data: datasets(0, 1), total: "many" }));
+		const { fetch } = fakeFetch(() =>
+			Response.json({ code: 0, data: datasets(0, 1), total: "many" }),
+		);
 		expect(await clientWith(fetch).health()).toEqual({ ok: true, value: { datasets: 1 } });
 	});
 
@@ -76,7 +103,11 @@ describe("createRagflowClient", () => {
 	});
 
 	test("listDatasets: pages of 100 until a short page, mapping the dataset fields", async () => {
-		const pages: Record<string, Array<Record<string, unknown>>> = { "1": datasets(0, 100), "2": datasets(100, 100), "3": datasets(200, 30) };
+		const pages: Record<string, Array<Record<string, unknown>>> = {
+			"1": datasets(0, 100),
+			"2": datasets(100, 100),
+			"3": datasets(200, 30),
+		};
 		const { fetch, calls } = fakeFetch((call) => {
 			const page = new URL(call.url).searchParams.get("page") ?? "";
 			return Response.json({ code: 0, data: pages[page] ?? [] });
@@ -87,23 +118,50 @@ describe("createRagflowClient", () => {
 			`${BASE}/api/v1/datasets?page=2&page_size=100`,
 			`${BASE}/api/v1/datasets?page=3&page_size=100`,
 		]);
-		expect(calls.every((c) => c.method === "GET" && c.headers.authorization === `Bearer ${KEY}`)).toBe(true);
+		expect(
+			calls.every((c) => c.method === "GET" && c.headers.authorization === `Bearer ${KEY}`),
+		).toBe(true);
 		expect(result.ok && result.value).toHaveLength(230);
-		if (result.ok) expect(result.value[0]).toEqual({ id: "ds-0", name: "Dataset 0", chunkCount: 3, documentCount: 1 });
+		if (result.ok)
+			expect(result.value[0]).toEqual({
+				id: "ds-0",
+				name: "Dataset 0",
+				chunkCount: 3,
+				documentCount: 1,
+			});
 	});
 
 	test("listDatasets: optional fields are mapped and non-dataset entries are dropped", async () => {
 		const { fetch } = fakeFetch(() =>
 			Response.json({
 				code: 0,
-				data: [{ id: "a", name: "Alpha", description: "docs", chunk_count: 9, document_count: 2, embedding_model: "bge@x" }, { name: "no id" }, "junk", { id: "b" }],
+				data: [
+					{
+						id: "a",
+						name: "Alpha",
+						description: "docs",
+						chunk_count: 9,
+						document_count: 2,
+						embedding_model: "bge@x",
+					},
+					{ name: "no id" },
+					"junk",
+					{ id: "b" },
+				],
 			}),
 		);
 		const result = await clientWith(fetch).listDatasets();
 		expect(result).toEqual({
 			ok: true,
 			value: [
-				{ id: "a", name: "Alpha", description: "docs", chunkCount: 9, documentCount: 2, embeddingModel: "bge@x" },
+				{
+					id: "a",
+					name: "Alpha",
+					description: "docs",
+					chunkCount: 9,
+					documentCount: 2,
+					embeddingModel: "bge@x",
+				},
 				{ id: "b", name: "b" },
 			],
 		});
@@ -141,7 +199,11 @@ describe("createRagflowClient", () => {
 	});
 
 	test("listDatasets: a failing page fails the whole listing", async () => {
-		const { fetch } = fakeFetch((_call, index) => (index === 0 ? Response.json({ code: 0, data: datasets(0, 100), total: 300 }) : Response.json({ code: 109, message: "nope" })));
+		const { fetch } = fakeFetch((_call, index) =>
+			index === 0
+				? Response.json({ code: 0, data: datasets(0, 100), total: 300 })
+				: Response.json({ code: 109, message: "nope" }),
+		);
 		const result = await clientWith(fetch).listDatasets();
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.error.kind).toBe("auth");
@@ -153,7 +215,14 @@ describe("createRagflowClient", () => {
 				code: 0,
 				data: {
 					chunks: [
-						{ id: "c1", content: "first", document_id: "d1", document_keyword: "guide.md", dataset_id: "ds-1", similarity: 0.91 },
+						{
+							id: "c1",
+							content: "first",
+							document_id: "d1",
+							document_keyword: "guide.md",
+							dataset_id: "ds-1",
+							similarity: 0.91,
+						},
 						{ id: "c2", content: "second" },
 						{ content: "no id" },
 						{ id: "c4", content: 7 },
@@ -163,7 +232,10 @@ describe("createRagflowClient", () => {
 				},
 			}),
 		);
-		const result = await clientWith(fetch).retrieve({ question: QUESTION, datasetIds: ["ds-1", "ds-2"] });
+		const result = await clientWith(fetch).retrieve({
+			question: QUESTION,
+			datasetIds: ["ds-1", "ds-2"],
+		});
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.method).toBe("POST");
 		expect(calls[0]?.url).toBe(`${BASE}/api/v1/retrieval`);
@@ -181,7 +253,14 @@ describe("createRagflowClient", () => {
 		expect(result).toEqual({
 			ok: true,
 			value: [
-				{ id: "c1", content: "first", documentId: "d1", documentName: "guide.md", datasetId: "ds-1", similarity: 0.91 },
+				{
+					id: "c1",
+					content: "first",
+					documentId: "d1",
+					documentName: "guide.md",
+					datasetId: "ds-1",
+					similarity: 0.91,
+				},
 				{ id: "c2", content: "second" },
 			],
 		});
@@ -189,7 +268,12 @@ describe("createRagflowClient", () => {
 
 	test("retrieve: topK and similarityThreshold override the defaults", async () => {
 		const { fetch, calls } = fakeFetch(() => Response.json({ code: 0, data: { chunks: [] } }));
-		const result = await clientWith(fetch).retrieve({ question: QUESTION, datasetIds: ["d"], topK: 12, similarityThreshold: 0.55 });
+		const result = await clientWith(fetch).retrieve({
+			question: QUESTION,
+			datasetIds: ["d"],
+			topK: 12,
+			similarityThreshold: 0.55,
+		});
 		expect(result).toEqual({ ok: true, value: [] });
 		expect(calls[0]?.body).toMatchObject({ page_size: 12, similarity_threshold: 0.55 });
 	});
@@ -216,12 +300,24 @@ describe("error mapping", () => {
 	const table: Array<[string, number, unknown, RagflowErrorKind, number | undefined]> = [
 		["HTTP 401", 401, { code: 401, message: "Unauthorized" }, "auth", 401],
 		["HTTP 403", 403, { code: 403, message: "Forbidden" }, "auth", 403],
-		["HTTP 200 with code 109", 200, { code: 109, message: "Authentication error: API key is invalid!" }, "auth", 109],
+		[
+			"HTTP 200 with code 109",
+			200,
+			{ code: 109, message: "Authentication error: API key is invalid!" },
+			"auth",
+			109,
+		],
 		["HTTP 200 with code 108", 200, { code: 108, message: "No permission" }, "auth", 108],
 		["HTTP 404", 404, { code: 404, message: "missing" }, "not-found", 404],
 		["HTTP 400", 400, { code: 400, message: "bad" }, "bad-request", 400],
 		["HTTP 422", 422, {}, "bad-request", undefined],
-		["HTTP 200 with code 102", 200, { code: 102, message: "`dataset_ids` is required." }, "bad-request", 102],
+		[
+			"HTTP 200 with code 102",
+			200,
+			{ code: 102, message: "`dataset_ids` is required." },
+			"bad-request",
+			102,
+		],
 		["HTTP 200 with code 101", 200, { code: 101, message: "invalid argument" }, "bad-request", 101],
 		["HTTP 429", 429, { message: "slow down" }, "rate-limit", undefined],
 		["HTTP 500", 500, { code: 500, message: "boom" }, "server", 500],
@@ -236,10 +332,14 @@ describe("error mapping", () => {
 
 	for (const [name, status, body, kind, code] of table) {
 		test(`${name} -> ${kind}`, async () => {
-			const respond = () => (body === undefined ? new Response("", { status }) : Response.json(body, { status }));
+			const respond = () =>
+				body === undefined ? new Response("", { status }) : Response.json(body, { status });
 			const { fetch } = fakeFetch(respond);
 			const client = clientWith(fetch);
-			for (const result of [await client.health(), await client.retrieve({ question: QUESTION, datasetIds: ["d"] })]) {
+			for (const result of [
+				await client.health(),
+				await client.retrieve({ question: QUESTION, datasetIds: ["d"] }),
+			]) {
 				expect(result.ok).toBe(false);
 				if (result.ok) continue;
 				expect(result.error.kind).toBe(kind);
@@ -260,7 +360,12 @@ describe("error mapping", () => {
 
 	test("messages carry the server's detail but never the key or the question", async () => {
 		const echo = (question: string) => `rejected key ${KEY}${question}\nBearer ${KEY}`;
-		const { fetch } = fakeFetch((call) => Response.json({ code: 109, message: echo(call.method === "POST" ? ` for question "${QUESTION}"` : "") }));
+		const { fetch } = fakeFetch((call) =>
+			Response.json({
+				code: 109,
+				message: echo(call.method === "POST" ? ` for question "${QUESTION}"` : ""),
+			}),
+		);
 		const client = clientWith(fetch);
 		const health = await client.health();
 		const retrieved = await client.retrieve({ question: QUESTION, datasetIds: ["d"] });
@@ -300,8 +405,16 @@ describe("error mapping", () => {
 	});
 
 	test("no answer within the budget is a timeout", async () => {
-		const { fetch } = fakeFetch(() => new Promise<Response>(() => {}));
-		const result = await clientWith(fetch, { timeoutMs: 25 }).retrieve({ question: QUESTION, datasetIds: ["d"] });
+		const { fetch } = fakeFetch(
+			() =>
+				new Promise<Response>(() => {
+					// reason: the request must hang; the timeout under test ends it
+				}),
+		);
+		const result = await clientWith(fetch, { timeoutMs: 25 }).retrieve({
+			question: QUESTION,
+			datasetIds: ["d"],
+		});
 		expect(result.ok === false && result.error.kind).toBe("timeout");
 		if (!result.ok) expect(result.error.message).not.toContain(QUESTION);
 	});

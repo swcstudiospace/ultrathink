@@ -15,7 +15,7 @@
 import { resolve } from "node:path";
 import { isChildInvocation } from "../src/claude/complete.ts";
 import { defaultStateDir, readSession, sessionRecordPath } from "../src/claude/state.ts";
-import { isSubagentEnvelope, parseEnvelope } from "../src/host/envelope.ts";
+import { isSubagentEnvelope, parseEnvelope, responseText } from "../src/host/envelope.ts";
 import { extractPrFromOutput, isPrCreationTool } from "../src/track/pr-detect.ts";
 
 interface HookInput {
@@ -23,15 +23,6 @@ interface HookInput {
 	tool_name?: string;
 	tool_input?: { command?: string; cmd?: string };
 	tool_response?: unknown;
-}
-
-function responseText(response: unknown): string {
-	if (typeof response === "string") return response;
-	try {
-		return JSON.stringify(response ?? "");
-	} catch {
-		return "";
-	}
 }
 
 async function main(): Promise<void> {
@@ -46,7 +37,8 @@ async function main(): Promise<void> {
 	if (isSubagentEnvelope(raw)) return;
 	const input = raw as HookInput;
 	if (!input.session_id) return;
-	if (!isPrCreationTool(input.tool_name, input.tool_input?.command ?? input.tool_input?.cmd)) return;
+	if (!isPrCreationTool(input.tool_name, input.tool_input?.command ?? input.tool_input?.cmd))
+		return;
 
 	const stateDir = defaultStateDir();
 	const record = readSession(stateDir, input.session_id);

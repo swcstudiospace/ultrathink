@@ -13,6 +13,8 @@ test("the Muse manifest parses and lists every skill, including ultrathink-teach
 	};
 	const skills = manifest.capabilities.skills;
 	expect(skills.map((skill) => skill.id)).toContain("ultrathink-teach");
-	expect(skills.find((skill) => skill.id === "ultrathink-teach")?.path).toBe("skills/ultrathink-teach/SKILL.md");
+	expect(skills.find((skill) => skill.id === "ultrathink-teach")?.path).toBe(
+		"skills/ultrathink-teach/SKILL.md",
+	);
 	for (const skill of skills) expect(existsSync(join(ROOT, skill.path))).toBe(true);
 });

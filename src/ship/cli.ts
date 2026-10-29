@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import type { SessionRecord } from "../claude/state.ts";
-import { readControl } from "../claude/state.ts";
+import { defaultStateDir, readControl } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { createDecisions } from "../decisions/gate.ts";
 import type { Decisions } from "../decisions/gate.ts";
@@ -27,7 +27,17 @@ import { defaultRun } from "./run.ts";
 import { collectSignals, gatherDiff } from "./signals.ts";
 import { appendAttempts, archiveShip, readShip, writeShip } from "./state.ts";
 import { GREPTILE_MAX_SCORE } from "./types.ts";
-import type { Assessment, PrRef, PrStatus, ReviewComment, ReviewResult, Run, ShipAttempt, ShipConfig, ShipState } from "./types.ts";
+import type {
+	Assessment,
+	PrRef,
+	PrStatus,
+	ReviewComment,
+	ReviewResult,
+	Run,
+	ShipAttempt,
+	ShipConfig,
+	ShipState,
+} from "./types.ts";
 
 export interface ShipDeps {
 	config: ShipConfig;
@@ -52,8 +62,10 @@ type ShipRecord = SessionRecord & { ship?: ShipState };
 
 const USAGE =
 	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd]";
-const NEXT_FIX = "fix the listed findings, commit only the files you edited, push, then run review again";
-const NEXT_PENDING = "Greptile review still running; run review again (safe to repeat, it resumes the same review)";
+const NEXT_FIX =
+	"fix the listed findings, commit only the files you edited, push, then run review again";
+const NEXT_PENDING =
+	"Greptile review still running; run review again (safe to repeat, it resumes the same review)";
 
 /** What the agent does when the merge gate refuses for a reason only a new commit can fix. */
 const GATE_NEXT: Record<string, string> = {
@@ -61,7 +73,10 @@ const GATE_NEXT: Record<string, string> = {
 	"merge conflicts": "merge conflicts: resolve them against the base, push, then run review again",
 };
 /** Gate reasons that clear on their own; `merge` keeps retrying through them. */
-const TRANSIENT_GATE: Record<string, true> = { "CI checks pending": true, "GitHub has not computed mergeability yet": true };
+const TRANSIENT_GATE: Record<string, true> = {
+	"CI checks pending": true,
+	"GitHub has not computed mergeability yet": true,
+};
 /** GitHub merge errors that clear without a new commit: branch protection awaiting a human (bounded by mergeTimeoutMs) or rate limits. */
 const TRANSIENT_MERGE_ERROR = /base branch policy prohibits|rate limit/i;
 /** GitHub merge errors no retry or new commit fixes: a human must act. */
@@ -73,7 +88,8 @@ const TERMINAL_MERGE_ERROR = new RegExp(
 	"i",
 );
 /** GitHub merge errors the agent fixes with a new commit and review. */
-const AGENT_MERGE_ERROR = /conflict|not mergeable|out of date|behind|update the branch|head branch was modified|head commit/i;
+const AGENT_MERGE_ERROR =
+	/conflict|not mergeable|out of date|behind|update the branch|head branch was modified|head commit/i;
 const MAX_POLL_MS = 60_000;
 const MERGED_OUTSIDE = "PR was merged outside the ship flow before its review passed";
 
@@ -83,11 +99,13 @@ function prWaitNext(reason: string): string {
 	return next ? `review passed; ${next}` : `review passed; ${reason}: wait, then run merge again`;
 }
 
-const isFailedReview = (round: ReviewResult) => round.status === "failed" || round.status === "timeout";
+const isFailedReview = (round: ReviewResult) =>
+	round.status === "failed" || round.status === "timeout";
 
 /** Rounds counted toward ship.maxRounds: completed reviews that did not pass. Failed or timed-out reviews never count. */
 function countFailedRounds(config: ShipConfig, rounds: ReviewResult[]): number {
-	return rounds.filter((round) => round.status === "completed" && !reviewPasses(config, round)).length;
+	return rounds.filter((round) => round.status === "completed" && !reviewPasses(config, round))
+		.length;
 }
 
 /** Minutes with one decimal, for messages. */
@@ -111,7 +129,12 @@ function stoppedComment(input: {
 }): string {
 	const findings = input.findings
 		.slice(0, 20)
-		.map((c) => `- ${c.path ?? "?"}${c.line ? `:${c.line}` : ""} ${c.severity ?? ""} ${c.body.split("\n")[0]}`.replace(/ +/g, " "));
+		.map((c) =>
+			`- ${c.path ?? "?"}${c.line ? `:${c.line}` : ""} ${c.severity ?? ""} ${c.body.split("\n")[0]}`.replace(
+				/ +/g,
+				" ",
+			),
+		);
 	const attempts = input.attempts.slice(-10).map(formatAttempt);
 	return [
 		`**ultrathink-ship stopped:** ${input.reason}`,
@@ -156,7 +179,9 @@ async function stepAssess(ctx: Ctx): Promise<Output & { done: boolean }> {
 		// One session ships sequentially: a merged ship is always archived (re-assessing it must not reopen the merged PR),
 		// a blocked ship of another repository or branch is archived, an active one elsewhere refuses.
 		const priorRepo = prRepo(pr);
-		const elsewhere = (priorRepo && signals.git.repo && priorRepo !== signals.git.repo) || pr.head !== signals.git.branch;
+		const elsewhere =
+			(priorRepo && signals.git.repo && priorRepo !== signals.git.repo) ||
+			pr.head !== signals.git.branch;
 		const { phase } = record.ship;
 		if (elsewhere && phase !== "merged" && phase !== "blocked") {
 			return {
@@ -167,40 +192,80 @@ async function stepAssess(ctx: Ctx): Promise<Output & { done: boolean }> {
 		}
 		if (phase === "merged" || elsewhere) {
 			if (!archiveShip(statePath, deps.now())) {
-				return { ok: false, done: false, reason: `could not archive the finished ship ${pr.url}; state file not writable` };
+				return {
+					ok: false,
+					done: false,
+					reason: `could not archive the finished ship ${pr.url}; state file not writable`,
+				};
 			}
 			pr = undefined;
 		}
 	}
-	const diff = signals.git.base ? deps.diff({ cwd, base: signals.git.base, run: deps.run }) : { stat: "", log: "" };
+	const diff = signals.git.base
+		? deps.diff({ cwd, base: signals.git.base, run: deps.run })
+		: { stat: "", log: "" };
 	const complete = await deps.engine();
 	const mode = deps.config.judge;
 	const decisions = deps.decisions?.(record);
 	const { autoMerge } = deps.config;
-	let assessment: Assessment = await deps.assess({ record, signals, diff, complete, now: deps.now, mode, decisions, autoMerge });
+	let assessment: Assessment = await deps.assess({
+		record,
+		signals,
+		diff,
+		complete,
+		now: deps.now,
+		mode,
+		decisions,
+		autoMerge,
+	});
 	// A rules-only "done" (no judge ran) never auto-merges in gate mode; with autoMerge assess never lets Jev stand in.
 	if (mode === "gate" && autoMerge && assessment.source === "rules" && assessment.done) {
 		assessment = { ...assessment, done: false, gaps: [...assessment.gaps, "no judge available"] };
 	}
-	writeShip(statePath, { assessment, phase: assessment.done && pr ? "pr-open" : "not-done" }, deps.now());
+	writeShip(
+		statePath,
+		{ assessment, phase: assessment.done && pr ? "pr-open" : "not-done" },
+		deps.now(),
+	);
 	const { done, confidence, summary, gaps, judge, source, decision } = assessment;
 	// Jev additions only: `decision` when the point ran, plus `source` when Jev itself gave the verdict.
-	const jev = decision ? { ...(source === "jev" ? { source } : {}), decision: assessDecisionJson(decision) } : {};
-	return { ok: true, done, confidence, summary, gaps, mode: assessment.mode ?? mode, ...(judge ? { judge } : {}), ...jev, signals };
+	const jev = decision
+		? { ...(source === "jev" ? { source } : {}), decision: assessDecisionJson(decision) }
+		: {};
+	return {
+		ok: true,
+		done,
+		confidence,
+		summary,
+		gaps,
+		mode: assessment.mode ?? mode,
+		...(judge ? { judge } : {}),
+		...jev,
+		signals,
+	};
 }
 
 async function stepPr(ctx: Ctx): Promise<Output & { ok: boolean }> {
 	const { deps, statePath, cwd } = ctx;
 	const record = readRecord(statePath);
 	const assessment = record?.ship?.assessment;
-	if (!record || !assessment?.done) return { ok: false, reason: "task not assessed as done; run assess first" };
+	if (!record || !assessment?.done)
+		return { ok: false, reason: "task not assessed as done; run assess first" };
 	const { git } = deps.signals({ cwd, record, run: deps.run });
 	if (!git.branch) return { ok: false, reason: "no current branch (detached HEAD?)" };
 	if (assessment.signals.git.branch !== git.branch) {
-		return { ok: false, reason: `branch changed since assessment (${assessment.signals.git.branch ?? "none"} -> ${git.branch}); run assess again` };
+		return {
+			ok: false,
+			reason: `branch changed since assessment (${assessment.signals.git.branch ?? "none"} -> ${git.branch}); run assess again`,
+		};
 	}
-	if (git.onBase) return { ok: false, reason: `on base branch ${git.base ?? ""}; work must be on a feature branch` };
-	if (git.dirty.length > 0) return { ok: false, reason: `uncommitted tracked changes: ${git.dirty.join(", ")}` };
+	if (git.onBase)
+		return {
+			ok: false,
+			reason: `on base branch ${git.base ?? ""}; work must be on a feature branch`,
+		};
+	if (git.dirty.length > 0)
+		return { ok: false, reason: `uncommitted tracked changes: ${git.dirty.join(", ")}` };
 	const github = deps.github(cwd);
 	const repo = github.repo();
 	const base = repo?.defaultBranch ?? git.base;
@@ -248,11 +313,14 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 		}
 	}
 	// Reviews of this head that failed or timed out are never resumed: the next call triggers a fresh one.
-	const failedHere = ship.rounds.filter((round) => isFailedReview(round) && round.headSha === status.headSha);
+	const failedHere = ship.rounds.filter(
+		(round) => isFailedReview(round) && round.headSha === status.headSha,
+	);
 	const staleReviewIds = failedHere.flatMap((round) => (round.reviewId ? [round.reviewId] : []));
 	// One without an id cannot be marked stale: restart ignores every existing review of the head, unless the fresh
 	// review it started is still pending (then it is resumed, not restarted again).
-	const restart = failedHere.some((round) => !round.reviewId) && ship.pending?.headSha !== status.headSha;
+	const restart =
+		failedHere.some((round) => !round.reviewId) && ship.pending?.headSha !== status.headSha;
 	let result: ReviewResult = reusedRound
 		? prior
 		: await deps.review({
@@ -264,7 +332,8 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 				base: pr.base,
 				prNumber: pr.number,
 				headSha: status.headSha,
-				reviewThreads: () => github.reviewThreads(pr.number, { deadlineMs: threadDeadline, now: deps.now }),
+				reviewThreads: () =>
+					github.reviewThreads(pr.number, { deadlineMs: threadDeadline, now: deps.now }),
 				staleReviewIds,
 				...(restart ? { restart: true } : {}),
 			});
@@ -273,7 +342,12 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 		// fall back to the stored snapshot: a finding posted since then would be missed, so report not ready and persist nothing.
 		const threads = github.reviewThreads(pr.number, { deadlineMs: threadDeadline, now: deps.now });
 		if (!threads.ok) {
-			return { ok: false, ready: false, reason: `could not read review threads: ${threads.error}`, next: "run review again" };
+			return {
+				ok: false,
+				ready: false,
+				reason: `could not read review threads: ${threads.error}`,
+				next: "run review again",
+			};
 		}
 		result = { ...result, comments: openThreadComments(threads.threads) };
 	}
@@ -293,8 +367,20 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 	if (result.status === "blocked") {
 		// Greptile is unusable as configured: no round is recorded and the flow stops until the user fixes the setup.
 		const reason = result.error ?? "Greptile review blocked";
-		writeShip(statePath, { phase: "blocked", blockedReason: reason, pending: undefined }, deps.now());
-		return { ok: false, ready: false, blocked: true, status: "blocked", reason, round: ship.rounds.length, next: `stop: ${reason}` };
+		writeShip(
+			statePath,
+			{ phase: "blocked", blockedReason: reason, pending: undefined },
+			deps.now(),
+		);
+		return {
+			ok: false,
+			ready: false,
+			blocked: true,
+			status: "blocked",
+			reason,
+			round: ship.rounds.length,
+			next: `stop: ${reason}`,
+		};
 	}
 	const maxRounds = deps.config.maxRounds;
 	if (result.status === "pending") {
@@ -302,10 +388,24 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 		const since = same?.since ?? deps.now();
 		if (deps.now() - since <= deps.config.reviewTimeoutMs) {
 			const runId = result.reviewId ?? same?.runId;
-			const pending = { headSha: status.headSha, source: result.source, since, ...(runId ? { runId } : {}) };
+			const pending = {
+				headSha: status.headSha,
+				source: result.source,
+				since,
+				...(runId ? { runId } : {}),
+			};
 			writeShip(statePath, { pending }, deps.now());
 			const error = result.error ? { error: result.error } : {};
-			return { ok: true, ready: false, status: "pending", pending, round: ship.rounds.length, maxRounds, next: NEXT_PENDING, ...error };
+			return {
+				ok: true,
+				ready: false,
+				status: "pending",
+				pending,
+				round: ship.rounds.length,
+				maxRounds,
+				next: NEXT_PENDING,
+				...error,
+			};
 		}
 		const cause = result.error ? ` (last error: ${result.error})` : "";
 		const runId = result.reviewId ?? same?.runId;
@@ -317,18 +417,25 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 		};
 	}
 	const now = deps.now();
-	const rounds: ReviewResult[] = reusedRound ? [...ship.rounds.slice(0, -1), result] : [...ship.rounds, result];
+	const rounds: ReviewResult[] = reusedRound
+		? [...ship.rounds.slice(0, -1), result]
+		: [...ship.rounds, result];
 	const gate = mergeGate({ config: deps.config, status, latest: result });
 	const failedRounds = countFailedRounds(deps.config, rounds);
 	const passed = reviewPasses(deps.config, result);
 	// A failed or timed-out review is re-triggered up to reviewRetries times per head; `used` includes this one.
-	const failure = isFailedReview(result) ? (result.status === "timeout" ? "timed out" : "failed") : undefined;
+	const failure = isFailedReview(result)
+		? result.status === "timeout"
+			? "timed out"
+			: "failed"
+		: undefined;
 	const used = failure ? failedHere.length + 1 : 0;
 	const retries = deps.config.reviewRetries;
 	const errorSuffix = result.error ? `: ${result.error}` : "";
 	// A PR merged outside the flow is ready only for cleanup, and only when its review passed.
 	const mergedPassing = status.state === "MERGED" && passed;
-	const waiting = !gate.ok && status.state === "OPEN" && result.headSha === status.headSha && passed;
+	const waiting =
+		!gate.ok && status.state === "OPEN" && result.headSha === status.headSha && passed;
 	const blockedReason =
 		gate.ok || waiting || mergedPassing
 			? undefined
@@ -343,14 +450,26 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 						: failedRounds >= maxRounds
 							? `max rounds reached: ${gate.reason}`
 							: undefined;
-	const phase = gate.ok || mergedPassing ? "ready" : waiting ? "pr-open" : blockedReason ? "blocked" : "needs-fixes";
+	const phase =
+		gate.ok || mergedPassing
+			? "ready"
+			: waiting
+				? "pr-open"
+				: blockedReason
+					? "blocked"
+					: "needs-fixes";
 	let attempts = ship.attempts ?? [];
 	if (!reusedRound) {
 		const attempt: ShipAttempt = {
 			at: now,
 			step: "review",
 			headSha: status.headSha,
-			outcome: result.status === "failed" || result.status === "timeout" ? result.status : passed ? "passed" : "needs-fixes",
+			outcome:
+				result.status === "failed" || result.status === "timeout"
+					? result.status
+					: passed
+						? "passed"
+						: "needs-fixes",
 			score: result.score,
 			detail: result.error ?? gate.reason,
 		};
@@ -358,7 +477,13 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 	}
 	let commented: boolean | undefined;
 	if (blockedReason && status.state === "OPEN" && !reusedRound && ship.phase !== "blocked") {
-		const body = stoppedComment({ reason: blockedReason, score: result.score, failedRounds, findings: result.comments, attempts });
+		const body = stoppedComment({
+			reason: blockedReason,
+			score: result.score,
+			failedRounds,
+			findings: result.comments,
+			attempts,
+		});
 		commented = github.comment(pr.number, body).ok;
 	}
 	writeShip(statePath, { rounds, phase, blockedReason, pending: undefined }, now);
@@ -393,7 +518,13 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 
 /** One merge poll's outcome. */
 type MergeStep =
-	| { kind: "merged"; headSha: string; score: number | null | undefined; method: ShipConfig["mergeMethod"]; alreadyMerged: boolean }
+	| {
+			kind: "merged";
+			headSha: string;
+			score: number | null | undefined;
+			method: ShipConfig["mergeMethod"];
+			alreadyMerged: boolean;
+	  }
 	/** Clears on its own: poll again. `retry` marks a failed GitHub merge call. */
 	| { kind: "transient"; reason: string; headSha?: string; retry?: boolean }
 	/** Only a new commit and review fix it: back to the agent. */
@@ -404,23 +535,45 @@ type MergeStep =
 /** A merge-gate refusal after the review passed: pending CI and mergeability are retried, the rest go back to the agent. */
 function classifyGateReason(reason: string, headSha: string): MergeStep {
 	if (TRANSIENT_GATE[reason] === true) return { kind: "transient", reason, headSha };
-	return { kind: "needs-agent", reason, next: GATE_NEXT[reason] ?? `${reason}; run review again`, headSha };
+	return {
+		kind: "needs-agent",
+		reason,
+		next: GATE_NEXT[reason] ?? `${reason}; run review again`,
+		headSha,
+	};
 }
 
 /** A failed GitHub merge: refused for good (a human must act), fixable by the agent with a new commit, or retried. */
 function classifyMergeError(error: string, headSha: string): MergeStep {
-	const transient = { kind: "transient", reason: `merge failed: ${error}`, headSha, retry: true } as const;
+	const transient = {
+		kind: "transient",
+		reason: `merge failed: ${error}`,
+		headSha,
+		retry: true,
+	} as const;
 	if (TRANSIENT_MERGE_ERROR.test(error)) return transient;
-	if (TERMINAL_MERGE_ERROR.test(error)) return { kind: "blocked", reason: `merge refused by GitHub: ${error}`, headSha, comment: true };
-	if (AGENT_MERGE_ERROR.test(error)) return { kind: "needs-agent", reason: error, next: `${error}; run review again`, headSha };
+	if (TERMINAL_MERGE_ERROR.test(error))
+		return { kind: "blocked", reason: `merge refused by GitHub: ${error}`, headSha, comment: true };
+	if (AGENT_MERGE_ERROR.test(error))
+		return { kind: "needs-agent", reason: error, next: `${error}; run review again`, headSha };
 	return transient;
 }
 
 /** Why the stored review alone refuses the merge (none, or not passing), or undefined when it passed. No GitHub read. */
-function storedReviewRefusal(config: ShipConfig, latest: ReviewResult | undefined, url: string): string | undefined {
+function storedReviewRefusal(
+	config: ShipConfig,
+	latest: ReviewResult | undefined,
+	url: string,
+): string | undefined {
 	if (latest && reviewPasses(config, latest)) return undefined;
 	// The review side of the gate alone: a mergeable, check-free stand-in for the PR at the stored head.
-	const standIn: PrStatus = { state: "OPEN", headSha: latest?.headSha ?? "", mergeable: "MERGEABLE", checks: "none", url };
+	const standIn: PrStatus = {
+		state: "OPEN",
+		headSha: latest?.headSha ?? "",
+		mergeable: "MERGEABLE",
+		checks: "none",
+		url,
+	};
 	return mergeGate({ config, status: standIn, latest }).reason;
 }
 
@@ -429,21 +582,39 @@ function storedReviewRefusal(config: ShipConfig, latest: ReviewResult | undefine
  * outside the flow, blocks; a stored review that does not pass goes back to the agent and never waits, even when the
  * PR cannot be read.
  */
-function mergeOnce(config: ShipConfig, github: Github, ship: ShipState, pr: PrRef, threadOpts?: ReviewThreadsOptions): MergeStep {
+function mergeOnce(
+	config: ShipConfig,
+	github: Github,
+	ship: ShipState,
+	pr: PrRef,
+	threadOpts?: ReviewThreadsOptions,
+): MergeStep {
 	let latest = ship.rounds.at(-1);
 	// After a recorded merge the stored review no longer matters: an unreadable PR is simply retried for the cleanup.
 	const refusal = ship.phase === "merged" ? undefined : storedReviewRefusal(config, latest, pr.url);
 	const status = github.prStatus(pr.number);
 	if (!status) {
 		if (!refusal) return { kind: "transient", reason: "could not read PR status" };
-		return { kind: "needs-agent", reason: refusal, next: `${refusal}; run review again`, headSha: latest?.headSha ?? "" };
+		return {
+			kind: "needs-agent",
+			reason: refusal,
+			next: `${refusal}; run review again`,
+			headSha: latest?.headSha ?? "",
+		};
 	}
 	const headSha = status.headSha;
-	if (status.state === "CLOSED") return { kind: "blocked", reason: "PR closed without merge", headSha, comment: false };
+	if (status.state === "CLOSED")
+		return { kind: "blocked", reason: "PR closed without merge", headSha, comment: false };
 	if (status.state === "MERGED") {
 		// Cleanup only for a merge this flow made or one whose exact head passed review; anything else is reported, never recorded.
 		if (ship.phase === "merged" || (latest?.headSha === headSha && !refusal)) {
-			return { kind: "merged", headSha, score: latest?.score, method: config.mergeMethod, alreadyMerged: true };
+			return {
+				kind: "merged",
+				headSha,
+				score: latest?.score,
+				method: config.mergeMethod,
+				alreadyMerged: true,
+			};
 		}
 		return { kind: "blocked", reason: MERGED_OUTSIDE, headSha, comment: false };
 	}
@@ -458,16 +629,31 @@ function mergeOnce(config: ShipConfig, github: Github, ship: ShipState, pr: PrRe
 	if (latest.source === "pr") {
 		// Merge on the PR's current threads, never on the stored snapshot; an unreadable thread list refuses this poll.
 		const threads = github.reviewThreads(pr.number, threadOpts);
-		if (!threads.ok) return { kind: "transient", reason: `could not read review threads: ${threads.error}`, headSha };
+		if (!threads.ok)
+			return {
+				kind: "transient",
+				reason: `could not read review threads: ${threads.error}`,
+				headSha,
+			};
 		latest = { ...latest, comments: openThreadComments(threads.threads) };
 	}
 	const gate = mergeGate({ config, status, latest });
-	if (!reviewPasses(config, latest)) return { kind: "needs-agent", reason: gate.reason, next: `${gate.reason}; run review again`, headSha };
+	if (!reviewPasses(config, latest))
+		return {
+			kind: "needs-agent",
+			reason: gate.reason,
+			next: `${gate.reason}; run review again`,
+			headSha,
+		};
 	if (!gate.ok) return classifyGateReason(gate.reason, headSha);
 	const allowed = github.mergeMethods();
-	const method = allowed.length > 0 && !allowed.includes(config.mergeMethod) ? (allowed[0] ?? config.mergeMethod) : config.mergeMethod;
+	const method =
+		allowed.length > 0 && !allowed.includes(config.mergeMethod)
+			? (allowed[0] ?? config.mergeMethod)
+			: config.mergeMethod;
 	const merged = github.merge({ number: pr.number, method, headSha });
-	if (merged.ok) return { kind: "merged", headSha, score: latest.score, method, alreadyMerged: false };
+	if (merged.ok)
+		return { kind: "merged", headSha, score: latest.score, method, alreadyMerged: false };
 	return classifyMergeError(merged.error ?? "unknown", headSha);
 }
 
@@ -481,8 +667,17 @@ function blockMerge(
 	now: number,
 ): Output & { ok: boolean } {
 	const { deps, statePath } = ctx;
-	const attempt: ShipAttempt = { at: now, step: "merge", headSha: block.headSha, outcome: "blocked", detail: block.reason };
-	const attempts = appendAttempts(statePath, [attempt], now)?.attempts ?? [...(ship.attempts ?? []), attempt];
+	const attempt: ShipAttempt = {
+		at: now,
+		step: "merge",
+		headSha: block.headSha,
+		outcome: "blocked",
+		detail: block.reason,
+	};
+	const attempts = appendAttempts(statePath, [attempt], now)?.attempts ?? [
+		...(ship.attempts ?? []),
+		attempt,
+	];
 	let commented: boolean | undefined;
 	if (block.comment && ship.phase !== "blocked") {
 		const body = stoppedComment({
@@ -526,8 +721,25 @@ function finishMerge(
 		if (synced.error) cleanup.syncError = synced.error;
 	}
 	const detail = merged.alreadyMerged ? { detail: "PR already merged" } : {};
-	appendAttempts(statePath, [{ at: now, step: "merge", headSha: merged.headSha, outcome: "merged", score: merged.score, ...detail }], now);
-	writeShip(statePath, { phase: "merged", mergedAt: ship.mergedAt ?? now, waiting: undefined }, now);
+	appendAttempts(
+		statePath,
+		[
+			{
+				at: now,
+				step: "merge",
+				headSha: merged.headSha,
+				outcome: "merged",
+				score: merged.score,
+				...detail,
+			},
+		],
+		now,
+	);
+	writeShip(
+		statePath,
+		{ phase: "merged", mergedAt: ship.mergedAt ?? now, waiting: undefined },
+		now,
+	);
 	const { method } = merged;
 	return {
 		ok: true,
@@ -535,7 +747,9 @@ function finishMerge(
 		alreadyMerged: merged.alreadyMerged,
 		pr,
 		method,
-		...(method !== deps.config.mergeMethod ? { methodSubstituted: `${deps.config.mergeMethod} not allowed; used ${method}` } : {}),
+		...(method !== deps.config.mergeMethod
+			? { methodSubstituted: `${deps.config.mergeMethod} not allowed; used ${method}` }
+			: {}),
 		...cleanup,
 		next: "run ultrathink-sync",
 	};
@@ -546,7 +760,10 @@ function finishMerge(
  * mergeability, unreadable PR state, transient GitHub errors) within `budgetMs`, and blocking after
  * `ship.mergeTimeoutMs` on one head commit.
  */
-async function stepMerge(ctx: Ctx, budgetMs: number = ctx.deps.config.waitMs): Promise<Output & { ok: boolean }> {
+async function stepMerge(
+	ctx: Ctx,
+	budgetMs: number = ctx.deps.config.waitMs,
+): Promise<Output & { ok: boolean }> {
 	const { deps, statePath, cwd } = ctx;
 	const { config } = deps;
 	if (!config.autoMerge) return { ok: false, merged: false, reason: "autoMerge disabled" };
@@ -558,17 +775,37 @@ async function stepMerge(ctx: Ctx, budgetMs: number = ctx.deps.config.waitMs): P
 	let waiting = ship.waiting;
 	let delay = config.pollMs;
 	for (let polls = 1; ; polls++) {
-		const step = mergeOnce(config, github, ship, pr, { deadlineMs: started + budgetMs, now: deps.now });
+		const step = mergeOnce(config, github, ship, pr, {
+			deadlineMs: started + budgetMs,
+			now: deps.now,
+		});
 		const now = deps.now();
 		if (step.kind === "merged") return finishMerge(ctx, github, ship, pr, step, now);
 		if (step.kind === "blocked") return blockMerge(ctx, github, ship, pr, step, now);
 		if (step.kind === "needs-agent") {
-			appendAttempts(statePath, [{ at: now, step: "merge", headSha: step.headSha, outcome: "needs-agent", detail: step.reason }], now);
+			appendAttempts(
+				statePath,
+				[
+					{
+						at: now,
+						step: "merge",
+						headSha: step.headSha,
+						outcome: "needs-agent",
+						detail: step.reason,
+					},
+				],
+				now,
+			);
 			return { ok: false, merged: false, reason: step.reason, next: step.next };
 		}
 		// An unreadable PR status has no head: count against the reviewed head, never a stale persisted `waiting` head.
 		const headSha = step.headSha ?? ship.rounds.at(-1)?.headSha ?? waiting?.headSha ?? "";
-		if (step.retry) appendAttempts(statePath, [{ at: now, step: "merge", headSha, outcome: "retry", detail: step.reason }], now);
+		if (step.retry)
+			appendAttempts(
+				statePath,
+				[{ at: now, step: "merge", headSha, outcome: "retry", detail: step.reason }],
+				now,
+			);
 		if (waiting?.headSha !== headSha) {
 			waiting = { headSha, since: now };
 			writeShip(statePath, { waiting }, now);
@@ -581,7 +818,11 @@ async function stepMerge(ctx: Ctx, budgetMs: number = ctx.deps.config.waitMs): P
 		const remaining = budgetMs - (now - started);
 		if (remaining <= 0) {
 			const detail = `${step.reason} (${polls} poll(s))`;
-			appendAttempts(statePath, [{ at: now, step: "merge", headSha, outcome: "waiting", detail }], now);
+			appendAttempts(
+				statePath,
+				[{ at: now, step: "merge", headSha, outcome: "waiting", detail }],
+				now,
+			);
 			const progress = `waited ${minutes(waitedMs)} of ${minutes(config.mergeTimeoutMs)} min on this commit`;
 			return {
 				ok: false,
@@ -602,22 +843,30 @@ async function stepRun(ctx: Ctx): Promise<Output> {
 	const { config } = ctx.deps;
 	const started = ctx.deps.now();
 	const assess = await stepAssess(ctx);
-	if (!assess.done) return { ok: true, assess, next: "task not done: finish the listed gaps, then run again" };
+	if (!assess.done)
+		return { ok: true, assess, next: "task not done: finish the listed gaps, then run again" };
 	const pr = await stepPr(ctx);
 	if (!pr.ok) return { ok: false, assess, pr, next: `stop: ${String(pr.reason)}` };
 	const review = await stepReview(ctx);
 	// A passed review merges now, or waits on the PR (CI, mergeability) inside the merge loop; blocked means closed.
 	const passed = review.ready || (review.passed === true && review.blocked !== true);
 	if (!passed || !config.autoMerge) {
-		const next = review.ready ? "autoMerge disabled: merge manually" : (review.next ?? `stop: ${String(review.reason)}`);
+		const next = review.ready
+			? "autoMerge disabled: merge manually"
+			: (review.next ?? `stop: ${String(review.reason)}`);
 		return { ok: review.ok !== false && review.blocked !== true, assess, pr, review, next };
 	}
 	const merge = await stepMerge(ctx, Math.max(0, config.waitMs - (ctx.deps.now() - started)));
-	const next = merge.ok ? "run ultrathink-sync" : String(merge.next ?? `stop: ${String(merge.reason)}`);
+	const next = merge.ok
+		? "run ultrathink-sync"
+		: String(merge.next ?? `stop: ${String(merge.reason)}`);
 	return { ok: merge.ok, assess, pr, review, merge, next };
 }
 
-export async function runShip(argv: string[], deps: ShipDeps): Promise<{ code: number; output: Output }> {
+export async function runShip(
+	argv: string[],
+	deps: ShipDeps,
+): Promise<{ code: number; output: Output }> {
 	const [command, ...rest] = argv;
 	let state: string | undefined;
 	let cwd = process.cwd();
@@ -626,7 +875,8 @@ export async function runShip(argv: string[], deps: ShipDeps): Promise<{ code: n
 		if (rest[i] === "--state") state = rest[++i];
 		else if (rest[i] === "--cwd") cwd = rest[++i] ?? cwd;
 		else if (rest[i] === "--ignore-gsd") ignoreGsd = true;
-		else return { code: 2, output: { ok: false, error: `unknown argument ${rest[i]}`, usage: USAGE } };
+		else
+			return { code: 2, output: { ok: false, error: `unknown argument ${rest[i]}`, usage: USAGE } };
 	}
 	if (!state) return { code: 2, output: { ok: false, error: "--state is required", usage: USAGE } };
 	const ctx: Ctx = { deps, statePath: resolve(state), cwd: resolve(cwd), ignoreGsd };
@@ -644,13 +894,22 @@ export async function runShip(argv: string[], deps: ShipDeps): Promise<{ code: n
 				return { code: 0, output: await stepRun(ctx) };
 			case "status": {
 				const ship = readShip(ctx.statePath);
-				return { code: 0, output: ship ? { ok: true, ship } : { ok: false, reason: "no ship state" } };
+				return {
+					code: 0,
+					output: ship ? { ok: true, ship } : { ok: false, reason: "no ship state" },
+				};
 			}
 			default:
-				return { code: 2, output: { ok: false, error: `unknown command ${command ?? ""}`, usage: USAGE } };
+				return {
+					code: 2,
+					output: { ok: false, error: `unknown command ${command ?? ""}`, usage: USAGE },
+				};
 		}
 	} catch (error) {
-		return { code: 0, output: { ok: false, error: error instanceof Error ? error.message : String(error) } };
+		return {
+			code: 0,
+			output: { ok: false, error: error instanceof Error ? error.message : String(error) },
+		};
 	}
 }
 
@@ -659,6 +918,9 @@ async function main(): Promise<number> {
 	const cwdIndex = argv.indexOf("--cwd");
 	const cwd = resolve(cwdIndex >= 0 ? (argv[cwdIndex + 1] ?? process.cwd()) : process.cwd());
 	const stateIndex = argv.indexOf("--state");
+	// The session record lives at <stateDir>/sessions/<id>.json; without it the host's default state dir applies.
+	const stateFile = stateIndex >= 0 ? argv[stateIndex + 1] : undefined;
+	const stateDir = stateFile ? dirname(dirname(resolve(stateFile))) : defaultStateDir();
 	const config = loadConfig(claudeConfigPaths(cwd));
 	let client: McpClient | undefined;
 	const deps: ShipDeps = {
@@ -671,11 +933,12 @@ async function main(): Promise<number> {
 		signals: collectSignals,
 		diff: gatherDiff,
 		engine: async () => {
-			const stateFile = stateIndex >= 0 ? argv[stateIndex + 1] : undefined;
 			if (!stateFile) return undefined;
-			// state file lives at <stateDir>/sessions/<id>.json. The judge is an auxiliary helper on the configured CLI route
-			// (explicit engine/model or the host's route default); it never replays the session's planning model or auth.
-			const selected = await selectEngine(config, readControl(dirname(dirname(resolve(stateFile)))), cwd, { purpose: "auxiliary" });
+			// The judge is an auxiliary helper on the configured CLI route (explicit engine/model or the host's route
+			// default); it never replays the session's planning model or auth.
+			const selected = await selectEngine(config, readControl(stateDir), cwd, {
+				purpose: "auxiliary",
+			});
 			return "skipped" in selected ? undefined : selected.complete;
 		},
 		greptile: () => {
@@ -684,7 +947,8 @@ async function main(): Promise<number> {
 			return client;
 		},
 		sleep: Bun.sleep,
-		decisions: (record) => createDecisions({ config: config.decisions, sessionId: record.sessionId }),
+		decisions: (record) =>
+			createDecisions({ config: config.decisions, sessionId: record.sessionId, stateDir }),
 	};
 	const { code, output } = await runShip(argv, deps);
 	client?.close();

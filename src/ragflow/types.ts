@@ -121,7 +121,13 @@ export type RagflowKeySource = "store" | typeof RAGFLOW_KEY_ENV;
 
 export type RagflowReadiness =
 	| { state: "ready"; url: string; keySource: RagflowKeySource }
-	| { state: "ready"; backend: "gateway"; url: string; seat: string; tokenSource: "store" | "DESK_GATEWAY_TOKEN" }
+	| {
+			state: "ready";
+			backend: "gateway";
+			url: string;
+			seat: string;
+			tokenSource: "store" | "DESK_GATEWAY_TOKEN";
+	  }
 	| { state: "off"; reason: "disabled" | "killed" }
 	| { state: "unready"; reason: "no-url" | "bad-url" | "no-key" | "no-token"; detail?: string };
 
@@ -131,7 +137,7 @@ export interface RagflowResolution {
 	client?: RagflowClient;
 }
 
-export type GroundStatus = "used" | "none" | "off" | "error";
+type GroundStatus = "used" | "none" | "off" | "error";
 
 /** What one planner-grounding lookup did; recorded on the session like the Greptile knowledge lookup. */
 export interface GroundOutcome {

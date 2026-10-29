@@ -4,8 +4,9 @@
 import { accessSync, constants, existsSync } from "node:fs";
 import pkg from "../../package.json";
 import { createAuth } from "./auth/auth.ts";
-import { loadChaosFetch } from "./chaos/faults.ts";
+import { loadChaosBackend } from "./chaos/faults.ts";
 import { ConfigError, type TlsFiles, type UltrathinkConfig, loadConfig } from "./config/config.ts";
+import { createPlanBackend } from "./engine/plan.ts";
 import { createShutdown, installProcessHandlers } from "./lifecycle.ts";
 import { ToolDefinitionError, assertToolDefinitions } from "./mcp/definitions.ts";
 import { TOOL_DEFINITIONS } from "./mcp/mcp.ts";
@@ -67,7 +68,11 @@ interface Listener {
 
 // With TLS configured the listener is mTLS only: the handshake refuses any client that does not chain to the CA, and
 // the verified SPIFFE identity (never a header) is the only identity the router sees.
-async function startTlsListener(tls: TlsFiles, config: UltrathinkConfig, app: App): Promise<Listener> {
+async function startTlsListener(
+	tls: TlsFiles,
+	config: UltrathinkConfig,
+	app: App,
+): Promise<Listener> {
 	assertMtlsRuntime();
 	requireReadableOrExit("ULTRATHINK_TLS_CERT", tls.certFile);
 	requireReadableOrExit("ULTRATHINK_TLS_KEY", tls.keyFile);
@@ -108,6 +113,21 @@ function startPlaintextListener(config: UltrathinkConfig, app: App): Listener {
 	});
 }
 
+// `--check-config` validates the environment and exits before any store, socket or tool-definition work.
+if (process.argv.includes("--check-config")) {
+	try {
+		loadConfig();
+	} catch (error) {
+		if (error instanceof ConfigError) {
+			process.stderr.write(`${error.message}\n`);
+			process.exit(1);
+		}
+		throw error;
+	}
+	process.stdout.write("config ok\n");
+	process.exit(0);
+}
+
 const config = loadConfigOrExit();
 assertToolDefinitionsOrExit();
 const logger = createLogger();
@@ -118,11 +138,30 @@ const auth = createAuth({
 	previousSessionSecrets: config.sessionSecretPrevious,
 	cookieSecure: config.publicOrigin.startsWith("https://"),
 });
-const chaosFetch = loadChaosFetch(config);
-const app = createApp({ config, store, auth, logger, ...(chaosFetch ? { fetch: chaosFetch } : {}) });
+// Chaos builds the real plan backend around a faulty `claude` seam, so faults land inside the same timed child call
+// production uses; off, nothing is built here and the planner makes its own backend.
+const chaosBackend = loadChaosBackend(config, (claude) =>
+	createPlanBackend({
+		model: config.planningModel,
+		fallback: config.planFallback ?? "none",
+		concurrency: config.planConcurrency ?? 2,
+		timeoutMs: config.modelTimeoutMs,
+		env: process.env,
+		claude,
+	}),
+);
+const app = createApp({
+	config,
+	store,
+	auth,
+	logger,
+	...(chaosBackend ? { planBackend: chaosBackend } : {}),
+});
 
 const listener: Listener =
-	config.tls === undefined ? startPlaintextListener(config, app) : await startTlsListener(config.tls, config, app);
+	config.tls === undefined
+		? startPlaintextListener(config, app)
+		: await startTlsListener(config.tls, config, app);
 app.start();
 
 const shutdown = createShutdown({
@@ -137,12 +176,20 @@ const shutdown = createShutdown({
 });
 installProcessHandlers(shutdown, logger, process);
 
+if (config.legacyEnvIgnored.length > 0) {
+	logger.warn("config_ignored_env", {
+		names: config.legacyEnvIgnored,
+		message:
+			"these variables are no longer used by the hosted service; remove them from the environment file",
+	});
+}
+
 logger.info("listening", {
 	version: pkg.version,
 	port: listener.port,
 	tls: config.tls !== undefined,
 	trustDomain: config.spiffeTrustDomain,
 	serverPlanning: config.serverPlanning,
-	planningModel: config.planningModel ?? null,
+	planningModel: config.planningModel,
 	maxConcurrentPlans: config.maxConcurrentPlans,
 });

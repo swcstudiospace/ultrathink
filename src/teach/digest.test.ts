@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { digestFromAgentMessages, digestFromClaudeTranscript, parseDigest } from "./digest.ts";
 import { DIGEST_MAX_CHARS, DIGEST_MAX_TURNS, DIGEST_TURN_CHARS } from "./types.ts";
 
-const META = { host: "claude-code", sessionId: "s1", cwd: "/work/repo", now: () => Date.parse("2026-10-02T10:00:00Z") };
+const META = {
+	host: "claude-code",
+	sessionId: "s1",
+	cwd: "/work/repo",
+	now: () => Date.parse("2026-10-02T10:00:00Z"),
+};
 
 function valid(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
@@ -34,10 +39,16 @@ describe("parseDigest", () => {
 	});
 
 	test("an unparseable or missing `at` becomes the current time", () => {
-		const before = Date.now();
-		for (const at of ["yesterday-ish", undefined, 42]) {
-			const digest = parseDigest(valid({ at }));
-			expect(Date.parse(digest?.at ?? "")).toBeGreaterThanOrEqual(before);
+		// parseDigest reads the wall clock directly, so the clock is pinned to a fixed instant for this test only.
+		const fixed = Date.UTC(2026, 9, 25, 12, 0, 0);
+		setSystemTime(fixed);
+		try {
+			for (const at of ["yesterday-ish", undefined, 42]) {
+				const digest = parseDigest(valid({ at }));
+				expect(digest?.at).toBe(new Date(fixed).toISOString());
+			}
+		} finally {
+			setSystemTime();
 		}
 	});
 
@@ -61,18 +72,26 @@ describe("parseDigest", () => {
 	});
 
 	test("keeps only the newest turns and clips each one", () => {
-		const turns = Array.from({ length: DIGEST_MAX_TURNS + 20 }, (_v, i) => ({ role: "user", text: `turn-${i}` }));
+		const turns = Array.from({ length: DIGEST_MAX_TURNS + 20 }, (_v, i) => ({
+			role: "user",
+			text: `turn-${i}`,
+		}));
 		const digest = parseDigest(valid({ turns }));
 		expect(digest?.turns).toHaveLength(DIGEST_MAX_TURNS);
 		expect(digest?.turns[0]?.text).toBe("turn-20");
 		expect(digest?.turns.at(-1)?.text).toBe(`turn-${DIGEST_MAX_TURNS + 19}`);
 
-		const long = parseDigest(valid({ turns: [{ role: "user", text: "x".repeat(DIGEST_TURN_CHARS * 3) }] }));
+		const long = parseDigest(
+			valid({ turns: [{ role: "user", text: "x".repeat(DIGEST_TURN_CHARS * 3) }] }),
+		);
 		expect(long?.turns[0]?.text.length).toBe(DIGEST_TURN_CHARS);
 	});
 
 	test("the total size stays within the character budget, dropping the oldest turns first", () => {
-		const turns = Array.from({ length: 40 }, (_v, i) => ({ role: "assistant", text: `${i}`.padEnd(DIGEST_TURN_CHARS, "y") }));
+		const turns = Array.from({ length: 40 }, (_v, i) => ({
+			role: "assistant",
+			text: `${i}`.padEnd(DIGEST_TURN_CHARS, "y"),
+		}));
 		const digest = parseDigest(valid({ turns }));
 		const total = digest?.turns.reduce((sum, turn) => sum + turn.text.length, 0) ?? 0;
 		expect(total).toBeLessThanOrEqual(DIGEST_MAX_CHARS);
@@ -81,7 +100,12 @@ describe("parseDigest", () => {
 	});
 
 	test("keeps tool name and error flag, and drops other fields", () => {
-		const digest = parseDigest(valid({ extra: "x", turns: [{ role: "tool", text: "boom", tool: "Bash", isError: true, secret: "s" }] }));
+		const digest = parseDigest(
+			valid({
+				extra: "x",
+				turns: [{ role: "tool", text: "boom", tool: "Bash", isError: true, secret: "s" }],
+			}),
+		);
 		expect(digest?.turns[0]).toEqual({ role: "tool", text: "boom", tool: "Bash", isError: true });
 		expect(digest).not.toHaveProperty("extra");
 	});
@@ -96,8 +120,15 @@ describe("digestFromClaudeTranscript", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	const user = (content: unknown, extra: Record<string, unknown> = {}) => ({ type: "user", message: { role: "user", content }, ...extra });
-	const assistant = (content: unknown) => ({ type: "assistant", message: { role: "assistant", content } });
+	const user = (content: unknown, extra: Record<string, unknown> = {}) => ({
+		type: "user",
+		message: { role: "user", content },
+		...extra,
+	});
+	const assistant = (content: unknown) => ({
+		type: "assistant",
+		message: { role: "assistant", content },
+	});
 	function write(entries: unknown[], name = "t.jsonl"): string {
 		const path = join(dir, name);
 		writeFileSync(path, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
@@ -109,15 +140,42 @@ describe("digestFromClaudeTranscript", () => {
 			user("make the tests pass"),
 			assistant([
 				{ type: "text", text: "Running the suite." },
-				{ type: "tool_use", id: "t1", name: "Bash", input: { command: "bun   test\n--bail", description: "ignored" } },
+				{
+					type: "tool_use",
+					id: "t1",
+					name: "Bash",
+					input: { command: "bun   test\n--bail", description: "ignored" },
+				},
 			]),
-			user([{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "error: cannot find module" }]),
-			assistant([{ type: "tool_use", id: "t2", name: "Edit", input: { file_path: "src/a.ts", old_string: "x" } }]),
-			user([{ type: "tool_result", tool_use_id: "t2", content: [{ type: "text", text: "edited" }] }]),
+			user([
+				{
+					type: "tool_result",
+					tool_use_id: "t1",
+					is_error: true,
+					content: "error: cannot find module",
+				},
+			]),
+			assistant([
+				{
+					type: "tool_use",
+					id: "t2",
+					name: "Edit",
+					input: { file_path: "src/a.ts", old_string: "x" },
+				},
+			]),
+			user([
+				{ type: "tool_result", tool_use_id: "t2", content: [{ type: "text", text: "edited" }] },
+			]),
 			assistant([{ type: "text", text: "Done." }]),
 		]);
 		const digest = digestFromClaudeTranscript(path, META);
-		expect(digest).toMatchObject({ host: "claude-code", sessionId: "s1", cwd: "/work/repo", at: "2026-10-02T10:00:00.000Z", toolCalls: 2 });
+		expect(digest).toMatchObject({
+			host: "claude-code",
+			sessionId: "s1",
+			cwd: "/work/repo",
+			at: "2026-10-02T10:00:00.000Z",
+			toolCalls: 2,
+		});
 		expect(digest?.outcome).toBeUndefined();
 		expect(digest?.turns).toEqual([
 			{ role: "user", text: "make the tests pass" },
@@ -137,7 +195,10 @@ describe("digestFromClaudeTranscript", () => {
 			{ type: "summary", summary: "x" },
 			user("<local-command-stdout>ok</local-command-stdout>"),
 			user("real prompt"),
-			assistant([{ type: "thinking", thinking: "hmm" }, { type: "text", text: "answer" }]),
+			assistant([
+				{ type: "thinking", thinking: "hmm" },
+				{ type: "text", text: "answer" },
+			]),
 		]);
 		writeFileSync(path, `not json\n${JSON.stringify(user("later prompt"))}\n`, { flag: "a" });
 		const digest = digestFromClaudeTranscript(path, META);
@@ -145,10 +206,19 @@ describe("digestFromClaudeTranscript", () => {
 	});
 
 	test("an interrupt marker sets the outcome unless the host states one", () => {
-		const entries = [user("go"), assistant([{ type: "text", text: "working" }]), user([{ type: "text", text: "[Request interrupted by user]" }])];
+		const entries = [
+			user("go"),
+			assistant([{ type: "text", text: "working" }]),
+			user([{ type: "text", text: "[Request interrupted by user]" }]),
+		];
 		expect(digestFromClaudeTranscript(write(entries), META)?.outcome).toBe("interrupted");
-		expect(digestFromClaudeTranscript(write(entries, "b.jsonl"), { ...META, outcome: "completed" })?.outcome).toBe("completed");
-		expect(digestFromClaudeTranscript(write(entries, "c.jsonl"), META)?.turns.map((t) => t.text)).toEqual(["go", "working"]);
+		expect(
+			digestFromClaudeTranscript(write(entries, "b.jsonl"), { ...META, outcome: "completed" })
+				?.outcome,
+		).toBe("completed");
+		expect(
+			digestFromClaudeTranscript(write(entries, "c.jsonl"), META)?.turns.map((t) => t.text),
+		).toEqual(["go", "working"]);
 	});
 
 	test("undefined for a missing file, an empty file, and conversations lacking either side", () => {
@@ -156,7 +226,12 @@ describe("digestFromClaudeTranscript", () => {
 		writeFileSync(join(dir, "empty.jsonl"), "");
 		expect(digestFromClaudeTranscript(join(dir, "empty.jsonl"), META)).toBeUndefined();
 		expect(digestFromClaudeTranscript(write([user("only me")], "u.jsonl"), META)).toBeUndefined();
-		expect(digestFromClaudeTranscript(write([assistant([{ type: "text", text: "only me" }])], "a.jsonl"), META)).toBeUndefined();
+		expect(
+			digestFromClaudeTranscript(
+				write([assistant([{ type: "text", text: "only me" }])], "a.jsonl"),
+				META,
+			),
+		).toBeUndefined();
 	});
 
 	test("reads only the tail of a large transcript", () => {
@@ -174,7 +249,9 @@ describe("digestFromClaudeTranscript", () => {
 	test("clips long tool summaries and turn text to the digest caps", () => {
 		const path = write([
 			user("y".repeat(DIGEST_TURN_CHARS * 2)),
-			assistant([{ type: "tool_use", id: "t", name: "Bash", input: { command: "z".repeat(1000) } }]),
+			assistant([
+				{ type: "tool_use", id: "t", name: "Bash", input: { command: "z".repeat(1000) } },
+			]),
 		]);
 		const digest = digestFromClaudeTranscript(path, META);
 		expect(digest?.turns[0]?.text.length).toBe(DIGEST_TURN_CHARS);
@@ -187,10 +264,37 @@ describe("digestFromAgentMessages", () => {
 		const digest = digestFromAgentMessages(
 			[
 				{ role: "user", content: "deploy it" },
-				{ role: "assistant", content: [{ type: "thinking", thinking: "..." }, { type: "text", text: "Checking." }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }], stopReason: "toolUse" },
-				{ role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "permission denied" }], isError: true },
-				{ role: "assistant", content: [{ type: "text", text: "Retrying." }, { type: "toolCall", id: "c2", name: "bash", arguments: { command: "sudo ls" } }], stopReason: "toolUse" },
-				{ role: "toolResult", toolCallId: "c2", toolName: "bash", content: [{ type: "text", text: "ok" }], isError: false },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "..." },
+						{ type: "text", text: "Checking." },
+						{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } },
+					],
+					stopReason: "toolUse",
+				},
+				{
+					role: "toolResult",
+					toolCallId: "c1",
+					toolName: "bash",
+					content: [{ type: "text", text: "permission denied" }],
+					isError: true,
+				},
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Retrying." },
+						{ type: "toolCall", id: "c2", name: "bash", arguments: { command: "sudo ls" } },
+					],
+					stopReason: "toolUse",
+				},
+				{
+					role: "toolResult",
+					toolCallId: "c2",
+					toolName: "bash",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+				},
 				{ role: "assistant", content: [{ type: "text", text: "Deployed." }], stopReason: "stop" },
 			],
 			META,
@@ -211,20 +315,105 @@ describe("digestFromAgentMessages", () => {
 
 	test("an aborted final assistant message means interrupted; an error means failed; the host can override", () => {
 		const base = [{ role: "user", content: "go" }];
-		const aborted = [...base, { role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" }];
-		const errored = [...base, { role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "error" }];
+		const aborted = [
+			...base,
+			{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" },
+		];
+		const errored = [
+			...base,
+			{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "error" },
+		];
 		expect(digestFromAgentMessages(aborted, META)?.outcome).toBe("interrupted");
 		expect(digestFromAgentMessages(errored, META)?.outcome).toBe("failed");
-		expect(digestFromAgentMessages(aborted, { ...META, outcome: "completed" })?.outcome).toBe("completed");
+		expect(digestFromAgentMessages(aborted, { ...META, outcome: "completed" })?.outcome).toBe(
+			"completed",
+		);
 	});
 
 	test("skips unknown shapes, synthetic and developer messages; undefined when a side is missing", () => {
 		const digest = digestFromAgentMessages(
-			[null, 7, "x", { role: "developer", content: "rules" }, { role: "user", content: "auto-continue", synthetic: true }, { role: "mystery" }, { role: "user", content: [{ type: "image" }, { type: "text", text: "hi" }] }, { role: "assistant", content: "plain string reply" }],
+			[
+				null,
+				7,
+				"x",
+				{ role: "developer", content: "rules" },
+				{ role: "user", content: "auto-continue", synthetic: true },
+				{ role: "mystery" },
+				{ role: "user", content: [{ type: "image" }, { type: "text", text: "hi" }] },
+				{ role: "assistant", content: "plain string reply" },
+			],
 			META,
 		);
 		expect(digest?.turns.map((t) => t.text)).toEqual(["hi", "plain string reply"]);
 		expect(digestFromAgentMessages([{ role: "user", content: "x" }], META)).toBeUndefined();
 		expect(digestFromAgentMessages([], META)).toBeUndefined();
+	});
+
+	describe("a run the user started with /skill:", () => {
+		// Omp delivers it as a `custom` message, never a `user` one, and its content is the whole skill body.
+		const skillPrompt = (details: unknown, extra: Record<string, unknown> = {}) => ({
+			role: "custom",
+			customType: "skill-prompt",
+			attribution: "user",
+			display: true,
+			content: '[IMPORTANT: User invoked the "gsd-autonomous" skill]\n\nLONG SKILL BODY',
+			details,
+			...extra,
+		});
+		const reply = {
+			role: "assistant",
+			content: [{ type: "text", text: "On it." }],
+			stopReason: "stop",
+		};
+
+		test("the words the user typed are the user turn, never the skill body", () => {
+			const digest = digestFromAgentMessages(
+				[
+					skillPrompt({ name: "gsd-autonomous", path: "/p/SKILL.md", args: "fix the memory bank" }),
+					reply,
+				],
+				META,
+			);
+			expect(digest?.turns).toEqual([
+				{ role: "user", text: "/skill:gsd-autonomous fix the memory bank" },
+				{ role: "assistant", text: "On it." },
+			]);
+		});
+
+		test("the submitted draft wins over the rebuilt command, and a bare skill keeps its name", () => {
+			const draft = digestFromAgentMessages(
+				[skillPrompt({ name: "ship", args: "x", prompt: "please /skill:ship x" }), reply],
+				META,
+			);
+			expect(draft?.turns[0]).toEqual({ role: "user", text: "please /skill:ship x" });
+			const bare = digestFromAgentMessages([skillPrompt({ name: "ship" }), reply], META);
+			expect(bare?.turns[0]).toEqual({ role: "user", text: "/skill:ship" });
+		});
+
+		test.each<[string, unknown]>([
+			["an autoload or agent injection", skillPrompt({ name: "ship" }, { attribution: "agent" })],
+			[
+				"another custom message",
+				skillPrompt({ name: "ship" }, { customType: "ultrathink-notice" }),
+			],
+			["a prompt without details", skillPrompt(undefined)],
+			["a prompt whose details name no skill", skillPrompt({ args: "x" })],
+		])("%s is not a user turn", (_name, message) => {
+			expect(digestFromAgentMessages([message, reply], META)).toBeUndefined();
+		});
+
+		test("a real user message in the same run still counts alongside the skill prompt", () => {
+			const digest = digestFromAgentMessages(
+				[
+					skillPrompt({ name: "ship", args: "go" }),
+					{ role: "user", content: "no, use squash" },
+					reply,
+				],
+				META,
+			);
+			expect(digest?.turns.filter((turn) => turn.role === "user").map((turn) => turn.text)).toEqual(
+				["/skill:ship go", "no, use squash"],
+			);
+		});
 	});
 });

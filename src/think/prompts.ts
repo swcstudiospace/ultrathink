@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { MAX_RATIONALE_CHARS, MAX_STEPS, MIN_STEPS } from "./types.ts";
+import { MAX_STEPS, MIN_STEPS } from "./types.ts";
 
 export const GRAPH_SYSTEM_PROMPT = `You are Graph-of-Thought planner.
 
@@ -57,7 +57,6 @@ Rules:
 - If information is missing, state a working assumption and continue.
 - You cannot call tools here; name the files and checks the coding agent should run after this pass.
 - Prefer repository evidence over speculation.
-- Hard length limits (the spec is injected into a bounded context; overflow is cut): <rationale> at most ${MAX_RATIONALE_CHARS} characters; <conclusion> at most 1200 characters for every kind except "synthesize", whose conclusion may use at most 3000 characters. Count characters, not words; trim rather than exceed.
 - When the current node kind is "synthesize", the conclusion MUST contain a WORKFLOW section written as plain lines, one unit per line:
   WORKFLOW
   Wave 1 (parallel): <unit> — files: <paths> — done when: <observable check>
@@ -80,7 +79,8 @@ Orchestrate it:
 
 const THINK_TRACKING = `The Notion Task/Issue/Sub-Issue rows and Linear issues for this graph were created before this turn (or are being finished by ultrathink-kickoff); their identifiers and URLs are in the ISSUES block of the specification and in the Linked issues list. Every WORKFLOW unit you put into TodoWrite should carry the matching issue link(s). Do not create additional Linear issues yourself: ultrathink-kickoff and "ultrathink-mcp track complete" own row creation, and ultrathink-sync updates the tracked rows later.`;
 
-const THINK_CLOSING = "Do not reprint the graph. Prefer repository evidence over the plan when they disagree. Start executing.";
+const THINK_CLOSING =
+	"Do not reprint the graph. Prefer repository evidence over the plan when they disagree. Start executing.";
 
 export const THINK_ADDENDUM = `${THINK_ORCHESTRATION}\n\n${THINK_TRACKING} ${THINK_CLOSING}\n`;
 

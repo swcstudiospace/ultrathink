@@ -2,7 +2,14 @@
 // Copyright (C) 2026 SWC Studio
 import type { ReviewThread, ReviewThreads } from "./github.ts";
 import { defaultRun } from "./run.ts";
-import { GREPTILE_MAX_SCORE, type ReviewComment, type ReviewResult, type Run, type ShipConfig } from "./types.ts";
+import {
+	GREPTILE_MAX_SCORE,
+	type ReviewComment,
+	type ReviewResult,
+	type Run,
+	type ShipConfig,
+} from "./types.ts";
+import { asObj } from "../shared.ts";
 
 export interface ToolCaller {
 	call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
@@ -20,9 +27,8 @@ export type ListedGreptileRepo = GreptileRepo & { reviewsEnabled?: boolean };
 
 type Obj = Record<string, unknown>;
 
-const asObj = (value: unknown): Obj | undefined =>
-	typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Obj) : undefined;
-const asStr = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+const asStr = (value: unknown): string | undefined =>
+	typeof value === "string" ? value : undefined;
 const asNum = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const asArr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -50,7 +56,8 @@ function repoArgs(repo: GreptileRepo): Obj {
 /** `{ organization }` for every Greptile MCP call when ship.greptileOrganization is set; empty lets Greptile pick. */
 const orgArgs = (organization: string | undefined): Obj => (organization ? { organization } : {});
 
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+const errorText = (error: unknown): string =>
+	error instanceof Error ? error.message : String(error);
 
 /** Organization ids/handles a tenant_required error offers, from a JSON payload or a `candidates: a, b` list. */
 function tenantCandidates(message: string): string[] {
@@ -88,7 +95,12 @@ export async function findGreptileRepo(
 	try {
 		for (let page = 0; page < 50; page++) {
 			const result = asObj(
-				await client.call("list_repositories", { limit, page, nameContains: repo.split("/").pop(), ...orgArgs(organization) }),
+				await client.call("list_repositories", {
+					limit,
+					page,
+					nameContains: repo.split("/").pop(),
+					...orgArgs(organization),
+				}),
 			);
 			const repos = asArr(result?.repositories);
 			for (const entry of repos) {
@@ -186,16 +198,26 @@ export async function reviewPr(input: {
 		let delay = input.pollMs;
 		let first = true;
 		while (true) {
-			const listed = asObj(await input.client.call("list_code_reviews", { ...tuple, prNumber: input.prNumber, limit: 20 }));
+			const listed = asObj(
+				await input.client.call("list_code_reviews", {
+					...tuple,
+					prNumber: input.prNumber,
+					limit: 20,
+				}),
+			);
 			const forHead = asArr(listed?.codeReviews)
 				.map(asObj)
 				.filter((item): item is Obj => item !== undefined && reviewSha(item) === input.headSha);
 			if (first && input.restart) for (const item of forHead) stale.add(String(item.id));
 			first = false;
-			const latest = forHead.filter((item) => !stale.has(String(item.id))).sort((a, b) => reviewTime(b) - reviewTime(a))[0];
+			const latest = forHead
+				.filter((item) => !stale.has(String(item.id)))
+				.sort((a, b) => reviewTime(b) - reviewTime(a))[0];
 			const status = asStr(latest?.status)?.toUpperCase();
 			const failed = status === "FAILED" || status === "ERROR" || status === "SKIPPED";
-			const reviewId = latest && (asStr(latest.id) ?? (asNum(latest.id) !== undefined ? String(latest.id) : undefined));
+			const reviewId =
+				latest &&
+				(asStr(latest.id) ?? (asNum(latest.id) !== undefined ? String(latest.id) : undefined));
 			pendingId = reviewId;
 			if (!triggered && (!latest || failed)) {
 				// Greptile auto-reviews pushes of indexed repos; trigger only when no live review exists for headSha.
@@ -203,19 +225,29 @@ export async function reviewPr(input: {
 				await input.client.call("trigger_code_review", { ...tuple, prNumber: input.prNumber });
 				triggered = true;
 			} else if (failed && status) {
-				return done({ status: "failed", reviewId, error: `greptile review ${status.toLowerCase()}` });
+				return done({
+					status: "failed",
+					reviewId,
+					error: `greptile review ${status.toLowerCase()}`,
+				});
 			} else if (status === "COMPLETED" && reviewId) {
 				const detail = asObj(
-					asObj(await input.client.call("get_code_review", { codeReviewId: reviewId, ...org }))?.codeReview,
+					asObj(await input.client.call("get_code_review", { codeReviewId: reviewId, ...org }))
+						?.codeReview,
 				);
 				const score = parseScore(asStr(detail?.body) ?? "");
 				if (score === null) {
-					return done({ status: "failed", reviewId, error: "score not found in Greptile review body" });
+					return done({
+						status: "failed",
+						reviewId,
+						error: "score not found in Greptile review body",
+					});
 				}
 				// Greptile reviews incrementally and never flips `addressed` on a fix, so GitHub thread state decides.
 				// A failed thread scan is not evidence that all findings are addressed.
 				const threads = input.reviewThreads?.();
-				if (threads && !threads.ok) return done({ status: "unverified", reviewId, error: threads.error });
+				if (threads && !threads.ok)
+					return done({ status: "unverified", reviewId, error: threads.error });
 				const comments = threads?.ok
 					? openThreadComments(threads.threads)
 					: mapComments(
@@ -228,7 +260,9 @@ export async function reviewPr(input: {
 										addressed: false,
 									}),
 								)?.comments,
-							).filter((c) => asObj(c)?.isGreptileComment !== false && asObj(c)?.addressed !== true),
+							).filter(
+								(c) => asObj(c)?.isGreptileComment !== false && asObj(c)?.addressed !== true,
+							),
 						);
 				const url = asStr(asObj(detail?.mergeRequest)?.url);
 				return done({ status: "completed", reviewId, score, comments, ...(url ? { url } : {}) });
@@ -247,7 +281,11 @@ export async function reviewPr(input: {
 		if (reason) return done({ status: "blocked", error: reason });
 		// A thrown tool or transport error says nothing about the review itself (Greptile's own FAILED/ERROR status is
 		// handled above), so it is pending: the next call retries, and ship.reviewTimeoutMs still bounds the wait.
-		return done({ status: "pending", error: message.slice(0, 300), ...(pendingId ? { reviewId: pendingId } : {}) });
+		return done({
+			status: "pending",
+			error: message.slice(0, 300),
+			...(pendingId ? { reviewId: pendingId } : {}),
+		});
 	}
 }
 
@@ -306,15 +344,24 @@ export async function reviewCli(input: {
 		let detail = info;
 		if (!Array.isArray(info.comments)) {
 			if (!runId) return fail("greptile review status has neither comments nor runId");
-			const shown = run(["greptile", "review", "show", runId, "--json"], { cwd, timeoutMs: CLI_QUERY_TIMEOUT_MS });
-			if (shown.exitCode !== 0) return fail(shown.stderr.trim() || `greptile review show exited ${shown.exitCode}`, runId);
+			const shown = run(["greptile", "review", "show", runId, "--json"], {
+				cwd,
+				timeoutMs: CLI_QUERY_TIMEOUT_MS,
+			});
+			if (shown.exitCode !== 0)
+				return fail(shown.stderr.trim() || `greptile review show exited ${shown.exitCode}`, runId);
 			const parsed = parseJson(shown.stdout);
 			if (!parsed) return fail("greptile review show returned invalid JSON", runId);
 			detail = parsed;
 		}
 		const score = validScore(info.confidence) ?? validScore(detail.confidence);
 		if (score === undefined) return fail("score not found in greptile review", runId);
-		return done({ status: "completed", score, comments: mapComments(detail.comments), ...(runId ? { reviewId: runId } : {}) });
+		return done({
+			status: "completed",
+			score,
+			comments: mapComments(detail.comments),
+			...(runId ? { reviewId: runId } : {}),
+		});
 	};
 	const deadline = now() + input.waitMs;
 	let delay = input.pollMs;
@@ -334,7 +381,9 @@ export async function reviewCli(input: {
 		);
 		const staleRun = staleRuns.has(asStr(info?.runId) ?? "");
 		const inFlight =
-			matches && !staleRun && (checked.exitCode === 3 || asStr(info?.status)?.toUpperCase() === "IN_FLIGHT");
+			matches &&
+			!staleRun &&
+			(checked.exitCode === 3 || asStr(info?.status)?.toUpperCase() === "IN_FLIGHT");
 		if (!inFlight) {
 			if (info && matches && !staleRun && checked.exitCode === 0) return complete(info);
 			break;
@@ -351,7 +400,10 @@ export async function reviewCli(input: {
 	const remaining = deadline - now();
 	if (remaining <= 0) return done({ status: "pending" });
 	const startedAt = now();
-	const started = run(["greptile", "review", "--json", "-b", input.base], { cwd, timeoutMs: remaining });
+	const started = run(["greptile", "review", "--json", "-b", input.base], {
+		cwd,
+		timeoutMs: remaining,
+	});
 	if (started.exitCode !== 0) {
 		if (now() - startedAt >= remaining) return done({ status: "pending" });
 		return fail(started.stderr.trim() || `greptile exited ${started.exitCode}`);
@@ -361,7 +413,12 @@ export async function reviewCli(input: {
 	const runId = asStr(parsed.runId);
 	const score = validScore(parsed.confidence);
 	if (score === undefined) return fail("score not found in greptile review", runId);
-	return done({ status: "completed", score, comments: mapComments(parsed.comments), ...(runId ? { reviewId: runId } : {}) });
+	return done({
+		status: "completed",
+		score,
+		comments: mapComments(parsed.comments),
+		...(runId ? { reviewId: runId } : {}),
+	});
 }
 
 export const GREPTILE_SETUP =
@@ -374,7 +431,11 @@ export const GREPTILE_SETUP =
 function cliNotSetUp(run: Run, cwd: string): boolean {
 	const who = run(["greptile", "whoami"], { cwd, timeoutMs: 10_000 });
 	const text = `${who.stdout}\n${who.stderr}`;
-	return who.exitCode === 127 || /ENOENT/.test(text) || /not signed in|saved sign-in could not be read/i.test(text);
+	return (
+		who.exitCode === 127 ||
+		/ENOENT/.test(text) ||
+		/not signed in|saved sign-in could not be read/i.test(text)
+	);
 }
 
 export async function runReview(input: {

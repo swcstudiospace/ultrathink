@@ -4,15 +4,38 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import * as nodeFs from "node:fs";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAuth } from "../auth/auth.ts";
-import { DEFAULT_REDIRECT_ORIGINS, type DurableFs, type OAuth, type OAuthOptions, createOAuth, writeFileDurably } from "./oauth.ts";
+import type { Logger } from "../obs/log.ts";
+import { redactText } from "../../../src/teach/redact.ts";
+import {
+	DEFAULT_REDIRECT_ORIGINS,
+	type DurableFs,
+	type OAuth,
+	type OAuthOptions,
+	createOAuth,
+	writeFileDurably,
+} from "./oauth.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { openStore, type Store } from "../store/store.ts";
 import { createHandler } from "../routes/router.ts";
-import { getSecurityLogger, setSecurityLogger, type SecurityEvent, type SecurityEventLogger } from "../security/events.ts";
+import {
+	getSecurityLogger,
+	setSecurityLogger,
+	type SecurityEvent,
+	type SecurityEventLogger,
+} from "../security/events.ts";
 
 const ORIGIN = "https://ultrathink.test";
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -44,7 +67,11 @@ async function registerClient(redirect = REDIRECT): Promise<string> {
 		new Request(`${ORIGIN}/oauth/register`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ client_name: "Grok", redirect_uris: [redirect], grant_types: ["authorization_code", "refresh_token"] }),
+			body: JSON.stringify({
+				client_name: "Grok",
+				redirect_uris: [redirect],
+				grant_types: ["authorization_code", "refresh_token"],
+			}),
 		}),
 		freshIp(),
 	);
@@ -53,7 +80,11 @@ async function registerClient(redirect = REDIRECT): Promise<string> {
 	return body.client_id;
 }
 
-async function startAuthorize(clientId: string, challenge: string, overrides: Record<string, string> = {}): Promise<Response> {
+async function startAuthorize(
+	clientId: string,
+	challenge: string,
+	overrides: Record<string, string> = {},
+): Promise<Response> {
 	const params = new URLSearchParams({
 		response_type: "code",
 		client_id: clientId,
@@ -64,7 +95,10 @@ async function startAuthorize(clientId: string, challenge: string, overrides: Re
 		state: "state-1",
 		...overrides,
 	});
-	return handler(new Request(`${ORIGIN}/oauth/authorize?${params.toString()}`, { method: "GET" }), freshIp());
+	return handler(
+		new Request(`${ORIGIN}/oauth/authorize?${params.toString()}`, { method: "GET" }),
+		freshIp(),
+	);
 }
 
 function consentFrom(html: string): { requestId: string; nonce: string } {
@@ -128,13 +162,22 @@ async function exchange(body: Record<string, string>): Promise<Response> {
 	);
 }
 
-async function issueTokens(clientId: string): Promise<{ access_token: string; refresh_token: string; code: string; verifier: string }> {
+async function issueTokens(
+	clientId: string,
+): Promise<{ access_token: string; refresh_token: string; code: string; verifier: string }> {
 	const { verifier, challenge } = pkcePair();
 	const consent = await startAuthorize(clientId, challenge);
 	expect(consent.status).toBe(200);
 	const granted = await approve(await consent.text(), password);
 	const code = codeFrom(granted);
-	const tokens = await exchange({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: REDIRECT, resource: RESOURCE });
+	const tokens = await exchange({
+		grant_type: "authorization_code",
+		code,
+		code_verifier: verifier,
+		client_id: clientId,
+		redirect_uri: REDIRECT,
+		resource: RESOURCE,
+	});
 	expect(tokens.status).toBe(200);
 	const body = (await tokens.json()) as { access_token: string; refresh_token: string };
 	return { ...body, code, verifier };
@@ -167,12 +210,11 @@ beforeAll(async () => {
 		maxBodyBytes: 16384,
 		runTokenCeiling: 150000,
 		dailyTokenCeiling: 1000000,
-		planningModel: undefined,
+		planningModel: "claude-haiku-5-5",
 		connectorKey: CONNECTOR_KEY,
 		allowedOrigins: [],
 		oauthRedirectOrigins: [],
-		openRouterApiKey: undefined,
-		openRouterBaseUrl: "https://openrouter.ai/api/v1",
+		legacyEnvIgnored: [],
 		serverPlanning: false,
 		maxConcurrentPlans: 2,
 		modelTimeoutMs: 120000,
@@ -218,13 +260,22 @@ afterAll(() => {
 
 describe("OAuth discovery", () => {
 	test("publishes protected-resource and authorization-server metadata with S256 PKCE", async () => {
-		const resource = await handler(new Request(`${ORIGIN}/.well-known/oauth-protected-resource/mcp`), PEER);
+		const resource = await handler(
+			new Request(`${ORIGIN}/.well-known/oauth-protected-resource/mcp`),
+			PEER,
+		);
 		expect(resource.status).toBe(200);
-		const protectedBody = (await resource.json()) as { resource: string; authorization_servers: string[] };
+		const protectedBody = (await resource.json()) as {
+			resource: string;
+			authorization_servers: string[];
+		};
 		expect(protectedBody.resource).toBe(RESOURCE);
 		expect(protectedBody.authorization_servers).toEqual([ORIGIN]);
 
-		const server = await handler(new Request(`${ORIGIN}/.well-known/oauth-authorization-server`), PEER);
+		const server = await handler(
+			new Request(`${ORIGIN}/.well-known/oauth-authorization-server`),
+			PEER,
+		);
 		const serverBody = (await server.json()) as Record<string, unknown>;
 		expect(serverBody.code_challenge_methods_supported).toEqual(["S256"]);
 		expect(serverBody.authorization_endpoint).toBe(`${ORIGIN}/oauth/authorize`);
@@ -235,7 +286,9 @@ describe("OAuth discovery", () => {
 	test("challenges MCP calls without a token with the metadata URL", async () => {
 		const response = await handler(mcpToolsList(null), PEER);
 		expect(response.status).toBe(401);
-		expect(response.headers.get("www-authenticate")).toContain(`${ORIGIN}/.well-known/oauth-protected-resource/mcp`);
+		expect(response.headers.get("www-authenticate")).toContain(
+			`${ORIGIN}/.well-known/oauth-protected-resource/mcp`,
+		);
 	});
 });
 
@@ -263,7 +316,13 @@ describe("OAuth authorization code flow", () => {
 		const { verifier, challenge } = pkcePair();
 		const consent = await startAuthorize(clientId, challenge);
 		const code = codeFrom(await approve(await consent.text(), password));
-		const base = { grant_type: "authorization_code", code, client_id: clientId, redirect_uri: REDIRECT, resource: RESOURCE };
+		const base = {
+			grant_type: "authorization_code",
+			code,
+			client_id: clientId,
+			redirect_uri: REDIRECT,
+			resource: RESOURCE,
+		};
 		const wrong = await exchange({ ...base, code_verifier: randomBytes(32).toString("base64url") });
 		expect(wrong.status).toBe(400);
 		expect(((await wrong.json()) as { error: string }).error).toBe("invalid_grant");
@@ -307,15 +366,23 @@ describe("OAuth authorization code flow", () => {
 		const clientId = await registerClient();
 		const { challenge } = pkcePair();
 		const plain = await startAuthorize(clientId, challenge, { code_challenge_method: "plain" });
-		expect(new URL(plain.headers.get("location") ?? "").searchParams.get("error")).toBe("invalid_request");
-		const foreign = await startAuthorize(clientId, challenge, { resource: "https://other.test/mcp" });
-		expect(new URL(foreign.headers.get("location") ?? "").searchParams.get("error")).toBe("invalid_target");
+		expect(new URL(plain.headers.get("location") ?? "").searchParams.get("error")).toBe(
+			"invalid_request",
+		);
+		const foreign = await startAuthorize(clientId, challenge, {
+			resource: "https://other.test/mcp",
+		});
+		expect(new URL(foreign.headers.get("location") ?? "").searchParams.get("error")).toBe(
+			"invalid_target",
+		);
 	});
 
 	test("authorize rejects an unregistered redirect URI without redirecting", async () => {
 		const clientId = await registerClient();
 		const { challenge } = pkcePair();
-		const response = await startAuthorize(clientId, challenge, { redirect_uri: "https://evil.test/cb" });
+		const response = await startAuthorize(clientId, challenge, {
+			redirect_uri: "https://evil.test/cb",
+		});
 		expect(response.status).toBe(400);
 		expect(response.headers.get("location")).toBeNull();
 	});
@@ -335,10 +402,18 @@ describe("OAuth authorization code flow", () => {
 	test("refresh tokens rotate, and a spent refresh token revokes the grant", async () => {
 		const clientId = await registerClient();
 		const first = await issueTokens(clientId);
-		const rotated = await exchange({ grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: clientId });
+		const rotated = await exchange({
+			grant_type: "refresh_token",
+			refresh_token: first.refresh_token,
+			client_id: clientId,
+		});
 		expect(rotated.status).toBe(200);
 		const next = (await rotated.json()) as { access_token: string; refresh_token: string };
-		const spent = await exchange({ grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: clientId });
+		const spent = await exchange({
+			grant_type: "refresh_token",
+			refresh_token: first.refresh_token,
+			client_id: clientId,
+		});
 		expect(spent.status).toBe(400);
 		expect((await handler(mcpToolsList(next.access_token), PEER)).status).toBe(401);
 	});
@@ -353,7 +428,14 @@ describe("OAuth authorization code flow", () => {
 		const consent = await startAuthorize(clientId, challenge);
 		const code = codeFrom(await approve(await consent.text(), password));
 		clock += CODE_TTL_MS + 1;
-		const late = await exchange({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: REDIRECT, resource: RESOURCE });
+		const late = await exchange({
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: REDIRECT,
+			resource: RESOURCE,
+		});
 		expect(late.status).toBe(400);
 	});
 
@@ -374,16 +456,24 @@ describe("OAuth authorization code flow", () => {
 		const { challenge } = pkcePair();
 		const consent = await startAuthorize(clientId, challenge);
 		const html = await consent.text();
-		expect(consent.headers.get("content-security-policy")).toContain("form-action 'self' https://claude.ai;");
+		expect(consent.headers.get("content-security-policy")).toContain(
+			"form-action 'self' https://claude.ai;",
+		);
 		expect(html).toContain('data-approval-state="PENDING_APPROVAL"');
 		clock += 45_000;
 		const polled = await pollConsent(html);
 		expect(polled.status).toBe(200);
 		const body: unknown = await polled.json();
-		if (typeof body !== "object" || body === null || !("state" in body) || body.state !== "PENDING_APPROVAL") {
+		if (
+			typeof body !== "object" ||
+			body === null ||
+			!("state" in body) ||
+			body.state !== "PENDING_APPROVAL"
+		) {
 			throw new Error("poll did not stay PENDING_APPROVAL");
 		}
-		if (!("refreshed_at" in body) || body.refreshed_at !== clock) throw new Error("approve poll did not refresh the timestamp");
+		if (!("refreshed_at" in body) || body.refreshed_at !== clock)
+			throw new Error("approve poll did not refresh the timestamp");
 		const granted = await approve(html, password);
 		expect(granted.status).toBe(302);
 		expect(await granted.text()).not.toContain("expired");
@@ -399,14 +489,21 @@ describe("OAuth authorization code flow", () => {
 		const still = await pollConsent(html);
 		expect(still.status).toBe(200);
 		const stillBody: unknown = await still.json();
-		if (typeof stillBody !== "object" || stillBody === null || !("state" in stillBody) || stillBody.state !== "PENDING_APPROVAL") {
+		if (
+			typeof stillBody !== "object" ||
+			stillBody === null ||
+			!("state" in stillBody) ||
+			stillBody.state !== "PENDING_APPROVAL"
+		) {
 			throw new Error("request left PENDING_APPROVAL before the deadline");
 		}
 		clock += 2;
 		const late = await approve(html, password);
 		expect(late.status).toBe(400);
 		const text = await late.text();
-		expect(text).toContain("This authorization request expired. Start the connection again from your client.");
+		expect(text).toContain(
+			"This authorization request expired. Start the connection again from your client.",
+		);
 		expect(text).not.toContain('data-approval-state="PENDING_APPROVAL"');
 	});
 
@@ -415,15 +512,24 @@ describe("OAuth authorization code flow", () => {
 		const { challenge } = pkcePair();
 		const html = await (await startAuthorize(clientId, challenge)).text();
 		const peer = "198.51.100.77";
-		expect(await (await approve(html, "not-the-password", peer)).text()).toContain("Incorrect password.");
-		expect(await (await approve(html, "not-the-password", peer)).text()).toContain("Incorrect password.");
+		expect(await (await approve(html, "not-the-password", peer)).text()).toContain(
+			"Incorrect password.",
+		);
+		expect(await (await approve(html, "not-the-password", peer)).text()).toContain(
+			"Incorrect password.",
+		);
 		const third = await approve(html, password, peer);
 		const limited = await third.text();
 		expect(third.status).toBe(429);
 		expect(limited).toContain("Too many attempts");
 		expect(limited).not.toContain("authorization request expired");
 		const pendingBody: unknown = await (await pollConsent(html)).json();
-		if (typeof pendingBody !== "object" || pendingBody === null || !("state" in pendingBody) || pendingBody.state !== "PENDING_APPROVAL") {
+		if (
+			typeof pendingBody !== "object" ||
+			pendingBody === null ||
+			!("state" in pendingBody) ||
+			pendingBody.state !== "PENDING_APPROVAL"
+		) {
 			throw new Error("rate limit expired the pending approval");
 		}
 	});
@@ -467,7 +573,12 @@ describe("OAuth authorization code flow", () => {
 			);
 			expect(registered.status).toBe(201);
 			const registeredBody: unknown = await registered.json();
-			if (typeof registeredBody !== "object" || registeredBody === null || !("client_id" in registeredBody) || typeof registeredBody.client_id !== "string") {
+			if (
+				typeof registeredBody !== "object" ||
+				registeredBody === null ||
+				!("client_id" in registeredBody) ||
+				typeof registeredBody.client_id !== "string"
+			) {
 				throw new Error("registration has no client id");
 			}
 			const clientId = registeredBody.client_id;
@@ -481,7 +592,10 @@ describe("OAuth authorization code flow", () => {
 				resource: RESOURCE,
 				state: "state-1",
 			});
-			const consent = await first.authorize(new Request(`${ORIGIN}/oauth/authorize?${params}`), PEER);
+			const consent = await first.authorize(
+				new Request(`${ORIGIN}/oauth/authorize?${params}`),
+				PEER,
+			);
 			const html = await consent.text();
 			const fields = consentFrom(html);
 			clock += 45_000;
@@ -561,7 +675,10 @@ interface Granted {
 let ownerHash: string | undefined;
 const harnessDirs: string[] = [];
 
-async function makeHarness(options: Partial<OAuthOptions> = {}, from?: { dir: string; clock: { now: number } }): Promise<Harness> {
+async function makeHarness(
+	options: Partial<OAuthOptions> = {},
+	from?: { dir: string; clock: { now: number } },
+): Promise<Harness> {
 	ownerHash ??= await Bun.password.hash(password);
 	let dir = from?.dir;
 	if (dir === undefined) {
@@ -570,7 +687,12 @@ async function makeHarness(options: Partial<OAuthOptions> = {}, from?: { dir: st
 	}
 	const clock = from?.clock ?? { now: HARNESS_START };
 	const timers: Timer[] = [];
-	const auth = createAuth({ ownerPasswordHash: ownerHash, sessionSecret: HARNESS_SECRET, cookieSecure: true, now: () => clock.now });
+	const auth = createAuth({
+		ownerPasswordHash: ownerHash,
+		sessionSecret: HARNESS_SECRET,
+		cookieSecure: true,
+		now: () => clock.now,
+	});
 	const oauth = createOAuth({
 		origin: ORIGIN,
 		stateDir: dir,
@@ -596,11 +718,16 @@ function firstTimer(h: Harness): Timer {
 
 async function bodyOf(response: Response): Promise<Record<string, unknown>> {
 	const parsed: unknown = await response.json();
-	if (typeof parsed !== "object" || parsed === null) throw new Error("response is not a JSON object");
+	if (typeof parsed !== "object" || parsed === null)
+		throw new Error("response is not a JSON object");
 	return Object.fromEntries(Object.entries(parsed));
 }
 
-function registerCall(h: Harness, body: Record<string, unknown>, ip = freshIp()): Promise<Response> {
+function registerCall(
+	h: Harness,
+	body: Record<string, unknown>,
+	ip = freshIp(),
+): Promise<Response> {
 	return h.oauth.register(
 		new Request(`${ORIGIN}/oauth/register`, {
 			method: "POST",
@@ -612,14 +739,25 @@ function registerCall(h: Harness, body: Record<string, unknown>, ip = freshIp())
 }
 
 async function registered(h: Harness, overrides: Record<string, unknown> = {}): Promise<string> {
-	const response = await registerCall(h, { client_name: "Test client", redirect_uris: [REDIRECT], grant_types: ["authorization_code", "refresh_token"], ...overrides });
+	const response = await registerCall(h, {
+		client_name: "Test client",
+		redirect_uris: [REDIRECT],
+		grant_types: ["authorization_code", "refresh_token"],
+		...overrides,
+	});
 	expect(response.status).toBe(201);
 	const id = (await bodyOf(response)).client_id;
 	if (typeof id !== "string") throw new Error("registration has no client id");
 	return id;
 }
 
-function authorizeCall(h: Harness, clientId: string, challenge: string, overrides: Record<string, string> = {}, ip = freshIp()): Promise<Response> {
+function authorizeCall(
+	h: Harness,
+	clientId: string,
+	challenge: string,
+	overrides: Record<string, string> = {},
+	ip = freshIp(),
+): Promise<Response> {
 	const params = new URLSearchParams({
 		response_type: "code",
 		client_id: clientId,
@@ -679,7 +817,11 @@ function revokeCall(h: Harness, fields: Record<string, string>, ip = freshIp()):
 	);
 }
 
-async function authorizedCode(h: Harness, clientId: string, options: { redirect?: string; scope?: string } = {}): Promise<{ code: string; verifier: string; redirect: string }> {
+async function authorizedCode(
+	h: Harness,
+	clientId: string,
+	options: { redirect?: string; scope?: string } = {},
+): Promise<{ code: string; verifier: string; redirect: string }> {
 	const { verifier, challenge } = pkcePair();
 	const redirect = options.redirect ?? REDIRECT;
 	const overrides: Record<string, string> = { redirect_uri: redirect };
@@ -690,13 +832,25 @@ async function authorizedCode(h: Harness, clientId: string, options: { redirect?
 	return { code: codeFrom(approved), verifier, redirect };
 }
 
-async function grant(h: Harness, clientId: string, options: { redirect?: string; scope?: string } = {}): Promise<Granted> {
+async function grant(
+	h: Harness,
+	clientId: string,
+	options: { redirect?: string; scope?: string } = {},
+): Promise<Granted> {
 	const { code, verifier, redirect } = await authorizedCode(h, clientId, options);
-	const response = await tokenCall(h, { grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: redirect, resource: RESOURCE });
+	const response = await tokenCall(h, {
+		grant_type: "authorization_code",
+		code,
+		code_verifier: verifier,
+		client_id: clientId,
+		redirect_uri: redirect,
+		resource: RESOURCE,
+	});
 	expect(response.status).toBe(200);
 	const body = await bodyOf(response);
 	const { access_token: access, refresh_token: refresh } = body;
-	if (typeof access !== "string" || typeof refresh !== "string") throw new Error("token response has no tokens");
+	if (typeof access !== "string" || typeof refresh !== "string")
+		throw new Error("token response has no tokens");
 	return { access, refresh, body };
 }
 
@@ -711,7 +865,8 @@ function savedKeys(h: Harness, section: "clients" | "grants" | "tokens" | "pendi
 	const saved = JSON.parse(readFileSync(h.statePath, "utf8")) as Record<string, unknown>;
 	if (!(section in saved)) throw new Error(`state file has no ${section}`);
 	const value = saved[section];
-	if (typeof value !== "object" || value === null) throw new Error(`state file ${section} is malformed`);
+	if (typeof value !== "object" || value === null)
+		throw new Error(`state file ${section} is malformed`);
 	return Object.keys(value);
 }
 
@@ -739,33 +894,50 @@ describe("OAuth redirect allowlist", () => {
 
 	test("refuses embedded credentials and fragments", async () => {
 		const h = await makeHarness();
-		expect((await registerCall(h, { redirect_uris: ["https://claude.ai@evil.test/cb"] })).status).toBe(400);
-		expect((await registerCall(h, { redirect_uris: ["https://user:pw@claude.ai/cb"] })).status).toBe(400);
+		expect(
+			(await registerCall(h, { redirect_uris: ["https://claude.ai@evil.test/cb"] })).status,
+		).toBe(400);
+		expect(
+			(await registerCall(h, { redirect_uris: ["https://user:pw@claude.ai/cb"] })).status,
+		).toBe(400);
 		expect((await registerCall(h, { redirect_uris: [`${REDIRECT}#frag`] })).status).toBe(400);
 	});
 
 	test("the list is configurable and replaces the default", async () => {
 		const h = await makeHarness({ redirectOrigins: ["https://custom.example"] });
-		expect((await registerCall(h, { redirect_uris: ["https://custom.example/cb"] })).status).toBe(201);
+		expect((await registerCall(h, { redirect_uris: ["https://custom.example/cb"] })).status).toBe(
+			201,
+		);
 		expect((await registerCall(h, { redirect_uris: [REDIRECT] })).status).toBe(400);
 	});
 
 	test("loopback http is accepted with any port", async () => {
 		const h = await makeHarness();
-		for (const uri of ["http://127.0.0.1:53211/cb", "http://localhost:1/x", "http://[::1]:8080/cb", "http://127.0.0.1/cb"]) {
+		for (const uri of [
+			"http://127.0.0.1:53211/cb",
+			"http://localhost:1/x",
+			"http://[::1]:8080/cb",
+			"http://127.0.0.1/cb",
+		]) {
 			expect((await registerCall(h, { redirect_uris: [uri] })).status).toBe(201);
 		}
-		expect((await registerCall(h, { redirect_uris: ["http://192.168.1.5:8080/cb"] })).status).toBe(400);
+		expect((await registerCall(h, { redirect_uris: ["http://192.168.1.5:8080/cb"] })).status).toBe(
+			400,
+		);
 	});
 
 	test("a loopback client may authorize on another port but not another path", async () => {
 		const h = await makeHarness();
 		const clientId = await registered(h, { redirect_uris: ["http://127.0.0.1:50000/cb"] });
 		const { challenge } = pkcePair();
-		const moved = await authorizeCall(h, clientId, challenge, { redirect_uri: "http://127.0.0.1:61234/cb" });
+		const moved = await authorizeCall(h, clientId, challenge, {
+			redirect_uri: "http://127.0.0.1:61234/cb",
+		});
 		expect(moved.status).toBe(200);
 		expect(formAction(moved)).toBe("'self' http://127.0.0.1:61234");
-		const other = await authorizeCall(h, clientId, challenge, { redirect_uri: "http://127.0.0.1:61234/other" });
+		const other = await authorizeCall(h, clientId, challenge, {
+			redirect_uri: "http://127.0.0.1:61234/other",
+		});
 		expect(other.status).toBe(400);
 		const tokens = await grant(h, clientId, { redirect: "http://127.0.0.1:61234/cb" });
 		expect(tokens.access).not.toBe("");
@@ -775,21 +947,28 @@ describe("OAuth redirect allowlist", () => {
 		const h = await makeHarness();
 		const clientId = await registered(h);
 		const { challenge } = pkcePair();
-		const response = await authorizeCall(h, clientId, challenge, { redirect_uri: "https://claude.ai/other" });
+		const response = await authorizeCall(h, clientId, challenge, {
+			redirect_uri: "https://claude.ai/other",
+		});
 		expect(response.status).toBe(400);
 		expect(response.headers.get("location")).toBeNull();
 	});
 
 	test("duplicate redirect URIs are collapsed", async () => {
 		const h = await makeHarness();
-		const response = await registerCall(h, { redirect_uris: [REDIRECT, REDIRECT, "https://claude.ai/other"] });
+		const response = await registerCall(h, {
+			redirect_uris: [REDIRECT, REDIRECT, "https://claude.ai/other"],
+		});
 		expect(response.status).toBe(201);
 		expect((await bodyOf(response)).redirect_uris).toEqual([REDIRECT, "https://claude.ai/other"]);
 	});
 
 	test("registration echoes the registered grant types", async () => {
 		const h = await makeHarness();
-		const both = await registerCall(h, { redirect_uris: [REDIRECT], grant_types: ["authorization_code", "refresh_token", "refresh_token"] });
+		const both = await registerCall(h, {
+			redirect_uris: [REDIRECT],
+			grant_types: ["authorization_code", "refresh_token", "refresh_token"],
+		});
 		expect((await bodyOf(both)).grant_types).toEqual(["authorization_code", "refresh_token"]);
 		const plain = await registerCall(h, { redirect_uris: [REDIRECT] });
 		expect((await bodyOf(plain)).grant_types).toEqual(["authorization_code"]);
@@ -802,7 +981,8 @@ describe("OAuth per-IP rate limits", () => {
 	test("registration allows 10 an hour per IP and recovers after the window", async () => {
 		const h = await makeHarness();
 		const ip = "203.0.113.9";
-		for (let i = 0; i < 10; i += 1) expect((await registerCall(h, { redirect_uris: [REDIRECT] }, ip)).status).toBe(201);
+		for (let i = 0; i < 10; i += 1)
+			expect((await registerCall(h, { redirect_uris: [REDIRECT] }, ip)).status).toBe(201);
 		const limited = await registerCall(h, { redirect_uris: [REDIRECT] }, ip);
 		expect(limited.status).toBe(429);
 		expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
@@ -817,7 +997,8 @@ describe("OAuth per-IP rate limits", () => {
 		const { challenge } = pkcePair();
 		const ip = "203.0.113.10";
 		// response_type=token redirects with an error, so no pending request builds up.
-		const probe = (address: string) => authorizeCall(h, clientId, challenge, { response_type: "token" }, address);
+		const probe = (address: string) =>
+			authorizeCall(h, clientId, challenge, { response_type: "token" }, address);
 		for (let i = 0; i < 30; i += 1) expect((await probe(ip)).status).toBe(302);
 		const limited = await probe(ip);
 		expect(limited.status).toBe(429);
@@ -830,7 +1011,8 @@ describe("OAuth per-IP rate limits", () => {
 	test("token allows 60 a minute per IP and recovers after the window", async () => {
 		const h = await makeHarness();
 		const ip = "203.0.113.11";
-		for (let i = 0; i < 60; i += 1) expect((await tokenCall(h, { grant_type: "unsupported" }, ip)).status).toBe(400);
+		for (let i = 0; i < 60; i += 1)
+			expect((await tokenCall(h, { grant_type: "unsupported" }, ip)).status).toBe(400);
 		const limited = await tokenCall(h, { grant_type: "unsupported" }, ip);
 		expect(limited.status).toBe(429);
 		expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
@@ -842,7 +1024,8 @@ describe("OAuth per-IP rate limits", () => {
 	test("revoke allows 60 a minute per IP", async () => {
 		const h = await makeHarness();
 		const ip = "203.0.113.12";
-		for (let i = 0; i < 60; i += 1) expect((await revokeCall(h, { token: "ut_at_unknown" }, ip)).status).toBe(200);
+		for (let i = 0; i < 60; i += 1)
+			expect((await revokeCall(h, { token: "ut_at_unknown" }, ip)).status).toBe(200);
 		expect((await revokeCall(h, { token: "ut_at_unknown" }, ip)).status).toBe(429);
 		expect((await revokeCall(h, { token: "ut_at_unknown" })).status).toBe(200);
 		h.clock.now += 61_000;
@@ -878,7 +1061,12 @@ describe("OAuth per-IP rate limits", () => {
 		const ip = "203.0.113.14";
 		const busy = await registered(h);
 		const quiet = await registered(h);
-		const attempt = (clientId: string) => tokenCall(h, { grant_type: "refresh_token", refresh_token: "ut_rt_unknown", client_id: clientId }, ip);
+		const attempt = (clientId: string) =>
+			tokenCall(
+				h,
+				{ grant_type: "refresh_token", refresh_token: "ut_rt_unknown", client_id: clientId },
+				ip,
+			);
 		for (let i = 0; i < 30; i += 1) expect((await attempt(busy)).status).toBe(400);
 		const limited = await attempt(busy);
 		expect(limited.status).toBe(429);
@@ -895,7 +1083,11 @@ describe("OAuth grant types", () => {
 		const h = await makeHarness();
 		const clientId = await registered(h, { grant_types: ["authorization_code"] });
 		const tokens = await grant(h, clientId);
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: tokens.refresh, client_id: clientId });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: tokens.refresh,
+			client_id: clientId,
+		});
 		expect(refreshed.status).toBe(400);
 		expect((await bodyOf(refreshed)).error).toBe("unauthorized_client");
 		expect(h.oauth.verifyAccessToken(tokens.access)).toBe(true);
@@ -905,7 +1097,11 @@ describe("OAuth grant types", () => {
 		const h = await makeHarness();
 		const clientId = await registered(h, { grant_types: ["authorization_code", "refresh_token"] });
 		const tokens = await grant(h, clientId);
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: tokens.refresh, client_id: clientId });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: tokens.refresh,
+			client_id: clientId,
+		});
 		expect(refreshed.status).toBe(200);
 	});
 
@@ -913,12 +1109,30 @@ describe("OAuth grant types", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-legacy-"));
 		harnessDirs.push(dir);
 		const clientId = "ut_client_legacy";
-		const legacy = { name: "Legacy", redirectUris: [REDIRECT], createdAt: HARNESS_START, lastUsedAt: HARNESS_START };
-		writeFileSync(join(dir, "oauth.json"), JSON.stringify({ clients: { [clientId]: legacy }, grants: {}, codes: {}, tokens: {}, pending: {} }));
+		const legacy = {
+			name: "Legacy",
+			redirectUris: [REDIRECT],
+			createdAt: HARNESS_START,
+			lastUsedAt: HARNESS_START,
+		};
+		writeFileSync(
+			join(dir, "oauth.json"),
+			JSON.stringify({
+				clients: { [clientId]: legacy },
+				grants: {},
+				codes: {},
+				tokens: {},
+				pending: {},
+			}),
+		);
 		const h = await makeHarness({}, { dir, clock: { now: HARNESS_START } });
 		const tokens = await grant(h, clientId);
 		expect(h.oauth.verifyAccessToken(tokens.access)).toBe(true);
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: tokens.refresh, client_id: clientId });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: tokens.refresh,
+			client_id: clientId,
+		});
 		expect(refreshed.status).toBe(200);
 		expect(typeof (await bodyOf(refreshed)).refresh_token).toBe("string");
 	});
@@ -950,14 +1164,22 @@ describe("OAuth client table", () => {
 		expect((await authorizeCall(h, spare, challenge)).status).toBe(400);
 		expect((await authorizeCall(h, granted, challenge)).status).toBe(200);
 		expect((await authorizeCall(h, newest, challenge)).status).toBe(200);
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: tokens.refresh, client_id: granted });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: tokens.refresh,
+			client_id: granted,
+		});
 		expect(refreshed.status).toBe(200);
 	});
 
 	test("a client whose owner approval is being checked is not evicted; another ungranted client is", async () => {
 		const entered = Promise.withResolvers<void>();
 		const gate = Promise.withResolvers<void>();
-		const real = createAuth({ ownerPasswordHash: ownerHash ?? (ownerHash = await Bun.password.hash(password)), sessionSecret: HARNESS_SECRET, cookieSecure: true });
+		const real = createAuth({
+			ownerPasswordHash: ownerHash ?? (ownerHash = await Bun.password.hash(password)),
+			sessionSecret: HARNESS_SECRET,
+			cookieSecure: true,
+		});
 		const auth = {
 			...real,
 			login: async (input: { password: string; clientIp: string }) => {
@@ -982,7 +1204,14 @@ describe("OAuth client table", () => {
 		gate.resolve();
 		const approved = await approval;
 		const code = codeFrom(approved);
-		const redeemed = await tokenCall(h, { grant_type: "authorization_code", code, code_verifier: verifier, client_id: approving, redirect_uri: REDIRECT, resource: RESOURCE });
+		const redeemed = await tokenCall(h, {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: approving,
+			redirect_uri: REDIRECT,
+			resource: RESOURCE,
+		});
 		expect(redeemed.status).toBe(200);
 
 		const other = pkcePair().challenge;
@@ -993,7 +1222,11 @@ describe("OAuth client table", () => {
 	test("registration reports unavailable while the only ungranted client is being approved", async () => {
 		const entered = Promise.withResolvers<void>();
 		const gate = Promise.withResolvers<void>();
-		const real = createAuth({ ownerPasswordHash: ownerHash ?? (ownerHash = await Bun.password.hash(password)), sessionSecret: HARNESS_SECRET, cookieSecure: true });
+		const real = createAuth({
+			ownerPasswordHash: ownerHash ?? (ownerHash = await Bun.password.hash(password)),
+			sessionSecret: HARNESS_SECRET,
+			cookieSecure: true,
+		});
 		const auth = {
 			...real,
 			login: async (input: { password: string; clientIp: string }) => {
@@ -1011,7 +1244,14 @@ describe("OAuth client table", () => {
 		expect((await registerCall(h, { redirect_uris: [REDIRECT] })).status).toBe(503);
 		gate.resolve();
 		const code = codeFrom(await approval);
-		const redeemed = await tokenCall(h, { grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: REDIRECT, resource: RESOURCE });
+		const redeemed = await tokenCall(h, {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: REDIRECT,
+			resource: RESOURCE,
+		});
 		expect(redeemed.status).toBe(200);
 	});
 
@@ -1042,7 +1282,11 @@ describe("OAuth client table", () => {
 		h.clock.now += 31 * 24 * HOUR_MS;
 		const { challenge } = pkcePair();
 		expect((await authorizeCall(h, clientId, challenge)).status).toBe(400);
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: tokens.refresh, client_id: clientId });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: tokens.refresh,
+			client_id: clientId,
+		});
 		expect(refreshed.status).toBe(401);
 		const fresh = await registered(h);
 		expect(savedKeys(h, "clients")).toEqual([fresh]);
@@ -1055,7 +1299,8 @@ describe("OAuth client table", () => {
 		const busy = await registered(h);
 		const other = await registered(h);
 		const { challenge } = pkcePair();
-		for (let i = 0; i < 5; i += 1) expect((await authorizeCall(h, busy, challenge)).status).toBe(200);
+		for (let i = 0; i < 5; i += 1)
+			expect((await authorizeCall(h, busy, challenge)).status).toBe(200);
 		expect((await authorizeCall(h, busy, challenge)).status).toBe(429);
 		expect((await authorizeCall(h, other, challenge)).status).toBe(200);
 		h.clock.now += PENDING_TTL_MS + 1;
@@ -1069,7 +1314,8 @@ describe("OAuth sweeper", () => {
 		const clientId = await registered(h);
 		expect(h.timers).toHaveLength(0);
 		const { challenge } = pkcePair();
-		for (let i = 0; i < 3; i += 1) expect((await authorizeCall(h, clientId, challenge)).status).toBe(200);
+		for (let i = 0; i < 3; i += 1)
+			expect((await authorizeCall(h, clientId, challenge)).status).toBe(200);
 		expect(h.timers).toHaveLength(1);
 		expect(firstTimer(h).intervalMs).toBeGreaterThan(0);
 	});
@@ -1112,7 +1358,9 @@ describe("OAuth consent page and CSP", () => {
 		expect(formAction(consent)).toBe("'self' https://claude.ai");
 
 		const loopback = await registered(h, { redirect_uris: ["http://127.0.0.1:53211/cb"] });
-		const local = await authorizeCall(h, loopback, challenge, { redirect_uri: "http://127.0.0.1:53211/cb" });
+		const local = await authorizeCall(h, loopback, challenge, {
+			redirect_uri: "http://127.0.0.1:53211/cb",
+		});
 		expect(formAction(local)).toBe("'self' http://127.0.0.1:53211");
 	});
 
@@ -1122,7 +1370,11 @@ describe("OAuth consent page and CSP", () => {
 		const unknown = await authorizeCall(h, "ut_client_missing", challenge);
 		expect(unknown.status).toBe(400);
 		expect(formAction(unknown)).toBe("'self'");
-		const expired = await approveWith(h, `<input name="req" value="nope"><input name="nonce" value="nope">`, password);
+		const expired = await approveWith(
+			h,
+			`<input name="req" value="nope"><input name="nonce" value="nope">`,
+			password,
+		);
 		expect(expired.status).toBe(400);
 		expect(formAction(expired)).toBe("'self'");
 	});
@@ -1157,7 +1409,9 @@ describe("OAuth consent page and CSP", () => {
 		const html = await consent.text();
 		expect(consent.status).toBe(200);
 		expect(html).not.toContain("<img");
-		expect(html).toContain("<strong>&lt;img src=x onerror=&quot;alert(1)&quot;&gt;&quot;&apos;&amp;</strong>");
+		expect(html).toContain(
+			"<strong>&lt;img src=x onerror=&quot;alert(1)&quot;&gt;&quot;&apos;&amp;</strong>",
+		);
 		// A wrong password re-renders the page with its alert. The hostile name stays inert on that page too.
 		const retryHtml = await (await approveWith(h, html, "not-the-password")).text();
 		expect(retryHtml).toContain('<p class="err">Incorrect password.</p>');
@@ -1169,13 +1423,21 @@ describe("OAuth consent page and CSP", () => {
 /** Keeps each validation refusal the logger seam reports, and writes nothing. */
 class RecordingLogger implements SecurityEventLogger {
 	readonly validation: Partial<SecurityEvent>[] = [];
-	log(): void {}
-	logAuthFailure(): void {}
+	log(): void {
+		// reason: the refusal test reads only validation events; other security events are not captured here.
+	}
+	logAuthFailure(): void {
+		// reason: the refusal test reads only validation events; auth failures are not captured here.
+	}
 	logValidationFailure(details: Partial<SecurityEvent>): void {
 		this.validation.push(details);
 	}
-	logRateLimitExceeded(): void {}
-	logSuspiciousActivity(): void {}
+	logRateLimitExceeded(): void {
+		// reason: the refusal test reads only validation events; rate-limit events are not captured here.
+	}
+	logSuspiciousActivity(): void {
+		// reason: the refusal test reads only validation events; suspicious-activity events are not captured here.
+	}
 }
 
 describe("OAuth refused requests", () => {
@@ -1204,11 +1466,25 @@ describe("OAuth refused requests", () => {
 				"203.0.113.50",
 			);
 			expect(repeated.status).toBe(400);
-			expect(await bodyOf(repeated)).toEqual({ error: "invalid_request", error_description: "code must appear once." });
+			expect(await bodyOf(repeated)).toEqual({
+				error: "invalid_request",
+				error_description: "code must appear once.",
+			});
 			expect(recorder.validation).toHaveLength(1);
-			expect(recorder.validation[0]).toMatchObject({ source: "oauth", resource: "/oauth/token", details: { field: "code", code: "DUPLICATE" } });
+			expect(recorder.validation[0]).toMatchObject({
+				source: "oauth",
+				resource: "/oauth/token",
+				details: { field: "code", code: "DUPLICATE" },
+			});
 			// The refused request never reached the code store, so the single-valued retry still redeems the code.
-			const redeemed = await tokenCall(h, { grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: redirect, resource: RESOURCE });
+			const redeemed = await tokenCall(h, {
+				grant_type: "authorization_code",
+				code,
+				code_verifier: verifier,
+				client_id: clientId,
+				redirect_uri: redirect,
+				resource: RESOURCE,
+			});
 			expect(redeemed.status).toBe(200);
 		} finally {
 			setSecurityLogger(previous);
@@ -1222,15 +1498,35 @@ describe("OAuth audit trail and response headers", () => {
 		const h = await makeHarness({ audit: (event, fields) => events.push({ event, fields }) });
 		const clientId = await registered(h);
 		const { code, verifier, redirect } = await authorizedCode(h, clientId);
-		const exchanged = await tokenCall(h, { grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: redirect, resource: RESOURCE });
+		const exchanged = await tokenCall(h, {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: redirect,
+			resource: RESOURCE,
+		});
 		expect(exchanged.status).toBe(200);
 		const first = await bodyOf(exchanged);
 		const firstAccess = String(first.access_token);
 		const firstRefresh = String(first.refresh_token);
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: firstRefresh, client_id: clientId, resource: RESOURCE });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: firstRefresh,
+			client_id: clientId,
+			resource: RESOURCE,
+		});
 		expect(refreshed.status).toBe(200);
 		const second = await bodyOf(refreshed);
-		expect((await tokenCall(h, { grant_type: "refresh_token", refresh_token: firstRefresh, client_id: clientId })).status).toBe(400);
+		expect(
+			(
+				await tokenCall(h, {
+					grant_type: "refresh_token",
+					refresh_token: firstRefresh,
+					client_id: clientId,
+				})
+			).status,
+		).toBe(400);
 		const next = await grant(h, clientId);
 		expect((await revokeCall(h, { token: next.access, client_id: clientId })).status).toBe(200);
 		expect(events.map((entry) => entry.event)).toEqual([
@@ -1245,9 +1541,21 @@ describe("OAuth audit trail and response headers", () => {
 			"code_exchanged",
 			"token_revoked",
 		]);
-		for (const entry of events) expect(entry.fields).toEqual(entry.event === "login_ok" ? { ip: expect.any(String) } : { clientId });
+		for (const entry of events)
+			expect(entry.fields).toEqual(
+				entry.event === "login_ok" ? { ip: expect.any(String) } : { clientId },
+			);
 		const serialised = JSON.stringify(events);
-		for (const secret of [code, verifier, firstAccess, firstRefresh, String(second.access_token), String(second.refresh_token), next.access, next.refresh]) {
+		for (const secret of [
+			code,
+			verifier,
+			firstAccess,
+			firstRefresh,
+			String(second.access_token),
+			String(second.refresh_token),
+			next.access,
+			next.refresh,
+		]) {
 			expect(serialised).not.toContain(secret);
 		}
 	});
@@ -1260,7 +1568,14 @@ describe("OAuth audit trail and response headers", () => {
 		});
 		const clientId = await registered(h);
 		const { code, verifier, redirect } = await authorizedCode(h, clientId);
-		const exchanged = await tokenCall(h, { grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: redirect, resource: RESOURCE });
+		const exchanged = await tokenCall(h, {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: redirect,
+			resource: RESOURCE,
+		});
 		expect(exchanged.status).toBe(200);
 		expect(typeof (await bodyOf(exchanged)).access_token).toBe("string");
 	});
@@ -1276,8 +1591,12 @@ describe("OAuth audit trail and response headers", () => {
 		];
 		for (const response of responses) {
 			expect(response.headers.get("x-frame-options")).toBe("DENY");
-			expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; frame-ancestors 'none'");
-			expect(response.headers.get("permissions-policy")).toBe("camera=(), microphone=(), geolocation=()");
+			expect(response.headers.get("content-security-policy")).toBe(
+				"default-src 'none'; frame-ancestors 'none'",
+			);
+			expect(response.headers.get("permissions-policy")).toBe(
+				"camera=(), microphone=(), geolocation=()",
+			);
 		}
 	});
 
@@ -1303,7 +1622,12 @@ describe("OAuth audit trail and response headers", () => {
 		expect(await wrong.text()).toContain("Incorrect password.");
 		const right = await approveWith(h, html, password, ip);
 		expect(new URL(right.headers.get("location") ?? "").searchParams.get("code")).not.toBeNull();
-		expect(events.map((entry) => entry.event)).toEqual(["client_registered", "login_failed", "login_ok", "consent_approved"]);
+		expect(events.map((entry) => entry.event)).toEqual([
+			"client_registered",
+			"login_failed",
+			"login_ok",
+			"consent_approved",
+		]);
 		expect(events[1]?.fields).toEqual({ ip });
 		expect(events[2]?.fields).toEqual({ ip });
 		expect(JSON.stringify(events)).not.toContain(password);
@@ -1319,12 +1643,22 @@ describe("OAuth audit trail and response headers", () => {
 		// Each attempt waits out the one-minute approval window, so only the login window can refuse.
 		for (let i = 0; i < 5; i += 1) {
 			h.clock.now += 61_000;
-			expect(await (await approveWith(h, html, "not-the-password", ip)).text()).toContain("Incorrect password.");
+			expect(await (await approveWith(h, html, "not-the-password", ip)).text()).toContain(
+				"Incorrect password.",
+			);
 		}
 		h.clock.now += 61_000;
 		const refused = await approveWith(h, html, "not-the-password", ip);
 		expect(refused.status).toBe(429);
-		expect(events.map((entry) => entry.event)).toEqual(["client_registered", "login_failed", "login_failed", "login_failed", "login_failed", "login_failed", "rate_limited"]);
+		expect(events.map((entry) => entry.event)).toEqual([
+			"client_registered",
+			"login_failed",
+			"login_failed",
+			"login_failed",
+			"login_failed",
+			"login_failed",
+			"rate_limited",
+		]);
 		expect(events.at(-1)?.fields).toEqual({ scope: "login", ip });
 	});
 });
@@ -1334,16 +1668,26 @@ describe("OAuth resource, scope, client and issuer handling", () => {
 		const h = await makeHarness();
 		const clientId = await registered(h);
 		const { challenge } = pkcePair();
-		expect((await authorizeCall(h, clientId, challenge, { resource: `${RESOURCE}/` })).status).toBe(200);
+		expect((await authorizeCall(h, clientId, challenge, { resource: `${RESOURCE}/` })).status).toBe(
+			200,
+		);
 		const foreign = await authorizeCall(h, clientId, challenge, { resource: `${ORIGIN}/other` });
-		expect(new URL(foreign.headers.get("location") ?? "").searchParams.get("error")).toBe("invalid_target");
+		expect(new URL(foreign.headers.get("location") ?? "").searchParams.get("error")).toBe(
+			"invalid_target",
+		);
 	});
 
 	test("resource is optional at the token endpoint and a different one is invalid_target", async () => {
 		const h = await makeHarness();
 		const clientId = await registered(h);
 		const { code, verifier } = await authorizedCode(h, clientId);
-		const base = { grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: REDIRECT };
+		const base = {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: REDIRECT,
+		};
 		const wrong = await tokenCall(h, { ...base, resource: `${ORIGIN}/other` });
 		expect(wrong.status).toBe(400);
 		expect((await bodyOf(wrong)).error).toBe("invalid_target");
@@ -1357,7 +1701,14 @@ describe("OAuth resource, scope, client and issuer handling", () => {
 		const h = await makeHarness();
 		const clientId = await registered(h);
 		const { code, verifier } = await authorizedCode(h, clientId);
-		const response = await tokenCall(h, { grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: REDIRECT, resource: `${RESOURCE}/` });
+		const response = await tokenCall(h, {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: REDIRECT,
+			resource: `${RESOURCE}/`,
+		});
 		expect(response.status).toBe(200);
 	});
 
@@ -1365,20 +1716,39 @@ describe("OAuth resource, scope, client and issuer handling", () => {
 		const h = await makeHarness();
 		const clientId = await registered(h);
 		const first = await grant(h, clientId);
-		const wrong = await tokenCall(h, { grant_type: "refresh_token", refresh_token: first.refresh, client_id: clientId, resource: `${ORIGIN}/other` });
+		const wrong = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: first.refresh,
+			client_id: clientId,
+			resource: `${ORIGIN}/other`,
+		});
 		expect(wrong.status).toBe(400);
 		expect((await bodyOf(wrong)).error).toBe("invalid_target");
-		const without = await tokenCall(h, { grant_type: "refresh_token", refresh_token: first.refresh, client_id: clientId });
+		const without = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: first.refresh,
+			client_id: clientId,
+		});
 		expect(without.status).toBe(200);
 		const next = await bodyOf(without);
-		const withResource = await tokenCall(h, { grant_type: "refresh_token", refresh_token: String(next.refresh_token), client_id: clientId, resource: RESOURCE });
+		const withResource = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: String(next.refresh_token),
+			client_id: clientId,
+			resource: RESOURCE,
+		});
 		expect(withResource.status).toBe(200);
 	});
 
 	test("an unknown client_id at the token endpoint is 401 invalid_client", async () => {
 		const h = await makeHarness();
 		const cases: Record<string, string>[] = [
-			{ grant_type: "authorization_code", code: "ut_code_x", client_id: "ut_client_gone", redirect_uri: REDIRECT },
+			{
+				grant_type: "authorization_code",
+				code: "ut_code_x",
+				client_id: "ut_client_gone",
+				redirect_uri: REDIRECT,
+			},
 			{ grant_type: "refresh_token", refresh_token: "ut_rt_x", client_id: "ut_client_gone" },
 			{ grant_type: "refresh_token", refresh_token: "ut_rt_x" },
 		];
@@ -1393,7 +1763,12 @@ describe("OAuth resource, scope, client and issuer handling", () => {
 	test("a known client with a bad code stays invalid_grant", async () => {
 		const h = await makeHarness();
 		const clientId = await registered(h);
-		const response = await tokenCall(h, { grant_type: "authorization_code", code: "ut_code_x", client_id: clientId, redirect_uri: REDIRECT });
+		const response = await tokenCall(h, {
+			grant_type: "authorization_code",
+			code: "ut_code_x",
+			client_id: clientId,
+			redirect_uri: REDIRECT,
+		});
 		expect(response.status).toBe(400);
 		expect((await bodyOf(response)).error).toBe("invalid_grant");
 	});
@@ -1417,7 +1792,11 @@ describe("OAuth resource, scope, client and issuer handling", () => {
 		const clientId = await registered(h);
 		const first = await grant(h, clientId, { scope: "claudeai" });
 		expect(first.body.scope).toBe("claudeai");
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: first.refresh, client_id: clientId });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: first.refresh,
+			client_id: clientId,
+		});
 		expect((await bodyOf(refreshed)).scope).toBe("claudeai");
 		const several = await grant(h, clientId, { scope: "mcp something:else" });
 		expect(several.body.scope).toBe("mcp something:else");
@@ -1450,7 +1829,11 @@ describe("OAuth revocation and bearer classification", () => {
 		expect(response.status).toBe(200);
 		expect(h.oauth.verifyAccessToken(tokens.access)).toBe(false);
 		expect(h.oauth.classifyBearer(tokens.access)).toBe("invalid");
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: tokens.refresh, client_id: clientId });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: tokens.refresh,
+			client_id: clientId,
+		});
 		expect(refreshed.status).toBe(400);
 	});
 
@@ -1460,7 +1843,11 @@ describe("OAuth revocation and bearer classification", () => {
 		const tokens = await grant(h, clientId);
 		expect((await revokeCall(h, { token: tokens.refresh, client_id: clientId })).status).toBe(200);
 		expect(h.oauth.verifyAccessToken(tokens.access)).toBe(false);
-		const refreshed = await tokenCall(h, { grant_type: "refresh_token", refresh_token: tokens.refresh, client_id: clientId });
+		const refreshed = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: tokens.refresh,
+			client_id: clientId,
+		});
 		expect(refreshed.status).toBe(400);
 	});
 
@@ -1524,11 +1911,16 @@ describe("OAuth state file", () => {
 	});
 
 	async function rotate(h: Harness, clientId: string, refresh: string): Promise<Granted> {
-		const rotated = await tokenCall(h, { grant_type: "refresh_token", refresh_token: refresh, client_id: clientId });
+		const rotated = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: refresh,
+			client_id: clientId,
+		});
 		expect(rotated.status).toBe(200);
 		const body = await bodyOf(rotated);
 		const { access_token: access, refresh_token: next } = body;
-		if (typeof access !== "string" || typeof next !== "string") throw new Error("rotation has no tokens");
+		if (typeof access !== "string" || typeof next !== "string")
+			throw new Error("rotation has no tokens");
 		return { access, refresh: next, body };
 	}
 
@@ -1541,7 +1933,11 @@ describe("OAuth state file", () => {
 		// Live access + live refresh + the spent refresh kept for reuse detection.
 		expect(savedKeys(h, "tokens")).toHaveLength(3);
 		h.clock.now += 60_000;
-		const reused = await tokenCall(h, { grant_type: "refresh_token", refresh_token: first.refresh, client_id: clientId });
+		const reused = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: first.refresh,
+			client_id: clientId,
+		});
 		expect(reused.status).toBe(400);
 		expect(h.oauth.verifyAccessToken(second.access)).toBe(false);
 		expect(savedKeys(h, "tokens")).toEqual([]);
@@ -1640,7 +2036,14 @@ describe("OAuth token rollback when the state save fails", () => {
 		const h = await makeHarness();
 		const clientId = await registered(h);
 		const { code, verifier, redirect } = await authorizedCode(h, clientId);
-		const fields = { grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: redirect, resource: RESOURCE };
+		const fields = {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: redirect,
+			resource: RESOURCE,
+		};
 		const before = readFileSync(h.statePath, "utf8");
 		const blocker = blockStateSave(h);
 		try {
@@ -1665,7 +2068,11 @@ describe("OAuth token rollback when the state save fails", () => {
 		const clientId = await registered(h);
 		const first = await grant(h, clientId);
 		const before = readFileSync(h.statePath, "utf8");
-		const fields = { grant_type: "refresh_token", refresh_token: first.refresh, client_id: clientId };
+		const fields = {
+			grant_type: "refresh_token",
+			refresh_token: first.refresh,
+			client_id: clientId,
+		};
 		const blocker = blockStateSave(h);
 		try {
 			const failed = await tokenCall(h, fields);
@@ -1682,5 +2089,34 @@ describe("OAuth token rollback when the state save fails", () => {
 		const rotated = await bodyOf(retry);
 		expect(typeof rotated.access_token).toBe("string");
 		expect(h.oauth.verifyAccessToken(rotated.access_token as string)).toBe(true);
+	});
+});
+
+describe("OAuth boundary failures", () => {
+	test("a quarantine rename that fails is logged under loadStore without the echoed token", async () => {
+		const TOKEN_FIXTURE = "tok-test-FIXTURE0000000000000000";
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-boundary-"));
+		harnessDirs.push(dir);
+		const statePath = join(dir, "oauth.json");
+		writeFileSync(statePath, `{"tokens": {"${TOKEN_FIXTURE}": `);
+		nodeFs.mkdirSync(`${statePath}.corrupt-${HARNESS_START}`);
+		const lines: string[] = [];
+		const logger: Logger = {
+			info() {
+				// reason: info logs are not asserted by the OAuth test; only error lines are collected
+			},
+			warn() {
+				// reason: warn logs are not asserted by the OAuth test; only error lines are collected
+			},
+			error: (event) => {
+				lines.push(event);
+			},
+		};
+		await makeHarness({ logger }, { dir, clock: { now: HARNESS_START } });
+		expect(lines).toHaveLength(1);
+		const line = lines[0] ?? "";
+		expect(line.startsWith("loadStore: ")).toBe(true);
+		expect(line).not.toContain(TOKEN_FIXTURE);
+		expect(redactText(line, { home: "" })).toBe(line);
 	});
 });

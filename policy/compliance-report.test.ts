@@ -34,9 +34,18 @@ function tempDir(prefix: string): string {
 	return dir;
 }
 
-async function runReport(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-	const proc = Bun.spawn({ cmd: [process.execPath, SCRIPT, ...args], stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+async function runReport(
+	args: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+	const proc = Bun.spawn({
+		cmd: [process.execPath, SCRIPT, ...args],
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+	]);
 	return { code: await proc.exited, stdout, stderr };
 }
 
@@ -54,7 +63,9 @@ test("real repo: exit 0, CRYPTO-BACKUP PENDING, RETENTION finding listed, every 
 	for (const spec of CONTROL_SPECS) {
 		if (spec.pending === undefined) expect(statusRow(stdout, spec.id)).toContain("| PASS |");
 		for (const path of spec.evidence) {
-			const digest = createHash("sha256").update(readFileSync(join(REPO, path))).digest("hex");
+			const digest = createHash("sha256")
+				.update(readFileSync(join(REPO, path)))
+				.digest("hex");
 			const line = stdout.split("\n").find((text) => text.startsWith(`  - \`${path}\` sha256 `));
 			expect(line).toBe(`  - \`${path}\` sha256 \`${digest}\``);
 		}
@@ -85,7 +96,12 @@ test("a tree with one evidence file removed: that control FAILs and the exit cod
 test("a control with no evidence and no pending reason is a schema error: exit 2, and no report is written", async () => {
 	const dir = tempDir("ultrathink-compliance-schema-");
 	const controls = join(dir, "controls.json");
-	const empty = { id: "EMPTY", title: "No evidence", refs: { soc2: [], iso27001: [], gdpr: [] }, evidence: [] };
+	const empty = {
+		id: "EMPTY",
+		title: "No evidence",
+		refs: { soc2: [], iso27001: [], gdpr: [] },
+		evidence: [],
+	};
 	writeFileSync(controls, JSON.stringify([empty]));
 
 	const { code, stdout, stderr } = await runReport(["--root", REPO, "--controls", controls]);
@@ -106,7 +122,13 @@ test("--out writes the Markdown report to the file and leaves stdout empty", asy
 
 test("a title with a backslash and a pipe renders as an exact table cell: backslash escaped first, then pipe", () => {
 	const controls = JSON.stringify([
-		{ id: "TEST-1", title: "a\\b | c", refs: { soc2: [], iso27001: [], gdpr: [] }, evidence: [], pending: "test" },
+		{
+			id: "TEST-1",
+			title: "a\\b | c",
+			refs: { soc2: [], iso27001: [], gdpr: [] },
+			evidence: [],
+			pending: "test",
+		},
 	]);
 	const markdown = renderMarkdown(buildReport(controls, REPO));
 	expect(statusRow(markdown, "TEST-1")).toBe("| `TEST-1` | a\\\\b \\| c | PENDING | 0/0 | 0 |");

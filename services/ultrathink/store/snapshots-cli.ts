@@ -23,7 +23,11 @@ export interface CliResult {
 	stderr: string;
 }
 
-const USAGE_ERROR = (message: string): CliResult => ({ code: 2, stdout: "", stderr: `${message}\n${USAGE}\n` });
+const USAGE_ERROR = (message: string): CliResult => ({
+	code: 2,
+	stdout: "",
+	stderr: `${message}\n${USAGE}\n`,
+});
 
 function integer(text: string | undefined): number | undefined {
 	if (text === undefined || !/^-?\d+$/.test(text)) return undefined;
@@ -44,12 +48,14 @@ export function runCli(argv: readonly string[], stdin: string): CliResult {
 		switch (command) {
 			case "next": {
 				const nowMs = integer(args[0]);
-				if (args.length !== 1 || nowMs === undefined) return USAGE_ERROR("next needs one integer <nowMs>");
+				if (args.length !== 1 || nowMs === undefined)
+					return USAGE_ERROR("next needs one integer <nowMs>");
 				return { code: 0, stdout: `${nextStamp(nowMs, namesFrom(stdin))}\n`, stderr: "" };
 			}
 			case "pick": {
 				const targetMs = integer(args[0]);
-				if (args.length !== 1 || targetMs === undefined) return USAGE_ERROR("pick needs one integer <targetMs>");
+				if (args.length !== 1 || targetMs === undefined)
+					return USAGE_ERROR("pick needs one integer <targetMs>");
 				const name = pickAtOrBefore(namesFrom(stdin), targetMs);
 				if (name === undefined) return { code: 1, stdout: "", stderr: "" };
 				return { code: 0, stdout: `${name}\n`, stderr: "" };
@@ -66,11 +72,16 @@ export function runCli(argv: readonly string[], stdin: string): CliResult {
 					return USAGE_ERROR("plan needs four integers <nowMs> <recentMs> <thinMs> <windowMs>");
 				}
 				const plan = retentionPlan(namesFrom(stdin), nowMs, { recentMs, thinMs, windowMs });
-				return { code: 0, stdout: plan.delete.map((name) => `delete ${name}\n`).join(""), stderr: "" };
+				return {
+					code: 0,
+					stdout: plan.delete.map((name) => `delete ${name}\n`).join(""),
+					stderr: "",
+				};
 			}
 			case "stamp": {
 				const ms = integer(args[0]);
-				if (args.length !== 1 || ms === undefined) return USAGE_ERROR("stamp needs one integer <ms>");
+				if (args.length !== 1 || ms === undefined)
+					return USAGE_ERROR("stamp needs one integer <ms>");
 				return { code: 0, stdout: `${formatStamp(ms)}\n`, stderr: "" };
 			}
 			default:

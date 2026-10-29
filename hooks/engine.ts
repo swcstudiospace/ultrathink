@@ -20,8 +20,12 @@ export function requestFrom(value: unknown): PlanRequest {
 	// A supplied host that is not a supported HostId (a bot label such as grok-bot, or a non-string) is omitted and
 	// flagged instead of being left to host detection, so the planner answers unresolved / unsupported-host with empty
 	// context. An absent, null or blank host keeps the existing detection.
-	const declared = typeof record.host === "string" ? record.host.trim() !== "" : record.host !== undefined && record.host !== null;
-	const text = (key: string): string | undefined => (typeof record[key] === "string" ? (record[key] as string) : undefined);
+	const declared =
+		typeof record.host === "string"
+			? record.host.trim() !== ""
+			: record.host !== undefined && record.host !== null;
+	const text = (key: string): string | undefined =>
+		typeof record[key] === "string" ? (record[key] as string) : undefined;
 	const rawModel = text("model");
 	const model = rawModel?.trim() ? rawModel.trim() : undefined;
 	const rawProvider = text("provider");
@@ -49,6 +53,7 @@ async function main(): Promise<void> {
 	try {
 		raw = await new Response(Bun.stdin.stream()).text();
 	} catch {
+		// reason: an unreadable stdin is treated as an empty request, which the planner answers with no context
 		raw = "";
 	}
 	let parsed: unknown = {};
@@ -56,6 +61,7 @@ async function main(): Promise<void> {
 		try {
 			parsed = JSON.parse(raw);
 		} catch {
+			// reason: unparseable stdin is treated as an empty envelope, which the planner answers with no context
 			parsed = {};
 		}
 	}
@@ -80,7 +86,7 @@ if (import.meta.main) {
 	main()
 		.catch(() => emit({ context: "", skipped: "engine-error" }))
 		.catch(() => {
-			// fail-open: nothing left to say
+			// reason: fail-open: nothing left to say
 		})
 		.finally(() => {
 			process.exit(0);

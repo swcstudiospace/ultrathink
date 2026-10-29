@@ -30,7 +30,13 @@ import {
 } from "./promote.ts";
 import { openStore, storeDir } from "./store.ts";
 import { DEFAULT_TEACH_CONFIG, MOMENT_KINDS } from "./types.ts";
-import type { MomentKind, SkillDraft, TeachableMoment, TeachConfig, TeachContext } from "./types.ts";
+import type {
+	MomentKind,
+	SkillDraft,
+	TeachableMoment,
+	TeachConfig,
+	TeachContext,
+} from "./types.ts";
 
 const roots: string[] = [];
 const NOW = Date.parse("2026-10-01T00:00:00.000Z");
@@ -45,7 +51,11 @@ interface Fixture {
 	stateDir: string;
 	piDir: string;
 	claudeDir: string;
-	ctx: (over?: { host?: string; teach?: Partial<TeachConfig>; env?: NodeJS.ProcessEnv }) => TeachContext;
+	ctx: (over?: {
+		host?: string;
+		teach?: Partial<TeachConfig>;
+		env?: NodeJS.ProcessEnv;
+	}) => TeachContext;
 }
 
 function fixture(): Fixture {
@@ -64,7 +74,10 @@ function fixture(): Fixture {
 		ctx: (over = {}) => ({
 			host: over.host ?? "omp",
 			cwd: join(root, "repo"),
-			config: { teach: { ...DEFAULT_TEACH_CONFIG, enabled: true, ...over.teach }, hindsight: DEFAULT_HINDSIGHT_CONFIG },
+			config: {
+				teach: { ...DEFAULT_TEACH_CONFIG, enabled: true, ...over.teach },
+				hindsight: DEFAULT_HINDSIGHT_CONFIG,
+			},
 			env: over.env ?? { HOME: home, PI_CODING_AGENT_DIR: piDir, CLAUDE_CONFIG_DIR: claudeDir },
 			stateDir,
 			now: () => NOW,
@@ -149,10 +162,17 @@ describe("renderSkillDraft names and descriptions", () => {
 	const { ctx } = fixture();
 
 	test("a typical lesson becomes a short trigger-first skill", () => {
-		const draft = renderSkillDraft([moment({ name: "tsc rejects value imports of types: use import type" })], ctx());
+		const draft = renderSkillDraft(
+			[moment({ name: "tsc rejects value imports of types: use import type" })],
+			ctx(),
+		);
 		expect(draft.name).toBe("lesson-tsc-rejects-value-imports-of-types-use");
 		expect(draft.description).toBe("Use when tsc rejects value imports of types, use import.");
-		expect(draft.content.startsWith(`---\nname: ${draft.name}\ndescription: ${draft.description}\n---\n`)).toBe(true);
+		expect(
+			draft.content.startsWith(
+				`---\nname: ${draft.name}\ndescription: ${draft.description}\n---\n`,
+			),
+		).toBe(true);
 		validateLikeHermes(draft.content);
 	});
 
@@ -197,7 +217,10 @@ describe("renderSkillDraft names and descriptions", () => {
 	});
 
 	test("a name with nothing usable falls back to the description for the trigger", () => {
-		const draft = renderSkillDraft([moment({ name: "!!!", description: "Quoting breaks in zsh" })], ctx());
+		const draft = renderSkillDraft(
+			[moment({ name: "!!!", description: "Quoting breaks in zsh" })],
+			ctx(),
+		);
 		expect(draft.description).toBe("Use when quoting breaks in zsh.");
 	});
 
@@ -224,6 +247,7 @@ describe("renderSkillDraft names and descriptions", () => {
 			try {
 				attempt();
 			} catch (error) {
+				// reason: the error text is captured for the assertions below, so the failure is checked rather than hidden
 				message = (error as Error).message;
 			}
 			expect(message).not.toBe("");
@@ -244,13 +268,18 @@ describe("renderSkillDraft body", () => {
 
 	for (const kind of MOMENT_KINDS) {
 		test(`a ${kind} lesson gets the ${sections[kind]} section with its body`, () => {
-			const draft = renderSkillDraft([moment({ kind, name: `A ${kind} lesson`, body: `Body of the ${kind}.` })], ctx());
+			const draft = renderSkillDraft(
+				[moment({ kind, name: `A ${kind} lesson`, body: `Body of the ${kind}.` })],
+				ctx(),
+			);
 			const headings = draft.body.split("\n").filter((l) => l.startsWith("## "));
 			expect(headings).toEqual(["## When to use", sections[kind], "## Evidence"]);
 			expect(draft.body).toContain(`${sections[kind]}\n\nBody of the ${kind}.`);
-			expect(draft.body.startsWith(`# A ${kind} lesson\n\n## When to use\n\nSomething went wrong the first time.`)).toBe(
-				true,
-			);
+			expect(
+				draft.body.startsWith(
+					`# A ${kind} lesson\n\n## When to use\n\nSomething went wrong the first time.`,
+				),
+			).toBe(true);
 			expect(draft.body).not.toContain("---\nname:");
 		});
 	}
@@ -282,8 +311,18 @@ describe("renderSkillDraft body", () => {
 	});
 
 	test("merged lessons use the most repeated one as primary and keep each body", () => {
-		const a = moment({ name: "Minor lesson", body: "Minor body.", occurrences: 2, kind: "pitfall" });
-		const b = moment({ name: "Major lesson", body: "Major body.", occurrences: 5, kind: "pattern" });
+		const a = moment({
+			name: "Minor lesson",
+			body: "Minor body.",
+			occurrences: 2,
+			kind: "pitfall",
+		});
+		const b = moment({
+			name: "Major lesson",
+			body: "Major body.",
+			occurrences: 5,
+			kind: "pattern",
+		});
 		const draft = renderSkillDraft([a, b], ctx());
 		expect(draft.name).toBe("lesson-major-lesson");
 		expect(draft.body.startsWith("# Major lesson")).toBe(true);
@@ -325,7 +364,11 @@ describe("installSkill", () => {
 		expect(mode(join(f.stateDir, "teach", "skill-drafts"))).toBe(0o700);
 		expect(readdirSync(dir)).toEqual(["SKILL.md"]);
 
-		const again = installSkill({ ...draft, content: `${draft.content}\nmore\n` }, "drafts", f.ctx());
+		const again = installSkill(
+			{ ...draft, content: `${draft.content}\nmore\n` },
+			"drafts",
+			f.ctx(),
+		);
 		expect(again.action).toBe("drafted");
 		expect(readFileSync(again.path, "utf8")).toBe(`${draft.content}\nmore\n`);
 		expect(readdirSync(dir)).toEqual(["SKILL.md"]);
@@ -353,7 +396,10 @@ describe("installSkill", () => {
 		expect(created).toEqual({ target: "omp", path: join(dir, "SKILL.md"), action: "created" });
 		expect(readFileSync(created.path, "utf8")).toBe(draft.content);
 
-		const next = { ...draft, content: draft.content.replace("Check the config", "Check the settings") };
+		const next = {
+			...draft,
+			content: draft.content.replace("Check the config", "Check the settings"),
+		};
 		const updated = installSkill(next, "omp", f.ctx());
 		expect(updated.action).toBe("updated");
 		expect(updated.path).toBe(created.path);
@@ -376,13 +422,31 @@ describe("installSkill", () => {
 	test("prime-agent: installs under PRIME_AGENT_CODING_AGENT_DIR/skills, else ~/.prime/agent/skills", () => {
 		const f = fixture();
 		const draft = draftOf(f);
-		const scoped = installSkill(draft, "prime-agent", f.ctx({ env: { HOME: f.home, PRIME_AGENT_CODING_AGENT_DIR: join(f.home, "prime") }, host: "prime-agent" }));
-		expect(scoped).toEqual({ target: "prime-agent", path: join(f.home, "prime", "skills", draft.name, "SKILL.md"), action: "created" });
+		const scoped = installSkill(
+			draft,
+			"prime-agent",
+			f.ctx({
+				env: { HOME: f.home, PRIME_AGENT_CODING_AGENT_DIR: join(f.home, "prime") },
+				host: "prime-agent",
+			}),
+		);
+		expect(scoped).toEqual({
+			target: "prime-agent",
+			path: join(f.home, "prime", "skills", draft.name, "SKILL.md"),
+			action: "created",
+		});
 		expect(readFileSync(scoped.path, "utf8")).toBe(draft.content);
-		const home = installSkill(draft, "prime-agent", f.ctx({ env: { HOME: f.home }, host: "prime-agent" }));
+		const home = installSkill(
+			draft,
+			"prime-agent",
+			f.ctx({ env: { HOME: f.home }, host: "prime-agent" }),
+		);
 		expect(home.path).toBe(join(f.home, ".prime", "agent", "skills", draft.name, "SKILL.md"));
 		expect(home.action).toBe("created");
-		expect(installSkill(draft, "prime-agent", f.ctx({ env: { HOME: f.home }, host: "prime-agent" })).action).toBe("updated");
+		expect(
+			installSkill(draft, "prime-agent", f.ctx({ env: { HOME: f.home }, host: "prime-agent" }))
+				.action,
+		).toBe("updated");
 	});
 
 	test("claude: honors CLAUDE_CONFIG_DIR and updates only its own file", () => {
@@ -396,7 +460,8 @@ describe("installSkill", () => {
 	});
 
 	for (const target of ["omp", "claude"] as const) {
-		const root = (f: Fixture) => join(target === "omp" ? join(f.piDir, "managed-skills") : join(f.claudeDir, "skills"));
+		const root = (f: Fixture) =>
+			join(target === "omp" ? join(f.piDir, "managed-skills") : join(f.claudeDir, "skills"));
 
 		test(`${target}: a skill somebody else wrote is never overwritten`, () => {
 			const f = fixture();
@@ -460,7 +525,11 @@ describe("installSkill", () => {
 		const theirs = renderSkillDraft([moment({ name: "Shared name" })], f.ctx());
 		expect(theirs.name).toBe(mine.name);
 		const path = join(f.claudeDir, "skills", mine.name, "SKILL.md");
-		expect(installSkill(theirs, "claude", f.ctx())).toEqual({ target: "claude", path, action: "created" });
+		expect(installSkill(theirs, "claude", f.ctx())).toEqual({
+			target: "claude",
+			path,
+			action: "created",
+		});
 
 		expect(installSkill(mine, "claude", f.ctx())).toEqual({
 			target: "claude",
@@ -486,13 +555,21 @@ describe("installSkill", () => {
 		// [a, b] over an installed [a].
 		const merged = renderSkillDraft([a, b], f.ctx());
 		expect(merged.name).toBe(alone.name);
-		expect(installSkill(merged, "omp", f.ctx())).toEqual({ target: "omp", path, action: "updated" });
+		expect(installSkill(merged, "omp", f.ctx())).toEqual({
+			target: "omp",
+			path,
+			action: "updated",
+		});
 		expect(readFileSync(path, "utf8")).toBe(merged.content);
 
 		// An installed [a, b] blocks a lone [c] (and a lone [b]: it did not make the merge on its own).
 		for (const lone of [c, b]) {
 			const outcome = installSkill(renderSkillDraft([lone], f.ctx()), "omp", f.ctx());
-			expect(outcome).toMatchObject({ action: "refused", path, reason: "name taken by a skill made from other lessons" });
+			expect(outcome).toMatchObject({
+				action: "refused",
+				path,
+				reason: "name taken by a skill made from other lessons",
+			});
 		}
 		expect(readFileSync(path, "utf8")).toBe(merged.content);
 		expect(readdirSync(join(f.piDir, "managed-skills"))).toEqual([alone.name]);
@@ -500,14 +577,27 @@ describe("installSkill", () => {
 
 	test("a marker quoted in a lesson body is not the skill's marker: the skill re-installs in place", () => {
 		const f = fixture();
-		const m = moment({ name: "Marker example", body: "Skills end with a marker like this one:\n\n<!-- ultrathink:teach ids=x -->\n\nKeep it last." });
+		const m = moment({
+			name: "Marker example",
+			body: "Skills end with a marker like this one:\n\n<!-- ultrathink:teach ids=x -->\n\nKeep it last.",
+		});
 		const draft = renderSkillDraft([m], f.ctx());
-		expect(draft.content.indexOf("<!-- ultrathink:teach ids=x -->")).toBeLessThan(draft.content.indexOf(`ids=${m.id} -->`));
+		expect(draft.content.indexOf("<!-- ultrathink:teach ids=x -->")).toBeLessThan(
+			draft.content.indexOf(`ids=${m.id} -->`),
+		);
 		expect(markerIds(draft.content)).toEqual([m.id]);
 
 		const path = join(f.claudeDir, "skills", draft.name, "SKILL.md");
-		expect(installSkill(draft, "claude", f.ctx())).toEqual({ target: "claude", path, action: "created" });
-		expect(installSkill(draft, "claude", f.ctx())).toEqual({ target: "claude", path, action: "updated" });
+		expect(installSkill(draft, "claude", f.ctx())).toEqual({
+			target: "claude",
+			path,
+			action: "created",
+		});
+		expect(installSkill(draft, "claude", f.ctx())).toEqual({
+			target: "claude",
+			path,
+			action: "updated",
+		});
 		expect(readFileSync(path, "utf8")).toBe(draft.content);
 		expect(readdirSync(join(f.claudeDir, "skills"))).toEqual([draft.name]);
 	});
@@ -521,7 +611,10 @@ describe("installSkill", () => {
 		writeFileSync(join(dir, "SKILL.md"), legacy);
 		expect(markerIds(legacy)).toEqual([]);
 		const outcome = installSkill(draft, "claude", f.ctx());
-		expect(outcome).toMatchObject({ action: "refused", reason: "name taken by a skill made from other lessons" });
+		expect(outcome).toMatchObject({
+			action: "refused",
+			reason: "name taken by a skill made from other lessons",
+		});
 		expect(readFileSync(join(dir, "SKILL.md"), "utf8")).toBe(legacy);
 		expect(readdirSync(join(f.claudeDir, "skills"))).toEqual([draft.name]);
 	});
@@ -529,7 +622,11 @@ describe("installSkill", () => {
 	test("a draft that is not a valid skill is refused without writing", () => {
 		const f = fixture();
 		const draft = draftOf(f);
-		for (const bad of [{ ...draft, name: "../evil" }, { ...draft, name: "Upper" }, { ...draft, content: "  " }]) {
+		for (const bad of [
+			{ ...draft, name: "../evil" },
+			{ ...draft, name: "Upper" },
+			{ ...draft, content: "  " },
+		]) {
 			const outcome = installSkill(bad, "omp", f.ctx());
 			expect(outcome.action).toBe("refused");
 			expect(outcome.path).toBe("");
@@ -547,7 +644,9 @@ describe("markPromoted", () => {
 		const ctx = f.ctx();
 		const store = openStore(storeDir(f.stateDir));
 		const local = moment();
-		const retained = moment({ retained: { at: "2026-01-05T00:00:00.000Z", bank: "ultrathink", documentId: "tm:x" } });
+		const retained = moment({
+			retained: { at: "2026-01-05T00:00:00.000Z", bank: "ultrathink", documentId: "tm:x" },
+		});
 		store.put(local);
 		store.put(retained);
 
@@ -583,7 +682,11 @@ describe("markPromoted", () => {
 		const m = moment();
 		store.put(m);
 		markPromoted([m.id], { skill: "lesson-x", target: "hermes" }, f.ctx());
-		expect(store.get(m.id)?.promoted).toEqual({ at: "2026-10-01T00:00:00.000Z", skill: "lesson-x", target: "hermes" });
+		expect(store.get(m.id)?.promoted).toEqual({
+			at: "2026-10-01T00:00:00.000Z",
+			skill: "lesson-x",
+			target: "hermes",
+		});
 	});
 });
 
@@ -594,7 +697,11 @@ describe("promotionCandidates", () => {
 		const promoted = { at: "2026-02-01T00:00:00.000Z", skill: "lesson-x", target: "omp" as const };
 		const oldest = moment({ occurrences: 5, createdAt: "2026-01-01T00:00:00.000Z" });
 		const middle = moment({ occurrences: 3, createdAt: "2026-01-02T00:00:00.000Z" });
-		const newest = moment({ kind: "playbook", occurrences: 1, createdAt: "2026-01-03T00:00:00.000Z" });
+		const newest = moment({
+			kind: "playbook",
+			occurrences: 1,
+			createdAt: "2026-01-03T00:00:00.000Z",
+		});
 		for (const m of [
 			oldest,
 			middle,
@@ -608,8 +715,15 @@ describe("promotionCandidates", () => {
 		]) {
 			store.put(m);
 		}
-		expect(promotionCandidates(f.ctx()).map((m) => m.id)).toEqual([newest.id, middle.id, oldest.id]);
-		expect(promotionCandidates(f.ctx({ teach: { promoteAfter: 5 } })).map((m) => m.id)).toEqual([newest.id, oldest.id]);
+		expect(promotionCandidates(f.ctx()).map((m) => m.id)).toEqual([
+			newest.id,
+			middle.id,
+			oldest.id,
+		]);
+		expect(promotionCandidates(f.ctx({ teach: { promoteAfter: 5 } })).map((m) => m.id)).toEqual([
+			newest.id,
+			oldest.id,
+		]);
 	});
 
 	test("an empty store has no candidates", () => {
@@ -639,7 +753,10 @@ describe("promoteDue", () => {
 	test("does nothing while Teachable Moments is off or killed", async () => {
 		const f = fixture();
 		seed(f, {});
-		expect(await promoteDue(f.ctx({ teach: { autoPromote: true, enabled: false } }))).toEqual({ drafted: [], installed: [] });
+		expect(await promoteDue(f.ctx({ teach: { autoPromote: true, enabled: false } }))).toEqual({
+			drafted: [],
+			installed: [],
+		});
 		const killed = f.ctx({
 			teach: { autoPromote: true },
 			env: { HOME: f.home, PI_CODING_AGENT_DIR: f.piDir, ULTRATHINK_TEACH: "0" },
@@ -675,7 +792,9 @@ describe("promoteDue", () => {
 		seed(f, { name: "Claude lesson" });
 		const result = await promoteDue(f.ctx({ host: "claude-code", teach: { autoPromote: true } }));
 		expect(result.installed).toHaveLength(1);
-		expect(result.installed[0]?.path).toBe(join(f.claudeDir, "skills", "lesson-claude-lesson", "SKILL.md"));
+		expect(result.installed[0]?.path).toBe(
+			join(f.claudeDir, "skills", "lesson-claude-lesson", "SKILL.md"),
+		);
 		expect(existsSync(join(f.piDir, "managed-skills"))).toBe(false);
 	});
 
@@ -702,7 +821,10 @@ describe("promoteDue", () => {
 		const skills = [a, b].map((m) => store.get(m?.id ?? "")?.promoted?.skill);
 		expect(new Set(skills).size).toBe(2);
 		for (const skill of skills) {
-			const content = readFileSync(join(f.piDir, "managed-skills", skill ?? "", "SKILL.md"), "utf8");
+			const content = readFileSync(
+				join(f.piDir, "managed-skills", skill ?? "", "SKILL.md"),
+				"utf8",
+			);
 			expect(validateLikeHermes(content).name).toBe(skill as string);
 		}
 	});
@@ -712,7 +834,10 @@ describe("promoteDue", () => {
 		const [blocked, fine] = seed(f, { name: "Blocked lesson" }, { name: "Fine lesson" });
 		const dir = join(f.piDir, "managed-skills", "lesson-blocked-lesson");
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, "SKILL.md"), "---\nname: lesson-blocked-lesson\ndescription: Mine.\n---\nAuthored.\n");
+		writeFileSync(
+			join(dir, "SKILL.md"),
+			"---\nname: lesson-blocked-lesson\ndescription: Mine.\n---\nAuthored.\n",
+		);
 		const result = await promoteDue(f.ctx({ teach: { autoPromote: true } }));
 		expect(result.installed.map((o) => o.action).sort()).toEqual(["created", "refused"]);
 		const store = openStore(storeDir(f.stateDir));
@@ -723,7 +848,10 @@ describe("promoteDue", () => {
 	test("claude-code and grok-build share ~/.claude/skills: a same-named lesson from the other store is refused and keeps its draft", async () => {
 		const f = fixture();
 		const claude = f.ctx({ host: "claude-code", teach: { autoPromote: true } });
-		const grok: TeachContext = { ...f.ctx({ host: "grok-build", teach: { autoPromote: true } }), stateDir: join(f.root, "grok-state") };
+		const grok: TeachContext = {
+			...f.ctx({ host: "grok-build", teach: { autoPromote: true } }),
+			stateDir: join(f.root, "grok-state"),
+		};
 		const fromClaude = moment({ name: "Shared lesson", occurrences: 3, body: "Claude's advice." });
 		const fromGrok = moment({ name: "Shared lesson", occurrences: 3, body: "Grok's advice." });
 		openStore(storeDir(claude.stateDir)).put(fromClaude);
@@ -737,7 +865,12 @@ describe("promoteDue", () => {
 
 		const second = await promoteDue(grok);
 		expect(second.installed).toEqual([
-			{ target: "claude", path, action: "refused", reason: "name taken by a skill made from other lessons" },
+			{
+				target: "claude",
+				path,
+				action: "refused",
+				reason: "name taken by a skill made from other lessons",
+			},
 		]);
 
 		// Claude Code's skill and record are untouched.
@@ -749,7 +882,13 @@ describe("promoteDue", () => {
 
 		// Grok Build's lesson stays confirmed with its draft.
 		expect(openStore(storeDir(grok.stateDir)).get(fromGrok.id)?.status).toBe("confirmed");
-		const draftPath = join(grok.stateDir, "teach", "skill-drafts", "lesson-shared-lesson", "SKILL.md");
+		const draftPath = join(
+			grok.stateDir,
+			"teach",
+			"skill-drafts",
+			"lesson-shared-lesson",
+			"SKILL.md",
+		);
 		expect(second.drafted).toEqual([{ target: "drafts", path: draftPath, action: "drafted" }]);
 		const draft = readFileSync(draftPath, "utf8");
 		expect(markerIds(draft)).toEqual([fromGrok.id]);
@@ -773,7 +912,12 @@ interface JevCall {
 function withSkillworthy(
 	f: Fixture,
 	answers: Array<number | Response | Error>,
-	over: { decisions?: Partial<DecisionsConfig> | false; env?: NodeJS.ProcessEnv; teach?: Partial<TeachConfig>; fetch?: typeof fetch } = {},
+	over: {
+		decisions?: Partial<DecisionsConfig> | false;
+		env?: NodeJS.ProcessEnv;
+		teach?: Partial<TeachConfig>;
+		fetch?: typeof fetch;
+	} = {},
 ): { ctx: TeachContext; calls: JevCall[] } {
 	const calls: JevCall[] = [];
 	const base = f.ctx({
@@ -782,18 +926,25 @@ function withSkillworthy(
 			HOME: f.home,
 			PI_CODING_AGENT_DIR: f.piDir,
 			CLAUDE_CONFIG_DIR: f.claudeDir,
-			OPENROUTER_API_KEY: JEV_KEY,
+			ULTRATHINK_OPENROUTER_KEY: JEV_KEY,
 			...over.env,
 		},
 	});
 	const decisions =
 		over.decisions === false
 			? undefined
-			: { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: ["skillworthy" as const], ...over.decisions };
+			: {
+					...DEFAULT_DECISIONS_CONFIG,
+					enabled: true,
+					points: ["skillworthy" as const],
+					...over.decisions,
+				};
 	const ctx: TeachContext = {
 		...base,
 		storePath: join(f.root, "credentials.json"),
-		config: decisions ? { ...base.config, decisions: { ...decisions, points: [...decisions.points] } } : base.config,
+		config: decisions
+			? { ...base.config, decisions: { ...decisions, points: [...decisions.points] } }
+			: base.config,
 		fetch:
 			over.fetch ??
 			((async (_url: string | URL | Request, init?: RequestInit) => {
@@ -823,14 +974,26 @@ describe("filterSkillworthy", () => {
 		});
 		const equal = moment({ name: "equal lesson", body: "equal body" });
 		const above = moment({ name: "above lesson", body: "above body" });
-		const { ctx, calls } = withSkillworthy(f, [0.61, at, 0.9], { decisions: { skillworthyAt: at } });
+		const { ctx, calls } = withSkillworthy(f, [0.61, at, 0.9], {
+			decisions: { skillworthyAt: at },
+		});
 		const kept = await filterSkillworthy([below, equal, above], ctx);
 		expect(kept.map((item) => item.id)).toEqual([equal.id, above.id]);
 		expect(calls).toHaveLength(3);
 		expect(calls[0]?.questions).toEqual({ skillworthy: QUESTIONS.skillworthy });
 		expect(calls[1]?.questions).toEqual({ skillworthy: QUESTIONS.skillworthy });
-		const state = calls[0]?.state as { name: string; description: string; body: string; kind: string; occurrences: number };
-		expect(state).toMatchObject({ description: "a plain description", kind: "pitfall", occurrences: 4 });
+		const state = calls[0]?.state as {
+			name: string;
+			description: string;
+			body: string;
+			kind: string;
+			occurrences: number;
+		};
+		expect(state).toMatchObject({
+			description: "a plain description",
+			kind: "pitfall",
+			occurrences: 4,
+		});
 		expect(state.name).toBe("name [redacted]");
 		expect(state.body.length).toBe(800);
 		expect(state.body.startsWith("token [redacted]")).toBe(true);
@@ -850,11 +1013,12 @@ describe("filterSkillworthy", () => {
 
 	test("no decisions section, a point list without skillworthy, or the kill switch keeps every moment and asks nothing", async () => {
 		const lessons = [moment({ name: "one" }), moment({ name: "two" })];
-		const cases: Array<{ decisions?: Partial<DecisionsConfig> | false; env?: NodeJS.ProcessEnv }> = [
-			{ decisions: false },
-			{ decisions: { points: ["plan"] } },
-			{ env: { ULTRATHINK_DECISIONS: "0" } },
-		];
+		const cases: Array<{ decisions?: Partial<DecisionsConfig> | false; env?: NodeJS.ProcessEnv }> =
+			[
+				{ decisions: false },
+				{ decisions: { points: ["plan"] } },
+				{ env: { ULTRATHINK_DECISIONS: "0" } },
+			];
 		for (const over of cases) {
 			const f = fixture();
 			const { ctx, calls } = withSkillworthy(f, [0.01], over);
@@ -867,13 +1031,23 @@ describe("filterSkillworthy", () => {
 	test("a thrown fetch, HTTP 500, or a timeout keeps every moment", async () => {
 		const lessons = [moment({ name: "one" }), moment({ name: "two" })];
 		const thrown = fixture();
-		const boom = withSkillworthy(thrown, [new Error("connection refused")], { decisions: { timeoutMs: 400 } });
-		expect((await filterSkillworthy(lessons, boom.ctx)).map((item) => item.id)).toEqual(lessons.map((item) => item.id));
+		const boom = withSkillworthy(thrown, [new Error("connection refused")], {
+			decisions: { timeoutMs: 400 },
+		});
+		expect((await filterSkillworthy(lessons, boom.ctx)).map((item) => item.id)).toEqual(
+			lessons.map((item) => item.id),
+		);
 		expect(boom.calls.length).toBeGreaterThan(0);
 
 		const upstream = fixture();
-		const down = withSkillworthy(upstream, [Response.json({ error: { message: "down" } }, { status: 500 })], { decisions: { timeoutMs: 400 } });
-		expect((await filterSkillworthy(lessons, down.ctx)).map((item) => item.id)).toEqual(lessons.map((item) => item.id));
+		const down = withSkillworthy(
+			upstream,
+			[Response.json({ error: { message: "down" } }, { status: 500 })],
+			{ decisions: { timeoutMs: 400 } },
+		);
+		expect((await filterSkillworthy(lessons, down.ctx)).map((item) => item.id)).toEqual(
+			lessons.map((item) => item.id),
+		);
 		expect(down.calls.length).toBeGreaterThan(0);
 
 		const hung = fixture();
@@ -883,11 +1057,15 @@ describe("filterSkillworthy", () => {
 			fetch: ((_url: string | URL | Request, init?: RequestInit) => {
 				timeouts += 1;
 				return new Promise<Response>((_resolve, reject) => {
-					init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+					init?.signal?.addEventListener("abort", () =>
+						reject(new DOMException("aborted", "AbortError")),
+					);
 				});
 			}) as typeof fetch,
 		});
-		expect((await filterSkillworthy(lessons, slow.ctx)).map((item) => item.id)).toEqual(lessons.map((item) => item.id));
+		expect((await filterSkillworthy(lessons, slow.ctx)).map((item) => item.id)).toEqual(
+			lessons.map((item) => item.id),
+		);
 		expect(timeouts).toBe(lessons.length);
 	});
 });
@@ -896,11 +1074,22 @@ describe("promoteDue skillworthy gate", () => {
 	test("with autoPromote on, drafts only the moments filterSkillworthy keeps", async () => {
 		const f = fixture();
 		const store = openStore(storeDir(f.stateDir));
-		const skip = moment({ name: "Skip lesson", occurrences: 3, createdAt: "2026-02-02T00:00:00.000Z" });
-		const keep = moment({ name: "Keep lesson", occurrences: 3, createdAt: "2026-01-01T00:00:00.000Z" });
+		const skip = moment({
+			name: "Skip lesson",
+			occurrences: 3,
+			createdAt: "2026-02-02T00:00:00.000Z",
+		});
+		const keep = moment({
+			name: "Keep lesson",
+			occurrences: 3,
+			createdAt: "2026-01-01T00:00:00.000Z",
+		});
 		store.put(skip);
 		store.put(keep);
-		const { ctx, calls } = withSkillworthy(f, [0.1, 0.8], { teach: { autoPromote: true }, decisions: { skillworthyAt: 0.5 } });
+		const { ctx, calls } = withSkillworthy(f, [0.1, 0.8], {
+			teach: { autoPromote: true },
+			decisions: { skillworthyAt: 0.5 },
+		});
 		const result = await promoteDue(ctx);
 		expect(calls).toHaveLength(2);
 		expect(result.drafted.map((outcome) => outcome.path)).toEqual([

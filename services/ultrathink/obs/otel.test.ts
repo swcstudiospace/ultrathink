@@ -13,7 +13,17 @@ const START = 1_700_000_000_000_000_000n;
 const END = 1_700_000_000_500_000_000n;
 
 function span(name: string, overrides: Partial<FinishedSpan> = {}): FinishedSpan {
-	return { traceId: TRACE_ID, spanId: SPAN_ID, name, kind: 3, startUnixNano: START, endUnixNano: END, attributes: {}, error: false, ...overrides };
+	return {
+		traceId: TRACE_ID,
+		spanId: SPAN_ID,
+		name,
+		kind: 3,
+		startUnixNano: START,
+		endUnixNano: END,
+		attributes: {},
+		error: false,
+		...overrides,
+	};
 }
 
 interface OtlpSpan {
@@ -56,7 +66,9 @@ function firstOf<T>(items: readonly T[]): T {
 }
 
 function spansIn(body: OtlpBody): OtlpSpan[] {
-	return body.resourceSpans.flatMap((resourceSpans) => resourceSpans.scopeSpans.flatMap((scopeSpans) => scopeSpans.spans));
+	return body.resourceSpans.flatMap((resourceSpans) =>
+		resourceSpans.scopeSpans.flatMap((scopeSpans) => scopeSpans.spans),
+	);
 }
 
 function startCollector(): Collector {
@@ -67,7 +79,8 @@ function startCollector(): Collector {
 		port: 0,
 		async fetch(request) {
 			const url = new URL(request.url);
-			if (request.method !== "POST" || url.pathname !== "/v1/traces") return new Response("not found", { status: 404 });
+			if (request.method !== "POST" || url.pathname !== "/v1/traces")
+				return new Response("not found", { status: 404 });
 			posted.push({
 				path: url.pathname,
 				contentType: request.headers.get("content-type"),
@@ -76,7 +89,12 @@ function startCollector(): Collector {
 			return new Response(null, { status: state.status });
 		},
 	});
-	return { endpoint: `http://127.0.0.1:${server.port}`, posted, state, stop: () => server.stop(true) };
+	return {
+		endpoint: `http://127.0.0.1:${server.port}`,
+		posted,
+		state,
+		stop: () => server.stop(true),
+	};
 }
 
 describe("span exporter", () => {
@@ -123,7 +141,10 @@ describe("span exporter", () => {
 	});
 
 	test("maps error to status.code 2 and a clean span to 0", () => {
-		const encoded = encodeOtlpTraces([span("ok"), span("bad", { error: true })], RESOURCE) as OtlpBody;
+		const encoded = encodeOtlpTraces(
+			[span("ok"), span("bad", { error: true })],
+			RESOURCE,
+		) as OtlpBody;
 		const spans = spansIn(encoded);
 		expect(firstOf(spans).status.code).toBe(0);
 		expect(firstOf(spans.slice(1)).status.code).toBe(2);
@@ -131,7 +152,18 @@ describe("span exporter", () => {
 
 	test("encodes attributes by type: string, int as decimal string, other number as double, boolean", () => {
 		const encoded = encodeOtlpTraces(
-			[span("attrs", { attributes: { route: "/v1/plan", retries: 3, negative: -7, huge: 1e21, cost: 0.25, cached: false } })],
+			[
+				span("attrs", {
+					attributes: {
+						route: "/v1/plan",
+						retries: 3,
+						negative: -7,
+						huge: 1e21,
+						cost: 0.25,
+						cached: false,
+					},
+				}),
+			],
 			RESOURCE,
 		) as OtlpBody;
 		expect(firstOf(spansIn(encoded)).attributes).toEqual([
@@ -183,7 +215,13 @@ describe("span exporter", () => {
 		await exporter.flush();
 
 		expect(collector.posted.map((post) => spansIn(post.body).length)).toEqual([2, 2, 1]);
-		expect(collector.posted.flatMap((post) => spansIn(post.body).map((s) => s.name))).toEqual(["a", "b", "c", "d", "e"]);
+		expect(collector.posted.flatMap((post) => spansIn(post.body).map((s) => s.name))).toEqual([
+			"a",
+			"b",
+			"c",
+			"d",
+			"e",
+		]);
 	});
 
 	test("a fetch that throws calls onFailure once, flush resolves, and the batch is never re-sent", async () => {
@@ -278,6 +316,8 @@ describe("span exporter", () => {
 	});
 
 	test("rejects a non-positive maxBatch at construction", () => {
-		expect(() => createSpanExporter({ endpoint: collector.endpoint, ...RESOURCE, maxBatch: 0 })).toThrow(RangeError);
+		expect(() =>
+			createSpanExporter({ endpoint: collector.endpoint, ...RESOURCE, maxBatch: 0 }),
+		).toThrow(RangeError);
 	});
 });

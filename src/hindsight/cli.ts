@@ -46,7 +46,11 @@ interface Step {
 function stepLine(step: Step): string {
 	if (step.skipped) return `  ${step.name}: skipped`;
 	if (step.ok) return `  ${step.name}: ok · ${step.ms} ms${step.note ? ` · ${step.note}` : ""}`;
-	const reason = step.error ? ` (${step.error.kind}) · ${step.error.message}` : step.note ? ` · ${step.note}` : "";
+	const reason = step.error
+		? ` (${step.error.kind}) · ${step.error.message}`
+		: step.note
+			? ` · ${step.note}`
+			: "";
 	return `  ${step.name}: failed${reason} · ${step.ms} ms`;
 }
 
@@ -70,7 +74,11 @@ async function roundtrip(
 		fetch: deps.fetch,
 	});
 	const steps: Step[] = [];
-	const run = async <T>(name: string, work: () => Promise<HindsightResult<T>>, verify?: (value: T) => string | undefined) => {
+	const run = async <T>(
+		name: string,
+		work: () => Promise<HindsightResult<T>>,
+		verify?: (value: T) => string | undefined,
+	) => {
 		const started = now();
 		const result = await work();
 		const step: Step = { name, ok: result.ok, ms: now() - started };
@@ -102,7 +110,10 @@ async function roundtrip(
 		await run(
 			"recall",
 			() => client.recall({ query: nonce }),
-			(hits) => (hits.some((hit) => hit.text.includes(nonce)) ? undefined : `no hit contains the nonce (${hits.length} hits)`),
+			(hits) =>
+				hits.some((hit) => hit.text.includes(nonce))
+					? undefined
+					: `no hit contains the nonce (${hits.length} hits)`,
 		);
 	} else skip("recall");
 	await run("delete document", () => client.deleteDocument(documentId));
@@ -110,14 +121,25 @@ async function roundtrip(
 	return { bank, steps };
 }
 
-async function check(config: HindsightConfig, flags: { roundtrip: boolean; json: boolean }, deps: CommandDeps): Promise<CliResult> {
+async function check(
+	config: HindsightConfig,
+	flags: { roundtrip: boolean; json: boolean },
+	deps: CommandDeps,
+): Promise<CliResult> {
 	const env = deps.env ?? process.env;
 	const storePath = deps.storePath ?? defaultStorePath(env);
 	const now = deps.now ?? Date.now;
-	const resolution = resolveHindsight(config, env, { storePath, fetch: deps.fetch, gateway: deps.gateway });
+	const resolution = resolveHindsight(config, env, {
+		storePath,
+		fetch: deps.fetch,
+		gateway: deps.gateway,
+	});
 	const { readiness } = resolution;
 	if (readiness.state !== "ready" || !resolution.client) {
-		const reason = hindsightStatusLine(config, env, storePath, deps.gateway).replace(/^Hindsight: /, "");
+		const reason = hindsightStatusLine(config, env, storePath, deps.gateway).replace(
+			/^Hindsight: /,
+			"",
+		);
 		return flags.json
 			? { code: 1, text: JSON.stringify({ ok: false, state: readiness.state, reason }) }
 			: { code: 1, text: `Hindsight check: ${reason}` };
@@ -136,7 +158,17 @@ async function check(config: HindsightConfig, flags: { roundtrip: boolean; json:
 				}
 			: health.error;
 		return flags.json
-			? { code: 1, text: JSON.stringify({ ok: false, state: "ready", origin, bank: readiness.bank, error, ms }) }
+			? {
+					code: 1,
+					text: JSON.stringify({
+						ok: false,
+						state: "ready",
+						origin,
+						bank: readiness.bank,
+						error,
+						ms,
+					}),
+				}
 			: { code: 1, text: `Hindsight check: error (${error.kind}) · ${error.message}` };
 	}
 	const { apiVersion, features } = health.value;
@@ -162,9 +194,11 @@ async function check(config: HindsightConfig, flags: { roundtrip: boolean; json:
 	}
 	const lines = [
 		`Hindsight check: ok · Hindsight ${apiVersion || "unknown"} · database connected · bank ${readiness.bank} · ${ms} ms`,
-		`Features: ${Object.entries(features)
-			.map(([name, on]) => `${name} ${on ? "on" : "off"}`)
-			.join(" · ") || "none reported"}`,
+		`Features: ${
+			Object.entries(features)
+				.map(([name, on]) => `${name} ${on ? "on" : "off"}`)
+				.join(" · ") || "none reported"
+		}`,
 	];
 	if (smoke) {
 		lines.push(`Hindsight roundtrip: ${passed ? "ok" : "failed"} · throwaway bank ${smoke.bank}`);
@@ -184,7 +218,8 @@ export async function runHindsightCommand(argv: string[], deps: CommandDeps): Pr
 			else return { code: 2, text: USAGE };
 		}
 		const env = deps.env ?? process.env;
-		const loaded = deps.config && deps.gateway ? undefined : loadConfig(claudeConfigPaths(deps.cwd, env));
+		const loaded =
+			deps.config && deps.gateway ? undefined : loadConfig(claudeConfigPaths(deps.cwd, env));
 		const config = deps.config ?? loaded?.hindsight;
 		if (!config) return { code: 1, text: "Hindsight: config unavailable" };
 		return await check(config, flags, { ...deps, gateway: deps.gateway ?? loaded?.gateway });

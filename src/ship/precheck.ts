@@ -18,13 +18,16 @@ export function shipPrecheck(
 	if (!base) {
 		base =
 			["master", "main"].find(
-				(name) => git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`).exitCode === 0,
+				(name) =>
+					git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`).exitCode === 0,
 			) ?? "";
 	}
 	if (!base) return { ok: false, reason: "no origin default branch", branch, ahead: 0 };
-	if (branch === base) return { ok: false, reason: `on base branch ${base}`, branch, base, ahead: 0 };
+	if (branch === base)
+		return { ok: false, reason: `on base branch ${base}`, branch, base, ahead: 0 };
 	const count = git("rev-list", "--count", `origin/${base}..HEAD`);
 	const ahead = count.exitCode === 0 ? Number.parseInt(count.stdout.trim(), 10) || 0 : 0;
-	if (ahead <= 0) return { ok: false, reason: `no commits ahead of origin/${base}`, branch, base, ahead: 0 };
+	if (ahead <= 0)
+		return { ok: false, reason: `no commits ahead of origin/${base}`, branch, base, ahead: 0 };
 	return { ok: true, reason: `${ahead} commit(s) ahead of origin/${base}`, branch, base, ahead };
 }

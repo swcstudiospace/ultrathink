@@ -74,10 +74,18 @@ describe("createWalCheckpointer", () => {
 	test("invalid options are rejected before any timer exists", () => {
 		const timers = fakeTimers();
 		expect(() =>
-			createWalCheckpointer({ checkpoint: () => ({ ok: true }), intervalMs: 0, setTimer: timers.setTimer }),
+			createWalCheckpointer({
+				checkpoint: () => ({ ok: true }),
+				intervalMs: 0,
+				setTimer: timers.setTimer,
+			}),
 		).toThrow(RangeError);
 		expect(() =>
-			createWalCheckpointer({ checkpoint: "not a function" as never, intervalMs: 1000, setTimer: timers.setTimer }),
+			createWalCheckpointer({
+				checkpoint: "not a function" as never,
+				intervalMs: 1000,
+				setTimer: timers.setTimer,
+			}),
 		).toThrow(TypeError);
 		expect(timers.timers).toHaveLength(0);
 	});

@@ -7,7 +7,11 @@ import type { DecisionRecord } from "../decisions/types.ts";
 import { buildPr } from "./pr-body.ts";
 import type { Assessment } from "./types.ts";
 
-const RECORD = { sessionId: "s", at: 1, result: { xml: "", original: "Add a --verbose flag", root: "" } } as unknown as SessionRecord;
+const RECORD = {
+	sessionId: "s",
+	at: 1,
+	result: { xml: "", original: "Add a --verbose flag", root: "" },
+} as unknown as SessionRecord;
 const MODEL = "typesafe/jev-1.13-20260917";
 const OK: DecisionRecord = {
 	point: "ship",
@@ -68,11 +72,20 @@ describe("buildPr Jev line", () => {
 
 	test("the line names what Jev did to the outcome, with P truncated to two decimals", () => {
 		const cases: [DecisionRecord, string][] = [
-			[{ ...OK, p: 0.79, action: "approve", threshold: 0.7 }, `- Jev: P(complete) 0.79 · ${MODEL} · approved (no LLM verdict)`],
-			[{ ...OK, p: 0.3, action: "reject", threshold: 0.7 }, `- Jev: P(complete) 0.30 · ${MODEL} · rejected (no LLM verdict)`],
+			[
+				{ ...OK, p: 0.79, action: "approve", threshold: 0.7 },
+				`- Jev: P(complete) 0.79 · ${MODEL} · approved (no LLM verdict)`,
+			],
+			[
+				{ ...OK, p: 0.3, action: "reject", threshold: 0.7 },
+				`- Jev: P(complete) 0.30 · ${MODEL} · rejected (no LLM verdict)`,
+			],
 			[{ ...OK, p: 0.03, action: "veto" }, `- Jev: P(complete) 0.03 · ${MODEL} · veto`],
 			[{ ...OK, p: 0.199, action: "veto" }, `- Jev: P(complete) 0.19 · ${MODEL} · veto`],
-			[{ ...OK, p: 0.03, action: "advise-veto" }, `- Jev: P(complete) 0.03 · ${MODEL} · veto (advisory: shipped anyway)`],
+			[
+				{ ...OK, p: 0.03, action: "advise-veto" },
+				`- Jev: P(complete) 0.03 · ${MODEL} · veto (advisory: shipped anyway)`,
+			],
 		];
 		for (const [decision, line] of cases) {
 			expect(assessmentLines(buildPr(RECORD, { ...ASSESSMENT, decision }).body).at(-1)).toBe(line);
@@ -87,8 +100,13 @@ describe("buildPr Jev line", () => {
 	});
 
 	test("the model is scrubbed of control characters and local paths and kept on one line", () => {
-		const { body } = buildPr(RECORD, { ...ASSESSMENT, decision: { ...OK, model: "evil\u0007/model\n## Injected /root/secret.txt" } });
-		expect(assessmentLines(body).at(-1)).toBe("- Jev: P(complete) 0.94 · evil/model ## Injected <local path>");
+		const { body } = buildPr(RECORD, {
+			...ASSESSMENT,
+			decision: { ...OK, model: "evil\u0007/model\n## Injected /root/secret.txt" },
+		});
+		expect(assessmentLines(body).at(-1)).toBe(
+			"- Jev: P(complete) 0.94 · evil/model ## Injected <local path>",
+		);
 		expect(body).not.toContain("\n## Injected");
 		expect(body).not.toContain("/root/");
 	});

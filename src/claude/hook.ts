@@ -9,15 +9,29 @@
  * AbortError, aborting sibling work and preventing later inference or side effects.
  */
 import type { UltrathinkConfig } from "../config.ts";
-import { createDecisions, type DecisionsDeps } from "../decisions/gate.ts";
+import { createDecisions, type DecisionsDeps, decisionsKilled } from "../decisions/gate.ts";
+import { takeJevWarning } from "../decisions/health.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
-import { createGreptileKnowledge, type KnowledgeLookup, type KnowledgeReader, type KnowledgeResult, type KnowledgeSession } from "../greptile/knowledge.ts";
+import {
+	createGreptileKnowledge,
+	type KnowledgeLookup,
+	type KnowledgeReader,
+	type KnowledgeResult,
+	type KnowledgeSession,
+} from "../greptile/knowledge.ts";
 import { injectClarificationsXml } from "../hitl/format.ts";
 import { normalizeQuestion, type RunClarifyOptions, runClarify } from "../hitl/pipeline.ts";
 import type { Clarification } from "../hitl/types.ts";
 import { runThink } from "../think/pipeline.ts";
 import type { ThoughtGraph } from "../think/types.ts";
-import { type EmitInput, emitEvent, fetchBrief } from "../substrate/brief.ts";
+import {
+	type BriefFailure,
+	type BriefResult,
+	type EmitInput,
+	emitEvent,
+	fetchBrief,
+} from "../substrate/brief.ts";
+import { sanitizeBrief } from "../substrate/inject.ts";
 import { resolveBranch, resolveRepoSlug } from "../track/git.ts";
 import { buildTrackPlan } from "../track/plan.ts";
 import type { Tracker } from "../track/gateway.ts";
@@ -26,13 +40,26 @@ import type { TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { type ActivityNotice, toActivityNotice } from "../host/activity-notice.ts";
 import type { ProgressEvent, ProgressSink, StageName } from "../host/progress.ts";
-import type { UpliftResult, UpliftState } from "../types.ts";
+import type { CompletionReport, UpliftResult, UpliftState } from "../types.ts";
 import { docsLookup, formatDocsSection, groundDocs } from "../ragflow/ground.ts";
 import { teachContext, teachEnabled } from "../teach/context.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "../teach/recall.ts";
 import type { GroundOutcome, DocsLookup } from "../ragflow/types.ts";
-import { formatSkillsSection, recallSkills, skillsLookup, SKILL_SECTION_CHARS } from "../teach/skills.ts";
-import type { LessonsLookup, RecallOutcome, SkillRecallOutcome, SkillsLookup } from "../teach/types.ts";
+import { isHostId, type HostId } from "../host/types.ts";
+import { redactSecrets } from "../redact.ts";
+import { probeRealmRaw, realmHint, type RealmProbe } from "../stack/realm.ts";
+import {
+	formatSkillsSection,
+	recallSkills,
+	skillsLookup,
+	SKILL_SECTION_CHARS,
+} from "../teach/skills.ts";
+import type {
+	LessonsLookup,
+	RecallOutcome,
+	SkillRecallOutcome,
+	SkillsLookup,
+} from "../teach/types.ts";
 import { isSubagentEnvelope } from "../host/envelope.ts";
 import { decideUplift } from "../uplift/detect.ts";
 import type { SkillInvocation } from "../uplift/skill.ts";
@@ -44,7 +71,18 @@ import { isChildInvocation } from "./complete.ts";
 import { formatPlanSkipNotice, formatPromptContext, formatSummary } from "./output.ts";
 import { JEV_PLAN_SKIP, planGate } from "./plan-gate.ts";
 import { shipApplies } from "../ship/policy.ts";
-import { clearSkipOnce, type ControlState, hostSessionId, isTurnSessionId, newTurnSessionId, readSession, readSkipOnce, type SessionRecord, sessionPath, writeSession } from "./state.ts";
+import {
+	clearSkipOnce,
+	type ControlState,
+	hostSessionId,
+	isTurnSessionId,
+	newTurnSessionId,
+	readSession,
+	readSkipOnce,
+	type SessionRecord,
+	sessionPath,
+	writeSession,
+} from "./state.ts";
 
 export interface PromptSubmitInput {
 	session_id?: string;
@@ -56,7 +94,7 @@ export interface PromptSubmitInput {
 	skill?: SkillInvocation;
 }
 
-export interface HookOutput {
+interface HookOutput {
 	hookSpecificOutput: { hookEventName: "UserPromptSubmit"; additionalContext: string };
 	systemMessage?: string;
 }
@@ -81,11 +119,24 @@ export interface HookDeps {
 	clarify?: (opts: RunClarifyOptions) => Promise<Clarification[]>;
 	/** First error the completer threw (already redacted), surfaced in the summary. */
 	engineError?: () => string | undefined;
+	/** A successful failover to another route this run (not an error), e.g. "claude:… → grok:… (plan-limit)". */
+	engineFailover?: () => string | undefined;
+	/** The completer's report for its most recent call (attempts, HTTP status), read when the uplift falls back. */
+	engineReport?: () => CompletionReport | undefined;
 	/** Test seam for git remote/branch resolution; default reads the real repo at cwd. */
 	git?: (cwd: string) => { repo?: string; branch?: string };
 	conversation?: (transcriptPath?: string) => string;
-	/** Test seam for the Agent Substrate brief; defaults to the real fail-open HTTP call against `config.substrate.url`. */
-	brief?: (input: { repo?: string; branch?: string; surface?: string; signal?: AbortSignal }) => Promise<string>;
+	/**
+	 * Test seam for the Agent Substrate brief; defaults to the real fail-open `fetchBrief` against `config.substrate.url`,
+	 * with the env the host injected (`decisionsDeps.env`) or else `process.env`. Resolves to a {@link BriefResult}: a
+	 * missing brief is `state: "none"` with a `reason`, never a rejection (a rejection still reads as no brief).
+	 */
+	brief?: (input: {
+		repo?: string;
+		branch?: string;
+		surface?: string;
+		signal?: AbortSignal;
+	}) => Promise<BriefResult>;
 	/**
 	 * Test seam for the Agent Substrate plan event: the one `note` a planned prompt leaves in the ledger, carrying the
 	 * Graph ID the substrate adopts as its correlation key. Defaults to the real fail-open `emitEvent` against
@@ -95,7 +146,17 @@ export interface HookDeps {
 	emit?: (event: EmitInput, signal?: AbortSignal) => Promise<boolean>;
 	/** Host that asked for the brief and is named on the plan event. Defaults to Claude so existing callers stay stable. */
 	surface?: string;
+	/**
+	 * Test seam for the Realm daemon probe: one per plan, started next to the brief fetch with a 1 s budget and never
+	 * awaited past the brief. Defaults to {@link probeRealmRaw}. A rejection reads as an unknown realm (no note).
+	 */
+	realmProbe?: (
+		env: Record<string, string | undefined>,
+		opts: { timeoutMs: number; cwd: string },
+	) => Promise<RealmProbe>;
 	now?: () => number;
+	/** Timer port for the budget and lookup deadlines; defaults to the platform timers. */
+	timers?: TimerPort;
 	log?: (message: string) => void;
 	/** Creates tracker rows through the MCP gateway before the prompt goes out; fail-open. */
 	track?: Tracker;
@@ -126,7 +187,11 @@ export interface HookDeps {
 	 * Promoted-skills lookup (Teachable Moments). Defaults to `recallSkills` when `config.teach.enabled && config.teach.recall`;
 	 * an injected seam always runs. Same query rule as `recall`.
 	 */
-	skills?: (input: { query: string; cwd: string; signal: AbortSignal }) => Promise<SkillRecallOutcome>;
+	skills?: (input: {
+		query: string;
+		cwd: string;
+		signal: AbortSignal;
+	}) => Promise<SkillRecallOutcome>;
 }
 
 export interface PromptSubmitResult {
@@ -147,7 +212,10 @@ function specFile(stateDir: string, sessionId: string): string {
  * A replan keeps the session's edited repos and recalculates its mismatch against the new plan's label, so a session that
  * already edited another repo neither forgets it nor repeats its warning (see recordEditAttribution in host/omp.ts).
  */
-function carryRepoAttribution(prior: SessionRecord | undefined, record: SessionRecord): SessionRecord {
+function carryRepoAttribution(
+	prior: SessionRecord | undefined,
+	record: SessionRecord,
+): SessionRecord {
 	const workRepos = prior?.workRepos;
 	if (workRepos === undefined) return record;
 	if (!record.plan) return { ...record, workRepos };
@@ -171,7 +239,9 @@ export function savePlanRecord(
 	stateDir: string,
 	sessionId: string,
 	record: SessionRecord,
-	log: (message: string) => void = () => {},
+	log: (message: string) => void = () => {
+		// reason: no logger was injected; the default is a silent sink
+	},
 ): { record: SessionRecord; specPath: string; statePath: string; lastNote?: string } {
 	const statePath = sessionPath(stateDir, sessionId);
 	const specPath = specFile(stateDir, sessionId);
@@ -186,7 +256,9 @@ export function savePlanRecord(
 			);
 			let merged = carryRepoAttribution(prior, record);
 			if (late.length > 0) {
-				const byQuestion = new Map<string, Clarification>(late.map((c) => [normalizeQuestion(c.question), c]));
+				const byQuestion = new Map<string, Clarification>(
+					late.map((c) => [normalizeQuestion(c.question), c]),
+				);
 				const seen = new Set(base.map((c) => normalizeQuestion(c.question)));
 				const clarifications = base.map((c) => byQuestion.get(normalizeQuestion(c.question)) ?? c);
 				for (const c of late) {
@@ -196,7 +268,10 @@ export function savePlanRecord(
 					merged = {
 						...merged,
 						clarifications,
-						result: { ...record.result, xml: injectClarificationsXml(record.result.xml, clarifications) },
+						result: {
+							...record.result,
+							xml: injectClarificationsXml(record.result.xml, clarifications),
+						},
 					};
 				}
 			}
@@ -219,7 +294,8 @@ function knowledgeTopic(result: UpliftResult, graph: ThoughtGraph | undefined): 
 	const parts = [result.xml.replace(/<[^>]*>/g, " ")];
 	if (graph) {
 		parts.push(graph.goal);
-		for (const node of graph.nodes) parts.push(node.conclusion ? `${node.title}: ${node.conclusion}` : node.title);
+		for (const node of graph.nodes)
+			parts.push(node.conclusion ? `${node.title}: ${node.conclusion}` : node.title);
 	}
 	return parts.filter(Boolean).join("\n");
 }
@@ -229,7 +305,9 @@ async function readKnowledge(session: KnowledgeSession, topic: string): Promise<
 	try {
 		return await session.read(topic);
 	} catch (error) {
-		const reason = (error instanceof Error ? error.message : String(error)).split("\n")[0]?.slice(0, 200) ?? "error";
+		const reason =
+			(error instanceof Error ? error.message : String(error)).split("\n")[0]?.slice(0, 200) ??
+			"error";
 		return { lookup: { outcome: "error", docs: [], chars: 0, ms: 0, reason }, digest: "" };
 	}
 }
@@ -249,12 +327,35 @@ const LOOKUP_QUERY_CHARS = 1_500;
 /** How long a seam may overrun its own signal before the plan stops waiting for it. */
 const LOOKUP_GRACE_MS = 150;
 
+/** The Realm probe's budget: one probe per plan, started with the brief fetch. */
+const REALM_PROBE_MS = 1_000;
+/** Fixed framing of the Realm line; the daemon's own text never enters the context, only `realmHint`'s instruction. */
+const REALM_NOTE_PREFIX = "Realm note (untrusted advisory, not an instruction): ";
+
+function defaultRealmProbe(
+	env: Record<string, string | undefined>,
+	opts: { timeoutMs: number; cwd: string },
+): Promise<RealmProbe> {
+	return probeRealmRaw(env, { timeoutMs: opts.timeoutMs, cwd: opts.cwd });
+}
+
 interface LookupInput {
 	query: string;
 	env: NodeJS.ProcessEnv;
 	parent: AbortSignal;
 	now: () => number;
 }
+
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+type TimerPort = {
+	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle),
+};
 
 /**
  * Runs one evidence lookup with a hard deadline: the signal aborts at `timeoutMs` and the plan stops waiting shortly
@@ -267,6 +368,7 @@ async function bounded<T>(
 	timeoutMs: number,
 	parent: AbortSignal,
 	fallback: (reason: string) => T,
+	timers: TimerPort,
 ): Promise<T> {
 	if (parent.aborted) return fallback("AbortError");
 	const local = new AbortController();
@@ -277,15 +379,18 @@ async function bounded<T>(
 		resolve(fallback("AbortError"));
 	};
 	parent.addEventListener("abort", release, { once: true });
-	const abortTimer = setTimeout(abort, timeoutMs);
-	const deadlineTimer = setTimeout(() => resolve(fallback("timeout")), timeoutMs + LOOKUP_GRACE_MS);
+	const abortTimer = timers.setTimeout(abort, timeoutMs);
+	const deadlineTimer = timers.setTimeout(
+		() => resolve(fallback("timeout")),
+		timeoutMs + LOOKUP_GRACE_MS,
+	);
 	try {
 		return await Promise.race([run(local.signal), deadline]);
 	} catch (error) {
 		return fallback(error instanceof Error && error.name !== "Error" ? error.name : "error");
 	} finally {
-		clearTimeout(abortTimer);
-		clearTimeout(deadlineTimer);
+		timers.clearTimeout(abortTimer);
+		timers.clearTimeout(deadlineTimer);
 		parent.removeEventListener("abort", release);
 	}
 }
@@ -293,7 +398,12 @@ async function bounded<T>(
 /** Lessons lookup; undefined when nothing is configured to run. Never rejects. */
 function startRecall(
 	deps: HookDeps,
-	input: LookupInput & { cwd: string; sessionId: string; host: string; log: (message: string) => void },
+	input: LookupInput & {
+		cwd: string;
+		sessionId: string;
+		host: string;
+		log: (message: string) => void;
+	},
 ): Promise<RecallOutcome> | undefined {
 	const seam = deps.recall;
 	const teach = deps.config.teach;
@@ -313,14 +423,23 @@ function startRecall(
 				now: input.now,
 				log: input.log,
 			});
-			if (!teachEnabled(ctx)) return { status: "off", lessons: [], source: "none", chars: 0, ms: 0, reason: "disabled" };
+			if (!teachEnabled(ctx))
+				return { status: "off", lessons: [], source: "none", chars: 0, ms: 0, reason: "disabled" };
 			return recallLessons({ query: arg.query }, ctx, { countUse: true });
 		});
 	return bounded(
 		(signal) => run({ query: input.query, cwd: input.cwd, signal }),
 		teach.timeoutMs,
 		input.parent,
-		(reason) => ({ status: "error", lessons: [], source: "none", chars: 0, ms: input.now() - started, reason }),
+		(reason) => ({
+			status: "error",
+			lessons: [],
+			source: "none",
+			chars: 0,
+			ms: input.now() - started,
+			reason,
+		}),
+		deps.timers ?? platformTimers,
 	);
 }
 
@@ -346,14 +465,27 @@ function startGround(deps: HookDeps, input: LookupInput): Promise<GroundOutcome>
 		(signal) => run({ query: input.query, signal }),
 		ragflow.timeoutMs,
 		input.parent,
-		(reason) => ({ status: "error", chunks: [], chars: 0, ms: input.now() - started, datasets: 0, reason }),
+		(reason) => ({
+			status: "error",
+			chunks: [],
+			chars: 0,
+			ms: input.now() - started,
+			datasets: 0,
+			reason,
+		}),
+		deps.timers ?? platformTimers,
 	);
 }
 
 /** Promoted-skills lookup; undefined when nothing is configured to run. Never rejects. */
 function startSkills(
 	deps: HookDeps,
-	input: LookupInput & { cwd: string; sessionId: string; host: string; log: (message: string) => void },
+	input: LookupInput & {
+		cwd: string;
+		sessionId: string;
+		host: string;
+		log: (message: string) => void;
+	},
 ): Promise<SkillRecallOutcome> | undefined {
 	const seam = deps.skills;
 	const teach = deps.config.teach;
@@ -361,7 +493,11 @@ function startSkills(
 	const started = input.now();
 	const run =
 		seam ??
-		(async (arg: { query: string; cwd: string; signal: AbortSignal }): Promise<SkillRecallOutcome> => {
+		(async (arg: {
+			query: string;
+			cwd: string;
+			signal: AbortSignal;
+		}): Promise<SkillRecallOutcome> => {
 			const ctx = teachContext({
 				host: input.host,
 				cwd: arg.cwd,
@@ -373,7 +509,8 @@ function startSkills(
 				now: input.now,
 				log: input.log,
 			});
-			if (!teachEnabled(ctx)) return { status: "off", skills: [], chars: 0, ms: 0, reason: "disabled" };
+			if (!teachEnabled(ctx))
+				return { status: "off", skills: [], chars: 0, ms: 0, reason: "disabled" };
 			return recallSkills({ query: arg.query }, ctx);
 		});
 	return bounded(
@@ -381,7 +518,43 @@ function startSkills(
 		teach.timeoutMs,
 		input.parent,
 		(reason) => ({ status: "error", skills: [], chars: 0, ms: input.now() - started, reason }),
+		deps.timers ?? platformTimers,
 	);
+}
+
+/** The stable wording of a missing brief's reason; a closed vocabulary, so a segment can never carry a token or a URL. */
+function briefReasonPhrase(reason: BriefFailure): string | undefined {
+	switch (reason) {
+		case "disabled":
+		case "no-url":
+			return undefined; // no Substrate is configured, so there is nothing to report
+		case "unauthorized":
+			return "unauthorized";
+		case "surface-mismatch":
+			return "surface mismatch, retry skipped";
+		case "bad-request":
+			return "bad request";
+		case "timeout":
+			return "timed out";
+		case "unreachable":
+			return "unreachable";
+		case "redirect refused":
+			return "redirect refused";
+		default:
+			if (reason.startsWith("url refused:")) return "url refused";
+			return /^http-\d{3}$/.test(reason) ? reason : "unreachable";
+	}
+}
+
+/**
+ * The one planning-summary segment for a configured Substrate that returned no brief: `Substrate · brief unavailable
+ * (<phrase>)`. Absent for a usable brief (complete, degraded, snapshot), for an empty answer without a reason, and when no
+ * Substrate is configured (`disabled`, `no-url`). Carries the reason phrase only, never `detail`, a URL or a token.
+ */
+function substrateBriefNotice(result: BriefResult): string | undefined {
+	if (result.state !== "none" || result.reason === undefined) return undefined;
+	const phrase = briefReasonPhrase(result.reason);
+	return phrase === undefined ? undefined : `Substrate · brief unavailable (${phrase})`;
 }
 
 /**
@@ -425,22 +598,31 @@ async function announcePlan(
 				graphId: plan.graphId,
 				repo: input.repo,
 				branch: input.branch,
-				payload: { ultrathink: "plan", nodes, host, ...(input.skill ? { skill: input.skill } : {}) },
+				payload: {
+					ultrathink: "plan",
+					nodes,
+					host,
+					...(input.skill ? { skill: input.skill } : {}),
+				},
 			},
 			input.signal,
 		);
 	} catch {
-		// fail-open: the substrate records a plan, it never gates one
+		// reason: fail-open: the substrate records a plan, it never gates one
 	}
 }
 
-export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps): Promise<PromptSubmitResult> {
+export async function runPromptSubmit(
+	input: PromptSubmitInput,
+	deps: HookDeps,
+): Promise<PromptSubmitResult> {
 	const now = deps.now ?? Date.now;
+	const timers = deps.timers ?? platformTimers;
 	const emit = (event: ProgressEvent): void => {
 		try {
 			deps.progress?.(event);
 		} catch {
-			// fail-open: progress is display only
+			// reason: fail-open: progress is display only
 		}
 	};
 	const emitActivity = (notice: ActivityNotice): void => {
@@ -450,13 +632,24 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			if (!clean) return;
 			deps.progress({ type: "activity", at: now(), notice: clean });
 		} catch {
-			// fail-open: a card never blocks planning
+			// reason: fail-open: a card never blocks planning
 		}
 	};
 	const stage = (name: StageName, phase: "start" | "end", ok?: boolean, detail?: string): void =>
-		emit({ type: "stage", at: now(), stage: name, phase, ...(ok === undefined ? {} : { ok }), ...(detail ? { detail } : {}) });
+		emit({
+			type: "stage",
+			at: now(),
+			stage: name,
+			phase,
+			...(ok === undefined ? {} : { ok }),
+			...(detail ? { detail } : {}),
+		});
 	const started = now();
-	const log = deps.log ?? (() => {});
+	const log =
+		deps.log ??
+		(() => {
+			// reason: no logger was injected; the hook runs silently
+		});
 	const cwd = input.cwd?.trim() || process.cwd();
 	const sessionId = hostSessionId(input.session_id) ?? newTurnSessionId();
 
@@ -474,7 +667,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		try {
 			clearSkipOnce(deps.stateDir, sessionId);
 		} catch {
-			// fail-open
+			// reason: fail-open: a skip-once marker that cannot be removed only skips one later planning pass; the prompt must not block on it
 		}
 	}
 	if (decision.action !== "uplift") return { skipped: decision.action };
@@ -488,16 +681,26 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 	const decisions = createDecisions({
 		config: deps.config.decisions,
 		...(isTurnSessionId(sessionId) ? {} : { sessionId }),
+		stateDir: deps.stateDir,
 		...deps.decisionsDeps,
 	});
 	// Keep cancellation separate from the hook's partial-result budget, whose timer starts after the gate as before.
 	const controller = new AbortController();
-	const cancellation = deps.signal ? AbortSignal.any([deps.signal, controller.signal]) : controller.signal;
+	const cancellation = deps.signal
+		? AbortSignal.any([deps.signal, controller.signal])
+		: controller.signal;
 	const budgetController = new AbortController();
 	const lifetime = AbortSignal.any([cancellation, budgetController.signal]);
 	const rethrowCancellation = (error: unknown): void => {
 		// A provider can abort while the caller is still live. Only an expired hook budget may fail open with a partial plan.
-		if (!budgetController.signal.aborted && typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") controller.abort();
+		if (
+			!budgetController.signal.aborted &&
+			typeof error === "object" &&
+			error !== null &&
+			"name" in error &&
+			error.name === "AbortError"
+		)
+			controller.abort();
 		throwIfCancelled(cancellation);
 	};
 	const complete: ClaudeCompleter = async (system, user, signal) => {
@@ -512,7 +715,11 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			throw error;
 		}
 	};
-	const gate = await planGate({ prompt: input.prompt ?? "", text: decision.text, skill, history }, decisions, lifetime);
+	const gate = await planGate(
+		{ prompt: input.prompt ?? "", text: decision.text, skill, history },
+		decisions,
+		lifetime,
+	);
 	throwIfCancelled(cancellation);
 	if (!gate.plan) {
 		return {
@@ -537,7 +744,9 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 
 	let session: KnowledgeSession | undefined;
 	const budget =
-		deps.config.claude.budgetMs > 0 ? setTimeout(() => budgetController.abort(), deps.config.claude.budgetMs) : undefined;
+		deps.config.claude.budgetMs > 0
+			? timers.setTimeout(() => budgetController.abort(), deps.config.claude.budgetMs)
+			: undefined;
 	try {
 		const original = decision.text;
 		const skillLine = skill
@@ -561,10 +770,12 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		// planned knowing what other agents already did, and the round trip
 		// overlaps the uplift call instead of adding to it.
 		stage("brief", "start");
+		// The brief and the plan event read the same env: the host's injected one, else the process's (announcePlan).
+		const substrateEnv = deps.decisionsDeps?.env ?? process.env;
 		const fetchSessionBrief =
 			deps.brief ??
 			((brief) =>
-				fetchBrief(brief, process.env, deps.config.substrate.url, {
+				fetchBrief(brief, substrateEnv, deps.config.substrate.url, {
 					backend: deps.config.substrate.backend,
 					gateway: deps.config.gateway,
 				}));
@@ -573,23 +784,51 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			branch: git.branch,
 			surface: deps.surface ?? "claude-code",
 			signal: lifetime,
-		}).catch(() => "");
+		}).catch((): BriefResult => ({ text: "", state: "none" }));
+
+		// The Realm probe runs beside the brief and the uplift, once per plan, capped at 1 s; it never rejects.
+		// The async wrapper turns a seam that throws before returning its promise into a rejection too.
+		const realmPromise = (async () =>
+			(deps.realmProbe ?? defaultRealmProbe)(substrateEnv, {
+				timeoutMs: REALM_PROBE_MS,
+				cwd,
+			}))().catch((): RealmProbe => ({ kind: "unknown", why: "io" }));
 
 		// The two evidence lookups start next to the brief and use only the user's own words: never the spec XML, the
 		// conversation history, or anything the engine produced.
 		const lookupQuery = original.trim().slice(0, LOOKUP_QUERY_CHARS);
 		const lookups =
-			lookupQuery !== "" && !isChildInvocation() && !isSubagentEnvelope(input as Record<string, unknown>);
+			lookupQuery !== "" &&
+			!isChildInvocation() &&
+			!isSubagentEnvelope(input as Record<string, unknown>);
 		const lookupEnv = deps.decisionsDeps?.env ?? process.env;
 		const surfaceId = deps.surface ?? "claude-code";
 		const recallPromise = lookups
-			? startRecall(deps, { query: lookupQuery, cwd, sessionId, host: surfaceId, env: lookupEnv, parent: lifetime, now, log })
+			? startRecall(deps, {
+					query: lookupQuery,
+					cwd,
+					sessionId,
+					host: surfaceId,
+					env: lookupEnv,
+					parent: lifetime,
+					now,
+					log,
+				})
 			: undefined;
 		const groundPromise = lookups
 			? startGround(deps, { query: lookupQuery, env: lookupEnv, parent: lifetime, now })
 			: undefined;
 		const skillsPromise = lookups
-			? startSkills(deps, { query: lookupQuery, cwd, sessionId, host: surfaceId, env: lookupEnv, parent: lifetime, now, log })
+			? startSkills(deps, {
+					query: lookupQuery,
+					cwd,
+					sessionId,
+					host: surfaceId,
+					env: lookupEnv,
+					parent: lifetime,
+					now,
+					log,
+				})
 			: undefined;
 
 		// The knowledge-base prefetch (find the repo, list documents, read index.md) overlaps the uplift and the
@@ -600,7 +839,9 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				session = reader.start({ repo: git.repo, signal: lifetime });
 				stage("knowledge", "start");
 			} catch (error) {
-				log(`greptile knowledge base: start failed: ${error instanceof Error ? error.message : String(error)}`);
+				log(
+					`greptile knowledge base: start failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
 			}
 		}
 
@@ -614,6 +855,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				complete,
 				signal: lifetime,
 				maxChars: deps.config.uplift.maxChars,
+				report: deps.engineReport,
 			});
 		} catch (error) {
 			rethrowCancellation(error);
@@ -627,10 +869,27 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		throwIfCancelled(cancellation);
 		stage("uplift", "end", true, `${result.root} · ${result.source}`);
 
-		const brief = await briefPromise;
+		const briefResult = await briefPromise;
 		throwIfCancelled(cancellation);
+		// The one secret gate for the brief: everything downstream (summary, activity, context) reads the masked text. A
+		// degraded or snapshot label is plain text and survives; only secret shapes are masked. Then control characters go
+		// and the text is capped, so a brief another agent wrote cannot carry terminal escapes or flood the context.
+		const brief = sanitizeBrief(redactSecrets(briefResult.text));
+		// One secret-free line when a configured Substrate answered nothing; shown in the summary only (never repeated).
+		const briefNotice = substrateBriefNotice(briefResult);
 		if (brief) log(`substrate brief: ${brief.split("\n").length} lines`);
+		else if (briefNotice) log(briefNotice);
 		stage("brief", "end", true, brief ? `${brief.split("\n").length} lines` : "none");
+		// Untrusted advisory about Realm, only for an enforcing realm (or a degraded one under fail-closed); formatPromptContext
+		// appends it after the sanitised brief (so the cap never cuts it), and it never reaches the summary.
+		const realmResult = await realmPromise;
+		throwIfCancelled(cancellation);
+		const realmHostId: HostId = isHostId(surfaceId) ? surfaceId : "claude-code";
+		const realmAdvice = realmHint(realmResult, realmHostId);
+		const realmNote =
+			realmAdvice.enforcement === "enforcing" && realmAdvice.instruction
+				? `${REALM_NOTE_PREFIX}${realmAdvice.instruction}`
+				: undefined;
 		try {
 			if (brief) {
 				const lines = brief.split("\n").length;
@@ -645,11 +904,15 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				});
 			}
 		} catch {
-			// fail-open
+			// reason: fail-open: the activity card is display only; a failed card never blocks planning
 		}
 
 		// Settled before anything is formatted so the record says what happened; all are bounded and never reject.
-		const [recalled, grounded, skilled] = await Promise.all([recallPromise, groundPromise, skillsPromise]);
+		const [recalled, grounded, skilled] = await Promise.all([
+			recallPromise,
+			groundPromise,
+			skillsPromise,
+		]);
 		throwIfCancelled(cancellation);
 		let lessons: LessonsLookup | undefined;
 		let lessonsText = "";
@@ -659,12 +922,25 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				lessonsText = formatLessonsSection(recalled, deps.config.teach.recallChars);
 			} catch (error) {
 				log(`lessons: format failed: ${error instanceof Error ? error.name : "error"}`);
-				lessons = { outcome: "error", count: 0, ids: [], chars: 0, ms: recalled.ms, source: "none", reason: "format" };
+				lessons = {
+					outcome: "error",
+					count: 0,
+					ids: [],
+					chars: 0,
+					ms: recalled.ms,
+					source: "none",
+					reason: "format",
+				};
 			}
-			log(`lessons: ${lessons.outcome} · ${lessons.count} · ${lessons.source} · ${lessons.ms}ms${lessons.reason ? ` · ${lessons.reason}` : ""}`);
+			log(
+				`lessons: ${lessons.outcome} · ${lessons.count} · ${lessons.source} · ${lessons.ms}ms${lessons.reason ? ` · ${lessons.reason}` : ""}`,
+			);
 			if (lessons.outcome !== "off") {
 				try {
-					const source = lessons.source === "hindsight" || lessons.source === "local" ? lessons.source : undefined;
+					const source =
+						lessons.source === "hindsight" || lessons.source === "local"
+							? lessons.source
+							: undefined;
 					emitActivity({
 						v: 1,
 						kind: "teachable-recalled",
@@ -675,7 +951,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 						names: recalled.lessons.map((lesson) => lesson.name),
 					});
 				} catch {
-					// fail-open
+					// reason: fail-open: the activity card is display only; a failed card never blocks planning
 				}
 			}
 		}
@@ -687,9 +963,18 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				docsText = formatDocsSection(grounded, deps.config.ragflow.groundChars);
 			} catch (error) {
 				log(`docs: format failed: ${error instanceof Error ? error.name : "error"}`);
-				docs = { status: "error", count: 0, chars: 0, ms: grounded.ms, datasets: grounded.datasets, reason: "format" };
+				docs = {
+					status: "error",
+					count: 0,
+					chars: 0,
+					ms: grounded.ms,
+					datasets: grounded.datasets,
+					reason: "format",
+				};
 			}
-			log(`docs (RAGFlow): ${docs.status} · ${docs.count} excerpts · ${docs.datasets} datasets · ${docs.ms}ms${docs.reason ? ` · ${docs.reason}` : ""}`);
+			log(
+				`docs (RAGFlow): ${docs.status} · ${docs.count} excerpts · ${docs.datasets} datasets · ${docs.ms}ms${docs.reason ? ` · ${docs.reason}` : ""}`,
+			);
 			if (docs.status !== "off") {
 				try {
 					emitActivity({
@@ -702,7 +987,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 						detail: docs.status === "error" ? (docs.reason ?? "error") : `${docs.count} excerpts`,
 					});
 				} catch {
-					// fail-open
+					// reason: fail-open: the activity card is display only; a failed card never blocks planning
 				}
 			}
 		}
@@ -714,9 +999,18 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				skillsText = formatSkillsSection(skilled, SKILL_SECTION_CHARS);
 			} catch (error) {
 				log(`skills: format failed: ${error instanceof Error ? error.name : "error"}`);
-				skills = { outcome: "error", count: 0, names: [], chars: 0, ms: skilled.ms, reason: "format" };
+				skills = {
+					outcome: "error",
+					count: 0,
+					names: [],
+					chars: 0,
+					ms: skilled.ms,
+					reason: "format",
+				};
 			}
-			log(`skills: ${skills.outcome} · ${skills.count} · ${skills.ms}ms${skills.reason ? ` · ${skills.reason}` : ""}`);
+			log(
+				`skills: ${skills.outcome} · ${skills.count} · ${skills.ms}ms${skills.reason ? ` · ${skills.reason}` : ""}`,
+			);
 			if (skills.outcome !== "off") {
 				try {
 					emitActivity({
@@ -728,7 +1022,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 						names: skilled.skills.map((skill) => skill.name),
 					});
 				} catch {
-					// fail-open
+					// reason: fail-open: the activity card is display only; a failed card never blocks planning
 				}
 			}
 		}
@@ -765,9 +1059,9 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		}
 
 		/** Answered clarifications from an earlier turn of this session survive; stale open ones are dropped. */
-		let clarifications: Clarification[] = (readSession(deps.stateDir, sessionId)?.clarifications ?? []).filter(
-			(c) => c.answer && c.source !== "knowledge",
-		);
+		let clarifications: Clarification[] = (
+			readSession(deps.stateDir, sessionId)?.clarifications ?? []
+		).filter((c) => c.answer && c.source !== "knowledge");
 
 		// Always awaited once started (it honours the abort signal and never rejects) so the record says what happened.
 		let knowledge: KnowledgeLookup | undefined;
@@ -779,7 +1073,12 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			log(
 				`greptile knowledge base: ${lookup.outcome}${lookup.docs.length > 0 ? ` · ${lookup.docs.join(", ")}` : ""}${lookup.reason ? ` · ${lookup.reason}` : ""} · ${lookup.ms}ms`,
 			);
-			stage("knowledge", "end", lookup.outcome !== "error", lookup.outcome === "used" ? `${lookup.docs.length} docs` : lookup.outcome);
+			stage(
+				"knowledge",
+				"end",
+				lookup.outcome !== "error",
+				lookup.outcome === "used" ? `${lookup.docs.length} docs` : lookup.outcome,
+			);
 			knowledge = { ...lookup, settled: 0 };
 			if (lookup.outcome === "used") knowledgeInput = { digest: read.digest, docs: lookup.docs };
 			if (lookup.outcome !== "off") {
@@ -793,7 +1092,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 						count: lookup.docs.length,
 					});
 				} catch {
-					// fail-open
+					// reason: fail-open: the activity card is display only; a failed card never blocks planning
 				}
 			}
 		}
@@ -818,8 +1117,17 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				const seen = new Set(clarifications.map((c) => normalizeQuestion(c.question)));
 				const kept = fresh.filter((c) => !seen.has(normalizeQuestion(c.question)));
 				clarifications = [...clarifications, ...kept];
-				if (knowledge) knowledge = { ...knowledge, settled: kept.filter((c) => c.source === "knowledge").length };
-				stage("clarify", "end", true, `${clarifications.length} question${clarifications.length === 1 ? "" : "s"}`);
+				if (knowledge)
+					knowledge = {
+						...knowledge,
+						settled: kept.filter((c) => c.source === "knowledge").length,
+					};
+				stage(
+					"clarify",
+					"end",
+					true,
+					`${clarifications.length} question${clarifications.length === 1 ? "" : "s"}`,
+				);
 			} catch (error) {
 				rethrowCancellation(error);
 				log(`clarify failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -846,7 +1154,12 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 					branch: git.branch,
 					agent: deps.surface ?? "claude-code",
 				});
-				stage("plan", "end", true, `${plan.linearIssues.length} issues · ${plan.linearSubIssues.length} steps`);
+				stage(
+					"plan",
+					"end",
+					true,
+					`${plan.linearIssues.length} issues · ${plan.linearSubIssues.length} steps`,
+				);
 			} catch (error) {
 				log(`track plan failed: ${error instanceof Error ? error.message : String(error)}`);
 				stage("plan", "end", false);
@@ -857,17 +1170,26 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		if (plan && deps.track && !deps.trackingOff) {
 			throwIfCancelled(cancellation);
 			stage("track", "start");
-			tracking = await deps.track({ plan, graph, signal: lifetime, progress: deps.progress }).catch((error: unknown) => {
-				rethrowCancellation(error);
-				log(`tracking failed: ${error instanceof Error ? error.message : String(error)}`);
-				return undefined;
-			});
+			tracking = await deps
+				.track({ plan, graph, signal: lifetime, progress: deps.progress })
+				.catch((error: unknown) => {
+					rethrowCancellation(error);
+					log(`tracking failed: ${error instanceof Error ? error.message : String(error)}`);
+					return undefined;
+				});
 			throwIfCancelled(cancellation);
 			if (tracking) {
 				result = { ...result, xml: injectTrackingXml(result.xml, plan, tracking) };
-				log(`tracking ${tracking.status}${tracking.errors.length > 0 ? `: ${tracking.errors.join("; ")}` : ""}`);
+				log(
+					`tracking ${tracking.status}${tracking.errors.length > 0 ? `: ${tracking.errors.join("; ")}` : ""}`,
+				);
 				const issues = Object.keys(tracking.linear.nodes).length;
-				stage("track", "end", tracking.status !== "failed", `${tracking.status} · ${issues}/${plan.linearIssues.length} issues`);
+				stage(
+					"track",
+					"end",
+					tracking.status !== "failed",
+					`${tracking.status} · ${issues}/${plan.linearIssues.length} issues`,
+				);
 			} else {
 				stage("track", "end", false);
 			}
@@ -875,6 +1197,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 
 		// Read once: the record, the summary and the context all report the same first error.
 		const engineError = deps.engineError?.();
+		const engineFailover = deps.engineFailover?.();
 		const degraded = [...(result.source === "fallback" ? ["uplift"] : []), ...thinkDegraded];
 		let record: SessionRecord = {
 			sessionId,
@@ -882,6 +1205,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			engine: deps.engine,
 			...withResolution,
 			...(engineError ? { engineError } : {}),
+			...(engineFailover ? { engineFailover } : {}),
 			...(degraded.length > 0 ? { degraded } : {}),
 			host: deps.surface ?? "claude-code",
 			result,
@@ -889,7 +1213,15 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			clarifications,
 			plan,
 			tracking,
-			...(skill ? { skill: { name: skill.name, ...(skill.summary ? { summary: skill.summary } : {}), source: skill.source } } : {}),
+			...(skill
+				? {
+						skill: {
+							name: skill.name,
+							...(skill.summary ? { summary: skill.summary } : {}),
+							source: skill.source,
+						},
+					}
+				: {}),
 			kickedOff: false,
 			synced: false,
 			...(knowledge ? { knowledge } : {}),
@@ -913,8 +1245,13 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			// not enough, since `result`/`clarifications` below still hold the stale
 			// pre-save values. Refresh the derived locals, keeping reference equality
 			// when the merge changed nothing.
-			if (saved.record.clarifications !== undefined && saved.record.clarifications !== clarifications) clarifications = saved.record.clarifications;
-			if (saved.record.result.xml !== result.xml) result = { ...result, xml: saved.record.result.xml };
+			if (
+				saved.record.clarifications !== undefined &&
+				saved.record.clarifications !== clarifications
+			)
+				clarifications = saved.record.clarifications;
+			if (saved.record.result.xml !== result.xml)
+				result = { ...result, xml: saved.record.result.xml };
 			specPath = saved.specPath;
 			statePath = saved.statePath;
 			lastNote = saved.lastNote;
@@ -925,10 +1262,17 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 			statePath = undefined;
 			stage("state", "end", false);
 		}
-			// Opt-in retention (state.retentionDays above 0): at most one bounded sweep a day. It never throws and never waits.
-			pruneSessionsBestEffort({ stateDir: deps.stateDir, retentionDays: deps.config.state.retentionDays, log });
+		// Opt-in retention (state.retentionDays above 0): at most one bounded sweep a day. It never throws and never waits.
+		pruneSessionsBestEffort({
+			stateDir: deps.stateDir,
+			retentionDays: deps.config.state.retentionDays,
+			log,
+		});
 
-		const providers = { linear: deps.config.linear.team.trim() !== "", notion: deps.config.notion.dataSourceUrl.trim() !== "" };
+		const providers = {
+			linear: deps.config.linear.team.trim() !== "",
+			notion: deps.config.notion.dataSourceUrl.trim() !== "",
+		};
 		const output: HookOutput = {
 			hookSpecificOutput: {
 				hookEventName: "UserPromptSubmit",
@@ -941,6 +1285,7 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 					graph,
 					clarifications,
 					brief,
+					...(realmNote ? { briefNote: realmNote } : {}),
 					statePath,
 					specPath,
 					...(lastNote ? { lastNote } : {}),
@@ -975,8 +1320,14 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				signal: lifetime,
 			});
 		}
+		// Taken only when the summary is shown: it marks the cause as warned, so a hidden summary must not spend it. An
+		// intentionally disabled run (ULTRATHINK_DECISIONS=0) neither shows nor consumes a Jev failure warning.
+		const jevWarning =
+			deps.config.claude.echo && !decisionsKilled(deps.decisionsDeps?.env ?? process.env)
+				? takeJevWarning(deps.stateDir, now())
+				: undefined;
 		if (deps.config.claude.echo) {
-			output.systemMessage = formatSummary({
+			const summary = formatSummary({
 				result,
 				engine: deps.engine,
 				...withResolution,
@@ -994,9 +1345,13 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 				docs,
 				skills,
 				...(engineError ? { engineError } : {}),
+				...(jevWarning ? { jevWarning } : {}),
+				...(engineFailover ? { engineFailover } : {}),
 				elapsedMs: now() - started,
 				decisions: records,
 			});
+			// The Substrate segment is echo-only and once per plan: this is the single place a summary is built.
+			output.systemMessage = briefNotice ? `${summary} · ${briefNotice}` : summary;
 		}
 		outcome = "planned";
 		return { output, record, ...(records.length ? { decisions: records } : {}) };
@@ -1009,7 +1364,13 @@ export async function runPromptSubmit(input: PromptSubmitInput, deps: HookDeps):
 		throw error;
 	} finally {
 		session?.close();
-		clearTimeout(budget);
-		emit({ type: "end", at: now(), outcome, ...(outcomeDetail ? { detail: outcomeDetail } : {}), ...withResolution });
+		timers.clearTimeout(budget);
+		emit({
+			type: "end",
+			at: now(),
+			outcome,
+			...(outcomeDetail ? { detail: outcomeDetail } : {}),
+			...withResolution,
+		});
 	}
 }

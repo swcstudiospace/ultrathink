@@ -51,7 +51,10 @@ function alwaysRetryableTransport(name: string): SinkTransport {
 	};
 }
 
-function streamsFor(transports: SinkTransport[], onEvent: (event: SinkEvent) => void = () => undefined): AuditStreams {
+function streamsFor(
+	transports: SinkTransport[],
+	onEvent: (event: SinkEvent) => void = () => undefined,
+): AuditStreams {
 	return createAuditStreams({ transports, capacity: 1000, onEvent });
 }
 
@@ -62,7 +65,9 @@ describe("createAuditStreams delivery", () => {
 		for (let seq = 1; seq <= 20; seq++) streams.audit(auditRecord(seq));
 
 		await healthy.reached;
-		expect(healthy.delivered.map((env) => env.body.seq)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+		expect(healthy.delivered.map((env) => env.body.seq)).toEqual(
+			Array.from({ length: 20 }, (_, i) => i + 1),
+		);
 		streams.close();
 	});
 
@@ -76,7 +81,9 @@ describe("createAuditStreams delivery", () => {
 		const expected = Array.from({ length: 250 }, (_, i) => i + 1);
 		expect(first.delivered.map((env) => env.body.seq)).toEqual(expected);
 		expect(second.delivered.map((env) => env.body.seq)).toEqual(expected);
-		expect(first.delivered.every((env) => env.kind === "audit" && env.at === env.body.ts)).toBe(true);
+		expect(first.delivered.every((env) => env.kind === "audit" && env.at === env.body.ts)).toBe(
+			true,
+		);
 		streams.close();
 	});
 
@@ -168,7 +175,10 @@ describe("createAuditStreams envelopes", () => {
 
 		expect(await streams.flush(2000)).toBe(true);
 		expect(up.delivered.map((env) => env.kind)).toEqual(["alert", "alert"]);
-		expect(up.delivered.map((env) => env.body.event)).toEqual(["anomaly_detected", "audit_tamper_detected"]);
+		expect(up.delivered.map((env) => env.body.event)).toEqual([
+			"anomaly_detected",
+			"audit_tamper_detected",
+		]);
 		expect(up.delivered[0]?.body.rule).toBe("login-burst");
 		streams.close();
 	});
@@ -194,7 +204,9 @@ describe("createAuditStreams shutdown", () => {
 		).not.toThrow();
 		expect(await streams.flush(50)).toBe(false);
 		expect(up.delivered).toHaveLength(0);
-		expect(events.some((event) => event.type === "dropped" && event.reason === "closed")).toBe(true);
+		expect(events.some((event) => event.type === "dropped" && event.reason === "closed")).toBe(
+			true,
+		);
 	});
 
 	test("close does not throw when called twice", () => {

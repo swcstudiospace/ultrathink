@@ -19,12 +19,30 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+// Local copy: this script runs in a harness tree without src/ (see policy/check.test.ts or deploy/ultrathink-release.test.ts), so it cannot import src/shared.ts.
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Local copy: this script runs in a harness tree without src/ (see policy/check.test.ts or deploy/ultrathink-release.test.ts), so it cannot import src/shared.ts.
+function isDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
 
 const DEFAULT_ROOT = resolve(import.meta.dir, "..");
 const DEFAULT_CONTROLS = join(import.meta.dir, "controls.json");
-const USAGE = "usage: bun policy/compliance-report.ts [--root <dir>] [--controls <file>] [--out <file>]";
+const USAGE =
+	"usage: bun policy/compliance-report.ts [--root <dir>] [--controls <file>] [--out <file>]";
 const FRAMEWORKS = ["soc2", "iso27001", "gdpr"] as const;
-const FRAMEWORK_LABEL: Record<Framework, string> = { soc2: "SOC 2", iso27001: "ISO 27001", gdpr: "GDPR" };
+const FRAMEWORK_LABEL: Record<Framework, string> = {
+	soc2: "SOC 2",
+	iso27001: "ISO 27001",
+	gdpr: "GDPR",
+};
 
 type Framework = (typeof FRAMEWORKS)[number];
 export type Status = "PASS" | "FAIL" | "PENDING";
@@ -69,10 +87,6 @@ export class SchemaError extends Error {}
 
 type Obj = Record<string, unknown>;
 
-function isObject(value: unknown): value is Obj {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function requireString(obj: Obj, key: string, where: string): string {
 	const value = obj[key];
 	if (typeof value !== "string" || value.trim() === "") {
@@ -94,7 +108,9 @@ function stringArray(value: unknown, where: string): string[] {
 /** Evidence is repo-relative: no absolute paths and no parent-directory segments. */
 function checkEvidencePath(path: string, where: string): void {
 	if (isAbsolute(path) || path.split("/").includes("..")) {
-		throw new SchemaError(`${where}: evidence path must be repo-relative with no parent segment: ${path}`);
+		throw new SchemaError(
+			`${where}: evidence path must be repo-relative with no parent segment: ${path}`,
+		);
 	}
 }
 
@@ -103,18 +119,18 @@ function parseFindings(value: unknown, where: string): Finding[] {
 	if (!Array.isArray(value)) throw new SchemaError(`${where}: expected an array`);
 	return value.map((item, index) => {
 		const at = `${where}[${index}]`;
-		if (!isObject(item)) throw new SchemaError(`${at}: expected an object`);
+		if (!isRecord(item)) throw new SchemaError(`${at}: expected an object`);
 		return { id: requireString(item, "id", at), summary: requireString(item, "summary", at) };
 	});
 }
 
 function parseControl(value: unknown, where: string): Control {
-	if (!isObject(value)) throw new SchemaError(`${where}: expected an object`);
+	if (!isRecord(value)) throw new SchemaError(`${where}: expected an object`);
 	const id = requireString(value, "id", where);
 	const at = `${where} (${id})`;
 	const title = requireString(value, "title", at);
 	const refsValue = value.refs;
-	if (!isObject(refsValue)) throw new SchemaError(`${at}.refs: expected an object`);
+	if (!isRecord(refsValue)) throw new SchemaError(`${at}.refs: expected an object`);
 	const refs: Record<Framework, string[]> = {
 		soc2: stringArray(refsValue.soc2, `${at}.refs.soc2`),
 		iso27001: stringArray(refsValue.iso27001, `${at}.refs.iso27001`),
@@ -129,7 +145,8 @@ function parseControl(value: unknown, where: string): Control {
 	return {
 		id,
 		title,
-		refs_status: value.refs_status === undefined ? undefined : requireString(value, "refs_status", at),
+		refs_status:
+			value.refs_status === undefined ? undefined : requireString(value, "refs_status", at),
 		refs,
 		evidence,
 		pending,
@@ -143,7 +160,9 @@ export function parseControls(text: string): Control[] {
 	try {
 		parsed = JSON.parse(text);
 	} catch (error) {
-		throw new SchemaError(`controls file is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+		throw new SchemaError(
+			`controls file is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 	if (!Array.isArray(parsed)) throw new SchemaError("controls file must be a JSON array");
 	const controls = parsed.map((value, index) => parseControl(value, `controls[${index}]`));
@@ -224,7 +243,9 @@ export function renderMarkdown(report: Report): string {
 	for (const { control, status, evidence } of report.controls) {
 		lines.push("", `## ${control.id}: ${control.title}`, "");
 		lines.push(`- Status: **${status}**`);
-		lines.push(`- Clause references (${control.refs_status ?? "status not stated"}): ${renderRefs(control.refs)}`);
+		lines.push(
+			`- Clause references (${control.refs_status ?? "status not stated"}): ${renderRefs(control.refs)}`,
+		);
 		if (evidence.length === 0) {
 			lines.push("- Evidence: none (pending)");
 		} else {
@@ -240,7 +261,8 @@ export function renderMarkdown(report: Report): string {
 		if (control.pending !== undefined) lines.push(`- Pending: ${control.pending}`);
 		if (control.findings.length > 0) {
 			lines.push("- Findings:");
-			for (const finding of control.findings) lines.push(`  - **${finding.id}**: ${finding.summary}`);
+			for (const finding of control.findings)
+				lines.push(`  - **${finding.id}**: ${finding.summary}`);
 		}
 	}
 	return `${lines.join("\n")}\n`;
@@ -248,14 +270,6 @@ export function renderMarkdown(report: Report): string {
 
 export function hasFail(report: Report): boolean {
 	return report.controls.some((item) => item.status === "FAIL");
-}
-
-function isDirectory(path: string): boolean {
-	try {
-		return statSync(path).isDirectory();
-	} catch {
-		return false;
-	}
 }
 
 function errorMessage(error: unknown): string {

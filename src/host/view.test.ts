@@ -7,18 +7,30 @@ import type { ProgressEvent } from "./progress.ts";
 import { planPrompt } from "./plan.ts";
 import { buildPlanView, projectResolution } from "./view.ts";
 
-const ref = (identifier: string) => ({ id: identifier, identifier, url: `https://linear.app/x/${identifier}`, title: identifier });
+const ref = (identifier: string) => ({
+	id: identifier,
+	identifier,
+	url: `https://linear.app/x/${identifier}`,
+	title: identifier,
+});
 
 function record(): SessionRecord {
 	return {
 		sessionId: "s1",
 		at: 1,
-		engine: "claude:sonnet",
+		engine: "claude:claude-haiku-5-5",
 		result: { xml: "<x/>", original: "add", root: "BUILD_PROMPT", source: "llm" },
 		graph: {
 			goal: "Ship it",
 			nodes: [
-				{ id: "n1", title: "Understand", kind: "understand", question: "q", dependsOn: [], conclusion: "c1" },
+				{
+					id: "n1",
+					title: "Understand",
+					kind: "understand",
+					question: "q",
+					dependsOn: [],
+					conclusion: "c1",
+				},
 				{ id: "n2", title: "Left", kind: "generate", question: "q", dependsOn: ["n1"] },
 				{ id: "n3", title: "Right", kind: "generate", question: "q", dependsOn: ["n1"] },
 				{ id: "n4", title: "Plan", kind: "synthesize", question: "q", dependsOn: ["n2", "n3"] },
@@ -37,7 +49,15 @@ function record(): SessionRecord {
 		],
 		plan: {
 			graphId: "g1",
-			task: { graphId: "g1", item: "t", description: "", upliftedPrompt: "", agent: "omp", status: "", linearState: "" },
+			task: {
+				graphId: "g1",
+				item: "t",
+				description: "",
+				upliftedPrompt: "",
+				agent: "omp",
+				status: "",
+				linearState: "",
+			},
 			issues: [],
 			subIssues: [
 				{ graphId: "g1", nodeId: "n1", item: "[n1] Read the code", step: 1, thought: "" },
@@ -77,7 +97,9 @@ describe("buildPlanView", () => {
 		]);
 		expect(n2?.issue?.identifier).toBe("ENG-2");
 		expect(n3?.issue).toBeUndefined();
-		expect(view.clarifications).toEqual([{ id: "q1", question: "Which db?", blocking: true, recommended: "SQLite" }]);
+		expect(view.clarifications).toEqual([
+			{ id: "q1", question: "Which db?", blocking: true, recommended: "SQLite" },
+		]);
 		expect(view.tracking).toEqual({
 			status: "partial",
 			notionTaskUrl: "https://notion.so/t",
@@ -85,7 +107,13 @@ describe("buildPlanView", () => {
 			issues: 2,
 			subIssues: 1,
 		});
-		expect(view).toMatchObject({ root: "BUILD_PROMPT", source: "llm", graphId: "g1", goal: "Ship it", elapsedMs: 4200 });
+		expect(view).toMatchObject({
+			root: "BUILD_PROMPT",
+			source: "llm",
+			graphId: "g1",
+			goal: "Ship it",
+			elapsedMs: 4200,
+		});
 	});
 
 	test("an untracked record without a graph has no nodes and no tracking", () => {
@@ -136,7 +164,7 @@ describe("buildPlanView model resolution (§9 path 3)", () => {
 
 	test("a record without a resolution keeps its recorded engine label and carries none", () => {
 		const view = buildPlanView(record(), 0);
-		expect(view.engine).toBe("claude:sonnet");
+		expect(view.engine).toBe("claude:claude-haiku-5-5");
 		expect(view).not.toHaveProperty("modelResolution");
 	});
 
@@ -224,10 +252,17 @@ describe("buildPlanView model resolution (§9 path 3)", () => {
 			modelKnown: true,
 			label: "<opaque-model>",
 		});
-		const view = JSON.stringify(buildPlanView({ ...record(), modelResolution: raw as unknown as ModelResolution }, 0));
+		const view = JSON.stringify(
+			buildPlanView({ ...record(), modelResolution: raw as unknown as ModelResolution }, 0),
+		);
 		expect(view).not.toContain(sentinel);
 		expect(view).not.toContain("gateway.example");
-		for (const label of ["claude:x [override]\u001b[31m", "claude:</ORIGINAL> [override]", "claude:token=abc [override]", `claude:${"a".repeat(600)}`]) {
+		for (const label of [
+			"claude:x [override]\u001b[31m",
+			"claude:</ORIGINAL> [override]",
+			"claude:token=abc [override]",
+			`claude:${"a".repeat(600)}`,
+		]) {
 			expect(projectResolution({ ...detected, label })?.label).toBe("<opaque-model>");
 		}
 	});
@@ -247,8 +282,11 @@ describe("buildPlanView model resolution (§9 path 3)", () => {
 		]) {
 			expect(projectResolution(value)).toBeUndefined();
 		}
-		const view = buildPlanView({ ...record(), modelResolution: null as unknown as ModelResolution }, 0);
-		expect(view.engine).toBe("claude:sonnet");
+		const view = buildPlanView(
+			{ ...record(), modelResolution: null as unknown as ModelResolution },
+			0,
+		);
+		expect(view.engine).toBe("claude:claude-haiku-5-5");
 		expect(view).not.toHaveProperty("modelResolution");
 	});
 });
@@ -256,10 +294,18 @@ describe("buildPlanView model resolution (§9 path 3)", () => {
 describe("planPrompt progress", () => {
 	test("an early skip emits end skipped with the reason", async () => {
 		const events: ProgressEvent[] = [];
-		const response = await planPrompt({ prompt: "build it" }, { ULTRATHINK_UPLIFT: "0" }, { progress: (e) => events.push(e) });
+		const response = await planPrompt(
+			{ prompt: "build it" },
+			{ ULTRATHINK_UPLIFT: "0" },
+			{ progress: (e) => events.push(e) },
+		);
 		expect(response).toEqual({ context: "", skipped: "child-or-disabled" });
 		expect(events).toHaveLength(1);
-		expect(events[0]).toMatchObject({ type: "end", outcome: "skipped", detail: "child-or-disabled" });
+		expect(events[0]).toMatchObject({
+			type: "end",
+			outcome: "skipped",
+			detail: "child-or-disabled",
+		});
 	});
 
 	test("ultrathink's own skills and non-skill slash commands skip before any engine", async () => {
@@ -268,9 +314,15 @@ describe("planPrompt progress", () => {
 			["/model sonnet", "slash-command"],
 		] as const) {
 			const events: ProgressEvent[] = [];
-			const response = await planPrompt({ prompt, cwd: "/nonexistent-ultrathink-cwd" }, {}, { progress: (e) => events.push(e) });
+			const response = await planPrompt(
+				{ prompt, cwd: "/nonexistent-ultrathink-cwd" },
+				{},
+				{ progress: (e) => events.push(e) },
+			);
 			expect(response).toEqual({ context: "", skipped: reason });
-			expect(events).toEqual([expect.objectContaining({ type: "end", outcome: "skipped", detail: reason })]);
+			expect(events).toEqual([
+				expect.objectContaining({ type: "end", outcome: "skipped", detail: reason }),
+			]);
 		}
 	});
 });

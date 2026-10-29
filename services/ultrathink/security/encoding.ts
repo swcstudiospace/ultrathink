@@ -10,13 +10,13 @@
  * Encodes characters that have special meaning in HTML
  */
 export function encodeHtml(input: string): string {
-  return input
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;")
-    .replace(/\//g, "&#x2F;");
+	return input
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&apos;")
+		.replace(/\//g, "&#x2F;");
 }
 
 /**
@@ -24,7 +24,7 @@ export function encodeHtml(input: string): string {
  * Encodes characters for safe inclusion in HTML attribute values
  */
 export function encodeHtmlAttribute(input: string): string {
-  return encodeHtml(input).replace(/`/g, '&#x60;');
+	return encodeHtml(input).replace(/`/g, "&#x60;");
 }
 
 /**
@@ -32,51 +32,51 @@ export function encodeHtmlAttribute(input: string): string {
  * Encodes for safe inclusion in JavaScript string literals
  */
 export function encodeJavaScript(input: string): string {
-  return input
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t')
-    .replace(/\x08/g, '\\b')
-    .replace(/</g, '\\u003C')
-    .replace(/>/g, '\\u003E')
-    .replace(/&/g, '\\u0026')
-    .replace(/=/g, '\\u003D')
-    .replace(/-/g, '\\u002D')
-    .replace(/;/g, '\\u003B');
+	return input
+		.replace(/\\/g, "\\\\")
+		.replace(/'/g, "\\'")
+		.replace(/"/g, '\\"')
+		.replace(/\n/g, "\\n")
+		.replace(/\r/g, "\\r")
+		.replace(/\t/g, "\\t")
+		.replace(/\x08/g, "\\b")
+		.replace(/</g, "\\u003C")
+		.replace(/>/g, "\\u003E")
+		.replace(/&/g, "\\u0026")
+		.replace(/=/g, "\\u003D")
+		.replace(/-/g, "\\u002D")
+		.replace(/;/g, "\\u003B");
 }
 
 /**
  * JSON encoding for safe inclusion in JSON contexts
  */
 export function encodeJson(input: unknown): string {
-  return JSON.stringify(input);
+	return JSON.stringify(input);
 }
 
 /**
  * URL encoding for query parameters and URL paths
  */
 export function encodeUrl(input: string): string {
-  return encodeURIComponent(input);
+	return encodeURIComponent(input);
 }
 
 /**
  * URL encoding for form data (spaces as +)
  */
 export function encodeFormUrl(input: string): string {
-  return encodeURIComponent(input).replace(/%20/g, '+');
+	return encodeURIComponent(input).replace(/%20/g, "+");
 }
 
 /**
  * CSS encoding for safe inclusion in CSS contexts
  */
 export function encodeCss(input: string): string {
-  return input.replace(/[^a-zA-Z0-9]/g, (char) => {
-    const code = char.charCodeAt(0);
-    return '\\' + code.toString(16).padStart(4, '0') + ' ';
-  });
+	return input.replace(/[^a-zA-Z0-9]/g, (char) => {
+		const code = char.charCodeAt(0);
+		return "\\" + code.toString(16).padStart(4, "0") + " ";
+	});
 }
 
 /**
@@ -84,11 +84,11 @@ export function encodeCss(input: string): string {
  * Note: Prefer parameterized queries over identifier quoting
  */
 export function quoteSqlIdentifier(input: string): string {
-  // Only allow alphanumeric and underscore
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(input)) {
-    throw new Error(`Invalid SQL identifier: ${input}`);
-  }
-  return `"${input}"`;
+	// Only allow alphanumeric and underscore
+	if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(input)) {
+		throw new Error(`Invalid SQL identifier: ${input}`);
+	}
+	return `"${input}"`;
 }
 
 /**
@@ -96,112 +96,131 @@ export function quoteSqlIdentifier(input: string): string {
  * Use with extreme caution - prefer child_process.spawn with array args
  */
 export function escapeShellArg(input: string): string {
-  // Single quote the entire argument and escape any single quotes inside
-  return "'" + input.replace(/'/g, "'\\''") + "'";
+	// Single quote the entire argument and escape any single quotes inside
+	return "'" + input.replace(/'/g, "'\\''") + "'";
 }
+
+/** Characters RFC 4514 requires escaping in a DN value; each is written as a backslash before the character. */
+const LDAP_DN_SPECIAL: Readonly<Record<string, true>> = {
+	",": true,
+	"+": true,
+	'"': true,
+	"<": true,
+	">": true,
+	";": true,
+};
 
 /**
  * LDAP DN escaping
  */
 export function escapeLdapDn(input: string): string {
-  return input
-    .replace(/\\/g, '\\5c')
-    .replace(/\*/g, '\\2a')
-    .replace(/\(/g, '\\28')
-    .replace(/\)/g, '\\29')
-    .replace(/\x00/g, '\\00');
+	const chars = [...input];
+	const last = chars.length - 1;
+	return chars
+		.map((ch, i) => {
+			if (ch === "\\") return "\\5c";
+			if (ch === "*") return "\\2a";
+			if (ch === "(") return "\\28";
+			if (ch === ")") return "\\29";
+			if (ch === "\u0000") return "\\00";
+			if (ch === " " && (i === 0 || i === last)) return "\\ ";
+			if (ch === "#" && i === 0) return "\\#";
+			if (LDAP_DN_SPECIAL[ch] === true) return `\\${ch}`;
+			return ch;
+		})
+		.join("");
 }
 
 /**
  * LDAP filter escaping
  */
 export function escapeLdapFilter(input: string): string {
-  return input
-    .replace(/\\/g, '\\5c')
-    .replace(/\*/g, '\\2a')
-    .replace(/\(/g, '\\28')
-    .replace(/\)/g, '\\29')
-    .replace(/\x00/g, '\\00');
+	return input
+		.replace(/\\/g, "\\5c")
+		.replace(/\*/g, "\\2a")
+		.replace(/\(/g, "\\28")
+		.replace(/\)/g, "\\29")
+		.replace(/\x00/g, "\\00");
 }
 
 /**
  * XPath expression escaping
  */
 export function escapeXPath(input: string): string {
-  // If string contains no quotes, wrap in single quotes
-  if (!input.includes("'") && !input.includes('"')) {
-    return "'" + input + "'";
-  }
+	// If string contains no quotes, wrap in single quotes
+	if (!input.includes("'") && !input.includes('"')) {
+		return "'" + input + "'";
+	}
 
-  // If contains only single quotes, wrap in double quotes
-  if (input.includes("'") && !input.includes('"')) {
-    return '"' + input + '"';
-  }
+	// If contains only single quotes, wrap in double quotes
+	if (input.includes("'") && !input.includes('"')) {
+		return '"' + input + '"';
+	}
 
-  // If contains only double quotes, wrap in single quotes
-  if (!input.includes("'") && input.includes('"')) {
-    return "'" + input + "'";
-  }
+	// If contains only double quotes, wrap in single quotes
+	if (!input.includes("'") && input.includes('"')) {
+		return "'" + input + "'";
+	}
 
-  // Contains both quotes - need to use concat()
-  // Split into segments: text segments and quote characters
-  const parts: string[] = [];
-  let current = '';
-  for (const char of input) {
-    if (char === "'" || char === '"') {
-      if (current) parts.push(current);
-      parts.push(char);
-      current = '';
-     } else {
-      current += char;
-    }
-  }
-  if (current) parts.push(current);
+	// Contains both quotes - need to use concat()
+	// Split into segments: text segments and quote characters
+	const parts: string[] = [];
+	let current = "";
+	for (const char of input) {
+		if (char === "'" || char === '"') {
+			if (current) parts.push(current);
+			parts.push(char);
+			current = "";
+		} else {
+			current += char;
+		}
+	}
+	if (current) parts.push(current);
 
-  // Build concat expression: alternate quote types for each part
-  // Quote characters get wrapped in the opposite quote type
-  // Text segments alternate quote types
-  let useSingleQuote = true;
-  const concatParts = parts.map((part) => {
-    if (part === "'") {
-      return '"\'"';
-    }
-    if (part === '"') {
-      return "'\"'";
-    }
-    // Text segment - alternate quote type
-    const result = useSingleQuote ? "'" + part + "'" : '"' + part + '"';
-    useSingleQuote = !useSingleQuote;
-    return result;
-  });
+	// Build concat expression: alternate quote types for each part
+	// Quote characters get wrapped in the opposite quote type
+	// Text segments alternate quote types
+	let useSingleQuote = true;
+	const concatParts = parts.map((part) => {
+		if (part === "'") {
+			return '"\'"';
+		}
+		if (part === '"') {
+			return "'\"'";
+		}
+		// Text segment - alternate quote type
+		const result = useSingleQuote ? "'" + part + "'" : '"' + part + '"';
+		useSingleQuote = !useSingleQuote;
+		return result;
+	});
 
-  return "concat(" + concatParts.join(", ") + ")";
+	return "concat(" + concatParts.join(", ") + ")";
 }
 
 /**
  * CSV field encoding
  */
 export function encodeCsvField(input: string): string {
-  if (/[",\n\r]/.test(input)) {
-    return '"' + input.replace(/"/g, '""') + '"';
-  }
-  return input;
+	if (/[",\n\r]/.test(input)) {
+		return '"' + input.replace(/"/g, '""') + '"';
+	}
+	return input;
 }
 
 /**
  * CSV row encoding
  */
 export function encodeCsvRow(fields: string[]): string {
-  return fields.map(encodeCsvField).join(',');
+	return fields.map(encodeCsvField).join(",");
 }
 
 /**
  * Removes null bytes and other dangerous characters
  */
 export function sanitizeInput(input: string): string {
-  return input
-    .replace(/\x00/g, '') // Remove null bytes
-    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''); // Remove control chars except \t\n\r
+	return input
+		.replace(/\x00/g, "") // Remove null bytes
+		.replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ""); // Remove control chars except \t\n\r
 }
 
 /**
@@ -215,154 +234,127 @@ export function sanitizeInput(input: string): string {
  * and each input character is visited once, so the cost is linear.
  */
 export function stripHtmlTags(input: string): string {
-  let output = '';
-  let inTag = false;
-  for (const char of input) {
-    if (inTag) {
-      if (char === '>') {
-        inTag = false;
-      }
-    } else if (char === '<') {
-      inTag = true;
-    } else if (char !== '>') {
-      output += char;
-    }
-  }
-  return output;
+	let output = "";
+	let inTag = false;
+	for (const char of input) {
+		if (inTag) {
+			if (char === ">") {
+				inTag = false;
+			}
+		} else if (char === "<") {
+			inTag = true;
+		} else if (char !== ">") {
+			output += char;
+		}
+	}
+	return output;
 }
 
 /**
  * Limits string length and adds ellipsis
  */
-export function truncateString(input: string, maxLength: number, ellipsis = '...'): string {
-  if (input.length <= maxLength) return input;
-  if (maxLength <= ellipsis.length) return ellipsis.slice(0, maxLength);
-  return input.slice(0, maxLength - ellipsis.length) + ellipsis;
+export function truncateString(input: string, maxLength: number, ellipsis = "..."): string {
+	if (input.length <= maxLength) return input;
+	if (maxLength <= ellipsis.length) return ellipsis.slice(0, maxLength);
+	return input.slice(0, maxLength - ellipsis.length) + ellipsis;
 }
 
 /**
  * Ensures string is safe for logging (no newlines, control chars)
  */
 export function safeForLogging(input: string): string {
-  return sanitizeInput(input)
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t');
+	return sanitizeInput(input).replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
 }
 
 /**
  * Context-aware encoding based on output context
  */
 export enum OutputContext {
-  HTML = 'html',
-  HTML_ATTRIBUTE = 'html-attribute',
-  HTML_COMMENT = 'html-comment',
-  JAVASCRIPT = 'javascript',
-  JAVASCRIPT_TEMPLATE = 'javascript-template',
-  JSON = 'json',
-  URL = 'url',
-  FORM_URL = 'form-url',
-  CSS = 'css',
-  CSS_STRING = 'css-string',
-  SQL_IDENTIFIER = 'sql-identifier',
-  SHELL = 'shell',
-  LDAP_DN = 'ldap-dn',
-  LDAP_FILTER = 'ldap-filter',
-  XPATH = 'xpath',
-  CSV = 'csv',
-  LOG = 'log',
+	HTML = "html",
+	HTML_ATTRIBUTE = "html-attribute",
+	HTML_COMMENT = "html-comment",
+	JAVASCRIPT = "javascript",
+	JAVASCRIPT_TEMPLATE = "javascript-template",
+	JSON = "json",
+	URL = "url",
+	FORM_URL = "form-url",
+	CSS = "css",
+	CSS_STRING = "css-string",
+	SQL_IDENTIFIER = "sql-identifier",
+	SHELL = "shell",
+	LDAP_DN = "ldap-dn",
+	LDAP_FILTER = "ldap-filter",
+	XPATH = "xpath",
+	CSV = "csv",
+	LOG = "log",
 }
 
 /**
  * Encodes input for the specified output context
  */
 export function encodeForContext(input: string, context: OutputContext): string {
-  switch (context) {
-    case OutputContext.HTML:
-      return encodeHtml(input);
-    case OutputContext.HTML_ATTRIBUTE:
-      return encodeHtmlAttribute(input);
-    case OutputContext.HTML_COMMENT:
-      return input.replace(/--/g, "&#45;&#45;").replace(/>/g, "&gt;");
-    case OutputContext.JAVASCRIPT:
-      return encodeJavaScript(input);
-    case OutputContext.JAVASCRIPT_TEMPLATE:
-      return input.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
-    case OutputContext.JSON:
-      return encodeJson(input);
-    case OutputContext.URL:
-      return encodeUrl(input);
-    case OutputContext.FORM_URL:
-      return encodeFormUrl(input);
-    case OutputContext.CSS:
-      return encodeCss(input);
-    case OutputContext.CSS_STRING:
-      return encodeJavaScript(input); // CSS strings use similar escaping
-    case OutputContext.SQL_IDENTIFIER:
-      return quoteSqlIdentifier(input);
-    case OutputContext.SHELL:
-      return escapeShellArg(input);
-    case OutputContext.LDAP_DN:
-      return escapeLdapDn(input);
-    case OutputContext.LDAP_FILTER:
-      return escapeLdapFilter(input);
-    case OutputContext.XPATH:
-      return escapeXPath(input);
-    case OutputContext.CSV:
-      return encodeCsvField(input);
-    case OutputContext.LOG:
-      return safeForLogging(input);
-    default:
-      return encodeHtml(input); // Default to HTML encoding
-  }
+	switch (context) {
+		case OutputContext.HTML:
+			return encodeHtml(input);
+		case OutputContext.HTML_ATTRIBUTE:
+			return encodeHtmlAttribute(input);
+		case OutputContext.HTML_COMMENT:
+			return input.replace(/--/g, "&#45;&#45;").replace(/>/g, "&gt;");
+		case OutputContext.JAVASCRIPT:
+			return encodeJavaScript(input);
+		case OutputContext.JAVASCRIPT_TEMPLATE:
+			return input.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+		case OutputContext.JSON:
+			return encodeJson(input);
+		case OutputContext.URL:
+			return encodeUrl(input);
+		case OutputContext.FORM_URL:
+			return encodeFormUrl(input);
+		case OutputContext.CSS:
+			return encodeCss(input);
+		case OutputContext.CSS_STRING:
+			return encodeJavaScript(input); // CSS strings use similar escaping
+		case OutputContext.SQL_IDENTIFIER:
+			return quoteSqlIdentifier(input);
+		case OutputContext.SHELL:
+			return escapeShellArg(input);
+		case OutputContext.LDAP_DN:
+			return escapeLdapDn(input);
+		case OutputContext.LDAP_FILTER:
+			return escapeLdapFilter(input);
+		case OutputContext.XPATH:
+			return escapeXPath(input);
+		case OutputContext.CSV:
+			return encodeCsvField(input);
+		case OutputContext.LOG:
+			return safeForLogging(input);
+		default:
+			return encodeHtml(input); // Default to HTML encoding
+	}
 }
 
 /**
  * Encodes a value for the given context, recursing through arrays and objects
  */
 function encodeValueForContext(value: unknown, context: OutputContext): unknown {
-  if (typeof value === 'string') return encodeForContext(value, context);
-  if (Array.isArray(value)) return value.map((item) => encodeValueForContext(item, context));
-  if (typeof value === 'object' && value !== null) {
-    return encodeObjectForContext(value as Record<string, unknown>, context);
-  }
-  return value;
+	if (typeof value === "string") return encodeForContext(value, context);
+	if (Array.isArray(value)) return value.map((item) => encodeValueForContext(item, context));
+	if (typeof value === "object" && value !== null) {
+		return encodeObjectForContext(value as Record<string, unknown>, context);
+	}
+	return value;
 }
 
 /**
  * Encodes all string values in an object for the given context, at any depth
  */
 export function encodeObjectForContext<T extends Record<string, unknown>>(
-  obj: T,
-  context: OutputContext
+	obj: T,
+	context: OutputContext,
 ): T {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    result[key] = encodeValueForContext(value, context);
-  }
-  return result as T;
+	const result: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(obj)) {
+		result[key] = encodeValueForContext(value, context);
+	}
+	return result as T;
 }
-
-export default {
-  encodeHtml,
-  encodeHtmlAttribute,
-  encodeJavaScript,
-  encodeJson,
-  encodeUrl,
-  encodeFormUrl,
-  encodeCss,
-  quoteSqlIdentifier,
-  escapeShellArg,
-  escapeLdapDn,
-  escapeLdapFilter,
-  escapeXPath,
-  encodeCsvField,
-  encodeCsvRow,
-  sanitizeInput,
-  stripHtmlTags,
-  truncateString,
-  safeForLogging,
-  OutputContext,
-  encodeForContext,
-  encodeObjectForContext,
-};

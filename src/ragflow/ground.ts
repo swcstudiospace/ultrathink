@@ -28,12 +28,16 @@ export function flattenText(text: string, max: number): string {
 
 function bulletFor(chunk: RagflowChunk): string {
 	const name = flattenText(chunk.documentName ?? "", NAME_CHARS) || "document";
-	const similarity = chunk.similarity !== undefined ? ` (similarity ${chunk.similarity.toFixed(2)})` : "";
+	const similarity =
+		chunk.similarity !== undefined ? ` (similarity ${chunk.similarity.toFixed(2)})` : "";
 	return `- ${name}${similarity}: ${flattenText(chunk.content, EXCERPT_CHARS)}`;
 }
 
 /** The section text and the chunks that made it in: whole bullets only, except the first, which is cut to fit. */
-function render(chunks: readonly RagflowChunk[], maxChars: number): { text: string; included: RagflowChunk[] } {
+function render(
+	chunks: readonly RagflowChunk[],
+	maxChars: number,
+): { text: string; included: RagflowChunk[] } {
 	let text = `${SECTION_TITLE}\n${FRAMING}\n`;
 	const included: RagflowChunk[] = [];
 	for (const chunk of chunks) {
@@ -70,7 +74,9 @@ export function docsLookup(outcome: GroundOutcome): DocsLookup {
 }
 
 function bySimilarity(a: RagflowChunk, b: RagflowChunk): number {
-	return (b.similarity ?? Number.NEGATIVE_INFINITY) - (a.similarity ?? Number.NEGATIVE_INFINITY) || 0;
+	return (
+		(b.similarity ?? Number.NEGATIVE_INFINITY) - (a.similarity ?? Number.NEGATIVE_INFINITY) || 0
+	);
 }
 
 /** Never throws. Off unless `config.ground` is set and RAGFlow is ready. No request is made while off. */
@@ -87,7 +93,10 @@ export async function groundDocs(input: {
 	const now = input.now ?? Date.now;
 	const started = now();
 	const { config } = input;
-	const outcome = (status: GroundOutcome["status"], extra: Partial<GroundOutcome> = {}): GroundOutcome => ({
+	const outcome = (
+		status: GroundOutcome["status"],
+		extra: Partial<GroundOutcome> = {},
+	): GroundOutcome => ({
 		status,
 		chunks: [],
 		chars: 0,
@@ -105,9 +114,12 @@ export async function groundDocs(input: {
 			signal,
 			gateway: input.gateway,
 		});
-		if (readiness.state === "off") return outcome("off", { reason: `RAGFlow is off (${readiness.reason})` });
+		if (readiness.state === "off")
+			return outcome("off", { reason: `RAGFlow is off (${readiness.reason})` });
 		if (readiness.state === "unready" || !client) {
-			return outcome("off", { reason: `RAGFlow is not ready (${readiness.state === "unready" ? readiness.reason : "no client"})` });
+			return outcome("off", {
+				reason: `RAGFlow is not ready (${readiness.state === "unready" ? readiness.reason : "no client"})`,
+			});
 		}
 		if (input.query.trim() === "") return outcome("none");
 		let datasetIds = config.datasetIds.map((id) => id.trim()).filter((id) => id !== "");
@@ -123,7 +135,8 @@ export async function groundDocs(input: {
 			topK: config.topK,
 			similarityThreshold: config.similarityThreshold,
 		});
-		if (!found.ok) return outcome("error", { datasets: datasetIds.length, reason: found.error.message });
+		if (!found.ok)
+			return outcome("error", { datasets: datasetIds.length, reason: found.error.message });
 		const ordered = [...found.value].sort(bySimilarity);
 		const { text, included } = render(ordered, config.groundChars);
 		if (included.length === 0) return outcome("none", { datasets: datasetIds.length });

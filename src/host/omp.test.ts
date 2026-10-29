@@ -1,27 +1,117 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { spawn } from "node:child_process";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Effort, Model } from "@oh-my-pi/pi-ai";
 import { writeSession } from "../claude/state.ts";
+import { briefDigest, LANE_LOCK_BUSY, writeLaneFile } from "../swarm/lane.ts";
+import type { ClassifyVerdict } from "../swarm/classify.ts";
+import { type LaneClassify, spawnLanes, type TeamsFs } from "../swarm/teams.ts";
+import { runUplift } from "../uplift/run.ts";
 import type { TrackPlan } from "../track/types.ts";
 import { DEFAULT_SHIP_CONFIG, type ShipConfig } from "../ship/types.ts";
 import { DEFAULT_HINDSIGHT_CONFIG } from "../hindsight/types.ts";
 import { DEFAULT_TEACH_CONFIG, type CaptureMode, type TeachDigest } from "../teach/types.ts";
 import type { ModelIntent, ModelResolution, SelectedEngine } from "./engine.ts";
-import { createNativeEnginePlanner, createNativeEngineSelector, NO_PLAN, QUICK_USAGE } from "./omp.ts";
-import type { NativeEngineDeps, OmpNativeRuntime, OmpPlan, OmpPlanRequest, ShipPrecheck } from "./omp.ts";
-import { controlled, fakeModel, fakeRuntime, flush, planReply, quietConfig, recorder, reply, setup, stageAnswer, tuiCtx, userText } from "./omp-test.helpers.ts";
+import {
+	createNativeEnginePlanner,
+	createNativeEngineSelector,
+	NO_PLAN,
+	QUICK_USAGE,
+} from "./omp.ts";
+import type {
+	NativeEngineDeps,
+	OmpNativeRuntime,
+	OmpPlan,
+	OmpPlanRequest,
+	ShipPrecheck,
+} from "./omp.ts";
+import {
+	controlled,
+	fakeModel,
+	fakeRuntime,
+	flush,
+	planReply,
+	quietConfig,
+	recorder,
+	reply,
+	setup,
+	stageAnswer,
+	tuiCtx,
+	userText,
+} from "./omp-test.helpers.ts";
 import type { ProgressEvent } from "./progress.ts";
 import type { PlanView } from "./view.ts";
+
+/** Timers the test fires by hand: the remount, race and flight-limit timers arm here instead of on the real clock. */
+type ManualTimers = {
+	timers: {
+		setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
+		clearTimeout(handle: NodeJS.Timeout | undefined): void;
+	};
+	/** Runs the oldest pending timer of `ms`, waiting until the code has armed one. */
+	fire: (ms: number) => Promise<void>;
+	/** Timers armed and neither fired nor cleared. */
+	pending: () => number;
+};
+
+function manualTimers(): ManualTimers {
+	const armed: Array<{ ms: number; run: () => void; handle: NodeJS.Timeout }> = [];
+	const live = new Set<NodeJS.Timeout>();
+	const waiting: Array<() => void> = [];
+	const timers: ManualTimers["timers"] = {
+		setTimeout: (run, ms) => {
+			// reason: the port's handle is opaque; the test tracks it by identity and never reads it
+			const handle = {} as NodeJS.Timeout;
+			armed.push({ ms, run, handle });
+			live.add(handle);
+			for (const wake of waiting.splice(0)) wake();
+			return handle;
+		},
+		clearTimeout: (handle) => {
+			if (handle) live.delete(handle);
+		},
+	};
+	const fire = async (ms: number): Promise<void> => {
+		const entry = armed.find((candidate) => live.has(candidate.handle) && candidate.ms === ms);
+		if (!entry) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			waiting.push(resolve);
+			await promise;
+			return fire(ms);
+		}
+		live.delete(entry.handle);
+		entry.run();
+	};
+	return { timers, fire, pending: () => live.size };
+}
 
 describe("omp extension", () => {
 	test("fast plan is returned inline", async () => {
 		const { run, sent } = setup(async () => "PLAN");
 		expect(await run()).toEqual({
-			message: { customType: "ultrathink-plan", content: "PLAN", display: true, attribution: "agent" },
+			message: {
+				customType: "ultrathink-plan",
+				content: "PLAN",
+				display: true,
+				attribution: "agent",
+			},
 		});
 		await flush();
 		expect(sent).toHaveLength(0);
@@ -32,20 +122,93 @@ describe("omp extension", () => {
 		expect(await run()).toBeUndefined();
 	});
 
+	test("with default options a plan released after the call starts is returned inline, not the fallback", async () => {
+		// The race is the shipped 25 s default, passed explicitly because the harness always sets it; maxRunMs is left unset.
+		const gate = Promise.withResolvers<void>();
+		const { run, sent } = setup(async () => {
+			await gate.promise;
+			return "PLAN";
+		}, 25_000);
+		const result = run();
+		gate.resolve();
+		expect(await result).toEqual({
+			message: {
+				customType: "ultrathink-plan",
+				content: "PLAN",
+				display: true,
+				attribution: "agent",
+			},
+		});
+		await flush();
+		expect(sent).toHaveLength(0);
+	});
+
+	test("maxRunMs 0 starts no flight timer: a slow flight is not aborted and its plan still lands as an aside", async () => {
+		const runs: {
+			request: OmpPlanRequest;
+			signal: AbortSignal;
+			gate: PromiseWithResolvers<string>;
+		}[] = [];
+		const manual = manualTimers();
+		const { run, sent } = setup(
+			(request, signal) => {
+				const gate = Promise.withResolvers<string>();
+				runs.push({ request, signal, gate });
+				return gate.promise;
+			},
+			1,
+			{ maxRunMs: 0, timers: manual.timers },
+		);
+		// The race limit is 1 ms: its timer fires by hand, and the pending message follows.
+		const running = run();
+		await manual.fire(1);
+		expect(await running).toEqual({
+			message: expect.objectContaining({ customType: "ultrathink-pending" }),
+		});
+		// With maxRunMs 0 the flight arms no limit timer, so none is pending once the race has ended.
+		expect(manual.pending()).toBe(0);
+		expect(runs[0]?.signal.aborted).toBe(false);
+		expect(runs[0]?.request.isCurrent?.()).toBe(true);
+		expect(runs[0]?.request.deadline).toBeUndefined();
+		runs[0]?.gate.resolve("PLAN");
+		await flush();
+		expect(sent).toEqual([
+			{
+				message: {
+					customType: "ultrathink-plan",
+					content: "PLAN",
+					display: true,
+					attribution: "agent",
+				},
+				options: { deliverAs: "aside" },
+			},
+		]);
+	});
+
 	test("slow plan returns pending then delivers aside once", async () => {
 		const gate = controlled();
 		const { run, sent } = setup(gate.plan, 1);
 		const result: unknown = await run();
-		const message: unknown = typeof result === "object" && result !== null && "message" in result ? result.message : undefined;
+		const message: unknown =
+			typeof result === "object" && result !== null && "message" in result
+				? result.message
+				: undefined;
 		const customType: unknown =
-			typeof message === "object" && message !== null && "customType" in message ? message.customType : undefined;
+			typeof message === "object" && message !== null && "customType" in message
+				? message.customType
+				: undefined;
 		expect(customType).toBe("ultrathink-pending");
 		expect(sent).toHaveLength(0);
 		gate.resolve("PLAN");
 		await flush();
 		expect(sent).toEqual([
 			{
-				message: { customType: "ultrathink-plan", content: "PLAN", display: true, attribution: "agent" },
+				message: {
+					customType: "ultrathink-plan",
+					content: "PLAN",
+					display: true,
+					attribution: "agent",
+				},
 				options: { deliverAs: "aside" },
 			},
 		]);
@@ -72,7 +235,11 @@ describe("omp extension", () => {
 		expect(sent.length).toBeLessThanOrEqual(1);
 	});
 
-	const PENDING_MSG = { customType: "ultrathink-pending", display: true, attribution: "agent" } as const;
+	const PENDING_MSG = {
+		customType: "ultrathink-pending",
+		display: true,
+		attribution: "agent",
+	} as const;
 	const PLAN_MSG = {
 		customType: "ultrathink-plan",
 		content: "PLAN",
@@ -132,12 +299,17 @@ describe("omp extension", () => {
 	test("an identical resend after an aside delivery is planned again", async () => {
 		const first = Promise.withResolvers<string>();
 		let calls = 0;
-		const { run, sent, emit } = setup(() => (++calls === 1 ? first.promise : Promise.resolve("PLAN 2")), 1);
+		const { run, sent, emit } = setup(
+			() => (++calls === 1 ? first.promise : Promise.resolve("PLAN 2")),
+			1,
+		);
 		expect(await run()).toEqual({ message: expect.objectContaining(PENDING_MSG) });
 		emit("turn_start");
 		first.resolve("PLAN 1");
 		await flush();
-		expect(sent).toEqual([{ message: { ...PLAN_MSG, content: "PLAN 1" }, options: { deliverAs: "aside" } }]);
+		expect(sent).toEqual([
+			{ message: { ...PLAN_MSG, content: "PLAN 1" }, options: { deliverAs: "aside" } },
+		]);
 		expect(await run()).toEqual({ message: { ...PLAN_MSG, content: "PLAN 2" } });
 		expect(calls).toBe(2);
 	});
@@ -153,15 +325,16 @@ describe("omp extension", () => {
 
 	test("tui session mounts the bar above the editor, then re-mounts once per tick after other handlers", async () => {
 		const t = tuiCtx();
-		const { emit } = setup(async () => "", 1_000, {}, t.ctx);
+		const manual = manualTimers();
+		const { emit } = setup(async () => "", 1_000, { timers: manual.timers }, t.ctx);
 		emit("session_start");
 		expect(t.widgets).toHaveLength(1);
 		expect(t.widgets[0]!.key).toBe("ultrathink");
 		expect(t.widgets[0]!.options).toEqual({ placement: "aboveEditor" });
 		emit("agent_start");
 		expect(t.widgets).toHaveLength(1);
-		// The remount is a setTimeout(0) macrotask by design (after every other extension's handler); wait one.
-		await Bun.sleep(1);
+		// The remount is a zero-delay timer by design (after every other extension's handler); fire it by hand.
+		await manual.fire(0);
 		expect(t.widgets).toHaveLength(2);
 		expect(t.widgets[1]!.factory).toBe(t.widgets[0]!.factory);
 		expect(emit("input")).toBeUndefined();
@@ -169,7 +342,7 @@ describe("omp extension", () => {
 		emit("tool_execution_start");
 		emit("turn_end");
 		expect(t.widgets).toHaveLength(2);
-		await Bun.sleep(1);
+		await manual.fire(0);
 		expect(t.widgets).toHaveLength(3);
 		expect(t.widgets[2]!.factory).toBe(t.widgets[0]!.factory);
 		expect(t.widgets[2]!.options).toEqual({ placement: "aboveEditor" });
@@ -178,11 +351,18 @@ describe("omp extension", () => {
 	test("non-tui or no-UI sessions mount no bar", async () => {
 		for (const extra of [{ mode: "rpc" }, { hasUI: false }]) {
 			const t = tuiCtx();
-			const { emit } = setup(async () => "", 1_000, {}, { ...t.ctx, ...extra });
+			const manual = manualTimers();
+			const { emit } = setup(
+				async () => "",
+				1_000,
+				{ timers: manual.timers },
+				{ ...t.ctx, ...extra },
+			);
 			emit("session_start");
 			emit("agent_start");
 			emit("input");
-			await Bun.sleep(1);
+			// Without a UI no remount is armed, so no timer is pending and no bar mounts.
+			expect(manual.pending()).toBe(0);
 			expect(t.widgets).toHaveLength(0);
 		}
 	});
@@ -214,13 +394,19 @@ describe("omp extension", () => {
 	test("slow plan shows pending then delivers the view via aside", async () => {
 		const t = tuiCtx();
 		const gate = Promise.withResolvers<OmpPlan>();
-		const { run, sent, emit } = setup(() => gate.promise, 1, {}, t.ctx);
+		const manual = manualTimers();
+		const { run, sent, emit } = setup(() => gate.promise, 1, { timers: manual.timers }, t.ctx);
 		emit("session_start");
-		await run();
+		const running = run();
+		// The race limit is 1 ms: its timer fires by hand while the plan is still held.
+		await manual.fire(1);
+		await running;
 		const pendingLine = t.line();
 		gate.resolve({ context: "PLAN", view: VIEW });
 		await flush();
-		expect(sent).toEqual([{ message: { ...PLAN_MSG, details: VIEW }, options: { deliverAs: "aside" } }]);
+		expect(sent).toEqual([
+			{ message: { ...PLAN_MSG, details: VIEW }, options: { deliverAs: "aside" } },
+		]);
 		expect(t.line()).not.toBe(pendingLine);
 	});
 
@@ -228,11 +414,13 @@ describe("omp extension", () => {
 		const t = tuiCtx(() => {
 			throw new Error("boom");
 		});
-		const { run, emit } = setup(async () => "PLAN", 1_000, {}, t.ctx);
+		const manual = manualTimers();
+		const { run, emit } = setup(async () => "PLAN", 1_000, { timers: manual.timers }, t.ctx);
 		emit("session_start");
 		emit("agent_start");
 		expect(await run()).toEqual({ message: PLAN_MSG });
-		await Bun.sleep(1);
+		// The deferred remount runs by hand; its throw is swallowed by the mount guard.
+		await manual.fire(0);
 	});
 
 	test("the frame timer renders while animating and once more after it stops", async () => {
@@ -262,7 +450,10 @@ describe("omp extension", () => {
 
 	test("a deferred plan that settles after a newer prompt began is dropped, not delivered", async () => {
 		const t = tuiCtx();
-		const flights = new Map<string, { onEvent: (event: ProgressEvent) => void; gate: PromiseWithResolvers<OmpPlan> }>();
+		const flights = new Map<
+			string,
+			{ onEvent: (event: ProgressEvent) => void; gate: PromiseWithResolvers<OmpPlan> }
+		>();
 		const { run, sent, emit } = setup(
 			(req, _signal, onEvent) => {
 				const gate = Promise.withResolvers<OmpPlan>();
@@ -295,7 +486,9 @@ describe("omp extension", () => {
 		expect(t.line()).toContain("think");
 		b.gate.resolve({ context: "PLAN B" });
 		await flush();
-		expect(sent).toEqual([{ message: { ...PLAN_MSG, content: "PLAN B" }, options: { deliverAs: "aside" } }]);
+		expect(sent).toEqual([
+			{ message: { ...PLAN_MSG, content: "PLAN B" }, options: { deliverAs: "aside" } },
+		]);
 	});
 
 	test("a deferred plan still lands after its own turns start", async () => {
@@ -367,7 +560,6 @@ describe("omp extension", () => {
 	});
 });
 
-
 describe("slash commands", () => {
 	let stateDir: string;
 	beforeEach(() => {
@@ -414,7 +606,12 @@ describe("slash commands", () => {
 		expect(planner.prompts).toEqual([]);
 		expect(sent).toHaveLength(0);
 		expect(await run("next")).toEqual({
-			message: { customType: "ultrathink-plan", content: "PLAN", display: true, attribution: "agent" },
+			message: {
+				customType: "ultrathink-plan",
+				content: "PLAN",
+				display: true,
+				attribution: "agent",
+			},
 		});
 		expect(planner.prompts).toEqual(["next"]);
 	});
@@ -464,10 +661,15 @@ describe("slash commands", () => {
 	});
 
 	test("in a subagent session a command goes to the agent as typed", async () => {
-		const { command, userMessages, notices } = setup(async () => "PLAN", 1_000, { stateDir }, {
-			hasUI: false,
-			sessionManager: { getSessionId: () => "s1" },
-		});
+		const { command, userMessages, notices } = setup(
+			async () => "PLAN",
+			1_000,
+			{ stateDir },
+			{
+				hasUI: false,
+				sessionManager: { getSessionId: () => "s1" },
+			},
+		);
 		await command("ultrathink-off");
 		await command("ultrathink-quick", "hello");
 		expect(userMessages).toEqual(["/ultrathink-off", "/ultrathink-quick hello"]);
@@ -479,7 +681,9 @@ describe("slash commands", () => {
 describe("subagent sessions", () => {
 	const PARENT = "/home/u/.omp/agent/sessions/abc/2026_parent";
 	const nestedOnly = (path: string) => path === `${PARENT}.jsonl`;
-	const session = (manager: Record<string, unknown>) => ({ sessionManager: { getSessionId: () => "s1", ...manager } });
+	const session = (manager: Record<string, unknown>) => ({
+		sessionManager: { getSessionId: () => "s1", ...manager },
+	});
 
 	test("a nested session file is not planned", async () => {
 		let calls = 0;
@@ -490,7 +694,13 @@ describe("subagent sessions", () => {
 			},
 			1_000,
 			{ exists: nestedOnly },
-			{ hasUI: false, ...session({ getSessionFile: () => `${PARENT}/Worker.jsonl`, getHeader: () => ({ parentSession: `${PARENT}.jsonl` }) }) },
+			{
+				hasUI: false,
+				...session({
+					getSessionFile: () => `${PARENT}/Worker.jsonl`,
+					getHeader: () => ({ parentSession: `${PARENT}.jsonl` }),
+				}),
+			},
 		);
 		expect(await run()).toBeUndefined();
 		await flush();
@@ -507,25 +717,44 @@ describe("subagent sessions", () => {
 			},
 			1_000,
 			{ exists: () => false },
-			{ hasUI: false, ...session({ getSessionFile: () => undefined, getHeader: () => ({ parentSession: `${PARENT}.jsonl` }) }) },
+			{
+				hasUI: false,
+				...session({
+					getSessionFile: () => undefined,
+					getHeader: () => ({ parentSession: `${PARENT}.jsonl` }),
+				}),
+			},
 		);
 		expect(await run()).toBeUndefined();
 		expect(calls).toBe(0);
 	});
 
 	test("a user fork with UI is planned", async () => {
-		const { run } = setup(async () => "PLAN", 1_000, { exists: nestedOnly }, {
-			hasUI: true,
-			...session({ getSessionFile: () => "/home/u/.omp/agent/sessions/abc/2026_fork.jsonl", getHeader: () => ({ parentSession: `${PARENT}.jsonl` }) }),
-		});
+		const { run } = setup(
+			async () => "PLAN",
+			1_000,
+			{ exists: nestedOnly },
+			{
+				hasUI: true,
+				...session({
+					getSessionFile: () => "/home/u/.omp/agent/sessions/abc/2026_fork.jsonl",
+					getHeader: () => ({ parentSession: `${PARENT}.jsonl` }),
+				}),
+			},
+		);
 		expect(await run()).toMatchObject({ message: { content: "PLAN" } });
 	});
 
 	test("a top-level session without a header is planned", async () => {
-		const { run } = setup(async () => "PLAN", 1_000, { exists: nestedOnly }, {
-			hasUI: false,
-			...session({ getSessionFile: () => `${PARENT}.jsonl`, getHeader: () => null }),
-		});
+		const { run } = setup(
+			async () => "PLAN",
+			1_000,
+			{ exists: nestedOnly },
+			{
+				hasUI: false,
+				...session({ getSessionFile: () => `${PARENT}.jsonl`, getHeader: () => null }),
+			},
+		);
 		expect(await run()).toMatchObject({ message: { content: "PLAN" } });
 	});
 
@@ -538,7 +767,13 @@ describe("subagent sessions", () => {
 			},
 			1_000,
 			{ exists: () => false },
-			{ hasUI: false, ...session({ getSessionFile: () => "/tmp/omp-task-123/Worker.jsonl", getHeader: () => null }) },
+			{
+				hasUI: false,
+				...session({
+					getSessionFile: () => "/tmp/omp-task-123/Worker.jsonl",
+					getHeader: () => null,
+				}),
+			},
 		);
 		expect(await run()).toBeUndefined();
 		expect(calls).toBe(0);
@@ -560,23 +795,33 @@ describe("subagent sessions", () => {
 	});
 
 	test("a session with UI and without a session file is planned", async () => {
-		const { run } = setup(async () => "PLAN", 1_000, { exists: () => false }, {
-			hasUI: true,
-			...session({ getSessionFile: () => undefined, getHeader: () => null }),
-		});
+		const { run } = setup(
+			async () => "PLAN",
+			1_000,
+			{ exists: () => false },
+			{
+				hasUI: true,
+				...session({ getSessionFile: () => undefined, getHeader: () => null }),
+			},
+		);
 		expect(await run()).toMatchObject({ message: { content: "PLAN" } });
 	});
 
 	test("a throwing session manager fails open and plans", async () => {
-		const { run } = setup(async () => "PLAN", 1_000, { exists: () => true }, {
-			hasUI: false,
-			...session({
-				getSessionFile: () => {
-					throw new Error("boom");
-				},
-				getHeader: () => ({ parentSession: `${PARENT}.jsonl` }),
-			}),
-		});
+		const { run } = setup(
+			async () => "PLAN",
+			1_000,
+			{ exists: () => true },
+			{
+				hasUI: false,
+				...session({
+					getSessionFile: () => {
+						throw new Error("boom");
+					},
+					getHeader: () => ({ parentSession: `${PARENT}.jsonl` }),
+				}),
+			},
+		);
 		expect(await run()).toMatchObject({ message: { content: "PLAN" } });
 	});
 });
@@ -591,15 +836,29 @@ describe("pr sync", () => {
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 	const track = (plan?: TrackPlan) =>
-		writeSession(dir, { sessionId: "s1", at: 1, result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" }, plan });
+		writeSession(dir, {
+			sessionId: "s1",
+			at: 1,
+			result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
+			plan,
+		});
 	const PLAN = { graphId: "g-7" } as TrackPlan;
-	const result = (toolName: string, input: Record<string, unknown>, text: string, isError = false) => ({
+	const result = (
+		toolName: string,
+		input: Record<string, unknown>,
+		text: string,
+		isError = false,
+	) => ({
 		toolName,
 		input,
 		content: [{ type: "text", text }],
 		isError,
 	});
-	const ghPrCreate = result("bash", { command: "git push -u origin feat && gh pr create --fill" }, `Creating pull request for feat into main in o/r\n\n${PR}\n`);
+	const ghPrCreate = result(
+		"bash",
+		{ command: "git push -u origin feat && gh pr create --fill" },
+		`Creating pull request for feat into main in o/r\n\n${PR}\n`,
+	);
 
 	test("a gh pr create result sends one ultrathink-sync aside per PR URL", () => {
 		track(PLAN);
@@ -608,16 +867,27 @@ describe("pr sync", () => {
 		emit("tool_result", ghPrCreate);
 		expect(sent).toEqual([
 			{
-				message: { customType: "ultrathink-sync", content: expect.any(String), display: true, details: { url: PR, number: 12 }, attribution: "agent" },
+				message: {
+					customType: "ultrathink-sync",
+					content: expect.any(String),
+					display: true,
+					details: { url: PR, number: 12 },
+					attribution: "agent",
+				},
 				options: { deliverAs: "aside" },
 			},
 		]);
 		// Bun's toMatchObject writes a matched asymmetric matcher back into the received object, so read the text once.
 		const message = sent[0]?.message;
-		const content = message && typeof message === "object" && "content" in message ? message.content : undefined;
-		for (const fact of [PR, `stateFile=${join(dir, "sessions", "s1.json")}`, "g-7"]) expect(content).toContain(fact);
+		const content =
+			message && typeof message === "object" && "content" in message ? message.content : undefined;
+		for (const fact of [PR, `stateFile=${join(dir, "sessions", "s1.json")}`, "g-7"])
+			expect(content).toContain(fact);
 		emit("tool_result", result("bash", { command: "gh pr create --fill" }, `${PR_13}\n`));
-		expect(sent).toMatchObject([{ message: { details: { url: PR } } }, { message: { details: { url: PR_13, number: 13 } } }]);
+		expect(sent).toMatchObject([
+			{ message: { details: { url: PR } } },
+			{ message: { details: { url: PR_13, number: 13 } } },
+		]);
 	});
 
 	test("nothing without a tracked plan or in a subagent session", () => {
@@ -628,10 +898,18 @@ describe("pr sync", () => {
 		expect(bare.sent).toHaveLength(0);
 
 		track(PLAN);
-		const sub = setup(async () => "", 1_000, { stateDir: dir, exists: () => false }, {
-			hasUI: false,
-			sessionManager: { getSessionId: () => "s1", getSessionFile: () => "/tmp/omp-task-1/Worker.jsonl" },
-		});
+		const sub = setup(
+			async () => "",
+			1_000,
+			{ stateDir: dir, exists: () => false },
+			{
+				hasUI: false,
+				sessionManager: {
+					getSessionId: () => "s1",
+					getSessionFile: () => "/tmp/omp-task-1/Worker.jsonl",
+				},
+			},
+		);
 		sub.emit("tool_result", ghPrCreate);
 		expect(sub.sent).toHaveLength(0);
 	});
@@ -642,16 +920,45 @@ describe("pr sync", () => {
 		emit("tool_result", result("bash", { command: "gh pr view 12 --json url" }, PR));
 		emit("tool_result", result("read", { path: "notes.md" }, PR));
 		emit("tool_result", result("github", { op: "pr_checkout", pr: "12" }, PR));
-		emit("tool_result", result("bash", { command: "gh pr create --fill" }, `a pull request for branch "feat" into branch "main" already exists:\n${PR}`, true));
-		emit("tool_result", result("bash", { command: "gh pr create --web" }, "Opening github.com/o/r/compare/main...feat in your browser."));
+		emit(
+			"tool_result",
+			result(
+				"bash",
+				{ command: "gh pr create --fill" },
+				`a pull request for branch "feat" into branch "main" already exists:\n${PR}`,
+				true,
+			),
+		);
+		emit(
+			"tool_result",
+			result(
+				"bash",
+				{ command: "gh pr create --web" },
+				"Opening github.com/o/r/compare/main...feat in your browser.",
+			),
+		);
 		expect(sent).toHaveLength(0);
 	});
 
 	test("Omp's github pr_create and PR-creation MCP tools nudge too", () => {
 		track(PLAN);
 		const { emit, sent } = setup(async () => "", 1_000, { stateDir: dir });
-		emit("tool_result", result("github", { op: "pr_create", title: "Feat" }, `# Created Pull Request #12: Feat\n\nURL: ${PR}`));
-		emit("tool_result", result("mcp__acme_github_create_pull_request", { owner: "o", repo: "r" }, JSON.stringify({ number: 13, html_url: PR_13 })));
+		emit(
+			"tool_result",
+			result(
+				"github",
+				{ op: "pr_create", title: "Feat" },
+				`# Created Pull Request #12: Feat\n\nURL: ${PR}`,
+			),
+		);
+		emit(
+			"tool_result",
+			result(
+				"mcp__acme_github_create_pull_request",
+				{ owner: "o", repo: "r" },
+				JSON.stringify({ number: 13, html_url: PR_13 }),
+			),
+		);
 		expect(sent).toMatchObject([
 			{ message: { customType: "ultrathink-sync", details: { url: PR, number: 12 } } },
 			{ message: { customType: "ultrathink-sync", details: { url: PR_13, number: 13 } } },
@@ -684,8 +991,23 @@ describe("ship nudge", () => {
 			skill: { name: "gsd-execute-phase", source: "omp" },
 			...extra,
 		} as unknown as Parameters<typeof writeSession>[1]);
-	const ship = (precheck: ShipPrecheck = OK, ctxExtra: Record<string, unknown> = {}, exists: (path: string) => boolean = () => true) =>
-		setup(async () => "", 1_000, { stateDir: dir, now: () => 777, exists, shipConfig: () => CONFIG, shipPrecheck: () => precheck }, ctxExtra);
+	const ship = (
+		precheck: ShipPrecheck = OK,
+		ctxExtra: Record<string, unknown> = {},
+		exists: (path: string) => boolean = () => true,
+	) =>
+		setup(
+			async () => "",
+			1_000,
+			{
+				stateDir: dir,
+				now: () => 777,
+				exists,
+				shipConfig: () => CONFIG,
+				shipPrecheck: () => precheck,
+			},
+			ctxExtra,
+		);
 	const statePath = () => join(dir, "sessions", "s1.json");
 
 	test("agent_end sends one ultrathink-ship aside and records nudgedAt", () => {
@@ -695,13 +1017,27 @@ describe("ship nudge", () => {
 		emit("agent_end");
 		expect(sent).toEqual([
 			{
-				message: { customType: "ultrathink-ship", content: expect.any(String), display: true, details: { branch: "feat/x", base: "master", ahead: 2 }, attribution: "agent" },
+				message: {
+					customType: "ultrathink-ship",
+					content: expect.any(String),
+					display: true,
+					details: { branch: "feat/x", base: "master", ahead: 2 },
+					attribution: "agent",
+				},
 				options: { deliverAs: "aside" },
 			},
 		]);
 		const message = sent[0]?.message;
-		const content = message && typeof message === "object" && "content" in message ? message.content : undefined;
-		for (const fact of ["ultrathink-ship", `stateFile=${statePath()}`, "gsd-execute-phase", "feat/x", "master"]) expect(content).toContain(fact);
+		const content =
+			message && typeof message === "object" && "content" in message ? message.content : undefined;
+		for (const fact of [
+			"ultrathink-ship",
+			`stateFile=${statePath()}`,
+			"gsd-execute-phase",
+			"feat/x",
+			"master",
+		])
+			expect(content).toContain(fact);
 		expect(JSON.parse(readFileSync(statePath(), "utf8")).ship.nudgedAt).toBe(777);
 	});
 
@@ -733,7 +1069,17 @@ describe("ship nudge", () => {
 
 	test("nothing in a subagent session", () => {
 		record();
-		const { emit, sent } = ship(OK, { hasUI: false, sessionManager: { getSessionId: () => "s1", getSessionFile: () => "/tmp/omp-task-1/Worker.jsonl" } }, () => false);
+		const { emit, sent } = ship(
+			OK,
+			{
+				hasUI: false,
+				sessionManager: {
+					getSessionId: () => "s1",
+					getSessionFile: () => "/tmp/omp-task-1/Worker.jsonl",
+				},
+			},
+			() => false,
+		);
 		emit("agent_end");
 		expect(sent).toHaveLength(0);
 	});
@@ -763,13 +1109,33 @@ describe("teach capture", () => {
 			],
 			stopReason: "toolUse",
 		},
-		{ role: "toolResult", toolCallId: "t1", toolName: "bash", isError: true, content: [{ type: "text", text: "error TS2307" }] },
-		{ role: "assistant", content: [{ type: "text", text: "Fixed the import." }], stopReason: "stop" },
+		{
+			role: "toolResult",
+			toolCallId: "t1",
+			toolName: "bash",
+			isError: true,
+			content: [{ type: "text", text: "error TS2307" }],
+		},
+		{
+			role: "assistant",
+			content: [{ type: "text", text: "Fixed the import." }],
+			stopReason: "stop",
+		},
 	];
-	const ABORTED = [...MESSAGES.slice(0, -1), { role: "assistant", content: [{ type: "text", text: "stopp" }], stopReason: "aborted" }];
+	const ABORTED = [
+		...MESSAGES.slice(0, -1),
+		{ role: "assistant", content: [{ type: "text", text: "stopp" }], stopReason: "aborted" },
+	];
 
-	const teach = (enabled: boolean, capture: CaptureMode, ctxExtra: Record<string, unknown> = {}) => {
-		const spawned: { digest: TeachDigest; options: { repoRoot: string; stateDir: string; host: string; env: NodeJS.ProcessEnv } }[] = [];
+	const teach = (
+		enabled: boolean,
+		capture: CaptureMode,
+		ctxExtra: Record<string, unknown> = {},
+	) => {
+		const spawned: {
+			digest: TeachDigest;
+			options: { repoRoot: string; stateDir: string; host: string; env: NodeJS.ProcessEnv };
+		}[] = [];
 		const contexts: unknown[] = [];
 		const harness = setup(
 			async () => "",
@@ -778,13 +1144,21 @@ describe("teach capture", () => {
 				stateDir: dir,
 				exists: () => false,
 				teachContext: (options) => {
-					contexts.push({ host: options.host, cwd: options.cwd, sessionId: options.sessionId, stateDir: options.stateDir });
+					contexts.push({
+						host: options.host,
+						cwd: options.cwd,
+						sessionId: options.sessionId,
+						stateDir: options.stateDir,
+					});
 					return {
 						host: "omp",
 						cwd: options.cwd ?? "",
 						env: options.env ?? {},
 						stateDir: join(dir, "teach-state"),
-						config: { teach: { ...DEFAULT_TEACH_CONFIG, enabled, capture }, hindsight: DEFAULT_HINDSIGHT_CONFIG },
+						config: {
+							teach: { ...DEFAULT_TEACH_CONFIG, enabled, capture },
+							hindsight: DEFAULT_HINDSIGHT_CONFIG,
+						},
 					};
 				},
 				spawnObserve: (digest, options) => {
@@ -797,24 +1171,65 @@ describe("teach capture", () => {
 		return { ...harness, spawned, contexts };
 	};
 
-	test.each<CaptureMode>(["observe", "auto"])("agent_end spawns one detached observe in %s mode", (capture) => {
-		const { emit, spawned, contexts, sent } = teach(true, capture);
-		emit("agent_end", { messages: MESSAGES });
+	test.each<CaptureMode>(["observe", "auto"])(
+		"agent_end spawns one detached observe in %s mode",
+		(capture) => {
+			const { emit, spawned, contexts, sent } = teach(true, capture);
+			emit("agent_end", { messages: MESSAGES });
+			expect(spawned).toHaveLength(1);
+			const spawnedOnce = spawned[0];
+			if (!spawnedOnce) throw new Error("expected one observe");
+			const { digest, options } = spawnedOnce;
+			expect(digest).toMatchObject({
+				host: "omp",
+				sessionId: "s1",
+				cwd: "/repo",
+				outcome: "completed",
+			});
+			expect(options).toMatchObject({ stateDir: join(dir, "teach-state"), host: "omp" });
+			expect(options.env.ULTRATHINK_HOST).toBe("omp");
+			expect(contexts).toEqual([{ host: "omp", cwd: "/repo", sessionId: "s1", stateDir: dir }]);
+			expect(sent).toHaveLength(0);
+		},
+	);
+
+	test("agent_end spawns observe for a run started with /skill:, which omp delivers as a custom message", () => {
+		const { emit, spawned } = teach(true, "auto");
+		emit("agent_end", {
+			messages: [
+				{
+					role: "custom",
+					customType: "skill-prompt",
+					attribution: "user",
+					display: true,
+					content: "[IMPORTANT: User invoked the skill] LONG SKILL BODY",
+					details: { name: "gsd-autonomous", path: "/p/SKILL.md", args: "fix the failing build" },
+				},
+				...MESSAGES.slice(1),
+			],
+		});
 		expect(spawned).toHaveLength(1);
-		const spawnedOnce = spawned[0];
-		if (!spawnedOnce) throw new Error("expected one observe");
-		const { digest, options } = spawnedOnce;
-		expect(digest).toMatchObject({ host: "omp", sessionId: "s1", cwd: "/repo", outcome: "completed" });
-		expect(options).toMatchObject({ stateDir: join(dir, "teach-state"), host: "omp" });
-		expect(options.env.ULTRATHINK_HOST).toBe("omp");
-		expect(contexts).toEqual([{ host: "omp", cwd: "/repo", sessionId: "s1", stateDir: dir }]);
-		expect(sent).toHaveLength(0);
+		expect(spawned[0]?.digest.turns[0]).toEqual({
+			role: "user",
+			text: "/skill:gsd-autonomous fix the failing build",
+		});
 	});
 
 	test.each<[string, boolean, CaptureMode, Record<string, unknown>]>([
 		["explicit mode", true, "explicit", {}],
 		["Teachable Moments disabled", false, "auto", {}],
-		["a subagent session", true, "observe", { hasUI: false, sessionManager: { getSessionId: () => "s1", getSessionFile: () => "/tmp/omp-task-1/Worker.jsonl" } }],
+		[
+			"a subagent session",
+			true,
+			"observe",
+			{
+				hasUI: false,
+				sessionManager: {
+					getSessionId: () => "s1",
+					getSessionFile: () => "/tmp/omp-task-1/Worker.jsonl",
+				},
+			},
+		],
 	])("agent_end does not spawn for %s", (_name, enabled, capture, ctxExtra) => {
 		const { emit, spawned } = teach(enabled, capture, ctxExtra);
 		emit("agent_end", { messages: MESSAGES });
@@ -839,20 +1254,16 @@ describe("teach capture", () => {
 			plan: { graphId: "g-9" } as TrackPlan,
 			skill: { name: "gsd-execute-phase", source: "omp" },
 		} as unknown as Parameters<typeof writeSession>[1]);
-		const { emit, sent } = setup(
-			async () => "",
-			1_000,
-			{
-				stateDir: dir,
-				now: () => 777,
-				exists: () => false,
-				shipConfig: () => ({ ...DEFAULT_SHIP_CONFIG, enabled: true, skills: ["gsd-"] }),
-				shipPrecheck: () => ({ ok: true, reason: "ok", branch: "feat/x", base: "master", ahead: 2 }),
-				teachContext: () => {
-					throw new Error("boom");
-				},
+		const { emit, sent } = setup(async () => "", 1_000, {
+			stateDir: dir,
+			now: () => 777,
+			exists: () => false,
+			shipConfig: () => ({ ...DEFAULT_SHIP_CONFIG, enabled: true, skills: ["gsd-"] }),
+			shipPrecheck: () => ({ ok: true, reason: "ok", branch: "feat/x", base: "master", ahead: 2 }),
+			teachContext: () => {
+				throw new Error("boom");
 			},
-		);
+		});
 		emit("agent_end", { messages: MESSAGES });
 		expect(sent).toHaveLength(1);
 		expect(sent[0]?.message).toMatchObject({ customType: "ultrathink-ship" });
@@ -874,8 +1285,17 @@ describe("native binding (D-01, D-02, §7)", () => {
 		modelSource: "ctx.model",
 		native: runtime,
 	});
-	const engineFor = async (request: OmpPlanRequest, deps: NativeEngineDeps, intent = INTENT, flight = new AbortController()): Promise<SelectedEngine> => {
-		const selection = await createNativeEngineSelector(request, flight.signal, deps)(intent, flight.signal);
+	const engineFor = async (
+		request: OmpPlanRequest,
+		deps: NativeEngineDeps,
+		intent = INTENT,
+		flight = new AbortController(),
+	): Promise<SelectedEngine> => {
+		const selection = await createNativeEngineSelector(
+			request,
+			flight.signal,
+			deps,
+		)(intent, flight.signal);
 		if ("skipped" in selection) throw new Error(`unexpected skip: ${selection.skipped}`);
 		return selection;
 	};
@@ -885,14 +1305,29 @@ describe("native binding (D-01, D-02, §7)", () => {
 			() => "resolved",
 			(error: unknown) => (error instanceof Error ? error.name : "non-error"),
 		);
+	/** No wait in a test: the backoff seam returns at once and records each wait. */
+	const instantSleep = (delays: number[]) => async (ms: number) => {
+		delays.push(ms);
+	};
 
 	test("every call runs on the flight's one snapshot through one host resolver: one system prompt, one timestamped user message, no tools, no per-call headers", async () => {
 		const live = fakeModel("acme", "Sol-1.Opaque");
 		const { runtime, log } = fakeRuntime([live]);
 		const rec = recorder(planReply);
 		const flight = new AbortController();
-		const engine = await engineFor(flightOf(live, runtime), { completeSimple: rec.complete, providerDefaults: {} }, INTENT, flight);
-		expect(engine.resolution).toMatchObject({ state: "detected", source: "ctx.model", reason: "live-model", provider: "acme", modelId: "Sol-1.Opaque" });
+		const engine = await engineFor(
+			flightOf(live, runtime),
+			{ completeSimple: rec.complete, providerDefaults: {} },
+			INTENT,
+			flight,
+		);
+		expect(engine.resolution).toMatchObject({
+			state: "detected",
+			source: "ctx.model",
+			reason: "live-model",
+			provider: "acme",
+			modelId: "Sol-1.Opaque",
+		});
 		const stage = new AbortController();
 		expect(await engine.complete("SYSTEM 1", "USER 1", stage.signal)).toBe("PLAN");
 		expect(await engine.complete("SYSTEM 2", "USER 2", stage.signal)).toBe("PLAN");
@@ -903,7 +1338,9 @@ describe("native binding (D-01, D-02, §7)", () => {
 			expect(call.model).toBe(live);
 			expect(Object.keys(call.context).sort()).toEqual(["messages", "systemPrompt"]);
 			expect(call.context.systemPrompt).toEqual([`SYSTEM ${index + 1}`]);
-			expect(call.context.messages).toEqual([{ role: "user", content: `USER ${index + 1}`, timestamp: expect.any(Number) }]);
+			expect(call.context.messages).toEqual([
+				{ role: "user", content: `USER ${index + 1}`, timestamp: expect.any(Number) },
+			]);
 			// The resolver callable itself is the key, never an extracted bearer; headers stay the Model's own chain.
 			expect(call.options?.apiKey).toBe(log.resolvers[0]?.key);
 			expect(call.options?.sessionId).toBe("s1");
@@ -928,17 +1365,33 @@ describe("native binding (D-01, D-02, §7)", () => {
 				{ stopReason: "toolUse" },
 			),
 		);
-		const engine = await engineFor(flightOf(live, runtime), { completeSimple: rec.complete, providerDefaults: {} });
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: {},
+		});
 		expect(await engine.complete("s", "u")).toBe("AB");
 	});
 
 	test("an error stop reason is a safe classified failure: no partial text, provider message or payload", async () => {
 		const live = fakeModel("acme", "sol-1");
 		const { runtime } = fakeRuntime([live]);
-		const rec = recorder(() => reply([{ type: "text", text: "PARTIAL" }], { stopReason: "error", errorMessage: "SECRET-PROVIDER-BODY", errorStatus: 429 }));
-		const engine = await engineFor(flightOf(live, runtime), { completeSimple: rec.complete, providerDefaults: {} });
+		const rec = recorder(() =>
+			reply([{ type: "text", text: "PARTIAL" }], {
+				stopReason: "error",
+				errorMessage: "SECRET-PROVIDER-BODY",
+				errorStatus: 429,
+			}),
+		);
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			sleep: instantSleep([]),
+		});
 		const error = await engine.complete("s", "u").catch((caught: unknown) => caught);
-		expect(error).toMatchObject({ name: "NativeCompletionError", message: "omp-native completion failed (provider error, HTTP 429)" });
+		expect(error).toMatchObject({
+			name: "NativeCompletionError",
+			message: "omp-native completion failed (provider error, HTTP 429)",
+		});
 		expect(engine.error()).toBe("omp-native completion failed (provider error, HTTP 429)");
 	});
 
@@ -949,9 +1402,15 @@ describe("native binding (D-01, D-02, §7)", () => {
 		const rec = recorder(() => {
 			throw upstream;
 		});
-		const engine = await engineFor(flightOf(live, runtime), { completeSimple: rec.complete, providerDefaults: {} });
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: {},
+		});
 		const error = await engine.complete("s", "u").catch((caught: unknown) => caught);
-		expect(error).toMatchObject({ name: "NativeCompletionError", message: "omp-native completion failed" });
+		expect(error).toMatchObject({
+			name: "NativeCompletionError",
+			message: "omp-native completion failed",
+		});
 		expect(error).toHaveProperty("cause", upstream);
 		expect(error).toBeInstanceOf(Error);
 		if (error instanceof Error) expect(Object.keys(error)).not.toContain("cause");
@@ -963,7 +1422,9 @@ describe("native binding (D-01, D-02, §7)", () => {
 		const live = fakeModel("acme", "sol-1");
 		const { runtime } = fakeRuntime([live]);
 		const aborted = await engineFor(flightOf(live, runtime), {
-			completeSimple: recorder(() => reply([{ type: "text", text: "PARTIAL" }], { stopReason: "aborted" })).complete,
+			completeSimple: recorder(() =>
+				reply([{ type: "text", text: "PARTIAL" }], { stopReason: "aborted" }),
+			).complete,
 			providerDefaults: {},
 		});
 		expect(await outcome(aborted.complete("s", "u"))).toBe("AbortError");
@@ -978,7 +1439,12 @@ describe("native binding (D-01, D-02, §7)", () => {
 		expect(await outcome(timeout.complete("s", "u"))).toBe("AbortError");
 		const flight = new AbortController();
 		const idle = recorder(planReply);
-		const cancelled = await engineFor(flightOf(live, runtime), { completeSimple: idle.complete, providerDefaults: {} }, INTENT, flight);
+		const cancelled = await engineFor(
+			flightOf(live, runtime),
+			{ completeSimple: idle.complete, providerDefaults: {} },
+			INTENT,
+			flight,
+		);
 		flight.abort();
 		expect(await outcome(cancelled.complete("s", "u"))).toBe("AbortError");
 		expect(idle.calls).toHaveLength(0);
@@ -987,8 +1453,172 @@ describe("native binding (D-01, D-02, §7)", () => {
 			late.abort();
 			return reply([{ type: "text", text: "LATE PLAN" }]);
 		});
-		const ignoring = await engineFor(flightOf(live, runtime), { completeSimple: stubborn.complete, providerDefaults: {} }, INTENT, late);
+		const ignoring = await engineFor(
+			flightOf(live, runtime),
+			{ completeSimple: stubborn.complete, providerDefaults: {} },
+			INTENT,
+			late,
+		);
 		expect(await outcome(ignoring.complete("s", "u"))).toBe("AbortError");
+	});
+
+	test("retries a 429 once and then plans", async () => {
+		const live = fakeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		const delays: number[] = [];
+		let failed = false;
+		const rec = recorder((call) => {
+			if (failed) return reply([{ type: "text", text: stageAnswer(userText(call)).text }]);
+			failed = true;
+			return reply([], { stopReason: "error", errorStatus: 429 });
+		});
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			sleep: instantSleep(delays),
+		});
+		const uplift = await runUplift({
+			original: "add a widget",
+			complete: engine.complete,
+			report: engine.report,
+		});
+		expect(uplift).toMatchObject({ source: "llm", root: "BUILD_PROMPT", attempts: 2 });
+		expect(rec.calls).toHaveLength(2);
+		expect(userText(rec.calls[1]!)).toBe(userText(rec.calls[0]!));
+		expect(delays).toHaveLength(1);
+		expect(delays[0]).toBeGreaterThanOrEqual(2000);
+		expect(delays[0]).toBeLessThan(2500);
+	});
+
+	test("does not retry a 403", async () => {
+		const live = fakeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		const delays: number[] = [];
+		const rec = recorder(() => reply([], { stopReason: "error", errorStatus: 403 }));
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			sleep: instantSleep(delays),
+		});
+		const uplift = await runUplift({
+			original: "add a widget",
+			complete: engine.complete,
+			report: engine.report,
+		});
+		expect(uplift).toMatchObject({
+			source: "fallback",
+			fallbackReason: "provider_error:403",
+			rawReplyChars: 0,
+			attempts: 1,
+		});
+		expect(rec.calls).toHaveLength(1);
+		expect(delays).toHaveLength(0);
+	});
+
+	test("records empty_reply on an empty completion", async () => {
+		const live = fakeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		const rec = recorder(() => reply([]));
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: {},
+		});
+		const uplift = await runUplift({
+			original: "add a widget",
+			complete: engine.complete,
+			report: engine.report,
+		});
+		expect(uplift).toMatchObject({
+			source: "fallback",
+			fallbackReason: "empty_reply",
+			rawReplyChars: 0,
+			attempts: 1,
+		});
+	});
+
+	test("an abort during backoff stops with no further call", async () => {
+		const live = fakeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		const flight = new AbortController();
+		const rec = recorder(() => reply([], { stopReason: "error", errorStatus: 429 }));
+		// The backoff wait holds until its signal aborts; the flight is aborted while that wait is in progress.
+		const backoff: number[] = [];
+		const sleep = (ms: number, signal: AbortSignal): Promise<void> => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			signal.addEventListener("abort", () => resolve(), { once: true });
+			backoff.push(ms);
+			flight.abort();
+			return promise;
+		};
+		const engine = await engineFor(
+			flightOf(live, runtime),
+			{ completeSimple: rec.complete, providerDefaults: {}, sleep },
+			INTENT,
+			flight,
+		);
+		expect(await outcome(engine.complete("s", "u"))).toBe("AbortError");
+		expect(backoff).toHaveLength(1);
+		expect(rec.calls).toHaveLength(1);
+	});
+
+	test("gives up after three attempts with the backoff between them", async () => {
+		const live = fakeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		const delays: number[] = [];
+		const rec = recorder(() => reply([], { stopReason: "error", errorStatus: 503 }));
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			sleep: instantSleep(delays),
+		});
+		const uplift = await runUplift({
+			original: "add a widget",
+			complete: engine.complete,
+			report: engine.report,
+		});
+		expect(uplift).toMatchObject({
+			source: "fallback",
+			fallbackReason: "provider_error:503",
+			attempts: 3,
+		});
+		expect(rec.calls).toHaveLength(3);
+		expect(delays).toHaveLength(2);
+		expect(delays[0]).toBeGreaterThanOrEqual(2000);
+		expect(delays[0]).toBeLessThan(2500);
+		expect(delays[1]).toBeGreaterThanOrEqual(6000);
+		expect(delays[1]).toBeLessThan(7500);
+	});
+
+	test("a retry that would cross the flight deadline is not taken", async () => {
+		const live = fakeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		const delays: number[] = [];
+		const rec = recorder(() => reply([], { stopReason: "error", errorStatus: 429 }));
+		// The clock is pinned, so the deadline 500 ms ahead is a fixed point the backoff cannot fit inside.
+		const FIXED_NOW = Date.UTC(2026, 9, 25);
+		setSystemTime(FIXED_NOW);
+		try {
+			const request: OmpPlanRequest = { ...flightOf(live, runtime), deadline: FIXED_NOW + 500 };
+			const engine = await engineFor(request, {
+				completeSimple: rec.complete,
+				providerDefaults: {},
+				sleep: instantSleep(delays),
+			});
+			const uplift = await runUplift({
+				original: "add a widget",
+				complete: engine.complete,
+				report: engine.report,
+			});
+			expect(uplift).toMatchObject({
+				source: "fallback",
+				fallbackReason: "provider_error:429",
+				attempts: 1,
+			});
+			expect(rec.calls).toHaveLength(1);
+			expect(delays).toHaveLength(0);
+		} finally {
+			setSystemTime();
+		}
 	});
 
 	test("flight validity is checked before dispatch and after the answer", async () => {
@@ -999,7 +1629,11 @@ describe("native binding (D-01, D-02, §7)", () => {
 			valid = false;
 			return reply([{ type: "text", text: "PLAN" }]);
 		});
-		const engine = await engineFor(flightOf(live, runtime), { completeSimple: rec.complete, providerDefaults: {}, isCurrent: () => valid });
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			isCurrent: () => valid,
+		});
 		expect(await outcome(engine.complete("s", "u"))).toBe("AbortError");
 		expect(rec.calls).toHaveLength(0);
 		valid = true;
@@ -1014,8 +1648,17 @@ describe("native binding (D-01, D-02, §7)", () => {
 		const before = JSON.stringify(fallback);
 		const { runtime, log } = fakeRuntime([fallback]);
 		const rec = recorder(planReply);
-		const engine = await engineFor(flightOf(live, runtime), { completeSimple: rec.complete, providerDefaults: { acme: "def-1" } });
-		expect(engine.resolution).toMatchObject({ state: "default", source: "host-catalog", reason: "active-unavailable", provider: "acme", modelId: "def-1" });
+		const engine = await engineFor(flightOf(live, runtime), {
+			completeSimple: rec.complete,
+			providerDefaults: { acme: "def-1" },
+		});
+		expect(engine.resolution).toMatchObject({
+			state: "default",
+			source: "host-catalog",
+			reason: "active-unavailable",
+			provider: "acme",
+			modelId: "def-1",
+		});
 		expect(log.resolves).toContain("acme/def-1");
 		await engine.complete("s", "u");
 		const bound = rec.calls[0]?.model;
@@ -1036,12 +1679,30 @@ describe("native binding (D-01, D-02, §7)", () => {
 		const opus = fakeModel("anthropic", "Opus-X");
 		const slow = fakeModel("anthropic", "slow-1");
 		const { runtime, log } = fakeRuntime([live, opus, slow], { aliases: { "@slow": () => slow } });
-		const deps: NativeEngineDeps = { completeSimple: recorder(planReply).complete, providerDefaults: {} };
-		const qualified = await engineFor(flightOf(live, runtime), deps, { ...INTENT, override: { provider: "anthropic", model: "Opus-X" } });
-		expect(qualified.resolution).toMatchObject({ state: "override", source: "host-override", provider: "anthropic", modelId: "Opus-X" });
+		const deps: NativeEngineDeps = {
+			completeSimple: recorder(planReply).complete,
+			providerDefaults: {},
+		};
+		const qualified = await engineFor(flightOf(live, runtime), deps, {
+			...INTENT,
+			override: { provider: "anthropic", model: "Opus-X" },
+		});
+		expect(qualified.resolution).toMatchObject({
+			state: "override",
+			source: "host-override",
+			provider: "anthropic",
+			modelId: "Opus-X",
+		});
 		expect(log.resolves).toContain("anthropic/Opus-X");
-		const alias = await engineFor(flightOf(live, runtime), deps, { ...INTENT, override: { provider: "", model: "@slow" } });
-		expect(alias.resolution).toMatchObject({ state: "override", provider: "anthropic", modelId: "slow-1" });
+		const alias = await engineFor(flightOf(live, runtime), deps, {
+			...INTENT,
+			override: { provider: "", model: "@slow" },
+		});
+		expect(alias.resolution).toMatchObject({
+			state: "override",
+			provider: "anthropic",
+			modelId: "slow-1",
+		});
 		expect(log.resolves).toContain("@slow");
 	});
 });
@@ -1053,7 +1714,12 @@ describe("native planner end to end (D-01, D-02)", () => {
 	});
 	afterEach(() => rmSync(root, { recursive: true, force: true }));
 	// No real agent dir, config home or substrate: the planner's env is isolated like the shared host suite's.
-	const isolated = () => ({ PI_CODING_AGENT_DIR: join(root, "agent"), XDG_CONFIG_HOME: join(root, "xdg"), CLAUDE_CONFIG_DIR: join(root, "claude"), SUBSTRATE_DISABLED: "1" });
+	const isolated = () => ({
+		PI_CODING_AGENT_DIR: join(root, "agent"),
+		XDG_CONFIG_HOME: join(root, "xdg"),
+		CLAUDE_CONFIG_DIR: join(root, "claude"),
+		SUBSTRATE_DISABLED: "1",
+	});
 	const request = (extra: Partial<OmpPlanRequest> = {}): OmpPlanRequest => ({
 		prompt: "add a widget",
 		cwd: root,
@@ -1071,21 +1737,41 @@ describe("native planner end to end (D-01, D-02)", () => {
 		const rec = recorder((call) => {
 			const { stage, text } = stageAnswer(userText(call));
 			stages.push(stage);
-			return reply([{ type: "thinking", thinking: "SECRET-THOUGHT" }, { type: "text", text }]);
+			return reply([
+				{ type: "thinking", thinking: "SECRET-THOUGHT" },
+				{ type: "text", text },
+			]);
 		});
 		const events: ProgressEvent[] = [];
-		const planner = createNativeEnginePlanner({ completeSimple: rec.complete, providerDefaults: {}, env: isolated() });
-		const plan = await planner(request({ model: live, modelSource: "ctx.model", native: runtime }), new AbortController().signal, (event) => events.push(event));
+		const planner = createNativeEnginePlanner({
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			env: isolated(),
+		});
+		const plan = await planner(
+			request({ model: live, modelSource: "ctx.model", native: runtime }),
+			new AbortController().signal,
+			(event) => events.push(event),
+		);
 		expect(plan.skipped).toBeUndefined();
 		expect(plan.context).not.toBe("");
 		expect(stages).toEqual(["uplift", "graph", "fill", "fill", "fill", "fill", "fill", "clarify"]);
-		expect(rec.calls.every((call) => call.model === live && call.options?.sessionId === "s1")).toBe(true);
+		expect(rec.calls.every((call) => call.model === live && call.options?.sessionId === "s1")).toBe(
+			true,
+		);
 		expect(log.resolvers.map((entry) => [entry.model, entry.sessionId])).toEqual([[live, "s1"]]);
 		expect(rec.calls.every((call) => call.options?.apiKey === log.resolvers[0]?.key)).toBe(true);
-		expect(plan.modelResolution).toMatchObject({ state: "detected", source: "ctx.model", label: "omp-native:acme/sol-1 [detected]" });
+		expect(plan.modelResolution).toMatchObject({
+			state: "detected",
+			source: "ctx.model",
+			label: "omp-native:acme/sol-1 [detected]",
+		});
 		expect(plan.view?.modelResolution?.label).toBe("omp-native:acme/sol-1 [detected]");
-		expect(events.find((event) => event.type === "begin")).toMatchObject({ modelResolution: { state: "detected" } });
-		for (const output of [JSON.stringify(plan), JSON.stringify(events)]) expect(output).not.toContain("SECRET");
+		expect(events.find((event) => event.type === "begin")).toMatchObject({
+			modelResolution: { state: "detected" },
+		});
+		for (const output of [JSON.stringify(plan), JSON.stringify(events)])
+			expect(output).not.toContain("SECRET");
 	});
 
 	for (const { name, level, capability } of [
@@ -1109,7 +1795,11 @@ describe("native planner end to end (D-01, D-02)", () => {
 				currentLevel = "max" as Effort;
 				return reply([{ type: "text", text }]);
 			});
-			const planner = createNativeEnginePlanner({ completeSimple: rec.complete, providerDefaults: {}, env: isolated() });
+			const planner = createNativeEnginePlanner({
+				completeSimple: rec.complete,
+				providerDefaults: {},
+				env: isolated(),
+			});
 			const { run, sent } = setup(
 				planner,
 				1_000,
@@ -1117,17 +1807,26 @@ describe("native planner end to end (D-01, D-02)", () => {
 				{ cwd: root, model: live, ...runtime },
 				capability
 					? {
-						getThinkingLevel: () => {
-							reads++;
-							return currentLevel;
-						},
-					}
+							getThinkingLevel: () => {
+								reads++;
+								return currentLevel;
+							},
+						}
 					: {},
 			);
 			const result = await run("add a widget");
 			expect(result).toMatchObject({ message: { customType: "ultrathink-plan" } });
 			expect(sent).toEqual([]);
-			expect(stages).toEqual(["uplift", "graph", "fill", "fill", "fill", "fill", "fill", "clarify"]);
+			expect(stages).toEqual([
+				"uplift",
+				"graph",
+				"fill",
+				"fill",
+				"fill",
+				"fill",
+				"fill",
+				"clarify",
+			]);
 			expect(reads).toBe(capability ? 1 : 0);
 			expect(log.resolvers).toHaveLength(1);
 			const resolved = log.resolvers[0];
@@ -1153,18 +1852,37 @@ describe("native planner end to end (D-01, D-02)", () => {
 	test("without a live model or override the plan is unresolved with its reason: no completion and no auth", async () => {
 		const { runtime, log } = fakeRuntime([]);
 		const rec = recorder(planReply);
-		const planner = createNativeEnginePlanner({ completeSimple: rec.complete, providerDefaults: {}, env: isolated() });
+		const planner = createNativeEnginePlanner({
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			env: isolated(),
+		});
 		const plan = await planner(request({ native: runtime }), new AbortController().signal);
-		expect(plan).toMatchObject({ context: "", skipped: "provider-unknown", modelResolution: { state: "unresolved", label: "omp-native:unresolved [provider-unknown]" } });
+		expect(plan).toMatchObject({
+			context: "",
+			skipped: "provider-unknown",
+			modelResolution: { state: "unresolved", label: "omp-native:unresolved [provider-unknown]" },
+		});
 		expect(rec.calls).toHaveLength(0);
 		expect(log.resolvers).toHaveLength(0);
 	});
 
 	test("without the host runtime native planning is unavailable, never a guessed route", async () => {
 		const rec = recorder(planReply);
-		const planner = createNativeEnginePlanner({ completeSimple: rec.complete, providerDefaults: {}, env: isolated() });
-		const plan = await planner(request({ model: fakeModel("acme", "sol-1"), modelSource: "ctx.model" }), new AbortController().signal);
-		expect(plan).toMatchObject({ context: "", skipped: "native-unavailable", modelResolution: { reason: "native-unavailable" } });
+		const planner = createNativeEnginePlanner({
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			env: isolated(),
+		});
+		const plan = await planner(
+			request({ model: fakeModel("acme", "sol-1"), modelSource: "ctx.model" }),
+			new AbortController().signal,
+		);
+		expect(plan).toMatchObject({
+			context: "",
+			skipped: "native-unavailable",
+			modelResolution: { reason: "native-unavailable" },
+		});
 		expect(rec.calls).toHaveLength(0);
 	});
 
@@ -1176,8 +1894,15 @@ describe("native planner end to end (D-01, D-02)", () => {
 			flight.abort();
 			return reply([{ type: "text", text: stageAnswer(userText(call)).text }]);
 		});
-		const planner = createNativeEnginePlanner({ completeSimple: rec.complete, providerDefaults: {}, env: isolated() });
-		const plan = await planner(request({ model: live, modelSource: "ctx.model", native: runtime }), flight.signal);
+		const planner = createNativeEnginePlanner({
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			env: isolated(),
+		});
+		const plan = await planner(
+			request({ model: live, modelSource: "ctx.model", native: runtime }),
+			flight.signal,
+		);
 		expect(plan).toMatchObject({ context: "", skipped: "aborted" });
 		expect(rec.calls).toHaveLength(1);
 	});
@@ -1213,7 +1938,13 @@ describe("status and the default planner (§9 paths 5-6)", () => {
 	test("status shows this session's latest observed resolution from the planner's events and plan, without any lookup", async () => {
 		const { run, command, notices } = setup(
 			async (_request, _signal, onEvent) => {
-				onEvent?.({ type: "begin", at: 1, sessionId: "s1", engine: DETECTED.label, modelResolution: DETECTED });
+				onEvent?.({
+					type: "begin",
+					at: 1,
+					sessionId: "s1",
+					engine: DETECTED.label,
+					modelResolution: DETECTED,
+				});
 				return { context: "PLAN", modelResolution: DETECTED };
 			},
 			1_000,
@@ -1245,7 +1976,10 @@ describe("status and the default planner (§9 paths 5-6)", () => {
 describe("swarm auto-run", () => {
 	// `sent` messages are unknown; narrow with `in` instead of casting (same pattern as the sync/ship suites).
 	const fields = (message: unknown): { customType: unknown; content: unknown } =>
-		typeof message === "object" && message !== null && "customType" in message && "content" in message
+		typeof message === "object" &&
+		message !== null &&
+		"customType" in message &&
+		"content" in message
 			? { customType: message.customType, content: message.content }
 			: { customType: undefined, content: undefined };
 
@@ -1270,13 +2004,25 @@ describe("swarm auto-run", () => {
 		};
 	};
 
-	/** A stub `python3` first on PATH, so `spawnLanes` reports a started lane without a real interpreter. */
-	const withSpawnablePython = (): { restore: () => void } => {
+	/**
+	 * A stub `python3` first on PATH, so `spawnLanes` reports a started lane without a real interpreter. As the
+	 * preflight classifier (`python3 -c ...`) it exits `classifyRc` (0 sdlc, 2 skip, anything else unknown); as a
+	 * lane (`python3 autonomous_run.py ...`) it logs its argv to `argvLog` and exits 0.
+	 */
+	const withSpawnablePython = (
+		opts: { classifyRc?: number } = {},
+	): { argvLog: string; restore: () => void } => {
 		const previousPath = process.env.PATH;
 		const bin = mkdtempSync(join(tmpdir(), "sw-autorun-bin-"));
-		writeFileSync(join(bin, "python3"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+		const argvLog = join(bin, "argv.log");
+		writeFileSync(
+			join(bin, "python3"),
+			`#!/bin/sh\nif [ "$1" = "-c" ]; then exit ${opts.classifyRc ?? 0}; fi\nprintf '%s\\n' "$@" >> '${argvLog}'\nexit 0\n`,
+			{ mode: 0o755 },
+		);
 		process.env.PATH = `${bin}:${previousPath ?? ""}`;
 		return {
+			argvLog,
 			restore: () => {
 				if (previousPath === undefined) delete process.env.PATH;
 				else process.env.PATH = previousPath;
@@ -1287,21 +2033,29 @@ describe("swarm auto-run", () => {
 
 	/** The `index`th swarm card's content, or "": `fields` narrows the unknown message without casting. */
 	const cardContent = (sent: { message: unknown }[], index: number): string => {
-		const card = sent.filter((entry) => fields(entry.message).customType === "ultrathink-swarm")[index];
+		const card = sent.filter((entry) => fields(entry.message).customType === "ultrathink-swarm")[
+			index
+		];
 		const content = fields(card?.message).content;
 		return typeof content === "string" ? content : "";
 	};
 
-	test("an SDLC prompt with autoRun enabled spawns a lane and publishes the card", () => {
+	test("an SDLC prompt with autoRun enabled spawns a lane and publishes the card", async () => {
 		const { root, stateDir, restore } = withSwarmRoot();
 		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-cwd-"));
 		try {
-			const { run, sent } = setup(async () => "PLAN", 1_000, {
-				config: () => quietConfig((config) => {
-					config.swarm.autoRun = true;
-				}),
-			}, { hasUI: true, cwd });
-			void run("build a health endpoint");
+			const { run, sent } = setup(
+				async () => "PLAN",
+				1_000,
+				{
+					config: () =>
+						quietConfig((config) => {
+							config.swarm.autoRun = true;
+						}),
+				},
+				{ hasUI: true, cwd },
+			);
+			await run("build a health endpoint");
 			const card = sent.find((entry) => fields(entry.message).customType === "ultrathink-swarm");
 			expect(card).toBeDefined();
 			// Spawn success depends on a usable python3 in the environment; the card itself must always appear.
@@ -1316,19 +2070,24 @@ describe("swarm auto-run", () => {
 		}
 	});
 
-	test("a non-SDLC prompt never spawns, and the opt-in off keeps everything quiet", () => {
+	test("a non-SDLC prompt never spawns, and the opt-in off keeps everything quiet", async () => {
 		const { root, stateDir, restore } = withSwarmRoot();
 		try {
 			const on = setup(async () => "PLAN", 1_000, {
-				config: () => quietConfig((config) => {
-					config.swarm.autoRun = true;
-				}),
+				config: () =>
+					quietConfig((config) => {
+						config.swarm.autoRun = true;
+					}),
 			});
-			void on.run("what does this repo do");
-			expect(on.sent.some((entry) => fields(entry.message).customType === "ultrathink-swarm")).toBe(false);
+			await on.run("what does this repo do");
+			expect(on.sent.some((entry) => fields(entry.message).customType === "ultrathink-swarm")).toBe(
+				false,
+			);
 			const off = setup(async () => "PLAN", 1_000, { config: () => quietConfig() });
-			off.run("build a health endpoint");
-			expect(off.sent.some((entry) => fields(entry.message).customType === "ultrathink-swarm")).toBe(false);
+			await off.run("build a health endpoint");
+			expect(
+				off.sent.some((entry) => fields(entry.message).customType === "ultrathink-swarm"),
+			).toBe(false);
 		} finally {
 			restore();
 			rmSync(root, { recursive: true, force: true });
@@ -1342,19 +2101,29 @@ describe("swarm auto-run", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-dedupe-"));
 		try {
 			const gate = controlled();
-			const { run, sent, emit } = setup(gate.plan, 1, {
-				config: () => quietConfig((config) => {
-					config.swarm.autoRun = true;
-				}),
-			}, { hasUI: true, cwd });
+			const { run, sent, emit } = setup(
+				gate.plan,
+				1,
+				{
+					config: () =>
+						quietConfig((config) => {
+							config.swarm.autoRun = true;
+						}),
+				},
+				{ hasUI: true, cwd },
+			);
 			expect(await run("build a health endpoint")).toBeUndefined();
 			expect(cardContent(sent, 0)).toContain("Swarm lanes — 1/1 spawned");
 			expect(cardContent(sent, 0)).toContain("lane owns this request");
 			// A second submission of the same text: quick suppression answers it before any spawn or planning.
 			emit("turn_start");
 			expect(await run("build a health endpoint")).toBeUndefined();
-			expect(sent.filter((entry) => fields(entry.message).customType === "ultrathink-swarm")).toHaveLength(1);
-			expect(sent.some((entry) => fields(entry.message).customType === "ultrathink-pending")).toBe(false);
+			expect(
+				sent.filter((entry) => fields(entry.message).customType === "ultrathink-swarm"),
+			).toHaveLength(1);
+			expect(sent.some((entry) => fields(entry.message).customType === "ultrathink-pending")).toBe(
+				false,
+			);
 			expect(gate.calls()).toBe(0);
 		} finally {
 			python.restore();
@@ -1372,22 +2141,34 @@ describe("swarm auto-run", () => {
 		try {
 			const t = tuiCtx();
 			const gate = controlled();
-			const { run, sent, emit } = setup(gate.plan, 1, {
-				config: () => quietConfig((config) => {
-					config.swarm.autoRun = true;
-				}),
-			}, { ...t.ctx, cwd });
+			const { run, sent, emit } = setup(
+				gate.plan,
+				1,
+				{
+					config: () =>
+						quietConfig((config) => {
+							config.swarm.autoRun = true;
+						}),
+				},
+				{ ...t.ctx, cwd },
+			);
 			emit("session_start");
 			// Seed a pending plan from a non-SDLC prompt: deferred, still current, gate unresolved.
-			expect(await run("what does this repo do")).toEqual({ message: expect.objectContaining({ customType: "ultrathink-pending" }) });
+			expect(await run("what does this repo do")).toEqual({
+				message: expect.objectContaining({ customType: "ultrathink-pending" }),
+			});
 			// The spawn owns this submission: the older flight is cancelled superseded and nothing is planned.
 			expect(await run("build a health endpoint")).toBeUndefined();
 			expect(t.line()).toContain("superseded");
 			gate.resolve("PLAN 1");
 			await flush();
 			expect(gate.calls()).toBe(1);
-			expect(sent.some((entry) => fields(entry.message).customType === "ultrathink-plan")).toBe(false);
-			expect(sent.filter((entry) => fields(entry.message).customType === "ultrathink-swarm")).toHaveLength(1);
+			expect(sent.some((entry) => fields(entry.message).customType === "ultrathink-plan")).toBe(
+				false,
+			);
+			expect(
+				sent.filter((entry) => fields(entry.message).customType === "ultrathink-swarm"),
+			).toHaveLength(1);
 		} finally {
 			python.restore();
 			restore();
@@ -1406,12 +2187,20 @@ describe("swarm auto-run", () => {
 			// No python3 reachable: spawnLanes starts nothing, quick stays disarmed, the normal turn plans.
 			process.env.PATH = emptyBin;
 			const gate = controlled();
-			const { run, sent } = setup(gate.plan, 1, {
-				config: () => quietConfig((config) => {
-					config.swarm.autoRun = true;
-				}),
-			}, { hasUI: true, cwd });
-			expect(await run("build a health endpoint")).toEqual({ message: expect.objectContaining({ customType: "ultrathink-pending" }) });
+			const { run, sent } = setup(
+				gate.plan,
+				1,
+				{
+					config: () =>
+						quietConfig((config) => {
+							config.swarm.autoRun = true;
+						}),
+				},
+				{ hasUI: true, cwd },
+			);
+			expect(await run("build a health endpoint")).toEqual({
+				message: expect.objectContaining({ customType: "ultrathink-pending" }),
+			});
 			expect(cardContent(sent, 0)).toBe("Swarm lanes — 0/1 spawned");
 			expect(gate.calls()).toBe(1);
 		} finally {
@@ -1423,5 +2212,687 @@ describe("swarm auto-run", () => {
 			rmSync(stateDir, { recursive: true, force: true });
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+
+	/** The plain-text content of a sent message (display-only replies carry no customType), or "". */
+	const textOf = (message: unknown): string =>
+		typeof message === "object" &&
+		message !== null &&
+		"content" in message &&
+		typeof message.content === "string"
+			? message.content
+			: "";
+
+	/** Every reply the harness captured, joined: display text and card titles alike. */
+	const repliesOf = (sent: { message: unknown }[]): string =>
+		sent.map((entry) => textOf(entry.message)).join("\n");
+
+	const swarmCards = (sent: { message: unknown }[]): number =>
+		sent.filter((entry) => fields(entry.message).customType === "ultrathink-swarm").length;
+
+	const autoRunConfig = () =>
+		quietConfig((config) => {
+			config.swarm.autoRun = true;
+		});
+
+	/** Set an environment variable for one test; the returned function restores the previous value. */
+	const setEnv = (name: string, value: string): (() => void) => {
+		const previous = process.env[name];
+		process.env[name] = value;
+		return () => {
+			if (previous === undefined) delete process.env[name];
+			else process.env[name] = previous;
+		};
+	};
+
+	// Real clock on purpose: this polls a real child process (a lane stub starting or writing its argv), which
+	// exposes no event to await and which fake timers cannot drive.
+	const waitFor = async (ready: () => boolean): Promise<boolean> => {
+		for (let attempt = 0; attempt < 150 && !ready(); attempt++) await Bun.sleep(20);
+		return ready();
+	};
+
+	/** The lane directories `spawnLanes` created under the state dir; refused plans create none. */
+	const laneDirNames = (stateDir: string): string[] =>
+		existsSync(join(stateDir, "swarm")) ? readdirSync(join(stateDir, "swarm")) : [];
+
+	/**
+	 * A real, verifiable "lane": a shell running a script named `autonomous_run.py`, so its /proc cmdline passes
+	 * the lane-process gate. It leads its own process group (detached), like a real lane.
+	 */
+	const startFakeLane = async (): Promise<{
+		pid: number;
+		exited: Promise<string | null>;
+		kill: () => void;
+		cleanup: () => void;
+	}> => {
+		const dir = mkdtempSync(join(tmpdir(), "sw-fake-lane-"));
+		const script = join(dir, "autonomous_run.py");
+		writeFileSync(script, "sleep 30\n");
+		const child = spawn("sh", [script], { detached: true, stdio: "ignore" });
+		const pid = child.pid;
+		if (pid === undefined) throw new Error("fake lane did not start");
+		const exit = Promise.withResolvers<string | null>();
+		child.once("exit", (_code, signal) => exit.resolve(signal));
+		child.unref();
+		const kill = (): void => {
+			try {
+				process.kill(-pid, "SIGKILL");
+			} catch {
+				// reason: the group already exited
+			}
+		};
+		const marked = await waitFor(() => {
+			try {
+				return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("autonomous_run.py");
+			} catch {
+				return false;
+			}
+		});
+		if (!marked) {
+			kill();
+			throw new Error("fake lane cmdline never showed the runner script");
+		}
+		return {
+			pid,
+			exited: exit.promise,
+			kill,
+			cleanup: () => {
+				kill();
+				rmSync(dir, { recursive: true, force: true });
+			},
+		};
+	};
+
+	/** Write the `lane.json` of a lane that is "running" as `pid`, in `<stateDir>/swarm/<laneId>/`. */
+	const recordFakeLane = (
+		stateDir: string,
+		laneId: string,
+		pid: number,
+		brief: string,
+		cwd: string,
+	): void => {
+		const laneDir = join(stateDir, "swarm", laneId);
+		mkdirSync(laneDir, { recursive: true });
+		writeLaneFile(laneDir, {
+			laneId,
+			pid,
+			briefDigest: briefDigest(brief),
+			cwd,
+			startedAt: new Date().toISOString(),
+		});
+	};
+
+	const CANARY = "sk-or-v1-CANARYCANARYCANARY1234";
+
+	test("lastLane compares the key it stores: the same prompt resubmitted after another prompt does not spawn a second lane", async () => {
+		// Mechanism: the old code stored lastLane = `${sessionId}:${cwd}:${prompt}` but compared the bare `prompt`,
+		// so the compare could never match. An identical resubmission normally dies at the quick bypass, but an
+		// intervening prompt disarms quick; the old code then spawned a second lane (two lane dirs and two cards
+		// instead of one), which is what this test fails on.
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-lastlane-"));
+		try {
+			const gate = controlled();
+			const { run, sent } = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+			expect(await run("build a health endpoint")).toBeUndefined();
+			await run("what does this repo do");
+			await run("build a health endpoint");
+			expect(swarmCards(sent)).toBe(1);
+			expect(laneDirNames(stateDir)).toHaveLength(1);
+		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("auto-run preflight: a brief Swarm's classifier skips spawns nothing and the turn plans normally", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 2 });
+		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-skip-"));
+		try {
+			const gate = controlled();
+			const { run, sent } = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+			expect(await run("build a health endpoint")).toEqual({
+				message: expect.objectContaining({ customType: "ultrathink-pending" }),
+			});
+			expect(swarmCards(sent)).toBe(0);
+			expect(laneDirNames(stateDir)).toEqual([]);
+			expect(gate.calls()).toBe(1);
+		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("auto-run preflight: an unanswered classifier still spawns the lane, which owns the request", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 1 });
+		const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-unknown-"));
+		try {
+			const gate = controlled();
+			const { run, sent } = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+			expect(await run("build a health endpoint")).toBeUndefined();
+			expect(cardContent(sent, 0)).toContain("Swarm lanes — 1/1 spawned");
+			expect(laneDirNames(stateDir)).toHaveLength(1);
+			expect(gate.calls()).toBe(0);
+		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("/ultrathink-swarm preflight: a skipped brief is refused with the reason and the usage, and nothing spawns", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 2 });
+		const unset = setEnv("OPENROUTER_API_KEY", CANARY);
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-skip-"));
+		try {
+			const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+			await command("ultrathink-swarm", "build a health endpoint");
+			const replies = repliesOf(sent);
+			expect(replies).toContain("Swarm would skip this brief (not SDLC work)");
+			expect(replies).toContain("/ultrathink-swarm usage");
+			expect(replies).not.toContain(CANARY);
+			expect(laneDirNames(stateDir)).toEqual([]);
+		} finally {
+			unset();
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("/ultrathink-swarm preflight: an unanswered classifier spawns the lane and the reply says so", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 1 });
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-unknown-"));
+		try {
+			const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+			await command("ultrathink-swarm", "build a health endpoint");
+			expect(repliesOf(sent)).toContain("classifier unavailable");
+			expect(laneDirNames(stateDir)).toHaveLength(1);
+		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test.skipIf(process.platform !== "linux")(
+		"/ultrathink-swarm refuses a brief already running as a live lane in the same repository",
+		async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const python = withSpawnablePython();
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-dup-"));
+			const lane = await startFakeLane();
+			try {
+				recordFakeLane(stateDir, "aaaaaaaa-1-live0", lane.pid, "Build a   health endpoint", cwd);
+				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command("ultrathink-swarm", "build a health endpoint");
+				expect(repliesOf(sent)).toContain("already running as aaaaaaaa-1-live0");
+				expect(laneDirNames(stateDir)).toEqual(["aaaaaaaa-1-live0"]);
+			} finally {
+				lane.cleanup();
+				python.restore();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "linux")(
+		"live lanes at ULTRATHINK_SWARM_MAX_LANES refuse a new lane, in the command and silently in auto-run",
+		async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const python = withSpawnablePython();
+			const unset = setEnv("ULTRATHINK_SWARM_MAX_LANES", "1");
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-cap-"));
+			const lane = await startFakeLane();
+			try {
+				recordFakeLane(stateDir, "aaaaaaaa-1-live0", lane.pid, "write the release notes", cwd);
+				const command = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command.command("ultrathink-swarm", "add a feature flag");
+				const replies = repliesOf(command.sent);
+				expect(replies).toContain("aaaaaaaa-1-live0");
+				expect(replies).toContain("/ultrathink-swarm stop");
+				// Auto-run hits the same cap: it stays silent, spawns nothing and lets the turn plan.
+				const gate = controlled();
+				const auto = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+				expect(await auto.run("build a health endpoint")).toEqual({
+					message: expect.objectContaining({ customType: "ultrathink-pending" }),
+				});
+				expect(swarmCards(auto.sent)).toBe(0);
+				expect(laneDirNames(stateDir)).toEqual(["aaaaaaaa-1-live0"]);
+			} finally {
+				lane.cleanup();
+				unset();
+				python.restore();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "linux")(
+		"/ultrathink-swarm stop <laneId> ends the lane's process group",
+		async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const unsetGrace = setEnv("SWARM_AUTONOMOUS_RUN_GRACE_S", "0");
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-stop-"));
+			const lane = await startFakeLane();
+			try {
+				recordFakeLane(stateDir, "aaaaaaaa-1-live0", lane.pid, "build a health endpoint", cwd);
+				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command("ultrathink-swarm", "stop aaaaaaaa-1-live0");
+				expect(repliesOf(sent)).toContain("aaaaaaaa-1-live0: stopped");
+				const signal = await Promise.race([lane.exited, Bun.sleep(3_000).then(() => "timeout")]);
+				expect(["SIGTERM", "SIGKILL"]).toContain(String(signal));
+			} finally {
+				lane.cleanup();
+				unsetGrace();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test("/ultrathink-swarm stop works without a swarm root and reports when no lane is live", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const unsetPrimary = setEnv("ULTRATHINK_SWARM_ROOT", "");
+		const unsetFallback = setEnv("SWARM_ROOT", "");
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-stopnone-"));
+		try {
+			const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+			await command("ultrathink-swarm", "stop");
+			expect(repliesOf(sent)).toContain("no live swarm lanes to stop");
+			expect(repliesOf(sent)).not.toContain("unavailable");
+		} finally {
+			unsetFallback();
+			unsetPrimary();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	/** A fs seam over real syscalls for `spawnLanes`; `failLaneJson` makes the `lane.json` rename fail. */
+	const laneFs = (failLaneJson = false): TeamsFs => ({
+		existsSync,
+		mkdirSync,
+		openSync,
+		closeSync,
+		readdirSync,
+		statSync,
+		readFileSync,
+		renameSync: failLaneJson
+			? () => {
+					throw new Error("EROFS: read-only file system");
+				}
+			: renameSync,
+		writeFileSync,
+	});
+	const sdlc = (): LaneClassify => async (): Promise<ClassifyVerdict> => ({ kind: "sdlc" });
+	/** A lane start that needs no real process. */
+	const startedLane = (): { pid: number } => ({ pid: 4242 });
+
+	test("the explicit command holds the lane lock across the check and the spawn, never across the classifier", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-lock-"));
+		try {
+			const lock = join(stateDir, "swarm", ".lane-lock");
+			const seen: { classify?: boolean; spawn?: boolean } = {};
+			const { command } = setup(
+				async () => "PLAN",
+				1_000,
+				{
+					swarm: {
+						classify: () => async (): Promise<ClassifyVerdict> => {
+							seen.classify = existsSync(lock);
+							return { kind: "sdlc" };
+						},
+						spawn: (plan) => {
+							seen.spawn = existsSync(lock);
+							return spawnLanes(plan, startedLane, laneFs());
+						},
+					},
+				},
+				{ cwd },
+			);
+			await command("ultrathink-swarm", "build a health endpoint");
+			expect(seen).toEqual({ classify: false, spawn: true });
+			expect(existsSync(lock)).toBe(false);
+			expect(laneDirNames(stateDir)).toHaveLength(1);
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("auto-run holds the lane lock across the check and the spawn, never across the classifier", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-auto-lock-"));
+		try {
+			const lock = join(stateDir, "swarm", ".lane-lock");
+			const seen: { classify?: boolean; spawn?: boolean } = {};
+			const gate = controlled();
+			const { run } = setup(
+				gate.plan,
+				1,
+				{
+					config: autoRunConfig,
+					swarm: {
+						classify: () => async (): Promise<ClassifyVerdict> => {
+							seen.classify = existsSync(lock);
+							return { kind: "sdlc" };
+						},
+						spawn: (plan) => {
+							seen.spawn = existsSync(lock);
+							return spawnLanes(plan, startedLane, laneFs());
+						},
+					},
+				},
+				{ hasUI: true, cwd },
+			);
+			expect(await run("build a health endpoint")).toBeUndefined();
+			expect(seen).toEqual({ classify: false, spawn: true });
+			expect(existsSync(lock)).toBe(false);
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	/** Another Omp process mid-spawn: the lane lock held by a live owner (this test process stands in for it). */
+	const holdLaneLock = (stateDir: string): string => {
+		const lock = join(stateDir, "swarm", ".lane-lock");
+		mkdirSync(lock, { recursive: true });
+		writeFileSync(join(lock, "owner"), String(process.pid));
+		return lock;
+	};
+
+	test("the explicit command refuses every brief with the busy reason while another process holds the lane lock, and spawns nothing", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-busy-"));
+		try {
+			const lock = holdLaneLock(stateDir);
+			const spawned: number[] = [];
+			const { command, sent } = setup(
+				async () => "PLAN",
+				1_000,
+				{
+					swarm: {
+						classify: sdlc,
+						spawn: (plan) => {
+							spawned.push(plan.length);
+							return spawnLanes(plan, startedLane, laneFs());
+						},
+					},
+				},
+				{ cwd },
+			);
+			await command("ultrathink-swarm", "build a health endpoint | fix the login bug");
+			expect(spawned).toEqual([]);
+			expect(repliesOf(sent).split(LANE_LOCK_BUSY).length - 1).toBe(2);
+			expect(swarmCards(sent)).toBe(0);
+			expect(laneDirNames(stateDir)).toEqual([".lane-lock"]);
+			expect(existsSync(lock)).toBe(true);
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("auto-run starts no lane while another process holds the lane lock: it returns false and the prompt plans normally", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-auto-busy-"));
+		try {
+			const lock = holdLaneLock(stateDir);
+			const spawned: number[] = [];
+			const gate = controlled();
+			const { run, sent } = setup(
+				gate.plan,
+				1,
+				{
+					config: autoRunConfig,
+					swarm: {
+						classify: sdlc,
+						spawn: (plan) => {
+							spawned.push(plan.length);
+							return spawnLanes(plan, startedLane, laneFs());
+						},
+					},
+				},
+				{ hasUI: true, cwd },
+			);
+			expect(await run("build a health endpoint")).toEqual({
+				message: expect.objectContaining({ customType: "ultrathink-pending" }),
+			});
+			expect(spawned).toEqual([]);
+			expect(swarmCards(sent)).toBe(0);
+			expect(laneDirNames(stateDir)).toEqual([".lane-lock"]);
+			expect(existsSync(lock)).toBe(true);
+			expect(gate.calls()).toBe(1);
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("a shutdown during the classifier await starts no plan and spawns nothing", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-auto-shutdown-"));
+		try {
+			const verdict = Promise.withResolvers<ClassifyVerdict>();
+			const spawned: number[] = [];
+			const gate = controlled();
+			const { run, sent, emit } = setup(
+				gate.plan,
+				1,
+				{
+					config: autoRunConfig,
+					swarm: {
+						classify: () => () => verdict.promise,
+						spawn: (plan) => {
+							spawned.push(plan.length);
+							return [];
+						},
+					},
+				},
+				{ hasUI: true, cwd },
+			);
+			const pending = run("build a health endpoint");
+			emit("session_shutdown");
+			verdict.resolve({ kind: "sdlc" });
+			expect(await pending).toBeUndefined();
+			expect(gate.calls()).toBe(0);
+			expect(spawned).toEqual([]);
+			expect(swarmCards(sent)).toBe(0);
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("a lane.json that cannot be written is reported beside the card, not dropped", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-note-"));
+		try {
+			const { command, sent } = setup(
+				async () => "PLAN",
+				1_000,
+				{ swarm: { classify: sdlc, spawn: (plan) => spawnLanes(plan, startedLane, laneFs(true)) } },
+				{ hasUI: true, cwd },
+			);
+			await command("ultrathink-swarm", "build a health endpoint");
+			expect(cardContent(sent, 0)).toContain("Swarm lanes — 1/1 spawned");
+			const replies = repliesOf(sent);
+			expect(replies).toContain("lane-1: lane.json not written");
+			expect(replies).toContain("EROFS");
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	describe("a long-running lane older than the 24 newest lane directories", () => {
+		/** The live lane's directory is the oldest by mtime; 25 newer lane directories push it out of status. */
+		const behindNewer = async (stateDir: string, cwd: string) => {
+			const lane = await startFakeLane();
+			recordFakeLane(stateDir, "aaaaaaaa-1-live0", lane.pid, "build a health endpoint", cwd);
+			const old = (Date.now() - 3_600_000) / 1000;
+			utimesSync(join(stateDir, "swarm", "aaaaaaaa-1-live0"), old, old);
+			for (let i = 2; i < 27; i += 1)
+				mkdirSync(join(stateDir, "swarm", `bbbbbbbb-${i}-n${i}`), { recursive: true });
+			return lane;
+		};
+
+		test.skipIf(process.platform !== "linux")("is stopped by its exact id", async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const unsetGrace = setEnv("SWARM_AUTONOMOUS_RUN_GRACE_S", "0");
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-old-id-"));
+			const lane = await behindNewer(stateDir, cwd);
+			try {
+				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command("ultrathink-swarm", "stop aaaaaaaa-1-live0");
+				expect(repliesOf(sent)).toContain("aaaaaaaa-1-live0: stopped");
+				const signal = await Promise.race([lane.exited, Bun.sleep(3_000).then(() => "timeout")]);
+				expect(["SIGTERM", "SIGKILL"]).toContain(String(signal));
+			} finally {
+				lane.cleanup();
+				unsetGrace();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+
+		test.skipIf(process.platform !== "linux")("is stopped by `stop all`", async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const unsetGrace = setEnv("SWARM_AUTONOMOUS_RUN_GRACE_S", "0");
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-old-all-"));
+			const lane = await behindNewer(stateDir, cwd);
+			try {
+				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command("ultrathink-swarm", "stop all");
+				expect(repliesOf(sent)).toContain("aaaaaaaa-1-live0: stopped");
+				const signal = await Promise.race([lane.exited, Bun.sleep(3_000).then(() => "timeout")]);
+				expect(["SIGTERM", "SIGKILL"]).toContain(String(signal));
+			} finally {
+				lane.cleanup();
+				unsetGrace();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("Graph ID", () => {
+		const GRAPH_ID = "ut-m1abc-0a1b2c3d";
+		const trackedSession = (stateDir: string): void => {
+			writeSession(stateDir, {
+				sessionId: "s1",
+				at: 1,
+				result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
+				plan: { graphId: GRAPH_ID } as TrackPlan,
+			} as unknown as Parameters<typeof writeSession>[1]);
+		};
+
+		test("/ultrathink-swarm binds the session's graph: the lane brief starts with its Graph ID line and lane.json records it", async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const python = withSpawnablePython();
+			const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-graph-"));
+			try {
+				trackedSession(stateDir);
+				const { command } = setup(async () => "PLAN", 1_000, {}, { cwd });
+				await command("ultrathink-swarm", "build a health endpoint");
+				expect(
+					await waitFor(
+						() =>
+							existsSync(python.argvLog) &&
+							readFileSync(python.argvLog, "utf8").includes("build a health endpoint"),
+					),
+				).toBe(true);
+				expect(readFileSync(python.argvLog, "utf8")).toContain(`Graph ID: ${GRAPH_ID}\n`);
+				const [laneId] = laneDirNames(stateDir);
+				const record: unknown = JSON.parse(
+					readFileSync(join(stateDir, "swarm", laneId ?? "", "lane.json"), "utf8"),
+				);
+				expect(record).toMatchObject({ graphId: GRAPH_ID });
+			} finally {
+				python.restore();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+
+		test("auto-run never binds the session's earlier plan: no Graph ID line in the lane brief and no graphId in lane.json", async () => {
+			const { root, stateDir, restore } = withSwarmRoot();
+			const python = withSpawnablePython();
+			const cwd = mkdtempSync(join(tmpdir(), "sw-autorun-graph-"));
+			try {
+				const gate = controlled();
+				trackedSession(stateDir);
+				const tracked = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
+				expect(await tracked.run("fix the login redirect")).toBeUndefined();
+				expect(
+					await waitFor(
+						() =>
+							existsSync(python.argvLog) &&
+							readFileSync(python.argvLog, "utf8").includes("fix the login redirect"),
+					),
+				).toBe(true);
+				expect(readFileSync(python.argvLog, "utf8")).not.toContain("Graph ID:");
+				const [laneId] = laneDirNames(stateDir);
+				const record: unknown = JSON.parse(
+					readFileSync(join(stateDir, "swarm", laneId ?? "", "lane.json"), "utf8"),
+				);
+				expect(record).not.toHaveProperty("graphId");
+			} finally {
+				python.restore();
+				restore();
+				rmSync(root, { recursive: true, force: true });
+				rmSync(stateDir, { recursive: true, force: true });
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
 	});
 });

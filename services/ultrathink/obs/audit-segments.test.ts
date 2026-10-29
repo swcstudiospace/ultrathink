@@ -4,10 +4,26 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+	chmodSync,
+	existsSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { type AuditFs, type AuditNotice, type AuditRecord, auditPath, createAuditLog, verifyAuditFile } from "./audit.ts";
+import { bulk } from "../../../src/test.helpers.ts";
+import { makeTempDir } from "../test.helpers.ts";
+import {
+	type AuditFs,
+	type AuditNotice,
+	type AuditRecord,
+	auditPath,
+	createAuditLog,
+	verifyAuditFile,
+} from "./audit.ts";
 import { listSegments, sealedName } from "./audit-segments.ts";
 import { createFrontier } from "./audit-merkle.ts";
 
@@ -22,9 +38,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-audit-seg-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-audit-seg-", dirs);
 }
 
 /** Each record advances the clock one second, so a record's ts identifies it. */
@@ -37,7 +51,9 @@ function clock(): () => number {
 }
 
 function lines(path: string): string[] {
-	return readFileSync(path, "utf8").split("\n").filter((l) => l.length > 0);
+	return readFileSync(path, "utf8")
+		.split("\n")
+		.filter((l) => l.length > 0);
 }
 
 function records(path: string): AuditRecord[] {
@@ -55,14 +71,11 @@ function rehash(r: AuditRecord): AuditRecord {
 	return { ...r, hash: createHash("sha256").update(`${r.prev}\n${canonical}`).digest("hex") };
 }
 
-/** About 8 KB of primitives per record (32 keys, 250 characters each), so a 1 MiB segment holds about 125 records. */
-function bulk(i: number): Record<string, string | number> {
-	const fields: Record<string, string | number> = { n: i };
-	for (let k = 0; k < 31; k += 1) fields[`k${k}`] = "x".repeat(250);
-	return fields;
-}
-
-function fill(log: { record(event: "login_ok", fields: Record<string, unknown>): void }, from: number, to: number): void {
+function fill(
+	log: { record(event: "login_ok", fields: Record<string, unknown>): void },
+	from: number,
+	to: number,
+): void {
 	for (let i = from; i <= to; i += 1) log.record("login_ok", bulk(i));
 }
 
@@ -95,7 +108,11 @@ describe("sealed segments", () => {
 		expect(sealedRecs.map((r) => r.seq)).toEqual(Array.from({ length: last }, (_, i) => i + 1));
 		expect(active[0]?.seq).toBe(last + 1);
 		expect(active[0]?.prev).toBe(sealedRecs[last - 1]?.hash);
-		expect(verifyAuditFile(path)).toEqual({ ok: true, records: 200, lastHash: active.at(-1)?.hash as string });
+		expect(verifyAuditFile(path)).toEqual({
+			ok: true,
+			records: 200,
+			lastHash: active.at(-1)?.hash as string,
+		});
 		expect(log.head()).toEqual({ seq: 200, hash: active.at(-1)?.hash as string });
 	});
 
@@ -109,7 +126,13 @@ describe("sealed segments", () => {
 				throw new Error("EXDEV: cross-device link");
 			},
 		};
-		const log = createAuditLog({ path, now: clock(), fs, segmentBytes: MIB, onError: (e) => errors.push(e) });
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			fs,
+			segmentBytes: MIB,
+			onError: (e) => errors.push(e),
+		});
 		fill(log, 1, 140);
 		expect(sealedIn(dir)).toEqual([]);
 		expect(records(path).length).toBe(140);
@@ -148,7 +171,9 @@ describe("sealed segments", () => {
 		out[4] = (out[4] as string).replace("xxxx", "yyyy");
 		rewrite(sealedPath, out);
 		const before = readdirSync(dir).sort();
-		expect(() => createAuditLog({ path, now: clock(), segmentBytes: MIB })).toThrow(/sealed segment .* is broken at record 5/);
+		expect(() => createAuditLog({ path, now: clock(), segmentBytes: MIB })).toThrow(
+			/sealed segment .* is broken at record 5/,
+		);
 		expect(readdirSync(dir).sort()).toEqual(before);
 	});
 
@@ -166,24 +191,44 @@ describe("sealed segments", () => {
 		const active = records(path);
 		expect(active.at(-1)?.seq).toBe(201);
 		expect(active.at(-1)?.prev).toBe(beforeLast);
-		expect(verifyAuditFile(path)).toEqual({ ok: true, records: 201, lastHash: active.at(-1)?.hash as string });
+		expect(verifyAuditFile(path)).toEqual({
+			ok: true,
+			records: 201,
+			lastHash: active.at(-1)?.hash as string,
+		});
 		expect(sealedIn(dir).length).toBe(1);
 	});
 
 	test("the segment helpers list only validated sealed names, sorted by first seq", () => {
 		const dir = tempDir();
-		for (const name of ["audit-3-5.jsonl", "audit-1-2.jsonl", "audit-01-2.jsonl", "audit-2-1.jsonl", "audit.jsonl.corrupt-x", "audit-6-6.jsonl", "notes.txt"]) {
+		for (const name of [
+			"audit-3-5.jsonl",
+			"audit-1-2.jsonl",
+			"audit-01-2.jsonl",
+			"audit-2-1.jsonl",
+			"audit.jsonl.corrupt-x",
+			"audit-6-6.jsonl",
+			"notes.txt",
+		]) {
 			writeFileSync(join(dir, name), "");
 		}
-		expect(listSegments(auditPath(dir), nodeFs).map((s) => s.name)).toEqual(["audit-1-2.jsonl", "audit-3-5.jsonl", "audit-6-6.jsonl"]);
+		expect(listSegments(auditPath(dir), nodeFs).map((s) => s.name)).toEqual([
+			"audit-1-2.jsonl",
+			"audit-3-5.jsonl",
+			"audit-6-6.jsonl",
+		]);
 		expect(listSegments(join(dir, "missing", "audit.jsonl"), nodeFs)).toEqual([]);
 		expect(sealedName(1, 2)).toBe("audit-1-2.jsonl");
 	});
 
 	test("segmentBytes below 1 MiB is rejected", () => {
 		const dir = tempDir();
-		expect(() => createAuditLog({ path: auditPath(dir), segmentBytes: MIB - 1 })).toThrow(/segmentBytes/);
-		expect(() => createAuditLog({ path: auditPath(dir), segmentBytes: MIB + 0.5 })).toThrow(/segmentBytes/);
+		expect(() => createAuditLog({ path: auditPath(dir), segmentBytes: MIB - 1 })).toThrow(
+			/segmentBytes/,
+		);
+		expect(() => createAuditLog({ path: auditPath(dir), segmentBytes: MIB + 0.5 })).toThrow(
+			/segmentBytes/,
+		);
 	});
 });
 
@@ -202,8 +247,18 @@ describe("prune", () => {
 		expect(existsSync(path)).toBe(true);
 		const active = records(path);
 		expect(active.at(-1)?.event).toBe("audit_retention_pruned");
-		expect(active.at(-1)?.fields).toEqual({ segments: 1, fromSeq: 1, throughSeq: lastSealed, throughHash: sealedRecs[lastSealed - 1]?.hash as string, frontier: expect.any(String) });
-		expect(verifyAuditFile(path)).toEqual({ ok: true, records: active.length, lastHash: active.at(-1)?.hash as string });
+		expect(active.at(-1)?.fields).toEqual({
+			segments: 1,
+			fromSeq: 1,
+			throughSeq: lastSealed,
+			throughHash: sealedRecs[lastSealed - 1]?.hash as string,
+			frontier: expect.any(String),
+		});
+		expect(verifyAuditFile(path)).toEqual({
+			ok: true,
+			records: active.length,
+			lastHash: active.at(-1)?.hash as string,
+		});
 		expect(log.verify().ok).toBe(true);
 	});
 
@@ -211,13 +266,24 @@ describe("prune", () => {
 		const dir = tempDir();
 		const path = auditPath(dir);
 		const notices: AuditNotice[] = [];
-		const log = createAuditLog({ path, now: clock(), segmentBytes: MIB, onNotice: (notice) => notices.push(notice) });
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			segmentBytes: MIB,
+			onNotice: (notice) => notices.push(notice),
+		});
 		fill(log, 1, 200);
 		const sealedName0 = sealedIn(dir)[0] as string;
 		const lastSealed = Number(/-(\d+)\.jsonl$/.exec(sealedName0)?.[1]);
-		const cutoff = Date.parse((records(join(dir, sealedName0))[lastSealed - 1] as AuditRecord).ts) + 1;
+		const cutoff =
+			Date.parse((records(join(dir, sealedName0))[lastSealed - 1] as AuditRecord).ts) + 1;
 		expect(log.prune(cutoff)).toEqual({ segments: 1 });
-		expect(notices).toEqual([expect.objectContaining({ kind: "pruned", message: expect.stringContaining("pruned 1 sealed segment(s)") })]);
+		expect(notices).toEqual([
+			expect.objectContaining({
+				kind: "pruned",
+				message: expect.stringContaining("pruned 1 sealed segment(s)"),
+			}),
+		]);
 	});
 
 	test("prune with nothing eligible returns zero and writes nothing", () => {
@@ -240,11 +306,14 @@ describe("prune", () => {
 		const log = createAuditLog({ path, now: clock(), segmentBytes: MIB });
 		fill(log, 1, 200);
 		const lastSealed = Number(/-(\d+)\.jsonl$/.exec(sealedIn(dir)[0] as string)?.[1]);
-		const cutoff = Date.parse(records(join(dir, sealedIn(dir)[0] as string))[lastSealed - 1]?.ts as string) + 1;
+		const cutoff =
+			Date.parse(records(join(dir, sealedIn(dir)[0] as string))[lastSealed - 1]?.ts as string) + 1;
 		log.prune(cutoff);
 		const out = lines(path);
 		const retention = JSON.parse(out.at(-1) as string) as AuditRecord;
-		out[out.length - 1] = JSON.stringify(rehash({ ...retention, fields: { ...retention.fields, throughHash: "f".repeat(64) } }));
+		out[out.length - 1] = JSON.stringify(
+			rehash({ ...retention, fields: { ...retention.fields, throughHash: "f".repeat(64) } }),
+		);
 		rewrite(path, out);
 		const v = verifyAuditFile(path);
 		expect(v.ok).toBe(false);
@@ -279,7 +348,13 @@ describe("prune", () => {
 		log.record("login_ok", { n: 2 });
 		log.record("login_ok", { n: 3 });
 		const after = records(path).slice(retentionAt);
-		expect(after.map((r) => r.event)).toEqual(["login_ok", "audit_anchor", "login_ok", "login_ok", "audit_anchor"]);
+		expect(after.map((r) => r.event)).toEqual([
+			"login_ok",
+			"audit_anchor",
+			"login_ok",
+			"login_ok",
+			"audit_anchor",
+		]);
 		expect(verifyAuditFile(path).ok).toBe(true);
 	});
 
@@ -307,7 +382,10 @@ describe("prune", () => {
 		// verify, so every anchor the pruned log wrote carries the root a never-pruned log gives.
 		const dirC = tempDir();
 		const pathC = auditPath(dirC);
-		rewrite(pathC, [...wholeChain, ...prunedChain.filter((r) => r.seq > total)].map((r) => JSON.stringify(r)));
+		rewrite(
+			pathC,
+			[...wholeChain, ...prunedChain.filter((r) => r.seq > total)].map((r) => JSON.stringify(r)),
+		);
 		expect(verifyAuditFile(pathC).ok).toBe(true);
 	}, 30_000);
 
@@ -351,7 +429,10 @@ describe("prune", () => {
 			out[i] = rehash({ ...edited, prev });
 			prev = (out[i] as AuditRecord).hash;
 		}
-		rewrite(path, out.map((r) => JSON.stringify(r)));
+		rewrite(
+			path,
+			out.map((r) => JSON.stringify(r)),
+		);
 		const v = verifyAuditFile(path);
 		expect(v.ok).toBe(false);
 		if (v.ok) return;
@@ -375,7 +456,10 @@ describe("prune", () => {
 			if (bad === undefined) delete fields.frontier;
 			else fields.frontier = bad;
 			out[out.length - 1] = rehash({ ...retention, fields });
-			rewrite(path, out.map((r) => JSON.stringify(r)));
+			rewrite(
+				path,
+				out.map((r) => JSON.stringify(r)),
+			);
 			const v = verifyAuditFile(path);
 			expect(v.ok).toBe(false);
 			if (v.ok) return;
@@ -394,11 +478,18 @@ describe("prune", () => {
 		const fs: AuditFs = {
 			...nodeFs,
 			writeSync: ((fd: number, data: Buffer, offset: number, length: number) => {
-				if (failWrites) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+				if (failWrites)
+					throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
 				return nodeFs.writeSync(fd, data, offset, length);
 			}) as typeof nodeFs.writeSync,
 		};
-		const log = createAuditLog({ path, now: clock(), fs, segmentBytes: MIB, onError: (e) => errors.push(e) });
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			fs,
+			segmentBytes: MIB,
+			onError: (e) => errors.push(e),
+		});
 		fill(log, 1, 200);
 		const sealedBefore = sealedIn(dir);
 		failWrites = true;
@@ -422,11 +513,18 @@ describe("prune", () => {
 			...nodeFs,
 			unlinkSync: ((target: nodeFs.PathLike) => {
 				unlinks += 1;
-				if (unlinks === 2) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+				if (unlinks === 2)
+					throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
 				nodeFs.unlinkSync(target);
 			}) as typeof nodeFs.unlinkSync,
 		};
-		const log = createAuditLog({ path, now: clock(), fs, segmentBytes: MIB, onError: (e) => errors.push(e) });
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			fs,
+			segmentBytes: MIB,
+			onError: (e) => errors.push(e),
+		});
 		fill(log, 1, 400);
 		const sealed = sealedIn(dir);
 		expect(sealed.length).toBeGreaterThanOrEqual(2);
@@ -454,7 +552,12 @@ describe("prune", () => {
 		wrong.push("a".repeat(64));
 		const out = lines(path);
 		const retention = JSON.parse(out.at(-1) as string) as AuditRecord;
-		out[out.length - 1] = JSON.stringify(rehash({ ...retention, fields: { ...retention.fields, frontier: JSON.stringify(wrong.snapshot()) } }));
+		out[out.length - 1] = JSON.stringify(
+			rehash({
+				...retention,
+				fields: { ...retention.fields, frontier: JSON.stringify(wrong.snapshot()) },
+			}),
+		);
 		rewrite(path, out);
 		const v = verifyAuditFile(path);
 		expect(v.ok).toBe(false);
@@ -472,7 +575,8 @@ describe("prune crash points and boundaries", () => {
 		return {
 			...nodeFs,
 			unlinkSync: ((target: nodeFs.PathLike) => {
-				if (unlinks >= survivors) throw Object.assign(new Error("EIO: process died"), { code: "EIO" });
+				if (unlinks >= survivors)
+					throw Object.assign(new Error("EIO: process died"), { code: "EIO" });
 				unlinks += 1;
 				nodeFs.unlinkSync(target);
 			}) as typeof nodeFs.unlinkSync,
@@ -501,13 +605,20 @@ describe("prune crash points and boundaries", () => {
 		for (const survivors of [0, 1]) {
 			const dir = tempDir();
 			const path = auditPath(dir);
-			const writer = createAuditLog({ path, now: clock(), segmentBytes: MIB, fs: dyingAfter(survivors) });
+			const writer = createAuditLog({
+				path,
+				now: clock(),
+				segmentBytes: MIB,
+				fs: dyingAfter(survivors),
+			});
 			fill(writer, 1, 300);
 			const eligible = sealedIn(dir).length;
 			expect(eligible).toBeGreaterThanOrEqual(2);
 			// Every boundary is durable before the first deletion, one per segment that will go.
 			expect(writer.prune(Number.MAX_SAFE_INTEGER)).toEqual({ segments: survivors });
-			expect(records(path).filter((r) => r.event === "audit_retention_pruned")).toHaveLength(eligible);
+			expect(records(path).filter((r) => r.event === "audit_retention_pruned")).toHaveLength(
+				eligible,
+			);
 
 			// The process died at this point. Its restart must come up on what is on disk and verify it.
 			const restarted = createAuditLog({ path, now: clock(), segmentBytes: MIB });
@@ -581,7 +692,9 @@ describe("prune crash points and boundaries", () => {
 		expect(writer.prune(Number.MAX_SAFE_INTEGER).segments).toBeGreaterThanOrEqual(2);
 		expect(sealedIn(dir)).toEqual([]);
 		writer.record("login_ok", { n: 1 });
-		const boundary = records(path).filter((r) => r.event === "audit_retention_pruned").at(-1)?.fields.throughSeq as number;
+		const boundary = records(path)
+			.filter((r) => r.event === "audit_retention_pruned")
+			.at(-1)?.fields.throughSeq as number;
 		writer.close();
 		// The crash tears the last append after the newest boundary was written.
 		nodeFs.appendFileSync(path, '{"seq":');
@@ -595,7 +708,11 @@ describe("prune crash points and boundaries", () => {
 		const live = records(path);
 		expect(live[0]?.event).toBe("audit_retention_pruned");
 		expect(live.map((r) => r.seq)).toEqual([boundary + 1, boundary + 2, boundary + 3]);
-		expect(verifyAuditFile(path)).toEqual({ ok: true, records: 3, lastHash: live.at(-1)?.hash as string });
+		expect(verifyAuditFile(path)).toEqual({
+			ok: true,
+			records: 3,
+			lastHash: live.at(-1)?.hash as string,
+		});
 		expect(restarted.head().seq).toBe(boundary + 3);
 		// A further restart still verifies the chain it continued.
 		restarted.close();

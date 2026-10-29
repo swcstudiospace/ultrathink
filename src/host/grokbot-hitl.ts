@@ -21,9 +21,15 @@ export interface AnswersInput {
 }
 
 export function parseAnswersInput(raw: unknown): AnswersInput {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("answers input must be a JSON object");
+	if (!raw || typeof raw !== "object" || Array.isArray(raw))
+		throw new Error("answers input must be a JSON object");
 	const rec = raw as Record<string, unknown>;
-	const map = rec.answers && typeof rec.answers === "object" && !Array.isArray(rec.answers) ? (rec.answers as Record<string, unknown>) : "answers" in rec || "response" in rec ? {} : rec;
+	const map =
+		rec.answers && typeof rec.answers === "object" && !Array.isArray(rec.answers)
+			? (rec.answers as Record<string, unknown>)
+			: "answers" in rec || "response" in rec
+				? {}
+				: rec;
 	const answers: Record<string, string> = {};
 	for (const [key, value] of Object.entries(map)) {
 		if (typeof value !== "string") throw new Error(`answer for ${key} must be a string`);
@@ -34,10 +40,16 @@ export function parseAnswersInput(raw: unknown): AnswersInput {
 	return { answers, ...(response ? { response } : {}) };
 }
 
-export function recordAnswers(statePath: string, input: AnswersInput, now = Date.now()): { matched: Clarification[]; unknownIds: string[]; list: Clarification[] } {
+export function recordAnswers(
+	statePath: string,
+	input: AnswersInput,
+	now = Date.now(),
+): { matched: Clarification[]; unknownIds: string[]; list: Clarification[] } {
 	return withFileLock(statePath, () => {
 		const record = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
-		const existing: Clarification[] = Array.isArray(record.clarifications) ? record.clarifications : [];
+		const existing: Clarification[] = Array.isArray(record.clarifications)
+			? record.clarifications
+			: [];
 		// Ids (q1, q2…) resolve to their question text, which is what applyAnswers matches on.
 		const unknownIds: string[] = [];
 		const byQuestion: Record<string, string> = {};
@@ -48,11 +60,20 @@ export function recordAnswers(statePath: string, input: AnswersInput, now = Date
 			else byQuestion[key] = value;
 		}
 		if (unknownIds.length > 0) return { matched: [], unknownIds, list: existing };
-		const { list, matched } = applyAnswers(existing, undefined, { answers: byQuestion, ...(input.response ? { response: input.response } : {}) }, now);
+		const { list, matched } = applyAnswers(
+			existing,
+			undefined,
+			{ answers: byQuestion, ...(input.response ? { response: input.response } : {}) },
+			now,
+		);
 		const xmlPath = statePath.replace(/\.json$/, ".xml");
 		const currentXml = existsSync(xmlPath) ? readFileSync(xmlPath, "utf8") : record.result.xml;
 		const xml = injectClarificationsXml(currentXml, list).trimEnd();
-		const next: SessionRecord = { ...record, result: { ...record.result, xml }, clarifications: list };
+		const next: SessionRecord = {
+			...record,
+			result: { ...record.result, xml },
+			clarifications: list,
+		};
 		writeFileAtomic(statePath, `${JSON.stringify(next, null, 2)}\n`);
 		writeFileAtomic(xmlPath, `${xml}\n`);
 		mirrorLast(statePath, next);

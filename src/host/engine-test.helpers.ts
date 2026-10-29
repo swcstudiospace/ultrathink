@@ -41,7 +41,12 @@ export function createEngineFixtures() {
 		const home = tempDir("ultrathink-engine-grok-");
 		// Built in pieces so no scanner reads a key-like literal out of this fixture.
 		const key = ["fixture", "session", "value"].join("-");
-		writeFileSync(join(home, "auth.json"), JSON.stringify({ default: { key, ...(expired ? { expires_at: "2020-01-01T00:00:00.000Z" } : {}) } }));
+		writeFileSync(
+			join(home, "auth.json"),
+			JSON.stringify({
+				default: { key, ...(expired ? { expires_at: "2020-01-01T00:00:00.000Z" } : {}) },
+			}),
+		);
 		return home;
 	}
 
@@ -62,19 +67,33 @@ export function configWith(overrides: Partial<UltrathinkConfig>): UltrathinkConf
 	return { ...defaultConfig(), ...overrides };
 }
 
-export const shunt = () => configWith({ grok: { ...defaultConfig().grok, transport: "shunt", shuntBaseUrl: "http://127.0.0.1:3001" } });
+export const shunt = () =>
+	configWith({
+		grok: { ...defaultConfig().grok, transport: "shunt", shuntBaseUrl: "http://127.0.0.1:3001" },
+	});
 
-export async function labelOf(config: UltrathinkConfig, state: ControlState, host: HostId, sessionModel?: unknown): Promise<string> {
+export async function labelOf(
+	config: UltrathinkConfig,
+	state: ControlState,
+	host: HostId,
+	sessionModel?: unknown,
+): Promise<string> {
 	const selected = await selectEngine(config, state, "/repo", { host, sessionModel });
 	return "skipped" in selected ? `skipped:${selected.skipped}` : selected.label;
 }
 
-export async function resolutionOf(config: UltrathinkConfig, state: ControlState, host: HostId, context: EngineSelectionContext = {}): Promise<ModelResolution> {
+export async function resolutionOf(
+	config: UltrathinkConfig,
+	state: ControlState,
+	host: HostId,
+	context: EngineSelectionContext = {},
+): Promise<ModelResolution> {
 	return (await selectEngine(config, state, "/repo", { host, ...context })).resolution;
 }
 
 export function engineOf(selection: EngineSelection): SelectedEngine {
-	if ("skipped" in selection) throw new Error(`expected an engine, got the skip ${selection.skipped}`);
+	if ("skipped" in selection)
+		throw new Error(`expected an engine, got the skip ${selection.skipped}`);
 	return selection;
 }
 
@@ -89,7 +108,11 @@ interface FakeModel extends NativeModelIdentity {
 	usable: "usable" | "unavailable" | "unsupported";
 }
 
-export function fakeModel(provider: string, id: string, usable: FakeModel["usable"] = "usable"): FakeModel {
+export function fakeModel(
+	provider: string,
+	id: string,
+	usable: FakeModel["usable"] = "usable",
+): FakeModel {
 	return { provider, id, api: "openai-responses", providerType: `${provider}-type`, usable };
 }
 
@@ -125,6 +148,14 @@ export function binder(): { bind: (model: FakeModel) => ClaudeCompleter; bound: 
 	};
 }
 
-export function intentWith(override: Partial<ModelIntent["override"]> = {}, providerDefaults: Record<string, string> = {}): ModelIntent {
-	return { host: "omp", override: { provider: "", model: "", ...override }, providerDefaults, engineSelection: { ...AUTO } };
+export function intentWith(
+	override: Partial<ModelIntent["override"]> = {},
+	providerDefaults: Record<string, string> = {},
+): ModelIntent {
+	return {
+		host: "omp",
+		override: { provider: "", model: "", ...override },
+		providerDefaults,
+		engineSelection: { ...AUTO },
+	};
 }

@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { recoverUnauthorized, resolveAuthHeader } from "./oauth.ts";
-import { isMcpProviderId, MCP_PROVIDERS, notMcpServer, PROVIDERS, USER_AGENT } from "./providers.ts";
+import {
+	isMcpProviderId,
+	MCP_PROVIDERS,
+	notMcpServer,
+	PROVIDERS,
+	USER_AGENT,
+} from "./providers.ts";
 import type { McpProviderId, ProviderId } from "./providers.ts";
 import { createRelay } from "./relay.ts";
 import { readStore } from "./store.ts";
@@ -61,7 +67,9 @@ function short(text: string): string {
 
 function unwrapToolResult(name: string, raw: unknown): unknown {
 	const result = (typeof raw === "object" && raw !== null ? raw : {}) as ToolResult;
-	const text = result.content?.find((item) => item.type === "text" && typeof item.text === "string")?.text;
+	const text = result.content?.find(
+		(item) => item.type === "text" && typeof item.text === "string",
+	)?.text;
 	if (result.isError) throw new Error(short(`${name}: ${text ?? "tool error"}`));
 	if (result.structuredContent !== undefined) return result.structuredContent;
 	if (text === undefined) return raw;
@@ -99,22 +107,35 @@ export function createMcpClient(provider: McpProviderId, deps: McpClientDeps): M
 				return;
 			}
 			if (typeof reply !== "object" || reply === null) return;
-			if (typeof reply.id !== "number" || reply.method !== undefined || !("result" in reply || "error" in reply)) return;
+			if (
+				typeof reply.id !== "number" ||
+				reply.method !== undefined ||
+				!("result" in reply || "error" in reply)
+			)
+				return;
 			const entry = pending.get(reply.id);
 			if (!entry) return;
 			pending.delete(reply.id);
 			if (reply.error) {
-				const message = typeof reply.error.message === "string" ? reply.error.message : "request failed";
+				const message =
+					typeof reply.error.message === "string" ? reply.error.message : "request failed";
 				entry.waiter.reject(new Error(short(message)));
 			} else entry.waiter.resolve(reply.result);
 		},
 	});
 
-	const request = async (method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> => {
+	const request = async (
+		method: string,
+		params: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<unknown> => {
 		if (closed) throw new Error(`${provider}: client closed`);
 		if (signal?.aborted) throw new Error(`${method}: aborted`);
 		const id = nextId++;
-		const entry: Pending = { waiter: Promise.withResolvers<unknown>(), controller: new AbortController() };
+		const entry: Pending = {
+			waiter: Promise.withResolvers<unknown>(),
+			controller: new AbortController(),
+		};
 		const { waiter, controller } = entry;
 		pending.set(id, entry);
 		const fail = (message: string): void => {
@@ -143,7 +164,11 @@ export function createMcpClient(provider: McpProviderId, deps: McpClientDeps): M
 		initialized ??= (async () => {
 			await request(
 				"initialize",
-				{ protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "ultrathink-track", version: "0.2.0" } },
+				{
+					protocolVersion: "2025-06-18",
+					capabilities: {},
+					clientInfo: { name: "ultrathink-track", version: "0.2.0" },
+				},
 				signal,
 			);
 			await relay.handle({ jsonrpc: "2.0", method: "notifications/initialized" });
@@ -196,9 +221,14 @@ export function hasUsableCredential(provider: ProviderId, storePath: string): bo
 }
 
 /** A client for `provider` when hasUsableCredential is true; otherwise undefined. Never throws. */
-export function createMcpClientIfCredentialed(provider: McpProviderId, deps: McpClientDeps): McpClient | undefined {
+export function createMcpClientIfCredentialed(
+	provider: McpProviderId,
+	deps: McpClientDeps,
+): McpClient | undefined {
 	try {
-		return hasUsableCredential(provider, deps.storePath) ? createMcpClient(provider, deps) : undefined;
+		return hasUsableCredential(provider, deps.storePath)
+			? createMcpClient(provider, deps)
+			: undefined;
 	} catch {
 		return undefined;
 	}

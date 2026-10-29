@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hangingFetch, JEV, recordingFetch, VEV, yieldTurn } from "../test.helpers.ts";
 import {
 	buildDecisionsRequest,
 	createDecisions,
+	type DecisionOutcome,
+	type Decisions,
 	type DecisionsInput,
 	formatDebugLine,
 	resolveDecisionsKeys,
@@ -14,7 +25,13 @@ import {
 	resolveVercelKey,
 	type RunDecisionOptions,
 } from "./gate.ts";
-import { buildPlanState, buildSkillworthyState, buildTeachableState, QUESTIONS } from "./questions.ts";
+import { openJevHealth } from "./health.ts";
+import {
+	buildPlanState,
+	buildSkillworthyState,
+	buildTeachableState,
+	QUESTIONS,
+} from "./questions.ts";
 import {
 	DECISION_POINTS,
 	DEFAULT_DECISIONS_CONFIG,
@@ -23,16 +40,10 @@ import {
 	formatP,
 	VERCEL_DECISIONS_URL,
 } from "./types.ts";
+import { USAGE_FILE } from "./usage.ts";
 
 const K = "sk-or-v1-UTTESTKEY-0123456789abcdef";
 const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-interface Recorded {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body: unknown;
-}
-
 const dirs: string[] = [];
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -40,45 +51,11 @@ afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** Recording fetch R: records every call, answers from a queue (last entry repeats). Installed as globalThis.fetch too. */
-function recordingFetch(queue: Array<() => Response | Promise<Response>>): { fetch: typeof fetch; calls: Recorded[] } {
-	const calls: Recorded[] = [];
-	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-		const headers: Record<string, string> = {};
-		new Headers(init?.headers).forEach((value, key) => {
-			headers[key] = value;
-		});
-		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body;
-		calls.push({ url: String(input), method: init?.method ?? "GET", headers, body });
-		const next = queue[Math.min(calls.length, queue.length) - 1];
-		if (!next) throw new Error("empty queue");
-		return next();
-	}) as typeof fetch;
-	globalThis.fetch = fetchImpl;
-	return { fetch: fetchImpl, calls };
-}
-
-const JEV =
-	(p: number, key = "plan_worthy") =>
-	() =>
-		Response.json({
-			id: "gen-dec-test",
-			model: "typesafe/jev-1.13-20260917",
-			provider: "TypeSafe",
-			answers: { [key]: { type: "noul", noul: p } },
-			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
-		});
 const ERR = (s: number, headers?: Record<string, string>) => () =>
-	Response.json({ error: { code: s, message: `upstream said no for ${K}` } }, { status: s, headers });
-
-/** Never resolves; rejects with an AbortError when its signal fires (as src/grok/complete.test.ts hangingFetch). */
-function hangingFetch(onCall?: () => void): typeof fetch {
-	return ((_input: string | URL | Request, init?: RequestInit) =>
-		new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-			onCall?.();
-		})) as typeof fetch;
-}
+	Response.json(
+		{ error: { code: s, message: `upstream said no for ${K}` } },
+		{ status: s, headers },
+	);
 
 function tempStore(key?: string): string {
 	const dir = mkdtempSync(join(tmpdir(), "ut-decisions-gate-"));
@@ -88,25 +65,43 @@ function tempStore(key?: string): string {
 	return path;
 }
 
+function tempStateDir(): string {
+	const dir = mkdtempSync(join(tmpdir(), "ut-decisions-state-"));
+	dirs.push(dir);
+	return dir;
+}
+
 function writeStoreKey(path: string, key: string | undefined): void {
-	const providers = key === undefined ? {} : { openrouter: { kind: "api_key", apiKey: key, updatedAt: 1 } };
+	const providers =
+		key === undefined ? {} : { openrouter: { kind: "api_key", apiKey: key, updatedAt: 1 } };
 	writeFileSync(path, JSON.stringify({ version: 1, providers }), { mode: 0o600 });
 }
 
-const ON: DecisionsConfig = { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: [...DEFAULT_DECISIONS_CONFIG.points] };
+const ON: DecisionsConfig = {
+	...DEFAULT_DECISIONS_CONFIG,
+	enabled: true,
+	points: [...DEFAULT_DECISIONS_CONFIG.points],
+};
 const MESSAGE = "Add OAuth login with GitHub to the web app";
 const PLAN_STATE = buildPlanState({ message: MESSAGE, recentConversation: "" });
-const PLAN_OPTS: RunDecisionOptions = { threshold: 0.2, action: (p) => (p < 0.2 ? "skip-plan" : "plan") };
+const PLAN_OPTS: RunDecisionOptions = {
+	threshold: 0.2,
+	action: (p) => (p < 0.2 ? "skip-plan" : "plan"),
+};
 
 function runtime(fetchImpl: typeof fetch, overrides: Partial<DecisionsInput> = {}) {
 	const lines: string[] = [];
 	const decisions = createDecisions({
 		config: ON,
-		env: { OPENROUTER_API_KEY: K },
+		env: { ULTRATHINK_OPENROUTER_KEY: K },
 		storePath: tempStore(),
+		// A fresh state dir per runtime: one test's breaker must never refuse another test's call.
+		stateDir: tempStateDir(),
 		fetch: fetchImpl,
 		now: () => 1000,
-		sleep: async () => {},
+		sleep: async () => {
+			// reason: no real delay in the fixture; retries run immediately
+		},
 		random: () => 0.5,
 		debug: (line) => lines.push(line),
 		...overrides,
@@ -115,17 +110,21 @@ function runtime(fetchImpl: typeof fetch, overrides: Partial<DecisionsInput> = {
 }
 
 describe("resolveOpenRouterKey (AC-2.8)", () => {
-	test("the stored key wins over OPENROUTER_API_KEY, which is the fallback", () => {
+	test("the stored key wins over ULTRATHINK_OPENROUTER_KEY, which is the fallback", () => {
 		const path = tempStore(K);
-		const env = { OPENROUTER_API_KEY: "sk-or-v1-ENVKEY" };
+		const env = { ULTRATHINK_OPENROUTER_KEY: "sk-or-v1-ENVKEY" };
 		expect(resolveOpenRouterKey(path, env)).toEqual({ key: K, source: "store" });
 		writeStoreKey(path, undefined);
-		expect(resolveOpenRouterKey(path, env)).toEqual({ key: "sk-or-v1-ENVKEY", source: "OPENROUTER_API_KEY" });
+		expect(resolveOpenRouterKey(path, env)).toEqual({
+			key: "sk-or-v1-ENVKEY",
+			source: "ULTRATHINK_OPENROUTER_KEY",
+		});
 	});
 
 	test("an empty store and an unset, empty or whitespace-only env key mean no key", () => {
 		const path = tempStore(undefined);
-		for (const value of [undefined, "", "   "]) expect(resolveOpenRouterKey(path, { OPENROUTER_API_KEY: value })).toBeUndefined();
+		for (const value of [undefined, "", "   "])
+			expect(resolveOpenRouterKey(path, { ULTRATHINK_OPENROUTER_KEY: value })).toBeUndefined();
 		expect(resolveOpenRouterKey(path, {})).toBeUndefined();
 	});
 
@@ -133,10 +132,18 @@ describe("resolveOpenRouterKey (AC-2.8)", () => {
 		const path = tempStore(`  ${K}  `);
 		expect(resolveOpenRouterKey(path, {})).toEqual({ key: K, source: "store" });
 		writeStoreKey(path, "   ");
-		expect(resolveOpenRouterKey(path, { OPENROUTER_API_KEY: ` ${K} ` })).toEqual({ key: K, source: "OPENROUTER_API_KEY" });
+		expect(resolveOpenRouterKey(path, { ULTRATHINK_OPENROUTER_KEY: ` ${K} ` })).toEqual({
+			key: K,
+			source: "ULTRATHINK_OPENROUTER_KEY",
+		});
 		writeFileSync(path, "{corrupt");
-		expect(resolveOpenRouterKey(path, { OPENROUTER_API_KEY: K })?.source).toBe("OPENROUTER_API_KEY");
-		expect(resolveOpenRouterKey(join(path, "missing", "store.json"), { OPENROUTER_API_KEY: K })?.source).toBe("OPENROUTER_API_KEY");
+		expect(resolveOpenRouterKey(path, { ULTRATHINK_OPENROUTER_KEY: K })?.source).toBe(
+			"ULTRATHINK_OPENROUTER_KEY",
+		);
+		expect(
+			resolveOpenRouterKey(join(path, "missing", "store.json"), { ULTRATHINK_OPENROUTER_KEY: K })
+				?.source,
+		).toBe("ULTRATHINK_OPENROUTER_KEY");
 	});
 });
 
@@ -176,7 +183,7 @@ describe("Decisions.active and inactive runs (AC-2.9)", () => {
 	test("K1: ULTRATHINK_DECISIONS=0 makes every point inactive with zero requests, even enabled with a key", async () => {
 		const r = recordingFetch([JEV(0.5)]);
 		const { decisions, lines } = runtime(r.fetch, {
-			env: { OPENROUTER_API_KEY: K, ULTRATHINK_DECISIONS: "0" },
+			env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" },
 			storePath: tempStore(K),
 		});
 		for (const point of DECISION_POINTS) {
@@ -186,7 +193,11 @@ describe("Decisions.active and inactive runs (AC-2.9)", () => {
 		expect(r.calls).toHaveLength(0);
 		expect(lines).toEqual([]);
 		// Only the exact value "0" is the kill switch.
-		expect(runtime(r.fetch, { env: { OPENROUTER_API_KEY: K, ULTRATHINK_DECISIONS: "1" } }).decisions.active("plan")).toBe(true);
+		expect(
+			runtime(r.fetch, {
+				env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "1" },
+			}).decisions.active("plan"),
+		).toBe(true);
 	});
 
 	test("the key is read lazily, once per runtime", () => {
@@ -226,7 +237,9 @@ describe("Decisions.run", () => {
 		expect(serialized).not.toContain(MESSAGE);
 		expect(serialized).not.toContain(K);
 		expect(r.calls).toHaveLength(1);
-		expect(lines).toEqual(["decisions plan · p 0.97 · typesafe/jev-1.13-20260917 · 0ms · attempts 1 · cost 0.000019"]);
+		expect(lines).toEqual([
+			"decisions plan · p 0.97 · typesafe/jev-1.13-20260917 · 0ms · attempts 1 · cost 0.000019",
+		]);
 	});
 
 	test("the ok action comes from the caller's rule", async () => {
@@ -269,11 +282,14 @@ describe("Decisions.run", () => {
 
 	test("a caller abort is re-thrown with no record and no debug line", async () => {
 		const controller = new AbortController();
-		const { decisions, lines } = runtime(hangingFetch(() => queueMicrotask(() => controller.abort())));
+		const { decisions, lines } = runtime(
+			hangingFetch(() => queueMicrotask(() => controller.abort())),
+		);
 		let error: { name?: string } | undefined;
 		try {
 			await decisions.run("plan", PLAN_STATE, { ...PLAN_OPTS, signal: controller.signal });
 		} catch (caught) {
+			// reason: the error is captured and asserted by the caller
 			error = caught as { name?: string };
 		}
 		expect(error?.name).toBe("AbortError");
@@ -288,10 +304,16 @@ describe("Decisions.run", () => {
 			},
 		});
 		const outcome = await decisions.run("plan", PLAN_STATE, PLAN_OPTS);
-		if (outcome.status !== "error") throw new Error(`expected a fail-open error, got ${outcome.status}`);
+		if (outcome.status !== "error")
+			throw new Error(`expected a fail-open error, got ${outcome.status}`);
 		expect(outcome.error.kind).toBe("network");
 		expect(outcome.error.message).toBe("decisions network: jitter source broke for [redacted]");
-		expect(outcome.record).toMatchObject({ point: "plan", outcome: "error", action: "fail-open", error: "network" });
+		expect(outcome.record).toMatchObject({
+			point: "plan",
+			outcome: "error",
+			action: "fail-open",
+			error: "network",
+		});
 		expect(lines).toHaveLength(1);
 		expect([JSON.stringify(outcome.record), ...lines].join("\n")).not.toContain(K);
 	});
@@ -311,7 +333,11 @@ describe("Decisions.run", () => {
 
 	test("requests the configured model", async () => {
 		const r = recordingFetch([JEV(0.5)]);
-		await runtime(r.fetch, { config: { ...ON, model: "typesafe/jev-1.13" } }).decisions.run("plan", PLAN_STATE, PLAN_OPTS);
+		await runtime(r.fetch, { config: { ...ON, model: "typesafe/jev-1.13" } }).decisions.run(
+			"plan",
+			PLAN_STATE,
+			PLAN_OPTS,
+		);
 		expect((r.calls[0]?.body as { model: string }).model).toBe("typesafe/jev-1.13");
 	});
 });
@@ -327,9 +353,14 @@ describe("ULTRATHINK_DECISIONS_URL (AC-2.13)", () => {
 			"ftp://127.0.0.1/x",
 			"not a url",
 		]) {
-			await runtime(r.fetch, { env: { OPENROUTER_API_KEY: K, ULTRATHINK_DECISIONS_URL: url } }).decisions.run("plan", PLAN_STATE, PLAN_OPTS);
+			await runtime(r.fetch, {
+				env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_URL: url },
+			}).decisions.run("plan", PLAN_STATE, PLAN_OPTS);
 		}
-		expect(r.calls.map((call) => call.url)).toEqual(["http://127.0.0.1:9999/decisions", ...Array(5).fill(ENDPOINT)]);
+		expect(r.calls.map((call) => call.url)).toEqual([
+			"http://127.0.0.1:9999/decisions",
+			...Array(5).fill(ENDPOINT),
+		]);
 		for (const call of r.calls) {
 			expect(call.method).toBe("POST");
 			expect(call.headers.authorization).toBe(`Bearer ${K}`);
@@ -338,7 +369,10 @@ describe("ULTRATHINK_DECISIONS_URL (AC-2.13)", () => {
 });
 
 describe("debug line (AC-3.14, §5.8)", () => {
-	async function stderrOf(env: Record<string, string | undefined>, respond: () => Response): Promise<string> {
+	async function stderrOf(
+		env: Record<string, string | undefined>,
+		respond: () => Response,
+	): Promise<string> {
 		const written: string[] = [];
 		const original = process.stderr.write;
 		process.stderr.write = ((chunk: string | Uint8Array) => {
@@ -350,9 +384,12 @@ describe("debug line (AC-3.14, §5.8)", () => {
 				config: ON,
 				env,
 				storePath: tempStore(),
+				stateDir: tempStateDir(),
 				fetch: recordingFetch([respond]).fetch,
 				now: () => 1000,
-				sleep: async () => {},
+				sleep: async () => {
+					// reason: no real delay in the fixture; retries run immediately
+				},
 			});
 			await decisions.run("plan", PLAN_STATE, PLAN_OPTS);
 		} finally {
@@ -362,21 +399,25 @@ describe("debug line (AC-3.14, §5.8)", () => {
 	}
 
 	test("ULTRATHINK_DEBUG=1 writes exactly one line per decision, without the message or the key", async () => {
-		const out = await stderrOf({ OPENROUTER_API_KEY: K, ULTRATHINK_DEBUG: "1" }, JEV(0.97));
-		expect(out).toBe("[ultrathink] decisions plan · p 0.97 · typesafe/jev-1.13-20260917 · 0ms · attempts 1 · cost 0.000019\n");
+		const out = await stderrOf({ ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DEBUG: "1" }, JEV(0.97));
+		expect(out).toBe(
+			"[ultrathink] decisions plan · p 0.97 · typesafe/jev-1.13-20260917 · 0ms · attempts 1 · cost 0.000019\n",
+		);
 		expect(out).not.toContain(MESSAGE);
 		expect(out).not.toContain(K);
 	});
 
 	test("an error writes the kind only", async () => {
-		const out = await stderrOf({ OPENROUTER_API_KEY: K, ULTRATHINK_DEBUG: "1" }, ERR(401));
+		const out = await stderrOf({ ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DEBUG: "1" }, ERR(401));
 		expect(out).toBe("[ultrathink] decisions plan · error (auth) · 0ms · attempts 1\n");
 		expect(out).not.toContain("upstream said no");
 	});
 
 	test("without ULTRATHINK_DEBUG=1 nothing is written", async () => {
-		expect(await stderrOf({ OPENROUTER_API_KEY: K }, JEV(0.97))).toBe("");
-		expect(await stderrOf({ OPENROUTER_API_KEY: K, ULTRATHINK_DEBUG: "0" }, JEV(0.97))).toBe("");
+		expect(await stderrOf({ ULTRATHINK_OPENROUTER_KEY: K }, JEV(0.97))).toBe("");
+		expect(await stderrOf({ ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DEBUG: "0" }, JEV(0.97))).toBe(
+			"",
+		);
 	});
 
 	test("formatDebugLine rounds latency and omits an absent cost", () => {
@@ -392,7 +433,9 @@ describe("debug line (AC-3.14, §5.8)", () => {
 			attempts: 2,
 			at: 1,
 		});
-		expect(line).toBe("decisions knowledge · p 0.19 · typesafe/jev-1.13-20260917 · 513ms · attempts 2");
+		expect(line).toBe(
+			"decisions knowledge · p 0.19 · typesafe/jev-1.13-20260917 · 513ms · attempts 2",
+		);
 	});
 });
 
@@ -405,51 +448,107 @@ describe("buildDecisionsRequest", () => {
 
 	test("session ids are trimmed, capped at 256 chars and omitted when empty or unknown", () => {
 		const input = { model: "m", zdr: true };
-		expect(buildDecisionsRequest("plan", PLAN_STATE, { ...input, sessionId: " sess-1 " }).session_id).toBe("sess-1");
-		expect(buildDecisionsRequest("plan", PLAN_STATE, { ...input, sessionId: "s".repeat(300) }).session_id).toBe("s".repeat(256));
+		expect(
+			buildDecisionsRequest("plan", PLAN_STATE, { ...input, sessionId: " sess-1 " }).session_id,
+		).toBe("sess-1");
+		expect(
+			buildDecisionsRequest("plan", PLAN_STATE, { ...input, sessionId: "s".repeat(300) })
+				.session_id,
+		).toBe("s".repeat(256));
 		for (const sessionId of ["", "   ", "unknown", undefined]) {
-			expect(buildDecisionsRequest("plan", PLAN_STATE, { ...input, sessionId })).not.toHaveProperty("session_id");
+			expect(buildDecisionsRequest("plan", PLAN_STATE, { ...input, sessionId })).not.toHaveProperty(
+				"session_id",
+			);
 		}
 	});
 
 	test("each point asks its own question; the span defaults to the point", () => {
-		const ship = buildDecisionsRequest("ship", { request: "r", acceptance_criteria: [], patch: "" }, { model: "m", zdr: true });
+		const ship = buildDecisionsRequest(
+			"ship",
+			{ request: "r", acceptance_criteria: [], patch: "" },
+			{ model: "m", zdr: true },
+		);
 		expect(ship.questions).toEqual({ complete: QUESTIONS.ship });
 		expect(ship.trace).toEqual({ trace_name: "ultrathink", span_name: "ship" });
-		const check = buildDecisionsRequest("plan", PLAN_STATE, { model: "m", zdr: true, spanName: "check" });
+		const check = buildDecisionsRequest("plan", PLAN_STATE, {
+			model: "m",
+			zdr: true,
+			spanName: "check",
+		});
 		expect(check.trace).toEqual({ trace_name: "ultrathink", span_name: "check" });
 	});
 });
 
 describe("teachable and skillworthy points", () => {
-	const LESSON = { name: "Run bun test per file", description: "The whole suite hides the failing file", body: "b".repeat(2000), kind: "pitfall" };
-	const TEACHABLE_OPTS: RunDecisionOptions = { threshold: 0.3, action: (p) => (p < 0.3 ? "drop" : "keep") };
+	const LESSON = {
+		name: "Run bun test per file",
+		description: "The whole suite hides the failing file",
+		body: "b".repeat(2000),
+		kind: "pitfall",
+	};
+	const TEACHABLE_OPTS: RunDecisionOptions = {
+		threshold: 0.3,
+		action: (p) => (p < 0.3 ? "drop" : "keep"),
+	};
 
 	test("teachable sends its state, its question and the span name under the key `teachable`", async () => {
 		const r = recordingFetch([JEV(0.9, "teachable")]);
-		const outcome = await runtime(r.fetch).decisions.run("teachable", buildTeachableState(LESSON), TEACHABLE_OPTS);
+		const outcome = await runtime(r.fetch).decisions.run(
+			"teachable",
+			buildTeachableState(LESSON),
+			TEACHABLE_OPTS,
+		);
 		expect(r.calls[0]?.body).toEqual({
 			model: "~typesafe/jev-latest",
-			state: { name: LESSON.name, description: LESSON.description, body: "b".repeat(800), kind: "pitfall" },
+			state: {
+				name: LESSON.name,
+				description: LESSON.description,
+				body: "b".repeat(800),
+				kind: "pitfall",
+			},
 			questions: { teachable: QUESTIONS.teachable },
 			provider: { zdr: true, data_collection: "deny" },
 			trace: { trace_name: "ultrathink", span_name: "teachable" },
 		});
-		expect(outcome.status === "ok" && outcome.record).toMatchObject({ point: "teachable", p: 0.9, action: "keep", threshold: 0.3 });
+		expect(outcome.status === "ok" && outcome.record).toMatchObject({
+			point: "teachable",
+			p: 0.9,
+			action: "keep",
+			threshold: 0.3,
+		});
 	});
 
 	test("skillworthy sends the occurrence count and its own question", async () => {
 		const r = recordingFetch([JEV(0.2, "skillworthy")]);
 		const opts: RunDecisionOptions = { threshold: 0.5, action: (p) => (p < 0.5 ? "skip" : "keep") };
-		const outcome = await runtime(r.fetch).decisions.run("skillworthy", buildSkillworthyState({ ...LESSON, occurrences: 4 }), opts);
-		const body = r.calls[0]?.body as { state: Record<string, unknown>; questions: Record<string, unknown> };
+		const outcome = await runtime(r.fetch).decisions.run(
+			"skillworthy",
+			buildSkillworthyState({ ...LESSON, occurrences: 4 }),
+			opts,
+		);
+		const body = r.calls[0]?.body as {
+			state: Record<string, unknown>;
+			questions: Record<string, unknown>;
+		};
 		expect(body.state).toEqual({ ...LESSON, body: "b".repeat(800), occurrences: 4 });
 		expect(body.questions).toEqual({ skillworthy: QUESTIONS.skillworthy });
-		expect(outcome.status === "ok" && outcome.record).toMatchObject({ point: "skillworthy", p: 0.2, action: "skip", probabilities: { skillworthy: 0.2 } });
+		expect(outcome.status === "ok" && outcome.record).toMatchObject({
+			point: "skillworthy",
+			p: 0.2,
+			action: "skip",
+			probabilities: { skillworthy: 0.2 },
+		});
 	});
 
 	test("each is active only when listed, and the default list names both", () => {
-		expect(DEFAULT_DECISIONS_CONFIG.points).toEqual(["plan", "ship", "knowledge", "blocking", "teachable", "skillworthy"]);
+		expect(DEFAULT_DECISIONS_CONFIG.points).toEqual([
+			"plan",
+			"ship",
+			"knowledge",
+			"blocking",
+			"teachable",
+			"skillworthy",
+		]);
 		const r = recordingFetch([JEV(0.5)]);
 		const onlyTeachable = runtime(r.fetch, { config: { ...ON, points: ["teachable"] } }).decisions;
 		expect(DECISION_POINTS.filter((point) => onlyTeachable.active(point))).toEqual(["teachable"]);
@@ -460,14 +559,29 @@ describe("teachable and skillworthy points", () => {
 
 	test("the kill switch makes both inactive without a request", async () => {
 		const r = recordingFetch([JEV(0.5, "teachable")]);
-		const { decisions } = runtime(r.fetch, { env: { OPENROUTER_API_KEY: K, ULTRATHINK_DECISIONS: "0" } });
-		expect(await decisions.run("teachable", buildTeachableState(LESSON), TEACHABLE_OPTS)).toEqual({ status: "inactive" });
-		expect(await decisions.run("skillworthy", buildSkillworthyState({ ...LESSON, occurrences: 1 }), TEACHABLE_OPTS)).toEqual({ status: "inactive" });
+		const { decisions } = runtime(r.fetch, {
+			env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" },
+		});
+		expect(await decisions.run("teachable", buildTeachableState(LESSON), TEACHABLE_OPTS)).toEqual({
+			status: "inactive",
+		});
+		expect(
+			await decisions.run(
+				"skillworthy",
+				buildSkillworthyState({ ...LESSON, occurrences: 1 }),
+				TEACHABLE_OPTS,
+			),
+		).toEqual({ status: "inactive" });
 		expect(r.calls).toHaveLength(0);
 	});
 
 	test("every failure kind returns a fail-open error record", async () => {
-		const invalid = () => Response.json({ model: "m", answers: { teachable: { type: "noul", noul: 7 } }, usage: { input_tokens: 1, output_tokens: 0 } });
+		const invalid = () =>
+			Response.json({
+				model: "m",
+				answers: { teachable: { type: "noul", noul: 7 } },
+				usage: { input_tokens: 1, output_tokens: 0 },
+			});
 		const throwing = (async () => {
 			throw new Error("connection refused");
 		}) as unknown as typeof fetch;
@@ -483,10 +597,18 @@ describe("teachable and skillworthy points", () => {
 			["network", throwing],
 		];
 		for (const [kind, fetchImpl] of cases) {
-			const outcome = await runtime(fetchImpl).decisions.run("teachable", buildTeachableState(LESSON), TEACHABLE_OPTS);
+			const outcome = await runtime(fetchImpl).decisions.run(
+				"teachable",
+				buildTeachableState(LESSON),
+				TEACHABLE_OPTS,
+			);
 			if (outcome.status !== "error") throw new Error(`expected an error for ${kind}`);
 			expect(outcome.error.kind).toBe(kind);
-			expect(outcome.record).toMatchObject({ point: "teachable", action: "fail-open", error: kind });
+			expect(outcome.record).toMatchObject({
+				point: "teachable",
+				action: "fail-open",
+				error: kind,
+			});
 		}
 	});
 });
@@ -509,12 +631,6 @@ describe("formatP (A2)", () => {
 
 describe("provider routing (JEV-02)", () => {
 	const V = "vck_test_key_do_not_use";
-	const VEV = (p: number) => () =>
-		Response.json({
-			answers: { plan_worthy: { type: "boolean", probability: p } },
-			usage: { inputTokens: 100, outputTokens: 5 },
-		});
-
 	function storeWith(providers: Record<string, unknown>): string {
 		const dir = mkdtempSync(join(tmpdir(), "ut-decisions-rail-"));
 		dirs.push(dir);
@@ -526,29 +642,43 @@ describe("provider routing (JEV-02)", () => {
 
 	test("resolveVercelKey: the stored key wins over AI_GATEWAY_API_KEY, which is the fallback", () => {
 		const path = storeWith({ vercel: stored(V) });
-		expect(resolveVercelKey(path, { AI_GATEWAY_API_KEY: "other" })).toEqual({ key: V, source: "store" });
-		expect(resolveVercelKey(storeWith({}), { AI_GATEWAY_API_KEY: ` ${V} ` })).toEqual({ key: V, source: "AI_GATEWAY_API_KEY" });
+		expect(resolveVercelKey(path, { AI_GATEWAY_API_KEY: "other" })).toEqual({
+			key: V,
+			source: "store",
+		});
+		expect(resolveVercelKey(storeWith({}), { AI_GATEWAY_API_KEY: ` ${V} ` })).toEqual({
+			key: V,
+			source: "AI_GATEWAY_API_KEY",
+		});
 		expect(resolveVercelKey(storeWith({}), {})).toBeUndefined();
 	});
 
 	test("auto picks vercel iff its key is present; explicit pins either rail", () => {
 		const auto = { ...ON, provider: "auto" as const };
-		expect(resolveDecisionsKeys(auto, storeWith({}), { AI_GATEWAY_API_KEY: V }).provider).toBe("vercel");
-		expect(resolveDecisionsKeys(auto, storeWith({ vercel: stored(V) }), {}).provider).toBe("vercel");
-		expect(resolveDecisionsKeys(auto, storeWith({}), { OPENROUTER_API_KEY: K }).provider).toBe("openrouter");
+		expect(resolveDecisionsKeys(auto, storeWith({}), { AI_GATEWAY_API_KEY: V }).provider).toBe(
+			"vercel",
+		);
+		expect(resolveDecisionsKeys(auto, storeWith({ vercel: stored(V) }), {}).provider).toBe(
+			"vercel",
+		);
+		expect(
+			resolveDecisionsKeys(auto, storeWith({}), { ULTRATHINK_OPENROUTER_KEY: K }).provider,
+		).toBe("openrouter");
 		expect(resolveDecisionsKeys(auto, storeWith({}), {}).provider).toBe("openrouter");
 		expect(resolveDecisionsKeys(auto, storeWith({}), {}).key).toBeUndefined();
 		const pinned = (provider: "openrouter" | "vercel") => ({ ...ON, provider });
-		const both = { AI_GATEWAY_API_KEY: V, OPENROUTER_API_KEY: K };
+		const both = { AI_GATEWAY_API_KEY: V, ULTRATHINK_OPENROUTER_KEY: K };
 		expect(resolveDecisionsKeys(pinned("openrouter"), storeWith({}), both)).toEqual({
 			provider: "openrouter",
-			key: { key: K, source: "OPENROUTER_API_KEY" },
+			key: { key: K, source: "ULTRATHINK_OPENROUTER_KEY" },
 		});
 		expect(resolveDecisionsKeys(pinned("vercel"), storeWith({}), both)).toEqual({
 			provider: "vercel",
 			key: { key: V, source: "AI_GATEWAY_API_KEY" },
 		});
-		expect(resolveDecisionsKeys(pinned("vercel"), storeWith({}), { OPENROUTER_API_KEY: K }).key).toBeUndefined();
+		expect(
+			resolveDecisionsKeys(pinned("vercel"), storeWith({}), { ULTRATHINK_OPENROUTER_KEY: K }).key,
+		).toBeUndefined();
 	});
 
 	test("run() on the vercel rail posts the v4 endpoint and records the gateway model", async () => {
@@ -568,17 +698,25 @@ describe("provider routing (JEV-02)", () => {
 		expect(call.body).toMatchObject({ questions: { plan_worthy: { type: "boolean" } } });
 		if (outcome.status !== "ok") throw new Error("expected ok");
 		expect(outcome.p).toBe(0.97);
-		expect(outcome.record).toMatchObject({ point: "plan", outcome: "ok", model: "typesafe-ai/jev", action: "plan" });
+		expect(outcome.record).toMatchObject({
+			point: "plan",
+			outcome: "ok",
+			model: "typesafe-ai/jev",
+			action: "plan",
+		});
 	});
 
 	test("run() on auto with both keys uses vercel; explicit openrouter stays on OpenRouter", async () => {
-		const both = { AI_GATEWAY_API_KEY: V, OPENROUTER_API_KEY: K };
+		const both = { AI_GATEWAY_API_KEY: V, ULTRATHINK_OPENROUTER_KEY: K };
 		const r = recordingFetch([VEV(0.5)]);
 		const auto = runtime(r.fetch, { config: { ...ON, provider: "auto" }, env: both }).decisions;
 		await auto.run("plan", PLAN_STATE, PLAN_OPTS);
 		expect(r.calls[0]?.url).toBe(VERCEL_DECISIONS_URL);
 		const queued = recordingFetch([JEV(0.5)]);
-		const pinned = runtime(queued.fetch, { config: { ...ON, provider: "openrouter" }, env: both }).decisions;
+		const pinned = runtime(queued.fetch, {
+			config: { ...ON, provider: "openrouter" },
+			env: both,
+		}).decisions;
 		expect(pinned.active("plan")).toBe(true);
 		await pinned.run("plan", PLAN_STATE, PLAN_OPTS);
 		expect(queued.calls[0]?.url).toBe(ENDPOINT);
@@ -593,5 +731,444 @@ describe("provider routing (JEV-02)", () => {
 		expect(decisions.active("plan")).toBe(false);
 		expect(await decisions.run("plan", PLAN_STATE, PLAN_OPTS)).toEqual({ status: "inactive" });
 		expect(r.calls).toHaveLength(0);
+	});
+});
+
+const plan = (decisions: Decisions): Promise<DecisionOutcome> =>
+	decisions.run("plan", PLAN_STATE, PLAN_OPTS);
+const kindOf = (outcome: DecisionOutcome): string =>
+	outcome.status === "error" ? outcome.error.kind : outcome.status;
+
+describe("the legacy OPENROUTER_API_KEY is not read", () => {
+	const LEGACY = "sk-or-v1-LEGACYKEY-0123456789abcdef";
+
+	test("resolveOpenRouterKey ignores it, with or without a store entry", () => {
+		expect(
+			resolveOpenRouterKey(tempStore(undefined), { OPENROUTER_API_KEY: LEGACY }),
+		).toBeUndefined();
+		expect(resolveOpenRouterKey(tempStore(K), { OPENROUTER_API_KEY: LEGACY })).toEqual({
+			key: K,
+			source: "store",
+		});
+		expect(
+			resolveOpenRouterKey(tempStore(undefined), {
+				OPENROUTER_API_KEY: LEGACY,
+				ULTRATHINK_OPENROUTER_KEY: K,
+			}),
+		).toEqual({ key: K, source: "ULTRATHINK_OPENROUTER_KEY" });
+	});
+
+	test("a decide with only the legacy variable reports no key and makes zero requests", async () => {
+		const r = recordingFetch([JEV(0.5)]);
+		const { decisions } = runtime(r.fetch, { env: { OPENROUTER_API_KEY: LEGACY } });
+		expect(decisions.active("plan")).toBe(false);
+		expect(await plan(decisions)).toEqual({ status: "inactive" });
+		expect(r.calls).toHaveLength(0);
+		expect(
+			resolveDecisionsKeys(ON, tempStore(undefined), { OPENROUTER_API_KEY: LEGACY }).key,
+		).toBeUndefined();
+	});
+});
+
+describe("health breaker on the Jev rails", () => {
+	const T = Date.UTC(2026, 9, 28, 12, 0, 0);
+	const BASE = 300_000;
+	const neverAnswers = () => Promise.withResolvers<Response>().promise;
+
+	test("a 402 opens it: later calls, here and in another process, make zero requests and return a typed unavailable error", async () => {
+		const dir = tempStateDir();
+		const r = recordingFetch([ERR(402), JEV(0.9)]);
+		const { decisions, lines } = runtime(r.fetch, { stateDir: dir });
+		expect(kindOf(await plan(decisions))).toBe("credits");
+		expect(r.calls).toHaveLength(1);
+		const refused = await plan(decisions);
+		if (refused.status !== "error") throw new Error("expected the breaker to refuse the call");
+		expect(refused.error.kind).toBe("unavailable");
+		expect(refused.error.message).toStartWith(
+			"decisions unavailable: OpenRouter reports insufficient credits; next check ",
+		);
+		expect(refused.error.message.length).toBeLessThanOrEqual(200);
+		expect(refused.record).toEqual({
+			point: "plan",
+			outcome: "error",
+			model: "~typesafe/jev-latest",
+			probabilities: {},
+			threshold: 0.2,
+			action: "fail-open",
+			latencyMs: 0,
+			attempts: 0,
+			error: "unavailable",
+			at: 1000,
+		});
+		expect(lines.at(-1)).toBe("decisions plan · error (unavailable) · 0ms · attempts 0");
+		const other = runtime(r.fetch, { stateDir: dir }).decisions;
+		const shipState = { request: "r", acceptance_criteria: [], patch: "" };
+		expect(kindOf(await other.run("ship", shipState, PLAN_OPTS))).toBe("unavailable");
+		expect(kindOf(await plan(other))).toBe("unavailable");
+		expect(r.calls).toHaveLength(1);
+		const file = join(dir, "decisions-health-openrouter.json");
+		expect(statSync(file).mode & 0o777).toBe(0o600);
+		expect(readFileSync(file, "utf8")).not.toContain(K);
+	});
+
+	test("401 and 403 open it too", async () => {
+		for (const status of [401, 403]) {
+			const r = recordingFetch([ERR(status), JEV(0.9)]);
+			const { decisions } = runtime(r.fetch);
+			expect(kindOf(await plan(decisions))).toBe("auth");
+			expect(kindOf(await plan(decisions))).toBe("unavailable");
+			expect(r.calls).toHaveLength(1);
+		}
+	});
+
+	test("429, 5xx, a timeout and a network error do not open it: the next call still goes out", async () => {
+		const cases: Array<[string, () => Response | Promise<Response>, Partial<DecisionsConfig>]> = [
+			["429", ERR(429), {}],
+			["500", ERR(500), {}],
+			["503", ERR(503), {}],
+			["408", ERR(408), {}],
+			[
+				"network",
+				() => {
+					throw new Error("connection refused");
+				},
+				{},
+			],
+			["timeout", neverAnswers, { timeoutMs: 20 }],
+		];
+		for (const [label, respond, config] of cases) {
+			const dir = tempStateDir();
+			const r = recordingFetch([respond]);
+			const { decisions } = runtime(r.fetch, { stateDir: dir, config: { ...ON, ...config } });
+			const first = await plan(decisions);
+			if (first.status !== "error") throw new Error(`${label}: expected a failure`);
+			const before = r.calls.length;
+			const second = await plan(decisions);
+			if (kindOf(second) === "unavailable") throw new Error(`${label}: opened the breaker`);
+			if (r.calls.length <= before) throw new Error(`${label}: the next call made no request`);
+			expect(openJevHealth(dir, "openrouter").read().state).toBe("closed");
+		}
+	});
+
+	test("a hand-built open file proves it across processes: zero requests, typed unavailable", async () => {
+		const dir = tempStateDir();
+		writeFileSync(
+			join(dir, "decisions-health-openrouter.json"),
+			JSON.stringify({
+				v: 1,
+				state: "open",
+				cause: "auth",
+				since: 0,
+				nextProbeAt: 1000 + 60_000,
+				coolDownMs: BASE,
+				failures: 1,
+			}),
+		);
+		const r = recordingFetch([JEV(0.9)]);
+		const outcome = await plan(runtime(r.fetch, { stateDir: dir }).decisions);
+		if (outcome.status !== "error") throw new Error("expected the breaker to refuse the call");
+		expect(outcome.error.kind).toBe("unavailable");
+		expect(outcome.error.message).toContain("OpenRouter rejected the key");
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("after the cool-down one call probes, and a success closes the breaker", async () => {
+		const dir = tempStateDir();
+		const clock = { now: T };
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const r = recordingFetch([ERR(402), JEV(0.9)]);
+		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => clock.now });
+		expect(kindOf(await plan(decisions))).toBe("credits");
+		clock.now = T + BASE - 1;
+		expect(kindOf(await plan(decisions))).toBe("unavailable");
+		expect(r.calls).toHaveLength(1);
+		clock.now = T + BASE;
+		expect(kindOf(await plan(decisions))).toBe("ok");
+		expect(r.calls).toHaveLength(2);
+		expect(health.read().state).toBe("closed");
+		expect(kindOf(await plan(decisions))).toBe("ok");
+		expect(r.calls).toHaveLength(3);
+	});
+
+	test("while one process probes, a second process stays off", async () => {
+		const dir = tempStateDir();
+		openJevHealth(dir, "openrouter", { rng: () => 0.5 }).recordFailure("credits", T);
+		const answer = Promise.withResolvers<Response>();
+		const probe = recordingFetch([() => answer.promise]);
+		const first = runtime(probe.fetch, { stateDir: dir, now: () => T + BASE }).decisions;
+		const pending = plan(first);
+		await yieldTurn();
+		expect(probe.calls).toHaveLength(1);
+		const second = runtime(probe.fetch, { stateDir: dir, now: () => T + BASE + 1000 }).decisions;
+		expect(kindOf(await plan(second))).toBe("unavailable");
+		expect(probe.calls).toHaveLength(1);
+		answer.resolve(JEV(0.9)());
+		expect(kindOf(await pending)).toBe("ok");
+	});
+
+	test("after a 402 the same URL, model and key are used on every later attempt and nothing else is contacted", async () => {
+		const dir = tempStateDir();
+		const clock = { now: T };
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const r = recordingFetch([ERR(402)]);
+		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => clock.now });
+		const kinds: string[] = [];
+		for (let round = 0; round < 3; round++) {
+			kinds.push(kindOf(await plan(decisions)));
+			kinds.push(kindOf(await plan(decisions)));
+			clock.now = health.read().nextProbeAt ?? 0;
+		}
+		expect(kinds).toEqual([
+			"credits",
+			"unavailable",
+			"credits",
+			"unavailable",
+			"credits",
+			"unavailable",
+		]);
+		expect(r.calls).toHaveLength(3);
+		for (const call of r.calls) {
+			expect(call.url).toBe(ENDPOINT);
+			expect(call.body).toMatchObject({ model: "~typesafe/jev-latest" });
+			expect(call.headers.authorization).toBe(`Bearer ${K}`);
+		}
+		// Each failed probe doubled the cool-down.
+		expect(health.read().coolDownMs).toBe(BASE * 4);
+	});
+
+	test("without a stateDir nothing is written anywhere, yet the breaker still refuses in-process", async () => {
+		const spy = tempStateDir();
+		const home = process.env.HOME;
+		const cwd = process.cwd();
+		// Every place a default could land (HOME, the cwd, the state-dir env vars) is the same empty spy dir.
+		process.env.HOME = spy;
+		process.chdir(spy);
+		try {
+			const r = recordingFetch([ERR(402), JEV(0.9)]);
+			const { decisions } = runtime(r.fetch, {
+				stateDir: undefined,
+				env: {
+					ULTRATHINK_OPENROUTER_KEY: K,
+					HOME: spy,
+					ULTRATHINK_STATE_DIR: join(spy, "state"),
+					CLAUDE_CONFIG_DIR: join(spy, ".claude"),
+				},
+			});
+			expect(kindOf(await plan(decisions))).toBe("credits");
+			expect(kindOf(await plan(decisions))).toBe("unavailable");
+			expect(r.calls).toHaveLength(1);
+			// The breaker is this runtime's own: a fresh one has no memory of the 402.
+			const fresh = runtime(r.fetch, { stateDir: undefined }).decisions;
+			expect(kindOf(await plan(fresh))).toBe("ok");
+			expect(r.calls).toHaveLength(2);
+		} finally {
+			process.chdir(cwd);
+			if (home !== undefined) process.env.HOME = home;
+		}
+		expect(readdirSync(spy)).toEqual([]);
+	});
+});
+
+describe("usage ledger", () => {
+	const rows = (dir: string): Array<Record<string, unknown>> =>
+		readFileSync(join(dir, USAGE_FILE), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+	test("an ok call appends one record: served model, tokens, cost and request id", async () => {
+		const dir = tempStateDir();
+		await plan(runtime(recordingFetch([JEV(0.97)]).fetch, { stateDir: dir }).decisions);
+		expect(rows(dir)).toEqual([
+			{
+				ts: 1000,
+				point: "plan",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				servedModel: "typesafe/jev-1.13-20260917",
+				ok: true,
+				ms: 0,
+				promptTokens: 450,
+				completionTokens: 0,
+				costUsd: 0.000019,
+				requestId: "gen-dec-test",
+			},
+		]);
+	});
+
+	test("a failure is ledgered with kind and status; a breaker refusal appends nothing", async () => {
+		const dir = tempStateDir();
+		const { decisions } = runtime(recordingFetch([ERR(402)]).fetch, { stateDir: dir });
+		await plan(decisions);
+		await plan(decisions);
+		expect(rows(dir)).toEqual([
+			{
+				ts: 1000,
+				point: "plan",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				ok: false,
+				kind: "credits",
+				status: 402,
+				ms: 0,
+			},
+		]);
+	});
+
+	test("a refused model makes no request, no ledger row and no breaker entry", async () => {
+		const dir = tempStateDir();
+		const r = recordingFetch([JEV(0.9)]);
+		const { decisions } = runtime(r.fetch, {
+			stateDir: dir,
+			config: { ...ON, model: "anthropic/claude-opus-5.5" },
+		});
+		expect(kindOf(await plan(decisions))).toBe("model");
+		expect(r.calls).toHaveLength(0);
+		expect(existsSync(join(dir, USAGE_FILE))).toBe(false);
+		expect(existsSync(join(dir, "decisions-health-openrouter.json"))).toBe(false);
+	});
+
+	test("the Vercel rail is ledgered with its own rail and the gateway model id", async () => {
+		const dir = tempStateDir();
+		const { decisions } = runtime(recordingFetch([VEV(0.97)]).fetch, {
+			stateDir: dir,
+			config: { ...ON, provider: "vercel" },
+			env: { AI_GATEWAY_API_KEY: "vck_test_key_do_not_use" },
+		});
+		await plan(decisions);
+		expect(rows(dir)).toEqual([
+			{
+				ts: 1000,
+				point: "plan",
+				rail: "vercel",
+				requestedModel: "typesafe-ai/jev",
+				servedModel: "typesafe-ai/jev",
+				ok: true,
+				ms: 0,
+				promptTokens: 100,
+				completionTokens: 5,
+			},
+		]);
+	});
+
+	test("neither the ledger nor the health file holds the key, the prompt or an upstream body", async () => {
+		const dir = tempStateDir();
+		const good = runtime(recordingFetch([JEV(0.9)]).fetch, {
+			stateDir: dir,
+			env: {},
+			storePath: tempStore(K),
+		});
+		await plan(good.decisions);
+		const bad = runtime(recordingFetch([ERR(402)]).fetch, { stateDir: dir });
+		await plan(bad.decisions);
+		const text = ["decisions-health-openrouter.json", USAGE_FILE]
+			.map((name) => readFileSync(join(dir, name), "utf8"))
+			.join("\n");
+		for (const secret of [K, MESSAGE, "Bearer", "upstream said no", "sk-or-"])
+			expect(text).not.toContain(secret);
+		// The files were really written, so the absence above means something.
+		expect(text).toContain("credits");
+		expect(rows(dir)).toHaveLength(2);
+	});
+});
+
+describe("per-rail breakers, stragglers and the per-POST ledger", () => {
+	const T = Date.UTC(2026, 9, 28, 12, 0, 0);
+	const BASE = 300_000;
+	const usageRows = (dir: string): Array<Record<string, unknown>> =>
+		readFileSync(join(dir, USAGE_FILE), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+	test("a spent Vercel account does not block OpenRouter, and the refusal names Vercel", async () => {
+		const dir = tempStateDir();
+		const vercel = runtime(recordingFetch([ERR(402)]).fetch, {
+			stateDir: dir,
+			config: { ...ON, provider: "vercel" },
+			env: { AI_GATEWAY_API_KEY: "vck_test_key_do_not_use" },
+		}).decisions;
+		expect(kindOf(await plan(vercel))).toBe("credits");
+		const refused = await plan(vercel);
+		if (refused.status !== "error") throw new Error("expected the Vercel breaker to refuse");
+		expect(refused.error.message).toStartWith(
+			"decisions unavailable: Vercel AI Gateway reports insufficient credits",
+		);
+		const r = recordingFetch([JEV(0.9)]);
+		const openrouter = runtime(r.fetch, {
+			stateDir: dir,
+			config: { ...ON, provider: "openrouter" },
+		}).decisions;
+		expect(kindOf(await plan(openrouter))).toBe("ok");
+		expect(r.calls).toHaveLength(1);
+		expect(existsSync(join(dir, "decisions-health-vercel.json"))).toBe(true);
+		expect(readFileSync(join(dir, "decisions-health-openrouter.json"), "utf8")).toContain("closed");
+		expect(existsSync(join(dir, "decisions-health.json"))).toBe(false);
+	});
+
+	test("decisions started together cannot double the cool-down: every failure after the first is a straggler", async () => {
+		const dir = tempStateDir();
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const r = recordingFetch([ERR(402)]);
+		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => T });
+		const outcomes = await Promise.all([plan(decisions), plan(decisions), plan(decisions)]);
+		expect(outcomes.map(kindOf)).toEqual(["credits", "credits", "credits"]);
+		expect(r.calls).toHaveLength(3);
+		expect(health.read()).toMatchObject({
+			state: "open",
+			coolDownMs: BASE,
+			nextProbeAt: T + BASE,
+			failures: 3,
+		});
+	});
+
+	test("a success already in flight cannot erase a newer hard failure", async () => {
+		const dir = tempStateDir();
+		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const slow = Promise.withResolvers<Response>();
+		const r = recordingFetch([ERR(402), () => slow.promise]);
+		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => T });
+		const failing = plan(decisions);
+		const inFlight = plan(decisions);
+		expect(kindOf(await failing)).toBe("credits");
+		expect(health.read().state).toBe("open");
+		slow.resolve(JEV(0.9)());
+		expect(kindOf(await inFlight)).toBe("ok");
+		expect(health.read()).toMatchObject({ state: "open", cause: "credits" });
+		expect(kindOf(await plan(decisions))).toBe("unavailable");
+		expect(r.calls).toHaveLength(2);
+	});
+
+	test("the ledger records each real POST: a 503 retried to success is two rows", async () => {
+		const dir = tempStateDir();
+		const r = recordingFetch([ERR(503), JEV(0.97)]);
+		const outcome = await plan(runtime(r.fetch, { stateDir: dir }).decisions);
+		expect(outcome.status === "ok" && outcome.record.attempts).toBe(2);
+		expect(r.calls).toHaveLength(2);
+		expect(usageRows(dir)).toEqual([
+			{
+				ts: 1000,
+				point: "plan",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				ok: false,
+				kind: "upstream",
+				status: 503,
+				ms: 0,
+			},
+			{
+				ts: 1000,
+				point: "plan",
+				rail: "openrouter",
+				requestedModel: "~typesafe/jev-latest",
+				servedModel: "typesafe/jev-1.13-20260917",
+				ok: true,
+				ms: 0,
+				promptTokens: 450,
+				completionTokens: 0,
+				costUsd: 0.000019,
+				requestId: "gen-dec-test",
+			},
+		]);
 	});
 });

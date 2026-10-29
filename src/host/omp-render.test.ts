@@ -2,12 +2,38 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import type { ModelResolution } from "./engine.ts";
-import { ACTIVITY_DELIVERY, ACTIVITY_TYPE, INSIGHT_TYPE, PENDING_TYPE, PLAN_TYPE, registerUltrathinkRenderers, SHIP_TYPE, SWARM_TYPE, SYNC_TYPE } from "./omp-render.ts";
+import {
+	ACTIVITY_DELIVERY,
+	ACTIVITY_TYPE,
+	INSIGHT_TYPE,
+	PENDING_TYPE,
+	PLAN_TYPE,
+	registerUltrathinkRenderers,
+	SHIP_TYPE,
+	SWARM_TYPE,
+	SYNC_TYPE,
+} from "./omp-render.ts";
 import { visibleWidth } from "./omp-paint.ts";
-import { toInsightCardSnapshot, type InsightCardSnapshot, type InsightDecision, type InsightSnapshot } from "./omp-insights.ts";
+import {
+	toInsightCardSnapshot,
+	type InsightCardSnapshot,
+	type InsightDecision,
+	type InsightSnapshot,
+} from "./omp-insights.ts";
 import type { PlanView } from "./view.ts";
 
-const FG = ["accent", "muted", "dim", "success", "warning", "error", "borderMuted", "borderAccent", "customMessageLabel", "customMessageText"];
+const FG = [
+	"accent",
+	"muted",
+	"dim",
+	"success",
+	"warning",
+	"error",
+	"borderMuted",
+	"borderAccent",
+	"customMessageLabel",
+	"customMessageText",
+];
 const CARD_BG = "\x1b[48;5;236m";
 
 /** Omp-shaped theme: every color is a distinct invisible SGR marker, and unknown colors throw like Omp's theme. */
@@ -21,7 +47,14 @@ const theme = {
 		return `${CARD_BG}${text}\x1b[49m`;
 	},
 	bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
-	boxRound: { topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯", horizontal: "─", vertical: "│" },
+	boxRound: {
+		topLeft: "╭",
+		topRight: "╮",
+		bottomLeft: "╰",
+		bottomRight: "╯",
+		horizontal: "─",
+		vertical: "│",
+	},
 	icon: { package: "📦" },
 	status: { running: "RR", success: "OK", error: "XX", warning: "WW", pending: ".." },
 };
@@ -40,17 +73,22 @@ const throwingTheme = {
 
 const themes: Record<string, unknown> = { fake: theme, throwing: throwingTheme, empty: {} };
 
-type Renderer = Parameters<Parameters<typeof registerUltrathinkRenderers>[0]["registerMessageRenderer"]>[1];
+type Renderer = Parameters<
+	Parameters<typeof registerUltrathinkRenderers>[0]["registerMessageRenderer"]
+>[1];
 
 const renderers: Record<string, Renderer> = {};
-registerUltrathinkRenderers({ registerMessageRenderer: (type, renderer) => void (renderers[type] = renderer) });
+registerUltrathinkRenderers({
+	registerMessageRenderer: (type, renderer) => void (renderers[type] = renderer),
+});
 const renderPlan = renderers[PLAN_TYPE] as Renderer;
 const renderPending = renderers[PENDING_TYPE] as Renderer;
 const renderSync = renderers[SYNC_TYPE] as Renderer;
 const renderSwarm = renderers[SWARM_TYPE] as Renderer;
 
 function planCard(view: PlanView, expanded: boolean, width: number, cardTheme: unknown = theme) {
-	const rows = renderPlan({ content: "md", details: view }, { expanded }, cardTheme)?.render(width) ?? [];
+	const rows =
+		renderPlan({ content: "md", details: view }, { expanded }, cardTheme)?.render(width) ?? [];
 	return { rows, plain: rows.map((row) => Bun.stripANSI(row)) };
 }
 
@@ -58,7 +96,6 @@ function planCard(view: PlanView, expanded: boolean, width: number, cardTheme: u
 function unpainted(row: string): string {
 	let onCard = false;
 	let out = "";
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape matching
 	for (const part of row.split(/(\x1b\[[0-9;]*m)/)) {
 		if (part === CARD_BG) onCard = true;
 		else if (part === "\x1b[49m" || part === "\x1b[0m") onCard = false;
@@ -68,7 +105,10 @@ function unpainted(row: string): string {
 }
 
 // a multi-line title and a wide-character (CJK) title
-const TITLES: Partial<Record<number, string>> = { 1: "Wire the\nstatus bar", 2: "数据库迁移：拆分用户表并回填历史订单数据" };
+const TITLES: Partial<Record<number, string>> = {
+	1: "Wire the\nstatus bar",
+	2: "数据库迁移：拆分用户表并回填历史订单数据",
+};
 
 const view: PlanView = {
 	root: "BUILD_PROMPT",
@@ -82,14 +122,27 @@ const view: PlanView = {
 		dependsOn: i === 0 ? [] : [`n${i}`],
 		conclusion: "done\n\n".repeat(60),
 		issue: { identifier: `ENG-${i + 10}`, url: `https://linear.app/x/ENG-${i + 10}` },
-		steps: [{ step: 1, title: "Step one", identifier: `ENG-${i + 100}`, url: `https://linear.app/x/ENG-${i + 100}` }],
+		steps: [
+			{
+				step: 1,
+				title: "Step one",
+				identifier: `ENG-${i + 100}`,
+				url: `https://linear.app/x/ENG-${i + 100}`,
+			},
+		],
 	})),
 	waves: [["n1"], ["n2", "n3"], ["n4", "n5", "n6", "n7", "n8", "n9", "n10"]],
 	clarifications: [
 		{ id: "c1", question: "Which DB?", blocking: true, recommended: "Postgres" },
 		{ id: "c2", question: "Keep the v1 API?", blocking: false, answer: "yes" },
 	],
-	tracking: { status: "partial", errors: ["notion down"], issues: 10, subIssues: 10, notionTaskUrl: "https://notion.so/t" },
+	tracking: {
+		status: "partial",
+		errors: ["notion down"],
+		issues: 10,
+		subIssues: 10,
+		notionTaskUrl: "https://notion.so/t",
+	},
 };
 
 const small: PlanView = { ...view, nodes: view.nodes.slice(0, 3), waves: [["n1"], ["n2", "n3"]] };
@@ -100,7 +153,12 @@ describe("plan card", () => {
 			for (const width of [8, 40, 60, 80, 100, 160]) {
 				for (const expanded of [false, true]) {
 					const { rows } = planCard(view, expanded, width, cardTheme);
-					expect({ name, width, expanded, widths: rows.map(visibleWidth) }).toEqual({ name, width, expanded, widths: rows.map(() => width) });
+					expect({ name, width, expanded, widths: rows.map(visibleWidth) }).toEqual({
+						name,
+						width,
+						expanded,
+						widths: rows.map(() => width),
+					});
 					expect(rows.join("")).not.toMatch(/[\n\r\t]/);
 				}
 			}
@@ -118,14 +176,30 @@ describe("plan card", () => {
 		}
 		// cut rows end in a full reset; the fill after it must still sit on the card background
 		for (const row of planCard(view, true, 40).rows.slice(1, -1)) expect(unpainted(row)).toBe("││");
-		const ascii = { ...theme, boxRound: { topLeft: "+", topRight: "+", bottomLeft: "+", bottomRight: "+", horizontal: "-", vertical: "|" } };
+		const ascii = {
+			...theme,
+			boxRound: {
+				topLeft: "+",
+				topRight: "+",
+				bottomLeft: "+",
+				bottomRight: "+",
+				horizontal: "-",
+				vertical: "|",
+			},
+		};
 		const asciiCard = planCard(view, false, 20, ascii).plain;
-		expect([asciiCard[0], asciiCard[1]?.at(0), asciiCard.at(-1)]).toEqual([`+${"-".repeat(18)}+`, "|", `+${"-".repeat(18)}+`]);
+		expect([asciiCard[0], asciiCard[1]?.at(0), asciiCard.at(-1)]).toEqual([
+			`+${"-".repeat(18)}+`,
+			"|",
+			`+${"-".repeat(18)}+`,
+		]);
 	});
 
 	test("collapsed folds each node's sub-issues; expanded drops every step down with its link", () => {
 		const collapsed = planCard(small, false, 160).plain;
-		expect(collapsed[2]).toContain("📦 ultrathink-plan · BUILD_PROMPT · 3 nodes · 10 issues · 1:05");
+		expect(collapsed[2]).toContain(
+			"📦 ultrathink-plan · BUILD_PROMPT · 3 nodes · 10 issues · 1:05",
+		);
 		const text = collapsed.join("\n");
 		expect(text).toContain("▸ 1 sub-issues");
 		expect(text).toContain("Wire the status bar");
@@ -150,7 +224,9 @@ describe("plan card", () => {
 	});
 
 	test("shows the invoking skill in the header", () => {
-		expect(planCard({ ...small, skill: "gsd-autonomous" }, false, 160).plain[2]).toContain("1:05 · via /gsd-autonomous");
+		expect(planCard({ ...small, skill: "gsd-autonomous" }, false, 160).plain[2]).toContain(
+			"1:05 · via /gsd-autonomous",
+		);
 		expect(planCard(small, false, 160).plain[2]).not.toContain("via /");
 	});
 
@@ -162,8 +238,16 @@ describe("plan card", () => {
 		expect(text).toContain("notion https://notion.so/t");
 		expect(text).not.toContain("ctrl+o to expand");
 		expect(rows.join("\n")).toContain(theme.fg("warning", "1 blocking"));
-		for (const [status, color] of [["complete", "success"], ["partial", "warning"], ["failed", "error"]] as const) {
-			const tracked = planCard({ ...small, tracking: { status, errors: [], issues: 5, subIssues: 20 } }, false, 160);
+		for (const [status, color] of [
+			["complete", "success"],
+			["partial", "warning"],
+			["failed", "error"],
+		] as const) {
+			const tracked = planCard(
+				{ ...small, tracking: { status, errors: [], issues: 5, subIssues: 20 } },
+				false,
+				160,
+			);
 			expect(tracked.plain.join("\n")).toContain(`tracking ${status} · 5 issues · 20 sub-issues`);
 			expect(tracked.rows.join("\n")).toContain(theme.fg(color, status));
 		}
@@ -192,9 +276,13 @@ describe("plan card", () => {
 
 	test("undefined for non-PlanView or malformed details", () => {
 		expect(renderPlan({ content: "md" }, { expanded: false }, theme)).toBeUndefined();
-		expect(renderPlan({ content: "md", details: { root: 1 } }, { expanded: false }, theme)).toBeUndefined();
+		expect(
+			renderPlan({ content: "md", details: { root: 1 } }, { expanded: false }, theme),
+		).toBeUndefined();
 		const malformed = { root: "x", nodes: [null], waves: [], clarifications: [] };
-		expect(renderPlan({ content: "md", details: malformed }, { expanded: false }, theme)).toBeUndefined();
+		expect(
+			renderPlan({ content: "md", details: malformed }, { expanded: false }, theme),
+		).toBeUndefined();
 	});
 
 	test("a throwing or empty theme still renders plain rows", () => {
@@ -214,9 +302,17 @@ describe("pending card", () => {
 		expect(rows).toHaveLength(3);
 		expect(rows.map(visibleWidth)).toEqual([80, 80, 80]);
 		expect(rows[0]).toBe(theme.fg("borderAccent", `╭${"─".repeat(78)}╮`));
-		expect(Bun.stripANSI(component?.render(120)[1] ?? "")).toContain("RR ultrathink-pending · planning… live status in the ultrathink bar above the editor");
-		expect(renderPending({ content: "" }, { expanded: false }, throwingTheme)?.render(120)[1]).toContain("● ultrathink-pending · planning…");
-		expect(renderPending({ content: "" }, { expanded: false }, theme)?.render(6).map((row) => Bun.stripANSI(row))).toEqual(["RR ul…"]);
+		expect(Bun.stripANSI(component?.render(120)[1] ?? "")).toContain(
+			"RR ultrathink-pending · planning… live status in the ultrathink bar above the editor",
+		);
+		expect(
+			renderPending({ content: "" }, { expanded: false }, throwingTheme)?.render(120)[1],
+		).toContain("● ultrathink-pending · planning…");
+		expect(
+			renderPending({ content: "" }, { expanded: false }, theme)
+				?.render(6)
+				.map((row) => Bun.stripANSI(row)),
+		).toEqual(["RR ul…"]);
 	});
 });
 
@@ -224,13 +320,19 @@ describe("sync card", () => {
 	const url = "https://github.com/o/r/pull/12";
 
 	test("one PR row inside an accent border at exactly the render width", () => {
-		const component = renderSync({ content: "nudge", details: { url, number: 12 } }, { expanded: false }, theme);
+		const component = renderSync(
+			{ content: "nudge", details: { url, number: 12 } },
+			{ expanded: false },
+			theme,
+		);
 		for (const width of [20, 80]) {
 			const rows = component?.render(width) ?? [];
 			expect(rows.map(visibleWidth)).toEqual([width, width, width]);
 			expect(rows[0]).toBe(theme.fg("borderAccent", `╭${"─".repeat(width - 2)}╮`));
 		}
-		expect(Bun.stripANSI(component?.render(80)[1] ?? "")).toContain(`RR ultrathink-sync · PR ${url}`);
+		expect(Bun.stripANSI(component?.render(80)[1] ?? "")).toContain(
+			`RR ultrathink-sync · PR ${url}`,
+		);
 	});
 
 	test("details without a PR URL fall back to Omp's default card", () => {
@@ -244,17 +346,30 @@ describe("ship card", () => {
 	const renderShip = renderers[SHIP_TYPE] as Renderer;
 
 	test("one branch row inside an accent border at exactly the render width", () => {
-		const component = renderShip({ content: "nudge", details: { branch: "feat/x", base: "master", ahead: 3 } }, { expanded: false }, theme);
+		const component = renderShip(
+			{ content: "nudge", details: { branch: "feat/x", base: "master", ahead: 3 } },
+			{ expanded: false },
+			theme,
+		);
 		for (const width of [20, 80]) {
 			const rows = component?.render(width) ?? [];
 			expect(rows.map(visibleWidth)).toEqual([width, width, width]);
 			expect(rows[0]).toBe(theme.fg("borderAccent", `╭${"─".repeat(width - 2)}╮`));
 		}
-		expect(Bun.stripANSI(component?.render(80)[1] ?? "")).toContain("RR ultrathink-ship · feat/x → master · 3 commits");
+		expect(Bun.stripANSI(component?.render(80)[1] ?? "")).toContain(
+			"RR ultrathink-ship · feat/x → master · 3 commits",
+		);
 	});
 
 	test("malformed details fall back to Omp's default card", () => {
-		for (const details of [undefined, "x", null, { branch: "b", base: "m" }, { branch: "b", base: 1, ahead: 2 }, { branch: "b", base: "m", ahead: "2" }]) {
+		for (const details of [
+			undefined,
+			"x",
+			null,
+			{ branch: "b", base: "m" },
+			{ branch: "b", base: 1, ahead: 2 },
+			{ branch: "b", base: "m", ahead: "2" },
+		]) {
 			expect(renderShip({ content: "nudge", details }, { expanded: false }, theme)).toBeUndefined();
 		}
 	});
@@ -277,13 +392,22 @@ describe("plan card model row (§9 path 5)", () => {
 
 	test("a recorded resolution adds one model row: label, reason and engine request", () => {
 		const withRecord = planCard({ ...small, modelResolution: DETECTED }, false, 200).plain;
-		expect(withRecord.join("\n")).toContain("model omp-native:acme/sol-1 [detected] · reason live-model · engine auto (config)");
+		expect(withRecord.join("\n")).toContain(
+			"model omp-native:acme/sol-1 [detected] · reason live-model · engine auto (config)",
+		);
 		expect(withRecord.length).toBe(planCard(small, false, 200).plain.length + 1);
 	});
 
 	test("no record, no row; an unsafe record shows the opaque marker and none of its text", () => {
 		expect(planCard(small, true, 200).plain.join("\n")).not.toContain("· reason");
-		const unsafe = planCard({ ...small, modelResolution: { ...DETECTED, label: "omp-native:https://SECRET.invalid [detected]" } }, true, 200).plain.join("\n");
+		const unsafe = planCard(
+			{
+				...small,
+				modelResolution: { ...DETECTED, label: "omp-native:https://SECRET.invalid [detected]" },
+			},
+			true,
+			200,
+		).plain.join("\n");
 		expect(unsafe).toContain("model <opaque-model> · reason live-model · engine auto (config)");
 		expect(unsafe).not.toContain("SECRET");
 	});
@@ -292,7 +416,11 @@ describe("plan card model row (§9 path 5)", () => {
 		for (const [name, cardTheme] of Object.entries(themes)) {
 			for (const width of [8, 40, 80, 160]) {
 				const { rows } = planCard({ ...small, modelResolution: DETECTED }, true, width, cardTheme);
-				expect({ name, width, widths: rows.map(visibleWidth) }).toEqual({ name, width, widths: rows.map(() => width) });
+				expect({ name, width, widths: rows.map(visibleWidth) }).toEqual({
+					name,
+					width,
+					widths: rows.map(() => width),
+				});
 			}
 		}
 	});
@@ -321,10 +449,41 @@ describe("insight card", () => {
 			{ point: "skillworthy", outcome: "error", action: "skip", model: "m1" },
 		],
 		lessons: [
-			{ id: "l-1", name: "First", status: "candidate", kind: "pattern", occurrences: 1, eligible: false, body: "must never appear in compact rows", content: "draft leak" },
-			{ id: "l-2", name: "Second", status: "confirmed", kind: "pattern", occurrences: 2, eligible: true },
-			{ id: "l-3", name: "Third", status: "promoted", kind: "playbook", occurrences: 1, eligible: false, promoted: { target: "omp", skill: "" } },
-			{ id: "l-4", name: "Fourth", status: "candidate", kind: "pitfall", occurrences: 1, eligible: false },
+			{
+				id: "l-1",
+				name: "First",
+				status: "candidate",
+				kind: "pattern",
+				occurrences: 1,
+				eligible: false,
+				body: "must never appear in compact rows",
+				content: "draft leak",
+			},
+			{
+				id: "l-2",
+				name: "Second",
+				status: "confirmed",
+				kind: "pattern",
+				occurrences: 2,
+				eligible: true,
+			},
+			{
+				id: "l-3",
+				name: "Third",
+				status: "promoted",
+				kind: "playbook",
+				occurrences: 1,
+				eligible: false,
+				promoted: { target: "omp", skill: "" },
+			},
+			{
+				id: "l-4",
+				name: "Fourth",
+				status: "candidate",
+				kind: "pitfall",
+				occurrences: 1,
+				eligible: false,
+			},
 		],
 		counts: { candidate: 2, confirmed: 1, promoted: 1, superseded: 0 },
 		eligible: 1,
@@ -333,8 +492,14 @@ describe("insight card", () => {
 		limitations: ["partial read"],
 	};
 
-	function insightCard(details: unknown, expanded: boolean, width: number, cardTheme: unknown = theme) {
-		const rows = renderInsight({ content: "card", details }, { expanded }, cardTheme)?.render(width) ?? [];
+	function insightCard(
+		details: unknown,
+		expanded: boolean,
+		width: number,
+		cardTheme: unknown = theme,
+	) {
+		const rows =
+			renderInsight({ content: "card", details }, { expanded }, cardTheme)?.render(width) ?? [];
 		return { rows, plain: rows.map((row) => Bun.stripANSI(row)) };
 	}
 
@@ -366,7 +531,14 @@ describe("insight card", () => {
 	});
 
 	test("malformed persisted details fall back to a safe bounded card", () => {
-		for (const details of [undefined, null, "x", 42, ["array"], { project: 7, decisions: "nope" }]) {
+		for (const details of [
+			undefined,
+			null,
+			"x",
+			42,
+			["array"],
+			{ project: 7, decisions: "nope" },
+		]) {
 			const { rows } = insightCard(details, false, 80, {});
 			expect(rows.length).toBeLessThanOrEqual(6 + 4);
 			for (const row of rows) expect(row).not.toContain(String.fromCharCode(27));
@@ -389,7 +561,16 @@ describe("insight card", () => {
 				jevEnabled: true,
 			},
 			decisions: [{ point: "plan", outcome: "ok", action: "plan", model: "m" }],
-			lessons: [{ id: "h-1", name: "a\u202eb", status: "candidate", kind: "bug", occurrences: 1, eligible: false }],
+			lessons: [
+				{
+					id: "h-1",
+					name: "a\u202eb",
+					status: "candidate",
+					kind: "bug",
+					occurrences: 1,
+					eligible: false,
+				},
+			],
 			counts: { candidate: 1, confirmed: 0, promoted: 0, superseded: 0 },
 			eligible: 0,
 			promoted: 0,
@@ -561,8 +742,17 @@ describe("insight card", () => {
 		const snapshot = canonicalCard();
 		const first = snapshot.decisions[0];
 		if (first === undefined) throw new Error("canonical fixture must carry a decision");
-		const near = { ...first, p: 0.1999, threshold: 0.2, questions: [{ key: "edge-case", p: 0.1999 }] };
-		const { plain } = insightCard(canonicalCard({ decisions: [near, ...snapshot.decisions.slice(1)] }), true, 160);
+		const near = {
+			...first,
+			p: 0.1999,
+			threshold: 0.2,
+			questions: [{ key: "edge-case", p: 0.1999 }],
+		};
+		const { plain } = insightCard(
+			canonicalCard({ decisions: [near, ...snapshot.decisions.slice(1)] }),
+			true,
+			160,
+		);
 		const text = plain.join("\n");
 		expect(text).toContain("edge-case (0.19)");
 		expect(text).toContain("P 0.19");
@@ -575,7 +765,8 @@ describe("insight card", () => {
 		const snapshot = canonicalCard();
 		const first = snapshot.decisions[0];
 		const second = snapshot.decisions[1];
-		if (first === undefined || second === undefined) throw new Error("canonical fixture must carry two decisions");
+		if (first === undefined || second === undefined)
+			throw new Error("canonical fixture must carry two decisions");
 		const zero = { ...first, questions: [{ key: "never-asked", p: 0 }] };
 		const one = { ...second, questions: [{ key: "always-asked", p: 1 }] };
 		const { plain } = insightCard(canonicalCard({ decisions: [zero, one] }), true, 160);
@@ -594,7 +785,12 @@ describe("insight card", () => {
 	});
 
 	test("invented alias fields never override recorded counts", () => {
-		const aliased = { ...canonicalCard(), eligibleCount: 99, promotedCount: 99, title: "Alias bait" };
+		const aliased = {
+			...canonicalCard(),
+			eligibleCount: 99,
+			promotedCount: 99,
+			title: "Alias bait",
+		};
 		const { plain } = insightCard(aliased, false, 80);
 		const text = plain.join("\n");
 		expect(text).toMatch(/1 eligible/);
@@ -605,19 +801,33 @@ describe("insight card", () => {
 
 	test("raw message content is never rendered", () => {
 		const rows =
-			renderInsight({ content: "SECRET-CONTENT-MARKER", details: canonicalCard() }, { expanded: true }, theme)?.render(160) ?? [];
+			renderInsight(
+				{ content: "SECRET-CONTENT-MARKER", details: canonicalCard() },
+				{ expanded: true },
+				theme,
+			)?.render(160) ?? [];
 		expect(rows.map((row) => Bun.stripANSI(row)).join("\n")).not.toContain("SECRET-CONTENT-MARKER");
 	});
-
 
 	test("recorded zeroes render as zeroes while absent cost stays absent", () => {
 		const snapshot = canonicalCard();
 		const first = snapshot.decisions[0];
 		if (first === undefined) throw new Error("canonical fixture must carry a decision");
-		const zeroed = { ...first, p: 0, threshold: 0.5, latencyMs: 0, attempts: 0, cost: 0, questions: [] };
+		const zeroed = {
+			...first,
+			p: 0,
+			threshold: 0.5,
+			latencyMs: 0,
+			attempts: 0,
+			cost: 0,
+			questions: [],
+		};
 		for (const width of [80, 120]) {
 			const { plain, rows } = insightCard(canonicalCard({ decisions: [zeroed] }), true, width);
-			const text = plain.map((row) => row.slice(1, -1).trim()).join(" ").replace(/\s+/g, " ");
+			const text = plain
+				.map((row) => row.slice(1, -1).trim())
+				.join(" ")
+				.replace(/\s+/g, " ");
 			expect(text).toContain("P 0.00");
 			expect(text).toContain("thr 0.50");
 			expect(text).toContain("0ms");
@@ -634,10 +844,18 @@ describe("insight card", () => {
 		const snapshot = canonicalCard();
 		const second = snapshot.decisions[1];
 		if (second === undefined) throw new Error("canonical fixture must carry two decisions");
-		const { plain } = insightCard(canonicalCard({ decisions: [snapshot.decisions[0]!, { ...second, error: "timeout" }] }), true, 160);
+		const { plain } = insightCard(
+			canonicalCard({ decisions: [snapshot.decisions[0]!, { ...second, error: "timeout" }] }),
+			true,
+			160,
+		);
 		expect(plain.join("\n")).toContain("err timeout");
 		const invented = { ...second, error: "meltdown" } as unknown as InsightDecision;
-		const { plain: dropped } = insightCard(canonicalCard({ decisions: [snapshot.decisions[0]!, invented] }), true, 160);
+		const { plain: dropped } = insightCard(
+			canonicalCard({ decisions: [snapshot.decisions[0]!, invented] }),
+			true,
+			160,
+		);
 		const text = dropped.join("\n");
 		expect(text).not.toContain("meltdown");
 		expect(text).not.toContain("err ");
@@ -653,7 +871,13 @@ describe("insight card", () => {
 		expect(text).toContain("after 3");
 		const snapshot = canonicalCard();
 		const off = canonicalCard({
-			policy: { ...snapshot.policy, capture: "auto", recall: false, autoPromote: true, promoteAfter: 5 },
+			policy: {
+				...snapshot.policy,
+				capture: "auto",
+				recall: false,
+				autoPromote: true,
+				promoteAfter: 5,
+			},
 		});
 		const { plain: offPlain } = insightCard(off, false, 160);
 		const offText = offPlain.join("\n");
@@ -667,7 +891,11 @@ describe("insight card", () => {
 		const snapshot = canonicalCard();
 		const base = snapshot.lessons[0];
 		if (base === undefined) throw new Error("canonical fixture must carry a lesson");
-		const lessons = [0, 1, 2, 3, 4].map((index) => ({ ...base, id: `eligible-${index}`, name: `Eligible ${index}` }));
+		const lessons = [0, 1, 2, 3, 4].map((index) => ({
+			...base,
+			id: `eligible-${index}`,
+			name: `Eligible ${index}`,
+		}));
 		const { rows, plain } = insightCard({ ...snapshot, lessons }, true, 160);
 		const text = plain.join("\n");
 		expect(text).toContain("5 shown");
@@ -693,8 +921,16 @@ describe("insight card", () => {
 	test("compact card discloses capture omissions before a long lesson title can clip them", () => {
 		const snapshot = canonicalCard();
 		const first = snapshot.lessons[0]!;
-		const lessons = Array.from({ length: 24 }, (_, index) => ({ ...first, id: `lesson-${index}`, name: "long ".repeat(24) }));
-		const { plain } = insightCard({ ...snapshot, lessons, counts: { candidate: 1, confirmed: 31, promoted: 0, superseded: 0 } }, false, 120);
+		const lessons = Array.from({ length: 24 }, (_, index) => ({
+			...first,
+			id: `lesson-${index}`,
+			name: "long ".repeat(24),
+		}));
+		const { plain } = insightCard(
+			{ ...snapshot, lessons, counts: { candidate: 1, confirmed: 31, promoted: 0, superseded: 0 } },
+			false,
+			120,
+		);
 		const text = plain.join("\n");
 		expect(text).toContain("24 shown");
 		expect(text).toContain("8 omitted from card");
@@ -716,25 +952,74 @@ describe("swarm card", () => {
 		spawned: 2,
 		total: 3,
 		lanes: [
-			{ laneId: "lane-a", brief: "Fix the login redirect", stateDir: "/tmp/swarm/aa11-1-x", logPath: "/tmp/swarm/aa11-1-x/run.log", pid: 101 },
-			{ laneId: "lane-b", brief: "Write the migration", stateDir: "/tmp/swarm/bb22-2-x", logPath: "/tmp/swarm/bb22-2-x/run.log", pid: 102 },
-			{ laneId: "lane-c", brief: "Update the docs", stateDir: "/tmp/swarm/cc33-3-x", logPath: "/tmp/swarm/cc33-3-x/run.log", error: "spawn blocked: no pty" },
+			{
+				laneId: "lane-a",
+				brief: "Fix the login redirect",
+				stateDir: "/tmp/swarm/aa11-1-x",
+				logPath: "/tmp/swarm/aa11-1-x/run.log",
+				pid: 101,
+			},
+			{
+				laneId: "lane-b",
+				brief: "Write the migration",
+				stateDir: "/tmp/swarm/bb22-2-x",
+				logPath: "/tmp/swarm/bb22-2-x/run.log",
+				pid: 102,
+			},
+			{
+				laneId: "lane-c",
+				brief: "Update the docs",
+				stateDir: "/tmp/swarm/cc33-3-x",
+				logPath: "/tmp/swarm/cc33-3-x/run.log",
+				error: "spawn blocked: no pty",
+			},
 		],
 		body: "leak bait",
 	};
 	const statusDetails = {
 		omitted: 0,
 		lanes: [
-			{ laneId: "lane-a", summary: "auth flow implemented", logPath: "/tmp/swarm/aa11-1-x/run.log", done: 4, total: 4 },
-			{ laneId: "lane-b", summary: "half the tables migrated", logPath: "/tmp/swarm/bb22-2-x/run.log", done: 2, total: 5 },
-			{ laneId: "lane-c", summary: "", logPath: "/tmp/swarm/cc33-3-x/run.log", done: 0, total: 0, error: "task store locked" },
+			{
+				laneId: "lane-a",
+				summary: "auth flow implemented",
+				logPath: "/tmp/swarm/aa11-1-x/run.log",
+				done: 4,
+				total: 4,
+			},
+			{
+				laneId: "lane-b",
+				summary: "half the tables migrated",
+				logPath: "/tmp/swarm/bb22-2-x/run.log",
+				done: 2,
+				total: 5,
+			},
+			{
+				laneId: "lane-c",
+				summary: "",
+				logPath: "/tmp/swarm/cc33-3-x/run.log",
+				done: 0,
+				total: 0,
+				error: "task store locked",
+			},
 		],
 	};
 	const omittedDetails = {
 		omitted: 2,
 		lanes: [
-			{ laneId: "lane-1", summary: "finished already", logPath: "/tmp/swarm/lane-1/run.log", done: 1, total: 1 },
-			{ laneId: "lane-2", summary: "still going", logPath: "/tmp/swarm/lane-2/run.log", done: 0, total: 3 },
+			{
+				laneId: "lane-1",
+				summary: "finished already",
+				logPath: "/tmp/swarm/lane-1/run.log",
+				done: 1,
+				total: 1,
+			},
+			{
+				laneId: "lane-2",
+				summary: "still going",
+				logPath: "/tmp/swarm/lane-2/run.log",
+				done: 0,
+				total: 3,
+			},
 		],
 	};
 
@@ -749,8 +1034,14 @@ describe("swarm card", () => {
 		return { spawned: count, total: count, lanes };
 	}
 
-	function swarmCard(details: unknown, expanded: boolean, width: number, cardTheme: unknown = theme) {
-		const rows = renderSwarm({ content: "card", details }, { expanded }, cardTheme)?.render(width) ?? [];
+	function swarmCard(
+		details: unknown,
+		expanded: boolean,
+		width: number,
+		cardTheme: unknown = theme,
+	) {
+		const rows =
+			renderSwarm({ content: "card", details }, { expanded }, cardTheme)?.render(width) ?? [];
 		return { rows, plain: rows.map((row) => Bun.stripANSI(row)) };
 	}
 
@@ -787,7 +1078,9 @@ describe("swarm card", () => {
 	test("expanded card stays within twenty-four content rows with an omission notice when capped", () => {
 		const { rows, plain } = swarmCard(manyLanes(40), true, 80);
 		expect(rows.length).toBeLessThanOrEqual(24 + 4);
-		expect(plain.join("\n")).toMatch(/of 40 lanes shown — run \/ultrathink-swarm status for the full list/);
+		expect(plain.join("\n")).toMatch(
+			/of 40 lanes shown — run \/ultrathink-swarm status for the full list/,
+		);
 	});
 
 	test("expanded card shows full state dirs and log paths", () => {
@@ -864,7 +1157,9 @@ describe("swarm card", () => {
 		const { rows, plain } = swarmCard(manyLanes(10), false, 160);
 		expect(rows.length).toBeLessThanOrEqual(6 + 2);
 		const text = plain.join("\n");
-		expect(text).toContain("7 more lanes not shown — run /ultrathink-swarm status for the full list");
+		expect(text).toContain(
+			"7 more lanes not shown — run /ultrathink-swarm status for the full list",
+		);
 		expect(text).toContain("Brief 3");
 		expect(text).not.toContain("Brief 4");
 	});
@@ -873,7 +1168,13 @@ describe("swarm card", () => {
 		const empty = {
 			omitted: 0,
 			lanes: [
-				{ laneId: "lane-a", summary: "auth flow implemented", logPath: "/s/a/run.log", done: 4, total: 4 },
+				{
+					laneId: "lane-a",
+					summary: "auth flow implemented",
+					logPath: "/s/a/run.log",
+					done: 4,
+					total: 4,
+				},
 				{ laneId: "lane-z", summary: "", logPath: "/s/z/run.log", done: 0, total: 0 },
 			],
 		};
@@ -901,10 +1202,14 @@ describe("swarm card", () => {
 		const compact = swarmCard(oversized, false, 80);
 		expect(compact.rows.length).toBeLessThanOrEqual(6 + 2);
 		// only the first 64 lanes are considered at all; the rest are counted, never drawn
-		expect(compact.plain.join("\n")).toContain("61 more lanes not shown — run /ultrathink-swarm status for the full list");
+		expect(compact.plain.join("\n")).toContain(
+			"61 more lanes not shown — run /ultrathink-swarm status for the full list",
+		);
 		const expanded = swarmCard(oversized, true, 80);
 		expect(expanded.rows.length).toBeLessThanOrEqual(24 + 4);
-		expect(expanded.plain.join("\n")).toMatch(/of 64 lanes shown — run \/ultrathink-swarm status for the full list/);
+		expect(expanded.plain.join("\n")).toMatch(
+			/of 64 lanes shown — run \/ultrathink-swarm status for the full list/,
+		);
 	});
 
 	test("compact card never shows full paths, only state dir basenames", () => {
@@ -916,7 +1221,17 @@ describe("swarm card", () => {
 	});
 
 	test("malformed details fall back to a safe bounded card naming the event", () => {
-		for (const details of [undefined, null, "x", 42, ["array"], {}, { lanes: [] }, { lanes: [], spawned: 1, total: "x" }, { lanes: "nope", omitted: 0 }]) {
+		for (const details of [
+			undefined,
+			null,
+			"x",
+			42,
+			["array"],
+			{},
+			{ lanes: [] },
+			{ lanes: [], spawned: 1, total: "x" },
+			{ lanes: "nope", omitted: 0 },
+		]) {
 			const { rows, plain } = swarmCard(details, false, 80, {});
 			expect(rows.length).toBeLessThanOrEqual(6 + 2);
 			expect(plain.join("\n")).toContain("Swarm lanes — details unavailable");
@@ -937,8 +1252,19 @@ describe("swarm card", () => {
 			spawned: 1,
 			total: 2,
 			lanes: [
-				{ laneId: "lane\x1b[2J-a", brief: "b\x1b]0;pwned\x07rief", stateDir: "/tmp/\x1b[31mswarm/ff11-1-x", logPath: "/tmp/swarm/ff11-1-x/run.log" },
-				{ laneId: "lane\x07-b", brief: "ok", stateDir: "/tmp/swarm/gg22-2-x", logPath: "/tmp/swarm/gg22-2-x/run.log", error: "\x1b[31merrored\x07" },
+				{
+					laneId: "lane\x1b[2J-a",
+					brief: "b\x1b]0;pwned\x07rief",
+					stateDir: "/tmp/\x1b[31mswarm/ff11-1-x",
+					logPath: "/tmp/swarm/ff11-1-x/run.log",
+				},
+				{
+					laneId: "lane\x07-b",
+					brief: "ok",
+					stateDir: "/tmp/swarm/gg22-2-x",
+					logPath: "/tmp/swarm/gg22-2-x/run.log",
+					error: "\x1b[31merrored\x07",
+				},
 			],
 			content: "SECRET-CONTENT-BAIT",
 		};
@@ -959,7 +1285,12 @@ describe("swarm card", () => {
 	});
 
 	test("raw message content is never rendered", () => {
-		const rows = renderSwarm({ content: "SECRET-MARKER", details: spawnDetails }, { expanded: true }, theme)?.render(160) ?? [];
+		const rows =
+			renderSwarm(
+				{ content: "SECRET-MARKER", details: spawnDetails },
+				{ expanded: true },
+				theme,
+			)?.render(160) ?? [];
 		expect(rows.map((row) => Bun.stripANSI(row)).join("\n")).not.toContain("SECRET-MARKER");
 	});
 
@@ -968,7 +1299,11 @@ describe("swarm card", () => {
 			for (const expanded of [false, true]) {
 				for (const details of [spawnDetails, statusDetails, omittedDetails, manyLanes(40)]) {
 					const { rows } = swarmCard(details, expanded, width);
-					expect({ width, expanded, widths: rows.map(visibleWidth) }).toEqual({ width, expanded, widths: rows.map(() => width) });
+					expect({ width, expanded, widths: rows.map(visibleWidth) }).toEqual({
+						width,
+						expanded,
+						widths: rows.map(() => width),
+					});
 				}
 			}
 		}
@@ -978,7 +1313,8 @@ describe("swarm card", () => {
 describe("activity card", () => {
 	const renderActivity = renderers[ACTIVITY_TYPE] as Renderer;
 	const cardOf = (details: unknown, width = 80, expanded = false) => {
-		const rows = renderActivity({ content: "ignored", details }, { expanded }, theme)?.render(width) ?? [];
+		const rows =
+			renderActivity({ content: "ignored", details }, { expanded }, theme)?.render(width) ?? [];
 		return { rows, plain: rows.map((row) => Bun.stripANSI(row)).join("\n") };
 	};
 
@@ -987,13 +1323,51 @@ describe("activity card", () => {
 	});
 
 	test("each kind names its header, and expanded renders the same bounded rows", () => {
-		const recall = { v: 1, kind: "teachable-recalled", title: "ignored title", source: "hindsight", outcome: "used", count: 2, names: ["Retry fetch", "Pin the lockfile"] };
-		const created = { v: 1, kind: "teachable-created", title: "Teachable moment", outcome: "created", detail: "playbook · confirmed · retain retained", names: ["Retry fetch"] };
-		const skill = { v: 1, kind: "skill-recalled", title: "Skill recalled", outcome: "none", count: 0 };
-		const resource = { v: 1, kind: "resource", title: "RAGFlow", source: "ragflow", outcome: "used", count: 1, detail: "1 excerpts" };
+		const recall = {
+			v: 1,
+			kind: "teachable-recalled",
+			title: "ignored title",
+			source: "hindsight",
+			outcome: "used",
+			count: 2,
+			names: ["Retry fetch", "Pin the lockfile"],
+		};
+		const created = {
+			v: 1,
+			kind: "teachable-created",
+			title: "Teachable moment",
+			outcome: "created",
+			detail: "playbook · confirmed · retain retained",
+			names: ["Retry fetch"],
+		};
+		const failed = {
+			v: 1,
+			kind: "teachable-failed",
+			title: "Teachable Moments distiller failed",
+			outcome: "failed",
+			count: 3,
+			detail: "Credit balance is too low",
+		};
+		const skill = {
+			v: 1,
+			kind: "skill-recalled",
+			title: "Skill recalled",
+			outcome: "none",
+			count: 0,
+		};
+		const resource = {
+			v: 1,
+			kind: "resource",
+			title: "RAGFlow",
+			source: "ragflow",
+			outcome: "used",
+			count: 1,
+			detail: "1 excerpts",
+		};
 		for (const [details, header] of [
 			[recall, "Lesson recalled"],
 			[created, "Teachable moment"],
+			[failed, "Teachable Moments failed"],
 			[skill, "Skill recalled"],
 			[resource, "RAGFlow"],
 		] as const) {
@@ -1008,16 +1382,29 @@ describe("activity card", () => {
 		expect(recalled.plain).toContain("Retry fetch");
 		expect(recalled.plain).toContain("Pin the lockfile");
 		expect(cardOf(created).plain).toContain("retain retained");
+		expect(cardOf(failed).plain).toContain("Credit balance is too low");
 		expect(cardOf(resource).plain).toContain("RAGFlow");
 	});
 
 	test("names past three say how many more, and a malformed notice is one fallback row", () => {
-		const many = cardOf({ v: 1, kind: "skill-recalled", title: "Skill recalled", names: ["a", "b", "c", "d", "e"] });
+		const many = cardOf({
+			v: 1,
+			kind: "skill-recalled",
+			title: "Skill recalled",
+			names: ["a", "b", "c", "d", "e"],
+		});
 		expect(many.plain).toContain("a");
 		expect(many.plain).toContain("c");
 		expect(many.plain).toContain("2 more");
 		// Validation keeps six names; the card's hidden total comes from the recall's full count (10 - 3 shown).
-		const recalled = cardOf({ v: 1, kind: "teachable-recalled", title: "Lesson recalled", outcome: "used", count: 10, names: ["a", "b", "c", "d", "e", "f"] });
+		const recalled = cardOf({
+			v: 1,
+			kind: "teachable-recalled",
+			title: "Lesson recalled",
+			outcome: "used",
+			count: 10,
+			names: ["a", "b", "c", "d", "e", "f"],
+		});
 		expect(recalled.plain).toContain("7 more");
 		expect(recalled.plain).not.toContain("3 more");
 		const bad = cardOf({ v: 2, kind: "nope" });

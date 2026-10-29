@@ -21,7 +21,14 @@ export interface Fingerprint {
 	readonly ino: number;
 }
 
-export type ScanOutcome = { readonly ok: true; readonly records: number; readonly lastHash: string } | { readonly ok: false; readonly records: number; readonly brokenAt: number; readonly reason: string };
+type ScanOutcome =
+	| { readonly ok: true; readonly records: number; readonly lastHash: string }
+	| {
+			readonly ok: false;
+			readonly records: number;
+			readonly brokenAt: number;
+			readonly reason: string;
+	  };
 
 /** A scan's verdict on the observed state, or `raced` when the chain changed under the scan and nothing can be concluded. */
 export type ScanReply = ScanOutcome | "raced";
@@ -80,7 +87,13 @@ function realSetTimer(run: () => void, intervalMs: number): object {
 }
 
 function sameFingerprint(a: Fingerprint | undefined, b: Fingerprint | undefined): boolean {
-	return a !== undefined && b !== undefined && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ino === b.ino;
+	return (
+		a !== undefined &&
+		b !== undefined &&
+		a.size === b.size &&
+		a.mtimeMs === b.mtimeMs &&
+		a.ino === b.ino
+	);
 }
 
 /**
@@ -89,20 +102,36 @@ function sameFingerprint(a: Fingerprint | undefined, b: Fingerprint | undefined)
  * global seq once a prune has removed segments.
  */
 function judge(outcome: ScanOutcome, ack: Acknowledged): WatchAlert | undefined {
-	if (!outcome.ok) return { kind: "chain_broken", reason: `chain broken at record ${outcome.brokenAt}: ${outcome.reason}` };
-	if (outcome.lastHash !== ack.hash) return { kind: "head_mismatch", reason: `last record on disk is not the acknowledged head, record ${ack.seq}` };
+	if (!outcome.ok)
+		return {
+			kind: "chain_broken",
+			reason: `chain broken at record ${outcome.brokenAt}: ${outcome.reason}`,
+		};
+	if (outcome.lastHash !== ack.hash)
+		return {
+			kind: "head_mismatch",
+			reason: `last record on disk is not the acknowledged head, record ${ack.seq}`,
+		};
 	return undefined;
 }
 
 export function createAuditWatch(options: AuditWatchOptions): AuditWatch {
 	const { intervalMs, stat, acknowledged, scan, onAlert } = options;
-	if (!Number.isInteger(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_INTERVAL_MS) {
-		throw new RangeError(`audit watch interval must be an integer ${MIN_INTERVAL_MS}..${MAX_INTERVAL_MS} ms`);
+	if (
+		!Number.isInteger(intervalMs) ||
+		intervalMs < MIN_INTERVAL_MS ||
+		intervalMs > MAX_INTERVAL_MS
+	) {
+		throw new RangeError(
+			`audit watch interval must be an integer ${MIN_INTERVAL_MS}..${MAX_INTERVAL_MS} ms`,
+		);
 	}
 	const fullScanEvery = options.fullScanEveryTicks ?? DEFAULT_FULL_SCAN_TICKS;
-	if (!Number.isInteger(fullScanEvery) || fullScanEvery < 1) throw new RangeError("audit watch fullScanEveryTicks must be a positive integer");
+	if (!Number.isInteger(fullScanEvery) || fullScanEvery < 1)
+		throw new RangeError("audit watch fullScanEveryTicks must be a positive integer");
 	const setTimer = options.setTimer ?? realSetTimer;
-	const clearTimer = options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
+	const clearTimer =
+		options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
 
 	let ticks = 0;
 	/** Fingerprint of the file the last time its state was decided. A repeat of it means nothing has changed. */
@@ -155,7 +184,10 @@ export function createAuditWatch(options: AuditWatchOptions): AuditWatch {
 					// A scan that failed decided nothing, so the next tick scans again rather than waiting on the same state.
 					if (full) fullScanOwed = true;
 					decided = undefined;
-					apply({ kind: "chain_broken", reason: `verifier failed: ${error instanceof Error ? error.message : String(error)}` });
+					apply({
+						kind: "chain_broken",
+						reason: `verifier failed: ${error instanceof Error ? error.message : String(error)}`,
+					});
 				},
 			)
 			.catch((error: unknown) => options.onError?.(error));
@@ -175,7 +207,11 @@ export function createAuditWatch(options: AuditWatchOptions): AuditWatch {
 			decided = undefined;
 			epoch += 1;
 			// A missing file is a condition only when records were acknowledged. Clearing a standing alert is a full-scan decision.
-			if (ack.seq > 0) apply({ kind: "head_mismatch", reason: `audit file is missing; acknowledged head is record ${ack.seq}` });
+			if (ack.seq > 0)
+				apply({
+					kind: "head_mismatch",
+					reason: `audit file is missing; acknowledged head is record ${ack.seq}`,
+				});
 			else if (fullScan) apply(undefined);
 			return idle();
 		}

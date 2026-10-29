@@ -32,17 +32,30 @@ let cursorDir = "";
 let multiDir = "";
 
 /** Build one cache entry the way Cursor lays it out: manifest, a `how` skill, optional completion marker. */
-function mkPlugin(cacheRoot: string, ref: string, version: string, completeMarker: boolean, name = "pstack"): string {
+function mkPlugin(
+	cacheRoot: string,
+	ref: string,
+	version: string,
+	completeMarker: boolean,
+	name = "pstack",
+): string {
 	const pluginDir = join(cacheRoot, ref);
 	mkdirSync(join(pluginDir, ".cursor-plugin"), { recursive: true });
-	writeFileSync(join(pluginDir, ".cursor-plugin", "plugin.json"), JSON.stringify({ name, version }));
+	writeFileSync(
+		join(pluginDir, ".cursor-plugin", "plugin.json"),
+		JSON.stringify({ name, version }),
+	);
 	mkdirSync(join(pluginDir, "skills", "how"), { recursive: true });
 	writeFileSync(join(pluginDir, "skills", "how", "SKILL.md"), "# how\n");
 	if (completeMarker) writeFileSync(join(pluginDir, ".cache-complete"), "");
 	return pluginDir;
 }
 
-function resolvedOrThrow(resolution: PstackResolution): { root: string; version: string; skillsDir: string } {
+function resolvedOrThrow(resolution: PstackResolution): {
+	root: string;
+	version: string;
+	skillsDir: string;
+} {
 	if ("reason" in resolution) throw new Error(resolution.reason);
 	return resolution;
 }
@@ -250,7 +263,12 @@ describe("buildBlock", () => {
 		const real = resolvedOrThrow(resolvePstack(cursorDir));
 		const both = blockOrThrow(buildBlock("plan", real, { plan: ["architect", "arena"] }));
 		const short = `${both.block}\n- skipped: 1 missing skill(s)`;
-		const shortened = buildBlock("plan", real, { plan: ["architect", "arena", "not-a-skill"] }, short.length);
+		const shortened = buildBlock(
+			"plan",
+			real,
+			{ plan: ["architect", "arena", "not-a-skill"] },
+			short.length,
+		);
 		if (!("block" in shortened)) throw new Error(shortened.reason);
 		expect(shortened.skills).toBe(2);
 		expect(shortened.block).toContain("missing skill(s)");
@@ -258,7 +276,12 @@ describe("buildBlock", () => {
 		expect(shortened.block).not.toContain("truncated by cap");
 
 		const bare = blockOrThrow(buildBlock("plan", real, { plan: ["architect"] }));
-		const dropped = buildBlock("plan", real, { plan: ["architect", "not-a-skill"] }, bare.block.length);
+		const dropped = buildBlock(
+			"plan",
+			real,
+			{ plan: ["architect", "not-a-skill"] },
+			bare.block.length,
+		);
 		if (!("block" in dropped)) throw new Error(dropped.reason);
 		expect(dropped.skills).toBe(1);
 		expect(dropped.block).toContain("architect");

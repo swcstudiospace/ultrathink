@@ -233,23 +233,6 @@
       ]
     },
     {
-      "id": 14,
-      "type": "stat",
-      "title": "Plan cost, last 24 h",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 42 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
-      "options": {},
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(increase(ultrathink_plan_cost_usd_total[24h]))",
-          "legendFormat": "USD"
-        }
-      ]
-    },
-    {
       "id": 15,
       "type": "timeseries",
       "title": "MCP tool calls by outcome",

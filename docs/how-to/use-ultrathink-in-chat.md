@@ -23,13 +23,13 @@ The server offers two ways to do the thinking. The tool list tells you which one
 
 | | Server-side mode | Client-driven mode |
 |---|---|---|
-| Who thinks | The server calls an OpenRouter model. | The chat model answers each planning prompt itself. |
+| Who thinks | The server calls a planning model: `claude -p` on the owner's own Claude plan login (one owner only), with an optional Grok Build fallback. | The chat model answers each planning prompt itself. |
 | Tools the chat model uses | `ultrathink_uplift`, then `ultrathink_result` | `ultrathink_plan`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, then `ultrathink_result` |
 | Tool count | 10 tools: the six client-driven tools, `ultrathink_uplift`, and the three connector tools `ultrathink_graph`, `ultrathink_sessions` and `ultrathink_command` | 9 tools (`ultrathink_uplift` is not listed) |
-| Who pays | The operator's OpenRouter account. | Your chat plan. The server makes no paid call. |
+| Who pays | The owner's own Claude plan (its usage limits; one owner only). | Your chat plan. The server makes no paid call. |
 | Used by | The hosted server when planning is configured: Grok Chat, Claude chat, Claude Code | Grok Bot, the local stdio server, or any client when server-side mode is off |
 
-Server-side mode is on when `OPENROUTER_API_KEY` and `ULTRATHINK_PLANNING_MODEL` are both set and `ULTRATHINK_SERVER_PLANNING` is not `0`. Without them the server lists no `ultrathink_uplift`, and its prompt and instructions describe the client-driven loop. The client-driven tools stay available in both modes. `ultrathink_result` returns the plan for a finished session from either mode.
+Server-side mode is on only when the operator sets `ULTRATHINK_SERVER_PLANNING=1`, an explicit opt-in; the planner runs on the service user's Claude plan login, and OpenRouter is not involved (it was retired from the hosted service). Unset or `0` means client-driven mode: the server lists no `ultrathink_uplift`, and its prompt and instructions describe the client-driven loop. The client-driven tools stay available in both modes. `ultrathink_result` returns the plan for a finished session from either mode.
 
 ## Connect a client
 
@@ -161,6 +161,107 @@ On Windows there is no shell wrapper. Run Bun on the entry file directly:
 
 That is `bun <path>\services\ultrathink\stdio\main.ts`. If Claude Desktop cannot find `bun`, give the full path to `bun.exe` as the command. Claude Code can start the same process with `claude mcp add --transport stdio ultrathink -- <path-to-clone>/bin/ultrathink-connector`. Claude Desktop writes the server's stderr to `mcp-server-ultrathink.log` in its log directory, `~/Library/Logs/Claude` on macOS and `%APPDATA%\Claude\logs` on Windows. Checking the server by hand is in the [runbook](../ops/runbook-ultrathink.md#13-connector-surface-and-diagnostics). That a local-server entry shows the six prompts and the card in Claude Desktop is not verified.
 
+## Copy-paste configs by client
+
+The sections above explain each client. This section is the short version: one block per client with placeholders, and for each one the variables its transport actually reads. Replace `<path-to-clone>` with the absolute path of your checkout, `<path-to-state-directory>` with a directory you own (the connector creates it with mode 0700) and `<your-origin>` with the origin of your own [self-hosted service](self-host.md). Nothing here is a real value. Where your variables belong for each shape is in [Bring your own variables](bring-your-own-variables.md).
+
+There are two transports, and they read different variables:
+
+- **Stdio connector** (`bin/ultrathink-connector`, started by the client as a process). It reads no config file, no credential store and no `.env` file (`bin/run-bun` starts Bun with `--no-env-file`, which Bun 1.3.3 and later honour), and it makes no network call. Its settings come only from the environment the client gives the process. Those are the variables in the table below.
+- **Hosted service** (`https://<your-origin>/mcp`, OAuth). The client side reads no ultrathink variable: you give the client a URL and sign in on the consent page with the owner password. The variables belong to the service and its operator; see [Self-host](self-host.md).
+
+| Stdio variable | Used for |
+|---|---|
+| `ULTRATHINK_STATE_DIR` | Where sessions are kept. Set it in every config below. A path inside a `.planning` tree is ignored. When it is unset, the directory is the `connector` directory under the host's state directory (next rows). |
+| `ULTRATHINK_LOG_LEVEL` | `info`, `warn` or `error`; default `warn`. Logs go to stderr. |
+| `ULTRATHINK_HOST` | Forces which host's state directory is the default: `claude-code`, `grok-build`, `hermes`, `muse`, `omp`, `prime-agent` or `cursor`. Any other value is ignored. Only matters when `ULTRATHINK_STATE_DIR` is unset. |
+| `GROK_PLUGIN_ROOT`, `GROK_HOOK_EVENT`, `GROK_SESSION_ID`, `MUSE_TOOL_USE_ID`, `MUSE_PLUGIN_ID`, `PRIME_AGENT_CODING_AGENT_DIR`, `RLM_SESSION_DIR` | Host detection when `ULTRATHINK_HOST` is unset: any Grok marker means Grok Build, a Muse marker Muse, a Prime Agent marker Prime Agent; otherwise Claude Code. |
+| `HOME`, `CLAUDE_CONFIG_DIR`, `GROK_PLUGIN_DATA`, `GROK_HOME`, `HERMES_HOME`, `XDG_CONFIG_HOME`, `PI_CODING_AGENT_DIR` | Where the default state directory is, per detected host (see [State directories](../configuration.md#state-directories)). Only used when `ULTRATHINK_STATE_DIR` is unset. |
+| `BUN`, `BUN_INSTALL`, `PATH` | `bin/run-bun` looks for Bun with them (see [Finding Bun](../configuration.md#finding-bun)). |
+
+Host detection never returns Omp from the environment, so inside an Omp shell the default stays the Claude Code directory unless `ULTRATHINK_HOST=omp` is set. Setting `ULTRATHINK_STATE_DIR` in the client's config avoids the question.
+
+### Config for Claude Desktop
+
+Stdio, in `claude_desktop_config.json` (location and Windows form are under [Local stdio](#local-stdio)):
+
+```json
+{
+  "mcpServers": {
+    "ultrathink": {
+      "command": "<path-to-clone>/bin/ultrathink-connector",
+      "args": [],
+      "env": {
+        "ULTRATHINK_STATE_DIR": "<path-to-state-directory>",
+        "ULTRATHINK_LOG_LEVEL": "info"
+      }
+    }
+  }
+}
+```
+
+Variables read: `ULTRATHINK_STATE_DIR` and `ULTRATHINK_LOG_LEVEL` from the `env` block, and the stdio table above. Hosted: use the [custom connector](#claude-desktop-and-claudeai-custom-connector) with `https://<your-origin>/mcp`; it reads no variable.
+
+### Config for Claude Code
+
+Stdio, with the environment passed by `-e` (the name comes before `-e`, and `--` ends the options):
+
+```bash
+claude mcp add --transport stdio ultrathink -e ULTRATHINK_STATE_DIR=<path-to-state-directory> -- <path-to-clone>/bin/ultrathink-connector
+```
+
+Hosted, with OAuth (then run `/mcp` inside Claude Code and authenticate), and with the connector key header instead:
+
+```bash
+claude mcp add --transport http ultrathink https://<your-origin>/mcp
+claude mcp add --transport http ultrathink https://<your-origin>/mcp --header "x-connector-key: $ULTRATHINK_CONNECTOR_KEY"
+```
+
+Run only one of the two hosted commands for the same name. Variables read: the stdio form reads `ULTRATHINK_STATE_DIR` (and the stdio table above); the hosted forms read none on the client, and the header form uses the key in your shell variable `ULTRATHINK_CONNECTOR_KEY`, which the service's `ULTRATHINK_CONNECTOR_KEY` must match. *Not verified:* these commands in a live Claude Code; the `-e` form follows Claude Code's documented `claude mcp add` syntax.
+
+### Config for Cursor
+
+Stdio, the same `mcpServers` JSON as Claude Desktop, in Cursor's MCP configuration. This repository's own setup writes MCP servers for Cursor to `~/.cursor/mcp.json` ([Install](../install.md)), so that file is where to paste it:
+
+```json
+{
+  "mcpServers": {
+    "ultrathink": {
+      "command": "<path-to-clone>/bin/ultrathink-connector",
+      "args": [],
+      "env": {
+        "ULTRATHINK_STATE_DIR": "<path-to-state-directory>"
+      }
+    }
+  }
+}
+```
+
+Variables read: the `env` block and the stdio table above. *Not verified:* the Cursor settings menu that opens the same file, that Cursor starts the connector with this entry, and whether Cursor can complete this server's OAuth sign-in (use stdio for Cursor).
+
+### Config for Grok Chat
+
+Hosted only: in grok.com/connectors choose **New Connector**, **Custom**, enter `https://<your-origin>/mcp`, choose OAuth, and approve with the owner password (full steps under [Grok Chat](#grok-chat)). Grok Chat runs in xAI's cloud, so it cannot start a local stdio process. Variables read on the client: none. Grok caches the tool list at connect time, so reconnect after the service's tools change.
+
+### Config for Omp
+
+This repository is already an Omp plugin (`package.json` names `src/host/omp.ts` as its extension), and the plugin plans in-process without the connector. To also give Omp the connector's nine tools, start `bin/ultrathink-connector` as a stdio process through Omp's MCP file, `~/.omp/agent/mcp.json` (`$PI_CODING_AGENT_DIR/mcp.json` when that variable is set), the file this repository's `scripts/mcp-register.ts` writes for Omp:
+
+```json
+{
+  "mcpServers": {
+    "ultrathink": {
+      "type": "stdio",
+      "command": "<path-to-clone>/bin/ultrathink-connector",
+      "args": [],
+      "env": { "ULTRATHINK_STATE_DIR": "<path-to-state-directory>", "ULTRATHINK_HOST": "omp" }
+    }
+  }
+}
+```
+
+Variables read: the `env` block and the stdio table above; `ULTRATHINK_HOST=omp` only matters if you drop `ULTRATHINK_STATE_DIR`. *Not verified:* that Omp passes an `env` key to a stdio server (this repository's writer emits only `type`, `command` and `args`). If it does not, run the connector through `env` instead: `"command": "env"` and `"args": ["ULTRATHINK_STATE_DIR=<path-to-state-directory>", "<path-to-clone>/bin/ultrathink-connector"]`. Hosted from Omp is not covered here.
+
 ## Use it
 
 Type `/ultrathink` followed by the request, in one message:
@@ -179,7 +280,7 @@ If the request is empty (`/ultrathink` alone), the model should ask for a reques
 
 With server-side planning the plan text starts with the Graph of Thought x Chain of Thought block: a wave tree in a code block, then a Mermaid diagram. The model is told to show the tree to you first, unchanged. In a client that draws MCP Apps, the card is bound to the `ultrathink_uplift` call: it shows progress, polls `ultrathink_result` itself and then draws the graph, so the model does not need `ultrathink_graph` for the same session unless you ask for it.
 
-The request is limited by `ULTRATHINK_MAX_INPUT_CHARS` (default 8000 characters).
+The request is limited by the 1 MB request body, which applies first over HTTP, and by `ULTRATHINK_MAX_INPUT_CHARS` (default 4,000,000 characters).
 
 ### Brief and full
 
@@ -194,28 +295,16 @@ When the plan does not fit, whole sections are left out and a note says so. The 
 
 ### Time and cost
 
-Measured on 2026-10-18 on this VPS with the real planner. Prompt: "Compare three approaches for caching in a small Node API and recommend one for a team of two." Five models ran in parallel with `ULTRATHINK_MODEL_REASONING_EFFORT` at `low`. All five plans passed the plugin's structure check. Each row is one run, so timing varies from run to run.
+A plan makes 9 to 11 model calls: uplift 1, graph 1, Chain of Thought one per node (5 to 8), clarify 1. Each call is a `claude -p` child process on the owner's Claude plan login, so a plan draws the plan's usage limits (the 5-hour session and the weekly limit) and has no per-token bill. Timing on this path has not been measured on the hosted service; earlier measurements were taken through OpenRouter, which was retired from the hosted service, and they no longer apply. The default planning model is `claude-haiku-5-5`; another Claude model is one `ULTRATHINK_PLANNING_MODEL` change. The result's `usage` field reports the real calls and tokens of each plan. The server logs every model call (`planner_call`) and exposes `ultrathink_planner_calls_total` and `ultrathink_planner_call_duration_seconds`, which show which calls are slow.
 
-| Model | Time | Model calls | Tokens in / out | Cost | Plan size | Nodes / steps |
-|---|---|---|---|---|---|---|
-| `google/gemini-3.6-flash` | 44 s | 9 | 28.8k / 7.9k | 0.051 USD | 19.8k chars | 6 / 34 |
-| `x-ai/grok-4.3` | 62 s | 9 | 15.3k / 7.9k | 0.036 USD | 8.1k chars | 6 / 44 |
-| `openai/gpt-5.6-luna` | 65 s | 10 | 34.7k / 7.6k | 0.018 USD | 22.0k chars | 7 / 49 |
-| `anthropic/claude-haiku-4.5` | 111 s | 10 | 39.3k / 10.0k | 0.089 USD | 23.9k chars | 7 / 56 |
-| `x-ai/grok-4.7` | 138 s | 10 | 50.9k / 11.7k | 0.153 USD | 23.9k chars | 7 / 56 |
+Two optional ceilings bound the spend, both counted in tokens by a ledger in the server's database. Both are off (0) by default:
 
-A plan makes 9 to 11 model calls: uplift 1, graph 1, Chain of Thought one per node (5 to 8), clarify 1. `x-ai/grok-4.7` at the provider's default reasoning did not finish in 6 minutes: one call passed the per-call timeout (120 s at the time of the test; the default is now 240 s), and the 9 calls it made cost 0.167 USD. That is why the default effort is `low`. `x-ai/grok-4.7` writes about 45 tokens per second, so its single large specification call takes 110 to 120 s even at `low`.
+- `ULTRATHINK_RUN_TOKEN_CEILING` (default 0, no limit) for one plan.
+- `ULTRATHINK_DAILY_TOKEN_CEILING` (default 0, no limit) for one UTC day, across all plans.
 
-The shipped example model stays `x-ai/grok-4.7`, which is the operator's choice. A faster or cheaper model is one `ULTRATHINK_PLANNING_MODEL` change: `google/gemini-3.6-flash` for speed, `openai/gpt-5.6-luna` for price. Model ids are OpenRouter ids. The result's `usage` field reports the real calls, tokens and, when OpenRouter returns it, the cost of each plan. The server logs every model call (`planner_call`) and exposes `ultrathink_planner_calls_total` and `ultrathink_planner_call_duration_seconds`, which show which calls are slow.
+A plan that would pass a ceiling stops with `budget_exceeded`. With no output cap set (`ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` at 0), each model call's reply is also capped to the tokens the ceilings still allow after its input, and a call whose input alone does not fit is refused with `budget_exceeded`. Abandoned reservations keep counting, so the ledger errs toward stopping early.
 
-Two ceilings bound the spend, both counted in tokens by a ledger in the server's database:
-
-- `ULTRATHINK_RUN_TOKEN_CEILING` (default 150,000 tokens) for one plan.
-- `ULTRATHINK_DAILY_TOKEN_CEILING` (default 1,000,000 tokens) for one UTC day, across all plans.
-
-A plan that would pass a ceiling stops with `budget_exceeded`. Abandoned reservations keep counting, so the ledger errs toward stopping early.
-
-The server runs at most `ULTRATHINK_MAX_CONCURRENT_PLANS` plans at once (default 2). It cancels a model call after `ULTRATHINK_MODEL_TIMEOUT_MS` (default 240000) and a whole plan after `ULTRATHINK_PLAN_TIMEOUT_MS` (default 600000).
+The server runs at most `ULTRATHINK_MAX_CONCURRENT_PLANS` plans at once (default 2). It cancels a model call after `ULTRATHINK_MODEL_TIMEOUT_MS` and a whole plan after `ULTRATHINK_PLAN_TIMEOUT_MS` when those are set above 0; both are off by default.
 
 ## Commands and the typed /ultrathink
 
@@ -249,7 +338,7 @@ If server-side planning is off (no `ultrathink_uplift` in the tool list), the fi
 - Which protocol revision Claude chat and Grok Chat open with, and how they react to the 400 on a 2026-07-28 probe. The fallback was confirmed only for the official SDK clients.
 - Grok Chat's redirect addresses on iOS, Android and Tesla, its tool-result size limit, per-call timeout and tool description length limit, and whether it uses client ID metadata documents.
 - That the model follows a typed `/ultrathink`. This is a convention that the descriptions, the prompts and your custom instructions encourage. A model can still answer the request directly without calling a tool. Say "use ultrathink" or run the prompt when that happens.
-- Which model a hosted client uses. The server cannot see it, and server-side mode does not depend on it: the planning model is the server's OpenRouter model.
+- Which model a hosted client uses. The server cannot see it, and server-side mode does not depend on it: the planning model is the server's own (a Claude model on the owner's plan login).
 
 To check a client, send `/ultrathink plan a short test feature` and look for an `ultrathink_uplift` call in the chat, then `ultrathink_result` calls, then a plan that starts with a wave tree and ends with questions. Then send `/ultrathink-status` and look for an `ultrathink_sessions` call.
 
@@ -260,9 +349,9 @@ To check a client, send `/ultrathink plan a short test feature` and look for an 
 - **Revoking.** A client can revoke its own token at `POST /oauth/revoke` (RFC 7009). To revoke every client and token, stop the service, delete `/var/lib/ultrathink/oauth.json`, and start it again (`systemctl stop ultrathink-web`, `rm /var/lib/ultrathink/oauth.json`, `systemctl start ultrathink-web`). Every client then registers and asks you to approve again. Plans are not lost. To lock out the owner login, rotate the hash (runbook section 6).
 - **Connector key.** The legacy `x-connector-key` header (`ULTRATHINK_CONNECTOR_KEY`) is for Grok Bot, which cannot do OAuth, and for Claude Code (`--header`). It works on `/mcp` next to OAuth. Do not paste it into Grok Chat or Claude chat: neither client's connector UI can send it. Rotate it in [the Grok Bot guide](../ops/grok-bot-setup-ultrathink.md) section 5.
 - **Browser origins.** `/mcp` refuses a request whose `Origin` header is not the server's own origin, `https://claude.ai`, `https://claude.com`, `https://grok.com`, `https://console.x.ai` or an origin in `ULTRATHINK_ALLOWED_ORIGINS`. A request with no `Origin` header (native and server-side clients) is allowed.
-- **Where your text goes.** In server-side mode the request and the model's intermediate text go to OpenRouter and the model provider you chose, under their privacy terms. The server stores the request, the prompts and the plan under `/var/lib/ultrathink` (`journal/`, `sessions/`, `jobs/`) for 30 days by default. Do not send secrets in a request.
-- **Logs.** The server logs one JSON line per request: request id, HTTP method and path, status, duration, JSON-RPC method, tool name, the `MCP-Protocol-Version` header as sent, auth kind and client address. It does not log prompt text, plans, the owner password, tokens, the connector key, the OpenRouter key or authorization headers; fields with such names are dropped by the logger.
-- **OpenRouter key.** The key stays on the server (`OPENROUTER_API_KEY` in `/etc/ultrathink/ultrathink.env`). Use a key with a spending limit.
+- **Where your text goes.** In server-side mode the request and the model's intermediate text go to Anthropic through the owner's Claude plan (and to xAI if the operator enabled the Grok fallback), under the owner's account terms. The server stores the request, the prompts and the plan under `/var/lib/ultrathink` (`journal/`, `sessions/`, `jobs/`) for 30 days by default. Do not send secrets in a request.
+- **Logs.** The server logs one JSON line per request: request id, HTTP method and path, status, duration, JSON-RPC method, tool name, the `MCP-Protocol-Version` header as sent, auth kind and client address. It does not log prompt text, plans, the owner password, tokens, the connector key or authorization headers; fields with such names are dropped by the logger.
+- **Credentials.** The Claude token (`CLAUDE_CODE_OAUTH_TOKEN`) lives in `/etc/ultrathink/ultrathink.env`, and the `claude` child process receives only an allowlisted environment, so no other server secret reaches it.
 
 ## Configuration
 
@@ -275,20 +364,19 @@ The operator sets these in `/etc/ultrathink/ultrathink.env` and restarts the ser
 | `ULTRATHINK_SESSION_SECRET` | none (required) | Secret for web login sessions, at least 32 characters. |
 | `ULTRATHINK_STATE_DIR` | `/var/lib/ultrathink` | State directory: database, `oauth.json`, `journal/`, `sessions/`, `jobs/`. |
 | `ULTRATHINK_PORT` | `8795` | Listen port, 1024 to 65535. |
-| `ULTRATHINK_MAX_INPUT_CHARS` | `8000` | Longest request, 1 to 20000 characters. |
+| `ULTRATHINK_MAX_INPUT_CHARS` | `4000000` | Longest request in characters; `0` means no limit. The 1 MB request body limit applies first over HTTP. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | `20000` | Longest client-driven answer, 1 to 20000 characters. |
-| `ULTRATHINK_RUN_TOKEN_CEILING` | `150000` | Token limit for one plan. A plan over it stops with `budget_exceeded`. |
-| `ULTRATHINK_DAILY_TOKEN_CEILING` | `1000000` | Token limit per UTC day across all plans. |
-| `ULTRATHINK_PLANNING_MODEL` | unset | OpenRouter model id for server-side planning, for example `x-ai/grok-4.7`. Server-side mode needs it. |
-| `OPENROUTER_API_KEY` | unset | OpenRouter key, at least 20 characters. Server-side mode needs it. |
-| `ULTRATHINK_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base. https only, no credentials, query or fragment. |
-| `ULTRATHINK_SERVER_PLANNING` | unset | `0` turns server-side mode off. `1` requires the key and the model, otherwise the server refuses to start. Unset means on when both are set. |
+| `ULTRATHINK_RUN_TOKEN_CEILING` | `0` | Token limit for one plan; `0` means no limit. A plan over a positive limit stops with `budget_exceeded`. With no output cap set, each model reply is capped to the tokens this limit still allows, and to at most 16000. |
+| `ULTRATHINK_DAILY_TOKEN_CEILING` | `0` | Token limit per UTC day across all plans; `0` means no limit. With no output cap set, each model reply is capped to the tokens this limit still allows, and to at most 16000. |
+| `ULTRATHINK_SERVER_PLANNING` | unset | `1` turns server-side mode on, through the service user's Claude plan login (`claude -p`; single owner only; see the runbook section "Plan backend (coding-plan inference)"). Unset or `0` means client-driven mode. |
+| `ULTRATHINK_PLANNING_MODEL` | `claude-haiku-5-5` | Optional. A Claude model id only; a value with a slash (an OpenRouter-style id) stops the server at start. |
+| `ULTRATHINK_PLANNING_FALLBACK` | `none` | `none` or `grok`; read only when server-side mode is on. |
+| `ULTRATHINK_PLAN_CONCURRENCY` | `2` | 1 to 6; read only when server-side mode is on. Most `claude` child processes at once. |
 | `ULTRATHINK_MAX_CONCURRENT_PLANS` | `2` | Plans that run at once, 1 to 8. More starts return `busy`. |
-| `ULTRATHINK_MODEL_TIMEOUT_MS` | `240000` | Timeout for one model call, 5000 to 600000. A call that times out is not retried. |
-| `ULTRATHINK_PLAN_TIMEOUT_MS` | `600000` | Timeout for one whole plan, 30000 to 1800000. |
-| `ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` | `8000` | Output token limit for one model call, 256 to 32000. |
-| `ULTRATHINK_MODEL_REASONING_EFFORT` | `low` | `minimal`, `low`, `medium` or `high`, or `default`, which omits the parameter so the provider's own default applies. The pipeline already asks the model to write its reasoning steps, so hidden reasoning only adds minutes. |
-| Server-side Jev decisions | off | Off until their spend is metered. Server-side plans never receive the OpenRouter key. |
+| `ULTRATHINK_MODEL_TIMEOUT_MS` | `0` | Timeout for one model call; `0` means no timeout. A positive value must be 5000 to 600000. A call that times out is not retried. |
+| `ULTRATHINK_PLAN_TIMEOUT_MS` | `0` | Timeout for one whole plan; `0` means no timeout. A positive value must be 30000 to 1800000. |
+| `ULTRATHINK_MODEL_MAX_OUTPUT_TOKENS` | `0` | Output token limit for one model call. `0` sends no configured cap: with no token ceiling set, the provider's own maximum applies; with a token ceiling set, each reply is capped to the tokens the ceilings still allow after its input, and never above 16000. A positive value is always sent as the cap; it must be 256 to 32000. |
+| Server-side Jev decisions | off | Off until their spend is metered. The hosted service uses no OpenRouter key: OpenRouter was retired from it. |
 | `ULTRATHINK_CONNECTOR_KEY` | unset | Key for the `x-connector-key` header (Grok Bot), at least 32 characters. |
 | `ULTRATHINK_ALLOWED_ORIGINS` | none | Comma list of extra browser origins (http or https) that `/mcp` accepts. |
 | `ULTRATHINK_OAUTH_REDIRECT_ORIGINS` | none | Comma list of extra https origins allowed in client redirect URIs. |
@@ -330,7 +418,7 @@ The operator sets these in `/etc/ultrathink/ultrathink.env` and restarts the ser
 | `ULTRATHINK_AUDIT_KAFKA_TOPIC` | unset | Kafka topic of the audit sink. Set it together with `ULTRATHINK_AUDIT_KAFKA_REST_URL`. |
 | `ULTRATHINK_OTLP_ENDPOINT` | unset | Base URL of the span collector for OpenTelemetry traces; `/v1/traces` is appended. https, or http to loopback. No credentials, query or fragment. |
 
-Origin lists take bare origins only (`https://host[:port]`, no path, query or fragment). The request body limit is 65,536 bytes and is not configurable. `ULTRATHINK_RETENTION_DAYS` and the backup variables belong to the maintenance job; see the runbook.
+Origin lists take bare origins only (`https://host[:port]`, no path, query or fragment). The request body limit is 1 MB and is not configurable. `ULTRATHINK_RETENTION_DAYS` and the backup variables belong to the maintenance job; see the runbook.
 
 ## Troubleshooting
 
@@ -342,12 +430,12 @@ Origin lists take bare origins only (`https://host[:port]`, no path, query or fr
 | Registration fails: redirect URI refused (`invalid_redirect_uri`) | The client's redirect URI is not https on an allowed origin and not loopback. The message lists the allowed origins. | Add the client's redirect origin to `ULTRATHINK_OAUTH_REDIRECT_ORIGINS` and restart, only if you trust that client. |
 | 429 | A rate limit fired. nginx allows 120 `/mcp` requests per minute per client address, 30 OAuth requests per minute, and 5 login requests per minute. The app has its own limits on registration (10 per hour), authorize (30 per minute) and token and revoke (60 per minute). | Wait for the `Retry-After` time. Do not poll `ultrathink_result` with `waitSeconds: 0` in a loop. |
 | `busy` error from `ultrathink_uplift` | `ULTRATHINK_MAX_CONCURRENT_PLANS` plans are already running. | Wait a minute and call again with the same `sessionId`. The operator can raise the limit. |
-| `disabled` or `not_ready` from `ultrathink_uplift` | Server-side mode is off, or the server is shutting down. | Use the client-driven tools (`ultrathink_plan`), or ask the operator to set the key and the model. |
+| `disabled` or `not_ready` from `ultrathink_uplift` | Server-side mode is off, or the server is shutting down. | Use the client-driven tools (`ultrathink_plan`), or ask the operator to enable server-side planning (`ULTRATHINK_SERVER_PLANNING=1`). |
 | Status `failed`, error `budget_exceeded` | The per-run or daily token ceiling was reached. | Wait for the next UTC day, or ask the operator to raise the ceiling. |
 | Status `skipped` | The pipeline declined the request, for example one that starts with a slash command or a `raw:` prefix. | State the request as a plain description of the task and call `ultrathink_uplift` again with a new `sessionId`. |
-| Status `failed`, error `auth` | OpenRouter refused the API key (HTTP 401 or 403). | The operator replaces `OPENROUTER_API_KEY` and restarts. |
-| Status `failed`, error `rate_limited`, `upstream`, `empty` or `bad_response` | The model provider limited, failed or returned nothing usable, after retries. | Try again with a new `sessionId`. The operator checks the model id, credit and timeouts. |
-| Status `failed`, error `timeout` | One model call took longer than `ULTRATHINK_MODEL_TIMEOUT_MS`, or the whole plan took longer than `ULTRATHINK_PLAN_TIMEOUT_MS`. A timeout is not retried: the plan fails with `timeout`. | Try a faster model (see the table above) or a lower `ULTRATHINK_MODEL_REASONING_EFFORT`. The cost of the partial run still counts against the ceilings. |
+| Status `failed`, error `auth` | The owner's Claude login is missing, expired or revoked. | The operator renews the Claude token (runbook section "Plan backend (coding-plan inference)") and restarts. |
+| Status `failed`, error `rate_limited`, `upstream` or `upstream_unavailable` | The Claude plan's usage limit was hit, the `claude` call failed, or the circuit breaker is open after repeated failures. Nothing retries a failed call. | Try again with a new `sessionId`. The operator checks the plan's usage limit and the timeouts. |
+| Status `failed`, error `timeout` | One model call took longer than `ULTRATHINK_MODEL_TIMEOUT_MS`, or the whole plan took longer than `ULTRATHINK_PLAN_TIMEOUT_MS`. Both are off by default, so this needs a limit you set. A timeout is not retried: the plan fails with `timeout`. | Raise the limit, or set `ULTRATHINK_PLANNING_MODEL` to a faster Claude model. The cost of the partial run still counts against the ceilings. |
 | Status `failed`, error `interrupted` | The service restarted while the plan ran. | Run it again with a new `sessionId`. |
 | Status `invalid` | The model produced an incomplete plan. | Run it again, or rephrase the request. |
 | Result says `truncated` | The plan was larger than the size limit, so later Graph of Thought sections were left out. | Ask the user for what is missing, or split the request into smaller ones. |

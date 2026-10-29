@@ -3,8 +3,21 @@
 
 import { createHmac, randomBytes } from "node:crypto";
 import { beforeAll, describe, expect, test } from "bun:test";
-import { type Auth, type AuthOptions, MAX_PASSWORD_CHARS, clientIpFrom, createAuth, keyIdOf, sessionCookieName } from "./auth.ts";
-import { type SecurityEvent, type SecurityEventLogger, getSecurityLogger, setSecurityLogger } from "../security/events.ts";
+import {
+	type Auth,
+	type AuthOptions,
+	MAX_PASSWORD_CHARS,
+	clientIpFrom,
+	createAuth,
+	keyIdOf,
+	sessionCookieName,
+} from "./auth.ts";
+import {
+	type SecurityEvent,
+	type SecurityEventLogger,
+	getSecurityLogger,
+	setSecurityLogger,
+} from "../security/events.ts";
 
 const PASSWORD = randomBytes(24).toString("base64url");
 const WRONG_PASSWORD = `${PASSWORD}-wrong`;
@@ -125,10 +138,16 @@ describe("login", () => {
 		const auth = makeAuth(makeClock());
 		const ip = "198.51.100.4";
 		for (let i = 0; i < 4; i++) {
-			expect(await auth.login({ password: WRONG_PASSWORD, clientIp: ip })).toEqual({ ok: false, reason: "invalid" });
+			expect(await auth.login({ password: WRONG_PASSWORD, clientIp: ip })).toEqual({
+				ok: false,
+				reason: "invalid",
+			});
 		}
 		expect((await auth.login({ password: PASSWORD, clientIp: ip })).ok).toBe(true);
-		expect(await auth.login({ password: WRONG_PASSWORD, clientIp: ip })).toEqual({ ok: false, reason: "invalid" });
+		expect(await auth.login({ password: WRONG_PASSWORD, clientIp: ip })).toEqual({
+			ok: false,
+			reason: "invalid",
+		});
 		const limited = await auth.login({ password: PASSWORD, clientIp: ip });
 		expect(limited.ok).toBe(false);
 		if (limited.ok) return;
@@ -138,7 +157,10 @@ describe("login", () => {
 	test("owner-level limit blocks after ten failures from distinct IPs", async () => {
 		const auth = makeAuth(makeClock());
 		for (let i = 0; i < 10; i++) {
-			const result = await auth.login({ password: WRONG_PASSWORD, clientIp: `198.51.100.${10 + i}` });
+			const result = await auth.login({
+				password: WRONG_PASSWORD,
+				clientIp: `198.51.100.${10 + i}`,
+			});
 			expect(result).toEqual({ ok: false, reason: "invalid" });
 		}
 		const eleventh = await auth.login({ password: PASSWORD, clientIp: "198.51.100.99" });
@@ -211,7 +233,10 @@ describe("sessionFor", () => {
 
 	test("accepts a cookie signed with a previous secret during rotation", async () => {
 		const clock = makeClock();
-		const before = makeAuth(clock, { sessionSecret: OTHER_SECRET, previousSessionSecrets: [OLDER_SECRET] });
+		const before = makeAuth(clock, {
+			sessionSecret: OTHER_SECRET,
+			previousSessionSecrets: [OLDER_SECRET],
+		});
 		const result = await before.login({ password: PASSWORD, clientIp: "198.51.100.1" });
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
@@ -235,16 +260,22 @@ describe("sessionFor", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		const [, expiresAt, mac] = cookieValueOf(result.setCookie).split(".");
-		expect(auth.sessionFor(requestWithCookieValue(`${keyIdOf(OTHER_SECRET)}.${expiresAt}.${mac}`))).toBeNull();
+		expect(
+			auth.sessionFor(requestWithCookieValue(`${keyIdOf(OTHER_SECRET)}.${expiresAt}.${mac}`)),
+		).toBeNull();
 		expect(auth.sessionFor(requestWithCookieValue(`DEADBEEF.${expiresAt}.${mac}`))).toBeNull();
-		expect(auth.sessionFor(requestWithCookieValue(`${keyIdOf(SESSION_SECRET)}.${expiresAt}.${mac}.x`))).toBeNull();
+		expect(
+			auth.sessionFor(requestWithCookieValue(`${keyIdOf(SESSION_SECRET)}.${expiresAt}.${mac}.x`)),
+		).toBeNull();
 	});
 
 	test("rejects the pre-ring two-part <expiresAt>.<mac> layout", async () => {
 		const clock = makeClock();
 		const auth = makeAuth(clock);
 		const expiresAt = clock.t + TWELVE_HOURS_MS;
-		const legacyMac = createHmac("sha256", SESSION_SECRET).update(`ut-session|${expiresAt}`).digest("base64url");
+		const legacyMac = createHmac("sha256", SESSION_SECRET)
+			.update(`ut-session|${expiresAt}`)
+			.digest("base64url");
 		expect(auth.sessionFor(requestWithCookieValue(`${expiresAt}.${legacyMac}`))).toBeNull();
 	});
 
@@ -261,10 +292,12 @@ describe("sessionFor", () => {
 	});
 
 	test("a previous secret shorter than 32 characters throws at construction", () => {
-		expect(() => makeAuth(makeClock(), { previousSessionSecrets: [OTHER_SECRET.slice(0, 31)] })).toThrow(
-			/at least 32 characters/,
-		);
-		expect(() => makeAuth(makeClock(), { previousSessionSecrets: [OTHER_SECRET.slice(0, 32)] })).not.toThrow();
+		expect(() =>
+			makeAuth(makeClock(), { previousSessionSecrets: [OTHER_SECRET.slice(0, 31)] }),
+		).toThrow(/at least 32 characters/);
+		expect(() =>
+			makeAuth(makeClock(), { previousSessionSecrets: [OTHER_SECRET.slice(0, 32)] }),
+		).not.toThrow();
 	});
 
 	test("a previous entry equal to the current secret is ignored", async () => {
@@ -273,7 +306,9 @@ describe("sessionFor", () => {
 		const result = await auth.login({ password: PASSWORD, clientIp: "198.51.100.1" });
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
-		expect(auth.sessionFor(requestWithCookieValue(cookieValueOf(result.setCookie)))).toEqual({ ownerId: "owner" });
+		expect(auth.sessionFor(requestWithCookieValue(cookieValueOf(result.setCookie)))).toEqual({
+			ownerId: "owner",
+		});
 	});
 
 	test("keyIdOf is 8 lowercase hex, stable, and distinct per secret", () => {
@@ -316,7 +351,9 @@ describe("allowRequest", () => {
 		const clock = makeClock();
 		const auth = makeAuth(clock);
 		for (let i = 0; i < 60; i++) {
-			expect(auth.allowRequest({ clientIp: `10.0.0.${i}`, ownerId: "owner" })).toEqual({ ok: true });
+			expect(auth.allowRequest({ clientIp: `10.0.0.${i}`, ownerId: "owner" })).toEqual({
+				ok: true,
+			});
 		}
 		const denied = auth.allowRequest({ clientIp: "10.0.1.1", ownerId: "owner" });
 		expect(denied.ok).toBe(false);
@@ -330,7 +367,9 @@ describe("allowRequest", () => {
 	test("client IP is limited to 120 requests per minute", () => {
 		const auth = makeAuth(makeClock());
 		for (let i = 0; i < 120; i++) {
-			expect(auth.allowRequest({ clientIp: "203.0.113.7", ownerId: `owner-${i}` })).toEqual({ ok: true });
+			expect(auth.allowRequest({ clientIp: "203.0.113.7", ownerId: `owner-${i}` })).toEqual({
+				ok: true,
+			});
 		}
 		const denied = auth.allowRequest({ clientIp: "203.0.113.7", ownerId: "owner-extra" });
 		expect(denied.ok).toBe(false);
@@ -346,7 +385,9 @@ describe("allowRequest", () => {
 		const first = "bearer:0123456789abcdef";
 		const second = "key:connector";
 		for (let i = 0; i < 60; i++) {
-			expect(auth.allowRequest({ clientIp: ip, ownerId: `owner-${i}`, principal: first })).toEqual({ ok: true });
+			expect(auth.allowRequest({ clientIp: ip, ownerId: `owner-${i}`, principal: first })).toEqual({
+				ok: true,
+			});
 		}
 		const denied = auth.allowRequest({ clientIp: ip, ownerId: "owner-x", principal: first });
 		expect(denied.ok).toBe(false);
@@ -355,14 +396,18 @@ describe("allowRequest", () => {
 		expect(denied.retryAfterSec).toBeGreaterThan(0);
 		// 61 IP hits so far; the second principal passes until the IP window (120) closes.
 		for (let i = 0; i < 59; i++) {
-			expect(auth.allowRequest({ clientIp: ip, ownerId: `owner-b${i}`, principal: second })).toEqual({ ok: true });
+			expect(
+				auth.allowRequest({ clientIp: ip, ownerId: `owner-b${i}`, principal: second }),
+			).toEqual({ ok: true });
 		}
 		const ipDenied = auth.allowRequest({ clientIp: ip, ownerId: "owner-y", principal: second });
 		expect(ipDenied.ok).toBe(false);
 		if (ipDenied.ok) return;
 		expect(ipDenied.scope).toBe("ip");
 		clock.t += 60_000;
-		expect(auth.allowRequest({ clientIp: ip, ownerId: "owner-x", principal: first })).toEqual({ ok: true });
+		expect(auth.allowRequest({ clientIp: ip, ownerId: "owner-x", principal: first })).toEqual({
+			ok: true,
+		});
 	});
 
 	test("the owner window applies across principals and honours the ownerLimit override", () => {
@@ -371,34 +416,52 @@ describe("allowRequest", () => {
 		const second = "bearer:bbbb";
 		for (let i = 0; i < 10; i++) {
 			expect(
-				auth.allowRequest({ clientIp: `10.1.0.${i}`, ownerId: "owner", principal: first, ownerLimit: 10 }),
+				auth.allowRequest({
+					clientIp: `10.1.0.${i}`,
+					ownerId: "owner",
+					principal: first,
+					ownerLimit: 10,
+				}),
 			).toEqual({ ok: true });
 		}
-		const denied = auth.allowRequest({ clientIp: "10.1.1.1", ownerId: "owner", principal: second, ownerLimit: 10 });
+		const denied = auth.allowRequest({
+			clientIp: "10.1.1.1",
+			ownerId: "owner",
+			principal: second,
+			ownerLimit: 10,
+		});
 		expect(denied.ok).toBe(false);
 		if (denied.ok) return;
 		expect(denied.scope).toBe("owner");
 		// The default owner window (60) is unaffected for other owners.
-		expect(auth.allowRequest({ clientIp: "10.1.1.1", ownerId: "other", principal: second })).toEqual({ ok: true });
+		expect(
+			auth.allowRequest({ clientIp: "10.1.1.1", ownerId: "other", principal: second }),
+		).toEqual({ ok: true });
 	});
 
 	test("principal ids longer than 128 characters are hashed to one window", () => {
 		const auth = makeAuth(makeClock());
 		const long = `bearer:${"x".repeat(200)}`;
 		for (let i = 0; i < 60; i++) {
-			expect(auth.allowRequest({ clientIp: `10.2.0.${i}`, ownerId: `owner-${i}`, principal: long })).toEqual({ ok: true });
+			expect(
+				auth.allowRequest({ clientIp: `10.2.0.${i}`, ownerId: `owner-${i}`, principal: long }),
+			).toEqual({ ok: true });
 		}
 		const denied = auth.allowRequest({ clientIp: "10.2.1.1", ownerId: "owner-z", principal: long });
 		expect(denied.ok).toBe(false);
 		if (denied.ok) return;
 		expect(denied.scope).toBe("principal");
-		expect(auth.allowRequest({ clientIp: "10.2.1.1", ownerId: "owner-z", principal: `${long}y` })).toEqual({ ok: true });
+		expect(
+			auth.allowRequest({ clientIp: "10.2.1.1", ownerId: "owner-z", principal: `${long}y` }),
+		).toEqual({ ok: true });
 	});
 
 	test("scale 0.5 halves the owner window: 30 admitted, the 31st denied as owner with a 60-second retry-after", () => {
 		const auth = makeAuth(makeClock());
 		for (let i = 0; i < 30; i++) {
-			expect(auth.allowRequest({ clientIp: `10.3.0.${i}`, ownerId: "owner", scale: 0.5 })).toEqual({ ok: true });
+			expect(auth.allowRequest({ clientIp: `10.3.0.${i}`, ownerId: "owner", scale: 0.5 })).toEqual({
+				ok: true,
+			});
 		}
 		const denied = auth.allowRequest({ clientIp: "10.3.1.1", ownerId: "owner", scale: 0.5 });
 		expect(denied.ok).toBe(false);
@@ -411,7 +474,9 @@ describe("allowRequest", () => {
 		const auth = makeAuth(makeClock());
 		const ip = "203.0.113.20";
 		for (let i = 0; i < 60; i++) {
-			expect(auth.allowRequest({ clientIp: ip, ownerId: `owner-${i}`, scale: 0.5 })).toEqual({ ok: true });
+			expect(auth.allowRequest({ clientIp: ip, ownerId: `owner-${i}`, scale: 0.5 })).toEqual({
+				ok: true,
+			});
 		}
 		const denied = auth.allowRequest({ clientIp: ip, ownerId: "owner-x", scale: 0.5 });
 		expect(denied.ok).toBe(false);
@@ -423,11 +488,23 @@ describe("allowRequest", () => {
 		const auth = makeAuth(makeClock());
 		const principal = "bearer:cccc";
 		for (let i = 0; i < 30; i++) {
-			expect(auth.allowRequest({ clientIp: `10.4.0.${i}`, ownerId: `owner-${i}`, principal, scale: 0.5 })).toEqual({
+			expect(
+				auth.allowRequest({
+					clientIp: `10.4.0.${i}`,
+					ownerId: `owner-${i}`,
+					principal,
+					scale: 0.5,
+				}),
+			).toEqual({
 				ok: true,
 			});
 		}
-		const denied = auth.allowRequest({ clientIp: "10.4.1.1", ownerId: "owner-x", principal, scale: 0.5 });
+		const denied = auth.allowRequest({
+			clientIp: "10.4.1.1",
+			ownerId: "owner-x",
+			principal,
+			scale: 0.5,
+		});
 		expect(denied.ok).toBe(false);
 		if (denied.ok) return;
 		expect(denied.scope).toBe("principal");
@@ -437,10 +514,20 @@ describe("allowRequest", () => {
 		const auth = makeAuth(makeClock());
 		for (let i = 0; i < 120; i++) {
 			expect(
-				auth.allowRequest({ clientIp: `10.7.0.${i}`, ownerId: "connector", ownerLimit: 240, scale: 0.5 }),
+				auth.allowRequest({
+					clientIp: `10.7.0.${i}`,
+					ownerId: "connector",
+					ownerLimit: 240,
+					scale: 0.5,
+				}),
 			).toEqual({ ok: true });
 		}
-		const denied = auth.allowRequest({ clientIp: "10.7.1.1", ownerId: "connector", ownerLimit: 240, scale: 0.5 });
+		const denied = auth.allowRequest({
+			clientIp: "10.7.1.1",
+			ownerId: "connector",
+			ownerLimit: 240,
+			scale: 0.5,
+		});
 		expect(denied.ok).toBe(false);
 		if (denied.ok) return;
 		expect(denied.scope).toBe("owner");
@@ -449,7 +536,9 @@ describe("allowRequest", () => {
 	test("scale 0.001 clamps to 0.1: six owner requests admitted, the seventh denied", () => {
 		const auth = makeAuth(makeClock());
 		for (let i = 0; i < 6; i++) {
-			expect(auth.allowRequest({ clientIp: `10.8.0.${i}`, ownerId: "owner", scale: 0.001 })).toEqual({ ok: true });
+			expect(
+				auth.allowRequest({ clientIp: `10.8.0.${i}`, ownerId: "owner", scale: 0.001 }),
+			).toEqual({ ok: true });
 		}
 		const denied = auth.allowRequest({ clientIp: "10.8.1.1", ownerId: "owner", scale: 0.001 });
 		expect(denied.ok).toBe(false);
@@ -458,15 +547,26 @@ describe("allowRequest", () => {
 	});
 
 	test("NaN, Infinity and non-number scales fail closed to 0.1", () => {
-		const invalid: unknown[] = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "half"];
+		const invalid: unknown[] = [
+			Number.NaN,
+			Number.POSITIVE_INFINITY,
+			Number.NEGATIVE_INFINITY,
+			"half",
+		];
 		for (const scale of invalid) {
 			const auth = makeAuth(makeClock());
 			for (let i = 0; i < 6; i++) {
-				expect(auth.allowRequest({ clientIp: `10.9.0.${i}`, ownerId: "owner", scale: scale as number })).toEqual({
+				expect(
+					auth.allowRequest({ clientIp: `10.9.0.${i}`, ownerId: "owner", scale: scale as number }),
+				).toEqual({
 					ok: true,
 				});
 			}
-			const denied = auth.allowRequest({ clientIp: "10.9.1.1", ownerId: "owner", scale: scale as number });
+			const denied = auth.allowRequest({
+				clientIp: "10.9.1.1",
+				ownerId: "owner",
+				scale: scale as number,
+			});
 			expect(denied.ok).toBe(false);
 			if (denied.ok) return;
 			expect(denied.scope).toBe("owner");
@@ -476,7 +576,9 @@ describe("allowRequest", () => {
 	test("a scale above 1 clamps to 1: 60 owner requests admitted", () => {
 		const auth = makeAuth(makeClock());
 		for (let i = 0; i < 60; i++) {
-			expect(auth.allowRequest({ clientIp: `10.10.0.${i}`, ownerId: "owner", scale: 5 })).toEqual({ ok: true });
+			expect(auth.allowRequest({ clientIp: `10.10.0.${i}`, ownerId: "owner", scale: 5 })).toEqual({
+				ok: true,
+			});
 		}
 		const denied = auth.allowRequest({ clientIp: "10.10.1.1", ownerId: "owner", scale: 5 });
 		expect(denied.ok).toBe(false);
@@ -487,7 +589,9 @@ describe("allowRequest", () => {
 	test("an explicit scale of 1 keeps the default owner window of 60", () => {
 		const auth = makeAuth(makeClock());
 		for (let i = 0; i < 60; i++) {
-			expect(auth.allowRequest({ clientIp: `10.11.0.${i}`, ownerId: "owner", scale: 1 })).toEqual({ ok: true });
+			expect(auth.allowRequest({ clientIp: `10.11.0.${i}`, ownerId: "owner", scale: 1 })).toEqual({
+				ok: true,
+			});
 		}
 		const denied = auth.allowRequest({ clientIp: "10.11.1.1", ownerId: "owner", scale: 1 });
 		expect(denied.ok).toBe(false);
@@ -498,7 +602,9 @@ describe("allowRequest", () => {
 	test("the scale applies to each call against counts already recorded", () => {
 		const auth = makeAuth(makeClock());
 		for (let i = 0; i < 40; i++) {
-			expect(auth.allowRequest({ clientIp: `10.12.0.${i}`, ownerId: "owner" })).toEqual({ ok: true });
+			expect(auth.allowRequest({ clientIp: `10.12.0.${i}`, ownerId: "owner" })).toEqual({
+				ok: true,
+			});
 		}
 		const denied = auth.allowRequest({ clientIp: "10.12.1.1", ownerId: "owner", scale: 0.5 });
 		expect(denied.ok).toBe(false);
@@ -531,11 +637,16 @@ describe("approval proofs", () => {
 	test("rejects a tampered nonce, timestamp, or signature", () => {
 		const auth = makeAuth(makeClock());
 		// Always change the last character: overwriting it with a fixed "A" is a no-op about 1 run in 16.
-		const flip = (value: string): string => `${value.slice(0, -1)}${value.endsWith("A") ? "B" : "A"}`;
+		const flip = (value: string): string =>
+			`${value.slice(0, -1)}${value.endsWith("A") ? "B" : "A"}`;
 		const signature = auth.signApproval(proof);
 		expect(auth.verifyApproval({ ...proof, nonce: flip(proof.nonce) }, signature)).toBe(false);
-		expect(auth.verifyApproval({ ...proof, expiresAt: proof.expiresAt + 1 }, signature)).toBe(false);
-		expect(auth.verifyApproval({ ...proof, refreshedAt: proof.refreshedAt + 1 }, signature)).toBe(false);
+		expect(auth.verifyApproval({ ...proof, expiresAt: proof.expiresAt + 1 }, signature)).toBe(
+			false,
+		);
+		expect(auth.verifyApproval({ ...proof, refreshedAt: proof.refreshedAt + 1 }, signature)).toBe(
+			false,
+		);
 		expect(auth.verifyApproval(proof, flip(signature))).toBe(false);
 		expect(auth.verifyApproval(proof, signature.slice(0, -1))).toBe(false);
 	});
@@ -558,7 +669,9 @@ describe("approval proofs", () => {
 		expect(auth.verifyApproval(proof, `${keyIdOf(OTHER_SECRET)}.${mac}`)).toBe(false);
 		expect(auth.verifyApproval(proof, `ZZZZZZZZ.${mac}`)).toBe(false);
 		expect(auth.verifyApproval(proof, mac)).toBe(false);
-		expect(auth.verifyApproval(proof, `${keyIdOf(SESSION_SECRET)}.${mac}${"A".repeat(90)}`)).toBe(false);
+		expect(auth.verifyApproval(proof, `${keyIdOf(SESSION_SECRET)}.${mac}${"A".repeat(90)}`)).toBe(
+			false,
+		);
 	});
 
 	test("allows two approve attempts per minute and the third is limited", () => {
@@ -609,7 +722,9 @@ describe("clientIpFrom", () => {
 	});
 
 	test("keys an IPv4-mapped IPv6 address as the IPv4 address", () => {
-		expect(clientIpFrom(requestWithRealIp("::ffff:198.51.100.9"), "127.0.0.1")).toBe("198.51.100.9");
+		expect(clientIpFrom(requestWithRealIp("::ffff:198.51.100.9"), "127.0.0.1")).toBe(
+			"198.51.100.9",
+		);
 	});
 
 	test("does not read X-Real-IP when trustForwarded is false, even from loopback", () => {
@@ -618,20 +733,30 @@ describe("clientIpFrom", () => {
 
 	test("reads X-Real-IP from loopback when trustForwarded is true or left to the default", () => {
 		expect(clientIpFrom(requestWithRealIp("198.51.100.9"), "127.0.0.1", true)).toBe("198.51.100.9");
-		expect(clientIpFrom(requestWithRealIp("198.51.100.9"), "127.0.0.1", undefined)).toBe("198.51.100.9");
+		expect(clientIpFrom(requestWithRealIp("198.51.100.9"), "127.0.0.1", undefined)).toBe(
+			"198.51.100.9",
+		);
 	});
 });
 
 /** Keeps each validation refusal the logger seam reports, and writes nothing. */
 class RecordingLogger implements SecurityEventLogger {
 	readonly validation: Partial<SecurityEvent>[] = [];
-	log(): void {}
-	logAuthFailure(): void {}
+	log(): void {
+		// reason: test double, no-op by design
+	}
+	logAuthFailure(): void {
+		// reason: test double, no-op by design
+	}
 	logValidationFailure(details: Partial<SecurityEvent>): void {
 		this.validation.push(details);
 	}
-	logRateLimitExceeded(): void {}
-	logSuspiciousActivity(): void {}
+	logRateLimitExceeded(): void {
+		// reason: test double, no-op by design
+	}
+	logSuspiciousActivity(): void {
+		// reason: test double, no-op by design
+	}
 }
 
 describe("refused input", () => {
@@ -645,11 +770,18 @@ describe("refused input", () => {
 			const hostile = "x".repeat(MAX_PASSWORD_CHARS + 1);
 			// Twice the five attempts per IP the limiter allows. A refused attempt must spend none of them.
 			for (let i = 0; i < 10; i++) {
-				expect(await auth.login({ password: hostile, clientIp: ip })).toEqual({ ok: false, reason: "invalid" });
+				expect(await auth.login({ password: hostile, clientIp: ip })).toEqual({
+					ok: false,
+					reason: "invalid",
+				});
 			}
 			expect((await auth.login({ password: PASSWORD, clientIp: ip })).ok).toBe(true);
 			expect(recorder.validation).toHaveLength(10);
-			expect(recorder.validation[0]).toMatchObject({ source: "auth", resource: "login", details: { field: "password" } });
+			expect(recorder.validation[0]).toMatchObject({
+				source: "auth",
+				resource: "login",
+				details: { field: "password" },
+			});
 			expect(JSON.stringify(recorder.validation)).not.toContain(hostile);
 		} finally {
 			setSecurityLogger(previous);

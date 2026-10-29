@@ -10,7 +10,7 @@
 // Pure: no clock, no I/O. Invalid samples (non-finite or negative) are ignored.
 
 /** One load observation from the runtime probe. `utilisation` is `inflight.count / inflight.max`. */
-export interface QuotaSample {
+interface QuotaSample {
 	lagMs: number;
 	utilisation: number;
 }
@@ -27,13 +27,20 @@ const STEP_UP = 0.05;
 const PRESSURE_UTILISATION = 0.8;
 
 /** Create an adaptive quota. `minFactor` must be in `(0, 1]` and `lagTargetMs` a finite number `>= 0`; otherwise `RangeError`. */
-export function createAdaptiveQuota(options: { minFactor: number; lagTargetMs: number }): AdaptiveQuota {
+export function createAdaptiveQuota(options: {
+	minFactor: number;
+	lagTargetMs: number;
+}): AdaptiveQuota {
 	const { minFactor, lagTargetMs } = options;
 	if (!(Number.isFinite(minFactor) && minFactor > 0 && minFactor <= 1)) {
-		throw new RangeError(`createAdaptiveQuota: minFactor must be in (0, 1], got ${String(minFactor)}`);
+		throw new RangeError(
+			`createAdaptiveQuota: minFactor must be in (0, 1], got ${String(minFactor)}`,
+		);
 	}
 	if (!(Number.isFinite(lagTargetMs) && lagTargetMs >= 0)) {
-		throw new RangeError(`createAdaptiveQuota: lagTargetMs must be a finite number >= 0, got ${String(lagTargetMs)}`);
+		throw new RangeError(
+			`createAdaptiveQuota: lagTargetMs must be a finite number >= 0, got ${String(lagTargetMs)}`,
+		);
 	}
 
 	let factor = 1;

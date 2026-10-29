@@ -2,7 +2,12 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { defaultConfig } from "../config.ts";
-import { buildDigest, createGreptileKnowledge, createKnowledgeReader, selectDocuments } from "./knowledge.ts";
+import {
+	buildDigest,
+	createGreptileKnowledge,
+	createKnowledgeReader,
+	selectDocuments,
+} from "./knowledge.ts";
 
 const INDEX = [
 	"# Knowledge base",
@@ -17,7 +22,13 @@ const INDEX = [
 	"- the index itself -> [`index.md`](index.md)",
 ].join("\n");
 
-const PATHS = ["index.md", "docs/shipping-workflow.md", "docs/clarify-flow.md", "docs/configuration.md", "docs/auth.md"];
+const PATHS = [
+	"index.md",
+	"docs/shipping-workflow.md",
+	"docs/clarify-flow.md",
+	"docs/configuration.md",
+	"docs/auth.md",
+];
 
 type Handler = (args: Record<string, unknown>) => unknown | Promise<unknown>;
 
@@ -27,7 +38,14 @@ interface Call {
 }
 
 /** A ToolCaller keyed by tool name; an unknown tool throws like a tool error. */
-function fakeClient(handlers: Record<string, Handler>): { client: { call: (name: string, args: Record<string, unknown>) => Promise<unknown>; close(): void }; calls: Call[]; closed: number } {
+function fakeClient(handlers: Record<string, Handler>): {
+	client: {
+		call: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+		close(): void;
+	};
+	calls: Call[];
+	closed: number;
+} {
 	const state = { calls: [] as Call[], closed: 0 };
 	const client = {
 		async call(name: string, args: Record<string, unknown>) {
@@ -71,7 +89,10 @@ function happyHandlers(overrides: Record<string, Handler> = {}): Record<string, 
 			returned: PATHS.length,
 		}),
 		get_knowledge_base_document: (args) => ({
-			document: { path: args.path, content: args.path === "index.md" ? INDEX : `Content of ${String(args.path)}.` },
+			document: {
+				path: args.path,
+				content: args.path === "index.md" ? INDEX : `Content of ${String(args.path)}.`,
+			},
 			untrustedContent: true,
 		}),
 		...overrides,
@@ -107,7 +128,9 @@ describe("createKnowledgeReader", () => {
 
 	test("omits an empty organization and returns the same result for a second read", async () => {
 		const fake = fakeClient(happyHandlers());
-		const session = createKnowledgeReader({ client: () => fake.client, organization: "" }).start({ repo: "acme/widgets" });
+		const session = createKnowledgeReader({ client: () => fake.client, organization: "" }).start({
+			repo: "acme/widgets",
+		});
 		const first = session.read(SHIP_TOPIC);
 		expect(session.read("something else entirely")).toBe(first);
 		await first;
@@ -116,7 +139,9 @@ describe("createKnowledgeReader", () => {
 
 	test("a repository without a knowledge base is none and reads no documents", async () => {
 		const fake = fakeClient(happyHandlers());
-		const session = createKnowledgeReader({ client: () => fake.client }).start({ repo: "acme/unknown" });
+		const session = createKnowledgeReader({ client: () => fake.client }).start({
+			repo: "acme/unknown",
+		});
 		const { lookup, digest } = await session.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("none");
 		expect(lookup.reason).toContain("acme/unknown");
@@ -127,7 +152,9 @@ describe("createKnowledgeReader", () => {
 
 	test("no repo slug is none without any call", async () => {
 		const fake = fakeClient(happyHandlers());
-		const { lookup } = await createKnowledgeReader({ client: () => fake.client }).start({}).read(SHIP_TOPIC);
+		const { lookup } = await createKnowledgeReader({ client: () => fake.client })
+			.start({})
+			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("none");
 		expect(lookup.reason).toBe("no git remote to look up");
 		expect(fake.calls).toEqual([]);
@@ -141,7 +168,10 @@ describe("createKnowledgeReader", () => {
 					offsets.push(args.offset);
 					const repositories =
 						args.offset === 0
-							? Array.from({ length: 100 }, (_, i) => ({ namespaceId: `ns-${i}`, repoName: `acme/repo-${i}` }))
+							? Array.from({ length: 100 }, (_, i) => ({
+									namespaceId: `ns-${i}`,
+									repoName: `acme/repo-${i}`,
+								}))
 							: [{ namespaceId: "ns-found", repoName: "Acme/Widgets" }];
 					return { repositories, total: 101, returned: repositories.length };
 				},
@@ -159,7 +189,11 @@ describe("createKnowledgeReader", () => {
 		const shapes: Array<Record<string, Handler>> = [
 			{ list_knowledge_bases: () => ({ repositories: "nope", total: "x" }) },
 			{ list_knowledge_bases: () => "plain text" },
-			happyHandlers({ list_knowledge_base_documents: () => ({ documentPaths: [1, null, { path: "a.md" }, "../escape.md", "notes.txt"] }) }),
+			happyHandlers({
+				list_knowledge_base_documents: () => ({
+					documentPaths: [1, null, { path: "a.md" }, "../escape.md", "notes.txt"],
+				}),
+			}),
 			happyHandlers({ get_knowledge_base_document: () => ({ document: { content: 42 } }) }),
 			happyHandlers({ get_knowledge_base_document: () => null }),
 		];
@@ -181,13 +215,18 @@ describe("createKnowledgeReader", () => {
 				},
 				reason: "get_knowledge_base_document: not found",
 			},
-			{ handler: () => ({ document: { content: 42 } }), reason: "docs/shipping-workflow.md: no document content" },
+			{
+				handler: () => ({ document: { content: 42 } }),
+				reason: "docs/shipping-workflow.md: no document content",
+			},
 		];
 		for (const { handler, reason } of failures) {
 			const fake = fakeClient(
 				happyHandlers({
 					get_knowledge_base_document: (args) =>
-						args.path === "docs/shipping-workflow.md" ? handler(args) : { document: { content: args.path === "index.md" ? INDEX : "body" } },
+						args.path === "docs/shipping-workflow.md"
+							? handler(args)
+							: { document: { content: args.path === "index.md" ? INDEX : "body" } },
 				}),
 			);
 			const { lookup, digest } = await createKnowledgeReader({ client: () => fake.client })
@@ -205,10 +244,15 @@ describe("createKnowledgeReader", () => {
 		const fake = fakeClient(
 			happyHandlers({
 				get_knowledge_base_document: (args) =>
-					args.path === "index.md" ? { document: { content: INDEX } } : Promise.withResolvers<never>().promise,
+					args.path === "index.md"
+						? { document: { content: INDEX } }
+						: Promise.withResolvers<never>().promise,
 			}),
 		);
-		const { lookup, digest } = await createKnowledgeReader({ client: () => fake.client, timeoutMs: 50 })
+		const { lookup, digest } = await createKnowledgeReader({
+			client: () => fake.client,
+			timeoutMs: 50,
+		})
 			.start({ repo: "acme/widgets" })
 			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("error");
@@ -221,25 +265,38 @@ describe("createKnowledgeReader", () => {
 		const fake = fakeClient(
 			happyHandlers({
 				list_knowledge_base_documents: () => ({
-					documentPaths: ["docs/billing plan.md", "docs/billing\n.md", "docs/billing\u001b[31m.md", "docs/billing.md"],
+					documentPaths: [
+						"docs/billing plan.md",
+						"docs/billing\n.md",
+						"docs/billing\u001b[31m.md",
+						"docs/billing.md",
+					],
 				}),
 			}),
 		);
-		const { lookup } = await createKnowledgeReader({ client: () => fake.client }).start({ repo: "acme/widgets" }).read("billing");
+		const { lookup } = await createKnowledgeReader({ client: () => fake.client })
+			.start({ repo: "acme/widgets" })
+			.read("billing");
 		expect(lookup.outcome).toBe("used");
 		expect(lookup.docs).toEqual(["docs/billing.md"]);
-		expect(fake.calls.filter((call) => call.name === "get_knowledge_base_document").map((call) => call.args.path)).toEqual([
-			"docs/billing.md",
-		]);
+		expect(
+			fake.calls
+				.filter((call) => call.name === "get_knowledge_base_document")
+				.map((call) => call.args.path),
+		).toEqual(["docs/billing.md"]);
 	});
 
 	test("tenant_required is an error naming ship.greptileOrganization", async () => {
 		const fake = fakeClient({
 			list_knowledge_bases: () => {
-				throw new Error('list_knowledge_bases: {"error":"tenant_required","candidates":["acme","other"]}');
+				throw new Error(
+					'list_knowledge_bases: {"error":"tenant_required","candidates":["acme","other"]}',
+				);
 			},
 		});
-		const { lookup } = await createKnowledgeReader({ client: () => fake.client }).start({ repo: "acme/widgets" }).read(SHIP_TOPIC);
+		const { lookup } = await createKnowledgeReader({ client: () => fake.client })
+			.start({ repo: "acme/widgets" })
+			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("error");
 		expect(lookup.reason).toContain("ship.greptileOrganization");
 		expect(lookup.reason?.length).toBeLessThanOrEqual(200);
@@ -247,7 +304,10 @@ describe("createKnowledgeReader", () => {
 
 	test("a call that never resolves times out", async () => {
 		const fake = fakeClient({ list_knowledge_bases: () => Promise.withResolvers<never>().promise });
-		const { lookup, digest } = await createKnowledgeReader({ client: () => fake.client, timeoutMs: 50 })
+		const { lookup, digest } = await createKnowledgeReader({
+			client: () => fake.client,
+			timeoutMs: 50,
+		})
 			.start({ repo: "acme/widgets" })
 			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("error");
@@ -290,14 +350,22 @@ describe("createKnowledgeReader", () => {
 
 describe("selectDocuments", () => {
 	test("routes a shipping topic and a clarification topic to their documents", () => {
-		expect(selectDocuments({ index: INDEX, paths: PATHS, topic: SHIP_TOPIC, maxDocs: 1 })).toEqual(["docs/shipping-workflow.md"]);
+		expect(selectDocuments({ index: INDEX, paths: PATHS, topic: SHIP_TOPIC, maxDocs: 1 })).toEqual([
+			"docs/shipping-workflow.md",
+		]);
 		expect(
-			selectDocuments({ index: INDEX, paths: PATHS, topic: "Ask fewer clarifying questions before planning", maxDocs: 1 }),
+			selectDocuments({
+				index: INDEX,
+				paths: PATHS,
+				topic: "Ask fewer clarifying questions before planning",
+				maxDocs: 1,
+			}),
 		).toEqual(["docs/clarify-flow.md"]);
 	});
 
 	test("honours maxDocs and never returns unlisted paths or index.md", () => {
-		const topic = "shipping merge clarifying questions configuration defaults credential login index document published";
+		const topic =
+			"shipping merge clarifying questions configuration defaults credential login index document published";
 		const picked = selectDocuments({ index: INDEX, paths: PATHS, topic, maxDocs: 3 });
 		expect(picked).toHaveLength(3);
 		expect(picked).not.toContain("index.md");
@@ -306,8 +374,12 @@ describe("selectDocuments", () => {
 	});
 
 	test("without a routing table, matches the listed paths' words", () => {
-		expect(selectDocuments({ paths: PATHS, topic: "rotate the auth credential", maxDocs: 3 })).toEqual(["docs/auth.md"]);
-		expect(selectDocuments({ paths: PATHS, topic: "unrelated words entirely", maxDocs: 3 })).toEqual([]);
+		expect(
+			selectDocuments({ paths: PATHS, topic: "rotate the auth credential", maxDocs: 3 }),
+		).toEqual(["docs/auth.md"]);
+		expect(
+			selectDocuments({ paths: PATHS, topic: "unrelated words entirely", maxDocs: 3 }),
+		).toEqual([]);
 	});
 
 	test("markup-free request text does not route to an entry about graphs, prompts and workflows", () => {
@@ -316,10 +388,13 @@ describe("selectDocuments", () => {
 			"- invoice billing and failed payment retries -> [`docs/billing.md`](docs/billing.md)",
 		].join("\n");
 		const paths = ["index.md", "docs/planner.md", "docs/billing.md"];
-		const topic = "Retry failed invoice payments\nRetry billing: resend the invoice after a failed payment";
+		const topic =
+			"Retry failed invoice payments\nRetry billing: resend the invoice after a failed payment";
 		expect(selectDocuments({ index, paths, topic, maxDocs: 3 })).toEqual(["docs/billing.md"]);
 		const markup = `<BUILD_PROMPT><GRAPH_OF_THOUGHT><NODE kind="generate">${topic}</NODE></GRAPH_OF_THOUGHT><WORKFLOW><WAVE parallel="true"/></WORKFLOW></BUILD_PROMPT>`;
-		expect(selectDocuments({ index, paths, topic: markup, maxDocs: 3 })).toContain("docs/planner.md");
+		expect(selectDocuments({ index, paths, topic: markup, maxDocs: 3 })).toContain(
+			"docs/planner.md",
+		);
 	});
 });
 
@@ -347,7 +422,9 @@ describe("createGreptileKnowledge", () => {
 	test("is undefined unless hitl.knowledgeBase is on", () => {
 		const config = defaultConfig();
 		config.hitl.knowledgeBase = false;
-		expect(createGreptileKnowledge(config, { storePath: "/nonexistent/creds.json" })).toBeUndefined();
+		expect(
+			createGreptileKnowledge(config, { storePath: "/nonexistent/creds.json" }),
+		).toBeUndefined();
 		config.hitl.knowledgeBase = true;
 		expect(createGreptileKnowledge(config, { storePath: "/nonexistent/creds.json" })).toBeDefined();
 	});

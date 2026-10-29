@@ -7,15 +7,34 @@
  * or truncated file can never feed unbounded text to the distiller. Nothing is redacted here: `observe` does that.
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { isNoise } from "../claude/transcript.ts";
-import { DIGEST_MAX_CHARS, DIGEST_MAX_TURNS, DIGEST_TURN_CHARS, type DigestTurn, type TeachDigest } from "./types.ts";
+import { isNoise, textParts } from "../claude/transcript.ts";
+import {
+	DIGEST_MAX_CHARS,
+	DIGEST_MAX_TURNS,
+	DIGEST_TURN_CHARS,
+	type DigestTurn,
+	type TeachDigest,
+} from "./types.ts";
 
 const TAIL_BYTES = 512 * 1024;
 const TOOL_SUMMARY_CHARS = 200;
 const TOOL_NAME_CHARS = 80;
-const SUMMARY_KEYS = ["command", "file_path", "path", "pattern", "url", "query", "description", "prompt"] as const;
+const SUMMARY_KEYS = [
+	"command",
+	"file_path",
+	"path",
+	"pattern",
+	"url",
+	"query",
+	"description",
+	"prompt",
+] as const;
 const ROLES: Record<DigestTurn["role"], true> = { user: true, assistant: true, tool: true };
-const OUTCOMES: Record<NonNullable<TeachDigest["outcome"]>, true> = { completed: true, failed: true, interrupted: true };
+const OUTCOMES: Record<NonNullable<TeachDigest["outcome"]>, true> = {
+	completed: true,
+	failed: true,
+	interrupted: true,
+};
 const INTERRUPTED = /^\[Request interrupted by user/i;
 
 export interface DigestMeta {
@@ -26,11 +45,11 @@ export interface DigestMeta {
 	now?: () => number;
 }
 
-function clip(text: string, max: number): string {
+export function clip(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-function nonEmpty(value: unknown): string | undefined {
+export function nonEmpty(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
@@ -57,7 +76,8 @@ export function parseDigest(raw: unknown): TeachDigest | undefined {
 	const cwd = nonEmpty(rec.cwd);
 	if (!host || !sessionId || !cwd) return undefined;
 	if (!Array.isArray(rec.turns)) return undefined;
-	if (typeof rec.toolCalls !== "number" || !Number.isInteger(rec.toolCalls) || rec.toolCalls < 0) return undefined;
+	if (typeof rec.toolCalls !== "number" || !Number.isInteger(rec.toolCalls) || rec.toolCalls < 0)
+		return undefined;
 	let outcome: TeachDigest["outcome"];
 	if (rec.outcome !== undefined) {
 		if (typeof rec.outcome !== "string" || !Object.hasOwn(OUTCOMES, rec.outcome)) return undefined;
@@ -67,7 +87,12 @@ export function parseDigest(raw: unknown): TeachDigest | undefined {
 	for (const item of rec.turns) {
 		if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
 		const turn = item as Record<string, unknown>;
-		if (typeof turn.role !== "string" || !Object.hasOwn(ROLES, turn.role) || typeof turn.text !== "string") return undefined;
+		if (
+			typeof turn.role !== "string" ||
+			!Object.hasOwn(ROLES, turn.role) ||
+			typeof turn.text !== "string"
+		)
+			return undefined;
 		const parsed: DigestTurn = { role: turn.role as DigestTurn["role"], text: turn.text };
 		const tool = nonEmpty(turn.tool);
 		if (tool) parsed.tool = clip(tool, TOOL_NAME_CHARS);
@@ -86,18 +111,6 @@ export function parseDigest(raw: unknown): TeachDigest | undefined {
 	};
 }
 
-function partsText(content: unknown): string {
-	if (typeof content === "string") return content.trim();
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const part of content) {
-		if (!part || typeof part !== "object") continue;
-		const rec = part as { type?: unknown; text?: unknown };
-		if (rec.type === "text" && typeof rec.text === "string") parts.push(rec.text);
-	}
-	return parts.join("\n").trim();
-}
-
 function summarizeInput(input: unknown): string {
 	let text = "";
 	if (typeof input === "string") text = input;
@@ -109,6 +122,7 @@ function summarizeInput(input: unknown): string {
 			try {
 				text = JSON.stringify(input) ?? "";
 			} catch {
+				// reason: unserialisable input gives an empty summary; the tool name is still shown
 				text = "";
 			}
 		}
@@ -146,14 +160,23 @@ function readTail(path: string): string | undefined {
 			try {
 				closeSync(fd);
 			} catch {
-				// nothing to release
+				// reason: nothing to release
 			}
 		}
 	}
 }
 
-function finish(turns: DigestTurn[], toolCalls: number, meta: DigestMeta, outcome: TeachDigest["outcome"]): TeachDigest | undefined {
-	if (!turns.some((turn) => turn.role === "user") || !turns.some((turn) => turn.role === "assistant")) return undefined;
+function finish(
+	turns: DigestTurn[],
+	toolCalls: number,
+	meta: DigestMeta,
+	outcome: TeachDigest["outcome"],
+): TeachDigest | undefined {
+	if (
+		!turns.some((turn) => turn.role === "user") ||
+		!turns.some((turn) => turn.role === "assistant")
+	)
+		return undefined;
 	const resolved = meta.outcome ?? outcome;
 	return {
 		host: meta.host,
@@ -166,7 +189,10 @@ function finish(turns: DigestTurn[], toolCalls: number, meta: DigestMeta, outcom
 	};
 }
 
-export function digestFromClaudeTranscript(path: string, meta: DigestMeta): TeachDigest | undefined {
+export function digestFromClaudeTranscript(
+	path: string,
+	meta: DigestMeta,
+): TeachDigest | undefined {
 	const jsonl = readTail(path);
 	if (!jsonl) return undefined;
 	const turns: DigestTurn[] = [];
@@ -180,6 +206,7 @@ export function digestFromClaudeTranscript(path: string, meta: DigestMeta): Teac
 		try {
 			entry = JSON.parse(trimmed);
 		} catch {
+			// reason: a line that is not JSON is skipped; the other lines still count
 			continue;
 		}
 		if (!entry || typeof entry !== "object") continue;
@@ -212,12 +239,13 @@ export function digestFromClaudeTranscript(path: string, meta: DigestMeta): Teac
 			} else if (p.type === "tool_use") {
 				flush();
 				toolCalls++;
-				if (typeof p.id === "string") toolNames.set(p.id, clip(nonEmpty(p.name) ?? "tool", TOOL_NAME_CHARS));
+				if (typeof p.id === "string")
+					toolNames.set(p.id, clip(nonEmpty(p.name) ?? "tool", TOOL_NAME_CHARS));
 				turns.push(toolCallTurn(p.name, p.input));
 			} else if (p.type === "tool_result") {
 				flush();
 				const tool = typeof p.tool_use_id === "string" ? toolNames.get(p.tool_use_id) : undefined;
-				const turn: DigestTurn = { role: "tool", text: partsText(p.content) || "(no output)" };
+				const turn: DigestTurn = { role: "tool", text: textParts(p.content) || "(no output)" };
 				if (tool) turn.tool = tool;
 				if (p.is_error === true) turn.isError = true;
 				turns.push(turn);
@@ -228,20 +256,45 @@ export function digestFromClaudeTranscript(path: string, meta: DigestMeta): Teac
 	return finish(turns, toolCalls, meta, interrupted ? "interrupted" : undefined);
 }
 
-export function digestFromAgentMessages(messages: readonly unknown[], meta: DigestMeta): TeachDigest | undefined {
+/**
+ * What the user typed for a `/skill:` run. Omp delivers it as a `custom` message, never a `user` one, and its `content`
+ * is the whole skill body, which the user did not write. The words are in `details`: the submitted draft, else
+ * `/skill:<name> <args>`. Autoload and agent injections carry another attribution and are not a user turn.
+ */
+function skillPromptText(rec: Record<string, unknown>): string {
+	if (rec.customType !== "skill-prompt" || rec.attribution !== "user") return "";
+	const details = rec.details;
+	if (!details || typeof details !== "object") return "";
+	const { prompt, name, args } = details as Record<string, unknown>;
+	const typed = nonEmpty(prompt);
+	if (typed) return typed;
+	const skill = nonEmpty(name);
+	if (!skill) return "";
+	const rest = nonEmpty(args);
+	return rest ? `/skill:${skill} ${rest}` : `/skill:${skill}`;
+}
+
+export function digestFromAgentMessages(
+	messages: readonly unknown[],
+	meta: DigestMeta,
+): TeachDigest | undefined {
 	const turns: DigestTurn[] = [];
 	let toolCalls = 0;
 	let lastStop: unknown;
 	for (const message of messages) {
 		if (!message || typeof message !== "object") continue;
 		const rec = message as Record<string, unknown>;
-		if (rec.role === "user") {
+		if (rec.role === "user" || rec.role === "custom") {
 			if (rec.synthetic === true) continue;
-			const text = partsText(rec.content);
+			const text = rec.role === "user" ? textParts(rec.content) : skillPromptText(rec);
 			if (text && !isNoise(text)) turns.push({ role: "user", text });
 		} else if (rec.role === "assistant") {
 			lastStop = rec.stopReason;
-			const content = Array.isArray(rec.content) ? rec.content : typeof rec.content === "string" ? [{ type: "text", text: rec.content }] : [];
+			const content = Array.isArray(rec.content)
+				? rec.content
+				: typeof rec.content === "string"
+					? [{ type: "text", text: rec.content }]
+					: [];
 			let pending: string[] = [];
 			const flush = (): void => {
 				const text = pending.join("\n").trim();
@@ -261,12 +314,17 @@ export function digestFromAgentMessages(messages: readonly unknown[], meta: Dige
 			}
 			flush();
 		} else if (rec.role === "toolResult") {
-			const turn: DigestTurn = { role: "tool", text: partsText(rec.content) || "(no output)" };
+			const turn: DigestTurn = { role: "tool", text: textParts(rec.content) || "(no output)" };
 			const tool = nonEmpty(rec.toolName);
 			if (tool) turn.tool = clip(tool, TOOL_NAME_CHARS);
 			if (rec.isError === true) turn.isError = true;
 			turns.push(turn);
 		}
 	}
-	return finish(turns, toolCalls, meta, lastStop === "aborted" ? "interrupted" : lastStop === "error" ? "failed" : undefined);
+	return finish(
+		turns,
+		toolCalls,
+		meta,
+		lastStop === "aborted" ? "interrupted" : lastStop === "error" ? "failed" : undefined,
+	);
 }

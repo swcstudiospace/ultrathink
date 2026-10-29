@@ -39,7 +39,8 @@ const CLARIFICATIONS_RE = /<CLARIFICATIONS\b[\s\S]*?<\/CLARIFICATIONS>/gi;
 // Tracker rows (Linear and Notion links) added to a tracked session's spec; a chat has no use for them.
 const TRACKER_BLOCK_RE = /<(ISSUES|TRACKING|LINKED_ISSUES)\b[\s\S]*?<\/\1\s*>/gi;
 const TRACKER_ATTR_RE = /\s+(?:notionTaskUrl|notionUrl|issueUrl|linearUrl)="[^"]*"/gi;
-const TRACKER_URL_RE = /https?:\/\/(?:[\w-]+\.)*(?:notion\.(?:so|com|site)|linear\.app)(?:[/?#][^\s"'<>)\]]*)?/gi;
+const TRACKER_URL_RE =
+	/https?:\/\/(?:[\w-]+\.)*(?:notion\.(?:so|com|site)|linear\.app)(?:[/?#][^\s"'<>)\]]*)?/gi;
 
 /** Share of maxChars the specification may take when the whole plan would not fit. */
 const SPEC_SHARE = 0.55;
@@ -76,7 +77,7 @@ function indent(text: string, prefix = INDENT): string {
 }
 
 /** The uplifted specification without the original prompt (shown separately) and the injected graph and question blocks. */
-export function specificationText(xml: string): string {
+function specificationText(xml: string): string {
 	let body = xml
 		.replace(ORIGINAL_RE, "")
 		.replace(GRAPH_RE, "")
@@ -135,7 +136,9 @@ function questionText(item: Clarification, detail: RenderOptions["detail"], inde
 	if (detail === "full") {
 		const why = oneLine(item.why, 1_000);
 		if (why) lines.push(`${INDENT}Why: ${why}`);
-		const options = item.options.map((option) => oneLine(option.label, 200)).filter((label) => label.length > 0);
+		const options = item.options
+			.map((option) => oneLine(option.label, 200))
+			.filter((label) => label.length > 0);
 		if (options.length > 0) lines.push(`${INDENT}Options: ${options.join(" | ")}`);
 	}
 	return lines.join("\n");
@@ -146,11 +149,17 @@ function questionsUnit(list: Clarification[], detail: RenderOptions["detail"]): 
 	const settled = list.filter((item) => item.answer !== undefined);
 	if (open.length === 0 && settled.length === 0) return null;
 	const lines = ["## Clarifying questions"];
-	if (open.length > 0) lines.push(open.map((item, i) => questionText(item, detail, i + 1)).join("\n"));
+	if (open.length > 0)
+		lines.push(open.map((item, i) => questionText(item, detail, i + 1)).join("\n"));
 	if (settled.length > 0) {
 		lines.push(
 			"Already settled:",
-			settled.map((item) => `- ${oneLine(item.question, 2_000)}\n${INDENT}Answer: ${oneLine(item.answer, 2_000)}`).join("\n"),
+			settled
+				.map(
+					(item) =>
+						`- ${oneLine(item.question, 2_000)}\n${INDENT}Answer: ${oneLine(item.answer, 2_000)}`,
+				)
+				.join("\n"),
 		);
 	}
 	return { text: lines.join("\n"), optional: false };
@@ -186,20 +195,27 @@ export function renderChatPlan(record: SessionRecord, options: RenderOptions): R
 		`Graph of Thought nodes: ${nodeCount}`,
 	];
 	if (record.degraded && record.degraded.length > 0) {
-		headerLines.push(`Stages that used boilerplate instead of model output: ${record.degraded.map((s) => oneLine(s, 60)).join(", ")}`);
+		headerLines.push(
+			`Stages that used boilerplate instead of model output: ${record.degraded.map((s) => oneLine(s, 60)).join(", ")}`,
+		);
 	}
 
 	const original = record.result.original;
 	const spec = specificationText(record.result.xml);
 	const view = buildGraphView(record);
 	// First among the optional units, so the request, specification and questions keep priority when the cap bites.
-	const diagram: Unit[] = view ? [{ text: renderGraphBlock(view), optional: true, diagram: true }] : [];
+	const diagram: Unit[] = view
+		? [{ text: renderGraphBlock(view), optional: true, diagram: true }]
+		: [];
 	const build = (specBody: string): Unit[] => {
 		const units: Unit[] = [
 			{ text: headerLines.join("\n"), optional: false },
 			...diagram,
 			{ text: `## Request\n${fenced(original)}`, optional: false },
-			{ text: `## Specification\n${specBody ? fenced(specBody, "xml") : "(none)"}`, optional: false },
+			{
+				text: `## Specification\n${specBody ? fenced(specBody, "xml") : "(none)"}`,
+				optional: false,
+			},
 			...graphUnits(record, options.detail),
 		];
 		const questions = questionsUnit(clarifications, options.detail);

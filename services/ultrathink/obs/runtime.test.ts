@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { describe, expect, test } from "bun:test";
-import { createDrainState, createInflight, createRuntimeProbe, type RuntimeSample } from "./runtime.ts";
+import { describe, expect, setSystemTime, test } from "bun:test";
+import {
+	createDrainState,
+	createInflight,
+	createRuntimeProbe,
+	type RuntimeSample,
+} from "./runtime.ts";
 
 interface FakeTimer {
 	run: () => void;
@@ -19,8 +24,19 @@ interface Harness {
 	memory: { rss: number; heapUsed: number };
 }
 
-function harness(opts: { intervalMs?: number; onSample?: (s: RuntimeSample) => void; clearTimer?: (h: object) => void } = {}) {
-	const h: Harness = { clock: { now: 1000 }, timers: [], samples: [], memory: { rss: 100, heapUsed: 40 } };
+function harness(
+	opts: {
+		intervalMs?: number;
+		onSample?: (s: RuntimeSample) => void;
+		clearTimer?: (h: object) => void;
+	} = {},
+) {
+	const h: Harness = {
+		clock: { now: 1000 },
+		timers: [],
+		samples: [],
+		memory: { rss: 100, heapUsed: 40 },
+	};
 	const probe = createRuntimeProbe({
 		intervalMs: opts.intervalMs ?? 500,
 		onSample: opts.onSample ?? ((s) => h.samples.push(s)),
@@ -112,11 +128,15 @@ describe("createDrainState", () => {
 	});
 
 	test("defaults to Date.now", () => {
-		const before = Date.now();
-		const drain = createDrainState();
-		drain.begin();
-		expect(drain.since).toBeGreaterThanOrEqual(before);
-		expect(drain.since).toBeLessThanOrEqual(Date.now());
+		const FIXED = new Date("2026-01-01T00:00:00Z");
+		setSystemTime(FIXED);
+		try {
+			const drain = createDrainState();
+			drain.begin();
+			expect(drain.since).toBe(FIXED.getTime());
+		} finally {
+			setSystemTime();
+		}
 	});
 
 	test("rejects a non-function clock", () => {
@@ -126,11 +146,15 @@ describe("createDrainState", () => {
 
 describe("createRuntimeProbe", () => {
 	test("rejects an invalid interval or onSample", () => {
-		const onSample = () => {};
+		const onSample = () => {
+			// reason: test double, the samples are not asserted in this test
+		};
 		for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
 			expect(() => createRuntimeProbe({ intervalMs: bad, onSample })).toThrow(RangeError);
 		}
-		expect(() => createRuntimeProbe({ intervalMs: 10, onSample: null as unknown as () => void })).toThrow(TypeError);
+		expect(() =>
+			createRuntimeProbe({ intervalMs: 10, onSample: null as unknown as () => void }),
+		).toThrow(TypeError);
 	});
 
 	test("computes lag from the injected clock and passes memory/uptime through", () => {
@@ -142,20 +166,35 @@ describe("createRuntimeProbe", () => {
 		h.clock.now = 1000 + 500 + 37; // woke 37ms late
 		pending(h).run();
 		expect(h.samples).toHaveLength(1);
-		expect(h.samples[0]).toEqual({ eventLoopLagMs: 37, rssBytes: 100, heapUsedBytes: 40, uptimeSec: 12.5 });
+		expect(h.samples[0]).toEqual({
+			eventLoopLagMs: 37,
+			rssBytes: 100,
+			heapUsedBytes: 40,
+			uptimeSec: 12.5,
+		});
 
 		// Rescheduled from the wake time; an early wake clamps to 0.
 		expect(h.timers).toHaveLength(2);
 		h.memory = { rss: 250, heapUsed: 90 };
 		h.clock.now = 1537 + 500 - 3;
 		pending(h).run();
-		expect(h.samples[1]).toEqual({ eventLoopLagMs: 0, rssBytes: 250, heapUsedBytes: 90, uptimeSec: 12.5 });
+		expect(h.samples[1]).toEqual({
+			eventLoopLagMs: 0,
+			rssBytes: 250,
+			heapUsedBytes: 90,
+			uptimeSec: 12.5,
+		});
 		stop();
 	});
 
 	test("sampleOnce reports the last measured lag without scheduling", () => {
 		const { h, probe } = harness();
-		expect(probe.sampleOnce()).toEqual({ eventLoopLagMs: 0, rssBytes: 100, heapUsedBytes: 40, uptimeSec: 12.5 });
+		expect(probe.sampleOnce()).toEqual({
+			eventLoopLagMs: 0,
+			rssBytes: 100,
+			heapUsedBytes: 40,
+			uptimeSec: 12.5,
+		});
 		expect(h.timers).toHaveLength(0);
 		const stop = probe.start();
 		h.clock.now = 1000 + 500 + 8;
@@ -234,7 +273,9 @@ describe("createRuntimeProbe", () => {
 				tick = run;
 				return {};
 			},
-			clearTimer: () => {},
+			clearTimer: () => {
+				// reason: test double, no timer is armed so there is nothing to clear
+			},
 		});
 		expect(() => probe.sampleOnce()).toThrow("no memory");
 		const stop = probe.start();
@@ -254,7 +295,12 @@ describe("createRuntimeProbe", () => {
 	});
 
 	test("default timer works end to end and samples real process memory", () => {
-		const probe = createRuntimeProbe({ intervalMs: 60_000, onSample: () => {} });
+		const probe = createRuntimeProbe({
+			intervalMs: 60_000,
+			onSample: () => {
+				// reason: test double, the samples are not asserted in this test
+			},
+		});
 		const stop = probe.start();
 		stop();
 		const sample = probe.sampleOnce();

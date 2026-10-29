@@ -9,3 +9,4 @@ issues/
 .hermes/
 docs/superpowers/
 __pycache__/
+.omp/

@@ -24,18 +24,27 @@ import {
 /** The credential-store provider id; `bin/ultrathink-mcp auth set-key hindsight --stdin` writes it. */
 const PROVIDER = "hindsight";
 
+/** The shorter name some Hindsight deployments export; read only when `HINDSIGHT_API_URL` is unset or blank, so the canonical name wins. */
+const HINDSIGHT_URL_FALLBACK_ENV = "HINDSIGHT_URL";
+
 /** Stored `hindsight` api_key (trimmed, non-empty) wins; then HINDSIGHT_API_KEY, then HINDSIGHT_API_TOKEN. Never throws. */
 export function resolveHindsightKey(
 	storePath: string | undefined,
 	env: NodeJS.ProcessEnv,
 ): { key: string; source: HindsightKeySource } | undefined {
 	try {
-		const providers = readStore(storePath ?? defaultStorePath(env)).providers as Record<string, unknown>;
+		const providers = readStore(storePath ?? defaultStorePath(env)).providers as Record<
+			string,
+			unknown
+		>;
 		const credential = providers[PROVIDER] as { kind?: unknown; apiKey?: unknown } | undefined;
-		const stored = credential?.kind === "api_key" && typeof credential.apiKey === "string" ? credential.apiKey.trim() : "";
+		const stored =
+			credential?.kind === "api_key" && typeof credential.apiKey === "string"
+				? credential.apiKey.trim()
+				: "";
 		if (stored) return { key: stored, source: "store" };
 	} catch {
-		// unreadable store: fall back to the environment
+		// reason: unreadable store falls back to the environment; the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
 	for (const name of HINDSIGHT_KEY_ENVS) {
 		const value = env[name]?.trim();
@@ -48,22 +57,49 @@ export function resolveHindsightKey(
 export function resolveHindsight(
 	config: HindsightConfig,
 	env: NodeJS.ProcessEnv,
-	deps: { storePath?: string; fetch?: typeof fetch; signal?: AbortSignal; gateway?: GatewayConfig } = {},
+	deps: {
+		storePath?: string;
+		fetch?: typeof fetch;
+		signal?: AbortSignal;
+		gateway?: GatewayConfig;
+	} = {},
 ): HindsightResolution {
 	if (env[HINDSIGHT_KILL_ENV] === "0") return { readiness: { state: "off", reason: "killed" } };
 	if (!config.enabled) return { readiness: { state: "off", reason: "disabled" } };
 	if (serviceBackend(config.backend, env, HINDSIGHT_BACKEND_ENV) === "gateway") {
 		const gatewayConfig = deps.gateway ?? { url: "", seat: "lead", timeoutMs: config.timeoutMs };
 		const resolved = resolveGateway(gatewayConfig, env, { storePath: deps.storePath });
-		if (!resolved.ok) return { readiness: { state: "unready", reason: resolved.reason === "no-token" ? "no-token" : resolved.reason, detail: resolved.detail } };
+		if (!resolved.ok)
+			return {
+				readiness: {
+					state: "unready",
+					reason: resolved.reason === "no-token" ? "no-token" : resolved.reason,
+					detail: resolved.detail,
+				},
+			};
 		const { gateway } = resolved;
-		const client = createGatewayHindsightClient({ ...gateway, fetch: deps.fetch, signal: deps.signal });
+		const client = createGatewayHindsightClient({
+			...gateway,
+			fetch: deps.fetch,
+			signal: deps.signal,
+		});
 		return {
-			readiness: { state: "ready", backend: "gateway", url: gateway.url, bank: gateway.seat, seat: gateway.seat, tokenSource: gateway.tokenSource },
+			readiness: {
+				state: "ready",
+				backend: "gateway",
+				url: gateway.url,
+				bank: gateway.seat,
+				seat: gateway.seat,
+				tokenSource: gateway.tokenSource,
+			},
 			client,
 		};
 	}
-	const rawUrl = config.url.trim() || env[HINDSIGHT_URL_ENV]?.trim() || "";
+	const rawUrl =
+		config.url.trim() ||
+		env[HINDSIGHT_URL_ENV]?.trim() ||
+		env[HINDSIGHT_URL_FALLBACK_ENV]?.trim() ||
+		"";
 	if (rawUrl === "") return { readiness: { state: "unready", reason: "no-url" } };
 	const url = checkServiceUrl(rawUrl);
 	if (!url.ok) return { readiness: { state: "unready", reason: "bad-url", detail: url.reason } };
@@ -83,13 +119,25 @@ export function resolveHindsight(
 }
 
 /** One line for `status` output; names the origin, bank and key source, never the key or a URL path. */
-export function hindsightStatusLine(config: HindsightConfig, env: NodeJS.ProcessEnv, storePath?: string, gateway?: GatewayConfig): string {
+export function hindsightStatusLine(
+	config: HindsightConfig,
+	env: NodeJS.ProcessEnv,
+	storePath?: string,
+	gateway?: GatewayConfig,
+): string {
 	const { readiness } = resolveHindsight(config, env, { storePath, gateway });
 	if (readiness.state === "ready" && "backend" in readiness) {
 		return `Hindsight: gateway · ${gatewayStatus({ ok: true, gateway: { url: readiness.url, seat: readiness.seat, token: "", tokenSource: readiness.tokenSource, timeoutMs: config.timeoutMs } })}`;
 	}
-	if (readiness.state === "unready" && serviceBackend(config.backend, env, HINDSIGHT_BACKEND_ENV) === "gateway") {
-		const resolved = resolveGateway(gateway ?? { url: "", seat: "lead", timeoutMs: config.timeoutMs }, env, { storePath });
+	if (
+		readiness.state === "unready" &&
+		serviceBackend(config.backend, env, HINDSIGHT_BACKEND_ENV) === "gateway"
+	) {
+		const resolved = resolveGateway(
+			gateway ?? { url: "", seat: "lead", timeoutMs: config.timeoutMs },
+			env,
+			{ storePath },
+		);
 		return `Hindsight: gateway · ${gatewayStatus(resolved)}`;
 	}
 	if (readiness.state === "off") {
@@ -98,8 +146,10 @@ export function hindsightStatusLine(config: HindsightConfig, env: NodeJS.Process
 			: "Hindsight: off (opt-in: set hindsight.enabled)";
 	}
 	if (readiness.state === "unready") {
-		if (readiness.reason === "no-url") return `Hindsight: on · no URL (set hindsight.url or ${HINDSIGHT_URL_ENV})`;
-		if (readiness.reason === "bad-url") return `Hindsight: on · bad URL (${readiness.detail ?? "refused"})`;
+		if (readiness.reason === "no-url")
+			return `Hindsight: on · no URL (set hindsight.url or ${HINDSIGHT_URL_ENV})`;
+		if (readiness.reason === "bad-url")
+			return `Hindsight: on · bad URL (${readiness.detail ?? "refused"})`;
 		return "Hindsight: on · no key (run bin/ultrathink-mcp auth set-key hindsight --stdin, or set HINDSIGHT_API_KEY)";
 	}
 	return `Hindsight: on · ${new URL(readiness.url).origin} · bank ${readiness.bank} · key from ${readiness.keySource}`;

@@ -10,7 +10,13 @@ import { FAILURE_MODES, loadTemplates, parseTemplate } from "./schema.ts";
 
 const EXPERIMENTS = join(import.meta.dir, "experiments");
 const VALID_LOAD = { method: "GET", path: "/healthz", requests: 1, concurrency: 1 };
-const VALID_HYPOTHESIS = { id: "healthz-200", name: "healthz answers", check: "status", path: "/healthz", equals: 200 } as const;
+const VALID_HYPOTHESIS = {
+	id: "healthz-200",
+	name: "healthz answers",
+	check: "status",
+	path: "/healthz",
+	equals: 200,
+} as const;
 const VALID_PLAN: FaultPlan = { steps: [{ count: "forever", fault: { kind: "blackhole" } }] };
 
 function inprocess(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -41,7 +47,11 @@ function operator(overrides: Record<string, unknown> = {}): Record<string, unkno
 	};
 }
 
-function expectRejected(value: unknown, type: new (message?: string) => Error, field: string): void {
+function expectRejected(
+	value: unknown,
+	type: new (message?: string) => Error,
+	field: string,
+): void {
 	let caught: unknown;
 	try {
 		parseTemplate(value, "case.json");
@@ -109,7 +119,10 @@ describe("loadTemplates from a directory", () => {
 			"b.json": JSON.stringify(inprocess({ id: "alpha-template" })),
 			"notes.txt": "not a template",
 		});
-		expect(loadTemplates(dir).map((template) => template.id)).toEqual(["alpha-template", "zeta-template"]);
+		expect(loadTemplates(dir).map((template) => template.id)).toEqual([
+			"alpha-template",
+			"zeta-template",
+		]);
 	});
 
 	test("rejects duplicate ids", () => {
@@ -128,15 +141,27 @@ describe("loadTemplates from a directory", () => {
 
 describe("parseTemplate rejects invalid templates", () => {
 	test("load.requests 0", () => {
-		expectRejected(inprocess({ load: { ...VALID_LOAD, requests: 0 } }), RangeError, "load.requests");
+		expectRejected(
+			inprocess({ load: { ...VALID_LOAD, requests: 0 } }),
+			RangeError,
+			"load.requests",
+		);
 	});
 
 	test("load.concurrency 33", () => {
-		expectRejected(inprocess({ load: { ...VALID_LOAD, concurrency: 33 } }), RangeError, "load.concurrency");
+		expectRejected(
+			inprocess({ load: { ...VALID_LOAD, concurrency: 33 } }),
+			RangeError,
+			"load.concurrency",
+		);
 	});
 
 	test("unknown hypothesis check", () => {
-		expectRejected(inprocess({ hypotheses: [{ ...VALID_HYPOTHESIS, check: "header" }] }), TypeError, "hypotheses[0].check");
+		expectRejected(
+			inprocess({ hypotheses: [{ ...VALID_HYPOTHESIS, check: "header" }] }),
+			TypeError,
+			"hypotheses[0].check",
+		);
 	});
 
 	test("unknown metric op", () => {
@@ -153,7 +178,11 @@ describe("parseTemplate rejects invalid templates", () => {
 
 	test("duplicate hypothesis ids", () => {
 		const second = { ...VALID_HYPOTHESIS, equals: 503 };
-		expectRejected(inprocess({ hypotheses: [{ ...VALID_HYPOTHESIS }, second] }), TypeError, "hypotheses[1].id");
+		expectRejected(
+			inprocess({ hypotheses: [{ ...VALID_HYPOTHESIS }, second] }),
+			TypeError,
+			"hypotheses[1].id",
+		);
 	});
 
 	test("rollbackOnFail that is not a boolean", () => {
@@ -170,7 +199,11 @@ describe("parseTemplate rejects invalid templates", () => {
 	});
 
 	test("a plan on an operator template", () => {
-		expectRejected(operator({ plan: structuredClone(VALID_PLAN) }), TypeError, "plan is only allowed");
+		expectRejected(
+			operator({ plan: structuredClone(VALID_PLAN) }),
+			TypeError,
+			"plan is only allowed",
+		);
 	});
 
 	test("an inprocess template without a plan", () => {
@@ -178,11 +211,19 @@ describe("parseTemplate rejects invalid templates", () => {
 	});
 
 	test("an operator template without operatorStep", () => {
-		expectRejected({ ...operator(), operatorStep: undefined }, TypeError, "operatorStep is required");
+		expectRejected(
+			{ ...operator(), operatorStep: undefined },
+			TypeError,
+			"operatorStep is required",
+		);
 	});
 
 	test("an inprocess template with operatorStep", () => {
-		expectRejected(inprocess({ operatorStep: "Send SIGTERM." }), TypeError, "operatorStep is only allowed");
+		expectRejected(
+			inprocess({ operatorStep: "Send SIGTERM." }),
+			TypeError,
+			"operatorStep is only allowed",
+		);
 	});
 
 	test("a plan with a zero step count names the plan path", () => {
@@ -228,11 +269,19 @@ describe("parseTemplate accepts valid templates", () => {
 		const template = parseTemplate(
 			inprocess({
 				hypotheses: [metric],
-				settle: { metric: "ultrathink_planner_calls_total", labels: { outcome: "upstream_unavailable" }, atLeast: 2 },
+				settle: {
+					metric: "ultrathink_planner_calls_total",
+					labels: { outcome: "upstream_unavailable" },
+					atLeast: 2,
+				},
 			}),
 			"metric.json",
 		);
 		expect(template.hypotheses).toEqual([metric]);
-		expect(template.settle).toEqual({ metric: "ultrathink_planner_calls_total", labels: { outcome: "upstream_unavailable" }, atLeast: 2 });
+		expect(template.settle).toEqual({
+			metric: "ultrathink_planner_calls_total",
+			labels: { outcome: "upstream_unavailable" },
+			atLeast: 2,
+		});
 	});
 });

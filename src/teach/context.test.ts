@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import { DEFAULT_HINDSIGHT_CONFIG, type HindsightClient } from "../hindsight/types.ts";
 import { hindsightFor, teachContext, teachEnabled, tryStore } from "./context.ts";
 import { DEFAULT_TEACH_CONFIG } from "./types.ts";
@@ -11,9 +11,7 @@ import { DEFAULT_TEACH_CONFIG } from "./types.ts";
 const dirs: string[] = [];
 
 function tempDir(): string {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-teach-ctx-"));
-	dirs.push(dir);
-	return dir;
+	return makeTempDir("ultrathink-teach-ctx-", dirs);
 }
 
 afterEach(() => {
@@ -47,7 +45,11 @@ describe("teachContext defaults", () => {
 			hindsight: { enabled: true, backend: "gateway" },
 		});
 		const ctx = teachContext({ cwd, env });
-		expect(ctx.config.gateway).toMatchObject({ url: "https://gateway.example/desk", seat: "lead", timeoutMs: 4000 });
+		expect(ctx.config.gateway).toMatchObject({
+			url: "https://gateway.example/desk",
+			seat: "lead",
+			timeoutMs: 4000,
+		});
 		expect(ctx.config.hindsight.backend).toBe("gateway");
 	});
 
@@ -86,10 +88,27 @@ describe("teachContext defaults", () => {
 
 	test("explicit options win and unset seams stay absent", () => {
 		const { cwd, env } = sandbox();
-		const config = { teach: { ...DEFAULT_TEACH_CONFIG, enabled: true }, hindsight: { ...DEFAULT_HINDSIGHT_CONFIG } };
+		const config = {
+			teach: { ...DEFAULT_TEACH_CONFIG, enabled: true },
+			hindsight: { ...DEFAULT_HINDSIGHT_CONFIG },
+		};
 		const now = () => 42;
-		const ctx = teachContext({ cwd, env, host: "omp", stateDir: "/tmp/state-x", storePath: "/tmp/creds-x", sessionId: "s1", config, now });
-		expect(ctx).toMatchObject({ host: "omp", stateDir: "/tmp/state-x", storePath: "/tmp/creds-x", sessionId: "s1" });
+		const ctx = teachContext({
+			cwd,
+			env,
+			host: "omp",
+			stateDir: "/tmp/state-x",
+			storePath: "/tmp/creds-x",
+			sessionId: "s1",
+			config,
+			now,
+		});
+		expect(ctx).toMatchObject({
+			host: "omp",
+			stateDir: "/tmp/state-x",
+			storePath: "/tmp/creds-x",
+			sessionId: "s1",
+		});
 		expect(ctx.config).toBe(config);
 		expect(ctx.now?.()).toBe(42);
 		expect(ctx.fetch).toBeUndefined();
@@ -101,7 +120,9 @@ describe("teachContext defaults", () => {
 describe("teachEnabled and config layers", () => {
 	test("a user config turns it on; ULTRATHINK_TEACH=0 turns it off for the process", () => {
 		const { cwd, env, writeJson } = sandbox();
-		writeJson(join(env.XDG_CONFIG_HOME ?? "", "ultrathink", "config.json"), { teach: { enabled: true, recallLimit: 3 } });
+		writeJson(join(env.XDG_CONFIG_HOME ?? "", "ultrathink", "config.json"), {
+			teach: { enabled: true, recallLimit: 3 },
+		});
 		const ctx = teachContext({ cwd, env });
 		expect(teachEnabled(ctx)).toBe(true);
 		expect(ctx.config.teach.recallLimit).toBe(3);
@@ -111,11 +132,15 @@ describe("teachEnabled and config layers", () => {
 
 	test("a project file can switch it off but cannot override an explicit off", () => {
 		const { cwd, env, writeJson } = sandbox();
-		writeJson(join(env.XDG_CONFIG_HOME ?? "", "ultrathink", "config.json"), { teach: { enabled: false } });
+		writeJson(join(env.XDG_CONFIG_HOME ?? "", "ultrathink", "config.json"), {
+			teach: { enabled: false },
+		});
 		writeJson(join(cwd, ".claude", "ultrathink.json"), { teach: { enabled: true } });
 		expect(teachEnabled(teachContext({ cwd, env }))).toBe(false);
 
-		writeJson(join(env.XDG_CONFIG_HOME ?? "", "ultrathink", "config.json"), { teach: { enabled: true } });
+		writeJson(join(env.XDG_CONFIG_HOME ?? "", "ultrathink", "config.json"), {
+			teach: { enabled: true },
+		});
 		expect(teachEnabled(teachContext({ cwd, env }))).toBe(true);
 		writeJson(join(cwd, ".claude", "ultrathink.json"), { teach: { enabled: false } });
 		expect(teachEnabled(teachContext({ cwd, env }))).toBe(false);
@@ -125,7 +150,10 @@ describe("teachEnabled and config layers", () => {
 describe("hindsightFor", () => {
 	function configured(overrides: Partial<typeof DEFAULT_HINDSIGHT_CONFIG> = {}) {
 		const box = sandbox();
-		const config = { teach: { ...DEFAULT_TEACH_CONFIG, enabled: true }, hindsight: { ...DEFAULT_HINDSIGHT_CONFIG, ...overrides } };
+		const config = {
+			teach: { ...DEFAULT_TEACH_CONFIG, enabled: true },
+			hindsight: { ...DEFAULT_HINDSIGHT_CONFIG, ...overrides },
+		};
 		return { ...box, ctx: teachContext({ cwd: box.cwd, env: box.env, config }) };
 	}
 
@@ -147,7 +175,11 @@ describe("hindsightFor", () => {
 		const noKey = configured({ enabled: true, url: "https://hindsight.example.com" });
 		expect(hindsightFor(noKey.ctx).reason).toBe("hindsight is not ready (no-key)");
 
-		const ready = configured({ enabled: true, url: "https://hindsight.example.com", bank: "lessons" });
+		const ready = configured({
+			enabled: true,
+			url: "https://hindsight.example.com",
+			bank: "lessons",
+		});
 		ready.ctx.env.HINDSIGHT_API_KEY = "test-key";
 		const resolved = hindsightFor(ready.ctx);
 		expect(resolved.client?.bank).toBe("lessons");
@@ -176,7 +208,12 @@ describe("decisions config layers", () => {
 	test("teachContext loads decisions from the user config file", () => {
 		const { cwd, env, writeJson } = sandbox();
 		writeJson(join(env.XDG_CONFIG_HOME ?? "", "ultrathink", "config.json"), {
-			decisions: { enabled: true, points: ["plan", "skillworthy"], teachableBelow: 0.4, skillworthyAt: 0.7 },
+			decisions: {
+				enabled: true,
+				points: ["plan", "skillworthy"],
+				teachableBelow: 0.4,
+				skillworthyAt: 0.7,
+			},
 		});
 		const ctx = teachContext({ cwd, env });
 		expect(ctx.config.decisions).toMatchObject({
@@ -200,7 +237,9 @@ describe("decisions config layers", () => {
 		writeJson(join(env.XDG_CONFIG_HOME ?? "", "ultrathink", "config.json"), {
 			decisions: { enabled: false, points: ["plan"] },
 		});
-		writeJson(project, { decisions: { enabled: true, points: ["plan", "teachable", "skillworthy"] } });
+		writeJson(project, {
+			decisions: { enabled: true, points: ["plan", "teachable", "skillworthy"] },
+		});
 		const loaded = teachContext({ cwd, env }).config.decisions;
 		expect(loaded?.enabled).toBe(true);
 		expect(loaded?.points).toEqual(["plan"]);

@@ -60,7 +60,7 @@ The second line always counts candidate, confirmed, promoted and superseded. Ask
 
 A project file can only lower the mode: `auto` to `observe` or `explicit`, or `observe` to `explicit`. It cannot raise it.
 
-`observe` skips a turn with fewer tool calls than `teach.observeMinToolCalls` (default 4), or one with no recovery, user correction or failed run. Hosts do not redact the turn; `observe` does, before anything is stored or sent. A turn it keeps is sent, redacted and with its tool results, to your host's planning engine in one extra call that distills the lessons, so `observe` and `auto` are not local-only even with Hindsight off (see [Privacy](../privacy.md#planning-engine-lesson-distillation)). `explicit` makes no such call.
+`observe` skips a turn with fewer tool calls than `teach.observeMinToolCalls` (default 4), or one with no recovery, user correction or failed run. Hosts do not redact the turn; `observe` does, before anything is stored or sent. A turn it keeps is sent, redacted and with its tool results, in one extra model call that distills the lessons, so `observe` and `auto` are not local-only even with Hindsight off (see [Privacy](../privacy.md#planning-engine-lesson-distillation)). That call runs a pinned chain, not your planning engine: `claude-haiku-5-5` through the `claude` CLI first (Claude Code 2.1.293 or newer must be installed), and only with `claude.fallbackToGrok` on and a signed-in Grok lane `grok-build-0.1` second. Your host's model, `claude.model` and `think.engine` are ignored for it; see [Choose an engine: memory-bank chain](choose-engine.md#memory-bank-chain). Without the CLI (and without the fallback) a turn ends as `distiller failed` and stores nothing. `explicit` makes no such call.
 
 ## 3. Save a lesson
 
@@ -179,6 +179,12 @@ Recall does not wait on the outbox. If Hindsight fails or is not ready, and this
 
 Hermes starts a detached `teach sync` when a session ends, if Teachable Moments is on. See [Teachable Moments on Hermes](teachable-moments-on-hermes.md).
 
+Every `teach observe` run also replays due outbox entries (at most 20 per run), so after each agent run on Omp, Claude Code, Grok Build and Muse the outbox drains without a command. A manual `teach sync` is only needed to force it. The observe output gains a `Sync: <done> done · <pending> pending` line and a `sync` object in `--json`. A failed replay never changes the exit code of `teach observe`.
+
+Each observe run is recorded in `<state dir>/teach/runs/`, one small JSON file per run: `at` (epoch ms), `sessionId`, `outcome` (`captured` or `skipped`), `captured` (count), and, for a skip, `skipped` (reason, at most 80 characters) and `detail` (the failure text, at most 160 characters, for example `Credit balance is too low`). Secrets are redacted. The newest 50 files are kept. The files never hold lesson text. `bin/ultrathink doctor` reads them in its `memory` section.
+
+A run is handed to `teach observe` when it starts from a prompt of yours: a typed message or, on Omp, a `/skill:<name>` you invoked. The digest's user turn is what you typed (`/skill:<name> <args>`), never the skill's own text. A run that resumes on an agent-side message alone, such as an async result or a ship nudge, has no prompt of yours and is not captured. The host builds the digest in its own process, so restart it after updating the plugin.
+
 ## 7. Promote a lesson to a skill
 
 `teach promote --due` lists lessons that are due. It does not install anything. A lesson is due when it is confirmed, not already promoted or superseded, and either its occurrence count is at least `teach.promoteAfter` (default 3, from 2 to 20) or its kind is `playbook`. Newest first.
@@ -240,7 +246,7 @@ Marked 1 moment(s) promoted · <name> (hermes)
 
 - `"teach": { "enabled": false }`. No capture, confirm, forget, sync or promote runs. `bin/ultrathink status` shows `Teach: off (opt-in: set teach.enabled)`. A project file can do this for its repository.
 - `"teach": { "recall": false }` stops injection into plans. Capture still works. A project file can do this.
-- `"teach": { "capture": "explicit" }` stops background observe, and with it the lesson-distillation call to the planning engine. Recall and explicit capture keep working. A project file can lower the mode, not raise it.
+- `"teach": { "capture": "explicit" }` stops background observe, and with it the lesson-distillation call to the memory-bank chain (Haiku 5.5, then Grok Build). Recall and explicit capture keep working. A project file can lower the mode, not raise it.
 - `ULTRATHINK_TEACH=0` in the host's environment turns Teachable Moments off for that process, whatever any config file says. Mutating commands print `Teachable Moments is off (ULTRATHINK_TEACH=0)` and exit 1.
 
 Lessons already on disk stay until you `teach forget` them or delete `<state dir>/teach`. See [Uninstall](uninstall.md).

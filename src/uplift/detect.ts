@@ -46,7 +46,7 @@ export function isAlreadyUplifted(text: string): boolean {
 }
 
 /** The prompt carries out an already-planned graph (a dispatcher or kickoff hand-off); planning it again would fork the graph. */
-export function referencesPlannedGraph(text: string): boolean {
+function referencesPlannedGraph(text: string): boolean {
 	return PLANNED_GRAPH_RE.test(text);
 }
 

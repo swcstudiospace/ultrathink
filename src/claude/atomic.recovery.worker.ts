@@ -46,12 +46,20 @@ mock.module("node:fs", () => ({
 		try {
 			nodeFs.renameSync(from, to);
 		} catch (error) {
-			if (to === guard && ["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+			if (
+				to === guard &&
+				["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")
+			) {
 				signal(`${actor}.guarded`);
 			}
 			throw error;
 		}
-		if (actor !== "delayed" && !claimed && to === guard && nodeFs.existsSync(join(events, "released-owner"))) {
+		if (
+			actor !== "delayed" &&
+			!claimed &&
+			to === guard &&
+			nodeFs.existsSync(join(events, "released-owner"))
+		) {
 			claimed = true;
 			signal(`${actor}.claimed`);
 			wait("claimed-go");
@@ -85,23 +93,33 @@ mock.module("node:fs", () => ({
 // This fixture must load state after installing process-local filesystem barriers; a static import would bind too early.
 const { updateSession } = await import("./state.ts");
 signal(`${actor}.attempting`);
-const result = updateSession(stateDir, sessionId, (record: SessionRecord & { counter?: number }) => {
-	let active: number | undefined;
-	try {
-		active = nodeFs.openSync(join(events, "active"), "wx", 0o600);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		signal(`${actor}.overlap`);
-	}
-	try {
-		signal(`${actor}.entered`);
-		wait("body-go");
-		return { ...record, counter: (record.counter ?? 0) + 1 };
-	} finally {
-		if (active !== undefined) {
-			nodeFs.closeSync(active);
-			nodeFs.unlinkSync(join(events, "active"));
+const result = updateSession(
+	stateDir,
+	sessionId,
+	(record: SessionRecord & { counter?: number }) => {
+		let active: number | undefined;
+		try {
+			active = nodeFs.openSync(join(events, "active"), "wx", 0o600);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			signal(`${actor}.overlap`);
 		}
-	}
-}, { timeoutMs: 20_000, staleMs: 60_000, pollMs: 5, log: (message) => console.error(`${actor}: ${message}`) });
+		try {
+			signal(`${actor}.entered`);
+			wait("body-go");
+			return { ...record, counter: (record.counter ?? 0) + 1 };
+		} finally {
+			if (active !== undefined) {
+				nodeFs.closeSync(active);
+				nodeFs.unlinkSync(join(events, "active"));
+			}
+		}
+	},
+	{
+		timeoutMs: 20_000,
+		staleMs: 60_000,
+		pollMs: 5,
+		log: (message) => console.error(`${actor}: ${message}`),
+	},
+);
 if (!result) throw new Error("session vanished");

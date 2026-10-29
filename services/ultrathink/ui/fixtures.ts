@@ -10,7 +10,7 @@ import type { NodeKind } from "../../../src/think/types.ts";
 import type { GraphView, GraphViewNode } from "../engine/graph-view.ts";
 import type { ResultView, StartView } from "../engine/headless.ts";
 
-export interface ToolResult {
+interface ToolResult {
 	content: { type: "text"; text: string }[];
 	structuredContent: ResultView | StartView;
 	isError?: boolean;
@@ -58,7 +58,9 @@ function node(spec: NodeSpec): GraphViewNode {
 		dependsOn: spec.dependsOn ?? [],
 		wave: spec.wave,
 		steps: Array.from({ length: count }, (_, i) => stepText(spec.id, i + 1)),
-		conclusion: spec.conclusion ?? `${spec.title}: settled, with the trade-offs written down for the nodes that depend on it.`,
+		conclusion:
+			spec.conclusion ??
+			`${spec.title}: settled, with the trade-offs written down for the nodes that depend on it.`,
 	};
 	if (spec.fallback) out.fallback = true;
 	return out;
@@ -85,7 +87,11 @@ function view(goal: string, nodes: GraphViewNode[], fills: string[] = []): Graph
 	};
 }
 
-function planned(graph: GraphView, extra: Partial<ResultView> = {}, sessionId = SESSION): ToolResult {
+function planned(
+	graph: GraphView,
+	extra: Partial<ResultView> = {},
+	sessionId = SESSION,
+): ToolResult {
 	const text = `# Plan\n\nGoal: ${graph.goal}\n\n${graph.nodes.length} nodes in ${graph.waves.length} waves.`;
 	return {
 		content: [{ type: "text", text }],
@@ -93,7 +99,11 @@ function planned(graph: GraphView, extra: Partial<ResultView> = {}, sessionId = 
 	};
 }
 
-function statusOnly(status: "failed" | "invalid" | "skipped", text: string, error: string): ToolResult {
+function statusOnly(
+	status: "failed" | "invalid" | "skipped",
+	text: string,
+	error: string,
+): ToolResult {
 	return {
 		content: [{ type: "text", text }],
 		structuredContent: { sessionId: SESSION, status, mode: "server", text, error },
@@ -102,7 +112,12 @@ function statusOnly(status: "failed" | "invalid" | "skipped", text: string, erro
 
 function running(): ToolResult {
 	return {
-		content: [{ type: "text", text: "Planning started. Call ultrathink_result with this sessionId to collect the plan." }],
+		content: [
+			{
+				type: "text",
+				text: "Planning started. Call ultrathink_result with this sessionId to collect the plan.",
+			},
+		],
 		structuredContent: { sessionId: RUNNING_SESSION, status: "running", pollAfterSec: 1 },
 	};
 }
@@ -119,10 +134,38 @@ const DIAMOND_GOAL = "Design a CSV to JSON converter that streams large files in
 
 const DIAMOND = view(DIAMOND_GOAL, [
 	node({ id: "n1", title: "Understand the request", kind: "understand", wave: 1, steps: 4 }),
-	node({ id: "n2", title: "Decompose the pipeline", kind: "decompose", dependsOn: ["n1"], wave: 2, steps: 5 }),
-	node({ id: "n3", title: "Generate parser options", kind: "generate", dependsOn: ["n1"], wave: 2, steps: 6 }),
-	node({ id: "n4", title: "Critique memory limits", kind: "critique", dependsOn: ["n1"], wave: 2, steps: 5 }),
-	node({ id: "n5", title: "Compare writer designs", kind: "compare", dependsOn: ["n1"], wave: 2, steps: 4 }),
+	node({
+		id: "n2",
+		title: "Decompose the pipeline",
+		kind: "decompose",
+		dependsOn: ["n1"],
+		wave: 2,
+		steps: 5,
+	}),
+	node({
+		id: "n3",
+		title: "Generate parser options",
+		kind: "generate",
+		dependsOn: ["n1"],
+		wave: 2,
+		steps: 6,
+	}),
+	node({
+		id: "n4",
+		title: "Critique memory limits",
+		kind: "critique",
+		dependsOn: ["n1"],
+		wave: 2,
+		steps: 5,
+	}),
+	node({
+		id: "n5",
+		title: "Compare writer designs",
+		kind: "compare",
+		dependsOn: ["n1"],
+		wave: 2,
+		steps: 4,
+	}),
 	node({
 		id: "n6",
 		title: "Synthesize the plan",
@@ -130,7 +173,8 @@ const DIAMOND = view(DIAMOND_GOAL, [
 		dependsOn: ["n2", "n3", "n4", "n5"],
 		wave: 3,
 		steps: 7,
-		conclusion: "Stream rows through a bounded queue, parse with the chosen options, flush the writer per chunk.\n\nKeep the memory ceiling in the acceptance criteria and test it with a one gigabyte file.",
+		conclusion:
+			"Stream rows through a bounded queue, parse with the chosen options, flush the writer per chunk.\n\nKeep the memory ceiling in the acceptance criteria and test it with a one gigabyte file.",
 	}),
 ]);
 
@@ -138,32 +182,105 @@ const EIGHT = view("Migrate the billing service to the new payment provider with
 	node({ id: "n1", title: "Understand current billing flows", kind: "understand", wave: 1 }),
 	node({ id: "n2", title: "Understand the new provider API", kind: "understand", wave: 1 }),
 	node({ id: "n3", title: "Decompose the cutover", kind: "decompose", dependsOn: ["n1"], wave: 2 }),
-	node({ id: "n4", title: "Compare dual-write strategies", kind: "compare", dependsOn: ["n1", "n2"], wave: 2 }),
-	node({ id: "n5", title: "Generate the webhook mapping", kind: "generate", dependsOn: ["n2"], wave: 2 }),
-	node({ id: "n6", title: "Critique rollback paths", kind: "critique", dependsOn: ["n3", "n4"], wave: 3 }),
-	node({ id: "n7", title: "Refine the test plan", kind: "refine", dependsOn: ["n4", "n5"], wave: 3 }),
-	node({ id: "n8", title: "Synthesize the migration plan", kind: "synthesize", dependsOn: ["n6", "n7"], wave: 4 }),
+	node({
+		id: "n4",
+		title: "Compare dual-write strategies",
+		kind: "compare",
+		dependsOn: ["n1", "n2"],
+		wave: 2,
+	}),
+	node({
+		id: "n5",
+		title: "Generate the webhook mapping",
+		kind: "generate",
+		dependsOn: ["n2"],
+		wave: 2,
+	}),
+	node({
+		id: "n6",
+		title: "Critique rollback paths",
+		kind: "critique",
+		dependsOn: ["n3", "n4"],
+		wave: 3,
+	}),
+	node({
+		id: "n7",
+		title: "Refine the test plan",
+		kind: "refine",
+		dependsOn: ["n4", "n5"],
+		wave: 3,
+	}),
+	node({
+		id: "n8",
+		title: "Synthesize the migration plan",
+		kind: "synthesize",
+		dependsOn: ["n6", "n7"],
+		wave: 4,
+	}),
 ]);
 
 // Unbroken strings at the caps: the layout must clamp them, not grow around them.
 const LONG_ID = "i".repeat(40);
 const LONG_TITLE = "T".repeat(120);
-const SPACED_TITLE = "A very long title that keeps going and going so that the two line clamp on the card has to cut it off somewhere sensible ok";
+const SPACED_TITLE =
+	"A very long title that keeps going and going so that the two line clamp on the card has to cut it off somewhere sensible ok";
 
 const LONG = view("G".repeat(300), [
-	node({ id: LONG_ID, title: LONG_TITLE, kind: "understand", wave: 1, question: "Q".repeat(1000), steps: 12, conclusion: "C".repeat(2000) }),
-	node({ id: "n2", title: SPACED_TITLE.slice(0, 120), kind: "decompose", dependsOn: [LONG_ID], wave: 2 }),
+	node({
+		id: LONG_ID,
+		title: LONG_TITLE,
+		kind: "understand",
+		wave: 1,
+		question: "Q".repeat(1000),
+		steps: 12,
+		conclusion: "C".repeat(2000),
+	}),
+	node({
+		id: "n2",
+		title: SPACED_TITLE.slice(0, 120),
+		kind: "decompose",
+		dependsOn: [LONG_ID],
+		wave: 2,
+	}),
 	node({ id: "n3", title: LONG_TITLE, kind: "generate", dependsOn: [LONG_ID], wave: 2 }),
-	node({ id: "n4", title: SPACED_TITLE.slice(0, 120), kind: "critique", dependsOn: ["n2", "n3"], wave: 3 }),
+	node({
+		id: "n4",
+		title: SPACED_TITLE.slice(0, 120),
+		kind: "critique",
+		dependsOn: ["n2", "n3"],
+		wave: 3,
+	}),
 	node({ id: "n5", title: "Synthesize", kind: "synthesize", dependsOn: ["n4"], wave: 4 }),
 ]);
-for (const n of LONG.nodes) n.steps = n.steps.map((s, i) => (n.id === LONG_ID && i === 0 ? "S".repeat(600) : s.slice(0, 600)));
+for (const n of LONG.nodes)
+	n.steps = n.steps.map((s, i) =>
+		n.id === LONG_ID && i === 0 ? "S".repeat(600) : s.slice(0, 600),
+	);
 
 // Beyond the caps: what a hostile or buggy producer could send.
 const OVERSIZE = view("Z".repeat(2000), [
-	node({ id: "n1", title: `${"Six hundred characters of title text. ".repeat(17)}`.slice(0, 600), kind: "understand", wave: 1 }),
-	node({ id: "n2", title: "w".repeat(5000), kind: "decompose", dependsOn: ["n1"], wave: 2, question: "q ".repeat(3000), conclusion: "c ".repeat(6000) }),
-	node({ id: "n3", title: `${"Another long title. ".repeat(30)}`, kind: "synthesize", dependsOn: ["n2"], wave: 3 }),
+	node({
+		id: "n1",
+		title: `${"Six hundred characters of title text. ".repeat(17)}`.slice(0, 600),
+		kind: "understand",
+		wave: 1,
+	}),
+	node({
+		id: "n2",
+		title: "w".repeat(5000),
+		kind: "decompose",
+		dependsOn: ["n1"],
+		wave: 2,
+		question: "q ".repeat(3000),
+		conclusion: "c ".repeat(6000),
+	}),
+	node({
+		id: "n3",
+		title: `${"Another long title. ".repeat(30)}`,
+		kind: "synthesize",
+		dependsOn: ["n2"],
+		wave: 3,
+	}),
 ]);
 
 // Everything a script injection or a markup break would try; all of it must show up as plain text.
@@ -176,28 +293,59 @@ const HOSTILE = view("</script><script>alert(1)</script> \"quoted\" `tick` 'sing
 		question: `${HOSTILE_TEXT} </script> "q" 'q' \`q\``,
 		dependsOn: [],
 		wave: 1,
-		steps: [HOSTILE_TEXT, "</script><script>alert(2)</script>", '"double" and \'single\' and `backtick`', "&lt;b&gt;entities&lt;/b&gt; &amp; <b>bold</b>", "javascript:alert(3)"],
+		steps: [
+			HOSTILE_TEXT,
+			"</script><script>alert(2)</script>",
+			"\"double\" and 'single' and `backtick`",
+			"&lt;b&gt;entities&lt;/b&gt; &amp; <b>bold</b>",
+			"javascript:alert(3)",
+		],
 		conclusion: `${HOSTILE_TEXT}\n</script>\n\`\`\`\n"quotes"`,
 	},
-	node({ id: "n2", title: '"><svg onload=alert(1)>', kind: "decompose", dependsOn: ["n1"], wave: 2 }),
+	node({
+		id: "n2",
+		title: '"><svg onload=alert(1)>',
+		kind: "decompose",
+		dependsOn: ["n1"],
+		wave: 2,
+	}),
 	node({ id: "n3", title: "`${alert(1)}` {{7*7}}", kind: "generate", dependsOn: ["n1"], wave: 2 }),
-	node({ id: "n4", title: "</style><style>*{display:none}</style>", kind: "critique", dependsOn: ["n2", "n3"], wave: 3 }),
-	node({ id: "n5", title: "<script>alert(5)</script>", kind: "synthesize", dependsOn: ["n4"], wave: 4 }),
+	node({
+		id: "n4",
+		title: "</style><style>*{display:none}</style>",
+		kind: "critique",
+		dependsOn: ["n2", "n3"],
+		wave: 3,
+	}),
+	node({
+		id: "n5",
+		title: "<script>alert(5)</script>",
+		kind: "synthesize",
+		dependsOn: ["n4"],
+		wave: 4,
+	}),
 ]);
 
 const DEGRADED = view(
 	DIAMOND_GOAL,
-	DIAMOND.nodes.map((n) => (n.id === "n3" || n.id === "n5" ? { ...n, fallback: true as const } : n)),
+	DIAMOND.nodes.map((n) =>
+		n.id === "n3" || n.id === "n5" ? { ...n, fallback: true as const } : n,
+	),
 	["n3", "n5"],
 );
 
 const QUESTIONS = [
 	{ question: "Which input encoding do the CSV files use?", default: "UTF-8", blocking: true },
-	{ question: "Should malformed rows abort the run or be skipped and reported?", default: "Skip and report", blocking: false },
+	{
+		question: "Should malformed rows abort the run or be skipped and reported?",
+		default: "Skip and report",
+		blocking: false,
+	},
 	{ question: "Is there a memory ceiling for the converter?" },
 ];
 
-const FALLBACK_TEXT = "Planning failed (engine_error). Tell the user, and offer to try again with a new sessionId.";
+const FALLBACK_TEXT =
+	"Planning failed (engine_error). Tell the user, and offer to try again with a new sessionId.";
 
 function build(): Record<string, Fixture> {
 	const list: Fixture[] = [
@@ -219,7 +367,8 @@ function build(): Record<string, Fixture> {
 		},
 		{
 			name: "longtitles",
-			description: "Ids, titles, questions, steps and conclusions at the caps, unbroken strings (acceptance 2)",
+			description:
+				"Ids, titles, questions, steps and conclusions at the caps, unbroken strings (acceptance 2)",
 			conforming: true,
 			args: {},
 			initial: planned(LONG),
@@ -235,7 +384,8 @@ function build(): Record<string, Fixture> {
 		},
 		{
 			name: "hostile",
-			description: "Markup, script and template injection strings in every text field (acceptance 7)",
+			description:
+				"Markup, script and template injection strings in every text field (acceptance 7)",
 			conforming: true,
 			args: {},
 			initial: planned(HOSTILE),
@@ -278,7 +428,11 @@ function build(): Record<string, Fixture> {
 			description: "An invalid session",
 			conforming: true,
 			args: {},
-			initial: statusOnly("invalid", "The stored session is invalid (invalid_session).", "invalid_session"),
+			initial: statusOnly(
+				"invalid",
+				"The stored session is invalid (invalid_session).",
+				"invalid_session",
+			),
 			polls: [],
 		},
 		{
@@ -286,7 +440,11 @@ function build(): Record<string, Fixture> {
 			description: "A skipped job",
 			conforming: true,
 			args: {},
-			initial: statusOnly("skipped", "Planning was skipped (skipped). Rephrase the request as a plain description of the task.", "skipped"),
+			initial: statusOnly(
+				"skipped",
+				"Planning was skipped (skipped). Rephrase the request as a plain description of the task.",
+				"skipped",
+			),
 			polls: [],
 		},
 		{
@@ -295,7 +453,12 @@ function build(): Record<string, Fixture> {
 			conforming: true,
 			args: {},
 			initial: {
-				content: [{ type: "text", text: `# Plan\n\n${"Step by step plan text without any structured graph. ".repeat(20)}` }],
+				content: [
+					{
+						type: "text",
+						text: `# Plan\n\n${"Step by step plan text without any structured graph. ".repeat(20)}`,
+					},
+				],
 				structuredContent: {
 					sessionId: SESSION,
 					status: "planned",
@@ -307,11 +470,17 @@ function build(): Record<string, Fixture> {
 		},
 		{
 			name: "plannedstart",
-			description: "Start view that already says planned, with no graph: the card fetches the plan itself with one ultrathink_result call",
+			description:
+				"Start view that already says planned, with no graph: the card fetches the plan itself with one ultrathink_result call",
 			conforming: true,
 			args: { prompt: "Migrate billing" },
 			initial: {
-				content: [{ type: "text", text: "Planning is finished. Call ultrathink_result with this sessionId to collect the plan." }],
+				content: [
+					{
+						type: "text",
+						text: "Planning is finished. Call ultrathink_result with this sessionId to collect the plan.",
+					},
+				],
 				structuredContent: { sessionId: SESSION, status: "planned" },
 			},
 			polls: [planned(EIGHT)],

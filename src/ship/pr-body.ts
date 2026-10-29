@@ -11,7 +11,6 @@ const LOCAL_PATH = /(?:[A-Za-z]:\\|\/(?:root|home|Users|tmp|var|private)\/)[^\s)
 
 // Strips ASCII control chars (keeping \n and \t) and absolute local paths from interpolated text.
 function scrub(text: string): string {
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
 	return text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").replace(LOCAL_PATH, "<local path>");
 }
 
@@ -30,10 +29,17 @@ function jevLine(decision: DecisionRecord): string {
 	return `- Jev: P(complete) ${formatP(decision.p ?? 0)} · ${model}${JEV_SUFFIX[decision.action] ?? ""}`;
 }
 
-export function buildPr(record: SessionRecord, assessment?: Assessment): { title: string; body: string } {
-	const source = record.graph?.goal?.trim() || record.result.original.trim().split("\n")[0]?.trim() || "ultrathink change";
+export function buildPr(
+	record: SessionRecord,
+	assessment?: Assessment,
+): { title: string; body: string } {
+	const source =
+		record.graph?.goal?.trim() ||
+		record.result.original.trim().split("\n")[0]?.trim() ||
+		"ultrathink change";
 	const oneLine = scrub(source).replace(/\s+/g, " ").trim();
-	const title = oneLine.length > TITLE_MAX ? `${oneLine.slice(0, TITLE_MAX - 1).trimEnd()}…` : oneLine;
+	const title =
+		oneLine.length > TITLE_MAX ? `${oneLine.slice(0, TITLE_MAX - 1).trimEnd()}…` : oneLine;
 
 	const sections: string[] = [];
 	const summary = assessment?.summary.trim() || record.result.original.trim();
@@ -50,16 +56,23 @@ export function buildPr(record: SessionRecord, assessment?: Assessment): { title
 	if (links.length > 0) sections.push(`## Linked issues\n\n${links.join("\n\n")}`);
 
 	if (assessment) {
-		const lines = [`- Done: ${assessment.done ? "yes" : "no"}`, `- Confidence: ${assessment.confidence}`];
-		if (assessment.signals.gsdIgnored) lines.push("- GSD roadmap: excluded by the operator (`--ignore-gsd`)");
+		const lines = [
+			`- Done: ${assessment.done ? "yes" : "no"}`,
+			`- Confidence: ${assessment.confidence}`,
+		];
+		if (assessment.signals.gsdIgnored)
+			lines.push("- GSD roadmap: excluded by the operator (`--ignore-gsd`)");
 		if (assessment.gaps.length > 0) {
 			lines.push("- Gaps:", ...assessment.gaps.map((gap) => `  - ${scrub(gap)}`));
 		}
 		if (assessment.mode === "advisory" && assessment.judge) {
 			const { judge } = assessment;
 			const error = judge.error ? `, error: ${scrub(judge.error)}` : "";
-			lines.push(`- Judge (advisory): done ${judge.done ? "yes" : "no"}, confidence ${judge.confidence}${error}`);
-			if (judge.gaps.length > 0) lines.push("- Judge notes:", ...judge.gaps.map((gap) => `  - ${scrub(gap)}`));
+			lines.push(
+				`- Judge (advisory): done ${judge.done ? "yes" : "no"}, confidence ${judge.confidence}${error}`,
+			);
+			if (judge.gaps.length > 0)
+				lines.push("- Judge notes:", ...judge.gaps.map((gap) => `  - ${scrub(gap)}`));
 		}
 		if (assessment.decision) lines.push(jevLine(assessment.decision));
 		sections.push(`## Assessment\n\n${lines.join("\n")}`);

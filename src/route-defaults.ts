@@ -12,7 +12,19 @@
 export type LegacyRoute = "claude" | "grok" | "muse";
 
 export const ROUTE_DEFAULT_MODELS: Readonly<Record<LegacyRoute, string>> = Object.freeze({
-	claude: "sonnet",
-	grok: "grok-4.7",
+	claude: "claude-haiku-5-5",
+	grok: "grok-build-0.1",
 	muse: "muse-spark-1.3-contributor",
 });
+
+/** Variables holding a Jev key (OpenRouter or Vercel AI Gateway); no child Ultrathink spawns may inherit them (SDKs auto-read the generic names). */
+const JEV_KEY_ENV_NAMES: readonly string[] = Object.freeze([
+	"ULTRATHINK_OPENROUTER_KEY",
+	"OPENROUTER_API_KEY",
+	"AI_GATEWAY_API_KEY",
+]);
+
+/** Deletes the Jev key variables from a child env the caller already owns (a copy, never `process.env`); the one place every model-CLI launch drops them. */
+export function dropJevKeys(env: Record<string, string | undefined>): void {
+	for (const name of JEV_KEY_ENV_NAMES) delete env[name];
+}

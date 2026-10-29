@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { failureLabel } from "../obs/log.ts";
+
 export type RunStatus =
 	| "queued"
 	| "discovering"
@@ -29,7 +31,7 @@ export interface Run {
 	updatedAt: number;
 }
 
-export type PhaseStatus = "complete" | "failed";
+type PhaseStatus = "complete" | "failed";
 
 export interface PhaseRecord {
 	runId: string;
@@ -41,6 +43,9 @@ export interface PhaseRecord {
 }
 
 export class DuplicatePhaseError extends Error {}
+
+/** Thrown when `PRAGMA quick_check` reports problems; the message names them and passes through `openStore` unchanged. */
+class QuickCheckError extends Error {}
 
 export interface Store {
 	readonly db: Database;
@@ -151,7 +156,10 @@ function clampLimit(limit: number): number {
 
 function isUniqueViolation(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
-	if ("code" in error && (error.code === "SQLITE_CONSTRAINT_PRIMARYKEY" || error.code === "SQLITE_CONSTRAINT_UNIQUE")) {
+	if (
+		"code" in error &&
+		(error.code === "SQLITE_CONSTRAINT_PRIMARYKEY" || error.code === "SQLITE_CONSTRAINT_UNIQUE")
+	) {
 		return true;
 	}
 	return error.message.includes("UNIQUE constraint failed");
@@ -178,11 +186,20 @@ function quickCheck(db: Database): { ok: true } | { ok: false; detail: string } 
 	try {
 		const rows = db.query<QuickCheckRow, []>(`PRAGMA quick_check(${QUICK_CHECK_MAX_ROWS})`).all();
 		if (rows.length === 1 && rows[0]?.quick_check === "ok") return { ok: true };
-		detail = rows.length === 0 ? "quick_check returned no rows" : rows.map((row) => String(row.quick_check)).join("; ");
+		detail =
+			rows.length === 0
+				? "quick_check returned no rows"
+				: rows.map((row) => String(row.quick_check)).join("; ");
 	} catch (error) {
-		detail = error instanceof Error ? error.message : String(error);
+		detail = failureLabel(error);
 	}
-	return { ok: false, detail: detail.length > QUICK_CHECK_DETAIL_CHARS ? `${detail.slice(0, QUICK_CHECK_DETAIL_CHARS - 1)}…` : detail };
+	return {
+		ok: false,
+		detail:
+			detail.length > QUICK_CHECK_DETAIL_CHARS
+				? `${detail.slice(0, QUICK_CHECK_DETAIL_CHARS - 1)}…`
+				: detail,
+	};
 }
 
 function createStore(db: Database): Store {
@@ -280,7 +297,7 @@ function createStore(db: Database): Store {
 						`phase ${input.phase} attempt ${input.attempt} already recorded for run ${input.runId}`,
 					);
 				}
-				throw error;
+				throw new Error(`recordPhase: ${failureLabel(error)}`, { cause: error });
 			}
 		},
 
@@ -310,7 +327,7 @@ function createStore(db: Database): Store {
 			try {
 				db.exec("PRAGMA optimize;");
 			} catch {
-				// Statistics are a hint; a failed optimize must not keep the handle open.
+				// reason: Statistics are a hint; a failed optimize must not keep the handle open.
 			}
 			db.close();
 		},
@@ -331,11 +348,12 @@ export function openStore(dbPath: string): Store {
 		db.exec("PRAGMA busy_timeout = 5000;");
 		db.exec("PRAGMA foreign_keys = ON;");
 		const check = quickCheck(db);
-		if (!check.ok) throw new Error(`sqlite quick_check failed: ${check.detail}`);
+		if (!check.ok) throw new QuickCheckError(`sqlite quick_check failed: ${check.detail}`);
 		db.exec(MIGRATIONS);
 	} catch (error) {
 		db.close();
-		throw error;
+		if (error instanceof QuickCheckError) throw error;
+		throw new Error(`openStore: ${failureLabel(error)}`, { cause: error });
 	}
 	return createStore(db);
 }

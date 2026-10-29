@@ -31,7 +31,7 @@ export interface GraphViewNode {
 	fallback?: true;
 }
 
-export interface GraphViewWave {
+interface GraphViewWave {
 	wave: number;
 	parallel: boolean;
 	ids: string[];
@@ -122,7 +122,11 @@ function bound(text: string, max: number, ctx: Ctx): string {
 
 /** Keeps line structure (conclusions carry lists), drops control characters and runs of blank lines. */
 function block(value: unknown): string {
-	return str(value).replace(/\r\n?/g, "\n").replace(BLOCK_CONTROL_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+	return str(value)
+		.replace(/\r\n?/g, "\n")
+		.replace(BLOCK_CONTROL_RE, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
 }
 
 function isNodeKind(value: unknown): value is NodeKind {
@@ -143,7 +147,9 @@ function nodeSteps(thinking: string, conclusion: string, question: string): stri
 export function buildGraphView(record: SessionRecord): GraphView | null {
 	const graph = record?.graph;
 	if (!graph || typeof graph !== "object" || !Array.isArray(graph.nodes)) return null;
-	const items = graph.nodes.filter((item): item is ThoughtNode => typeof item === "object" && item !== null);
+	const items = graph.nodes.filter(
+		(item): item is ThoughtNode => typeof item === "object" && item !== null,
+	);
 	if (items.length === 0) return null;
 	if (isFallbackGraph({ goal: graph.goal, nodes: items })) return null;
 
@@ -202,7 +208,8 @@ export function buildGraphView(record: SessionRecord): GraphView | null {
 
 	const degraded = new Set<string>();
 	for (const entry of Array.isArray(record.degraded) ? record.degraded : []) {
-		if (typeof entry === "string" && entry.startsWith("fill:")) degraded.add(entry.slice("fill:".length).trim());
+		if (typeof entry === "string" && entry.startsWith("fill:"))
+			degraded.add(entry.slice("fill:".length).trim());
 	}
 
 	const sourceById = new Map<string, ThoughtNode>();
@@ -267,7 +274,9 @@ function labelText(value: string): string {
 }
 
 function nodeLabel(node: GraphViewNode, position: number): string {
-	const joined = [labelText(node.id), labelText(node.title)].filter((part) => part.length > 0).join(": ");
+	const joined = [labelText(node.id), labelText(node.title)]
+		.filter((part) => part.length > 0)
+		.join(": ");
 	return clip(joined || `node ${position}`, LABEL_MAX);
 }
 
@@ -282,7 +291,9 @@ export function renderMermaid(view: GraphView): string {
 	const placed = new Set<number>();
 	const lines = ["flowchart TD"];
 	for (const [w, wave] of view.waves.entries()) {
-		const members = wave.ids.map((id) => index.get(id)).filter((i): i is number => i !== undefined && !placed.has(i));
+		const members = wave.ids
+			.map((id) => index.get(id))
+			.filter((i): i is number => i !== undefined && !placed.has(i));
 		if (members.length === 0) continue;
 		lines.push(`  subgraph W${w + 1}["Wave ${w + 1}${wave.parallel ? " - parallel" : ""}"]`);
 		for (const i of members) {
@@ -317,13 +328,21 @@ export function renderMermaid(view: GraphView): string {
 	return lines.join("\n");
 }
 
-const pad = (text: string, width: number): string => text + " ".repeat(Math.max(0, width - text.length));
+const pad = (text: string, width: number): string =>
+	text + " ".repeat(Math.max(0, width - text.length));
 
 /** Plain-text wave tree: one aligned line per node, every model string collapsed to one line. */
 export function renderTree(view: GraphView): string {
 	const lines = [`Goal: ${clip(flat(view.goal), TREE_GOAL_MAX)}`];
 	const byId = new Map(view.nodes.map((node) => [node.id, node] as const));
-	const rows: Array<{ wave: number; id: string; title: string; kind: string; steps: string; after: string }> = [];
+	const rows: Array<{
+		wave: number;
+		id: string;
+		title: string;
+		kind: string;
+		steps: string;
+		after: string;
+	}> = [];
 	for (const [w, wave] of view.waves.entries()) {
 		for (const id of wave.ids) {
 			const node = byId.get(id);
@@ -335,11 +354,15 @@ export function renderTree(view: GraphView): string {
 				title: clip(flat(node.title), TREE_TITLE_MAX) || "(untitled)",
 				kind: `[${flat(node.kind)}]`,
 				steps: `${count} ${count === 1 ? "step" : "steps"}`,
-				after: node.dependsOn.length > 0 ? `after ${node.dependsOn.map((dep) => clip(flat(dep), ID_MAX)).join(", ")}` : "",
+				after:
+					node.dependsOn.length > 0
+						? `after ${node.dependsOn.map((dep) => clip(flat(dep), ID_MAX)).join(", ")}`
+						: "",
 			});
 		}
 	}
-	const width = (pick: (row: (typeof rows)[number]) => string): number => rows.reduce((max, row) => Math.max(max, pick(row).length), 0);
+	const width = (pick: (row: (typeof rows)[number]) => string): number =>
+		rows.reduce((max, row) => Math.max(max, pick(row).length), 0);
 	const idW = width((row) => row.id);
 	const titleW = width((row) => row.title);
 	const kindW = width((row) => row.kind);
@@ -349,7 +372,13 @@ export function renderTree(view: GraphView): string {
 		if (members.length === 0) continue;
 		lines.push(`Wave ${w + 1}${wave.parallel ? " (parallel)" : ""}`);
 		for (const row of members) {
-			const cells = [pad(row.id, idW), pad(row.title, titleW), pad(row.kind, kindW), pad(row.steps, stepsW), row.after];
+			const cells = [
+				pad(row.id, idW),
+				pad(row.title, titleW),
+				pad(row.kind, kindW),
+				pad(row.steps, stepsW),
+				row.after,
+			];
 			lines.push(`  ${cells.join("  ")}`.trimEnd());
 		}
 	}
@@ -365,7 +394,7 @@ export function fenced(text: string, info = ""): string {
 }
 
 /** Shown when the caps cut the view, so a client that displays only text can tell it is incomplete. */
-export const TRUNCATED_NOTE =
+const TRUNCATED_NOTE =
 	'Note: this view is shortened (some nodes or steps were left out). Call ultrathink_result with detail "full" for the whole plan.';
 
 /** The plan-text block: heading, one instruction for the chat model, the wave tree first and the diagram second. */

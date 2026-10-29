@@ -20,15 +20,26 @@ export interface Github {
 	repo(): { name: string; defaultBranch: string } | undefined;
 	push(branch: string): { ok: boolean; error?: string };
 	findOpenPr(head: string): PrRef | undefined;
-	createPr(input: { base: string; head: string; title: string; body: string }): PrRef | { error: string };
+	createPr(input: {
+		base: string;
+		head: string;
+		title: string;
+		body: string;
+	}): PrRef | { error: string };
 	prStatus(number: number): PrStatus | undefined;
 	/** Merges without deleting the branch; ok only once GitHub reports the PR MERGED. */
-	merge(input: { number: number; method: ShipConfig["mergeMethod"]; headSha: string }): { ok: boolean; error?: string };
+	merge(input: { number: number; method: ShipConfig["mergeMethod"]; headSha: string }): {
+		ok: boolean;
+		error?: string;
+	};
 	deleteRemoteBranch(branch: string): { ok: boolean; error?: string };
 	comment(number: number, body: string): { ok: boolean; error?: string };
 	mergeMethods(): ShipConfig["mergeMethod"][];
 	/** Checks out `base` and fast-forwards it; then deletes the local `branch` only when it is fully merged or its tip is `headSha`. */
-	syncBase(input: { base: string; branch: string; headSha?: string }): { ok: boolean; error?: string };
+	syncBase(input: { base: string; branch: string; headSha?: string }): {
+		ok: boolean;
+		error?: string;
+	};
 	/**
 	 * The PR's Greptile review threads; fails on any doubt (errors, truncation) so callers can fail closed.
 	 * With `opts.deadlineMs`, repository lookup and every page share the remaining wait budget; a response
@@ -80,7 +91,9 @@ function parseJson(text: string): unknown {
 }
 
 function obj(value: unknown): Record<string, unknown> | undefined {
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
 }
 
 function str(value: unknown): string | undefined {
@@ -110,7 +123,8 @@ export function classifyChecks(rollup: unknown): PrStatus["checks"] {
 		const conclusion = str(o.conclusion)?.toUpperCase();
 		const state = str(o.state)?.toUpperCase();
 		const status = str(o.status)?.toUpperCase();
-		if ((conclusion && FAILED_CONCLUSIONS[conclusion]) || (state && FAILED_STATES[state])) return "failing";
+		if ((conclusion && FAILED_CONCLUSIONS[conclusion]) || (state && FAILED_STATES[state]))
+			return "failing";
 		// CheckRun carries `status`; StatusContext carries `state`.
 		const progress = status ?? state;
 		if (progress && !DONE_STATUSES[progress]) pending = true;
@@ -118,7 +132,9 @@ export function classifyChecks(rollup: unknown): PrStatus["checks"] {
 	return pending ? "pending" : "passing";
 }
 
-type ThreadsPage = { ok: true; threads: ReviewThread[]; next?: string } | { ok: false; error: string };
+type ThreadsPage =
+	| { ok: true; threads: ReviewThread[]; next?: string }
+	| { ok: false; error: string };
 
 /** Parses one page of the reviewThreads response; `next` is the cursor of the following page when there is one. */
 function parseThreadsPage(stdout: string): ThreadsPage {
@@ -129,9 +145,11 @@ function parseThreadsPage(stdout: string): ThreadsPage {
 		return { ok: false, error: str(obj(errors[0])?.message)?.slice(0, 300) ?? "graphql error" };
 	}
 	const threads = obj(obj(obj(obj(root.data)?.repository)?.pullRequest)?.reviewThreads);
-	if (!threads || !Array.isArray(threads.nodes)) return { ok: false, error: "pull request review threads missing" };
+	if (!threads || !Array.isArray(threads.nodes))
+		return { ok: false, error: "pull request review threads missing" };
 	const pageInfo = obj(threads.pageInfo);
-	if (!pageInfo || typeof pageInfo.hasNextPage !== "boolean") return { ok: false, error: "malformed review threads pageInfo" };
+	if (!pageInfo || typeof pageInfo.hasNextPage !== "boolean")
+		return { ok: false, error: "malformed review threads pageInfo" };
 	const next = pageInfo?.hasNextPage === true ? str(pageInfo.endCursor) : undefined;
 	if (pageInfo?.hasNextPage === true && !next) return { ok: false, error: PAGINATION_STALLED };
 	const out: ReviewThread[] = [];
@@ -151,7 +169,13 @@ function parseThreadsPage(stdout: string): ThreadsPage {
 		if (!body || typeof thread.isResolved !== "boolean" || typeof thread.isOutdated !== "boolean") {
 			return { ok: false, error: "malformed review thread" };
 		}
-		const entry: ReviewThread = { id, isResolved: thread.isResolved, isOutdated: thread.isOutdated, author, body };
+		const entry: ReviewThread = {
+			id,
+			isResolved: thread.isResolved,
+			isOutdated: thread.isOutdated,
+			author,
+			body,
+		};
 		const path = str(first.path);
 		if (path) entry.path = path;
 		const line = typeof first.line === "number" ? first.line : first.originalLine;
@@ -164,9 +188,12 @@ function parseThreadsPage(stdout: string): ThreadsPage {
 export function createGithub(input: { cwd: string; run?: Run }): Github {
 	const run = input.run ?? defaultRun;
 	const cwd = input.cwd;
-	const exec = (argv: string[], opts: { timeoutMs?: number; stdin?: string } = {}) => run(argv, { cwd, ...opts });
+	const exec = (argv: string[], opts: { timeoutMs?: number; stdin?: string } = {}) =>
+		run(argv, { cwd, ...opts });
 	const repo = (timeoutMs?: number) => {
-		const r = exec(["gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef"], { timeoutMs });
+		const r = exec(["gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef"], {
+			timeoutMs,
+		});
 		if (r.exitCode !== 0) return undefined;
 		const o = obj(parseJson(r.stdout));
 		const name = str(o?.nameWithOwner);
@@ -175,7 +202,8 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 	};
 
 	// A name beginning with `-` would be parsed by git as an option; full refspecs keep every other name a positional.
-	const badBranch = (branch: string) => (branch.startsWith("-") ? `refusing branch name ${JSON.stringify(branch)}` : undefined);
+	const badBranch = (branch: string) =>
+		branch.startsWith("-") ? `refusing branch name ${JSON.stringify(branch)}` : undefined;
 
 	const gh: Github = {
 		repo,
@@ -187,14 +215,38 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			return r.exitCode === 0 ? { ok: true } : { ok: false, error: errorOf(r) };
 		},
 		findOpenPr(head) {
-			const r = exec(["gh", "pr", "list", "--head", head, "--state", "open", "--json", PR_FIELDS, "--limit", "1"]);
+			const r = exec([
+				"gh",
+				"pr",
+				"list",
+				"--head",
+				head,
+				"--state",
+				"open",
+				"--json",
+				PR_FIELDS,
+				"--limit",
+				"1",
+			]);
 			if (r.exitCode !== 0) return undefined;
 			const list = parseJson(r.stdout);
 			return Array.isArray(list) ? toPrRef(list[0]) : undefined;
 		},
 		createPr({ base, head, title, body }) {
 			const created = exec(
-				["gh", "pr", "create", "--base", base, "--head", head, "--title", title, "--body-file", "-"],
+				[
+					"gh",
+					"pr",
+					"create",
+					"--base",
+					base,
+					"--head",
+					head,
+					"--title",
+					title,
+					"--body-file",
+					"-",
+				],
 				{ stdin: body, timeoutMs: LONG_TIMEOUT_MS },
 			);
 			if (created.exitCode !== 0) return { error: errorOf(created) };
@@ -209,29 +261,45 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			return toPrRef(parseJson(view.stdout)) ?? { error: "could not parse created PR" };
 		},
 		prStatus(number) {
-			const r = exec(["gh", "pr", "view", String(number), "--json", "state,headRefOid,mergeable,statusCheckRollup,url"]);
+			const r = exec([
+				"gh",
+				"pr",
+				"view",
+				String(number),
+				"--json",
+				"state,headRefOid,mergeable,statusCheckRollup,url",
+			]);
 			if (r.exitCode !== 0) return undefined;
 			const o = obj(parseJson(r.stdout));
 			const state = str(o?.state);
 			const headSha = str(o?.headRefOid);
 			const url = str(o?.url);
-			if (!o || !headSha || !url || (state !== "OPEN" && state !== "MERGED" && state !== "CLOSED")) return undefined;
+			if (!o || !headSha || !url || (state !== "OPEN" && state !== "MERGED" && state !== "CLOSED"))
+				return undefined;
 			const m = str(o.mergeable);
 			const mergeable = m === "MERGEABLE" || m === "CONFLICTING" ? m : "UNKNOWN";
 			return { state, headSha, mergeable, checks: classifyChecks(o.statusCheckRollup), url };
 		},
 		merge({ number, method, headSha }) {
-			const r = exec(["gh", "pr", "merge", String(number), `--${method}`, "--match-head-commit", headSha], {
-				timeoutMs: LONG_TIMEOUT_MS,
-			});
+			const r = exec(
+				["gh", "pr", "merge", String(number), `--${method}`, "--match-head-commit", headSha],
+				{
+					timeoutMs: LONG_TIMEOUT_MS,
+				},
+			);
 			const state = gh.prStatus(number)?.state;
 			if (state === "MERGED") return { ok: true };
-			return { ok: false, error: r.exitCode !== 0 ? errorOf(r) : `PR is ${state ?? "unknown"} after merge` };
+			return {
+				ok: false,
+				error: r.exitCode !== 0 ? errorOf(r) : `PR is ${state ?? "unknown"} after merge`,
+			};
 		},
 		deleteRemoteBranch(branch) {
 			const bad = badBranch(branch);
 			if (bad) return { ok: false, error: bad };
-			const r = exec(["git", "push", "origin", `:refs/heads/${branch}`], { timeoutMs: LONG_TIMEOUT_MS });
+			const r = exec(["git", "push", "origin", `:refs/heads/${branch}`], {
+				timeoutMs: LONG_TIMEOUT_MS,
+			});
 			if (r.exitCode === 0 || r.stderr.includes("remote ref does not exist")) return { ok: true };
 			return { ok: false, error: errorOf(r) };
 		},
@@ -240,7 +308,13 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			return r.exitCode === 0 ? { ok: true } : { ok: false, error: errorOf(r) };
 		},
 		mergeMethods() {
-			const r = exec(["gh", "repo", "view", "--json", "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"]);
+			const r = exec([
+				"gh",
+				"repo",
+				"view",
+				"--json",
+				"squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed",
+			]);
 			const o = r.exitCode === 0 ? obj(parseJson(r.stdout)) : undefined;
 			if (!o) return [];
 			const methods: ShipConfig["mergeMethod"][] = [];
@@ -254,7 +328,9 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			if (bad) return { ok: false, error: bad };
 			const checkout = exec(["git", "checkout", base]);
 			if (checkout.exitCode !== 0) return { ok: false, error: errorOf(checkout) };
-			const pull = exec(["git", "pull", "--ff-only", "origin", base], { timeoutMs: LONG_TIMEOUT_MS });
+			const pull = exec(["git", "pull", "--ff-only", "origin", base], {
+				timeoutMs: LONG_TIMEOUT_MS,
+			});
 			if (pull.exitCode !== 0) return { ok: false, error: errorOf(pull) };
 			const current = exec(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
 			const tip = exec(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
@@ -268,25 +344,38 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 		reviewThreads(prNumber, opts = {}) {
 			const now = opts.now ?? Date.now;
 			let remaining = opts.deadlineMs === undefined ? undefined : opts.deadlineMs - now();
-			if (remaining !== undefined && remaining <= 0) return { ok: false, error: THREADS_DEADLINE_EXCEEDED };
+			if (remaining !== undefined && remaining <= 0)
+				return { ok: false, error: THREADS_DEADLINE_EXCEEDED };
 			const [owner, name] = repo(remaining)?.name.split("/") ?? [];
-			if (opts.deadlineMs !== undefined && now() >= opts.deadlineMs) return { ok: false, error: THREADS_DEADLINE_EXCEEDED };
+			if (opts.deadlineMs !== undefined && now() >= opts.deadlineMs)
+				return { ok: false, error: THREADS_DEADLINE_EXCEEDED };
 			if (!owner || !name) return { ok: false, error: "could not resolve GitHub repo" };
 			const threads: ReviewThread[] = [];
 			const seen = new Set<string>();
 			let after: string | undefined;
 			for (let page = 1; page <= MAX_THREAD_PAGES; page++) {
 				remaining = opts.deadlineMs === undefined ? undefined : opts.deadlineMs - now();
-				if (remaining !== undefined && remaining <= 0) return { ok: false, error: THREADS_DEADLINE_EXCEEDED };
-				const r = exec([
-					"gh", "api", "graphql",
-					"-f", `query=${THREADS_QUERY}`,
-					"-f", `owner=${owner}`,
-					"-f", `name=${name}`,
-					"-F", `number=${prNumber}`,
-					...(after === undefined ? [] : ["-f", `after=${after}`]),
-				], { timeoutMs: remaining });
-				if (opts.deadlineMs !== undefined && now() >= opts.deadlineMs) return { ok: false, error: THREADS_DEADLINE_EXCEEDED };
+				if (remaining !== undefined && remaining <= 0)
+					return { ok: false, error: THREADS_DEADLINE_EXCEEDED };
+				const r = exec(
+					[
+						"gh",
+						"api",
+						"graphql",
+						"-f",
+						`query=${THREADS_QUERY}`,
+						"-f",
+						`owner=${owner}`,
+						"-f",
+						`name=${name}`,
+						"-F",
+						`number=${prNumber}`,
+						...(after === undefined ? [] : ["-f", `after=${after}`]),
+					],
+					{ timeoutMs: remaining },
+				);
+				if (opts.deadlineMs !== undefined && now() >= opts.deadlineMs)
+					return { ok: false, error: THREADS_DEADLINE_EXCEEDED };
 				if (r.exitCode !== 0) return { ok: false, error: errorOf(r) };
 				const parsed = parseThreadsPage(r.stdout);
 				if (!parsed.ok) return parsed;

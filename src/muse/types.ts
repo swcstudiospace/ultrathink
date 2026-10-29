@@ -5,7 +5,16 @@ import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
 /** The Muse route default (`ROUTE_DEFAULT_MODELS.muse`); `DEFAULT_MUSE_CONFIG.model` references it. */
 export const MUSE_MODEL_DEFAULT = ROUTE_DEFAULT_MODELS.muse;
 
-export const MUSE_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export const MUSE_EFFORTS = [
+	"none",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
+] as const;
 
 export type MuseEffort = (typeof MUSE_EFFORTS)[number];
 

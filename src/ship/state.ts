@@ -9,7 +9,9 @@ import type { ShipAttempt, ShipState } from "./types.ts";
 function readRecord(statePath: string): Record<string, unknown> | undefined {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(statePath, "utf8"));
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: undefined;
 	} catch {
 		return undefined;
 	}
@@ -39,7 +41,10 @@ function priorShip(record: Record<string, unknown>): Partial<ShipState> {
  * ship from it and writes it back. Takes the lock once, so a writer that needs the old ship never has to call another
  * public writer (which would lock a second time and lose updates between the two cycles).
  */
-function updateShip(statePath: string, build: (record: Record<string, unknown>) => ShipState): ShipState | undefined {
+function updateShip(
+	statePath: string,
+	build: (record: Record<string, unknown>) => ShipState,
+): ShipState | undefined {
 	return withFileLock(statePath, () => {
 		const record = readRecord(statePath);
 		if (!record) return undefined;
@@ -48,8 +53,18 @@ function updateShip(statePath: string, build: (record: Record<string, unknown>) 
 	});
 }
 
-export function writeShip(statePath: string, patch: Partial<ShipState>, now: number = Date.now()): ShipState | undefined {
-	return updateShip(statePath, (record) => ({ phase: "not-done", rounds: [], ...priorShip(record), ...patch, updatedAt: now }));
+export function writeShip(
+	statePath: string,
+	patch: Partial<ShipState>,
+	now: number = Date.now(),
+): ShipState | undefined {
+	return updateShip(statePath, (record) => ({
+		phase: "not-done",
+		rounds: [],
+		...priorShip(record),
+		...patch,
+		updatedAt: now,
+	}));
 }
 
 /**
@@ -72,14 +87,22 @@ export function archiveShip(statePath: string, now: number = Date.now()): ShipSt
 const MAX_DETAIL = 200;
 
 /** Appends attempts to the ship state's log, keeping the newest MAX_ATTEMPTS. Never throws. */
-export function appendAttempts(statePath: string, attempts: ShipAttempt[], now: number = Date.now()): ShipState | undefined {
+export function appendAttempts(
+	statePath: string,
+	attempts: ShipAttempt[],
+	now: number = Date.now(),
+): ShipState | undefined {
 	// Details are one line of at most MAX_DETAIL characters.
 	const added = attempts.map((attempt) =>
-		attempt.detail === undefined ? attempt : { ...attempt, detail: attempt.detail.replace(/\s+/g, " ").trim().slice(0, MAX_DETAIL) },
+		attempt.detail === undefined
+			? attempt
+			: { ...attempt, detail: attempt.detail.replace(/\s+/g, " ").trim().slice(0, MAX_DETAIL) },
 	);
 	return updateShip(statePath, (record) => {
 		const prior = priorShip(record);
-		const log = [...(Array.isArray(prior.attempts) ? prior.attempts : []), ...added].slice(-MAX_ATTEMPTS);
+		const log = [...(Array.isArray(prior.attempts) ? prior.attempts : []), ...added].slice(
+			-MAX_ATTEMPTS,
+		);
 		return { phase: "not-done", rounds: [], ...prior, attempts: log, updatedAt: now };
 	});
 }

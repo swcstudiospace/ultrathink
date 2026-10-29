@@ -13,9 +13,15 @@ import { buildShipState, extractAcceptanceCriteria } from "../decisions/question
 import type { DecisionAction, DecisionRecord, DecisionsErrorKind } from "../decisions/types.ts";
 import { formatP } from "../decisions/types.ts";
 import type { ShipDiff } from "./signals.ts";
-import type { Assessment, JudgeMode, JudgeVerdict, MilestoneEvidence, ShipSignals } from "./types.ts";
+import type {
+	Assessment,
+	JudgeMode,
+	JudgeVerdict,
+	MilestoneEvidence,
+	ShipSignals,
+} from "./types.ts";
 
-export const JUDGE_SYSTEM_PROMPT = `You are a strict release reviewer. You are given the user's original request, the uplifted spec summary, the Graph-of-Thought goal and WORKFLOW, the clarifications with any recorded answers, GSD roadmap/verification signals, the branch diff stat, commit log and the (possibly truncated) patch.
+const JUDGE_SYSTEM_PROMPT = `You are a strict release reviewer. You are given the user's original request, the uplifted spec summary, the Graph-of-Thought goal and WORKFLOW, the clarifications with any recorded answers, GSD roadmap/verification signals, the branch diff stat, commit log and the (possibly truncated) patch.
 Decide whether the requested work is complete enough to merge: check the patch against every stated requirement. Missing features, TODO/stub markers, failing verification or unanswered blocking clarifications mean NOT done.
 You run before the ship flow, which then pushes the branch, opens the PR into the default branch and gates it on CI and a Greptile review; the flow or a person then merges it and may delete the branch. Requirements to push, open a PR, merge into the main/default branch or delete the branch are handled after you: treat them as satisfied, never as gaps. Also never count as gaps: repository settings a person applies after the merge (such as visibility), a truncated patch, or not seeing logs of commands being run. Judge the delivered changes; CI and the review gate verify the code after you.
 List in gaps only concrete missing or broken work; leave gaps empty when done.
@@ -27,18 +33,24 @@ function ruleGaps(signals: ShipSignals): string[] {
 	const { git, gsd } = signals;
 	const gaps: string[] = [];
 	if (git.onBase) gaps.push("working on the default branch; ship needs a feature branch");
-	if (git.ahead === 0 && git.dirty.length === 0) gaps.push(`nothing to ship: no commits ahead of ${git.base ?? "base"}`);
+	if (git.ahead === 0 && git.dirty.length === 0)
+		gaps.push(`nothing to ship: no commits ahead of ${git.base ?? "base"}`);
 	if (git.dirty.length > 0) {
 		const planning = git.dirty.some((path) => path.startsWith(".planning/"))
 			? "; uncommitted .planning/ changes (another session may be planning here)"
 			: "";
-		gaps.push(`uncommitted tracked changes: ${git.dirty.join(", ")}${planning}; commit your work first`);
+		gaps.push(
+			`uncommitted tracked changes: ${git.dirty.join(", ")}${planning}; commit your work first`,
+		);
 	}
 	if (gsd && !gsd.trusted)
 		gaps.push(
 			".planning/ is neither tracked nor ignored (possibly stray planning written by another tool); commit or remove it before shipping",
 		);
-	if (gsd?.toolsMissing) gaps.push("GSD roadmap found but gsd-tools.cjs was not found; set GSD_TOOLS or rerun assess with --ignore-gsd");
+	if (gsd?.toolsMissing)
+		gaps.push(
+			"GSD roadmap found but gsd-tools.cjs was not found; set GSD_TOOLS or rerun assess with --ignore-gsd",
+		);
 	if (gsd?.toolsMissing && gsd?.toolsTracked)
 		gaps.push(
 			"a gsd-tools.cjs committed in this repository was not run (repository code is never executed); install GSD outside the repository or set GSD_TOOLS",
@@ -56,7 +68,9 @@ function ruleGaps(signals: ShipSignals): string[] {
 			gaps.push(`archived milestone ${gsd.milestone.version} has no phase verifications`);
 		for (const v of gsd.milestone.verifications) {
 			if (v.status !== "passed")
-				gaps.push(`archived milestone ${gsd.milestone.version}: ${v.phase} verification is ${v.status}`);
+				gaps.push(
+					`archived milestone ${gsd.milestone.version}: ${v.phase} verification is ${v.status}`,
+				);
 		}
 	}
 	return gaps;
@@ -102,7 +116,7 @@ function judgePrompt(record: SessionRecord, signals: ShipSignals, diff: ShipDiff
 }
 
 /** Extracts the first balanced JSON object from free text. */
-export function parseJudge(text: string): JudgeVerdict | undefined {
+function parseJudge(text: string): JudgeVerdict | undefined {
 	for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
 		let depth = 0;
 		let inString = false;
@@ -121,9 +135,12 @@ export function parseJudge(text: string): JudgeVerdict | undefined {
 						done: value.done,
 						confidence: typeof value.confidence === "number" ? value.confidence : 0,
 						summary: typeof value.summary === "string" ? value.summary : "",
-						gaps: Array.isArray(value.gaps) ? value.gaps.filter((g): g is string => typeof g === "string") : [],
+						gaps: Array.isArray(value.gaps)
+							? value.gaps.filter((g): g is string => typeof g === "string")
+							: [],
 					};
 				} catch {
+					// reason: a balanced span that is not valid JSON is skipped; the scan moves on to the next "{"
 					break;
 				}
 			}
@@ -168,7 +185,16 @@ export async function assessDone(input: AssessInput): Promise<Assessment> {
 	const at = (input.now ?? Date.now)();
 	const gaps = ruleGaps(signals);
 	if (gaps.length > 0)
-		return { done: false, confidence: 1, summary: gaps[0] ?? "", gaps, signals, source: "rules", mode, at };
+		return {
+			done: false,
+			confidence: 1,
+			summary: gaps[0] ?? "",
+			gaps,
+			signals,
+			source: "rules",
+			mode,
+			at,
+		};
 	// Started before the judge is called, so Jev adds no latency; awaited outside the judge's try/catch so a caller
 	// abort is re-thrown rather than read as a judge failure.
 	const jev = startShipDecision(input);
@@ -177,7 +203,9 @@ export async function assessDone(input: AssessInput): Promise<Assessment> {
 		return jev ? adviseWithJev(assessment, await jev.outcome, jev) : assessment;
 	}
 	const judged = await judgeGate(input, at);
-	return jev ? gateWithJev(judged, await jev.outcome, jev, input.autoMerge === true) : judged.assessment;
+	return jev
+		? gateWithJev(judged, await jev.outcome, jev, input.autoMerge === true)
+		: judged.assessment;
 }
 
 /** Starts the `ship` decision when the point is active. State: request, acceptance criteria and patch only (D9). */
@@ -191,13 +219,23 @@ function startShipDecision(input: AssessInput): ShipDecision | undefined {
 		patchTruncated: input.diff.patchTruncated,
 	});
 	const { shipVetoAtOrBelow: veto, shipApproveAt: approve } = decisions.config;
-	const outcome = decisions.run("ship", state, { signal: input.signal, threshold: veto, action: () => "none" });
+	const outcome = decisions.run("ship", state, {
+		signal: input.signal,
+		threshold: veto,
+		action: () => "none",
+	});
 	// An early exit must never leave an unhandled rejection; assessDone still awaits (and so re-throws) the outcome.
-	outcome.catch(() => {});
+	outcome.catch(() => {
+		// reason: the rejection is re-thrown by assessDone, which awaits the outcome
+	});
 	return { outcome, truncated, veto, approve };
 }
 
-function decided(record: DecisionRecord, action: DecisionAction, threshold: number): DecisionRecord {
+function decided(
+	record: DecisionRecord,
+	action: DecisionAction,
+	threshold: number,
+): DecisionRecord {
 	return { ...record, action, threshold };
 }
 
@@ -207,13 +245,21 @@ function decided(record: DecisionRecord, action: DecisionAction, threshold: numb
  * a merge then always needs a usable judge verdict, so the judge's result stands and Jev is only recorded. Jev never
  * turns a judge's "not done" into done, and a failed decision leaves today's result.
  */
-function gateWithJev(judged: GateJudgement, outcome: DecisionOutcome, jev: ShipDecision, autoMerge: boolean): Assessment {
+function gateWithJev(
+	judged: GateJudgement,
+	outcome: DecisionOutcome,
+	jev: ShipDecision,
+	autoMerge: boolean,
+): Assessment {
 	const { assessment, verdict } = judged;
 	// Jev can only veto here: it decides alone only when there is no usable verdict and no auto-merge.
 	const vetoOnly = verdict !== undefined || autoMerge;
 	if (outcome.status === "inactive") return assessment;
 	if (outcome.status === "error")
-		return { ...assessment, decision: decided(outcome.record, "fail-open", vetoOnly ? jev.veto : jev.approve) };
+		return {
+			...assessment,
+			decision: decided(outcome.record, "fail-open", vetoOnly ? jev.veto : jev.approve),
+		};
 	const { p, record } = outcome;
 	if (vetoOnly) {
 		if (verdict && assessment.done && p <= jev.veto && !jev.truncated) {
@@ -227,17 +273,42 @@ function gateWithJev(judged: GateJudgement, outcome: DecisionOutcome, jev: ShipD
 	if (p >= jev.approve) {
 		const summary = `Jev judged the change complete (P(complete) ${formatP(p)})`;
 		const decision = decided(record, "approve", jev.approve);
-		return { done: true, confidence: p, summary, gaps: [], signals, source: "jev", mode: "gate", at, decision };
+		return {
+			done: true,
+			confidence: p,
+			summary,
+			gaps: [],
+			signals,
+			source: "jev",
+			mode: "gate",
+			at,
+			decision,
+		};
 	}
 	const gap = `Jev P(complete) ${formatP(p)} is below ${String(jev.approve)}`;
 	const decision = decided(record, "reject", jev.approve);
-	return { done: false, confidence: p, summary: gap, gaps: [gap], signals, source: "jev", mode: "gate", at, decision };
+	return {
+		done: false,
+		confidence: p,
+		summary: gap,
+		gaps: [gap],
+		signals,
+		source: "jev",
+		mode: "gate",
+		at,
+		decision,
+	};
 }
 
 /** Advisory mode with Jev: the run still ships; Jev's verdict is only recorded (`advise-veto` where gate would veto). */
-function adviseWithJev(assessment: Assessment, outcome: DecisionOutcome, jev: ShipDecision): Assessment {
+function adviseWithJev(
+	assessment: Assessment,
+	outcome: DecisionOutcome,
+	jev: ShipDecision,
+): Assessment {
 	if (outcome.status === "inactive") return assessment;
-	if (outcome.status === "error") return { ...assessment, decision: decided(outcome.record, "fail-open", jev.veto) };
+	if (outcome.status === "error")
+		return { ...assessment, decision: decided(outcome.record, "fail-open", jev.veto) };
 	const action = outcome.p <= jev.veto && !jev.truncated ? "advise-veto" : "none";
 	return { ...assessment, decision: decided(outcome.record, action, jev.veto) };
 }
@@ -253,24 +324,65 @@ async function judgeGate(input: AssessInput, at: number): Promise<GateJudgement>
 	const { signals } = input;
 	const mode = "gate";
 	if (!input.complete)
-		return { assessment: { done: true, confidence: 0.5, summary: "deterministic checks passed", gaps: [], signals, source: "rules", mode, at } };
+		return {
+			assessment: {
+				done: true,
+				confidence: 0.5,
+				summary: "deterministic checks passed",
+				gaps: [],
+				signals,
+				source: "rules",
+				mode,
+				at,
+			},
+		};
 	let reason: string;
 	try {
-		const text = await input.complete(JUDGE_SYSTEM_PROMPT, judgePrompt(input.record, signals, input.diff), input.signal);
+		const text = await input.complete(
+			JUDGE_SYSTEM_PROMPT,
+			judgePrompt(input.record, signals, input.diff),
+			input.signal,
+		);
 		const verdict = parseJudge(text);
 		if (verdict) {
 			const done = verdict.done && verdict.confidence >= MIN_CONFIDENCE;
 			const judgeGaps =
-				!done && verdict.done ? [...verdict.gaps, `judge confidence ${verdict.confidence} below ${MIN_CONFIDENCE}`] : verdict.gaps;
+				!done && verdict.done
+					? [...verdict.gaps, `judge confidence ${verdict.confidence} below ${MIN_CONFIDENCE}`]
+					: verdict.gaps;
 			const { confidence, summary } = verdict;
-			return { assessment: { done, confidence, summary, gaps: judgeGaps, signals, source: "llm", mode, at }, verdict };
+			return {
+				assessment: {
+					done,
+					confidence,
+					summary,
+					gaps: judgeGaps,
+					signals,
+					source: "llm",
+					mode,
+					at,
+				},
+				verdict,
+			};
 		}
 		reason = "judge reply was not parseable JSON";
 	} catch (error) {
+		// reason: the failure is kept as the judge reason and returned in the assessment
 		reason = error instanceof Error ? error.message : String(error);
 	}
 	const gap = `assessment unavailable: ${reason}`;
-	return { assessment: { done: false, confidence: 0, summary: gap, gaps: [gap], signals, source: "llm", mode, at } };
+	return {
+		assessment: {
+			done: false,
+			confidence: 0,
+			summary: gap,
+			gaps: [gap],
+			signals,
+			source: "llm",
+			mode,
+			at,
+		},
+	};
 }
 
 // Rules passed: the run ships; the judge only informs the PR body and the audit trail.
@@ -287,11 +399,23 @@ async function assessAdvisory(input: AssessInput, at: number): Promise<Assessmen
 		};
 	let reason: string;
 	try {
-		const text = await input.complete(JUDGE_SYSTEM_PROMPT, judgePrompt(input.record, signals, input.diff), input.signal);
+		const text = await input.complete(
+			JUDGE_SYSTEM_PROMPT,
+			judgePrompt(input.record, signals, input.diff),
+			input.signal,
+		);
 		const verdict = parseJudge(text);
-		if (verdict) return { ...base, confidence: verdict.confidence, summary: verdict.summary, source: "llm", judge: verdict };
+		if (verdict)
+			return {
+				...base,
+				confidence: verdict.confidence,
+				summary: verdict.summary,
+				source: "llm",
+				judge: verdict,
+			};
 		reason = "judge reply was not parseable JSON";
 	} catch (error) {
+		// reason: the failure is kept as the judge error and returned in the assessment
 		reason = error instanceof Error ? error.message : String(error);
 	}
 	return {
@@ -313,6 +437,7 @@ export interface AssessDecisionJson {
 
 /** ok → {p, model, action}; error → {action: "fail-open", error}. */
 export function assessDecisionJson(record: DecisionRecord): AssessDecisionJson {
-	if (record.outcome === "error") return { action: "fail-open", ...(record.error ? { error: record.error } : {}) };
+	if (record.outcome === "error")
+		return { action: "fail-open", ...(record.error ? { error: record.error } : {}) };
 	return { p: record.p, model: record.model, action: record.action };
 }

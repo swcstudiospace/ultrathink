@@ -15,6 +15,7 @@ import {
 	userConfigPath,
 } from "./config.ts";
 import type { DecisionsConfig } from "./decisions/types.ts";
+import { DEFAULT_GROK_CONFIG } from "./grok/types.ts";
 import { ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
 
 function tempConfigFile(content: unknown): { path: string; cleanup: () => void } {
@@ -40,7 +41,12 @@ describe("defaultConfig", () => {
 		expect(config.substrate.url).toBe("");
 		expect(config.grok.shuntBaseUrl).toBe("");
 		expect(config.grok.shuntModel).toBe("");
-		expect(config.ship).toMatchObject({ enabled: false, autoMerge: false, deleteBranch: false, greptileOrganization: "" });
+		expect(config.ship).toMatchObject({
+			enabled: false,
+			autoMerge: false,
+			deleteBranch: false,
+			greptileOrganization: "",
+		});
 	});
 });
 
@@ -79,7 +85,10 @@ describe("mergeConfig", () => {
 
 	test("claude concurrency rejects non-positive input (falls back to the default) and callTimeoutMs/budgetMs reject negative numbers", () => {
 		const base = defaultConfig();
-		const merged = mergeConfig({ claude: { concurrency: 0, callTimeoutMs: -5, budgetMs: -1 } }, base);
+		const merged = mergeConfig(
+			{ claude: { concurrency: 0, callTimeoutMs: -5, budgetMs: -1 } },
+			base,
+		);
 		expect(merged.claude.concurrency).toBe(base.claude.concurrency);
 		expect(merged.claude.callTimeoutMs).toBe(base.claude.callTimeoutMs);
 		expect(merged.claude.budgetMs).toBe(base.claude.budgetMs);
@@ -87,10 +96,15 @@ describe("mergeConfig", () => {
 
 	test("grok reasoningEffort only accepts known efforts, baseUrl trailing slash is stripped", () => {
 		const base = defaultConfig();
-		const merged = mergeConfig({ grok: { reasoningEffort: "medium", baseUrl: "https://x/v1/" } }, base);
+		const merged = mergeConfig(
+			{ grok: { reasoningEffort: "medium", baseUrl: "https://x/v1/" } },
+			base,
+		);
 		expect(merged.grok.reasoningEffort).toBe("medium");
 		expect(merged.grok.baseUrl).toBe("https://x/v1");
-		expect(mergeConfig({ grok: { reasoningEffort: "extreme" } }, base).grok.reasoningEffort).toBe(base.grok.reasoningEffort);
+		expect(mergeConfig({ grok: { reasoningEffort: "extreme" } }, base).grok.reasoningEffort).toBe(
+			base.grok.reasoningEffort,
+		);
 	});
 
 	test("muse defaults are the Muse route default (muse-spark-1.3-contributor) @ high with no timer", () => {
@@ -107,15 +121,19 @@ describe("mergeConfig", () => {
 		expect(mergeConfig({ muse: { model: "" } }, base).muse.model).toBe("");
 		expect(mergeConfig({ muse: { model: " other " } }, base).muse.model).toBe("other");
 		expect(mergeConfig({ muse: { bin: "  " } }, base).muse.bin).toBe("muse");
-		expect(mergeConfig({ muse: { reasoningEffort: "ultra" } }, base).muse.reasoningEffort).toBe("ultra");
-		expect(mergeConfig({ muse: { reasoningEffort: "extreme" } }, base).muse.reasoningEffort).toBe("high");
+		expect(mergeConfig({ muse: { reasoningEffort: "ultra" } }, base).muse.reasoningEffort).toBe(
+			"ultra",
+		);
+		expect(mergeConfig({ muse: { reasoningEffort: "extreme" } }, base).muse.reasoningEffort).toBe(
+			"high",
+		);
 		expect(mergeConfig({ muse: { callTimeoutMs: -5 } }, base).muse.callTimeoutMs).toBe(0);
 	});
 
-	test("grok defaults are the Grok route default (grok-4.7) @ xhigh over the http transport, with no shunt gateway configured", () => {
+	test("grok defaults are the Grok route default (grok-build-0.1) @ xhigh over the http transport, with no shunt gateway configured", () => {
 		const grok = defaultConfig().grok;
 		expect(grok.model).toBe(ROUTE_DEFAULT_MODELS.grok);
-		expect(grok.model).toBe("grok-4.7");
+		expect(grok.model).toBe("grok-build-0.1");
 		expect(grok.reasoningEffort).toBe("xhigh");
 		expect(grok.transport).toBe("http");
 		expect(grok.shuntBaseUrl).toBe("");
@@ -135,30 +153,57 @@ describe("mergeConfig", () => {
 	test("grok shunt keys are validated: http(s) URL with trailing slash stripped, non-empty model, positive integer max_tokens", () => {
 		const base = defaultConfig();
 		const merged = mergeConfig(
-			{ grok: { transport: "shunt", shuntBaseUrl: "http://10.0.0.5:3001/", shuntModel: "grok-4.7", shuntMaxTokens: 4096 } },
+			{
+				grok: {
+					transport: "shunt",
+					shuntBaseUrl: "http://10.0.0.5:3001/",
+					shuntModel: "grok-4.7",
+					shuntMaxTokens: 4096,
+				},
+			},
 			base,
 		);
 		expect(merged.grok.shuntBaseUrl).toBe("http://10.0.0.5:3001");
 		expect(merged.grok.shuntModel).toBe("grok-4.7");
 		expect(merged.grok.shuntMaxTokens).toBe(4096);
-		const bad = mergeConfig({ grok: { shuntBaseUrl: "not a url", shuntModel: "  ", shuntMaxTokens: 0 } }, base).grok;
+		const bad = mergeConfig(
+			{ grok: { shuntBaseUrl: "not a url", shuntModel: "  ", shuntMaxTokens: 0 } },
+			base,
+		).grok;
 		expect(bad.shuntBaseUrl).toBe(base.grok.shuntBaseUrl);
 		expect(bad.shuntModel).toBe(base.grok.shuntModel);
 		expect(bad.shuntMaxTokens).toBe(base.grok.shuntMaxTokens);
-		expect(mergeConfig({ grok: { shuntBaseUrl: "ftp://x" } }, base).grok.shuntBaseUrl).toBe(base.grok.shuntBaseUrl);
-		expect(mergeConfig({ grok: { shuntBaseUrl: "http://shunt.example.com:3001" } }, base).grok.shuntBaseUrl).toBe(base.grok.shuntBaseUrl);
-		expect(mergeConfig({ grok: { shuntBaseUrl: "https://shunt.example.com/" } }, base).grok.shuntBaseUrl).toBe("https://shunt.example.com");
-		expect(mergeConfig({ grok: { shuntMaxTokens: 1.5 } }, base).grok.shuntMaxTokens).toBe(base.grok.shuntMaxTokens);
-		expect(mergeConfig({ grok: { shuntMaxTokens: "8192" } }, base).grok.shuntMaxTokens).toBe(base.grok.shuntMaxTokens);
+		expect(mergeConfig({ grok: { shuntBaseUrl: "ftp://x" } }, base).grok.shuntBaseUrl).toBe(
+			base.grok.shuntBaseUrl,
+		);
+		expect(
+			mergeConfig({ grok: { shuntBaseUrl: "http://shunt.example.com:3001" } }, base).grok
+				.shuntBaseUrl,
+		).toBe(base.grok.shuntBaseUrl);
+		expect(
+			mergeConfig({ grok: { shuntBaseUrl: "https://shunt.example.com/" } }, base).grok.shuntBaseUrl,
+		).toBe("https://shunt.example.com");
+		expect(mergeConfig({ grok: { shuntMaxTokens: 1.5 } }, base).grok.shuntMaxTokens).toBe(
+			base.grok.shuntMaxTokens,
+		);
+		expect(mergeConfig({ grok: { shuntMaxTokens: "8192" } }, base).grok.shuntMaxTokens).toBe(
+			base.grok.shuntMaxTokens,
+		);
 	});
 
 	test("grok baseUrl must be an http(s) URL; anything else keeps the earlier layer (same rule as shuntBaseUrl)", () => {
 		const base = defaultConfig();
-		expect(mergeConfig({ grok: { baseUrl: "ftp://x" } }, base).grok.baseUrl).toBe(base.grok.baseUrl);
-		expect(mergeConfig({ grok: { baseUrl: "not a url" } }, base).grok.baseUrl).toBe(base.grok.baseUrl);
+		expect(mergeConfig({ grok: { baseUrl: "ftp://x" } }, base).grok.baseUrl).toBe(
+			base.grok.baseUrl,
+		);
+		expect(mergeConfig({ grok: { baseUrl: "not a url" } }, base).grok.baseUrl).toBe(
+			base.grok.baseUrl,
+		);
 		expect(mergeConfig({ grok: { baseUrl: "   " } }, base).grok.baseUrl).toBe(base.grok.baseUrl);
 		expect(mergeConfig({ grok: { baseUrl: 7 } }, base).grok.baseUrl).toBe(base.grok.baseUrl);
-		expect(mergeConfig({ grok: { baseUrl: "http://127.0.0.1:8080/v1/" } }, base).grok.baseUrl).toBe("http://127.0.0.1:8080/v1");
+		expect(mergeConfig({ grok: { baseUrl: "http://127.0.0.1:8080/v1/" } }, base).grok.baseUrl).toBe(
+			"http://127.0.0.1:8080/v1",
+		);
 	});
 
 	test("a project file cannot pick the executables, grok home/URLs or claude settingSources (RCE from a cloned repo, SPE-17435)", () => {
@@ -190,14 +235,27 @@ describe("mergeConfig", () => {
 			reasoningEffort: "medium",
 			callTimeoutMs: 4321,
 		});
-		expect(project.muse).toMatchObject({ bin: base.muse.bin, reasoningEffort: "ultra", callTimeoutMs: 99 });
+		expect(project.muse).toMatchObject({
+			bin: base.muse.bin,
+			reasoningEffort: "ultra",
+			callTimeoutMs: 99,
+		});
 		// A user-level layer (no `project`) still sets every one of them.
 		const user = mergeConfig(hostile, base);
 		expect(user.claude).toMatchObject({ bin: "./x", settingSources: "project" });
-		expect(user.grok).toMatchObject({ bin: "./y", home: "./h", baseUrl: "https://evil.example", shuntBaseUrl: "https://evil.example/shunt" });
+		expect(user.grok).toMatchObject({
+			bin: "./y",
+			home: "./h",
+			baseUrl: "https://evil.example",
+			shuntBaseUrl: "https://evil.example/shunt",
+		});
 		expect(user.muse.bin).toBe("./z");
 		// A project layer also cannot undo a user-level choice.
-		expect(mergeConfig({ claude: { bin: "claude" }, grok: { home: "" }, muse: { bin: "muse" } }, user, { project: true })).toMatchObject({
+		expect(
+			mergeConfig({ claude: { bin: "claude" }, grok: { home: "" }, muse: { bin: "muse" } }, user, {
+				project: true,
+			}),
+		).toMatchObject({
 			claude: { bin: "./x" },
 			grok: { home: "./h" },
 			muse: { bin: "./z" },
@@ -208,21 +266,34 @@ describe("mergeConfig", () => {
 		const base = defaultConfig();
 		expect(MAX_TIMER_MS).toBe(2_147_483_647);
 		const merged = mergeConfig(
-			{ claude: { callTimeoutMs: 1e10, budgetMs: 1e12 }, grok: { callTimeoutMs: 1e10 }, muse: { callTimeoutMs: 1e10 } },
+			{
+				claude: { callTimeoutMs: 1e10, budgetMs: 1e12 },
+				grok: { callTimeoutMs: 1e10 },
+				muse: { callTimeoutMs: 1e10 },
+			},
 			base,
 		);
 		expect(merged.claude.callTimeoutMs).toBe(MAX_TIMER_MS);
 		expect(merged.claude.budgetMs).toBe(MAX_TIMER_MS);
 		expect(merged.grok.callTimeoutMs).toBe(MAX_TIMER_MS);
 		expect(merged.muse.callTimeoutMs).toBe(MAX_TIMER_MS);
-		expect(mergeConfig({ claude: { callTimeoutMs: MAX_TIMER_MS } }, base).claude.callTimeoutMs).toBe(MAX_TIMER_MS);
-		expect(mergeConfig({ claude: { callTimeoutMs: 0, budgetMs: 0 } }, base).claude).toMatchObject({ callTimeoutMs: 0, budgetMs: 0 });
+		expect(
+			mergeConfig({ claude: { callTimeoutMs: MAX_TIMER_MS } }, base).claude.callTimeoutMs,
+		).toBe(MAX_TIMER_MS);
+		expect(mergeConfig({ claude: { callTimeoutMs: 0, budgetMs: 0 } }, base).claude).toMatchObject({
+			callTimeoutMs: 0,
+			budgetMs: 0,
+		});
 	});
 
 	test("hitl maxQuestions is clamped to 1-4", () => {
 		const base = defaultConfig();
-		expect(mergeConfig({ hitl: { maxQuestions: 0 } }, base).hitl.maxQuestions).toBe(base.hitl.maxQuestions);
-		expect(mergeConfig({ hitl: { maxQuestions: 9 } }, base).hitl.maxQuestions).toBe(base.hitl.maxQuestions);
+		expect(mergeConfig({ hitl: { maxQuestions: 0 } }, base).hitl.maxQuestions).toBe(
+			base.hitl.maxQuestions,
+		);
+		expect(mergeConfig({ hitl: { maxQuestions: 9 } }, base).hitl.maxQuestions).toBe(
+			base.hitl.maxQuestions,
+		);
 		expect(mergeConfig({ hitl: { maxQuestions: 2 } }, base).hitl.maxQuestions).toBe(2);
 	});
 
@@ -237,10 +308,17 @@ describe("mergeConfig", () => {
 	});
 
 	test("notion dataSourceUrl and linear team accept a non-empty override, reject an empty string", () => {
-		const base = mergeConfig({ notion: { dataSourceUrl: "collection://mine" }, linear: { team: "Mine" } }, defaultConfig());
+		const base = mergeConfig(
+			{ notion: { dataSourceUrl: "collection://mine" }, linear: { team: "Mine" } },
+			defaultConfig(),
+		);
 		expect(base.notion.dataSourceUrl).toBe("collection://mine");
-		expect(mergeConfig({ notion: { dataSourceUrl: "collection://other" } }, base).notion.dataSourceUrl).toBe("collection://other");
-		expect(mergeConfig({ notion: { dataSourceUrl: "" } }, base).notion.dataSourceUrl).toBe("collection://mine");
+		expect(
+			mergeConfig({ notion: { dataSourceUrl: "collection://other" } }, base).notion.dataSourceUrl,
+		).toBe("collection://other");
+		expect(mergeConfig({ notion: { dataSourceUrl: "" } }, base).notion.dataSourceUrl).toBe(
+			"collection://mine",
+		);
 		expect(mergeConfig({ linear: { team: "Other Team" } }, base).linear.team).toBe("Other Team");
 		expect(mergeConfig({ linear: { team: "  " } }, base).linear.team).toBe("Mine");
 	});
@@ -248,25 +326,48 @@ describe("mergeConfig", () => {
 
 describe("track config", () => {
 	test("defaults", () => {
-		expect(defaultConfig().track).toEqual({ enabled: true, budgetMs: 60_000, concurrency: 6 });
+		expect(defaultConfig().track).toEqual({ enabled: true, budgetMs: 0, concurrency: 6 });
 	});
 
 	test("accepts valid overrides and rejects invalid values", () => {
 		const base = defaultConfig();
-		expect(mergeConfig({ track: { enabled: false, budgetMs: 5000, concurrency: 2.7 } }, base).track).toEqual({
+		expect(
+			mergeConfig({ track: { enabled: false, budgetMs: 5000, concurrency: 2.7 } }, base).track,
+		).toEqual({
 			enabled: false,
 			budgetMs: 5000,
 			concurrency: 2,
 		});
-		expect(mergeConfig({ track: { enabled: "no", budgetMs: 0, concurrency: 0 } }, base).track).toEqual(base.track);
-		expect(mergeConfig({ track: { budgetMs: -1, concurrency: Number.NaN } }, base).track).toEqual(base.track);
+		expect(mergeConfig({ track: { enabled: "no", concurrency: 0 } }, base).track).toEqual(
+			base.track,
+		);
+	});
+
+	test("an explicit budgetMs of 0 is accepted and means no limit, even over a set budget", () => {
+		const bounded = mergeConfig({ track: { budgetMs: 5000 } }, defaultConfig());
+		expect(bounded.track.budgetMs).toBe(5000);
+		expect(mergeConfig({ track: { budgetMs: 0 } }, bounded).track.budgetMs).toBe(0);
+	});
+
+	test("a negative or non-finite budgetMs falls back to the default", () => {
+		const bounded = mergeConfig({ track: { budgetMs: 5000 } }, defaultConfig());
+		expect(mergeConfig({ track: { budgetMs: -1 } }, defaultConfig()).track.budgetMs).toBe(0);
+		expect(mergeConfig({ track: { budgetMs: -1 } }, bounded).track.budgetMs).toBe(5000);
+		expect(
+			mergeConfig({ track: { budgetMs: Number.NaN, concurrency: Number.NaN } }, defaultConfig())
+				.track,
+		).toEqual(defaultConfig().track);
 	});
 
 	test("budgetMs above the timer maximum is clamped so the tracker budget does not fire at once", () => {
 		const base = defaultConfig();
 		expect(mergeConfig({ track: { budgetMs: 1e10 } }, base).track.budgetMs).toBe(2_147_483_647);
-		expect(mergeConfig({ track: { budgetMs: 2_147_483_647 } }, base).track.budgetMs).toBe(2_147_483_647);
-		expect(mergeConfig({ track: { budgetMs: 2_147_483_648 } }, base).track.budgetMs).toBe(MAX_TIMER_MS);
+		expect(mergeConfig({ track: { budgetMs: 2_147_483_647 } }, base).track.budgetMs).toBe(
+			2_147_483_647,
+		);
+		expect(mergeConfig({ track: { budgetMs: 2_147_483_648 } }, base).track.budgetMs).toBe(
+			MAX_TIMER_MS,
+		);
 	});
 });
 
@@ -277,7 +378,9 @@ describe("config paths", () => {
 	});
 
 	test("user, then Claude home, then project, in that order; only the project file is tagged as a project layer", () => {
-		expect(claudeConfigPaths("/repo", { XDG_CONFIG_HOME: "/xdg", CLAUDE_CONFIG_DIR: "/home/.claude" })).toEqual([
+		expect(
+			claudeConfigPaths("/repo", { XDG_CONFIG_HOME: "/xdg", CLAUDE_CONFIG_DIR: "/home/.claude" }),
+		).toEqual([
 			"/xdg/ultrathink/config.json",
 			"/home/.claude/ultrathink.json",
 			{ path: "/repo/.claude/ultrathink.json", project: true },
@@ -288,13 +391,18 @@ describe("config paths", () => {
 	test("the project file overrides ~/.claude, which overrides the user config", () => {
 		const root = mkdtempSync(join(tmpdir(), "ultrathink-paths-"));
 		const env = { XDG_CONFIG_HOME: join(root, "xdg"), CLAUDE_CONFIG_DIR: join(root, "claude") };
-		const [user, claude, project] = claudeConfigPaths(join(root, "repo"), env).map((s) => (typeof s === "string" ? s : s.path)) as [
-			string,
-			string,
-			string,
-		];
+		const [user, claude, project] = claudeConfigPaths(join(root, "repo"), env).map((s) =>
+			typeof s === "string" ? s : s.path,
+		) as [string, string, string];
 		const files: [string, unknown][] = [
-			[user, { linear: { team: "User" }, notion: { dataSourceUrl: "collection://user" }, hitl: { maxQuestions: 1 } }],
+			[
+				user,
+				{
+					linear: { team: "User" },
+					notion: { dataSourceUrl: "collection://user" },
+					hitl: { maxQuestions: 1 },
+				},
+			],
 			[claude, { linear: { team: "Claude" }, notion: { dataSourceUrl: "collection://claude" } }],
 			[project, { notion: { dataSourceUrl: "collection://project" } }],
 		];
@@ -328,21 +436,42 @@ describe("loadConfig", () => {
 	});
 
 	test("the <cwd>/.claude/ultrathink.json project layer cannot change which binaries the hooks spawn (SPE-17435)", () => {
-		const user = tempConfigFile({ claude: { bin: "/opt/claude" }, grok: { home: "/home/me/.grok" } });
+		const user = tempConfigFile({
+			claude: { bin: "/opt/claude" },
+			grok: { home: "/home/me/.grok" },
+		});
 		const project = tempConfigFile({
 			claude: { bin: "./node_modules/.bin/claude", settingSources: "project" },
-			grok: { bin: "./grok", home: "./.grok", baseUrl: "https://evil.example/v1", shuntBaseUrl: "https://evil.example" },
+			grok: {
+				bin: "./grok",
+				home: "./.grok",
+				baseUrl: "https://evil.example/v1",
+				shuntBaseUrl: "https://evil.example",
+			},
 			muse: { bin: "./muse", model: "muse-other" },
 		});
 		try {
 			const config = loadConfig([user.path, { path: project.path, project: true }]);
 			expect(config.claude).toMatchObject({ bin: "/opt/claude", settingSources: "" });
-			expect(config.grok).toMatchObject({ bin: "grok", home: "/home/me/.grok", baseUrl: defaultConfig().grok.baseUrl, shuntBaseUrl: "" });
+			expect(config.grok).toMatchObject({
+				bin: "grok",
+				home: "/home/me/.grok",
+				baseUrl: defaultConfig().grok.baseUrl,
+				shuntBaseUrl: "",
+			});
 			expect(config.muse).toMatchObject({ bin: "muse", model: "muse-other" });
 			// The same file as a user layer applies all of them.
 			const trusted = loadConfig([user.path, project.path]);
-			expect(trusted.claude).toMatchObject({ bin: "./node_modules/.bin/claude", settingSources: "project" });
-			expect(trusted.grok).toMatchObject({ bin: "./grok", home: "./.grok", baseUrl: "https://evil.example/v1", shuntBaseUrl: "https://evil.example" });
+			expect(trusted.claude).toMatchObject({
+				bin: "./node_modules/.bin/claude",
+				settingSources: "project",
+			});
+			expect(trusted.grok).toMatchObject({
+				bin: "./grok",
+				home: "./.grok",
+				baseUrl: "https://evil.example/v1",
+				shuntBaseUrl: "https://evil.example",
+			});
 			expect(trusted.muse.bin).toBe("./muse");
 		} finally {
 			user.cleanup();
@@ -368,16 +497,49 @@ describe("ship config", () => {
 		});
 	});
 	test("opting in restores auto-merge and branch deletion; greptileOrganization is trimmed", () => {
-		const ship = mergeConfig({ ship: { enabled: true, autoMerge: true, deleteBranch: true, greptileOrganization: " acme " } }, base).ship;
-		expect(ship).toMatchObject({ enabled: true, autoMerge: true, deleteBranch: true, greptileOrganization: "acme" });
-		expect(mergeConfig({ ship: { greptileOrganization: 7 } }, base).ship.greptileOrganization).toBe("");
+		const ship = mergeConfig(
+			{
+				ship: {
+					enabled: true,
+					autoMerge: true,
+					deleteBranch: true,
+					greptileOrganization: " acme ",
+				},
+			},
+			base,
+		).ship;
+		expect(ship).toMatchObject({
+			enabled: true,
+			autoMerge: true,
+			deleteBranch: true,
+			greptileOrganization: "acme",
+		});
+		expect(mergeConfig({ ship: { greptileOrganization: 7 } }, base).ship.greptileOrganization).toBe(
+			"",
+		);
 	});
 	test("valid overrides apply", () => {
 		const ship = mergeConfig(
-			{ ship: { autoMerge: false, skills: [], mergeMethod: "rebase", maxRounds: 2, minScore: 4, waitMs: 30_000 } },
+			{
+				ship: {
+					autoMerge: false,
+					skills: [],
+					mergeMethod: "rebase",
+					maxRounds: 2,
+					minScore: 4,
+					waitMs: 30_000,
+				},
+			},
 			base,
 		).ship;
-		expect(ship).toMatchObject({ autoMerge: false, skills: [], mergeMethod: "rebase", maxRounds: 2, minScore: 4, waitMs: 30_000 });
+		expect(ship).toMatchObject({
+			autoMerge: false,
+			skills: [],
+			mergeMethod: "rebase",
+			maxRounds: 2,
+			minScore: 4,
+			waitMs: 30_000,
+		});
 	});
 	test("invalid values fall back to defaults", () => {
 		const ship = mergeConfig(
@@ -405,7 +567,9 @@ describe("ship config", () => {
 		expect(mergeConfig({ ship: { reviewRetries: "3" } }, base).ship.reviewRetries).toBe(3);
 	});
 	test("mergeTimeoutMs must be at least 1 ms", () => {
-		expect(mergeConfig({ ship: { mergeTimeoutMs: 600_000 } }, base).ship.mergeTimeoutMs).toBe(600_000);
+		expect(mergeConfig({ ship: { mergeTimeoutMs: 600_000 } }, base).ship.mergeTimeoutMs).toBe(
+			600_000,
+		);
 		expect(mergeConfig({ ship: { mergeTimeoutMs: 0 } }, base).ship.mergeTimeoutMs).toBe(3_600_000);
 		expect(mergeConfig({ ship: { mergeTimeoutMs: -5 } }, base).ship.mergeTimeoutMs).toBe(3_600_000);
 	});
@@ -415,20 +579,43 @@ describe("ship config", () => {
 	test("judge accepts gate and advisory; anything else falls back to gate", () => {
 		expect(base.ship.judge).toBe("gate");
 		expect(mergeConfig({ ship: { judge: "advisory" } }, base).ship.judge).toBe("advisory");
-		expect(mergeConfig({ ship: { judge: "gate" } }, { ...base, ship: { ...base.ship, judge: "advisory" } }).ship.judge).toBe("gate");
-		for (const judge of ["off", "ADVISORY", 1, null]) expect(mergeConfig({ ship: { judge } }, base).ship.judge).toBe("gate");
+		expect(
+			mergeConfig(
+				{ ship: { judge: "gate" } },
+				{ ...base, ship: { ...base.ship, judge: "advisory" } },
+			).ship.judge,
+		).toBe("gate");
+		for (const judge of ["off", "ADVISORY", 1, null])
+			expect(mergeConfig({ ship: { judge } }, base).ship.judge).toBe("gate");
 	});
 });
 
 describe("substrate config", () => {
 	const base = defaultConfig();
 	test("accepts an http(s) URL with trailing slashes stripped", () => {
-		expect(mergeConfig({ substrate: { url: "http://127.0.0.1:7410/" } }, base).substrate.url).toBe("http://127.0.0.1:7410");
+		expect(mergeConfig({ substrate: { url: "http://127.0.0.1:7410/" } }, base).substrate.url).toBe(
+			"http://127.0.0.1:7410",
+		);
 	});
 	test("rejects non-http values and cannot be cleared by an empty string", () => {
 		expect(mergeConfig({ substrate: { url: "ftp://x" } }, base).substrate.url).toBe("");
 		const set = mergeConfig({ substrate: { url: "https://substrate.example" } }, base);
-		expect(mergeConfig({ substrate: { url: "" } }, set).substrate.url).toBe("https://substrate.example");
+		expect(mergeConfig({ substrate: { url: "" } }, set).substrate.url).toBe(
+			"https://substrate.example",
+		);
+	});
+	test("a project layer cannot set the URL that receives the bearer token", () => {
+		const user = mergeConfig({ substrate: { url: "https://substrate.example" } }, base);
+		const hostile = mergeConfig(
+			{ substrate: { url: "https://attacker.example", backend: "gateway" } },
+			user,
+			{ project: true },
+		);
+		expect(hostile.substrate).toEqual({ url: "https://substrate.example" });
+		expect(
+			mergeConfig({ substrate: { url: "https://attacker.example" } }, base, { project: true })
+				.substrate.url,
+		).toBe("");
 	});
 });
 
@@ -482,12 +669,21 @@ describe("decisions config", () => {
 	test("a fresh install has decisions on with the brief §5 defaults (AC-1.6)", () => {
 		expect(defaultConfig().decisions).toEqual(DECISIONS_DEFAULTS);
 		expect(loadLayers(undefined).decisions).toEqual(DECISIONS_DEFAULTS);
-		expect(loadLayers({ uplift: { enabled: false } }, { hitl: { maxQuestions: 2 } }).decisions).toEqual(DECISIONS_DEFAULTS);
+		expect(
+			loadLayers({ uplift: { enabled: false } }, { hitl: { maxQuestions: 2 } }).decisions,
+		).toEqual(DECISIONS_DEFAULTS);
 	});
 
 	test("each defaultConfig() owns its points list, so mutating one never changes the next default", () => {
 		defaultConfig().decisions.points.splice(0);
-		expect(defaultConfig().decisions.points).toEqual(["plan", "ship", "knowledge", "blocking", "teachable", "skillworthy"]);
+		expect(defaultConfig().decisions.points).toEqual([
+			"plan",
+			"ship",
+			"knowledge",
+			"blocking",
+			"teachable",
+			"skillworthy",
+		]);
 	});
 
 	test("enabled is always on: true, false, non-booleans and missing values all merge to true in every layer (JEV-01)", () => {
@@ -497,44 +693,113 @@ describe("decisions config", () => {
 			expect(loadLayers({}, undefined, { decisions: { enabled } }).decisions.enabled).toBe(true);
 		}
 		expect(loadLayers({}).decisions.enabled).toBe(true);
-		expect(loadLayers({ decisions: { enabled: false } }, { decisions: { enabled: false } }, { decisions: { enabled: false } }).decisions.enabled).toBe(
-			true,
-		);
+		expect(
+			loadLayers(
+				{ decisions: { enabled: false } },
+				{ decisions: { enabled: false } },
+				{ decisions: { enabled: false } },
+			).decisions.enabled,
+		).toBe(true);
 	});
 
 	test("provider accepts auto, openrouter and vercel per layer; anything else keeps the earlier layer (JEV-02)", () => {
 		expect(loadLayers({}).decisions.provider).toBe("auto");
 		expect(loadLayers({ decisions: { provider: "vercel" } }).decisions.provider).toBe("vercel");
-		expect(loadLayers({ decisions: { provider: "vercel" } }, { decisions: { provider: "openrouter" } }).decisions.provider).toBe("openrouter");
-		expect(loadLayers({ decisions: { provider: "openrouter" } }, { decisions: { provider: "auto" } }).decisions.provider).toBe("auto");
-		expect(loadLayers({}, undefined, { decisions: { provider: "vercel" } }).decisions.provider).toBe("vercel");
+		expect(
+			loadLayers({ decisions: { provider: "vercel" } }, { decisions: { provider: "openrouter" } })
+				.decisions.provider,
+		).toBe("openrouter");
+		expect(
+			loadLayers({ decisions: { provider: "openrouter" } }, { decisions: { provider: "auto" } })
+				.decisions.provider,
+		).toBe("auto");
+		expect(
+			loadLayers({}, undefined, { decisions: { provider: "vercel" } }).decisions.provider,
+		).toBe("vercel");
 		for (const provider of ["VERCEL", "gateway", "", 1, null]) {
-			expect(loadLayers({ decisions: { provider: "vercel" } }, { decisions: { provider } }).decisions.provider).toBe("vercel");
+			expect(
+				loadLayers({ decisions: { provider: "vercel" } }, { decisions: { provider } }).decisions
+					.provider,
+			).toBe("vercel");
 			expect(loadLayers({}, { decisions: { provider } }).decisions.provider).toBe("auto");
 		}
 	});
 
 	test("model is trimmed; empty, blank and non-string values keep the earlier layer's model (AC-10.6)", () => {
 		const user = { decisions: { model: "typesafe/jev-user" } };
-		expect(loadLayers(user, { decisions: { model: "typesafe/jev-1.13" } }).decisions.model).toBe("typesafe/jev-1.13");
-		expect(loadLayers(user, { decisions: { model: "  typesafe/jev-1.13  " } }).decisions.model).toBe("typesafe/jev-1.13");
+		expect(loadLayers(user, { decisions: { model: "typesafe/jev-1.13" } }).decisions.model).toBe(
+			"typesafe/jev-1.13",
+		);
+		expect(
+			loadLayers(user, { decisions: { model: "  typesafe/jev-1.13  " } }).decisions.model,
+		).toBe("typesafe/jev-1.13");
 		for (const model of ["", "   ", 42]) {
 			expect(loadLayers(user, { decisions: { model } }).decisions.model).toBe("typesafe/jev-user");
 			expect(loadLayers({}, { decisions: { model } }).decisions.model).toBe("~typesafe/jev-latest");
 		}
 	});
 
+	const NON_JEV_MODELS = [
+		"anthropic/claude-opus-5.5",
+		"z-ai/glm-5.3-flash",
+		"anthropic/claude-sonnet-5-5",
+		"anthropic/claude-haiku-4.5",
+		"x-ai/grok-4.7",
+		"  x-ai/grok-4.3  ",
+		"typesafe/other",
+	];
+
+	test("model accepts only the three Jev ids in every layer; anything else keeps the earlier layer (user, claude, project)", () => {
+		for (const model of ["~typesafe/jev-latest", "typesafe/jev-1.13-20260917", "typesafe-ai/jev"]) {
+			expect(loadLayers({ decisions: { model } }).decisions.model).toBe(model);
+			expect(loadLayers({}, { decisions: { model } }).decisions.model).toBe(model);
+			expect(loadLayers({}, undefined, { decisions: { model } }).decisions.model).toBe(model);
+		}
+		const user = { decisions: { model: "typesafe/jev-user" } };
+		const claude = { decisions: { model: "typesafe-ai/jev" } };
+		for (const model of NON_JEV_MODELS) {
+			expect(loadLayers({ decisions: { model } }).decisions.model).toBe("~typesafe/jev-latest");
+			expect(loadLayers(user, { decisions: { model } }).decisions.model).toBe("typesafe/jev-user");
+			expect(loadLayers({}, { decisions: { model } }).decisions.model).toBe("~typesafe/jev-latest");
+			expect(loadLayers(user, claude, { decisions: { model } }).decisions.model).toBe(
+				"typesafe-ai/jev",
+			);
+			expect(loadLayers(user, undefined, { decisions: { model } }).decisions.model).toBe(
+				"typesafe/jev-user",
+			);
+			expect(mergeConfig({ decisions: { model } }, defaultConfig()).decisions.model).toBe(
+				"~typesafe/jev-latest",
+			);
+		}
+	});
+
 	test("points keeps known names in input order, drops unknowns and duplicates, allows []; a non-array keeps the earlier layer (AC-10.7)", () => {
 		const user = { decisions: { points: ["ship", "knowledge"] } };
-		expect(loadLayers(user, { decisions: { points: ["plan", "ship"] } }).decisions.points).toEqual(["plan", "ship"]);
-		expect(loadLayers(user, { decisions: { points: ["plan", "bogus"] } }).decisions.points).toEqual(["plan"]);
+		expect(loadLayers(user, { decisions: { points: ["plan", "ship"] } }).decisions.points).toEqual([
+			"plan",
+			"ship",
+		]);
+		expect(loadLayers(user, { decisions: { points: ["plan", "bogus"] } }).decisions.points).toEqual(
+			["plan"],
+		);
 		expect(loadLayers(user, { decisions: { points: [] } }).decisions.points).toEqual([]);
-		expect(loadLayers(user, { decisions: { points: "plan" } }).decisions.points).toEqual(["ship", "knowledge"]);
-		expect(loadLayers(user, { decisions: { points: null } }).decisions.points).toEqual(["ship", "knowledge"]);
+		expect(loadLayers(user, { decisions: { points: "plan" } }).decisions.points).toEqual([
+			"ship",
+			"knowledge",
+		]);
+		expect(loadLayers(user, { decisions: { points: null } }).decisions.points).toEqual([
+			"ship",
+			"knowledge",
+		]);
 		expect(
-			loadLayers({}, { decisions: { points: ["blocking", "PLAN", "plan", "blocking", 3, null, "plan"] } }).decisions.points,
+			loadLayers(
+				{},
+				{ decisions: { points: ["blocking", "PLAN", "plan", "blocking", 3, null, "plan"] } },
+			).decisions.points,
 		).toEqual(["blocking", "plan"]);
-		expect(loadLayers({ decisions: { points: [] } }, { decisions: { enabled: true } }).decisions.points).toEqual([]);
+		expect(
+			loadLayers({ decisions: { points: [] } }, { decisions: { enabled: true } }).decisions.points,
+		).toEqual([]);
 	});
 
 	test("timeoutMs adopts a finite number in (0, 30000]; 0, negatives, larger values and strings keep the earlier layer (AC-10.8, K4)", () => {
@@ -551,11 +816,15 @@ describe("decisions config", () => {
 		}
 	});
 
-	test("zdr adopts only a boolean; the string \"false\" keeps the earlier layer (AC-10.9)", () => {
+	test('zdr adopts only a boolean; the string "false" keeps the earlier layer (AC-10.9)', () => {
 		expect(loadLayers({}, { decisions: { zdr: false } }).decisions.zdr).toBe(false);
 		expect(loadLayers({}, { decisions: { zdr: "false" } }).decisions.zdr).toBe(true);
-		expect(loadLayers({ decisions: { zdr: false } }, { decisions: { zdr: "true" } }).decisions.zdr).toBe(false);
-		expect(loadLayers({ decisions: { zdr: false } }, { decisions: { zdr: 1 } }).decisions.zdr).toBe(false);
+		expect(
+			loadLayers({ decisions: { zdr: false } }, { decisions: { zdr: "true" } }).decisions.zdr,
+		).toBe(false);
+		expect(loadLayers({ decisions: { zdr: false } }, { decisions: { zdr: 1 } }).decisions.zdr).toBe(
+			false,
+		);
 	});
 
 	test("every threshold adopts a finite number in [0, 1] and only its own key; out-of-range and strings keep the earlier layer (AC-10.10)", () => {
@@ -573,14 +842,20 @@ describe("decisions config", () => {
 		for (const key of thresholds) {
 			const user = { decisions: { [key]: previous } };
 			for (const value of [0, 1, 0.35]) {
-				expect(loadLayers(user, { decisions: { [key]: value } }).decisions).toEqual({ ...DECISIONS_DEFAULTS, [key]: value });
+				expect(loadLayers(user, { decisions: { [key]: value } }).decisions).toEqual({
+					...DECISIONS_DEFAULTS,
+					[key]: value,
+				});
 			}
 			for (const value of [-0.1, 1.1, "0.3", null]) {
-				expect(loadLayers(user, { decisions: { [key]: value } }).decisions).toEqual({ ...DECISIONS_DEFAULTS, [key]: previous });
+				expect(loadLayers(user, { decisions: { [key]: value } }).decisions).toEqual({
+					...DECISIONS_DEFAULTS,
+					[key]: previous,
+				});
 			}
-			expect(mergeConfig({ decisions: { [key]: Number.NaN } }, defaultConfig()).decisions[key]).toBe(
-				DECISIONS_DEFAULTS[key],
-			);
+			expect(
+				mergeConfig({ decisions: { [key]: Number.NaN } }, defaultConfig()).decisions[key],
+			).toBe(DECISIONS_DEFAULTS[key]);
 		}
 	});
 
@@ -589,20 +864,35 @@ describe("decisions config", () => {
 			{ decisions: { enabled: true, planSkipBelow: 0.3 } },
 			{ decisions: { planSkipBelow: 0.1, zdr: false } },
 		);
-		expect(config.decisions).toEqual({ ...DECISIONS_DEFAULTS, enabled: true, planSkipBelow: 0.1, zdr: false });
+		expect(config.decisions).toEqual({
+			...DECISIONS_DEFAULTS,
+			enabled: true,
+			planSkipBelow: 0.1,
+			zdr: false,
+		});
 	});
 
 	test("a non-object decisions section keeps the earlier layer whole", () => {
 		const user = { decisions: { enabled: true, points: ["plan"] } };
 		for (const decisions of ["on", true, ["plan"], null]) {
-			expect(loadLayers(user, { decisions }).decisions).toEqual({ ...DECISIONS_DEFAULTS, enabled: true, points: ["plan"] });
+			expect(loadLayers(user, { decisions }).decisions).toEqual({
+				...DECISIONS_DEFAULTS,
+				enabled: true,
+				points: ["plan"],
+			});
 		}
 	});
 
 	test("url and endpoint keys in any layer are ignored: the merged section has exactly the fourteen keys and no URL (D1, AC-2.12)", () => {
 		const config = loadLayers(
 			{ decisions: { url: "https://evil.example/user" } },
-			{ decisions: { enabled: true, url: "https://evil.example/x", endpoint: "https://evil.example/y" } },
+			{
+				decisions: {
+					enabled: true,
+					url: "https://evil.example/x",
+					endpoint: "https://evil.example/y",
+				},
+			},
 			{ decisions: { url: "https://evil.example/project", endpoint: "https://evil.example/z" } },
 		);
 		expect(config.decisions).toEqual({ ...DECISIONS_DEFAULTS, enabled: true });
@@ -612,51 +902,103 @@ describe("decisions config", () => {
 
 	describe("a project file can only tighten consent (K5)", () => {
 		test("a project `enabled` value never changes always-on: true and false in any combination stay true (JEV-01)", () => {
-			expect(loadLayers({}, undefined, { decisions: { enabled: true } }).decisions.enabled).toBe(true);
-			expect(loadLayers({ decisions: { enabled: false } }, undefined, { decisions: { enabled: true } }).decisions.enabled).toBe(true);
-			expect(loadLayers({ decisions: { enabled: true } }, undefined, { decisions: { enabled: true } }).decisions.enabled).toBe(true);
-			expect(loadLayers({ decisions: { enabled: true } }, undefined, { decisions: { enabled: false } }).decisions.enabled).toBe(true);
-			expect(loadLayers({}, { decisions: { enabled: true } }, { decisions: { enabled: false } }).decisions.enabled).toBe(true);
+			expect(loadLayers({}, undefined, { decisions: { enabled: true } }).decisions.enabled).toBe(
+				true,
+			);
+			expect(
+				loadLayers({ decisions: { enabled: false } }, undefined, { decisions: { enabled: true } })
+					.decisions.enabled,
+			).toBe(true);
+			expect(
+				loadLayers({ decisions: { enabled: true } }, undefined, { decisions: { enabled: true } })
+					.decisions.enabled,
+			).toBe(true);
+			expect(
+				loadLayers({ decisions: { enabled: true } }, undefined, { decisions: { enabled: false } })
+					.decisions.enabled,
+			).toBe(true);
+			expect(
+				loadLayers({}, { decisions: { enabled: true } }, { decisions: { enabled: false } })
+					.decisions.enabled,
+			).toBe(true);
 		});
 
 		test("a project `zdr: false` never lowers a user's retention guard; a project `zdr: true` raises a user's `false`", () => {
 			expect(loadLayers({}, undefined, { decisions: { zdr: false } }).decisions.zdr).toBe(true);
-			expect(loadLayers({ decisions: { zdr: true } }, undefined, { decisions: { zdr: false } }).decisions.zdr).toBe(true);
-			expect(loadLayers({ decisions: { zdr: false } }, undefined, { decisions: { zdr: true } }).decisions.zdr).toBe(true);
-			expect(loadLayers({ decisions: { zdr: false } }, undefined, { decisions: { zdr: false } }).decisions.zdr).toBe(false);
+			expect(
+				loadLayers({ decisions: { zdr: true } }, undefined, { decisions: { zdr: false } }).decisions
+					.zdr,
+			).toBe(true);
+			expect(
+				loadLayers({ decisions: { zdr: false } }, undefined, { decisions: { zdr: true } }).decisions
+					.zdr,
+			).toBe(true);
+			expect(
+				loadLayers({ decisions: { zdr: false } }, undefined, { decisions: { zdr: false } })
+					.decisions.zdr,
+			).toBe(false);
 		});
 
 		test("project points are intersected with the user's: they narrow, never widen, and keep the user's order", () => {
 			const user = { decisions: { enabled: true, points: ["ship", "plan"] } };
-			expect(loadLayers(user, undefined, { decisions: { points: ["plan"] } }).decisions.points).toEqual(["plan"]);
-			expect(loadLayers(user, undefined, { decisions: { points: ["plan", "knowledge", "blocking"] } }).decisions.points).toEqual([
-				"plan",
-			]);
-			expect(loadLayers(user, undefined, { decisions: { points: ["knowledge"] } }).decisions.points).toEqual([]);
-			expect(loadLayers(user, undefined, { decisions: { points: ["plan", "ship", "bogus"] } }).decisions.points).toEqual([
-				"ship",
-				"plan",
-			]);
-			expect(loadLayers(user, undefined, { decisions: { points: "knowledge" } }).decisions.points).toEqual(["ship", "plan"]);
-			expect(loadLayers({ decisions: { points: [] } }, undefined, { decisions: { points: ["plan"] } }).decisions.points).toEqual([]);
-			expect(loadLayers({}, { decisions: { points: ["blocking"] } }, { decisions: { points: ["blocking", "ship"] } }).decisions.points).toEqual([
-				"blocking",
-			]);
+			expect(
+				loadLayers(user, undefined, { decisions: { points: ["plan"] } }).decisions.points,
+			).toEqual(["plan"]);
+			expect(
+				loadLayers(user, undefined, { decisions: { points: ["plan", "knowledge", "blocking"] } })
+					.decisions.points,
+			).toEqual(["plan"]);
+			expect(
+				loadLayers(user, undefined, { decisions: { points: ["knowledge"] } }).decisions.points,
+			).toEqual([]);
+			expect(
+				loadLayers(user, undefined, { decisions: { points: ["plan", "ship", "bogus"] } }).decisions
+					.points,
+			).toEqual(["ship", "plan"]);
+			expect(
+				loadLayers(user, undefined, { decisions: { points: "knowledge" } }).decisions.points,
+			).toEqual(["ship", "plan"]);
+			expect(
+				loadLayers({ decisions: { points: [] } }, undefined, { decisions: { points: ["plan"] } })
+					.decisions.points,
+			).toEqual([]);
+			expect(
+				loadLayers(
+					{},
+					{ decisions: { points: ["blocking"] } },
+					{ decisions: { points: ["blocking", "ship"] } },
+				).decisions.points,
+			).toEqual(["blocking"]);
 		});
 
 		test("a project file cannot add teachable or skillworthy, but can drop them and move their thresholds", () => {
-			const user = { decisions: { enabled: true, points: ["plan", "teachable"], teachableBelow: 0.2 } };
-			expect(loadLayers(user, undefined, { decisions: { points: ["plan", "teachable", "skillworthy"] } }).decisions.points).toEqual([
-				"plan",
-				"teachable",
-			]);
-			expect(loadLayers(user, undefined, { decisions: { points: ["plan"] } }).decisions.points).toEqual(["plan"]);
-			expect(loadLayers({ decisions: { enabled: true, points: ["plan"] } }, undefined, { decisions: { points: ["skillworthy"] } }).decisions.points).toEqual(
-				[],
-			);
-			const tightened = loadLayers(user, undefined, { decisions: { teachableBelow: 0.5, teachableAutoAt: 0.9, skillworthyAt: 0.7 } }).decisions;
-			expect(tightened).toMatchObject({ teachableBelow: 0.5, teachableAutoAt: 0.9, skillworthyAt: 0.7 });
-			expect(loadLayers(user, undefined, { decisions: { teachableBelow: 2, skillworthyAt: "0.9" } }).decisions).toMatchObject({
+			const user = {
+				decisions: { enabled: true, points: ["plan", "teachable"], teachableBelow: 0.2 },
+			};
+			expect(
+				loadLayers(user, undefined, { decisions: { points: ["plan", "teachable", "skillworthy"] } })
+					.decisions.points,
+			).toEqual(["plan", "teachable"]);
+			expect(
+				loadLayers(user, undefined, { decisions: { points: ["plan"] } }).decisions.points,
+			).toEqual(["plan"]);
+			expect(
+				loadLayers({ decisions: { enabled: true, points: ["plan"] } }, undefined, {
+					decisions: { points: ["skillworthy"] },
+				}).decisions.points,
+			).toEqual([]);
+			const tightened = loadLayers(user, undefined, {
+				decisions: { teachableBelow: 0.5, teachableAutoAt: 0.9, skillworthyAt: 0.7 },
+			}).decisions;
+			expect(tightened).toMatchObject({
+				teachableBelow: 0.5,
+				teachableAutoAt: 0.9,
+				skillworthyAt: 0.7,
+			});
+			expect(
+				loadLayers(user, undefined, { decisions: { teachableBelow: 2, skillworthyAt: "0.9" } })
+					.decisions,
+			).toMatchObject({
 				teachableBelow: 0.2,
 				skillworthyAt: 0.5,
 			});
@@ -664,9 +1006,23 @@ describe("decisions config", () => {
 
 		test("model, thresholds and timeoutMs from a project file still merge as usual", () => {
 			const config = loadLayers(
-				{ decisions: { enabled: true, model: "typesafe/jev-user", planSkipBelow: 0.3, timeoutMs: 4000 } },
+				{
+					decisions: {
+						enabled: true,
+						model: "typesafe/jev-user",
+						planSkipBelow: 0.3,
+						timeoutMs: 4000,
+					},
+				},
 				undefined,
-				{ decisions: { model: "typesafe/jev-1.13", planSkipBelow: 0.1, blockingAt: 0.9, timeoutMs: 8000 } },
+				{
+					decisions: {
+						model: "typesafe/jev-1.13",
+						planSkipBelow: 0.1,
+						blockingAt: 0.9,
+						timeoutMs: 8000,
+					},
+				},
 			);
 			expect(config.decisions).toEqual({
 				...DECISIONS_DEFAULTS,
@@ -676,13 +1032,23 @@ describe("decisions config", () => {
 				blockingAt: 0.9,
 				timeoutMs: 8000,
 			});
-			expect(loadLayers({ decisions: { timeoutMs: 4000 } }, undefined, { decisions: { timeoutMs: 30001 } }).decisions.timeoutMs).toBe(4000);
+			expect(
+				loadLayers({ decisions: { timeoutMs: 4000 } }, undefined, {
+					decisions: { timeoutMs: 30001 },
+				}).decisions.timeoutMs,
+			).toBe(4000);
 		});
 
 		test("a plain path list keeps user semantics, so only the tagged project entry is restricted", () => {
-			const file = tempConfigFile({ decisions: { enabled: true, zdr: false, points: ["plan", "ship"] } });
+			const file = tempConfigFile({
+				decisions: { enabled: true, zdr: false, points: ["plan", "ship"] },
+			});
 			try {
-				expect(loadConfig([file.path]).decisions).toMatchObject({ enabled: true, zdr: false, points: ["plan", "ship"] });
+				expect(loadConfig([file.path]).decisions).toMatchObject({
+					enabled: true,
+					zdr: false,
+					points: ["plan", "ship"],
+				});
 				expect(loadConfig([{ path: file.path, project: true }]).decisions).toMatchObject({
 					enabled: true,
 					zdr: true,
@@ -696,7 +1062,12 @@ describe("decisions config", () => {
 });
 
 /** Runs the real loader over user config.json, the Claude home file and the project file (`undefined` = no file). */
-function loadLayerFiles(roots: string[], user: unknown, claude?: unknown, project?: unknown): UltrathinkConfig {
+function loadLayerFiles(
+	roots: string[],
+	user: unknown,
+	claude?: unknown,
+	project?: unknown,
+): UltrathinkConfig {
 	const root = mkdtempSync(join(tmpdir(), "ut-teach-config-"));
 	roots.push(root);
 	const env = { XDG_CONFIG_HOME: join(root, "xdg"), CLAUDE_CONFIG_DIR: join(root, "claude") };
@@ -722,7 +1093,13 @@ describe("hindsight config", () => {
 	});
 
 	test("defaults are off with no URL, and each defaultConfig() is independent", () => {
-		expect(base.hindsight).toEqual({ enabled: false, url: "", bank: "ultrathink", timeoutMs: 5_000, retainTimeoutMs: 15_000 });
+		expect(base.hindsight).toEqual({
+			enabled: false,
+			url: "",
+			bank: "ultrathink",
+			timeoutMs: 5_000,
+			retainTimeoutMs: 15_000,
+		});
 		expect(loadLayerFiles(roots, undefined).hindsight).toEqual(base.hindsight);
 		const mutated = defaultConfig();
 		mutated.hindsight.enabled = true;
@@ -732,32 +1109,46 @@ describe("hindsight config", () => {
 	test("enabled adopts only a boolean", () => {
 		expect(mergeConfig({ hindsight: { enabled: true } }, base).hindsight.enabled).toBe(true);
 		for (const enabled of ["yes", 1, null]) {
-			expect(mergeConfig({ hindsight: { enabled } }, mergeConfig({ hindsight: { enabled: true } }, base)).hindsight.enabled).toBe(true);
+			expect(
+				mergeConfig({ hindsight: { enabled } }, mergeConfig({ hindsight: { enabled: true } }, base))
+					.hindsight.enabled,
+			).toBe(true);
 		}
 	});
 
 	test("url is trimmed and kept as written, so the resolver can report a bad one", () => {
-		expect(mergeConfig({ hindsight: { url: "  http://10.0.0.5:8888/  " } }, base).hindsight.url).toBe("http://10.0.0.5:8888/");
+		expect(
+			mergeConfig({ hindsight: { url: "  http://10.0.0.5:8888/  " } }, base).hindsight.url,
+		).toBe("http://10.0.0.5:8888/");
 		expect(mergeConfig({ hindsight: { url: "not a url" } }, base).hindsight.url).toBe("not a url");
 		const set = mergeConfig({ hindsight: { url: "http://hs.lan" } }, base);
-		for (const url of ["", "   ", 5, null]) expect(mergeConfig({ hindsight: { url } }, set).hindsight.url).toBe("http://hs.lan");
+		for (const url of ["", "   ", 5, null])
+			expect(mergeConfig({ hindsight: { url } }, set).hindsight.url).toBe("http://hs.lan");
 	});
 
 	test("bank must be a safe identifier of at most 64 characters", () => {
-		expect(mergeConfig({ hindsight: { bank: "team.a-1_b" } }, base).hindsight.bank).toBe("team.a-1_b");
-		expect(mergeConfig({ hindsight: { bank: "a".repeat(64) } }, base).hindsight.bank).toBe("a".repeat(64));
+		expect(mergeConfig({ hindsight: { bank: "team.a-1_b" } }, base).hindsight.bank).toBe(
+			"team.a-1_b",
+		);
+		expect(mergeConfig({ hindsight: { bank: "a".repeat(64) } }, base).hindsight.bank).toBe(
+			"a".repeat(64),
+		);
 		for (const bank of ["a".repeat(65), "-lead", "has space", "a/b", "", 3]) {
 			expect(mergeConfig({ hindsight: { bank } }, base).hindsight.bank).toBe("ultrathink");
 		}
 	});
 
 	test("timeouts are positive integers of at most 120000", () => {
-		expect(mergeConfig({ hindsight: { timeoutMs: 1, retainTimeoutMs: 120_000 } }, base).hindsight).toMatchObject({
+		expect(
+			mergeConfig({ hindsight: { timeoutMs: 1, retainTimeoutMs: 120_000 } }, base).hindsight,
+		).toMatchObject({
 			timeoutMs: 1,
 			retainTimeoutMs: 120_000,
 		});
 		for (const value of [0, -5, 1.5, 120_001, "9", Number.NaN, Number.POSITIVE_INFINITY]) {
-			expect(mergeConfig({ hindsight: { timeoutMs: value, retainTimeoutMs: value } }, base).hindsight).toMatchObject({
+			expect(
+				mergeConfig({ hindsight: { timeoutMs: value, retainTimeoutMs: value } }, base).hindsight,
+			).toMatchObject({
 				timeoutMs: 5_000,
 				retainTimeoutMs: 15_000,
 			});
@@ -765,18 +1156,30 @@ describe("hindsight config", () => {
 	});
 
 	test("unknown keys are ignored and a non-object section changes nothing", () => {
-		expect(mergeConfig({ hindsight: { apiKey: "secret", extra: 1 } }, base).hindsight).toEqual(base.hindsight);
+		expect(mergeConfig({ hindsight: { apiKey: "secret", extra: 1 } }, base).hindsight).toEqual(
+			base.hindsight,
+		);
 		expect(mergeConfig({ hindsight: "on" }, base).hindsight).toEqual(base.hindsight);
 	});
 
 	test("user and Claude layers stack, the later one winning per key", () => {
-		const config = loadLayerFiles(roots, { hindsight: { enabled: true, url: "http://a.lan", bank: "one" } }, { hindsight: { bank: "two" } });
+		const config = loadLayerFiles(
+			roots,
+			{ hindsight: { enabled: true, url: "http://a.lan", bank: "one" } },
+			{ hindsight: { bank: "two" } },
+		);
 		expect(config.hindsight).toMatchObject({ enabled: true, url: "http://a.lan", bank: "two" });
 	});
 
 	test("a project file cannot turn it on or change the url, bank or timeouts", () => {
 		const config = loadLayerFiles(roots, undefined, undefined, {
-			hindsight: { enabled: true, url: "https://evil.example", bank: "evil", timeoutMs: 10, retainTimeoutMs: 10 },
+			hindsight: {
+				enabled: true,
+				url: "https://evil.example",
+				bank: "evil",
+				timeoutMs: 10,
+				retainTimeoutMs: 10,
+			},
 		});
 		expect(config.hindsight).toEqual(base.hindsight);
 		expect(JSON.stringify(config)).not.toContain("evil");
@@ -784,13 +1187,20 @@ describe("hindsight config", () => {
 
 	test("a project file can turn it off but keeps the user's url and bank", () => {
 		const user = { hindsight: { enabled: true, url: "http://hs.lan", bank: "mine" } };
-		expect(loadLayerFiles(roots, user, undefined, { hindsight: { enabled: false, url: "https://evil.example" } }).hindsight).toEqual({
+		expect(
+			loadLayerFiles(roots, user, undefined, {
+				hindsight: { enabled: false, url: "https://evil.example" },
+			}).hindsight,
+		).toEqual({
 			...base.hindsight,
 			enabled: false,
 			url: "http://hs.lan",
 			bank: "mine",
 		});
-		expect(loadLayerFiles(roots, user, undefined, { hindsight: { enabled: true, bank: "evil" } }).hindsight).toMatchObject({
+		expect(
+			loadLayerFiles(roots, user, undefined, { hindsight: { enabled: true, bank: "evil" } })
+				.hindsight,
+		).toMatchObject({
 			enabled: true,
 			bank: "mine",
 		});
@@ -799,9 +1209,19 @@ describe("hindsight config", () => {
 	test("a project file cannot supply a key or retarget a user URL and bank", () => {
 		const user = { hindsight: { enabled: true, url: "https://hs.example.test", bank: "mine" } };
 		const config = loadLayerFiles(roots, user, undefined, {
-			hindsight: { enabled: true, url: "https://evil.example", bank: "evil", apiKey: "evil-key", api_key: "evil-key" },
+			hindsight: {
+				enabled: true,
+				url: "https://evil.example",
+				bank: "evil",
+				apiKey: "evil-key",
+				api_key: "evil-key",
+			},
 		});
-		expect(config.hindsight).toMatchObject({ enabled: true, url: "https://hs.example.test", bank: "mine" });
+		expect(config.hindsight).toMatchObject({
+			enabled: true,
+			url: "https://hs.example.test",
+			bank: "mine",
+		});
 		expect(config.hindsight).not.toHaveProperty("apiKey");
 		expect(config.hindsight).not.toHaveProperty("api_key");
 		expect(JSON.stringify(config)).not.toContain("evil");
@@ -826,13 +1246,23 @@ describe("state config", () => {
 	test("a user file sets retentionDays", () => {
 		expect(loadLayerFiles(roots, { state: { retentionDays: 30 } }).state.retentionDays).toBe(30);
 		expect(mergeConfig({ state: { retentionDays: 3650 } }, base).state.retentionDays).toBe(3650);
-		expect(mergeConfig({ state: { retentionDays: 0 } }, mergeConfig({ state: { retentionDays: 30 } }, base)).state.retentionDays).toBe(0);
+		expect(
+			mergeConfig(
+				{ state: { retentionDays: 0 } },
+				mergeConfig({ state: { retentionDays: 30 } }, base),
+			).state.retentionDays,
+		).toBe(0);
 	});
 
 	test("a project file cannot set it, even over a user value", () => {
-		expect(loadLayerFiles(roots, undefined, undefined, { state: { retentionDays: 30 } }).state.retentionDays).toBe(0);
 		expect(
-			loadLayerFiles(roots, { state: { retentionDays: 90 } }, undefined, { state: { retentionDays: 1 } }).state.retentionDays,
+			loadLayerFiles(roots, undefined, undefined, { state: { retentionDays: 30 } }).state
+				.retentionDays,
+		).toBe(0);
+		expect(
+			loadLayerFiles(roots, { state: { retentionDays: 90 } }, undefined, {
+				state: { retentionDays: 1 },
+			}).state.retentionDays,
 		).toBe(90);
 	});
 
@@ -846,7 +1276,11 @@ describe("state config", () => {
 	});
 
 	test("a later user layer overrides an earlier one", () => {
-		const config = loadLayerFiles(roots, { state: { retentionDays: 30 } }, { state: { retentionDays: 7 } });
+		const config = loadLayerFiles(
+			roots,
+			{ state: { retentionDays: 30 } },
+			{ state: { retentionDays: 7 } },
+		);
 		expect(config.state.retentionDays).toBe(7);
 	});
 });
@@ -860,7 +1294,10 @@ describe("pstack config", () => {
 
 	test("defaults to off with a 2000-char context cap and no cursor dir or mapping", () => {
 		expect(base.pstack).toEqual({ enabled: false, contextCapChars: 2000 });
-		expect(loadLayerFiles(roots, undefined).pstack).toEqual({ enabled: false, contextCapChars: 2000 });
+		expect(loadLayerFiles(roots, undefined).pstack).toEqual({
+			enabled: false,
+			contextCapChars: 2000,
+		});
 	});
 
 	test("a user file enables the bridge", () => {
@@ -869,12 +1306,19 @@ describe("pstack config", () => {
 	});
 
 	test("a project file cannot enable it, even over a user file that did", () => {
-		expect(loadLayerFiles(roots, undefined, undefined, { pstack: { enabled: true } }).pstack.enabled).toBe(false);
-		expect(loadLayerFiles(roots, { pstack: { enabled: true } }, undefined, { pstack: { enabled: true } }).pstack.enabled).toBe(true);
+		expect(
+			loadLayerFiles(roots, undefined, undefined, { pstack: { enabled: true } }).pstack.enabled,
+		).toBe(false);
+		expect(
+			loadLayerFiles(roots, { pstack: { enabled: true } }, undefined, { pstack: { enabled: true } })
+				.pstack.enabled,
+		).toBe(true);
 	});
 
 	test("a user mapping override reaches the merged result", () => {
-		const config = loadLayerFiles(roots, { pstack: { enabled: true, mapping: { plan: ["architect", "arena"], review: ["how"] } } });
+		const config = loadLayerFiles(roots, {
+			pstack: { enabled: true, mapping: { plan: ["architect", "arena"], review: ["how"] } },
+		});
 		expect(config.pstack.mapping).toEqual({ plan: ["architect", "arena"], review: ["how"] });
 	});
 
@@ -885,31 +1329,60 @@ describe("pstack config", () => {
 			{ pstack: { enabled: true, mapping: { review: ["how"] } } },
 		);
 		expect(replaced.pstack.enabled).toBe(true);
-		expect(replaced.pstack.mapping).toEqual({ plan: ["architect"], discuss: ["how"], review: ["how"] });
-		const enabledOnly = loadLayerFiles(roots, { pstack: { mapping: { plan: ["architect"] } } }, { pstack: { enabled: true } });
+		expect(replaced.pstack.mapping).toEqual({
+			plan: ["architect"],
+			discuss: ["how"],
+			review: ["how"],
+		});
+		const enabledOnly = loadLayerFiles(
+			roots,
+			{ pstack: { mapping: { plan: ["architect"] } } },
+			{ pstack: { enabled: true } },
+		);
 		expect(enabledOnly.pstack.enabled).toBe(true);
 		expect(enabledOnly.pstack.mapping).toEqual({ plan: ["architect"] });
 	});
 
 	test("mapping drops unknown stages, wrong-typed stages and non-string entries", () => {
-		const merged = mergeConfig({ pstack: { mapping: { plan: ["architect", 7, null, "arena"], bogus: ["x"], review: "nope" } } }, base);
+		const merged = mergeConfig(
+			{
+				pstack: {
+					mapping: { plan: ["architect", 7, null, "arena"], bogus: ["x"], review: "nope" },
+				},
+			},
+			base,
+		);
 		expect(merged.pstack.mapping).toEqual({ plan: ["architect", "arena"] });
 	});
 
 	test("invalid contextCapChars values keep the lower layer's cap", () => {
 		for (const value of [0, -1, "x"]) {
-			expect(mergeConfig({ pstack: { contextCapChars: value } }, base).pstack.contextCapChars).toBe(2000);
+			expect(mergeConfig({ pstack: { contextCapChars: value } }, base).pstack.contextCapChars).toBe(
+				2000,
+			);
 		}
 		const raised = mergeConfig({ pstack: { contextCapChars: 4000 } }, base);
 		expect(raised.pstack.contextCapChars).toBe(4000);
-		expect(mergeConfig({ pstack: { contextCapChars: 0 } }, raised).pstack.contextCapChars).toBe(4000);
+		expect(mergeConfig({ pstack: { contextCapChars: 0 } }, raised).pstack.contextCapChars).toBe(
+			4000,
+		);
 	});
 
 	test("a user file sets cursorDir; a project file cannot, and a relative path is ignored", () => {
-		expect(mergeConfig({ pstack: { cursorDir: "/opt/cursor" } }, base).pstack.cursorDir).toBe("/opt/cursor");
-		expect(mergeConfig({ pstack: { cursorDir: "relative/cursor" } }, base).pstack.cursorDir).toBeUndefined();
-		expect(loadLayerFiles(roots, { pstack: { cursorDir: "/opt/cursor" } }).pstack.cursorDir).toBe("/opt/cursor");
-		expect(loadLayerFiles(roots, undefined, undefined, { pstack: { cursorDir: "/evil/cursor", enabled: true } }).pstack).toEqual({
+		expect(mergeConfig({ pstack: { cursorDir: "/opt/cursor" } }, base).pstack.cursorDir).toBe(
+			"/opt/cursor",
+		);
+		expect(
+			mergeConfig({ pstack: { cursorDir: "relative/cursor" } }, base).pstack.cursorDir,
+		).toBeUndefined();
+		expect(loadLayerFiles(roots, { pstack: { cursorDir: "/opt/cursor" } }).pstack.cursorDir).toBe(
+			"/opt/cursor",
+		);
+		expect(
+			loadLayerFiles(roots, undefined, undefined, {
+				pstack: { cursorDir: "/evil/cursor", enabled: true },
+			}).pstack,
+		).toEqual({
 			enabled: false,
 			contextCapChars: 2000,
 		});
@@ -934,8 +1407,13 @@ describe("swarm config", () => {
 	});
 
 	test("a project file cannot enable it, even over a user file that did", () => {
-		expect(loadLayerFiles(roots, undefined, undefined, { swarm: { autoRun: true } }).swarm.autoRun).toBe(false);
-		expect(loadLayerFiles(roots, { swarm: { autoRun: true } }, undefined, { swarm: { autoRun: true } }).swarm.autoRun).toBe(true);
+		expect(
+			loadLayerFiles(roots, undefined, undefined, { swarm: { autoRun: true } }).swarm.autoRun,
+		).toBe(false);
+		expect(
+			loadLayerFiles(roots, { swarm: { autoRun: true } }, undefined, { swarm: { autoRun: true } })
+				.swarm.autoRun,
+		).toBe(true);
 	});
 
 	test("a non-boolean autoRun keeps the lower layer's value", () => {
@@ -973,21 +1451,28 @@ describe("ragflow config", () => {
 		const on = mergeConfig({ ragflow: { enabled: true, ground: true } }, base);
 		expect(on.ragflow).toMatchObject({ enabled: true, ground: true });
 		for (const value of ["yes", 1, null]) {
-			expect(mergeConfig({ ragflow: { enabled: value, ground: value } }, on).ragflow).toMatchObject({ enabled: true, ground: true });
+			expect(mergeConfig({ ragflow: { enabled: value, ground: value } }, on).ragflow).toMatchObject(
+				{ enabled: true, ground: true },
+			);
 		}
 	});
 
 	test("url is trimmed and kept as written; blank or non-string keeps the earlier value", () => {
 		const set = mergeConfig({ ragflow: { url: " https://rag.lan/ " } }, base);
 		expect(set.ragflow.url).toBe("https://rag.lan/");
-		for (const url of ["", "  ", 7]) expect(mergeConfig({ ragflow: { url } }, set).ragflow.url).toBe("https://rag.lan/");
+		for (const url of ["", "  ", 7])
+			expect(mergeConfig({ ragflow: { url } }, set).ragflow.url).toBe("https://rag.lan/");
 		expect(mergeConfig({ ragflow: { url: "ftp//bad" } }, base).ragflow.url).toBe("ftp//bad");
 	});
 
 	test("datasetIds are trimmed and deduplicated, at most 20, strings only", () => {
-		expect(mergeConfig({ ragflow: { datasetIds: [" a ", "b", "a"] } }, base).ragflow.datasetIds).toEqual(["a", "b"]);
+		expect(
+			mergeConfig({ ragflow: { datasetIds: [" a ", "b", "a"] } }, base).ragflow.datasetIds,
+		).toEqual(["a", "b"]);
 		const twenty = Array.from({ length: 20 }, (_, i) => `d${i}`);
-		expect(mergeConfig({ ragflow: { datasetIds: twenty } }, base).ragflow.datasetIds).toEqual(twenty);
+		expect(mergeConfig({ ragflow: { datasetIds: twenty } }, base).ragflow.datasetIds).toEqual(
+			twenty,
+		);
 		const set = mergeConfig({ ragflow: { datasetIds: ["keep"] } }, base);
 		for (const datasetIds of [[...twenty, "d20"], ["ok", ""], ["ok", "  "], ["ok", 3], "a", null]) {
 			expect(mergeConfig({ ragflow: { datasetIds } }, set).ragflow.datasetIds).toEqual(["keep"]);
@@ -997,51 +1482,110 @@ describe("ragflow config", () => {
 
 	test("topK, similarityThreshold, timeoutMs and groundChars enforce their ranges", () => {
 		expect(
-			mergeConfig({ ragflow: { topK: 20, similarityThreshold: 1, timeoutMs: 120_000, groundChars: 8_000 } }, base).ragflow,
+			mergeConfig(
+				{ ragflow: { topK: 20, similarityThreshold: 1, timeoutMs: 120_000, groundChars: 8_000 } },
+				base,
+			).ragflow,
 		).toMatchObject({ topK: 20, similarityThreshold: 1, timeoutMs: 120_000, groundChars: 8_000 });
 		expect(
-			mergeConfig({ ragflow: { topK: 1, similarityThreshold: 0, timeoutMs: 1, groundChars: 500 } }, base).ragflow,
+			mergeConfig(
+				{ ragflow: { topK: 1, similarityThreshold: 0, timeoutMs: 1, groundChars: 500 } },
+				base,
+			).ragflow,
 		).toMatchObject({ topK: 1, similarityThreshold: 0, timeoutMs: 1, groundChars: 500 });
-		for (const bad of [{ topK: 0 }, { topK: 21 }, { topK: 2.5 }, { topK: "3" }]) expect(mergeConfig({ ragflow: bad }, base).ragflow.topK).toBe(5);
+		for (const bad of [{ topK: 0 }, { topK: 21 }, { topK: 2.5 }, { topK: "3" }])
+			expect(mergeConfig({ ragflow: bad }, base).ragflow.topK).toBe(5);
 		for (const similarityThreshold of [-0.1, 1.1, "0.5", Number.NaN]) {
-			expect(mergeConfig({ ragflow: { similarityThreshold } }, base).ragflow.similarityThreshold).toBe(0.2);
+			expect(
+				mergeConfig({ ragflow: { similarityThreshold } }, base).ragflow.similarityThreshold,
+			).toBe(0.2);
 		}
-		for (const timeoutMs of [0, -1, 120_001, 1.5, "5"]) expect(mergeConfig({ ragflow: { timeoutMs } }, base).ragflow.timeoutMs).toBe(8_000);
-		for (const groundChars of [499, 8_001, 1000.5, "900"]) expect(mergeConfig({ ragflow: { groundChars } }, base).ragflow.groundChars).toBe(3_000);
+		for (const timeoutMs of [0, -1, 120_001, 1.5, "5"])
+			expect(mergeConfig({ ragflow: { timeoutMs } }, base).ragflow.timeoutMs).toBe(8_000);
+		for (const groundChars of [499, 8_001, 1000.5, "900"])
+			expect(mergeConfig({ ragflow: { groundChars } }, base).ragflow.groundChars).toBe(3_000);
 	});
 
 	test("user and Claude layers stack, the later one winning per key", () => {
-		const config = loadLayerFiles(roots, { ragflow: { enabled: true, topK: 3, url: "http://a.lan" } }, { ragflow: { topK: 7 } });
+		const config = loadLayerFiles(
+			roots,
+			{ ragflow: { enabled: true, topK: 3, url: "http://a.lan" } },
+			{ ragflow: { topK: 7 } },
+		);
 		expect(config.ragflow).toMatchObject({ enabled: true, topK: 7, url: "http://a.lan" });
 	});
 
 	test("a project file cannot turn anything on or set the url, datasets or tuning", () => {
 		const config = loadLayerFiles(roots, undefined, undefined, {
-			ragflow: { enabled: true, ground: true, url: "https://evil.example", datasetIds: ["evil"], topK: 1, timeoutMs: 10, groundChars: 900 },
+			ragflow: {
+				enabled: true,
+				ground: true,
+				url: "https://evil.example",
+				datasetIds: ["evil"],
+				topK: 1,
+				timeoutMs: 10,
+				groundChars: 900,
+			},
 		});
 		expect(config.ragflow).toEqual(base.ragflow);
 		expect(JSON.stringify(config)).not.toContain("evil");
 	});
 
 	test("a project file can turn enabled and ground off but nothing else changes", () => {
-		const user = { ragflow: { enabled: true, ground: true, url: "http://rag.lan", datasetIds: ["mine"], topK: 9 } };
-		expect(loadLayerFiles(roots, user, undefined, { ragflow: { ground: false, url: "https://evil.example", topK: 1 } }).ragflow).toMatchObject({
+		const user = {
+			ragflow: {
+				enabled: true,
+				ground: true,
+				url: "http://rag.lan",
+				datasetIds: ["mine"],
+				topK: 9,
+			},
+		};
+		expect(
+			loadLayerFiles(roots, user, undefined, {
+				ragflow: { ground: false, url: "https://evil.example", topK: 1 },
+			}).ragflow,
+		).toMatchObject({
 			enabled: true,
 			ground: false,
 			url: "http://rag.lan",
 			datasetIds: ["mine"],
 			topK: 9,
 		});
-		expect(loadLayerFiles(roots, user, undefined, { ragflow: { enabled: false } }).ragflow).toMatchObject({ enabled: false, ground: true });
-		expect(loadLayerFiles(roots, { ragflow: { enabled: true } }, undefined, { ragflow: { ground: true } }).ragflow.ground).toBe(false);
+		expect(
+			loadLayerFiles(roots, user, undefined, { ragflow: { enabled: false } }).ragflow,
+		).toMatchObject({ enabled: false, ground: true });
+		expect(
+			loadLayerFiles(roots, { ragflow: { enabled: true } }, undefined, {
+				ragflow: { ground: true },
+			}).ragflow.ground,
+		).toBe(false);
 	});
 
 	test("a project file cannot supply a key or replace the user URL and datasets", () => {
-		const user = { ragflow: { enabled: true, ground: true, url: "https://rag.example.test", datasetIds: ["mine"] } };
+		const user = {
+			ragflow: {
+				enabled: true,
+				ground: true,
+				url: "https://rag.example.test",
+				datasetIds: ["mine"],
+			},
+		};
 		const config = loadLayerFiles(roots, user, undefined, {
-			ragflow: { enabled: true, ground: true, url: "https://evil.example", datasetIds: ["evil"], apiKey: "evil-key" },
+			ragflow: {
+				enabled: true,
+				ground: true,
+				url: "https://evil.example",
+				datasetIds: ["evil"],
+				apiKey: "evil-key",
+			},
 		});
-		expect(config.ragflow).toMatchObject({ enabled: true, ground: true, url: "https://rag.example.test", datasetIds: ["mine"] });
+		expect(config.ragflow).toMatchObject({
+			enabled: true,
+			ground: true,
+			url: "https://rag.example.test",
+			datasetIds: ["mine"],
+		});
 		expect(config.ragflow).not.toHaveProperty("apiKey");
 		expect(JSON.stringify(config)).not.toContain("evil");
 	});
@@ -1074,7 +1618,9 @@ describe("teach config", () => {
 		const on = mergeConfig({ teach: { enabled: true, recall: false, autoPromote: true } }, base);
 		expect(on.teach).toMatchObject({ enabled: true, recall: false, autoPromote: true });
 		for (const value of ["yes", 1, null]) {
-			expect(mergeConfig({ teach: { enabled: value, recall: value, autoPromote: value } }, on).teach).toMatchObject({
+			expect(
+				mergeConfig({ teach: { enabled: value, recall: value, autoPromote: value } }, on).teach,
+			).toMatchObject({
 				enabled: true,
 				recall: false,
 				autoPromote: true,
@@ -1083,67 +1629,134 @@ describe("teach config", () => {
 	});
 
 	test("capture accepts only the three modes", () => {
-		for (const capture of ["explicit", "observe", "auto"] as const) expect(mergeConfig({ teach: { capture } }, base).teach.capture).toBe(capture);
+		for (const capture of ["explicit", "observe", "auto"] as const)
+			expect(mergeConfig({ teach: { capture } }, base).teach.capture).toBe(capture);
 		const observe = mergeConfig({ teach: { capture: "observe" } }, base);
-		for (const capture of ["Auto", "always", "", 2, null]) expect(mergeConfig({ teach: { capture } }, observe).teach.capture).toBe("observe");
+		for (const capture of ["Auto", "always", "", 2, null])
+			expect(mergeConfig({ teach: { capture } }, observe).teach.capture).toBe("observe");
 	});
 
 	test("numeric keys enforce their ranges and integers", () => {
 		expect(
 			mergeConfig(
-				{ teach: { recallLimit: 10, recallChars: 8_000, promoteAfter: 20, observeMinToolCalls: 50, timeoutMs: 30_000 } },
+				{
+					teach: {
+						recallLimit: 10,
+						recallChars: 8_000,
+						promoteAfter: 20,
+						observeMinToolCalls: 50,
+						timeoutMs: 30_000,
+					},
+				},
 				base,
 			).teach,
-		).toMatchObject({ recallLimit: 10, recallChars: 8_000, promoteAfter: 20, observeMinToolCalls: 50, timeoutMs: 30_000 });
+		).toMatchObject({
+			recallLimit: 10,
+			recallChars: 8_000,
+			promoteAfter: 20,
+			observeMinToolCalls: 50,
+			timeoutMs: 30_000,
+		});
 		expect(
-			mergeConfig({ teach: { recallLimit: 1, recallChars: 500, promoteAfter: 2, observeMinToolCalls: 0, timeoutMs: 500 } }, base).teach,
-		).toMatchObject({ recallLimit: 1, recallChars: 500, promoteAfter: 2, observeMinToolCalls: 0, timeoutMs: 500 });
-		for (const recallLimit of [0, 11, 2.5, "3"]) expect(mergeConfig({ teach: { recallLimit } }, base).teach.recallLimit).toBe(5);
-		for (const recallChars of [499, 8_001, 600.5]) expect(mergeConfig({ teach: { recallChars } }, base).teach.recallChars).toBe(3_000);
-		for (const promoteAfter of [1, 21, 3.5, Number.NaN]) expect(mergeConfig({ teach: { promoteAfter } }, base).teach.promoteAfter).toBe(3);
+			mergeConfig(
+				{
+					teach: {
+						recallLimit: 1,
+						recallChars: 500,
+						promoteAfter: 2,
+						observeMinToolCalls: 0,
+						timeoutMs: 500,
+					},
+				},
+				base,
+			).teach,
+		).toMatchObject({
+			recallLimit: 1,
+			recallChars: 500,
+			promoteAfter: 2,
+			observeMinToolCalls: 0,
+			timeoutMs: 500,
+		});
+		for (const recallLimit of [0, 11, 2.5, "3"])
+			expect(mergeConfig({ teach: { recallLimit } }, base).teach.recallLimit).toBe(5);
+		for (const recallChars of [499, 8_001, 600.5])
+			expect(mergeConfig({ teach: { recallChars } }, base).teach.recallChars).toBe(3_000);
+		for (const promoteAfter of [1, 21, 3.5, Number.NaN])
+			expect(mergeConfig({ teach: { promoteAfter } }, base).teach.promoteAfter).toBe(3);
 		for (const observeMinToolCalls of [-1, 51, 1.5, "2"]) {
-			expect(mergeConfig({ teach: { observeMinToolCalls } }, base).teach.observeMinToolCalls).toBe(4);
+			expect(mergeConfig({ teach: { observeMinToolCalls } }, base).teach.observeMinToolCalls).toBe(
+				4,
+			);
 		}
-		for (const timeoutMs of [499, 30_001, 900.5, Number.POSITIVE_INFINITY]) expect(mergeConfig({ teach: { timeoutMs } }, base).teach.timeoutMs).toBe(2_500);
+		for (const timeoutMs of [499, 30_001, 900.5, Number.POSITIVE_INFINITY])
+			expect(mergeConfig({ teach: { timeoutMs } }, base).teach.timeoutMs).toBe(2_500);
 	});
 
 	test("unknown keys are ignored and a non-object section changes nothing", () => {
-		expect(mergeConfig({ teach: { mode: "auto", url: "https://x.example" } }, base).teach).toEqual(base.teach);
+		expect(mergeConfig({ teach: { mode: "auto", url: "https://x.example" } }, base).teach).toEqual(
+			base.teach,
+		);
 		expect(mergeConfig({ teach: true }, base).teach).toEqual(base.teach);
 	});
 
 	test("user and Claude layers stack, the later one winning per key", () => {
-		const config = loadLayerFiles(roots, { teach: { enabled: true, capture: "auto", recallLimit: 3 } }, { teach: { capture: "observe" } });
+		const config = loadLayerFiles(
+			roots,
+			{ teach: { enabled: true, capture: "auto", recallLimit: 3 } },
+			{ teach: { capture: "observe" } },
+		);
 		expect(config.teach).toMatchObject({ enabled: true, capture: "observe", recallLimit: 3 });
 	});
 
 	test("a project file cannot turn anything on, raise the mode or tune a number", () => {
 		const config = loadLayerFiles(roots, undefined, undefined, {
-			teach: { enabled: true, capture: "auto", recall: true, autoPromote: true, recallLimit: 1, promoteAfter: 2, timeoutMs: 600 },
+			teach: {
+				enabled: true,
+				capture: "auto",
+				recall: true,
+				autoPromote: true,
+				recallLimit: 1,
+				promoteAfter: 2,
+				timeoutMs: 600,
+			},
 		});
 		expect(config.teach).toEqual(base.teach);
 	});
 
 	test("a project file cannot raise capture above the user's level", () => {
 		const user = { teach: { enabled: true, capture: "observe" } };
-		expect(loadLayerFiles(roots, user, undefined, { teach: { capture: "auto" } }).teach.capture).toBe("observe");
-		expect(loadLayerFiles(roots, user, undefined, { teach: { capture: "observe" } }).teach.capture).toBe("observe");
+		expect(
+			loadLayerFiles(roots, user, undefined, { teach: { capture: "auto" } }).teach.capture,
+		).toBe("observe");
+		expect(
+			loadLayerFiles(roots, user, undefined, { teach: { capture: "observe" } }).teach.capture,
+		).toBe("observe");
 	});
 
 	test("a project file can lower capture auto -> observe -> explicit", () => {
 		const auto = { teach: { enabled: true, capture: "auto" } };
-		expect(loadLayerFiles(roots, auto, undefined, { teach: { capture: "observe" } }).teach.capture).toBe("observe");
-		expect(loadLayerFiles(roots, auto, undefined, { teach: { capture: "explicit" } }).teach.capture).toBe("explicit");
-		expect(loadLayerFiles(roots, auto, undefined, { teach: { capture: "bogus" } }).teach.capture).toBe("auto");
+		expect(
+			loadLayerFiles(roots, auto, undefined, { teach: { capture: "observe" } }).teach.capture,
+		).toBe("observe");
+		expect(
+			loadLayerFiles(roots, auto, undefined, { teach: { capture: "explicit" } }).teach.capture,
+		).toBe("explicit");
+		expect(
+			loadLayerFiles(roots, auto, undefined, { teach: { capture: "bogus" } }).teach.capture,
+		).toBe("auto");
 	});
 
 	test("a project file can turn enabled, recall and autoPromote off, never on", () => {
 		const user = { teach: { enabled: true, recall: true, autoPromote: true, recallLimit: 8 } };
 		expect(
-			loadLayerFiles(roots, user, undefined, { teach: { enabled: false, recall: false, autoPromote: false, recallLimit: 1 } }).teach,
+			loadLayerFiles(roots, user, undefined, {
+				teach: { enabled: false, recall: false, autoPromote: false, recallLimit: 1 },
+			}).teach,
 		).toMatchObject({ enabled: false, recall: false, autoPromote: false, recallLimit: 8 });
 		const off = { teach: { enabled: true, recall: false, autoPromote: false } };
-		expect(loadLayerFiles(roots, off, undefined, { teach: { recall: true, autoPromote: true } }).teach).toMatchObject({
+		expect(
+			loadLayerFiles(roots, off, undefined, { teach: { recall: true, autoPromote: true } }).teach,
+		).toMatchObject({
 			recall: false,
 			autoPromote: false,
 		});
@@ -1152,7 +1765,10 @@ describe("teach config", () => {
 	test("a user file combined with a project file that turns things off keeps the rest", () => {
 		const config = loadLayerFiles(
 			roots,
-			{ hindsight: { enabled: true, url: "http://hs.lan" }, teach: { enabled: true, capture: "auto", recall: true } },
+			{
+				hindsight: { enabled: true, url: "http://hs.lan" },
+				teach: { enabled: true, capture: "auto", recall: true },
+			},
 			undefined,
 			{ hindsight: { enabled: false }, teach: { capture: "explicit", recall: false } },
 		);
@@ -1164,17 +1780,24 @@ describe("teach config", () => {
 describe("route defaults (AD-1)", () => {
 	test("unconfigured routes retain their legacy targets and route-default provenance", () => {
 		const config = defaultConfig();
-		expect([config.claude.model, config.grok.model, config.muse.model]).toEqual(["sonnet", "grok-4.7", "muse-spark-1.3-contributor"]);
-		expect(config.modelProvenance).toEqual({ claude: "route-default", grok: "route-default", muse: "route-default" });
+		expect([config.claude.model, config.grok.model, config.muse.model]).toEqual([
+			"claude-haiku-5-5",
+			"grok-build-0.1",
+			"muse-spark-1.3-contributor",
+		]);
+		expect(config.modelProvenance).toEqual({
+			claude: "route-default",
+			grok: "route-default",
+			muse: "route-default",
+		});
 	});
 
 	test("the map cannot be changed at runtime", () => {
 		expect(() => {
 			(ROUTE_DEFAULT_MODELS as Record<string, string>).claude = "other";
 		}).toThrow();
-		expect(ROUTE_DEFAULT_MODELS.claude).toBe("sonnet");
+		expect(ROUTE_DEFAULT_MODELS.claude).toBe("claude-haiku-5-5");
 	});
-
 });
 
 describe("models config (D-05 merge truth table)", () => {
@@ -1188,19 +1811,40 @@ describe("models config (D-05 merge truth table)", () => {
 
 	test("nonblank strings trim surrounding whitespace only, keep case, slashes and punctuation, and the later layer wins", () => {
 		const user = mergeConfig(
-			{ models: { hosts: { omp: { provider: " openai-codex ", model: " OpenRouter/Anthropic/Claude-X:beta " } }, providerDefaults: { xai: " Grok-Fast " } } },
+			{
+				models: {
+					hosts: {
+						omp: { provider: " openai-codex ", model: " OpenRouter/Anthropic/Claude-X:beta " },
+					},
+					providerDefaults: { xai: " Grok-Fast " },
+				},
+			},
 			base,
 		);
-		expect(user.models.hosts.omp).toEqual({ provider: "openai-codex", model: "OpenRouter/Anthropic/Claude-X:beta" });
+		expect(user.models.hosts.omp).toEqual({
+			provider: "openai-codex",
+			model: "OpenRouter/Anthropic/Claude-X:beta",
+		});
 		expect(user.models.providerDefaults.xai).toBe("Grok-Fast");
-		const later = mergeConfig({ models: { hosts: { omp: { model: "smol" } }, providerDefaults: { xai: "grok-fast-2" } } }, user);
+		const later = mergeConfig(
+			{ models: { hosts: { omp: { model: "smol" } }, providerDefaults: { xai: "grok-fast-2" } } },
+			user,
+		);
 		expect(later.models.hosts.omp).toEqual({ provider: "openai-codex", model: "smol" });
 		expect(later.models.providerDefaults.xai).toBe("grok-fast-2");
 		expect(user.models.providerDefaults.xai).toBe("Grok-Fast");
 	});
 
 	test("absent, null, non-object, array and nonstring values preserve the lower value; empty sections merge nothing", () => {
-		const lower = mergeConfig({ models: { hosts: { omp: { provider: "xai", model: "grok-x" } }, providerDefaults: { xai: "fast" } } }, base);
+		const lower = mergeConfig(
+			{
+				models: {
+					hosts: { omp: { provider: "xai", model: "grok-x" } },
+					providerDefaults: { xai: "fast" },
+				},
+			},
+			base,
+		);
 		const cases: unknown[] = [
 			undefined,
 			null,
@@ -1221,16 +1865,28 @@ describe("models config (D-05 merge truth table)", () => {
 	});
 
 	test("a blank host model or provider clears that lower value without revealing it", () => {
-		const lower = mergeConfig({ models: { hosts: { omp: { provider: "xai", model: "grok-x" }, hermes: { model: "h" } } } }, base);
+		const lower = mergeConfig(
+			{ models: { hosts: { omp: { provider: "xai", model: "grok-x" }, hermes: { model: "h" } } } },
+			base,
+		);
 		const cleared = mergeConfig({ models: { hosts: { omp: { model: "  " } } } }, lower);
 		expect(cleared.models.hosts.omp).toEqual({ provider: "xai", model: "" });
 		expect(cleared.models.hosts.hermes).toEqual({ provider: "", model: "h" });
-		expect(mergeConfig({ models: { hosts: { omp: { provider: "\t" } } } }, cleared).models.hosts.omp).toEqual({ provider: "", model: "" });
-		expect(JSON.stringify(mergeConfig({ models: { hosts: { omp: { provider: "", model: "" } } } }, lower).models)).not.toContain("grok-x");
+		expect(
+			mergeConfig({ models: { hosts: { omp: { provider: "\t" } } } }, cleared).models.hosts.omp,
+		).toEqual({ provider: "", model: "" });
+		expect(
+			JSON.stringify(
+				mergeConfig({ models: { hosts: { omp: { provider: "", model: "" } } } }, lower).models,
+			),
+		).not.toContain("grok-x");
 	});
 
 	test("a blank provider default removes the lower selector, exposing the host-catalog tier", () => {
-		const lower = mergeConfig({ models: { providerDefaults: { xai: "fast", openai: "gpt-x" } } }, base);
+		const lower = mergeConfig(
+			{ models: { providerDefaults: { xai: "fast", openai: "gpt-x" } } },
+			base,
+		);
 		const merged = mergeConfig({ models: { providerDefaults: { xai: " " } } }, lower);
 		expect(Object.hasOwn(merged.models.providerDefaults, "xai")).toBe(false);
 		expect(merged.models.providerDefaults.openai).toBe("gpt-x");
@@ -1238,7 +1894,18 @@ describe("models config (D-05 merge truth table)", () => {
 	});
 
 	test("unknown host keys are ignored and register no host", () => {
-		const merged = mergeConfig({ models: { hosts: { "grok-bot": { model: "x" }, "gpt-dot": { provider: "openai" }, omp: { model: "m" } } } }, base);
+		const merged = mergeConfig(
+			{
+				models: {
+					hosts: {
+						"grok-bot": { model: "x" },
+						"gpt-dot": { provider: "openai" },
+						omp: { model: "m" },
+					},
+				},
+			},
+			base,
+		);
 		expect(Object.keys(merged.models.hosts)).toEqual(["omp"]);
 	});
 
@@ -1250,7 +1917,8 @@ describe("models config (D-05 merge truth table)", () => {
 		const defaults = merged.models.providerDefaults;
 		expect(Object.keys(defaults)).toEqual(["xai"]);
 		expect(Object.getPrototypeOf(defaults)).toBeNull();
-		for (const key of ["__proto__", "constructor", "prototype", "toString", "hasOwnProperty"]) expect(Object.hasOwn(defaults, key)).toBe(false);
+		for (const key of ["__proto__", "constructor", "prototype", "toString", "hasOwnProperty"])
+			expect(Object.hasOwn(defaults, key)).toBe(false);
 		expect(defaults.constructor).toBeUndefined();
 		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 		expect(Object.keys(merged.models.hosts)).toEqual([]);
@@ -1259,13 +1927,25 @@ describe("models config (D-05 merge truth table)", () => {
 	});
 
 	test("inherited-only host entries and selector fields never create an override (POL-FUNC-009)", () => {
-		const inherited = Object.create({ provider: "InheritedProvider", model: "InheritedTarget" }) as Record<string, unknown>;
-		const inheritedHosts = Object.create({ omp: { provider: "InheritedProvider", model: "InheritedTarget" } }) as Record<string, unknown>;
+		const inherited = Object.create({
+			provider: "InheritedProvider",
+			model: "InheritedTarget",
+		}) as Record<string, unknown>;
+		const inheritedHosts = Object.create({
+			omp: { provider: "InheritedProvider", model: "InheritedTarget" },
+		}) as Record<string, unknown>;
 		expect(mergeConfig({ models: { hosts: inheritedHosts } }, base).models.hosts).toEqual({});
 		for (const host of ["omp", "claude-code", "muse", "grok-build", "hermes"] as const) {
-			expect(mergeConfig({ models: { hosts: { [host]: inherited } } }, base).models.hosts).toEqual({});
-			const lower = mergeConfig({ models: { hosts: { [host]: { provider: "LowerProvider", model: "LowerTarget" } } } }, base);
-			expect(mergeConfig({ models: { hosts: { [host]: inherited } } }, lower).models.hosts[host]).toEqual({
+			expect(mergeConfig({ models: { hosts: { [host]: inherited } } }, base).models.hosts).toEqual(
+				{},
+			);
+			const lower = mergeConfig(
+				{ models: { hosts: { [host]: { provider: "LowerProvider", model: "LowerTarget" } } } },
+				base,
+			);
+			expect(
+				mergeConfig({ models: { hosts: { [host]: inherited } } }, lower).models.hosts[host],
+			).toEqual({
 				provider: "LowerProvider",
 				model: "LowerTarget",
 			});
@@ -1273,32 +1953,56 @@ describe("models config (D-05 merge truth table)", () => {
 	});
 
 	test("mixed own host fields ignore inherited counterparts and preserve lower pins (POL-FUNC-009)", () => {
-		const lower = mergeConfig({ models: { hosts: { omp: { provider: "LowerProvider", model: "LowerTarget" } } } }, base);
+		const lower = mergeConfig(
+			{ models: { hosts: { omp: { provider: "LowerProvider", model: "LowerTarget" } } } },
+			base,
+		);
 		const inherited = {
-			get provider(): string { throw new Error("an inherited provider must not be read"); },
-			get model(): string { throw new Error("an inherited model must not be read"); },
+			get provider(): string {
+				throw new Error("an inherited provider must not be read");
+			},
+			get model(): string {
+				throw new Error("an inherited model must not be read");
+			},
 		};
 		for (const [own, expected] of [
 			[{ provider: " OwnProvider " }, { provider: "OwnProvider", model: "LowerTarget" }],
 			[{ model: " OwnTarget " }, { provider: "LowerProvider", model: "OwnTarget" }],
 			[{ provider: "\t \n" }, { provider: "", model: "LowerTarget" }],
 			[{ model: "\t \n" }, { provider: "LowerProvider", model: "" }],
-			[{ provider: null, model: false }, { provider: "LowerProvider", model: "LowerTarget" }],
+			[
+				{ provider: null, model: false },
+				{ provider: "LowerProvider", model: "LowerTarget" },
+			],
 		] as const) {
 			const fields = Object.create(inherited) as Record<string, unknown>;
-			for (const [key, value] of Object.entries(own)) Object.defineProperty(fields, key, { value, enumerable: true });
-			expect(mergeConfig({ models: { hosts: { omp: fields } } }, lower).models.hosts.omp).toEqual(expected);
+			for (const [key, value] of Object.entries(own))
+				Object.defineProperty(fields, key, { value, enumerable: true });
+			expect(mergeConfig({ models: { hosts: { omp: fields } } }, lower).models.hosts.omp).toEqual(
+				expected,
+			);
 			expect(lower.models.hosts.omp).toEqual({ provider: "LowerProvider", model: "LowerTarget" });
 		}
 	});
 
 	test("a selector carrying a control character is kept as written for resolution to diagnose; all-whitespace is still a blank", () => {
-		const merged = mergeConfig({ models: { hosts: { omp: { model: "\u0000smol", provider: "xai\n" } }, providerDefaults: { xai: " fast\u001b " } } }, base);
+		const merged = mergeConfig(
+			{
+				models: {
+					hosts: { omp: { model: "\u0000smol", provider: "xai\n" } },
+					providerDefaults: { xai: " fast\u001b " },
+				},
+			},
+			base,
+		);
 		expect(merged.models.hosts.omp).toEqual({ provider: "xai\n", model: "\u0000smol" });
 		expect(merged.models.providerDefaults.xai).toBe(" fast\u001b ");
 		expect(hasControlCharacter(merged.models.hosts.omp?.model ?? "")).toBe(true);
 		expect(hasControlCharacter("openrouter/anthropic/claude-x:beta")).toBe(false);
-		expect(mergeConfig({ models: { hosts: { omp: { model: "\n\t " } } } }, merged).models.hosts.omp?.model).toBe("");
+		expect(
+			mergeConfig({ models: { hosts: { omp: { model: "\n\t " } } } }, merged).models.hosts.omp
+				?.model,
+		).toBe("");
 	});
 
 	test("every layer, the project file included, may set model selectors", () => {
@@ -1308,10 +2012,18 @@ describe("models config (D-05 merge truth table)", () => {
 				roots,
 				{ models: { hosts: { omp: { provider: "xai" } }, providerDefaults: { xai: "user-fast" } } },
 				{ models: { providerDefaults: { openai: "claude-home" } } },
-				{ models: { hosts: { omp: { model: "project-model" } }, providerDefaults: { xai: "project-fast" } } },
+				{
+					models: {
+						hosts: { omp: { model: "project-model" } },
+						providerDefaults: { xai: "project-fast" },
+					},
+				},
 			);
 			expect(config.models.hosts.omp).toEqual({ provider: "xai", model: "project-model" });
-			expect({ ...config.models.providerDefaults }).toEqual({ xai: "project-fast", openai: "claude-home" });
+			expect({ ...config.models.providerDefaults }).toEqual({
+				xai: "project-fast",
+				openai: "claude-home",
+			});
 		} finally {
 			for (const root of roots) rmSync(root, { recursive: true, force: true });
 		}
@@ -1330,31 +2042,101 @@ describe("legacy model provenance (AD-1)", () => {
 			grok: "route-default",
 			muse: "route-default",
 		});
-		const pinned = loadLayerFiles(roots, { claude: { model: "sonnet" } }, { grok: { model: " grok-4.7 " } }, { muse: { model: "muse-spark-1.3-contributor" } });
-		expect(pinned.modelProvenance).toEqual({ claude: "file-pin", grok: "file-pin", muse: "file-pin" });
-		expect([pinned.claude.model, pinned.grok.model, pinned.muse.model]).toEqual(["sonnet", "grok-4.7", "muse-spark-1.3-contributor"]);
+		const pinned = loadLayerFiles(
+			roots,
+			{ claude: { model: "claude-haiku-5-5" } },
+			{ grok: { model: " grok-build-0.1 " } },
+			{ muse: { model: "muse-spark-1.3-contributor" } },
+		);
+		expect(pinned.modelProvenance).toEqual({
+			claude: "file-pin",
+			grok: "file-pin",
+			muse: "file-pin",
+		});
+		expect([pinned.claude.model, pinned.grok.model, pinned.muse.model]).toEqual([
+			"claude-haiku-5-5",
+			"grok-build-0.1",
+			"muse-spark-1.3-contributor",
+		]);
 	});
 
 	test("nonblank legacy model and shunt selectors retain leading/trailing C0/C1 controls (POL-FUNC-011)", () => {
-		for (const control of ["\u0000", "\t", "\n", "\v", "\f", "\r", "\u001b", "\u007f", "\u0085", "\u009f"]) {
+		for (const control of [
+			"\u0000",
+			"\t",
+			"\n",
+			"\v",
+			"\f",
+			"\r",
+			"\u001b",
+			"\u007f",
+			"\u0085",
+			"\u009f",
+		]) {
 			for (const model of [`${control}Opaque-X`, `Opaque-X${control}`]) {
-				const config = mergeConfig({ claude: { model }, muse: { model }, grok: { model, shuntModel: model } }, defaultConfig());
-				expect([config.claude.model, config.muse.model, config.grok.model, config.grok.shuntModel]).toEqual([model, model, model, model]);
-				expect(config.modelProvenance).toEqual({ claude: "file-pin", muse: "file-pin", grok: "file-pin" });
+				const config = mergeConfig(
+					{ claude: { model }, muse: { model }, grok: { model, shuntModel: model } },
+					defaultConfig(),
+				);
+				expect([
+					config.claude.model,
+					config.muse.model,
+					config.grok.model,
+					config.grok.shuntModel,
+				]).toEqual([model, model, model, model]);
+				expect(config.modelProvenance).toEqual({
+					claude: "file-pin",
+					muse: "file-pin",
+					grok: "file-pin",
+				});
 			}
 		}
 		const model = "MiXeD/opaque:beta;$(literal)`data`";
-		const config = mergeConfig({ claude: { model: ` ${model} ` }, muse: { model: ` ${model} ` }, grok: { model: ` ${model} `, shuntModel: ` ${model} ` } }, defaultConfig());
-		expect([config.claude.model, config.muse.model, config.grok.model, config.grok.shuntModel]).toEqual([model, model, model, model]);
+		const config = mergeConfig(
+			{
+				claude: { model: ` ${model} ` },
+				muse: { model: ` ${model} ` },
+				grok: { model: ` ${model} `, shuntModel: ` ${model} ` },
+			},
+			defaultConfig(),
+		);
+		expect([
+			config.claude.model,
+			config.muse.model,
+			config.grok.model,
+			config.grok.shuntModel,
+		]).toEqual([model, model, model, model]);
 	});
 
 	test("all-whitespace legacy clears and Grok lower-pin retention stay unchanged (POL-FUNC-011, AD-1)", () => {
-		const lower = mergeConfig({ claude: { model: "ClaudePin" }, muse: { model: "MusePin" }, grok: { model: "GrokPin", shuntModel: "ShuntPin" } }, defaultConfig());
+		const lower = mergeConfig(
+			{
+				claude: { model: "ClaudePin" },
+				muse: { model: "MusePin" },
+				grok: { model: "GrokPin", shuntModel: "ShuntPin" },
+			},
+			defaultConfig(),
+		);
 		for (const model of ["", "  ", "\t \r\n\v\f"]) {
-			const config = mergeConfig({ claude: { model }, muse: { model }, grok: { model, shuntModel: model } }, lower);
-			expect([config.claude.model, config.muse.model, config.grok.model, config.grok.shuntModel]).toEqual(["", "", "GrokPin", "ShuntPin"]);
-			expect(config.modelProvenance).toEqual({ claude: "explicit-blank", muse: "explicit-blank", grok: "file-pin" });
-			const builtin = mergeConfig({ claude: { model }, muse: { model }, grok: { model, shuntModel: model } }, defaultConfig());
+			const config = mergeConfig(
+				{ claude: { model }, muse: { model }, grok: { model, shuntModel: model } },
+				lower,
+			);
+			expect([
+				config.claude.model,
+				config.muse.model,
+				config.grok.model,
+				config.grok.shuntModel,
+			]).toEqual(["", "", "GrokPin", "ShuntPin"]);
+			expect(config.modelProvenance).toEqual({
+				claude: "explicit-blank",
+				muse: "explicit-blank",
+				grok: "file-pin",
+			});
+			const builtin = mergeConfig(
+				{ claude: { model }, muse: { model }, grok: { model, shuntModel: model } },
+				defaultConfig(),
+			);
 			expect(builtin.grok.model).toBe(ROUTE_DEFAULT_MODELS.grok);
 			expect(builtin.grok.shuntModel).toBe(defaultConfig().grok.shuntModel);
 			expect(builtin.modelProvenance.grok).toBe("route-default");
@@ -1364,26 +2146,169 @@ describe("legacy model provenance (AD-1)", () => {
 	test("an explicit blank claude.model or muse.model clears a lower pin to CLI omission; Grok's non-empty merge ignores blanks", () => {
 		const config = loadLayerFiles(
 			roots,
-			{ claude: { model: "opus" }, grok: { model: "grok-x", shuntModel: "alias" }, muse: { model: "m" } },
+			{
+				claude: { model: "opus" },
+				grok: { model: "grok-x", shuntModel: "alias" },
+				muse: { model: "m" },
+			},
 			{ claude: { model: " " }, grok: { model: "", shuntModel: "  " }, muse: { model: "" } },
 		);
-		expect([config.claude.model, config.grok.model, config.grok.shuntModel, config.muse.model]).toEqual(["", "grok-x", "alias", ""]);
-		expect(config.modelProvenance).toEqual({ claude: "explicit-blank", grok: "file-pin", muse: "explicit-blank" });
-		const repinned = loadLayerFiles(roots, { claude: { model: "" } }, undefined, { claude: { model: "haiku" } });
+		expect([
+			config.claude.model,
+			config.grok.model,
+			config.grok.shuntModel,
+			config.muse.model,
+		]).toEqual(["", "grok-x", "alias", ""]);
+		expect(config.modelProvenance).toEqual({
+			claude: "explicit-blank",
+			grok: "file-pin",
+			muse: "explicit-blank",
+		});
+		const repinned = loadLayerFiles(roots, { claude: { model: "" } }, undefined, {
+			claude: { model: "haiku" },
+		});
 		expect(repinned.claude.model).toBe("haiku");
 		expect(repinned.modelProvenance.claude).toBe("file-pin");
 	});
 
 	test("wrong types keep the lower value and its provenance", () => {
-		const config = loadLayerFiles(roots, { claude: { model: "opus" } }, { claude: { model: 7 }, muse: "bogus", grok: { model: null } });
+		const config = loadLayerFiles(
+			roots,
+			{ claude: { model: "opus" } },
+			{ claude: { model: 7 }, muse: "bogus", grok: { model: null } },
+		);
 		expect(config.claude.model).toBe("opus");
 		expect(config.grok.model).toBe(ROUTE_DEFAULT_MODELS.grok);
-		expect(config.modelProvenance).toEqual({ claude: "file-pin", grok: "route-default", muse: "route-default" });
+		expect(config.modelProvenance).toEqual({
+			claude: "file-pin",
+			grok: "route-default",
+			muse: "route-default",
+		});
 	});
 
 	test("grok.fallbackToClaude keeps its default false and boolean-only merge", () => {
 		expect(defaultConfig().grok.fallbackToClaude).toBe(false);
-		expect(loadLayerFiles(roots, { grok: { fallbackToClaude: true } }).grok.fallbackToClaude).toBe(true);
-		expect(loadLayerFiles(roots, { grok: { fallbackToClaude: true } }, { grok: { fallbackToClaude: "no" } }).grok.fallbackToClaude).toBe(true);
+		expect(loadLayerFiles(roots, { grok: { fallbackToClaude: true } }).grok.fallbackToClaude).toBe(
+			true,
+		);
+		expect(
+			loadLayerFiles(
+				roots,
+				{ grok: { fallbackToClaude: true } },
+				{ grok: { fallbackToClaude: "no" } },
+			).grok.fallbackToClaude,
+		).toBe(true);
+	});
+
+	test("claude.auth defaults to plan, accepts api-key, rejects others, and is user-only", () => {
+		const base = defaultConfig();
+		expect(base.claude.auth).toBe("plan");
+		const user = mergeConfig({ claude: { auth: "api-key" } }, base);
+		expect(user.claude.auth).toBe("api-key");
+		expect(mergeConfig({ claude: { auth: "bogus" } }, base).claude.auth).toBe("plan");
+		expect(mergeConfig({ claude: { auth: "bogus" } }, user).claude.auth).toBe("api-key");
+		expect(mergeConfig({ claude: { auth: 1 } }, base).claude.auth).toBe("plan");
+		expect(mergeConfig({ claude: { auth: "api-key" } }, base, { project: true }).claude.auth).toBe(
+			"plan",
+		);
+		expect(mergeConfig({ claude: { auth: "plan" } }, user, { project: true }).claude.auth).toBe(
+			"api-key",
+		);
+	});
+
+	test("claude.fallbackToGrok defaults false, is user-only and boolean-only", () => {
+		const base = defaultConfig();
+		expect(base.claude.fallbackToGrok).toBe(false);
+		const user = mergeConfig({ claude: { fallbackToGrok: true } }, base);
+		expect(user.claude.fallbackToGrok).toBe(true);
+		expect(
+			mergeConfig({ claude: { fallbackToGrok: true } }, base, { project: true }).claude
+				.fallbackToGrok,
+		).toBe(false);
+		expect(
+			mergeConfig({ claude: { fallbackToGrok: false } }, user, { project: true }).claude
+				.fallbackToGrok,
+		).toBe(true);
+		expect(mergeConfig({ claude: { fallbackToGrok: "yes" } }, user).claude.fallbackToGrok).toBe(
+			true,
+		);
+		expect(mergeConfig({ claude: { fallbackToGrok: "yes" } }, base).claude.fallbackToGrok).toBe(
+			false,
+		);
+	});
+
+	test("an old claude.fallbackToLogin key is ignored without error", () => {
+		const base = defaultConfig();
+		const merged = mergeConfig({ claude: { fallbackToLogin: true } }, base);
+		expect(merged.claude).toEqual(base.claude);
+		expect("fallbackToLogin" in merged.claude).toBe(false);
+	});
+
+	test("grok.fallbackModels defaults to [] and merges from user and project layers", () => {
+		const base = defaultConfig();
+		expect(base.grok.fallbackModels).toEqual([]);
+		expect(
+			mergeConfig({ grok: { fallbackModels: ["grok-4.6"] } }, base).grok.fallbackModels,
+		).toEqual(["grok-4.6"]);
+		expect(
+			mergeConfig({ grok: { fallbackModels: ["grok-4.5"] } }, base, { project: true }).grok
+				.fallbackModels,
+		).toEqual(["grok-4.5"]);
+		const user = mergeConfig({ grok: { fallbackModels: ["grok-4.6"] } }, base);
+		expect(
+			mergeConfig({ grok: { fallbackModels: ["grok-4.5", "grok-4.7"] } }, user, { project: true })
+				.grok.fallbackModels,
+		).toEqual(["grok-4.5", "grok-4.7"]);
+	});
+
+	test("grok.fallbackModels trims, dedupes, drops blanks, controls and non-strings, caps at 8", () => {
+		const base = defaultConfig();
+		const models = mergeConfig(
+			{
+				grok: {
+					fallbackModels: [" a ", "a", "", "  ", "b\u0000c", "d\ne", 7, "b"],
+				},
+			},
+			base,
+		).grok.fallbackModels;
+		expect(models).toEqual(["a", "b"]);
+		const many = Array.from({ length: 12 }, (_, i) => `m${i}`);
+		expect(mergeConfig({ grok: { fallbackModels: many } }, base).grok.fallbackModels).toEqual(
+			many.slice(0, 8),
+		);
+	});
+
+	test("grok.fallbackModels arrays are never shared with the module default", () => {
+		const first = defaultConfig();
+		first.grok.fallbackModels.push("mutated");
+		expect(defaultConfig().grok.fallbackModels).toEqual([]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual([]);
+		const base = defaultConfig();
+		const merged = mergeConfig({ grok: { model: "x" } }, base);
+		expect(merged.grok.fallbackModels).not.toBe(DEFAULT_GROK_CONFIG.fallbackModels);
+		expect(merged.grok.fallbackModels).not.toBe(base.grok.fallbackModels);
+		merged.grok.fallbackModels.push("mutated");
+		expect(base.grok.fallbackModels).toEqual([]);
+		expect(DEFAULT_GROK_CONFIG.fallbackModels).toEqual([]);
+		const nonArray = mergeConfig({ grok: { fallbackModels: "grok-4.6" } }, base);
+		expect(nonArray.grok.fallbackModels).not.toBe(DEFAULT_GROK_CONFIG.fallbackModels);
+		expect(nonArray.grok.fallbackModels).not.toBe(base.grok.fallbackModels);
+	});
+
+	test("grok.fallbackModels: a non-array keeps the current list and [] is honored", () => {
+		const base = defaultConfig();
+		expect(base.grok.fallbackModels).toEqual([]);
+		expect(mergeConfig({ grok: { fallbackModels: "grok-4.6" } }, base).grok.fallbackModels).toEqual(
+			[],
+		);
+		const user = mergeConfig({ grok: { fallbackModels: ["grok-4.6"] } }, base);
+		expect(user.grok.fallbackModels).toEqual(["grok-4.6"]);
+		expect(mergeConfig({ grok: { fallbackModels: "grok-4.5" } }, user).grok.fallbackModels).toEqual(
+			["grok-4.6"],
+		);
+		expect(
+			mergeConfig({ grok: { fallbackModels: [] } }, user, { project: true }).grok.fallbackModels,
+		).toEqual([]);
+		expect(mergeConfig({ grok: { fallbackModels: [] } }, user).grok.fallbackModels).toEqual([]);
 	});
 });

@@ -48,7 +48,11 @@ function parseExpectation(value: string | undefined): Expectation | undefined {
 }
 
 /** Runs the command and returns the exit code; `io.out` receives the single result line, `io.err` usage errors. */
-export function main(argv: readonly string[], env: Env = process.env, io: CliIo = { out: console.log, err: console.error }): number {
+export function main(
+	argv: readonly string[],
+	env: Env = process.env,
+	io: CliIo = { out: console.log, err: console.error },
+): number {
 	if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
 		(argv.length === 0 ? io.err : io.out)(USAGE);
 		return argv.length === 0 ? 2 : 0;
@@ -85,11 +89,16 @@ export function main(argv: readonly string[], env: Env = process.env, io: CliIo 
 		return 1;
 	}
 	if (expectations.length > 0) {
-		const found = recordHashes(target, expectations.map((e) => e.seq));
+		const found = recordHashes(
+			target,
+			expectations.map((e) => e.seq),
+		);
 		for (const expectation of expectations) {
 			const actual = found.get(expectation.seq);
 			if (actual !== expectation.hash) {
-				io.out(`audit BROKEN: expected record ${expectation.seq} hash ${expectation.hash}, found ${actual ?? "none"}`);
+				io.out(
+					`audit BROKEN: expected record ${expectation.seq} hash ${expectation.hash}, found ${actual ?? "none"}`,
+				);
 				return 1;
 			}
 		}

@@ -2,15 +2,25 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * Shared shapes for `ultrathink doctor`: a finding, the report built from findings, and the side-effect seams every
- * check receives. Imports nothing, so each check module and the report can depend on it. Doctor is static and offline:
- * nothing in this directory opens a network connection or starts `gh` or `curl`.
+ * check receives. Imports nothing, so each check module and the report can depend on it. Doctor is static and offline,
+ * except the `stack` section (stack-check.ts), which makes the free read-only probe requests; nothing starts `gh` or `curl`.
  */
 
-export const DOCTOR_LEVELS = ["ok", "info", "warn", "error"] as const;
+const DOCTOR_LEVELS = ["ok", "info", "warn", "error"] as const;
 export type DoctorLevel = (typeof DOCTOR_LEVELS)[number];
 
 /** Report order of the sections. */
-export const DOCTOR_SECTIONS = ["runtime", "config", "credentials", "state", "pstack"] as const;
+export const DOCTOR_SECTIONS = [
+	"runtime",
+	"config",
+	"credentials",
+	"env",
+	"inference",
+	"state",
+	"memory",
+	"pstack",
+	"stack",
+] as const;
 export type DoctorSection = (typeof DOCTOR_SECTIONS)[number];
 
 export interface Finding {
@@ -50,4 +60,8 @@ export interface DoctorDeps {
 	bunVersion: string;
 	/** First line of `<command> --version`, or undefined when it cannot be run. Only the Python interpreters are ever probed: `gh` and `curl` cannot be passed. */
 	runVersion: (command: PythonCommand) => string | undefined;
+	/** First line of `<bin> --version` for the configured `claude.bin` (sync, 8 s cap), or undefined when it cannot run. Optional: absent means the version finding is skipped. */
+	claudeVersion?: (bin: string) => string | undefined;
+	/** Stdout of `<bin> auth status --json` run with `env` (sync, 8 s cap), or undefined when it cannot run. Optional: absent means the auth finding is skipped. */
+	claudeAuth?: (env: Env, bin: string) => string | undefined;
 }

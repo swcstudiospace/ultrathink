@@ -38,7 +38,7 @@ const PLAN_CHECKS = [
 	"Semgrep",
 	"Analyze (javascript-typescript)",
 	"Analyze (python)",
-	"Check and test (ubuntu-latest, Bun latest)",
+	"Check and test (Bun latest)",
 ];
 /** One real advisory object, copied verbatim from `bun audit --json` run against a probe project with lodash@4.17.15. */
 const CAPTURED_NONEMPTY =
@@ -85,7 +85,12 @@ type Run = { code: number; out: string[]; err: string[] };
 function run(argv: string[], runAudit?: CliIo["runAudit"], root = REPO): Run {
 	const out: string[] = [];
 	const err: string[] = [];
-	const code = main(argv, { out: (line) => out.push(line), err: (line) => err.push(line), root, runAudit });
+	const code = main(argv, {
+		out: (line) => out.push(line),
+		err: (line) => err.push(line),
+		root,
+		runAudit,
+	});
 	return { code, out, err };
 }
 
@@ -93,7 +98,11 @@ function evidence(file: string): Record<string, unknown> {
 	return JSON.parse(readFileSync(file, "utf8"));
 }
 
-const advisory = (severity: Severity, id = 1, url = `https://example.test/advisory/${id}`): Advisory => ({
+const advisory = (
+	severity: Severity,
+	id = 1,
+	url = `https://example.test/advisory/${id}`,
+): Advisory => ({
 	package: "pkg",
 	id,
 	url,
@@ -139,7 +148,9 @@ describe("shipped policy", () => {
 
 	test("the policy digest reported by loadPolicy is the sha256 of the file bytes", () => {
 		const bytes = readFileSync(SHIPPED_POLICY, "utf8");
-		expect(loadPolicy(SHIPPED_POLICY).sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+		expect(loadPolicy(SHIPPED_POLICY).sha256).toBe(
+			createHash("sha256").update(bytes).digest("hex"),
+		);
 	});
 });
 
@@ -206,7 +217,10 @@ describe("audit parsing", () => {
 describe("audit evaluation", () => {
 	test("the captured empty report passes the shipped policy", () => {
 		const { policy } = loadPolicy(SHIPPED_POLICY);
-		expect(evaluateAudit(parseAuditOutput(readFileSync(REAL_EMPTY_FIXTURE, "utf8")), policy, TODAY).status).toBe("pass");
+		expect(
+			evaluateAudit(parseAuditOutput(readFileSync(REAL_EMPTY_FIXTURE, "utf8")), policy, TODAY)
+				.status,
+		).toBe("pass");
 	});
 
 	test("moderate advisories do not block at the high threshold", () => {
@@ -218,25 +232,42 @@ describe("audit evaluation", () => {
 	test("high and critical advisories without an allow entry block", () => {
 		const result = evaluateAudit([advisory("high", 1), advisory("critical", 2)], policyOf(), TODAY);
 		expect(result.status).toBe("fail");
-		expect(result.blocking.map((item) => item.reason)).toEqual(["no allow entry", "no allow entry"]);
+		expect(result.blocking.map((item) => item.reason)).toEqual([
+			"no allow entry",
+			"no allow entry",
+		]);
 	});
 
 	test("an allow entry naming the URL waives the advisory", () => {
-		const allow = [{ advisory: "https://example.test/advisory/1", reason: "accepted", expires: "2026-12-31" }];
-		const result = evaluateAudit([advisory("high", 1)], policyOf({ audit: { level: "high", allow } }), TODAY);
+		const allow = [
+			{ advisory: "https://example.test/advisory/1", reason: "accepted", expires: "2026-12-31" },
+		];
+		const result = evaluateAudit(
+			[advisory("high", 1)],
+			policyOf({ audit: { level: "high", allow } }),
+			TODAY,
+		);
 		expect(result.status).toBe("pass");
 		expect(result.waived).toHaveLength(1);
 	});
 
 	test("an allow entry naming the numeric id waives the advisory", () => {
 		const allow = [{ advisory: "1", reason: "accepted", expires: "2026-12-31" }];
-		const result = evaluateAudit([advisory("high", 1)], policyOf({ audit: { level: "high", allow } }), TODAY);
+		const result = evaluateAudit(
+			[advisory("high", 1)],
+			policyOf({ audit: { level: "high", allow } }),
+			TODAY,
+		);
 		expect(result.status).toBe("pass");
 	});
 
 	test("an allow entry expiring on today still waives; one expiring yesterday fails", () => {
 		const entry = (expires: string) => ({ advisory: "1", reason: "accepted", expires });
-		const onToday = evaluateAudit([advisory("high", 1)], policyOf({ audit: { level: "high", allow: [entry(TODAY)] } }), TODAY);
+		const onToday = evaluateAudit(
+			[advisory("high", 1)],
+			policyOf({ audit: { level: "high", allow: [entry(TODAY)] } }),
+			TODAY,
+		);
 		expect(onToday.status).toBe("pass");
 		const expiredYesterday = evaluateAudit(
 			[advisory("high", 1)],
@@ -259,39 +290,108 @@ describe("audit CLI", () => {
 	test("the synthetic high advisory fails, writes evidence, and an allow entry passes it", () => {
 		const dir = tempDir();
 		const out = join(dir, "ev");
-		const failing = run(["audit", "--root", dir, "--input", SYNTHETIC_FIXTURE, "--policy", SHIPPED_POLICY, "--today", TODAY, "--out", out]);
+		const failing = run([
+			"audit",
+			"--root",
+			dir,
+			"--input",
+			SYNTHETIC_FIXTURE,
+			"--policy",
+			SHIPPED_POLICY,
+			"--today",
+			TODAY,
+			"--out",
+			out,
+		]);
 		expect(failing.code).toBe(1);
 		expect(evidence(join(out, "audit.json")).status).toBe("fail");
 
 		const allow = [{ advisory: SYNTHETIC_URL, reason: "fixture waiver", expires: "2026-12-31" }];
 		const policy = writePolicy(dir, policyJson({ audit: { level: "high", allow } }));
-		const passing = run(["audit", "--root", dir, "--input", SYNTHETIC_FIXTURE, "--policy", policy, "--today", TODAY, "--out", out]);
+		const passing = run([
+			"audit",
+			"--root",
+			dir,
+			"--input",
+			SYNTHETIC_FIXTURE,
+			"--policy",
+			policy,
+			"--today",
+			TODAY,
+			"--out",
+			out,
+		]);
 		expect(passing.code).toBe(0);
 		expect(evidence(join(out, "audit.json")).status).toBe("pass");
 	});
 
 	test("the captured empty report passes through the CLI", () => {
 		const dir = tempDir();
-		const code = run(["audit", "--root", dir, "--input", REAL_EMPTY_FIXTURE, "--policy", SHIPPED_POLICY, "--today", TODAY, "--out", join(dir, "ev")]).code;
+		const code = run([
+			"audit",
+			"--root",
+			dir,
+			"--input",
+			REAL_EMPTY_FIXTURE,
+			"--policy",
+			SHIPPED_POLICY,
+			"--today",
+			TODAY,
+			"--out",
+			join(dir, "ev"),
+		]).code;
 		expect(code).toBe(0);
 	});
 
 	test("without --policy the policy comes from the first root's .github directory", () => {
 		const dir = tempDir();
 		const allow = [{ advisory: SYNTHETIC_URL, reason: "fixture waiver", expires: "2026-12-31" }];
-		write(join(dir, ".github", "security-policy.json"), JSON.stringify(policyJson({ audit: { level: "high", allow } })));
-		const code = run(["audit", "--root", dir, "--input", SYNTHETIC_FIXTURE, "--today", TODAY, "--out", join(dir, "ev")]).code;
+		write(
+			join(dir, ".github", "security-policy.json"),
+			JSON.stringify(policyJson({ audit: { level: "high", allow } })),
+		);
+		const code = run([
+			"audit",
+			"--root",
+			dir,
+			"--input",
+			SYNTHETIC_FIXTURE,
+			"--today",
+			TODAY,
+			"--out",
+			join(dir, "ev"),
+		]).code;
 		expect(code).toBe(0);
 	});
 
 	test("unknown output shapes exit 2 and write no evidence", () => {
-		const shapes = ["[]", "not json", '{"lodash":{}}', '{"lodash":[{"id":1,"url":"u","title":"t","severity":"medium","vulnerable_versions":"*"}]}', ""];
+		const shapes = [
+			"[]",
+			"not json",
+			'{"lodash":{}}',
+			'{"lodash":[{"id":1,"url":"u","title":"t","severity":"medium","vulnerable_versions":"*"}]}',
+			"",
+		];
 		for (const shape of shapes) {
 			const dir = tempDir();
 			const input = join(dir, "raw.json");
 			write(input, shape);
 			const out = join(dir, "ev");
-			expect(run(["audit", "--root", dir, "--input", input, "--policy", SHIPPED_POLICY, "--today", TODAY, "--out", out]).code).toBe(2);
+			expect(
+				run([
+					"audit",
+					"--root",
+					dir,
+					"--input",
+					input,
+					"--policy",
+					SHIPPED_POLICY,
+					"--today",
+					TODAY,
+					"--out",
+					out,
+				]).code,
+			).toBe(2);
 			expect(existsSync(join(out, "audit.json"))).toBe(false);
 		}
 	});
@@ -302,7 +402,21 @@ describe("audit CLI", () => {
 		write(join(out, "audit.json"), JSON.stringify({ gate: "audit", status: "pass" }));
 		const input = join(dir, "raw.json");
 		write(input, "not json");
-		expect(run(["audit", "--root", dir, "--input", input, "--policy", SHIPPED_POLICY, "--today", TODAY, "--out", out]).code).toBe(2);
+		expect(
+			run([
+				"audit",
+				"--root",
+				dir,
+				"--input",
+				input,
+				"--policy",
+				SHIPPED_POLICY,
+				"--today",
+				TODAY,
+				"--out",
+				out,
+			]).code,
+		).toBe(2);
 		expect(existsSync(join(out, "audit.json"))).toBe(false);
 	});
 
@@ -335,7 +449,17 @@ describe("audit CLI", () => {
 
 	test("--input needs exactly one --root", () => {
 		const dir = tempDir();
-		const code = run(["audit", "--root", dir, "--root", dir, "--input", SYNTHETIC_FIXTURE, "--out", join(dir, "ev")]).code;
+		const code = run([
+			"audit",
+			"--root",
+			dir,
+			"--root",
+			dir,
+			"--input",
+			SYNTHETIC_FIXTURE,
+			"--out",
+			join(dir, "ev"),
+		]).code;
 		expect(code).toBe(2);
 	});
 });
@@ -361,7 +485,16 @@ describe("SPDX expressions", () => {
 	}
 
 	test("malformed expressions throw so they can never pass", () => {
-		for (const bad of ["", "(MIT", "MIT)", "MIT OR", "SEE LICENSE IN LICENSE", "AND MIT", "MIT WITH", "MIT AND WITH x"]) {
+		for (const bad of [
+			"",
+			"(MIT",
+			"MIT)",
+			"MIT OR",
+			"SEE LICENSE IN LICENSE",
+			"AND MIT",
+			"MIT WITH",
+			"MIT AND WITH x",
+		]) {
 			expect(() => spdxAllowed(bad, ["MIT"])).toThrow();
 		}
 	});
@@ -387,7 +520,12 @@ describe("license evaluation", () => {
 	});
 
 	test("a package whose manifest lacks a version fails rather than passing", () => {
-		const unversioned: InstalledPackage = { file: "node_modules/x/package.json", name: "x", license: "MIT", problem: "package.json has no name or version" };
+		const unversioned: InstalledPackage = {
+			file: "node_modules/x/package.json",
+			name: "x",
+			license: "MIT",
+			problem: "package.json has no name or version",
+		};
 		expect(evaluateLicenses([unversioned], policy, TODAY).status).toBe("fail");
 	});
 
@@ -417,12 +555,30 @@ describe("license evaluation", () => {
 			expires: "2026-12-31",
 		};
 		const withException = policyOf({ licenses: { allow: LICENSE_ALLOW, exceptions: [exception] } });
-		expect(evaluateLicenses([pkg("gpl-thing", "GPL-3.0-only WITH classpath-exception-2.0", "1.0.1")], withException, TODAY).status).toBe("fail");
-		expect(evaluateLicenses([pkg("other-thing", "GPL-3.0-only WITH classpath-exception-2.0")], withException, TODAY).status).toBe("fail");
+		expect(
+			evaluateLicenses(
+				[pkg("gpl-thing", "GPL-3.0-only WITH classpath-exception-2.0", "1.0.1")],
+				withException,
+				TODAY,
+			).status,
+		).toBe("fail");
+		expect(
+			evaluateLicenses(
+				[pkg("other-thing", "GPL-3.0-only WITH classpath-exception-2.0")],
+				withException,
+				TODAY,
+			).status,
+		).toBe("fail");
 	});
 
 	test("an exception does not waive a different license expression for the same package", () => {
-		const exception = { name: "gpl-thing", version: "1.0.0", license: "GPL-3.0-only", reason: "r", expires: "2026-12-31" };
+		const exception = {
+			name: "gpl-thing",
+			version: "1.0.0",
+			license: "GPL-3.0-only",
+			reason: "r",
+			expires: "2026-12-31",
+		};
 		const result = evaluateLicenses(
 			[pkg("gpl-thing", "GPL-3.0-only WITH classpath-exception-2.0")],
 			policyOf({ licenses: { allow: LICENSE_ALLOW, exceptions: [exception] } }),
@@ -432,8 +588,18 @@ describe("license evaluation", () => {
 	});
 
 	test("an exception expiring on today still waives; one expiring yesterday fails and is reported", () => {
-		const entry = (expires: string) => ({ name: "gpl-thing", version: "1.0.0", license: "GPL-3.0-only", reason: "r", expires });
-		const onToday = evaluateLicenses([pkg("gpl-thing", "GPL-3.0-only")], policyOf({ licenses: { allow: LICENSE_ALLOW, exceptions: [entry(TODAY)] } }), TODAY);
+		const entry = (expires: string) => ({
+			name: "gpl-thing",
+			version: "1.0.0",
+			license: "GPL-3.0-only",
+			reason: "r",
+			expires,
+		});
+		const onToday = evaluateLicenses(
+			[pkg("gpl-thing", "GPL-3.0-only")],
+			policyOf({ licenses: { allow: LICENSE_ALLOW, exceptions: [entry(TODAY)] } }),
+			TODAY,
+		);
 		expect(onToday.status).toBe("pass");
 		const expired = evaluateLicenses(
 			[pkg("gpl-thing", "GPL-3.0-only")],
@@ -449,13 +615,32 @@ describe("license tree collection", () => {
 	test("collects installed packages, dedupes by name@version, and ignores non-package JSON", () => {
 		const root = tempDir();
 		installPackage(root, "alpha", { name: "alpha", version: "1.0.0", license: "MIT" });
-		installPackage(root, "@scope/beta", { name: "@scope/beta", version: "2.0.0", license: "(MIT OR GPL-3.0-only)" });
-		installPackage(root, "alpha/node_modules/gamma", { name: "gamma", version: "1.0.0", license: { type: "ISC" } });
-		installPackage(root, ".bun/alpha@1.0.0/node_modules/alpha", { name: "alpha", version: "1.0.0", license: "MIT" });
-		write(join(root, "node_modules", "alpha", "test", "package.json"), JSON.stringify({ private: true, license: "GPL-3.0-only" }));
+		installPackage(root, "@scope/beta", {
+			name: "@scope/beta",
+			version: "2.0.0",
+			license: "(MIT OR GPL-3.0-only)",
+		});
+		installPackage(root, "alpha/node_modules/gamma", {
+			name: "gamma",
+			version: "1.0.0",
+			license: { type: "ISC" },
+		});
+		installPackage(root, ".bun/alpha@1.0.0/node_modules/alpha", {
+			name: "alpha",
+			version: "1.0.0",
+			license: "MIT",
+		});
+		write(
+			join(root, "node_modules", "alpha", "test", "package.json"),
+			JSON.stringify({ private: true, license: "GPL-3.0-only" }),
+		);
 
 		const packages = collectLicenses([root]);
-		expect(packages.map((item) => `${item.name}@${item.version}`).sort()).toEqual(["@scope/beta@2.0.0", "alpha@1.0.0", "gamma@1.0.0"]);
+		expect(packages.map((item) => `${item.name}@${item.version}`).sort()).toEqual([
+			"@scope/beta@2.0.0",
+			"alpha@1.0.0",
+			"gamma@1.0.0",
+		]);
 		const result = evaluateLicenses(packages, policyOf(), TODAY);
 		expect(result.status).toBe("pass");
 		expect(result.packageCount).toBe(3);
@@ -464,7 +649,11 @@ describe("license tree collection", () => {
 	test("a package only present in Bun's dot store is still evaluated", () => {
 		const root = tempDir();
 		installPackage(root, "alpha", { name: "alpha", version: "1.0.0", license: "MIT" });
-		installPackage(root, ".bun/delta@1.0.0/node_modules/delta", { name: "delta", version: "1.0.0", license: "GPL-3.0-only" });
+		installPackage(root, ".bun/delta@1.0.0/node_modules/delta", {
+			name: "delta",
+			version: "1.0.0",
+			license: "GPL-3.0-only",
+		});
 		const result = evaluateLicenses(collectLicenses([root]), policyOf(), TODAY);
 		expect(result.status).toBe("fail");
 		expect(result.failures.map((item) => item.name)).toEqual(["delta"]);
@@ -478,25 +667,58 @@ describe("license tree collection", () => {
 		const root = tempDir();
 		const out = join(root, "ev");
 		installPackage(root, "alpha", { name: "alpha", version: "1.0.0", license: "MIT" });
-		expect(run(["licenses", "--root", root, "--out", out, "--policy", SHIPPED_POLICY, "--today", TODAY]).code).toBe(0);
+		expect(
+			run(["licenses", "--root", root, "--out", out, "--policy", SHIPPED_POLICY, "--today", TODAY])
+				.code,
+		).toBe(0);
 		expect(evidence(join(out, "licenses.json")).status).toBe("pass");
 
 		installPackage(root, "gpl", { name: "gpl", version: "1.0.0", license: "GPL-3.0-only" });
-		const failing = run(["licenses", "--root", root, "--out", out, "--policy", SHIPPED_POLICY, "--today", TODAY]);
+		const failing = run([
+			"licenses",
+			"--root",
+			root,
+			"--out",
+			out,
+			"--policy",
+			SHIPPED_POLICY,
+			"--today",
+			TODAY,
+		]);
 		expect(failing.code).toBe(1);
 		expect(evidence(join(out, "licenses.json")).status).toBe("fail");
 		expect(failing.err.join("\n")).toContain("gpl@1.0.0");
 
-		expect(run(["licenses", "--root", tempDir(), "--out", join(root, "other"), "--policy", SHIPPED_POLICY, "--today", TODAY]).code).toBe(2);
+		expect(
+			run([
+				"licenses",
+				"--root",
+				tempDir(),
+				"--out",
+				join(root, "other"),
+				"--policy",
+				SHIPPED_POLICY,
+				"--today",
+				TODAY,
+			]).code,
+		).toBe(2);
 	});
 });
 
 describe("check evaluation", () => {
 	test("a rerun with a higher id replaces an earlier failure, in either line order", () => {
-		const failedThenPassed = [checkLine(5, "Semgrep", "completed", "failure"), checkLine(9, "Semgrep", "completed", "success")].join("\n");
-		const passedThenFailed = [checkLine(9, "Semgrep", "completed", "success"), checkLine(5, "Semgrep", "completed", "failure")].join("\n");
+		const failedThenPassed = [
+			checkLine(5, "Semgrep", "completed", "failure"),
+			checkLine(9, "Semgrep", "completed", "success"),
+		].join("\n");
+		const passedThenFailed = [
+			checkLine(9, "Semgrep", "completed", "success"),
+			checkLine(5, "Semgrep", "completed", "failure"),
+		].join("\n");
 		for (const ndjson of [failedThenPassed, passedThenFailed]) {
-			expect(evaluateChecks(latestChecks(ndjson), policyOf({ requiredChecks: ["Semgrep"] })).status).toBe("pass");
+			expect(
+				evaluateChecks(latestChecks(ndjson), policyOf({ requiredChecks: ["Semgrep"] })).status,
+			).toBe("pass");
 		}
 	});
 
@@ -516,26 +738,45 @@ describe("check evaluation", () => {
 	}
 
 	test("a required check with no run at all fails", () => {
-		const result = evaluateChecks(latestChecks(checkLine(1, "Other", "completed", "success")), policyOf({ requiredChecks: ["Semgrep"] }));
+		const result = evaluateChecks(
+			latestChecks(checkLine(1, "Other", "completed", "success")),
+			policyOf({ requiredChecks: ["Semgrep"] }),
+		);
 		expect(result.status).toBe("fail");
 		expect(result.checks[0]?.reason).toBe("no check run with this name");
 	});
 
 	test("checks that are not required do not affect the verdict", () => {
-		const ndjson = [checkLine(1, "Semgrep", "completed", "success"), checkLine(2, "Experimental", "completed", "failure")].join("\n");
-		expect(evaluateChecks(latestChecks(ndjson), policyOf({ requiredChecks: ["Semgrep"] })).status).toBe("pass");
+		const ndjson = [
+			checkLine(1, "Semgrep", "completed", "success"),
+			checkLine(2, "Experimental", "completed", "failure"),
+		].join("\n");
+		expect(
+			evaluateChecks(latestChecks(ndjson), policyOf({ requiredChecks: ["Semgrep"] })).status,
+		).toBe("pass");
 	});
 
 	test("a malformed NDJSON line throws", () => {
-		expect(() => latestChecks('{"id":1,"name":"Semgrep","status":"completed","conclusion":"success"}\nnot json')).toThrow();
+		expect(() =>
+			latestChecks(
+				'{"id":1,"name":"Semgrep","status":"completed","conclusion":"success"}\nnot json',
+			),
+		).toThrow();
 	});
 
 	test("the checks CLI passes every shipped required check and writes evidence", () => {
 		const dir = tempDir();
 		const input = join(dir, "checks.ndjson");
-		write(input, PLAN_CHECKS.map((name, index) => checkLine(index + 1, name, "completed", "success")).join("\n"));
+		write(
+			input,
+			PLAN_CHECKS.map((name, index) => checkLine(index + 1, name, "completed", "success")).join(
+				"\n",
+			),
+		);
 		const out = join(dir, "ev");
-		expect(run(["checks", "--input", input, "--policy", SHIPPED_POLICY, "--out", out]).code).toBe(0);
+		expect(run(["checks", "--input", input, "--policy", SHIPPED_POLICY, "--out", out]).code).toBe(
+			0,
+		);
 		expect(evidence(join(out, "checks.json")).status).toBe("pass");
 	});
 
@@ -543,7 +784,17 @@ describe("check evaluation", () => {
 		const dir = tempDir();
 		const out = join(dir, "ev");
 		write(join(out, "checks.json"), JSON.stringify({ gate: "checks", status: "pass" }));
-		expect(run(["checks", "--input", join(dir, "absent.ndjson"), "--policy", SHIPPED_POLICY, "--out", out]).code).toBe(2);
+		expect(
+			run([
+				"checks",
+				"--input",
+				join(dir, "absent.ndjson"),
+				"--policy",
+				SHIPPED_POLICY,
+				"--out",
+				out,
+			]).code,
+		).toBe(2);
 		expect(existsSync(join(out, "checks.json"))).toBe(false);
 	});
 });
@@ -556,13 +807,26 @@ describe("report", () => {
 	test("all three passing gates produce a passing manifest with sha, tag and policy digest", () => {
 		const dir = tempDir();
 		for (const gate of ["audit", "licenses", "checks"]) gateFile(dir, gate, "pass");
-		const code = run(["report", "--out", dir, "--policy", SHIPPED_POLICY, "--sha", "abc123", "--tag", "v1.2.3"]).code;
+		const code = run([
+			"report",
+			"--out",
+			dir,
+			"--policy",
+			SHIPPED_POLICY,
+			"--sha",
+			"abc123",
+			"--tag",
+			"v1.2.3",
+		]).code;
 		expect(code).toBe(0);
 		const manifest = evidence(join(dir, "manifest.json"));
 		expect(manifest.status).toBe("pass");
 		expect(manifest.sha).toBe("abc123");
 		expect(manifest.tag).toBe("v1.2.3");
-		expect(manifest.policy).toEqual({ file: SHIPPED_POLICY, sha256: loadPolicy(SHIPPED_POLICY).sha256 });
+		expect(manifest.policy).toEqual({
+			file: SHIPPED_POLICY,
+			sha256: loadPolicy(SHIPPED_POLICY).sha256,
+		});
 	});
 
 	test("a missing audit.json is a failure: exit 1, manifest still written, and the gap named", () => {
@@ -610,11 +874,23 @@ describe("bun subprocess", () => {
 });
 
 describe("ancestry", () => {
-	const gitIdentity = ["-c", "user.name=test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false"];
+	const gitIdentity = [
+		"-c",
+		"user.name=test",
+		"-c",
+		"user.email=test@example.test",
+		"-c",
+		"commit.gpgsign=false",
+	];
 
 	function git(dir: string, ...args: string[]): string {
-		const result = Bun.spawnSync(["git", ...gitIdentity, ...args], { cwd: dir, stdout: "pipe", stderr: "pipe" });
-		if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${new TextDecoder().decode(result.stderr)}`);
+		const result = Bun.spawnSync(["git", ...gitIdentity, ...args], {
+			cwd: dir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (result.exitCode !== 0)
+			throw new Error(`git ${args.join(" ")} failed: ${new TextDecoder().decode(result.stderr)}`);
 		return new TextDecoder().decode(result.stdout).trim();
 	}
 
@@ -651,7 +927,10 @@ describe("ancestry", () => {
 			write(join(out, `${gate}.json`), JSON.stringify({ schema: 1, gate, status: "pass" }));
 		}
 		expect(run(["ancestry", "--sha", onMain], undefined, dir).code).toBe(0);
-		expect(run(["report", "--out", out, "--policy", SHIPPED_POLICY, "--sha", onMain], undefined, dir).code).toBe(0);
+		expect(
+			run(["report", "--out", out, "--policy", SHIPPED_POLICY, "--sha", onMain], undefined, dir)
+				.code,
+		).toBe(0);
 		expect(evidence(join(out, "manifest.json")).status).toBe("pass");
 	});
 

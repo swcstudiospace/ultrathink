@@ -87,10 +87,14 @@ This is an optional integration. Run it only when an MCP server named `substrate
 | `graph_id` | `plan.graphId` (required) |
 | `notion_task_page` | `tracking.notion.taskUrl` |
 | `repo` / `branch` | `plan.task.repo` / `plan.task.branch`, when set |
-| `surface` | the record's `host`; `claude-code` only when `host` is absent |
+| `surface` | the record's `host`; `claude-code` only when `host` is absent. `prime-agent` is not a Substrate surface: send `pi` |
 | `status` | `plan.task.status` |
-| `nodes` | per node: `node_id`, `linear_issue_id` (`linear.nodes[n].id`), `linear_identifier`, `linear_url`, `notion_page` (`notion.nodes[n]`) |
-| `steps` | per step key: `node_id`, `step`, `linear_sub_issue_id`, `linear_identifier`, `linear_url`, `notion_page` (`notion.steps[key]`) |
+| `pr_url` | the PR URL, only when one exists (a fresh plan has none: leave it out) |
+| `nodes` | per node: `node_id`, `linear_issue_id` (`linear.nodes[n].id`), `linear_identifier`, `notion_page` (`notion.nodes[n]`), `state` |
+| `steps` | per step key: `node_id`, `step`, `linear_sub_issue_id`, `notion_page` (`notion.steps[key]`), `state` |
+| `edges` | per dependency in the Graph of Thought: `from_node` = the dependent node, `to_node` = the node it depends on, `kind` = `requires` |
+
+`state` is one of `backlog`, `unstarted`, `started`, `started_review`, `completed`, `canceled`, `duplicate`, taken from `plan.task.status` (for example `Todo` is `unstarted`, `Implementing` is `started`, `Done` is `completed`). Leave it out when the status names none of them (`Planning` does not) rather than guessing. Never send `linear_url` on nodes, or `linear_identifier` or `linear_url` on steps: the Substrate schema does not accept them.
 
 **Fail open.** If the call errors, log one line and continue. Do not retry or ask the user.
 

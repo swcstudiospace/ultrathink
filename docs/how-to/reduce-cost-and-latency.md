@@ -1,6 +1,6 @@
 # Reduce cost and latency
 
-Planning makes several model calls before your agent starts, and the agent waits for them. This guide counts those calls and lists every setting that makes planning cheaper or faster. The **engine** is the model that plans (see [Choose the engine](choose-engine.md)). With the Claude engine, each call is one headless `claude -p` run on the account the `claude` CLI is logged in with.
+Planning makes several model calls before your agent starts, and the agent waits for them. This guide counts those calls and lists every setting that makes planning cheaper or faster. The **engine** is the model that plans (see [Choose the engine](choose-engine.md)). With the Claude engine, each call is one headless `claude -p` run on the plan login the `claude` CLI is signed in with, so the calls count against your plan's session and weekly limits rather than an API balance (see [plan-first auth](choose-engine.md#claude)).
 
 - [What one plan costs](#what-one-plan-costs)
 - [Plan fewer prompts](#plan-fewer-prompts)
@@ -43,7 +43,7 @@ To plan one message while planning is off, or a short reply, start it with `upli
 
 `bin/ultrathink` changes the host it detects, and Claude Code from a plain shell. Set `ULTRATHINK_HOST` (`claude-code`, `grok-build`, `hermes`, `muse` or `omp`) to change another host. See [Commands](../commands.md#skip-and-control-commands) for how each host shows the commands.
 
-A prompt longer than `uplift.maxChars` (20,000 characters) skips the spec call: it gets the minimal fallback spec and creates no rows. The Graph of Thought and the questions still run unless they are off.
+By default `uplift.maxChars` is `0`, so no prompt is cut short and every spec call runs. Set a positive value to cap the spec call: a longer prompt skips it, gets the minimal fallback spec and creates no rows. The Graph of Thought and the questions still run unless they are off.
 
 ## Make each plan smaller
 
@@ -70,12 +70,13 @@ For example, a lighter plan for every host:
 
 | Key | Default | Effect |
 |---|---|---|
-| `claude.model` | `"sonnet"` | Model alias for the Claude engine. A smaller model is faster and cheaper. `""` uses the `claude` CLI's default. |
+| `claude.model` | `"claude-haiku-5-5"` | Model for the Claude engine, passed as `--model`. The default is already the small, fast model. `""` uses the `claude` CLI's default. |
 | `claude.thinking` | `false` | Keep it off. On allows extended thinking in every planning call, which dominates latency. |
 | `claude.settingSources` | `""` | Keep it empty. Empty loads no settings in the child `claude` calls: fastest, and no nested hooks. |
 | `claude.concurrency` | `3` | Node detail calls that run at once, per dependency level of the graph. It applies to both engines. `1` runs them one by one. Higher is faster, if your account allows the parallel calls. |
-| `grok.reasoningEffort` | `"xhigh"` | Grok `http` and `cli` transports: `"low"`, `"medium"` or `"high"` trade depth for speed. |
-| `grok.model`, `grok.shuntModel` | `"grok-4.7"`, `""` | The Grok model, or the model your shunt gateway routes. |
+| `grok.reasoningEffort` | `"xhigh"` | Grok `http` and `cli` transports: `"low"`, `"medium"` or `"high"` trade depth for speed. It is sent only to `grok-4.5`, `grok-4.6` and `grok-4.7`; the default `grok-build-0.1` takes no effort, so the setting changes nothing for it. |
+| `grok.model`, `grok.shuntModel` | `"grok-build-0.1"`, `""` | The Grok model, or the model your shunt gateway routes. |
+| `grok.fallbackModels` | `[]` | Models tried after `grok.model` when the session cannot use it. Empty by default, so a refused `grok-build-0.1` is reported instead of walking to a pricier model; the fix is the right Grok login (see [Grok Build login lane](choose-engine.md#grok-build-login-lane)). List a model yourself to opt in. |
 
 ## Cap the waiting time
 
@@ -93,7 +94,7 @@ Tracking creates the Linear and Notion rows before the agent sees the plan, so i
 
 | Key | Default | Effect |
 |---|---|---|
-| `track.budgetMs` | `60000` | Longest the planner spends creating rows. Rows it did not finish are left to the `ultrathink-kickoff` skill, which the agent runs. |
+| `track.budgetMs` | `0` | Longest the planner spends creating rows; `0` means no limit. Rows it did not finish are left to the `ultrathink-kickoff` skill, which the agent runs. |
 | `track.concurrency` | `6` | Tracker calls at once. |
 | `track.enabled` | `true` | `false`, or `ULTRATHINK_TRACK=0`, stops the planner creating rows. The kickoff skill still creates them in the agent's turn, which costs agent tokens instead. |
 | `/ultrathink-track off` | | Stops all row creation for this host, the kickoff skill included. |
