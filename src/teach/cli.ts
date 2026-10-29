@@ -9,6 +9,7 @@
  */
 import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { appendActivity } from "./activity.ts";
 import { toAgentCardFromMoments } from "./agent-card.ts";
 import {
 	captureMoment,
@@ -21,7 +22,14 @@ import { teachContext, teachEnabled } from "./context.ts";
 import type { TeachContextOptions } from "./context.ts";
 import { parseDigest } from "./digest.ts";
 import { observeDigest } from "./observe.ts";
-import { appendRun } from "./runlog.ts";
+import {
+	appendRun,
+	failureStreak,
+	isObserveFailure,
+	type ObserveRun,
+	readRuns,
+	shouldNotifyFailure,
+} from "./runlog.ts";
 import {
 	filterSkillworthy,
 	installSkill,
@@ -594,6 +602,28 @@ async function drainOutbox(
 	}
 }
 
+/**
+ * A failed distiller leaves one `teachable-failed` activity receipt for the Omp session that produced the run: on the
+ * first failure of a streak and then every tenth. The status line carries the standing signal. Never throws.
+ */
+function announceFailure(ctx: TeachContext, record: ObserveRun): void {
+	if (record.outcome !== "skipped" || !isObserveFailure(record.skipped)) return;
+	const streak = failureStreak(readRuns(ctx.stateDir));
+	if (!streak || !shouldNotifyFailure(streak)) return;
+	appendActivity(
+		ctx.stateDir,
+		{
+			v: 1,
+			kind: "teachable-failed",
+			title: "Teachable Moments distiller failed",
+			outcome: "failed",
+			count: streak.count,
+			detail: streak.reason,
+		},
+		record.sessionId,
+	);
+}
+
 async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise<CliResult> {
 	const file = p.one("file");
 	if (p.has("stdin") === (file !== undefined))
@@ -617,26 +647,25 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 		// A save that did not reach disk (`retain: "off"`) is not a capture: count only the stored ones.
 		const stored = outcome.captured.filter((c) => c.retain !== "off").length;
 		const notSaved = outcome.captured.length > 0 && stored === 0;
-		appendRun(
-			ctx.stateDir,
-			notSaved
-				? {
-						at: ctx.now?.() ?? Date.now(),
-						sessionId: digest.sessionId,
-						outcome: "skipped",
-						captured: 0,
-						skipped: "lesson not saved",
-						detail: redactLine(outcome.captured[0]?.reason ?? "store unavailable", 160),
-					}
-				: {
-						at: ctx.now?.() ?? Date.now(),
-						sessionId: digest.sessionId,
-						outcome: outcome.skipped ? "skipped" : "captured",
-						captured: stored,
-						...(outcome.skipped ? { skipped: outcome.skipped } : {}),
-						...(outcome.detail ? { detail: outcome.detail } : {}),
-					},
-		);
+		const record: ObserveRun = notSaved
+			? {
+					at: ctx.now?.() ?? Date.now(),
+					sessionId: digest.sessionId,
+					outcome: "skipped",
+					captured: 0,
+					skipped: "lesson not saved",
+					detail: redactLine(outcome.captured[0]?.reason ?? "store unavailable", 160),
+				}
+			: {
+					at: ctx.now?.() ?? Date.now(),
+					sessionId: digest.sessionId,
+					outcome: outcome.skipped ? "skipped" : "captured",
+					captured: stored,
+					...(outcome.skipped ? { skipped: outcome.skipped } : {}),
+					...(outcome.detail ? { detail: outcome.detail } : {}),
+				};
+		appendRun(ctx.stateDir, record);
+		announceFailure(ctx, record);
 		const value: Record<string, unknown> = {
 			ok: true,
 			captured: outcome.captured.map(captureJson),

@@ -21,10 +21,11 @@ import type {
 	RecallHit,
 	RetainItem,
 } from "../hindsight/types.ts";
+import { readActivity } from "./activity.ts";
 import { runTeachCommand } from "./cli.ts";
 import type { CommandDeps } from "./cli.ts";
 import { contentFor, documentIdFor, metadataFor, projectOf, tagsFor } from "./mapping.ts";
-import { readRuns } from "./runlog.ts";
+import { appendRun, readRuns } from "./runlog.ts";
 import { openStore, storeDir } from "./store.ts";
 import type { CliResult, TeachableMoment, TeachConfig } from "./types.ts";
 import { DEFAULT_TEACH_CONFIG } from "./types.ts";
@@ -1336,6 +1337,71 @@ describe("observe run log and outbox drain", () => {
 				detail: "Credit balance is too low",
 			},
 		]);
+	});
+
+	describe("distiller failure receipts", () => {
+		const failing = async (): Promise<string> => {
+			throw new Error("Credit balance is too low");
+		};
+		const seedFailures = (count: number): void => {
+			for (let i = 0; i < count; i++)
+				appendRun(stateDir, {
+					at: NOW - (count - i) * 1000,
+					sessionId: "earlier",
+					outcome: "skipped",
+					captured: 0,
+					skipped: "distiller failed",
+					detail: "Credit balance is too low",
+				});
+		};
+		const observeFailing = (): Promise<CliResult> =>
+			run(["observe", "--stdin", "--json"], {
+				stdin: async () => JSON.stringify(digest()),
+				complete: failing,
+			});
+
+		test("the first failure of a streak leaves one receipt for the session", async () => {
+			await observeFailing();
+			expect(readActivity(stateDir)).toMatchObject([
+				{
+					sessionId: "session-1",
+					kind: "teachable-failed",
+					outcome: "failed",
+					count: 1,
+					detail: "Credit balance is too low",
+				},
+			]);
+		});
+
+		test("the second to ninth failures leave no further receipt", async () => {
+			seedFailures(1);
+			await observeFailing();
+			expect(readActivity(stateDir)).toEqual([]);
+		});
+
+		test("the tenth failure leaves a receipt carrying the count", async () => {
+			seedFailures(9);
+			await observeFailing();
+			expect(readActivity(stateDir)).toMatchObject([{ kind: "teachable-failed", count: 10 }]);
+		});
+
+		test("a run skipped before the distiller never repeats the receipt of a long streak", async () => {
+			seedFailures(9);
+			await run(["observe", "--stdin", "--json"], {
+				stdin: async () => JSON.stringify(digest({ toolCalls: 0 })),
+				complete: failing,
+			});
+			expect(readActivity(stateDir)).toEqual([]);
+		});
+
+		test("an answered run leaves no failure receipt", async () => {
+			seedFailures(1);
+			await run(["observe", "--stdin", "--json"], {
+				stdin: async () => JSON.stringify(digest()),
+				complete: async () => DISTILLED,
+			});
+			expect(readActivity(stateDir).filter((row) => row.kind === "teachable-failed")).toEqual([]);
+		});
 	});
 
 	test("a captured run records outcome captured", async () => {

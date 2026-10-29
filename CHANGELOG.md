@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A failing Teachable Moments distiller is now visible where you look, not only in `doctor`. The newest failed `teach observe` runs in the run log (`<state>/teach/runs/`; a distiller that cannot answer, a missing engine, a lesson the store refused) are read as a streak: the `Teach:` status line and `teach status` end with `observe failing ×<n> since <time> UTC (<reason>)` until a run is answered or captures, and `teach observe` writes one `teachable-failed` activity receipt (the Omp card reads "Teachable Moments failed") on the first failure of a streak and on every tenth. Runs skipped before the distiller was asked (too few tool calls, no signal, explicit mode) neither extend nor end a streak. The streak is derived from the run log, so there is no second state file, and a full log now drops runs skipped before the distiller was asked first, so a stream of them cannot push an unresolved failure out; the status line shows `×50+` once all 50 kept runs are failures.
+
 ### Added
 
 - GSD slash commands are planned. A prompt that is `/gsd-*` or `/skill:gsd-*` (also a plugin-qualified `…:gsd-*`) is planning input even when no skill file is installed: ultrathink plans the text after the command, or the command's objective when you typed nothing. `/ultrathink-quick` and the other `/ultrathink-*` commands still skip planning, and so do unknown commands such as `/model`. `bun scripts/cursor-plugin.ts install` copies the GSD command names the pstack stage table already knows into `~/.cursor/commands/<name>.md`, marked `ultrathink-cursor-gsd`. A file without that marker is left alone, and `remove` deletes only marked copies. The same files ship at `hosts/cursor/gsd-commands/`, and `.cursor-plugin/plugin.json` lists that directory beside `./hosts/cursor/commands`, which holds the Cursor control commands (`/ultrathink-on`, `-off`, `-skip`, `-track`, `-status`). The hook answers those controls itself through `bin/ultrathink` with host `cursor`. The pstack bridge (`ultrathink-managed`) is unchanged.

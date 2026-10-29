@@ -8,6 +8,7 @@ import { redactLine } from "../teach/redact.ts";
 
 const ACTIVITY_KINDS = [
 	"teachable-created",
+	"teachable-failed",
 	"teachable-recalled",
 	"skill-recalled",
 	"resource",

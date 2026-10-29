@@ -437,7 +437,7 @@ Teachable Moments are on by default: finished turns are distilled into lessons a
 
 `ULTRATHINK_TEACH=0` is checked after `enabled`. While `enabled` is false the status line says `Teach: off (opt-in: set teach.enabled)` even if the variable is set. When `enabled` is true and the variable is `0`, the line is `Teach: off (ULTRATHINK_TEACH=0)`.
 
-Lessons are written under the host state directory, `<stateDir>/teach/`: one JSON file per moment in `moments/`, pending Hindsight writes in `outbox/`, observe digests in `inbox/`, the newest 50 `teach observe` runs in `runs/` (one small JSON file per run with `at`, `sessionId`, `outcome`, `captured`, `skipped` and `detail`, never lesson text), and skill drafts in `skill-drafts/<name>/SKILL.md`. `ULTRATHINK_STATE_DIR` is honored, and a path inside `.planning` is ignored. Nothing is written into `<cwd>/.planning` or a repository working tree. A Hindsight failure queues an outbox entry (backoff 1 minute, doubling, capped at 6 hours) and does not block the caller. Every `teach observe` run drains due outbox entries (at most 20, within 30 s), and `teach sync` forces it.
+Lessons are written under the host state directory, `<stateDir>/teach/`: one JSON file per moment in `moments/`, pending Hindsight writes in `outbox/`, observe digests in `inbox/`, 50 `teach observe` runs in `runs/` (the newest; runs skipped before the distiller was asked go first once the log is full) (one small JSON file per run with `at`, `sessionId`, `outcome`, `captured`, `skipped` and `detail`, never lesson text), and skill drafts in `skill-drafts/<name>/SKILL.md`. `ULTRATHINK_STATE_DIR` is honored, and a path inside `.planning` is ignored. Nothing is written into `<cwd>/.planning` or a repository working tree. A Hindsight failure queues an outbox entry (backoff 1 minute, doubling, capped at 6 hours) and does not block the caller. Every `teach observe` run drains due outbox entries (at most 20, within 30 s), and `teach sync` forces it.
 
 Before anything is stored or sent, text is redacted. `Bearer` followed by a short English word is left alone (`the Bearer key`, `Bearer token rotation`). `Bearer` followed by a token is replaced with `[redacted]` when the token is at least 16 characters, or at least 6 characters and contains a digit. Trailing dots stay. See [Troubleshooting](troubleshooting.md#redaction).
 
@@ -445,9 +445,9 @@ Before anything is stored or sent, text is redacted. `Bearer` followed by a shor
 
 - `Teach: off (opt-in: set teach.enabled)`
 - `Teach: off (ULTRATHINK_TEACH=0)`
-- `Teach: on · capture <explicit|observe|auto> · recall on|off · <n> confirmed, <m> candidate · Hindsight <ready|off|no URL|bad URL|no key> · outbox <k>`
+- `Teach: on · capture <explicit|observe|auto> · recall on|off · <n> confirmed, <m> candidate · Hindsight <ready|off|no URL|bad URL|no key> · outbox <k>[ · observe failing ×<n> since <time> UTC (<reason>)]`
 
-The confirmed/candidate counts and the outbox count are included when the status command knows the state directory, which `bin/ultrathink status` does. `Hindsight` here is the readiness word, not the `Hindsight:` line.
+The confirmed/candidate counts and the outbox count are included when the status command knows the state directory, which `bin/ultrathink status` does. `Hindsight` here is the readiness word, not the `Hindsight:` line. The `observe failing` part appears while the newest `teach observe` runs in `teach/runs/` failed (the distiller could not answer, no engine, or the store refused the lesson) and ends with the first run that was answered; runs skipped before the distiller was asked do not count either way. `×50+` means every kept run failed.
 
 ### `state`: session retention
 
