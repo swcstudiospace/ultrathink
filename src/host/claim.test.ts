@@ -70,7 +70,7 @@ describe("claimTurn", () => {
 		stateDir: string,
 		tail: string,
 	): { exitCode: number | null; stderr: string } {
-		const script = `import { claimTurn } from ${JSON.stringify(join(import.meta.dir, "claim.ts"))};\nconst won = claimTurn(${JSON.stringify(stateDir)}, "s1:p1");\n${tail}\n`;
+		const script = `import { claimTurn, markClaimedTurnsDone } from ${JSON.stringify(join(import.meta.dir, "claim.ts"))};\nconst won = claimTurn(${JSON.stringify(stateDir)}, "s1:p1");\n${tail}\n`;
 		const child = Bun.spawnSync(["bun", "--no-env-file", "-e", script], { stderr: "pipe" });
 		return { exitCode: child.exitCode, stderr: child.stderr.toString() };
 	}
@@ -88,7 +88,7 @@ describe("claimTurn", () => {
 
 	test("a hook that exited normally leaves a done claim: a later duplicate stays out", () => {
 		const stateDir = tempDir();
-		const child = claimInChild(stateDir, "process.exit(won ? 0 : 3);");
+		const child = claimInChild(stateDir, "markClaimedTurnsDone();\nprocess.exit(won ? 0 : 3);");
 		expect(child.stderr).toBe("");
 		expect(child.exitCode).toBe(0);
 		const body = JSON.parse(readFileSync(claimFile(stateDir, "s1:p1"), "utf8"));
@@ -99,12 +99,37 @@ describe("claimTurn", () => {
 		expect(claimTurn(stateDir, "s1:p1")).toBe(false);
 		expect(claimTurn(stateDir, "s1:p1")).toBe(false);
 		// A sequential second hook process is also refused.
-		expect(claimInChild(stateDir, "process.exit(won ? 3 : 0);").exitCode).toBe(0);
+		expect(
+			claimInChild(stateDir, "markClaimedTurnsDone();\nprocess.exit(won ? 3 : 0);").exitCode,
+		).toBe(0);
+	}, 60_000);
+
+	test("a hook killed by SIGTERM (exit handlers still run) leaves the claim not done: a retried turn takes it over", () => {
+		const stateDir = tempDir();
+		// Same shape as the hook's child reaper: the signal handler ends the process through `process.exit`.
+		const tail = [
+			'process.on("SIGTERM", () => process.exit(143));',
+			'process.kill(process.pid, "SIGTERM");',
+			"setTimeout(() => process.exit(0), 20_000);",
+		].join("\n");
+		const child = claimInChild(stateDir, tail);
+		expect(child.exitCode).toBe(143);
+		expect(JSON.parse(readFileSync(claimFile(stateDir, "s1:p1"), "utf8")).done).toBeUndefined();
+		expect(claimTurn(stateDir, "s1:p1")).toBe(true);
+		expect(claimTurn(stateDir, "s1:p1")).toBe(false);
+	}, 60_000);
+
+	test("a hook that exits without finishing its work leaves the claim not done", () => {
+		const stateDir = tempDir();
+		const child = claimInChild(stateDir, "process.exit(won ? 0 : 3);");
+		expect(child.exitCode).toBe(0);
+		expect(JSON.parse(readFileSync(claimFile(stateDir, "s1:p1"), "utf8")).done).toBeUndefined();
+		expect(claimTurn(stateDir, "s1:p1")).toBe(true);
 	}, 60_000);
 
 	test("a done claim stays held until the 24h window ends, then the key can be claimed again", () => {
 		const stateDir = tempDir();
-		expect(claimInChild(stateDir, "process.exit(0);").exitCode).toBe(0);
+		expect(claimInChild(stateDir, "markClaimedTurnsDone();\nprocess.exit(0);").exitCode).toBe(0);
 		const file = claimFile(stateDir, "s1:p1");
 		expect(claimTurn(stateDir, "s1:p1")).toBe(false);
 		const old = new Date(Date.now() - 25 * 60 * 60 * 1000);

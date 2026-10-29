@@ -966,6 +966,28 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		return busy();
 	}
 
+	/** What an id's existing owner makes of a start: a conflict, or the job the start joins. */
+	type Claim = { refusal: StartResult } | { join: JobFile; live: Job | undefined };
+
+	/** Synchronous on purpose: the caller relies on nothing running between this check and `jobs.set`. */
+	function sessionClaim(sessionId: string, promptSha256: string): Claim | undefined {
+		const live = jobs.get(sessionId);
+		const existing = live ?? readJobFile(sessionId);
+		if (existing) {
+			if (existing.promptSha256 !== promptSha256) return { refusal: fail("session_conflict") };
+			return { join: existing, live };
+		}
+		// The id already belongs to the client-driven loop.
+		if (readMeta(journalDir(stateDir, sessionId))) return { refusal: fail("session_conflict") };
+		return undefined;
+	}
+
+	async function answerClaimed(claim: Claim): Promise<StartResult> {
+		if ("refusal" in claim) return claim.refusal;
+		if (claim.live) await waitFor(claim.live, START_WAIT_MS);
+		return { ok: true, data: startView(claim.live ?? claim.join) };
+	}
+
 	/** An unadmitted caller (stdio, a test) and an owner may act on any job; a principal only on its own. */
 	function mayAct(job: Job): boolean {
 		const admission = currentRequestContext()?.admission;
@@ -998,15 +1020,8 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (opts.completer === undefined && !planBackend().ready().ok) return fail("not_ready");
 
 			const promptSha256 = createHash("sha256").update(prompt).digest("hex");
-			const existing = jobs.get(sessionId) ?? readJobFile(sessionId);
-			if (existing) {
-				if (existing.promptSha256 !== promptSha256) return fail("session_conflict");
-				const live = jobs.get(sessionId);
-				if (live) await waitFor(live, START_WAIT_MS);
-				return { ok: true, data: startView(live ?? existing) };
-			}
-			// The id already belongs to the client-driven loop.
-			if (readMeta(journalDir(stateDir, sessionId))) return fail("session_conflict");
+			const claimed = sessionClaim(sessionId, promptSha256);
+			if (claimed) return answerClaimed(claimed);
 			// An open breaker refuses before a run row, a job file or a slot exists.
 			const refused = breakerRefusal();
 			if (refused) return refused;
@@ -1022,6 +1037,13 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (late) {
 				slotRelease();
 				return late;
+			}
+			// Another start of this id may have run while this one waited. Nothing awaits between this check and
+			// jobs.set below, so exactly one start per id creates the job and the others answer from it.
+			const raced = sessionClaim(sessionId, promptSha256);
+			if (raced) {
+				slotRelease();
+				return answerClaimed(raced);
 			}
 
 			let job: Job;

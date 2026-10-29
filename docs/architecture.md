@@ -477,7 +477,7 @@ Hermes passes its host id in the engine request, and the Omp extension passes `h
 | `sessions/<id>.xml` | The full spec the agent executes. |
 | `last.json` | Copy of the most recent session record (`bin/ultrathink last`, `think last`, `hitl last`). |
 | `last-plan.<sessionId>.json` | Carrier, one file per session (`<sessionId>` with every character outside `A-Z a-z 0-9 _ -` replaced by `_`, at most 64 characters): host, session id, spec and state paths, graph id, reading instruction, context. A session reads and clears only its own. On Grok it exists only while the latest prompt was planned. Carriers untouched for 24 hours, and the single `last-plan.json` of earlier builds, are removed by the next carrier write. |
-| `failover-cooldowns.json` | Which engine candidates are cooling after a failover-worthy failure (candidate id, failure class, expiry). Shared by the processes of one state directory; fail-open. |
+| `failover-cooldowns.json` | Which engine candidates are cooling after a failover-worthy failure (candidate id and route hash, failure class, expiry). Shared by the processes of one state directory and merged under a file lock; fail-open. |
 | `control.json.corrupt-<epochMs>` | A `control.json` that did not parse, set aside instead of overwritten. |
 | `claims/` | Grok per-turn claims. |
 

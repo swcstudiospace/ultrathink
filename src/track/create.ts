@@ -7,6 +7,11 @@
  * Every tracker call runs through the retry kernel (429, 5xx, timeouts and Retry-After are retried, a permanent
  * refusal is not). A refusal that covers the whole provider (auth, permission, quota) opens a breaker for that
  * provider for the rest of the run. Linear and Notion run independently of each other.
+ *
+ * A create has no idempotency key, so a failure that may have left the row behind (a timeout, a 5xx, a reset, a lost
+ * reply) is never answered by a blind repeat: the tracker is read back for the row first, and when that read fails
+ * the create is not repeated. Adoption on a re-run matches a row by its title as well as its key, so a resend that got
+ * another graph under the same graph id does not point its checklist at rows that describe the old plan.
  */
 import type { ThoughtGraph } from "../think/types.ts";
 import type { ProgressSink } from "../host/progress.ts";
@@ -21,7 +26,7 @@ import {
 } from "../resilience/retry.ts";
 import type { abortableSleep } from "../resilience/sleep.ts";
 import { isAbortError } from "../shared.ts";
-import type { IssueRef, TrackingRefs, TrackPlan } from "./types.ts";
+import type { IssueRef, IssueRow, SubIssueRow, TrackingRefs, TrackPlan } from "./types.ts";
 import { nonEmpty } from "../teach/digest.ts";
 
 export interface ToolCaller {
@@ -99,6 +104,9 @@ const LINK_WAIT_MS = 20_000;
 const RETRY_AFTER_TEXT = /retry after (\d+(?:\.\d+)?)\s*s/i;
 /** A message that says the account has run out of allowance: no later attempt helps. */
 const QUOTA_TEXT = /\bquota\b|usage limit|plan limit|billing/i;
+/** Failure text that says the request never reached the tracker's create: no connection, no DNS answer, a rate limit. */
+const PRE_CREATION_TEXT =
+	/connection refused|econnrefused|enotfound|eai_again|getaddrinfo|dns (?:lookup|failure|error)|could not resolve host|no route to host|rate limit|too many requests/i;
 const DEGRADED_MARKER = "[degraded fill] ";
 
 type Provider = "linear" | "notion";
@@ -224,6 +232,227 @@ function markTitle(nodeId: string, title: string): string {
 	const prefix = `[${nodeId}]`;
 	const rest = title.startsWith(prefix) ? title.slice(prefix.length).trimStart() : title;
 	return `${prefix} ${DEGRADED_MARKER}${rest}`;
+}
+
+const DEGRADED_RE = /\[degraded fill\]\s*/gi;
+
+/**
+ * A title as adoption compares it: without the degraded marker (it says how the fill went, not what the row is about),
+ * trimmed, whitespace collapsed, case-insensitive.
+ */
+function normalTitle(title: string): string {
+	return title.replace(DEGRADED_RE, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function sameTitle(left: string | undefined, right: string | undefined): boolean {
+	return left !== undefined && right !== undefined && normalTitle(left) === normalTitle(right);
+}
+
+/** The title of a node's Linear issue: the plan's, led by `[nodeId]` (and the degraded marker for a degraded fill). */
+function linearNodeTitle(nodeId: string, title: string, degraded: boolean): string {
+	if (degraded) return markTitle(nodeId, title);
+	return title.startsWith(`[${nodeId}]`) ? title : `[${nodeId}] ${title}`;
+}
+
+/** The Item a node's Notion row is created with. */
+function notionNodeItem(row: IssueRow, degraded: boolean): string {
+	return clip(degraded ? markTitle(row.nodeId, row.item) : row.item, FIELD_CAPS.title).text;
+}
+
+/** The Item a step's Notion row is created with. */
+function notionStepItem(row: SubIssueRow): string {
+	return clip(row.item, FIELD_CAPS.step).text;
+}
+
+/** What a tracker caller is guarded with: retried, refused once its breaker is open, and able to read back a create. */
+interface GuardedCaller extends ToolCaller {
+	/**
+	 * A create. A failure that may have left the row behind (a timeout, a 5xx, a reset, a lost reply) is never answered
+	 * by a blind repeat: `readBack` looks for the row first and the row it finds is the answer. A read-back that fails
+	 * ends the create with an error, because a duplicate row is worse than a missing one. `makeArgs` is called again for
+	 * every attempt, so a repeat can ask for less than the first try did.
+	 */
+	create(
+		name: string,
+		makeArgs: () => Record<string, unknown>,
+		readBack: () => Promise<unknown>,
+	): Promise<unknown>;
+}
+
+/** The deps a run hands its providers: the same as the caller's, with guarded callers. */
+type RunDeps = Omit<CreateTrackingDeps, "linear" | "notion"> & {
+	linear?: GuardedCaller;
+	notion?: GuardedCaller;
+};
+
+/** The titles every row of a plan is created with, by key (`nodeId`, or `nodeId.step`). */
+interface PlanTitles {
+	linearNodes: Map<string, string>;
+	linearSteps: Map<string, string>;
+	notionNodes: Map<string, string>;
+	notionSteps: Map<string, string>;
+}
+
+function planTitles(plan: TrackPlan): PlanTitles {
+	return {
+		linearNodes: new Map(
+			plan.linearIssues.map((issue) => [
+				issue.nodeId,
+				linearNodeTitle(issue.nodeId, issue.title, false),
+			]),
+		),
+		linearSteps: new Map(
+			plan.linearSubIssues.map((sub) => [stepKey(sub.nodeId, sub.step), sub.title]),
+		),
+		notionNodes: new Map(plan.issues.map((row) => [row.nodeId, notionNodeItem(row, false)])),
+		notionSteps: new Map(
+			plan.subIssues.map((row) => [stepKey(row.nodeId, row.step), notionStepItem(row)]),
+		),
+	};
+}
+
+/** Keys of recorded rows that describe other work than the plan now does. */
+interface StaleKeys {
+	linearNodes: Set<string>;
+	linearSteps: Set<string>;
+	notionNodes: Set<string>;
+	notionSteps: Set<string>;
+}
+
+function emptyStale(): StaleKeys {
+	return {
+		linearNodes: new Set(),
+		linearSteps: new Set(),
+		notionNodes: new Set(),
+		notionSteps: new Set(),
+	};
+}
+
+/** A title that is known on both sides and differs. An unknown side is not a difference: nothing says the row is stale. */
+function differs(have: string | undefined, want: string | undefined): boolean {
+	return have !== undefined && want !== undefined && !sameTitle(have, want);
+}
+
+/**
+ * The recorded refs whose row no longer matches what the plan says for that key. The Linear refs carry their own title;
+ * `recorded`, when given, is the plan that created the rows and is the source of the old titles for both providers.
+ */
+function staleRefs(refs: TrackingRefs, current: PlanTitles, recorded?: PlanTitles): StaleKeys {
+	const stale = emptyStale();
+	for (const [key, ref] of Object.entries(refs.linear.nodes)) {
+		const have = recorded ? recorded.linearNodes.get(key) : refTitle(ref);
+		if (differs(have, current.linearNodes.get(key))) stale.linearNodes.add(key);
+	}
+	for (const [key, ref] of Object.entries(refs.linear.steps)) {
+		const have = recorded ? recorded.linearSteps.get(key) : refTitle(ref);
+		if (differs(have, current.linearSteps.get(key))) stale.linearSteps.add(key);
+	}
+	if (!recorded) return stale;
+	for (const key of Object.keys(refs.notion.nodes))
+		if (differs(recorded.notionNodes.get(key), current.notionNodes.get(key)))
+			stale.notionNodes.add(key);
+	for (const key of Object.keys(refs.notion.steps))
+		if (differs(recorded.notionSteps.get(key), current.notionSteps.get(key)))
+			stale.notionSteps.add(key);
+	return stale;
+}
+
+function refTitle(ref: IssueRef): string | undefined {
+	return typeof ref.title === "string" ? ref.title : undefined;
+}
+
+/** Remembers that `nodeId`'s issue still has to be blocked by `deps` (their issues did not exist, or are being replaced). */
+function addPending(refs: TrackingRefs, nodeId: string, deps: readonly string[]): void {
+	const pending = (refs.pendingLinks ??= trackingMap<string[]>(undefined));
+	pending[nodeId] = [...new Set([...(pending[nodeId] ?? []), ...deps])];
+}
+
+/**
+ * Takes the stale rows out of `refs` so the run creates fresh ones. The old rows are left alone in the trackers. The steps
+ * of a replaced node hang under its old row and go with it; a kept node that was blocked by a replaced node waits for the
+ * link to the new row.
+ */
+function removeStale(
+	refs: TrackingRefs,
+	plan: TrackPlan,
+	graph: ThoughtGraph | undefined,
+	stale: StaleKeys,
+): void {
+	for (const sub of plan.linearSubIssues)
+		if (stale.linearNodes.has(sub.nodeId)) stale.linearSteps.add(stepKey(sub.nodeId, sub.step));
+	for (const sub of plan.subIssues)
+		if (stale.notionNodes.has(sub.nodeId)) stale.notionSteps.add(stepKey(sub.nodeId, sub.step));
+	for (const key of stale.linearNodes) {
+		delete refs.linear.nodes[key];
+		if (refs.pendingLinks) delete refs.pendingLinks[key];
+	}
+	for (const key of stale.linearSteps) delete refs.linear.steps[key];
+	for (const key of stale.notionNodes) delete refs.notion.nodes[key];
+	for (const key of stale.notionSteps) delete refs.notion.steps[key];
+	if (stale.linearNodes.size === 0) return;
+	for (const node of graph?.nodes ?? []) {
+		if (!refs.linear.nodes[node.id]) continue;
+		const replaced = node.dependsOn.filter((dep) => dep !== node.id && stale.linearNodes.has(dep));
+		if (replaced.length > 0) addPending(refs, node.id, replaced);
+	}
+}
+
+/**
+ * `refs` without the rows that describe other work than `plan` does, judged against `prior`, the plan that created them.
+ * A resend of the same prompt gets a new graph from the model under the same graph id: the old rows are not its rows.
+ */
+export function dropStaleRefs(
+	refs: TrackingRefs,
+	plan: TrackPlan,
+	graph: ThoughtGraph | undefined,
+	prior: TrackPlan,
+): TrackingRefs {
+	const kept = structuredClone(refs);
+	removeStale(kept, plan, graph, staleRefs(kept, planTitles(plan), planTitles(prior)));
+	return kept;
+}
+
+/** Drops the pending links that no longer apply: a node or dependency that left the plan or the graph, or a node with no issue. */
+function prunePending(refs: TrackingRefs, plan: TrackPlan, graph: ThoughtGraph | undefined): void {
+	const pending = refs.pendingLinks;
+	if (!pending) return;
+	const inPlan = new Set(plan.linearIssues.map((issue) => issue.nodeId));
+	const wanted = graph && new Map(graph.nodes.map((node) => [node.id, new Set(node.dependsOn)]));
+	for (const [nodeId, deps] of Object.entries(pending)) {
+		const keep = deps.filter(
+			(dep) => dep !== nodeId && inPlan.has(dep) && (!wanted || wanted.get(nodeId)?.has(dep)),
+		);
+		if (!inPlan.has(nodeId) || !refs.linear.nodes[nodeId] || keep.length === 0)
+			delete pending[nodeId];
+		else pending[nodeId] = keep;
+	}
+}
+
+/** True when the failure happened before the tracker could have created anything: a refusal, a rate limit, no connection. */
+function failedBeforeCreation(error: unknown): boolean {
+	const { status } = classifyTrackerFailure(error);
+	if (status !== undefined)
+		return status === 425 || status === 429 || (status >= 400 && status < 500 && status !== 408);
+	const code = asRecord(error)?.code;
+	const text = error instanceof Error ? error.message : String(error);
+	return PRE_CREATION_TEXT.test(`${typeof code === "string" ? code : ""} ${text}`);
+}
+
+/** Thrown when a create's outcome is unknown and the read-back that would tell failed too: the create is not repeated. */
+class ReadBackFailedError extends Error {
+	constructor(createError: unknown, readError: unknown) {
+		super(
+			`read-back failed (${shortError(readError).slice(0, 60)}) after an uncertain create (${shortError(createError).slice(0, 60)}); not repeated`,
+		);
+		this.name = "ReadBackFailedError";
+	}
+}
+
+/** How the kernel judges a failed create: a refused read-back or an open breaker ends it; the rest as for any call. */
+function classifyCreate(error: unknown, now?: number): FailureVerdict {
+	if (error instanceof ReadBackFailedError || error instanceof BreakerOpenError)
+		return { transient: false, reason: "read-back unavailable" };
+	return classifyTrackerFailure(error, now);
 }
 
 /** Dependency levels for the plan's nodes (graph order when no graph). */
@@ -353,14 +582,21 @@ type IssueEmitter = (
 	ref: { identifier?: string; url: string },
 ) => void;
 
-/** Re-run only: adopts Linear issues already carrying this graph's description footer. A failure is the caller's to record. */
-async function adoptLinear(
+interface LinearRow {
+	nodeId: string;
+	step: number | undefined;
+	title: string;
+	ref: IssueRef;
+	/** The listed issue as the tracker returned it. */
+	issue: Record<string, unknown>;
+}
+
+/** Every Linear issue that carries this graph's description footer. A failure is the caller's to record. */
+async function lookupLinear(
 	plan: TrackPlan,
-	refs: TrackingRefs,
 	linear: ToolCaller,
 	signal: AbortSignal,
-	emitIssue: IssueEmitter,
-): Promise<void> {
+): Promise<LinearRow[]> {
 	const result = await linear.call(
 		"list_issues",
 		{ query: `ultrathink graph ${plan.graphId}`, limit: 250 },
@@ -371,35 +607,74 @@ async function adoptLinear(
 		`ultrathink graph ${graphPattern} · node (\\S+?)(?: · step (\\d+))?\\s*$`,
 		"m",
 	);
+	const rows: LinearRow[] = [];
 	for (const issue of listEntries(result)) {
 		const match = nonEmpty(issue.description)?.match(re);
 		if (!match) continue;
-		const nodeId = match[1] as string;
 		const title = nonEmpty(issue.title) ?? "";
 		const ref = extractIssueRef(issue, title);
 		if (!ref) continue;
-		if (match[2] === undefined) {
-			if (refs.linear.nodes[nodeId]) continue;
-			refs.linear.nodes[nodeId] = ref;
-			emitIssue("linear", nodeId, undefined, ref);
-		} else {
-			const step = Number(match[2]);
-			const key = stepKey(nodeId, step);
-			if (refs.linear.steps[key]) continue;
-			refs.linear.steps[key] = ref;
-			emitIssue("linear", nodeId, step, ref);
-		}
+		rows.push({
+			nodeId: match[1] as string,
+			step: match[2] === undefined ? undefined : Number(match[2]),
+			title,
+			ref,
+			issue,
+		});
+	}
+	return rows;
+}
+
+/**
+ * Re-run only: adopts the Linear issues this graph's footer marks and whose title is the one the plan gives that node or
+ * step now. A row with other work under the same key is left alone. A failure is the caller's to record.
+ */
+async function adoptLinear(
+	plan: TrackPlan,
+	refs: TrackingRefs,
+	linear: ToolCaller,
+	signal: AbortSignal,
+	emitIssue: IssueEmitter,
+	titles: PlanTitles,
+): Promise<void> {
+	const rows = await lookupLinear(plan, linear, signal);
+	const listed = new Set<string>();
+	for (const row of rows) {
+		if (row.step !== undefined) continue;
+		listed.add(row.nodeId);
+		if (refs.linear.nodes[row.nodeId]) continue;
+		if (!sameTitle(row.title, titles.linearNodes.get(row.nodeId))) continue;
+		refs.linear.nodes[row.nodeId] = row.ref;
+		emitIssue("linear", row.nodeId, undefined, row.ref);
+	}
+	for (const row of rows) {
+		if (row.step === undefined) continue;
+		// A node whose issues are listed but none matches the plan was replaced: its steps hang under the old issue.
+		if (listed.has(row.nodeId) && !refs.linear.nodes[row.nodeId]) continue;
+		const key = stepKey(row.nodeId, row.step);
+		if (refs.linear.steps[key]) continue;
+		if (!sameTitle(row.title, titles.linearSteps.get(key))) continue;
+		refs.linear.steps[key] = row.ref;
+		emitIssue("linear", row.nodeId, row.step, row.ref);
 	}
 }
 
-/** Re-run only: adopts Notion rows already tagged with this graph's Graph ID. A failure is the caller's to record. */
-async function adoptNotion(
+interface NotionRow {
+	url: string;
+	level: string;
+	/** Set for node and step rows only. */
+	nodeId?: string;
+	step?: number;
+	item: string;
+}
+
+/** Every Notion row tagged with this graph's Graph ID. A failure is the caller's to record. */
+async function lookupNotion(
 	plan: TrackPlan,
-	refs: TrackingRefs,
 	notion: ToolCaller,
 	dataSource: string,
 	signal: AbortSignal,
-): Promise<void> {
+): Promise<NotionRow[]> {
 	const collection = `collection://${dataSource}`;
 	const result = await notion.call(
 		"notion-query-data-sources",
@@ -412,21 +687,74 @@ async function adoptNotion(
 		},
 		signal,
 	);
+	const rows: NotionRow[] = [];
 	for (const row of listEntries(result)) {
 		const url = nonEmpty(row.url);
 		const level = nonEmpty(row.Level);
 		if (!url || !level) continue;
+		const item = nonEmpty(row.Item) ?? "";
 		if (level === "Task") {
-			refs.notion.taskUrl ??= url;
+			rows.push({ url, level, item });
 			continue;
 		}
-		const nodeId = nonEmpty(row.Item)?.match(/^\[([^\]]+)\]/)?.[1];
+		const nodeId = item.match(/^\[([^\]]+)\]/)?.[1];
 		if (!nodeId) continue;
-		if (level === "Issue") refs.notion.nodes[nodeId] ??= url;
-		else if (level === "Sub-Issue") {
-			const step = Number(row.Step);
-			if (Number.isFinite(step)) refs.notion.steps[stepKey(nodeId, step)] ??= url;
+		const step = Number(row.Step);
+		rows.push({
+			url,
+			level,
+			nodeId,
+			item,
+			...(level === "Sub-Issue" && Number.isFinite(step) ? { step } : {}),
+		});
+	}
+	return rows;
+}
+
+/**
+ * Re-run only: adopts the Notion rows tagged with this graph's Graph ID whose Item is the one the plan gives that node or
+ * step now. A recorded ref whose row says something else is dropped (the row stays in Notion), so a fresh row replaces
+ * it. A failure is the caller's to record.
+ */
+async function adoptNotion(
+	plan: TrackPlan,
+	graph: ThoughtGraph | undefined,
+	refs: TrackingRefs,
+	notion: ToolCaller,
+	dataSource: string,
+	signal: AbortSignal,
+	titles: PlanTitles,
+): Promise<void> {
+	const rows = await lookupNotion(plan, notion, dataSource, signal);
+	const stale = emptyStale();
+	const nodes: NotionRow[] = [];
+	const steps: NotionRow[] = [];
+	const listed = new Set<string>();
+	for (const row of rows) {
+		if (row.level === "Task") {
+			refs.notion.taskUrl ??= row.url;
+		} else if (row.nodeId === undefined) {
+			// reason: a row without a node id belongs to no node, so there is nothing to adopt
+		} else if (row.level === "Issue") {
+			listed.add(row.nodeId);
+			const want = titles.notionNodes.get(row.nodeId);
+			if (sameTitle(row.item, want)) nodes.push(row);
+			else if (want !== undefined && refs.notion.nodes[row.nodeId] === row.url)
+				stale.notionNodes.add(row.nodeId);
+		} else if (row.level === "Sub-Issue" && row.step !== undefined) {
+			const key = stepKey(row.nodeId, row.step);
+			const want = titles.notionSteps.get(key);
+			if (sameTitle(row.item, want)) steps.push(row);
+			else if (want !== undefined && refs.notion.steps[key] === row.url) stale.notionSteps.add(key);
 		}
+	}
+	removeStale(refs, plan, graph, stale);
+	for (const row of nodes) refs.notion.nodes[row.nodeId as string] ??= row.url;
+	for (const row of steps) {
+		const nodeId = row.nodeId as string;
+		// A node whose rows are listed but none matches the plan was replaced: its steps hang under the old row.
+		if (listed.has(nodeId) && !refs.notion.nodes[nodeId]) continue;
+		refs.notion.steps[stepKey(nodeId, row.step as number)] ??= row.url;
 	}
 }
 
@@ -455,6 +783,10 @@ export async function createTracking(
 		updatedAt: now(),
 	};
 	if (refs.notion.taskUrl === undefined) delete refs.notion.taskUrl;
+	refs.pendingLinks = trackingMap(existing?.pendingLinks);
+	const titles = planTitles(plan);
+	removeStale(refs, plan, graph, staleRefs(refs, titles));
+	prunePending(refs, plan, graph);
 	const controller = new AbortController();
 	const signal = controller.signal;
 	const timer =
@@ -523,39 +855,101 @@ export async function createTracking(
 	};
 
 	const breaker: Partial<Record<Provider, string>> = {};
+	/** Runs one provider call under that provider's breaker; a refusal that covers the whole provider opens it. */
+	const guard = async <T>(provider: Provider, work: () => Promise<T>): Promise<T> => {
+		const open = breaker[provider];
+		if (open !== undefined) throw new BreakerOpenError(provider, open);
+		try {
+			return await work();
+		} catch (error) {
+			const cause = unwrapRetryError(error);
+			const settled = cause instanceof BreakerOpenError || cause instanceof ReadBackFailedError;
+			if (!settled && breaker[provider] === undefined && refusesProvider(cause)) {
+				breaker[provider] = shortError(cause);
+				fail(`${provider}: breaker open after ${shortError(cause)}`);
+			}
+			throw cause;
+		}
+	};
+	const seams = { signal, sleep: deps.sleep, random: deps.random, now };
+	/**
+	 * One create through the retry kernel. A failure the tracker may have survived with the row made is followed, before
+	 * any repeat, by `readBack`: the row it finds is the result. When it finds none the create is repeated; when it
+	 * fails, nothing is repeated and the node says why.
+	 */
+	const createOnce = async (
+		caller: ToolCaller,
+		name: string,
+		makeArgs: () => Record<string, unknown>,
+		readBack: () => Promise<unknown>,
+	): Promise<unknown> => {
+		/** The last failure that may have left a row behind; cleared once a read-back finds nothing. */
+		let uncertain: unknown;
+		const lookup = async (): Promise<unknown> => {
+			try {
+				return await readBack();
+			} catch (readError) {
+				if (isAbortError(readError) || readError instanceof BreakerOpenError) throw readError;
+				throw new ReadBackFailedError(uncertain, readError);
+			}
+		};
+		try {
+			const { value } = await withRetry(
+				async () => {
+					if (uncertain !== undefined) {
+						const found = await lookup();
+						if (found !== undefined) return found;
+						uncertain = undefined;
+					}
+					try {
+						return await withSignal(caller.call(name, makeArgs(), signal), signal);
+					} catch (error) {
+						if (!isAbortError(error) && !failedBeforeCreation(error)) uncertain = error;
+						throw error;
+					}
+				},
+				RETRY_POLICY,
+				{ ...seams, classify: classifyCreate },
+			);
+			return value;
+		} catch (error) {
+			const cause = unwrapRetryError(error);
+			if (
+				uncertain === undefined ||
+				isAbortError(cause) ||
+				cause instanceof BreakerOpenError ||
+				cause instanceof ReadBackFailedError
+			)
+				throw error;
+			// The attempts ran out on an uncertain failure: the last one may have made the row, so look once more.
+			try {
+				const found = await readBack();
+				if (found !== undefined) return found;
+			} catch {
+				// reason: the create already failed and is reported; a later run adopts the row by its footer
+			}
+			throw error;
+		}
+	};
 	/**
 	 * A caller whose every call is raced with the budget, retried through the kernel (it throws the last raw error, never
 	 * the kernel's wrapper), and refused once its provider's breaker is open.
 	 */
-	const guarded = (provider: Provider, caller: ToolCaller | undefined): ToolCaller | undefined =>
+	const guarded = (provider: Provider, caller: ToolCaller | undefined): GuardedCaller | undefined =>
 		caller && {
-			async call(name, args) {
-				const open = breaker[provider];
-				if (open !== undefined) throw new BreakerOpenError(provider, open);
-				try {
+			call: (name, args) =>
+				guard(provider, async () => {
 					const { value } = await withRetry(
 						() => withSignal(caller.call(name, args, signal), signal),
 						RETRY_POLICY,
-						{
-							signal,
-							sleep: deps.sleep,
-							random: deps.random,
-							now,
-							classify: classifyTrackerFailure,
-						},
+						{ ...seams, classify: classifyTrackerFailure },
 					);
 					return value;
-				} catch (error) {
-					const cause = unwrapRetryError(error);
-					if (breaker[provider] === undefined && refusesProvider(cause)) {
-						breaker[provider] = shortError(cause);
-						fail(`${provider}: breaker open after ${shortError(cause)}`);
-					}
-					throw cause;
-				}
-			},
+				}),
+			create: (name, makeArgs, readBack) =>
+				guard(provider, () => createOnce(caller, name, makeArgs, readBack)),
 		};
-	const run = {
+	const run: RunDeps = {
 		...deps,
 		linear: guarded("linear", deps.linear),
 		notion: guarded("notion", deps.notion),
@@ -567,13 +961,15 @@ export async function createTracking(
 		if (existing) {
 			await Promise.all([
 				run.linear && deps.linearTeam
-					? adoptLinear(plan, refs, run.linear, signal, emitIssue).catch((error: unknown) => {
-							skipped.linear = true;
-							report("linear adopt", error);
-						})
+					? adoptLinear(plan, refs, run.linear, signal, emitIssue, titles).catch(
+							(error: unknown) => {
+								skipped.linear = true;
+								report("linear adopt", error);
+							},
+						)
 					: undefined,
 				run.notion && deps.notionDataSource
-					? adoptNotion(plan, refs, run.notion, deps.notionDataSource, signal).catch(
+					? adoptNotion(plan, graph, refs, run.notion, deps.notionDataSource, signal, titles).catch(
 							(error: unknown) => {
 								skipped.notion = true;
 								report("notion adopt", error);
@@ -581,6 +977,7 @@ export async function createTracking(
 						)
 					: undefined,
 			]);
+			prunePending(refs, plan, graph);
 			emit();
 		}
 		const settle = (work: Promise<void>): Promise<void> =>
@@ -608,6 +1005,7 @@ export async function createTracking(
 		timers.clearTimeout(timer);
 	}
 	if (signal.aborted) fail("tracking: budget exhausted");
+	if (refs.pendingLinks && Object.keys(refs.pendingLinks).length === 0) delete refs.pendingLinks;
 	refs.status = trackingStatus(plan, refs, !!deps.linearTeam, !!deps.notionDataSource);
 	refs.updatedAt = now();
 	return refs;
@@ -623,7 +1021,8 @@ function trackingStatus(
 	const linearDone =
 		!linearConfigured ||
 		(plan.linearIssues.every((issue) => refs.linear.nodes[issue.nodeId]) &&
-			plan.linearSubIssues.every((sub) => refs.linear.steps[stepKey(sub.nodeId, sub.step)]));
+			plan.linearSubIssues.every((sub) => refs.linear.steps[stepKey(sub.nodeId, sub.step)]) &&
+			Object.keys(refs.pendingLinks ?? {}).length === 0);
 	const notionDone =
 		!notionConfigured ||
 		(!!refs.notion.taskUrl &&
@@ -651,7 +1050,7 @@ function noCaller(provider: Provider, deps: CreateTrackingDeps): string {
 interface RunContext {
 	plan: TrackPlan;
 	refs: TrackingRefs;
-	deps: CreateTrackingDeps;
+	deps: RunDeps;
 	signal: AbortSignal;
 	fail: (message: string) => void;
 	report: (label: string, error: unknown) => void;
@@ -674,7 +1073,8 @@ async function createLinear(
 	const pendingSteps = plan.linearSubIssues.filter(
 		(sub) => !refs.linear.steps[stepKey(sub.nodeId, sub.step)],
 	);
-	if (pendingNodes.length === 0 && pendingSteps.length === 0) return;
+	const hasPendingLinks = Object.keys(refs.pendingLinks ?? {}).length > 0;
+	if (pendingNodes.length === 0 && pendingSteps.length === 0 && !hasPendingLinks) return;
 	const linear = deps.linear;
 	if (!linear) {
 		fail(noCaller("linear", deps));
@@ -692,9 +1092,20 @@ async function createLinear(
 		label: string,
 		title: string,
 		args: Record<string, unknown>,
+		row: { nodeId: string; step?: number },
 	): Promise<IssueRef | undefined> => {
 		try {
-			const result = await linear.call("save_issue", args, signal);
+			const result = await linear.create(
+				"save_issue",
+				() => args,
+				async () =>
+					(await lookupLinear(plan, linear, signal)).find(
+						(entry) =>
+							entry.nodeId === row.nodeId &&
+							entry.step === row.step &&
+							sameTitle(entry.title, title),
+					)?.issue,
+			);
 			const ref = extractIssueRef(result, title);
 			if (!ref) fail(`linear ${label}: no identifier in result`);
 			return ref;
@@ -713,11 +1124,7 @@ async function createLinear(
 		await runPool(todo, deps.concurrency, signal, async (nodeId) => {
 			const issue = byNode.get(nodeId);
 			if (!issue) return;
-			const title = degraded.has(nodeId)
-				? markTitle(nodeId, issue.title)
-				: issue.title.startsWith(`[${nodeId}]`)
-					? issue.title
-					: `[${nodeId}] ${issue.title}`;
+			const title = linearNodeTitle(nodeId, issue.title, degraded.has(nodeId));
 			// A dependency that was never created cannot be blocked on: the node is still created, without that link.
 			const nodeDeps = dependsOn.get(nodeId) ?? [];
 			const created = nodeDeps.filter((dep) => refs.linear.nodes[dep]);
@@ -732,9 +1139,13 @@ async function createLinear(
 				description: `${degraded.has(nodeId) ? DEGRADED_MARKER : ""}${issue.description}\n\n${footer(plan.graphId, nodeId)}`,
 			};
 			if (blockedBy.length > 0) args.blockedBy = blockedBy;
-			const ref = await save(nodeId, title, args);
+			// A node that is made again starts from nothing: its old pending links belonged to the row it replaces.
+			if (refs.pendingLinks) delete refs.pendingLinks[nodeId];
+			const ref = await save(nodeId, title, args, { nodeId });
 			if (ref) {
 				refs.linear.nodes[nodeId] = ref;
+				// The links omitted above are made on this issue once their dependencies have issues.
+				if (missing.length > 0) addPending(refs, nodeId, missing);
 				emitIssue("linear", nodeId, undefined, ref);
 				emit();
 			}
@@ -750,17 +1161,50 @@ async function createLinear(
 	await runPool(steps, deps.concurrency, signal, async (sub) => {
 		const key = stepKey(sub.nodeId, sub.step);
 		const parent = refs.linear.nodes[sub.nodeId] as IssueRef;
-		const ref = await save(key, sub.title, {
-			team: deps.linearTeam,
-			title: sub.title,
-			description: `${degraded.has(sub.nodeId) ? DEGRADED_MARKER : ""}${sub.description}\n\n${footer(plan.graphId, sub.nodeId, sub.step)}`,
-			parentId: parent.identifier,
-		});
+		const ref = await save(
+			key,
+			sub.title,
+			{
+				team: deps.linearTeam,
+				title: sub.title,
+				description: `${degraded.has(sub.nodeId) ? DEGRADED_MARKER : ""}${sub.description}\n\n${footer(plan.graphId, sub.nodeId, sub.step)}`,
+				parentId: parent.identifier,
+			},
+			{ nodeId: sub.nodeId, step: sub.step },
+		);
 		if (ref) {
 			refs.linear.steps[key] = ref;
 			emitIssue("linear", sub.nodeId, sub.step, ref);
 			emit();
 		}
+	});
+	// Links left out when a node was made (its dependency had no issue) are added to the existing issue, once the dependency
+	// has one. `blockedBy` only adds, so a repeat is safe; a link that fails stays pending for the next run.
+	const repairs = Object.entries(refs.pendingLinks ?? {}).flatMap(([nodeId, depIds]) => {
+		const issue = refs.linear.nodes[nodeId];
+		const ready = depIds.filter((dep) => refs.linear.nodes[dep]);
+		return issue && ready.length > 0 ? [{ nodeId, issue, ready }] : [];
+	});
+	await runPool(repairs, deps.concurrency, signal, async ({ nodeId, issue, ready }) => {
+		try {
+			await linear.call(
+				"save_issue",
+				{
+					id: issue.identifier,
+					blockedBy: ready.map((dep) => (refs.linear.nodes[dep] as IssueRef).identifier),
+				},
+				signal,
+			);
+		} catch (error) {
+			report(`linear ${nodeId}: blockedBy ${ready.join(", ")}`, error);
+			return;
+		}
+		const left = (refs.pendingLinks?.[nodeId] ?? []).filter((dep) => !ready.includes(dep));
+		if (refs.pendingLinks) {
+			if (left.length > 0) refs.pendingLinks[nodeId] = left;
+			else delete refs.pendingLinks[nodeId];
+		}
+		emit();
 	});
 }
 
@@ -797,7 +1241,7 @@ async function createNotion(ctx: RunContext, linear: LinearProgress | undefined)
 
 async function createNotionRows(
 	{ plan, refs, deps, signal, fail, report, emit, emitIssue }: RunContext,
-	notion: ToolCaller,
+	notion: GuardedCaller,
 	waitLinear: (part: keyof LinearProgress) => Promise<void>,
 	nodeRows: TrackPlan["issues"],
 	stepRows: TrackPlan["subIssues"],
@@ -826,84 +1270,124 @@ async function createNotionRows(
 		}
 		return out;
 	};
-	const create = async (
-		label: string,
-		pages: Array<{ properties: Record<string, unknown>; content?: string }>,
-	): Promise<string[] | undefined> => {
+	/** A row to create, with the identity a read-back finds it by. */
+	interface RowSpec {
+		level: "Task" | "Issue" | "Sub-Issue";
+		nodeId?: string;
+		step?: number;
+		/** The Item the row is created with. */
+		item: string;
+		page: { properties: Record<string, unknown>; content?: string };
+	}
+	const isRow = (row: NotionRow, spec: RowSpec): boolean =>
+		row.level === spec.level &&
+		row.nodeId === spec.nodeId &&
+		row.step === spec.step &&
+		(spec.level === "Task" || sameTitle(row.item, spec.item));
+	/**
+	 * Creates the rows and returns each one's url (undefined for a row that was not made). A create whose outcome is
+	 * unknown is read back first: rows already there are adopted and only the missing ones are created again.
+	 */
+	const create = async (label: string, specs: RowSpec[]): Promise<Array<string | undefined>> => {
+		const found = new Map<RowSpec, string>();
+		const missing = () => specs.filter((spec) => !found.has(spec));
 		try {
-			const urls = notionUrls(
-				await call("notion-create-pages", {
+			const result = await notion.create(
+				"notion-create-pages",
+				() => ({
 					parent: { data_source_id: deps.notionDataSource },
-					pages,
+					pages: missing().map((spec) => spec.page),
 					allow_async: false,
 				}),
+				async () => {
+					const rows = await lookupNotion(plan, notion, deps.notionDataSource as string, signal);
+					for (const spec of missing()) {
+						const row = rows.find((entry) => isRow(entry, spec));
+						if (row) found.set(spec, row.url);
+					}
+					return missing().length === 0 ? { pages: [] } : undefined;
+				},
 			);
-			if (urls.length !== pages.length) {
-				fail(`notion ${label}: expected ${pages.length} page urls, got ${urls.length}`);
-				return undefined;
+			const need = missing();
+			if (need.length > 0) {
+				const urls = notionUrls(result);
+				if (urls.length !== need.length)
+					fail(`notion ${label}: expected ${need.length} page urls, got ${urls.length}`);
+				else
+					need.forEach((spec, index) => {
+						found.set(spec, urls[index] as string);
+					});
 			}
-			return urls;
 		} catch (error) {
 			report(`notion ${label}`, error);
-			return undefined;
 		}
+		return specs.map((spec) => found.get(spec));
 	};
 	/** A model-controlled value, capped so one long answer cannot become one huge row. */
 	const capped = (text: string, max: number): string => clip(text, max).text;
 	const { task } = plan;
 
 	if (!refs.notion.taskUrl) {
-		const urls = await create("task", [
+		const [url] = await create("task", [
 			{
-				properties: props({
-					Item: capped(task.item, FIELD_CAPS.title),
-					Level: "Task",
-					Description: capped(task.description, FIELD_CAPS.conclusion),
-					"Uplifted Prompt": task.upliftedPrompt,
-					Agent: task.agent,
-					Status: task.status,
-					"Linear State": task.linearState,
-					Repo: task.repo,
-					Branch: task.branch,
-					"Graph ID": plan.graphId,
-				}),
+				level: "Task",
+				item: capped(task.item, FIELD_CAPS.title),
+				page: {
+					properties: props({
+						Item: capped(task.item, FIELD_CAPS.title),
+						Level: "Task",
+						Description: capped(task.description, FIELD_CAPS.conclusion),
+						"Uplifted Prompt": task.upliftedPrompt,
+						Agent: task.agent,
+						Status: task.status,
+						"Linear State": task.linearState,
+						Repo: task.repo,
+						Branch: task.branch,
+						"Graph ID": plan.graphId,
+					}),
+				},
 			},
 		]);
-		if (!urls) return;
-		refs.notion.taskUrl = urls[0];
+		if (!url) return;
+		refs.notion.taskUrl = url;
 		emit();
 	}
 	const taskUrl = refs.notion.taskUrl as string;
 
 	if (nodeRows.length > 0 && !signal.aborted) {
 		await waitLinear("nodes");
-		const pages = nodeRows.map((row) => {
+		const specs: RowSpec[] = nodeRows.map((row) => {
 			const linear = refs.linear.nodes[row.nodeId];
 			const mark = degraded.has(row.nodeId);
+			const item = notionNodeItem(row, mark);
 			return {
-				properties: props({
-					Item: capped(mark ? markTitle(row.nodeId, row.item) : row.item, FIELD_CAPS.title),
-					Level: "Issue",
-					Agent: task.agent,
-					Status: task.status,
-					"Linear State": task.linearState,
-					"Graph ID": plan.graphId,
-					Thought: capped(`${mark ? DEGRADED_MARKER : ""}${row.thought}`, FIELD_CAPS.conclusion),
-					"Parent Item": JSON.stringify([taskUrl]),
-					"Linear URL": linear?.url,
-					"Issue ID": linear?.identifier,
-				}),
+				level: "Issue",
+				nodeId: row.nodeId,
+				item,
+				page: {
+					properties: props({
+						Item: item,
+						Level: "Issue",
+						Agent: task.agent,
+						Status: task.status,
+						"Linear State": task.linearState,
+						"Graph ID": plan.graphId,
+						Thought: capped(`${mark ? DEGRADED_MARKER : ""}${row.thought}`, FIELD_CAPS.conclusion),
+						"Parent Item": JSON.stringify([taskUrl]),
+						"Linear URL": linear?.url,
+						"Issue ID": linear?.identifier,
+					}),
+				},
 			};
 		});
-		const urls = await create("nodes", pages);
-		if (urls) {
-			nodeRows.forEach((row, index) => {
-				const url = urls[index] as string;
-				refs.notion.nodes[row.nodeId] = url;
-				emitIssue("notion", row.nodeId, undefined, { url });
-			});
-			emit();
-		}
+		const urls = await create("nodes", specs);
+		nodeRows.forEach((row, index) => {
+			const url = urls[index];
+			if (url === undefined) return;
+			refs.notion.nodes[row.nodeId] = url;
+			emitIssue("notion", row.nodeId, undefined, { url });
+		});
+		if (urls.some((url) => url !== undefined)) emit();
 	}
 
 	const ready = stepRows.filter((row) => {
@@ -916,34 +1400,40 @@ async function createNotionRows(
 	for (let index = 0; index < ready.length; index += NOTION_BATCH)
 		batches.push(ready.slice(index, index + NOTION_BATCH));
 	await runPool(batches, deps.concurrency, signal, async (batch) => {
-		const pages = batch.map((row) => {
+		const specs: RowSpec[] = batch.map((row) => {
 			const linear = refs.linear.steps[stepKey(row.nodeId, row.step)];
 			const mark = degraded.has(row.nodeId);
+			const item = notionStepItem(row);
 			return {
-				properties: props({
-					Item: capped(row.item, FIELD_CAPS.step),
-					Level: "Sub-Issue",
-					Agent: task.agent,
-					Status: task.status,
-					"Linear State": task.linearState,
-					"Graph ID": plan.graphId,
-					Thought: capped(`${mark ? DEGRADED_MARKER : ""}${row.thought}`, FIELD_CAPS.thinking),
-					Step: row.step,
-					"Parent Item": JSON.stringify([refs.notion.nodes[row.nodeId]]),
-					"Linear URL": linear?.url,
-					"Issue ID": linear?.identifier,
-				}),
+				level: "Sub-Issue",
+				nodeId: row.nodeId,
+				step: row.step,
+				item,
+				page: {
+					properties: props({
+						Item: item,
+						Level: "Sub-Issue",
+						Agent: task.agent,
+						Status: task.status,
+						"Linear State": task.linearState,
+						"Graph ID": plan.graphId,
+						Thought: capped(`${mark ? DEGRADED_MARKER : ""}${row.thought}`, FIELD_CAPS.thinking),
+						Step: row.step,
+						"Parent Item": JSON.stringify([refs.notion.nodes[row.nodeId]]),
+						"Linear URL": linear?.url,
+						"Issue ID": linear?.identifier,
+					}),
+				},
 			};
 		});
 		const first = batch[0] as (typeof ready)[number];
-		const urls = await create(`steps ${stepKey(first.nodeId, first.step)}+`, pages);
-		if (urls) {
-			batch.forEach((row, index) => {
-				const url = urls[index] as string;
-				refs.notion.steps[stepKey(row.nodeId, row.step)] = url;
-				emitIssue("notion", row.nodeId, row.step, { url });
-			});
-			emit();
-		}
+		const urls = await create(`steps ${stepKey(first.nodeId, first.step)}+`, specs);
+		batch.forEach((row, index) => {
+			const url = urls[index];
+			if (url === undefined) return;
+			refs.notion.steps[stepKey(row.nodeId, row.step)] = url;
+			emitIssue("notion", row.nodeId, row.step, { url });
+		});
+		if (urls.some((url) => url !== undefined)) emit();
 	});
 }

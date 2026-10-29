@@ -6,7 +6,7 @@
  * for a cooldown instead of being retried on every stage call; the CLIs already retry 429/529 themselves.
  */
 
-import { writeFileAtomic } from "../claude/atomic.ts";
+import { updateJsonAtomic } from "../claude/atomic.ts";
 import { abortError } from "../claude/complete.ts";
 import { redactSecrets } from "../redact.ts";
 import { readJson } from "../shared.ts";
@@ -25,6 +25,11 @@ export interface FailoverCandidate {
 	id: string;
 	label: string;
 	complete: Completer;
+	/**
+	 * Identity of the access path (transport, endpoint, login home). Persisted cooldowns are keyed by id and route, so
+	 * two routes to a same-named model never cool each other. It reaches the state file, so it must hold no secret.
+	 */
+	route?: string;
 }
 
 interface FailoverAttempt {
@@ -69,10 +74,14 @@ interface CooldownFile {
 	failure: Record<string, FailureClass>;
 }
 
-/** Fail-open: any unreadable or malformed file is an empty one; entries that already lapsed are dropped. */
-function loadCooldowns(path: string, at: number): CooldownFile {
+/** A persisted entry is keyed by the candidate id and, when it has one, its route (see {@link FailoverCandidate.route}). */
+function cooldownKey(candidate: FailoverCandidate): string {
+	return candidate.route === undefined ? candidate.id : `${candidate.id}@${candidate.route}`;
+}
+
+/** Fail-open: anything that is not a well-formed file reads as an empty one; entries that already lapsed are dropped. */
+function parseCooldowns(raw: unknown, at: number): CooldownFile {
 	const out: CooldownFile = { until: {}, failure: {} };
-	const raw = readJson(path);
 	if (typeof raw !== "object" || raw === null) return out;
 	const until: unknown = Reflect.get(raw, "until");
 	const failure: unknown = Reflect.get(raw, "failure");
@@ -145,13 +154,15 @@ export function createFailoverCompleter(
 	const failing = new Set<string>();
 	const persistPath = opts.persist?.path;
 	if (persistPath !== undefined) {
-		const saved = loadCooldowns(persistPath, now());
-		for (const [id, until] of Object.entries(saved.until)) {
-			if (!candidates.some((c) => c.id === id)) continue;
-			cooldownUntil.set(id, until);
-			failing.add(id);
-			const failure = saved.failure[id];
-			if (failure !== undefined) lastFailure.set(id, failure);
+		const saved = parseCooldowns(readJson(persistPath), now());
+		for (const candidate of candidates) {
+			const key = cooldownKey(candidate);
+			const until = saved.until[key];
+			if (until === undefined) continue;
+			cooldownUntil.set(candidate.id, until);
+			failing.add(candidate.id);
+			const failure = saved.failure[key];
+			if (failure !== undefined) lastFailure.set(candidate.id, failure);
 		}
 	}
 
@@ -167,21 +178,22 @@ export function createFailoverCompleter(
 	function persist(): void {
 		if (persistPath === undefined) return;
 		try {
-			// Other chains share the file: keep their live entries and replace only this chain's candidates.
-			const at = now();
-			const merged = loadCooldowns(persistPath, at);
-			for (const candidate of candidates) {
-				const until = cooldownUntil.get(candidate.id);
-				const failure = lastFailure.get(candidate.id);
-				if (until !== undefined && until > at && failure !== undefined) {
-					merged.until[candidate.id] = until;
-					merged.failure[candidate.id] = failure;
-				} else {
-					delete merged.until[candidate.id];
-					delete merged.failure[candidate.id];
+			// Under the file lock: other hook processes share the file, so this merges into what is there now and never
+			// drops an entry it does not own (a cooldown another chain learned after this one was built stays).
+			updateJsonAtomic(persistPath, (current) => {
+				const at = now();
+				const merged = parseCooldowns(current, at);
+				for (const candidate of candidates) {
+					const until = cooldownUntil.get(candidate.id);
+					const failure = lastFailure.get(candidate.id);
+					if (until === undefined || until <= at || failure === undefined) continue;
+					const key = cooldownKey(candidate);
+					if ((merged.until[key] ?? 0) >= until) continue;
+					merged.until[key] = until;
+					merged.failure[key] = failure;
 				}
-			}
-			writeFileAtomic(persistPath, `${JSON.stringify(merged)}\n`);
+				return merged;
+			});
 		} catch {
 			// reason: cooldown persistence is an optimization; a failed write must never change the completion outcome
 		}

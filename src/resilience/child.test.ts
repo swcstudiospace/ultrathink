@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type * as ChildModule from "./child.ts";
-import { type ChildResult, runChild, withTempDir } from "./child.ts";
+import { type ChildResult, childFailure, runChild, withTempDir } from "./child.ts";
 
 const POSIX = process.platform !== "win32";
 const SLOW = 30_000;
@@ -330,6 +330,26 @@ describe("installChildReaper", () => {
 		},
 		SLOW,
 	);
+});
+
+describe("childFailure", () => {
+	test("a child killed by a signal with nothing on stderr names the signal and carries signalCode", () => {
+		const error = childFailure("claude", { code: null, signal: "SIGKILL" }, "");
+		expect(error.message).toBe("claude was killed by SIGKILL");
+		expect(Reflect.get(error, "signalCode")).toBe("SIGKILL");
+	});
+
+	test("stderr stays the message and a signal still travels as signalCode", () => {
+		const error = childFailure("grok", { code: null, signal: "SIGTERM" }, "stream reset");
+		expect(error.message).toBe("stream reset");
+		expect(Reflect.get(error, "signalCode")).toBe("SIGTERM");
+	});
+
+	test("a plain exit names the code and has no signalCode", () => {
+		const error = childFailure("claude", { code: 3, signal: null }, "");
+		expect(error.message).toBe("claude exited 3");
+		expect(Reflect.has(error, "signalCode")).toBe(false);
+	});
 });
 
 describe("withTempDir", () => {

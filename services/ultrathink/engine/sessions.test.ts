@@ -696,4 +696,21 @@ describe("caller scoping", () => {
 		// A session with neither a job file nor a journal has nothing to leak: the views report it not found.
 		expect(sessionVisibleTo(state, randomUUID(), bob)).toBe(true);
 	});
+
+	test("newer sessions of other principals never push a caller's own sessions out of its listing", () => {
+		const state = tmp();
+		const mine = randomUUID();
+		writeJobFor(state, mine, alice.principal, NOW - 100_000);
+		for (let i = 0; i < 30; i++) writeJobFor(state, randomUUID(), bob.principal, NOW - i);
+		expect(listSessions(state, { caller: alice }).map((s) => s.sessionId)).toEqual([mine]);
+		expect(listSessions(state, { caller: owner })).toHaveLength(5);
+	});
+
+	test("the caller's newest planned session is found behind more than 200 newer sessions of others", () => {
+		const state = tmp();
+		const mine = randomUUID();
+		writeJobFor(state, mine, alice.principal, NOW - 100_000);
+		for (let i = 0; i < 250; i++) writeJobFor(state, randomUUID(), bob.principal, NOW - i);
+		expect(newestPlannedSessionId(state, undefined, alice)).toBe(mine);
+	});
 });

@@ -32,7 +32,7 @@ import {
 } from "./types.ts";
 import { abortError } from "../claude/complete.ts";
 import { redactSecrets } from "../redact.ts";
-import { runChild, withTempDir } from "../resilience/child.ts";
+import { childFailure, runChild, withTempDir } from "../resilience/child.ts";
 import {
 	type FailureVerdict,
 	isTransientFailure,
@@ -637,10 +637,10 @@ function cliAttempt(
 		if (result.timedOut) throw new Error(`grok timed out after ${timeoutMs}ms`);
 		if (result.stdoutTruncated) throw new Error("grok output exceeded the 4 MB cap");
 		if (result.code !== 0 && !result.stdout.trim()) {
-			const message = redactSecrets(result.stderr.trim()) || `grok exited ${result.code}`;
-			if (LOGIN_FAILURE.test(message))
+			const failure = childFailure("grok", result, redactSecrets(result.stderr.trim()));
+			if (LOGIN_FAILURE.test(failure.message))
 				throw new GrokAuthError(`Grok login rejected: ${LOGIN_HINT}`);
-			throw new Error(message);
+			throw failure;
 		}
 		return parseCliJson(result.stdout);
 	});

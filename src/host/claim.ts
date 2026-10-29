@@ -6,9 +6,10 @@
  * own hooks, both would plan the same prompt and create duplicate tracking rows.
  * The first hook to create the claim file wins, and the claim names its owner (pid and process start time). A
  * duplicate takes the claim over when that owner is dead and never finished, so a first hook that was killed before it
- * planned does not make the turn skip planning for the 24 h the claim would otherwise live. An owner that exits
- * normally stamps `done: true` into its claim (process `exit` event), and a done claim stays held for the 24 h
- * window: a late duplicate must not plan a turn that already ran. Fail-open: a broken claim store
+ * planned does not make the turn skip planning for the 24 h the claim would otherwise live. An owner that finishes its
+ * turn normally calls `markClaimedTurnsDone`, which stamps `done: true` into its claim, and a done claim stays held for
+ * the 24 h window: a late duplicate must not plan a turn that already ran. A hook that is interrupted (SIGTERM,
+ * SIGINT, an uncaught exit) never stamps it, so a retried turn can take the claim over. Fail-open: a broken claim store
  * must never block planning.
  */
 import {
@@ -51,10 +52,15 @@ function ownRecord(done = false): string {
 	return JSON.stringify(owner);
 }
 
-/** Claims this process owns and has not yet marked done; one `exit` listener stamps them all. */
+/** Claims this process owns and has not yet marked done. */
 const ownedClaims = new Set<string>();
 
-function markOwnedClaimsDone(): void {
+/**
+ * Stamps `done: true` into every claim this process still owns. The hook calls it once its turn finished its work
+ * normally. It is deliberately not an `exit` listener: a hook killed by SIGTERM or SIGINT also runs exit listeners,
+ * and an interrupted turn must stay recoverable by a retry (an unfinished claim falls to the dead-owner takeover).
+ */
+export function markClaimedTurnsDone(): void {
 	for (const path of ownedClaims) {
 		try {
 			const value: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -65,14 +71,13 @@ function markOwnedClaimsDone(): void {
 			writeFileSync(tmp, ownRecord(true), { mode: 0o600 });
 			renameSync(tmp, path);
 		} catch {
-			// reason: best effort on exit; an unmarked claim only falls back to the dead-owner takeover
+			// reason: best effort; an unmarked claim only falls back to the dead-owner takeover
 		}
 	}
 	ownedClaims.clear();
 }
 
 function rememberOwnedClaim(path: string): void {
-	if (ownedClaims.size === 0) process.once("exit", markOwnedClaimsDone);
 	ownedClaims.add(path);
 }
 

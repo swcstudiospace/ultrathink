@@ -2,8 +2,9 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createClaudeCompleter } from "../../../../src/claude/complete.ts";
 import type { SelectedEngine } from "../../../../src/host/engine.ts";
 import { makeTempDir } from "../../test.helpers.ts";
 import { appendHistory, readHistory } from "../history.ts";
@@ -368,6 +369,44 @@ describe("the real-provider guard", () => {
 		expect(notes.some((line) => /^calls made: \d+ \(cap 100\)$/.test(line))).toBe(true);
 		expect(result.hypotheses.map((hypothesis) => hypothesis.id)).toContain("recovery");
 	});
+
+	test("retries inside one engine call never send more real requests than the cap", async () => {
+		const { historyPath, stateRoot } = paths();
+		const bin = join(makeTempDir("pipeline-run-bin-", roots), "bin");
+		mkdirSync(bin, { recursive: true });
+		const log = join(bin, "runs.log");
+		writeFileSync(log, "");
+		// A `claude` that fails transiently on every run: the real completer retries it up to three times per call.
+		writeFileSync(
+			join(bin, "claude"),
+			`#!/bin/sh\nprintf x >> ${JSON.stringify(log)}\necho "upstream overloaded" >&2\nexit 1\n`,
+		);
+		chmodSync(join(bin, "claude"), 0o755);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${bin}:${previousPath ?? ""}`;
+		try {
+			const notes: string[] = [];
+			await runPipeline(tiny({ prompts: { count: 2, concurrency: 1, corpus: ["add a widget"] } }), {
+				historyPath,
+				stateRoot,
+				now: NOW,
+				notes: (line) => notes.push(line),
+				real: { requested: true, envFlag: "1", maxCalls: 2 },
+				engineSelector: async (config) => ({
+					...stubEngine(),
+					complete: createClaudeCompleter({
+						bin: config.claude.bin,
+						timeoutMs: 30_000,
+						retrySeams: { sleep: async () => undefined, random: () => 0 },
+					}),
+				}),
+			});
+			expect(readFileSync(log, "utf8").length).toBeLessThanOrEqual(2);
+			expect(notes.some((line) => /^calls made: \d+ \(cap 2(, reached)?\)$/.test(line))).toBe(true);
+		} finally {
+			process.env.PATH = previousPath;
+		}
+	}, 120_000);
 });
 
 /** Hand-driven stall sampler: `advance` moves its clock one sample and runs the registered tick. */

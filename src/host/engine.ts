@@ -37,6 +37,7 @@ import { assertMemoryChain, MEMORY_CHAIN, memoryChainFor } from "./memory-chain.
 import { MAX_ENGINE_ERROR_CHARS } from "./display-limits.ts";
 import { unwrapRetryError } from "../resilience/retry.ts";
 import { type CompletionReport, readReport } from "../types.ts";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { resolveStateDir } from "./paths.ts";
 
@@ -203,6 +204,24 @@ function statusOf(error: unknown): number | undefined {
 /** Where failover cooldowns live between hook processes. */
 function cooldownPersist(): { path: string } {
 	return { path: join(resolveStateDir(), "failover-cooldowns.json") };
+}
+
+/**
+ * A short, secret-free identity of the access path a candidate calls: the same model name behind another transport,
+ * endpoint, binary or login home must not share a persisted cooldown with it. The parts (URLs, paths) are hashed, never
+ * stored.
+ */
+function routeIdentity(kind: string, ...parts: readonly string[]): string {
+	return `${kind}:${createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 12)}`;
+}
+
+function claudeRouteIdentity(config: UltrathinkConfig): string {
+	return routeIdentity("cli", config.claude.bin, config.claude.auth);
+}
+
+function grokRouteIdentity(config: UltrathinkConfig): string {
+	const { transport, baseUrl, bin, home, shuntBaseUrl, shuntModel } = config.grok;
+	return routeIdentity(transport, baseUrl, bin, home, shuntBaseUrl, shuntModel);
 }
 
 export function captureFirstError(
@@ -427,9 +446,10 @@ async function claudeRoute(
 		const grokModels = unique([config.grok.model, ...config.grok.fallbackModels]);
 		const grok = grokCandidates(config, cwd, grokModels);
 		if (grok.length > 0) {
-			const chain = createFailoverCompleter([{ id: label, label, complete: claude }, ...grok], {
-				persist: cooldownPersist(),
-			});
+			const chain = createFailoverCompleter(
+				[{ id: label, label, complete: claude, route: claudeRouteIdentity(config) }, ...grok],
+				{ persist: cooldownPersist() },
+			);
 			return captureFirstError(label, chain.complete, resolution, chain.failover);
 		}
 	}
@@ -471,6 +491,7 @@ function grokCandidates(
 			{
 				id: label,
 				label,
+				route: grokRouteIdentity(config),
 				complete: createGrokCompleter({
 					baseUrl: config.grok.baseUrl,
 					model,
@@ -536,7 +557,9 @@ async function memoryRoute(
 	});
 	const label = `${MEMORY_CHAIN.primary.vendor}:${model}`;
 	const claude = claudeCli(config, cwd, model);
-	const candidates: FailoverCandidate[] = [{ id: label, label, complete: claude }];
+	const candidates: FailoverCandidate[] = [
+		{ id: label, label, complete: claude, route: claudeRouteIdentity(config) },
+	];
 	if (memoryChainFor(config).length > 1 && (await grokUsable(config)))
 		candidates.push(...grokCandidates(config, cwd, [MEMORY_CHAIN.fallback.model]));
 	assertMemoryCandidates(candidates);

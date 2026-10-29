@@ -35,6 +35,7 @@ import {
 	fetchBrief,
 } from "../substrate/brief.ts";
 import { sanitizeBrief } from "../substrate/inject.ts";
+import { dropStaleRefs } from "../track/create.ts";
 import { resolveBranch, resolveRepoSlug } from "../track/git.ts";
 import { buildTrackPlan } from "../track/plan.ts";
 import type { Tracker } from "../track/gateway.ts";
@@ -1390,7 +1391,13 @@ export async function runPromptSubmit(
 			// finds the same graph id and adopts the rows instead of creating them again.
 			const prior = readSession(deps.stateDir, sessionId);
 			const sameGraph = prior?.plan?.graphId === plan.graphId;
-			const priorRefs = prior?.tracking?.graphId === plan.graphId ? prior.tracking : undefined;
+			const recordedRefs = prior?.tracking?.graphId === plan.graphId ? prior.tracking : undefined;
+			// The model answers a resend with a new graph under the same graph id: rows made for other work than this plan's
+			// are not its rows, and neither the tracker nor the saved record may point at them.
+			const priorRefs =
+				recordedRefs && prior?.plan
+					? dropStaleRefs(recordedRefs, plan, graph, prior.plan)
+					: recordedRefs;
 			existing = priorRefs ?? (sameGraph ? emptyTracking(plan.graphId, now()) : undefined);
 			if (priorRefs) record = { ...record, tracking: priorRefs };
 			try {

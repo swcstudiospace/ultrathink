@@ -179,6 +179,16 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 		expect(out).toBe("");
 		expect(armedAfter).toBe(true);
 	}, 60_000);
+
+	test("an unrecognised /word is planned as rewritten text, not skipped as a command, as on Omp (greptile r1 #10)", async () => {
+		const { err, lastSkip } = await runGrokHook("/frobnicate do the thing", false);
+		// The rewritten target no longer starts with `/`, so the precheck lets it through to engine selection,
+		// which is where an ordinary prompt stops here when no Grok login exists.
+		expect(err).not.toContain("skipped: command");
+		expect(lastSkip?.reason).toBe("engine grok-unavailable");
+		const plain = await runGrokHook("frobnicate do the thing", false);
+		expect(lastSkip?.reason).toBe(plain.lastSkip?.reason);
+	}, 90_000);
 });
 
 describe("a provider that answers 429 forever, through the real hook entry and the real Claude completer", () => {

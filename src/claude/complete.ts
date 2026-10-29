@@ -13,7 +13,7 @@
  */
 
 import { redactSecrets } from "../redact.ts";
-import { runChild } from "../resilience/child.ts";
+import { childFailure, runChild } from "../resilience/child.ts";
 import {
 	isTransientFailure,
 	RetryExhaustedError,
@@ -312,7 +312,7 @@ async function claudeAttempt(
 	if (result.aborted || opts.signal?.aborted) throw abortError();
 	if (result.timedOut) throw new Error(`claude timed out after ${opts.timeoutMs}ms`);
 	if (code !== 0 && !stdout.trim()) {
-		throw new Error(redactSecrets(stderr.trim()) || `claude exited ${code}`);
+		throw childFailure("claude", result, redactSecrets(stderr.trim()));
 	}
 	if (opts.onResult) {
 		const info = readInfoQuietly(stdout);

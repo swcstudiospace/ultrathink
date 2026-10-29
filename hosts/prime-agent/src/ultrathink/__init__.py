@@ -53,6 +53,27 @@ DEFAULT_TIMEOUT_S = 600.0
 CONTROL_TIMEOUT_S = 30.0
 TEACH_TIMEOUT_S = 120.0
 SPEC_MAX_CHARS = 200_000
+# After SIGTERM the engine gets this long to stop the model CLIs it started before its group is force-killed.
+TERM_GRACE_S = 3.0
+
+
+def _stop_engine(proc: "subprocess.Popen[str]") -> None:
+	"""End a timed-out engine. SIGTERM goes to its process group first: the engine's child reaper then kills the
+	model CLIs it started, each in a session of its own that a signal to the engine's group does not reach (and
+	SIGKILL would skip that cleanup). After TERM_GRACE_S the group is force-killed, which also sweeps anything of
+	the engine's own group that outlived it."""
+	try:
+		os.killpg(proc.pid, signal.SIGTERM)
+	except (ProcessLookupError, PermissionError):
+		pass
+	try:
+		proc.wait(timeout=TERM_GRACE_S)
+	except subprocess.TimeoutExpired:
+		pass
+	try:
+		os.killpg(proc.pid, signal.SIGKILL)
+	except (ProcessLookupError, PermissionError):
+		pass
 
 
 def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -194,10 +215,7 @@ def plan(
 	try:
 		stdout, stderr = proc.communicate(input=json.dumps(request), timeout=timeout)
 	except subprocess.TimeoutExpired:
-		try:
-			os.killpg(proc.pid, signal.SIGKILL)
-		except (ProcessLookupError, PermissionError):
-			pass
+		_stop_engine(proc)
 		proc.communicate()
 		return _skip("timeout", error=f"no plan after {timeout:g}s", elapsed_s=round(time.monotonic() - started, 1))
 	elapsed = round(time.monotonic() - started, 1)

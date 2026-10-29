@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -2416,6 +2416,57 @@ describe("headless planner: cancel, queue and drain", () => {
 		expect(h.planner.status({ sessionId: second })).toMatchObject({ ok: true });
 		gate.resolve();
 		expect(await queued).toMatchObject({ ok: true, data: { sessionId: second } });
+	});
+
+	test("two waiting starts with one session id create one job; the loser conflicts and frees its slot", async () => {
+		const h = setup({ planTimeoutMs: 0, maxConcurrentPlans: 2 }, { completer: NEVER_ANSWERS });
+		const holders = [randomUUID(), randomUUID()];
+		for (const holder of holders) await startRunning(h, holder);
+		const sessionId = randomUUID();
+		const first = h.planner.start({ prompt: PROMPT, sessionId });
+		const second = h.planner.start({ prompt: `${PROMPT} Also add a man page.`, sessionId });
+		let loser: Awaited<typeof second> | undefined;
+		void second.then((answer) => {
+			loser = answer;
+		});
+		await flush();
+		// Both wait: the slot table is full and neither start has a job yet.
+		expect(h.planner.status({ sessionId })).toBeNull();
+		const before = runCount(h.store);
+		for (const holder of holders) await h.planner.cancel?.({ sessionId: holder });
+		await flush();
+		// The loser answers at once with the documented conflict; the winner is the one running job.
+		expect(loser).toEqual({ ok: false, code: "session_conflict" });
+		expect(runCount(h.store)).toBe(before + 1);
+		const promptSha256 = createHash("sha256").update(PROMPT).digest("hex");
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "running", promptSha256 });
+		await h.planner.cancel?.({ sessionId });
+		expect(await first).toMatchObject({ ok: true, data: { sessionId } });
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", promptSha256 });
+		// Every slot is back: two further starts of other ids are both admitted at once instead of queueing.
+		const others = [randomUUID(), randomUUID()];
+		const started = others.map((id) => h.planner.start({ prompt: PROMPT, sessionId: id }));
+		await flush();
+		for (const id of others) expect(h.planner.status({ sessionId: id })).not.toBeNull();
+		for (const id of others) await h.planner.cancel?.({ sessionId: id });
+		await Promise.all(started);
+	});
+
+	test("two waiting starts with one session id and one prompt share the one job", async () => {
+		const h = setup({ planTimeoutMs: 0, maxConcurrentPlans: 2 }, { completer: NEVER_ANSWERS });
+		const holders = [randomUUID(), randomUUID()];
+		for (const holder of holders) await startRunning(h, holder);
+		const sessionId = randomUUID();
+		const first = h.planner.start({ prompt: PROMPT, sessionId });
+		const second = h.planner.start({ prompt: PROMPT, sessionId });
+		await flush();
+		const before = runCount(h.store);
+		for (const holder of holders) await h.planner.cancel?.({ sessionId: holder });
+		await flush();
+		expect(runCount(h.store)).toBe(before + 1);
+		await h.planner.cancel?.({ sessionId });
+		const [a, b] = await Promise.all([first, second]);
+		expect(a).toEqual(b);
 	});
 
 	test("a principal cancels only its own job; an owner cancels any", async () => {

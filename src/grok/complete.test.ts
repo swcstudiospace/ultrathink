@@ -1274,6 +1274,16 @@ describe("grokComplete (cli) resilience (97-02)", () => {
 		expect(readReport(error)?.attempts).toBe(1);
 	});
 
+	test("a child killed by a signal with no output keeps its cause for the failover classifier", async () => {
+		const { seams } = retrySeams();
+		const bin = scriptGrok('process.kill(process.pid, "SIGKILL");');
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }),
+		);
+		expect(error.message).toContain("SIGKILL");
+		expect(classifyFailure(error)).toBe("network");
+	});
+
 	test("CLI failure reports carry a single-line redacted cause of at most 200 characters", async () => {
 		const { seams } = retrySeams();
 		const bin = failingGrok(`boom ${PLANTED_BEARER}\n${PLANTED_KEY} ${"x".repeat(400)}`);

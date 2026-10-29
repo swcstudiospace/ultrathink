@@ -520,6 +520,8 @@ export function degradedNodeIds(record: Pick<SessionRecord, "degraded"> | undefi
 function mergeTrackingRefs(prior: TrackingRefs | undefined, live: TrackingRefs): TrackingRefs {
 	const taskUrl = live.notion.taskUrl ?? prior?.notion.taskUrl;
 	const linearTeam = live.linearTeam ?? prior?.linearTeam;
+	// The live run owns the links still to make (it starts from the record's and removes the ones it made).
+	const pendingLinks = live.pendingLinks ?? prior?.pendingLinks;
 	return {
 		graphId: live.graphId,
 		status: "partial",
@@ -533,6 +535,7 @@ function mergeTrackingRefs(prior: TrackingRefs | undefined, live: TrackingRefs):
 			nodes: { ...prior?.notion.nodes, ...live.notion.nodes },
 			steps: { ...prior?.notion.steps, ...live.notion.steps },
 		},
+		...(pendingLinks && Object.keys(pendingLinks).length > 0 ? { pendingLinks } : {}),
 		errors: [...live.errors],
 		updatedAt: live.updatedAt,
 	};

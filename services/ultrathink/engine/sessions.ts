@@ -51,6 +51,8 @@ const MAX_LIMIT = 20;
 /** Directory entries read per directory; a hostile or runaway directory cannot make a listing unbounded. */
 const MAX_DIR_ENTRIES = 5000;
 const MAX_CANDIDATES = 200;
+/** Sessions read per listing, whoever they belong to: the bound on a scan that skips other principals' sessions. */
+const MAX_EXAMINED = 1000;
 /** Larger files are skipped unread: a plan record with every node filled stays far below this. */
 const MAX_FILE_BYTES = 1024 * 1024;
 /** Text is cut to this many characters before it is normalised, so a megabyte goal costs nothing. */
@@ -271,10 +273,6 @@ function summarize(
 	caller?: SessionCaller,
 ): SessionSummary | undefined {
 	const { id } = sources;
-	const record =
-		sources.recordMtime === undefined
-			? undefined
-			: readRecord(join(stateDir, "sessions", `${id}${JSON_SUFFIX}`));
 
 	let status: SessionStatus | undefined;
 	let mode: "server" | "client" = "server";
@@ -318,6 +316,10 @@ function summarize(
 	// Another principal's session is not listed, and never reads as the newest planned session.
 	if (!visibleTo(caller, scopedTo)) return undefined;
 
+	const record =
+		sources.recordMtime === undefined
+			? undefined
+			: readRecord(join(stateDir, "sessions", `${id}${JSON_SUFFIX}`));
 	const goal = oneLine(record?.graphGoal) || oneLine(record?.original) || oneLine(metaOriginal);
 	return {
 		sessionId: id,
@@ -330,10 +332,9 @@ function summarize(
 	};
 }
 
-/** The `candidates` most recently touched sessions, newest first by file modification time. */
-function newestSources(
+/** Every session found, newest first by file modification time. */
+function sourcesByRecency(
 	stateDir: string,
-	candidates: number,
 	logger: Logger,
 ): Array<{ id: string; time: number; sources: Sources }> {
 	return scan(stateDir, logger)
@@ -342,28 +343,51 @@ function newestSources(
 			time: Math.max(sources.jobMtime ?? 0, sources.metaMtime ?? 0, sources.recordMtime ?? 0),
 			sources,
 		}))
-		.sort(byRecency)
-		.slice(0, candidates);
+		.sort(byRecency);
 }
 
-/** Summaries of the `candidates` most recently touched sessions, newest first by their own timestamp. */
+/**
+ * Visits sessions newest first and hands `visit` the summary of each one the caller may see, until `visit` answers
+ * true, `wanted` summaries were visited or MAX_EXAMINED sessions were read. Another principal's session is skipped
+ * before it counts, so recent activity of others never hides the caller's own sessions.
+ */
+function walkVisible(
+	stateDir: string,
+	wanted: number,
+	logger: Logger,
+	caller: SessionCaller | undefined,
+	label: string,
+	visit: (summary: SessionSummary) => boolean,
+): void {
+	let examined = 0;
+	let visited = 0;
+	for (const { sources } of sourcesByRecency(stateDir, logger)) {
+		if (visited >= wanted || examined >= MAX_EXAMINED) return;
+		examined++;
+		try {
+			const summary = summarize(stateDir, sources, caller);
+			if (!summary) continue;
+			visited++;
+			if (visit(summary)) return;
+		} catch (error) {
+			// reason: One unreadable session never hides the others.
+			logger.error(`${label}: ${failureLabel(error)}`);
+		}
+	}
+}
+
+/** Summaries of the `candidates` most recently touched sessions the caller may see, newest first by their own timestamp. */
 function collect(
 	stateDir: string,
 	candidates: number,
 	logger: Logger,
 	caller?: SessionCaller,
 ): SessionSummary[] {
-	const newest = newestSources(stateDir, candidates, logger);
 	const summaries: SessionSummary[] = [];
-	for (const { sources } of newest) {
-		try {
-			const summary = summarize(stateDir, sources, caller);
-			if (summary) summaries.push(summary);
-		} catch (error) {
-			// reason: One unreadable session never hides the others.
-			logger.error(`collect: ${failureLabel(error)}`);
-		}
-	}
+	walkVisible(stateDir, candidates, logger, caller, "collect", (summary) => {
+		summaries.push(summary);
+		return false;
+	});
 	return summaries
 		.map((summary) => ({ id: summary.sessionId, time: summary.updatedAt, summary }))
 		.sort(byRecency)
@@ -371,9 +395,10 @@ function collect(
 }
 
 /**
- * The most recent sessions of a state directory, newest first. Never throws: a missing directory, an unreadable or
+ * The most recent sessions the caller may see, newest first. Never throws: a missing directory, an unreadable or
  * malformed file and a name that is not a session id are all skipped. `limit` is clamped to 1..20 (default 5); at
- * most min(200, limit * 4) sessions are parsed, chosen by file modification time.
+ * most min(200, limit * 4) visible sessions are parsed, chosen by file modification time among the caller's own, and
+ * at most MAX_EXAMINED sessions are read.
  */
 export function listSessions(
 	stateDir: string,
@@ -393,9 +418,10 @@ export function listSessions(
 }
 
 /**
- * Id of the newest session whose plan is finished (status "planned"), or undefined when there is none. Candidates are
- * visited newest first and the walk stops at the first planned one, so a state directory full of unfinished sessions
- * costs reads only until that session.
+ * Id of the newest session whose plan is finished (status "planned") that the caller may see, or undefined when there
+ * is none. Candidates are visited newest first and the walk stops at the first planned one, so a state directory full
+ * of unfinished sessions costs reads only until that session; sessions of other principals are skipped, up to
+ * MAX_EXAMINED sessions read.
  */
 export function newestPlannedSessionId(
 	stateDir: string,
@@ -403,16 +429,13 @@ export function newestPlannedSessionId(
 	caller?: SessionCaller,
 ): string | undefined {
 	try {
-		for (const { sources } of newestSources(stateDir, MAX_CANDIDATES, logger)) {
-			try {
-				const summary = summarize(stateDir, sources, caller);
-				if (summary?.status === "planned") return summary.sessionId;
-			} catch (error) {
-				// reason: One unreadable session never hides the others.
-				logger.error(`newestPlannedSessionId: ${failureLabel(error)}`);
-			}
-		}
-		return undefined;
+		let found: string | undefined;
+		walkVisible(stateDir, MAX_CANDIDATES, logger, caller, "newestPlannedSessionId", (summary) => {
+			if (summary.status !== "planned") return false;
+			found = summary.sessionId;
+			return true;
+		});
+		return found;
 	} catch {
 		return undefined;
 	}

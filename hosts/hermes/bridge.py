@@ -52,6 +52,7 @@ RUN_BUN = REPO_ROOT / "bin" / "run-bun"
 CLI = REPO_ROOT / "bin" / "ultrathink"
 DEFAULT_TIMEOUT_S = 540  # planning takes minutes; stay below Hermes' 600s hook cap maximum
 HOOK_MARGIN_S = 15  # the bridge's deadline ends this long before Hermes abandons the hook
+TERM_GRACE_S = 3.0  # how long the engine gets to stop its model children after SIGTERM before SIGKILL; well inside HOOK_MARGIN_S
 MIN_PLAN_S = 90  # below this a plan cannot finish, so Bun is not started at all
 HERMES_DEFAULT_CAP_S = 30.0  # Hermes' plugins.hook_callback_timeout when its config sets none
 HERMES_MAX_CAP_S = 600.0  # Hermes clamps a larger plugins.hook_callback_timeout to this
@@ -318,13 +319,25 @@ def session_sender() -> str:
 		return ""
 
 
+def _signal_group(proc: "subprocess.Popen[str]", name: int) -> None:
+	try:
+		os.killpg(proc.pid, name)
+	except (ProcessLookupError, PermissionError):
+		pass
+
+
 def _reap(proc: "subprocess.Popen[str]") -> None:
-	"""Kill the child's process group when it is still running, then wait for it so no zombie is left."""
+	"""Stop the engine when it is still running, then wait for it so no zombie is left. SIGTERM goes to its process
+	group first: the engine's child reaper then kills the model CLIs it started, each in a session of its own that
+	a signal to the engine's group does not reach (and SIGKILL would skip that cleanup). After TERM_GRACE_S the
+	group is force-killed, which also sweeps anything of the engine's own group that outlived it."""
 	if proc.poll() is None:
+		_signal_group(proc, signal.SIGTERM)
 		try:
-			os.killpg(proc.pid, signal.SIGKILL)
-		except (ProcessLookupError, PermissionError):
+			proc.wait(timeout=TERM_GRACE_S)
+		except subprocess.TimeoutExpired:
 			pass
+		_signal_group(proc, signal.SIGKILL)
 	try:
 		proc.wait(timeout=10)
 	except subprocess.TimeoutExpired:

@@ -227,6 +227,26 @@ export function runChild(opts: RunChildOptions): Promise<ChildResult> {
 	return promise;
 }
 
+/**
+ * The error for a child that failed without an answer: its (already redacted) stderr, else the signal that ended it,
+ * else its exit code. A signal also travels as `signalCode`, which the failover classifier reads, so a child the OS or
+ * an OOM killer ended is told apart from one that exited with an error.
+ */
+export function childFailure(
+	label: string,
+	result: Pick<ChildResult, "code" | "signal">,
+	stderr: string,
+): Error {
+	const error = new Error(
+		stderr ||
+			(result.signal
+				? `${label} was killed by ${result.signal}`
+				: `${label} exited ${result.code}`),
+	);
+	if (result.signal) Object.assign(error, { signalCode: result.signal });
+	return error;
+}
+
 function killAllGroups(): void {
 	for (const pid of liveGroups) killGroup(pid, "SIGKILL");
 }

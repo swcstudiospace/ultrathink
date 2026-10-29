@@ -278,12 +278,25 @@ export function parseNodeFill(xml: string): NodeFill {
 	if (!thinking || !conclusion) return REJECTED_FILL;
 	const steps = splitRationaleSteps(thinking);
 	if (steps.length < MIN_STEPS || steps.length > MAX_STEPS) return REJECTED_FILL;
+	const bounded = steps.map((step) => clip(step, FIELD_CAPS.step).text);
+	const stored = storedRationale(thinking, bounded);
+	// The stored text is what trackers and hosted plans split again: it must hold exactly the accepted steps.
+	if (splitRationaleSteps(stored).length !== steps.length) return REJECTED_FILL;
 	return {
 		ok: true,
-		thinking: clip(thinking, FIELD_CAPS.thinking).text,
+		thinking: stored,
 		conclusion: clip(conclusion, FIELD_CAPS.conclusion).text,
-		steps: steps.map((step) => clip(step, FIELD_CAPS.step).text),
+		steps: bounded,
 	};
+}
+
+/**
+ * The rationale as stored. Within the cap it is kept as written. Over it, the text is rebuilt from the bounded steps
+ * (at most MAX_STEPS × (FIELD_CAPS.step + marker) characters, under FIELD_CAPS.thinking) so no step is cut off.
+ */
+function storedRationale(thinking: string, bounded: string[]): string {
+	if (thinking.length <= FIELD_CAPS.thinking) return thinking;
+	return bounded.map((step, index) => `${index + 1}. ${step.replace(/\s+/g, " ")}`).join("\n");
 }
 
 function nodeXml(node: ThoughtNode): string {

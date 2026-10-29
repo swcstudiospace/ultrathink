@@ -654,6 +654,102 @@ def test_deadline_kills_bun_and_everything_it_spawned():
 				os.kill(grandchild, signal.SIGKILL)
 
 
+def _engine_stub_that_stops_its_own_process_group_child(path: Path, pid_file: Path) -> Path:
+	"""A bun stand-in that behaves like the engine's child reaper: it starts a model child in a
+	SEPARATE session (as runChild does), and on SIGTERM kills that child's group before it exits."""
+	path.write_text(
+		f"#!{sys.executable}\nimport os, pathlib, signal, subprocess, sys, time\n"
+		"child = []\n"
+		"def stop(signum, frame):\n"
+		"\tfor proc in child:\n"
+		"\t\tos.killpg(proc.pid, signal.SIGKILL)\n"
+		"\tos._exit(143)\n"
+		"signal.signal(signal.SIGTERM, stop)\n"
+		"sys.stdin.read()\n"
+		"child.append(subprocess.Popen(['sleep', '60'], start_new_session=True))\n"
+		f"pathlib.Path({str(pid_file)!r}).write_text(str(child[0].pid))\n"
+		"time.sleep(60)\n"
+	)
+	path.chmod(path.stat().st_mode | stat.S_IEXEC)
+	return path
+
+
+def test_deadline_lets_the_engine_stop_the_model_groups_it_started_before_any_force_kill():
+	# runChild starts each model CLI in its own session, so a SIGKILL of the engine's group cannot reach it
+	# and also skips the engine's cleanup: the bridge must send SIGTERM first.
+	with tempfile.TemporaryDirectory() as tmp:
+		pid_file = Path(tmp) / "model.pid"
+		fake = _engine_stub_that_stops_its_own_process_group_child(Path(tmp) / "bun", pid_file)
+		saved = bridge.plan_deadline
+		bridge.plan_deadline = lambda: 4.0
+		try:
+			assert plan({"user_message": "add a widget", "session_id": "s1"}, env={"BUN": str(fake)}) == ""
+		finally:
+			bridge.plan_deadline = saved
+		model = int(pid_file.read_text())
+		try:
+			assert exited(model)
+		finally:
+			if not exited(model):
+				os.kill(model, signal.SIGKILL)
+
+
+def test_deadline_still_force_kills_an_engine_that_ignores_sigterm():
+	with tempfile.TemporaryDirectory() as tmp:
+		pid_file = Path(tmp) / "engine.pid"
+		fake = Path(tmp) / "bun"
+		fake.write_text(
+			f"#!{sys.executable}\nimport os, pathlib, signal, sys, time\n"
+			"signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+			f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+			"sys.stdin.read()\n"
+			"time.sleep(60)\n"
+		)
+		fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+		saved_deadline, saved_grace = bridge.plan_deadline, bridge.TERM_GRACE_S
+		bridge.plan_deadline = lambda: 2.0
+		bridge.TERM_GRACE_S = 0.5
+		try:
+			assert plan({"user_message": "add a widget", "session_id": "s1"}, env={"BUN": str(fake)}) == ""
+		finally:
+			bridge.plan_deadline, bridge.TERM_GRACE_S = saved_deadline, saved_grace
+		assert exited(int(pid_file.read_text()))
+
+
+def test_deadline_with_the_real_engine_reaper_leaves_no_model_process():
+	import shutil
+
+	bun = shutil.which("bun")
+	if bun is None:
+		return
+	child_module = (HERE.parent.parent / "src" / "resilience" / "child.ts").resolve()
+	with tempfile.TemporaryDirectory() as tmp:
+		pid_file = Path(tmp) / "model.pid"
+		engine = Path(tmp) / "engine.ts"
+		engine.write_text(
+			f'import {{ installChildReaper, runChild }} from "{child_module}";\n'
+			"installChildReaper({ signals: true });\n"
+			"void runChild({\n"
+			f'\tcmd: ["sh", "-c", "echo $$ > {pid_file}; exec sleep 60"],\n'
+			"\tenv: { PATH: process.env.PATH },\n"
+			"});\n"
+			"setInterval(() => {}, 1000);\n"
+		)
+		saved_engine, saved_deadline = bridge.ENGINE, bridge.plan_deadline
+		bridge.ENGINE = engine
+		bridge.plan_deadline = lambda: 12.0
+		try:
+			assert plan({"user_message": "add a widget", "session_id": "s1"}, env={"BUN": bun}) == ""
+		finally:
+			bridge.ENGINE, bridge.plan_deadline = saved_engine, saved_deadline
+		model = int(pid_file.read_text())
+		try:
+			assert exited(model)
+		finally:
+			if not exited(model):
+				os.kill(model, signal.SIGKILL)
+
+
 def test_deadline_logs_one_visible_line_naming_the_session():
 	with tempfile.TemporaryDirectory() as tmp:
 		fake = Path(tmp) / "bun"
@@ -1742,6 +1838,9 @@ if __name__ == "__main__":
 	test_a_hermes_without_its_cap_resolver_or_a_configured_cap_assumes_30s_and_never_starts_bun()
 	test_a_plugin_directory_without_its_engine_warns_once_and_never_starts_bun()
 	test_deadline_kills_bun_and_everything_it_spawned()
+	test_deadline_lets_the_engine_stop_the_model_groups_it_started_before_any_force_kill()
+	test_deadline_still_force_kills_an_engine_that_ignores_sigterm()
+	test_deadline_with_the_real_engine_reaper_leaves_no_model_process()
 	test_deadline_logs_one_visible_line_naming_the_session()
 	test_invalid_utf8_from_bun_is_replaced_not_raised()
 	test_the_child_is_reaped_even_when_communicate_raises()

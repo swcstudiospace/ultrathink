@@ -32,7 +32,7 @@ import { decideUplift } from "../src/uplift/detect.ts";
 import { recordLastSkip, skipNotice } from "../src/uplift/skip.ts";
 import { planningTarget } from "../src/uplift/skill.ts";
 import { clearPlanCarrier, writePlanCarrier } from "../src/host/carrier.ts";
-import { claimTurn } from "../src/host/claim.ts";
+import { claimTurn, markClaimedTurnsDone } from "../src/host/claim.ts";
 import { detectHost } from "../src/host/detect.ts";
 import { selectEngine } from "../src/host/engine.ts";
 import { createGatewayTracker, trackCommand } from "../src/track/gateway.ts";
@@ -130,7 +130,8 @@ async function main(): Promise<void> {
 			if (grok) clearCarrier(stateDir);
 			return;
 		}
-		if (target.skill) input = { ...raw, prompt: target.text, skill: target.skill };
+		// Every accepted target, skill or text-only, is what is planned (as on Omp): a rewritten `/word …` no longer begins with `/`.
+		input = { ...raw, prompt: target.text, ...(target.skill ? { skill: target.skill } : {}) };
 	} catch {
 		// reason: fail-open: a throwing skill parser plans the prompt as written
 	}
@@ -259,6 +260,7 @@ async function main(): Promise<void> {
 if (import.meta.main) {
 	installChildReaper({ signals: true });
 	main()
+		.then(markClaimedTurnsDone)
 		.catch((error) => {
 			log(`fatal: ${error instanceof Error ? error.message : String(error)}`);
 		})

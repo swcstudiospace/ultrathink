@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { abortError } from "../claude/complete.ts";
@@ -484,6 +484,97 @@ describe("persisted cooldowns", () => {
 		time.advance(30_000);
 		await chain.complete("s", "u");
 		expect(first.calls()).toBe(2);
+	});
+
+	test("a failure keeps a cooldown another chain recorded after this one was built", async () => {
+		const time = clock();
+		const path = persistPath();
+		const early = createFailoverCompleter(
+			[scripted("a", [new Error(PLAN_LIMIT)]), scripted("b", ["ok-b"])],
+			{ now: time.now, persist: { path } },
+		);
+		// Another hook process learns that "b" is cooling while `early` is already built.
+		const other = createFailoverCompleter(
+			[scripted("b", [new Error("Credit balance is too low")]), scripted("c", ["ok-c"])],
+			{ now: time.now, persist: { path } },
+		);
+		expect(await other.complete("s", "u")).toBe("ok-c");
+		expect(await early.complete("s", "u")).toBe("ok-b");
+		const saved = JSON.parse(readFileSync(path, "utf8")) as {
+			until: Record<string, number>;
+			failure: Record<string, string>;
+		};
+		expect(Object.keys(saved.until).sort()).toEqual(["a", "b"]);
+		expect(saved.failure.b).toBe("billing");
+	});
+
+	test("a write waits for the file lock and merges what its holder wrote", async () => {
+		const time = clock();
+		const path = persistPath();
+		mkdirSync(dirname(path), { recursive: true });
+		const ready = `${path}.ready`;
+		const atomic = join(import.meta.dir, "..", "claude", "atomic.ts");
+		const until = time.now() + 3_600_000;
+		const holder = Bun.spawn(
+			[
+				process.execPath,
+				"-e",
+				[
+					`import { withFileLock, writeFileAtomic } from ${JSON.stringify(atomic)};`,
+					'import { writeFileSync } from "node:fs";',
+					`withFileLock(${JSON.stringify(path)}, () => {`,
+					`\twriteFileSync(${JSON.stringify(ready)}, "1");`,
+					"\tAtomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600);",
+					`\twriteFileAtomic(${JSON.stringify(path)}, JSON.stringify({ until: { z: ${until} }, failure: { z: "billing" } }));`,
+					"});",
+				].join("\n"),
+			],
+			{ stdout: "pipe", stderr: "pipe" },
+		);
+		// A real second process holds the lock: polling its marker file is the only way to know it is inside the lock.
+		for (let i = 0; i < 1500 && !existsSync(ready); i++) await Bun.sleep(10);
+		expect(existsSync(ready)).toBe(true);
+		const chain = createFailoverCompleter(
+			[scripted("a", [new Error(PLAN_LIMIT)]), scripted("b", ["ok-b"])],
+			{ now: time.now, persist: { path } },
+		);
+		expect(await chain.complete("s", "u")).toBe("ok-b");
+		expect(await holder.exited).toBe(0);
+		const saved = JSON.parse(readFileSync(path, "utf8")) as { until: Record<string, number> };
+		expect(Object.keys(saved.until).sort()).toEqual(["a", "z"]);
+	});
+
+	test("candidates with the same id on different routes do not share a persisted cooldown", async () => {
+		const time = clock();
+		const path = persistPath();
+		const failing = scripted("a", [new Error("Credit balance is too low")]);
+		const one = createFailoverCompleter(
+			[
+				{ ...failing, route: "cli:one" },
+				{ ...scripted("b", ["ok-b"]), route: "cli:one" },
+			],
+			{ now: time.now, persist: { path } },
+		);
+		expect(await one.complete("s", "u")).toBe("ok-b");
+		const healthy = scripted("a", ["ok-a"]);
+		const other = createFailoverCompleter(
+			[
+				{ ...healthy, route: "http:two" },
+				{ ...scripted("b", ["ok-b"]), route: "http:two" },
+			],
+			{ now: time.now, persist: { path } },
+		);
+		expect(await other.complete("s", "u")).toBe("ok-a");
+		const same = scripted("a", ["ok-a"]);
+		const again = createFailoverCompleter(
+			[
+				{ ...same, route: "cli:one" },
+				{ ...scripted("b", ["ok-b"]), route: "cli:one" },
+			],
+			{ now: time.now, persist: { path } },
+		);
+		expect(await again.complete("s", "u")).toBe("ok-b");
+		expect(same.calls()).toBe(0);
 	});
 });
 

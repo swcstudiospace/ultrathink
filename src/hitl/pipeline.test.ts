@@ -1418,6 +1418,69 @@ describe("runClarify with Jev decisions", () => {
 			]);
 		});
 	});
+
+	describe("a reply cut off mid-array still gets the Jev checks (greptile r1 #5)", () => {
+		const truncated = (items: unknown[]): string => {
+			const full = JSON.stringify({ questions: [...items, openItem("Cut off after this?")] });
+			return full.slice(0, full.length - 25);
+		};
+		const clarifyText = async (text: string, opts: Partial<RunClarifyOptions>) => {
+			const records: DecisionRecord[] = [];
+			const result = await runClarify({
+				uplift,
+				complete: async () => text,
+				onDecision: (record) => records.push(record),
+				...opts,
+			});
+			return { ...result, records };
+		};
+
+		test("an unsupported settled claim in the recovered items is asked, not left settled", async () => {
+			const r = recordingFetch([JEV(0.05, "supported")]);
+			const run = await clarifyText(truncated([kbClaim(SESSIONS_Q)]), {
+				knowledge: kb(),
+				decisions: jev(r.fetch, ["knowledge"]).decisions,
+			});
+			expect(run.failed).toContain("reply truncated: kept 1 complete question");
+			expect(r.calls).toHaveLength(1);
+			expect(run.items).toEqual([
+				{
+					id: "q1",
+					question: SESSIONS_Q,
+					header: "Auth",
+					why: "shapes the session model",
+					options: [{ label: "As stated", description: SESSIONS_A }, { label: "Something else" }],
+					default: "As stated",
+					blocking: false,
+				},
+			]);
+			expect(run.records).toMatchObject([{ point: "knowledge", action: "reject-claim" }]);
+		});
+
+		test("a risky default in the recovered items is promoted to blocking", async () => {
+			const r = recordingFetch([JEV(0.68, "risky")]);
+			const run = await clarifyText(truncated([openItem()]), {
+				decisions: jev(r.fetch, ["blocking"]).decisions,
+			});
+			expect(run.failed).toContain("reply truncated");
+			expect(r.calls).toHaveLength(1);
+			expect(run.items.map((item) => [item.question, item.blocking])).toEqual([[COLUMN_Q, true]]);
+			expect(run.records).toMatchObject([{ point: "blocking", action: "promote" }]);
+		});
+
+		test("with Jev off the recovered items are returned exactly as before", async () => {
+			const r = recordingFetch([JEV(0.68, "risky")]);
+			const run = await clarifyText(truncated([kbClaim(SESSIONS_Q), openItem()]), {
+				knowledge: kb(),
+				decisions: jevOff(r.fetch, ["knowledge", "blocking"]).decisions,
+			});
+			expect(r.calls).toHaveLength(0);
+			expect(run.items.map((item) => [item.id, item.source, item.blocking])).toEqual([
+				["q1", undefined, false],
+				["k1", "knowledge", false],
+			]);
+		});
+	});
 });
 
 describe("runClarify failure contract and salvage", () => {

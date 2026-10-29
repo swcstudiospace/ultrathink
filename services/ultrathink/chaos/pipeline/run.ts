@@ -4,6 +4,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { availableParallelism, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultConfig } from "../../../../src/config.ts";
 import { selectEngine } from "../../../../src/host/engine.ts";
 import type { HostId } from "../../../../src/host/types.ts";
 import { appendHistory, readHistory } from "../history.ts";
@@ -18,6 +19,7 @@ import {
 	stallBudgetMs,
 	watchdogBudgetMs,
 } from "./drive.ts";
+import { type CallGate, createCallGate } from "./gate.ts";
 import { checkInvariants, createJudge, median, snapshotResources } from "./oracle.ts";
 import {
 	type Pressure,
@@ -238,6 +240,11 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 	const samples: HeapSample[] = [];
 	const traceEvery = deps.traceEvery ?? 100;
 	const engineSelector = real ? (deps.engineSelector ?? selectEngine) : undefined;
+	// The live run's request cap is enforced at the request, not around the engine call that may retry (see gate.ts).
+	const gate: CallGate | undefined =
+		real && deps.real
+			? createCallGate({ cap: deps.real.maxCalls, bin: defaultConfig().claude.bin })
+			: undefined;
 	const drive: DriveDeps = {
 		provider,
 		sleep: clock.sleep,
@@ -268,11 +275,13 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 				}
 			: {}),
 		...(engineSelector ? { engineSelector, host: deps.host ?? "claude-code" } : {}),
+		...(gate ? { gate } : {}),
 	};
 
 	const pressure = deps.pressure
 		? (deps.startPressure ?? startRealPressure)(pressureSpecOf(scenario))
 		: undefined;
+	const restoreGate = gate?.install();
 	try {
 		const baseline = snapshotResources(stateRoot);
 		const report = await runPrompts(scenario, drive);
@@ -287,7 +296,7 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 		const probes = await runProbes(scenario, drive, real ? 1 : PROBE_COUNT);
 		const probe = probes[0];
 		if (probe === undefined) throw new Error("the probe batch is empty");
-		const capped = provider.capped();
+		const capped = provider.capped() || gate?.refused() === true;
 		const recorded =
 			scenario.baselineOf === undefined
 				? undefined
@@ -352,7 +361,7 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 		if (typeof recoveryObserved === "string") deps.notes?.(recoveryObserved);
 		if (real && deps.real) {
 			deps.notes?.(
-				`calls made: ${provider.calls().length} (cap ${deps.real.maxCalls}${capped ? ", reached" : ""})`,
+				`calls made: ${Math.max(gate?.used() ?? 0, provider.calls().length)} (cap ${deps.real.maxCalls}${capped ? ", reached" : ""})`,
 			);
 		}
 		const result: RunResult = {
@@ -384,6 +393,8 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 		return appendHistory(deps.historyPath, result);
 	} finally {
 		await pressure?.stop();
+		restoreGate?.();
+		gate?.dispose();
 		if (ownRoot) rmSync(stateRoot, { recursive: true, force: true });
 	}
 }

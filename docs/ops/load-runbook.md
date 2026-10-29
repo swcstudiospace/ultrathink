@@ -69,7 +69,7 @@ Flags of `pipeline run <id>`:
 | `--watchdog-ms MS` | Replaces the per-prompt livelock ceiling (same range). |
 | `--trace-heap` | Prints `heap prompts=<n> heapUsed=<MiB> rss=<MiB>` after a forced full collection every 100 completed prompts, then `heap slope: <KiB/prompt> over <n> samples`. A slope above about 100 KiB per prompt means the code under test retains memory per prompt. |
 | `--provider real` | Sends the prompts to the live engine instead of the scripted provider (see the real-provider section). |
-| `--max-calls N` | With `--provider real` only: the most provider calls the run may make. Default 40. |
+| `--max-calls N` | With `--provider real` only: the most requests the run may send to the `claude` CLI, retries included. Default 40. |
 
 The output is one line, `<id> via pipeline: PASSED|FAILED, score <n>, …`, one `pass <invariant>` or `fail <invariant>` line per hypothesis, and `recorded seq <n> in <history path>`. Exit codes are the framework's: 0 when every hypothesis passed, 1 when one failed, 2 for a usage error or a refused gate.
 
@@ -123,7 +123,7 @@ It is double-gated, and each gate refuses before any engine is called:
 1. The flag `--provider real`, and
 2. `ULTRATHINK_CHAOS_REAL=1` in the environment of the CLI process (exactly `1`).
 
-It also refuses the `stress` and `spike` scenarios, whose size would spend credentials at load, stops at `--max-calls` (default 40), and prints `calls made: N (cap M, reached)` at the end. A run that reaches the cap cannot send its probe, so its `recovery` invariant is not judged.
+It also refuses the `stress` and `spike` scenarios, whose size would spend credentials at load, and stops at `--max-calls` (default 40). The cap counts requests, not engine calls: the run points the engine's `claude` binary at a gate that takes one numbered slot for every run of the CLI, including each retry the completer makes inside one call, and refuses a run past the cap as a usage limit before anything is sent (a prompt dispatched after that ends `skipped:max-calls`). It prints `calls made: N (cap M, reached)` at the end. The gate covers the `claude` CLI engine; an engine the selector fails over to (another CLI or an HTTP route) is not counted. A run that reaches the cap cannot send its probe, so its `recovery` invariant is not judged.
 
 ```bash
 ULTRATHINK_CHAOS_REAL=1 bun run chaos -- pipeline run smoke --provider real --max-calls 40

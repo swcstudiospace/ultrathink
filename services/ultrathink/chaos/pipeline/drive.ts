@@ -21,6 +21,7 @@ import type { abortableSleep } from "../../../../src/resilience/sleep.ts";
 import { isAbortError } from "../../../../src/shared.ts";
 import { runThink } from "../../../../src/think/pipeline.ts";
 import type { Tracker } from "../../../../src/track/gateway.ts";
+import type { CallGate } from "./gate.ts";
 import {
 	asCompleteSimple,
 	type CallLog,
@@ -130,6 +131,12 @@ export interface DriveDeps {
 	host?: HostId;
 	/** Most prompts that take the Omp planner path when no selector is given. Default 10; 0 keeps every prompt on the hook. */
 	ompPrompts?: number;
+	/**
+	 * The live run's request gate. The resolved engine's `claude` binary becomes the gate's shim, so the cap counts every
+	 * request the retrying completer sends and a run past it is refused before anything leaves; a prompt dispatched after
+	 * the gate refused ends `skipped:max-calls`.
+	 */
+	gate?: CallGate;
 	/**
 	 * The livelock ceiling: aborts a flight still running after this many real milliseconds, whatever the run is doing.
 	 * Default: the scenario's `watchdogMs`, else {@link defaultWatchdogMs} of its concurrency. It is not the hang detector.
@@ -273,7 +280,7 @@ function seededRandom(seed: number): () => number {
 	};
 }
 
-function configFor(scenario: Scenario): UltrathinkConfig {
+function configFor(scenario: Scenario, gate?: CallGate): UltrathinkConfig {
 	const config = defaultConfig();
 	config.teach.enabled = false;
 	config.decisions.points = [];
@@ -284,6 +291,8 @@ function configFor(scenario: Scenario): UltrathinkConfig {
 	if (overrides.thinkMinNodes !== undefined) config.think.minNodes = overrides.thinkMinNodes;
 	if (overrides.thinkMaxNodes !== undefined) config.think.maxNodes = overrides.thinkMaxNodes;
 	config.hitl.enabled = overrides.hitl ?? true;
+	// The live run's `claude` is the gate: every request, retries inside one engine call included, takes a slot of the cap.
+	if (gate) config.claude.bin = gate.shim;
 	return config;
 }
 
@@ -453,7 +462,7 @@ async function flyOmp(
 	signal: AbortSignal,
 ): Promise<Flight> {
 	const { deps, scenario, sleep, now, random } = ctx;
-	const config = configFor(scenario);
+	const config = configFor(scenario, deps.gate);
 	const host = deps.host ?? "omp";
 	const env = ompEnv(scratch, stateDir, host);
 	const selector = deps.engineSelector;
@@ -521,7 +530,7 @@ async function drivePrompt(
 		path,
 		expected: item.expected,
 	};
-	if (deps.provider.capped()) {
+	if (deps.provider.capped() || deps.gate?.refused() === true) {
 		return {
 			...base,
 			terminal: "skipped:max-calls",

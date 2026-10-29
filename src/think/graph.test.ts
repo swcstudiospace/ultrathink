@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { FIELD_CAPS } from "../resilience/limits.ts";
+import { splitRationaleSteps } from "../track/plan.ts";
 import {
 	dependencyLevels,
 	extractJsonObject,
@@ -314,12 +315,43 @@ describe("parseNodeFill", () => {
 			`<node><rationale>${long}</rationale><conclusion>${"y".repeat(FIELD_CAPS.conclusion + 1000)}</conclusion></node>`,
 		);
 		expect(fill.ok).toBe(true);
-		expect(fill.thinking.length).toBe(FIELD_CAPS.thinking);
-		expect(fill.conclusion.length).toBe(FIELD_CAPS.conclusion);
 		expect(fill.thinking.length).toBeLessThanOrEqual(FIELD_CAPS.thinking);
+		expect(fill.conclusion.length).toBe(FIELD_CAPS.conclusion);
 		expect(fill.conclusion.length).toBeLessThanOrEqual(FIELD_CAPS.conclusion);
 		expect(fill.steps).toHaveLength(5);
 		for (const step of fill.steps) expect(step.length).toBeLessThanOrEqual(FIELD_CAPS.step);
+	});
+
+	test.each([5, 6, 8])(
+		"%i steps of 2,500 characters keep every step in the stored rationale (greptile r1 #4)",
+		(count) => {
+			const long = Array.from(
+				{ length: count },
+				(_, i) => `${i + 1}. ${String.fromCharCode(97 + i).repeat(2500)}`,
+			).join("\n");
+			const fill = parseNodeFill(
+				`<node><rationale>${long}</rationale><conclusion>c</conclusion></node>`,
+			);
+			expect(fill.ok).toBe(true);
+			expect(fill.steps).toHaveLength(count);
+			expect(fill.thinking.length).toBeLessThanOrEqual(FIELD_CAPS.thinking);
+			// The stored rationale is what trackers and hosted plans re-split: it must hold exactly the accepted steps.
+			const stored = splitRationaleSteps(fill.thinking);
+			expect(stored).toHaveLength(count);
+			expect(stored).toEqual(fill.steps);
+			for (const [i, step] of fill.steps.entries())
+				expect(step.startsWith(String.fromCharCode(97 + i))).toBe(true);
+		},
+	);
+
+	test("a rationale under the cap is stored exactly as written even when one step is over the step cap", () => {
+		const text = `1. ${"a".repeat(700)}\n2. b\n3. c\n4. d\n5. e`;
+		const fill = parseNodeFill(
+			`<node><rationale>${text}</rationale><conclusion>c</conclusion></node>`,
+		);
+		expect(fill.ok).toBe(true);
+		expect(fill.thinking).toBe(text);
+		expect(fill.steps[0]!.length).toBe(FIELD_CAPS.step);
 	});
 });
 

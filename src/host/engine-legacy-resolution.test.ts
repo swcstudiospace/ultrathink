@@ -1014,6 +1014,49 @@ describe("call-time failover (claude.fallbackToGrok and the Grok model chain)", 
 		}
 	});
 
+	test("a cooldown learned on one Grok route never skips the same model on another route", async () => {
+		const savedState = process.env.ULTRATHINK_STATE_DIR;
+		const home = grokLogin();
+		process.env.ULTRATHINK_STATE_DIR = tempDir("ultrathink-engine-state-");
+		const dead = gateway((_path, body) =>
+			body.model === "grok-build-0.1"
+				? new Response(RATE_LIMIT_ZERO, { status: 429 })
+				: Response.json({ output_text: "HTTP_REPLY" }),
+		);
+		const healthy = gateway(() => Response.json({ output_text: "HTTP_REPLY" }));
+		const configFor = (origin: string) =>
+			configWith({
+				grok: {
+					...defaultConfig().grok,
+					home,
+					baseUrl: `${origin}/v1`,
+					fallbackModels: ["grok-4.7"],
+				},
+			});
+		const select = async (origin: string) =>
+			engineOf(
+				await selectEngine(configFor(origin), {}, tempDir("ultrathink-engine-cwd-"), {
+					host: "grok-build",
+				}),
+			);
+		try {
+			// Route one learns that grok-build-0.1 is unusable there and records it for the next hook process.
+			expect(await (await select(dead.origin)).complete("system", "user")).toBe("HTTP_REPLY");
+			expect(dead.models).toEqual(["grok-build-0.1", "grok-4.7"]);
+			// A fresh process on the same route starts with that model cooling.
+			expect(await (await select(dead.origin)).complete("system", "user")).toBe("HTTP_REPLY");
+			expect(dead.models).toEqual(["grok-build-0.1", "grok-4.7", "grok-4.7"]);
+			// Another route to the same model name is a different access path: its first model still answers.
+			expect(await (await select(healthy.origin)).complete("system", "user")).toBe("HTTP_REPLY");
+			expect(healthy.models).toEqual(["grok-build-0.1"]);
+		} finally {
+			dead.stop();
+			healthy.stop();
+			if (savedState === undefined) delete process.env.ULTRATHINK_STATE_DIR;
+			else process.env.ULTRATHINK_STATE_DIR = savedState;
+		}
+	});
+
 	test("a host wire override names one exact model: no model chain", async () => {
 		const gw = gateway(() => new Response(RATE_LIMIT_ZERO, { status: 429 }));
 		try {

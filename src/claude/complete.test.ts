@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { classifyFailure } from "../failover/classify.ts";
 import { readReport } from "../types.ts";
 import {
 	buildClaudeArgs,
@@ -678,5 +679,16 @@ describe("claudeComplete resilience", () => {
 		);
 		expect(error.message).toBe("claude timed out after 50ms");
 		expect(readReport(error)?.attempts).toBe(1);
+	});
+
+	test("a child killed by a signal with no output keeps its cause for the failover classifier", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-claude-killed-"));
+		dirs.push(dir);
+		const bin = join(dir, "claude");
+		writeFileSync(bin, "#!/bin/sh\ncat >/dev/null\nkill -9 $$\n", { mode: 0o755 });
+		const error = await failure(createClaudeCompleter({ bin, env, retrySeams: noWait })("s", "u"));
+		expect(error.message).toContain("SIGKILL");
+		expect(classifyFailure(error)).toBe("network");
+		expect(readReport(error)?.cause).toContain("SIGKILL");
 	});
 });

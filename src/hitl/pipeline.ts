@@ -541,19 +541,21 @@ function leadingObjects(text: string): unknown[] {
 	return found;
 }
 
-/** The complete leading items of a reply that is not valid JSON as a whole; [] when none survive. */
+/** The complete leading questions of a reply that is not valid JSON as a whole, as a parsed reply; none when none survive. */
 function salvageTruncated(
 	text: string,
 	max: number,
 	docs: string[] | undefined,
 	idOffset: number,
-): Clarification[] {
+): { questions: unknown[] } | undefined {
 	const run: unknown[] = [];
 	for (const candidate of leadingObjects(text)) {
 		if (normalizeClarifications([candidate], max, docs, idOffset).length === 0) break;
 		run.push(candidate);
 	}
-	return normalizeClarifications(run, max, docs, idOffset);
+	return normalizeClarifications(run, max, docs, idOffset).length > 0
+		? { questions: run }
+		: undefined;
 }
 
 function failedCause(error: unknown): string {
@@ -577,13 +579,15 @@ export async function runClarify(
 		opts.onProgress?.("Clarifications…");
 		const system = clarifySystemPrompt(max, knowledge ? { knowledge: true } : {});
 		const text = await opts.complete(system, clarifyUserPayload(opts, max), opts.signal);
-		const parsed = extractJsonObject(text);
+		let parsed: unknown = extractJsonObject(text);
+		let failed: string | undefined;
 		if (!parsed || typeof parsed !== "object") {
-			const salvaged = salvageTruncated(text, max, knowledge?.docs, idOffset);
-			if (salvaged.length === 0) throw new Error("unparsable JSON");
-			const failed = `reply truncated: kept ${salvaged.length} complete question${salvaged.length === 1 ? "" : "s"}`;
+			// A reply cut off mid-array: its complete leading items go through the same checks as a whole reply.
+			parsed = salvageTruncated(text, max, knowledge?.docs, idOffset);
+			if (!parsed) throw new Error("unparsable JSON");
+			const kept = normalizeClarifications(parsed, max, knowledge?.docs, idOffset).length;
+			failed = `reply truncated: kept ${kept} complete question${kept === 1 ? "" : "s"}`;
 			opts.onProgress?.(`clarify failed: ${failed}`);
-			return { items: salvaged, failed };
 		}
 		const normalized = normalizeClarifications(parsed, max, knowledge?.docs, idOffset);
 		const list = opts.decisions
@@ -599,8 +603,8 @@ export async function runClarify(
 			: normalized;
 		const settled = list.filter((item) => item.source === "knowledge").length;
 		const settledBit = settled > 0 ? ` (+${settled} settled)` : "";
-		opts.onProgress?.(`Clarifications → ${list.length - settled}${settledBit}`);
-		return { items: list };
+		if (!failed) opts.onProgress?.(`Clarifications → ${list.length - settled}${settledBit}`);
+		return failed ? { items: list, failed } : { items: list };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
 		const failed = failedCause(error);

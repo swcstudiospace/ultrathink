@@ -67,7 +67,7 @@ const PIPELINE_RUN_FLAGS = [
 ] as const;
 const PIPELINE_BOOLEAN_FLAGS = ["--pressure", "--trace-heap"] as const;
 const PRESSURE_FLAGS = ["--workers", "--seconds", "--memory-mb", "--floor"] as const;
-/** The live engine run stops after this many provider calls unless `--max-calls` says otherwise. */
+/** The live engine run stops after this many requests to the `claude` CLI, retries included, unless `--max-calls` says otherwise. */
 const DEFAULT_MAX_CALLS = 40;
 
 class UsageError extends Error {}
