@@ -19,7 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Effort, Model } from "@oh-my-pi/pi-ai";
-import { writeSession } from "../claude/state.ts";
+import { writeControl, writeSession } from "../claude/state.ts";
 import { Flag } from "@oh-my-pi/pi-ai/error";
 import { RetryExhaustedError } from "../resilience/retry.ts";
 import { readReport } from "../types.ts";
@@ -597,6 +597,48 @@ describe("slash commands", () => {
 		expect(notices).toHaveLength(2);
 		expect(notices[1]).toContain("Prompt Uplift off");
 	});
+
+	test("a held control.json lock fails the slash command after about 2 s and writes nothing", async () => {
+		writeControl(stateDir, { thinkEnabled: true });
+		const before = readFileSync(join(stateDir, "control.json"), "utf8");
+		// A live helper process holds the control lock for 15 s; the TUI must not wait for it (30 s with the CLI policy).
+		const holder = Bun.spawn(
+			[
+				process.execPath,
+				"-e",
+				`
+			import { withFileLock } from ${JSON.stringify(join(import.meta.dir, "../claude/atomic.ts"))};
+			withFileLock(${JSON.stringify(join(stateDir, "control.json"))}, () => {
+				process.stdout.write("ready");
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15000);
+			}, { timeoutMs: 5000 });
+		`,
+			],
+			{ stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+		);
+		try {
+			const reader = holder.stdout.getReader();
+			let ready = "";
+			while (ready.length < "ready".length) {
+				const chunk = await reader.read();
+				if (chunk.done) break;
+				ready += new TextDecoder().decode(chunk.value);
+			}
+			reader.releaseLock();
+			expect(ready).toBe("ready");
+			const { command, notices } = setup(async () => "PLAN", 1_000, { stateDir });
+			const started = Date.now();
+			await command("ultrathink-off");
+			expect(Date.now() - started).toBeLessThan(10_000);
+			expect(notices).toEqual([
+				"ultrathink: control.json is locked by another process; nothing was changed, try again in a moment",
+			]);
+			expect(readFileSync(join(stateDir, "control.json"), "utf8")).toBe(before);
+		} finally {
+			holder.kill();
+			await holder.exited;
+		}
+	}, 60_000);
 
 	test("quick sends the message unplanned; the next message plans again", async () => {
 		const planner = counting();

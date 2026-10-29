@@ -2275,6 +2275,9 @@ export function createOmpExtension(
 									host: "omp",
 									...(observed ? { modelResolution: observed } : {}),
 									sessionId: ctx?.sessionManager?.getSessionId?.() || undefined,
+									// The TUI process: keep the short 2 s lock bound (a long wait would freeze the screen); a contended
+									// toggle fails with one line and writes nothing.
+									controlLock: { ...OMP_LOCK, onTimeout: "throw" },
 								});
 								ctx?.ui?.notify?.(reply, "info");
 							} catch {

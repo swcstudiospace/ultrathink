@@ -3,6 +3,7 @@
 /** Read-modify-write of the `ship` section inside a session state file. One locked cycle per call. Never throws. */
 import { readFileSync } from "node:fs";
 import { type LockOptions, withFileLock, writeFileAtomic } from "../claude/atomic.ts";
+import { HOOK_LOCK } from "../claude/state.ts";
 import { MAX_ATTEMPTS, MAX_SHIP_HISTORY } from "./types.ts";
 import type { ShipAttempt, ShipState } from "./types.ts";
 
@@ -44,7 +45,9 @@ function priorShip(record: Record<string, unknown>): Partial<ShipState> {
 function updateShip(
 	statePath: string,
 	build: (record: Record<string, unknown>) => ShipState,
-	lock?: LockOptions,
+	// The ship CLI and the stop hook run in their own short-lived processes and these writers never throw: wait long for a live
+	// holder, then fall back to the unlocked write. The Omp extension passes `OMP_LOCK` explicitly to keep its 2 s bound.
+	lock: LockOptions = HOOK_LOCK,
 ): ShipState | undefined {
 	return withFileLock(
 		statePath,

@@ -458,8 +458,8 @@ export function writeSession(dir: string, record: SessionRecord): string | undef
  * record is written back to that same path: a record still under its earlier name keeps its JSON beside its XML, and
  * never splits onto the new name. `mutate` must not write the record file itself. Without `lock` a held lock is waited for 2 s and
  * then the update runs unlocked, which can lose a concurrent update; that is reported in one line on stderr unless
- * `lock.log` takes it. Every production caller names its policy: `HOOK_LOCK` (hook entrypoints), `CLI_LOCK` (a writer that
- * must not lose an update) or `OMP_LOCK` (the TUI process).
+ * `lock.log` takes it. A production caller passes its process kind's policy instead: `HOOK_LOCK` (hook entrypoints),
+ * `CLI_LOCK` (a writer that must not lose an update) or `OMP_LOCK` (the TUI process).
  */
 export function updateSession(
 	dir: string,

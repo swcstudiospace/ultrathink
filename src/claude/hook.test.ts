@@ -2901,7 +2901,7 @@ describe("Jev knowledge and blocking points through the hook", () => {
 				h.cleanup();
 			}
 		}
-	}, 30_000);
+	}, 60_000);
 });
 
 describe("lessons and RAGFlow documents in the plan", () => {
@@ -4448,4 +4448,52 @@ describe("honest degradation (98-04)", () => {
 			cleanup();
 		}
 	});
+});
+
+describe("runPromptSubmit lock policy", () => {
+	test("with no stateLock in the deps the plan save outwaits a 9 s hold of the session lock", async () => {
+		const { deps, cleanup } = baseDeps();
+		try {
+			const first = await runPromptSubmit(input, deps);
+			expect(first.record?.engine).toBe("claude:claude-haiku-5-5");
+			// A live helper process holds the session lock for 9 s, then writes its own mark over the record it read. The
+			// pipeline reaches the save a few seconds in, so a save that gave up after the 2 s default and wrote unlocked
+			// would be overwritten by that stale write; the 15 s hook wait outlasts the hold.
+			const holder = Bun.spawn(
+				[
+					process.execPath,
+					"-e",
+					`
+			import { updateSession } from ${JSON.stringify(join(import.meta.dir, "state.ts"))};
+			updateSession(${JSON.stringify(deps.stateDir)}, "s1", record => {
+				process.stdout.write("ready");
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 9000);
+				return { ...record, workRepos: ["acme/widgets"], engine: "held-by-helper" };
+			});
+		`,
+				],
+				{ stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+			);
+			const reader = holder.stdout.getReader();
+			let ready = "";
+			while (ready.length < "ready".length) {
+				const chunk = await reader.read();
+				if (chunk.done) break;
+				ready += new TextDecoder().decode(chunk.value);
+			}
+			reader.releaseLock();
+			expect(ready).toBe("ready");
+			// The save blocks this thread on the lock; the helper releases it by itself.
+			const second = await runPromptSubmit(input, { ...deps, engine: "claude:second-plan" });
+			await holder.exited;
+			expect(holder.exitCode).toBe(0);
+			expect(second.record?.engine).toBe("claude:second-plan");
+			const saved = readSession(deps.stateDir, "s1");
+			// The helper's mark is carried onto the new plan, and the new plan is the record on disk.
+			expect(saved?.engine).toBe("claude:second-plan");
+			expect(saved?.workRepos).toEqual(["acme/widgets"]);
+		} finally {
+			cleanup();
+		}
+	}, 30_000);
 });

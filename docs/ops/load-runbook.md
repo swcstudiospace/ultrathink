@@ -142,35 +142,50 @@ Two variables are intentionally not in the environment registry, so `docs/enviro
 
 ## Recorded results
 
-Recorded on commit `e3097be` on a shared 8-CPU host (one-minute load average 28.93 when the first run started), with `--history` pointing at `.planning/phases/100-load-proof-and-closeout/load-history.jsonl` (six records, seq 1 to 6). Each row is transcribed from the run log `load-run.log` next to it and from that history file; the score and mean are read back with `pipeline score <id> --history <that file>`. Every run exited 0, printed `PASSED, score 100` and `pass` for all ten invariants (the `--pressure` run also printed `pass pressure`). The `Planned` column is how many of the prompts the oracle counted as planned (the `original`, `uplift`, `degraded` and `cot` invariants are checked over those, for example 436/436 in `nominal`); the others ended skipped or aborted with a status the `terminal` invariant accepts (all 500 of 500 were terminal), which is what the deterministic skip rules do to the varied prompt corpus.
+Recorded on commit `71f2e10` (the strict oracle, the stall watchdog and the median-of-5 recovery probe described above) on a shared 8-CPU host, with `--history` pointing at `.planning/phases/100-load-proof-and-closeout/load-history.jsonl` (six records, seq 1 to 6). Each row is transcribed from the run log `load-run.log` next to it (verdict lines, wall time, max RSS, the one-minute load average read when the run started) and from that history file (`details` holds the planned and skipped counts, the abort counts, the load average the run recorded and the five probe latencies); the score and mean are read back with `pipeline score <id> --history <that file>`. Every run exited 0, printed `PASSED, score 100` and `pass` for all ten invariants (the `--pressure` run also printed `pass pressure`). Runs recorded earlier under the first, laxer oracle are kept for history in `superseded/` next to the evidence and are not results of this harness.
 
-| Scenario | Prompts | Concurrency | Faults | Score | Planned | Probe outcome | Wall | Max RSS | History |
-|---|---|---|---|---|---|---|---|---|---|
-| `smoke` | 50 | 5 | none | 100 | 42 | passed | 13.28 s | 147 532 KB | seq 1 |
-| `nominal` | 500 | 25 | none | 100 | 436 | passed | 109.92 s | 183 764 KB | seq 2 |
-| `recovery` | 5 | 1 | none (probe batch after `nominal`) | 100 | 3 | passed | 1.33 s | 82 848 KB | seq 3 |
-| `stress` | 2 000 | 100 | 429 on every 4th prompt's fills, 503 on every 5th prompt's first fill | 100 | 1 750 | passed | 267.82 s | 301 216 KB | seq 4 |
-| `spike` | 1 000 | 100 | slow then 429 on every 3rd uplift, garbage on every 7th graph | 100 | 874 | passed | 108.31 s | 225 908 KB | seq 5 |
-| `nominal --pressure` | 500 | 25 | none, with full-duty pressure on every CPU (the scenario names none, so the helper uses all of them) | 100 | 436 | passed | 117.18 s | 214 500 KB | seq 6 |
+`Planned` is how many prompts the oracle counted as planned (the `original`, `uplift`, `degraded` and `cot` invariants are checked over those); `Skipped` is how many ended skipped by design. Every skip in these runs is `skipped:empty`: the generated corpus carries blank prompts (2 of every 16), which the pipeline skips before any engine call. Every run recorded 0 aborted prompts, 0 stall aborts and 0 ceiling aborts (stall watchdog 60 000 ms, ceiling 900 000 ms).
 
-The probe outcome is the `recovery` invariant: the probe prompt planned from the model with nothing degraded. Its recorded observation is `0` in every run: the harness measures it on its virtual clock, so there was no latency to compare with the 1.25 times baseline, and the invariant rests on the probe's outcome alone. Per-run figures the oracle recorded:
+| Scenario | Prompts | Concurrency | Faults | Score | Planned | Skipped | Wall | Max RSS | Load at start | History |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `smoke` | 50 | 5 | none | 100 | 42 | 8 | 18.40 s | 147 156 KB | 36.47 | seq 1 |
+| `nominal` | 500 | 25 | none | 100 | 436 | 64 | 204.10 s | 195 496 KB | 28.89 | seq 2 |
+| `recovery` | 5 | 1 | none (probe batch after `nominal`) | 100 | 3 | 2 | 5.18 s | 84 992 KB | 56.03 | seq 3 |
+| `stress` | 2 000 | 100 | 429 on every 4th prompt's fills, 503 on every 5th prompt's first fill | 100 | 1 750 | 250 | 802.59 s | 302 556 KB | 55.07 | seq 4 |
+| `spike` | 1 000 | 100 | slow then 429 on every 3rd uplift, garbage on every 7th graph | 100 | 874 | 126 | 313.27 s | 219 364 KB | 13.50 | seq 5 |
+| `nominal --pressure` | 500 | 25 | none, with full-duty pressure on every CPU (the scenario names none, so the helper uses all of them) | 100 | 436 | 64 | 233.39 s | 210 972 KB | 46.31 | seq 6 |
 
-| Run | `terminal` | `isolation` | `resources` (after the run, against the baseline before it) | `calls` |
+Per-run figures the oracle recorded. `resources` is the heap-based observation: the heap after the run against the baseline before it (the resident set size is printed but does not decide); `calls` is provider calls observed against the retry budget.
+
+| Run | `terminal` | `isolation` | `resources` | `calls` observed |
 |---|---|---|---|---|
-| `smoke` | 50/50 | 42 prompts, 0 leaks | heap +4 MiB, rss +93 MiB, handles +0, files 0, peak in flight 5 | 51/51 within budget |
-| `nominal` | 500/500 | 436 prompts, 0 leaks | heap +7 MiB, rss +117 MiB, handles +0, files 0, peak in flight 20 | 501/501 |
-| `recovery` | 5/5 | 3 prompts, 0 leaks | heap +5 MiB, rss +32 MiB, handles +0, files 0, peak in flight 1 | 6/6 |
-| `stress` | 2000/2000 | 1750 prompts, 0 leaks | heap +17 MiB, rss +166 MiB, handles +0, files 0, peak in flight 81 | 2001/2001 |
-| `spike` | 1000/1000 | 874 prompts, 0 leaks | heap +9 MiB, rss +126 MiB, handles +0, files 0, peak in flight 97 | 1001/1001 |
-| `nominal --pressure` | 500/500 | 436 prompts, 0 leaks | heap +6 MiB, rss +116 MiB, handles +0, files 0, peak in flight 20 | 501/501 |
+| `smoke` | 50/50 terminal: 42 planned, 8 skipped | 42 prompts, 0 leaks | heap +4 MiB, rss +83 MiB, handles +0, files 0, peak in flight 3 | 55/55 within budget |
+| `nominal` | 500/500: 436 planned, 64 skipped | 436 prompts, 0 leaks | heap +5 MiB, rss +105 MiB, handles +0, files 0, peak in flight 20 | 505/505 |
+| `recovery` | 5/5: 3 planned, 2 skipped | 3 prompts, 0 leaks | heap +5 MiB, rss +38 MiB, handles +0, files 0, peak in flight 1 | 10/10 |
+| `stress` | 2000/2000: 1750 planned, 250 skipped | 1750 prompts, 0 leaks | heap +18 MiB, rss +148 MiB, handles +0, files 0, peak in flight 80 | 2005/2005 |
+| `spike` | 1000/1000: 874 planned, 126 skipped | 874 prompts, 0 leaks | heap +8 MiB, rss +89 MiB, handles +0, files 0, peak in flight 80 | 1005/1005 |
+| `nominal --pressure` | 500/500: 436 planned, 64 skipped | 436 prompts, 0 leaks | heap +7 MiB, rss +79 MiB, handles +0, files 0, peak in flight 20 | 505/505 |
 
-Pressure applied during the `nominal --pressure` run (seq 6): the `pressure` hypothesis passed with an achieved CPU ratio of 4.785 against the floor of 0.5. `pipeline score` after the six runs: `smoke`, `recovery`, `stress` and `spike` have one run each, mean 100, latest 100; `nominal` has two runs (seq 2 and 6), mean 100, trend slope 0, latest 100.
+The `recovery` invariant, as recorded. Each run sent its batch of 5 probes after the load and the real-clock median of their latencies is below; the scripted-clock figure (`probeVirtualMs`) is 0 in every run, as expected for a fault-free probe. In every run the observation reads `baseline none ratio n/a bound n/a`, because no run compared against a baseline:
+
+| Run | Probe latencies, ms (in order) | Median | Min | Max |
+|---|---|---|---|---|
+| `smoke` | 279, 310, 285, 340, 186 | 285 | 186 | 340 |
+| `nominal` | 208, 309, 816, 300, 371 | 309 | 208 | 816 |
+| `recovery` | 316, 188, 373, 398, 214 | 316 | 188 | 398 |
+| `stress` | 177, 305, 312, 396, 596 | 312 | 177 | 596 |
+| `spike` | 321, 290, 305, 291, 194 | 291 | 194 | 321 |
+| `nominal --pressure` | 701, 810, 206, 272, 209 | 272 | 206 | 810 |
+
+What the recorded `recovery` run (seq 3) did: it found the `nominal` baseline (seq 2, recorded under a load average of 26.58) and its own load average was 56.04, a difference of more than a factor of 2, so it printed `recovery latency comparison skipped: load differed (baseline 26.58, now 56.04)` and made no real-clock comparison. The verdict rests on the scripted-clock figure and on the probes' outcome (all 5 planned from the model with nothing degraded); the real median, 316 ms, is recorded but was not compared with the nominal median of 309 ms. The 1.25 times plus 250 ms comparison was therefore not made in this evidence set; it is covered by the oracle's unit tests, and a rerun on a calmer host with comparable load would make it.
+
+Pressure applied during the `nominal --pressure` run (seq 6): the `pressure` hypothesis passed with an achieved CPU ratio of 2.977 against the floor of 0.5. `pipeline score` after the six runs: `smoke`, `recovery`, `stress` and `spike` have one run each, mean 100, latest 100; `nominal` has two runs (seq 2 and 6), mean 100, trend slope 0, latest 100.
 
 ## Soak: the load-flaky test files under pressure
 
 The soak proves that the test files that used to fail only on a loaded host (`atomic`, `audit-segments`, `audit-verify`, `session mark`, the doctor commands, `pstack-check`, `engine-label-safety`) pass repeatedly while the host is under CPU pressure. `audit-watch.test.ts` is hardened by the same seam and is proved in focused runs, not in the loop.
 
-The procedure is one script that holds the pressure helper in repeated 300 s windows in the background while twenty iterations of the seven files run in the foreground, and stops on the first failing iteration. The helper's window must be at least as long as one loop iteration; otherwise the tail of an iteration runs unpressured and the soak proves less than it claims. An iteration took 105 to 170 s here, so 300 s covers it. Run it from the repository root:
+The procedure is one script that holds the pressure helper in repeated 300 s windows in the background while twenty iterations of the seven files run in the foreground, and stops on the first failing iteration. The helper's window must be at least as long as one loop iteration; otherwise the tail of an iteration runs unpressured and the soak proves less than it claims. An iteration took 105 to 170 s on the first soak and 243 to 291 s on the confirmation below (the host was busier), so 300 s covered both, with little margin on the second. Run it from the repository root:
 
 ```bash
 FILES="src/claude/atomic.test.ts services/ultrathink/obs/audit-segments.test.ts services/ultrathink/obs/audit-verify.test.ts src/mcp/cli.test.ts src/uplift/commands.test.ts src/doctor/pstack-check.test.ts src/host/engine-label-safety.test.ts"
@@ -204,7 +219,7 @@ wait "$PRESSURE" 2>/dev/null
 
 Every window's last lines must read `pressure held 300s: … ratio <r>` with `pressure window exit=0`; an exit 2 (`pressure not applied`) means the host delivered less than the floor and that window proves nothing. The soak passes when the log ends with `soak runs passed: 20 of 20`. Do not run the loop while another heavy job (a full `bun test`, a build) holds the host, so that a failure is attributable to the files.
 
-Recorded result: soak started 2026-10-29T08:47:46Z on commit `e3097be`, 8 CPUs, one-minute load average 34.99 at the start, ended 09:31:48Z with `soak runs passed: 20 of 20`. Each run executed the same 273 tests: 273 pass, 0 fail, in all 20. The load column is the one-minute load average read when that run ended.
+Recorded result of the full 20-run soak: started 2026-10-29T08:47:46Z on commit `e3097be`, 8 CPUs, one-minute load average 34.99 at the start, ended 09:31:48Z with `soak runs passed: 20 of 20`. Each run executed the same 273 tests: 273 pass, 0 fail, in all 20. The load column is the one-minute load average read when that run ended. This soak ran before the harness changes recorded above; it exercises the seven test files, not the pipeline oracle, so it is kept as the full soak. The log is kept as history in `superseded/soak-20.log`.
 
 | Run | Result | Time | Load | Tests |
 |---|---|---|---|---|
@@ -243,32 +258,41 @@ Pressure delivered, as the helper measured it (nine 300 s windows, 4 workers on 
 | 09:22:53 | 738 589 | 300 010 | 2.4619 |
 | 09:27:54 | 832 657 | 300 071 | 2.7749 |
 
+Confirmation on the final code, `soak-confirm.log`: three iterations of the same loop (the same seven files, the same 300 s windows) on commit `71f2e10`, started 2026-10-29T13:18:52Z at a one-minute load average of 30.21, ending with `soak confirmation passed: 3 of 3`. Each run again executed 273 tests: 273 pass, 0 fail.
+
+| Run | Result | Time | Load | Tests |
+|---|---|---|---|---|
+| 1 | PASS | 243 s | 68.88 | 273 pass, 0 fail |
+| 2 | PASS | 291 s | 22.19 | 273 pass, 0 fail |
+| 3 | PASS | 260 s | 48.49 | 273 pass, 0 fail |
+
+| Window start (UTC) | cpuMs | wallMs | Ratio |
+|---|---|---|---|
+| 13:18:53 | 435 324 | 300 196 | 1.4501 |
+| 13:23:54 | 394 855 | 300 073 | 1.3159 |
+| 13:28:55 | 410 505 | 300 015 | 1.3683 |
+
 ## Closeout record (v1.21)
 
 What the gates produced, transcribed from the orchestrator's runs. A value that has not been produced is `pending` with the command that produces it; nothing is estimated.
 
 ### GATE-01: static gates and tests
 
-Run by the orchestrator on the milestone code before the last documentation commit (commit `e3097be` for the load runs):
+What the gates produced, transcribed from the orchestrator's runs and from the evidence files next to this phase. The load runs and the soak confirmation were produced on commit `71f2e10`.
 
 | Gate | Command | Result |
 |---|---|---|
-| Types | `bun run check` | exit 0 |
-| Service types | `bun run check:services` | exit 0 |
-| Lint | `bun run lint` | exit 0, 0 errors; 64 infos, which already exist on `origin/main` |
-| Dead code | `bun run deadcode` | exit 0 |
-| Environment docs | `bun scripts/render-env-docs.ts --check` | current |
-| Hermes bridge | `python3 hosts/hermes/bridge_test.py` | OK |
-| Prime Agent bridge | `python3 hosts/prime-agent/bridge_test.py` | 17 tests OK |
-| Full local suite, pre-integration tree | `bun test` | 8 048 pass, 12 skip, 0 fail, 1 237 s |
-| Full local suite, final tree | `bun test` | 8 092 pass, 12 skip, 2 fail |
+| Full local suite on `71f2e10` | `bun test` (`full-suite.log`, started 2026-10-29T13:33:56Z, load average 31.04 at start) | 8 187 pass, 12 skip, 1 fail, 8 200 tests in 286 files, 2 113.60 s of test time, 35:15 wall, max RSS 565 568 KB |
+| Types, service types, lint, dead code on `71f2e10` or later | `bun run check`, `bun run check:services`, `bun run lint`, `bun run deadcode` | the orchestrator reported exit 0 for all four (lint: 0 errors, 64 infos that already exist on `origin/main`) on the earlier tree, before the last documentation commit; no log of it is in the evidence directory, and no gate log for `b69984f` is in a file: pending: re-run on the merge head |
+| Environment docs | `bun scripts/render-env-docs.ts --check` | current (also re-run while writing these docs) |
+| Hermes bridge, Prime Agent bridge | `python3 hosts/hermes/bridge_test.py`, `python3 hosts/prime-agent/bridge_test.py` | OK; 17 tests OK, as reported by the orchestrator on the earlier tree |
 | Pull request CI | the CI checks on the pull request | pending: PR CI |
 
-The two failures on the final tree are known load-sensitive tests, not passes. Neither is touched by this milestone; each passed 3 of 3 times when run alone, and each failed only while the host's load average was above 30: `plugins/omp-token-opt/src/remote-sink.test.ts` (`close returns within about timeoutMs`) and `services/ultrathink/mcp/conformance.test.ts` (`a line over 1 MiB is refused …`). The full suite is not a local gate on this host; CI on the pull request is, and it has not run yet.
+The one failure in the full-suite run is `grok-bot answers > answers and refs wait for an independent session mutation and retain concurrent marks` (8 012.74 ms). It was fixed afterwards in `b69984f`: `recordAnswers` now takes the 30 s CLI lock, with a regression test that holds the lock for 3 s. The suite was not rerun after the fix, so the 8 187 pass above is the figure of the run on `71f2e10`, not of the fixed head. Two tests that failed in an earlier full-suite run, `plugins/omp-token-opt/src/remote-sink.test.ts` (`close returns within about timeoutMs`) and `services/ultrathink/mcp/conformance.test.ts` (`a line over 1 MiB is refused …`), did not fail in this one; they remain recorded as accepted load-sensitive debt, because they failed only while the host's load average was above 30 and passed alone. The full suite is not a local gate on this host; CI on the pull request is, and it has not run yet.
 
 ### GATE-02: load and soak
 
-The five scenarios at full size, the `nominal --pressure` run and the 20-run soak are recorded in "Recorded results" and "Soak" above: every scenario scored 100 with all ten invariants passing, and 20 of 20 soak runs passed under measured pressure (ratio 1.9047 to 2.7749).
+The five scenarios at full size, the `nominal --pressure` run and the soak are recorded in "Recorded results" and "Soak" above: on `71f2e10` every scenario scored 100 with all ten invariants passing and 0 aborts, the `--pressure` run delivered a CPU ratio of 2.977, the 20-run soak passed 20 of 20 on `e3097be` under pressure ratios of 1.9047 to 2.7749, and the 3-run confirmation passed 3 of 3 on `71f2e10` under ratios of 1.3159 to 1.4501. The `recovery` latency comparison was skipped by the load caveat (see above).
 
 ### GATE-03: milestone audit
 

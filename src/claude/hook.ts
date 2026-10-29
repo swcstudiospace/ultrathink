@@ -79,6 +79,7 @@ import {
 	clearSkipOnce,
 	type ControlState,
 	hostSessionId,
+	HOOK_LOCK,
 	isTurnSessionId,
 	newTurnSessionId,
 	readSession,
@@ -117,7 +118,7 @@ export interface HookDeps {
 	 */
 	modelResolution?: ModelResolution;
 	stateDir: string;
-	/** Lock policy of the plan save and the tracker checkpoints: `HOOK_LOCK` for a hook process, `OMP_LOCK` inside the Omp TUI. Absent: the lock default (2 s, then unlocked). */
+	/** Lock policy of the plan save and the tracker checkpoints. Absent: `HOOK_LOCK` (this pipeline runs in a hook process: 15 s, then one logged unlocked write); the Omp extension passes `OMP_LOCK` (2 s) so it never freezes the TUI. */
 	stateLock?: LockOptions;
 	/**
 	 * The session's armed /ultrathink-skip as the caller read it, before any engine wait (the Claude/Grok/Muse hook and
@@ -1359,7 +1360,13 @@ export async function runPromptSubmit(
 		 * derived locals are refreshed, keeping reference equality when the merge changed nothing.
 		 */
 		const persist = (): void => {
-			const saved = savePlanRecord(deps.stateDir, sessionId, record, log, deps.stateLock);
+			const saved = savePlanRecord(
+				deps.stateDir,
+				sessionId,
+				record,
+				log,
+				deps.stateLock ?? HOOK_LOCK,
+			);
 			record = saved.record;
 			if (
 				saved.record.clarifications !== undefined &&
@@ -1417,7 +1424,7 @@ export async function runPromptSubmit(
 								deps.stateDir,
 								sessionId,
 								trackingCheckpoint(plan.graphId, live),
-								deps.stateLock,
+								deps.stateLock ?? HOOK_LOCK,
 							);
 						} catch (error) {
 							log(
