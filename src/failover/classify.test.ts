@@ -133,6 +133,21 @@ const CORPUS: readonly [string, Error, FailureClass][] = [
 	// timeout
 	["claude timeout", err("claude timed out after 90000ms"), "timeout"],
 	["grok timeout", err("grok timed out after 1000ms"), "timeout"],
+	["status 408 is a hung route", err("request timeout", { status: 408 }), "timeout"],
+	["status 408 with plain text", err("body read stalled", { status: 408 }), "timeout"],
+	// spawn resources and killed children
+	["EAGAIN code", err("spawn failed", { code: "EAGAIN" }), "network"],
+	["ENOMEM code", err("cannot allocate", { code: "ENOMEM" }), "network"],
+	["EMFILE code", err("too many open", { code: "EMFILE" }), "network"],
+	["EAGAIN text", err("spawn claude EAGAIN"), "network"],
+	["claude exited 137", err("claude exited 137"), "network"],
+	["SIGKILL text", err("child killed by SIGKILL"), "network"],
+	[
+		"SIGTERM signalCode",
+		Object.assign(new Error("claude stopped"), { signalCode: "SIGTERM" }),
+		"network",
+	],
+	["OOM kill wording", err("claude was OOM-killed"), "network"],
 	// unavailable
 	["spawn ENOENT", err("spawn claude ENOENT", { code: "ENOENT" }), "unavailable"],
 	["ENOENT code only", err("no such binary", { code: "ENOENT" }), "unavailable"],
@@ -245,6 +260,7 @@ describe("isFailoverWorthy and failureCooldownMs", () => {
 		"model-unavailable": 3_600_000,
 		unavailable: 3_600_000,
 		network: 30_000,
+		timeout: 30_000,
 	};
 
 	for (const failure of ALL) {

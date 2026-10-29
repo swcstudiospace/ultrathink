@@ -32,6 +32,18 @@ export interface SessionSummary {
 	hasGraph: boolean;
 }
 
+/**
+ * Who is asking, for scoping a listing. A server job is private to the principal its file names: another principal's
+ * lookup never reaches it, and an owner sees every session. A session that names no principal (a job file from before
+ * principals, a journal whose first run died before it was stamped, one seeded outside the service) belongs to nobody: an
+ * owner sees it, and so does a caller with no principal (stdio), but no other principal does.
+ * No caller at all is the stdio and legacy path, and nothing is scoped.
+ */
+export interface SessionCaller {
+	principal: string;
+	owner: boolean;
+}
+
 export const GOAL_MAX_CHARS = 120;
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -218,7 +230,46 @@ function clientStatus(status: unknown): SessionStatus {
 	return status === "planned" || status === "invalid" || status === "skipped" ? status : "running";
 }
 
-function summarize(stateDir: string, sources: Sources): SessionSummary | undefined {
+/**
+ * Whether `caller` may see a session that names `principal`. A session that names none (a job file or journal from before
+ * principals, or seeded outside the service) is visible only to an owner and to a caller-less listing (stdio), the same
+ * owner-only rule `cancel` applies.
+ */
+function visibleTo(caller: SessionCaller | undefined, principal: string | undefined): boolean {
+	if (caller === undefined || caller.owner) return true;
+	return principal !== undefined && principal === caller.principal;
+}
+
+/** The principal in a job file or a journal meta; undefined when the file is unreadable or names none. */
+function namedPrincipal(path: string): string | undefined {
+	const body = readJson(path);
+	return isObject(body) && typeof body.principal === "string" ? body.principal : undefined;
+}
+
+/**
+ * Whether `caller` may read the session `id`: not when its job file or journal names another principal or none. A
+ * session with neither file has nothing to read, so an explicit id of one resolves as before (the views report
+ * not-found for an id that does not exist).
+ */
+export function sessionVisibleTo(
+	stateDir: string,
+	id: string,
+	caller: SessionCaller | undefined,
+): boolean {
+	if (caller === undefined || caller.owner) return true;
+	const jobPath = join(stateDir, "jobs", `${id}${JSON_SUFFIX}`);
+	if (fileMtime(jobPath) !== undefined) return visibleTo(caller, namedPrincipal(jobPath));
+	const metaPath = join(stateDir, "journal", id, "meta.json");
+	// Neither file: nothing to read, and the views answer not-found.
+	if (fileMtime(metaPath) === undefined) return true;
+	return visibleTo(caller, namedPrincipal(metaPath));
+}
+
+function summarize(
+	stateDir: string,
+	sources: Sources,
+	caller?: SessionCaller,
+): SessionSummary | undefined {
 	const { id } = sources;
 	const record =
 		sources.recordMtime === undefined
@@ -229,6 +280,8 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 	let mode: "server" | "client" = "server";
 	let updatedAt = 0;
 	let metaOriginal = "";
+	/** The principal the winning source (job file or journal meta) names. */
+	let scopedTo: string | undefined;
 
 	if (sources.jobMtime !== undefined) {
 		const job = readJson(join(stateDir, "jobs", `${id}${JSON_SUFFIX}`));
@@ -242,6 +295,7 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 		) {
 			status = job.status as SessionStatus;
 			updatedAt = job.updatedAt;
+			scopedTo = typeof job.principal === "string" ? job.principal : undefined;
 		}
 	}
 
@@ -255,11 +309,14 @@ function summarize(stateDir: string, sources: Sources): SessionSummary | undefin
 					? meta.updatedAt
 					: sources.metaMtime;
 			if (typeof meta.original === "string") metaOriginal = meta.original.slice(0, GOAL_SCAN_CHARS);
+			scopedTo = typeof meta.principal === "string" ? meta.principal : undefined;
 		}
 	}
 
 	// A plan record with no job and no journal cannot be served by ultrathink_result, so it is not listed.
 	if (status === undefined) return undefined;
+	// Another principal's session is not listed, and never reads as the newest planned session.
+	if (!visibleTo(caller, scopedTo)) return undefined;
 
 	const goal = oneLine(record?.graphGoal) || oneLine(record?.original) || oneLine(metaOriginal);
 	return {
@@ -290,12 +347,17 @@ function newestSources(
 }
 
 /** Summaries of the `candidates` most recently touched sessions, newest first by their own timestamp. */
-function collect(stateDir: string, candidates: number, logger: Logger): SessionSummary[] {
+function collect(
+	stateDir: string,
+	candidates: number,
+	logger: Logger,
+	caller?: SessionCaller,
+): SessionSummary[] {
 	const newest = newestSources(stateDir, candidates, logger);
 	const summaries: SessionSummary[] = [];
 	for (const { sources } of newest) {
 		try {
-			const summary = summarize(stateDir, sources);
+			const summary = summarize(stateDir, sources, caller);
 			if (summary) summaries.push(summary);
 		} catch (error) {
 			// reason: One unreadable session never hides the others.
@@ -315,7 +377,7 @@ function collect(stateDir: string, candidates: number, logger: Logger): SessionS
  */
 export function listSessions(
 	stateDir: string,
-	options: { limit?: number; logger?: Logger } = {},
+	options: { limit?: number; logger?: Logger; caller?: SessionCaller } = {},
 ): SessionSummary[] {
 	try {
 		const limit = clampLimit(options.limit);
@@ -323,6 +385,7 @@ export function listSessions(
 			stateDir,
 			Math.min(MAX_CANDIDATES, limit * 4),
 			options.logger ?? createLogger(),
+			options.caller,
 		).slice(0, limit);
 	} catch {
 		return [];
@@ -337,11 +400,12 @@ export function listSessions(
 export function newestPlannedSessionId(
 	stateDir: string,
 	logger: Logger = createLogger(),
+	caller?: SessionCaller,
 ): string | undefined {
 	try {
 		for (const { sources } of newestSources(stateDir, MAX_CANDIDATES, logger)) {
 			try {
-				const summary = summarize(stateDir, sources);
+				const summary = summarize(stateDir, sources, caller);
 				if (summary?.status === "planned") return summary.sessionId;
 			} catch (error) {
 				// reason: One unreadable session never hides the others.

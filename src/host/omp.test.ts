@@ -18,8 +18,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Effort, Model } from "@oh-my-pi/pi-ai";
+import type { Api, AssistantMessage, Effort, Model } from "@oh-my-pi/pi-ai";
 import { writeSession } from "../claude/state.ts";
+import { Flag } from "@oh-my-pi/pi-ai/error";
+import { RetryExhaustedError } from "../resilience/retry.ts";
+import { readReport } from "../types.ts";
 import { briefDigest, LANE_LOCK_BUSY, writeLaneFile } from "../swarm/lane.ts";
 import type { ClassifyVerdict } from "../swarm/classify.ts";
 import { type LaneClassify, spawnLanes, type TeamsFs } from "../swarm/teams.ts";
@@ -34,6 +37,7 @@ import {
 	createNativeEngineSelector,
 	NO_PLAN,
 	QUICK_USAGE,
+	repoOfPath,
 } from "./omp.ts";
 import type {
 	NativeEngineDeps,
@@ -1405,6 +1409,7 @@ describe("native binding (D-01, D-02, §7)", () => {
 		const engine = await engineFor(flightOf(live, runtime), {
 			completeSimple: rec.complete,
 			providerDefaults: {},
+			sleep: instantSleep([]),
 		});
 		const error = await engine.complete("s", "u").catch((caught: unknown) => caught);
 		expect(error).toMatchObject({
@@ -1418,7 +1423,7 @@ describe("native binding (D-01, D-02, §7)", () => {
 		expect(engine.error()).toBe("omp-native completion failed");
 	});
 
-	test("an aborted result, an aborted lifetime and a timeout reject as AbortError; a provider ignoring cancellation never yields a plan", async () => {
+	test("an aborted result and an aborted lifetime reject as AbortError; a provider ignoring cancellation never yields a plan", async () => {
 		const live = fakeModel("acme", "sol-1");
 		const { runtime } = fakeRuntime([live]);
 		const aborted = await engineFor(flightOf(live, runtime), {
@@ -1428,15 +1433,19 @@ describe("native binding (D-01, D-02, §7)", () => {
 			providerDefaults: {},
 		});
 		expect(await outcome(aborted.complete("s", "u"))).toBe("AbortError");
-		const timeout = await engineFor(flightOf(live, runtime), {
-			completeSimple: recorder(() => {
-				const error = new Error("timed out");
-				error.name = "TimeoutError";
-				throw error;
-			}).complete,
-			providerDefaults: {},
+		const hung = recorder(() => {
+			const error = new Error("timed out");
+			error.name = "TimeoutError";
+			throw error;
 		});
-		expect(await outcome(timeout.complete("s", "u"))).toBe("AbortError");
+		const timeout = await engineFor(flightOf(live, runtime), {
+			completeSimple: hung.complete,
+			providerDefaults: {},
+			sleep: instantSleep([]),
+		});
+		// A TimeoutError of a live flight is a failed attempt (retried, then final), never a cancellation.
+		expect(await outcome(timeout.complete("s", "u"))).toBe("NativeCompletionError");
+		expect(hung.calls).toHaveLength(3);
 		const flight = new AbortController();
 		const idle = recorder(planReply);
 		const cancelled = await engineFor(
@@ -1462,32 +1471,29 @@ describe("native binding (D-01, D-02, §7)", () => {
 		expect(await outcome(ignoring.complete("s", "u"))).toBe("AbortError");
 	});
 
-	test("retries a 429 once and then plans", async () => {
+	test("retries a 429 once and then plans, after one positive bounded wait", async () => {
 		const live = fakeModel("acme", "sol-1");
 		const { runtime } = fakeRuntime([live]);
 		const delays: number[] = [];
 		let failed = false;
-		const rec = recorder((call) => {
-			if (failed) return reply([{ type: "text", text: stageAnswer(userText(call)).text }]);
+		const rec = recorder(() => {
+			if (failed) return reply([{ type: "text", text: "PLAN" }]);
 			failed = true;
 			return reply([], { stopReason: "error", errorStatus: 429 });
 		});
 		const engine = await engineFor(flightOf(live, runtime), {
 			completeSimple: rec.complete,
 			providerDefaults: {},
+			random: () => 0.5,
 			sleep: instantSleep(delays),
 		});
-		const uplift = await runUplift({
-			original: "add a widget",
-			complete: engine.complete,
-			report: engine.report,
-		});
-		expect(uplift).toMatchObject({ source: "llm", root: "BUILD_PROMPT", attempts: 2 });
+		expect(await engine.complete("s", "u")).toBe("PLAN");
+		expect(engine.report?.()).toEqual({ attempts: 2 });
 		expect(rec.calls).toHaveLength(2);
 		expect(userText(rec.calls[1]!)).toBe(userText(rec.calls[0]!));
 		expect(delays).toHaveLength(1);
-		expect(delays[0]).toBeGreaterThanOrEqual(2000);
-		expect(delays[0]).toBeLessThan(2500);
+		expect(delays[0]).toBeGreaterThan(0);
+		expect(delays[0]).toBeLessThanOrEqual(8000);
 	});
 
 	test("does not retry a 403", async () => {
@@ -1561,15 +1567,23 @@ describe("native binding (D-01, D-02, §7)", () => {
 		expect(rec.calls).toHaveLength(1);
 	});
 
-	test("gives up after three attempts with the backoff between them", async () => {
+	test("gives up after three attempts with two positive, bounded backoffs between them, in call-sleep-call order", async () => {
 		const live = fakeModel("acme", "sol-1");
 		const { runtime } = fakeRuntime([live]);
+		const events: string[] = [];
 		const delays: number[] = [];
-		const rec = recorder(() => reply([], { stopReason: "error", errorStatus: 503 }));
+		const rec = recorder(() => {
+			events.push("call");
+			return reply([], { stopReason: "error", errorStatus: 503 });
+		});
 		const engine = await engineFor(flightOf(live, runtime), {
 			completeSimple: rec.complete,
 			providerDefaults: {},
-			sleep: instantSleep(delays),
+			random: () => 0.5,
+			sleep: async (ms) => {
+				events.push("sleep");
+				delays.push(ms);
+			},
 		});
 		const uplift = await runUplift({
 			original: "add a widget",
@@ -1582,11 +1596,12 @@ describe("native binding (D-01, D-02, §7)", () => {
 			attempts: 3,
 		});
 		expect(rec.calls).toHaveLength(3);
+		expect(events).toEqual(["call", "sleep", "call", "sleep", "call"]);
 		expect(delays).toHaveLength(2);
-		expect(delays[0]).toBeGreaterThanOrEqual(2000);
-		expect(delays[0]).toBeLessThan(2500);
-		expect(delays[1]).toBeGreaterThanOrEqual(6000);
-		expect(delays[1]).toBeLessThan(7500);
+		for (const delay of delays) {
+			expect(delay).toBeGreaterThan(0);
+			expect(delay).toBeLessThanOrEqual(8000);
+		}
 	});
 
 	test("a retry that would cross the flight deadline is not taken", async () => {
@@ -1602,6 +1617,8 @@ describe("native binding (D-01, D-02, §7)", () => {
 			const engine = await engineFor(request, {
 				completeSimple: rec.complete,
 				providerDefaults: {},
+				// Full jitter pinned high: every possible first wait is far past the 500 ms left to the deadline.
+				random: () => 0.99,
 				sleep: instantSleep(delays),
 			});
 			const uplift = await runUplift({
@@ -1619,6 +1636,162 @@ describe("native binding (D-01, D-02, §7)", () => {
 		} finally {
 			setSystemTime();
 		}
+	});
+
+	describe("kernel retry, classification and throttle (PROV-03)", () => {
+		const failing = (extra: Record<string, unknown>) =>
+			reply([], { stopReason: "error", ...extra });
+		const run = async (answer: () => AssistantMessage, deps: NativeEngineDeps = {}) => {
+			const live = fakeModel("acme", "sol-1");
+			const { runtime } = fakeRuntime([live]);
+			const delays: number[] = [];
+			const rec = recorder(answer);
+			// The caller's own deps object is the one the binding sees, so a test can read the throttle back from it.
+			deps.completeSimple ??= rec.complete;
+			deps.providerDefaults ??= {};
+			deps.random ??= () => 0.5;
+			deps.sleep ??= instantSleep(delays);
+			const engine = await engineFor(flightOf(live, runtime), deps);
+			return { engine, rec, delays };
+		};
+
+		test("a status-less Overloaded reply is retried then plans: errorId Transient beats refusal-sounding text", async () => {
+			let calls = 0;
+			const { engine, rec } = await run(() =>
+				++calls === 1
+					? failing({
+							errorMessage: "Overloaded: subscription tier busy",
+							errorId: Flag.Transient | Flag.Class,
+						})
+					: reply([{ type: "text", text: "PLAN" }]),
+			);
+			expect(await engine.complete("s", "u")).toBe("PLAN");
+			expect(rec.calls).toHaveLength(2);
+		});
+
+		test("a rate_limit_error and a usage-limit reply with no status are retried too", async () => {
+			for (const id of [Flag.Transient | Flag.Class, Flag.UsageLimit | Flag.Class]) {
+				let calls = 0;
+				const { engine, rec } = await run(() =>
+					++calls === 1
+						? failing({ errorMessage: "rate_limit_error", errorId: id })
+						: reply([{ type: "text", text: "PLAN" }]),
+				);
+				expect(await engine.complete("s", "u")).toBe("PLAN");
+				expect(rec.calls).toHaveLength(2);
+			}
+		});
+
+		test("ContentBlocked, ContextOverflow, PayloadRejected and AuthFailed never retry, even with a 503", async () => {
+			for (const flag of [
+				Flag.ContentBlocked,
+				Flag.ContextOverflow,
+				Flag.PayloadRejected,
+				Flag.AuthFailed,
+			]) {
+				const { engine, rec } = await run(() =>
+					failing({ errorStatus: 503, errorId: flag | Flag.Transient | Flag.Class }),
+				);
+				expect(await outcome(engine.complete("s", "u"))).toBe("NativeCompletionError");
+				expect(rec.calls).toHaveLength(1);
+			}
+		});
+
+		test("a 503 whose text mentions a subscription still retries", async () => {
+			const { engine, rec } = await run(() =>
+				failing({ errorStatus: 503, errorMessage: "subscription backend unavailable" }),
+			);
+			expect(await outcome(engine.complete("s", "u"))).toBe("NativeCompletionError");
+			expect(rec.calls).toHaveLength(3);
+		});
+
+		test("a stopReason length is a failed, retried attempt with cause truncated_reply and never resolves its text", async () => {
+			const { engine, rec } = await run(() =>
+				reply([{ type: "text", text: "HALF A PLAN" }], { stopReason: "length" }),
+			);
+			const error = await engine.complete("s", "u").catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(Error);
+			expect(rec.calls).toHaveLength(3);
+			expect(readReport(error)).toEqual({ attempts: 3, cause: "truncated_reply" });
+			expect(engine.report?.()).toEqual({ attempts: 3, cause: "truncated_reply" });
+		});
+
+		test("the thrown error is the original failure, not the retry wrapper, and its report carries status, hint, attempts and a redacted cause", async () => {
+			const live = fakeModel("acme", "sol-1");
+			const { runtime } = fakeRuntime([live]);
+			// A Retry-After of 3 s arrives through the response metadata hook of every attempt.
+			const hinted = recorder((call) => {
+				call.options?.onResponse?.({ status: 429, headers: { "Retry-After": "3" } });
+				return failing({ errorStatus: 429, errorMessage: "slow   down\nplease" });
+			});
+			const waits: number[] = [];
+			// A virtual clock the injected sleep advances, so the throttle's shared cooldown ends without real time.
+			let clock = 0;
+			const engine = await engineFor(flightOf(live, runtime), {
+				completeSimple: hinted.complete,
+				providerDefaults: {},
+				random: () => 0,
+				now: () => clock,
+				sleep: async (ms) => {
+					waits.push(ms);
+					clock += ms;
+				},
+			});
+			const error = await engine.complete("s", "u").catch((caught: unknown) => caught);
+			expect(error).not.toBeInstanceOf(RetryExhaustedError);
+			expect(error).toMatchObject({
+				name: "NativeCompletionError",
+				errorStatus: 429,
+				retryAfterMs: 3000,
+			});
+			expect(readReport(error)).toEqual({
+				attempts: 3,
+				httpStatus: 429,
+				retryAfterMs: 3000,
+				cause: "slow down please",
+			});
+			// The server's hint raises every wait to at least 3 s even with the jitter at its minimum.
+			expect(waits).toHaveLength(2);
+			for (const wait of waits) expect(wait).toBeGreaterThanOrEqual(3000);
+			expect(hinted.calls).toHaveLength(3);
+		});
+
+		test("one limiter per flight is capped at 3, exposed on the deps, shared by every fill and halved by a transient failure", async () => {
+			const deps: NativeEngineDeps = { maxConcurrency: 10 };
+			let calls = 0;
+			const { engine } = await run(
+				() =>
+					++calls === 1 ? failing({ errorStatus: 429 }) : reply([{ type: "text", text: "PLAN" }]),
+				deps,
+			);
+			expect(deps.throttle?.limit).toBe(3);
+			// The selected engine carries the same limiter, so the planner's think stage reuses it (G-11).
+			expect(engine.throttle).toBe(deps.throttle);
+			expect(await engine.complete("s", "u")).toBe("PLAN");
+			expect(deps.throttle?.limit).toBe(1);
+		});
+
+		test("concurrent fills never exceed the flight's limit", async () => {
+			let inflight = 0;
+			let peak = 0;
+			const live = fakeModel("acme", "sol-1");
+			const { runtime } = fakeRuntime([live]);
+			const rec = recorder(async () => {
+				inflight++;
+				peak = Math.max(peak, inflight);
+				await flush();
+				inflight--;
+				return reply([{ type: "text", text: "PLAN" }]);
+			});
+			const engine = await engineFor(flightOf(live, runtime), {
+				completeSimple: rec.complete,
+				providerDefaults: {},
+				maxConcurrency: 2,
+			});
+			await Promise.all([1, 2, 3, 4, 5].map(() => engine.complete("s", "u")));
+			expect(rec.calls).toHaveLength(5);
+			expect(peak).toBe(2);
+		});
 	});
 
 	test("flight validity is checked before dispatch and after the answer", async () => {
@@ -2894,5 +3067,23 @@ describe("swarm auto-run", () => {
 				rmSync(cwd, { recursive: true, force: true });
 			}
 		});
+	});
+});
+
+describe("repoOfPath cache (L6-07)", () => {
+	test("a directory's slug is reused inside the TTL and read again after it", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ut-repo-cache-"));
+		try {
+			const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd: dir });
+			git("init", "-q");
+			git("remote", "add", "origin", "git@github.com:acme/first.git");
+			const file = join(dir, "a.ts");
+			expect(repoOfPath(file, () => 0)).toBe("acme/first");
+			git("remote", "set-url", "origin", "git@github.com:acme/second.git");
+			expect(repoOfPath(file, () => 1_000)).toBe("acme/first");
+			expect(repoOfPath(file, () => 10_000)).toBe("acme/second");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

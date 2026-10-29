@@ -5,15 +5,23 @@
  * single long answer cannot amplify into megabytes of the next prompt. Pure functions, no I/O.
  */
 
-/** Character caps per model-controlled field. */
+/**
+ * Character caps per model-controlled field. Measured on 1,185 recorded plan nodes (167 sessions): title p99.9 93,
+ * goal max 417, question p99.9 2,681 (max 3,052), thinking max 5,361, conclusion p99.9 25,152 (max 26,489; synthesize
+ * is the long one, ending in the `Verify:` line). Each cap lets at least 99.9% of recorded values through untouched.
+ * A node conclusion only reaches the next prompt as a `predecessor` excerpt, so the growth of one prompt stays bounded.
+ */
 export const FIELD_CAPS = {
-	title: 120,
-	goal: 400,
-	question: 600,
-	thinking: 6000,
-	conclusion: 3000,
-	step: 400,
-	predecessor: 1500,
+	title: 160,
+	goal: 600,
+	question: 3000,
+	thinking: 8000,
+	conclusion: 26000,
+	step: 600,
+	/** A predecessor's conclusion in the next node's prompt: over this, the head and the tail are kept. */
+	predecessor: 3000,
+	predecessorHead: 1800,
+	predecessorTail: 1000,
 } as const;
 
 const DEFAULT_MARKER = "…[clipped]";
@@ -41,6 +49,33 @@ export function clip(
 	if (text.length <= max) return { text, clipped: false };
 	if (marker.length >= max) return { text: safeHead(marker, max), clipped: true };
 	return { text: safeHead(text, max - marker.length) + marker, clipped: true };
+}
+
+const MIDDLE_MARKER = "\n…[middle clipped]…\n";
+
+/** Slice the last `count` UTF-16 units without starting on the low half of a surrogate pair. */
+function safeTail(text: string, count: number): string {
+	if (count <= 0) return "";
+	if (count >= text.length) return text;
+	const start = text.length - count;
+	const code = text.charCodeAt(start);
+	return code >= 0xdc00 && code <= 0xdfff ? text.slice(start + 1) : text.slice(start);
+}
+
+/**
+ * Cap `text` at `max` units keeping its start and its end: the first `head` and the last `tail` units around a
+ * marker, so a closing line (`Verify:`, `Open questions:`) survives. At or under `max` the text is returned untouched.
+ */
+export function clipHeadTail(
+	text: string,
+	max: number,
+	head: number,
+	tail: number,
+	marker: string = MIDDLE_MARKER,
+): { text: string; clipped: boolean } {
+	if (text.length <= max) return { text, clipped: false };
+	if (head + tail + marker.length > max) return clip(text, max);
+	return { text: safeHead(text, head) + marker + safeTail(text, tail), clipped: true };
 }
 
 // NUL and C0 controls except TAB, LF and CR, then a high surrogate with no low one after it, then

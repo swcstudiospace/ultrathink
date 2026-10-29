@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { claudeConfigPaths, loadConfig, userConfigPath } from "../config.ts";
-import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
+import { type LockOptions, withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 import { readControl } from "../claude/state.ts";
 import type { SessionRecord } from "../claude/state.ts";
 import { createGatewayTracker } from "../track/gateway.ts";
@@ -464,17 +464,22 @@ function updateRecord(
 	statePath: string,
 	mutate: (record: SessionRecord) => SessionRecord | undefined,
 	xml?: (next: SessionRecord) => string | undefined,
+	lock?: LockOptions,
 ): SessionRecord | undefined {
-	return withFileLock(statePath, () => {
-		const record = readRecord(statePath);
-		if (!record) return undefined;
-		const next = mutate(record);
-		if (!next) return undefined;
-		writeFileAtomic(statePath, `${JSON.stringify(next, null, 2)}\n`);
-		const text = xml?.(next);
-		if (text !== undefined) writeFileAtomic(statePath.replace(/\.json$/, ".xml"), text);
-		return next;
-	});
+	return withFileLock(
+		statePath,
+		() => {
+			const record = readRecord(statePath);
+			if (!record) return undefined;
+			const next = mutate(record);
+			if (!next) return undefined;
+			writeFileAtomic(statePath, `${JSON.stringify(next, null, 2)}\n`);
+			const text = xml?.(next);
+			if (text !== undefined) writeFileAtomic(statePath.replace(/\.json$/, ".xml"), text);
+			return next;
+		},
+		lock,
+	);
 }
 function sessionMark(args: string[]): number {
 	const statePath = flag(args, "--state");
@@ -488,11 +493,17 @@ function sessionMark(args: string[]): number {
 		);
 	// Plan-scoped: the mark describes the plan now in the record; the session's next planned prompt replaces the record
 	// with a new graph whose kickedOff and synced start false, because that graph has not been kicked off or synced.
-	const marked = updateRecord(statePath, (record) => {
-		const next = { ...record };
-		next[field] = true;
-		return next;
-	});
+	// A CLI caller outside every hook, so a long wait for the lock is right: a short one would run the update unlocked and lose a concurrent mark.
+	const marked = updateRecord(
+		statePath,
+		(record) => {
+			const next = { ...record };
+			next[field] = true;
+			return next;
+		},
+		undefined,
+		{ timeoutMs: 120_000 },
+	);
 	return marked ? 0 : 1;
 }
 

@@ -23,7 +23,7 @@ type RollbackStatus =
 
 export interface RunResult {
 	templateId: string;
-	driver: "inprocess" | "http";
+	driver: "inprocess" | "http" | "pipeline";
 	startedAt: string;
 	finishedAt: string;
 	settled: boolean | "not_configured";

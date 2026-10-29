@@ -654,6 +654,79 @@ def test_deadline_kills_bun_and_everything_it_spawned():
 				os.kill(grandchild, signal.SIGKILL)
 
 
+def test_deadline_logs_one_visible_line_naming_the_session():
+	with tempfile.TemporaryDirectory() as tmp:
+		fake = Path(tmp) / "bun"
+		fake.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+		fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+		saved = bridge.plan_deadline
+		bridge.plan_deadline = lambda: 1.0
+		try:
+			with bridge_warnings() as warnings:
+				assert plan({"user_message": "add a widget", "session_id": "sess-42"}, env={"BUN": str(fake)}) == ""
+		finally:
+			bridge.plan_deadline = saved
+		deadline_lines = [line for line in warnings if "deadline" in line]
+		assert len(deadline_lines) == 1, warnings
+		assert "sess-42" in deadline_lines[0] and "hermes" in deadline_lines[0].lower(), deadline_lines
+
+
+def test_invalid_utf8_from_bun_is_replaced_not_raised():
+	with tempfile.TemporaryDirectory() as tmp:
+		fake = Path(tmp) / "bun"
+		fake.write_text(
+			f"#!{sys.executable}\nimport sys\n"
+			"sys.stdin.read()\n"
+			"sys.stdout.buffer.write(b'{\"context\": \"plan \\xff\\xfe end\"}')\n"
+		)
+		fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+		result = plan({"user_message": "add a widget", "session_id": "s1"}, env={"BUN": str(fake)})
+		assert result == "plan \ufffd\ufffd end", repr(result)
+
+
+def test_the_child_is_reaped_even_when_communicate_raises():
+	import subprocess
+
+	with tempfile.TemporaryDirectory() as tmp:
+		pid_file = Path(tmp) / "bun.pid"
+		fake = Path(tmp) / "bun"
+		fake.write_text(
+			f"#!{sys.executable}\nimport os, pathlib, time\n"
+			f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+			"time.sleep(60)\n"
+		)
+		fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+		started: list[subprocess.Popen] = []
+		real_popen = subprocess.Popen
+
+		class Booming(real_popen):  # type: ignore[misc, valid-type]
+			def __init__(self, *args, **kwargs):
+				super().__init__(*args, **kwargs)
+				started.append(self)
+
+			def communicate(self, input=None, timeout=None):
+				# Let the child start before the failure so there is something to reap.
+				deadline = time.monotonic() + 5
+				while not pid_file.exists() and time.monotonic() < deadline:
+					time.sleep(0.01)
+				raise RuntimeError("communicate failed")
+
+		bridge.subprocess.Popen = Booming  # type: ignore[assignment, misc]
+		try:
+			try:
+				plan({"user_message": "add a widget", "session_id": "s1"}, env={"BUN": str(fake)})
+				raised = False
+			except RuntimeError:
+				raised = True
+		finally:
+			bridge.subprocess.Popen = real_popen  # type: ignore[assignment, misc]
+		assert raised
+		assert len(started) == 1
+		# Reaped means waited for: poll() has a return code, and nothing of the process group survives.
+		assert started[0].poll() is not None
+		assert exited(int(pid_file.read_text()))
+
+
 def test_pr_creation_tool_mirrors_pr_detect():
 	for command in ("gh pr create --fill", "cd x && gh pr create", "  gh   pr   create"):
 		assert is_pr_creation_tool("terminal", command), command
@@ -1669,6 +1742,9 @@ if __name__ == "__main__":
 	test_a_hermes_without_its_cap_resolver_or_a_configured_cap_assumes_30s_and_never_starts_bun()
 	test_a_plugin_directory_without_its_engine_warns_once_and_never_starts_bun()
 	test_deadline_kills_bun_and_everything_it_spawned()
+	test_deadline_logs_one_visible_line_naming_the_session()
+	test_invalid_utf8_from_bun_is_replaced_not_raised()
+	test_the_child_is_reaped_even_when_communicate_raises()
 	test_pr_creation_tool_mirrors_pr_detect()
 	test_extract_pr_url_reads_gh_output()
 	test_tool_result_carries_the_nudge_once_and_only_for_a_planned_session()

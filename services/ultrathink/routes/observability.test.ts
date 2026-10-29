@@ -313,13 +313,19 @@ describe("runtime-fed signals", () => {
 
 		const refusedBefore =
 			sample(h, "ultrathink_planner_calls_total", { outcome: "upstream_unavailable" }) ?? 0;
-		await uplift();
-		// The pipeline degrades stage by stage instead of stopping, so one refused uplift records one refusal per
-		// stage it still attempts (as the OpenRouter path did); none of them may reach the backend.
+		const refused = await uplift();
+		// The open breaker refuses the start itself, before any job or model call exists: nothing reaches the backend,
+		// no planner call is recorded, and the client gets the code with a retry hint.
+		const body = (await refused.json()) as {
+			result: { isError: boolean; structuredContent: { error?: string; errors?: string[] } };
+		};
+		expect(body.result.isError).toBe(true);
+		expect(body.result.structuredContent.error).toBe("upstream_unavailable");
+		expect(body.result.structuredContent.errors?.[0]).toMatch(/^retry after \d+s$/);
 		expect(backendCalls).toBe(3);
 		expect(
-			sample(h, "ultrathink_planner_calls_total", { outcome: "upstream_unavailable" }),
-		).toBeGreaterThan(refusedBefore);
+			sample(h, "ultrathink_planner_calls_total", { outcome: "upstream_unavailable" }) ?? 0,
+		).toBe(refusedBefore);
 		expect(sample(h, "ultrathink_planner_calls_total", { outcome: "upstream" })).toBe(3);
 		await h.app.shutdown();
 	});

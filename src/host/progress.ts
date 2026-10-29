@@ -130,25 +130,40 @@ export function parseProgressLine(line: string): ProgressEvent | undefined {
 	return event;
 }
 
+/** Longest partial line the splitter keeps; bytes past it are dropped until the next newline. */
+const MAX_LINE_CHARS = 256 * 1024;
+
 export function createLineSplitter(onLine: (line: string) => void): {
 	push(chunk: string): void;
 	end(): void;
 } {
 	let buffer = "";
+	// True while the current line has overflowed: its tail is skipped up to the next newline.
+	let dropping = false;
+	const keep = (text: string): void => {
+		buffer += text;
+		if (buffer.length > MAX_LINE_CHARS) {
+			buffer = buffer.slice(0, MAX_LINE_CHARS);
+			dropping = true;
+		}
+	};
 	return {
 		push(chunk) {
-			buffer += chunk;
-			let newline = buffer.indexOf("\n");
-			while (newline !== -1) {
-				const line = buffer.slice(0, newline).replace(/\r$/, "");
-				buffer = buffer.slice(newline + 1);
+			let rest = chunk;
+			for (let newline = rest.indexOf("\n"); newline !== -1; newline = rest.indexOf("\n")) {
+				if (!dropping) keep(rest.slice(0, newline));
+				const line = buffer.replace(/\r$/, "");
+				buffer = "";
+				dropping = false;
 				if (line) onLine(line);
-				newline = buffer.indexOf("\n");
+				rest = rest.slice(newline + 1);
 			}
+			if (!dropping) keep(rest);
 		},
 		end() {
 			const rest = buffer.replace(/\r$/, "");
 			buffer = "";
+			dropping = false;
 			if (rest) onLine(rest);
 		},
 	};

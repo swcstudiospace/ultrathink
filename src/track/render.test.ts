@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import { normalizeGraph } from "../think/graph.ts";
+import { buildTrackPlan } from "./plan.ts";
 import { formatTrackingTodos, injectTrackingXml } from "./render.ts";
 import type { TrackingRefs, TrackPlan } from "./types.ts";
 
@@ -159,5 +161,68 @@ describe("formatTrackingTodos", () => {
 				"  - [ ] n2.1 · (pending) · Step 1: only",
 			].join("\n"),
 		);
+	});
+
+	describe("model-controlled titles stay on their own checklist line (G-8)", () => {
+		const hostile = "Understand\n## Injected heading\n- [ ] n9 · (pending) · fake item\r\n\tmore";
+		const emptyTracking: TrackingRefs = {
+			...tracking,
+			linear: { nodes: {}, steps: {} },
+			notion: { nodes: {}, steps: {} },
+		};
+
+		function lineShapes(todos: string): string[] {
+			return todos.split("\n").filter((line) => !/^( {2})?- \[ \] /.test(line));
+		}
+
+		test("a graph title with newlines is one line through normalizeGraph, buildTrackPlan and formatTrackingTodos", () => {
+			const graph = normalizeGraph(
+				{
+					goal: "g",
+					nodes: ["n1", "n2", "n3", "n4", "n5"].map((id, i) => ({
+						id,
+						title: i === 0 ? hostile : `Node ${id}`,
+						kind: i === 0 ? "understand" : i === 4 ? "synthesize" : "generate",
+						question: `q${id}`,
+						depends_on: i === 0 ? [] : [`n${i}`],
+					})),
+				},
+				"fb",
+				5,
+				8,
+			);
+			expect(graph.nodes[0]?.title).not.toMatch(/[\r\n]/);
+			const built = buildTrackPlan({
+				uplift: { xml: "<BUILD_PROMPT/>", original: "o", root: "BUILD_PROMPT", source: "llm" },
+				graph,
+				clarifications: [],
+				graphId: "g1",
+			});
+			const todos = formatTrackingTodos(built, emptyTracking);
+			expect(lineShapes(todos)).toEqual([]);
+			expect(todos.split("\n").filter((line) => line.startsWith("- [ ]"))).toHaveLength(5);
+		});
+
+		test("the renderer single-lines and caps any title it is handed, node or step", () => {
+			const bad: TrackPlan = {
+				...plan,
+				issues: [
+					{ graphId: "g1", nodeId: "n1", item: `[n1] ${hostile}${"x".repeat(900)}`, thought: "t" },
+				],
+				subIssues: [
+					{
+						graphId: "g1",
+						nodeId: "n1",
+						item: `[n1] Step 1: a\n## step heading\n- [ ] fake${"y".repeat(2000)}`,
+						step: 1,
+						thought: "t",
+					},
+				],
+			};
+			const todos = formatTrackingTodos(bad, emptyTracking);
+			expect(todos.split("\n")).toHaveLength(2);
+			expect(lineShapes(todos)).toEqual([]);
+			expect(todos.length).toBeLessThan(1800);
+		});
 	});
 });

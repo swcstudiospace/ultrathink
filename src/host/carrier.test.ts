@@ -9,12 +9,19 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readSkipOnce } from "../claude/state.ts";
-import { carrierPath, clearPlanCarrier, writePlanCarrier } from "./carrier.ts";
+import {
+	carrierPath,
+	carrierPathFor,
+	clearPlanCarrier,
+	readPlanCarrier,
+	writePlanCarrier,
+} from "./carrier.ts";
 import { claimTurn } from "./claim.ts";
 
 const HOOK = join(import.meta.dir, "..", "..", "hooks", "uplift.ts");
@@ -31,11 +38,11 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-function writeStalePlan(): string {
+function writeStalePlan(sessionId = "s1"): string {
 	const path = writePlanCarrier({
 		host: "grok-build",
 		stateDir,
-		sessionId: "s0",
+		sessionId,
 		context: "<spec>old prompt</spec>",
 	});
 	if (!path) throw new Error("stale carrier not written");
@@ -43,17 +50,181 @@ function writeStalePlan(): string {
 }
 
 describe("clearPlanCarrier", () => {
-	test("removes the carrier", () => {
-		const path = writeStalePlan();
-		clearPlanCarrier(stateDir);
+	test("removes the carrier of the named session", () => {
+		const path = writeStalePlan("s1");
+		clearPlanCarrier(stateDir, "s1");
 		expect(existsSync(path)).toBe(false);
 	});
 
 	test("a missing carrier or state dir is fine", () => {
-		expect(() => clearPlanCarrier(stateDir)).not.toThrow();
+		expect(() => clearPlanCarrier(stateDir, "s1")).not.toThrow();
 		mkdirSync(stateDir, { recursive: true });
-		clearPlanCarrier(stateDir);
-		expect(existsSync(carrierPath(stateDir))).toBe(false);
+		clearPlanCarrier(stateDir, "s1");
+		expect(existsSync(carrierPathFor(stateDir, "s1"))).toBe(false);
+	});
+
+	test("clearing one session leaves another session's carrier intact", () => {
+		const a = writeStalePlan("session-a");
+		const b = writeStalePlan("session-b");
+		clearPlanCarrier(stateDir, "session-a");
+		expect(existsSync(a)).toBe(false);
+		expect(existsSync(b)).toBe(true);
+	});
+
+	test("a carrier whose stored session differs from the caller's is left in place", () => {
+		const path = writeStalePlan("s1");
+		// Two ids can sanitize to one file name; the file names its own session.
+		const other = JSON.parse(readFileSync(path, "utf8"));
+		writeFileSync(path, JSON.stringify({ ...other, sessionId: "someone-else" }));
+		clearPlanCarrier(stateDir, "s1");
+		expect(existsSync(path)).toBe(true);
+	});
+
+	test("a blank session id clears nothing", () => {
+		const path = writeStalePlan("s1");
+		for (const id of ["", "  "]) clearPlanCarrier(stateDir, id);
+		expect(existsSync(path)).toBe(true);
+	});
+});
+
+describe("carrierPathFor", () => {
+	test("keeps A-Za-z0-9_- and replaces every other character with _", () => {
+		expect(carrierPathFor(stateDir, "Abc_9-z")).toBe(join(stateDir, "last-plan.Abc_9-z.json"));
+		expect(carrierPathFor(stateDir, "a/../b c\\d")).toBe(
+			join(stateDir, "last-plan.a____b_c_d.json"),
+		);
+		expect(carrierPathFor(stateDir, "s.1:é")).toBe(join(stateDir, "last-plan.s_1__.json"));
+	});
+
+	test("cuts the name to 64 characters", () => {
+		const path = carrierPathFor(stateDir, `${"a".repeat(80)}`);
+		expect(path).toBe(join(stateDir, `last-plan.${"a".repeat(64)}.json`));
+	});
+
+	test("a blank id still names a harmless file inside the state dir", () => {
+		for (const id of ["", "   "]) {
+			const path = carrierPathFor(stateDir, id);
+			expect(path.startsWith(`${stateDir}/last-plan.`)).toBe(true);
+			expect(path.endsWith(".json")).toBe(true);
+			expect(path.slice(stateDir.length + 1)).not.toContain("/");
+		}
+	});
+
+	test("a path traversal id cannot leave the state dir", () => {
+		const path = carrierPathFor(stateDir, "../../etc/passwd");
+		expect(path.slice(stateDir.length + 1)).not.toContain("/");
+		expect(path.startsWith(`${stateDir}/`)).toBe(true);
+	});
+});
+
+describe("per-session carriers", () => {
+	test("two sessions write distinct files and never read each other's plan", () => {
+		const a = writePlanCarrier({
+			host: "grok-build",
+			stateDir,
+			sessionId: "A",
+			context: "plan for A",
+		});
+		const b = writePlanCarrier({
+			host: "grok-build",
+			stateDir,
+			sessionId: "B",
+			context: "plan for B",
+		});
+		expect(a).toBeDefined();
+		expect(b).toBeDefined();
+		expect(a).not.toBe(b);
+		expect(readPlanCarrier(stateDir, "A")?.context).toBe("plan for A");
+		expect(readPlanCarrier(stateDir, "B")?.context).toBe("plan for B");
+		expect(readPlanCarrier(stateDir, "C")).toBeUndefined();
+	});
+
+	test("clearing session A leaves session B's file intact", () => {
+		const a = writePlanCarrier({
+			host: "grok-build",
+			stateDir,
+			sessionId: "A",
+			context: "plan for A",
+		});
+		const b = writePlanCarrier({
+			host: "grok-build",
+			stateDir,
+			sessionId: "B",
+			context: "plan for B",
+		});
+		clearPlanCarrier(stateDir, "A");
+		expect(existsSync(a as string)).toBe(false);
+		expect(existsSync(b as string)).toBe(true);
+		expect(readPlanCarrier(stateDir, "B")?.context).toBe("plan for B");
+	});
+
+	test("a carrier whose stored sessionId differs from the reader's is rejected", () => {
+		const path = writePlanCarrier({
+			host: "grok-build",
+			stateDir,
+			sessionId: "A",
+			context: "plan for A",
+		});
+		const body = JSON.parse(readFileSync(path as string, "utf8"));
+		writeFileSync(path as string, JSON.stringify({ ...body, sessionId: "B" }));
+		expect(readPlanCarrier(stateDir, "A")).toBeUndefined();
+	});
+
+	test("ids that sanitize to the same file name never read each other's carrier", () => {
+		writePlanCarrier({ host: "grok-build", stateDir, sessionId: "a.b", context: "dotted" });
+		expect(readPlanCarrier(stateDir, "a.b")?.context).toBe("dotted");
+		expect(readPlanCarrier(stateDir, "a:b")).toBeUndefined();
+	});
+
+	test("the legacy single-file carrier is never read for a plan", () => {
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			carrierPath(stateDir),
+			JSON.stringify({ host: "grok-build", sessionId: "A", context: "old" }),
+		);
+		expect(readPlanCarrier(stateDir, "A")).toBeUndefined();
+	});
+
+	test("an unreadable, blank-id or non-object carrier reads as absent", () => {
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(carrierPathFor(stateDir, "A"), "{");
+		expect(readPlanCarrier(stateDir, "A")).toBeUndefined();
+		writeFileSync(carrierPathFor(stateDir, "A"), "[]");
+		expect(readPlanCarrier(stateDir, "A")).toBeUndefined();
+		expect(readPlanCarrier(stateDir, "")).toBeUndefined();
+	});
+
+	test("the next write removes a legacy single-file carrier older than 24 h and keeps a fresh one", () => {
+		mkdirSync(stateDir, { recursive: true });
+		const legacy = carrierPath(stateDir);
+		writeFileSync(legacy, "{}");
+		const old = (Date.now() - 25 * 60 * 60 * 1000) / 1000;
+		utimesSync(legacy, old, old);
+		writePlanCarrier({ host: "grok-build", stateDir, sessionId: "A", context: "ctx" });
+		expect(existsSync(legacy)).toBe(false);
+
+		writeFileSync(legacy, "{}");
+		writePlanCarrier({ host: "grok-build", stateDir, sessionId: "A", context: "ctx" });
+		expect(existsSync(legacy)).toBe(true);
+	});
+
+	test("the next write also removes another session's carrier older than 24 h, never the writer's own", () => {
+		const stale = writePlanCarrier({
+			host: "grok-build",
+			stateDir,
+			sessionId: "old",
+			context: "x",
+		});
+		const old = (Date.now() - 25 * 60 * 60 * 1000) / 1000;
+		utimesSync(stale as string, old, old);
+		const fresh = writePlanCarrier({
+			host: "grok-build",
+			stateDir,
+			sessionId: "new",
+			context: "y",
+		});
+		expect(existsSync(stale as string)).toBe(false);
+		expect(existsSync(fresh as string)).toBe(true);
 	});
 });
 
@@ -68,8 +239,9 @@ describe("writePlanCarrier", () => {
 			graphId: "ut-1",
 			context: "first",
 		});
-		expect(path).toBe(carrierPath(stateDir));
-		expect(JSON.parse(readFileSync(carrierPath(stateDir), "utf8"))).toMatchObject({
+		const own = carrierPathFor(stateDir, "s1");
+		expect(path).toBe(own);
+		expect(JSON.parse(readFileSync(own, "utf8"))).toMatchObject({
 			host: "grok-build",
 			sessionId: "s1",
 			specPath: "/s/s1.xml",
@@ -77,24 +249,24 @@ describe("writePlanCarrier", () => {
 			context: "first",
 		});
 		if (process.platform !== "win32") {
-			expect(statSync(carrierPath(stateDir)).mode & 0o777).toBe(0o600);
+			expect(statSync(own).mode & 0o777).toBe(0o600);
 			expect(statSync(stateDir).mode & 0o777).toBe(0o700);
 		}
-		writePlanCarrier({ host: "grok-build", stateDir, sessionId: "s2", context: "second" });
-		expect(JSON.parse(readFileSync(carrierPath(stateDir), "utf8"))).toMatchObject({
-			sessionId: "s2",
+		writePlanCarrier({ host: "grok-build", stateDir, sessionId: "s1", context: "second" });
+		expect(JSON.parse(readFileSync(own, "utf8"))).toMatchObject({
+			sessionId: "s1",
 			context: "second",
 		});
-		expect(readdirSync(stateDir)).toEqual(["last-plan.json"]);
+		expect(readdirSync(stateDir)).toEqual(["last-plan.s1.json"]);
 	});
 
 	test.skipIf(process.platform === "win32")(
 		"a 0644 carrier from an older version is 0600 after the next write",
 		() => {
 			mkdirSync(stateDir, { recursive: true });
-			writeFileSync(carrierPath(stateDir), "{}", { mode: 0o644 });
+			writeFileSync(carrierPathFor(stateDir, "s1"), "{}", { mode: 0o644 });
 			writePlanCarrier({ host: "omp", stateDir, sessionId: "s1", context: "ctx" });
-			expect(statSync(carrierPath(stateDir)).mode & 0o777).toBe(0o600);
+			expect(statSync(carrierPathFor(stateDir, "s1")).mode & 0o777).toBe(0o600);
 		},
 	);
 
@@ -110,7 +282,8 @@ describe("writePlanCarrier", () => {
 				}),
 			).toBeUndefined();
 		}
-		expect(existsSync(carrierPath(stateDir))).toBe(false);
+		const names = existsSync(stateDir) ? readdirSync(stateDir) : [];
+		expect(names.filter((name) => name.startsWith("last-plan"))).toEqual([]);
 	});
 });
 
@@ -369,7 +542,7 @@ describe("uplift hook with a Jev plan skip", () => {
 
 	test("on Grok a Jev skip leaves last-plan.json exactly as a deterministic TRIVIAL_RE skip does (AC-3.2)", async () => {
 		const jev = fakeJev(0.04);
-		const path = carrierPath(stateDir);
+		const path = carrierPathFor(stateDir, "s1");
 		try {
 			writeStalePlan();
 			// shunt has no Grok login check, so selection reaches the Jev gate without a login (AD-2a removed the auto Claude switch).

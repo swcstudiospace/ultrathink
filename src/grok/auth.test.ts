@@ -257,6 +257,129 @@ describe("ensureFreshGrokAuth", () => {
 	});
 });
 
+describe("ensureFreshGrokAuth single flight and abort (97-02)", () => {
+	const PAST = "2020-01-01T00:00:00.000Z";
+	const FUTURE = "2030-06-01T00:00:00.000Z";
+
+	function gatedSpawn(home: string, rewrite = true) {
+		const gate = Promise.withResolvers<void>();
+		const calls: { signal?: AbortSignal }[] = [];
+		const spawn = async (
+			_cmd: string[],
+			_env: Record<string, string | undefined>,
+			signal?: AbortSignal,
+		) => {
+			calls.push({ signal });
+			await gate.promise;
+			if (rewrite)
+				writeFileSync(
+					join(home, "auth.json"),
+					JSON.stringify(fixture({ key: `${TOKEN}x`, expires_at: FUTURE })),
+				);
+			return 0;
+		};
+		return { spawn, calls, gate };
+	}
+
+	test("three concurrent refreshes of one home share one grok models spawn", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const { spawn, calls, gate } = gatedSpawn(home);
+		const pending = [1, 2, 3].map(() => ensureFreshGrokAuth({ home, spawn }));
+		gate.resolve();
+		const results = await Promise.all(pending);
+		expect(calls).toHaveLength(1);
+		for (const auth of results) expect(auth?.token).toBe(`${TOKEN}x`);
+	});
+
+	test("back-to-back fills inside the 60 s window do not respawn; force does", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		let spawns = 0;
+		const spawn = async () => {
+			spawns++;
+			return 0;
+		};
+		const now = Date.now();
+		await ensureFreshGrokAuth({ home, spawn, now });
+		await ensureFreshGrokAuth({ home, spawn, now: now + 30_000 });
+		expect(spawns).toBe(1);
+		await ensureFreshGrokAuth({ home, spawn, now: now + 61_000 });
+		expect(spawns).toBe(2);
+		await ensureFreshGrokAuth({ home, spawn, now: now + 62_000, force: true });
+		expect(spawns).toBe(3);
+	});
+
+	test("an abort kills the refresh and returns the current session without waiting", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const controller = new AbortController();
+		const seen: AbortSignal[] = [];
+		const spawn = (
+			_cmd: string[],
+			_env: Record<string, string | undefined>,
+			signal?: AbortSignal,
+		) =>
+			new Promise<number>((resolve) => {
+				if (signal) seen.push(signal);
+				signal?.addEventListener("abort", () => resolve(1), { once: true });
+			});
+		const pending = ensureFreshGrokAuth({ home, spawn, signal: controller.signal });
+		controller.abort();
+		const auth = await pending;
+		expect(auth?.token).toBe(TOKEN);
+		expect(seen[0]?.aborted).toBe(true);
+	});
+
+	test("an already-aborted signal never spawns", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const controller = new AbortController();
+		controller.abort();
+		let spawns = 0;
+		const auth = await ensureFreshGrokAuth({
+			home,
+			signal: controller.signal,
+			spawn: async () => {
+				spawns++;
+				return 0;
+			},
+		});
+		expect(spawns).toBe(0);
+		expect(auth?.token).toBe(TOKEN);
+	});
+
+	test("one caller aborting does not kill a refresh another caller still waits for", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const { spawn, calls, gate } = gatedSpawn(home);
+		const controller = new AbortController();
+		const aborting = ensureFreshGrokAuth({ home, spawn, signal: controller.signal });
+		const waiting = ensureFreshGrokAuth({ home, spawn });
+		controller.abort();
+		await aborting;
+		expect(calls[0]?.signal?.aborted).toBe(false);
+		gate.resolve();
+		expect((await waiting)?.token).toBe(`${TOKEN}x`);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("a refresh that times out with the token still expired is marked refreshTimedOut", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const bin = join(home, "grok");
+		writeFileSync(bin, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+		const auth = await ensureFreshGrokAuth({ home, bin, timeoutMs: 150 });
+		expect(auth && isGrokAuthExpired(auth)).toBe(true);
+		expect(auth?.refreshTimedOut).toBe(true);
+	});
+
+	test("a refresh that fails fast is not marked as timed out", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const auth = await ensureFreshGrokAuth({
+			home,
+			spawn: async () => {
+				throw new Error("ENOENT");
+			},
+		});
+		expect(auth?.refreshTimedOut).toBeUndefined();
+	});
+});
+
 describe("grokClientVersion", () => {
 	test("reads version.json and falls back when missing or malformed", () => {
 		const home = tempHome();

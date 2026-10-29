@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import type { ProgressEvent } from "../host/progress.ts";
+import { FIELD_CAPS } from "../resilience/limits.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import { createTracking, stepKey, type CreateTrackingDeps, type ToolCaller } from "./create.ts";
 import type { TrackingRefs, TrackPlan } from "./types.ts";
@@ -127,9 +128,45 @@ function deps(over: Partial<CreateTrackingDeps>): CreateTrackingDeps {
 		concurrency: 3,
 		budgetMs: 5000,
 		now: () => 1,
+		// Retries never wait for real time in these tests.
+		sleep: async () => undefined,
+		random: () => 0,
 		...over,
 	};
 }
+
+describe("createTracking onRef checkpoint (G5)", () => {
+	test("is called after each created row with every ref made so far, and a throwing callback never stops tracking", async () => {
+		const snapshots: TrackingRefs[] = [];
+		const result = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({
+				linear: fakeLinear(),
+				notion: fakeNotion(),
+				onRef: (refs) => {
+					snapshots.push(structuredClone(refs));
+					if (snapshots.length === 1) throw new Error("sink broke");
+				},
+			}),
+		);
+		expect(result.status).toBe("complete");
+		expect(snapshots.length).toBeGreaterThanOrEqual(
+			makePlan().linearIssues.length + makePlan().linearSubIssues.length,
+		);
+		// The Linear count grows by one row per checkpoint and never shrinks; the last snapshot holds everything.
+		const counts = snapshots.map(
+			(s) => Object.keys(s.linear.nodes).length + Object.keys(s.linear.steps).length,
+		);
+		for (let i = 1; i < counts.length; i++)
+			expect(counts[i]).toBeGreaterThanOrEqual(counts[i - 1] as number);
+		expect(snapshots.at(-1)?.linear.nodes).toEqual(result.linear.nodes);
+		expect(snapshots.at(-1)?.notion.taskUrl).toBe(result.notion.taskUrl);
+		// The first checkpoint already carries exactly one created Linear row.
+		expect(counts.find((count) => count > 0)).toBe(1);
+	});
+});
 
 describe("createTracking", () => {
 	test("full success creates every row and reports complete", async () => {
@@ -758,7 +795,7 @@ describe("createTracking", () => {
 		expect(refs.notion.nodes.n1).toBe("https://app.notion.com/p/row-2");
 	});
 
-	test("a node whose dependency failed is skipped, then created with full blockedBy on re-run", async () => {
+	test("a node whose dependency failed is still created, without that dependency in blockedBy", async () => {
 		const plan = makePlan();
 		const failing = fakeLinear({ throwOn: (args) => args.title === "[n2] Build" });
 		const first = await createTracking(
@@ -767,17 +804,12 @@ describe("createTracking", () => {
 			undefined,
 			deps({ linear: failing, notion: fakeNotion() }),
 		);
-		expect(first.errors).toContain("linear n3: dependency missing");
-		expect(first.linear.nodes.n3).toBeUndefined();
-		expect(failing.calls.some((call) => call.args.title === "[n3] Review")).toBe(false);
-		const linear = fakeLinear();
-		const refs = await createTracking(plan, GRAPH, first, deps({ linear, notion: fakeNotion() }));
-		const n3 = linear.calls.find((call) => call.args.title === "[n3] Review");
-		expect(n3?.args.blockedBy).toEqual([
-			first.linear.nodes.n1?.identifier,
-			refs.linear.nodes.n2?.identifier,
-		]);
-		expect(refs.linear.nodes.n3).toBeDefined();
+		expect(first.errors.some((error) => error.includes("dependency missing"))).toBe(false);
+		expect(first.linear.nodes.n2).toBeUndefined();
+		const n3 = failing.calls.find((call) => call.args.title === "[n3] Review");
+		expect(n3?.args.blockedBy).toEqual([first.linear.nodes.n1?.identifier]);
+		expect(first.linear.nodes.n3).toBeDefined();
+		expect(first.errors).toContain("linear n3: blockedBy n2 omitted (dependency not created)");
 	});
 
 	test("node ids that are prototype keys are created, tracked and adopted like any other", async () => {
@@ -828,12 +860,13 @@ describe("createTracking", () => {
 			undefined,
 			deps({ linear: failing, notionDataSource: undefined }),
 		);
-		expect(failing.calls.filter((call) => call.name === "save_issue")).toHaveLength(1);
+		// `constructor` fails (a status-less error is retried up to the attempt cap); `__proto__` is still created, unblocked.
+		expect(failing.calls.filter((call) => call.name === "save_issue")).toHaveLength(4);
 		expect(failed.status).not.toBe("complete");
-		expect(Object.keys(failed.linear.nodes)).toEqual([]);
+		expect(Object.keys(failed.linear.nodes)).toEqual(["__proto__"]);
 		expect(failed.errors).toEqual([
 			"linear constructor: HTTP 500",
-			"linear __proto__: dependency missing",
+			"linear __proto__: blockedBy constructor omitted (dependency not created)",
 		]);
 
 		const listed = () => [
@@ -845,10 +878,12 @@ describe("createTracking", () => {
 			},
 		];
 		const adopting = fakeLinear({ listed });
+		// The earlier `__proto__` row is lost from the record (a lost response): the re-run finds it by its footer.
+		const lost: TrackingRefs = { ...failed, linear: { nodes: {}, steps: {} } };
 		const adopted = await createTracking(
 			plan,
 			graph,
-			failed,
+			lost,
 			deps({ linear: adopting, notionDataSource: undefined }),
 		);
 		// biome-ignore lint/suspicious/noProto: reason: this test asserts that a node id named __proto__ is stored as an own key, so the literal accessor is the subject under test. remove when: the node store no longer keys a plain object by node id.
@@ -857,5 +892,444 @@ describe("createTracking", () => {
 			adopting.calls.filter((call) => call.name === "save_issue").map((call) => call.args.title),
 		).toEqual(["[constructor] A"]);
 		expect(adopted.status).toBe("complete");
+	});
+});
+
+/** An error as the relay and the MCP client surface it: a message, optionally an HTTP status and a retry hint. */
+function failure(message: string, extra: Record<string, unknown> = {}): Error {
+	return Object.assign(new Error(message), extra);
+}
+
+/** A Linear fake that answers like `fakeLinear` unless `fail` returns an error for the call. */
+function scriptedLinear(
+	fail: (args: Record<string, unknown>, attempt: number) => Error | undefined,
+): ToolCaller & { calls: Call[] } {
+	const inner = fakeLinear();
+	const attempts = new Map<string, number>();
+	return {
+		calls: inner.calls,
+		async call(name, args, signal) {
+			if (name !== "save_issue") return inner.call(name, args, signal);
+			const key = String(args.title);
+			const attempt = (attempts.get(key) ?? 0) + 1;
+			attempts.set(key, attempt);
+			const error = fail(args, attempt);
+			if (error) {
+				inner.calls.push({ name, args });
+				throw error;
+			}
+			return inner.call(name, args, signal);
+		},
+	};
+}
+
+function independentNodes(count: number): { plan: TrackPlan; graph: ThoughtGraph } {
+	const graph: ThoughtGraph = {
+		goal: "Ship it",
+		nodes: Array.from({ length: count }, (_, index) => ({
+			id: `r${index + 1}`,
+			title: `Root ${index + 1}`,
+			kind: "generate" as const,
+			question: `q${index + 1}`,
+			dependsOn: [],
+		})),
+	};
+	const base = makePlan();
+	return {
+		graph,
+		plan: {
+			...base,
+			issues: graph.nodes.map((node) => ({
+				graphId: base.graphId,
+				nodeId: node.id,
+				item: `[${node.id}] ${node.title}`,
+				thought: node.question,
+			})),
+			subIssues: [],
+			linearIssues: graph.nodes.map((node) => ({
+				nodeId: node.id,
+				title: node.title,
+				description: `desc ${node.id}`,
+			})),
+			linearSubIssues: [],
+		},
+	};
+}
+
+describe("createTracking retry and breaker (TRK-02)", () => {
+	test("a 429 with Retry-After is retried through the kernel and every node is still created", async () => {
+		const sleeps: number[] = [];
+		const linear = scriptedLinear((args, attempt) =>
+			args.title === "[n1] Understand" && attempt === 1
+				? failure("rate limited", { status: 429, retryAfterMs: 2_000 })
+				: undefined,
+		);
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({
+				linear,
+				notion: fakeNotion(),
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+			}),
+		);
+		expect(Object.keys(refs.linear.nodes).sort()).toEqual(["n1", "n2", "n3"]);
+		expect(linear.calls.filter((call) => call.args.title === "[n1] Understand")).toHaveLength(2);
+		expect(sleeps).toContain(2_000);
+		expect(refs.errors).toEqual([]);
+	});
+
+	test("a relay rate-limit message carries its Retry-After seconds into the wait", async () => {
+		const sleeps: number[] = [];
+		const linear = scriptedLinear((_args, attempt) =>
+			attempt === 1 ? failure("mcp.linear.app rate limited; retry after 3s") : undefined,
+		);
+		await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({
+				linear,
+				notion: fakeNotion(),
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+			}),
+		);
+		expect(Math.max(...sleeps)).toBeGreaterThanOrEqual(3_000);
+	});
+
+	test("an auth or quota error opens a per-provider breaker: one call, one recorded error, Notion unaffected", async () => {
+		const { plan, graph } = independentNodes(4);
+		const linear = scriptedLinear(() => failure("Forbidden: plan quota", { status: 403 }));
+		const notion = fakeNotion();
+		const refs = await createTracking(
+			plan,
+			graph,
+			undefined,
+			deps({ linear, notion, concurrency: 1 }),
+		);
+		expect(linear.calls.filter((call) => call.name === "save_issue")).toHaveLength(1);
+		expect(refs.errors.filter((error) => error.startsWith("linear"))).toHaveLength(2);
+		expect(refs.errors.some((error) => error.includes("breaker"))).toBe(true);
+		expect(Object.keys(refs.notion.nodes)).toHaveLength(4);
+		expect(refs.notion.taskUrl).toBeDefined();
+	});
+
+	test("a quota message without a status is permanent too and is not retried", async () => {
+		const { plan, graph } = independentNodes(3);
+		const sleeps: number[] = [];
+		const linear = scriptedLinear(() =>
+			failure("save_issue: usage limit exceeded for this workspace"),
+		);
+		await createTracking(
+			plan,
+			graph,
+			undefined,
+			deps({
+				linear,
+				concurrency: 1,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+			}),
+		);
+		expect(linear.calls.filter((call) => call.name === "save_issue")).toHaveLength(1);
+		expect(sleeps).toEqual([]);
+	});
+
+	test("a transient failure that never clears stops after the attempt cap, then the next node is tried", async () => {
+		const { plan, graph } = independentNodes(2);
+		const linear = scriptedLinear((args) =>
+			args.title === "[r1] Root 1" ? failure("HTTP 503", { status: 503 }) : undefined,
+		);
+		const refs = await createTracking(plan, graph, undefined, deps({ linear, concurrency: 1 }));
+		expect(linear.calls.filter((call) => call.args.title === "[r1] Root 1")).toHaveLength(3);
+		expect(refs.linear.nodes.r2).toBeDefined();
+		expect(refs.linear.nodes.r1).toBeUndefined();
+		expect(refs.errors).toContain("linear r1: HTTP 503");
+	});
+
+	test("a node that fails for a node-specific reason does not stop the provider; dependents are created without it", async () => {
+		const linear = scriptedLinear((args) =>
+			args.title === "[n2] Build" ? failure("HTTP 404", { status: 404 }) : undefined,
+		);
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear, notion: fakeNotion() }),
+		);
+		const n3 = linear.calls.find((call) => call.args.title === "[n3] Review");
+		expect(n3?.args.blockedBy).toEqual([refs.linear.nodes.n1?.identifier]);
+		// n3's own sub-issues are still attempted; n2's are skipped because its parent was never created.
+		expect(
+			linear.calls.some((call) => call.args.parentId === refs.linear.nodes.n3?.identifier),
+		).toBe(true);
+		expect(refs.errors).toContain("linear n2.1: parent missing");
+		expect(refs.errors).toContain("linear n3: blockedBy n2 omitted (dependency not created)");
+		expect(refs.errors.some((error) => error.includes("dependency missing"))).toBe(false);
+	});
+});
+
+describe("createTracking provider independence", () => {
+	/** Wraps a Notion fake so a test can await the moment its Nth `notion-create-pages` call has been answered. */
+	function watched(inner: ToolCaller & { calls: Call[] }) {
+		const waiters: Array<{ count: number; done: () => void }> = [];
+		const created = () => inner.calls.filter((call) => call.name === "notion-create-pages").length;
+		const caller: ToolCaller & { calls: Call[] } = {
+			calls: inner.calls,
+			async call(name, args, signal) {
+				const result = await inner.call(name, args, signal);
+				for (const waiter of waiters) if (created() >= waiter.count) waiter.done();
+				return result;
+			},
+		};
+		const reached = (count: number): Promise<void> => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			if (created() >= count) resolve();
+			else waiters.push({ count, done: resolve });
+			return promise;
+		};
+		return { caller, reached };
+	}
+
+	test("Notion rows are created while Linear hangs, without Linear links", async () => {
+		const hang: ToolCaller = { call: () => Promise.withResolvers<unknown>().promise };
+		const { caller: notion, reached } = watched(fakeNotion());
+		const armed = new Map<number, () => void>();
+		const linkTimerArmed = Promise.withResolvers<void>();
+		const timers = {
+			setTimeout: (fn: () => void, ms: number) => {
+				armed.set(ms, fn);
+				if (ms === 777) linkTimerArmed.resolve();
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		};
+		const tracking = createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: hang, notion, timers, budgetMs: 5_000, linkWaitMs: 777 }),
+		);
+		// Notion reaches its Linear link wait after the task row; the grace timer is fired by hand.
+		await linkTimerArmed.promise;
+		armed.get(777)?.();
+		await reached(3);
+		armed.get(5_000)?.();
+		const refs = await tracking;
+		expect(refs.notion.taskUrl).toBeDefined();
+		expect(Object.keys(refs.notion.nodes).sort()).toEqual(["n1", "n2", "n3"]);
+		const nodeCall = notion.calls.find(
+			(call) => call.name === "notion-create-pages" && (call.args.pages as unknown[]).length === 3,
+		);
+		const pages = nodeCall?.args.pages as Array<{ properties: Record<string, unknown> }>;
+		expect(pages.every((page) => page.properties["Linear URL"] === undefined)).toBe(true);
+	});
+
+	test("Notion rows carry the Linear URLs of rows Linear finished in time", async () => {
+		const linear = fakeLinear();
+		const notion = fakeNotion();
+		const refs = await createTracking(makePlan(), GRAPH, undefined, deps({ linear, notion }));
+		const nodeCall = notion.calls.find(
+			(call) => call.name === "notion-create-pages" && (call.args.pages as unknown[]).length === 3,
+		);
+		const pages = nodeCall?.args.pages as Array<{ properties: Record<string, unknown> }>;
+		expect(pages.map((page) => page.properties["Linear URL"])).toEqual([
+			refs.linear.nodes.n1?.url,
+			refs.linear.nodes.n2?.url,
+			refs.linear.nodes.n3?.url,
+		]);
+	});
+
+	test("Notion's task and node rows do not wait for Linear's sub-issues", async () => {
+		const gate = Promise.withResolvers<void>();
+		const inner = fakeLinear();
+		const linear: ToolCaller = {
+			async call(name, args, signal) {
+				if (name === "save_issue" && args.parentId !== undefined) await gate.promise;
+				return inner.call(name, args, signal);
+			},
+		};
+		const { caller: notion, reached } = watched(fakeNotion());
+		const tracking = createTracking(makePlan(), GRAPH, undefined, deps({ linear, notion }));
+		// The task row and the three node rows are out while every Linear sub-issue is still held.
+		await reached(2);
+		expect(notion.calls.filter((call) => call.name === "notion-create-pages")).toHaveLength(2);
+		gate.resolve();
+		const refs = await tracking;
+		expect(refs.status).toBe("complete");
+	});
+});
+
+describe("createTracking adoption and credential errors", () => {
+	function shell(): TrackingRefs {
+		return {
+			graphId: "g-1",
+			status: "failed",
+			linear: { nodes: {}, steps: {} },
+			notion: { nodes: {}, steps: {} },
+			errors: [],
+			updatedAt: 1,
+		};
+	}
+
+	test("a failed Linear adoption lookup is recorded and creates no duplicate rows", async () => {
+		const linear: ToolCaller & { calls: Call[] } = {
+			calls: [],
+			async call(name, args) {
+				this.calls.push({ name, args });
+				throw failure("list_issues: HTTP 400", { status: 400 });
+			},
+		};
+		const notion = fakeNotion();
+		const refs = await createTracking(makePlan(), GRAPH, shell(), deps({ linear, notion }));
+		expect(refs.errors.some((error) => error.startsWith("linear adopt:"))).toBe(true);
+		expect(linear.calls.filter((call) => call.name === "save_issue")).toEqual([]);
+		// Notion's own adoption worked, so its rows are still created.
+		expect(Object.keys(refs.notion.nodes)).toHaveLength(3);
+	});
+
+	test("a failed Notion adoption query is recorded and creates no duplicate rows", async () => {
+		const inner = fakeNotion();
+		const notion: ToolCaller & { calls: Call[] } = {
+			calls: inner.calls,
+			async call(name, args, signal) {
+				if (name === "notion-query-data-sources") {
+					inner.calls.push({ name, args });
+					throw failure("query: HTTP 400", { status: 400 });
+				}
+				return inner.call(name, args, signal);
+			},
+		};
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			shell(),
+			deps({ linear: fakeLinear(), notion }),
+		);
+		expect(refs.errors.some((error) => error.startsWith("notion adopt:"))).toBe(true);
+		expect(notion.calls.filter((call) => call.name === "notion-create-pages")).toEqual([]);
+		expect(Object.keys(refs.linear.nodes)).toHaveLength(3);
+	});
+
+	test("a credential lookup error is reported as such, distinct from login required", async () => {
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({
+				linear: fakeLinear(),
+				credentialErrors: { notion: "credential store /x/creds.json is unreadable (invalid_json)" },
+			}),
+		);
+		expect(refs.errors).toContain(
+			"notion: credential error: credential store /x/creds.json is unreadable (invalid_json)",
+		);
+		expect(refs.errors).not.toContain("notion: login required");
+		const unconfigured = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear: fakeLinear() }),
+		);
+		expect(unconfigured.errors).toContain("notion: login required");
+	});
+});
+
+describe("createTracking Notion field caps", () => {
+	test("over-long Item and Thought values are clipped with a marker", async () => {
+		const plan = makePlan();
+		const first = plan.issues[0];
+		if (!first) throw new Error("plan has no issue");
+		first.item = `[n1] ${"T".repeat(500)}`;
+		first.thought = "x".repeat(FIELD_CAPS.conclusion + 5_000);
+		const sub = plan.subIssues[0];
+		if (!sub) throw new Error("plan has no sub-issue");
+		sub.thought = "y".repeat(FIELD_CAPS.thinking + 5_000);
+		const notion = fakeNotion();
+		await createTracking(plan, GRAPH, undefined, deps({ notion }));
+		const pages = notion.calls
+			.filter((call) => call.name === "notion-create-pages")
+			.flatMap((call) => call.args.pages as Array<{ properties: Record<string, string> }>);
+		const node = pages.find(
+			(page) => page.properties.Level === "Issue" && page.properties.Item?.startsWith("[n1]"),
+		);
+		expect(node?.properties.Item?.length).toBe(FIELD_CAPS.title);
+		expect(node?.properties.Item).toEndWith("…[clipped]");
+		expect(node?.properties.Thought?.length).toBe(FIELD_CAPS.conclusion);
+		const step = pages.find(
+			(page) =>
+				page.properties.Level === "Sub-Issue" && page.properties.Step === (1 as unknown as string),
+		);
+		expect(step?.properties.Thought?.length).toBe(FIELD_CAPS.thinking);
+	});
+});
+
+describe("createTracking degraded fill marker", () => {
+	test("rows of a degraded node say so in the Linear title and the Notion Item and Thought", async () => {
+		const linear = fakeLinear();
+		const notion = fakeNotion();
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			undefined,
+			deps({ linear, notion, degradedNodes: ["n2"] }),
+		);
+		const titles = linear.calls
+			.filter((call) => call.name === "save_issue")
+			.map((call) => call.args.title);
+		expect(titles).toContain("[n2] [degraded fill] Build");
+		expect(titles).toContain("[n1] Understand");
+		expect(refs.linear.nodes.n2?.title).toBe("[n2] [degraded fill] Build");
+		const pages = notion.calls
+			.filter((call) => call.name === "notion-create-pages")
+			.flatMap((call) => call.args.pages as Array<{ properties: Record<string, unknown> }>);
+		const row = pages.find(
+			(page) =>
+				page.properties.Level === "Issue" && String(page.properties.Item).startsWith("[n2]"),
+		);
+		expect(row?.properties.Item).toBe("[n2] [degraded fill] Build");
+		expect(String(row?.properties.Thought)).toStartWith("[degraded fill] ");
+		const clean = pages.find(
+			(page) =>
+				page.properties.Level === "Issue" && String(page.properties.Item).startsWith("[n1]"),
+		);
+		expect(clean?.properties.Item).toBe("[n1] Understand");
+		expect(String(clean?.properties.Thought)).not.toContain("[degraded fill]");
+		const steps = pages.filter(
+			(page) =>
+				page.properties.Level === "Sub-Issue" && String(page.properties.Item).startsWith("[n2]"),
+		);
+		expect(
+			steps.every((page) => String(page.properties.Thought).startsWith("[degraded fill] ")),
+		).toBe(true);
+	});
+
+	test("a degraded node's Notion row is still adopted by its node id", async () => {
+		const notion = fakeNotion({
+			rows: [
+				{ url: "https://www.notion.so/t", Level: "Task", Item: "Ship it" },
+				{ url: "https://www.notion.so/n2", Level: "Issue", Item: "[n2] [degraded fill] Build" },
+			],
+		});
+		const refs = await createTracking(
+			makePlan(),
+			GRAPH,
+			{
+				graphId: "g-1",
+				status: "failed",
+				linear: { nodes: {}, steps: {} },
+				notion: { nodes: {}, steps: {} },
+				errors: [],
+				updatedAt: 1,
+			},
+			deps({ notion, linearTeam: undefined, degradedNodes: ["n2"] }),
+		);
+		expect(refs.notion.nodes.n2).toBe("https://www.notion.so/n2");
 	});
 });

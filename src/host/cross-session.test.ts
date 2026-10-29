@@ -23,7 +23,7 @@ import {
 	writeSession,
 } from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
-import { graphJson } from "../test.helpers.ts";
+import { graphJson, UPLIFT } from "../test.helpers.ts";
 import { realmHint, type RealmProbe } from "../stack/realm.ts";
 import type { TrackPlan } from "../track/types.ts";
 import { runControl, takeSessionFlag } from "../uplift/commands.ts";
@@ -88,8 +88,7 @@ function plannedRecord(sessionId: string, labelled: string | undefined): Session
 /** Dispatches by payload content so one fake handles uplift, graph, CoT, and clarify calls. */
 function smartComplete(): (system: string, user: string) => Promise<string> {
 	return async (_system, user) => {
-		if (user.includes("<user_request>"))
-			return "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>";
+		if (user.includes("<user_request>")) return UPLIFT("add a widget");
 		if (user.startsWith("<spec>")) return JSON.stringify({ questions: [] });
 		if (user.includes("current_node")) {
 			const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
@@ -109,7 +108,7 @@ function baseDeps(): HookDeps {
 		stateDir: join(tempRoot(), "ultrathink"),
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),
 		brief: async () => ({ text: "", state: "none" }),
-		clarify: async () => [],
+		clarify: async () => ({ items: [] }),
 		emit: async () => true,
 		now: () => 1_000,
 		log: () => {

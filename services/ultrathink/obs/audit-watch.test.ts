@@ -10,10 +10,11 @@ import {
 	type ScanReply,
 	type WatchAlert,
 } from "./audit-watch.ts";
+import * as nodeFs from "node:fs";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { auditPath, createAuditLog } from "./audit.ts";
+import { type AuditFs, auditPath, createAuditLog } from "./audit.ts";
 import { diskFingerprint } from "../../../src/shared.ts";
 import { bulk } from "../../../src/test.helpers.ts";
 
@@ -330,7 +331,8 @@ describe("off the request path", () => {
 					slot.release = resolve;
 				}),
 			onAlert: (alert) => alerts.push(alert),
-			onRecover: () => alerts.push({ kind: "head_mismatch", reason: "recovered" }),
+			onRecover: () =>
+				alerts.push({ kind: "head_mismatch", severity: "critical", reason: "recovered" }),
 		});
 
 		const pending = watch.tick();
@@ -344,7 +346,7 @@ describe("off the request path", () => {
 		expect(alerts.map((alert) => alert.kind)).toEqual(["head_mismatch"]);
 	});
 
-	test("a scan that rejects alerts once with the failure, and the next tick scans again", async () => {
+	test("a scan that rejects alerts once as verifier_unavailable, and the next tick scans again", async () => {
 		const alerts: WatchAlert[] = [];
 		let scans = 0;
 		const watch = createAuditWatch({
@@ -361,7 +363,13 @@ describe("off the request path", () => {
 		await watch.tick();
 
 		expect(scans).toBe(2);
-		expect(alerts).toEqual([{ kind: "chain_broken", reason: "verifier failed: worker crashed" }]);
+		expect(alerts).toEqual([
+			{
+				kind: "verifier_unavailable",
+				severity: "warn",
+				reason: "verifier failed: worker crashed",
+			},
+		]);
 	});
 
 	test("idle resolves once no scan is in flight", async () => {
@@ -498,13 +506,20 @@ describe("timer and interval", () => {
 
 describe("pruned chain", () => {
 	const MIB = 1024 * 1024;
+	/** The prune is under test, not durability, so no record waits for a real fsync. */
+	const noFsync: AuditFs = { ...nodeFs, fsyncSync: () => undefined };
 
 	test("a full scan of a pruned chain raises no tamper alert, and dropping its boundary record alerts", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-watch-"));
 		try {
 			const path = auditPath(dir);
 			let t = 1_700_000_000_000;
-			const log = createAuditLog({ path, now: () => (t += 1000), segmentBytes: MIB });
+			const log = createAuditLog({
+				path,
+				now: () => (t += 1000),
+				segmentBytes: MIB,
+				fs: noFsync,
+			});
 			for (let i = 1; i <= 140; i += 1) log.record("login_ok", bulk(i));
 			expect(log.prune(Number.MAX_SAFE_INTEGER)).toEqual({ segments: 1 });
 
@@ -535,5 +550,76 @@ describe("pruned chain", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	}, 60_000);
+});
+
+describe("verifier failures", () => {
+	test("a verifier timeout or worker failure alerts verifier_unavailable at warn severity, never chain_broken", async () => {
+		const alerts: WatchAlert[] = [];
+		const watch = createAuditWatch({
+			intervalMs: 1000,
+			stat: () => fp(120, 2_000),
+			acknowledged: () => ({ fingerprint: fp(100, 1_000), seq: 5, hash: HEAD_HASH }),
+			scan: async () => {
+				throw new Error("verifier timed out");
+			},
+			onAlert: (alert) => alerts.push(alert),
+		});
+		await watch.tick();
+		expect(alerts).toEqual([
+			{
+				kind: "verifier_unavailable",
+				severity: "warn",
+				reason: "verifier failed: verifier timed out",
+			},
+		]);
+		expect(alerts.map((alert) => alert.kind)).not.toContain("chain_broken");
+	});
+
+	test("a verified break after a verifier failure is chain_broken at critical severity", async () => {
+		const alerts: WatchAlert[] = [];
+		let reply: "throw" | ScanReply = "throw";
+		const watch = createAuditWatch({
+			intervalMs: 1000,
+			stat: () => fp(120, 2_000),
+			acknowledged: () => ({ fingerprint: fp(100, 1_000), seq: 5, hash: HEAD_HASH }),
+			scan: async () => {
+				if (reply === "throw") throw new Error("worker crashed");
+				return reply;
+			},
+			onAlert: (alert) => alerts.push(alert),
+		});
+		await watch.tick();
+		reply = { ok: false, records: 5, brokenAt: 3, reason: "hash mismatch" };
+		await watch.tick();
+		expect(alerts.map((alert) => [alert.kind, alert.severity])).toEqual([
+			["verifier_unavailable", "warn"],
+			["chain_broken", "critical"],
+		]);
+	});
+
+	test("a healthy scan after a verifier failure clears it", async () => {
+		const alerts: WatchAlert[] = [];
+		let recovers = 0;
+		let reply: "throw" | ScanReply = "throw";
+		const watch = createAuditWatch({
+			intervalMs: 1000,
+			fullScanEveryTicks: 1,
+			stat: () => fp(100, 1_000),
+			acknowledged: () => ({ fingerprint: fp(100, 1_000), seq: 5, hash: HEAD_HASH }),
+			scan: async () => {
+				if (reply === "throw") throw new Error("worker crashed");
+				return reply;
+			},
+			onAlert: (alert) => alerts.push(alert),
+			onRecover: () => {
+				recovers += 1;
+			},
+		});
+		await watch.tick();
+		reply = { ok: true, records: 5, lastHash: HEAD_HASH };
+		await watch.tick();
+		expect(alerts.map((alert) => alert.kind)).toEqual(["verifier_unavailable"]);
+		expect(recovers).toBe(1);
 	});
 });

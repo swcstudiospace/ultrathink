@@ -56,12 +56,17 @@ describe("the real tool definitions", () => {
 		expect(validateToolDefinitions(toolDefinitions(false))).toEqual([]);
 	});
 
-	test("both modes serve the same definitions, and only server planning adds ultrathink_uplift", () => {
+	test("both modes serve the same definitions, and only server planning adds ultrathink_uplift and ultrathink_cancel", () => {
 		const withPlanning = toolDefinitions(true);
 		const withoutPlanning = toolDefinitions(false);
-		expect(withPlanning.some((def) => def.name === "ultrathink_uplift")).toBe(true);
-		expect(withoutPlanning.some((def) => def.name === "ultrathink_uplift")).toBe(false);
-		expect(withoutPlanning).toEqual(withPlanning.filter((def) => def.name !== "ultrathink_uplift"));
+		const serverOnly = ["ultrathink_uplift", "ultrathink_cancel"];
+		for (const name of serverOnly) {
+			expect(withPlanning.some((def) => def.name === name)).toBe(true);
+			expect(withoutPlanning.some((def) => def.name === name)).toBe(false);
+		}
+		expect(withoutPlanning).toHaveLength(9);
+		expect(withPlanning).toHaveLength(11);
+		expect(withoutPlanning).toEqual(withPlanning.filter((def) => !serverOnly.includes(def.name)));
 	});
 });
 

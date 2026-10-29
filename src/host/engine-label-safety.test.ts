@@ -27,6 +27,7 @@ import {
 	shunt,
 	skipOf,
 } from "./engine-test.helpers.ts";
+import { UPLIFT } from "../test.helpers.ts";
 import { createFdProgressSink, parseProgressLine } from "./progress.ts";
 
 const { tempDir, emptyHome, grokLogin, cleanup } = createEngineFixtures();
@@ -41,9 +42,17 @@ describe("legacy diagnostic label safety", () => {
 		["markup", `<model>${sentinel}</model>`],
 		["oversized", `${sentinel}${"x".repeat(600)}`],
 	] as const;
-	const xml = "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>";
+	const xml = UPLIFT("add a widget");
 
-	function cliFixture(route: LegacyRoute): {
+	/**
+	 * A fake CLI that records its argv and cwd and prints a valid reply. `real` (the default) starts a `bun` child, the
+	 * argv a real spawn delivers; `stub` is a `#!/bin/sh` script that records the same files without starting `bun`,
+	 * which on a loaded host costs seconds per call.
+	 */
+	function cliFixture(
+		route: LegacyRoute,
+		kind: "real" | "stub" = "real",
+	): {
 		cwd: string;
 		bin: string;
 		args: () => string[];
@@ -51,8 +60,9 @@ describe("legacy diagnostic label safety", () => {
 	} {
 		const cwd = tempDir("ultrathink-safe-label-cli-");
 		const bin = join(cwd, route);
-		const argvPath = join(cwd, "argv.json");
+		const argvPath = join(cwd, kind === "real" ? "argv.json" : "argv.bin");
 		const cwdPath = join(cwd, "cwd.txt");
+		const replyPath = join(cwd, "reply.json");
 		const reply =
 			route === "claude"
 				? { is_error: false, result: xml }
@@ -62,15 +72,30 @@ describe("legacy diagnostic label safety", () => {
 							payload: { terminal: "completed", text: xml },
 						}
 					: { text: xml, stopReason: "end_turn" };
-		writeFileSync(
-			bin,
-			`#!${process.execPath}\nawait Bun.write(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));\nawait Bun.write(${JSON.stringify(cwdPath)}, process.cwd());\nprocess.stdout.write(${JSON.stringify(JSON.stringify(reply))});\n`,
-			{ mode: 0o755 },
-		);
+		if (kind === "real") {
+			writeFileSync(
+				bin,
+				`#!${process.execPath}\nawait Bun.write(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));\nawait Bun.write(${JSON.stringify(cwdPath)}, process.cwd());\nprocess.stdout.write(${JSON.stringify(JSON.stringify(reply))});\n`,
+				{ mode: 0o755 },
+			);
+		} else {
+			// The arguments hold quotes and newlines (the system prompt), so the stub records them NUL-separated, not as JSON.
+			writeFileSync(replyPath, JSON.stringify(reply));
+			writeFileSync(
+				bin,
+				`#!/bin/sh\nprintf '%s\\0' "$@" > '${argvPath}'\npwd > '${cwdPath}'\ncat '${replyPath}'\n`,
+				{ mode: 0o755 },
+			);
+		}
 		return {
 			cwd,
 			bin,
-			args: () => JSON.parse(readFileSync(argvPath, "utf8")) as string[],
+			args: () => {
+				const recorded = readFileSync(argvPath, "utf8");
+				return kind === "real"
+					? (JSON.parse(recorded) as string[])
+					: recorded.split("\0").slice(0, -1);
+			},
 			childCwd: () => readFileSync(cwdPath, "utf8"),
 		};
 	}
@@ -133,10 +158,15 @@ describe("legacy diagnostic label safety", () => {
 	test.each(["claude", "muse"] as const)(
 		"%s projects every public sink without changing host-override or engine-model argv",
 		async (route) => {
-			const cli = cliFixture(route);
-			const host = route === "claude" ? "claude-code" : "muse";
+			// One real `bun` child per route proves the argv a real spawn delivers; every other combination runs a stub.
+			const real = cliFixture(route, "real");
+			const stub = cliFixture(route, "stub");
+			let first = true;
 			for (const [, model] of models) {
 				for (const source of ["host-override", "engine-model"] as const) {
+					const cli = first ? real : stub;
+					first = false;
+					const host = route === "claude" ? "claude-code" : "muse";
 					const config = defaultConfig();
 					config[route].bin = cli.bin;
 					if (source === "host-override") config.models.hosts[host] = { provider: "", model };
@@ -151,6 +181,7 @@ describe("legacy diagnostic label safety", () => {
 				}
 			}
 		},
+		120_000,
 	);
 
 	test("Grok shunt projects every public sink while sending exact host overrides, engine pins and shunt aliases", async () => {
@@ -191,7 +222,7 @@ describe("legacy diagnostic label safety", () => {
 		} finally {
 			globalThis.fetch = realFetch;
 		}
-	});
+	}, 120_000);
 
 	test("Grok HTTP and CLI labels never expose an unsafe model and carry effort only where it applies", async () => {
 		for (const transport of ["http", "cli"] as const) {
@@ -211,7 +242,7 @@ describe("legacy diagnostic label safety", () => {
 				engineOf(await selectEngine(effortful, {}, "/repo", { host: "grok-build" })).label,
 			).toBe("grok-4.7@xhigh");
 		}
-	});
+	}, 120_000);
 
 	test.each(["claude", "muse", "grok"] as const)(
 		"%s keeps a shell-metacharacter model in one argv field with no marker/path effect (POL-COV-020)",
@@ -273,6 +304,7 @@ describe("legacy diagnostic label safety", () => {
 				}
 			}
 		},
+		120_000,
 	);
 
 	test("Grok HTTP/shunt keep shell-metacharacter models in one exact body field and fixed request paths (POL-COV-020)", async () => {
@@ -364,7 +396,7 @@ describe("legacy diagnostic label safety", () => {
 		} finally {
 			server.stop(true);
 		}
-	});
+	}, 120_000);
 
 	test("control-bearing selectors are rejected consistently by selection and static status", async () => {
 		for (const model of [
@@ -414,6 +446,7 @@ describe("legacy diagnostic label safety", () => {
 			expect(await selected.complete("system", "user")).toBe(xml);
 			expect(cli.args()).not.toContain("--model");
 		},
+		120_000,
 	);
 
 	test("both configured Grok fallbacks project Claude labels and keep Claude's wire target", async () => {
@@ -435,5 +468,5 @@ describe("legacy diagnostic label safety", () => {
 			const args = cli.args();
 			expect(args[args.indexOf("--model") + 1]).toBe(model);
 		}
-	});
+	}, 120_000);
 });

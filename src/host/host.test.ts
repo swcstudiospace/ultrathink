@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,9 +14,11 @@ import {
 	writeControl,
 } from "../claude/state.ts";
 import { defaultConfig } from "../config.ts";
+import { FlightThrottle } from "../resilience/throttle.ts";
+import { lastSkipLine } from "../uplift/skip.ts";
 import type { DecisionsErrorKind } from "../decisions/types.ts";
 import type { Tracker } from "../track/gateway.ts";
-import { writePlanCarrier } from "./carrier.ts";
+import { carrierPathFor, writePlanCarrier } from "./carrier.ts";
 import { detectHost } from "./detect.ts";
 import {
 	type EngineSelectionContext,
@@ -41,7 +43,7 @@ import { planPrompt, type PlanOptions, type PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 import type { GroundOutcome } from "../ragflow/types.ts";
 import type { RecallOutcome } from "../teach/types.ts";
-import { JEV, recordingFetch } from "../test.helpers.ts";
+import { JEV, recordingFetch, UPLIFT } from "../test.helpers.ts";
 
 describe("detectHost", () => {
 	test("Grok markers win over Claude aliases, and an explicit host wins over both", () => {
@@ -288,7 +290,7 @@ describe("writePlanCarrier", () => {
 				context: "<BUILD_PROMPT/>",
 				graphId: "ut-1",
 			});
-			expect(path).toBe(join(dir, "last-plan.json"));
+			expect(path).toBe(carrierPathFor(dir, "s1"));
 			const body = JSON.parse(readFileSync(path!, "utf8")) as {
 				instruction: string;
 				graphId: string;
@@ -304,8 +306,7 @@ describe("writePlanCarrier", () => {
 
 /** Dispatches by payload so one fake answers the uplift, graph, node, and clarify calls. */
 async function stubComplete(_system: string, user: string): Promise<string> {
-	if (user.includes("<user_request>"))
-		return "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>";
+	if (user.includes("<user_request>")) return UPLIFT("add a widget");
 	if (user.startsWith("<spec>")) return JSON.stringify({ questions: [] });
 	if (user.includes("current_node")) {
 		const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
@@ -447,7 +448,7 @@ describe("planPrompt", () => {
 				),
 			).toMatchObject({
 				context: "",
-				skipped: "precheck-skip",
+				skipped: "precheck-skip-once",
 			});
 			expect(readSkipOnce(stateDir, "s1")).toBe(false);
 		} finally {
@@ -598,14 +599,69 @@ describe("planPrompt", () => {
 		}
 	});
 
+	test("a flight whose completer owns the limiter plans to the end at a limit of one: the think stage takes no second slot (G-11)", async () => {
+		const { root, env, options } = planHarness();
+		try {
+			const throttle = new FlightThrottle({ max: 1 });
+			const acquire = spyOn(throttle, "acquire");
+			// Like Omp's native binding: one slot per call, released when the call settles.
+			const complete = async (system: string, user: string): Promise<string> => {
+				const release = await throttle.acquire();
+				try {
+					return await stubComplete(system, user);
+				} finally {
+					release();
+				}
+			};
+			const response = await planPrompt(
+				{ host: "omp", session_id: "limiter-session-1", prompt: "add a widget", cwd: root },
+				env,
+				{
+					...options,
+					selectEngine: async (): Promise<SelectedEngine> => ({
+						label: "stub",
+						complete,
+						error: () => undefined,
+						throttle,
+						resolution: STUB_RESOLUTION,
+					}),
+				},
+			);
+			expect(response.skipped).toBeUndefined();
+			expect(response.context).not.toBe("");
+			// Uplift, graph and five fills: every call took exactly one slot, none was taken twice.
+			expect(acquire.mock.calls.length).toBeGreaterThanOrEqual(7);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("every precheck skip names its reason and leaves it for `ultrathink status` (G-2)", async () => {
+		const { root, env, options } = planHarness();
+		try {
+			const stateDir = env.ULTRATHINK_STATE_DIR!;
+			for (const [prompt, reason] of [
+				["thanks", "trivial"],
+				["<BUILD_PROMPT>add a widget</BUILD_PROMPT>", "already-uplifted"],
+				["Execute graph ut-mughkkc0-1a2b3c4d", "graph-reference"],
+			] as const) {
+				const response = await planPrompt({ host: "hermes", prompt, cwd: root }, env, options);
+				expect(response).toEqual({ context: "", skipped: `precheck-${reason}` });
+				expect(lastSkipLine(stateDir)).toMatch(new RegExp(`^last skip: ${reason} \\d+s ago$`));
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("stateless skips return before an engine is selected", async () => {
 		const { root, env, options, calls } = planHarness();
 		try {
 			for (const [prompt, reason] of [
-				["ok", "precheck-skip"],
+				["ok", "precheck-trivial"],
 				["raw: add a widget", "precheck-passthrough"],
-				["<BUILD_PROMPT>add a widget</BUILD_PROMPT>", "precheck-skip"],
-				["Implement node n2 of graph ut-mughkkc0-1a2b3c4d.", "precheck-skip"],
+				["<BUILD_PROMPT>add a widget</BUILD_PROMPT>", "precheck-already-uplifted"],
+				["Implement node n2 of graph ut-mughkkc0-1a2b3c4d.", "precheck-graph-reference"],
 			] as const) {
 				expect(await planPrompt({ host: "hermes", prompt, cwd: root }, env, options)).toEqual({
 					context: "",
@@ -671,7 +727,7 @@ describe("planPrompt", () => {
 					armSkipOnce(stateDir, "s1");
 					expect(
 						await planPrompt({ host, session_id: "s1", prompt, cwd: root }, hostEnv, options),
-					).toEqual({ context: "", skipped: "precheck-skip" });
+					).toEqual({ context: "", skipped: "precheck-skip-once" });
 					expect(readSkipOnce(stateDir, "s1")).toBe(false);
 				}
 				// Consumed before engine selection, so an engine that is unavailable (e.g. a Grok login) cannot leave it armed.
@@ -686,7 +742,7 @@ describe("planPrompt", () => {
 					),
 				).toEqual({
 					context: "",
-					skipped: "precheck-skip",
+					skipped: "precheck-already-uplifted",
 				});
 				expect(readSkipOnce(stateDir, "s1")).toBe(true);
 			} finally {
@@ -846,10 +902,10 @@ describe("planPrompt with the Jev plan gate", () => {
 					h.env,
 					h.options,
 				);
-				expect(trivial).toEqual({ context: "", skipped: "precheck-skip" });
+				expect(trivial).toEqual({ context: "", skipped: "precheck-trivial" });
 				expect(h.calls.engine).toBe(0);
 				expect(h.events).toEqual([
-					{ type: "end", at: expect.any(Number), outcome: "skipped", detail: "precheck-skip" },
+					{ type: "end", at: expect.any(Number), outcome: "skipped", detail: "precheck-trivial" },
 				]);
 				h.events.length = 0;
 
@@ -881,7 +937,7 @@ describe("planPrompt with the Jev plan gate", () => {
 				expect(h.calls.track).toBe(0);
 				expect(existsSync(h.sessionFile)).toBe(false);
 				expect(existsSync(h.sessionFile.replace(/\.json$/, ".xml"))).toBe(false);
-				expect(existsSync(join(h.env.ULTRATHINK_STATE_DIR!, "last-plan.json"))).toBe(false);
+				expect(existsSync(carrierPathFor(h.env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
 				expectNoKey(response, h.events);
 			} finally {
 				rmSync(h.root, { recursive: true, force: true });
@@ -1022,7 +1078,8 @@ describe("planPrompt with the Jev plan gate", () => {
 					expect(jev).toEqual(base);
 					expect(jev.context).toBe("");
 					expect(jev.skipped).toBeDefined();
-					if (acks.includes(prompt)) expect(jev).toEqual({ context: "", skipped: "precheck-skip" });
+					if (acks.includes(prompt))
+						expect(jev).toEqual({ context: "", skipped: "precheck-trivial" });
 				}
 				// Planning turned off by control state.
 				const offDir = h.env.ULTRATHINK_STATE_DIR;
@@ -1033,7 +1090,7 @@ describe("planPrompt with the Jev plan gate", () => {
 				h.configure({ enabled: true });
 				const off = await run(NEW_WORK);
 				expect(off).toEqual(offBase);
-				expect(off).toEqual({ context: "", skipped: "precheck-skip" });
+				expect(off).toEqual({ context: "", skipped: "precheck-disabled" });
 				expect(R.calls).toHaveLength(0);
 				expect(h.calls.engine).toBe(0);
 			} finally {
@@ -1381,7 +1438,10 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 		const stateDir = env.ULTRATHINK_STATE_DIR!;
 		const tail = "NATIVE_XML_TAIL_BEYOND_4096";
 		const body = `<SPECIFICATION>${"Preserve the exact widget requirement. ".repeat(150)}<ACCEPTANCE_CRITERIA>${tail}</ACCEPTANCE_CRITERIA></SPECIFICATION>`;
-		const xml = `<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL>${body}</BUILD_PROMPT>`;
+		const xml = `<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL><SYSTEM_ROLE>Senior engineer.</SYSTEM_ROLE><CONTEXT>A widget app.</CONTEXT><SCOPE>One widget.</SCOPE><CONSTRAINTS>No new dependencies.</CONSTRAINTS>${body}</BUILD_PROMPT>`;
+		// The pipeline owns ORIGINAL: it re-seats the user's words as the first child and keeps every other byte of the reply.
+		const head = "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL>";
+		const canonical = `<BUILD_PROMPT>\n<ORIGINAL>add a widget</ORIGINAL>\n${xml.slice(head.length)}`;
 		const split = xml.indexOf(tail) - 7;
 		const ignoredThought = "IGNORED_NATIVE_THINKING";
 		const ignoredTool = "IGNORED_NATIVE_TOOL";
@@ -1444,8 +1504,8 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				"clarify",
 			]);
 			// The graph and each fill consume the whole individual uplift, not a reconstructed large handoff.
-			expect(userText(rec.calls[1]!)).toBe(`add a widget\n\n${xml}`);
-			for (const call of rec.calls.slice(2, 7)) expect(userText(call)).toContain(xml);
+			expect(userText(rec.calls[1]!)).toBe(`add a widget\n\n${canonical}`);
+			for (const call of rec.calls.slice(2, 7)) expect(userText(call)).toContain(canonical);
 			expect(userText(rec.calls[7]!)).toContain(body);
 			const record = readSession(stateDir, "large-native");
 			const spec = readFileSync(
@@ -1459,7 +1519,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 			});
 			expect(record?.degraded).toBeUndefined();
 			expect(record?.graph?.nodes).toHaveLength(5);
-			expect(record?.result.xml).toContain(xml.slice(0, -"</BUILD_PROMPT>".length));
+			expect(record?.result.xml).toContain(canonical.slice(0, -"</BUILD_PROMPT>".length));
 			expect(record?.result.xml).toContain(body);
 			expect(record?.result.xml.trimEnd().endsWith("</BUILD_PROMPT>")).toBe(true);
 			expect(spec).toBe(`${record?.result.xml}\n`);
@@ -1711,7 +1771,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 					type: "end",
 					at: expect.any(Number),
 					outcome: "skipped",
-					detail: "engine-error",
+					detail: "engine-error (Error)",
 					modelResolution: resolution,
 				},
 			]);
@@ -1720,7 +1780,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 			expect(calls).toEqual({ engine: 1, createTracker: 1, track: 0 });
 			expect(completions).toBe(0);
 			expect(existsSync(sessionPath(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
-			expect(existsSync(join(env.ULTRATHINK_STATE_DIR!, "last-plan.json"))).toBe(false);
+			expect(existsSync(carrierPathFor(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -1744,11 +1804,11 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 			);
 			expect(response).toEqual({ context: "", skipped: "engine-error" });
 			expect(events).toEqual([
-				{ type: "end", at: expect.any(Number), outcome: "skipped", detail: "engine-error" },
+				{ type: "end", at: expect.any(Number), outcome: "skipped", detail: "engine-error (Error)" },
 			]);
 			expect(calls).toEqual({ engine: 1, createTracker: 0, track: 0 });
 			expect(existsSync(sessionPath(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
-			expect(existsSync(join(env.ULTRATHINK_STATE_DIR!, "last-plan.json"))).toBe(false);
+			expect(existsSync(carrierPathFor(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -1845,7 +1905,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				}),
 			).toEqual({
 				context: "",
-				skipped: "precheck-skip",
+				skipped: "precheck-trivial",
 			});
 		} finally {
 			rmSync(root, { recursive: true, force: true });
@@ -1908,7 +1968,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				});
 				expect(calls.track).toBe(0);
 				expect(existsSync(sessionPath(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
-				expect(existsSync(join(env.ULTRATHINK_STATE_DIR!, "last-plan.json"))).toBe(false);
+				expect(existsSync(carrierPathFor(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -1968,7 +2028,8 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 							if (phase === at && failure !== "aborted-result") {
 								if (failure === "AbortError")
 									throw new DOMException("SECRET-PROVIDER-ERROR", "AbortError");
-								throw new Error("SECRET-PROVIDER-ERROR");
+								// A 400 is a permanent refusal: the retry kernel makes one call, so the stage sequence stays exact.
+								throw Object.assign(new Error("SECRET-PROVIDER-ERROR"), { status: 400 });
 							}
 							const aborted = phase === at && failure === "aborted-result";
 							const text = aborted ? "SECRET-PARTIAL-TEXT" : await stubComplete("", user);
@@ -1995,7 +2056,14 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 						},
 					);
 					const stateDir = env.ULTRATHINK_STATE_DIR!;
-					const expected = ["uplift", "graph", "fill", "fill", "fill", "fill", "fill", "clarify"];
+					const fills = (count: number) => Array.from({ length: count }, () => "fill");
+					// A failed fill gets one repair pass after the first five calls, so every node is called twice.
+					const expected = [
+						"uplift",
+						"graph",
+						...fills(failure === "ordinary-error" && at === "fill" ? 10 : 5),
+						"clarify",
+					];
 					expect(controller.signal.aborted).toBe(false);
 					expect(response.modelResolution).toMatchObject({
 						state: "detected",
@@ -2011,7 +2079,8 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 						expect(response.context).not.toBe("");
 						expect(readSession(stateDir, "s1")).toBeDefined();
 						expect(existsSync(response.carrierPath ?? "")).toBe(true);
-						expect(calls.track).toBe(at === "uplift" ? 0 : 1);
+						// The hook creates no tracker rows from a fallback uplift or a boilerplate graph.
+						expect(calls.track).toBe(at === "uplift" || at === "graph" ? 0 : 1);
 						expect(signals.every((signal) => signal?.aborted === false)).toBe(true);
 					} else {
 						expect(stages).toEqual(expected.slice(0, expected.indexOf(at) + 1));
@@ -2025,7 +2094,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 							sessionPath(stateDir, "s1"),
 							sessionPath(stateDir, "s1").replace(/\.json$/, ".xml"),
 							join(stateDir, "last.json"),
-							join(stateDir, "last-plan.json"),
+							carrierPathFor(stateDir, "s1"),
 						]) {
 							expect(existsSync(path)).toBe(false);
 						}
@@ -2066,7 +2135,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 			expect(response).toEqual({ context: "", skipped: "aborted" });
 			expect(calls.track).toBe(0);
 			expect(existsSync(sessionPath(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
-			expect(existsSync(join(env.ULTRATHINK_STATE_DIR!, "last-plan.json"))).toBe(false);
+			expect(existsSync(carrierPathFor(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -2093,7 +2162,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				skipped: "aborted",
 				modelResolution: STUB_RESOLUTION,
 			});
-			expect(existsSync(join(env.ULTRATHINK_STATE_DIR!, "last-plan.json"))).toBe(false);
+			expect(existsSync(carrierPathFor(env.ULTRATHINK_STATE_DIR!, "s1"))).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -2135,7 +2204,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 					stateDir,
 				},
 			);
-			expect(skipped).toEqual({ context: "", skipped: "precheck-skip" });
+			expect(skipped).toEqual({ context: "", skipped: "precheck-skip-once" });
 			expect(readSkipOnce(stateDir, "s1")).toBe(false);
 			expect(seen).toHaveLength(1);
 		} finally {

@@ -9,6 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "../src/claude/atomic.ts";
 import { isChildInvocation } from "../src/claude/complete.ts";
+import { installChildReaper } from "../src/resilience/child.ts";
 import { defaultStateDir, updateSession } from "../src/claude/state.ts";
 import { parseEnvelope } from "../src/host/envelope.ts";
 import {
@@ -56,8 +57,18 @@ async function main(): Promise<void> {
 	if (!updated) return;
 
 	if (matched.length > 0) {
-		console.log(JSON.stringify({ systemMessage: `HITL · ${matched.length} answer(s) recorded` }));
+		await Bun.write(
+			Bun.stdout,
+			`${JSON.stringify({ systemMessage: `HITL · ${matched.length} answer(s) recorded` })}\n`,
+		);
 	}
 }
 
-main().catch(() => process.exit(0));
+installChildReaper({ signals: true });
+main()
+	.catch(() => {
+		// reason: fail-open: a PostToolUse hook never fails the tool call
+	})
+	.finally(() => {
+		process.exit(0);
+	});

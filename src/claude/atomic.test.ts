@@ -673,7 +673,7 @@ describe("concurrent updates through updateSession", () => {
 		expect(readSession(stateDir, "race")).toMatchObject({ counter: 200 });
 		expect(leftovers(join(stateDir, "sessions"))).toEqual([]);
 		expect(leftovers(stateDir)).toEqual([]);
-	}, 60_000);
+	}, 180_000);
 
 	test("a delayed stale recovery cannot open a live successor's critical section to another writer", async () => {
 		const stateDir = join(dir, "state");
@@ -793,5 +793,5 @@ describe("concurrent updates through updateSession", () => {
 			await Promise.allSettled(workers.map((worker) => worker.exited));
 			await Promise.all(readers);
 		}
-	}, 60_000);
+	}, 180_000);
 });

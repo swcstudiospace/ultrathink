@@ -216,4 +216,16 @@ describe("createLineSplitter", () => {
 		splitter.end();
 		expect(lines).toHaveLength(3);
 	});
+
+	test("a newline-less flood stays bounded at 256 KiB and the next normal lines still split", () => {
+		const lines: string[] = [];
+		const splitter = createLineSplitter((line) => lines.push(line));
+		splitter.push("x".repeat(1024 * 1024));
+		for (let i = 0; i < 8; i++) splitter.push("y".repeat(128 * 1024));
+		splitter.push('\n{"a":1}\n{"b":2}');
+		splitter.end();
+		expect(lines).toHaveLength(3);
+		expect(lines[0]?.length).toBeLessThanOrEqual(256 * 1024);
+		expect(lines.slice(1)).toEqual(['{"a":1}', '{"b":2}']);
+	});
 });

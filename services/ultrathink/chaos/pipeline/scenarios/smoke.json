@@ -1,0 +1,23 @@
+{
+	"id": "smoke",
+	"title": "50 varied prompts at concurrency 5 with no faults (unit-test size)",
+	"failureMode": "pipeline-load",
+	"seed": 11,
+	"prompts": {
+		"count": 50,
+		"concurrency": 5
+	},
+	"faults": [],
+	"invariants": [
+		"terminal",
+		"original",
+		"uplift",
+		"degraded",
+		"cot",
+		"isolation",
+		"resources",
+		"recovery",
+		"persisted",
+		"calls"
+	]
+}

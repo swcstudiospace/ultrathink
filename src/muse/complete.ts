@@ -11,27 +11,23 @@
  * prompt file. `--provider echo` is the free local test path (it rejects
  * `--model`/`--reasoning-effort`, so the completer omits both there).
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { abortError, CHILD_ENV } from "../claude/complete.ts";
+import {
+	abortError,
+	CHILD_ENV,
+	CHILD_OUTPUT_CAP_BYTES,
+	truncatedReplyError,
+	withCompletionReport,
+} from "../claude/complete.ts";
 import { redactSecrets } from "../redact.ts";
+import { runChild, withTempDir } from "../resilience/child.ts";
+import type { RetrySeams } from "../resilience/retry.ts";
 import { dropJevKeys } from "../route-defaults.ts";
 import { CHILD_PROMPT_SENTINEL } from "../uplift/skill.ts";
 import type { MuseEffort } from "./types.ts";
 
 type MuseProvider = "meta" | "echo";
-
-/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
-type TimerPort = {
-	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
-	clearTimeout(handle: NodeJS.Timeout | undefined): void;
-};
-
-const platformTimers: TimerPort = {
-	setTimeout: (fn, ms) => setTimeout(fn, ms),
-	clearTimeout: (handle) => clearTimeout(handle),
-};
 
 export interface MuseCompleteOptions {
 	bin?: string;
@@ -42,10 +38,10 @@ export interface MuseCompleteOptions {
 	provider?: MuseProvider;
 	cwd?: string;
 	timeoutMs?: number;
-	/** Timer port for the timeout kill timer; defaults to the platform timers. */
-	timers?: TimerPort;
 	signal?: AbortSignal;
 	env?: Record<string, string | undefined>;
+	/** Test seams for the retry backoff (sleep, random); production uses the kernel defaults. */
+	retrySeams?: RetrySeams;
 }
 
 export type MuseCompleter = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
@@ -97,13 +93,18 @@ export function parseMuseJsonl(stdout: string, stderr: string, code: number): st
 		if (!rec.payload || typeof rec.payload !== "object") continue;
 		terminal = rec.payload as { terminal?: unknown; reason?: unknown; text?: unknown };
 	}
+	if (terminal?.terminal === "truncated" || terminal?.reason === "max_tokens") {
+		throw truncatedReplyError("muse reply was truncated");
+	}
 	if (!terminal || terminal.terminal !== "completed") {
 		const reason =
 			typeof terminal?.reason === "string" && terminal.reason ? `: ${terminal.reason}` : "";
 		const detail = stderr.trim() || `muse exited ${code}`;
 		throw new Error(redactSecrets(`muse completion failed${reason} (${detail.slice(0, 300)})`));
 	}
-	if (typeof terminal.text !== "string" || !terminal.text) throw new Error("muse returned no text");
+	if (typeof terminal.text !== "string" || !terminal.text) {
+		throw truncatedReplyError("muse returned no text");
+	}
 	return terminal.text;
 }
 
@@ -119,53 +120,36 @@ export async function museComplete(
 		[CHILD_ENV]: "1",
 	};
 	dropJevKeys(env);
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-muse-"));
-	const promptFile = join(dir, "prompt.txt");
-	try {
-		writeFileSync(promptFile, buildMusePrompt(system, user), { encoding: "utf8", mode: 0o600 });
-	} catch (error) {
-		rmSync(dir, { recursive: true, force: true });
-		throw new Error(
-			`muse prompt file failed (${error instanceof Error ? error.message : String(error)})`,
-		);
-	}
-	const proc = Bun.spawn([bin, ...buildMuseArgs(promptFile, opts)], {
-		cwd: opts.cwd,
-		env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-
-	let timedOut = false;
-	let aborted = false;
-	const timers = opts.timers ?? platformTimers;
-	const timer =
-		opts.timeoutMs && opts.timeoutMs > 0
-			? timers.setTimeout(() => {
-					timedOut = true;
-					proc.kill();
-				}, opts.timeoutMs)
-			: undefined;
-	const onAbort = (): void => {
-		aborted = true;
-		proc.kill();
-	};
-	opts.signal?.addEventListener("abort", onAbort, { once: true });
-
-	try {
-		const [stdout, stderr, code] = await Promise.all([
-			new Response(proc.stdout).text(),
-			new Response(proc.stderr).text(),
-			proc.exited,
-		]);
-		if (aborted) throw abortError();
-		if (timedOut) throw new Error(`muse timed out after ${opts.timeoutMs}ms`);
-		return parseMuseJsonl(stdout, stderr, code);
-	} finally {
-		if (timer) timers.clearTimeout(timer);
-		opts.signal?.removeEventListener("abort", onAbort);
-		rmSync(dir, { recursive: true, force: true });
-	}
+	return withCompletionReport(
+		() =>
+			withTempDir("ultrathink-muse-", async (dir) => {
+				const promptFile = join(dir, "prompt.txt");
+				try {
+					writeFileSync(promptFile, buildMusePrompt(system, user), {
+						encoding: "utf8",
+						mode: 0o600,
+					});
+				} catch (error) {
+					throw new Error(
+						`muse prompt file failed (${error instanceof Error ? error.message : String(error)})`,
+					);
+				}
+				const result = await runChild({
+					cmd: [bin, ...buildMuseArgs(promptFile, opts)],
+					cwd: opts.cwd,
+					env,
+					...(opts.timeoutMs && opts.timeoutMs > 0 ? { timeoutMs: opts.timeoutMs } : {}),
+					signal: opts.signal,
+					maxStdoutBytes: CHILD_OUTPUT_CAP_BYTES,
+					maxStderrBytes: CHILD_OUTPUT_CAP_BYTES,
+				});
+				if (result.aborted || opts.signal?.aborted) throw abortError();
+				if (result.timedOut) throw new Error(`muse timed out after ${opts.timeoutMs}ms`);
+				return parseMuseJsonl(result.stdout, result.stderr, result.code ?? -1);
+			}),
+		opts.signal,
+		opts.retrySeams,
+	);
 }
 
 export function createMuseCompleter(opts: Omit<MuseCompleteOptions, "signal">): MuseCompleter {

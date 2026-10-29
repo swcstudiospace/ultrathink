@@ -16,6 +16,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	openSync,
+	opendirSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
@@ -63,6 +64,42 @@ const NODE_FS: AtomicFs = {
 };
 
 const TEXT = new TextEncoder();
+
+/** `.<name>.<pid>.<8 hex>.tmp`: the temporary name `writeFileAtomic` gives a file it is about to rename. */
+const ORPHAN_TEMP = /^\..+\.(\d+)\.[0-9a-f]{8}\.tmp$/;
+/** A dead writer's temp file must also be this old (ms) before it goes: a live write finishes in milliseconds. */
+const ORPHAN_MIN_AGE_MS = 60_000;
+const ORPHAN_SCAN_LIMIT = 100;
+
+/**
+ * Removes temp files that a killed `writeFileAtomic` left in `dir`: the embedded pid is dead and the file is at least
+ * a minute old. Scans at most {@link ORPHAN_SCAN_LIMIT} entries and never throws: a failed scan or unlink only leaves
+ * the file for a later write.
+ */
+function sweepOrphanTemps(dir: string): void {
+	try {
+		const now = Date.now();
+		const handle = opendirSync(dir);
+		try {
+			for (let scanned = 0; scanned < ORPHAN_SCAN_LIMIT; scanned++) {
+				const entry = handle.readSync();
+				if (!entry) break;
+				const pid = Number(ORPHAN_TEMP.exec(entry.name)?.[1]);
+				if (!Number.isSafeInteger(pid) || pid <= 0 || pidAlive(pid)) continue;
+				const path = join(dir, entry.name);
+				try {
+					if (now - statSync(path).mtimeMs >= ORPHAN_MIN_AGE_MS) unlinkSync(path);
+				} catch {
+					// reason: a sibling writer may have swept it first
+				}
+			}
+		} finally {
+			handle.closeSync();
+		}
+	} catch {
+		// reason: housekeeping only; the write itself already succeeded
+	}
+}
 
 /**
  * Replaces `path` with `data`: a temporary file in the same directory is written and flushed, then renamed over the
@@ -114,6 +151,7 @@ export function writeFileAtomic(
 		}
 		throw error;
 	}
+	sweepOrphanTemps(dir);
 }
 
 /** The seams behind the holder-liveness check, so a test can plant live and dead holders without real processes. */

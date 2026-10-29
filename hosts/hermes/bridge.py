@@ -318,6 +318,25 @@ def session_sender() -> str:
 		return ""
 
 
+def _reap(proc: "subprocess.Popen[str]") -> None:
+	"""Kill the child's process group when it is still running, then wait for it so no zombie is left."""
+	if proc.poll() is None:
+		try:
+			os.killpg(proc.pid, signal.SIGKILL)
+		except (ProcessLookupError, PermissionError):
+			pass
+	try:
+		proc.wait(timeout=10)
+	except subprocess.TimeoutExpired:
+		logger.warning("ultrathink: the engine process %s did not exit after SIGKILL", proc.pid)
+	for stream in (proc.stdin, proc.stdout, proc.stderr):
+		if stream is not None:
+			try:
+				stream.close()
+			except OSError:
+				pass
+
+
 def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 	"""Return context to inject, or "" when the engine should not run."""
 	parent = payload.get("parent_session_id") or payload.get("parentSessionId")
@@ -389,7 +408,9 @@ def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 			stdin=subprocess.PIPE,
 			stdout=subprocess.PIPE,
 			stderr=subprocess.PIPE,
-			text=True,
+			# Bytes the engine never meant as text must not raise out of the hook: they decode to U+FFFD.
+			encoding="utf-8",
+			errors="replace",
 			env=child_env,
 			cwd=str(REPO_ROOT),
 			start_new_session=True,
@@ -399,12 +420,16 @@ def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 	try:
 		stdout, _ = proc.communicate(input=json.dumps(request), timeout=deadline)
 	except subprocess.TimeoutExpired:
-		try:
-			os.killpg(proc.pid, signal.SIGKILL)
-		except (ProcessLookupError, PermissionError):
-			pass
-		proc.communicate()
+		logger.warning(
+			"ultrathink: planning for hermes session %s stopped at its %ss deadline; the prompt runs unplanned",
+			request["session_id"] or "(none)",
+			f"{deadline:g}",
+		)
 		return ""
+	finally:
+		# Every path leaves no child behind: a finished one is already reaped, anything else (deadline, an exception out
+		# of communicate) takes its whole process group down and is waited for.
+		_reap(proc)
 	try:
 		parsed = json.loads(stdout or "{}")
 	except json.JSONDecodeError:

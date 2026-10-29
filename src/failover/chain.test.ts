@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { abortError } from "../claude/complete.ts";
 import { createFailoverCompleter, type FailoverCandidate } from "./chain.ts";
 import { classifyFailure } from "./classify.ts";
+
+const dirs: string[] = [];
+afterEach(() => {
+	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 const TOKEN = "Bearer abcdef0123456789abcdef";
 const PLAN_LIMIT = "You've hit your session limit \u00b7 resets 3:45pm";
@@ -176,7 +184,6 @@ describe("failover and cooldown", () => {
 describe("errors that must not fail over", () => {
 	for (const [label, message, failure] of [
 		["other", "claude output is not JSON", "other"],
-		["timeout", "claude timed out after 90000ms", "timeout"],
 	] as const) {
 		test(`${label} rethrows at once without calling the second`, async () => {
 			const time = clock();
@@ -250,25 +257,191 @@ describe("all candidates fail", () => {
 		expect(error?.message.startsWith("a: ")).toBe(true);
 	});
 
-	test("with every candidate in cooldown all of them are still walked", async () => {
+	test("with every candidate in cooldown nothing is invoked until a window lapses", async () => {
 		const time = clock();
 		const first = scripted("a", [new Error(PLAN_LIMIT)]);
 		const second = scripted("b", [new Error("Request rejected (429)")]);
 		const chain = createFailoverCompleter([first, second], { now: time.now });
 		await expect(chain.complete("s", "u")).rejects.toThrow("a: ");
 		expect([first.calls(), second.calls()]).toEqual([1, 1]);
-		await expect(chain.complete("s", "u")).rejects.toThrow("b: ");
-		expect([first.calls(), second.calls()]).toEqual([2, 2]);
+		await expect(chain.complete("s", "u")).rejects.toThrow("a: ");
+		expect([first.calls(), second.calls()]).toEqual([1, 1]);
 	});
 
-	test("a recovered candidate is found even though everyone was in cooldown", async () => {
+	test("a recovered candidate is found once its cooldown lapsed", async () => {
 		const time = clock();
 		const first = scripted("a", [new Error(PLAN_LIMIT), new Error(PLAN_LIMIT), "back"]);
 		const second = scripted("b", [new Error("Request rejected (429)"), "back-b"]);
 		const chain = createFailoverCompleter([first, second], { now: time.now });
 		await expect(chain.complete("s", "u")).rejects.toThrow();
+		time.advance(60_000);
 		expect(await chain.complete("s", "u")).toBe("back-b");
 		expect(chain.failover()).toBe("a \u2192 b (plan-limit)");
+	});
+});
+
+describe("fail-fast and single probe", () => {
+	test("while every candidate cools, ten calls invoke nothing and reject with the remembered error", async () => {
+		const time = clock();
+		const first = scripted("a", [new Error("Credit balance is too low")]);
+		const second = scripted("b", [new Error("Not logged in \u00b7 Please run /login")]);
+		const chain = createFailoverCompleter([first, second], { now: time.now });
+		const remembered = await chain.complete("s", "u").then(
+			() => undefined,
+			(e: unknown) => e,
+		);
+		expect(remembered).toBeInstanceOf(Error);
+		for (let i = 0; i < 10; i++) {
+			time.advance(1_000);
+			await expect(chain.complete("s", "u")).rejects.toBe(remembered);
+		}
+		expect([first.calls(), second.calls()]).toEqual([1, 1]);
+	});
+
+	test("after the earliest window lapses exactly one candidate is probed, once per window", async () => {
+		const time = clock();
+		const first = scripted("a", [new Error("Credit balance is too low")]);
+		const second = scripted("b", [new Error("Not logged in \u00b7 Please run /login")]);
+		const chain = createFailoverCompleter([first, second], { now: time.now });
+		await expect(chain.complete("s", "u")).rejects.toThrow();
+		// b (auth, 10 min) expires first; a (billing, 1 h) is still cooling
+		time.advance(600_000);
+		await expect(chain.complete("s", "u")).rejects.toThrow("b: ");
+		expect([first.calls(), second.calls()]).toEqual([1, 2]);
+		// the probe failed: a fresh window, no further call inside it
+		for (let i = 0; i < 5; i++) await expect(chain.complete("s", "u")).rejects.toThrow("b: ");
+		expect([first.calls(), second.calls()]).toEqual([1, 2]);
+	});
+
+	test("when both windows lapsed together only one candidate is walked per call", async () => {
+		const time = clock();
+		const first = scripted("a", [new Error("Not logged in \u00b7 Please run /login")]);
+		const second = scripted("b", [new Error("Not logged in \u00b7 Please run /login")]);
+		const chain = createFailoverCompleter([first, second], { now: time.now });
+		await expect(chain.complete("s", "u")).rejects.toThrow();
+		time.advance(600_000);
+		await expect(chain.complete("s", "u")).rejects.toThrow();
+		expect(first.calls() + second.calls()).toBe(3);
+	});
+
+	test("a probe that answers clears the remembered error and the chain recovers", async () => {
+		const time = clock();
+		const first = scripted("a", [new Error(PLAN_LIMIT), "back"]);
+		const second = scripted("b", [new Error("Request rejected (429)"), "back-b"]);
+		const chain = createFailoverCompleter([first, second], { now: time.now });
+		await expect(chain.complete("s", "u")).rejects.toThrow();
+		time.advance(60_000);
+		expect(await chain.complete("s", "u")).toBe("back-b");
+		// b is healthy again, so a call is no longer fail-fast even though a still cools
+		expect(await chain.complete("s", "u")).toBe("back-b");
+		time.advance(900_000);
+		expect(await chain.complete("s", "u")).toBe("back");
+	});
+});
+
+describe("persisted cooldowns", () => {
+	function persistPath(): string {
+		const dir = mkdtempSync(join(tmpdir(), "failover-persist-"));
+		dirs.push(dir);
+		return join(dir, "state", "failover-cooldowns.json");
+	}
+
+	test("a second chain over the same file sees the cooldown and invokes nothing", async () => {
+		const time = clock();
+		const path = persistPath();
+		const first = scripted("a", [new Error("Credit balance is too low")]);
+		const second = scripted("b", [new Error("Not logged in \u00b7 Please run /login")]);
+		const chain = createFailoverCompleter([first, second], { now: time.now, persist: { path } });
+		await expect(chain.complete("s", "u")).rejects.toThrow();
+		const nextFirst = scripted("a", ["ok-a"]);
+		const nextSecond = scripted("b", ["ok-b"]);
+		const next = createFailoverCompleter([nextFirst, nextSecond], {
+			now: time.now,
+			persist: { path },
+		});
+		const error = await next.complete("s", "u").then(
+			() => undefined,
+			(e: unknown) => e as Error,
+		);
+		expect(error?.name).toBe("FailoverError");
+		expect(classifyFailure(error)).toBe("billing");
+		expect([nextFirst.calls(), nextSecond.calls()]).toEqual([0, 0]);
+	});
+
+	test("a persisted cooldown on the first sends the next process straight to the second", async () => {
+		const time = clock();
+		const path = persistPath();
+		const chain = createFailoverCompleter(
+			[scripted("a", [new Error(PLAN_LIMIT)]), scripted("b", ["x"])],
+			{
+				now: time.now,
+				persist: { path },
+			},
+		);
+		await chain.complete("s", "u");
+		const nextFirst = scripted("a", ["ok-a"]);
+		const nextSecond = scripted("b", ["ok-b"]);
+		const next = createFailoverCompleter([nextFirst, nextSecond], {
+			now: time.now,
+			persist: { path },
+		});
+		expect(await next.complete("s", "u")).toBe("ok-b");
+		expect(nextFirst.calls()).toBe(0);
+		time.advance(900_000);
+		expect(await next.complete("s", "u")).toBe("ok-a");
+	});
+
+	test("expired, malformed or unreadable files load as empty", async () => {
+		const time = clock();
+		const path = persistPath();
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(
+			path,
+			JSON.stringify({ until: { a: time.now() - 1 }, failure: { a: "billing" } }),
+		);
+		const first = scripted("a", ["ok-a"]);
+		const chain = createFailoverCompleter([first, scripted("b", ["ok-b"])], {
+			now: time.now,
+			persist: { path },
+		});
+		expect(await chain.complete("s", "u")).toBe("ok-a");
+		for (const junk of ["not json", "[]", '{"until":{"a":"x"},"failure":{"a":"bogus"}}']) {
+			writeFileSync(path, junk);
+			const fresh = scripted("a", ["ok-a"]);
+			const again = createFailoverCompleter([fresh, scripted("b", ["ok-b"])], {
+				now: time.now,
+				persist: { path },
+			});
+			expect(await again.complete("s", "u")).toBe("ok-a");
+		}
+	});
+
+	test("a path that cannot be written never breaks the call", async () => {
+		const time = clock();
+		const dir = mkdtempSync(join(tmpdir(), "failover-persist-"));
+		dirs.push(dir);
+		const blocker = join(dir, "file");
+		writeFileSync(blocker, "x");
+		const chain = createFailoverCompleter(
+			[scripted("a", [new Error(PLAN_LIMIT)]), scripted("b", ["ok-b"])],
+			{ now: time.now, persist: { path: join(blocker, "cooldowns.json") } },
+		);
+		expect(await chain.complete("s", "u")).toBe("ok-b");
+	});
+
+	test("a timeout fails over to the next candidate and the file records it", async () => {
+		const time = clock();
+		const path = persistPath();
+		const first = scripted("a", [new Error("claude timed out after 90000ms")]);
+		const second = scripted("b", ["ok-b"]);
+		const chain = createFailoverCompleter([first, second], { now: time.now, persist: { path } });
+		expect(await chain.complete("s", "u")).toBe("ok-b");
+		expect(chain.failover()).toBe("a \u2192 b (timeout)");
+		const saved = JSON.parse(readFileSync(path, "utf8")) as { until: Record<string, number> };
+		expect(saved.until.a).toBe(time.now() + 30_000);
+		time.advance(30_000);
+		await chain.complete("s", "u");
+		expect(first.calls()).toBe(2);
 	});
 });
 

@@ -13,6 +13,7 @@ import {
 	readFileSync,
 	readdirSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -246,5 +247,21 @@ describe.skipIf(process.platform !== "linux")("ultrathink-backup.sh", () => {
 		const fresh = remaining.filter((name) => !name.startsWith("ultrathink-2020"));
 		expect(fresh).toHaveLength(1);
 		expect(fresh[0]).toMatch(/^ultrathink-\d{8}T\d{6}Z\.tar\.gz$/);
+	});
+
+	test("prune removes stale last-plan.json and last-plan.<session>.json copies and keeps fresh ones", () => {
+		const s = scenario("prune-carriers", { runs: 1, oauth: true });
+		const old = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+		for (const name of ["last-plan.json", "last-plan.sess-old.json", "last.json"]) {
+			const path = join(s.state, name);
+			writeFileSync(path, "{}");
+			utimesSync(path, old, old);
+		}
+		writeFileSync(join(s.state, "last-plan.sess-new.json"), "{}");
+		handOver(base);
+		const result = runDr(SCRIPT, ["prune"], { ...s.env, ULTRATHINK_RETENTION_DAYS: "30" });
+		expect(result.code).toBe(0);
+		const remaining = entriesIn(s.state).filter((name) => name.startsWith("last"));
+		expect(remaining).toEqual(["last-plan.sess-new.json"]);
 	});
 });

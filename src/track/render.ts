@@ -4,6 +4,7 @@
  * Embeds created tracker rows (Linear issues, Notion pages) into the uplifted spec
  * and renders the TODO checklist the agent copies into its task list.
  */
+import { clip, FIELD_CAPS } from "../resilience/limits.ts";
 import { stepKey } from "./create.ts";
 import type { IssueRef, SubIssueRow, TrackingRefs, TrackPlan } from "./types.ts";
 import { escapeXml } from "../uplift/xml.ts";
@@ -110,9 +111,12 @@ function todoLine(
 	ref: IssueRef | undefined,
 	title: string,
 	notionUrl: string | undefined,
+	max: number,
 ): string {
+	// Model-controlled text on one line, capped: a newline in it would open a heading or a fake checklist item.
+	const line = clip(title.replace(/\s+/g, " ").trim(), max).text;
 	const notion = notionUrl ? ` · notion: ${notionUrl}` : "";
-	return `${indent}- [ ] ${id} · ${ref ? `[${ref.identifier}](${ref.url})` : "(pending)"} · ${title}${notion}`;
+	return `${indent}- [ ] ${id} · ${ref ? `[${ref.identifier}](${ref.url})` : "(pending)"} · ${line}${notion}`;
 }
 
 /** Markdown checklist, one line per node then its indented steps, each carrying its tracker links. */
@@ -126,6 +130,7 @@ export function formatTrackingTodos(plan: TrackPlan, tracking: TrackingRefs): st
 				tracking.linear.nodes[issue.nodeId],
 				stripNodePrefix(issue.item, issue.nodeId),
 				tracking.notion.nodes[issue.nodeId],
+				FIELD_CAPS.title,
 			),
 		);
 		for (const sub of stepsOf(plan, issue.nodeId)) {
@@ -137,6 +142,7 @@ export function formatTrackingTodos(plan: TrackPlan, tracking: TrackingRefs): st
 					tracking.linear.steps[key],
 					stripNodePrefix(sub.item, sub.nodeId),
 					tracking.notion.steps[key],
+					FIELD_CAPS.step,
 				),
 			);
 		}

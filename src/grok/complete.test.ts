@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
@@ -22,6 +31,7 @@ import {
 } from "./complete.ts";
 import { classifyFailure } from "../failover/classify.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
+import { readReport } from "../types.ts";
 import { hangingFetch } from "../test.helpers.ts";
 
 const dirs: string[] = [];
@@ -274,8 +284,8 @@ describe("grokComplete (http)", () => {
 		expect(new Headers(calls[0]!.init.headers).get("authorization")).toBe(`Bearer ${TOKEN}`);
 		expect(new Headers(calls[1]!.init.headers).get("authorization")).toBe(`Bearer ${FRESH_TOKEN}`);
 		expect(refreshCalls).toEqual([
-			{ home, bin: undefined, timeoutMs: 20_000 },
-			{ home, bin: undefined, timeoutMs: 20_000, force: true },
+			{ home, bin: undefined, timeoutMs: 60_000 },
+			{ home, bin: undefined, timeoutMs: 60_000, force: true },
 		]);
 	});
 
@@ -345,7 +355,9 @@ describe("grokComplete (http)", () => {
 		const { fetch } = fakeFetch(
 			() => new Response(`upstream failed for Bearer ${TOKEN}`, { status: 500 }),
 		);
-		const error = await rejection(grokComplete("S", "U", { home: tempHome(), fetch }));
+		const error = await rejection(
+			grokComplete("S", "U", { home: tempHome(), fetch, ...retrySeams().seams }),
+		);
 		expect(error).toBeInstanceOf(GrokHttpError);
 		if (!(error instanceof GrokHttpError)) return;
 		expect(error.status).toBe(500);
@@ -602,7 +614,7 @@ describe("grokComplete (shunt)", () => {
 			() => new Response(`route missing for Bearer ${TOKEN}`, { status: 502 }),
 		);
 		const error = await rejection(
-			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch }),
+			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch, ...retrySeams().seams }),
 		);
 		expect(error).toBeInstanceOf(GrokHttpError);
 		if (!(error instanceof GrokHttpError)) return;
@@ -617,7 +629,7 @@ describe("grokComplete (shunt)", () => {
 			Response.json({ type: "error", error: { type: "api_error", message: "upstream" } }),
 		);
 		const error = await rejection(
-			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch }),
+			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch, ...retrySeams().seams }),
 		);
 		expect(error).toBeInstanceOf(GrokHttpError);
 		expect(error.message).toBe("shunt api_error: upstream");
@@ -836,7 +848,12 @@ describe("grokComplete (cli)", () => {
 	test("a non-end_turn stopReason is an error even when partial text is present", async () => {
 		const { bin } = fakeGrok('{ text: "partial", stopReason: "cancelled" }');
 		const error = await rejection(
-			grokComplete("SYS", "USER", { transport: "cli", bin, home: tempHome() }),
+			grokComplete("SYS", "USER", {
+				transport: "cli",
+				bin,
+				home: tempHome(),
+				...retrySeams().seams,
+			}),
 		);
 		expect(error.message).toBe("grok cli stopped: cancelled");
 	});
@@ -855,5 +872,439 @@ describe("isGrokAuthError", () => {
 		expect(isGrokAuthError({ name: "GrokAuthError" })).toBe(true);
 		expect(isGrokAuthError(new Error("x"))).toBe(false);
 		expect(isGrokAuthError(null)).toBe(false);
+	});
+});
+
+/** Instant retry seams: records every backoff the kernel asked for and never waits. */
+function retrySeams(): {
+	delays: number[];
+	seams: { retrySleep: (ms: number) => Promise<void>; retryRandom: () => number };
+} {
+	const delays: number[] = [];
+	return {
+		delays,
+		seams: {
+			retrySleep: async (ms: number) => {
+				delays.push(ms);
+			},
+			retryRandom: () => 0,
+		},
+	};
+}
+
+const PLANTED_BEARER = `Bearer ${TOKEN}`;
+const PLANTED_KEY = "sk-or-v1-PLANTEDSENTINEL0123456789abcdef";
+
+function expectCleanCause(cause: string | undefined): void {
+	expect(cause).toBeDefined();
+	expect(cause).not.toContain("\n");
+	expect((cause ?? "").length).toBeLessThanOrEqual(200);
+	expect(cause).not.toContain(TOKEN);
+	expect(cause).not.toContain("PLANTEDSENTINEL");
+}
+
+/** Fetch that serves `replies` in order, repeating the last one. */
+function sequenceFetch(replies: (() => Response)[]): { fetch: typeof fetch; calls: Captured[] } {
+	let index = 0;
+	return fakeFetch(() => {
+		const reply = replies[Math.min(index, replies.length - 1)];
+		index++;
+		if (!reply) throw new Error("no reply");
+		return reply();
+	});
+}
+
+const tooMany = (): Response =>
+	new Response(`slow down ${PLANTED_BEARER} ${PLANTED_KEY}\nsecond line`, {
+		status: 429,
+		headers: { "retry-after": "2" },
+	});
+
+describe("grokComplete retries (97-02)", () => {
+	test("http: 429 with Retry-After then 200 succeeds on attempt 2 after the hinted wait", async () => {
+		const { delays, seams } = retrySeams();
+		const { fetch, calls } = sequenceFetch([tooMany, () => responsesReply("ok")]);
+		const text = await grokComplete("S", "U", { home: tempHome(), fetch, ...seams });
+		expect(text).toBe("ok");
+		expect(calls).toHaveLength(2);
+		expect(delays).toEqual([2000]);
+	});
+
+	test("http: a 429 that never clears throws the original GrokHttpError carrying the report", async () => {
+		const { seams } = retrySeams();
+		const { fetch, calls } = fakeFetch(tooMany);
+		const error = await rejection(grokComplete("S", "U", { home: tempHome(), fetch, ...seams }));
+		expect(error.name).not.toBe("RetryExhaustedError");
+		expect(error).toBeInstanceOf(GrokHttpError);
+		if (!(error instanceof GrokHttpError)) return;
+		expect(error.status).toBe(429);
+		expect(error.retryAfterMs).toBe(2000);
+		expect(calls).toHaveLength(3);
+		const report = readReport(error);
+		expect(report?.attempts).toBe(3);
+		expect(report?.httpStatus).toBe(429);
+		expect(report?.retryAfterMs).toBe(2000);
+		expectCleanCause(report?.cause);
+	});
+
+	test("http: a failure that cannot be retried reports one attempt", async () => {
+		const { seams } = retrySeams();
+		const { fetch, calls } = fakeFetch(() => new Response("bad request", { status: 400 }));
+		const error = await rejection(grokComplete("S", "U", { home: tempHome(), fetch, ...seams }));
+		expect(calls).toHaveLength(1);
+		expect(readReport(error)?.attempts).toBe(1);
+		expect(readReport(error)?.httpStatus).toBe(400);
+	});
+
+	test("shunt: 503 with Retry-After then 200 succeeds on attempt 2; a standing 429 carries the report", async () => {
+		const { delays, seams } = retrySeams();
+		const shuntBaseUrl = "https://shunt.example";
+		const flaky = sequenceFetch([
+			() => new Response("busy", { status: 503, headers: { "retry-after": "3" } }),
+			() => shuntReply("ok"),
+		]);
+		expect(
+			await grokComplete("S", "U", {
+				transport: "shunt",
+				shuntBaseUrl,
+				fetch: flaky.fetch,
+				...seams,
+			}),
+		).toBe("ok");
+		expect(flaky.calls).toHaveLength(2);
+		expect(delays).toEqual([3000]);
+		const standing = fakeFetch(tooMany);
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch: standing.fetch, ...seams }),
+		);
+		expect(error).toBeInstanceOf(GrokHttpError);
+		const report = readReport(error);
+		expect(report?.attempts).toBe(3);
+		expect(report?.httpStatus).toBe(429);
+		expect(report?.retryAfterMs).toBe(2000);
+		expectCleanCause(report?.cause);
+	});
+
+	test("a rejected fetch (fetch failed) is retried on the same model", async () => {
+		const { seams } = retrySeams();
+		let calls = 0;
+		const fetch = (async () => {
+			calls++;
+			if (calls === 1) throw new TypeError("fetch failed");
+			return responsesReply("ok");
+		}) as unknown as typeof globalThis.fetch;
+		expect(await grokComplete("S", "U", { home: tempHome(), fetch, ...seams })).toBe("ok");
+		expect(calls).toBe(2);
+	});
+
+	test("an abort during the backoff stops the call with a bare AbortError", async () => {
+		const controller = new AbortController();
+		const { fetch, calls } = fakeFetch(tooMany);
+		const error = await rejection(
+			grokComplete("S", "U", {
+				home: tempHome(),
+				fetch,
+				signal: controller.signal,
+				retrySleep: async () => {
+					controller.abort();
+					throw Object.assign(new Error("aborted"), { name: "AbortError" });
+				},
+			}),
+		);
+		expect(error.name).toBe("AbortError");
+		expect(readReport(error)).toBeUndefined();
+		expect(calls).toHaveLength(1);
+	});
+
+	test("success carries no report and makes the minimal calls", async () => {
+		const home = tempHome();
+		const { refresh, calls: refreshCalls } = fakeRefresh(home);
+		const { fetch, calls } = fakeFetch(() => responsesReply("ok"));
+		expect(await grokComplete("S", "U", { home, fetch, refresh })).toBe("ok");
+		expect(calls).toHaveLength(1);
+		expect(refreshCalls).toHaveLength(1);
+	});
+
+	test("auth failures are final, carry one attempt and a clean cause", async () => {
+		const home = tempHome();
+		const { refresh } = fakeRefresh(home, () => undefined);
+		const { fetch, calls } = fakeFetch(() => new Response("unauthorized", { status: 401 }));
+		const error = await rejection(grokComplete("S", "U", { home, fetch, refresh }));
+		expect(error).toBeInstanceOf(GrokAuthError);
+		expect(calls).toHaveLength(1);
+		const report = readReport(error);
+		expect(report?.attempts).toBe(1);
+		expectCleanCause(report?.cause);
+	});
+});
+
+describe("grokComplete abort across the refresh (97-02)", () => {
+	test("an abort while the token refresh runs stops the call before any request is sent", async () => {
+		const home = tempHome();
+		const controller = new AbortController();
+		const gate = Promise.withResolvers<void>();
+		const refresh = async (opts: EnsureFreshOptions): Promise<GrokAuth | undefined> => {
+			await gate.promise;
+			return readGrokAuth(opts.home);
+		};
+		const { fetch, calls } = fakeFetch(() => responsesReply("never"));
+		const pending = rejection(
+			grokComplete("S", "U", { home, fetch, refresh, signal: controller.signal }),
+		);
+		controller.abort();
+		gate.resolve();
+		const error = await pending;
+		expect(error.name).toBe("AbortError");
+		expect(calls).toHaveLength(0);
+		expect(readReport(error)).toBeUndefined();
+	});
+
+	test("an abort during the forced 401 refresh sends no second request", async () => {
+		const home = tempHome();
+		const controller = new AbortController();
+		const refresh = async (opts: EnsureFreshOptions): Promise<GrokAuth | undefined> => {
+			if (opts.force) {
+				writeAuth(home, { token: FRESH_TOKEN });
+				controller.abort();
+			}
+			return readGrokAuth(opts.home);
+		};
+		const { fetch, calls } = fakeFetch(() => new Response("unauthorized", { status: 401 }));
+		const error = await rejection(
+			grokComplete("S", "U", { home, fetch, refresh, signal: controller.signal }),
+		);
+		expect(error.name).toBe("AbortError");
+		expect(calls).toHaveLength(1);
+	});
+
+	test("the caller signal and a 60 s budget reach the refresh", async () => {
+		const home = tempHome();
+		const controller = new AbortController();
+		const { refresh, calls } = fakeRefresh(home);
+		await grokComplete("S", "U", {
+			home,
+			refresh,
+			fetch: fakeFetch(() => responsesReply("ok")).fetch,
+			signal: controller.signal,
+		});
+		expect(calls[0]?.signal).toBe(controller.signal);
+		expect(calls[0]?.timeoutMs).toBe(60_000);
+		const custom = fakeRefresh(home);
+		await grokComplete("S", "U", {
+			home,
+			refresh: custom.refresh,
+			refreshTimeoutMs: 90_000,
+			fetch: fakeFetch(() => responsesReply("ok")).fetch,
+		});
+		expect(custom.calls[0]?.timeoutMs).toBe(90_000);
+	});
+
+	test("a refresh that timed out with a still-expired token says so, not login expired", async () => {
+		const home = tempHome({ expiresAt: new Date(FIXED_NOW - 1000).toISOString() });
+		const refresh = async (opts: EnsureFreshOptions): Promise<GrokAuth | undefined> => {
+			const auth = readGrokAuth(opts.home);
+			return auth && { ...auth, refreshTimedOut: true };
+		};
+		const { seams } = retrySeams();
+		const { fetch, calls } = fakeFetch(() => responsesReply("never"));
+		const error = await rejection(grokComplete("S", "U", { home, fetch, refresh, ...seams }));
+		expect(error.message).toContain("refresh timed out");
+		expect(error.message).not.toContain("login expired");
+		expect(isGrokAuthError(error)).toBe(false);
+		expect(calls).toHaveLength(0);
+	});
+});
+
+describe("grokComplete truncation (97-02)", () => {
+	test("/responses status incomplete is a truncated_reply failure", async () => {
+		const { seams } = retrySeams();
+		const { fetch, calls } = fakeFetch(() =>
+			Response.json({
+				status: "incomplete",
+				output: [{ type: "message", content: [{ type: "output_text", text: "cut off" }] }],
+			}),
+		);
+		const error = await rejection(grokComplete("S", "U", { home: tempHome(), fetch, ...seams }));
+		expect(readReport(error)?.cause).toBe("truncated_reply");
+		expect(readReport(error)?.attempts).toBe(3);
+		expect(calls).toHaveLength(3);
+	});
+
+	test("shunt stop_reason max_tokens is a truncated_reply failure", async () => {
+		const { seams } = retrySeams();
+		const { fetch } = fakeFetch(() =>
+			Response.json({
+				type: "message",
+				content: [{ type: "text", text: "cut" }],
+				stop_reason: "max_tokens",
+			}),
+		);
+		const error = await rejection(
+			grokComplete("S", "U", {
+				transport: "shunt",
+				shuntBaseUrl: "https://shunt.example",
+				fetch,
+				...seams,
+			}),
+		);
+		expect(readReport(error)?.cause).toBe("truncated_reply");
+	});
+});
+
+describe("grokComplete (cli) resilience (97-02)", () => {
+	function scriptGrok(body: string): string {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-grok-script-"));
+		dirs.push(dir);
+		const bin = join(dir, "grok");
+		writeFileSync(bin, `#!${process.execPath}\n${body}\n`, { mode: 0o755 });
+		return bin;
+	}
+
+	function failingGrok(stderr: string, code = 1): string {
+		return scriptGrok(`console.error(${JSON.stringify(stderr)}); process.exit(${code});`);
+	}
+
+	function promptDirs(): Set<string> {
+		return new Set(
+			readdirSync(tmpdir()).filter(
+				(name) =>
+					name.startsWith("ultrathink-grok-") && existsSync(join(tmpdir(), name, "prompt.md")),
+			),
+		);
+	}
+
+	test("transient stderr (fetch failed) is retried on the same model and succeeds on attempt 2", async () => {
+		const { seams } = retrySeams();
+		const counter = join(mkdtempSync(join(tmpdir(), "ultrathink-grok-count-")), "n");
+		dirs.push(dirname(counter));
+		const bin = scriptGrok(
+			`const f = ${JSON.stringify(counter)};\nconst n = (await Bun.file(f).exists()) ? Number(await Bun.file(f).text()) : 0;\nawait Bun.write(f, String(n + 1));\nif (n === 0) { console.error("fetch failed"); process.exit(1); }\nconsole.log(JSON.stringify({ text: "ok", stopReason: "end_turn" }));`,
+		);
+		expect(
+			await grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }),
+		).toBe("ok");
+		expect(readFileSync(counter, "utf8")).toBe("2");
+	});
+
+	test("a bin that cannot spawn leaves no prompt directory behind", async () => {
+		const { seams } = retrySeams();
+		await grokComplete("S", "U", {
+			transport: "cli",
+			bin: scriptGrok('console.log(JSON.stringify({ text: "ok" }));'),
+			home: tempHome(),
+		});
+		const before = promptDirs();
+		const error = await rejection(
+			grokComplete("S", "U", {
+				transport: "cli",
+				bin: join(tmpdir(), "ultrathink-no-such-grok-bin"),
+				home: tempHome(),
+				...seams,
+			}),
+		);
+		expect(error).toBeInstanceOf(Error);
+		const leaked = [...promptDirs()].filter((name) => !before.has(name));
+		expect(leaked).toEqual([]);
+		expect(readReport(error)?.attempts).toBe(1);
+	});
+
+	test("an abort kills the child and its grandchild", async () => {
+		const pidFile = join(mkdtempSync(join(tmpdir(), "ultrathink-grok-pid-")), "pids");
+		dirs.push(dirname(pidFile));
+		const bin = scriptGrok(
+			`const child = Bun.spawn(["sleep", "300"], { stdio: ["ignore", "ignore", "ignore"] });\nawait Bun.write(${JSON.stringify(pidFile)}, String(child.pid));\nsetInterval(() => {}, 1000);`,
+		);
+		const controller = new AbortController();
+		const pending = rejection(
+			grokComplete("S", "U", {
+				transport: "cli",
+				bin,
+				home: tempHome(),
+				signal: controller.signal,
+			}),
+		);
+		for (let i = 0; i < 400 && !existsSync(pidFile); i++) await Bun.sleep(25);
+		const grandchild = Number(readFileSync(pidFile, "utf8"));
+		controller.abort();
+		const error = await pending;
+		expect(error.name).toBe("AbortError");
+		const alive = (): boolean => {
+			try {
+				return !readFileSync(`/proc/${grandchild}/stat`, "utf8").includes(") Z ");
+			} catch {
+				return false;
+			}
+		};
+		for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(20);
+		expect(alive()).toBe(false);
+	});
+
+	test("an already-aborted signal rejects without spawning", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const error = await rejection(
+			grokComplete("S", "U", {
+				transport: "cli",
+				bin: join(tmpdir(), "ultrathink-no-such-grok-bin"),
+				home: tempHome(),
+				signal: controller.signal,
+			}),
+		);
+		expect(error.name).toBe("AbortError");
+	});
+
+	test("stderr with a bare number like 14012 is not a login failure", async () => {
+		const { seams } = retrySeams();
+		const bin = failingGrok("stream reset after 14012 ms (EAGAIN)");
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }),
+		);
+		expect(isGrokAuthError(error)).toBe(false);
+		expect(error.message).toBe("stream reset after 14012 ms (EAGAIN)");
+		expect(readReport(error)?.attempts).toBe(3);
+	});
+
+	test("an exact login marker is a GrokAuthError and is not retried", async () => {
+		const { seams } = retrySeams();
+		const bin = failingGrok("Error: login required");
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }),
+		);
+		expect(error).toBeInstanceOf(GrokAuthError);
+		expect(readReport(error)?.attempts).toBe(1);
+	});
+
+	test("CLI failure reports carry a single-line redacted cause of at most 200 characters", async () => {
+		const { seams } = retrySeams();
+		const bin = failingGrok(`boom ${PLANTED_BEARER}\n${PLANTED_KEY} ${"x".repeat(400)}`);
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }),
+		);
+		const report = readReport(error);
+		expect(report?.attempts).toBe(3);
+		expect(report?.httpStatus).toBeUndefined();
+		expect(report?.retryAfterMs).toBeUndefined();
+		expectCleanCause(report?.cause);
+		expect(error.message).not.toContain("PLANTEDSENTINEL");
+	});
+
+	test("a length stop is a truncated_reply failure", async () => {
+		const { seams } = retrySeams();
+		const bin = scriptGrok('console.log(JSON.stringify({ text: "cut", stopReason: "length" }));');
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }),
+		);
+		expect(readReport(error)?.cause).toBe("truncated_reply");
+		expect(readReport(error)?.attempts).toBe(3);
+	});
+
+	test("stdout past the 4 MB cap fails instead of buffering without bound", async () => {
+		const { seams } = retrySeams();
+		const bin = scriptGrok('process.stdout.write("x".repeat(5 * 1024 * 1024));');
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }),
+		);
+		expect(error.message).toContain("exceeded");
+		expect(readReport(error)?.attempts).toBe(1);
 	});
 });

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CHILD_ENV } from "../claude/complete.ts";
+import { abortError, CHILD_ENV } from "../claude/complete.ts";
+import { readReport } from "../types.ts";
 import { CHILD_PROMPT_SENTINEL, planningTarget } from "../uplift/skill.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
 import { buildMuseArgs, buildMusePrompt, museComplete, parseMuseJsonl } from "./complete.ts";
@@ -125,6 +126,8 @@ describe("parseMuseJsonl", () => {
 	});
 });
 
+const noWait = { sleep: async (): Promise<void> => undefined, random: () => 0 };
+
 describe("museComplete (fake bin)", () => {
 	/** Writes a fake `muse` binary that records argv/prompt/child-env and prints `stdout` lines. */
 	function fakeMuse(stdout: string, exitCode = 0): { bin: string; seenPath: string } {
@@ -207,7 +210,7 @@ describe("museComplete (fake bin)", () => {
 
 	test("non-zero exit without output throws the exit code", async () => {
 		const { bin } = fakeMuse("", 2);
-		const error = await museComplete("SYS", "USER", { bin }).then(
+		const error = await museComplete("SYS", "USER", { bin, retrySeams: noWait }).then(
 			() => new Error("should have thrown"),
 			(error: Error) => error,
 		);
@@ -218,24 +221,14 @@ describe("museComplete (fake bin)", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-muse-cli-"));
 		dirs.push(dir);
 		const bin = join(dir, "muse");
-		// The child never exits on its own: the kill timer is the only thing that ends it.
-		writeFileSync(bin, `#!${process.execPath}\nawait new Promise(() => {});\n`, { mode: 0o755 });
-		// The kill timer is armed on a test-held port, so the test fires it by hand rather than waiting for timeoutMs.
-		const armed = Promise.withResolvers<() => void>();
-		const timers = {
-			setTimeout: (fn: () => void) => {
-				armed.resolve(fn);
-				return {} as NodeJS.Timeout;
-			},
-			clearTimeout: () => undefined,
-		};
-		const pending = museComplete("SYS", "USER", { bin, timeoutMs: 20, timers }).then(
+		// The child never exits on its own: the kernel timeout is the only thing that ends it.
+		writeFileSync(bin, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+		const error = await museComplete("SYS", "USER", { bin, timeoutMs: 50 }).then(
 			() => new Error("should have thrown"),
 			(error: Error) => error,
 		);
-		const fire = await armed.promise;
-		fire();
-		expect((await pending).message).toBe("muse timed out after 20ms");
+		expect(error.message).toBe("muse timed out after 50ms");
+		expect(readReport(error)?.attempts).toBe(1);
 	});
 
 	test("abort rejects with AbortError", async () => {
@@ -250,5 +243,164 @@ describe("museComplete (fake bin)", () => {
 		);
 		controller.abort();
 		expect(await pending).toBe("AbortError");
+	});
+});
+
+describe("museComplete resilience", () => {
+	interface Step {
+		out?: string;
+		err?: string;
+		exit?: number;
+	}
+
+	/** Stub `muse` whose n-th call replays steps[n-1] (the last step repeats); `spawns()` counts calls. */
+	function sequence(steps: Step[]): { bin: string; spawns: () => number } {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-muse-seq-"));
+		dirs.push(dir);
+		steps.forEach((step, index) => {
+			writeFileSync(join(dir, `out.${index + 1}`), step.out ?? "");
+			writeFileSync(join(dir, `err.${index + 1}`), step.err ?? "");
+			writeFileSync(join(dir, `exit.${index + 1}`), String(step.exit ?? 0));
+		});
+		const counter = join(dir, "counter");
+		const bin = join(dir, "muse");
+		writeFileSync(
+			bin,
+			[
+				"#!/bin/sh",
+				`n=$(cat "${counter}" 2>/dev/null || echo 0)`,
+				"n=$((n+1))",
+				`echo $n > "${counter}"`,
+				`[ $n -gt ${steps.length} ] && n=${steps.length}`,
+				`cat "${dir}/out.$n"`,
+				`cat "${dir}/err.$n" >&2`,
+				`exit $(cat "${dir}/exit.$n")`,
+			].join("\n"),
+			{ mode: 0o755 },
+		);
+		return {
+			bin,
+			spawns: () => (existsSync(counter) ? Number(readFileSync(counter, "utf8").trim()) : 0),
+		};
+	}
+
+	const okOut = (text: string): string => `${terminalLine(text)}\n`;
+	const transient: Step = { err: "fetch failed", exit: 1 };
+
+	async function failure(run: Promise<string>): Promise<Error> {
+		return run.then(
+			() => new Error("should have thrown"),
+			(error: Error) => error,
+		);
+	}
+
+	const museTempDirs = (): string[] =>
+		readdirSync(tmpdir()).filter(
+			(name) =>
+				name.startsWith("ultrathink-muse-") &&
+				!name.includes("-cli-") &&
+				!name.includes("-seq-") &&
+				!name.includes("-jev-"),
+		);
+
+	test("a transient failure is retried and succeeds on attempt 2", async () => {
+		const stub = sequence([transient, { out: okOut("second") }]);
+		expect(await museComplete("s", "u", { bin: stub.bin, retrySeams: noWait })).toBe("second");
+		expect(stub.spawns()).toBe(2);
+	});
+
+	test("a success spawns exactly once", async () => {
+		const stub = sequence([{ out: okOut("fine") }]);
+		await museComplete("s", "u", { bin: stub.bin, retrySeams: noWait });
+		expect(stub.spawns()).toBe(1);
+	});
+
+	test("two transient failures then a success resolves on attempt 3", async () => {
+		const stub = sequence([transient, transient, { out: okOut("third") }]);
+		expect(await museComplete("s", "u", { bin: stub.bin, retrySeams: noWait })).toBe("third");
+		expect(stub.spawns()).toBe(3);
+	});
+
+	test("a truncated payload is a failed attempt with cause truncated_reply", async () => {
+		const stub = sequence([{ out: `${terminalLine("cut", "truncated", "max_tokens")}\n` }]);
+		const error = await failure(museComplete("s", "u", { bin: stub.bin, retrySeams: noWait }));
+		expect(readReport(error)?.cause).toBe("truncated_reply");
+		expect(readReport(error)?.attempts).toBe(3);
+	});
+
+	test("an empty reply text is a truncated_reply failure", async () => {
+		const stub = sequence([{ out: okOut("") }]);
+		const error = await failure(museComplete("s", "u", { bin: stub.bin, retrySeams: noWait }));
+		expect(readReport(error)?.cause).toBe("truncated_reply");
+	});
+
+	test("a permanent failure is not retried", async () => {
+		const stub = sequence([{ err: "permission denied", exit: 1 }]);
+		const error = await failure(museComplete("s", "u", { bin: stub.bin, retrySeams: noWait }));
+		expect(error.message).toContain("permission denied");
+		expect(stub.spawns()).toBe(1);
+	});
+
+	test("an abort during the backoff rejects with AbortError after one spawn", async () => {
+		const stub = sequence([transient, { out: okOut("never") }]);
+		const controller = new AbortController();
+		const error = await failure(
+			museComplete("s", "u", {
+				bin: stub.bin,
+				signal: controller.signal,
+				retrySeams: {
+					sleep: async () => {
+						controller.abort();
+						throw abortError();
+					},
+				},
+			}),
+		);
+		expect(error.name).toBe("AbortError");
+		expect(readReport(error)).toBeUndefined();
+		expect(stub.spawns()).toBe(1);
+	});
+
+	test("an already-aborted signal rejects without spawning", async () => {
+		const stub = sequence([{ out: okOut("never") }]);
+		const controller = new AbortController();
+		controller.abort();
+		const error = await failure(
+			museComplete("s", "u", { bin: stub.bin, signal: controller.signal }),
+		);
+		expect(error.name).toBe("AbortError");
+		expect(stub.spawns()).toBe(0);
+	});
+
+	test("a missing executable rejects and leaves no prompt directory behind", async () => {
+		const before = museTempDirs();
+		const error = await failure(
+			museComplete("PLAINTEXT-PROMPT", "u", {
+				bin: join(tmpdir(), "ultrathink-muse-missing-bin-does-not-exist"),
+				retrySeams: noWait,
+			}),
+		);
+		expect(error).toBeInstanceOf(Error);
+		expect(museTempDirs().filter((name) => !before.includes(name))).toEqual([]);
+	});
+
+	test("the report cause is redacted, one line and at most 200 characters", async () => {
+		const secret = "sk-ant-api03-SENTINELSENTINELSENTINEL1234567890";
+		const stub = sequence([{ err: `first ${secret}\nsecond ${"x".repeat(400)}`, exit: 1 }]);
+		const error = await failure(museComplete("s", "u", { bin: stub.bin, retrySeams: noWait }));
+		const cause = readReport(error)?.cause ?? "";
+		expect(cause.length).toBeGreaterThan(0);
+		expect(cause.length).toBeLessThanOrEqual(200);
+		expect(cause).not.toContain("\n");
+		expect(cause).not.toContain("SENTINELSENTINEL");
+	});
+
+	test("a transient failure on every attempt throws the original error with attempts 3", async () => {
+		const stub = sequence([transient]);
+		const error = await failure(museComplete("s", "u", { bin: stub.bin, retrySeams: noWait }));
+		expect(error.name).not.toBe("RetryExhaustedError");
+		expect(error.message).toContain("fetch failed");
+		expect(readReport(error)?.attempts).toBe(3);
+		expect(stub.spawns()).toBe(3);
 	});
 });

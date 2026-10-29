@@ -33,17 +33,18 @@ import { normalizeClarifications } from "../hitl/pipeline.ts";
 import { readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { DISTILL_SYSTEM } from "../teach/observe.ts";
+import { FIELD_CAPS } from "../resilience/limits.ts";
 import {
 	extractJsonObject,
 	isFallbackGraph,
 	normalizeGraph,
-	parseNodeFill,
+	readNodeText,
 } from "../think/graph.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../think/prompts.ts";
 import { MAX_NODES, MAX_STEPS, MIN_NODES, MIN_STEPS, type ThoughtNode } from "../think/types.ts";
 import { nodeStepTitles, splitRationaleSteps } from "../track/plan.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../uplift/prompt.ts";
-import { escapeXml, sanitizeUpliftXml } from "../uplift/xml.ts";
+import { checkUpliftXml, escapeXml } from "../uplift/xml.ts";
 import type { ModelResolution, SelectedEngine } from "./engine.ts";
 import { type PlanResponse, planPrompt } from "./plan.ts";
 
@@ -110,6 +111,8 @@ export interface JournalMeta {
 	status?: "needs-model" | "planned" | "skipped" | "invalid";
 	deepened?: boolean;
 	updatedAt?: number;
+	/** Principal of the hosted service request that started the session; absent for sessions started without one. */
+	principal?: string;
 }
 
 function sanitizeId(value: string): string {
@@ -373,12 +376,28 @@ function sectionPresent(xml: string, names: string[]): boolean {
 
 export function validateUplift(raw: string, original: string): Validation {
 	const errors: string[] = [];
-	const xml = sanitizeUpliftXml(raw, original);
-	if (!xml)
+	const checked = checkUpliftXml(raw, original);
+	if (!checked.ok) {
+		if (checked.reason === "unclosed_root")
+			return {
+				ok: false,
+				errors: [
+					"the uplift reply is cut off: its root element is not closed (answer with the whole document)",
+				],
+			};
+		if (checked.reason === "missing_child") {
+			const missing = checked.missing.map((name) => `missing required section ${name}`);
+			// Sections the plugin's own gate does not demand are still part of the desk's contract.
+			if (!sectionPresent(raw, ["OUT_OF_SCOPE"]))
+				missing.push("missing required section OUT_OF_SCOPE");
+			return { ok: false, errors: missing };
+		}
 		return {
 			ok: false,
 			errors: ["not an uplift XML document (root must be one of the uplift roots)"],
 		};
+	}
+	const xml = checked.xml;
 	const root = xml.match(/^<([A-Za-z_]+)/)?.[1] ?? "";
 	if (!ROOTS.includes(root)) errors.push(`root <${root}> is not one of ${ROOTS.join(", ")}`);
 	if (!xml.includes(`<ORIGINAL>${escapeXml(original)}</ORIGINAL>`))
@@ -409,7 +428,9 @@ export function validateGraph(raw: string, original: string): Validation {
 
 export function validateNodeFill(raw: string, kind: string | undefined): Validation {
 	const errors: string[] = [];
-	const fill = parseNodeFill(raw);
+	// The desk's answer is judged as written: the stored copy is capped, so a clipped read would drop the closing
+	// Verify: or Open questions: line of a long, valid answer and refuse it for a cut it never had.
+	const fill = readNodeText(raw);
 	const steps = splitRationaleSteps(fill.thinking);
 	if (!/<rationale>/i.test(raw) || !/<conclusion>/i.test(raw))
 		errors.push("answer must be <node><rationale>…</rationale><conclusion>…</conclusion></node>");
@@ -420,6 +441,14 @@ export function validateNodeFill(raw: string, kind: string | undefined): Validat
 	if (steps.length < MIN_STEPS || steps.length > MAX_STEPS)
 		errors.push(
 			`rationale must have ${MIN_STEPS}-${MAX_STEPS} numbered steps (got ${steps.length})`,
+		);
+	if (fill.thinking.length > FIELD_CAPS.thinking)
+		errors.push(
+			`rationale is ${fill.thinking.length} characters; at most ${FIELD_CAPS.thinking} are stored`,
+		);
+	if (fill.conclusion.length > FIELD_CAPS.conclusion)
+		errors.push(
+			`conclusion is ${fill.conclusion.length} characters; at most ${FIELD_CAPS.conclusion} are stored`,
 		);
 	if (kind === "synthesize") {
 		if (!/^\s*WORKFLOW\s*$/m.test(fill.conclusion))

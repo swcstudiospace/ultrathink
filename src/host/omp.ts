@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isDirectory } from "../shared.ts";
+import { isAbortError, isDirectory } from "../shared.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -35,6 +35,18 @@ import {
 import { claudeConfigPaths, loadConfig, normalizeSelectorField } from "../config.ts";
 import type { LegacyModelProvenance, UltrathinkConfig } from "../config.ts";
 import type { CompletionReport } from "../types.ts";
+import { attachReport, readReport } from "../types.ts";
+import { redactSecrets } from "../redact.ts";
+import {
+	type FailureVerdict,
+	isTransientFailure,
+	parseRetryAfter,
+	RetryExhaustedError,
+	unwrapRetryError,
+	withRetry,
+} from "../resilience/retry.ts";
+import { abortableSleep } from "../resilience/sleep.ts";
+import { FlightThrottle } from "../resilience/throttle.ts";
 import { DEFAULT_GROK_CONFIG } from "../grok/types.ts";
 import { shipNudge } from "../ship/nudge.ts";
 import { shipApplies } from "../ship/policy.ts";
@@ -346,8 +358,19 @@ export interface NativeEngineDeps {
 	providerDefaults?: Readonly<Record<string, string>>;
 	/** Flight validity, not a model chooser: false before or after a native call cancels it. */
 	isCurrent?: () => boolean;
-	/** Backoff wait between transient retries: resolves after `ms`, or ends at once when the signal aborts. Tests inject an instant one. */
+	/** Backoff and cooldown wait: resolves after `ms`, or ends at once when the signal aborts. Tests inject an instant one. */
 	sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+	/** Jitter source in [0, 1) for the retry backoff; tests pin it. */
+	random?: () => number;
+	/** Clock of the retry classifier and the flight limiter's cooldown; tests inject one their instant sleep advances. */
+	now?: () => number;
+	/** Most concurrent native calls of one flight; never above 3 on Omp. Default 3. */
+	maxConcurrency?: number;
+	/**
+	 * The flight's limiter. Absent, the binding creates it and writes it back here; the selection carries it as
+	 * `SelectedEngine.throttle`, which tells the planner this flight already has its one limiter (the think stage builds none).
+	 */
+	throttle?: FlightThrottle;
 }
 
 type McpState = NonNullable<BarState["mcp"]>;
@@ -396,6 +419,31 @@ function snapshotModel(model: Model<Api>): Model<Api> {
 	const snapshot = structuredClone(data) as Model<Api>;
 	if (resolveHeaders) snapshot.resolveHeaders = resolveHeaders;
 	return snapshot;
+}
+
+/** Caps of the extension's per-session memory; the oldest entry goes first. */
+const TURNS_CAP = 200;
+const RESOLUTIONS_CAP = 100;
+const SYNCED_PRS_CAP = 500;
+const NUDGED_GRAPHS_CAP = 1000;
+
+/** Sets `key` as the newest entry and evicts the oldest ones past `cap`. */
+function boundedSet<K, V>(map: Map<K, V>, key: K, value: V, cap: number): void {
+	map.delete(key);
+	map.set(key, value);
+	for (const oldest of map.keys()) {
+		if (map.size <= cap) break;
+		map.delete(oldest);
+	}
+}
+
+function boundedAdd<T>(set: Set<T>, value: T, cap: number): void {
+	set.delete(value);
+	set.add(value);
+	for (const oldest of set) {
+		if (set.size <= cap) break;
+		set.delete(oldest);
+	}
 }
 
 const MAX_COMPARE_DEPTH = 32;
@@ -533,42 +581,170 @@ function thrownStatus(error: unknown): number | undefined {
 	return httpStatusCode(status) ?? httpStatusCode(statusCode);
 }
 
-/** Backoff before the second and third attempt; each wait gains up to `RETRY_JITTER` of itself. Three attempts in all. */
-const RETRY_BACKOFF_MS = [2000, 6000] as const;
-const RETRY_JITTER = 0.25;
-/** Refusals no retry can fix (subscription, permission, entitlement), whatever the status says. */
-const PERMANENT_FAILURE =
-	/subscription|permission|not entitled|forbidden|unauthori[sz]ed|insufficient[ _]quota|access denied/i;
-/** Network and timeout failures that carry no HTTP status. */
-const NETWORK_FAILURE =
-	/\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|EPIPE|ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH)\b|socket hang up|fetch failed|network error|connection (?:error|reset|closed)|Connection(?:Timeout)?Error|timed? ?out/i;
+/** Same-model retry of the native completer: three attempts, backoff 2 s then up to 8 s with full jitter and Retry-After. */
+const RETRY_POLICY = { maxAttempts: 3, baseMs: 2000, capMs: 8000 } as const;
 
-/** Retry only what a later attempt can fix: 408, 429 and 5xx, or a network or timeout failure with no status. 401, 403 and 404 never retry. */
-function transientFailure(status: number | undefined, text: string): boolean {
-	if (status === 401 || status === 403 || status === 404) return false;
-	if (PERMANENT_FAILURE.test(text)) return false;
-	if (status !== undefined)
-		return status === 408 || status === 429 || (status >= 500 && status <= 599);
-	return NETWORK_FAILURE.test(text);
+const TRUNCATED_REPLY = "truncated_reply";
+
+/** The pi-ai error classifier, loaded lazily with the catalog (D-03); absent means errorId-less classification only. */
+interface ErrorFlags {
+	Flag: Readonly<Record<string, number>>;
+	is(id: number | undefined, flag: number): boolean;
+	retriable(id: number | undefined): boolean;
+}
+let errorFlags: ErrorFlags | undefined;
+
+// A literal dynamic specifier, as for the catalog (D-03): the host package exists only inside Omp (its loader remaps the
+// specifier) or after `bun install`, so a static import would load it in every test run and at extension load.
+async function loadErrorFlags(): Promise<void> {
+	if (errorFlags) return;
+	try {
+		const flags = await import("@oh-my-pi/pi-ai/error");
+		errorFlags = { Flag: flags.Flag, is: flags.is, retriable: flags.retriable };
+	} catch {
+		// reason: without the host's error flags the kernel's status and text classification still applies
+	}
 }
 
-/** A real wait that ends at once when the signal aborts, so cancellation never sits out a backoff. */
-function sleepOrAbort(ms: number, signal: AbortSignal): Promise<void> {
-	const { promise, resolve, reject } = Promise.withResolvers<void>();
-	if (signal.aborted) {
-		reject(cancelled());
-		return promise;
+/** The redacted, single-line, at most 200 characters form of a provider's failure text, for the report and the private cause. */
+function oneLine(text: string): string {
+	return redactSecrets(text).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** The redacted failure detail of each attempt's error; private to this module, never enumerable on the error. */
+const FAILURE_DETAIL = new WeakMap<object, string>();
+
+/** Raised from `onRetry` when the next backoff would cross the flight deadline; the last attempt's failure is then final. */
+class DeadlineStop extends Error {
+	readonly attempt: number;
+	constructor(attempt: number) {
+		super("retry would cross the flight deadline");
+		this.name = "DeadlineStop";
+		this.attempt = attempt;
 	}
-	const onAbort = (): void => {
-		clearTimeout(timer);
-		reject(cancelled());
+}
+
+/** The server's `Retry-After` from a response's headers, as milliseconds, or nothing. */
+function retryAfterOf(headers: Record<string, string> | undefined): number | undefined {
+	if (!headers || typeof headers !== "object") return undefined;
+	const key = Object.keys(headers).find((name) => name.toLowerCase() === "retry-after");
+	return key === undefined ? undefined : parseRetryAfter(headers[key]);
+}
+
+/** The raw fields the kernel classifier reads, placed on an attempt's error as own properties. */
+function withFields(
+	error: Error,
+	fields: { status?: number; retryAfterMs?: number; errorId?: number },
+	detail: string,
+): Error {
+	if (fields.status !== undefined) Object.assign(error, { errorStatus: fields.status });
+	if (fields.retryAfterMs !== undefined)
+		Object.assign(error, { retryAfterMs: fields.retryAfterMs });
+	if (fields.errorId !== undefined) Object.assign(error, { errorId: fields.errorId });
+	if (detail) FAILURE_DETAIL.set(error, detail);
+	return error;
+}
+
+/** A provider call that rejected: the static public message, the upstream error as private cause. */
+function thrownFailure(error: unknown, retryAfterMs: number | undefined): Error {
+	const text = error instanceof Error ? `${error.name} ${error.message}` : "";
+	const errorId =
+		typeof error === "object" &&
+		error !== null &&
+		"errorId" in error &&
+		typeof error.errorId === "number"
+			? error.errorId
+			: undefined;
+	return withFields(
+		nativeFailure("omp-native completion failed", error),
+		{ status: thrownStatus(error), retryAfterMs, errorId },
+		oneLine(text),
+	);
+}
+
+/** A resolved `stopReason: "error"` reply: safe public message, the redacted provider text as private cause. */
+function resultFailure(result: AssistantMessage, retryAfterMs: number | undefined): Error {
+	const detail = oneLine(result.errorMessage ?? "");
+	return withFields(
+		nativeFailure(
+			`omp-native completion failed (provider error${httpStatus(result)})`,
+			detail || undefined,
+		),
+		{
+			status: httpStatusCode(result.errorStatus),
+			retryAfterMs,
+			errorId: typeof result.errorId === "number" ? result.errorId : undefined,
+		},
+		detail,
+	);
+}
+
+/** A reply the model cut off at its token limit: a failed, retryable attempt whose report cause is `truncated_reply`. */
+function truncatedFailure(): Error {
+	const error = nativeFailure("omp-native completion failed (truncated reply)", TRUNCATED_REPLY);
+	attachReport(error, { attempts: 1, cause: TRUNCATED_REPLY });
+	return error;
+}
+
+/**
+ * Whether another attempt can help. A pi-ai `errorId` decides first, like its own oneshot retry: Transient, UsageLimit or a
+ * retriable kind retries, ContentBlocked, ContextOverflow, PayloadRejected and AuthFailed never do. Otherwise the kernel's
+ * status-led verdict on the raw fields (a 503 with refusal-sounding text still retries; only a 429 is vetoed by it).
+ */
+function classifyNativeFailure(error: unknown, now: number = Date.now()): FailureVerdict {
+	if (isAbortError(error)) return { transient: false, reason: "aborted" };
+	if (readReport(error)?.cause === TRUNCATED_REPLY)
+		return { transient: true, reason: TRUNCATED_REPLY };
+	const own = typeof error === "object" && error !== null ? error : undefined;
+	const status =
+		own && "errorStatus" in own && typeof own.errorStatus === "number"
+			? own.errorStatus
+			: own && "status" in own && typeof own.status === "number"
+				? own.status
+				: undefined;
+	const hint =
+		own && "retryAfterMs" in own && typeof own.retryAfterMs === "number"
+			? { retryAfterMs: own.retryAfterMs }
+			: {};
+	const message = (own && FAILURE_DETAIL.get(own)) ?? (error instanceof Error ? error.message : "");
+	const base = isTransientFailure(
+		{ ...(status === undefined ? {} : { status }), ...hint, message },
+		now,
+	);
+	const id = own && "errorId" in own && typeof own.errorId === "number" ? own.errorId : undefined;
+	const flags = errorFlags;
+	if (id === undefined || !flags) return base;
+	const { Flag, is } = flags;
+	const refused =
+		is(id, Flag.ContentBlocked ?? 0) ||
+		is(id, Flag.ContextOverflow ?? 0) ||
+		is(id, Flag.PayloadRejected ?? 0) ||
+		is(id, Flag.AuthFailed ?? 0);
+	if (refused) return { ...base, transient: false, reason: "errorId is a permanent refusal" };
+	if (is(id, Flag.Transient ?? 0) || is(id, Flag.UsageLimit ?? 0) || flags.retriable(id))
+		return { ...base, transient: true, reason: "errorId is transient" };
+	return base;
+}
+
+/** The final report of a failed call: attempts, HTTP status, the server's hint and the redacted one-line cause. */
+function failureReport(root: unknown, attempts: number): CompletionReport {
+	if (readReport(root)?.cause === TRUNCATED_REPLY) return { attempts, cause: TRUNCATED_REPLY };
+	const own = typeof root === "object" && root !== null ? root : undefined;
+	const status =
+		own && "errorStatus" in own && typeof own.errorStatus === "number"
+			? own.errorStatus
+			: undefined;
+	const retryAfterMs =
+		own && "retryAfterMs" in own && typeof own.retryAfterMs === "number"
+			? own.retryAfterMs
+			: undefined;
+	const cause = own ? FAILURE_DETAIL.get(own) : undefined;
+	return {
+		attempts,
+		...(status === undefined ? {} : { httpStatus: status }),
+		...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+		...(cause ? { cause } : {}),
 	};
-	const timer = setTimeout(() => {
-		signal.removeEventListener("abort", onAbort);
-		resolve();
-	}, ms);
-	signal.addEventListener("abort", onAbort, { once: true });
-	return promise;
 }
 
 /**
@@ -592,24 +768,22 @@ export function createNativeEngineSelector(
 			: level === undefined || level === "inherit"
 				? {}
 				: { reasoning: level };
-	// Backoff waits go through the injected seam, or a real wait that ends at once on abort.
-	const sleep = deps.sleep ?? sleepOrAbort;
+	// Backoff and cooldown waits go through the injected seam, or the kernel's real wait that ends at once on abort.
+	const kernelSleep: typeof abortableSleep = deps.sleep
+		? (ms, signal) => deps.sleep!(ms, signal ?? flightSignal)
+		: abortableSleep;
+	// One limiter per flight (D-06): fills share it, a transient failure halves its limit. The selection returns it, so the planner
+	// knows the think stage needs no second one; this binding acquires a slot per call and feeds it every failure.
+	const throttle =
+		deps.throttle ??
+		new FlightThrottle({
+			max: Math.min(Math.max(1, Math.floor(deps.maxConcurrency ?? 3)), 3),
+			sleep: kernelSleep,
+			...(deps.now ? { now: deps.now } : {}),
+		});
+	deps.throttle = throttle;
 	// The last settled call's report, read by the uplift stage right after its own call; a flight's stages run in turn.
 	let lastReport: CompletionReport | undefined;
-	/** Waits before a retry. False when the failure is final, the schedule is spent, or the wait would cross the flight deadline. */
-	const retryAfter = async (
-		attempt: number,
-		transient: boolean,
-		lifetime: AbortSignal,
-	): Promise<boolean> => {
-		const base = RETRY_BACKOFF_MS[attempt - 1];
-		if (!transient || base === undefined) return false;
-		const wait = Math.round(base * (1 + Math.random() * RETRY_JITTER));
-		if (request.deadline !== undefined && Date.now() + wait > request.deadline) return false;
-		await sleep(wait, lifetime);
-		if (lifetime.aborted || deps.isCurrent?.() === false) throw cancelled();
-		return true;
-	};
 	return async (intent, signal) => {
 		const runtime = request.native;
 		if (!runtime) throw nativeFailure("omp-native runtime unavailable");
@@ -619,6 +793,7 @@ export function createNativeEngineSelector(
 			deps.completeSimple ??
 				import("@oh-my-pi/pi-ai").then((ai): CompleteSimple => ai.completeSimple),
 			deps.providerDefaults ?? loadProviderDefaults(),
+			loadErrorFlags(),
 		]);
 		const sessionId = request.sessionId.trim() || undefined;
 		const query: NativeModelQuery<Model<Api>> = {
@@ -651,54 +826,103 @@ export function createNativeEngineSelector(
 					systemPrompt: [system],
 					messages: [{ role: "user", content: user, timestamp: Date.now() }],
 				};
-				for (let attempts = 1; ; attempts++) {
-					let result: AssistantMessage;
+				let lastError: unknown;
+				/** One attempt: a failed one throws a `NativeCompletionError` carrying the raw fields the classifier reads. */
+				const attempt = async (): Promise<string> => {
+					// A flight cancelled or replaced while a backoff slept never makes another call.
+					if (lifetime.aborted || deps.isCurrent?.() === false) throw cancelled();
+					// The provider's Retry-After for THIS attempt only: each attempt starts without a stale hint.
+					let hintMs: number | undefined;
+					const release = await throttle.acquire(lifetime);
 					try {
-						result = await complete(snapshot, context, {
-							apiKey,
-							signal: lifetime,
-							...thinking,
-							...(sessionId ? { sessionId } : {}),
-						});
-					} catch (error) {
-						// AbortSignal.timeout's TimeoutError is cancellation too; any other rejection stays a rejection with a safe message.
+						let result: AssistantMessage;
+						try {
+							result = await complete(snapshot, context, {
+								apiKey,
+								signal: lifetime,
+								onResponse: (response) => {
+									hintMs = retryAfterOf(response?.headers);
+								},
+								...thinking,
+								...(sessionId ? { sessionId } : {}),
+							});
+						} catch (error) {
+							// A cancelled flight stays a cancellation. A TimeoutError of a live flight (a hung resolver or
+							// request deadline) is a failed attempt, never a silent cancel.
+							if (
+								lifetime.aborted ||
+								deps.isCurrent?.() === false ||
+								(error instanceof Error && error.name === "AbortError")
+							)
+								throw cancelled();
+							throw thrownFailure(error, hintMs);
+						}
+						// A provider that ignores the signal and still answers never turns a cancelled flight into a plan.
 						if (
 							lifetime.aborted ||
-							(error instanceof Error &&
-								(error.name === "AbortError" || error.name === "TimeoutError"))
+							deps.isCurrent?.() === false ||
+							result?.stopReason === "aborted"
 						)
 							throw cancelled();
-						const status = thrownStatus(error);
-						const text = error instanceof Error ? `${error.name} ${error.message}` : "";
-						if (await retryAfter(attempts, transientFailure(status, text), lifetime)) continue;
-						lastReport = { attempts, ...(status === undefined ? {} : { httpStatus: status }) };
-						throw nativeFailure("omp-native completion failed", error);
+						if (result?.stopReason === "error") throw resultFailure(result, hintMs);
+						// A reply cut off at the token limit is a failed attempt, never a plan made of its first half.
+						if (result?.stopReason === "length") throw truncatedFailure();
+						throttle.noteSuccess();
+						return textOf(result);
+					} catch (error) {
+						lastError = error;
+						if (!isAbortError(error)) {
+							const verdict = classifyNativeFailure(error, deps.now?.() ?? Date.now());
+							if (verdict.transient)
+								throttle.noteFailure(
+									verdict.retryAfterMs === undefined ? {} : { retryAfterMs: verdict.retryAfterMs },
+								);
+						}
+						throw error;
+					} finally {
+						release();
 					}
-					// A provider that ignores the signal and still answers never turns a cancelled flight into a plan.
-					if (lifetime.aborted || deps.isCurrent?.() === false || result?.stopReason === "aborted")
-						throw cancelled();
-					if (result?.stopReason === "error") {
-						const status = httpStatusCode(result.errorStatus);
-						if (
-							await retryAfter(
-								attempts,
-								transientFailure(status, result.errorMessage ?? ""),
-								lifetime,
-							)
-						)
-							continue;
-						lastReport = { attempts, ...(status === undefined ? {} : { httpStatus: status }) };
-						throw nativeFailure(
-							`omp-native completion failed (provider error${httpStatus(result)})`,
-						);
-					}
+				};
+				try {
+					const { value, attempts } = await withRetry(attempt, RETRY_POLICY, {
+						signal: lifetime,
+						sleep: kernelSleep,
+						...(deps.random ? { random: deps.random } : {}),
+						...(deps.now ? { now: deps.now } : {}),
+						classify: classifyNativeFailure,
+						onRetry: ({ attempt: made, delayMs }) => {
+							// A retry that would cross the flight's own deadline is not taken: the failure is final.
+							if (request.deadline !== undefined && Date.now() + delayMs > request.deadline)
+								throw new DeadlineStop(made);
+						},
+					});
 					lastReport = { attempts };
-					return textOf(result);
+					return value;
+				} catch (error) {
+					const root = error instanceof DeadlineStop ? lastError : unwrapRetryError(error);
+					if (isAbortError(root)) throw cancelled();
+					const attempts =
+						error instanceof RetryExhaustedError
+							? error.attempts
+							: error instanceof DeadlineStop
+								? error.attempt
+								: 1;
+					const report = failureReport(root, attempts);
+					lastReport = report;
+					attachReport(root, report);
+					throw root;
 				}
 			};
 		};
 		const selection = await selectNativeEngine(intent, query, bind);
-		return "skipped" in selection ? selection : { ...selection, report: () => lastReport };
+		// The binding's limiter (written back to `deps` when it was created) travels with the engine so the think stage reuses it.
+		return "skipped" in selection
+			? selection
+			: {
+					...selection,
+					report: () => lastReport,
+					...(deps.throttle ? { throttle: deps.throttle } : {}),
+				};
 	};
 }
 
@@ -724,11 +948,17 @@ export function createNativeEnginePlanner(
 ): OmpPlanner {
 	return async (request, signal, onEvent) => {
 		const { env, ...native } = deps;
+		// The flight's own deps object: the binding writes its throttle back here; the selection carries it.
+		const flightDeps: NativeEngineDeps = {
+			...native,
+			maxConcurrency: Math.min(
+				native.maxConcurrency ?? (request.config?.claude.concurrency || 3),
+				3,
+			),
+			...(request.isCurrent ? { isCurrent: request.isCurrent } : {}),
+		};
 		const selector = request.native
-			? createNativeEngineSelector(request, signal, {
-					...native,
-					...(request.isCurrent ? { isCurrent: request.isCurrent } : {}),
-				})
+			? createNativeEngineSelector(request, signal, flightDeps)
 			: undefined;
 		const response = await planPrompt(
 			{ host: "omp", session_id: request.sessionId, prompt: request.prompt, cwd: request.cwd },
@@ -776,15 +1006,37 @@ export function editTargets(
 	return files;
 }
 
-/** Repo slug of the nearest existing directory at or above `file`; undefined outside a git repo with an origin. */
-export function repoOfPath(file: string): string | undefined {
+/** A git call never waits longer than this on the host's event loop; a killed call reads as "no repo". */
+const GIT_TIMEOUT_MS = 2000;
+/** A directory's repo slug is reused this long, so a burst of edits spawns one git process per directory. */
+const GIT_CACHE_TTL_MS = 5000;
+const GIT_CACHE_CAP = 200;
+const slugCache = new Map<string, { at: number; slug: string | undefined }>();
+
+function timedGitRun(cmd: string[], cwd: string): { stdout: string; code: number } {
+	const proc = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe", timeout: GIT_TIMEOUT_MS });
+	return { stdout: proc.stdout?.toString() ?? "", code: proc.exitCode ?? 1 };
+}
+
+/** Repo slug of the nearest existing directory at or above `file`; undefined outside a git repo with an origin. Cached 5 s per directory, each git call timed out after 2 s. */
+export function repoOfPath(file: string, now: () => number = Date.now): string | undefined {
 	let dir = dirname(file);
 	while (!isDirectory(dir)) {
 		const parent = dirname(dir);
 		if (parent === dir) return undefined;
 		dir = parent;
 	}
-	return resolveRepoSlug(dir);
+	const at = now();
+	const cached = slugCache.get(dir);
+	if (cached && at - cached.at < GIT_CACHE_TTL_MS) return cached.slug;
+	const slug = resolveRepoSlug(dir, timedGitRun);
+	slugCache.delete(dir);
+	slugCache.set(dir, { at, slug });
+	if (slugCache.size > GIT_CACHE_CAP) {
+		const oldest = slugCache.keys().next();
+		if (!oldest.done) slugCache.delete(oldest.value);
+	}
+	return slug;
 }
 
 /**
@@ -1307,11 +1559,16 @@ export function createOmpExtension(
 		};
 		const observe = (sessionId: string, record: unknown): void => {
 			const projected = projectResolution(record);
-			if (projected) resolutions.set(sessionId, projected);
+			if (projected) boundedSet(resolutions, sessionId, projected, RESOLUTIONS_CAP);
 		};
 		const endFlights = (): void => {
 			for (const flight of [...flights.values()]) cancel(flight, SESSION_ENDED);
 			quick = undefined;
+		};
+		/** Drops per-session memory of sessions with no live flight; run after `endFlights`, on switch and shutdown. */
+		const pruneSessions = (): void => {
+			for (const map of [turns, resolutions])
+				for (const sessionId of [...map.keys()]) if (!flights.has(sessionId)) map.delete(sessionId);
 		};
 		// `/ultrathink-ui` native dashboard lifetimes (Phase 26). One owned lifetime at a time, separate from
 		// planner flights: its own AbortController plus a monotonic epoch covering session/cwd/stateDir/project.
@@ -1779,6 +2036,7 @@ export function createOmpExtension(
 		pi.on("session_switch", (_event, ctx) => {
 			// The old session's flights would deliver into the new one: cancel and suppress them.
 			guard(endFlights);
+			guard(pruneSessions);
 			// The old dashboard would publish into the new session: abort it first, then explain the closure.
 			guard(() => closeInsightForSwitch(ctx));
 			shutDown = false;
@@ -1791,6 +2049,9 @@ export function createOmpExtension(
 			shutDown = true;
 			stopActivityPoll();
 			guard(endFlights);
+			guard(pruneSessions);
+			syncedPrs.clear();
+			nudgedGraphs.clear();
 			guard(() => {
 				if (activeInsight) teardownInsight(activeInsight);
 			});
@@ -1812,7 +2073,7 @@ export function createOmpExtension(
 			guard(() => {
 				observeFlights(ctx);
 				const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
-				turns.set(sessionId, (turns.get(sessionId) ?? 0) + 1);
+				boundedSet(turns, sessionId, (turns.get(sessionId) ?? 0) + 1, TURNS_CAP);
 			});
 		});
 
@@ -1866,7 +2127,7 @@ export function createOmpExtension(
 					},
 					{ deliverAs: "aside" },
 				);
-				syncedPrs.add(pr.url);
+				boundedAdd(syncedPrs, pr.url, SYNCED_PRS_CAP);
 			});
 		});
 
@@ -1937,7 +2198,7 @@ export function createOmpExtension(
 				const statePath = sessionRecordPath(dir, sessionId);
 				const nudge = shipNudge({ record, config, precheck, statePath });
 				if (!nudge) return;
-				nudgedGraphs.add(graphId);
+				boundedAdd(nudgedGraphs, graphId, NUDGED_GRAPHS_CAP);
 				writeShip(statePath, { nudgedAt: now() });
 				pi.sendMessage(
 					{
@@ -2145,7 +2406,7 @@ export function createOmpExtension(
 		}
 
 		/** Delivery once the plan settles: only a still-current flight on an unchanged live model shows or sends anything. */
-		const settle = (flight: Flight, result: OmpPlan): void => {
+		const settle = async (flight: Flight, result: OmpPlan): Promise<void> => {
 			flight.settled = true;
 			flight.content = result?.context ?? "";
 			flight.view = result?.view;
@@ -2154,13 +2415,26 @@ export function createOmpExtension(
 			barWrite(flight.generation, () => {
 				if (!flight.content)
 					store.skipped(flight.timedOut ? "timed out" : (flight.endDetail ?? "no plan"), now());
-				else if (flight.deferred) store.delivered("aside", flight.view, now());
 			});
 			barWrite(flight.generation, refreshMcp);
 			if (!flight.deferred) return;
-			guard(() =>
-				pi.sendMessage(planMessage(flight.content || NO_PLAN, flight.view), { deliverAs: "aside" }),
-			);
+			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A rejected
+			// send marks the bar aside-failed and keeps `flight.content`, so the plan is not lost.
+			try {
+				await Promise.resolve(
+					pi.sendMessage(planMessage(flight.content || NO_PLAN, flight.view), {
+						deliverAs: "aside",
+					}),
+				);
+			} catch {
+				// reason: a refused aside must never break the host; it is shown as aside-failed below
+				// Settled and no longer deferred: the same submission's next before_agent_start delivers the plan inline.
+				flight.deferred = false;
+				if (flight.content) barWrite(flight.generation, () => store.skipped("aside failed", now()));
+				return;
+			}
+			if (flight.content)
+				barWrite(flight.generation, () => store.delivered("aside", flight.view, now()));
 		};
 
 		const start = (
@@ -2204,7 +2478,11 @@ export function createOmpExtension(
 			void flight.result.then((result) => settle(flight, result));
 			// Registered before the planner runs, so a progress callback that fires at once already finds its flight.
 			flights.set(request.sessionId, flight);
-			if (previous) cancel(previous, SUPERSEDED);
+			if (previous) {
+				cancel(previous, SUPERSEDED);
+				// The superseded flight's observed resolution is stale; the new flight observes its own.
+				resolutions.delete(request.sessionId);
+			}
 			// A reentrant session/model cancellation of this flight during the previous abort runs synchronously
 			// above: a flight that lost ownership there admits no planner and schedules no outer timer.
 			if (flight.cancelled) return flight;
@@ -2484,18 +2762,26 @@ export function createOmpExtension(
 				if (same?.deferred) return same.settled ? undefined : { message: pendingMessage() };
 				if (same?.settled)
 					return same.content ? { message: planMessage(same.content, same.view) } : undefined;
-				const flight =
-					same ??
-					launch(
-						ctx,
-						{ prompt, cwd, sessionId, stateDir: dir },
-						submission,
-						live,
-						thinkingLevel,
-						captured,
-					);
+				// The race is armed before the flight starts: launch() runs the planner's synchronous prefix, which must
+				// never be able to delay arming the delivery timer.
 				const timeout = Promise.withResolvers<null>();
 				const timer = timers.setTimeout(() => timeout.resolve(null), raceMs);
+				let flight: Flight;
+				try {
+					flight =
+						same ??
+						launch(
+							ctx,
+							{ prompt, cwd, sessionId, stateDir: dir },
+							submission,
+							live,
+							thinkingLevel,
+							captured,
+						);
+				} catch (error) {
+					timers.clearTimeout(timer);
+					throw error;
+				}
 				let result: OmpPlan | null;
 				try {
 					result = await Promise.race([flight.result, timeout.promise]);

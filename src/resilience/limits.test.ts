@@ -1,21 +1,70 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { clip, FIELD_CAPS, stripXmlInvalid } from "./limits.ts";
+import { clip, clipHeadTail, FIELD_CAPS, stripXmlInvalid } from "./limits.ts";
 
 const MARKER = "…[clipped]";
 
 describe("FIELD_CAPS", () => {
 	test("holds exactly the contract values", () => {
 		expect({ ...FIELD_CAPS }).toEqual({
-			title: 120,
-			goal: 400,
-			question: 600,
-			thinking: 6000,
-			conclusion: 3000,
-			step: 400,
-			predecessor: 1500,
+			title: 160,
+			goal: 600,
+			question: 3000,
+			thinking: 8000,
+			conclusion: 26000,
+			step: 600,
+			predecessor: 3000,
+			predecessorHead: 1800,
+			predecessorTail: 1000,
 		});
+	});
+
+	test("the excerpt of a predecessor stays inside its own cap", () => {
+		const { predecessor, predecessorHead, predecessorTail } = FIELD_CAPS;
+		expect(predecessorHead + predecessorTail + "\n…[middle clipped]…\n".length).toBeLessThanOrEqual(
+			predecessor,
+		);
+	});
+});
+
+describe("clipHeadTail", () => {
+	const { predecessor, predecessorHead, predecessorTail } = FIELD_CAPS;
+
+	test("leaves text at or under the cap untouched", () => {
+		const text = "x".repeat(predecessor);
+		expect(clipHeadTail(text, predecessor, predecessorHead, predecessorTail)).toEqual({
+			text,
+			clipped: false,
+		});
+	});
+
+	test("keeps the first head and the last tail units with the marker between, inside the cap", () => {
+		const text = `${"a".repeat(5000)}${"b".repeat(5000)}\nVerify: bun test`;
+		const out = clipHeadTail(text, predecessor, predecessorHead, predecessorTail);
+		expect(out.clipped).toBe(true);
+		expect(out.text.length).toBeLessThanOrEqual(predecessor);
+		expect(out.text.startsWith("a".repeat(predecessorHead))).toBe(true);
+		expect(out.text.endsWith(text.slice(-predecessorTail))).toBe(true);
+		expect(out.text.endsWith("Verify: bun test")).toBe(true);
+		expect(out.text).toContain("…[middle clipped]…");
+	});
+
+	test("never splits a surrogate pair at either cut", () => {
+		const text = "😀".repeat(3000);
+		for (const [head, tail] of [
+			[101, 99],
+			[100, 101],
+		] as const) {
+			const out = clipHeadTail(text, 300, head, tail);
+			expect(out.clipped).toBe(true);
+			expect(stripXmlInvalid(out.text)).toBe(out.text);
+		}
+	});
+
+	test("falls back to a plain head clip when head, tail and marker cannot fit the cap", () => {
+		const out = clipHeadTail("x".repeat(500), 100, 80, 80);
+		expect(out).toEqual(clip("x".repeat(500), 100));
 	});
 });
 

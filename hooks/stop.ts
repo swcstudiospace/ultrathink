@@ -20,6 +20,7 @@ import {
 import { claudeConfigPaths, loadConfig } from "../src/config.ts";
 import { detectHost } from "../src/host/detect.ts";
 import { isSubagentEnvelope, parseEnvelope } from "../src/host/envelope.ts";
+import { installChildReaper } from "../src/resilience/child.ts";
 import { type ShipNudge, shipNudge } from "../src/ship/nudge.ts";
 import { shipApplies } from "../src/ship/policy.ts";
 import { shipPrecheck } from "../src/ship/precheck.ts";
@@ -123,7 +124,7 @@ async function main(): Promise<void> {
 		return;
 	}
 	const out = runStop(stdin);
-	if (out !== undefined) console.log(out);
+	if (out !== undefined) await Bun.write(Bun.stdout, `${out}\n`);
 }
 
 /** Fail-open: any error means no nudge, and the nudge is recorded before it is printed so it fires once. */
@@ -146,4 +147,13 @@ function shipCheck(
 	}
 }
 
-if (import.meta.main) main().catch(() => process.exit(0));
+if (import.meta.main) {
+	installChildReaper({ signals: true });
+	main()
+		.catch(() => {
+			// reason: fail-open: a Stop hook never blocks the session
+		})
+		.finally(() => {
+			process.exit(0);
+		});
+}

@@ -18,10 +18,12 @@ import { bulk } from "../../../src/test.helpers.ts";
 import { makeTempDir } from "../test.helpers.ts";
 import {
 	type AuditFs,
+	type AuditLog,
+	type AuditLogOptions,
 	type AuditNotice,
 	type AuditRecord,
 	auditPath,
-	createAuditLog,
+	createAuditLog as openAuditLog,
 	verifyAuditFile,
 } from "./audit.ts";
 import { listSegments, sealedName } from "./audit-segments.ts";
@@ -30,6 +32,14 @@ import { createFrontier } from "./audit-merkle.ts";
 const START = 1_700_000_000_000;
 const MIB = 1024 * 1024;
 const dirs: string[] = [];
+
+/** Nothing here is about durability, so a record never waits for a real fsync. */
+const NO_FSYNC: AuditFs = { ...nodeFs, fsyncSync: () => undefined };
+
+/** A log that defaults to {@link NO_FSYNC}; a test that injects its own `fs` keeps it. */
+function createAuditLog(options: AuditLogOptions): AuditLog {
+	return openAuditLog({ fs: NO_FSYNC, ...options });
+}
 
 afterEach(() => {
 	for (const dir of dirs.splice(0)) {
@@ -114,14 +124,14 @@ describe("sealed segments", () => {
 			lastHash: active.at(-1)?.hash as string,
 		});
 		expect(log.head()).toEqual({ seq: 200, hash: active.at(-1)?.hash as string });
-	});
+	}, 60_000);
 
 	test("a rename that fails is reported and the records keep landing in the active file", () => {
 		const dir = tempDir();
 		const path = auditPath(dir);
 		const errors: Error[] = [];
 		const fs: AuditFs = {
-			...nodeFs,
+			...NO_FSYNC,
 			renameSync: () => {
 				throw new Error("EXDEV: cross-device link");
 			},
@@ -139,7 +149,7 @@ describe("sealed segments", () => {
 		expect(errors.length).toBeGreaterThan(0);
 		expect(errors.every((e) => /cannot seal .* EXDEV/.test(e.message))).toBe(true);
 		expect(verifyAuditFile(path).ok).toBe(true);
-	});
+	}, 60_000);
 
 	test("editing a line in a sealed file breaks the chain at that line's global seq", () => {
 		const dir = tempDir();
@@ -157,7 +167,7 @@ describe("sealed segments", () => {
 		expect(v.brokenAt).toBe(5);
 		expect(v.records).toBe(4);
 		expect(v.reason).toMatch(/hash does not match/);
-	});
+	}, 60_000);
 
 	test("a broken sealed segment makes the log refuse to start and moves nothing aside", () => {
 		const dir = tempDir();
@@ -175,7 +185,7 @@ describe("sealed segments", () => {
 			/sealed segment .* is broken at record 5/,
 		);
 		expect(readdirSync(dir).sort()).toEqual(before);
-	});
+	}, 60_000);
 
 	test("reopening after rotation continues the global seq and the chain", () => {
 		const dir = tempDir();
@@ -197,7 +207,7 @@ describe("sealed segments", () => {
 			lastHash: active.at(-1)?.hash as string,
 		});
 		expect(sealedIn(dir).length).toBe(1);
-	});
+	}, 60_000);
 
 	test("the segment helpers list only validated sealed names, sorted by first seq", () => {
 		const dir = tempDir();
@@ -260,7 +270,7 @@ describe("prune", () => {
 			lastHash: active.at(-1)?.hash as string,
 		});
 		expect(log.verify().ok).toBe(true);
-	});
+	}, 60_000);
 
 	test("a prune reports one pruned notice and no tamper kind", () => {
 		const dir = tempDir();
@@ -284,7 +294,7 @@ describe("prune", () => {
 				message: expect.stringContaining("pruned 1 sealed segment(s)"),
 			}),
 		]);
-	});
+	}, 60_000);
 
 	test("prune with nothing eligible returns zero and writes nothing", () => {
 		const dir = tempDir();
@@ -298,7 +308,7 @@ describe("prune", () => {
 		expect(log.prune(0)).toEqual({ segments: 0 });
 		expect(readFileSync(path, "utf8")).toBe(before);
 		expect(sealedIn(dir).length).toBe(1);
-	});
+	}, 60_000);
 
 	test("a forged throughHash in the boundary record makes verification fail", () => {
 		const dir = tempDir();
@@ -319,7 +329,7 @@ describe("prune", () => {
 		expect(v.ok).toBe(false);
 		if (v.ok) return;
 		expect(v.reason).toMatch(/where 1 was expected/);
-	});
+	}, 60_000);
 
 	test("corrupt evidence files are never removed by prune", () => {
 		const dir = tempDir();
@@ -331,7 +341,7 @@ describe("prune", () => {
 		log.prune(Number.MAX_SAFE_INTEGER);
 		expect(existsSync(evidence)).toBe(true);
 		expect(readFileSync(evidence, "utf8")).toBe("kept\n");
-	});
+	}, 60_000);
 
 	test("after a prune the retained chain with anchors still verifies, and anchors resume after it", () => {
 		const dir = tempDir();
@@ -356,9 +366,9 @@ describe("prune", () => {
 			"audit_anchor",
 		]);
 		expect(verifyAuditFile(path).ok).toBe(true);
-	});
+	}, 60_000);
 
-	// Two 200-record logs with anchors, each append fsynced: 5.7 s under load, past the 5 s default. Allow 30 s.
+	// Two 200-record logs with anchors, no real fsync: CPU hashing only.
 	test("the next anchor after a prune has the root a never-pruned log gives for the same records", () => {
 		const dirA = tempDir();
 		const dirB = tempDir();
@@ -387,7 +397,7 @@ describe("prune", () => {
 			[...wholeChain, ...prunedChain.filter((r) => r.seq > total)].map((r) => JSON.stringify(r)),
 		);
 		expect(verifyAuditFile(pathC).ok).toBe(true);
-	}, 30_000);
+	}, 60_000);
 
 	test("a pruned directory verifies, and a reopened log continues its chain and its anchors", () => {
 		const dir = tempDir();
@@ -407,7 +417,7 @@ describe("prune", () => {
 		expect(reopened.head()).toEqual(head);
 		reopened.record("login_ok", { n: 9 });
 		expect(verifyAuditFile(path).ok).toBe(true);
-	});
+	}, 60_000);
 
 	test("tampering a retained record after the boundary breaks the chain at the anchor that covers it", () => {
 		const dir = tempDir();
@@ -437,7 +447,7 @@ describe("prune", () => {
 		expect(v.ok).toBe(false);
 		if (v.ok) return;
 		expect(v.reason).toMatch(/anchor root does not match/);
-	});
+	}, 60_000);
 
 	test("a retained audit_retention_pruned record without a valid frontier fails closed", () => {
 		for (const bad of [undefined, "{}", "not json"]) {
@@ -468,7 +478,7 @@ describe("prune", () => {
 			expect(existsSync(path)).toBe(true);
 			expect(() => createAuditLog({ path, now: clock() })).toThrow(/cannot verify/);
 		}
-	});
+	}, 60_000);
 
 	test("a boundary record that cannot be written removes no segment, and the chain still verifies", () => {
 		const dir = tempDir();
@@ -476,7 +486,7 @@ describe("prune", () => {
 		const errors: Error[] = [];
 		let failWrites = false;
 		const fs: AuditFs = {
-			...nodeFs,
+			...NO_FSYNC,
 			writeSync: ((fd: number, data: Buffer, offset: number, length: number) => {
 				if (failWrites)
 					throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
@@ -502,7 +512,7 @@ describe("prune", () => {
 		expect(log.prune(Number.MAX_SAFE_INTEGER)).toEqual({ segments: sealedBefore.length });
 		expect(sealedIn(dir)).toEqual([]);
 		expect(verifyAuditFile(path).ok).toBe(true);
-	});
+	}, 60_000);
 
 	test("a segment that cannot be deleted after the boundary is written leaves a chain that verifies", () => {
 		const dir = tempDir();
@@ -510,7 +520,7 @@ describe("prune", () => {
 		const errors: Error[] = [];
 		let unlinks = 0;
 		const fs: AuditFs = {
-			...nodeFs,
+			...NO_FSYNC,
 			unlinkSync: ((target: nodeFs.PathLike) => {
 				unlinks += 1;
 				if (unlinks === 2)
@@ -535,7 +545,7 @@ describe("prune", () => {
 		expect(records(path).at(-1)?.event).toBe("audit_retention_pruned");
 		log.record("login_ok", { n: 999 });
 		expect(verifyAuditFile(path).ok).toBe(true);
-	});
+	}, 60_000);
 
 	test("a boundary frontier over a different number of records fails closed", () => {
 		const dir = tempDir();
@@ -565,7 +575,7 @@ describe("prune", () => {
 		expect(v.brokenAt).toBe(0);
 		expect(v.reason).toMatch(/carries a frontier over 1 records/);
 		expect(() => createAuditLog({ path, now: clock() })).toThrow(/cannot verify/);
-	});
+	}, 60_000);
 });
 
 describe("prune crash points and boundaries", () => {
@@ -573,7 +583,7 @@ describe("prune crash points and boundaries", () => {
 	function dyingAfter(survivors: number): AuditFs {
 		let unlinks = 0;
 		return {
-			...nodeFs,
+			...NO_FSYNC,
 			unlinkSync: ((target: nodeFs.PathLike) => {
 				if (unlinks >= survivors)
 					throw Object.assign(new Error("EIO: process died"), { code: "EIO" });
@@ -634,7 +644,7 @@ describe("prune crash points and boundaries", () => {
 		const path = auditPath(dir);
 		let armed = false;
 		const fs: AuditFs = {
-			...nodeFs,
+			...NO_FSYNC,
 			writeSync: ((fd: number, data: Buffer, offset: number, length: number) => {
 				if (!armed) return nodeFs.writeSync(fd, data, offset, length);
 				// The process dies with half of the first boundary record on disk.

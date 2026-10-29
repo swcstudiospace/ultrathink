@@ -15,10 +15,55 @@ export function parseRepoSlug(remoteUrl: string): string | undefined {
 
 export type GitRun = (cmd: string[], cwd: string) => { stdout: string; code: number };
 
-function defaultGitRun(cmd: string[], cwd: string): { stdout: string; code: number } {
-	const proc = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
+/** A git call never blocks the host's event loop longer than this; a killed call reads as a failed one. */
+const GIT_TIMEOUT_MS = 2000;
+/** A result is reused this long per directory and command, so a planning run spawns each git command at most once. */
+const GIT_CACHE_TTL_MS = 5000;
+const GIT_CACHE_CAP = 200;
+
+type GitSpawn = (cmd: string[], cwd: string, timeoutMs: number) => { stdout: string; code: number };
+
+const spawnGit: GitSpawn = (cmd, cwd, timeoutMs) => {
+	const proc = Bun.spawnSync(cmd, {
+		cwd,
+		stdout: "pipe",
+		stderr: "pipe",
+		timeout: timeoutMs,
+	});
 	return { stdout: proc.stdout?.toString() ?? "", code: proc.exitCode ?? 1 };
+};
+
+interface GitRunOptions {
+	timeoutMs?: number;
+	ttlMs?: number;
+	now?: () => number;
+	spawn?: GitSpawn;
 }
+
+/** A synchronous git runner with a spawn timeout and a per-(cwd, command) TTL memo. A throwing spawn is never memoized. */
+export function createGitRun(options: GitRunOptions = {}): GitRun {
+	const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
+	const ttlMs = options.ttlMs ?? GIT_CACHE_TTL_MS;
+	const now = options.now ?? Date.now;
+	const spawn = options.spawn ?? spawnGit;
+	const cache = new Map<string, { at: number; result: { stdout: string; code: number } }>();
+	return (cmd, cwd) => {
+		const key = `${cwd}\0${cmd.join("\0")}`;
+		const at = now();
+		const cached = cache.get(key);
+		if (cached && at - cached.at < ttlMs) return cached.result;
+		const result = spawn(cmd, cwd, timeoutMs);
+		cache.delete(key);
+		cache.set(key, { at, result });
+		if (cache.size > GIT_CACHE_CAP) {
+			const oldest = cache.keys().next();
+			if (!oldest.done) cache.delete(oldest.value);
+		}
+		return result;
+	};
+}
+
+const defaultGitRun = createGitRun();
 
 export function resolveRepoSlug(root: string, run: GitRun = defaultGitRun): string | undefined {
 	try {

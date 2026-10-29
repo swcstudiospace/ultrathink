@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+import { clip, FIELD_CAPS } from "../resilience/limits.ts";
+import { splitRationaleSteps } from "../track/plan.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import {
 	FALLBACK_GRAPH,
+	MAX_STEPS,
+	MIN_STEPS,
 	NODE_KINDS,
 	type NodeKind,
 	type ThoughtGraph,
@@ -94,9 +98,13 @@ export function normalizeGraph(
 		const kind: NodeKind = isNodeKind(kindRaw) ? kindRaw : index === 0 ? "understand" : "generate";
 		nodes.push({
 			id,
-			title: asString(rec.title) || id,
+			// One line: a title is spliced into markdown lists, tracker rows and XML attributes, where a newline injects structure.
+			title: clip(asString(rec.title).replace(/\s+/g, " ").trim() || id, FIELD_CAPS.title).text,
 			kind,
-			question: asString(rec.question) || asString(rec.prompt) || `Reason about ${id}`,
+			question: clip(
+				asString(rec.question) || asString(rec.prompt) || `Reason about ${id}`,
+				FIELD_CAPS.question,
+			).text,
 			dependsOn: parseDependsOn(rec.depends_on ?? rec.dependsOn),
 		});
 		if (nodes.length >= maxNodes) break;
@@ -109,18 +117,32 @@ export function normalizeGraph(
 		};
 	}
 
-	const ids = new Set(nodes.map((node) => node.id));
-	for (const node of nodes) {
-		node.dependsOn = node.dependsOn
-			.map((dep) => renamed.get(dep) ?? dep)
-			.filter((dep) => ids.has(dep) && dep !== node.id);
+	const position = new Map(nodes.map((node, index) => [node.id, index]));
+	for (const [index, node] of nodes.entries()) {
+		// A dependency at or after the node's own position is a back edge (cycle or forward reference): dropping it keeps the model's order topological.
+		const deps = new Set<string>();
+		for (const raw of node.dependsOn) {
+			const dep = renamed.get(raw) ?? raw;
+			const at = position.get(dep);
+			if (at !== undefined && at < index) deps.add(dep);
+		}
+		node.dependsOn = [...deps];
 	}
 
 	const last = nodes[nodes.length - 1];
-	if (last) last.kind = "synthesize";
+	if (last) {
+		last.kind = "synthesize";
+		// The synthesis reads every branch: each leaf (a node nothing depends on) feeds it.
+		const consumed = new Set(nodes.flatMap((node) => node.dependsOn));
+		const fanIn = new Set(last.dependsOn);
+		for (const node of nodes) {
+			if (node !== last && !consumed.has(node.id)) fanIn.add(node.id);
+		}
+		last.dependsOn = [...fanIn];
+	}
 
 	return {
-		goal: asString(obj.goal) || fallbackGoal || FALLBACK_GRAPH.goal,
+		goal: clip(asString(obj.goal) || fallbackGoal || FALLBACK_GRAPH.goal, FIELD_CAPS.goal).text,
 		nodes,
 	};
 }
@@ -183,19 +205,30 @@ export function topoSort(nodes: ThoughtNode[]): ThoughtNode[] {
 	return ordered;
 }
 
-/** Groups topologically sorted nodes into dependency levels (all deps in earlier levels). */
+/**
+ * Groups nodes into dependency levels: a node's level is one past its deepest dependency, memoised, so no input order
+ * or cycle can place a node before a dependency. Unknown ids are ignored and an edge that closes a cycle is skipped.
+ */
 export function dependencyLevels(nodes: ThoughtNode[]): ThoughtNode[][] {
-	const level = new Map<string, number>();
-	const levels: ThoughtNode[][] = [];
-	for (const node of nodes) {
-		let depth = 0;
+	const byId = new Map(nodes.map((node) => [node.id, node]));
+	const depth = new Map<string, number>();
+	const visiting = new Set<string>();
+	const depthOf = (node: ThoughtNode): number => {
+		const known = depth.get(node.id);
+		if (known !== undefined) return known;
+		visiting.add(node.id);
+		let deepest = 0;
 		for (const dep of node.dependsOn) {
-			const seen = level.get(dep);
-			if (seen !== undefined) depth = Math.max(depth, seen + 1);
+			const target = byId.get(dep);
+			if (!target || target === node || visiting.has(target.id)) continue;
+			deepest = Math.max(deepest, depthOf(target) + 1);
 		}
-		level.set(node.id, depth);
-		(levels[depth] ??= []).push(node);
-	}
+		visiting.delete(node.id);
+		depth.set(node.id, deepest);
+		return deepest;
+	};
+	const levels: ThoughtNode[][] = [];
+	for (const node of nodes) (levels[depthOf(node)] ??= []).push(node);
 	return levels.filter((group) => group.length > 0);
 }
 
@@ -214,7 +247,18 @@ export function workflowWaves(graph: ThoughtGraph): WorkflowWave[] {
 	}));
 }
 
-export function parseNodeFill(xml: string): { thinking: string; conclusion: string } {
+export interface NodeFill {
+	/** True only for a closed rationale of MIN_STEPS to MAX_STEPS numbered steps plus a closed conclusion. */
+	ok: boolean;
+	thinking: string;
+	conclusion: string;
+	steps: string[];
+}
+
+const REJECTED_FILL: NodeFill = { ok: false, thinking: "", conclusion: "", steps: [] };
+
+/** The rationale and conclusion text of one CoT completion exactly as written: unvalidated and unclipped. */
+export function readNodeText(xml: string): { thinking: string; conclusion: string } {
 	const body = extractTag(xml, "node") || xml;
 	// "rationale" is current; "thinking"/"chain_of_thought" accepted for back-compat with older completions.
 	const thinking =
@@ -222,11 +266,24 @@ export function parseNodeFill(xml: string): { thinking: string; conclusion: stri
 		extractTag(body, "thinking") ||
 		extractTag(body, "chain_of_thought");
 	const conclusion = extractTag(body, "conclusion") || extractTag(body, "answer");
-	if (thinking || conclusion) {
-		return { thinking: thinking || conclusion, conclusion: conclusion || thinking };
-	}
-	const trimmed = xml.trim();
-	return { thinking: trimmed, conclusion: trimmed };
+	return { thinking, conclusion };
+}
+
+/**
+ * Reads one CoT completion. Only closed markup counts: a refusal, an error body, a truncated reply or free text is
+ * `ok: false` with every field empty, so a failed attempt can never flow on as a conclusion.
+ */
+export function parseNodeFill(xml: string): NodeFill {
+	const { thinking, conclusion } = readNodeText(xml);
+	if (!thinking || !conclusion) return REJECTED_FILL;
+	const steps = splitRationaleSteps(thinking);
+	if (steps.length < MIN_STEPS || steps.length > MAX_STEPS) return REJECTED_FILL;
+	return {
+		ok: true,
+		thinking: clip(thinking, FIELD_CAPS.thinking).text,
+		conclusion: clip(conclusion, FIELD_CAPS.conclusion).text,
+		steps: steps.map((step) => clip(step, FIELD_CAPS.step).text),
+	};
 }
 
 function nodeXml(node: ThoughtNode): string {
@@ -235,7 +292,7 @@ function nodeXml(node: ThoughtNode): string {
 			? `		<DEPENDS_ON>${escapeXml(node.dependsOn.join(","))}</DEPENDS_ON>`
 			: "		<DEPENDS_ON></DEPENDS_ON>";
 	return [
-		`	<NODE id="${escapeXml(node.id)}" kind="${escapeXml(node.kind)}" title="${escapeXml(node.title)}">`,
+		`	<NODE id="${escapeXml(node.id)}" kind="${escapeXml(node.kind)}" title="${escapeXml(node.title)}"${node.degraded ? ' degraded="true"' : ""}>`,
 		`		<QUESTION>${escapeXml(node.question)}</QUESTION>`,
 		deps,
 		`		<RATIONALE>${escapeXml(node.thinking ?? "")}</RATIONALE>`,
@@ -270,7 +327,7 @@ const GRAPH_BLOCK_RE = /<GRAPH_OF_THOUGHT\b[\s\S]*?<\/GRAPH_OF_THOUGHT>/i;
 export function injectGraphXml(upliftXml: string, graph: ThoughtGraph): string {
 	const graphXml = graphToXml(graph);
 	if (GRAPH_BLOCK_RE.test(upliftXml)) {
-		return upliftXml.replace(GRAPH_BLOCK_RE, graphXml);
+		return upliftXml.replace(GRAPH_BLOCK_RE, () => graphXml);
 	}
 
 	const trimmed = upliftXml.trim();
@@ -280,14 +337,15 @@ export function injectGraphXml(upliftXml: string, graph: ThoughtGraph): string {
 	const tag = open[1]!;
 	const closeRe = new RegExp(`</${tag}\\s*>\\s*$`, "i");
 	if (!closeRe.test(trimmed)) return `${trimmed}\n${graphXml}`;
-	return trimmed.replace(closeRe, `\n${graphXml}\n</${tag}>`);
+	return trimmed.replace(closeRe, () => `\n${graphXml}\n</${tag}>`);
 }
 
 export function graphSketch(graph: ThoughtGraph): string {
 	return graph.nodes
 		.map((node) => {
 			const deps = node.dependsOn.length > 0 ? `  deps=${node.dependsOn.join(",")}` : "";
-			return `${node.id}  ${node.title}  ${node.kind}${deps}`;
+			const title = node.title.replace(/\s+/g, " ").trim();
+			return `${node.id}  ${title}  ${node.kind}${deps}`;
 		})
 		.join("\n");
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	closeSync,
@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type SessionRecord, writeControl, writeSession } from "../claude/state.ts";
 import type { Clarification } from "../hitl/types.ts";
+import { FIELD_CAPS } from "../resilience/limits.ts";
 import { NODE, UPLIFT } from "../test.helpers.ts";
 import type { TrackingRefs } from "../track/types.ts";
 import { escapeXml } from "../uplift/xml.ts";
@@ -75,7 +76,6 @@ const tmp = (): string => {
 };
 afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-	setSystemTime();
 });
 
 const testEnv = (root: string): Record<string, string | undefined> => ({
@@ -304,7 +304,9 @@ describe("grok-bot journal driver", () => {
 		});
 		const dir = journalDir(stateDir, "s1");
 		const [request] = listPending(dir);
-		const bad = storeAnswer(dir, request!.key, UPLIFT("a paraphrase of the request"));
+		// The pipeline owns ORIGINAL, so a paraphrase there is replaced, not rejected; an uplift missing a required section is.
+		const incomplete = UPLIFT(PROMPT).replace(/<ACCEPTANCE_CRITERIA>.*<\/ACCEPTANCE_CRITERIA>/, "");
+		const bad = storeAnswer(dir, request!.key, incomplete);
 		expect(bad.ok).toBe(false);
 		expect(existsSync(join(dir, "answers"))).toBe(false);
 		expect(listPending(dir)).toHaveLength(1);
@@ -348,6 +350,40 @@ describe("grok-bot validators", () => {
 				"decompose",
 			).errors.join(),
 		).toMatch(/XML-escape/);
+	});
+	test("a long valid synthesize or critique answer is judged on its full text, not a clipped one (G-6)", () => {
+		const longBody = Array.from(
+			{ length: 90 },
+			(_, i) => `Wave ${(i % 3) + 1}: task-${i} — files: src/t${i}.ts — done when: tests pass`,
+		).join("\n");
+		const steps = NODE("n5", "decompose", 6).match(/<rationale>[\s\S]*<\/rationale>/)?.[0] ?? "";
+		const synthesize = `<node>${steps}<conclusion>Plan.\nWORKFLOW\n${longBody}\nVerify: bun test</conclusion></node>`;
+		expect(synthesize.length).toBeGreaterThan(5000);
+		expect(validateNodeFill(synthesize, "synthesize")).toMatchObject({ ok: true, errors: [] });
+		const critique = `<node>${steps}<conclusion>${longBody}\nOpen questions:\n- JSON lines or array?</conclusion></node>`;
+		expect(validateNodeFill(critique, "critique")).toMatchObject({ ok: true, errors: [] });
+	});
+
+	test("a fill over the stored field limits is refused by name, never silently clipped (G-6)", () => {
+		const steps = NODE("n2", "decompose", 6).match(/<rationale>[\s\S]*<\/rationale>/)?.[0] ?? "";
+		const huge = `<node>${steps}<conclusion>${"x".repeat(FIELD_CAPS.conclusion + 1)}</conclusion></node>`;
+		expect(validateNodeFill(huge, "decompose").errors.join()).toMatch(
+			new RegExp(`conclusion.*${FIELD_CAPS.conclusion}`),
+		);
+	});
+
+	test("an uplift refusal names the missing child or the cut-off root (G-6)", () => {
+		for (const child of ["SYSTEM_ROLE", "SCOPE", "CONSTRAINTS", "ACCEPTANCE_CRITERIA"]) {
+			const without = UPLIFT(PROMPT).replace(new RegExp(`<${child}>.*?</${child}>`), "");
+			const errors = validateUplift(without, PROMPT).errors.join();
+			expect(errors).toContain(child);
+			expect(errors).not.toContain("not an uplift XML document");
+		}
+		const noContext = UPLIFT(PROMPT).replace(/<APP_CONTEXT>.*?<\/APP_CONTEXT>/, "");
+		expect(validateUplift(noContext, PROMPT).errors.join()).toContain("CONTEXT");
+		const cutOff = UPLIFT(PROMPT).replace("</BUILD_PROMPT>", "");
+		expect(validateUplift(cutOff, PROMPT).errors.join()).toMatch(/not closed|cut off/);
+		expect(validateUplift("plain prose", PROMPT).errors.join()).toContain("root");
 	});
 	test("clarify allows at most 4 questions", () => {
 		expect(validateClarify(CLARIFY).ok).toBe(true);
@@ -1349,11 +1385,10 @@ describe("grok-bot answers", () => {
 		const lastPath = join(stateDir, "last.json");
 		const before = readFileSync(lastPath, "utf8");
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
-		const FIXED = new Date("2026-01-01T00:00:00Z");
-		const old = new Date(FIXED.getTime() - 60_000);
+		// Real clock: the refresh waits out its 3 s wall-clock deadline, which a frozen clock would never reach.
+		const old = new Date(Date.now() - 60_000);
 		utimesSync(`${lastPath}.lock`, old, old);
 		const lockMtime = statSync(`${lastPath}.lock`).mtimeMs;
-		setSystemTime(FIXED);
 		try {
 			expect(() => mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 })).toThrow(
 				/could not refresh/,
@@ -1379,12 +1414,11 @@ describe("grok-bot answers", () => {
 		writeSession(stateDir, record);
 		const lastPath = join(stateDir, "last.json");
 		writeFileSync(`${lastPath}.lock`, "");
-		const FIXED = new Date("2026-01-01T00:00:00Z");
-		setSystemTime(FIXED);
+		// Real clock: the refresh waits out its 3 s wall-clock deadline, which a frozen clock would never reach.
 		expect(writeSession(stateDir, { ...record, at: 2 })).toMatch(/could not refresh/);
 		expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
 		expect(readFileSync(`${lastPath}.lock`, "utf8")).toBe("");
-		const stale = new Date(FIXED.getTime() - 6_000);
+		const stale = new Date(Date.now() - 6_000);
 		utimesSync(`${lastPath}.lock`, stale, stale);
 		expect(writeSession(stateDir, { ...record, at: 4 })).toBeUndefined();
 		expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(4);

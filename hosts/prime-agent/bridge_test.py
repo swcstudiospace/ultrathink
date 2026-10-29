@@ -151,13 +151,70 @@ class Bridge(unittest.TestCase):
 		# A fresh directory under the test's own temporary directory, so the carrier is read from where this test wrote it.
 		state = Path(self.tmp.name) / "state"
 		state.mkdir(parents=True, exist_ok=True)
-		env = {**self.env, "ULTRATHINK_STATE_DIR": str(state)}
+		# No session at all: the legacy single file of an earlier build is the only carrier there can be.
+		env = {k: v for k, v in {**self.env, "ULTRATHINK_STATE_DIR": str(state)}.items() if k != "RLM_SESSION_DIR"}
 		self.assertEqual(bridge.state_dir(env), state)
 		(state / "last-plan.json").write_text(json.dumps({"host": "prime-agent", "specPath": str(self.spec)}))
 		self.assertEqual(bridge.last(env)["host"], "prime-agent")
 		self.assertIn("<ORIGINAL>", bridge.spec(env))
 		(state / "last-plan.json").write_text("{")
 		self.assertIsNone(bridge.last(env))
+
+	def _carrier(self, state: Path, name: str, **fields: object) -> None:
+		state.mkdir(parents=True, exist_ok=True)
+		(state / name).write_text(json.dumps({"host": "prime-agent", "specPath": str(self.spec), **fields}))
+
+	def test_last_with_a_session_reads_that_sessions_carrier_only(self) -> None:
+		state = Path(self.tmp.name) / "scoped"
+		env = {**self.env, "ULTRATHINK_STATE_DIR": str(state)}
+		self._carrier(state, "last-plan.A.json", sessionId="A", context="plan A")
+		self._carrier(state, "last-plan.B.json", sessionId="B", context="plan B")
+		self.assertEqual(bridge.last(env, session_id="A")["context"], "plan A")
+		self.assertEqual(bridge.last(env, session_id="B")["context"], "plan B")
+		self.assertIsNone(bridge.last(env, session_id="C"))
+		self.assertIn("<ORIGINAL>", bridge.spec(env, session_id="A"))
+		self.assertIsNone(bridge.spec(env, session_id="C"))
+
+	def test_last_rejects_a_carrier_that_names_another_session(self) -> None:
+		state = Path(self.tmp.name) / "mismatch"
+		env = {**self.env, "ULTRATHINK_STATE_DIR": str(state)}
+		self._carrier(state, "last-plan.A.json", sessionId="B", context="plan B")
+		self.assertIsNone(bridge.last(env, session_id="A"))
+		# Ids that sanitize to one file name never read each other's carrier.
+		self._carrier(state, "last-plan.a_b.json", sessionId="a.b", context="dotted")
+		self.assertEqual(bridge.last(env, session_id="a.b")["context"], "dotted")
+		self.assertIsNone(bridge.last(env, session_id="a:b"))
+
+	def test_carrier_file_names_follow_the_typescript_sanitizer(self) -> None:
+		self.assertEqual(bridge.carrier_name("Abc_9-z"), "last-plan.Abc_9-z.json")
+		self.assertEqual(bridge.carrier_name("a/../b c"), "last-plan.a____b_c.json")
+		self.assertEqual(bridge.carrier_name("é"), "last-plan._.json")
+		# JavaScript counts UTF-16 units: one astral character is two underscores there.
+		self.assertEqual(bridge.carrier_name("\U0001f600x"), "last-plan.__x.json")
+		self.assertEqual(bridge.carrier_name("a" * 80), "last-plan." + "a" * 64 + ".json")
+
+	def test_last_without_a_session_never_reads_across_sessions(self) -> None:
+		state = Path(self.tmp.name) / "ambiguous"
+		env = {k: v for k, v in {**self.env, "ULTRATHINK_STATE_DIR": str(state)}.items() if k != "RLM_SESSION_DIR"}
+		self._carrier(state, "last-plan.json", sessionId="old", context="legacy")
+		self.assertEqual(bridge.last(env)["context"], "legacy")
+		self._carrier(state, "last-plan.A.json", sessionId="A", context="plan A")
+		self.assertIsNone(bridge.last(env))
+		# The kernel's own session is the default when the caller names none.
+		self.assertEqual(bridge.last({**env, "ULTRATHINK_SESSION_ID": "A"})["context"], "plan A")
+		self.assertIsNone(bridge.last({**env, "ULTRATHINK_SESSION_ID": "B"}))
+
+	def test_a_known_session_never_reads_a_legacy_carrier_of_another_session(self) -> None:
+		state = Path(self.tmp.name) / "legacy-session"
+		env = {**self.env, "ULTRATHINK_STATE_DIR": str(state)}
+		self._carrier(state, "last-plan.json", sessionId="old", context="legacy of old")
+		# The kernel's own session has no carrier file; the single file of an earlier build names another session.
+		self.assertIsNone(bridge.last({**env, "ULTRATHINK_SESSION_ID": "A"}))
+		self.assertIsNone(bridge.last(env, session_id="A"))
+		self.assertIsNone(bridge.spec({**env, "ULTRATHINK_SESSION_ID": "A"}))
+		# A legacy file that names the session is that session's plan.
+		self._carrier(state, "last-plan.json", sessionId="A", context="legacy of A")
+		self.assertEqual(bridge.last({**env, "ULTRATHINK_SESSION_ID": "A"})["context"], "legacy of A")
 
 	def test_ctl_and_teach_report_a_missing_clone(self) -> None:
 		env = {**self.env, "ULTRATHINK_PLUGIN_ROOT": self.tmp.name}

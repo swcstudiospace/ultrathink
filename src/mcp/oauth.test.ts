@@ -2,13 +2,22 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	beginLogin,
 	completeLogin,
 	recoverUnauthorized,
+	logout,
 	resolveAuthHeader,
 	setApiKey,
 	status,
@@ -897,5 +906,68 @@ describe("callback and token limits", () => {
 		} finally {
 			setSecurityLogger(previous);
 		}
+	});
+});
+
+describe("credential store cannot be wiped", () => {
+	const corrupt = '{"version":1,"providers":{"notion":{"kind":"api_key","apiKey":"keep-me"';
+
+	test("an unreadable store makes a mutation throw and leaves the bytes untouched", async () => {
+		writeFileSync(path, corrupt);
+		const before = statSync(path);
+		await expect(
+			setApiKey("linear", "lin-key", { storePath: path, now: () => NOW }),
+		).rejects.toThrow("credential store");
+		await expect(logout("linear", { storePath: path, now: () => NOW })).rejects.toThrow(
+			"credential store",
+		);
+		expect(readFileSync(path, "utf8")).toBe(corrupt);
+		expect(statSync(path).ino).toBe(before.ino);
+	});
+
+	test("a newer-version store is unreadable in the lock and kept, while an unlocked status read stays lenient", async () => {
+		const newer = JSON.stringify({
+			version: 2,
+			providers: { notion: { kind: "api_key", apiKey: "k" } },
+		});
+		writeFileSync(path, newer);
+		await expect(
+			setApiKey("linear", "lin-key", { storePath: path, now: () => NOW }),
+		).rejects.toThrow("credential store");
+		expect(readFileSync(path, "utf8")).toBe(newer);
+		expect(
+			status({ storePath: path, now: () => NOW }).every((entry) => entry.kind === "none"),
+		).toBe(true);
+	});
+
+	test("a mutation that changes nothing performs no write", async () => {
+		writeStore(path, {
+			version: 1,
+			providers: { notion: { kind: "api_key", apiKey: "k", updatedAt: 1 } },
+		});
+		const old = new Date(1_000_000);
+		utimesSync(path, old, old);
+		const before = statSync(path);
+		await logout("linear", { storePath: path, now: () => NOW });
+		const after = statSync(path);
+		expect(after.ino).toBe(before.ino);
+		expect(after.mtimeMs).toBe(before.mtimeMs);
+	});
+
+	test("an unreadable store is a credential error from resolveAuthHeader, distinct from not configured", async () => {
+		expect(await resolveAuthHeader("linear", { storePath: path, now: () => NOW })).toBeUndefined();
+		writeFileSync(path, corrupt);
+		await expect(resolveAuthHeader("linear", { storePath: path, now: () => NOW })).rejects.toThrow(
+			"credential store",
+		);
+	});
+
+	test("a changed store is written once", async () => {
+		await setApiKey("linear", "lin-key", { storePath: path, now: () => NOW });
+		expect(readStore(path).providers.linear).toEqual({
+			kind: "api_key",
+			apiKey: "lin-key",
+			updatedAt: NOW,
+		});
 	});
 });

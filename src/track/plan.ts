@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { randomUUID } from "node:crypto";
 import type { Clarification } from "../hitl/types.ts";
-import type { ThoughtGraph, ThoughtNode } from "../think/types.ts";
+import { MAX_STEPS, type ThoughtGraph, type ThoughtNode } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
 import type {
 	HitlPlan,
@@ -110,10 +110,13 @@ export function splitRationaleSteps(rationale: string): string[] {
 /**
  * The per-step texts tracked as Sub-Issues under a node's Issue. A node whose fill produced no
  * rationale (engine failure, empty completion) still gets one step so every Issue keeps a Sub-Issue.
+ * More than MAX_STEPS steps fold their tail into the last one, so a long list never fans out into dozens of rows.
  */
 function nodeSteps(node: ThoughtNode): string[] {
 	const steps = splitRationaleSteps(node.thinking ?? "");
-	return steps.length > 0 ? steps : [nodeConclusion(node) || node.question];
+	if (steps.length === 0) return [nodeConclusion(node) || node.question];
+	if (steps.length <= MAX_STEPS) return steps;
+	return [...steps.slice(0, MAX_STEPS - 1), steps.slice(MAX_STEPS - 1).join(" / ")];
 }
 
 function stepTitle(step: number, text: string): string {

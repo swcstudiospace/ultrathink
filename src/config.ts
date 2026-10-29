@@ -249,12 +249,20 @@ export interface UltrathinkConfig {
 	modelProvenance: Readonly<Record<LegacyRoute, LegacyModelProvenance>>;
 }
 
+/** Default uplift input gate in characters; an explicit `uplift.maxChars` of 0 still means no gate. */
+const DEFAULT_UPLIFT_MAX_CHARS = 200_000;
+/** Defaults for `think.fillRetries` (extra attempts per node fill) and `think.repair` (one repair pass). */
+const THINK_RESILIENCE_DEFAULTS: Pick<ThinkConfig, "fillRetries" | "repair"> = {
+	fillRetries: 2,
+	repair: true,
+};
+
 export function defaultConfig(): UltrathinkConfig {
 	return {
 		uplift: {
 			enabled: true,
 			skipTrivial: true,
-			maxChars: 0,
+			maxChars: DEFAULT_UPLIFT_MAX_CHARS,
 			echo: true,
 		},
 		think: {
@@ -262,6 +270,7 @@ export function defaultConfig(): UltrathinkConfig {
 			minNodes: MIN_NODES,
 			maxNodes: MAX_NODES,
 			engine: "auto",
+			...THINK_RESILIENCE_DEFAULTS,
 		},
 		claude: { ...DEFAULT_CLAUDE_CONFIG },
 		grok: { ...DEFAULT_GROK_CONFIG, fallbackModels: [...DEFAULT_GROK_CONFIG.fallbackModels] },
@@ -324,6 +333,13 @@ function mergeThink(
 		think.maxNodes >= minNodes
 			? Math.min(think.maxNodes, MAX_NODES)
 			: defaults.maxNodes;
+	const fillRetries =
+		typeof think.fillRetries === "number" &&
+		Number.isInteger(think.fillRetries) &&
+		think.fillRetries > 0
+			? think.fillRetries
+			: defaults.fillRetries;
+	const repair = typeof think.repair === "boolean" ? think.repair : defaults.repair;
 	return {
 		enabled: typeof think.enabled === "boolean" ? think.enabled : defaults.enabled,
 		minNodes: Math.min(minNodes, maxNodes),
@@ -331,6 +347,8 @@ function mergeThink(
 		engine: THINK_ENGINES.includes(think.engine as ThinkEngine)
 			? (think.engine as ThinkEngine)
 			: defaults.engine,
+		fillRetries,
+		repair,
 	};
 }
 

@@ -13,7 +13,7 @@ export interface UpliftResult {
 	original: string;
 	root: string;
 	source: "llm" | "fallback";
-	/** Why the uplift fell back: `provider_error:<http status>`, `provider_error`, `empty_reply`, `unparseable_reply`, `graph_minimum_not_met` or `input_over_limit`. Absent for `llm`. */
+	/** Why the uplift fell back: `provider_error:<http status>`, `provider_error`, `empty_reply`, `truncated_reply`, `unparseable_reply`, `graph_minimum_not_met` or `input_over_limit`. Absent for `llm`. */
 	fallbackReason?: string;
 	/** Characters in the raw model reply; 0 when there was no reply. */
 	rawReplyChars?: number;

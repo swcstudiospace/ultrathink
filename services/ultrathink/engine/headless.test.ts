@@ -431,13 +431,15 @@ describe("headless planner: start and result", () => {
 	test("busy at the concurrency cap, and free again once a job ends", async () => {
 		const gate = Promise.withResolvers<void>();
 		const model = fakeModel(gate.promise);
-		const h = setup({ maxConcurrentPlans: 1 }, { completer: model.complete });
+		// No plan timer: the queue wait below is fired by its own 60 s, which a 60 s plan timer would share.
+		const h = setup({ planTimeoutMs: 0, maxConcurrentPlans: 1 }, { completer: model.complete });
 		const first = randomUUID();
 		await startRunning(h, first);
-		expect(await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() })).toEqual({
-			ok: false,
-			code: "busy",
-		});
+		// Over capacity a start waits for a slot; when the wait runs out it is busy, with a retry hint.
+		const waiting = h.planner.start({ prompt: PROMPT, sessionId: randomUUID() });
+		await flush();
+		h.clock.fire(QUEUE_WAIT_MS);
+		expect(await waiting).toEqual({ ok: false, code: "busy", retryAfterSec: 30 });
 		gate.resolve();
 		await h.planner.result({ sessionId: first, waitSeconds: 30 });
 		expect(await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() })).toMatchObject({
@@ -805,7 +807,8 @@ describe("headless planner: limits and lifecycle", () => {
 		const gate = Promise.withResolvers<void>();
 		const completer: ClaudeCompleter = async (_system, _user, signal) => {
 			await (signal ? Promise.race([gate.promise, aborted(signal)]) : gate.promise);
-			throw new Error("model down");
+			// A permanent failure (status 401): the retry kernel does not sleep through 55 plans' fill retries.
+			throw Object.assign(new PlanCompleterError("auth", "auth"), { status: 401 });
 		};
 		const events: Array<{ level: string; event: string; fields?: Record<string, unknown> }> = [];
 		const logger = {
@@ -1004,11 +1007,13 @@ describe("headless planner: call telemetry", () => {
 
 describe("headless planner: upstream breaker", () => {
 	test("a tripped breaker fails the job with upstream_unavailable before any backend call, and upstream() reports open", async () => {
-		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
-		const slot = breaker.tryAcquire();
+		const tripped = createCircuitBreaker(COUNT_BREAKER);
+		const slot = tripped.tryAcquire();
 		if (!slot.ok) throw new Error("expected a closed breaker");
 		slot.release("failure");
-		expect(breaker.state()).toBe("open");
+		expect(tripped.state()).toBe("open");
+		// The breaker opened after the start's check (peek) and before the first call: the call itself is refused.
+		const breaker = { ...tripped, peek: () => ({ ok: true as const }) };
 		const fake = fakeBackend();
 		const calls: PlannerCall[] = [];
 		const refusals: unknown[] = [];
@@ -1096,11 +1101,7 @@ describe("headless planner: upstream breaker", () => {
 			["rate_limited", "plan-limit"],
 		];
 		for (const [code, failure] of cases) {
-			const breaker = createCircuitBreaker({
-				failureThreshold: 1,
-				windowMs: 60_000,
-				openMs: 30_000,
-			});
+			const breaker = createCircuitBreaker(COUNT_BREAKER);
 			const fake = fakeBackend(new PlanCompleterError(code, failure));
 			const h = setup({}, { completer: undefined, planBackend: fake.backend, breaker });
 			const sessionId = randomUUID();
@@ -1115,7 +1116,7 @@ describe("headless planner: upstream breaker", () => {
 	});
 
 	test("a reply, an auth failure and an unclassified error never count against the breaker", async () => {
-		const options = { failureThreshold: 1, windowMs: 60_000, openMs: 30_000 };
+		const options = COUNT_BREAKER;
 		const answered = createCircuitBreaker(options);
 		const ok = setup(
 			{},
@@ -1155,15 +1156,12 @@ describe("headless planner: upstream breaker", () => {
 
 	test("refused calls leave the daily budget untouched, so planning works again once the breaker closes", async () => {
 		let clock = 1_000_000;
-		const breaker = createCircuitBreaker({
-			failureThreshold: 1,
-			windowMs: 60_000,
-			openMs: 30_000,
-			now: () => clock,
-		});
-		const slot = breaker.tryAcquire();
+		const tripped = createCircuitBreaker({ ...COUNT_BREAKER, now: () => clock });
+		const slot = tripped.tryAcquire();
 		if (!slot.ok) throw new Error("expected a closed breaker");
 		slot.release("failure");
+		// The breaker opened after each start's check (peek) and before its first call: the calls themselves are refused.
+		const breaker = { ...tripped, peek: () => ({ ok: true as const }) };
 		const fake = fakeBackend();
 		const h = setup(
 			{ dailyTokenCeiling: 60_000 },
@@ -1190,7 +1188,7 @@ describe("headless planner: upstream breaker", () => {
 	});
 
 	test("a call that reached the backend and failed keeps its estimate counted while the refused ones add nothing", async () => {
-		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
+		const breaker = createCircuitBreaker(COUNT_BREAKER);
 		const fake = fakeBackend(new PlanCompleterError("upstream", "other"));
 		const h = setup({}, { completer: undefined, planBackend: fake.backend, breaker });
 		const ledger = createLedger(h.store, { runTokenCeiling: 0, dailyTokenCeiling: 0 });
@@ -1560,21 +1558,42 @@ describe("headless planner: plan-slot fairness", () => {
 		return started;
 	}
 
+	/** A start that finds no free slot waits in the queue; this lets that wait run out and returns the busy answer. */
+	async function startBusy(h: Harness, admission: Admission | undefined) {
+		const call = () => h.planner.start({ prompt: PROMPT, sessionId: randomUUID() });
+		const waiting =
+			admission === undefined ? call() : runWithRequestContext(admittedAs(admission), call);
+		await flush();
+		h.clock.fire(QUEUE_WAIT_MS);
+		return waiting;
+	}
+
 	test("connectors leave the reserved slot to owners: a second connector start is busy, a second owner start is busy at the cap", async () => {
 		const gate = Promise.withResolvers<void>();
-		const h = setup({ maxConcurrentPlans: 2 }, { completer: fakeModel(gate.promise).complete });
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 2 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
 		const connectorPlan = randomUUID();
 		const ownerPlan = randomUUID();
 		expect(await startAs(h, connector("key-a"), connectorPlan)).toMatchObject({
 			ok: true,
 			data: { sessionId: connectorPlan, status: "running" },
 		});
-		expect(await startAs(h, connector("key-b"), randomUUID())).toEqual({ ok: false, code: "busy" });
+		expect(await startBusy(h, connector("key-b"))).toEqual({
+			ok: false,
+			code: "busy",
+			retryAfterSec: 30,
+		});
 		expect(await startAs(h, owner, ownerPlan)).toMatchObject({
 			ok: true,
 			data: { sessionId: ownerPlan, status: "running" },
 		});
-		expect(await startAs(h, owner, randomUUID())).toEqual({ ok: false, code: "busy" });
+		expect(await startBusy(h, owner)).toEqual({
+			ok: false,
+			code: "busy",
+			retryAfterSec: 30,
+		});
 		gate.resolve();
 		for (const sessionId of [connectorPlan, ownerPlan])
 			await h.planner.result({ sessionId, waitSeconds: 30 });
@@ -1582,7 +1601,10 @@ describe("headless planner: plan-slot fairness", () => {
 
 	test("one connector principal is capped at its share while another principal is still admitted", async () => {
 		const gate = Promise.withResolvers<void>();
-		const h = setup({ maxConcurrentPlans: 4 }, { completer: fakeModel(gate.promise).complete });
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 4 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
 		const started: string[] = [];
 		for (let i = 0; i < 2; i++) {
 			const sessionId = randomUUID();
@@ -1592,7 +1614,11 @@ describe("headless planner: plan-slot fairness", () => {
 				data: { status: "running" },
 			});
 		}
-		expect(await startAs(h, connector("key-a"), randomUUID())).toEqual({ ok: false, code: "busy" });
+		expect(await startBusy(h, connector("key-a"))).toEqual({
+			ok: false,
+			code: "busy",
+			retryAfterSec: 30,
+		});
 		const other = randomUUID();
 		started.push(other);
 		expect(await startAs(h, connector("key-b"), other)).toMatchObject({
@@ -1605,10 +1631,17 @@ describe("headless planner: plan-slot fairness", () => {
 
 	test("a settled plan frees its slot for the next connector start", async () => {
 		const gate = Promise.withResolvers<void>();
-		const h = setup({ maxConcurrentPlans: 2 }, { completer: fakeModel(gate.promise).complete });
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 2 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
 		const first = randomUUID();
 		await startAs(h, connector("key-a"), first);
-		expect(await startAs(h, connector("key-b"), randomUUID())).toEqual({ ok: false, code: "busy" });
+		expect(await startBusy(h, connector("key-b"))).toEqual({
+			ok: false,
+			code: "busy",
+			retryAfterSec: 30,
+		});
 		gate.resolve();
 		await h.planner.result({ sessionId: first, waitSeconds: 30 });
 		const next = randomUUID();
@@ -1618,7 +1651,10 @@ describe("headless planner: plan-slot fairness", () => {
 
 	test("starts without an admission keep the count-only check", async () => {
 		const gate = Promise.withResolvers<void>();
-		const h = setup({ maxConcurrentPlans: 2 }, { completer: fakeModel(gate.promise).complete });
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 2 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
 		const plans = [randomUUID(), randomUUID()] as const;
 		expect(await startAs(h, undefined, plans[0])).toMatchObject({
 			ok: true,
@@ -1628,17 +1664,28 @@ describe("headless planner: plan-slot fairness", () => {
 			ok: true,
 			data: { status: "running" },
 		});
-		expect(await startAs(h, undefined, randomUUID())).toEqual({ ok: false, code: "busy" });
+		expect(await startBusy(h, undefined)).toEqual({
+			ok: false,
+			code: "busy",
+			retryAfterSec: 30,
+		});
 		gate.resolve();
 		for (const sessionId of plans) await h.planner.result({ sessionId, waitSeconds: 30 });
 	});
 
 	test("re-starting a running session is never busy, whoever asks", async () => {
 		const gate = Promise.withResolvers<void>();
-		const h = setup({ maxConcurrentPlans: 1 }, { completer: fakeModel(gate.promise).complete });
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 1 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
 		const sessionId = randomUUID();
 		await startAs(h, connector("key-a"), sessionId);
-		expect(await startAs(h, connector("key-b"), randomUUID())).toEqual({ ok: false, code: "busy" });
+		expect(await startBusy(h, connector("key-b"))).toEqual({
+			ok: false,
+			code: "busy",
+			retryAfterSec: 30,
+		});
 		expect(await startAs(h, connector("key-b"), sessionId)).toMatchObject({
 			ok: true,
 			data: { sessionId, status: "running" },
@@ -1731,7 +1778,7 @@ describe("headless planner: client span threading", () => {
 			await runWithRequestContext(CTX, () => sinkless.planner.start({ prompt: PROMPT })),
 		).toMatchObject({ ok: true, data: { status: "planned" } });
 
-		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
+		const breaker = createCircuitBreaker(COUNT_BREAKER);
 		const slot = breaker.tryAcquire();
 		if (!slot.ok) throw new Error("expected a closed breaker");
 		slot.release("failure");
@@ -2128,5 +2175,413 @@ describe("headless planner: plan backend", () => {
 		expect(fake.readyChecks()).toBe(0);
 		expect(labels.length).toBeGreaterThan(0);
 		for (const label of labels) expect(label).toBe("plan:claude-haiku-5-5");
+	});
+});
+
+/** A model that never answers and ignores the abort: only the planner's own cancel can end its job. */
+const NEVER_ANSWERS: ClaudeCompleter = () => new Promise<string>(() => undefined);
+
+const runCount = (store: Store): number =>
+	(store.db.query("SELECT COUNT(*) AS n FROM runs").get() as { n: number }).n;
+
+/** Opens a breaker with enough failures for any window rule. */
+function tripBreaker(breaker: ReturnType<typeof createCircuitBreaker>): void {
+	for (let i = 0; i < 12; i++) {
+		const slot = breaker.tryAcquire();
+		if (!slot.ok) break;
+		slot.release("failure");
+	}
+}
+
+const QUEUE_WAIT_MS = 60_000;
+
+/**
+ * A breaker that opens on the first failed call (one call is a large enough sample, any rate counts): the tests of the
+ * planner's wiring want a tripped breaker without 10 failed calls; the rate rule has its own tests in breaker.test.ts.
+ */
+const COUNT_BREAKER = {
+	failureThreshold: 1,
+	windowMs: 60_000,
+	openMs: 30_000,
+	minCalls: 1,
+	failureRate: 0,
+} as const;
+
+describe("headless planner: cancel, queue and drain", () => {
+	const owner: Admission = { principal: "owner", class: "owner" };
+	const connector = (principal: string): Admission => ({ principal, class: "connector" });
+	const admittedAs = (admission: Admission): RequestContext => ({
+		reqId: randomUUID(),
+		traceId: "0".repeat(32),
+		spanId: "0".repeat(16),
+		admission,
+	});
+
+	test("an aborted start request ends the job and frees its slot", async () => {
+		const request = new AbortController();
+		let signal: AbortSignal | undefined = request.signal;
+		const h = setup(
+			{ maxConcurrentPlans: 1 },
+			{ completer: NEVER_ANSWERS, requestSignal: () => signal },
+		);
+		const first = randomUUID();
+		const started = h.planner.start({ prompt: PROMPT, sessionId: first });
+		let settled = false;
+		void started.then(() => {
+			settled = true;
+		});
+		await flush();
+		request.abort();
+		await flush();
+		expect(settled).toBe(true);
+		expect(await started).toEqual({
+			ok: true,
+			data: { sessionId: first, status: "failed", error: "aborted" },
+		});
+		expect(jobFile(h.stateDir, first)).toMatchObject({ status: "failed", error: "aborted" });
+		// The slot is free again: the next start is accepted instead of busy.
+		signal = undefined;
+		expect(await startRunning(h, randomUUID())).toMatchObject({
+			ok: true,
+			data: { status: "running" },
+		});
+	});
+
+	test("an abort while queued removes the waiter without creating a job", async () => {
+		let signal: AbortSignal | undefined;
+		const h = setup(
+			{ maxConcurrentPlans: 1 },
+			{ completer: NEVER_ANSWERS, requestSignal: () => signal },
+		);
+		await startRunning(h, randomUUID());
+		const before = runCount(h.store);
+		const request = new AbortController();
+		signal = request.signal;
+		const queuedId = randomUUID();
+		const queued = h.planner.start({ prompt: PROMPT, sessionId: queuedId });
+		let settled = false;
+		void queued.then(() => {
+			settled = true;
+		});
+		signal = undefined;
+		await flush();
+		// It waits for a slot instead of answering busy at once.
+		expect(settled).toBe(false);
+		request.abort();
+		await flush();
+		expect(await queued).toEqual({ ok: false, code: "aborted" });
+		expect(runCount(h.store)).toBe(before);
+		expect(existsSync(join(h.stateDir, "jobs", `${queuedId}.json`))).toBe(false);
+	});
+
+	test("cancel ends a running job as aborted and frees the slot; unknown and finished ids are not_found", async () => {
+		const h = setup({ maxConcurrentPlans: 1 }, { completer: NEVER_ANSWERS });
+		const sessionId = randomUUID();
+		await startRunning(h, sessionId);
+		expect(await h.planner.cancel?.({ sessionId })).toEqual({
+			ok: true,
+			data: { sessionId, status: "failed", error: "aborted" },
+		});
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ status: "failed", error: "aborted" });
+		expect(h.planner.status({ sessionId })).toMatchObject({ ok: true, data: { status: "failed" } });
+		expect(await h.planner.cancel?.({ sessionId })).toEqual({ ok: false, code: "not_found" });
+		expect(await h.planner.cancel?.({ sessionId: randomUUID() })).toEqual({
+			ok: false,
+			code: "not_found",
+		});
+		expect(await h.planner.cancel?.({ sessionId: "nope" })).toEqual({
+			ok: false,
+			code: "invalid_session_id",
+		});
+		expect(await startRunning(h, randomUUID())).toMatchObject({
+			ok: true,
+			data: { status: "running" },
+		});
+	});
+
+	test("cancel of a running job advances the next queued waiter", async () => {
+		const gate = Promise.withResolvers<void>();
+		const h = setup(
+			{ maxConcurrentPlans: 1 },
+			{ completer: fakeModel(gate.promise, false).complete },
+		);
+		const first = randomUUID();
+		const second = randomUUID();
+		await startRunning(h, first);
+		const queued = h.planner.start({ prompt: PROMPT, sessionId: second });
+		await flush();
+		expect(h.planner.status({ sessionId: second })).toBeNull();
+		await h.planner.cancel?.({ sessionId: first });
+		await flush();
+		expect(h.planner.status({ sessionId: second })).toMatchObject({ ok: true });
+		gate.resolve();
+		expect(await queued).toMatchObject({ ok: true, data: { sessionId: second } });
+	});
+
+	test("a principal cancels only its own job; an owner cancels any", async () => {
+		const h = setup({ maxConcurrentPlans: 4 }, { completer: NEVER_ANSWERS });
+		const sessionId = randomUUID();
+		const started = runWithRequestContext(admittedAs(connector("key-a")), () =>
+			h.planner.start({ prompt: PROMPT, sessionId }),
+		);
+		await flush();
+		h.clock.fire(15_000);
+		await started;
+		const foreign = await runWithRequestContext(admittedAs(connector("key-b")), () =>
+			h.planner.cancel?.({ sessionId }),
+		);
+		expect(foreign).toEqual({ ok: false, code: "not_found" });
+		expect(h.planner.status({ sessionId })).toMatchObject({
+			ok: true,
+			data: { status: "running" },
+		});
+		const byOwner = await runWithRequestContext(admittedAs(owner), () =>
+			h.planner.cancel?.({ sessionId }),
+		);
+		expect(byOwner).toMatchObject({ ok: true, data: { status: "failed", error: "aborted" } });
+	});
+
+	test("queued plans wait without an armed plan timeout; the countdown starts at the slot grant", async () => {
+		const gate = Promise.withResolvers<void>();
+		const h = setup(
+			{ maxConcurrentPlans: 1, planTimeoutMs: 1000 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
+		const starts = [randomUUID(), randomUUID(), randomUUID()].map((sessionId) =>
+			h.planner.start({ prompt: PROMPT, sessionId }),
+		);
+		await flush();
+		expect(h.clock.waits.filter((wait) => wait.ms === 1000)).toHaveLength(1);
+		gate.resolve();
+		for (const settled of await Promise.all(starts))
+			expect(settled).toMatchObject({ ok: true, data: { status: "planned" } });
+	});
+
+	test("saturation queues within a bound, answers busy with a retry hint, and still admits another principal", async () => {
+		const gate = Promise.withResolvers<void>();
+		const h = setup({ maxConcurrentPlans: 4 }, { completer: fakeModel(gate.promise).complete });
+		const results: Array<{ ok: boolean; code?: string; retryAfterSec?: number } | undefined> = [];
+		const starts = Array.from({ length: 14 }, (_, index) =>
+			runWithRequestContext(admittedAs(connector("key-a")), () =>
+				h.planner.start({ prompt: PROMPT, sessionId: randomUUID() }),
+			).then((reply) => {
+				results[index] = reply as { ok: boolean; code?: string; retryAfterSec?: number };
+				return reply;
+			}),
+		);
+		await flush();
+		// Two run, eight wait (half the queue depth of 16), four are refused at once.
+		const refused = results.filter((reply) => reply !== undefined);
+		expect(refused).toHaveLength(4);
+		for (const reply of refused) {
+			expect(reply).toMatchObject({ ok: false, code: "busy" });
+			expect(reply?.retryAfterSec).toBeGreaterThan(0);
+		}
+		h.clock.fire(15_000);
+		await flush();
+		const other = runWithRequestContext(admittedAs(connector("key-b")), () =>
+			h.planner.start({ prompt: PROMPT, sessionId: randomUUID() }),
+		);
+		await flush();
+		h.clock.fire(15_000);
+		expect(await other).toMatchObject({ ok: true, data: { status: "running" } });
+		gate.resolve();
+		const settled = await Promise.all(starts);
+		expect(settled.filter((reply) => reply.ok)).toHaveLength(10);
+	});
+
+	test("a queued start that waits out the queue answers busy with a retry hint", async () => {
+		const gate = Promise.withResolvers<void>();
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 1 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
+		await startRunning(h, randomUUID());
+		const waiting = h.planner.start({ prompt: PROMPT, sessionId: randomUUID() });
+		await flush();
+		expect(h.clock.has(QUEUE_WAIT_MS)).toBe(true);
+		h.clock.fire(QUEUE_WAIT_MS);
+		expect(await waiting).toMatchObject({
+			ok: false,
+			code: "busy",
+			retryAfterSec: expect.any(Number),
+		});
+		gate.resolve();
+	});
+
+	test("an open breaker refuses before any run row, job file or slot exists, with a retry hint", async () => {
+		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
+		tripBreaker(breaker);
+		expect(breaker.state()).toBe("open");
+		const h = setup({ maxConcurrentPlans: 1 }, { breaker });
+		const before = runCount(h.store);
+		const sessionId = randomUUID();
+		const refused = await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(refused).toMatchObject({
+			ok: false,
+			code: "upstream_unavailable",
+			retryAfterSec: expect.any(Number),
+		});
+		expect(runCount(h.store)).toBe(before);
+		expect(existsSync(join(h.stateDir, "jobs", `${sessionId}.json`))).toBe(false);
+		expect(h.planner.status({ sessionId })).toBeNull();
+		expect(h.planner.upstream()?.state).toBe("open");
+	});
+
+	test("a refused fill degrades the plan explicitly instead of failing it", async () => {
+		const breaker = createCircuitBreaker({ failureThreshold: 1, windowMs: 60_000, openMs: 30_000 });
+		const h = setup(
+			{},
+			{
+				breaker,
+				plan: async (request, env, options) => {
+					const select = options?.selectEngine;
+					if (!select) throw new Error("selectEngine missing");
+					let ask: ClaudeCompleter | undefined;
+					const response = await planPrompt(request, env, {
+						...options,
+						selectEngine: async (...args) => {
+							const engine = await select(...args);
+							if ("skipped" in engine) return engine;
+							ask = engine.complete;
+							return engine;
+						},
+					});
+					// The breaker opens mid-plan, so the next fill is refused.
+					tripBreaker(breaker);
+					await ask?.("fill", "node n2").catch(() => undefined);
+					const stateDir = options?.stateDir ?? "";
+					const record = readSession(stateDir, request.session_id ?? "");
+					if (record) writeSession(stateDir, { ...record, degraded: ["fill:n2"] });
+					return response;
+				},
+			},
+		);
+		const sessionId = randomUUID();
+		const started = await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(started).toMatchObject({ ok: true, data: { status: "invalid" } });
+		const view = await h.planner.result({ sessionId, waitSeconds: 0 });
+		expect(view).toMatchObject({ ok: true, data: { status: "invalid" } });
+		if (!view.ok) return;
+		expect(view.data.error).toContain("degraded stages: fill:n2");
+		expect(view.data.error).toMatch(/retry after \d+s/);
+	});
+
+	test("a job that nobody polls reports its outcome when it ends", async () => {
+		const outcomes: Array<Record<string, unknown>> = [];
+		const h = setup({}, { onOutcome: (outcome) => outcomes.push({ ...outcome }) });
+		const sessionId = randomUUID();
+		await h.planner.start({ prompt: PROMPT, sessionId });
+		expect(outcomes).toHaveLength(1);
+		expect(outcomes[0]).toMatchObject({ sessionId, status: "planned" });
+		expect(outcomes[0]?.calls).toBeGreaterThanOrEqual(8);
+		expect(typeof outcomes[0]?.ms).toBe("number");
+	});
+
+	test("a failed job and a throwing outcome hook: the outcome carries the error, the job is unaffected", async () => {
+		const outcomes: Array<Record<string, unknown>> = [];
+		const failing: ClaudeCompleter = async () => {
+			throw new PlanCompleterError("auth", "auth");
+		};
+		const h = setup(
+			{},
+			{
+				completer: failing,
+				onOutcome: (outcome) => {
+					outcomes.push({ ...outcome });
+					throw new Error("hook broke");
+				},
+			},
+		);
+		const sessionId = randomUUID();
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({
+			ok: true,
+			data: { status: "failed", error: "auth" },
+		});
+		expect(outcomes).toEqual([
+			expect.objectContaining({ sessionId, status: "failed", error: "auth" }),
+		]);
+	});
+
+	test("beginDrain refuses new plans and ends queued waiters; shutdown ends accepted jobs as interrupted", async () => {
+		const h = setup({ maxConcurrentPlans: 1 }, { completer: NEVER_ANSWERS });
+		const running = randomUUID();
+		await startRunning(h, running);
+		const queued = h.planner.start({ prompt: PROMPT, sessionId: randomUUID() });
+		await flush();
+		h.planner.beginDrain?.();
+		await flush();
+		expect(await queued).toEqual({ ok: false, code: "not_ready" });
+		const before = runCount(h.store);
+		expect(await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() })).toEqual({
+			ok: false,
+			code: "not_ready",
+		});
+		expect(runCount(h.store)).toBe(before);
+		const closing = h.planner.shutdown();
+		await flush();
+		h.clock.fire(5_000);
+		await closing;
+		expect(jobFile(h.stateDir, running)).toMatchObject({ status: "failed", error: "interrupted" });
+		expect(
+			h.store.listRunsForOwner("ultrathink-server-planner", 10).map((run) => run.status),
+		).toEqual(["failed"]);
+	});
+
+	test("shutdown alone refuses queued waiters instead of letting them start", async () => {
+		const h = setup({ maxConcurrentPlans: 1 }, { completer: NEVER_ANSWERS });
+		await startRunning(h, randomUUID());
+		const queued = h.planner.start({ prompt: PROMPT, sessionId: randomUUID() });
+		await flush();
+		const closing = h.planner.shutdown();
+		await flush();
+		h.clock.fire(5_000);
+		await closing;
+		expect(await queued).toEqual({ ok: false, code: "not_ready" });
+	});
+
+	test("a disk fault while persisting the job leaves a failed run row, not a paused one", async () => {
+		const h = setup();
+		// A regular file where the jobs directory belongs makes every persist fail.
+		mkdirSync(h.stateDir, { recursive: true });
+		writeFileSync(join(h.stateDir, "jobs"), "not a directory");
+		const before = runCount(h.store);
+		expect(await h.planner.start({ prompt: PROMPT, sessionId: randomUUID() })).toEqual({
+			ok: false,
+			code: "engine_error",
+		});
+		expect(runCount(h.store)).toBe(before + 1);
+		const rows = h.store.db
+			.query("SELECT status, reason FROM runs ORDER BY created_at DESC LIMIT 1")
+			.all() as Array<{ status: string; reason: string | null }>;
+		expect(rows[0]).toEqual({ status: "failed", reason: "persist_failed" });
+	});
+
+	test("a plan that throws logs engine_error with a redacted cause", async () => {
+		const events: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+		const logger = {
+			info: () => undefined,
+			warn: () => undefined,
+			error: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
+		};
+		const h = setup(
+			{},
+			{
+				logger,
+				plan: async () => {
+					throw new Error(`model exploded with ${FAKE_KEY}\nsecond line`);
+				},
+			},
+		);
+		const sessionId = randomUUID();
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toMatchObject({
+			ok: true,
+			data: { status: "failed", error: "engine_error" },
+		});
+		const logged = events.find((entry) => entry.event === "engine_error");
+		expect(logged?.fields?.sessionId).toBe(sessionId);
+		expect(String(logged?.fields?.cause)).toContain("model exploded");
+		expect(JSON.stringify(events)).not.toContain(FAKE_KEY);
+		expect(String(logged?.fields?.cause)).not.toContain("\n");
 	});
 });

@@ -28,10 +28,11 @@ export interface FailureVerdict {
 
 /**
  * Refusals no later attempt can fix. Unknown text is not on this list: a status-less failure retries unless it says
- * plainly that the account, key or request is refused.
+ * plainly that the account, key or request is refused (including a Claude CLI login failure), or that its usage window (session, usage, weekly, monthly,
+ * daily limit) or a zero request limit (`limit: 0`, `0/0`, `actual/limit): 5/0`) is out of reach for a retry.
  */
 const PERMANENT_TEXT =
-	/subscription|permission|not entitled|forbidden|unauthori[sz]ed|insufficient[ _]quota|credit balance|access denied|content policy|invalid api key/i;
+	/subscription|permission|not entitled|forbidden|unauthori[sz]ed|not logged in|please run \/login|not authenticated|authentication_error|insufficient[ _]quota|credit balance|access denied|content policy|invalid api key|\b(?:session|usage|weekly|monthly|daily) limit\b|\blimit\)?:?\s*0(?!\d|\.\d)|\bactual\/limit\)?:?\s*\d+\s*\/\s*0(?!\d)|\b0\s*\/\s*0(?!\d)/i;
 
 const DELTA_SECONDS = /^\d+(?:\.\d+)?$/;
 

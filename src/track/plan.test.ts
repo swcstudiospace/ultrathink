@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import type { Clarification } from "../hitl/types.ts";
-import type { ThoughtGraph } from "../think/types.ts";
+import { MAX_STEPS, type ThoughtGraph } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
 import {
 	buildTrackPlan,
@@ -359,5 +359,35 @@ describe("buildTrackPlan per-step Sub-Issues", () => {
 		expect(plan.subIssues[0]?.item.length).toBeLessThan(120);
 		expect(plan.subIssues[0]?.item.endsWith("…")).toBe(true);
 		expect(plan.linearSubIssues[0]?.title.length).toBeLessThan(120);
+	});
+
+	test("a 99-step rationale clamps to MAX_STEPS and the tail folds into the last step", () => {
+		const rationale = Array.from({ length: 99 }, (_, i) => `${i + 1}. body ${i + 1}`).join("\n");
+		const graph: ThoughtGraph = {
+			goal: "g",
+			nodes: [
+				{
+					id: "n1",
+					title: "T",
+					kind: "synthesize",
+					question: "Q",
+					dependsOn: [],
+					thinking: rationale,
+					conclusion: "C",
+				},
+			],
+		};
+		const titles = nodeStepTitles(graph.nodes[0]!);
+		expect(titles).toHaveLength(MAX_STEPS);
+		expect(titles[0]).toBe("Step 1: body 1");
+		expect(titles[MAX_STEPS - 1]).toStartWith(
+			`Step ${MAX_STEPS}: body ${MAX_STEPS} / body ${MAX_STEPS + 1}`,
+		);
+		const plan = buildTrackPlan({ uplift, graph, clarifications: [], graphId: "ut-fixed" });
+		expect(plan.subIssues).toHaveLength(MAX_STEPS);
+		expect(plan.linearSubIssues).toHaveLength(MAX_STEPS);
+		const last = plan.subIssues[MAX_STEPS - 1]!;
+		expect(last.thought.startsWith(`body ${MAX_STEPS} / body ${MAX_STEPS + 1}`)).toBe(true);
+		expect(last.thought.endsWith("body 99")).toBe(true);
 	});
 });

@@ -3,9 +3,24 @@
 /**
  * Creates the tracker rows for a TrackPlan (Linear issues/sub-issues, Notion rows) through
  * MCP tool callers. Idempotent against `existing`, bounded by one budget signal, never throws.
+ *
+ * Every tracker call runs through the retry kernel (429, 5xx, timeouts and Retry-After are retried, a permanent
+ * refusal is not). A refusal that covers the whole provider (auth, permission, quota) opens a breaker for that
+ * provider for the rest of the run. Linear and Notion run independently of each other.
  */
 import type { ThoughtGraph } from "../think/types.ts";
 import type { ProgressSink } from "../host/progress.ts";
+import { FIELD_CAPS, clip } from "../resilience/limits.ts";
+import {
+	RETRY_AFTER_CAP_MS,
+	isTransientFailure,
+	unwrapRetryError,
+	withRetry,
+	type FailureVerdict,
+	type RetryPolicy,
+} from "../resilience/retry.ts";
+import type { abortableSleep } from "../resilience/sleep.ts";
+import { isAbortError } from "../shared.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "./types.ts";
 import { nonEmpty } from "../teach/digest.ts";
 
@@ -47,9 +62,25 @@ export interface CreateTrackingDeps {
 	/** Whole creation budget in ms; 0 = no limit (no abort timer is created). */
 	budgetMs: number;
 	now?: () => number;
-	/** Timer port for the creation budget; defaults to the platform timers. */
+	/** Timer port for the creation budget and the Linear link wait; defaults to the platform timers. */
 	timers?: TimerPort;
+	/** Wait between retries of a tracker call; defaults to the kernel's abortable sleep. */
+	sleep?: typeof abortableSleep;
+	/** Jitter source of the retry wait; defaults to `Math.random`. */
+	random?: () => number;
+	/** How long Notion node and step rows wait for Linear's links before going without them (default 20 s). */
+	linkWaitMs?: number;
+	/** Node ids whose fill is degraded: their Linear and Notion rows carry a "[degraded fill]" marker. */
+	degradedNodes?: readonly string[];
+	/** A credential lookup that failed, per provider (short, secret-free): reported apart from "login required". */
+	credentialErrors?: { linear?: string; notion?: string };
 	log?: (message: string) => void;
+	/**
+	 * Called with the live refs right after each row is created or adopted (a Linear issue or sub-issue, the Notion task, or
+	 * one Notion batch of node or step pages), before the next call starts: a checkpoint the caller can save so a kill keeps every ref made so far.
+	 * It must copy what it keeps; errors thrown by it are ignored.
+	 */
+	onRef?: (refs: TrackingRefs) => void;
 	/** Receives a `track` event after every creation, adoption pass and failure; errors thrown by it are ignored. */
 	progress?: ProgressSink;
 }
@@ -59,6 +90,18 @@ const IDENTIFIER_RE = /\b[A-Z][A-Z0-9]*-\d+\b/;
 const NOTION_URL_RE =
 	/https:\/\/(?:(?:www\.)?notion\.(?:so|site)|app\.notion\.com)\/[^\s"')\]<>]+/g;
 const NOTION_BATCH = 25;
+
+/** Three tries per tracker call: the first plus two retries, full-jitter backoff raised to any Retry-After. */
+const RETRY_POLICY: RetryPolicy = { maxAttempts: 3, baseMs: 500, capMs: 8_000 };
+/** The longest Notion rows wait for Linear's links when Linear is slow or stuck. */
+const LINK_WAIT_MS = 20_000;
+/** The relay's rate-limit text: `... rate limited; retry after 3s`. */
+const RETRY_AFTER_TEXT = /retry after (\d+(?:\.\d+)?)\s*s/i;
+/** A message that says the account has run out of allowance: no later attempt helps. */
+const QUOTA_TEXT = /\bquota\b|usage limit|plan limit|billing/i;
+const DEGRADED_MARKER = "[degraded fill] ";
+
+type Provider = "linear" | "notion";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -108,14 +151,51 @@ function shortError(error: unknown): string {
 	return message.replace(/\s+/g, " ").trim().slice(0, 160) || "error";
 }
 
+/** The failure a raced call reports once the budget is gone. Named `AbortError` so the retry kernel never retries it. */
+function budgetExhausted(): Error {
+	return Object.assign(new Error("budget exhausted"), { name: "AbortError" });
+}
+
 /** Races `promise` with the signal so a caller that ignores the signal cannot outlive the budget. */
 function withSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-	if (signal.aborted) return Promise.reject(new Error("budget exhausted"));
+	if (signal.aborted) return Promise.reject(budgetExhausted());
 	const { promise: raced, resolve, reject } = Promise.withResolvers<T>();
-	const onAbort = () => reject(new Error("budget exhausted"));
+	const onAbort = () => reject(budgetExhausted());
 	signal.addEventListener("abort", onAbort, { once: true });
 	promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
 	return raced;
+}
+
+/**
+ * How the kernel judges a tracker failure: its own verdict, plus the two things only this transport shows. The relay
+ * reports a rate limit as text carrying `retry after Ns`, and a quota message without a status is still permanent.
+ */
+function classifyTrackerFailure(error: unknown, now?: number): FailureVerdict {
+	const verdict = isTransientFailure(error, now);
+	if (!verdict.transient) return verdict;
+	const text = error instanceof Error ? error.message : String(error);
+	if (QUOTA_TEXT.test(text)) return { ...verdict, transient: false, reason: "quota text" };
+	if (verdict.retryAfterMs !== undefined) return verdict;
+	const seconds = RETRY_AFTER_TEXT.exec(text)?.[1];
+	const ms = seconds === undefined ? 0 : Math.round(Number(seconds) * 1000);
+	return ms > 0 ? { ...verdict, retryAfterMs: Math.min(ms, RETRY_AFTER_CAP_MS) } : verdict;
+}
+
+/** True when a refusal covers the whole provider (auth, permission, quota), not just the one request that met it. */
+function refusesProvider(error: unknown): boolean {
+	if (isAbortError(error)) return false;
+	const verdict = classifyTrackerFailure(error, Date.now());
+	if (verdict.transient) return false;
+	if (/content policy/i.test(shortError(error))) return false;
+	return verdict.status === undefined || [401, 402, 403, 429].includes(verdict.status);
+}
+
+/** Thrown for a call the breaker refused: the provider's one recorded error already says why. */
+class BreakerOpenError extends Error {
+	constructor(provider: Provider, reason: string) {
+		super(`${provider} breaker open: ${reason}`);
+		this.name = "BreakerOpenError";
+	}
 }
 
 async function runPool<T>(
@@ -137,6 +217,13 @@ async function runPool<T>(
 
 function footer(graphId: string, nodeId: string, step?: number): string {
 	return `ultrathink graph ${graphId} · node ${nodeId}${step === undefined ? "" : ` · step ${step}`}`;
+}
+
+/** `[n2] Build` becomes `[n2] [degraded fill] Build`: the node id stays first, because adoption reads it from there. */
+function markTitle(nodeId: string, title: string): string {
+	const prefix = `[${nodeId}]`;
+	const rest = title.startsWith(prefix) ? title.slice(prefix.length).trimStart() : title;
+	return `${prefix} ${DEGRADED_MARKER}${rest}`;
 }
 
 /** Dependency levels for the plan's nodes (graph order when no graph). */
@@ -260,13 +347,13 @@ function listEntries(result: unknown): Record<string, unknown>[] {
 }
 
 type IssueEmitter = (
-	provider: "linear" | "notion",
+	provider: Provider,
 	nodeId: string,
 	step: number | undefined,
 	ref: { identifier?: string; url: string },
 ) => void;
 
-/** Re-run only: adopts Linear issues already carrying this graph's description footer. Non-fatal. */
+/** Re-run only: adopts Linear issues already carrying this graph's description footer. A failure is the caller's to record. */
 async function adoptLinear(
 	plan: TrackPlan,
 	refs: TrackingRefs,
@@ -274,8 +361,9 @@ async function adoptLinear(
 	signal: AbortSignal,
 	emitIssue: IssueEmitter,
 ): Promise<void> {
-	const result = await withSignal(
-		linear.call("list_issues", { query: `ultrathink graph ${plan.graphId}`, limit: 250 }, signal),
+	const result = await linear.call(
+		"list_issues",
+		{ query: `ultrathink graph ${plan.graphId}`, limit: 250 },
 		signal,
 	);
 	const graphPattern = plan.graphId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -304,7 +392,7 @@ async function adoptLinear(
 	}
 }
 
-/** Re-run only: adopts Notion rows already tagged with this graph's Graph ID. Non-fatal. */
+/** Re-run only: adopts Notion rows already tagged with this graph's Graph ID. A failure is the caller's to record. */
 async function adoptNotion(
 	plan: TrackPlan,
 	refs: TrackingRefs,
@@ -313,18 +401,15 @@ async function adoptNotion(
 	signal: AbortSignal,
 ): Promise<void> {
 	const collection = `collection://${dataSource}`;
-	const result = await withSignal(
-		notion.call(
-			"notion-query-data-sources",
-			{
-				data: {
-					data_source_urls: [collection],
-					query: `SELECT url, "Level", "Item", "Step" FROM "${collection}" WHERE "Graph ID" = ?`,
-					params: [plan.graphId],
-				},
+	const result = await notion.call(
+		"notion-query-data-sources",
+		{
+			data: {
+				data_source_urls: [collection],
+				query: `SELECT url, "Level", "Item", "Step" FROM "${collection}" WHERE "Graph ID" = ?`,
+				params: [plan.graphId],
 			},
-			signal,
-		),
+		},
 		signal,
 	);
 	for (const row of listEntries(result)) {
@@ -375,6 +460,14 @@ export async function createTracking(
 	const timer =
 		deps.budgetMs > 0 ? timers.setTimeout(() => controller.abort(), deps.budgetMs) : undefined;
 	const emit = (error?: string) => {
+		// Every non-failure emit follows a created or adopted row (a Notion batch emits once): the refs are checkpointed here.
+		if (error === undefined) {
+			try {
+				deps.onRef?.(refs);
+			} catch {
+				// reason: a broken checkpoint must never affect tracking
+			}
+		}
 		if (!deps.progress) return;
 		try {
 			deps.progress({
@@ -424,18 +517,90 @@ export async function createTracking(
 		deps.log?.(message);
 		emit(message);
 	};
+	/** Records a failed call; a call the breaker refused is not recorded again, its provider already said why. */
+	const report = (label: string, error: unknown) => {
+		if (!(error instanceof BreakerOpenError)) fail(`${label}: ${shortError(error)}`);
+	};
+
+	const breaker: Partial<Record<Provider, string>> = {};
+	/**
+	 * A caller whose every call is raced with the budget, retried through the kernel (it throws the last raw error, never
+	 * the kernel's wrapper), and refused once its provider's breaker is open.
+	 */
+	const guarded = (provider: Provider, caller: ToolCaller | undefined): ToolCaller | undefined =>
+		caller && {
+			async call(name, args) {
+				const open = breaker[provider];
+				if (open !== undefined) throw new BreakerOpenError(provider, open);
+				try {
+					const { value } = await withRetry(
+						() => withSignal(caller.call(name, args, signal), signal),
+						RETRY_POLICY,
+						{
+							signal,
+							sleep: deps.sleep,
+							random: deps.random,
+							now,
+							classify: classifyTrackerFailure,
+						},
+					);
+					return value;
+				} catch (error) {
+					const cause = unwrapRetryError(error);
+					if (breaker[provider] === undefined && refusesProvider(cause)) {
+						breaker[provider] = shortError(cause);
+						fail(`${provider}: breaker open after ${shortError(cause)}`);
+					}
+					throw cause;
+				}
+			},
+		};
+	const run = {
+		...deps,
+		linear: guarded("linear", deps.linear),
+		notion: guarded("notion", deps.notion),
+	};
+	/** A provider whose adoption lookup failed gets no new rows this run: they could duplicate rows it could not see. */
+	const skipped: Partial<Record<Provider, true>> = {};
+
 	try {
 		if (existing) {
-			if (deps.linear && deps.linearTeam)
-				await adoptLinear(plan, refs, deps.linear, signal, emitIssue).catch(() => undefined);
-			if (deps.notion && deps.notionDataSource)
-				await adoptNotion(plan, refs, deps.notion, deps.notionDataSource, signal).catch(
-					() => undefined,
-				);
+			await Promise.all([
+				run.linear && deps.linearTeam
+					? adoptLinear(plan, refs, run.linear, signal, emitIssue).catch((error: unknown) => {
+							skipped.linear = true;
+							report("linear adopt", error);
+						})
+					: undefined,
+				run.notion && deps.notionDataSource
+					? adoptNotion(plan, refs, run.notion, deps.notionDataSource, signal).catch(
+							(error: unknown) => {
+								skipped.notion = true;
+								report("notion adopt", error);
+							},
+						)
+					: undefined,
+			]);
 			emit();
 		}
-		if (deps.linearTeam) await createLinear(plan, graph, refs, deps, signal, fail, emit, emitIssue);
-		if (deps.notionDataSource) await createNotion(plan, refs, deps, signal, fail, emit, emitIssue);
+		const settle = (work: Promise<void>): Promise<void> =>
+			work.catch((error: unknown) => fail(`tracking: ${shortError(error)}`));
+		// Both providers start at once; Notion only waits (bounded) for the Linear links it prints on its rows.
+		const ctx: RunContext = { plan, refs, deps: run, signal, fail, report, emit, emitIssue };
+		const nodesDone = Promise.withResolvers<void>();
+		const linearRun =
+			deps.linearTeam && !skipped.linear
+				? settle(
+						createLinear(ctx, graph, () => nodesDone.resolve()).finally(() => nodesDone.resolve()),
+					)
+				: undefined;
+		const notionRun =
+			deps.notionDataSource && !skipped.notion
+				? settle(
+						createNotion(ctx, linearRun ? { nodes: nodesDone.promise, all: linearRun } : undefined),
+					)
+				: undefined;
+		await Promise.all([linearRun, notionRun]);
 	} catch (error) {
 		// reason: the failure is recorded through fail() as a tracking error; the run continues to the status below
 		fail(`tracking: ${shortError(error)}`);
@@ -474,15 +639,36 @@ function trackingStatus(
 	return any > 0 ? "partial" : "failed";
 }
 
+/** Why a provider has no caller: a credential lookup that failed, or no login at all. */
+function noCaller(provider: Provider, deps: CreateTrackingDeps): string {
+	const credential = deps.credentialErrors?.[provider];
+	return credential === undefined
+		? `${provider}: login required`
+		: `${provider}: credential error: ${credential}`;
+}
+
+/** What a provider's creation pass shares with the run: the plan, the refs it fills and the ways to report. */
+interface RunContext {
+	plan: TrackPlan;
+	refs: TrackingRefs;
+	deps: CreateTrackingDeps;
+	signal: AbortSignal;
+	fail: (message: string) => void;
+	report: (label: string, error: unknown) => void;
+	emit: () => void;
+	emitIssue: IssueEmitter;
+}
+
+/** Linear's progress as Notion sees it: its node issues are all attempted, and everything is. */
+interface LinearProgress {
+	nodes: Promise<void>;
+	all: Promise<void>;
+}
+
 async function createLinear(
-	plan: TrackPlan,
+	{ plan, refs, deps, signal, fail, report, emit, emitIssue }: RunContext,
 	graph: ThoughtGraph | undefined,
-	refs: TrackingRefs,
-	deps: CreateTrackingDeps,
-	signal: AbortSignal,
-	fail: (message: string) => void,
-	emit: () => void,
-	emitIssue: IssueEmitter,
+	nodesDone: () => void,
 ): Promise<void> {
 	const pendingNodes = plan.linearIssues.filter((issue) => !refs.linear.nodes[issue.nodeId]);
 	const pendingSteps = plan.linearSubIssues.filter(
@@ -491,9 +677,10 @@ async function createLinear(
 	if (pendingNodes.length === 0 && pendingSteps.length === 0) return;
 	const linear = deps.linear;
 	if (!linear) {
-		fail("linear: login required");
+		fail(noCaller("linear", deps));
 		return;
 	}
+	const degraded = new Set(deps.degradedNodes ?? []);
 	const byNode = new Map(plan.linearIssues.map((issue) => [issue.nodeId, issue]));
 	const dependsOn = new Map(
 		(graph?.nodes ?? []).map((node) => [
@@ -507,12 +694,12 @@ async function createLinear(
 		args: Record<string, unknown>,
 	): Promise<IssueRef | undefined> => {
 		try {
-			const result = await withSignal(linear.call("save_issue", args, signal), signal);
+			const result = await linear.call("save_issue", args, signal);
 			const ref = extractIssueRef(result, title);
 			if (!ref) fail(`linear ${label}: no identifier in result`);
 			return ref;
 		} catch (error) {
-			fail(`linear ${label}: ${shortError(error)}`);
+			report(`linear ${label}`, error);
 			return undefined;
 		}
 	};
@@ -526,19 +713,23 @@ async function createLinear(
 		await runPool(todo, deps.concurrency, signal, async (nodeId) => {
 			const issue = byNode.get(nodeId);
 			if (!issue) return;
-			const title = issue.title.startsWith(`[${nodeId}]`)
-				? issue.title
-				: `[${nodeId}] ${issue.title}`;
+			const title = degraded.has(nodeId)
+				? markTitle(nodeId, issue.title)
+				: issue.title.startsWith(`[${nodeId}]`)
+					? issue.title
+					: `[${nodeId}] ${issue.title}`;
+			// A dependency that was never created cannot be blocked on: the node is still created, without that link.
 			const nodeDeps = dependsOn.get(nodeId) ?? [];
-			if (nodeDeps.some((dep) => !refs.linear.nodes[dep])) {
-				fail(`linear ${nodeId}: dependency missing`);
-				return;
+			const created = nodeDeps.filter((dep) => refs.linear.nodes[dep]);
+			const missing = nodeDeps.filter((dep) => !refs.linear.nodes[dep]);
+			if (missing.length > 0) {
+				fail(`linear ${nodeId}: blockedBy ${missing.join(", ")} omitted (dependency not created)`);
 			}
-			const blockedBy = nodeDeps.map((dep) => (refs.linear.nodes[dep] as IssueRef).identifier);
+			const blockedBy = created.map((dep) => (refs.linear.nodes[dep] as IssueRef).identifier);
 			const args: Record<string, unknown> = {
 				team: deps.linearTeam,
 				title,
-				description: `${issue.description}\n\n${footer(plan.graphId, nodeId)}`,
+				description: `${degraded.has(nodeId) ? DEGRADED_MARKER : ""}${issue.description}\n\n${footer(plan.graphId, nodeId)}`,
 			};
 			if (blockedBy.length > 0) args.blockedBy = blockedBy;
 			const ref = await save(nodeId, title, args);
@@ -549,7 +740,7 @@ async function createLinear(
 			}
 		});
 	}
-
+	nodesDone();
 	const steps = plan.linearSubIssues.filter((sub) => {
 		if (refs.linear.steps[stepKey(sub.nodeId, sub.step)]) return false;
 		if (refs.linear.nodes[sub.nodeId]) return true;
@@ -562,7 +753,7 @@ async function createLinear(
 		const ref = await save(key, sub.title, {
 			team: deps.linearTeam,
 			title: sub.title,
-			description: `${sub.description}\n\n${footer(plan.graphId, sub.nodeId, sub.step)}`,
+			description: `${degraded.has(sub.nodeId) ? DEGRADED_MARKER : ""}${sub.description}\n\n${footer(plan.graphId, sub.nodeId, sub.step)}`,
 			parentId: parent.identifier,
 		});
 		if (ref) {
@@ -573,15 +764,8 @@ async function createLinear(
 	});
 }
 
-async function createNotion(
-	plan: TrackPlan,
-	refs: TrackingRefs,
-	deps: CreateTrackingDeps,
-	signal: AbortSignal,
-	fail: (message: string) => void,
-	emit: () => void,
-	emitIssue: IssueEmitter,
-): Promise<void> {
+async function createNotion(ctx: RunContext, linear: LinearProgress | undefined): Promise<void> {
+	const { plan, refs, deps, signal, fail } = ctx;
 	const nodeRows = plan.issues.filter((row) => !refs.notion.nodes[row.nodeId]);
 	const stepRows = plan.subIssues.filter(
 		(row) => !refs.notion.steps[stepKey(row.nodeId, row.step)],
@@ -589,12 +773,37 @@ async function createNotion(
 	if (refs.notion.taskUrl && nodeRows.length === 0 && stepRows.length === 0) return;
 	const notion = deps.notion;
 	if (!notion) {
-		fail("notion: login required");
+		fail(noCaller("notion", deps));
 		return;
 	}
 	if (signal.aborted) return;
-	const call = (name: string, args: Record<string, unknown>) =>
-		withSignal(notion.call(name, args, signal), signal);
+	const timers = deps.timers ?? platformTimers;
+
+	// Rows print the Linear links of what Linear has created. Waiting for Linear is bounded: once the grace is spent,
+	// rows go without links instead of waiting on a stuck provider.
+	const grace = Promise.withResolvers<void>();
+	let graceTimer: NodeJS.Timeout | undefined;
+	const waitLinear = async (part: keyof LinearProgress): Promise<void> => {
+		if (!linear) return;
+		graceTimer ??= timers.setTimeout(() => grace.resolve(), deps.linkWaitMs ?? LINK_WAIT_MS);
+		await Promise.race([linear[part], grace.promise]);
+	};
+	try {
+		await createNotionRows(ctx, notion, waitLinear, nodeRows, stepRows);
+	} finally {
+		timers.clearTimeout(graceTimer);
+	}
+}
+
+async function createNotionRows(
+	{ plan, refs, deps, signal, fail, report, emit, emitIssue }: RunContext,
+	notion: ToolCaller,
+	waitLinear: (part: keyof LinearProgress) => Promise<void>,
+	nodeRows: TrackPlan["issues"],
+	stepRows: TrackPlan["subIssues"],
+): Promise<void> {
+	const degraded = new Set(deps.degradedNodes ?? []);
+	const call = (name: string, args: Record<string, unknown>) => notion.call(name, args, signal);
 
 	let names: Set<string>;
 	try {
@@ -602,7 +811,7 @@ async function createNotion(
 			await call("notion-fetch", { id: `collection://${deps.notionDataSource}` }),
 		);
 	} catch (error) {
-		fail(`notion schema: ${shortError(error)}`);
+		report("notion schema", error);
 		return;
 	}
 	// A schema read that misses the core names was not understood. Filtering by it would create rows with fields silently
@@ -635,19 +844,21 @@ async function createNotion(
 			}
 			return urls;
 		} catch (error) {
-			fail(`notion ${label}: ${shortError(error)}`);
+			report(`notion ${label}`, error);
 			return undefined;
 		}
 	};
+	/** A model-controlled value, capped so one long answer cannot become one huge row. */
+	const capped = (text: string, max: number): string => clip(text, max).text;
 	const { task } = plan;
 
 	if (!refs.notion.taskUrl) {
 		const urls = await create("task", [
 			{
 				properties: props({
-					Item: task.item,
+					Item: capped(task.item, FIELD_CAPS.title),
 					Level: "Task",
-					Description: task.description,
+					Description: capped(task.description, FIELD_CAPS.conclusion),
 					"Uplifted Prompt": task.upliftedPrompt,
 					Agent: task.agent,
 					Status: task.status,
@@ -665,17 +876,19 @@ async function createNotion(
 	const taskUrl = refs.notion.taskUrl as string;
 
 	if (nodeRows.length > 0 && !signal.aborted) {
+		await waitLinear("nodes");
 		const pages = nodeRows.map((row) => {
 			const linear = refs.linear.nodes[row.nodeId];
+			const mark = degraded.has(row.nodeId);
 			return {
 				properties: props({
-					Item: row.item,
+					Item: capped(mark ? markTitle(row.nodeId, row.item) : row.item, FIELD_CAPS.title),
 					Level: "Issue",
 					Agent: task.agent,
 					Status: task.status,
 					"Linear State": task.linearState,
 					"Graph ID": plan.graphId,
-					Thought: row.thought,
+					Thought: capped(`${mark ? DEGRADED_MARKER : ""}${row.thought}`, FIELD_CAPS.conclusion),
 					"Parent Item": JSON.stringify([taskUrl]),
 					"Linear URL": linear?.url,
 					"Issue ID": linear?.identifier,
@@ -698,21 +911,23 @@ async function createNotion(
 		fail(`notion ${stepKey(row.nodeId, row.step)}: parent missing`);
 		return false;
 	});
+	if (ready.length > 0 && !signal.aborted) await waitLinear("all");
 	const batches: (typeof ready)[] = [];
 	for (let index = 0; index < ready.length; index += NOTION_BATCH)
 		batches.push(ready.slice(index, index + NOTION_BATCH));
 	await runPool(batches, deps.concurrency, signal, async (batch) => {
 		const pages = batch.map((row) => {
 			const linear = refs.linear.steps[stepKey(row.nodeId, row.step)];
+			const mark = degraded.has(row.nodeId);
 			return {
 				properties: props({
-					Item: row.item,
+					Item: capped(row.item, FIELD_CAPS.step),
 					Level: "Sub-Issue",
 					Agent: task.agent,
 					Status: task.status,
 					"Linear State": task.linearState,
 					"Graph ID": plan.graphId,
-					Thought: row.thought,
+					Thought: capped(`${mark ? DEGRADED_MARKER : ""}${row.thought}`, FIELD_CAPS.thinking),
 					Step: row.step,
 					"Parent Item": JSON.stringify([refs.notion.nodes[row.nodeId]]),
 					"Linear URL": linear?.url,

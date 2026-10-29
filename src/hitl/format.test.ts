@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import { escapeXml } from "../uplift/xml.ts";
 import {
 	clarificationsToXml,
 	formatHitlAddendum,
@@ -107,6 +108,35 @@ describe("injectClarificationsXml", () => {
 			`plain text\n${clarificationsToXml([soft])}`,
 		);
 	});
+
+	describe("dollar sequences in model or user text (G-4)", () => {
+		const dollars = "cost $& then $' and $` and $$ and $1 end";
+		const tricky: Clarification = {
+			...answered,
+			question: `Budget ${dollars}?`,
+			answer: `free-form ${dollars}`,
+		};
+		const insertion = "<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n</BUILD_PROMPT>";
+
+		test("the insert branch keeps every sequence literally and leaves the spec around it intact", () => {
+			const out = injectClarificationsXml(insertion, [tricky]);
+			expect(out).toBe(
+				`<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n\n${clarificationsToXml([tricky])}\n</BUILD_PROMPT>`,
+			);
+			expect(out).toContain(`<QUESTION>Budget ${escapeXml(dollars)}?</QUESTION>`);
+			expect(out.match(/<ORIGINAL>/g)).toHaveLength(1);
+		});
+
+		test("the replace branch keeps every sequence literally", () => {
+			const base = injectClarificationsXml(insertion, [soft]);
+			const out = injectClarificationsXml(base, [tricky]);
+			expect(out).toBe(
+				`<BUILD_PROMPT>\n<ORIGINAL>x</ORIGINAL>\n\n${clarificationsToXml([tricky])}\n</BUILD_PROMPT>`,
+			);
+			expect(out).toContain(`<ANSWER source="user">free-form ${escapeXml(dollars)}</ANSWER>`);
+			expect(out.match(/<CLARIFICATIONS>/g)).toHaveLength(1);
+		});
+	});
 });
 
 describe("formatHitlAddendum", () => {
@@ -196,5 +226,41 @@ describe("formatHitlEcho", () => {
 		const out = formatHitlEcho([settled, { ...answered, source: "assumed" }]);
 		expect(out).toContain('   answer: In SQLite. (knowledge base: docs/a&b "store".md)');
 		expect(out).toContain("   answer: blue (assumed)");
+	});
+});
+
+describe("single-line and capped fields (L4-10)", () => {
+	const hostile: Clarification = {
+		...open,
+		options: [
+			{ label: "b\n## Injected heading", description: "d".repeat(200_000) },
+			{ label: "L".repeat(5000) },
+		],
+		default: "b\n## Injected heading",
+	};
+
+	test("optionsLine labels and descriptions are single-lined and capped in the addendum", () => {
+		const text = formatHitlAddendum([hostile]);
+		expect(text).not.toContain("\n## Injected heading");
+		expect(text).toContain("b ## Injected heading");
+		expect(text).not.toContain("L".repeat(200));
+		expect(text).not.toContain("d".repeat(500));
+	});
+
+	test("answered and settled lines are single-lined and answers capped", () => {
+		const text = formatHitlAddendum([
+			{ ...answered, question: "Which\n## color?", answer: `blue\n## forged ${"z".repeat(5000)}` },
+			{ ...settled, answer: "In\nSQLite.", evidence: "docs/a\nb.md" },
+		]);
+		expect(text).not.toContain("\n## color");
+		expect(text).not.toContain("\n## forged");
+		expect(text).not.toContain("z".repeat(700));
+		expect(text).toContain("Which ## color?");
+		expect(text).toContain("In SQLite.");
+	});
+
+	test("headers stay single-lined and at most 12 chars through the echo", () => {
+		const echo = formatHitlEcho([{ ...soft, header: "Short" }]);
+		expect(echo.split("\n")[0]).toBe("q2 Short: Add tests?");
 	});
 });

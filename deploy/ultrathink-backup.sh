@@ -7,7 +7,7 @@
 #   ultrathink-backup.sh run              backup, then prune old backups, then prune old state (what the timer runs)
 #   ultrathink-backup.sh backup           consistent copy of the state into /var/backups/ultrathink/ultrathink-<utc>.tar.gz
 #   ultrathink-backup.sh verify <archive> check checksums, SQLite integrity and oauth.json syntax of an archive
-#   ultrathink-backup.sh prune            remove journal, sessions and jobs entries, the root last.json and last-plan.json copies and SQLite runs older than the retention window
+#   ultrathink-backup.sh prune            remove journal, sessions and jobs entries, the root last.json, last-plan.json and last-plan.<session>.json copies and SQLite runs older than the retention window
 #
 # What a backup holds: ultrathink.sqlite (a VACUUM INTO copy, consistent while the service runs), oauth.json
 # (registered clients and tokens; losing it logs every connector out) and the jobs/, sessions/ and journal/ directories
@@ -77,6 +77,7 @@ case "$RETENTION_DAYS" in '' | *[!0-9]*) die "ULTRATHINK_RETENTION_DAYS must be 
 # State directories a backup copies and retention prunes entry by entry.
 STATE_DATA_DIRS="jobs sessions journal"
 # The planner also writes full plan copies (request text included) next to the state directories.
+# Per-session last-plan.<sessionId>.json carriers (see src/host/carrier.ts) are matched by name in do_prune.
 STATE_ROOT_COPIES="last.json last-plan.json"
 # Single files a backup copies when present. BACKUP_INFO files= lists the ones that were actually copied. The sealed
 # audit segments (is_sealed_audit) are copied too; the chain does not verify without them.
@@ -264,7 +265,7 @@ do_backup() {
 	[ "$rsync_failed" -eq 0 ] || return 1
 }
 
-# A journal, sessions or jobs entry (and the root-level last.json and last-plan.json plan copies) is removed only when
+# A journal, sessions or jobs entry (and the root-level last.json, last-plan.json and last-plan.<session>.json plan copies) is removed only when
 # nothing inside it (or the entry itself) was modified within the retention window, so a session that is still being
 # written is never touched.
 do_prune() {
@@ -295,6 +296,13 @@ do_prune() {
 			removed=$((removed + 1))
 		fi
 	done
+	# One carrier per session: last-plan.<sessionId>.json. find -type f skips links; the glob never matches last-plan.json itself.
+	while IFS= read -r -d '' entry; do
+		if [ -z "$(find "$entry" -mmin "-$window_minutes" -print -quit)" ]; then
+			rm -f -- "$entry"
+			removed=$((removed + 1))
+		fi
+	done < <(find "$STATE_DIR" -mindepth 1 -maxdepth 1 -type f -name 'last-plan.*.json' -print0)
 	say "retention: removed $removed entries older than $RETENTION_DAYS days"
 }
 

@@ -9,18 +9,25 @@
  * `onTransition` so the integrator can wire logs and metrics.
  *
  * States:
- * - `closed`: calls flow; failures are counted in a fixed window of `windowMs`
- *   starting at the first failure. When the window rolls the count restarts
- *   at the new failure. Reaching `failureThreshold` inside one window opens
- *   the breaker.
+ * - `closed`: calls flow. Every success and failure of the last `windowMs`
+ *   is counted (an `ignored` outcome is neither). The breaker opens on the
+ *   failure that leaves the window with at least `failureThreshold` failures
+ *   AND at least `minCalls` calls (default `min(10, failureThreshold)`, so a
+ *   streak of `failureThreshold` failures always opens it) AND a failure rate
+ *   of at least `failureRate`, so a few failures among many successes never
+ *   open it. A success resets the
+ *   consecutive-failure count.
  * - `open`: `tryAcquire` refuses with the remaining `retryAfterMs` until
  *   `openMs` has elapsed since `openedAt`; the first `tryAcquire` after that
  *   moves to `half_open` and hands out a probe slot.
  * - `half_open`: at most `halfOpenMaxCalls` probes in flight; extra callers
  *   are refused with `retryAfterMs = HALF_OPEN_RETRY_MS` so they back off
  *   briefly instead of hammering. A probe released with `success` closes the
- *   breaker and resets counters; `failure` re-opens it with a fresh
- *   `openedAt`; `ignored` only frees the slot.
+ *   breaker and resets both counters and the window; `failure` re-opens it
+ *   with a fresh `openedAt`; `ignored` only frees the slot.
+ *
+ * `peek()` answers what `tryAcquire` would answer without taking a probe or
+ * moving the state, so a caller can refuse work before it creates anything.
  *
  * `state()` and `snapshot()` are pure reads of the stored state: an open
  * breaker whose `openMs` has elapsed still reports `open` until a caller asks
@@ -37,14 +44,18 @@
 export type BreakerState = "closed" | "open" | "half_open";
 
 export interface CircuitBreakerOptions {
-	/** Failures inside one window that open the breaker; `>= 1`. */
+	/** Failures inside the window below which the breaker never opens; `>= 1`. */
 	failureThreshold: number;
-	/** Fixed failure-counting window while closed, in ms. */
+	/** Rolling window of counted calls while closed, in ms. */
 	windowMs: number;
 	/** Time the breaker stays open before allowing a probe, in ms. */
 	openMs: number;
 	/** Probes allowed in flight while half-open; default 1. */
 	halfOpenMaxCalls?: number;
+	/** Calls the window must hold before its failure rate counts; default the smaller of 10 and `failureThreshold`. */
+	minCalls?: number;
+	/** Share of the window's calls that failed, `0..1`, at which the breaker opens; default 0.5. */
+	failureRate?: number;
 	/** Clock in ms; default `Date.now`. */
 	now?: () => number;
 	/** Called after each state change, in order; a throwing hook is ignored. */
@@ -66,6 +77,8 @@ interface CircuitBreakerSnapshot {
 	 * after a successful probe closes it.
 	 */
 	failures: number;
+	/** Failures since the last success; 0 after a success and after a probe closes the breaker. */
+	consecutiveFailures: number;
 	/** Clock value of the last close -> open or half_open -> open transition. */
 	openedAt?: number;
 	/** State transitions since construction. */
@@ -76,12 +89,16 @@ export interface CircuitBreaker {
 	state(): BreakerState;
 	/** Never throws. Call `release` exactly once per `{ ok: true }` result; extra calls are no-ops. */
 	tryAcquire(): Acquire;
+	/** What `tryAcquire` would answer now, without taking a probe or moving the state. Never throws. */
+	peek(): { ok: true } | { ok: false; retryAfterMs: number };
 	/** Counters for metrics. */
 	snapshot(): CircuitBreakerSnapshot;
 }
 
 /** `retryAfterMs` handed to callers refused because every half-open probe slot is taken. */
 export const HALF_OPEN_RETRY_MS = 1000;
+const DEFAULT_MIN_CALLS = 10;
+const DEFAULT_FAILURE_RATE = 0.5;
 
 function requirePositiveInteger(name: string, value: unknown): number {
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
@@ -105,12 +122,24 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 	if (options.onTransition !== undefined && typeof options.onTransition !== "function") {
 		throw new RangeError("circuit breaker: onTransition must be a function");
 	}
+	// A streak of failures equal to the configured threshold must still open it, so the sample the rate needs is never
+	// larger than the threshold.
+	const minCalls =
+		options.minCalls === undefined
+			? Math.min(DEFAULT_MIN_CALLS, failureThreshold)
+			: requirePositiveInteger("minCalls", options.minCalls);
+	const failureRate = options.failureRate ?? DEFAULT_FAILURE_RATE;
+	if (typeof failureRate !== "number" || !(failureRate >= 0 && failureRate <= 1)) {
+		throw new RangeError("circuit breaker: failureRate must be a number from 0 to 1");
+	}
 	const now = options.now ?? Date.now;
 	const onTransition = options.onTransition;
 
 	let state: BreakerState = "closed";
+	/** Counted calls inside the window, oldest first: when each ended and whether it failed. */
+	let calls: Array<{ at: number; failed: boolean }> = [];
 	let failures = 0;
-	let windowStart: number | undefined;
+	let consecutiveFailures = 0;
 	let openedAt: number | undefined;
 	let transitions = 0;
 	/** Increments on every transition; stale probe releases compare against it. */
@@ -137,16 +166,32 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 		transition("open");
 	}
 
-	function recordClosedFailure(t: number): void {
-		if (windowStart === undefined || t - windowStart >= windowMs) {
-			windowStart = t;
-			failures = 1;
-		} else {
-			failures += 1;
-		}
-		if (failures >= failureThreshold) {
+	/** Drops the calls that left the window and recounts the failures that remain. */
+	function trim(t: number): void {
+		let keep = 0;
+		while (keep < calls.length && t - (calls[keep] as { at: number }).at >= windowMs) keep += 1;
+		if (keep > 0) calls = calls.slice(keep);
+		failures = calls.reduce((count, call) => count + (call.failed ? 1 : 0), 0);
+	}
+
+	function recordClosedCall(t: number, failed: boolean): void {
+		calls.push({ at: t, failed });
+		consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
+		trim(t);
+		if (
+			failed &&
+			failures >= failureThreshold &&
+			calls.length >= minCalls &&
+			failures / calls.length >= failureRate
+		) {
 			open(t);
 		}
+	}
+
+	function resetCounters(): void {
+		calls = [];
+		failures = 0;
+		consecutiveFailures = 0;
 	}
 
 	function closedAcquire(): Acquire {
@@ -159,10 +204,10 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 					return;
 				}
 				released = true;
-				// A slot admitted before the last transition is stale: a failure from before the breaker opened
+				// A slot admitted before the last transition is stale: a result from before the breaker opened
 				// and closed again must not count against the new healthy period.
-				if (outcome === "failure" && state === "closed" && admitted === generation) {
-					recordClosedFailure(now());
+				if (outcome !== "ignored" && state === "closed" && admitted === generation) {
+					recordClosedCall(now(), outcome === "failure");
 				}
 			},
 		};
@@ -185,30 +230,38 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 				}
 				inFlight -= 1;
 				if (outcome === "success") {
-					failures = 0;
-					windowStart = undefined;
+					resetCounters();
 					transition("closed");
 				} else if (outcome === "failure") {
 					failures += 1;
+					consecutiveFailures += 1;
 					open(now());
 				}
 			},
 		};
 	}
 
+	/** The open breaker's remaining wait, or undefined once `openMs` has elapsed (a probe may be let through). */
+	function openWait(): number | undefined {
+		const elapsed = now() - (openedAt as number);
+		return elapsed < openMs ? Math.min(openMs, Math.max(1, openMs - elapsed)) : undefined;
+	}
+
 	return {
 		state: () => state,
+		peek: () => {
+			if (state === "open") {
+				const wait = openWait();
+				return wait === undefined ? { ok: true } : { ok: false, retryAfterMs: wait };
+			}
+			if (state === "half_open" && inFlight >= halfOpenMaxCalls)
+				return { ok: false, retryAfterMs: HALF_OPEN_RETRY_MS };
+			return { ok: true };
+		},
 		tryAcquire: () => {
 			if (state === "open") {
-				const t = now();
-				const elapsed = t - (openedAt as number);
-				if (elapsed < openMs) {
-					return {
-						ok: false,
-						state: "open",
-						retryAfterMs: Math.min(openMs, Math.max(1, openMs - elapsed)),
-					};
-				}
+				const wait = openWait();
+				if (wait !== undefined) return { ok: false, state: "open", retryAfterMs: wait };
 				transition("half_open");
 			}
 			if (state === "half_open") {
@@ -222,6 +275,7 @@ export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBre
 		snapshot: () => ({
 			state,
 			failures,
+			consecutiveFailures,
 			...(openedAt === undefined ? {} : { openedAt }),
 			transitions,
 		}),

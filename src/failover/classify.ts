@@ -78,6 +78,17 @@ const NETWORK_RES: readonly RegExp[] = [
 	/getaddrinfo/i,
 ];
 
+/** A spawn that ran out of processes, memory or descriptors, or a child the OS or an OOM killer ended. */
+const RESOURCE_CODES: ReadonlySet<string> = new Set(["EAGAIN", "ENOMEM", "EMFILE"]);
+
+const RESOURCE_RES: readonly RegExp[] = [
+	/\b(?:eagain|enomem|emfile)\b/i,
+	/\bexited (?:with (?:code )?)?137\b/i,
+	/\bsig(?:kill|term)\b/i,
+	/\boom[- ]?kill/i,
+	/out of memory/i,
+];
+
 const TIMEOUT_RES: readonly RegExp[] = [/timed out/i, /\btimeout\b/i];
 
 const UNAVAILABLE_RES: readonly RegExp[] = [/\benoent\b/i, /command not found/i];
@@ -107,9 +118,17 @@ function statusClass(status: number | undefined): FailureClass | undefined {
 	if (status === undefined) return undefined;
 	if (status === 401 || status === 403) return "auth";
 	if (status === 402) return "billing";
+	if (status === 408) return "timeout";
 	if (status === 429) return "rate-limit";
 	if (status >= 500 && status <= 599) return "overloaded";
 	return undefined;
+}
+
+function isResourceFailure(error: unknown, message: string): boolean {
+	const code = readString(error, "code");
+	if (code !== undefined && RESOURCE_CODES.has(code)) return true;
+	if (readString(error, "signalCode") !== undefined) return true;
+	return anyMatch(RESOURCE_RES, message);
 }
 
 /** Maps a thrown value from any inference route onto one failover class. */
@@ -132,7 +151,7 @@ export function classifyFailure(error: unknown): FailureClass {
 	if (byStatus !== undefined) return byStatus;
 	if (anyMatch(RATE_LIMIT_RES, message)) return "rate-limit";
 	if (anyMatch(OVERLOADED_RES, message)) return "overloaded";
-	if (anyMatch(NETWORK_RES, message)) return "network";
+	if (isResourceFailure(error, message) || anyMatch(NETWORK_RES, message)) return "network";
 	if (anyMatch(TIMEOUT_RES, message)) return "timeout";
 	if (readString(error, "code") === "ENOENT" || anyMatch(UNAVAILABLE_RES, message)) {
 		return "unavailable";
@@ -149,12 +168,15 @@ const COOLDOWN_MS: Record<FailureClass, number> = {
 	"model-unavailable": 3_600_000,
 	unavailable: 3_600_000,
 	network: 30_000,
-	timeout: 0,
+	timeout: 30_000,
 	aborted: 0,
 	other: 0,
 };
 
-/** Whether trying another candidate can help: the caller's own cancel, a timeout or an unreadable reply cannot. */
+/**
+ * Whether trying another candidate can help: the caller's own cancel or an unreadable reply cannot. A timeout can: a
+ * hung route is skipped for a short cooldown instead of being retried forever.
+ */
 export function isFailoverWorthy(failure: FailureClass): boolean {
 	return COOLDOWN_MS[failure] > 0;
 }

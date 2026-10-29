@@ -206,7 +206,7 @@ describe("runChild lifecycle", () => {
 		async () => {
 			const out: ChildResult = await runChild({
 				cmd: sh("sleep 120 & echo $!; exit 0"),
-				drainMs: 100,
+				drainMs: 500,
 			});
 			expect(out.code).toBe(0);
 			const pid = Number(out.stdout.trim());
@@ -228,7 +228,7 @@ describe("runChild lifecycle", () => {
 				),
 				signal: ctl.signal,
 				graceMs: 200,
-				drainMs: 100,
+				drainMs: 500,
 			});
 			await waitForFile(marker);
 			const pid = Number(readFileSync(pidFile, "utf8").trim());

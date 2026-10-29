@@ -195,6 +195,57 @@ describe("pruneSessions", () => {
 		expect(existsSync(join(state, "last-plan.json"))).toBe(true);
 	});
 
+	test("every per-session plan carrier protects the session it points at, whichever session wrote it", () => {
+		const state = makeState();
+		seed(state, "sess-a", 300);
+		seed(state, "sess-b", 300);
+		seed(state, "spec-only", 300);
+		seed(state, "gone", 300);
+		writeFileSync(
+			join(state, "last-plan.sess-a.json"),
+			JSON.stringify({ host: "omp", sessionId: "sess-a", instruction: "x", context: "" }),
+		);
+		writeFileSync(
+			join(state, "last-plan.sess-b.json"),
+			JSON.stringify({
+				host: "omp",
+				sessionId: "sess-b",
+				specPath: join(state, "sessions", "spec-only.xml"),
+				instruction: "x",
+				context: "",
+			}),
+		);
+		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
+		expect(result.pruned.map((session) => session.id)).toEqual(["gone"]);
+		expect(result.kept).toBe(3);
+		expect(sessionFiles(state)).toEqual([
+			"sess-a.json",
+			"sess-a.xml",
+			"sess-b.json",
+			"sess-b.xml",
+			"spec-only.json",
+			"spec-only.xml",
+		]);
+	});
+
+	test("the legacy single carrier is still honoured, and an unreadable or foreign carrier is skipped", () => {
+		const state = makeState();
+		seed(state, "legacy", 300);
+		seed(state, "other", 300);
+		writeFileSync(
+			join(state, "last-plan.json"),
+			JSON.stringify({ host: "omp", sessionId: "legacy", instruction: "x", context: "" }),
+		);
+		writeFileSync(join(state, "last-plan.broken.json"), "{not json");
+		writeFileSync(join(state, "last-plan.array.json"), "[1, 2]");
+		writeFileSync(join(state, "last-plan.number.json"), JSON.stringify({ sessionId: 7 }));
+		writeFileSync(join(state, "last-plan.txt"), JSON.stringify({ sessionId: "other" }));
+		writeFileSync(join(state, "unrelated.json"), JSON.stringify({ sessionId: "other" }));
+		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
+		expect(result.pruned.map((session) => session.id)).toEqual(["other"]);
+		expect(sessionFiles(state)).toEqual(["legacy.json", "legacy.xml"]);
+	});
+
 	test("a session id with unsafe characters is protected under its on-disk name", () => {
 		const state = makeState();
 		seed(state, basename(sessionPath(state, "a/b"), ".json"), 300);

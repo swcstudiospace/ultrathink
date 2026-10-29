@@ -36,6 +36,8 @@ export interface ThoughtNode {
 	dependsOn: string[];
 	thinking?: string;
 	conclusion?: string;
+	/** Set when every fill attempt failed: thinking and conclusion stay empty and the spec XML marks the node. */
+	degraded?: boolean;
 }
 
 export interface ThoughtGraph {
@@ -52,6 +54,10 @@ export interface ThinkConfig {
 	minNodes: number;
 	maxNodes: number;
 	engine: ThinkEngine;
+	/** Extra attempts per node fill after the first one (kernel backoff between them). */
+	fillRetries: number;
+	/** One dependency-ordered repair pass over failed fills and the successors that read them. */
+	repair: boolean;
 }
 
 export const FALLBACK_GRAPH: ThoughtGraph = {

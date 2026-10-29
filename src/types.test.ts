@@ -42,4 +42,21 @@ describe("completion report seam", () => {
 		expect(readReport(error)).toBeUndefined();
 		expect(() => attachReport("not an object", { attempts: 1 })).not.toThrow();
 	});
+
+	test("attaching again keeps the last report", () => {
+		const error = new Error("boom");
+		attachReport(error, { attempts: 1, cause: "first" });
+		attachReport(error, { attempts: 4, httpStatus: 503 });
+		expect(readReport(error)).toEqual({ attempts: 4, httpStatus: 503 });
+	});
+
+	test("a hostile getter reads as undefined and never throws", () => {
+		const error = new Error("hostile");
+		Object.defineProperty(error, Symbol.for("ultrathink.completionReport"), {
+			get() {
+				throw new Error("getter");
+			},
+		});
+		expect(readReport(error)).toBeUndefined();
+	});
 });

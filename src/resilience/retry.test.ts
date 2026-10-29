@@ -102,6 +102,18 @@ describe("isTransientFailure", () => {
 		}
 	});
 
+	test("a status-less Claude login failure is permanent", () => {
+		for (const text of [
+			"Not logged in · Please run /login",
+			"Please run /login",
+			"not authenticated",
+			"Error: Not authenticated. Run claude login",
+			"authentication_error: invalid x-api-key",
+		]) {
+			expect(isTransientFailure(failure(text)).transient).toBe(false);
+		}
+	});
+
 	test("an AbortError is never transient, whatever its text says", () => {
 		const error = Object.assign(new Error("fetch failed"), { name: "AbortError" });
 		expect(isTransientFailure(error).transient).toBe(false);
@@ -477,5 +489,50 @@ describe("RetryExhaustedError forwards the cause's duck-typed fields", () => {
 		expect(unwrapRetryError(other)).toBe(other);
 		expect(unwrapRetryError("text")).toBe("text");
 		expect(unwrapRetryError(undefined)).toBeUndefined();
+	});
+});
+
+describe("windows the account cannot wait out are permanent", () => {
+	const XAI_ZERO = (limit: string) =>
+		`grok HTTP 429: {"code":"resource-exhausted","error":"Your team's rate limit is \u2014 Requests per Minute (actual/limit): ${limit}."}`;
+	const WINDOW_TEXTS = [
+		"You've hit your session limit \u00b7 resets 3:45pm",
+		"You\u2019ve hit your weekly limit \u00b7 resets Mon 12:00am",
+		"Claude usage limit reached",
+		"You have reached your monthly limit",
+		"daily limit exceeded",
+		XAI_ZERO("5/0"),
+		XAI_ZERO("0/0"),
+		"rate limit: limit: 0",
+		"quota limit 0 for this model",
+	];
+
+	test("each window or zero-limit text is permanent, with a 429 and with no status", () => {
+		for (const text of WINDOW_TEXTS) {
+			expect(isTransientFailure(failure(text, { status: 429 })).transient).toBe(false);
+			expect(isTransientFailure(failure(text)).transient).toBe(false);
+		}
+	});
+
+	test("a 429 with a retry-after header and the text usage limit is permanent", () => {
+		const error = failure("usage limit", { status: 429, headers: { "retry-after": "30" } });
+		expect(isTransientFailure(error, NOW).transient).toBe(false);
+	});
+
+	test("a plain rate-limit text, a bare 429 and a 429 with a hint stay transient", () => {
+		expect(isTransientFailure(failure("rate limit exceeded, retry after 30s")).transient).toBe(
+			true,
+		);
+		expect(isTransientFailure(failure("rate limit exceeded", { status: 429 })).transient).toBe(
+			true,
+		);
+		expect(isTransientFailure({ status: 429 }).transient).toBe(true);
+		expect(
+			isTransientFailure(failure("Too many requests", { status: 429, retryAfter: "30" }), NOW),
+		).toMatchObject({ transient: true, retryAfterMs: 30_000 });
+		expect(isTransientFailure(failure("limit: 0.5 requests", { status: 429 })).transient).toBe(
+			true,
+		);
+		expect(isTransientFailure(failure("limit: 10", { status: 429 })).transient).toBe(true);
 	});
 });

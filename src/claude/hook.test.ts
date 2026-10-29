@@ -20,7 +20,9 @@ import type {
 	DecisionsErrorKind,
 } from "../decisions/types.ts";
 import { openJevHealth } from "../decisions/health.ts";
-import { JEV, recordingFetch } from "../test.helpers.ts";
+import { GRAPH_ID_PATTERN } from "../gateway/types.ts";
+import { decideUplift } from "../uplift/detect.ts";
+import { JEV, recordingFetch, UPLIFT } from "../test.helpers.ts";
 import type { Clarification } from "../hitl/types.ts";
 import type { KnowledgeReader, KnowledgeResult } from "../greptile/knowledge.ts";
 import type { RunClarifyOptions } from "../hitl/pipeline.ts";
@@ -36,7 +38,9 @@ import {
 	type PromptSubmitResult,
 } from "./hook.ts";
 import {
+	armSkipOnce,
 	readSession,
+	readSkipOnce,
 	type SessionRecord,
 	sessionPath,
 	updateSession,
@@ -53,6 +57,9 @@ import type {
 	SkillRecallOutcome,
 } from "../teach/types.ts";
 import { graphJson } from "../test.helpers.ts";
+import { FlightThrottle } from "../resilience/throttle.ts";
+import { runThink, type RunThinkOptions } from "../think/pipeline.ts";
+import type { ThoughtGraph } from "../think/types.ts";
 
 function tempStateDir(): { dir: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-hook-"));
@@ -65,8 +72,7 @@ function tempStateDir(): { dir: string; cleanup: () => void } {
 /** Dispatches by payload content so one fake handles uplift, graph, CoT, and clarify calls correctly. */
 function smartComplete(): (system: string, user: string) => Promise<string> {
 	return async (_system, user) => {
-		if (user.includes("<user_request>"))
-			return "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>";
+		if (user.includes("<user_request>")) return UPLIFT("add a widget");
 		if (user.startsWith("<spec>")) return JSON.stringify({ questions: [] });
 		if (user.includes("current_node")) {
 			const id = user.match(/current_node id="([^"]+)"/)?.[1] ?? "n?";
@@ -152,7 +158,7 @@ function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup:
 	const deps: HookDeps = {
 		config: trackedConfig(),
 		control: {},
-		complete: async () => "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL></BUILD_PROMPT>",
+		complete: async () => UPLIFT("add a widget"),
 		engine: "claude:claude-haiku-5-5",
 		stateDir: dir,
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),
@@ -256,7 +262,11 @@ describe("runPromptSubmit", () => {
 
 	test("a real spec with a failed fill records the stage and warns without discarding the plan", async () => {
 		const flaky = smartComplete();
+		const config = trackedConfig();
+		config.think.fillRetries = 0;
+		config.think.repair = false;
 		const { deps, cleanup } = baseDeps({
+			config,
 			complete: async (system, user) => {
 				if (user.includes('current_node id="n2"')) throw new Error("boom");
 				return flaky(system, user);
@@ -270,7 +280,7 @@ describe("runPromptSubmit", () => {
 			expect(result.record?.degraded).toEqual(["fill:n2"]);
 			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
 			expect(ctx).toContain("## Planning degraded");
-			expect(ctx).toContain("the n2 fill use fallback content");
+			expect(ctx).toContain("the n2 fill (boom) use fallback content");
 			expect(ctx).toContain("Tracker rows are left for ultrathink-kickoff");
 		} finally {
 			cleanup();
@@ -285,7 +295,9 @@ describe("runPromptSubmit", () => {
 			expect(result.record?.engineError).toBeUndefined();
 			expect(result.record?.degraded?.[0]).toBe("uplift");
 			expect(result.record?.degraded).toContain("graph");
-			expect(result.record?.degraded).toHaveLength(7);
+			// Uplift, graph, five fills, and the clarify step: an engine that answers nothing answers the clarifier nothing too.
+			expect(result.record?.degraded).toHaveLength(8);
+			expect(result.record?.degraded?.at(-1)).toBe("clarify");
 			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
 			expect(ctx).toContain("## Planning degraded");
 			expect(ctx).toContain("no usable model output");
@@ -343,7 +355,10 @@ describe("runPromptSubmit", () => {
 	});
 
 	test("previously answered clarifications carry over into the new record", async () => {
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [] });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => ({ items: [] }),
+		});
 		try {
 			const priorAnswer: Clarification = {
 				id: "q1",
@@ -371,7 +386,10 @@ describe("runPromptSubmit", () => {
 	});
 
 	test("a plan save interleaved with a locked answer update loses neither", async () => {
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [] });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => ({ items: [] }),
+		});
 		try {
 			const open: Clarification = {
 				id: "q1",
@@ -446,7 +464,10 @@ describe("runPromptSubmit", () => {
 		const answered: Clarification = { ...open, answer: "Postgres", answeredAt: 2, source: "user" };
 		// The answer lands on disk after the flight's stale read (via the
 		// tracker call, which runs before the save) so the save merges it.
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [open] });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => ({ items: [open] }),
+		});
 		const stateDir = deps.stateDir;
 		deps.track = async () => {
 			writeSession(stateDir, {
@@ -672,7 +693,7 @@ describe("substrate brief", () => {
 	test("injects the brief into hook context, framed as history not instructions", async () => {
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			brief: async () =>
 				briefOf("## Substrate brief: acme/widgets\n- 09:04 cursor edited widget.ts"),
 		});
@@ -693,7 +714,7 @@ describe("substrate brief", () => {
 			| undefined;
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			brief: async (i) => {
 				seen = i;
 				return NO_BRIEF;
@@ -716,7 +737,7 @@ describe("substrate brief", () => {
 	test("an empty brief adds no section at all", async () => {
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			brief: async () => NO_BRIEF,
 		});
 		try {
@@ -732,7 +753,7 @@ describe("substrate brief", () => {
 	test("a substrate outage never blocks the prompt", async () => {
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			brief: async () => {
 				throw new Error("ECONNREFUSED");
 			},
@@ -763,7 +784,7 @@ describe("substrate brief", () => {
 			const { deps, cleanup } = baseDeps({
 				config,
 				complete: smartComplete(),
-				clarify: async () => [],
+				clarify: async () => ({ items: [] }),
 				brief: undefined,
 				decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0", SUBSTRATE_TOKENS_DIR: tokensDir } },
 			});
@@ -797,7 +818,7 @@ describe("substrate brief", () => {
 		const logs: string[] = [];
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			brief,
 			log: (message) => {
 				logs.push(message);
@@ -1122,7 +1143,7 @@ describe("substrate brief", () => {
 		}) as unknown as typeof fetch;
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			brief: undefined,
 			decisionsDeps: {
 				env: {
@@ -1170,7 +1191,10 @@ describe("substrate plan event", () => {
 	test("a planned prompt emits one note with the Graph ID, after the session record is on disk", async () => {
 		const sent: EmitInput[] = [];
 		const onDisk: Array<string | undefined> = [];
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [] });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => ({ items: [] }),
+		});
 		deps.emit = async (event) => {
 			sent.push(event);
 			onDisk.push(readSession(deps.stateDir, "s1")?.plan?.graphId);
@@ -1179,7 +1203,13 @@ describe("substrate plan event", () => {
 		try {
 			const result = await runPromptSubmit(input, deps);
 			const graphId = result.record?.plan?.graphId ?? "missing graph id";
-			expect(graphId).toMatch(/^ut-[a-z0-9]+-[0-9a-f]{8}$/);
+			expect(graphId).toMatch(GRAPH_ID_PATTERN);
+			expect(
+				decideUplift(
+					{ text: `execute graph ${graphId}`, source: "user" },
+					{ enabled: true, skipOnce: false, skipTrivial: true },
+				),
+			).toEqual({ action: "skip", reason: "graph-reference" });
 			expect(sent).toEqual([
 				{
 					kind: "note",
@@ -1198,16 +1228,16 @@ describe("substrate plan event", () => {
 		}
 	});
 
-	test("two prompts planned in one host session emit notes on different session ids, each ending in its own graph id", async () => {
+	test("two different prompts planned in one host session emit notes on different session ids, each ending in its own graph id", async () => {
 		const { emit, sent } = recorder();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit,
 		});
 		try {
 			const first = await runPromptSubmit(input, deps);
-			const second = await runPromptSubmit(input, deps);
+			const second = await runPromptSubmit({ ...input, prompt: "add a gadget" }, deps);
 			const g1 = first.record?.plan?.graphId ?? "missing graph id 1";
 			const g2 = second.record?.plan?.graphId ?? "missing graph id 2";
 			expect(g1).not.toBe(g2);
@@ -1226,7 +1256,7 @@ describe("substrate plan event", () => {
 		const { deps, cleanup } = baseDeps({
 			surface: "cursor",
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit,
 			brief: async (brief) => {
 				briefSurface = brief.surface;
@@ -1249,7 +1279,7 @@ describe("substrate plan event", () => {
 		const { deps, cleanup } = baseDeps({
 			surface: "hermes",
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit,
 		});
 		try {
@@ -1284,7 +1314,7 @@ describe("substrate plan event", () => {
 		const { emit, sent } = recorder();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit,
 		});
 		try {
@@ -1334,7 +1364,7 @@ describe("substrate plan event", () => {
 		const { emit, sent } = recorder();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit,
 		});
 		try {
@@ -1354,7 +1384,7 @@ describe("substrate plan event", () => {
 		const { emit, sent } = recorder();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit,
 		});
 		try {
@@ -1375,7 +1405,7 @@ describe("substrate plan event", () => {
 		const tracking = Promise.withResolvers<void>();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit,
 			timers: manual.timers,
 			// The tracker waits for the budget to fire, so the plan is finished only after the controller aborted.
@@ -1407,7 +1437,7 @@ describe("substrate plan event", () => {
 		const emitted = Promise.withResolvers<void>();
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			timers: manual.timers,
 			emit: (_event, signal) => {
 				const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -1437,7 +1467,7 @@ describe("substrate plan event", () => {
 		let aborted: boolean | undefined;
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit: async (_event, signal) => {
 				aborted = signal?.aborted;
 				return true;
@@ -1455,7 +1485,7 @@ describe("substrate plan event", () => {
 		let clock = 1_000;
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			now: () => clock,
 			emit: async () => {
 				clock += 4_000;
@@ -1474,7 +1504,7 @@ describe("substrate plan event", () => {
 		const events: ProgressEvent[] = [];
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			progress: (e) => events.push(e),
 		});
 		try {
@@ -1528,7 +1558,7 @@ describe("substrate plan event", () => {
 			const { deps, cleanup } = baseDeps({
 				config,
 				complete: smartComplete(),
-				clarify: async () => [],
+				clarify: async () => ({ items: [] }),
 				emit: undefined,
 				decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0", ...env } },
 			});
@@ -1558,7 +1588,7 @@ describe("substrate plan event", () => {
 		const { deps, cleanup } = baseDeps({
 			config,
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			emit: undefined,
 			log: (message) => logs.push(message),
 			decisionsDeps: { env: { ULTRATHINK_DECISIONS: "0", SUBSTRATE_TOKEN: "tok-secret-1234" } },
@@ -1853,7 +1883,7 @@ describe("Greptile knowledge base before clarify", () => {
 			knowledge: reader,
 			clarify: async (opts) => {
 				seen = opts;
-				return [open, settled];
+				return { items: [open, settled] };
 			},
 		});
 		try {
@@ -1900,7 +1930,7 @@ describe("Greptile knowledge base before clarify", () => {
 			knowledge: reader,
 			clarify: async (opts) => {
 				seen = opts;
-				return [open];
+				return { items: [open] };
 			},
 		});
 		try {
@@ -1982,7 +2012,7 @@ describe("Greptile knowledge base before clarify", () => {
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
 			knowledge: reader,
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 		});
 		try {
 			await runPromptSubmit(input, deps);
@@ -2000,7 +2030,10 @@ describe("Greptile knowledge base before clarify", () => {
 	});
 
 	test("knowledge-settled answers are not carried to the next prompt; user answers are", async () => {
-		const { deps, cleanup } = baseDeps({ complete: smartComplete(), clarify: async () => [] });
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => ({ items: [] }),
+		});
 		try {
 			const userAnswer: Clarification = { ...open, answer: "Redis", answeredAt: 1, source: "user" };
 			writeSession(deps.stateDir, {
@@ -2337,9 +2370,10 @@ describe("Jev plan gate", () => {
 				);
 
 				const trivial = await runPromptSubmit({ ...input, prompt: "thanks" }, h.deps);
-				expect(trivial).toEqual({ skipped: "skip" });
+				expect(trivial).toEqual({ skipped: "skip", reason: "trivial" });
+				// The Jev skip has the same shape as a deterministic one, which also names its reason.
 				expect(Object.keys(result).filter((k) => k !== "decisions" && k !== "notice")).toEqual(
-					Object.keys(trivial),
+					Object.keys(trivial).filter((key) => key !== "reason"),
 				);
 				expectNoKey(result, h.logs, sessionText(h.deps.stateDir));
 			} finally {
@@ -2453,7 +2487,7 @@ describe("Jev plan gate", () => {
 				);
 				const jev = await runPromptSubmit({ ...input, prompt }, h.deps);
 				expect(jev).toEqual(base);
-				expect(jev).toEqual({ skipped: "skip" });
+				expect(jev).toEqual({ skipped: "skip", reason: "trivial" });
 			}
 			expect(R.calls).toHaveLength(0);
 			expect(h.calls.engine).toBe(0);
@@ -2933,7 +2967,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const { deps, cleanup } = baseDeps({
 			config: echoConfig(),
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			brief: async () =>
 				briefOf("## Substrate brief: acme/widgets\n- 09:04 cursor edited widget.ts"),
 			recall: async () => recalled,
@@ -2974,7 +3008,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const { deps, cleanup } = baseDeps({
 			config: echoConfig(),
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			recall: async () => recalled,
 			ground: async () => grounded,
 			skills: async () => skillHits,
@@ -3007,7 +3041,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const { deps, cleanup } = baseDeps({
 			config: echoConfig(),
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 		});
 		try {
 			const base = await runPromptSubmit(input, deps);
@@ -3064,7 +3098,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const { deps, cleanup } = baseDeps({
 			config: echoConfig(),
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			decisionsDeps: { env: {}, storePath: tempStore(), fetch: R.fetch },
 		});
 		try {
@@ -3084,7 +3118,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const { deps, cleanup } = baseDeps({
 			config: echoConfig(),
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 		});
 		try {
 			const base = await runPromptSubmit(input, deps);
@@ -3116,7 +3150,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const { deps, cleanup } = baseDeps({
 			config,
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			timers: manual.timers,
 		});
 		try {
@@ -3165,11 +3199,14 @@ describe("lessons and RAGFlow documents in the plan", () => {
 			complete: async (system, user) => {
 				if (user.includes("<user_request>")) {
 					order.push("uplift");
-					return "<BUILD_PROMPT><ORIGINAL>add a widget</ORIGINAL><NOTES>SPEC_ONLY_TOKEN</NOTES></BUILD_PROMPT>";
+					return UPLIFT("add a widget").replace(
+						"</BUILD_PROMPT>",
+						"<NOTES>SPEC_ONLY_TOKEN</NOTES></BUILD_PROMPT>",
+					);
 				}
 				return complete(system, user);
 			},
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			conversation: () => "User: PRIOR_HISTORY_TOKEN\n\nAssistant: ok",
 			recall: async ({ query, cwd }) => {
 				order.push("recall");
@@ -3202,7 +3239,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const queries: string[] = [];
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			recall: async ({ query }) => {
 				queries.push(query);
 				return recalled;
@@ -3223,7 +3260,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const { deps, cleanup } = baseDeps({
 			config: echoConfig(),
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			recall: async ({ query }) => {
 				queries.push(query);
 				return recalled;
@@ -3295,7 +3332,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const calls = { recall: 0, ground: 0 };
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			recall: async () => {
 				calls.recall++;
 				return recalled;
@@ -3335,7 +3372,7 @@ describe("lessons and RAGFlow documents in the plan", () => {
 		const { deps, cleanup } = baseDeps({
 			config,
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			decisionsDeps: { env: {}, storePath: tempStore(), fetch: R.fetch },
 		});
 		try {
@@ -3755,7 +3792,8 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				name,
 				later: [],
 			});
-			expect({ name, written: run.written }).toEqual({ name, written: false });
+			// The session record is saved before the tracker runs, so only the tracker case finds it on disk.
+			expect({ name, written: run.written }).toEqual({ name, written: name === "track" });
 			expect(run.events.at(-1)).toEqual(ENDED);
 		}
 	});
@@ -3769,7 +3807,7 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			config,
 			signal: controller.signal,
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			recall: ({ signal }) => {
 				lookupSignals.push(signal);
 				return Promise.withResolvers<never>().promise;
@@ -3851,7 +3889,7 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 			timers: manual.timers,
 			signal: new AbortController().signal,
 			modelResolution: RESOLUTION,
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			complete: async (system, user, signal) => {
 				if (phaseOf(user) !== "graph") return complete(system, user);
 				graphStarted.resolve();
@@ -3919,7 +3957,14 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 					expect(result.skipped).toBeUndefined();
 					expect(result.output).toBeDefined();
 					expect(result.record?.result.source).toBe("llm");
-					expect(Boolean(result.record?.graph)).toBe(at === "clarify");
+					expect(Boolean(result.record?.graph)).toBe(true);
+					if (at === "fill") {
+						// The abort carried the graph as far as it got: no fill finished, so every node is marked, none invented.
+						const nodes = result.record?.graph?.nodes ?? [];
+						expect(nodes.length).toBeGreaterThan(0);
+						expect(nodes.every((node) => node.degraded === true && !node.conclusion)).toBe(true);
+						expect(result.record?.degraded).toContain("think");
+					}
 					expect(readSession(deps.stateDir, "s1")).toBeDefined();
 				}
 			} finally {
@@ -3932,7 +3977,7 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 		const events: ProgressEvent[] = [];
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
-			clarify: async () => [],
+			clarify: async () => ({ items: [] }),
 			modelResolution: RESOLUTION,
 			progress: (event) => events.push(event),
 		});
@@ -3959,6 +4004,7 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 		try {
 			expect(await runPromptSubmit({ ...input, prompt: "ok" }, trivial.deps)).toEqual({
 				skipped: "skip",
+				reason: "trivial",
 			});
 			expect(existsSync(sessionPath(trivial.deps.stateDir, "s1"))).toBe(false);
 		} finally {
@@ -4024,6 +4070,380 @@ describe("scheduled session retention", () => {
 			const old = seedOldSession(deps.stateDir);
 			await runPromptSubmit(input, deps);
 			expect(existsSync(old)).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("honest degradation (98-04)", () => {
+	const stageEnd = (events: ProgressEvent[], name: string): ProgressEvent | undefined =>
+		events.find((e) => e.type === "stage" && e.stage === name && e.phase === "end");
+
+	/** A graph the think stage got partway through: n1 filled, n2 and n3 still empty. */
+	const partialGraph = (): ThoughtGraph => ({
+		goal: "ship the widget",
+		nodes: [
+			{
+				id: "n1",
+				title: "Understand",
+				kind: "understand",
+				question: "What is asked?",
+				dependsOn: [],
+				thinking: "1. a 2. b 3. c 4. d 5. e",
+				conclusion: "c n1",
+			},
+			{
+				id: "n2",
+				title: "Decompose",
+				kind: "decompose",
+				question: "What parts?",
+				dependsOn: ["n1"],
+				degraded: true,
+			},
+			{
+				id: "n3",
+				title: "Plan",
+				kind: "synthesize",
+				question: "What order?",
+				dependsOn: ["n2"],
+			},
+		],
+	});
+
+	test("a think stage that throws keeps the partial graph it carries, marks the unfilled nodes, and ends ok=false", async () => {
+		const events: ProgressEvent[] = [];
+		const graph = partialGraph();
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			progress: (e) => events.push(e),
+			think: async () => {
+				throw Object.assign(
+					new Error("think exploded sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"),
+					{
+						graph,
+					},
+				);
+			},
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(result.record?.graph?.nodes.map((n) => n.id)).toEqual(["n1", "n2", "n3"]);
+			expect(result.record?.graph?.nodes[0]?.conclusion).toBe("c n1");
+			expect(result.record?.result.xml).toContain("<GRAPH_OF_THOUGHT");
+			expect(result.record?.degraded).toEqual(["fill:n2", "fill:n3", "think"]);
+			expect(stageEnd(events, "think")).toMatchObject({ ok: false });
+			const detail = (stageEnd(events, "think") as { detail?: string } | undefined)?.detail ?? "";
+			expect(detail).toContain("think exploded");
+			expect(detail).not.toContain("sk-ant-api03");
+			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
+			expect(ctx).toContain("the think step (think exploded");
+			expect(ctx).not.toContain("sk-ant-api03");
+			// A real (partial) graph still plans: its rows are not boilerplate, only the unfilled nodes are.
+			expect(result.record?.plan?.issues).toHaveLength(3);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("the uplift stage ends ok=false for a fallback uplift and ok=true for a model one, with the reason in the detail (G-10)", async () => {
+		const llm: ProgressEvent[] = [];
+		const good = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => ({ items: [] }),
+			progress: (e) => llm.push(e),
+		});
+		try {
+			await runPromptSubmit(input, good.deps);
+			expect(stageEnd(llm, "uplift")).toMatchObject({ ok: true });
+		} finally {
+			good.cleanup();
+		}
+
+		const fallback: ProgressEvent[] = [];
+		const complete = smartComplete();
+		const bad = baseDeps({
+			complete: async (system, user) =>
+				user.includes("<user_request>")
+					? "<UPLIFTED_PROMPT><SYSTEM_ROLE>r</SYSTEM_ROLE>"
+					: complete(system, user),
+			clarify: async () => ({ items: [] }),
+			progress: (e) => fallback.push(e),
+		});
+		try {
+			const result = await runPromptSubmit(input, bad.deps);
+			expect(result.record?.result.source).toBe("fallback");
+			expect(stageEnd(fallback, "uplift")).toMatchObject({
+				ok: false,
+				detail: expect.stringContaining("fallback · truncated_reply"),
+			});
+		} finally {
+			bad.cleanup();
+		}
+	});
+
+	test("a think stage that throws with no graph records think, creates no tracker rows, and still delivers the spec", async () => {
+		const events: ProgressEvent[] = [];
+		let tracked = 0;
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			progress: (e) => events.push(e),
+			think: async () => {
+				throw new Error("provider down");
+			},
+			track: async () => {
+				tracked += 1;
+				return undefined;
+			},
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(result.output).toBeDefined();
+			expect(result.record?.degraded).toEqual(["think"]);
+			expect(result.record?.graph).toBeUndefined();
+			expect(result.record?.plan).toBeUndefined();
+			expect(tracked).toBe(0);
+			expect(stageEnd(events, "think")).toMatchObject({ ok: false, detail: "provider down" });
+			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
+			expect(ctx).toContain("the think step (provider down)");
+			expect(ctx).toContain("No tracker rows were created for this plan, and none will be.");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a boilerplate graph from a failed graph call is recorded and never becomes tracker rows", async () => {
+		const events: ProgressEvent[] = [];
+		const logs: string[] = [];
+		let tracked = 0;
+		const smart = smartComplete();
+		const { deps, cleanup } = baseDeps({
+			complete: async (system, user) => {
+				const graphCall =
+					!user.includes("<user_request>") &&
+					!user.startsWith("<spec>") &&
+					!user.includes("current_node");
+				return graphCall ? "not a graph" : smart(system, user);
+			},
+			progress: (e) => events.push(e),
+			log: (m) => logs.push(m),
+			track: async () => {
+				tracked += 1;
+				return undefined;
+			},
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(result.record?.result.source).toBe("llm");
+			expect(result.record?.degraded).toContain("graph");
+			expect(result.record?.plan).toBeUndefined();
+			expect(tracked).toBe(0);
+			expect(events.some((e) => e.type === "stage" && e.stage === "plan")).toBe(false);
+			expect(events.some((e) => e.type === "stage" && e.stage === "track")).toBe(false);
+			expect(logs.some((m) => m.includes("graph-fallback"))).toBe(true);
+			expect(stageEnd(events, "think")).toMatchObject({ ok: false });
+			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
+			expect(ctx).toContain("No tracker rows were created for this plan, and none will be.");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("fills that stayed failed are tagged for the failed node ids only, in the rows' log line and the spec", async () => {
+		const events: ProgressEvent[] = [];
+		const logs: string[] = [];
+		const config = trackedConfig();
+		config.think.fillRetries = 0;
+		config.think.repair = false;
+		const smart = smartComplete();
+		const { deps, cleanup } = baseDeps({
+			config,
+			complete: async (system, user) => {
+				if (user.includes('current_node id="n2"')) throw new Error("fill n2 refused");
+				return smart(system, user);
+			},
+			progress: (e) => events.push(e),
+			log: (m) => logs.push(m),
+			track: async ({ plan }) => ({
+				graphId: plan.graphId,
+				status: "complete",
+				linearTeam: "Team",
+				linear: { nodes: {}, steps: {} },
+				notion: { nodes: {}, steps: {} },
+				errors: [],
+				updatedAt: 1_000,
+			}),
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(result.record?.degraded).toEqual(["fill:n2"]);
+			expect(result.record?.plan).toBeDefined();
+			expect(stageEnd(events, "think")).toMatchObject({ ok: false });
+			const tracking = logs.find((m) => m.startsWith("tracking complete"));
+			expect(tracking).toContain("degraded fill:n2");
+			expect(tracking).not.toContain("fill:n1");
+			const spec = readFileSync(join(deps.stateDir, "sessions", "s1.xml"), "utf8");
+			expect(spec.match(/degraded="true"/g)).toHaveLength(1);
+			expect(spec).toMatch(/<NODE id="n2"[^>]* degraded="true"/);
+			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
+			expect(ctx).toContain("the n2 fill (");
+			expect(ctx).toContain("fill n2 refused");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a clarify failure ends clarify ok=false with the cause, lands in the record and the notice, never as 0 questions ok", async () => {
+		const events: ProgressEvent[] = [];
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			progress: (e) => events.push(e),
+			clarify: async () => ({ items: [], failed: "reply was not JSON" }),
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(stageEnd(events, "clarify")).toMatchObject({
+				ok: false,
+				detail: "reply was not JSON",
+			});
+			expect(result.record?.degraded).toEqual(["clarify"]);
+			expect(result.record?.clarifications).toEqual([]);
+			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
+			expect(ctx).toContain("the clarify step (reply was not JSON)");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a thrown clarifier is recorded the same way, and salvaged leading items are kept", async () => {
+		const open: Clarification = {
+			id: "q1",
+			question: "Which database?",
+			header: "DB",
+			why: "w",
+			options: [{ label: "Postgres" }, { label: "SQLite" }],
+			default: "Postgres",
+			blocking: true,
+		};
+		const thrown = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => {
+				throw new Error("clarify down");
+			},
+		});
+		const salvaged = baseDeps({
+			complete: smartComplete(),
+			clarify: async () => ({ items: [open], failed: "reply cut off" }),
+		});
+		try {
+			const a = await runPromptSubmit(input, thrown.deps);
+			expect(a.record?.degraded).toEqual(["clarify"]);
+			expect(a.output?.hookSpecificOutput.additionalContext).toContain(
+				"the clarify step (clarify down)",
+			);
+			const b = await runPromptSubmit(input, salvaged.deps);
+			expect(b.record?.clarifications).toEqual([open]);
+			expect(b.record?.degraded).toEqual(["clarify"]);
+		} finally {
+			thrown.cleanup();
+			salvaged.cleanup();
+		}
+	});
+
+	test("a route whose completer owns the flight limiter gets no second one from the think stage (G-11)", async () => {
+		const owned = new FlightThrottle({ max: 1 });
+		let seen: RunThinkOptions | undefined;
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			throttle: owned,
+			think: async (opts) => {
+				seen = opts;
+				return runThink(opts);
+			},
+		});
+		try {
+			await runPromptSubmit(input, deps);
+			// The completer acquires from `owned` per call: a second slot taken by the fills would deadlock at a limit of one.
+			expect(seen).toBeDefined();
+			expect(seen?.throttle).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("the think stage gets the configured retries, repair, and one per-flight throttle capped at three", async () => {
+		const config = trackedConfig();
+		config.claude.concurrency = 8;
+		config.think.fillRetries = 4;
+		config.think.repair = false;
+		let seen: RunThinkOptions | undefined;
+		const { deps, cleanup } = baseDeps({
+			config,
+			complete: smartComplete(),
+			think: async (opts) => {
+				seen = opts;
+				return runThink(opts);
+			},
+		});
+		try {
+			await runPromptSubmit(input, deps);
+			expect(seen?.fillRetries).toBe(4);
+			expect(seen?.repair).toBe(false);
+			expect(seen?.throttle).toBeInstanceOf(FlightThrottle);
+			expect(seen?.throttle?.limit).toBe(3);
+		} finally {
+			cleanup();
+		}
+		const low = trackedConfig();
+		low.claude.concurrency = 2;
+		const small = baseDeps({
+			config: low,
+			complete: smartComplete(),
+			think: async (opts) => {
+				seen = opts;
+				return runThink(opts);
+			},
+		});
+		try {
+			await runPromptSubmit(input, small.deps);
+			expect(seen?.throttle?.limit).toBe(2);
+		} finally {
+			small.cleanup();
+		}
+	});
+
+	test("every deterministic skip runs before the engine, carries its reason, and an armed skip is spent only by its own skip", async () => {
+		let engineCalls = 0;
+		const { deps, cleanup } = baseDeps({
+			complete: async () => {
+				engineCalls += 1;
+				return "";
+			},
+		});
+		try {
+			const cases: Array<[string, string, Partial<HookDeps>?]> = [
+				["/help", "command"],
+				[UPLIFT("add a flag"), "already-uplifted"],
+				["ok", "trivial"],
+				["continue graph ut-abc-0123abcd", "graph-reference"],
+				["add a widget", "disabled", { control: { enabled: false } }],
+			];
+			for (const [prompt, reason, extra] of cases) {
+				const result = await runPromptSubmit({ ...input, prompt }, { ...deps, ...extra });
+				expect(result).toEqual({ skipped: "skip", reason });
+			}
+			expect(engineCalls).toBe(0);
+
+			// Armed, then a command: the flag stays for the real next prompt.
+			armSkipOnce(deps.stateDir, "s1");
+			const command = await runPromptSubmit({ ...input, prompt: "/help" }, deps);
+			expect(command).toEqual({ skipped: "skip", reason: "command" });
+			expect(readSkipOnce(deps.stateDir, "s1")).toBe(true);
+			// The real prompt is skipped by the flag, and only now is it spent.
+			const real = await runPromptSubmit(input, deps);
+			expect(real).toEqual({ skipped: "skip", reason: "skip-once" });
+			expect(readSkipOnce(deps.stateDir, "s1")).toBe(false);
+			expect(engineCalls).toBe(0);
 		} finally {
 			cleanup();
 		}

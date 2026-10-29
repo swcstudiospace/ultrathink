@@ -15,6 +15,7 @@ import type { JournalResult } from "../engine/journal.ts";
 import { COMMAND_OVERLAY, MAX_ARGUMENT_CHARS } from "./commands.ts";
 import type { ToolOutcome } from "./mcp.ts";
 import {
+	CANCEL_TOOL,
 	CONNECTOR_TOOL_DEFINITIONS,
 	type ConnectorDeps,
 	catalogFromOverlay,
@@ -163,14 +164,15 @@ function fakePlanner(enabled: boolean, result: Planner["result"]): Planner & { c
 }
 
 describe("definitions", () => {
-	test("three read-only tools with closed schemas, in a fixed order", () => {
+	test("three read-only tools and the cancel tool, with closed schemas, in a fixed order", () => {
 		expect(CONNECTOR_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
 			"ultrathink_graph",
 			"ultrathink_sessions",
 			"ultrathink_command",
+			"ultrathink_cancel",
 		]);
 		for (const tool of CONNECTOR_TOOL_DEFINITIONS) {
-			expect(tool.annotations).toEqual(READ_ONLY);
+			if (tool.name !== CANCEL_TOOL) expect(tool.annotations).toEqual(READ_ONLY);
 			expect(tool.inputSchema.type).toBe("object");
 			expect(tool.inputSchema.additionalProperties).toBe(false);
 			expect("outputSchema" in tool).toBe(false);
@@ -692,5 +694,134 @@ describe("catalogFromOverlay", () => {
 		});
 		expect(catalog.find("ultrathink-ship")).toMatchObject({ state: "unsupported" });
 		expect(catalog.find("nope")).toBeUndefined();
+	});
+});
+
+/** `jobs/<id>.json` and the plan record of a server job, the way the planner leaves them. */
+function seedServer(
+	stateDir: string,
+	principal: string | undefined,
+	options: { graph?: ThoughtGraph } = {},
+): string {
+	const sessionId = randomUUID();
+	clock += 10_000;
+	const at = clock;
+	mkdirSync(join(stateDir, "jobs"), { recursive: true });
+	const job = join(stateDir, "jobs", `${sessionId}.json`);
+	writeFileSync(
+		job,
+		`${JSON.stringify({
+			sessionId,
+			runId: randomUUID(),
+			status: "planned",
+			createdAt: at - 1000,
+			updatedAt: at,
+			usage: { calls: 9, inputTokens: 10, outputTokens: 10 },
+			promptSha256: "0".repeat(64),
+			...(principal === undefined ? {} : { principal }),
+		})}\n`,
+	);
+	utimesSync(job, at / 1000, at / 1000);
+	const record: SessionRecord = {
+		sessionId,
+		at,
+		result: {
+			xml: "<BUILD_PROMPT><ORIGINAL>Build the converter</ORIGINAL></BUILD_PROMPT>",
+			original: "Build the converter",
+			root: "BUILD_PROMPT",
+			source: "llm",
+		},
+		...(options.graph ? { graph: options.graph } : {}),
+	};
+	writeSession(stateDir, record);
+	utimesSync(join(stateDir, "sessions", `${sessionId}.json`), at / 1000, at / 1000);
+	return sessionId;
+}
+
+function plannedView(sessionId: string): ResultView {
+	return {
+		sessionId,
+		status: "planned",
+		mode: "server",
+		text: "the plan",
+		graph:
+			buildGraphView({
+				sessionId,
+				at: 0,
+				result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
+				graph: GRAPH,
+			}) ?? undefined,
+	};
+}
+
+describe("caller scoping", () => {
+	const alice = { principal: "key:alice", owner: false };
+	const bob = { principal: "key:bob", owner: false };
+	const owner = { principal: "owner", owner: true };
+
+	function scoped(caller: ConnectorDeps["caller"]) {
+		const planner = fakePlanner(true, async (input) => ({
+			ok: true,
+			data: plannedView(String(input.sessionId)),
+		}));
+		const world = setup({ planner, ...(caller === undefined ? {} : { caller }) });
+		const mine = seedServer(world.stateDir, alice.principal, { graph: GRAPH });
+		const theirs = seedServer(world.stateDir, bob.principal, { graph: GRAPH });
+		return { ...world, planner, mine, theirs };
+	}
+
+	test("ultrathink_graph without a session id resolves only the caller's own newest plan", async () => {
+		const a = scoped(() => alice);
+		const { data } = okOf(await a.handlers.graph({}));
+		expect(data.sessionId).toBe(a.mine);
+		expect(a.planner.calls).toEqual([{ sessionId: a.mine, waitSeconds: 0, detail: "brief" }]);
+		const b = scoped(() => bob);
+		expect(okOf(await b.handlers.graph({})).data.sessionId).toBe(b.theirs);
+	});
+
+	test("a principal whose sessions are all someone else's gets none, and the planner is never asked", async () => {
+		const planner = fakePlanner(true, async (input) => ({
+			ok: true,
+			data: plannedView(String(input.sessionId)),
+		}));
+		const { stateDir, handlers } = setup({ planner, caller: () => alice });
+		seedServer(stateDir, bob.principal, { graph: GRAPH });
+		const { data } = okOf(await handlers.graph({}));
+		expect(data.status).toBe("none");
+		expect(planner.calls).toEqual([]);
+	});
+
+	test("an explicit session id owned by another principal is not found and never read", async () => {
+		const world = scoped(() => alice);
+		expect(refusal(await world.handlers.graph({ sessionId: world.theirs }))).toBe("not_found");
+		expect(world.planner.calls).toEqual([]);
+		expect(okOf(await world.handlers.graph({ sessionId: world.mine })).data.sessionId).toBe(
+			world.mine,
+		);
+	});
+
+	test("an owner sees the newest plan of anyone, and a host with no caller reader keeps the legacy view", async () => {
+		const asOwner = scoped(() => owner);
+		expect(okOf(await asOwner.handlers.graph({})).data.sessionId).toBe(asOwner.theirs);
+		const legacy = scoped(undefined);
+		expect(okOf(await legacy.handlers.graph({})).data.sessionId).toBe(legacy.theirs);
+	});
+
+	test("ultrathink_sessions lists only the caller's sessions", () => {
+		const world = scoped(() => alice);
+		const { data } = okOf(world.handlers.sessions({}));
+		expect(objects(data.sessions).map((entry) => entry.sessionId)).toEqual([world.mine]);
+	});
+});
+
+describe("ultrathink_cancel definition", () => {
+	test("names its tool, takes one required session id and is not read-only", () => {
+		const cancel = CONNECTOR_TOOL_DEFINITIONS.find((tool) => tool.name === CANCEL_TOOL);
+		expect(CANCEL_TOOL).toBe("ultrathink_cancel");
+		expect(cancel).toBeDefined();
+		expect(Object.keys(obj(cancel?.inputSchema.properties))).toEqual(["sessionId"]);
+		expect(cancel?.inputSchema.required).toEqual(["sessionId"]);
+		expect(cancel?.inputSchema.additionalProperties).toBe(false);
+		expect(cancel?.annotations.readOnlyHint).toBe(false);
 	});
 });

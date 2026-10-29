@@ -3,8 +3,10 @@
 /**
  * Omp persists a task subagent's session one directory deeper than a
  * top-level session: `<root>/<cwd slug>/<parent session>/<Agent>.jsonl`.
- * `planPrompt` checks the session id on disk, so a subagent session is
- * recognised even when the extension's context alone cannot tell.
+ * `isOmpSubagentSessionId` recognises a subagent session id on disk for a
+ * caller with no cheaper signal. The Omp extension has one (`isSubagentSession`,
+ * O(1)), so `planPrompt` never calls this: the scan is a synchronous glob plus
+ * stat walk and must not run on a planning path.
  * Always fail-open: any error means "not a subagent". The session file is
  * never a model source: native planning reads the live model from the host.
  */
