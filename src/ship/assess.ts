@@ -161,6 +161,8 @@ interface AssessInput {
 	decisions?: Decisions;
 	/** `ship.autoMerge`: in gate mode Jev may then only veto a usable judge "done", never stand in for the judge. */
 	autoMerge?: boolean;
+	/** Label of the judge's provider route; set as `judgedBy` on the assessment when a judge is attempted. */
+	judgedBy?: string;
 }
 
 /** A started Jev `ship` decision and what its outcome is read against. */
@@ -200,12 +202,20 @@ export async function assessDone(input: AssessInput): Promise<Assessment> {
 	const jev = startShipDecision(input);
 	if (mode === "advisory") {
 		const assessment = await assessAdvisory(input, at);
-		return jev ? adviseWithJev(assessment, await jev.outcome, jev) : assessment;
+		const advised = jev ? adviseWithJev(assessment, await jev.outcome, jev) : assessment;
+		return withJudgedBy(advised, input);
 	}
 	const judged = await judgeGate(input, at);
-	return jev
+	const gated = jev
 		? gateWithJev(judged, await jev.outcome, jev, input.autoMerge === true)
 		: judged.assessment;
+	return withJudgedBy(gated, input);
+}
+
+/** Records the judge's provider route on an assessment whose judge was attempted (a completer was present). */
+function withJudgedBy(assessment: Assessment, input: AssessInput): Assessment {
+	if (!input.complete || !input.judgedBy) return assessment;
+	return { ...assessment, judgedBy: input.judgedBy };
 }
 
 /** Starts the `ship` decision when the point is active. State: request, acceptance criteria and patch only (D9). */

@@ -610,6 +610,61 @@ describe("assessDone judge", () => {
 		expect(a.gaps[0]).toStartWith("assessment unavailable:");
 		expect(a.judge?.error).toBeDefined();
 	});
+
+	test("a successful gate-mode judge carries judgedBy", async () => {
+		const a = await assessDone({
+			record: RECORD,
+			signals: signals(),
+			diff: DIFF,
+			complete: async () => '{"done": true, "confidence": 0.9, "summary": "ok", "gaps": []}',
+			judgedBy: "claude-cli",
+		});
+		expect(a).toMatchObject({ done: true, source: "llm", judgedBy: "claude-cli" });
+	});
+
+	test("a judge that throws carries judgedBy alongside judge.error", async () => {
+		const a = await assessDone({
+			record: RECORD,
+			signals: signals(),
+			diff: DIFF,
+			complete: async () => {
+				throw new Error("offline");
+			},
+			judgedBy: "claude-cli",
+		});
+		expect(a.judgedBy).toBe("claude-cli");
+		expect(a.judge?.error).toBe("offline");
+	});
+
+	test("no judge attempted -> no judgedBy", async () => {
+		const noCompleter = await assessDone({
+			record: RECORD,
+			signals: signals(),
+			diff: DIFF,
+			judgedBy: "claude-cli",
+		});
+		expect("judgedBy" in noCompleter).toBe(false);
+		const ruleGap = await assessDone({
+			record: RECORD,
+			signals: signals({ ahead: 0 }),
+			diff: DIFF,
+			complete: async () => '{"done": true, "confidence": 0.9, "summary": "ok", "gaps": []}',
+			judgedBy: "claude-cli",
+		});
+		expect("judgedBy" in ruleGap).toBe(false);
+	});
+
+	test("advisory mode carries judgedBy when the judge answers", async () => {
+		const a = await assessDone({
+			record: RECORD,
+			signals: signals(),
+			diff: DIFF,
+			mode: "advisory",
+			complete: async () => '{"done": true, "confidence": 0.9, "summary": "ok", "gaps": []}',
+			judgedBy: "xai-oauth/grok-4.7",
+		});
+		expect(a).toMatchObject({ mode: "advisory", source: "llm", judgedBy: "xai-oauth/grok-4.7" });
+	});
 });
 
 describe("assessDone modes", () => {

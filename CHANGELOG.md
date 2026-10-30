@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Gate-mode ship assessment reports a judge that threw or gave an unparseable reply as `judge.error`; before, that was only a prefix in `gaps`. A Jev decision made after a judge failure keeps the field.
 - Explicit-id session tools (`ultrathink_plan` with a `sessionId`, `ultrathink_uplift`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, `ultrathink_result`) answer `not_found` for a session that names another principal, matching `ultrathink_graph` and `ultrathink_sessions`. Stdio and the owner are unchanged.
+- Claude failover (`claude.fallbackToGrok`) continues on the `grok.shuntBaseUrl` shunt gateway after the login-based Grok candidates when the primary transport is not `shunt`. A refused or unreachable Grok gateway counts as a network failure and fails over to the next candidate. The ship judge uses the route of the session's own provider: an xai session judges on Grok, through the shunt when configured, then Claude as the last resort; other sessions keep the host's default auxiliary route. Ship output's `judgedBy` names the provider that answered.
 
 ### Removed
 
