@@ -6,9 +6,6 @@ import { fallbackUplift } from "./fallback.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "./prompt.ts";
 import { checkUpliftXml } from "./xml.ts";
 
-/** Input gate in characters; 0 means no gate. A positive value is an explicit cap; config supplies 200000 by default. */
-const DEFAULT_MAX_CHARS = 0;
-
 function buildPayload(original: string, conversation?: string): string {
 	if (conversation?.trim()) {
 		return `<conversation>\n${conversation}\n</conversation>\n\n<user_request>\n${original}\n</user_request>`;
@@ -42,20 +39,10 @@ export async function runUplift(input: {
 	conversation?: string;
 	complete: (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 	signal?: AbortSignal;
-	maxChars?: number;
 	/** The completer's report for its most recent call; absent when the route reports nothing. */
 	report?: () => CompletionReport | undefined;
 }): Promise<UpliftResult> {
-	const maxChars = input.maxChars ?? DEFAULT_MAX_CHARS;
 	const original = input.original;
-
-	if (maxChars > 0 && original.length > maxChars)
-		return {
-			...fallbackResult(original),
-			fallbackReason: "input_over_limit",
-			rawReplyChars: 0,
-			attempts: 0,
-		};
 
 	// The report seam is the completer's own bookkeeping: a throwing one reads as absent and never escapes.
 	const readReport = (): CompletionReport | undefined => {

@@ -310,7 +310,7 @@ describe("listSessions", () => {
 		expect(listSessions(state, { limit: 20 }).map((s) => s.sessionId)).toEqual([good]);
 	});
 
-	test("a file over 1 MiB is skipped unread, one just under it is listed", () => {
+	test("a job over 1 MiB is still listed from its status file", () => {
 		const state = tmp();
 		const [small, huge] = [randomUUID(), randomUUID()];
 		writeJob(state, small, "planned", NOW - 1);
@@ -329,14 +329,27 @@ describe("listSessions", () => {
 			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 + 1 - overhead) })}\n`,
 		);
 		touch(path, NOW);
-		expect(listSessions(state).map((s) => s.sessionId)).toEqual([small]);
-		expect(newestPlannedSessionId(state)).toBe(small);
-		writeFileSync(
-			path,
-			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 - overhead) })}\n`,
-		);
-		touch(path, NOW);
 		expect(listSessions(state).map((s) => s.sessionId)).toEqual([huge, small]);
+		expect(newestPlannedSessionId(state)).toBe(huge);
+	});
+
+	test("a session record over 1 MiB is unread, not reported as an empty graph", () => {
+		const state = tmp();
+		const id = randomUUID();
+		writeJob(state, id, "planned", NOW);
+		mkdirSync(join(state, "sessions"), { recursive: true });
+		writeFileSync(join(state, "sessions", `${id}.json`), "x".repeat(1024 * 1024 + 64));
+		expect(listSessions(state)).toEqual([
+			{
+				sessionId: id,
+				status: "planned",
+				mode: "server",
+				updatedAt: NOW,
+				goal: "",
+				nodeCount: null,
+				hasGraph: null,
+			},
+		]);
 	});
 
 	test("a malformed graph does not hide its session", () => {
@@ -683,6 +696,22 @@ describe("caller scoping", () => {
 		expect(sessionVisibleTo(state, unnamed, alice)).toBe(false);
 		expect(sessionVisibleTo(state, unnamed, owner)).toBe(true);
 		expect(sessionVisibleTo(state, unnamed, undefined)).toBe(true);
+	});
+	test("a journal meta over 1 MiB still names its principal", () => {
+		const state = tmp();
+		const mine = randomUUID();
+		writeClientFor(state, mine, alice.principal, NOW);
+		const path = join(state, "journal", mine, "meta.json");
+		const body = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		const overhead = JSON.stringify({ ...body, padding: "" }).length + 1;
+		writeFileSync(
+			path,
+			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 + 1 - overhead) })}\n`,
+		);
+		touch(path, NOW);
+		expect(sessionVisibleTo(state, mine, alice)).toBe(true);
+		expect(sessionVisibleTo(state, mine, bob)).toBe(false);
+		expect(listSessions(state, { caller: alice }).map((s) => s.sessionId)).toEqual([mine]);
 	});
 
 	test("an explicit session id is visible to its principal and to an owner only", () => {

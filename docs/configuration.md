@@ -61,7 +61,7 @@ Types: "integer" means a whole JSON number; "number" allows fractions. Ranges ar
 |---|---|---|---|
 | `enabled` | boolean | `true` | Plan prompts. When `false`, only prompts that start with `uplift:` are planned. `/ultrathink-off` and `/ultrathink-on` override this per host. |
 | `skipTrivial` | boolean | `true` | Skip trivial acknowledgements such as `ok` or `lgtm`. |
-| `maxChars` | number, >= 0 | `200000` | The longest prompt, in characters, that is sent to the uplift call. A longer prompt is not sent: it gets the conservative fallback spec with the visible reason `input_over_limit` (the plan's `## Planning degraded` notice says to shorten the prompt or raise this), and creates no rows. `0` means no limit. A negative or non-numeric value keeps the default. |
+| `maxChars` | ignored | ignored | Accepted but not read. A prompt of any length is sent to uplift. An old value does not skip the spec call or create a fallback spec. |
 | `echo` | boolean | `true` | Accepted but not read. The one-line summary after each plan is controlled by `claude.echo`. |
 
 ### `think`: Graph of Thought
@@ -482,7 +482,7 @@ All keys are optional; write only the ones you change. This file shows every key
 
 ```json
 {
-  "uplift": { "enabled": true, "skipTrivial": true, "maxChars": 200000, "echo": true },
+  "uplift": { "enabled": true, "skipTrivial": true, "echo": true },
   "think": { "enabled": true, "minNodes": 5, "maxNodes": 8, "engine": "auto", "fillRetries": 2, "repair": true },
   "hitl": { "enabled": true, "maxQuestions": 4, "knowledgeBase": false },
   "claude": {
@@ -670,7 +670,6 @@ The complete reference, one table per scope with each variable's kind, default a
 | `ULTRATHINK_OAUTH_TAILSCALE=1` | Same as `auth login --tailscale`: on a remote (SSH) session, receive the OAuth callback through `tailscale serve`. Without it, ultrathink never runs `tailscale`. Only the exact value `1` opts in. See [Commands](commands.md#binultrathink-mcp). |
 | `ULTRATHINK_DEBUG=1` | The prompt hook (`hooks/uplift.ts`, used by Claude Code, Grok Build and Muse) writes `[ultrathink]` log lines to stderr. With Decisions on, every process that asks Jev (the prompt hook, the Hermes and Omp engine, `bin/ultrathink-ship`) also writes one `[ultrathink] decisions …` line per decision: the point, P or the error kind, the model, latency, attempts and cost. Never the message, the state or the key. |
 | `ULTRATHINK_MCP_DEBUG=1` | `bin/ultrathink-mcp serve` writes relay log lines to stderr. |
-| `ULTRATHINK_HERMES_TIMEOUT` | Hermes only. Longest time in seconds the Hermes plugin lets one plan run. A positive integer; anything else means the default, `540`. The plugin stops the plan at min(this, cap − 15) seconds, where the cap is Hermes' `plugins.hook_callback_timeout`, and does not start planning when that leaves less than 90 seconds. See the note below the table. |
 | `ULTRATHINK_GATEWAY=0` | Force Hindsight, RAGFlow and the substrate brief back to their direct clients, even when a backend is `gateway`. |
 | `DESK_GATEWAY_URL` | Desk gateway origin. Wins over `gateway.url`. |
 | `DESK_GATEWAY_SEAT` | Seat path segment. Wins over `gateway.seat` when it matches `^[a-z][a-z0-9-]{0,31}$`. |

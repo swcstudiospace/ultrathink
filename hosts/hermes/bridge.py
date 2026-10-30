@@ -2,9 +2,10 @@
 # Copyright (C) 2026 SWC Studio
 """Fail-open bridge from Hermes hooks into the TypeScript ultrathink engine.
 
-pre_llm_call plans the prompt through hooks/engine.ts, inside the hook cap Hermes
-enforces (plugins.hook_callback_timeout): Bun gets min(540, cap - 15) seconds in its
-own process group, and the whole group is killed at that deadline. Slash commands
+pre_llm_call plans the prompt through hooks/engine.ts. When Hermes enforces a positive
+hook cap (plugins.hook_callback_timeout), Bun stops HOOK_MARGIN_S before that cap, in its
+own process group, so children can be reaped. With no positive host cap, Bun runs until
+the engine exits. Slash commands
 and already-uplifted ultrathink XML never start Bun, even behind a shared session's
 "[Name] " sender tag. When a planned session's tool call opens a pull request (or a
 delegate_task subagent's result names one), transform_tool_result appends an
@@ -50,7 +51,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ENGINE = REPO_ROOT / "hooks" / "engine.ts"
 RUN_BUN = REPO_ROOT / "bin" / "run-bun"
 CLI = REPO_ROOT / "bin" / "ultrathink"
-DEFAULT_TIMEOUT_S = 540  # planning takes minutes; stay below Hermes' 600s hook cap maximum
 HOOK_MARGIN_S = 15  # the bridge's deadline ends this long before Hermes abandons the hook
 TERM_GRACE_S = 3.0  # how long the engine gets to stop its model children after SIGTERM before SIGKILL; well inside HOOK_MARGIN_S
 MIN_PLAN_S = 90  # below this a plan cannot finish, so Bun is not started at all
@@ -131,15 +131,6 @@ _teach_status_cache: dict[str, tuple[float, float, dict[str, Any]]] = {}  # cwd 
 _observed_at: dict[str, float] = {}  # session_id -> clock time of its last observe spawn
 _synced: set[str] = set()  # session_ids whose outbox sync was already started
 _clock = time.monotonic
-
-
-def timeout_seconds() -> int:
-	try:
-		value = int(os.environ.get("ULTRATHINK_HERMES_TIMEOUT", ""))
-	except ValueError:
-		return DEFAULT_TIMEOUT_S
-	return value if value > 0 else DEFAULT_TIMEOUT_S
-
 
 def _first_warning(key: str) -> bool:
 	"""True only the first time this process asks to log warning `key`."""
@@ -253,14 +244,20 @@ def _config_hook_cap(path: Path) -> float | None:
 
 
 def plan_deadline() -> float | None:
-	"""Seconds Bun may run: timeout_seconds(), cut to end HOOK_MARGIN_S before a positive
-	Hermes cap (a cap <= 0 runs the hook inline, without one). None when that leaves
-	less than MIN_PLAN_S."""
-	deadline = float(timeout_seconds())
+	"""communicate timeout for Bun. A positive Hermes hook cap stops HOOK_MARGIN_S early so
+	children can be reaped; None when that remainder is under MIN_PLAN_S (plan() skips) or
+	when there is no positive host cap (plan() waits until the engine exits)."""
 	cap = host_hook_cap()
-	if cap is not None and cap > 0:
-		deadline = min(deadline, cap - HOOK_MARGIN_S)
+	if cap is None or cap <= 0:
+		return None
+	deadline = cap - HOOK_MARGIN_S
 	return deadline if deadline >= MIN_PLAN_S else None
+
+
+def _host_cap_too_short() -> bool:
+	"""True when Hermes enforces a positive cap that leaves under MIN_PLAN_S after the margin."""
+	cap = host_hook_cap()
+	return cap is not None and cap > 0 and cap - HOOK_MARGIN_S < MIN_PLAN_S
 
 
 def is_already_uplifted(text: str) -> bool:
@@ -368,10 +365,11 @@ def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 	# before pre_llm_call, so a prompt still starting with "/" is never a skill with a task.
 	if not prompt.strip() or prompt.strip().startswith("/") or is_already_uplifted(prompt):
 		return ""
-	deadline = plan_deadline()
-	if deadline is None:
+	if _host_cap_too_short():
 		_warn_short_cap()
 		return ""
+	# None waits until the engine exits. A number is only the external Hermes cap minus the margin.
+	deadline = plan_deadline()
 	child_env = os.environ.copy()
 	child_env.update(env or {})
 	# Hermes passes no cwd to pre_llm_call, so the turn directory comes from the

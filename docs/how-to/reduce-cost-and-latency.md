@@ -43,7 +43,7 @@ To plan one message while planning is off, or a short reply, start it with `upli
 
 `bin/ultrathink` changes the host it detects, and Claude Code from a plain shell. Set `ULTRATHINK_HOST` (`claude-code`, `grok-build`, `hermes`, `muse` or `omp`) to change another host. See [Commands](../commands.md#skip-and-control-commands) for how each host shows the commands.
 
-By default `uplift.maxChars` is `200000`, so only a very long prompt skips the spec call. Lower it to cap the spec call sooner, or set `0` for no limit: a longer prompt skips the call, gets the minimal fallback spec with the reason `input_over_limit`, and creates no rows. The Graph of Thought and the questions still run unless they are off. Each failed node fill is retried `think.fillRetries` times (default 2) and repaired once (`think.repair`), so under provider errors a plan can make more calls than the table below suggests; lower `think.fillRetries` or set `think.repair` to `false` to cap that, at the cost of more degraded nodes.
+A prompt of any length is sent to uplift. `uplift.maxChars` is ignored, so it does not skip the spec call. The Graph of Thought and the questions still run unless they are off. Each failed node fill is retried `think.fillRetries` times (default 2) and repaired once (`think.repair`), so under provider errors a plan can make more calls than the table below suggests; lower `think.fillRetries` or set `think.repair` to `false` to cap that, at the cost of more degraded nodes.
 
 ## Make each plan smaller
 

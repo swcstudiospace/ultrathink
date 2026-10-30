@@ -33,7 +33,6 @@ import { normalizeClarifications } from "../hitl/pipeline.ts";
 import { readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { DISTILL_SYSTEM } from "../teach/observe.ts";
-import { FIELD_CAPS } from "../resilience/limits.ts";
 import {
 	extractJsonObject,
 	isFallbackGraph,
@@ -428,8 +427,7 @@ export function validateGraph(raw: string, original: string): Validation {
 
 export function validateNodeFill(raw: string, kind: string | undefined): Validation {
 	const errors: string[] = [];
-	// The desk's answer is judged as written: the stored copy is capped, so a clipped read would drop the closing
-	// Verify: or Open questions: line of a long, valid answer and refuse it for a cut it never had.
+	// The desk's answer is judged as written, including a long Verify: or Open questions: close.
 	const fill = readNodeText(raw);
 	const steps = splitRationaleSteps(fill.thinking);
 	if (!/<rationale>/i.test(raw) || !/<conclusion>/i.test(raw))
@@ -441,14 +439,6 @@ export function validateNodeFill(raw: string, kind: string | undefined): Validat
 	if (steps.length < MIN_STEPS || steps.length > MAX_STEPS)
 		errors.push(
 			`rationale must have ${MIN_STEPS}-${MAX_STEPS} numbered steps (got ${steps.length})`,
-		);
-	if (fill.thinking.length > FIELD_CAPS.thinking)
-		errors.push(
-			`rationale is ${fill.thinking.length} characters; at most ${FIELD_CAPS.thinking} are stored`,
-		);
-	if (fill.conclusion.length > FIELD_CAPS.conclusion)
-		errors.push(
-			`conclusion is ${fill.conclusion.length} characters; at most ${FIELD_CAPS.conclusion} are stored`,
 		);
 	if (kind === "synthesize") {
 		if (!/^\s*WORKFLOW\s*$/m.test(fill.conclusion))

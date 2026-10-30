@@ -63,8 +63,6 @@ Read by the hooks, `bin/ultrathink` and the other plugin commands, on every host
 | `HERMES_HOME` | — | no | path | `~/.hermes` | Hermes home directory, also the Hermes state directory. |
 | `PI_CODING_AGENT_DIR` | — | no | path | `~/.omp/agent` | Omp agent directory, also the Omp state directory. |
 | `PRIME_AGENT_CODING_AGENT_DIR` | — | no | path | `~/.prime/agent` | Prime Agent directory, also the Prime Agent state directory. |
-| `ULTRATHINK_HERMES_TIMEOUT` | — | no | int (at least 1) | `540` | Hermes only: longest time in seconds one plan may run. A positive integer; anything else means the default. |
-| `ULTRATHINK_CURSOR_BUDGET_MS` | — | no | int (at least 1) | `180000` | Cursor only: longest wait for one plan in milliseconds. A positive integer; anything else means the default. |
 | `ULTRATHINK_LOG_LEVEL` | — | no | string | `warn` | Log level of the stdio tool host: info, warn or error, compared without case; anything else means warn. |
 
 ## Hosted service variables

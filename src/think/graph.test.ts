@@ -309,17 +309,18 @@ describe("parseNodeFill", () => {
 		expect(critique.conclusion).toBe(open);
 	});
 
-	test("caps thinking, conclusion and each step at parse", () => {
+	test("keeps a conclusion past the old field cap in full", () => {
 		const long = Array.from({ length: 5 }, (_, i) => `${i + 1}. ${"x".repeat(2500)}`).join("\n");
+		const conclusion = "y".repeat(FIELD_CAPS.conclusion + 1000);
 		const fill = parseNodeFill(
-			`<node><rationale>${long}</rationale><conclusion>${"y".repeat(FIELD_CAPS.conclusion + 1000)}</conclusion></node>`,
+			`<node><rationale>${long}</rationale><conclusion>${conclusion}</conclusion></node>`,
 		);
 		expect(fill.ok).toBe(true);
-		expect(fill.thinking.length).toBeLessThanOrEqual(FIELD_CAPS.thinking);
-		expect(fill.conclusion.length).toBe(FIELD_CAPS.conclusion);
-		expect(fill.conclusion.length).toBeLessThanOrEqual(FIELD_CAPS.conclusion);
+		expect(fill.thinking).toBe(long);
+		expect(fill.conclusion).toBe(conclusion);
+		expect(fill.conclusion.length).toBe(FIELD_CAPS.conclusion + 1000);
 		expect(fill.steps).toHaveLength(5);
-		for (const step of fill.steps) expect(step.length).toBeLessThanOrEqual(FIELD_CAPS.step);
+		for (const step of fill.steps) expect(step).toBe("x".repeat(2500));
 	});
 
 	test.each([5, 6, 8])(
@@ -334,7 +335,7 @@ describe("parseNodeFill", () => {
 			);
 			expect(fill.ok).toBe(true);
 			expect(fill.steps).toHaveLength(count);
-			expect(fill.thinking.length).toBeLessThanOrEqual(FIELD_CAPS.thinking);
+			expect(fill.thinking).toBe(long);
 			// The stored rationale is what trackers and hosted plans re-split: it must hold exactly the accepted steps.
 			const stored = splitRationaleSteps(fill.thinking);
 			expect(stored).toHaveLength(count);
@@ -344,14 +345,14 @@ describe("parseNodeFill", () => {
 		},
 	);
 
-	test("a rationale under the cap is stored exactly as written even when one step is over the step cap", () => {
+	test("a long step is stored in full", () => {
 		const text = `1. ${"a".repeat(700)}\n2. b\n3. c\n4. d\n5. e`;
 		const fill = parseNodeFill(
 			`<node><rationale>${text}</rationale><conclusion>c</conclusion></node>`,
 		);
 		expect(fill.ok).toBe(true);
 		expect(fill.thinking).toBe(text);
-		expect(fill.steps[0]!.length).toBe(FIELD_CAPS.step);
+		expect(fill.steps[0]).toBe("a".repeat(700));
 	});
 });
 
@@ -493,7 +494,7 @@ describe("graph integrity", () => {
 		expect(branched.nodes[4]?.dependsOn).toEqual(["n4", "n3"]);
 	});
 
-	test("oversize title, question and goal are clipped at parse (GOT-04)", () => {
+	test("oversize title, question and goal are stored in full (GOT-04)", () => {
 		const out = normalizeGraph(
 			{
 				goal: "g".repeat(5000),
@@ -508,10 +509,10 @@ describe("graph integrity", () => {
 			5,
 			8,
 		);
-		expect(out.goal.length).toBeLessThanOrEqual(FIELD_CAPS.goal);
+		expect(out.goal).toBe("g".repeat(5000));
 		for (const node of out.nodes) {
-			expect(node.title.length).toBeLessThanOrEqual(FIELD_CAPS.title);
-			expect(node.question.length).toBeLessThanOrEqual(FIELD_CAPS.question);
+			expect(node.title).toBe("t".repeat(900));
+			expect(node.question).toBe("q".repeat(5000));
 		}
 	});
 

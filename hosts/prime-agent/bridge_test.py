@@ -157,54 +157,15 @@ class Bridge(unittest.TestCase):
 		self.assertEqual(bridge.plan("", env=self.env)["skipped"], "empty")
 		self.assertEqual(bridge.plan("GARBAGE", env=self.env)["skipped"], "engine-no-output")
 		self.assertEqual(bridge.plan("SILENT", env=self.env)["skipped"], "engine-no-output")
-		slow = bridge.plan("SLEEP", env=self.env, timeout=0.5)
-		self.assertEqual(slow["skipped"], "timeout")
 		missing = bridge.plan("x", env={**self.env, "ULTRATHINK_PLUGIN_ROOT": self.tmp.name})
 		self.assertEqual(missing["skipped"], "engine-missing")
 
-	def test_timeout_lets_the_engine_stop_the_model_groups_it_started_before_any_force_kill(self) -> None:
-		# The engine starts each model CLI in a session of its own, which a signal to the engine's group never
-		# reaches; only the engine's SIGTERM reaper stops it, and SIGKILL would skip that cleanup.
-		pid_file = Path(self.tmp.name) / "model.pid"
-		engine = Path(self.tmp.name) / "reaping-bun"
-		engine.write_text(
-			"#!/usr/bin/env python3\nimport os, pathlib, signal, subprocess, sys, time\n"
-			"child = []\n"
-			"def stop(signum, frame):\n"
-			"\tfor proc in child:\n"
-			"\t\tos.killpg(proc.pid, signal.SIGKILL)\n"
-			"\tos._exit(143)\n"
-			"signal.signal(signal.SIGTERM, stop)\n"
-			"sys.stdin.read()\n"
-			"child.append(subprocess.Popen(['sleep', '60'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))\n"
-			f"pathlib.Path({str(pid_file)!r}).write_text(str(child[0].pid))\n"
-			"time.sleep(60)\n"
-		)
-		engine.chmod(engine.stat().st_mode | stat.S_IEXEC)
-		slow = bridge.plan("anything", env={**self.env, "BUN": str(engine)}, timeout=4.0)
-		self.assertEqual(slow["skipped"], "timeout")
-		model = int(pid_file.read_text())
-		try:
-			self.assertTrue(_gone(model), "the model process survived the planning timeout")
-		finally:
-			if not _gone(model, wait=0):
-				os.kill(model, signal.SIGKILL)
-
-	def test_timeout_still_force_kills_an_engine_that_ignores_sigterm(self) -> None:
-		pid_file = Path(self.tmp.name) / "engine.pid"
-		engine = Path(self.tmp.name) / "stubborn-bun"
-		engine.write_text(
-			"#!/usr/bin/env python3\nimport os, pathlib, signal, sys, time\n"
-			"signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-			f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
-			"sys.stdin.read()\n"
-			"time.sleep(60)\n"
-		)
-		engine.chmod(engine.stat().st_mode | stat.S_IEXEC)
-		with mock.patch.object(bridge, "TERM_GRACE_S", 0.5):
-			slow = bridge.plan("anything", env={**self.env, "BUN": str(engine)}, timeout=2.0)
-		self.assertEqual(slow["skipped"], "timeout")
-		self.assertTrue(_gone(int(pid_file.read_text())))
+	def test_a_spec_longer_than_the_old_slice_is_returned_whole(self) -> None:
+		body = "x" * 200_001
+		self.spec.write_text(body)
+		result = bridge.plan("build a thing", env=self.env)
+		self.assertEqual(len(result["spec"]), 200_001)
+		self.assertEqual(result["spec"], body)
 
 	def test_child_marker_never_reaches_the_engine_and_host_is_fixed(self) -> None:
 		env = bridge._env({"ULTRATHINK_CHILD": "1", "ULTRATHINK_HOST": "hermes"})
@@ -292,6 +253,52 @@ class Bridge(unittest.TestCase):
 		with mock.patch.dict(os.environ, self.env):
 			result = asyncio.run(bridge.run("async thing", cwd=self.tmp.name))
 		self.assertEqual(result["context"], "PLAN for async thing")
+
+	def test_cancelling_run_kills_the_engine_group_and_is_not_a_plan(self) -> None:
+		import asyncio
+
+		pid_file = Path(self.tmp.name) / "pids"
+		fake = self.root / "hang-bun"
+		# Ignores SIGTERM, like an engine that has not reaped yet, and leaves a same-group child that does not.
+		fake.write_text(
+			f"#!{sys.executable}\n"
+			"import json, os, pathlib, signal, subprocess, sys, time\n"
+			"signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+			"json.loads(sys.stdin.read())\n"
+			"child = subprocess.Popen(['sleep', '60'])\n"
+			f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()) + '\\n' + str(child.pid))\n"
+			"time.sleep(60)\n"
+		)
+		fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+		saved = bridge.TERM_GRACE_S
+		bridge.TERM_GRACE_S = 0.4
+
+		async def go() -> None:
+			task = asyncio.create_task(bridge.run("hang please", cwd=self.tmp.name))
+			deadline = time.monotonic() + 5
+			while not pid_file.exists():
+				if time.monotonic() >= deadline:
+					task.cancel()
+					raise AssertionError("engine did not publish its pid")
+				await asyncio.sleep(0.05)
+			task.cancel()
+			with self.assertRaises(asyncio.CancelledError):
+				await task
+
+		try:
+			with mock.patch.dict(os.environ, {**self.env, "BUN": str(fake)}):
+				asyncio.run(go())
+		finally:
+			bridge.TERM_GRACE_S = saved
+		engine_pid, child_pid = (int(line) for line in pid_file.read_text().splitlines())
+		try:
+			self.assertTrue(_gone(engine_pid), "engine still alive after cancel")
+			self.assertTrue(_gone(child_pid), "engine child still alive after cancel")
+		finally:
+			for pid in (engine_pid, child_pid):
+				if not _gone(pid, wait=0):
+					os.kill(pid, signal.SIGKILL)
+
 
 	def test_variables_exported_in_the_callers_shell_never_reach_the_test_environment(self) -> None:
 		leaks = {

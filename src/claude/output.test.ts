@@ -287,7 +287,7 @@ describe("formatPromptContext", () => {
 		expect(out).not.toContain("z".repeat(201));
 	});
 
-	test("the input_over_limit notice is unchanged", () => {
+	test("an old input_over_limit record does not tell the user to set a cap", () => {
 		const out = formatPromptContext({
 			result: {
 				...result,
@@ -297,9 +297,8 @@ describe("formatPromptContext", () => {
 			engine: "claude:sonnet",
 			graph: FALLBACK_GRAPH,
 		});
-		expect(out).toContain(
-			"Planning was skipped because the prompt is over the planner's input limit, so the specification below is generic fallback text",
-		);
+		expect(out).toContain("this version no longer enforces");
+		expect(out).not.toContain("uplift.maxChars");
 	});
 
 	test("a long engine error is bounded in the notice so handoffs cannot spill", () => {

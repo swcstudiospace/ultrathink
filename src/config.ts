@@ -213,7 +213,7 @@ interface ModelsConfig {
 export type LegacyModelProvenance = "route-default" | "file-pin" | "explicit-blank";
 
 export interface UltrathinkConfig {
-	uplift: { enabled: boolean; skipTrivial: boolean; maxChars: number; echo: boolean };
+	uplift: { enabled: boolean; skipTrivial: boolean; echo: boolean };
 	claude: ClaudeConfig;
 	grok: GrokConfig;
 	hitl: HitlConfig;
@@ -249,8 +249,6 @@ export interface UltrathinkConfig {
 	modelProvenance: Readonly<Record<LegacyRoute, LegacyModelProvenance>>;
 }
 
-/** Default uplift input gate in characters; an explicit `uplift.maxChars` of 0 still means no gate. */
-const DEFAULT_UPLIFT_MAX_CHARS = 200_000;
 /** Defaults for `think.fillRetries` (extra attempts per node fill) and `think.repair` (one repair pass). */
 const THINK_RESILIENCE_DEFAULTS: Pick<ThinkConfig, "fillRetries" | "repair"> = {
 	fillRetries: 2,
@@ -262,7 +260,6 @@ export function defaultConfig(): UltrathinkConfig {
 		uplift: {
 			enabled: true,
 			skipTrivial: true,
-			maxChars: DEFAULT_UPLIFT_MAX_CHARS,
 			echo: true,
 		},
 		think: {
@@ -308,12 +305,6 @@ function mergeUplift(
 		enabled: typeof uplift.enabled === "boolean" ? uplift.enabled : defaults.enabled,
 		skipTrivial:
 			typeof uplift.skipTrivial === "boolean" ? uplift.skipTrivial : defaults.skipTrivial,
-		maxChars:
-			typeof uplift.maxChars === "number" &&
-			Number.isFinite(uplift.maxChars) &&
-			uplift.maxChars >= 0
-				? uplift.maxChars
-				: defaults.maxChars,
 		echo: typeof uplift.echo === "boolean" ? uplift.echo : defaults.echo,
 	};
 }

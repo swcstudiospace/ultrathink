@@ -389,12 +389,14 @@ describe("grok-bot validators", () => {
 		expect(validateNodeFill(critique, "critique")).toMatchObject({ ok: true, errors: [] });
 	});
 
-	test("a fill over the stored field limits is refused by name, never silently clipped (G-6)", () => {
+	test("a fill past the old stored field limits is accepted in full (G-6)", () => {
 		const steps = NODE("n2", "decompose", 6).match(/<rationale>[\s\S]*<\/rationale>/)?.[0] ?? "";
-		const huge = `<node>${steps}<conclusion>${"x".repeat(FIELD_CAPS.conclusion + 1)}</conclusion></node>`;
-		expect(validateNodeFill(huge, "decompose").errors.join()).toMatch(
-			new RegExp(`conclusion.*${FIELD_CAPS.conclusion}`),
-		);
+		const conclusion = "x".repeat(FIELD_CAPS.conclusion + 1);
+		const huge = `<node>${steps}<conclusion>${conclusion}</conclusion></node>`;
+		const result = validateNodeFill(huge, "decompose");
+		expect(result.ok).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect(result.info?.conclusionChars).toBe(conclusion.length);
 	});
 
 	test("an uplift refusal names the missing child or the cut-off root (G-6)", () => {

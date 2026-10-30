@@ -8,7 +8,7 @@
  * so it only enriches the goal and counts of a session found elsewhere. Only summaries leave this module: a one-line
  * goal, counts and a status. Prompts, specifications, answers and error text stay on disk.
  */
-import { type Dir, lstatSync, opendirSync } from "node:fs";
+import { type Dir, lstatSync, opendirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { isFallbackGraph } from "../../../src/think/graph.ts";
@@ -27,9 +27,16 @@ export interface SessionSummary {
 	updatedAt: number;
 	/** One line, at most GOAL_MAX_CHARS characters; empty when nothing safe to show exists yet. */
 	goal: string;
-	nodeCount: number;
-	/** False for a missing graph and for the boilerplate fallback graph. */
-	hasGraph: boolean;
+	/**
+	 * Usable graph nodes. Null when the session file was not read (larger than SUMMARY_READ_BYTES): that is not a
+	 * count of zero.
+	 */
+	nodeCount: number | null;
+	/**
+	 * False only when the session file was read and had no usable graph (missing or the boilerplate fallback).
+	 * Null when that file was not read, so an oversized record is not reported as having no graph.
+	 */
+	hasGraph: boolean | null;
 }
 
 /**
@@ -53,8 +60,8 @@ const MAX_DIR_ENTRIES = 5000;
 const MAX_CANDIDATES = 200;
 /** Sessions read per listing, whoever they belong to: the bound on a scan that skips other principals' sessions. */
 const MAX_EXAMINED = 1000;
-/** Larger files are skipped unread: a plan record with every node filled stays far below this. */
-const MAX_FILE_BYTES = 1024 * 1024;
+/** Plan records larger than this are not parsed on the listing path. Status files are read without this bound. */
+const SUMMARY_READ_BYTES = 1024 * 1024;
 /** Text is cut to this many characters before it is normalised, so a megabyte goal costs nothing. */
 const GOAL_SCAN_CHARS = 2048;
 const JOB_STATUSES: Record<string, true> = {
@@ -135,11 +142,11 @@ function listNames(dir: string, logger: Logger): string[] {
 	return names;
 }
 
-/** Modification time of a regular, reasonably small file that is not a symlink; undefined otherwise. */
+/** Modification time of a regular file that is not a symlink; undefined for symlinks, other types and stat failures. */
 function fileMtime(path: string): number | undefined {
 	try {
 		const stat = lstatSync(path);
-		if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return undefined;
+		if (!stat.isFile()) return undefined;
 		return Math.trunc(stat.mtimeMs);
 	} catch {
 		return undefined;
@@ -152,6 +159,24 @@ function isRealDirectory(path: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+type CappedRead = { readonly kind: "text"; readonly text: string } | { readonly kind: "unread" };
+
+/** UTF-8 of a regular file at most `maxBytes` long. `unread` when larger. Symlinks and non-files are undefined. */
+function readCappedBytes(path: string, maxBytes: number): CappedRead | undefined {
+	try {
+		const stat = lstatSync(path);
+		if (!stat.isFile()) return undefined;
+		if (stat.size > maxBytes) return { kind: "unread" };
+		return { kind: "text", text: readFileSync(path, "utf8") };
+	} catch {
+		return undefined;
+	}
+}
+
+function readCapped(path: string): CappedRead | undefined {
+	return readCappedBytes(path, SUMMARY_READ_BYTES);
 }
 
 /** Every session id found in any of the three places, with the modification time of each file it was found in. */
@@ -201,8 +226,16 @@ function byRecency(a: { id: string; time: number }, b: { id: string; time: numbe
 	return b.time - a.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
-function readRecord(path: string): RecordView | undefined {
-	const raw = readJson(path);
+function readRecord(path: string): RecordView | "unread" | undefined {
+	const read = readCapped(path);
+	if (read === undefined) return undefined;
+	if (read.kind === "unread") return "unread";
+	let raw: unknown;
+	try {
+		raw = JSON.parse(read.text) as unknown;
+	} catch {
+		return undefined;
+	}
 	if (!isObject(raw) || !isObject(raw.result)) return undefined;
 	const view: RecordView = {
 		graphGoal: "",
@@ -244,8 +277,9 @@ function visibleTo(caller: SessionCaller | undefined, principal: string | undefi
 
 /** The principal in a job file or a journal meta; undefined when the file is unreadable or names none. */
 function namedPrincipal(path: string): string | undefined {
-	const body = readJson(path);
-	return isObject(body) && typeof body.principal === "string" ? body.principal : undefined;
+	const parsed = readJson(path);
+	if (!isObject(parsed)) return undefined;
+	return typeof parsed.principal === "string" ? parsed.principal : undefined;
 }
 
 /**
@@ -282,10 +316,11 @@ function summarize(
 	let scopedTo: string | undefined;
 
 	if (sources.jobMtime !== undefined) {
-		const job = readJson(join(stateDir, "jobs", `${id}${JSON_SUFFIX}`));
+		const parsed = readJson(join(stateDir, "jobs", `${id}${JSON_SUFFIX}`));
+		const job = isObject(parsed) ? parsed : undefined;
 		// The shape check mirrors the planner's own: a file it would refuse to serve is not listed as a job.
 		if (
-			isObject(job) &&
+			job !== undefined &&
 			typeof job.status === "string" &&
 			Object.hasOwn(JOB_STATUSES, job.status) &&
 			typeof job.updatedAt === "number" &&
@@ -298,8 +333,9 @@ function summarize(
 	}
 
 	if (status === undefined && sources.metaMtime !== undefined) {
-		const meta = readJson(join(stateDir, "journal", id, "meta.json"));
-		if (isObject(meta)) {
+		const parsed = readJson(join(stateDir, "journal", id, "meta.json"));
+		const meta = isObject(parsed) ? parsed : undefined;
+		if (meta !== undefined) {
 			status = clientStatus(meta.status);
 			mode = "client";
 			updatedAt =
@@ -316,10 +352,13 @@ function summarize(
 	// Another principal's session is not listed, and never reads as the newest planned session.
 	if (!visibleTo(caller, scopedTo)) return undefined;
 
-	const record =
-		sources.recordMtime === undefined
-			? undefined
-			: readRecord(join(stateDir, "sessions", `${id}${JSON_SUFFIX}`));
+	let record: RecordView | undefined;
+	let recordUnread = false;
+	if (sources.recordMtime !== undefined) {
+		const loaded = readRecord(join(stateDir, "sessions", `${id}${JSON_SUFFIX}`));
+		if (loaded === "unread") recordUnread = true;
+		else record = loaded;
+	}
 	const goal = oneLine(record?.graphGoal) || oneLine(record?.original) || oneLine(metaOriginal);
 	return {
 		sessionId: id,
@@ -327,8 +366,8 @@ function summarize(
 		mode,
 		updatedAt: Math.trunc(updatedAt),
 		goal,
-		nodeCount: record?.nodeCount ?? 0,
-		hasGraph: record?.hasGraph ?? false,
+		nodeCount: recordUnread ? null : (record?.nodeCount ?? 0),
+		hasGraph: recordUnread ? null : (record?.hasGraph ?? false),
 	};
 }
 

@@ -14,7 +14,7 @@ skills are the same ones the other hosts use. State lives in `${PRIME_AGENT_CODI
 
 ```python
 r = await ultrathink("add a /health endpoint returning uptime and git sha")
-r["planned"]          # False when the engine skipped (r["skipped"] says why: precheck-<reason> such as precheck-trivial or precheck-graph-reference, child-or-disabled, timeout, engine-error ...)
+r["planned"]          # False when the engine skipped (r["skipped"] says why: precheck-<reason> such as precheck-trivial or precheck-graph-reference, child-or-disabled, engine-error ...)
 r["context"]          # the plan: spec path, HITL questions, tracking rows, WORKFLOW waves. Work from this.
 r["spec"]             # the XML spec (ORIGINAL holds the user's verbatim words)
 r["spec_path"], r["state_path"], r["graph_id"], r["summary"], r["view"], r["model_resolution"]
@@ -23,7 +23,7 @@ r["spec_path"], r["state_path"], r["graph_id"], r["summary"], r["view"], r["mode
 - Pass the request verbatim. A Prime Agent skill invocation (`/skill:gsd-quick add X`) is planned as that skill's task.
 - `force=True` prefixes `uplift:` (plans even while planning is off or the prompt looks trivial). `raw=True` prefixes `raw:` (never plans).
 - `cwd` selects the project config layer and skill lookup; `session` overrides the session id (default: this Prime Agent session).
-- `timeout` defaults to 600 s. A CLI route takes 1-5 minutes; the call runs in a thread, so the kernel stays responsive.
+- A CLI route takes 1-5 minutes. The call runs in a thread, so the kernel stays responsive, and it is not capped by a client deadline. Cancelling it SIGTERMs the engine process group and SIGKILLs that group after a short grace; that call does not come back as a finished plan.
 - Shell form: `ultrathink "request" --force`.
 
 ## After a plan
