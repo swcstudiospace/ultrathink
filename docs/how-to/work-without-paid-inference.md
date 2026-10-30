@@ -12,11 +12,12 @@ Each capability has one class:
 
 | Capability | Class | What you get without inference |
 |---|---|---|
-| Planning on Claude Code, Omp (auto or a named engine), Hermes, Cursor or Prime Agent | inference-optional | Uplift falls back to a labelled fallback spec. Graph of Thought degrades to boilerplate with no tracker rows. Chain-of-thought nodes are marked degraded. |
+| Planning on Claude Code, Hermes, Cursor or Prime Agent | inference-optional | Uplift falls back to a labelled fallback spec. Graph of Thought degrades to boilerplate with no tracker rows. Chain-of-thought nodes are marked degraded. |
 | Planning on the Muse route | inference-optional | No degraded output is documented for this route in the inventory; treat the no-model result as unconfirmed. |
 | Planning on the Claude route with `claude.fallbackToGrok` on | inference-optional | Only the paid Grok legs are added. Without them, the Claude route is unchanged. |
 | Jev plan gate | inference-optional | Any failure plans normally. |
-| Ship judge | inference-optional | No judge gives the rules-only result `deterministic checks passed`. With `autoMerge` on, the result is not done, with `no judge available`. |
+| Ship judge with no judge function supplied | inference-free | Rules-only result: `deterministic checks passed`, done true. |
+| Ship judge in advisory mode (`ship.judge: "advisory"`), judge route fails | inference-optional | Rules decide `done`, so done is true. The judge verdict is recorded with `judge.error`. |
 | Jev ship point | inference-optional | Fails open. |
 | Ship review (Greptile) | inference-free | Needs a Greptile credential or the Greptile CLI. Without one, it is blocked with the `GREPTILE_SETUP` message. |
 | Ship merge gate, `pr` and `status` | inference-free | Run without a model. |
@@ -29,10 +30,13 @@ Each capability has one class:
 
 | Capability | Class | What you see instead |
 |---|---|---|
+| Planning on Omp under `think.engine: "auto"`, with no live model | inference-required | The prompt goes through unplanned with `Prompt Uplift skipped · omp-native:unresolved [native-unavailable]`. It never falls back to Claude or to a fallback spec. A named engine on Omp is outside this row; see the planning-route docs. |
 | Planning on the Grok route (`think.engine: "grok"`) | inference-required | The prompt goes through unplanned with ``Prompt Uplift skipped · Grok login required (run `grok login`)``. |
 | Teach `observe` distiller | inference-required | Shown as `no engine` or `distiller failed`. Nothing is captured. |
 | Grok Bot adapter | inference-required | Status `needs-model`. |
 | Hosted service planning | inference-required | Start is refused as disabled or not_ready. |
+| Ship judge in gate mode (`ship.judge` default `"gate"`), judge route fails | inference-required | `done: false` with `judge.error` set, even with `autoMerge` off. Fix the judge route, or set `ship.judge` to `"advisory"`. |
+| Ship judge in gate mode with `ship.autoMerge` on, and no judge function supplied | inference-required | `done: false` with the gap `no judge available`, even when the deterministic checks pass. This applies only with `ship.autoMerge` on. With `autoMerge` off, the same setup gives the rules-only result, done true (section 1). |
 | `grok check`, `decisions check` and `decisions probe` | inference-required | Explicit paid probes. They run only when you invoke them. |
 
 The Grok login message is the one most users meet first. It means the Grok route has no signed-in, unexpired `grok login` session, so run `grok login` or choose another engine. See [Choose the engine](choose-engine.md).

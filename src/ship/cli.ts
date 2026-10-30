@@ -922,6 +922,22 @@ export async function runShip(
 	}
 }
 
+/**
+ * The session model the ship judge routes on (`selectJudgeEngine`). A Hermes session that plans on Grok saves its
+ * transport and model id but no provider, so a Grok transport supplies the `grok/` prefix that `engineForSessionModel`
+ * maps to Grok even when the model id names no family (for example `route-xhigh`).
+ */
+export function judgeSessionModel(
+	modelResolution: SessionRecord["modelResolution"],
+): string | undefined {
+	const modelId = modelResolution?.modelId;
+	if (!modelId) return undefined;
+	const provider = modelResolution?.provider;
+	if (provider) return `${provider}/${modelId}`;
+	if (modelResolution?.transport?.startsWith("grok")) return `grok/${modelId}`;
+	return modelId;
+}
+
 async function main(): Promise<number> {
 	const argv = process.argv.slice(2);
 	const cwdIndex = argv.indexOf("--cwd");
@@ -943,11 +959,8 @@ async function main(): Promise<number> {
 		diff: gatherDiff,
 		engine: async (record) => {
 			if (!stateFile) return undefined;
-			// The judge chooses its route from the session's provider.
-			const sessionModel =
-				record.modelResolution?.provider && record.modelResolution?.modelId
-					? `${record.modelResolution.provider}/${record.modelResolution.modelId}`
-					: undefined;
+			// The judge chooses its route from the session's model.
+			const sessionModel = judgeSessionModel(record.modelResolution);
 			const selected = await selectJudgeEngine(config, readControl(stateDir), cwd, sessionModel);
 			if ("skipped" in selected) return undefined;
 			return { complete: selected.complete, label: selected.label, answering: selected.answering };
