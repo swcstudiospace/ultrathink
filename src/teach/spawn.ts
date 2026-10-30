@@ -17,6 +17,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { appendRun } from "./runlog.ts";
 import type { TeachDigest } from "./types.ts";
 
 const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -116,6 +117,24 @@ export function spawnObserveDetached(
 			{ env: childEnv, cwd },
 		);
 		if (launch && launch.pid === undefined) throw new Error("launcher did not start");
+		if (launch) {
+			// Not awaited: the host returns at once. Best effort: a failed write must not reach the host.
+			launch.exited.then((code) => {
+				if (code === 0) return;
+				try {
+					appendRun(options.stateDir, {
+						at: Date.now(),
+						sessionId: digest.sessionId,
+						outcome: "skipped",
+						captured: 0,
+						skipped: "launch exited",
+						exitCode: code,
+					});
+				} catch {
+					// reason: fail-open: the run log is diagnostics only
+				}
+			});
+		}
 		return { spawned: true };
 	} catch (error) {
 		if (path) {

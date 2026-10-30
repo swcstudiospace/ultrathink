@@ -147,6 +147,26 @@ describe("observe run log", () => {
 		const [file] = runFiles(dir);
 		expect(readFileSync(join(dir, "teach", "runs", file ?? ""), "utf8")).not.toContain(key);
 	});
+
+	test("a launch that exited non-zero keeps its exit code through the run log", () => {
+		const dir = stateDir();
+		const exited = run(1, {
+			outcome: "skipped",
+			captured: 0,
+			skipped: "launch exited",
+			exitCode: 3,
+		});
+		const killed = run(2, {
+			outcome: "skipped",
+			captured: 0,
+			skipped: "launch exited",
+			exitCode: null,
+		});
+		appendRun(dir, exited);
+		appendRun(dir, killed);
+		expect(readRuns(dir)).toEqual([exited, killed]);
+		expect(readRuns(dir)[0]).toMatchObject({ exitCode: 3, skipped: "launch exited" });
+	});
 });
 
 describe("failure streak", () => {
@@ -156,7 +176,13 @@ describe("failure streak", () => {
 		run(at, { outcome: "skipped", captured: 0, skipped });
 
 	test("which skip reasons are failures", () => {
-		for (const reason of ["distiller failed", "lesson not saved", "error", "no engine: none"])
+		for (const reason of [
+			"distiller failed",
+			"lesson not saved",
+			"error",
+			"launch exited",
+			"no engine: none",
+		])
 			expect(isObserveFailure(reason)).toBe(true);
 		for (const reason of [undefined, "no signal", "too few tool calls", "nothing teachable"])
 			expect(isObserveFailure(reason)).toBe(false);
@@ -237,6 +263,32 @@ describe("failure streak", () => {
 		const streak = failureStreak([failed(1, "\u001b[2Kcredit\u0008 balance\r\nlow\u009b")]);
 		expect(streak?.reason).toBe("[2Kcredit balance low");
 		expect(streak && failureStreakText(streak)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+	});
+
+	test("a launch exit counts as an observe failure in the failure streak", () => {
+		const exited = (at: number, exitCode: number | null) =>
+			run(at, { outcome: "skipped", captured: 0, skipped: "launch exited", exitCode });
+		const streak = failureStreak([run(1), exited(2, 3), exited(3, null)]);
+		expect(streak).toEqual({ count: 2, truncated: false, since: 2, reason: "launch exited" });
+		expect(shouldNotifyFailure(failureStreak([run(1), exited(2, 3)]))).toBe(true);
+		expect(failureStreak([exited(1, 3), run(2)])).toBeUndefined();
+		expect(failureStreak([exited(1, 3), exited(2, 1), run(3), exited(4, 1)])).toMatchObject({
+			count: 1,
+			since: 4,
+		});
+	});
+
+	test("a successful run is not an observe failure", () => {
+		const success = run(2, { outcome: "captured", captured: 2 });
+		expect(isObserveFailure(success.skipped)).toBe(false);
+		expect(failureStreak([run(1), success])).toBeUndefined();
+		const launchExit = run(1, {
+			outcome: "skipped",
+			captured: 0,
+			skipped: "launch exited",
+			exitCode: 3,
+		});
+		expect(failureStreak([launchExit, success])).toBeUndefined();
 	});
 
 	test("overlapping observers in separate processes never lose the newest run", async () => {

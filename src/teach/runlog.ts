@@ -28,6 +28,7 @@ export interface ObserveRun {
 	captured: number;
 	skipped?: string; // redactLine, at most 80 chars
 	detail?: string; // redactLine, at most 160 chars
+	exitCode?: number | null; // on `launch exited` runs: the launcher's exit code (null: killed by a signal or never started)
 }
 
 function runsDir(stateDir: string): string {
@@ -97,6 +98,7 @@ export function appendRun(stateDir: string, run: ObserveRun): void {
 			captured: run.captured,
 			...(run.skipped ? { skipped: redactLine(run.skipped, SKIPPED_CHARS) } : {}),
 			...(run.detail ? { detail: redactLine(run.detail, DETAIL_CHARS) } : {}),
+			...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
 		};
 		const name = `${String(Math.max(0, Math.trunc(run.at))).padStart(AT_DIGITS, "0")}-${randomBytes(4).toString("hex")}.json`;
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -136,6 +138,7 @@ function parseRun(value: unknown): ObserveRun | undefined {
 	if (o.outcome !== "captured" && o.outcome !== "skipped") return undefined;
 	if (typeof o.captured !== "number" || !Number.isInteger(o.captured) || o.captured < 0)
 		return undefined;
+	const exitCode = o.exitCode === null || typeof o.exitCode === "number" ? o.exitCode : undefined;
 	return {
 		at: o.at,
 		sessionId: o.sessionId,
@@ -143,6 +146,7 @@ function parseRun(value: unknown): ObserveRun | undefined {
 		captured: o.captured,
 		...(typeof o.skipped === "string" ? { skipped: o.skipped } : {}),
 		...(typeof o.detail === "string" ? { detail: o.detail } : {}),
+		...(exitCode !== undefined ? { exitCode } : {}),
 	};
 }
 
@@ -173,6 +177,7 @@ export function isObserveFailure(skipped: string | undefined): boolean {
 		skipped === "distiller failed" ||
 		skipped === "lesson not saved" ||
 		skipped === "error" ||
+		skipped === "launch exited" ||
 		(skipped?.startsWith("no engine") ?? false)
 	);
 }

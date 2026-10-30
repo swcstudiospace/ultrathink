@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readRuns } from "./runlog.ts";
 import { spawnObserveDetached, startDetached, writeInbox, type DetachedLaunch } from "./spawn.ts";
 import type { TeachDigest } from "./types.ts";
 
@@ -280,5 +281,59 @@ describe("spawnObserveDetached", () => {
 		expect(result.spawned).toBe(false);
 		expect(result.reason).toBeTruthy();
 		expect(readdirSync(inbox())).toEqual([]);
+	});
+
+	test("a launcher that exits non-zero leaves one run record carrying its exit code", async () => {
+		mkdirSync(join(repoRoot, "bin"));
+		const launcher = join(repoRoot, "bin", "ultrathink");
+		writeFileSync(launcher, "#!/bin/sh\nexit 3\n");
+		chmodSync(launcher, 0o755);
+		const launches: DetachedLaunch[] = [];
+		const result = spawnObserveDetached(digest(), {
+			repoRoot,
+			env: { ...process.env },
+			stateDir,
+			host: "omp",
+			spawn: (cmd, args, opts) => {
+				const launch = startDetached(cmd, args, opts);
+				launches.push(launch);
+				return launch;
+			},
+		});
+		expect(result).toEqual({ spawned: true });
+		expect(await launches[0]?.exited).toBe(3);
+		expect(readRuns(stateDir)).toEqual([
+			{
+				at: expect.any(Number),
+				sessionId: "s1",
+				outcome: "skipped",
+				captured: 0,
+				skipped: "launch exited",
+				exitCode: 3,
+			},
+		]);
+	});
+
+	test("returns before a running launch exits and a clean exit writes no run record", async () => {
+		mkdirSync(join(repoRoot, "bin"));
+		const launcher = join(repoRoot, "bin", "ultrathink");
+		writeFileSync(launcher, "#!/bin/sh\nsleep 0.3\n");
+		chmodSync(launcher, 0o755);
+		const launches: DetachedLaunch[] = [];
+		const result = spawnObserveDetached(digest(), {
+			repoRoot,
+			env: { ...process.env },
+			stateDir,
+			host: "omp",
+			spawn: (cmd, args, opts) => {
+				const launch = startDetached(cmd, args, opts);
+				launches.push(launch);
+				return launch;
+			},
+		});
+		expect(result).toEqual({ spawned: true });
+		expect(readRuns(stateDir)).toEqual([]);
+		expect(await launches[0]?.exited).toBe(0);
+		expect(readRuns(stateDir)).toEqual([]);
 	});
 });
