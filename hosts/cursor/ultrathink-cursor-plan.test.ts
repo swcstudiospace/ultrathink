@@ -134,14 +134,24 @@ printf '%s\\n' '{"skipped":"trivial","context":"PLAN"}'
 		}
 	});
 
-	test("the plan path has no budget timer and no output character cap", () => {
-		const source = readFileSync(HOOK, "utf8");
-		expect(source).not.toContain("ULTRATHINK_CURSOR_BUDGET_MS");
-		expect(source).not.toContain("DEFAULT_BUDGET_MS");
-		expect(source).not.toContain("MAX_OUTPUT_CHARS");
-		expect(source).not.toContain("180000");
-		expect(source).not.toContain("budgetTimer");
-		expect(source).not.toContain("budgetMs");
+	test("a slow planner stdout longer than 2000001 characters is returned in full", async () => {
+		const length = 2_000_002;
+		const root = fakeCheckout(`#!/bin/sh
+cat >/dev/null
+sleep 0.3
+printf '%s' '{"context":"'
+dd if=/dev/zero bs=${length} count=1 2>/dev/null | tr '\\0' 'a'
+printf '%s\\n' '"}'
+`);
+		try {
+			const response = JSON.parse((await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: root })).stdout) as {
+				additional_context?: string;
+			};
+			expect(response).not.toEqual({});
+			expect(response.additional_context).toBe("a".repeat(length));
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test("a multi-byte character split across stdout chunks is kept intact", async () => {

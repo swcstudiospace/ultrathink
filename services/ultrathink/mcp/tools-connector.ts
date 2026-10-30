@@ -314,7 +314,12 @@ function sessionsText(sessions: readonly SessionSummary[], planning: PlanningInf
 	// Goals are model or user text: fenced, they cannot read as Markdown of their own.
 	const table: string[] = [];
 	for (const session of sessions) {
-		const nodes = session.hasGraph ? `${session.nodeCount} nodes` : "no graph";
+		const nodes =
+			session.hasGraph === null
+				? "graph unread"
+				: session.hasGraph
+					? `${session.nodeCount} nodes`
+					: "no graph";
 		const goal = session.goal === "" ? "(no goal yet)" : session.goal;
 		table.push(
 			`- ${session.sessionId} | ${session.status} | ${session.mode} | ${when(session.updatedAt)} | ${nodes} | ${goal}`,

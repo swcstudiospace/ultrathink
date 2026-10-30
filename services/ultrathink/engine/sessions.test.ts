@@ -310,7 +310,7 @@ describe("listSessions", () => {
 		expect(listSessions(state, { limit: 20 }).map((s) => s.sessionId)).toEqual([good]);
 	});
 
-	test("a file over 1 MiB is skipped unread, one just under it is listed", () => {
+	test("a job over 1 MiB and under 32 MiB is still listed", () => {
 		const state = tmp();
 		const [small, huge] = [randomUUID(), randomUUID()];
 		writeJob(state, small, "planned", NOW - 1);
@@ -329,14 +329,45 @@ describe("listSessions", () => {
 			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 + 1 - overhead) })}\n`,
 		);
 		touch(path, NOW);
-		expect(listSessions(state).map((s) => s.sessionId)).toEqual([small]);
-		expect(newestPlannedSessionId(state)).toBe(small);
-		writeFileSync(
-			path,
-			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 - overhead) })}\n`,
-		);
-		touch(path, NOW);
 		expect(listSessions(state).map((s) => s.sessionId)).toEqual([huge, small]);
+		expect(newestPlannedSessionId(state)).toBe(huge);
+	});
+
+	test("a session record over 1 MiB and under 32 MiB still reports the graph node count and goal", () => {
+		const state = tmp();
+		const id = randomUUID();
+		writeJob(state, id, "planned", NOW);
+		mkdirSync(join(state, "sessions"), { recursive: true });
+		const record = {
+			sessionId: id,
+			at: NOW,
+			result: { xml: "", original: "ignored original", root: "BUILD_PROMPT", source: "llm" },
+			graph: {
+				goal: "Ship the oversized plan",
+				nodes: [
+					{ id: "n1", title: "One", kind: "decompose", question: "Q?", dependsOn: [] },
+					{ id: "n2", title: "Two", kind: "decompose", question: "Q?", dependsOn: [], padding: "" },
+				],
+			},
+		};
+		const overhead = JSON.stringify(record).length;
+		record.graph.nodes[1]!.padding = "x".repeat(1024 * 1024 + 64 - overhead);
+		const body = JSON.stringify(record);
+		const bytes = Buffer.byteLength(body);
+		expect(bytes).toBeGreaterThan(1024 * 1024);
+		expect(bytes).toBeLessThan(32 * 1024 * 1024);
+		writeFileSync(join(state, "sessions", `${id}.json`), body);
+		expect(listSessions(state)).toEqual([
+			{
+				sessionId: id,
+				status: "planned",
+				mode: "server",
+				updatedAt: NOW,
+				goal: "Ship the oversized plan",
+				nodeCount: 2,
+				hasGraph: true,
+			},
+		]);
 	});
 
 	test("a malformed graph does not hide its session", () => {

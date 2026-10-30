@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +53,8 @@ TEACH_REL = Path("src") / "teach" / "cli.ts"
 
 CONTROL_TIMEOUT_S = 30.0
 TEACH_TIMEOUT_S = 120.0
+# How long a cancelled plan waits after SIGTERM before SIGKILL. Not a plan deadline.
+TERM_GRACE_S = 3.0
 
 
 
@@ -132,6 +137,51 @@ def _read_text(path: str | None) -> str | None:
 def _skip(reason: str, **extra: Any) -> dict[str, Any]:
 	return {"planned": False, "skipped": reason, "context": "", **extra}
 
+def _signal_group(proc: subprocess.Popen[str], sig: int) -> None:
+	try:
+		os.killpg(proc.pid, sig)
+	except (ProcessLookupError, PermissionError):
+		pass
+
+
+def _stop_engine(proc: subprocess.Popen[str]) -> None:
+	"""SIGTERM the engine process group, then SIGKILL after ``TERM_GRACE_S`` if it is still alive.
+
+	Does not ``wait`` or close the pipes: ``plan``'s ``communicate`` owns that wait. SIGTERM first so the
+	engine can stop model CLIs it started in their own sessions; SIGKILL then sweeps this group.
+	"""
+	_signal_group(proc, signal.SIGTERM)
+	deadline = time.monotonic() + TERM_GRACE_S
+	while time.monotonic() < deadline:
+		if proc.poll() is not None:
+			return
+		time.sleep(0.05)
+	if proc.poll() is None:
+		_signal_group(proc, signal.SIGKILL)
+
+
+class _EngineHandle:
+	"""The engine ``Popen``, published before ``communicate`` so ``run`` can stop it on cancel."""
+
+	def __init__(self) -> None:
+		self._lock = threading.Lock()
+		self.proc: subprocess.Popen[str] | None = None
+		self.cancelled = False
+
+	def __call__(self, proc: subprocess.Popen[str]) -> bool:
+		"""Record ``proc``. True when the run is already cancelled, so ``plan`` must not communicate."""
+		with self._lock:
+			self.proc = proc
+			return self.cancelled
+
+	def stop(self) -> None:
+		"""Mark the run cancelled and SIGTERM/SIGKILL the group when the process is already published."""
+		with self._lock:
+			self.cancelled = True
+			proc = self.proc
+		if proc is not None:
+			_stop_engine(proc)
+
 
 def plan(
 	text: str,
@@ -141,6 +191,7 @@ def plan(
 	force: bool = False,
 	raw: bool = False,
 	env: dict[str, str] | None = None,
+	on_process: Callable[[subprocess.Popen[str]], bool] | None = None,
 ) -> dict[str, Any]:
 	"""Plan one request through the engine (synchronous; ``run`` is the awaitable wrapper).
 
@@ -174,6 +225,7 @@ def plan(
 	started = time.monotonic()
 	try:
 		# Bun leads its own process group. There is no product deadline; plan() waits until the engine exits.
+		# on_process is invoked before communicate so a cancelled run() can signal this group.
 		proc = subprocess.Popen(
 			command,
 			stdin=subprocess.PIPE,
@@ -188,7 +240,12 @@ def plan(
 		)
 	except OSError as error:
 		return _skip("engine-spawn-failed", error=str(error))
+	if on_process is not None and on_process(proc):
+		_stop_engine(proc)
+		return _skip("cancelled")
 	stdout, stderr = proc.communicate(input=json.dumps(request), timeout=None)
+	if on_process is not None and getattr(on_process, "cancelled", False):
+		return _skip("cancelled")
 	elapsed = round(time.monotonic() - started, 1)
 	# bin/run-bun exits 0 with no output when bun is missing (fail-open); the hint is on stderr.
 	line = next((entry for entry in reversed((stdout or "").splitlines()) if entry.strip().startswith("{")), "")
@@ -236,11 +293,20 @@ async def run(
 		raw: prefix ``raw:`` so nothing is planned (returns ``planned=False``).
 
 	Returns the ``plan()`` dict. Work from ``context``; it names the spec file, the HITL questions and, with tracking
-	on, tells you to run the ``ultrathink-kickoff`` skill first. Never raises.
+	on, tells you to run the ``ultrathink-kickoff`` skill first. Re-raises ``asyncio.CancelledError`` after SIGTERM
+	and, following ``TERM_GRACE_S``, SIGKILL of the engine process group — a cancelled run is not a finished plan.
 	"""
 	import asyncio
 
-	return await asyncio.to_thread(plan, text, cwd=cwd, session=session, force=force, raw=raw)
+	handle = _EngineHandle()
+	try:
+		result = await asyncio.to_thread(plan, text, cwd=cwd, session=session, force=force, raw=raw, on_process=handle)
+	except asyncio.CancelledError:
+		handle.stop()
+		raise
+	if handle.cancelled or result.get("skipped") == "cancelled":
+		raise asyncio.CancelledError
+	return result
 
 
 def _run_cli(root: Path, argv: list[str], timeout: float, env: dict[str, str] | None, stdin: str | None = None) -> tuple[bool, str]:

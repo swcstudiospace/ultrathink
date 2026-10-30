@@ -254,6 +254,52 @@ class Bridge(unittest.TestCase):
 			result = asyncio.run(bridge.run("async thing", cwd=self.tmp.name))
 		self.assertEqual(result["context"], "PLAN for async thing")
 
+	def test_cancelling_run_kills_the_engine_group_and_is_not_a_plan(self) -> None:
+		import asyncio
+
+		pid_file = Path(self.tmp.name) / "pids"
+		fake = self.root / "hang-bun"
+		# Ignores SIGTERM, like an engine that has not reaped yet, and leaves a same-group child that does not.
+		fake.write_text(
+			f"#!{sys.executable}\n"
+			"import json, os, pathlib, signal, subprocess, sys, time\n"
+			"signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+			"json.loads(sys.stdin.read())\n"
+			"child = subprocess.Popen(['sleep', '60'])\n"
+			f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()) + '\\n' + str(child.pid))\n"
+			"time.sleep(60)\n"
+		)
+		fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+		saved = bridge.TERM_GRACE_S
+		bridge.TERM_GRACE_S = 0.4
+
+		async def go() -> None:
+			task = asyncio.create_task(bridge.run("hang please", cwd=self.tmp.name))
+			deadline = time.monotonic() + 5
+			while not pid_file.exists():
+				if time.monotonic() >= deadline:
+					task.cancel()
+					raise AssertionError("engine did not publish its pid")
+				await asyncio.sleep(0.05)
+			task.cancel()
+			with self.assertRaises(asyncio.CancelledError):
+				await task
+
+		try:
+			with mock.patch.dict(os.environ, {**self.env, "BUN": str(fake)}):
+				asyncio.run(go())
+		finally:
+			bridge.TERM_GRACE_S = saved
+		engine_pid, child_pid = (int(line) for line in pid_file.read_text().splitlines())
+		try:
+			self.assertTrue(_gone(engine_pid), "engine still alive after cancel")
+			self.assertTrue(_gone(child_pid), "engine child still alive after cancel")
+		finally:
+			for pid in (engine_pid, child_pid):
+				if not _gone(pid, wait=0):
+					os.kill(pid, signal.SIGKILL)
+
+
 	def test_variables_exported_in_the_callers_shell_never_reach_the_test_environment(self) -> None:
 		leaks = {
 			"ULTRATHINK_STATE_DIR": "/elsewhere/state",
