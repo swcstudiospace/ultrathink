@@ -14,7 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
-import { readSession } from "../../../src/claude/state.ts";
+import { OMP_LOCK, readSession } from "../../../src/claude/state.ts";
 import { defaultConfig, type UltrathinkConfig as PluginConfig } from "../../../src/config.ts";
 import type { ModelResolution, SelectedEngine } from "../../../src/host/engine.ts";
 import {
@@ -872,6 +872,8 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 					config: pluginConfig(),
 					control: { enabled: true },
 					createTracker: () => undefined,
+					// A server process: its event loop is shared with every request, so a long lock wait would freeze it. Keep the short 2 s bound.
+					stateLock: OMP_LOCK,
 					selectEngine: async (): Promise<SelectedEngine> => ({
 						label: `plan:${model}`,
 						complete: meteredCompleter(job, model),

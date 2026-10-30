@@ -40,7 +40,7 @@ The connector has not been connected to Claude chat or Claude Code from this plu
 
 - That the commands appear in the "/" menu and that picking one runs it. In chat a command loads as a skill that Claude applies when it fits; a typed `/ultrathink foo` that is not picked from the menu is plain text.
 - That `$ARGUMENTS` is filled in when chat loads a command as a skill. The command files fall back to the text you typed.
-- That the Connectors tab lists the connector, accepts the owner-password sign-in, and then exposes all ten tools, including the new `ultrathink_graph`, `ultrathink_sessions` and `ultrathink_command`.
+- That the Connectors tab lists the connector, accepts the owner-password sign-in, and then exposes the connector's tools (9; 11 when the host plans on the server, which adds `ultrathink_uplift` and `ultrathink_cancel`), including the new `ultrathink_graph`, `ultrathink_sessions` and `ultrathink_command`.
 - That MCP App rendering of the diagram works in custom connectors. Reports say it is inconsistent, so the commands ask Claude to show the mermaid block as text.
 - The upload size and file limits for your plan (the documentation gives 200 MB and 5,000 files for chat).
 
