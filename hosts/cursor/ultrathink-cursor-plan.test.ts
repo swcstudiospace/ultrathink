@@ -79,7 +79,7 @@ printf '%s\\n' '{"context":"PLAN","graphId":"ut-m1-abcdef12"}'
 		try {
 			const planned = await runHook(
 				{ prompt: "add /health", conversation_id: "conv-1", workspace_roots: ["/work"], model: "composer\ninjected" },
-				{ ULTRATHINK_ROOT: root, ULTRATHINK_CURSOR_BUDGET_MS: "5000" },
+				{ ULTRATHINK_ROOT: root },
 				root,
 			);
 			const body = JSON.parse(planned.stdout) as { continue?: boolean; additional_context?: string };
@@ -102,7 +102,7 @@ printf '%s\\n' '{"context":"PLAN","graphId":"not-a-graph"}'
 `);
 		try {
 			const response = JSON.parse(
-				(await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: loose, ULTRATHINK_CURSOR_BUDGET_MS: "5000" })).stdout,
+				(await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: loose })).stdout,
 			) as { additional_context?: string };
 			expect(response.additional_context).toContain("PLAN");
 			expect(response.additional_context).not.toContain("not-a-graph");
@@ -115,7 +115,7 @@ printf '%s\\n' '{"context":"PLAN","graphId":"not-a-graph"}'
 	test("engine failure and a skip return {}", async () => {
 		const root = fakeCheckout("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' 'not-json'\n");
 		try {
-			expect(JSON.parse((await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: root, ULTRATHINK_CURSOR_BUDGET_MS: "5000" })).stdout)).toEqual(
+			expect(JSON.parse((await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: root })).stdout)).toEqual(
 				{},
 			);
 		} finally {
@@ -127,34 +127,21 @@ printf '%s\\n' '{"skipped":"trivial","context":"PLAN"}'
 `);
 		try {
 			expect(
-				JSON.parse((await runHook({ prompt: "ok" }, { ULTRATHINK_ROOT: skipped, ULTRATHINK_CURSOR_BUDGET_MS: "5000" })).stdout),
+				JSON.parse((await runHook({ prompt: "ok" }, { ULTRATHINK_ROOT: skipped })).stdout),
 			).toEqual({});
 		} finally {
 			rmSync(skipped, { recursive: true, force: true });
 		}
 	});
 
-	test("a hung engine is cut off and the prompt still goes through", async () => {
-		const root = fakeCheckout("#!/bin/sh\nsleep 30\n");
-		try {
-			expect(JSON.parse((await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: root, ULTRATHINK_CURSOR_BUDGET_MS: "200" })).stdout)).toEqual(
-				{},
-			);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	test("a child that ignores SIGTERM is killed after the grace, and the prompt still goes through", async () => {
-		const root = fakeCheckout("#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 1; done\n");
-		try {
-			const started = Date.now();
-			const response = await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: root, ULTRATHINK_CURSOR_BUDGET_MS: "200" });
-			expect(JSON.parse(response.stdout)).toEqual({});
-			expect(Date.now() - started).toBeLessThan(5000);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
+	test("the plan path has no budget timer and no output character cap", () => {
+		const source = readFileSync(HOOK, "utf8");
+		expect(source).not.toContain("ULTRATHINK_CURSOR_BUDGET_MS");
+		expect(source).not.toContain("DEFAULT_BUDGET_MS");
+		expect(source).not.toContain("MAX_OUTPUT_CHARS");
+		expect(source).not.toContain("180000");
+		expect(source).not.toContain("budgetTimer");
+		expect(source).not.toContain("budgetMs");
 	});
 
 	test("a multi-byte character split across stdout chunks is kept intact", async () => {
@@ -166,7 +153,7 @@ sleep 0.3
 printf '\\251 plan"}\\n'
 `);
 		try {
-			const response = JSON.parse((await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: root, ULTRATHINK_CURSOR_BUDGET_MS: "5000" })).stdout) as {
+			const response = JSON.parse((await runHook({ prompt: "add /health" }, { ULTRATHINK_ROOT: root })).stdout) as {
 				additional_context?: string;
 			};
 			expect(response.additional_context).toBe("café plan");
@@ -187,7 +174,7 @@ printf 'host=%s args=%s\\n' "$ULTRATHINK_HOST" "$*"
 `,
 		);
 		try {
-			const env = { ULTRATHINK_ROOT: root, ULTRATHINK_CURSOR_BUDGET_MS: "5000", ULTRATHINK_HOST: "claude-code" };
+			const env = { ULTRATHINK_ROOT: root, ULTRATHINK_HOST: "claude-code" };
 			expect(JSON.parse((await runHook({ prompt: "/ultrathink-track off" }, env)).stdout)).toEqual({
 				continue: false,
 				user_message: "host=cursor args=track off",
@@ -225,9 +212,9 @@ printf '%s\\n' '{"context":"PLAN"}'
 			"#!/bin/sh\nexit 3\n",
 		);
 		try {
-			const quickEnv = { ULTRATHINK_ROOT: quick, ULTRATHINK_CURSOR_BUDGET_MS: "5000" };
+			const quickEnv = { ULTRATHINK_ROOT: quick };
 			expect(JSON.parse((await runHook({ prompt: "/ultrathink-quick fix the typo" }, quickEnv)).stdout)).toEqual({});
-			const failEnv = { ULTRATHINK_ROOT: failing, ULTRATHINK_CURSOR_BUDGET_MS: "5000" };
+			const failEnv = { ULTRATHINK_ROOT: failing };
 			expect(JSON.parse((await runHook({ prompt: "/ultrathink-off" }, failEnv)).stdout)).toEqual({});
 		} finally {
 			rmSync(quick, { recursive: true, force: true });

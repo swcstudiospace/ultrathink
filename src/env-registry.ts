@@ -490,22 +490,6 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 	row(
 		"plugin",
 		"hosts",
-		"int",
-		"ULTRATHINK_HERMES_TIMEOUT",
-		"Hermes only: longest time in seconds one plan may run. A positive integer; anything else means the default.",
-		{ default: "540", min: 1 },
-	),
-	row(
-		"plugin",
-		"hosts",
-		"int",
-		"ULTRATHINK_CURSOR_BUDGET_MS",
-		"Cursor only: longest wait for one plan in milliseconds. A positive integer; anything else means the default.",
-		{ default: "180000", min: 1 },
-	),
-	row(
-		"plugin",
-		"hosts",
 		"string",
 		"ULTRATHINK_LOG_LEVEL",
 		"Log level of the stdio tool host: info, warn or error, compared without case; anything else means warn.",

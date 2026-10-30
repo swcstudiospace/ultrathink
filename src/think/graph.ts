@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { clip, FIELD_CAPS } from "../resilience/limits.ts";
 import { splitRationaleSteps } from "../track/plan.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import {
@@ -99,12 +98,9 @@ export function normalizeGraph(
 		nodes.push({
 			id,
 			// One line: a title is spliced into markdown lists, tracker rows and XML attributes, where a newline injects structure.
-			title: clip(asString(rec.title).replace(/\s+/g, " ").trim() || id, FIELD_CAPS.title).text,
+			title: asString(rec.title).replace(/\s+/g, " ").trim() || id,
 			kind,
-			question: clip(
-				asString(rec.question) || asString(rec.prompt) || `Reason about ${id}`,
-				FIELD_CAPS.question,
-			).text,
+			question: asString(rec.question) || asString(rec.prompt) || `Reason about ${id}`,
 			dependsOn: parseDependsOn(rec.depends_on ?? rec.dependsOn),
 		});
 		if (nodes.length >= maxNodes) break;
@@ -142,7 +138,7 @@ export function normalizeGraph(
 	}
 
 	return {
-		goal: clip(asString(obj.goal) || fallbackGoal || FALLBACK_GRAPH.goal, FIELD_CAPS.goal).text,
+		goal: asString(obj.goal) || fallbackGoal || FALLBACK_GRAPH.goal,
 		nodes,
 	};
 }
@@ -278,25 +274,12 @@ export function parseNodeFill(xml: string): NodeFill {
 	if (!thinking || !conclusion) return REJECTED_FILL;
 	const steps = splitRationaleSteps(thinking);
 	if (steps.length < MIN_STEPS || steps.length > MAX_STEPS) return REJECTED_FILL;
-	const bounded = steps.map((step) => clip(step, FIELD_CAPS.step).text);
-	const stored = storedRationale(thinking, bounded);
-	// The stored text is what trackers and hosted plans split again: it must hold exactly the accepted steps.
-	if (splitRationaleSteps(stored).length !== steps.length) return REJECTED_FILL;
 	return {
 		ok: true,
-		thinking: stored,
-		conclusion: clip(conclusion, FIELD_CAPS.conclusion).text,
-		steps: bounded,
+		thinking,
+		conclusion,
+		steps,
 	};
-}
-
-/**
- * The rationale as stored. Within the cap it is kept as written. Over it, the text is rebuilt from the bounded steps
- * (at most MAX_STEPS × (FIELD_CAPS.step + marker) characters, under FIELD_CAPS.thinking) so no step is cut off.
- */
-function storedRationale(thinking: string, bounded: string[]): string {
-	if (thinking.length <= FIELD_CAPS.thinking) return thinking;
-	return bounded.map((step, index) => `${index + 1}. ${step.replace(/\s+/g, " ")}`).join("\n");
 }
 
 function nodeXml(node: ThoughtNode): string {

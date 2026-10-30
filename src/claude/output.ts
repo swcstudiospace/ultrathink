@@ -434,7 +434,7 @@ function planningNotice(
 			return [
 				"## Planning degraded",
 				"",
-				`Planning was skipped because the prompt is over the planner's input limit, so the specification below is generic fallback text, not a real plan; treat the attached graph as unverified. No tracker rows were created for it. Shorten the prompt or raise uplift.maxChars, then resend to get a real plan.`,
+				"This record was skipped by an older planner because the prompt was over a character limit this version no longer enforces. The specification below is generic fallback text, not a real plan; treat the attached graph as unverified. No tracker rows were created for it. Resend the prompt to get a real plan.",
 			].join("\n");
 		}
 		return [

@@ -499,21 +499,11 @@ def test_the_planner_runs_in_the_terminal_cwd_hermes_tools_use():
 
 
 def test_deadline_ends_fifteen_seconds_inside_the_hermes_cap():
-	saved = os.environ.pop("ULTRATHINK_HERMES_TIMEOUT", None)
-	try:
-		# 0 runs the hook inline with no cap; None is outside Hermes. Under 90s nothing runs.
-		for cap, deadline in ((600, 540), (300, 285), (105, 90), (104.9, None), (30, None), (0, 540), (None, 540)):
-			with hook_cap(cap):
-				assert bridge.plan_deadline() == deadline, cap
-		# ULTRATHINK_HERMES_TIMEOUT still shortens the deadline, but never past the cap.
-		os.environ["ULTRATHINK_HERMES_TIMEOUT"] = "120"
-		for cap, deadline in ((600, 120), (120, 105), (0, 120)):
-			with hook_cap(cap):
-				assert bridge.plan_deadline() == deadline, cap
-	finally:
-		os.environ.pop("ULTRATHINK_HERMES_TIMEOUT", None)
-		if saved is not None:
-			os.environ["ULTRATHINK_HERMES_TIMEOUT"] = saved
+	# 0 runs the hook inline with no cap; None is outside Hermes. Both wait until the engine exits.
+	# Under 90s nothing runs.
+	for cap, deadline in ((600, 585), (300, 285), (105, 90), (104.9, None), (30, None), (0, None), (None, None)):
+		with hook_cap(cap):
+			assert bridge.plan_deadline() == deadline, cap
 
 
 def test_short_hook_cap_never_starts_bun_and_warns_once():

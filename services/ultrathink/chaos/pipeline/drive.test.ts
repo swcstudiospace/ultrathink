@@ -263,9 +263,9 @@ describe("the generated corpus", () => {
 			expect(outcome.record.result.original).toBe(outcome.expected);
 		}
 		const over = report.outcomes.find((outcome) => outcome.expected.length > 200_000);
-		expect(over?.record?.result.fallbackReason).toBe("input_over_limit");
-		expect(over?.degraded).toContain("uplift");
-		expect(over?.calls.uplift ?? 0).toBe(0);
+		expect(over?.record?.result.fallbackReason).not.toBe("input_over_limit");
+		expect(over?.degraded ?? []).not.toContain("uplift");
+		expect(over?.calls.uplift ?? 0).toBeGreaterThan(0);
 		const surrogate = report.outcomes.find((outcome) =>
 			/[\ud800-\udbff](?![\udc00-\udfff])/.test(outcome.expected),
 		);

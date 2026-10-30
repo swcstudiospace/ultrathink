@@ -2,7 +2,6 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, spyOn, test } from "bun:test";
 import { createFailoverCompleter } from "../failover/chain.ts";
-import { FIELD_CAPS } from "../resilience/limits.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { nodeStepTitles } from "../track/plan.ts";
 import { attachReport, type UpliftResult } from "../types.ts";
@@ -675,14 +674,13 @@ describe("runThink resilience", () => {
 		expect(result.degraded.fills).toEqual(["n2", "n3"]);
 	});
 
-	test("a realistic 4,500-character synthesize conclusion is stored untouched and its Verify: line survives the predecessor excerpt (F-1)", async () => {
+	test("a realistic 4,500-character synthesize conclusion is stored untouched and forwarded whole to the next fill (F-1)", async () => {
 		const wave = (i: number): string =>
 			`Wave ${(i % 3) + 1}: task-${i} — files: src/t${i}.ts — done when: the unit tests for task-${i} pass`;
 		let body = "Plan for the exporter.\nWORKFLOW";
 		for (let i = 0; body.length < 4400; i++) body += `\n${wave(i)}`;
 		const conclusion = `${body}\nVerify: bun test`;
 		expect(conclusion.length).toBeGreaterThan(4400);
-		expect(conclusion.length).toBeLessThan(FIELD_CAPS.conclusion);
 		const users: string[] = [];
 		const result = await runThink({
 			uplift,
@@ -697,7 +695,7 @@ describe("runThink resilience", () => {
 		expect(result.graph.nodes[3]?.conclusion).toBe(conclusion);
 		const last = users[4] ?? "";
 		const block = last.match(/<predecessor [^>]*>\n([\s\S]*?)\n<\/predecessor>/)?.[1] ?? "";
-		expect(block).toContain("…[middle clipped]…");
+		expect(block).toBe(conclusion);
 		expect(block.endsWith("Verify: bun test")).toBe(true);
 		expect(block.startsWith("Plan for the exporter.")).toBe(true);
 	});
@@ -769,7 +767,8 @@ describe("runThink resilience", () => {
 		expect(second).toContain("&lt;/predecessor&gt;");
 		const block = second.match(/<predecessor [^>]*>\n([\s\S]*?)\n<\/predecessor>/)?.[1] ?? "";
 		expect(block.length).toBeGreaterThan(0);
-		expect(block.length).toBeLessThanOrEqual(FIELD_CAPS.predecessor + 200);
+		expect(block).toContain("x".repeat(5000));
+		expect(block).not.toContain("middle clipped");
 		expect(users[0]).not.toContain("</original><evil/>");
 		expect(users[0]).toContain("&lt;/original&gt;&lt;evil/&gt;");
 		expect(users[0]).not.toContain("</graph_goal><x/>");

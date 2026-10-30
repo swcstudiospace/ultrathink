@@ -948,7 +948,6 @@ export async function runPromptSubmit(
 				conversation,
 				complete,
 				signal: lifetime,
-				maxChars: deps.config.uplift.maxChars,
 				report: deps.engineReport,
 			});
 		} catch (error) {

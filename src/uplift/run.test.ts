@@ -90,41 +90,9 @@ describe("runUplift", () => {
 		expect(reached).toBe(true);
 	});
 
-	test("over maxChars uses fallback without calling complete", async () => {
+	test("a prompt longer than 200000 still calls complete", async () => {
 		let called = 0;
-		const original = "x".repeat(10);
-		const result = await runUplift({
-			original,
-			maxChars: 5,
-			complete: async () => {
-				called += 1;
-				return "<BUILD_PROMPT>nope</BUILD_PROMPT>";
-			},
-		});
-		expect(called).toBe(0);
-		expect(result.source).toBe("fallback");
-		expect(result.xml).toBe(fallbackUplift(original));
-	});
-
-	test("equal to maxChars still calls complete", async () => {
-		let called = 0;
-		const original = "hello";
-		const result = await runUplift({
-			original,
-			maxChars: original.length,
-			complete: async () => {
-				called += 1;
-				return `<RESEARCH_PROMPT>${children}</RESEARCH_PROMPT>`;
-			},
-		});
-		expect(called).toBe(1);
-		expect(result.source).toBe("llm");
-		expect(result.root).toBe("RESEARCH_PROMPT");
-	});
-
-	test("plans a prompt of 60,001 characters with the default config", async () => {
-		let called = 0;
-		const original = "x".repeat(60_001);
+		const original = "x".repeat(200_001);
 		const result = await runUplift({
 			original,
 			complete: async () => {
@@ -134,25 +102,10 @@ describe("runUplift", () => {
 		});
 		expect(called).toBe(1);
 		expect(result.source).toBe("llm");
+		expect(result.fallbackReason).not.toBe("input_over_limit");
 		expect(result.fallbackReason).toBeUndefined();
 		expect(result.root).toBe("RESEARCH_PROMPT");
-	});
-
-	test("an explicit positive maxChars cap skips a longer prompt with input_over_limit", async () => {
-		let called = 0;
-		const original = "x".repeat(101);
-		const result = await runUplift({
-			original,
-			maxChars: 100,
-			complete: async () => {
-				called += 1;
-				return `<RESEARCH_PROMPT>${children}</RESEARCH_PROMPT>`;
-			},
-		});
-		expect(called).toBe(0);
-		expect(result.source).toBe("fallback");
-		expect(result.fallbackReason).toBe("input_over_limit");
-		expect(result.xml).toBe(fallbackUplift(original));
+		expect(result.attempts).not.toBe(0);
 	});
 
 	test("records provider_error:429 when the completer throws an HTTP 429", async () => {
@@ -240,16 +193,6 @@ describe("runUplift", () => {
 		expect(failed.source).toBe("fallback");
 		expect(failed.fallbackReason).toBe("provider_error");
 		expect(failed.attempts).toBe(1);
-	});
-
-	test("input_over_limit records zero attempts and the 200000 default gate applies", async () => {
-		const result = await runUplift({
-			original: "x".repeat(200_001),
-			maxChars: 200_000,
-			complete: async () => "never",
-		});
-		expect(result.fallbackReason).toBe("input_over_limit");
-		expect(result.attempts).toBe(0);
 	});
 
 	test("an AbortError-shaped non-Error object is rethrown", async () => {

@@ -68,14 +68,21 @@ describe("mergeConfig", () => {
 		expect(merged.uplift).toEqual(base.uplift);
 	});
 
-	test("defaults: uplift gate 200000, think fillRetries 2 and repair true", () => {
+	test("defaults: think fillRetries 2 and repair true", () => {
 		const base = defaultConfig();
-		expect(base.uplift.maxChars).toBe(200_000);
+		expect(base.uplift).not.toHaveProperty("maxChars");
 		expect(base.think).toMatchObject({ fillRetries: 2, repair: true });
 	});
 
-	test("an explicit uplift.maxChars of 0 still disables the gate", () => {
-		expect(mergeConfig({ uplift: { maxChars: 0 } }, defaultConfig()).uplift.maxChars).toBe(0);
+	test("an old uplift.maxChars is ignored", () => {
+		const base = defaultConfig();
+		const merged = mergeConfig({ uplift: { maxChars: 0 } }, base);
+		expect(merged.uplift).toEqual(base.uplift);
+		expect(merged.uplift).not.toHaveProperty("maxChars");
+		expect(mergeConfig({ uplift: { enabled: false, maxChars: 12 } }, base).uplift).toEqual({
+			...base.uplift,
+			enabled: false,
+		});
 	});
 
 	test("think fillRetries accepts a positive integer and repair a boolean; anything else keeps the defaults", () => {

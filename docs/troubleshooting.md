@@ -132,7 +132,7 @@ The plan context starts with a `## Planning degraded` block, but the plan itself
 | The notice says | Marker in `degraded` | What failed | What to do |
 |---|---|---|---|
 | `The <engine> planning call failed (<cause>). The specification below is generic fallback text` | `uplift` (with `source: fallback` and `engineError`) | The uplift call failed after its three attempts. The spec is the conservative fallback and no tracker rows were created. | Fix the cause named in the parentheses (see the table in [Every plan shows fallback](#every-plan-shows-fallback)), then resend. |
-| `Planning was skipped because the prompt is over the planner's input limit` | `uplift`, reason `input_over_limit` | The prompt is longer than `uplift.maxChars` (default 200000 characters). | Shorten the prompt, or raise `uplift.maxChars` (`0` removes the limit). |
+| `This record was skipped by an older planner because the prompt was over a character limit this version no longer enforces` | `uplift`, reason `input_over_limit` | An older planner skipped uplift. This version sends a prompt of any length; `uplift.maxChars` is ignored. | Resend the prompt. Do not set a character cap. |
 | `Planning produced no usable model output (an empty or invalid completion)` | `uplift`, reason `empty_reply`, `truncated_reply` (cut off before the closing tag) or `unparseable_reply` | The model answered, but not with a complete uplift: empty, a refusal, an error page, or a reply cut off before the closing tag. | Resend, narrow the prompt, or fix the engine. |
 | `the graph structure … use fallback content` | `graph` | The graph call failed or returned too few nodes, so the generic 5-node graph was used. No tracker rows were created from it. | Resend after the load passes; treat the graph as unverified. |
 | `the n2 fill (<cause>) use fallback content` | `fill:n2`, one token per node id | That node's fill still failed after its retries and the repair pass (or the repair was skipped because no fill succeeded): a provider error, or a reply that was not a closed rationale of 5 to 8 steps plus a closed conclusion (the cause then reads `node fill was not a closed rationale …`). The other nodes are real. | Treat that node as unverified and do its reasoning yourself. Resend after the load passes, or lower `claude.concurrency` if provider 429s caused it. |
@@ -180,8 +180,9 @@ A full plan makes several model calls (uplift, graph, one fill per node, clarifi
 | Claude Code | Hook timeout 86 400 s (`hooks/hooks.json`) | Not reached in practice. |
 | Grok Build | 600 s `UserPromptSubmit` timeout in `${GROK_HOME:-~/.grok}/hooks/ultrathink.json` | Grok stops the hook and the prompt goes through unplanned. |
 | Muse Code | 600 s (`timeoutMs: 600000` in `.muse-plugin/plugin.json`) | Same. |
-| Hermes Agent | `min(540, cap − 15)` s, where the cap is Hermes' `plugins.hook_callback_timeout` (30 s by default; set it to 600); `ULTRATHINK_HERMES_TIMEOUT` replaces the 540 | The planner kills Bun's process group and no context is added. See [Hermes: the plan never arrives](#hermes-the-plan-never-arrives). |
-| Omp | 25 s inline, then the plan arrives as an aside; the default flight has no outer planning deadline (`maxRunMs` 0, the default, creates no outer timer). Native planning on reasoning-heavy models can take several minutes | See [Omp](#omp). |
+| Hermes Agent | Hermes' `plugins.hook_callback_timeout` minus 15 s, when that cap is positive and leaves at least 90 s (30 s by default; set the Hermes cap to 600). No positive host cap means the bridge waits until the engine exits | The planner kills Bun's process group at that deadline and no context is added. See [Hermes: the plan never arrives](#hermes-the-plan-never-arrives). |
+| Cursor | No product timer. The hook waits until the engine exits and does not slice the spec | A missing Bun, a planner error, or a child or swarm session leaves the prompt unchanged. |
+| Prime Agent | No product timer. The bridge waits until the engine exits and does not slice the spec | A planner failure leaves the prompt unplanned. |
 
 To make plans faster, lower `think.maxNodes`, raise `claude.concurrency`, set `claude.budgetMs` to cap the whole run, or turn Graph of Thought (`bin/ultrathink think off`) or HITL (`bin/ultrathink hitl off`) off for a host. See [Configuration](configuration.md) and [Reduce cost and latency](how-to/reduce-cost-and-latency.md).
 
@@ -213,7 +214,7 @@ It sends 50 varied prompts through the real pipeline against a fault-injecting f
 
 Hermes stops waiting for a plugin hook after `plugins.hook_callback_timeout` seconds, 30 by default. This is a global Hermes setting that applies to every plugin, and nothing sets it for you: neither the plugin nor `scripts/setup.ts` changes it. A plan takes minutes, so the cap must be at least 105 s, and 600 is recommended.
 
-The planner gives the engine `min(540, cap − 15)` seconds. Below a 105 s cap that is under 90 s, too short for a plan, so the planner doesn't start Bun at all and returns at once. Hermes never waits long enough to time out, so its log shows no hook timeout line, yet no prompt is planned. At the default 30 s cap, `${HERMES_HOME:-~/.hermes}/logs/agent.log` shows this once per Hermes process:
+A positive Hermes hook cap stops the engine 15 s before that cap, so children can be reaped. Below a 105 s cap that leaves under 90 s, too short for a plan, so the planner doesn't start Bun at all and returns at once. With no positive host cap the bridge waits until the engine exits. Hermes never waits long enough to time out when the cap is too short, so its log shows no hook timeout line, yet no prompt is planned. At the default 30 s cap, `${HERMES_HOME:-~/.hermes}/logs/agent.log` shows this once per Hermes process:
 
 ```text
 ultrathink: Hermes hook cap 30.0s leaves under 90s to plan, so prompts go unplanned; run `hermes config set plugins.hook_callback_timeout 600`
@@ -237,7 +238,7 @@ Every ultrathink warning in the Hermes log starts with `ultrathink:` and is logg
 | `ultrathink: this Hermes does not report its plugin hook cap, so ultrathink uses Hermes' 30s default, as <path>/config.yaml sets no plugins.hook_callback_timeout; …` | The planner found no cap in the config, assumed 30 s, and never plans. | Set the cap as above. |
 | `ultrathink: <path> not found; install hosts/hermes as a symlink into a full clone of ultrathink (docs/install.md#hermes-agent)` | The plugin directory was copied rather than symlinked, so `hooks/engine.ts` (or `bin/run-bun`) isn't beside it. Bun is never started. | Replace the copy with a symlink: `ln -sfn <clone>/hosts/hermes ${HERMES_HOME:-~/.hermes}/plugins/ultrathink`. See [Install](install.md#hermes-agent). |
 
-If the cap is 600 and plans still don't arrive, the engine ran past 540 s and its process group was killed. See [The plan is slow or cut off](#the-plan-is-slow-or-cut-off) to make plans faster.
+If the cap is 600 and plans still don't arrive, the engine ran past that cap minus 15 s and its process group was killed. See [The plan is slow or cut off](#the-plan-is-slow-or-cut-off) to make plans faster.
 
 ## Tracking rows don't appear
 
@@ -595,7 +596,7 @@ Realm is optional. ultrathink only reads it: it never starts, stops or configure
 - **One planner.** If another plugin also plans prompts before the model call, disable it, or both will plan the same turn.
 - **Gateway injection.** `/ultrathink-quick <message>` sends the message through `inject_message`. In gateways this needs `plugins.entries.ultrathink.allow_gateway_injection: true` in the Hermes config. Without it, the command falls back to skipping your next message and replies `Ultrathink will not plan your next message. Send it now (or prefix any message with raw:).`
 - **Command names in chat apps.** The commands are registered with hyphens (`ultrathink-status`) because chat menus accept only a restricted character set, and one colon name stops Discord from listing the commands after it. Telegram menus show them with underscores: `ultrathink_status`, `ultrathink_quick` and so on.
-- **Timeout.** The planner subprocess runs for at most `min(540, cap − 15)` seconds, where the cap is `plugins.hook_callback_timeout`. `ULTRATHINK_HERMES_TIMEOUT` replaces the 540. On the deadline the whole Bun process group is killed. Below a 105 s cap the planner doesn't run at all. Control commands time out after 20 s.
+- **Timeout.** A positive Hermes hook cap stops the planner subprocess 15 s before that cap, so children can be reaped. With no positive host cap the bridge waits until the engine exits. On a deadline the whole Bun process group is killed. Below a 105 s cap the planner doesn't run at all. Control commands time out after 20 s.
 - **Skipped before Bun.** Cron runs, sessions with a parent session, empty prompts, prompts that start with `/`, and already uplifted ultrathink XML are never sent to the engine. The engine then skips a bare skill scaffold with no task, and a prompt that references an existing graph as `graph ut-<id>-<8 hex>` unless it starts with `uplift:`.
 - **No rows from the hook.** On Hermes the planner creates no Notion or Linear rows. `ultrathink-kickoff` creates them at the start of the agent's turn with `ultrathink-mcp track complete --state <file>`, so rows appear only once the agent has run kickoff.
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { redactSecrets } from "../redact.ts";
-import { clip, clipHeadTail, FIELD_CAPS } from "../resilience/limits.ts";
+import { clip } from "../resilience/limits.ts";
 import {
 	isTransientFailure,
 	type RetryPolicy,
@@ -147,17 +147,7 @@ function predecessorBlock(graph: ThoughtGraph, node: ThoughtNode): string {
 		.map((pred) => {
 			const conclusion = pred.conclusion?.trim();
 			const body =
-				pred.degraded || !conclusion
-					? "(predecessor unavailable)"
-					: escapeXml(
-							// Head and tail: a synthesize or critique conclusion ends in its `Verify:` / `Open questions:` lines.
-							clipHeadTail(
-								conclusion,
-								FIELD_CAPS.predecessor,
-								FIELD_CAPS.predecessorHead,
-								FIELD_CAPS.predecessorTail,
-							).text,
-						);
+				pred.degraded || !conclusion ? "(predecessor unavailable)" : escapeXml(conclusion);
 			return `<predecessor id="${escapeXml(pred.id)}" title="${escapeXml(pred.title)}">\n${body}\n</predecessor>`;
 		})
 		.join("\n\n");

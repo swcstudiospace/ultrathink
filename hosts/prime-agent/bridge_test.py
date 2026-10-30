@@ -157,54 +157,15 @@ class Bridge(unittest.TestCase):
 		self.assertEqual(bridge.plan("", env=self.env)["skipped"], "empty")
 		self.assertEqual(bridge.plan("GARBAGE", env=self.env)["skipped"], "engine-no-output")
 		self.assertEqual(bridge.plan("SILENT", env=self.env)["skipped"], "engine-no-output")
-		slow = bridge.plan("SLEEP", env=self.env, timeout=0.5)
-		self.assertEqual(slow["skipped"], "timeout")
 		missing = bridge.plan("x", env={**self.env, "ULTRATHINK_PLUGIN_ROOT": self.tmp.name})
 		self.assertEqual(missing["skipped"], "engine-missing")
 
-	def test_timeout_lets_the_engine_stop_the_model_groups_it_started_before_any_force_kill(self) -> None:
-		# The engine starts each model CLI in a session of its own, which a signal to the engine's group never
-		# reaches; only the engine's SIGTERM reaper stops it, and SIGKILL would skip that cleanup.
-		pid_file = Path(self.tmp.name) / "model.pid"
-		engine = Path(self.tmp.name) / "reaping-bun"
-		engine.write_text(
-			"#!/usr/bin/env python3\nimport os, pathlib, signal, subprocess, sys, time\n"
-			"child = []\n"
-			"def stop(signum, frame):\n"
-			"\tfor proc in child:\n"
-			"\t\tos.killpg(proc.pid, signal.SIGKILL)\n"
-			"\tos._exit(143)\n"
-			"signal.signal(signal.SIGTERM, stop)\n"
-			"sys.stdin.read()\n"
-			"child.append(subprocess.Popen(['sleep', '60'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))\n"
-			f"pathlib.Path({str(pid_file)!r}).write_text(str(child[0].pid))\n"
-			"time.sleep(60)\n"
-		)
-		engine.chmod(engine.stat().st_mode | stat.S_IEXEC)
-		slow = bridge.plan("anything", env={**self.env, "BUN": str(engine)}, timeout=4.0)
-		self.assertEqual(slow["skipped"], "timeout")
-		model = int(pid_file.read_text())
-		try:
-			self.assertTrue(_gone(model), "the model process survived the planning timeout")
-		finally:
-			if not _gone(model, wait=0):
-				os.kill(model, signal.SIGKILL)
-
-	def test_timeout_still_force_kills_an_engine_that_ignores_sigterm(self) -> None:
-		pid_file = Path(self.tmp.name) / "engine.pid"
-		engine = Path(self.tmp.name) / "stubborn-bun"
-		engine.write_text(
-			"#!/usr/bin/env python3\nimport os, pathlib, signal, sys, time\n"
-			"signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-			f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
-			"sys.stdin.read()\n"
-			"time.sleep(60)\n"
-		)
-		engine.chmod(engine.stat().st_mode | stat.S_IEXEC)
-		with mock.patch.object(bridge, "TERM_GRACE_S", 0.5):
-			slow = bridge.plan("anything", env={**self.env, "BUN": str(engine)}, timeout=2.0)
-		self.assertEqual(slow["skipped"], "timeout")
-		self.assertTrue(_gone(int(pid_file.read_text())))
+	def test_a_spec_longer_than_the_old_slice_is_returned_whole(self) -> None:
+		body = "x" * 200_001
+		self.spec.write_text(body)
+		result = bridge.plan("build a thing", env=self.env)
+		self.assertEqual(len(result["spec"]), 200_001)
+		self.assertEqual(result["spec"], body)
 
 	def test_child_marker_never_reaches_the_engine_and_host_is_fixed(self) -> None:
 		env = bridge._env({"ULTRATHINK_CHILD": "1", "ULTRATHINK_HOST": "hermes"})

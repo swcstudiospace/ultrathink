@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import time
 from pathlib import Path
@@ -49,31 +48,10 @@ RUN_BUN_REL = Path("bin") / "run-bun"
 CLI_REL = Path("bin") / "ultrathink"
 TEACH_REL = Path("src") / "teach" / "cli.ts"
 
-DEFAULT_TIMEOUT_S = 600.0
 CONTROL_TIMEOUT_S = 30.0
 TEACH_TIMEOUT_S = 120.0
-SPEC_MAX_CHARS = 200_000
-# After SIGTERM the engine gets this long to stop the model CLIs it started before its group is force-killed.
-TERM_GRACE_S = 3.0
 
 
-def _stop_engine(proc: "subprocess.Popen[str]") -> None:
-	"""End a timed-out engine. SIGTERM goes to its process group first: the engine's child reaper then kills the
-	model CLIs it started, each in a session of its own that a signal to the engine's group does not reach (and
-	SIGKILL would skip that cleanup). After TERM_GRACE_S the group is force-killed, which also sweeps anything of
-	the engine's own group that outlived it."""
-	try:
-		os.killpg(proc.pid, signal.SIGTERM)
-	except (ProcessLookupError, PermissionError):
-		pass
-	try:
-		proc.wait(timeout=TERM_GRACE_S)
-	except subprocess.TimeoutExpired:
-		pass
-	try:
-		os.killpg(proc.pid, signal.SIGKILL)
-	except (ProcessLookupError, PermissionError):
-		pass
 
 
 def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -142,14 +120,13 @@ def _engine_command(root: Path, env: dict[str, str]) -> list[str] | None:
 	return [str(runner), str(engine)]
 
 
-def _read_text(path: str | None, limit: int = SPEC_MAX_CHARS) -> str | None:
+def _read_text(path: str | None) -> str | None:
 	if not path:
 		return None
 	try:
-		text = Path(path).read_text(encoding="utf-8", errors="replace")
+		return Path(path).read_text(encoding="utf-8", errors="replace")
 	except OSError:
 		return None
-	return text if len(text) <= limit else text[:limit]
 
 
 def _skip(reason: str, **extra: Any) -> dict[str, Any]:
@@ -163,7 +140,6 @@ def plan(
 	session: str | None = None,
 	force: bool = False,
 	raw: bool = False,
-	timeout: float = DEFAULT_TIMEOUT_S,
 	env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
 	"""Plan one request through the engine (synchronous; ``run`` is the awaitable wrapper).
@@ -197,7 +173,7 @@ def plan(
 	}
 	started = time.monotonic()
 	try:
-		# Bun leads its own process group so a timeout can end everything it spawned (the Claude/Grok CLI it calls).
+		# Bun leads its own process group. There is no product deadline; plan() waits until the engine exits.
 		proc = subprocess.Popen(
 			command,
 			stdin=subprocess.PIPE,
@@ -212,12 +188,7 @@ def plan(
 		)
 	except OSError as error:
 		return _skip("engine-spawn-failed", error=str(error))
-	try:
-		stdout, stderr = proc.communicate(input=json.dumps(request), timeout=timeout)
-	except subprocess.TimeoutExpired:
-		_stop_engine(proc)
-		proc.communicate()
-		return _skip("timeout", error=f"no plan after {timeout:g}s", elapsed_s=round(time.monotonic() - started, 1))
+	stdout, stderr = proc.communicate(input=json.dumps(request), timeout=None)
 	elapsed = round(time.monotonic() - started, 1)
 	# bin/run-bun exits 0 with no output when bun is missing (fail-open); the hint is on stderr.
 	line = next((entry for entry in reversed((stdout or "").splitlines()) if entry.strip().startswith("{")), "")
@@ -253,7 +224,6 @@ async def run(
 	session: str | None = None,
 	force: bool = False,
 	raw: bool = False,
-	timeout: float = DEFAULT_TIMEOUT_S,
 ) -> dict[str, Any]:
 	"""Plan a request with ultrathink: Prompt Uplift (XML spec), Graph of Thought with WORKFLOW waves, HITL
 	questions and, when configured, Linear/Notion rows.
@@ -264,14 +234,13 @@ async def run(
 		session: session id for the state files; defaults to the Prime Agent session id.
 		force: prefix ``uplift:`` so planning-off and trivial-prompt gates do not skip.
 		raw: prefix ``raw:`` so nothing is planned (returns ``planned=False``).
-		timeout: seconds the engine may run (planning takes 1-5 minutes on a CLI route).
 
 	Returns the ``plan()`` dict. Work from ``context``; it names the spec file, the HITL questions and, with tracking
 	on, tells you to run the ``ultrathink-kickoff`` skill first. Never raises.
 	"""
 	import asyncio
 
-	return await asyncio.to_thread(plan, text, cwd=cwd, session=session, force=force, raw=raw, timeout=timeout)
+	return await asyncio.to_thread(plan, text, cwd=cwd, session=session, force=force, raw=raw)
 
 
 def _run_cli(root: Path, argv: list[str], timeout: float, env: dict[str, str] | None, stdin: str | None = None) -> tuple[bool, str]:
