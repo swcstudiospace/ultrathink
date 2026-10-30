@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- The Grok `shunt` transport, its `grok.shuntBaseUrl`, `grok.shuntModel` and `grok.shuntMaxTokens` keys, and the shunt failover candidate. Grok now runs only on the `http` and `cli` transports. A stored `grok.transport` of `"shunt"` falls to the schema default (`"http"`), like any unknown transport value. `ultrathink doctor` reports the removed keys as obsolete when a config file still sets them; delete them from the file.
+- The Grok `shunt` transport, its `grok.shuntBaseUrl`, `grok.shuntModel` and `grok.shuntMaxTokens` keys, and the shunt failover candidate. Grok now runs only on the `http` and `cli` transports. A stored `grok.transport` of `"shunt"` is ignored like any unknown transport value: a valid transport from an earlier config layer stays in effect, and `http` (the schema default) applies only when no layer sets a valid one. `ultrathink doctor` reports the removed keys as obsolete when a config file still sets them; delete them from the file.
 - `src/host/omp-session.ts`, a dead helper that no production code imported.
 - The Vercel AI Gateway Decisions rail is removed. Decisions (Jev) run only on OpenRouter, through `https://openrouter.ai/api/alpha/decisions`.
 - The `decisions.provider` config key is removed. A file that still sets it gets a one-time doctor warning, and the key is ignored.

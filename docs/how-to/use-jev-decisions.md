@@ -15,7 +15,7 @@ Decisions are **always on**: the moment a Jev key exists, every listed point is 
 
 The GSD flow hook (`hooks/flow-eval.ts`) is not one of the six points. `decisions.points` does not affect it; it is silent without a key for the rail it picks (no context note, no record) and is switched off only with `ULTRATHINK_DECISIONS=0`.
 
-The OpenRouter Decisions API endpoint (`https://openrouter.ai/api/alpha/decisions`) is marked **alpha** by OpenRouter, so its shape may change. ultrathink checks every answer strictly and fails open on anything unexpected. Decisions have no other endpoint: a request is never sent anywhere else.
+The OpenRouter Decisions API endpoint (`https://openrouter.ai/api/alpha/decisions`) is marked **alpha** by OpenRouter, so its shape may change. ultrathink checks every answer strictly and fails open on anything unexpected. Decisions use the OpenRouter endpoint only. `ULTRATHINK_DECISIONS_URL` can override it with another OpenRouter path or a loopback address for tests; no other host is accepted.
 
 **The OpenRouter key is for Jev only.** ultrathink has one OpenRouter client, and it sends one thing: Decisions requests to Jev's model family (`~typesafe/jev-latest`, `typesafe/jev-1.13-20260917`). `decisions.model` accepts only `typesafe/jev*` ids; any other value, in any config layer including a project file, is ignored: that layer leaves the earlier layers' value in place (an invalid project value keeps your pinned Jev version), and only when no layer holds a valid Jev id does the default alias `~typesafe/jev-latest` apply. A failure never falls back to another model or key: the point just behaves as with Decisions off. Planning, memory and every other model call use their own routes and never see this key.
 

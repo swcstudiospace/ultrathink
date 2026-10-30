@@ -20,10 +20,10 @@ const WEEKLY_LIMIT = JSON.stringify({
 });
 const REPLY_OK = JSON.stringify({ type: "result", is_error: false, result: "CLAUDE_REPLY" });
 
-/** A `claude` stub that logs each call's argv, then prints `out` and exits `code`. */
-function claudeStub(out: string, code = 0): { bin: string; argv: () => string[] } {
-	const dir = tempDir("ultrathink-judge-claude-stub-");
-	const bin = join(dir, "claude");
+/** A stub binary that logs each call's argv, then prints `out` and exits `code`. */
+function argvStub(name: string, out: string, code = 0): { bin: string; argv: () => string[] } {
+	const dir = tempDir(`ultrathink-judge-${name}-stub-`);
+	const bin = join(dir, name);
 	const outFile = join(dir, "out.json");
 	const logFile = join(dir, "argv.log");
 	writeFileSync(outFile, out);
@@ -49,6 +49,11 @@ function claudeStub(out: string, code = 0): { bin: string; argv: () => string[] 
 			}
 		},
 	};
+}
+
+/** A `claude` stub that logs each call's argv, then prints `out` and exits `code`. */
+function claudeStub(out: string, code = 0): { bin: string; argv: () => string[] } {
+	return argvStub("claude", out, code);
 }
 
 /** A local gateway; `answer` sees each request's path and wire model and returns the reply. */
@@ -134,5 +139,64 @@ describe("selectJudgeEngine: the judge's route follows the session's provider", 
 		expect(selected.label).toBe(CLAUDE_HAIKU);
 		expect(await selected.complete("system", "user")).toBe("CLAUDE_REPLY");
 		expect(selected.failover).toBeUndefined();
+	});
+
+	test("a Grok session judges on Grok over HTTP and never reaches Claude", async () => {
+		const claude = claudeStub(REPLY_OK);
+		const paths: string[] = [];
+		const gw = gateway((path) => {
+			paths.push(path);
+			return Response.json({ output_text: "GROK_REPLY" });
+		});
+		try {
+			const config = judgeConfig(claude.bin, {
+				grok: { home: grokLogin(), baseUrl: `${gw.origin}/v1`, transport: "http" },
+			});
+			const selected = engineOf(
+				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
+			);
+			expect(await selected.complete("system", "user")).toBe("GROK_REPLY");
+			expect(paths).toEqual(["/v1/responses"]);
+			expect(gw.models).toEqual(["grok-4.7"]);
+			expect(claude.argv()).toEqual([]);
+			expect(selected.failover?.()).toBeUndefined();
+		} finally {
+			gw.stop();
+		}
+	});
+
+	test("a Grok session judges on Grok over the CLI transport and never reaches Claude", async () => {
+		const claude = claudeStub(REPLY_OK);
+		const grok = argvStub("grok", JSON.stringify({ text: "GROK_REPLY", stopReason: "end_turn" }));
+		const config = judgeConfig(claude.bin, {
+			grok: { home: grokLogin(), bin: grok.bin, transport: "cli" },
+		});
+		const selected = engineOf(
+			await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
+		);
+		expect(await selected.complete("system", "user")).toBe("GROK_REPLY");
+		expect(grok.argv()).toHaveLength(1);
+		expect(grok.argv()[0]).toContain("-m grok-4.7");
+		expect(claude.argv()).toEqual([]);
+		expect(selected.failover?.()).toBeUndefined();
+	});
+
+	test("a Grok session whose judge call fails with billing falls back to Claude", async () => {
+		const claude = claudeStub(REPLY_OK);
+		const gw = gateway(() => new Response("payment required", { status: 402 }));
+		try {
+			const config = judgeConfig(claude.bin, {
+				grok: { home: grokLogin(), baseUrl: `${gw.origin}/v1`, transport: "http" },
+			});
+			const selected = engineOf(
+				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
+			);
+			expect(await selected.complete("system", "user")).toBe("CLAUDE_REPLY");
+			expect(gw.models).toEqual(["grok-4.7"]);
+			expect(claude.argv()).toHaveLength(1);
+			expect(selected.failover?.()).toMatch(/\(billing\)$/);
+		} finally {
+			gw.stop();
+		}
 	});
 });
