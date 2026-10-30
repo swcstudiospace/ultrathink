@@ -15,6 +15,7 @@ ultrathink plans every non-trivial prompt into a spec and a Graph of Thought bef
 - [Set up Linear](how-to/set-up-linear.md): log in with OAuth or an API key, choose the team, verify.
 - [Register the MCP gateway](how-to/register-mcp-gateway.md): give every host's agent the Notion, Linear and Greptile tools.
 - [Choose the engine](how-to/choose-engine.md): plan with your host's own engine (Claude, Grok or Muse, or on Omp the session's own model), name another one, and read the four planning model states.
+- [Work without paid inference](how-to/work-without-paid-inference.md): what keeps working with no paid model access, what needs a paid route and its exact message, the fallback order, and the owner actions that remain.
 - [Ship with Greptile](how-to/ship-with-greptile.md): opt in to the pull request, Greptile review and merge flow.
 - [Use the Greptile knowledge base](how-to/use-greptile-knowledge-base.md): opt in to reading the repository's Greptile knowledge base before the clarifying questions.
 - [Use Jev decisions](how-to/use-jev-decisions.md): store a Jev key for the always-on decision model at the plan, ship, knowledge, blocking, teachable and skillworthy points, check it over OpenRouter or Vercel, tune its thresholds and pin the model.

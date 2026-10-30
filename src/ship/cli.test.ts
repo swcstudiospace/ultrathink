@@ -178,7 +178,7 @@ function deps(o: FakeOpts = {}): ShipDeps {
 		}),
 		signals: () => signals,
 		diff: () => ({ stat: "", log: "" }),
-		engine: async () => async () => "{}",
+		engine: async () => ({ complete: async () => "{}", label: "fake-judge" }),
 		greptile: () => undefined,
 		sleep: async (ms) => {
 			sleeps.push(ms);
@@ -340,6 +340,47 @@ describe("runShip", () => {
 		const gate = await ship("assess", d);
 		expect(gate.output).toMatchObject({ done: false, mode: "gate" });
 		expect(gate.output.gaps).toContain("no judge available");
+	});
+
+	test("the judge engine receives the session record; its label reaches the assessment as judgedBy", async () => {
+		const saved = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+		writeFileSync(
+			statePath,
+			JSON.stringify({
+				...saved,
+				modelResolution: {
+					version: "1.0.0",
+					state: "detected",
+					host: "omp",
+					provider: "xai-oauth",
+					modelId: "grok-4.7",
+					modelKnown: true,
+					label: "omp-native:xai-oauth/grok-4.7 [detected]",
+				},
+			}),
+		);
+		const seen: Parameters<ShipDeps["engine"]>[0][] = [];
+		const base = deps();
+		const echo: ShipDeps = {
+			...base,
+			assess: async (i) => ({ ...(await base.assess(i)), judgedBy: i.judgedBy }),
+		};
+		const judged: ShipDeps = {
+			...echo,
+			engine: async (record) => {
+				seen.push(record);
+				return { complete: async () => "{}", label: "fake-judge" };
+			},
+		};
+		const out = await ship("assess", judged);
+		expect(out.output).toMatchObject({ ok: true, done: true, judgedBy: "fake-judge" });
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.sessionId).toBe("s");
+		expect(seen[0]?.modelResolution).toMatchObject({ provider: "xai-oauth", modelId: "grok-4.7" });
+		expect(readShip(statePath)?.assessment?.judgedBy).toBe("fake-judge");
+
+		const unjudged = await ship("assess", { ...echo, engine: async () => undefined });
+		expect(unjudged.output).not.toHaveProperty("judgedBy");
 	});
 
 	test("assess archives a finished ship of another branch or repository and assesses into a fresh ship", async () => {
@@ -1448,7 +1489,8 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 		return {
 			...base,
 			assess: assessDone,
-			engine: async () => (judge === undefined ? undefined : async () => judge),
+			engine: async () =>
+				judge === undefined ? undefined : { complete: async () => judge, label: "fake-judge" },
 			github: () => ({
 				...github,
 				createPr: (input) => (bodies.push(input.body), github.createPr(input)),
@@ -1492,9 +1534,12 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 		const offline = jevShip({ fetch: recordingFetch([JEV(0.95, COMPLETE)]).fetch });
 		const throwing: ShipDeps = {
 			...offline,
-			engine: async () => async () => {
-				throw new Error("offline");
-			},
+			engine: async () => ({
+				complete: async () => {
+					throw new Error("offline");
+				},
+				label: "fake-judge",
+			}),
 		};
 		const cases: [ShipDeps, string][] = [
 			[offline, "no judge available"],
