@@ -301,7 +301,7 @@ pending. The audit must list the unverified claims, the deferred findings and th
 - Owner policies kept: no default planning deadline on Omp (the 25 s race is delivery-only), one model per flight, every stage fails open; a retry never changes model, route or effort.
 - Deferred by decision, not built: a machine-wide model-call gate across processes (L12-08); default per-call deadlines for the Claude, Grok and Muse CLI routes (L5-02) and for the hosted service (L9-01 keeps 0, with a warning); retention on by default (L8-12); the Hermes plan-deadline redesign (L7-07 c); every LOW finding.
 - Suspected and unproven: L5-09, L8-13, L4-06. Performance, not load-critical: L9-09, L9-10, L12-09, L12-13.
-- Known gap: a journal or job that records no principal is visible only to an owner-class caller and to a stdio host. The client tools addressed by an explicit session id (`ultrathink_result`, `ultrathink_answer`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_status`) do not check the principal: the session UUID is the only protection there.
+- Principal scoping: a journal or job that records no principal is visible only to an owner-class caller and to a stdio host. The explicit-session-id tools (`ultrathink_plan` and `ultrathink_uplift` with a `sessionId`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, `ultrathink_result`) answer `not_found` for another principal's session, as `ultrathink_graph` does.
 
 ### GATE-04: review, merge and sync
 

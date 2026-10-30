@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Gate-mode ship assessment reports a judge that threw or gave an unparseable reply as `judge.error`; before, that was only a prefix in `gaps`. A Jev decision made after a judge failure keeps the field.
+- Explicit-id session tools (`ultrathink_plan` with a `sessionId`, `ultrathink_uplift`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, `ultrathink_result`) answer `not_found` for a session that names another principal, matching `ultrathink_graph` and `ultrathink_sessions`. Stdio and the owner are unchanged.
+
+### Removed
+
+- `src/host/omp-session.ts`, a dead helper that no production code imported.
+
 ### Fixed
 
+- A detached observe launch that exits non-zero is recorded in the run log with its `exitCode` and counts toward the observe failure streak. Before, a launch that failed after it started was reported as spawned with no record.
+- The Claude Code one-line summary and the Omp plan card list degraded stages when there are any.
 - Uplift no longer has a character gate (`uplift.maxChars` is ignored); Graph of Thought and Chain of Thought stored fields and predecessor text are not clipped; Hermes, Prime Agent and Cursor no longer abort a plan on a product timer (Hermes still stops 15s before Hermes' own hook cap when that cap is positive and leaves at least 90s).
 - The hosted service's server-side plan now keeps the 2 s state-lock bound (`OMP_LOCK`) instead of the 15 s hook default: a live external process holding a session lock in the service's state directory can no longer freeze the service's event loop for up to 15 s in the synchronous lock wait.
 - Two concurrent `ultrathink_plan` starts with one session id no longer overwrite each other when the plan slots are full: after the wait for a slot the start re-checks the id, so exactly one job is created, a start with another prompt answers `session_conflict`, a start with the same prompt joins the first job, and the extra slot is released.
