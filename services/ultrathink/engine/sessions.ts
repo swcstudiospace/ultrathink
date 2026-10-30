@@ -179,14 +179,6 @@ function readCapped(path: string): CappedRead | undefined {
 	return readCappedBytes(path, SUMMARY_READ_BYTES);
 }
 
-function parseObject(text: string): Record<string, unknown> | undefined {
-	try {
-		const raw = JSON.parse(text) as unknown;
-		return isObject(raw) ? raw : undefined;
-	} catch {
-		return undefined;
-	}
-}
 
 /** Every session id found in any of the three places, with the modification time of each file it was found in. */
 function scan(stateDir: string, logger: Logger): Sources[] {
@@ -286,10 +278,9 @@ function visibleTo(caller: SessionCaller | undefined, principal: string | undefi
 
 /** The principal in a job file or a journal meta; undefined when the file is unreadable or names none. */
 function namedPrincipal(path: string): string | undefined {
-	const read = readCapped(path);
-	if (read === undefined || read.kind !== "text") return undefined;
-	const body = parseObject(read.text);
-	return body !== undefined && typeof body.principal === "string" ? body.principal : undefined;
+	const parsed = readJson(path);
+	if (!isObject(parsed)) return undefined;
+	return typeof parsed.principal === "string" ? parsed.principal : undefined;
 }
 
 /**

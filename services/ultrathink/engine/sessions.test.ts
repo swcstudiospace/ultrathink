@@ -697,6 +697,22 @@ describe("caller scoping", () => {
 		expect(sessionVisibleTo(state, unnamed, owner)).toBe(true);
 		expect(sessionVisibleTo(state, unnamed, undefined)).toBe(true);
 	});
+	test("a journal meta over 1 MiB still names its principal", () => {
+		const state = tmp();
+		const mine = randomUUID();
+		writeClientFor(state, mine, alice.principal, NOW);
+		const path = join(state, "journal", mine, "meta.json");
+		const body = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		const overhead = JSON.stringify({ ...body, padding: "" }).length + 1;
+		writeFileSync(
+			path,
+			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 + 1 - overhead) })}\n`,
+		);
+		touch(path, NOW);
+		expect(sessionVisibleTo(state, mine, alice)).toBe(true);
+		expect(sessionVisibleTo(state, mine, bob)).toBe(false);
+		expect(listSessions(state, { caller: alice }).map((s) => s.sessionId)).toEqual([mine]);
+	});
 
 	test("an explicit session id is visible to its principal and to an owner only", () => {
 		const state = tmp();
