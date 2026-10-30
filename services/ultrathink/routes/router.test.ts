@@ -27,6 +27,17 @@ function requiredHeader(name: string): string {
 
 const PERMISSIONS_POLICY = requiredHeader("Permissions-Policy");
 
+/** The security headers every JSON, metrics, 202 and refusal response carries; each must equal SECURITY_HEADERS. */
+const SECURITY_HEADER_NAMES = [
+	"Cache-Control",
+	"X-Content-Type-Options",
+	"Referrer-Policy",
+	"X-Frame-Options",
+	"Content-Security-Policy",
+	"Permissions-Policy",
+	"Strict-Transport-Security",
+] as const;
+
 const PUBLIC_ORIGIN = "https://ultrathink.test";
 const PEER_IP = "127.0.0.1";
 const OWNER_ID = "owner";
@@ -428,7 +439,20 @@ describe("router", () => {
 		expect(runCount()).toBe(before);
 	});
 
-	test("every JSON, 202 and metrics response carries the frame, CSP and permissions headers", async () => {
+	test("every JSON, 202, metrics and refusal response carries the full security header set", async () => {
+		// Twenty-one failed credentials from one IP: the last one escalates the penalty, so the next request is refused.
+		const penalised = "203.0.113.90";
+		for (let i = 0; i < 21; i++) {
+			const failed = await handler(
+				new Request(`${PUBLIC_ORIGIN}/mcp`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", Authorization: "Bearer not-a-real-token" },
+					body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+				}),
+				penalised,
+			);
+			expect(failed.status).toBe(401);
+		}
 		const responses = [
 			await handler(new Request(`${PUBLIC_ORIGIN}/healthz`), PEER_IP),
 			await handler(new Request(`${PUBLIC_ORIGIN}/metrics`), PEER_IP),
@@ -436,8 +460,22 @@ describe("router", () => {
 			await handler(new Request(`${PUBLIC_ORIGIN}/login`, { method: "GET" }), PEER_IP),
 			await handler(new Request(`${PUBLIC_ORIGIN}/ultrathink`), PEER_IP),
 			await handler(ultrathinkPost(JSON.stringify({ input: "plan the header rollout" })), PEER_IP),
+			await handler(
+				ultrathinkPost(
+					JSON.stringify({ input: "plan the header rollout", flags: { admin: true } }),
+				),
+				PEER_IP,
+			),
+			await handler(
+				new Request(`${PUBLIC_ORIGIN}/mcp`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", Authorization: "Bearer not-a-real-token" },
+					body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+				}),
+				penalised,
+			),
 		];
-		expect(responses.map((res) => res.status)).toEqual([200, 200, 404, 405, 401, 202]);
+		expect(responses.map((res) => res.status)).toEqual([200, 200, 404, 405, 401, 202, 400, 429]);
 		for (const res of responses) {
 			expect(res.headers.get("x-frame-options")).toBe("DENY");
 			expect(res.headers.get("content-security-policy")).toBe(
@@ -445,6 +483,9 @@ describe("router", () => {
 			);
 			expect(res.headers.get("permissions-policy")).toBe(PERMISSIONS_POLICY);
 			expect(res.headers.get("cache-control")).toBe("no-store");
+			for (const name of SECURITY_HEADER_NAMES) {
+				expect(res.headers.get(name)).toBe(requiredHeader(name));
+			}
 		}
 	});
 
@@ -1032,6 +1073,69 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		expect((await holdB).status).toBe(200);
 		expect((await queuedC).status).toBe(200);
 		expect((await queuedD).status).toBe(200);
+	});
+
+	test("a queued connector whose wait expires answers 429 with Retry-After 1 and runs nothing", async () => {
+		const gate = Promise.withResolvers<void>();
+		const reached = Promise.withResolvers<void>();
+		let entered = 0;
+		const planner: HeadlessPlanner = {
+			enabled: true,
+			async start(input) {
+				entered += 1;
+				if (entered === 2) reached.resolve();
+				await gate.promise;
+				return {
+					ok: true,
+					data: {
+						sessionId: String(input.sessionId ?? "held"),
+						status: "running",
+						pollAfterSec: 5,
+					},
+				};
+			},
+			async result() {
+				throw new Error("the stub planner is not asked for results in this test");
+			},
+			status: () => null,
+			async shutdown() {
+				// reason: the stub holds no resources to release.
+			},
+			upstream: () => undefined,
+			backendReady: () => ({ ok: true }),
+		};
+		// maxInflight 4 with a 50 % reserve: non-owner classes hold 2 pool slots. The third connector queues behind them,
+		// and the gate stays closed, so its only exit is the 1 ms expiry.
+		const { app, metrics } = build(
+			{
+				connectorKey: CONNECTOR_KEY,
+				maxInflight: 4,
+				priorityReservePct: 50,
+				fairQueueDepth: 16,
+				fairQueueWaitMs: 1,
+			},
+			{ planner },
+		);
+
+		const holdA = app.handle(connectorUplift(1), "198.51.100.1");
+		const holdB = app.handle(connectorUplift(2), "198.51.100.2");
+		await reached.promise;
+
+		const expired = await app.handle(connectorUplift(3), "198.51.100.3");
+		expect(expired.status).toBe(429);
+		expect(expired.headers.get("retry-after")).toBe("1");
+		for (const name of SECURITY_HEADER_NAMES) {
+			expect(expired.headers.get(name)).toBe(requiredHeader(name));
+		}
+		expect(await expired.json()).toEqual({ error: "rate_limited" });
+		expect(entered).toBe(2);
+		expect(metrics.render()).toContain(
+			'ultrathink_fair_share_refused_total{class="connector",reason="reserved"} 1',
+		);
+
+		gate.resolve();
+		expect((await holdA).status).toBe(200);
+		expect((await holdB).status).toBe(200);
 	});
 
 	test("a finishing call releases its outer slot before its share slot: a queued call is admitted, not 503", async () => {
