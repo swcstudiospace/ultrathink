@@ -111,7 +111,7 @@ export interface HookDeps {
 	config: UltrathinkConfig;
 	control: ControlState;
 	complete: ClaudeCompleter;
-	/** Thinking engine label recorded and echoed: the selected route and its wire model, e.g. "claude:<model>", "<model>@<effort>" or "<shuntModel or model>@shunt". */
+	/** Thinking engine label recorded and echoed: the selected route and its wire model, e.g. "claude:<model>" or "<model>@<effort>". */
 	engine: string;
 	/**
 	 * Safe selection record of `complete` (UT-Planning-ModelSelection §6). Reported on progress begin/end and in the

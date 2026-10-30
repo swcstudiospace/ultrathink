@@ -20,7 +20,7 @@ import { DECISIONS_URL_IGNORED, resolveDecisionsUrl } from "../decisions/client.
 import { runDecisionsCommand } from "../decisions/cli.ts";
 import { runDoctorCommand } from "../doctor/cli.ts";
 import { describeJevHealth } from "../decisions/health.ts";
-import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
+import { decisionsKilled, resolveOpenRouterKey } from "../decisions/gate.ts";
 import { grokAuthStatusFresh } from "../grok/auth.ts";
 import { type GrokCheckOptions, runGrokCheck } from "../grok/check.ts";
 import { type GrokLoginOptions, runGrokLogin } from "../grok/login.ts";
@@ -159,7 +159,7 @@ function claudeStatusLine(config: UltrathinkConfig): string {
 	return `Claude: ${displayId(claude.model, OPAQUE_MODEL)} · auth ${claude.auth} · fallback to Grok ${claude.fallbackToGrok ? "on" : "off"}`;
 }
 
-/** `Grok: <model> [@ <effort>] · transport <t> [· home <dir>] [· then <fallbacks>]`, plus the shunt gateway when active. */
+/** `Grok: <model> [@ <effort>] · transport <t> [· home <dir>] [· then <fallbacks>]`. */
 function grokTransportLine(config: UltrathinkConfig): string {
 	const { grok } = config;
 	const effort = grokWireEffort(grok.model, grok.reasoningEffort);
@@ -171,12 +171,7 @@ function grokTransportLine(config: UltrathinkConfig): string {
 	const home = grok.home.trim()
 		? ` · home ${redactSecrets(grok.home.trim().replace(/\s+/g, " "))}`
 		: "";
-	const base = `Grok: ${displayId(grok.model, OPAQUE_MODEL)}${effort ? ` @ ${effort}` : ""} · transport ${grok.transport}${home}${then}`;
-	if (grok.transport !== "shunt") return base;
-	const gateway = grok.shuntBaseUrl
-		? `${grok.shuntBaseUrl}/v1/messages`
-		: "shunt gateway not configured (set grok.shuntBaseUrl)";
-	return `${base} · ${gateway} · wire model ${displayId(grok.shuntModel || grok.model, OPAQUE_MODEL)} · max_tokens ${grok.shuntMaxTokens}`;
+	return `Grok: ${displayId(grok.model, OPAQUE_MODEL)}${effort ? ` @ ${effort}` : ""} · transport ${grok.transport}${home}${then}`;
 }
 
 /** Where the Agent Substrate brief comes from, if anywhere; the same rule the hooks use. */
@@ -225,28 +220,24 @@ function decisionsLine(
 ): string {
 	const { decisions } = config;
 	if (decisionsKilled(env)) return "Decisions: off (ULTRATHINK_DECISIONS=0)";
-	const picked = resolveDecisionsKeys(decisions, storePath(env), env);
-	if (!picked.key) {
-		return "Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
+	const key = resolveOpenRouterKey(storePath(env), env);
+	if (!key) {
+		return "Decisions: on · no Jev key (bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 	}
 	const points = decisions.points.length ? decisions.points.join(", ") : "no points";
 	const endpoint = resolveDecisionsUrl(env);
 	const url =
-		picked.provider === "openrouter"
-			? endpoint.source === "ULTRATHINK_DECISIONS_URL"
-				? ` · url ${endpoint.url}`
-				: endpoint.ignored
-					? DECISIONS_URL_IGNORED
-					: ""
-			: "";
+		endpoint.source === "ULTRATHINK_DECISIONS_URL"
+			? ` · url ${endpoint.url}`
+			: endpoint.ignored
+				? DECISIONS_URL_IGNORED
+				: "";
 	const breaker = describeJevHealth(stateDir, Date.now());
-	const zdr = picked.provider === "vercel" ? "n/a (vercel)" : decisions.zdr ? "on" : "off";
-	return `Decisions: on · ${decisions.model} · ${points} · provider ${picked.provider} · key from ${picked.key.source} · zdr ${zdr}${url}${breaker ? ` · ${breaker}` : ""}`;
+	const zdr = decisions.zdr ? "on" : "off";
+	return `Decisions: on · ${decisions.model} · ${points} · provider openrouter · key from ${key.source} · zdr ${zdr}${url}${breaker ? ` · ${breaker}` : ""}`;
 }
 
 async function grokOauthLine(config: UltrathinkConfig): Promise<string> {
-	if (config.grok.transport === "shunt")
-		return "SuperGrok OAuth: not used (shunt gateway owns upstream auth)";
 	const auth = await grokAuthStatusFresh({
 		home: config.grok.home || undefined,
 		bin: config.grok.bin,

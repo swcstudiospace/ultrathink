@@ -7,15 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The Grok `shunt` transport, its `grok.shuntBaseUrl`, `grok.shuntModel` and `grok.shuntMaxTokens` keys, and the shunt failover candidate. Grok now runs only on the `http` and `cli` transports. A stored `grok.transport` of `"shunt"` is ignored like any unknown transport value: a valid transport from an earlier config layer stays in effect, and `http` (the schema default) applies only when no layer sets a valid one. `ultrathink doctor` reports the removed keys as obsolete when a config file still sets them; delete them from the file.
+- `src/host/omp-session.ts`, a dead helper that no production code imported.
+- The Vercel AI Gateway Decisions rail is removed. Decisions (Jev) run only on OpenRouter, through `https://openrouter.ai/api/alpha/decisions`.
+- The `decisions.provider` config key is removed. A file that still sets it gets a one-time doctor warning, and the key is ignored.
+- Stored Vercel credentials and `AI_GATEWAY_API_KEY` are no longer read for Decisions. `bin/ultrathink-mcp auth set-key vercel` is removed.
+
 ### Changed
 
 - Gate-mode ship assessment reports a judge that threw or gave an unparseable reply as `judge.error`; before, that was only a prefix in `gaps`. A Jev decision made after a judge failure keeps the field.
 - Explicit-id session tools (`ultrathink_plan` with a `sessionId`, `ultrathink_uplift`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, `ultrathink_result`) answer `not_found` for a session that names another principal, matching `ultrathink_graph` and `ultrathink_sessions`. Stdio and the owner are unchanged.
-- Claude failover (`claude.fallbackToGrok`) continues on the `grok.shuntBaseUrl` shunt gateway after the login-based Grok candidates when the primary transport is not `shunt`. A refused or unreachable Grok gateway counts as a network failure and fails over to the next candidate. The ship judge uses the route of the session's own provider: an xai session judges on Grok, through the shunt when configured, then Claude as the last resort; other sessions keep the host's default auxiliary route. Ship output's `judgedBy` names the provider that answered.
-
-### Removed
-
-- `src/host/omp-session.ts`, a dead helper that no production code imported.
+- The ship judge uses the route of the session's own provider: an xai session judges on Grok, then Claude as the last resort; other sessions keep the host's default auxiliary route. Ship output's `judgedBy` names the provider that answered.
 
 ### Fixed
 

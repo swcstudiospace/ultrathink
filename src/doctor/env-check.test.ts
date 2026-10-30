@@ -209,9 +209,9 @@ describe("env checks", () => {
 			});
 
 			deps = { ...deps, env: { ...deps.env, ULTRATHINK_OPENROUTER_KEY: undefined } };
-			store({ vercel: apiKey() });
+			store({ openrouter: apiKey() });
 			jev = byId(checkCredentials(deps), "credentials.jev");
-			expect(jev.title).toBe("Jev decisions: Vercel AI Gateway key present (credential store)");
+			expect(jev.title).toBe("Jev decisions: OpenRouter key present (credential store)");
 		});
 
 		test("an exported OPENROUTER_API_KEY is warned about and never counted as a Jev key", () => {
@@ -269,29 +269,6 @@ describe("env checks", () => {
 			expect(ids()).not.toContain("decisions.health");
 			writeFileSync(health, "{not json");
 			expect(ids()).not.toContain("decisions.health");
-		});
-
-		test("each rail's breaker is its own finding text, naming the rail and its fix", () => {
-			const stateDir = join(dir, "state");
-			setEnv({ ULTRATHINK_STATE_DIR: stateDir, ULTRATHINK_OPENROUTER_KEY: FAKE_KEY });
-			mkdirSync(stateDir, { recursive: true });
-			writeFileSync(
-				join(stateDir, "decisions-health-vercel.json"),
-				JSON.stringify({
-					v: 1,
-					state: "open",
-					cause: "credits",
-					since: 1,
-					nextProbeAt: 3_600_000,
-					coolDownMs: 300_000,
-					failures: 1,
-				}),
-			);
-			const finding = byId(checkCredentials(deps), "decisions.health");
-			expect(finding.title).toContain(
-				"Jev unavailable: Vercel AI Gateway reports insufficient credits",
-			);
-			expect(finding.title).not.toContain("OpenRouter");
 		});
 
 		test("ULTRATHINK_DECISIONS=0 shows no breaker finding even with a saved open breaker", () => {
@@ -623,7 +600,7 @@ describe("env checks", () => {
 				HINDSIGHT_API_KEY: FAKE_KEY,
 				GH_TOKEN: FAKE_KEY,
 			});
-			store({ greptile: apiKey(), ragflow: apiKey(), vercel: apiKey() });
+			store({ greptile: apiKey(), ragflow: apiKey() });
 			const report = buildReport([...checkRuntime(deps), ...checkCredentials(deps)]);
 			for (const output of [formatReport(report), reportJson(report)]) {
 				expect(output).not.toContain(FAKE_KEY);

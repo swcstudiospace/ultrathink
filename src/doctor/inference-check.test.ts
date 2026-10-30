@@ -475,17 +475,6 @@ describe("checkInference", () => {
 			expect(byId(checkInference(deps), "inference.grok.login").level).toBe("info");
 		});
 
-		test("the shunt transport is info and reads no login", () => {
-			userConfig({
-				grok: { transport: "shunt", shuntBaseUrl: "http://127.0.0.1:9999" },
-				claude: { fallbackToGrok: true },
-			});
-			expect(byId(checkInference(deps), "inference.grok.login")).toMatchObject({
-				level: "info",
-				title: "Grok route uses a shunt gateway",
-			});
-		});
-
 		test("grok.home in config wins over GROK_HOME", () => {
 			const other = join(dir, "other-grok");
 			mkdirSync(other);
@@ -632,17 +621,6 @@ describe("checkInference", () => {
 			grokLogin({});
 			userConfig({ claude: { fallbackToGrok: true }, grok: { home: join(dir, "empty-lane") } });
 			expect(byId(checkInference(deps), "inference.memory").title).toContain("inactive");
-		});
-
-		test("the shunt transport has no Grok fallback and says why", () => {
-			grokLogin({});
-			userConfig({
-				claude: { fallbackToGrok: true },
-				grok: { transport: "shunt", shuntBaseUrl: "http://127.0.0.1:9999" },
-			});
-			const finding = byId(checkInference(deps), "inference.memory");
-			expect(finding.title).toBe("Memory-bank inference: claude-haiku-5-5 only");
-			expect(finding.detail).toContain("No Grok fallback: grok.transport is shunt");
 		});
 
 		test("grok.enabled false has no Grok fallback and says why", () => {

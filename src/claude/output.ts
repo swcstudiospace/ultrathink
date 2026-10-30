@@ -115,9 +115,8 @@ const ID_CHARS = /^[\w.:@+/~-]+$/;
 const MAX_ID_CHARS = 128;
 /** URI, endpoint or user-info shapes in an id: `//`, a leading `/`, or `name:secret@`. */
 const ENDPOINT_LIKE = /\/\/|^\/|:[^/]*@/;
-/** Route punctuation and Grok's shunt suffix are generated syntax, not part of the displayed identifier. */
+/** Route punctuation is generated syntax, not part of the displayed identifier. */
 const LABEL_ROUTE_PREFIX = /^(?:omp-native|claude|muse|grok):/;
-const SHUNT_LABEL_SUFFIX = /@shunt(?= \[|$)/;
 /** Fixed-vocabulary record values: states, sources, reasons, transports, hosts and engine requests. */
 const DISPLAY_TOKEN = /^[a-z][a-z.-]{0,63}$/;
 
@@ -132,12 +131,11 @@ export function displayLabel(value: unknown): string {
 	const line = value.replace(/\s+/g, " ").trim();
 	const plain = line.replace(OPAQUE_MARKERS, "");
 	const target = line.replace(LABEL_ROUTE_PREFIX, "");
-	const endpointText = line.startsWith("grok:") ? target.replace(SHUNT_LABEL_SUFFIX, "") : target;
 	const safe =
 		line !== "" &&
 		line.length <= MAX_ENGINE_ERROR_CHARS &&
 		(plain === "" || LABEL_CHARS.test(plain)) &&
-		!ENDPOINT_LIKE.test(endpointText) &&
+		!ENDPOINT_LIKE.test(target) &&
 		redactSecrets(redactLine(line, MAX_ENGINE_ERROR_CHARS)) === line;
 	return safe ? line : OPAQUE_MODEL;
 }

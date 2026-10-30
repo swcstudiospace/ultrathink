@@ -8,10 +8,8 @@ import {
 	COOL_DOWN_BASE_MS,
 	COOL_DOWN_MAX_MS,
 	describeJevHealth,
-	JEV_RAILS,
 	type JevCall,
 	type JevHealth,
-	type JevRail,
 	openJevHealth,
 	openMemoryJevHealth,
 	REWARN_MS,
@@ -33,8 +31,8 @@ function tempDir(): string {
 }
 
 /** rng 0.5 makes the +-20% jitter exactly 1, so cool-downs are the plain doubled values. */
-function open(dir: string, rail: JevRail = "openrouter", rng: () => number = () => 0.5): JevHealth {
-	return openJevHealth(dir, rail, { rng });
+function open(dir: string, rng: () => number = () => 0.5): JevHealth {
+	return openJevHealth(dir, { rng });
 }
 
 /** The ticket of a call the breaker lets through. */
@@ -103,71 +101,42 @@ describe("tolerant read", () => {
 			JSON.stringify({ v: 1, state: "open", cause: "credits", nextProbeAt: T0 + 1e6, failures: 1 }),
 		);
 		expect(open(dir).shouldCall(T0)).toEqual({ call: true, probe: false });
-		expect(open(dir, "vercel").shouldCall(T0)).toEqual({ call: true, probe: false });
 	});
 });
 
-describe("one breaker per rail", () => {
-	test("a spent Vercel account leaves OpenRouter closed, in separate files", () => {
+describe("the Jev breaker", () => {
+	test("its state file keeps the OpenRouter name, so existing breaker state still applies", () => {
 		const dir = tempDir();
-		const vercel = open(dir, "vercel");
-		const openrouter = open(dir, "openrouter");
-		expect(vercel.recordFailure("credits", T0)).toEqual({ opened: true });
-		expect(openrouter.shouldCall(T0 + 1)).toEqual({ call: true, probe: false });
-		expect(vercel.shouldCall(T0 + 1)).toMatchObject({ call: false, cause: "credits" });
-		expect(openrouter.recordFailure("auth", T0 + 2)).toEqual({ opened: true });
-		expect(
-			readdirSync(dir)
-				.filter((name) => name.startsWith("decisions-health"))
-				.sort(),
-		).toEqual(["decisions-health-openrouter.json", "decisions-health-vercel.json"]);
-		expect(vercel.read()).toMatchObject({ cause: "credits", failures: 1 });
-		expect(openrouter.read()).toMatchObject({ cause: "auth", failures: 1 });
+		open(dir).recordFailure("credits", T0);
+		const files = readdirSync(dir).filter((name) => name.startsWith("decisions-health"));
+		expect(files).toEqual([FILE]);
+		expect(open(dir).read()).toMatchObject({ cause: "credits", failures: 1 });
 	});
 
-	test("every text names the failing rail and its own fix", () => {
+	test("every text names OpenRouter and its own fix", () => {
 		const dir = tempDir();
-		open(dir, "openrouter").recordFailure("credits", T0);
-		open(dir, "vercel").recordFailure("auth", T0);
-		expect(open(dir, "openrouter").describe(T0 + 1)).toBe(
+		open(dir).recordFailure("credits", T0);
+		expect(open(dir).describe(T0 + 1)).toBe(
 			"Jev unavailable: OpenRouter reports insufficient credits since 2026-10-28. Decisions fall back to their defaults until you top up at https://openrouter.ai/settings/credits (next check 2026-10-28T12:05:00Z).",
 		);
-		expect(open(dir, "vercel").describe(T0 + 1)).toBe(
-			"Jev unavailable: Vercel AI Gateway rejected the key since 2026-10-28. Fix: bin/ultrathink-mcp auth set-key vercel --stdin (next check 2026-10-28T12:05:00Z).",
-		);
 		const other = tempDir();
-		open(other, "openrouter").recordFailure("auth", T0);
-		open(other, "vercel").recordFailure("credits", T0);
-		expect(open(other, "openrouter").describe(T0 + 1)).toBe(
+		open(other).recordFailure("auth", T0);
+		expect(open(other).describe(T0 + 1)).toBe(
 			"Jev unavailable: OpenRouter rejected the key since 2026-10-28. Fix: bin/ultrathink-mcp auth set-key openrouter --stdin (next check 2026-10-28T12:05:00Z).",
 		);
-		expect(open(other, "vercel").describe(T0 + 1)).toBe(
-			"Jev unavailable: Vercel AI Gateway reports insufficient credits since 2026-10-28. Decisions fall back to their defaults until you add credits in your Vercel AI Gateway dashboard (next check 2026-10-28T12:05:00Z).",
-		);
-		expect(unavailableMessage({ cause: "auth", nextProbeAt: T0 }, "vercel")).toBe(
-			"decisions unavailable: Vercel AI Gateway rejected the key; next check 2026-10-28T12:00:00Z",
+		expect(unavailableMessage({ cause: "auth", nextProbeAt: T0 })).toBe(
+			"decisions unavailable: OpenRouter rejected the key; next check 2026-10-28T12:00:00Z",
 		);
 	});
 
-	test("describeJevHealth and takeJevWarning cover every rail, naming each open one once", () => {
+	test("describeJevHealth and takeJevWarning name the open breaker once", () => {
 		const dir = tempDir();
-		expect(JEV_RAILS).toEqual(["openrouter", "vercel"]);
 		expect(describeJevHealth(dir, T0)).toBeUndefined();
 		expect(takeJevWarning(dir, T0)).toBeUndefined();
-		open(dir, "vercel").recordFailure("credits", T0);
-		expect(describeJevHealth(dir, T0 + 1)).toContain(
-			"Vercel AI Gateway reports insufficient credits",
-		);
-		expect(describeJevHealth(dir, T0 + 1)).not.toContain("OpenRouter");
-		expect(takeJevWarning(dir, T0 + 2)).toContain("Vercel AI Gateway");
+		open(dir).recordFailure("credits", T0);
+		expect(describeJevHealth(dir, T0 + 1)).toContain("OpenRouter reports insufficient credits");
+		expect(takeJevWarning(dir, T0 + 2)).toContain("OpenRouter");
 		expect(takeJevWarning(dir, T0 + 3)).toBeUndefined();
-		// OpenRouter failing later is its own entry: it warns although Vercel already did.
-		open(dir, "openrouter").recordFailure("auth", T0 + 4);
-		const warning = takeJevWarning(dir, T0 + 5);
-		expect(warning).toContain("OpenRouter rejected the key");
-		expect(warning).not.toContain("Vercel");
-		expect(describeJevHealth(dir, T0 + 6)).toContain("OpenRouter rejected the key");
-		expect(describeJevHealth(dir, T0 + 6)).toContain("Vercel AI Gateway");
 	});
 });
 
@@ -221,10 +190,10 @@ describe("what opens the breaker", () => {
 	});
 
 	test("the cool-down is spread by up to 20% either way from the injected rng", () => {
-		const low = open(tempDir(), "openrouter", () => 0);
+		const low = open(tempDir(), () => 0);
 		low.recordFailure("credits", T0);
 		expect(low.read().nextProbeAt).toBe(T0 + 240_000);
-		const high = open(tempDir(), "openrouter", () => 1);
+		const high = open(tempDir(), () => 1);
 		high.recordFailure("credits", T0);
 		expect(high.read().nextProbeAt).toBe(T0 + 360_000);
 		// The persisted cool-down stays the plain doubled value so doubling is deterministic.
@@ -455,7 +424,7 @@ describe("visible text", () => {
 	});
 
 	test("the refusal message is one short decisions line", () => {
-		const message = unavailableMessage({ cause: "credits", nextProbeAt: T0 }, "openrouter");
+		const message = unavailableMessage({ cause: "credits", nextProbeAt: T0 });
 		expect(message).toBe(
 			"decisions unavailable: OpenRouter reports insufficient credits; next check 2026-10-28T12:00:00Z",
 		);
@@ -497,7 +466,7 @@ describe("visible text", () => {
 
 describe("in-memory health (no state dir)", () => {
 	test("runs the same state machine: opens, refuses, probes once, doubles, warns once, closes", () => {
-		const health = openMemoryJevHealth("openrouter", { rng: () => 0.5 });
+		const health = openMemoryJevHealth({ rng: () => 0.5 });
 		expect(health.shouldCall(T0)).toEqual({ call: true, probe: false });
 		expect(health.recordFailure("credits", T0)).toEqual({ opened: true });
 		expect(health.shouldCall(T0 + 1)).toMatchObject({ call: false, cause: "credits" });
@@ -523,11 +492,11 @@ describe("in-memory health (no state dir)", () => {
 		});
 	});
 
-	test("each instance is its own breaker, names its rail, and read() hands out a copy", () => {
-		const first = openMemoryJevHealth("vercel");
-		const second = openMemoryJevHealth("vercel");
+	test("each instance is its own breaker, names OpenRouter, and read() hands out a copy", () => {
+		const first = openMemoryJevHealth();
+		const second = openMemoryJevHealth();
 		first.recordFailure("auth", T0);
-		expect(first.describe(T0 + 1)).toContain("Vercel AI Gateway rejected the key");
+		expect(first.describe(T0 + 1)).toContain("OpenRouter rejected the key");
 		expect(second.shouldCall(T0 + 1)).toEqual({ call: true, probe: false });
 		const snapshot = first.read();
 		snapshot.state = "closed";
@@ -538,7 +507,7 @@ describe("in-memory health (no state dir)", () => {
 describe("failures of calls that began before the last recovery", () => {
 	const backings: Array<[string, () => JevHealth]> = [
 		["file", () => open(tempDir())],
-		["memory", () => openMemoryJevHealth("openrouter", { rng: () => 0.5 })],
+		["memory", () => openMemoryJevHealth({ rng: () => 0.5 })],
 	];
 	/** A call's ticket as the gate hands it back: the verdict plus when the call began. */
 	const began = (health: JevHealth, at: number, opts?: { force?: boolean }): JevCall => ({

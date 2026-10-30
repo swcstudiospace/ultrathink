@@ -1780,14 +1780,6 @@ describe("judgeSessionModel", () => {
 		expect(engineForSessionModel(model)).toBe("grok");
 	});
 
-	test("Hermes Grok shunt session with no grok in the model id still routes to grok", () => {
-		const model = judgeSessionModel(
-			resolution({ transport: "grok-shunt", modelId: "route-xhigh" }),
-		);
-		expect(model).toBe("grok/route-xhigh");
-		expect(engineForSessionModel(model)).toBe("grok");
-	});
-
 	test("Claude session with provider anthropic routes to claude", () => {
 		const model = judgeSessionModel(
 			resolution({ provider: "anthropic", modelId: "claude-sonnet-5-5", transport: "claude-cli" }),

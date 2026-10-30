@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * PostToolUse hook: score a gsd-autonomous skill or phase command through Jev, on the rail
- * `resolveDecisionsKeys` picks (OpenRouter or the Vercel AI Gateway). With no key, or with
+ * PostToolUse hook: score a gsd-autonomous skill or phase command through Jev on OpenRouter, the only Decisions
+ * rail. With no key, or with
  * ULTRATHINK_DECISIONS=0, it prints nothing and writes nothing. Otherwise it writes a sidecar record and
  * additionalContext reports the score or the error, naming the rail that decided.
  * It does not rewrite artifacts and does not clear a human pause.

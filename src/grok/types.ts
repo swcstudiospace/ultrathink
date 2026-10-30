@@ -4,7 +4,7 @@
  * Configuration types for the optional Grok thinking engine. Claude is
  * this plugin's default Stage-1 engine; Grok is an opt-in alternative
  * (`think.engine: "grok"`) that reuses the user's existing `grok login`
- * session (`http`/`cli` transports) or a shunt gateway you run.
+ * session (`http`/`cli` transports).
  */
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
 
@@ -27,11 +27,10 @@ export function grokWireEffort(model: string, effort: GrokEffort): GrokEffort | 
 /**
  * `http`: Grok CLI chat proxy `/responses` with the `grok login` token.
  * `cli`: shell out to the Grok Build CLI.
- * `shunt`: a shunt gateway you run (Anthropic Messages `/v1/messages`, no auth).
  */
-export type GrokTransport = "http" | "cli" | "shunt";
+export type GrokTransport = "http" | "cli";
 
-export const GROK_TRANSPORTS: readonly GrokTransport[] = ["http", "cli", "shunt"];
+export const GROK_TRANSPORTS: readonly GrokTransport[] = ["http", "cli"];
 
 export interface GrokConfig {
 	enabled: boolean;
@@ -50,12 +49,6 @@ export interface GrokConfig {
 	fallbackToClaude: boolean;
 	/** Tried in order after `model` when the session cannot serve it. Empty by default: a more expensive model is never a silent default. */
 	fallbackModels: string[];
-	/** Base URL of your shunt gateway; `/v1/messages` is appended. "" = not configured (required for `transport: "shunt"`). */
-	shuntBaseUrl: string;
-	/** Wire model sent to shunt; the gateway route pins the effort, so the alias carries it. "" = send `model`. */
-	shuntModel: string;
-	/** Anthropic Messages `max_tokens` for shunt calls. */
-	shuntMaxTokens: number;
 }
 
 export const DEFAULT_GROK_CONFIG: GrokConfig = {
@@ -69,9 +62,6 @@ export const DEFAULT_GROK_CONFIG: GrokConfig = {
 	callTimeoutMs: 0,
 	fallbackToClaude: false,
 	fallbackModels: [],
-	shuntBaseUrl: "",
-	shuntModel: "",
-	shuntMaxTokens: 8192,
 };
 
 export const GROK_CLIENT_VERSION_FALLBACK = "1.0.25";

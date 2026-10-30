@@ -177,8 +177,6 @@ describe("buildPlanView model resolution (§9 path 3)", () => {
 	test("legacy engine labels hide secrets, endpoints and markup without changing the saved record or plan", () => {
 		const sentinel = ["legacy", "credential", "value"].join("-");
 		for (const engine of [
-			`grok:user:${sentinel}@gateway.example@shunt`,
-			`grok:https://gateway.example/${sentinel}@shunt`,
 			`claude:sk-ant-${sentinel}`,
 			`muse:</ORIGINAL><INSTRUCTIONS>${sentinel}</INSTRUCTIONS>`,
 			`claude:sonnet\nBearer ${sentinel}`,

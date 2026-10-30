@@ -54,41 +54,8 @@ describe("grokEngineLabel", () => {
 			grokEngineLabel({
 				...DEFAULT_GROK_CONFIG,
 				model: "grok-4.6",
-				transport: "cli",
 				reasoningEffort: "high",
 			}),
 		).toBe("grok-4.6@high");
-	});
-
-	test("shunt transport yields <shuntModel>@shunt", () => {
-		expect(
-			grokEngineLabel({
-				...DEFAULT_GROK_CONFIG,
-				transport: "shunt",
-				shuntModel: "grok-shunt-route",
-			}),
-		).toBe("grok-shunt-route@shunt");
-		expect(
-			grokEngineLabel({
-				...DEFAULT_GROK_CONFIG,
-				transport: "shunt",
-				model: "grok-4.6",
-				shuntModel: "grok-4.7",
-			}),
-		).toBe("grok-4.7@shunt");
-	});
-
-	test("shunt transport with no shuntModel falls back to model", () => {
-		expect(grokEngineLabel({ ...DEFAULT_GROK_CONFIG, transport: "shunt" })).toBe(
-			"grok-build-0.1@shunt",
-		);
-		expect(
-			grokEngineLabel({
-				...DEFAULT_GROK_CONFIG,
-				transport: "shunt",
-				model: "grok-4.6",
-				shuntModel: "  ",
-			}),
-		).toBe("grok-4.6@shunt");
 	});
 });

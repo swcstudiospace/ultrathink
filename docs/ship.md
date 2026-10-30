@@ -35,7 +35,7 @@ The skill drives `bin/ultrathink-ship`. Each gate is enforced by that CLI, not l
 | `gh`, logged in (`gh auth status`) with rights to push, open PRs and, for auto-merge, merge | default branch, PR create and view, merge, PR comments, review threads |
 | A Greptile credential in the ultrathink credential store (`bin/ultrathink-mcp auth set-key greptile --stdin`, or `bin/ultrathink-mcp auth login greptile`) | PR mode review, when Greptile lists the repository |
 | The Greptile CLI (tested with 3.4.1), signed in with `greptile login` | CLI mode review, when PR mode is not available |
-| A working engine: a logged-in `claude` CLI, or `grok login` (or your shunt gateway) when `think.engine` is `"grok"` | the done judge; required when `ship.autoMerge` is `true` |
+| A working engine: a logged-in `claude` CLI, or `grok login` when `think.engine` is `"grok"` | the done judge; required when `ship.autoMerge` is `true` |
 | Optional: GSD's `gsd-tools.cjs`, and `node` on `PATH` to run it | GSD roadmap progress in the assessment, when the repository has `.planning/ROADMAP.md` (see [GSD tools](#gsd-tools)) |
 | Optional: Jev decisions (a Jev key for the resolved rail) | a calibrated second check on the done assessment (see [Jev decision](#jev-decision)) |
 | Bun 1.2 or later | `bin/ultrathink-ship` itself; without Bun it exits 127 with an install hint |

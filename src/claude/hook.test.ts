@@ -2635,7 +2635,6 @@ describe("Jev plan gate", () => {
 			"model",
 			"planSkipBelow",
 			"points",
-			"provider",
 			"shipApproveAt",
 			"shipVetoAtOrBelow",
 			"skillworthyAt",
@@ -2705,14 +2704,14 @@ describe("Jev plan gate", () => {
 	test("an intentionally disabled run neither shows nor consumes a saved Jev failure warning (ULTRATHINK_DECISIONS=0)", async () => {
 		const h = jevHarness(onConfig({ points: ["plan"] }), recordingFetch([JEV(0.97)]).fetch);
 		try {
-			openJevHealth(h.deps.stateDir, "openrouter").recordFailure("credits", Date.now());
+			openJevHealth(h.deps.stateDir).recordFailure("credits", Date.now());
 			const off = await runPromptSubmit({ ...input, prompt: ACK }, offDeps(h.deps));
 			expect(off.output?.systemMessage ?? "").not.toContain("Jev · unavailable");
-			expect(openJevHealth(h.deps.stateDir, "openrouter").read().warnedCause).toBeUndefined();
+			expect(openJevHealth(h.deps.stateDir).read().warnedCause).toBeUndefined();
 			// Enabled again, the saved failure still warns, once.
 			const on = await runPromptSubmit({ ...input, prompt: ACK }, h.deps);
 			expect(on.output?.systemMessage?.match(JEV_WARNING) ?? []).toHaveLength(1);
-			expect(openJevHealth(h.deps.stateDir, "openrouter").read().warnedCause).toBe("credits");
+			expect(openJevHealth(h.deps.stateDir).read().warnedCause).toBe("credits");
 		} finally {
 			h.cleanup();
 		}

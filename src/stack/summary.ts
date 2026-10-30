@@ -20,14 +20,14 @@
  *   `XDG_CONFIG_HOME` wins, else an absolute `HOME`, else no path); else missing. Existence only: the file is not
  *   read and the daemon is not dialled.
  * - decisions: off iff `decisionsKilled(env)` (`ULTRATHINK_DECISIONS=0`), else ready iff
- *   `resolveDecisionsKeys(config.decisions, storePath(env), env).key` is set, else missing.
+ *   `resolveOpenRouterKey(storePath(env), env)` finds a key, else missing.
  * - hindsight: from `resolveHindsight(config.hindsight, env, ...).readiness`: `ready` is ready, `off` is off,
  *   `unready` is missing. The resolver only reads files; it builds a client but does not call it.
  */
 
 import { existsSync } from "node:fs";
 import type { UltrathinkConfig } from "../config.ts";
-import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
+import { decisionsKilled, resolveOpenRouterKey } from "../decisions/gate.ts";
 import { resolveGateway, serviceBackend } from "../gateway/settings.ts";
 import { SUBSTRATE_BACKEND_ENV } from "../gateway/types.ts";
 import { resolveHindsight } from "../hindsight/settings.ts";
@@ -55,9 +55,9 @@ function hindsightReadiness(config: UltrathinkConfig, env: Env): Readiness {
 	return readiness.state === "off" ? "off" : "missing";
 }
 
-function decisionsReadiness(config: UltrathinkConfig, env: Env): Readiness {
+function decisionsReadiness(env: Env): Readiness {
 	if (decisionsKilled(env)) return "off";
-	return resolveDecisionsKeys(config.decisions, storePath(env), env).key ? "ready" : "missing";
+	return resolveOpenRouterKey(storePath(env), env) ? "ready" : "missing";
 }
 
 /** Picks the branch the stack probe picks: the kill switch, then the selected backend (`serviceBackend`), then the gateway or the direct URL. */
@@ -122,7 +122,7 @@ export function stackSummaryLine(
 		guarded(() => substrateReadiness(config, env)),
 		guarded(() => ("root" in resolveSwarmRoot(env) ? "ready" : "missing")),
 		guarded(() => realmReadiness(env, existsPath)),
-		guarded(() => decisionsReadiness(config, env)),
+		guarded(() => decisionsReadiness(env)),
 		guarded(() => hindsightReadiness(config, env)),
 	];
 	const count = (wanted: Readiness): number => states.filter((state) => state === wanted).length;

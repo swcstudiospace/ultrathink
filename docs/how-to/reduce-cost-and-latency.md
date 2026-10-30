@@ -75,7 +75,7 @@ For example, a lighter plan for every host:
 | `claude.settingSources` | `""` | Keep it empty. Empty loads no settings in the child `claude` calls: fastest, and no nested hooks. |
 | `claude.concurrency` | `3` | Node detail calls that run at once, per dependency level of the graph. It applies to both engines. `1` runs them one by one. Higher is faster, if your account allows the parallel calls. |
 | `grok.reasoningEffort` | `"xhigh"` | Grok `http` and `cli` transports: `"low"`, `"medium"` or `"high"` trade depth for speed. It is sent only to `grok-4.5`, `grok-4.6` and `grok-4.7`; the default `grok-build-0.1` takes no effort, so the setting changes nothing for it. |
-| `grok.model`, `grok.shuntModel` | `"grok-build-0.1"`, `""` | The Grok model, or the model your shunt gateway routes. |
+| `grok.model` | `"grok-build-0.1"` | The Grok model sent to the `http` or `cli` transport. |
 | `grok.fallbackModels` | `[]` | Models tried after `grok.model` when the session cannot use it. Empty by default, so a refused `grok-build-0.1` is reported instead of walking to a pricier model; the fix is the right Grok login (see [Grok Build login lane](choose-engine.md#grok-build-login-lane)). List a model yourself to opt in. |
 
 ## Cap the waiting time

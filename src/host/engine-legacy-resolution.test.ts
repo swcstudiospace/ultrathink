@@ -16,7 +16,6 @@ import {
 	fakeModel,
 	fakeQuery,
 	resolutionOf,
-	shunt,
 	skipOf,
 } from "./engine-test.helpers.ts";
 
@@ -43,7 +42,7 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 		});
 	});
 
-	test("unpinned Grok Build plans on the Grok entry over http with a login and over shunt without one", async () => {
+	test("unpinned Grok Build plans on the Grok entry over http with a login", async () => {
 		const http = engineOf(
 			await selectEngine(
 				configWith({ grok: { ...defaultConfig().grok, home: grokLogin() } }),
@@ -65,14 +64,6 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 			modelKnown: true,
 			label: "grok:grok-build-0.1 [route default]",
 		});
-		const viaShunt = engineOf(await selectEngine(shunt(), {}, "/repo", { host: "grok-build" }));
-		expect(viaShunt.resolution).toMatchObject({
-			state: "default",
-			transport: "grok-shunt",
-			source: "route-default",
-			modelId: ROUTE_DEFAULT_MODELS.grok,
-		});
-		expect(viaShunt.resolution.label).toBe("grok:grok-build-0.1@shunt [route default]");
 	});
 
 	test("unpinned Muse plans on the Muse entry", async () => {
@@ -147,24 +138,14 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 			expect(field in muse).toBe(false);
 	});
 
-	test("blank grok.model and grok.shuntModel keep the non-empty merge: the route default, never a pin", async () => {
-		const config = mergeConfig(
-			{
-				grok: {
-					model: "  ",
-					shuntModel: "",
-					transport: "shunt",
-					shuntBaseUrl: "http://127.0.0.1:3001",
-				},
-			},
-			defaultConfig(),
-		);
+	test("blank grok.model keeps the non-empty merge: the route default, never a pin", async () => {
+		const config = mergeConfig({ grok: { model: "  ", home: grokLogin() } }, defaultConfig());
 		expect(await resolutionOf(config, {}, "grok-build")).toMatchObject({
 			state: "default",
 			source: "route-default",
 			reason: "route-default-model",
 			modelId: ROUTE_DEFAULT_MODELS.grok,
-			label: "grok:grok-build-0.1@shunt [route default]",
+			label: "grok:grok-build-0.1 [route default]",
 		});
 	});
 
@@ -198,7 +179,7 @@ describe("route defaults (AD-1, AC-15-042)", () => {
 					},
 				},
 			},
-			shunt(),
+			configWith({ grok: { ...defaultConfig().grok, home: grokLogin() } }),
 		);
 		expect(await resolutionOf(config, {}, "claude-code")).toMatchObject({
 			source: "route-default",
@@ -302,12 +283,12 @@ describe("merged host selector ownership (POL-FUNC-009)", () => {
 });
 
 describe("legacy host overrides and selector validation (§5.2)", () => {
-	test("a provider-less host model is the route's explicit wire selector; a shunt alias still wins on shunt", async () => {
+	test("a provider-less host model is the route's explicit wire selector", async () => {
 		const config = mergeConfig(
 			{
 				models: { hosts: { "claude-code": { model: "opus" }, "grok-build": { model: "grok-x" } } },
 			},
-			shunt(),
+			configWith({ grok: { ...defaultConfig().grok, home: grokLogin() } }),
 		);
 		const claude = engineOf(await selectEngine(config, {}, "/repo", { host: "claude-code" }));
 		expect(claude.label).toBe("claude:opus");
@@ -319,17 +300,11 @@ describe("legacy host overrides and selector validation (§5.2)", () => {
 			label: "claude:opus [override]",
 		});
 		const grok = engineOf(await selectEngine(config, {}, "/repo", { host: "grok-build" }));
-		expect(grok.label).toBe("grok-x@shunt");
+		expect(grok.label).toBe("grok-x");
 		expect(grok.resolution).toMatchObject({
 			state: "override",
 			source: "host-override",
-			label: "grok:grok-x@shunt [override]",
-		});
-		const aliased = mergeConfig({ grok: { shuntModel: "route-alias" } }, config);
-		expect(await resolutionOf(aliased, {}, "grok-build")).toMatchObject({
-			state: "override",
-			source: "shunt-model",
-			label: "grok:route-alias@shunt [override]",
+			label: "grok:grok-x [override]",
 		});
 	});
 
@@ -459,75 +434,17 @@ describe("legacy host overrides and selector validation (§5.2)", () => {
 		}
 	});
 
-	test("merged and direct shunt aliases reject boundary C0/C1 controls before trim, auth or execution (POL-FUNC-011)", async () => {
-		const spy = claudeSpy();
-		const lower = mergeConfig(
-			{ grok: { bin: spy.bin, home: emptyHome(), model: "LowerGrok", shuntModel: "LowerAlias" } },
-			shunt(),
-		);
-		for (const control of [
-			"\u0000",
-			"\t",
-			"\n",
-			"\v",
-			"\f",
-			"\r",
-			"\u001b",
-			"\u007f",
-			"\u0085",
-			"\u009f",
-		]) {
-			for (const alias of [`${control}Opaque-X`, `Opaque-X${control}`]) {
-				for (const merged of [true, false]) {
-					const config = merged
-						? mergeConfig({ grok: { shuntModel: alias } }, lower)
-						: mergeConfig({ grok: {} }, lower);
-					if (!merged) config.grok.shuntModel = alias;
-					let authLookups = 0;
-					Object.defineProperty(config.grok, "home", {
-						get: () => {
-							authLookups++;
-							return lower.grok.home;
-						},
-					});
-					const skipped = skipOf(
-						await selectEngine(config, { engine: "grok" }, "/repo", { host: "omp" }),
-					);
-					expect(skipped).toMatchObject({
-						skipped: "selector-invalid",
-						resolution: {
-							state: "unresolved",
-							transport: "grok-shunt",
-							source: "shunt-model",
-							reason: "selector-invalid",
-							modelKnown: false,
-						},
-					});
-					expect(engineLabel(config, { engine: "grok" }, "omp")).toBe(skipped.resolution.label);
-					expect("complete" in skipped).toBe(false);
-					expect(JSON.stringify(skipped)).not.toContain("Opaque-X");
-					expect(authLookups).toBe(0);
-					expect(spy.ran()).toBe(false);
-				}
-			}
-		}
-	});
-
 	test("all-whitespace merged legacy selectors keep CLI delegation and Grok lower pins (POL-FUNC-011, AD-1)", async () => {
 		const lower = mergeConfig(
 			{
 				claude: { model: "LowerClaude" },
 				muse: { model: "LowerMuse" },
-				grok: { model: "LowerGrok", shuntModel: "LowerAlias" },
+				grok: { model: "LowerGrok", home: grokLogin() },
 			},
-			shunt(),
+			defaultConfig(),
 		);
-		const withoutAlias = mergeConfig({ grok: { model: "LowerGrok" } }, shunt());
 		for (const model of ["", "  ", "\t \r\n\v\f"]) {
-			const config = mergeConfig(
-				{ claude: { model }, muse: { model }, grok: { model, shuntModel: model } },
-				lower,
-			);
+			const config = mergeConfig({ claude: { model }, muse: { model }, grok: { model } }, lower);
 			for (const host of ["claude-code", "muse"] as const) {
 				expect(await resolutionOf(config, {}, host)).toMatchObject({
 					state: "default",
@@ -538,74 +455,29 @@ describe("legacy host overrides and selector validation (§5.2)", () => {
 			}
 			expect(await resolutionOf(config, {}, "grok-build")).toMatchObject({
 				state: "override",
-				source: "shunt-model",
-				modelId: "LowerAlias",
-			});
-			const retained = mergeConfig({ grok: { model, shuntModel: model } }, withoutAlias);
-			expect(await resolutionOf(retained, {}, "grok-build")).toMatchObject({
-				state: "override",
 				source: "engine-model",
 				modelId: "LowerGrok",
 			});
 		}
 	});
 
-	test("a valid selected shunt alias still wins over invalid unselected pins and trims only plain surrounding spaces", async () => {
-		const config = mergeConfig(
-			{
-				grok: { model: "\tinvalid-engine", shuntModel: " Opaque/route:beta;literal " },
-				models: { hosts: { "grok-build": { model: "invalid-host\n" } } },
-			},
-			shunt(),
-		);
-		expect(await resolutionOf(config, {}, "grok-build")).toMatchObject({
-			state: "override",
-			source: "shunt-model",
-			reason: "explicit-model",
-			modelKnown: true,
-		});
-		config.grok.shuntModel = " DirectAlias ";
-		expect(await resolutionOf(config, {}, "grok-build")).toMatchObject({
-			source: "shunt-model",
-			modelId: "DirectAlias",
-		});
-	});
-
-	test("a Grok route needs a concrete wire model and, on shunt, a gateway URL", async () => {
-		const blank = configWith({ grok: { ...shunt().grok, model: "" } });
+	test("a Grok route needs a concrete wire model", async () => {
+		const blank = configWith({ grok: { ...defaultConfig().grok, model: "" } });
 		expect(await resolutionOf(blank, {}, "grok-build")).toMatchObject({
 			state: "unresolved",
 			source: "none",
 			reason: "concrete-model-required",
 		});
-		const noUrl = configWith({
-			grok: { ...defaultConfig().grok, transport: "shunt", shuntBaseUrl: "" },
-		});
-		expect(
-			skipOf(await selectEngine(noUrl, {}, "/repo", { host: "grok-build" })).resolution,
-		).toMatchObject({
-			state: "unresolved",
-			transport: "grok-shunt",
-			source: "route-default",
-			reason: "transport-incompatible",
-		});
 	});
 
-	test("records never carry endpoints, gateway URLs or credentials", async () => {
+	test("records never carry endpoints or credentials", async () => {
 		const grok = {
 			...defaultConfig().grok,
 			baseUrl: "https://proxy-secret.example/v1",
-			shuntBaseUrl: "http://gateway-secret.example:3001",
 			home: grokLogin(),
 		};
-		const viaShunt = await resolutionOf(
-			configWith({ grok: { ...grok, transport: "shunt" } }),
-			{},
-			"grok-build",
-		);
 		const viaHttp = await resolutionOf(configWith({ grok }), {}, "grok-build");
-		for (const record of [viaShunt, viaHttp])
-			expect(JSON.stringify(record)).not.toMatch(/secret|fixture-session/);
+		expect(JSON.stringify(viaHttp)).not.toMatch(/secret|fixture-session/);
 		const endpoint = configWith({
 			claude: { ...defaultConfig().claude, model: "https://evil.example/v1" },
 		});
@@ -855,8 +727,6 @@ describe("call-time failover (claude.fallbackToGrok and the Grok model chain)", 
 		return { origin: `http://127.0.0.1:${server.port}`, models, stop: () => server.stop(true) };
 	}
 
-	const shuntReply = () => Response.json({ content: [{ type: "text", text: "GATEWAY_REPLY" }] });
-
 	function claudeConfig(
 		bin: string,
 		fallbackToGrok: boolean,
@@ -871,11 +741,11 @@ describe("call-time failover (claude.fallbackToGrok and the Grok model chain)", 
 
 	test("fallbackToGrok: a plan-limit Claude failure continues on Grok, reported as a failover, not an error", async () => {
 		const claude = claudeStub(PLAN_LIMIT, 1);
-		const gw = gateway(shuntReply);
+		const gw = gateway(() => Response.json({ output_text: "HTTP_REPLY" }));
 		try {
 			const config = claudeConfig(claude.bin, true, {
-				transport: "shunt",
-				shuntBaseUrl: gw.origin,
+				home: grokLogin(),
+				baseUrl: `${gw.origin}/v1`,
 			});
 			const selected = engineOf(
 				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),
@@ -883,7 +753,7 @@ describe("call-time failover (claude.fallbackToGrok and the Grok model chain)", 
 			expect(selected.label).toBe(CLAUDE_FIRST);
 			expect(selected.resolution.modelId).toBe("claude-haiku-5-5");
 			expect(selected.failover?.()).toBeUndefined();
-			expect(await selected.complete("system", "user")).toBe("GATEWAY_REPLY");
+			expect(await selected.complete("system", "user")).toBe("HTTP_REPLY");
 			expect(selected.failover?.()).toBe(`${CLAUDE_FIRST} → grok:grok-build-0.1 (plan-limit)`);
 			expect(selected.label).toBe(CLAUDE_FIRST);
 			expect(selected.resolution.modelId).toBe("claude-haiku-5-5");
@@ -930,35 +800,13 @@ describe("call-time failover (claude.fallbackToGrok and the Grok model chain)", 
 		await expect(selected.complete("system", "user")).rejects.toThrow(/session limit/);
 	});
 
-	test("a shunt Grok fallback is named by the effective wire alias, not grok.model", async () => {
-		const claude = claudeStub(PLAN_LIMIT, 1);
-		const gw = gateway(shuntReply);
-		try {
-			const config = claudeConfig(claude.bin, true, {
-				transport: "shunt",
-				shuntBaseUrl: gw.origin,
-				shuntModel: "gateway-alias",
-			});
-			const selected = engineOf(
-				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),
-			);
-			expect(await selected.complete("system", "user")).toBe("GATEWAY_REPLY");
-			const failover = selected.failover?.();
-			expect(failover).toBe(`${CLAUDE_FIRST} → grok:gateway-alias (plan-limit)`);
-			expect(failover).not.toContain("grok-build-0.1");
-			expect(gw.models).toEqual(["gateway-alias"]);
-		} finally {
-			gw.stop();
-		}
-	});
-
 	test("fallbackToGrok off: the plan-limit error propagates and there is no failover", async () => {
 		const claude = claudeStub(PLAN_LIMIT, 1);
-		const gw = gateway(shuntReply);
+		const gw = gateway(() => Response.json({ output_text: "HTTP_REPLY" }));
 		try {
 			const config = claudeConfig(claude.bin, false, {
-				transport: "shunt",
-				shuntBaseUrl: gw.origin,
+				home: grokLogin(),
+				baseUrl: `${gw.origin}/v1`,
 			});
 			const selected = engineOf(
 				await selectEngine(config, {}, tempDir("ultrathink-engine-cwd-"), { host: "claude-code" }),

@@ -401,7 +401,6 @@ describe("checkConfig", () => {
 				bin: "./grok",
 				home: "./.grok",
 				baseUrl: "https://evil.example/v1",
-				shuntBaseUrl: "https://evil.example",
 			},
 			muse: { bin: "./muse" },
 		});
@@ -413,7 +412,6 @@ describe("checkConfig", () => {
 			"grok.bin",
 			"grok.home",
 			"grok.baseUrl",
-			"grok.shuntBaseUrl",
 			"muse.bin",
 		]) {
 			const finding = byId(findings, `config.project.project-restricted.${id}`);
@@ -427,9 +425,28 @@ describe("checkConfig", () => {
 			bin: "grok",
 			home: "",
 			baseUrl: defaultConfig().grok.baseUrl,
-			shuntBaseUrl: "",
 		});
 		expect(effective.muse.bin).toBe("muse");
+	});
+
+	test("obsolete removed grok keys warn once per layer and are never reported as unknown", () => {
+		write("user", {
+			grok: { bin: "grok", shuntBaseUrl: "http://127.0.0.1:9999", shuntMaxTokens: 1024 },
+		});
+		const findings = checkConfig(deps);
+		const finding = byId(findings, "config.user.obsolete-key.grok");
+		expect(finding.level).toBe("warn");
+		expect(finding.title).toContain("grok.shuntBaseUrl, grok.shuntMaxTokens");
+		expect(findings.some((item) => item.id.includes("unknown-key"))).toBe(false);
+	});
+
+	test("the removed decisions.provider key warns once per layer and is never reported as unknown", () => {
+		write("user", { decisions: { provider: "auto", zdr: true } });
+		const findings = checkConfig(deps);
+		const finding = byId(findings, "config.user.obsolete-key.decisions");
+		expect(finding.level).toBe("warn");
+		expect(finding.title).toContain("decisions.provider");
+		expect(findings.some((item) => item.id.includes("unknown-key"))).toBe(false);
 	});
 
 	test("the same keys in a user file are honored and produce nothing above info", () => {

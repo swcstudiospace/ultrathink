@@ -532,7 +532,7 @@ describe("formatSummary", () => {
 			const now = 1_000_000;
 			const summary = (): string =>
 				formatSummary({ result, engine: "claude:x", jevWarning: takeJevWarning(dir, now) });
-			const health = openJevHealth(dir, "openrouter");
+			const health = openJevHealth(dir);
 			expect(summary()).not.toContain("Jev ·");
 			health.recordFailure("credits", now);
 			expect(summary()).toContain("Jev · unavailable: OpenRouter reports insufficient credits");
@@ -545,18 +545,6 @@ describe("formatSummary", () => {
 			expect(summary()).not.toContain("Jev ·");
 			writeFileSync(join(dir, "decisions-health-openrouter.json"), "{corrupt");
 			expect(summary()).not.toContain("Jev ·");
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	test("a failing Vercel rail is named as Vercel in the summary bit", () => {
-		const dir = mkdtempSync(join(tmpdir(), "ut-summary-jev-"));
-		try {
-			openJevHealth(dir, "vercel").recordFailure("auth", 1_000_000);
-			expect(
-				formatSummary({ result, engine: "claude:x", jevWarning: takeJevWarning(dir, 1_000_001) }),
-			).toContain("Jev · unavailable: Vercel AI Gateway rejected the key");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

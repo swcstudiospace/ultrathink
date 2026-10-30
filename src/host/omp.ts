@@ -34,7 +34,7 @@ import {
 	updateSession,
 } from "../claude/state.ts";
 import type { LockOptions } from "../claude/atomic.ts";
-import { claudeConfigPaths, loadConfig, normalizeSelectorField } from "../config.ts";
+import { claudeConfigPaths, loadConfig } from "../config.ts";
 import type { LegacyModelProvenance, UltrathinkConfig } from "../config.ts";
 import type { CompletionReport } from "../types.ts";
 import { attachReport, readReport } from "../types.ts";
@@ -1276,7 +1276,6 @@ interface FlightIntent {
 		transport: UltrathinkConfig["grok"]["transport"];
 		/** Effective fetch target, normalized like the completer; private and never projected into resolution/display. */
 		endpoint?: string;
-		shuntModel?: string;
 		fallbackToClaude: boolean;
 		fallback?: LegacyFlightTarget;
 	};
@@ -1286,13 +1285,8 @@ function intentOf(config: UltrathinkConfig, control: ControlState): FlightIntent
 	const override = config.models.hosts.omp;
 	const engine = control.engine ?? config.think.engine;
 	const grok = engine === "grok" ? config.grok : undefined;
-	const shuntModel =
-		grok?.transport === "shunt" ? normalizeSelectorField(grok.shuntModel) : undefined;
 	const legacy =
-		engine !== "auto" &&
-		!override?.provider &&
-		!override?.model &&
-		(!grok || (grok.enabled && !shuntModel))
+		engine !== "auto" && !override?.provider && !override?.model && (!grok || grok.enabled)
 			? { model: config[engine].model, provenance: config.modelProvenance[engine] }
 			: undefined;
 	return {
@@ -1308,14 +1302,10 @@ function intentOf(config: UltrathinkConfig, control: ControlState): FlightIntent
 						transport: grok.transport,
 						endpoint:
 							grok.enabled && grok.transport !== "cli"
-								? (grok.transport === "shunt"
-										? grok.shuntBaseUrl.trim()
-										: grok.baseUrl.trim() || DEFAULT_GROK_CONFIG.baseUrl
-									).replace(/\/+$/, "")
+								? (grok.baseUrl.trim() || DEFAULT_GROK_CONFIG.baseUrl).replace(/\/+$/, "")
 								: undefined,
-						shuntModel,
 						fallbackToClaude: grok.fallbackToClaude,
-						...(!grok.enabled || (grok.transport !== "shunt" && grok.fallbackToClaude)
+						...(!grok.enabled || grok.fallbackToClaude
 							? {
 									fallback: {
 										model: config.claude.model,

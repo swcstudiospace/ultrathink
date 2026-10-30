@@ -599,7 +599,7 @@ describe("Jev-only model guard", () => {
 	test.each([
 		["~typesafe/jev-latest", true],
 		["typesafe/jev-1.13-20260917", true],
-		["typesafe-ai/jev", true],
+		["typesafe-ai/jev", false],
 		["anthropic/claude-opus-5.5", false],
 		["z-ai/glm-5.3-flash", false],
 		["anthropic/claude-sonnet-5-5", false],

@@ -2,10 +2,9 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * Autonomous-output judge. Unlike the six noul gates, this asks a choice question so the Decisions API
- * must return `confidence` in [0, 1]. The rail and key come from `resolveDecisionsKeys`, exactly as for the
- * six gates: `decisions.provider` pins a rail, `auto` takes Vercel when its key is present, else OpenRouter. With
- * no key on the picked rail (or the kill switch set) the outcome is `inactive`: no request, no usage row, and the
- * hook writes and prints nothing. A missing or out-of-range confidence is one repair retry, then a failure.
+ * must return `confidence` in [0, 1]. The key comes from `resolveOpenRouterKey`, exactly as for the six gates. With
+ * no key (or the kill switch set) the outcome is `inactive`: no request, no usage row, and the hook writes and
+ * prints nothing. A missing or out-of-range confidence is one repair retry, then a failure.
  * No default score. The hook writes only this record; it never rewrites the phase artifact. Given a `stateDir`,
  * every real call here also feeds, and obeys, the same health breaker and usage ledger as the six gates.
  */
@@ -14,8 +13,8 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
 import { decide, type DecideOptions, resolveDecisionsUrl } from "./client.ts";
-import { decisionsKilled, recordHealth, resolveDecisionsKeys, usageListener } from "./gate.ts";
-import { type JevRail, openJevHealth, unavailableMessage } from "./health.ts";
+import { decisionsKilled, recordHealth, resolveOpenRouterKey, usageListener } from "./gate.ts";
+import { openJevHealth, unavailableMessage } from "./health.ts";
 import {
 	DEFAULT_DECISIONS_CONFIG,
 	DEFAULT_DECISIONS_MODEL,
@@ -23,15 +22,14 @@ import {
 	type DecisionsConfig,
 	type DecisionsRequest,
 } from "./types.ts";
-import { decideVercel } from "./vercel.ts";
 
 export const FLOW_OUTPUT_MAX = 12_000;
 const FLOW_DECISIONS = ["approve", "reject", "needs-human"] as const;
 type FlowDecision = (typeof FLOW_DECISIONS)[number];
-/** `inactive`: nothing could decide (no key on the picked rail, or ULTRATHINK_DECISIONS=0). Never stored, never printed. */
+/** `inactive`: nothing could decide (no Jev key, or ULTRATHINK_DECISIONS=0). Never stored, never printed. */
 type FlowState = "success" | "empty" | "error" | "inactive";
-type FlowProvider = "OpenRouter" | "Vercel";
-const PROVIDER_NAME: Record<JevRail, FlowProvider> = { openrouter: "OpenRouter", vercel: "Vercel" };
+const FLOW_PROVIDER = "OpenRouter" as const;
+type FlowProvider = typeof FLOW_PROVIDER;
 
 export interface FlowRecord {
 	version: 1;
@@ -59,16 +57,15 @@ export interface FlowEvalInput {
 	command?: string;
 	phase?: string;
 	model?: string;
-	/** Decisions config: provider pin and zdr. Default: the defaults (`auto`, zdr on). */
+	/** Decisions config: zdr. Default: the defaults (zdr on). */
 	config?: DecisionsConfig;
 	/** Default process.env. Read for the kill switch, the key variables and ULTRATHINK_DECISIONS_URL. */
 	env?: Record<string, string | undefined>;
 	/** Default storePath(env). */
 	storePath?: string;
-	/** Test seam: replaces key resolution. The rail is then `rail` (default openrouter). */
+	/** Test seam: replaces key resolution. */
 	apiKey?: string;
-	rail?: JevRail;
-	/** Test seam: the endpoint. Default: ULTRATHINK_DECISIONS_URL on OpenRouter, the fixed endpoint on Vercel. */
+	/** Test seam: the endpoint. Default: ULTRATHINK_DECISIONS_URL, else the built-in OpenRouter endpoint. */
 	url?: string;
 	fetch?: DecideOptions["fetch"];
 	now?: () => number;
@@ -165,20 +162,18 @@ function fromAnswer(
 	};
 }
 
-/** The rail and key this evaluation uses, or undefined when nothing can decide. The kill switch is checked first. */
-function pickRail(
+/** The key and ZDR setting this evaluation uses, or undefined when nothing can decide. The kill switch is checked first. */
+function pickKey(
 	input: FlowEvalInput,
 	env: Record<string, string | undefined>,
-): { rail: JevRail; key: string; zdr: boolean } | undefined {
+): { key: string; zdr: boolean } | undefined {
 	if (decisionsKilled(env)) return undefined;
 	const config = input.config ?? DEFAULT_DECISIONS_CONFIG;
 	if (input.apiKey !== undefined) {
-		return input.apiKey
-			? { rail: input.rail ?? "openrouter", key: input.apiKey, zdr: config.zdr }
-			: undefined;
+		return input.apiKey ? { key: input.apiKey, zdr: config.zdr } : undefined;
 	}
-	const picked = resolveDecisionsKeys(config, input.storePath ?? defaultStorePath(env), env);
-	return picked.key ? { rail: picked.provider, key: picked.key.key, zdr: config.zdr } : undefined;
+	const picked = resolveOpenRouterKey(input.storePath ?? defaultStorePath(env), env);
+	return picked ? { key: picked.key, zdr: config.zdr } : undefined;
 }
 
 /** Whether an evaluation of this input could decide now: the kill switch is off and a usable key is picked. Same decision `evaluateFlowOutput` makes. */
@@ -186,7 +181,7 @@ export function flowEvalActive(
 	input: FlowEvalInput,
 	env: Record<string, string | undefined>,
 ): boolean {
-	return pickRail(input, env) !== undefined;
+	return pickKey(input, env) !== undefined;
 }
 
 export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowRecord> {
@@ -194,14 +189,13 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 	const started = now();
 	const env = input.env ?? process.env;
 	const hash = flowHash(input.output);
-	const picked = pickRail(input, env);
-	const rail: JevRail = picked?.rail ?? "openrouter";
+	const picked = pickKey(input, env);
 	const base = {
 		version: 1 as const,
 		subject: input.subject,
 		hash,
 		model: input.model?.trim() || DEFAULT_DECISIONS_MODEL,
-		provider: PROVIDER_NAME[rail],
+		provider: FLOW_PROVIDER,
 		at: started,
 		clearsHumanPause: false as const,
 	};
@@ -240,7 +234,7 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 			latencyMs: 0,
 		};
 	}
-	const health = input.stateDir ? openJevHealth(input.stateDir, rail) : undefined;
+	const health = input.stateDir ? openJevHealth(input.stateDir) : undefined;
 	let retryCount = 0;
 	for (const repair of [false, true]) {
 		// Each real request takes its own verdict and start time, never the previous request's: a repair sent right
@@ -248,34 +242,28 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 		const startedAt = now();
 		const verdict = health?.shouldCall(startedAt);
 		if (verdict && !verdict.call) {
-			// The picked rail's breaker is open: no request is made, and the verdict is an error like any other Jev failure.
+			// The Jev breaker is open: no request is made, and the verdict is an error like any other Jev failure.
 			return {
 				...base,
 				decision: null,
 				confidence: null,
-				rationale: unavailableMessage(verdict, rail),
+				rationale: unavailableMessage(verdict),
 				state: "error",
 				errorClass: "unavailable",
 				retryCount,
 				latencyMs: Math.max(0, now() - started),
 			};
 		}
-		const request = requestFor(input, repair, picked.zdr && rail === "openrouter");
-		// The Vercel rail has a fixed endpoint and sends no ZDR preference; only OpenRouter honors ULTRATHINK_DECISIONS_URL.
-		const outcome = await (rail === "vercel" ? decideVercel : decide)(request, {
+		const request = requestFor(input, repair, picked.zdr);
+		const outcome = await decide(request, {
 			apiKey: picked.key,
-			...(rail === "openrouter"
-				? { url: input.url ?? resolveDecisionsUrl(env).url }
-				: input.url
-					? { url: input.url }
-					: {}),
+			url: input.url ?? resolveDecisionsUrl(env).url,
 			fetch: input.fetch,
 			now,
 			signal: input.signal,
 			timeoutMs: 3000,
 			onAttempt: usageListener(input.stateDir, {
 				point: "flow",
-				rail,
 				model: request.model,
 			}),
 		});

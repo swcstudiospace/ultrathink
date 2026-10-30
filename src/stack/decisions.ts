@@ -9,13 +9,12 @@
  * variable's name) and a failure is its kind, never its message.
  */
 import { decisionsLiveCheck } from "../decisions/cli.ts";
-import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
-import { describeJevHealth, JEV_RAILS, openJevHealth } from "../decisions/health.ts";
+import { decisionsKilled, resolveOpenRouterKey } from "../decisions/gate.ts";
+import { describeJevHealth, openJevHealth } from "../decisions/health.ts";
 import { storePath } from "../mcp/store.ts";
 import type { StackConnection, StackProbe, StackProbeContext } from "./types.ts";
 
-const SET_KEY_FIX =
-	"bin/ultrathink-mcp auth set-key vercel --stdin, or bin/ultrathink-mcp auth set-key openrouter --stdin";
+const SET_KEY_FIX = "bin/ultrathink-mcp auth set-key openrouter --stdin";
 const AFFECTS = ["plan gate", "ship gate", "knowledge, blocking and teachable decisions"] as const;
 
 function connection(
@@ -31,14 +30,10 @@ function connection(
 	};
 }
 
-/** The rails whose breaker is open, each with its cause: `openrouter (credits)`. Enum values only. */
-function openRails(ctx: StackProbeContext): string[] {
-	const open: string[] = [];
-	for (const rail of JEV_RAILS) {
-		const state = openJevHealth(ctx.stateDir, rail).read();
-		if (state.state === "open") open.push(`${rail} (${state.cause})`);
-	}
-	return open;
+/** The breaker's open state as `openrouter (credits)`, or undefined when closed. Enum values only. */
+function openRail(ctx: StackProbeContext): string | undefined {
+	const state = openJevHealth(ctx.stateDir).read();
+	return state.state === "open" ? `openrouter (${state.cause})` : undefined;
 }
 
 function failureFix(kind: string | undefined): string | undefined {
@@ -61,20 +56,20 @@ export const probeDecisions: StackProbe = async (
 			});
 		}
 		const { decisions } = ctx.config;
-		const picked = resolveDecisionsKeys(decisions, storePath(ctx.env), ctx.env);
-		if (!picked.key) {
+		const key = resolveOpenRouterKey(storePath(ctx.env), ctx.env);
+		if (!key) {
 			const exported = ctx.env.OPENROUTER_API_KEY?.trim();
 			return connection(ctx, startedAt, {
 				status: "misconfigured",
 				reason: exported
 					? "no Jev key: OPENROUTER_API_KEY is exported but Ultrathink does not read it"
-					: "no Jev key on either rail",
+					: "no Jev key",
 				fix: exported ? "bin/ultrathink-mcp auth set-key openrouter --stdin" : SET_KEY_FIX,
 				affects: AFFECTS,
 				via: "config",
 			});
 		}
-		const label = `${picked.provider} rail, key from ${picked.key.source}`;
+		const label = `openrouter rail, key from ${key.source}`;
 		if (ctx.live) {
 			const result = await decisionsLiveCheck(
 				{
@@ -99,7 +94,7 @@ export const probeDecisions: StackProbe = async (
 			return {
 				member: "decisions",
 				status: "unavailable",
-				reason: `live check failed on the ${picked.provider} rail (${result.kind ?? "unknown"})`,
+				reason: `live check failed on the openrouter rail (${result.kind ?? "unknown"})`,
 				...(fix ? { fix } : {}),
 				affects: AFFECTS,
 				latencyMs: Math.max(0, Math.round(result.latencyMs)),
@@ -107,10 +102,10 @@ export const probeDecisions: StackProbe = async (
 			};
 		}
 		if (describeJevHealth(ctx.stateDir, (ctx.now ?? Date.now)()) !== undefined) {
-			const rails = openRails(ctx);
+			const rail = openRail(ctx);
 			return connection(ctx, startedAt, {
 				status: "degraded",
-				reason: `Jev breaker open on ${rails.length > 0 ? rails.join(", ") : "a rail"}; decisions are skipped until it re-checks`,
+				reason: `Jev breaker open on ${rail ?? "openrouter"}; decisions are skipped until it re-checks`,
 				fix: "bin/ultrathink decisions check",
 				affects: AFFECTS,
 				via: "config",

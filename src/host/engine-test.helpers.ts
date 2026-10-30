@@ -81,11 +81,6 @@ export function configWith(overrides: Partial<UltrathinkConfig>): UltrathinkConf
 	return { ...defaultConfig(), ...overrides };
 }
 
-export const shunt = () =>
-	configWith({
-		grok: { ...defaultConfig().grok, transport: "shunt", shuntBaseUrl: "http://127.0.0.1:3001" },
-	});
-
 export async function labelOf(
 	config: UltrathinkConfig,
 	state: ControlState,

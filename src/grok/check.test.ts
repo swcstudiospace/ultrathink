@@ -120,88 +120,33 @@ describe("runGrokCheck", () => {
 			baseUrl: "https://proxy.test/v1",
 			timeoutMs: 1234,
 			maxOutputTokens: 16,
-			shuntMaxTokens: 16,
 		});
 	});
 
-	test("the 16-token cap reaches the HTTP and shunt wire bodies, whatever shuntMaxTokens says", async () => {
+	test("the 16-token cap reaches the HTTP wire body", async () => {
 		const bodies: Record<string, unknown>[] = [];
 		const fetchStub = (async (_url: string | URL | Request, init?: RequestInit) => {
 			bodies.push(JSON.parse(String(init?.body)));
 			return Response.json({
 				output: [{ type: "message", content: [{ type: "output_text", text: "pong" }] }],
-				content: [{ type: "text", text: "pong" }],
 			});
 		}) as typeof fetch;
 		const viaRealTransport: Complete = (system, user, opts = {}) =>
 			grokComplete(system, user, { ...opts, fetch: fetchStub });
-		const grok = {
-			...DEFAULT_GROK_CONFIG,
-			home: laneHome(),
-			shuntBaseUrl: "http://gateway.test",
-			shuntMaxTokens: 8192,
-		};
+		const grok = { ...DEFAULT_GROK_CONFIG, home: laneHome() };
 		await runGrokCheck({ grok, complete: viaRealTransport }, { transport: "http" });
-		await runGrokCheck({ grok: { ...grok, transport: "shunt" }, complete: viaRealTransport });
-		expect(bodies).toHaveLength(2);
+		expect(bodies).toHaveLength(1);
 		expect(bodies[0]?.max_output_tokens).toBe(16);
-		expect(bodies[1]?.max_tokens).toBe(16);
 	});
 
-	test("the options handed to the completer carry the cap for both capped routes", async () => {
+	test("the options handed to the completer carry the cap", async () => {
 		const seen: CompleteOptions[] = [];
 		await runGrokCheck({
-			grok: { ...DEFAULT_GROK_CONFIG, shuntMaxTokens: 8192 },
+			grok: DEFAULT_GROK_CONFIG,
 			complete: okComplete(seen),
 			status: () => ({ loggedIn: false, expired: false, home: "/x" }),
 		});
 		expect(seen[0]?.maxOutputTokens).toBe(16);
-		expect(seen[0]?.shuntMaxTokens).toBe(16);
-	});
-
-	test("a shunt alias is the effective model: sent, reported as such, never as grok-build-0.1", async () => {
-		const seen: CompleteOptions[] = [];
-		const grok = {
-			...DEFAULT_GROK_CONFIG,
-			transport: "shunt" as const,
-			shuntBaseUrl: "http://gateway.test",
-			shuntModel: "route-xhigh",
-		};
-		const result = await runGrokCheck({
-			grok,
-			complete: async (_system, _user, opts = {}) => {
-				seen.push(opts);
-				return "pong";
-			},
-			status: () => ({ loggedIn: false, expired: false, home: "/x" }),
-		});
-		expect(seen[0]?.model).toBe("route-xhigh");
-		expect(result.text).toContain("ok · route-xhigh (shunt alias) ·");
-		expect(result.text).not.toContain("grok-build-0.1");
-		expect(result.json).toMatchObject({
-			model: "route-xhigh",
-			shuntAlias: true,
-			transport: "shunt",
-		});
-	});
-
-	test("an empty shunt alias falls back to grok.model and sets no alias flag", async () => {
-		const plain = await runGrokCheck({
-			grok: { ...DEFAULT_GROK_CONFIG, transport: "shunt", shuntModel: "  " },
-			complete: async () => "pong",
-			status: () => ({ loggedIn: false, expired: false, home: "/x" }),
-		});
-		expect(plain.text).toContain("ok · grok-build-0.1 ·");
-		expect(plain.json).not.toHaveProperty("shuntAlias");
-	});
-
-	test("a failure through a shunt alias names the alias", async () => {
-		const result = await runGrokCheck({
-			grok: { ...DEFAULT_GROK_CONFIG, transport: "shunt", shuntModel: "route-xhigh" },
-			complete: failing(new GrokHttpError(RESOURCE_EXHAUSTED, 429, RESOURCE_EXHAUSTED)),
-		});
-		expect(result.text).toContain("not entitled to route-xhigh (shunt alias)");
-		expect(result.json).toMatchObject({ model: "route-xhigh", shuntAlias: true });
 	});
 
 	test("a 429 resource-exhausted is model-unavailable with the entitlement fix", async () => {

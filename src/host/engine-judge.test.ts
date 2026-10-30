@@ -11,7 +11,6 @@ const { tempDir, emptyHome, grokLogin, cleanup } = createEngineFixtures();
 afterEach(cleanup);
 
 const CLAUDE_HAIKU = "claude:claude-haiku-5-5";
-const GROK_SHUNT = "grok:grok-4.7@shunt";
 const CLAUDE_SESSION = "anthropic/claude-sonnet-5-5";
 const GROK_SESSION = "xai-oauth/grok-4.7";
 const WEEKLY_LIMIT = JSON.stringify({
@@ -20,14 +19,11 @@ const WEEKLY_LIMIT = JSON.stringify({
 	result: "You've hit your weekly limit · resets Oct 31",
 });
 const REPLY_OK = JSON.stringify({ type: "result", is_error: false, result: "CLAUDE_REPLY" });
-const SHUNT_BODY = { content: [{ type: "text", text: "GATEWAY_REPLY" }] };
-const RATE_LIMIT_ZERO =
-	'{"code":"resource-exhausted","error":"Too many requests for team t-1 and model grok-4.7. Your team\'s rate limit is — Requests per Minute (actual/limit): 0/0. Your rate limit tier is determined based on your historical API spend."}';
 
-/** A `claude` stub that logs each call's argv, then prints `out` and exits `code`. */
-function claudeStub(out: string, code = 0): { bin: string; argv: () => string[] } {
-	const dir = tempDir("ultrathink-judge-claude-stub-");
-	const bin = join(dir, "claude");
+/** A stub binary that logs each call's argv, then prints `out` and exits `code`. */
+function argvStub(name: string, out: string, code = 0): { bin: string; argv: () => string[] } {
+	const dir = tempDir(`ultrathink-judge-${name}-stub-`);
+	const bin = join(dir, name);
 	const outFile = join(dir, "out.json");
 	const logFile = join(dir, "argv.log");
 	writeFileSync(outFile, out);
@@ -55,6 +51,11 @@ function claudeStub(out: string, code = 0): { bin: string; argv: () => string[] 
 	};
 }
 
+/** A `claude` stub that logs each call's argv, then prints `out` and exits `code`. */
+function claudeStub(out: string, code = 0): { bin: string; argv: () => string[] } {
+	return argvStub("claude", out, code);
+}
+
 /** A local gateway; `answer` sees each request's path and wire model and returns the reply. */
 function gateway(answer: (path: string, model: string) => Response): {
 	origin: string;
@@ -75,13 +76,11 @@ function gateway(answer: (path: string, model: string) => Response): {
 }
 
 /**
- * Judge config with no Grok login (an empty home) unless `grok` names one. Claude fails over by `fallbackToGrok`; the
- * shunt gateway is set by `shunt` ("" = not configured).
+ * Judge config with no Grok login (an empty home) unless `grok` names one. Claude fails over by `fallbackToGrok`.
  */
 function judgeConfig(
 	bin: string,
 	options: {
-		shunt?: string;
 		fallbackToGrok?: boolean;
 		grok?: Partial<UltrathinkConfig["grok"]>;
 	} = {},
@@ -93,7 +92,6 @@ function judgeConfig(
 			...base.grok,
 			home: emptyHome(),
 			model: "grok-4.7",
-			shuntBaseUrl: options.shunt ?? "",
 			...options.grok,
 		},
 		think: { ...base.think, engine: "claude" },
@@ -101,25 +99,7 @@ function judgeConfig(
 }
 
 describe("selectJudgeEngine: the judge's route follows the session's provider", () => {
-	test("(a) a Claude judge that hits its weekly limit answers from the shunt gateway", async () => {
-		const claude = claudeStub(WEEKLY_LIMIT, 1);
-		const gw = gateway(() => Response.json(SHUNT_BODY));
-		try {
-			const config = judgeConfig(claude.bin, { shunt: gw.origin });
-			const selected = engineOf(
-				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), CLAUDE_SESSION),
-			);
-			expect(selected.label).toBe(CLAUDE_HAIKU);
-			expect(await selected.complete("system", "user")).toBe("GATEWAY_REPLY");
-			expect(selected.failover?.()).toBe(`${CLAUDE_HAIKU} → ${GROK_SHUNT} (plan-limit)`);
-			expect(claude.argv()).toHaveLength(1);
-			expect(gw.models).toEqual(["grok-4.7"]);
-		} finally {
-			gw.stop();
-		}
-	});
-
-	test("(b) with no shunt and no Grok login, a Claude judge stays a single candidate", async () => {
+	test("(b) with no Grok login, a Claude judge stays a single candidate", async () => {
 		const claude = claudeStub(WEEKLY_LIMIT, 1);
 		const config = judgeConfig(claude.bin);
 		const selected = engineOf(
@@ -130,61 +110,13 @@ describe("selectJudgeEngine: the judge's route follows the session's provider", 
 		expect(claude.argv()).toHaveLength(1);
 	});
 
-	test("(c) a Grok session answers from the shunt gateway and never calls Claude", async () => {
+	test("(e) a Claude session takes the auxiliary path: Claude answers first, the Grok route is never asked", async () => {
 		const claude = claudeStub(REPLY_OK);
-		const gw = gateway(() => Response.json(SHUNT_BODY));
+		const gw = gateway(() => Response.json({ output_text: "GATEWAY_REPLY" }));
 		try {
-			const config = judgeConfig(claude.bin, { shunt: gw.origin });
-			const selected = engineOf(
-				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
-			);
-			expect(selected.label).toBe(GROK_SHUNT);
-			expect(selected.resolution.transport).toBe("grok-shunt");
-			expect(await selected.complete("system", "user")).toBe("GATEWAY_REPLY");
-			expect(selected.failover?.()).toBeUndefined();
-			expect(gw.models).toEqual(["grok-4.7"]);
-			expect(claude.argv()).toEqual([]);
-		} finally {
-			gw.stop();
-		}
-	});
-
-	test("(d) a Grok session whose shunt gateway refuses connections falls through to Claude", async () => {
-		const claude = claudeStub(REPLY_OK);
-		const gw = gateway(() => Response.json(SHUNT_BODY));
-		const refused = gw.origin;
-		gw.stop();
-		const config = judgeConfig(claude.bin, { shunt: refused });
-		const selected = engineOf(
-			await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
-		);
-		expect(await selected.complete("system", "user")).toBe("CLAUDE_REPLY");
-		expect(selected.failover?.()).toContain(`${GROK_SHUNT} → ${CLAUDE_HAIKU}`);
-		expect(claude.argv()).toHaveLength(1);
-	}, 20_000);
-
-	test("(d2) a Grok session whose shunt gateway refuses the model falls through to Claude", async () => {
-		const claude = claudeStub(REPLY_OK);
-		const gw = gateway(() => new Response(RATE_LIMIT_ZERO, { status: 429 }));
-		try {
-			const config = judgeConfig(claude.bin, { shunt: gw.origin });
-			const selected = engineOf(
-				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
-			);
-			expect(await selected.complete("system", "user")).toBe("CLAUDE_REPLY");
-			expect(selected.failover?.()).toBe(`${GROK_SHUNT} → ${CLAUDE_HAIKU} (model-unavailable)`);
-			expect(gw.models).toEqual(["grok-4.7"]);
-			expect(claude.argv()).toHaveLength(1);
-		} finally {
-			gw.stop();
-		}
-	}, 20_000);
-
-	test("(e) a Claude session takes the auxiliary path: Claude answers first, the shunt is never asked", async () => {
-		const claude = claudeStub(REPLY_OK);
-		const gw = gateway(() => Response.json(SHUNT_BODY));
-		try {
-			const config = judgeConfig(claude.bin, { shunt: gw.origin });
+			const config = judgeConfig(claude.bin, {
+				grok: { home: grokLogin(), baseUrl: `${gw.origin}/v1` },
+			});
 			const selected = engineOf(
 				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), CLAUDE_SESSION),
 			);
@@ -193,25 +125,6 @@ describe("selectJudgeEngine: the judge's route follows the session's provider", 
 			expect(selected.failover?.()).toBeUndefined();
 			expect(gw.models).toEqual([]);
 			expect(claude.argv()).toHaveLength(1);
-		} finally {
-			gw.stop();
-		}
-	});
-
-	test("(f) a shunt alias with a control character is never a failover candidate", async () => {
-		const claude = claudeStub(WEEKLY_LIMIT, 1);
-		const gw = gateway(() => Response.json(SHUNT_BODY));
-		try {
-			const config = judgeConfig(claude.bin, {
-				shunt: gw.origin,
-				grok: { shuntModel: "bad\nalias" },
-			});
-			const selected = engineOf(
-				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), CLAUDE_SESSION),
-			);
-			expect(selected.failover).toBeUndefined();
-			await expect(selected.complete("system", "user")).rejects.toThrow(/weekly limit/);
-			expect(gw.models).toEqual([]);
 		} finally {
 			gw.stop();
 		}
@@ -228,27 +141,62 @@ describe("selectJudgeEngine: the judge's route follows the session's provider", 
 		expect(selected.failover).toBeUndefined();
 	});
 
-	test("(h) a Grok session with a login walks the login model, then the shunt gateway", async () => {
+	test("a Grok session judges on Grok over HTTP and never reaches Claude", async () => {
 		const claude = claudeStub(REPLY_OK);
-		const gw = gateway((path) =>
-			path === "/v1/messages"
-				? Response.json(SHUNT_BODY)
-				: new Response(RATE_LIMIT_ZERO, { status: 429 }),
-		);
+		const paths: string[] = [];
+		const gw = gateway((path) => {
+			paths.push(path);
+			return Response.json({ output_text: "GROK_REPLY" });
+		});
 		try {
 			const config = judgeConfig(claude.bin, {
-				shunt: gw.origin,
-				grok: { home: grokLogin(), baseUrl: `${gw.origin}/v1` },
+				grok: { home: grokLogin(), baseUrl: `${gw.origin}/v1`, transport: "http" },
 			});
 			const selected = engineOf(
 				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
 			);
-			expect(selected.label).toBe("grok:grok-4.7");
-			expect(await selected.complete("system", "user")).toBe("GATEWAY_REPLY");
-			expect(selected.failover?.()).toBe(`grok:grok-4.7 → ${GROK_SHUNT} (model-unavailable)`);
+			expect(await selected.complete("system", "user")).toBe("GROK_REPLY");
+			expect(paths).toEqual(["/v1/responses"]);
+			expect(gw.models).toEqual(["grok-4.7"]);
 			expect(claude.argv()).toEqual([]);
+			expect(selected.failover?.()).toBeUndefined();
 		} finally {
 			gw.stop();
 		}
-	}, 20_000);
+	});
+
+	test("a Grok session judges on Grok over the CLI transport and never reaches Claude", async () => {
+		const claude = claudeStub(REPLY_OK);
+		const grok = argvStub("grok", JSON.stringify({ text: "GROK_REPLY", stopReason: "end_turn" }));
+		const config = judgeConfig(claude.bin, {
+			grok: { home: grokLogin(), bin: grok.bin, transport: "cli" },
+		});
+		const selected = engineOf(
+			await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
+		);
+		expect(await selected.complete("system", "user")).toBe("GROK_REPLY");
+		expect(grok.argv()).toHaveLength(1);
+		expect(grok.argv()[0]).toContain("-m grok-4.7");
+		expect(claude.argv()).toEqual([]);
+		expect(selected.failover?.()).toBeUndefined();
+	});
+
+	test("a Grok session whose judge call fails with billing falls back to Claude", async () => {
+		const claude = claudeStub(REPLY_OK);
+		const gw = gateway(() => new Response("payment required", { status: 402 }));
+		try {
+			const config = judgeConfig(claude.bin, {
+				grok: { home: grokLogin(), baseUrl: `${gw.origin}/v1`, transport: "http" },
+			});
+			const selected = engineOf(
+				await selectJudgeEngine(config, {}, tempDir("ultrathink-judge-cwd-"), GROK_SESSION),
+			);
+			expect(await selected.complete("system", "user")).toBe("CLAUDE_REPLY");
+			expect(gw.models).toEqual(["grok-4.7"]);
+			expect(claude.argv()).toHaveLength(1);
+			expect(selected.failover?.()).toMatch(/\(billing\)$/);
+		} finally {
+			gw.stop();
+		}
+	});
 });

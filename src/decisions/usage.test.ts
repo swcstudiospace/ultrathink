@@ -229,13 +229,21 @@ describe("summarizeUsage", () => {
 				"null",
 				'"a string"',
 				JSON.stringify({ ts: "yesterday", point: "plan" }),
-				JSON.stringify({ ...record(), rail: "other" }),
+				JSON.stringify({ ...record(), rail: 7 }),
 				JSON.stringify(record({ costUsd: 0.5 })),
 				'{"ts":1',
 			].join("\n"),
 		);
 		const summary = summarizeUsage(dir, { days: 7, now: NOW });
 		expect(summary.total).toEqual({ calls: 1, failures: 0, costUsd: 0.5 });
+	});
+
+	test("rows written under a retired rail name still count", () => {
+		const dir = tempDir();
+		const legacy = { ...record({ costUsd: 0.25 }), rail: "legacy-rail" };
+		writeFileSync(join(dir, USAGE_FILE), `${JSON.stringify(legacy)}\n`);
+		const summary = summarizeUsage(dir, { days: 7, now: NOW });
+		expect(summary.total).toEqual({ calls: 1, failures: 0, costUsd: 0.25 });
 	});
 
 	test("a missing ledger or an unreadable directory summarizes to zero without throwing", () => {

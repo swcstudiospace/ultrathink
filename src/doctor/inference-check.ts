@@ -273,14 +273,6 @@ function grokLoginState(
 }
 
 function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
-	if (config.grok.transport === "shunt") {
-		return {
-			id: "inference.grok.login",
-			section: "inference",
-			level: "info",
-			title: "Grok route uses a shunt gateway",
-		};
-	}
 	const now = deps.now();
 	const { laneHome, status } = grokLoginState(deps, config);
 	const laneNote = laneHome ? `Grok lane home: ${laneHome}` : undefined;
@@ -335,8 +327,7 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 /** Why a memory-bank call has no Grok fallback, mirroring the conditions in `memoryChainFor`. */
 function memoryFallbackReason(config: UltrathinkConfig): string {
 	if (!config.claude.fallbackToGrok) return "No Grok fallback: claude.fallbackToGrok is off";
-	if (!config.grok.enabled) return "No Grok fallback: grok.enabled is false";
-	return "No Grok fallback: grok.transport is shunt, which cannot be proven to be Grok Build";
+	return "No Grok fallback: grok.enabled is false";
 }
 
 /** The pinned memory-bank chain, plus every configured value that does not apply to it. Info only: it describes, never fails. */

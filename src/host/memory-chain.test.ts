@@ -90,12 +90,11 @@ describe("memoryChainFor", () => {
 		expect(memoryChainFor(defaultConfig())).toEqual([PRIMARY]);
 	});
 
-	test("adds the fallback only with fallbackToGrok on, Grok enabled and a non-shunt transport", () => {
+	test("adds the fallback only with fallbackToGrok on and Grok enabled", () => {
 		const base = defaultConfig();
 		const on = mergeConfig(consent, base);
 		expect(memoryChainFor(on)).toEqual([PRIMARY, FALLBACK]);
 		expect(memoryChainFor({ ...on, grok: { ...on.grok, enabled: false } })).toEqual([PRIMARY]);
-		expect(memoryChainFor({ ...on, grok: { ...on.grok, transport: "shunt" } })).toEqual([PRIMARY]);
 		expect(memoryChainFor({ ...on, claude: { ...on.claude, fallbackToGrok: false } })).toEqual([
 			PRIMARY,
 		]);

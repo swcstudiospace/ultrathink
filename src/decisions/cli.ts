@@ -22,11 +22,10 @@ import {
 import {
 	type DecisionsDeps,
 	type KeySource,
-	type ResolvedProvider,
 	buildDecisionsRequest,
 	decisionsKilled,
 	recordHealth,
-	resolveDecisionsKeys,
+	resolveOpenRouterKey,
 	usageListener,
 } from "./gate.ts";
 import {
@@ -36,7 +35,6 @@ import {
 	openMemoryJevHealth,
 } from "./health.ts";
 import { type UsageTotals, summarizeUsage } from "./usage.ts";
-import { decideVercel } from "./vercel.ts";
 import {
 	buildBlockingState,
 	buildKnowledgeState,
@@ -64,7 +62,7 @@ export interface DecisionsCommandDeps extends Omit<DecisionsDeps, "debug"> {
 const USAGE =
 	"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json> | ultrathink decisions usage [--days N] [--json]";
 const NO_KEY =
-	"no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
+	"no Jev key (bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 const KILLED = "off (ULTRATHINK_DECISIONS=0)";
 const CHECK_MESSAGE = "Add a --verbose flag to the export command";
 const MAX_CASES = 200;
@@ -73,13 +71,11 @@ interface Runtime {
 	config: DecisionsConfig;
 	/** ULTRATHINK_DECISIONS=0: no request is ever sent. */
 	killed: boolean;
-	provider: ResolvedProvider;
 	key?: { key: string; source: KeySource };
 	url: DecisionsUrl;
 	decideOptions: (apiKey: string, point: string) => DecideOptions;
-	rail: typeof decide;
 	now: () => number;
-	/** The picked rail's breaker: under the caller's state dir, else in memory (no disk). */
+	/** The Jev breaker: under the caller's state dir, else in memory (no disk). */
 	health: JevHealth;
 }
 
@@ -87,52 +83,45 @@ function runtime(deps: DecisionsCommandDeps, configured?: DecisionsConfig): Runt
 	const env = deps.env ?? process.env;
 	const config = configured ?? loadConfig(claudeConfigPaths(deps.cwd, env)).decisions;
 	const url = resolveDecisionsUrl(env);
-	const picked = resolveDecisionsKeys(config, deps.storePath ?? defaultStorePath(env), env);
+	const key = resolveOpenRouterKey(deps.storePath ?? defaultStorePath(env), env);
 	return {
 		config,
 		killed: decisionsKilled(env),
-		provider: picked.provider,
-		key: picked.key,
+		key,
 		url,
 		decideOptions: (apiKey, point) => ({
 			apiKey,
 			timeoutMs: config.timeoutMs,
-			...(picked.provider === "openrouter" ? { url: url.url } : {}),
+			url: url.url,
 			fetch: deps.fetch,
 			now: deps.now,
 			sleep: deps.sleep,
 			random: deps.random,
 			onAttempt: usageListener(deps.stateDir, {
 				point,
-				rail: picked.provider,
 				model: config.model,
 			}),
 		}),
-		rail: picked.provider === "vercel" ? decideVercel : decide,
 		now: deps.now ?? Date.now,
 		health:
 			deps.health ??
-			(deps.stateDir === undefined
-				? openMemoryJevHealth(picked.provider)
-				: openJevHealth(deps.stateDir, picked.provider)),
+			(deps.stateDir === undefined ? openMemoryJevHealth() : openJevHealth(deps.stateDir)),
 	};
 }
 
-/** ` · provider <rail> · zdr <n/a (vercel)|on|off> · key from <source>` + ` · url <url>` when the env override is in effect on the OpenRouter rail, or the ignored notice when it was rejected. The Vercel rail sends no ZDR preference. */
+/** ` · provider openrouter · zdr on|off · key from <source>` + ` · url <url>` when the env override is in effect, or the ignored notice when it was rejected. */
 function footer(rt: Runtime, source: KeySource): string {
 	const url =
-		rt.provider === "openrouter"
-			? rt.url.source === "ULTRATHINK_DECISIONS_URL"
-				? ` · url ${rt.url.url}`
-				: rt.url.ignored
-					? DECISIONS_URL_IGNORED
-					: ""
-			: "";
-	const zdr = rt.provider === "vercel" ? "n/a (vercel)" : rt.config.zdr ? "on" : "off";
-	return ` · provider ${rt.provider} · zdr ${zdr} · key from ${source}${url}`;
+		rt.url.source === "ULTRATHINK_DECISIONS_URL"
+			? ` · url ${rt.url.url}`
+			: rt.url.ignored
+				? DECISIONS_URL_IGNORED
+				: "";
+	const zdr = rt.config.zdr ? "on" : "off";
+	return ` · provider openrouter · zdr ${zdr} · key from ${source}${url}`;
 }
 
-/** The one-request check: the plan question against the configured model, with the rail's data-handling setting. */
+/** The one-request check: the plan question against the configured model, with the zdr data-handling setting. */
 function checkRequest(rt: Runtime): DecisionsRequest {
 	return buildDecisionsRequest(
 		"plan",
@@ -154,7 +143,7 @@ interface DecisionsLiveCheck {
 }
 
 /**
- * The request `decisions check` sends, with its result recorded on the rail's breaker, for callers that need a verdict
+ * The request `decisions check` sends, with its result recorded on the Jev breaker, for callers that need a verdict
  * and not a printed line (the stack probe). `config` replaces the file layers; `config.timeoutMs` is the total budget.
  * No key, or `ULTRATHINK_DECISIONS=0`, sends nothing. Never rejects.
  */
@@ -207,7 +196,7 @@ async function check(rt: Runtime): Promise<{ code: number; text: string }> {
 
 /**
  * The operator's request goes out whatever the cool-down says, and its result is recorded like a claimed probe's: a
- * success closes the rail's breaker, a 402/401/403 re-schedules it. The ledger gets a row per real POST.
+ * success closes the breaker, a 402/401/403 re-schedules it. The ledger gets a row per real POST.
  */
 async function forcedCall(
 	rt: Runtime,
@@ -217,7 +206,7 @@ async function forcedCall(
 ): Promise<DecideOutcome> {
 	const startedAt = rt.now();
 	const verdict = rt.health.shouldCall(startedAt, { force: true });
-	const outcome = await rt.rail(request, rt.decideOptions(apiKey, point));
+	const outcome = await decide(request, rt.decideOptions(apiKey, point));
 	recordHealth(rt.health, outcome, rt.now(), verdict.call ? { ...verdict, startedAt } : undefined);
 	return outcome;
 }

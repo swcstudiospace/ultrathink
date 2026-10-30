@@ -20,13 +20,7 @@ import { sessionPath } from "../claude/state.ts";
 import { defaultConfig, mergeConfig } from "../config.ts";
 import { engineLabel, selectEngine } from "./engine.ts";
 import { MAX_ENGINE_ERROR_CHARS } from "./display-limits.ts";
-import {
-	configWith,
-	createEngineFixtures,
-	engineOf,
-	shunt,
-	skipOf,
-} from "./engine-test.helpers.ts";
+import { configWith, createEngineFixtures, engineOf, skipOf } from "./engine-test.helpers.ts";
 import { UPLIFT } from "../test.helpers.ts";
 import { createFdProgressSink, parseProgressLine } from "./progress.ts";
 
@@ -184,46 +178,6 @@ describe("legacy diagnostic label safety", () => {
 		120_000,
 	);
 
-	test("Grok shunt projects every public sink while sending exact host overrides, engine pins and shunt aliases", async () => {
-		const realFetch = globalThis.fetch;
-		const sent: Array<{ url: string; model: string }> = [];
-		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-			const body: unknown = JSON.parse(String(init?.body));
-			if (!body || typeof body !== "object" || !("model" in body) || typeof body.model !== "string")
-				throw new Error("expected a wire model");
-			sent.push({ url: String(input), model: body.model });
-			return Response.json({ content: [{ type: "text", text: xml }] });
-		}) as unknown as typeof fetch;
-		try {
-			for (const [, model] of models) {
-				for (const source of ["host-override", "engine-model", "shunt-model"] as const) {
-					const config = shunt();
-					if (source === "host-override")
-						config.models.hosts["grok-build"] = { provider: "", model };
-					else if (source === "engine-model") config.grok.model = model;
-					else {
-						config.models.hosts["grok-build"] = { provider: "", model: "ignored-host-model" };
-						config.grok.shuntModel = model;
-					}
-					const selected = engineOf(
-						await selectEngine(config, {}, "/repo", { host: "grok-build" }),
-					);
-					expect(selected.label).toBe("<opaque-model>@shunt");
-					expect(selected.resolution).toMatchObject({
-						source,
-						transport: "grok-shunt",
-						modelId: "<opaque-model>",
-					});
-					await expectSafePlan(selected, config, "/repo");
-					expect(sent.at(-1)).toEqual({ url: "http://127.0.0.1:3001/v1/messages", model });
-				}
-			}
-			expect(sent).toHaveLength(models.length * 3);
-		} finally {
-			globalThis.fetch = realFetch;
-		}
-	}, 120_000);
-
 	test("Grok HTTP and CLI labels never expose an unsafe model and carry effort only where it applies", async () => {
 		for (const transport of ["http", "cli"] as const) {
 			for (const [, model] of models) {
@@ -307,7 +261,7 @@ describe("legacy diagnostic label safety", () => {
 		120_000,
 	);
 
-	test("Grok HTTP/shunt keep shell-metacharacter models in one exact body field and fixed request paths (POL-COV-020)", async () => {
+	test("Grok HTTP keeps shell-metacharacter models in one exact body field and fixed request paths (POL-COV-020)", async () => {
 		const cwd = tempDir("ultrathink-safe-model-body-");
 		const marker = join(cwd, "shell-canary-ran");
 		const model = `${sentinel};touch ${marker};$(touch ${marker});\`touch ${marker}\`;#`;
@@ -321,78 +275,43 @@ describe("legacy diagnostic label safety", () => {
 					body: await request.json(),
 					modelHeader: request.headers.get("x-grok-model-override"),
 				});
-				return Response.json(
-					new URL(request.url).pathname.endsWith("/responses")
-						? { output_text: xml }
-						: { content: [{ type: "text", text: xml }] },
-				);
+				return Response.json({ output_text: xml });
 			},
 		});
 		const origin = `http://127.0.0.1:${server.port}`;
 		try {
-			for (const transport of ["http", "shunt"] as const) {
-				const lower = mergeConfig(
-					{
-						grok: {
-							transport,
-							home: grokLogin(),
-							baseUrl: `${origin}/proxy/v1`,
-							shuntBaseUrl: `${origin}/gateway`,
-						},
-					},
-					defaultConfig(),
+			const lower = mergeConfig(
+				{ grok: { transport: "http", home: grokLogin(), baseUrl: `${origin}/proxy/v1` } },
+				defaultConfig(),
+			);
+			for (const source of ["host-override", "engine-model"] as const) {
+				const config = mergeConfig(
+					source === "host-override"
+						? { models: { hosts: { "grok-build": { model } } } }
+						: { grok: { model } },
+					lower,
 				);
-				const sources =
-					transport === "shunt"
-						? (["host-override", "engine-model", "shunt-model"] as const)
-						: (["host-override", "engine-model"] as const);
-				for (const source of sources) {
-					const config = mergeConfig(
-						source === "host-override"
-							? { models: { hosts: { "grok-build": { model } } } }
-							: { grok: { [source === "shunt-model" ? "shuntModel" : "model"]: model } },
-						lower,
-					);
-					const selected = engineOf(await selectEngine(config, {}, cwd, { host: "grok-build" }));
-					expect(selected.resolution).toMatchObject({
-						state: "override",
-						source,
-						reason: "explicit-model",
-						modelKnown: true,
-						modelId: "<opaque-model>",
-					});
-					const before = sent.length;
-					expect(await selected.complete("system", "user")).toBe(xml);
-					expect(sent).toHaveLength(before + 1);
-					expect(sent.at(-1)).toEqual(
-						transport === "http"
-							? {
-									url: `${origin}/proxy/v1/responses`,
-									modelHeader: model,
-									body: {
-										model,
-										instructions: "system",
-										input: "user",
-										stream: false,
-									},
-								}
-							: {
-									url: `${origin}/gateway/v1/messages`,
-									modelHeader: null,
-									body: {
-										model,
-										max_tokens: lower.grok.shuntMaxTokens,
-										system: "system",
-										messages: [{ role: "user", content: "user" }],
-									},
-								},
-					);
-					expect(existsSync(marker)).toBe(false);
-					expect(existsSync(join(cwd, model))).toBe(false);
-					expect(readdirSync(cwd)).toEqual([]);
-				}
+				const selected = engineOf(await selectEngine(config, {}, cwd, { host: "grok-build" }));
+				expect(selected.resolution).toMatchObject({
+					state: "override",
+					source,
+					reason: "explicit-model",
+					modelKnown: true,
+					modelId: "<opaque-model>",
+				});
+				const before = sent.length;
+				expect(await selected.complete("system", "user")).toBe(xml);
+				expect(sent).toHaveLength(before + 1);
+				expect(sent.at(-1)).toEqual({
+					url: `${origin}/proxy/v1/responses`,
+					modelHeader: model,
+					body: { model, instructions: "system", input: "user", stream: false },
+				});
+				expect(existsSync(marker)).toBe(false);
+				expect(existsSync(join(cwd, model))).toBe(false);
+				expect(readdirSync(cwd)).toEqual([]);
 			}
-			expect(sent).toHaveLength(5);
+			expect(sent).toHaveLength(2);
 		} finally {
 			server.stop(true);
 		}
@@ -409,14 +328,9 @@ describe("legacy diagnostic label safety", () => {
 				["muse", "muse"],
 				["grok-build", "grok"],
 			] as const) {
-				for (const source of [
-					"host-override",
-					"engine-model",
-					...(route === "grok" ? ["shunt-model"] : []),
-				]) {
-					const config = shunt();
+				for (const source of ["host-override", "engine-model"]) {
+					const config = configWith({});
 					if (source === "host-override") config.models.hosts[host] = { provider: "", model };
-					else if (source === "shunt-model") config.grok.shuntModel = model;
 					else config[route].model = model;
 					const skipped = skipOf(await selectEngine(config, {}, "/repo", { host }));
 					expect(skipped.resolution).toMatchObject({

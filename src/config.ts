@@ -9,11 +9,9 @@ import { DEFAULT_HINDSIGHT_CONFIG, type HindsightConfig } from "./hindsight/type
 import { DEFAULT_RAGFLOW_CONFIG, type RagflowConfig } from "./ragflow/types.ts";
 import {
 	DECISION_POINTS,
-	DECISIONS_PROVIDERS,
 	DEFAULT_DECISIONS_CONFIG,
 	type DecisionPoint,
 	type DecisionsConfig,
-	type DecisionsProvider,
 	isJevModelId,
 } from "./decisions/types.ts";
 import {
@@ -407,7 +405,7 @@ function mergeFallbackModels(value: unknown, fallback: string[]): string[] {
 	return out;
 }
 
-/** Same trust rule as `mergeClaude`: a project layer keeps `bin`, `home`, `baseUrl` and `shuntBaseUrl` (where the CLI and traffic go). */
+/** Same trust rule as `mergeClaude`: a project layer keeps `bin`, `home` and `baseUrl` (where the CLI and traffic go). */
 function mergeGrok(
 	grok: Record<string, unknown> | undefined,
 	defaults: GrokConfig,
@@ -431,17 +429,7 @@ function mergeGrok(
 			typeof grok.fallbackToClaude === "boolean"
 				? grok.fallbackToClaude
 				: defaults.fallbackToClaude,
-		shuntBaseUrl: project
-			? defaults.shuntBaseUrl
-			: httpUrl(grok.shuntBaseUrl, defaults.shuntBaseUrl),
 		fallbackModels: mergeFallbackModels(grok.fallbackModels, defaults.fallbackModels),
-		shuntModel: selectorField(grok.shuntModel) || defaults.shuntModel,
-		shuntMaxTokens:
-			typeof grok.shuntMaxTokens === "number" &&
-			Number.isInteger(grok.shuntMaxTokens) &&
-			grok.shuntMaxTokens > 0
-				? grok.shuntMaxTokens
-				: defaults.shuntMaxTokens,
 	};
 }
 
@@ -471,7 +459,7 @@ export function hasControlCharacter(value: string): boolean {
 }
 
 /** Shared selector string normalization: blanks stay absent; nonblank controls stay raw so selection can reject them before trim. */
-export function normalizeSelectorField(value: string): string {
+function normalizeSelectorField(value: string): string {
 	const trimmed = value.trim();
 	if (!trimmed) return "";
 	return hasControlCharacter(value) ? value : trimmed;
@@ -748,9 +736,6 @@ function mergeDecisions(
 	return {
 		// Jev is always on: the file value is ignored in every layer; only ULTRATHINK_DECISIONS=0 disables.
 		enabled: true,
-		provider: DECISIONS_PROVIDERS.includes(decisions.provider as DecisionsProvider)
-			? (decisions.provider as DecisionsProvider)
-			: defaults.provider,
 		model:
 			typeof decisions.model === "string" && isJevModelId(decisions.model.trim())
 				? decisions.model.trim()

@@ -11,9 +11,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
-import { decisionsKilled, resolveDecisionsKeys } from "../decisions/gate.ts";
+import { decisionsKilled, resolveOpenRouterKey } from "../decisions/gate.ts";
 import { describeJevHealth } from "../decisions/health.ts";
-import { DECISIONS_PROVIDERS, type DecisionsProvider } from "../decisions/types.ts";
 import { resolveGatewayToken, serviceBackend } from "../gateway/settings.ts";
 import {
 	GATEWAY_STORE_PROVIDER,
@@ -220,11 +219,6 @@ function fixFor(provider: ProviderId): string {
 }
 
 /** Provider names, present or missing, for the features the config switches on. Never reads or prints a credential value. */
-/** The key-based rails Jev can run on: every decisions provider but `auto`, so no rail is spelled out in this module. */
-const JEV_RAILS = DECISIONS_PROVIDERS.filter(
-	(provider): provider is Exclude<DecisionsProvider, "auto"> => provider !== "auto",
-);
-
 export function checkCredentials(deps: DoctorDeps): Finding[] {
 	const { env } = deps;
 	const config = loadConfig(claudeConfigPaths(deps.cwd, env));
@@ -304,21 +298,20 @@ export function checkCredentials(deps: DoctorDeps): Finding[] {
 			title: "Jev decisions: off (ULTRATHINK_DECISIONS=0)",
 		});
 	} else {
-		const jev = resolveDecisionsKeys(config.decisions, path, env);
-		if (jev.key) {
+		const jev = resolveOpenRouterKey(path, env);
+		if (jev) {
 			add({
 				id: "credentials.jev",
 				level: "ok",
-				title: `Jev decisions: ${PROVIDERS[jev.provider].label} key present (${jev.key.source === "store" ? "credential store" : jev.key.source})`,
+				title: `Jev decisions: OpenRouter key present (${jev.source === "store" ? "credential store" : jev.source})`,
 			});
 		} else {
-			const [firstRail, ...otherRails] = JEV_RAILS;
 			add({
 				id: "credentials.jev",
 				level: "info",
-				title: `Jev decisions: no ${JEV_RAILS.map((rail) => PROVIDERS[rail].label).join(" or ")} key`,
+				title: "Jev decisions: no OpenRouter key",
 				detail: "Decision points are skipped without one; planning continues.",
-				fix: `bin/ultrathink-mcp auth set-key ${firstRail} --stdin${otherRails.length > 0 ? ` (or ${otherRails.join(", ")})` : ""}`,
+				fix: "bin/ultrathink-mcp auth set-key openrouter --stdin",
 			});
 			if (env.OPENROUTER_API_KEY?.trim()) {
 				// Retired name: say so instead of leaving the owner wondering why an exported key does nothing.

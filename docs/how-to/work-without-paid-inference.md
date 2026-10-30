@@ -43,25 +43,22 @@ The Grok login message is the one most users meet first. It means the Grok route
 
 ## 3. How the fallback order works
 
-The fallback applies only when `claude.fallbackToGrok` is on. A failed Claude call moves to the Grok candidates in this order:
+The fallback applies only when `claude.fallbackToGrok` is on. A failed Claude call moves to the Grok candidates, when a Grok login is usable.
 
-1. The login-based Grok candidates, when a Grok login is usable.
-2. The Grok shunt gateway, when `grok.shuntBaseUrl` is set. The shunt needs no login, and it is used when the primary transport is not `shunt`.
-
-A refused or unreachable Grok gateway counts as a network failure, so the chain moves to the next candidate. The full list of failures that fail over is in [Configuration](../configuration.md#claude-and-grok-failover).
+A refused or unreachable Grok call counts as a network failure. The full list of failures that fail over is in [Configuration](../configuration.md#claude-and-grok-failover).
 
 The ship judge follows the session's own provider:
 
-- An xai session (for example `grok-4.7`) judges on the Grok route, through the shunt when it is configured, with Claude as the last resort.
+- An xai session (for example `grok-4.7`) judges on the Grok route, with Claude as the last resort.
 - Other sessions judge on the host's default auxiliary route, which is Claude in Omp.
 
 The `judgedBy` field in ship output names the provider that answered.
 
-Memory distillation does not follow these keys. It is pinned by the owner to Claude Haiku 5.5, then Grok Build with a Grok login only. The shunt is never used there, and no setting changes that.
+Memory distillation does not follow these keys. It is pinned by the owner to Claude Haiku 5.5, then Grok Build with a Grok login only, and no setting changes that.
 
 ## 4. Owner actions that remain
 
-- **A Grok login, for memory distillation.** Run `grok login`. Grok Build is the second leg of the distiller. That leg also needs `claude.fallbackToGrok` on, `grok.enabled` on, and a `grok.transport` other than `shunt`. See [Configuration](../configuration.md#claude-and-grok-failover).
+- **A Grok login, for memory distillation.** Run `grok login`. Grok Build is the second leg of the distiller. That leg also needs `claude.fallbackToGrok` on and `grok.enabled` on. See [Configuration](../configuration.md#claude-and-grok-failover).
 - **A Greptile credential, for review.** Store a key with `bin/ultrathink-mcp auth set-key greptile --stdin` (or `auth login greptile`), or install the Greptile CLI and run `greptile login`. See [Ship with Greptile](ship-with-greptile.md).
 - **An OpenRouter key, only if you want Jev.** Jev is always on in config. Only a configured key activates it. Store one with `bin/ultrathink-mcp auth set-key openrouter --stdin`. An OpenRouter credits or auth failure opens a persisted breaker: a 5-minute cool-down that doubles up to 6 hours. While it is open, no request is made. See [Use Jev decisions](use-jev-decisions.md).
 
