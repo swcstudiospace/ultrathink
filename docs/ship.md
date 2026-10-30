@@ -285,7 +285,7 @@ With `ship.autoMerge` on, when the gate passes, `merge`:
 
 1. merges with `gh pr merge <n> --<method> --match-head-commit <sha>`. The method is `ship.mergeMethod` (`squash`). If the repository does not allow it, the first allowed method (squash, merge, rebase) is used and the output reports the substitution. It never uses `--admin`.
 2. reads the PR back and counts the merge as done only when GitHub reports it `MERGED`.
-3. with `ship.autoMerge` on and `ship.deleteBranch: true`, deletes the remote branch (`git push origin --delete <branch>`) after the merge is confirmed. It then checks out the base branch, fast-forwards it from `origin`, and deletes the local branch with `git branch -D`. With the default `false`, both branches stay and your checkout is not touched.
+3. with `ship.autoMerge` on and `ship.deleteBranch: true`, deletes the remote branch (`git push origin --delete <branch>`) after the merge is confirmed. It then checks out the base branch, fast-forwards it from `origin`, and deletes the local branch with `git branch -D`. With the default `false`, the remote branch stays and the base branch is not checked out. A verified merge still deletes the local feature branch when its tip is exactly the merged head and no worktree holding it is dirty; a clean worktree that has it checked out is detached first.
 
 A PR already merged on GitHub counts as a ship merge only when the ship already recorded it, or when the latest review passed on the exact commit GitHub merged; then `merge` finishes the cleanup. Otherwise the phase becomes `blocked` with `PR was merged outside the ship flow before its review passed`, and nothing is cleaned up.
 
@@ -330,7 +330,7 @@ These keys go in the `ship` section of any [config file](configuration.md#config
 | `enabled` | `false` | Add the ship instruction and nudges. |
 | `autoMerge` | `false` | Allow `merge`. When `true` and `judge` is `"gate"`, the assessment also requires the engine judge; a Jev verdict never replaces it. |
 | `judge` | `"gate"` | `"gate"`: the LLM judge must say done with confidence >= 0.7. `"advisory"`: only the rules gate `done`; the judge verdict is recorded and shown in the PR body. The merge gate is unchanged in both modes (see [Done assessment](#done-assessment)). |
-| `deleteBranch` | `false` | Delete the remote and local branch after a confirmed merge. |
+| `deleteBranch` | `false` | Delete the remote and local branch after a confirmed merge. When `false`, the remote branch stays, but the local branch is still deleted when its tip is exactly the merged head and no worktree holding it is dirty. |
 | `skills` | `["gsd-"]` | Skill name prefixes that trigger ship. `[]` matches every planned prompt. |
 | `greptileOrganization` | `""` | Greptile organization id or handle sent with every Greptile API call. `""` lets Greptile pick, which works for single-organization accounts. |
 | `minScore` | `5` | Lowest Greptile score that may merge (1 to 5). |

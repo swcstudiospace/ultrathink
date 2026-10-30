@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import { defaultRun } from "./run.ts";
 import type { PrRef, PrStatus, Run, ShipConfig } from "./types.ts";
 
@@ -15,6 +17,13 @@ export interface ReviewThread {
 }
 
 export type ReviewThreads = { ok: true; threads: ReviewThread[] } | { ok: false; error: string };
+
+/** Outcome of `deleteLocalBranch`: `kept` names why a local branch stayed; `ok: false` is an error. */
+export interface LocalBranchDelete {
+	ok: boolean;
+	kept?: string;
+	error?: string;
+}
 
 export interface Github {
 	repo(): { name: string; defaultBranch: string } | undefined;
@@ -40,6 +49,12 @@ export interface Github {
 		ok: boolean;
 		error?: string;
 	};
+	/**
+	 * Deletes the local `branch` after a merge that kept it. Only when its tip is exactly `headSha`; a worktree that
+	 * has it checked out is detached first, and a dirty one keeps the branch. Returns ok with `kept` for a
+	 * deliberate keep, and never touches a remote branch or any file.
+	 */
+	deleteLocalBranch(input: { branch: string; headSha: string }): LocalBranchDelete;
 	/**
 	 * The PR's Greptile review threads; fails on any doubt (errors, truncation) so callers can fail closed.
 	 * With `opts.deadlineMs`, repository lookup and every page share the remaining wait budget; a response
@@ -185,6 +200,36 @@ function parseThreadsPage(stdout: string): ThreadsPage {
 	return next ? { ok: true, threads: out, next } : { ok: true, threads: out };
 }
 
+/** Paths of the worktrees with `ref` checked out, from `git worktree list --porcelain -z` (NUL-separated, so literal). */
+function worktreesOn(porcelain: string, ref: string): string[] {
+	const paths: string[] = [];
+	let path: string | undefined;
+	for (const field of porcelain.split("\0")) {
+		if (field === "") path = undefined;
+		else if (field.startsWith("worktree ")) path = field.slice("worktree ".length);
+		else if (field === `branch ${ref}` && path !== undefined) paths.push(path);
+	}
+	return paths;
+}
+
+// Files and directories git leaves in a worktree's git dir while an operation is in progress.
+const OPERATION_MARKERS = [
+	"rebase-merge",
+	"rebase-apply",
+	"MERGE_HEAD",
+	"CHERRY_PICK_HEAD",
+	"REVERT_HEAD",
+	"BISECT_LOG",
+];
+const OPERATION_KEPT =
+	"git operation in progress (rebase, merge, cherry-pick, revert or bisect), left alone";
+
+/** HEAD of a worktree: the branch it names, detached, or the error git reported while reading it. */
+type HeadState =
+	| { kind: "branch"; ref: string }
+	| { kind: "detached" }
+	| { kind: "error"; error: string };
+
 export function createGithub(input: { cwd: string; run?: Run }): Github {
 	const run = input.run ?? defaultRun;
 	const cwd = input.cwd;
@@ -204,6 +249,82 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 	// A name beginning with `-` would be parsed by git as an option; full refspecs keep every other name a positional.
 	const badBranch = (branch: string) =>
 		branch.startsWith("-") ? `refusing branch name ${JSON.stringify(branch)}` : undefined;
+
+	// `rev-parse --verify --quiet` exits 1 with no output only when the ref is missing; any other failure is an error.
+	const readRef = (ref: string): { sha?: string; error?: string } => {
+		const r = exec(["git", "rev-parse", "--verify", "--quiet", ref]);
+		if (r.exitCode === 0) return { sha: r.stdout.trim() };
+		if (r.exitCode === 1 && r.stderr.trim() === "") return {};
+		return { error: errorOf(r) };
+	};
+
+	// `symbolic-ref -q` exits 1 with no output exactly when HEAD is detached; any other failure is an error.
+	const headState = (wt: string): HeadState => {
+		const r = exec(["git", "-C", wt, "symbolic-ref", "-q", "HEAD"]);
+		if (r.exitCode === 0) return { kind: "branch", ref: r.stdout.trim() };
+		if (r.exitCode === 1 && r.stderr.trim() === "") return { kind: "detached" };
+		return { kind: "error", error: errorOf(r) };
+	};
+	// Whether a git operation is in progress in any of `paths`, read from each worktree's own git dir.
+	const operationIn = (paths: string[]): { busy: boolean; error?: string } => {
+		for (const wt of paths) {
+			const r = exec(["git", "-C", wt, "rev-parse", "--git-dir"]);
+			if (r.exitCode !== 0) return { busy: false, error: errorOf(r) };
+			const gitDir = resolve(wt, r.stdout.trim());
+			if (OPERATION_MARKERS.some((name) => existsSync(join(gitDir, name)))) return { busy: true };
+		}
+		return { busy: false };
+	};
+
+	// `path` with symlinks resolved, as `git worktree list` reports them; `path` itself when it cannot be resolved.
+	const realOrSelf = (path: string): string => {
+		try {
+			return realpathSync(path);
+		} catch {
+			return path;
+		}
+	};
+	// Whether `wt` is this session's own worktree: the one the command runs in, or a directory inside it. Both sides
+	// are resolved through symlinks, since `git worktree list` reports real paths.
+	const mine = (wt: string): boolean => {
+		const here = realOrSelf(resolve(cwd));
+		const path = realOrSelf(resolve(wt));
+		return here === path || here.startsWith(`${path}${sep}`);
+	};
+
+	// `git config -z --local --get-regexp` prints `key\nvalue\0` per setting (a bare boolean has no newline) and exits 1
+	// with no output when nothing matches. Only the keys of the local `branch.<name>` section are kept: removal deletes
+	// exactly that section, and a variable name has no dot, so a dot after the name marks another subsection.
+	const readSettings = (branch: string): { entries: [string, string][]; error?: string } => {
+		const r = exec(["git", "config", "-z", "--local", "--get-regexp", "^branch\\."]);
+		if (r.exitCode === 1 && r.stderr.trim() === "") return { entries: [] };
+		if (r.exitCode !== 0) return { entries: [], error: errorOf(r) };
+		const prefix = `branch.${branch}.`;
+		const entries: [string, string][] = [];
+		for (const record of r.stdout.split("\0")) {
+			const newline = record.indexOf("\n");
+			const key = newline < 0 ? record : record.slice(0, newline);
+			const value = newline < 0 ? "true" : record.slice(newline + 1);
+			if (key.startsWith(prefix) && !key.slice(prefix.length).includes("."))
+				entries.push([key, value]);
+		}
+		return { entries };
+	};
+	// Removes the whole `branch.<name>` section; a missing section is fine. Returns the failure, if any.
+	const removeSettings = (branch: string): string | undefined => {
+		const r = exec(["git", "config", "--remove-section", `branch.${branch}`]);
+		if (r.exitCode === 0 || /no such section/i.test(r.stderr)) return undefined;
+		return errorOf(r);
+	};
+	// Writes saved settings back after a refused delete; attempts every key and returns the first failure.
+	const restoreSettings = (entries: [string, string][]): string | undefined => {
+		let failure: string | undefined;
+		for (const [key, value] of entries) {
+			const r = exec(["git", "config", "--add", key, value]);
+			if (r.exitCode !== 0 && failure === undefined) failure = `${key}: ${errorOf(r)}`;
+		}
+		return failure;
+	};
 
 	const gh: Github = {
 		repo,
@@ -340,6 +461,81 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			const safe = headSha !== undefined && tip.stdout.trim() === headSha;
 			const deleted = exec(["git", "branch", safe ? "-D" : "-d", branch]);
 			return deleted.exitCode === 0 ? { ok: true } : { ok: false, error: errorOf(deleted) };
+		},
+		deleteLocalBranch({ branch, headSha }) {
+			const bad = badBranch(branch);
+			if (bad) return { ok: false, error: bad };
+			const ref = `refs/heads/${branch}`;
+			const found = readRef(ref);
+			if (found.error !== undefined) return { ok: false, error: found.error };
+			if (found.sha === undefined) return { ok: true };
+			if (found.sha !== headSha) return { ok: true, kept: "tip differs from merged head" };
+			const listed = exec(["git", "worktree", "list", "--porcelain", "-z"]);
+			if (listed.exitCode !== 0) return { ok: false, error: errorOf(listed) };
+			const holders = worktreesOn(listed.stdout, ref);
+			// Another session's worktree is left alone: a checkout there could detach a branch that session is on, and
+			// the re-checks below could not put it back. Only this session's own worktree is detached.
+			if (holders.length > 1 || !holders.every(mine)) {
+				return { ok: true, kept: "shared worktree, left alone" };
+			}
+			// An operation in progress detaches HEAD and hides the branch from the scan, so it is checked per holder too.
+			const scanOp = operationIn(holders);
+			if (scanOp.error !== undefined) return { ok: false, error: scanOp.error };
+			if (scanOp.busy) return { ok: true, kept: OPERATION_KEPT };
+			// Check every holder before detaching any, so a dirty one leaves all worktrees untouched.
+			for (const wt of holders) {
+				const status = exec(["git", "-C", wt, "status", "--porcelain"]);
+				if (status.exitCode !== 0) return { ok: false, error: errorOf(status) };
+				if (status.stdout.trim() !== "") return { ok: true, kept: "worktree dirty" };
+			}
+			for (const wt of holders) {
+				// Re-read HEAD right before the detach. Git has no lock between a read and a checkout, so these checks
+				// narrow the window for a branch switch but do not close it.
+				const state = headState(wt);
+				if (state.kind === "error") return { ok: false, error: state.error };
+				// Already detached: this worktree no longer holds the branch, so there is nothing to detach.
+				if (state.kind === "detached") continue;
+				if (state.ref !== ref) return { ok: true, kept: "worktree no longer on the branch" };
+				const detached = exec(["git", "-C", wt, "checkout", "--detach"]);
+				if (detached.exitCode !== 0) return { ok: false, error: errorOf(detached) };
+				const head = exec(["git", "-C", wt, "rev-parse", "--verify", "--quiet", "HEAD"]);
+				if (head.exitCode !== 0) return { ok: false, error: errorOf(head) };
+				// Not detached at the merged head: report it and delete nothing, rather than restoring a checkout.
+				const after = headState(wt);
+				if (after.kind === "error") return { ok: false, error: after.error };
+				if (after.kind !== "detached" || head.stdout.trim() !== headSha) {
+					return { ok: false, error: "worktree did not detach at the merged head" };
+				}
+			}
+			// Git cannot stop a checkout after this re-read: update-ref, unlike `branch -D`, does not refuse a branch
+			// another session has checked out, so the worktrees are re-read right before the delete.
+			const relisted = exec(["git", "worktree", "list", "--porcelain", "-z"]);
+			if (relisted.exitCode !== 0) return { ok: false, error: errorOf(relisted) };
+			if (worktreesOn(relisted.stdout, ref).length > 0) {
+				return { ok: true, kept: "checked out in a worktree" };
+			}
+			// Checked again right before the delete: an operation started after the scan also detaches its holder.
+			const lateOp = operationIn(holders);
+			if (lateOp.error !== undefined) return { ok: false, error: lateOp.error };
+			if (lateOp.busy) return { ok: true, kept: OPERATION_KEPT };
+			// Saved first so a refused delete can restore them, and removed before the delete so that a branch another
+			// session recreates after a successful delete keeps the settings it sets.
+			const settings = readSettings(branch);
+			if (settings.error !== undefined) return { ok: false, error: settings.error };
+			const removed = removeSettings(branch);
+			if (removed !== undefined) return { ok: false, error: removed };
+			// Deletes only while the ref still points at headSha; a commit that landed since the tip check keeps it.
+			const deleted = exec(["git", "update-ref", "-d", ref, headSha]);
+			if (deleted.exitCode === 0) return { ok: true };
+			const restoreError = restoreSettings(settings.entries);
+			if (restoreError !== undefined) {
+				return { ok: false, error: `could not restore branch settings: ${restoreError}` };
+			}
+			const moved = readRef(ref);
+			if (moved.error !== undefined) return { ok: false, error: moved.error };
+			if (moved.sha === undefined) return { ok: true };
+			if (moved.sha !== headSha) return { ok: true, kept: "tip differs from merged head" };
+			return { ok: false, error: errorOf(deleted) };
 		},
 		reviewThreads(prNumber, opts = {}) {
 			const now = opts.now ?? Date.now;

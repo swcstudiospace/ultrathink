@@ -10,7 +10,7 @@ import { DEFAULT_DECISIONS_CONFIG } from "../decisions/types.ts";
 import type { DecisionsConfig, DecisionsErrorKind } from "../decisions/types.ts";
 import { engineForSessionModel } from "../host/engine.ts";
 import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
-import type { Github, ReviewThreads, ReviewThreadsOptions } from "./github.ts";
+import type { Github, LocalBranchDelete, ReviewThreads, ReviewThreadsOptions } from "./github.ts";
 import { assessDone } from "./assess.ts";
 import { judgeSessionModel, runShip } from "./cli.ts";
 import type { ShipDeps } from "./cli.ts";
@@ -63,6 +63,7 @@ let comments: string[];
 let clock: number;
 let sleeps: number[];
 let reviewInputs: Parameters<ShipDeps["review"]>[0][];
+let localBranchCalls: { branch: string; headSha: string }[];
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "ship-cli-"));
@@ -72,6 +73,7 @@ beforeEach(() => {
 	clock = 1000;
 	sleeps = [];
 	reviewInputs = [];
+	localBranchCalls = [];
 	writeFileSync(
 		statePath,
 		JSON.stringify({
@@ -103,6 +105,8 @@ interface FakeOpts {
 	now?: number;
 	/** GitHub review threads; defaults to a failed lookup. */
 	threads?: ReviewThreads;
+	/** Local branch deletion after a merge that keeps the remote branch; defaults to deleted. */
+	localBranch?: LocalBranchDelete;
 }
 
 function deps(o: FakeOpts = {}): ShipDeps {
@@ -142,6 +146,7 @@ function deps(o: FakeOpts = {}): ShipDeps {
 		deleteRemoteBranch: (b) => (calls.push(`delete:${b}`), { ok: true }),
 		comment: (n, body) => (calls.push(`comment:${n}`), comments.push(body), { ok: true }),
 		syncBase: (i) => (calls.push(`sync:${i.base}`), { ok: true }),
+		deleteLocalBranch: (i) => (localBranchCalls.push(i), o.localBranch ?? { ok: true }),
 		reviewThreads: (_prNumber: number, opts?: ReviewThreadsOptions) =>
 			opts?.deadlineMs !== undefined && (opts.now ?? Date.now)() >= opts.deadlineMs
 				? { ok: false, error: "review threads scan exceeded its deadline" }
@@ -1150,6 +1155,56 @@ describe("runShip", () => {
 		const out = await ship("merge", deps({ methods: ["rebase"], config: { deleteBranch: false } }));
 		expect(out.output.method).toBe("rebase");
 		expect(calls).toEqual(["merge:rebase:abc"]);
+	});
+
+	describe("local branch when the remote branch is kept", () => {
+		beforeEach(() => {
+			writeShip(statePath, { pr: PR, phase: "pr-open", rounds: [PASSED] });
+		});
+
+		test("deleted: the merged head is passed and the remote branch is left alone", async () => {
+			const out = await ship("merge", deps({ config: { deleteBranch: false } }));
+			expect(out.output).toMatchObject({ merged: true, localBranch: "deleted" });
+			expect(localBranchCalls).toEqual([{ branch: "feat", headSha: "abc" }]);
+			expect(calls).toEqual(["merge:squash:abc"]);
+		});
+
+		test("kept: the reason is recorded and the merge still succeeds", async () => {
+			const out = await ship(
+				"merge",
+				deps({
+					config: { deleteBranch: false },
+					localBranch: { ok: true, kept: "worktree dirty" },
+				}),
+			);
+			expect(out.output).toMatchObject({
+				ok: true,
+				merged: true,
+				localBranch: "kept: worktree dirty",
+			});
+		});
+
+		test("an error is recorded without failing the merge", async () => {
+			const out = await ship(
+				"merge",
+				deps({
+					config: { deleteBranch: false },
+					localBranch: { ok: false, error: "permission denied" },
+				}),
+			);
+			expect(out.output).toMatchObject({
+				ok: true,
+				merged: true,
+				localBranch: "error: permission denied",
+			});
+		});
+
+		test("deleteBranch true keeps the existing path and never asks for a local delete", async () => {
+			const out = await ship("merge", deps());
+			expect(out.output).not.toHaveProperty("localBranch");
+			expect(localBranchCalls).toEqual([]);
+			expect(calls).toEqual(["merge:squash:abc", "delete:feat", "sync:master"]);
+		});
 	});
 
 	describe("merge retry loop", () => {
