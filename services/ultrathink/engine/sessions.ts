@@ -179,7 +179,6 @@ function readCapped(path: string): CappedRead | undefined {
 	return readCappedBytes(path, SUMMARY_READ_BYTES);
 }
 
-
 /** Every session id found in any of the three places, with the modification time of each file it was found in. */
 function scan(stateDir: string, logger: Logger): Sources[] {
 	const found = new Map<string, Sources>();

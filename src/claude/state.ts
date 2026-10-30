@@ -452,7 +452,6 @@ function saveSessionFile(
 	return undefined;
 }
 
-
 /**
  * Writes the session. Returns a warning when `last.json` could not be refreshed; the session file is still saved.
  * `lastLock` carries the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s).
