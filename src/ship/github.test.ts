@@ -833,8 +833,9 @@ describe("createGithub", () => {
 				["git", "-C", "/wt/feat", "checkout", "--detach"],
 				["git", "-C", "/wt/feat", "rev-parse", "--verify", "--quiet", "HEAD"],
 				["git", "worktree", "list", "--porcelain", "-z"],
-				["git", "update-ref", "-d", "refs/heads/feat", TIP],
+				["git", "config", "-z", "--get-regexp", "^branch\\."],
 				["git", "config", "--remove-section", "branch.feat"],
+				["git", "update-ref", "-d", "refs/heads/feat", TIP],
 			]);
 			expect(calls.some((c) => c.argv.includes("push") || c.argv.includes("--delete"))).toBe(false);
 		});
@@ -859,8 +860,8 @@ describe("createGithub", () => {
 			expect(
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
-			expect(calls.at(-2)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
-			expect(calls.at(-1)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);
+			expect(calls.at(-2)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);
+			expect(calls.at(-1)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
 		});
 
 		test("a failed update-ref with the tip still at the merged head is an error", () => {
@@ -969,8 +970,8 @@ describe("createGithub", () => {
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
 			expect(calls.map((c) => c.argv)).toContainEqual(["git", "-C", path, "checkout", "--detach"]);
-			expect(calls.at(-2)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
-			expect(calls.at(-1)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);
+			expect(calls.at(-2)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);
+			expect(calls.at(-1)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
 		});
 
 		test("a branch another session checks out after the scan is kept, with no delete", () => {
@@ -993,20 +994,31 @@ describe("createGithub", () => {
 			expect(calls.some((c) => c.argv.includes("-D"))).toBe(false);
 		});
 
-		test("a deleted branch loses its branch.<name> settings", () => {
-			const { run, calls } = fakeRun((argv) =>
-				argv[2] === "--verify" ? { stdout: `${TIP}\n` } : {},
-			);
+		test("a successful delete removes the settings before the ref delete", () => {
+			const { run, calls } = fakeRun((argv) => {
+				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
+				if (argv[2] === "-z") {
+					return { stdout: "branch.feat.remote\norigin\0branch.feat.merge\nrefs/heads/feat\0" };
+				}
+				return {};
+			});
 			expect(
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
-			expect(calls.at(-1)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);
+			const order = calls.map((c) => c.argv.join(" "));
+			const read = order.indexOf("git config -z --get-regexp ^branch\\.");
+			const remove = order.indexOf("git config --remove-section branch.feat");
+			const drop = order.indexOf(`git update-ref -d refs/heads/feat ${TIP}`);
+			expect(read).toBeGreaterThanOrEqual(0);
+			expect(remove).toBeGreaterThan(read);
+			expect(drop).toBeGreaterThan(remove);
+			expect(order.some((c) => c.startsWith("git config --add"))).toBe(false);
 		});
 
 		test("a branch with no settings section is still deleted", () => {
 			const { run } = fakeRun((argv) => {
 				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
-				if (argv[1] === "config") {
+				if (argv[2] === "--remove-section") {
 					return { exitCode: 128, stderr: "fatal: no such section: branch.feat" };
 				}
 				return {};
@@ -1019,7 +1031,7 @@ describe("createGithub", () => {
 		test("a failed settings removal is reported, not swallowed", () => {
 			const { run } = fakeRun((argv) => {
 				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
-				if (argv[1] === "config") {
+				if (argv[2] === "--remove-section") {
 					return { exitCode: 255, stderr: "error: could not lock config file .git/config" };
 				}
 				return {};
@@ -1027,6 +1039,59 @@ describe("createGithub", () => {
 			expect(
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: false, error: "error: could not lock config file .git/config" });
+		});
+
+		test("a refused delete restores every saved setting with its value", () => {
+			const { run, calls } = fakeRun((argv) => {
+				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
+				if (argv[2] === "-z") {
+					return {
+						stdout:
+							"branch.feat.remote\norigin\0branch.feat.merge\nrefs/heads/feat\0branch.other.remote\nupstream\0",
+					};
+				}
+				if (argv[1] === "update-ref") {
+					return { exitCode: 1, stderr: "error: cannot lock ref 'refs/heads/feat'" };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: false, error: "error: cannot lock ref 'refs/heads/feat'" });
+			expect(calls.map((c) => c.argv)).toContainEqual([
+				"git",
+				"config",
+				"--add",
+				"branch.feat.remote",
+				"origin",
+			]);
+			expect(calls.map((c) => c.argv)).toContainEqual([
+				"git",
+				"config",
+				"--add",
+				"branch.feat.merge",
+				"refs/heads/feat",
+			]);
+			expect(calls.some((c) => c.argv.includes("branch.other.remote"))).toBe(false);
+		});
+
+		test("a failed restore of a saved setting is reported", () => {
+			const { run } = fakeRun((argv) => {
+				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
+				if (argv[2] === "-z") return { stdout: "branch.feat.remote\norigin\0" };
+				if (argv[1] === "update-ref") return { exitCode: 1, stderr: "error: cannot lock ref" };
+				if (argv[2] === "--add") {
+					return { exitCode: 255, stderr: "error: could not lock config file" };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({
+				ok: false,
+				error:
+					"could not restore branch settings: branch.feat.remote: error: could not lock config file",
+			});
 		});
 	});
 });

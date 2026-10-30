@@ -238,6 +238,38 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 		return { error: errorOf(r) };
 	};
 
+	// `git config -z --get-regexp` prints `key\nvalue\0` per setting (a bare boolean has no newline) and exits 1 with no
+	// output when nothing matches. Only this branch's keys are kept.
+	const readSettings = (branch: string): { entries: [string, string][]; error?: string } => {
+		const r = exec(["git", "config", "-z", "--get-regexp", "^branch\\."]);
+		if (r.exitCode === 1 && r.stderr.trim() === "") return { entries: [] };
+		if (r.exitCode !== 0) return { entries: [], error: errorOf(r) };
+		const prefix = `branch.${branch}.`;
+		const entries: [string, string][] = [];
+		for (const record of r.stdout.split("\0")) {
+			const newline = record.indexOf("\n");
+			const key = newline < 0 ? record : record.slice(0, newline);
+			const value = newline < 0 ? "true" : record.slice(newline + 1);
+			if (key.startsWith(prefix)) entries.push([key, value]);
+		}
+		return { entries };
+	};
+	// Removes the whole `branch.<name>` section; a missing section is fine. Returns the failure, if any.
+	const removeSettings = (branch: string): string | undefined => {
+		const r = exec(["git", "config", "--remove-section", `branch.${branch}`]);
+		if (r.exitCode === 0 || /no such section/i.test(r.stderr)) return undefined;
+		return errorOf(r);
+	};
+	// Writes saved settings back after a refused delete; attempts every key and returns the first failure.
+	const restoreSettings = (entries: [string, string][]): string | undefined => {
+		let failure: string | undefined;
+		for (const [key, value] of entries) {
+			const r = exec(["git", "config", "--add", key, value]);
+			if (r.exitCode !== 0 && failure === undefined) failure = `${key}: ${errorOf(r)}`;
+		}
+		return failure;
+	};
+
 	const gh: Github = {
 		repo,
 		push(branch) {
@@ -401,20 +433,25 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 					return { ok: true, kept: "tip differs from merged head" };
 				}
 			}
-			// update-ref, unlike `branch -D`, does not refuse a branch another session has checked out, so re-read the
-			// worktrees right before the delete. Git cannot stop a checkout after this read; that residual race remains.
+			// Git cannot stop a checkout after this re-read: update-ref, unlike `branch -D`, does not refuse a branch
+			// another session has checked out, so the worktrees are re-read right before the delete.
 			const relisted = exec(["git", "worktree", "list", "--porcelain", "-z"]);
 			if (relisted.exitCode !== 0) return { ok: false, error: errorOf(relisted) };
 			if (worktreesOn(relisted.stdout, ref).length > 0) {
 				return { ok: true, kept: "checked out in a worktree" };
 			}
+			// Saved first so a refused delete can restore them, and removed before the delete so that a branch another
+			// session recreates after a successful delete keeps the settings it sets.
+			const settings = readSettings(branch);
+			if (settings.error !== undefined) return { ok: false, error: settings.error };
+			const removed = removeSettings(branch);
+			if (removed !== undefined) return { ok: false, error: removed };
 			// Deletes only while the ref still points at headSha; a commit that landed since the tip check keeps it.
 			const deleted = exec(["git", "update-ref", "-d", ref, headSha]);
-			if (deleted.exitCode === 0) {
-				// Drops the settings `push -u` wrote, so a recreated branch of this name does not inherit an old upstream.
-				const config = exec(["git", "config", "--remove-section", `branch.${branch}`]);
-				if (config.exitCode === 0 || /no such section/i.test(config.stderr)) return { ok: true };
-				return { ok: false, error: errorOf(config) };
+			if (deleted.exitCode === 0) return { ok: true };
+			const restoreError = restoreSettings(settings.entries);
+			if (restoreError !== undefined) {
+				return { ok: false, error: `could not restore branch settings: ${restoreError}` };
 			}
 			const moved = readRef(ref);
 			if (moved.error !== undefined) return { ok: false, error: moved.error };
