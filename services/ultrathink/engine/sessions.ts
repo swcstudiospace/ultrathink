@@ -59,8 +59,9 @@ const MAX_DIR_ENTRIES = 5000;
 const MAX_CANDIDATES = 200;
 /** Sessions read per listing, whoever they belong to: the bound on a scan that skips other principals' sessions. */
 const MAX_EXAMINED = 1000;
-/** Session JSON is parsed up to this size. A larger regular file keeps its mtime but is not read. */
-const SUMMARY_READ_BYTES = 32 * 1024 * 1024;
+/** Session JSON is parsed only up to 1 MiB. A larger plan is listed from its `.summary.json`, never by parsing the record on the request path. */
+const SUMMARY_READ_BYTES = 1024 * 1024;
+const SIDECAR_READ_BYTES = 64 * 1024;
 /** Text is cut to this many characters before it is normalised, so a megabyte goal costs nothing. */
 const GOAL_SCAN_CHARS = 2048;
 const JOB_STATUSES: Record<string, true> = {
@@ -162,19 +163,20 @@ function isRealDirectory(path: string): boolean {
 
 type CappedRead = { readonly kind: "text"; readonly text: string } | { readonly kind: "unread" };
 
-/**
- * UTF-8 of a regular file at most SUMMARY_READ_BYTES long. `unread` when that file is larger, so a caller can avoid
- * treating "not parsed" as "no graph". Symlinks and non-files are undefined.
- */
-function readCapped(path: string): CappedRead | undefined {
+/** UTF-8 of a regular file at most `maxBytes` long. `unread` when larger. Symlinks and non-files are undefined. */
+function readCappedBytes(path: string, maxBytes: number): CappedRead | undefined {
 	try {
 		const stat = lstatSync(path);
 		if (!stat.isFile()) return undefined;
-		if (stat.size > SUMMARY_READ_BYTES) return { kind: "unread" };
+		if (stat.size > maxBytes) return { kind: "unread" };
 		return { kind: "text", text: readFileSync(path, "utf8") };
 	} catch {
 		return undefined;
 	}
+}
+
+function readCapped(path: string): CappedRead | undefined {
+	return readCappedBytes(path, SUMMARY_READ_BYTES);
 }
 
 function parseObject(text: string): Record<string, unknown> | undefined {
@@ -233,11 +235,23 @@ function byRecency(a: { id: string; time: number }, b: { id: string; time: numbe
 	return b.time - a.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
+function readSidecar(recordPath: string): RecordView | undefined {
+	const read = readCappedBytes(recordPath.replace(/\.json$/, ".summary.json"), SIDECAR_READ_BYTES);
+	if (read?.kind !== "text") return undefined;
+	const raw = parseObject(read.text);
+	if (!raw || typeof raw.hasGraph !== "boolean" || typeof raw.nodeCount !== "number") return undefined;
+	return {
+		graphGoal: typeof raw.goal === "string" ? raw.goal : "",
+		original: "",
+		nodeCount: raw.nodeCount,
+		hasGraph: raw.hasGraph,
+	};
+}
+
 function readRecord(path: string): RecordView | "unread" | undefined {
 	const read = readCapped(path);
 	if (read === undefined) return undefined;
-	// An oversized file was not parsed. Callers must not turn that into nodeCount 0 / hasGraph false.
-	if (read.kind === "unread") return "unread";
+	if (read.kind === "unread") return readSidecar(path) ?? "unread";
 	let raw: unknown;
 	try {
 		raw = JSON.parse(read.text) as unknown;

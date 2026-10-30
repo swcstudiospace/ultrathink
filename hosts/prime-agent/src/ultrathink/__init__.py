@@ -302,7 +302,7 @@ async def run(
 	try:
 		result = await asyncio.to_thread(plan, text, cwd=cwd, session=session, force=force, raw=raw, on_process=handle)
 	except asyncio.CancelledError:
-		handle.stop()
+		await asyncio.to_thread(handle.stop)
 		raise
 	if handle.cancelled or result.get("skipped") == "cancelled":
 		raise asyncio.CancelledError
