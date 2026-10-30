@@ -4,7 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JEV, recordingFetch, VEV } from "../test.helpers.ts";
+import { JEV, recordingFetch } from "../test.helpers.ts";
 import { type DecisionsCommandDeps, runDecisionsCommand } from "./cli.ts";
 import { openJevHealth } from "./health.ts";
 import { QUESTIONS } from "./questions.ts";
@@ -28,7 +28,7 @@ const ERR = (s: number, headers?: Record<string, string>) => () =>
 const USAGE =
 	"Usage: ultrathink decisions check | ultrathink decisions probe <plan|ship|knowledge|blocking|teachable|skillworthy> <cases.json> | ultrathink decisions usage [--days N] [--json]";
 const NO_KEY =
-	"no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
+	"no Jev key (bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 
 /** Temp project, config layers and credential store; the env holds K unless overridden. */
 function setup(
@@ -204,66 +204,44 @@ describe("decisions check", () => {
 		expect(r.calls).toHaveLength(0);
 	});
 
-	test("auto with a Vercel key checks the vercel rail and shows provider vercel (JEV-02)", async () => {
+	test("a stored Vercel credential and AI_GATEWAY_API_KEY are never read: without an OpenRouter key the check sends nothing", async () => {
 		const V = "vck_test_key_do_not_use";
-		const r = recordingFetch([
-			() =>
-				Response.json({
-					answers: { plan_worthy: { type: "boolean", probability: 0.9 } },
-					usage: { inputTokens: 100, outputTokens: 5 },
-				}),
-		]);
-		const out = await runDecisionsCommand(
-			["check"],
-			setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V } }),
-		);
-		expect(out).toEqual({
-			code: 0,
-			text: "Decisions check: ok · typesafe-ai/jev (requested ~typesafe/jev-latest) · 0 ms · attempts 1 · cost n/a · provider vercel · zdr n/a (vercel) · key from AI_GATEWAY_API_KEY",
+		const r = recordingFetch([JEV(0.9)]);
+		const deps = setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V } });
+		const providers = { vercel: { kind: "api_key", apiKey: V, updatedAt: 1 } };
+		const storePath = deps.storePath as string;
+		writeFileSync(storePath, JSON.stringify({ version: 1, providers }), { mode: 0o600 });
+		expect(await runDecisionsCommand(["check"], deps)).toEqual({
+			code: 1,
+			text: `Decisions check: ${NO_KEY}`,
 		});
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("with an OpenRouter key, a stored Vercel credential and AI_GATEWAY_API_KEY never reach the request", async () => {
+		const V = "vck_test_key_do_not_use";
+		const r = recordingFetch([JEV(0.9)]);
+		const deps = setup(r, { env: { AI_GATEWAY_API_KEY: V } });
+		const providers = { vercel: { kind: "api_key", apiKey: V, updatedAt: 1 } };
+		const storePath = deps.storePath as string;
+		writeFileSync(storePath, JSON.stringify({ version: 1, providers }), { mode: 0o600 });
+		const out = await runDecisionsCommand(["check"], deps);
+		expect(out.code).toBe(0);
 		expect(r.calls).toHaveLength(1);
-		expect(r.calls[0]?.url).toBe("https://ai-gateway.vercel.sh/v4/ai/evaluation-model");
+		expect(r.calls[0]?.url).toBe(ENDPOINT);
+		expect(r.calls[0]?.headers.authorization).toBe(`Bearer ${K}`);
+		expect(r.calls[0]?.body).toMatchObject({ model: "~typesafe/jev-latest" });
 		expect(out.text).not.toContain(V);
 	});
 
-	test("the Vercel rail prints zdr n/a (vercel) whatever decisions.zdr says; OpenRouter keeps zdr on|off", async () => {
-		const V = "vck_test_key_do_not_use";
-		const answer = () =>
-			Response.json({
-				answers: { plan_worthy: { type: "boolean", probability: 0.9 } },
-				usage: { inputTokens: 100, outputTokens: 5 },
-			});
+	test("the footer names the OpenRouter rail and its zdr setting", async () => {
 		for (const zdr of [true, false]) {
-			const vercel = await runDecisionsCommand(
-				["check"],
-				setup(recordingFetch([answer]), {
-					config: { decisions: { zdr } },
-					env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V },
-				}),
-			);
-			expect(vercel.text).toContain(" · provider vercel · zdr n/a (vercel) · key from ");
-			expect(vercel.text).not.toContain("zdr on");
-			expect(vercel.text).not.toContain("zdr off");
-			const openrouter = await runDecisionsCommand(
+			const out = await runDecisionsCommand(
 				["check"],
 				setup(recordingFetch([JEV(0.9)]), { config: { decisions: { zdr } } }),
 			);
-			expect(openrouter.text).toContain(` · provider openrouter · zdr ${zdr ? "on" : "off"} · `);
-			expect(openrouter.text).not.toContain("n/a (vercel)");
+			expect(out.text).toContain(` · provider openrouter · zdr ${zdr ? "on" : "off"} · `);
 		}
-	});
-
-	test("explicit provider pins the rail even when both keys exist (JEV-02)", async () => {
-		const V = "vck_test_key_do_not_use";
-		const both = { ULTRATHINK_OPENROUTER_KEY: K, AI_GATEWAY_API_KEY: V };
-		const r = recordingFetch([JEV(0.9)]);
-		const pinned = await runDecisionsCommand(
-			["check"],
-			setup(r, { config: { decisions: { provider: "openrouter" } }, env: both }),
-		);
-		expect(pinned.code).toBe(0);
-		expect(pinned.text).toContain("· provider openrouter ·");
-		expect(r.calls[0]?.url).toBe(ENDPOINT);
 	});
 });
 
@@ -428,24 +406,6 @@ describe("decisions probe (A11, §5.7)", () => {
 			message: "thanks, that works now",
 			recent_conversation: "Assistant: done",
 		});
-	});
-
-	test("probe dispatches to the vercel rail when auto picks it (JEV-02)", async () => {
-		const V = "vck_test_key_do_not_use";
-		const r = recordingFetch([
-			() => Response.json({ answers: { plan_worthy: { type: "boolean", probability: 0.97 } } }),
-		]);
-		const deps = setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V } });
-		const file = writeCases(deps, [{ message: "build a widget", label: true }]);
-		const out = await runDecisionsCommand(["probe", "plan", file], deps);
-		expect(out.code).toBe(0);
-		expect(out.text.split("\n")).toEqual([
-			"#1 P 0.97 · plan · label true · agree",
-			"Decisions probe: plan · typesafe-ai/jev · cases 1 · labelled 1 · agree 1/1 · errors 0",
-		]);
-		expect(r.calls).toHaveLength(1);
-		expect(r.calls[0]?.url).toBe("https://ai-gateway.vercel.sh/v4/ai/evaluation-model");
-		expect(out.text).not.toContain(V);
 	});
 
 	test("ship: veto, pass and approve under the thresholds; agreement follows the ship rule", async () => {
@@ -749,7 +709,7 @@ describe("decisions check and probe go through the health breaker and the ledger
 		const r = recordingFetch([JEV(0.9)]);
 		const deps = setup(r);
 		const stateDir = deps.stateDir as string;
-		const health = openJevHealth(stateDir, "openrouter");
+		const health = openJevHealth(stateDir);
 		health.recordFailure("credits", 4000);
 		expect(health.shouldCall(5000)).toMatchObject({ call: false });
 		const out = await runDecisionsCommand(["check"], deps);
@@ -764,7 +724,7 @@ describe("decisions check and probe go through the health breaker and the ledger
 		const r = recordingFetch([ERR(402)]);
 		const deps = setup(r);
 		const stateDir = deps.stateDir as string;
-		const health = openJevHealth(stateDir, "openrouter");
+		const health = openJevHealth(stateDir);
 		health.recordFailure("credits", 4000);
 		const out = await runDecisionsCommand(["check"], deps);
 		expect(out.code).toBe(1);
@@ -772,19 +732,6 @@ describe("decisions check and probe go through the health breaker and the ledger
 			" · attempts 1 · breaker still open: credits · provider openrouter ·",
 		);
 		expect(health.read().coolDownMs).toBe(600_000);
-	});
-
-	test("a check on the Vercel rail closes only the Vercel breaker", async () => {
-		const V = "vck_test_key_do_not_use";
-		const r = recordingFetch([VEV(0.9)]);
-		const deps = setup(r, { env: { ULTRATHINK_OPENROUTER_KEY: undefined, AI_GATEWAY_API_KEY: V } });
-		const stateDir = deps.stateDir as string;
-		openJevHealth(stateDir, "vercel").recordFailure("auth", 4000);
-		openJevHealth(stateDir, "openrouter").recordFailure("credits", 4000);
-		const out = await runDecisionsCommand(["check"], deps);
-		expect(out.text).toContain(" · breaker closed · provider vercel ·");
-		expect(openJevHealth(stateDir, "vercel").read().state).toBe("closed");
-		expect(openJevHealth(stateDir, "openrouter").read().state).toBe("open");
 	});
 
 	test("every real POST of a check is ledgered, a retried 503 included", async () => {
@@ -823,7 +770,7 @@ describe("decisions check and probe go through the health breaker and the ledger
 		const r = recordingFetch([JEV(0.9)]);
 		const deps = setup(r);
 		const stateDir = deps.stateDir as string;
-		const health = openJevHealth(stateDir, "openrouter");
+		const health = openJevHealth(stateDir);
 		health.recordFailure("auth", 4000);
 		const out = await runDecisionsCommand(
 			["probe", "plan", writeCases(deps, [{ message: "a" }, { message: "b" }])],

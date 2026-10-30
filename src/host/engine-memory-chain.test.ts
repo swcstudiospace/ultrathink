@@ -82,7 +82,7 @@ function gateway(answer: (model: string) => Response): {
 
 /**
  * Every setting that could steer the chain elsewhere: Sonnet pinned for Claude and for the host, a Grok model and
- * fallback list that name grok-4.7 and grok-4.6, a Grok engine request and a shunt alias under the http transport.
+ * fallback list that name grok-4.7 and grok-4.6, and a Grok engine request under the http transport.
  */
 function adversarial(
 	bin: string,
@@ -96,7 +96,6 @@ function adversarial(
 			...base.grok,
 			model: "grok-4.7",
 			fallbackModels: ["grok-4.7", "grok-4.6"],
-			shuntModel: "gateway-alias",
 			...grok,
 		},
 		think: { ...base.think, engine: "grok" },
@@ -174,26 +173,6 @@ describe("selectEngine purpose memory", () => {
 			}),
 		);
 		expect(planning.label).toBe(`claude:${SONNET}`);
-	});
-
-	test("a shunt transport has no Grok candidate: a Claude failure is the only outcome", async () => {
-		const claude = claudeStub(PLAN_LIMIT, 1);
-		const gw = gateway(() => Response.json({ content: [{ type: "text", text: "GATEWAY_REPLY" }] }));
-		try {
-			const config = adversarial(claude.bin, { transport: "shunt", shuntBaseUrl: gw.origin });
-			const selected = engineOf(
-				await selectEngine(config, {}, tempDir("ultrathink-memory-cwd-"), {
-					host: "claude-code",
-					purpose: "memory",
-				}),
-			);
-			expect(selected.label).toBe(HAIKU_LABEL);
-			expect(selected.failover).toBeUndefined();
-			await expect(selected.complete("system", "user")).rejects.toThrow(/session limit/);
-			expect(gw.models).toEqual([]);
-		} finally {
-			gw.stop();
-		}
 	});
 
 	test("without fallbackToGrok the chain is Haiku alone", async () => {

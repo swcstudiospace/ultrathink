@@ -93,14 +93,12 @@ export function assertMemoryChain(entries: readonly { vendor: string; model: str
 
 /**
  * The chain a memory-bank call is configured to try: the primary, plus the fallback iff the user opted into the
- * cross-vendor fallback, Grok is enabled, and the transport is not a shunt gateway (an alias cannot be proven to be
- * Grok Build). Pure; `claude.model`, `grok.model`, `grok.fallbackModels`, `models.hosts` and `think.engine` are ignored
- * on purpose.
+ * cross-vendor fallback and Grok is enabled. Pure; `claude.model`, `grok.model`, `grok.fallbackModels`, `models.hosts` and
+ * `think.engine` are ignored on purpose.
  */
 export function memoryChainFor(
 	config: Pick<UltrathinkConfig, "claude" | "grok">,
 ): readonly MemoryChainEntry[] {
-	const fallback =
-		config.claude.fallbackToGrok && config.grok.enabled && config.grok.transport !== "shunt";
+	const fallback = config.claude.fallbackToGrok && config.grok.enabled;
 	return fallback ? [MEMORY_CHAIN.primary, MEMORY_CHAIN.fallback] : [MEMORY_CHAIN.primary];
 }

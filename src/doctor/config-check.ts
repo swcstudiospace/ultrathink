@@ -28,6 +28,12 @@ const MODELS_KEYS = ["hosts", "providerDefaults"] as const;
 const HOST_OVERRIDE_KEYS = ["provider", "model"] as const;
 const BACKEND_SECTIONS = ["hindsight", "ragflow", "substrate"] as const;
 
+/** Keys a removed feature left behind. The merge ignores them, so they are reported once per layer, not as unknown keys. */
+const OBSOLETE_KEYS: Readonly<Record<string, readonly string[]>> = {
+	grok: ["shuntBaseUrl", "shuntModel", "shuntMaxTokens"],
+	decisions: ["provider"],
+};
+
 function kindOf(value: unknown): string {
 	if (Array.isArray(value)) return "array";
 	if (value === null) return "null";
@@ -348,6 +354,22 @@ function checkLeaf(
 	);
 }
 
+/** One warning per layer for the obsolete keys it still carries; the merge ignores them. */
+function checkObsolete(out: Collector, section: string, value: Json): void {
+	const found = (OBSOLETE_KEYS[section] ?? [])
+		.filter((key) => Object.hasOwn(value, key))
+		.map((key) => `${section}.${key}`);
+	if (found.length === 0) return;
+	const plural = found.length > 1;
+	out.add(
+		"warn",
+		"obsolete-key",
+		section,
+		`${found.join(", ")} ${plural ? "are" : "is"} removed and ignored`,
+		`Delete ${plural ? "them" : "it"} from this file. File: ${out.layer.path}`,
+	);
+}
+
 function checkLayer(
 	layer: Layer,
 	data: Json,
@@ -378,7 +400,9 @@ function checkLayer(
 			);
 			continue;
 		}
+		checkObsolete(out, section, value);
 		for (const [key, written] of Object.entries(value)) {
+			if (OBSOLETE_KEYS[section]?.includes(key)) continue;
 			if (!Object.hasOwn(defaults, key)) {
 				unknownName(out, "key", `${section}.${key}`, Object.keys(defaults), section);
 				continue;

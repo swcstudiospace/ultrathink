@@ -22,12 +22,10 @@ import {
 } from "./auth.ts";
 import {
 	buildResponsesBody,
-	buildShuntBody,
 	createGrokCompleter,
 	grokComplete,
 	isGrokAuthError,
 	parseResponsesText,
-	parseShuntText,
 } from "./complete.ts";
 import { classifyFailure } from "../failover/classify.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
@@ -463,234 +461,6 @@ describe("grokComplete (http)", () => {
 	});
 });
 
-/** Anthropic Messages reply the shunt gateway returns for `grok-shunt-route` (thinking block first). */
-function shuntReply(text: string, extra: Record<string, unknown>[] = []): Response {
-	return Response.json({
-		id: "msg_1",
-		type: "message",
-		role: "assistant",
-		model: "grok-shunt-route",
-		content: [
-			{ type: "thinking", thinking: "hidden reasoning", signature: "sig" },
-			...extra,
-			{ type: "text", text },
-		],
-		stop_reason: "end_turn",
-		usage: { input_tokens: 1, output_tokens: 1 },
-	});
-}
-
-describe("buildShuntBody", () => {
-	test("produces an Anthropic Messages payload without a thinking param", () => {
-		const body = buildShuntBody("SYS", "USER", "grok-shunt-route", 4096);
-		expect(body).toEqual({
-			model: "grok-shunt-route",
-			max_tokens: 4096,
-			system: "SYS",
-			messages: [{ role: "user", content: "USER" }],
-		});
-		expect("thinking" in body).toBe(false);
-	});
-});
-
-describe("parseShuntText", () => {
-	test("joins text blocks and ignores thinking / redacted_thinking blocks", () => {
-		const text = parseShuntText({
-			type: "message",
-			content: [
-				{ type: "thinking", thinking: "secret plan" },
-				{ type: "redacted_thinking", data: "opaque" },
-				{ type: "text", text: "a" },
-				{ type: "tool_use", id: "t", name: "x", input: {} },
-				{ type: "text", text: "b" },
-			],
-		});
-		expect(text).toBe("a\nb");
-		expect(text).not.toContain("secret plan");
-	});
-
-	test("surfaces an Anthropic error body as a redacted GrokHttpError", () => {
-		let error: unknown;
-		try {
-			parseShuntText({
-				type: "error",
-				error: { type: "overloaded_error", message: `busy Bearer ${TOKEN}` },
-			});
-		} catch (caught) {
-			// reason: the error is captured and asserted by the caller
-			error = caught;
-		}
-		expect(error).toBeInstanceOf(GrokHttpError);
-		if (!(error instanceof GrokHttpError)) return;
-		expect(error.message).toBe("shunt overloaded_error: busy [redacted]");
-		expect(error.body).toBe("busy [redacted]");
-		expect(error.message).not.toContain(TOKEN);
-	});
-
-	test("throws when there is no text", () => {
-		expect(() =>
-			parseShuntText({ type: "message", content: [{ type: "thinking", thinking: "only" }] }),
-		).toThrow("grok returned no text");
-		expect(() => parseShuntText(null)).toThrow("grok returned no text");
-	});
-});
-
-describe("grokComplete (shunt)", () => {
-	const shuntBaseUrl = "http://gateway.test:8080";
-
-	test("posts Anthropic Messages to {shuntBaseUrl}/v1/messages with no auth and returns the text", async () => {
-		const { fetch, calls } = fakeFetch(() => shuntReply("<UPLIFT/>"));
-		const text = await grokComplete("SYS", "USER", {
-			transport: "shunt",
-			shuntBaseUrl: "http://gateway.test:8080/",
-			shuntModel: "grok-shunt-route",
-			shuntMaxTokens: 2048,
-			model: "grok-4.7",
-			reasoningEffort: "xhigh",
-			fetch,
-		});
-		expect(text).toBe("<UPLIFT/>");
-		expect(calls).toHaveLength(1);
-		const call = calls[0]!;
-		expect(call.url).toBe("http://gateway.test:8080/v1/messages");
-		expect(call.init.method).toBe("POST");
-		const headers = new Headers(call.init.headers);
-		expect(headers.get("content-type")).toBe("application/json");
-		expect(headers.get("anthropic-version")).toBe("2023-06-01");
-		expect(headers.get("authorization")).toBeNull();
-		expect(headers.get("x-api-key")).toBeNull();
-		expect(headers.get("x-xai-token-auth")).toBeNull();
-		expect(JSON.parse(String(call.init.body))).toEqual({
-			model: "grok-shunt-route",
-			max_tokens: 2048,
-			system: "SYS",
-			messages: [{ role: "user", content: "USER" }],
-		});
-	});
-
-	test("an unset shuntBaseUrl throws naming the setting, without fetching or touching grok login", async () => {
-		const { fetch, calls } = fakeFetch(() => shuntReply("never"));
-		const home = mkdtempSync(join(tmpdir(), "ultrathink-grok-empty-"));
-		dirs.push(home);
-		for (const url of [undefined, "", "  "]) {
-			const error = await rejection(
-				grokComplete("S", "U", {
-					transport: "shunt",
-					shuntBaseUrl: url,
-					shuntModel: "m",
-					home,
-					fetch,
-				}),
-			);
-			expect(error.message).toContain("grok.shuntBaseUrl");
-			expect(error.message).toContain("~/.config/ultrathink/config.json");
-			expect(isGrokAuthError(error)).toBe(false);
-		}
-		expect(calls).toHaveLength(0);
-	});
-
-	test("an unset shuntModel sends model, and max_tokens defaults to 8192, without touching grok login", async () => {
-		const { fetch, calls } = fakeFetch(() => shuntReply("ok"));
-		const home = mkdtempSync(join(tmpdir(), "ultrathink-grok-empty-"));
-		dirs.push(home);
-		const complete = createGrokCompleter({
-			transport: "shunt",
-			shuntBaseUrl,
-			shuntModel: "",
-			model: "grok-4.6",
-			home,
-			fetch,
-		});
-		expect(await complete("S", "U")).toBe("ok");
-		expect(calls[0]!.url).toBe("http://gateway.test:8080/v1/messages");
-		const body = JSON.parse(String(calls[0]!.init.body));
-		expect(body.model).toBe("grok-4.6");
-		expect(body.max_tokens).toBe(8192);
-		expect(body.thinking).toBeUndefined();
-	});
-
-	test("non-2xx becomes a GrokHttpError with a redacted body", async () => {
-		const { fetch } = fakeFetch(
-			() => new Response(`route missing for Bearer ${TOKEN}`, { status: 502 }),
-		);
-		const error = await rejection(
-			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch, ...retrySeams().seams }),
-		);
-		expect(error).toBeInstanceOf(GrokHttpError);
-		if (!(error instanceof GrokHttpError)) return;
-		expect(error.status).toBe(502);
-		expect(error.body).toBe("route missing for [redacted]");
-		expect(error.message).toBe("shunt HTTP 502: route missing for [redacted]");
-		expect(isGrokAuthError(error)).toBe(false);
-	});
-
-	test("a 200 carrying an Anthropic error body is still an error", async () => {
-		const { fetch } = fakeFetch(() =>
-			Response.json({ type: "error", error: { type: "api_error", message: "upstream" } }),
-		);
-		const error = await rejection(
-			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch, ...retrySeams().seams }),
-		);
-		expect(error).toBeInstanceOf(GrokHttpError);
-		expect(error.message).toBe("shunt api_error: upstream");
-	});
-
-	test("already-aborted signal throws AbortError without fetching", async () => {
-		const { fetch, calls } = fakeFetch(() => shuntReply("never"));
-		const controller = new AbortController();
-		controller.abort();
-		const error = await rejection(
-			grokComplete("S", "U", {
-				transport: "shunt",
-				shuntBaseUrl,
-				fetch,
-				signal: controller.signal,
-			}),
-		);
-		expect(error.name).toBe("AbortError");
-		expect(calls).toHaveLength(0);
-	});
-
-	test("abort during the request surfaces as AbortError", async () => {
-		const controller = new AbortController();
-		const fetch = hangingFetch(() => controller.abort());
-		const error = await rejection(
-			grokComplete("S", "U", {
-				transport: "shunt",
-				shuntBaseUrl,
-				fetch,
-				signal: controller.signal,
-			}),
-		);
-		expect(error.name).toBe("AbortError");
-	});
-
-	test("timeout surfaces as a timed-out error", async () => {
-		const error = await rejection(
-			grokComplete("S", "U", {
-				transport: "shunt",
-				shuntBaseUrl,
-				fetch: hangingFetch(),
-				timeoutMs: 20,
-			}),
-		);
-		expect(error.message).toBe("grok timed out after 20ms");
-	});
-
-	test("a timeout while reading a non-OK body surfaces as the timeout", async () => {
-		const error = await rejection(
-			grokComplete("S", "U", {
-				transport: "shunt",
-				shuntBaseUrl,
-				fetch: stalledBodyFetch(502),
-				timeoutMs: 20,
-			}),
-		);
-		expect(error.message).toBe("grok timed out after 20ms");
-		expect(error).not.toBeInstanceOf(GrokHttpError);
-	});
-});
-
 describe("grokComplete (cli)", () => {
 	/** Writes a fake `grok` binary that records argv/env/cwd and prints `reply(prompt)` as its JSON output. */
 	function fakeGrok(replyJs: string): { bin: string; argsPath: string } {
@@ -956,35 +726,6 @@ describe("grokComplete retries (97-02)", () => {
 		expect(readReport(error)?.httpStatus).toBe(400);
 	});
 
-	test("shunt: 503 with Retry-After then 200 succeeds on attempt 2; a standing 429 carries the report", async () => {
-		const { delays, seams } = retrySeams();
-		const shuntBaseUrl = "https://shunt.example";
-		const flaky = sequenceFetch([
-			() => new Response("busy", { status: 503, headers: { "retry-after": "3" } }),
-			() => shuntReply("ok"),
-		]);
-		expect(
-			await grokComplete("S", "U", {
-				transport: "shunt",
-				shuntBaseUrl,
-				fetch: flaky.fetch,
-				...seams,
-			}),
-		).toBe("ok");
-		expect(flaky.calls).toHaveLength(2);
-		expect(delays).toEqual([3000]);
-		const standing = fakeFetch(tooMany);
-		const error = await rejection(
-			grokComplete("S", "U", { transport: "shunt", shuntBaseUrl, fetch: standing.fetch, ...seams }),
-		);
-		expect(error).toBeInstanceOf(GrokHttpError);
-		const report = readReport(error);
-		expect(report?.attempts).toBe(3);
-		expect(report?.httpStatus).toBe(429);
-		expect(report?.retryAfterMs).toBe(2000);
-		expectCleanCause(report?.cause);
-	});
-
 	test("a rejected fetch (fetch failed) is retried on the same model", async () => {
 		const { seams } = retrySeams();
 		let calls = 0;
@@ -1128,26 +869,6 @@ describe("grokComplete truncation (97-02)", () => {
 		expect(readReport(error)?.cause).toBe("truncated_reply");
 		expect(readReport(error)?.attempts).toBe(3);
 		expect(calls).toHaveLength(3);
-	});
-
-	test("shunt stop_reason max_tokens is a truncated_reply failure", async () => {
-		const { seams } = retrySeams();
-		const { fetch } = fakeFetch(() =>
-			Response.json({
-				type: "message",
-				content: [{ type: "text", text: "cut" }],
-				stop_reason: "max_tokens",
-			}),
-		);
-		const error = await rejection(
-			grokComplete("S", "U", {
-				transport: "shunt",
-				shuntBaseUrl: "https://shunt.example",
-				fetch,
-				...seams,
-			}),
-		);
-		expect(readReport(error)?.cause).toBe("truncated_reply");
 	});
 });
 

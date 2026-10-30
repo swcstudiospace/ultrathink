@@ -17,7 +17,7 @@ export const ROUTE_DEFAULT_MODELS: Readonly<Record<LegacyRoute, string>> = Objec
 	muse: "muse-spark-1.3-contributor",
 });
 
-/** Variables holding a Jev key (OpenRouter or Vercel AI Gateway); no child Ultrathink spawns may inherit them (SDKs auto-read the generic names). */
+/** Credential variables no child Ultrathink spawns may inherit. OPENROUTER_API_KEY and AI_GATEWAY_API_KEY are auto-read by SDKs and agents, so they are stripped whether or not Ultrathink reads them. */
 const JEV_KEY_ENV_NAMES: readonly string[] = Object.freeze([
 	"ULTRATHINK_OPENROUTER_KEY",
 	"OPENROUTER_API_KEY",

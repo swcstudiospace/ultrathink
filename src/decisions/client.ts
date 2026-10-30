@@ -3,8 +3,7 @@
 /**
  * Hand-written client for OpenRouter's Decisions API (D1, D6, D7): local request checks, one POST inside a total
  * time budget, at most one retry for transient failures, strict response parsing and redacted, classified errors.
- * Never rejects except with an AbortError when the caller aborts. `postDecision` is the shared POST core the Vercel
- * rail (`./vercel.ts`) reuses, so both rails share timeout/retry/redaction discipline structurally.
+ * Never rejects except with an AbortError when the caller aborts.
  */
 import { USER_AGENT } from "../mcp/providers.ts";
 import { redactSecrets } from "../redact.ts";
@@ -29,7 +28,7 @@ export interface DecideOptions {
 	apiKey: string;
 	/** Total budget for the decision, retries included (D6). */
 	timeoutMs: number;
-	/** Default per rail (OpenRouter default / Vercel endpoint). OpenRouter callers pass resolveDecisionsUrl(env).url. */
+	/** Default: DEFAULT_DECISIONS_URL. The OpenRouter callers pass resolveDecisionsUrl(env).url. */
 	url?: string;
 	/** Default: globalThis.fetch looked up at call time (tests may replace globalThis.fetch). */
 	fetch?: typeof fetch;
@@ -109,15 +108,15 @@ export function resolveDecisionsUrl(env: Env): DecisionsUrl {
 	return { url: DEFAULT_DECISIONS_URL, source: "default", ignored: true };
 }
 
-/** Shared with the Vercel rail: plain-object check for strict response parsing. */
+/** Plain-object check for strict response parsing. */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	const proto = Object.getPrototypeOf(value);
 	return proto === Object.prototype || proto === null;
 }
 
-/** Shared with the Vercel rail: a finite number in [0, 1]. */
-export function isUnit(value: unknown): value is number {
+/** A finite number in [0, 1]. */
+function isUnit(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
@@ -185,12 +184,12 @@ export function validateRequest(request: DecisionsRequest): DecisionsError | und
 	const violation = requestViolation(request);
 	if (violation)
 		return new DecisionsError("bad-request", redact(`decisions bad-request: ${violation}`));
-	// Shared by both rails and checked before any I/O: the Decisions key is Jev-only, so no other model id may leave.
+	// Checked before any I/O: the Decisions key is Jev-only, so no other model id may leave.
 	if (!isJevModelId(request.model)) {
 		return new DecisionsError(
 			"model",
 			redact(
-				`decisions model: refused ${redact(request.model).slice(0, 120)}; only Jev models travel on these rails`,
+				`decisions model: refused ${redact(request.model).slice(0, 120)}; only Jev models travel on this rail`,
 			),
 		);
 	}
@@ -211,7 +210,7 @@ function invalid(rule: string): DecisionsError {
 }
 
 /** `probabilities` keyed exactly by `keys`, every value in [0, 1]. */
-export function checkProbabilities(
+function checkProbabilities(
 	value: unknown,
 	keys: readonly string[],
 	at: string,
@@ -277,8 +276,8 @@ function checkAnswer(value: unknown, question: DecisionQuestion, at: string): De
 	};
 }
 
-/** Shared with the Vercel rail: a finite number >= 0. */
-export function isCount(value: unknown): value is number {
+/** A finite number >= 0. */
+function isCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
@@ -344,8 +343,8 @@ function statusKind(status: number): DecisionsErrorKind {
 
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([408, 429, 500, 502, 503, 524, 529]);
 
-/** Shared with the Vercel rail: the caller's abort reason, or an AbortError. */
-export function abortError(signal: AbortSignal): Error {
+/** The caller's abort reason, or an AbortError. */
+function abortError(signal: AbortSignal): Error {
 	const reason: unknown = signal.reason;
 	if ((reason instanceof Error || reason instanceof DOMException) && reason.name === "AbortError")
 		return reason;
@@ -406,7 +405,7 @@ type Attempt =
 	| { ok: true; response: DecisionsResponse }
 	| { ok: false; error: DecisionsError; transient: boolean; retryAfter?: string | null };
 
-export interface PostDecisionOptions {
+interface PostDecisionOptions {
 	apiKey: string;
 	/** Total budget for the decision, retries included (D6). */
 	timeoutMs: number;
@@ -426,10 +425,10 @@ export interface PostDecisionOptions {
 
 /**
  * One POST inside a total time budget, at most one retry for transient failures, strict `parse` of a 2xx JSON
- * body, redacted classified errors. Shared by the OpenRouter rail (`decide`) and the Vercel rail (`./vercel.ts`).
+ * body, redacted classified errors.
  * Never rejects except with an AbortError when opts.signal aborts.
  */
-export async function postDecision(
+async function postDecision(
 	url: string,
 	headers: Record<string, string>,
 	bodyText: string,
@@ -575,7 +574,7 @@ export async function postDecision(
 	return settle({ ok: false as const, error: second.error, attempts: 2 });
 }
 
-/** OpenRouter rail: local D7 checks, then the shared POST core. Never rejects except with an AbortError when opts.signal aborts. */
+/** Local D7 checks, then the POST core. Never rejects except with an AbortError when opts.signal aborts. */
 export async function decide(
 	request: DecisionsRequest,
 	opts: DecideOptions,

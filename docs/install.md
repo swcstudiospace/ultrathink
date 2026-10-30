@@ -66,7 +66,7 @@ ultrathink runs on Linux and macOS. On Windows, run it and your host inside WSL;
 
 3. **An engine login.** Planning runs its own model calls, apart from the host's work.
    - Claude (the default on Claude Code and Hermes): the `claude` CLI must be on `PATH` and logged in. The engine runs `claude -p` headless.
-   - Grok (the default on Grok Build): run `grok login`, unless you use the `shunt` transport. See [Engine selection](#engine-selection).
+   - Grok (the default on Grok Build): run `grok login`. See [Engine selection](#engine-selection).
    - Muse (the default on Muse Code): the `muse` CLI must be on `PATH` and logged in. The engine runs `muse exec` headless.
    - Omp: nothing extra. Under `auto`, Omp plans on the session's own model with Omp's own provider and login. See [Omp](#omp).
 
@@ -77,7 +77,7 @@ Optional:
 | `gh`, logged in | [Ship](ship.md) (opt-in): pushing, opening and merging the PR |
 | Greptile CLI (`greptile login`) | Ship's CLI review mode |
 | Notion, Linear, Greptile credentials | [Tracking](tracking.md) and ship, through the [shared MCP gateway](#shared-mcp-gateway) |
-| A Jev key: a Vercel AI Gateway API key (`bin/ultrathink-mcp auth set-key vercel --stdin`, or `AI_GATEWAY_API_KEY`) or an OpenRouter API key (`bin/ultrathink-mcp auth set-key openrouter --stdin`, or `ULTRATHINK_OPENROUTER_KEY`) | [Jev decisions](how-to/use-jev-decisions.md) (always on once a key exists): it is stored in the same credential store, but `vercel` and `openrouter` are not MCP servers and are never registered in a host. The OpenRouter key is for Jev only; the generic `OPENROUTER_API_KEY` is not read (and is scrubbed from model-CLI children), so remove that export if you have one |
+| A Jev key: an OpenRouter API key (`bin/ultrathink-mcp auth set-key openrouter --stdin`, or `ULTRATHINK_OPENROUTER_KEY`) | [Jev decisions](how-to/use-jev-decisions.md) (always on once a key exists): it is stored in the same credential store, but `openrouter` is not an MCP server and is never registered in a host. The OpenRouter key is for Jev only; the generic `OPENROUTER_API_KEY` is not read (and is scrubbed from model-CLI children), so remove that export if you have one |
 | A Hindsight API key (`bin/ultrathink-mcp auth set-key hindsight --stdin`, or `HINDSIGHT_API_KEY` / `HINDSIGHT_API_TOKEN`) | [Hindsight](how-to/connect-hindsight.md) (opt-in, `hindsight.enabled`). Not an MCP server. |
 | A RAGFlow API key (`bin/ultrathink-mcp auth set-key ragflow --stdin`, or `RAGFLOW_API_KEY`) | [RAGFlow](how-to/connect-ragflow.md) (opt-in, `ragflow.enabled`). Not an MCP server. |
 
@@ -456,7 +456,7 @@ To switch every host, set it in config, for example in `${XDG_CONFIG_HOME:-~/.co
 ```
 
 - **Claude** runs the `claude` CLI headless (`claude -p`) on your own Claude plan login (sign in with `claude`, then `/login`; on a machine without a browser run `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN`). With the default `claude.auth: "plan"`, `ANTHROPIC_API_KEY` is kept away from the child process, because Claude Code always prefers that key to your plan login in `-p` mode. The default model `claude-haiku-5-5` needs Claude Code 2.1.293 or newer. Its status label is `claude:<model>`, for example `claude:claude-haiku-5-5`. `bin/ultrathink doctor` checks the version and the login.
-- **Grok** has three transports. `http` (default) and `cli` use your `grok login` session; if it is missing or expired, the prompt goes through unplanned with ``Prompt Uplift skipped · Grok login required (run `grok login`)``, under `auto` on Grok Build too, unless one of the two switches above is set. The default model is `grok-build-0.1`; where the session cannot use it, the route continues with `grok.fallbackModels` (`grok-4.7` by default). `shunt` posts to an Anthropic-compatible gateway that you run and name in `grok.shuntBaseUrl`. There is no built-in gateway: with `shunt` selected and `grok.shuntBaseUrl` empty, the prompt goes through unplanned with ``Prompt Uplift skipped · grok:unresolved [transport-incompatible]`` and nothing is sent.
+- **Grok** has two transports, `http` (default) and `cli`. Both use your `grok login` session; if it is missing or expired, the prompt goes through unplanned with ``Prompt Uplift skipped · Grok login required (run `grok login`)``, under `auto` on Grok Build too, unless one of the two switches above is set. The default model is `grok-build-0.1`; where the session cannot use it, the route continues with `grok.fallbackModels` (`grok-4.7` by default).
 - **Omp's native planning** uses the session's own model and Omp's login, and shows labels such as `omp-native:<provider>/<model> [detected]`. See [Choose the planning engine](how-to/choose-engine.md#omp-the-sessions-own-model).
 - **Muse** runs the `muse` CLI headless (`muse exec --json`) for one agent turn per call, with the shell, file writes and web tools disabled. Its label is `muse:<model>`, for example `muse:muse-spark-1.3-contributor`.
 

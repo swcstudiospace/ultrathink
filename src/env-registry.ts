@@ -308,14 +308,6 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 	row(
 		"stack",
 		"decisions",
-		"string",
-		"AI_GATEWAY_API_KEY",
-		"Vercel AI Gateway key for Jev decisions, used when no stored key is found.",
-		{ secret: true },
-	),
-	row(
-		"stack",
-		"decisions",
 		"url",
 		"ULTRATHINK_DECISIONS_URL",
 		"Decisions endpoint. Only an https://openrouter.ai URL or a loopback URL is accepted; anything else is ignored.",

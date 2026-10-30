@@ -81,7 +81,7 @@ The engine and the trackers need logins on the runner:
 | Service | Headless route |
 |---|---|
 | Claude engine | Whatever login the `claude` CLI has on the runner, OAuth or API key. ultrathink adds none. |
-| Grok engine | A `grok login` session in the Grok home (`grok.home`, `$GROK_HOME` or `~/.grok`), or the `shunt` transport with your own gateway, which needs no Grok login. See [Choose the engine](choose-engine.md). |
+| Grok engine | A `grok login` session in the Grok home (`grok.home`, `$GROK_HOME` or `~/.grok`), for the `http` or `cli` transport. See [Choose the engine](choose-engine.md). |
 | Linear, Greptile | An API key: `<clone>/bin/ultrathink-mcp auth set-key linear --stdin`, or from a file with `auth set-key linear --env-file <path> --var <NAME>`. The same for `greptile`. |
 | Notion | OAuth only. Log in once with `auth login notion`; see [Set up Notion](set-up-notion.md) for logging in from a remote machine. |
 

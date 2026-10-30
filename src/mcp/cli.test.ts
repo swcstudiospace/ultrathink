@@ -598,10 +598,10 @@ describe("openrouter API-key provider", () => {
 		60_000,
 	);
 
-	test("the usage text says openrouter, vercel, hindsight and ragflow are API-key only", async () => {
+	test("the usage text says openrouter, hindsight and ragflow are API-key only", async () => {
 		const { stderr } = await run("auth", "set-key");
 		expect(stderr).toContain(
-			"  ultrathink-mcp auth set-key <provider> (--stdin | --env-file <path> --var <NAME>)\n  (openrouter, vercel, hindsight and ragflow are API-key only: set-key, status and logout; never serve, check or login)\n",
+			"  ultrathink-mcp auth set-key <provider> (--stdin | --env-file <path> --var <NAME>)\n  (openrouter, hindsight and ragflow are API-key only: set-key, status and logout; never serve, check or login)\n",
 		);
 	}, 60_000);
 
@@ -759,98 +759,6 @@ describe.each([
 		},
 		60_000,
 	);
-});
-
-describe("vercel set-key validation", () => {
-	const store = (): string => join(root, "credentials.json");
-	const good = "vck_UTTESTKEY0123456789abcdef";
-	/** A key of exactly `length` characters; each test asserts `.length` so a label can never drift from its data. */
-	const keyOfLength = (length: number): string => `vck_${"a".repeat(length - 4)}`;
-	const setVercel = (stdin: string, ...extra: string[]) =>
-		runWith({ stdin }, "auth", "set-key", "vercel", "--stdin", ...extra);
-
-	test.each([
-		["empty", ""],
-		["blank", "  \n"],
-		["15 characters", keyOfLength(15)],
-		["513 characters", keyOfLength(513)],
-	])(
-		"%s key is rejected with exit 1, nothing stored",
-		async (label, key) => {
-			if (key.trim()) expect(label).toBe(`${key.length} characters`);
-			const { code, stdout, stderr } = await setVercel(`${key}\n`);
-			expect(code).toBe(1);
-			expect(stdout).toBe("");
-			expect(stderr).toMatch(
-				/^ultrathink-mcp: (empty api key|vercel api key must be 16 to 512 characters \(got \d+\))\n$/,
-			);
-			if (key.trim()) {
-				expect(stderr).toContain(`(got ${key.length})`);
-				expect(stderr).not.toContain(key.trim());
-			}
-			expect(existsSync(store())).toBe(false);
-		},
-		60_000,
-	);
-
-	test.each([
-		["a space", "vck_UTTESTKEY 0123456789abcdef"],
-		["a tab", "vck_UTTESTKEY\t0123456789abcdef"],
-		["a control character", "vck_UTTESTKEY\u0007_0123456789abcdef"],
-		["a unicode space", "vck_UTTESTKEY\u00a0_0123456789abcdef"],
-	])(
-		"a key with %s is rejected without echoing any part of it",
-		async (_label, key) => {
-			const { code, stdout, stderr } = await setVercel(`${key}\n`);
-			expect(code).toBe(1);
-			expect(stdout).toBe("");
-			expect(stderr).toBe(
-				"ultrathink-mcp: vercel api key must not contain whitespace or control characters\n",
-			);
-			expect(stderr).not.toContain("UTTESTKEY");
-			expect(existsSync(store())).toBe(false);
-		},
-		60_000,
-	);
-
-	test.each([16, 512])(
-		"a %i character key is accepted and only its length is printed",
-		async (length) => {
-			const key = keyOfLength(length);
-			expect(key.length).toBe(length);
-			const { code, stdout, stderr } = await setVercel(`${key}\n`);
-			expect(code).toBe(0);
-			expect(stdout).toBe(`vercel: api key stored (${length} chars)\n`);
-			expect(stdout + stderr).not.toContain(key);
-			expect(readStore(store()).providers.vercel).toMatchObject({ kind: "api_key", apiKey: key });
-		},
-		60_000,
-	);
-
-	test("--no-verify is accepted as a no-op", async () => {
-		const { code, stdout, stderr } = await setVercel(`${good}\n`, "--no-verify");
-		expect(code).toBe(0);
-		expect(stdout).toBe(`vercel: api key stored (${good.length} chars)\n`);
-		expect(stdout + stderr).not.toContain(good);
-		expect(readStore(store()).providers.vercel).toMatchObject({ kind: "api_key", apiKey: good });
-	}, 60_000);
-
-	test("the check also applies to --env-file input", async () => {
-		const file = join(root, "vercel.env");
-		writeFileSync(file, "AI_GATEWAY_API_KEY=short\n");
-		const { code, stderr } = await run(
-			"auth",
-			"set-key",
-			"vercel",
-			"--env-file",
-			file,
-			"--var",
-			"AI_GATEWAY_API_KEY",
-		);
-		expect(code).toBe(1);
-		expect(stderr).toContain("vercel api key must be 16 to 512 characters (got 5)");
-		expect(stderr).not.toContain("short");
-	}, 60_000);
 });
 
 describe("auth login stdin wait", () => {

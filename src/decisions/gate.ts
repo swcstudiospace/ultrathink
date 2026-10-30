@@ -2,10 +2,10 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * The Decisions runtime every decision point shares: the key lookup, the one is-point-active predicate, and a
- * fail-open run() that returns a typed outcome plus a content-free DecisionRecord. Jev runs on OpenRouter or the
- * Vercel AI Gateway rail; `resolveDecisionsKeys` is the one place the rail and key are picked. Every real attempt
- * feeds the health breaker and, when the host names a `stateDir`, the usage ledger (no `stateDir` means no disk at
- * all); while the breaker is open run() makes no request.
+ * fail-open run() that returns a typed outcome plus a content-free DecisionRecord. Jev runs on OpenRouter only:
+ * `resolveOpenRouterKey` is the one place the key is picked. Every real attempt feeds the health breaker and, when
+ * the host names a `stateDir`, the usage ledger (no `stateDir` means no disk at all); while the breaker is open run()
+ * makes no request.
  */
 import { readStore, storePath as defaultStorePath } from "../mcp/store.ts";
 import {
@@ -18,7 +18,6 @@ import {
 import {
 	type JevCall,
 	type JevHealth,
-	type JevRail,
 	openJevHealth,
 	openMemoryJevHealth,
 	unavailableMessage,
@@ -34,41 +33,25 @@ import {
 	formatP,
 } from "./types.ts";
 import { appendUsage, type UsageRecord } from "./usage.ts";
-import { decideVercel, resolveGatewayModel } from "./vercel.ts";
 
 type Env = Record<string, string | undefined>;
 
-export type KeySource = "store" | "ULTRATHINK_OPENROUTER_KEY" | "AI_GATEWAY_API_KEY";
+export type KeySource = "store" | "ULTRATHINK_OPENROUTER_KEY";
+/** The Jev key and where it came from. */
+export interface JevKey {
+	key: string;
+	source: KeySource;
+}
 
 /**
  * Stored openrouter api_key (trimmed, non-empty) wins; else trimmed non-empty env.ULTRATHINK_OPENROUTER_KEY; else
  * undefined. The generic OpenRouter variable that SDKs and agents auto-read is deliberately not read: exporting it
  * would let every other tool in the shell spend Jev's key. Never throws.
  */
-export function resolveOpenRouterKey(
-	storePath: string,
-	env: Env,
-): { key: string; source: KeySource } | undefined {
-	return resolveStoreKey(storePath, env, "openrouter", "ULTRATHINK_OPENROUTER_KEY");
-}
-
-/** Stored vercel api_key (trimmed, non-empty) wins; else trimmed non-empty env.AI_GATEWAY_API_KEY; else undefined. Never throws. */
-export function resolveVercelKey(
-	storePath: string,
-	env: Env,
-): { key: string; source: KeySource } | undefined {
-	return resolveStoreKey(storePath, env, "vercel", "AI_GATEWAY_API_KEY");
-}
-
-function resolveStoreKey(
-	storePath: string,
-	env: Env,
-	provider: string,
-	envVar: "ULTRATHINK_OPENROUTER_KEY" | "AI_GATEWAY_API_KEY",
-): { key: string; source: KeySource } | undefined {
+export function resolveOpenRouterKey(storePath: string, env: Env): JevKey | undefined {
 	try {
 		const providers = readStore(storePath).providers as Record<string, unknown>;
-		const credential = providers[provider] as { kind?: unknown; apiKey?: unknown } | undefined;
+		const credential = providers.openrouter as { kind?: unknown; apiKey?: unknown } | undefined;
 		const stored =
 			credential?.kind === "api_key" && typeof credential.apiKey === "string"
 				? credential.apiKey.trim()
@@ -77,36 +60,8 @@ function resolveStoreKey(
 	} catch {
 		// reason: unreadable store falls back to the environment; the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 	}
-	const fromEnv = env[envVar]?.trim();
-	return fromEnv ? { key: fromEnv, source: envVar } : undefined;
-}
-
-/** The picked rail: `auto` resolves to vercel when its key is present, else openrouter; explicit pins either. */
-export type ResolvedProvider = JevRail;
-
-export interface ResolvedDecisionsKeys {
-	provider: ResolvedProvider;
-	key?: { key: string; source: KeySource };
-}
-
-/** The one rail + key picker, shared by the runtime, the CLI and the status line. Never throws. */
-export function resolveDecisionsKeys(
-	config: DecisionsConfig,
-	storePath: string,
-	env: Env,
-): ResolvedDecisionsKeys {
-	const vercel = resolveVercelKey(storePath, env);
-	const openrouter = resolveOpenRouterKey(storePath, env);
-	const provider: ResolvedProvider =
-		config.provider === "vercel"
-			? "vercel"
-			: config.provider === "openrouter"
-				? "openrouter"
-				: vercel
-					? "vercel"
-					: "openrouter";
-	const key = provider === "vercel" ? vercel : openrouter;
-	return { provider, ...(key ? { key } : {}) };
+	const fromEnv = env.ULTRATHINK_OPENROUTER_KEY?.trim();
+	return fromEnv ? { key: fromEnv, source: "ULTRATHINK_OPENROUTER_KEY" } : undefined;
 }
 
 export interface DecisionsDeps {
@@ -194,7 +149,7 @@ export function decisionsKilled(env: Env): boolean {
 }
 
 /**
- * Feeds one finished decision to its rail's breaker, handing back the verdict `shouldCall` gave the call, so only the
+ * Feeds one finished decision to the Jev breaker, handing back the verdict `shouldCall` gave the call, so only the
  * claimed probe (or an operator's forced call) can close or re-schedule an open breaker. A request reached the wire
  * iff `attempts > 0`; the breaker's own refusals and the local request checks make none, so they are neither a
  * service success nor a failure. Never throws.
@@ -216,16 +171,15 @@ export function recordHealth(
  */
 export function usageListener(
 	stateDir: string | undefined,
-	call: { point: string; rail: ResolvedProvider; model: string },
+	call: { point: string; model: string },
 ): ((attempt: DecisionAttempt) => void) | undefined {
 	if (stateDir === undefined) return undefined;
-	const requestedModel = call.rail === "vercel" ? resolveGatewayModel(call.model) : call.model;
 	return (attempt) => {
 		const row: UsageRecord = {
 			ts: attempt.at,
 			point: call.point,
-			rail: call.rail,
-			requestedModel,
+			rail: "openrouter",
+			requestedModel: call.model,
 			servedModel: attempt.model,
 			ok: attempt.ok,
 			kind: attempt.kind,
@@ -250,38 +204,31 @@ export function createDecisions(input: DecisionsInput): Decisions {
 		((line: string) => {
 			if (env.ULTRATHINK_DEBUG === "1") process.stderr.write(`[ultrathink] ${line}\n`);
 		});
-	let resolved: ResolvedDecisionsKeys | undefined;
-	const keys = (): ResolvedDecisionsKeys => {
-		resolved ??= resolveDecisionsKeys(config, input.storePath ?? defaultStorePath(env), env);
-		return resolved;
+	let resolved: { key: JevKey | undefined } | undefined;
+	const keyNow = (): JevKey | undefined => {
+		resolved ??= { key: resolveOpenRouterKey(input.storePath ?? defaultStorePath(env), env) };
+		return resolved.key;
 	};
 	const active = (point: DecisionPoint): boolean =>
-		!decisionsKilled(env) && config.points.includes(point) && keys().key !== undefined;
-	const breakers = new Map<ResolvedProvider, JevHealth>();
-	// One breaker per rail (separate keys and accounts). Persisted only when the host named a state dir; otherwise in
-	// memory, so a bare runtime touches no disk.
-	const healthOf = (rail: ResolvedProvider): JevHealth => {
-		let health = breakers.get(rail);
-		if (!health) {
-			health =
-				input.health ??
-				(input.stateDir === undefined
-					? openMemoryJevHealth(rail)
-					: openJevHealth(input.stateDir, rail));
-			breakers.set(rail, health);
-		}
-		return health;
+		!decisionsKilled(env) && config.points.includes(point) && keyNow() !== undefined;
+	// The breaker and the usage ledger persist only when the host named a state dir; otherwise both live in memory, so
+	// a bare runtime touches no disk.
+	let breaker: JevHealth | undefined;
+	const healthOf = (): JevHealth => {
+		breaker ??=
+			input.health ??
+			(input.stateDir === undefined ? openMemoryJevHealth() : openJevHealth(input.stateDir));
+		return breaker;
 	};
 
 	return {
 		config,
 		active,
 		async run(point, state, opts) {
-			const picked = active(point) ? keys() : undefined;
-			const apiKeyNow = picked?.key?.key;
-			if (!apiKeyNow || !picked) return { status: "inactive" };
+			const apiKeyNow = active(point) ? keyNow()?.key : undefined;
+			if (!apiKeyNow) return { status: "inactive" };
 			const questionKey = QUESTION_KEYS[point];
-			const health = healthOf(picked.provider);
+			const health = healthOf();
 			const start = now();
 			// The breaker answers before any request: while it is open there is no network I/O at all.
 			const verdict = health.shouldCall(start);
@@ -291,16 +238,14 @@ export function createDecisions(input: DecisionsInput): Decisions {
 			if (!verdict.call) {
 				outcome = {
 					ok: false,
-					error: new DecisionsError("unavailable", unavailableMessage(verdict, picked.provider)),
+					error: new DecisionsError("unavailable", unavailableMessage(verdict)),
 					attempts: 0,
 					latencyMs: 0,
 				};
 			} else {
 				ticket = { ...verdict, startedAt: start };
 				try {
-					// The Vercel rail has a fixed endpoint; only the OpenRouter rail honors ULTRATHINK_DECISIONS_URL.
-					const rail = picked.provider === "vercel" ? decideVercel : decide;
-					outcome = await rail(
+					outcome = await decide(
 						buildDecisionsRequest(point, state, {
 							model: config.model,
 							zdr: config.zdr,
@@ -309,7 +254,7 @@ export function createDecisions(input: DecisionsInput): Decisions {
 						{
 							apiKey: apiKeyNow,
 							timeoutMs: config.timeoutMs,
-							...(picked.provider === "openrouter" ? { url: resolveDecisionsUrl(env).url } : {}),
+							url: resolveDecisionsUrl(env).url,
 							fetch: input.fetch,
 							signal: opts.signal,
 							now,
@@ -317,7 +262,6 @@ export function createDecisions(input: DecisionsInput): Decisions {
 							random: input.random,
 							onAttempt: usageListener(input.stateDir, {
 								point,
-								rail: picked.provider,
 								model: config.model,
 							}),
 						},

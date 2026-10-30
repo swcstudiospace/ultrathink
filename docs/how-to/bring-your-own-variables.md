@@ -127,7 +127,6 @@ Source: the files named in the table. These are read by the hooks, commands and 
 | `SUBSTRATE_TIMEOUT_MS` | no | agent process | `src/stack/substrate.ts` | `1500` |
 | `SUBSTRATE_DISABLED` | no | agent process | `src/stack/substrate.ts` | unset; `1` disables Substrate |
 | `ULTRATHINK_OPENROUTER_KEY` | yes | agent process | `src/decisions/gate.ts` | unset; a stored key wins |
-| `AI_GATEWAY_API_KEY` | yes | agent process | `src/decisions/gate.ts` | unset; a stored key wins |
 | `DESK_GATEWAY_URL` | no | agent process | `src/gateway/settings.ts` | unset; wins over the config key |
 | `DESK_GATEWAY_TOKEN` | yes | agent process | `src/gateway/settings.ts` | unset; the stored credential wins |
 | `BUN` | no | agent process | `bin/run-bun` | search order in [Finding Bun](../configuration.md#finding-bun) |
@@ -142,7 +141,7 @@ Two conventions coexist, and mixing them up leaves a feature on while you believ
 
 ## Precedence
 
-Which source wins for a setting (environment, config file layer, stored credential) differs by setting family, and the [environment reference](../environment.md) states the order for each family as the code implements it. Where the order is already stated elsewhere in this repository: stored credentials beat their environment fallbacks (the Hindsight, RAGFlow, OpenRouter and Vercel keys in [Configuration](../configuration.md#environment-variables)), `SUBSTRATE_URL` beats `substrate.url`, and a kill switch beats its config key.
+Which source wins for a setting (environment, config file layer, stored credential) differs by setting family, and the [environment reference](../environment.md) states the order for each family as the code implements it. Where the order is already stated elsewhere in this repository: stored credentials beat their environment fallbacks (the Hindsight, RAGFlow and OpenRouter keys in [Configuration](../configuration.md#environment-variables)), `SUBSTRATE_URL` beats `substrate.url`, and a kill switch beats its config key.
 
 ## Passing variables to a client's MCP entry
 

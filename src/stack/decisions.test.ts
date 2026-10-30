@@ -1,23 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../config.ts";
 import { openJevHealth } from "../decisions/health.ts";
-import { writeStore } from "../mcp/store.ts";
-import { hangingFetch, JEV, recordingFetch, VEV } from "../test.helpers.ts";
+import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
 import { probeDecisions } from "./decisions.ts";
 import type { StackConnection, StackProbeContext } from "./types.ts";
 
 const T0 = Date.UTC(2026, 9, 28, 12, 0, 0);
 const CANARY = "sk-or-v1-CANARYCANARYCANARY1234";
 const CANARY_VERCEL = "vck_CANARYVERCELCANARY0123456789";
-const BOTH_SET_KEY_COMMANDS = [
-	"bin/ultrathink-mcp auth set-key vercel --stdin",
-	"bin/ultrathink-mcp auth set-key openrouter --stdin",
-];
+const SET_KEY_COMMAND = "bin/ultrathink-mcp auth set-key openrouter --stdin";
 
 const realFetch = globalThis.fetch;
 let dir: string;
@@ -78,11 +74,11 @@ describe("probeDecisions without ctx.live", () => {
 		expectClean(conn, CANARY);
 	});
 
-	test("no key on either rail is misconfigured and the fix names both set-key commands", async () => {
+	test("no Jev key is misconfigured and the fix names the OpenRouter set-key command", async () => {
 		const r = recordingFetch([JEV(0.9)]);
 		const conn = await probeDecisions(ctx({}, { fetch: r.fetch }));
 		expect(conn).toMatchObject({ member: "decisions", status: "misconfigured", via: "config" });
-		for (const command of BOTH_SET_KEY_COMMANDS) expect(conn.fix).toContain(command);
+		expect(conn.fix).toContain(SET_KEY_COMMAND);
 		expect(conn.reason).not.toContain("OPENROUTER_API_KEY");
 		expect(conn.affects?.length).toBeGreaterThan(0);
 		expect(r.calls).toHaveLength(0);
@@ -119,31 +115,24 @@ describe("probeDecisions without ctx.live", () => {
 		expectClean(conn, CANARY);
 	});
 
-	test("a stored Vercel key wins the auto pick and its source renders as the label store, never the store path", async () => {
-		writeStore(storeFile, {
-			version: 1,
-			providers: { vercel: { kind: "api_key", apiKey: CANARY_VERCEL, updatedAt: 1 } },
-		});
-		const conn = await probeDecisions(ctx({ ULTRATHINK_OPENROUTER_KEY: CANARY }));
-		expect(conn.status).toBe("connected");
-		expect(conn.reason).toContain("vercel rail, key from store");
-		expectClean(conn, CANARY, CANARY_VERCEL, storeFile);
-
-		const pinned = await probeDecisions({
-			...ctx({ ULTRATHINK_OPENROUTER_KEY: CANARY }),
-			config: {
-				...defaultConfig(),
-				decisions: { ...defaultConfig().decisions, provider: "openrouter" },
-			},
-		});
-		expect(pinned.reason).toContain("openrouter rail, key from ULTRATHINK_OPENROUTER_KEY");
+	test("a stored Vercel key is not a Jev key: misconfigured, and its value never echoed", async () => {
+		writeFileSync(
+			storeFile,
+			JSON.stringify({
+				version: 1,
+				providers: { vercel: { kind: "api_key", apiKey: CANARY_VERCEL, updatedAt: 1 } },
+			}),
+		);
+		const conn = await probeDecisions(ctx({ AI_GATEWAY_API_KEY: CANARY_VERCEL }));
+		expect(conn).toMatchObject({ status: "misconfigured", reason: "no Jev key" });
+		expectClean(conn, CANARY_VERCEL, storeFile);
 	});
 
 	test("an open rail breaker is degraded, names the rail and cause only, and sends nothing", async () => {
 		const r = recordingFetch([JEV(0.9)]);
 		const base = ctx({ ULTRATHINK_OPENROUTER_KEY: CANARY }, { fetch: r.fetch });
 		expect((await probeDecisions(base)).status).toBe("connected");
-		expect(openJevHealth(base.stateDir, "openrouter").recordFailure("credits", T0)).toEqual({
+		expect(openJevHealth(base.stateDir).recordFailure("credits", T0)).toEqual({
 			opened: true,
 		});
 		const conn = await probeDecisions(base);
@@ -152,14 +141,6 @@ describe("probeDecisions without ctx.live", () => {
 		expect(conn.affects?.length).toBeGreaterThan(0);
 		expect(r.calls).toHaveLength(0);
 		expectClean(conn, CANARY);
-	});
-
-	test("a breaker open on the other rail also degrades", async () => {
-		const base = ctx({ ULTRATHINK_OPENROUTER_KEY: CANARY });
-		openJevHealth(base.stateDir, "vercel").recordFailure("auth", T0);
-		const conn = await probeDecisions(base);
-		expect(conn.status).toBe("degraded");
-		expect(conn.reason).toContain("vercel (auth)");
 	});
 });
 
@@ -178,17 +159,6 @@ describe("probeDecisions with ctx.live", () => {
 		expectClean(conn, CANARY);
 	});
 
-	test("runs on the Vercel rail when its key is the one picked", async () => {
-		const r = recordingFetch([VEV(0.9)]);
-		const conn = await probeDecisions(
-			ctx({ AI_GATEWAY_API_KEY: CANARY_VERCEL }, { live: true, fetch: r.fetch }),
-		);
-		expect(conn.status).toBe("connected");
-		expect(conn.reason).toContain("vercel rail, key from AI_GATEWAY_API_KEY");
-		expect(r.calls[0]?.url).toBe("https://ai-gateway.vercel.sh/v4/ai/evaluation-model");
-		expectClean(conn, CANARY_VERCEL);
-	});
-
 	test("a failed check is unavailable with the failure kind only, never the upstream message", async () => {
 		const r = recordingFetch([
 			() =>
@@ -202,7 +172,7 @@ describe("probeDecisions with ctx.live", () => {
 		);
 		expect(conn).toMatchObject({ member: "decisions", status: "unavailable", via: "http" });
 		expect(conn.reason).toContain("(auth)");
-		for (const command of BOTH_SET_KEY_COMMANDS) expect(conn.fix).toContain(command);
+		expect(conn.fix).toContain(SET_KEY_COMMAND);
 		expect(r.calls).toHaveLength(1);
 		expectClean(conn, CANARY, "rejected");
 	});
@@ -212,10 +182,10 @@ describe("probeDecisions with ctx.live", () => {
 			{ ULTRATHINK_OPENROUTER_KEY: CANARY },
 			{ live: true, fetch: recordingFetch([JEV(0.9)]).fetch },
 		);
-		openJevHealth(base.stateDir, "openrouter").recordFailure("credits", T0);
+		openJevHealth(base.stateDir).recordFailure("credits", T0);
 		const conn = await probeDecisions(base);
 		expect(conn.status).toBe("connected");
-		expect(openJevHealth(base.stateDir, "openrouter").read().state).toBe("closed");
+		expect(openJevHealth(base.stateDir).read().state).toBe("closed");
 		expect((await probeDecisions({ ...base, live: false })).status).toBe("connected");
 	});
 

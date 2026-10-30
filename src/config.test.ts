@@ -39,8 +39,6 @@ describe("defaultConfig", () => {
 	test("contacts no optional service and ships nothing until configured", () => {
 		const config = defaultConfig();
 		expect(config.substrate.url).toBe("");
-		expect(config.grok.shuntBaseUrl).toBe("");
-		expect(config.grok.shuntModel).toBe("");
 		expect(config.ship).toMatchObject({
 			enabled: false,
 			autoMerge: false,
@@ -165,68 +163,23 @@ describe("mergeConfig", () => {
 		expect(mergeConfig({ muse: { callTimeoutMs: -5 } }, base).muse.callTimeoutMs).toBe(0);
 	});
 
-	test("grok defaults are the Grok route default (grok-build-0.1) @ xhigh over the http transport, with no shunt gateway configured", () => {
+	test("grok defaults are the Grok route default (grok-build-0.1) @ xhigh over the http transport", () => {
 		const grok = defaultConfig().grok;
 		expect(grok.model).toBe(ROUTE_DEFAULT_MODELS.grok);
 		expect(grok.model).toBe("grok-build-0.1");
 		expect(grok.reasoningEffort).toBe("xhigh");
 		expect(grok.transport).toBe("http");
-		expect(grok.shuntBaseUrl).toBe("");
-		expect(grok.shuntModel).toBe("");
-		expect(grok.shuntMaxTokens).toBe(8192);
 	});
 
-	test("grok transport accepts http, cli and shunt; anything else falls back", () => {
+	test("grok transport accepts http and cli; anything else falls back", () => {
 		const base = defaultConfig();
-		expect(mergeConfig({ grok: { transport: "shunt" } }, base).grok.transport).toBe("shunt");
 		expect(mergeConfig({ grok: { transport: "cli" } }, base).grok.transport).toBe("cli");
 		expect(mergeConfig({ grok: { transport: "http" } }, base).grok.transport).toBe("http");
 		expect(mergeConfig({ grok: { transport: "proxy" } }, base).grok.transport).toBe("http");
 		expect(mergeConfig({ grok: { transport: 3 } }, base).grok.transport).toBe("http");
 	});
 
-	test("grok shunt keys are validated: http(s) URL with trailing slash stripped, non-empty model, positive integer max_tokens", () => {
-		const base = defaultConfig();
-		const merged = mergeConfig(
-			{
-				grok: {
-					transport: "shunt",
-					shuntBaseUrl: "http://10.0.0.5:3001/",
-					shuntModel: "grok-4.7",
-					shuntMaxTokens: 4096,
-				},
-			},
-			base,
-		);
-		expect(merged.grok.shuntBaseUrl).toBe("http://10.0.0.5:3001");
-		expect(merged.grok.shuntModel).toBe("grok-4.7");
-		expect(merged.grok.shuntMaxTokens).toBe(4096);
-		const bad = mergeConfig(
-			{ grok: { shuntBaseUrl: "not a url", shuntModel: "  ", shuntMaxTokens: 0 } },
-			base,
-		).grok;
-		expect(bad.shuntBaseUrl).toBe(base.grok.shuntBaseUrl);
-		expect(bad.shuntModel).toBe(base.grok.shuntModel);
-		expect(bad.shuntMaxTokens).toBe(base.grok.shuntMaxTokens);
-		expect(mergeConfig({ grok: { shuntBaseUrl: "ftp://x" } }, base).grok.shuntBaseUrl).toBe(
-			base.grok.shuntBaseUrl,
-		);
-		expect(
-			mergeConfig({ grok: { shuntBaseUrl: "http://shunt.example.com:3001" } }, base).grok
-				.shuntBaseUrl,
-		).toBe(base.grok.shuntBaseUrl);
-		expect(
-			mergeConfig({ grok: { shuntBaseUrl: "https://shunt.example.com/" } }, base).grok.shuntBaseUrl,
-		).toBe("https://shunt.example.com");
-		expect(mergeConfig({ grok: { shuntMaxTokens: 1.5 } }, base).grok.shuntMaxTokens).toBe(
-			base.grok.shuntMaxTokens,
-		);
-		expect(mergeConfig({ grok: { shuntMaxTokens: "8192" } }, base).grok.shuntMaxTokens).toBe(
-			base.grok.shuntMaxTokens,
-		);
-	});
-
-	test("grok baseUrl must be an http(s) URL; anything else keeps the earlier layer (same rule as shuntBaseUrl)", () => {
+	test("grok baseUrl must be an http(s) URL; anything else keeps the earlier layer", () => {
 		const base = defaultConfig();
 		expect(mergeConfig({ grok: { baseUrl: "ftp://x" } }, base).grok.baseUrl).toBe(
 			base.grok.baseUrl,
@@ -249,7 +202,6 @@ describe("mergeConfig", () => {
 				bin: "./y",
 				home: "./h",
 				baseUrl: "https://evil.example",
-				shuntBaseUrl: "https://evil.example/shunt",
 				reasoningEffort: "medium",
 				callTimeoutMs: 4321,
 			},
@@ -266,7 +218,6 @@ describe("mergeConfig", () => {
 			bin: base.grok.bin,
 			home: base.grok.home,
 			baseUrl: base.grok.baseUrl,
-			shuntBaseUrl: base.grok.shuntBaseUrl,
 			reasoningEffort: "medium",
 			callTimeoutMs: 4321,
 		});
@@ -282,7 +233,6 @@ describe("mergeConfig", () => {
 			bin: "./y",
 			home: "./h",
 			baseUrl: "https://evil.example",
-			shuntBaseUrl: "https://evil.example/shunt",
 		});
 		expect(user.muse.bin).toBe("./z");
 		// A project layer also cannot undo a user-level choice.
@@ -481,7 +431,6 @@ describe("loadConfig", () => {
 				bin: "./grok",
 				home: "./.grok",
 				baseUrl: "https://evil.example/v1",
-				shuntBaseUrl: "https://evil.example",
 			},
 			muse: { bin: "./muse", model: "muse-other" },
 		});
@@ -492,7 +441,6 @@ describe("loadConfig", () => {
 				bin: "grok",
 				home: "/home/me/.grok",
 				baseUrl: defaultConfig().grok.baseUrl,
-				shuntBaseUrl: "",
 			});
 			expect(config.muse).toMatchObject({ bin: "muse", model: "muse-other" });
 			// The same file as a user layer applies all of them.
@@ -505,7 +453,6 @@ describe("loadConfig", () => {
 				bin: "./grok",
 				home: "./.grok",
 				baseUrl: "https://evil.example/v1",
-				shuntBaseUrl: "https://evil.example",
 			});
 			expect(trusted.muse.bin).toBe("./muse");
 		} finally {
@@ -657,7 +604,6 @@ describe("substrate config", () => {
 /** Brief §5 defaults, written out so a drifted constant fails here (AC-1.6). */
 const DECISIONS_DEFAULTS: DecisionsConfig = {
 	enabled: true,
-	provider: "auto",
 	model: "~typesafe/jev-latest",
 	points: ["plan", "ship", "knowledge", "blocking", "teachable", "skillworthy"],
 	timeoutMs: 3000,
@@ -737,29 +683,6 @@ describe("decisions config", () => {
 		).toBe(true);
 	});
 
-	test("provider accepts auto, openrouter and vercel per layer; anything else keeps the earlier layer (JEV-02)", () => {
-		expect(loadLayers({}).decisions.provider).toBe("auto");
-		expect(loadLayers({ decisions: { provider: "vercel" } }).decisions.provider).toBe("vercel");
-		expect(
-			loadLayers({ decisions: { provider: "vercel" } }, { decisions: { provider: "openrouter" } })
-				.decisions.provider,
-		).toBe("openrouter");
-		expect(
-			loadLayers({ decisions: { provider: "openrouter" } }, { decisions: { provider: "auto" } })
-				.decisions.provider,
-		).toBe("auto");
-		expect(
-			loadLayers({}, undefined, { decisions: { provider: "vercel" } }).decisions.provider,
-		).toBe("vercel");
-		for (const provider of ["VERCEL", "gateway", "", 1, null]) {
-			expect(
-				loadLayers({ decisions: { provider: "vercel" } }, { decisions: { provider } }).decisions
-					.provider,
-			).toBe("vercel");
-			expect(loadLayers({}, { decisions: { provider } }).decisions.provider).toBe("auto");
-		}
-	});
-
 	test("model is trimmed; empty, blank and non-string values keep the earlier layer's model (AC-10.6)", () => {
 		const user = { decisions: { model: "typesafe/jev-user" } };
 		expect(loadLayers(user, { decisions: { model: "typesafe/jev-1.13" } }).decisions.model).toBe(
@@ -784,20 +707,20 @@ describe("decisions config", () => {
 		"typesafe/other",
 	];
 
-	test("model accepts only the three Jev ids in every layer; anything else keeps the earlier layer (user, claude, project)", () => {
-		for (const model of ["~typesafe/jev-latest", "typesafe/jev-1.13-20260917", "typesafe-ai/jev"]) {
+	test("model accepts only Jev ids in every layer; anything else keeps the earlier layer (user, claude, project)", () => {
+		for (const model of ["~typesafe/jev-latest", "typesafe/jev-1.13-20260917"]) {
 			expect(loadLayers({ decisions: { model } }).decisions.model).toBe(model);
 			expect(loadLayers({}, { decisions: { model } }).decisions.model).toBe(model);
 			expect(loadLayers({}, undefined, { decisions: { model } }).decisions.model).toBe(model);
 		}
 		const user = { decisions: { model: "typesafe/jev-user" } };
-		const claude = { decisions: { model: "typesafe-ai/jev" } };
+		const claude = { decisions: { model: "typesafe/jev-1.13-20260917" } };
 		for (const model of NON_JEV_MODELS) {
 			expect(loadLayers({ decisions: { model } }).decisions.model).toBe("~typesafe/jev-latest");
 			expect(loadLayers(user, { decisions: { model } }).decisions.model).toBe("typesafe/jev-user");
 			expect(loadLayers({}, { decisions: { model } }).decisions.model).toBe("~typesafe/jev-latest");
 			expect(loadLayers(user, claude, { decisions: { model } }).decisions.model).toBe(
-				"typesafe-ai/jev",
+				"typesafe/jev-1.13-20260917",
 			);
 			expect(loadLayers(user, undefined, { decisions: { model } }).decisions.model).toBe(
 				"typesafe/jev-user",
@@ -2095,7 +2018,7 @@ describe("legacy model provenance (AD-1)", () => {
 		]);
 	});
 
-	test("nonblank legacy model and shunt selectors retain leading/trailing C0/C1 controls (POL-FUNC-011)", () => {
+	test("nonblank legacy model selectors retain leading/trailing C0/C1 controls (POL-FUNC-011)", () => {
 		for (const control of [
 			"\u0000",
 			"\t",
@@ -2110,15 +2033,14 @@ describe("legacy model provenance (AD-1)", () => {
 		]) {
 			for (const model of [`${control}Opaque-X`, `Opaque-X${control}`]) {
 				const config = mergeConfig(
-					{ claude: { model }, muse: { model }, grok: { model, shuntModel: model } },
+					{ claude: { model }, muse: { model }, grok: { model } },
 					defaultConfig(),
 				);
-				expect([
-					config.claude.model,
-					config.muse.model,
-					config.grok.model,
-					config.grok.shuntModel,
-				]).toEqual([model, model, model, model]);
+				expect([config.claude.model, config.muse.model, config.grok.model]).toEqual([
+					model,
+					model,
+					model,
+				]);
 				expect(config.modelProvenance).toEqual({
 					claude: "file-pin",
 					muse: "file-pin",
@@ -2131,16 +2053,15 @@ describe("legacy model provenance (AD-1)", () => {
 			{
 				claude: { model: ` ${model} ` },
 				muse: { model: ` ${model} ` },
-				grok: { model: ` ${model} `, shuntModel: ` ${model} ` },
+				grok: { model: ` ${model} ` },
 			},
 			defaultConfig(),
 		);
-		expect([
-			config.claude.model,
-			config.muse.model,
-			config.grok.model,
-			config.grok.shuntModel,
-		]).toEqual([model, model, model, model]);
+		expect([config.claude.model, config.muse.model, config.grok.model]).toEqual([
+			model,
+			model,
+			model,
+		]);
 	});
 
 	test("all-whitespace legacy clears and Grok lower-pin retention stay unchanged (POL-FUNC-011, AD-1)", () => {
@@ -2148,32 +2069,27 @@ describe("legacy model provenance (AD-1)", () => {
 			{
 				claude: { model: "ClaudePin" },
 				muse: { model: "MusePin" },
-				grok: { model: "GrokPin", shuntModel: "ShuntPin" },
+				grok: { model: "GrokPin" },
 			},
 			defaultConfig(),
 		);
 		for (const model of ["", "  ", "\t \r\n\v\f"]) {
-			const config = mergeConfig(
-				{ claude: { model }, muse: { model }, grok: { model, shuntModel: model } },
-				lower,
-			);
-			expect([
-				config.claude.model,
-				config.muse.model,
-				config.grok.model,
-				config.grok.shuntModel,
-			]).toEqual(["", "", "GrokPin", "ShuntPin"]);
+			const config = mergeConfig({ claude: { model }, muse: { model }, grok: { model } }, lower);
+			expect([config.claude.model, config.muse.model, config.grok.model]).toEqual([
+				"",
+				"",
+				"GrokPin",
+			]);
 			expect(config.modelProvenance).toEqual({
 				claude: "explicit-blank",
 				muse: "explicit-blank",
 				grok: "file-pin",
 			});
 			const builtin = mergeConfig(
-				{ claude: { model }, muse: { model }, grok: { model, shuntModel: model } },
+				{ claude: { model }, muse: { model }, grok: { model } },
 				defaultConfig(),
 			);
 			expect(builtin.grok.model).toBe(ROUTE_DEFAULT_MODELS.grok);
-			expect(builtin.grok.shuntModel).toBe(defaultConfig().grok.shuntModel);
 			expect(builtin.modelProvenance.grok).toBe("route-default");
 		}
 	});
@@ -2183,17 +2099,12 @@ describe("legacy model provenance (AD-1)", () => {
 			roots,
 			{
 				claude: { model: "opus" },
-				grok: { model: "grok-x", shuntModel: "alias" },
+				grok: { model: "grok-x" },
 				muse: { model: "m" },
 			},
-			{ claude: { model: " " }, grok: { model: "", shuntModel: "  " }, muse: { model: "" } },
+			{ claude: { model: " " }, grok: { model: "" }, muse: { model: "" } },
 		);
-		expect([
-			config.claude.model,
-			config.grok.model,
-			config.grok.shuntModel,
-			config.muse.model,
-		]).toEqual(["", "grok-x", "alias", ""]);
+		expect([config.claude.model, config.grok.model, config.muse.model]).toEqual(["", "grok-x", ""]);
 		expect(config.modelProvenance).toEqual({
 			claude: "explicit-blank",
 			grok: "file-pin",

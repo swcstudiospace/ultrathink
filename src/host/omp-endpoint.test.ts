@@ -75,11 +75,18 @@ describe("named legacy flight identity (REV15-005)", () => {
 	function configured(engine: LegacyRoute): UltrathinkConfig {
 		return quietConfig((config) => {
 			config.think.engine = engine;
-			// Shunt selection needs no login. HTTP/CLI cases use a missing, isolated auth store.
-			config.grok.transport = "shunt";
-			config.grok.shuntBaseUrl = "http://127.0.0.1:1";
+			// Grok HTTP/CLI cases use a missing, isolated auth store unless the case writes its own synthetic login.
 			config.grok.home = join(root, "grok");
 		});
+	}
+
+	/** A synthetic `grok login` in the isolated store: the real HTTP route plans with no user credential. */
+	function grokLogin(config: UltrathinkConfig): void {
+		mkdirSync(config.grok.home, { recursive: true });
+		writeFileSync(
+			join(config.grok.home, "auth.json"),
+			JSON.stringify({ default: { key: ["fixture", "session", "value"].join("-") } }),
+		);
 	}
 
 	/** Exercise the real legacy selector without invoking any selected completer, subprocess or inference. */
@@ -103,6 +110,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 	for (const engine of ["claude", "muse", "grok"] as const) {
 		test(`same-prompt reentry uses the new named ${engine} model instead of its settled plan`, async () => {
 			const config = configured(engine);
+			if (engine === "grok") grokLogin(config);
 			config[engine].model = "PIN_A";
 			const planner = selecting();
 			const { run, sent } = setup(
@@ -127,6 +135,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 
 		test(`an equal-valued ${engine} file pin invalidates route-default provenance`, async () => {
 			let config = configured(engine);
+			if (engine === "grok") grokLogin(config);
 			const model = config[engine].model;
 			const planner = selecting();
 			const { run } = setup(planner.plan, 1_000, { config: () => config, stateDir: root });
@@ -174,27 +183,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 		expect(planner.resolutions).toHaveLength(2);
 	});
 
-	test("a changed Grok shunt alias replans on the new wire target", async () => {
-		const config = configured("grok");
-		config.grok.shuntModel = "SHUNT_A";
-		const planner = selecting();
-		const { run } = setup(planner.plan, 1_000, { config: () => config, stateDir: root });
-		expect(await run()).toMatchObject({ message: { content: "SHUNT_A" } });
-		config.grok.shuntModel = "SHUNT_B";
-		expect(await run()).toMatchObject({ message: { content: "SHUNT_B" } });
-		expect(
-			planner.resolutions.map((resolution) => [resolution.modelId, resolution.source]),
-		).toEqual([
-			["SHUNT_A", "shunt-model"],
-			["SHUNT_B", "shunt-model"],
-		]);
-		expect(planner.signals[0]?.aborted).toBe(true);
-	});
-
-	for (const [transport, endpoint, suffix] of [
-		["shunt", "shuntBaseUrl", "/v1/messages"],
-		["http", "baseUrl", "/responses"],
-	] as const) {
+	for (const [transport, endpoint, suffix] of [["http", "baseUrl", "/responses"]] as const) {
 		test(`Grok ${transport} endpoint-only same-submission reentry aborts a pipeline paused on evidence after its final completion before obsolete effects (QF-RUNTIME-ENDPOINT-PIPELINE)`, async () => {
 			const stateDir = join(root, "state");
 			const prompt = "Build a widget showing A & B inside <button> labels.";
@@ -224,19 +213,15 @@ describe("named legacy flight identity (REV15-005)", () => {
 						"<ORIGINAL></ORIGINAL>",
 						"",
 					);
-					return Response.json(
-						transport === "shunt"
-							? { type: "message", role: "assistant", content: [{ type: "text", text: xml }] }
-							: {
-									output: [
-										{
-											type: "message",
-											role: "assistant",
-											content: [{ type: "output_text", text: xml }],
-										},
-									],
-								},
-					);
+					return Response.json({
+						output: [
+							{
+								type: "message",
+								role: "assistant",
+								content: [{ type: "output_text", text: xml }],
+							},
+						],
+					});
 				},
 			});
 			const config = configured("grok");
@@ -247,14 +232,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 			config.grok.model = "ENDPOINT_MODEL";
 			config.modelProvenance = { ...config.modelProvenance, grok: "file-pin" };
 			config.grok[endpoint] = `http://127.0.0.1:${server.port}/obsolete`;
-			if (transport === "http") {
-				// Isolated synthetic login permits the real HTTP completer, never a user's store or live auth.
-				mkdirSync(config.grok.home, { recursive: true });
-				writeFileSync(
-					join(config.grok.home, "auth.json"),
-					JSON.stringify({ default: { key: ["fixture", "session", "value"].join("-") } }),
-				);
-			}
+			grokLogin(config);
 			const empty: GroundOutcome = { status: "none", chunks: [], chars: 0, ms: 0, datasets: 0 };
 			const runs: Array<{
 				request: OmpPlanRequest;
@@ -488,10 +466,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 		});
 	}
 
-	for (const [transport, endpoint, unused] of [
-		["shunt", "shuntBaseUrl", "baseUrl"],
-		["http", "baseUrl", "shuntBaseUrl"],
-	] as const) {
+	for (const [transport, endpoint, unused] of [["http", "baseUrl", "bin"]] as const) {
 		test(`a pending Grok ${transport} flight compares only its effective endpoint and suppresses stale delivery (REV15-005)`, async () => {
 			const config = configured("grok");
 			config.grok.transport = transport;
@@ -531,11 +506,9 @@ describe("named legacy flight identity (REV15-005)", () => {
 	}
 
 	for (const [transport, endpoint, before] of [
-		["shunt", "shuntBaseUrl", ""],
-		["shunt", "shuntBaseUrl", "https://SECRET-GATEWAY-A.invalid"],
 		["http", "baseUrl", "https://SECRET-GATEWAY-A.invalid"],
 	] as const) {
-		test(`Grok ${transport} endpoint changes invalidate a settled ${before ? "result" : "missing-gateway skip"} (REV15-005)`, async () => {
+		test(`Grok ${transport} endpoint changes invalidate a settled result (REV15-005)`, async () => {
 			const config = configured("grok");
 			config.grok.transport = transport;
 			config.grok[endpoint] = before;
@@ -547,15 +520,12 @@ describe("named legacy flight identity (REV15-005)", () => {
 			const old = await run();
 			expect(await run()).toEqual(old);
 			expect(planner.resolutions).toHaveLength(1);
-			if (!before) expect(planner.resolutions[0]?.reason).toBe("transport-incompatible");
 			config.grok[endpoint] = "https://SECRET-GATEWAY-B.invalid";
 			const result = await run();
 			expect(await run()).toEqual(result);
 			expect(planner.resolutions).toHaveLength(2);
 			expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, false]);
-			if (transport === "shunt")
-				expect(result).toMatchObject({ message: { content: config.grok.model } });
-			else expect(result).toBeUndefined();
+			expect(result).toBeUndefined();
 			await command("ultrathink-status");
 			expect(
 				JSON.stringify({ old, result, resolutions: planner.resolutions, sent, notices }),
@@ -573,33 +543,26 @@ describe("named legacy flight identity (REV15-005)", () => {
 			const { run } = setup(planner.plan, 1_000, { config: () => config, stateDir: root });
 			const result = await run();
 			config.grok.baseUrl = mode === "default-http" ? " " : "https://SECRET-UNUSED.invalid";
-			config.grok.shuntBaseUrl = "https://SECRET-UNUSED.invalid";
 			expect(await run()).toEqual(result);
 			expect(planner.resolutions).toHaveLength(1);
 			expect(planner.signals[0]?.aborted).toBe(false);
 		}
 	});
 
-	test("Grok transport changes invalidate both settled plans and unresolved flights", async () => {
+	test("Grok transport changes invalidate settled plans", async () => {
 		const config = configured("grok");
 		config.grok.model = "PIN_A";
+		grokLogin(config);
 		const planner = selecting();
 		const { run } = setup(planner.plan, 1_000, { config: () => config, stateDir: root });
 		expect(await run()).toMatchObject({ message: { content: "PIN_A" } });
-		for (const transport of ["http", "cli"] as const) {
-			config.grok.transport = transport;
-			expect(await run()).toBeUndefined();
-			expect(planner.resolutions.at(-1)).toMatchObject({
-				state: "unresolved",
-				reason: "grok-unavailable",
-			});
-		}
+		config.grok.transport = "cli";
+		expect(await run()).toMatchObject({ message: { content: "PIN_A" } });
 		expect(planner.resolutions.map((resolution) => resolution.transport)).toEqual([
-			"grok-shunt",
 			"grok-http",
 			"grok-cli",
 		]);
-		expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, true, false]);
+		expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, false]);
 	});
 
 	for (const switchName of ["fallbackToClaude", "enabled"] as const) {
@@ -692,21 +655,18 @@ describe("named legacy flight identity (REV15-005)", () => {
 		config.claude.model = "UNUSED_CLAUDE";
 		config.muse.model = "UNUSED_MUSE";
 		config.grok.model = "UNUSED_GROK";
-		config.grok.shuntModel = "UNUSED_SHUNT";
-		config.grok.transport = "shunt";
 		config.grok.baseUrl = "https://SECRET-UNUSED-HTTP.invalid";
-		config.grok.shuntBaseUrl = "https://SECRET-UNUSED-SHUNT.invalid";
 		config.grok.fallbackToClaude = true;
 		config.modelProvenance = { claude: "file-pin", muse: "file-pin", grok: "file-pin" };
 		expect(await run()).toMatchObject({ message: { content: "PLAN" } });
 		expect(calls).toBe(1);
 	});
 
-	test("host and shunt overrides ignore shadowed model pins and unrelated routes", async () => {
+	test("host overrides ignore shadowed model pins and unrelated routes", async () => {
 		for (const engine of ["claude", "muse", "grok"] as const) {
 			let config = configured(engine);
-			if (engine === "grok") config.grok.shuntModel = "WIRE";
-			else config.models.hosts.omp = { provider: "", model: "WIRE" };
+			if (engine === "grok") grokLogin(config);
+			config.models.hosts.omp = { provider: "", model: "WIRE" };
 			const planner = selecting();
 			const { run } = setup(planner.plan, 1_000, { config: () => config, stateDir: root });
 			expect(await run()).toMatchObject({ message: { content: "WIRE" } });

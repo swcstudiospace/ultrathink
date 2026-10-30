@@ -157,7 +157,6 @@ describe("runControl", () => {
 		"RAGFLOW_API_KEY",
 		"OPENROUTER_API_KEY",
 		"ULTRATHINK_OPENROUTER_KEY",
-		"AI_GATEWAY_API_KEY",
 		"ULTRATHINK_DECISIONS_URL",
 		"ULTRATHINK_DECISIONS",
 		"ULTRATHINK_DEBUG",
@@ -209,7 +208,6 @@ describe("runControl", () => {
 		for (const key of [
 			"OPENROUTER_API_KEY",
 			"ULTRATHINK_OPENROUTER_KEY",
-			"AI_GATEWAY_API_KEY",
 			"ULTRATHINK_DECISIONS_URL",
 			"ULTRATHINK_DECISIONS",
 			"ULTRATHINK_DEBUG",
@@ -402,24 +400,6 @@ describe("runControl", () => {
 		);
 	});
 
-	test("the shunt status names the missing gateway setting and the model actually sent", async () => {
-		const grok = { home: join(dir, "grok"), model: "grok-test", transport: "shunt" };
-		projectConfig({ grok });
-		const unset = await statusLine("Grok:");
-		expect(unset).toContain("shunt gateway not configured (set grok.shuntBaseUrl)");
-		expect(unset).toContain("wire model grok-test");
-		expect(unset).not.toContain("/v1/messages");
-		// A project file cannot set the gateway: the same key there leaves the status line unchanged.
-		projectConfig({ grok: { ...grok, shuntBaseUrl: "https://gateway.example" } });
-		expect(await statusLine("Grok:")).toBe(unset);
-
-		userServices({ grok: { shuntBaseUrl: "https://gateway.example" } });
-		projectConfig({ grok: { ...grok, shuntModel: "wire-x" } });
-		const set = await statusLine("Grok:");
-		expect(set).toContain("https://gateway.example/v1/messages");
-		expect(set).toContain("wire model wire-x");
-	});
-
 	test("status lines show the Claude route and the Grok model chain by default", async () => {
 		projectConfig({ grok: { home: join(dir, "grok"), transport: "http" } });
 		const lines = (await runControl(["status"], io)).split("\n");
@@ -465,13 +445,6 @@ describe("runControl", () => {
 		);
 		expect(await statusLine("Grok:")).toBe(
 			"Grok: grok-build-0.1 · transport http · then <opaque-model>, grok-4.7",
-		);
-	});
-
-	test("the shunt status keeps its gateway extension after the transport", async () => {
-		projectConfig({ grok: { home: join(dir, "grok"), model: "grok-test", transport: "shunt" } });
-		expect(await statusLine("Grok:")).toBe(
-			"Grok: grok-test · transport shunt · shunt gateway not configured (set grok.shuntBaseUrl) · wire model grok-test · max_tokens 8192",
 		);
 	});
 
@@ -571,10 +544,6 @@ describe("runControl", () => {
 			[["login", "extra"], "Usage: grok login [--home <dir>] [--write-config]"],
 			[["check", "--model"], "Usage: grok check [--model <id>] [--transport http|cli] [--json]"],
 			[
-				["check", "--transport", "shunt"],
-				"Usage: grok check [--model <id>] [--transport http|cli] [--json]",
-			],
-			[
 				["check", "--json", "--json"],
 				"Usage: grok check [--model <id>] [--transport http|cli] [--json]",
 			],
@@ -670,19 +639,10 @@ describe("runControl", () => {
 					[`${sentinel}\u001b[31m\nmodel`, true],
 				] as const;
 				for (const [model, invalid] of selectors) {
-					for (const source of [
-						"host-override",
-						"engine-model",
-						...(route === "grok" ? ["shunt-model"] : []),
-					]) {
-						const grok = {
-							home: join(dir, "grok"),
-							transport: "shunt",
-							shuntBaseUrl: "http://gateway.example",
-						};
+					for (const source of ["host-override", "engine-model"]) {
+						const grok = { home: join(dir, "grok"), transport: "http" };
 						const extra: Record<string, unknown> = { grok };
 						if (source === "host-override") extra.models = { hosts: { [host]: { model } } };
-						else if (source === "shunt-model") extra.grok = { ...grok, shuntModel: model };
 						else extra[route] = route === "grok" ? { ...grok, model } : { model };
 						projectConfig(extra);
 						for (const args of [["status"], ["grok", "status"]]) {
@@ -919,7 +879,7 @@ describe("runControl", () => {
 			userConfig({ enabled: true });
 			const { line, jevCalls } = await status();
 			expect(line).toBe(
-				"Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)",
+				"Decisions: on · no Jev key (bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)",
 			);
 			expect(jevCalls).toEqual([]);
 		});
@@ -943,24 +903,6 @@ describe("runControl", () => {
 			expect([...stored.jevCalls, ...fromEnv.jevCalls]).toEqual([]);
 		});
 
-		test("auto with only a Vercel key shows provider vercel; explicit provider pins the rail (JEV-02)", async () => {
-			const V = "vck_test_key_do_not_use";
-			userConfig({ enabled: true });
-			process.env.AI_GATEWAY_API_KEY = V;
-			const auto = await status();
-			expect(auto.line).toBe(
-				`${ON_DEFAULTS} · provider vercel · key from AI_GATEWAY_API_KEY · zdr n/a (vercel)`,
-			);
-			expect(auto.text).not.toContain(V);
-			process.env.ULTRATHINK_OPENROUTER_KEY = K;
-			userConfig({ enabled: true, provider: "openrouter" });
-			const pinned = await status();
-			expect(pinned.line).toBe(
-				`${ON_DEFAULTS} · provider openrouter · key from ULTRATHINK_OPENROUTER_KEY · zdr on`,
-			);
-			expect([...auto.jevCalls, ...pinned.jevCalls]).toEqual([]);
-		});
-
 		test("the stored key wins over the env key", async () => {
 			userConfig({ enabled: true });
 			storeKey();
@@ -970,9 +912,9 @@ describe("runControl", () => {
 			expect(text).not.toContain("sk-or-v1-ENVKEY");
 		});
 
-		function writeHealth(state: Record<string, unknown>, rail = "openrouter"): void {
+		function writeHealth(state: Record<string, unknown>): void {
 			mkdirSync(io.stateDir, { recursive: true });
-			writeFileSync(join(io.stateDir, `decisions-health-${rail}.json`), JSON.stringify(state));
+			writeFileSync(join(io.stateDir, "decisions-health-openrouter.json"), JSON.stringify(state));
 		}
 
 		test("an open breaker appends its reason to the Decisions line; closed or corrupt shows nothing", async () => {
@@ -1000,28 +942,6 @@ describe("runControl", () => {
 
 			writeFileSync(join(io.stateDir, "decisions-health-openrouter.json"), "{not json");
 			expect((await status()).line).toBe(closed);
-		});
-
-		test("an open Vercel breaker names Vercel on the Decisions line, not OpenRouter", async () => {
-			userConfig({ enabled: true });
-			storeKey();
-			const now = Date.now();
-			writeHealth(
-				{
-					v: 1,
-					state: "open",
-					cause: "auth",
-					since: now - 60_000,
-					nextProbeAt: now + 3_600_000,
-					coolDownMs: 300_000,
-					failures: 1,
-				},
-				"vercel",
-			);
-			const { line } = await status();
-			expect(line).toContain("Jev unavailable: Vercel AI Gateway rejected the key");
-			expect(line).toContain("auth set-key vercel --stdin");
-			expect(line).not.toContain("OpenRouter rejected");
 		});
 
 		test("the line shows the configured model, points and zdr, the normalised URL when an override is in effect, and flags a rejected one", async () => {
@@ -1420,7 +1340,6 @@ describe("runControl", () => {
 			process.env.ULTRATHINK_SWARM_ROOT = `/nonexistent/${CANARY_B}`;
 			process.env.HINDSIGHT_API_URL = `https://hindsight.example.test/${CANARY}`;
 			process.env.HINDSIGHT_API_KEY = CANARY_B;
-			process.env.AI_GATEWAY_API_KEY = CANARY;
 			process.env.RAGFLOW_API_KEY = CANARY_B;
 			const line = stackLine(await runControl(["status"], io));
 			expect(line).toMatch(/^Stack: (\d+ (ready|off|missing)( · )?)+ \(run ultrathink stack\)$/);
@@ -1490,7 +1409,6 @@ esac
 				"ULTRATHINK_HINDSIGHT_BACKEND",
 				"ULTRATHINK_SUBSTRATE_BACKEND",
 				"ULTRATHINK_OPENROUTER_KEY",
-				"AI_GATEWAY_API_KEY",
 			]) {
 				delete env[name];
 			}

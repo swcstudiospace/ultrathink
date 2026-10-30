@@ -18,7 +18,6 @@ import {
 	type HookInput,
 } from "./flow-eval.ts";
 
-const VERCEL_KEY = "vck_CANARYCANARYCANARY1234";
 const OPENROUTER_KEY = "sk-or-v1-CANARYCANARYCANARY1234";
 const dirs: string[] = [];
 afterEach(() => {
@@ -87,13 +86,6 @@ function harness(
 	};
 }
 
-const vercelAnswer = (): Response =>
-	json({
-		answers: { verdict: { type: "choice", choice: "approve" } },
-		providerMetadata: { typesafe: { confidence: { verdict: 0.9 } } },
-		usage: { inputTokens: 3, outputTokens: 2 },
-	});
-
 const openRouterAnswer = (): Response =>
 	json({
 		id: "req_1",
@@ -127,7 +119,7 @@ describe("evaluateFlowHook", () => {
 	});
 
 	test("kill switch returns before config, evaluation or any resolution", async () => {
-		const h = harness({ ULTRATHINK_DECISIONS: "0", AI_GATEWAY_API_KEY: VERCEL_KEY });
+		const h = harness({ ULTRATHINK_DECISIONS: "0", ULTRATHINK_OPENROUTER_KEY: OPENROUTER_KEY });
 		await evaluateFlowHook(GSD, {
 			...h.deps,
 			config: () => {
@@ -142,26 +134,13 @@ describe("evaluateFlowHook", () => {
 	});
 
 	test("a command that is not a GSD flow stays silent", async () => {
-		const h = harness({ AI_GATEWAY_API_KEY: VERCEL_KEY }, vercelAnswer);
+		const h = harness({ ULTRATHINK_OPENROUTER_KEY: OPENROUTER_KEY }, openRouterAnswer);
 		await evaluateFlowHook(
 			{ tool_name: "Bash", tool_input: { command: "bun test" }, tool_response: "ok" },
 			h.deps,
 		);
 		expect(h.lines).toEqual([]);
 		expect(h.fetchCalls).toBe(0);
-	});
-
-	test("Vercel-only key: the note names the Vercel rail, never OpenRouter, and the record carries it", async () => {
-		const h = harness({ AI_GATEWAY_API_KEY: VERCEL_KEY }, vercelAnswer);
-		await evaluateFlowHook(GSD, h.deps);
-		expect(h.fetchCalls).toBe(1);
-		expect(h.lines).toHaveLength(1);
-		const note = noteOf(h.lines);
-		expect(note).toStartWith("Jev · approve · confidence 0.9 · Vercel · ");
-		expect(note).toEndWith(". This does not clear a human pause.");
-		expect(note).not.toContain("OpenRouter");
-		const stored: FlowRecord = JSON.parse(readFileSync(h.logPath, "utf8").trim());
-		expect(stored).toMatchObject({ provider: "Vercel", state: "success", decision: "approve" });
 	});
 
 	test("OpenRouter-only key keeps the original note shape", async () => {
@@ -174,7 +153,7 @@ describe("evaluateFlowHook", () => {
 	});
 
 	test("a cached success is replayed without a request and without a second record", async () => {
-		const h = harness({ AI_GATEWAY_API_KEY: VERCEL_KEY }, vercelAnswer);
+		const h = harness({ ULTRATHINK_OPENROUTER_KEY: OPENROUTER_KEY }, openRouterAnswer);
 		await evaluateFlowHook(GSD, h.deps);
 		await evaluateFlowHook(GSD, h.deps);
 		expect(h.fetchCalls).toBe(1);
@@ -183,7 +162,7 @@ describe("evaluateFlowHook", () => {
 	});
 
 	test("a cached success stays silent once the key is gone: nothing printed, nothing appended, no request", async () => {
-		const h = harness({ AI_GATEWAY_API_KEY: VERCEL_KEY }, vercelAnswer);
+		const h = harness({ ULTRATHINK_OPENROUTER_KEY: OPENROUTER_KEY }, openRouterAnswer);
 		await evaluateFlowHook(GSD, h.deps);
 		expect(h.lines).toHaveLength(1);
 		const stored = readFileSync(h.logPath, "utf8");
@@ -195,8 +174,8 @@ describe("evaluateFlowHook", () => {
 	});
 
 	test("a rejected key is an error note with no rail text, and the key never reaches the note or the record", async () => {
-		const h = harness({ AI_GATEWAY_API_KEY: VERCEL_KEY }, () =>
-			json({ error: { message: `invalid key ${VERCEL_KEY}` } }, 401),
+		const h = harness({ ULTRATHINK_OPENROUTER_KEY: OPENROUTER_KEY }, () =>
+			json({ error: { message: `invalid key ${OPENROUTER_KEY}` } }, 401),
 		);
 		await evaluateFlowHook(GSD, h.deps);
 		expect(h.lines).toHaveLength(1);
@@ -205,7 +184,7 @@ describe("evaluateFlowHook", () => {
 			"Jev · error · auth · retries 0. Not an approval. Do not mark this output Jev-approved.",
 		);
 		const written = `${h.lines.join("\n")}\n${readFileSync(h.logPath, "utf8")}`;
-		expect(written).not.toContain(VERCEL_KEY);
+		expect(written).not.toContain(OPENROUTER_KEY);
 	});
 });
 

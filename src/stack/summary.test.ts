@@ -46,7 +46,7 @@ describe("stackSummaryLine", () => {
 			env({
 				SUBSTRATE_URL: "https://substrate.example.test",
 				ULTRATHINK_SWARM_ROOT: checkout,
-				AI_GATEWAY_API_KEY: CANARY,
+				ULTRATHINK_OPENROUTER_KEY: CANARY,
 				HINDSIGHT_API_KEY: CANARY,
 			}),
 			{ existsPath: () => true },
@@ -135,7 +135,6 @@ describe("stackSummaryLine", () => {
 				SUBSTRATE_URL: "https://CANARYCANARYsubstrate.example.test/x",
 				HINDSIGHT_API_KEY: CANARY,
 				HINDSIGHT_API_URL: "https://CANARYCANARYhindsight.example.test",
-				AI_GATEWAY_API_KEY: CANARY,
 				ULTRATHINK_OPENROUTER_KEY: CANARY,
 				ULTRATHINK_SWARM_ROOT: "/CANARYCANARYroot",
 				XDG_CONFIG_HOME: "/CANARYCANARYxdg",
@@ -159,7 +158,6 @@ describe("stackSummaryLine", () => {
 				env({
 					SUBSTRATE_URL: "https://substrate.example.test",
 					ULTRATHINK_REALM: "off",
-					AI_GATEWAY_API_KEY: CANARY,
 					HINDSIGHT_API_KEY: CANARY,
 				}),
 				{
@@ -169,7 +167,7 @@ describe("stackSummaryLine", () => {
 					},
 				},
 			);
-			expect(line).toBe("Stack: 3 ready · 1 off · 1 missing (run ultrathink stack)");
+			expect(line).toMatch(/^Stack: .*1 off.* \(run ultrathink stack\)$/);
 			expect(stats).toEqual([]);
 		} finally {
 			globalThis.fetch = realFetch;

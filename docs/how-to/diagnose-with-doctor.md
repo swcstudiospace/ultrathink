@@ -47,6 +47,7 @@ Each file is checked over the accumulated lower-precedence layers using the same
 | not found | info | The file is optional. |
 | not valid JSON, not readable, or top level is not an object | error | Every key in the file is ignored. The finding shows the path and the parser's message, never the file's content. |
 | unknown section, unknown key | warn | The merge ignores it. When a known name is close (an edit distance of 2 or less, or the same first four letters) the finding says `Did you mean …?`. |
+| `grok.<key>, … are removed and ignored` (`config.<layer>.obsolete-key.grok`) | warn | The file still sets Grok keys for a setting this version removed. The merge ignores them. The finding names the keys; delete them from the file. |
 | `<key> ignored: expected <type>, got <type>` | warn | The value has the wrong type, so the lower layer's value or the default stays. |
 | `<key> invalid: contains a control character` | warn | A nonblank host provider/model selector or provider-default model contains a control character and will be rejected by model resolution. Whitespace-only resets keep their normal meaning. |
 | `<key> ignored or adjusted: effective value is <value>` | warn | The type is right but the value is outside what the merge accepts (a range, an allowed word, a shape), so the effective value is the one shown. |
@@ -69,7 +70,7 @@ Only features that are switched on are checked:
 | `hindsight.enabled` (unless `ULTRATHINK_HINDSIGHT=0`) | Hindsight in direct mode; Desk gateway when its selected backend is gateway |
 | `ragflow.enabled` (unless `ULTRATHINK_RAGFLOW=0`) | RAGFlow in direct mode; Desk gateway when its selected backend is gateway |
 | `substrate.backend: "gateway"` (unless `SUBSTRATE_DISABLED=1`) | Desk gateway |
-| Jev, unless `ULTRATHINK_DECISIONS=0` | an OpenRouter or Vercel AI Gateway key |
+| Jev, unless `ULTRATHINK_DECISIONS=0` | an OpenRouter key |
 
 A missing credential for a feature you turned on is a warning, with the command that stores it, for example `bin/ultrathink-mcp auth set-key greptile --stdin`. Jev without a key is only info, because it fails open and skips its decision points. A present credential is reported as `credential present` with its source, either the credential store or the name of the environment variable.
 
@@ -79,7 +80,7 @@ Three Jev findings are specific to the OpenRouter key, which ultrathink uses for
 |---|---|---|
 | `OPENROUTER_API_KEY is exported: Ultrathink no longer reads it …` | warn | The generic name is not read any more; Jev takes its key from the credential store or `ULTRATHINK_OPENROUTER_KEY`. The export only lets other tools in this environment (SDKs and agents read that name on their own) spend the key. Fix: remove the export from your shell profile or service unit. |
 | `Jev decisions: OPENROUTER_API_KEY is set but Ultrathink no longer reads it` | warn | Jev has no key and only the legacy variable is set. Fix: `bin/ultrathink-mcp auth set-key openrouter --stdin`, then remove the export. |
-| `decisions.health` (title: `Jev unavailable: …`) | warn | A persisted Jev health breaker is open: a rail (`OpenRouter` or `Vercel AI Gateway`; each has its own breaker) answered HTTP 402 (insufficient credits) or 401/403 (key rejected). The finding names the rail, the cause, the date it opened, that rail's own fix and the next check time. Decisions use their defaults until then; the plan gate plans every prompt. Fix the cause (top up, or store a valid key), then run `bin/ultrathink decisions check`; `ok` closes the breaker (the line ends with `breaker closed`). |
+| `decisions.health` (title: `Jev unavailable: …`) | warn | A persisted Jev health breaker is open: OpenRouter answered HTTP 402 (insufficient credits) or 401/403 (key rejected). The finding names the cause, the date it opened, the fix and the next check time. Decisions use their defaults until then; the plan gate plans every prompt. Fix the cause (top up, or store a valid key), then run `bin/ultrathink decisions check`; `ok` closes the breaker (the line ends with `breaker closed`). |
 
 Two findings are about the credential store file itself (`${XDG_CONFIG_HOME:-~/.config}/ultrathink/mcp-credentials.json`, or the path in `ULTRATHINK_MCP_STORE`). They appear only when the file exists, and they name its path, never its content:
 
@@ -116,7 +117,6 @@ The `inference` section looks at the two coding-plan logins that planning runs o
 | `Grok login: <account> expires in <age>` | ok | A signed-in, unexpired Grok session. |
 | `Grok login expired` | warn | Fix: `ultrathink grok login`. When `grok.home` is set, the fix names the lane: `GROK_HOME=<dir> grok login --device-auth`. |
 | `Grok login: not signed in` | warn or info | A warning when `claude.fallbackToGrok` is on or the engine resolves to Grok, with the fix `ultrathink grok login` (and `GROK_HOME=<dir> grok login --device-auth` when `grok.home` is set); otherwise info, because the Grok route is not in use. |
-| `Grok route uses a shunt gateway` | info | The `shunt` transport has no login to check. |
 | `Claude to Grok fallback: off` or `on (models …)` | info | The state of `claude.fallbackToGrok` and the Grok models the fallback would walk. |
 | `Models: claude …, grok …` | info | The effective models, with `then …` and the fallback models when you set `grok.fallbackModels` (empty by default). A detail says when `claude.model` is pinned in config rather than the route default. |
 | `Memory-bank inference: claude-haiku-5-5, then grok-build-0.1` or `… claude-haiku-5-5 only` | info | The chain that memory-bank calls (the Teachable Moments distiller behind `teach observe`) use. It is pinned in code: `claude-haiku-5-5` first, then `grok-build-0.1` only when `claude.fallbackToGrok` is on and the Grok lane is usable; the detail gives the reason when the fallback is missing. Details also say that Hindsight needs no inference (chunks mode) and name any configured `claude.model`, `grok.model` or `grok.fallbackModels` that differ from the chain, for example `claude.model claude-sonnet-5-5 applies to planning and helpers, not to memory-bank calls`. Memory-bank calls never use Sonnet, `grok-4.7` or OpenRouter. |
@@ -149,9 +149,9 @@ config
   i project config: not found (optional)
       File: /home/you/work/app/.claude/ultrathink.json
 credentials
-  i Jev decisions: no OpenRouter or Vercel AI Gateway key
+  i Jev decisions: no Jev key
       Decision points are skipped without one; planning continues.
-      fix: bin/ultrathink-mcp auth set-key openrouter --stdin (or vercel)
+      fix: bin/ultrathink-mcp auth set-key openrouter --stdin
 inference
   ✓ claude 2.1.301
   ✓ Claude auth: plan login (max)

@@ -20,7 +20,8 @@ import { join } from "node:path";
 export interface UsageRecord {
 	ts: number;
 	point: string;
-	rail: "openrouter" | "vercel";
+	/** Always "openrouter" on rows written now. Older rows may carry a retired rail name: kept verbatim, never read. */
+	rail: string;
 	requestedModel: string;
 	servedModel?: string;
 	ok: boolean;
@@ -162,7 +163,7 @@ function parseLine(line: string): UsageRecord | undefined {
 	if (
 		!isFiniteNumber(r.ts) ||
 		typeof r.point !== "string" ||
-		(r.rail !== "openrouter" && r.rail !== "vercel") ||
+		typeof r.rail !== "string" ||
 		typeof r.requestedModel !== "string" ||
 		typeof r.ok !== "boolean" ||
 		!isFiniteNumber(r.ms)

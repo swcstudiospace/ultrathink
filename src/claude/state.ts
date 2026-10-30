@@ -52,7 +52,7 @@ export interface ControlState {
 export interface SessionRecord {
 	sessionId: string;
 	at: number;
-	/** Thinking engine label: the selected route and its wire model, e.g. "claude:<model>", "<model>@<effort>" or "<shuntModel or model>@shunt". */
+	/** Thinking engine label: the selected route and its wire model, e.g. "claude:<model>" or "<model>@<effort>". */
 	engine?: string;
 	/**
 	 * Safe selection record (UT-Planning-ModelSelection §6) of the engine that planned this prompt: allowlisted and

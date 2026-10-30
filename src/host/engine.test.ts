@@ -28,10 +28,9 @@ import {
 	intentWith,
 	labelOf,
 	resolutionOf,
-	shunt,
 } from "./engine-test.helpers.ts";
 
-const { tempDir, emptyHome, cleanup } = createEngineFixtures();
+const { tempDir, emptyHome, grokLogin, cleanup } = createEngineFixtures();
 afterEach(cleanup);
 
 describe("selectEngine host defaults (think.engine auto)", () => {
@@ -45,8 +44,9 @@ describe("selectEngine host defaults (think.engine auto)", () => {
 		}
 	});
 
-	test("grok-build inherits grok at grok-build-0.1 when usable (shunt needs no login)", async () => {
-		expect(await labelOf(shunt(), {}, "grok-build")).toBe("grok-build-0.1@shunt");
+	test("grok-build inherits grok at grok-build-0.1 when usable", async () => {
+		const config = configWith({ grok: { ...defaultConfig().grok, home: grokLogin() } });
+		expect(await labelOf(config, {}, "grok-build")).toBe("grok-build-0.1");
 	});
 
 	test("grok-build without a grok login skips visibly instead of switching to Claude (AD-2a)", async () => {
@@ -252,12 +252,7 @@ describe("engineLabel", () => {
 		}
 	});
 
-	test("generated route syntax and opaque markers survive observed-label projection", async () => {
-		for (const model of ["namespace:model", "https://model.invalid/path"]) {
-			const config = mergeConfig({ grok: { shuntModel: model } }, shunt());
-			const resolution = await resolutionOf(config, {}, "grok-build");
-			expect(engineLabel(config, {}, "grok-build", resolution)).toBe(resolution.label);
-		}
+	test("opaque live-model markers survive observed-label projection", async () => {
 		const live = fakeModel("gate way", "https://model.invalid/path");
 		const selected = engineOf(
 			await selectNativeEngine(
@@ -299,37 +294,6 @@ describe("Vercel is Jev-only: engine code never references it (JEV-03)", () => {
 			}
 		}
 		expect(visited).toBeGreaterThan(0);
-		expect(offenders).toEqual([]);
-	});
-
-	test("every other production reference is allowlisted: src/decisions, the vercel key provider, the config merge, the status line", () => {
-		// Test files are exempt: they must name the feature to prove it (and fixtures may say "Vercel" incidentally).
-		const allowed = (rel: string): boolean =>
-			rel.startsWith("decisions/") ||
-			rel === "mcp/providers.ts" ||
-			rel === "mcp/cli.ts" ||
-			rel === "config.ts" ||
-			rel === "uplift/commands.ts" ||
-			// The Jev child-env scrub list names AI_GATEWAY_API_KEY so it never reaches an engine subprocess.
-			rel === "route-defaults.ts" ||
-			// The variable registry documents AI_GATEWAY_API_KEY like every other configuration variable.
-			rel === "env-registry.ts" ||
-			// The `ultrathink stack` Decisions probe reports the Decisions (Vercel gateway) member.
-			rel === "stack/decisions.ts";
-		const matches: string[] = [];
-		const offenders: string[] = [];
-		let visited = 0;
-		for (const file of tsFiles(SRC)) {
-			if (file.endsWith(".test.ts")) continue;
-			visited++;
-			const rel = relative(SRC, file);
-			if (!PATTERN.test(readFileSync(file, "utf8"))) continue;
-			matches.push(rel);
-			if (!allowed(rel)) offenders.push(rel);
-		}
-		expect(visited).toBeGreaterThan(50);
-		expect(matches).toContain("decisions/vercel.ts");
-		expect(matches).toContain("mcp/providers.ts");
 		expect(offenders).toEqual([]);
 	});
 });
@@ -419,24 +383,24 @@ describe("engineForSessionModel", () => {
 
 describe("selectEngine session-model routing (Hermes only, AD-3)", () => {
 	test("hermes follows the session model family under auto", async () => {
-		expect(await labelOf(shunt(), {}, "hermes", "xai-oauth/grok-4.6")).toBe("grok-build-0.1@shunt");
-		expect(await labelOf(shunt(), {}, "hermes", "claude-sonnet-4-5")).toBe(
+		const config = configWith({ grok: { ...defaultConfig().grok, home: grokLogin() } });
+		expect(await labelOf(config, {}, "hermes", "xai-oauth/grok-4.6")).toBe("grok-build-0.1");
+		expect(await labelOf(config, {}, "hermes", "claude-sonnet-4-5")).toBe(
 			"claude:claude-haiku-5-5",
 		);
-		expect(await labelOf(shunt(), {}, "hermes", "muse-spark-1.3-contributor")).toBe(
+		expect(await labelOf(config, {}, "hermes", "muse-spark-1.3-contributor")).toBe(
 			"muse:muse-spark-1.3-contributor",
 		);
 	});
 
 	test("unknown or missing models fall back to the host default", async () => {
 		for (const model of ["kimi-k2", "gpt-5", "", undefined] as const) {
-			expect(await labelOf(shunt(), {}, "hermes", model)).toBe("claude:claude-haiku-5-5");
+			expect(await labelOf(configWith({}), {}, "hermes", model)).toBe("claude:claude-haiku-5-5");
 		}
 	});
 
 	test("an explicit engine pin wins over the session model", async () => {
 		const config = configWith({
-			...shunt(),
 			think: { ...defaultConfig().think, engine: "claude" },
 		});
 		expect(await labelOf(config, {}, "hermes", "xai-oauth/grok-4.6")).toBe(
@@ -445,10 +409,10 @@ describe("selectEngine session-model routing (Hermes only, AD-3)", () => {
 	});
 
 	test("other hosts ignore the session model", async () => {
-		expect(await labelOf(shunt(), {}, "claude-code", "xai-oauth/grok-4.6")).toBe(
+		expect(await labelOf(configWith({}), {}, "claude-code", "xai-oauth/grok-4.6")).toBe(
 			"claude:claude-haiku-5-5",
 		);
-		expect(await labelOf(shunt(), {}, "muse", "xai-oauth/grok-4.6")).toBe(
+		expect(await labelOf(configWith({}), {}, "muse", "xai-oauth/grok-4.6")).toBe(
 			"muse:muse-spark-1.3-contributor",
 		);
 	});

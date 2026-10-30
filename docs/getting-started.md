@@ -97,7 +97,7 @@ Linear team: not configured
 Substrate: off (optional: set substrate.url or SUBSTRATE_URL)
 Ship: off (opt-in: set ship.enabled)
 Knowledge base: off (opt-in: set hitl.knowledgeBase)
-Decisions: on · no Jev key (Vercel: bin/ultrathink-mcp auth set-key vercel --stdin or AI_GATEWAY_API_KEY; OpenRouter: bin/ultrathink-mcp auth set-key openrouter --stdin or OPENROUTER_API_KEY)
+Decisions: on · no Jev key (bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)
 Hindsight: off (opt-in: set hindsight.enabled)
 RAGFlow: off (opt-in: set ragflow.enabled)
 Teach: on · capture auto · recall on · 0 confirmed, 0 candidate · Hindsight off · outbox 0

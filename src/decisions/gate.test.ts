@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hangingFetch, JEV, recordingFetch, VEV, yieldTurn } from "../test.helpers.ts";
+import { hangingFetch, JEV, recordingFetch, yieldTurn } from "../test.helpers.ts";
 import {
 	buildDecisionsRequest,
 	createDecisions,
@@ -20,9 +20,7 @@ import {
 	type Decisions,
 	type DecisionsInput,
 	formatDebugLine,
-	resolveDecisionsKeys,
 	resolveOpenRouterKey,
-	resolveVercelKey,
 	type RunDecisionOptions,
 } from "./gate.ts";
 import { openJevHealth } from "./health.ts";
@@ -38,7 +36,6 @@ import {
 	type DecisionsConfig,
 	type DecisionsErrorKind,
 	formatP,
-	VERCEL_DECISIONS_URL,
 } from "./types.ts";
 import { USAGE_FILE } from "./usage.ts";
 
@@ -629,10 +626,10 @@ describe("formatP (A2)", () => {
 	});
 });
 
-describe("provider routing (JEV-02)", () => {
+describe("the Jev key is OpenRouter's alone (JEV-02)", () => {
 	const V = "vck_test_key_do_not_use";
 	function storeWith(providers: Record<string, unknown>): string {
-		const dir = mkdtempSync(join(tmpdir(), "ut-decisions-rail-"));
+		const dir = mkdtempSync(join(tmpdir(), "ut-decisions-key-"));
 		dirs.push(dir);
 		const path = join(dir, "mcp-credentials.json");
 		writeFileSync(path, JSON.stringify({ version: 1, providers }), { mode: 0o600 });
@@ -640,96 +637,42 @@ describe("provider routing (JEV-02)", () => {
 	}
 	const stored = (key: string) => ({ kind: "api_key", apiKey: key, updatedAt: 1 });
 
-	test("resolveVercelKey: the stored key wins over AI_GATEWAY_API_KEY, which is the fallback", () => {
+	test("a stored Vercel credential and AI_GATEWAY_API_KEY are ignored: the call goes to OpenRouter with the Jev model", async () => {
 		const path = storeWith({ vercel: stored(V) });
-		expect(resolveVercelKey(path, { AI_GATEWAY_API_KEY: "other" })).toEqual({
-			key: V,
-			source: "store",
-		});
-		expect(resolveVercelKey(storeWith({}), { AI_GATEWAY_API_KEY: ` ${V} ` })).toEqual({
-			key: V,
-			source: "AI_GATEWAY_API_KEY",
-		});
-		expect(resolveVercelKey(storeWith({}), {})).toBeUndefined();
-	});
-
-	test("auto picks vercel iff its key is present; explicit pins either rail", () => {
-		const auto = { ...ON, provider: "auto" as const };
-		expect(resolveDecisionsKeys(auto, storeWith({}), { AI_GATEWAY_API_KEY: V }).provider).toBe(
-			"vercel",
-		);
-		expect(resolveDecisionsKeys(auto, storeWith({ vercel: stored(V) }), {}).provider).toBe(
-			"vercel",
-		);
-		expect(
-			resolveDecisionsKeys(auto, storeWith({}), { ULTRATHINK_OPENROUTER_KEY: K }).provider,
-		).toBe("openrouter");
-		expect(resolveDecisionsKeys(auto, storeWith({}), {}).provider).toBe("openrouter");
-		expect(resolveDecisionsKeys(auto, storeWith({}), {}).key).toBeUndefined();
-		const pinned = (provider: "openrouter" | "vercel") => ({ ...ON, provider });
-		const both = { AI_GATEWAY_API_KEY: V, ULTRATHINK_OPENROUTER_KEY: K };
-		expect(resolveDecisionsKeys(pinned("openrouter"), storeWith({}), both)).toEqual({
-			provider: "openrouter",
-			key: { key: K, source: "ULTRATHINK_OPENROUTER_KEY" },
-		});
-		expect(resolveDecisionsKeys(pinned("vercel"), storeWith({}), both)).toEqual({
-			provider: "vercel",
-			key: { key: V, source: "AI_GATEWAY_API_KEY" },
-		});
-		expect(
-			resolveDecisionsKeys(pinned("vercel"), storeWith({}), { ULTRATHINK_OPENROUTER_KEY: K }).key,
-		).toBeUndefined();
-	});
-
-	test("run() on the vercel rail posts the v4 endpoint and records the gateway model", async () => {
-		const r = recordingFetch([VEV(0.97)]);
+		expect(resolveOpenRouterKey(path, { AI_GATEWAY_API_KEY: V })).toBeUndefined();
+		const r = recordingFetch([JEV(0.97)]);
 		const { decisions } = runtime(r.fetch, {
-			config: { ...ON, provider: "vercel" },
-			env: { AI_GATEWAY_API_KEY: V },
+			storePath: path,
+			env: { AI_GATEWAY_API_KEY: V, ULTRATHINK_OPENROUTER_KEY: K },
 		});
 		expect(decisions.active("plan")).toBe(true);
-		const outcome = await decisions.run("plan", PLAN_STATE, PLAN_OPTS);
-		expect(outcome.status).toBe("ok");
+		expect(kindOf(await plan(decisions))).toBe("ok");
 		expect(r.calls).toHaveLength(1);
 		const call = r.calls[0];
 		if (!call) throw new Error("expected a decisions call");
-		expect(call.url).toBe(VERCEL_DECISIONS_URL);
-		expect(call.headers["ai-model-id"]).toBe("typesafe-ai/jev");
-		expect(call.body).toMatchObject({ questions: { plan_worthy: { type: "boolean" } } });
-		if (outcome.status !== "ok") throw new Error("expected ok");
-		expect(outcome.p).toBe(0.97);
-		expect(outcome.record).toMatchObject({
-			point: "plan",
-			outcome: "ok",
-			model: "typesafe-ai/jev",
-			action: "plan",
-		});
+		expect(call.url).toBe(ENDPOINT);
+		expect(call.headers.authorization).toBe(`Bearer ${K}`);
+		expect(call.body).toMatchObject({ model: "~typesafe/jev-latest" });
 	});
 
-	test("run() on auto with both keys uses vercel; explicit openrouter stays on OpenRouter", async () => {
-		const both = { AI_GATEWAY_API_KEY: V, ULTRATHINK_OPENROUTER_KEY: K };
-		const r = recordingFetch([VEV(0.5)]);
-		const auto = runtime(r.fetch, { config: { ...ON, provider: "auto" }, env: both }).decisions;
-		await auto.run("plan", PLAN_STATE, PLAN_OPTS);
-		expect(r.calls[0]?.url).toBe(VERCEL_DECISIONS_URL);
-		const queued = recordingFetch([JEV(0.5)]);
-		const pinned = runtime(queued.fetch, {
-			config: { ...ON, provider: "openrouter" },
-			env: both,
-		}).decisions;
-		expect(pinned.active("plan")).toBe(true);
-		await pinned.run("plan", PLAN_STATE, PLAN_OPTS);
-		expect(queued.calls[0]?.url).toBe(ENDPOINT);
-	});
-
-	test("the kill switch offs the vercel rail too, with zero requests", async () => {
-		const r = recordingFetch([VEV(0.5)]);
+	test("with no OpenRouter key the decision is inactive and sends nothing, whatever else is stored or exported", async () => {
+		const r = recordingFetch([JEV(0.97)]);
 		const { decisions } = runtime(r.fetch, {
-			config: { ...ON, provider: "vercel" },
-			env: { AI_GATEWAY_API_KEY: V, ULTRATHINK_DECISIONS: "0" },
+			storePath: storeWith({ vercel: stored(V) }),
+			env: { AI_GATEWAY_API_KEY: V },
 		});
 		expect(decisions.active("plan")).toBe(false);
-		expect(await decisions.run("plan", PLAN_STATE, PLAN_OPTS)).toEqual({ status: "inactive" });
+		expect(await plan(decisions)).toEqual({ status: "inactive" });
+		expect(r.calls).toHaveLength(0);
+	});
+
+	test("the kill switch turns OpenRouter off with zero requests", async () => {
+		const r = recordingFetch([JEV(0.5)]);
+		const { decisions } = runtime(r.fetch, {
+			env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS: "0" },
+		});
+		expect(decisions.active("plan")).toBe(false);
+		expect(await plan(decisions)).toEqual({ status: "inactive" });
 		expect(r.calls).toHaveLength(0);
 	});
 });
@@ -764,9 +707,6 @@ describe("the legacy OPENROUTER_API_KEY is not read", () => {
 		expect(decisions.active("plan")).toBe(false);
 		expect(await plan(decisions)).toEqual({ status: "inactive" });
 		expect(r.calls).toHaveLength(0);
-		expect(
-			resolveDecisionsKeys(ON, tempStore(undefined), { OPENROUTER_API_KEY: LEGACY }).key,
-		).toBeUndefined();
 	});
 });
 
@@ -846,7 +786,7 @@ describe("health breaker on the Jev rails", () => {
 			const second = await plan(decisions);
 			if (kindOf(second) === "unavailable") throw new Error(`${label}: opened the breaker`);
 			if (r.calls.length <= before) throw new Error(`${label}: the next call made no request`);
-			expect(openJevHealth(dir, "openrouter").read().state).toBe("closed");
+			expect(openJevHealth(dir).read().state).toBe("closed");
 		}
 	});
 
@@ -875,7 +815,7 @@ describe("health breaker on the Jev rails", () => {
 	test("after the cool-down one call probes, and a success closes the breaker", async () => {
 		const dir = tempStateDir();
 		const clock = { now: T };
-		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const health = openJevHealth(dir, { rng: () => 0.5 });
 		const r = recordingFetch([ERR(402), JEV(0.9)]);
 		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => clock.now });
 		expect(kindOf(await plan(decisions))).toBe("credits");
@@ -892,7 +832,7 @@ describe("health breaker on the Jev rails", () => {
 
 	test("while one process probes, a second process stays off", async () => {
 		const dir = tempStateDir();
-		openJevHealth(dir, "openrouter", { rng: () => 0.5 }).recordFailure("credits", T);
+		openJevHealth(dir, { rng: () => 0.5 }).recordFailure("credits", T);
 		const answer = Promise.withResolvers<Response>();
 		const probe = recordingFetch([() => answer.promise]);
 		const first = runtime(probe.fetch, { stateDir: dir, now: () => T + BASE }).decisions;
@@ -909,7 +849,7 @@ describe("health breaker on the Jev rails", () => {
 	test("after a 402 the same URL, model and key are used on every later attempt and nothing else is contacted", async () => {
 		const dir = tempStateDir();
 		const clock = { now: T };
-		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const health = openJevHealth(dir, { rng: () => 0.5 });
 		const r = recordingFetch([ERR(402)]);
 		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => clock.now });
 		const kinds: string[] = [];
@@ -1028,29 +968,6 @@ describe("usage ledger", () => {
 		expect(existsSync(join(dir, "decisions-health-openrouter.json"))).toBe(false);
 	});
 
-	test("the Vercel rail is ledgered with its own rail and the gateway model id", async () => {
-		const dir = tempStateDir();
-		const { decisions } = runtime(recordingFetch([VEV(0.97)]).fetch, {
-			stateDir: dir,
-			config: { ...ON, provider: "vercel" },
-			env: { AI_GATEWAY_API_KEY: "vck_test_key_do_not_use" },
-		});
-		await plan(decisions);
-		expect(rows(dir)).toEqual([
-			{
-				ts: 1000,
-				point: "plan",
-				rail: "vercel",
-				requestedModel: "typesafe-ai/jev",
-				servedModel: "typesafe-ai/jev",
-				ok: true,
-				ms: 0,
-				promptTokens: 100,
-				completionTokens: 5,
-			},
-		]);
-	});
-
 	test("neither the ledger nor the health file holds the key, the prompt or an upstream body", async () => {
 		const dir = tempStateDir();
 		const good = runtime(recordingFetch([JEV(0.9)]).fetch, {
@@ -1072,7 +989,7 @@ describe("usage ledger", () => {
 	});
 });
 
-describe("per-rail breakers, stragglers and the per-POST ledger", () => {
+describe("breaker, stragglers and the per-POST ledger", () => {
 	const T = Date.UTC(2026, 9, 28, 12, 0, 0);
 	const BASE = 300_000;
 	const usageRows = (dir: string): Array<Record<string, unknown>> =>
@@ -1081,34 +998,24 @@ describe("per-rail breakers, stragglers and the per-POST ledger", () => {
 			.split("\n")
 			.map((line) => JSON.parse(line) as Record<string, unknown>);
 
-	test("a spent Vercel account does not block OpenRouter, and the refusal names Vercel", async () => {
+	test("a spent OpenRouter account refuses later calls with its own text, and writes only the OpenRouter breaker file", async () => {
 		const dir = tempStateDir();
-		const vercel = runtime(recordingFetch([ERR(402)]).fetch, {
-			stateDir: dir,
-			config: { ...ON, provider: "vercel" },
-			env: { AI_GATEWAY_API_KEY: "vck_test_key_do_not_use" },
-		}).decisions;
-		expect(kindOf(await plan(vercel))).toBe("credits");
-		const refused = await plan(vercel);
-		if (refused.status !== "error") throw new Error("expected the Vercel breaker to refuse");
+		const r = recordingFetch([ERR(402)]);
+		const { decisions } = runtime(r.fetch, { stateDir: dir });
+		expect(kindOf(await plan(decisions))).toBe("credits");
+		const refused = await plan(decisions);
+		if (refused.status !== "error") throw new Error("expected the breaker to refuse");
 		expect(refused.error.message).toStartWith(
-			"decisions unavailable: Vercel AI Gateway reports insufficient credits",
+			"decisions unavailable: OpenRouter reports insufficient credits",
 		);
-		const r = recordingFetch([JEV(0.9)]);
-		const openrouter = runtime(r.fetch, {
-			stateDir: dir,
-			config: { ...ON, provider: "openrouter" },
-		}).decisions;
-		expect(kindOf(await plan(openrouter))).toBe("ok");
 		expect(r.calls).toHaveLength(1);
-		expect(existsSync(join(dir, "decisions-health-vercel.json"))).toBe(true);
-		expect(readFileSync(join(dir, "decisions-health-openrouter.json"), "utf8")).toContain("closed");
-		expect(existsSync(join(dir, "decisions-health.json"))).toBe(false);
+		const files = readdirSync(dir).filter((name) => name.startsWith("decisions-health"));
+		expect(files).toEqual(["decisions-health-openrouter.json"]);
 	});
 
 	test("decisions started together cannot double the cool-down: every failure after the first is a straggler", async () => {
 		const dir = tempStateDir();
-		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const health = openJevHealth(dir, { rng: () => 0.5 });
 		const r = recordingFetch([ERR(402)]);
 		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => T });
 		const outcomes = await Promise.all([plan(decisions), plan(decisions), plan(decisions)]);
@@ -1124,7 +1031,7 @@ describe("per-rail breakers, stragglers and the per-POST ledger", () => {
 
 	test("a success already in flight cannot erase a newer hard failure", async () => {
 		const dir = tempStateDir();
-		const health = openJevHealth(dir, "openrouter", { rng: () => 0.5 });
+		const health = openJevHealth(dir, { rng: () => 0.5 });
 		const slow = Promise.withResolvers<Response>();
 		const r = recordingFetch([ERR(402), () => slow.promise]);
 		const { decisions } = runtime(r.fetch, { stateDir: dir, health, now: () => T });

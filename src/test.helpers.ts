@@ -163,12 +163,6 @@ export const JEV =
 			usage: { input_tokens: 450, output_tokens: 0, cost: 0.000019 },
 		});
 
-export const VEV = (p: number) => () =>
-	Response.json({
-		answers: { plan_worthy: { type: "boolean", probability: p } },
-		usage: { inputTokens: 100, outputTokens: 5 },
-	});
-
 /** Never resolves; rejects with an AbortError when its signal fires. */
 export function hangingFetch(onCall?: () => void): typeof fetch {
 	return ((_input: string | URL | Request, init?: RequestInit) =>

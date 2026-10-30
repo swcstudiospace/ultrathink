@@ -132,10 +132,10 @@ A repository without `.planning/ROADMAP.md` needs no GSD at all.
 
 ## Optional: add the Jev check
 
-Jev is a decision model on OpenRouter and the Vercel AI Gateway that answers one yes/no question with a calibrated probability. With a Jev key, the done assessment also asks it whether the patch fully delivers the request and every acceptance criterion in the spec, with nothing missing, stubbed or left as a TODO. It is always on and applies to every ship run, so to every GSD run. Setup: [Use Jev decisions](use-jev-decisions.md). The short version:
+Jev is a decision model on OpenRouter that answers one yes/no question with a calibrated probability. With a Jev key, the done assessment also asks it whether the patch fully delivers the request and every acceptance criterion in the spec, with nothing missing, stubbed or left as a TODO. It is always on and applies to every ship run, so to every GSD run. Setup: [Use Jev decisions](use-jev-decisions.md). The short version:
 
 ```sh
-<clone>/bin/ultrathink-mcp auth set-key vercel --stdin   # paste the Vercel key, then Ctrl-D
+<clone>/bin/ultrathink-mcp auth set-key openrouter --stdin   # paste the OpenRouter key, then Ctrl-D
 ```
 
 ```json

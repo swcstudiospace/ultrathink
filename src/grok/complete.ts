@@ -7,8 +7,6 @@
  * Default transport talks directly to the Grok CLI chat proxy (`/responses`)
  * with the user's existing `grok login` session; the `cli` transport shells
  * out to the Grok Build CLI instead so the same login is reused either way.
- * The `shunt` transport posts Anthropic Messages to a shunt gateway you run
- * (`grok.shuntBaseUrl` + `/v1/messages`) that owns its own upstream auth.
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -67,12 +65,6 @@ export interface GrokCompleteOptions {
 	cwd?: string;
 	/** Test seam for the CLI-driven token refresh; default `ensureFreshGrokAuth`. */
 	refresh?: (opts: EnsureFreshOptions) => Promise<GrokAuth | undefined>;
-	/** `shunt` transport: base URL of a shunt gateway you run (`/v1/messages` is appended). Required: there is no built-in default. */
-	shuntBaseUrl?: string;
-	/** `shunt` transport: wire model; overrides `model` because the gateway route pins the effort. Empty = `model`. */
-	shuntModel?: string;
-	/** `shunt` transport: Anthropic `max_tokens`. */
-	shuntMaxTokens?: number;
 	/** `http` transport: receives model and token usage from the reply when present. Never throws into the call. */
 	onResult?: (info: GrokCallInfo) => void;
 	/** `http` transport: `max_output_tokens` (visible output only; positive integer, floored). The CLI transport ignores it. */
@@ -86,8 +78,6 @@ export interface GrokCompleteOptions {
 	/** Test seam: jitter source for the retry backoff. */
 	retryRandom?: () => number;
 }
-
-const SHUNT_ANTHROPIC_VERSION = "2023-06-01";
 
 const LOGIN_HINT = "run `grok login`";
 
@@ -181,61 +171,13 @@ function reportUsage(opts: GrokCompleteOptions, json: unknown, model: string): v
 	}
 }
 
-/** Anthropic Messages body for the shunt gateway. No `thinking` param: the route pins the effort. */
-export function buildShuntBody(
-	system: string,
-	user: string,
-	model: string,
-	maxTokens: number,
-): Record<string, unknown> {
-	return { model, max_tokens: maxTokens, system, messages: [{ role: "user", content: user }] };
-}
-
-/** Shape of an Anthropic `/v1/messages` reply; each field is still checked at use because it is upstream JSON. */
-interface ShuntReply {
-	type?: unknown;
-	content?: unknown;
-	error?: unknown;
-}
-
-/** Extracts assistant text from an Anthropic Messages reply, skipping `thinking`/`redacted_thinking` blocks. */
-export function parseShuntText(json: unknown): string {
-	const reply: ShuntReply = json && typeof json === "object" ? json : {};
-	if (reply.type === "error") {
-		const err =
-			reply.error && typeof reply.error === "object"
-				? (reply.error as { type?: unknown; message?: unknown })
-				: {};
-		const message =
-			typeof err.message === "string" ? err.message : JSON.stringify(reply.error ?? null);
-		const kind = typeof err.type === "string" ? err.type : "error";
-		throw new GrokHttpError(
-			`shunt ${kind}: ${redactSecrets(message).slice(0, 500)}`,
-			0,
-			redactSecrets(message).slice(0, 500),
-		);
-	}
-	const parts: string[] = [];
-	if (Array.isArray(reply.content)) {
-		for (const raw of reply.content) {
-			if (!raw || typeof raw !== "object") continue;
-			const block: ResponsesContentBlock = raw;
-			if (block.type === "text" && typeof block.text === "string" && block.text)
-				parts.push(block.text);
-		}
-	}
-	const text = parts.join("\n");
-	if (!text.trim()) throw new Error("grok returned no text");
-	return text;
-}
-
 const RETRY_POLICY = { maxAttempts: 3, baseMs: 1000, capMs: 8000 };
-
-/** Report cause (and interim marker) for a reply the provider cut short. */
-const TRUNCATED_REPLY = "truncated_reply";
 
 /** Replies the provider says it stopped for length. */
 const LENGTH_STOPS: readonly unknown[] = ["length", "max_tokens"];
+
+/** Report cause (and interim marker) for a reply the provider cut short. */
+const TRUNCATED_REPLY = "truncated_reply";
 
 /** Failures a second attempt cannot fix: our own timeout, and an output over the cap. */
 const FINAL_TEXT = /^grok (?:timed out after|output exceeded)/;
@@ -308,10 +250,9 @@ function httpError(prefix: string, res: Response, body: string): GrokHttpError {
 	);
 }
 
-function isTruncatedJson(json: unknown, field: "status" | "stop_reason"): boolean {
+function isIncompleteReply(json: unknown): boolean {
 	if (!json || typeof json !== "object") return false;
-	const value = (json as Record<string, unknown>)[field];
-	return field === "status" ? value === "incomplete" : LENGTH_STOPS.includes(value);
+	return (json as Record<string, unknown>).status === "incomplete";
 }
 
 /** Shared per-call timeout + caller-abort wiring for the fetch-based transports. */
@@ -348,64 +289,6 @@ function callGuard(opts: GrokCompleteOptions): CallGuard {
 			opts.signal?.removeEventListener("abort", onAbort);
 		},
 	};
-}
-
-const SHUNT_URL_MISSING =
-	'grok shunt transport: set grok.shuntBaseUrl (the base URL of your Anthropic-compatible gateway) in ~/.config/ultrathink/config.json, or switch grok.transport to "http"';
-
-async function completeShunt(
-	system: string,
-	user: string,
-	opts: GrokCompleteOptions,
-	fallbackModel: string,
-): Promise<string> {
-	const baseUrl = (opts.shuntBaseUrl?.trim() ?? "").replace(/\/+$/, "");
-	if (!baseUrl) throw new Error(SHUNT_URL_MISSING);
-	const model = opts.shuntModel?.trim() || fallbackModel;
-	const maxTokens =
-		typeof opts.shuntMaxTokens === "number" &&
-		Number.isInteger(opts.shuntMaxTokens) &&
-		opts.shuntMaxTokens > 0
-			? opts.shuntMaxTokens
-			: DEFAULT_GROK_CONFIG.shuntMaxTokens;
-	return withGrokRetry(() => shuntAttempt(system, user, opts, baseUrl, model, maxTokens), opts);
-}
-
-async function shuntAttempt(
-	system: string,
-	user: string,
-	opts: GrokCompleteOptions,
-	baseUrl: string,
-	model: string,
-	maxTokens: number,
-): Promise<string> {
-	const guard = callGuard(opts);
-	try {
-		let res: Response;
-		try {
-			res = await (opts.fetch ?? fetch)(`${baseUrl}/v1/messages`, {
-				method: "POST",
-				headers: {
-					"content-type": "application/json",
-					"anthropic-version": SHUNT_ANTHROPIC_VERSION,
-					accept: "application/json",
-				},
-				body: JSON.stringify(buildShuntBody(system, user, model, maxTokens)),
-				signal: guard.signal,
-			});
-		} catch (error) {
-			throw guard.wrap(error);
-		}
-		if (!res.ok) {
-			throw httpError("shunt HTTP", res, await errorBody(res, guard));
-		}
-		const reply: unknown = await res.json();
-		if (isTruncatedJson(reply, "stop_reason"))
-			throw truncatedReply("grok shunt reply was cut short (max_tokens)");
-		return parseShuntText(reply);
-	} finally {
-		guard.release();
-	}
 }
 
 /**
@@ -509,7 +392,7 @@ async function httpAttempt(
 		}
 		if (!res.ok) throw httpError("grok HTTP", res, await errorBody(res, guard));
 		const reply: unknown = await res.json();
-		if (isTruncatedJson(reply, "status"))
+		if (isIncompleteReply(reply))
 			throw truncatedReply("grok reply was cut short (status incomplete)");
 		reportUsage(opts, reply, model);
 		return parseResponsesText(reply);
@@ -655,8 +538,6 @@ export async function grokComplete(
 	const model = opts.model?.trim() || DEFAULT_GROK_CONFIG.model;
 	const effort = grokWireEffort(model, opts.reasoningEffort ?? DEFAULT_GROK_CONFIG.reasoningEffort);
 	switch (opts.transport) {
-		case "shunt":
-			return completeShunt(system, user, opts, model);
 		case "cli":
 			return completeCli(system, user, opts, model, effort);
 		default:
