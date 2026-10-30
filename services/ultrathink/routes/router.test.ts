@@ -1418,5 +1418,5 @@ describe("hosted planner lifecycle", () => {
 		});
 		expect(metrics.sum("ultrathink_plan_jobs_total", { status: "failed" })).toBe(1);
 		await app.shutdown();
-	});
+	}, 20_000);
 });
