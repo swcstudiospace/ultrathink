@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SessionRecord } from "../claude/state.ts";
 import { classifyChecks, createGithub } from "./github.ts";
 import type { ReviewThread, ReviewThreads } from "./github.ts";
@@ -935,6 +938,61 @@ describe("createGithub", () => {
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: false, error: "fatal: permission denied" });
 			expect(calls).toHaveLength(1);
+		});
+
+		test("a symlinked cwd is this session's worktree, so its merged branch is cleaned up", () => {
+			const root = mkdtempSync(join(tmpdir(), "ship-link-"));
+			try {
+				const real = join(realpathSync(root), "wt");
+				mkdirSync(real);
+				const link = join(root, "link");
+				symlinkSync(real, link);
+				const listing = [
+					"worktree /repo",
+					"HEAD 1111111",
+					"branch refs/heads/master",
+					"",
+					`worktree ${real}`,
+					`HEAD ${TIP}`,
+					"branch refs/heads/feat",
+					"",
+				].join("\0");
+				const detachedListing = [
+					"worktree /repo",
+					"HEAD 1111111",
+					"branch refs/heads/master",
+					"",
+					`worktree ${real}`,
+					`HEAD ${TIP}`,
+					"detached",
+					"",
+				].join("\0");
+				let detached = false;
+				const { run, calls } = fakeRun((argv) => {
+					const cmd = argv.join(" ");
+					if (cmd === "git rev-parse --verify --quiet refs/heads/feat") {
+						return { stdout: `${TIP}\n` };
+					}
+					if (cmd === "git worktree list --porcelain -z") {
+						return { stdout: detached ? detachedListing : listing };
+					}
+					if (cmd === `git -C ${real} status --porcelain`) return { stdout: "" };
+					if (cmd === `git -C ${real} symbolic-ref -q HEAD`) {
+						return detached ? { exitCode: 1 } : { stdout: "refs/heads/feat\n" };
+					}
+					if (cmd === `git -C ${real} checkout --detach`) detached = true;
+					if (cmd === `git -C ${real} rev-parse --verify --quiet HEAD`) {
+						return { stdout: `${TIP}\n` };
+					}
+					return {};
+				});
+				expect(
+					createGithub({ cwd: link, run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+				).toEqual({ ok: true });
+				expect(calls.at(-1)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
 		});
 
 		test("another session's worktree is left alone: kept with its reason and no checkout runs", () => {

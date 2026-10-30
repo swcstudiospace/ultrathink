@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { defaultRun } from "./run.ts";
 import type { PrRef, PrStatus, Run, ShipConfig } from "./types.ts";
@@ -244,10 +245,19 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 		const r = exec(["git", "-C", wt, "symbolic-ref", "-q", "HEAD"]);
 		return r.exitCode === 0 ? r.stdout.trim() : undefined;
 	};
-	// Whether `wt` is this session's own worktree: the one the command runs in, or a directory inside it.
+	// `path` with symlinks resolved, as `git worktree list` reports them; `path` itself when it cannot be resolved.
+	const realOrSelf = (path: string): string => {
+		try {
+			return realpathSync(path);
+		} catch {
+			return path;
+		}
+	};
+	// Whether `wt` is this session's own worktree: the one the command runs in, or a directory inside it. Both sides
+	// are resolved through symlinks, since `git worktree list` reports real paths.
 	const mine = (wt: string): boolean => {
-		const here = resolve(cwd);
-		const path = resolve(wt);
+		const here = realOrSelf(resolve(cwd));
+		const path = realOrSelf(resolve(wt));
 		return here === path || here.startsWith(`${path}${sep}`);
 	};
 
