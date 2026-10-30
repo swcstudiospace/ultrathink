@@ -796,6 +796,9 @@ describe("createGithub", () => {
 				}
 				if (cmd === "git -C /wt/feat status --porcelain") return { stdout: status };
 				if (cmd === "git -C /wt/feat checkout --detach") detached = true;
+				if (cmd === "git -C /wt/feat symbolic-ref -q HEAD") {
+					return detached ? { exitCode: 1 } : { stdout: "refs/heads/feat\n" };
+				}
 				if (cmd === "git -C /wt/feat rev-parse --verify --quiet HEAD") {
 					return { stdout: `${TIP}\n` };
 				}
@@ -824,14 +827,16 @@ describe("createGithub", () => {
 		test("a clean worktree holding the branch is detached, then the local branch is deleted; no remote call", () => {
 			const { run, calls } = reply("");
 			expect(
-				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+				createGithub({ cwd: "/wt/feat", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
 			expect(calls.map((c) => c.argv)).toEqual([
 				["git", "rev-parse", "--verify", "--quiet", "refs/heads/feat"],
 				["git", "worktree", "list", "--porcelain", "-z"],
 				["git", "-C", "/wt/feat", "status", "--porcelain"],
+				["git", "-C", "/wt/feat", "symbolic-ref", "-q", "HEAD"],
 				["git", "-C", "/wt/feat", "checkout", "--detach"],
 				["git", "-C", "/wt/feat", "rev-parse", "--verify", "--quiet", "HEAD"],
+				["git", "-C", "/wt/feat", "symbolic-ref", "-q", "HEAD"],
 				["git", "worktree", "list", "--porcelain", "-z"],
 				["git", "config", "-z", "--local", "--get-regexp", "^branch\\."],
 				["git", "config", "--remove-section", "branch.feat"],
@@ -843,7 +848,7 @@ describe("createGithub", () => {
 		test("a dirty worktree keeps the branch and is never detached", () => {
 			const { run, calls } = reply(" M src/a.ts\n");
 			expect(
-				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+				createGithub({ cwd: "/wt/feat", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true, kept: "worktree dirty" });
 			expect(calls.map((c) => c.argv.join(" "))).not.toContain("git -C /wt/feat checkout --detach");
 			expect(calls.some((c) => c.argv[1] === "branch")).toBe(false);
@@ -903,7 +908,7 @@ describe("createGithub", () => {
 			expect(calls.some((c) => c.argv[1] === "branch" || c.argv.includes("-D"))).toBe(false);
 		});
 
-		test("a worktree whose HEAD moved past the merged head is detached, but the branch is kept", () => {
+		test("a detach that does not land on headSha reports an error and deletes nothing", () => {
 			const { run, calls } = fakeRun((argv) => {
 				const cmd = argv.join(" ");
 				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") {
@@ -914,11 +919,12 @@ describe("createGithub", () => {
 				if (cmd === "git -C /wt/feat rev-parse --verify --quiet HEAD") {
 					return { stdout: "f00d1\n" };
 				}
+				if (cmd === "git -C /wt/feat symbolic-ref -q HEAD") return { stdout: "refs/heads/feat\n" };
 				return {};
 			});
 			expect(
-				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
-			).toEqual({ ok: true, kept: "tip differs from merged head" });
+				createGithub({ cwd: "/wt/feat", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: false, error: "worktree did not detach at the merged head" });
 			expect(calls.some((c) => c.argv[1] === "update-ref")).toBe(false);
 			expect(calls.some((c) => c.argv[1] === "branch")).toBe(false);
 		});
@@ -929,6 +935,54 @@ describe("createGithub", () => {
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: false, error: "fatal: permission denied" });
 			expect(calls).toHaveLength(1);
+		});
+
+		test("another session's worktree is left alone: kept with its reason and no checkout runs", () => {
+			const { run, calls } = reply("");
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true, kept: "shared worktree, left alone" });
+			expect(calls.some((c) => c.argv.includes("checkout"))).toBe(false);
+			expect(calls.some((c) => c.argv[1] === "update-ref")).toBe(false);
+		});
+
+		test("two worktrees on the branch are both left alone", () => {
+			const two = [
+				"worktree /wt/feat",
+				`HEAD ${TIP}`,
+				"branch refs/heads/feat",
+				"",
+				"worktree /wt/feat-2",
+				`HEAD ${TIP}`,
+				"branch refs/heads/feat",
+				"",
+			].join("\0");
+			const { run, calls } = fakeRun((argv) => {
+				const cmd = argv.join(" ");
+				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") return { stdout: `${TIP}\n` };
+				if (cmd === "git worktree list --porcelain -z") return { stdout: two };
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/wt/feat", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true, kept: "shared worktree, left alone" });
+			expect(calls.some((c) => c.argv.includes("checkout"))).toBe(false);
+		});
+
+		test("a holder switched to another branch after the scan is kept, with no detach", () => {
+			const { run, calls } = fakeRun((argv) => {
+				const cmd = argv.join(" ");
+				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") return { stdout: `${TIP}\n` };
+				if (cmd === "git worktree list --porcelain -z") return { stdout: PORCELAIN };
+				if (cmd === "git -C /wt/feat status --porcelain") return { stdout: "" };
+				if (cmd === "git -C /wt/feat symbolic-ref -q HEAD") return { stdout: "refs/heads/other\n" };
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/wt/feat", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true, kept: "worktree no longer on the branch" });
+			expect(calls.some((c) => c.argv.includes("checkout"))).toBe(false);
+			expect(calls.some((c) => c.argv[1] === "update-ref")).toBe(false);
 		});
 
 		test("a worktree path with a backslash and an accent is used literally", () => {
@@ -961,13 +1015,16 @@ describe("createGithub", () => {
 					return { stdout: detached ? detachedListing : listing };
 				}
 				if (cmd === `git -C ${path} checkout --detach`) detached = true;
+				if (cmd === `git -C ${path} symbolic-ref -q HEAD`) {
+					return detached ? { exitCode: 1 } : { stdout: "refs/heads/feat\n" };
+				}
 				if (cmd === `git -C ${path} rev-parse --verify --quiet HEAD`) {
 					return { stdout: `${TIP}\n` };
 				}
 				return {};
 			});
 			expect(
-				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+				createGithub({ cwd: path, run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
 			expect(calls.map((c) => c.argv)).toContainEqual(["git", "-C", path, "checkout", "--detach"]);
 			expect(calls.at(-2)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);

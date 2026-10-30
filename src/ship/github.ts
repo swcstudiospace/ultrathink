@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+import { resolve, sep } from "node:path";
 import { defaultRun } from "./run.ts";
 import type { PrRef, PrStatus, Run, ShipConfig } from "./types.ts";
 
@@ -238,6 +239,18 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 		return { error: errorOf(r) };
 	};
 
+	// The ref HEAD names in `wt`, or undefined when HEAD is detached (or unreadable).
+	const headRef = (wt: string): string | undefined => {
+		const r = exec(["git", "-C", wt, "symbolic-ref", "-q", "HEAD"]);
+		return r.exitCode === 0 ? r.stdout.trim() : undefined;
+	};
+	// Whether `wt` is this session's own worktree: the one the command runs in, or a directory inside it.
+	const mine = (wt: string): boolean => {
+		const here = resolve(cwd);
+		const path = resolve(wt);
+		return here === path || here.startsWith(`${path}${sep}`);
+	};
+
 	// `git config -z --local --get-regexp` prints `key\nvalue\0` per setting (a bare boolean has no newline) and exits 1
 	// with no output when nothing matches. Only the keys of the local `branch.<name>` section are kept: removal deletes
 	// exactly that section, and a variable name has no dot, so a dot after the name marks another subsection.
@@ -419,6 +432,11 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			const listed = exec(["git", "worktree", "list", "--porcelain", "-z"]);
 			if (listed.exitCode !== 0) return { ok: false, error: errorOf(listed) };
 			const holders = worktreesOn(listed.stdout, ref);
+			// Another session's worktree is left alone: a checkout there could detach a branch that session is on, and
+			// the re-checks below could not put it back. Only this session's own worktree is detached.
+			if (holders.length > 1 || !holders.every(mine)) {
+				return { ok: true, kept: "shared worktree, left alone" };
+			}
 			// Check every holder before detaching any, so a dirty one leaves all worktrees untouched.
 			for (const wt of holders) {
 				const status = exec(["git", "-C", wt, "status", "--porcelain"]);
@@ -426,13 +444,16 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 				if (status.stdout.trim() !== "") return { ok: true, kept: "worktree dirty" };
 			}
 			for (const wt of holders) {
+				// Re-read HEAD right before the detach. Git has no lock between a read and a checkout, so these checks
+				// narrow the window for a branch switch but do not close it.
+				if (headRef(wt) !== ref) return { ok: true, kept: "worktree no longer on the branch" };
 				const detached = exec(["git", "-C", wt, "checkout", "--detach"]);
 				if (detached.exitCode !== 0) return { ok: false, error: errorOf(detached) };
-				// A commit that landed after the checks above is detached too, so re-check what HEAD now is.
 				const head = exec(["git", "-C", wt, "rev-parse", "--verify", "--quiet", "HEAD"]);
 				if (head.exitCode !== 0) return { ok: false, error: errorOf(head) };
-				if (head.stdout.trim() !== headSha) {
-					return { ok: true, kept: "tip differs from merged head" };
+				// Not detached at the merged head: report it and delete nothing, rather than restoring a checkout.
+				if (headRef(wt) !== undefined || head.stdout.trim() !== headSha) {
+					return { ok: false, error: "worktree did not detach at the merged head" };
 				}
 			}
 			// Git cannot stop a checkout after this re-read: update-ref, unlike `branch -D`, does not refuse a branch
