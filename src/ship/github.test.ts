@@ -995,6 +995,24 @@ describe("createGithub", () => {
 			}
 		});
 
+		test("a failing HEAD read is reported as that error, not as the branch being left", () => {
+			const { run, calls } = fakeRun((argv) => {
+				const cmd = argv.join(" ");
+				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") return { stdout: `${TIP}\n` };
+				if (cmd === "git worktree list --porcelain -z") return { stdout: PORCELAIN };
+				if (cmd === "git -C /wt/feat status --porcelain") return { stdout: "" };
+				if (cmd === "git -C /wt/feat symbolic-ref -q HEAD") {
+					return { exitCode: 128, stderr: "fatal: unable to read HEAD" };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/wt/feat", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: false, error: "fatal: unable to read HEAD" });
+			expect(calls.some((c) => c.argv.includes("checkout"))).toBe(false);
+			expect(calls.some((c) => c.argv[1] === "update-ref")).toBe(false);
+		});
+
 		test("another session's worktree is left alone: kept with its reason and no checkout runs", () => {
 			const { run, calls } = reply("");
 			expect(

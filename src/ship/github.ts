@@ -212,6 +212,12 @@ function worktreesOn(porcelain: string, ref: string): string[] {
 	return paths;
 }
 
+/** HEAD of a worktree: the branch it names, detached, or the error git reported while reading it. */
+type HeadState =
+	| { kind: "branch"; ref: string }
+	| { kind: "detached" }
+	| { kind: "error"; error: string };
+
 export function createGithub(input: { cwd: string; run?: Run }): Github {
 	const run = input.run ?? defaultRun;
 	const cwd = input.cwd;
@@ -240,10 +246,12 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 		return { error: errorOf(r) };
 	};
 
-	// The ref HEAD names in `wt`, or undefined when HEAD is detached (or unreadable).
-	const headRef = (wt: string): string | undefined => {
+	// `symbolic-ref -q` exits 1 with no output exactly when HEAD is detached; any other failure is an error.
+	const headState = (wt: string): HeadState => {
 		const r = exec(["git", "-C", wt, "symbolic-ref", "-q", "HEAD"]);
-		return r.exitCode === 0 ? r.stdout.trim() : undefined;
+		if (r.exitCode === 0) return { kind: "branch", ref: r.stdout.trim() };
+		if (r.exitCode === 1 && r.stderr.trim() === "") return { kind: "detached" };
+		return { kind: "error", error: errorOf(r) };
 	};
 	// `path` with symlinks resolved, as `git worktree list` reports them; `path` itself when it cannot be resolved.
 	const realOrSelf = (path: string): string => {
@@ -456,13 +464,19 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			for (const wt of holders) {
 				// Re-read HEAD right before the detach. Git has no lock between a read and a checkout, so these checks
 				// narrow the window for a branch switch but do not close it.
-				if (headRef(wt) !== ref) return { ok: true, kept: "worktree no longer on the branch" };
+				const state = headState(wt);
+				if (state.kind === "error") return { ok: false, error: state.error };
+				// Already detached: this worktree no longer holds the branch, so there is nothing to detach.
+				if (state.kind === "detached") continue;
+				if (state.ref !== ref) return { ok: true, kept: "worktree no longer on the branch" };
 				const detached = exec(["git", "-C", wt, "checkout", "--detach"]);
 				if (detached.exitCode !== 0) return { ok: false, error: errorOf(detached) };
 				const head = exec(["git", "-C", wt, "rev-parse", "--verify", "--quiet", "HEAD"]);
 				if (head.exitCode !== 0) return { ok: false, error: errorOf(head) };
 				// Not detached at the merged head: report it and delete nothing, rather than restoring a checkout.
-				if (headRef(wt) !== undefined || head.stdout.trim() !== headSha) {
+				const after = headState(wt);
+				if (after.kind === "error") return { ok: false, error: after.error };
+				if (after.kind !== "detached" || head.stdout.trim() !== headSha) {
 					return { ok: false, error: "worktree did not detach at the merged head" };
 				}
 			}
