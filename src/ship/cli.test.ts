@@ -4,13 +4,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SessionRecord } from "../claude/state.ts";
 import { createDecisions } from "../decisions/gate.ts";
 import { DEFAULT_DECISIONS_CONFIG } from "../decisions/types.ts";
 import type { DecisionsConfig, DecisionsErrorKind } from "../decisions/types.ts";
+import { engineForSessionModel } from "../host/engine.ts";
 import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
 import type { Github, ReviewThreads, ReviewThreadsOptions } from "./github.ts";
 import { assessDone } from "./assess.ts";
-import { runShip } from "./cli.ts";
+import { judgeSessionModel, runShip } from "./cli.ts";
 import type { ShipDeps } from "./cli.ts";
 import { runReview } from "./greptile.ts";
 import { appendAttempts, archiveShip, readShip, writeShip } from "./state.ts";
@@ -178,7 +180,7 @@ function deps(o: FakeOpts = {}): ShipDeps {
 		}),
 		signals: () => signals,
 		diff: () => ({ stat: "", log: "" }),
-		engine: async () => async () => "{}",
+		engine: async () => ({ complete: async () => "{}", label: "fake-judge" }),
 		greptile: () => undefined,
 		sleep: async (ms) => {
 			sleeps.push(ms);
@@ -340,6 +342,47 @@ describe("runShip", () => {
 		const gate = await ship("assess", d);
 		expect(gate.output).toMatchObject({ done: false, mode: "gate" });
 		expect(gate.output.gaps).toContain("no judge available");
+	});
+
+	test("the judge engine receives the session record; its label reaches the assessment as judgedBy", async () => {
+		const saved = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+		writeFileSync(
+			statePath,
+			JSON.stringify({
+				...saved,
+				modelResolution: {
+					version: "1.0.0",
+					state: "detected",
+					host: "omp",
+					provider: "xai-oauth",
+					modelId: "grok-4.7",
+					modelKnown: true,
+					label: "omp-native:xai-oauth/grok-4.7 [detected]",
+				},
+			}),
+		);
+		const seen: Parameters<ShipDeps["engine"]>[0][] = [];
+		const base = deps();
+		const echo: ShipDeps = {
+			...base,
+			assess: async (i) => ({ ...(await base.assess(i)), judgedBy: i.judgedBy }),
+		};
+		const judged: ShipDeps = {
+			...echo,
+			engine: async (record) => {
+				seen.push(record);
+				return { complete: async () => "{}", label: "fake-judge" };
+			},
+		};
+		const out = await ship("assess", judged);
+		expect(out.output).toMatchObject({ ok: true, done: true, judgedBy: "fake-judge" });
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.sessionId).toBe("s");
+		expect(seen[0]?.modelResolution).toMatchObject({ provider: "xai-oauth", modelId: "grok-4.7" });
+		expect(readShip(statePath)?.assessment?.judgedBy).toBe("fake-judge");
+
+		const unjudged = await ship("assess", { ...echo, engine: async () => undefined });
+		expect(unjudged.output).not.toHaveProperty("judgedBy");
 	});
 
 	test("assess archives a finished ship of another branch or repository and assesses into a fresh ship", async () => {
@@ -1448,7 +1491,8 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 		return {
 			...base,
 			assess: assessDone,
-			engine: async () => (judge === undefined ? undefined : async () => judge),
+			engine: async () =>
+				judge === undefined ? undefined : { complete: async () => judge, label: "fake-judge" },
 			github: () => ({
 				...github,
 				createPr: (input) => (bodies.push(input.body), github.createPr(input)),
@@ -1492,9 +1536,12 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 		const offline = jevShip({ fetch: recordingFetch([JEV(0.95, COMPLETE)]).fetch });
 		const throwing: ShipDeps = {
 			...offline,
-			engine: async () => async () => {
-				throw new Error("offline");
-			},
+			engine: async () => ({
+				complete: async () => {
+					throw new Error("offline");
+				},
+				label: "fake-judge",
+			}),
 		};
 		const cases: [ShipDeps, string][] = [
 			[offline, "no judge available"],
@@ -1648,4 +1695,57 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 			);
 		});
 	}
+});
+
+describe("judgeSessionModel", () => {
+	type Resolution = NonNullable<SessionRecord["modelResolution"]>;
+	const resolution = (fields: Partial<Resolution>): Resolution => ({
+		version: "1.0.0",
+		state: "detected",
+		host: "hermes",
+		source: "engine-model",
+		reason: "live-model",
+		engineSelection: { engine: "auto", source: "config", nativeOptOut: false },
+		modelKnown: true,
+		label: "test",
+		...fields,
+	});
+
+	test("provider and model id give the provider-qualified session model", () => {
+		const model = judgeSessionModel(
+			resolution({ provider: "xai-oauth", modelId: "grok-4.7", transport: "grok-cli" }),
+		);
+		expect(model).toBe("xai-oauth/grok-4.7");
+		expect(engineForSessionModel(model)).toBe("grok");
+	});
+
+	test("Hermes Grok session with no provider (grok-cli transport) routes to grok", () => {
+		const model = judgeSessionModel(resolution({ transport: "grok-cli", modelId: "grok-4.7" }));
+		expect(model).toBe("grok/grok-4.7");
+		expect(engineForSessionModel(model)).toBe("grok");
+	});
+
+	test("Hermes Grok shunt session with no grok in the model id still routes to grok", () => {
+		const model = judgeSessionModel(
+			resolution({ transport: "grok-shunt", modelId: "route-xhigh" }),
+		);
+		expect(model).toBe("grok/route-xhigh");
+		expect(engineForSessionModel(model)).toBe("grok");
+	});
+
+	test("Claude session with provider anthropic routes to claude", () => {
+		const model = judgeSessionModel(
+			resolution({ provider: "anthropic", modelId: "claude-sonnet-5-5", transport: "claude-cli" }),
+		);
+		expect(model).toBe("anthropic/claude-sonnet-5-5");
+		expect(engineForSessionModel(model)).toBe("claude");
+	});
+
+	test("no model id gives undefined, even with a provider or a Grok transport", () => {
+		expect(judgeSessionModel(undefined)).toBeUndefined();
+		expect(judgeSessionModel(resolution({ provider: "xai-oauth", transport: "grok-cli" }))).toBe(
+			undefined,
+		);
+		expect(judgeSessionModel(resolution({ transport: "grok-cli", modelId: "" }))).toBeUndefined();
+	});
 });

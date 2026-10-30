@@ -133,6 +133,16 @@ function isResourceFailure(error: unknown, message: string): boolean {
 	return anyMatch(RESOURCE_RES, message);
 }
 
+/** A refused connect: Bun's code is ConnectionRefused, Node's is ECONNREFUSED. */
+const REFUSED_CODES: Record<string, true> = { ConnectionRefused: true, ECONNREFUSED: true };
+const REFUSED_RES: readonly RegExp[] = [/unable to connect/i];
+
+function isRefusedConnection(error: unknown, message: string): boolean {
+	const code = readString(error, "code");
+	if (code !== undefined && Object.hasOwn(REFUSED_CODES, code)) return true;
+	return anyMatch(REFUSED_RES, message);
+}
+
 /** Maps a thrown value from any inference route onto one failover class. */
 export function classifyFailure(error: unknown): FailureClass {
 	const name = readString(error, "name");
@@ -153,7 +163,13 @@ export function classifyFailure(error: unknown): FailureClass {
 	if (byStatus !== undefined) return byStatus;
 	if (anyMatch(RATE_LIMIT_RES, message)) return "rate-limit";
 	if (anyMatch(OVERLOADED_RES, message)) return "overloaded";
-	if (isResourceFailure(error, message) || anyMatch(NETWORK_RES, message)) return "network";
+	if (
+		isResourceFailure(error, message) ||
+		isRefusedConnection(error, message) ||
+		anyMatch(NETWORK_RES, message)
+	) {
+		return "network";
+	}
 	if (anyMatch(TIMEOUT_RES, message)) return "timeout";
 	if (readString(error, "code") === "ENOENT" || anyMatch(UNAVAILABLE_RES, message)) {
 		return "unavailable";

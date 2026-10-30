@@ -10,17 +10,19 @@
  * Grok route only through the two explicit, labeled user switches `grok.fallbackToClaude: true` (login missing or
  * expired) and `grok.enabled: false`; otherwise a missing or expired Grok login skips with `GROK_LOGIN_REQUIRED`. The
  * shunt transport does not need `grok login`. Failover exists at call time and is opt-in: with
- * `claude.fallbackToGrok` a failed Claude call (plan limit, auth, billing, overload, ...) continues on the Grok
- * models, and a selected Grok route walks `grok.model` then `grok.fallbackModels` (`createFailoverCompleter`); the
- * resolution record and label stay those of the first candidate, `SelectedEngine.failover` reports the switch. The
- * `memory` purpose (memory-bank distill) is a fixed chain in `memory-chain.ts`: Claude Haiku 5.5, then Grok Build under
+ * `claude.fallbackToGrok` a failed Claude call (plan limit, auth, billing, overload, ...) continues on the Grok models
+ * and then on the shunt gateway when `grok.shuntBaseUrl` is set, and a selected Grok route walks `grok.model` then
+ * `grok.fallbackModels` (`createFailoverCompleter`); the resolution record and label stay those of the first candidate,
+ * `SelectedEngine.failover` reports the switch. `selectJudgeEngine` picks the ship judge's route from the session's
+ * provider: a Grok session tries Grok first and Claude last. The `memory` purpose (memory-bank distill) is a fixed chain
+ * in `memory-chain.ts`: Claude Haiku 5.5, then Grok Build under
  * the same consent, whatever any model setting says.
  */
 import { grokAuthStatusFresh } from "../grok/auth.ts";
 import { createFailoverCompleter, type FailoverCandidate } from "../failover/chain.ts";
 import { createGrokCompleter } from "../grok/complete.ts";
 import { grokEngineLabel } from "../grok/label.ts";
-import type { GrokTransport } from "../grok/types.ts";
+import type { GrokConfig, GrokTransport } from "../grok/types.ts";
 import { type ClaudeCompleter, createClaudeCompleter } from "../claude/complete.ts";
 import type { FlightThrottle } from "../resilience/throttle.ts";
 import { displayId, displayLabel } from "../claude/output.ts";
@@ -126,6 +128,8 @@ export interface SelectedEngine {
 	report?: () => CompletionReport | undefined;
 	/** `<first> → <answering> (<class>)` once a later candidate answered; absent on single-candidate routes. */
 	failover?: () => string | undefined;
+	/** Label of the candidate that produced the most recent successful completion; absent on routes without a chain. */
+	answering?: () => string | undefined;
 	/** The flight's one limiter when the route's completer owns it (Omp's native binding takes a slot per call); the planner then builds none. */
 	throttle?: FlightThrottle;
 	resolution: ModelResolution;
@@ -229,6 +233,7 @@ export function captureFirstError(
 	complete: ClaudeCompleter,
 	resolution: ModelResolution,
 	failover?: () => string | undefined,
+	answering?: () => string | undefined,
 ): SelectedEngine {
 	let first: string | undefined;
 	let lastReport: CompletionReport | undefined;
@@ -265,6 +270,31 @@ export function captureFirstError(
 		report: () => lastReport,
 		resolution,
 		...(failover ? { failover } : {}),
+		...(answering ? { answering } : {}),
+	};
+}
+
+/**
+ * The chain reports only its failed attempts, so the candidate that answered is recorded here: each candidate notes its
+ * own label when it returns a completion. The wrapper changes nothing else; the chain sees the same candidates.
+ */
+function trackAnswering(candidates: readonly FailoverCandidate[]): {
+	candidates: FailoverCandidate[];
+	answering: () => string | undefined;
+} {
+	let answered: string | undefined;
+	return {
+		candidates: candidates.map(
+			(candidate): FailoverCandidate => ({
+				...candidate,
+				complete: async (system, user, signal) => {
+					const text = await candidate.complete(system, user, signal);
+					answered = candidate.label;
+					return text;
+				},
+			}),
+		),
+		answering: () => answered,
 	};
 }
 
@@ -442,15 +472,23 @@ async function claudeRoute(
 	const claude = claudeCli(config, cwd, choice.model);
 	// Claude standing in for an unavailable Grok route has nothing to fail over to.
 	const failoverToGrok = !fallback && config.claude.fallbackToGrok && config.grok.enabled;
-	if (failoverToGrok && (await grokUsable(config))) {
-		const grokModels = unique([config.grok.model, ...config.grok.fallbackModels]);
-		const grok = grokCandidates(config, cwd, grokModels);
+	if (failoverToGrok) {
+		const models = unique([config.grok.model, ...config.grok.fallbackModels]);
+		const { login, shunt } = await grokFailover(config, cwd, models);
+		const grok = shunt ? [...login, shunt] : login;
 		if (grok.length > 0) {
-			const chain = createFailoverCompleter(
-				[{ id: label, label, complete: claude, route: claudeRouteIdentity(config) }, ...grok],
-				{ persist: cooldownPersist() },
+			const tracked = trackAnswering([
+				{ id: label, label, complete: claude, route: claudeRouteIdentity(config) },
+				...grok,
+			]);
+			const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
+			return captureFirstError(
+				label,
+				chain.complete,
+				resolution,
+				chain.failover,
+				tracked.answering,
 			);
-			return captureFirstError(label, chain.complete, resolution, chain.failover);
 		}
 	}
 	return captureFirstError(label, claude, resolution);
@@ -510,6 +548,58 @@ function grokCandidates(
 	});
 }
 
+/** The shunt wire model: the alias, else `model`; undefined when blank or carrying a control character. */
+function shuntWire(config: UltrathinkConfig): string | undefined {
+	const raw = config.grok.shuntModel.trim() ? config.grok.shuntModel : config.grok.model;
+	const wire = raw.trim();
+	return wire && !hasControlCharacter(raw) ? wire : undefined;
+}
+
+/**
+ * The shunt gateway as a failover candidate under a Grok transport other than shunt (under the shunt transport
+ * `grokCandidates` already names it). It needs no `grok login`, only `grok.shuntBaseUrl`.
+ */
+function shuntFailoverCandidate(
+	config: UltrathinkConfig,
+	cwd: string,
+): FailoverCandidate | undefined {
+	if (config.grok.transport === "shunt" || !config.grok.shuntBaseUrl.trim()) return undefined;
+	if (shuntWire(config) === undefined) return undefined;
+	const shunt: GrokConfig = { ...config.grok, transport: "shunt" };
+	const label = `grok:${displayId(grokEngineLabel(shunt), "<opaque-model>")}`;
+	return {
+		id: label,
+		label,
+		route: grokRouteIdentity({ ...config, grok: shunt }),
+		complete: createGrokCompleter({
+			baseUrl: config.grok.baseUrl,
+			model: config.grok.model,
+			reasoningEffort: config.grok.reasoningEffort,
+			timeoutMs: config.grok.callTimeoutMs,
+			home: config.grok.home || undefined,
+			transport: "shunt",
+			bin: config.grok.bin,
+			cwd,
+			shuntBaseUrl: config.grok.shuntBaseUrl,
+			shuntModel: config.grok.shuntModel,
+			shuntMaxTokens: config.grok.shuntMaxTokens,
+		}),
+	};
+}
+
+/**
+ * The Grok candidates a failed Claude call or a judge call falls through to: the login-based models when a session is
+ * usable (under the shunt transport, that is the alias itself), then the shunt gateway when configured.
+ */
+async function grokFailover(
+	config: UltrathinkConfig,
+	cwd: string,
+	models: readonly string[],
+): Promise<{ login: FailoverCandidate[]; shunt: FailoverCandidate | undefined }> {
+	const login = (await grokUsable(config)) ? grokCandidates(config, cwd, models) : [];
+	return { login, shunt: shuntFailoverCandidate(config, cwd) };
+}
+
 /** The `claude -p` completer for one wire model; `""` omits `--model`. */
 function claudeCli(config: UltrathinkConfig, cwd: string, model: string): ClaudeCompleter {
 	return createClaudeCompleter({
@@ -564,8 +654,9 @@ async function memoryRoute(
 		candidates.push(...grokCandidates(config, cwd, [MEMORY_CHAIN.fallback.model]));
 	assertMemoryCandidates(candidates);
 	if (candidates.length === 1) return captureFirstError(label, claude, resolution);
-	const chain = createFailoverCompleter(candidates, { persist: cooldownPersist() });
-	return captureFirstError(label, chain.complete, resolution, chain.failover);
+	const tracked = trackAnswering(candidates);
+	const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
+	return captureFirstError(label, chain.complete, resolution, chain.failover, tracked.answering);
 }
 
 /**
@@ -589,6 +680,20 @@ export function engineForSessionModel(model: unknown): LegacyRoute | undefined {
 	return matchFamily(segments[segments.length - 1] ?? "") ?? matchFamily(id);
 }
 
+/** Where the engine request came from, and whether an Omp host opted out of native planning. */
+function selectionProvenance(
+	config: UltrathinkConfig,
+	state: ControlState,
+	host: HostId,
+): EngineSelectionProvenance {
+	const requested = state.engine ?? config.think.engine;
+	return {
+		engine: requested,
+		source: state.engine === undefined ? "config" : "control",
+		nativeOptOut: host === "omp" && requested !== "auto",
+	};
+}
+
 export async function selectEngine(
 	config: UltrathinkConfig,
 	state: ControlState,
@@ -597,11 +702,7 @@ export async function selectEngine(
 ): Promise<EngineSelection> {
 	const requested = state.engine ?? config.think.engine;
 	const host = context.host ?? detectHost();
-	const engineSelection: EngineSelectionProvenance = {
-		engine: requested,
-		source: state.engine === undefined ? "config" : "control",
-		nativeOptOut: host === "omp" && requested !== "auto",
-	};
+	const engineSelection = selectionProvenance(config, state, host);
 	const base: SelectionBase = { host, engineSelection };
 	if (context.purpose === "memory") return memoryRoute(config, cwd, base);
 	const ompAuto = host === "omp" && requested === "auto";
@@ -753,8 +854,15 @@ export async function selectEngine(
 			unique([choice.model, ...config.grok.fallbackModels]),
 		);
 		if (candidates.length > 1) {
-			const chain = createFailoverCompleter(candidates, { persist: cooldownPersist() });
-			return captureFirstError(label, chain.complete, resolution, chain.failover);
+			const tracked = trackAnswering(candidates);
+			const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
+			return captureFirstError(
+				label,
+				chain.complete,
+				resolution,
+				chain.failover,
+				tracked.answering,
+			);
 		}
 	}
 	const model = override.model || config.grok.model;
@@ -774,6 +882,64 @@ export async function selectEngine(
 			shuntMaxTokens: config.grok.shuntMaxTokens,
 		}),
 		resolution,
+	);
+}
+
+/**
+ * The engine a ship judge runs on, chosen by the session's provider rather than the host default. A Grok session tries
+ * its Grok candidates (login-based models, then the shunt gateway), then Claude; any other session, or a Grok session
+ * with no Grok candidate, takes the auxiliary route unchanged. The record and label are those of the first candidate;
+ * `answering` names the candidate that actually answered.
+ */
+export async function selectJudgeEngine(
+	config: UltrathinkConfig,
+	state: ControlState,
+	cwd: string,
+	sessionModel: string | undefined,
+): Promise<EngineSelection> {
+	if (engineForSessionModel(sessionModel) !== "grok" || !config.grok.enabled)
+		return selectEngine(config, state, cwd, { purpose: "auxiliary" });
+	const models = unique([config.grok.model, ...config.grok.fallbackModels]);
+	const { login, shunt } = await grokFailover(config, cwd, models);
+	const grok = shunt ? [...login, shunt] : login;
+	const [first] = grok;
+	if (first === undefined) return selectEngine(config, state, cwd, { purpose: "auxiliary" });
+	const host = detectHost();
+	const base: SelectionBase = { host, engineSelection: selectionProvenance(config, state, host) };
+	const onLogin = login.length > 0;
+	const alias = shuntModel(config, "grok");
+	const shuntChoice: WireChoice = {
+		model: shuntWire(config) ?? "",
+		source: config.grok.shuntModel.trim() ? "shunt-model" : "engine-model",
+	};
+	const choice: WireChoice = !onLogin
+		? shuntChoice
+		: alias
+			? { model: alias, source: "shunt-model" }
+			: engineModel(config, "grok");
+	const transport: PlanningTransport = onLogin
+		? GROK_TRANSPORT[config.grok.transport]
+		: "grok-shunt";
+	const resolution = resolutionRecord({ ...base, transport, ...legacyFields(choice) });
+	const claude = engineModel(config, "claude");
+	const claudeName = claude.model ? displayId(claude.model, "<opaque-model>") : "session default";
+	const claudeLabel = `claude:${claudeName}`;
+	const claudeCandidate: FailoverCandidate = {
+		id: claudeLabel,
+		label: claudeLabel,
+		complete: claudeCli(config, cwd, claude.model),
+		route: claudeRouteIdentity(config),
+	};
+	// As in claudeRoute, a Claude model with a control character is never sent: the Grok candidates answer alone.
+	const candidates = hasControlCharacter(claude.model) ? grok : [...grok, claudeCandidate];
+	const tracked = trackAnswering(candidates);
+	const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
+	return captureFirstError(
+		first.label,
+		chain.complete,
+		resolution,
+		chain.failover,
+		tracked.answering,
 	);
 }
 

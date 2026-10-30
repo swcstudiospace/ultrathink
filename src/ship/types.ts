@@ -126,6 +126,11 @@ export interface Assessment {
 	mode?: JudgeMode;
 	/** The judge verdict, or `error` when the judge was unavailable or failed (both modes). */
 	judge?: JudgeVerdict & { error?: string };
+	/**
+	 * Label of the provider route that answered the judge. Present whenever a judge was attempted, including
+	 * when it failed; absent when no judge was run (no completer, or a rule gap returned first).
+	 */
+	judgedBy?: string;
 	/** Jev ship decision; absent when the point was inactive or a rule gap returned first. */
 	decision?: DecisionRecord;
 	at: number;

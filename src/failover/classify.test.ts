@@ -271,3 +271,33 @@ describe("isFailoverWorthy and failureCooldownMs", () => {
 		});
 	}
 });
+
+describe("refused connections", () => {
+	test("a refused Bun connect is a failover-worthy network failure", () => {
+		const error = Object.assign(
+			new TypeError("Unable to connect. Is the computer able to access the url?"),
+			{ code: "ConnectionRefused" },
+		);
+		const failure = classifyFailure(error);
+		expect(failure).toBe("network");
+		expect(isFailoverWorthy(failure)).toBe(true);
+		expect(failureCooldownMs(failure)).toBe(30_000);
+	});
+
+	test("connect ECONNREFUSED text is network", () => {
+		expect(classifyFailure(err("connect ECONNREFUSED 127.0.0.1:3001"))).toBe("network");
+	});
+
+	test("an ECONNREFUSED code without that text is network", () => {
+		expect(classifyFailure(err("socket failed", { code: "ECONNREFUSED" }))).toBe("network");
+	});
+
+	test("a 401 and a plan limit classify as before, with or without the refused code", () => {
+		const weekly = "You've hit your weekly limit \u00b7 resets Mon 12:00am";
+		expect(classifyFailure(err("denied", { status: 401 }))).toBe("auth");
+		expect(classifyFailure(err(weekly))).toBe("plan-limit");
+		expect(classifyFailure(err(weekly, { code: "ConnectionRefused", status: 401 }))).toBe(
+			"plan-limit",
+		);
+	});
+});

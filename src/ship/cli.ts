@@ -12,7 +12,7 @@ import { defaultStateDir, readControl } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { createDecisions } from "../decisions/gate.ts";
 import type { Decisions } from "../decisions/gate.ts";
-import { selectEngine } from "../host/engine.ts";
+import { selectJudgeEngine } from "../host/engine.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
@@ -48,8 +48,12 @@ export interface ShipDeps {
 	assess: typeof assessDone;
 	signals: typeof collectSignals;
 	diff: typeof gatherDiff;
-	/** Judge completer; undefined when no engine is available. */
-	engine: () => Promise<ClaudeCompleter | undefined>;
+	/** Judge for this session; it follows the session's provider. `label` names its first candidate; `answering`, when given, names the one that answered. Undefined when no judge is available. */
+	engine: (
+		record: SessionRecord,
+	) => Promise<
+		{ complete: ClaudeCompleter; label: string; answering?: () => string | undefined } | undefined
+	>;
 	greptile: () => ToolCaller | undefined;
 	/** Waits between merge polls; tests inject a fake clock. */
 	sleep: (ms: number) => Promise<void>;
@@ -204,7 +208,7 @@ async function stepAssess(ctx: Ctx): Promise<Output & { done: boolean }> {
 	const diff = signals.git.base
 		? deps.diff({ cwd, base: signals.git.base, run: deps.run })
 		: { stat: "", log: "" };
-	const complete = await deps.engine();
+	const judgeEngine = await deps.engine(record);
 	const mode = deps.config.judge;
 	const decisions = deps.decisions?.(record);
 	const { autoMerge } = deps.config;
@@ -212,12 +216,16 @@ async function stepAssess(ctx: Ctx): Promise<Output & { done: boolean }> {
 		record,
 		signals,
 		diff,
-		complete,
+		complete: judgeEngine?.complete,
+		judgedBy: judgeEngine?.label,
 		now: deps.now,
 		mode,
 		decisions,
 		autoMerge,
 	});
+	// The judge's provenance names the candidate that answered, not the first one tried (a failover moves the answer).
+	const answered = judgeEngine?.answering?.();
+	if (assessment.judgedBy && answered) assessment = { ...assessment, judgedBy: answered };
 	// A rules-only "done" (no judge ran) never auto-merges in gate mode; with autoMerge assess never lets Jev stand in.
 	if (mode === "gate" && autoMerge && assessment.source === "rules" && assessment.done) {
 		assessment = { ...assessment, done: false, gaps: [...assessment.gaps, "no judge available"] };
@@ -240,6 +248,7 @@ async function stepAssess(ctx: Ctx): Promise<Output & { done: boolean }> {
 		gaps,
 		mode: assessment.mode ?? mode,
 		...(judge ? { judge } : {}),
+		...(assessment.judgedBy ? { judgedBy: assessment.judgedBy } : {}),
 		...jev,
 		signals,
 	};
@@ -913,6 +922,22 @@ export async function runShip(
 	}
 }
 
+/**
+ * The session model the ship judge routes on (`selectJudgeEngine`). A Hermes session that plans on Grok saves its
+ * transport and model id but no provider, so a Grok transport supplies the `grok/` prefix that `engineForSessionModel`
+ * maps to Grok even when the model id names no family (for example `route-xhigh`).
+ */
+export function judgeSessionModel(
+	modelResolution: SessionRecord["modelResolution"],
+): string | undefined {
+	const modelId = modelResolution?.modelId;
+	if (!modelId) return undefined;
+	const provider = modelResolution?.provider;
+	if (provider) return `${provider}/${modelId}`;
+	if (modelResolution?.transport?.startsWith("grok")) return `grok/${modelId}`;
+	return modelId;
+}
+
 async function main(): Promise<number> {
 	const argv = process.argv.slice(2);
 	const cwdIndex = argv.indexOf("--cwd");
@@ -932,14 +957,13 @@ async function main(): Promise<number> {
 		assess: assessDone,
 		signals: collectSignals,
 		diff: gatherDiff,
-		engine: async () => {
+		engine: async (record) => {
 			if (!stateFile) return undefined;
-			// The judge is an auxiliary helper on the configured CLI route (explicit engine/model or the host's route
-			// default); it never replays the session's planning model or auth.
-			const selected = await selectEngine(config, readControl(stateDir), cwd, {
-				purpose: "auxiliary",
-			});
-			return "skipped" in selected ? undefined : selected.complete;
+			// The judge chooses its route from the session's model.
+			const sessionModel = judgeSessionModel(record.modelResolution);
+			const selected = await selectJudgeEngine(config, readControl(stateDir), cwd, sessionModel);
+			if ("skipped" in selected) return undefined;
+			return { complete: selected.complete, label: selected.label, answering: selected.answering };
 		},
 		greptile: () => {
 			// No stored Greptile credential means no MCP mode; review then needs a signed-in greptile CLI.
