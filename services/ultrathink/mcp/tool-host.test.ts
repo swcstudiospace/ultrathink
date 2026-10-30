@@ -526,7 +526,7 @@ describe("client journals record their principal", () => {
 			unknown
 		>;
 
-	test("a session started by an admitted request names its principal in the journal meta, and answers keep it", async () => {
+	test("a session started by an admitted request names its principal in the journal meta, and another principal cannot continue it", async () => {
 		const { host, stateDir } = setup();
 		const started = await runWithRequestContext(admitted("key:alice"), () =>
 			host.call("ultrathink_plan", { prompt: "plan the rollout" }),
@@ -534,6 +534,32 @@ describe("client journals record their principal", () => {
 		const sessionId = String(okOf(started).data.sessionId);
 		expect(metaOf(stateDir, sessionId).principal).toBe("key:alice");
 		const again = await runWithRequestContext(admitted("key:bob"), () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout", sessionId }),
+		);
+		expect(again).toMatchObject({ ok: false, code: "not_found" });
+		expect(metaOf(stateDir, sessionId).principal).toBe("key:alice");
+	});
+
+	test("the session's own principal continues it with ultrathink_plan", async () => {
+		const { host, stateDir } = setup();
+		const started = await runWithRequestContext(admitted("key:alice"), () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout" }),
+		);
+		const sessionId = String(okOf(started).data.sessionId);
+		const again = await runWithRequestContext(admitted("key:alice"), () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout", sessionId }),
+		);
+		expect(again.ok).toBe(true);
+		expect(metaOf(stateDir, sessionId).principal).toBe("key:alice");
+	});
+
+	test("the owner continues another principal's session with ultrathink_plan", async () => {
+		const { host, stateDir } = setup();
+		const started = await runWithRequestContext(admitted("key:alice"), () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout" }),
+		);
+		const sessionId = String(okOf(started).data.sessionId);
+		const again = await runWithRequestContext(ownerContext, () =>
 			host.call("ultrathink_plan", { prompt: "plan the rollout", sessionId }),
 		);
 		expect(again.ok).toBe(true);
@@ -591,5 +617,123 @@ describe("client journals record their principal", () => {
 		expect(await listed(admitted("key:connector"))).toEqual([]);
 		expect(await listed(ownerContext)).toEqual([sessionId]);
 		expect(await listed()).toEqual([sessionId]);
+	});
+
+	const NOT_FOUND: ToolOutcome = { ok: false, code: "not_found" };
+
+	test("another principal gets not_found from each session tool; the starter and an owner get results", async () => {
+		const { host } = setup();
+		const alice = admitted("key:alice");
+		const started = await runWithRequestContext(alice, () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout" }),
+		);
+		const sessionId = String(okOf(started).data.sessionId);
+		const pending = okOf(
+			await runWithRequestContext(alice, () => host.call("ultrathink_pending", { sessionId })),
+		).data.pending as Array<{ key: string }>;
+		const key = String(pending[0]?.key);
+		expect(pending.length).toBeGreaterThan(0);
+
+		const calls: Array<[string, Record<string, unknown>]> = [
+			["ultrathink_pending", { sessionId }],
+			["ultrathink_show", { sessionId, key }],
+			["ultrathink_answer", { sessionId, key, answer: "Postgres" }],
+			["ultrathink_status", { sessionId }],
+			["ultrathink_result", { sessionId }],
+		];
+		for (const [name, args] of calls) {
+			expect(await runWithRequestContext(admitted("key:bob"), () => host.call(name, args))).toEqual(
+				NOT_FOUND,
+			);
+		}
+
+		const owner = (name: string, args: Record<string, unknown>) =>
+			runWithRequestContext(ownerContext, () => host.call(name, args));
+		expect(okOf(await owner("ultrathink_pending", { sessionId })).data.pending).toEqual(pending);
+		expect(okOf(await owner("ultrathink_show", { sessionId, key })).data).toMatchObject({ key });
+		expect(okOf(await owner("ultrathink_status", { sessionId })).data).toMatchObject({
+			sessionId,
+			status: "needs-model",
+		});
+		expect(okOf(await owner("ultrathink_result", { sessionId })).data).toMatchObject({
+			sessionId,
+			mode: "client",
+		});
+
+		const own = (name: string, args: Record<string, unknown>) =>
+			runWithRequestContext(alice, () => host.call(name, args));
+		expect(okOf(await own("ultrathink_status", { sessionId })).data).toMatchObject({
+			sessionId,
+			status: "needs-model",
+		});
+		expect(okOf(await own("ultrathink_show", { sessionId, key })).data).toMatchObject({ key });
+		expect(okOf(await own("ultrathink_result", { sessionId })).data).toMatchObject({
+			sessionId,
+			mode: "client",
+		});
+		// The answer is checked against its stage's format and may be refused; it is never refused as not_found.
+		expect(await own("ultrathink_answer", { sessionId, key, answer: "Postgres" })).not.toEqual(
+			NOT_FOUND,
+		);
+	});
+
+	test("a request with no admission, as stdio serves, reaches every session tool of any principal's session", async () => {
+		const { host } = setup();
+		const started = await runWithRequestContext(admitted("key:alice"), () =>
+			host.call("ultrathink_plan", { prompt: "plan the rollout" }),
+		);
+		const sessionId = String(okOf(started).data.sessionId);
+		const pending = okOf(await host.call("ultrathink_pending", { sessionId })).data
+			.pending as Array<{ key: string }>;
+		const key = String(pending[0]?.key);
+		expect(pending.length).toBeGreaterThan(0);
+		expect(okOf(await host.call("ultrathink_show", { sessionId, key })).data).toMatchObject({
+			key,
+		});
+		expect(okOf(await host.call("ultrathink_status", { sessionId })).data).toMatchObject({
+			sessionId,
+			status: "needs-model",
+		});
+		expect(okOf(await host.call("ultrathink_result", { sessionId })).data).toMatchObject({
+			sessionId,
+			mode: "client",
+		});
+		// The answer is checked against its stage's format and may be refused; it is never refused as not_found.
+		expect(
+			await host.call("ultrathink_answer", { sessionId, key, answer: "Postgres" }),
+		).not.toEqual(NOT_FOUND);
+	});
+
+	test("an unnamed journal session is not_found to another principal on every session tool, and visible to an owner", async () => {
+		const { host, stateDir } = setup();
+		const sessionId = randomUUID();
+		writeMeta(journalDir(stateDir, sessionId), {
+			sessionId,
+			original: "Build the converter",
+			status: "needs-model",
+		});
+		const calls: Array<[string, Record<string, unknown>]> = [
+			["ultrathink_pending", { sessionId }],
+			["ultrathink_show", { sessionId, key: "k1" }],
+			["ultrathink_answer", { sessionId, key: "k1", answer: "Postgres" }],
+			["ultrathink_status", { sessionId }],
+			["ultrathink_result", { sessionId }],
+		];
+		for (const [name, args] of calls) {
+			expect(await runWithRequestContext(admitted("key:bob"), () => host.call(name, args))).toEqual(
+				NOT_FOUND,
+			);
+		}
+		const owner = (name: string, args: Record<string, unknown>) =>
+			runWithRequestContext(ownerContext, () => host.call(name, args));
+		expect(okOf(await owner("ultrathink_pending", { sessionId })).data.pending).toEqual([]);
+		expect(okOf(await owner("ultrathink_status", { sessionId })).data).toMatchObject({
+			sessionId,
+			status: "needs-model",
+		});
+		expect(okOf(await owner("ultrathink_result", { sessionId })).data).toMatchObject({
+			sessionId,
+			mode: "client",
+		});
 	});
 });

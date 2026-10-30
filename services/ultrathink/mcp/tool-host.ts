@@ -20,6 +20,7 @@ import {
 	startPlan,
 } from "../engine/journal.ts";
 import { clientPlanView } from "../engine/plan-view.ts";
+import { sessionVisibleTo } from "../engine/sessions.ts";
 import type { CommandCatalog } from "./commands.ts";
 import type { McpToolHost, ToolOutcome } from "./mcp.ts";
 import type { ResourceRegistry } from "./resources.ts";
@@ -30,11 +31,26 @@ import {
 	type PlanningInfo,
 	SESSIONS_TOOL,
 	createConnectorHandlers,
+	requestCaller,
 	textOutcome,
 } from "./tools-connector.ts";
 
 /** Finished plans remembered so each is counted once; the oldest are forgotten first. */
 const COUNTED_PLANS_MAX = 2000;
+
+/**
+ * The tools that take an explicit session id. Each reaches only the sessions its caller may see, as
+ * ultrathink_graph does: another principal's session reads exactly like one that does not exist.
+ */
+const EXPLICIT_SESSION_TOOLS: Record<string, true> = {
+	ultrathink_pending: true,
+	ultrathink_show: true,
+	ultrathink_answer: true,
+	ultrathink_status: true,
+	ultrathink_result: true,
+	ultrathink_plan: true,
+	ultrathink_uplift: true,
+};
 
 export interface ToolHostDeps {
 	journalOpts: JournalOptions;
@@ -129,6 +145,13 @@ export function createToolHost(deps: ToolHostDeps): ToolHost {
 	}
 
 	async function call(name: string, args: Record<string, unknown>): Promise<ToolOutcome> {
+		const { sessionId } = args;
+		if (
+			Object.hasOwn(EXPLICIT_SESSION_TOOLS, name) &&
+			isSessionId(sessionId) &&
+			!sessionVisibleTo(journalOpts.stateDir, sessionId, requestCaller())
+		)
+			return { ok: false, code: "not_found" };
 		switch (name) {
 			case "ultrathink_plan": {
 				// A server job and a client-driven plan share one session file; the reverse guard lives in headless start.

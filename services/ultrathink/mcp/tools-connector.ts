@@ -377,7 +377,7 @@ function thinkArguments(text: string | undefined): { sessionId?: string; node?: 
 }
 
 /** The caller of the request being served, from the admission the router put on its context. */
-function requestCaller(): SessionCaller | undefined {
+export function requestCaller(): SessionCaller | undefined {
 	const admission = currentRequestContext()?.admission;
 	return admission === undefined
 		? undefined
