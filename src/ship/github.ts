@@ -16,6 +16,13 @@ export interface ReviewThread {
 
 export type ReviewThreads = { ok: true; threads: ReviewThread[] } | { ok: false; error: string };
 
+/** Outcome of `deleteLocalBranch`: `kept` names why a local branch stayed; `ok: false` is an error. */
+export interface LocalBranchDelete {
+	ok: boolean;
+	kept?: string;
+	error?: string;
+}
+
 export interface Github {
 	repo(): { name: string; defaultBranch: string } | undefined;
 	push(branch: string): { ok: boolean; error?: string };
@@ -40,6 +47,12 @@ export interface Github {
 		ok: boolean;
 		error?: string;
 	};
+	/**
+	 * Deletes the local `branch` after a merge that kept it. Only when its tip is exactly `headSha`; a worktree that
+	 * has it checked out is detached first, and a dirty one keeps the branch. Returns ok with `kept` for a
+	 * deliberate keep, and never touches a remote branch or any file.
+	 */
+	deleteLocalBranch(input: { branch: string; headSha: string }): LocalBranchDelete;
 	/**
 	 * The PR's Greptile review threads; fails on any doubt (errors, truncation) so callers can fail closed.
 	 * With `opts.deadlineMs`, repository lookup and every page share the remaining wait budget; a response
@@ -183,6 +196,18 @@ function parseThreadsPage(stdout: string): ThreadsPage {
 		out.push(entry);
 	}
 	return next ? { ok: true, threads: out, next } : { ok: true, threads: out };
+}
+
+/** Paths of the worktrees with `ref` checked out, from `git worktree list --porcelain`. */
+function worktreesOn(porcelain: string, ref: string): string[] {
+	const paths: string[] = [];
+	let path: string | undefined;
+	for (const line of porcelain.split("\n")) {
+		if (line === "") path = undefined;
+		else if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
+		else if (line === `branch ${ref}` && path !== undefined) paths.push(path);
+	}
+	return paths;
 }
 
 export function createGithub(input: { cwd: string; run?: Run }): Github {
@@ -339,6 +364,29 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			// nothing local is lost. Otherwise `-d` refuses unmerged commits (a later amend or commit) and is never forced.
 			const safe = headSha !== undefined && tip.stdout.trim() === headSha;
 			const deleted = exec(["git", "branch", safe ? "-D" : "-d", branch]);
+			return deleted.exitCode === 0 ? { ok: true } : { ok: false, error: errorOf(deleted) };
+		},
+		deleteLocalBranch({ branch, headSha }) {
+			const bad = badBranch(branch);
+			if (bad) return { ok: false, error: bad };
+			const ref = `refs/heads/${branch}`;
+			const tip = exec(["git", "rev-parse", "--verify", "--quiet", ref]);
+			if (tip.exitCode !== 0) return { ok: true };
+			if (tip.stdout.trim() !== headSha) return { ok: true, kept: "tip differs from merged head" };
+			const listed = exec(["git", "worktree", "list", "--porcelain"]);
+			if (listed.exitCode !== 0) return { ok: false, error: errorOf(listed) };
+			const holders = worktreesOn(listed.stdout, ref);
+			// Check every holder before detaching any, so a dirty one leaves all worktrees untouched.
+			for (const wt of holders) {
+				const status = exec(["git", "-C", wt, "status", "--porcelain"]);
+				if (status.exitCode !== 0) return { ok: false, error: errorOf(status) };
+				if (status.stdout.trim() !== "") return { ok: true, kept: "worktree dirty" };
+			}
+			for (const wt of holders) {
+				const detached = exec(["git", "-C", wt, "checkout", "--detach"]);
+				if (detached.exitCode !== 0) return { ok: false, error: errorOf(detached) };
+			}
+			const deleted = exec(["git", "branch", "-D", branch]);
 			return deleted.exitCode === 0 ? { ok: true } : { ok: false, error: errorOf(deleted) };
 		},
 		reviewThreads(prNumber, opts = {}) {

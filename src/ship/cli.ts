@@ -719,6 +719,11 @@ function finishMerge(
 		Object.assign(cleanup, { remoteDeleted: deleted.ok, synced: synced.ok });
 		if (deleted.error) cleanup.deleteError = deleted.error;
 		if (synced.error) cleanup.syncError = synced.error;
+	} else {
+		// The remote branch stays, so only the local copy goes, and only when its tip is exactly what landed.
+		const local = github.deleteLocalBranch({ branch: pr.head, headSha: merged.headSha });
+		if (!local.ok) cleanup.localBranch = `error: ${local.error}`;
+		else cleanup.localBranch = local.kept === undefined ? "deleted" : `kept: ${local.kept}`;
 	}
 	const detail = merged.alreadyMerged ? { detail: "PR already merged" } : {};
 	appendAttempts(
