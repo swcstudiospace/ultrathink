@@ -424,6 +424,22 @@ describe("plan card model row (§9 path 5)", () => {
 			}
 		}
 	});
+
+	test("degraded stages add one Degraded row before the model row, and none when the list is empty", () => {
+		const withDegraded = planCard({ ...small, degraded: ["graph", "clarify"] }, false, 200).plain;
+		expect(withDegraded.join("\n")).toContain("Degraded graph, clarify");
+		expect(withDegraded.length).toBe(planCard(small, false, 200).plain.length + 1);
+		const both = planCard(
+			{ ...small, degraded: ["graph"], modelResolution: DETECTED },
+			false,
+			200,
+		).plain.join("\n");
+		expect(both.indexOf("Degraded graph")).toBeGreaterThan(-1);
+		expect(both.indexOf("Degraded graph")).toBeLessThan(both.indexOf("model omp-native"));
+		expect(planCard({ ...small, degraded: [] }, false, 200).plain).toEqual(
+			planCard(small, false, 200).plain,
+		);
+	});
 });
 
 describe("insight card", () => {

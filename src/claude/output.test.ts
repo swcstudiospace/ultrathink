@@ -478,6 +478,25 @@ describe("formatSummary", () => {
 		expect(formatSummary({ result })).toBe("Prompt Uplift · BUILD_PROMPT · llm");
 	});
 
+	test("lists degraded stages after the graph, and only when there are any", () => {
+		expect(
+			formatSummary({
+				result,
+				engine: "claude:x",
+				graph: FALLBACK_GRAPH,
+				degraded: ["graph", "fill:n2"],
+			}),
+		).toBe(
+			"Prompt Uplift · BUILD_PROMPT · llm · claude:x · Graph of Thought · 5 nodes · Degraded · graph, fill:n2",
+		);
+		expect(formatSummary({ result, engine: "claude:x", degraded: [] })).toBe(
+			formatSummary({ result, engine: "claude:x" }),
+		);
+		expect(formatSummary({ result, engine: "claude:x", degraded: ["state"] })).toBe(
+			formatSummary({ result, engine: "claude:x" }),
+		);
+	});
+
 	test("names the invoked skill right after the engine", () => {
 		expect(formatSummary({ result, engine: "claude:sonnet", skill: "gsd-quick" })).toBe(
 			"Prompt Uplift · BUILD_PROMPT · llm · claude:sonnet · Skill · gsd-quick",

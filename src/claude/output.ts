@@ -775,6 +775,8 @@ export function formatSummary(input: {
 	skills?: SkillsLookup;
 	/** Jev decisions of this prompt (plan, knowledge, blocking); absent or empty leaves the summary unchanged. */
 	decisions?: readonly DecisionRecord[];
+	/** Stages that fell back or failed, in run order (`uplift`, `graph`, `fill:<id>`, `think`, `clarify`); `state` is left to the notice. Absent or empty adds no segment. */
+	degraded?: readonly string[];
 }): string {
 	const bits = [`Prompt Uplift · ${input.result.root} · ${input.result.source}`];
 	if (input.modelResolution) bits.push(formatModelSelection(input.modelResolution));
@@ -783,6 +785,8 @@ export function formatSummary(input: {
 	if (input.jevWarning) bits.push(`Jev · ${input.jevWarning.replace(/^Jev /, "")}`);
 	if (input.skill) bits.push(`Skill · ${input.skill}`);
 	if (input.graph) bits.push(`Graph of Thought · ${input.graph.nodes.length} nodes`);
+	const degraded = (input.degraded ?? []).filter((token) => token !== "state");
+	if (degraded.length > 0) bits.push(`Degraded · ${degraded.join(", ")}`);
 	const briefLines = input.brief?.trim() ? input.brief.trim().split("\n").length : 0;
 	if (briefLines > 0) bits.push(`Substrate · brief ${briefLines} lines`);
 	const kb = knowledgeBit(input.knowledge);

@@ -205,6 +205,8 @@ function planRows(
 		}
 		if (notionTaskUrl) body.push(`${p.fg("dim", "notion")} ${p.fg("muted", notionTaskUrl)}`);
 	}
+	if (Array.isArray(view.degraded) && view.degraded.length > 0)
+		body.push(`${p.fg("dim", "Degraded")} ${p.fg("warning", view.degraded.join(", "))}`);
 	// The planning model's safe record (details are untrusted session data, so it is projected again): label, reason and
 	// engine request, e.g. `omp-native:openai-codex/gpt-6.1-sol [detected] · reason live-model · engine auto (config)`.
 	const resolution = projectResolution(view.modelResolution);

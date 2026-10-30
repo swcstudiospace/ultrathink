@@ -309,7 +309,7 @@ async function openStdio(): Promise<Opened> {
 		async rpc(method, params) {
 			id += 1;
 			child.send(JSON.stringify(envelope(id, method, params)));
-			const reply = obj(JSON.parse(await child.nextLine()));
+			const reply = obj(JSON.parse(await withTimeout(child.nextLine(), `reply to ${method}`)));
 			expect(reply.id).toBe(id);
 			return reply;
 		},
@@ -555,7 +555,7 @@ conformance("stdio", openStdio, () => {
 		expect(obj(reply.error).code).toBe(-32700);
 		child.send(JSON.stringify(envelope(900, "ping")));
 		expect((await replyOf(child)).id).toBe(900);
-	});
+	}, 10_000);
 
 	test("every stdout line so far is one JSON-RPC message", () => {
 		const { lines } = stdioProcess();
@@ -614,7 +614,7 @@ describe("stdio process lifecycle", () => {
 		} finally {
 			await stop(child);
 		}
-	});
+	}, 10_000);
 });
 
 describe("the transports agree", () => {

@@ -971,11 +971,29 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 	/** What an id's existing owner makes of a start: a conflict, or the job the start joins. */
 	type Claim = { refusal: StartResult } | { join: JobFile; live: Job | undefined };
 
+	/**
+	 * sessionVisibleTo's rule for a claim: an unadmitted caller and an owner see every claim;
+	 * a principal sees only its own; a claim with no principal is owner-only.
+	 */
+	function claimVisibleTo(
+		principal: string | undefined,
+		admission: Admission | undefined,
+	): boolean {
+		if (admission === undefined || admission.class === "owner") return true;
+		return principal !== undefined && principal === admission.principal;
+	}
+
 	/** Synchronous on purpose: the caller relies on nothing running between this check and `jobs.set`. */
-	function sessionClaim(sessionId: string, promptSha256: string): Claim | undefined {
+	function sessionClaim(
+		sessionId: string,
+		promptSha256: string,
+		admission: Admission | undefined,
+	): Claim | undefined {
 		const live = jobs.get(sessionId);
 		const existing = live ?? readJobFile(sessionId);
 		if (existing) {
+			// Another principal's claim reads as absent, as a hidden session does at the guard.
+			if (!claimVisibleTo(existing.principal, admission)) return { refusal: fail("not_found") };
 			if (existing.promptSha256 !== promptSha256) return { refusal: fail("session_conflict") };
 			return { join: existing, live };
 		}
@@ -1011,6 +1029,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		async start(input) {
 			// Read first: this runs before the first await, inside the request that called start.
 			const callerSignal = opts.requestSignal?.();
+			const admission = currentRequestContext()?.admission;
 			const sessionId = input.sessionId === undefined ? randomUUID() : input.sessionId;
 			if (!isSessionId(sessionId)) return fail("invalid_session_id");
 			if (typeof input.prompt !== "string") return fail("invalid_input");
@@ -1022,13 +1041,12 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			if (opts.completer === undefined && !planBackend().ready().ok) return fail("not_ready");
 
 			const promptSha256 = createHash("sha256").update(prompt).digest("hex");
-			const claimed = sessionClaim(sessionId, promptSha256);
+			const claimed = sessionClaim(sessionId, promptSha256, admission);
 			if (claimed) return answerClaimed(claimed);
 			// An open breaker refuses before a run row, a job file or a slot exists.
 			const refused = breakerRefusal();
 			if (refused) return refused;
 
-			const admission = currentRequestContext()?.admission;
 			const asked: Admission = admission ?? { principal: UNADMITTED_PRINCIPAL, class: "owner" };
 			const granted = await takeSlot(asked, callerSignal);
 			if (!granted.ok) return granted.refusal;
@@ -1042,7 +1060,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			}
 			// Another start of this id may have run while this one waited. Nothing awaits between this check and
 			// jobs.set below, so exactly one start per id creates the job and the others answer from it.
-			const raced = sessionClaim(sessionId, promptSha256);
+			const raced = sessionClaim(sessionId, promptSha256, admission);
 			if (raced) {
 				slotRelease();
 				return answerClaimed(raced);

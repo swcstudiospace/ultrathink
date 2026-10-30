@@ -7,6 +7,7 @@
 // PATH stub that logs calls, so the 30-attempt budget is asserted by count and no wall-clock time is spent.
 // The release ancestry gate is tested by running `release` as a subprocess against a temp bare origin and clone. Only
 // root-only commands are stubbed on PATH; the gate under test is the real scripts/security-gate.ts, copied into the fixture.
+// The dependency audit gate is tested by calling security_gate from the sourced script, under the same stubs.
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
 	chmodSync,
@@ -436,31 +437,42 @@ for (const omitted of REQUIRED_TLS_FILES) {
 	);
 }
 
+// ---------- release gate fixtures ----------
+const REPO_ROOT = resolve(import.meta.dir, "..");
+// The real gate and its import closure (Node built-ins only), copied into each fixture checkout so it runs there.
+const GATE_FILES = [
+	"scripts/security-gate.ts",
+	"src/decisions/client.ts",
+	"src/decisions/types.ts",
+	"src/mcp/providers.ts",
+	"src/redact.ts",
+];
+// Root-only commands are stubbed on PATH: `id` reports root, `chown` does nothing, `setpriv` runs its command as the
+// current user and `systemctl` does nothing.
+const RELEASE_STUBS: Record<string, string> = {
+	id: "#!/bin/sh\necho 0\n",
+	// The release tree is owned by root on the VPS; these tests check ancestry, not ownership, so chown is a no-op here.
+	chown: "#!/bin/sh\nexit 0\n",
+	setpriv:
+		'#!/bin/sh\nwhile [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ $# -gt 0 ] && shift\nexec "$@"\n',
+	systemctl: "#!/bin/sh\nexit 0\n",
+};
+
+// Copies the real gate and its import closure into dir, so `bun run scripts/security-gate.ts` runs from there.
+function copyGateFiles(dir: string): void {
+	for (const rel of GATE_FILES) {
+		mkdirSync(join(dir, rel, ".."), { recursive: true });
+		cpSync(join(REPO_ROOT, rel), join(dir, rel));
+	}
+}
+
 // ---------- release ancestry gate (do_release) ----------
 // The release preflight needs flock, which the macOS runner lacks, and these tests run the real release path that the
 // Linux VPS uses. They are skipped off Linux for that reason.
 describe.skipIf(process.platform !== "linux")("release ancestry gate (do_release)", () => {
-	// `release` runs as a subprocess, so the real entry point and the real gate run. Root-only commands are stubbed on PATH:
-	// `id` reports root, `chown` does nothing, `setpriv` runs its command as the current user and `systemctl` does nothing.
-	// Every run stops at the ancestry gate, or continues past the archive step for a commit on origin/main.
+	// `release` runs as a subprocess, so the real entry point and the real gate run. Every run stops at the ancestry gate,
+	// or continues past the archive step for a commit on origin/main.
 	const RELEASE_TIMEOUT_MS = 60_000;
-	const REPO_ROOT = resolve(import.meta.dir, "..");
-	// The real gate and its import closure (Node built-ins only), copied into each fixture checkout so it runs there.
-	const GATE_FILES = [
-		"scripts/security-gate.ts",
-		"src/decisions/client.ts",
-		"src/decisions/types.ts",
-		"src/mcp/providers.ts",
-		"src/redact.ts",
-	];
-	const RELEASE_STUBS: Record<string, string> = {
-		id: "#!/bin/sh\necho 0\n",
-		// The release tree is owned by root on the VPS; these tests check ancestry, not ownership, so chown is a no-op here.
-		chown: "#!/bin/sh\nexit 0\n",
-		setpriv:
-			'#!/bin/sh\nwhile [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ $# -gt 0 ] && shift\nexec "$@"\n',
-		systemctl: "#!/bin/sh\nexit 0\n",
-	};
 
 	// Runs git in cwd with a fixed identity, so fixtures never depend on the host's git configuration.
 	async function git(cwd: string, args: string[]): Promise<string> {
@@ -506,10 +518,7 @@ describe.skipIf(process.platform !== "linux")("release ancestry gate (do_release
 		const clone = join(dir, "clone");
 		await git(dir, ["init", "-q", "--bare", "-b", "main", origin]);
 		await git(dir, ["init", "-q", "-b", "main", seed]);
-		for (const rel of GATE_FILES) {
-			mkdirSync(join(seed, rel, ".."), { recursive: true });
-			cpSync(join(REPO_ROOT, rel), join(seed, rel));
-		}
+		copyGateFiles(seed);
 		const mainSha = await commitAll(seed, "base");
 		await git(seed, ["push", "-q", origin, "main"]);
 		await git(dir, ["clone", "-q", origin, clone]);
@@ -609,4 +618,132 @@ describe.skipIf(process.platform !== "linux")("release ancestry gate (do_release
 		},
 		RELEASE_TIMEOUT_MS,
 	);
+});
+
+// ---------- dependency audit gate (security_gate) ----------
+// security_gate is called straight from the sourced script, as the release calls it, under the same root-only stubs.
+// Its only privileged steps are setpriv, env and the Bun wrapper, so each fixture controls exactly those. Unlike the
+// ancestry block this has no platform skip: it needs neither flock nor root.
+describe("security gate (security_gate)", () => {
+	const SETPRIV_CANNOT_SWITCH = "#!/bin/sh\nexit 1\n";
+	// Sources the script, calls security_gate on the release, then prints the verdict and the state variable.
+	const DRIVER = [
+		'source "$1"',
+		'if security_gate "$2"; then echo PASS; else echo REFUSE; fi',
+		'echo "state=[$SEC_STATE]"',
+	].join("; ");
+
+	// A gate stub that writes `ran` into the release before it exits. A refusal that happened before the gate ran
+	// shows up as a missing marker.
+	function gateStub(exitCode: number, ran: string): string {
+		return [
+			'import { writeFileSync } from "node:fs";',
+			`writeFileSync(${JSON.stringify(ran)}, "ran\\n");`,
+			`process.exit(${exitCode});`,
+		].join("\n");
+	}
+
+	// One fixture under work/: a release whose scripts/security-gate.ts is a stub exiting with the given code, the real
+	// gate, or nothing. ROOT/bin/bun wraps the running Bun unless bun is false. setpriv replaces the pass-through stub
+	// when given.
+	function securityFixture(
+		name: string,
+		options: { gate: number | "real" | "absent"; setpriv?: string; bun?: boolean },
+	) {
+		const dir = join(work, `security-${name}`);
+		const release = join(dir, "release");
+		const root = join(dir, "opt");
+		const stubs = join(dir, "stubs");
+		const ran = join(release, "ran");
+		mkdirSync(release, { recursive: true });
+		if (options.gate === "real") {
+			copyGateFiles(release);
+		} else if (options.gate !== "absent") {
+			mkdirSync(join(release, "scripts"));
+			writeFileSync(join(release, "scripts", "security-gate.ts"), gateStub(options.gate, ran));
+		}
+		const tools: Record<string, string> = { ...RELEASE_STUBS };
+		if (options.setpriv !== undefined) tools.setpriv = options.setpriv;
+		mkdirSync(stubs, { recursive: true });
+		for (const [tool, body] of Object.entries(tools)) {
+			writeFileSync(join(stubs, tool), body);
+			chmodSync(join(stubs, tool), 0o755);
+		}
+		mkdirSync(root, { recursive: true });
+		if (options.bun !== false) {
+			mkdirSync(join(root, "bin"));
+			writeFileSync(join(root, "bin", "bun"), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`);
+			chmodSync(join(root, "bin", "bun"), 0o755);
+		}
+		const env = scrubbedEnv({
+			ULTRATHINK_ROOT: root,
+			ULTRATHINK_SERVICE_USER: "ultrathink",
+			PATH: `${stubs}:${process.env.PATH ?? ""}`,
+		});
+		return { release, env, ran };
+	}
+
+	// Calls security_gate on release through the real script. The last two lines of output are the verdict and the
+	// state variable; anything the gate printed before them is ignored.
+	async function callSecurityGate(release: string, env: Record<string, string>) {
+		const result = await run(["bash", "-c", DRIVER, "bash", SCRIPT, release], env);
+		expect(result.exitCode).toBe(0);
+		const lines = result.stdout.trimEnd().split("\n");
+		return {
+			verdict: lines.at(-2) ?? "",
+			state: (lines.at(-1) ?? "").replace(/^state=\[(.*)\]$/, "$1"),
+			stderr: result.stderr,
+		};
+	}
+
+	test("passes when the gate exits 0, and the gate ran", async () => {
+		const { release, env, ran } = securityFixture("pass", { gate: 0 });
+		const call = await callSecurityGate(release, env);
+		expect(call.verdict).toBe("PASS");
+		expect(call.state).toBe("");
+		expect(existsSync(ran)).toBe(true);
+	});
+
+	test("refuses when the gate exits 1", async () => {
+		const { release, env, ran } = securityFixture("gate-exits-1", { gate: 1 });
+		const call = await callSecurityGate(release, env);
+		expect(call.verdict).toBe("REFUSE");
+		expect(call.state).toBe("");
+		expect(existsSync(ran)).toBe(true);
+	});
+
+	test("refuses when the real gate exits 2 on a missing policy file", async () => {
+		const { release, env } = securityFixture("no-policy", { gate: "real" });
+		const call = await callSecurityGate(release, env);
+		expect(call.verdict).toBe("REFUSE");
+		expect(call.state).toBe("");
+		expect(call.stderr).toContain("security-gate audit:");
+	});
+
+	test("refuses when setpriv cannot switch user, and the gate never runs", async () => {
+		const { release, env, ran } = securityFixture("no-setpriv", {
+			gate: 0,
+			setpriv: SETPRIV_CANNOT_SWITCH,
+		});
+		const call = await callSecurityGate(release, env);
+		expect(call.verdict).toBe("REFUSE");
+		expect(call.state).toBe("");
+		expect(existsSync(ran)).toBe(false);
+	});
+
+	test("refuses when the Bun binary is absent", async () => {
+		const { release, env } = securityFixture("no-bun", { gate: 0, bun: false });
+		const call = await callSecurityGate(release, env);
+		expect(call.verdict).toBe("REFUSE");
+		expect(call.state).toBe("");
+		expect(call.stderr).toContain("bin/bun");
+	});
+
+	test("refuses when the release has no scripts/security-gate.ts", async () => {
+		const { release, env } = securityFixture("no-gate-file", { gate: "absent" });
+		const call = await callSecurityGate(release, env);
+		expect(call.verdict).toBe("REFUSE");
+		expect(call.state).toBe("");
+		expect(call.stderr).toContain("security-gate.ts");
+	});
 });

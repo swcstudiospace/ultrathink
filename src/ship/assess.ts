@@ -283,6 +283,7 @@ function gateWithJev(
 			mode: "gate",
 			at,
 			decision,
+			...(assessment.judge ? { judge: assessment.judge } : {}),
 		};
 	}
 	const gap = `Jev P(complete) ${formatP(p)} is below ${String(jev.approve)}`;
@@ -297,6 +298,7 @@ function gateWithJev(
 		mode: "gate",
 		at,
 		decision,
+		...(assessment.judge ? { judge: assessment.judge } : {}),
 	};
 }
 
@@ -381,6 +383,7 @@ async function judgeGate(input: AssessInput, at: number): Promise<GateJudgement>
 			source: "llm",
 			mode,
 			at,
+			judge: { done: false, confidence: 0, summary: "", gaps: [], error: reason },
 		},
 	};
 }

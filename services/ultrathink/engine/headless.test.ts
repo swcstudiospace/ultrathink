@@ -1794,7 +1794,7 @@ describe("headless planner: plan-slot fairness", () => {
 		for (const sessionId of plans) await h.planner.result({ sessionId, waitSeconds: 30 });
 	});
 
-	test("re-starting a running session is never busy, whoever asks", async () => {
+	test("re-starting a running session is never busy: another principal gets not_found, its owner gets running", async () => {
 		const gate = Promise.withResolvers<void>();
 		const h = setup(
 			{ planTimeoutMs: 0, maxConcurrentPlans: 1 },
@@ -1807,7 +1807,11 @@ describe("headless planner: plan-slot fairness", () => {
 			code: "busy",
 			retryAfterSec: 30,
 		});
-		expect(await startAs(h, connector("key-b"), sessionId)).toMatchObject({
+		expect(await startAs(h, connector("key-b"), sessionId)).toEqual({
+			ok: false,
+			code: "not_found",
+		});
+		expect(await startAs(h, connector("key-a"), sessionId)).toMatchObject({
 			ok: true,
 			data: { sessionId, status: "running" },
 		});
@@ -2755,5 +2759,117 @@ describe("headless planner: cancel, queue and drain", () => {
 		expect(String(logged?.fields?.cause)).toContain("model exploded");
 		expect(JSON.stringify(events)).not.toContain(FAKE_KEY);
 		expect(String(logged?.fields?.cause)).not.toContain("\n");
+	});
+});
+
+describe("headless planner: a session claim is visible only to its principal", () => {
+	const connector = (principal: string): Admission => ({ principal, class: "connector" });
+	const admittedAs = (admission: Admission): RequestContext => ({
+		reqId: randomUUID(),
+		traceId: "0".repeat(32),
+		spanId: "0".repeat(16),
+		admission,
+	});
+
+	/** A plan that connector `key-a` starts and that stays running behind the gate. */
+	async function claimBy(h: Harness, sessionId: string) {
+		const started = runWithRequestContext(admittedAs(connector("key-a")), () =>
+			h.planner.start({ prompt: PROMPT, sessionId }),
+		);
+		await flush();
+		h.clock.fire(15_000);
+		return started;
+	}
+
+	test("a second principal that waited for a slot gets not_found, never the first principal's claim", async () => {
+		const gate = Promise.withResolvers<void>();
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 2 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
+		// Both slots are held, so the two connector starts below wait with no claim on the id yet.
+		for (const holder of [randomUUID(), randomUUID()]) await startRunning(h, holder);
+		const sessionId = randomUUID();
+		const first = runWithRequestContext(admittedAs(connector("key-a")), () =>
+			h.planner.start({ prompt: PROMPT, sessionId }),
+		);
+		await flush();
+		const second = runWithRequestContext(admittedAs(connector("key-b")), () =>
+			h.planner.start({ prompt: PROMPT, sessionId }),
+		);
+		await flush();
+		expect(h.planner.status({ sessionId })).toBeNull();
+		gate.resolve();
+		expect(await second).toEqual({ ok: false, code: "not_found" });
+		expect(await first).toMatchObject({ ok: true, data: { sessionId } });
+		expect(await h.planner.result({ sessionId, waitSeconds: 30 })).toMatchObject({
+			ok: true,
+			data: { sessionId, status: "planned" },
+		});
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ principal: "key-a" });
+	});
+
+	test("another principal's start of a claimed id is not_found at once, whatever the prompt", async () => {
+		const gate = Promise.withResolvers<void>();
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 2 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
+		const sessionId = randomUUID();
+		expect(await claimBy(h, sessionId)).toMatchObject({ ok: true, data: { status: "running" } });
+		const samePrompt = await runWithRequestContext(admittedAs(connector("key-b")), () =>
+			h.planner.start({ prompt: PROMPT, sessionId }),
+		);
+		const otherPrompt = await runWithRequestContext(admittedAs(connector("key-b")), () =>
+			h.planner.start({ prompt: `${PROMPT} Also add a man page.`, sessionId }),
+		);
+		expect(samePrompt).toEqual({ ok: false, code: "not_found" });
+		expect(otherPrompt).toEqual({ ok: false, code: "not_found" });
+		expect(jobFile(h.stateDir, sessionId)).toMatchObject({ principal: "key-a" });
+		gate.resolve();
+		expect(await h.planner.result({ sessionId, waitSeconds: 30 })).toMatchObject({
+			ok: true,
+			data: { status: "planned" },
+		});
+	});
+
+	test("a principal joins its own claim with the same prompt", async () => {
+		const gate = Promise.withResolvers<void>();
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 2 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
+		const sessionId = randomUUID();
+		expect(await claimBy(h, sessionId)).toMatchObject({ ok: true, data: { status: "running" } });
+		const joined = runWithRequestContext(admittedAs(connector("key-a")), () =>
+			h.planner.start({ prompt: PROMPT, sessionId }),
+		);
+		await flush();
+		h.clock.fire(15_000);
+		expect(await joined).toMatchObject({ ok: true, data: { sessionId, status: "running" } });
+		gate.resolve();
+		expect(await h.planner.result({ sessionId, waitSeconds: 30 })).toMatchObject({
+			ok: true,
+			data: { sessionId, status: "planned" },
+		});
+	});
+
+	test("stdio joins a claim held by a principal, with the same prompt", async () => {
+		const gate = Promise.withResolvers<void>();
+		const h = setup(
+			{ planTimeoutMs: 0, maxConcurrentPlans: 2 },
+			{ completer: fakeModel(gate.promise).complete },
+		);
+		const sessionId = randomUUID();
+		expect(await claimBy(h, sessionId)).toMatchObject({ ok: true, data: { status: "running" } });
+		const joined = h.planner.start({ prompt: PROMPT, sessionId });
+		await flush();
+		h.clock.fire(15_000);
+		expect(await joined).toMatchObject({ ok: true, data: { sessionId, status: "running" } });
+		gate.resolve();
+		expect(await h.planner.result({ sessionId, waitSeconds: 30 })).toMatchObject({
+			ok: true,
+			data: { sessionId, status: "planned" },
+		});
 	});
 });

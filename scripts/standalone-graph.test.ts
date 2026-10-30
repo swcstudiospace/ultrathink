@@ -4,7 +4,7 @@
 /**
  * Standalone import-graph guard (STAND-03). Every entry point that must run without Omp is checked two independent
  * ways: Bun.build must bundle it with nothing external, and a transitive import scan of its real source files must
- * never reach src/host/omp.ts (or an Omp-named file outside PURE_OMP_HELPERS) or any @oh-my-pi/* package. A failure
+ * never reach src/host/omp.ts (or any other Omp-named src/host file) or any @oh-my-pi/* package. A failure
  * prints the full import chain to the offender.
  */
 
@@ -37,16 +37,8 @@ const STANDALONE_ENTRIES: readonly string[] = [
 	"src/mcp/cli.ts",
 ];
 
-/** Any src/host/omp*.ts file: the Omp extension and its UI helpers. Only PURE_OMP_HELPERS may be reached. */
+/** Any src/host/omp*.ts file: the Omp extension and its UI helpers. No standalone entry may reach one. */
 const OMP_HOST_PATH = /(^|\/)src\/host\/omp[^/]*\.ts$/;
-/**
- * Omp-named files a standalone entry MAY reach. Each must import only node:* builtins (never an @oh-my-pi/* package),
- * which the "pure helpers stay pure" test verifies. Adding a file here is a reviewed decision (94-CONTEXT D-04).
- */
-const PURE_OMP_HELPERS: readonly string[] = [
-	// Recognises an Omp subagent session id on disk, fail-open; imports node:fs, node:os and node:path only.
-	"src/host/omp-session.ts",
-];
 const OMP_PACKAGE_PREFIX = "@oh-my-pi/";
 const OMP_NODE_MODULES = "node_modules/@oh-my-pi";
 /** Below this many visited files a scan is treated as silently empty rather than as a pass. */
@@ -89,10 +81,7 @@ function scanGraph(entry: string, root: string = REPO_ROOT): ScanResult {
 	const visit = (repoPath: string, importer: string | null): void => {
 		if (visited.has(repoPath)) return;
 		visited.set(repoPath, importer);
-		if (
-			(OMP_HOST_PATH.test(repoPath) && !PURE_OMP_HELPERS.includes(repoPath)) ||
-			repoPath.includes(OMP_NODE_MODULES)
-		) {
+		if (OMP_HOST_PATH.test(repoPath) || repoPath.includes(OMP_NODE_MODULES)) {
 			forbidden.push(chainTo(visited, repoPath).join(" -> "));
 			return;
 		}
@@ -156,19 +145,6 @@ describe("standalone entries never reach Omp", () => {
 	}
 });
 
-describe("the pure Omp helpers a standalone entry may reach", () => {
-	for (const helper of PURE_OMP_HELPERS) {
-		test(`${helper} imports only node: builtins`, () => {
-			const source = readFileSync(join(REPO_ROOT, helper), "utf8");
-			const specifiers = new Bun.Transpiler({ loader: "ts" })
-				.scanImports(source)
-				.map((item) => item.path);
-			expect(specifiers.length).toBeGreaterThan(0);
-			expect(specifiers.filter((specifier) => !specifier.startsWith("node:"))).toEqual([]);
-		});
-	}
-});
-
 describe("scanGraph itself", () => {
 	const roots: string[] = [];
 	afterEach(() => {
@@ -196,16 +172,16 @@ describe("scanGraph itself", () => {
 		expect(scan.unresolved).toEqual([]);
 	});
 
-	test("passes when the graph only reaches the allowed pure helper", () => {
+	test("passes when the graph only reaches a non-Omp host helper", () => {
 		const root = fixture({
-			"entry.ts": 'import { id } from "./src/host/omp-session.ts";\nexport const y = id;\n',
-			"src/host/omp-session.ts":
+			"entry.ts": 'import { id } from "./src/host/session-id.ts";\nexport const y = id;\n',
+			"src/host/session-id.ts":
 				'import { join } from "node:path";\nexport const id = join("a", "b");\n',
 		});
 		const scan = scanGraph("entry.ts", root);
 		expect(scan.forbidden).toEqual([]);
 		expect(scan.unresolved).toEqual([]);
-		expect([...scan.visited.keys()]).toEqual(["entry.ts", "src/host/omp-session.ts"]);
+		expect([...scan.visited.keys()]).toEqual(["entry.ts", "src/host/session-id.ts"]);
 	});
 
 	test("fails on src/host/omp.ts and on an Omp-named helper that is not on the allow-list", () => {

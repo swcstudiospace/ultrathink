@@ -55,6 +55,8 @@ export interface PlanView {
 		issues: number;
 		subIssues: number;
 	};
+	/** Pipeline stages that ran degraded (record.degraded), shown on the plan card; absent when none did. */
+	degraded?: string[];
 }
 
 const NODE_PREFIX = /^\[[^\]]*\]\s*/;
@@ -176,5 +178,6 @@ export function buildPlanView(record: SessionRecord, elapsedMs: number): PlanVie
 					},
 				}
 			: {}),
+		...(record.degraded?.length ? { degraded: [...record.degraded] } : {}),
 	};
 }

@@ -590,6 +590,13 @@ describe("assessDone judge", () => {
 			source: "llm",
 			gaps: ["assessment unavailable: offline"],
 		});
+		expect(a.judge).toEqual({
+			done: false,
+			confidence: 0,
+			summary: "",
+			gaps: [],
+			error: "offline",
+		});
 	});
 
 	test("unparsable reply -> not done", async () => {
@@ -601,6 +608,7 @@ describe("assessDone judge", () => {
 		});
 		expect(a.done).toBe(false);
 		expect(a.gaps[0]).toStartWith("assessment unavailable:");
+		expect(a.judge?.error).toBeDefined();
 	});
 });
 
@@ -1158,6 +1166,50 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			expect(r.calls).toHaveLength(2);
 			expectNoKey(failed, lines);
 		}
+	});
+
+	test("Jev approve keeps judge.error after a judge failure, and adds no judge field without one", async () => {
+		const offline: ClaudeCompleter = async () => {
+			throw new Error("offline");
+		};
+		const failed = await assessDone({
+			record: RECORD,
+			signals: clean,
+			diff: FULL_DIFF,
+			complete: offline,
+			now,
+			decisions: jevRuntime(recordingFetch([JEV(0.79, COMPLETE)]).fetch).decisions,
+		});
+		expect(failed).toMatchObject({ done: true, source: "jev", gaps: [] });
+		expect(failed.decision?.action).toBe("approve");
+		expect(failed.judge).toEqual({
+			done: false,
+			confidence: 0,
+			summary: "",
+			gaps: [],
+			error: "offline",
+		});
+
+		const noJudge = await assessDone({
+			record: RECORD,
+			signals: clean,
+			diff: FULL_DIFF,
+			now,
+			decisions: jevRuntime(recordingFetch([JEV(0.79, COMPLETE)]).fetch).decisions,
+		});
+		expect(noJudge).toMatchObject({ done: true, source: "jev" });
+		expect("judge" in noJudge).toBe(false);
+
+		const judged = await assessDone({
+			record: RECORD,
+			signals: clean,
+			diff: FULL_DIFF,
+			complete: DONE_09,
+			now,
+			decisions: jevRuntime(recordingFetch([JEV(0.03, COMPLETE)]).fetch).decisions,
+		});
+		expect(judged.decision?.action).toBe("veto");
+		expect("judge" in judged).toBe(false);
 	});
 
 	test("a rule gap returns before any request, in gate and advisory mode (AC-6.7)", async () => {
