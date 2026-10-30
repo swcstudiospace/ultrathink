@@ -773,15 +773,18 @@ describe("createGithub", () => {
 			`HEAD ${TIP}`,
 			"branch refs/heads/feat",
 			"",
-		].join("\n");
+		].join("\0");
 		const reply = (status: string) =>
 			fakeRun((argv) => {
 				const cmd = argv.join(" ");
 				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") {
 					return { stdout: `${TIP}\n` };
 				}
-				if (cmd === "git worktree list --porcelain") return { stdout: PORCELAIN };
+				if (cmd === "git worktree list --porcelain -z") return { stdout: PORCELAIN };
 				if (cmd === "git -C /wt/feat status --porcelain") return { stdout: status };
+				if (cmd === "git -C /wt/feat rev-parse --verify --quiet HEAD") {
+					return { stdout: `${TIP}\n` };
+				}
 				return {};
 			});
 
@@ -810,10 +813,11 @@ describe("createGithub", () => {
 			).toEqual({ ok: true });
 			expect(calls.map((c) => c.argv)).toEqual([
 				["git", "rev-parse", "--verify", "--quiet", "refs/heads/feat"],
-				["git", "worktree", "list", "--porcelain"],
+				["git", "worktree", "list", "--porcelain", "-z"],
 				["git", "-C", "/wt/feat", "status", "--porcelain"],
 				["git", "-C", "/wt/feat", "checkout", "--detach"],
-				["git", "branch", "-D", "feat"],
+				["git", "-C", "/wt/feat", "rev-parse", "--verify", "--quiet", "HEAD"],
+				["git", "update-ref", "-d", "refs/heads/feat", TIP],
 			]);
 			expect(calls.some((c) => c.argv.includes("push") || c.argv.includes("--delete"))).toBe(false);
 		});
@@ -823,37 +827,117 @@ describe("createGithub", () => {
 			expect(
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true, kept: "worktree dirty" });
-			expect(calls.map((c) => c.argv.join(" "))).not.toContain(
-				"git -C /wt/feat checkout --detach",
-			);
+			expect(calls.map((c) => c.argv.join(" "))).not.toContain("git -C /wt/feat checkout --detach");
 			expect(calls.some((c) => c.argv[1] === "branch")).toBe(false);
 		});
 
-		test("a branch in no worktree is deleted with -D", () => {
+		test("a branch in no worktree is deleted only while it still points at the merged head", () => {
 			const { run, calls } = fakeRun((argv) =>
 				argv[2] === "--verify"
 					? { stdout: `${TIP}\n` }
-					: argv.join(" ") === "git worktree list --porcelain"
-						? { stdout: "worktree /repo\nHEAD 1111111\nbranch refs/heads/master\n" }
+					: argv.join(" ") === "git worktree list --porcelain -z"
+						? { stdout: "worktree /repo\0HEAD 1111111\0branch refs/heads/master\0\0" }
 						: {},
 			);
 			expect(
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
-			expect(calls.at(-1)?.argv).toEqual(["git", "branch", "-D", "feat"]);
+			expect(calls.at(-1)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
 		});
 
-		test("a refused branch -D is an error", () => {
-			const { run } = fakeRun((argv) =>
-				argv[2] === "--verify"
-					? { stdout: `${TIP}\n` }
-					: argv[1] === "branch"
-						? { exitCode: 1, stderr: "error: cannot delete branch 'feat'" }
+		test("a failed update-ref with the tip still at the merged head is an error", () => {
+			const { run, calls } = fakeRun((argv) =>
+				argv[1] === "update-ref"
+					? { exitCode: 1, stderr: "error: cannot lock ref 'refs/heads/feat'" }
+					: argv[2] === "--verify"
+						? { stdout: `${TIP}\n` }
 						: {},
 			);
 			expect(
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
-			).toEqual({ ok: false, error: "error: cannot delete branch 'feat'" });
+			).toEqual({ ok: false, error: "error: cannot lock ref 'refs/heads/feat'" });
+			expect(calls.some((c) => c.argv.includes("-D"))).toBe(false);
+		});
+
+		test("a branch that moved after the tip check is kept, with no force delete", () => {
+			let reads = 0;
+			const { run, calls } = fakeRun((argv) => {
+				if (argv[2] === "--verify") {
+					reads += 1;
+					return { stdout: `${reads === 1 ? TIP : "f00d1"}\n` };
+				}
+				if (argv[1] === "update-ref") {
+					return { exitCode: 1, stderr: "error: cannot lock ref: is at f00d1 but expected beef2" };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true, kept: "tip differs from merged head" });
+			expect(calls.map((c) => c.argv)).toContainEqual([
+				"git",
+				"update-ref",
+				"-d",
+				"refs/heads/feat",
+				TIP,
+			]);
+			expect(calls.some((c) => c.argv[1] === "branch" || c.argv.includes("-D"))).toBe(false);
+		});
+
+		test("a worktree whose HEAD moved past the merged head is detached, but the branch is kept", () => {
+			const { run, calls } = fakeRun((argv) => {
+				const cmd = argv.join(" ");
+				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") {
+					return { stdout: `${TIP}\n` };
+				}
+				if (cmd === "git worktree list --porcelain -z") return { stdout: PORCELAIN };
+				if (cmd === "git -C /wt/feat status --porcelain") return { stdout: "" };
+				if (cmd === "git -C /wt/feat rev-parse --verify --quiet HEAD") {
+					return { stdout: "f00d1\n" };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true, kept: "tip differs from merged head" });
+			expect(calls.some((c) => c.argv[1] === "update-ref")).toBe(false);
+			expect(calls.some((c) => c.argv[1] === "branch")).toBe(false);
+		});
+
+		test("a failed lookup of the branch is an error, not a missing branch", () => {
+			const { run, calls } = fakeRun(() => ({ exitCode: 128, stderr: "fatal: permission denied" }));
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: false, error: "fatal: permission denied" });
+			expect(calls).toHaveLength(1);
+		});
+
+		test("a worktree path with a backslash and an accent is used literally", () => {
+			const path = "/wt/caf\u00e9\\feat";
+			const listing = [
+				"worktree /repo",
+				"HEAD 1111111",
+				"branch refs/heads/master",
+				"",
+				`worktree ${path}`,
+				`HEAD ${TIP}`,
+				"branch refs/heads/feat",
+				"",
+			].join("\0");
+			const { run, calls } = fakeRun((argv) => {
+				const cmd = argv.join(" ");
+				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") return { stdout: `${TIP}\n` };
+				if (cmd === "git worktree list --porcelain -z") return { stdout: listing };
+				if (cmd === `git -C ${path} rev-parse --verify --quiet HEAD`) {
+					return { stdout: `${TIP}\n` };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true });
+			expect(calls.map((c) => c.argv)).toContainEqual(["git", "-C", path, "checkout", "--detach"]);
+			expect(calls.at(-1)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
 		});
 	});
 });

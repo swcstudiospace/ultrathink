@@ -198,14 +198,14 @@ function parseThreadsPage(stdout: string): ThreadsPage {
 	return next ? { ok: true, threads: out, next } : { ok: true, threads: out };
 }
 
-/** Paths of the worktrees with `ref` checked out, from `git worktree list --porcelain`. */
+/** Paths of the worktrees with `ref` checked out, from `git worktree list --porcelain -z` (NUL-separated, so literal). */
 function worktreesOn(porcelain: string, ref: string): string[] {
 	const paths: string[] = [];
 	let path: string | undefined;
-	for (const line of porcelain.split("\n")) {
-		if (line === "") path = undefined;
-		else if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
-		else if (line === `branch ${ref}` && path !== undefined) paths.push(path);
+	for (const field of porcelain.split("\0")) {
+		if (field === "") path = undefined;
+		else if (field.startsWith("worktree ")) path = field.slice("worktree ".length);
+		else if (field === `branch ${ref}` && path !== undefined) paths.push(path);
 	}
 	return paths;
 }
@@ -229,6 +229,14 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 	// A name beginning with `-` would be parsed by git as an option; full refspecs keep every other name a positional.
 	const badBranch = (branch: string) =>
 		branch.startsWith("-") ? `refusing branch name ${JSON.stringify(branch)}` : undefined;
+
+	// `rev-parse --verify --quiet` exits 1 with no output only when the ref is missing; any other failure is an error.
+	const readRef = (ref: string): { sha?: string; error?: string } => {
+		const r = exec(["git", "rev-parse", "--verify", "--quiet", ref]);
+		if (r.exitCode === 0) return { sha: r.stdout.trim() };
+		if (r.exitCode === 1 && r.stderr.trim() === "") return {};
+		return { error: errorOf(r) };
+	};
 
 	const gh: Github = {
 		repo,
@@ -370,10 +378,11 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			const bad = badBranch(branch);
 			if (bad) return { ok: false, error: bad };
 			const ref = `refs/heads/${branch}`;
-			const tip = exec(["git", "rev-parse", "--verify", "--quiet", ref]);
-			if (tip.exitCode !== 0) return { ok: true };
-			if (tip.stdout.trim() !== headSha) return { ok: true, kept: "tip differs from merged head" };
-			const listed = exec(["git", "worktree", "list", "--porcelain"]);
+			const found = readRef(ref);
+			if (found.error !== undefined) return { ok: false, error: found.error };
+			if (found.sha === undefined) return { ok: true };
+			if (found.sha !== headSha) return { ok: true, kept: "tip differs from merged head" };
+			const listed = exec(["git", "worktree", "list", "--porcelain", "-z"]);
 			if (listed.exitCode !== 0) return { ok: false, error: errorOf(listed) };
 			const holders = worktreesOn(listed.stdout, ref);
 			// Check every holder before detaching any, so a dirty one leaves all worktrees untouched.
@@ -385,9 +394,21 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			for (const wt of holders) {
 				const detached = exec(["git", "-C", wt, "checkout", "--detach"]);
 				if (detached.exitCode !== 0) return { ok: false, error: errorOf(detached) };
+				// A commit that landed after the checks above is detached too, so re-check what HEAD now is.
+				const head = exec(["git", "-C", wt, "rev-parse", "--verify", "--quiet", "HEAD"]);
+				if (head.exitCode !== 0) return { ok: false, error: errorOf(head) };
+				if (head.stdout.trim() !== headSha) {
+					return { ok: true, kept: "tip differs from merged head" };
+				}
 			}
-			const deleted = exec(["git", "branch", "-D", branch]);
-			return deleted.exitCode === 0 ? { ok: true } : { ok: false, error: errorOf(deleted) };
+			// Deletes only while the ref still points at headSha; a commit that landed since the tip check keeps it.
+			const deleted = exec(["git", "update-ref", "-d", ref, headSha]);
+			if (deleted.exitCode === 0) return { ok: true };
+			const moved = readRef(ref);
+			if (moved.error !== undefined) return { ok: false, error: moved.error };
+			if (moved.sha === undefined) return { ok: true };
+			if (moved.sha !== headSha) return { ok: true, kept: "tip differs from merged head" };
+			return { ok: false, error: errorOf(deleted) };
 		},
 		reviewThreads(prNumber, opts = {}) {
 			const now = opts.now ?? Date.now;
