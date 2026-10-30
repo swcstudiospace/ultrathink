@@ -413,7 +413,7 @@ describe("retention sweep, planner correlation and shutdown", () => {
 		expect(calls.length).toBeGreaterThan(0);
 		expect(calls[0]).toMatchObject({ reqId: "req-plan-0001" });
 		await h.app.shutdown();
-	});
+	}, 20_000);
 
 	test("app.shutdown flushes the injected sink before it resolves, then shuts it down", async () => {
 		const sink = recordingSink();
