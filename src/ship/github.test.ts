@@ -833,7 +833,7 @@ describe("createGithub", () => {
 				["git", "-C", "/wt/feat", "checkout", "--detach"],
 				["git", "-C", "/wt/feat", "rev-parse", "--verify", "--quiet", "HEAD"],
 				["git", "worktree", "list", "--porcelain", "-z"],
-				["git", "config", "-z", "--get-regexp", "^branch\\."],
+				["git", "config", "-z", "--local", "--get-regexp", "^branch\\."],
 				["git", "config", "--remove-section", "branch.feat"],
 				["git", "update-ref", "-d", "refs/heads/feat", TIP],
 			]);
@@ -1006,7 +1006,7 @@ describe("createGithub", () => {
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
 			const order = calls.map((c) => c.argv.join(" "));
-			const read = order.indexOf("git config -z --get-regexp ^branch\\.");
+			const read = order.indexOf("git config -z --local --get-regexp ^branch\\.");
 			const remove = order.indexOf("git config --remove-section branch.feat");
 			const drop = order.indexOf(`git update-ref -d refs/heads/feat ${TIP}`);
 			expect(read).toBeGreaterThanOrEqual(0);
@@ -1092,6 +1092,62 @@ describe("createGithub", () => {
 				error:
 					"could not restore branch settings: branch.feat.remote: error: could not lock config file",
 			});
+		});
+
+		test("only the local branch section is saved: other subsections are never restored", () => {
+			const { run, calls } = fakeRun((argv) => {
+				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
+				if (argv[2] === "-z") {
+					return {
+						stdout:
+							"branch.feat.remote\norigin\0branch.feat.other.remote\nupstream\0branch.feat.other.merge\nrefs/heads/x\0",
+					};
+				}
+				if (argv[1] === "update-ref") return { exitCode: 1, stderr: "error: cannot lock ref" };
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: false, error: "error: cannot lock ref" });
+			expect(calls.filter((c) => c.argv[2] === "--add").map((c) => c.argv.slice(3))).toEqual([
+				["branch.feat.remote", "origin"],
+			]);
+		});
+
+		test("an inherited value is never saved or written back", () => {
+			const { run, calls } = fakeRun((argv) => {
+				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
+				if (argv[2] === "-z") {
+					// Without --local git would also list the inherited global value; only a local read may be used.
+					return { stdout: argv.includes("--local") ? "" : "branch.feat.remote\nglobal-origin\0" };
+				}
+				if (argv[1] === "update-ref") return { exitCode: 1, stderr: "error: cannot lock ref" };
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: false, error: "error: cannot lock ref" });
+			expect(calls.find((c) => c.argv[2] === "-z")?.argv).toContain("--local");
+			expect(calls.some((c) => c.argv[2] === "--add")).toBe(false);
+		});
+
+		test("a restore after a refused delete writes each saved key once", () => {
+			const { run, calls } = fakeRun((argv) => {
+				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
+				if (argv[2] === "-z") {
+					return { stdout: "branch.feat.remote\norigin\0branch.feat.merge\nrefs/heads/feat\0" };
+				}
+				if (argv[1] === "update-ref") return { exitCode: 1, stderr: "error: cannot lock ref" };
+				return {};
+			});
+			createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP });
+			const adds = calls
+				.map((c) => c.argv.join(" "))
+				.filter((c) => c.startsWith("git config --add "));
+			expect(adds).toEqual([
+				"git config --add branch.feat.remote origin",
+				"git config --add branch.feat.merge refs/heads/feat",
+			]);
 		});
 	});
 });

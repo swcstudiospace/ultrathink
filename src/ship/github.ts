@@ -238,10 +238,11 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 		return { error: errorOf(r) };
 	};
 
-	// `git config -z --get-regexp` prints `key\nvalue\0` per setting (a bare boolean has no newline) and exits 1 with no
-	// output when nothing matches. Only this branch's keys are kept.
+	// `git config -z --local --get-regexp` prints `key\nvalue\0` per setting (a bare boolean has no newline) and exits 1
+	// with no output when nothing matches. Only the keys of the local `branch.<name>` section are kept: removal deletes
+	// exactly that section, and a variable name has no dot, so a dot after the name marks another subsection.
 	const readSettings = (branch: string): { entries: [string, string][]; error?: string } => {
-		const r = exec(["git", "config", "-z", "--get-regexp", "^branch\\."]);
+		const r = exec(["git", "config", "-z", "--local", "--get-regexp", "^branch\\."]);
 		if (r.exitCode === 1 && r.stderr.trim() === "") return { entries: [] };
 		if (r.exitCode !== 0) return { entries: [], error: errorOf(r) };
 		const prefix = `branch.${branch}.`;
@@ -250,7 +251,8 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			const newline = record.indexOf("\n");
 			const key = newline < 0 ? record : record.slice(0, newline);
 			const value = newline < 0 ? "true" : record.slice(newline + 1);
-			if (key.startsWith(prefix)) entries.push([key, value]);
+			if (key.startsWith(prefix) && !key.slice(prefix.length).includes("."))
+				entries.push([key, value]);
 		}
 		return { entries };
 	};
