@@ -15,8 +15,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { waitUntil } from "../test.helpers.ts";
 import { readRuns } from "./runlog.ts";
-import { spawnObserveDetached, startDetached, writeInbox, type DetachedLaunch } from "./spawn.ts";
+import { spawnObserveDetached, writeInbox } from "./spawn.ts";
 import type { TeachDigest } from "./types.ts";
 
 let root: string;
@@ -54,6 +55,31 @@ function digest(overrides: Partial<TeachDigest> = {}): TeachDigest {
 
 const inbox = (): string => join(stateDir, "teach", "inbox");
 
+interface SupervisorTask {
+	stateDir: string;
+	sessionId: string;
+	command: string;
+	args: string[];
+}
+
+/** The JSON task the supervisor is handed: its arguments are [supervisor path, task]. */
+function launched(args: string[]): SupervisorTask {
+	return JSON.parse(args[1] ?? "{}");
+}
+
+/** Starts each launch in the foreground, so a test can await the supervisor's exit. */
+function foreground(exits: Promise<number>[]) {
+	return (cmd: string, args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => {
+		const proc = Bun.spawn([cmd, ...args], {
+			cwd: opts.cwd,
+			env: opts.env,
+			stdio: ["ignore", "ignore", "ignore"],
+		});
+		exits.push(proc.exited);
+		return { pid: proc.pid };
+	};
+}
+
 describe("writeInbox", () => {
 	test("writes a private, atomically-named file under <stateDir>/teach/inbox", () => {
 		const path = writeInbox(digest(), stateDir, () => 1_790_000_000_000);
@@ -74,7 +100,7 @@ describe("writeInbox", () => {
 });
 
 describe("spawnObserveDetached", () => {
-	test("starts `bin/ultrathink teach observe --file <inbox file>` with host and state dir in the environment", () => {
+	test("starts the supervisor through bin/run-bun with the observe command, inbox file, host and state dir", () => {
 		const calls: { cmd: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
 		const env = {
 			PATH: "/usr/bin",
@@ -94,9 +120,16 @@ describe("spawnObserveDetached", () => {
 		expect(result).toEqual({ spawned: true });
 		expect(calls).toHaveLength(1);
 		const call = calls[0];
-		expect(call?.cmd).toBe(join(repoRoot, "bin", "ultrathink"));
-		expect(call?.args.slice(0, 3)).toEqual(["teach", "observe", "--file"]);
-		const file = call?.args[3] ?? "";
+		expect(call?.cmd.endsWith(join("bin", "run-bun"))).toBe(true);
+		expect(call?.args[0]?.endsWith("launch-supervisor.ts")).toBe(true);
+		const task = launched(call?.args ?? []);
+		expect(task).toMatchObject({
+			stateDir,
+			sessionId: "s1",
+			command: join(repoRoot, "bin", "ultrathink"),
+		});
+		expect(task.args.slice(0, 3)).toEqual(["teach", "observe", "--file"]);
+		const file = task.args[3] ?? "";
 		expect(file.startsWith(`${inbox()}/`)).toBe(true);
 		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(digest());
 		expect(call?.env).toMatchObject({
@@ -210,31 +243,6 @@ describe("spawnObserveDetached", () => {
 		}
 	});
 
-	test("passes the file argument, host, state dir and session cwd to the launcher spawn", () => {
-		const calls: { cmd: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
-		const result = spawnObserveDetached(digest(), {
-			repoRoot,
-			env: { PATH: "/usr/bin" },
-			stateDir,
-			host: "omp",
-			spawn: (cmd, args, opts) => {
-				calls.push({ cmd, args, ...opts });
-			},
-		});
-		expect(result).toEqual({ spawned: true });
-		expect(calls).toHaveLength(1);
-		const call = calls[0];
-		expect(call?.cmd).toBe(join(repoRoot, "bin", "ultrathink"));
-		expect(call?.args.slice(0, 3).join(" ")).toBe("teach observe --file");
-		expect(call?.args[3]?.startsWith(`${inbox()}/`)).toBe(true);
-		expect(call?.env).toMatchObject({
-			PATH: "/usr/bin",
-			ULTRATHINK_HOST: "omp",
-			ULTRATHINK_STATE_DIR: stateDir,
-		});
-		expect(call?.cwd).toBe(sessionCwd);
-	});
-
 	test("the real launcher receives the file, host, state dir and session cwd", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "teach-launcher-"));
 		try {
@@ -246,23 +254,19 @@ describe("spawnObserveDetached", () => {
 				`#!/bin/sh\nprintf '%s|%s|%s|%s' "$*" "$ULTRATHINK_HOST" "$ULTRATHINK_STATE_DIR" "$(pwd -P)" > "${marker}"\n`,
 			);
 			chmodSync(launcher, 0o755);
-			const files: string[] = [];
-			const launches: DetachedLaunch[] = [];
+			const exits: Promise<number>[] = [];
 			const result = spawnObserveDetached(digest(), {
 				repoRoot,
 				env: { ...process.env },
 				stateDir,
 				host: "omp",
-				spawn: (cmd, args, opts) => {
-					files.push(args[3] ?? "");
-					launches.push(startDetached(cmd, args, opts));
-				},
+				spawn: foreground(exits),
 			});
 			expect(result).toEqual({ spawned: true });
-			expect(await launches[0]?.exited).toBe(0);
+			expect(await Promise.all(exits)).toEqual([0]);
 			const [argv, host, state, cwd] = readFileSync(marker, "utf8").split("|");
-			expect(files[0]?.startsWith(`${inbox()}/`)).toBe(true);
-			expect(argv).toBe(`teach observe --file ${files[0]}`);
+			expect(argv?.startsWith("teach observe --file ")).toBe(true);
+			expect(argv?.slice("teach observe --file ".length).startsWith(`${inbox()}/`)).toBe(true);
 			expect(host).toBe("omp");
 			expect(state).toBe(stateDir);
 			expect(cwd).toBe(realpathSync(sessionCwd));
@@ -271,37 +275,42 @@ describe("spawnObserveDetached", () => {
 		}
 	});
 
-	test("a launcher that cannot start (nonexistent binary) reports spawned:false and removes the inbox file", () => {
+	test("a launch whose command cannot start is recorded with a null exit code, and spawned stays true", async () => {
 		const result = spawnObserveDetached(digest(), {
 			repoRoot,
 			env: { ...process.env },
 			stateDir,
 			host: "omp",
 		});
-		expect(result.spawned).toBe(false);
-		expect(result.reason).toBeTruthy();
-		expect(readdirSync(inbox())).toEqual([]);
+		expect(result).toEqual({ spawned: true });
+		await waitUntil(() => readRuns(stateDir).length > 0, { name: "a launch-exit run record" });
+		expect(readRuns(stateDir)).toEqual([
+			{
+				at: expect.any(Number),
+				sessionId: "s1",
+				outcome: "skipped",
+				captured: 0,
+				skipped: "launch exited",
+				exitCode: null,
+			},
+		]);
 	});
 
-	test("a launcher that exits non-zero leaves one run record carrying its exit code", async () => {
+	test("a launch that exits non-zero is recorded with its exit code by the supervisor", async () => {
 		mkdirSync(join(repoRoot, "bin"));
 		const launcher = join(repoRoot, "bin", "ultrathink");
 		writeFileSync(launcher, "#!/bin/sh\nexit 3\n");
 		chmodSync(launcher, 0o755);
-		const launches: DetachedLaunch[] = [];
 		const result = spawnObserveDetached(digest(), {
 			repoRoot,
 			env: { ...process.env },
 			stateDir,
 			host: "omp",
-			spawn: (cmd, args, opts) => {
-				const launch = startDetached(cmd, args, opts);
-				launches.push(launch);
-				return launch;
-			},
 		});
 		expect(result).toEqual({ spawned: true });
-		expect(await launches[0]?.exited).toBe(3);
+		await waitUntil(() => readRuns(stateDir).some((run) => run.exitCode === 3), {
+			name: "a run record with exit code 3",
+		});
 		expect(readRuns(stateDir)).toEqual([
 			{
 				at: expect.any(Number),
@@ -314,26 +323,76 @@ describe("spawnObserveDetached", () => {
 		]);
 	});
 
-	test("returns before a running launch exits and a clean exit writes no run record", async () => {
+	test("the record is written after the hook process that started the launch has exited", async () => {
 		mkdirSync(join(repoRoot, "bin"));
 		const launcher = join(repoRoot, "bin", "ultrathink");
-		writeFileSync(launcher, "#!/bin/sh\nsleep 0.3\n");
+		writeFileSync(launcher, "#!/bin/sh\nsleep 0.3\nexit 3\n");
 		chmodSync(launcher, 0o755);
-		const launches: DetachedLaunch[] = [];
+		const hook = join(root, "hook.ts");
+		writeFileSync(
+			hook,
+			[
+				`import { spawnObserveDetached } from ${JSON.stringify(join(import.meta.dir, "spawn.ts"))};`,
+				"const input = JSON.parse(process.argv[2] ?? '{}');",
+				"const result = spawnObserveDetached(",
+				"  { host: 'omp', sessionId: 's1', cwd: input.cwd, at: '2026-10-02T10:00:00.000Z', turns: [], toolCalls: 0 },",
+				"  { repoRoot: input.repoRoot, env: { ...process.env }, stateDir: input.stateDir, host: 'omp' },",
+				");",
+				"process.exit(result.spawned ? 0 : 2);",
+			].join("\n"),
+		);
+		const hookRun = Bun.spawn(
+			[process.execPath, hook, JSON.stringify({ repoRoot, stateDir, cwd: sessionCwd })],
+			{ env: { ...process.env }, stdio: ["ignore", "ignore", "ignore"] },
+		);
+		expect(await hookRun.exited).toBe(0);
+		await waitUntil(() => readRuns(stateDir).length > 0, { name: "a launch-exit run record" });
+		expect(readRuns(stateDir)).toEqual([
+			{
+				at: expect.any(Number),
+				sessionId: "s1",
+				outcome: "skipped",
+				captured: 0,
+				skipped: "launch exited",
+				exitCode: 3,
+			},
+		]);
+	});
+
+	test("a launch that exits zero writes no run record", async () => {
+		mkdirSync(join(repoRoot, "bin"));
+		const launcher = join(repoRoot, "bin", "ultrathink");
+		const marker = join(root, "ran.txt");
+		writeFileSync(launcher, `#!/bin/sh\nprintf ran > "${marker}"\nexit 0\n`);
+		chmodSync(launcher, 0o755);
+		const exits: Promise<number>[] = [];
 		const result = spawnObserveDetached(digest(), {
 			repoRoot,
 			env: { ...process.env },
 			stateDir,
 			host: "omp",
-			spawn: (cmd, args, opts) => {
-				const launch = startDetached(cmd, args, opts);
-				launches.push(launch);
-				return launch;
-			},
+			spawn: foreground(exits),
 		});
 		expect(result).toEqual({ spawned: true });
+		expect(await Promise.all(exits)).toEqual([0]);
+		expect(readFileSync(marker, "utf8")).toBe("ran");
 		expect(readRuns(stateDir)).toEqual([]);
-		expect(await launches[0]?.exited).toBe(0);
-		expect(readRuns(stateDir)).toEqual([]);
+	});
+
+	test("returns spawned true at once, before the observe command has run", async () => {
+		mkdirSync(join(repoRoot, "bin"));
+		const launcher = join(repoRoot, "bin", "ultrathink");
+		const marker = join(root, "ran.txt");
+		writeFileSync(launcher, `#!/bin/sh\nsleep 0.3\nprintf ran > "${marker}"\n`);
+		chmodSync(launcher, 0o755);
+		const result = spawnObserveDetached(digest(), {
+			repoRoot,
+			env: { ...process.env },
+			stateDir,
+			host: "omp",
+		});
+		expect(result).toEqual({ spawned: true });
+		expect(existsSync(marker)).toBe(false);
+		await waitUntil(() => existsSync(marker), { name: "the observe command to run" });
 	});
 });

@@ -17,11 +17,14 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { appendRun } from "./runlog.ts";
 import type { TeachDigest } from "./types.ts";
 
 const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const INBOX_FILE = /^(\d+)-[0-9a-f]{8}\.json(?:\.tmp)?$/;
+/** The detached supervisor: it starts the observe command and records a failed exit. */
+const SUPERVISOR = join(import.meta.dir, "launch-supervisor.ts");
+/** bin/run-bun passes --no-env-file, so a cloned repository's .env never reaches the supervisor. */
+const RUN_BUN = join(import.meta.dir, "..", "..", "bin", "run-bun");
 
 export interface SpawnObserveOptions {
 	repoRoot: string;
@@ -40,13 +43,13 @@ function inboxDir(stateDir: string): string {
 	return join(stateDir, "teach", "inbox");
 }
 
-/** A detached launch. `exited` settles with the child's exit code (null if killed by a signal or never started); it never rejects, so callers can await the launch without polling. */
-export interface DetachedLaunch {
+/** A detached launch: its pid, undefined when the launcher did not start. */
+interface DetachedLaunch {
 	pid: number | undefined;
-	exited: Promise<number | null>;
 }
 
-export function startDetached(
+/** Starts a detached child with ignored stdio and returns at once, without waiting for it. */
+function startDetached(
 	cmd: string,
 	args: string[],
 	opts: { env: NodeJS.ProcessEnv; cwd: string },
@@ -58,11 +61,11 @@ export function startDetached(
 		stdio: "ignore",
 	});
 	// A missing launcher is reported asynchronously as an 'error' event; without a listener it would crash the host.
-	const { promise: exited, resolve } = Promise.withResolvers<number | null>();
-	child.on("error", () => resolve(null));
-	child.on("exit", (code) => resolve(code));
+	child.on("error", () => {
+		// reason: a launcher that never started has no pid, and the caller reports that
+	});
 	child.unref();
-	return { pid: child.pid, exited };
+	return { pid: child.pid };
 }
 
 /** Removes inbox files older than 24 hours. Foreign file names are left alone; failures are ignored. */
@@ -97,6 +100,10 @@ export function writeInbox(
 	return path;
 }
 
+/**
+ * Starts the supervisor of one `teach observe` run and returns at once; it never waits for the run or its log lock.
+ * `spawned` is false when the inbox file or the supervisor could not be started. Never throws.
+ */
 export function spawnObserveDetached(
 	digest: TeachDigest,
 	options: SpawnObserveOptions,
@@ -111,30 +118,18 @@ export function spawnObserveDetached(
 			ULTRATHINK_HOST: options.host,
 			ULTRATHINK_STATE_DIR: options.stateDir,
 		};
-		const launch = (options.spawn ?? startDetached)(
-			join(options.repoRoot, "bin", "ultrathink"),
-			["teach", "observe", "--file", path],
-			{ env: childEnv, cwd },
-		);
+		// The supervisor starts the observe command and records a failed exit. The host waits for neither.
+		const task = JSON.stringify({
+			stateDir: options.stateDir,
+			sessionId: digest.sessionId,
+			command: join(options.repoRoot, "bin", "ultrathink"),
+			args: ["teach", "observe", "--file", path],
+		});
+		const launch = (options.spawn ?? startDetached)(RUN_BUN, [SUPERVISOR, task], {
+			env: childEnv,
+			cwd,
+		});
 		if (launch && launch.pid === undefined) throw new Error("launcher did not start");
-		if (launch) {
-			// Not awaited: the host returns at once. Best effort: a failed write must not reach the host.
-			launch.exited.then((code) => {
-				if (code === 0) return;
-				try {
-					appendRun(options.stateDir, {
-						at: Date.now(),
-						sessionId: digest.sessionId,
-						outcome: "skipped",
-						captured: 0,
-						skipped: "launch exited",
-						exitCode: code,
-					});
-				} catch {
-					// reason: fail-open: the run log is diagnostics only
-				}
-			});
-		}
 		return { spawned: true };
 	} catch (error) {
 		if (path) {
