@@ -401,9 +401,21 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 					return { ok: true, kept: "tip differs from merged head" };
 				}
 			}
+			// update-ref, unlike `branch -D`, does not refuse a branch another session has checked out, so re-read the
+			// worktrees right before the delete. Git cannot stop a checkout after this read; that residual race remains.
+			const relisted = exec(["git", "worktree", "list", "--porcelain", "-z"]);
+			if (relisted.exitCode !== 0) return { ok: false, error: errorOf(relisted) };
+			if (worktreesOn(relisted.stdout, ref).length > 0) {
+				return { ok: true, kept: "checked out in a worktree" };
+			}
 			// Deletes only while the ref still points at headSha; a commit that landed since the tip check keeps it.
 			const deleted = exec(["git", "update-ref", "-d", ref, headSha]);
-			if (deleted.exitCode === 0) return { ok: true };
+			if (deleted.exitCode === 0) {
+				// Drops the settings `push -u` wrote, so a recreated branch of this name does not inherit an old upstream.
+				const config = exec(["git", "config", "--remove-section", `branch.${branch}`]);
+				if (config.exitCode === 0 || /no such section/i.test(config.stderr)) return { ok: true };
+				return { ok: false, error: errorOf(config) };
+			}
 			const moved = readRef(ref);
 			if (moved.error !== undefined) return { ok: false, error: moved.error };
 			if (moved.sha === undefined) return { ok: true };

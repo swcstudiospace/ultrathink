@@ -774,19 +774,34 @@ describe("createGithub", () => {
 			"branch refs/heads/feat",
 			"",
 		].join("\0");
-		const reply = (status: string) =>
-			fakeRun((argv) => {
+		const DETACHED = [
+			"worktree /repo",
+			"HEAD 1111111",
+			"branch refs/heads/master",
+			"",
+			"worktree /wt/feat",
+			`HEAD ${TIP}`,
+			"detached",
+			"",
+		].join("\0");
+		const reply = (status: string) => {
+			let detached = false;
+			return fakeRun((argv) => {
 				const cmd = argv.join(" ");
 				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") {
 					return { stdout: `${TIP}\n` };
 				}
-				if (cmd === "git worktree list --porcelain -z") return { stdout: PORCELAIN };
+				if (cmd === "git worktree list --porcelain -z") {
+					return { stdout: detached ? DETACHED : PORCELAIN };
+				}
 				if (cmd === "git -C /wt/feat status --porcelain") return { stdout: status };
+				if (cmd === "git -C /wt/feat checkout --detach") detached = true;
 				if (cmd === "git -C /wt/feat rev-parse --verify --quiet HEAD") {
 					return { stdout: `${TIP}\n` };
 				}
 				return {};
 			});
+		};
 
 		test("an absent local branch is ok with nothing to do", () => {
 			const { run, calls } = fakeRun((argv) => (argv[2] === "--verify" ? { exitCode: 1 } : {}));
@@ -817,7 +832,9 @@ describe("createGithub", () => {
 				["git", "-C", "/wt/feat", "status", "--porcelain"],
 				["git", "-C", "/wt/feat", "checkout", "--detach"],
 				["git", "-C", "/wt/feat", "rev-parse", "--verify", "--quiet", "HEAD"],
+				["git", "worktree", "list", "--porcelain", "-z"],
 				["git", "update-ref", "-d", "refs/heads/feat", TIP],
+				["git", "config", "--remove-section", "branch.feat"],
 			]);
 			expect(calls.some((c) => c.argv.includes("push") || c.argv.includes("--delete"))).toBe(false);
 		});
@@ -842,7 +859,8 @@ describe("createGithub", () => {
 			expect(
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
-			expect(calls.at(-1)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
+			expect(calls.at(-2)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
+			expect(calls.at(-1)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);
 		});
 
 		test("a failed update-ref with the tip still at the merged head is an error", () => {
@@ -924,10 +942,24 @@ describe("createGithub", () => {
 				"branch refs/heads/feat",
 				"",
 			].join("\0");
+			const detachedListing = [
+				"worktree /repo",
+				"HEAD 1111111",
+				"branch refs/heads/master",
+				"",
+				`worktree ${path}`,
+				`HEAD ${TIP}`,
+				"detached",
+				"",
+			].join("\0");
+			let detached = false;
 			const { run, calls } = fakeRun((argv) => {
 				const cmd = argv.join(" ");
 				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") return { stdout: `${TIP}\n` };
-				if (cmd === "git worktree list --porcelain -z") return { stdout: listing };
+				if (cmd === "git worktree list --porcelain -z") {
+					return { stdout: detached ? detachedListing : listing };
+				}
+				if (cmd === `git -C ${path} checkout --detach`) detached = true;
 				if (cmd === `git -C ${path} rev-parse --verify --quiet HEAD`) {
 					return { stdout: `${TIP}\n` };
 				}
@@ -937,7 +969,64 @@ describe("createGithub", () => {
 				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
 			).toEqual({ ok: true });
 			expect(calls.map((c) => c.argv)).toContainEqual(["git", "-C", path, "checkout", "--detach"]);
-			expect(calls.at(-1)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
+			expect(calls.at(-2)?.argv).toEqual(["git", "update-ref", "-d", "refs/heads/feat", TIP]);
+			expect(calls.at(-1)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);
+		});
+
+		test("a branch another session checks out after the scan is kept, with no delete", () => {
+			const scanned = "worktree /repo\0HEAD 1111111\0branch refs/heads/master\0\0";
+			const later = `${scanned}worktree /other\0HEAD ${TIP}\0branch refs/heads/feat\0\0`;
+			let listed = 0;
+			const { run, calls } = fakeRun((argv) => {
+				const cmd = argv.join(" ");
+				if (cmd === "git rev-parse --verify --quiet refs/heads/feat") return { stdout: `${TIP}\n` };
+				if (cmd === "git worktree list --porcelain -z") {
+					listed += 1;
+					return { stdout: listed === 1 ? scanned : later };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true, kept: "checked out in a worktree" });
+			expect(calls.some((c) => c.argv[1] === "update-ref" || c.argv[1] === "config")).toBe(false);
+			expect(calls.some((c) => c.argv.includes("-D"))).toBe(false);
+		});
+
+		test("a deleted branch loses its branch.<name> settings", () => {
+			const { run, calls } = fakeRun((argv) =>
+				argv[2] === "--verify" ? { stdout: `${TIP}\n` } : {},
+			);
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true });
+			expect(calls.at(-1)?.argv).toEqual(["git", "config", "--remove-section", "branch.feat"]);
+		});
+
+		test("a branch with no settings section is still deleted", () => {
+			const { run } = fakeRun((argv) => {
+				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
+				if (argv[1] === "config") {
+					return { exitCode: 128, stderr: "fatal: no such section: branch.feat" };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: true });
+		});
+
+		test("a failed settings removal is reported, not swallowed", () => {
+			const { run } = fakeRun((argv) => {
+				if (argv[2] === "--verify") return { stdout: `${TIP}\n` };
+				if (argv[1] === "config") {
+					return { exitCode: 255, stderr: "error: could not lock config file .git/config" };
+				}
+				return {};
+			});
+			expect(
+				createGithub({ cwd: "/w", run }).deleteLocalBranch({ branch: "feat", headSha: TIP }),
+			).toEqual({ ok: false, error: "error: could not lock config file .git/config" });
 		});
 	});
 });
