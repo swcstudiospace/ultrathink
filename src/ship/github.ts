@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { realpathSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import { defaultRun } from "./run.ts";
 import type { PrRef, PrStatus, Run, ShipConfig } from "./types.ts";
 
@@ -212,6 +212,18 @@ function worktreesOn(porcelain: string, ref: string): string[] {
 	return paths;
 }
 
+// Files and directories git leaves in a worktree's git dir while an operation is in progress.
+const OPERATION_MARKERS = [
+	"rebase-merge",
+	"rebase-apply",
+	"MERGE_HEAD",
+	"CHERRY_PICK_HEAD",
+	"REVERT_HEAD",
+	"BISECT_LOG",
+];
+const OPERATION_KEPT =
+	"git operation in progress (rebase, merge, cherry-pick, revert or bisect), left alone";
+
 /** HEAD of a worktree: the branch it names, detached, or the error git reported while reading it. */
 type HeadState =
 	| { kind: "branch"; ref: string }
@@ -253,6 +265,17 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 		if (r.exitCode === 1 && r.stderr.trim() === "") return { kind: "detached" };
 		return { kind: "error", error: errorOf(r) };
 	};
+	// Whether a git operation is in progress in any of `paths`, read from each worktree's own git dir.
+	const operationIn = (paths: string[]): { busy: boolean; error?: string } => {
+		for (const wt of paths) {
+			const r = exec(["git", "-C", wt, "rev-parse", "--git-dir"]);
+			if (r.exitCode !== 0) return { busy: false, error: errorOf(r) };
+			const gitDir = resolve(wt, r.stdout.trim());
+			if (OPERATION_MARKERS.some((name) => existsSync(join(gitDir, name)))) return { busy: true };
+		}
+		return { busy: false };
+	};
+
 	// `path` with symlinks resolved, as `git worktree list` reports them; `path` itself when it cannot be resolved.
 	const realOrSelf = (path: string): string => {
 		try {
@@ -455,6 +478,10 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			if (holders.length > 1 || !holders.every(mine)) {
 				return { ok: true, kept: "shared worktree, left alone" };
 			}
+			// An operation in progress detaches HEAD and hides the branch from the scan, so it is checked per holder too.
+			const scanOp = operationIn(holders);
+			if (scanOp.error !== undefined) return { ok: false, error: scanOp.error };
+			if (scanOp.busy) return { ok: true, kept: OPERATION_KEPT };
 			// Check every holder before detaching any, so a dirty one leaves all worktrees untouched.
 			for (const wt of holders) {
 				const status = exec(["git", "-C", wt, "status", "--porcelain"]);
@@ -487,6 +514,10 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			if (worktreesOn(relisted.stdout, ref).length > 0) {
 				return { ok: true, kept: "checked out in a worktree" };
 			}
+			// Checked again right before the delete: an operation started after the scan also detaches its holder.
+			const lateOp = operationIn(holders);
+			if (lateOp.error !== undefined) return { ok: false, error: lateOp.error };
+			if (lateOp.busy) return { ok: true, kept: OPERATION_KEPT };
 			// Saved first so a refused delete can restore them, and removed before the delete so that a branch another
 			// session recreates after a successful delete keeps the settings it sets.
 			const settings = readSettings(branch);

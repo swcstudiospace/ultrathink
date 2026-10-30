@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionRecord } from "../claude/state.ts";
@@ -835,12 +835,14 @@ describe("createGithub", () => {
 			expect(calls.map((c) => c.argv)).toEqual([
 				["git", "rev-parse", "--verify", "--quiet", "refs/heads/feat"],
 				["git", "worktree", "list", "--porcelain", "-z"],
+				["git", "-C", "/wt/feat", "rev-parse", "--git-dir"],
 				["git", "-C", "/wt/feat", "status", "--porcelain"],
 				["git", "-C", "/wt/feat", "symbolic-ref", "-q", "HEAD"],
 				["git", "-C", "/wt/feat", "checkout", "--detach"],
 				["git", "-C", "/wt/feat", "rev-parse", "--verify", "--quiet", "HEAD"],
 				["git", "-C", "/wt/feat", "symbolic-ref", "-q", "HEAD"],
 				["git", "worktree", "list", "--porcelain", "-z"],
+				["git", "-C", "/wt/feat", "rev-parse", "--git-dir"],
 				["git", "config", "-z", "--local", "--get-regexp", "^branch\\."],
 				["git", "config", "--remove-section", "branch.feat"],
 				["git", "update-ref", "-d", "refs/heads/feat", TIP],
@@ -1011,6 +1013,64 @@ describe("createGithub", () => {
 			).toEqual({ ok: false, error: "fatal: unable to read HEAD" });
 			expect(calls.some((c) => c.argv.includes("checkout"))).toBe(false);
 			expect(calls.some((c) => c.argv[1] === "update-ref")).toBe(false);
+		});
+
+		test("a rebase in progress keeps the branch, with no checkout and no delete", () => {
+			const gitDir = mkdtempSync(join(tmpdir(), "ship-gitdir-"));
+			try {
+				mkdirSync(join(gitDir, "rebase-merge"));
+				const { run, calls } = fakeRun((argv) => {
+					const cmd = argv.join(" ");
+					if (cmd === "git rev-parse --verify --quiet refs/heads/feat")
+						return { stdout: `${TIP}\n` };
+					if (cmd === "git worktree list --porcelain -z") return { stdout: PORCELAIN };
+					if (cmd === "git -C /wt/feat rev-parse --git-dir") return { stdout: `${gitDir}\n` };
+					return {};
+				});
+				expect(
+					createGithub({ cwd: "/wt/feat", run }).deleteLocalBranch({
+						branch: "feat",
+						headSha: TIP,
+					}),
+				).toEqual({
+					ok: true,
+					kept: "git operation in progress (rebase, merge, cherry-pick, revert or bisect), left alone",
+				});
+				expect(calls.some((c) => c.argv.includes("checkout") || c.argv[1] === "update-ref")).toBe(
+					false,
+				);
+			} finally {
+				rmSync(gitDir, { recursive: true, force: true });
+			}
+		});
+
+		test("a MERGE_HEAD marker keeps the branch", () => {
+			const gitDir = mkdtempSync(join(tmpdir(), "ship-gitdir-"));
+			try {
+				writeFileSync(join(gitDir, "MERGE_HEAD"), `${TIP}\n`);
+				const { run, calls } = fakeRun((argv) => {
+					const cmd = argv.join(" ");
+					if (cmd === "git rev-parse --verify --quiet refs/heads/feat")
+						return { stdout: `${TIP}\n` };
+					if (cmd === "git worktree list --porcelain -z") return { stdout: PORCELAIN };
+					if (cmd === "git -C /wt/feat rev-parse --git-dir") return { stdout: `${gitDir}\n` };
+					return {};
+				});
+				expect(
+					createGithub({ cwd: "/wt/feat", run }).deleteLocalBranch({
+						branch: "feat",
+						headSha: TIP,
+					}),
+				).toEqual({
+					ok: true,
+					kept: "git operation in progress (rebase, merge, cherry-pick, revert or bisect), left alone",
+				});
+				expect(calls.some((c) => c.argv.includes("checkout") || c.argv[1] === "update-ref")).toBe(
+					false,
+				);
+			} finally {
+				rmSync(gitDir, { recursive: true, force: true });
+			}
 		});
 
 		test("another session's worktree is left alone: kept with its reason and no checkout runs", () => {
