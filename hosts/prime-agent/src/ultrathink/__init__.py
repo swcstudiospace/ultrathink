@@ -302,7 +302,8 @@ async def run(
 	try:
 		result = await asyncio.to_thread(plan, text, cwd=cwd, session=session, force=force, raw=raw, on_process=handle)
 	except asyncio.CancelledError:
-		await asyncio.to_thread(handle.stop)
+		# Own thread, not the plan pool and not the event loop: cleanup must not wait for a busy communicate.
+		threading.Thread(target=handle.stop, daemon=True).start()
 		raise
 	if handle.cancelled or result.get("skipped") == "cancelled":
 		raise asyncio.CancelledError

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { isFallbackGraph } from "../../../src/think/graph.ts";
 import type { ThoughtGraph } from "../../../src/think/types.ts";
+import { readJson } from "../../../src/shared.ts";
 import { isSessionId } from "./journal.ts";
 
 type SessionStatus = "running" | "planned" | "failed" | "invalid" | "skipped";
@@ -59,9 +60,8 @@ const MAX_DIR_ENTRIES = 5000;
 const MAX_CANDIDATES = 200;
 /** Sessions read per listing, whoever they belong to: the bound on a scan that skips other principals' sessions. */
 const MAX_EXAMINED = 1000;
-/** Session JSON is parsed only up to 1 MiB. A larger plan is listed from its `.summary.json`, never by parsing the record on the request path. */
+/** Plan records larger than this are not parsed on the listing path. Status files are read without this bound. */
 const SUMMARY_READ_BYTES = 1024 * 1024;
-const SIDECAR_READ_BYTES = 64 * 1024;
 /** Text is cut to this many characters before it is normalised, so a megabyte goal costs nothing. */
 const GOAL_SCAN_CHARS = 2048;
 const JOB_STATUSES: Record<string, true> = {
@@ -235,23 +235,10 @@ function byRecency(a: { id: string; time: number }, b: { id: string; time: numbe
 	return b.time - a.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
-function readSidecar(recordPath: string): RecordView | undefined {
-	const read = readCappedBytes(recordPath.replace(/\.json$/, ".summary.json"), SIDECAR_READ_BYTES);
-	if (read?.kind !== "text") return undefined;
-	const raw = parseObject(read.text);
-	if (!raw || typeof raw.hasGraph !== "boolean" || typeof raw.nodeCount !== "number") return undefined;
-	return {
-		graphGoal: typeof raw.goal === "string" ? raw.goal : "",
-		original: "",
-		nodeCount: raw.nodeCount,
-		hasGraph: raw.hasGraph,
-	};
-}
-
 function readRecord(path: string): RecordView | "unread" | undefined {
 	const read = readCapped(path);
 	if (read === undefined) return undefined;
-	if (read.kind === "unread") return readSidecar(path) ?? "unread";
+	if (read.kind === "unread") return "unread";
 	let raw: unknown;
 	try {
 		raw = JSON.parse(read.text) as unknown;
@@ -339,8 +326,8 @@ function summarize(
 	let scopedTo: string | undefined;
 
 	if (sources.jobMtime !== undefined) {
-		const read = readCapped(join(stateDir, "jobs", `${id}${JSON_SUFFIX}`));
-		const job = read?.kind === "text" ? parseObject(read.text) : undefined;
+		const parsed = readJson(join(stateDir, "jobs", `${id}${JSON_SUFFIX}`));
+		const job = isObject(parsed) ? parsed : undefined;
 		// The shape check mirrors the planner's own: a file it would refuse to serve is not listed as a job.
 		if (
 			job !== undefined &&
@@ -356,8 +343,8 @@ function summarize(
 	}
 
 	if (status === undefined && sources.metaMtime !== undefined) {
-		const read = readCapped(join(stateDir, "journal", id, "meta.json"));
-		const meta = read?.kind === "text" ? parseObject(read.text) : undefined;
+		const parsed = readJson(join(stateDir, "journal", id, "meta.json"));
+		const meta = isObject(parsed) ? parsed : undefined;
 		if (meta !== undefined) {
 			status = clientStatus(meta.status);
 			mode = "client";

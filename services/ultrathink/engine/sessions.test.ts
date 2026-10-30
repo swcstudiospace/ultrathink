@@ -310,7 +310,7 @@ describe("listSessions", () => {
 		expect(listSessions(state, { limit: 20 }).map((s) => s.sessionId)).toEqual([good]);
 	});
 
-	test("a job over 1 MiB is not parsed on the listing path", () => {
+	test("a job over 1 MiB is still listed from its status file", () => {
 		const state = tmp();
 		const [small, huge] = [randomUUID(), randomUUID()];
 		writeJob(state, small, "planned", NOW - 1);
@@ -329,29 +329,25 @@ describe("listSessions", () => {
 			`${JSON.stringify({ ...body, padding: "x".repeat(1024 * 1024 + 1 - overhead) })}\n`,
 		);
 		touch(path, NOW);
-		expect(listSessions(state).map((s) => s.sessionId)).toEqual([small]);
-		expect(newestPlannedSessionId(state)).toBe(small);
+		expect(listSessions(state).map((s) => s.sessionId)).toEqual([huge, small]);
+		expect(newestPlannedSessionId(state)).toBe(huge);
 	});
 
-	test("a session record over 1 MiB is listed from its summary, not by parsing the record", () => {
+	test("a session record over 1 MiB is unread, not reported as an empty graph", () => {
 		const state = tmp();
 		const id = randomUUID();
 		writeJob(state, id, "planned", NOW);
 		mkdirSync(join(state, "sessions"), { recursive: true });
 		writeFileSync(join(state, "sessions", `${id}.json`), "x".repeat(1024 * 1024 + 64));
-		writeFileSync(
-			join(state, "sessions", `${id}.summary.json`),
-			JSON.stringify({ goal: "Ship the oversized plan", nodeCount: 2, hasGraph: true }),
-		);
 		expect(listSessions(state)).toEqual([
 			{
 				sessionId: id,
 				status: "planned",
 				mode: "server",
 				updatedAt: NOW,
-				goal: "Ship the oversized plan",
-				nodeCount: 2,
-				hasGraph: true,
+				goal: "",
+				nodeCount: null,
+				hasGraph: null,
 			},
 		]);
 	});

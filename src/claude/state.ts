@@ -28,7 +28,6 @@ import {
 } from "./atomic.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
 import type { Clarification } from "../hitl/types.ts";
-import { isFallbackGraph } from "../think/graph.ts";
 import { THINK_ENGINES, type ThinkEngine, type ThoughtGraph } from "../think/types.ts";
 import type { TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { UpliftResult } from "../types.ts";
@@ -442,7 +441,6 @@ function saveSessionFile(
 	lastLock?: LastLockOptions,
 ): string | undefined {
 	writeJson(path, record);
-	writePlanSummary(path, record);
 	const last = join(dir, "last.json");
 	try {
 		if (!withLastLock(last, () => writeJson(last, record), lastLock))
@@ -454,21 +452,6 @@ function saveSessionFile(
 	return undefined;
 }
 
-/** A few hundred bytes beside the record so history can list a long plan without parsing it. */
-function writePlanSummary(recordPath: string, record: SessionRecord): void {
-	const graph = record.graph;
-	const nodes = graph?.nodes ?? [];
-	const real = graph !== undefined && nodes.length > 0 && !isFallbackGraph(graph);
-	try {
-		writeJson(recordPath.replace(/\.json$/, ".summary.json"), {
-			goal: real ? graph.goal.slice(0, 2048) : "",
-			nodeCount: real ? nodes.length : 0,
-			hasGraph: real,
-		});
-	} catch {
-		// reason: the record is saved; a missing listing summary must not fail the plan
-	}
-}
 
 /**
  * Writes the session. Returns a warning when `last.json` could not be refreshed; the session file is still saved.
