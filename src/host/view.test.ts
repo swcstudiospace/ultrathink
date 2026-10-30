@@ -130,6 +130,12 @@ describe("buildPlanView", () => {
 		expect(view.skill).toBe("gsd-quick");
 		expect(buildPlanView(record(), 0)).not.toHaveProperty("skill");
 	});
+
+	test("projects the record's degraded stages, and carries no degraded key without any", () => {
+		expect(buildPlanView({ ...record(), degraded: ["graph"] }, 0).degraded).toEqual(["graph"]);
+		expect(buildPlanView({ ...record(), degraded: [] }, 0)).not.toHaveProperty("degraded");
+		expect(buildPlanView(record(), 0)).not.toHaveProperty("degraded");
+	});
 });
 
 describe("buildPlanView model resolution (§9 path 3)", () => {

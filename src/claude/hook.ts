@@ -1595,6 +1595,7 @@ export async function runPromptSubmit(
 				...(engineFailover ? { engineFailover } : {}),
 				elapsedMs: now() - started,
 				decisions: records,
+				degraded,
 			});
 			// The Substrate segment is echo-only and once per plan: this is the single place a summary is built.
 			output.systemMessage = briefNotice ? `${summary} · ${briefNotice}` : summary;
