@@ -1172,7 +1172,10 @@ describe("runShip", () => {
 		test("kept: the reason is recorded and the merge still succeeds", async () => {
 			const out = await ship(
 				"merge",
-				deps({ config: { deleteBranch: false }, localBranch: { ok: true, kept: "worktree dirty" } }),
+				deps({
+					config: { deleteBranch: false },
+					localBranch: { ok: true, kept: "worktree dirty" },
+				}),
 			);
 			expect(out.output).toMatchObject({
 				ok: true,
@@ -1184,7 +1187,10 @@ describe("runShip", () => {
 		test("an error is recorded without failing the merge", async () => {
 			const out = await ship(
 				"merge",
-				deps({ config: { deleteBranch: false }, localBranch: { ok: false, error: "permission denied" } }),
+				deps({
+					config: { deleteBranch: false },
+					localBranch: { ok: false, error: "permission denied" },
+				}),
 			);
 			expect(out.output).toMatchObject({
 				ok: true,
