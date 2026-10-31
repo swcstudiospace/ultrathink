@@ -82,6 +82,7 @@ Read only by the hosted service (`services/ultrathink`) at start. A bad value st
 | `ULTRATHINK_PLANNING_MODEL` | — | no | string | `claude-haiku-5-5` | Claude model id of the hosted planner: 1 to 80 characters from letters, digits, dot, underscore, colon and dash. |
 | `ULTRATHINK_PLANNING_FALLBACK` | — | no | enum (one of none, grok) | `none` | Whether a failed Claude call fails over to Grok. |
 | `ULTRATHINK_SERVER_PLANNING` | — | no | bool01 | `0` | Set to 1 to let the service plan on the server. |
+| `ULTRATHINK_CIMD` | — | no | bool01 | `0` | Set to 1 to allow guarded CIMD client metadata retrieval; unset or 0 keeps it off. |
 | `ULTRATHINK_PLAINTEXT_LOOPBACK` | — | no | bool01 | `0` | Set to 1 to run without TLS; for development and local smoke tests only. |
 | `ULTRATHINK_MAX_INPUT_CHARS` | — | no | int (at least 0) | `4000000` | Longest accepted prompt in characters; 0 means no limit, otherwise at least 1. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | — | no | int (1 to 200000) | `20000` | Longest accepted answer in characters. |
