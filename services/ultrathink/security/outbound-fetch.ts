@@ -43,12 +43,12 @@ export type OutboundFetchResult =
 	| { readonly ok: true; readonly text: string; readonly headers: OutboundCacheHeaders }
 	| { readonly ok: false; readonly code: OutboundFetchCode };
 export type GuardedFetch = (target: string, signal?: AbortSignal) => Promise<OutboundFetchResult>;
-export interface OutboundResolver {
+interface OutboundResolver {
 	resolve4(hostname: string): Promise<readonly string[]>;
 	resolve6(hostname: string): Promise<readonly string[]>;
 	cancel(): void;
 }
-export interface OutboundAddress {
+interface OutboundAddress {
 	readonly address: string;
 	readonly family: 4 | 6;
 }
@@ -66,7 +66,7 @@ export interface OutboundTransportEvents {
 	end(complete: boolean): void;
 	error(reason: "NETWORK_FAILURE" | "INVALID_RESPONSE"): void;
 }
-export interface OutboundOperation {
+interface OutboundOperation {
 	destroy(): void;
 	readonly stopped: Promise<void>;
 }
