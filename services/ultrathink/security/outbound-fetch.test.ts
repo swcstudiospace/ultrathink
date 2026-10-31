@@ -351,7 +351,7 @@ describe("phase102 tracer", () => {
 					expect(request.bodyReads).toBe(6);
 				}
 			}
-			const refusal = { ok: false, code };
+			const refusal = { ok: false, code } satisfies OutboundFetchResult;
 			expect(await pending).toEqual(refusal);
 			expect(request.destroyed).toBe(true);
 			expect(request.stoppedWork).toBe(false);
@@ -1394,9 +1394,13 @@ describe("phase102 boundaries — B09 leases and isolation", () => {
 		expect([memory.resolverStarts, memory.queries, memory.requests.length]).toEqual(before);
 
 		memory.advance(5000);
-		expect(await Promise.all([dns, tls, handshaking, body])).toEqual(
-			Array(4).fill({ ok: false, code: "TIMEOUT" }),
-		);
+		const timedOut: OutboundFetchResult = { ok: false, code: "TIMEOUT" };
+		expect(await Promise.all([dns, tls, handshaking, body])).toEqual([
+			timedOut,
+			timedOut,
+			timedOut,
+			timedOut,
+		]);
 		await pump();
 		// The DNS slot is released once its resolver settles; the transport slots wait for confirmed stops.
 		const extra = guard(URL_ID);

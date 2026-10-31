@@ -291,7 +291,11 @@ describe("phase102 tracer", () => {
 				fetcher.fetch(null),
 				fetcher.fetch(RAW, controller.signal),
 			]),
-		).toEqual(Array(3).fill({ ok: false, kind: "fetch", code: "DISABLED" }));
+		).toEqual([
+			{ ok: false, kind: "fetch", code: "DISABLED" },
+			{ ok: false, kind: "fetch", code: "DISABLED" },
+			{ ok: false, kind: "fetch", code: "DISABLED" },
+		]);
 		expect(starts).toBe(0);
 	});
 
@@ -338,7 +342,7 @@ describe("phase102 tracer", () => {
 				ok: false,
 				kind: "fetch",
 				code: failure === "peer" ? "PIN_MISMATCH" : "NETWORK_FAILURE",
-			};
+			} as const satisfies CimdFetchResult;
 			expect(await pending).toEqual(expected);
 			expect(request.bodyReads).toBe(0);
 			expect(request.stoppedWork).toBe(false);
@@ -449,7 +453,8 @@ describe("phase102 tracer", () => {
 
 describe("phase102 boundaries — B11 adapter and model", () => {
 	test("B11 each refused document field maps to its exact model refusal and never echoes the value", async () => {
-		const cases: [Record<string, unknown>, string, string][] = [
+		type RefusedCode = Extract<CimdFetchResult, { readonly kind: "model" }>["refused"]["code"];
+		const cases: [Record<string, unknown>, string, RefusedCode][] = [
 			[{ client_id: "https://client.example:443/meta.json" }, "client_id", "CLIENT_ID_MISMATCH"],
 			[{ client_id: "https://CLIENT.example/meta.json" }, "client_id", "CLIENT_ID_MISMATCH"],
 			[{ client_id: undefined }, "client_id", "INVALID_DOCUMENT"],
@@ -656,7 +661,12 @@ describe("phase102 boundaries — B12 isolation and DI", () => {
 		const before = [memory.resolverStarts, memory.queries, memory.requests.length];
 		expect(
 			await Promise.all([off.fetch(RAW), off.fetch(null), off.fetch(RAW), off.fetch(RAW)]),
-		).toEqual(Array(4).fill({ ok: false, kind: "fetch", code: "DISABLED" }));
+		).toEqual([
+			{ ok: false, kind: "fetch", code: "DISABLED" },
+			{ ok: false, kind: "fetch", code: "DISABLED" },
+			{ ok: false, kind: "fetch", code: "DISABLED" },
+			{ ok: false, kind: "fetch", code: "DISABLED" },
+		]);
 		expect([memory.resolverStarts, memory.queries, memory.requests.length]).toEqual(before);
 		const request = memory.request();
 		expect(await request.peer(PUBLIC)).toBe(true);

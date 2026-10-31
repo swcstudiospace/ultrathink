@@ -2172,7 +2172,8 @@ describe("CIMD OFF handler", () => {
 			fetcher.fetch("http://insecure.example/meta.json"),
 			fetcher.fetch(CLIENT, aborted.signal),
 		]);
-		expect(results).toEqual(Array(3).fill({ ok: false, kind: "fetch", code: "DISABLED" }));
+		const disabled = { ok: false, kind: "fetch", code: "DISABLED" } as const;
+		expect(results).toEqual([disabled, disabled, disabled]);
 		expect(targets).toEqual([]);
 	});
 
