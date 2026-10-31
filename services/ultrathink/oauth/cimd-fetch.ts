@@ -28,7 +28,11 @@ export interface CimdFetcher {
 	fetch(raw: unknown, signal?: AbortSignal): Promise<CimdFetchResult>;
 }
 
-const CIMD_FETCH_POLICY: OutboundFetchPolicy = { timeoutMs: 5000, maxBytes: 5000, maxInflight: 4 };
+export const CIMD_FETCH_POLICY: OutboundFetchPolicy = {
+	timeoutMs: 5000,
+	maxBytes: 5000,
+	maxInflight: 4,
+};
 // Inert construction, one admission counter for every default factory in this process.
 const sharedCimdGuard = createOutboundFetchGuard(CIMD_FETCH_POLICY);
 

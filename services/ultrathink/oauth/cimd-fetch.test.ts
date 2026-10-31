@@ -11,7 +11,7 @@ import {
 	type OutboundTransportEvents,
 	type PinnedHttpsTarget,
 } from "../security/outbound-fetch.ts";
-import { type CimdFetchResult, createCimdFetcher } from "./cimd-fetch.ts";
+import { CIMD_FETCH_POLICY, type CimdFetchResult, createCimdFetcher } from "./cimd-fetch.ts";
 
 const RAW = "https://CLIENT.example:443/meta.json";
 const PUBLIC = "93.184.216.34";
@@ -406,7 +406,7 @@ describe("phase102 tracer", () => {
 							? "TIMEOUT"
 							: "BODY_TOO_LARGE",
 			});
-			if (failure === "redirect" || failure === "declared") expect(request.bodyReads).toBe(0);
+			if (failure === "redirect") expect(request.bodyReads).toBe(0);
 			if (failure === "overflow") expect(request.delivered).toBeLessThan(6001);
 			expect(memory.requests).toHaveLength(1);
 			expect(memory.queries).toBe(2);
@@ -448,6 +448,11 @@ describe("phase102 tracer", () => {
 		expect(
 			await createCimdFetcher(configured("1"), new Set()).fetch("https://127.0.0.1/meta.json"),
 		).toEqual({ ok: false, kind: "fetch", code: expected });
+	});
+
+	test("OD-4 bounds: the production policy is 5-second timeout, 5,000-byte body cap and 4 in-flight fetches", () => {
+		// Owner-decided in OD-4 (2026-10-31); a change requires a new owner decision.
+		expect(CIMD_FETCH_POLICY).toEqual({ timeoutMs: 5000, maxBytes: 5000, maxInflight: 4 });
 	});
 });
 
