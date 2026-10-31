@@ -576,7 +576,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"service-tuning",
 		"bool01",
 		"ULTRATHINK_CIMD",
-		"Set to 1 to allow guarded CIMD client metadata retrieval; unset or 0 keeps it off.",
+		"Set to 1 to allow guarded CIMD client metadata retrieval. Needs Bun 1.4.0 or later; older Bun refuses retrieval. Unset or 0 keeps it off. Does not advertise CIMD.",
 		{ default: "0", reader: "trims" },
 	),
 	row(
