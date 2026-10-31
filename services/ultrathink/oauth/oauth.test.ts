@@ -2196,7 +2196,7 @@ describe("CIMD OFF handler", () => {
 		expect(targets).toEqual([]);
 	});
 
-	test("with the flag OFF, the authorize flow refuses an HTTPS client id and never fetches its metadata", async () => {
+	test("with the flag OFF, the authorize flow refuses an HTTPS client id with the unknown-client page", async () => {
 		const h = await makeHarness();
 		const { challenge } = pkcePair();
 		const response = await authorizeCall(h, CLIENT, challenge);
