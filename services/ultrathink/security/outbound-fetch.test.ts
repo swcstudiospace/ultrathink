@@ -1119,6 +1119,21 @@ describe("phase102 boundaries — B06 declared length", () => {
 			(await deliver({ headers: { "content-length": "5" }, chunks: [new Uint8Array(6).fill(97)] }))
 				.result,
 		).toEqual({ ok: false, code: "INVALID_RESPONSE" });
+		const memory = new MemoryPrimitives();
+		const pending = createOutboundFetchGuard(POLICY, memory.deps)(URL_ID);
+		await pump();
+		const request = memory.request();
+		expect(await request.observe(PUBLIC)).toBe(true);
+		expect(request.headers(200, { "content-length": "5" })).toBe(true);
+		for (let part = 0; part < 25 && !request.destroyed; part++) {
+			request.chunk(new Uint8Array(6).fill(97));
+		}
+		request.end(true);
+		expect(request.destroyed).toBe(true);
+		expect(request.bodyReads).toBe(1);
+		expect(request.deliveredBytes).toBe(6);
+		expect(await pending).toEqual({ ok: false, code: "INVALID_RESPONSE" });
+		await memory.cleanup();
 		expect((await deliver({ headers: { "content-length": "5000" }, chunks: [] })).result).toEqual({
 			ok: false,
 			code: "INVALID_RESPONSE",
@@ -1127,6 +1142,22 @@ describe("phase102 boundaries — B06 declared length", () => {
 			ok: false,
 			code: "BODY_TOO_LARGE",
 		});
+	});
+
+	test("policy limits must be positive safe integers before any admission", () => {
+		const invalid: Partial<typeof POLICY>[] = [
+			{ maxBytes: 0 },
+			{ maxBytes: 1.5 },
+			{ maxInflight: 0 },
+			{ timeoutMs: -1 },
+			{ timeoutMs: Number.NaN },
+		];
+		for (const override of invalid) {
+			const memory = new MemoryPrimitives();
+			expect(() => createOutboundFetchGuard({ ...POLICY, ...override }, memory.deps)).toThrow(
+				RangeError,
+			);
+		}
 	});
 });
 
