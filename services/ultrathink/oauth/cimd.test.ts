@@ -430,4 +430,251 @@ describe("phase101 boundaries", () => {
 		}
 		refused(parse(fixture({ jwks: { keys: [{ kty: "oct" }] } })), "jwks", "FORBIDDEN_CREDENTIAL");
 	});
+
+	test("DOC-06: every redirect must pass; a bad first, middle or last member refuses all", () => {
+		accepted();
+		for (const redirectUris of [undefined, null, "", {}, 0, false, []]) {
+			refused(
+				parse(fixture({ redirect_uris: redirectUris })),
+				"redirect_uris",
+				"INVALID_REDIRECT_URIS",
+			);
+		}
+		const other = "https://claude.ai/other";
+		for (const bad of [null, 0, false, {}, [], "", "https://outside.example/callback"]) {
+			for (const redirectUris of [
+				[bad],
+				[bad, redirect, other],
+				[redirect, bad, other],
+				[redirect, other, bad],
+			]) {
+				refused(
+					parse(fixture({ redirect_uris: redirectUris })),
+					"redirect_uris",
+					"INVALID_REDIRECT_URIS",
+				);
+			}
+		}
+	});
+
+	test("DOC-07: untrusted metadata cannot replace core; list order and duplicates survive", () => {
+		const redirects = [
+			redirect,
+			...[1, 2, 3, 4, 5].map((n) => `https://claude.ai/cb${n}`),
+			redirect,
+		];
+		const metadata = fixture({
+			redirect_uris: redirects,
+			client_name: `  Unverified <name> ${"n".repeat(130)}  `,
+			grant_types: ["untrusted-grant"],
+			response_types: ["untrusted-response"],
+			valid: false,
+			value: { client_id: "forged" },
+			metadata: { redirect_uris: ["https://outside.example/forged"] },
+			extension: { client_id: "forged", token_endpoint_auth_method: "private_key_jwt" },
+		});
+		const reordered = Object.fromEntries(Object.entries(metadata).reverse());
+		const document = accepted(metadata);
+		expect(accepted(reordered)).toEqual(document);
+		expect(document.redirect_uris).toEqual(redirects);
+		expect(document.redirect_uris.length).toBe(7);
+		expect(document.client_id).toBe(clientId);
+		expect(document.token_endpoint_auth_method).toBe("none");
+		expect(cimdRedirectMatches(document, "https://outside.example/forged")).toBe(false);
+		expect(accepted().metadata).not.toHaveProperty("grant_types");
+		expect(accepted().metadata).not.toHaveProperty("response_types");
+	});
+
+	test("REDIR-01: required trusted normalized origins alone grant permission", () => {
+		const providerOrigins = [
+			"https://claude.ai",
+			"https://claude.com",
+			"https://grok.com",
+			"https://console.x.ai",
+		];
+		const policy: ReadonlySet<string> = new Set(providerOrigins);
+		for (const origin of providerOrigins) {
+			accepted(fixture({ redirect_uris: [`${origin}/cb`] }), clientId, policy);
+		}
+		for (const raw of [
+			"https://outside.example/cb",
+			"https://claude.ai.evil.example/cb",
+			"https://sub.claude.ai/cb",
+			"https://claude.ai:8443/cb",
+			"https://claude.ai@evil.example/cb",
+			"https://evil.example@claude.ai/cb",
+		]) {
+			refused(
+				parse(fixture({ redirect_uris: [raw] }), clientId, policy),
+				"redirect_uris",
+				"INVALID_REDIRECT_URIS",
+			);
+		}
+		const custom: ReadonlySet<string> = new Set(["https://custom.example"]);
+		accepted(fixture({ redirect_uris: ["https://custom.example/cb"] }), clientId, custom);
+		refused(parse(fixture(), clientId, custom), "redirect_uris", "INVALID_REDIRECT_URIS");
+		refused(parse(fixture(), clientId, new Set()), "redirect_uris", "INVALID_REDIRECT_URIS");
+		// Metadata is not trusted policy, even when it names familiar permission keys.
+		refused(
+			parse(
+				fixture({
+					redirect_uris: ["https://outside.example/cb"],
+					allowedRedirectOrigins: ["https://outside.example"],
+					redirect_origins: ["https://outside.example"],
+				}),
+			),
+			"redirect_uris",
+			"INVALID_REDIRECT_URIS",
+		);
+		accepted(fixture({ redirect_uris: ["HTTPS://CLAUDE.AI:443/cb"] }));
+	});
+
+	test("REDIR-02: independent HTTPS rule rejects HTTP even with injected origin permission", () => {
+		for (const host of ["localhost", "127.0.0.1", "[::1]", "claude.ai"]) {
+			for (const port of ["", ":80", ":50000", ":61234"]) {
+				const raw = `http://${host}${port}/cb`;
+				const policy: ReadonlySet<string> = new Set([new URL(raw).origin]);
+				refused(
+					parse(fixture({ redirect_uris: [raw] }), clientId, policy),
+					"redirect_uris",
+					"INVALID_REDIRECT_URIS",
+				);
+			}
+			const httpsOrigin = `https://${host}`;
+			accepted(fixture({ redirect_uris: [`${httpsOrigin}/cb`] }), clientId, new Set([httpsOrigin]));
+		}
+	});
+
+	test("REDIR-03: raw syntax and exact 2048/2049 UTF-16 length boundary", () => {
+		for (const raw of [
+			"https://claude.ai",
+			"https://claude.ai/",
+			`${redirect}?`,
+			`${redirect}?state=fixture&next=%2F%3F%23`,
+			"https://claude.ai/%20%2F%23%40",
+			"https://claude.ai/%252e/%252G",
+		]) {
+			accepted(fixture({ redirect_uris: [raw] }));
+		}
+		for (const raw of [
+			"",
+			"not a URL",
+			"//claude.ai/cb",
+			"https:///cb",
+			"https://user:pw@claude.ai/cb",
+			"https://user@claude.ai/cb",
+			"https://@claude.ai/cb",
+			"https://:@claude.ai/cb",
+			`${redirect}#`,
+			`${redirect}#fragment`,
+			` ${redirect}`,
+			`${redirect} `,
+			"https://claude.ai/a\\b",
+			"https://claude.ai/a/../cb",
+			"https://claude.ai/%2e/cb",
+			"https://claude.ai/%",
+			"https://claude.ai/%2",
+			"https://claude.ai/%GG",
+			"https://claude.ai/cb?q=%GG",
+		]) {
+			refused(parse(fixture({ redirect_uris: [raw] })), "redirect_uris", "INVALID_REDIRECT_URIS");
+		}
+		for (const character of ["\t", "\n", "\r", "\x00", "\x1f", "\x7f", "\u00a0"]) {
+			refused(
+				parse(fixture({ redirect_uris: [`https://claude.ai/a${character}b`] })),
+				"redirect_uris",
+				"INVALID_REDIRECT_URIS",
+			);
+		}
+		const prefix = "https://claude.ai/";
+		for (const data of ["a", "\u{1f600}"]) {
+			const remaining = 2048 - prefix.length;
+			const atLimit =
+				prefix +
+				data.repeat(Math.floor(remaining / data.length)) +
+				"a".repeat(remaining % data.length);
+			expect(atLimit.length).toBe(2048);
+			accepted(fixture({ redirect_uris: [atLimit] }));
+			const overLimit = `${atLimit}a`;
+			expect(overLimit.length).toBe(2049);
+			refused(
+				parse(fixture({ redirect_uris: [overLimit] })),
+				"redirect_uris",
+				"INVALID_REDIRECT_URIS",
+			);
+		}
+	});
+
+	test("MATCH-01: exact requested membership never canonicalizes, decodes or applies port exceptions", () => {
+		const pairs = [
+			[redirect, `${redirect}/`],
+			[redirect, "https://claude.ai/other"],
+			[redirect, "HTTPS://claude.ai/callback"],
+			[redirect, "https://CLAUDE.AI/callback"],
+			[redirect, "https://claude.ai:443/callback"],
+			[redirect, "https://claude.ai:8443/callback"],
+			[redirect, `${redirect}?`],
+			[redirect, `${redirect}?x=1`],
+			[redirect, `${redirect}suffix`],
+			[redirect, "prefixhttps://claude.ai/callback"],
+			["https://claude.ai/a%2fb", "https://claude.ai/a%2Fb"],
+			["https://claude.ai/%61", "https://claude.ai/a"],
+			[`${redirect}?a=1&b=2`, `${redirect}?b=2&a=1`],
+			[`${redirect}?a=1`, `${redirect}?a=2`],
+			[`${redirect}?q=a%20b`, `${redirect}?q=a+b`],
+			["https://claude.ai/caf\u00e9", "https://claude.ai/cafe\u0301"],
+		] as const;
+		for (const [registered, requested] of pairs) {
+			const document = accepted(fixture({ redirect_uris: [registered] }));
+			expect(cimdRedirectMatches(document, registered)).toBe(true);
+			expect(cimdRedirectMatches(document, requested)).toBe(false);
+		}
+		const document = accepted(fixture({ redirect_uris: [`${redirect}?`] }));
+		expect(cimdRedirectMatches(document, `${redirect}?`)).toBe(true);
+		expect(cimdRedirectMatches(document, redirect)).toBe(false);
+		for (const requested of [null, undefined, 0, false, {}, [], ""]) {
+			expect(cimdRedirectMatches(document, requested)).toBe(false);
+		}
+	});
+
+	test("PURE-01: alternating identities, policies and lists remain synchronous and independent", () => {
+		const otherId = "https://other.example:443/meta.json";
+		const customRedirect = "https://custom.example/cb";
+		const custom: ReadonlySet<string> = new Set(["https://custom.example"]);
+		const empty: ReadonlySet<string> = new Set();
+		const originalOrigins = [...origins];
+		const originalCustom = [...custom];
+		const otherMetadata = fixture({ client_id: otherId, redirect_uris: [customRedirect] });
+		const otherText = JSON.stringify(otherMetadata);
+		for (let iteration = 0; iteration < 4; iteration++) {
+			validId(clientId);
+			validId(otherId);
+			const first = accepted();
+			const second = accepted(otherMetadata, otherId, custom);
+			expect(cimdRedirectMatches(first, redirect)).toBe(true);
+			expect(cimdRedirectMatches(first, customRedirect)).toBe(false);
+			expect(cimdRedirectMatches(second, customRedirect)).toBe(true);
+			expect(cimdRedirectMatches(second, redirect)).toBe(false);
+			refused(parse(otherMetadata, otherId, origins), "redirect_uris", "INVALID_REDIRECT_URIS");
+			refused(parse(fixture(), clientId, custom), "redirect_uris", "INVALID_REDIRECT_URIS");
+			refused(parse(fixture(), clientId, empty), "redirect_uris", "INVALID_REDIRECT_URIS");
+			for (const redirects of [
+				[redirect, "https://claude.ai/other", redirect],
+				["https://claude.ai/other", redirect, redirect],
+				[redirect, redirect, "https://claude.ai/other"],
+			]) {
+				const document = accepted(fixture({ redirect_uris: redirects }));
+				for (const member of redirects) {
+					expect(cimdRedirectMatches(document, member)).toBe(true);
+				}
+				expect(cimdRedirectMatches(document, "https://claude.ai/absent")).toBe(false);
+			}
+			expect(accepted()).toEqual(first);
+			expect(accepted(otherMetadata, otherId, custom)).toEqual(second);
+		}
+		expect([...origins]).toEqual(originalOrigins);
+		expect([...custom]).toEqual(originalCustom);
+		expect([...empty]).toEqual([]);
+		expect(JSON.stringify(otherMetadata)).toBe(otherText);
+	});
 });
