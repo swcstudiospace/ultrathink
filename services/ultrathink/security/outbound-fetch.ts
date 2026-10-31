@@ -139,6 +139,19 @@ function mappedTail(bytes: readonly number[]): readonly number[] | undefined {
 		: undefined;
 }
 
+/** NAT64 well-known prefix 64:ff9b::/96 (RFC 6052). The embedded IPv4 can be private, so the whole prefix is refused. */
+function nat64WellKnown(bytes: readonly number[]): boolean {
+	const head = [0, 100, 255, 155];
+	return (
+		head.every((byte, index) => bytes[index] === byte) &&
+		bytes.slice(4, 12).every((byte) => byte === 0)
+	);
+}
+/** 6to4 2002::/16 (RFC 3056). The embedded IPv4 can be private, so the whole prefix is refused. */
+function sixToFour(bytes: readonly number[]): boolean {
+	return bytes[0] === 32 && bytes[1] === 2;
+}
+
 function classifyAddress(address: string): NumericAddress | undefined {
 	if (typeof address !== "string" || address.includes("%")) return undefined;
 	const family = isIP(address);
@@ -152,7 +165,9 @@ function classifyAddress(address: string): NumericAddress | undefined {
 				bytes.slice(0, 12).every((byte) => byte === 0) ||
 				bytes[0] === 255 ||
 				((bytes[0] ?? 0) & 254) === 252 ||
-				(bytes[0] === 254 && ((bytes[1] ?? 0) & 192) === 128);
+				(bytes[0] === 254 && ((bytes[1] ?? 0) & 192) === 128) ||
+				nat64WellKnown(bytes) ||
+				sixToFour(bytes);
 	return { address, family, bytes, refused };
 }
 

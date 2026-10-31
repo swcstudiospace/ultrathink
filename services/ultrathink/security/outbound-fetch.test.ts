@@ -545,7 +545,7 @@ describe("phase102 boundaries — B01 address policy", () => {
 		await memory.cleanup();
 	});
 
-	test("B01 IPv6 ::1, ::/96, fc00::/7, fe80::/10 and ff00::/8 boundaries refuse; adjacent nonmembers proceed", async () => {
+	test("B01 IPv6 ::1, ::/96, fc00::/7, fe80::/10, ff00::/8, 64:ff9b::/96 and 2002::/16 boundaries refuse; adjacent nonmembers proceed", async () => {
 		const memory = new MemoryPrimitives();
 		const guard = createOutboundFetchGuard(POLICY, memory.deps);
 		const refused = [
@@ -557,6 +557,10 @@ describe("phase102 boundaries — B01 address policy", () => {
 			"fe80::",
 			"febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 			"ff00::",
+			"64:ff9b::808:808",
+			"64:ff9b::a00:1",
+			"2002:c0a8:101::1",
+			"2002::1",
 			"ff02::1",
 			"ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 		];
@@ -569,6 +573,8 @@ describe("phase102 boundaries — B01 address policy", () => {
 			"fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 			"fe00::1",
 			"fec0::1",
+			"2003::1",
+			"64:ff9b:0:1::1",
 			PUBLIC_V6,
 		];
 		for (const ip of adjacent) {
