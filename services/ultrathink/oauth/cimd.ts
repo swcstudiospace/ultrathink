@@ -81,19 +81,13 @@ function parseHttpsUrl(raw: string, pathRequired: boolean): URL | null {
 
 /** Validate syntax without fetching; success retains exact case, escapes and explicit ports. */
 export function validateCimdClientId(raw: unknown): CimdResult<string> {
-	if (
-		typeof raw !== "string" ||
-		raw.includes("?") ||
-		parseHttpsUrl(raw, true) === null
-	) {
+	if (typeof raw !== "string" || raw.includes("?") || parseHttpsUrl(raw, true) === null) {
 		return refuse("client_id", "INVALID_CLIENT_ID");
 	}
 	return { valid: true, value: raw };
 }
 
-function inlineJwksFailure(
-	jwks: unknown,
-): "INVALID_DOCUMENT" | "FORBIDDEN_CREDENTIAL" | null {
+function inlineJwksFailure(jwks: unknown): "INVALID_DOCUMENT" | "FORBIDDEN_CREDENTIAL" | null {
 	if (!isObject(jwks) || !Object.hasOwn(jwks, "keys") || !Array.isArray(jwks.keys)) {
 		return "INVALID_DOCUMENT";
 	}
