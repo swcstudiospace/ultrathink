@@ -382,6 +382,14 @@ describe("ULTRATHINK_CIMD strict boolean", () => {
 			expect(message).toContain("ULTRATHINK_CIMD must be 0 or 1");
 		}
 	});
+
+	test("a rejected value is never echoed back in the error", () => {
+		const message = messageOf(() =>
+			loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: "CIMD-VALUE-CANARY" }),
+		);
+		expect(message).toContain("ULTRATHINK_CIMD must be 0 or 1");
+		expect(message).not.toContain("CIMD-VALUE-CANARY");
+	});
 });
 
 describe("origin lists", () => {
