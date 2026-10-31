@@ -364,6 +364,26 @@ describe("serverPlanning derivation", () => {
 	});
 });
 
+describe("ULTRATHINK_CIMD strict boolean", () => {
+	test("unset, blank and 0 leave CIMD off", () => {
+		for (const value of [undefined, "", "   ", "0"]) {
+			expect(loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: value }).cimdEnabled).toBe(false);
+		}
+	});
+
+	test("exactly 1 turns CIMD on, and surrounding whitespace is trimmed first", () => {
+		expect(loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: "1" }).cimdEnabled).toBe(true);
+		expect(loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: " 1\t" }).cimdEnabled).toBe(true);
+	});
+
+	test("any other value is rejected by name, never read as on or off", () => {
+		for (const value of ["true", "TRUE", "yes", "on", "01", "2", "1.0"]) {
+			const message = messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: value }));
+			expect(message).toContain("ULTRATHINK_CIMD must be 0 or 1");
+		}
+	});
+});
+
 describe("origin lists", () => {
 	test("trims, skips empty entries, normalizes and de-duplicates", () => {
 		const env = baseEnv();

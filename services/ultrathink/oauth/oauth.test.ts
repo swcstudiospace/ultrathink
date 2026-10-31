@@ -27,7 +27,7 @@ import {
 	createOAuth,
 	writeFileDurably,
 } from "./oauth.ts";
-import type { UltrathinkConfig } from "../config/config.ts";
+import { loadConfig, type UltrathinkConfig } from "../config/config.ts";
 import { openStore, type Store } from "../store/store.ts";
 import { createHandler } from "../routes/router.ts";
 import {
@@ -36,6 +36,9 @@ import {
 	type SecurityEvent,
 	type SecurityEventLogger,
 } from "../security/events.ts";
+import type { GuardedFetch } from "../security/outbound-fetch.ts";
+import { createCimdFetcher } from "./cimd-fetch.ts";
+import { randomHash } from "../../../src/test.helpers.ts";
 
 const ORIGIN = "https://ultrathink.test";
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -2118,5 +2121,86 @@ describe("OAuth boundary failures", () => {
 		expect(line.startsWith("loadStore: ")).toBe(true);
 		expect(line).not.toContain(TOKEN_FIXTURE);
 		expect(redactText(line, { home: "" })).toBe(line);
+	});
+});
+
+describe("CIMD OFF handler", () => {
+	const CLIENT = "https://client.example/meta.json";
+	const REDIRECT_ORIGIN = "https://claude.ai";
+	const DOCUMENT = JSON.stringify({
+		client_id: CLIENT,
+		redirect_uris: [`${REDIRECT_ORIGIN}/api/mcp/auth_callback`],
+		token_endpoint_auth_method: "none",
+	});
+
+	function configFor(flag: string | undefined) {
+		return loadConfig({
+			ULTRATHINK_PUBLIC_ORIGIN: ORIGIN,
+			ULTRATHINK_OWNER_PASSWORD_HASH: randomHash(),
+			ULTRATHINK_SESSION_SECRET: randomBytes(24).toString("hex"),
+			ULTRATHINK_PLAINTEXT_LOOPBACK: "1",
+			ULTRATHINK_CIMD: flag,
+		});
+	}
+
+	// Counts every target that reaches the guarded transport and answers with a complete document.
+	function countingGuard(): { guard: GuardedFetch; targets: string[] } {
+		const targets: string[] = [];
+		const guard: GuardedFetch = async (target) => {
+			targets.push(target);
+			return { ok: true, text: DOCUMENT, headers: {} };
+		};
+		return { guard, targets };
+	}
+
+	test("unset and 0 answer DISABLED and never reach the guarded transport", async () => {
+		for (const flag of [undefined, "0"]) {
+			const { guard, targets } = countingGuard();
+			const fetcher = createCimdFetcher(configFor(flag), new Set([REDIRECT_ORIGIN]), guard);
+			expect(await fetcher.fetch(CLIENT)).toEqual({ ok: false, kind: "fetch", code: "DISABLED" });
+			expect(targets).toEqual([]);
+		}
+	});
+
+	test("OFF decides before the client id is judged or the signal is read", async () => {
+		const { guard, targets } = countingGuard();
+		const fetcher = createCimdFetcher(configFor("0"), new Set([REDIRECT_ORIGIN]), guard);
+		const aborted = new AbortController();
+		aborted.abort("OFF-SIGNAL-CANARY");
+		const results = await Promise.all([
+			fetcher.fetch(null),
+			fetcher.fetch("http://insecure.example/meta.json"),
+			fetcher.fetch(CLIENT, aborted.signal),
+		]);
+		expect(results).toEqual(Array(3).fill({ ok: false, kind: "fetch", code: "DISABLED" }));
+		expect(targets).toEqual([]);
+	});
+
+	test("ON with the same guard reaches the transport once and returns the parsed document", async () => {
+		const { guard, targets } = countingGuard();
+		const fetcher = createCimdFetcher(configFor("1"), new Set([REDIRECT_ORIGIN]), guard);
+		expect(await fetcher.fetch(CLIENT)).toMatchObject({
+			ok: true,
+			document: { client_id: CLIENT, token_endpoint_auth_method: "none" },
+		});
+		expect(targets).toEqual([CLIENT]);
+	});
+
+	test("the flag is read once when the fetcher is built, so a later change cannot turn it on", async () => {
+		const { guard, targets } = countingGuard();
+		const config: { cimdEnabled?: boolean } = { cimdEnabled: false };
+		const fetcher = createCimdFetcher(config, new Set([REDIRECT_ORIGIN]), guard);
+		config.cimdEnabled = true;
+		expect(await fetcher.fetch(CLIENT)).toEqual({ ok: false, kind: "fetch", code: "DISABLED" });
+		expect(targets).toEqual([]);
+	});
+
+	test("with the flag OFF, the authorize flow refuses an HTTPS client id and never fetches its metadata", async () => {
+		const h = await makeHarness();
+		const { challenge } = pkcePair();
+		const response = await authorizeCall(h, CLIENT, challenge);
+		expect(response.status).toBe(400);
+		expect(response.headers.get("content-type")).toContain("text/html");
+		expect(await response.text()).toContain("Authorization failed");
 	});
 });
