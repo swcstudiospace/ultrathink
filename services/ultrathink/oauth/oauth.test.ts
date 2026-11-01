@@ -2797,14 +2797,16 @@ describe("CIMD token, refresh and drift", () => {
 		for (const code of ["DISABLED", "BUSY", "TIMEOUT"] as const) {
 			const fake = fakeCimd(DOCUMENT_NAMED);
 			const h = await makeHarness({ cimd: fake });
-			const issued = await authorizedCode(h, CIMD_URL);
+			const granted = await grant(h, CIMD_URL);
+			// Refresh reads the cache. Age the entry past the 300 s ceiling so the refresh must fetch.
+			h.clock.now += 5 * 60 * 1000 + 1;
 			fake.failWith({ ok: false, kind: "fetch", code });
-			await expectUnverified(await tokenCall(h, codeFields(issued)));
+			await expectUnverified(await tokenCall(h, refreshFields(granted.refresh)));
 		}
 		const h = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED) });
-		const issued = await authorizedCode(h, CIMD_URL);
+		const granted = await grant(h, CIMD_URL);
 		const bare = await makeHarness({}, { dir: h.dir, clock: h.clock });
-		await expectUnverified(await tokenCall(bare, codeFields(issued)));
+		await expectUnverified(await tokenCall(bare, refreshFields(granted.refresh)));
 	});
 
 	test("a token request for a URL client whose code is unknown, used, expired or bound to another client, or whose refresh token is unknown, used or bound to another client, calls the fetcher zero times and returns invalid_grant; a replayed used code and a replayed used refresh token still revoke their grant", async () => {
