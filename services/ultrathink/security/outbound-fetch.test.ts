@@ -1790,7 +1790,7 @@ describe("phase102 header collection — inherited names", () => {
 			"two",
 		]);
 		expect(headers).toBeDefined();
-		expect(headers?.constructor).toBe("a");
+		expect(Object.getOwnPropertyDescriptor(headers ?? {}, "constructor")?.value).toBe("a");
 		expect(Object.getOwnPropertyDescriptor(headers ?? {}, "__proto__")?.value).toBe("b");
 		expect(headers?.["x-repeat"]).toEqual(["one", "two"]);
 	});
