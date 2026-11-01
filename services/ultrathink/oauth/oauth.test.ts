@@ -38,6 +38,9 @@ import {
 } from "../security/events.ts";
 import type { GuardedFetch } from "../security/outbound-fetch.ts";
 import { createCimdFetcher } from "./cimd-fetch.ts";
+import type { CimdFetchResult } from "./cimd-fetch.ts";
+import { parseCimdDocument } from "./cimd.ts";
+import type { OutboundCacheHeaders } from "../security/outbound-fetch.ts";
 import { randomHash } from "../../../src/test.helpers.ts";
 
 const ORIGIN = "https://ultrathink.test";
@@ -2321,5 +2324,245 @@ describe("CIMD storage, digest and restart", () => {
 		const keys = savedKeys(h, "clients");
 		expect(keys).not.toContain("ut_client_stale");
 		expect(keys).toContain(fresh);
+	});
+});
+
+// CIMD fixtures for the URL client id tests. The fake fetcher parses each document with the real
+// parser, so the document checks and the trusted redirect origins behave as they do in production.
+const CIMD_ORIGIN = "https://client.example";
+const CIMD_URL = `${CIMD_ORIGIN}/cimd.json`;
+const DOCUMENT_NAMED = {
+	client_id: CIMD_URL,
+	client_name: "Example Client",
+	redirect_uris: [REDIRECT],
+	grant_types: ["authorization_code", "refresh_token"],
+	token_endpoint_auth_method: "none",
+};
+
+// A mutable CimdFetcher. It counts calls, answers with the current document or the configured
+// failure, and sends the same cache headers on every fetch.
+interface FakeCimd {
+	fetch(raw: unknown): Promise<CimdFetchResult>;
+	calls(): number;
+	set(next: Record<string, unknown>): void;
+	setHeaders(next: OutboundCacheHeaders): void;
+	failWith(result: CimdFetchResult | null): void;
+}
+
+function fakeCimd(initial: Record<string, unknown>, headers: OutboundCacheHeaders = {}): FakeCimd {
+	let current: Record<string, unknown> = initial;
+	let cacheHeaders: OutboundCacheHeaders = headers;
+	let failure: CimdFetchResult | null = null;
+	let count = 0;
+	return {
+		async fetch(raw: unknown): Promise<CimdFetchResult> {
+			count += 1;
+			if (failure !== null) return failure;
+			const parsed = parseCimdDocument(
+				String(raw),
+				JSON.stringify(current),
+				new Set(DEFAULT_REDIRECT_ORIGINS),
+			);
+			if (!parsed.valid) return { ok: false, kind: "model", refused: parsed.refused };
+			return { ok: true, document: parsed.value, headers: cacheHeaders };
+		},
+		calls: () => count,
+		set(next: Record<string, unknown>) {
+			current = next;
+		},
+		setHeaders(next: OutboundCacheHeaders) {
+			cacheHeaders = next;
+		},
+		failWith(result: CimdFetchResult | null) {
+			failure = result;
+		},
+	};
+}
+
+function savedOrNone(h: Harness, section: "clients" | "grants" | "tokens" | "pending"): string[] {
+	return existsSync(h.statePath) ? savedKeys(h, section) : [];
+}
+
+describe("CIMD authorize GET", () => {
+	// The same switch setup as the CIMD OFF handler, for the switch-off and guard-count cases.
+	function configFor(flag: string | undefined) {
+		return loadConfig({
+			ULTRATHINK_PUBLIC_ORIGIN: ORIGIN,
+			ULTRATHINK_OWNER_PASSWORD_HASH: randomHash(),
+			ULTRATHINK_SESSION_SECRET: randomBytes(24).toString("hex"),
+			ULTRATHINK_PLAINTEXT_LOOPBACK: "1",
+			ULTRATHINK_CIMD: flag,
+		});
+	}
+
+	// Counts every target that reaches the guarded transport and answers with a complete document.
+	function countingGuard(): { guard: GuardedFetch; targets: string[] } {
+		const targets: string[] = [];
+		const guard: GuardedFetch = async (target) => {
+			targets.push(target);
+			return { ok: true, text: JSON.stringify(DOCUMENT_NAMED), headers: {} };
+		};
+		return { guard, targets };
+	}
+
+	test("GET shows the document client_name, not MCP client, and creates one pending request", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const response = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		expect(response.status).toBe(200);
+		const body = await response.text();
+		expect(body).toContain("Example Client");
+		expect(body).not.toContain("MCP client");
+		expect(fake.calls()).toBe(1);
+		expect(savedKeys(h, "pending")).toHaveLength(1);
+		expect(savedKeys(h, "clients")).toEqual([]);
+	});
+
+	test("GET with a client_name containing HTML markup renders the consent page with the markup escaped and the raw tag absent", async () => {
+		const fake = fakeCimd({ ...DOCUMENT_NAMED, client_name: `<img src=x onerror=1>&"` });
+		const h = await makeHarness({ cimd: fake });
+		const response = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		expect(response.status).toBe(200);
+		const body = await response.text();
+		expect(body).toContain("&lt;img src=x onerror=1&gt;");
+		expect(body).not.toContain("<img src=x onerror=1>");
+	});
+
+	test("GET with a redirect_uri not byte-equal to the document shows the DCR redirect message and creates no pending request", async () => {
+		const h = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED) });
+		const response = await authorizeCall(h, CIMD_URL, pkcePair().challenge, {
+			redirect_uri: `${REDIRECT}/`,
+		});
+		expect(response.status).toBe(400);
+		expect(await response.text()).toContain(
+			"The redirect address does not match this client&apos;s registration.",
+		);
+		expect(savedOrNone(h, "pending")).toEqual([]);
+	});
+
+	test("GET with a query in client_id, or with the switch off, shows the unknown-client page and makes zero guard calls", async () => {
+		const { challenge } = pkcePair();
+		const onGuard = countingGuard();
+		const onHarness = await makeHarness({
+			cimd: createCimdFetcher(configFor("1"), new Set(DEFAULT_REDIRECT_ORIGINS), onGuard.guard),
+		});
+		const withQuery = await authorizeCall(onHarness, `${CIMD_URL}?x=1`, challenge);
+		expect(withQuery.status).toBe(400);
+		expect(await withQuery.text()).toContain("This client is not registered with ultrathink.");
+		const offGuard = countingGuard();
+		const offHarness = await makeHarness({
+			cimd: createCimdFetcher(configFor(undefined), new Set(DEFAULT_REDIRECT_ORIGINS), offGuard.guard),
+		});
+		const off = await authorizeCall(offHarness, CIMD_URL, challenge);
+		expect(off.status).toBe(400);
+		expect(await off.text()).toContain("This client is not registered with ultrathink.");
+		expect(onGuard.targets).toEqual([]);
+		expect(offGuard.targets).toEqual([]);
+	});
+
+	test("GET with a valid URL client_id and a bad response_type, with the document redirect_uri matched, fetches the document exactly once and returns the existing 302 unsupported_response_type redirect to that redirect_uri", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const response = await authorizeCall(h, CIMD_URL, pkcePair().challenge, {
+			response_type: "token",
+		});
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get("location") ?? "");
+		expect(`${location.origin}${location.pathname}`).toBe(REDIRECT);
+		expect(location.searchParams.get("error")).toBe("unsupported_response_type");
+		expect(fake.calls()).toBe(1);
+	});
+
+	test("each GET failure class (guard refusal, fetch failure, timeout, HTTP 404, invalid document) shows the failed-class error page, creates no pending request, and the body contains neither the URL nor its host", async () => {
+		const cases: Array<[string, (fake: FakeCimd) => void]> = [
+			["guard refusal", (fake) => fake.failWith({ ok: false, kind: "fetch", code: "ADDRESS_REFUSED" })],
+			["fetch failure", (fake) => fake.failWith({ ok: false, kind: "fetch", code: "NETWORK_FAILURE" })],
+			["timeout", (fake) => fake.failWith({ ok: false, kind: "fetch", code: "TIMEOUT" })],
+			["HTTP 404", (fake) => fake.failWith({ ok: false, kind: "fetch", code: "HTTP_STATUS" })],
+			[
+				"invalid document",
+				(fake) => fake.set({ ...DOCUMENT_NAMED, token_endpoint_auth_method: "client_secret_basic" }),
+			],
+		];
+		for (const [, arrange] of cases) {
+			const fake = fakeCimd(DOCUMENT_NAMED);
+			arrange(fake);
+			const h = await makeHarness({ cimd: fake });
+			const response = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+			const body = await response.text();
+			expect(response.status).toBe(400);
+			expect(body).toContain("The client details could not be retrieved.");
+			expect(body).not.toContain(CIMD_URL);
+			expect(body).not.toContain(CIMD_ORIGIN);
+			expect(response.headers.get("location")).toBeNull();
+			expect(savedOrNone(h, "pending")).toEqual([]);
+		}
+	});
+
+	test("a BUSY result at GET shows 503 with the busy text and creates no pending request", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		fake.failWith({ ok: false, kind: "fetch", code: "BUSY" });
+		const h = await makeHarness({ cimd: fake });
+		const response = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		expect(response.status).toBe(503);
+		expect(await response.text()).toContain(
+			"Client details are busy. Start the connection again from your client.",
+		);
+		expect(savedOrNone(h, "pending")).toEqual([]);
+	});
+
+	test("after cache expiry a failed re-fetch at GET shows an error page and never the consent page", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, { cacheControl: "max-age=60" });
+		const h = await makeHarness({ cimd: fake });
+		const { challenge } = pkcePair();
+		expect((await authorizeCall(h, CIMD_URL, challenge)).status).toBe(200);
+		h.clock.now += 61_000;
+		fake.failWith({ ok: false, kind: "fetch", code: "TIMEOUT" });
+		const response = await authorizeCall(h, CIMD_URL, challenge);
+		const body = await response.text();
+		expect(response.status).toBe(400);
+		expect(body).toContain("The client details could not be retrieved.");
+		expect(body).not.toContain('name="req"');
+		expect(fake.calls()).toBe(2);
+	});
+
+	test("a ut_client_ id on the same authorize path still resolves through data.clients and shows the DCR consent page", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const clientId = await registered(h);
+		const response = await authorizeCall(h, clientId, pkcePair().challenge);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("Test client");
+		expect(fake.calls()).toBe(0);
+	});
+
+	test("restart empties the resolver cache and the next authorize calls the fetcher again", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, { cacheControl: "max-age=300" });
+		const { challenge } = pkcePair();
+		const first = await makeHarness({ cimd: fake });
+		expect((await authorizeCall(first, CIMD_URL, challenge)).status).toBe(200);
+		expect((await authorizeCall(first, CIMD_URL, challenge)).status).toBe(200);
+		expect(fake.calls()).toBe(1);
+		const restarted = await makeHarness({ cimd: fake }, { dir: first.dir, clock: first.clock });
+		expect((await authorizeCall(restarted, CIMD_URL, challenge)).status).toBe(200);
+		expect(fake.calls()).toBe(2);
+	});
+
+	test("a DCR registration after CIMD is enabled returns the same response shape as before", async () => {
+		const body = {
+			client_name: "Test client",
+			redirect_uris: [REDIRECT],
+			grant_types: ["authorization_code", "refresh_token"],
+		};
+		const plain = await makeHarness();
+		const plainResponse = await registerCall(plain, body);
+		expect(plainResponse.status).toBe(201);
+		const plainKeys = Object.keys(await bodyOf(plainResponse)).sort();
+		const enabled = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED) });
+		const enabledResponse = await registerCall(enabled, body);
+		expect(enabledResponse.status).toBe(201);
+		const enabledBody = await bodyOf(enabledResponse);
+		expect(Object.keys(enabledBody).sort()).toEqual(plainKeys);
+		expect(String(enabledBody.client_id)).toMatch(/^ut_client_/);
 	});
 });

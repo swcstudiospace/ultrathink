@@ -22,6 +22,8 @@ import {
 	StringValidator,
 	type Validator,
 } from "../security/validation.ts";
+import type { CimdFetcher } from "./cimd-fetch.ts";
+import { type CimdClient, type CimdResolution, createCimdResolver } from "./cimd-resolve.ts";
 
 export const DEFAULT_REDIRECT_ORIGINS: readonly string[] = [
 	"https://claude.ai",
@@ -190,6 +192,10 @@ interface PendingRequest {
 	approvalState: ApprovalState;
 	nonce: string;
 	signature: string;
+	/** URL clients only: the normalized client_name consented to. Unsigned, as clientId and redirectUri are. */
+	clientName?: string;
+	/** URL clients only: the metadataDigest consented to. A missing value fails the approval check. */
+	metadataDigest?: string;
 }
 
 export interface OAuthOptions {
@@ -201,6 +207,11 @@ export interface OAuthOptions {
 	redirectOrigins?: readonly string[];
 	/** Client table size. Defaults to 200. */
 	maxClients?: number;
+	/**
+	 * Resolves https client ids as CIMD documents. Absent means URL client ids get the
+	 * unknown-client response. Production passes createCimdFetcher with the trusted origins.
+	 */
+	cimd?: CimdFetcher;
 	/**
 	 * Runs `run` every `intervalMs` and returns a canceller. Defaults to an unref'd
 	 * setInterval in production and to nothing when a test supplies a clock.
@@ -399,7 +410,7 @@ async function readBodyText(req: Request, maxBytes: number): Promise<string | nu
 	return text.length > maxBytes ? null : text;
 }
 
-function normalizeOrigins(origins: readonly string[]): string[] {
+export function normalizeOrigins(origins: readonly string[]): string[] {
 	const out = new Set<string>();
 	for (const raw of origins) {
 		try {
@@ -610,6 +621,16 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	const maxClients = options.maxClients ?? MAX_CLIENTS;
 	// A fake clock means a test. Wall-clock polling would race that clock, so only production arms it.
 	const schedule = options.schedule ?? (options.now === undefined ? realSchedule : undefined);
+	// URL client ids (CIMD) resolve through one bounded resolver. Absent means they get the unknown-client response.
+	const cimd =
+		options.cimd === undefined
+			? undefined
+			: createCimdResolver({
+					fetcher: options.cimd,
+					now,
+					supportedGrants: SUPPORTED_GRANTS,
+					defaultGrantTypes: DEFAULT_GRANT_TYPES,
+				});
 	const data = loadStore(path, now(), logger);
 	const pending = new Map<string, PendingRequest>();
 	const approving = new Set<string>();
@@ -889,7 +910,19 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		return new Response(null, { status: 302, headers: { ...NO_STORE, Location: url.toString() } });
 	}
 
-	function authorizeGet(params: URLSearchParams): Response {
+	/** Authorize GET's answer for a URL client id that does not resolve (D2). Logs the failure code only. */
+	function cimdAuthorizeFailure(outcome: Exclude<CimdResolution, { readonly ok: true }>): Response {
+		if (outcome.kind === "busy")
+			return errorPage(503, "Client details are busy. Start the connection again from your client.");
+		if (outcome.kind === "unknown") return errorPage(400, "This client is not registered with ultrathink.");
+		refusedInput("/oauth/authorize", "client_id", outcome.code);
+		return errorPage(
+			400,
+			"The client details could not be retrieved. Start the connection again from your client.",
+		);
+	}
+
+	async function authorizeGet(params: URLSearchParams): Promise<Response> {
 		const refused = formRefusal(params, AUTHORIZE_QUERY);
 		if (refused !== null) {
 			refusedInput("/oauth/authorize", refused.field, refused.code);
@@ -900,13 +933,27 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 		prune();
 		const clientId = params.get("client_id") ?? "";
-		const client = own(data.clients, clientId);
-		if (!client) return errorPage(400, "This client is not registered with ultrathink.");
 		const redirectUri = params.get("redirect_uri") ?? "";
-		if (!client.redirectUris.some((registered) => redirectMatches(registered, redirectUri))) {
-			return errorPage(400, "The redirect address does not match this client's registration.");
+		let clientName: string;
+		let resolved: CimdClient | undefined;
+		if (isUrlClientId(clientId)) {
+			const outcome = cimd === undefined ? null : await cimd.resolve(clientId);
+			if (outcome === null) return errorPage(400, "This client is not registered with ultrathink.");
+			if (!outcome.ok) return cimdAuthorizeFailure(outcome);
+			if (!outcome.client.redirectUris.includes(redirectUri)) {
+				return errorPage(400, "The redirect address does not match this client's registration.");
+			}
+			resolved = outcome.client;
+			clientName = outcome.client.name;
+		} else {
+			const client = own(data.clients, clientId);
+			if (!client) return errorPage(400, "This client is not registered with ultrathink.");
+			if (!client.redirectUris.some((registered) => redirectMatches(registered, redirectUri))) {
+				return errorPage(400, "The redirect address does not match this client's registration.");
+			}
+			client.lastUsedAt = now();
+			clientName = client.name;
 		}
-		client.lastUsedAt = now();
 		const state = params.get("state");
 		if (params.get("response_type") !== "code") {
 			return redirectWith(
@@ -966,11 +1013,15 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			nonce,
 			signature: "",
 		};
+		if (resolved !== undefined) {
+			request.clientName = clientName;
+			request.metadataDigest = resolved.metadataDigest;
+		}
 		request.signature = options.auth.signApproval(proofOf(key, request));
 		pending.set(key, request);
 		ensureSweeper();
 		persist();
-		return consentPage(requestId, nonce, client.name, redirectUri, "", 200);
+		return consentPage(requestId, nonce, clientName, redirectUri, "", 200);
 	}
 
 	async function authorizePost(req: Request, ip: string): Promise<Response> {
@@ -1425,7 +1476,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 					"Too many requests. Wait and try again.",
 					rateLimited(limit.retryAfterSec),
 				);
-			if (req.method === "GET") return authorizeGet(new URL(req.url).searchParams);
+			if (req.method === "GET") return await authorizeGet(new URL(req.url).searchParams);
 			return await authorizePost(req, ip);
 		},
 		token,
