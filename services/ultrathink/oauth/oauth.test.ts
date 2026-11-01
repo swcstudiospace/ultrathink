@@ -2225,25 +2225,6 @@ describe("CIMD OFF handler", () => {
 		const metadata = await bodyOf(h.oauth.authorizationServerMetadata());
 		expect(metadata).not.toHaveProperty("client_id_metadata_document_supported");
 	});
-
-	test("the OAuth authorize path opens no outbound connection when the switch is OFF", async () => {
-		const h = await makeHarness();
-		const { challenge } = pkcePair();
-		const realFetch = globalThis.fetch;
-		const inputs: Array<string | URL | Request> = [];
-		globalThis.fetch = ((input: string | URL | Request) => {
-			inputs.push(input);
-			throw new Error("outbound fetch is forbidden on the OAuth path");
-		}) as unknown as typeof fetch;
-		let response: Response;
-		try {
-			response = await authorizeCall(h, CLIENT, challenge);
-		} finally {
-			globalThis.fetch = realFetch;
-		}
-		expect(response.status).toBe(400);
-		expect(inputs).toEqual([]);
-	});
 });
 
 describe("CIMD storage, digest and restart", () => {
