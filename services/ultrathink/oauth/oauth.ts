@@ -142,6 +142,8 @@ interface GrantRecord {
 	resource: string;
 	createdAt: number;
 	lastUsedAt?: number;
+	/** URL-client grants only: the metadataDigest consented to. DCR grants never set it. */
+	metadataDigest?: string;
 }
 
 interface CodeRecord {
@@ -376,6 +378,11 @@ function secret(prefix: string): string {
 
 function own<T>(record: Record<string, T>, key: string): T | undefined {
 	return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+/** A CIMD client id is any https URL. Every other id keeps the DCR path. */
+function isUrlClientId(id: string): boolean {
+	return /^https:\/\//i.test(id);
 }
 
 function isJsonRequest(req: Request): boolean {
@@ -634,6 +641,9 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	}
 
 	function clientRemovable(id: string, client: ClientRecord, t: number): boolean {
+		if (isUrlClientId(id) && Object.values(data.grants).some((grant) => grant.clientId === id)) {
+			return false;
+		}
 		for (const request of pending.values()) if (request.clientId === id) return false;
 		if (client.grantedAt === undefined) return t - client.createdAt > UNGRANTED_CLIENT_TTL_MS;
 		for (const grant of Object.values(data.grants)) if (grant.clientId === id) return false;

@@ -2242,3 +2242,84 @@ describe("CIMD OFF handler", () => {
 		expect(inputs).toEqual([]);
 	});
 });
+
+describe("CIMD storage, digest and restart", () => {
+	const URL_CLIENT = "https://client.example/cimd.json";
+
+	function plantedDir(state: {
+		clients?: Record<string, unknown>;
+		grants?: Record<string, unknown>;
+	}): string {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-cimd-"));
+		harnessDirs.push(dir);
+		writeFileSync(
+			join(dir, "oauth.json"),
+			JSON.stringify({ clients: {}, grants: {}, codes: {}, tokens: {}, pending: {}, ...state }),
+		);
+		return dir;
+	}
+
+	test("a metadataDigest written on a grant survives a reopen from oauth.json and a persisting DCR registration with the same value (OW-4 restore proof, unit level, not a disaster-recovery test)", async () => {
+		const digest = "a".repeat(64);
+		const dir = plantedDir({
+			grants: {
+				"grant-cimd": {
+					clientId: URL_CLIENT,
+					resource: RESOURCE,
+					createdAt: HARNESS_START,
+					metadataDigest: digest,
+				},
+			},
+		});
+		const from = { dir, clock: { now: HARNESS_START } };
+		const first = await makeHarness({}, from);
+		await registered(first);
+		const reopened = await makeHarness({}, from);
+		await registered(reopened);
+		const saved = JSON.parse(readFileSync(reopened.statePath, "utf8")) as {
+			grants: Record<string, { metadataDigest?: string }>;
+		};
+		expect(saved.grants["grant-cimd"]?.metadataDigest).toBe(digest);
+	});
+
+	test("a URL-keyed client that has a grant survives prune and reopen when it has no grantedAt and a createdAt older than 24 h (literal 25 h); the test reads savedKeys(h, 'clients') after a persisting DCR registration", async () => {
+		const dir = plantedDir({
+			clients: {
+				[URL_CLIENT]: {
+					name: "Planted",
+					redirectUris: [REDIRECT],
+					grantTypes: ["authorization_code"],
+					createdAt: HARNESS_START - 25 * HOUR_MS,
+				},
+			},
+			grants: {
+				"grant-cimd": { clientId: URL_CLIENT, resource: RESOURCE, createdAt: HARNESS_START },
+			},
+		});
+		const from = { dir, clock: { now: HARNESS_START } };
+		const first = await makeHarness({}, from);
+		await registered(first);
+		expect(savedKeys(first, "clients")).toContain(URL_CLIENT);
+		const reopened = await makeHarness({}, from);
+		await registered(reopened);
+		expect(savedKeys(reopened, "clients")).toContain(URL_CLIENT);
+	});
+
+	test("an ungranted DCR client past the 24 h TTL is still removed by clientRemovable on a persisting registration", async () => {
+		const dir = plantedDir({
+			clients: {
+				ut_client_stale: {
+					name: "Stale",
+					redirectUris: [REDIRECT],
+					grantTypes: ["authorization_code"],
+					createdAt: HARNESS_START - 25 * HOUR_MS,
+				},
+			},
+		});
+		const h = await makeHarness({}, { dir, clock: { now: HARNESS_START } });
+		const fresh = await registered(h);
+		const keys = savedKeys(h, "clients");
+		expect(keys).not.toContain("ut_client_stale");
+		expect(keys).toContain(fresh);
+	});
+});
