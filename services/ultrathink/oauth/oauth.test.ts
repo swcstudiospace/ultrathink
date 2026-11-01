@@ -2451,7 +2451,11 @@ describe("CIMD authorize GET", () => {
 		expect(await withQuery.text()).toContain("This client is not registered with ultrathink.");
 		const offGuard = countingGuard();
 		const offHarness = await makeHarness({
-			cimd: createCimdFetcher(configFor(undefined), new Set(DEFAULT_REDIRECT_ORIGINS), offGuard.guard),
+			cimd: createCimdFetcher(
+				configFor(undefined),
+				new Set(DEFAULT_REDIRECT_ORIGINS),
+				offGuard.guard,
+			),
 		});
 		const off = await authorizeCall(offHarness, CIMD_URL, challenge);
 		expect(off.status).toBe(400);
@@ -2475,13 +2479,20 @@ describe("CIMD authorize GET", () => {
 
 	test("each GET failure class (guard refusal, fetch failure, timeout, HTTP 404, invalid document) shows the failed-class error page, creates no pending request, and the body contains neither the URL nor its host", async () => {
 		const cases: Array<[string, (fake: FakeCimd) => void]> = [
-			["guard refusal", (fake) => fake.failWith({ ok: false, kind: "fetch", code: "ADDRESS_REFUSED" })],
-			["fetch failure", (fake) => fake.failWith({ ok: false, kind: "fetch", code: "NETWORK_FAILURE" })],
+			[
+				"guard refusal",
+				(fake) => fake.failWith({ ok: false, kind: "fetch", code: "ADDRESS_REFUSED" }),
+			],
+			[
+				"fetch failure",
+				(fake) => fake.failWith({ ok: false, kind: "fetch", code: "NETWORK_FAILURE" }),
+			],
 			["timeout", (fake) => fake.failWith({ ok: false, kind: "fetch", code: "TIMEOUT" })],
 			["HTTP 404", (fake) => fake.failWith({ ok: false, kind: "fetch", code: "HTTP_STATUS" })],
 			[
 				"invalid document",
-				(fake) => fake.set({ ...DOCUMENT_NAMED, token_endpoint_auth_method: "client_secret_basic" }),
+				(fake) =>
+					fake.set({ ...DOCUMENT_NAMED, token_endpoint_auth_method: "client_secret_basic" }),
 			],
 		];
 		for (const [, arrange] of cases) {
@@ -2571,7 +2582,8 @@ describe("CIMD approval POST", () => {
 	const OTHER_REDIRECT = "https://claude.com/api/mcp/auth_callback";
 	const CHANGED_REDIRECTS = { ...DOCUMENT_NAMED, redirect_uris: [REDIRECT, OTHER_REDIRECT] };
 	const EXPIRED_TEXT = "This authorization request expired.";
-	const FAILED_TEXT = "The client details could not be retrieved. Start the connection again from your client.";
+	const FAILED_TEXT =
+		"The client details could not be retrieved. Start the connection again from your client.";
 
 	test("POST approval resolves the URL, issues a code, and leaves data.clients unchanged", async () => {
 		const fake = fakeCimd(DOCUMENT_NAMED);
@@ -2705,7 +2717,11 @@ describe("CIMD token, refresh and drift", () => {
 		};
 	}
 
-	function codeFields(issued: { code: string; verifier: string; redirect: string }): Record<string, string> {
+	function codeFields(issued: {
+		code: string;
+		verifier: string;
+		redirect: string;
+	}): Record<string, string> {
 		return {
 			grant_type: "authorization_code",
 			code: issued.code,
@@ -2716,7 +2732,10 @@ describe("CIMD token, refresh and drift", () => {
 		};
 	}
 
-	async function expectRefused(response: Response, error: string): Promise<Record<string, unknown>> {
+	async function expectRefused(
+		response: Response,
+		error: string,
+	): Promise<Record<string, unknown>> {
 		expect(response.status).toBe(400);
 		const body = await bodyOf(response);
 		expect(body.error).toBe(error);
@@ -2851,7 +2870,10 @@ describe("CIMD token, refresh and drift", () => {
 		const h = await makeHarness({ cimd: fake });
 		const granted = await grant(h, CIMD_URL);
 		fake.set(CHANGED);
-		const refused = await expectRefused(await tokenCall(h, refreshFields(granted.refresh)), "invalid_grant");
+		const refused = await expectRefused(
+			await tokenCall(h, refreshFields(granted.refresh)),
+			"invalid_grant",
+		);
 		expect(refused.error_description).toBe(DRIFT_TEXT);
 		const fresh = await grant(h, CIMD_URL);
 		expect(fresh.access).toMatch(/^ut_at_/);
@@ -2862,7 +2884,10 @@ describe("CIMD token, refresh and drift", () => {
 		const h = await makeHarness({ cimd: fake });
 		const granted = await grant(h, CIMD_URL);
 		fake.set({ ...DOCUMENT_NAMED, grant_types: ["refresh_token"] });
-		const refused = await expectRefused(await tokenCall(h, refreshFields(granted.refresh)), "invalid_grant");
+		const refused = await expectRefused(
+			await tokenCall(h, refreshFields(granted.refresh)),
+			"invalid_grant",
+		);
 		expect(refused.error_description).toBe(DRIFT_TEXT);
 	});
 
@@ -2890,7 +2915,10 @@ describe("CIMD token, refresh and drift", () => {
 	});
 
 	test("a re-fetch that only reorders redirect_uris or grant_types, or only adds duplicates (changed after the approval POST and before the token call), refreshes with no drift refusal", async () => {
-		const fake = fakeCimd({ ...DOCUMENT_NAMED, redirect_uris: [REDIRECT, OTHER_REDIRECT] }, NO_STORE);
+		const fake = fakeCimd(
+			{ ...DOCUMENT_NAMED, redirect_uris: [REDIRECT, OTHER_REDIRECT] },
+			NO_STORE,
+		);
 		const h = await makeHarness({ cimd: fake });
 		const granted = await grant(h, CIMD_URL);
 		fake.set({

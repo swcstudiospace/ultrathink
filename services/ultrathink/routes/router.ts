@@ -736,7 +736,10 @@ export function createApp(deps: RouterDeps): App {
 		streams.alert("audit_tamper_detected", { reason });
 	}
 	// One normalized origin set serves the OAuth redirect check and the CIMD fetcher's redirect check.
-	const redirectOrigins = normalizeOrigins([...DEFAULT_REDIRECT_ORIGINS, ...config.oauthRedirectOrigins]);
+	const redirectOrigins = normalizeOrigins([
+		...DEFAULT_REDIRECT_ORIGINS,
+		...config.oauthRedirectOrigins,
+	]);
 	const oauth = createOAuth({
 		origin: config.publicOrigin,
 		stateDir: config.stateDir,

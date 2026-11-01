@@ -926,8 +926,12 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	/** Authorize GET's answer for a URL client id that does not resolve (D2). Logs the failure code only. */
 	function cimdAuthorizeFailure(outcome: Exclude<CimdResolution, { readonly ok: true }>): Response {
 		if (outcome.kind === "busy")
-			return errorPage(503, "Client details are busy. Start the connection again from your client.");
-		if (outcome.kind === "unknown") return errorPage(400, "This client is not registered with ultrathink.");
+			return errorPage(
+				503,
+				"Client details are busy. Start the connection again from your client.",
+			);
+		if (outcome.kind === "unknown")
+			return errorPage(400, "This client is not registered with ultrathink.");
 		refusedInput("/oauth/authorize", "client_id", outcome.code);
 		return errorPage(
 			400,
@@ -1077,7 +1081,8 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			});
 		}
 		persist();
-		const clientName = found.request.clientName ?? own(data.clients, found.request.clientId)?.name ?? "MCP client";
+		const clientName =
+			found.request.clientName ?? own(data.clients, found.request.clientId)?.name ?? "MCP client";
 		const redirectUri = found.request.redirectUri;
 		if (approving.has(found.key)) {
 			return consentPage(
@@ -1135,14 +1140,20 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				const outcome = await cimd.resolveFresh(found.request.clientId);
 				if (!outcome.ok) {
 					if (outcome.kind === "busy") {
-						return errorPage(503, "Client details are busy. Start the connection again from your client.");
+						return errorPage(
+							503,
+							"Client details are busy. Start the connection again from your client.",
+						);
 					}
 					return errorPage(
 						400,
 						"The client details could not be retrieved. Start the connection again from your client.",
 					);
 				}
-				if (found.request.approvalState !== "PENDING_APPROVAL" || pending.get(found.key) !== found.request) {
+				if (
+					found.request.approvalState !== "PENDING_APPROVAL" ||
+					pending.get(found.key) !== found.request
+				) {
 					return expiredResponse(false);
 				}
 				// The drift check (choice 3) and the name check (OW-8). A missing request value counts as a mismatch.
