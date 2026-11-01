@@ -2566,3 +2566,120 @@ describe("CIMD authorize GET", () => {
 		expect(String(enabledBody.client_id)).toMatch(/^ut_client_/);
 	});
 });
+
+describe("CIMD approval POST", () => {
+	const OTHER_REDIRECT = "https://claude.com/api/mcp/auth_callback";
+	const CHANGED_REDIRECTS = { ...DOCUMENT_NAMED, redirect_uris: [REDIRECT, OTHER_REDIRECT] };
+	const EXPIRED_TEXT = "This authorization request expired.";
+	const FAILED_TEXT = "The client details could not be retrieved. Start the connection again from your client.";
+
+	test("POST approval resolves the URL, issues a code, and leaves data.clients unchanged", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const approved = await approveWith(h, await consent.text(), password);
+		expect(approved.status).toBe(302);
+		expect(codeFrom(approved)).toMatch(/^ut_code_/);
+		expect(savedKeys(h, "clients")).toEqual([]);
+		expect(fake.calls()).toBe(2);
+	});
+
+	test("POST with a wrong password makes no outbound call and re-renders the consent page with the stored name", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const wrong = await approveWith(h, await consent.text(), "not-the-owner-password");
+		expect(wrong.status).toBe(200);
+		const body = await wrong.text();
+		expect(body).toContain("Incorrect password.");
+		expect(body).toContain("Example Client");
+		expect(fake.calls()).toBe(1);
+	});
+
+	test("POST after the document's redirect_uris or grant_types changed expires the pending request and creates no grant or code", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, { cacheControl: "no-store" });
+		const h = await makeHarness({ cimd: fake });
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const html = await consent.text();
+		fake.set(CHANGED_REDIRECTS);
+		const expired = await approveWith(h, html, password);
+		expect(expired.status).toBe(400);
+		expect(await expired.text()).toContain(EXPIRED_TEXT);
+		expect(expired.headers.get("location")).toBeNull();
+		expect(savedKeys(h, "grants")).toEqual([]);
+		expect(savedKeys(h, "pending")).toEqual([]);
+	});
+
+	test("a change made within the cache window is seen at approval and expires the pending request", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, { cacheControl: "max-age=300" });
+		const h = await makeHarness({ cimd: fake });
+		const t0 = h.clock.now;
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const html = await consent.text();
+		h.clock.now = t0 + 100_000;
+		fake.set(CHANGED_REDIRECTS);
+		h.clock.now = t0 + 101_000;
+		const expired = await approveWith(h, html, password);
+		expect(expired.status).toBe(400);
+		expect(await expired.text()).toContain(EXPIRED_TEXT);
+		expect(fake.calls()).toBe(2);
+		expect(savedKeys(h, "grants")).toEqual([]);
+		expect(expired.headers.get("location")).toBeNull();
+	});
+
+	test("POST with a failed re-resolution shows the failed-class error page, creates no grant or code, and keeps the pending request until its TTL", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const html = await consent.text();
+		fake.failWith({ ok: false, kind: "fetch", code: "TIMEOUT" });
+		const failed = await approveWith(h, html, password);
+		expect(failed.status).toBe(400);
+		expect(await failed.text()).toContain(FAILED_TEXT);
+		expect(failed.headers.get("location")).toBeNull();
+		expect(savedKeys(h, "grants")).toEqual([]);
+		expect(savedKeys(h, "pending")).toHaveLength(1);
+		fake.failWith(null);
+		const retried = await approveWith(h, html, password);
+		expect(retried.status).toBe(302);
+		expect(codeFrom(retried)).toMatch(/^ut_code_/);
+	});
+
+	test("POST with a BUSY re-resolution shows 503 with the busy text and creates no grant or code", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const html = await consent.text();
+		fake.failWith({ ok: false, kind: "fetch", code: "BUSY" });
+		const busy = await approveWith(h, html, password);
+		expect(busy.status).toBe(503);
+		expect(await busy.text()).toContain(
+			"Client details are busy. Start the connection again from your client.",
+		);
+		expect(busy.headers.get("location")).toBeNull();
+		expect(savedOrNone(h, "grants")).toEqual([]);
+	});
+
+	test("a client_name change between consent and approval re-prompts: the pending request is expired, the expired page is shown, and no grant or code is created", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const html = await consent.text();
+		fake.set({ ...DOCUMENT_NAMED, client_name: "Renamed Client" });
+		const expired = await approveWith(h, html, password);
+		expect(expired.status).toBe(400);
+		expect(await expired.text()).toContain(EXPIRED_TEXT);
+		expect(expired.headers.get("location")).toBeNull();
+		expect(savedKeys(h, "grants")).toEqual([]);
+		expect(savedKeys(h, "pending")).toEqual([]);
+	});
+
+	test("a client_name unchanged between consent and approval approves and issues a code", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const approved = await approveWith(h, await consent.text(), password);
+		expect(approved.status).toBe(302);
+		expect(codeFrom(approved)).toMatch(/^ut_code_/);
+	});
+});

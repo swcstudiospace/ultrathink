@@ -1064,7 +1064,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			});
 		}
 		persist();
-		const clientName = own(data.clients, found.request.clientId)?.name ?? "MCP client";
+		const clientName = found.request.clientName ?? own(data.clients, found.request.clientId)?.name ?? "MCP client";
 		const redirectUri = found.request.redirectUri;
 		if (approving.has(found.key)) {
 			return consentPage(
@@ -1102,12 +1102,47 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			}
 			audit("login_ok", { ip });
 			// Registration or pruning may have dropped the client or its pending entry while the password was checked; a code for a missing client could never be redeemed.
+			const urlClient = isUrlClientId(found.request.clientId);
 			if (
 				found.request.approvalState !== "PENDING_APPROVAL" ||
 				pending.get(found.key) !== found.request ||
-				own(data.clients, found.request.clientId) === undefined
+				(!urlClient && own(data.clients, found.request.clientId) === undefined)
 			) {
 				return expiredResponse(false);
+			}
+			let consentedDigest: string | undefined;
+			if (urlClient) {
+				// K1: approval always fetches the current document and never reads the resolver cache.
+				if (cimd === undefined) {
+					return errorPage(
+						400,
+						"The client details could not be retrieved. Start the connection again from your client.",
+					);
+				}
+				const outcome = await cimd.resolveFresh(found.request.clientId);
+				if (!outcome.ok) {
+					if (outcome.kind === "busy") {
+						return errorPage(503, "Client details are busy. Start the connection again from your client.");
+					}
+					return errorPage(
+						400,
+						"The client details could not be retrieved. Start the connection again from your client.",
+					);
+				}
+				if (found.request.approvalState !== "PENDING_APPROVAL" || pending.get(found.key) !== found.request) {
+					return expiredResponse(false);
+				}
+				// The drift check (choice 3) and the name check (OW-8). A missing request value counts as a mismatch.
+				if (
+					outcome.client.metadataDigest !== found.request.metadataDigest ||
+					outcome.client.name !== found.request.clientName
+				) {
+					found.request.approvalState = "EXPIRED";
+					pending.delete(found.key);
+					persist();
+					return expiredResponse(false);
+				}
+				consentedDigest = found.request.metadataDigest;
 			}
 			found.request.approvalState = "APPROVED";
 			pending.delete(found.key);
@@ -1119,6 +1154,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				resource: found.request.resource,
 				createdAt: t,
 				lastUsedAt: t,
+				...(consentedDigest === undefined ? {} : { metadataDigest: consentedDigest }),
 			};
 			const client = own(data.clients, found.request.clientId);
 			if (client !== undefined && client.grantedAt === undefined) client.grantedAt = t;
