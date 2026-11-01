@@ -2809,6 +2809,15 @@ describe("CIMD token, refresh and drift", () => {
 		await expectUnverified(await tokenCall(bare, refreshFields(granted.refresh)));
 	});
 
+	test("token exchange for a URL client whose document sends no-store refuses with invalid_client when the fetch fails at exchange", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, { cacheControl: "no-store" });
+		const h = await makeHarness({ cimd: fake });
+		const issued = await authorizedCode(h, CIMD_URL);
+		// A no-store document is never cached, so the exchange must fetch and sees the failure.
+		fake.failWith({ ok: false, kind: "fetch", code: "TIMEOUT" });
+		await expectUnverified(await tokenCall(h, codeFields(issued)));
+	});
+
 	test("a token request for a URL client whose code is unknown, used, expired or bound to another client, or whose refresh token is unknown, used or bound to another client, calls the fetcher zero times and returns invalid_grant; a replayed used code and a replayed used refresh token still revoke their grant", async () => {
 		const fake = fakeCimd(DOCUMENT_NAMED);
 		const h = await makeHarness({ cimd: fake });
