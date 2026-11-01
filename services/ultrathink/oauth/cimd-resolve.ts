@@ -22,7 +22,7 @@ const MAX_CLIENT_NAME_CHARS = 120;
 const NO_CONTROL = /^[^\x00-\x1f\x7f]*$/;
 const DIGITS = /^\d+$/;
 
-export type CimdResolutionCode = "DISABLED" | CimdFailureCode | OutboundFetchCode;
+type CimdResolutionCode = "DISABLED" | CimdFailureCode | OutboundFetchCode;
 
 export interface CimdClient {
 	readonly clientId: string;
