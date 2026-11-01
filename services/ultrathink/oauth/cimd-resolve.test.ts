@@ -80,7 +80,10 @@ function resolverWith(probe: Probe, clock: { now: number }) {
 
 describe("CIMD metadata digest and consumer checks", () => {
 	test("digest is identical for reordered or duplicated identical sets and differs when redirect_uris or grant_types change", () => {
-		const base = metadataDigest([REDIRECT, OTHER_REDIRECT], ["authorization_code", "refresh_token"]);
+		const base = metadataDigest(
+			[REDIRECT, OTHER_REDIRECT],
+			["authorization_code", "refresh_token"],
+		);
 		expect(base).toMatch(/^[0-9a-f]{64}$/);
 		expect(
 			metadataDigest([OTHER_REDIRECT, REDIRECT], ["refresh_token", "authorization_code"]),
@@ -103,7 +106,10 @@ describe("CIMD metadata digest and consumer checks", () => {
 
 	test("absent grant_types defaults to authorization_code; empty, non-array, non-string or unsupported grant_types refuse the document as INVALID_DOCUMENT", async () => {
 		const clock = { now: START };
-		const absent = await resolverWith(scripted(() => ok(CLIENT)), clock).resolve(CLIENT);
+		const absent = await resolverWith(
+			scripted(() => ok(CLIENT)),
+			clock,
+		).resolve(CLIENT);
 		expect(absent).toMatchObject({ ok: true, client: { grantTypes: ["authorization_code"] } });
 		const refused: unknown[] = [
 			[],
@@ -115,7 +121,10 @@ describe("CIMD metadata digest and consumer checks", () => {
 			["authorization_code", "password"],
 		];
 		for (const value of refused) {
-			const resolver = resolverWith(scripted(() => ok(CLIENT, { grant_types: value })), clock);
+			const resolver = resolverWith(
+				scripted(() => ok(CLIENT, { grant_types: value })),
+				clock,
+			);
 			expect(await resolver.resolveFresh(CLIENT)).toEqual({
 				ok: false,
 				kind: "failed",
@@ -127,7 +136,10 @@ describe("CIMD metadata digest and consumer checks", () => {
 	test("client_name: absent, null or blank gives MCP client; a non-string value or any C0 or DEL character, including one past character 120, refuses the document as INVALID_DOCUMENT; the name is sliced to 120 before it is trimmed, so 118 spaces followed by abc gives ab", async () => {
 		const clock = { now: START };
 		const named = (metadata: Record<string, unknown>) =>
-			resolverWith(scripted(() => ok(CLIENT, metadata)), clock).resolve(CLIENT);
+			resolverWith(
+				scripted(() => ok(CLIENT, metadata)),
+				clock,
+			).resolve(CLIENT);
 		expect(await named({})).toMatchObject({ ok: true, client: { name: "MCP client" } });
 		expect(await named({ client_name: null })).toMatchObject({
 			ok: true,
@@ -162,7 +174,10 @@ describe("CIMD metadata digest and consumer checks", () => {
 	test("client_name: an ASCII input of exactly 1024 characters (1024 UTF-16 code units) is accepted, and an ASCII input of 1025 characters refuses the document as INVALID_DOCUMENT (the DCR input cap, oauth.ts:67)", async () => {
 		const clock = { now: START };
 		const named = (metadata: Record<string, unknown>) =>
-			resolverWith(scripted(() => ok(CLIENT, metadata)), clock).resolve(CLIENT);
+			resolverWith(
+				scripted(() => ok(CLIENT, metadata)),
+				clock,
+			).resolve(CLIENT);
 		expect(await named({ client_name: "a".repeat(1024) })).toMatchObject({
 			ok: true,
 			client: { name: "a".repeat(120) },
@@ -268,7 +283,10 @@ describe("CIMD cache policy", () => {
 			],
 		];
 		for (const [result, expected] of cases) {
-			const resolver = resolverWith(scripted(() => result), clock);
+			const resolver = resolverWith(
+				scripted(() => result),
+				clock,
+			);
 			expect(await resolver.resolve(CLIENT)).toEqual(expected);
 		}
 	});
