@@ -2683,3 +2683,291 @@ describe("CIMD approval POST", () => {
 		expect(codeFrom(approved)).toMatch(/^ut_code_/);
 	});
 });
+
+describe("CIMD token, refresh and drift", () => {
+	const OTHER_REDIRECT = "https://claude.com/api/mcp/auth_callback";
+	const OTHER_CLIENT = "https://other.example/cimd.json";
+	const CHANGED = { ...DOCUMENT_NAMED, redirect_uris: [REDIRECT, OTHER_REDIRECT] };
+	// No cache headers: every resolve fetches, so a change is seen at the next resolve (K2).
+	const NO_STORE: OutboundCacheHeaders = { cacheControl: "no-store" };
+	const DRIFT_TEXT = "The client details changed. Authorize the connection again.";
+	const UNVERIFIED_TEXT =
+		"The client details could not be verified. Start the connection again from your client.";
+	// The client table cap (oauth.ts MAX_CLIENTS).
+	const CLIENT_CAP = 200;
+
+	function refreshFields(refresh: string): Record<string, string> {
+		return {
+			grant_type: "refresh_token",
+			refresh_token: refresh,
+			client_id: CIMD_URL,
+			resource: RESOURCE,
+		};
+	}
+
+	function codeFields(issued: { code: string; verifier: string; redirect: string }): Record<string, string> {
+		return {
+			grant_type: "authorization_code",
+			code: issued.code,
+			code_verifier: issued.verifier,
+			client_id: CIMD_URL,
+			redirect_uri: issued.redirect,
+			resource: RESOURCE,
+		};
+	}
+
+	async function expectRefused(response: Response, error: string): Promise<Record<string, unknown>> {
+		expect(response.status).toBe(400);
+		const body = await bodyOf(response);
+		expect(body.error).toBe(error);
+		return body;
+	}
+
+	async function expectUnverified(response: Response): Promise<void> {
+		expect(response.status).toBe(401);
+		expect(response.headers.get("www-authenticate")).toBe('Basic realm="ultrathink"');
+		const body = await bodyOf(response);
+		expect(body.error).toBe("invalid_client");
+		expect(body.error_description).toBe(UNVERIFIED_TEXT);
+		expect(JSON.stringify(body)).not.toContain("Register the client again");
+	}
+
+	test("authorization_code exchange for a URL client issues tokens and leaves data.clients unchanged", async () => {
+		const h = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED) });
+		const granted = await grant(h, CIMD_URL);
+		expect(granted.access).toMatch(/^ut_at_/);
+		expect(granted.refresh).toMatch(/^ut_rt_/);
+		expect(savedKeys(h, "clients")).toEqual([]);
+	});
+
+	test("a CIMD grant from a real authorize, approval and exchange survives filling the client table to `MAX_CLIENTS` (200) and one more registration, and its refresh still succeeds", async () => {
+		const h = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED) });
+		const granted = await grant(h, CIMD_URL);
+		// The first CLIENT_CAP registrations fill the table; the one after forces makeRoomForClient to
+		// evict the oldest ungranted DCR client.
+		for (let i = 0; i <= CLIENT_CAP; i += 1) {
+			const response = await registerCall(h, {
+				client_name: `Filler ${i}`,
+				redirect_uris: [REDIRECT],
+				grant_types: ["authorization_code", "refresh_token"],
+			});
+			expect(response.status).toBe(201);
+		}
+		const clients = savedKeys(h, "clients");
+		expect(clients).toHaveLength(CLIENT_CAP);
+		expect(clients).not.toContain(CIMD_URL);
+		expect(savedKeys(h, "grants")).toHaveLength(1);
+		expect((await tokenCall(h, refreshFields(granted.refresh))).status).toBe(200);
+	}, 60_000);
+
+	test("a URL client whose document omits grant_types gets unauthorized_client on refresh", async () => {
+		const noGrantTypes = {
+			client_id: CIMD_URL,
+			client_name: "Example Client",
+			redirect_uris: [REDIRECT],
+			token_endpoint_auth_method: "none",
+		};
+		const h = await makeHarness({ cimd: fakeCimd(noGrantTypes) });
+		const granted = await grant(h, CIMD_URL);
+		const refreshed = await tokenCall(h, refreshFields(granted.refresh));
+		expect(refreshed.status).toBe(400);
+		expect((await bodyOf(refreshed)).error).toBe("unauthorized_client");
+	});
+
+	test("every token resolution failure (unknown, busy, failed, no resolver) returns 401 invalid_client with the URL message and without the register-again text", async () => {
+		for (const code of ["DISABLED", "BUSY", "TIMEOUT"] as const) {
+			const fake = fakeCimd(DOCUMENT_NAMED);
+			const h = await makeHarness({ cimd: fake });
+			const issued = await authorizedCode(h, CIMD_URL);
+			fake.failWith({ ok: false, kind: "fetch", code });
+			await expectUnverified(await tokenCall(h, codeFields(issued)));
+		}
+		const h = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED) });
+		const issued = await authorizedCode(h, CIMD_URL);
+		const bare = await makeHarness({}, { dir: h.dir, clock: h.clock });
+		await expectUnverified(await tokenCall(bare, codeFields(issued)));
+	});
+
+	test("a token request for a URL client whose code is unknown, used, expired or bound to another client, or whose refresh token is unknown, used or bound to another client, calls the fetcher zero times and returns invalid_grant; a replayed used code and a replayed used refresh token still revoke their grant", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const refuse = async (fields: Record<string, string>): Promise<void> => {
+			const before = fake.calls();
+			await expectRefused(await tokenCall(h, fields), "invalid_grant");
+			expect(fake.calls()).toBe(before);
+		};
+		await refuse({
+			grant_type: "authorization_code",
+			code: "ut_code_unknown",
+			client_id: CIMD_URL,
+			redirect_uri: REDIRECT,
+		});
+		await refuse(refreshFields("ut_rt_unknown"));
+
+		const bound = await authorizedCode(h, CIMD_URL);
+		await refuse({ ...codeFields(bound), client_id: OTHER_CLIENT });
+		// The refusal revoked nothing: the code still redeems for its own client.
+		expect((await tokenCall(h, codeFields(bound))).status).toBe(200);
+
+		const expiring = await authorizedCode(h, CIMD_URL);
+		h.clock.now += CODE_TTL_MS + 1;
+		await refuse(codeFields(expiring));
+
+		const used = await authorizedCode(h, CIMD_URL);
+		const issued = await tokenCall(h, codeFields(used));
+		expect(issued.status).toBe(200);
+		const access = String((await bodyOf(issued)).access_token);
+		expect(h.oauth.verifyAccessToken(access)).toBe(true);
+		await refuse(codeFields(used));
+		expect(h.oauth.verifyAccessToken(access)).toBe(false);
+
+		const rolling = await grant(h, CIMD_URL);
+		const rotated = await tokenCall(h, refreshFields(rolling.refresh));
+		expect(rotated.status).toBe(200);
+		const next = String((await bodyOf(rotated)).refresh_token);
+		await refuse(refreshFields(rolling.refresh));
+		await refuse(refreshFields(next));
+
+		const other = await grant(h, CIMD_URL);
+		await refuse({ ...refreshFields(other.refresh), client_id: OTHER_CLIENT });
+		expect((await tokenCall(h, refreshFields(other.refresh))).status).toBe(200);
+	});
+
+	test("unchanged re-fetch: refresh returns 200 with tokens, and the persisted pending and grants key sets are unchanged (savedOrEmpty before and after)", async () => {
+		const h = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED, NO_STORE) });
+		const granted = await grant(h, CIMD_URL);
+		expect((await authorizeCall(h, CIMD_URL, pkcePair().challenge)).status).toBe(200);
+		const pendingBefore = savedOrNone(h, "pending");
+		const grantsBefore = savedOrNone(h, "grants");
+		expect(pendingBefore).toHaveLength(1);
+		const refreshed = await tokenCall(h, refreshFields(granted.refresh));
+		expect(refreshed.status).toBe(200);
+		expect(savedOrNone(h, "pending")).toEqual(pendingBefore);
+		expect(savedOrNone(h, "grants")).toEqual(grantsBefore);
+	});
+
+	test("re-fetch that changes redirect_uris (changed after the approval POST and before the token call): refresh is refused with invalid_grant; fresh consent then issues tokens", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, NO_STORE);
+		const h = await makeHarness({ cimd: fake });
+		const granted = await grant(h, CIMD_URL);
+		fake.set(CHANGED);
+		const refused = await expectRefused(await tokenCall(h, refreshFields(granted.refresh)), "invalid_grant");
+		expect(refused.error_description).toBe(DRIFT_TEXT);
+		const fresh = await grant(h, CIMD_URL);
+		expect(fresh.access).toMatch(/^ut_at_/);
+	});
+
+	test("re-fetch that changes grant_types (changed after the approval POST and before the token call): refresh is refused with invalid_grant", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, NO_STORE);
+		const h = await makeHarness({ cimd: fake });
+		const granted = await grant(h, CIMD_URL);
+		fake.set({ ...DOCUMENT_NAMED, grant_types: ["refresh_token"] });
+		const refused = await expectRefused(await tokenCall(h, refreshFields(granted.refresh)), "invalid_grant");
+		expect(refused.error_description).toBe(DRIFT_TEXT);
+	});
+
+	test("re-fetch that changes the document between authorize and exchange (changed after the approval POST and before the token call): exchange is refused with invalid_grant and issues no token", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, NO_STORE);
+		const h = await makeHarness({ cimd: fake });
+		const issued = await authorizedCode(h, CIMD_URL);
+		fake.set(CHANGED);
+		const refused = await expectRefused(await tokenCall(h, codeFields(issued)), "invalid_grant");
+		expect(refused.error_description).toBe(DRIFT_TEXT);
+		expect(refused.access_token).toBeUndefined();
+		// The refusal did not mark the code used: once the document reverts, the same code exchanges.
+		fake.set(DOCUMENT_NAMED);
+		expect((await tokenCall(h, codeFields(issued))).status).toBe(200);
+	});
+
+	test("a drift refusal leaves the refresh token usable (changed after the approval POST and before the token call): once the document reverts, the same refresh token refreshes", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, NO_STORE);
+		const h = await makeHarness({ cimd: fake });
+		const granted = await grant(h, CIMD_URL);
+		fake.set(CHANGED);
+		await expectRefused(await tokenCall(h, refreshFields(granted.refresh)), "invalid_grant");
+		fake.set(DOCUMENT_NAMED);
+		expect((await tokenCall(h, refreshFields(granted.refresh))).status).toBe(200);
+	});
+
+	test("a re-fetch that only reorders redirect_uris or grant_types, or only adds duplicates (changed after the approval POST and before the token call), refreshes with no drift refusal", async () => {
+		const fake = fakeCimd({ ...DOCUMENT_NAMED, redirect_uris: [REDIRECT, OTHER_REDIRECT] }, NO_STORE);
+		const h = await makeHarness({ cimd: fake });
+		const granted = await grant(h, CIMD_URL);
+		fake.set({
+			...DOCUMENT_NAMED,
+			redirect_uris: [OTHER_REDIRECT, REDIRECT, REDIRECT],
+			grant_types: ["refresh_token", "authorization_code", "refresh_token"],
+		});
+		expect((await tokenCall(h, refreshFields(granted.refresh))).status).toBe(200);
+	});
+
+	test("a CIMD grant with no metadataDigest refuses refresh (fail closed)", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, NO_STORE);
+		const h = await makeHarness({ cimd: fake });
+		const granted = await grant(h, CIMD_URL);
+		const saved = JSON.parse(readFileSync(h.statePath, "utf8")) as {
+			grants: Record<string, Record<string, unknown>>;
+		};
+		for (const [id, record] of Object.entries(saved.grants)) {
+			saved.grants[id] = Object.fromEntries(
+				Object.entries(record).filter(([key]) => key !== "metadataDigest"),
+			);
+		}
+		writeFileSync(h.statePath, JSON.stringify(saved));
+		const reopened = await makeHarness({ cimd: fake }, { dir: h.dir, clock: h.clock });
+		await expectRefused(await tokenCall(reopened, refreshFields(granted.refresh)), "invalid_grant");
+	});
+
+	test("OW-1: a token minted before a drift stays valid until ACCESS_TTL_MS, while the next refresh and the next code exchange under the drifted document are refused with invalid_grant", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, NO_STORE);
+		const h = await makeHarness({ cimd: fake });
+		const first = await grant(h, CIMD_URL);
+		const second = await authorizedCode(h, CIMD_URL);
+		fake.set(CHANGED);
+		const exchanged = await expectRefused(await tokenCall(h, codeFields(second)), "invalid_grant");
+		expect(exchanged.access_token).toBeUndefined();
+		await expectRefused(await tokenCall(h, refreshFields(first.refresh)), "invalid_grant");
+		expect(h.oauth.verifyAccessToken(first.access)).toBe(true);
+		h.clock.now += ACCESS_TTL_MS + 1;
+		expect(h.oauth.verifyAccessToken(first.access)).toBe(false);
+	});
+
+	test("OW-6: with a max-age=300 document fetched by the approval POST at time t0 (the approval replaces the cache entry), a change made at t0 after that approval POST and before the token call is seen by refresh only after the cache entry expires: a refresh at t0+100 s succeeds from cache with zero new fetches, and a refresh at t0+301 s is refused with invalid_grant. With a no-store document, the same change is refused on the next refresh with no lag", async () => {
+		const cached = fakeCimd(DOCUMENT_NAMED, { cacheControl: "max-age=300" });
+		const h = await makeHarness({ cimd: cached });
+		const t0 = h.clock.now;
+		const granted = await grant(h, CIMD_URL);
+		const afterGrant = cached.calls();
+		cached.set(CHANGED);
+		h.clock.now = t0 + 100_000;
+		const early = await tokenCall(h, refreshFields(granted.refresh));
+		expect(early.status).toBe(200);
+		expect(cached.calls()).toBe(afterGrant);
+		const rotated = String((await bodyOf(early)).refresh_token);
+		h.clock.now = t0 + 301_000;
+		await expectRefused(await tokenCall(h, refreshFields(rotated)), "invalid_grant");
+		expect(cached.calls()).toBe(afterGrant + 1);
+
+		const strict = fakeCimd(DOCUMENT_NAMED, NO_STORE);
+		const strictHarness = await makeHarness({ cimd: strict });
+		const strictGrant = await grant(strictHarness, CIMD_URL);
+		strict.set(CHANGED);
+		await expectRefused(
+			await tokenCall(strictHarness, refreshFields(strictGrant.refresh)),
+			"invalid_grant",
+		);
+	});
+
+	test("a fresh fetch that returns the consented metadata does not refuse, even after the cache entry has expired at 301 s: the document is changed to B after the approval POST and before the token call, then set back to the consented A before the refresh at t0+301 s, which fetches fresh and succeeds", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, { cacheControl: "max-age=300" });
+		const h = await makeHarness({ cimd: fake });
+		const t0 = h.clock.now;
+		const granted = await grant(h, CIMD_URL);
+		fake.set(CHANGED);
+		fake.set(DOCUMENT_NAMED);
+		h.clock.now = t0 + 301_000;
+		const before = fake.calls();
+		expect((await tokenCall(h, refreshFields(granted.refresh))).status).toBe(200);
+		expect(fake.calls()).toBe(before + 1);
+	});
+});

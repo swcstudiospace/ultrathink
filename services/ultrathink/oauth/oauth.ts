@@ -293,6 +293,19 @@ function invalidClient(): Response {
 	});
 }
 
+/** A drift refusal at exchange or refresh (choice 1). Only resolution failures are invalid_client. */
+const CLIENT_CHANGED_MESSAGE = "The client details changed. Authorize the connection again.";
+
+/** Every token-side resolution failure for a URL client, including BUSY (CIMD-11). */
+function invalidCimdClient(): Response {
+	return oauthError(
+		401,
+		"invalid_client",
+		"The client details could not be verified. Start the connection again from your client.",
+		{ "WWW-Authenticate": 'Basic realm="ultrathink"' },
+	);
+}
+
 function htmlPage(
 	status: number,
 	body: string,
@@ -1176,7 +1189,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 	}
 
-	async function exchangeCode(form: URLSearchParams, clientId: string): Promise<Response> {
+	async function exchangeCode(
+		form: URLSearchParams,
+		clientId: string,
+		consented?: string,
+	): Promise<Response> {
 		const key = digest(form.get("code") ?? "");
 		const record = own(data.codes, key);
 		if (!record) return invalidGrant();
@@ -1197,6 +1214,9 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (!pkceMatches(form.get("code_verifier") ?? "", record.codeChallenge)) {
 			return invalidGrant("PKCE verification failed.");
 		}
+		if (consented !== undefined && own(data.grants, record.grantId)?.metadataDigest !== consented) {
+			return invalidGrant(CLIENT_CHANGED_MESSAGE);
+		}
 		const snapshot = snapshotStore();
 		record.used = true;
 		const body = issueTokens(
@@ -1215,7 +1235,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		return jsonResponse(200, body);
 	}
 
-	function refreshGrant(form: URLSearchParams, clientId: string): Response {
+	function refreshGrant(form: URLSearchParams, clientId: string, consented?: string): Response {
 		const record = own(data.tokens, digest(form.get("refresh_token") ?? ""));
 		if (!record || record.kind !== "refresh") return invalidGrant("The refresh token is unknown.");
 		if (record.clientId !== clientId)
@@ -1229,6 +1249,9 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 		if (record.expiresAt <= now()) return invalidGrant("The refresh token expired.");
 		if (!own(data.grants, record.grantId)) return invalidGrant("The grant was revoked.");
+		if (consented !== undefined && own(data.grants, record.grantId)?.metadataDigest !== consented) {
+			return invalidGrant(CLIENT_CHANGED_MESSAGE);
+		}
 		const presented = form.get("resource");
 		if (presented !== null && presented !== "" && !sameResource(presented)) {
 			return oauthError(400, "invalid_target", "resource must be the ultrathink MCP endpoint.");
@@ -1377,6 +1400,54 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		});
 	}
 
+	/** W1 record pre-check: true only for a live, unused record bound to clientId. It reads no metadata. */
+	function tokenRecordLive(
+		grantType: "authorization_code" | "refresh_token",
+		form: URLSearchParams,
+		clientId: string,
+	): boolean {
+		const t = now();
+		if (grantType === "authorization_code") {
+			const code = own(data.codes, digest(form.get("code") ?? ""));
+			return code !== undefined && code.clientId === clientId && !code.used && code.expiresAt > t;
+		}
+		const refresh = own(data.tokens, digest(form.get("refresh_token") ?? ""));
+		return (
+			refresh !== undefined &&
+			refresh.kind === "refresh" &&
+			refresh.clientId === clientId &&
+			!refresh.used &&
+			refresh.expiresAt > t
+		);
+	}
+
+	/** A URL client's token request (D4). Resolution runs only after the record pre-check passes. */
+	async function cimdToken(
+		form: URLSearchParams,
+		grantType: "authorization_code" | "refresh_token",
+		clientId: string,
+	): Promise<Response> {
+		if (!tokenRecordLive(grantType, form, clientId)) {
+			// Each refusal here is invalid_grant with no fetch. A replayed used record still revokes its grant.
+			return grantType === "authorization_code"
+				? await exchangeCode(form, clientId)
+				: refreshGrant(form, clientId);
+		}
+		const outcome = cimd === undefined ? null : await cimd.resolve(clientId);
+		if (outcome === null || !outcome.ok) return invalidCimdClient();
+		if (!outcome.client.grantTypes.includes(grantType)) {
+			return oauthError(
+				400,
+				"unauthorized_client",
+				`The client was not registered for grant_type ${grantType}.`,
+			);
+		}
+		const consented = outcome.client.metadataDigest;
+		return grantType === "authorization_code"
+			? await exchangeCode(form, clientId, consented)
+			: refreshGrant(form, clientId, consented);
+	}
+
 	async function token(req: Request, ip = UNKNOWN_IP): Promise<Response> {
 		const limit = tokenLimiter.hit(ip);
 		if (!limit.ok)
@@ -1410,6 +1481,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (grantType !== "authorization_code" && grantType !== "refresh_token") {
 			return oauthError(400, "unsupported_grant_type", "Use authorization_code or refresh_token.");
 		}
+		if (isUrlClientId(clientId)) return await cimdToken(form, grantType, clientId);
 		// An unknown client gets 401 so the client registers again instead of looping on invalid_grant.
 		const client = own(data.clients, clientId);
 		if (!client) return invalidClient();

@@ -1524,3 +1524,22 @@ describe("hosted planner lifecycle", () => {
 		await app.shutdown();
 	}, 20_000);
 });
+
+describe("CIMD production router wiring", () => {
+	test("with cimdEnabled absent from the router config, a URL client_id authorize shows the unknown-client page body", async () => {
+		const params = new URLSearchParams({
+			response_type: "code",
+			client_id: "https://client.example/cimd.json",
+			redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+			code_challenge: "a".repeat(43),
+			code_challenge_method: "S256",
+			resource: `${PUBLIC_ORIGIN}/mcp`,
+		});
+		const response = await handler(
+			new Request(`${PUBLIC_ORIGIN}/oauth/authorize?${params.toString()}`, { method: "GET" }),
+			"198.51.100.23",
+		);
+		expect(response.status).toBe(400);
+		expect(await response.text()).toContain("This client is not registered with ultrathink.");
+	});
+});
