@@ -260,6 +260,25 @@ function parseTarget(target: string): Omit<PinnedHttpsTarget, "address" | "famil
 	}
 }
 
+// Null prototype: a remote header named "constructor" or "__proto__" must be stored as a plain key.
+// On a {} map it reads an inherited Object.prototype value, and spreading that throws.
+export function collectRawHeaders(rawHeaders: readonly string[]): HeaderValues | undefined {
+	const headers: Record<string, string | string[]> = Object.create(null);
+	for (let i = 0; i < rawHeaders.length; i += 2) {
+		const name = rawHeaders[i]?.toLowerCase();
+		const value = rawHeaders[i + 1];
+		if (name === undefined || value === undefined) return undefined;
+		const previous = headers[name];
+		headers[name] =
+			previous === undefined
+				? value
+				: typeof previous === "string"
+					? [previous, value]
+					: [...previous, value];
+	}
+	return headers;
+}
+
 function headerValues(headers: HeaderValues, name: string): string[] {
 	const values: string[] = [];
 	for (const [key, value] of Object.entries(headers)) {
@@ -383,22 +402,11 @@ function startPinnedHttpsRequest(
 			destroy();
 			return;
 		}
-		const headers: Record<string, string | string[]> = {};
-		for (let i = 0; i < response.rawHeaders.length; i += 2) {
-			const name = response.rawHeaders[i]?.toLowerCase();
-			const value = response.rawHeaders[i + 1];
-			if (name === undefined || value === undefined) {
-				events.error("INVALID_RESPONSE");
-				destroy();
-				return;
-			}
-			const previous = headers[name];
-			headers[name] =
-				previous === undefined
-					? value
-					: typeof previous === "string"
-						? [previous, value]
-						: [...previous, value];
+		const headers = collectRawHeaders(response.rawHeaders);
+		if (headers === undefined) {
+			events.error("INVALID_RESPONSE");
+			destroy();
+			return;
 		}
 		if (!events.headers(response.statusCode ?? 0, headers) || destroying) {
 			destroy();

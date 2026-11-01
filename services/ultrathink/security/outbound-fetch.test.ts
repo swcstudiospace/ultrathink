@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	createOutboundFetchGuard,
+	collectRawHeaders,
 	type GuardedFetch,
 	type OutboundFetchCode,
 	type OutboundFetchDeps,
@@ -1773,5 +1774,28 @@ describe("phase102 boundaries — B12 runtime floor and DI isolation", () => {
 		request.end();
 		expect(await pending).toEqual({ ok: true, text: "ok", headers: {} });
 		await memory.cleanup();
+	});
+});
+
+describe("phase102 header collection — inherited names", () => {
+	test("a response header named constructor or __proto__ is kept as a plain header and does not throw, and repeated names join into a list", () => {
+		const headers = collectRawHeaders([
+			"Constructor",
+			"a",
+			"__proto__",
+			"b",
+			"X-Repeat",
+			"one",
+			"x-repeat",
+			"two",
+		]);
+		expect(headers).toBeDefined();
+		expect(headers?.constructor).toBe("a");
+		expect(Object.getOwnPropertyDescriptor(headers ?? {}, "__proto__")?.value).toBe("b");
+		expect(headers?.["x-repeat"]).toEqual(["one", "two"]);
+	});
+
+	test("an odd number of raw header entries is refused as undefined", () => {
+		expect(collectRawHeaders(["X-Odd"])).toBeUndefined();
 	});
 });
