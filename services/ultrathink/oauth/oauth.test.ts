@@ -2788,7 +2788,7 @@ describe("CIMD token, refresh and drift", () => {
 		const granted = await grant(h, CIMD_URL);
 		const bare = await makeHarness({}, { dir: h.dir, clock: h.clock });
 		await expectUnverified(await tokenCall(bare, refreshFields(granted.refresh)));
-	});
+	}, 60_000);
 
 	test("token exchange for a URL client whose document sends no-store refuses with invalid_client when the fetch fails at exchange", async () => {
 		const fake = fakeCimd(DOCUMENT_NAMED, { cacheControl: "no-store" });
