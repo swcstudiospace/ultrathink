@@ -82,7 +82,7 @@ Read only by the hosted service (`services/ultrathink`) at start. A bad value st
 | `ULTRATHINK_PLANNING_MODEL` | — | no | string | `claude-haiku-5-5` | Claude model id of the hosted planner: 1 to 80 characters from letters, digits, dot, underscore, colon and dash. |
 | `ULTRATHINK_PLANNING_FALLBACK` | — | no | enum (one of none, grok) | `none` | Whether a failed Claude call fails over to Grok. |
 | `ULTRATHINK_SERVER_PLANNING` | — | no | bool01 | `0` | Set to 1 to let the service plan on the server. |
-| `ULTRATHINK_CIMD` | — | no | bool01 | `0` | Set to 1 to allow guarded CIMD client metadata retrieval. Needs Bun 1.4.0 or later; older Bun refuses retrieval. Unset or 0 keeps it off. Does not advertise CIMD. |
+| `ULTRATHINK_CIMD` | — | no | bool01 | `0` | Set to 1 to allow guarded CIMD client metadata retrieval. Needs Bun 1.4.0 or later; older Bun refuses retrieval. Unset or 0 keeps it off. Does not advertise CIMD. Refuses loopback, private, link-local, multicast, reserved, NAT64, 6to4 and IPv4-translated targets. Each fetch holds one of four in-flight slots until its connection confirms stop; a slot whose stop never confirms is not reclaimed, so restart the service to free it. |
 | `ULTRATHINK_PLAINTEXT_LOOPBACK` | — | no | bool01 | `0` | Set to 1 to run without TLS; for development and local smoke tests only. |
 | `ULTRATHINK_MAX_INPUT_CHARS` | — | no | int (at least 0) | `4000000` | Longest accepted prompt in characters; 0 means no limit, otherwise at least 1. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | — | no | int (1 to 200000) | `20000` | Longest accepted answer in characters. |

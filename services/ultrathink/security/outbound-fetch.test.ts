@@ -315,6 +315,23 @@ describe("phase102 tracer", () => {
 		expect(memory.timers.size).toBe(0);
 	});
 
+	test("a throwing timer refuses NETWORK_FAILURE before any DNS or HTTPS start and frees admission", async () => {
+		const memory = new MemoryPrimitives();
+		const deps: OutboundFetchDeps = {
+			...memory.deps,
+			schedule: () => {
+				throw new Error("timer unavailable");
+			},
+		};
+		const guard = createOutboundFetchGuard(POLICY, deps);
+		// Sequential attempts beyond maxInflight prove each refused attempt released its lease.
+		for (let attempt = 0; attempt <= POLICY.maxInflight; attempt++) {
+			expect(await guard(URL_ID)).toEqual({ ok: false, code: "NETWORK_FAILURE" });
+		}
+		expect(memory.resolverStarts).toBe(0);
+		expect(memory.requests).toHaveLength(0);
+	});
+
 	for (const stimulus of ["peer", "network", "redirect", "declared", "overflow"] as const) {
 		test(`${stimulus} refusal holds its lease until owned stop, preserves its code and admits one replacement`, async () => {
 			const memory = new MemoryPrimitives();
@@ -545,7 +562,7 @@ describe("phase102 boundaries — B01 address policy", () => {
 		await memory.cleanup();
 	});
 
-	test("B01 IPv6 ::1, ::/96, fc00::/7, fe80::/10, ff00::/8, 64:ff9b::/96 and 2002::/16 boundaries refuse; adjacent nonmembers proceed", async () => {
+	test("B01 IPv6 ::1, ::/96, fc00::/7, fe80::/10, ff00::/8, 64:ff9b::/96, 64:ff9b:1::/48, 2002::/16 and ::ffff:0:0:0/96 boundaries refuse; adjacent nonmembers proceed", async () => {
 		const memory = new MemoryPrimitives();
 		const guard = createOutboundFetchGuard(POLICY, memory.deps);
 		const refused = [
@@ -561,6 +578,14 @@ describe("phase102 boundaries — B01 address policy", () => {
 			"64:ff9b::a00:1",
 			"2002:c0a8:101::1",
 			"2002::1",
+			"64:ff9b::",
+			"64:ff9b::ffff:ffff",
+			"2002::",
+			"2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+			"64:ff9b:1::",
+			"64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+			"::ffff:0:0:0",
+			"::ffff:0:ffff:ffff",
 			"ff02::1",
 			"ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 		];
@@ -575,6 +600,14 @@ describe("phase102 boundaries — B01 address policy", () => {
 			"fec0::1",
 			"2003::1",
 			"64:ff9b:0:1::1",
+			"64:ff9a:ffff:ffff:ffff:ffff:ffff:ffff",
+			"64:ff9b::1:0:0",
+			"2001:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+			"2003::",
+			"64:ff9b:0:ffff:ffff:ffff:ffff:ffff",
+			"64:ff9b:2::",
+			"::fffe:ffff:ffff:ffff",
+			"::ffff:1:0:0",
 			PUBLIC_V6,
 		];
 		for (const ip of adjacent) {

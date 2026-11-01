@@ -152,6 +152,22 @@ function sixToFour(bytes: readonly number[]): boolean {
 	return bytes[0] === 32 && bytes[1] === 2;
 }
 
+/** NAT64 local-use 64:ff9b:1::/48 (RFC 8215). Refused whole, like the well-known prefix. */
+function nat64LocalUse(bytes: readonly number[]): boolean {
+	const head = [0, 100, 255, 155, 0, 1];
+	return head.every((byte, index) => bytes[index] === byte);
+}
+/** IPv4-translated ::ffff:0:0:0/96 (RFC 2765, 0:0:0:0:ffff:0:a.b.c.d). The embedded IPv4 can be private, so the whole prefix is refused. */
+function ipv4Translated(bytes: readonly number[]): boolean {
+	return (
+		bytes.slice(0, 8).every((byte) => byte === 0) &&
+		bytes[8] === 255 &&
+		bytes[9] === 255 &&
+		bytes[10] === 0 &&
+		bytes[11] === 0
+	);
+}
+
 function classifyAddress(address: string): NumericAddress | undefined {
 	if (typeof address !== "string" || address.includes("%")) return undefined;
 	const family = isIP(address);
@@ -167,7 +183,9 @@ function classifyAddress(address: string): NumericAddress | undefined {
 				((bytes[0] ?? 0) & 254) === 252 ||
 				(bytes[0] === 254 && ((bytes[1] ?? 0) & 192) === 128) ||
 				nat64WellKnown(bytes) ||
-				sixToFour(bytes);
+				sixToFour(bytes) ||
+				nat64LocalUse(bytes) ||
+				ipv4Translated(bytes);
 	return { address, family, bytes, refused };
 }
 
@@ -220,6 +238,9 @@ function parseTarget(target: string): Omit<PinnedHttpsTarget, "address" | "famil
 	try {
 		const url = new URL(target);
 		const hostname = url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
+		// Layering: the anchored regex above fixes the lexical https:// form of the raw target.
+		// This URL.protocol operand independently checks the scheme the WHATWG parser resolves.
+		// Both are required; neither is redundant, so do not remove either.
 		if (
 			url.protocol !== "https:" ||
 			!hostname ||
@@ -714,12 +735,19 @@ export function createOutboundFetchGuard(
 			}
 			signal?.addEventListener("abort", onAbort, { once: true });
 			try {
-				cancelTimer = deps.schedule(
-					() => {
-						if (!terminal) refuse("TIMEOUT");
-					},
-					Math.max(0, deadline - deps.now()),
-				);
+				try {
+					cancelTimer = deps.schedule(
+						() => {
+							if (!terminal) refuse("TIMEOUT");
+						},
+						Math.max(0, deadline - deps.now()),
+					);
+				} catch {
+					// A timer that cannot be armed means no deadline or work starts. NETWORK_FAILURE
+					// matches the startRequest refusal in dial; DNS_FAILURE would misreport the fault.
+					refuse("NETWORK_FAILURE");
+					return;
+				}
 				if (terminal) {
 					cancelTimer();
 					return;

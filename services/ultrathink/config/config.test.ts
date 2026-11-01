@@ -1212,6 +1212,22 @@ describe("loadConfig aggregation", () => {
 		]);
 	});
 
+	test("mixed invalid settings are listed in declaration order without echoing the CIMD value", () => {
+		const message = messageOf(() =>
+			loadConfig({
+				...baseEnv(),
+				ULTRATHINK_CIMD: "CIMD-VALUE-CANARY",
+				ULTRATHINK_PLANNING_FALLBACK: "sekrit-fallback",
+			}),
+		);
+		expect(message.split("\n")).toEqual([
+			"ultrathink: 2 configuration problems",
+			"  ULTRATHINK_CIMD must be 0 or 1",
+			"  ULTRATHINK_PLANNING_FALLBACK must be none or grok",
+		]);
+		expect(message).not.toContain("CIMD-VALUE-CANARY");
+	});
+
 	test("cross-variable checks run next to ordinary ones: partial TLS and a bad port both appear", () => {
 		const message = messageOf(() =>
 			loadConfig({

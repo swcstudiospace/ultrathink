@@ -67,6 +67,9 @@ function parseHttpsUrl(raw: string, pathRequired: boolean): URL | null {
 	} catch {
 		return null;
 	}
+	// Layering: HTTPS_COMPONENTS above fixes the lexical https:// form of the raw id.
+	// This URL.protocol operand independently checks the scheme the WHATWG parser resolves.
+	// Both are required; neither is redundant, so do not remove either.
 	if (
 		url.protocol !== "https:" ||
 		url.hostname === "" ||

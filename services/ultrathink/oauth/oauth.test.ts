@@ -2153,6 +2153,11 @@ describe("CIMD OFF handler", () => {
 		return { guard, targets };
 	}
 
+	// No state file yet means nothing was saved, so no pending request or grant exists.
+	function savedOrEmpty(h: Harness, section: "pending" | "grants"): string[] {
+		return existsSync(h.statePath) ? savedKeys(h, section) : [];
+	}
+
 	test("unset and 0 answer DISABLED and never reach the guarded transport", async () => {
 		for (const flag of [undefined, "0"]) {
 			const { guard, targets } = countingGuard();
@@ -2196,9 +2201,11 @@ describe("CIMD OFF handler", () => {
 		expect(targets).toEqual([]);
 	});
 
-	test("with the flag OFF, the authorize flow refuses an HTTPS client id with the unknown-client page", async () => {
+	test("with the flag OFF, the authorize flow refuses an HTTPS client id with the unknown-client page and creates no pending authorization or consent record", async () => {
 		const h = await makeHarness();
 		const { challenge } = pkcePair();
+		expect(savedOrEmpty(h, "pending")).toEqual([]);
+		expect(savedOrEmpty(h, "grants")).toEqual([]);
 		const response = await authorizeCall(h, CLIENT, challenge);
 		expect(response.status).toBe(400);
 		expect(response.headers.get("content-type")).toContain("text/html");
@@ -2206,6 +2213,8 @@ describe("CIMD OFF handler", () => {
 		expect(body).toContain("Authorization failed");
 		expect(body).toContain("This client is not registered with ultrathink.");
 		expect(response.headers.get("location")).toBeNull();
+		expect(savedOrEmpty(h, "pending")).toEqual([]);
+		expect(savedOrEmpty(h, "grants")).toEqual([]);
 	});
 
 	test("with the switch OFF, the authorization server metadata has no client_id_metadata_document_supported key", async () => {
