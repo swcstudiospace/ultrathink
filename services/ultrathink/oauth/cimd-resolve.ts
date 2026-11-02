@@ -9,9 +9,9 @@ import type { CimdFetcher, CimdFetchResult } from "./cimd-fetch.ts";
 import type { CimdDocument, CimdFailureCode } from "./cimd.ts";
 import type { OutboundCacheHeaders, OutboundFetchCode } from "../security/outbound-fetch.ts";
 
-/** Engineering choice (OD-4 and owner decision 2026-10-31): the most any cached document lives. */
+/** Engineering choice, accepted by the owner on 2026-10-31: the most any cached document lives. */
 export const CIMD_CACHE_TTL_CEILING_MS = 300_000;
-/** Engineering choice (OD-4): the cache holds at most this many client ids. */
+/** Engineering choice, accepted by the owner on 2026-10-31: the cache holds at most this many client ids. */
 export const CIMD_CACHE_MAX_ENTRIES = 128;
 
 const DEFAULT_CLIENT_NAME = "MCP client";
@@ -63,7 +63,7 @@ interface CacheEntry {
 
 /**
  * SHA-256 hex over the sorted, de-duplicated redirect_uris and grant_types. Reordering or
- * duplicating a set is not drift (OW-2); changing a member is.
+ * duplicating a set is not drift (owner decision, 2026-10-31); changing a member is.
  */
 export function metadataDigest(
 	redirectUris: readonly string[],
@@ -185,8 +185,11 @@ export function createCimdResolver(options: CimdResolverOptions): CimdResolver {
 	const maxEntries = options.maxEntries ?? CIMD_CACHE_MAX_ENTRIES;
 	const ceilingMs = options.ceilingMs ?? CIMD_CACHE_TTL_CEILING_MS;
 	const cache = new Map<string, CacheEntry>();
-	// At most one fetch per id is in flight at a time; later fetches queue behind it.
+	// At most one fetch per id runs. One more may wait behind it. A waiting fetch has not started, so every
+	// caller that joins it still gets a result from a fetch that began after the call.
 	const inflight = new Map<string, Promise<CimdResolution>>();
+	const waiting = new Map<string, Promise<CimdResolution>>();
+	const running = new Map<string, Promise<CimdResolution>>();
 
 	// Insert order decides eviction. Reads never reorder the map.
 	function remember(
@@ -218,15 +221,23 @@ export function createCimdResolver(options: CimdResolverOptions): CimdResolver {
 
 	// The earlier outcome is ignored: the later fetch decides what the cache holds.
 	function startFetch(clientId: string): Promise<CimdResolution> {
-		const ready = Promise.resolve(inflight.get(clientId)).catch(() => undefined);
+		const queued = waiting.get(clientId);
+		if (queued !== undefined) return queued;
+		const previous = inflight.get(clientId);
+		const ready = Promise.resolve(previous).catch(() => undefined);
 		const pending: Promise<CimdResolution> = ready.then(async () => {
+			if (waiting.get(clientId) === pending) waiting.delete(clientId);
+			running.set(clientId, pending);
 			try {
 				return await fetchAndStore(clientId);
 			} finally {
+				if (running.get(clientId) === pending) running.delete(clientId);
 				if (inflight.get(clientId) === pending) inflight.delete(clientId);
 			}
 		});
 		inflight.set(clientId, pending);
+		if (previous === undefined) running.set(clientId, pending);
+		else waiting.set(clientId, pending);
 		return pending;
 	}
 
@@ -237,7 +248,7 @@ export function createCimdResolver(options: CimdResolverOptions): CimdResolver {
 				if (now() < entry.expiresAt) return { ok: true, client: entry.client };
 				cache.delete(clientId);
 			}
-			return inflight.get(clientId) ?? startFetch(clientId);
+			return running.get(clientId) ?? waiting.get(clientId) ?? startFetch(clientId);
 		},
 		resolveFresh(clientId) {
 			return startFetch(clientId);

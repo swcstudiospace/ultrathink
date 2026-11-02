@@ -1564,6 +1564,7 @@ describe("CIMD production router wiring", () => {
 				expect(await response.json()).toHaveProperty("client_id_metadata_document_supported", true);
 			} finally {
 				await app.shutdown();
+				rmSync(stateDir, { recursive: true, force: true });
 			}
 		},
 	);
@@ -1588,6 +1589,7 @@ describe("CIMD production router wiring", () => {
 				expect(await response.json()).not.toHaveProperty("client_id_metadata_document_supported");
 			} finally {
 				await app.shutdown();
+				rmSync(stateDir, { recursive: true, force: true });
 			}
 		},
 	);

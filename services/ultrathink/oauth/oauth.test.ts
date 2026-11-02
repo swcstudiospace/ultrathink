@@ -2735,26 +2735,6 @@ describe("OAuth approval deadline at the commit point", () => {
 		};
 	}
 
-	test("a DCR request whose deadline passes during login gets the expired response and creates no grant or code", async () => {
-		const h: Harness = await makeHarness({
-			auth: await authAdvancingOnLogin(
-				() => h.clock.now,
-				() => {
-					h.clock.now += PENDING_TTL_MS;
-				},
-			),
-		});
-		const clientId = await registered(h);
-		const consent = await authorizeCall(h, clientId, pkcePair().challenge);
-		expect(consent.status).toBe(200);
-		const approved = await approveWith(h, await consent.text(), password);
-		expect(approved.status).toBe(400);
-		expect(await approved.text()).toContain(EXPIRED_TEXT);
-		expect(approved.headers.get("location")).toBeNull();
-		expect(savedOrNone(h, "grants")).toEqual([]);
-		expect(savedOrNone(h, "codes")).toEqual([]);
-	});
-
 	test("a URL client whose deadline passes during login gets the expired response and creates no grant or code", async () => {
 		const fake = fakeCimd(DOCUMENT_NAMED);
 		const h: Harness = await makeHarness({

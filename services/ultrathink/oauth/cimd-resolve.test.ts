@@ -438,6 +438,22 @@ describe("CIMD cache policy", () => {
 		expect(probe.calls()).toBe(1);
 	});
 
+	test("N resolveFresh calls during one in-flight fetch share one queued fetch, so at most two fetches run", async () => {
+		const clock = { now: START };
+		const { probe, gates } = gated(2);
+		const resolver = resolverWith(probe, clock);
+		const running = resolver.resolve(CLIENT);
+		const freshCalls = Array.from({ length: 5 }, () => resolver.resolveFresh(CLIENT));
+		await gates[0]?.started.promise;
+		gates[0]?.answer.resolve(ok(CLIENT, { client_name: "Running" }, { cacheControl: "no-store" }));
+		expect(await running).toMatchObject({ ok: true, client: { name: "Running" } });
+		await gates[1]?.started.promise;
+		gates[1]?.answer.resolve(ok(CLIENT, { client_name: "Queued" }, { cacheControl: "no-store" }));
+		for (const call of freshCalls)
+			expect(await call).toMatchObject({ ok: true, client: { name: "Queued" } });
+		expect(probe.calls()).toBe(2);
+	});
+
 	test("repeated Cache-Control lines that combine to no-store leave no cache entry; the next resolve calls the fetcher again", async () => {
 		const clock = { now: START };
 		const noStore = scripted(() => ok(CLIENT, {}, { cacheControl: "max-age=300, no-store" }));

@@ -214,7 +214,7 @@ export interface OAuthOptions {
 	cimd?: CimdFetcher;
 	/**
 	 * Publishes client_id_metadata_document_supported: true in the authorization server metadata (CIMD-13).
-	 * Production passes the ULTRATHINK_CIMD switch. False or absent leaves the key out.
+	 * Production passes cimdServable(config): the ULTRATHINK_CIMD switch and Bun 1.4.0 or later. False or absent leaves the key out.
 	 */
 	advertiseCimd?: boolean;
 	/**
@@ -298,7 +298,7 @@ function invalidClient(): Response {
 	});
 }
 
-/** A drift refusal at exchange or refresh (choice 1). Only resolution failures are invalid_client. */
+/** A drift refusal at exchange or refresh. Only resolution failures are invalid_client. */
 const CLIENT_CHANGED_MESSAGE = "The client details changed. Authorize the connection again.";
 
 /** Every token-side resolution failure for a URL client, including BUSY (CIMD-11). */
@@ -943,7 +943,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		return new Response(null, { status: 302, headers: { ...NO_STORE, Location: url.toString() } });
 	}
 
-	/** Authorize GET's answer for a URL client id that does not resolve (D2). Logs the failure code only. */
+	/** Authorize GET's answer for a URL client id that does not resolve. Logs the failure code only. */
 	function cimdAuthorizeFailure(outcome: Exclude<CimdResolution, { readonly ok: true }>): Response {
 		if (outcome.kind === "busy")
 			return errorPage(
@@ -1141,18 +1141,18 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			audit("login_ok", { ip });
 			// Registration or pruning may have dropped the client or its pending entry while the password was checked; a code for a missing client could never be redeemed.
 			const urlClient = isUrlClientId(found.request.clientId);
-			// A request whose deadline passed while the password was checked is refused below, for DCR and URL clients alike.
+			// A URL client whose deadline passed while the password was checked is refused below. DCR keeps its pre-CIMD path (CIMD-14).
 			if (
 				found.request.approvalState !== "PENDING_APPROVAL" ||
 				pending.get(found.key) !== found.request ||
 				(!urlClient && own(data.clients, found.request.clientId) === undefined) ||
-				approvalExpired(found.request, now())
+				(urlClient && approvalExpired(found.request, now()))
 			) {
 				return expiredResponse(false);
 			}
 			let consentedDigest: string | undefined;
 			if (urlClient) {
-				// K1: approval always fetches the current document and never reads the resolver cache.
+				// Approval always fetches the current document and never reads the resolver cache.
 				if (cimd === undefined) {
 					return errorPage(
 						400,
@@ -1178,7 +1178,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				) {
 					return expiredResponse(false);
 				}
-				// The drift check (choice 3) and the name check (OW-8). A missing request value counts as a mismatch.
+				// The drift check and the name check. A missing request value counts as a mismatch.
 				if (
 					outcome.client.metadataDigest !== found.request.metadataDigest ||
 					outcome.client.name !== found.request.clientName
@@ -1190,10 +1190,9 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				}
 				consentedDigest = found.request.metadataDigest;
 			}
-			// The commit point: the deadline is checked after every await, so a request that expired during
-			// login or the CIMD fetch never gets a grant or code. This applies to DCR and URL clients alike, as
-			// deliberate hardening; DCR behaviour changes only for a request that expired during login.
-			if (approvalExpired(found.request, now())) {
+			// The commit point: for a URL client the deadline is checked after every await, so a request that
+			// expired during login or the CIMD fetch never gets a grant or code. DCR keeps its pre-CIMD path (CIMD-14).
+			if (urlClient && approvalExpired(found.request, now())) {
 				if (pending.get(found.key) === found.request) {
 					found.request.approvalState = "EXPIRED";
 					pending.delete(found.key);
@@ -1444,7 +1443,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		});
 	}
 
-	/** W1 record pre-check: true only for a live, unused record bound to clientId. It reads no metadata. */
+	/** Token pre-check: true only for a live, unused record bound to clientId. It reads no metadata. */
 	function tokenRecordLive(
 		grantType: "authorization_code" | "refresh_token",
 		form: URLSearchParams,
@@ -1465,7 +1464,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		);
 	}
 
-	/** A URL client's token request (D4). Resolution runs only after the record pre-check passes. */
+	/** A URL client's token request. Resolution runs only after the record pre-check passes. */
 	async function cimdToken(
 		form: URLSearchParams,
 		grantType: "authorization_code" | "refresh_token",

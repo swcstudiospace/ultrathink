@@ -133,7 +133,7 @@ function ipv6Bytes(address: string): number[] {
 }
 
 function refusedV4(bytes: readonly number[]): boolean {
-	const [a, b] = bytes;
+	const [a, b, c] = bytes;
 	return (
 		a === 0 ||
 		(a !== undefined && a >= 224) ||
@@ -142,7 +142,13 @@ function refusedV4(bytes: readonly number[]): boolean {
 		(a === 172 && b !== undefined && b >= 16 && b <= 31) ||
 		(a === 192 && b === 168) ||
 		(a === 169 && b === 254) ||
-		(a === 100 && b !== undefined && b >= 64 && b <= 127)
+		(a === 100 && b !== undefined && b >= 64 && b <= 127) ||
+		// Documentation, benchmark and IETF protocol ranges (RFC 5737, RFC 2544, RFC 6890): never public.
+		(a === 192 && b === 0 && (c === 0 || c === 2)) ||
+		(a === 192 && b === 88 && c === 99) ||
+		(a === 198 && (b === 18 || b === 19)) ||
+		(a === 198 && b === 51 && c === 100) ||
+		(a === 203 && b === 0 && c === 113)
 	);
 }
 
@@ -184,6 +190,15 @@ function ipv4Translated(bytes: readonly number[]): boolean {
 	);
 }
 
+/** Documentation 2001:db8::/32 (RFC 3849) and 3fff::/20 (RFC 9637), discard-only 100::/64 (RFC 6666) and deprecated site-local fec0::/10. Never public. */
+function nonPublicDocumentationV6(bytes: readonly number[]): boolean {
+	const documentation = bytes[0] === 32 && bytes[1] === 1 && bytes[2] === 13 && bytes[3] === 184;
+	const discard = bytes[0] === 1 && bytes[1] === 0 && bytes.slice(2, 8).every((byte) => byte === 0);
+	const siteLocal = bytes[0] === 254 && ((bytes[1] ?? 0) & 192) === 192;
+	const rfc9637 = bytes[0] === 63 && bytes[1] === 255 && ((bytes[2] ?? 0) & 240) === 0;
+	return documentation || discard || siteLocal || rfc9637;
+}
+
 function classifyAddress(address: string): NumericAddress | undefined {
 	if (typeof address !== "string" || address.includes("%")) return undefined;
 	const family = isIP(address);
@@ -201,7 +216,8 @@ function classifyAddress(address: string): NumericAddress | undefined {
 				nat64WellKnown(bytes) ||
 				sixToFour(bytes) ||
 				nat64LocalUse(bytes) ||
-				ipv4Translated(bytes);
+				ipv4Translated(bytes) ||
+				nonPublicDocumentationV6(bytes);
 	return { address, family, bytes, refused };
 }
 

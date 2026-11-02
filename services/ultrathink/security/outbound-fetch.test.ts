@@ -528,6 +528,13 @@ describe("phase102 boundaries — B01 address policy", () => {
 			"239.255.255.255",
 			"240.0.0.0",
 			"255.255.255.255",
+			"192.0.0.1",
+			"192.0.2.1",
+			"192.88.99.1",
+			"198.18.0.1",
+			"198.19.255.255",
+			"198.51.100.1",
+			"203.0.113.1",
 		];
 		for (const ip of refused)
 			expect(await guard(`https://${ip}/meta`)).toEqual({ ok: false, code: "ADDRESS_REFUSED" });
@@ -548,6 +555,10 @@ describe("phase102 boundaries — B01 address policy", () => {
 			"100.63.255.255",
 			"100.128.0.0",
 			"223.255.255.255",
+			"198.17.255.255",
+			"198.20.0.1",
+			"198.51.99.255",
+			"203.0.114.1",
 		];
 		for (const ip of adjacent) {
 			const pending = guard(`https://${ip}/meta`);
@@ -589,6 +600,14 @@ describe("phase102 boundaries — B01 address policy", () => {
 			"::ffff:0:ffff:ffff",
 			"ff02::1",
 			"ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+			"2001:db8::1",
+			"2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+			"3fff::1",
+			"3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+			"100::1",
+			"100::ffff:ffff:ffff:ffff",
+			"fec0::1",
+			"feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 		];
 		for (const ip of refused)
 			expect(await guard(`https://[${ip}]/meta`)).toEqual({ ok: false, code: "ADDRESS_REFUSED" });
@@ -597,8 +616,10 @@ describe("phase102 boundaries — B01 address policy", () => {
 		const adjacent = [
 			"::1:0:0",
 			"fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+			"2001:db9::1",
+			"3fff:1000::1",
+			"100:0:0:1::1",
 			"fe00::1",
-			"fec0::1",
 			"2003::1",
 			"64:ff9b:0:1::1",
 			"64:ff9a:ffff:ffff:ffff:ffff:ffff:ffff",
