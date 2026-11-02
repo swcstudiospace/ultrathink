@@ -2,17 +2,17 @@
 // Copyright (C) 2026 SWC Studio
 
 import { Resolver } from "node:dns/promises";
-import type { ClientRequest, IncomingMessage } from "node:http";
-import { request as httpsRequest } from "node:https";
-import { isIP, type Socket } from "node:net";
-import { checkServerIdentity } from "node:tls";
+import { connect as netConnect, isIP } from "node:net";
+import { checkServerIdentity, connect as tlsConnect, type TLSSocket } from "node:tls";
+import { createHttp1Parser, type Http1Sink } from "./http1-response.ts";
 import { bunAtLeast } from "./mtls.ts";
 
 /**
- * Complete bounded HTTPS retrieval, not an OAuth resolver or a cache. Native eligibility is
- * feature-specific: the selected literal HTTPS/owned Resolver primitives were qualified on
- * Bun 1.4.0, not on the legacy baseline. Physical deadline/stop/byte properties still require
- * parent runtime evidence; neither a version number nor an offline fixture proves them.
+ * Complete bounded HTTPS retrieval, not an OAuth resolver or a cache. The pinned transport (one TCP
+ * connection to the checked literal address, TLS over it with the hostname identity check, a strict
+ * HTTP/1.1 response reader) was qualified on Bun 1.2.23 and Bun 1.4.0 with physical receipts (phase 102,
+ * physical driver v5). A version number alone proves nothing: runtime eligibility is the floor below, and
+ * the physical receipts are the evidence. A stop that never confirms is reclaimed after STOP_RECLAIM_MS.
  * The finite numeric policy is not a claim to implement the entire future IANA registry.
  */
 export interface OutboundFetchPolicy {
@@ -88,14 +88,17 @@ export interface OutboundFetchDeps {
 	runtimeVersion(): string;
 }
 
-const OUTBOUND_FETCH_MIN_BUN: readonly [number, number, number] = [1, 4, 0];
+const OUTBOUND_FETCH_MIN_BUN: readonly [number, number, number] = [1, 2, 23];
+
+/** Bound, counted from the moment a request finished, after which its in-flight slot is reclaimed when its stop has not confirmed. */
+const STOP_RECLAIM_MS = 5_000;
 
 /** The running Bun version, or "" outside Bun. The guard and the CIMD advertisement both read the runtime through here. */
 export function runningRuntimeVersion(): string {
 	return typeof Bun === "undefined" ? "" : Bun.version;
 }
 
-/** Whether a runtime version can run the guarded outbound fetch (Bun 1.4.0 or later). */
+/** Whether a runtime version can run the guarded outbound fetch (Bun 1.2.23 or later; both the 1.2.23 and 1.4.0 transports are physically proven). */
 export function outboundFetchRuntimeSupported(version: string): boolean {
 	return bunAtLeast(version, OUTBOUND_FETCH_MIN_BUN);
 }
@@ -148,7 +151,11 @@ function refusedV4(bytes: readonly number[]): boolean {
 		(a === 192 && b === 88 && c === 99) ||
 		(a === 198 && (b === 18 || b === 19)) ||
 		(a === 198 && b === 51 && c === 100) ||
-		(a === 203 && b === 0 && c === 113)
+		(a === 203 && b === 0 && c === 113) ||
+		// IETF protocol assignments (RFC 6890): never public.
+		(a === 192 && b === 31 && c === 196) || // RFC 7535: 192.31.196.0/24 (AS112-v4)
+		(a === 192 && b === 52 && c === 193) || // RFC 7450: 192.52.193.0/24 (AMT)
+		(a === 192 && b === 175 && c === 48) // RFC 7534: 192.175.48.0/24 (Direct Delegation AS112)
 	);
 }
 
@@ -199,6 +206,11 @@ function nonPublicDocumentationV6(bytes: readonly number[]): boolean {
 	return documentation || discard || siteLocal || rfc9637;
 }
 
+/** IETF protocol assignments 2001::/23 (RFC 2928), which contain Teredo 2001::/32 (RFC 4380), 2001:2::/48, 2001:10::/28 and 2001:20::/28. Never public. */
+function ietfProtocolBlockV6(bytes: readonly number[]): boolean {
+	return bytes[0] === 32 && bytes[1] === 1 && ((bytes[2] ?? 0) & 254) === 0;
+}
+
 function classifyAddress(address: string): NumericAddress | undefined {
 	if (typeof address !== "string" || address.includes("%")) return undefined;
 	const family = isIP(address);
@@ -217,6 +229,7 @@ function classifyAddress(address: string): NumericAddress | undefined {
 				sixToFour(bytes) ||
 				nat64LocalUse(bytes) ||
 				ipv4Translated(bytes) ||
+				ietfProtocolBlockV6(bytes) ||
 				nonPublicDocumentationV6(bytes);
 	return { address, family, bytes, refused };
 }
@@ -370,144 +383,135 @@ function cacheHeaders(headers: HeaderValues): OutboundCacheHeaders {
 	return result;
 }
 
-/** One owned raw Node HTTPS operation. No redirect, proxy, pool or second DNS lookup. */
+/**
+ * One pinned HTTPS connection per call: TCP to the already-validated literal address, TLS over
+ * that same socket with the hostname identity check, then one GET. No redirect following, no
+ * proxy, no pooling, no second DNS lookup. Identity encoding only; the response is read by the
+ * strict HTTP/1.1 reader in http1-response.ts (bounded header block, chunked decoding, no 1xx).
+ * Every failure after the operation exists is reported through events, once.
+ */
 function startPinnedHttpsRequest(
 	target: PinnedHttpsTarget,
 	signal: AbortSignal,
 	events: OutboundTransportEvents,
 ): OutboundOperation {
 	const stopped = Promise.withResolvers<void>();
-	let req: ClientRequest | undefined;
-	let res: IncomingMessage | undefined;
-	let socket: Socket | undefined;
-	let constructing = true;
-	let requestClosed = false;
-	let responseClosed = true;
-	let socketClosed = true;
+	const request =
+		"GET " +
+		target.path +
+		" HTTP/1.1\r\nHost: " +
+		target.authority +
+		"\r\nConnection: close\r\nAccept-Encoding: identity\r\n\r\n";
 	let destroying = false;
 	let ended = false;
-	let peerAccepted = false;
+	let inputClosed = false;
+	let tcpClosed = false;
+	let tlsClosed = true;
 	let stopConfirmed = false;
-	const consumeError = () => {
-		if (!destroying && !ended) events.error("NETWORK_FAILURE");
+	let secure: TLSSocket | undefined;
+	const sink: Http1Sink = {
+		head(status, rawHeaders) {
+			if (destroying) return false;
+			const headers = collectRawHeaders(rawHeaders);
+			if (headers === undefined) {
+				failWith("INVALID_RESPONSE");
+				return false;
+			}
+			const accepted = events.headers(status, headers);
+			if (!accepted || destroying) {
+				failWith("INVALID_RESPONSE");
+				return false;
+			}
+			return true;
+		},
+		body(chunk) {
+			if (!destroying) events.data(chunk);
+		},
+		end(complete) {
+			if (destroying || ended) return;
+			ended = true;
+			events.end(complete);
+			destroy();
+		},
+		fail() {
+			failWith("INVALID_RESPONSE");
+		},
 	};
-	const confirmStop = () => {
-		if (stopConfirmed || constructing || !requestClosed || !responseClosed || !socketClosed) return;
+	const parser = createHttp1Parser(sink, { maxHeaderBytes: 16384 });
+	function confirmStop(): void {
+		if (stopConfirmed || !tcpClosed || !tlsClosed) return;
 		stopConfirmed = true;
-		socket?.removeListener("secureConnect", observePeer);
-		res?.removeListener("data", onData);
+		signal.removeEventListener("abort", onAbort);
 		stopped.resolve();
-	};
-	const destroy = () => {
+	}
+	function destroy(): void {
 		if (destroying) return;
 		destroying = true;
-		res?.removeListener("data", onData);
-		res?.destroy();
-		req?.destroy();
-		socket?.destroy();
+		secure?.destroy();
+		tcp.destroy();
 		confirmStop();
-	};
-	function observePeer(): void {
-		if (destroying || peerAccepted) return;
-		peerAccepted = events.peer(socket?.remoteAddress);
-		if (!peerAccepted) destroy();
 	}
-	function onData(chunk: Uint8Array): void {
-		if (!destroying) events.data(chunk);
+	function failWith(reason: "NETWORK_FAILURE" | "INVALID_RESPONSE"): void {
+		if (destroying || ended) return;
+		events.error(reason);
+		destroy();
 	}
-	const onResponse = (response: IncomingMessage) => {
-		res = response;
-		responseClosed = false;
-		response.on("error", consumeError);
-		response.once("aborted", () => {
-			if (!destroying && !ended) events.error("INVALID_RESPONSE");
-		});
-		response.once("close", () => {
-			responseClosed = true;
-			if (!destroying && !ended) events.error("INVALID_RESPONSE");
-			confirmStop();
-		});
-		response.once("end", () => {
-			if (destroying) return;
-			ended = true;
-			events.end(response.complete);
-		});
-		if (destroying) {
-			response.destroy();
-			return;
+	function onAbort(): void {
+		destroy();
+	}
+	function onTransportClose(): void {
+		if (!inputClosed) {
+			inputClosed = true;
+			parser.close();
 		}
-		// A response is TLS-established; this also covers adapters without secureConnect delivery.
-		observePeer();
-		if (!peerAccepted || destroying) {
-			destroy();
-			return;
-		}
-		const headers = collectRawHeaders(response.rawHeaders);
-		if (headers === undefined) {
-			events.error("INVALID_RESPONSE");
-			destroy();
-			return;
-		}
-		if (!events.headers(response.statusCode ?? 0, headers) || destroying) {
-			destroy();
-			return;
-		}
-		response.on("data", onData);
-	};
-	// A creation throw owns no observable request. After creation all throws use the event seam.
-	req = httpsRequest(
-		{
-			protocol: "https:",
-			hostname: target.address,
-			family: target.family,
-			port: target.port,
-			method: "GET",
-			path: target.path,
+		failWith("INVALID_RESPONSE");
+		confirmStop();
+	}
+	// The only connection: the literal validated address, never a hostname.
+	const tcp = netConnect({ host: target.address, port: target.port, family: target.family });
+	tcp.once("connect", () => {
+		if (destroying) return;
+		const tlsSocket = tlsConnect({
+			socket: tcp,
 			servername: isIP(target.hostname) === 0 ? target.hostname : "",
+			rejectUnauthorized: true,
 			checkServerIdentity: (_host, certificate) =>
 				checkServerIdentity(target.hostname, certificate),
-			rejectUnauthorized: true,
-			agent: false,
-			signal,
-			headers: { Host: target.authority, Connection: "close", "Accept-Encoding": "identity" },
-		},
-		onResponse,
-	);
-	req.on("error", consumeError);
-	req.once("socket", (assigned: Socket) => {
-		socket = assigned;
-		socketClosed = false;
-		assigned.on("error", consumeError);
-		assigned.once("close", () => {
-			socketClosed = true;
-			if (!destroying && !ended) events.error("INVALID_RESPONSE");
-			confirmStop();
 		});
-		assigned.once("secureConnect", observePeer);
-		if (destroying) assigned.destroy();
+		secure = tlsSocket;
+		tlsClosed = false;
+		tlsSocket.once("secureConnect", () => {
+			if (destroying) return;
+			const observed = tcp.remoteAddress;
+			const accepted = events.peer(observed);
+			if (!accepted || observed === undefined) {
+				destroy();
+				return;
+			}
+			tlsSocket.write(request);
+		});
+		tlsSocket.on("data", (chunk: string | Uint8Array) => {
+			if (destroying) return;
+			// No encoding is set on the socket, so chunks are bytes; a string would mean the socket changed mode.
+			if (typeof chunk === "string") {
+				failWith("INVALID_RESPONSE");
+				return;
+			}
+			parser.push(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+		});
+		tlsSocket.on("error", () => failWith("NETWORK_FAILURE"));
+		tlsSocket.once("close", () => {
+			tlsClosed = true;
+			onTransportClose();
+		});
 	});
-	req.once("close", () => {
-		requestClosed = true;
-		if (!destroying && !ended) events.error("INVALID_RESPONSE");
-		confirmStop();
+	tcp.on("error", () => failWith("NETWORK_FAILURE"));
+	tcp.once("close", () => {
+		tcpClosed = true;
+		onTransportClose();
 	});
-	req.once("upgrade", (_response, upgraded) => {
-		events.error("INVALID_RESPONSE");
-		upgraded.destroy();
-		destroy();
-	});
-	req.on("information", () => {
-		events.error("INVALID_RESPONSE");
-		destroy();
-	});
-	constructing = false;
-	try {
-		req.end();
-	} catch {
-		events.error("NETWORK_FAILURE");
-		destroy();
-	}
-	confirmStop();
+	if (signal.aborted) destroy();
+	else signal.addEventListener("abort", onAbort, { once: true });
 	return { destroy, stopped: stopped.promise };
 }
 
@@ -552,6 +556,7 @@ export function createOutboundFetchGuard(
 			const controller = new AbortController();
 			let terminal = false;
 			let released = false;
+			let cancelReclaim: (() => void) | undefined;
 			let resolver: OutboundResolver | undefined;
 			let dnsPending = false;
 			let resolverCancelled = false;
@@ -577,6 +582,27 @@ export function createOutboundFetchGuard(
 				if (!released && terminal && !dnsPending && !starting && operationStopped) {
 					released = true;
 					inflight--;
+					try {
+						cancelReclaim?.();
+					} catch {
+						/* Released is already set, so an uncancelled reclaim is a no-op. */
+					}
+					cancelReclaim = undefined;
+				}
+			}
+			function armReclaim(): void {
+				if (released) return;
+				try {
+					cancelReclaim = deps.schedule(reclaimSlot, STOP_RECLAIM_MS);
+				} catch {
+					/* A reclaim timer that cannot be armed leaves the slot held: fail closed. */
+				}
+			}
+			function reclaimSlot(): void {
+				cancelReclaim = undefined;
+				if (!released) {
+					released = true;
+					inflight--;
 				}
 			}
 			function stopWork(): void {
@@ -586,7 +612,7 @@ export function createOutboundFetchGuard(
 					try {
 						resolver.cancel();
 					} catch {
-						/* Unconfirmed DNS retains its lease. */
+						/* Unconfirmed DNS retains its lease until the reclaim bound. */
 					}
 				}
 				if (operation && !destroyed) {
@@ -594,7 +620,7 @@ export function createOutboundFetchGuard(
 					try {
 						operation.destroy();
 					} catch {
-						/* Unconfirmed transport retains its lease. */
+						/* Unconfirmed transport retains its lease until the reclaim bound. */
 					}
 				}
 			}
@@ -608,6 +634,7 @@ export function createOutboundFetchGuard(
 				controller.abort();
 				stopWork();
 				release();
+				armReclaim();
 				resolve(result);
 			}
 			function refuse(code: OutboundFetchCode): void {
@@ -768,7 +795,7 @@ export function createOutboundFetchGuard(
 							release();
 						},
 						() => {
-							// A rejected stop promise is not stop confirmation: retain admission fail-closed.
+							// A rejected stop promise is not stop confirmation: the slot stays held until the reclaim bound.
 							if (active()) refuse("NETWORK_FAILURE");
 						},
 					);
