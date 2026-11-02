@@ -576,7 +576,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"service-tuning",
 		"bool01",
 		"ULTRATHINK_CIMD",
-		"Set to 1 to allow guarded CIMD client metadata retrieval. Needs Bun 1.4.0 or later; older Bun refuses retrieval. Unset or 0 keeps it off. Does not advertise CIMD. Refuses loopback, private, link-local, multicast, reserved, NAT64, 6to4 and IPv4-translated targets. Each fetch holds one of four in-flight slots until its connection confirms stop; a slot whose stop never confirms is not reclaimed, so restart the service to free it.",
+		"Set to 1 to allow guarded CIMD client metadata retrieval. Needs Bun 1.4.0 or later; older Bun refuses retrieval. Unset or 0 keeps it off. When 1, the server advertises client_id_metadata_document_supported in its authorization server metadata. Refuses loopback, private, link-local, multicast, reserved, NAT64, 6to4 and IPv4-translated targets. Each fetch holds one of four in-flight slots until its connection confirms stop; a slot whose stop never confirms is not reclaimed, so restart the service to free it.",
 		{ default: "0", reader: "trims" },
 	),
 	row(

@@ -772,13 +772,32 @@ For a clean-room run of the same connector, use `scripts/standalone-smoke.ts`: `
 
 | Limit | Value | What it looks like |
 |---|---|---|
-| Client registration (`POST /oauth/register`) | 10 per hour per client address, in memory (a restart clears it). | 429 `temporarily_unavailable` with `Retry-After`. Claude registers a new client on every fresh connection, and Anthropic's connector traffic comes from a fixed address range (160.79.104.0/21 in Anthropic's documentation), so a burst of fresh connections can exhaust the limit for every Claude user. Grok registers through dynamic client registration too. |
+| Client registration (`POST /oauth/register`) | 10 per hour per client address, in memory (a restart clears it). CIMD clients do not call this endpoint. | 429 `temporarily_unavailable` with `Retry-After`. Claude registers a new client on every fresh connection, and Anthropic's connector traffic comes from a fixed address range (160.79.104.0/21 in Anthropic's documentation), so a burst of fresh connections can exhaust the limit for every Claude user. Grok registers through dynamic client registration too. |
 | `/mcp` in the app | 120 per minute per client address, and 60 per minute for all connector traffic together (one shared bucket for key and OAuth clients). | 429 `rate_limited` with `Retry-After`, logged as `rate_limited` with `scope` `mcp`. Do not poll `ultrathink_result` with `waitSeconds: 0` in a loop. |
 | `/mcp` in nginx | 120 per minute per client address, burst 60. | nginx's default 429 page. |
 | OAuth in nginx and the app | nginx 30 per minute (burst 20); the app limits authorize to 30 per minute and token and revoke to 60 per minute. | 429 on the OAuth endpoints. |
 | Login | nginx 5 per minute; the app allows 5 attempts per address per 15 minutes. | 429 or a login refusal. |
 
-When registrations are limited, wait for `Retry-After`. Restarting `ultrathink-web` also clears the in-memory limiter, at the cost of a restart. Raising the limit needs a code change (`REGISTER_LIMIT` in `services/ultrathink/oauth/oauth.ts`).
+When registrations are limited, wait for `Retry-After`. Restarting `ultrathink-web` also clears the in-memory limiter, at the cost of a restart. Raising the limit needs a code change (`REGISTER_LIMIT` in `services/ultrathink/oauth/oauth.ts`). With `ULTRATHINK_CIMD=1`, a client that uses a client ID metadata document never registers and is not counted here; see the CIMD section below.
+
+### Client ID metadata documents (CIMD)
+
+`ULTRATHINK_CIMD` is off by default. Turning it on is an owner decision, and the owner has not approved it. Whether Claude or Grok present a CIMD `client_id` is not verified: the Claude and Grok identity questions (OD-1, OD-3) are open, and live behaviour is checked in phase 105, which the owner runs.
+
+With the switch off, an `https` `client_id` is an unknown client. The authorize page shows the unknown-client page, and no metadata document is fetched. Dynamic client registration (`POST /oauth/register`, `ut_client_` ids) works the same in both states.
+
+With the switch on, the server fetches the metadata document named by an `https` `client_id` through a guarded fetch: public addresses only, at most 5000 bytes, a 5 s time limit, and at most four fetches in flight. The authorization server metadata then includes `"client_id_metadata_document_supported": true`. With the switch off that key is absent.
+
+CIMD clients never call `POST /oauth/register`, so they are not counted against the registration limit. Their authorize, approval, token and revoke calls use the authorize, token and revoke limits in the table above, and they share the four fetch slots with other CIMD traffic.
+
+The rules below are the project's engineering choices, accepted by the owner on 2026-10-31. They are not quoted from the draft specification.
+
+- **Cache lifetime.** A document is cached for at most 300 s. `max-age` is used, minus `Age`, capped at 300 s; an `Expires` header is used when there is no `max-age`. `no-store` or `no-cache` on any `Cache-Control` line, an invalid `max-age` or `Expires`, or repeated `Expires`, `Date` or `Age` headers mean no caching. Without cache headers the document is cached for 300 s. The cache holds at most 128 client IDs.
+- **Cache lag at refresh and token exchange.** A metadata change at the host is seen by refresh and exchange only when the cached entry expires, up to 300 s after the fetch. Until then, refresh checks the last fetched document against the consented digest. A change already fetched is refused; a change not yet fetched is not seen. This does not widen authority. Approval always fetches the current document, at the cost of one outbound fetch per approval, so approval is not subject to this lag.
+- **Availability.** While all four slots are held by slow fetches, every CIMD authorize, approval and refresh that needs a fetch gets BUSY: authorize and approval return 503, and refresh returns `invalid_client` at the token endpoint. This applies to every CIMD client. A slot is held from the start of a fetch, including DNS resolution, and is released only when the fetch is finished and its connection has confirmed stop. A slot whose stop never confirms is not reclaimed; restart the service to free it. A refresh served from the warm cache does not fetch and is unaffected. Two sources can hold the slots: unauthenticated authorize requests from two IPs at 30 per minute each, which together can keep four 5 s slots busy; or a CIMD operator refreshing a grant whose document sends `no-store`, from one IP at 60 per minute or from a few client IDs at 30 per minute each. The operator path needs one consent by the operator's own account.
+- **Drift at refresh and exchange.** A changed `redirect_uris` or `grant_types` returns `invalid_grant` with "The client details changed. Authorize the connection again." `invalid_client` is for resolution failure only. Exception: when the document no longer lists the grant type the request itself uses (`authorization_code` at exchange, `refresh_token` at refresh), the grant-type check returns `unauthorized_client` first, before the drift check runs.
+- **`client_name` at approval.** A name change between consent and approval re-prompts the user at approval. It does not re-prompt at refresh or exchange.
+- **Consent page lag.** The consent page takes the client name and the allowed redirect URIs from the resolver cache, so it does not show the current document. A change at the host can show the old name, or accept a redirect the host has removed, for up to 300 s. Approval always fetches the current document. It expires the pending request, and creates no grant or code, when the fresh `redirect_uris` or `grant_types` differ from the document the consent used, or when `client_name` differs. The owner accepted this residual on 2026-11-01.
 
 ### After changing tools
 
