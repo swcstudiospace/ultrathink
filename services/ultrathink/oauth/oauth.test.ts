@@ -2357,13 +2357,12 @@ interface FakeCimd {
 	fetch(raw: unknown): Promise<CimdFetchResult>;
 	calls(): number;
 	set(next: Record<string, unknown>): void;
-	setHeaders(next: OutboundCacheHeaders): void;
 	failWith(result: CimdFetchResult | null): void;
 }
 
 function fakeCimd(initial: Record<string, unknown>, headers: OutboundCacheHeaders = {}): FakeCimd {
 	let current: Record<string, unknown> = initial;
-	let cacheHeaders: OutboundCacheHeaders = headers;
+	const cacheHeaders: OutboundCacheHeaders = headers;
 	let failure: CimdFetchResult | null = null;
 	let count = 0;
 	return {
@@ -2381,9 +2380,6 @@ function fakeCimd(initial: Record<string, unknown>, headers: OutboundCacheHeader
 		calls: () => count,
 		set(next: Record<string, unknown>) {
 			current = next;
-		},
-		setHeaders(next: OutboundCacheHeaders) {
-			cacheHeaders = next;
 		},
 		failWith(result: CimdFetchResult | null) {
 			failure = result;
@@ -3060,6 +3056,18 @@ describe("CIMD token, refresh and drift", () => {
 		// The refusal did not mark the code used: once the document reverts, the same code exchanges.
 		fake.set(DOCUMENT_NAMED);
 		expect((await tokenCall(h, codeFields(issued))).status).toBe(200);
+	});
+
+	test("a URL client whose re-fetched document no longer lists authorization_code gets unauthorized_client at exchange, with no token", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED, NO_STORE);
+		const h = await makeHarness({ cimd: fake });
+		const issued = await authorizedCode(h, CIMD_URL);
+		fake.set({ ...DOCUMENT_NAMED, grant_types: ["refresh_token"] });
+		const refused = await tokenCall(h, codeFields(issued));
+		expect(refused.status).toBe(400);
+		const body = await bodyOf(refused);
+		expect(body.error).toBe("unauthorized_client");
+		expect(body.access_token).toBeUndefined();
 	});
 
 	test("a drift refusal leaves the refresh token usable (changed after the approval POST and before the token call): once the document reverts, the same refresh token refreshes", async () => {
