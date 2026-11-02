@@ -12,7 +12,7 @@ import { bunAtLeast } from "./mtls.ts";
  * Complete bounded HTTPS retrieval, not an OAuth resolver or a cache. The pinned transport (one TCP
  * connection to the checked literal address, TLS over it with the hostname identity check, a strict
  * HTTP/1.1 response reader) was qualified on Bun 1.2.23 and Bun 1.4.0 with physical receipts (phase 102,
- * physical driver v5). A version number alone proves nothing: runtime eligibility is the floor below, and
+ * physical driver v6, after v5). A version number alone proves nothing: runtime eligibility is the floor below, and
  * the physical receipts are the evidence. A stop that never confirms releases its slot after
  * STOP_RECLAIM_MS, unless MAX_ZOMBIES reclaimed operations are already unconfirmed.
  * The finite numeric policy is not a claim to implement the entire future IANA registry.
