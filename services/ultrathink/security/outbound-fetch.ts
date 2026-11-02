@@ -15,7 +15,7 @@ import { bunAtLeast } from "./mtls.ts";
  * physical driver v6, after v5). A version number alone proves nothing: runtime eligibility is the floor below, and
  * the physical receipts are the evidence. A stop that never confirms releases its slot after
  * STOP_RECLAIM_MS; the operation then counts as a zombie until its stop and any DNS lookup confirm,
- * and admission is refused while MAX_ZOMBIES zombies exist.
+ * and admission is refused while MAX_ZOMBIES_ADMISSION zombies exist.
  * The finite numeric policy is not a claim to implement the entire future IANA registry.
  */
 export interface OutboundFetchPolicy {
@@ -96,12 +96,12 @@ const OUTBOUND_FETCH_MIN_BUN: readonly [number, number, number] = [1, 2, 23];
 /**
  * Release at the bound. A stop that has not confirmed STOP_RECLAIM_MS after its request finished releases the
  * operation's in-flight slot, and the operation counts as a zombie until its stop and any DNS lookup confirm.
- * Admission is refused while MAX_ZOMBIES zombies exist. With an in-flight limit M, at most M + MAX_ZOMBIES - 1
- * operations are open at once (seven for M = 4).
+ * Admission is refused while MAX_ZOMBIES_ADMISSION zombies exist. With an in-flight limit M, at most
+ * M + MAX_ZOMBIES_ADMISSION - 1 operations are open at once (seven for M = 4).
  */
 const STOP_RECLAIM_MS = 5_000;
 /** Admission is refused while this many reclaimed operations are still unconfirmed. */
-const MAX_ZOMBIES = 4;
+const MAX_ZOMBIES_ADMISSION = 4;
 
 /** The running Bun version, or "" outside Bun. The guard and the CIMD advertisement both read the runtime through here. */
 export function runningRuntimeVersion(): string {
@@ -564,7 +564,7 @@ export function createOutboundFetchGuard(
 			return Promise.resolve({ ok: false, code: "UNSUPPORTED_RUNTIME" });
 		}
 		if (signal?.aborted) return Promise.resolve({ ok: false, code: "ABORTED" });
-		if (inflight >= maxInflight || zombies >= MAX_ZOMBIES) {
+		if (inflight >= maxInflight || zombies >= MAX_ZOMBIES_ADMISSION) {
 			return Promise.resolve({ ok: false, code: "BUSY" });
 		}
 		inflight++;
