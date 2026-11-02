@@ -186,6 +186,17 @@ const scenarios: readonly Scenario[] = [
 		expected: [head(200, "Transfer-Encoding", "chunked"), body("abc"), end(true)],
 	},
 	{
+		name: "trailer line without a colon is a violation",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\nBad trailer line\r\n\r\n`,
+		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
+	},
+	{
+		name: "trailer section over maxHeaderBytes 1024 is a violation",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\nX-Pad: ${"a".repeat(1016)}\r\n\r\n`,
+		maxHeaderBytes: 1024,
+		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
+	},
+	{
 		name: "chunked response with no data ends at the terminator",
 		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n`,
 		expected: [head(200, "Transfer-Encoding", "chunked"), end(true)],
@@ -206,15 +217,37 @@ const scenarios: readonly Scenario[] = [
 		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
 	},
 	{
+		name: "chunk-size line over maxHeaderBytes 1024 is a violation",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3;${"x".repeat(1023)}\r\nabc\r\n0\r\n\r\n`,
+		maxHeaderBytes: 1024,
+		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
+	},
+	{
 		name: "missing CRLF after chunk data is a violation",
 		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3\r\nabcX\r\n0\r\n\r\n`,
 		expected: [head(200, "Transfer-Encoding", "chunked"), body("abc"), FAIL],
+	},
+	{
+		name: "chunk data followed by CR and a non-LF byte is a violation",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n5\r\nhello\rX\r\n0\r\n\r\n`,
+		expected: [head(200, "Transfer-Encoding", "chunked"), body("hello"), FAIL],
+	},
+	{
+		name: "bare LF ending a chunk-size line is a violation",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n5\nhello\r\n0\r\n\r\n`,
+		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
 	},
 	{
 		name: "chunked close before the terminator ends incomplete",
 		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n`,
 		close: true,
 		expected: [head(200, "Transfer-Encoding", "chunked"), body("abc"), end(false)],
+	},
+	{
+		name: "close during the trailer section ends incomplete",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\nExpires: never\r\nX-Partial: 1`,
+		close: true,
+		expected: [head(200, "Transfer-Encoding", "chunked"), end(false)],
 	},
 	{
 		name: "Transfer-Encoding with Content-Length is a violation",
@@ -252,6 +285,11 @@ const scenarios: readonly Scenario[] = [
 		expected: [FAIL],
 	},
 	{
+		name: "status 199 is a violation",
+		input: "HTTP/1.1 199 Hint\r\nContent-Length: 0\r\n\r\n",
+		expected: [FAIL],
+	},
+	{
 		name: "status 101 is a violation",
 		input: "HTTP/1.1 101 Switching Protocols\r\nContent-Length: 0\r\n\r\n",
 		expected: [FAIL],
@@ -267,6 +305,11 @@ const scenarios: readonly Scenario[] = [
 		expected: [FAIL],
 	},
 	{
+		name: "status 599 is accepted with a valid body",
+		input: "HTTP/1.1 599 Custom\r\nContent-Length: 2\r\n\r\nok",
+		expected: [head(599, "Content-Length", "2"), body("ok"), end(true)],
+	},
+	{
 		name: "four-digit status is a violation",
 		input: "HTTP/1.1 2000 OK\r\nContent-Length: 0\r\n\r\n",
 		expected: [FAIL],
@@ -274,6 +317,11 @@ const scenarios: readonly Scenario[] = [
 	{
 		name: "bare LF ending the status line is a violation",
 		input: "HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n",
+		expected: [FAIL],
+	},
+	{
+		name: "reason phrase with a control octet is a violation",
+		input: `HTTP/1.1 200 O\u0001K\r\nContent-Length: 0\r\n\r\n`,
 		expected: [FAIL],
 	},
 	{
@@ -296,6 +344,11 @@ const scenarios: readonly Scenario[] = [
 	{
 		name: "header line without a colon is a violation",
 		input: `${OK}X-A b\r\nContent-Length: 0\r\n\r\n`,
+		expected: [FAIL],
+	},
+	{
+		name: "header line with an empty name is a violation",
+		input: `${OK}: x\r\nContent-Length: 0\r\n\r\n`,
 		expected: [FAIL],
 	},
 	{

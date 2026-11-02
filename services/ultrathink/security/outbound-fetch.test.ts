@@ -654,6 +654,7 @@ describe("phase102 boundaries — B01 address policy", () => {
 		// [block, first, last, below, above]. A "-" neighbour is itself special-purpose and is not checked.
 		const blocks: readonly (readonly [string, string, string, string, string])[] = [
 			["192.0.0.0/24", "192.0.0.0", "192.0.0.255", "191.255.255.255", "192.0.1.0"],
+			["192.0.0.0/29", "192.0.0.0", "192.0.0.7", "191.255.255.255", "-"],
 			["192.0.2.0/24", "192.0.2.0", "192.0.2.255", "192.0.1.255", "192.0.3.0"],
 			["192.31.196.0/24", "192.31.196.0", "192.31.196.255", "192.31.195.255", "192.31.197.0"],
 			["192.52.193.0/24", "192.52.193.0", "192.52.193.255", "192.52.192.255", "192.52.194.0"],
@@ -669,6 +670,10 @@ describe("phase102 boundaries — B01 address policy", () => {
 				"2000:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 				"2001:200::1",
 			],
+			["2001::/32", "2001::", "2001:0:ffff:ffff:ffff:ffff:ffff:ffff", "-", "-"],
+			["2001:2::/48", "2001:2::", "2001:2:0:ffff:ffff:ffff:ffff:ffff", "-", "-"],
+			["2001:10::/28", "2001:10::", "2001:1f:ffff:ffff:ffff:ffff:ffff:ffff", "-", "-"],
+			["2001:20::/28", "2001:20::", "2001:2f:ffff:ffff:ffff:ffff:ffff:ffff", "-", "-"],
 			[
 				"2001:db8::/32",
 				"2001:db8::",

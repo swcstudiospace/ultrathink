@@ -90,7 +90,12 @@ export interface OutboundFetchDeps {
 
 const OUTBOUND_FETCH_MIN_BUN: readonly [number, number, number] = [1, 2, 23];
 
-/** Bound, counted from the moment a request finished, after which its in-flight slot is reclaimed when its stop has not confirmed. */
+/**
+ * Bound, counted from the moment a request finished, after which its in-flight slot is reclaimed when its
+ * stop has not confirmed. The reclaimed operation's socket may still be open until its stop confirms, so
+ * open sockets can exceed maxInflight by the number of unconfirmed stops. This is the owner's accepted
+ * trade-off of the reclaim policy (2026-11-01), not an oversight.
+ */
 const STOP_RECLAIM_MS = 5_000;
 
 /** The running Bun version, or "" outside Bun. The guard and the CIMD advertisement both read the runtime through here. */
@@ -146,13 +151,13 @@ function refusedV4(bytes: readonly number[]): boolean {
 		(a === 192 && b === 168) ||
 		(a === 169 && b === 254) ||
 		(a === 100 && b !== undefined && b >= 64 && b <= 127) ||
-		// Documentation, benchmark and IETF protocol ranges (RFC 5737, RFC 2544, RFC 6890): never public.
+		// Documentation and benchmark ranges (RFC 5737, RFC 2544) are not public. The IETF protocol ranges below are refused by the owner's full-RFC-6890 decision (2026-11-01).
 		(a === 192 && b === 0 && (c === 0 || c === 2)) ||
 		(a === 192 && b === 88 && c === 99) ||
 		(a === 198 && (b === 18 || b === 19)) ||
 		(a === 198 && b === 51 && c === 100) ||
 		(a === 203 && b === 0 && c === 113) ||
-		// IETF protocol assignments (RFC 6890): never public.
+		// IETF protocol assignments (RFC 6890): refused by the owner's full-RFC-6890 decision (2026-11-01).
 		(a === 192 && b === 31 && c === 196) || // RFC 7535: 192.31.196.0/24 (AS112-v4)
 		(a === 192 && b === 52 && c === 193) || // RFC 7450: 192.52.193.0/24 (AMT)
 		(a === 192 && b === 175 && c === 48) // RFC 7534: 192.175.48.0/24 (Direct Delegation AS112)
@@ -206,7 +211,7 @@ function nonPublicDocumentationV6(bytes: readonly number[]): boolean {
 	return documentation || discard || siteLocal || rfc9637;
 }
 
-/** IETF protocol assignments 2001::/23 (RFC 2928), which contain Teredo 2001::/32 (RFC 4380), 2001:2::/48, 2001:10::/28 and 2001:20::/28. Never public. */
+/** IETF protocol assignments 2001::/23 (RFC 2928), which contain Teredo 2001::/32 (RFC 4380), 2001:2::/48, 2001:10::/28 and 2001:20::/28. Refused by the owner's full-RFC-6890 decision (2026-11-01). */
 function ietfProtocolBlockV6(bytes: readonly number[]): boolean {
 	return bytes[0] === 32 && bytes[1] === 1 && ((bytes[2] ?? 0) & 254) === 0;
 }
