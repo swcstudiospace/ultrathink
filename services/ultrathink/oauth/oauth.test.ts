@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAuth } from "../auth/auth.ts";
+import { type Auth, createAuth } from "../auth/auth.ts";
 import type { Logger } from "../obs/log.ts";
 import { redactText } from "../../../src/teach/redact.ts";
 import {
@@ -867,7 +867,10 @@ function formAction(response: Response): string {
 	return action;
 }
 
-function savedKeys(h: Harness, section: "clients" | "grants" | "tokens" | "pending"): string[] {
+function savedKeys(
+	h: Harness,
+	section: "clients" | "grants" | "tokens" | "pending" | "codes",
+): string[] {
 	const saved = JSON.parse(readFileSync(h.statePath, "utf8")) as Record<string, unknown>;
 	if (!(section in saved)) throw new Error(`state file has no ${section}`);
 	const value = saved[section];
@@ -2306,6 +2309,34 @@ describe("CIMD storage, digest and restart", () => {
 		expect(keys).not.toContain("ut_client_stale");
 		expect(keys).toContain(fresh);
 	});
+
+	test("CIMD-10: a granted URL client idle past GRANTED_CLIENT_IDLE_MS survives a prune while its grant exists", async () => {
+		const idle = HARNESS_START - 31 * 24 * HOUR_MS;
+		const dir = plantedDir({
+			clients: {
+				[URL_CLIENT]: {
+					name: "Planted",
+					redirectUris: [REDIRECT],
+					grantTypes: ["authorization_code"],
+					createdAt: idle,
+					grantedAt: idle,
+					lastUsedAt: idle,
+				},
+			},
+			grants: {
+				"grant-cimd": {
+					clientId: URL_CLIENT,
+					resource: RESOURCE,
+					createdAt: HARNESS_START,
+					lastUsedAt: HARNESS_START,
+				},
+			},
+		});
+		const h = await makeHarness({}, { dir, clock: { now: HARNESS_START } });
+		await registered(h);
+		expect(savedKeys(h, "clients")).toContain(URL_CLIENT);
+		expect(savedKeys(h, "grants")).toEqual(["grant-cimd"]);
+	});
 });
 
 // CIMD fixtures for the URL client id tests. The fake fetcher parses each document with the real
@@ -2360,7 +2391,10 @@ function fakeCimd(initial: Record<string, unknown>, headers: OutboundCacheHeader
 	};
 }
 
-function savedOrNone(h: Harness, section: "clients" | "grants" | "tokens" | "pending"): string[] {
+function savedOrNone(
+	h: Harness,
+	section: "clients" | "grants" | "tokens" | "pending" | "codes",
+): string[] {
 	return existsSync(h.statePath) ? savedKeys(h, section) : [];
 }
 
@@ -2674,6 +2708,138 @@ describe("CIMD approval POST", () => {
 		const approved = await approveWith(h, await consent.text(), password);
 		expect(approved.status).toBe(302);
 		expect(codeFrom(approved)).toMatch(/^ut_code_/);
+	});
+});
+
+describe("OAuth approval deadline at the commit point", () => {
+	const EXPIRED_TEXT = "This authorization request expired.";
+
+	// The real owner auth with one change: onLogin runs before each login, so the clock can move while the password is checked.
+	async function authAdvancingOnLogin(now: () => number, onLogin: () => void): Promise<Auth> {
+		const real = createAuth({
+			ownerPasswordHash: await Bun.password.hash(password),
+			sessionSecret: HARNESS_SECRET,
+			cookieSecure: true,
+			now,
+		});
+		return {
+			...real,
+			login(input) {
+				onLogin();
+				return real.login(input);
+			},
+		};
+	}
+
+	test("a DCR request whose deadline passes during login gets the expired response and creates no grant or code", async () => {
+		const h: Harness = await makeHarness({
+			auth: await authAdvancingOnLogin(
+				() => h.clock.now,
+				() => {
+					h.clock.now += PENDING_TTL_MS;
+				},
+			),
+		});
+		const clientId = await registered(h);
+		const consent = await authorizeCall(h, clientId, pkcePair().challenge);
+		expect(consent.status).toBe(200);
+		const approved = await approveWith(h, await consent.text(), password);
+		expect(approved.status).toBe(400);
+		expect(await approved.text()).toContain(EXPIRED_TEXT);
+		expect(approved.headers.get("location")).toBeNull();
+		expect(savedOrNone(h, "grants")).toEqual([]);
+		expect(savedOrNone(h, "codes")).toEqual([]);
+	});
+
+	test("a URL client whose deadline passes during login gets the expired response and creates no grant or code", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h: Harness = await makeHarness({
+			cimd: fake,
+			auth: await authAdvancingOnLogin(
+				() => h.clock.now,
+				() => {
+					h.clock.now += PENDING_TTL_MS;
+				},
+			),
+		});
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		expect(consent.status).toBe(200);
+		const approved = await approveWith(h, await consent.text(), password);
+		expect(approved.status).toBe(400);
+		expect(await approved.text()).toContain(EXPIRED_TEXT);
+		expect(approved.headers.get("location")).toBeNull();
+		expect(fake.calls()).toBe(1);
+		expect(savedOrNone(h, "grants")).toEqual([]);
+		expect(savedOrNone(h, "codes")).toEqual([]);
+	});
+
+	test("a URL client whose deadline passes during the CIMD fetch is refused at the commit point and keeps no grant, code or pending request", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		let advanceOnFetch = false;
+		const h: Harness = await makeHarness({
+			cimd: {
+				fetch(raw) {
+					if (advanceOnFetch) h.clock.now += PENDING_TTL_MS;
+					return fake.fetch(raw);
+				},
+			},
+		});
+		const consent = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		const html = await consent.text();
+		advanceOnFetch = true;
+		const expired = await approveWith(h, html, password);
+		expect(expired.status).toBe(400);
+		expect(await expired.text()).toContain(EXPIRED_TEXT);
+		expect(expired.headers.get("location")).toBeNull();
+		expect(fake.calls()).toBe(2);
+		expect(savedOrNone(h, "grants")).toEqual([]);
+		expect(savedOrNone(h, "codes")).toEqual([]);
+		expect(savedOrNone(h, "pending")).toEqual([]);
+	});
+});
+
+describe("OAuth client_id length by client kind", () => {
+	const LONG_CIMD = `https://client.example/${"a".repeat(300)}/cimd.json`;
+	const OVER_LIMIT_CIMD = `https://client.example/${"a".repeat(2048)}`;
+	const AUTHORIZE_REFUSED = "This authorization request is not valid.";
+	const CLIENT_ID_REFUSED = {
+		error: "invalid_request",
+		error_description: "client_id is not valid.",
+	};
+
+	test("an https client id longer than 256 and within 2048 characters completes authorize, approval and token exchange", async () => {
+		expect(LONG_CIMD.length).toBeGreaterThan(256);
+		const longDocument = { ...DOCUMENT_NAMED, client_id: LONG_CIMD };
+		const h = await makeHarness({ cimd: fakeCimd(longDocument) });
+		const tokens = await grant(h, LONG_CIMD);
+		expect(tokens.access.length).toBeGreaterThan(0);
+	});
+
+	test("a client id over 256 characters that is not https is refused by authorize, token and revoke with the unchanged response", async () => {
+		const h = await makeHarness();
+		for (const clientId of ["c".repeat(257), `http://client.example/${"a".repeat(240)}`]) {
+			const authorize = await authorizeCall(h, clientId, pkcePair().challenge);
+			expect(authorize.status).toBe(400);
+			expect(await authorize.text()).toContain(AUTHORIZE_REFUSED);
+			const token = await tokenCall(h, {
+				grant_type: "authorization_code",
+				client_id: clientId,
+			});
+			expect(token.status).toBe(400);
+			expect(await bodyOf(token)).toEqual(CLIENT_ID_REFUSED);
+			const revoke = await revokeCall(h, { token: "t", client_id: clientId });
+			expect(revoke.status).toBe(400);
+			expect(await bodyOf(revoke)).toEqual(CLIENT_ID_REFUSED);
+		}
+	});
+
+	test("an https client id over 2048 characters is refused by authorize before the CIMD fetch, with the unchanged response", async () => {
+		const fake = fakeCimd(DOCUMENT_NAMED);
+		const h = await makeHarness({ cimd: fake });
+		const response = await authorizeCall(h, OVER_LIMIT_CIMD, pkcePair().challenge);
+		expect(response.status).toBe(400);
+		expect(await response.text()).toContain(AUTHORIZE_REFUSED);
+		expect(fake.calls()).toBe(0);
 	});
 });
 

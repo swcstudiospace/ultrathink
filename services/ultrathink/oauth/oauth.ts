@@ -91,7 +91,7 @@ const REGISTER_BODY: Record<string, Validator<unknown>> = {
 	client_name: formText(MAX_CLIENT_NAME_INPUT_CHARS),
 };
 const TOKEN_FORM: Record<string, Validator<unknown>> = {
-	client_id: formText(MAX_CLIENT_ID_CHARS),
+	client_id: clientIdText(),
 	grant_type: formText(MAX_SHORT_CHARS),
 	code: formText(MAX_SECRET_CHARS),
 	code_verifier: formText(MAX_VERIFIER_INPUT_CHARS),
@@ -101,11 +101,11 @@ const TOKEN_FORM: Record<string, Validator<unknown>> = {
 };
 const REVOKE_FORM: Record<string, Validator<unknown>> = {
 	token: formText(MAX_SECRET_CHARS),
-	client_id: formText(MAX_CLIENT_ID_CHARS),
+	client_id: clientIdText(),
 };
 /** `scope` is not listed: cleanScope drops an invalid scope rather than refusing the request, and a test pins that. */
 const AUTHORIZE_QUERY: Record<string, Validator<unknown>> = {
-	client_id: formText(MAX_CLIENT_ID_CHARS),
+	client_id: clientIdText(),
 	redirect_uri: formText(MAX_REDIRECT_URI_CHARS),
 	response_type: formText(MAX_SHORT_CHARS),
 	state: formText(MAX_STATE_CHARS),
@@ -337,6 +337,19 @@ function formText(max: number): StringValidator {
 	return new StringValidator({ allowEmpty: true, maxLength: max, pattern: NO_CONTROL });
 }
 
+/** A client_id: an https URL (the CIMD form) may run to MAX_REDIRECT_URI_CHARS; every other value keeps MAX_CLIENT_ID_CHARS. */
+function clientIdText(): Validator<unknown> {
+	const short = formText(MAX_CLIENT_ID_CHARS);
+	const url = formText(MAX_REDIRECT_URI_CHARS);
+	return {
+		validate(value) {
+			return typeof value === "string" && isUrlClientId(value)
+				? url.validate(value)
+				: short.validate(value);
+		},
+	};
+}
+
 /** The schema's verdict: the typed value when every field passes, else the first refused field and its validator code. */
 function checkedFields<T extends Record<string, unknown>>(
 	schema: Record<string, Validator<unknown>>,
@@ -407,6 +420,11 @@ function own<T>(record: Record<string, T>, key: string): T | undefined {
 /** A CIMD client id is any https URL. Every other id keeps the DCR path. */
 function isUrlClientId(id: string): boolean {
 	return /^https:\/\//i.test(id);
+}
+
+/** The approval deadline: a request is expired once its TTL from creation passes, or its stored expiry does. */
+function approvalExpired(request: PendingRequest, t: number): boolean {
+	return t >= request.createdAt + PENDING_TTL_MS || request.expiresAt <= t;
 }
 
 function isJsonRequest(req: Request): boolean {
@@ -773,7 +791,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (request.approvalState !== "PENDING_APPROVAL") return request.approvalState;
 		const t = now();
 		const deadline = request.createdAt + PENDING_TTL_MS;
-		if (t >= deadline || request.expiresAt <= t) {
+		if (approvalExpired(request, t)) {
 			request.approvalState = "EXPIRED";
 			request.expiresAt = deadline;
 			return "EXPIRED";
@@ -1118,10 +1136,12 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			audit("login_ok", { ip });
 			// Registration or pruning may have dropped the client or its pending entry while the password was checked; a code for a missing client could never be redeemed.
 			const urlClient = isUrlClientId(found.request.clientId);
+			// A request whose deadline passed while the password was checked is refused below, for DCR and URL clients alike.
 			if (
 				found.request.approvalState !== "PENDING_APPROVAL" ||
 				pending.get(found.key) !== found.request ||
-				(!urlClient && own(data.clients, found.request.clientId) === undefined)
+				(!urlClient && own(data.clients, found.request.clientId) === undefined) ||
+				approvalExpired(found.request, now())
 			) {
 				return expiredResponse(false);
 			}
@@ -1164,6 +1184,17 @@ export function createOAuth(options: OAuthOptions): OAuth {
 					return expiredResponse(false);
 				}
 				consentedDigest = found.request.metadataDigest;
+			}
+			// The commit point: the deadline is checked after every await, so a request that expired during
+			// login or the CIMD fetch never gets a grant or code. This applies to DCR and URL clients alike, as
+			// deliberate hardening; DCR behaviour changes only for a request that expired during login.
+			if (approvalExpired(found.request, now())) {
+				if (pending.get(found.key) === found.request) {
+					found.request.approvalState = "EXPIRED";
+					pending.delete(found.key);
+					persist();
+				}
+				return expiredResponse(false);
 			}
 			found.request.approvalState = "APPROVED";
 			pending.delete(found.key);
