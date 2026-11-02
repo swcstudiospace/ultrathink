@@ -2483,6 +2483,29 @@ describe("CIMD authorize GET", () => {
 		expect(offGuard.targets).toEqual([]);
 	});
 
+	test("GET with an explicit non-443 port in client_id shows the unknown-client page, makes zero guarded outbound calls and creates no pending request", async () => {
+		const port8443 = `${CIMD_ORIGIN}:8443/cimd.json`;
+		const guard = countingGuard();
+		const h = await makeHarness({
+			cimd: createCimdFetcher(configFor("1"), new Set(DEFAULT_REDIRECT_ORIGINS), guard.guard),
+		});
+		const response = await authorizeCall(h, port8443, pkcePair().challenge);
+		expect(response.status).toBe(400);
+		expect(await response.text()).toContain("This client is not registered with ultrathink.");
+		expect(guard.targets).toEqual([]);
+		expect(savedOrNone(h, "pending")).toEqual([]);
+	});
+
+	test("GET with the same origin written with an explicit :443 is not refused by the port rule and reaches the guarded fetch", async () => {
+		const explicit443 = `${CIMD_ORIGIN}:443/cimd.json`;
+		const guard = countingGuard();
+		const h = await makeHarness({
+			cimd: createCimdFetcher(configFor("1"), new Set(DEFAULT_REDIRECT_ORIGINS), guard.guard),
+		});
+		await authorizeCall(h, explicit443, pkcePair().challenge);
+		expect(guard.targets).toEqual([explicit443]);
+	});
+
 	test("GET with a valid URL client_id and a bad response_type, with the document redirect_uri matched, fetches the document exactly once and returns the existing 302 unsupported_response_type redirect to that redirect_uri", async () => {
 		const fake = fakeCimd(DOCUMENT_NAMED);
 		const h = await makeHarness({ cimd: fake });
@@ -2947,6 +2970,52 @@ describe("CIMD token, refresh and drift", () => {
 		// A no-store document is never cached, so the exchange must fetch and sees the failure.
 		fake.failWith({ ok: false, kind: "fetch", code: "TIMEOUT" });
 		await expectUnverified(await tokenCall(h, codeFields(issued)));
+	});
+
+	test("a refresh for a client id with an explicit :8443 port is 401 invalid_client, makes zero guarded outbound calls and issues no token", async () => {
+		const port8443 = `${CIMD_ORIGIN}:8443/cimd.json`;
+		const refreshToken = "ut_rt_port8443";
+		const tokenKey = createHash("sha256").update(refreshToken).digest("base64url");
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-port-"));
+		harnessDirs.push(dir);
+		writeFileSync(
+			join(dir, "oauth.json"),
+			JSON.stringify({
+				clients: {},
+				codes: {},
+				pending: {},
+				grants: {
+					"grant-8443": { clientId: port8443, resource: RESOURCE, createdAt: HARNESS_START },
+				},
+				tokens: {
+					[tokenKey]: {
+						kind: "refresh",
+						grantId: "grant-8443",
+						clientId: port8443,
+						resource: RESOURCE,
+						scope: null,
+						expiresAt: HARNESS_START + HOUR_MS,
+						used: false,
+					},
+				},
+			}),
+		);
+		const targets: string[] = [];
+		const guard: GuardedFetch = async (target) => {
+			targets.push(target);
+			return { ok: true, text: JSON.stringify(DOCUMENT_NAMED), headers: {} };
+		};
+		const cimd = createCimdFetcher({ cimdEnabled: true }, new Set(DEFAULT_REDIRECT_ORIGINS), guard);
+		const h = await makeHarness({ cimd }, { dir, clock: { now: HARNESS_START } });
+		const response = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: refreshToken,
+			client_id: port8443,
+			resource: RESOURCE,
+		});
+		await expectUnverified(response);
+		expect(targets).toEqual([]);
+		expect(savedKeys(h, "tokens")).toEqual([tokenKey]);
 	});
 
 	test("a token request for a URL client whose code is unknown, used, expired or bound to another client, or whose refresh token is unknown, used or bound to another client, calls the fetcher zero times and returns invalid_grant; a replayed used code and a replayed used refresh token still revoke their grant", async () => {
