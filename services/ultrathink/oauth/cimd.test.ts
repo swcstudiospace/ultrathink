@@ -161,11 +161,7 @@ describe("phase101 boundaries", () => {
 	}
 
 	test("ID-01: HTTPS syntax without case folding or authority repair", () => {
-		for (const raw of [
-			clientId,
-			"HTTPS://CLIENT.example/meta.json",
-			"https://client.example:8443/meta.json",
-		]) {
+		for (const raw of [clientId, "HTTPS://CLIENT.example/meta.json"]) {
 			validId(raw);
 		}
 		for (const raw of [
@@ -179,6 +175,7 @@ describe("phase101 boundaries", () => {
 			"https://[::1/meta.json",
 			"https://client.example:65536/meta.json",
 			"https://client.example:wrong/meta.json",
+			"https://client.example:8443/meta.json",
 		]) {
 			invalidId(raw);
 		}

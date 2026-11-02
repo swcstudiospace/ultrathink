@@ -82,11 +82,12 @@ function parseHttpsUrl(raw: string, pathRequired: boolean): URL | null {
 	return url;
 }
 
-/** Validate syntax without fetching; success retains exact case, escapes and explicit ports. */
+/** Validate syntax without fetching; success retains exact case and escapes. Only the https default port 443 is allowed. */
 export function validateCimdClientId(raw: unknown): CimdResult<string> {
-	if (typeof raw !== "string" || raw.includes("?") || parseHttpsUrl(raw, true) === null) {
-		return refuse("client_id", "INVALID_CLIENT_ID");
-	}
+	if (typeof raw !== "string" || raw.includes("?")) return refuse("client_id", "INVALID_CLIENT_ID");
+	const url = parseHttpsUrl(raw, true);
+	// WHATWG URL drops an explicit :443 for https, so any non-empty port is a different port.
+	if (url === null || url.port !== "") return refuse("client_id", "INVALID_CLIENT_ID");
 	return { valid: true, value: raw };
 }
 
