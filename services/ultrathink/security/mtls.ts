@@ -255,10 +255,11 @@ async function serveRequest(
 export const MTLS_MIN_BUN: readonly [number, number, number] = [1, 4, 0];
 const MTLS_RUNTIME_MESSAGE =
 	"mTLS requires Bun 1.4.0 or newer; on older runtimes requests through the adapter hang.";
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([^+]*))?(?:\+.*)?$/;
 
 /**
- * True when `version` is a semantic version x.y.z at or above `floor`. A pre-release or build suffix is ignored.
+ * True when `version` is a semantic version x.y.z at or above `floor`. A pre-release suffix orders below its
+ * release, so `1.2.23-canary.1` is below `1.2.23`. Build metadata after `+` is ignored.
  * A string that is not a version is not at or above any floor, so an unknown runtime fails closed.
  */
 export function bunAtLeast(version: string, floor: readonly [number, number, number]): boolean {
@@ -267,7 +268,8 @@ export function bunAtLeast(version: string, floor: readonly [number, number, num
 	const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
 	if (major !== floor[0]) return major > floor[0];
 	if (minor !== floor[1]) return minor > floor[1];
-	return patch >= floor[2];
+	if (patch !== floor[2]) return patch > floor[2];
+	return match[4] === undefined;
 }
 
 /** Throws when the running Bun is below MTLS_MIN_BUN. Runs before any socket or server is created. */
