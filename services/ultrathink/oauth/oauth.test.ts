@@ -2447,6 +2447,15 @@ describe("CIMD authorize GET", () => {
 		expect(body).not.toContain("<img src=x onerror=1>");
 	});
 
+	test("GET for a URL client shows the redirect origin and marks the client name unverified", async () => {
+		const h = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED) });
+		const response = await authorizeCall(h, CIMD_URL, pkcePair().challenge);
+		expect(response.status).toBe(200);
+		const html = await response.text();
+		expect(html).toContain('data-redirect-origin="https:&#x2F;&#x2F;claude.ai"');
+		expect(html).toContain('data-client-unverified="true"');
+	});
+
 	test("GET with a redirect_uri not byte-equal to the document shows the DCR redirect message and creates no pending request", async () => {
 		const h = await makeHarness({ cimd: fakeCimd(DOCUMENT_NAMED) });
 		const response = await authorizeCall(h, CIMD_URL, pkcePair().challenge, {
