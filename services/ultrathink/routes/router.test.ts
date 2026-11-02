@@ -1542,4 +1542,29 @@ describe("CIMD production router wiring", () => {
 		expect(response.status).toBe(400);
 		expect(await response.text()).toContain("This client is not registered with ultrathink.");
 	});
+
+	test("with ULTRATHINK_CIMD on, the production router's metadata advertises client_id_metadata_document_supported", async () => {
+		const enabled = createHandler({
+			config: { ...config, cimdEnabled: true },
+			store,
+			auth,
+			logger: silent,
+			hasWorker: () => true,
+		});
+		const response = await enabled(
+			new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-authorization-server`),
+			PEER_IP,
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toHaveProperty("client_id_metadata_document_supported", true);
+	});
+
+	test("with cimdEnabled absent, the production router's metadata has no client_id_metadata_document_supported key", async () => {
+		const response = await handler(
+			new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-authorization-server`),
+			PEER_IP,
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).not.toHaveProperty("client_id_metadata_document_supported");
+	});
 });

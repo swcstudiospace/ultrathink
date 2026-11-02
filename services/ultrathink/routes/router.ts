@@ -748,6 +748,7 @@ export function createApp(deps: RouterDeps): App {
 		redirectOrigins,
 		audit: record,
 		cimd: createCimdFetcher(config, new Set(redirectOrigins)),
+		advertiseCimd: config.cimdEnabled === true,
 	});
 	const ledger = deps.ledger ?? lazyLedger(store, config, deps.now);
 	// Repeated upstream failures open the breaker; a threshold of 0 turns it off.

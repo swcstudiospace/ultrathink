@@ -2230,6 +2230,14 @@ describe("CIMD OFF handler", () => {
 	});
 });
 
+describe("CIMD advertisement (CIMD-13)", () => {
+	test("with advertiseCimd on, the authorization server metadata advertises client_id_metadata_document_supported as true", async () => {
+		const h = await makeHarness({ advertiseCimd: true });
+		const metadata = await bodyOf(h.oauth.authorizationServerMetadata());
+		expect(metadata.client_id_metadata_document_supported).toBe(true);
+	});
+});
+
 describe("CIMD storage, digest and restart", () => {
 	const URL_CLIENT = "https://client.example/cimd.json";
 

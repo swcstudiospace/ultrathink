@@ -213,6 +213,11 @@ export interface OAuthOptions {
 	 */
 	cimd?: CimdFetcher;
 	/**
+	 * Publishes client_id_metadata_document_supported: true in the authorization server metadata (CIMD-13).
+	 * Production passes the ULTRATHINK_CIMD switch. False or absent leaves the key out.
+	 */
+	advertiseCimd?: boolean;
+	/**
 	 * Runs `run` every `intervalMs` and returns a canceller. Defaults to an unref'd
 	 * setInterval in production and to nothing when a test supplies a clock.
 	 */
@@ -1609,6 +1614,9 @@ export function createOAuth(options: OAuthOptions): OAuth {
 					revocation_endpoint_auth_methods_supported: ["none"],
 					scopes_supported: ["mcp"],
 					authorization_response_iss_parameter_supported: true,
+					...(options.advertiseCimd === true
+						? { client_id_metadata_document_supported: true }
+						: {}),
 				},
 				{ "Cache-Control": "public, max-age=3600" },
 			);
