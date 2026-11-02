@@ -188,7 +188,7 @@ const scenarios: readonly Scenario[] = [
 	},
 	{
 		name: "trailer lines are accepted and ignored",
-		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nExpires: never\r\nX-Trailer: 1\r\n\r\n`,
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nX-Checksum: abc\r\nX-Trailer: 1\r\n\r\n`,
 		expected: [head(200, "Transfer-Encoding", "chunked"), body("abc"), end(true)],
 	},
 	{
@@ -201,6 +201,31 @@ const scenarios: readonly Scenario[] = [
 		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\nX-Pad: ${"a".repeat(1016)}\r\n\r\n`,
 		maxHeaderBytes: 1024,
 		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
+	},
+	{
+		name: "forbidden trailer Content-Length is a violation",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\nContent-Length: 5\r\n\r\n`,
+		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
+	},
+	{
+		name: "forbidden trailer in upper case CACHE-CONTROL is a violation",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\nCACHE-CONTROL: no-store\r\n\r\n`,
+		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
+	},
+	{
+		name: "forbidden trailer after delivered data is a violation",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nSet-Cookie: a=1\r\n\r\n`,
+		expected: [head(200, "Transfer-Encoding", "chunked"), body("abc"), FAIL],
+	},
+	{
+		name: "permitted trailer X-Checksum is accepted and discarded",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nX-Checksum: abc\r\n\r\n`,
+		expected: [head(200, "Transfer-Encoding", "chunked"), body("abc"), end(true)],
+	},
+	{
+		name: "empty trailer section after data is accepted",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n`,
+		expected: [head(200, "Transfer-Encoding", "chunked"), body("abc"), end(true)],
 	},
 	{
 		name: "chunked response with no data ends at the terminator",
@@ -263,7 +288,7 @@ const scenarios: readonly Scenario[] = [
 	},
 	{
 		name: "close during the trailer section ends incomplete",
-		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\nExpires: never\r\nX-Partial: 1`,
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n0\r\nX-Checksum: abc\r\nX-Partial: 1`,
 		close: true,
 		expected: [head(200, "Transfer-Encoding", "chunked"), end(false)],
 	},

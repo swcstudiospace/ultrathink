@@ -47,6 +47,38 @@ const STATUS_LINE = /^HTTP\/1\.[01] ([0-9]{3})(?: ([\s\S]*))?$/;
 const CHUNK_SIZE_DIGITS = /^[0-9A-Fa-f]{1,8}$/;
 const CONTENT_LENGTH_VALUE = /^[0-9]{1,10}$/;
 
+/**
+ * Field names refused in a trailer section. This is an interpretation of the RFC 9110 section 6.5.1
+ * categories, not a list the RFC enumerates. Refusal is fail-closed.
+ */
+const FORBIDDEN_TRAILER_FIELDS: Readonly<Record<string, true>> = {
+	"content-length": true,
+	"transfer-encoding": true,
+	host: true,
+	trailer: true,
+	"content-encoding": true,
+	"content-type": true,
+	"content-range": true,
+	authorization: true,
+	"proxy-authorization": true,
+	"www-authenticate": true,
+	"proxy-authenticate": true,
+	"set-cookie": true,
+	cookie: true,
+	"cache-control": true,
+	expires: true,
+	age: true,
+	date: true,
+	vary: true,
+	expect: true,
+	range: true,
+	te: true,
+	"max-forwards": true,
+	pragma: true,
+	location: true,
+	"retry-after": true,
+};
+
 /** True for any control octet other than HTAB; CR, LF and NUL are all rejected here. */
 function hasForbiddenOctet(text: string): boolean {
 	for (let i = 0; i < text.length; i++) {
@@ -240,8 +272,11 @@ export function createHttp1Parser(
 			case "trailers": {
 				if (bytes.length === 0) {
 					finish(true);
-				} else if (parseField(bytes) === undefined) {
-					fail();
+				} else {
+					const field = parseField(bytes);
+					if (field === undefined || FORBIDDEN_TRAILER_FIELDS[field.name.toLowerCase()] === true) {
+						fail();
+					}
 				}
 				return;
 			}
