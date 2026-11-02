@@ -76,7 +76,11 @@ function runCount(): number {
 beforeAll(async () => {
 	dir = mkdtempSync(join(tmpdir(), "ultrathink-router-"));
 	password = randomBytes(24).toString("base64url");
-	const ownerPasswordHash = await Bun.password.hash(password, { algorithm: "argon2id", memoryCost: 4096, timeCost: 2 });
+	const ownerPasswordHash = await Bun.password.hash(password, {
+		algorithm: "argon2id",
+		memoryCost: 4096,
+		timeCost: 2,
+	});
 	const sessionSecret = randomBytes(32).toString("hex");
 
 	config = {
