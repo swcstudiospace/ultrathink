@@ -79,13 +79,15 @@ export function metadataDigest(
 /**
  * How long a document may be served from cache, in milliseconds, clamped to [0, ceilingMs].
  * Engineering choice (owner, 2026-10-31), not quoted from the pinned draft. `private` is cacheable
- * because this cache is private to the process. An invalid Age counts as 0.
+ * because this cache is private to the process. An invalid Age counts as 0. Ambiguous headers
+ * (repeated Expires, Date or Age) give 0.
  */
 export function cacheLifetimeMs(
 	headers: OutboundCacheHeaders,
 	nowMs: number,
 	ceilingMs: number,
 ): number {
+	if (headers.ambiguous === true) return 0;
 	const directives = parseCacheControl(headers.cacheControl);
 	if (directives.has("no-store") || directives.has("no-cache")) return 0;
 	const ageMs = digitsOrZero(headers.age) * 1000;
@@ -183,6 +185,8 @@ export function createCimdResolver(options: CimdResolverOptions): CimdResolver {
 	const maxEntries = options.maxEntries ?? CIMD_CACHE_MAX_ENTRIES;
 	const ceilingMs = options.ceilingMs ?? CIMD_CACHE_TTL_CEILING_MS;
 	const cache = new Map<string, CacheEntry>();
+	// At most one fetch per id is in flight at a time; later fetches queue behind it.
+	const inflight = new Map<string, Promise<CimdResolution>>();
 
 	// Insert order decides eviction. Reads never reorder the map.
 	function remember(
@@ -212,6 +216,20 @@ export function createCimdResolver(options: CimdResolverOptions): CimdResolver {
 		return { ok: true, client };
 	}
 
+	// The earlier outcome is ignored: the later fetch decides what the cache holds.
+	function startFetch(clientId: string): Promise<CimdResolution> {
+		const ready = Promise.resolve(inflight.get(clientId)).catch(() => undefined);
+		const pending: Promise<CimdResolution> = ready.then(async () => {
+			try {
+				return await fetchAndStore(clientId);
+			} finally {
+				if (inflight.get(clientId) === pending) inflight.delete(clientId);
+			}
+		});
+		inflight.set(clientId, pending);
+		return pending;
+	}
+
 	return {
 		async resolve(clientId) {
 			const entry = cache.get(clientId);
@@ -219,10 +237,10 @@ export function createCimdResolver(options: CimdResolverOptions): CimdResolver {
 				if (now() < entry.expiresAt) return { ok: true, client: entry.client };
 				cache.delete(clientId);
 			}
-			return fetchAndStore(clientId);
+			return inflight.get(clientId) ?? startFetch(clientId);
 		},
 		resolveFresh(clientId) {
-			return fetchAndStore(clientId);
+			return startFetch(clientId);
 		},
 	};
 }

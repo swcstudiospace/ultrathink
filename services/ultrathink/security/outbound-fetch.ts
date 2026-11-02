@@ -33,11 +33,17 @@ export type OutboundFetchCode =
 	| "ABORTED"
 	| "BUSY"
 	| "NETWORK_FAILURE";
+/**
+ * Cache-relevant response headers. `cacheControl` joins every Cache-Control line with ", " (RFC 9110
+ * list combining), so a directive on any line is seen. `ambiguous` is set only when Expires, Date or
+ * Age appears more than once; no value is picked for them. The field is absent otherwise.
+ */
 export interface OutboundCacheHeaders {
 	readonly cacheControl?: string;
 	readonly expires?: string;
 	readonly date?: string;
 	readonly age?: string;
+	readonly ambiguous?: true;
 }
 export type OutboundFetchResult =
 	| { readonly ok: true; readonly text: string; readonly headers: OutboundCacheHeaders }
@@ -317,15 +323,23 @@ function readDeclaredLength(
 }
 
 function cacheHeaders(headers: HeaderValues): OutboundCacheHeaders {
-	const result: { cacheControl?: string; expires?: string; date?: string; age?: string } = {};
+	const result: {
+		cacheControl?: string;
+		expires?: string;
+		date?: string;
+		age?: string;
+		ambiguous?: true;
+	} = {};
+	const cacheControl = headerValues(headers, "cache-control");
+	if (cacheControl.length > 0) result.cacheControl = cacheControl.join(", ");
 	for (const [wire, field] of [
-		["cache-control", "cacheControl"],
 		["expires", "expires"],
 		["date", "date"],
 		["age", "age"],
 	] as const) {
 		const values = headerValues(headers, wire);
 		if (values.length === 1) result[field] = values[0];
+		else if (values.length > 1) result.ambiguous = true;
 	}
 	return result;
 }

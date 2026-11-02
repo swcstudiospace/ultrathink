@@ -1799,3 +1799,42 @@ describe("phase102 header collection — inherited names", () => {
 		expect(collectRawHeaders(["X-Odd"])).toBeUndefined();
 	});
 });
+
+describe("cache headers — repeated lines", () => {
+	test("repeated Cache-Control lines are joined with ', ' so a no-store on any line is kept", async () => {
+		const { result } = await deliver({
+			chunks: [encoder.encode("ok")],
+			headers: { "cache-control": ["max-age=30", "no-store"] },
+		});
+		expect(result).toEqual({
+			ok: true,
+			text: "ok",
+			headers: { cacheControl: "max-age=30, no-store" },
+		});
+	});
+
+	test("a repeated Expires, Date or Age marks the headers ambiguous and keeps no value", async () => {
+		const values = ["1", "2"];
+		for (const name of ["expires", "date", "age"]) {
+			const { result } = await deliver({
+				chunks: [encoder.encode("ok")],
+				headers: { [name]: values },
+			});
+			expect(result).toEqual({ ok: true, text: "ok", headers: { ambiguous: true } });
+		}
+	});
+
+	test("single Expires, Date and Age lines are kept as before", async () => {
+		const expires = "Thu, 01 Jan 2099 00:00:00 GMT";
+		const date = "Wed, 01 Jan 2098 00:00:00 GMT";
+		const { result } = await deliver({
+			chunks: [encoder.encode("ok")],
+			headers: { expires, date, age: "5" },
+		});
+		expect(result).toEqual({
+			ok: true,
+			text: "ok",
+			headers: { expires, date, age: "5" },
+		});
+	});
+});

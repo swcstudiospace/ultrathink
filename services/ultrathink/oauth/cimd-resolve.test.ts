@@ -49,6 +49,29 @@ function queued(results: readonly CimdFetchResult[]): Probe {
 	});
 }
 
+// A fetcher whose answers the test settles by hand. Call n announces its start on gates[n].started,
+// then waits for gates[n].answer. A call past the gates fails the test loudly.
+function gated(maxCalls: number) {
+	const gates = Array.from({ length: maxCalls }, () => ({
+		started: Promise.withResolvers<void>(),
+		answer: Promise.withResolvers<CimdFetchResult>(),
+	}));
+	let calls = 0;
+	const probe: Probe = {
+		fetcher: {
+			fetch() {
+				const gate = gates[calls];
+				calls += 1;
+				if (gate === undefined) throw new Error(`unexpected fetch number ${calls}`);
+				gate.started.resolve();
+				return gate.answer.promise;
+			},
+		},
+		calls: () => calls,
+	};
+	return { probe, gates };
+}
+
 function ok(
 	clientId: string,
 	metadata: Record<string, unknown> = {},
@@ -378,5 +401,74 @@ describe("CIMD cache policy", () => {
 		});
 		expect(await resolver.resolve(CLIENT)).toMatchObject({ ok: true, client: { name: "Fourth" } });
 		expect(probe.calls()).toBe(5);
+	});
+
+	test("resolveFresh during an in-flight fetch for the same id waits for it, then stores and returns only its own fetch's result", async () => {
+		const clock = { now: START };
+		const { probe, gates } = gated(2);
+		const resolver = resolverWith(probe, clock);
+		const earlier = resolver.resolve(CLIENT);
+		const fresh = resolver.resolveFresh(CLIENT);
+		await gates[0]?.started.promise;
+		expect(probe.calls()).toBe(1);
+		const earlierDoc = ok(CLIENT, { client_name: "Earlier" }, { cacheControl: "max-age=300" });
+		gates[0]?.answer.resolve(earlierDoc);
+		expect(await earlier).toMatchObject({ ok: true, client: { name: "Earlier" } });
+		await gates[1]?.started.promise;
+		expect(probe.calls()).toBe(2);
+		const freshDoc = ok(CLIENT, { client_name: "Fresh" }, { cacheControl: "max-age=300" });
+		gates[1]?.answer.resolve(freshDoc);
+		expect(await fresh).toMatchObject({ ok: true, client: { name: "Fresh" } });
+		expect(await resolver.resolve(CLIENT)).toMatchObject({ ok: true, client: { name: "Fresh" } });
+		expect(probe.calls()).toBe(2);
+	});
+
+	test("two concurrent resolve calls for an id with a fetch in flight share one fetcher call", async () => {
+		const clock = { now: START };
+		const { probe, gates } = gated(1);
+		const resolver = resolverWith(probe, clock);
+		const first = resolver.resolve(CLIENT);
+		const second = resolver.resolve(CLIENT);
+		await gates[0]?.started.promise;
+		expect(probe.calls()).toBe(1);
+		const shared = ok(CLIENT, { client_name: "Shared" }, { cacheControl: "max-age=300" });
+		gates[0]?.answer.resolve(shared);
+		expect(await first).toMatchObject({ ok: true, client: { name: "Shared" } });
+		expect(await second).toEqual(await first);
+		expect(probe.calls()).toBe(1);
+	});
+
+	test("repeated Cache-Control lines that combine to no-store leave no cache entry; the next resolve calls the fetcher again", async () => {
+		const clock = { now: START };
+		const noStore = scripted(() => ok(CLIENT, {}, { cacheControl: "max-age=300, no-store" }));
+		const noStoreResolver = resolverWith(noStore, clock);
+		await noStoreResolver.resolve(CLIENT);
+		await noStoreResolver.resolve(CLIENT);
+		expect(noStore.calls()).toBe(2);
+		const single = scripted(() => ok(CLIENT, {}, { cacheControl: "max-age=300" }));
+		const singleResolver = resolverWith(single, clock);
+		await singleResolver.resolve(CLIENT);
+		await singleResolver.resolve(CLIENT);
+		expect(single.calls()).toBe(1);
+	});
+
+	test("ambiguous Expires, Date or Age leaves no cache entry, even beside a max-age", async () => {
+		const clock = { now: START };
+		const probe = scripted(() => ok(CLIENT, {}, { ambiguous: true, cacheControl: "max-age=300" }));
+		const resolver = resolverWith(probe, clock);
+		await resolver.resolve(CLIENT);
+		expect(await resolver.resolve(CLIENT)).toMatchObject({ ok: true });
+		expect(probe.calls()).toBe(2);
+	});
+
+	test("ambiguous headers give zero lifetime before any other rule", () => {
+		const ambiguous: OutboundCacheHeaders[] = [
+			{ ambiguous: true },
+			{ ambiguous: true, cacheControl: "max-age=60" },
+			{ ambiguous: true, date, expires: at(120_000) },
+		];
+		for (const headers of ambiguous) {
+			expect(cacheLifetimeMs(headers, START, CIMD_CACHE_TTL_CEILING_MS)).toBe(0);
+		}
 	});
 });
