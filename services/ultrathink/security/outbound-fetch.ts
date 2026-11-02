@@ -4,6 +4,7 @@
 import { Resolver } from "node:dns/promises";
 import { connect as netConnect, isIP } from "node:net";
 import { checkServerIdentity, connect as tlsConnect, type TLSSocket } from "node:tls";
+import { createSecurityEvent, logSecurityEvent, SecurityEventType } from "./events.ts";
 import { createHttp1Parser, type Http1Sink } from "./http1-response.ts";
 import { bunAtLeast } from "./mtls.ts";
 
@@ -12,7 +13,8 @@ import { bunAtLeast } from "./mtls.ts";
  * connection to the checked literal address, TLS over it with the hostname identity check, a strict
  * HTTP/1.1 response reader) was qualified on Bun 1.2.23 and Bun 1.4.0 with physical receipts (phase 102,
  * physical driver v5). A version number alone proves nothing: runtime eligibility is the floor below, and
- * the physical receipts are the evidence. A stop that never confirms is reclaimed after STOP_RECLAIM_MS.
+ * the physical receipts are the evidence. A stop that never confirms releases its slot after
+ * STOP_RECLAIM_MS, unless MAX_ZOMBIES reclaimed operations are already unconfirmed.
  * The finite numeric policy is not a claim to implement the entire future IANA registry.
  */
 export interface OutboundFetchPolicy {
@@ -91,19 +93,22 @@ export interface OutboundFetchDeps {
 const OUTBOUND_FETCH_MIN_BUN: readonly [number, number, number] = [1, 2, 23];
 
 /**
- * Bound, counted from the moment a request finished, after which its in-flight slot is reclaimed when its
- * stop has not confirmed. The reclaimed operation's socket may still be open until its stop confirms, so
- * open sockets can exceed maxInflight by the number of unconfirmed stops. This is the owner's accepted
- * trade-off of the reclaim policy (2026-11-01), not an oversight.
+ * Owner decision 2026-11-02, strict. A stop that has not confirmed STOP_RECLAIM_MS after its request
+ * finished releases the operation's in-flight slot, and the operation is counted as a zombie until its
+ * stop confirms. At most MAX_ZOMBIES zombies exist at once: when the cap is full, an operation past its
+ * bound keeps its slot, and counts against inflight, until its own stop or DNS confirms. Admission is
+ * refused while MAX_ZOMBIES zombies exist.
  */
 const STOP_RECLAIM_MS = 5_000;
+/** Owner decision 2026-11-02: the strict cap on reclaimed operations that are still unconfirmed. */
+const MAX_ZOMBIES = 4;
 
 /** The running Bun version, or "" outside Bun. The guard and the CIMD advertisement both read the runtime through here. */
 export function runningRuntimeVersion(): string {
 	return typeof Bun === "undefined" ? "" : Bun.version;
 }
 
-/** Whether a runtime version can run the guarded outbound fetch (Bun 1.2.23 or later; both the 1.2.23 and 1.4.0 transports are physically proven). */
+/** Whether a runtime version can run the guarded outbound fetch: Bun 1.2.23 or later. Only the 1.2.23 and 1.4.0 transports are physically proven; other versions are not individually tested. */
 export function outboundFetchRuntimeSupported(version: string): boolean {
 	return bunAtLeast(version, OUTBOUND_FETCH_MIN_BUN);
 }
@@ -151,16 +156,14 @@ function refusedV4(bytes: readonly number[]): boolean {
 		(a === 192 && b === 168) ||
 		(a === 169 && b === 254) ||
 		(a === 100 && b !== undefined && b >= 64 && b <= 127) ||
-		// Documentation and benchmark ranges (RFC 5737, RFC 2544) are not public. The IETF protocol ranges below are refused by the owner's full-RFC-6890 decision (2026-11-01).
+		// Special-purpose IPv4 ranges that are not public: IETF protocol assignments 192.0.0.0/24 (RFC 6890),
+		// documentation 192.0.2.0/24 (RFC 5737), 6to4 relay anycast 192.88.99.0/24 (RFC 3068), benchmarking
+		// 198.18.0.0/15 (RFC 2544), and documentation 198.51.100.0/24 and 203.0.113.0/24 (RFC 5737).
 		(a === 192 && b === 0 && (c === 0 || c === 2)) ||
 		(a === 192 && b === 88 && c === 99) ||
 		(a === 198 && (b === 18 || b === 19)) ||
 		(a === 198 && b === 51 && c === 100) ||
-		(a === 203 && b === 0 && c === 113) ||
-		// IETF protocol assignments (RFC 6890): refused by the owner's full-RFC-6890 decision (2026-11-01).
-		(a === 192 && b === 31 && c === 196) || // RFC 7535: 192.31.196.0/24 (AS112-v4)
-		(a === 192 && b === 52 && c === 193) || // RFC 7450: 192.52.193.0/24 (AMT)
-		(a === 192 && b === 175 && c === 48) // RFC 7534: 192.175.48.0/24 (Direct Delegation AS112)
+		(a === 203 && b === 0 && c === 113)
 	);
 }
 
@@ -487,6 +490,13 @@ function startPinnedHttpsRequest(
 		tlsClosed = false;
 		tlsSocket.once("secureConnect", () => {
 			if (destroying) return;
+			// Both checks are required. Bun 1.2.23 may report a handshake success for an untrusted chain, so the
+			// verified flag and the hostname identity check are both enforced here, not left to the runtime.
+			const identity = checkServerIdentity(target.hostname, tlsSocket.getPeerCertificate());
+			if (!tlsSocket.authorized || identity !== undefined) {
+				failWith("NETWORK_FAILURE");
+				return;
+			}
 			const observed = tcp.remoteAddress;
 			const accepted = events.peer(observed);
 			if (!accepted || observed === undefined) {
@@ -548,12 +558,15 @@ export function createOutboundFetchGuard(
 		throw new RangeError("Outbound limits must be positive safe integers");
 	}
 	let inflight = 0;
+	let zombies = 0;
 	return (target, signal): Promise<OutboundFetchResult> => {
 		if (!outboundFetchRuntimeSupported(deps.runtimeVersion())) {
 			return Promise.resolve({ ok: false, code: "UNSUPPORTED_RUNTIME" });
 		}
 		if (signal?.aborted) return Promise.resolve({ ok: false, code: "ABORTED" });
-		if (inflight >= maxInflight) return Promise.resolve({ ok: false, code: "BUSY" });
+		if (inflight >= maxInflight || zombies >= MAX_ZOMBIES) {
+			return Promise.resolve({ ok: false, code: "BUSY" });
+		}
 		inflight++;
 		const { promise, resolve } = Promise.withResolvers<OutboundFetchResult>();
 		function start(): void {
@@ -561,6 +574,7 @@ export function createOutboundFetchGuard(
 			const controller = new AbortController();
 			let terminal = false;
 			let released = false;
+			let zombie = false;
 			let cancelReclaim: (() => void) | undefined;
 			let resolver: OutboundResolver | undefined;
 			let dnsPending = false;
@@ -600,15 +614,40 @@ export function createOutboundFetchGuard(
 				try {
 					cancelReclaim = deps.schedule(reclaimSlot, STOP_RECLAIM_MS);
 				} catch {
-					/* A reclaim timer that cannot be armed leaves the slot held: fail closed. */
+					/* Without a timer the bound cannot run later, so the slot is reclaimed now. */
+					reclaimSlot();
 				}
 			}
 			function reclaimSlot(): void {
 				cancelReclaim = undefined;
-				if (!released) {
-					released = true;
-					inflight--;
+				if (released) return;
+				const unconfirmed = dnsPending || !operationStopped;
+				// Strict cap: with MAX_ZOMBIES zombies, an operation past its bound keeps its slot
+				// until its own stop or DNS confirms; no reclaim happens and no event is emitted.
+				if (unconfirmed && zombies >= MAX_ZOMBIES) return;
+				released = true;
+				inflight--;
+				// A slot whose work never started, or already confirmed, leaves no zombie behind.
+				if (!unconfirmed) return;
+				zombie = true;
+				zombies++;
+				try {
+					logSecurityEvent(
+						createSecurityEvent(SecurityEventType.SUSPICIOUS_ACTIVITY, {
+							name: "outbound_fetch.zombie_reclaimed",
+							source: "outbound_fetch",
+							details: { phase: dnsPending ? "dns" : "transport", zombies },
+						}),
+					);
+				} catch {
+					/* The sink must never break slot accounting. */
 				}
+			}
+			/** Retires the zombie once no DNS, start or transport work is unconfirmed. */
+			function retireZombie(): void {
+				if (!zombie || dnsPending || starting || !operationStopped) return;
+				zombie = false;
+				zombies--;
 			}
 			function stopWork(): void {
 				destroyRequested = true;
@@ -793,6 +832,7 @@ export function createOutboundFetchGuard(
 					operation.stopped.then(
 						() => {
 							operationStopped = true;
+							retireZombie();
 							if (!terminal) {
 								if (ending) commitComplete();
 								else if (active()) refuse("INVALID_RESPONSE");
@@ -858,6 +898,7 @@ export function createOutboundFetchGuard(
 				Promise.allSettled([query(4), query(6)]).then(
 					(settled) => {
 						dnsPending = false;
+						retireZombie();
 						if (!active()) {
 							release();
 							return;
@@ -882,6 +923,7 @@ export function createOutboundFetchGuard(
 					},
 					() => {
 						dnsPending = false;
+						retireZombie();
 						if (active()) refuse("DNS_FAILURE");
 						release();
 					},

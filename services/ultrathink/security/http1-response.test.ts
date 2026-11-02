@@ -73,6 +73,12 @@ function run(scenario: Scenario, pieces: readonly Uint8Array[]): Event[] {
 	return events;
 }
 
+/** A chunked body of `count` one-byte chunks whose size lines each carry a `pad`-byte extension, then the last-chunk line and an empty trailer section. Each size line is pad + 4 bytes: digit, semicolon, pad, CR, LF. */
+function paddedChunkBody(count: number, pad: number): string {
+	const sizeLine = `1;${"a".repeat(pad)}\r\nx\r\n`;
+	return `${sizeLine.repeat(count)}0\r\n\r\n`;
+}
+
 const scenarios: readonly Scenario[] = [
 	// Content-Length framing.
 	{
@@ -221,6 +227,18 @@ const scenarios: readonly Scenario[] = [
 		input: `${OK}Transfer-Encoding: chunked\r\n\r\n3;${"x".repeat(1023)}\r\nabc\r\n0\r\n\r\n`,
 		maxHeaderBytes: 1024,
 		expected: [head(200, "Transfer-Encoding", "chunked"), FAIL],
+	},
+	{
+		name: "chunk-size lines totalling exactly maxHeaderBytes are accepted: three 44-byte size lines and the 3-byte last-chunk line make 135 bytes",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n${paddedChunkBody(3, 40)}`,
+		maxHeaderBytes: 135,
+		expected: [head(200, "Transfer-Encoding", "chunked"), body("xxx"), end(true)],
+	},
+	{
+		name: "chunk-size lines totalling one byte over maxHeaderBytes are a budget violation: 135 bytes against a budget of 134, though each 44-byte line alone fits",
+		input: `${OK}Transfer-Encoding: chunked\r\n\r\n${paddedChunkBody(3, 40)}`,
+		maxHeaderBytes: 134,
+		expected: [head(200, "Transfer-Encoding", "chunked"), body("xxx"), FAIL],
 	},
 	{
 		name: "missing CRLF after chunk data is a violation",

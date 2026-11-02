@@ -139,8 +139,9 @@ function framingOf(fields: readonly HeaderField[]): Framing | undefined {
  * that closes before the header block completes, end in `fail()`. A truncated body ends in
  * `end(false)`. `head` returning false stops parsing silently.
  *
- * Budgets: the status line and header block (through the blank line) share `maxHeaderBytes`; the
- * trailer section has its own budget of the same size; each chunk-size line is bounded by it too.
+ * Budgets: the status line and header block (through the blank line) share `maxHeaderBytes`. The
+ * chunk-size lines of one body (the last-chunk line included) share one cumulative budget of the same
+ * size, CR and LF counted. The trailer section has its own budget of the same size.
  */
 export function createHttp1Parser(
 	sink: Http1Sink,
@@ -318,7 +319,6 @@ export function createHttp1Parser(
 							fail();
 						} else {
 							phase = "chunkSize";
-							blockBytes = 0;
 						}
 						index++;
 						break;
