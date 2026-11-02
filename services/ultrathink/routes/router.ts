@@ -68,7 +68,7 @@ import { createSyslogTransport } from "../obs/sinks/syslog.ts";
 import type { SinkTransport } from "../obs/sinks/types.ts";
 import { createSloTracker } from "../obs/slo.ts";
 import { childSpan, formatTraceparent, traceContextFor } from "../obs/trace.ts";
-import { createCimdFetcher } from "../oauth/cimd-fetch.ts";
+import { cimdServable, createCimdFetcher } from "../oauth/cimd-fetch.ts";
 import { DEFAULT_REDIRECT_ORIGINS, createOAuth, normalizeOrigins } from "../oauth/oauth.ts";
 import { type RouteGroup, authorize, isEdgeIdentity } from "../security/identity.ts";
 import {
@@ -748,7 +748,7 @@ export function createApp(deps: RouterDeps): App {
 		redirectOrigins,
 		audit: record,
 		cimd: createCimdFetcher(config, new Set(redirectOrigins)),
-		advertiseCimd: config.cimdEnabled === true,
+		advertiseCimd: cimdServable(config),
 	});
 	const ledger = deps.ledger ?? lazyLedger(store, config, deps.now);
 	// Repeated upstream failures open the breaker; a threshold of 0 turns it off.

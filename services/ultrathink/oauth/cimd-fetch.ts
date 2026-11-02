@@ -8,6 +8,8 @@ import {
 	type OutboundCacheHeaders,
 	type OutboundFetchCode,
 	type OutboundFetchPolicy,
+	outboundFetchRuntimeSupported,
+	runningRuntimeVersion,
 } from "../security/outbound-fetch.ts";
 import {
 	type CimdDocument,
@@ -35,6 +37,17 @@ export const CIMD_FETCH_POLICY: OutboundFetchPolicy = {
 };
 // Inert construction, one admission counter for every default factory in this process.
 const sharedCimdGuard = createOutboundFetchGuard(CIMD_FETCH_POLICY);
+
+/**
+ * Whether this process can serve CIMD: the switch is on and the runtime can run the guarded fetch.
+ * The advertisement follows this, so no client is told to use CIMD where every fetch would be refused.
+ */
+export function cimdServable(
+	config: Pick<UltrathinkConfig, "cimdEnabled">,
+	runtimeVersion: string = runningRuntimeVersion(),
+): boolean {
+	return config.cimdEnabled === true && outboundFetchRuntimeSupported(runtimeVersion);
+}
 
 /**
  * OFF first, then the original identity/model contracts around one complete guarded fetch.

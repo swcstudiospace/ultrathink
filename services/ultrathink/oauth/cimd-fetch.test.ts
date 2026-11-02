@@ -11,7 +11,12 @@ import {
 	type OutboundTransportEvents,
 	type PinnedHttpsTarget,
 } from "../security/outbound-fetch.ts";
-import { CIMD_FETCH_POLICY, type CimdFetchResult, createCimdFetcher } from "./cimd-fetch.ts";
+import {
+	CIMD_FETCH_POLICY,
+	type CimdFetchResult,
+	cimdServable,
+	createCimdFetcher,
+} from "./cimd-fetch.ts";
 
 const RAW = "https://CLIENT.example:443/meta.json";
 const PUBLIC = "93.184.216.34";
@@ -741,5 +746,16 @@ describe("phase102 boundaries — B12 isolation and DI", () => {
 			kind: "fetch",
 			code: bunAtLeast(Bun.version, [1, 4, 0]) ? "ADDRESS_REFUSED" : "UNSUPPORTED_RUNTIME",
 		});
+	});
+});
+
+describe("CIMD servable gate", () => {
+	test("serves CIMD only when the switch is on and the runtime is Bun 1.4.0 or later", () => {
+		expect(cimdServable({ cimdEnabled: true }, "1.4.0")).toBe(true);
+		expect(cimdServable({ cimdEnabled: true }, "1.4.3")).toBe(true);
+		expect(cimdServable({ cimdEnabled: true }, "1.3.9")).toBe(false);
+		expect(cimdServable({ cimdEnabled: true }, "1.2.23")).toBe(false);
+		expect(cimdServable({ cimdEnabled: true }, "")).toBe(false);
+		expect(cimdServable({ cimdEnabled: false }, "1.4.0")).toBe(false);
 	});
 });

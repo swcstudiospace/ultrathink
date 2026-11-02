@@ -90,6 +90,16 @@ export interface OutboundFetchDeps {
 
 const OUTBOUND_FETCH_MIN_BUN: readonly [number, number, number] = [1, 4, 0];
 
+/** The running Bun version, or "" outside Bun. The guard and the CIMD advertisement both read the runtime through here. */
+export function runningRuntimeVersion(): string {
+	return typeof Bun === "undefined" ? "" : Bun.version;
+}
+
+/** Whether a runtime version can run the guarded outbound fetch (Bun 1.4.0 or later). */
+export function outboundFetchRuntimeSupported(version: string): boolean {
+	return bunAtLeast(version, OUTBOUND_FETCH_MIN_BUN);
+}
+
 interface NumericAddress extends OutboundAddress {
 	readonly bytes: readonly number[];
 	readonly refused: boolean;
@@ -493,7 +503,7 @@ const nativeDeps: OutboundFetchDeps = {
 		const timer = setTimeout(run, delayMs);
 		return () => clearTimeout(timer);
 	},
-	runtimeVersion: () => (typeof Bun === "undefined" ? "" : Bun.version),
+	runtimeVersion: runningRuntimeVersion,
 };
 
 function absentFamily(reason: unknown): boolean {
@@ -514,7 +524,7 @@ export function createOutboundFetchGuard(
 	}
 	let inflight = 0;
 	return (target, signal): Promise<OutboundFetchResult> => {
-		if (!bunAtLeast(deps.runtimeVersion(), OUTBOUND_FETCH_MIN_BUN)) {
+		if (!outboundFetchRuntimeSupported(deps.runtimeVersion())) {
 			return Promise.resolve({ ok: false, code: "UNSUPPORTED_RUNTIME" });
 		}
 		if (signal?.aborted) return Promise.resolve({ ok: false, code: "ABORTED" });
