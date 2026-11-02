@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Client ID metadata documents (CIMD) for OAuth clients, behind the `ULTRATHINK_CIMD` switch, which is off by default. With the switch on under Bun 1.4.0 or later, an `https` `client_id` on port 443 is resolved from its metadata document through the guarded fetch, and the authorization server metadata advertises `client_id_metadata_document_supported`. Any other port is refused. On an older Bun nothing is advertised and every retrieval is refused. Dynamic client registration is unchanged. See the runbook section on client ID metadata documents.
+
 ### Removed
 
 - The Grok `shunt` transport, its `grok.shuntBaseUrl`, `grok.shuntModel` and `grok.shuntMaxTokens` keys, and the shunt failover candidate. Grok now runs only on the `http` and `cli` transports. A stored `grok.transport` of `"shunt"` is ignored like any unknown transport value: a valid transport from an earlier config layer stays in effect, and `http` (the schema default) applies only when no layer sets a valid one. `ultrathink doctor` reports the removed keys as obsolete when a config file still sets them; delete them from the file.

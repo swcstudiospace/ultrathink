@@ -68,7 +68,8 @@ import { createSyslogTransport } from "../obs/sinks/syslog.ts";
 import type { SinkTransport } from "../obs/sinks/types.ts";
 import { createSloTracker } from "../obs/slo.ts";
 import { childSpan, formatTraceparent, traceContextFor } from "../obs/trace.ts";
-import { DEFAULT_REDIRECT_ORIGINS, createOAuth } from "../oauth/oauth.ts";
+import { cimdServable, createCimdFetcher } from "../oauth/cimd-fetch.ts";
+import { DEFAULT_REDIRECT_ORIGINS, createOAuth, normalizeOrigins } from "../oauth/oauth.ts";
 import { type RouteGroup, authorize, isEdgeIdentity } from "../security/identity.ts";
 import {
 	ObjectValidator,
@@ -734,13 +735,20 @@ export function createApp(deps: RouterDeps): App {
 		metrics.inc("ultrathink_audit_tamper_alerts_total");
 		streams.alert("audit_tamper_detected", { reason });
 	}
+	// One normalized origin set serves the OAuth redirect check and the CIMD fetcher's redirect check.
+	const redirectOrigins = normalizeOrigins([
+		...DEFAULT_REDIRECT_ORIGINS,
+		...config.oauthRedirectOrigins,
+	]);
 	const oauth = createOAuth({
 		origin: config.publicOrigin,
 		stateDir: config.stateDir,
 		auth,
 		now: deps.now,
-		redirectOrigins: [...DEFAULT_REDIRECT_ORIGINS, ...config.oauthRedirectOrigins],
+		redirectOrigins,
 		audit: record,
+		cimd: createCimdFetcher(config, new Set(redirectOrigins)),
+		advertiseCimd: cimdServable(config),
 	});
 	const ledger = deps.ledger ?? lazyLedger(store, config, deps.now);
 	// Repeated upstream failures open the breaker; a threshold of 0 turns it off.

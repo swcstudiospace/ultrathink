@@ -16,6 +16,7 @@ import { createMetrics, type Metrics } from "../obs/metrics.ts";
 import type { RuntimeSample } from "../obs/runtime.ts";
 import { type App, SECURITY_HEADERS, type RouterDeps, createApp, createHandler } from "./router.ts";
 import { getSecurityLogger } from "../security/events.ts";
+import { bunAtLeast } from "../security/mtls.ts";
 import { redactText } from "../../../src/teach/redact.ts";
 
 /** A header the security module sets, read from the exported constant. A missing one is a broken build, not a value to compare. */
@@ -1523,4 +1524,82 @@ describe("hosted planner lifecycle", () => {
 		expect(metrics.sum("ultrathink_plan_jobs_total", { status: "failed" })).toBe(1);
 		await app.shutdown();
 	}, 20_000);
+});
+
+describe("CIMD production router wiring", () => {
+	test("with cimdEnabled absent from the router config, a URL client_id authorize shows the unknown-client page body", async () => {
+		const params = new URLSearchParams({
+			response_type: "code",
+			client_id: "https://client.example/cimd.json",
+			redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+			code_challenge: "a".repeat(43),
+			code_challenge_method: "S256",
+			resource: `${PUBLIC_ORIGIN}/mcp`,
+		});
+		const response = await handler(
+			new Request(`${PUBLIC_ORIGIN}/oauth/authorize?${params.toString()}`, { method: "GET" }),
+			"198.51.100.23",
+		);
+		expect(response.status).toBe(400);
+		expect(await response.text()).toContain("This client is not registered with ultrathink.");
+	});
+
+	test.skipIf(!bunAtLeast(Bun.version, [1, 4, 0]))(
+		"with ULTRATHINK_CIMD on under Bun 1.4.0 or later, the production router's metadata advertises client_id_metadata_document_supported",
+		async () => {
+			const stateDir = mkdtempSync(join(tmpdir(), "ultrathink-cimd-"));
+			const app = createApp({
+				config: { ...config, stateDir, cimdEnabled: true },
+				store,
+				auth,
+				logger: silent,
+				hasWorker: () => true,
+			});
+			try {
+				const response = await app.handle(
+					new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-authorization-server`),
+					PEER_IP,
+				);
+				expect(response.status).toBe(200);
+				expect(await response.json()).toHaveProperty("client_id_metadata_document_supported", true);
+			} finally {
+				await app.shutdown();
+				rmSync(stateDir, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test.skipIf(bunAtLeast(Bun.version, [1, 4, 0]))(
+		"with ULTRATHINK_CIMD on under a Bun older than 1.4.0, the production router does not advertise client_id_metadata_document_supported",
+		async () => {
+			const stateDir = mkdtempSync(join(tmpdir(), "ultrathink-cimd-"));
+			const app = createApp({
+				config: { ...config, stateDir, cimdEnabled: true },
+				store,
+				auth,
+				logger: silent,
+				hasWorker: () => true,
+			});
+			try {
+				const response = await app.handle(
+					new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-authorization-server`),
+					PEER_IP,
+				);
+				expect(response.status).toBe(200);
+				expect(await response.json()).not.toHaveProperty("client_id_metadata_document_supported");
+			} finally {
+				await app.shutdown();
+				rmSync(stateDir, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test("with cimdEnabled absent, the production router's metadata has no client_id_metadata_document_supported key", async () => {
+		const response = await handler(
+			new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-authorization-server`),
+			PEER_IP,
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).not.toHaveProperty("client_id_metadata_document_supported");
+	});
 });

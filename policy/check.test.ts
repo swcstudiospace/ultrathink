@@ -288,6 +288,8 @@ test.skipIf(!REAL_OPA)(
 		cpSync(join(REPO, ".github", "workflows"), join(dir, ".github", "workflows"), {
 			recursive: true,
 		});
+		// The real collector requires deployment inputs before OPA evaluation.
+		cpSync(join(REPO, "deploy"), join(dir, "deploy"), { recursive: true });
 		const ci = join(dir, ".github", "workflows", "ci.yml");
 		const original = readFileSync(ci, "utf8");
 		const seeded = original.replace(/actions\/checkout@[0-9a-f]{40}/, "actions/checkout@v4");
