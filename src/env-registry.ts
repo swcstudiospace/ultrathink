@@ -576,7 +576,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"service-tuning",
 		"bool01",
 		"ULTRATHINK_CIMD",
-		"Set to 1 to allow guarded CIMD client metadata retrieval and advertisement of client_id_metadata_document_supported. Needs Bun 1.2.23 or later: on an older Bun the server neither retrieves nor advertises. Unset or 0 keeps it off. Refuses loopback, private, link-local, multicast, reserved, NAT64, 6to4 and IPv4-translated targets. Each fetch holds one of four in-flight slots until its connection confirms stop. A slot whose stop has not confirmed 5 seconds after its request finished is reclaimed, and a late stop never counts twice.",
+		"Set to 1 to allow guarded CIMD client metadata retrieval and advertisement of client_id_metadata_document_supported. Needs Bun 1.2.23 or later for the guard, which is physically tested on Bun 1.2.23 and 1.4.0 only; the TLS-only listener needs Bun 1.4.0 or later. On an older Bun the server neither retrieves nor advertises. Unset or 0 keeps it off. Refuses loopback, private, link-local, multicast, reserved, NAT64, 6to4 and IPv4-translated targets. Each fetch holds one of four in-flight slots until its connection confirms stop. A slot whose stop has not confirmed 5 seconds after its request finished is reclaimed; the operation then counts against admission until it confirms, and at most four such operations are pending. A late stop never counts twice. A response must be framed by Content-Length or chunked encoding; unframed bodies and 1xx responses are refused.",
 		{ default: "0", reader: "trims" },
 	),
 	row(
