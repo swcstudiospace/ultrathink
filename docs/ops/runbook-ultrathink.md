@@ -788,6 +788,8 @@ With the switch off, an `https` `client_id` is an unknown client. The authorize 
 
 With the switch on, the server fetches the metadata document named by an `https` `client_id` through a guarded fetch: public addresses only, at most 5000 bytes, a 5 s time limit, and at most four fetches in flight. The authorization server metadata then includes `"client_id_metadata_document_supported": true`. With the switch off that key is absent.
 
+The authorization server metadata response is cacheable for an hour (`Cache-Control: public, max-age=3600`), so after the switch changes, a client that has already cached it can take up to an hour to see the change.
+
 CIMD clients never call `POST /oauth/register`, so they are not counted against the registration limit. Their authorize, approval, token and revoke calls use the authorize, token and revoke limits in the table above, and they share the four fetch slots with other CIMD traffic.
 
 The rules below are the project's engineering choices, accepted by the owner on 2026-10-31. They are not quoted from the draft specification.
