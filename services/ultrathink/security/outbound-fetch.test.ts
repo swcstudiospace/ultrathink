@@ -250,10 +250,10 @@ async function zombifyAll(
 
 /**
  * Four operations start 1000 ms apart and never confirm. A is reclaimed at 10000 ms, freeing its slot for a
- * fifth operation E. B, C and D are then reclaimed, so four zombies exist. E times out at 15000 ms; its reclaim
- * at 20000 ms finds the cap full. The clock is left at 15000 ms.
+ * fifth operation E. B, C and D are then reclaimed, so four zombies exist. E times out at 15000 ms and is reclaimed
+ * at 20000 ms, which makes five zombies. The clock is left at 15000 ms.
  */
-async function fillCapWithHeldFifth(
+async function fillCapWithReclaimedFifth(
 	memory: MemoryPrimitives,
 	guard: GuardedFetch,
 ): Promise<Promise<OutboundFetchResult>[]> {
@@ -1927,11 +1927,11 @@ describe("phase102 boundaries — stop reclaim bound", () => {
 		expect(await replacement).toEqual(NETWORK_FAILED);
 	});
 
-	test("strict cap: four reclaimed operations fill the cap, and a fifth past its bound keeps its slot", async () => {
+	test("release at the bound: a fifth stuck operation is reclaimed too, and admission stays refused", async () => {
 		const memory = new MemoryPrimitives();
 		memory.automaticStop = false;
 		const guard = createOutboundFetchGuard(POLICY, memory.deps);
-		const pending = await fillCapWithHeldFifth(memory, guard);
+		const pending = await fillCapWithReclaimedFifth(memory, guard);
 		expect(await Promise.all(pending)).toEqual(Array(5).fill(TIMED_OUT));
 		expect(securityEvents.map((event) => event.details)).toEqual([
 			{ phase: "transport", zombies: 1 },
@@ -1940,52 +1940,70 @@ describe("phase102 boundaries — stop reclaim bound", () => {
 			{ phase: "transport", zombies: 4 },
 		]);
 		expect(await guard(URL_ID)).toEqual(BUSY);
-		// The fifth reaches its own bound at 20000 ms, finds the cap full, and is not reclaimed.
+		// The fifth reaches its own bound at 20000 ms and is reclaimed too, so five zombies exist and admission stays refused.
 		memory.advance(20000);
-		expect(securityEvents).toHaveLength(4);
+		expect(securityEvents.map((event) => event.details)).toEqual([
+			{ phase: "transport", zombies: 1 },
+			{ phase: "transport", zombies: 2 },
+			{ phase: "transport", zombies: 3 },
+			{ phase: "transport", zombies: 4 },
+			{ phase: "transport", zombies: 5 },
+		]);
 		expect(await guard(URL_ID)).toEqual(BUSY);
 		await memory.cleanup();
 	});
 
-	test("one zombie confirming reopens admission while the held fifth still holds its slot", async () => {
+	test("admission reopens only when zombies drop below four, and the reclaimed fifth counts until it confirms", async () => {
 		const memory = new MemoryPrimitives();
 		memory.automaticStop = false;
 		const guard = createOutboundFetchGuard(POLICY, memory.deps);
-		const pending = await fillCapWithHeldFifth(memory, guard);
+		const pending = await fillCapWithReclaimedFifth(memory, guard);
 		memory.advance(20000);
 		expect(await guard(URL_ID)).toEqual(BUSY);
-		// The first zombie confirms: zombies drops to 3, so admission reopens.
+		// The first zombie confirms: zombies drops to 4, which still refuses admission.
 		memory.request(0).confirmStop();
 		await pump();
-		const reopened = [guard(URL_ID), guard(URL_ID), guard(URL_ID)];
-		await pump();
-		expect(memory.requests).toHaveLength(8);
-		// The held fifth and three new operations fill the cap, so a further admission is refused by inflight.
 		expect(await guard(URL_ID)).toEqual(BUSY);
-		expect(securityEvents).toHaveLength(4);
+		// The second zombie confirms: zombies drops to 3, so admission reopens and four new operations fill the in-flight limit.
+		memory.request(1).confirmStop();
+		await pump();
+		const reopened = [guard(URL_ID), guard(URL_ID), guard(URL_ID), guard(URL_ID)];
+		await pump();
+		expect(memory.requests).toHaveLength(9);
+		expect(await guard(URL_ID)).toEqual(BUSY);
+		expect(securityEvents).toHaveLength(5);
 		await memory.cleanup();
-		expect(await Promise.all(reopened)).toEqual(Array(3).fill(NETWORK_FAILED));
+		expect(await Promise.all(reopened)).toEqual(Array(4).fill(NETWORK_FAILED));
 		expect(await Promise.all(pending)).toEqual(Array(5).fill(TIMED_OUT));
 	});
 
-	test("the held fifth releases through its own stop with one decrement and leaves zombies unchanged", async () => {
+	test("a reclaimed fifth retires through its own late stop with one decrement, so the next reclaim reports four zombies", async () => {
 		const memory = new MemoryPrimitives();
 		memory.automaticStop = false;
 		const guard = createOutboundFetchGuard(POLICY, memory.deps);
-		const pending = await fillCapWithHeldFifth(memory, guard);
+		const pending = await fillCapWithReclaimedFifth(memory, guard);
 		memory.advance(20000);
 		memory.request(0).confirmStop();
 		await pump();
-		// The held fifth's own stop confirms: its normal release decrements inflight once and leaves zombies at 3.
+		// The reclaimed fifth's own late stop confirms: its zombie retires once, so zombies drops from 4 to 3.
 		memory.request(4).confirmStop();
 		await pump();
 		const fresh = [guard(URL_ID), guard(URL_ID), guard(URL_ID), guard(URL_ID)];
 		await pump();
 		expect(memory.requests).toHaveLength(9);
 		expect(await guard(URL_ID)).toEqual(BUSY);
-		expect(securityEvents).toHaveLength(4);
+		// The four fresh operations reach their deadline at 25000 ms and their bound at 30000 ms. Each advance runs
+		// only the timers already scheduled, so the deadline and the reclaim take one step each.
+		memory.advance(25000);
+		memory.advance(30000);
+		expect(securityEvents.slice(5).map((event) => event.details)).toEqual([
+			{ phase: "transport", zombies: 4 },
+			{ phase: "transport", zombies: 5 },
+			{ phase: "transport", zombies: 6 },
+			{ phase: "transport", zombies: 7 },
+		]);
 		await memory.cleanup();
-		expect(await Promise.all(fresh)).toEqual(Array(4).fill(NETWORK_FAILED));
+		expect(await Promise.all(fresh)).toEqual(Array(4).fill(TIMED_OUT));
 		expect(await Promise.all(pending)).toEqual(Array(5).fill(TIMED_OUT));
 	});
 });

@@ -14,7 +14,8 @@ import { bunAtLeast } from "./mtls.ts";
  * HTTP/1.1 response reader) was qualified on Bun 1.2.23 and Bun 1.4.0 with physical receipts (phase 102,
  * physical driver v6, after v5). A version number alone proves nothing: runtime eligibility is the floor below, and
  * the physical receipts are the evidence. A stop that never confirms releases its slot after
- * STOP_RECLAIM_MS, unless MAX_ZOMBIES reclaimed operations are already unconfirmed.
+ * STOP_RECLAIM_MS; the operation then counts as a zombie until its stop and any DNS lookup confirm,
+ * and admission is refused while MAX_ZOMBIES zombies exist.
  * The finite numeric policy is not a claim to implement the entire future IANA registry.
  */
 export interface OutboundFetchPolicy {
@@ -93,14 +94,13 @@ export interface OutboundFetchDeps {
 const OUTBOUND_FETCH_MIN_BUN: readonly [number, number, number] = [1, 2, 23];
 
 /**
- * Owner decision 2026-11-02, strict. A stop that has not confirmed STOP_RECLAIM_MS after its request
- * finished releases the operation's in-flight slot, and the operation is counted as a zombie until its
- * stop confirms. At most MAX_ZOMBIES zombies exist at once: when the cap is full, an operation past its
- * bound keeps its slot, and counts against inflight, until its own stop or DNS confirms. Admission is
- * refused while MAX_ZOMBIES zombies exist.
+ * Release at the bound. A stop that has not confirmed STOP_RECLAIM_MS after its request finished releases the
+ * operation's in-flight slot, and the operation counts as a zombie until its stop and any DNS lookup confirm.
+ * Admission is refused while MAX_ZOMBIES zombies exist. With an in-flight limit M, at most M + MAX_ZOMBIES - 1
+ * operations are open at once (seven for M = 4).
  */
 const STOP_RECLAIM_MS = 5_000;
-/** Owner decision 2026-11-02: the strict cap on reclaimed operations that are still unconfirmed. */
+/** Admission is refused while this many reclaimed operations are still unconfirmed. */
 const MAX_ZOMBIES = 4;
 
 /** The running Bun version, or "" outside Bun. The guard and the CIMD advertisement both read the runtime through here. */
@@ -622,9 +622,6 @@ export function createOutboundFetchGuard(
 				cancelReclaim = undefined;
 				if (released) return;
 				const unconfirmed = dnsPending || !operationStopped;
-				// Strict cap: with MAX_ZOMBIES zombies, an operation past its bound keeps its slot
-				// until its own stop or DNS confirms; no reclaim happens and no event is emitted.
-				if (unconfirmed && zombies >= MAX_ZOMBIES) return;
 				released = true;
 				inflight--;
 				// A slot whose work never started, or already confirmed, leaves no zombie behind.
