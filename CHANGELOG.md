@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Client ID metadata documents (CIMD) for OAuth clients, behind the `ULTRATHINK_CIMD` switch, which is off by default. With the switch on, an `https` `client_id` is resolved from its metadata document through the guarded fetch, and the authorization server metadata advertises `client_id_metadata_document_supported`. Dynamic client registration is unchanged. See the runbook section on client ID metadata documents.
+- Client ID metadata documents (CIMD) for OAuth clients, behind the `ULTRATHINK_CIMD` switch, which is off by default. With the switch on under Bun 1.4.0 or later, an `https` `client_id` is resolved from its metadata document through the guarded fetch, and the authorization server metadata advertises `client_id_metadata_document_supported`. On an older Bun nothing is advertised and every retrieval is refused. Dynamic client registration is unchanged. See the runbook section on client ID metadata documents.
 
 ### Removed
 

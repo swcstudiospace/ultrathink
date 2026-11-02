@@ -782,11 +782,11 @@ When registrations are limited, wait for `Retry-After`. Restarting `ultrathink-w
 
 ### Client ID metadata documents (CIMD)
 
-`ULTRATHINK_CIMD` is off by default. Turning it on is an owner decision, and the owner has not approved it. Whether Claude or Grok present a CIMD `client_id` is not verified: the Claude and Grok identity questions (OD-1, OD-3) are open, and live behaviour is checked in phase 105, which the owner runs.
+`ULTRATHINK_CIMD` is off by default and needs Bun 1.4.0 or later. Turning it on is an owner decision, and the owner has not approved it. Whether Claude or Grok present a CIMD `client_id` is not verified: the Claude and Grok identity questions (OD-1, OD-3) are open, and live behaviour is checked in phase 105, which the owner runs.
 
 With the switch off, an `https` `client_id` is an unknown client. The authorize page shows the unknown-client page, and no metadata document is fetched. Dynamic client registration (`POST /oauth/register`, `ut_client_` ids) works the same in both states.
 
-With the switch on, the server fetches the metadata document named by an `https` `client_id` through a guarded fetch: public addresses only, at most 5000 bytes, a 5 s time limit, and at most four fetches in flight. The authorization server metadata then includes `"client_id_metadata_document_supported": true`. With the switch off that key is absent.
+With the switch on under Bun 1.4.0 or later, the server fetches the metadata document named by an `https` `client_id` through a guarded fetch: public addresses only, at most 5000 bytes, a 5 s time limit, and at most four fetches in flight. The authorization server metadata then includes `"client_id_metadata_document_supported": true`. With the switch off, that key is absent. On a Bun older than 1.4.0 it is absent even with the switch on, because the guard refuses every fetch there, and a URL `client_id` then gets the failed-class error page rather than a CIMD flow. Dynamic client registration keeps working in every case.
 
 The authorization server metadata response is cacheable for an hour (`Cache-Control: public, max-age=3600`), so after the switch changes, a client that has already cached it can take up to an hour to see the change.
 
