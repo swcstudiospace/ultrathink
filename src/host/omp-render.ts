@@ -428,7 +428,7 @@ function insightLesson(value: unknown): InsightCardLesson | undefined {
 		if (!isRecord(value.promoted)) return undefined;
 		if (!isLiteral(INSIGHT_TARGETS, value.promoted.target)) return undefined;
 		const skill = insightText(value.promoted.skill, 40);
-		promotion = "promoted " + (skill === "" ? "skill" : skill) + " (" + value.promoted.target + ")";
+		promotion = `promoted ${skill === "" ? "skill" : skill} (${value.promoted.target})`;
 	}
 	return {
 		name: name === "" ? "lesson" : name,
@@ -543,26 +543,25 @@ function decisionRow(decision: InsightCardDecision): string {
 		decision.outcome,
 		decision.action,
 		decision.model,
-		"P " + (decision.p === undefined ? "Not recorded" : formatP(decision.p)),
-		"thr " + (decision.threshold === undefined ? "Not recorded" : formatP(decision.threshold)),
+		`P ${decision.p === undefined ? "Not recorded" : formatP(decision.p)}`,
+		`thr ${decision.threshold === undefined ? "Not recorded" : formatP(decision.threshold)}`,
 	];
-	if (decision.error !== undefined) parts.push("err " + decision.error);
-	parts.push(decision.latencyMs === undefined ? "latency Not recorded" : decision.latencyMs + "ms");
+	if (decision.error !== undefined) parts.push(`err ${decision.error}`);
+	parts.push(decision.latencyMs === undefined ? "latency Not recorded" : `${decision.latencyMs}ms`);
 	parts.push(
 		decision.attempts === undefined
 			? "attempts Not recorded"
 			: decision.attempts + (decision.attempts === 1 ? " attempt" : " attempts"),
 	);
-	if (decision.cost !== undefined) parts.push("Cost " + decision.cost);
+	if (decision.cost !== undefined) parts.push(`Cost ${decision.cost}`);
 	const first = decision.questions[0];
 	if (first !== undefined) {
-		const extra =
-			decision.questions.length > 1 ? " +" + (decision.questions.length - 1) + " more" : "";
-		parts.push("Q " + first.key + " (" + formatP(first.p) + ")" + extra);
+		const extra = decision.questions.length > 1 ? ` +${decision.questions.length - 1} more` : "";
+		parts.push(`Q ${first.key} (${formatP(first.p)})${extra}`);
 	}
 	const at = insightTimestamp(decision.at);
 	if (at !== undefined) parts.push(at);
-	return "  Jev: " + parts.join(" · ");
+	return `  Jev: ${parts.join(" · ")}`;
 }
 
 /** Wrap sanitized card metadata by terminal cells, retaining whole graphemes. */
@@ -604,7 +603,7 @@ function wrapInsightLines(lines: string[], room: number): string[] {
 function insightRows(details: unknown, expanded: boolean, p: Paint, room: number): string[] {
 	// the frame truncates every row to the room (width - 4), so the not-live marker rides on the
 	// label row: after time/scope it vanishes at common widths and the card reads as live state.
-	const label = p.fg("customMessageLabel", p.bold(INSIGHT_TYPE + " · captured — not live"));
+	const label = p.fg("customMessageLabel", p.bold(`${INSIGHT_TYPE} · captured — not live`));
 	const fallback = [
 		`${label}`,
 		"Insight snapshot unavailable. Open /ultrathink-ui for the live view.",
@@ -641,20 +640,17 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 			: "Moments: " +
 				card.lessons.length +
 				" shown" +
-				(omittedLessons > 0 ? " · " + omittedLessons + " omitted from card" : "") +
+				(omittedLessons > 0 ? ` · ${omittedLessons} omitted from card` : "") +
 				" · " +
 				first.name +
 				" · " +
 				first.status;
-	const autonomyCounts =
-		"Autonomy: " + card.eligible + " eligible · " + card.promoted + " promoted";
+	const autonomyCounts = `Autonomy: ${card.eligible} eligible · ${card.promoted} promoted`;
 	const autonomySettings =
 		" · capture " +
 		card.policy.capture +
 		" · recall " +
-		(card.policy.recall
-			? "on (" + card.policy.recallLimit + "/" + card.policy.recallChars + ")"
-			: "off") +
+		(card.policy.recall ? `on (${card.policy.recallLimit}/${card.policy.recallChars})` : "off") +
 		" · auto-promote " +
 		(card.policy.autoPromote ? "on" : "off") +
 		" after " +
@@ -662,27 +658,25 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 	// a failed read must never read as ordinary missing history: the short warning leads the row so
 	// it survives truncation, while the settings trail as optional text that narrow rows may clip
 	const autonomyLine =
-		(card.partial ? PARTIAL_READ_WARNING + " · " : "") + autonomyCounts + autonomySettings;
+		(card.partial ? `${PARTIAL_READ_WARNING} · ` : "") + autonomyCounts + autonomySettings;
 	const countsLine =
 		card.counts.length === 0
 			? "Counts (shown): none recorded"
 			: "Counts (shown): " +
-				card.counts.map((entry) => entry.total + " " + entry.status).join(" · ");
+				card.counts.map((entry) => `${entry.total} ${entry.status}`).join(" · ");
 	if (!expanded) {
 		const rows = [`${label}`, scopeLine, latestLine, lessonLine, autonomyLine];
 		// Counts lead on the final row so they survive truncation: real snapshots always carry
 		// limitation notes, so a separate counts row never fits the compact budget.
 		const note = pickLimitations(card.limitations, 1)[0];
-		rows.push(countsLine + (note === undefined ? "" : " · " + note));
+		rows.push(countsLine + (note === undefined ? "" : ` · ${note}`));
 		return rows.slice(0, INSIGHT_COMPACT_ROWS);
 	}
 	const rows = [`${label}`, scopeLine, latestLine, lessonLine];
 	const jevShown = card.decisions.slice(0, INSIGHT_SUMMARY_CAP);
 	for (const decision of jevShown) rows.push(decisionRow(decision));
 	if (card.decisions.length > jevShown.length)
-		rows.push(
-			"  " + (card.decisions.length - jevShown.length) + " more decisions — open /ultrathink-ui",
-		);
+		rows.push(`  ${card.decisions.length - jevShown.length} more decisions — open /ultrathink-ui`);
 	const lessonsShown = card.lessons.slice(0, INSIGHT_SUMMARY_CAP);
 	for (const lesson of lessonsShown) {
 		rows.push(
@@ -694,13 +688,11 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 				lesson.kind +
 				" ×" +
 				lesson.occurrences +
-				(lesson.promotion === "" ? "" : " · " + lesson.promotion),
+				(lesson.promotion === "" ? "" : ` · ${lesson.promotion}`),
 		);
 	}
 	if (card.lessons.length > lessonsShown.length)
-		rows.push(
-			"  " + (card.lessons.length - lessonsShown.length) + " more lessons — open /ultrathink-ui",
-		);
+		rows.push(`  ${card.lessons.length - lessonsShown.length} more lessons — open /ultrathink-ui`);
 	const flagged = card.lessons.filter((lesson) => lesson.eligible || lesson.promotion !== "");
 	const skillsShown = flagged.slice(0, INSIGHT_SUMMARY_CAP);
 	for (const lesson of skillsShown) {
@@ -712,23 +704,19 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 		);
 	}
 	if (flagged.length > skillsShown.length) {
-		rows.push(
-			"  " + (flagged.length - skillsShown.length) + " more skills omitted — open /ultrathink-ui",
-		);
+		rows.push(`  ${flagged.length - skillsShown.length} more skills omitted — open /ultrathink-ui`);
 	}
 	// the footer autonomy row keeps the recorded counts and the partial-read warning but drops the
 	// settings: the "Effective policy" row below already states them, and fewer fixed rows keep the
 	// footer (teaching state + limitations) inside the expanded budget at narrow widths
-	const footer = [(card.partial ? PARTIAL_READ_WARNING + " · " : "") + autonomyCounts, countsLine];
+	const footer = [(card.partial ? `${PARTIAL_READ_WARNING} · ` : "") + autonomyCounts, countsLine];
 	footer.push(
 		"Effective policy: teaching " +
 			(card.policy.teaching ? "on" : "off") +
 			" · capture " +
 			card.policy.capture +
 			" · recall " +
-			(card.policy.recall
-				? "on (" + card.policy.recallLimit + "/" + card.policy.recallChars + ")"
-				: "off") +
+			(card.policy.recall ? `on (${card.policy.recallLimit}/${card.policy.recallChars})` : "off") +
 			" · auto-promote " +
 			(card.policy.autoPromote ? "on" : "off") +
 			" after " +
@@ -737,7 +725,7 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 			(card.policy.jevEnabled ? "on" : "off"),
 	);
 	for (const limitation of pickLimitations(card.limitations, 2))
-		footer.push("Limitation: " + limitation);
+		footer.push(`Limitation: ${limitation}`);
 	const identity = [rows[0]!, ...wrapInsightLines(rows.slice(1, 4), room)];
 	const detailsRows = wrapInsightLines(rows.slice(4), room);
 	const footerRows = wrapInsightLines(footer, room);
@@ -753,7 +741,7 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 			const hidden = id.length - identityCap + 1;
 			id = [
 				...id.slice(0, identityCap - 1),
-				truncateToWidth(hidden + " more record lines — open /ultrathink-ui", room),
+				truncateToWidth(`${hidden} more record lines — open /ultrathink-ui`, room),
 			];
 		}
 		let booked = footerRows;
@@ -765,7 +753,7 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 			const hidden = booked.length - footerBudget + 1;
 			booked = [
 				...booked.slice(0, footerBudget - 1),
-				truncateToWidth(hidden + " more policy and limitation lines — open /ultrathink-ui", room),
+				truncateToWidth(`${hidden} more policy and limitation lines — open /ultrathink-ui`, room),
 			];
 		}
 		return {
@@ -779,7 +767,7 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 		({ id: shownIdentity, footer: shownFooter, available } = fitBookends(1));
 	if (detailsRows.length > available) {
 		const shown = available - 1;
-		const notice = detailsRows.length - shown + " more detail lines — open /ultrathink-ui";
+		const notice = `${detailsRows.length - shown} more detail lines — open /ultrathink-ui`;
 		return [
 			...shownIdentity,
 			...detailsRows.slice(0, shown),

@@ -21,7 +21,7 @@
 	"linter": {
 		"enabled": true,
 		"rules": {
-			"recommended": true,
+			"preset": "recommended",
 			"complexity": { "noCommaOperator": "off", "useOptionalChain": "off" },
 			"correctness": { "noUnsafeOptionalChaining": "off" },
 			"suspicious": {

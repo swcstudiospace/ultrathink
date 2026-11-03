@@ -75,7 +75,7 @@ export function encodeFormUrl(input: string): string {
 export function encodeCss(input: string): string {
 	return input.replace(/[^a-zA-Z0-9]/g, (char) => {
 		const code = char.charCodeAt(0);
-		return "\\" + code.toString(16).padStart(4, "0") + " ";
+		return `\\${code.toString(16).padStart(4, "0")} `;
 	});
 }
 
@@ -97,7 +97,7 @@ export function quoteSqlIdentifier(input: string): string {
  */
 export function escapeShellArg(input: string): string {
 	// Single quote the entire argument and escape any single quotes inside
-	return "'" + input.replace(/'/g, "'\\''") + "'";
+	return `'${input.replace(/'/g, "'\\''")}'`;
 }
 
 /** Characters RFC 4514 requires escaping in a DN value; each is written as a backslash before the character. */
@@ -149,17 +149,17 @@ export function escapeLdapFilter(input: string): string {
 export function escapeXPath(input: string): string {
 	// If string contains no quotes, wrap in single quotes
 	if (!input.includes("'") && !input.includes('"')) {
-		return "'" + input + "'";
+		return `'${input}'`;
 	}
 
 	// If contains only single quotes, wrap in double quotes
 	if (input.includes("'") && !input.includes('"')) {
-		return '"' + input + '"';
+		return `"${input}"`;
 	}
 
 	// If contains only double quotes, wrap in single quotes
 	if (!input.includes("'") && input.includes('"')) {
-		return "'" + input + "'";
+		return `'${input}'`;
 	}
 
 	// Contains both quotes - need to use concat()
@@ -189,12 +189,12 @@ export function escapeXPath(input: string): string {
 			return "'\"'";
 		}
 		// Text segment - alternate quote type
-		const result = useSingleQuote ? "'" + part + "'" : '"' + part + '"';
+		const result = useSingleQuote ? `'${part}'` : `"${part}"`;
 		useSingleQuote = !useSingleQuote;
 		return result;
 	});
 
-	return "concat(" + concatParts.join(", ") + ")";
+	return `concat(${concatParts.join(", ")})`;
 }
 
 /**
@@ -202,7 +202,7 @@ export function escapeXPath(input: string): string {
  */
 export function encodeCsvField(input: string): string {
 	if (/[",\n\r]/.test(input)) {
-		return '"' + input.replace(/"/g, '""') + '"';
+		return `"${input.replace(/"/g, '""')}"`;
 	}
 	return input;
 }
