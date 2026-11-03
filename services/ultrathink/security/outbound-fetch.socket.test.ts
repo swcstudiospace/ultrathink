@@ -11,10 +11,14 @@ import tls from "node:tls";
 import {
 	createOutboundFetchGuard,
 	createPinnedRequest,
+	outboundFetchRuntimeSupported,
 	type GuardedFetch,
 	type OutboundFetchDeps,
 	runningRuntimeVersion,
 } from "./outbound-fetch.ts";
+
+// The guard refuses every connection on a runtime older than Bun 1.2.23 (UNSUPPORTED_RUNTIME), so the real-socket checks need that runtime.
+const SUPPORTED_RUNTIME = outboundFetchRuntimeSupported(Bun.version);
 
 // A public IP literal: the guard validates it and dials it with no DNS lookup. The local server stands in for it.
 const PUBLIC = "93.184.216.34";
@@ -108,6 +112,7 @@ function realSocketGuard(
 }
 
 beforeAll(async () => {
+	if (!SUPPORTED_RUNTIME) return;
 	dir = mkdtempSync(join(tmpdir(), "outbound-socket-test-"));
 	openssl([
 		"req",
@@ -183,6 +188,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+	if (!SUPPORTED_RUNTIME) return;
 	for (const socket of served) socket.destroy();
 	const closing = Promise.withResolvers<void>();
 	server.close(() => closing.resolve());
@@ -190,38 +196,47 @@ afterAll(async () => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-test("delivers the body the local TLS server sends through the real sockets", async () => {
-	const closes: Promise<void>[] = [];
-	const result = await realSocketGuard(POLICY.timeoutMs, closes, new Set())(TARGET);
-	expect(result).toEqual({ ok: true, text: BODY, headers: {} });
-});
+test.skipIf(!SUPPORTED_RUNTIME)(
+	"delivers the body the local TLS server sends through the real sockets",
+	async () => {
+		const closes: Promise<void>[] = [];
+		const result = await realSocketGuard(POLICY.timeoutMs, closes, new Set())(TARGET);
+		expect(result).toEqual({ ok: true, text: BODY, headers: {} });
+	},
+);
 
-test("closes both real sockets and completes the guard result without hanging", async () => {
-	const closes: Promise<void>[] = [];
-	const result = await realSocketGuard(POLICY.timeoutMs, closes, new Set())(TARGET);
-	expect(result.ok).toBe(true);
-	expect(closes).toHaveLength(2);
-	await Promise.all(closes);
-});
-
-test("ends a server that never responds with TIMEOUT when the short policy deadline fires", async () => {
-	const closes: Promise<void>[] = [];
-	const timers = new Set<ArmedTimer>();
-	const sawRequest = Promise.withResolvers<void>();
-	silent = true;
-	onRequest = () => sawRequest.resolve();
-	try {
-		const result = realSocketGuard(SILENT_TIMEOUT_MS, closes, timers)(TARGET);
-		// The request reaching the silent server is the signal to fire the armed deadline by hand.
-		await sawRequest.promise;
-		const deadline = [...timers][0];
-		expect(timers.size).toBe(1);
-		expect(deadline?.delayMs).toBe(SILENT_TIMEOUT_MS);
-		deadline?.run();
-		expect(await result).toEqual({ ok: false, code: "TIMEOUT" });
+test.skipIf(!SUPPORTED_RUNTIME)(
+	"closes both real sockets and completes the guard result without hanging",
+	async () => {
+		const closes: Promise<void>[] = [];
+		const result = await realSocketGuard(POLICY.timeoutMs, closes, new Set())(TARGET);
+		expect(result.ok).toBe(true);
+		expect(closes).toHaveLength(2);
 		await Promise.all(closes);
-	} finally {
-		silent = false;
-		onRequest = undefined;
-	}
-});
+	},
+);
+
+test.skipIf(!SUPPORTED_RUNTIME)(
+	"ends a server that never responds with TIMEOUT when the short policy deadline fires",
+	async () => {
+		const closes: Promise<void>[] = [];
+		const timers = new Set<ArmedTimer>();
+		const sawRequest = Promise.withResolvers<void>();
+		silent = true;
+		onRequest = () => sawRequest.resolve();
+		try {
+			const result = realSocketGuard(SILENT_TIMEOUT_MS, closes, timers)(TARGET);
+			// The request reaching the silent server is the signal to fire the armed deadline by hand.
+			await sawRequest.promise;
+			const deadline = [...timers][0];
+			expect(timers.size).toBe(1);
+			expect(deadline?.delayMs).toBe(SILENT_TIMEOUT_MS);
+			deadline?.run();
+			expect(await result).toEqual({ ok: false, code: "TIMEOUT" });
+			await Promise.all(closes);
+		} finally {
+			silent = false;
+			onRequest = undefined;
+		}
+	},
+);
