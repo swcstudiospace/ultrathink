@@ -339,6 +339,14 @@ function bearerFrom(req: Request): string {
 	return match?.[1] ?? "";
 }
 
+/** The log fields that name a bearer client. The digest covers the full client_id, so IDs that share a long prefix stay distinct after the logger clips strings. */
+export function clientLogFields(clientId: string): { clientId: string; clientIdDigest: string } {
+	return {
+		clientId,
+		clientIdDigest: createHash("sha256").update(clientId).digest("hex").slice(0, 16),
+	};
+}
+
 function rpcError(code: number, message: string): unknown {
 	return { jsonrpc: "2.0", id: null, error: { code, message } };
 }
@@ -1551,7 +1559,7 @@ export function createApp(deps: RouterDeps): App {
 					...(ctx.rpcMethod === undefined ? {} : { rpcMethod: ctx.rpcMethod }),
 					...(ctx.mcpVersion === undefined ? {} : { mcpVersion: ctx.mcpVersion }),
 					...(ctx.tool === undefined ? {} : { tool: ctx.tool }),
-					...(ctx.clientId === undefined ? {} : { clientId: ctx.clientId }),
+					...(ctx.clientId === undefined ? {} : clientLogFields(ctx.clientId)),
 					authKind: ctx.authKind,
 					ip: ctx.ip,
 				};
