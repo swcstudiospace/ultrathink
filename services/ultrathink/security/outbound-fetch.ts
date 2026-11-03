@@ -2,8 +2,13 @@
 // Copyright (C) 2026 SWC Studio
 
 import { Resolver } from "node:dns/promises";
-import { connect as netConnect, isIP } from "node:net";
-import { checkServerIdentity, connect as tlsConnect, type TLSSocket } from "node:tls";
+import { connect as netConnect, isIP, type NetConnectOpts, type Socket } from "node:net";
+import {
+	checkServerIdentity,
+	type ConnectionOptions,
+	connect as tlsConnect,
+	type TLSSocket,
+} from "node:tls";
 import { createSecurityEvent, logSecurityEvent, SecurityEventType } from "./events.ts";
 import { createHttp1Parser, type Http1Sink } from "./http1-response.ts";
 import { bunAtLeast } from "./mtls.ts";
@@ -89,6 +94,12 @@ export interface OutboundFetchDeps {
 	now(): number;
 	schedule(run: () => void, delayMs: number): () => void;
 	runtimeVersion(): string;
+}
+
+/** The two connection primitives a pinned request dials through; nativeDeps supplies node:net and node:tls. */
+interface PinnedTransports {
+	connectTcp(options: NetConnectOpts): Socket;
+	connectTls(options: ConnectionOptions): TLSSocket;
 }
 
 const OUTBOUND_FETCH_MIN_BUN: readonly [number, number, number] = [1, 2, 23];
@@ -402,6 +413,7 @@ function startPinnedHttpsRequest(
 	target: PinnedHttpsTarget,
 	signal: AbortSignal,
 	events: OutboundTransportEvents,
+	transports: PinnedTransports,
 ): OutboundOperation {
 	const stopped = Promise.withResolvers<void>();
 	const request =
@@ -476,10 +488,14 @@ function startPinnedHttpsRequest(
 		confirmStop();
 	}
 	// The only connection: the literal validated address, never a hostname.
-	const tcp = netConnect({ host: target.address, port: target.port, family: target.family });
+	const tcp = transports.connectTcp({
+		host: target.address,
+		port: target.port,
+		family: target.family,
+	});
 	tcp.once("connect", () => {
 		if (destroying) return;
-		const tlsSocket = tlsConnect({
+		const tlsSocket = transports.connectTls({
 			socket: tcp,
 			servername: isIP(target.hostname) === 0 ? target.hostname : "",
 			rejectUnauthorized: true,
@@ -530,9 +546,16 @@ function startPinnedHttpsRequest(
 	return { destroy, stopped: stopped.promise };
 }
 
+/** The pinned request over the given connection primitives. */
+export function createPinnedRequest(
+	transports: PinnedTransports,
+): OutboundFetchDeps["startRequest"] {
+	return (target, signal, events) => startPinnedHttpsRequest(target, signal, events, transports);
+}
+
 const nativeDeps: OutboundFetchDeps = {
 	createResolver: () => new Resolver(),
-	startRequest: startPinnedHttpsRequest,
+	startRequest: createPinnedRequest({ connectTcp: netConnect, connectTls: tlsConnect }),
 	now: () => performance.now(),
 	schedule: (run, delayMs) => {
 		const timer = setTimeout(run, delayMs);
