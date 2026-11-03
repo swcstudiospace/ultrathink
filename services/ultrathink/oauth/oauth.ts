@@ -239,6 +239,7 @@ export interface OAuth {
 	revoke(req: Request, ip?: string): Promise<Response>;
 	verifyAccessToken(token: string): boolean;
 	classifyBearer(token: string | null): "valid" | "invalid" | "absent";
+	clientIdForAccessToken(token: string): string | undefined;
 }
 
 const NO_STORE = {
@@ -1639,6 +1640,13 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		classifyBearer(presented) {
 			if (presented === null || presented === "") return "absent";
 			return verifyAccessToken(presented) ? "valid" : "invalid";
+		},
+		// Read-only: the client an unexpired access token was issued to. It never touches lastUsedAt or prunes.
+		clientIdForAccessToken(presented) {
+			const record = own(data.tokens, digest(presented));
+			if (record !== undefined && record.kind === "access" && record.expiresAt > now())
+				return record.clientId;
+			return undefined;
 		},
 	};
 }

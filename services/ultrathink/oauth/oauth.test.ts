@@ -1893,6 +1893,25 @@ describe("OAuth revocation and bearer classification", () => {
 		h.clock.now += ACCESS_TTL_MS + 1;
 		expect(h.oauth.classifyBearer(tokens.access)).toBe("invalid");
 	});
+
+	test("clientIdForAccessToken names the client of a live access token and changes no record", async () => {
+		const h = await makeHarness();
+		const clientId = await registered(h);
+		const tokens = await grant(h, clientId);
+		// Five minutes later: a write that touched lastUsedAt would show up in the saved records.
+		h.clock.now += 5 * 60 * 1000;
+		const before = JSON.parse(readFileSync(h.statePath, "utf8")) as Record<string, unknown>;
+		expect(h.oauth.clientIdForAccessToken(tokens.access)).toBe(clientId);
+		expect(h.oauth.clientIdForAccessToken(tokens.refresh)).toBeUndefined();
+		expect(h.oauth.clientIdForAccessToken("ut_at_not-a-real-token")).toBeUndefined();
+		// Any later save writes the whole store, so a changed token or grant record would show here.
+		await registered(h);
+		const after = JSON.parse(readFileSync(h.statePath, "utf8")) as Record<string, unknown>;
+		expect(after.tokens).toEqual(before.tokens);
+		expect(after.grants).toEqual(before.grants);
+		h.clock.now += ACCESS_TTL_MS + 1;
+		expect(h.oauth.clientIdForAccessToken(tokens.access)).toBeUndefined();
+	});
 });
 
 describe("OAuth state file", () => {

@@ -177,6 +177,8 @@ interface RequestCtx {
 	peerIp: string;
 	endpoint: Endpoint | "not_found";
 	authKind: AuthKind;
+	/** The OAuth client_id of a bearer-authenticated request; absent otherwise. */
+	clientId?: string;
 	rpcMethod?: string;
 	mcpVersion?: string;
 	tool?: string;
@@ -1320,6 +1322,7 @@ export function createApp(deps: RouterDeps): App {
 			principal = "key:connector";
 		} else if (bearer === "valid") {
 			ctx.authKind = "bearer";
+			ctx.clientId = oauth.clientIdForAccessToken(presented);
 			principal = `bearer:${createHash("sha256").update(presented).digest("hex").slice(0, 16)}`;
 		} else {
 			authFailed(
@@ -1548,6 +1551,7 @@ export function createApp(deps: RouterDeps): App {
 					...(ctx.rpcMethod === undefined ? {} : { rpcMethod: ctx.rpcMethod }),
 					...(ctx.mcpVersion === undefined ? {} : { mcpVersion: ctx.mcpVersion }),
 					...(ctx.tool === undefined ? {} : { tool: ctx.tool }),
+					...(ctx.clientId === undefined ? {} : { clientId: ctx.clientId }),
 					authKind: ctx.authKind,
 					ip: ctx.ip,
 				};
