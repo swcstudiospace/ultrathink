@@ -86,10 +86,20 @@ function realSocketGuard(
 		startRequest: createPinnedRequest({
 			connectTcp: (options) => {
 				const socket = net.connect({ ...options, host: "127.0.0.1", port: serverPort });
-				// Documented shim: the peer pin compares the socket's remoteAddress with the validated literal, and
-				// the real peer is 127.0.0.1, which the guard refuses. The bytes and the TLS session stay real.
-				Object.defineProperty(socket, "remoteAddress", { value: PUBLIC, configurable: true });
 				recordClose(socket, closes);
+				// The real peer must be the local server before the pin is shimmed. A runtime that reports another
+				// remoteAddress or remoteFamily fails here, not behind the shim.
+				socket.once("connect", () => {
+					if (socket.remoteAddress !== "127.0.0.1" || socket.remoteFamily !== "IPv4") {
+						socket.destroy(
+							new Error(`unexpected peer ${socket.remoteAddress} ${socket.remoteFamily}`),
+						);
+						return;
+					}
+					// Documented shim: the peer pin compares the socket's remoteAddress with the validated literal, and
+					// the real peer is 127.0.0.1, which the guard refuses. The bytes and the TLS session stay real.
+					Object.defineProperty(socket, "remoteAddress", { value: PUBLIC, configurable: true });
+				});
 				return socket;
 			},
 			connectTls: (options) => {
