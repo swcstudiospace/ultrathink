@@ -330,7 +330,7 @@ These keys go in the `ship` section of any [config file](configuration.md#config
 | `enabled` | `false` | Add the ship instruction and nudges. |
 | `autoMerge` | `false` | Allow `merge`. When `true` and `judge` is `"gate"`, the assessment also requires the engine judge; a Jev verdict never replaces it. |
 | `judge` | `"gate"` | `"gate"`: the LLM judge must say done with confidence >= 0.7. `"advisory"`: only the rules gate `done`; the judge verdict is recorded and shown in the PR body. The merge gate is unchanged in both modes (see [Done assessment](#done-assessment)). |
-| `deleteBranch` | `false` | Delete the remote and local branch after a confirmed merge. When `false`, the remote branch stays, but the local branch is still deleted when its tip is exactly the merged head and no worktree holding it is dirty. |
+| `deleteBranch` | `false` | Delete the remote and local branch after a confirmed merge. When `false`, nothing is deleted or checked out: both branches stay and the base branch is not checked out. |
 | `skills` | `["gsd-"]` | Skill name prefixes that trigger ship. `[]` matches every planned prompt. |
 | `greptileOrganization` | `""` | Greptile organization id or handle sent with every Greptile API call. `""` lets Greptile pick, which works for single-organization accounts. |
 | `minScore` | `5` | Lowest Greptile score that may merge (1 to 5). |
