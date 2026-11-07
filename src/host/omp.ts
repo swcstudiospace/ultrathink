@@ -115,7 +115,7 @@ import {
 	SYNC_TYPE,
 } from "./omp-render.ts";
 import { resolveStateDir } from "./paths.ts";
-import { planPrompt, type PlanResponse } from "./plan.ts";
+import { planPrompt, wouldSkipPlanning, type PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 import { toActivityNotice } from "./activity-notice.ts";
 import { readActivity } from "../teach/activity.ts";
@@ -263,6 +263,19 @@ type LifecycleEvent =
 /** Omp's public ThinkingLevel shape, using the provider's effort type without loading the agent runtime. */
 type SessionThinkingLevel = Effort | "off" | "inherit";
 
+/** The default ceiling on the provider reasoning of a planning stage call. "inherit" keeps the session's own level, uncapped;
+ * `think.reasoningCeiling` lowers it on purpose, and a lower session level is always kept. */
+export const PLANNING_REASONING_CEILING: Effort | "inherit" = "inherit";
+const EFFORT_ORDER: readonly string[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** The session's effort, lowered to the ceiling when above it; an effort outside the known order is passed through. */
+function cappedEffort(level: Effort, ceiling: Effort | "inherit"): Effort {
+	if (ceiling === "inherit") return level;
+	const have = EFFORT_ORDER.indexOf(level);
+	const cap = EFFORT_ORDER.indexOf(ceiling);
+	return have > cap && cap >= 0 ? ceiling : level;
+}
+
 export interface ExtensionAPI {
 	on(
 		event: "before_agent_start",
@@ -312,6 +325,8 @@ export interface OmpPlanRequest {
 	prompt: string;
 	cwd: string;
 	sessionId: string;
+	/** Receives the uplift-only context once the uplift is final, before the graph; the flight's early delivery uses it. */
+	onUplift?: (handoff: { context: string }) => void;
 	/** The flight's one whole live Model snapshot (D-01); the target every native stage of the flight uses when detected. */
 	model?: Model<Api>;
 	/** Where the live Model was observed: `ctx.model`, else `ctx.models.current()`. */
@@ -368,6 +383,8 @@ export interface NativeEngineDeps {
 	now?: () => number;
 	/** Most concurrent native calls of one flight; never above 3 on Omp. Default 3. */
 	maxConcurrency?: number;
+	/** Highest reasoning effort a planning call uses; default `PLANNING_REASONING_CEILING`. "inherit" leaves the session level alone. */
+	reasoningCeiling?: Effort | "inherit";
 	/**
 	 * The flight's limiter. Absent, the binding creates it and writes it back here; the selection carries it as
 	 * `SelectedEngine.throttle`, which tells the planner this flight already has its one limiter (the think stage builds none).
@@ -382,6 +399,10 @@ export const PENDING =
 
 export const NO_PLAN =
 	"Ultrathink planning produced no plan. Continue with the user's request as written.";
+
+/** Sent after an inline uplift when the rest of the plan could not be built: the uplift stands, so the model goes on with it. */
+export const EARLY_RELEASE =
+	"Planning could not finish the rest of the plan; continue with the uplifted prompt above.";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -764,12 +785,17 @@ export function createNativeEngineSelector(
 ): NativeEngineSelector {
 	// Match Omp's toReasoningEffort/shouldDisableReasoning convention, once for this native binding.
 	const level = request.thinkingLevel;
+	// The chain of thought is written out explicitly, and its depth follows the reasoning level the session chose. A ceiling is
+	// opt-in (think.reasoningCeiling): a lower level makes each of the ~15 stage calls shallower. "inherit" uses the host's default.
+	const ceiling = deps.reasoningCeiling ?? PLANNING_REASONING_CEILING;
 	const thinking: Pick<SimpleStreamOptions, "reasoning" | "disableReasoning"> =
 		level === "off"
 			? { disableReasoning: true }
 			: level === undefined || level === "inherit"
-				? {}
-				: { reasoning: level };
+				? ceiling === "inherit"
+					? {}
+					: { reasoning: ceiling }
+				: { reasoning: cappedEffort(level, ceiling) };
 	// Backoff and cooldown waits go through the injected seam, or the kernel's real wait that ends at once on abort.
 	const kernelSleep: typeof abortableSleep = deps.sleep
 		? (ms, signal) => deps.sleep!(ms, signal ?? flightSignal)
@@ -818,6 +844,9 @@ export function createNativeEngineSelector(
 			const snapshot = model === request.model ? model : snapshotModel(model);
 			// One auth route per flight: the host resolver for exactly this snapshot and session, passed as the callable key.
 			const apiKey = runtime.modelRegistry.resolver(snapshot, sessionId);
+			// One call's bound: claude.callTimeoutMs when it is above zero. A hung provider then fails this attempt; it never cancels
+			// the flight. The default is 0: no per-call timer, so a call runs until it answers or the flight is cancelled.
+			const callTimeoutMs = request.config?.claude.callTimeoutMs ?? 0;
 			return async (system, user, stageSignal) => {
 				const lifetime =
 					stageSignal && stageSignal !== flightSignal
@@ -838,10 +867,11 @@ export function createNativeEngineSelector(
 					const release = await throttle.acquire(lifetime);
 					try {
 						let result: AssistantMessage;
+						const deadline = callTimeoutMs > 0 ? AbortSignal.timeout(callTimeoutMs) : undefined;
 						try {
 							result = await complete(snapshot, context, {
 								apiKey,
-								signal: lifetime,
+								signal: deadline ? AbortSignal.any([lifetime, deadline]) : lifetime,
 								onResponse: (response) => {
 									hintMs = retryAfterOf(response?.headers);
 								},
@@ -851,10 +881,26 @@ export function createNativeEngineSelector(
 						} catch (error) {
 							// A cancelled flight stays a cancellation. A TimeoutError of a live flight (a hung resolver or
 							// request deadline) is a failed attempt, never a silent cancel.
-							if (lifetime.aborted || deps.isCurrent?.() === false || isAbortError(error))
-								throw cancelled();
+							if (lifetime.aborted || deps.isCurrent?.() === false) throw cancelled();
+							if (deadline?.aborted)
+								throw thrownFailure(
+									new Error(`native call timed out after ${callTimeoutMs} ms`),
+									hintMs,
+								);
+							if (isAbortError(error)) throw cancelled();
 							throw thrownFailure(error, hintMs);
 						}
+						// The per-call deadline ended this call, not the flight: a provider that resolves "aborted" on it is a failed attempt.
+						if (
+							deadline?.aborted &&
+							!lifetime.aborted &&
+							deps.isCurrent?.() !== false &&
+							result?.stopReason === "aborted"
+						)
+							throw thrownFailure(
+								new Error(`native call timed out after ${callTimeoutMs} ms`),
+								hintMs,
+							);
 						// A provider that ignores the signal and still answers never turns a cancelled flight into a plan.
 						if (
 							lifetime.aborted ||
@@ -954,6 +1000,10 @@ export function createNativeEnginePlanner(
 				3,
 			),
 			...(request.isCurrent ? { isCurrent: request.isCurrent } : {}),
+			// The configured ceiling reaches every native stage of the flight; a dependency value (tests) still wins.
+			...(native.reasoningCeiling === undefined && request.config
+				? { reasoningCeiling: request.config.think.reasoningCeiling as Effort | "inherit" }
+				: {}),
 		};
 		const selector = request.native
 			? createNativeEngineSelector(request, signal, flightDeps)
@@ -962,6 +1012,7 @@ export function createNativeEnginePlanner(
 			{ host: "omp", session_id: request.sessionId, prompt: request.prompt, cwd: request.cwd },
 			env ?? { ...process.env, ULTRATHINK_HOST: "omp" },
 			{
+				...(request.onUplift ? { onUplift: request.onUplift } : {}),
 				...(selector ? { native: selector } : {}),
 				signal,
 				...(onEvent ? { progress: onEvent } : {}),
@@ -1411,6 +1462,10 @@ export function createOmpExtension(
 			deadlineTimer: NodeJS.Timeout | undefined;
 			/** Pending was returned; the aside is the only delivery. */
 			deferred: boolean;
+			/** The uplift-only context, when it was final before the race ended; the rest of the plan follows as the aside. */
+			early?: { context: string };
+			/** The early context was delivered inline: settle sends the whole final plan as the aside, so the uplift is repeated there. */
+			earlyDelivered?: boolean;
 			/** Start order; only the latest flight writes to the bar store. */
 			generation: number;
 			settled: boolean;
@@ -2427,13 +2482,20 @@ export function createOmpExtension(
 			});
 			barWrite(flight.generation, refreshMcp);
 			if (!flight.deferred) return;
+			// After an inline uplift the model is holding for the rest of the plan, so even an empty final plan sends one aside.
 			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A rejected
 			// send marks the bar aside-failed and keeps `flight.content`, so the plan is not lost.
 			try {
 				await Promise.resolve(
-					pi.sendMessage(planMessage(flight.content || NO_PLAN, flight.view), {
-						deliverAs: "aside",
-					}),
+					pi.sendMessage(
+						planMessage(
+							flight.content || (flight.earlyDelivered ? EARLY_RELEASE : NO_PLAN),
+							flight.view,
+						),
+						{
+							deliverAs: "aside",
+						},
+					),
 				);
 			} catch {
 				// reason: a refused aside must never break the host; it is shown as aside-failed below
@@ -2541,6 +2603,9 @@ export function createOmpExtension(
 						...request,
 						deadline: maxRunMs > 0 ? Date.now() + maxRunMs : undefined,
 						isCurrent: () => !flight.timedOut && !flight.settled && current(flight),
+						onUplift: (handoff) => {
+							flight.early = handoff;
+						},
 					},
 					flight.controller.signal,
 					onEvent,
@@ -2750,6 +2815,19 @@ export function createOmpExtension(
 				const thinkingLevel = namedEngine ? undefined : pi.getThinkingLevel?.();
 				const live = observeLive(ctx);
 				const existing = flights.get(sessionId);
+				// A follow-up the planner would skip (`continue`, an ack, a command) must not cancel the plan still being
+				// built for the real prompt: starting a flight supersedes the old one, and the skipped one delivers nothing.
+				if (
+					existing &&
+					!existing.settled &&
+					!existing.cancelled &&
+					existing.prompt !== prompt &&
+					wouldSkipPlanning(
+						{ prompt, cwd, host: "omp", session_id: sessionId },
+						{ config: captured.config, control: captured.control, stateDir: dir },
+					)
+				)
+					return;
 				let same =
 					existing?.submission === submission && existing.prompt === prompt && existing.cwd === cwd
 						? existing
@@ -2768,7 +2846,8 @@ export function createOmpExtension(
 						same = undefined;
 					}
 				}
-				if (same?.deferred) return same.settled ? undefined : { message: pendingMessage() };
+				if (same?.deferred)
+					return same.settled || same.earlyDelivered ? undefined : { message: pendingMessage() };
 				if (same?.settled)
 					return same.content ? { message: planMessage(same.content, same.view) } : undefined;
 				// The race is armed before the flight starts: launch() runs the planner's synchronous prefix, which must
@@ -2801,6 +2880,17 @@ export function createOmpExtension(
 				if (result === null) {
 					// Delivery only switches to pending and aside; the flight keeps running under its own lifetime.
 					flight.deferred = true;
+					const early = flight.early;
+					if (early) {
+						// A final uplift goes inline now; the whole final plan follows as the one aside.
+						flight.earlyDelivered = true;
+						barWrite(flight.generation, () => store.delivered("inline", undefined, now()));
+						return {
+							message: planMessage(
+								`${early.context}\n\nThe rest of the plan follows as an aside when planning finishes; until then, only read and investigate.`,
+							),
+						};
+					}
 					barWrite(flight.generation, () => store.pending());
 					return { message: pendingMessage() };
 				}
