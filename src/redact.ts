@@ -96,9 +96,10 @@ function redactBearer(text: string): string {
 	});
 }
 
-function isShellReference(text: string, at: number): boolean {
+/** The shell reference that starts at `at` (`$NAME`, `${NAME}` or `$(command)`), or undefined. */
+function shellReferenceAt(text: string, at: number): string | undefined {
 	SHELL_REFERENCE.lastIndex = at;
-	return SHELL_REFERENCE.test(text);
+	return SHELL_REFERENCE.exec(text)?.[0];
 }
 
 function isTemplateReference(text: string, at: number): boolean {
@@ -115,12 +116,13 @@ function assignmentReplacement(
 	valueStart: number,
 ): { replacement: string | undefined; end: number } | undefined {
 	// Template references and JSX props (`key={id}`, `<name>`, `%NAME%`, `TOKEN=$TOKEN`) hold no secret; the value is not
-	// scanned at all. A `$` value is one only when it is a shell reference: `password=$ecr3t123` is a literal secret, and
-	// so is `password=(hunter2)`.
-	if (
-		isTemplateReference(text, valueStart) ||
-		(text[valueStart] === "$" && isShellReference(text, valueStart))
-	)
+	// scanned at all. A `$` value is a reference only when it is a shell reference whose bare name is not credential-shaped:
+	// `password=$SECRET123` is a literal secret, as are `password=$ecr3t123` and `password=(hunter2)`.
+	const reference = text[valueStart] === "$" ? shellReferenceAt(text, valueStart) : undefined;
+	const isEnvReference =
+		reference !== undefined &&
+		!(/^\$[A-Za-z_]/.test(reference) && isCredentialShaped(reference.slice(1)));
+	if (isTemplateReference(text, valueStart) || isEnvReference)
 		return { replacement: undefined, end: valueStart };
 	ASSIGNMENT_VALUE.lastIndex = valueStart;
 	const value = ASSIGNMENT_VALUE.exec(text);

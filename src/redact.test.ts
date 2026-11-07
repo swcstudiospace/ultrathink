@@ -345,3 +345,10 @@ describe("redactSecretShapes: bracketed and percent-quoted values", () => {
 		expect(redactSecretShapes("TOKEN=$GITHUB_TOKEN")).toBe("TOKEN=$GITHUB_TOKEN");
 	});
 });
+
+describe("redactSecretShapes: a bare dollar name is a reference only when it is not credential-shaped", () => {
+	test("a literal secret that starts with a dollar sign and carries digits is masked; a plain environment reference is kept", () => {
+		expect(redactSecretShapes("password=$SECRET123")).not.toContain("SECRET123");
+		expect(redactSecretShapes("TOKEN=$GITHUB_TOKEN")).toBe("TOKEN=$GITHUB_TOKEN");
+	});
+});
