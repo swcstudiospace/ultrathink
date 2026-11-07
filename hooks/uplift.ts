@@ -167,6 +167,7 @@ async function main(): Promise<void> {
 			enabled: state.enabled ?? config.uplift.enabled,
 			skipOnce: armedSkip,
 			skipTrivial: config.uplift.skipTrivial,
+			maxChars: config.uplift.maxChars,
 		},
 	);
 	if (precheck.action !== "uplift") {

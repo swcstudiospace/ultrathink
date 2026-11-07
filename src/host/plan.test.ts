@@ -152,6 +152,36 @@ describe("planPrompt guards (L6-06, L12-06)", () => {
 		expect(readPlanCarrier(stateDir, "engine-session")).toBeUndefined();
 	});
 
+	test("a cancelled turn keeps the carrier even when its skip is an ordinary one: an aborted trivial prompt leaves the previous plan in place", async () => {
+		const env = isolatedPlanEnv(root);
+		const stateDir = join(root, "state");
+		writePlanCarrier({
+			host: "omp",
+			stateDir,
+			sessionId: "cancel-skip-session",
+			context: "plan of the last prompt",
+		});
+		const controller = new AbortController();
+		controller.abort();
+		const response = await planPrompt(
+			{ host: "omp", session_id: "cancel-skip-session", prompt: "ok", cwd: root },
+			env,
+			{
+				config: quietConfig(),
+				control: {},
+				stateDir,
+				signal: controller.signal,
+				selectEngine: () => {
+					throw new Error("selector reached");
+				},
+			},
+		);
+		expect(response.skipped).toBe("precheck-trivial");
+		expect(readPlanCarrier(stateDir, "cancel-skip-session")?.context).toBe(
+			"plan of the last prompt",
+		);
+	});
+
 	test("a cancelled turn leaves the carrier alone: a newer prompt in the session may already own it", async () => {
 		const env = isolatedPlanEnv(root);
 		const stateDir = join(root, "state");

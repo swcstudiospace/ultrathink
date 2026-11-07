@@ -421,7 +421,9 @@ export async function planPrompt(
 	options: PlanOptions = {},
 ): Promise<PlanResponse> {
 	const response = await planPromptTurn(request, env, options);
-	if (response.skipped !== undefined && response.skipped !== "aborted" && !request.invalidHost)
+	// A cancelled turn leaves the carrier alone whatever its skip reason: a newer prompt in the session may already own it.
+	const cancelled = response.skipped === "aborted" || options.signal?.aborted === true;
+	if (response.skipped !== undefined && !cancelled && !request.invalidHost)
 		clearTurnCarrier(request, env, options);
 	return response;
 }

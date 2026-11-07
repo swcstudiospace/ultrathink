@@ -107,6 +107,7 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 	async function runGrokHook(
 		prompt: string,
 		arm: boolean,
+		config?: Record<string, unknown>,
 	): Promise<{
 		out: string;
 		err: string;
@@ -119,6 +120,10 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 			const stateDir = join(dir, "state");
 			mkdirSync(home, { recursive: true });
 			mkdirSync(stateDir, { recursive: true });
+			if (config) {
+				mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
+				writeFileSync(join(home, ".config", "ultrathink", "config.json"), JSON.stringify(config));
+			}
 			if (arm) armSkipOnce(stateDir, "s1");
 			const proc = Bun.spawn(["bun", "--no-env-file", join(HOOKS, "uplift.ts")], {
 				stdin: new Blob([
@@ -159,6 +164,11 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 
 	test("an acknowledgement is skipped before any engine lookup, so no login notice is printed", async () => {
 		const { out } = await runGrokHook("ok", false);
+		expect(out).toBe("");
+	}, 60_000);
+
+	test("a prompt over uplift.maxChars is skipped before any engine lookup, so no login notice is printed", async () => {
+		const { out } = await runGrokHook("x".repeat(200), false, { uplift: { maxChars: 50 } });
 		expect(out).toBe("");
 	}, 60_000);
 
