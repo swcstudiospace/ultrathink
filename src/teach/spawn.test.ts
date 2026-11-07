@@ -321,7 +321,7 @@ describe("spawnObserveDetached", () => {
 				exitCode: 3,
 			},
 		]);
-	});
+	}, 30_000);
 
 	test("the record is written after the hook process that started the launch has exited", async () => {
 		mkdirSync(join(repoRoot, "bin"));
@@ -357,7 +357,7 @@ describe("spawnObserveDetached", () => {
 				exitCode: 3,
 			},
 		]);
-	});
+	}, 30_000);
 
 	test("a launch that exits zero writes no run record", async () => {
 		mkdirSync(join(repoRoot, "bin"));

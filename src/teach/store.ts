@@ -249,6 +249,15 @@ function opKey(op: OutboxOp): string {
 	return JSON.stringify(op);
 }
 
+/** The order `list()` returns: most recently seen first, then newest created, then by id. Ranking ties keep this order. */
+export function newestFirst(a: TeachableMoment, b: TeachableMoment): number {
+	return (
+		Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt) ||
+		Date.parse(b.createdAt) - Date.parse(a.createdAt) ||
+		(a.id < b.id ? -1 : 1)
+	);
+}
+
 export function openStore(dir: string): TeachStore {
 	if (isPlanningPath(dir)) throw new Error("the teach store must not live under .planning");
 	const momentsDir = join(dir, "moments");
@@ -266,12 +275,16 @@ export function openStore(dir: string): TeachStore {
 			const moment = read(id);
 			if (moment) moments.push(moment);
 		}
-		return moments.sort(
-			(a, b) =>
-				Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt) ||
-				Date.parse(b.createdAt) - Date.parse(a.createdAt) ||
-				(a.id < b.id ? -1 : 1),
-		);
+		return moments.sort(newestFirst);
+	}
+
+	/** The moments one at a time, yielding to the event loop before each file is read. */
+	async function* scanYielding(): AsyncGenerator<TeachableMoment> {
+		for (const id of recordIds(momentsDir)) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const moment = read(id);
+			if (moment) yield moment;
+		}
 	}
 
 	function outbox(): OutboxEntry[] {
@@ -291,6 +304,7 @@ export function openStore(dir: string): TeachStore {
 	return {
 		dir,
 		list,
+		scanYielding,
 		get: read,
 		has(id) {
 			if (!isValidId(id)) return false;
