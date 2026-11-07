@@ -44,7 +44,7 @@ export interface Github {
 	deleteRemoteBranch(branch: string): { ok: boolean; error?: string };
 	comment(number: number, body: string): { ok: boolean; error?: string };
 	mergeMethods(): ShipConfig["mergeMethod"][];
-	/** Checks out `base` and fast-forwards it; then deletes the local `branch` only when it is fully merged or its tip is `headSha`. */
+	/** Fast-forwards the local `base` when no worktree has it checked out, then deletes the local `branch` when it is not checked out and is fully merged or its tip is `headSha`. */
 	syncBase(input: { base: string; branch: string; headSha?: string }): {
 		ok: boolean;
 		error?: string;
@@ -447,13 +447,17 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 		syncBase({ base, branch, headSha }) {
 			const bad = badBranch(branch) ?? badBranch(base);
 			if (bad) return { ok: false, error: bad };
-			const checkout = exec(["git", "checkout", base]);
-			if (checkout.exitCode !== 0) return { ok: false, error: errorOf(checkout) };
-			const pull = exec(["git", "pull", "--ff-only", "origin", base], {
-				timeoutMs: LONG_TIMEOUT_MS,
-			});
-			if (pull.exitCode !== 0) return { ok: false, error: errorOf(pull) };
+			// A base that a worktree has checked out is left alone: the user's working tree is never touched. Otherwise
+			// its local ref fast-forwards by fetch, which refuses anything that is not a fast-forward.
 			const current = exec(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
+			const listed = exec(["git", "worktree", "list", "--porcelain", "-z"]);
+			if (listed.exitCode !== 0) return { ok: false, error: errorOf(listed) };
+			if (worktreesOn(listed.stdout, `refs/heads/${base}`).length === 0) {
+				const update = exec(["git", "fetch", "origin", `refs/heads/${base}:refs/heads/${base}`], {
+					timeoutMs: LONG_TIMEOUT_MS,
+				});
+				if (update.exitCode !== 0) return { ok: false, error: errorOf(update) };
+			}
 			const tip = exec(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
 			if (tip.exitCode !== 0 || current === branch) return { ok: true };
 			// A squash/rebase merge leaves the branch "unmerged" for `-d`; its tip being exactly the merged head proves
