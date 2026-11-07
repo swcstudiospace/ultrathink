@@ -314,7 +314,7 @@ describe("runControl", () => {
 		expect(status).toContain(`State: ${io.stateDir}`);
 		expect(await runControl([], io)).toBe(status);
 
-		projectConfig({ notion: { dataSourceUrl: "collection://abc" }, linear: { team: "Acme" } });
+		userServices({ notion: { dataSourceUrl: "collection://abc" }, linear: { team: "Acme" } });
 		const configured = await runControl(["status"], io);
 		expect(configured).toContain("Tracking: on (Linear/Notion rows)");
 		expect(configured).toContain("Notion: collection://abc");
@@ -329,9 +329,10 @@ describe("runControl", () => {
 	test("tracking reads off only when no rows are wanted; config or ULTRATHINK_TRACK=0 leaves them to kickoff", async () => {
 		const kickoff =
 			"Tracking: kickoff (planner-side row creation off; /ultrathink-track off stops all rows)";
-		projectConfig({ linear: { team: "Acme" }, track: { enabled: false } });
+		userServices({ linear: { team: "Acme" } });
+		projectConfig({ track: { enabled: false } });
 		expect(await runControl(["status"], io)).toContain(kickoff);
-		projectConfig({ linear: { team: "Acme" } });
+		userServices({ linear: { team: "Acme" } });
 		process.env.ULTRATHINK_TRACK = "0";
 		expect(await runControl(["track"], io)).toStartWith(kickoff);
 		expect(await runControl(["track", "on"], io)).toStartWith(kickoff);
@@ -361,9 +362,12 @@ describe("runControl", () => {
 
 	test("status shows ship as off by default, its merge settings when enabled, and off again under ULTRATHINK_SHIP=0", async () => {
 		expect(await statusLine("Ship:")).toBe("Ship: off (opt-in: set ship.enabled)");
-		projectConfig({ ship: { enabled: true } });
-		expect(await statusLine("Ship:")).toBe("Ship: on · auto-merge off · delete branch off");
+		// A repository file cannot enable ship or set its merge settings: those come from the user layer only.
 		projectConfig({ ship: { enabled: true, autoMerge: true, deleteBranch: true } });
+		expect(await statusLine("Ship:")).toBe("Ship: off (opt-in: set ship.enabled)");
+		userServices({ ship: { enabled: true } });
+		expect(await statusLine("Ship:")).toBe("Ship: on · auto-merge off · delete branch off");
+		userServices({ ship: { enabled: true, autoMerge: true, deleteBranch: true } });
 		expect(await statusLine("Ship:")).toBe("Ship: on · auto-merge on · delete branch on");
 		process.env.ULTRATHINK_SHIP = "0";
 		expect(await statusLine("Ship:")).toBe("Ship: off (ULTRATHINK_SHIP=0)");
@@ -373,7 +377,12 @@ describe("runControl", () => {
 		expect(await statusLine("Knowledge base:")).toBe(
 			"Knowledge base: off (opt-in: set hitl.knowledgeBase)",
 		);
+		// A repository file cannot opt the knowledge base in: that would send repository content to Greptile with your credential.
 		projectConfig({ hitl: { knowledgeBase: true } });
+		expect(await statusLine("Knowledge base:")).toBe(
+			"Knowledge base: off (opt-in: set hitl.knowledgeBase)",
+		);
+		userServices({ hitl: { knowledgeBase: true } });
 		expect(await statusLine("Knowledge base:")).toBe(
 			"Knowledge base: on · no Greptile credential (run bin/ultrathink-mcp auth login greptile)",
 		);
@@ -382,7 +391,7 @@ describe("runControl", () => {
 			providers: { greptile: { kind: "api_key", apiKey: "test-key", updatedAt: 1 } },
 		});
 		expect(await statusLine("Knowledge base:")).toBe("Knowledge base: on · Greptile");
-		projectConfig({ hitl: { knowledgeBase: true }, ship: { greptileOrganization: "acme" } });
+		userServices({ hitl: { knowledgeBase: true }, ship: { greptileOrganization: "acme" } });
 		expect(await statusLine("Knowledge base:")).toBe(
 			"Knowledge base: on · Greptile · organization acme",
 		);
@@ -390,10 +399,8 @@ describe("runControl", () => {
 		expect(await statusLine("Knowledge base:")).toBe(
 			"Knowledge base: on · not read while HITL is off",
 		);
-		projectConfig({
-			hitl: { enabled: false, knowledgeBase: true },
-			ship: { greptileOrganization: "acme" },
-		});
+		projectConfig({ hitl: { enabled: false, knowledgeBase: true } });
+		userServices({ hitl: { knowledgeBase: true }, ship: { greptileOrganization: "acme" } });
 		await runControl(["hitl", "on"], io);
 		expect(await statusLine("Knowledge base:")).toBe(
 			"Knowledge base: on · Greptile · organization acme",

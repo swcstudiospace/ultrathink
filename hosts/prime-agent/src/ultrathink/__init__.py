@@ -402,11 +402,13 @@ def _read_carrier(path: Path) -> dict[str, Any] | None:
 
 
 def last(env: dict[str, str] | None = None, session_id: str | None = None) -> dict[str, Any] | None:
-	"""The carrier of a session's last planned prompt (``last-plan.<session>.json``: session, spec path, graph id,
-	context), or None. A named ``session_id`` reads that session's file only, and a file that names another session is
-	never returned. Without one, this kernel's session is read first; failing that, the single-file carrier of an
-	earlier build is returned only while no session has a carrier of its own, and, for a known session, only when it names
-	that session, so one state directory shared by several sessions never hands out another session's plan."""
+	"""The carrier of this session's latest prompt (``last-plan.<session>.json``: session, spec path, graph id, context),
+	or None. A turn that planned nothing removes that carrier, so the latest prompt reads as None; the one exception is an
+	earlier build's single-file carrier that names this session, which the stale sweep removes after 24 h. A named
+	``session_id`` reads that session's file only, and a file that names another session is never returned. Without one,
+	this kernel's session is read first; failing that, the single-file carrier of an earlier build is returned only while no
+	session has a carrier of its own, and, for a known session, only when it names that session, so one state directory
+	shared by several sessions never hands out another session's plan."""
 	directory = state_dir(env)
 	session = session_id or _kernel_session(env)
 	if session:
@@ -428,7 +430,7 @@ def last(env: dict[str, str] | None = None, session_id: str | None = None) -> di
 
 
 def spec(env: dict[str, str] | None = None, session_id: str | None = None) -> str | None:
-	"""The XML spec of this session's last planned prompt, or None."""
+	"""The XML spec of this session's latest prompt, or None when that turn planned nothing (see ``last``)."""
 	carrier = last(env, session_id)
 	return _read_text(carrier.get("specPath")) if carrier else None
 

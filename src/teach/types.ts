@@ -346,6 +346,8 @@ export interface TeachStore {
 	/** `<stateDir>/teach`. */
 	readonly dir: string;
 	list(): TeachableMoment[];
+	/** The moments one at a time, yielding to the event loop before each file: the plan path reads through this. */
+	scanYielding(): AsyncIterable<TeachableMoment>;
 	get(id: string): TeachableMoment | undefined;
 	/** True when a moment record for `id` exists on disk, readable or not; true on any error other than "does not exist" (uncertainty must never look like a removal). */
 	has(id: string): boolean;
