@@ -13,7 +13,7 @@ export interface UpliftResult {
 	original: string;
 	root: string;
 	source: "llm" | "fallback";
-	/** Why the uplift fell back: `provider_error:<http status>`, `provider_error`, `empty_reply`, `truncated_reply`, `unparseable_reply` or `input_over_limit`. Absent for `llm`. */
+	/** Why the uplift fell back: `provider_error:<http status>`, `provider_error`, `empty_reply`, `truncated_reply`, `unparseable_reply`, or, on older records only, `input_over_limit`. Absent for `llm`. */
 	fallbackReason?: string;
 	/** Characters in the raw model reply; 0 when there was no reply. */
 	rawReplyChars?: number;
@@ -87,6 +87,8 @@ export interface UpliftState {
 	enabled: boolean;
 	skipOnce: boolean;
 	skipTrivial: boolean;
+	/** uplift.maxChars: a prompt longer than this is skipped before any provider call; absent or 0 means no limit. */
+	maxChars?: number;
 }
 
 export type UpliftDecision =

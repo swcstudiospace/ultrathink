@@ -153,15 +153,20 @@ function predecessorBlock(graph: ThoughtGraph, node: ThoughtNode): string {
 		.join("\n\n");
 }
 
+/** The uplift XML without its ORIGINAL element: each payload carries the prompt once, as the caller's own copy. */
+function xmlWithoutOriginal(xml: string): string {
+	return xml.replace(/<ORIGINAL>[\s\S]*?<\/ORIGINAL>\n?/g, "");
+}
+
 function graphUserPayload(uplift: UpliftResult): string {
-	return `${uplift.original}\n\n${uplift.xml}`;
+	return `${uplift.original}\n\n${xmlWithoutOriginal(uplift.xml)}`;
 }
 
 function cotUserPayload(uplift: UpliftResult, graph: ThoughtGraph, node: ThoughtNode): string {
 	return [
 		`<original>${escapeXml(uplift.original)}</original>`,
 		"",
-		uplift.xml,
+		xmlWithoutOriginal(uplift.xml),
 		"",
 		`<graph_goal>${escapeXml(graph.goal)}</graph_goal>`,
 		"<graph>",
@@ -354,6 +359,19 @@ function noteRepairSkipped(ctx: FillContext): void {
 }
 
 /**
+ * The graph call failed with a provider report, so the provider is down: a fill per node would only repeat that failure.
+ * Every node is failed at once with the cause, and the repair pass is skipped with the other all-failed runs.
+ */
+function skipFillsAfterGraphFailure(ctx: FillContext, graph: ThoughtGraph, failure: string): void {
+	const cause = clip(`graph call failed: ${failure}`, CAUSE_MAX_CHARS).text;
+	for (const node of graph.nodes) {
+		ctx.failed.add(node.id);
+		ctx.providerFailed.add(node.id);
+		ctx.causes.set(node.id, cause);
+	}
+}
+
+/**
  * One more single attempt, in dependency order, for every still-failed node and for every node downstream of a node
  * the pass just repaired (it was filled while that predecessor was unavailable). A successor whose refill fails keeps
  * its earlier real fill.
@@ -428,7 +446,9 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 
 	const repaired: string[] = [];
 	try {
-		if (concurrency === 1) {
+		if (built.failure !== undefined) {
+			skipFillsAfterGraphFailure(ctx, graph, built.failure);
+		} else if (concurrency === 1) {
 			for (let index = 0; index < graph.nodes.length; index++) {
 				const node = graph.nodes[index]!;
 				ctx.progress(`Node detail n${index + 1}/${graph.nodes.length} · ${node.kind}…`);

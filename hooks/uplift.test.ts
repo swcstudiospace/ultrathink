@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { armSkipOnce, readSkipOnce } from "../src/claude/state.ts";
+import { carrierPathFor, writePlanCarrier } from "../src/host/carrier.ts";
 
 const HOOKS = import.meta.dir;
 const ENTRYPOINTS = ["uplift.ts", "stop.ts", "answers.ts", "flow-eval.ts", "pr-sync.ts"] as const;
@@ -21,7 +22,7 @@ describe("emit", () => {
 				`import { emit } from ${JSON.stringify(join(HOOKS, "uplift.ts"))};\n` +
 					`emit(JSON.stringify({ systemMessage: "x".repeat(400_000) })).finally(() => process.exit(0));\n`,
 			);
-			const proc = Bun.spawn(["bun", "--no-env-file", script], {
+			const proc = Bun.spawn([process.execPath, "--no-env-file", script], {
 				stdout: "pipe",
 				stderr: "pipe",
 				env: { ...process.env, ULTRATHINK_HOST: "claude-code" },
@@ -64,6 +65,9 @@ describe("hook entrypoints", () => {
 	for (const name of ENTRYPOINTS) {
 		const source = readFileSync(join(HOOKS, name), "utf8");
 
+		// Wiring guards, kept on purpose: a console.log or stdout write followed by process.exit truncates output past the
+		// pipe buffer (see the 400,000-byte test above). Only a real envelope reaches each entry's output path, and no
+		// envelope-free behavior test can force that path, so the source shape is pinned here.
 		test(`${name} writes stdout only through an awaited Bun.write`, () => {
 			expect(source).not.toMatch(/console\.log\(/);
 			expect(source).not.toMatch(/process\.stdout\.write\(/);
@@ -73,6 +77,28 @@ describe("hook entrypoints", () => {
 			expect(source).toContain("installChildReaper({ signals: true })");
 			expect(source).toMatch(/\.finally\(\(\) => \{?\s*process\.exit\(0\)/);
 		});
+
+		test(`${name} exits 0 and writes nothing to stdout without an envelope`, async () => {
+			const dir = mkdtempSync(join(tmpdir(), "ultrathink-entry-"));
+			try {
+				const proc = Bun.spawn([process.execPath, "--no-env-file", join(HOOKS, name)], {
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+					env: {
+						...process.env,
+						HOME: join(dir, "home"),
+						ULTRATHINK_STATE_DIR: join(dir, "state"),
+						ULTRATHINK_HOST: "claude-code",
+					},
+				});
+				const out = await new Response(proc.stdout).text();
+				expect(await proc.exited).toBe(0);
+				expect(out).toBe("");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		}, 60_000);
 	}
 });
 
@@ -191,8 +217,51 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 	}, 90_000);
 });
 
+describe("a turn that plans nothing leaves no carrier behind, on every hook host", () => {
+	test("a Claude Code skip (a trivial acknowledgement) clears the session's carrier", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-carrier-"));
+		try {
+			const home = join(dir, "home");
+			const stateDir = join(dir, "state");
+			mkdirSync(home, { recursive: true });
+			mkdirSync(stateDir, { recursive: true });
+			writePlanCarrier({
+				host: "claude-code",
+				stateDir,
+				sessionId: "s1",
+				context: "plan of the last prompt",
+			});
+			const carrier = carrierPathFor(stateDir, "s1");
+			expect(existsSync(carrier)).toBe(true);
+			const proc = Bun.spawn([process.execPath, "--no-env-file", join(HOOKS, "uplift.ts")], {
+				stdin: new Blob([
+					JSON.stringify({
+						session_id: "s1",
+						hook_event_name: "UserPromptSubmit",
+						cwd: dir,
+						prompt: "ok",
+					}),
+				]),
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					PATH: process.env.PATH ?? "",
+					HOME: home,
+					ULTRATHINK_STATE_DIR: stateDir,
+					ULTRATHINK_HOST: "claude-code",
+				},
+			});
+			await new Response(proc.stdout).text();
+			expect(await proc.exited).toBe(0);
+			expect(existsSync(carrier)).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
+});
+
 describe("a provider that answers 429 forever, through the real hook entry and the real Claude completer", () => {
-	test("the record says provider_error:429 after 3 attempts, the clarify stage is skipped, and no fill is retried a second time", async () => {
+	test("the record says provider_error:429 after 3 attempts, the clarify stage is skipped, and no fill is requested after the graph call fails", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-429-"));
 		try {
 			const home = join(dir, "home");
@@ -238,9 +307,9 @@ describe("a provider that answers 429 forever, through the real hook entry and t
 			expect(record.result.fallbackReason).toBe("provider_error:429");
 			expect(record.result.attempts).toBe(3);
 			expect(record.degraded).toContain("clarify");
-			// uplift 3 + graph 3 + five fills at 3 attempts each: the fill layer does not retry what the completer retried,
-			// the repair pass does not run against a dead provider and clarify is skipped (39 calls before).
-			expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(21);
+			// uplift 3 + graph 3 and nothing else: after the graph call fails with a provider report, no fill is requested
+			// (every node is marked failed with that cause) and the repair pass does not run against the dead provider.
+			expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(6);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

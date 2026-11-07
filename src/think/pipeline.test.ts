@@ -401,6 +401,30 @@ describe("runThink resilience", () => {
 		expect(unparseable.degraded.graphFailure).toBeUndefined();
 	});
 
+	test("a graph call that failed with a provider report skips every node fill: no fill is requested and each node is marked failed", async () => {
+		let fillRequests = 0;
+		const result = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) => {
+				if (user.includes("current_node")) {
+					fillRequests += 1;
+					return fillXml("c");
+				}
+				const error = transient("rate limited");
+				attachReport(error, { attempts: 3, httpStatus: 429 });
+				throw error;
+			},
+		});
+		expect(fillRequests).toBe(0);
+		expect(result.degraded.graphFailure).toContain("rate limited");
+		expect(result.degraded.fills).toHaveLength(5);
+		for (const cause of Object.values(result.degraded.causes ?? {})) {
+			expect(cause).toContain("graph call failed");
+			expect(cause.length).toBeLessThanOrEqual(200);
+		}
+	});
+
 	test("a rejected fill (refusal, truncated or malformed) is retried up to 1 + fillRetries at the fill layer", async () => {
 		const calls = new Map<string, number>();
 		const complete = async (_system: string, user: string): Promise<string> => {

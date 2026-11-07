@@ -2420,6 +2420,22 @@ describe("Jev plan gate", () => {
 		}
 	});
 
+	test("a prompt over uplift.maxChars makes no Jev request and no brief, knowledge, engine or tracker call", async () => {
+		const config = onConfig();
+		config.uplift.maxChars = 10;
+		const R = recordingFetch([JEV(0.97)]);
+		const h = jevHarness(config, R.fetch);
+		try {
+			const result = await runPromptSubmit({ ...input, prompt: NEW_WORK }, h.deps);
+			expect(R.calls).toHaveLength(0);
+			expect(h.calls).toEqual({ engine: 0, track: 0, brief: 0, knowledge: 0 });
+			expect(result.skipped).toBe("over-max-chars");
+			expect(result.notice).toContain("uplift.maxChars");
+		} finally {
+			h.cleanup();
+		}
+	});
+
 	test("a skill invocation (gsd-quick) bypasses the gate with zero requests and still plans with the skill (AC-3.6)", async () => {
 		const R = recordingFetch([JEV(0.01)]);
 		const h = jevHarness(onConfig(), R.fetch);
@@ -4368,6 +4384,63 @@ describe("honest degradation (98-04)", () => {
 			// The completer acquires from `owned` per call: a second slot taken by the fills would deadlock at a limit of one.
 			expect(seen).toBeDefined();
 			expect(seen?.throttle).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("an early-delivery host gets the uplift once, before the graph, and the handoff carries no graph block", async () => {
+		const early: string[] = [];
+		const { deps, cleanup } = baseDeps({
+			complete: smartComplete(),
+			onUplift: (handoff) => {
+				early.push(handoff.context);
+			},
+		});
+		try {
+			await runPromptSubmit(input, deps);
+			expect(early).toHaveLength(1);
+			expect(early[0]).toContain("add a widget");
+			expect(early[0]).not.toContain("<GRAPH_OF_THOUGHT");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("no early handoff when think is off, or when the planner skips the prompt", async () => {
+		const early: string[] = [];
+		const onUplift = (handoff: { context: string }) => {
+			early.push(handoff.context);
+		};
+		const off = baseDeps({ complete: smartComplete(), control: { thinkEnabled: false }, onUplift });
+		const skipped = baseDeps({ complete: smartComplete(), onUplift });
+		try {
+			await runPromptSubmit(input, off.deps);
+			await runPromptSubmit({ ...input, prompt: "ok" }, skipped.deps);
+			expect(early).toEqual([]);
+		} finally {
+			off.cleanup();
+			skipped.cleanup();
+		}
+	});
+
+	test("a prompt over uplift.maxChars makes no provider call and says why it runs unplanned", async () => {
+		const config = trackedConfig();
+		config.uplift.maxChars = 10;
+		let calls = 0;
+		const answer = smartComplete();
+		const { deps, cleanup } = baseDeps({
+			config,
+			complete: async (system, user) => {
+				calls += 1;
+				return answer(system, user);
+			},
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(calls).toBe(0);
+			expect(result.skipped).toBe("over-max-chars");
+			expect(result.notice).toContain("uplift.maxChars");
 		} finally {
 			cleanup();
 		}

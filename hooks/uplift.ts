@@ -86,7 +86,7 @@ async function main(): Promise<void> {
 	};
 	if (process.env.ULTRATHINK_UPLIFT === "0") {
 		noteSkip("ULTRATHINK_UPLIFT=0");
-		if (detectHost() === "grok-build") clearCarrier(defaultStateDir());
+		clearCarrier(defaultStateDir());
 		return;
 	}
 	if (raw.hook_event_name && raw.hook_event_name !== "UserPromptSubmit") return;
@@ -106,11 +106,11 @@ async function main(): Promise<void> {
 	const command = parseUltrathinkCommand(raw.prompt ?? "");
 	if (command?.verb === "quick") {
 		noteSkip("quick");
-		if (grok) clearCarrier(stateDir);
+		clearCarrier(stateDir);
 		return;
 	}
 	if (command) {
-		if (grok) clearCarrier(stateDir);
+		clearCarrier(stateDir);
 		const reason = await runControl([command.verb, ...command.args.split(/\s+/).filter(Boolean)], {
 			stateDir,
 			cwd,
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
 		// must not wait on the engine.
 		if ("skip" in target) {
 			noteSkip(target.skip, stateDir);
-			if (grok) clearCarrier(stateDir);
+			clearCarrier(stateDir);
 			return;
 		}
 		// Every accepted target, skill or text-only, is what is planned (as on Omp): a rewritten `/word …` no longer begins with `/`.
@@ -149,9 +149,10 @@ async function main(): Promise<void> {
 			noteSkip("duplicate-hook");
 			return;
 		}
-		// Start the owned turn with no carrier: every exit below that plans nothing leaves none.
-		clearCarrier(stateDir);
 	}
+	// Start the owned turn with no carrier: every exit below that plans nothing leaves none, because a reader takes the file
+	// as the session's current plan (the Grok Build rule, Prime Agent's spec()).
+	clearCarrier(stateDir);
 	const config = loadConfig(claudeConfigPaths(cwd));
 	const state = readControl(stateDir, { log });
 	// Read before the engine wait: a /ultrathink-skip typed while the engine is selected is for this session's next prompt.

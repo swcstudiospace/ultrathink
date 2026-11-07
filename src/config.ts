@@ -47,8 +47,10 @@ import {
 	MAX_NODES,
 	MIN_NODES,
 	THINK_ENGINES,
+	THINK_REASONING_CEILINGS,
 	type ThinkConfig,
 	type ThinkEngine,
+	type ThinkReasoningCeiling,
 } from "./think/types.ts";
 import { type HostId, isHostId } from "./host/types.ts";
 import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
@@ -211,7 +213,7 @@ interface ModelsConfig {
 export type LegacyModelProvenance = "route-default" | "file-pin" | "explicit-blank";
 
 export interface UltrathinkConfig {
-	uplift: { enabled: boolean; skipTrivial: boolean; echo: boolean };
+	uplift: { enabled: boolean; skipTrivial: boolean; echo: boolean; maxChars: number };
 	claude: ClaudeConfig;
 	grok: GrokConfig;
 	hitl: HitlConfig;
@@ -259,12 +261,14 @@ export function defaultConfig(): UltrathinkConfig {
 			enabled: true,
 			skipTrivial: true,
 			echo: true,
+			maxChars: 0,
 		},
 		think: {
 			enabled: true,
 			minNodes: MIN_NODES,
 			maxNodes: MAX_NODES,
 			engine: "auto",
+			reasoningCeiling: "inherit",
 			...THINK_RESILIENCE_DEFAULTS,
 		},
 		claude: { ...DEFAULT_CLAUDE_CONFIG },
@@ -297,6 +301,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function mergeUplift(
 	uplift: Record<string, unknown> | undefined,
 	defaults: UltrathinkConfig["uplift"],
+	project = false,
 ): UltrathinkConfig["uplift"] {
 	if (!uplift) return defaults;
 	return {
@@ -304,6 +309,13 @@ function mergeUplift(
 		skipTrivial:
 			typeof uplift.skipTrivial === "boolean" ? uplift.skipTrivial : defaults.skipTrivial,
 		echo: typeof uplift.echo === "boolean" ? uplift.echo : defaults.echo,
+		maxChars:
+			!project &&
+			typeof uplift.maxChars === "number" &&
+			Number.isInteger(uplift.maxChars) &&
+			uplift.maxChars >= 0
+				? uplift.maxChars
+				: defaults.maxChars,
 	};
 }
 
@@ -336,6 +348,11 @@ function mergeThink(
 		engine: THINK_ENGINES.includes(think.engine as ThinkEngine)
 			? (think.engine as ThinkEngine)
 			: defaults.engine,
+		reasoningCeiling: THINK_REASONING_CEILINGS.includes(
+			think.reasoningCeiling as ThinkReasoningCeiling,
+		)
+			? (think.reasoningCeiling as ThinkReasoningCeiling)
+			: defaults.reasoningCeiling,
 		fillRetries,
 		repair,
 	};
@@ -351,6 +368,17 @@ function nonNegativeMs(value: unknown, fallback: number): number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0
 		? Math.min(value, MAX_TIMER_MS)
 		: fallback;
+}
+
+/**
+ * A call timer a project file sets can only shorten a bound the earlier files set. A project `0` (no timer) or an unusable
+ * value keeps the earlier value, so a repository cannot remove a bound by writing `0` (K5).
+ */
+function projectTimerMs(value: unknown, base: number, project: boolean): number {
+	if (!project) return nonNegativeMs(value, base);
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return base;
+	const capped = Math.min(value, MAX_TIMER_MS);
+	return base > 0 ? Math.min(base, capped) : capped;
 }
 
 /** `project` (a repository-controlled layer) cannot choose the executable or its setting sources; model/effort/timers stay open. */
@@ -378,8 +406,8 @@ function mergeClaude(
 			!project && typeof claude.settingSources === "string"
 				? claude.settingSources.trim()
 				: defaults.settingSources,
-		callTimeoutMs: nonNegativeMs(claude.callTimeoutMs, defaults.callTimeoutMs),
-		budgetMs: nonNegativeMs(claude.budgetMs, defaults.budgetMs),
+		callTimeoutMs: projectTimerMs(claude.callTimeoutMs, defaults.callTimeoutMs, project),
+		budgetMs: projectTimerMs(claude.budgetMs, defaults.budgetMs, project),
 		concurrency: Math.max(1, Math.floor(positive(claude.concurrency, defaults.concurrency))),
 		echo: typeof claude.echo === "boolean" ? claude.echo : defaults.echo,
 	};
@@ -424,7 +452,7 @@ function mergeGrok(
 			: defaults.transport,
 		bin: project ? defaults.bin : nonEmpty(grok.bin, defaults.bin),
 		home: !project && typeof grok.home === "string" ? grok.home.trim() : defaults.home,
-		callTimeoutMs: nonNegativeMs(grok.callTimeoutMs, defaults.callTimeoutMs),
+		callTimeoutMs: projectTimerMs(grok.callTimeoutMs, defaults.callTimeoutMs, project),
 		fallbackToClaude:
 			typeof grok.fallbackToClaude === "boolean"
 				? grok.fallbackToClaude
@@ -446,7 +474,7 @@ function mergeMuse(
 		reasoningEffort: MUSE_EFFORTS.includes(muse.reasoningEffort as MuseEffort)
 			? (muse.reasoningEffort as MuseEffort)
 			: defaults.reasoningEffort,
-		callTimeoutMs: nonNegativeMs(muse.callTimeoutMs, defaults.callTimeoutMs),
+		callTimeoutMs: projectTimerMs(muse.callTimeoutMs, defaults.callTimeoutMs, project),
 	};
 }
 
@@ -711,9 +739,10 @@ const MAX_DECISIONS_TIMEOUT_MS = 30_000;
  * Per-field merge; only the fourteen known keys are read, so a layer can never add a URL (D1). `enabled` is ignored in
  * every layer: Jev is always on, and only ULTRATHINK_DECISIONS=0 disables it. `model` is accepted only when it is a Jev
  * model id (the OpenRouter key is Jev's alone); in every layer, project files included, anything else keeps the earlier
- * layer's value. A project layer (a file a cloned repository
- * controls) may only tighten consent (K5): `zdr` false→true, `points` narrowed to the intersection with the lower layers;
- * the remaining keys merge as usual.
+ * layer's value. A project layer (a file a cloned repository controls) may only tighten consent (K5): `zdr` false→true and
+ * `points` narrowed to the intersection with the lower layers. Of the thresholds, a project layer can only make a gate
+ * stricter: `shipVetoAtOrBelow`, `shipApproveAt`, `groundedAt`, `teachableAutoAt` and `skillworthyAt` can only rise, and
+ * `blockingAt` can only fall. `planSkipBelow` and `teachableBelow` merge as usual: they decide planning and storage.
  */
 function mergeDecisions(
 	decisions: Record<string, unknown> | undefined,
@@ -750,13 +779,43 @@ function mergeDecisions(
 				: defaults.timeoutMs,
 		zdr: project ? defaults.zdr || zdr : zdr,
 		planSkipBelow: unitInterval(decisions.planSkipBelow, defaults.planSkipBelow),
-		shipVetoAtOrBelow: unitInterval(decisions.shipVetoAtOrBelow, defaults.shipVetoAtOrBelow),
-		shipApproveAt: unitInterval(decisions.shipApproveAt, defaults.shipApproveAt),
-		groundedAt: unitInterval(decisions.groundedAt, defaults.groundedAt),
-		blockingAt: unitInterval(decisions.blockingAt, defaults.blockingAt),
+		shipVetoAtOrBelow: strictness(
+			project,
+			unitInterval(decisions.shipVetoAtOrBelow, defaults.shipVetoAtOrBelow),
+			defaults.shipVetoAtOrBelow,
+			"higher",
+		),
+		shipApproveAt: strictness(
+			project,
+			unitInterval(decisions.shipApproveAt, defaults.shipApproveAt),
+			defaults.shipApproveAt,
+			"higher",
+		),
+		groundedAt: strictness(
+			project,
+			unitInterval(decisions.groundedAt, defaults.groundedAt),
+			defaults.groundedAt,
+			"higher",
+		),
+		blockingAt: strictness(
+			project,
+			unitInterval(decisions.blockingAt, defaults.blockingAt),
+			defaults.blockingAt,
+			"lower",
+		),
 		teachableBelow: unitInterval(decisions.teachableBelow, defaults.teachableBelow),
-		teachableAutoAt: unitInterval(decisions.teachableAutoAt, defaults.teachableAutoAt),
-		skillworthyAt: unitInterval(decisions.skillworthyAt, defaults.skillworthyAt),
+		teachableAutoAt: strictness(
+			project,
+			unitInterval(decisions.teachableAutoAt, defaults.teachableAutoAt),
+			defaults.teachableAutoAt,
+			"higher",
+		),
+		skillworthyAt: strictness(
+			project,
+			unitInterval(decisions.skillworthyAt, defaults.skillworthyAt),
+			defaults.skillworthyAt,
+			"higher",
+		),
 	};
 }
 
@@ -765,6 +824,17 @@ function intInRange(value: unknown, min: number, max: number, fallback: number):
 	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
 		? value
 		: fallback;
+}
+
+/** A project layer can make a decision threshold stricter than the layer below it, never looser; a user layer sets it freely. */
+function strictness(
+	project: boolean,
+	value: number,
+	base: number,
+	stricter: "higher" | "lower",
+): number {
+	if (!project) return value;
+	return stricter === "higher" ? Math.max(value, base) : Math.min(value, base);
 }
 
 function booleanOr(value: unknown, fallback: boolean): boolean {
@@ -959,6 +1029,47 @@ function mergeSwarm(
 	return { autoRun: booleanOr(swarm.autoRun, defaults.autoRun) };
 }
 
+/**
+ * Project layers are repository-controlled, so they may only tighten these sections (default-deny, K5). Each helper
+ * lets a project move a key toward the safer side and nothing else. Notion and Linear are the one exception: a project file
+ * fills them only where no earlier file sets them. Think is user-only.
+ */
+function tightenShip(ship: Record<string, unknown> | undefined, base: ShipConfig): ShipConfig {
+	if (!ship) return base;
+	const minScore = ship.minScore;
+	return {
+		...base,
+		enabled: ship.enabled === false ? false : base.enabled,
+		autoMerge: ship.autoMerge === false ? false : base.autoMerge,
+		deleteBranch: ship.deleteBranch === false ? false : base.deleteBranch,
+		greptileOrganization:
+			base.greptileOrganization || typeof ship.greptileOrganization !== "string"
+				? base.greptileOrganization
+				: ship.greptileOrganization.trim(),
+		minScore:
+			typeof minScore === "number" &&
+			Number.isFinite(minScore) &&
+			minScore > base.minScore &&
+			minScore <= GREPTILE_MAX_SCORE
+				? minScore
+				: base.minScore,
+	};
+}
+
+function tightenTrack(track: Record<string, unknown> | undefined, base: TrackConfig): TrackConfig {
+	if (!track) return base;
+	return { ...base, enabled: track.enabled === false ? false : base.enabled };
+}
+
+function tightenHitl(hitl: Record<string, unknown> | undefined, base: HitlConfig): HitlConfig {
+	if (!hitl) return base;
+	return {
+		...base,
+		enabled: base.enabled || hitl.enabled === true,
+		knowledgeBase: base.knowledgeBase && hitl.knowledgeBase !== false,
+	};
+}
+
 /** Merges one config layer onto `base`; `project` marks a repository-controlled layer (consent may only tighten, K5). */
 export function mergeConfig(
 	file: Record<string, unknown> | undefined,
@@ -970,16 +1081,28 @@ export function mergeConfig(
 	const grok = asRecord(file.grok);
 	const muse = asRecord(file.muse);
 	return {
-		uplift: mergeUplift(asRecord(file.uplift), base.uplift),
+		uplift: mergeUplift(asRecord(file.uplift), base.uplift, options.project === true),
 		claude: mergeClaude(claude, base.claude, options.project === true),
 		grok: mergeGrok(grok, base.grok, options.project === true),
 		muse: mergeMuse(muse, base.muse, options.project === true),
-		hitl: mergeHitl(asRecord(file.hitl), base.hitl),
-		think: mergeThink(asRecord(file.think), base.think),
-		notion: mergeNotion(asRecord(file.notion), base.notion),
-		linear: mergeLinear(asRecord(file.linear), base.linear),
-		track: mergeTrack(asRecord(file.track), base.track),
-		ship: mergeShip(asRecord(file.ship), base.ship),
+		hitl:
+			options.project === true
+				? tightenHitl(asRecord(file.hitl), base.hitl)
+				: mergeHitl(asRecord(file.hitl), base.hitl),
+		think: options.project === true ? base.think : mergeThink(asRecord(file.think), base.think),
+		// A repository file never chooses where tracker writes go (notion.dataSourceUrl, linear.team): your own config does.
+		notion:
+			options.project === true ? base.notion : mergeNotion(asRecord(file.notion), base.notion),
+		linear:
+			options.project === true ? base.linear : mergeLinear(asRecord(file.linear), base.linear),
+		track:
+			options.project === true
+				? tightenTrack(asRecord(file.track), base.track)
+				: mergeTrack(asRecord(file.track), base.track),
+		ship:
+			options.project === true
+				? tightenShip(asRecord(file.ship), base.ship)
+				: mergeShip(asRecord(file.ship), base.ship),
 		substrate: mergeSubstrate(asRecord(file.substrate), base.substrate, options.project === true),
 		decisions: mergeDecisions(asRecord(file.decisions), base.decisions, options.project === true),
 		hindsight: mergeHindsight(asRecord(file.hindsight), base.hindsight, options.project === true),
