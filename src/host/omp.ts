@@ -37,7 +37,7 @@ import type { LockOptions } from "../claude/atomic.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import type { LegacyModelProvenance, UltrathinkConfig } from "../config.ts";
 import type { CompletionReport } from "../types.ts";
-import { attachReport, readReport } from "../types.ts";
+import { attachReport, readReport, TRUNCATED_REPLY } from "../types.ts";
 import { redactSecrets } from "../redact.ts";
 import {
 	type FailureVerdict,
@@ -606,8 +606,6 @@ function thrownStatus(error: unknown): number | undefined {
 
 /** Same-model retry of the native completer: three attempts, backoff 2 s then up to 8 s with full jitter and Retry-After. */
 const RETRY_POLICY = { maxAttempts: 3, baseMs: 2000, capMs: 8000 } as const;
-
-const TRUNCATED_REPLY = "truncated_reply";
 
 /** The pi-ai error classifier, loaded lazily with the catalog (D-03); absent means errorId-less classification only. */
 interface ErrorFlags {
@@ -2884,7 +2882,7 @@ export function createOmpExtension(
 					if (early) {
 						// A final uplift goes inline now; the whole final plan follows as the one aside.
 						flight.earlyDelivered = true;
-						barWrite(flight.generation, () => store.delivered("inline", undefined, now()));
+						barWrite(flight.generation, () => store.pending());
 						return {
 							message: planMessage(
 								`${early.context}\n\nThe rest of the plan follows as an aside when planning finishes; until then, only read and investigate.`,

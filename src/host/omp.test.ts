@@ -414,6 +414,31 @@ describe("omp extension", () => {
 		expect(t.line()).not.toBe(pendingLine);
 	});
 
+	test("an uplift final before the race leaves the status line pending until the whole plan arrives as an aside", async () => {
+		const t = tuiCtx();
+		const gate = Promise.withResolvers<OmpPlan>();
+		const manual = manualTimers();
+		const { run, sent, emit } = setup(
+			(request) => {
+				request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
+				return gate.promise;
+			},
+			1,
+			{ timers: manual.timers },
+			t.ctx,
+		);
+		emit("session_start");
+		const running = run();
+		// The race limit is 1 ms: its timer fires by hand while the final plan is still held.
+		await manual.fire(1);
+		await running;
+		expect(t.line()).toContain("arrives as aside");
+		gate.resolve({ context: "PLAN", view: VIEW });
+		await flush();
+		expect(sent).toHaveLength(1);
+		expect(t.line()).not.toContain("arrives as aside");
+	});
+
 	test("a throwing setWidget does not break planning", async () => {
 		const t = tuiCtx(() => {
 			throw new Error("boom");

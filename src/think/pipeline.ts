@@ -12,7 +12,7 @@ import { abortableSleep } from "../resilience/sleep.ts";
 import type { FlightThrottle } from "../resilience/throttle.ts";
 import { isAbortError } from "../shared.ts";
 import { nodeStepTitles } from "../track/plan.ts";
-import { readReport, type UpliftResult } from "../types.ts";
+import { readReport, TRUNCATED_REPLY, type UpliftResult } from "../types.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import {
 	dependencyLevels,
@@ -183,6 +183,12 @@ function cotUserPayload(uplift: UpliftResult, graph: ThoughtGraph, node: Thought
 	].join("\n");
 }
 
+/** Whether a graph-call failure says the provider is down: a completer report, unless it reports a reply cut off at its token limit. */
+function isProviderFailure(error: unknown): boolean {
+	const report = readReport(unwrapRetryError(error));
+	return report !== undefined && report.cause !== TRUNCATED_REPLY;
+}
+
 async function buildGraph(
 	opts: RunThinkOptions,
 	minNodes: number,
@@ -203,9 +209,8 @@ async function buildGraph(
 			graph: normalizeGraph(null, opts.uplift.original, minNodes, maxNodes),
 			fallback: true,
 			// A report means the completer judged and retried the failure itself: the provider, not the reply, failed.
-			...(readReport(unwrapRetryError(error)) === undefined
-				? {}
-				: { failure: describeCause(error) }),
+			// A reply cut off at its token limit is the reply that failed, so the node fills still run.
+			...(isProviderFailure(error) ? { failure: describeCause(error) } : {}),
 		};
 	}
 }

@@ -21,6 +21,9 @@ export interface UpliftResult {
 	attempts?: number;
 }
 
+/** The `cause` of the report for a reply the model cut off at its token limit: the reply failed, the provider did not. */
+export const TRUNCATED_REPLY = "truncated_reply";
+
 /** What a completer reports about its most recent call: attempts, HTTP status, the server's retry hint and a redacted cause, never the reply text. */
 export interface CompletionReport {
 	attempts: number;

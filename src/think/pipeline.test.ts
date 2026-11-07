@@ -652,6 +652,22 @@ describe("runThink resilience", () => {
 		expect(result.graph.nodes[2]?.conclusion).toBe("done n3");
 	});
 
+	test("a graph reply cut off at the token limit still fills every node: only a provider outage skips the fills", async () => {
+		const result = await runThink({
+			uplift,
+			...seams,
+			complete: async (system, user) => {
+				if (system === GRAPH_SYSTEM_PROMPT) {
+					const cutOff = new Error("omp-native completion failed (truncated reply)");
+					attachReport(cutOff, { attempts: 1, cause: "truncated_reply" });
+					throw cutOff;
+				}
+				return fillXml(nodeId(user));
+			},
+		});
+		expect(result.graph.nodes.some((node) => Boolean(node.conclusion))).toBe(true);
+	});
+
 	test("a graph that fell back is partial even when every fill succeeds", async () => {
 		const result = await runThink({
 			uplift,
