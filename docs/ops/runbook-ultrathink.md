@@ -782,7 +782,7 @@ When registrations are limited, wait for `Retry-After`. Restarting `ultrathink-w
 
 ### Client ID metadata documents (CIMD)
 
-`ULTRATHINK_CIMD` is off by default and needs Bun 1.2.23 or later. The guard is physically tested on Bun 1.2.23 and 1.4.0 only, and the TLS-only listener that production runs needs Bun 1.4.0 or later. Turning it on is gated: the owner approved the flip for after the phase 105 live check passes. The Claude identity is the hosted connector metadata document at `https://claude.ai/oauth/mcp-oauth-client-metadata` (OD-1). CIMD is offered to Grok as well (OD-3). Whether Claude or Grok present a CIMD `client_id` in practice is checked live in phase 105, which the owner runs.
+`ULTRATHINK_CIMD` is off by default and needs Bun 1.2.23 or later. The guard is physically tested on Bun 1.2.23 and 1.4.0 only, and the TLS-only listener that production runs needs Bun 1.4.0 or later. Turning it on is gated: the 2026-11-02 owner decision is that the flip waits for the phase 105 live check to pass. It then needs a separate, explicit owner approval, and production stays off until that approval is recorded. The Claude identity is the hosted connector metadata document at `https://claude.ai/oauth/mcp-oauth-client-metadata` (OD-1). CIMD is offered to Grok as well (OD-3). Whether Claude or Grok present a CIMD `client_id` in practice is checked live in phase 105, which the owner runs.
 
 With the switch off, an `https` `client_id` is an unknown client. The authorize page shows the unknown-client page, and no metadata document is fetched. Dynamic client registration (`POST /oauth/register`, `ut_client_` ids) works the same in both states.
 
