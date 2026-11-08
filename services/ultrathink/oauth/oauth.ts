@@ -214,7 +214,8 @@ export interface OAuthOptions {
 	cimd?: CimdFetcher;
 	/**
 	 * Publishes client_id_metadata_document_supported: true in the authorization server metadata (CIMD-13).
-	 * Production passes cimdServable(config): the ULTRATHINK_CIMD switch and Bun 1.4.0 or later. False or absent leaves the key out.
+	 * Production passes cimdServable(config): the ULTRATHINK_CIMD switch and Bun 1.2.23 or later, the outbound guard floor.
+	 * The TLS-only listener also needs Bun 1.4.0 (assertMtlsRuntime). False or absent leaves the key out.
 	 */
 	advertiseCimd?: boolean;
 	/**
