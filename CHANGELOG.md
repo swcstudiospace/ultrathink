@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.1] - 2026-11-08
+
 ### Added
 
 - Client ID metadata documents (CIMD) for OAuth clients, behind the `ULTRATHINK_CIMD` switch, which is off by default. With the switch on under Bun 1.4.0 or later, an `https` `client_id` on port 443 is resolved from its metadata document through the guarded fetch, and the authorization server metadata advertises `client_id_metadata_document_supported`. Any other port is refused. On an older Bun nothing is advertised and every retrieval is refused. Dynamic client registration is unchanged. See the runbook section on client ID metadata documents.
@@ -24,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gate-mode ship assessment reports a judge that threw or gave an unparseable reply as `judge.error`; before, that was only a prefix in `gaps`. A Jev decision made after a judge failure keeps the field.
 - Explicit-id session tools (`ultrathink_plan` with a `sessionId`, `ultrathink_uplift`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, `ultrathink_result`) answer `not_found` for a session that names another principal, matching `ultrathink_graph` and `ultrathink_sessions`. Stdio and the owner are unchanged.
 - The ship judge uses the route of the session's own provider: an xai session judges on Grok, then Claude as the last resort; other sessions keep the host's default auxiliary route. Ship output's `judgedBy` names the provider that answered.
+- The planner's default bounds: a Claude CLI planning call times out after 5 minutes (`claude.callTimeoutMs`, was no limit), and tracker row creation stops after 10 minutes (`track.budgetMs`, was no limit). A timed-out uplift falls back to an unplanned prompt and the prompt still goes ahead; rows not created in time are left for kickoff. Set either key to `0` to restore the unbounded behaviour.
 
 ### Fixed
 

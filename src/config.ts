@@ -90,7 +90,7 @@ const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	model: ROUTE_DEFAULT_MODELS.claude,
 	thinking: false,
 	settingSources: "",
-	callTimeoutMs: 0,
+	callTimeoutMs: 300_000,
 	budgetMs: 0,
 	concurrency: 3,
 	echo: true,
@@ -125,7 +125,7 @@ interface TrackConfig {
 
 const DEFAULT_TRACK_CONFIG: TrackConfig = {
 	enabled: true,
-	budgetMs: 0,
+	budgetMs: 600_000,
 	concurrency: 6,
 };
 

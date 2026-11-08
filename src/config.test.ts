@@ -311,7 +311,7 @@ describe("mergeConfig", () => {
 
 describe("track config", () => {
 	test("defaults", () => {
-		expect(defaultConfig().track).toEqual({ enabled: true, budgetMs: 0, concurrency: 6 });
+		expect(defaultConfig().track).toEqual({ enabled: true, budgetMs: 600_000, concurrency: 6 });
 	});
 
 	test("accepts valid overrides and rejects invalid values", () => {
@@ -336,7 +336,9 @@ describe("track config", () => {
 
 	test("a negative or non-finite budgetMs falls back to the default", () => {
 		const bounded = mergeConfig({ track: { budgetMs: 5000 } }, defaultConfig());
-		expect(mergeConfig({ track: { budgetMs: -1 } }, defaultConfig()).track.budgetMs).toBe(0);
+		expect(mergeConfig({ track: { budgetMs: -1 } }, defaultConfig()).track.budgetMs).toBe(
+			defaultConfig().track.budgetMs,
+		);
 		expect(mergeConfig({ track: { budgetMs: -1 } }, bounded).track.budgetMs).toBe(5000);
 		expect(
 			mergeConfig({ track: { budgetMs: Number.NaN, concurrency: Number.NaN } }, defaultConfig())
