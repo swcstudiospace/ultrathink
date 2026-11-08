@@ -1,6 +1,6 @@
 [project]
 name = "ultrathink"
-version = "1.21.1"
+version = "1.21.2"
 description = "Prime Agent bridge to the ultrathink planner (Prompt Uplift + Graph of Thought + HITL questions, tracked in Linear/Notion). Calls the shared TypeScript engine of claude-ultrathink."
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"

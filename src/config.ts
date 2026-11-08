@@ -91,7 +91,7 @@ const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	thinking: false,
 	settingSources: "",
 	callTimeoutMs: 300_000,
-	budgetMs: 0,
+	budgetMs: 900_000,
 	concurrency: 3,
 	echo: true,
 };

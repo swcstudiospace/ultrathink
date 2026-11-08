@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.2] - 2026-11-08
+
+### Changed
+
+- The whole planning pass is bounded by default: `claude.budgetMs` is 900000 ms (15 minutes), was no budget. The same budget applies on Omp; `0` restores the unbounded behaviour.
+- `claude.callTimeoutMs` also bounds each native Omp planning call. The 1.21.1 entry named only the Claude CLI calls.
+
 ## [1.21.1] - 2026-11-08
 
 ### Added

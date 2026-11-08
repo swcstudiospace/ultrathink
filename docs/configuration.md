@@ -107,7 +107,7 @@ The Claude engine runs the `claude` CLI headless. It uses your Claude plan login
 | `thinking` | boolean | `false` | Allow extended thinking in the planning calls. Slower. When `false`, the child calls run with `MAX_THINKING_TOKENS=0`. |
 | `settingSources` | string | `""` | Passed as `--setting-sources` to the planning calls. `""` loads none, which is fastest and keeps other hooks out of the child calls. |
 | `callTimeoutMs` | number, >= 0 | `300000` | Timeout for one planning call. The default bounds each Claude CLI call at 5 minutes; a timed-out uplift call falls back to an unplanned prompt (`skipped: uplift-failed`) and the prompt still goes ahead. `0` means no timer. |
-| `budgetMs` | number, >= 0 | `0` | Budget for the whole planning pass. `0` means run until the host's hook timeout. |
+| `budgetMs` | number, >= 0 | `900000` | Budget for the whole planning pass. The default is 15 minutes. `0` means run until the host's hook timeout. A positive value bounds the pass: an Omp flight is bounded by it too, and delivers the plan built so far. A project file can only shorten it. |
 | `concurrency` | number, > 0 | `3` | Node fills that run in parallel within one dependency level. Rounded down, at least 1. |
 | `echo` | boolean | `true` | Show a one-line summary to the user after each plan. |
 
@@ -492,7 +492,7 @@ All keys are optional; write only the ones you change. This file shows every key
     "thinking": false,
     "settingSources": "",
     "callTimeoutMs": 300000,
-    "budgetMs": 0,
+    "budgetMs": 900000,
     "concurrency": 3,
     "echo": true
   },

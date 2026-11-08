@@ -82,7 +82,7 @@ For example, a lighter plan for every host:
 
 | Key | Default | Effect |
 |---|---|---|
-| `claude.budgetMs` | `0` | Budget for the whole planning run, on every host and with either engine. `0` means no budget. When it runs out, the stage that is running is cancelled and dropped, the later stages are skipped, and the agent gets the plan built so far. If the spec itself had not finished, the prompt goes through unplanned. |
+| `claude.budgetMs` | `900000` | Budget for the whole planning run, on every host and with either engine. `0` means no budget. When it runs out, the stage that is running is cancelled and dropped, the later stages are skipped, and the agent gets the plan built so far. If the spec itself had not finished, the prompt goes through unplanned. |
 | `claude.callTimeoutMs` | `0` | Timeout for one Claude call. `0` means no timer. A timed-out spec call gives the fallback spec. |
 | `grok.callTimeoutMs` | `0` | Same, for Grok calls. |
 

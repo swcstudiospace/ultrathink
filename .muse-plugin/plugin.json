@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"name": "ultrathink",
 	"displayName": "Ultrathink",
-	"version": "1.21.1",
+	"version": "1.21.2",
 	"description": "Plans each prompt with the shared ultrathink engine and writes the spec for the agent to read.",
 	"compat": {
 		"source": "native",
