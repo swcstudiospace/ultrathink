@@ -46,7 +46,7 @@ export type OutboundFetchCode =
  * list combining), so a directive on any line is seen. `ambiguous` is set only when Expires, Date or
  * Age appears more than once; no value is picked for them. The field is absent otherwise.
  */
-export interface OutboundCacheHeaders {
+interface OutboundCacheHeaders {
 	readonly cacheControl?: string;
 	readonly expires?: string;
 	readonly date?: string;
@@ -114,7 +114,7 @@ const STOP_RECLAIM_MS = 5_000;
 /** Admission is refused while this many reclaimed operations are still unconfirmed. */
 const MAX_ZOMBIES_ADMISSION = 4;
 
-/** The running Bun version, or "" outside Bun. The guard and the CIMD advertisement both read the runtime through here. */
+/** The running Bun version, or "" outside Bun. */
 export function runningRuntimeVersion(): string {
 	return typeof Bun === "undefined" ? "" : Bun.version;
 }

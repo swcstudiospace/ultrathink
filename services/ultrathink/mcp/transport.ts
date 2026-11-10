@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { DEFAULT_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "./mcp.ts";
+import { DEFAULT_PROTOCOL_VERSION, TRANSPORT_PROTOCOL_VERSIONS } from "./mcp.ts";
 
 /** Browser origins of the hosted clients that may call /mcp. The service's own origin is added by the router. */
 export const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
@@ -49,6 +49,73 @@ export function resolveProtocolVersion(
 	header: string | null,
 ): { ok: true; version: string } | { ok: false } {
 	if (header === null) return { ok: true, version: DEFAULT_PROTOCOL_VERSION };
-	const version = SUPPORTED_PROTOCOL_VERSIONS.find((supported) => supported === header);
+	const version = TRANSPORT_PROTOCOL_VERSIONS.find((supported) => supported === header);
 	return version === undefined ? { ok: false } : { ok: true, version };
+}
+
+type ModernValidationError = { id: string | number; code: -32602 | -32020; message: string };
+
+function record(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Decode the case-sensitive sentinel once; reject noncanonical Base64 and invalid UTF-8. */
+function decodeName(value: string): string | null {
+	if (!value.startsWith("=?base64?") || !value.endsWith("?="))
+		return /^[\x20-\x7e]*$/.test(value) ? value : null;
+	const encoded = value.slice(9, -2);
+	if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded))
+		return null;
+	try {
+		const bytes = Buffer.from(encoded, "base64");
+		if (bytes.toString("base64") !== encoded) return null;
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Validate only well-formed request envelopes; the core handles batches, invalid envelopes,
+ * client responses and notifications. Metadata-first precedence is a local choice, not a spec rule.
+ */
+export function validateModernRequest(
+	payload: unknown,
+	headers: Headers,
+): ModernValidationError | null {
+	if (!record(payload) || payload.jsonrpc !== "2.0" || typeof payload.method !== "string")
+		return null;
+	const id = payload.id;
+	if (typeof id !== "string" && !(typeof id === "number" && Number.isInteger(id))) return null;
+	// Leave invalid envelopes to the core; requests with IDs always require validation.
+	if (
+		(typeof id === "string" && (id.length > 256 || /[\x00-\x1f\x7f]/.test(id))) ||
+		payload.method.length > 128 ||
+		/[\x00-\x1f\x7f]/.test(payload.method)
+	)
+		return null;
+	const params = record(payload.params) ? payload.params : {};
+	const meta = record(params._meta) ? params._meta : {};
+	const version = meta["io.modelcontextprotocol/protocolVersion"];
+	if (typeof version !== "string" || !record(meta["io.modelcontextprotocol/clientCapabilities"])) {
+		return { id, code: -32602, message: "invalid params" };
+	}
+	const mismatch = { id, code: -32020, message: "header mismatch" } as const;
+	if (
+		headers.get("mcp-protocol-version") !== version ||
+		headers.get("mcp-method") !== payload.method
+	)
+		return mismatch;
+	const field =
+		payload.method === "resources/read"
+			? "uri"
+			: payload.method === "tools/call" || payload.method === "prompts/get"
+				? "name"
+				: null;
+	if (field !== null) {
+		const name = headers.get("mcp-name");
+		if (name === null || typeof params[field] !== "string" || decodeName(name) !== params[field])
+			return mismatch;
+	}
+	return null;
 }

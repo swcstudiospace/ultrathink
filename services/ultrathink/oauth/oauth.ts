@@ -22,8 +22,6 @@ import {
 	StringValidator,
 	type Validator,
 } from "../security/validation.ts";
-import type { CimdFetcher } from "./cimd-fetch.ts";
-import { type CimdClient, type CimdResolution, createCimdResolver } from "./cimd-resolve.ts";
 
 export const DEFAULT_REDIRECT_ORIGINS: readonly string[] = [
 	"https://claude.ai",
@@ -144,8 +142,6 @@ interface GrantRecord {
 	resource: string;
 	createdAt: number;
 	lastUsedAt?: number;
-	/** URL-client grants only: the metadataDigest consented to. DCR grants never set it. */
-	metadataDigest?: string;
 }
 
 interface CodeRecord {
@@ -192,10 +188,6 @@ interface PendingRequest {
 	approvalState: ApprovalState;
 	nonce: string;
 	signature: string;
-	/** URL clients only: the normalized client_name consented to. Unsigned, as clientId and redirectUri are. */
-	clientName?: string;
-	/** URL clients only: the metadataDigest consented to. A missing value fails the approval check. */
-	metadataDigest?: string;
 }
 
 export interface OAuthOptions {
@@ -207,17 +199,6 @@ export interface OAuthOptions {
 	redirectOrigins?: readonly string[];
 	/** Client table size. Defaults to 200. */
 	maxClients?: number;
-	/**
-	 * Resolves https client ids as CIMD documents. Absent means URL client ids get the
-	 * unknown-client response. Production passes createCimdFetcher with the trusted origins.
-	 */
-	cimd?: CimdFetcher;
-	/**
-	 * Publishes client_id_metadata_document_supported: true in the authorization server metadata (CIMD-13).
-	 * Production passes cimdServable(config): the ULTRATHINK_CIMD switch and Bun 1.2.23 or later, the outbound guard floor.
-	 * The TLS-only listener also needs Bun 1.4.0 (assertMtlsRuntime). False or absent leaves the key out.
-	 */
-	advertiseCimd?: boolean;
 	/**
 	 * Runs `run` every `intervalMs` and returns a canceller. Defaults to an unref'd
 	 * setInterval in production and to nothing when a test supplies a clock.
@@ -300,19 +281,6 @@ function invalidClient(): Response {
 	});
 }
 
-/** A drift refusal at exchange or refresh. Only resolution failures are invalid_client. */
-const CLIENT_CHANGED_MESSAGE = "The client details changed. Authorize the connection again.";
-
-/** Every token-side resolution failure for a URL client, including BUSY (CIMD-11). */
-function invalidCimdClient(): Response {
-	return oauthError(
-		401,
-		"invalid_client",
-		"The client details could not be verified. Start the connection again from your client.",
-		{ "WWW-Authenticate": 'Basic realm="ultrathink"' },
-	);
-}
-
 function htmlPage(
 	status: number,
 	body: string,
@@ -344,17 +312,9 @@ function formText(max: number): StringValidator {
 	return new StringValidator({ allowEmpty: true, maxLength: max, pattern: NO_CONTROL });
 }
 
-/** A client_id: an https URL (the CIMD form) may run to MAX_REDIRECT_URI_CHARS; every other value keeps MAX_CLIENT_ID_CHARS. */
+/** The same identifier limit applies to every registered client. */
 function clientIdText(): Validator<unknown> {
-	const short = formText(MAX_CLIENT_ID_CHARS);
-	const url = formText(MAX_REDIRECT_URI_CHARS);
-	return {
-		validate(value) {
-			return typeof value === "string" && isUrlClientId(value)
-				? url.validate(value)
-				: short.validate(value);
-		},
-	};
+	return formText(MAX_CLIENT_ID_CHARS);
 }
 
 /** The schema's verdict: the typed value when every field passes, else the first refused field and its validator code. */
@@ -422,11 +382,6 @@ function secret(prefix: string): string {
 
 function own<T>(record: Record<string, T>, key: string): T | undefined {
 	return Object.hasOwn(record, key) ? record[key] : undefined;
-}
-
-/** A CIMD client id is any https URL. Every other id keeps the DCR path. */
-function isUrlClientId(id: string): boolean {
-	return /^https:\/\//i.test(id);
 }
 
 /** The approval deadline: a request is expired once its TTL from creation passes, or its stored expiry does. */
@@ -659,16 +614,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	const maxClients = options.maxClients ?? MAX_CLIENTS;
 	// A fake clock means a test. Wall-clock polling would race that clock, so only production arms it.
 	const schedule = options.schedule ?? (options.now === undefined ? realSchedule : undefined);
-	// URL client ids (CIMD) resolve through one bounded resolver. Absent means they get the unknown-client response.
-	const cimd =
-		options.cimd === undefined
-			? undefined
-			: createCimdResolver({
-					fetcher: options.cimd,
-					now,
-					supportedGrants: SUPPORTED_GRANTS,
-					defaultGrantTypes: DEFAULT_GRANT_TYPES,
-				});
 	const data = loadStore(path, now(), logger);
 	const pending = new Map<string, PendingRequest>();
 	const approving = new Set<string>();
@@ -945,22 +890,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		return new Response(null, { status: 302, headers: { ...NO_STORE, Location: url.toString() } });
 	}
 
-	/** Authorize GET's answer for a URL client id that does not resolve. Logs the failure code only. */
-	function cimdAuthorizeFailure(outcome: Exclude<CimdResolution, { readonly ok: true }>): Response {
-		if (outcome.kind === "busy")
-			return errorPage(
-				503,
-				"Client details are busy. Start the connection again from your client.",
-			);
-		if (outcome.kind === "unknown")
-			return errorPage(400, "This client is not registered with ultrathink.");
-		refusedInput("/oauth/authorize", "client_id", outcome.code);
-		return errorPage(
-			400,
-			"The client details could not be retrieved. Start the connection again from your client.",
-		);
-	}
-
 	async function authorizeGet(params: URLSearchParams): Promise<Response> {
 		const refused = formRefusal(params, AUTHORIZE_QUERY);
 		if (refused !== null) {
@@ -973,26 +902,13 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		prune();
 		const clientId = params.get("client_id") ?? "";
 		const redirectUri = params.get("redirect_uri") ?? "";
-		let clientName: string;
-		let resolved: CimdClient | undefined;
-		if (isUrlClientId(clientId)) {
-			const outcome = cimd === undefined ? null : await cimd.resolve(clientId);
-			if (outcome === null) return errorPage(400, "This client is not registered with ultrathink.");
-			if (!outcome.ok) return cimdAuthorizeFailure(outcome);
-			if (!outcome.client.redirectUris.includes(redirectUri)) {
-				return errorPage(400, "The redirect address does not match this client's registration.");
-			}
-			resolved = outcome.client;
-			clientName = outcome.client.name;
-		} else {
-			const client = own(data.clients, clientId);
-			if (!client) return errorPage(400, "This client is not registered with ultrathink.");
-			if (!client.redirectUris.some((registered) => redirectMatches(registered, redirectUri))) {
-				return errorPage(400, "The redirect address does not match this client's registration.");
-			}
-			client.lastUsedAt = now();
-			clientName = client.name;
+		const client = own(data.clients, clientId);
+		if (!client) return errorPage(400, "This client is not registered with ultrathink.");
+		if (!client.redirectUris.some((registered) => redirectMatches(registered, redirectUri))) {
+			return errorPage(400, "The redirect address does not match this client's registration.");
 		}
+		client.lastUsedAt = now();
+		const clientName = client.name;
 		const state = params.get("state");
 		if (params.get("response_type") !== "code") {
 			return redirectWith(
@@ -1052,10 +968,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			nonce,
 			signature: "",
 		};
-		if (resolved !== undefined) {
-			request.clientName = clientName;
-			request.metadataDigest = resolved.metadataDigest;
-		}
 		request.signature = options.auth.signApproval(proofOf(key, request));
 		pending.set(key, request);
 		ensureSweeper();
@@ -1103,8 +1015,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			});
 		}
 		persist();
-		const clientName =
-			found.request.clientName ?? own(data.clients, found.request.clientId)?.name ?? "MCP client";
+		const clientName = own(data.clients, found.request.clientId)?.name ?? "MCP client";
 		const redirectUri = found.request.redirectUri;
 		if (approving.has(found.key)) {
 			return consentPage(
@@ -1142,64 +1053,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			}
 			audit("login_ok", { ip });
 			// Registration or pruning may have dropped the client or its pending entry while the password was checked; a code for a missing client could never be redeemed.
-			const urlClient = isUrlClientId(found.request.clientId);
-			// A URL client whose deadline passed while the password was checked is refused below. DCR keeps its pre-CIMD path (CIMD-14).
 			if (
 				found.request.approvalState !== "PENDING_APPROVAL" ||
 				pending.get(found.key) !== found.request ||
-				(!urlClient && own(data.clients, found.request.clientId) === undefined) ||
-				(urlClient && approvalExpired(found.request, now()))
+				own(data.clients, found.request.clientId) === undefined
 			) {
-				return expiredResponse(false);
-			}
-			let consentedDigest: string | undefined;
-			if (urlClient) {
-				// Approval always fetches the current document and never reads the resolver cache.
-				if (cimd === undefined) {
-					return errorPage(
-						400,
-						"The client details could not be retrieved. Start the connection again from your client.",
-					);
-				}
-				const outcome = await cimd.resolveFresh(found.request.clientId);
-				if (!outcome.ok) {
-					if (outcome.kind === "busy") {
-						return errorPage(
-							503,
-							"Client details are busy. Start the connection again from your client.",
-						);
-					}
-					return errorPage(
-						400,
-						"The client details could not be retrieved. Start the connection again from your client.",
-					);
-				}
-				if (
-					found.request.approvalState !== "PENDING_APPROVAL" ||
-					pending.get(found.key) !== found.request
-				) {
-					return expiredResponse(false);
-				}
-				// The drift check and the name check. A missing request value counts as a mismatch.
-				if (
-					outcome.client.metadataDigest !== found.request.metadataDigest ||
-					outcome.client.name !== found.request.clientName
-				) {
-					found.request.approvalState = "EXPIRED";
-					pending.delete(found.key);
-					persist();
-					return expiredResponse(false);
-				}
-				consentedDigest = found.request.metadataDigest;
-			}
-			// The commit point: for a URL client the deadline is checked after every await, so a request that
-			// expired during login or the CIMD fetch never gets a grant or code. DCR keeps its pre-CIMD path (CIMD-14).
-			if (urlClient && approvalExpired(found.request, now())) {
-				if (pending.get(found.key) === found.request) {
-					found.request.approvalState = "EXPIRED";
-					pending.delete(found.key);
-					persist();
-				}
 				return expiredResponse(false);
 			}
 			found.request.approvalState = "APPROVED";
@@ -1212,7 +1070,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				resource: found.request.resource,
 				createdAt: t,
 				lastUsedAt: t,
-				...(consentedDigest === undefined ? {} : { metadataDigest: consentedDigest }),
 			};
 			const client = own(data.clients, found.request.clientId);
 			if (client !== undefined && client.grantedAt === undefined) client.grantedAt = t;
@@ -1234,14 +1091,19 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 	}
 
-	async function exchangeCode(
-		form: URLSearchParams,
-		clientId: string,
-		consented?: string,
-	): Promise<Response> {
+	async function exchangeCode(form: URLSearchParams, clientId: string): Promise<Response> {
 		const key = digest(form.get("code") ?? "");
 		const record = own(data.codes, key);
 		if (!record) return invalidGrant();
+		const grant = own(data.grants, record.grantId);
+		if (
+			record.clientId !== clientId ||
+			!grant ||
+			grant.clientId !== clientId ||
+			grant.resource !== record.resource
+		) {
+			return invalidGrant("The grant is invalid or revoked.");
+		}
 		if (record.used) {
 			// A replayed code means the grant leaked. Revoke every token it issued.
 			revokeGrant(record.grantId);
@@ -1258,9 +1120,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 		if (!pkceMatches(form.get("code_verifier") ?? "", record.codeChallenge)) {
 			return invalidGrant("PKCE verification failed.");
-		}
-		if (consented !== undefined && own(data.grants, record.grantId)?.metadataDigest !== consented) {
-			return invalidGrant(CLIENT_CHANGED_MESSAGE);
 		}
 		const snapshot = snapshotStore();
 		record.used = true;
@@ -1280,11 +1139,15 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		return jsonResponse(200, body);
 	}
 
-	function refreshGrant(form: URLSearchParams, clientId: string, consented?: string): Response {
+	function refreshGrant(form: URLSearchParams, clientId: string): Response {
 		const record = own(data.tokens, digest(form.get("refresh_token") ?? ""));
 		if (!record || record.kind !== "refresh") return invalidGrant("The refresh token is unknown.");
 		if (record.clientId !== clientId)
 			return invalidGrant("The refresh token belongs to another client.");
+		const grant = own(data.grants, record.grantId);
+		if (!grant || grant.clientId !== clientId || grant.resource !== record.resource) {
+			return invalidGrant("The grant is invalid or revoked.");
+		}
 		if (record.used) {
 			// Refresh rotation: presenting a spent refresh token revokes the whole grant.
 			revokeGrant(record.grantId);
@@ -1293,10 +1156,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			return invalidGrant("The refresh token was already used.");
 		}
 		if (record.expiresAt <= now()) return invalidGrant("The refresh token expired.");
-		if (!own(data.grants, record.grantId)) return invalidGrant("The grant was revoked.");
-		if (consented !== undefined && own(data.grants, record.grantId)?.metadataDigest !== consented) {
-			return invalidGrant(CLIENT_CHANGED_MESSAGE);
-		}
 		const presented = form.get("resource");
 		if (presented !== null && presented !== "" && !sameResource(presented)) {
 			return oauthError(400, "invalid_target", "resource must be the ultrathink MCP endpoint.");
@@ -1445,54 +1304,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		});
 	}
 
-	/** Token pre-check: true only for a live, unused record bound to clientId. It reads no metadata. */
-	function tokenRecordLive(
-		grantType: "authorization_code" | "refresh_token",
-		form: URLSearchParams,
-		clientId: string,
-	): boolean {
-		const t = now();
-		if (grantType === "authorization_code") {
-			const code = own(data.codes, digest(form.get("code") ?? ""));
-			return code !== undefined && code.clientId === clientId && !code.used && code.expiresAt > t;
-		}
-		const refresh = own(data.tokens, digest(form.get("refresh_token") ?? ""));
-		return (
-			refresh !== undefined &&
-			refresh.kind === "refresh" &&
-			refresh.clientId === clientId &&
-			!refresh.used &&
-			refresh.expiresAt > t
-		);
-	}
-
-	/** A URL client's token request. Resolution runs only after the record pre-check passes. */
-	async function cimdToken(
-		form: URLSearchParams,
-		grantType: "authorization_code" | "refresh_token",
-		clientId: string,
-	): Promise<Response> {
-		if (!tokenRecordLive(grantType, form, clientId)) {
-			// Each refusal here is invalid_grant with no fetch. A replayed used record still revokes its grant.
-			return grantType === "authorization_code"
-				? await exchangeCode(form, clientId)
-				: refreshGrant(form, clientId);
-		}
-		const outcome = cimd === undefined ? null : await cimd.resolve(clientId);
-		if (outcome === null || !outcome.ok) return invalidCimdClient();
-		if (!outcome.client.grantTypes.includes(grantType)) {
-			return oauthError(
-				400,
-				"unauthorized_client",
-				`The client was not registered for grant_type ${grantType}.`,
-			);
-		}
-		const consented = outcome.client.metadataDigest;
-		return grantType === "authorization_code"
-			? await exchangeCode(form, clientId, consented)
-			: refreshGrant(form, clientId, consented);
-	}
-
 	async function token(req: Request, ip = UNKNOWN_IP): Promise<Response> {
 		const limit = tokenLimiter.hit(ip);
 		if (!limit.ok)
@@ -1526,7 +1337,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (grantType !== "authorization_code" && grantType !== "refresh_token") {
 			return oauthError(400, "unsupported_grant_type", "Use authorization_code or refresh_token.");
 		}
-		if (isUrlClientId(clientId)) return await cimdToken(form, grantType, clientId);
 		// An unknown client gets 401 so the client registers again instead of looping on invalid_grant.
 		const client = own(data.clients, clientId);
 		if (!client) return invalidClient();
@@ -1581,7 +1391,13 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (!record || record.kind !== "access") return false;
 		if (record.expiresAt <= now()) return false;
 		if (record.resource !== resource) return false;
-		return own(data.grants, record.grantId) !== undefined;
+		const grant = own(data.grants, record.grantId);
+		return (
+			own(data.clients, record.clientId) !== undefined &&
+			grant !== undefined &&
+			grant.clientId === record.clientId &&
+			grant.resource === record.resource
+		);
 	}
 
 	return {
@@ -1615,9 +1431,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 					revocation_endpoint_auth_methods_supported: ["none"],
 					scopes_supported: ["mcp"],
 					authorization_response_iss_parameter_supported: true,
-					...(options.advertiseCimd === true
-						? { client_id_metadata_document_supported: true }
-						: {}),
 				},
 				{ "Cache-Control": "public, max-age=3600" },
 			);

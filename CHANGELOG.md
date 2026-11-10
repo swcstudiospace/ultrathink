@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Client ID Metadata Document support and `ULTRATHINK_CIMD` are removed. Existing URL-client credentials no longer authorize access; affected clients must reconnect using dynamic client registration. Registered-client connections remain supported. This change has not been deployed.
 - The Grok `shunt` transport, its `grok.shuntBaseUrl`, `grok.shuntModel` and `grok.shuntMaxTokens` keys, and the shunt failover candidate. Grok now runs only on the `http` and `cli` transports. A stored `grok.transport` of `"shunt"` is ignored like any unknown transport value: a valid transport from an earlier config layer stays in effect, and `http` (the schema default) applies only when no layer sets a valid one. `ultrathink doctor` reports the removed keys as obsolete when a config file still sets them; delete them from the file.
 - `src/host/omp-session.ts`, a dead helper that no production code imported.
 - The Vercel AI Gateway Decisions rail is removed. Decisions (Jev) run only on OpenRouter, through `https://openrouter.ai/api/alpha/decisions`.
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The doctor inference report no longer prints the Grok account email; it still reports sign-in state and expiry.
 - Omp: a follow-up the planner would skip (`continue`, an acknowledgement, a command, a trivial or already-uplifted prompt) no longer cancels the plan still being built for the previous prompt. Before, any new `before_agent_start` superseded the running flight before the planner decided to skip the new prompt, so a session that kept going after a blocker never received its build prompt. A plannable newer prompt still supersedes.
 - A settled knowledge claim whose cited document has no section in the knowledge digest is no longer settled unchecked. It is asked as an open question, or dropped when the open-question cap is full.
 - The orchestrator hook's deadline timer is cleared when its call settles, so a finished call no longer keeps the hook process alive for the rest of its 120-second window.

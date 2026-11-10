@@ -568,7 +568,7 @@ Known gaps that are accepted for now. Each has an owner decision pending.
 - **Web sessions are not revocable (S5).** A session cookie is an HMAC over its expiry; logout only clears the browser copy. A stolen cookie works for the full 12 hours. Mitigation: rotate `ULTRATHINK_SESSION_SECRET` (section 6).
 - **Cookie name has no `__Host-` prefix (S6).** The cookie has `HttpOnly`, `SameSite=Strict` and `Secure`, but a sibling subdomain could still set a cookie with the same name.
 - **The in-memory limiter refuses new keys when full (S8).** At 10,000 tracked keys with nothing expired, new keys are rejected. A rotating-source attacker could therefore cause 429 for new addresses until entries expire; nginx limits and Cloudflare rules reduce the chance.
-- **Client ID Metadata Documents are off until the owner's flip.** `ULTRATHINK_CIMD` is off by default, so a metadata-URL client ID is an unknown client and cannot connect. When the owner turns the switch on after the phase 105 live check, the server fetches the document under the guard described in the CIMD section. Dynamic client registration (RFC 7591) is the supported path until then.
+- **OAuth clients use dynamic registration.** A metadata-URL client ID is an unknown client and cannot connect; the server does not fetch client metadata. Dynamic client registration (RFC 7591) is the supported path.
 - **`POST /ultrathink` run API is unavailable.** Since v1.21 it answers 501 `run_api_unavailable` and creates no run: the router accepts a run only when a worker is wired in (`hasWorker`), and the service wires none (there is no worker entrypoint: `services/ultrathink/worker/main.ts` does not exist, and `deploy/ultrathink-worker.service` is a draft that is not installed and cannot start). Nothing queues runs. Server-side planning for chat clients runs inside `ultrathink-web` instead; do not tell users the run API works.
 - **Abandoned ledger reservations count until pruned.** A run that never finished keeps its reserved tokens against the per-run and daily ceilings of its own day; the daily job removes the rows after the retention window.
 - **Smoke tests run unsandboxed.** The release script's smoke start uses the production secrets as the service user without the systemd sandbox, on loopback port 8796 for a few seconds, over TLS with the production leaves.
@@ -679,7 +679,7 @@ Do steps 1 to 4 before you run the release script. Earlier releases planned thro
 
 ## 13. Connector surface and diagnostics
 
-Status: the connector has never been connected to Claude chat, Claude Code or Grok Chat in a live session. Until it has, the first connection from each client is the evidence, and this section is how to read it. Nothing here claims a client behavior that the logs have not shown.
+Status: hosted Claude chat, Claude Code and Grok Chat behavior is not verified live. The protocol inventory and example responses below describe the checked-out implementation, not proof of a deployed revision. Deployment identity and actual client behavior require separately authorized, owner-observed evidence.
 
 ### Inventory
 
@@ -690,9 +690,10 @@ Status: the connector has never been connected to Claude chat, Claude Code or Gr
 | Connector tools | `ultrathink_graph` (`/ultrathink-think`), `ultrathink_sessions` (`/ultrathink-status`, first step of `/ultrathink-last`) and `ultrathink_command` (every other `/ultrathink-<name>`). They are always listed, so a client that never refreshes `tools/list` cannot miss them. |
 | Prompts | 6: `ultrathink`, `ultrathink-plan`, `ultrathink-think`, `ultrathink-last`, `ultrathink-status`, `ultrathink-quick`. The 16 unsupported commands are not listed; `prompts/get` for one returns an explanation. A prompt returns text and runs no tool. |
 | Resource | 1: `ui://ultrathink/graph` (name `ultrathink-graph`, MIME `text/html;profile=mcp-app`), a self-contained HTML card of at most 512 KiB, served with an empty content security policy (`csp: {}`), no `domain` and `prefersBorder: false`. The app loads nothing external. `resources/templates/list` returns an empty list. |
-| Capabilities in `initialize` | `tools`, `prompts` and `resources`, plus the extension `io.modelcontextprotocol/ui`, announced unconditionally because claude.ai web is reported to render MCP Apps without sending the extension itself. No `listChanged`, no subscriptions, no logging. |
-| Protocol versions | `2025-11-25`, `2025-06-18` and `2025-03-26`. `initialize` answers the requested version when it is listed, otherwise `2025-11-25`. A request with no `MCP-Protocol-Version` header is treated as `2025-03-26`. Any other header value, including `2026-07-28`, gets HTTP 400 with JSON-RPC error `-32600` `unsupported MCP-Protocol-Version`. JSON-RPC batches get 400 from `2025-06-18`. `2026-07-28` is not served and `server/discover` answers `-32601`. |
-| Errors | A `resources/read` for an unknown `ui://` uri returns `-32002`; a malformed uri returns `-32602`. `GET` and `DELETE` on `/mcp` return 405 with `Allow: POST`, before authentication. |
+| Capabilities in legacy `initialize` and modern discovery | `tools`, `prompts` and `resources`, plus the extension `io.modelcontextprotocol/ui`, announced unconditionally because claude.ai web is reported to render MCP Apps without sending the extension itself. No `listChanged`, no subscriptions, no logging. |
+| Protocol versions | The checked-out HTTP transport accepts `2026-07-28`, `2025-11-25`, `2025-06-18` and `2025-03-26`; an absent `MCP-Protocol-Version` selects `2025-03-26`. Legacy `initialize` echoes a supported legacy version, or selects `2025-11-25` for an unknown initialize parameter. An unknown HTTP version header instead returns HTTP 400 / JSON-RPC `-32600` `unsupported MCP-Protocol-Version`, retained under OD-10 as an accepted deviation from the modern typed-error requirement. JSON-RPC batches get 400 from `2025-06-18` onward. |
+| Modern discovery and methods | `server/discover` returns the transport versions, capabilities, server information and instructions. Modern successful results include `resultType: "complete"`; only cacheable modern methods include `ttlMs: 0` and `cacheScope: "private"`. Modern `initialize` and `ping` return method-not-found (`-32601`, HTTP 404); legacy `server/discover` returns `-32601`. Modern requests require matching version and method headers and request metadata; `resources/read`, `tools/call` and `prompts/get` also require a matching `Mcp-Name`. |
+| Errors | An unknown `ui://` resource returns `-32602` in the modern era and `-32002` in the legacy eras; a malformed URI returns `-32602` in both. `GET` and `DELETE` on `/mcp` return 405 with `Allow: POST`, before authentication. |
 | Command catalog | Read from `commands/` and `skills/` in the release, with the decision per command in `COMMAND_OVERLAY` (`services/ultrathink/mcp/commands.ts`). A release without those directories serves the static overlay and logs a `command_catalog_fallback` warning at start. |
 | Plugin bundle | `plugins/ultrathink-connector/`, built with `sh plugins/ultrathink-connector/package.sh` into a zip for Claude's plugin upload. Its `.mcp.json` points at the production URL and holds no key. |
 
@@ -700,7 +701,7 @@ Metrics: `ultrathink_mcp_tool_calls_total{tool,outcome}` carries the three new t
 
 ### Read a first Claude or Grok connection
 
-List the MCP and OAuth requests of the last hour, oldest first:
+Use authorized, attributable client-side observations together with the request log to diagnose a connection. Request lines can include `ts`, `status`, `endpoint`, `rpcMethod`, `mcpVersion`, `tool`, `authKind` (`none`, `bearer` or `connector-key`) and `ip`. An IP can be shared: it alone does not identify a client, connect two requests, or prove fallback. Keep evidence redacted; do not copy credentials or raw sensitive logs into a record.
 
 ```bash
 journalctl -u ultrathink-web --since "1 hour ago" -o cat | grep '"event":"request"' | grep -E '"endpoint":"(mcp|oauth_[a-z_]+)"'
@@ -708,24 +709,15 @@ journalctl -u ultrathink-web --since "1 hour ago" -o cat | grep '"event":"reques
 
 Each line has `ts`, `status`, `endpoint`, `rpcMethod`, `mcpVersion`, `tool`, `clientId` and `clientIdDigest` (bearer requests only), `authKind` (`none`, `bearer` or `connector-key`) and `ip`. The order to expect for a new connector:
 
-1. `POST /mcp` with `status` 401 and `authKind` `none`: the client learns it must sign in. Then `oauth_protected_resource`, `oauth_authorization_server`, `oauth_register` (201), `oauth_authorize` and `oauth_token` requests: the OAuth flow. A 429 on `oauth_register` is the registration limit (below).
-2. With a token, the first `POST /mcp` shows which revision the client opens with:
-   - **`status` 400 with `mcpVersion` `2026-07-28` and `rpcMethod` `server/discover`, then `status` 200 with `rpcMethod` `initialize` from the same `ip`.** The client probed for the newer revision, read the 400 as "legacy server" and fell back. This is the expected, working case for a client that probes.
-   - **`status` 200 `initialize` with no 400 before it.** A legacy-only client. Also working.
-   - **`status` 400 and then nothing from that `ip`.** The client treated the 400 as fatal. This is a hard failure: serving `2026-07-28` (a dual-era server) becomes urgent. Keep the log lines as the evidence.
-3. After `initialize` expect `notifications/initialized` (202), often a `GET /mcp` that returns 405 (the client's optional event stream; harmless), then `tools/list`, `prompts/list` and perhaps `resources/list` with `mcpVersion` `2025-11-25`. The `initialize` line itself usually has no `mcpVersion`, because the header is sent only after the version is negotiated.
-4. Tool use appears as `rpcMethod` `tools/call` with `tool` set. A client that lists tools and never calls one points at the model or the client, not the server.
+An unknown HTTP version header receives 400 / `-32600` in the checked-out router after normal origin and authentication checks. This accepted OD-10 response is not the modern typed unsupported-version error. Do not infer a deployment's response from the local source.
 
-A 5xx on the probe would be worse than a 400: official SDK clients treat a 5xx or an unusable 2xx on a probe as a hard error. The router answers an unknown `MCP-Protocol-Version` with 400 whatever the body holds, so a probe does not produce one.
+### Protocol request examples
 
-### Smoke checklist with curl
+These are illustrative requests and expected results for the checked-out implementation, not evidence of hosted behavior or authorization to probe. If a future check is authorized, use a deployment whose identity is known and the normal authenticated `/mcp` route (OAuth bearer or connector key), through the edge identity described in section 17. Use an authenticated client that handles credentials securely; do not include credentials, credential-file reads or sensitive raw logs in the evidence.
 
-Run it on the VPS against the public URL. The `/mcp` route admits only the edge identity (section 17), and a loopback request carrying the probe identity is refused there, so this check does not use the loopback listener. The key goes into a variable and is never printed:
+For the legacy examples below, `rpc` represents that authenticated client's JSON POST to `/mcp` with `Content-Type: application/json`; it is not an authentication bypass or a defined shell command:
 
-```bash
-BASE=https://ultrathink.swcstudio.space
-UT_KEY=$(grep -m1 '^ULTRATHINK_CONNECTOR_KEY=' /etc/ultrathink/ultrathink.env | cut -d= -f2-)
-rpc() { curl -s "$BASE/mcp" -H "x-connector-key: $UT_KEY" -H 'content-type: application/json' "$@"; }
+```text
 rpc -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
 rpc -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 rpc -d '{"jsonrpc":"2.0","id":3,"method":"prompts/list"}'
@@ -743,17 +735,20 @@ Expected:
 5. `resources/read`: `result.contents[0].text` is an HTML document with the same MIME type. A different `ui://` uri returns error `-32002`.
 6. `tools/call`: `isError` false and `structuredContent.text` equal to the content text (the copy Claude Code reads).
 
-The refusal cases, each with its expected status:
+Modern discovery uses these additional headers and body with the same authenticated JSON POST:
 
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST "$BASE/mcp" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'            # 401, WWW-Authenticate: Bearer resource_metadata=...
-curl -s -i -X GET "$BASE/mcp"                                                                                                                             # 405, Allow: POST
-rpc -H 'MCP-Protocol-Version: 2026-07-28' -d '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' -w '\n%{http_code}\n'                                  # 400, -32600 unsupported MCP-Protocol-Version
-rpc -d '{"jsonrpc":"2.0","id":1,"method":"server/discover"}'                                                                                              # 200 with -32601 method not found
-rpc -H 'MCP-Protocol-Version: 2025-11-25' -d '[{"jsonrpc":"2.0","id":1,"method":"ping"}]' -w '\n%{http_code}\n'                                           # 400, batches are refused from 2025-06-18
+```text
+MCP-Protocol-Version: 2026-07-28
+Mcp-Method: server/discover
+
+{"jsonrpc":"2.0","id":7,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
 ```
 
-Finish with `unset UT_KEY`. After a release that changes tools, also check the tool names in `ultrathink_mcp_tool_calls_total` once a client has used them.
+The local implementation returns 200 with `supportedVersions`, `capabilities`, server information in `_meta`, `instructions`, `resultType: "complete"`, `ttlMs: 0` and `cacheScope: "private"`. The cache hints are not attached to every modern method.
+
+For refusal diagnostics, an authenticated JSON POST with `MCP-Protocol-Version: 1999-01-01` gets HTTP 400 / JSON-RPC `-32600`; with no version header, `server/discover` gets `-32601` under the legacy default. An authenticated batch with `MCP-Protocol-Version: 2025-11-25` gets HTTP 400. A valid modern request for `initialize` or `ping` gets HTTP 404 / `-32601`; it must still carry the required modern metadata and matching headers. Without authentication, a JSON POST gets 401; `GET /mcp` gets 405 before authentication.
+
+After a release that changes tools, also check the tool names in `ultrathink_mcp_tool_calls_total` once an authorized client has used them.
 
 ### Smoke check of the stdio server
 
@@ -774,36 +769,13 @@ For a clean-room run of the same connector, use `scripts/standalone-smoke.ts`: `
 
 | Limit | Value | What it looks like |
 |---|---|---|
-| Client registration (`POST /oauth/register`) | 10 per hour per client address, in memory (a restart clears it). CIMD clients do not call this endpoint. | 429 `temporarily_unavailable` with `Retry-After`. Claude registers a new client on every fresh connection, and Anthropic's connector traffic comes from a fixed address range (160.79.104.0/21 in Anthropic's documentation), so a burst of fresh connections can exhaust the limit for every Claude user. Grok registers through dynamic client registration too. |
+| Client registration (`POST /oauth/register`) | 10 per hour per client address, in memory (a restart clears it). | 429 `temporarily_unavailable` with `Retry-After`. Claude registers a new client on every fresh connection, and Anthropic's connector traffic comes from a fixed address range (160.79.104.0/21 in Anthropic's documentation), so a burst of fresh connections can exhaust the limit for every Claude user. Grok registers through dynamic client registration too. |
 | `/mcp` in the app | 120 per minute per client address, and 60 per minute for all connector traffic together (one shared bucket for key and OAuth clients). | 429 `rate_limited` with `Retry-After`, logged as `rate_limited` with `scope` `mcp`. Do not poll `ultrathink_result` with `waitSeconds: 0` in a loop. |
 | `/mcp` in nginx | 120 per minute per client address, burst 60. | nginx's default 429 page. |
 | OAuth in nginx and the app | nginx 30 per minute (burst 20); the app limits authorize to 30 per minute and token and revoke to 60 per minute. | 429 on the OAuth endpoints. |
 | Login | nginx 5 per minute; the app allows 5 attempts per address per 15 minutes. | 429 or a login refusal. |
 
-When registrations are limited, wait for `Retry-After`. Restarting `ultrathink-web` also clears the in-memory limiter, at the cost of a restart. Raising the limit needs a code change (`REGISTER_LIMIT` in `services/ultrathink/oauth/oauth.ts`). With `ULTRATHINK_CIMD=1`, a client that uses a client ID metadata document never registers and is not counted here; see the CIMD section below.
-
-### Client ID metadata documents (CIMD)
-
-`ULTRATHINK_CIMD` is off by default and needs Bun 1.2.23 or later. The guard is physically tested on Bun 1.2.23 and 1.4.0 only, and the TLS-only listener that production runs needs Bun 1.4.0 or later. Turning it on is gated: the 2026-11-02 owner decision is that the flip waits for the phase 105 live check to pass. It then needs a separate, explicit owner approval, and production stays off until that approval is recorded. The Claude identity is the hosted connector metadata document at `https://claude.ai/oauth/mcp-oauth-client-metadata` (OD-1). CIMD is offered to Grok as well (OD-3). Whether Claude or Grok present a CIMD `client_id` in practice is checked live in phase 105, which the owner runs.
-
-With the switch off, an `https` `client_id` is an unknown client. The authorize page shows the unknown-client page, and no metadata document is fetched. Dynamic client registration (`POST /oauth/register`, `ut_client_` ids) works the same in both states.
-
-With the switch on under Bun 1.2.23 or later, the server fetches the metadata document named by an `https` `client_id` through a guarded fetch: public addresses only, at most 5000 bytes, a 5 s time limit, and at most four fetches in flight. When a stop never confirms, its slot is released at the 5 s bound and the operation counts as reclaimed; at most seven operations are open at once, and new fetches are refused while four or more reclaimed operations are unconfirmed. A `client_id` must use port 443, written out or implied; any other port is refused as an invalid client ID. The metadata response must be framed by Content-Length or chunked encoding: a response that closes the connection to end its body, or a 1xx response, is refused as an invalid response. The authorization server metadata then includes `"client_id_metadata_document_supported": true`. With the switch off, that key is absent. On a Bun older than 1.2.23 it is absent even with the switch on, because the guard refuses every fetch there, and a URL `client_id` then gets the failed-class error page rather than a CIMD flow. Dynamic client registration keeps working in every case.
-
-The switch is read when the service starts, so a change takes effect after a restart of ultrathink-web.
-
-The authorization server metadata response is cacheable for an hour (`Cache-Control: public, max-age=3600`), so after the switch changes, a client that has already cached it can take up to an hour to see the change.
-
-CIMD clients never call `POST /oauth/register`, so they are not counted against the registration limit. Their authorize, approval, token and revoke calls use the authorize, token and revoke limits in the table above, and they share the four fetch slots with other CIMD traffic.
-
-The rules below are the project's engineering choices, accepted by the owner on 2026-10-31. They are not quoted from the draft specification.
-
-- **Cache lifetime.** A document is cached for at most 300 s. `max-age` is used, minus `Age`, capped at 300 s; an `Expires` header is used when there is no `max-age`. `no-store` or `no-cache` on any `Cache-Control` line, an invalid `max-age` or `Expires`, or repeated `Expires`, `Date` or `Age` headers mean no caching. Without cache headers the document is cached for 300 s. The cache holds at most 128 client IDs.
-- **Cache lag at refresh and token exchange.** A metadata change at the host is seen by refresh and exchange only when the cached entry expires, up to 300 s after the fetch. Until then, refresh checks the last fetched document against the consented digest. A change already fetched is refused; a change not yet fetched is not seen. This does not widen authority. Approval always fetches the current document, at the cost of one outbound fetch per approval, so approval is not subject to this lag.
-- **Availability.** While all four slots are held, or while four or more reclaimed operations are unconfirmed, every CIMD authorize, approval and refresh that needs a fetch gets BUSY: authorize and approval return 503, and refresh returns `invalid_client` at the token endpoint. This applies to every CIMD client. A slot is held from the start of a fetch, including DNS resolution, and is released when the fetch is finished and its connection has confirmed stop, or at the 5 s bound described next. A slot whose stop has not confirmed 5 seconds after its request finished is released at that bound, and its operation counts as reclaimed until its stop and any DNS lookup confirm. At most seven operations are open at once. Admission reopens when fewer than four reclaimed operations remain unconfirmed, so each confirmation can reopen it. If four or more never confirm, CIMD stays refused until the service restarts. A late stop never counts twice. A refresh served from the warm cache does not fetch and is unaffected. Two sources can hold the slots: unauthenticated authorize requests from two IPs at 30 per minute each, which together can keep four 5 s slots busy; or a CIMD operator refreshing a grant whose document sends `no-store`, from one IP at 60 per minute or from a few client IDs at 30 per minute each. The operator path needs one consent by the operator's own account.
-- **Drift at refresh and exchange.** A changed `redirect_uris` or `grant_types` returns `invalid_grant` with "The client details changed. Authorize the connection again." `invalid_client` is for resolution failure only. Exception: when the document no longer lists the grant type the request itself uses (`authorization_code` at exchange, `refresh_token` at refresh), the grant-type check returns `unauthorized_client` first, before the drift check runs.
-- **`client_name` at approval.** A name change between consent and approval re-prompts the user at approval. The pending request expires, and the user starts the connection again from the client, which shows consent again. It does not re-prompt at refresh or exchange, and it does not affect them.
-- **Consent page lag.** The consent page takes the client name and the allowed redirect URIs from the resolver cache, so it does not show the current document. A change at the host can show the old name, or accept a redirect the host has removed, for up to 300 s. Approval always fetches the current document. It expires the pending request, and creates no grant or code, when the fresh `redirect_uris` or `grant_types` differ from the document the consent used, or when `client_name` differs. The owner accepted this residual on 2026-11-01.
+When registrations are limited, wait for `Retry-After`. Restarting `ultrathink-web` also clears the in-memory limiter, at the cost of a restart. Raising the limit needs a code change (`REGISTER_LIMIT` in `services/ultrathink/oauth/oauth.ts`).
 
 ### After changing tools
 
