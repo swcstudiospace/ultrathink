@@ -1364,27 +1364,29 @@ export function createApp(deps: RouterDeps): App {
 		const parsed = await readJson(req, config.maxBodyBytes);
 		if (!parsed.ok) return respond(400, rpcError(-32700, "parse error"));
 		describeRpc(parsed.value, ctx);
-		const payload = parsed.value;
-		const params =
-			typeof payload === "object" && payload !== null && !Array.isArray(payload)
-				? (payload as Record<string, unknown>).params
-				: undefined;
-		const meta =
-			typeof params === "object" && params !== null && !Array.isArray(params)
-				? (params as Record<string, unknown>)._meta
-				: undefined;
-		const bodyVersion =
-			typeof meta === "object" && meta !== null && !Array.isArray(meta)
-				? (meta as Record<string, unknown>)["io.modelcontextprotocol/protocolVersion"]
-				: undefined;
-		if (version.version === MODERN_PROTOCOL_VERSION || bodyVersion === MODERN_PROTOCOL_VERSION) {
-			const error = validateModernRequest(parsed.value, req.headers);
-			if (error !== null) {
-				return respond(400, {
-					jsonrpc: "2.0",
-					id: error.id,
-					error: { code: error.code, message: error.message },
-				});
+		const requests = Array.isArray(parsed.value) ? parsed.value : [parsed.value];
+		for (const payload of requests) {
+			const params =
+				typeof payload === "object" && payload !== null && !Array.isArray(payload)
+					? (payload as Record<string, unknown>).params
+					: undefined;
+			const meta =
+				typeof params === "object" && params !== null && !Array.isArray(params)
+					? (params as Record<string, unknown>)._meta
+					: undefined;
+			const bodyVersion =
+				typeof meta === "object" && meta !== null && !Array.isArray(meta)
+					? (meta as Record<string, unknown>)["io.modelcontextprotocol/protocolVersion"]
+					: undefined;
+			if (version.version === MODERN_PROTOCOL_VERSION || bodyVersion === MODERN_PROTOCOL_VERSION) {
+				const error = validateModernRequest(payload, req.headers);
+				if (error !== null) {
+					return respond(400, {
+						jsonrpc: "2.0",
+						id: error.id,
+						error: { code: error.code, message: error.message },
+					});
+				}
 			}
 		}
 

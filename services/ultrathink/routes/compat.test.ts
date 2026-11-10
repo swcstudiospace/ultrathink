@@ -433,6 +433,28 @@ describe("modern request validation", () => {
 		}
 	});
 
+	test("rejects a modern-declared request inside a legacy batch before dispatch", async () => {
+		const h = harness();
+		const legacy = { jsonrpc: "2.0", id: 20, method: "ping" };
+		const modern = {
+			jsonrpc: "2.0",
+			id: 21,
+			method: "tools/call",
+			params: { name: "ultrathink_pending", arguments: { sessionId: "missing" }, _meta: meta },
+		};
+		for (const headers of [{}, { "MCP-Protocol-Version": "2025-03-26" }] as Record<
+			string,
+			string
+		>[]) {
+			const response = await rpc(h, [legacy, modern], headers);
+			expect(response.status).toBe(400);
+			expect(await body(response)).toMatchObject({ id: 21, error: { code: -32020 } });
+		}
+		const genuine = await rpc(h, [legacy, { ...legacy, id: 22 }]);
+		expect(genuine.status).toBe(200);
+		expect(await genuine.json()).toHaveLength(2);
+	});
+
 	test("validates notification-named requests while preserving actual notifications", async () => {
 		const h = harness();
 		const request = {
