@@ -449,7 +449,9 @@ describe("phase102 tracer", () => {
 		});
 		// The default guard takes Bun.version as its runtime input. A literal loopback target is refused before
 		// any DNS or transport on an eligible runtime, and refused by the runtime floor on a legacy one.
-		const expected = bunAtLeast(Bun.version, [1, 4, 0]) ? "ADDRESS_REFUSED" : "UNSUPPORTED_RUNTIME";
+		const expected = bunAtLeast(Bun.version, [1, 2, 23])
+			? "ADDRESS_REFUSED"
+			: "UNSUPPORTED_RUNTIME";
 		expect(
 			await createCimdFetcher(configured("1"), new Set()).fetch("https://127.0.0.1/meta.json"),
 		).toEqual({ ok: false, kind: "fetch", code: expected });
@@ -744,18 +746,20 @@ describe("phase102 boundaries — B12 isolation and DI", () => {
 		expect(result).toEqual({
 			ok: false,
 			kind: "fetch",
-			code: bunAtLeast(Bun.version, [1, 4, 0]) ? "ADDRESS_REFUSED" : "UNSUPPORTED_RUNTIME",
+			code: bunAtLeast(Bun.version, [1, 2, 23]) ? "ADDRESS_REFUSED" : "UNSUPPORTED_RUNTIME",
 		});
 	});
 });
 
 describe("CIMD servable gate", () => {
-	test("serves CIMD only when the switch is on and the runtime is Bun 1.4.0 or later", () => {
+	test("serves CIMD only when the switch is on and the runtime is Bun 1.2.23 or later", () => {
+		expect(cimdServable({ cimdEnabled: true }, "1.2.23")).toBe(true);
 		expect(cimdServable({ cimdEnabled: true }, "1.4.0")).toBe(true);
 		expect(cimdServable({ cimdEnabled: true }, "1.4.3")).toBe(true);
-		expect(cimdServable({ cimdEnabled: true }, "1.3.9")).toBe(false);
-		expect(cimdServable({ cimdEnabled: true }, "1.2.23")).toBe(false);
+		expect(cimdServable({ cimdEnabled: true }, "1.2.22")).toBe(false);
+		expect(cimdServable({ cimdEnabled: true }, "1.1.99")).toBe(false);
 		expect(cimdServable({ cimdEnabled: true }, "")).toBe(false);
 		expect(cimdServable({ cimdEnabled: false }, "1.4.0")).toBe(false);
+		expect(cimdServable({ cimdEnabled: false }, "1.2.23")).toBe(false);
 	});
 });
