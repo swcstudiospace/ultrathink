@@ -13,13 +13,13 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every job runs on the Omega CI runner pool ([self-hosted, linux, x64, omega-ci], swcstudiospace/Omega-Prime
-# docs/ci-runners.md), never on GitHub-hosted runners. Fork pull requests are skipped: fork code never reaches the pool.
+# Using self-hosted runner on this machine (local) for CI (per user); was temporarily GitHub-hosted ubuntu-latest while diagnosing Railway Omega-CI.
+# Runner label: self-hosted (or local-runner if registered with that).
 jobs:
   test:
     name: Check and test (Bun ${{ matrix.bun }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, omega-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
