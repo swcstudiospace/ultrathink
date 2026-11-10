@@ -357,6 +357,10 @@ async function checkOne(id: McpProviderId, deps: AuthDeps): Promise<number> {
 async function trackComplete(args: string[], seams: CliSeams): Promise<number> {
 	const statePath = flag(args, "--state");
 	if (!statePath) throw new UsageError("track complete needs --state <path>");
+	if (!statePath.endsWith(".json"))
+		throw new UsageError(
+			"track complete needs --state <sessions/<id>.json>: the .xml sidecar is named from it",
+		);
 	// The state file lives at <host state dir>/sessions/<id>.json; control.json sits in the state dir.
 	if (readControl(dirname(dirname(statePath))).trackEnabled === false) {
 		err("ultrathink-mcp: tracking is off (/ultrathink-track on to enable)");

@@ -1,9 +1,10 @@
 # Creates a GitHub release when a semantic-version tag is pushed. It never publishes to a registry (the package
 # is private) and only runs for tags like v1.5.0 or v1.5.0-rc.1; milestone tags such as v1.3 do not match.
-# The tag is checked against package.json, every manifest and CHANGELOG.md, the gates run again, and the
-# release notes are the tag's CHANGELOG.md section. Before the release is created, the job refuses a tag whose commit
-# is not on origin/main, then gates on the required check runs for the tagged commit, the dependency audit and the
-# license policy, and attaches that evidence (security-evidence/) to the release.
+# The `verify` job checks the tag against package.json, every manifest and CHANGELOG.md, runs the gates again and writes
+# the release notes from the tag's CHANGELOG.md section. Before anything is kept it refuses a tag whose commit is not on
+# origin/main, then gates on the required check runs for the tagged commit, the dependency audit and the license policy,
+# and keeps that evidence (security-evidence/). The `release` job is the only job with a write scope: it runs no
+# repository code, downloads that evidence and creates the release.
 name: Release
 
 on:
@@ -18,12 +19,18 @@ permissions:
 # Using self-hosted runner on this machine (local) for CI (per user); was temporarily GitHub-hosted ubuntu-latest while diagnosing Railway Omega-CI.
 # Runner label: self-hosted (or local-runner if registered with that).
 jobs:
+<<<<<<< HEAD
   release:
     name: Release ${{ github.ref_name }}
     runs-on: ubuntu-latest
+=======
+  verify:
+    name: Verify ${{ github.ref_name }}
+    runs-on: [self-hosted, linux, x64, omega-ci]
+>>>>>>> a02af970a5ceb38a96f12ee4f0a9c2d6e921ffd7
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
       checks: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,6 +40,29 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
+<<<<<<< HEAD
+=======
+
+      # The tagged commit must already be on main. This check runs before any repository code, and the gate runs from a
+      # worktree of origin/main, so the reviewed copy decides. The token is only in steps that run gh, never repo code.
+      - name: Fetch origin/main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          if ! git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'; then
+            echo "::error::cannot fetch origin/main; release refused" >&2
+            exit 1
+          fi
+
+      - name: Verify tagged commit is on main (trusted gate)
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/trusted-main" origin/main
+          bun "$RUNNER_TEMP/trusted-main/scripts/security-gate.ts" ancestry --sha "$SHA"
+
+>>>>>>> a02af970a5ceb38a96f12ee4f0a9c2d6e921ffd7
       # hosts/hermes and hosts/prime-agent need Python 3.10+; pin the minimum so newer syntax is caught.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -73,20 +103,6 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: bun scripts/release-check.ts --tag "$TAG"
 
-      # The tagged commit must already be on main. origin/main is fetched here because persist-credentials is off, so the
-      # token is passed through an extra header instead. Any failure stops the job before the release is created.
-      - name: Verify tagged commit is on main
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-        run: |
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          if ! git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'; then
-            echo "::error::cannot fetch origin/main; release refused" >&2
-            exit 1
-          fi
-          bun scripts/security-gate.ts ancestry --sha "$SHA"
-
       - name: Type check
         run: bun run check
 
@@ -126,10 +142,37 @@ jobs:
       - name: Extract release notes
         run: bun scripts/release-check.ts --notes > RELEASE_NOTES.md
 
+      # The evidence and the notes leave this read-only job as one artifact; the release job publishes them.
+      - name: Upload release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-evidence
+          path: |
+            security-evidence/
+            RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 7
+
+  # The only job with a write scope. It runs no repository code and checks nothing out: it downloads the evidence that
+  # `verify` produced and creates the release from it.
+  release:
+    name: Release ${{ github.ref_name }}
+    needs: verify
+    runs-on: [self-hosted, linux, x64, omega-ci]
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-evidence
+
       # A tag with a hyphen (v1.5.0-rc.1) is a prerelease. --verify-tag aborts instead of creating a tag that is not already on the remote.
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           flags=()

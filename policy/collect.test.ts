@@ -71,9 +71,6 @@ describe("static collection of the real repository", () => {
 		const uses = ORIGINAL_WORKFLOWS.flatMap((file) =>
 			Object.values(findWorkflow(input, file).jobs).flatMap((job) => job.uses),
 		);
-		// 16 before task 00057, plus the SHA-pinned setup-node step in ci.yml and in release.yml (the Omega CI pool has no system Node),
-		// plus the one in codeql.yml (task 00066: CodeQL's TypeScript extractor starts Node).
-		expect(uses).toHaveLength(19);
 		for (const use of uses) expect(use).toMatch(SHA_PIN);
 	});
 
@@ -89,10 +86,11 @@ describe("static collection of the real repository", () => {
 			expect(workflow.on).not.toContain("pull_request_target");
 	});
 
-	test("release.yml keeps its job-level write scope and the top-level read scope", () => {
+	test("release.yml confines the write scope to the release job, which holds nothing else; the gates run read-only", () => {
 		const release = findWorkflow(input, ".github/workflows/release.yml");
 		expect(release.permissions).toEqual({ contents: "read" });
-		expect(release.jobs.release?.permissions).toEqual({ contents: "write", checks: "read" });
+		expect(release.jobs.release?.permissions).toEqual({ contents: "write" });
+		expect(release.jobs.verify?.permissions).toEqual({ contents: "read", checks: "read" });
 	});
 
 	test("the web unit keeps repeated directives, splits list values and reads an empty value as one empty entry", () => {

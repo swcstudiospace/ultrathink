@@ -401,6 +401,30 @@ describe("runThink resilience", () => {
 		expect(unparseable.degraded.graphFailure).toBeUndefined();
 	});
 
+	test("a graph call that failed with a provider report skips every node fill: no fill is requested and each node is marked failed", async () => {
+		let fillRequests = 0;
+		const result = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) => {
+				if (user.includes("current_node")) {
+					fillRequests += 1;
+					return fillXml("c");
+				}
+				const error = transient("rate limited");
+				attachReport(error, { attempts: 3, httpStatus: 429 });
+				throw error;
+			},
+		});
+		expect(fillRequests).toBe(0);
+		expect(result.degraded.graphFailure).toContain("rate limited");
+		expect(result.degraded.fills).toHaveLength(5);
+		for (const cause of Object.values(result.degraded.causes ?? {})) {
+			expect(cause).toContain("graph call failed");
+			expect(cause.length).toBeLessThanOrEqual(200);
+		}
+	});
+
 	test("a rejected fill (refusal, truncated or malformed) is retried up to 1 + fillRetries at the fill layer", async () => {
 		const calls = new Map<string, number>();
 		const complete = async (_system: string, user: string): Promise<string> => {
@@ -626,6 +650,22 @@ describe("runThink resilience", () => {
 		expect(calls.get("n3")).toBe(1);
 		expect(result.graph.nodes[1]?.degraded).toBe(true);
 		expect(result.graph.nodes[2]?.conclusion).toBe("done n3");
+	});
+
+	test("a graph reply cut off at the token limit still fills every node: only a provider outage skips the fills", async () => {
+		const result = await runThink({
+			uplift,
+			...seams,
+			complete: async (system, user) => {
+				if (system === GRAPH_SYSTEM_PROMPT) {
+					const cutOff = new Error("omp-native completion failed (truncated reply)");
+					attachReport(cutOff, { attempts: 1, cause: "truncated_reply" });
+					throw cutOff;
+				}
+				return fillXml(nodeId(user));
+			},
+		});
+		expect(result.graph.nodes.some((node) => Boolean(node.conclusion))).toBe(true);
 	});
 
 	test("a graph that fell back is partial even when every fill succeeds", async () => {

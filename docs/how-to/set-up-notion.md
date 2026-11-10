@@ -108,7 +108,7 @@ The printed paths are absolute on your machine. With `--write-config`, `notion.d
 
 ### Or use an existing database
 
-Set `notion.dataSourceUrl` to the database's data source in any [config file](../configuration.md#config-files):
+Set `notion.dataSourceUrl` to the database's data source in your user config, `~/.config/ultrathink/config.json`. A repository's `.claude/ultrathink.json` cannot set it, because the data source decides where your rows are written:
 
 ```json
 { "notion": { "dataSourceUrl": "collection://<data source id>" } }

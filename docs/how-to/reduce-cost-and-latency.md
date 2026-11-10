@@ -43,7 +43,9 @@ To plan one message while planning is off, or a short reply, start it with `upli
 
 `bin/ultrathink` changes the host it detects, and Claude Code from a plain shell. Set `ULTRATHINK_HOST` (`claude-code`, `grok-build`, `hermes`, `muse` or `omp`) to change another host. See [Commands](../commands.md#skip-and-control-commands) for how each host shows the commands.
 
-A prompt of any length is sent to uplift. `uplift.maxChars` is ignored, so it does not skip the spec call. The Graph of Thought and the questions still run unless they are off. Each failed node fill is retried `think.fillRetries` times (default 2) and repaired once (`think.repair`), so under provider errors a plan can make more calls than the table below suggests; lower `think.fillRetries` or set `think.repair` to `false` to cap that, at the cost of more degraded nodes.
+A prompt of any length is sent to uplift by default. `uplift.maxChars` (default `0`, no limit) is an opt-in limit: a longer prompt runs unplanned, with no provider call. Each failed node fill is retried `think.fillRetries` times (default 2) and repaired once (`think.repair`), so under provider errors a plan can make more calls than the table below suggests; lower `think.fillRetries` or set `think.repair` to `false` to cap that, at the cost of more degraded nodes.
+
+Predecessor conclusions are not clipped: a node carries the full conclusion of each direct predecessor, so a fan-in node such as synthesize pays for every predecessor in its prompt. This is a deliberate choice; it is not capped by a setting.
 
 ## Make each plan smaller
 
@@ -82,11 +84,11 @@ For example, a lighter plan for every host:
 
 | Key | Default | Effect |
 |---|---|---|
-| `claude.budgetMs` | `0` | Budget for the whole planning run, on every host and with either engine. `0` means no budget. When it runs out, the stage that is running is cancelled and dropped, the later stages are skipped, and the agent gets the plan built so far. If the spec itself had not finished, the prompt goes through unplanned. |
-| `claude.callTimeoutMs` | `0` | Timeout for one Claude call. `0` means no timer. A timed-out spec call gives the fallback spec. |
+| `claude.budgetMs` | `0` (unlimited) | Budget for the whole planning run, on every host and with either engine. `0` means no budget: the run waits until the host's hook timeout. When a positive budget runs out, the stage that is running is cancelled and dropped, the later stages are skipped, and the agent gets the plan built so far. If the spec itself had not finished, the prompt goes through unplanned. A project file can only shorten it. |
+| `claude.callTimeoutMs` | `0` (no timer) | Timeout for one provider call: a Claude CLI call, or a native Omp call. `0` means no timer. A positive value: a timed-out spec call gives the fallback spec, and a timed-out native call fails its attempt and the flight goes on. A project file can only shorten it. |
 | `grok.callTimeoutMs` | `0` | Same, for Grok calls. |
 
-Without these, the host's own hook timeout is the limit. Claude Code's prompt hook allows 86,400 seconds. On Hermes Agent the limit is Hermes' hook cap (`plugins.hook_callback_timeout`): set it to at least 105 seconds, 600 recommended; it is a global Hermes setting, and ultrathink never changes it. See [Install](../install.md).
+Without these, the host's own hook timeout is the limit. Claude Code's prompt hook is set to 86,400 seconds (24 hours), so a multi-minute plan is not cut short. Grok Build's and Muse Code's prompt hooks are set to 600 seconds, which cuts off a longer plan there; set `claude.budgetMs` below 600000 to receive the plan built so far. On Hermes Agent the limit is Hermes' hook cap (`plugins.hook_callback_timeout`): set it to at least 105 seconds, 600 recommended; it is a global Hermes setting, and ultrathink never changes it. See [Install](../install.md).
 
 ## Tracking and ship
 
