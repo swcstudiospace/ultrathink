@@ -281,7 +281,7 @@ describe("Encoding", () => {
 		});
 
 		test("handles 100000 repeated nested openers without leaving angle brackets", () => {
-			const output = stripHtmlTags("<a".repeat(100000) + ">");
+			const output = stripHtmlTags(`${"<a".repeat(100000)}>`);
 			expect(output).not.toContain("<");
 			expect(output).not.toContain(">");
 		});
