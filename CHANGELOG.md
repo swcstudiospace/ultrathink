@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The doctor inference report no longer prints the Grok account email; it still reports sign-in state and expiry.
 - Omp: a follow-up the planner would skip (`continue`, an acknowledgement, a command, a trivial or already-uplifted prompt) no longer cancels the plan still being built for the previous prompt. Before, any new `before_agent_start` superseded the running flight before the planner decided to skip the new prompt, so a session that kept going after a blocker never received its build prompt. A plannable newer prompt still supersedes.
 - A settled knowledge claim whose cited document has no section in the knowledge digest is no longer settled unchecked. It is asked as an open question, or dropped when the open-question cap is full.
 - The orchestrator hook's deadline timer is cleared when its call settles, so a finished call no longer keeps the hook process alive for the rest of its 120-second window.
