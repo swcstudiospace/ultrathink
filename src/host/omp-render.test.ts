@@ -1122,28 +1122,33 @@ describe("swarm card", () => {
 	});
 
 	test("path fields stay copy-pasteable — no ~/ collapse, no redaction marker", () => {
-		// under the runner's real HOME, so the old full-sanitizer path (redactText collapsing $HOME to ~/)
-		// would fail this; the light path sanitizer must keep every segment intact
-		const home = process.env.HOME ?? "/home/alex";
-		const stateDir = `${home}/.opensessions/swarm/ab12cd34-1-x`;
-		const snapshot = {
-			spawned: 1,
-			total: 1,
-			lanes: [
-				{
-					laneId: "lane-h",
-					brief: "b",
-					stateDir,
-					logPath: `${stateDir}/run.log`,
-					pid: 5,
-				},
-			],
-		};
-		const text = swarmCard(snapshot, true, 160).plain.join("\n");
-		expect(text).toContain(stateDir);
-		expect(text).toContain(`log ${stateDir}/run.log`);
-		expect(text).not.toContain("~/");
-		expect(text).not.toContain("[redacted]");
+		// HOME is a synthetic home for this test, so a sanitizer that collapsed $HOME to ~/ would change the path.
+		const savedHome = process.env.HOME;
+		process.env.HOME = "/home/tester";
+		try {
+			const stateDir = "/home/tester/.opensessions/swarm/ab12cd34-1-x";
+			const snapshot = {
+				spawned: 1,
+				total: 1,
+				lanes: [
+					{
+						laneId: "lane-h",
+						brief: "b",
+						stateDir,
+						logPath: `${stateDir}/run.log`,
+						pid: 5,
+					},
+				],
+			};
+			const text = swarmCard(snapshot, true, 160).plain.join("\n");
+			expect(text).toContain(stateDir);
+			expect(text).toContain(`log ${stateDir}/run.log`);
+			expect(text).not.toContain("~/");
+			expect(text).not.toContain("[redacted]");
+		} finally {
+			if (savedHome === undefined) delete process.env.HOME;
+			else process.env.HOME = savedHome;
+		}
 	});
 
 	test("expanded card wraps lane fields across rows instead of cutting them at the frame border", () => {

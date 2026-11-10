@@ -102,7 +102,6 @@ describe("runUplift", () => {
 		});
 		expect(called).toBe(1);
 		expect(result.source).toBe("llm");
-		expect(result.fallbackReason).not.toBe("input_over_limit");
 		expect(result.fallbackReason).toBeUndefined();
 		expect(result.root).toBe("RESEARCH_PROMPT");
 		expect(result.attempts).not.toBe(0);

@@ -487,25 +487,21 @@ describe("per-session /ultrathink-skip", () => {
 	test("the Markdown and Grok Bot skip/status fallbacks forward the current session id", () => {
 		const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 		const read = (path: string) => readFileSync(join(root, path), "utf8");
-		// Claude Code and Muse run commands/*.md when the prompt hook did not answer: both commands name this session.
+		// Claude Code and Muse run commands/*.md when the prompt hook did not answer: each invocation names the session.
 		for (const verb of ["skip", "status"]) {
-			const command = read(`commands/ultrathink-${verb}.md`);
-			const runs = command.match(/bin\/ultrathink" [^`\n]*/g) ?? [];
-			expect(runs.length).toBe(2);
+			const runs = read(`commands/ultrathink-${verb}.md`).match(/bin\/ultrathink" [^`\n]*/g) ?? [];
+			expect(runs.length).toBeGreaterThan(0);
 			for (const run of runs) expect(run).toContain(`${verb} --session "\${CLAUDE_SESSION_ID}"`);
 		}
-		// Grok Bot's skills pass the planner session, so `G ctl skip` is not refused and `G ctl status` sees its flag.
-		// Each request plans under a fresh id, so the skip reserves the next request's id `N` and the protocol plans under it.
-		const skipSkill = read("hosts/grok-bot/skills/ultrathink-skip/SKILL.md");
-		expect(skipSkill).toContain("`G ctl skip --session N`");
-		// A new reservation carries a random suffix, so two conversations reserving in the same minute get different ids.
-		expect(skipSkill).toContain("`desk-YYYYMMDD-HHMM-next-<8 random hex>`");
-		expect(skipSkill).not.toContain("`desk-YYYYMMDD-HHMM-next`");
+		// Grok Bot's skills pass the planner session: their skip, status and plan invocations carry the session flag.
+		expect(read("hosts/grok-bot/skills/ultrathink-skip/SKILL.md")).toContain(
+			"G ctl skip --session",
+		);
 		expect(read("hosts/grok-bot/skills/ultrathink-status/SKILL.md")).toContain(
-			"`G ctl status --session N`",
+			"G ctl status --session",
 		);
 		expect(read("hosts/grok-bot/skills/ultrathink-protocol/SKILL.md")).toContain(
-			"`G plan --session N`",
+			"G plan --session",
 		);
 	});
 

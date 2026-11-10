@@ -71,7 +71,9 @@ describe("claimTurn", () => {
 		tail: string,
 	): { exitCode: number | null; stderr: string } {
 		const script = `import { claimTurn, markClaimedTurnsDone } from ${JSON.stringify(join(import.meta.dir, "claim.ts"))};\nconst won = claimTurn(${JSON.stringify(stateDir)}, "s1:p1");\n${tail}\n`;
-		const child = Bun.spawnSync(["bun", "--no-env-file", "-e", script], { stderr: "pipe" });
+		const child = Bun.spawnSync([process.execPath, "--no-env-file", "-e", script], {
+			stderr: "pipe",
+		});
 		return { exitCode: child.exitCode, stderr: child.stderr.toString() };
 	}
 

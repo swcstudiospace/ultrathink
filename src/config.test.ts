@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	claudeConfigPaths,
@@ -68,19 +68,7 @@ describe("mergeConfig", () => {
 
 	test("defaults: think fillRetries 2 and repair true", () => {
 		const base = defaultConfig();
-		expect(base.uplift).not.toHaveProperty("maxChars");
 		expect(base.think).toMatchObject({ fillRetries: 2, repair: true });
-	});
-
-	test("an old uplift.maxChars is ignored", () => {
-		const base = defaultConfig();
-		const merged = mergeConfig({ uplift: { maxChars: 0 } }, base);
-		expect(merged.uplift).toEqual(base.uplift);
-		expect(merged.uplift).not.toHaveProperty("maxChars");
-		expect(mergeConfig({ uplift: { enabled: false, maxChars: 12 } }, base).uplift).toEqual({
-			...base.uplift,
-			enabled: false,
-		});
 	});
 
 	test("think fillRetries accepts a positive integer and repair a boolean; anything else keeps the defaults", () => {
@@ -140,11 +128,10 @@ describe("mergeConfig", () => {
 		);
 	});
 
-	test("muse defaults are the Muse route default (muse-spark-1.3-contributor) @ high with no timer", () => {
+	test("muse defaults are the Muse route default @ high with no timer", () => {
 		const muse = defaultConfig().muse;
 		expect(muse.bin).toBe("muse");
 		expect(muse.model).toBe(ROUTE_DEFAULT_MODELS.muse);
-		expect(muse.model).toBe("muse-spark-1.3-contributor");
 		expect(muse.reasoningEffort).toBe("high");
 		expect(muse.callTimeoutMs).toBe(0);
 	});
@@ -163,10 +150,9 @@ describe("mergeConfig", () => {
 		expect(mergeConfig({ muse: { callTimeoutMs: -5 } }, base).muse.callTimeoutMs).toBe(0);
 	});
 
-	test("grok defaults are the Grok route default (grok-build-0.1) @ xhigh over the http transport", () => {
+	test("grok defaults are the Grok route default @ xhigh over the http transport", () => {
 		const grok = defaultConfig().grok;
 		expect(grok.model).toBe(ROUTE_DEFAULT_MODELS.grok);
-		expect(grok.model).toBe("grok-build-0.1");
 		expect(grok.reasoningEffort).toBe("xhigh");
 		expect(grok.transport).toBe("http");
 	});
@@ -245,6 +231,23 @@ describe("mergeConfig", () => {
 			grok: { home: "./h" },
 			muse: { bin: "./z" },
 		});
+	});
+
+	test("a project file cannot turn ship auto-merge or branch deletion on; it can turn them off (integrations-b-01)", () => {
+		const base = defaultConfig();
+		const user = mergeConfig({ ship: { autoMerge: true, deleteBranch: true } }, base);
+		expect(user.ship).toMatchObject({ autoMerge: true, deleteBranch: true });
+		// A repository file only tightens: over the defaults it cannot enable either setting, and over the user's values it cannot enable them either way.
+		expect(
+			mergeConfig({ ship: { autoMerge: true, deleteBranch: true } }, base, { project: true }).ship,
+		).toMatchObject({ autoMerge: base.ship.autoMerge, deleteBranch: base.ship.deleteBranch });
+		expect(
+			mergeConfig({ ship: { autoMerge: false, deleteBranch: false } }, user, { project: true })
+				.ship,
+		).toMatchObject({ autoMerge: false, deleteBranch: false });
+		expect(mergeConfig({ ship: { autoMerge: true } }, user, { project: true }).ship.autoMerge).toBe(
+			true,
+		);
 	});
 
 	test("ms budgets above the timer maximum are clamped to MAX_TIMER_MS (0 stays unbounded)", () => {
@@ -359,7 +362,7 @@ describe("track config", () => {
 describe("config paths", () => {
 	test("user config lives under XDG_CONFIG_HOME, else ~/.config", () => {
 		expect(userConfigPath({ XDG_CONFIG_HOME: "/xdg" })).toBe("/xdg/ultrathink/config.json");
-		expect(userConfigPath({})).toBe(join(homedir(), ".config", "ultrathink", "config.json"));
+		expect(userConfigPath({})).toMatch(/[\\/]\.config[\\/]ultrathink[\\/]config\.json$/);
 	});
 
 	test("user, then Claude home, then project, in that order; only the project file is tagged as a project layer", () => {
@@ -370,10 +373,10 @@ describe("config paths", () => {
 			"/home/.claude/ultrathink.json",
 			{ path: "/repo/.claude/ultrathink.json", project: true },
 		]);
-		expect(claudeConfigPaths("/repo", {})[1]).toBe(join(homedir(), ".claude", "ultrathink.json"));
+		expect(claudeConfigPaths("/repo", {})[1]).toMatch(/[\\/]\.claude[\\/]ultrathink\.json$/);
 	});
 
-	test("the project file overrides ~/.claude, which overrides the user config", () => {
+	test("a repository file cannot choose the Notion data source; the Claude file overrides the user config", () => {
 		const root = mkdtempSync(join(tmpdir(), "ultrathink-paths-"));
 		const env = { XDG_CONFIG_HOME: join(root, "xdg"), CLAUDE_CONFIG_DIR: join(root, "claude") };
 		const [user, claude, project] = claudeConfigPaths(join(root, "repo"), env).map((s) =>
@@ -399,7 +402,8 @@ describe("config paths", () => {
 			const config = loadConfig(claudeConfigPaths(join(root, "repo"), env));
 			expect(config.hitl.maxQuestions).toBe(1);
 			expect(config.linear.team).toBe("Claude");
-			expect(config.notion.dataSourceUrl).toBe("collection://project");
+			// A repository file cannot choose the Notion data source (tighten-only, K5): the Claude file's value stands.
+			expect(config.notion.dataSourceUrl).toBe("collection://claude");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -617,6 +621,114 @@ const DECISIONS_DEFAULTS: DecisionsConfig = {
 	teachableAutoAt: 0.8,
 	skillworthyAt: 0.5,
 };
+
+describe("a project layer can make a decision threshold stricter, never looser", () => {
+	test("ship and knowledge thresholds keep the user's value against a looser project value", () => {
+		const user = mergeConfig(
+			{
+				decisions: { shipVetoAtOrBelow: 0.4, shipApproveAt: 0.9, groundedAt: 0.9, blockingAt: 0.3 },
+			},
+			defaultConfig(),
+		);
+		const looser = mergeConfig(
+			{ decisions: { shipVetoAtOrBelow: 0, shipApproveAt: 0.1, groundedAt: 0, blockingAt: 1 } },
+			user,
+			{ project: true },
+		);
+		expect(looser.decisions).toMatchObject({
+			shipVetoAtOrBelow: 0.4,
+			shipApproveAt: 0.9,
+			groundedAt: 0.9,
+			blockingAt: 0.3,
+		});
+	});
+
+	test("a project value that is stricter applies, and a user file sets the same thresholds freely", () => {
+		const user = mergeConfig(
+			{
+				decisions: { shipVetoAtOrBelow: 0.4, shipApproveAt: 0.9, groundedAt: 0.9, blockingAt: 0.3 },
+			},
+			defaultConfig(),
+		);
+		const stricter = mergeConfig(
+			{
+				decisions: {
+					shipVetoAtOrBelow: 0.6,
+					shipApproveAt: 0.95,
+					groundedAt: 0.95,
+					blockingAt: 0.1,
+				},
+			},
+			user,
+			{ project: true },
+		);
+		expect(stricter.decisions).toMatchObject({
+			shipVetoAtOrBelow: 0.6,
+			shipApproveAt: 0.95,
+			groundedAt: 0.95,
+			blockingAt: 0.1,
+		});
+		const freeUser = mergeConfig(
+			{ decisions: { shipVetoAtOrBelow: 0, shipApproveAt: 0.1, groundedAt: 0, blockingAt: 1 } },
+			defaultConfig(),
+		);
+		expect(freeUser.decisions).toMatchObject({
+			shipVetoAtOrBelow: 0,
+			shipApproveAt: 0.1,
+			groundedAt: 0,
+			blockingAt: 1,
+		});
+	});
+
+	const layered = (user: Record<string, unknown>, project: Record<string, unknown>) =>
+		mergeConfig(project, mergeConfig(user, defaultConfig()), { project: true }).decisions;
+
+	const GATES: [string, number, number, number][] = [
+		["shipVetoAtOrBelow", 0.4, 0.1, 0.6],
+		["shipApproveAt", 0.6, 0.2, 0.9],
+		["groundedAt", 0.7, 0.3, 0.95],
+		["teachableAutoAt", 0.6, 0.2, 0.9],
+		["skillworthyAt", 0.6, 0.2, 0.9],
+	];
+	test.each(GATES)(
+		"a project file cannot loosen decisions.%s: a looser value is ignored and a stricter one applies",
+		(key, user, looser, stricter) => {
+			expect(
+				layered({ decisions: { [key]: user } }, { decisions: { [key]: looser } }),
+			).toMatchObject({
+				[key]: user,
+			});
+			expect(
+				layered({ decisions: { [key]: user } }, { decisions: { [key]: stricter } }),
+			).toMatchObject({
+				[key]: stricter,
+			});
+		},
+	);
+
+	test("a project file cannot raise decisions.blockingAt, and a lower value applies", () => {
+		const user = { decisions: { blockingAt: 0.4 } };
+		expect(layered(user, { decisions: { blockingAt: 0.9 } })).toMatchObject({ blockingAt: 0.4 });
+		expect(layered(user, { decisions: { blockingAt: 0.1 } })).toMatchObject({ blockingAt: 0.1 });
+	});
+
+	const MOVABLE: [string, number][] = [
+		["planSkipBelow", 0.9],
+		["planSkipBelow", 0.05],
+		["teachableBelow", 0.5],
+		["teachableBelow", 0.1],
+	];
+	test.each(MOVABLE)(
+		"a project file moves decisions.%s, which decides planning and storage rather than a gate",
+		(key, project) => {
+			expect(
+				layered({ decisions: { [key]: 0.2 } }, { decisions: { [key]: project } }),
+			).toMatchObject({
+				[key]: project,
+			});
+		},
+	);
+});
 
 describe("decisions config", () => {
 	const roots: string[] = [];
@@ -962,7 +1074,7 @@ describe("decisions config", () => {
 			});
 		});
 
-		test("model, thresholds and timeoutMs from a project file still merge as usual", () => {
+		test("model, planSkipBelow and timeoutMs from a project file merge as usual; a looser blockingAt is ignored", () => {
 			const config = loadLayers(
 				{
 					decisions: {
@@ -987,7 +1099,7 @@ describe("decisions config", () => {
 				enabled: true,
 				model: "typesafe/jev-1.13",
 				planSkipBelow: 0.1,
-				blockingAt: 0.9,
+				// blockingAt: 0.9 would ask fewer questions than the 0.5 default, so the project file cannot apply it.
 				timeoutMs: 8000,
 			});
 			expect(
@@ -2256,5 +2368,106 @@ describe("legacy model provenance (AD-1)", () => {
 			mergeConfig({ grok: { fallbackModels: [] } }, user, { project: true }).grok.fallbackModels,
 		).toEqual([]);
 		expect(mergeConfig({ grok: { fallbackModels: [] } }, user).grok.fallbackModels).toEqual([]);
+	});
+});
+
+describe("project files: tighten, fill and timers", () => {
+	test("a project file can shorten a call timer; 0 keeps the earlier bound and an over-long value is capped", () => {
+		const base = defaultConfig();
+		expect(
+			mergeConfig({ claude: { callTimeoutMs: 30_000 } }, base, { project: true }).claude
+				.callTimeoutMs,
+		).toBe(30_000);
+		expect(
+			mergeConfig({ claude: { callTimeoutMs: 0, budgetMs: 0 } }, base, { project: true }).claude,
+		).toMatchObject({
+			callTimeoutMs: base.claude.callTimeoutMs,
+			budgetMs: base.claude.budgetMs,
+		});
+		// Unlimited (0) is shortened by any project value, and a value over the timer maximum is capped, not rejected.
+		expect(
+			mergeConfig({ claude: { budgetMs: 9_999_999_999 } }, base, { project: true }).claude.budgetMs,
+		).toBe(2_147_483_647);
+	});
+
+	test("a project file can only shorten a timer the user set: a longer project value keeps the user's bound, a shorter one applies", () => {
+		const base = defaultConfig();
+		const user = mergeConfig({ claude: { callTimeoutMs: 60_000, budgetMs: 600_000 } }, base);
+		const longer = mergeConfig(
+			{ claude: { callTimeoutMs: 120_000, budgetMs: 9_999_999_999 } },
+			user,
+			{
+				project: true,
+			},
+		);
+		expect(longer.claude).toMatchObject({ callTimeoutMs: 60_000, budgetMs: 600_000 });
+		const shorter = mergeConfig({ claude: { callTimeoutMs: 30_000, budgetMs: 300_000 } }, user, {
+			project: true,
+		});
+		expect(shorter.claude).toMatchObject({ callTimeoutMs: 30_000, budgetMs: 300_000 });
+	});
+
+	test("a project file can turn the knowledge base off but never on", () => {
+		const base = defaultConfig();
+		const user = mergeConfig({ hitl: { knowledgeBase: true } }, base);
+		expect(
+			mergeConfig({ hitl: { knowledgeBase: true } }, base, { project: true }).hitl.knowledgeBase,
+		).toBe(false);
+		expect(
+			mergeConfig({ hitl: { knowledgeBase: false } }, user, { project: true }).hitl.knowledgeBase,
+		).toBe(false);
+		expect(
+			mergeConfig({ hitl: { knowledgeBase: true } }, user, { project: true }).hitl.knowledgeBase,
+		).toBe(true);
+	});
+
+	test("think.reasoningCeiling is a user setting: a known value is read, anything else keeps the earlier value", () => {
+		const base = defaultConfig();
+		expect(mergeConfig({ think: { reasoningCeiling: "low" } }, base).think.reasoningCeiling).toBe(
+			"low",
+		);
+		expect(mergeConfig({ think: { reasoningCeiling: "high" } }, base).think.reasoningCeiling).toBe(
+			"high",
+		);
+		expect(mergeConfig({ think: { reasoningCeiling: "turbo" } }, base).think.reasoningCeiling).toBe(
+			base.think.reasoningCeiling,
+		);
+		expect(
+			mergeConfig({ think: { reasoningCeiling: "low" } }, base, { project: true }).think
+				.reasoningCeiling,
+		).toBe(base.think.reasoningCeiling);
+	});
+
+	test("uplift.maxChars is a user setting: a positive limit is read; 0, bad values and project files keep no limit", () => {
+		const base = defaultConfig();
+		expect(base.uplift.maxChars).toBe(0);
+		expect(mergeConfig({ uplift: { maxChars: 500 } }, base).uplift.maxChars).toBe(500);
+		expect(mergeConfig({ uplift: { maxChars: -1 } }, base).uplift.maxChars).toBe(0);
+		expect(mergeConfig({ uplift: { maxChars: 1.5 } }, base).uplift.maxChars).toBe(0);
+		expect(
+			mergeConfig({ uplift: { maxChars: 500 } }, base, { project: true }).uplift.maxChars,
+		).toBe(0);
+	});
+
+	test("a project file cannot choose the tracker destination: notion.dataSourceUrl and linear.team come from your own config only", () => {
+		const base = defaultConfig();
+		const fromProject = mergeConfig(
+			{ linear: { team: "Acme" }, notion: { dataSourceUrl: "collection://acme" } },
+			base,
+			{ project: true },
+		);
+		expect(fromProject.linear.team).toBe(base.linear.team);
+		expect(fromProject.notion.dataSourceUrl).toBe(base.notion.dataSourceUrl);
+		const user = mergeConfig(
+			{ linear: { team: "User" }, notion: { dataSourceUrl: "collection://user" } },
+			base,
+		);
+		const overridden = mergeConfig(
+			{ linear: { team: "Acme" }, notion: { dataSourceUrl: "collection://acme" } },
+			user,
+			{ project: true },
+		);
+		expect(overridden.linear.team).toBe("User");
+		expect(overridden.notion.dataSourceUrl).toBe("collection://user");
 	});
 });

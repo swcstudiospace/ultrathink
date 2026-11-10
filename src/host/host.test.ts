@@ -1065,21 +1065,19 @@ describe("planPrompt with the Jev plan gate", () => {
 				const run = (prompt: string) =>
 					planPrompt({ host, session_id: "s1", prompt, cwd: h.root }, h.env, h.options);
 				const acks = ["yes", "ok", "thanks", "go ahead", "lgtm!"];
-				for (const prompt of [
-					...acks,
-					"raw: add a flag",
-					"/help",
-					"<BUILD_PROMPT>add a flag</BUILD_PROMPT>",
-				]) {
+				const skipRows: Array<[string, string]> = [
+					...acks.map((ack): [string, string] => [ack, "precheck-trivial"]),
+					["raw: add a flag", "precheck-passthrough"],
+					["/help", "slash-command"],
+					["<BUILD_PROMPT>add a flag</BUILD_PROMPT>", "precheck-already-uplifted"],
+				];
+				for (const [prompt, skipped] of skipRows) {
 					h.configure({ enabled: false });
 					const base = await run(prompt);
 					h.configure({ enabled: true });
 					const jev = await run(prompt);
 					expect(jev).toEqual(base);
-					expect(jev.context).toBe("");
-					expect(jev.skipped).toBeDefined();
-					if (acks.includes(prompt))
-						expect(jev).toEqual({ context: "", skipped: "precheck-trivial" });
+					expect(jev).toMatchObject({ context: "", skipped });
 				}
 				// Planning turned off by control state.
 				const offDir = h.env.ULTRATHINK_STATE_DIR;
@@ -1433,6 +1431,47 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 		}
 	});
 
+	test("the native planner hands the uplift to onUplift once, before the graph, and the handoff carries no graph block", async () => {
+		const { root, env } = planHarness();
+		const stateDir = env.ULTRATHINK_STATE_DIR!;
+		const model = fakeModel("acme", "early-native");
+		const { runtime } = fakeRuntime([model]);
+		const rec = recorder((call) =>
+			reply([{ type: "text", text: stageAnswer(userText(call)).text }]),
+		);
+		const early: string[] = [];
+		const planner = createNativeEnginePlanner({
+			completeSimple: rec.complete,
+			providerDefaults: {},
+			env: ompEnv(root, env),
+		});
+		try {
+			const plan = await planner(
+				{
+					prompt: "add a widget",
+					cwd: root,
+					sessionId: "early-native",
+					model,
+					modelSource: "ctx.model",
+					native: runtime,
+					config: quietConfig(),
+					control: {},
+					stateDir,
+					onUplift: (handoff) => {
+						early.push(handoff.context);
+					},
+				},
+				new AbortController().signal,
+			);
+			expect(plan.skipped).toBeUndefined();
+			expect(early).toHaveLength(1);
+			expect(early[0]).toContain("add a widget");
+			expect(early[0]).not.toContain("<GRAPH_OF_THOUGHT");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("native uplift preserves an individual BUILD_PROMPT over 4096 characters through downstream calls and current spec/state, ignoring nontext blocks", async () => {
 		const { root, env } = planHarness();
 		const stateDir = env.ULTRATHINK_STATE_DIR!;
@@ -1503,9 +1542,11 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				"fill",
 				"clarify",
 			]);
-			// The graph and each fill consume the whole individual uplift, not a reconstructed large handoff.
-			expect(userText(rec.calls[1]!)).toBe(`add a widget\n\n${canonical}`);
-			for (const call of rec.calls.slice(2, 7)) expect(userText(call)).toContain(canonical);
+			// The graph and each fill consume the whole individual uplift, not a reconstructed large handoff; the prompt is sent once per call.
+			for (const call of rec.calls.slice(1, 7)) {
+				expect(userText(call)).toContain(body);
+				expect(userText(call).split("add a widget")).toHaveLength(2);
+			}
 			expect(userText(rec.calls[7]!)).toContain(body);
 			const record = readSession(stateDir, "large-native");
 			const spec = readFileSync(
@@ -2058,12 +2099,14 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 					const stateDir = env.ULTRATHINK_STATE_DIR!;
 					const fills = (count: number) => Array.from({ length: count }, () => "fill");
 					// A provider that failed every fill (a 400 on each) is down: no repair pass runs against it. A graph call the
-					// completer already gave up on (it carries a report) skips the clarify stage for the same reason.
+					// completer already gave up on (it carries a report) skips the clarify stage and every node fill for the same
+					// reason: the provider failed the graph call, so the stages after it would only repeat that failure.
+					const graphFailed = failure === "ordinary-error" && at === "graph";
 					const expected = [
 						"uplift",
 						"graph",
-						...fills(5),
-						...(failure === "ordinary-error" && at === "graph" ? [] : ["clarify"]),
+						...(graphFailed ? [] : fills(5)),
+						...(graphFailed ? [] : ["clarify"]),
 					];
 					expect(controller.signal.aborted).toBe(false);
 					expect(response.modelResolution).toMatchObject({

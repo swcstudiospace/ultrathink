@@ -429,12 +429,17 @@ async function checkClarifications(
 
 	const settled = list.filter((item) => item.source === "knowledge");
 	const knowledgeChecks: Promise<Checked>[] = [];
+	// A settled claim whose cited document has no digest section has nothing to check against, so it is never settled
+	// unchecked: it joins the rejected claims and is asked instead.
+	const ungrounded = new Set<string>();
 	if (kb) {
 		for (const claim of settled) {
-			const document = extractDigestDocument(kb.digest, claim.evidence ?? "", kb.docs);
-			// No section for the cited document: nothing to check against, so no request and the claim stays settled.
-			if (!document) continue;
 			const key = normalizeQuestion(claim.question);
+			const document = extractDigestDocument(kb.digest, claim.evidence ?? "", kb.docs);
+			if (!document) {
+				ungrounded.add(key);
+				continue;
+			}
 			knowledgeChecks.push(
 				decisions
 					.run(
@@ -457,11 +462,12 @@ async function checkClarifications(
 	for (const { outcome } of [...known, ...risky])
 		if (outcome.status !== "inactive") opts.onDecision?.(outcome.record);
 
-	const rejected = new Set(
-		known.flatMap(({ key, outcome }) =>
+	const rejected = new Set([
+		...ungrounded,
+		...known.flatMap(({ key, outcome }) =>
 			outcome.status === "ok" && outcome.p < groundedAt ? [key] : [],
 		),
-	);
+	]);
 	let checked = list;
 	let second: Checked[] = [];
 	if (kb && rejected.size > 0) {
