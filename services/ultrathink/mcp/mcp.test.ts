@@ -364,8 +364,6 @@ describe("era-specific result metadata and errors", () => {
 			["resources/list", {}, true],
 			["resources/templates/list", {}, true],
 			["resources/read", { uri: UI_URI }, true],
-			["initialize", {}, false],
-			["ping", {}, false],
 			["tools/call", { name: "ultrathink_sessions", arguments: {} }, false],
 			["prompts/get", { name: "ultrathink", arguments: { request: "Plan" } }, false],
 		];
@@ -387,6 +385,18 @@ describe("era-specific result metadata and errors", () => {
 				expect(legacyResult.ttlMs).toBeUndefined();
 				expect(legacyResult.cacheScope).toBeUndefined();
 			}
+		}
+	});
+
+	test("rejects removed modern initialize and ping while keeping legacy methods", async () => {
+		for (const method of ["initialize", "ping"]) {
+			const modern = await handleMcpPayload(fakeHost(), request(method, {}, 1), {
+				protocolVersion: "2026-07-28",
+			});
+			expect(modern?.status).toBe(404);
+			expect(modern?.body).toMatchObject({ error: { code: -32601 } });
+			const legacy = await handleMcpPayload(fakeHost(), request(method, {}, 1));
+			expect((legacy?.body as RpcReply).result).toBeDefined();
 		}
 	});
 

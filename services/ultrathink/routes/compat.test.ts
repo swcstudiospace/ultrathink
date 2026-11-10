@@ -390,7 +390,7 @@ describe("modern request validation", () => {
 	test("requires case-sensitive mirrors and accepts mixed-case header names", async () => {
 		const h = harness();
 		const ok = await rpc(h, ping, { "mcp-protocol-version": version, "mCP-mEThod": "ping" });
-		expect(ok.status).toBe(200);
+		expect(ok.status).toBe(404);
 		for (const invalidHeaders of [
 			{ "MCP-Protocol-Version": version },
 			{ ...headers, "Mcp-Method": "Ping" },

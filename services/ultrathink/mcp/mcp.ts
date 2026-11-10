@@ -461,9 +461,13 @@ async function dispatch(
 				? rpcResult(id, discoveryResult(serverPlanning))
 				: rpcError(id, METHOD_NOT_FOUND, "method not found");
 		case "initialize":
-			return rpcResult(id, initializeResult(params, serverPlanning));
+			return protocolVersion === MODERN_PROTOCOL_VERSION
+				? rpcError(id, METHOD_NOT_FOUND, "method not found")
+				: rpcResult(id, initializeResult(params, serverPlanning));
 		case "ping":
-			return rpcResult(id, {});
+			return protocolVersion === MODERN_PROTOCOL_VERSION
+				? rpcError(id, METHOD_NOT_FOUND, "method not found")
+				: rpcResult(id, {});
 		case "tools/list":
 			return rpcResult(id, { tools: toolDefinitions(serverPlanning) });
 		case "tools/call":
