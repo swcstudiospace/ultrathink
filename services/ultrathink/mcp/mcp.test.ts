@@ -302,12 +302,20 @@ describe("server/discover", () => {
 	test("advertises actual capabilities and mode-specific instructions for the modern request context", async () => {
 		for (const host of [fakeHost(), serverHost()]) {
 			const legacy = await initialize(host);
-			const reply = await bodyOf(host, request("server/discover", {
-				_meta: {
-					"io.modelcontextprotocol/protocolVersion": "2026-07-28",
-					"io.modelcontextprotocol/clientCapabilities": {},
-				},
-			}, "discovery"), { protocolVersion: "2026-07-28" }) as RpcReply;
+			const reply = (await bodyOf(
+				host,
+				request(
+					"server/discover",
+					{
+						_meta: {
+							"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+							"io.modelcontextprotocol/clientCapabilities": {},
+						},
+					},
+					"discovery",
+				),
+				{ protocolVersion: "2026-07-28" },
+			)) as RpcReply;
 			expect(reply.id).toBe("discovery");
 			expect(reply.result).toEqual({
 				resultType: "complete",
@@ -330,6 +338,81 @@ describe("server/discover", () => {
 				jsonrpc: "2.0",
 				id: 7,
 				error: { code: -32601, message: "method not found" },
+			});
+		}
+	});
+});
+
+describe("era-specific result metadata and errors", () => {
+	test("decorates only modern successes and only cacheable operations", async () => {
+		const host = fakeHost();
+		host.resources = createResourceRegistry([
+			{
+				uri: UI_URI,
+				name: "graph",
+				title: "Graph",
+				description: "Graph",
+				mimeType: UI_RESOURCE_MIME_TYPE,
+				html: () => "<p>graph</p>",
+				meta: { csp: {} },
+			},
+		]);
+		const cases: [string, unknown, boolean][] = [
+			["server/discover", {}, true],
+			["tools/list", {}, true],
+			["prompts/list", {}, true],
+			["resources/list", {}, true],
+			["resources/templates/list", {}, true],
+			["resources/read", { uri: UI_URI }, true],
+			["initialize", {}, false],
+			["ping", {}, false],
+			["tools/call", { name: "ultrathink_sessions", arguments: {} }, false],
+			["prompts/get", { name: "ultrathink", arguments: { request: "Plan" } }, false],
+		];
+		for (const [method, params, cacheable] of cases) {
+			const modern = await handleMcpPayload(host, request(method, params, method), {
+				protocolVersion: "2026-07-28",
+			});
+			const result = resultOf<Record<string, unknown>>(modern?.body as RpcReply);
+			expect(result.resultType).toBe("complete");
+			expect(result.ttlMs).toBe(cacheable ? 0 : undefined);
+			expect(result.cacheScope).toBe(cacheable ? "private" : undefined);
+			if (method === "server/discover") continue;
+			for (const version of SUPPORTED_PROTOCOL_VERSIONS) {
+				const legacy = await handleMcpPayload(host, request(method, params, method), {
+					protocolVersion: version,
+				});
+				const legacyResult = resultOf<Record<string, unknown>>(legacy?.body as RpcReply);
+				expect(legacyResult.resultType).toBeUndefined();
+				expect(legacyResult.ttlMs).toBeUndefined();
+				expect(legacyResult.cacheScope).toBeUndefined();
+			}
+		}
+	});
+
+	test("uses era-specific errors without result metadata", async () => {
+		for (const version of ["2026-07-28", ...SUPPORTED_PROTOCOL_VERSIONS]) {
+			const modern = version === "2026-07-28";
+			for (const method of ["sampling/createMessage", "notifications/unknown"]) {
+				const response = await handleMcpPayload(fakeHost(), request(method, {}, "unknown"), {
+					protocolVersion: version,
+				});
+				expect(response?.status ?? 200).toBe(modern ? 404 : 200);
+				expect(response?.body).toEqual({
+					jsonrpc: "2.0",
+					id: "unknown",
+					error: { code: -32601, message: "method not found" },
+				});
+			}
+			const missing = await handleMcpPayload(
+				fakeHost(),
+				request("resources/read", { uri: UI_URI }, "missing"),
+				{ protocolVersion: version },
+			);
+			expect(missing?.body).toEqual({
+				jsonrpc: "2.0",
+				id: "missing",
+				error: { code: modern ? -32602 : -32002, message: "resource not found" },
 			});
 		}
 	});

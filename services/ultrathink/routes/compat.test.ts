@@ -6,6 +6,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, request as httpRequest } from "node:http";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAuth } from "../auth/auth.ts";
@@ -49,6 +51,8 @@ afterAll(() => {
 interface Harness {
 	app: App;
 	logs: LogLine[];
+	store: Store;
+	dir: string;
 }
 
 function harness(overrides: Partial<UltrathinkConfig> = {}): Harness {
@@ -113,7 +117,7 @@ function harness(overrides: Partial<UltrathinkConfig> = {}): Harness {
 	});
 	const logs: LogLine[] = [];
 	const logger = createLogger({ write: (line) => logs.push(JSON.parse(line) as LogLine) });
-	return { app: createApp({ config, store, auth, logger }), logs };
+	return { app: createApp({ config, store, auth, logger }), logs, store, dir };
 }
 
 /** A /mcp POST whose body is sent exactly as given, so a test can send something that is not JSON. */
@@ -243,23 +247,36 @@ describe("protocol version header", () => {
 
 	test("authenticated modern discovery advertises the actual server capabilities", async () => {
 		const h = harness();
-		const response = await rpc(h, {
-			jsonrpc: "2.0",
-			id: "discover-modern",
-			method: "server/discover",
-			params: { _meta: {
-				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
-				"io.modelcontextprotocol/clientCapabilities": {},
-			} },
-		}, { "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover" });
+		const response = await rpc(
+			h,
+			{
+				jsonrpc: "2.0",
+				id: "discover-modern",
+				method: "server/discover",
+				params: {
+					_meta: {
+						"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+						"io.modelcontextprotocol/clientCapabilities": {},
+					},
+				},
+			},
+			{ "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover" },
+		);
 		expect(response.status).toBe(200);
 		const answer = await body(response);
 		expect(answer.id).toBe("discover-modern");
 		expect(answer.result).toMatchObject({
 			resultType: "complete",
 			supportedVersions: ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"],
-			capabilities: { tools: {}, prompts: {}, resources: {}, extensions: { "io.modelcontextprotocol/ui": {} } },
-			_meta: { "io.modelcontextprotocol/serverInfo": { name: "ultrathink", version: expect.any(String) } },
+			capabilities: {
+				tools: {},
+				prompts: {},
+				resources: {},
+				extensions: { "io.modelcontextprotocol/ui": {} },
+			},
+			_meta: {
+				"io.modelcontextprotocol/serverInfo": { name: "ultrathink", version: expect.any(String) },
+			},
 			instructions: expect.any(String),
 			ttlMs: 0,
 			cacheScope: "private",
@@ -350,12 +367,17 @@ describe("modern request validation", () => {
 
 	test("requires metadata before checking headers and echoes the request id", async () => {
 		const h = harness();
-		for (const invalid of [{}, { "io.modelcontextprotocol/protocolVersion": version }, {
-			"io.modelcontextprotocol/clientCapabilities": {},
-		}, {
-			"io.modelcontextprotocol/protocolVersion": version,
-			"io.modelcontextprotocol/clientCapabilities": [],
-		}]) {
+		for (const invalid of [
+			{},
+			{ "io.modelcontextprotocol/protocolVersion": version },
+			{
+				"io.modelcontextprotocol/clientCapabilities": {},
+			},
+			{
+				"io.modelcontextprotocol/protocolVersion": version,
+				"io.modelcontextprotocol/clientCapabilities": [],
+			},
+		]) {
 			const response = await rpc(h, { ...ping, params: { _meta: invalid } }, headers);
 			expect(response.status).toBe(400);
 			expect(await body(response)).toMatchObject({ id: "p", error: { code: -32602 } });
@@ -377,25 +399,45 @@ describe("modern request validation", () => {
 			expect(response.status).toBe(400);
 			expect((await body(response)).error?.code).toBe(-32020);
 		}
-		const mismatch = await rpc(h, { ...ping, params: { _meta: { ...meta,
-			"io.modelcontextprotocol/protocolVersion": "2025-11-25" } } }, headers);
+		const mismatch = await rpc(
+			h,
+			{
+				...ping,
+				params: { _meta: { ...meta, "io.modelcontextprotocol/protocolVersion": "2025-11-25" } },
+			},
+			headers,
+		);
 		expect(mismatch.status).toBe(400);
 		expect((await body(mismatch)).error?.code).toBe(-32020);
 	});
 
 	test("checks names and resource URIs before dispatch", async () => {
 		const h = harness();
-		for (const [method, field] of [["tools/call", "name"], ["prompts/get", "name"], ["resources/read", "uri"]]) {
-			const request = { jsonrpc: "2.0", id: 3, method, params: { [field]: "expected", _meta: meta } };
+		for (const [method, field] of [
+			["tools/call", "name"],
+			["prompts/get", "name"],
+			["resources/read", "uri"],
+		] as const) {
+			const request = {
+				jsonrpc: "2.0",
+				id: 3,
+				method,
+				params: { [field]: "expected", _meta: meta },
+			};
 			for (const name of [undefined, "Expected"]) {
-				const sent: Record<string, string> = { "MCP-Protocol-Version": version, "Mcp-Method": method };
+				const sent: Record<string, string> = {
+					"MCP-Protocol-Version": version,
+					"Mcp-Method": method,
+				};
 				if (name !== undefined) sent["Mcp-Name"] = name;
 				const response = await rpc(h, request, sent);
 				expect(response.status).toBe(400);
 				expect((await body(response)).error?.code).toBe(-32020);
 			}
 			const matching = await rpc(h, request, {
-				"MCP-Protocol-Version": version, "Mcp-Method": method, "Mcp-Name": "expected",
+				"MCP-Protocol-Version": version,
+				"Mcp-Method": method,
+				"Mcp-Name": "expected",
 			});
 			expect((await body(matching)).error?.code).not.toBe(-32020);
 		}
@@ -403,11 +445,20 @@ describe("modern request validation", () => {
 
 	test("mismatched routing headers cannot invoke the tool host", async () => {
 		const h = harness();
-		const request = { jsonrpc: "2.0", id: 4, method: "tools/call", params: {
-			name: "ultrathink_pending", arguments: { sessionId: "missing" }, _meta: meta,
-		} };
+		const request = {
+			jsonrpc: "2.0",
+			id: 4,
+			method: "tools/call",
+			params: {
+				name: "ultrathink_pending",
+				arguments: { sessionId: "missing" },
+				_meta: meta,
+			},
+		};
 		const response = await rpc(h, request, {
-			"MCP-Protocol-Version": version, "Mcp-Method": "tools/call", "Mcp-Name": "ultrathink_status",
+			"MCP-Protocol-Version": version,
+			"Mcp-Method": "tools/call",
+			"Mcp-Name": "ultrathink_status",
 		});
 		expect(response.status).toBe(400);
 		expect((await body(response)).error?.code).toBe(-32020);
@@ -417,19 +468,31 @@ describe("modern request validation", () => {
 	test("name encoding is checked on the wire before dispatch", async () => {
 		const h = harness();
 		for (const name of ["café", "=?base64?SGk=?="]) {
-			const request = { jsonrpc: "2.0", id: 5, method: "prompts/get", params: { name, _meta: meta } };
+			const request = {
+				jsonrpc: "2.0",
+				id: 5,
+				method: "prompts/get",
+				params: { name, _meta: meta },
+			};
 			const encoded = `=?base64?${Buffer.from(name, "utf8").toString("base64")}?=`;
 			const response = await rpc(h, request, {
-				"MCP-Protocol-Version": version, "Mcp-Method": "prompts/get", "Mcp-Name": encoded,
+				"MCP-Protocol-Version": version,
+				"Mcp-Method": "prompts/get",
+				"Mcp-Name": encoded,
 			});
 			expect(response.status).toBe(200);
 			expect((await body(response)).error?.code).not.toBe(-32020);
 		}
 		for (const name of ["=?base64?!!!!?=", "=?base64?/w==?="]) {
-			const response = await rpc(h, { jsonrpc: "2.0", id: 5, method: "prompts/get",
-				params: { name: "expected", _meta: meta } }, {
-				"MCP-Protocol-Version": version, "Mcp-Method": "prompts/get", "Mcp-Name": name,
-			});
+			const response = await rpc(
+				h,
+				{ jsonrpc: "2.0", id: 5, method: "prompts/get", params: { name: "expected", _meta: meta } },
+				{
+					"MCP-Protocol-Version": version,
+					"Mcp-Method": "prompts/get",
+					"Mcp-Name": name,
+				},
+			);
 			expect(response.status).toBe(400);
 			expect((await body(response)).error?.code).toBe(-32020);
 		}
@@ -437,8 +500,11 @@ describe("modern request validation", () => {
 
 	test("notifications and malformed envelopes retain their existing behavior", async () => {
 		const h = harness();
-		const notification = await rpc(h, { jsonrpc: "2.0", method: "notifications/initialized" },
-			{ "MCP-Protocol-Version": version });
+		const notification = await rpc(
+			h,
+			{ jsonrpc: "2.0", method: "notifications/initialized" },
+			{ "MCP-Protocol-Version": version },
+		);
 		expect(notification.status).toBe(202);
 		expect(await notification.text()).toBe("");
 		const batch = await rpc(h, [ping], headers);
@@ -453,10 +519,14 @@ describe("modern request validation", () => {
 		const h = harness();
 		const forbidden = await rpc(h, ping, { ...headers, Origin: "https://evil.example" });
 		expect(forbidden.status).toBe(403);
-		const noKey = await h.app.handle(new Request(RESOURCE, {
-			method: "POST", headers: { "Content-Type": "application/json", ...headers },
-			body: JSON.stringify(ping),
-		}), PEER);
+		const noKey = await h.app.handle(
+			new Request(RESOURCE, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...headers },
+				body: JSON.stringify(ping),
+			}),
+			PEER,
+		);
 		expect(noKey.status).toBe(401);
 		const badKey = await rpc(h, ping, { ...headers, "x-connector-key": "invalid" });
 		expect(badKey.status).toBe(401);
@@ -464,12 +534,190 @@ describe("modern request validation", () => {
 
 	test("a locally simulated unsupported probe can fall back to legacy initialize", async () => {
 		const h = harness();
-		const probe = await rpc(h, ping, { "MCP-Protocol-Version": "2027-01-01", "Mcp-Method": "ping" });
+		const probe = await rpc(h, ping, {
+			"MCP-Protocol-Version": "2027-01-01",
+			"Mcp-Method": "ping",
+		});
 		expect(probe.status).toBe(400);
 		expect((await body(probe)).error?.code).toBe(-32600);
 		const fallback = await rpc(h, initialize("2027-01-01"));
 		expect(fallback.status).toBe(200);
 		expect((await body(fallback)).result?.protocolVersion).toBe("2025-11-25");
+	});
+});
+
+describe("era-specific HTTP errors", () => {
+	test("modern unknown methods use 404 and missing resources use -32602; legacy remains unchanged", async () => {
+		const h = harness();
+		for (const version of ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]) {
+			const modern = version === "2026-07-28";
+			const meta = modern
+				? {
+						_meta: {
+							"io.modelcontextprotocol/protocolVersion": version,
+							"io.modelcontextprotocol/clientCapabilities": {},
+						},
+					}
+				: {};
+			const unknown = await rpc(
+				h,
+				{ jsonrpc: "2.0", id: "unknown", method: "sampling/createMessage", params: meta },
+				{
+					"MCP-Protocol-Version": version,
+					...(modern ? { "Mcp-Method": "sampling/createMessage" } : {}),
+				},
+			);
+			expect(unknown.status).toBe(modern ? 404 : 200);
+			expect(await body(unknown)).toEqual({
+				jsonrpc: "2.0",
+				id: "unknown",
+				error: { code: -32601, message: "method not found" },
+			});
+			const missing = await rpc(
+				h,
+				{
+					jsonrpc: "2.0",
+					id: "missing",
+					method: "resources/read",
+					params: { ...meta, uri: "ui://ultrathink/missing" },
+				},
+				{
+					"MCP-Protocol-Version": version,
+					...(modern
+						? { "Mcp-Method": "resources/read", "Mcp-Name": "ui://ultrathink/missing" }
+						: {}),
+				},
+			);
+			expect(missing.status).toBe(200);
+			expect(await body(missing)).toEqual({
+				jsonrpc: "2.0",
+				id: "missing",
+				error: { code: modern ? -32602 : -32002, message: "resource not found" },
+			});
+		}
+	});
+});
+
+describe("stateless transport across TCP connections", () => {
+	test("tool calls work before discovery and on a different connection after discovery", async () => {
+		const h = harness();
+		const sockets: Socket[] = [];
+		const server = createServer(async (incoming, outgoing) => {
+			sockets.push(incoming.socket);
+			try {
+				const chunks: Buffer[] = [];
+				for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+				const headers = new Headers();
+				for (const [name, value] of Object.entries(incoming.headers)) {
+					if (value !== undefined)
+						headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+				}
+				const response = await h.app.handle(
+					new Request(RESOURCE, {
+						method: "POST",
+						headers,
+						body: Buffer.concat(chunks),
+					}),
+					PEER,
+				);
+				outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
+				outgoing.end(Buffer.from(await response.arrayBuffer()));
+			} catch {
+				outgoing.writeHead(500);
+				outgoing.end();
+			}
+		});
+		try {
+			const listening = Promise.withResolvers<void>();
+			server.once("error", listening.reject);
+			server.listen(0, PEER, listening.resolve);
+			await listening.promise;
+			const address = server.address();
+			if (!address || typeof address === "string") throw new Error("missing loopback address");
+			const version = "2026-07-28";
+			const send = (method: string, id: string, params: Json = {}) => {
+				const { promise, resolve, reject } = Promise.withResolvers<{
+					status: number;
+					headers: Record<string, unknown>;
+					body: RpcBody;
+				}>();
+				const payload = JSON.stringify({
+					jsonrpc: "2.0",
+					id,
+					method,
+					params: {
+						...params,
+						_meta: {
+							"io.modelcontextprotocol/protocolVersion": version,
+							"io.modelcontextprotocol/clientCapabilities": {},
+						},
+					},
+				});
+				const headers: Record<string, string> = {
+					"Content-Type": "application/json",
+					"Content-Length": String(Buffer.byteLength(payload)),
+					Connection: "close",
+					"x-connector-key": CONNECTOR_KEY,
+					"MCP-Protocol-Version": version,
+					"Mcp-Method": method,
+				};
+				if (method === "tools/call") headers["Mcp-Name"] = "ultrathink_sessions";
+				const req = httpRequest(
+					{ host: PEER, port: address.port, path: "/mcp", method: "POST", headers, agent: false },
+					(res) => {
+						const chunks: Buffer[] = [];
+						res.on("data", (chunk: Buffer) => chunks.push(chunk));
+						res.on("error", reject);
+						res.on("end", () => {
+							try {
+								resolve({
+									status: res.statusCode ?? 0,
+									headers: res.headers,
+									body: JSON.parse(Buffer.concat(chunks).toString()) as RpcBody,
+								});
+							} catch (error) {
+								reject(error);
+							}
+						});
+					},
+				);
+				req.on("error", reject);
+				req.end(payload);
+				return promise;
+			};
+			const toolParams = { name: "ultrathink_sessions", arguments: {} };
+			const first = await send("tools/call", "before", toolParams);
+			const discovery = await send("server/discover", "discover");
+			const last = await send("tools/call", "after", toolParams);
+			for (const [response, id] of [
+				[first, "before"],
+				[discovery, "discover"],
+				[last, "after"],
+			] as const) {
+				expect(response.status).toBe(200);
+				expect(response.body.id).toBe(id);
+				expect(response.body.result?.resultType).toBe("complete");
+				expect(response.headers["mcp-session-id"]).toBeUndefined();
+			}
+			for (const response of [first, last]) {
+				expect(response.body.result?.isError).toBe(false);
+				expect(response.body.result?.structuredContent).toMatchObject({
+					sessions: [],
+					planning: { serverPlanning: false },
+				});
+			}
+			expect(sockets).toHaveLength(3);
+			expect(new Set(sockets).size).toBe(3);
+		} finally {
+			server.closeAllConnections();
+			const closed = Promise.withResolvers<void>();
+			server.close(() => closed.resolve());
+			await closed.promise;
+			h.store.close();
+			stores.splice(stores.indexOf(h.store), 1);
+			rmSync(h.dir, { recursive: true, force: true });
+			dirs.splice(dirs.indexOf(h.dir), 1);
+		}
 	});
 });
 

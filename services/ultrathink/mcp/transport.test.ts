@@ -3,7 +3,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { SUPPORTED_PROTOCOL_VERSIONS, TRANSPORT_PROTOCOL_VERSIONS } from "./mcp.ts";
-import { DEFAULT_ALLOWED_ORIGINS, originAllowed, resolveProtocolVersion, validateModernRequest } from "./transport.ts";
+import {
+	DEFAULT_ALLOWED_ORIGINS,
+	originAllowed,
+	resolveProtocolVersion,
+	validateModernRequest,
+} from "./transport.ts";
 
 const SERVICE_ORIGIN = "https://ultrathink.example.test";
 const ALLOWED = [SERVICE_ORIGIN, ...DEFAULT_ALLOWED_ORIGINS];
@@ -106,14 +111,7 @@ describe("resolveProtocolVersion", () => {
 	});
 
 	test("an unsupported, empty or malformed version is refused", () => {
-		for (const header of [
-			"2024-11-05",
-			"",
-			"latest",
-			" 2025-06-18",
-			"2025-06-18 ",
-			"2025-6-18",
-		]) {
+		for (const header of ["2024-11-05", "", "latest", " 2025-06-18", "2025-06-18 ", "2025-6-18"]) {
 			expect(resolveProtocolVersion(header)).toEqual({ ok: false });
 		}
 	});
@@ -125,11 +123,17 @@ describe("validateModernRequest", () => {
 		"io.modelcontextprotocol/clientCapabilities": {},
 	};
 	const request = (name: string) => ({
-		jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, _meta: meta },
+		jsonrpc: "2.0",
+		id: 1,
+		method: "tools/call",
+		params: { name, _meta: meta },
 	});
-	const headers = (name: string) => new Headers({
-		"mcp-protocol-version": "2026-07-28", "MCP-METHOD": "tools/call", "mCp-NaMe": name,
-	});
+	const headers = (name: string) =>
+		new Headers({
+			"mcp-protocol-version": "2026-07-28",
+			"MCP-METHOD": "tools/call",
+			"mCp-NaMe": name,
+		});
 
 	test("decodes UTF-8 and escaped sentinel-looking names exactly once", () => {
 		for (const name of ["Hello, 世界", "=?base64?literal?=", "=?base64?SGk=?="]) {
@@ -140,7 +144,12 @@ describe("validateModernRequest", () => {
 	});
 
 	test("rejects malformed, noncanonical base64 and invalid UTF-8", () => {
-		for (const value of ["=?base64?!!!!?=", "=?base64?YQ?=", "=?base64?YR==?=", "=?base64?/w==?="]) {
+		for (const value of [
+			"=?base64?!!!!?=",
+			"=?base64?YQ?=",
+			"=?base64?YR==?=",
+			"=?base64?/w==?=",
+		]) {
 			expect(validateModernRequest(request("a"), headers(value))?.code).toBe(-32020);
 		}
 	});

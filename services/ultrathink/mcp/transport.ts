@@ -64,7 +64,8 @@ function decodeName(value: string): string | null {
 	if (!value.startsWith("=?base64?") || !value.endsWith("?="))
 		return /^[\x20-\x7e]*$/.test(value) ? value : null;
 	const encoded = value.slice(9, -2);
-	if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return null;
+	if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded))
+		return null;
 	try {
 		const bytes = Buffer.from(encoded, "base64");
 		if (bytes.toString("base64") !== encoded) return null;
@@ -78,14 +79,22 @@ function decodeName(value: string): string | null {
  * Validate only well-formed request envelopes; the core handles batches, invalid envelopes,
  * client responses and notifications. Metadata-first precedence is a local choice, not a spec rule.
  */
-export function validateModernRequest(payload: unknown, headers: Headers): ModernValidationError | null {
-	if (!record(payload) || payload.jsonrpc !== "2.0" || typeof payload.method !== "string") return null;
+export function validateModernRequest(
+	payload: unknown,
+	headers: Headers,
+): ModernValidationError | null {
+	if (!record(payload) || payload.jsonrpc !== "2.0" || typeof payload.method !== "string")
+		return null;
 	const id = payload.id;
 	if (typeof id !== "string" && !(typeof id === "number" && Number.isInteger(id))) return null;
 	// Leave the core's envelope validation and notification-method handling unchanged.
-	if ((typeof id === "string" && (id.length > 256 || /[\x00-\x1f\x7f]/.test(id))) ||
-		payload.method.length > 128 || /[\x00-\x1f\x7f]/.test(payload.method) ||
-		payload.method.startsWith("notifications/")) return null;
+	if (
+		(typeof id === "string" && (id.length > 256 || /[\x00-\x1f\x7f]/.test(id))) ||
+		payload.method.length > 128 ||
+		/[\x00-\x1f\x7f]/.test(payload.method) ||
+		payload.method.startsWith("notifications/")
+	)
+		return null;
 	const params = record(payload.params) ? payload.params : {};
 	const meta = record(params._meta) ? params._meta : {};
 	const version = meta["io.modelcontextprotocol/protocolVersion"];
@@ -93,10 +102,17 @@ export function validateModernRequest(payload: unknown, headers: Headers): Moder
 		return { id, code: -32602, message: "invalid params" };
 	}
 	const mismatch = { id, code: -32020, message: "header mismatch" } as const;
-	if (headers.get("mcp-protocol-version") !== version || headers.get("mcp-method") !== payload.method)
+	if (
+		headers.get("mcp-protocol-version") !== version ||
+		headers.get("mcp-method") !== payload.method
+	)
 		return mismatch;
-	const field = payload.method === "resources/read" ? "uri" :
-		payload.method === "tools/call" || payload.method === "prompts/get" ? "name" : null;
+	const field =
+		payload.method === "resources/read"
+			? "uri"
+			: payload.method === "tools/call" || payload.method === "prompts/get"
+				? "name"
+				: null;
 	if (field !== null) {
 		const name = headers.get("mcp-name");
 		if (name === null || typeof params[field] !== "string" || decodeName(name) !== params[field])
