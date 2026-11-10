@@ -46,7 +46,7 @@ export type OutboundFetchCode =
  * list combining), so a directive on any line is seen. `ambiguous` is set only when Expires, Date or
  * Age appears more than once; no value is picked for them. The field is absent otherwise.
  */
-export interface OutboundCacheHeaders {
+interface OutboundCacheHeaders {
 	readonly cacheControl?: string;
 	readonly expires?: string;
 	readonly date?: string;

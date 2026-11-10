@@ -46,8 +46,6 @@ export interface UltrathinkConfig {
 	allowedOrigins: string[];
 	oauthRedirectOrigins: string[];
 	serverPlanning: boolean;
-	/** Guarded CIMD retrieval; absence means OFF. */
-	cimdEnabled?: boolean;
 	/** Whether a failed Claude call fails over to Grok. Absent means `none`. */
 	planFallback?: PlanFallback;
 	/** Most `claude` children in flight at once. Absent means 2. */
@@ -747,7 +745,6 @@ export function loadConfig(
 			readOriginList(env, "ULTRATHINK_OAUTH_REDIRECT_ORIGINS", ["https:"]),
 		),
 		serverPlanning: flag("ULTRATHINK_SERVER_PLANNING") === true,
-		cimdEnabled: flag("ULTRATHINK_CIMD") === true,
 		planFallback: collect<PlanFallback>(problems, "none", () => readPlanFallback(env)),
 		planConcurrency: int(
 			"ULTRATHINK_PLAN_CONCURRENCY",
