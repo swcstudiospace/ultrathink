@@ -464,6 +464,8 @@ Logs are one JSON object per line with `ts`, `level`, `event` and, for requests,
 
 Request lines for `/mcp` also carry `mcpVersion` (the `MCP-Protocol-Version` header exactly as the client sent it, cut to a short length; absent when the client sent none) and `rpcMethod` (the JSON-RPC method of the body, or `batch`), and `tool` on `tools/call`. A request refused for an unknown protocol version still logs its `rpcMethod`. Section 13 shows how to read them.
 
+Bearer-authenticated `/mcp` request lines also carry `clientId`: the OAuth `client_id` the access token was issued to, so each connected client can be told apart in the log. `clientIdDigest` is a 16-character lowercase hex SHA-256 prefix of the full `client_id`, logged beside `clientId`, so clients whose IDs share a long prefix can be told apart; the log clips long strings, so `clientId` alone cannot. It is absent on a connector-key or unauthenticated request, and on a bearer that is unknown, expired or a refresh token.
+
 Common symptoms:
 
 | Symptom | Usual cause | Check and action |
@@ -701,10 +703,11 @@ Metrics: `ultrathink_mcp_tool_calls_total{tool,outcome}` carries the three new t
 
 Use authorized, attributable client-side observations together with the request log to diagnose a connection. Request lines can include `ts`, `status`, `endpoint`, `rpcMethod`, `mcpVersion`, `tool`, `authKind` (`none`, `bearer` or `connector-key`) and `ip`. An IP can be shared: it alone does not identify a client, connect two requests, or prove fallback. Keep evidence redacted; do not copy credentials or raw sensitive logs into a record.
 
-1. An unauthenticated `POST /mcp` can return 401 and initiate OAuth. The subsequent metadata, registration, authorization and token requests depend on the client; a 429 on registration can indicate the limit below.
-2. On a deployment known to contain the checked-out modern implementation, an authenticated, correctly formed `server/discover` for `2026-07-28` can return 200 and the discovery result. A 400 needs diagnosis, including the deployed revision and request metadata; it does not by itself prove a client's response or fallback.
-3. On an older deployment that actually lacks `2026-07-28`, a modern probe may receive 400 and a client may then try legacy `initialize`. Confirm the actual client's sequence and outcome independently; a later initialize, or silence, at the same IP proves neither fallback nor a fatal client error. A successful initialize alone also does not establish that the client is legacy-only.
-4. For an observed legacy connection, `notifications/initialized` may return 202, an optional `GET /mcp` may return 405, and list requests may follow using the negotiated version. Tool use appears as `tools/call` with `tool` set; a missing call is not by itself proof of where a failure lies.
+```bash
+journalctl -u ultrathink-web --since "1 hour ago" -o cat | grep '"event":"request"' | grep -E '"endpoint":"(mcp|oauth_[a-z_]+)"'
+```
+
+Each line has `ts`, `status`, `endpoint`, `rpcMethod`, `mcpVersion`, `tool`, `clientId` and `clientIdDigest` (bearer requests only), `authKind` (`none`, `bearer` or `connector-key`) and `ip`. The order to expect for a new connector:
 
 An unknown HTTP version header receives 400 / `-32600` in the checked-out router after normal origin and authentication checks. This accepted OD-10 response is not the modern typed unsupported-version error. Do not infer a deployment's response from the local source.
 
