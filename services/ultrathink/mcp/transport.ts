@@ -87,12 +87,11 @@ export function validateModernRequest(
 		return null;
 	const id = payload.id;
 	if (typeof id !== "string" && !(typeof id === "number" && Number.isInteger(id))) return null;
-	// Leave the core's envelope validation and notification-method handling unchanged.
+	// Leave invalid envelopes to the core; requests with IDs always require validation.
 	if (
 		(typeof id === "string" && (id.length > 256 || /[\x00-\x1f\x7f]/.test(id))) ||
 		payload.method.length > 128 ||
-		/[\x00-\x1f\x7f]/.test(payload.method) ||
-		payload.method.startsWith("notifications/")
+		/[\x00-\x1f\x7f]/.test(payload.method)
 	)
 		return null;
 	const params = record(payload.params) ? payload.params : {};

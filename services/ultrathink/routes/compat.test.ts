@@ -411,6 +411,51 @@ describe("modern request validation", () => {
 		expect((await body(mismatch)).error?.code).toBe(-32020);
 	});
 
+	test("rejects modern request metadata without a matching version header", async () => {
+		const h = harness();
+		const request = {
+			jsonrpc: "2.0",
+			id: 17,
+			method: "tools/call",
+			params: { name: "ultrathink_pending", arguments: { sessionId: "missing" }, _meta: meta },
+		};
+		for (const supplied of [
+			{ "Mcp-Method": "tools/call", "Mcp-Name": "ultrathink_pending" },
+			{
+				"MCP-Protocol-Version": "2025-11-25",
+				"Mcp-Method": "tools/call",
+				"Mcp-Name": "ultrathink_pending",
+			},
+		] as Record<string, string>[]) {
+			const response = await rpc(h, request, supplied);
+			expect(response.status).toBe(400);
+			expect((await body(response)).error?.code).toBe(-32020);
+		}
+	});
+
+	test("validates notification-named requests while preserving actual notifications", async () => {
+		const h = harness();
+		const request = {
+			jsonrpc: "2.0",
+			id: 18,
+			method: "notifications/unknown",
+			params: { _meta: meta },
+		};
+		for (const method of [undefined, "other"]) {
+			const supplied: Record<string, string> = { "MCP-Protocol-Version": version };
+			if (method !== undefined) supplied["Mcp-Method"] = method;
+			const response = await rpc(h, request, supplied);
+			expect(response.status).toBe(400);
+			expect((await body(response)).error?.code).toBe(-32020);
+		}
+		const notification = await rpc(
+			h,
+			{ jsonrpc: "2.0", method: "notifications/unknown" },
+			{ "MCP-Protocol-Version": version },
+		);
+		expect(notification.status).toBe(202);
+	});
+
 	test("checks names and resource URIs before dispatch", async () => {
 		const h = harness();
 		for (const [method, field] of [

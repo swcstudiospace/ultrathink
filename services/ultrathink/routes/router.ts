@@ -1364,7 +1364,20 @@ export function createApp(deps: RouterDeps): App {
 		const parsed = await readJson(req, config.maxBodyBytes);
 		if (!parsed.ok) return respond(400, rpcError(-32700, "parse error"));
 		describeRpc(parsed.value, ctx);
-		if (version.version === MODERN_PROTOCOL_VERSION) {
+		const payload = parsed.value;
+		const params =
+			typeof payload === "object" && payload !== null && !Array.isArray(payload)
+				? (payload as Record<string, unknown>).params
+				: undefined;
+		const meta =
+			typeof params === "object" && params !== null && !Array.isArray(params)
+				? (params as Record<string, unknown>)._meta
+				: undefined;
+		const bodyVersion =
+			typeof meta === "object" && meta !== null && !Array.isArray(meta)
+				? (meta as Record<string, unknown>)["io.modelcontextprotocol/protocolVersion"]
+				: undefined;
+		if (version.version === MODERN_PROTOCOL_VERSION || bodyVersion === MODERN_PROTOCOL_VERSION) {
 			const error = validateModernRequest(parsed.value, req.headers);
 			if (error !== null) {
 				return respond(400, {
