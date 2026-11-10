@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-// Pins what current hosted MCP clients rely on. Several answers look odd in isolation (400 for a modern
-// version header, -32601 for server/discover); each one is what lets a client fall back to the legacy
-// initialize handshake, so changing any of them is a compatibility decision, not a cleanup.
+// Pins hosted clients' legacy fallback behavior alongside modern discovery.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
@@ -243,6 +241,31 @@ describe("protocol version header", () => {
 		id: null,
 	};
 
+	test("authenticated modern discovery advertises the actual server capabilities", async () => {
+		const h = harness();
+		const response = await rpc(h, {
+			jsonrpc: "2.0",
+			id: "discover-modern",
+			method: "server/discover",
+			params: { _meta: {
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": {},
+			} },
+		}, { "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover" });
+		expect(response.status).toBe(200);
+		const answer = await body(response);
+		expect(answer.id).toBe("discover-modern");
+		expect(answer.result).toMatchObject({
+			resultType: "complete",
+			supportedVersions: ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"],
+			capabilities: { tools: {}, prompts: {}, resources: {}, extensions: { "io.modelcontextprotocol/ui": {} } },
+			_meta: { "io.modelcontextprotocol/serverInfo": { name: "ultrathink", version: expect.any(String) } },
+			instructions: expect.any(String),
+			ttlMs: 0,
+			cacheScope: "private",
+		});
+	});
+
 	test("an unsupported MCP-Protocol-Version is answered 400 / -32600, never -32022, whatever the method", async () => {
 		const h = harness();
 		const probes = [
@@ -255,7 +278,7 @@ describe("protocol version header", () => {
 			initialize("2026-07-28"),
 			{ jsonrpc: "2.0", id: 2, method: "tools/list" },
 		];
-		for (const version of ["2026-07-28", "2024-11-05", "2025-12-01"]) {
+		for (const version of ["2024-11-05", "2025-12-01"]) {
 			for (const probe of probes) {
 				const response = await rpc(h, probe, {
 					"MCP-Protocol-Version": version,
@@ -272,7 +295,7 @@ describe("protocol version header", () => {
 
 	test("the answer is the same when the body is not JSON or is larger than the body limit", async () => {
 		const h = harness({ maxBodyBytes: 256 });
-		const headers = { "MCP-Protocol-Version": "2026-07-28" };
+		const headers = { "MCP-Protocol-Version": "2025-12-01" };
 		for (const raw of [
 			"not json {",
 			"",
@@ -369,14 +392,14 @@ describe("request log diagnostics", () => {
 				method: "tools/call",
 				params: { name: "ultrathink_plan", arguments: { prompt: argumentText } },
 			},
-			{ "MCP-Protocol-Version": "2026-07-28" },
+			{ "MCP-Protocol-Version": "2025-12-01" },
 		);
 		expect(response.status).toBe(400);
 		const [line] = requestLogs(h);
 		expect(line).toMatchObject({
 			endpoint: "mcp",
 			status: 400,
-			mcpVersion: "2026-07-28",
+			mcpVersion: "2025-12-01",
 			rpcMethod: "tools/call",
 			authKind: "connector-key",
 		});
@@ -408,10 +431,10 @@ describe("request log diagnostics", () => {
 			method: "server/discover",
 			params: { pad: "x".repeat(2048) },
 		});
-		const response = await post(h, big, { "MCP-Protocol-Version": "2026-07-28" });
+		const response = await post(h, big, { "MCP-Protocol-Version": "2025-12-01" });
 		expect(response.status).toBe(400);
 		const [line] = requestLogs(h);
-		expect(line).toMatchObject({ status: 400, mcpVersion: "2026-07-28" });
+		expect(line).toMatchObject({ status: 400, mcpVersion: "2025-12-01" });
 		expect(line).not.toHaveProperty("rpcMethod");
 	});
 

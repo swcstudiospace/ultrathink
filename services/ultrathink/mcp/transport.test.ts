@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
-import { SUPPORTED_PROTOCOL_VERSIONS } from "./mcp.ts";
+import { SUPPORTED_PROTOCOL_VERSIONS, TRANSPORT_PROTOCOL_VERSIONS } from "./mcp.ts";
 import { DEFAULT_ALLOWED_ORIGINS, originAllowed, resolveProtocolVersion } from "./transport.ts";
 
 const SERVICE_ORIGIN = "https://ultrathink.example.test";
@@ -100,10 +100,14 @@ describe("resolveProtocolVersion", () => {
 		}
 	});
 
+	test("the modern revision is accepted separately from legacy initialize versions", () => {
+		expect(TRANSPORT_PROTOCOL_VERSIONS).toEqual(["2026-07-28", ...SUPPORTED_PROTOCOL_VERSIONS]);
+		expect(resolveProtocolVersion("2026-07-28")).toEqual({ ok: true, version: "2026-07-28" });
+	});
+
 	test("an unsupported, empty or malformed version is refused", () => {
 		for (const header of [
 			"2024-11-05",
-			"2026-07-28",
 			"",
 			"latest",
 			" 2025-06-18",

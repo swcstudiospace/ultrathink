@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { DEFAULT_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "./mcp.ts";
+import { DEFAULT_PROTOCOL_VERSION, TRANSPORT_PROTOCOL_VERSIONS } from "./mcp.ts";
 
 /** Browser origins of the hosted clients that may call /mcp. The service's own origin is added by the router. */
 export const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
@@ -49,6 +49,6 @@ export function resolveProtocolVersion(
 	header: string | null,
 ): { ok: true; version: string } | { ok: false } {
 	if (header === null) return { ok: true, version: DEFAULT_PROTOCOL_VERSION };
-	const version = SUPPORTED_PROTOCOL_VERSIONS.find((supported) => supported === header);
+	const version = TRANSPORT_PROTOCOL_VERSIONS.find((supported) => supported === header);
 	return version === undefined ? { ok: false } : { ok: true, version };
 }

@@ -19,6 +19,10 @@ import { isRecord } from "../../../src/shared.ts";
 /** Newest first: initialize answers with the requested version when listed here, otherwise the first. */
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
 
+/** Stateless revision and all revisions accepted by the HTTP transport, separate from legacy initialize. */
+export const MODERN_PROTOCOL_VERSION = "2026-07-28";
+export const TRANSPORT_PROTOCOL_VERSIONS = [MODERN_PROTOCOL_VERSION, ...SUPPORTED_PROTOCOL_VERSIONS] as const;
+
 /** Version assumed for a request that names none. It is the newest one that still allows JSON-RPC batches. */
 export const DEFAULT_PROTOCOL_VERSION = "2025-03-26";
 
@@ -326,14 +330,15 @@ export async function handleMcpPayload(
 	payload: unknown,
 	ctx?: McpContext,
 ): Promise<{ body: unknown; status?: number } | null> {
+	const protocolVersion = ctx?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
 	if (!Array.isArray(payload)) {
-		const handled = await handleMessage(host, payload);
+		const handled = await handleMessage(host, payload, protocolVersion);
 		if (handled === null) return null;
 		return handled.status === undefined
 			? { body: handled.reply }
 			: { body: handled.reply, status: handled.status };
 	}
-	if ((ctx?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION) >= BATCH_REMOVED_IN) {
+	if (protocolVersion >= BATCH_REMOVED_IN) {
 		return { body: invalidRequest(), status: 400 };
 	}
 	if (payload.length === 0) return { body: invalidRequest() };
@@ -341,7 +346,7 @@ export async function handleMcpPayload(
 	const replies: RpcResponse[] = [];
 	let status: number | undefined;
 	for (const message of payload) {
-		const handled = await handleMessage(host, message);
+		const handled = await handleMessage(host, message, protocolVersion);
 		if (handled === null) continue;
 		replies.push(handled.reply);
 		if (handled.status !== undefined) status = handled.status;
@@ -350,7 +355,7 @@ export async function handleMcpPayload(
 	return status === undefined ? { body: replies } : { body: replies, status };
 }
 
-async function handleMessage(host: McpToolHost, message: unknown): Promise<Handled | null> {
+async function handleMessage(host: McpToolHost, message: unknown, protocolVersion: string): Promise<Handled | null> {
 	if (!isRecord(message) || message.jsonrpc !== JSONRPC) return { reply: invalidRequest() };
 	const id = message.id;
 	const method = message.method;
@@ -379,7 +384,7 @@ async function handleMessage(host: McpToolHost, message: unknown): Promise<Handl
 		return { reply: rpcError(id, INVALID_PARAMS, "invalid params") };
 	}
 	try {
-		return { reply: await dispatch(host, id, method, message.params) };
+		return { reply: await dispatch(host, id, method, message.params, protocolVersion) };
 	} catch {
 		// Host failures are reported without the thrown message or stack.
 		return { reply: rpcError(id, INTERNAL_ERROR, "internal error") };
@@ -419,9 +424,14 @@ async function dispatch(
 	id: unknown,
 	method: string,
 	params: unknown,
+	protocolVersion: string,
 ): Promise<RpcResponse> {
 	const serverPlanning = host.capabilities?.().serverPlanning === true;
 	switch (method) {
+		case "server/discover":
+			return protocolVersion === MODERN_PROTOCOL_VERSION
+				? rpcResult(id, discoveryResult(serverPlanning))
+				: rpcError(id, METHOD_NOT_FOUND, "method not found");
 		case "initialize":
 			return rpcResult(id, initializeResult(params, serverPlanning));
 		case "ping":
@@ -445,6 +455,23 @@ async function dispatch(
 	}
 }
 
+function discoveryResult(serverPlanning: boolean) {
+	return {
+		resultType: "complete",
+		supportedVersions: TRANSPORT_PROTOCOL_VERSIONS,
+		capabilities: serverCapabilities(),
+		_meta: { "io.modelcontextprotocol/serverInfo": SERVER_INFO },
+		instructions: serverPlanning ? SERVER_INSTRUCTIONS : CLIENT_INSTRUCTIONS,
+		ttlMs: 0,
+		cacheScope: "private",
+	};
+}
+
+function serverCapabilities() {
+	// claude.ai web renders MCP Apps without sending the extension itself.
+	return { tools: {}, prompts: {}, resources: {}, extensions: { [UI_EXTENSION]: {} } };
+}
+
 function initializeResult(params: unknown, serverPlanning: boolean) {
 	const requested = isRecord(params) ? params.protocolVersion : undefined;
 	const protocolVersion =
@@ -452,8 +479,7 @@ function initializeResult(params: unknown, serverPlanning: boolean) {
 		SUPPORTED_PROTOCOL_VERSIONS[0];
 	return {
 		protocolVersion,
-		// The UI extension is announced unconditionally: claude.ai web renders MCP Apps without sending the extension itself.
-		capabilities: { tools: {}, prompts: {}, resources: {}, extensions: { [UI_EXTENSION]: {} } },
+		capabilities: serverCapabilities(),
 		serverInfo: SERVER_INFO,
 		instructions: serverPlanning ? SERVER_INSTRUCTIONS : CLIENT_INSTRUCTIONS,
 	};

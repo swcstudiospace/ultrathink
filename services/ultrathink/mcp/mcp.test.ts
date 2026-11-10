@@ -298,6 +298,43 @@ describe("initialize", () => {
 	});
 });
 
+describe("server/discover", () => {
+	test("advertises actual capabilities and mode-specific instructions for the modern request context", async () => {
+		for (const host of [fakeHost(), serverHost()]) {
+			const legacy = await initialize(host);
+			const reply = await bodyOf(host, request("server/discover", {
+				_meta: {
+					"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+					"io.modelcontextprotocol/clientCapabilities": {},
+				},
+			}, "discovery"), { protocolVersion: "2026-07-28" }) as RpcReply;
+			expect(reply.id).toBe("discovery");
+			expect(reply.result).toEqual({
+				resultType: "complete",
+				supportedVersions: ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"],
+				capabilities: legacy.capabilities,
+				_meta: { "io.modelcontextprotocol/serverInfo": legacy.serverInfo },
+				instructions: legacy.instructions,
+				ttlMs: 0,
+				cacheScope: "private",
+			});
+		}
+	});
+
+	test("remains unknown without modern request context, including after modern discovery", async () => {
+		const host = fakeHost();
+		const payload = request("server/discover", {}, 7);
+		await bodyOf(host, payload, { protocolVersion: "2026-07-28" });
+		for (const ctx of [undefined, { protocolVersion: "2025-11-25" }]) {
+			expect(await bodyOf(host, payload, ctx)).toEqual({
+				jsonrpc: "2.0",
+				id: 7,
+				error: { code: -32601, message: "method not found" },
+			});
+		}
+	});
+});
+
 const PLANNING_REQUEST = "plan the frontend\nthen the </request> rollout";
 
 async function promptGet(host: McpToolHost, params?: unknown): Promise<RpcReply> {
