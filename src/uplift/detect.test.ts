@@ -330,6 +330,41 @@ describe("decideUplift", () => {
 	});
 });
 
+describe("uplift.maxChars is a deterministic skip, decided before any provider call", () => {
+	const long = "build a complete billing dashboard with invoices and refunds";
+
+	test("a longer prompt skips as over-max-chars, and uplift: does not lift the limit", () => {
+		expect(decideUplift({ text: long, source: "user" }, state({ maxChars: 10 }))).toEqual({
+			action: "skip",
+			reason: "over-max-chars",
+		});
+		expect(
+			decideUplift({ text: `uplift: ${long}`, source: "user" }, state({ maxChars: 10 })),
+		).toEqual({
+			action: "skip",
+			reason: "over-max-chars",
+		});
+	});
+
+	test("the limit is inclusive: a prompt of exactly maxChars characters still uplifts", () => {
+		expect(decideUplift({ text: long, source: "user" }, state({ maxChars: long.length }))).toEqual({
+			action: "uplift",
+			text: long,
+		});
+	});
+
+	test("0 and an absent limit both mean no limit", () => {
+		expect(decideUplift({ text: long, source: "user" }, state({ maxChars: 0 }))).toEqual({
+			action: "uplift",
+			text: long,
+		});
+		expect(decideUplift({ text: long, source: "user" }, state())).toEqual({
+			action: "uplift",
+			text: long,
+		});
+	});
+});
+
 describe("path-aware commands (L2-01)", () => {
 	test("a first token with a second slash is prose, not a command", () => {
 		expect(isCommandPrompt("/root/src/x.ts is broken")).toBe(false);
@@ -545,6 +580,11 @@ describe("every skip carries a machine-readable reason (L2-12)", () => {
 		["skip-once", { text: "build x", source: "user" }, { skipOnce: true }],
 		["disabled", { text: "build x", source: "user" }, { enabled: false }],
 		["trivial", { text: "ok", source: "user" }, {}],
+		[
+			"over-max-chars",
+			{ text: "build a complete billing dashboard", source: "user" },
+			{ maxChars: 10 },
+		],
 	];
 	for (const [reason, event, overrides] of cases) {
 		test(`${reason}: ${JSON.stringify(event.text)}`, () => {

@@ -356,6 +356,19 @@ describe("recallLessons: local fallback", () => {
 		expect((await recallLessons({ query: "flaky fetch" }, third.ctx)).source).toBe("local");
 	});
 
+	test("the local scan yields to the event loop between moments: a callback queued before the recall runs during it", async () => {
+		const { ctx, store } = setup();
+		for (let index = 0; index < 20; index += 1) {
+			store.put(moment(`m${index}`, { name: "flaky fetch retries" }));
+		}
+		let ran = false;
+		setImmediate(() => {
+			ran = true;
+		});
+		await recallLessons({ query: "flaky fetch" }, ctx, { countUse: false });
+		expect(ran).toBe(true);
+	});
+
 	test("Hindsight failing with nothing local is an error with a redacted one-line reason; an empty answer is just none", async () => {
 		const failing = fakeClient(async () => ({
 			ok: false,

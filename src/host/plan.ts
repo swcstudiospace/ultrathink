@@ -24,10 +24,10 @@ import {
 import { recentConversationFromTranscript } from "../claude/transcript.ts";
 import { parseUltrathinkCommand, trackingEnabled, trackingOff } from "../uplift/commands.ts";
 import { recordLastSkip } from "../uplift/skip.ts";
-import { decideUplift, isTrivial } from "../uplift/detect.ts";
+import { decideUplift, isTrivial, overMaxCharsNotice } from "../uplift/detect.ts";
 import { planningTarget, type SkillInvocation } from "../uplift/skill.ts";
 import { fetchBrief } from "../substrate/brief.ts";
-import { writePlanCarrier } from "./carrier.ts";
+import { clearPlanCarrier, writePlanCarrier } from "./carrier.ts";
 import { createGatewayTracker, trackCommand, type Tracker } from "../track/gateway.ts";
 import { detectHost } from "./detect.ts";
 import { type ModelResolution, type NativeEngineSelector, selectEngine } from "./engine.ts";
@@ -73,6 +73,8 @@ export interface PlanResponse {
 
 export interface PlanOptions {
 	progress?: ProgressSink;
+	/** Receives the uplift-only context once the uplift and brief are final, before the graph (see hook.ts onUplift). */
+	onUplift?: (handoff: { context: string }) => void;
 	/** Test seam for completer selection; defaults to `selectEngine`. An injected selector stays authoritative. */
 	selectEngine?: typeof selectEngine;
 	/** In-process native selector (Omp); selection consults it only for Omp planning under `auto`. Never crosses a process boundary. */
@@ -122,6 +124,48 @@ function skipReason(
 	return undefined;
 }
 
+/**
+ * Whether `planPrompt` would skip this prompt on its stateless prechecks (a command, an ack, a trivial or
+ * already-uplifted prompt, planning turned off). Read-only: it consumes nothing, and an armed skip counts as
+ * plannable so the real run still consumes it. A host uses it to keep a running plan alive when the follow-up
+ * would not plan anyway. Any failure reads as "would plan" (fail-open: the caller keeps its normal path).
+ */
+export function wouldSkipPlanning(
+	request: PlanRequest,
+	options: {
+		env?: Record<string, string | undefined>;
+		config?: UltrathinkConfig;
+		control?: ControlState;
+		stateDir?: string;
+	} = {},
+): boolean {
+	try {
+		const env = options.env ?? process.env;
+		if (skipReason(request, env)) return true;
+		const cwd = request.cwd?.trim() || process.cwd();
+		const host = request.host ?? detectHost(env);
+		if (parseUltrathinkCommand(request.prompt ?? "")) return true;
+		const target = planningTarget(request.prompt ?? "", { cwd, host });
+		if ("skip" in target) return true;
+		const stateDir = options.stateDir ?? resolveStateDir({ ...env, ULTRATHINK_HOST: host });
+		const control = options.control ?? readControl(stateDir);
+		const config = options.config ?? loadConfig(claudeConfigPaths(cwd, env));
+		const decision = decideUplift(
+			{ text: target.text, source: "user", idle: true },
+			{
+				enabled: control.enabled ?? config.uplift.enabled,
+				skipOnce: false,
+				skipTrivial: config.uplift.skipTrivial,
+				maxChars: config.uplift.maxChars,
+			},
+		);
+		return decision.action !== "uplift";
+	} catch {
+		// reason: fail-open: an unreadable precheck input plans the prompt as it always did
+		return false;
+	}
+}
+
 /** A redacted, single-line, bounded label of why planning failed: the error's name (or string code), never its message. */
 function causeOf(error: unknown): string {
 	let label = "error";
@@ -133,7 +177,7 @@ function causeOf(error: unknown): string {
 	return redactSecrets(label).replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
-export async function planPrompt(
+async function planPromptTurn(
 	request: PlanRequest,
 	env: Record<string, string | undefined> = process.env,
 	options: PlanOptions = {},
@@ -235,6 +279,7 @@ export async function planPrompt(
 			enabled: control.enabled ?? config.uplift.enabled,
 			skipOnce: skipArmed,
 			skipTrivial: config.uplift.skipTrivial,
+			maxChars: config.uplift.maxChars,
 		};
 		const decision = decideUplift({ text, source: "user", idle: true }, state);
 		if (skipArmed && !state.skipOnce) {
@@ -248,7 +293,11 @@ export async function planPrompt(
 			// The response names the real reason (`precheck-trivial`, `precheck-graph-reference`, ...), and `ultrathink status` shows it.
 			const why = decision.action === "skip" ? decision.reason : decision.action;
 			recordLastSkip(stateDir, why);
-			return skip(`precheck-${why}`);
+			const response = skip(`precheck-${why}`);
+			// An over-limit prompt runs unplanned: the summary names the limit, as the Claude hook's notice does.
+			return decision.action === "skip" && decision.reason === "over-max-chars"
+				? { ...response, summary: overMaxCharsNotice(config.uplift.maxChars) }
+				: response;
 		}
 		// Only eligible input reaches selection, so a skipped prompt never meets the native selector or cancellation. A
 		// flight cancelled already selects nothing: no native lookup, auth or inference.
@@ -313,6 +362,7 @@ export async function planPrompt(
 				...(options.ground ? { ground: options.ground } : {}),
 				...(options.realmProbe ? { realmProbe: options.realmProbe } : {}),
 				...(options.think ? { think: options.think } : {}),
+				...(options.onUplift ? { onUplift: options.onUplift } : {}),
 				signal: options.signal,
 			},
 		);
@@ -355,5 +405,43 @@ export async function planPrompt(
 		// Provider cancellation need not abort the caller's signal. Preserve it here with only the safe selection record.
 		if (options.signal?.aborted || isAbortError(error)) return skip("aborted", resolution);
 		return skip("engine-error", resolution, causeOf(error));
+	}
+}
+
+/**
+ * A turn that plans nothing leaves no carrier behind. The planPrompt hosts (Omp, Hermes, Prime Agent) come through here,
+ * and the readers of the carrier (Prime Agent's spec(), the Grok Build rule) take it as the session's current plan, so a
+ * skip, an engine failure or a planning-off turn must not leave the previous prompt's plan readable. A cancelled flight
+ * is the exception: a newer prompt may already own the carrier, and this turn must not clear it. The hook hosts clear in
+ * hooks/uplift.ts.
+ */
+export async function planPrompt(
+	request: PlanRequest,
+	env: Record<string, string | undefined> = process.env,
+	options: PlanOptions = {},
+): Promise<PlanResponse> {
+	const response = await planPromptTurn(request, env, options);
+	// A cancelled turn leaves the carrier alone whatever its skip reason: a newer prompt in the session may already own it.
+	const cancelled = response.skipped === "aborted" || options.signal?.aborted === true;
+	if (response.skipped !== undefined && !cancelled && !request.invalidHost)
+		clearTurnCarrier(request, env, options);
+	return response;
+}
+
+/** Clears the session's carrier in the state directory planning uses. Fail-open; a host with no session id has none. */
+function clearTurnCarrier(
+	request: PlanRequest,
+	env: Record<string, string | undefined>,
+	options: PlanOptions,
+): void {
+	try {
+		const sessionId = hostSessionId(request.session_id);
+		if (sessionId === undefined) return;
+		const stateDir =
+			options.stateDir ??
+			resolveStateDir({ ...env, ULTRATHINK_HOST: request.host ?? detectHost(env) });
+		clearPlanCarrier(stateDir, sessionId);
+	} catch {
+		// reason: fail-open: a carrier that cannot be cleared must not turn a skip into an error
 	}
 }

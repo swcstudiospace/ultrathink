@@ -15,14 +15,14 @@ concurrency:
   group: codeql-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every job runs on the Omega CI runner pool ([self-hosted, linux, x64, omega-ci], swcstudiospace/Omega-Prime
-# docs/ci-runners.md), never on GitHub-hosted runners. Fork pull requests are skipped: fork code never reaches the pool.
+# Using self-hosted runner on this machine (local) for CI (per user); was temporarily GitHub-hosted ubuntu-latest while diagnosing Railway Omega-CI.
+# Runner label: self-hosted (or local-runner if registered with that).
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     # pull_request permits CodeQL uploads with fork read-only tokens; never run untrusted code via pull_request_target.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, omega-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
@@ -47,11 +47,11 @@ jobs:
       # The pool's tool cache (/opt/hostedtoolcache) is read-only, so this action cannot download its CodeQL
       # bundle at job time: the runner image ships the bundle this pin asks for (CodeQL 2.27.3). Bump the image
       # with the action (swcstudiospace/Omega-Prime deploy/ci-runner-desktop).
-      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: none
 
-      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
           category: "/language:${{ matrix.language }}"

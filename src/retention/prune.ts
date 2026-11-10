@@ -25,6 +25,8 @@ const DAY_MS = 86_400_000;
 const ORPHAN_AGE_MS = 3_600_000;
 /** Entries one scheduled run may examine, so a huge state directory never slows a prompt. */
 const BEST_EFFORT_LIMIT = 500;
+/** Sessions one scheduled run removes. Each removal rechecks every plan carrier under the session lock, so a large backlog clears over several days instead of stalling one prompt. */
+const BEST_EFFORT_REMOVALS = 50;
 const MARKER_NAME = ".last-prune";
 /** The last sessions-directory entry a bounded run examined; a best-effort hint, never a promise. */
 const CURSOR_NAME = ".prune-cursor";
@@ -62,6 +64,8 @@ export interface PruneOptions {
 	dryRun?: boolean;
 	/** Caps the directory entries examined. Default: no cap. */
 	limit?: number;
+	/** Most sessions one run removes; the scheduled prune sets it. Default: no cap. Sessions past it wait for a later run. */
+	maxRemovals?: number;
 	now?: () => number;
 	log?: (message: string) => void;
 	/** File removal seam; production default is `unlinkSync`. */
@@ -93,6 +97,7 @@ interface Sweep {
 	dryRun: boolean;
 	remove: (path: string) => void;
 	budget: number;
+	maxRemovals?: number;
 	result: PruneResult;
 	log?: (message: string) => void;
 }
@@ -501,6 +506,11 @@ function sweepSessions(
 			result.keptActive++;
 			continue;
 		}
+		// A scheduled run stops removing at its cap: the candidate is kept for a later run, and its recheck is skipped.
+		if (sweep.maxRemovals !== undefined && result.pruned.length >= sweep.maxRemovals) {
+			result.kept++;
+			continue;
+		}
 		deleteSession(sweep, stateDir, dir, stem, olderThanMs);
 	}
 }
@@ -526,6 +536,7 @@ export function pruneSessions(options: PruneOptions): PruneResult {
 		dryRun,
 		remove: options.remove ?? unlinkSync,
 		budget: options.limit ?? Number.POSITIVE_INFINITY,
+		maxRemovals: options.maxRemovals,
 		result,
 		log: options.log,
 	};
@@ -585,6 +596,7 @@ export function pruneSessionsBestEffort(options: BestEffortOptions): PruneResult
 			stateDir: options.stateDir,
 			olderThanMs: options.retentionDays * DAY_MS,
 			limit: BEST_EFFORT_LIMIT,
+			maxRemovals: BEST_EFFORT_REMOVALS,
 			now: () => now,
 			log: options.log,
 		});

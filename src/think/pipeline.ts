@@ -12,7 +12,7 @@ import { abortableSleep } from "../resilience/sleep.ts";
 import type { FlightThrottle } from "../resilience/throttle.ts";
 import { isAbortError } from "../shared.ts";
 import { nodeStepTitles } from "../track/plan.ts";
-import { readReport, type UpliftResult } from "../types.ts";
+import { readReport, TRUNCATED_REPLY, type UpliftResult } from "../types.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import {
 	dependencyLevels,
@@ -153,15 +153,20 @@ function predecessorBlock(graph: ThoughtGraph, node: ThoughtNode): string {
 		.join("\n\n");
 }
 
+/** The uplift XML without its ORIGINAL element: each payload carries the prompt once, as the caller's own copy. */
+function xmlWithoutOriginal(xml: string): string {
+	return xml.replace(/<ORIGINAL>[\s\S]*?<\/ORIGINAL>\n?/g, "");
+}
+
 function graphUserPayload(uplift: UpliftResult): string {
-	return `${uplift.original}\n\n${uplift.xml}`;
+	return `${uplift.original}\n\n${xmlWithoutOriginal(uplift.xml)}`;
 }
 
 function cotUserPayload(uplift: UpliftResult, graph: ThoughtGraph, node: ThoughtNode): string {
 	return [
 		`<original>${escapeXml(uplift.original)}</original>`,
 		"",
-		uplift.xml,
+		xmlWithoutOriginal(uplift.xml),
 		"",
 		`<graph_goal>${escapeXml(graph.goal)}</graph_goal>`,
 		"<graph>",
@@ -176,6 +181,12 @@ function cotUserPayload(uplift: UpliftResult, graph: ThoughtGraph, node: Thought
 		escapeXml(node.question),
 		"</current_node>",
 	].join("\n");
+}
+
+/** Whether a graph-call failure says the provider is down: a completer report, unless it reports a reply cut off at its token limit. */
+function isProviderFailure(error: unknown): boolean {
+	const report = readReport(unwrapRetryError(error));
+	return report !== undefined && report.cause !== TRUNCATED_REPLY;
 }
 
 async function buildGraph(
@@ -198,9 +209,8 @@ async function buildGraph(
 			graph: normalizeGraph(null, opts.uplift.original, minNodes, maxNodes),
 			fallback: true,
 			// A report means the completer judged and retried the failure itself: the provider, not the reply, failed.
-			...(readReport(unwrapRetryError(error)) === undefined
-				? {}
-				: { failure: describeCause(error) }),
+			// A reply cut off at its token limit is the reply that failed, so the node fills still run.
+			...(isProviderFailure(error) ? { failure: describeCause(error) } : {}),
 		};
 	}
 }
@@ -354,6 +364,19 @@ function noteRepairSkipped(ctx: FillContext): void {
 }
 
 /**
+ * The graph call failed with a provider report, so the provider is down: a fill per node would only repeat that failure.
+ * Every node is failed at once with the cause, and the repair pass is skipped with the other all-failed runs.
+ */
+function skipFillsAfterGraphFailure(ctx: FillContext, graph: ThoughtGraph, failure: string): void {
+	const cause = clip(`graph call failed: ${failure}`, CAUSE_MAX_CHARS).text;
+	for (const node of graph.nodes) {
+		ctx.failed.add(node.id);
+		ctx.providerFailed.add(node.id);
+		ctx.causes.set(node.id, cause);
+	}
+}
+
+/**
  * One more single attempt, in dependency order, for every still-failed node and for every node downstream of a node
  * the pass just repaired (it was filled while that predecessor was unavailable). A successor whose refill fails keeps
  * its earlier real fill.
@@ -428,7 +451,9 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 
 	const repaired: string[] = [];
 	try {
-		if (concurrency === 1) {
+		if (built.failure !== undefined) {
+			skipFillsAfterGraphFailure(ctx, graph, built.failure);
+		} else if (concurrency === 1) {
 			for (let index = 0; index < graph.nodes.length; index++) {
 				const node = graph.nodes[index]!;
 				ctx.progress(`Node detail n${index + 1}/${graph.nodes.length} · ${node.kind}…`);

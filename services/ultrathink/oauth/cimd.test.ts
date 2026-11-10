@@ -294,6 +294,34 @@ describe("phase101 boundaries", () => {
 		validId("https://[::1]/meta.json");
 	});
 
+	test("ID-09: a percent sign in a client_id authority is refused, never decoded", () => {
+		for (const raw of [
+			"https://%63laude.ai/cb",
+			"https://client%2Eexample/x",
+			"https://%31%32%37.0.0.1/x",
+		]) {
+			invalidId(raw);
+		}
+		validId("https://client.example/%63laude");
+	});
+
+	test("ID-10: client_id authority is exactly host or host:443; other port spellings fail", () => {
+		for (const raw of [
+			"https://client.example:/meta.json",
+			"https://client.example:0443/meta.json",
+			"https://client.example:00443/meta.json",
+			"https://client.example:000443/meta.json",
+			"https://client.example:0/meta.json",
+			"https://client.example:+443/meta.json",
+			"https://[::1]:/meta.json",
+			"https://[::1]:0443/meta.json",
+		]) {
+			invalidId(raw);
+		}
+		validId("https://client.example:443/meta.json");
+		validId("https://[::1]:443/meta.json");
+	});
+
 	test("DOC-01: JSON syntax and root shape have distinct bounded refusals", () => {
 		accepted();
 		for (const text of ["", "{", "not-json", '{"client_id":', '{"client_id":"x",}']) {
@@ -338,15 +366,21 @@ describe("phase101 boundaries", () => {
 		}
 	});
 
-	test("DOC-03: own case-sensitive secret prefixes are forbidden by presence, not truthiness", () => {
+	test("DOC-03: own secret-prefixed members are refused case-insensitively, by presence", () => {
 		accepted(
 			fixture({
-				Client_secret: "untrusted case-sensitive extension",
 				x_client_secret: "unrelated extension",
 				extension: { secret: "label", client_secret: "nested inert label" },
 			}),
 		);
-		for (const field of ["client_secret", "client_secret_expires_at", "client_secret_extra"]) {
+		for (const field of [
+			"client_secret",
+			"client_secret_expires_at",
+			"client_secret_extra",
+			"Client_secret",
+			"CLIENT_SECRET",
+			"CLIENT_SECRET_JWT",
+		]) {
 			for (const value of [null, 0, "", false, "private-fixture-value"]) {
 				refused(parse(fixture({ [field]: value })), "client_secret", "FORBIDDEN_CREDENTIAL");
 			}
@@ -482,6 +516,44 @@ describe("phase101 boundaries", () => {
 		expect(accepted().metadata).not.toHaveProperty("response_types");
 	});
 
+	test("DOC-08: non-string document text is refused as INVALID_JSON before JSON.parse", () => {
+		accepted();
+		const text = JSON.stringify(fixture());
+		for (const value of [[text], 42, null, {}, undefined]) {
+			refused(
+				parseCimdDocument(clientId, value as unknown as string, origins),
+				"document",
+				"INVALID_JSON",
+			);
+		}
+	});
+
+	test("DOC-09: repeated member names are refused at any depth, escaped or not", () => {
+		const base = JSON.stringify(fixture({ client_name: "first" }));
+		const withoutClose = base.slice(0, -1);
+		for (const text of [
+			// Top-level duplicate: JSON.parse would silently keep the later "none".
+			`{"token_endpoint_auth_method":"client_secret_basic",${base.slice(1)}`,
+			`${withoutClose},"extension":{"x":1,"x":2}}`,
+			`${withoutClose},"list":[{"a":1,"a":2}]}`,
+			// Escaped spelling of client_name: \u0063 decodes to "c".
+			`${withoutClose},"\\u0063lient_name":"second"}`,
+			`${withoutClose},"extension":{"\\u0061":1,"a":2}}`,
+		]) {
+			refused(parseCimdDocument(clientId, text, origins), "document", "INVALID_JSON");
+		}
+		// The same name in sibling objects, or in objects inside arrays, is not a duplicate.
+		accepted(fixture({ extension: { a: 1, b: { a: 2 } }, list: [{ a: 1 }, { a: 2 }] }));
+	});
+
+	test("DOC-09 a non-object root with a repeated name keeps INVALID_DOCUMENT", () => {
+		refused(
+			parseCimdDocument(clientId, `[{"a":1,"a":2}]`, origins),
+			"document",
+			"INVALID_DOCUMENT",
+		);
+	});
+
 	test("REDIR-01: required trusted normalized origins alone grant permission", () => {
 		const providerOrigins = [
 			"https://claude.ai",
@@ -602,6 +674,22 @@ describe("phase101 boundaries", () => {
 		}
 	});
 
+	test("REDIR-04: percent-encoded redirect authorities are refused, never decoded", () => {
+		const policy: ReadonlySet<string> = new Set(["https://claude.ai"]);
+		for (const raw of [
+			"https://%63laude.ai/cb",
+			"https://claude%2Eai/cb",
+			"https://%63laude.ai:443/cb",
+		]) {
+			refused(
+				parse(fixture({ redirect_uris: [raw] }), clientId, policy),
+				"redirect_uris",
+				"INVALID_REDIRECT_URIS",
+			);
+		}
+		accepted(fixture({ redirect_uris: ["https://claude.ai/%63allback"] }), clientId, policy);
+	});
+
 	test("MATCH-01: exact requested membership never canonicalizes, decodes or applies port exceptions", () => {
 		const pairs = [
 			[redirect, `${redirect}/`],
@@ -632,6 +720,21 @@ describe("phase101 boundaries", () => {
 		for (const requested of [null, undefined, 0, false, {}, [], ""]) {
 			expect(cimdRedirectMatches(document, requested)).toBe(false);
 		}
+	});
+
+	test("MATCH-02: the returned redirect list is a frozen copy, not the parsed metadata array", () => {
+		const document = accepted(fixture({ redirect_uris: [redirect, "https://claude.ai/other"] }));
+		const parsedRedirects = document.metadata.redirect_uris as string[];
+		parsedRedirects.push("https://claude.ai/evil");
+		parsedRedirects[0] = "https://claude.ai/replaced";
+		expect(cimdRedirectMatches(document, "https://claude.ai/evil")).toBe(false);
+		expect(cimdRedirectMatches(document, "https://claude.ai/replaced")).toBe(false);
+		expect(cimdRedirectMatches(document, redirect)).toBe(true);
+		expect(cimdRedirectMatches(document, "https://claude.ai/other")).toBe(true);
+		expect(Object.isFrozen(document.redirect_uris)).toBe(true);
+		expect(() => (document.redirect_uris as string[]).push("https://claude.ai/evil")).toThrow(
+			TypeError,
+		);
 	});
 
 	test("PURE-01: alternating identities, policies and lists remain synchronous and independent", () => {

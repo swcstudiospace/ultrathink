@@ -62,6 +62,7 @@ type SkipReason =
 	| "skip-once"
 	| "disabled"
 	| "trivial"
+	| "over-max-chars"
 	| "empty";
 
 /** `uplift` and `passthrough` as in `UpliftDecision`; a skip names why, for the hook log, status notes and tests. */
@@ -232,8 +233,16 @@ export function decideUplift(
 	}
 
 	if (!state.enabled && !force) return { action: "skip", reason: "disabled" };
+	// uplift.maxChars: an over-long prompt is never sent to a provider, and `uplift:` does not lift the limit.
+	if (state.maxChars && text.length > state.maxChars)
+		return { action: "skip", reason: "over-max-chars" };
 	if (isTrivial(text) && !force && state.skipTrivial !== false) {
 		return { action: "skip", reason: "trivial" };
 	}
 	return { action: "uplift", text };
+}
+
+/** The notice a host shows when uplift.maxChars skips a prompt: it names the limit, so the user knows what to change. */
+export function overMaxCharsNotice(limit: number): string {
+	return `Prompt Uplift skipped · the prompt is over uplift.maxChars (${limit}); it runs unplanned`;
 }

@@ -72,6 +72,8 @@ TOOL_CALL_ARGS_CHARS = 300
 LEARN_NAME_CHARS = 80
 TEACH_MAX_TAGS = 20
 QUICK_FALLBACK = "Ultrathink will not plan your next message. Send it now (or prefix any message with raw:)."
+# The CLI answers a skip that names no session with this text and exit 0, so the bridge says it itself and sends none.
+QUICK_NOT_ARMED = "Prompt Uplift skip needs a session id (--session <id>); none was given, so nothing was armed."
 # A shared multi-user gateway session attributes each message: "[Alice] fix the typo".
 SENDER_TAG_RE = re.compile(r"\[([^\]\n]*)\]\s+")
 # Hermes' skill scaffold also opens with a bracket; it is the prompt, not a sender tag.
@@ -767,7 +769,12 @@ def _take_quick(prompt: str) -> bool:
 	return False
 
 
-def quick(message: str, inject: Callable[[str], bool], env: dict[str, str] | None = None) -> str | None:
+def quick(
+	message: str,
+	inject: Callable[[str], bool],
+	env: dict[str, str] | None = None,
+	session_id: str | None = None,
+) -> str | None:
 	"""/ultrathink-quick: hand `message` to Hermes as the next user turn, which pre_llm_call
 	leaves unplanned. Without a message, or where Hermes cannot inject (the TUI, a gateway
 	without allow_gateway_injection, an older Hermes), skip the next message instead."""
@@ -782,7 +789,10 @@ def quick(message: str, inject: Callable[[str], bool], env: dict[str, str] | Non
 		except Exception:
 			pass
 		_take_quick(text)
-	ok, reply = control(["skip"], env)
+	# A skip that names no session is never sent: the CLI would answer it with exit 0 and nothing armed.
+	if not (session_id or "").strip():
+		return QUICK_NOT_ARMED
+	ok, reply = control(["skip"], env, session_id)
 	return QUICK_FALLBACK if ok else reply
 
 

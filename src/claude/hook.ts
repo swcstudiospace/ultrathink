@@ -66,7 +66,7 @@ import type {
 	SkillsLookup,
 } from "../teach/types.ts";
 import { isSubagentEnvelope } from "../host/envelope.ts";
-import { decideUplift } from "../uplift/detect.ts";
+import { decideUplift, overMaxCharsNotice } from "../uplift/detect.ts";
 import type { SkillInvocation } from "../uplift/skill.ts";
 import { runUplift } from "../uplift/run.ts";
 import { pruneSessionsBestEffort } from "../retention/prune.ts";
@@ -113,6 +113,8 @@ export interface HookDeps {
 	complete: ClaudeCompleter;
 	/** Thinking engine label recorded and echoed: the selected route and its wire model, e.g. "claude:<model>" or "<model>@<effort>". */
 	engine: string;
+	/** Fired once the uplift and brief are final, before the graph starts: the uplift-only context, for early delivery. */
+	onUplift?: (handoff: { context: string }) => void;
 	/**
 	 * Safe selection record of `complete` (UT-Planning-ModelSelection §6). Reported on progress begin/end and in the
 	 * summary and context, and persisted on the SessionRecord of a real plan only. Absent for legacy injected callers.
@@ -755,6 +757,7 @@ export async function runPromptSubmit(
 		enabled: deps.control.enabled ?? deps.config.uplift.enabled,
 		skipOnce: skipArmed,
 		skipTrivial: deps.config.uplift.skipTrivial,
+		maxChars: deps.config.uplift.maxChars,
 	};
 	const decision = decideUplift({ text: input.prompt ?? "", source: "user", idle: true }, state);
 	// Only the prompt skipped by the armed flag spends it (reason "skip-once"); a command, an ack or a disabled-planning
@@ -767,9 +770,11 @@ export async function runPromptSubmit(
 		}
 	}
 	if (decision.action !== "uplift") {
+		const overMax = decision.action === "skip" && decision.reason === "over-max-chars";
 		return {
-			skipped: decision.action,
+			skipped: overMax ? "over-max-chars" : decision.action,
 			...(decision.action === "skip" ? { reason: decision.reason } : {}),
+			...(overMax ? { notice: overMaxCharsNotice(deps.config.uplift.maxChars) } : {}),
 		};
 	}
 	// A cancelled flight starts nothing: no gate request, stage, lookup, tracker call or write.
@@ -1135,6 +1140,12 @@ export async function runPromptSubmit(
 		let providerUnavailable = false;
 		const thinkOn = deps.control.thinkEnabled ?? deps.config.think.enabled;
 		if (thinkOn && !lifetime.aborted) {
+			// A host that delivers early gets the uplift-only context now; the graph follows through the normal output.
+			try {
+				deps.onUplift?.({ context: formatPromptContext({ result, engine: deps.engine, brief }) });
+			} catch (error) {
+				log(`early uplift delivery failed: ${causeText(error)}`);
+			}
 			stage("think", "start");
 			// One limiter per flight: a rate limit seen by any fill slows every fill of this prompt. A route whose completer
 			// already owns the limiter (Omp's native binding acquires a slot per call and feeds it every failure) is that one:

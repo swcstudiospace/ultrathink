@@ -22,6 +22,7 @@ sys.path.insert(0, str(HERE))
 import bridge  # noqa: E402
 from bridge import (  # noqa: E402
 	QUICK_FALLBACK,
+	QUICK_NOT_ARMED,
 	extract_pr_url,
 	is_pr_creation_tool,
 	message_text,
@@ -1181,14 +1182,19 @@ def test_quick_skips_the_next_message_where_hermes_cannot_send_it():
 		with cli(fake_cli(Path(tmp))):
 			for ctx, message in ((refused, "fix the typo"), (older, "fix the typo"), (bare, "  ")):
 				plugin.register(ctx)
-				assert ctx.commands["ultrathink-quick"](message) == QUICK_FALLBACK
-		assert (Path(tmp) / "calls").read_text().splitlines() == ["skip", "skip", "skip"]
+				assert ctx.commands["ultrathink-quick"](message, session_id="q3") == QUICK_FALLBACK
+		assert (Path(tmp) / "calls").read_text().splitlines() == ["skip --session q3"] * 3
 		assert refused.injected == ["fix the typo"] and bare.injected == []
 		# The bridge holds no marker then: the engine's one-shot skip decides the next message.
 		assert plan({"user_message": "fix the typo", "session_id": "q2"}, env=engine) == "planned:fix the typo"
+		# The real CLI answers a skip that names no session with this text and exit 0: nothing is armed, so the bridge says so.
+		faithful = fake_cli(Path(tmp), prelude=f"if sys.argv[1:] == ['skip']:\n\tprint({QUICK_NOT_ARMED!r})\n\tsys.exit(0)")
+		with cli(faithful):
+			assert bare.commands["ultrathink-quick"]("  ") == QUICK_NOT_ARMED
+			assert refused.commands["ultrathink-quick"]("fix the typo") == QUICK_NOT_ARMED
 		# A skip that could not be set says so rather than promising it.
 		with cli(Path(tmp) / "missing"):
-			assert refused.commands["ultrathink-quick"]("fix the typo").startswith("Ultrathink skip: ")
+			assert refused.commands["ultrathink-quick"]("fix the typo", session_id="q3").startswith("Ultrathink skip: ")
 
 
 STATUS_ON = {"match": ["status", "--json"], "stdout": json.dumps({"enabled": True, "capture": "observe", "recall": True})}

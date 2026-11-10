@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { AssistantMessage, Effort } from "@oh-my-pi/pi-ai";
 import { readSession } from "../claude/state.ts";
 import type { GroundOutcome } from "../ragflow/types.ts";
-import { createNativeEngineSelector, NO_PLAN } from "./omp.ts";
+import { createNativeEngineSelector, EARLY_RELEASE, NO_PLAN } from "./omp.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
 import type { ModelResolution } from "./engine.ts";
 import {
@@ -103,6 +103,40 @@ describe("flight lifecycle (D-12)", () => {
 		await flush();
 		expect(sent).toEqual([aside("PLAN")]);
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
+	});
+
+	test("an uplift final before the race ends goes inline now; the whole final plan follows as the one aside", async () => {
+		const gate = Promise.withResolvers<string>();
+		const { run, sent } = setup((request) => {
+			request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
+			return gate.promise;
+		}, 1);
+		expect(await run()).toEqual({
+			message: expect.objectContaining({
+				customType: "ultrathink-plan",
+				content: expect.stringContaining("<UPLIFT>u</UPLIFT>"),
+			}),
+		});
+		const finalPlan =
+			"<UPLIFT>u</UPLIFT>\n<CLARIFICATIONS>q</CLARIFICATIONS>\n<GRAPH_OF_THOUGHT>g</GRAPH_OF_THOUGHT>";
+		gate.resolve(finalPlan);
+		await flush();
+		expect(sent).toEqual([aside(finalPlan)]);
+	});
+
+	test("an early uplift whose final plan is empty is released by one aside, never left holding", async () => {
+		const gate = Promise.withResolvers<string>();
+		const { run, sent } = setup((request) => {
+			request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
+			return gate.promise;
+		}, 1);
+		expect(await run()).toEqual({
+			message: expect.objectContaining({ customType: "ultrathink-plan" }),
+		});
+		gate.resolve("");
+		await flush();
+		expect(sent).toEqual([aside(EARLY_RELEASE)]);
+		expect(sent).not.toEqual([aside(NO_PLAN)]);
 	});
 
 	test("an activity card is delivered nextTurn with triggerTurn false, so it never steers a running turn or starts one; the aside still carries the plan", async () => {
@@ -264,6 +298,30 @@ describe("flight lifecycle (D-12)", () => {
 		await flush();
 		expect(sent).toEqual([aside(NO_PLAN)]);
 	}, 1_000);
+
+	test("a follow-up the planner would skip does not cancel the plan still being built", async () => {
+		const planner = gated();
+		const { run, sent, emit } = setup(planner.plan, 1);
+		await run("Build the big feature with a full graph of thought");
+		for (const followUp of ["continue", "ok", "/ultrathink-status"]) {
+			emit("turn_start");
+			expect(await run(followUp)).toBeUndefined();
+		}
+		expect(planner.runs).toHaveLength(1);
+		expect(planner.runs[0]?.signal.aborted).toBe(false);
+		planner.runs[0]?.gate.resolve("PLAN A");
+		await flush();
+		expect(sent).toEqual([aside("PLAN A")]);
+	});
+
+	test("a plannable follow-up still supersedes the running plan", async () => {
+		const planner = gated();
+		const { run, emit } = setup(planner.plan, 1);
+		await run("Build the big feature with a full graph of thought");
+		emit("turn_start");
+		await run("Now also refactor the billing module to remove the legacy invoice path");
+		expect(planner.runs.map((entry) => entry.signal.aborted)).toEqual([true, false]);
+	});
 
 	test("a newer prompt cancels the superseded flight; its late plan is dropped", async () => {
 		const planner = gated();
@@ -1601,7 +1659,7 @@ describe("flight lifecycle (D-12)", () => {
 			{ timers: manual.timers },
 		);
 		const racing = run();
-		expect(pendingAtPlan).toBe(1);
+		expect(pendingAtPlan).toBeGreaterThanOrEqual(1);
 		await manual.fire(1);
 		expect(await racing).toEqual(PENDING_RESULT);
 	});

@@ -92,6 +92,36 @@ SHAPES.push(
 		canary: "CANARYhash",
 		keepsTail: true,
 	},
+	{ name: "Stripe live secret key", planted: `sk_live_${FAKE}`, canary: CANARY, keepsTail: true },
+	{
+		name: "Stripe live restricted key",
+		planted: `rk_live_${FAKE}`,
+		canary: CANARY,
+		keepsTail: true,
+	},
+	{ name: "Stripe test secret key", planted: `sk_test_${FAKE}`, canary: CANARY, keepsTail: true },
+	{
+		name: "GitLab personal access token",
+		planted: `glpat-${FAKE}`,
+		canary: CANARY,
+		keepsTail: true,
+	},
+	{ name: "npm access token", planted: `npm_${CANARY.repeat(6)}`, canary: CANARY, keepsTail: true },
+	{
+		name: "Hugging Face token",
+		planted: `hf_${CANARY.repeat(6)}`,
+		canary: CANARY,
+		keepsTail: true,
+	},
+	{
+		name: "Hugging Face token with digits",
+		planted: `hf_${FAKE}${FAKE}`,
+		canary: CANARY,
+		keepsTail: true,
+	},
+	{ name: "SendGrid API key", planted: `SG.${FAKE}.${FAKE}`, canary: CANARY, keepsTail: true },
+	{ name: "PyPI API token", planted: `pypi-${CANARY.repeat(10)}`, canary: CANARY, keepsTail: true },
+	{ name: "Google OAuth access token", planted: `ya29.${FAKE}`, canary: CANARY, keepsTail: true },
 );
 
 describe("redactSecrets: key shapes", () => {
@@ -128,6 +158,19 @@ describe("redactSecrets: key shapes", () => {
 		);
 		expect(redactSecrets(`rejected ${key}`)).toContain(key);
 		expect(redactSecrets(`rejected ${key}`, key)).toBe("rejected [redacted]");
+	});
+});
+
+describe("redactSecrets: dollar-led values", () => {
+	test("a literal that starts with $ is a secret: password=$ecr3t123 is masked", () => {
+		expect(redactSecrets("login failed: password=$ecr3t123 rejected")).toBe(
+			"login failed: password=[redacted] rejected",
+		);
+	});
+
+	test("a shell reference is not a secret: a bare uppercase name, a braced name and a command substitution stay", () => {
+		const text = "TOKEN=$TOKEN API_KEY=${API_KEY} DB_PASSWORD=$(cat /run/db) done";
+		expect(redactSecrets(text)).toBe(text);
 	});
 });
 
@@ -258,12 +301,15 @@ describe("redactSecrets: never throws", () => {
 		expect(redactSecrets(`${run} ${key}`)).toBe(`${run} [redacted]`);
 	});
 
-	test("assignment redaction is linear: a long `a:a:a:` or `a=a:` run completes quickly", () => {
+	test("assignment redaction is linear: a long `a:a:a:`, `a=a:`, `key=$`, `KEY=${` or `KEY=$(` run completes quickly", () => {
 		const budgetMs = 3000;
 		const colons = "a:".repeat(100_000);
 		const mixed = "a=a:".repeat(50_000);
 		const templ = "key=$".repeat(50_000);
-		for (const input of [colons, mixed, templ]) {
+		// A KEY= before a `${` or `$(` whose closing bracket is far away used to rescan up to it: quadratic.
+		const braces = `${"KEY=${".repeat(50_000)}}`;
+		const parens = `${"KEY=$(".repeat(50_000)})`;
+		for (const input of [colons, mixed, templ, braces, parens]) {
 			const started = performance.now();
 			const out = redactSecrets(input);
 			expect(performance.now() - started).toBeLessThan(budgetMs);
@@ -287,5 +333,22 @@ describe("redactSecrets: never throws", () => {
 	test("lone surrogates and control characters pass through without an error", () => {
 		const odd = "\ud800 \u0000 \u001b[31m tail";
 		expect(redactSecrets(odd)).toBe(odd);
+	});
+});
+
+describe("redactSecretShapes: bracketed and percent-quoted values", () => {
+	test("a secret wrapped in brackets or percent signs is masked; template and shell references are kept", () => {
+		expect(redactSecretShapes("password=(hunter2-real-secret)")).not.toContain("hunter2");
+		expect(redactSecretShapes("password=%hunter2-real-secret%")).not.toContain("hunter2");
+		expect(redactSecretShapes("TOKEN=%GITHUB_TOKEN%")).toBe("TOKEN=%GITHUB_TOKEN%");
+		expect(redactSecretShapes("key={apiKey}")).toBe("key={apiKey}");
+		expect(redactSecretShapes("TOKEN=$GITHUB_TOKEN")).toBe("TOKEN=$GITHUB_TOKEN");
+	});
+});
+
+describe("redactSecretShapes: a bare dollar name is a reference only when it is not credential-shaped", () => {
+	test("a literal secret that starts with a dollar sign and carries digits is masked; a plain environment reference is kept", () => {
+		expect(redactSecretShapes("password=$SECRET123")).not.toContain("SECRET123");
+		expect(redactSecretShapes("TOKEN=$GITHUB_TOKEN")).toBe("TOKEN=$GITHUB_TOKEN");
 	});
 });

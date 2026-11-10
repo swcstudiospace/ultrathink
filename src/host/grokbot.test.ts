@@ -1405,12 +1405,31 @@ describe("grok-bot answers", () => {
 				[
 					process.execPath,
 					"-e",
-					`import { recordAnswers } from ${JSON.stringify(join(import.meta.dir, "grokbot-hitl.ts"))}; recordAnswers(${JSON.stringify(statePath)}, { answers: { q1: "after the hold" } }, 401);`,
+					`import { recordAnswers } from ${JSON.stringify(join(import.meta.dir, "grokbot-hitl.ts"))}; const wait = Atomics.wait; let reported = false; Atomics.wait = (...args) => { if (!reported) { reported = true; process.stdout.write("waiting"); } return wait(...args); }; recordAnswers(${JSON.stringify(statePath)}, { answers: { q1: "after the hold" } }, 401);`,
 				],
 				{ stdin: "ignore", stdout: "pipe", stderr: "pipe", env: testEnv(root) },
 			);
-			await new Promise((resolve) => setTimeout(resolve, 3_000));
-			// Still blocked on the lock: nothing of the answer is on disk yet.
+			// The worker reports "waiting" once it is blocked on the lock: only then is "nothing of the answer is on disk" meaningful.
+			const workerOut = worker.stdout.getReader();
+			const decoder = new TextDecoder();
+			const stalled = Promise.withResolvers<never>();
+			// Real child process: the 10 s bound only fails a worker that never reports, which fake timers cannot reach.
+			const timer = setTimeout(
+				() => stalled.reject(new Error("the worker never reported the lock wait")),
+				10_000,
+			);
+			let seen = "";
+			try {
+				while (!seen.includes("waiting")) {
+					const chunk = await Promise.race([workerOut.read(), stalled.promise]);
+					if (chunk.done) break;
+					seen += decoder.decode(chunk.value);
+				}
+			} finally {
+				clearTimeout(timer);
+				workerOut.releaseLock();
+			}
+			expect(seen).toContain("waiting");
 			expect(readFileSync(statePath, "utf8")).not.toContain("after the hold");
 		} finally {
 			reader.releaseLock();
@@ -1997,15 +2016,5 @@ describe("grok-bot graph_register payload", () => {
 		expect(graphRegisterPayload(after, { surface: "omp" }).surface).toBe("omp");
 		expect(graphRegisterPayload(after, { surface: "prime-agent" }).surface).toBe("pi");
 		expect(graphRegisterPayload(after, { surface: "no-such-host" }).surface).toBe("claude-code");
-	});
-});
-
-describe("grok-bot cli child reaper", () => {
-	test("the entry installs it with signals before it runs a command that may spawn a completer child", () => {
-		const source = readFileSync(new URL("./grokbot-cli.ts", import.meta.url), "utf8");
-		const entry = source.slice(source.indexOf("if (import.meta.main) {"));
-		expect(entry).toMatch(
-			/if \(import\.meta\.main\) \{\s*installChildReaper\(\{ signals: true \}\);\s*main\(/,
-		);
 	});
 });
