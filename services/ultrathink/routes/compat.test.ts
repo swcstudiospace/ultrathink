@@ -435,7 +435,12 @@ describe("modern request validation", () => {
 
 	test("rejects a modern-declared request inside a legacy batch before dispatch", async () => {
 		const h = harness();
-		const legacy = { jsonrpc: "2.0", id: 20, method: "ping" };
+		const legacy = {
+			jsonrpc: "2.0",
+			id: 20,
+			method: "tools/call",
+			params: { name: "ultrathink_graph", arguments: {} },
+		};
 		const modern = {
 			jsonrpc: "2.0",
 			id: 21,
@@ -449,10 +454,12 @@ describe("modern request validation", () => {
 			const response = await rpc(h, [legacy, modern], headers);
 			expect(response.status).toBe(400);
 			expect(await body(response)).toMatchObject({ id: 21, error: { code: -32020 } });
+			expect(h.app.metrics.sum("ultrathink_mcp_tool_calls_total")).toBe(0);
 		}
 		const genuine = await rpc(h, [legacy, { ...legacy, id: 22 }]);
 		expect(genuine.status).toBe(200);
 		expect(await genuine.json()).toHaveLength(2);
+		expect(h.app.metrics.sum("ultrathink_mcp_tool_calls_total")).toBe(2);
 	});
 
 	test("validates notification-named requests while preserving actual notifications", async () => {
