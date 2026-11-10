@@ -23,7 +23,7 @@ import type { JournalOptions } from "../engine/journal.ts";
 import type { PlanBackend } from "../engine/plan.ts";
 import { type SweepResult, createSweeper, sweepStateDir } from "../engine/retention.ts";
 import { defaultGraphResources, loadCatalogWithFallback } from "../mcp/connector-host.ts";
-import { type McpToolHost, type ToolOutcome, handleMcpPayload } from "../mcp/mcp.ts";
+import { MODERN_PROTOCOL_VERSION, type McpToolHost, type ToolOutcome, handleMcpPayload } from "../mcp/mcp.ts";
 import { createToolHost } from "../mcp/tool-host.ts";
 import type { PlanningInfo } from "../mcp/tools-connector.ts";
 import { diskFingerprint } from "../../../src/shared.ts";
@@ -31,6 +31,7 @@ import {
 	DEFAULT_ALLOWED_ORIGINS,
 	originAllowed,
 	resolveProtocolVersion,
+	validateModernRequest,
 } from "../mcp/transport.ts";
 import { type AnomalyAlert, DEFAULT_ANOMALY_RULES, createAnomalyDetector } from "../obs/anomaly.ts";
 import { createAuditWatch } from "../obs/audit-watch.ts";
@@ -1358,6 +1359,12 @@ export function createApp(deps: RouterDeps): App {
 		const parsed = await readJson(req, config.maxBodyBytes);
 		if (!parsed.ok) return respond(400, rpcError(-32700, "parse error"));
 		describeRpc(parsed.value, ctx);
+		if (version.version === MODERN_PROTOCOL_VERSION) {
+			const error = validateModernRequest(parsed.value, req.headers);
+			if (error !== null) {
+				return respond(400, { jsonrpc: "2.0", id: error.id, error: { code: error.code, message: error.message } });
+			}
+		}
 
 		const answer = async (): Promise<Response> => {
 			const reply = await handleMcpPayload(mcpHost, parsed.value, {

@@ -339,6 +339,140 @@ describe("protocol version header", () => {
 	});
 });
 
+describe("modern request validation", () => {
+	const version = "2026-07-28";
+	const meta = {
+		"io.modelcontextprotocol/protocolVersion": version,
+		"io.modelcontextprotocol/clientCapabilities": {},
+	};
+	const headers = { "MCP-Protocol-Version": version, "Mcp-Method": "ping" };
+	const ping = { jsonrpc: "2.0", id: "p", method: "ping", params: { _meta: meta } };
+
+	test("requires metadata before checking headers and echoes the request id", async () => {
+		const h = harness();
+		for (const invalid of [{}, { "io.modelcontextprotocol/protocolVersion": version }, {
+			"io.modelcontextprotocol/clientCapabilities": {},
+		}, {
+			"io.modelcontextprotocol/protocolVersion": version,
+			"io.modelcontextprotocol/clientCapabilities": [],
+		}]) {
+			const response = await rpc(h, { ...ping, params: { _meta: invalid } }, headers);
+			expect(response.status).toBe(400);
+			expect(await body(response)).toMatchObject({ id: "p", error: { code: -32602 } });
+		}
+		const both = await rpc(h, { ...ping, params: {} }, { "MCP-Protocol-Version": version });
+		expect(both.status).toBe(400);
+		expect((await body(both)).error?.code).toBe(-32602);
+	});
+
+	test("requires case-sensitive mirrors and accepts mixed-case header names", async () => {
+		const h = harness();
+		const ok = await rpc(h, ping, { "mcp-protocol-version": version, "mCP-mEThod": "ping" });
+		expect(ok.status).toBe(200);
+		for (const invalidHeaders of [
+			{ "MCP-Protocol-Version": version },
+			{ ...headers, "Mcp-Method": "Ping" },
+		] as Record<string, string>[]) {
+			const response = await rpc(h, ping, invalidHeaders);
+			expect(response.status).toBe(400);
+			expect((await body(response)).error?.code).toBe(-32020);
+		}
+		const mismatch = await rpc(h, { ...ping, params: { _meta: { ...meta,
+			"io.modelcontextprotocol/protocolVersion": "2025-11-25" } } }, headers);
+		expect(mismatch.status).toBe(400);
+		expect((await body(mismatch)).error?.code).toBe(-32020);
+	});
+
+	test("checks names and resource URIs before dispatch", async () => {
+		const h = harness();
+		for (const [method, field] of [["tools/call", "name"], ["prompts/get", "name"], ["resources/read", "uri"]]) {
+			const request = { jsonrpc: "2.0", id: 3, method, params: { [field]: "expected", _meta: meta } };
+			for (const name of [undefined, "Expected"]) {
+				const sent: Record<string, string> = { "MCP-Protocol-Version": version, "Mcp-Method": method };
+				if (name !== undefined) sent["Mcp-Name"] = name;
+				const response = await rpc(h, request, sent);
+				expect(response.status).toBe(400);
+				expect((await body(response)).error?.code).toBe(-32020);
+			}
+			const matching = await rpc(h, request, {
+				"MCP-Protocol-Version": version, "Mcp-Method": method, "Mcp-Name": "expected",
+			});
+			expect((await body(matching)).error?.code).not.toBe(-32020);
+		}
+	});
+
+	test("mismatched routing headers cannot invoke the tool host", async () => {
+		const h = harness();
+		const request = { jsonrpc: "2.0", id: 4, method: "tools/call", params: {
+			name: "ultrathink_pending", arguments: { sessionId: "missing" }, _meta: meta,
+		} };
+		const response = await rpc(h, request, {
+			"MCP-Protocol-Version": version, "Mcp-Method": "tools/call", "Mcp-Name": "ultrathink_status",
+		});
+		expect(response.status).toBe(400);
+		expect((await body(response)).error?.code).toBe(-32020);
+		expect(h.app.metrics.sum("ultrathink_mcp_tool_calls_total")).toBe(0);
+	});
+
+	test("name encoding is checked on the wire before dispatch", async () => {
+		const h = harness();
+		for (const name of ["café", "=?base64?SGk=?="]) {
+			const request = { jsonrpc: "2.0", id: 5, method: "prompts/get", params: { name, _meta: meta } };
+			const encoded = `=?base64?${Buffer.from(name, "utf8").toString("base64")}?=`;
+			const response = await rpc(h, request, {
+				"MCP-Protocol-Version": version, "Mcp-Method": "prompts/get", "Mcp-Name": encoded,
+			});
+			expect(response.status).toBe(200);
+			expect((await body(response)).error?.code).not.toBe(-32020);
+		}
+		for (const name of ["=?base64?!!!!?=", "=?base64?/w==?="]) {
+			const response = await rpc(h, { jsonrpc: "2.0", id: 5, method: "prompts/get",
+				params: { name: "expected", _meta: meta } }, {
+				"MCP-Protocol-Version": version, "Mcp-Method": "prompts/get", "Mcp-Name": name,
+			});
+			expect(response.status).toBe(400);
+			expect((await body(response)).error?.code).toBe(-32020);
+		}
+	});
+
+	test("notifications and malformed envelopes retain their existing behavior", async () => {
+		const h = harness();
+		const notification = await rpc(h, { jsonrpc: "2.0", method: "notifications/initialized" },
+			{ "MCP-Protocol-Version": version });
+		expect(notification.status).toBe(202);
+		expect(await notification.text()).toBe("");
+		const batch = await rpc(h, [ping], headers);
+		expect(batch.status).toBe(400);
+		expect((await body(batch)).error?.code).toBe(-32600);
+		const invalid = await rpc(h, { jsonrpc: "2.0", id: null, method: "ping" }, headers);
+		expect(invalid.status).toBe(400);
+		expect((await body(invalid)).error?.code).toBe(-32600);
+	});
+
+	test("origin and credentials are rejected before modern validation", async () => {
+		const h = harness();
+		const forbidden = await rpc(h, ping, { ...headers, Origin: "https://evil.example" });
+		expect(forbidden.status).toBe(403);
+		const noKey = await h.app.handle(new Request(RESOURCE, {
+			method: "POST", headers: { "Content-Type": "application/json", ...headers },
+			body: JSON.stringify(ping),
+		}), PEER);
+		expect(noKey.status).toBe(401);
+		const badKey = await rpc(h, ping, { ...headers, "x-connector-key": "invalid" });
+		expect(badKey.status).toBe(401);
+	});
+
+	test("a locally simulated unsupported probe can fall back to legacy initialize", async () => {
+		const h = harness();
+		const probe = await rpc(h, ping, { "MCP-Protocol-Version": "2027-01-01", "Mcp-Method": "ping" });
+		expect(probe.status).toBe(400);
+		expect((await body(probe)).error?.code).toBe(-32600);
+		const fallback = await rpc(h, initialize("2027-01-01"));
+		expect(fallback.status).toBe(200);
+		expect((await body(fallback)).result?.protocolVersion).toBe("2025-11-25");
+	});
+});
+
 describe("credentials and media type", () => {
 	test("the connector key and an OAuth bearer both reach initialize with 200", async () => {
 		const withKey = harness();
