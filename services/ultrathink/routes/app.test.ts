@@ -217,7 +217,9 @@ function register(h: Harness, redirect: string): Promise<Response> {
 	);
 }
 
-async function issueAccessToken(h: Harness): Promise<{ accessToken: string; clientId: string }> {
+async function issueAccessToken(
+	h: Harness,
+): Promise<{ accessToken: string; refreshToken: string; clientId: string }> {
 	const registered = await register(h, REDIRECT);
 	expect(registered.status).toBe(201);
 	const clientId = (await json<{ client_id: string }>(registered)).client_id;
@@ -267,7 +269,8 @@ async function issueAccessToken(h: Harness): Promise<{ accessToken: string; clie
 		freshIp(),
 	);
 	expect(tokens.status).toBe(200);
-	return { accessToken: (await json<{ access_token: string }>(tokens)).access_token, clientId };
+	const issued = await json<{ access_token: string; refresh_token: string }>(tokens);
+	return { accessToken: issued.access_token, refreshToken: issued.refresh_token, clientId };
 }
 
 function bearerRequest(token: string): Request {
@@ -452,6 +455,47 @@ describe("MCP transport guards", () => {
 		const after = await h.app.handle(bearerRequest(accessToken), PEER);
 		expect(after.status).toBe(401);
 		expect(after.headers.get("www-authenticate") ?? "").toContain('error="invalid_token"');
+	});
+
+	test("a bearer request logs the OAuth client_id its token was issued to", async () => {
+		const h = harness({ config: { connectorKey: undefined } });
+		const { accessToken, clientId } = await issueAccessToken(h);
+		expect((await h.app.handle(bearerRequest(accessToken), PEER)).status).toBe(200);
+		const bearerLines = logsOf(h, "request").filter((line) => line.authKind === "bearer");
+		expect(bearerLines).toHaveLength(1);
+		expect(bearerLines[0]).toMatchObject({ authKind: "bearer", clientId });
+	});
+
+	test("a connector-key request and a request with no credentials log no clientId", async () => {
+		const h = harness();
+		const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
+		expect((await rpc(h, ping)).status).toBe(200);
+		const bare = await h.app.handle(
+			new Request(RESOURCE, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(ping),
+			}),
+			PEER,
+		);
+		expect(bare.status).toBe(401);
+		const lines = logsOf(h, "request");
+		expect(lines.map((line) => line.authKind)).toEqual(["connector-key", "none"]);
+		for (const line of lines) expect(line).not.toHaveProperty("clientId");
+	});
+
+	test("an unknown bearer, a refresh token and an expired access token log no clientId", async () => {
+		let clock = Date.now();
+		const h = harness({ config: { connectorKey: undefined }, deps: { now: () => clock } });
+		const { accessToken, refreshToken } = await issueAccessToken(h);
+		expect((await h.app.handle(bearerRequest(accessToken), PEER)).status).toBe(200);
+		clock += 60 * 60 * 1000 + 1;
+		for (const token of ["ut_at_not-a-real-token", refreshToken, accessToken]) {
+			expect((await h.app.handle(bearerRequest(token), PEER)).status).toBe(401);
+		}
+		const rejected = logsOf(h, "request").slice(-3);
+		expect(rejected.map((line) => line.authKind)).toEqual(["none", "none", "none"]);
+		for (const line of rejected) expect(line).not.toHaveProperty("clientId");
 	});
 });
 

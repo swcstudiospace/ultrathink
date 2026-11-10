@@ -464,6 +464,8 @@ Logs are one JSON object per line with `ts`, `level`, `event` and, for requests,
 
 Request lines for `/mcp` also carry `mcpVersion` (the `MCP-Protocol-Version` header exactly as the client sent it, cut to a short length; absent when the client sent none) and `rpcMethod` (the JSON-RPC method of the body, or `batch`), and `tool` on `tools/call`. A request refused for an unknown protocol version still logs its `rpcMethod`. Section 13 shows how to read them.
 
+Bearer-authenticated `/mcp` request lines also carry `clientId`: the OAuth `client_id` the access token was issued to, so each connected client can be told apart in the log. `clientIdDigest` is a 16-character lowercase hex SHA-256 prefix of the full `client_id`, logged beside `clientId`, so clients whose IDs share a long prefix can be told apart; the log clips long strings, so `clientId` alone cannot. It is absent on a connector-key or unauthenticated request, and on a bearer that is unknown, expired or a refresh token.
+
 Common symptoms:
 
 | Symptom | Usual cause | Check and action |
@@ -704,7 +706,7 @@ List the MCP and OAuth requests of the last hour, oldest first:
 journalctl -u ultrathink-web --since "1 hour ago" -o cat | grep '"event":"request"' | grep -E '"endpoint":"(mcp|oauth_[a-z_]+)"'
 ```
 
-Each line has `ts`, `status`, `endpoint`, `rpcMethod`, `mcpVersion`, `tool`, `authKind` (`none`, `bearer` or `connector-key`) and `ip`. The order to expect for a new connector:
+Each line has `ts`, `status`, `endpoint`, `rpcMethod`, `mcpVersion`, `tool`, `clientId` and `clientIdDigest` (bearer requests only), `authKind` (`none`, `bearer` or `connector-key`) and `ip`. The order to expect for a new connector:
 
 1. `POST /mcp` with `status` 401 and `authKind` `none`: the client learns it must sign in. Then `oauth_protected_resource`, `oauth_authorization_server`, `oauth_register` (201), `oauth_authorize` and `oauth_token` requests: the OAuth flow. A 429 on `oauth_register` is the registration limit (below).
 2. With a token, the first `POST /mcp` shows which revision the client opens with:

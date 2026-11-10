@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Client ID metadata documents (CIMD) for OAuth clients, behind the `ULTRATHINK_CIMD` switch, which is off by default. With the switch on under Bun 1.2.23 or later, an `https` `client_id` on port 443 is resolved from its metadata document through the guarded fetch, and the authorization server metadata advertises `client_id_metadata_document_supported`. Any other port is refused. On an older Bun nothing is advertised and every retrieval is refused. The guard is physically tested on Bun 1.2.23 and 1.4.0 only, and the TLS-only listener needs Bun 1.4.0 or later. A metadata response must be framed by Content-Length or chunked encoding; unframed bodies and 1xx responses are refused. Dynamic client registration is unchanged. See the runbook section on client ID metadata documents.
+- Request log lines for bearer-authenticated `/mcp` requests carry `clientId`, the OAuth `client_id` the access token was issued to, and `clientIdDigest`, a short hash of the full `client_id` so IDs that share a long prefix stay distinct. Connected clients can be told apart in the log. Connector-key and unauthenticated lines carry neither, and no request or authorization decision changes.
 
 ### Removed
 
