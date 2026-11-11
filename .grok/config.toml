@@ -1,0 +1,4 @@
+# substrate-mcp, projected by agent-substrate packages/projector. The token is named here, never written.
+[mcp_servers.substrate]
+url = "${SUBSTRATE_URL}/mcp"
+headers = { Authorization = "Bearer ${SUBSTRATE_TOKEN}" }

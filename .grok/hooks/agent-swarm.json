@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /var/tmp/ut-verify/wt-swarm/hooks/user_prompt_submit.py"
+          }
+        ]
+      }
+    ]
+  }
+}
