@@ -4,7 +4,6 @@
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import pkg from "../package.json";
 
 /** The repository root: this file sits one level below it, in `src/`. */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -31,6 +30,3 @@ export function stampedVersion(
 	const text = stamp()?.trim();
 	return text ? `${release}+${text}` : release;
 }
-
-/** The package version with the live git stamp, so a running build shows which code is loaded. */
-export const RUNTIME_VERSION = stampedVersion(pkg.version);
