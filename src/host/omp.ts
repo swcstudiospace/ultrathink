@@ -24,6 +24,7 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import { resolvePstack } from "../cursor/pstack.ts";
 import type { EnvironmentPort } from "../../core/src/ports/environment.ts";
+import type { ClockPort } from "../../core/src/ports/injection.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import {
 	type ControlState,
@@ -713,7 +714,7 @@ function truncatedFailure(): Error {
  * retriable kind retries, ContentBlocked, ContextOverflow, PayloadRejected and AuthFailed never do. Otherwise the kernel's
  * status-led verdict on the raw fields (a 503 with refusal-sounding text still retries; only a 429 is vetoed by it).
  */
-function classifyNativeFailure(error: unknown, now: number = Date.now()): FailureVerdict {
+function classifyNativeFailure(error: unknown, now: number = SYSTEM_CLOCK.now()): FailureVerdict {
 	if (isAbortError(error)) return { transient: false, reason: "aborted" };
 	if (readReport(error)?.cause === TRUNCATED_REPLY)
 		return { transient: true, reason: TRUNCATED_REPLY };
@@ -787,6 +788,8 @@ export function createNativeEngineSelector(
 	// The chain of thought is written out explicitly, and its depth follows the reasoning level the session chose. A ceiling is
 	// opt-in (think.reasoningCeiling): a lower level makes each of the ~15 stage calls shallower. "inherit" uses the host's default.
 	const ceiling = deps.reasoningCeiling ?? PLANNING_REASONING_CEILING;
+	/** The attempt clock: the injected `deps.now`, else the real clock. */
+	const now = (): number => deps.now?.() ?? SYSTEM_CLOCK.now();
 	const thinking: Pick<SimpleStreamOptions, "reasoning" | "disableReasoning"> =
 		level === "off"
 			? { disableReasoning: true }
@@ -854,7 +857,7 @@ export function createNativeEngineSelector(
 				if (lifetime.aborted || deps.isCurrent?.() === false) throw cancelled();
 				const context: Context = {
 					systemPrompt: [system],
-					messages: [{ role: "user", content: user, timestamp: Date.now() }],
+					messages: [{ role: "user", content: user, timestamp: now() }],
 				};
 				let lastError: unknown;
 				/** One attempt: a failed one throws a `NativeCompletionError` carrying the raw fields the classifier reads. */
@@ -915,7 +918,7 @@ export function createNativeEngineSelector(
 					} catch (error) {
 						lastError = error;
 						if (!isAbortError(error)) {
-							const verdict = classifyNativeFailure(error, deps.now?.() ?? Date.now());
+							const verdict = classifyNativeFailure(error, now());
 							if (verdict.transient)
 								throttle.noteFailure(
 									verdict.retryAfterMs === undefined ? {} : { retryAfterMs: verdict.retryAfterMs },
@@ -935,7 +938,7 @@ export function createNativeEngineSelector(
 						classify: classifyNativeFailure,
 						onRetry: ({ attempt: made, delayMs }) => {
 							// A retry that would cross the flight's own deadline is not taken: the failure is final.
-							if (request.deadline !== undefined && Date.now() + delayMs > request.deadline)
+							if (request.deadline !== undefined && now() + delayMs > request.deadline)
 								throw new DeadlineStop(made);
 						},
 					});
@@ -1069,7 +1072,7 @@ function timedGitRun(cmd: string[], cwd: string): { stdout: string; code: number
 }
 
 /** Repo slug of the nearest existing directory at or above `file`; undefined outside a git repo with an origin. Cached 5 s per directory, each git call timed out after 2 s. */
-export function repoOfPath(file: string, now: () => number = Date.now): string | undefined {
+export function repoOfPath(file: string, now: () => number = SYSTEM_CLOCK.now): string | undefined {
 	let dir = dirname(file);
 	while (!isDirectory(dir)) {
 		const parent = dirname(dir);
@@ -1389,12 +1392,19 @@ const PROCESS_ENV: EnvironmentPort = {
 	read: () => process.env,
 };
 
+/** The real clock: the default for every timestamp and deadline read, so a ClockPort is the only way to change time. */
+const SYSTEM_CLOCK: ClockPort = {
+	now: () => Date.now(),
+};
+
 export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
 		raceMs?: number;
 		maxRunMs?: number;
 		now?: () => number;
+		/** Clock port for every timestamp and deadline read; defaults to the real clock. */
+		clock?: ClockPort;
 		/** Timer port for the remount, flight deadline and race timers; defaults to the platform timers. */
 		timers?: TimerPort;
 		ui?: boolean;
@@ -1427,7 +1437,8 @@ export function createOmpExtension(
 	const raceMs = options.raceMs ?? 25_000;
 	// 0 (the default) means no outer limit: no flight timer and no retry deadline.
 	const maxRunMs = options.maxRunMs ?? 0;
-	const now = options.now ?? Date.now;
+	const clock = options.clock ?? SYSTEM_CLOCK;
+	const now = options.now ?? (() => clock.now());
 	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
 	const readMcp = options.mcp ?? readMcpState;
@@ -2613,7 +2624,7 @@ export function createOmpExtension(
 				plan(
 					{
 						...request,
-						deadline: maxRunMs > 0 ? Date.now() + maxRunMs : undefined,
+						deadline: maxRunMs > 0 ? clock.now() + maxRunMs : undefined,
 						isCurrent: () => !flight.timedOut && !flight.settled && current(flight),
 						onUplift: (handoff) => {
 							flight.early = handoff;
