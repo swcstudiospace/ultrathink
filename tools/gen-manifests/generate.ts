@@ -112,7 +112,7 @@ export function buildGenerated(source: unknown): Map<string, string> {
 	const generated = new Map<string, string>();
 	for (const id of Object.keys(validated.hosts).sort()) {
 		const host = validated.hosts[id];
-		if (host.status === "verified") generated.set(id, renderManifest(validated, host));
+		if (host?.status === "verified") generated.set(id, renderManifest(validated, host));
 	}
 	return generated;
 }

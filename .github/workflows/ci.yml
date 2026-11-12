@@ -105,6 +105,13 @@ jobs:
         env:
           ULTRATHINK_SMOKE_SERVICE: "1"
 
+      # A stale committed manifest fails the build: regenerate with `bun run gen:manifests` and commit the result.
+      - name: Manifest drift
+        run: |
+          bun run gen:manifests
+          git diff --exit-code -- plugin/generated
+          test -z "$(git status --porcelain -- plugin/generated)"
+
       - name: Hermes bridge test
         run: python3 hosts/hermes/bridge_test.py
 
