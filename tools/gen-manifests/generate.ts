@@ -17,7 +17,7 @@ const GENERATED_DIR = join(REPO_ROOT, "plugin/generated");
 
 const TOP_LEVEL_KEYS = ["name", "version", "license", "author", "hosts"];
 const AUTHOR_KEYS = ["name"];
-const HOST_IDS = ["claude-code", "muse", "cursor", "omp", "hermes", "prime-agent", "grok-build"];
+const HOST_IDS = ["claude-code", "muse", "omp", "hermes", "prime-agent", "grok-build"];
 const HOST_KEYS = ["description", "status"];
 const HOST_STATUSES = ["verified", "unmapped"];
 

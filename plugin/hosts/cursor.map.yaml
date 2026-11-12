@@ -1,5 +1,0 @@
-# Map: cursor to its native manifest. The generator writes plugin/generated/cursor/manifest.json from plugin/source/plugin.source.yaml.
-host: cursor
-status: verified
-native_manifest: .cursor-plugin/plugin.json
-generated_manifest: plugin/generated/cursor/manifest.json

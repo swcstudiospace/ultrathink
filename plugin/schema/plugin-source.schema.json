@@ -24,7 +24,6 @@
       "properties": {
         "claude-code": { "$ref": "#/$defs/host" },
         "muse": { "$ref": "#/$defs/host" },
-        "cursor": { "$ref": "#/$defs/host" },
         "omp": { "$ref": "#/$defs/host" },
         "hermes": { "$ref": "#/$defs/host" },
         "prime-agent": { "$ref": "#/$defs/host" },

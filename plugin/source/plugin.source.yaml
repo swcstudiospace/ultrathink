@@ -14,9 +14,6 @@ hosts:
   muse:
     description: "Plans each prompt with the shared ultrathink engine and writes the spec for the agent to read."
     status: verified
-  cursor:
-    description: "Plans prompts into a spec and a Graph of Thought, remembers work through Agent Substrate, and hands SDLC work to Agent Swarm subagents."
-    status: verified
   omp:
     description: "Shared ultrathink engine for Omp, Claude Code, Grok Build, Hermes Agent, Muse and Prime Agent."
     status: verified

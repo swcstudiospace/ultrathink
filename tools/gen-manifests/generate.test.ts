@@ -20,7 +20,7 @@ function validSource(): Record<string, unknown> {
 		hosts: {
 			omp: { description: "Omp description", status: "verified" },
 			hermes: { description: "Hermes description", status: "verified" },
-			cursor: { description: "Cursor description", status: "unmapped" },
+			"prime-agent": { description: "Prime Agent description", status: "unmapped" },
 		},
 	};
 }
@@ -29,7 +29,7 @@ describe("buildGenerated", () => {
 	test("emits exactly the verified hosts of the committed source", async () => {
 		const source: unknown = parse(await readFile(SOURCE_PATH, "utf8"));
 		const keys = [...buildGenerated(source).keys()];
-		expect(keys).toEqual(["claude-code", "cursor", "hermes", "muse", "omp"]);
+		expect(keys).toEqual(["claude-code", "hermes", "muse", "omp"]);
 		expect(keys).not.toContain("prime-agent");
 		expect(keys).not.toContain("grok-build");
 	});
@@ -67,7 +67,7 @@ describe("buildGenerated", () => {
 	test("produces no entry for an unmapped host", () => {
 		const generated = buildGenerated(validSource());
 		expect([...generated.keys()]).toEqual(["hermes", "omp"]);
-		expect(generated.has("cursor")).toBe(false);
+		expect(generated.has("prime-agent")).toBe(false);
 	});
 
 	test("is deterministic: two calls yield identical content", () => {

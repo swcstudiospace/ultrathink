@@ -1,9 +1,0 @@
-{
-  "author": {
-    "name": "SWC Studio"
-  },
-  "description": "Plans prompts into a spec and a Graph of Thought, remembers work through Agent Substrate, and hands SDLC work to Agent Swarm subagents.",
-  "license": "AGPL-3.0-or-later",
-  "name": "ultrathink",
-  "version": "1.4.0"
-}
