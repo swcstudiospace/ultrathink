@@ -350,6 +350,7 @@ describe("grok-bot journal driver", () => {
 		});
 		const dir = journalDir(stateDir, "s1");
 		const before = listPending(dir);
+		expect(before.length).toBeGreaterThan(0);
 		writeFileSync(join(dir, "pending", "corrupt.json"), "{not json");
 		expect(listPending(dir)).toEqual(before);
 	});
