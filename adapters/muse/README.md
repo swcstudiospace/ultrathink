@@ -37,4 +37,4 @@ Muse reads its plugin manifest from `.muse-plugin/plugin.json`. When both `.muse
 | `hooks/muse-prompt` is absent | `capability_missing`, `host entry point missing` |
 | Runner throws, or `bin/ultrathink` exits non-zero | `internal`, `command failed` |
 
-On failure the thrown text and the engine's output are never returned, because they may carry secrets. On success, `value.stdout` is the engine's stdout truncated to 4096 characters.
+On failure the thrown text and the engine's output are never returned, because they may carry secrets. On success, `value.stdout` is the engine's full stdout. The 4096-character cap applies only to the JSON envelope printed by `bin/ultrathink-adapter` when `--raw` is not given.

@@ -32,9 +32,6 @@ const COMMANDS: ReadonlyMap<string, string> = new Map(
 	VERBS.map((verb) => [`ultrathink-${verb}`, verb]),
 );
 
-/** Output is capped so a verbose engine cannot flood the host's transcript. */
-const STDOUT_LIMIT = 4096;
-
 /** The adapter forwards arguments only as argv verbs, so it accepts any input value unchanged. */
 const passthrough: Schema<unknown> = { parse: (value) => value };
 
@@ -79,7 +76,7 @@ export function createClaudeCodeAdapter(options: ClaudeCodeAdapterOptions): Comm
 				const result = await runner.run([verb]);
 				if (result.exitCode !== 0)
 					return { ok: false, error: { category: "internal", message: "command failed" } };
-				return { ok: true, value: { stdout: result.stdout.slice(0, STDOUT_LIMIT) } };
+				return { ok: true, value: { stdout: result.stdout } };
 			} catch {
 				return { ok: false, error: { category: "internal", message: "command failed" } };
 			}

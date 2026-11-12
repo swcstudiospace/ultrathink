@@ -36,9 +36,6 @@ const COMMANDS: ReadonlyMap<string, Verb> = new Map(
 	VERBS.map((verb): [string, Verb] => [`ultrathink-${verb}`, verb]),
 );
 
-/** Longest stdout returned to the host, in characters. */
-const STDOUT_LIMIT = 4096;
-
 const COMMAND_ERRORS: readonly ErrorCategory[] = [
 	"invalid_input",
 	"capability_missing",
@@ -86,7 +83,7 @@ export function createMuseAdapter(options: MuseAdapterOptions): CommandPort {
 			try {
 				const result = await runner.run([verb]);
 				if (result.exitCode !== 0) return internalFailure();
-				return { ok: true, value: { stdout: result.stdout.slice(0, STDOUT_LIMIT) } };
+				return { ok: true, value: { stdout: result.stdout } };
 			} catch {
 				return internalFailure();
 			}

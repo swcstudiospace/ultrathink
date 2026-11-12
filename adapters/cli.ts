@@ -81,6 +81,9 @@ const VERBS: readonly string[] = ["quick", "skip", "off", "on", "track", "status
 
 const RAW_FLAG = "--raw";
 
+/** Longest stdout the JSON envelope carries. `--raw` prints stdout in full. */
+const ENVELOPE_STDOUT_LIMIT = 4096;
+
 const CONTEXT = { correlationId: "ultrathink-adapter" };
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -138,14 +141,20 @@ export async function runAdapterCli(
 }
 
 /**
- * What to print for a result. Envelope mode prints one JSON line on stdout. Raw mode prints only
- * the child's stdout on success, and only the error message on stderr on failure.
+ * What to print for a result. Envelope mode prints one JSON line on stdout, with stdout cut to
+ * `ENVELOPE_STDOUT_LIMIT` characters. Raw mode prints only the child's full stdout on success, and
+ * only the error message on stderr on failure.
  */
 export function renderResult(result: AdapterCliResult): {
 	readonly stdout: string;
 	readonly stderr: string;
 } {
-	if (!result.raw) return { stdout: `${JSON.stringify(result.output)}\n`, stderr: "" };
+	if (!result.raw) {
+		const output: AdapterCliOutput = result.output.ok
+			? { ok: true, stdout: result.output.stdout.slice(0, ENVELOPE_STDOUT_LIMIT) }
+			: result.output;
+		return { stdout: `${JSON.stringify(output)}\n`, stderr: "" };
+	}
 	if (result.output.ok) return { stdout: result.output.stdout, stderr: "" };
 	return { stdout: "", stderr: `${result.output.error.message}\n` };
 }

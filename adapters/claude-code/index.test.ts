@@ -60,8 +60,9 @@ describe("createClaudeCodeAdapter", () => {
 		expect(result).toEqual({ ok: true, value: { stdout: "quick ok\n" } });
 	});
 
-	test("valid: stdout is truncated to 4096 characters", async () => {
-		const runner = fakeRunner({ exitCode: 0, stdout: "x".repeat(5000) });
+	test("valid: stdout is returned in full without truncation", async () => {
+		const stdout = "x".repeat(5000);
+		const runner = fakeRunner({ exitCode: 0, stdout });
 		const adapter = createClaudeCodeAdapter({
 			runner,
 			entry: fakeEntry(true),
@@ -70,14 +71,7 @@ describe("createClaudeCodeAdapter", () => {
 
 		const result = await adapter.invoke("ultrathink-status", {}, CONTEXT);
 
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-		const value = result.value;
-		if (typeof value !== "object" || value === null || !("stdout" in value)) {
-			throw new Error("expected stdout in value");
-		}
-		if (typeof value.stdout !== "string") throw new Error("expected string stdout");
-		expect(value.stdout.length).toBe(4096);
+		expect(result).toEqual({ ok: true, value: { stdout } });
 	});
 
 	test("invalid: an unknown name returns invalid_input without running", async () => {

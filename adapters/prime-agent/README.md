@@ -19,7 +19,7 @@ Each command runs `bin/ultrathink` once with its verb:
 | `ultrathink-track`  | `bin/ultrathink track`  |
 | `ultrathink-status` | `bin/ultrathink status` |
 
-All commands are `side-effecting`. Successful stdout is returned truncated to 4096 characters.
+All commands are `side-effecting`. Successful stdout is returned in full. The 4096-character cap applies only to the JSON envelope printed by `bin/ultrathink-adapter` when `--raw` is not given.
 
 ## Usage
 

@@ -39,14 +39,14 @@ describe("grok-build adapter", () => {
 		);
 	});
 
-	test("valid: a known command runs its verb once and returns truncated stdout", async () => {
+	test("valid: a known command runs its verb once and returns the full stdout", async () => {
 		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "x".repeat(5000) });
 		const port = createGrokBuildAdapter({ runner, entry: presentEntry, entryPath: ENTRY_PATH });
 
 		const result = await port.invoke("ultrathink-quick", undefined, CONTEXT);
 
 		expect(calls).toEqual([["quick"]]);
-		expect(result).toEqual({ ok: true, value: { stdout: "x".repeat(4096) } });
+		expect(result).toEqual({ ok: true, value: { stdout: "x".repeat(5000) } });
 	});
 
 	test("invalid: an unknown command returns invalid_input and never runs", async () => {

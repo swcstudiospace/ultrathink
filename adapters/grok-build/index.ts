@@ -33,8 +33,6 @@ const VERB_BY_COMMAND: ReadonlyMap<string, string> = new Map(
 	VERBS.map((verb) => [`ultrathink-${verb}`, verb]),
 );
 
-const MAX_STDOUT_CHARS = 4096;
-
 const COMMAND_ERRORS: readonly ErrorCategory[] = [
 	"invalid_input",
 	"capability_missing",
@@ -81,7 +79,7 @@ export function createGrokBuildAdapter(options: GrokBuildAdapterOptions): Comman
 				return fail("internal", "command failed");
 			}
 			if (outcome.exitCode !== 0) return fail("internal", "command failed");
-			return { ok: true, value: { stdout: outcome.stdout.slice(0, MAX_STDOUT_CHARS) } };
+			return { ok: true, value: { stdout: outcome.stdout } };
 		},
 	};
 }

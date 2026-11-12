@@ -28,7 +28,7 @@ Every command is `side-effecting`: repeating one is not safe.
 - Unknown command: `invalid_input` (`unknown command: <name>`). The runner is not called.
 - Entry point missing: `capability_missing` (`host entry point missing`). The runner is not called.
 - Runner throws, or exits non-zero: `internal` (`command failed`). The thrown text and stderr are never returned, because they may carry secrets.
-- Success: `{ ok: true, value: { stdout } }`, with `stdout` truncated to 4096 characters.
+- Success: `{ ok: true, value: { stdout } }`, with `stdout` the full child stdout. The 4096-character cap applies only to the JSON envelope printed by `bin/ultrathink-adapter` when `--raw` is not given.
 
 ## Import rule
 

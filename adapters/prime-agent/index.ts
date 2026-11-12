@@ -36,9 +36,6 @@ const COMMANDS = new Map<string, string>(
 	VERBS.map((verb) => [`ultrathink-${verb}`, verb] as const),
 );
 
-/** Maximum characters of engine stdout returned to the host. */
-const STDOUT_LIMIT = 4096;
-
 const COMMAND_ERRORS: readonly ErrorCategory[] = [
 	"invalid_input",
 	"capability_missing",
@@ -96,7 +93,7 @@ export function createPrimeAgentAdapter(options: PrimeAgentAdapterOptions): Comm
 				const result = await runner.run([verb]);
 				if (result.exitCode !== 0)
 					return { ok: false, error: { category: "internal", message: "command failed" } };
-				return { ok: true, value: { stdout: result.stdout.slice(0, STDOUT_LIMIT) } };
+				return { ok: true, value: { stdout: result.stdout } };
 			} catch {
 				return { ok: false, error: { category: "internal", message: "command failed" } };
 			}

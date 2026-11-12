@@ -34,4 +34,4 @@ The adapter imports no Node or host modules. The caller supplies:
 | Entry point missing | `capability_missing` | `host entry point missing` |
 | Runner throws, or non-zero exit | `internal` | `command failed` |
 
-The runner's thrown text is never returned, because it may contain secrets. Successful stdout is truncated to 4096 characters.
+The runner's thrown text is never returned, because it may contain secrets. Successful stdout is returned in full. The 4096-character cap applies only to the JSON envelope printed by `bin/ultrathink-adapter` when `--raw` is not given.

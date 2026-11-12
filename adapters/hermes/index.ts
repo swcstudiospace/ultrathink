@@ -37,9 +37,6 @@ export const HERMES_ENTRY_PATH = "hosts/hermes/bridge.py";
 /** Verbs accepted by `bin/ultrathink`. Each one is exposed to Hermes as `ultrathink-<verb>`. */
 const VERBS = ["quick", "skip", "off", "on", "track", "status"] as const;
 
-/** Upper bound on the stdout returned to the host, in characters. */
-const STDOUT_LIMIT = 4096;
-
 const COMMAND_ERRORS: readonly ErrorCategory[] = [
 	"invalid_input",
 	"capability_missing",
@@ -87,7 +84,7 @@ export function createHermesAdapter(options: HermesAdapterOptions): CommandPort 
 				return failure("internal", "command failed");
 			}
 			if (outcome.exitCode !== 0) return failure("internal", "command failed");
-			return { ok: true, value: { stdout: outcome.stdout.slice(0, STDOUT_LIMIT) } };
+			return { ok: true, value: { stdout: outcome.stdout } };
 		},
 	};
 }

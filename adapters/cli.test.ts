@@ -174,6 +174,13 @@ describe("runAdapterCli: --raw", () => {
 		expect(renderResult(result)).toEqual({ stdout: "bare line\n", stderr: "" });
 	});
 
+	test("--raw prints a 5000-character stdout in full", async () => {
+		const stdout = "x".repeat(5000);
+		const { deps } = fakeDeps({ exitCode: 0, stdout });
+		const result = await runAdapterCli(["--raw", "claude-code", "status"], deps);
+		expect(renderResult(result)).toEqual({ stdout, stderr: "" });
+	});
+
 	test("--raw with a non-zero child exit exits with that code and prints no stdout", async () => {
 		const { deps } = fakeDeps({ exitCode: 3, stdout: "secret detail" });
 		const result = await runAdapterCli(["--raw", "claude-code", "on"], deps);
@@ -216,6 +223,15 @@ describe("renderResult: default envelope", () => {
 		expect(result.exitCode).toBe(1);
 		expect(renderResult(result)).toEqual({
 			stdout: '{"ok":false,"error":{"category":"internal","message":"command failed"}}\n',
+			stderr: "",
+		});
+	});
+
+	test("without --raw the envelope stdout is cut to 4096 characters", async () => {
+		const { deps } = fakeDeps({ exitCode: 0, stdout: "x".repeat(5000) });
+		const result = await runAdapterCli(["claude-code", "status"], deps);
+		expect(renderResult(result)).toEqual({
+			stdout: `${JSON.stringify({ ok: true, stdout: "x".repeat(4096) })}\n`,
 			stderr: "",
 		});
 	});

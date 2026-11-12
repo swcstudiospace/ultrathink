@@ -114,7 +114,7 @@ describe("createHermesAdapter", () => {
 		expect(JSON.stringify(result)).not.toContain("secret-token-456");
 	});
 
-	test("successful stdout is truncated to 4096 characters", async () => {
+	test("successful stdout is returned in full, even when longer than 4096 characters", async () => {
 		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "x".repeat(5000) }));
 		const adapter = createHermesAdapter({
 			runner: fake.runner,
@@ -124,7 +124,7 @@ describe("createHermesAdapter", () => {
 
 		const result = await adapter.invoke("ultrathink-track", {}, context);
 
-		expect(result).toEqual({ ok: true, value: { stdout: "x".repeat(4096) } });
+		expect(result).toEqual({ ok: true, value: { stdout: "x".repeat(5000) } });
 	});
 
 	test("a missing host entry point returns capability_missing and never runs the engine", async () => {

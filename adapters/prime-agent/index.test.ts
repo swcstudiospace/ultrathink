@@ -60,7 +60,7 @@ describe("createPrimeAgentAdapter", () => {
 		expect(calls).toEqual([["quick"]]);
 	});
 
-	test("valid: stdout is truncated to 4096 characters", async () => {
+	test("valid: stdout is returned in full when longer than 4096 characters", async () => {
 		const { runner } = fakeRunner({ exitCode: 0, stdout: "x".repeat(5000) });
 		const adapter = createPrimeAgentAdapter({
 			runner,
@@ -68,7 +68,7 @@ describe("createPrimeAgentAdapter", () => {
 			entryPath: PRIME_AGENT_ENTRY_PATH,
 		});
 		const result = await adapter.invoke("ultrathink-status", {}, context);
-		expect(result).toEqual({ ok: true, value: { stdout: "x".repeat(4096) } });
+		expect(result).toEqual({ ok: true, value: { stdout: "x".repeat(5000) } });
 	});
 
 	test("invalid: an unknown command name returns invalid_input and never runs the engine", async () => {

@@ -39,7 +39,7 @@ Every command is `side-effecting`. The adapter adds no deduplication.
 - An unknown name returns `invalid_input`.
 - A missing entry point returns `capability_missing` and does not run the engine.
 - A runner that throws, or a non-zero exit, returns `internal` with the message `command failed`. Thrown text and stdout are never included, because they may carry secrets.
-- Successful stdout is truncated to 4096 characters and returned as `{ stdout }`.
+- Successful stdout is returned in full as `{ stdout }`. The 4096-character cap applies only to the JSON envelope printed by `bin/ultrathink-adapter` when `--raw` is not given.
 
 ## Import rule
 

@@ -111,14 +111,14 @@ describe("createMuseAdapter", () => {
 		expect(argvs).toEqual([]);
 	});
 
-	test("stdout is truncated to 4096 characters", async () => {
+	test("stdout is returned in full, beyond 4096 characters", async () => {
 		const { runner } = fakeRunner({ exitCode: 0, stdout: "x".repeat(5000) });
 		const { entry } = fakeEntry(true);
 		const port = createMuseAdapter({ runner, entry, entryPath: ENTRY_PATH });
 
 		const result = await port.invoke("ultrathink-quick", {}, CONTEXT);
 
-		expect(result).toEqual({ ok: true, value: { stdout: "x".repeat(4096) } });
+		expect(result).toEqual({ ok: true, value: { stdout: "x".repeat(5000) } });
 	});
 
 	test("list declares the six verb commands, all side-effecting", () => {
