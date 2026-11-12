@@ -191,10 +191,13 @@ export function listPending(dir: string): PendingRequest[] {
 	const pending: PendingRequest[] = [];
 	for (const name of readdirSync(folder)) {
 		if (!name.endsWith(".json")) continue;
-		let request: PendingRequest;
+		let parsed: unknown;
 		try {
-			request = JSON.parse(readFileSync(join(folder, name), "utf8")) as PendingRequest;
+			parsed = JSON.parse(readFileSync(join(folder, name), "utf8"));
 		} catch {
+			parsed = undefined;
+		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 			getSecurityLogger().logValidationFailure({
 				source: "grokbot",
 				resource: "pending",
@@ -202,7 +205,7 @@ export function listPending(dir: string): PendingRequest[] {
 			});
 			continue;
 		}
-		pending.push(request);
+		pending.push(parsed as PendingRequest);
 	}
 	return pending.sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
 }
