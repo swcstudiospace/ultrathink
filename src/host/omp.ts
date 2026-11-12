@@ -25,6 +25,7 @@ import type {
 import { resolvePstack } from "../cursor/pstack.ts";
 import type { EnvironmentPort } from "../../core/src/ports/environment.ts";
 import type { ClockPort } from "../../core/src/ports/injection.ts";
+import type { SyncFileSystemPort } from "../../core/src/ports/sync-filesystem.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import {
 	type ControlState,
@@ -1163,7 +1164,7 @@ const LEASE_DIR = /^omp-(?:task|eval-agent)-\d+$/;
  */
 export function isSubagentSession(
 	ctx: ExtensionContext | undefined,
-	exists: (path: string) => boolean = existsSync,
+	exists: (path: string) => boolean = SYSTEM_FS.existsSync,
 ): boolean {
 	try {
 		const file = ctx?.sessionManager?.getSessionFile?.();
@@ -1397,6 +1398,12 @@ const SYSTEM_CLOCK: ClockPort = {
 	now: () => Date.now(),
 };
 
+/** The real filesystem's synchronous reads, for hook paths that cannot await; a SyncFileSystemPort is the only way to change them. */
+const SYSTEM_FS: SyncFileSystemPort = {
+	existsSync: (path) => existsSync(path),
+	readFileSync: (path) => readFileSync(path, "utf8"),
+};
+
 export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
@@ -1412,6 +1419,8 @@ export function createOmpExtension(
 		mcp?: () => McpState;
 		/** File existence check for subagent detection; defaults to `existsSync`. */
 		exists?: (path: string) => boolean;
+		/** Synchronous filesystem port for the live token-opt snapshot read; defaults to the real filesystem. */
+		fs?: SyncFileSystemPort;
 		/** Ultrathink state dir holding `sessions/<id>.json`; defaults to the omp host state dir. */
 		stateDir?: string;
 		/** Process environment port for every env read; defaults to the real process environment. */
@@ -1442,9 +1451,10 @@ export function createOmpExtension(
 	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
 	const readMcp = options.mcp ?? readMcpState;
-	const exists = options.exists ?? existsSync;
+	const exists = options.exists ?? SYSTEM_FS.existsSync;
 	const flightConfig = options.config ?? ((cwd: string) => loadConfig(claudeConfigPaths(cwd)));
 	const environment = options.env ?? PROCESS_ENV;
+	const fsPort = options.fs ?? SYSTEM_FS;
 	// The host state dir for the session cwd, made absolute: planning, carriers and commands share it.
 	const stateDir = (cwd: string) =>
 		resolve(
@@ -1526,8 +1536,8 @@ export function createOmpExtension(
 		}
 		try {
 			const live = join(homedir(), ".omp", "agent", "token-opt", "live.json");
-			if (existsSync(live)) {
-				const savings = parseTokenSavings(JSON.parse(readFileSync(live, "utf8")));
+			if (fsPort.existsSync(live)) {
+				const savings = parseTokenSavings(JSON.parse(fsPort.readFileSync(live)));
 				if (savings !== undefined) store.setSavings(savings);
 			}
 		} catch {
