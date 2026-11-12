@@ -1,0 +1,5 @@
+# Map: claude-code to its native manifest. The generator writes plugin/generated/claude-code/manifest.json from plugin/source/plugin.source.yaml.
+host: claude-code
+status: verified
+native_manifest: .claude-plugin/plugin.json
+generated_manifest: plugin/generated/claude-code/manifest.json

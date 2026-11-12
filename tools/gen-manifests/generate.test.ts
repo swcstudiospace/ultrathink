@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
-import { buildGenerated } from "./generate.ts";
+import { buildGenerated, requireMaps } from "./generate.ts";
 
 const SOURCE_PATH = fileURLToPath(
 	new URL("../../plugin/source/plugin.source.yaml", import.meta.url),
@@ -72,5 +72,17 @@ describe("buildGenerated", () => {
 
 	test("is deterministic: two calls yield identical content", () => {
 		expect([...buildGenerated(validSource())]).toEqual([...buildGenerated(validSource())]);
+	});
+});
+
+describe("requireMaps", () => {
+	test("throws naming every verified host that has no map file", () => {
+		expect(() => requireMaps(["claude-code", "muse", "hermes"], new Set(["claude-code"]))).toThrow(
+			"verified hosts without a map file: muse, hermes",
+		);
+	});
+
+	test("passes when every verified host has a map file", () => {
+		expect(() => requireMaps(["claude-code"], new Set(["claude-code"]))).not.toThrow();
 	});
 });

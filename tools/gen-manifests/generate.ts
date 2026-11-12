@@ -5,6 +5,7 @@
 // plugin/source/plugin.source.yaml. Hosts with any other status write nothing.
 // Run with: bun tools/gen-manifests/generate.ts
 
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,9 +118,23 @@ export function buildGenerated(source: unknown): Map<string, string> {
 	return generated;
 }
 
+// Refuses to generate any verified host that lacks its plugin/hosts/<id>.map.yaml.
+export function requireMaps(verifiedIds: readonly string[], mapped: ReadonlySet<string>): void {
+	const missing = verifiedIds.filter((id) => !mapped.has(id));
+	if (missing.length > 0) {
+		throw new Error(`verified hosts without a map file: ${missing.join(", ")}`);
+	}
+}
+
 async function main(): Promise<void> {
 	const source = validateSource(parse(await readFile(SOURCE_PATH, "utf8")));
 	const generated = buildGenerated(source);
+	const mapped = new Set(
+		[...generated.keys()].filter((id) =>
+			existsSync(join(REPO_ROOT, "plugin/hosts", `${id}.map.yaml`)),
+		),
+	);
+	requireMaps([...generated.keys()], mapped);
 	for (const [id, content] of generated) {
 		const dir = join(GENERATED_DIR, id);
 		await mkdir(dir, { recursive: true });
