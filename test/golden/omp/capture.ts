@@ -591,7 +591,8 @@ function shipSetup(seeded: { skill: string } | "no-plan"): NonNullable<HookCase[
 		return {
 			config,
 			repo: { path: "app", branch: "feature/golden", origin: "git@github.com:acme/app.git" },
-			seeded: seeded === "no-plan" ? null : seedRecord(app, deps, planned("acme/app", seeded.skill)),
+			seeded:
+				seeded === "no-plan" ? null : seedRecord(app, deps, planned("acme/app", seeded.skill)),
 		};
 	};
 }
@@ -820,8 +821,7 @@ const HOOK_SPECS: HookSpec[] = [
 			},
 			{
 				variant: "shutdown cancels a running planner flight",
-				reason:
-					"requires live host: a planner flight calls a model provider over the network",
+				reason: "requires live host: a planner flight calls a model provider over the network",
 			},
 			{
 				variant: "shutdown while a TUI dashboard is open (teardown of a mounted component)",
@@ -895,7 +895,11 @@ const HOOK_SPECS: HookSpec[] = [
 				name: "write into the plan's repo: attribution recorded, no warning",
 				setup: editSetup(true),
 				steps: [
-					{ on: "tool_result", cwd: "repo", event: toolResult("write", { path: "src/app.ts" }, "ok") },
+					{
+						on: "tool_result",
+						cwd: "repo",
+						event: toolResult("write", { path: "src/app.ts" }, "ok"),
+					},
 				],
 			},
 			{
@@ -931,9 +935,7 @@ const HOOK_SPECS: HookSpec[] = [
 					repos: [],
 					seeded: seedRecord(sb.workspace, deps, planned("acme/app")),
 				}),
-				steps: [
-					{ on: "tool_result", event: toolResult("write", { path: "notes/todo.md" }, "ok") },
-				],
+				steps: [{ on: "tool_result", event: toolResult("write", { path: "notes/todo.md" }, "ok") }],
 			},
 			{
 				name: "gh pr create in a tracked session: one sync nudge per PR URL",
@@ -1123,7 +1125,9 @@ async function main(): Promise<void> {
 				join(outDir, `${spec.file}.json`),
 				`${JSON.stringify(normalizeCase(fixture, roots), null, 2)}\n`,
 			);
-			console.log(`captured ${spec.file} (${spec.cases.length} cases, ${spec.excluded.length} excluded)`);
+			console.log(
+				`captured ${spec.file} (${spec.cases.length} cases, ${spec.excluded.length} excluded)`,
+			);
 		}
 		console.log(`secret-named env vars redacted: ${redacted}`);
 		console.log(`fixtures written to ${outDir}`);
