@@ -28,7 +28,7 @@ ultrathink runs on Linux and macOS. On Windows, run it and your host inside WSL;
 | Hermes Agent | v0.21.4 |
 | Muse Code | 1.4.0 |
 | Omp | 18.3.1 (native planning: 18.8.0) |
-| Prime Agent | 0.9.8 |
+| Prime Agent | 0.10.2 |
 | Bun | 1.4.0 (1.2 or later required) |
 | Greptile CLI (optional, for ship) | 3.4.1 |
 
