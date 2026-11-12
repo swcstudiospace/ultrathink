@@ -23,6 +23,7 @@ import type {
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
 import { resolvePstack } from "../cursor/pstack.ts";
+import type { EnvironmentPort } from "../../core/src/ports/environment.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import {
 	type ControlState,
@@ -1008,7 +1009,7 @@ export function createNativeEnginePlanner(
 			: undefined;
 		const response = await planPrompt(
 			{ host: "omp", session_id: request.sessionId, prompt: request.prompt, cwd: request.cwd },
-			env ?? { ...process.env, ULTRATHINK_HOST: "omp" },
+			env ?? { ...PROCESS_ENV.read(), ULTRATHINK_HOST: "omp" },
 			{
 				...(request.onUplift ? { onUplift: request.onUplift } : {}),
 				...(selector ? { native: selector } : {}),
@@ -1383,6 +1384,11 @@ const platformTimers: TimerPort = {
 	clearTimeout: (handle) => clearTimeout(handle),
 };
 
+/** The real process environment, read on every call so each read sees the live value. */
+const PROCESS_ENV: EnvironmentPort = {
+	read: () => process.env,
+};
+
 export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
@@ -1398,6 +1404,8 @@ export function createOmpExtension(
 		exists?: (path: string) => boolean;
 		/** Ultrathink state dir holding `sessions/<id>.json`; defaults to the omp host state dir. */
 		stateDir?: string;
+		/** Process environment port for every env read; defaults to the real process environment. */
+		env?: EnvironmentPort;
 		/** The effective config a flight captures for a session cwd; defaults to the layered config files. */
 		config?: (cwd: string) => UltrathinkConfig;
 		/** Local ship precheck (`git` only); defaults to `shipPrecheck`. */
@@ -1425,9 +1433,13 @@ export function createOmpExtension(
 	const readMcp = options.mcp ?? readMcpState;
 	const exists = options.exists ?? existsSync;
 	const flightConfig = options.config ?? ((cwd: string) => loadConfig(claudeConfigPaths(cwd)));
+	const environment = options.env ?? PROCESS_ENV;
 	// The host state dir for the session cwd, made absolute: planning, carriers and commands share it.
 	const stateDir = (cwd: string) =>
-		resolve(cwd, options.stateDir ?? resolveStateDir({ ...process.env, ULTRATHINK_HOST: "omp" }));
+		resolve(
+			cwd,
+			options.stateDir ?? resolveStateDir({ ...environment.read(), ULTRATHINK_HOST: "omp" }),
+		);
 	// Swarm seams: Swarm's own classifier and the lane spawner; the defaults are the real ones.
 	const classifierFor = options.swarm?.classify ?? swarmClassifier;
 	const spawnLaneSet = options.swarm?.spawn ?? spawnLanes;
@@ -1711,7 +1723,7 @@ export function createOmpExtension(
 		 * No network, model, or store mutation happens here; the read model and action adapter own their boundaries.
 		 */
 		const insightTeachContext = (lifetime: InsightLifetime): TeachContext => {
-			const env = { ...process.env, ULTRATHINK_HOST: "omp" };
+			const env = { ...environment.read(), ULTRATHINK_HOST: "omp" };
 			let config: TeachContext["config"] | undefined;
 			try {
 				const full = flightConfig(lifetime.cwd);
@@ -2213,7 +2225,7 @@ export function createOmpExtension(
 			)
 				return;
 			const cwd = ctx?.cwd || process.cwd();
-			const env = { ...process.env, ULTRATHINK_HOST: "omp" };
+			const env = { ...environment.read(), ULTRATHINK_HOST: "omp" };
 			const teach = (options.teachContext ?? teachContext)({
 				host: "omp",
 				cwd,
@@ -2367,7 +2379,7 @@ export function createOmpExtension(
 							const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
 							const cwd = ctx?.cwd || process.cwd();
 							const dir = stateDir(cwd);
-							const parsed = parseLaneArgs(args ?? "", { maxLanes: maxLanes(process.env) });
+							const parsed = parseLaneArgs(args ?? "", { maxLanes: maxLanes(environment.read()) });
 							if (parsed.kind === "usage")
 								return sendInsightText(`${parsed.reason}. ${TEAMS_USAGE}`);
 							// `stop` never needs a valid swarm root: a user whose config broke must still be able to end lanes.
@@ -2386,14 +2398,14 @@ export function createOmpExtension(
 								});
 								return sendSessionText(sessionId, ctx, lines.join("\n"));
 							}
-							const root = resolveSwarmRoot(process.env);
+							const root = resolveSwarmRoot(environment.read());
 							if ("reason" in root)
 								return sendInsightText(`AgentSwarm lanes unavailable: ${swarmRootMessage(root)}`);
 							if (parsed.kind === "status") {
 								const discovery = laneDirs(dir);
 								const rows = await laneStatus(
 									discovery.lanes,
-									orchStatusRunner({ swarmRoot: root.root, cwd, env: process.env }),
+									orchStatusRunner({ swarmRoot: root.root, cwd, env: environment.read() }),
 								);
 								const full = formatLaneStatusText(rows, discovery.omitted);
 								// The card summarizes; the text listing is the complete enumeration (every reported
@@ -2408,14 +2420,16 @@ export function createOmpExtension(
 									);
 								return sendSessionText(sessionId, ctx, full);
 							}
-							const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
+							const pstack = resolvePstack(
+								join(environment.read().HOME?.trim() || homedir(), ".cursor"),
+							);
 							// The Graph ID of the session's tracked plan (when there is one) becomes the lane brief's first line.
 							const graphId = sessionId ? readSession(dir, sessionId)?.plan?.graphId : undefined;
 							const planned = planLanes(parsed.briefs, {
 								cwd,
 								stateDir: dir,
 								swarmRoot: root.root,
-								env: process.env,
+								env: environment.read(),
 								pstack,
 								graphId,
 							});
@@ -2427,7 +2441,7 @@ export function createOmpExtension(
 							const guarded = spawnGuarded(preflight.spawn, {
 								stateDir: dir,
 								cwd,
-								cap: maxLanes(process.env),
+								cap: maxLanes(environment.read()),
 								isAlive: pidAlive,
 								spawn: spawnLaneSet,
 							});
@@ -2688,17 +2702,17 @@ export function createOmpExtension(
 			if (!prompt || prompt.startsWith("/") || key === lastLane) return undefined;
 			if (isSubagentSession(ctx, exists)) return undefined;
 			if (flightConfig(cwd).swarm?.autoRun !== true) return undefined;
-			const root = resolveSwarmRoot(process.env);
+			const root = resolveSwarmRoot(environment.read());
 			if ("reason" in root) return undefined;
 			if (!isSdlcPrompt(prompt)) return undefined;
 			if (!sessionId) return undefined;
 			const dir = stateDir(cwd);
-			const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
+			const pstack = resolvePstack(join(environment.read().HOME?.trim() || homedir(), ".cursor"));
 			const planned = planLanes([prompt.trim()], {
 				cwd,
 				stateDir: dir,
 				swarmRoot: root.root,
-				env: process.env,
+				env: environment.read(),
 				pstack,
 				// No graphId: auto-run returns before this prompt is planned, so the session's tracked plan
 				// belongs to earlier work; Swarm and Substrate mint the lane's own graph.
@@ -2719,7 +2733,7 @@ export function createOmpExtension(
 				const { spawn: plan, handles } = spawnGuarded(preflight.spawn, {
 					stateDir: dir,
 					cwd,
-					cap: maxLanes(process.env),
+					cap: maxLanes(environment.read()),
 					isAlive: pidAlive,
 					spawn: spawnLaneSet,
 				});
