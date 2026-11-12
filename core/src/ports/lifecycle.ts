@@ -3,7 +3,7 @@
 
 import type { ErrorCategory } from "./command.ts";
 
-export type LifecycleStage = "load" | "invoke" | "complete" | "error";
+type LifecycleStage = "load" | "invoke" | "complete" | "error";
 
 /**
  * Payload of every lifecycle event. It is closed: adapters MUST NOT add keys.

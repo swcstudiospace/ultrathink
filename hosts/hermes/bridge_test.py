@@ -1374,7 +1374,7 @@ def test_plugin_yaml_lists_exactly_the_hooks_and_tools_register_installs():
 	hooks: list[str] = []
 	tools: list[str] = []
 	for line in (HERE / "plugin.yaml").read_text(encoding="utf-8").splitlines():
-		if re.fullmatch(r"hooks:\s*", line):
+		if re.fullmatch(r"provides_hooks:\s*", line):
 			section = hooks
 		elif re.fullmatch(r"provides_tools:\s*", line):
 			section = tools

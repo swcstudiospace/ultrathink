@@ -13,7 +13,7 @@ export const CAPABILITY_FLAGS = [
 export type CapabilityFlag = (typeof CAPABILITY_FLAGS)[number];
 
 /** A flag value reported by an adapter or probe. `source` names the reporter, e.g. "claude-code". */
-export interface CapabilityReport {
+interface CapabilityReport {
 	readonly value: boolean;
 	readonly source: string;
 }
@@ -21,7 +21,7 @@ export interface CapabilityReport {
 /** Reports keyed by flag. An absent key means the flag is unset, which resolves to false. */
 export type CapabilityReports = Readonly<Partial<Record<CapabilityFlag, CapabilityReport>>>;
 
-export interface ResolvedCapability {
+interface ResolvedCapability {
 	readonly enabled: boolean;
 	/** Reporter of the value, or "unset" when no report exists. */
 	readonly source: string;

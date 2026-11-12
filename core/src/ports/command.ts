@@ -24,7 +24,7 @@ export interface CategorizedError extends Error {
  * - "idempotent": repeating an invocation with the same input is safe.
  * - "keyed": the caller MUST supply an idempotency key; the command deduplicates on it.
  */
-export type Idempotency = "idempotent" | "keyed";
+type Idempotency = "idempotent" | "keyed";
 
 /** Host-agnostic validator. `parse` returns the typed value or throws. */
 export interface Schema<T> {
@@ -41,7 +41,7 @@ export interface CommandDefinition<I, O> {
 }
 
 /** Failure value returned by a command. `message` never contains credentials. */
-export interface CommandError {
+interface CommandError {
 	readonly category: ErrorCategory;
 	readonly message: string;
 }
@@ -50,7 +50,7 @@ export type CommandResult<O> =
 	| { readonly ok: true; readonly value: O }
 	| { readonly ok: false; readonly error: CommandError };
 
-export interface InvokeContext {
+interface InvokeContext {
 	readonly correlationId: string;
 	/** Required for "keyed" commands; ignored by "idempotent" commands. */
 	readonly idempotencyKey?: string;

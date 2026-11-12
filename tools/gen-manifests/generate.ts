@@ -20,12 +20,12 @@ const HOST_IDS = ["claude-code", "muse", "cursor", "omp", "hermes", "prime-agent
 const HOST_KEYS = ["description", "status"];
 const HOST_STATUSES = ["verified", "unmapped"];
 
-export interface HostEntry {
+interface HostEntry {
 	description: string;
 	status: "verified" | "unmapped";
 }
 
-export interface PluginSource {
+interface PluginSource {
 	name: string;
 	version: string;
 	license: string;
@@ -117,7 +117,7 @@ export function buildGenerated(source: unknown): Map<string, string> {
 	return generated;
 }
 
-export async function main(): Promise<void> {
+async function main(): Promise<void> {
 	const source = validateSource(parse(await readFile(SOURCE_PATH, "utf8")));
 	const generated = buildGenerated(source);
 	for (const [id, content] of generated) {
