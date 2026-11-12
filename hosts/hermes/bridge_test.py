@@ -256,16 +256,38 @@ def fake_cli(directory: Path, prelude: str = "") -> Path:
 	return path
 
 
+def fake_adapter(cli_path: Path) -> Path:
+	"""A bin/ultrathink-adapter stand-in for `--raw hermes <verb> ...`: runs `cli_path` with the verb and its arguments.
+	Like the real adapter, a failure discards the CLI's stderr, says `command failed` and exits with the CLI's code.
+	Its name follows the CLI's, so a missing CLI leaves a missing adapter, as a missing bin/ultrathink would."""
+	path = cli_path.with_name(f"{cli_path.name}-adapter")
+	if not cli_path.exists():
+		return path
+	path.write_text(
+		f"#!{sys.executable}\nimport subprocess, sys\n"
+		"argv = [arg for arg in sys.argv[1:] if arg != '--raw']\n"
+		"assert argv[0] == 'hermes', argv\n"
+		f"done = subprocess.run([{str(cli_path)!r}, *argv[1:]], capture_output=True, text=True, check=False)\n"
+		"if done.returncode:\n"
+		"\tsys.stderr.write('command failed\\n')\n"
+		"\tsys.exit(done.returncode)\n"
+		"sys.stdout.write(done.stdout)\n"
+	)
+	path.chmod(path.stat().st_mode | stat.S_IEXEC)
+	return path
+
+
 @contextmanager
 def cli(path: Path, timeout: int | None = None) -> Iterator[None]:
-	"""Point the slash commands at `path` instead of bin/ultrathink."""
-	saved = bridge.CLI, bridge.CONTROL_TIMEOUT_S
+	"""Point the slash commands at `path` instead of bin/ultrathink, and their five adapter verbs at a stand-in adapter for it."""
+	saved = bridge.CLI, bridge.ADAPTER, bridge.CONTROL_TIMEOUT_S
 	bridge.CLI = path
-	bridge.CONTROL_TIMEOUT_S = timeout or saved[1]
+	bridge.ADAPTER = fake_adapter(path)
+	bridge.CONTROL_TIMEOUT_S = timeout or saved[2]
 	try:
 		yield
 	finally:
-		bridge.CLI, bridge.CONTROL_TIMEOUT_S = saved
+		bridge.CLI, bridge.ADAPTER, bridge.CONTROL_TIMEOUT_S = saved
 
 
 def test_message_text_reads_string_and_dict():
@@ -1116,10 +1138,10 @@ def test_control_failures_come_back_as_one_line():
 		with cli(Path(tmp) / "missing"):
 			reply = off("")
 			assert reply.startswith("Ultrathink off: ") and "\n" not in reply, reply
-		# Without bun, bin/ultrathink exits 127 with an install hint on stderr.
+		# Without bun, bin/ultrathink exits 127 with an install hint on stderr; the adapter discards it and answers `command failed`.
 		hint = "ultrathink: bun not found. Install Bun 1.2 or later (https://bun.sh) or set BUN=/path/to/bun"
 		with cli(fake_cli(Path(tmp), f"sys.stderr.write({hint!r} + '\\n'); sys.exit(127)")):
-			assert off("") == f"Ultrathink off failed: {hint}"
+			assert off("") == "Ultrathink off failed: command failed"
 		with cli(fake_cli(Path(tmp), "import time; time.sleep(10)"), timeout=1):
 			assert off("") == "Ultrathink off: no answer after 1s"
 

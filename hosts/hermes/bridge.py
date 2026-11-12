@@ -51,6 +51,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ENGINE = REPO_ROOT / "hooks" / "engine.ts"
 RUN_BUN = REPO_ROOT / "bin" / "run-bun"
 CLI = REPO_ROOT / "bin" / "ultrathink"
+ADAPTER = REPO_ROOT / "bin" / "ultrathink-adapter"
+# These verbs run through the adapter; teach stays on CLI because the adapter does not accept it.
+ADAPTER_VERBS = frozenset({"off", "on", "skip", "status", "track"})
 HOOK_MARGIN_S = 15  # the bridge's deadline ends this long before Hermes abandons the hook
 TERM_GRACE_S = 3.0  # how long the engine gets to stop its model children after SIGTERM before SIGKILL; well inside HOOK_MARGIN_S
 MIN_PLAN_S = 90  # below this a plan cannot finish, so Bun is not started at all
@@ -728,13 +731,18 @@ def control_args(args: list[str], session_id: str | None) -> list[str]:
 
 
 def control(args: list[str], env: dict[str, str] | None = None, session_id: str | None = None) -> tuple[bool, str]:
-	"""Run `bin/ultrathink <args>` as Hermes against the engine's state directory, for the session ``session_id`` names:
-	(True, its text), or (False, one line saying what failed). Never raises."""
+	"""Run `bin/ultrathink <args>` as Hermes against the engine's state directory, for the session ``session_id`` names.
+	The five adapter verbs run through `bin/ultrathink-adapter` (ADAPTER_VERBS): (True, its text), or (False, one line saying what failed). Never raises."""
 	label = " ".join(["Ultrathink", *args[:1]])
+	argv = control_args(args, session_id)
+	if argv and argv[0] in ADAPTER_VERBS:
+		command = [str(ADAPTER), "hermes", *argv, "--raw"]
+	else:
+		command = [str(CLI), *argv]
 	try:
 		child_env = _child_env(env)
 		completed = subprocess.run(
-			[str(CLI), *control_args(args, session_id)],
+			command,
 			encoding="utf-8",
 			errors="replace",
 			capture_output=True,
