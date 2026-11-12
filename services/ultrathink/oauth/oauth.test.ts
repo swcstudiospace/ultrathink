@@ -2287,6 +2287,32 @@ describe("OAuth persisted client pruning", () => {
 		expect(keys).not.toContain("ut_client_stale");
 		expect(keys).toContain(fresh);
 	});
+
+	test("a DCR client with a grant survives the sweep even when grantedAt is missing from the stored record", async () => {
+		const dcrClient = "ut_client_grant";
+		const dir = plantedDir({
+			clients: {
+				[dcrClient]: {
+					name: "Grant without grantedAt",
+					redirectUris: [REDIRECT],
+					grantTypes: ["authorization_code"],
+					createdAt: HARNESS_START - 25 * HOUR_MS,
+				},
+			},
+			grants: {
+				"url-grant": {
+					clientId: dcrClient,
+					resource: "https://ultrathink.example/mcp",
+					createdAt: HARNESS_START - 25 * HOUR_MS,
+					lastUsedAt: HARNESS_START - HOUR_MS,
+				},
+			},
+		});
+		const h = await makeHarness({}, { dir, clock: { now: HARNESS_START } });
+		await registered(h);
+		expect(savedKeys(h, "clients")).toContain(dcrClient);
+		expect(savedKeys(h, "grants")).toContain("url-grant");
+	});
 });
 
 describe("OAuth client_id length", () => {

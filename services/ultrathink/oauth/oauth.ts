@@ -646,8 +646,9 @@ export function createOAuth(options: OAuthOptions): OAuth {
 
 	function clientRemovable(id: string, client: ClientRecord, t: number): boolean {
 		for (const request of pending.values()) if (request.clientId === id) return false;
-		if (client.grantedAt === undefined) return t - client.createdAt > UNGRANTED_CLIENT_TTL_MS;
+		// A grant always protects its client, even when grantedAt is missing from the stored record.
 		for (const grant of Object.values(data.grants)) if (grant.clientId === id) return false;
+		if (client.grantedAt === undefined) return t - client.createdAt > UNGRANTED_CLIENT_TTL_MS;
 		return t - (client.lastUsedAt ?? client.grantedAt) > GRANTED_CLIENT_IDLE_MS;
 	}
 
