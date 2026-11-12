@@ -72,8 +72,9 @@ Applied in this order per case; placeholders are numbered per case, so a case is
 6. Epoch seconds or milliseconds as digit runs (`1[67]\d{8}` or `1[67]\d{8}\d{3}`) → `<TS>`.
 7. Numeric epoch values in JSON (integers in 1.6e9–1.9e9 seconds or 1.6e12–1.9e12 ms) → `<TS>`.
 8. Object keys are emitted in sorted order.
-9. Side-effect manifest entries are sorted by path. Arrays of notices and sent messages keep their emission order,
-   which is the observable behavior.
+9. Side-effect manifest entries are sorted by normalized path, then by content, so two files that normalize to one name keep a fixed order.
+10. The repo checkout path (the directory above `test/golden/omp`) → `<REPO>`. Used for launch paths into the checkout.
+11. Teach inbox file names `<epoch ms>-<8 random hex>.json`: the random part → `<RAND>` (the epoch is `<TS>` by rule 6).
 
 Binary files and files over 64 KiB are recorded as `<binary, N bytes>`, not hashed. The manifest records content
 after normalization, so it is stable across runs.
@@ -91,6 +92,37 @@ Recorded in each fixture's `excluded` array, with reasons:
 - `ultrathink-swarm`: stopping a running lane. Requires a live lane process.
 
 All four are `requires live host`.
+
+## Hook handlers (`pi.on`)
+
+`hook-*.json` fixtures cover the handlers the host registers with `pi.on`, driven through the same mocked ExtensionAPI.
+For each handler the case records the event payload, the context fields it reads (cwd, session id), its `ctx.ui.notify`
+calls, `pi.sendMessage` and `pi.sendUserMessage` calls, any `teach observe` launch, and the sandbox side-effect manifest.
+A `command:<name>` step runs a registered command on the same host as a probe, so a later hook shows what the command left
+in memory. Each case gets its own sandbox and its own extension.
+
+Fixture shape: `"kind": "hook"`, `entry` (the event, or the observed events), and per case `input.setup` (plain data the
+case seeded), `input.steps` (event, args, session id, cwd), `output.steps[].handlers[]` (one entry per registered handler,
+in registration order; `handler` is its index, or `command`), and `sideEffects`.
+
+| Fixture | Event(s) | Handlers |
+| --- | --- | --- |
+| `hook-session-start.json` | `session_start` | 1 |
+| `hook-session-switch.json` | `session_switch` | 1 |
+| `hook-session-shutdown.json` | `session_shutdown` | 1 |
+| `hook-observe.json` | `agent_start`, `turn_end`, `tool_execution_start`, `tool_execution_end` | 1 each |
+| `hook-turn-start.json` | `turn_start` | 1 |
+| `hook-tool-result.json` | `tool_result` | 2 (0: edit attribution; 1: PR-sync nudge) |
+| `hook-agent-end.json` | `agent_end` | 2 (0: observer; 1: teach observe handoff, then ship nudge) |
+
+The setup the hooks read is real local state: git repositories with `origin` remotes (`refs/remotes/origin/main` is set
+locally and the remote is never contacted), a session record in the state dir the host resolves for the case cwd (the
+planner is not run), and a user `ultrathink.json` under the pinned `CLAUDE_CONFIG_DIR`. Git identity and dates are pinned.
+
+`teach observe` is launched through the real `spawnObserveDetached`. Only its process launch is replaced by a recorder that
+returns `pid: 0` and starts nothing; the recorded command, arguments and `ULTRATHINK_*` environment are the production values.
+
+Each hook fixture's `excluded` array lists the handler behaviour that needs a live host (TUI mount, planner flight, network).
 
 ## Changing this capture
 
