@@ -336,6 +336,23 @@ describe("grok-bot journal driver", () => {
 		expect(existsSync(join(dir, "answers"))).toBe(false);
 		expect(listPending(dir)).toHaveLength(1);
 	});
+
+	test("a corrupt pending file is skipped and the valid requests still list", async () => {
+		const root = tmp();
+		const stateDir = join(root, "state");
+		await runGrokbotPlan({
+			sessionId: "s1",
+			prompt: PROMPT,
+			cwd: root,
+			stateDir,
+			env: testEnv(root),
+			debounceMs: 5,
+		});
+		const dir = journalDir(stateDir, "s1");
+		const before = listPending(dir);
+		writeFileSync(join(dir, "pending", "corrupt.json"), "{not json");
+		expect(listPending(dir)).toEqual(before);
+	});
 });
 
 describe("grok-bot validators", () => {
