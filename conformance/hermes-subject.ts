@@ -59,10 +59,10 @@ export function createHermesSubject(): ConformanceSubject {
 		name: "Hermes plugin command entry point",
 		capabilities: {
 			supports_slash_commands: true,
-			supports_skills: false,
+			supports_skills: true,
 			supports_hooks: true,
-			supports_subagents: false,
-			supports_persistent_state: false,
+			supports_subagents: true,
+			supports_persistent_state: true,
 			supports_interactive_prompts: false,
 		},
 		commands,
