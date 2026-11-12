@@ -23,8 +23,9 @@ export interface CategorizedError extends Error {
  * Idempotency contract for a command.
  * - "idempotent": repeating an invocation with the same input is safe.
  * - "keyed": the caller MUST supply an idempotency key; the command deduplicates on it.
+ * - "side-effecting": each run changes state (for example sends a message or spawns work); repeating it is not safe.
  */
-type Idempotency = "idempotent" | "keyed";
+type Idempotency = "idempotent" | "keyed" | "side-effecting";
 
 /** Host-agnostic validator. `parse` returns the typed value or throws. */
 export interface Schema<T> {

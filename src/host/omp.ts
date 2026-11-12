@@ -24,6 +24,7 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import { resolvePstack } from "../cursor/pstack.ts";
 import type { EnvironmentPort } from "../../core/src/ports/environment.ts";
+import { createOmpCommandPort, type OmpCommandHandler } from "../../adapters/omp/commands.ts";
 import type { ClockPort } from "../../core/src/ports/injection.ts";
 import type { SyncFileSystemPort } from "../../core/src/ports/sync-filesystem.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
@@ -2310,6 +2311,20 @@ export function createOmpExtension(
 		// message queued as a steer never swallows the next one.
 		let quick: { sessionId: string; text: string; submission?: number } | undefined;
 		if (typeof pi.registerCommand === "function") {
+			// Each command's handler is also held in this map; the registered wrapper dispatches through the port.
+			const commandHandlers = new Map<string, OmpCommandHandler>();
+			const commandPort = createOmpCommandPort(commandHandlers);
+			const routed = (
+				name: string,
+				handler: (args: string, ctx: ExtensionContext) => Promise<void>,
+			) => {
+				commandHandlers.set(name, (args, ctx) => handler(args, ctx as ExtensionContext));
+				return async (args: string, ctx: ExtensionContext): Promise<void> => {
+					const correlationId = globalThis.crypto.randomUUID();
+					const result = await commandPort.invoke(name, { args, ctx }, { correlationId });
+					if (!result.ok) throw new Error(result.error.message);
+				};
+			};
 			for (const verb of Object.keys(COMMANDS) as UltrathinkVerb[]) {
 				const name = `ultrathink-${verb}`;
 				guard(() =>
@@ -2321,7 +2336,7 @@ export function createOmpExtension(
 										TRACK_COMPLETIONS.filter((item) => item.value.startsWith(prefix.trim())),
 								}
 							: {}),
-						handler: async (args, ctx) => {
+						handler: routed(name, async (args, ctx) => {
 							try {
 								// Subagents act as before: the typed text goes to the agent unchanged.
 								if (isSubagentSession(ctx, exists)) {
@@ -2359,7 +2374,7 @@ export function createOmpExtension(
 							} catch {
 								// reason: a rejected verb must not throw into the host command runner; the reply is best effort
 							}
-						},
+						}),
 					}),
 				);
 			}
@@ -2377,13 +2392,13 @@ export function createOmpExtension(
 							label: value,
 							description: `Ultrathink dashboard view: ${value}`,
 						})),
-					handler: async (args, ctx) => {
+					handler: routed("ultrathink-ui", async (args, ctx) => {
 						try {
 							await openInsightUi(args, ctx);
 						} catch {
 							// reason: a failed dashboard open must not reject into the host command runner
 						}
-					},
+					}),
 				}),
 			);
 			// `/ultrathink-swarm brief|brief|…` fans out one detached AgentSwarm orchestrator lane per brief; each
@@ -2394,7 +2409,7 @@ export function createOmpExtension(
 				pi.registerCommand?.("ultrathink-swarm", {
 					description:
 						"Fan out AgentSwarm lanes from `|`-separated briefs, show lane status, or `stop [laneId|all]`",
-					handler: async (args, ctx) => {
+					handler: routed("ultrathink-swarm", async (args, ctx) => {
 						try {
 							// The session this command belongs to; replies computed across an await are dropped if it changed.
 							const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
@@ -2497,7 +2512,7 @@ export function createOmpExtension(
 						} catch {
 							// reason: a failed swarm card must not reject into the host command runner
 						}
-					},
+					}),
 				}),
 			);
 		}
