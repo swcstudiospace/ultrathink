@@ -321,3 +321,37 @@ describe("CapabilityManifest resolution", () => {
 		expect(resume.missingRequired).toEqual(["supports_persistent_state"]);
 	});
 });
+
+describe("per-flag fallback contract", () => {
+	const everyOptional = {
+		all: { required: [], optional: [...CAPABILITY_FLAGS] },
+	} satisfies CapabilityManifest;
+
+	for (const flag of CAPABILITY_FLAGS) {
+		test(`${flag}: disabled selects a non-empty fallback; enabled selects none`, () => {
+			const disabled = resolveCapabilities({ [flag]: { value: false, source: "adapter" } });
+			expect(disabled[flag].enabled).toBe(false);
+			expect(disabled[flag].fallback).toBe(CAPABILITY_FALLBACKS[flag]);
+			expect(CAPABILITY_FALLBACKS[flag].length).toBeGreaterThan(0);
+
+			const enabled = resolveCapabilities({ [flag]: { value: true, source: "adapter" } });
+			expect(enabled[flag].enabled).toBe(true);
+			expect(enabled[flag].fallback).toBeNull();
+		});
+	}
+
+	test("a command with every flag enabled is ready with no fallbacks", () => {
+		const reports: CapabilityReports = Object.fromEntries(
+			CAPABILITY_FLAGS.map((flag) => [flag, { value: true, source: "adapter" }]),
+		);
+		const plan = planCommand(everyOptional.all, resolveCapabilities(reports));
+		expect(plan).toEqual({ status: "ready", missingRequired: [], fallbacks: {} });
+	});
+
+	test("a report of value false still names its source in the resolved entry", () => {
+		const resolved = resolveCapabilities({
+			supports_hooks: { value: false, source: "prime-agent" },
+		});
+		expect(resolved.supports_hooks.source).toBe("prime-agent");
+	});
+});
