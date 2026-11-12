@@ -17,9 +17,15 @@ import { createHermesAdapter } from "./hermes/index.ts";
 import { createMuseAdapter } from "./muse/index.ts";
 import { createPrimeAgentAdapter } from "./prime-agent/index.ts";
 
-/** Runs `bin/ultrathink` with the given argv. */
+/** Environment a host adds to the current process env for its engine child. */
+type HostEnv = Readonly<Record<string, string>>;
+
+/** Runs `bin/ultrathink` with the given argv; `env` entries are merged over the current process env. */
 interface AdapterRunner {
-	run(argv: readonly string[]): Promise<{ readonly exitCode: number; readonly stdout: string }>;
+	run(
+		argv: readonly string[],
+		env?: HostEnv,
+	): Promise<{ readonly exitCode: number; readonly stdout: string }>;
 }
 
 /** Reports whether a host entry point exists, relative to the repo root. */
@@ -56,6 +62,7 @@ type AdapterFactory = (options: {
 interface HostSpec {
 	readonly create: AdapterFactory;
 	readonly entryPath: string;
+	readonly env?: HostEnv;
 }
 
 const HOSTS: Record<string, HostSpec> = {
@@ -63,7 +70,11 @@ const HOSTS: Record<string, HostSpec> = {
 	"grok-build": { create: createGrokBuildAdapter, entryPath: "hooks/hooks.json" },
 	muse: { create: createMuseAdapter, entryPath: "hooks/muse-prompt" },
 	hermes: { create: createHermesAdapter, entryPath: "hosts/hermes/bridge.py" },
-	"prime-agent": { create: createPrimeAgentAdapter, entryPath: "hosts/prime-agent/SKILL.md" },
+	"prime-agent": {
+		create: createPrimeAgentAdapter,
+		entryPath: "hosts/prime-agent/SKILL.md",
+		env: { ULTRATHINK_HOST: "prime-agent" },
+	},
 };
 
 const VERBS: readonly string[] = ["quick", "skip", "off", "on", "track", "status"];
@@ -111,7 +122,7 @@ export async function runAdapterCli(
 	const last: { child?: { readonly exitCode: number; readonly stdout: string } } = {};
 	const runner: AdapterRunner = {
 		async run(childArgv) {
-			last.child = await deps.runner.run([...childArgv, ...extra]);
+			last.child = await deps.runner.run([...childArgv, ...extra], host.env);
 			return last.child;
 		},
 	};
@@ -142,26 +153,31 @@ export function renderResult(result: AdapterCliResult): {
 /**
  * Real runner: spawns the engine binary with an argv array (no shell). A non-zero exit resolves
  * with its code; a spawn failure, signal or output overflow rejects, and the adapter maps it to
- * `internal`.
+ * `internal`. The child runs with the current process env plus the host's `env` entries.
  */
 function createProcessRunner(binPath: string): AdapterRunner {
 	return {
-		run(argv) {
+		run(argv, env) {
 			const { promise, resolve, reject } = Promise.withResolvers<{
 				readonly exitCode: number;
 				readonly stdout: string;
 			}>();
-			execFile(binPath, [...argv], { encoding: "utf8" }, (error, stdout) => {
-				if (error === null) {
-					resolve({ exitCode: 0, stdout });
-					return;
-				}
-				if (typeof error.code === "number") {
-					resolve({ exitCode: error.code, stdout });
-					return;
-				}
-				reject(error);
-			});
+			execFile(
+				binPath,
+				[...argv],
+				{ encoding: "utf8", env: { ...process.env, ...env } },
+				(error, stdout) => {
+					if (error === null) {
+						resolve({ exitCode: 0, stdout });
+						return;
+					}
+					if (typeof error.code === "number") {
+						resolve({ exitCode: error.code, stdout });
+						return;
+					}
+					reject(error);
+				},
+			);
 			return promise;
 		},
 	};

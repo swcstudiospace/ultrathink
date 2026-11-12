@@ -7,11 +7,13 @@ type ChildOutcome = { readonly exitCode: number; readonly stdout: string } | Err
 
 function fakeDeps(outcome: ChildOutcome, entryExists = true) {
 	const runCalls: string[][] = [];
+	const runEnvs: (Readonly<Record<string, string>> | undefined)[] = [];
 	const entryPaths: string[] = [];
 	const deps: AdapterCliDeps = {
 		runner: {
-			async run(argv) {
+			async run(argv, env) {
 				runCalls.push([...argv]);
+				runEnvs.push(env);
 				if (outcome instanceof Error) throw outcome;
 				return outcome;
 			},
@@ -23,7 +25,7 @@ function fakeDeps(outcome: ChildOutcome, entryExists = true) {
 			},
 		},
 	};
-	return { deps, runCalls, entryPaths };
+	return { deps, runCalls, runEnvs, entryPaths };
 }
 
 describe("runAdapterCli: dispatch", () => {
@@ -138,6 +140,20 @@ describe("runAdapterCli: pass-through arguments", () => {
 		const { deps, runCalls } = fakeDeps({ exitCode: 0, stdout: "" }, false);
 		await runAdapterCli(["claude-code", "skip", "--session", "x"], deps);
 		expect(runCalls).toEqual([]);
+	});
+});
+
+describe("runAdapterCli: host environment", () => {
+	test("prime-agent runner receives ULTRATHINK_HOST=prime-agent", async () => {
+		const { deps, runEnvs } = fakeDeps({ exitCode: 0, stdout: "" });
+		await runAdapterCli(["prime-agent", "status"], deps);
+		expect(runEnvs).toEqual([{ ULTRATHINK_HOST: "prime-agent" }]);
+	});
+
+	test("claude-code runner does not get ULTRATHINK_HOST from the CLI", async () => {
+		const { deps, runEnvs } = fakeDeps({ exitCode: 0, stdout: "" });
+		await runAdapterCli(["claude-code", "status"], deps);
+		expect(runEnvs).toEqual([undefined]);
 	});
 });
 
