@@ -1,0 +1,9 @@
+{
+  "author": {
+    "name": "SWC Studio"
+  },
+  "description": "Plans every prompt into a spec + Graph of Thought with HITL clarifications on a pluggable engine (Claude default, Grok optional), tracks it in Linear/Notion, and ships finished work through a Greptile-gated PR.",
+  "license": "AGPL-3.0-or-later",
+  "name": "ultrathink",
+  "version": "1.4.0"
+}

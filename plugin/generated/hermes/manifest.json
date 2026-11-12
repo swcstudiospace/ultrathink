@@ -1,0 +1,9 @@
+{
+  "author": {
+    "name": "SWC Studio"
+  },
+  "description": "Plans each prompt with the shared ultrathink engine. /ultrathink-quick <message> sends one message without planning.",
+  "license": "AGPL-3.0-or-later",
+  "name": "ultrathink",
+  "version": "1.4.0"
+}
