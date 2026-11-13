@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { describe, expect, test } from "bun:test";
-import { type AdapterCliDeps, childEnvironment, renderResult, runAdapterCli } from "./cli.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	type AdapterCliDeps,
+	childEnvironment,
+	renderResult,
+	runAdapterCli,
+	runInstallVerb,
+} from "./cli.ts";
 
 type ChildOutcome = { readonly exitCode: number; readonly stdout: string } | Error;
 
@@ -290,5 +300,90 @@ describe("renderResult: default envelope", () => {
 			stdout: `${JSON.stringify({ ok: true, stdout: "x".repeat(4096) })}\n`,
 			stderr: "",
 		});
+	});
+});
+
+describe("runInstallVerb: install prime-agent", () => {
+	const SKILL_TEXT = "# ultrathink\n";
+	const scratch: string[] = [];
+
+	afterEach(async () => {
+		await Promise.all(scratch.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+	});
+
+	async function scratchDir(): Promise<string> {
+		const dir = await mkdtemp(join(tmpdir(), "ultrathink-install-"));
+		scratch.push(dir);
+		return dir;
+	}
+
+	/** A temp repo root with hosts/prime-agent, holding SKILL.md only when asked. */
+	async function sourceRepo(withSkill: boolean): Promise<string> {
+		const repo = await scratchDir();
+		await mkdir(join(repo, "hosts", "prime-agent"), { recursive: true });
+		if (withSkill) await writeFile(join(repo, "hosts", "prime-agent", "SKILL.md"), SKILL_TEXT);
+		return repo;
+	}
+
+	test("missing --skills-dir exits 2 with a one-line usage message", async () => {
+		const source = await sourceRepo(true);
+		const result = await runInstallVerb(["prime-agent", "--source", source]);
+		expect(result.exitCode).toBe(2);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toMatch(/^usage: ultrathink-adapter install prime-agent /);
+		expect(result.stderr.trimEnd().includes("\n")).toBe(false);
+	});
+
+	test("relative --source exits 2 and installs nothing", async () => {
+		const skillsDir = await scratchDir();
+		const result = await runInstallVerb([
+			"prime-agent",
+			"--source",
+			"relative/repo",
+			"--skills-dir",
+			skillsDir,
+		]);
+		expect(result.exitCode).toBe(2);
+		expect(result.stderr).toContain("--source must be an absolute path");
+		expect(existsSync(join(skillsDir, "ultrathink"))).toBe(false);
+	});
+
+	test("an unknown install target is a usage error", async () => {
+		const result = await runInstallVerb(["claude-code", "--source", "/x", "--skills-dir", "/y"]);
+		expect(result.exitCode).toBe(2);
+		expect(result.stderr).toContain("unknown install target: claude-code");
+	});
+
+	test("a valid run installs the skill and exits 0", async () => {
+		const source = await sourceRepo(true);
+		const skillsDir = await scratchDir();
+		const result = await runInstallVerb([
+			"prime-agent",
+			"--source",
+			source,
+			"--skills-dir",
+			skillsDir,
+		]);
+		expect(result.exitCode).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(JSON.parse(result.stdout)).toEqual({ ok: true, status: "installed" });
+		expect(await readFile(join(skillsDir, "ultrathink", "SKILL.md"), "utf8")).toBe(SKILL_TEXT);
+	});
+
+	test("a source without SKILL.md exits 1 with install_failed and leaves no target", async () => {
+		const source = await sourceRepo(false);
+		const skillsDir = await scratchDir();
+		const result = await runInstallVerb([
+			"prime-agent",
+			"--source",
+			source,
+			"--skills-dir",
+			skillsDir,
+		]);
+		expect(result.exitCode).toBe(1);
+		const parsed = JSON.parse(result.stdout);
+		expect(parsed.ok).toBe(false);
+		expect(parsed.error.category).toBe("install_failed");
+		expect(existsSync(join(skillsDir, "ultrathink"))).toBe(false);
 	});
 });

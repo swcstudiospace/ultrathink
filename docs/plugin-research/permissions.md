@@ -19,6 +19,19 @@ The baseline the brief sets, with what the code actually does:
 
 **Verdict:** the baseline holds for the adapter layer itself (the adapter modules have no I/O of their own; see §1). It does not hold for the engine the adapters run. The "no network in core" clause is the most divergent. Each deviation is listed under *Permissions outside the core baseline* (§4).
 
+### Recorded decisions
+
+- **D1. MCP credentials file is an intentional, documented exception to the baseline.**
+  - Decision: `~/.config/ultrathink/mcp-credentials.json` stays in the user config directory, outside the state dir and project root. Documented at lines 94, 143, 211, 340.
+  - Reason: it is the user's own config directory, and moving it would break MCP auth. Line 143 supports the cross-host part (one login serves every host); the MCP auth consequence is UNVERIFIED (check `src/mcp/client.ts:224-231`).
+  - Opt-in: none. This is an exception, not an opt-in. The closest trigger is the user-run `bin/ultrathink-mcp auth login` (`hosts/prime-agent/SKILL.md:56`, cited at line 395).
+  - Enforcing file: none cited. Path defined at `src/mcp/store.ts:51-55`; write at `src/mcp/store.ts:133-140` (line 340).
+- **D2. `teach promote --install` writing to `~/.claude/skills` and `~/.prime/agent/skills` is an opt-in exception.**
+  - Decision: skill writes to `~/.claude/skills/<name>/SKILL.md` and `${PRIME_AGENT_CODING_AGENT_DIR:-~/.prime/agent}/skills/<name>/SKILL.md` happen only with the explicit `--install` flag. Write sites: `src/teach/promote.ts:451-452` (claude), `:447-449` (prime-agent), `:318` (`flag: "wx"`). Documented at lines 95, 144, 303, 341-342.
+  - Reason: the user must choose it.
+  - Opt-in: the explicit `--install` flag.
+  - Enforcing file: `src/teach/promote.ts`. The line that checks `--install` is UNVERIFIED (check the flag handling in `src/teach/promote.ts`; not cited in this document).
+
 ---
 
 ## 1. Shared adapter layer (applies to all hosts)
@@ -395,6 +408,18 @@ Allowlisted launchers used as intended: `bin/run-bun` (`hooks/hooks.json`), `bin
 - `bin/ultrathink-mcp auth login` (`hosts/prime-agent/SKILL.md:56`), user-run.
 
 These are not in the spawn allowlist as written in the brief. Adding them would need an explicit decision.
+
+### Recorded decisions
+
+- **D1. MCP credentials file: intentional exception, not opt-in.**
+  - Path: `~/.config/ultrathink/mcp-credentials.json` (row at line 340; see Core baseline D1).
+  - Reason: it is the user's own config directory, and moving it would break MCP auth (UNVERIFIED (check `src/mcp/client.ts:224-231`) for the MCP auth consequence; line 143 supports only the cross-host part).
+  - Enforcing file: none cited. The path is defined at `src/mcp/store.ts:51-55`; no opt-in gate is cited in this document.
+- **D2. `teach promote --install`: opt-in exception.**
+  - Writes: `~/.claude/skills/<name>/SKILL.md` (`src/teach/promote.ts:451-452`) and `~/.prime/agent/skills/<name>/SKILL.md` (`src/teach/promote.ts:447-449`); see rows at lines 341-342.
+  - Reason: the user must choose it.
+  - Opt-in: the explicit `--install` flag.
+  - Enforcing file: `src/teach/promote.ts`. The line that checks `--install` is UNVERIFIED (check the flag handling in `src/teach/promote.ts`; not cited in this document).
 
 ---
 

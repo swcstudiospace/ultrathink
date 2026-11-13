@@ -6,16 +6,19 @@
  * Default output is one JSON line: {"ok":true,"stdout":"..."} or {"ok":false,"error":{...}}.
  * With --raw, a success prints only the child's stdout; a failure prints the error message to
  * stderr and exits with the child's exit code when it had one, otherwise 1.
+ * ultrathink-adapter install prime-agent --source <abs path> --skills-dir <abs path>: installs the
+ * Prime-Agent skill and prints the InstallResult as one JSON line (see runInstallVerb).
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { CommandPort, ErrorCategory } from "../core/src/ports/command.ts";
 import { createClaudeCodeAdapter } from "./claude-code/index.ts";
 import { createGrokBuildAdapter } from "./grok-build/index.ts";
 import { createHermesAdapter } from "./hermes/index.ts";
 import { createMuseAdapter } from "./muse/index.ts";
 import { createPrimeAgentAdapter } from "./prime-agent/index.ts";
+import { installPrimeAgentSkill } from "./prime-agent/install.ts";
 
 /** Environment a host adds on top of the inherited parent env for its engine child. */
 type HostEnv = Readonly<Record<string, string>>;
@@ -159,6 +162,57 @@ export function renderResult(result: AdapterCliResult): {
 	return { stdout: "", stderr: `${result.output.error.message}\n` };
 }
 
+/** Output of the install verb: the exit code and the text for each stream. */
+export interface InstallCliResult {
+	readonly exitCode: 0 | 1 | 2;
+	readonly stdout: string;
+	readonly stderr: string;
+}
+
+/** The one-line usage message for install; a usage error appends its reason after a colon. */
+const INSTALL_USAGE =
+	"usage: ultrathink-adapter install prime-agent --source <abs path> --skills-dir <abs path>";
+
+/** The only host the install verb installs; the other hosts have no installer. */
+const INSTALL_TARGET = "prime-agent";
+
+const installUsage = (reason: string): InstallCliResult => ({
+	exitCode: 2,
+	stdout: "",
+	stderr: `${INSTALL_USAGE}: ${reason}\n`,
+});
+
+/**
+ * Runs `install prime-agent --source <repo root> --skills-dir <dir>`. `args` is argv after the verb.
+ * Both flags take a value that must be an absolute path. Prints the InstallResult as one JSON line:
+ * exit 0 when installed or unchanged, 1 on install_failed, 2 on a usage error (one line on stderr).
+ */
+export async function runInstallVerb(args: readonly string[]): Promise<InstallCliResult> {
+	const [target, ...rest] = args;
+	if (target !== INSTALL_TARGET)
+		return installUsage(
+			target === undefined ? "missing install target" : `unknown install target: ${target}`,
+		);
+	const values: Partial<Record<"--source" | "--skills-dir", string>> = {};
+	for (let i = 0; i < rest.length; i += 2) {
+		const flag = rest[i];
+		const value = rest[i + 1];
+		if (flag !== "--source" && flag !== "--skills-dir")
+			return installUsage(`unknown argument: ${flag}`);
+		if (value === undefined || value.startsWith("--")) return installUsage(`${flag} needs a value`);
+		if (values[flag] !== undefined) return installUsage(`${flag} given twice`);
+		values[flag] = value;
+	}
+	const source = values["--source"];
+	const skillsDir = values["--skills-dir"];
+	if (source === undefined) return installUsage("--source is required");
+	if (skillsDir === undefined) return installUsage("--skills-dir is required");
+	if (!isAbsolute(source)) return installUsage("--source must be an absolute path");
+	if (!isAbsolute(skillsDir)) return installUsage("--skills-dir must be an absolute path");
+	const result = await installPrimeAgentSkill({ sourceDir: source, skillsDir });
+	return { exitCode: result.ok ? 0 : 1, stdout: `${JSON.stringify(result)}\n`, stderr: "" };
+}
+
 /** Parent variables the engine child may inherit, by exact name. */
 const INHERITED_ENV_NAMES: Readonly<Record<string, true>> = {
 	PATH: true,
@@ -245,6 +299,12 @@ function createRepoEntry(root: string): AdapterEntry {
 }
 
 async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
+	if (argv[0] === "install") {
+		const install = await runInstallVerb(argv.slice(1));
+		if (install.stdout !== "") process.stdout.write(install.stdout);
+		if (install.stderr !== "") process.stderr.write(install.stderr);
+		return install.exitCode;
+	}
 	const deps: AdapterCliDeps = {
 		runner: createProcessRunner(join(REPO_ROOT, "bin", "ultrathink")),
 		entry: createRepoEntry(REPO_ROOT),
