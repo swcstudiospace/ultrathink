@@ -34,6 +34,7 @@
 		"ship": "bun src/ship/cli.ts",
 		"policy:check": "bash policy/check.sh",
 		"policy:collect": "bun policy/collect.ts",
+		"gen:manifests": "bun tools/gen-manifests/generate.ts",
 		"compliance": "bun policy/compliance-report.ts --root ."
 	},
 	"omp": {

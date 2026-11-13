@@ -489,7 +489,10 @@ describe("per-session /ultrathink-skip", () => {
 		const read = (path: string) => readFileSync(join(root, path), "utf8");
 		// Claude Code and Muse run commands/*.md when the prompt hook did not answer: each invocation names the session.
 		for (const verb of ["skip", "status"]) {
-			const runs = read(`commands/ultrathink-${verb}.md`).match(/bin\/ultrathink" [^`\n]*/g) ?? [];
+			const runs =
+				read(`commands/ultrathink-${verb}.md`).match(
+					/bin\/ultrathink(?:-adapter" claude-code|") [^`\n]*/g,
+				) ?? [];
 			expect(runs.length).toBeGreaterThan(0);
 			for (const run of runs) expect(run).toContain(`${verb} --session "\${CLAUDE_SESSION_ID}"`);
 		}

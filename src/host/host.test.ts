@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import {
@@ -189,7 +189,9 @@ describe("isSubagentEnvelope", () => {
 
 describe("resolveStateDir", () => {
 	test("keeps the Claude default and refuses a planning-tree override", () => {
-		expect(resolveStateDir({ ULTRATHINK_STATE_DIR: "/x" })).toBe("/x");
+		const inHome = join(homedir(), "proj", "state");
+		expect(resolveStateDir({ ULTRATHINK_STATE_DIR: inHome })).toBe(inHome);
+		expect(resolveStateDir({ ULTRATHINK_STATE_DIR: "/x" })).toBe(resolveStateDir({}));
 		expect(resolveStateDir({ CLAUDE_CONFIG_DIR: "/cfg" })).toBe(join("/cfg", "ultrathink"));
 		expect(resolveStateDir({}).endsWith(join(".claude", "ultrathink"))).toBe(true);
 		expect(isPlanningPath("/repo/.planning/phases")).toBe(true);
@@ -272,7 +274,7 @@ describe("resolveStateDir", () => {
 
 describe("writePlanCarrier", () => {
 	test("writes a subordinate pointer and refuses an unknown session id", () => {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-carrier-"));
+		const dir = mkdtempSync(join(homedir(), "ultrathink-carrier-"));
 		try {
 			expect(
 				writePlanCarrier({
@@ -346,7 +348,7 @@ function planHarness(): {
 	options: PlanOptions;
 	calls: { engine: number; createTracker: number; track: number };
 } {
-	const root = mkdtempSync(join(tmpdir(), "ultrathink-plan-"));
+	const root = mkdtempSync(join(homedir(), "ultrathink-plan-"));
 	mkdirSync(join(root, "xdg", "ultrathink"), { recursive: true });
 	writeFileSync(
 		join(root, "xdg", "ultrathink", "config.json"),
@@ -362,6 +364,7 @@ function planHarness(): {
 		env: {
 			XDG_CONFIG_HOME: join(root, "xdg"),
 			CLAUDE_CONFIG_DIR: join(root, "claude"),
+			// The state resolver accepts only paths under the home directory, so the harness root lives there.
 			ULTRATHINK_STATE_DIR: join(root, "state"),
 			SUBSTRATE_DISABLED: "1",
 		},

@@ -2124,7 +2124,7 @@ interface JevHarness {
 	cleanup: () => void;
 }
 
-/** Hook deps that count every engine, tracker, brief and knowledge-base call, with the Decisions seams injected (key K, empty store). */
+/** Hook deps that count every engine, tracker, brief and knowledge call, with the Decisions seams injected (key K, empty store, network opted in). */
 function jevHarness(
 	config: UltrathinkConfig,
 	fetchImpl: typeof fetch,
@@ -4262,6 +4262,29 @@ describe("honest degradation (98-04)", () => {
 			expect(stageEnd(events, "think")).toMatchObject({ ok: false });
 			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
 			expect(ctx).toContain("No tracker rows were created for this plan, and none will be.");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a graph reply of bare ok is a degraded graph whose cause reaches the planning notice, not a provider failure", async () => {
+		const smart = smartComplete();
+		const { deps, cleanup } = baseDeps({
+			complete: async (system, user) => {
+				const graphCall =
+					!user.includes("<user_request>") &&
+					!user.startsWith("<spec>") &&
+					!user.includes("current_node");
+				return graphCall ? "ok" : smart(system, user);
+			},
+		});
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(result.record?.degraded).toContain("graph");
+			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
+			expect(ctx).toContain("## Planning degraded");
+			expect(ctx).toContain("the graph structure (graph reply held no usable graph JSON)");
+			expect(result.record?.plan).toBeUndefined();
 		} finally {
 			cleanup();
 		}

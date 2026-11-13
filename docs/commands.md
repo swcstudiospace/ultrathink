@@ -207,7 +207,7 @@ Set these in the environment of the host process. They override config and the c
 | `ULTRATHINK_TEACH=0` | No lesson capture, recall or promote while Teachable Moments would otherwise be on. See [Configuration](configuration.md#teach-teachable-moments). |
 | `ULTRATHINK_DEBUG=1` | `hooks/uplift.ts` (Claude Code, Grok, Muse) logs every skip reason and failure to stderr as `[ultrathink] …`. With Jev decisions on, every decision also logs one `[ultrathink] decisions <point> · …` line (P or the error kind, model, latency, attempts, cost; never the message or the key). |
 | `ULTRATHINK_HOST` | Forces the host id: `claude-code`, `grok-build`, `hermes`, `muse` or `omp`. This selects the state directory, which matters for `bin/ultrathink` run from a plain terminal. |
-| `ULTRATHINK_STATE_DIR` | Overrides the state directory. Use an absolute path (a relative one resolves differently per host; see [Configuration](configuration.md#environment-variables)). It is ignored if it points into a `.planning/` directory. |
+| `ULTRATHINK_STATE_DIR` | Overrides the state directory. It is honored only when it is an absolute path inside your home directory and not the home directory itself. A relative path, an empty value, a path outside home, home itself, or a path inside a `.planning` tree is ignored, and the host default is used. See [Configuration](configuration.md#environment-variables). |
 
 The other variables (credential store, OAuth callback and Tailscale opt-in, Hermes timeout, Agent Substrate, Jev keys and Decisions endpoint, GSD tools, Bun) are listed in [Configuration: Environment variables](configuration.md#environment-variables).
 
@@ -650,7 +650,7 @@ bun scripts/setup.ts rollback  # undo what apply did
    - adds the checkout as a plugin marketplace and runs `claude plugin install ultrathink@ultrathink`;
    - merges a short "Ultrathink task tracking" block between `<!-- ultrathink:start -->` and `<!-- ultrathink:end -->` into `~/.claude/CLAUDE.md` (`$CLAUDE_CONFIG_DIR/CLAUDE.md` when set). The block says the plugin *can* track work and applies only when tracking is configured;
    - records which MCP servers it added in `ultrathink-setup-state.json` next to that `CLAUDE.md`. A re-run keeps servers recorded by earlier runs, so `rollback` still removes them.
-3. Prints the remaining steps for the other hosts: the Hermes symlink into `$HERMES_HOME/plugins/ultrathink` (`~/.hermes` when unset) and the `hermes config set plugins.hook_callback_timeout 600` command (see [Install](install.md)), `muse plugins install <clone> --scope user && muse plugins approve ultrathink`, and `omp plugin link <clone>`. It does not run them.
+3. Prints the remaining steps for the other hosts: the Hermes per-file links from `hosts/hermes` into `$HERMES_HOME/plugins/ultrathink` (`~/.hermes` when unset) and the `hermes config set plugins.hook_callback_timeout 600` command (see [Install](install.md)), `muse plugins install <clone> --scope user && muse plugins approve ultrathink`, and `omp plugin link <clone>`. It does not run them.
 
 `apply` never changes `~/.claude/settings.json` or any Hermes setting.
 

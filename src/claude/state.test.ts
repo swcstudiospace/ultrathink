@@ -12,7 +12,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
@@ -55,7 +55,9 @@ afterEach(() => {
 
 describe("defaultStateDir", () => {
 	test("prefers ULTRATHINK_STATE_DIR, then CLAUDE_CONFIG_DIR, then ~/.claude", () => {
-		expect(defaultStateDir({ ULTRATHINK_STATE_DIR: "/x" })).toBe("/x");
+		const inHome = join(homedir(), "proj", "state");
+		expect(defaultStateDir({ ULTRATHINK_STATE_DIR: inHome })).toBe(inHome);
+		expect(defaultStateDir({ ULTRATHINK_STATE_DIR: "/x" })).toBe(defaultStateDir({}));
 		expect(defaultStateDir({ CLAUDE_CONFIG_DIR: "/cfg" })).toBe(join("/cfg", "ultrathink"));
 		expect(defaultStateDir({}).endsWith(join(".claude", "ultrathink"))).toBe(true);
 	});
@@ -695,7 +697,7 @@ describe("the HITL answers hook", () => {
 		};
 		const proc = Bun.spawn([process.execPath, ANSWERS_HOOK], {
 			cwd: join(dir, ".."),
-			env: { PATH: process.env.PATH, HOME: dir, ULTRATHINK_STATE_DIR: dir },
+			env: { PATH: process.env.PATH, HOME: join(dir, ".."), ULTRATHINK_STATE_DIR: dir },
 			stdin: new TextEncoder().encode(JSON.stringify(envelope)),
 			stdout: "pipe",
 			stderr: "pipe",
@@ -726,7 +728,7 @@ describe("the HITL answers hook", () => {
 		const dir = tempDir();
 		const proc = Bun.spawn([process.execPath, ANSWERS_HOOK], {
 			cwd: join(dir, ".."),
-			env: { PATH: process.env.PATH, HOME: dir, ULTRATHINK_STATE_DIR: dir },
+			env: { PATH: process.env.PATH, HOME: join(dir, ".."), ULTRATHINK_STATE_DIR: dir },
 			stdin: new TextEncoder().encode(
 				JSON.stringify({
 					session_id: "ghost",
@@ -781,7 +783,7 @@ describe("a legacy-only session record through the answers hook", () => {
 		};
 		const proc = Bun.spawn([process.execPath, ANSWERS_HOOK], {
 			cwd: join(dir, ".."),
-			env: { PATH: process.env.PATH, HOME: dir, ULTRATHINK_STATE_DIR: dir },
+			env: { PATH: process.env.PATH, HOME: join(dir, ".."), ULTRATHINK_STATE_DIR: dir },
 			stdin: new TextEncoder().encode(JSON.stringify(envelope)),
 			stdout: "pipe",
 			stderr: "pipe",

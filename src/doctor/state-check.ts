@@ -80,7 +80,7 @@ export function checkState(deps: DoctorDeps): Finding[] {
 			id: "state.dir",
 			level: "error",
 			title: `State path is not a directory: ${dir}`,
-			fix: "Remove it or point ULTRATHINK_STATE_DIR elsewhere.",
+			fix: "Remove it, or point ULTRATHINK_STATE_DIR at another absolute path inside your home directory.",
 		});
 		return findings;
 	}

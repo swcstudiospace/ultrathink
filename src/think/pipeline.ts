@@ -53,6 +53,11 @@ export interface ThinkResult extends UpliftResult {
 		 * failure): a redacted single-line cause. The provider is unavailable, so a later stage need not try it again.
 		 */
 		graphFailure?: string;
+		/**
+		 * Present when the graph fell back without a provider failure: the reply held no usable graph JSON, or it was cut
+		 * off at its token limit. A redacted single-line cause. The node fills still ran.
+		 */
+		graphCause?: string;
 	};
 }
 
@@ -100,6 +105,7 @@ const DEFAULT_FILL_RETRIES = 2;
 const FILL_RETRY_BASE_MS = 500;
 const FILL_RETRY_CAP_MS = 8000;
 const CAUSE_MAX_CHARS = 200;
+const GRAPH_REPLY_UNUSABLE = "graph reply held no usable graph JSON";
 
 /** A completion that is not a closed 5-8 step rationale plus a closed conclusion. It retries like a transient failure. */
 class FillRejectedError extends Error {
@@ -159,7 +165,7 @@ function xmlWithoutOriginal(xml: string): string {
 }
 
 function graphUserPayload(uplift: UpliftResult): string {
-	return `${uplift.original}\n\n${xmlWithoutOriginal(uplift.xml)}`;
+	return `<original>${escapeXml(uplift.original)}</original>\n\n${xmlWithoutOriginal(uplift.xml)}`;
 }
 
 function cotUserPayload(uplift: UpliftResult, graph: ThoughtGraph, node: ThoughtNode): string {
@@ -193,7 +199,7 @@ async function buildGraph(
 	opts: RunThinkOptions,
 	minNodes: number,
 	maxNodes: number,
-): Promise<{ graph: ThoughtGraph; fallback: boolean; failure?: string }> {
+): Promise<{ graph: ThoughtGraph; fallback: boolean; failure?: string; cause?: string }> {
 	try {
 		const raw = await opts.complete(
 			GRAPH_SYSTEM_PROMPT,
@@ -201,16 +207,18 @@ async function buildGraph(
 			opts.signal,
 		);
 		const graph = normalizeGraph(extractJsonObject(raw), opts.uplift.original, minNodes, maxNodes);
-		return { graph, fallback: isFallbackGraph(graph) };
+		const fallback = isFallbackGraph(graph);
+		return fallback ? { graph, fallback, cause: GRAPH_REPLY_UNUSABLE } : { graph, fallback };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
 		await ensureLive(opts.signal);
+		const reason = describeCause(error);
 		return {
 			graph: normalizeGraph(null, opts.uplift.original, minNodes, maxNodes),
 			fallback: true,
 			// A report means the completer judged and retried the failure itself: the provider, not the reply, failed.
-			// A reply cut off at its token limit is the reply that failed, so the node fills still run.
-			...(isProviderFailure(error) ? { failure: describeCause(error) } : {}),
+			// A reply cut off at its token limit is the reply that failed, so the node fills still run and it is a cause.
+			...(isProviderFailure(error) ? { failure: reason } : { cause: reason }),
 		};
 	}
 }
@@ -491,6 +499,7 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 		degraded: {
 			graph: built.fallback,
 			...(built.failure === undefined ? {} : { graphFailure: built.failure }),
+			...(built.cause === undefined ? {} : { graphCause: built.cause }),
 			fills,
 			...(fills.length > 0 ? { causes } : {}),
 			...(repaired.length > 0 ? { repaired } : {}),

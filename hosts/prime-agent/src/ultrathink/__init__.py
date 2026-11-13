@@ -49,6 +49,7 @@ _DEFAULT_CLONE = Path.home() / "src" / "repos" / "claude-ultrathink"
 ENGINE_REL = Path("hooks") / "engine.ts"
 RUN_BUN_REL = Path("bin") / "run-bun"
 CLI_REL = Path("bin") / "ultrathink"
+ADAPTER_REL = Path("bin") / "ultrathink-adapter"
 TEACH_REL = Path("src") / "teach" / "cli.ts"
 
 CONTROL_TIMEOUT_S = 30.0
@@ -338,6 +339,9 @@ def _run_cli(root: Path, argv: list[str], timeout: float, env: dict[str, str] | 
 # The control verbs whose answer belongs to one session: `skip` arms this session's next prompt, `status` shows whether it is armed.
 SESSION_CONTROL_VERBS = ("skip", "status")
 
+# The control verbs that run through bin/ultrathink-adapter (which sets ULTRATHINK_HOST for this host); the rest call bin/ultrathink.
+ADAPTER_VERBS = ("off", "on", "skip", "status", "track")
+
 
 def control_args(args: tuple[str, ...] | list[str], session: str | None) -> list[str]:
 	"""The bin/ultrathink argv for a control. A session-scoped verb gets ``--session <id>``; a blank id gets none, so the
@@ -362,10 +366,17 @@ def ctl(*args: str, env: dict[str, str] | None = None, session: str | None = Non
 	``ctl("last")``. ``session`` names the session a skip or status is for; by default it is this kernel's session, when it has one.
 	Returns the CLI's text, or one line saying what failed."""
 	root = repo_root(env)
-	cli = root / CLI_REL
-	if not cli.is_file():
-		return f"Ultrathink: {cli} not found; set ULTRATHINK_PLUGIN_ROOT to a full clone of claude-ultrathink"
-	ok, text = _run_cli(root, [str(cli), *control_args(args, session or _kernel_session(env))], CONTROL_TIMEOUT_S, env)
+	argv = control_args(args, session or _kernel_session(env))
+	if args and args[0] in ADAPTER_VERBS:
+		# The host adapter runs the same verb with the same extra args; --raw makes it answer with bare text.
+		entry = root / ADAPTER_REL
+		argv = [str(entry), HOST, *argv, "--raw"]
+	else:
+		entry = root / CLI_REL
+		argv = [str(entry), *argv]
+	if not entry.is_file():
+		return f"Ultrathink: {entry} not found; set ULTRATHINK_PLUGIN_ROOT to a full clone of claude-ultrathink"
+	ok, text = _run_cli(root, argv, CONTROL_TIMEOUT_S, env)
 	return text if ok else f"Ultrathink {' '.join(args[:1]) or 'status'} failed: {text}"
 
 

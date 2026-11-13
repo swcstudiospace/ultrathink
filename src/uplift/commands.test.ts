@@ -1483,6 +1483,8 @@ esac
 		const SECRET_PROMPT = "a prompt that must never be printed";
 		const PRUNE_NOW = Date.UTC(2026, 9, 9, 12);
 
+		// The state resolver accepts only paths inside the home directory, so the prune state lives under the test's HOME.
+
 		async function runPrune(args: string[]): Promise<{ stdout: string; exitCode: number | null }> {
 			const proc = Bun.spawn(
 				[process.execPath, join(import.meta.dir, "commands.ts"), "prune", ...args],
@@ -1491,7 +1493,7 @@ esac
 					env: {
 						...process.env,
 						HOME: join(dir, "home"),
-						ULTRATHINK_STATE_DIR: join(dir, "state"),
+						ULTRATHINK_STATE_DIR: join(dir, "home", "state"),
 						ULTRATHINK_PRUNE_NOW_MS: String(PRUNE_NOW),
 					},
 					stdin: "ignore",
@@ -1508,7 +1510,7 @@ esac
 		}
 
 		function seedSession(id: string, ageDays: number): string {
-			const sessions = join(dir, "state", "sessions");
+			const sessions = join(dir, "home", "state", "sessions");
 			mkdirSync(sessions, { recursive: true });
 			const path = join(sessions, `${id}.json`);
 			writeFileSync(

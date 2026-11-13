@@ -1,0 +1,622 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "setup": {
+          "repos": [
+            {
+              "origin": "git@github.com:acme/app.git",
+              "path": "repo"
+            },
+            {
+              "origin": "git@github.com:acme/other.git",
+              "path": "other"
+            }
+          ],
+          "seeded": {
+            "path": "<ROOT>/hook-tool-result-0/omp-agent/ultrathink/sessions/golden-session-1.json",
+            "record": {
+              "at": 0,
+              "plan": {
+                "graphId": "graph-golden-1",
+                "task": {
+                  "repo": "acme/app",
+                  "title": "golden task"
+                }
+              },
+              "result": {},
+              "sessionId": "golden-session-1"
+            }
+          }
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": "repo",
+            "event": {
+              "content": [
+                {
+                  "text": "ok",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "path": "src/app.ts"
+              },
+              "isError": false,
+              "toolName": "write"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "write into the plan's repo: attribution recorded, no warning",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": [
+        {
+          "change": "created",
+          "content": "{\n\t\"sessionId\": \"golden-session-1\",\n\t\"at\": 0,\n\t\"result\": {},\n\t\"plan\": {\n\t\t\"graphId\": \"graph-golden-1\",\n\t\t\"task\": {\n\t\t\t\"title\": \"golden task\",\n\t\t\t\"repo\": \"acme/app\"\n\t\t}\n\t},\n\t\"workRepos\": [\n\t\t\"acme/app\"\n\t]\n}\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/last.json"
+        },
+        {
+          "change": "modified",
+          "content": "{\n\t\"sessionId\": \"golden-session-1\",\n\t\"at\": 0,\n\t\"result\": {},\n\t\"plan\": {\n\t\t\"graphId\": \"graph-golden-1\",\n\t\t\"task\": {\n\t\t\t\"title\": \"golden task\",\n\t\t\t\"repo\": \"acme/app\"\n\t\t}\n\t},\n\t\"workRepos\": [\n\t\t\"acme/app\"\n\t]\n}\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/sessions/golden-session-1.json"
+        }
+      ]
+    },
+    {
+      "input": {
+        "setup": {
+          "repos": [
+            {
+              "origin": "git@github.com:acme/app.git",
+              "path": "repo"
+            },
+            {
+              "origin": "git@github.com:acme/other.git",
+              "path": "other"
+            }
+          ],
+          "seeded": {
+            "path": "<ROOT>/hook-tool-result-1/omp-agent/ultrathink/sessions/golden-session-1.json",
+            "record": {
+              "at": 0,
+              "plan": {
+                "graphId": "graph-golden-1",
+                "task": {
+                  "repo": "acme/app",
+                  "title": "golden task"
+                }
+              },
+              "result": {},
+              "sessionId": "golden-session-1"
+            }
+          }
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": "repo",
+            "event": {
+              "content": [
+                {
+                  "text": "ok",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "path": "../other/lib.ts"
+              },
+              "isError": false,
+              "toolName": "write"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          },
+          {
+            "args": null,
+            "cwd": "repo",
+            "event": {
+              "content": [
+                {
+                  "text": "ok",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "path": "../other/lib.ts"
+              },
+              "isError": false,
+              "toolName": "write"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "write into another repo: one warning; the same edit again is silent",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [
+                  {
+                    "level": "warning",
+                    "text": "Ultrathink: this session edited acme/other, but its plan is labelled acme/app. The tracked task row may name the wrong repository."
+                  }
+                ],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          },
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": [
+        {
+          "change": "created",
+          "content": "{\n\t\"sessionId\": \"golden-session-1\",\n\t\"at\": 0,\n\t\"result\": {},\n\t\"plan\": {\n\t\t\"graphId\": \"graph-golden-1\",\n\t\t\"task\": {\n\t\t\t\"title\": \"golden task\",\n\t\t\t\"repo\": \"acme/app\"\n\t\t}\n\t},\n\t\"workRepos\": [\n\t\t\"acme/other\"\n\t],\n\t\"repoMismatch\": {\n\t\t\"labelled\": \"acme/app\",\n\t\t\"edited\": [\n\t\t\t\"acme/other\"\n\t\t]\n\t}\n}\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/last.json"
+        },
+        {
+          "change": "modified",
+          "content": "{\n\t\"sessionId\": \"golden-session-1\",\n\t\"at\": 0,\n\t\"result\": {},\n\t\"plan\": {\n\t\t\"graphId\": \"graph-golden-1\",\n\t\t\"task\": {\n\t\t\t\"title\": \"golden task\",\n\t\t\t\"repo\": \"acme/app\"\n\t\t}\n\t},\n\t\"workRepos\": [\n\t\t\"acme/other\"\n\t],\n\t\"repoMismatch\": {\n\t\t\"labelled\": \"acme/app\",\n\t\t\"edited\": [\n\t\t\t\"acme/other\"\n\t\t]\n\t}\n}\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/sessions/golden-session-1.json"
+        }
+      ]
+    },
+    {
+      "input": {
+        "setup": {
+          "repos": [
+            {
+              "origin": "git@github.com:acme/app.git",
+              "path": "repo"
+            },
+            {
+              "origin": "git@github.com:acme/other.git",
+              "path": "other"
+            }
+          ],
+          "seeded": {
+            "path": "<ROOT>/hook-tool-result-2/omp-agent/ultrathink/sessions/golden-session-1.json",
+            "record": {
+              "at": 0,
+              "plan": {
+                "graphId": "graph-golden-1",
+                "task": {
+                  "repo": "acme/app",
+                  "title": "golden task"
+                }
+              },
+              "result": {},
+              "sessionId": "golden-session-1"
+            }
+          }
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": "repo",
+            "event": {
+              "content": [
+                {
+                  "text": "denied",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "path": "src/app.ts"
+              },
+              "isError": true,
+              "toolName": "write"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "failed write: nothing recorded",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "setup": {
+          "repos": [],
+          "seeded": {
+            "path": "<ROOT>/hook-tool-result-3/omp-agent/ultrathink/sessions/golden-session-1.json",
+            "record": {
+              "at": 0,
+              "plan": {
+                "graphId": "graph-golden-1",
+                "task": {
+                  "repo": "acme/app",
+                  "title": "golden task"
+                }
+              },
+              "result": {},
+              "sessionId": "golden-session-1"
+            }
+          }
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": {
+              "content": [
+                {
+                  "text": "ok",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "path": "notes/todo.md"
+              },
+              "isError": false,
+              "toolName": "write"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "write outside any git repo: nothing recorded",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "setup": {
+          "repos": [
+            {
+              "origin": "git@github.com:acme/app.git",
+              "path": "repo"
+            },
+            {
+              "origin": "git@github.com:acme/other.git",
+              "path": "other"
+            }
+          ],
+          "seeded": {
+            "path": "<ROOT>/hook-tool-result-4/omp-agent/ultrathink/sessions/golden-session-1.json",
+            "record": {
+              "at": 0,
+              "plan": {
+                "graphId": "graph-golden-1",
+                "task": {
+                  "repo": "acme/app",
+                  "title": "golden task"
+                }
+              },
+              "result": {},
+              "sessionId": "golden-session-1"
+            }
+          }
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": "repo",
+            "event": {
+              "content": [
+                {
+                  "text": "https://github.com/acme/app/pull/42\n",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "command": "gh pr create --title golden --body capture"
+              },
+              "isError": false,
+              "toolName": "bash"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          },
+          {
+            "args": null,
+            "cwd": "repo",
+            "event": {
+              "content": [
+                {
+                  "text": "https://github.com/acme/app/pull/42\n",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "command": "gh pr create --title golden --body capture"
+              },
+              "isError": false,
+              "toolName": "bash"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          },
+          {
+            "args": null,
+            "cwd": "repo",
+            "event": {
+              "content": [
+                {
+                  "text": "https://github.com/acme/app/pull/43",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "op": "pr_create"
+              },
+              "isError": false,
+              "toolName": "github"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "gh pr create in a tracked session: one sync nudge per PR URL",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [
+                  {
+                    "message": {
+                      "attribution": "agent",
+                      "content": "Ultrathink: a pull request was opened for the tracked task (https://github.com/acme/app/pull/42). Invoke the ultrathink-sync skill now with stateFile=<ROOT>/hook-tool-result-4/omp-agent/ultrathink/sessions/golden-session-1.json and prUrl=https://github.com/acme/app/pull/42 (graphId=graph-golden-1), so the tracked Notion Task row and Linear issues get the PR URL/number/branch and status. ultrathink-sync only updates existing rows; do not create new Notion rows or Linear issues.",
+                      "customType": "ultrathink-sync",
+                      "details": {
+                        "number": 42,
+                        "url": "https://github.com/acme/app/pull/42"
+                      },
+                      "display": true
+                    },
+                    "options": {
+                      "deliverAs": "aside"
+                    }
+                  }
+                ],
+                "userMessages": []
+              }
+            ]
+          },
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          },
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [
+                  {
+                    "message": {
+                      "attribution": "agent",
+                      "content": "Ultrathink: a pull request was opened for the tracked task (https://github.com/acme/app/pull/43). Invoke the ultrathink-sync skill now with stateFile=<ROOT>/hook-tool-result-4/omp-agent/ultrathink/sessions/golden-session-1.json and prUrl=https://github.com/acme/app/pull/43 (graphId=graph-golden-1), so the tracked Notion Task row and Linear issues get the PR URL/number/branch and status. ultrathink-sync only updates existing rows; do not create new Notion rows or Linear issues.",
+                      "customType": "ultrathink-sync",
+                      "details": {
+                        "number": 43,
+                        "url": "https://github.com/acme/app/pull/43"
+                      },
+                      "display": true
+                    },
+                    "options": {
+                      "deliverAs": "aside"
+                    }
+                  }
+                ],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "setup": {
+          "repos": [
+            {
+              "origin": "git@github.com:acme/app.git",
+              "path": "repo"
+            },
+            {
+              "origin": "git@github.com:acme/other.git",
+              "path": "other"
+            }
+          ],
+          "seeded": null
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": "repo",
+            "event": {
+              "content": [
+                {
+                  "text": "https://github.com/acme/app/pull/42\n",
+                  "type": "text"
+                }
+              ],
+              "input": {
+                "command": "gh pr create --title golden --body capture"
+              },
+              "isError": false,
+              "toolName": "bash"
+            },
+            "on": "tool_result",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "PR opened with no tracked plan: no nudge",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    }
+  ],
+  "entry": "tool_result",
+  "excluded": [
+    {
+      "reason": "requires live host: subagent detection reads the session-file layout of a live Omp subagent",
+      "variant": "PR opened by a subagent session"
+    }
+  ],
+  "kind": "hook",
+  "schema": 1,
+  "source": "src/host/omp.ts pi.on('tool_result') x2: handler 0 = edit attribution, handler 1 = PR-sync nudge"
+}

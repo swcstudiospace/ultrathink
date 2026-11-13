@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import stat
 import sys
 import tempfile
@@ -34,6 +35,17 @@ if "SKIP" in prompt:
     print(json.dumps({"context": "", "skipped": "precheck-trivial"})); sys.exit(0)
 print("noise before the answer")
 print(json.dumps({"context": "PLAN for " + prompt, "host": req["host"], "session": req["session_id"], "specPath": os.environ["SPEC"], "graphId": "g1", "summary": "ok", "modelResolution": {"label": "x"}}))
+"""
+
+REPO = Path(__file__).resolve().parents[2]
+CTL_BUN = """#!/usr/bin/env python3
+# Stand-in for `bun --no-env-file adapters/cli.ts <host> <verb> [args...]` on the control path: runs bin/ultrathink
+# with the verb and the extra args, minus --raw, and passes its stdout through.
+import os, subprocess, sys
+_, _no_env, script, _host, verb, *rest = sys.argv
+child = subprocess.run([os.path.join(os.path.dirname(os.path.dirname(script)), "bin", "ultrathink"), verb, *(a for a in rest if a != "--raw")], capture_output=True, text=True)
+sys.stdout.write(child.stdout)
+sys.exit(child.returncode)
 """
 
 
@@ -120,7 +132,17 @@ class Bridge(unittest.TestCase):
 		cli = root / "bin" / "ultrathink"
 		cli.write_text('#!/bin/sh\necho "$@"\n', encoding="utf-8")
 		cli.chmod(cli.stat().st_mode | stat.S_IEXEC)
-		env = {**self.env, "ULTRATHINK_PLUGIN_ROOT": str(root)}
+		# ctl runs bin/ultrathink-adapter, which execs bin/run-bun, which execs bun on adapters/cli.ts. The launcher
+		# resolves its root from its own path, so copy it, its runner and the adapter entry point into this clone.
+		for rel in ("bin/ultrathink-adapter", "bin/run-bun", "hosts/prime-agent/SKILL.md", "hooks/hooks.json"):
+			(root / rel).parent.mkdir(parents=True, exist_ok=True)
+			shutil.copy2(REPO / rel, root / rel)
+		shutil.copytree(REPO / "adapters", root / "adapters", dirs_exist_ok=True)
+		# No bun runs in this suite: the bun the runner reaches stands in for adapters/cli.ts and runs bin/ultrathink.
+		ctl_bun = root / "ctl-bun"
+		ctl_bun.write_text(CTL_BUN, encoding="utf-8")
+		ctl_bun.chmod(ctl_bun.stat().st_mode | stat.S_IEXEC)
+		env = {**self.env, "ULTRATHINK_PLUGIN_ROOT": str(root), "BUN": str(ctl_bun)}
 		self.assertEqual(bridge.ctl("skip", env=env), "skip --session sess-123")
 		self.assertEqual(bridge.ctl("status", env=env), "status --session sess-123")
 		self.assertEqual(bridge.ctl("skip", env={k: v for k, v in env.items() if k != "RLM_SESSION_DIR"}), "skip")
@@ -321,6 +343,28 @@ class Bridge(unittest.TestCase):
 		# The environment this test class runs under is the explicit one, whatever the shell exported.
 		self.assertEqual([name for name in os.environ if is_ambient(name)], [])
 		self.assertEqual(bridge.state_dir(self.env), Path(self.tmp.name) / "agent" / "ultrathink")
+
+
+
+class SkillFrontmatter(unittest.TestCase):
+	"""Prime Agent drops a skill whose frontmatter has an empty or missing description, so the entry must carry both."""
+
+	def frontmatter(self) -> dict[str, str]:
+		text = (REPO / "hosts" / "prime-agent" / "SKILL.md").read_text(encoding="utf-8")
+		self.assertTrue(text.startswith("---\n"), "SKILL.md must open with a frontmatter block")
+		header, sep, _ = text[4:].partition("\n---\n")
+		self.assertTrue(sep, "SKILL.md frontmatter must be closed by a line of ---")
+		fields: dict[str, str] = {}
+		for line in header.splitlines():
+			key, colon, value = line.partition(":")
+			if colon and not line.startswith((" ", "\t")):
+				fields[key.strip()] = value.strip()
+		return fields
+
+	def test_name_and_description_are_present_and_non_empty(self) -> None:
+		fields = self.frontmatter()
+		self.assertEqual(fields.get("name"), "ultrathink")
+		self.assertTrue(fields.get("description", ""), "an empty description makes Prime Agent drop the skill")
 
 
 if __name__ == "__main__":

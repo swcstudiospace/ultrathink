@@ -52,7 +52,7 @@ Read by the hooks, `bin/ultrathink` and the other plugin commands, on every host
 | `ULTRATHINK_MCP_DEBUG` | — | no | bool1 | — | Set to 1 so ultrathink-mcp serve writes relay log lines to stderr. |
 | `ULTRATHINK_PROGRESS_FD` | — | no | int (at least 3) | — | File descriptor that receives one JSON progress line per event; 3 or higher, else ignored. |
 | `ULTRATHINK_HOST` | — | no | enum (one of claude-code, grok-build, hermes, muse, omp, prime-agent, cursor) | — | Forces the detected host; an unknown value is ignored. |
-| `ULTRATHINK_STATE_DIR` | — | no | path | — | Directory for control state and session records instead of the host default. The hosted service reads it too and defaults to /var/lib/ultrathink; a path inside .planning is ignored. |
+| `ULTRATHINK_STATE_DIR` | — | no | path | — | Directory for control state and session records instead of the host default. The host uses it only when it is an absolute path inside your home directory and not home itself; any other value, including a path inside .planning, is ignored. The hosted service and stdio connector read it under their own rules; the hosted service defaults to /var/lib/ultrathink. |
 | `ULTRATHINK_CONFIG_DIR` | — | no | path | — | Directory holding config.json for the Cursor pstack hook and the doctor pstack section only. |
 | `ULTRATHINK_PSTACK_CURSOR_DIR` | — | no | path | — | Absolute Cursor directory for the pstack hook; it wins over pstack.cursorDir. |
 | `ULTRATHINK_AGENT_SKILLS_DIR` | — | no | path | `~/.agents/skills` | Shared Agent Skills directory that scripts/setup.ts installs into. |

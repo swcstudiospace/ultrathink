@@ -406,7 +406,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"paths",
 		"path",
 		"ULTRATHINK_STATE_DIR",
-		"Directory for control state and session records instead of the host default. The hosted service reads it too and defaults to /var/lib/ultrathink; a path inside .planning is ignored.",
+		"Directory for control state and session records instead of the host default. The host uses it only when it is an absolute path inside your home directory and not home itself; any other value, including a path inside .planning, is ignored. The hosted service and stdio connector read it under their own rules; the hosted service defaults to /var/lib/ultrathink.",
 	),
 	row(
 		"plugin",

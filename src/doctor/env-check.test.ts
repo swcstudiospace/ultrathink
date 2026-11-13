@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { type Credential, type CredentialStore, writeStore } from "../mcp/store.ts";
 import { byId } from "../test.helpers.ts";
@@ -37,7 +37,7 @@ describe("env checks", () => {
 	}
 
 	beforeEach(() => {
-		dir = mkdtempSync(join(tmpdir(), "ut-doctor-env-"));
+		dir = mkdtempSync(join(homedir(), "ut-doctor-env-"));
 		installed = ["git", "gh", "python3"];
 		probed = [];
 		versions = { python3: "Python 3.12.1", python: "Python 2.7.18" };

@@ -16,8 +16,9 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { TEST_STATE_DIR_PREFIX } from "../test.state-dir.ts";
 import type { Api, AssistantMessage, Effort, Model } from "@oh-my-pi/pi-ai";
 import { writeControl, writeSession } from "../claude/state.ts";
 import { Flag } from "@oh-my-pi/pi-ai/error";
@@ -2246,7 +2247,7 @@ describe("swarm auto-run", () => {
 		const root = mkdtempSync(join(tmpdir(), "sw-autorun-root-"));
 		mkdirSync(join(root, "hooks"), { recursive: true });
 		writeFileSync(join(root, "hooks", "autonomous_run.py"), "import sys\nsys.exit(0)\n");
-		const stateDir = mkdtempSync(join(tmpdir(), "sw-autorun-state-"));
+		const stateDir = mkdtempSync(join(homedir(), TEST_STATE_DIR_PREFIX));
 		process.env.ULTRATHINK_SWARM_ROOT = root;
 		process.env.ULTRATHINK_STATE_DIR = stateDir;
 		return {

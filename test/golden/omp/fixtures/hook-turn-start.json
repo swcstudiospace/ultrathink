@@ -1,0 +1,95 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "setup": null,
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "turn_start",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "one turn start with no flight: no output",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "setup": null,
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "turn_start",
+            "sessionId": "golden-session-1"
+          },
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "turn_start",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "two turn starts: no output",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          },
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    }
+  ],
+  "entry": "turn_start",
+  "excluded": [
+    {
+      "reason": "requires live host: the counter is read only by before_agent_start, which calls a model provider over the network",
+      "variant": "turn counter gating the before_agent_start re-run check"
+    }
+  ],
+  "kind": "hook",
+  "schema": 1,
+  "source": "src/host/omp.ts pi.on('turn_start')"
+}

@@ -1,0 +1,46 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "args": "fix the typo in the README",
+        "command": "/ultrathink-quick fix the typo in the README",
+        "cwd": "<ROOT>/ultrathink-quick/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "message sent as typed",
+      "output": {
+        "notices": [],
+        "sentMessages": [],
+        "userMessages": [
+          "fix the typo in the README"
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "args": "",
+        "command": "/ultrathink-quick",
+        "cwd": "<ROOT>/ultrathink-quick/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "no message shows usage",
+      "output": {
+        "notices": [
+          {
+            "level": "info",
+            "text": "Usage: /ultrathink-quick <message>. Sends the message to the agent as typed, without planning."
+          }
+        ],
+        "sentMessages": [],
+        "userMessages": []
+      },
+      "sideEffects": []
+    }
+  ],
+  "entry": "ultrathink-quick",
+  "excluded": [],
+  "schema": 1,
+  "source": "registerCommand loop, verb=quick"
+}

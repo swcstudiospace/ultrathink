@@ -1,0 +1,130 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "commands": [
+    {
+      "argumentCompletions": null,
+      "description": "Turn planning off for Omp on this machine until turned on",
+      "name": "ultrathink-off"
+    },
+    {
+      "argumentCompletions": null,
+      "description": "Turn planning back on for Omp on this machine",
+      "name": "ultrathink-on"
+    },
+    {
+      "argumentCompletions": null,
+      "description": "Send <message> to the agent as typed: no plan, no Graph of Thought, no Linear/Notion rows",
+      "name": "ultrathink-quick"
+    },
+    {
+      "argumentCompletions": null,
+      "description": "Do not plan the next message",
+      "name": "ultrathink-skip"
+    },
+    {
+      "argumentCompletions": null,
+      "description": "Show the current ultrathink state",
+      "name": "ultrathink-status"
+    },
+    {
+      "argumentCompletions": null,
+      "description": "Fan out AgentSwarm lanes from `|`-separated briefs, show lane status, or `stop [laneId|all]`",
+      "name": "ultrathink-swarm"
+    },
+    {
+      "argumentCompletions": {
+        "": [
+          {
+            "description": "Create Linear/Notion rows for planned prompts",
+            "label": "on",
+            "value": "on"
+          },
+          {
+            "description": "Plan without creating Linear/Notion rows",
+            "label": "off",
+            "value": "off"
+          }
+        ],
+        "o": [
+          {
+            "description": "Create Linear/Notion rows for planned prompts",
+            "label": "on",
+            "value": "on"
+          },
+          {
+            "description": "Plan without creating Linear/Notion rows",
+            "label": "off",
+            "value": "off"
+          }
+        ]
+      },
+      "description": "on|off: keep planning but start or stop creating Linear/Notion rows",
+      "name": "ultrathink-track"
+    },
+    {
+      "argumentCompletions": {
+        "": [
+          {
+            "description": "Ultrathink dashboard view: overview",
+            "label": "overview",
+            "value": "overview"
+          },
+          {
+            "description": "Ultrathink dashboard view: jev",
+            "label": "jev",
+            "value": "jev"
+          },
+          {
+            "description": "Ultrathink dashboard view: moments",
+            "label": "moments",
+            "value": "moments"
+          },
+          {
+            "description": "Ultrathink dashboard view: skills",
+            "label": "skills",
+            "value": "skills"
+          },
+          {
+            "description": "Ultrathink dashboard view: card",
+            "label": "card",
+            "value": "card"
+          }
+        ],
+        "o": [
+          {
+            "description": "Ultrathink dashboard view: overview",
+            "label": "overview",
+            "value": "overview"
+          }
+        ]
+      },
+      "description": "Open the native Ultrathink dashboard (overview, jev, moments, skills) or publish a summary card",
+      "name": "ultrathink-ui"
+    }
+  ],
+  "entry": "registration",
+  "eventHandlers": [
+    "agent_end",
+    "agent_start",
+    "before_agent_start",
+    "session_shutdown",
+    "session_start",
+    "session_switch",
+    "tool_execution_end",
+    "tool_execution_start",
+    "tool_result",
+    "turn_end",
+    "turn_start"
+  ],
+  "messageRenderers": [
+    "ultrathink-activity",
+    "ultrathink-insight",
+    "ultrathink-pending",
+    "ultrathink-plan",
+    "ultrathink-ship",
+    "ultrathink-swarm",
+    "ultrathink-sync"
+  ],
+  "schema": 1,
+  "source": "src/host/omp.ts createOmpExtension(): registerCommand, registerMessageRenderer, on"
+}

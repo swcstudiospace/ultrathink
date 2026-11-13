@@ -17,7 +17,7 @@ synced, the turn continues once with a nudge to run ultrathink-sync.
 
 When Hermes does not report its hook cap, the bridge reads plugins.hook_callback_timeout
 from ${HERMES_HOME:-~/.hermes}/config.yaml, else assumes Hermes' 30 s default. When the
-engine is not beside the plugin (a copied directory, not a symlink into a clone), Bun never
+engine is not beside the plugin (a copy, not files linked from a clone), Bun never
 starts. Each case logs one warning naming the fix.
 
 The /ultrathink-<verb> slash commands run bin/ultrathink against the engine's
@@ -47,10 +47,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# resolve() follows the per-file links from docs/install/hermes.md back into the clone.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENGINE = REPO_ROOT / "hooks" / "engine.ts"
 RUN_BUN = REPO_ROOT / "bin" / "run-bun"
 CLI = REPO_ROOT / "bin" / "ultrathink"
+ADAPTER = REPO_ROOT / "bin" / "ultrathink-adapter"
+# These verbs run through the adapter; teach stays on CLI because the adapter does not accept it.
+ADAPTER_VERBS = frozenset({"off", "on", "skip", "status", "track"})
 HOOK_MARGIN_S = 15  # the bridge's deadline ends this long before Hermes abandons the hook
 TERM_GRACE_S = 3.0  # how long the engine gets to stop its model children after SIGTERM before SIGKILL; well inside HOOK_MARGIN_S
 MIN_PLAN_S = 90  # below this a plan cannot finish, so Bun is not started at all
@@ -406,8 +410,8 @@ def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 	if missing is not None:
 		if _first_warning("engine"):
 			logger.warning(
-				"ultrathink: %s not found; install hosts/hermes as a symlink into a full clone of ultrathink "
-				"(docs/install.md#hermes-agent)",
+				"ultrathink: %s not found; link the files of hosts/hermes from a full clone of ultrathink, do not copy them "
+				"(docs/install/hermes.md)",
 				missing,
 			)
 		return ""
@@ -728,13 +732,18 @@ def control_args(args: list[str], session_id: str | None) -> list[str]:
 
 
 def control(args: list[str], env: dict[str, str] | None = None, session_id: str | None = None) -> tuple[bool, str]:
-	"""Run `bin/ultrathink <args>` as Hermes against the engine's state directory, for the session ``session_id`` names:
-	(True, its text), or (False, one line saying what failed). Never raises."""
+	"""Run `bin/ultrathink <args>` as Hermes against the engine's state directory, for the session ``session_id`` names.
+	The five adapter verbs run through `bin/ultrathink-adapter` (ADAPTER_VERBS): (True, its text), or (False, one line saying what failed). Never raises."""
 	label = " ".join(["Ultrathink", *args[:1]])
+	argv = control_args(args, session_id)
+	if argv and argv[0] in ADAPTER_VERBS:
+		command = [str(ADAPTER), "hermes", *argv, "--raw"]
+	else:
+		command = [str(CLI), *argv]
 	try:
 		child_env = _child_env(env)
 		completed = subprocess.run(
-			[str(CLI), *control_args(args, session_id)],
+			command,
 			encoding="utf-8",
 			errors="replace",
 			capture_output=True,

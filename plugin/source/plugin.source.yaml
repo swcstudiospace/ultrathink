@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=../schema/plugin-source.schema.json
+# Hand-edited source of truth for the generated host manifests (tools/gen-manifests/generate.ts).
+# status verified: the generator writes plugin/generated/<host>/manifest.json.
+# status unmapped: the generator writes nothing for the host.
+name: ultrathink
+version: "1.4.0"
+license: AGPL-3.0-or-later
+author:
+  name: SWC Studio
+hosts:
+  claude-code:
+    description: "Plans every prompt into a spec + Graph of Thought with HITL clarifications on a pluggable engine (Claude default, Grok optional), tracks it in Linear/Notion, and ships finished work through a Greptile-gated PR."
+    status: verified
+  muse:
+    description: "Plans each prompt with the shared ultrathink engine and writes the spec for the agent to read."
+    status: verified
+  omp:
+    description: "Shared ultrathink engine for Omp, Claude Code, Grok Build, Hermes Agent, Muse and Prime Agent."
+    status: verified
+  hermes:
+    description: "Plans each prompt with the shared ultrathink engine. /ultrathink-quick <message> sends one message without planning."
+    status: verified
+  prime-agent:
+    description: "Skills-only host: no plugin manifest contract is documented, so no manifest is generated."
+    status: unmapped
+  grok-build:
+    description: "No plugin manifest exists for Grok Build yet, so no manifest is generated."
+    status: unmapped
