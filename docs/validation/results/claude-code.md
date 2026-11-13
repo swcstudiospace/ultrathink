@@ -186,7 +186,7 @@ Stop says: Ultrathink · this turn tracked a task (graphId=ut-6fc5b4a73f-a910f9c
 
 **Reply.** Assistant text: `ok`. Result: `subtype: success`, `is_error: false`, `terminal_reason: completed`, `num_turns: 1`.
 
-**Side effect (needs owner decision).** The `Tracking` stage was on and created Linear issues in team `Spectrum Web Co` (workspace `swcstudio`): `SPE-31017` through `SPE-31023` (7 node issues) and 49 step sub-issues (`SPE-31024` onward). The earlier 1.4.0 run reported `Tracking · off`. The tracking source was not identified. These issues were not removed by this run.
+**Side effect (cleaned up).** The `Tracking` stage was on and created Linear issues in team `Spectrum Web Co` (workspace `swcstudio`): `SPE-31017` through `SPE-31023` (7 node issues) and 49 step sub-issues (`SPE-31024` through `SPE-31072`). The earlier 1.4.0 run reported `Tracking · off`. The tracking source was not identified. All 56 were set to Canceled (Linear has no delete tool); none was deleted.
 
 **Login deletion (verified).** `.credentials.json` removed; `oauthAccount` deleted from the isolated `.claude.json`. `ls` → `No such file or directory`; `has("oauthAccount")` → `false`. A recursive search for `"accessToken"`/`"refreshToken"` found 4 files, all in the plugin cache's source copy and this results file, so no credential remains.
 
