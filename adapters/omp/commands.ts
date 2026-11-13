@@ -26,17 +26,13 @@ const COMMAND_ERRORS: readonly ErrorCategory[] = ["invalid_input", "internal"];
 
 /** Host facts the port checks before it routes any command. */
 export interface OmpCommandPortOptions {
-	/**
-	 * Observed Omp version, or null when unreadable. When present, a version below the floor or unknown is
-	 * refused on every call. When absent, no version check runs.
-	 */
-	readonly observedVersion?: string | null;
+	/** Observed Omp version of the hosting binary, read once at extension load. Null (unreadable) refuses every command. */
+	readonly observedVersion: string | null;
 }
 
 /** Refusal message when the observed version fails the Omp floor; null when the port may route commands. */
-function versionRefusal(options: OmpCommandPortOptions): string | null {
-	if (options.observedVersion === undefined) return null;
-	const check: VersionFloorResult = checkVersionFloor("omp", options.observedVersion);
+function versionRefusal(observedVersion: string | null): string | null {
+	const check: VersionFloorResult = checkVersionFloor("omp", observedVersion);
 	if (check.ok) return null;
 	return check.reason === "unknown_version"
 		? `omp version unknown; minimum ${check.floor}`
@@ -50,9 +46,9 @@ function versionRefusal(options: OmpCommandPortOptions): string | null {
  */
 export function createOmpCommandPort(
 	handlers: ReadonlyMap<string, OmpCommandHandler>,
-	options: OmpCommandPortOptions = {},
+	options: OmpCommandPortOptions,
 ): CommandPort {
-	const refusal = versionRefusal(options);
+	const refusal = versionRefusal(options.observedVersion);
 	return {
 		list(): readonly CommandDefinition<unknown, unknown>[] {
 			if (refusal !== null) return [];

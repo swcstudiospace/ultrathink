@@ -9,6 +9,7 @@
  * each flight owns its own cancellation and outer time limit. A tool result that opens a PR for a planned session gets
  * an ultrathink-sync aside. `/ultrathink-<verb>` commands toggle control state or send one unplanned message.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -1405,6 +1406,19 @@ const SYSTEM_FS: SyncFileSystemPort = {
 	readFileSync: (path) => readFileSync(path, "utf8"),
 };
 
+/** The Omp version of the binary hosting this extension: `process.execPath --version`, bounded to 2 seconds. Null when the read fails or prints no dotted version token. */
+function readLiveOmpVersion(): string | null {
+	try {
+		const output = execFileSync(process.execPath, ["--version"], {
+			timeout: 2000,
+			encoding: "utf8",
+		});
+		return /\d+(?:\.\d+)+/.exec(output)?.[0] ?? null;
+	} catch {
+		return null;
+	}
+}
+
 export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
@@ -1441,6 +1455,8 @@ export function createOmpExtension(
 			classify?: (swarmRoot: string) => LaneClassify;
 			spawn?: (plan: readonly LanePlan[]) => LaneHandle[];
 		};
+		/** Reads the hosting Omp binary's version once at extension load; defaults to the live read. Null refuses every command. */
+		readOmpVersion?: () => string | null;
 	} = {},
 ): (pi: ExtensionAPI) => void {
 	const plan = options.plan ?? nativeEnginePlanner;
@@ -1451,6 +1467,7 @@ export function createOmpExtension(
 	const now = options.now ?? (() => clock.now());
 	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
+	const readOmpVersion = options.readOmpVersion ?? readLiveOmpVersion;
 	const readMcp = options.mcp ?? readMcpState;
 	const exists = options.exists ?? SYSTEM_FS.existsSync;
 	const flightConfig = options.config ?? ((cwd: string) => loadConfig(claudeConfigPaths(cwd)));
@@ -2313,7 +2330,8 @@ export function createOmpExtension(
 		if (typeof pi.registerCommand === "function") {
 			// Each command's handler is also held in this map; the registered wrapper dispatches through the port.
 			const commandHandlers = new Map<string, OmpCommandHandler>();
-			const commandPort = createOmpCommandPort(commandHandlers);
+			const observedVersion = readOmpVersion();
+			const commandPort = createOmpCommandPort(commandHandlers, { observedVersion });
 			const routed = (
 				name: string,
 				handler: (args: string, ctx: ExtensionContext) => Promise<void>,

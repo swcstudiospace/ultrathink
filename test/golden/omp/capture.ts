@@ -39,6 +39,8 @@ const TEXT_LIMIT = 64 * 1024;
 /** The only inherited variables; everything else is dropped so output cannot depend on the operator's shell. */
 const KEPT_ENV = ["PATH", "TMPDIR"];
 const PINNED_ENV: Record<string, string> = { TZ: "UTC", LANG: "C.UTF-8", LC_ALL: "C.UTF-8" };
+/** The validated Omp floor, injected so capture never spawns the real binary and fixtures stay unchanged. */
+const OMP_VERSION = "18.19.0";
 
 // Normalization patterns, applied in this order (see README.md).
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
@@ -723,6 +725,7 @@ async function runHookCase(
 	const host = createHost();
 	deps.createOmpExtension({
 		spawnObserve: recordingObserve(launches, deps.spawnObserveDetached),
+		readOmpVersion: () => OMP_VERSION,
 	})(host.pi);
 	const setup = c.setup ? c.setup(sb, deps) : null;
 	const before = snapshotTree(sb.root);
@@ -1077,7 +1080,7 @@ async function main(): Promise<void> {
 		mkdirSync(outDir, { recursive: true });
 
 		const registration = createHost();
-		createOmpExtension()(registration.pi);
+		createOmpExtension({ readOmpVersion: () => OMP_VERSION })(registration.pi);
 		writeFileSync(
 			join(outDir, "registration.json"),
 			`${JSON.stringify(registrationFixture(registration.state, roots), null, 2)}\n`,
@@ -1088,7 +1091,7 @@ async function main(): Promise<void> {
 			const sb = makeSandbox(runRoot, spec.entry);
 			pinEnv(sb);
 			const host = createHost();
-			createOmpExtension()(host.pi);
+			createOmpExtension({ readOmpVersion: () => OMP_VERSION })(host.pi);
 			const cases: unknown[] = [];
 			for (const c of spec.cases) cases.push(await runCase(host.state, sb, spec.entry, c, roots));
 			const fixture = {

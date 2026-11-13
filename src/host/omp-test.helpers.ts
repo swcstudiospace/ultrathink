@@ -118,6 +118,8 @@ export function setup(
 		...(omitRaceMs ? {} : { raceMs }),
 		mcp: MCP,
 		config: () => quietConfig(),
+		// The validated Omp floor, injected so the suite never spawns the real binary.
+		readOmpVersion: () => "18.19.0",
 		...extra,
 	})(pi);
 	const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "s1" }, ...ctxExtra };
