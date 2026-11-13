@@ -5,8 +5,8 @@ import { describe, expect, test } from "bun:test";
 import { HOST_VERSION_FLOORS } from "../version-floor.ts";
 import { type OmpCommandHandler, createOmpCommandPort } from "./commands.ts";
 
-/** Omp version recorded in docs/plugin-research/host-contracts.md ("Host versions used"). The live version is not read. */
-const RECORDED_OMP_VERSION = "18.19.0";
+/** Omp runtime package version (`VERSION` from @oh-my-pi/pi-utils), which is the Omp version floor. */
+const RECORDED_OMP_VERSION = "18.14.0";
 
 const input = { args: "now", ctx: {} };
 const context = { correlationId: "test" };
@@ -82,12 +82,12 @@ describe("createOmpCommandPort version floor", () => {
 
 	test("a version below the floor is refused: no command listed, handler never called", async () => {
 		const calls: string[] = [];
-		const port = createOmpCommandPort(recordingHandlers(calls), { observedVersion: "18.18.9" });
+		const port = createOmpCommandPort(recordingHandlers(calls), { observedVersion: "18.13.9" });
 
 		expect(port.list()).toEqual([]);
 		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
 			ok: false,
-			error: { category: "internal", message: "omp version below minimum 18.19.0" },
+			error: { category: "internal", message: "omp version below minimum 18.14.0" },
 		});
 		expect(calls).toEqual([]);
 	});
@@ -100,7 +100,7 @@ describe("createOmpCommandPort version floor", () => {
 			expect(port.list()).toEqual([]);
 			expect(await port.invoke("ultrathink-status", input, context)).toEqual({
 				ok: false,
-				error: { category: "internal", message: "omp version unknown; minimum 18.19.0" },
+				error: { category: "internal", message: "omp version unknown; minimum 18.14.0" },
 			});
 		}
 		expect(calls).toEqual([]);

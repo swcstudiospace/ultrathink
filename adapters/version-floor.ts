@@ -15,7 +15,7 @@ export const HOST_VERSION_FLOORS: Readonly<Record<HostId, string>> = {
 	muse: "1.4.14",
 	hermes: "v0.23.1",
 	"prime-agent": "0.10.2",
-	omp: "18.19.0",
+	omp: "18.14.0",
 };
 
 export type VersionFloorResult =

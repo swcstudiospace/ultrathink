@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { VERSION as OMP_RUNTIME_VERSION } from "@oh-my-pi/pi-utils";
 import { isAbortError, isDirectory } from "../shared.ts";
 import type {
 	Api,
@@ -2313,7 +2314,9 @@ export function createOmpExtension(
 		if (typeof pi.registerCommand === "function") {
 			// Each command's handler is also held in this map; the registered wrapper dispatches through the port.
 			const commandHandlers = new Map<string, OmpCommandHandler>();
-			const commandPort = createOmpCommandPort(commandHandlers);
+			const commandPort = createOmpCommandPort(commandHandlers, {
+				observedVersion: OMP_RUNTIME_VERSION,
+			});
 			const routed = (
 				name: string,
 				handler: (args: string, ctx: ExtensionContext) => Promise<void>,
