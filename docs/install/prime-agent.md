@@ -103,3 +103,44 @@ Observed: `Removing <stage>...` then `Removed <stage>`; `prime-agent package lis
 - Observed runs in the isolated root `/tmp/ut-matrix/prime-agent-fix`: install, RPC `get_commands`, kernel-venv import, `ultrathink.status()`, `ultrathink.plan("ok")`, and removal, as described above.
 - Host contract `.planning/research/hosts/host-contracts.md`: section 3 and its unverified-gaps list.
 - `docs/install.md#prime-agent` covers the setup-script route (`scripts/setup.ts apply` symlinks), which is separate from this package route.
+
+## Model-turn verification
+
+Run in the isolated root `/tmp/ut-matrix/prime-agent-fix/home` (`HOME` set there; `PRIME_AGENT_CODING_AGENT_DIR=$HOME/.prime/agent`), with `ANTHROPIC_API_KEY` unset. Install used the staging block above, with `STAGE=/tmp/ut-matrix/prime-agent-fix/model-turn/stage` and `PROJECT=/tmp/ut-matrix/prime-agent-fix/model-turn/project`.
+
+Login: Prime-Agent 0.10.2 does not read `.credentials.json` (the string is absent from the binary). It reads the `anthropic` entry of `$PRIME_AGENT_CODING_AGENT_DIR/auth.json` (`type`, `access`, `refresh`, `expires`). The `claudeAiOauth` fields of the Claude login were written there as that one entry with mode 600. `mcpOAuth` was not copied. The file was removed after the run.
+
+```sh
+export HOME=/tmp/ut-matrix/prime-agent-fix/home PRIME_AGENT_CODING_AGENT_DIR=/tmp/ut-matrix/prime-agent-fix/home/.prime/agent
+unset ANTHROPIC_API_KEY
+cd "$PROJECT" && prime-agent package install "$STAGE" --local
+cd "$PROJECT" && prime-agent -p --no-session --cwd "$PROJECT" --provider anthropic --model claude-haiku-4-5 -- "/skill:ultrathink" "/ultrathink-status"
+rm -f "$PRIME_AGENT_CODING_AGENT_DIR/auth.json"; ls -la "$PRIME_AGENT_CODING_AGENT_DIR/auth.json"
+```
+
+Results:
+
+- Install: `Installed /tmp/ut-matrix/prime-agent-fix/model-turn/stage`, exit 0. `package list` shows `Project packages:` with `../../../stage`, exit 0.
+- Model turn: exit 0, wall time 11.76 s. stdout, verbatim:
+
+```text
+**ultrathink status:**
+
+- **Prompt Uplift:** on
+- **Engine:** claude-haiku-5-5
+- **Graph of Thought:** on
+- **HITL clarifications:** on (max 4)
+- **Tracking:** on (not configured—set Notion/Linear credentials)
+- **Ship:** off
+- **Teach:** on · 0 confirmed, 0 candidate
+- **Session ID:** unknown
+- **State dir:** `/tmp/ut-matrix/prime-agent-fix/home/.prime/agent/ultrathink`
+
+Planning is ready to use. Tracking and shipping require MCP configuration (Notion dataSourceUrl or Linear team).
+```
+
+- `Engine` is the planner engine from the ultrathink config, not the `--model` flag of this run.
+- stderr (12 lines): kernel-venv resolve and rebuild of `agent-message` and `prime-agent-runtime`, then `✓ ready`. No errors.
+- Not checked in this run: that `/skill:ultrathink` loaded as a separate step (the RPC `get_commands` listing was not repeated).
+- Login removal: `ls: cannot access '/tmp/ut-matrix/prime-agent-fix/home/.prime/agent/auth.json': No such file or directory`, exit 2. A byte scan of the isolated root found no file holding the staged access or refresh token.
+- The staged access token had already expired (`expires` earlier than the run). Whether Prime-Agent refreshed it was not determined. `/root/.claude/.credentials.json` has mtime `2026-11-13 06:18:08 UTC`, inside the run window. This run did not write it, and the cause was not determined.
