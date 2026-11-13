@@ -431,3 +431,11 @@ Result:
 - `readOmpVersionFrom(process.execPath)`: `18.20.0`, which passes the 18.19.0 floor.
 
 So the production default in `createOmpExtension` reads the hosting Omp binary's version, as the fail-closed floor requires.
+
+## Live check: `omp --no-extensions --version` (the production read)
+
+Date: 2026-11-13. The production read runs `execFileSync(process.execPath, ["--no-extensions", "--version"])` with a 2 s bound.
+
+- Command: `omp --no-extensions --version` → output `18.20.0`, exit `0`. The parse keeps only the `omp/<version>` token, so this prints 18.20.0 and passes the floor.
+- `omp --version` (no flag) and `omp -e <probe> --version` do not load extensions; the probe file was not run (checked separately).
+- Callers of `createOmpExtension(`: 10 occurrences across the repo, all in files that inject `readOmpVersion` (the default export, the golden capture, the conformance subject, and the endpoint test helper). Verified by grep and by `bun run check`, which typechecks every caller.
