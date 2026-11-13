@@ -418,3 +418,16 @@ Invoke:
 - No command was run against the real home. The isolated `ultrathink/` dir had no `last-skip.json` when listed before Run 1 step 10, and it did not exist during Run 2. Nothing links these writes to the isolated runs.
 - The real `control.json` mtime stayed `2026-11-10 12:13:14` across the run.
 - [INFERENCE] The writer is probably another live omp session on this machine that consumed a skip-once flag. The session running this agent is one candidate. Not identified. The operator should check.
+
+## Live identity check: `process.execPath` is the Omp binary
+
+Date: 2026-11-13. Omp binary: `/root/.local/bin/omp` (287 MB Bun-compiled executable; `omp --version` → `omp/18.20.0`).
+
+Method: `omp --no-extensions -e <probe> -p "reply with the single word ok"`. The probe is a throwaway extension that writes its own `process.execPath`, `typeof Bun`, and `readOmpVersionFrom(process.execPath)` to a file. Probe files were in `/tmp/omp-probe/` and are not part of the repo.
+
+Result:
+- `process.execPath` inside the extension: `/root/.local/bin/omp` (the Omp binary, not a separate runtime).
+- `typeof Bun`: `object` (the embedded Bun runtime).
+- `readOmpVersionFrom(process.execPath)`: `18.20.0`, which passes the 18.19.0 floor.
+
+So the production default in `createOmpExtension` reads the hosting Omp binary's version, as the fail-closed floor requires.
