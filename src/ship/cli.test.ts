@@ -44,6 +44,7 @@ const CONFIG: ShipConfig = {
 	reviewRetries: 3,
 	mergeTimeoutMs: 10_000,
 	judge: "gate",
+	reviewer: "greptile",
 };
 const PR: PrRef = { number: 7, url: "https://github.com/o/r/pull/7", head: "feat", base: "master" };
 const PASSED: ReviewResult = {

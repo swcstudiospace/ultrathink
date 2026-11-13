@@ -17,6 +17,7 @@ import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
 import { assessDecisionJson, assessDone } from "./assess.ts";
+import { CLAUDE_REVIEW_TIMEOUT_MS, reviewWithClaude, usesClaudeReviewer } from "./claude-review.ts";
 import { createGithub } from "./github.ts";
 import type { Github, ReviewThreadsOptions } from "./github.ts";
 import { openThreadComments, runReview } from "./greptile.ts";
@@ -332,20 +333,30 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 		failedHere.some((round) => !round.reviewId) && ship.pending?.headSha !== status.headSha;
 	let result: ReviewResult = reusedRound
 		? prior
-		: await deps.review({
-				config: deps.config,
-				client: deps.greptile(),
-				run: deps.run,
-				cwd,
-				repo,
-				base: pr.base,
-				prNumber: pr.number,
-				headSha: status.headSha,
-				reviewThreads: () =>
-					github.reviewThreads(pr.number, { deadlineMs: threadDeadline, now: deps.now }),
-				staleReviewIds,
-				...(restart ? { restart: true } : {}),
-			});
+		: usesClaudeReviewer(deps.config)
+			? await reviewWithClaude({
+					run: deps.run,
+					cwd,
+					repo,
+					prNumber: pr.number,
+					headSha: status.headSha,
+					timeoutMs: CLAUDE_REVIEW_TIMEOUT_MS,
+					now: deps.now,
+				})
+			: await deps.review({
+					config: deps.config,
+					client: deps.greptile(),
+					run: deps.run,
+					cwd,
+					repo,
+					base: pr.base,
+					prNumber: pr.number,
+					headSha: status.headSha,
+					reviewThreads: () =>
+						github.reviewThreads(pr.number, { deadlineMs: threadDeadline, now: deps.now }),
+					staleReviewIds,
+					...(restart ? { restart: true } : {}),
+				});
 	if (reusedRound && result.source === "pr") {
 		// Threads resolved since the round (non-actionable findings) close without a new commit. A failed refresh must not
 		// fall back to the stored snapshot: a finding posted since then would be missed, so report not ready and persist nothing.
