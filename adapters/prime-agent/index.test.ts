@@ -2,11 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { createPrimeAgentSkillSubject } from "../../conformance/prime-agent-subject.ts";
+import { CAPABILITY_FALLBACKS } from "../../core/src/capabilities/manifest.ts";
 import {
 	type AdapterEntry,
 	type AdapterRunner,
 	createPrimeAgentAdapter,
+	PRIME_AGENT_DECLARED_CAPABILITIES,
 	PRIME_AGENT_ENTRY_PATH,
+	PRIME_AGENT_RECORDED_VERSION,
 } from "./index.ts";
 
 const context = { correlationId: "test-correlation" };
@@ -129,5 +133,87 @@ describe("createPrimeAgentAdapter", () => {
 			error: { category: "capability_missing", message: "host entry point missing" },
 		});
 		expect(calls).toEqual([]);
+	});
+
+	test("host-unsupported: a false skills flag returns the documented fallback and skips the runner", async () => {
+		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ok" });
+		const adapter = createPrimeAgentAdapter({
+			runner,
+			entry: presentEntry,
+			entryPath: PRIME_AGENT_ENTRY_PATH,
+			declared: { ...PRIME_AGENT_DECLARED_CAPABILITIES, supports_skills: false },
+		});
+		const result = await adapter.invoke("ultrathink-status", {}, context);
+		expect(result).toEqual({
+			ok: false,
+			error: { category: "capability_missing", message: CAPABILITY_FALLBACKS.supports_skills },
+		});
+		expect(calls).toEqual([]);
+	});
+
+	test("valid: a skills-only request runs when no other flag is declared", async () => {
+		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ok\n" });
+		const adapter = createPrimeAgentAdapter({
+			runner,
+			entry: presentEntry,
+			entryPath: PRIME_AGENT_ENTRY_PATH,
+			declared: { supports_skills: true },
+		});
+		const result = await adapter.invoke("ultrathink-on", {}, context);
+		expect(result).toEqual({ ok: true, value: { stdout: "ok\n" } });
+		expect(calls).toEqual([["on"]]);
+	});
+
+	test("host-unsupported: the declared flags match the Prime Agent conformance subject", () => {
+		expect(PRIME_AGENT_DECLARED_CAPABILITIES).toEqual(createPrimeAgentSkillSubject().capabilities);
+	});
+
+	test("host-unsupported: a version below the floor is refused and skips the runner", async () => {
+		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ok" });
+		const adapter = createPrimeAgentAdapter({
+			runner,
+			entry: presentEntry,
+			entryPath: PRIME_AGENT_ENTRY_PATH,
+			observedVersion: "0.10.1",
+		});
+		const result = await adapter.invoke("ultrathink-quick", {}, context);
+		expect(result).toEqual({
+			ok: false,
+			error: { category: "version_mismatch", message: "host version below floor 0.10.2" },
+		});
+		expect(calls).toEqual([]);
+	});
+
+	test("valid: a version at or above the floor runs the engine unchanged", async () => {
+		for (const observedVersion of ["0.10.2", "0.10.10", "0.11.0", PRIME_AGENT_RECORDED_VERSION]) {
+			const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ok" });
+			const adapter = createPrimeAgentAdapter({
+				runner,
+				entry: presentEntry,
+				entryPath: PRIME_AGENT_ENTRY_PATH,
+				observedVersion,
+			});
+			const result = await adapter.invoke("ultrathink-status", {}, context);
+			expect(result).toEqual({ ok: true, value: { stdout: "ok" } });
+			expect(calls).toEqual([["status"]]);
+		}
+	});
+
+	test("host-unsupported: an unknown version is refused and skips the runner", async () => {
+		for (const observedVersion of [null, "", "unknown", "0.10.x"]) {
+			const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ok" });
+			const adapter = createPrimeAgentAdapter({
+				runner,
+				entry: presentEntry,
+				entryPath: PRIME_AGENT_ENTRY_PATH,
+				observedVersion,
+			});
+			const result = await adapter.invoke("ultrathink-status", {}, context);
+			expect(result).toEqual({
+				ok: false,
+				error: { category: "version_mismatch", message: "host version unknown" },
+			});
+			expect(calls).toEqual([]);
+		}
 	});
 });

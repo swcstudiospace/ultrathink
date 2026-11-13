@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { CAPABILITY_FALLBACKS } from "../../core/src/capabilities/manifest.ts";
 import {
 	type AdapterEntry,
 	type AdapterOutcome,
@@ -164,5 +165,100 @@ describe("createHermesAdapter", () => {
 		for (const definition of adapter.list()) {
 			expect(definition.idempotency).toBe("side-effecting");
 		}
+	});
+
+	test("a false supports_slash_commands flag returns its fallback and never runs the engine", async () => {
+		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "" }));
+		for (const capabilities of [{ supports_slash_commands: false }, {}]) {
+			const adapter = createHermesAdapter({
+				runner: fake.runner,
+				entry: presentEntry,
+				entryPath: HERMES_ENTRY_PATH,
+				capabilities,
+			});
+
+			const result = await adapter.invoke("ultrathink-status", {}, context);
+
+			expect(result).toEqual({
+				ok: false,
+				error: {
+					category: "capability_missing",
+					message: CAPABILITY_FALLBACKS.supports_slash_commands,
+				},
+			});
+		}
+		expect(fake.calls).toEqual([]);
+	});
+
+	test("a true supports_slash_commands flag runs the engine unchanged", async () => {
+		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "engine output" }));
+		const adapter = createHermesAdapter({
+			runner: fake.runner,
+			entry: presentEntry,
+			entryPath: HERMES_ENTRY_PATH,
+			capabilities: { supports_slash_commands: true },
+		});
+
+		const result = await adapter.invoke("ultrathink-status", {}, context);
+
+		expect(fake.calls).toEqual([["status"]]);
+		expect(result).toEqual({ ok: true, value: { stdout: "engine output" } });
+	});
+
+	test("a host version below the floor is refused and never runs the engine", async () => {
+		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "" }));
+		for (const hostVersion of ["v0.23.0", "0.9.0"]) {
+			const adapter = createHermesAdapter({
+				runner: fake.runner,
+				entry: presentEntry,
+				entryPath: HERMES_ENTRY_PATH,
+				hostVersion,
+			});
+
+			const result = await adapter.invoke("ultrathink-status", {}, context);
+
+			expect(result).toEqual({
+				ok: false,
+				error: { category: "version_mismatch", message: "host version below v0.23.1" },
+			});
+		}
+		expect(fake.calls).toEqual([]);
+	});
+
+	test("an unknown host version is refused and never runs the engine", async () => {
+		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "" }));
+		for (const hostVersion of [null, "unknown", "0.23.1-beta"]) {
+			const adapter = createHermesAdapter({
+				runner: fake.runner,
+				entry: presentEntry,
+				entryPath: HERMES_ENTRY_PATH,
+				hostVersion,
+			});
+
+			const result = await adapter.invoke("ultrathink-status", {}, context);
+
+			expect(result).toEqual({
+				ok: false,
+				error: { category: "version_mismatch", message: "host version unknown" },
+			});
+		}
+		expect(fake.calls).toEqual([]);
+	});
+
+	test("a host version at or above the floor is accepted and unchanged", async () => {
+		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "engine output" }));
+		for (const hostVersion of ["v0.23.1", "0.23.1", "0.24.0"]) {
+			const adapter = createHermesAdapter({
+				runner: fake.runner,
+				entry: presentEntry,
+				entryPath: HERMES_ENTRY_PATH,
+				hostVersion,
+			});
+
+			const result = await adapter.invoke("ultrathink-status", {}, context);
+
+			expect(result).toEqual({ ok: true, value: { stdout: "engine output" } });
+		}
+		expect(fake.calls).toEqual([["status"], ["status"], ["status"]]);
 	});
 });

@@ -15,10 +15,14 @@ import {
 
 type ChildOutcome = { readonly exitCode: number; readonly stdout: string } | Error;
 
-function fakeDeps(outcome: ChildOutcome, entryExists = true) {
+/** Host version the fake reader reports by default: above every host floor. */
+const ABOVE_FLOOR = "99.0.0";
+
+function fakeDeps(outcome: ChildOutcome, entryExists = true, version: string | null = ABOVE_FLOOR) {
 	const runCalls: string[][] = [];
 	const runEnvs: (Readonly<Record<string, string>> | undefined)[] = [];
 	const entryPaths: string[] = [];
+	const versionCalls: string[] = [];
 	const deps: AdapterCliDeps = {
 		runner: {
 			async run(argv, env) {
@@ -34,8 +38,12 @@ function fakeDeps(outcome: ChildOutcome, entryExists = true) {
 				return entryExists;
 			},
 		},
+		readVersion: async (command) => {
+			versionCalls.push(command);
+			return version;
+		},
 	};
-	return { deps, runCalls, runEnvs, entryPaths };
+	return { deps, runCalls, runEnvs, entryPaths, versionCalls };
 }
 
 describe("runAdapterCli: dispatch", () => {
@@ -164,6 +172,132 @@ describe("runAdapterCli: host environment", () => {
 		const { deps, runEnvs } = fakeDeps({ exitCode: 0, stdout: "" });
 		await runAdapterCli(["claude-code", "status"], deps);
 		expect(runEnvs).toEqual([undefined]);
+	});
+});
+
+describe("runAdapterCli: host version", () => {
+	test("a version above the floor lets the verb run", async () => {
+		const { deps, runCalls, versionCalls } = fakeDeps(
+			{ exitCode: 0, stdout: "ran\n" },
+			true,
+			"claude 2.1.400 (Claude Code)",
+		);
+		const result = await runAdapterCli(["claude-code", "quick"], deps);
+		expect(result.output).toEqual({ ok: true, stdout: "ran\n" });
+		expect(versionCalls).toEqual(["claude"]);
+		expect(runCalls).toEqual([["quick"]]);
+	});
+
+	test("a version below the floor is refused with the adapter's refusal and never runs", async () => {
+		// Each adapter words and categorizes its own version refusal; the CLI passes it through.
+		const cases: {
+			host: string;
+			version: string;
+			category: "capability_missing" | "version_mismatch";
+			message: string;
+		}[] = [
+			{
+				host: "claude-code",
+				version: "claude 2.1.321 (Claude Code)",
+				category: "capability_missing",
+				message: "host version below floor 2.1.322",
+			},
+			{
+				host: "grok-build",
+				version: "1.0.76",
+				category: "capability_missing",
+				message: "host version below minimum 1.0.77",
+			},
+			{
+				host: "muse",
+				version: "muse 1.4.13",
+				category: "version_mismatch",
+				message: "host version is below the minimum 1.4.14",
+			},
+			{
+				host: "hermes",
+				version: "hermes v0.23.0",
+				category: "version_mismatch",
+				message: "host version below v0.23.1",
+			},
+			{
+				host: "prime-agent",
+				version: "prime-agent 0.10.1",
+				category: "version_mismatch",
+				message: "host version below floor 0.10.2",
+			},
+		];
+		for (const { host, version, category, message } of cases) {
+			const { deps, runCalls } = fakeDeps({ exitCode: 0, stdout: "ran" }, true, version);
+			const result = await runAdapterCli([host, "quick"], deps);
+			expect(result.exitCode).toBe(1);
+			expect(result.output).toEqual({ ok: false, error: { category, message } });
+			expect(runCalls).toEqual([]);
+		}
+	});
+
+	test("an unreadable version is refused fail-closed without running", async () => {
+		// The version is passed as null, which every adapter refuses; undefined would fall back to
+		// the recorded version and let the host run.
+		const cases: {
+			host: string;
+			category: "capability_missing" | "version_mismatch";
+			message: string;
+		}[] = [
+			{ host: "claude-code", category: "capability_missing", message: "host version unknown" },
+			{
+				host: "grok-build",
+				category: "capability_missing",
+				message: "host version unknown; minimum 1.0.77",
+			},
+			{
+				host: "muse",
+				category: "version_mismatch",
+				message: "host version is unknown; minimum is 1.4.14",
+			},
+			{ host: "hermes", category: "version_mismatch", message: "host version unknown" },
+			{ host: "prime-agent", category: "version_mismatch", message: "host version unknown" },
+		];
+		for (const { host, category, message } of cases) {
+			for (const version of [null, "", "dev build"]) {
+				const { deps, runCalls } = fakeDeps({ exitCode: 0, stdout: "ran" }, true, version);
+				const result = await runAdapterCli([host, "quick"], deps);
+				expect(result.output).toEqual({ ok: false, error: { category, message } });
+				expect(runCalls).toEqual([]);
+			}
+		}
+	});
+
+	test("a reader that throws is refused fail-closed and never leaks its text", async () => {
+		const { deps, runCalls } = fakeDeps({ exitCode: 0, stdout: "ran" });
+		const throwing: AdapterCliDeps = {
+			...deps,
+			readVersion: async () => {
+				throw new Error("spawn grok ENOENT /home/u/.token=abc");
+			},
+		};
+		const result = await runAdapterCli(["grok-build", "quick"], throwing);
+		expect(result.output).toEqual({
+			ok: false,
+			error: { category: "capability_missing", message: "host version unknown; minimum 1.0.77" },
+		});
+		expect(JSON.stringify(result.output)).not.toContain("abc");
+		expect(runCalls).toEqual([]);
+	});
+
+	test("each host reads its own --version command", async () => {
+		const expected: Record<string, string> = {
+			"claude-code": "claude",
+			"grok-build": "grok",
+			muse: "muse",
+			hermes: "hermes",
+			"prime-agent": "prime-agent",
+		};
+		for (const [host, command] of Object.entries(expected)) {
+			const { deps, versionCalls } = fakeDeps({ exitCode: 0, stdout: "" });
+			await runAdapterCli([host, "status"], deps);
+			expect(versionCalls).toEqual([command]);
+		}
 	});
 });
 

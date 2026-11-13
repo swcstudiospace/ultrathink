@@ -8,6 +8,9 @@ import type {
 	ErrorCategory,
 	Schema,
 } from "../../core/src/ports/command.ts";
+import type { CapabilityFlag } from "../../core/src/capabilities/manifest.ts";
+import { type DeclaredCapabilities, gateCapabilities } from "../capability-gate.ts";
+import { checkVersionFloor } from "../version-floor.ts";
 
 /** Runs `bin/ultrathink` with the given argv. The caller supplies the real process spawn. */
 export interface AdapterRunner {
@@ -23,6 +26,10 @@ export interface ClaudeCodeAdapterOptions {
 	readonly runner: AdapterRunner;
 	readonly entry: AdapterEntry;
 	readonly entryPath: string;
+	/** Declared host flags. Defaults to the Claude Code subject's declarations (DECLARED_FLAGS). */
+	readonly declared?: DeclaredCapabilities;
+	/** Observed host version. Defaults to the version recorded in host-contracts.md (RECORDED_VERSION). */
+	readonly observedVersion?: string | null;
 }
 
 /** Engine verbs accepted by `bin/ultrathink`. Each one is exposed as `ultrathink-<verb>`. */
@@ -41,13 +48,55 @@ const COMMAND_ERRORS: readonly ErrorCategory[] = [
 	"internal",
 ];
 
+/** Capabilities this adapter needs: each command is a slash command, and the entry point is the hooks file. */
+const REQUESTED_FLAGS: readonly CapabilityFlag[] = ["supports_slash_commands", "supports_hooks"];
+
+/**
+ * Flags conformance/claude-code-subject.ts declares. Mirrored here because the subject reads the commands
+ * directory when it is created; keep the two in step.
+ */
+const DECLARED_FLAGS: DeclaredCapabilities = {
+	supports_skills: true,
+	supports_slash_commands: true,
+	supports_subagents: false,
+	supports_hooks: true,
+	supports_persistent_state: false,
+	supports_interactive_prompts: false,
+};
+
+/**
+ * Claude Code version recorded in docs/plugin-research/host-contracts.md. The live `claude --version` is not read
+ * here: this adapter has no version source (the doctor probe is separate), so the recorded version stands in for the
+ * observed one unless the caller passes `observedVersion`.
+ */
+const RECORDED_VERSION = "2.1.322";
+
+/** Fixed refusal text when the version floor rejects `observed`; undefined when it is accepted. */
+function versionRefusal(observed: string | null): string | undefined {
+	const floor = checkVersionFloor("claude-code", observed);
+	if (floor.ok) return undefined;
+	return floor.reason === "below_floor"
+		? `host version below floor ${floor.floor}`
+		: "host version unknown";
+}
+
 /**
  * CommandPort for the Claude Code host. Each command runs one `bin/ultrathink <verb>` invocation and
  * returns its stdout. A thrown runner error or a non-zero exit yields `internal` with a fixed message,
  * because the thrown text or stderr may carry secrets.
  */
 export function createClaudeCodeAdapter(options: ClaudeCodeAdapterOptions): CommandPort {
-	const { runner, entry, entryPath } = options;
+	const {
+		runner,
+		entry,
+		entryPath,
+		declared = DECLARED_FLAGS,
+		observedVersion = RECORDED_VERSION,
+	} = options;
+	const [fallback] = gateCapabilities(REQUESTED_FLAGS, declared).flatMap((capability) =>
+		capability.fallback === null ? [] : [capability.fallback],
+	);
+	const refusal = versionRefusal(observedVersion);
 
 	return {
 		list(): readonly CommandDefinition<unknown, unknown>[] {
@@ -67,6 +116,10 @@ export function createClaudeCodeAdapter(options: ClaudeCodeAdapterOptions): Comm
 					ok: false,
 					error: { category: "invalid_input", message: `unknown command: ${name}` },
 				};
+			if (fallback !== undefined)
+				return { ok: false, error: { category: "capability_missing", message: fallback } };
+			if (refusal !== undefined)
+				return { ok: false, error: { category: "capability_missing", message: refusal } };
 			if (!entry.exists(entryPath))
 				return {
 					ok: false,

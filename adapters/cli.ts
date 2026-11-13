@@ -36,9 +36,16 @@ interface AdapterEntry {
 	exists(path: string): boolean;
 }
 
+/**
+ * Reads the output of `<command> --version`. Resolves null when the binary is absent, exits non-zero,
+ * or times out; the CLI then refuses that host fail closed.
+ */
+type VersionReader = (command: string) => Promise<string | null>;
+
 export interface AdapterCliDeps {
 	readonly runner: AdapterRunner;
 	readonly entry: AdapterEntry;
+	readonly readVersion: VersionReader;
 }
 
 type AdapterCliOutput =
@@ -60,22 +67,39 @@ type AdapterFactory = (options: {
 	readonly runner: AdapterRunner;
 	readonly entry: AdapterEntry;
 	readonly entryPath: string;
+	readonly observedVersion: string | null;
 }) => CommandPort;
 
 interface HostSpec {
 	readonly create: AdapterFactory;
 	readonly entryPath: string;
+	readonly versionCommand: string;
 	readonly env?: HostEnv;
 }
 
 const HOSTS: Record<string, HostSpec> = {
-	"claude-code": { create: createClaudeCodeAdapter, entryPath: "hooks/hooks.json" },
-	"grok-build": { create: createGrokBuildAdapter, entryPath: "hooks/hooks.json" },
-	muse: { create: createMuseAdapter, entryPath: "hooks/muse-prompt" },
-	hermes: { create: createHermesAdapter, entryPath: "hosts/hermes/bridge.py" },
+	"claude-code": {
+		create: createClaudeCodeAdapter,
+		entryPath: "hooks/hooks.json",
+		versionCommand: "claude",
+	},
+	"grok-build": {
+		create: createGrokBuildAdapter,
+		entryPath: "hooks/hooks.json",
+		versionCommand: "grok",
+	},
+	muse: { create: createMuseAdapter, entryPath: "hooks/muse-prompt", versionCommand: "muse" },
+	hermes: {
+		// Hermes names its version option `hostVersion`.
+		create: ({ observedVersion, ...options }) =>
+			createHermesAdapter({ ...options, hostVersion: observedVersion }),
+		entryPath: "hosts/hermes/bridge.py",
+		versionCommand: "hermes",
+	},
 	"prime-agent": {
 		create: createPrimeAgentAdapter,
 		entryPath: "hosts/prime-agent/SKILL.md",
+		versionCommand: "prime-agent",
 		env: { ULTRATHINK_HOST: "prime-agent" },
 	},
 };
@@ -86,6 +110,12 @@ const RAW_FLAG = "--raw";
 
 /** Longest stdout the JSON envelope carries. `--raw` prints stdout in full. */
 const ENVELOPE_STDOUT_LIMIT = 4096;
+
+/** Longest a host `--version` call may run before the host counts as unreadable. */
+const VERSION_TIMEOUT_MS = 5000;
+
+/** First dotted-number run in a host's `--version` output, e.g. `2.1.322` in `claude 2.1.322 (Claude Code)`. */
+const VERSION_RUN = /\d+(?:\.\d+)+/;
 
 const CONTEXT = { correlationId: "ultrathink-adapter" };
 
@@ -103,8 +133,8 @@ const failure = (
 });
 
 /**
- * Pure dispatch: strips `--raw`, validates host and verb, builds the host adapter with a runner
- * that appends the extra args, and invokes the verb. Performs no I/O of its own.
+ * Dispatch: strips `--raw`, validates host and verb, reads the host version, builds the host adapter
+ * with a runner that appends the extra args, and invokes the verb. Its I/O goes only through `deps`.
  */
 export async function runAdapterCli(
 	argv: readonly string[],
@@ -132,7 +162,13 @@ export async function runAdapterCli(
 			return last.child;
 		},
 	};
-	const port = host.create({ runner, entry: deps.entry, entryPath: host.entryPath });
+	const observedVersion = await readObservedVersion(deps.readVersion, host.versionCommand);
+	const port = host.create({
+		runner,
+		entry: deps.entry,
+		entryPath: host.entryPath,
+		observedVersion,
+	});
 	const result = await port.invoke(`ultrathink-${verb}`, undefined, CONTEXT);
 	if (!result.ok)
 		return failure(raw, result.error.category, result.error.message, last.child?.exitCode);
@@ -293,6 +329,33 @@ function createProcessRunner(binPath: string): AdapterRunner {
 	};
 }
 
+/** Version text a host CLI prints, read through the injected reader; null when unreadable. */
+async function readObservedVersion(read: VersionReader, command: string): Promise<string | null> {
+	try {
+		const text = await read(command);
+		return text === null ? null : (VERSION_RUN.exec(text)?.[0] ?? null);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Real reader: spawns `<command> --version` with an argv array (no shell) and resolves its stdout.
+ * Resolves null on a spawn failure, non-zero exit or timeout.
+ */
+function createVersionReader(): VersionReader {
+	return (command) => {
+		const { promise, resolve } = Promise.withResolvers<string | null>();
+		execFile(
+			command,
+			["--version"],
+			{ encoding: "utf8", timeout: VERSION_TIMEOUT_MS },
+			(error, stdout) => resolve(error === null ? stdout : null),
+		);
+		return promise;
+	};
+}
+
 /** Real entry check: a host entry point exists when its path resolves under the repo root. */
 function createRepoEntry(root: string): AdapterEntry {
 	return { exists: (path) => existsSync(join(root, path)) };
@@ -308,6 +371,7 @@ async function main(argv: readonly string[] = process.argv.slice(2)): Promise<nu
 	const deps: AdapterCliDeps = {
 		runner: createProcessRunner(join(REPO_ROOT, "bin", "ultrathink")),
 		entry: createRepoEntry(REPO_ROOT),
+		readVersion: createVersionReader(),
 	};
 	const result = await runAdapterCli(argv, deps);
 	const { stdout, stderr } = renderResult(result);

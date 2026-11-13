@@ -2,10 +2,25 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
-import { type AdapterEntry, type AdapterRunner, createGrokBuildAdapter } from "./index.ts";
+import { createGrokBuildSubject } from "../../conformance/grok-build-subject.ts";
+import { CAPABILITY_FALLBACKS } from "../../core/src/capabilities/manifest.ts";
+import {
+	type AdapterEntry,
+	type AdapterRunner,
+	GROK_BUILD_DECLARED_FLAGS,
+	createGrokBuildAdapter,
+} from "./index.ts";
 
 const ENTRY_PATH = "hooks/hooks.json";
 const CONTEXT = { correlationId: "test" };
+const COMMAND_NAMES = [
+	"ultrathink-quick",
+	"ultrathink-skip",
+	"ultrathink-off",
+	"ultrathink-on",
+	"ultrathink-track",
+	"ultrathink-status",
+];
 
 function fakeRunner(outcome: { exitCode: number; stdout: string } | Error) {
 	const calls: string[][] = [];
@@ -26,14 +41,7 @@ describe("grok-build adapter", () => {
 	test("lists the six ultrathink commands as side-effecting", () => {
 		const { runner } = fakeRunner({ exitCode: 0, stdout: "" });
 		const port = createGrokBuildAdapter({ runner, entry: presentEntry, entryPath: ENTRY_PATH });
-		expect(port.list().map((definition) => definition.name)).toEqual([
-			"ultrathink-quick",
-			"ultrathink-skip",
-			"ultrathink-off",
-			"ultrathink-on",
-			"ultrathink-track",
-			"ultrathink-status",
-		]);
+		expect(port.list().map((definition) => definition.name)).toEqual(COMMAND_NAMES);
 		expect(port.list().every((definition) => definition.idempotency === "side-effecting")).toBe(
 			true,
 		);
@@ -99,5 +107,143 @@ describe("grok-build adapter", () => {
 			error: { category: "capability_missing", message: "host entry point missing" },
 		});
 		expect(calls).toEqual([]);
+	});
+
+	test("declared flags match conformance/grok-build-subject.ts", () => {
+		expect(GROK_BUILD_DECLARED_FLAGS).toEqual(createGrokBuildSubject().capabilities);
+	});
+
+	test("capability: every requested flag true runs every verb unchanged", async () => {
+		for (const name of COMMAND_NAMES) {
+			const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+			const port = createGrokBuildAdapter({
+				runner,
+				entry: presentEntry,
+				entryPath: ENTRY_PATH,
+				declared: { ...GROK_BUILD_DECLARED_FLAGS, supports_hooks: true },
+			});
+
+			const result = await port.invoke(name, undefined, CONTEXT);
+
+			expect(calls).toHaveLength(1);
+			expect(result).toEqual({ ok: true, value: { stdout: "ran" } });
+		}
+	});
+
+	test("capability: a false hooks flag returns its fallback and never runs the verb", async () => {
+		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+		const port = createGrokBuildAdapter({
+			runner,
+			entry: presentEntry,
+			entryPath: ENTRY_PATH,
+			declared: { ...GROK_BUILD_DECLARED_FLAGS, supports_hooks: false },
+		});
+
+		const result = await port.invoke("ultrathink-on", undefined, CONTEXT);
+
+		expect(result).toEqual({ ok: true, value: { stdout: CAPABILITY_FALLBACKS.supports_hooks } });
+		expect(calls).toEqual([]);
+	});
+
+	test("capability: a false slash-command flag returns its fallback for every command", async () => {
+		for (const name of COMMAND_NAMES) {
+			const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+			const port = createGrokBuildAdapter({
+				runner,
+				entry: presentEntry,
+				entryPath: ENTRY_PATH,
+				declared: { ...GROK_BUILD_DECLARED_FLAGS, supports_slash_commands: false },
+			});
+
+			const result = await port.invoke(name, undefined, CONTEXT);
+
+			expect(result).toEqual({
+				ok: true,
+				value: { stdout: CAPABILITY_FALLBACKS.supports_slash_commands },
+			});
+			expect(calls).toEqual([]);
+		}
+	});
+
+	test("capability: both requested flags false return both fallbacks, one per line", async () => {
+		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+		const port = createGrokBuildAdapter({
+			runner,
+			entry: presentEntry,
+			entryPath: ENTRY_PATH,
+			declared: {
+				...GROK_BUILD_DECLARED_FLAGS,
+				supports_slash_commands: false,
+				supports_hooks: false,
+			},
+		});
+
+		const result = await port.invoke("ultrathink-track", undefined, CONTEXT);
+
+		expect(result).toEqual({
+			ok: true,
+			value: {
+				stdout: `${CAPABILITY_FALLBACKS.supports_slash_commands}\n${CAPABILITY_FALLBACKS.supports_hooks}`,
+			},
+		});
+		expect(calls).toEqual([]);
+	});
+
+	test("version: a version below the floor is refused and never runs", async () => {
+		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+		const port = createGrokBuildAdapter({
+			runner,
+			entry: presentEntry,
+			entryPath: ENTRY_PATH,
+			observedVersion: "1.0.76",
+		});
+
+		const result = await port.invoke("ultrathink-quick", undefined, CONTEXT);
+
+		expect(result).toEqual({
+			ok: false,
+			error: { category: "capability_missing", message: "host version below minimum 1.0.77" },
+		});
+		expect(calls).toEqual([]);
+	});
+
+	test("version: an unknown or unparseable version is refused and never runs", async () => {
+		for (const observedVersion of [null, "dev", "1.0.x"]) {
+			const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+			const port = createGrokBuildAdapter({
+				runner,
+				entry: presentEntry,
+				entryPath: ENTRY_PATH,
+				observedVersion,
+			});
+
+			const result = await port.invoke("ultrathink-quick", undefined, CONTEXT);
+
+			expect(result).toEqual({
+				ok: false,
+				error: {
+					category: "capability_missing",
+					message: "host version unknown; minimum 1.0.77",
+				},
+			});
+			expect(calls).toEqual([]);
+		}
+	});
+
+	test("version: the floor and newer versions run unchanged", async () => {
+		for (const observedVersion of ["1.0.77", "1.0.78", "1.1.0", "v2.0.0"]) {
+			const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+			const port = createGrokBuildAdapter({
+				runner,
+				entry: presentEntry,
+				entryPath: ENTRY_PATH,
+				observedVersion,
+			});
+
+			const result = await port.invoke("ultrathink-quick", undefined, CONTEXT);
+
+			expect(calls).toEqual([["quick"]]);
+			expect(result).toEqual({ ok: true, value: { stdout: "ran" } });
+		}
 	});
 });
