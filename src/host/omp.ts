@@ -9,7 +9,6 @@
  * each flight owns its own cancellation and outer time limit. A tool result that opens a PR for a planned session gets
  * an ultrathink-sync aside. `/ultrathink-<verb>` commands toggle control state or send one unplanned message.
  */
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -1406,28 +1405,6 @@ const SYSTEM_FS: SyncFileSystemPort = {
 	readFileSync: (path) => readFileSync(path, "utf8"),
 };
 
-/** The version token of `omp --version` output, such as `omp/18.19.0`. */
-const OMP_VERSION_TOKEN = /\d+(?:\.\d+)+/;
-/** Bounds the live `omp --version` read, so a hung binary cannot stall extension load. */
-const OMP_VERSION_TIMEOUT_MS = 2000;
-
-/**
- * The real reader of the live Omp binary's version, synchronously: `omp --version` as an argv array (no shell), its
- * first dotted version token. Returns null on a spawn failure, non-zero exit, timeout or output without a version;
- * never throws.
- */
-function readLiveOmpVersion(): string | null {
-	try {
-		const stdout = execFileSync("omp", ["--version"], {
-			encoding: "utf8",
-			timeout: OMP_VERSION_TIMEOUT_MS,
-		});
-		return OMP_VERSION_TOKEN.exec(stdout)?.[0] ?? null;
-	} catch {
-		return null;
-	}
-}
-
 export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
@@ -1445,8 +1422,6 @@ export function createOmpExtension(
 		exists?: (path: string) => boolean;
 		/** Synchronous filesystem port for the live token-opt snapshot read; defaults to the real filesystem. */
 		fs?: SyncFileSystemPort;
-		/** The live Omp binary's version, read once at load for the version floor; defaults to `omp --version`. */
-		readOmpVersion?: () => string | null;
 		/** Ultrathink state dir holding `sessions/<id>.json`; defaults to the omp host state dir. */
 		stateDir?: string;
 		/** Process environment port for every env read; defaults to the real process environment. */
@@ -1469,7 +1444,6 @@ export function createOmpExtension(
 	} = {},
 ): (pi: ExtensionAPI) => void {
 	const plan = options.plan ?? nativeEnginePlanner;
-	const readOmpVersion = options.readOmpVersion ?? readLiveOmpVersion;
 	const raceMs = options.raceMs ?? 25_000;
 	// 0 (the default) means no outer limit: no flight timer and no retry deadline.
 	const maxRunMs = options.maxRunMs ?? 0;
@@ -2339,12 +2313,7 @@ export function createOmpExtension(
 		if (typeof pi.registerCommand === "function") {
 			// Each command's handler is also held in this map; the registered wrapper dispatches through the port.
 			const commandHandlers = new Map<string, OmpCommandHandler>();
-			// The floor reads the live binary once, synchronously, at load: the port receives a fixed value, so
-			// command dispatch never waits on the version read. An unreadable version is not refused (a readable
-			// version below the floor is); the floor still stops known-old hosts.
-			const commandPort = createOmpCommandPort(commandHandlers, {
-				observedVersion: readOmpVersion() ?? undefined,
-			});
+			const commandPort = createOmpCommandPort(commandHandlers);
 			const routed = (
 				name: string,
 				handler: (args: string, ctx: ExtensionContext) => Promise<void>,

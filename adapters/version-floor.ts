@@ -7,7 +7,7 @@
  * refused (fail closed).
  */
 
-export type HostId = "claude-code" | "grok-build" | "muse" | "hermes" | "prime-agent" | "omp";
+export type HostId = "claude-code" | "grok-build" | "muse" | "hermes" | "prime-agent";
 
 export const HOST_VERSION_FLOORS: Readonly<Record<HostId, string>> = {
 	"claude-code": "2.1.322",
@@ -15,7 +15,6 @@ export const HOST_VERSION_FLOORS: Readonly<Record<HostId, string>> = {
 	muse: "1.4.14",
 	hermes: "v0.23.1",
 	"prime-agent": "0.10.2",
-	omp: "18.19.0",
 };
 
 export type VersionFloorResult =

@@ -723,7 +723,6 @@ async function runHookCase(
 	const host = createHost();
 	deps.createOmpExtension({
 		spawnObserve: recordingObserve(launches, deps.spawnObserveDetached),
-		readOmpVersion: () => "18.19.0",
 	})(host.pi);
 	const setup = c.setup ? c.setup(sb, deps) : null;
 	const before = snapshotTree(sb.root);
@@ -1078,7 +1077,7 @@ async function main(): Promise<void> {
 		mkdirSync(outDir, { recursive: true });
 
 		const registration = createHost();
-		createOmpExtension({ readOmpVersion: () => "18.19.0" })(registration.pi);
+		createOmpExtension()(registration.pi);
 		writeFileSync(
 			join(outDir, "registration.json"),
 			`${JSON.stringify(registrationFixture(registration.state, roots), null, 2)}\n`,
@@ -1089,7 +1088,7 @@ async function main(): Promise<void> {
 			const sb = makeSandbox(runRoot, spec.entry);
 			pinEnv(sb);
 			const host = createHost();
-			createOmpExtension({ readOmpVersion: () => "18.19.0" })(host.pi);
+			createOmpExtension()(host.pi);
 			const cases: unknown[] = [];
 			for (const c of spec.cases) cases.push(await runCase(host.state, sb, spec.entry, c, roots));
 			const fixture = {

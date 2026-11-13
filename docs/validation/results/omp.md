@@ -419,6 +419,6 @@ Invoke:
 - The real `control.json` mtime stayed `2026-11-10 12:13:14` across the run.
 - [INFERENCE] The writer is probably another live omp session on this machine that consumed a skip-once flag. The session running this agent is one candidate. Not identified. The operator should check.
 
-## Version floor 18.19.0 (omp binary)
+## No Omp version floor
 
-The Omp version floor is the `omp` binary's version (`omp --version`, observed live at 18.19.0 on this machine), and the floor is 18.19.0. It is read once, synchronously, at extension load. A readable version below 18.19.0 is refused. An unreadable version (no `omp` on PATH, timeout, or no version token) is not refused, so Omp keeps working where the binary cannot be found. The golden fixtures and the Omp tests inject the validated 18.19.0, so they do not depend on the machine's binary.
+Omp has no enforced version floor. Enforcing one needs a fail-closed read of the `omp` binary's version (`omp --version`) on PATH at extension load, a process spawn with a load-time side effect. An unreadable version (no `omp` on PATH, timeout, or no version token) then has no safe outcome: refusing it breaks Omp wherever the binary is absent, and allowing it leaves the floor unenforced. The version observed on this machine is 18.19.0 (line 6). The golden fixtures and Omp tests no longer inject a version.

@@ -44,7 +44,6 @@ describe("checkVersionFloor", () => {
 			muse: "1.4.14",
 			hermes: "v0.23.1",
 			"prime-agent": "0.10.2",
-			omp: "18.19.0",
 		});
 	});
 
@@ -58,11 +57,6 @@ describe("checkVersionFloor", () => {
 	});
 
 	test("an equal version passes", () => {
-		expect(checkVersionFloor("omp", "18.19.0")).toEqual({
-			ok: true,
-			floor: "18.19.0",
-			observed: "18.19.0",
-		});
 		expect(checkVersionFloor("hermes", "0.23.1")).toEqual({
 			ok: true,
 			floor: "v0.23.1",
