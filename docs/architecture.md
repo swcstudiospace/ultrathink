@@ -467,7 +467,7 @@ Hermes passes its host id in the engine request, and the Omp extension passes `h
 | Muse Code | `${XDG_CONFIG_HOME:-~/.config}/muse/ultrathink` |
 | Omp | `${PI_CODING_AGENT_DIR:-~/.omp/agent}/ultrathink` |
 
-`ULTRATHINK_STATE_DIR` overrides all of these unless it points into `.planning/`. Inside the directory:
+`ULTRATHINK_STATE_DIR` overrides all of these only when it is an absolute path inside your home directory (not home itself) and not inside `.planning/`; otherwise the host default is used. Inside the directory:
 
 | Path | Contents |
 |---|---|
@@ -542,7 +542,7 @@ The same clone serves every host. The manifests (`.claude-plugin/`, `.muse-plugi
 
 ### Nothing is written to `.planning/`
 
-GSD keeps its project files in `.planning/`. ultrathink never writes there: every state directory is outside your repository, and an `ULTRATHINK_STATE_DIR` that points into a `.planning/` directory is ignored in favour of the host default (`src/host/paths.ts`, and the same check in the Hermes bridge).
+GSD keeps its project files in `.planning/`. ultrathink never writes there: every state directory is outside your repository, and an `ULTRATHINK_STATE_DIR` is used only when it is absolute, inside your home directory (not home itself) and outside `.planning/`; otherwise the host default applies (`src/host/paths.ts`).
 
 ## Skills
 
@@ -673,7 +673,7 @@ It is off until `pstack.enabled` is `true` in the user config the hook reads. A 
 - **A fallback creates no rows.** A plan whose spec is the fallback, or whose graph is the generic fallback graph, is never tracked, so an engine outage can't create generic rows. A node whose fill degraded is tracked, with a `[degraded fill]` marker on its rows.
 - **Tracking is bounded.** Credential resolution and row creation share `track.budgetMs` when it is set above 0; its default 0 means no limit. Each tracker call is retried up to 3 times, a provider that refuses everything is skipped for the rest of the run, unfinished rows are left to `ultrathink-kickoff`, and unconfigured providers are never contacted.
 - **Nudges fire once.** The ship nudge is recorded in the session before it is printed. Omp and Hermes send the PR-sync nudge once per PR URL, and the Hermes `pre_verify` sync nudge fires at most once per plan (session and Graph ID) and never after sync has recorded `synced`. A subagent's PR is credited to its parent once, through Hermes' `subagent_start` hook.
-- **Nothing lands in the working tree.** State lives in the host state directory. An `ULTRATHINK_STATE_DIR` that points into `.planning/` is ignored. The A01 orchestrator hook (`src/hooks/a01-orchestrator-hook.ts`) appends a redacted failure line to `<stateDir>/a01-failures.log` (directory `0700`, file `0600`). It does not write `<cwd>/.planning`.
+- **Nothing lands in the working tree.** State lives in the host state directory. An `ULTRATHINK_STATE_DIR` that is relative, outside your home directory, or inside `.planning/` is ignored. The A01 orchestrator hook (`src/hooks/a01-orchestrator-hook.ts`) appends a redacted failure line to `<stateDir>/a01-failures.log` (directory `0700`, file `0600`). It does not write `<cwd>/.planning`.
 - **Secrets stay out of messages.** Engine and command errors go through `redactSecrets` before they are shown, and `auth status` reports readiness without printing tokens. Decisions errors are redacted the same way (the OpenRouter key and any `sk-or-…` or `Bearer …` value), cut to 200 characters, and `DecisionRecord`s hold no prompt, patch or key.
 
 ## Connector surface

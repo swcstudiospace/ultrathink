@@ -207,7 +207,7 @@ Set these in the environment of the host process. They override config and the c
 | `ULTRATHINK_TEACH=0` | No lesson capture, recall or promote while Teachable Moments would otherwise be on. See [Configuration](configuration.md#teach-teachable-moments). |
 | `ULTRATHINK_DEBUG=1` | `hooks/uplift.ts` (Claude Code, Grok, Muse) logs every skip reason and failure to stderr as `[ultrathink] …`. With Jev decisions on, every decision also logs one `[ultrathink] decisions <point> · …` line (P or the error kind, model, latency, attempts, cost; never the message or the key). |
 | `ULTRATHINK_HOST` | Forces the host id: `claude-code`, `grok-build`, `hermes`, `muse` or `omp`. This selects the state directory, which matters for `bin/ultrathink` run from a plain terminal. |
-| `ULTRATHINK_STATE_DIR` | Overrides the state directory. Use an absolute path (a relative one resolves differently per host; see [Configuration](configuration.md#environment-variables)). It is ignored if it points into a `.planning/` directory. |
+| `ULTRATHINK_STATE_DIR` | Overrides the state directory. It is honored only when it is an absolute path inside your home directory and not the home directory itself. A relative path, an empty value, a path outside home, home itself, or a path inside a `.planning` tree is ignored, and the host default is used. See [Configuration](configuration.md#environment-variables). |
 
 The other variables (credential store, OAuth callback and Tailscale opt-in, Hermes timeout, Agent Substrate, Jev keys and Decisions endpoint, GSD tools, Bun) are listed in [Configuration: Environment variables](configuration.md#environment-variables).
 
