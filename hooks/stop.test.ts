@@ -169,8 +169,9 @@ describe("the stop hook entry", () => {
 	test("its output line arrives whole through a pipe, and the entry exits 0 after it", async () => {
 		const root = mkdtempSync(join(tmpdir(), "ut-stop-entry-"));
 		try {
-			const stateDir = join(root, "state");
 			const home = join(root, "home");
+			// The state resolver accepts only paths inside the (fake) home directory the child process sees.
+			const stateDir = join(home, "state");
 			writeSession(stateDir, {
 				sessionId: "s9",
 				at: 1,

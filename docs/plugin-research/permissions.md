@@ -354,7 +354,7 @@ Consolidated from §§1–6. Each item is a permission the code uses that the ba
 | `~/.claude/skills/<name>/SKILL.md` | `teach promote --install` (claude) | `src/teach/promote.ts:451-452`, `:318` |
 | `~/.prime/agent/skills/<name>/SKILL.md` | `teach promote --install` (prime-agent) | `src/teach/promote.ts:447-449` |
 | Grok config (`grok.home`) | `grok login` path | `src/grok/login.ts:84-96` (target UNVERIFIED) |
-| Any path set by `ULTRATHINK_STATE_DIR` that is absolute, inside home (not home itself), and outside `.planning` | Engine, all hosts | `src/host/paths.ts`: other values fall back to the host default. Known bypass: `ULTRATHINK_TEST_STATE_ROOT` also permits a directory outside home; it is set only by the test process but any user can set it |
+| Any path set by `ULTRATHINK_STATE_DIR` that is absolute, inside home (not home itself), and outside `.planning` | Engine, all hosts | `src/host/paths.ts`: other values fall back to the host default. The test-only root is removed; tests use a scratch dir under home (`src/test.setup.ts`). Test scratch dirs (`ultrathink-test-state-*`) accumulate one empty directory per run and are swept after 24 hours |
 
 ### Reads outside the project root
 

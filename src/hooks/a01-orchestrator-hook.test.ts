@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, type Mock, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+} from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
 	__injectFaultForTest,
@@ -106,7 +115,10 @@ describe("a01 orchestrator hook failure log", () => {
 	test("without opts.stateDir it uses the resolved host state dir, never <cwd>/.planning", async () => {
 		const cwd = tempDir();
 		mkdirSync(join(cwd, ".planning"));
-		const stateDir = join(tempDir(), "resolved-state");
+		// The state resolver accepts only paths inside the home directory, so the scratch state lives under it.
+		const homeScratch = mkdtempSync(join(homedir(), "ultrathink-a01-state-"));
+		dirs.push(homeScratch);
+		const stateDir = join(homeScratch, "resolved-state");
 		process.env.ULTRATHINK_STATE_DIR = stateDir;
 		process.chdir(cwd);
 

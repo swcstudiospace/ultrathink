@@ -9,11 +9,7 @@
  * Anything else falls back to the host default, and `resolveStateDirDetail`
  * reports the refused value and why, so the fallback is never silent.
  *
- * Known bypass, test-only: `ULTRATHINK_TEST_STATE_ROOT`, when set to an absolute
- * path, also permits a state directory that resolves inside that root, even when
- * the root is outside home. `src/test.setup.ts` sets it to the temp root it creates
- * for the test process. Production hosts never set it, but a user who does set it
- * can point state outside home. Nothing else may rely on it.
+ * Test isolation uses a scratch directory inside the home directory (src/test.setup.ts). No env override widens the rule.
  */
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -103,9 +99,7 @@ export function resolveStateDirDetail(
 	const home = resolve(homedir());
 	if (path === home) return refuse("home-directory");
 
-	const testRootRaw = env.ULTRATHINK_TEST_STATE_ROOT?.trim();
-	const testRoot = testRootRaw && isAbsolute(testRootRaw) ? resolve(testRootRaw) : undefined;
-	const permitted = isWithin(home, path) || (testRoot !== undefined && isWithin(testRoot, path));
+	const permitted = isWithin(home, path);
 	if (!permitted) return refuse("outside-home");
 
 	if (isPlanningPath(override)) return refuse("planning-path");

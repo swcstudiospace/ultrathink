@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { armSkipOnce, readSkipOnce } from "../src/claude/state.ts";
 import { carrierPathFor, writePlanCarrier } from "../src/host/carrier.ts";
@@ -37,7 +37,7 @@ describe("emit", () => {
 	}, 60_000);
 
 	test("importing uplift.ts runs nothing: the entry only starts as the main module", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-import-"));
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-import-"));
 		try {
 			const script = join(dir, "import.ts");
 			writeFileSync(
@@ -54,8 +54,7 @@ describe("emit", () => {
 				env: {
 					...process.env,
 					HOME: home,
-					ULTRATHINK_STATE_DIR: join(dir, "state"),
-					ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
+					ULTRATHINK_STATE_DIR: join(home, "state"),
 				},
 			});
 			expect(await new Response(proc.stdout).text()).toBe("ok");
@@ -84,7 +83,7 @@ describe("hook entrypoints", () => {
 		});
 
 		test(`${name} exits 0 and writes nothing to stdout without an envelope`, async () => {
-			const dir = mkdtempSync(join(tmpdir(), "ultrathink-entry-"));
+			const dir = mkdtempSync(join(homedir(), "ultrathink-entry-"));
 			try {
 				const proc = Bun.spawn([process.execPath, "--no-env-file", join(HOOKS, name)], {
 					stdin: "ignore",
@@ -93,8 +92,7 @@ describe("hook entrypoints", () => {
 					env: {
 						...process.env,
 						HOME: join(dir, "home"),
-						ULTRATHINK_STATE_DIR: join(dir, "state"),
-						ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
+						ULTRATHINK_STATE_DIR: join(dir, "home", "state"),
 						ULTRATHINK_HOST: "claude-code",
 					},
 				});
@@ -120,10 +118,10 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 		armedAfter: boolean;
 		lastSkip?: { reason?: string; at?: number };
 	}> {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-precheck-"));
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-precheck-"));
 		try {
 			const home = join(dir, "home");
-			const stateDir = join(dir, "state");
+			const stateDir = join(home, "state");
 			mkdirSync(home, { recursive: true });
 			mkdirSync(stateDir, { recursive: true });
 			if (config) {
@@ -146,7 +144,6 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 					PATH: process.env.PATH ?? "",
 					HOME: home,
 					ULTRATHINK_STATE_DIR: stateDir,
-					ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 					ULTRATHINK_HOST: "grok-build",
 				},
 			});
@@ -236,10 +233,10 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 
 describe("a turn that plans nothing leaves no carrier behind, on every hook host", () => {
 	test("a Claude Code skip (a trivial acknowledgement) clears the session's carrier", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-carrier-"));
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-carrier-"));
 		try {
 			const home = join(dir, "home");
-			const stateDir = join(dir, "state");
+			const stateDir = join(home, "state");
 			mkdirSync(home, { recursive: true });
 			mkdirSync(stateDir, { recursive: true });
 			writePlanCarrier({
@@ -265,7 +262,6 @@ describe("a turn that plans nothing leaves no carrier behind, on every hook host
 					PATH: process.env.PATH ?? "",
 					HOME: home,
 					ULTRATHINK_STATE_DIR: stateDir,
-					ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 					ULTRATHINK_HOST: "claude-code",
 				},
 			});
@@ -280,10 +276,10 @@ describe("a turn that plans nothing leaves no carrier behind, on every hook host
 
 describe("a provider that answers 429 forever, through the real hook entry and the real Claude completer", () => {
 	test("the record says provider_error:429 after 3 attempts, the clarify stage is skipped, and no fill is requested after the graph call fails", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-429-"));
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-429-"));
 		try {
 			const home = join(dir, "home");
-			const stateDir = join(dir, "state");
+			const stateDir = join(home, "state");
 			const calls = join(dir, "calls.log");
 			const fake = join(dir, "claude-fake");
 			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
@@ -312,7 +308,6 @@ describe("a provider that answers 429 forever, through the real hook entry and t
 					PATH: process.env.PATH ?? "",
 					HOME: home,
 					ULTRATHINK_STATE_DIR: stateDir,
-					ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 				},
 			});
 			const [out] = await Promise.all([

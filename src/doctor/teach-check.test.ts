@@ -10,7 +10,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { appendRun } from "../teach/runlog.ts";
 import { runDoctorCommand } from "./cli.ts";
@@ -87,7 +87,7 @@ describe("checkTeach", () => {
 	};
 
 	beforeEach(() => {
-		dir = mkdtempSync(join(tmpdir(), "ut-doctor-teach-"));
+		dir = mkdtempSync(join(homedir(), "ut-doctor-teach-"));
 		mkdirSync(join(dir, "project"));
 		deps = {
 			env: {
@@ -95,7 +95,6 @@ describe("checkTeach", () => {
 				XDG_CONFIG_HOME: join(dir, "xdg"),
 				CLAUDE_CONFIG_DIR: join(dir, "claude"),
 				ULTRATHINK_STATE_DIR: join(dir, "state"),
-				ULTRATHINK_TEST_STATE_ROOT: dir,
 				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
 				GH_CONFIG_DIR: join(dir, "gh"),
 			},

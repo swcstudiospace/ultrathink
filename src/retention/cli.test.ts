@@ -10,7 +10,7 @@ import {
 	writeFileSync,
 	utimesSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { runPruneCommand } from "./cli.ts";
 
@@ -34,7 +34,7 @@ interface Fixture {
 }
 
 function makeFixture(): Fixture {
-	const root = mkdtempSync(join(tmpdir(), "ut-prune-cli-"));
+	const root = mkdtempSync(join(homedir(), "ut-prune-cli-"));
 	roots.push(root);
 	const state = join(root, "state");
 	mkdirSync(join(state, "sessions"), { recursive: true });
@@ -45,7 +45,6 @@ function makeFixture(): Fixture {
 			XDG_CONFIG_HOME: join(root, "xdg"),
 			CLAUDE_CONFIG_DIR: join(root, "claude"),
 			ULTRATHINK_STATE_DIR: state,
-			ULTRATHINK_TEST_STATE_ROOT: root,
 		},
 	};
 }

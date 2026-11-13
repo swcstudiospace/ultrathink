@@ -3,7 +3,7 @@
 
 import { afterAll, setDefaultTimeout } from "bun:test";
 import { mkdtempSync } from "node:fs";
-import { availableParallelism, loadavg, tmpdir } from "node:os";
+import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import {
 	removeStaleTestStateDirs,
@@ -12,14 +12,13 @@ import {
 } from "./test.state-dir.ts";
 
 // Planning, failover cooldowns, carriers and trackers write under the state directory. A test process gets a fresh
-// temp one (unless the caller set its own) so no suite can touch the operator's real state, e.g. failover-cooldowns.json.
+// scratch one inside the home directory (the only place the state resolver accepts), unless the caller set its own, so
+// no suite can touch the operator's real state, e.g. failover-cooldowns.json.
 if (!process.env.ULTRATHINK_STATE_DIR?.trim()) {
 	// Earlier runs leave one empty directory each (see below): drop the ones from yesterday and before.
-	removeStaleTestStateDirs(tmpdir());
-	const stateDir = mkdtempSync(join(tmpdir(), TEST_STATE_DIR_PREFIX));
+	removeStaleTestStateDirs(homedir());
+	const stateDir = mkdtempSync(join(homedir(), TEST_STATE_DIR_PREFIX));
 	process.env.ULTRATHINK_STATE_DIR = stateDir;
-	// Suites create their own temp subdirectories under tmpdir(), outside home. Only this test process gets the root.
-	process.env.ULTRATHINK_TEST_STATE_ROOT = tmpdir();
 	// Measured with a preload that logs: `process.on("exit")` and `beforeExit` handlers never fire under `bun test`
 	// (Bun 1.2.23 and 1.4.0), and a preload's global afterAll runs after EVERY test file on Bun 1.2.23 (3 files, 3 calls)
 	// but once after the last file on Bun 1.4.0. The runner offers no end-of-run hook, so the hook below must be correct

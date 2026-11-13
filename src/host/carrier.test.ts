@@ -12,7 +12,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { readSkipOnce } from "../claude/state.ts";
 import {
@@ -30,8 +30,9 @@ let dir: string;
 let stateDir: string;
 
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "ultrathink-carrier-"));
-	stateDir = join(dir, "state");
+	dir = mkdtempSync(join(homedir(), "ultrathink-carrier-"));
+	// Hook children run with HOME=dir/home and accept a state dir only inside their home.
+	stateDir = join(dir, "home", "state");
 });
 
 afterEach(() => {
@@ -304,7 +305,6 @@ describe("uplift hook on Grok, Claude and Muse", () => {
 				XDG_CONFIG_HOME: join(home, ".config"),
 				ULTRATHINK_HOST: host,
 				ULTRATHINK_STATE_DIR: stateDir,
-				ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 			},
 			stdin: Buffer.from(
 				JSON.stringify({ hookEventName: "user_prompt_submit", cwd: dir, ...envelope }),
@@ -385,7 +385,6 @@ describe("uplift hook on Grok, Claude and Muse", () => {
 				XDG_CONFIG_HOME: join(home, ".config"),
 				ULTRATHINK_HOST: "grok-build",
 				ULTRATHINK_STATE_DIR: stateDir,
-				ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 			},
 			stdout: "pipe",
 			stderr: "pipe",
@@ -488,7 +487,6 @@ describe("uplift hook with a Jev plan skip", () => {
 				XDG_CONFIG_HOME: join(home, ".config"),
 				ULTRATHINK_HOST: host,
 				ULTRATHINK_STATE_DIR: stateDir,
-				ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
 				ULTRATHINK_DECISIONS_URL: jevUrl,
 				ULTRATHINK_OPENROUTER_KEY: K,

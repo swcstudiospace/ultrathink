@@ -5,8 +5,6 @@ import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { resolveStateDir, resolveStateDirDetail } from "./paths.ts";
 
-const TEST_ROOT = "/tmp/ultrathink-root-test";
-
 /** The Claude default for an env with no host markers and no override. */
 const defaultDir = resolveStateDirDetail({}).dir;
 
@@ -51,41 +49,6 @@ describe("resolveStateDirDetail", () => {
 		expect(resolveStateDirDetail({ ULTRATHINK_STATE_DIR: `${homedir()}${sep}` })).toEqual({
 			dir: defaultDir,
 			rejected: { value: `${homedir()}${sep}`, reason: "home-directory" },
-		});
-	});
-
-	test("accepts a path inside ULTRATHINK_TEST_STATE_ROOT, including the root itself", () => {
-		const env = { ULTRATHINK_TEST_STATE_ROOT: TEST_ROOT };
-		const inside = join(TEST_ROOT, "state");
-		expect(resolveStateDirDetail({ ...env, ULTRATHINK_STATE_DIR: inside })).toEqual({
-			dir: inside,
-		});
-		expect(resolveStateDirDetail({ ...env, ULTRATHINK_STATE_DIR: TEST_ROOT })).toEqual({
-			dir: TEST_ROOT,
-		});
-	});
-
-	test("refuses a path outside both home and ULTRATHINK_TEST_STATE_ROOT", () => {
-		expect(
-			resolveStateDirDetail({
-				ULTRATHINK_STATE_DIR: "/tmp/outside",
-				ULTRATHINK_TEST_STATE_ROOT: "/tmp/root-elsewhere",
-			}),
-		).toEqual({
-			dir: defaultDir,
-			rejected: { value: "/tmp/outside", reason: "outside-home" },
-		});
-	});
-
-	test("ignores a relative ULTRATHINK_TEST_STATE_ROOT", () => {
-		expect(
-			resolveStateDirDetail({
-				ULTRATHINK_STATE_DIR: "/tmp/ultrathink-root-test/state",
-				ULTRATHINK_TEST_STATE_ROOT: "ultrathink-root-test",
-			}),
-		).toEqual({
-			dir: defaultDir,
-			rejected: { value: "/tmp/ultrathink-root-test/state", reason: "outside-home" },
 		});
 	});
 
