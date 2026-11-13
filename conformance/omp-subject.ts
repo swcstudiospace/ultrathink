@@ -78,7 +78,7 @@ function openSession(): Session {
 	});
 
 	const host = createHost();
-	createOmpExtension()(host.pi);
+	createOmpExtension({ readOmpVersion: () => "18.19.0" })(host.pi);
 
 	return {
 		host,
