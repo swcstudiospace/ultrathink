@@ -117,6 +117,7 @@ export function setup(
 		...(plan ? { plan: wrap(plan) } : {}),
 		...(omitRaceMs ? {} : { raceMs }),
 		mcp: MCP,
+		readOmpVersion: async () => "18.19.0",
 		config: () => quietConfig(),
 		...extra,
 	})(pi);

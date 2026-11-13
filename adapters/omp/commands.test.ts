@@ -5,8 +5,8 @@ import { describe, expect, test } from "bun:test";
 import { HOST_VERSION_FLOORS } from "../version-floor.ts";
 import { type OmpCommandHandler, createOmpCommandPort } from "./commands.ts";
 
-/** Omp runtime package version (`VERSION` from @oh-my-pi/pi-utils), which is the Omp version floor. */
-const RECORDED_OMP_VERSION = "18.14.0";
+/** The Omp binary's version (`omp --version`), which is the Omp version floor. */
+const RECORDED_OMP_VERSION = "18.19.0";
 
 const input = { args: "now", ctx: {} };
 const context = { correlationId: "test" };
@@ -87,7 +87,7 @@ describe("createOmpCommandPort version floor", () => {
 		expect(port.list()).toEqual([]);
 		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
 			ok: false,
-			error: { category: "internal", message: "omp version below minimum 18.14.0" },
+			error: { category: "internal", message: "omp version below minimum 18.19.0" },
 		});
 		expect(calls).toEqual([]);
 	});
@@ -100,7 +100,7 @@ describe("createOmpCommandPort version floor", () => {
 			expect(port.list()).toEqual([]);
 			expect(await port.invoke("ultrathink-status", input, context)).toEqual({
 				ok: false,
-				error: { category: "internal", message: "omp version unknown; minimum 18.14.0" },
+				error: { category: "internal", message: "omp version unknown; minimum 18.19.0" },
 			});
 		}
 		expect(calls).toEqual([]);
