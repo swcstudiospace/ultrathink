@@ -28,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -71,6 +72,28 @@ jobs:
         if: matrix.bun == 'latest'
         run: bun run lint
 
+      # Job (e): format check limited to the .ts, .js and .json files this change adds or modifies. The full-tree Biome
+      # step above is unchanged. Pull requests diff against the base branch; pushes diff against the previous commit.
+      - name: Format check (changed files)
+        if: matrix.bun == 'latest'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            range="origin/${BASE_REF}...HEAD"
+          elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+            range="HEAD~1 HEAD"
+          else
+            range="$(git hash-object -t tree /dev/null) HEAD"
+          fi
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR $range -- '*.ts' '*.js' '*.json')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No changed .ts, .js or .json files."
+            exit 0
+          fi
+          bunx biome format --error-on-warnings --no-errors-on-unmatched "${files[@]}"
+
       # Phase 80: the dead-code gate (knip, exports and types). It runs on the latest-Bun leg with the Biome step.
       - name: Dead-code check (knip)
         if: matrix.bun == 'latest'
@@ -111,6 +134,12 @@ jobs:
           bun run gen:manifests
           git diff --exit-code -- plugin/generated
           test -z "$(git status --porcelain -- plugin/generated)"
+
+      # Job (c): the plugin source must match plugin/schema/plugin-source.schema.json, and every generated manifest must
+      # parse as JSON or YAML.
+      - name: Schema validation (plugin source and manifests)
+        run: bun tooling/schema/validate.ts
+
       - name: Core dependency boundary
         run: bun tooling/boundary/check-core-boundary.ts
 
@@ -122,3 +151,51 @@ jobs:
 
       - name: Prime Agent bridge test
         run: python3 hosts/prime-agent/bridge_test.py
+
+  # Job (f): one matrix entry per adapter. `subject` is the describe name that conformance/<adapter>.conformance.test.ts
+  # registers; the step filters on it with --test-name-pattern. The full test job above still runs every conformance test.
+  conformance:
+    name: Conformance (${{ matrix.adapter }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - adapter: claude-code
+            subject: Claude Code plugin entry points
+          - adapter: grok-build
+            subject: Grok Build plugin command entry point
+          - adapter: muse
+            subject: Muse plugin entry points
+          - adapter: hermes
+            subject: Hermes plugin command entry point
+          - adapter: prime-agent
+            subject: Prime Agent skill entry point
+          - adapter: omp
+            subject: Omp host
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.x"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Conformance (${{ matrix.adapter }})
+        env:
+          SUBJECT: ${{ matrix.subject }}
+        run: bun test conformance --test-name-pattern "$SUBJECT"
