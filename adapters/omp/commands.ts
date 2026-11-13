@@ -46,7 +46,7 @@ function versionRefusal(observedVersion: string | null): string | null {
  */
 export function createOmpCommandPort(
 	handlers: ReadonlyMap<string, OmpCommandHandler>,
-	options: OmpCommandPortOptions,
+	options: OmpCommandPortOptions = { observedVersion: null },
 ): CommandPort {
 	const refusal = versionRefusal(options.observedVersion);
 	return {

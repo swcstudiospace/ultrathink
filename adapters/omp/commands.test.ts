@@ -117,4 +117,16 @@ describe("createOmpCommandPort version floor", () => {
 		});
 		expect(calls).toEqual([]);
 	});
+
+	test("(e) a port created without options refuses every command fail-closed", async () => {
+		const calls: string[] = [];
+		const port = createOmpCommandPort(recordingHandlers(calls));
+
+		expect(port.list()).toEqual([]);
+		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
+			ok: false,
+			error: { category: "internal", message: "omp version unknown; minimum 18.19.0" },
+		});
+		expect(calls).toEqual([]);
+	});
 });
