@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { type AdapterCliDeps, renderResult, runAdapterCli } from "./cli.ts";
+import { type AdapterCliDeps, childEnvironment, renderResult, runAdapterCli } from "./cli.ts";
 
 type ChildOutcome = { readonly exitCode: number; readonly stdout: string } | Error;
 
@@ -154,6 +154,62 @@ describe("runAdapterCli: host environment", () => {
 		const { deps, runEnvs } = fakeDeps({ exitCode: 0, stdout: "" });
 		await runAdapterCli(["claude-code", "status"], deps);
 		expect(runEnvs).toEqual([undefined]);
+	});
+});
+
+describe("childEnvironment", () => {
+	test("drops a parent variable that is not on the allowlist", () => {
+		const env = childEnvironment({ PATH: "/bin", SECRET_OTHER: "leak" });
+		expect(env).toEqual({ PATH: "/bin" });
+	});
+
+	test("keeps every listed exact name", () => {
+		const names = [
+			"PATH",
+			"HOME",
+			"USER",
+			"LANG",
+			"LC_ALL",
+			"LC_CTYPE",
+			"TERM",
+			"TMPDIR",
+			"SHELL",
+			"BUN",
+			"BUN_INSTALL",
+			"ANTHROPIC_API_KEY",
+			"OPENROUTER_API_KEY",
+			"AI_GATEWAY_API_KEY",
+			"SUBSTRATE_TOKEN",
+			"RAGFLOW_API_KEY",
+			"HINDSIGHT_API_KEY",
+			"PRIME_AGENT_CODING_AGENT_DIR",
+			"CLAUDE_CONFIG_DIR",
+			"CLAUDE_PLUGIN_ROOT",
+			"CLAUDE_SESSION_ID",
+		];
+		for (const name of names) {
+			expect(childEnvironment({ [name]: `value-of-${name}` })).toEqual({
+				[name]: `value-of-${name}`,
+			});
+		}
+	});
+
+	test("keeps any ULTRATHINK_ prefixed variable", () => {
+		const env = childEnvironment({ ULTRATHINK_OPENROUTER_KEY: "key", ULTRATHINK_HOST: "x" });
+		expect(env).toEqual({ ULTRATHINK_OPENROUTER_KEY: "key", ULTRATHINK_HOST: "x" });
+	});
+
+	test("a host env entry overrides a parent value of the same name", () => {
+		const env = childEnvironment(
+			{ PATH: "/bin", ULTRATHINK_HOST: "parent" },
+			{ ULTRATHINK_HOST: "prime-agent" },
+		);
+		expect(env).toEqual({ PATH: "/bin", ULTRATHINK_HOST: "prime-agent" });
+	});
+
+	test("undefined parent values are not emitted", () => {
+		const env = childEnvironment({ PATH: undefined, HOME: "/root" });
+		expect(Object.keys(env)).toEqual(["HOME"]);
 	});
 });
 

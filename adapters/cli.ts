@@ -17,10 +17,10 @@ import { createHermesAdapter } from "./hermes/index.ts";
 import { createMuseAdapter } from "./muse/index.ts";
 import { createPrimeAgentAdapter } from "./prime-agent/index.ts";
 
-/** Environment a host adds to the current process env for its engine child. */
+/** Environment a host adds on top of the inherited parent env for its engine child. */
 type HostEnv = Readonly<Record<string, string>>;
 
-/** Runs `bin/ultrathink` with the given argv; `env` entries are merged over the current process env. */
+/** Runs `bin/ultrathink` with the given argv; `env` entries are merged over the child environment. */
 interface AdapterRunner {
 	run(
 		argv: readonly string[],
@@ -159,10 +159,57 @@ export function renderResult(result: AdapterCliResult): {
 	return { stdout: "", stderr: `${result.output.error.message}\n` };
 }
 
+/** Parent variables the engine child may inherit, by exact name. */
+const INHERITED_ENV_NAMES: Readonly<Record<string, true>> = {
+	PATH: true,
+	HOME: true,
+	USER: true,
+	LANG: true,
+	LC_ALL: true,
+	LC_CTYPE: true,
+	TERM: true,
+	TMPDIR: true,
+	SHELL: true,
+	BUN: true,
+	BUN_INSTALL: true,
+	ANTHROPIC_API_KEY: true,
+	OPENROUTER_API_KEY: true,
+	AI_GATEWAY_API_KEY: true,
+	SUBSTRATE_TOKEN: true,
+	RAGFLOW_API_KEY: true,
+	HINDSIGHT_API_KEY: true,
+	PRIME_AGENT_CODING_AGENT_DIR: true,
+	CLAUDE_CONFIG_DIR: true,
+	CLAUDE_PLUGIN_ROOT: true,
+	CLAUDE_SESSION_ID: true,
+};
+
+/** Parent variables with this prefix are always inherited by the engine child. */
+const INHERITED_ENV_PREFIX = "ULTRATHINK_";
+
+/**
+ * Environment for the engine child: parent variables on the allowlist (exact names, or the
+ * `ULTRATHINK_` prefix), with undefined values dropped, then the host's `hostEnv` entries on top.
+ * Pure: reads only its arguments.
+ */
+export function childEnvironment(
+	parent: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
+	hostEnv: HostEnv = {},
+): Record<string, string> {
+	const env: Record<string, string> = {};
+	for (const [name, value] of Object.entries(parent)) {
+		if (value === undefined) continue;
+		if (Object.hasOwn(INHERITED_ENV_NAMES, name) || name.startsWith(INHERITED_ENV_PREFIX)) {
+			env[name] = value;
+		}
+	}
+	return { ...env, ...hostEnv };
+}
+
 /**
  * Real runner: spawns the engine binary with an argv array (no shell). A non-zero exit resolves
  * with its code; a spawn failure, signal or output overflow rejects, and the adapter maps it to
- * `internal`. The child runs with the current process env plus the host's `env` entries.
+ * `internal`. The child env is `childEnvironment(process.env, env)`.
  */
 function createProcessRunner(binPath: string): AdapterRunner {
 	return {
@@ -174,7 +221,7 @@ function createProcessRunner(binPath: string): AdapterRunner {
 			execFile(
 				binPath,
 				[...argv],
-				{ encoding: "utf8", env: { ...process.env, ...env } },
+				{ encoding: "utf8", env: childEnvironment(process.env, env) },
 				(error, stdout) => {
 					if (error === null) {
 						resolve({ exitCode: 0, stdout });
