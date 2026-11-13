@@ -72,7 +72,8 @@ export interface OmpTestHarness {
 export function setup(
 	plan: ((...args: Parameters<OmpPlanner>) => Promise<string | OmpPlan>) | undefined,
 	raceMs = 1_000,
-	extra: Omit<OmpOptions, "plan" | "raceMs" | "mcp"> & Partial<Pick<OmpOptions, "mcp">> = {},
+	extra: Omit<OmpOptions, "plan" | "raceMs" | "mcp" | "readOmpVersion"> &
+		Partial<Pick<OmpOptions, "mcp">> = {},
 	ctxExtra: Record<string, unknown> = {},
 	apiExtra: Pick<ExtensionAPI, "getThinkingLevel"> = {},
 	/** Test-only omission seam: a true value leaves raceMs absent at createOmpExtension, proving the real default. */

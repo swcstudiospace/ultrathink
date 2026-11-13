@@ -1419,46 +1419,44 @@ export function readOmpVersionFrom(binary: string): string | null {
 	}
 }
 
-export function createOmpExtension(
-	options: {
-		plan?: OmpPlanner;
-		raceMs?: number;
-		maxRunMs?: number;
-		now?: () => number;
-		/** Clock port for every timestamp and deadline read; defaults to the real clock. */
-		clock?: ClockPort;
-		/** Timer port for the remount, flight deadline and race timers; defaults to the platform timers. */
-		timers?: TimerPort;
-		ui?: boolean;
-		/** MCP readiness source; defaults to the local credential store. */
-		mcp?: () => McpState;
-		/** File existence check for subagent detection; defaults to `existsSync`. */
-		exists?: (path: string) => boolean;
-		/** Synchronous filesystem port for the live token-opt snapshot read; defaults to the real filesystem. */
-		fs?: SyncFileSystemPort;
-		/** Ultrathink state dir holding `sessions/<id>.json`; defaults to the omp host state dir. */
-		stateDir?: string;
-		/** Process environment port for every env read; defaults to the real process environment. */
-		env?: EnvironmentPort;
-		/** The effective config a flight captures for a session cwd; defaults to the layered config files. */
-		config?: (cwd: string) => UltrathinkConfig;
-		/** Local ship precheck (`git` only); defaults to `shipPrecheck`. */
-		shipPrecheck?: (cwd: string) => ShipPrecheck;
-		/** Teachable Moments context source; defaults to the merged config for the session cwd. */
-		teachContext?: typeof teachContext;
-		/** Detached `teach observe` launcher; defaults to `spawnObserveDetached`. */
-		spawnObserve?: typeof spawnObserveDetached;
-		/** Ship config source; defaults to the merged Claude config files for the session cwd. */
-		shipConfig?: (cwd: string) => ShipConfig;
-		/** AgentSwarm lane seams: the classifier bound to a swarm root, and the lane spawner. Default to the real ones. */
-		swarm?: {
-			classify?: (swarmRoot: string) => LaneClassify;
-			spawn?: (plan: readonly LanePlan[]) => LaneHandle[];
-		};
-		/** Reads the hosting Omp binary's version once at extension load; defaults to the live read. Null refuses every command. */
-		readOmpVersion?: () => string | null;
-	} = {},
-): (pi: ExtensionAPI) => void {
+export function createOmpExtension(options: {
+	plan?: OmpPlanner;
+	raceMs?: number;
+	maxRunMs?: number;
+	now?: () => number;
+	/** Clock port for every timestamp and deadline read; defaults to the real clock. */
+	clock?: ClockPort;
+	/** Timer port for the remount, flight deadline and race timers; defaults to the platform timers. */
+	timers?: TimerPort;
+	ui?: boolean;
+	/** MCP readiness source; defaults to the local credential store. */
+	mcp?: () => McpState;
+	/** File existence check for subagent detection; defaults to `existsSync`. */
+	exists?: (path: string) => boolean;
+	/** Synchronous filesystem port for the live token-opt snapshot read; defaults to the real filesystem. */
+	fs?: SyncFileSystemPort;
+	/** Ultrathink state dir holding `sessions/<id>.json`; defaults to the omp host state dir. */
+	stateDir?: string;
+	/** Process environment port for every env read; defaults to the real process environment. */
+	env?: EnvironmentPort;
+	/** The effective config a flight captures for a session cwd; defaults to the layered config files. */
+	config?: (cwd: string) => UltrathinkConfig;
+	/** Local ship precheck (`git` only); defaults to `shipPrecheck`. */
+	shipPrecheck?: (cwd: string) => ShipPrecheck;
+	/** Teachable Moments context source; defaults to the merged config for the session cwd. */
+	teachContext?: typeof teachContext;
+	/** Detached `teach observe` launcher; defaults to `spawnObserveDetached`. */
+	spawnObserve?: typeof spawnObserveDetached;
+	/** Ship config source; defaults to the merged Claude config files for the session cwd. */
+	shipConfig?: (cwd: string) => ShipConfig;
+	/** AgentSwarm lane seams: the classifier bound to a swarm root, and the lane spawner. Default to the real ones. */
+	swarm?: {
+		classify?: (swarmRoot: string) => LaneClassify;
+		spawn?: (plan: readonly LanePlan[]) => LaneHandle[];
+	};
+	/** Reads the hosting Omp binary's version once at extension load. Required: the production entry injects it. Null refuses every command. */
+	readOmpVersion: () => string | null;
+}): (pi: ExtensionAPI) => void {
 	const plan = options.plan ?? nativeEnginePlanner;
 	const raceMs = options.raceMs ?? 25_000;
 	// 0 (the default) means no outer limit: no flight timer and no retry deadline.
@@ -1467,7 +1465,7 @@ export function createOmpExtension(
 	const now = options.now ?? (() => clock.now());
 	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
-	const readOmpVersion = options.readOmpVersion ?? (() => readOmpVersionFrom(process.execPath));
+	const readOmpVersion = options.readOmpVersion;
 	const readMcp = options.mcp ?? readMcpState;
 	const exists = options.exists ?? SYSTEM_FS.existsSync;
 	const flightConfig = options.config ?? ((cwd: string) => loadConfig(claudeConfigPaths(cwd)));
@@ -2970,4 +2968,6 @@ export function createOmpExtension(
 	};
 }
 
-export default createOmpExtension();
+export default createOmpExtension({
+	readOmpVersion: () => readOmpVersionFrom(process.execPath),
+});
