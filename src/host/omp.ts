@@ -1406,14 +1406,14 @@ const SYSTEM_FS: SyncFileSystemPort = {
 	readFileSync: (path) => readFileSync(path, "utf8"),
 };
 
-/** Reads `<binary> --version` bounded to 2 seconds. Null when the read fails or prints no dotted version token. */
+/** Reads `<binary> --version` bounded to 2 seconds. Null when the read fails or prints no `omp/<version>` token. */
 export function readOmpVersionFrom(binary: string): string | null {
 	try {
 		const output = execFileSync(binary, ["--no-extensions", "--version"], {
 			timeout: 2000,
 			encoding: "utf8",
 		});
-		return /\d+(?:\.\d+)+/.exec(output)?.[0] ?? null;
+		return /omp\/(\d+(?:\.\d+)+)/.exec(output)?.[1] ?? null;
 	} catch {
 		return null;
 	}

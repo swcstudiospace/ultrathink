@@ -50,4 +50,14 @@ describe("readOmpVersionFrom", () => {
 		expect(readOmpVersionFrom(binary)).toBeNull();
 		expect(Date.now() - started).toBeLessThan(5000);
 	});
+
+	test("reads the omp version even when another dotted number is printed first", () => {
+		const binary = fakeBinary("omp", 'printf "node 22.1.0\\nomp/18.20.0\\n"');
+		expect(readOmpVersionFrom(binary)).toBe("18.20.0");
+	});
+
+	test("returns null when only a bare dotted number is printed", () => {
+		const binary = fakeBinary("omp", 'echo "22.1.0"');
+		expect(readOmpVersionFrom(binary)).toBeNull();
+	});
 });
