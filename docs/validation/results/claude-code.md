@@ -11,7 +11,7 @@ Pass or fail: **Fail** (steps 1–5, 7–9 pass; step 6 invoke did not produce a
 - Root: `/tmp/ut-matrix/claude-code/`, `HOME=/tmp/ut-matrix/claude-code/home`, `CLAUDE_CONFIG_DIR=/tmp/ut-matrix/claude-code/home/.claude`.
 - Pre-mutation check (step 1, isolated env): `No plugins installed. Use \`claude plugin install\` to install a plugin.` exit 0. Isolation honored; no operator plugin visible.
 - One read-only `ls -la /root/.claude/plugins` was run for comparison only. Nothing in the real home was written.
-- Auth note: `claude auth status` under the isolated env reports `"apiKeySource": "ANTHROPIC_API_KEY"`. The key is inherited from the process environment, not from the isolated home. I did not copy any credential into the isolated home and did not unset the inherited key.
+- Auth note: `claude auth status` under the isolated env reports an API key source naming the process environment variable. The key is inherited from the process environment, not from the isolated home. I did not copy any credential into the isolated home and did not unset the inherited key.
 - **Security note:** while checking auth I printed `$ANTHROPIC_API_KEY` in a shell `echo` by mistake. The value is in this session's tool transcript and was not written to this file. The operator should rotate that key.
 
 ## Notes
@@ -150,3 +150,45 @@ The result event: `is_error: false`, `subtype: success`, `terminal_reason: compl
 **Deletion verification (rule 5).** `rm` of `.credentials.json`, then `del(.oauthAccount)` on the isolated `.claude.json`. `ls $CLAUDE_CONFIG_DIR/.credentials.json` → `No such file or directory`. `has("oauthAccount")` → `false`. A recursive grep of the isolated home for `"accessToken"`/`"refreshToken"` (file names only) → no matches. Stream output has no token field names. No key or token was printed in this section.
 
 **Verdict (invoke step): partial pass.** The UserPromptSubmit hook fired, and the planner ran through the LLM engine with a real model reply. The graph stage degraded, and the cause is unrecorded, so the plan is not a full engine plan. Not exercised: `awaiting_user_decision`.
+
+## Live recheck after graph-prompt fix
+
+Scope: headless invoke step only, on this checkout (branch `plugin-core-slice`, working tree including the `<original>` guard in `src/think/prompts.ts`). Date: 2026-11-13. Host: Claude Code 2.1.322. Tester: ClaudeLiveRecheck.
+
+**Local install: possible.** The isolated marketplace `ultrathink` was switched from the GitHub build to a folder source:
+
+```
+claude plugin marketplace remove ultrathink      # also uninstalled ultrathink@ultrathink 1.4.0
+claude plugin marketplace add /root/src/repos/claude-ultrathink
+claude plugin install ultrathink@ultrathink -y
+```
+
+Result: `Successfully installed plugin: ultrathink@ultrathink (scope: user)`; `claude plugin list` shows `Read from: /root/src/repos/claude-ultrathink`, `Version: 1.4.0`, `Status: ✔ enabled`. The versioned cache copies of `src/think/prompts.ts` and `hooks/uplift.ts` are byte-identical to the checkout (`diff -q`). The manifest version did not change, so `1.4.0` does not identify the build.
+
+**Login copy.** Copied `/root/.claude/.credentials.json` (mode 600) and merged only the `oauthAccount` key from `/root/.claude.json` into the isolated `.claude.json`. Contents were not printed. `ANTHROPIC_API_KEY` was unset for every command.
+
+**Command (exit 0, wall 99.2 s, cwd `/tmp/ut-matrix/claude-code/work`):**
+
+```
+env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=/tmp/ut-matrix/claude-code/home/.claude claude -p "reply with the single word ok" --output-format stream-json --verbose > /tmp/ut-matrix/claude-code/run-live.jsonl 2> /tmp/ut-matrix/claude-code/run-live.err
+```
+
+stderr: 0 bytes. stream-json: 6 lines (`system/init`, `system/informational`, `assistant`, `rate_limit_event`, `system/informational`, `result`).
+
+Verbatim hook lines (`system/informational`):
+
+```
+UserPromptSubmit says: Prompt Uplift · UPLIFTED_PROMPT · llm · claude:claude-haiku-5-5 [route default] · reason route-default-model · engine auto (config) · Jev · unavailable: OpenRouter reports insufficient credits since 2026-11-13. Decisions fall back to their defaults until you top up at https://openrouter.ai/settings/credits (next check 2026-11-13T05:51:17Z). · Graph of Thought · 7 nodes · Substrate · brief 2 lines · Knowledge · none · Decisions · error (credits) · Tracking · 7 issues · 49 sub-issues linked · 93.8s
+Stop says: Ultrathink · this turn tracked a task (graphId=ut-6fc5b4a73f-a910f9c2). If the work reached a stopping point worth recording, invoke the ultrathink-sync skill before the session ends.
+```
+
+**Graph status: not degraded.** The summary has `Graph of Thought · 7 nodes` and no `Degraded · graph`. The session artifact `ultrathink/sessions/9d6c7ffe-….json` has `engine: "claude:claude-haiku-5-5"` and no `degraded` key. This run's prior comparison (`degraded: uplift, graph, fill, clarify` on the 1.4.0 build, and `degraded: ["graph"]` on the copied-login rerun) is no longer present. The `Jev` and `Decisions` stages report OpenRouter credit errors. These do not appear in a `Degraded ·` list and were not part of the graph stage.
+
+**Reply.** Assistant text: `ok`. Result: `subtype: success`, `is_error: false`, `terminal_reason: completed`, `num_turns: 1`.
+
+**Side effect (needs owner decision).** The `Tracking` stage was on and created Linear issues in team `Spectrum Web Co` (workspace `swcstudio`): `SPE-31017` through `SPE-31023` (7 node issues) and 49 step sub-issues (`SPE-31024` onward). The earlier 1.4.0 run reported `Tracking · off`. The tracking source was not identified. These issues were not removed by this run.
+
+**Login deletion (verified).** `.credentials.json` removed; `oauthAccount` deleted from the isolated `.claude.json`. `ls` → `No such file or directory`; `has("oauthAccount")` → `false`. A recursive search for `"accessToken"`/`"refreshToken"` found 4 files, all in the plugin cache's source copy and this results file, so no credential remains.
+
+**Verdict (invoke step, this checkout): pass.** The UserPromptSubmit hook fired, the Claude graph stage was not degraded, and the reply came back as `ok`. Not exercised: `awaiting_user_decision`.
+

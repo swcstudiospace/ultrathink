@@ -288,8 +288,10 @@ export function readSkipOnce(dir: string, sessionId: string): boolean {
 export function armSkipOnce(dir: string, sessionId: string): void {
 	// The session's record lock, which prune holds while it decides on and deletes a stale flag: an arm never lands between
 	// that decision and its delete. A lock that cannot be taken runs unlocked, as every session write does.
-	withFileLock(sessionPath(dir, sessionId), () =>
-		writeFileAtomic(skipOncePath(dir, sessionId), "skip\n"),
+	withFileLock(
+		sessionPath(dir, sessionId),
+		() => writeFileAtomic(skipOncePath(dir, sessionId), "skip\n"),
+		{ createParent: true },
 	);
 }
 

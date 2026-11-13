@@ -34,7 +34,7 @@ grok plugin uninstall ultrathink
 
 Trust gates everything below. The repo declares no MCP servers, user config, or `allowed-tools`; `.mcp.json` is not tracked. Hooks in `hooks/hooks.json` run through `bin/run-bun`:
 
-- UserPromptSubmit: `uplift.ts` plans each prompt (timeout 86400 s).
+- UserPromptSubmit: `uplift.ts` plans each prompt (timeout 86400 s). On Grok 1.0.77 its stdout is discarded, so the plan reaches the model only through the carrier file (see Known limitations).
 - PostToolUse `AskUserQuestion`: `answers.ts` folds answers into the session's clarifications and spec.
 - PostToolUse shell and PR-creation tools: `pr-sync.ts` nudges `ultrathink-sync` after PR creation in a planned session.
 - PostToolUse shell and `Skill`: `flow-eval.ts` scores gsd-autonomous and phase output through OpenRouter, only when a key is set and `ULTRATHINK_DECISIONS` is not `0`.
@@ -50,7 +50,10 @@ Trust gates everything below. The repo declares no MCP servers, user config, or 
 - `${CLAUDE_PLUGIN_ROOT}`: the contract lists only the `GROK_` variables. Bundled text says the `CLAUDE_` aliases are set too. Not exercised.
 - Payloads: `src/host/envelope.ts` maps Grok's camelCase stdin keys (read, not run). `run_terminal_command` (named in Grok's hook example) matches the shell matcher. `Skill`, `AskUserQuestion`, and PR-creation matchers are unverified on Grok.
 - `additionalContext` is dropped for MCP calls from Execute cells and workflows (bundled text). `pr-sync.ts` and `flow-eval.ts` depend on it.
-- Not run here: install, reload, enable, disable, or any hook.
+- UserPromptSubmit output: bundled docs say an allowing hook's stdout and `additionalContext` are "discarded rather than added as context". Passive events (`SessionStart`) ignore stdout too. `additionalContext` reaches the model only from `PreToolUse` and `PostToolUse`, and only with a tool batch.
+- Headless `grok -p` cannot approve tool calls. Any shell call the model makes (`run_terminal_command`) is denied and the run ends with no answer. Non-shell tools (`read_file`, `list_dir`, `grep`) ran without approval.
+- Reproduced 2026-11-13 (grok 1.0.77, isolated home, plugin installed, `grok -p "Say OK in one word."`): the plugin's `hooks/hooks.json` `UserPromptSubmit` hook succeeded and wrote `last-plan.<sid>.json`. The model's first call was a shell lookup of the plan path, which was denied; the output is one line with no answer. A test-only rule that asked for a non-shell lookup got the model to read the plan with `read_file`, then the `ultrathink-kickoff` step ran `ultrathink-mcp track complete` through the shell, which was denied. Still no answer. Both runs used a login copy, deleted afterwards.
+- Not run here against the real home: install, reload, enable, disable. The hook ran only in the isolated home (see the reproduction above).
 
 ## Sources
 

@@ -206,9 +206,13 @@ Event payload types observed: `runtime.command.accepted`, `session.run.linked`, 
 
 I grepped the full artifact for `hook`, `plugin`, and payload types matching `hook|plugin|extension|capabilit`. The grep found no plugin hook event. The `UserPromptSubmit` hook (`hooks/muse-prompt` -> `hooks/uplift.ts`) did not show in the stream, and no ultrathink plan appeared in the output. Hook execution is therefore not observable in the headless output, and I could not confirm it ran.
 
+**Superseded 2026-11-13:** this check read only stdout, and the hook did run. See the correction under Pass or fail.
+
 Invoke state: `idle`, `running`, `awaiting_user_decision`, `succeeded`, `failed`, `cancelled` all not observable on this host (the runbook says the same).
 
 Step 7 result: prompt ran headless on the echo provider, exit 0. The hook effect was not observed. The meta provider run was blocked by login.
+
+**Superseded 2026-11-13:** the hook effect is recorded in the session log, not stdout. See the correction under Pass or fail.
 
 ## Step 8: remove
 
@@ -258,6 +262,7 @@ Invoke
 - Experimental gate (`MUSE_EXPERIMENTAL_PLUGINS=1`): run both ways as the runbook requires. Non-gate install failed 3/3; gated install succeeded on attempt 2 of 2 (attempt 1 failed). Install is not shown to depend on the gate, because the run was nondeterministic. Approve works both ways once installed.
 - Scope default: not stated by the doc. I used `--scope user` explicitly.
 - Hook execution in headless mode: not observed. See step 7.
+- **Superseded 2026-11-13:** the session log records the hook; see the correction under Pass or fail.
 - Plugin data directory path and `--delete-data`: observed only as above.
 
 ## Verbatim final `list`
@@ -274,6 +279,10 @@ Final state: Muse is clean. No plugins are installed in the isolated home.
 
 FAIL. Step 2 (`muse plugins install . --scope user`) exited non-zero without the experimental gate on 3 of 3 attempts. The gated install failed once, then succeeded. Steps 3 to 9 completed after the successful gated install, but step 7's hook effect is not observable and the default meta provider needs login.
 
+**Correction, 2026-11-13.** The statements that the Muse hook did not run or was not observable (Step 7, this section, and the retry) are superseded. The check behind them read only `muse exec` stdout, which carries no hook events (`docs/install/muse.md`). The hook records to `session.jsonl` (`hook_run_terminal`) and to the `last-plan.<session-id>.json` state file. It fires once the plugin is approved, and Step 3 approved it before Step 7. Step 7's session `01a1d329-19bb-7620-8421-1ad20590bbe8` (`/tmp/ut-matrix/muse/home/.local/share/muse/sessions/2026/11/13/`) has a completed `hook_run_terminal` for `plugin:ultrathink:user-prompt-submit` (`exit_code` 0, `effects` `["context"]`), and its `last-plan` file names `"host": "muse"`. The retry's session `01a1d35c-43fe-7783-8933-26d8f3c47089` in `/tmp/ut-matrix/muse2/home` has the same completed record; this file records no approve step for the retry. The FAIL verdict stands, as recorded at the end of this file.
+
 ## Retry of step 2 (orchestrator, quiet checkout)
+
+**Superseded 2026-11-13:** the statement below that no ultrathink hook event was observable is wrong. This retry's session log records the hook. See the correction above.
 
 The earlier install failures ("held project plugin source inventory changed during snapshot") came while parallel matrix runs were writing into this checkout. Retried in a fresh isolated home (`/tmp/ut-matrix/muse2/home`) with no other writers: `muse plugins install . --scope user` exited 0 and reported `installed ultrathink 1.4.0 enabled=true trust=user-local`. Step 7 (prompt hook event) is unchanged from the run above: no ultrathink hook event was observable. Verdict stays FAIL.

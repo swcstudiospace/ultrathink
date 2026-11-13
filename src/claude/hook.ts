@@ -347,7 +347,7 @@ export function savePlanRecord(
 			if (lastNote) log(lastNote);
 			return merged;
 		},
-		{ log, ...lock },
+		{ log, createParent: true, ...lock },
 	);
 	return { record: saved, specPath, statePath, lastNote };
 }
@@ -1182,6 +1182,8 @@ export async function runPromptSubmit(
 				if (thought.degraded.graphFailure !== undefined) {
 					providerUnavailable = true;
 					degradedCauses.graph = causeText(thought.degraded.graphFailure);
+				} else if (thought.degraded.graphCause !== undefined) {
+					degradedCauses.graph = causeText(thought.degraded.graphCause);
 				}
 				const total = `${graph.nodes.length} nodes`;
 				if (thought.partial || thinkDegraded.length > 0)

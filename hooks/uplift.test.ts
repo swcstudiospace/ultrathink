@@ -329,3 +329,69 @@ describe("a provider that answers 429 forever, through the real hook entry and t
 		}
 	}, 180_000);
 });
+
+describe("the graph stage's claude child, through the real hook entry", () => {
+	test('the child inherits the hook\'s ANTHROPIC_BASE_URL on every graph call, and a bare "ok" reply degrades the graph stage', async () => {
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-graph-env-"));
+		try {
+			const home = join(dir, "home");
+			const stateDir = join(home, "state");
+			const calls = join(dir, "calls.log");
+			const fake = join(dir, "claude-fake");
+			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
+			mkdirSync(stateDir, { recursive: true });
+			// Every call answers the bare word "ok", the reply the graph stage received in the field. The log records
+			// whether the call is the graph call (its argv carries the graph system prompt) and the base URL it inherited.
+			writeFileSync(
+				fake,
+				[
+					"#!/bin/sh",
+					"cat >/dev/null",
+					`case "$*" in *Graph-of-Thought*) echo "graph \${ANTHROPIC_BASE_URL:-unset}" >> '${calls}';; *) echo "other \${ANTHROPIC_BASE_URL:-unset}" >> '${calls}';; esac`,
+					`echo '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","result":"ok"}'`,
+					"exit 0",
+					"",
+				].join("\n"),
+				{ mode: 0o755 },
+			);
+			writeFileSync(
+				join(home, ".config", "ultrathink", "config.json"),
+				JSON.stringify({ claude: { bin: fake } }),
+			);
+			const proc = Bun.spawn(["bun", "--no-env-file", join(HOOKS, "uplift.ts")], {
+				stdin: new Blob([
+					JSON.stringify({
+						session_id: "s-graph-env",
+						hook_event_name: "UserPromptSubmit",
+						cwd: dir,
+						prompt: "ultrathink invoke rerun: reply with the single word ok",
+					}),
+				]),
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					PATH: process.env.PATH ?? "",
+					HOME: home,
+					ULTRATHINK_STATE_DIR: stateDir,
+					ANTHROPIC_BASE_URL: "http://127.0.0.1:9/v1",
+				},
+			});
+			const [out] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+			]);
+			expect(await proc.exited).toBe(0);
+			expect(out).toContain("additionalContext");
+			const record = JSON.parse(readFileSync(join(stateDir, "last.json"), "utf8"));
+			expect(record.degraded).toContain("graph");
+			const graphCalls = readFileSync(calls, "utf8")
+				.trim()
+				.split("\n")
+				.filter((line) => line.startsWith("graph "));
+			expect(graphCalls.length).toBeGreaterThan(0);
+			expect(graphCalls.every((line) => line === "graph http://127.0.0.1:9/v1")).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 180_000);
+});

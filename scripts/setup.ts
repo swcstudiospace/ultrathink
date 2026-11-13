@@ -674,9 +674,10 @@ export function hermesHint(
 	repoRoot: string,
 	env: Record<string, string | undefined> = process.env,
 ): string {
-	const pluginsDir = join(hermesHome(env), "plugins");
-	// -n replaces an existing link instead of nesting a new one inside the linked directory on a re-paste; Hermes plugins are opt-in, hence enable.
-	const link = `mkdir -p ${shellQuote(pluginsDir)} && ln -sfn ${shellQuote(join(repoRoot, "hosts", "hermes"))} ${shellQuote(join(pluginsDir, "ultrathink"))} && hermes plugins enable ultrathink`;
+	const pluginDir = join(hermesHome(env), "plugins", "ultrathink");
+	const hermesDir = join(repoRoot, "hosts", "hermes");
+	// Per-file links, as docs/install/hermes.md: the plugin directory stays real so `hermes plugins remove` works; a directory symlink left by an earlier install is dropped first.
+	const link = `PLUGIN_DIR=${shellQuote(pluginDir)}; if [ -L "$PLUGIN_DIR" ]; then rm "$PLUGIN_DIR"; fi; mkdir -p "$PLUGIN_DIR" && for f in ${shellQuote(hermesDir)}/*.py ${shellQuote(hermesDir)}/plugin.yaml; do case "$f" in *_test.py) continue ;; esac; ln -sf "$f" "$PLUGIN_DIR/"; done && hermes plugins enable ultrathink`;
 	return `Hermes: ${link}; then hermes config set plugins.hook_callback_timeout 600 — the hook cap must be at least 105 s, 600 recommended (Hermes drops slower hooks after 30 s by default; this is a global Hermes setting that applies to every plugin); then disable any other prompt-planning plugin so two planners do not plan the same turn.`;
 }
 

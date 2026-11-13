@@ -773,8 +773,9 @@ describe("hermesHint", () => {
 	test("links into HERMES_HOME when set, else ~/.hermes, and states the global hook cap", () => {
 		const hint = hermesHint("/src/ultrathink", { HERMES_HOME: "/opt/hermes home" });
 		expect(hint).toContain(
-			`mkdir -p '/opt/hermes home/plugins' && ln -sfn '/src/ultrathink/hosts/hermes' '/opt/hermes home/plugins/ultrathink' && hermes plugins enable ultrathink`,
+			`PLUGIN_DIR='/opt/hermes home/plugins/ultrathink'; if [ -L "$PLUGIN_DIR" ]; then rm "$PLUGIN_DIR"; fi; mkdir -p "$PLUGIN_DIR" && for f in '/src/ultrathink/hosts/hermes'/*.py '/src/ultrathink/hosts/hermes'/plugin.yaml; do case "$f" in *_test.py) continue ;; esac; ln -sf "$f" "$PLUGIN_DIR/"; done && hermes plugins enable ultrathink`,
 		);
+		expect(hint).not.toContain("ln -sfn");
 		expect(hint).toContain("hermes config set plugins.hook_callback_timeout 600");
 		expect(hint).toContain("at least 105 s");
 		expect(hint).toContain("global Hermes setting");
@@ -897,6 +898,70 @@ describe("installGrokRule", () => {
 		} finally {
 			cleanup();
 		}
+	});
+
+	test("the installed Grok rule finds the plan with read_file and expands no GROK_PLUGIN_DATA in a shell", () => {
+		const packaged = readFileSync(
+			join(repoRootFromModule(import.meta.url), "hosts", "grok", "ultrathink.md"),
+			"utf8",
+		);
+		const { repo, rulePath, cleanup } = tempSetup();
+		try {
+			writeFileSync(join(repo, "hosts", "grok", "ultrathink.md"), packaged);
+			expect(installGrokRule(repo, dirname(rulePath)).changed).toBe(true);
+			const installed = readFileSync(rulePath, "utf8");
+			const lookup = installed
+				.split("\n")
+				.find((line) => line.includes("last-plan.<sessionId>.json"));
+			expect(lookup).toBeDefined();
+			expect(lookup).toContain("read_file");
+			expect(installed.indexOf("read_file")).toBeLessThan(
+				installed.indexOf("If `specPath` is set"),
+			);
+			expect(installed).not.toContain("$GROK_PLUGIN_DATA");
+			expect(installed).not.toContain("${GROK_HOME");
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("ultrathink-kickoff skill", () => {
+	const skill = readFileSync(
+		join(repoRootFromModule(import.meta.url), "skills", "ultrathink-kickoff", "SKILL.md"),
+		"utf8",
+	);
+	const section = (from: string, to?: string) =>
+		skill.slice(skill.indexOf(from), to === undefined ? undefined : skill.indexOf(to));
+
+	test("the answer path never waits on a shell call; the shell tracking step runs only when a shell tool is available", () => {
+		// Reading the state, substrate registration, HITL answers, the final prompt and proceeding need no shell.
+		for (const [from, to] of [
+			["## 0.", "## 1."],
+			["## 3.", "## 4."],
+			["## 4.", "## 5."],
+			["## 6."],
+		] as const) {
+			expect(section(from, to)).not.toMatch(/shell/i);
+		}
+		expect(section("## 1.", "## 2.")).not.toContain("track complete");
+		expect(section("## 1.", "## 2.")).toContain("step 5.3");
+		expect(section("## 1.", "## 2.")).toContain("`grok -p`");
+	});
+
+	test("the answer section comes before the shell tracking step, and the tracking step is optional and fail open", () => {
+		const answer = skill.indexOf("The final prompt is the **full spec file**");
+		expect(answer).toBeGreaterThan(-1);
+		const tracking = section(
+			"3. **Optional: track after the answer.**",
+			"4. **Linked issues TODO lines.**",
+		);
+		expect(tracking).toContain("ultrathink-mcp track complete");
+		expect(tracking).toContain("optional");
+		expect(tracking).toContain("fail open");
+		expect(tracking).toContain("cancels the whole turn");
+		expect(skill.indexOf("track complete")).toBeGreaterThan(answer);
+		expect(skill.indexOf("Optional: track after the answer")).toBeGreaterThan(answer);
 	});
 });
 

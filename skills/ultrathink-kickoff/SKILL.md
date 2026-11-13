@@ -50,17 +50,10 @@ If `plan` is missing (the planner fell back to boilerplate), take the no-plan pa
 Rows go to the Notion data source `notion.dataSourceUrl` (a `collection://…` URL) and the Linear team `linear.team` from the ultrathink config: `~/.config/ultrathink/config.json`, `~/.claude/ultrathink.json` and `<project>/.claude/ultrathink.json`, later files winning. `<repo>/bin/ultrathink status`, run from the project directory, prints both as `Notion: …` and `Linear team: …` (`not configured` when unset); `<repo>` is the plugin root (this file is `<repo>/skills/ultrathink-kickoff/SKILL.md`). Skip a tracker that is not configured silently: create nothing in it and do not mention it. If the user asks to set up Notion tracking, `<repo>/bin/ultrathink-mcp notion init --parent <page url or id> --write-config` creates the database and saves its `notion.dataSourceUrl` to `~/.config/ultrathink/config.json`.
 
 - If `tracking.status` is `"complete"`: every row exists in each configured tracker. Skip all row creation and go to step 3.
-- Otherwise — `tracking` is absent (on Hermes the planner creates no rows, so it always is on the first run) or not complete — and the state file has a `plan`, run the command printed in the prompt's **Ultrathink tracking** section once with the shell tool (without a `plan` there are no rows to finish: skip to step 4, reading `record.clarifications`):
+- Otherwise — `tracking` is absent (on Hermes the planner creates no rows, so it always is on the first run) or not complete — and the state file has a `plan`: no shell command runs before the answer. The shell tracking command runs after the answer text, in step 5.3. Before the answer only the manual fallback can run, and only when no shell tool is available in this session or the run is headless (`grok -p`): then do step 2 now, when its MCP tools are available, and continue with steps 3–5. Otherwise continue with step 4 and leave the rows to step 5.3.
+- Without a `plan` there are no rows to finish: skip to step 4, reading `record.clarifications`.
 
-  ```sh
-  <repo>/bin/ultrathink-mcp track complete --state <stateFile>
-  ```
-
-  It creates only the missing Linear/Notion rows through the shared MCP gateway (reusing the host's stored OAuth logins), updates `tracking` in the state file, rewrites the spec's `<ISSUES>` block and prints the Linked-issues TODO lines. Re-read the state file afterwards. If it reports that tracking is not configured or turned off, go to step 3 without mentioning it. If it reports `notion: login required`, tell the user to run `<repo>/bin/ultrathink-mcp auth login notion` and continue — do not block.
-- **Fail open when a tracker fails.** If the command reports that Notion or Linear is down, unreachable, rate-limited, unauthorised or returned errors (`! …` lines, `tracking partial` or `tracking failed`), do not create rows by hand: tell the user in one line which tracker failed and continue to step 3.
-- Only if the command itself cannot run (the `bin/ultrathink-mcp` file is missing, `bun` is missing, or the shell exits 127 or 126), do step 2 manually — never because a tracker is down.
-
-## 2. Manual fallback (only when step 1's command could not run)
+## 2. Manual fallback (no shell tool, or the step 5.3 command cannot run)
 
 Create only what `tracking` does not already contain. This step needs the Notion and Linear MCP tools in this session; if a tracker's tools are not available, tell the user once to register them with `bun <repo>/scripts/mcp-register.ts` (or connect the official Notion/Linear MCP servers), skip that tracker and continue — never block the work.
 
@@ -79,6 +72,8 @@ Create only what `tracking` does not already contain. This step needs the Notion
 Keep every identifier/URL you created; steps 3 and 5 use them.
 
 ## 3. Optional: register the graph with an Agent Substrate server
+
+Run this step once tracking has run (step 1, or step 5.3 when tracking is deferred), so the refs it sends are real.
 
 This is an optional integration. Run it only when an MCP server named `substrate` is connected in this session and you have its `graph_register` tool; otherwise skip this step silently — do not log, mention or suggest it. When it is connected, call `graph_register` on it. It is idempotent by `graph_id`, so call it without checking for an earlier registration. On Cursor the session record's `host` is `cursor`; pass that as `surface` (the same rule as every other host: `claude-code` only when `host` is absent). Build it from the tracking refs, leaving out fields whose value is absent:
 
@@ -108,12 +103,23 @@ Without a `plan`, read `record.clarifications` instead of `plan.hitl`: blocking 
 - Persist the user's answers into the spec before anything reads it (step 5 and any Cursor handoff): in `sessions/<id>.xml`, add `<ANSWER source="user">…</ANSWER>` (answer text XML-escaped) inside the `<CLARIFICATION>` of the question it answers, after `</OPTIONS>`. The `<CLARIFICATIONS>` block already holds one `<CLARIFICATION>` per blocking question. Replace an existing `<ANSWER>` rather than adding a second. If the block has no entry for a question, append one in the same format. An answer kept only in chat never reaches the spec, so the orchestrator would build the default instead. Stated assumptions need no entry: the default option already carries `recommended="true"`.
 
 ## 5. Set Implementing and emit the final prompt
-When the plan carries the Cursor swarm note (`## Cursor swarm`), do steps 1 and 4 only, then stop. The Cursor session hands the unit to `a01-orchestrator`, so do not emit the final prompt in steps 2 and 3 here.
+When the plan carries the Cursor swarm note (`## Cursor swarm`), do steps 1 and 4 only, run step 5.3 after your answer text, then stop. The Cursor session hands the unit to `a01-orchestrator`, so do not emit the final prompt (step 5.2) here.
 
 1. Set the Task `Status` to `"Implementing"`: `notion-update-page` on `tracking.notion.taskUrl` when present (skip silently when absent). If the Notion MCP tools are not available in this session, tell the user once to register them with `bun <repo>/scripts/mcp-register.ts` (or connect the official Notion MCP server), skip this update and continue — never block the work.
 2. The final prompt is the **full spec file** (`sessions/<id>.xml`, the spec path from the prompt context), which already carries the `<ISSUES>` block with identifiers and URLs. Do not use `plan.task.upliftedPrompt` — that copy is truncated to 1900 characters.
-3. Copy every **Linked issues** TODO line into the host TODO tool verbatim, keeping the identifier and URL on each line. When step 1 ran `track complete`, take the lines from its output — the prompt-context lines are stale then (they still show `(pending)` rows); otherwise take them from the prompt context (without a `plan` there are none — skip).
-4. Mark the session kicked off, once: `<repo>/bin/ultrathink-mcp session mark --state <stateFile> kicked-off`. Fail open: if it errors, ignore it and continue.
+3. **Optional: track after the answer.** After the answer text in step 5.2 is written, when a shell tool is available and `tracking` is not complete with a `plan`, run this command once:
+
+```sh
+<repo>/bin/ultrathink-mcp track complete --state <stateFile>
+```
+
+It is optional and fail open: the plan is used whether or not it runs. It creates only the missing Linear/Notion rows through the shared MCP gateway (reusing the host's stored OAuth logins), updates `tracking` in the state file, rewrites the spec's `<ISSUES>` block and prints the Linked-issues TODO lines. Re-read the state file afterwards. If it reports that tracking is not configured or turned off, ignore it without mentioning it. If it reports `notion: login required`, tell the user to run `<repo>/bin/ultrathink-mcp auth login notion` and continue — do not block.
+
+If Notion or Linear is down (`! …` lines, `tracking partial` or `tracking failed`), do not create rows by hand: tell the user in one line which tracker failed and continue.
+
+If the command itself cannot run (the `bin/ultrathink-mcp` file is missing, `bun` is missing, the shell exits 127 or 126) and MCP tools are available, do step 2 now. A shell call denied for approval cancels the whole turn in a headless run, so the answer text must already be written and nothing here may hold it back: a denied or failed shell call is ignored, never retried, and never blocks step 5.4 or 5.5.
+4. **Linked issues TODO lines.** Copy every **Linked issues** TODO line into the host TODO tool verbatim, keeping the identifier and URL on each line. When step 5.3 ran the command, take the lines from its output — the prompt-context lines are stale then (they still show `(pending)` rows); otherwise take them from the prompt context (without a `plan` there are none — skip).
+5. Mark the session kicked off, once, after your answer text is written: when a shell tool is available, run `<repo>/bin/ultrathink-mcp session mark --state <stateFile> kicked-off`. Never run it before the answer text, because a denied shell call cancels the whole turn. Fail open: if it errors or no shell is available, ignore it.
 
 ## 6. Proceed as normal
 

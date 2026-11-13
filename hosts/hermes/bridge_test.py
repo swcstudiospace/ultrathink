@@ -221,14 +221,19 @@ SYNC_SKILL = HERE.parents[1] / "skills" / "ultrathink-sync" / "SKILL.md"
 def fake_ctx(accepts: bool | None = True) -> SimpleNamespace:
 	"""A Hermes PluginContext stand-in. accepts=False refuses to inject (the TUI, or a gateway
 	without allow_gateway_injection); accepts=None is a Hermes without inject_message."""
-	ctx = SimpleNamespace(hooks=[], callbacks={}, commands={}, injected=[], skills={}, tools={})
+	ctx = SimpleNamespace(hooks=[], callbacks={}, commands={}, command_info={}, injected=[], skills={}, tools={})
 
 	def register_hook(name: str, callback: Callable[..., object]) -> None:
 		ctx.hooks.append(name)
 		ctx.callbacks[name] = callback
 
 	ctx.register_hook = register_hook
-	ctx.register_command = lambda name, handler, description="", args_hint="": ctx.commands.__setitem__(name, handler)
+
+	def register_command(name: str, handler: Callable[..., object], description: str = "", args_hint: str = "") -> None:
+		ctx.commands[name] = handler
+		ctx.command_info[name] = (description, args_hint)
+
+	ctx.register_command = register_command
 	ctx.register_skill = lambda name, path, description="", frontmatter=None: ctx.skills.__setitem__(name, (path, description))
 	ctx.register_tool = lambda name, toolset, schema, handler, check_fn=None, **extra: ctx.tools.__setitem__(
 		name, SimpleNamespace(toolset=toolset, schema=schema, handler=handler, check_fn=check_fn)
@@ -618,7 +623,7 @@ def test_a_hermes_without_its_cap_resolver_or_a_configured_cap_assumes_30s_and_n
 
 
 def test_a_plugin_directory_without_its_engine_warns_once_and_never_starts_bun():
-	# Hermes loaded a copy of hosts/hermes instead of a symlink into a clone: nothing to run is beside it.
+	# Hermes loaded a copy of hosts/hermes instead of links into a clone: nothing to run is beside it.
 	saved = bridge.ENGINE, bridge.RUN_BUN
 	with tempfile.TemporaryDirectory() as tmp, hook_cap(None):
 		fake = fake_bun(Path(tmp) / "bun")
@@ -629,7 +634,7 @@ def test_a_plugin_directory_without_its_engine_warns_once_and_never_starts_bun()
 					assert plan({"user_message": "add a widget", "session_id": "s1"}, env={"BUN": str(fake)}) == ""
 			assert bun_calls(fake) == []
 			assert len(warnings) == 1 and str(bridge.ENGINE) in warnings[0], warnings
-			assert "docs/install.md#hermes-agent" in warnings[0]
+			assert "docs/install/hermes.md" in warnings[0]
 			# Without a BUN override the engine starts through bin/run-bun, which must be there too.
 			bridge.ENGINE, bridge.RUN_BUN = saved[0], Path(tmp) / "bin" / "run-bun"
 			with bridge_warnings() as warnings:
@@ -1080,6 +1085,48 @@ def test_registers_every_ultrathink_command_next_to_the_hooks():
 	older.register_command = reject
 	plugin.register(older)
 	assert older.hooks == ctx.hooks and older.commands == {}
+
+
+def test_per_file_install_links_resolve_the_clone_for_repo_root_engine_and_skills():
+	# docs/install/hermes.md links each file of hosts/hermes into a real plugin directory, which `hermes plugins remove`
+	# accepts. REPO_ROOT resolves through those links, so the engine, bin/ and the skills belong to the clone.
+	name = "ultrathink_linked"
+	with tempfile.TemporaryDirectory() as tmp:
+		linked = Path(tmp) / "ultrathink"
+		linked.mkdir()
+		for source in [*HERE.glob("*.py"), HERE / "plugin.yaml"]:
+			if not source.name.endswith("_test.py"):
+				(linked / source.name).symlink_to(source)
+		spec = importlib.util.spec_from_file_location(name, linked / "__init__.py", submodule_search_locations=[str(linked)])
+		assert spec is not None and spec.loader is not None
+		module = importlib.util.module_from_spec(spec)
+		sys.modules[name] = module
+		try:
+			spec.loader.exec_module(module)
+			linked_bridge = sys.modules[f"{name}.bridge"]
+			repo = HERE.parents[1]
+			assert linked_bridge.REPO_ROOT == repo, linked_bridge.REPO_ROOT
+			assert linked_bridge.ENGINE.is_file() and linked_bridge.RUN_BUN.is_file() and linked_bridge.CLI.is_file()
+			ctx = fake_ctx()
+			module.register(ctx)
+			assert "ultrathink-lessons" in ctx.commands
+			for skill in module.SKILLS:
+				assert ctx.skills[skill][0] == repo / "skills" / skill / "SKILL.md", skill
+		finally:
+			for key in [key for key in sys.modules if key == name or key.startswith(f"{name}.")]:
+				del sys.modules[key]
+
+
+def test_every_command_is_registered_under_the_name_hermes_routes_with_its_argument_hint():
+	# Hermes files a plugin command under its lowercased name without the slash, spaces as hyphens, and dispatches
+	# /<name> from that key, `hermes chat -q` included. Telegram, Slack and Discord menus accept only [a-z0-9_-].
+	ctx = fake_ctx()
+	plugin.register(ctx)
+	for name in ctx.commands:
+		assert re.fullmatch(r"[a-z0-9_-]+", name), name
+	description, args_hint = ctx.command_info["ultrathink-lessons"]
+	assert description and args_hint == "[list|recall <query>|promote <id>|status]", (description, args_hint)
+	assert callable(ctx.commands["ultrathink-lessons"])
 
 
 def test_registers_the_five_ultrathink_skills_with_their_descriptions():
@@ -1874,6 +1921,8 @@ if __name__ == "__main__":
 	test_tracking_refs_with_no_created_rows_do_not_use_up_the_nudge()
 	test_pre_verify_hook_fails_open()
 	test_registers_every_ultrathink_command_next_to_the_hooks()
+	test_per_file_install_links_resolve_the_clone_for_repo_root_engine_and_skills()
+	test_every_command_is_registered_under_the_name_hermes_routes_with_its_argument_hint()
 	test_registers_the_five_ultrathink_skills_with_their_descriptions()
 	test_skill_registration_failures_leave_hooks_and_commands_registered()
 	test_skill_description_is_empty_without_frontmatter()

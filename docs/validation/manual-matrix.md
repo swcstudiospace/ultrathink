@@ -15,7 +15,7 @@ Manual runbook for the six host installs in `docs/install/`. Conformance subject
 | Host | Install | Load | Invoke a command | Uninstall | Recorded result |
 |---|---|---|---|---|---|
 | Omp | `omp plugin install .` from repo root; check with `omp plugin list` | `/reload-plugins` or restart Omp | `/ultrathink-status` | `omp plugin uninstall ultrathink` | |
-| Hermes | Symlink `hosts/hermes` to `~/.hermes/plugins/ultrathink`; `hermes plugins enable ultrathink` | Enable notifies gateway; restart if reported required | `/ultrathink-lessons` | `hermes plugins disable ultrathink`; `hermes plugins remove ultrathink` | |
+| Hermes | Per-file install from `docs/install/hermes.md`: link each file of `hosts/hermes` into a real `~/.hermes/plugins/ultrathink`, not the directory; `hermes plugins enable ultrathink` | Enable notifies gateway; restart if reported required | `/ultrathink-lessons` | `hermes plugins disable ultrathink`; `hermes plugins remove ultrathink` | |
 | Prime Agent | `prime-agent package install <source> [--local]` (source syntax UNVERIFIED) | Fresh session; `/skill:ultrathink` | `/ultrathink-status` | `prime-agent package remove <source> [--local]` | |
 | Claude Code | `claude plugin marketplace add swcstudiospace/claude-ultrathink`; `claude plugin install ultrathink@ultrathink --scope user` | `/reload-plugins` or new session | Submit a prompt; the UserPromptSubmit hook plans it | `claude plugin uninstall ultrathink` | |
 | Grok Build | `grok plugin install <path-to-checkout>`; answer the trust prompt | `/plugins`, press `r` in Plugins tab, or new session | Submit a prompt; the UserPromptSubmit hook plans it | `grok plugin uninstall ultrathink` | |
@@ -72,8 +72,8 @@ Observed host: Hermes Agent v0.23.1 (2026.9.24). Minimum version: not documented
 ### Steps
 
 1. From the repo root, run `hermes plugins list --plain`. Record whether ultrathink is listed.
-2. Run `mkdir -p ~/.hermes/plugins`.
-3. Run `ln -s "$PWD/hosts/hermes" ~/.hermes/plugins/ultrathink`. Do not copy the directory; a copy breaks `REPO_ROOT` and the skill paths.
+2. Run the install block in `docs/install/hermes.md` (`## Install`), except its last line, `hermes plugins enable ultrathink`, which is step 4. It makes `~/.hermes/plugins/ultrathink` a real directory and links each file of `hosts/hermes` into it. Do not link the directory, and do not copy the files.
+3. Run `ls -l ~/.hermes/plugins/ultrathink`. Each file should be a link into `hosts/hermes`, not a copy; a copy breaks `REPO_ROOT` and the skill paths.
 4. Run `hermes plugins enable ultrathink`.
 5. Run `hermes plugins validate hosts/hermes`. Expect a pass with one warning about the private core import at `bridge.py:153`.
 6. Run `hermes plugins list --plain`. Confirm ultrathink is listed as enabled.
@@ -81,16 +81,16 @@ Observed host: Hermes Agent v0.23.1 (2026.9.24). Minimum version: not documented
 8. Run `/ultrathink-lessons`. Record the returned text verbatim.
 9. Run `hermes plugins disable ultrathink`.
 10. Run `hermes plugins remove ultrathink`.
-11. Run `ls -l ~/.hermes/plugins/ultrathink`. If the link remains, run `rm ~/.hermes/plugins/ultrathink`. This does not touch the repository.
+11. Run `ls -l ~/.hermes/plugins/ultrathink`. If the directory remains, run `rm -r ~/.hermes/plugins/ultrathink`. It deletes only links, so the repository is untouched.
 12. Plugin data directories are kept on remove. Record whether one exists.
 
 ### Lifecycle states to observe
 
 Install
-- `not_installed`: observable. Step 1 does not show ultrathink enabled, and step 3 has not run.
-- `installing`: not observable on this host. Installation is a symlink plus a CLI call with no documented progress output.
+- `not_installed`: observable. Step 1 does not show ultrathink enabled, and step 2 has not run.
+- `installing`: not observable on this host. Installation is a set of file links plus a CLI call with no documented progress output.
 - `installed`: observable. Step 6 lists ultrathink as enabled.
-- `install_failed`: observable. Step 5 fails, or the link in step 3 is missing from `~/.hermes/plugins/`.
+- `install_failed`: observable. Step 5 fails, or step 3 shows a `hosts/hermes` file missing from `~/.hermes/plugins/ultrathink`.
 
 Load
 - `loading`: not observable on this host.

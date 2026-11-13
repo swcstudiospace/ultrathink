@@ -345,5 +345,27 @@ class Bridge(unittest.TestCase):
 		self.assertEqual(bridge.state_dir(self.env), Path(self.tmp.name) / "agent" / "ultrathink")
 
 
+
+class SkillFrontmatter(unittest.TestCase):
+	"""Prime Agent drops a skill whose frontmatter has an empty or missing description, so the entry must carry both."""
+
+	def frontmatter(self) -> dict[str, str]:
+		text = (REPO / "hosts" / "prime-agent" / "SKILL.md").read_text(encoding="utf-8")
+		self.assertTrue(text.startswith("---\n"), "SKILL.md must open with a frontmatter block")
+		header, sep, _ = text[4:].partition("\n---\n")
+		self.assertTrue(sep, "SKILL.md frontmatter must be closed by a line of ---")
+		fields: dict[str, str] = {}
+		for line in header.splitlines():
+			key, colon, value = line.partition(":")
+			if colon and not line.startswith((" ", "\t")):
+				fields[key.strip()] = value.strip()
+		return fields
+
+	def test_name_and_description_are_present_and_non_empty(self) -> None:
+		fields = self.frontmatter()
+		self.assertEqual(fields.get("name"), "ultrathink")
+		self.assertTrue(fields.get("description", ""), "an empty description makes Prime Agent drop the skill")
+
+
 if __name__ == "__main__":
 	unittest.main()

@@ -650,7 +650,7 @@ bun scripts/setup.ts rollback  # undo what apply did
    - adds the checkout as a plugin marketplace and runs `claude plugin install ultrathink@ultrathink`;
    - merges a short "Ultrathink task tracking" block between `<!-- ultrathink:start -->` and `<!-- ultrathink:end -->` into `~/.claude/CLAUDE.md` (`$CLAUDE_CONFIG_DIR/CLAUDE.md` when set). The block says the plugin *can* track work and applies only when tracking is configured;
    - records which MCP servers it added in `ultrathink-setup-state.json` next to that `CLAUDE.md`. A re-run keeps servers recorded by earlier runs, so `rollback` still removes them.
-3. Prints the remaining steps for the other hosts: the Hermes symlink into `$HERMES_HOME/plugins/ultrathink` (`~/.hermes` when unset) and the `hermes config set plugins.hook_callback_timeout 600` command (see [Install](install.md)), `muse plugins install <clone> --scope user && muse plugins approve ultrathink`, and `omp plugin link <clone>`. It does not run them.
+3. Prints the remaining steps for the other hosts: the Hermes per-file links from `hosts/hermes` into `$HERMES_HOME/plugins/ultrathink` (`~/.hermes` when unset) and the `hermes config set plugins.hook_callback_timeout 600` command (see [Install](install.md)), `muse plugins install <clone> --scope user && muse plugins approve ultrathink`, and `omp plugin link <clone>`. It does not run them.
 
 `apply` never changes `~/.claude/settings.json` or any Hermes setting.
 

@@ -17,7 +17,7 @@ synced, the turn continues once with a nudge to run ultrathink-sync.
 
 When Hermes does not report its hook cap, the bridge reads plugins.hook_callback_timeout
 from ${HERMES_HOME:-~/.hermes}/config.yaml, else assumes Hermes' 30 s default. When the
-engine is not beside the plugin (a copied directory, not a symlink into a clone), Bun never
+engine is not beside the plugin (a copy, not files linked from a clone), Bun never
 starts. Each case logs one warning naming the fix.
 
 The /ultrathink-<verb> slash commands run bin/ultrathink against the engine's
@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# resolve() follows the per-file links from docs/install/hermes.md back into the clone.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENGINE = REPO_ROOT / "hooks" / "engine.ts"
 RUN_BUN = REPO_ROOT / "bin" / "run-bun"
@@ -409,8 +410,8 @@ def plan(payload: dict[str, Any], env: dict[str, str] | None = None) -> str:
 	if missing is not None:
 		if _first_warning("engine"):
 			logger.warning(
-				"ultrathink: %s not found; install hosts/hermes as a symlink into a full clone of ultrathink "
-				"(docs/install.md#hermes-agent)",
+				"ultrathink: %s not found; link the files of hosts/hermes from a full clone of ultrathink, do not copy them "
+				"(docs/install/hermes.md)",
 				missing,
 			)
 		return ""
