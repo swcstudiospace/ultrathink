@@ -157,3 +157,63 @@ Uninstall
 - `grok plugin list` shows no enabled or disabled marker. The state is observable only in `config.toml`.
 - Uninstall leaves `enabled = ["ultrathink"]` in `config.toml`. Observed; not a runbook step.
 - Runbook caveat resolved: local-path install appears in `grok plugin list` (step 3).
+
+## Invoke rerun with copied login (orchestrator-approved)
+
+Date: 2026-11-13. Host: `grok --version` → `grok 1.0.77 (50ca579fa996) [stable]`. Scope: runbook step 6 only. Tester: InvokeRerunGrok.
+
+### Plugin reinstall
+
+The earlier run uninstalled the plugin, so it was installed again in the isolated env.
+
+Command: `grok plugin install /root/src/repos/claude-ultrathink --trust` · Exit: 0 · Wall 11.51 s
+```
+Installed 1 plugin(s) from /root/src/repos/claude-ultrathink: ultrathink
+```
+`grok plugin list` after: `claude-ultrathink-dc480685: ultrathink [local: /root/src/repos/claude-ultrathink]`.
+
+### Login copy
+
+Only `/root/.grok/auth.json` (mode 600) was copied to `$GROK_HOME/auth.json` with `cp -p`. Its contents were not printed. No other file was copied. The real file was not written by this run: its mtime is `2026-11-12 22:12:49 UTC`, before the run.
+
+### Invoke
+
+Environment: `HOME=/tmp/ut-matrix/grok-build/home`, `GROK_HOME=/tmp/ut-matrix/grok-build/home/.grok`, working directory `/root/src/repos/claude-ultrathink`.
+
+Command: `env -u ANTHROPIC_API_KEY -u XAI_API_KEY timeout 240 grok -p "Say OK in one word."` · Exit: 0 · Wall 156.90 s. The shell moved the call to a background job after about 60 s; it finished on its own.
+
+Output (full, 343 bytes, 2 lines, not truncated):
+```
+I'll check the ultrathink plan for this turn first, then reply.I'll locate this session's plan file next.permission required: Execute `echo "SESSION_HINT=$GROK_SESSION_ID"; echo "ULTRATHINK_STATE_DIR=$ULTRATHINK_STATE_DIR"; echo "GROK_PLUGIN_DATA=$GROK_PLUGIN_DATA"; echo "GROK_HOME=… was not run, as
+ a headless run cannot ask for approval
+```
+
+Hook evidence, from the isolated session transcript `sessions/%2Froot%2Fsrc%2Frepos%2Fclaude-ultrathink/01a1d340-a924-7740-bb9f-6ed48348b31a/updates.jsonl`:
+
+- `hook_execution`: event `user_prompt_submit`, run `plugin/ultrathink/hooks:user_prompt_submit[0].hooks[0]`, status `success`, elapsed 145812 ms.
+- `hook_annotation`: "Prompt Uplift · UPLIFTED_PROMPT · llm · grok:grok-build-0.1 [route default] · reason route-default-model · engine auto (config) · Graph of Thought · 6 nodes · Substrate · brief 13 lines · Tracking · off · 145.3s".
+- Plan file written: `plugin-data/user/95ebd55b/ultrathink/ultrathink/last-plan.01a1d340-a924-7740-bb9f-6ed48348b31a.json`, 15171 bytes, graph id `ut-00da624882-799720ff`.
+
+The first stdout line ("I'll check the ultrathink plan…") matches the hook's instruction to read the plan file. Stdout carries no hook-tagged marker, so the transcript records are the attribution.
+
+The agent's follow-up bash call, which reads the plan, needed approval. `grok -p` cannot ask for approval, so the call was refused. The run ended with no answer text ("OK" was not produced). Exit stayed 0.
+
+### Deletion verification
+
+Command: `rm -f "$GROK_HOME/auth.json"` · Exit: 0.
+`ls -la "$GROK_HOME/auth.json"` → `No such file or directory`. `find /tmp/ut-matrix/grok-build/home -name 'auth*.json'` → 0 matches.
+`auth.json.lock` (18 B) remains in `$GROK_HOME`. grok created it during the run; it is a lock file, not a copy of login data.
+
+### Verdict (invoke step)
+
+- Hook fired and succeeded: observed (transcript records above).
+- Planned result written: observed (plan file above).
+- Final answer to the prompt: not produced. The headless run refused the plan-reading tool call, which needs approval.
+
+Step 6 documented result ("the hook plans the prompt") is observed. The full invoke path is not, because the post-plan tool call was denied under `-p`.
+
+### Notes
+
+- Not verified: whether the isolated run rotated the refresh token server-side. The real `auth.json` was not modified locally.
+- The plugin remains installed in the isolated home. This section does not uninstall it.
+

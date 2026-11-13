@@ -124,3 +124,29 @@ Invoke
 - **Credit (inherited key):** the inherited `ANTHROPIC_API_KEY` returns `Credit balance is too low`. A real model turn could not complete, so the "submit a prompt → model answers" path was not verified.
 
 To finish step 6 for real, run it with credentials that are valid for this account in the isolated home (for example, `claude /login` run inside `CLAUDE_CONFIG_DIR`) or with an API key that has credit. Then repeat step 6 and record whether the planner returns `engine` output instead of `degraded`.
+
+## Invoke rerun with copied login (orchestrator-approved)
+
+Scope: step 6 only (submit a prompt, observe UserPromptSubmit hook). Date: 2026-11-13. Host: Claude Code 2.1.322.
+
+**Plugin source.** The isolated home had no plugin (step 7 of the earlier run uninstalled it). `claude plugin marketplace add swcstudiospace/claude-ultrathink` reported the marketplace `ultrathink` already on disk (GitHub `swcstudiospace/claude-ultrathink`, the published marketplace). `claude plugin install ultrathink@ultrathink --scope user` → exit 0, `Successfully installed plugin: ultrathink@ultrathink (scope: user)`. `claude plugin list` → `ultrathink@ultrathink`, `Version: 1.4.0`, `Scope: user`, `Status: ✔ enabled`. The plugin was left installed after this run.
+
+**Login copy (rule 2).** Copied only the login-holding data into the isolated home: `/root/.claude/.credentials.json` → `$CLAUDE_CONFIG_DIR/.credentials.json` (mode 600). The login's `oauthAccount` key lives in `/root/.claude.json`. I merged that single key into the isolated `$CLAUDE_CONFIG_DIR/.claude.json` instead of copying the whole real file, because the real file carries unrelated project and cache state. This is a narrower copy than rule 2's literal wording. Contents were not printed.
+
+**Command (exit code 0, wall time 54.8 s).**
+```
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN HOME=/tmp/ut-matrix/claude-code/home CLAUDE_CONFIG_DIR=/tmp/ut-matrix/claude-code/home/.claude PATH=/root/.local/share/reflex/bun/bin:$PATH timeout 600 claude -p "ultrathink invoke rerun: reply with the single word ok" --output-format stream-json --verbose > /tmp/ut-matrix/claude-code/invoke-rerun.jsonl 2> /tmp/ut-matrix/claude-code/invoke-rerun.stderr.txt
+```
+Output: 7 stream-json lines, stderr empty. Not truncated.
+
+**Hook output: appeared.** Verbatim `system/informational` event:
+```
+UserPromptSubmit says: Prompt Uplift · UPLIFTED_PROMPT · llm · claude:claude-haiku-5-5 [route default] · reason route-default-model · engine auto (config) · Graph of Thought · 5 nodes · Degraded · graph · Substrate · brief 2 lines · Tracking · off · 47.8s
+```
+The result event: `is_error: false`, `subtype: success`, `terminal_reason: completed`, `num_turns: 1`. The assistant replied `ok`.
+
+**Plan state.** The session file `ultrathink/sessions/b7e2d07e-….json` records `engine: "claude:claude-haiku-5-5"` and `degraded: ["graph"]`. The plan body has a `## Planning degraded` note: "the graph structure use fallback content — treat those parts as unverified." Only the graph stage degraded. The earlier run degraded all four stages (`uplift, graph, fill, clarify`). The artifacts do not record why the graph calls failed.
+
+**Deletion verification (rule 5).** `rm` of `.credentials.json`, then `del(.oauthAccount)` on the isolated `.claude.json`. `ls $CLAUDE_CONFIG_DIR/.credentials.json` → `No such file or directory`. `has("oauthAccount")` → `false`. A recursive grep of the isolated home for `"accessToken"`/`"refreshToken"` (file names only) → no matches. Stream output has no token field names. No key or token was printed in this section.
+
+**Verdict (invoke step): partial pass.** The UserPromptSubmit hook fired, and the planner ran through the LLM engine with a real model reply. The graph stage degraded, and the cause is unrecorded, so the plan is not a full engine plan. Not exercised: `awaiting_user_decision`.
