@@ -27,19 +27,15 @@ const COMMAND_ERRORS: readonly ErrorCategory[] = ["invalid_input", "internal"];
 /** Host facts the port checks before it routes any command. */
 export interface OmpCommandPortOptions {
 	/**
-	 * Observed Omp version, or null when unreadable; a getter returns the cached value synchronously. When the
-	 * value is absent (or the getter returns undefined, before the background read settles), no version check runs.
+	 * Observed Omp version, or null when unreadable. When the value is absent (undefined), no version check runs.
 	 * A version below the floor or unknown is refused on every call.
 	 */
-	readonly observedVersion?: string | null | (() => string | null | undefined);
+	readonly observedVersion?: string | null;
 }
 
 /** Refusal message when the observed version fails the Omp floor; null when the port may route commands. */
 function versionRefusal(options: OmpCommandPortOptions): string | null {
-	const observed =
-		typeof options.observedVersion === "function"
-			? options.observedVersion()
-			: options.observedVersion;
+	const observed = options.observedVersion;
 	if (observed === undefined) return null;
 	const check: VersionFloorResult = checkVersionFloor("omp", observed);
 	if (check.ok) return null;
