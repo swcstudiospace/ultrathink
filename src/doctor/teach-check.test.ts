@@ -95,6 +95,7 @@ describe("checkTeach", () => {
 				XDG_CONFIG_HOME: join(dir, "xdg"),
 				CLAUDE_CONFIG_DIR: join(dir, "claude"),
 				ULTRATHINK_STATE_DIR: join(dir, "state"),
+				ULTRATHINK_TEST_STATE_ROOT: dir,
 				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
 				GH_CONFIG_DIR: join(dir, "gh"),
 			},

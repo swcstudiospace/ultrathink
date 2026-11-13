@@ -28,6 +28,7 @@ function sandbox(extraEnv: NodeJS.ProcessEnv = {}) {
 		XDG_CONFIG_HOME: join(root, "xdg"),
 		CLAUDE_CONFIG_DIR: join(root, "claude"),
 		ULTRATHINK_MCP_STORE: join(root, "credentials.json"),
+		ULTRATHINK_TEST_STATE_ROOT: root,
 		...extraEnv,
 	};
 	const writeJson = (path: string, value: unknown) => {

@@ -313,6 +313,14 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"Decisions endpoint. Only an https://openrouter.ai URL or a loopback URL is accepted; anything else is ignored.",
 		{ default: "https://openrouter.ai/api/alpha/decisions" },
 	),
+	row(
+		"stack",
+		"decisions",
+		"bool1",
+		"ULTRATHINK_DECISIONS_NETWORK",
+		"Set to 1 to allow the Jev decisions OpenRouter call on a plugin host (claude-code, grok-build, muse, hermes, prime-agent). Any other value keeps that call off there.",
+		{ reader: "raw" },
+	),
 
 	// Swarm: src/swarm/teams.ts. A non-empty ULTRATHINK_SWARM_ROOT wins over SWARM_ROOT.
 	row(

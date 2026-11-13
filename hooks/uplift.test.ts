@@ -51,7 +51,12 @@ describe("emit", () => {
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
-				env: { ...process.env, HOME: home, ULTRATHINK_STATE_DIR: join(dir, "state") },
+				env: {
+					...process.env,
+					HOME: home,
+					ULTRATHINK_STATE_DIR: join(dir, "state"),
+					ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
+				},
 			});
 			expect(await new Response(proc.stdout).text()).toBe("ok");
 			expect(await proc.exited).toBe(0);
@@ -89,6 +94,7 @@ describe("hook entrypoints", () => {
 						...process.env,
 						HOME: join(dir, "home"),
 						ULTRATHINK_STATE_DIR: join(dir, "state"),
+						ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 						ULTRATHINK_HOST: "claude-code",
 					},
 				});
@@ -140,6 +146,7 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 					PATH: process.env.PATH ?? "",
 					HOME: home,
 					ULTRATHINK_STATE_DIR: stateDir,
+					ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 					ULTRATHINK_HOST: "grok-build",
 				},
 			});
@@ -258,6 +265,7 @@ describe("a turn that plans nothing leaves no carrier behind, on every hook host
 					PATH: process.env.PATH ?? "",
 					HOME: home,
 					ULTRATHINK_STATE_DIR: stateDir,
+					ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 					ULTRATHINK_HOST: "claude-code",
 				},
 			});
@@ -304,6 +312,7 @@ describe("a provider that answers 429 forever, through the real hook entry and t
 					PATH: process.env.PATH ?? "",
 					HOME: home,
 					ULTRATHINK_STATE_DIR: stateDir,
+					ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 				},
 			});
 			const [out] = await Promise.all([

@@ -47,6 +47,7 @@ describe("env checks", () => {
 				XDG_CONFIG_HOME: join(dir, "xdg"),
 				CLAUDE_CONFIG_DIR: join(dir, "claude"),
 				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
+				ULTRATHINK_TEST_STATE_ROOT: tmpdir(),
 				GH_CONFIG_DIR: join(dir, "gh"),
 			},
 			cwd: join(dir, "project"),

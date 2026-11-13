@@ -189,7 +189,9 @@ describe("isSubagentEnvelope", () => {
 
 describe("resolveStateDir", () => {
 	test("keeps the Claude default and refuses a planning-tree override", () => {
-		expect(resolveStateDir({ ULTRATHINK_STATE_DIR: "/x" })).toBe("/x");
+		const inHome = join(homedir(), "proj", "state");
+		expect(resolveStateDir({ ULTRATHINK_STATE_DIR: inHome })).toBe(inHome);
+		expect(resolveStateDir({ ULTRATHINK_STATE_DIR: "/x" })).toBe(resolveStateDir({}));
 		expect(resolveStateDir({ CLAUDE_CONFIG_DIR: "/cfg" })).toBe(join("/cfg", "ultrathink"));
 		expect(resolveStateDir({}).endsWith(join(".claude", "ultrathink"))).toBe(true);
 		expect(isPlanningPath("/repo/.planning/phases")).toBe(true);
@@ -362,7 +364,9 @@ function planHarness(): {
 		env: {
 			XDG_CONFIG_HOME: join(root, "xdg"),
 			CLAUDE_CONFIG_DIR: join(root, "claude"),
+			// An explicit env carries no test-process root, so the harness's own temp root is the permitted location.
 			ULTRATHINK_STATE_DIR: join(root, "state"),
+			ULTRATHINK_TEST_STATE_ROOT: root,
 			SUBSTRATE_DISABLED: "1",
 		},
 		options: {
@@ -807,6 +811,7 @@ function jevPlanHarness(
 	const env: Record<string, string> = {
 		...h.env,
 		ULTRATHINK_OPENROUTER_KEY: K,
+		ULTRATHINK_DECISIONS_NETWORK: "1",
 		ULTRATHINK_MCP_STORE: join(h.root, "mcp-credentials.json"),
 		PI_CODING_AGENT_DIR: join(h.root, "omp"),
 	};

@@ -542,7 +542,11 @@ describe("observeDigest with the Jev teachable point", () => {
 			...h.ctx.config,
 			decisions: { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: ["teachable"], ...config },
 		};
-		h.ctx.env = { ...h.ctx.env, ULTRATHINK_OPENROUTER_KEY: JEV_KEY };
+		h.ctx.env = {
+			...h.ctx.env,
+			ULTRATHINK_OPENROUTER_KEY: JEV_KEY,
+			ULTRATHINK_DECISIONS_NETWORK: "1",
+		};
 		h.ctx.storePath = join(h.ctx.stateDir ?? tmpdir(), "credentials.json");
 		h.ctx.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
 			bodies.push(JSON.parse(String(init?.body)));

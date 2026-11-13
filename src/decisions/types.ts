@@ -55,7 +55,7 @@ const TEACHABLE_AUTO_AT = 0.8;
 export const SKILLWORTHY_AT = 0.5;
 
 export interface DecisionsConfig {
-	/** Always true: Jev is always on. Kept for config compatibility; the value in files is ignored. */
+	/** Always true; kept for config compatibility, the value in files is ignored. The network call is gated per host in gate.ts (opt-in on plugin hosts). */
 	enabled: boolean;
 	model: string;
 	points: DecisionPoint[];

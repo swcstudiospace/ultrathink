@@ -2124,7 +2124,7 @@ interface JevHarness {
 	cleanup: () => void;
 }
 
-/** Hook deps that count every engine, tracker, brief and knowledge-base call, with the Decisions seams injected (key K, empty store). */
+/** Hook deps that count every engine, tracker, brief and knowledge call, with the Decisions seams injected (key K, empty store, network opted in). */
 function jevHarness(
 	config: UltrathinkConfig,
 	fetchImpl: typeof fetch,
@@ -2167,7 +2167,7 @@ function jevHarness(
 		log: (message) => logs.push(message),
 		progress: (event) => events.push(event),
 		decisionsDeps: {
-			env: { ULTRATHINK_OPENROUTER_KEY: K },
+			env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_NETWORK: "1" },
 			storePath: tempStore(),
 			fetch: fetchImpl,
 			sleep: async () => {
@@ -2329,7 +2329,7 @@ describe("Jev plan gate", () => {
 					{
 						...h.deps,
 						decisionsDeps: {
-							env: { ULTRATHINK_OPENROUTER_KEY: K },
+							env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_NETWORK: "1" },
 							storePath: tempStore(K),
 							fetch: R.fetch,
 						},

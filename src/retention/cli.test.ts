@@ -45,6 +45,7 @@ function makeFixture(): Fixture {
 			XDG_CONFIG_HOME: join(root, "xdg"),
 			CLAUDE_CONFIG_DIR: join(root, "claude"),
 			ULTRATHINK_STATE_DIR: state,
+			ULTRATHINK_TEST_STATE_ROOT: root,
 		},
 	};
 }

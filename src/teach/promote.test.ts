@@ -927,6 +927,7 @@ function withSkillworthy(
 			PI_CODING_AGENT_DIR: f.piDir,
 			CLAUDE_CONFIG_DIR: f.claudeDir,
 			ULTRATHINK_OPENROUTER_KEY: JEV_KEY,
+			ULTRATHINK_HOST: "omp",
 			...over.env,
 		},
 	});

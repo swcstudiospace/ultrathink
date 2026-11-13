@@ -25,12 +25,12 @@ const ERR = (s: number, headers?: Record<string, string>) => () =>
 		{ status: s, headers },
 	);
 
-/** The Decisions runtime with `ON` defaults: key K in the injected env, an empty temp store, no real sleeps. */
+/** The Decisions runtime with `ON` defaults: key K and the network opt-in (ULTRATHINK_DECISIONS_NETWORK=1) in the injected env, an empty temp store, no real sleeps. */
 function runtime(
 	fetchImpl: typeof fetch,
 	config: Partial<DecisionsConfig> = {},
 	sessionId?: string,
-	env: Record<string, string> = { ULTRATHINK_OPENROUTER_KEY: K },
+	env: Record<string, string> = { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_NETWORK: "1" },
 ): Decisions {
 	const dir = mkdtempSync(join(tmpdir(), "ut-decisions-plan-gate-"));
 	dirs.push(dir);

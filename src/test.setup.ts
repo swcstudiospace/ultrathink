@@ -18,6 +18,8 @@ if (!process.env.ULTRATHINK_STATE_DIR?.trim()) {
 	removeStaleTestStateDirs(tmpdir());
 	const stateDir = mkdtempSync(join(tmpdir(), TEST_STATE_DIR_PREFIX));
 	process.env.ULTRATHINK_STATE_DIR = stateDir;
+	// Suites create their own temp subdirectories under tmpdir(), outside home. Only this test process gets the root.
+	process.env.ULTRATHINK_TEST_STATE_ROOT = tmpdir();
 	// Measured with a preload that logs: `process.on("exit")` and `beforeExit` handlers never fire under `bun test`
 	// (Bun 1.2.23 and 1.4.0), and a preload's global afterAll runs after EVERY test file on Bun 1.2.23 (3 files, 3 calls)
 	// but once after the last file on Bun 1.4.0. The runner offers no end-of-run hook, so the hook below must be correct

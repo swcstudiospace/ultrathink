@@ -58,7 +58,12 @@ describe("checkState", () => {
 		dir = mkdtempSync(join(tmpdir(), "ut-doctor-state-"));
 		stateDir = join(dir, "state");
 		deps = {
-			env: { HOME: join(dir, "home"), ULTRATHINK_STATE_DIR: stateDir },
+			// deps.env is explicit, so the test-process root is not inherited: the temp root is the permitted location.
+			env: {
+				HOME: join(dir, "home"),
+				ULTRATHINK_STATE_DIR: stateDir,
+				ULTRATHINK_TEST_STATE_ROOT: dir,
+			},
 			cwd: join(dir, "project"),
 			now: () => NOW,
 			which: () => undefined,

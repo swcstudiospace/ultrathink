@@ -19,6 +19,7 @@ import {
 	type DecisionOutcome,
 	type Decisions,
 	type DecisionsInput,
+	decisionsNetworkOffReason,
 	formatDebugLine,
 	resolveOpenRouterKey,
 	type RunDecisionOptions,
@@ -90,7 +91,6 @@ function runtime(fetchImpl: typeof fetch, overrides: Partial<DecisionsInput> = {
 	const lines: string[] = [];
 	const decisions = createDecisions({
 		config: ON,
-		env: { ULTRATHINK_OPENROUTER_KEY: K },
 		storePath: tempStore(),
 		// A fresh state dir per runtime: one test's breaker must never refuse another test's call.
 		stateDir: tempStateDir(),
@@ -102,6 +102,8 @@ function runtime(fetchImpl: typeof fetch, overrides: Partial<DecisionsInput> = {
 		random: () => 0.5,
 		debug: (line) => lines.push(line),
 		...overrides,
+		// Omp is the host these tests stand for, so its default-on call runs; a case names its own host in `env`.
+		env: { ULTRATHINK_HOST: "omp", ...(overrides.env ?? { ULTRATHINK_OPENROUTER_KEY: K }) },
 	});
 	return { decisions, lines };
 }
@@ -379,7 +381,7 @@ describe("debug line (AC-3.14, §5.8)", () => {
 		try {
 			const decisions = createDecisions({
 				config: ON,
-				env,
+				env: { ULTRATHINK_HOST: "omp", ...env },
 				storePath: tempStore(),
 				stateDir: tempStateDir(),
 				fetch: recordingFetch([respond]).fetch,
@@ -681,6 +683,74 @@ const plan = (decisions: Decisions): Promise<DecisionOutcome> =>
 	decisions.run("plan", PLAN_STATE, PLAN_OPTS);
 const kindOf = (outcome: DecisionOutcome): string =>
 	outcome.status === "error" ? outcome.error.kind : outcome.status;
+
+describe("the Decisions network call is opt-in on plugin hosts", () => {
+	const PLUGIN_HOSTS = ["claude-code", "grok-build", "muse", "hermes", "prime-agent"] as const;
+
+	test.each(PLUGIN_HOSTS)(
+		"%s with a key and no flag: no call, and the reason names the opt-in",
+		async (host) => {
+			const r = recordingFetch([JEV(0.97)]);
+			const env = { ULTRATHINK_HOST: host, ULTRATHINK_OPENROUTER_KEY: K };
+			const { decisions } = runtime(r.fetch, { env });
+			expect(decisionsNetworkOffReason(env)).toContain("ULTRATHINK_DECISIONS_NETWORK=1");
+			expect(decisions.active("plan")).toBe(false);
+			expect(await plan(decisions)).toEqual({ status: "inactive" });
+			expect(r.calls).toHaveLength(0);
+		},
+	);
+
+	test('a flag other than exactly "1" keeps the call off on a plugin host', async () => {
+		for (const flag of ["0", "true", "yes", " 1", ""]) {
+			const r = recordingFetch([JEV(0.97)]);
+			const env = {
+				ULTRATHINK_HOST: "muse",
+				ULTRATHINK_OPENROUTER_KEY: K,
+				ULTRATHINK_DECISIONS_NETWORK: flag,
+			};
+			const { decisions } = runtime(r.fetch, { env });
+			expect(decisions.active("plan")).toBe(false);
+			expect(await plan(decisions)).toEqual({ status: "inactive" });
+			expect(r.calls).toHaveLength(0);
+		}
+	});
+
+	test("a plugin host with a key and ULTRATHINK_DECISIONS_NETWORK=1: the call is allowed", async () => {
+		const r = recordingFetch([JEV(0.97)]);
+		const env = {
+			ULTRATHINK_HOST: "hermes",
+			ULTRATHINK_OPENROUTER_KEY: K,
+			ULTRATHINK_DECISIONS_NETWORK: "1",
+		};
+		const { decisions } = runtime(r.fetch, { env });
+		expect(decisionsNetworkOffReason(env)).toBeUndefined();
+		expect(decisions.active("plan")).toBe(true);
+		expect(kindOf(await plan(decisions))).toBe("ok");
+		expect(r.calls).toHaveLength(1);
+	});
+
+	test("omp with a key and no flag: the call is allowed, as before", async () => {
+		const r = recordingFetch([JEV(0.97)]);
+		const env = { ULTRATHINK_HOST: "omp", ULTRATHINK_OPENROUTER_KEY: K };
+		const { decisions } = runtime(r.fetch, { env });
+		expect(decisionsNetworkOffReason(env)).toBeUndefined();
+		expect(kindOf(await plan(decisions))).toBe("ok");
+		expect(r.calls).toHaveLength(1);
+	});
+
+	test("with no key the call is off on every host, flag or not", async () => {
+		for (const host of [...PLUGIN_HOSTS, "omp"]) {
+			for (const flag of [undefined, "1"]) {
+				const r = recordingFetch([JEV(0.97)]);
+				const env = { ULTRATHINK_HOST: host, ULTRATHINK_DECISIONS_NETWORK: flag };
+				const { decisions } = runtime(r.fetch, { env });
+				expect(decisions.active("plan")).toBe(false);
+				expect(await plan(decisions)).toEqual({ status: "inactive" });
+				expect(r.calls).toHaveLength(0);
+			}
+		}
+	});
+});
 
 describe("the legacy OPENROUTER_API_KEY is not read", () => {
 	const LEGACY = "sk-or-v1-LEGACYKEY-0123456789abcdef";
