@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { CAPABILITY_FALLBACKS } from "../../core/src/capabilities/manifest.ts";
 import { type AdapterEntry, type AdapterRunner, createClaudeCodeAdapter } from "./index.ts";
 
 const ENTRY_PATH = "hooks/hooks.json";
@@ -140,5 +141,98 @@ describe("createClaudeCodeAdapter", () => {
 			error: { category: "capability_missing", message: "host entry point missing" },
 		});
 		expect(runner.calls).toEqual([]);
+	});
+
+	test("degraded: a false slash-command flag returns its fallback without running", async () => {
+		const runner = fakeRunner({ exitCode: 0, stdout: "" });
+		const adapter = createClaudeCodeAdapter({
+			runner,
+			entry: fakeEntry(true),
+			entryPath: ENTRY_PATH,
+			declared: { supports_slash_commands: false, supports_hooks: true },
+		});
+
+		const result = await adapter.invoke("ultrathink-skip", {}, CONTEXT);
+
+		expect(result).toEqual({
+			ok: false,
+			error: {
+				category: "capability_missing",
+				message: CAPABILITY_FALLBACKS.supports_slash_commands,
+			},
+		});
+		expect(runner.calls).toEqual([]);
+	});
+
+	test("degraded: a false hooks flag returns its fallback without running", async () => {
+		const runner = fakeRunner({ exitCode: 0, stdout: "" });
+		const adapter = createClaudeCodeAdapter({
+			runner,
+			entry: fakeEntry(true),
+			entryPath: ENTRY_PATH,
+			declared: { supports_slash_commands: true, supports_hooks: false },
+		});
+
+		const result = await adapter.invoke("ultrathink-skip", {}, CONTEXT);
+
+		expect(result).toEqual({
+			ok: false,
+			error: { category: "capability_missing", message: CAPABILITY_FALLBACKS.supports_hooks },
+		});
+		expect(runner.calls).toEqual([]);
+	});
+
+	test("valid: true flags and a floor-equal version run the command unchanged", async () => {
+		const runner = fakeRunner({ exitCode: 0, stdout: "status ok\n" });
+		const adapter = createClaudeCodeAdapter({
+			runner,
+			entry: fakeEntry(true),
+			entryPath: ENTRY_PATH,
+			declared: { supports_slash_commands: true, supports_hooks: true },
+			observedVersion: "2.1.322",
+		});
+
+		const result = await adapter.invoke("ultrathink-status", {}, CONTEXT);
+
+		expect(result).toEqual({ ok: true, value: { stdout: "status ok\n" } });
+		expect(runner.calls).toEqual([["status"]]);
+	});
+
+	test("version: a version below the floor is refused without running", async () => {
+		const runner = fakeRunner({ exitCode: 0, stdout: "" });
+		const adapter = createClaudeCodeAdapter({
+			runner,
+			entry: fakeEntry(true),
+			entryPath: ENTRY_PATH,
+			observedVersion: "2.1.321",
+		});
+
+		const result = await adapter.invoke("ultrathink-skip", {}, CONTEXT);
+
+		expect(result).toEqual({
+			ok: false,
+			error: { category: "capability_missing", message: "host version below floor 2.1.322" },
+		});
+		expect(runner.calls).toEqual([]);
+	});
+
+	test("version: an unknown version is refused without running", async () => {
+		for (const observedVersion of [null, "not-a-version"]) {
+			const runner = fakeRunner({ exitCode: 0, stdout: "" });
+			const adapter = createClaudeCodeAdapter({
+				runner,
+				entry: fakeEntry(true),
+				entryPath: ENTRY_PATH,
+				observedVersion,
+			});
+
+			const result = await adapter.invoke("ultrathink-skip", {}, CONTEXT);
+
+			expect(result).toEqual({
+				ok: false,
+				error: { category: "capability_missing", message: "host version unknown" },
+			});
+			expect(runner.calls).toEqual([]);
+		}
 	});
 });
