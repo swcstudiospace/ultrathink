@@ -419,6 +419,6 @@ Invoke:
 - The real `control.json` mtime stayed `2026-11-10 12:13:14` across the run.
 - [INFERENCE] The writer is probably another live omp session on this machine that consumed a skip-once flag. The session running this agent is one candidate. Not identified. The operator should check.
 
-## Version floor 18.14.0 (runtime package)
+## Version floor 18.19.0 (omp binary)
 
-The Omp version floor is the runtime package version (`VERSION` from `@oh-my-pi/pi-utils`, pinned to 18.14.0 in `package.json`), which is the version the operator runs. The floor was lowered from 18.19.0 to 18.14.0 for that reason. Evidence for the 18.14.0 range: `bun test/golden/omp/capture.ts` run with the runtime floor wired in produced zero diff against `test/golden/omp/fixtures`, so every golden Omp command behaves identically at 18.14.0. Omp 18.14.0 through 18.18.x is therefore covered by golden identity, not by the earlier live run on 18.19.0.
+The Omp version floor is the `omp` binary's version (`omp --version`, observed live at 18.19.0 on this machine), and the floor is 18.19.0. It is read once, synchronously, at extension load. A readable version below 18.19.0 is refused. An unreadable version (no `omp` on PATH, timeout, or no version token) is not refused, so Omp keeps working where the binary cannot be found. The golden fixtures and the Omp tests inject the validated 18.19.0, so they do not depend on the machine's binary.

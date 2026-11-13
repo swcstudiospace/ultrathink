@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { HOST_VERSION_FLOORS } from "../version-floor.ts";
 import { type OmpCommandHandler, createOmpCommandPort } from "./commands.ts";
 
-/** The Omp binary's version (`omp --version`), which is the Omp version floor. */
+/** The Omp version floor: the validated `omp --version` of docs/validation/results/omp.md. Tests pin this value, not a live read. */
 const RECORDED_OMP_VERSION = "18.19.0";
 
 const input = { args: "now", ctx: {} };
