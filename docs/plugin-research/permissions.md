@@ -2,7 +2,7 @@
 
 Scope: the five host surfaces named in the research brief (claude-code, grok-build, muse, hermes, prime-agent), the shared CLI adapter, and the launchers they call. Paths are relative to the repo root. Line numbers refer to the working tree at HEAD `5f76f14`. Read-only research; no code was changed.
 
-Citation key: `cli.ts:N` means `adapters/cli.ts` line N. Where a file was read only through grep, the cited line is that grep match. `UNVERIFIED (check <file>)` marks a claim I could not confirm from a file read. Engine files under `src/` are cited because every host reaches them through `bin/ultrathink`.
+Citation format: `cli.ts:N` means `adapters/cli.ts` line N. Where a file was read only through grep, the cited line is that grep match. `UNVERIFIED (check <file>)` marks a claim I could not confirm from a file read. Engine files under `src/` are cited because every host reaches them through `bin/ultrathink`.
 
 ---
 
