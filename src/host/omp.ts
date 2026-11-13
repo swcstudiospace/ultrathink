@@ -1406,10 +1406,10 @@ const SYSTEM_FS: SyncFileSystemPort = {
 	readFileSync: (path) => readFileSync(path, "utf8"),
 };
 
-/** The Omp version of the binary hosting this extension: `process.execPath --version`, bounded to 2 seconds. Null when the read fails or prints no dotted version token. */
-function readLiveOmpVersion(): string | null {
+/** Reads `<binary> --version` bounded to 2 seconds. Null when the read fails or prints no dotted version token. */
+export function readOmpVersionFrom(binary: string): string | null {
 	try {
-		const output = execFileSync(process.execPath, ["--version"], {
+		const output = execFileSync(binary, ["--version"], {
 			timeout: 2000,
 			encoding: "utf8",
 		});
@@ -1467,7 +1467,7 @@ export function createOmpExtension(
 	const now = options.now ?? (() => clock.now());
 	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
-	const readOmpVersion = options.readOmpVersion ?? readLiveOmpVersion;
+	const readOmpVersion = options.readOmpVersion ?? (() => readOmpVersionFrom(process.execPath));
 	const readMcp = options.mcp ?? readMcpState;
 	const exists = options.exists ?? SYSTEM_FS.existsSync;
 	const flightConfig = options.config ?? ((cwd: string) => loadConfig(claudeConfigPaths(cwd)));
