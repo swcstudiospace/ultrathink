@@ -418,3 +418,7 @@ Invoke:
 - No command was run against the real home. The isolated `ultrathink/` dir had no `last-skip.json` when listed before Run 1 step 10, and it did not exist during Run 2. Nothing links these writes to the isolated runs.
 - The real `control.json` mtime stayed `2026-11-10 12:13:14` across the run.
 - [INFERENCE] The writer is probably another live omp session on this machine that consumed a skip-once flag. The session running this agent is one candidate. Not identified. The operator should check.
+
+## Version floor 18.14.0 (runtime package)
+
+The Omp version floor is the runtime package version (`VERSION` from `@oh-my-pi/pi-utils`, pinned to 18.14.0 in `package.json`), which is the version the operator runs. The floor was lowered from 18.19.0 to 18.14.0 for that reason. Evidence for the 18.14.0 range: `bun test/golden/omp/capture.ts` run with the runtime floor wired in produced zero diff against `test/golden/omp/fixtures`, so every golden Omp command behaves identically at 18.14.0. Omp 18.14.0 through 18.18.x is therefore covered by golden identity, not by the earlier live run on 18.19.0.

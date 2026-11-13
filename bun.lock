@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "ultrathink",
+      "dependencies": {
+        "@oh-my-pi/pi-utils": "18.14.0",
+      },
       "devDependencies": {
         "@biomejs/biome": "2.6.4",
         "@oh-my-pi/pi-ai": "^18.14.0",
