@@ -625,7 +625,7 @@ function tempStore(key?: string): string {
 	return path;
 }
 
-/** `ON` point-isolated to `points`: ULTRATHINK_OPENROUTER_KEY=K and ULTRATHINK_DECISIONS_NETWORK=1 in the injected env, an empty store, a fixed clock, instant retries. */
+/** `ON` point-isolated to `points`: ULTRATHINK_OPENROUTER_KEY=K in the injected env, an empty store, a fixed clock, instant retries. */
 function jev(
 	fetchImpl: typeof fetch,
 	points: DecisionPoint[],
@@ -634,7 +634,7 @@ function jev(
 	const lines: string[] = [];
 	const decisions = createDecisions({
 		config: { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points, ...config },
-		env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_NETWORK: "1" },
+		env: { ULTRATHINK_OPENROUTER_KEY: K },
 		storePath: tempStore(),
 		fetch: fetchImpl,
 		now: () => 1000,
@@ -876,7 +876,7 @@ describe("runClarify with Jev decisions", () => {
 		const lines: string[] = [];
 		const decisions = createDecisions({
 			config: { ...config.decisions, points: ["knowledge"] },
-			env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_NETWORK: "1" },
+			env: { ULTRATHINK_OPENROUTER_KEY: K },
 			storePath: tempStore(K),
 			fetch: r.fetch,
 			debug: (line) => lines.push(line),

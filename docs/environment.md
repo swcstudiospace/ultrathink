@@ -148,7 +148,6 @@ Settings for the five stack links: Substrate, Swarm, Realm, Decisions and Hindsi
 | `HINDSIGHT_API_TOKEN` | — | yes | string | — | Hindsight API key, used only when no key is stored and HINDSIGHT_API_KEY is empty. |
 | `ULTRATHINK_OPENROUTER_KEY` | — | yes | string | — | OpenRouter key for Jev decisions, used when no openrouter key is stored. The stored key wins. |
 | `ULTRATHINK_DECISIONS_URL` | — | no | url | `https://openrouter.ai/api/alpha/decisions` | Decisions endpoint. Only an https://openrouter.ai URL or a loopback URL is accepted; anything else is ignored. |
-| `ULTRATHINK_DECISIONS_NETWORK` | — | no | bool1 | — | Set to 1 to allow the Jev decisions OpenRouter call on a plugin host (claude-code, grok-build, muse, hermes, prime-agent). Any other value keeps that call off there. |
 | `ULTRATHINK_SWARM_ROOT` | `SWARM_ROOT` | no | path | — | Absolute path of an agent-swarm checkout, required for swarm lanes. SWARM_ROOT is read when this one is empty. |
 | `ULTRATHINK_SWARM_MAX_LANES` | — | no | int (1 to 6) | `3` | Most swarm lanes alive at once across all commands, and the most briefs one command starts. A value that is not a number from 1 up means 3; larger values are cut to 6. |
 | `SWARM_AUTONOMOUS_RUN_CAP_S` | — | no | string | — | Run cap in seconds, passed through unchanged to each swarm lane. |

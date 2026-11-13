@@ -1023,7 +1023,7 @@ describe("observe", () => {
 						},
 					],
 				}),
-			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY, ULTRATHINK_DECISIONS_NETWORK: "1" },
+			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn({ points: ["teachable"] }) },
 			fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
 				calls.push(String(init?.body ?? ""));
@@ -1251,7 +1251,7 @@ describe("promote", () => {
 		seed(playbook());
 		const lowCalls = { n: 0 };
 		const low = await run(["promote", "--due"], {
-			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY, ULTRATHINK_DECISIONS_NETWORK: "1" },
+			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn() },
 			fetch: jevFetch(0.1, lowCalls),
 		});
@@ -1458,7 +1458,7 @@ describe("observe run log and outbox drain", () => {
 		const result = await run(["observe", "--stdin", "--json"], {
 			stdin: async () => JSON.stringify(digest()),
 			complete: async () => lessons,
-			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY, ULTRATHINK_DECISIONS_NETWORK: "1" },
+			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn({ points: ["teachable"] }) },
 			// The Decisions call runs once per lesson, just before its capture: break the store after the first one.
 			fetch: (async () => {

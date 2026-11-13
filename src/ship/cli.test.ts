@@ -1556,7 +1556,7 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 				createDecisions({
 					config: { ...JEV_ON, ...o.decisions },
 					sessionId: record.sessionId,
-					env: o.env ?? { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_NETWORK: "1" },
+					env: o.env ?? { ULTRATHINK_OPENROUTER_KEY: K },
 					storePath: join(dir, "mcp-credentials.json"),
 					fetch: o.fetch,
 					sleep: async () => {

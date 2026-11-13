@@ -492,7 +492,6 @@ describe("uplift hook with a Jev plan skip", () => {
 				ULTRATHINK_MCP_STORE: join(dir, "mcp-credentials.json"),
 				ULTRATHINK_DECISIONS_URL: jevUrl,
 				ULTRATHINK_OPENROUTER_KEY: K,
-				ULTRATHINK_DECISIONS_NETWORK: "1",
 				SUBSTRATE_DISABLED: "1",
 			},
 			stdin: new Blob([JSON.stringify({ cwd: dir, ...envelope })]),

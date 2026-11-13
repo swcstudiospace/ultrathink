@@ -7,8 +7,6 @@
  * the host names a `stateDir`, the usage ledger (no `stateDir` means no disk at all); while the breaker is open run()
  * makes no request.
  */
-import { detectHost } from "../host/detect.ts";
-import type { HostId } from "../host/types.ts";
 import { readStore, storePath as defaultStorePath } from "../mcp/store.ts";
 import {
 	type DecideOutcome,
@@ -106,9 +104,9 @@ export type DecisionOutcome =
 
 export interface Decisions {
 	readonly config: DecisionsConfig;
-	/** The one is-point-active predicate: env.ULTRATHINK_DECISIONS !== "0" ∧ config.points.includes(point) ∧ the
-	 *  host allows the network call (decisionsNetworkOffReason) ∧ key present. Checks the kill switch, points and
-	 *  host first; resolves the key at most once per runtime (lazily). */
+	/** The one is-point-active predicate: env.ULTRATHINK_DECISIONS !== "0" ∧ config.points.includes(point) ∧ key
+	 *  present. Jev is always on; only the kill switch disables. Checks the kill switch and points first; resolves the
+	 *  key at most once per runtime (lazily). */
 	active(point: DecisionPoint): boolean;
 	/** One decision. Never rejects except with an AbortError (caller abort). */
 	run<P extends DecisionPoint>(
@@ -148,22 +146,6 @@ export function formatDebugLine(record: DecisionRecord): string {
 /** `ULTRATHINK_DECISIONS=0` turns every decision point off for this shell, whatever the config says. */
 export function decisionsKilled(env: Env): boolean {
 	return env.ULTRATHINK_DECISIONS === "0";
-}
-
-/** Plugin hosts whose Decisions network call is opt-in: it runs only with ULTRATHINK_DECISIONS_NETWORK=1. Omp is not listed and keeps the call default-on. */
-const PLUGIN_HOSTS: readonly HostId[] = [
-	"claude-code",
-	"grok-build",
-	"muse",
-	"hermes",
-	"prime-agent",
-];
-
-/** Why the Decisions network call is off on this host, or undefined when it may run. The host is detectHost(env). */
-export function decisionsNetworkOffReason(env: Env): string | undefined {
-	const host = detectHost(env);
-	if (!PLUGIN_HOSTS.includes(host) || env.ULTRATHINK_DECISIONS_NETWORK === "1") return undefined;
-	return `decisions network is opt-in on the ${host} host: set ULTRATHINK_DECISIONS_NETWORK=1 to allow the OpenRouter call`;
 }
 
 /**
@@ -228,10 +210,7 @@ export function createDecisions(input: DecisionsInput): Decisions {
 		return resolved.key;
 	};
 	const active = (point: DecisionPoint): boolean =>
-		!decisionsKilled(env) &&
-		config.points.includes(point) &&
-		decisionsNetworkOffReason(env) === undefined &&
-		keyNow() !== undefined;
+		!decisionsKilled(env) && config.points.includes(point) && keyNow() !== undefined;
 	// The breaker and the usage ledger persist only when the host named a state dir; otherwise both live in memory, so
 	// a bare runtime touches no disk.
 	let breaker: JevHealth | undefined;

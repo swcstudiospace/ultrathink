@@ -811,7 +811,6 @@ function jevPlanHarness(
 	const env: Record<string, string> = {
 		...h.env,
 		ULTRATHINK_OPENROUTER_KEY: K,
-		ULTRATHINK_DECISIONS_NETWORK: "1",
 		ULTRATHINK_MCP_STORE: join(h.root, "mcp-credentials.json"),
 		PI_CODING_AGENT_DIR: join(h.root, "omp"),
 	};

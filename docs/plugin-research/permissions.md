@@ -354,7 +354,7 @@ Consolidated from §§1–6. Each item is a permission the code uses that the ba
 | `~/.claude/skills/<name>/SKILL.md` | `teach promote --install` (claude) | `src/teach/promote.ts:451-452`, `:318` |
 | `~/.prime/agent/skills/<name>/SKILL.md` | `teach promote --install` (prime-agent) | `src/teach/promote.ts:447-449` |
 | Grok config (`grok.home`) | `grok login` path | `src/grok/login.ts:84-96` (target UNVERIFIED) |
-| Any path set by `ULTRATHINK_STATE_DIR` | Engine, all hosts | `src/host/paths.ts:55-61`: only `.planning` paths are refused; any other directory is accepted |
+| Any path set by `ULTRATHINK_STATE_DIR` that is absolute, inside home (not home itself), and outside `.planning` | Engine, all hosts | `src/host/paths.ts`: other values fall back to the host default. Known bypass: `ULTRATHINK_TEST_STATE_ROOT` also permits a directory outside home; it is set only by the test process but any user can set it |
 
 ### Reads outside the project root
 
@@ -397,7 +397,7 @@ Allowlisted launchers used as intended: `bin/run-bun` (`hooks/hooks.json`), `bin
 
 ### Environment exposure
 
-- `adapters/cli.ts:177`: the child engine receives the full `process.env` merged with the host `env`. No allowlist of variables. This includes `OPENROUTER_API_KEY`-style variables. The engine's own handling (`src/decisions/gate.ts:47-50`) refuses the generic `OPENROUTER_API_KEY` but other secrets are passed through.
+- `adapters/cli.ts`: the child engine receives only `childEnvironment()`: an allowlist of named variables (credential keys the engine reads, base locale and path variables, the host variable), plus every `ULTRATHINK_*` name. Other parent variables are not passed. The allowlist is the enforced control; `src/decisions/gate.ts` is unchanged here.
 - `src/teach/spawn.ts:116-120`: the teach-observe child inherits `options.env` and adds two variables.
 - `bin/run-bun:48`: `--no-env-file` prevents `.env*` loading by Bun. This is the one env-isolation control in the path.
 
@@ -419,7 +419,11 @@ These are not in the spawn allowlist as written in the brief. Adding them would 
   - Writes: `~/.claude/skills/<name>/SKILL.md` (`src/teach/promote.ts:451-452`) and `~/.prime/agent/skills/<name>/SKILL.md` (`src/teach/promote.ts:447-449`); see rows at lines 341-342.
   - Reason: the user must choose it.
   - Opt-in: the explicit `--install` flag.
-  - Enforcing file: `src/teach/promote.ts`. The line that checks `--install` is UNVERIFIED (check the flag handling in `src/teach/promote.ts`; not cited in this document).
+  - Enforcing file: `src/teach/promote.ts`. The flag check is UNVERIFIED (check the `--install` handling in `src/teach/promote.ts`; not cited in this document).
+- **D3. Decisions network call (OpenRouter Jev) is default-on for every host, including plugin hosts, matching Omp.**
+  - Reason: user decision. A plugin-host opt-in was tried and reverted in this branch; it is not part of the baseline.
+  - Enforcing file: `src/decisions/gate.ts` (active when a key exists; no host-specific gate).
+  - Consequence: the baseline's "no network in core" does not hold for the decisions call on any host. Outbound traffic goes to `https://openrouter.ai/api/alpha/decisions`.
 
 ---
 

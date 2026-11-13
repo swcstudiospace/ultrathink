@@ -2167,7 +2167,7 @@ function jevHarness(
 		log: (message) => logs.push(message),
 		progress: (event) => events.push(event),
 		decisionsDeps: {
-			env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_NETWORK: "1" },
+			env: { ULTRATHINK_OPENROUTER_KEY: K },
 			storePath: tempStore(),
 			fetch: fetchImpl,
 			sleep: async () => {
@@ -2329,7 +2329,7 @@ describe("Jev plan gate", () => {
 					{
 						...h.deps,
 						decisionsDeps: {
-							env: { ULTRATHINK_OPENROUTER_KEY: K, ULTRATHINK_DECISIONS_NETWORK: "1" },
+							env: { ULTRATHINK_OPENROUTER_KEY: K },
 							storePath: tempStore(K),
 							fetch: R.fetch,
 						},
