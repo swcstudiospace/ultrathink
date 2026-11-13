@@ -1409,7 +1409,7 @@ const SYSTEM_FS: SyncFileSystemPort = {
 /** The version token of `omp --version` output, such as `omp/18.19.0`. */
 const OMP_VERSION_TOKEN = /\d+(?:\.\d+)+/;
 /** Bounds the live `omp --version` read, so a hung binary cannot stall extension load. */
-const OMP_VERSION_TIMEOUT_MS = 5000;
+const OMP_VERSION_TIMEOUT_MS = 2000;
 
 /**
  * The real reader of the live Omp binary's version, synchronously: `omp --version` as an argv array (no shell), its
@@ -2340,9 +2340,10 @@ export function createOmpExtension(
 			// Each command's handler is also held in this map; the registered wrapper dispatches through the port.
 			const commandHandlers = new Map<string, OmpCommandHandler>();
 			// The floor reads the live binary once, synchronously, at load: the port receives a fixed value, so
-			// command dispatch never waits on the version read.
+			// command dispatch never waits on the version read. An unreadable version is not refused (a readable
+			// version below the floor is); the floor still stops known-old hosts.
 			const commandPort = createOmpCommandPort(commandHandlers, {
-				observedVersion: readOmpVersion(),
+				observedVersion: readOmpVersion() ?? undefined,
 			});
 			const routed = (
 				name: string,
