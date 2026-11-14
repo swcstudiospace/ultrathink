@@ -188,7 +188,7 @@ Stop says: Ultrathink · this turn tracked a task (graphId=ut-6fc5b4a73f-a910f9c
 
 **Side effect (cancelled; source not identified).** The `Tracking` stage was on and created Linear issues in team `Spectrum Web Co` (workspace `swcstudio`): `SPE-31017` through `SPE-31023` (7 node issues) and 49 step sub-issues (`SPE-31024` through `SPE-31072`). The earlier 1.4.0 run reported `Tracking · off`. The tracking source was not identified, so the cause is still open. All 56 were set to Canceled (Linear has no delete tool); none was deleted.
 
-**Login deletion (verified).** `.credentials.json` removed; `oauthAccount` deleted from the isolated `.claude.json`. `ls` → `No such file or directory`; `has("oauthAccount")` → `false`. A recursive search for `"accessToken"`/`"refreshToken"` found 4 files, all in the plugin cache's source copy and this results file, so no credential remains.
+**Login deletion (verified).** `.credentials.json` removed; `oauthAccount` deleted from the isolated `.claude.json`. `ls` → `No such file or directory`; `has("oauthAccount")` → `false`. A key-name search for `accessToken`/`refreshToken` matched code and doc references only. A value-level search of the isolated validation homes under `/tmp/ut-matrix` for non-empty `"accessToken"`/`"refreshToken"` string values found none (checked 2026-11-14).
 
 **Verdict (invoke step, this checkout): pass.** The UserPromptSubmit hook fired, the Claude graph stage was not degraded, and the reply came back as `ok`. Not exercised: `awaiting_user_decision`.
 
