@@ -96,7 +96,7 @@ function baseBranch(stdout: string): string | undefined {
 
 /** The diff between this call's delimiter lines; a `<<<UNTRUSTED_PR_DIFF_` inside the diff is escaped so it cannot close the fence early. */
 function fenceDiff(diff: string, nonce: string): string {
-	const body = diff.replace(new RegExp(`<<<(?=${DIFF_FENCE}_)`, "g"), "‹‹‹");
+	const body = diff.replace(new RegExp(`<<<(?=${DIFF_FENCE}_)`, "g"), "[escaped]");
 	const end = body.endsWith("\n") ? "" : "\n";
 	return `<<<${DIFF_FENCE}_BEGIN ${nonce}>>>\n${body}${end}<<<${DIFF_FENCE}_END ${nonce}>>>`;
 }
