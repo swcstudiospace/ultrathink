@@ -1797,3 +1797,41 @@ describe("judgeSessionModel", () => {
 		expect(judgeSessionModel(resolution({ transport: "grok-cli", modelId: "" }))).toBeUndefined();
 	});
 });
+
+describe("merge approval for the Claude reviewer", () => {
+	const passed = (): ReviewResult => ({
+		source: "cli",
+		status: "completed",
+		score: 5,
+		comments: [],
+		headSha: "abc",
+		at: 1,
+	});
+	const merge = (d: ShipDeps, ...flags: string[]) =>
+		runShip(["merge", "--state", statePath, "--cwd", dir, ...flags], d);
+
+	test("a passing Claude review never merges on its own: the output asks for human approval with the PR url", async () => {
+		writeShip(statePath, { pr: PR, phase: "ready", rounds: [passed()] });
+		const out = await merge(deps({ config: { reviewer: "claude" } }));
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({ ok: false, merged: false, reason: "needs human approval" });
+		expect(String(out.output.next)).toContain(PR.url);
+		expect(calls).toEqual([]);
+		expect(comments).toEqual([]);
+		expect(readShip(statePath)).toMatchObject({ phase: "ready" });
+	});
+
+	test("with --approve, a passing Claude review merges", async () => {
+		writeShip(statePath, { pr: PR, phase: "ready", rounds: [passed()] });
+		const out = await merge(deps({ config: { reviewer: "claude" } }), "--approve");
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(calls).toEqual(["merge:squash:abc", "delete:feat", "sync:master"]);
+	});
+
+	test("Greptile reviewer merges a passing review without any approval flag", async () => {
+		writeShip(statePath, { pr: PR, phase: "ready", rounds: [passed()] });
+		const out = await merge(deps({ config: { reviewer: "greptile" } }));
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(calls).toEqual(["merge:squash:abc", "delete:feat", "sync:master"]);
+	});
+});
