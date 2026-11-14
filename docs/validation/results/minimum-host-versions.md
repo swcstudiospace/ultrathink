@@ -41,7 +41,7 @@ Status terms:
 - Runtime read: `adapters/cli.ts` HOSTS, `versionCommand: "claude"`, runs `claude --version`.
 - Live version: `docs/validation/results/claude-code.md:3,5` (`2.1.322 (Claude Code)`).
 - Live result: header `Fail` at line 7 (step 6 invoke blocked by login and credit). The rerun with a copied login (lines 128-152) reached the planner, which returned a degraded graph stage. The live recheck at lines 154-185 returned reply `ok`, `subtype: success`, graph not degraded.
-- Side effect seen in that rerun (not an AC3 matter): the tracking stage created Linear issues in team `Spectrum Web Co`. The result file records it; no cleanup was done.
+- Side effect seen in that rerun (not an AC3 matter): the tracking stage created Linear issues in team `Spectrum Web Co`. The result file records it; all 56 (SPE-31017 through SPE-31072) were then set to Canceled.
 
 ### grok-build (floor 1.0.77)
 
@@ -77,7 +77,7 @@ Status terms:
 
 1. No host has a tested lower bound. Any "minimum" statement needs a run below the floor.
 2. Muse: no live run on the 1.4.14 floor. The 1.4.18 runs are above it.
-3. Prime-Agent: the install, load, and invoke lifecycle is unverified. `docs/validation/results/prime-agent.md` says no install was performed. `milestone-audit.md` AC5 reports Prime-Agent install and `/ultrathink-status` as passing; no result file in this directory records that run.
+3. Prime-Agent: the install, load, and invoke lifecycle is unverified. `docs/validation/results/prime-agent.md` says no install was performed. `milestone-audit.md` AC5 is Partial for this reason; the earlier unrecorded `/ultrathink-status` check is not evidence.
 4. Prime-Agent: `prime-agent --version` (the form the CLI calls) is not recorded live; the run used `-v`.
 5. Hermes: a symlinked install cannot be removed with `hermes plugins remove` (step 10 FAIL).
 6. Omp: the floor is not enforced in production at `611e926` (see omp evidence).
