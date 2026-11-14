@@ -432,10 +432,11 @@ Result:
 
 So the production default in `createOmpExtension` reads the hosting Omp binary's version, as the fail-closed floor requires.
 
-## Live check: `omp --no-extensions --version` (the production read)
+## Live check: the production version read (`omp --version`)
 
-Date: 2026-11-13. The production read runs `execFileSync(process.execPath, ["--no-extensions", "--version"])` with a 2 s bound.
+Date: 2026-11-14. The production read runs `execFileSync(process.execPath, ["--version"])` with a 2 s bound, and parses only the `omp/<version>` token.
 
-- Command: `omp --no-extensions --version` → output `18.20.0`, exit `0`. The parse keeps only the `omp/<version>` token, so this prints 18.20.0 and passes the floor.
-- `omp --version` (no flag) and `omp -e <probe> --version` do not load extensions; the probe file was not run (checked separately).
-- Callers of `createOmpExtension(`: 10 occurrences across the repo, all in files that inject `readOmpVersion` (the default export, the golden capture, the conformance subject, and the endpoint test helper). Verified by grep and by `bun run check`, which typechecks every caller.
+- `omp --version` → `omp/18.20.0`, exit `0`. The `omp/` prefix is present, so the parse returns `18.20.0`, which passes the floor.
+- `omp --no-extensions --version` → `18.20.0` with no prefix. The parse returns null and refuses every command. That flag was removed from the production read for this reason; an earlier commit that added it is corrected here.
+- `omp --version` does not load extensions (checked with a load-counting probe passed via `-e`, which was not loaded).
+- Callers of `createOmpExtension(`: all in files that inject `readOmpVersion` or pass an options object that the typecheck covers.
