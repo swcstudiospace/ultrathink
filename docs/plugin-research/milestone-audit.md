@@ -27,7 +27,7 @@ Overall verdict: **not complete**. AC4 passes on its criterion: the conformance 
 
 ## Open decisions and limits
 
-- Live validation: AC4 complete. AC5 is Partial because Prime-Agent's install is not verified (`docs/validation/results/prime-agent.md`). Its install `<source>` syntax needs an owner decision and a live run that is recorded in the repo.
+- Live validation: AC4 complete. AC5 is Partial across several hosts, per the AC5 row: Omp headless steps 6-7 not reachable; Grok Build invoke produced no answer; Hermes `plugins remove` fails for a symlinked install; Muse needed the experimental gate; Prime-Agent unverified (`docs/validation/results/prime-agent.md`). Prime-Agent's install `<source>` syntax needs an owner decision and a live run recorded in the repo.
 - Prime-Agent and Grok Build: unmapped by design.
 - Minimum supported host versions: not documented by any host, and no floor is a validated minimum. Per-host status is in docs/validation/results/minimum-host-versions.md.
 - Hermes private import: hosts/hermes/bridge.py reads `_resolve_hook_callback_timeout` from hermes_cli.plugins. No public equivalent exists in v0.23.1.
