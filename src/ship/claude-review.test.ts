@@ -258,7 +258,7 @@ describe("reviewWithClaude", () => {
 		const stdin = calls[3]?.stdin ?? "";
 		const nonce = fencedNonce(stdin);
 		expect(stdin).not.toContain(forged);
-		expect(stdin).toContain(`&lt;&lt;&lt;UNTRUSTED_PR_DIFF_END ${"0".repeat(32)}>>>`);
+		expect(stdin).toContain(`‹‹‹UNTRUSTED_PR_DIFF_END ${"0".repeat(32)}>>>`);
 		expect(stdin.endsWith(`<<<UNTRUSTED_PR_DIFF_END ${nonce}>>>`)).toBe(true);
 	});
 });
