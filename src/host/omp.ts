@@ -2328,7 +2328,8 @@ export function createOmpExtension(options: {
 		if (typeof pi.registerCommand === "function") {
 			// Each command's handler is also held in this map; the registered wrapper dispatches through the port.
 			const commandHandlers = new Map<string, OmpCommandHandler>();
-			const observedVersion = readOmpVersion();
+			// A missing read (a JS caller that omits the option) refuses closed; it must not throw during load.
+			const observedVersion = typeof readOmpVersion === "function" ? readOmpVersion() : null;
 			const commandPort = createOmpCommandPort(commandHandlers, { observedVersion });
 			const routed = (
 				name: string,

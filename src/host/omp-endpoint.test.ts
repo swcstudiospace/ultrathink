@@ -533,6 +533,16 @@ describe("named legacy flight identity (REV15-005)", () => {
 		});
 	}
 
+	test("a missing version read refuses commands closed instead of throwing at load", async () => {
+		const { command } = setup(selecting().plan, 1_000, {
+			stateDir: root,
+			readOmpVersion: undefined,
+		} as never);
+		await expect(command("ultrathink-status")).rejects.toThrow(
+			"omp version unknown; minimum 18.19.0",
+		);
+	});
+
 	test("the HTTP default and unused CLI or disabled Grok endpoints keep settled reentry reusable", async () => {
 		for (const mode of ["default-http", "cli", "disabled"] as const) {
 			const config = configured("grok");
