@@ -2,7 +2,7 @@
 
 Audited at commit 5f76f14 on branch plugin-core-slice (PR #89), then re-checked at 611e926 (PR #91) with the AC3/AC5 reconciliation in PR #95. This supersedes the audit written at ab6fcf9. Each criterion lists the verdict and the evidence it rests on. A criterion passes only when the evidence in the repo or a recorded CI run shows it.
 
-Overall verdict: **not complete**. AC4 passes on the verified live evidence. AC3, AC5, AC6, and AC9 remain **Partial**, and AC10 is **Fail**, with their limits recorded per row: minimum host versions are not documented by any host, Prime-Agent's install is not verified, no adapter-level test runs a flag-false case end to end, and the credential scanner does not cover unquoted values. Live results for all six hosts are in `docs/validation/results/`.
+Overall verdict: **not complete**. AC4 passes on the verified live evidence. AC5 is downgraded to **Partial** in this PR (it was Pass before), and AC3, AC6, and AC9 are **Partial**, and AC10 is **Fail**, with their limits recorded per row: minimum host versions are not documented by any host, Prime-Agent's install is not verified, no adapter-level test runs a flag-false case end to end, and the credential scanner does not cover unquoted values. Live results for all six hosts are in `docs/validation/results/`.
 
 | AC | Criterion | Verdict | Evidence |
 |---|---|---|---|
