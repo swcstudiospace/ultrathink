@@ -145,16 +145,18 @@ export async function reviewWithClaude(input: {
 	});
 	if (diff.exitCode !== 0) return failed(`git diff failed: ${diff.stderr}`);
 	if (!diff.stdout.trim()) return failed("git diff returned an empty diff");
-	// Isolated child: --bare skips hooks, plugins and OAuth/keychain reads; --tools "" and --setting-sources "" load no tools
-	// or settings. `env` sets MAX_THINKING_TOKENS=0 because Run takes no env option.
+	// Isolated child: --tools "" and --setting-sources "" load no tools or settings, so user hooks do not run. `env`
+	// sets MAX_THINKING_TOKENS=0 and unsets ANTHROPIC_API_KEY, so the review uses the claude.ai login rather than an
+	// API key with no credit (--bare would require the key, so it is not used).
 	const nonce = randomBytes(16).toString("hex");
 	const reply = run(
 		[
 			"env",
+			"-u",
+			"ANTHROPIC_API_KEY",
 			"MAX_THINKING_TOKENS=0",
 			"claude",
 			"-p",
-			"--bare",
 			"--tools",
 			"",
 			"--setting-sources",

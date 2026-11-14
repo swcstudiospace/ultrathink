@@ -117,10 +117,11 @@ describe("reviewWithClaude", () => {
 		expect(calls[2]?.argv).toEqual(["git", "diff", "origin/master...abc123"]);
 		expect(calls[3]?.argv).toEqual([
 			"env",
+			"-u",
+			"ANTHROPIC_API_KEY",
 			"MAX_THINKING_TOKENS=0",
 			"claude",
 			"-p",
-			"--bare",
 			"--tools",
 			"",
 			"--setting-sources",
@@ -219,15 +220,16 @@ describe("reviewWithClaude", () => {
 		expect(result).toMatchObject({ status: "failed", score: null });
 	});
 
-	test("the reviewer child is isolated: bare, no tools, no settings sources, no extended thinking", async () => {
+	test("the reviewer child is isolated: login only, no tools, no settings sources, no extended thinking", async () => {
 		const { run, calls } = fakeRun(ok('{"score": 5, "comments": []}'));
 		await reviewWithClaude({ ...input, run });
 		expect(calls[3]?.argv).toEqual([
 			"env",
+			"-u",
+			"ANTHROPIC_API_KEY",
 			"MAX_THINKING_TOKENS=0",
 			"claude",
 			"-p",
-			"--bare",
 			"--tools",
 			"",
 			"--setting-sources",
