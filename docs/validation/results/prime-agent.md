@@ -97,3 +97,13 @@ None executed. Documented form: `prime-agent package install <source> [--local]`
 - Blocker (verbatim, step 2): `Usage: prime-agent package install <source> [--local]` with no source-kind description.
 - The isolated home was created empty; nothing was installed, removed, enabled, or approved. No real-home command was run.
 - Repo files changed: only this results file.
+
+## Install syntax verified on 0.10.2 (local path, isolated home)
+
+Date: 2026-11-14. Prime Agent `0.10.2`. Isolated `HOME=/tmp/pa-verify/home`, `PRIME_AGENT_CODING_AGENT_DIR` inside it. Package: a throwaway `package.json` (`pa-probe` 0.0.1) in `/tmp/pa-verify/pkg`, deleted afterward.
+
+- `prime-agent package list` → `No packages installed.`
+- `prime-agent package install /tmp/pa-verify/pkg` → `Installed /tmp/pa-verify/pkg`, exit 0. List then shows the local path under `User packages`.
+- `prime-agent package remove /tmp/pa-verify/pkg` → `Removed /tmp/pa-verify/pkg`, exit 0. List returns to `No packages installed.`
+
+Verified form on 0.10.2: `prime-agent package install <absolute-path>`. The published README (found by web search) also documents `npm:<pkg>[@version]`, `git:<repo>[@ref]`, `https://…`, `ssh://…`, and a checkout via `"$PWD"`. The npm and git forms were not run here (they need the network, and an unknown package would run full-access code). Not verified: load, invoke, and that the packaged command runs after install.
