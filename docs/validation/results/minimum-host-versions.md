@@ -33,7 +33,7 @@ Status terms:
 - Floor: `adapters/version-floor.ts:18`. Contract: `host-contracts.md:89` (minimum not documented; dev pin `@oh-my-pi/pi-ai ^18.14.0` is not a host minimum).
 - Live version: `docs/validation/results/omp.md:34-39` (`omp --version` → `omp/18.19.0`). `docs/install/omp.md:5` records the same.
 - Live result: `omp.md` header `Pass`; Run 1 covers steps 1-10. A banner advertised 18.20.0 and was not acted on (`omp.md:398`).
-- Runtime wiring at this checkout: `adapters/cli.ts` HOSTS has no `omp` entry, and `src/host/omp.ts:2316` builds the command port without `observedVersion`. The Omp floor is therefore not enforced in production at `611e926`. The working tree has uncommitted edits to `adapters/omp/commands.ts` and `src/host/omp.ts` that address this; this record does not cover them.
+- Runtime wiring: `adapters/cli.ts` HOSTS has no `omp` entry, and `src/host/omp.ts` builds the command port without `observedVersion`. The Omp floor is **not enforced** at `611e926`. A fail-closed floor was attempted on PR #93 and dropped by decision; it is not on main.
 
 ### claude-code (floor 2.1.322)
 
