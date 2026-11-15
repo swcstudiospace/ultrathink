@@ -106,7 +106,7 @@ Date: 2026-11-14. Prime Agent `0.10.2`. Isolated `HOME=/tmp/pa-verify/home`, `PR
 - `prime-agent package install /tmp/pa-verify/pkg` → `Installed /tmp/pa-verify/pkg`, exit 0. List then shows the local path under `User packages`.
 - `prime-agent package remove /tmp/pa-verify/pkg` → `Removed /tmp/pa-verify/pkg`, exit 0. List returns to `No packages installed.`
 
-Verified form on 0.10.2: `prime-agent package install <absolute-path>`. The published README (found by web search) also documents `npm:<pkg>[@version]`, `git:<repo>[@ref]`, `https://…`, `ssh://…`, and a checkout via `"$PWD"`. The npm and git forms were not run here (they need the network, and an unknown package would run full-access code). Not verified: load, invoke, and that the packaged command runs after install.
+Verified form on 0.10.2: `prime-agent package install <absolute-path>`. The published README (found by web search) also documents `npm:<pkg>[@version]`, `git:<repo>[@ref]`, `https://…`, `ssh://…`, and a checkout via `"$PWD"`. The npm and git forms were not run here (they need the network, and an unknown package would run full-access code). Load, invoke, and the packaged command after install are not verified in this section; the 2026-11-15 section below records them.
 
 ## 2026-11-15 live load and invoke (0.10.2, isolated root)
 
@@ -158,10 +158,12 @@ Planning is active and ready. Tracking would need Notion/Linear configuration to
 
 stderr: install and kernel-venv build lines only; no errors. The first kernel-venv build downloaded CPython 3.11.17 and dependencies (about 30 s, one time).
 
+Model note: the `--model` flag passed to this invoke was `claude-haiku-4-5`, and the engine line reports `claude-haiku-5-5`. This run does not establish which model served the request.
+
 ### Attempts that did not pass (kept)
 
 1. Invoke with `cd "$ISO/work"` (the procedure's directory): exit 0, but the model reported no ultrathink skill. Project-local packages load only when `--cwd` is the project directory, so the invoke was rerun from the project.
-2. Invoke from the project with no login copied: exit 1. A shell-inherited `ANTHROPIC_API_KEY` was sent to the Anthropic API and rejected: `Provider rejected the request (invalid_request_error, 400): Your credit balance is too low ...`. The key was ambient, not copied from any login, and was out of approved scope. Its value is not recorded. It was unset for every later run.
+2. Invoke from the project with no login copied: exit 1. A shell-inherited `ANTHROPIC_API_KEY` was sent to the Anthropic API in this attempt and rejected: `Provider rejected the request (invalid_request_error, 400): Your credit balance is too low ...`. The key was ambient, not copied from any login. Using it was not an approved use of that key. Its value is not recorded. It was unset for every later run. The key's owner should check whether it needs rotation; this run does not verify rotation.
 3. Same invoke with the key unset and no login: exit 1, `Error: Unknown provider "anthropic". Use "prime-agent model list" ...`. The install doc says a missing provider stops with `No authenticated models available`; 0.10.2 reports an unknown provider instead. Doc discrepancy, not yet fixed.
 
 ### Login
