@@ -217,3 +217,43 @@ Step 6 documented result ("the hook plans the prompt") is observed. The full inv
 - Not verified: whether the isolated run rotated the refresh token server-side. The real `auth.json` was not modified locally.
 - The plugin remains installed in the isolated home. This section does not uninstall it.
 
+
+## Invoke rerun with auto-approve (2026-11-15)
+
+Date: 2026-11-15. Host: `grok --version` → `grok 1.0.77 (50ca579fa996) [stable]`. Scope: runbook step 6 only. Tester: GrokBuildTrustInvoke.
+
+### Trust setting
+
+- Plugin install: `grok plugin install /root/src/repos/claude-ultrathink --trust` (flag-only trust, same as the prior run). Trust state is still not shown by any command, so it remains UNVERIFIED.
+- Invoke approval: `--always-approve` ("Auto-approve all tool executions", from `grok --help`). Chosen because the prior blocker was headless tool approval. Not tried: `--permission-mode`, `--allow`.
+
+### Isolation and login
+
+- Isolated root `/tmp/grok-live-Kktr`; `HOME=$ISO/home`; `GROK_HOME=$ISO/home/.grok`; working directory `$ISO/work`.
+- Probe without login: `grok -p "Say OK in one word."` · Exit: 1 · `Not signed in. To authenticate without a browser, run: grok login --device-code`.
+- Only `/root/.grok/auth.json` was copied (`cp -p`, mode 600) into `$GROK_HOME`. Contents were not printed.
+
+### Invoke
+
+Command: `env -u ANTHROPIC_API_KEY -u XAI_API_KEY timeout 900 grok -p "Say OK in one word." --always-approve`, run from `$ISO/work`. Exit: 0. Wall: 140.83 s. Stderr: 0 bytes.
+
+Reply (stdout, 3 bytes): `OK`
+
+### Hook evidence (session `01a1dcb4-7f88-7222-b930-6a049a1038bd`, `updates.jsonl`)
+
+- `hook_execution` `user_prompt_submit`: `success`, 134259 ms. Annotation: Prompt Uplift · UPLIFTED_PROMPT · `grok:grok-build-0.1` · Graph of Thought · 7 nodes · 133.7 s.
+- Plan carrier written: `plugin-data/user/d09cb73a/ultrathink/ultrathink/last-plan.01a1dcb4-7f88-7222-b930-6a049a1038bd.json`, 18877 bytes.
+- `hook_execution` `stop`: `success` (342 ms and 351 ms). Annotation: "this turn tracked a task (graphId=ut-8ec621f5b1-85a2f639)".
+- Stdout carried no permission-refusal text and stderr was empty. The refused shell call from the prior run did not recur. This run does not prove whether the model made any auto-approved tool call; the transcript was not fully audited.
+
+### Verdict (invoke step)
+
+- **Pass.** Exit 0, the expected reply `OK` was produced, and the `user_prompt_submit` hook succeeded.
+- Caveat: the reply does not depend on the plan carrier, so this run does not show the plan reaching the model.
+
+### Deletion
+
+- Command: `rm -rf /tmp/grok-live-Kktr`. Afterwards `/tmp/grok-live-Kktr` does not exist and no `/tmp/grok-live-*` directory remains. The copied `auth.json` was removed with it.
+- Not verified: whether the isolated run rotated the refresh token server-side.
+- Residue: the first `rm -rf` succeeded, but the persistent shell's `HOME` still pointed into the deleted directory, so tool writes recreated `home/.local/`. `HOME` was reset to `/root`, `GROK_HOME` unset, and the directory removed again. It is confirmed absent.
+- Real login file: `/root/.grok/auth.json` mtime `2026-11-14 23:49:12 UTC`, size 1878, mode 600, identical before and after the run. This run did not modify it.
