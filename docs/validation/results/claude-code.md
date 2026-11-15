@@ -250,3 +250,35 @@ Original prompt: /ultrathink-status
 **Deletion (step 7).** `rm -rf /tmp/cc-live-tXkn` run. Verified: the directory is absent, `find /tmp -maxdepth 1 -name 'cc-live-*'` returns 0 entries, and `.credentials.json` is gone with it. The real home was not written: every `claude` call used the isolated `HOME`.
 
 **Verdict.** Claude Code invoke (login, isolated home): partial. Exit 0, the reply text is recorded above, and the invoke ran with the copied login. Only the hook-answered status path ran; no model turn and no planner ran, so the graph-stage check (reply `ok`, graph not degraded) is still open.
+
+## Graph-stage check (login, isolated home): 2026-11-15
+
+Scope: one headless invoke with a plain prompt, to reach a model turn with the planner. Checkout HEAD `d4006ec`; the only untracked item was the pre-existing `.gsd-run/`. Host: Claude Code 2.1.322. Tester: ClaudeCodeGraphRun.
+
+**Isolation.** `ISO=$(mktemp -d /tmp/cc-graph-XXXX)` → `/tmp/cc-graph-b35h`. Copied only `/root/.claude/.credentials.json` (mode 600) into `$ISO/home/.claude/`, and merged only the `oauthAccount` key of `/root/.claude.json` into `$ISO/home/.claude/.claude.json`. Contents were not printed. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` were unset for every command.
+
+**Plugin install (from checkout).** `claude plugin marketplace add /root/src/repos/claude-ultrathink` → exit 0. `claude plugin install ultrathink@ultrathink --scope user` → exit 0, `✔ Successfully installed plugin`. `claude plugin list` → exit 0, `Version: 1.4.0`, `Read from: /root/src/repos/claude-ultrathink`, `Status: ✔ enabled`.
+
+**Command (exit 0, wall 49.7 s, cwd `$ISO/work`, not the repo).**
+
+```
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN HOME=$ISO/home CLAUDE_CONFIG_DIR=$ISO/home/.claude timeout 600 claude -p "reply with the single word ok" --output-format stream-json --verbose > $ISO/run.jsonl 2> $ISO/run.err
+```
+
+stderr: 0 bytes. stream-json: 7 lines (`system/init`, `system/commands_changed`, `system/informational` ×2, `assistant`, `rate_limit_event`, `result`).
+
+**Hook output (verbatim `system/informational`):**
+
+```
+UserPromptSubmit says: Prompt Uplift · UPLIFTED_PROMPT · llm · claude:claude-haiku-5-5 [route default] · reason route-default-model · engine auto (config) · Graph of Thought · 6 nodes · Substrate · brief 2 lines · Tracking · off · 44.5s
+```
+
+The summary has `Graph of Thought · 6 nodes` and no `Degraded` marker. `Tracking · off`, so no Linear or Notion writes were expected; I did not query Linear.
+
+**Reply (assistant text, verbatim):** `ok`. Result: `subtype: success`, `is_error: false`, `terminal_reason: completed`, `num_turns: 1`, `result: "ok"`.
+
+**Graph status: not degraded (checked in artifact).** `sessions/80777c1e-1938-41c3-ba01-8172725780bc.json` and `last.json` both have `engine: "claude:claude-haiku-5-5"`, no top-level `degraded` key, and `result.degraded` = `{"graph": false, "fills": []}`. The plan has no `Planning degraded` note.
+
+**Deletion (verified).** `rm -rf /tmp/cc-graph-b35h`. `ls` → `No such file or directory`. `find /tmp -maxdepth 1 -name 'cc-graph-*'` → 0 entries. `.credentials.json` and the merged `.claude.json` went with it. The real home was not written: every `claude` call used the isolated `HOME`.
+
+**Verdict (graph-stage check): pass.** The UserPromptSubmit hook fired, the planner ran through the LLM engine with a real model reply `ok`, and the graph stage was not degraded. Not exercised: `awaiting_user_decision`.
