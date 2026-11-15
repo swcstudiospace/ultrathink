@@ -7,9 +7,9 @@ Checkout: worktree `/root/src/worktrees/ut-min-hermes`, branch `docs/min-version
 
 ## Result
 
-**Latest (2026-11-15, Python 3.12): none validated. v0.23.1 (the floor) fails on Python 3.12 because the packaged install omits every core dependency there (all 45 are gated to `python_version >= '3.14'`). The chain stopped at v0.23.1. See the dated section at the end.**
+**Latest (2026-11-15, Python 3.12): none validated. v0.23.1 (the floor) did not install a working host on Python 3.12: the packaged install omits every core dependency there (all 45 are gated to `python_version >= '3.14'`), so the lifecycle was not reached. The chain stopped at v0.23.1. See the dated section at the end.**
 
-**None validated.** The lifecycle passed on every tested release from v0.21.5 through v0.23.1 (v0.21.5, v0.21.6 and v0.21.7 added 2026-11-15; see the dated section below). No tested release has failed, so the rule for a validated minimum (the next lower release fails) is not met, and the lowest passing tested release (v0.21.5, tag `v2026.9.24`) is not a validated minimum. The fallback ("lowest tested release if no lower release is installable offline") does not apply: lower official releases are installable from GitHub. The original sweep was stopped on the main agent's instruction at v0.22.0.
+**None validated.** On Python 3.14.8, the lifecycle passed on every tested release from v0.21.5 through v0.23.1 (v0.21.5, v0.21.6 and v0.21.7 added 2026-11-15; see the dated section below). On Python 3.12, the v0.23.1 attempt failed at enable and list (exit 1); the plugin was never reached, and the failure is attributed to the dependency gate in the record. The 3.14.8 runs record no failing release, so the rule for a validated minimum (the next lower release fails) is not met, and the lowest passing tested release (v0.21.5, tag `v2026.9.24`) is not a validated minimum. The fallback ("lowest tested release if no lower release is installable offline") does not apply: lower official releases are installable from GitHub. The original sweep was stopped on the main agent's instruction at v0.22.0.
 
 Python: every run before the 2026-11-15 Python 3.12 section used Python 3.14.8 (see "Python per run" under Sources and method). The only Python 3.12 run is the dated section at the end, which covers v0.23.1 only. The file records a declared range only for v2026.9.24 (`>=3.11,<3.14`); 3.14.8 is outside it, so that tag was not run on a declared-range Python. The declared range is not recorded in this file for the other tags (v0.21.6, v0.21.7, v0.22.0 to v0.23.1), so their range status is unverified.
 
@@ -92,7 +92,7 @@ Observations:
 - On v0.21.7, `hermes --version` printed `Could not resolve the stable source release: HTTP Error 403: rate limit exceeded` (the GitHub update check). Exit codes of the lifecycle steps were unaffected.
 - `hermes plugins enable` printed `Takes effect on next session.` on all three tags.
 
-Result: **none validated.** All three gap versions passed, so no tested release has failed and no failure sits at the next lower release. v0.21.4 (`v2026.9.21`) is the next lower release. It was outside this assignment's scope and was not tested. The lowest passing tested release is now v0.21.5 (tag `v2026.9.24`), which is not a validated minimum. The floor in `adapters/version-floor.ts` and the install doc's "not documented" statement are unchanged by this run.
+Result: **none validated.** All three gap versions passed on Python 3.14.8, so this run recorded no failing release and no failure sits at the next lower release. v0.21.4 (`v2026.9.21`) is the next lower release. It was outside this assignment's scope and was not tested. The lowest passing tested release is now v0.21.5 (tag `v2026.9.24`), which is not a validated minimum. The floor in `adapters/version-floor.ts` and the install doc's "not documented" statement are unchanged by this run.
 
 Cleanup: `/tmp/ut-gap-hermes` (checkouts, venvs, Python installs, isolated homes, logs) was removed after the results were recorded. The worktree `/root/src/worktrees/ut-gap-hermes` remains because it holds this file. Nothing was committed.
 
@@ -104,14 +104,14 @@ Method: `git clone --depth 1 --branch v0.23.1` (commit `3b421578`); `uv venv --p
 
 | Tag | Python | install | version | enable | list | pty invoke | remove | Verdict |
 |---|---|---|---|---|---|---|---|---|
-| v0.23.1 (floor) | 3.12.3 | 0 | 0 | 1 | 1 | not reached (no setup prompt seen, command never sent) | 1 | fail |
+| v0.23.1 (floor) | 3.12.3 | 0 | 0 | 1 | 1 | not reached (no setup prompt seen, command never sent) | 1 | not reached (dependency gate) |
 | v0.22.0, v0.21.7, v2026.9.21, v0.21.3 | 3.12 | not run | - | - | - | - | - | not run (chain stopped) |
 
 Cause: `pyproject.toml` declares `requires-python = ">=3.11,<3.15"`, but all 45 entries in `[project].dependencies` carry the marker `; python_version >= '3.14'`. On 3.12 the editable install therefore brings in no dependencies (the venv holds only `hermes-agent`). Every subcommand that imports `hermes_cli.main` then crashes with `ModuleNotFoundError: No module named 'ruamel'` (`hermes --version` still printed `Hermes Agent v0.23.1 (2026.9.24)`, exit 0). The plugin was never reached. This is a host install-metadata defect for Python 3.11 to 3.13, not a plugin result.
 
 Diagnostic, not counted: I tried to install the 45 pins with markers stripped into the 3.12 venv, to see whether the plugin passes once dependencies are present. The pin set does not resolve on 3.12 (`uv pip install` and `uv pip compile` report unsatisfiable requirements, e.g. a git-URL `psutil` pin and `pillow` 12.3.0 against 13.0.0), so no lifecycle result with dependencies was obtained.
 
-Verdict: v0.23.1 fails on Python 3.12, which is inside its declared range. No minimum is validated by this run. The 3.14.8 results above are unchanged, and the floor in `adapters/version-floor.ts` is not changed by this run.
+Verdict: v0.23.1 did not install a working host on Python 3.12 (dependency gate); lifecycle not reached. Python 3.12 is inside its declared range (`>=3.11,<3.15`). No minimum is validated by this run. The 3.14.8 results above are unchanged, and the floor in `adapters/version-floor.ts` is not changed by this run.
 
 Cleanup: `/tmp/ut-v-hermes` (checkouts, venvs, homes, logs) was removed, and `pkill` found no leftover processes. The worktree `/root/src/worktrees/ut-v-hermes` holds this file. Nothing was committed.
 
