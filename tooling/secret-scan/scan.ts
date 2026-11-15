@@ -45,18 +45,20 @@ export function scanText(
 	const findings: SecretFinding[] = [];
 	const lines = text.split(/\r?\n/);
 	lines.forEach((line, index) => {
-		for (const { name, pattern, valueGroup } of patterns) {
+		for (const { name, pattern, valueGroup, isPlaceholder, appliesTo } of patterns) {
+			if (appliesTo !== undefined && !appliesTo(file)) continue;
 			const match = pattern.exec(line);
 			if (match === null) continue;
 			const value = match[valueGroup];
 			if (value === undefined) {
 				throw new Error(`pattern ${name} has no capture group ${valueGroup}`);
 			}
+			if (isPlaceholder?.(value)) continue;
 			findings.push({
 				file,
 				line: index + 1,
 				pattern: name,
-				preview: `${value.slice(0, PREVIEW_CHARS)}****`,
+				preview: value.length > PREVIEW_CHARS ? `${value.slice(0, PREVIEW_CHARS)}****` : "****",
 			});
 		}
 	});
