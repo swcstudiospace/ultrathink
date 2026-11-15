@@ -67,7 +67,7 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
 		// Quoted values are left to secret-assignment.
 		name: "secret-env-assignment",
 		pattern:
-			/^\s*(?:export\s+)?([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)[A-Z0-9_]*)\s*=\s*([^\s"'`#]\S*)/,
+			/^\s*(?:export\s+)?([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)[A-Z0-9_]*)\s*=\s*([^\s"'`#]\S{7,})/,
 		valueGroup: 2,
 		isPlaceholder: isPlaceholderValue,
 	},

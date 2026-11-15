@@ -14,6 +14,10 @@ describe("credential scan unquoted assignments", () => {
 		]);
 	});
 
+	test("does not flag a short unquoted value under the secret-env-assignment rule", () => {
+		expect(findingsOf("DB_TOKEN=abc12\n")).toEqual([]);
+	});
+
 	test("flags an exported unquoted private key assignment", () => {
 		expect(findingsOf("export MY_PRIVATE_KEY=zq9pLx2wVb7r\n")).toEqual([
 			{ line: 1, pattern: "secret-env-assignment", preview: "zq9p****" },

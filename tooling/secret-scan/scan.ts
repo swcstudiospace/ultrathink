@@ -57,7 +57,7 @@ export function scanText(
 				file,
 				line: index + 1,
 				pattern: name,
-				preview: `${value.slice(0, PREVIEW_CHARS)}****`,
+				preview: value.length > PREVIEW_CHARS ? `${value.slice(0, PREVIEW_CHARS)}****` : "****",
 			});
 		}
 	});
