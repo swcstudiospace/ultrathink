@@ -107,3 +107,69 @@ Date: 2026-11-14. Prime Agent `0.10.2`. Isolated `HOME=/tmp/pa-verify/home`, `PR
 - `prime-agent package remove /tmp/pa-verify/pkg` → `Removed /tmp/pa-verify/pkg`, exit 0. List returns to `No packages installed.`
 
 Verified form on 0.10.2: `prime-agent package install <absolute-path>`. The published README (found by web search) also documents `npm:<pkg>[@version]`, `git:<repo>[@ref]`, `https://…`, `ssh://…`, and a checkout via `"$PWD"`. The npm and git forms were not run here (they need the network, and an unknown package would run full-access code). Not verified: load, invoke, and that the packaged command runs after install.
+
+## 2026-11-15 live load and invoke (0.10.2, isolated root)
+
+Host: Prime Agent `0.10.2`. Checkout: worktree `/root/src/worktrees/ut-prime`, branch `docs/prime-agent-load`, commit `9feb75f` (origin/main). Tester: PrimeAgentLoadInvoke. Isolated root `/tmp/prime-live-19dR` (`HOME` and `PRIME_AGENT_CODING_AGENT_DIR` inside it; the real home was not used).
+
+**Verdict: pass.** Install, load (package list, RPC `get_commands`, kernel-venv import) and invoke of `/ultrathink-status` all exit 0 with the expected output.
+
+### Install (staging block from docs/install/prime-agent.md)
+
+`STAGE` and `PROJECT` sit inside the isolated root; `CLONE` is the worktree. The staged `package.json` lists `hosts/prime-agent` plus the six `skills/ultrathink-*` directories under `pi.skills`.
+
+```
+$ prime-agent package install "$STAGE" --local
+Installed /tmp/prime-live-19dR/stage            (exit 0)
+$ prime-agent package list
+Project packages:
+  ../../../stage
+    /tmp/prime-live-19dR/stage                  (exit 0)
+```
+
+### Load
+
+RPC: `printf '{"id":"1","type":"get_commands"}\n' | prime-agent --mode rpc --cwd "$PROJECT" --no-session` → exit 0, `success: true`. Skills with origin `package`: `skill:ultrathink` (`<clone>/hosts/prime-agent/SKILL.md`), `skill:ultrathink-cursor`, `-kickoff`, `-plan`, `-ship`, `-sync`, `-teach`.
+
+Python entry: `kernel-venv/bin/python -c "import ultrathink; print(ultrathink.status()['host']); print(ultrathink.plan('ok')['skipped'])"` → exit 0, prints `prime-agent` and `precheck-trivial`.
+
+### Invoke
+
+```
+cd "$PROJECT" && prime-agent -p --no-session --cwd "$PROJECT" --provider anthropic --model claude-haiku-4-5 -- "/skill:ultrathink" "/ultrathink-status"
+```
+
+Exit 0, wall time 10.29 s. stdout, verbatim:
+
+```text
+**ultrathink status:**
+
+- **Engine**: claude-haiku-5-5 (ready)
+- **Prompt Uplift**: on
+- **Graph of Thought**: on
+- **HITL clarifications**: on (max 4)
+- **Tracking**: on but **not configured** (Notion dataSourceUrl and Linear team not set)
+- **Ship**: off (opt-in feature)
+- **Teach**: on (0 confirmed lessons, 0 candidates)
+- **State dir**: `/tmp/prime-live-19dR/home/.prime/agent/ultrathink`
+
+Planning is active and ready. Tracking would need Notion/Linear configuration to log tasks. Use `await ultrathink("request")` to plan a task, or skip/off/quick controls with `/ultrathink-*` commands.
+```
+
+stderr: install and kernel-venv build lines only; no errors. The first kernel-venv build downloaded CPython 3.11.17 and dependencies (about 30 s, one time).
+
+### Attempts that did not pass (kept)
+
+1. Invoke with `cd "$ISO/work"` (the procedure's directory): exit 0, but the model reported no ultrathink skill. Project-local packages load only when `--cwd` is the project directory, so the invoke was rerun from the project.
+2. Invoke from the project with no login copied: exit 1. A shell-inherited `ANTHROPIC_API_KEY` was sent to the Anthropic API and rejected: `Provider rejected the request (invalid_request_error, 400): Your credit balance is too low ...`. The key was ambient, not copied from any login, and was out of approved scope. Its value is not recorded. It was unset for every later run.
+3. Same invoke with the key unset and no login: exit 1, `Error: Unknown provider "anthropic". Use "prime-agent model list" ...`. The install doc says a missing provider stops with `No authenticated models available`; 0.10.2 reports an unknown provider instead. Doc discrepancy, not yet fixed.
+
+### Login
+
+Only the `anthropic` entry of the user's Prime-Agent login (`/root/.prime/agent/auth.json`) was copied into the isolated `auth.json`, mode 600, 303 bytes. The source was read, not modified, and its values were not printed. After the copy, `prime-agent model list` showed 16 `anthropic` models. The earlier model-turn section in docs/install/prime-agent.md used a Claude login instead.
+
+### Cleanup
+
+`rm -rf /tmp/prime-live-19dR` → `test -e` reports the root gone, and no `/tmp/prime-live-*` directory remains. The copied login was inside that root and was removed with it. No commit was made, and only this results file was changed.
+
+Still unverified: `/skill:ultrathink-<name>` slash forms, and the `/reload` path.
