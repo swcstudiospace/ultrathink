@@ -6,7 +6,7 @@ Date: 2026-11-14 (the per-host results and the credential scan). Checkout: `611e
 
 - No host documents a minimum supported version. Five contracts say "not documented" (`docs/plugin-research/host-contracts.md:89` Omp, `:115` Hermes, `:138` Prime-Agent, `:194` Grok Build, `:226` Muse). The Claude Code contract gives feature minimums only, with no base version (`:163`).
 - The floors in `adapters/version-floor.ts:13-18` are the versions observed while writing those contracts (`host-contracts.md:65`). They are not tested minimums.
-- Lower bounds were tested per host in `docs/validation/results/minimum-versions/`. Grok Build: plugin lifecycle validated from 1.0.42 (host invoke from 1.0.13). Prime-Agent: lifecycle validated from 0.3.1 with a stub provider, not a live model. Claude Code, Hermes, Muse, and Omp: no validated minimum; the reasons are in each record.
+- Lower bounds were tested per host in `docs/validation/results/minimum-versions/`. Grok Build: plugin lifecycle from 1.0.42 (host invoke from 1.0.13). Prime-Agent: lifecycle from 0.3.1 with a stub provider, not a live model. Claude Code: 2.1.178 for install, enable, and the UserPromptSubmit hook path; the planner is not covered. Omp: 17.0.0 under the record's listing criterion. Hermes and Muse: no validated minimum; each record gives the reason.
 - Live status is per host below. Muse's floor has no live run at all. Prime-Agent's load and invoke pass on the login (2026-11-15), and its lower bound is from a stub-provider run.
 
 Status terms:
@@ -75,11 +75,11 @@ Status terms:
 
 ## Gaps
 
-1. Two hosts have a tested lower bound (Grok Build from 1.0.42; Prime-Agent from 0.3.1, stub provider). Claude Code, Hermes, Muse, and Omp have none; each record gives the reason. Any new "minimum" statement needs a run below the floor.
+1. Lower bounds are tested for four hosts with stated scope (Grok Build from 1.0.42; Prime-Agent from 0.3.1, stub provider; Claude Code 2.1.178, scoped; Omp 17.0.0, listing criterion). Hermes and Muse have no validated minimum. Any new "minimum" statement needs a run below the floor.
 2. Muse: no live run on the 1.4.14 floor. The 1.4.18 runs are above it.
 3. Prime-Agent: load and invoke pass on the login (2026-11-15, `docs/validation/results/prime-agent.md`); the 0.10.2 floor's install and remove pass on a local path. The lower-bound invoke used a stub provider.
 4. Prime-Agent: `prime-agent --version` (the form the CLI calls) is not recorded live; the run used `-v`.
 5. Hermes: a directory-link install (a symlinked plugin directory) cannot be removed with `hermes plugins remove` (exit 1). The documented per-file install removes cleanly (2026-11-15).
 6. Omp: the floor is not enforced in production at `611e926` (see omp evidence).
 
-AC3 status: **Partial**. Floors are recorded and each host's live status is stated above. Validated lower bounds: Grok Build (plugin lifecycle from 1.0.42) and Prime-Agent (lifecycle from 0.3.1, stub provider). No validated minimum for Claude Code, Hermes, Muse, or Omp; each record gives the reason.
+AC3 status: **Partial**. Floors are recorded and each host's live status is stated above. Lower bounds, each with its scope: Grok Build (plugin lifecycle from 1.0.42); Prime-Agent (lifecycle from 0.3.1, stub provider); Claude Code (2.1.178, install, enable, and the UserPromptSubmit hook path; planner not covered); Omp (17.0.0 under the record's listing criterion; 16.0.0 fails only that criterion). No validated minimum for Hermes (no failure found down to v0.21.5, one run on Python 3.14.8, outside its declared range) or Muse (no lower build obtainable). Each record gives the detail.

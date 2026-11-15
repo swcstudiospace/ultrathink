@@ -7,10 +7,10 @@ Tester: MinVersionClaudeCode.
 
 ## Result
 
-**None validated.** The lifecycle passes at 2.1.179, 2.1.186, 2.1.200, 2.1.250, 2.1.280, 2.1.300 and 2.1.321. It fails at 2.1.177, 2.1.176, 2.1.174, 2.1.150 and 2.1.100. The boundary lies between 2.1.177 (FAIL) and 2.1.179 (PASS). Its only intermediate release, 2.1.178, is **untested**: that run was stopped at wrap-up. The procedure needs the next lower release to be shown to fail, so no minimum is claimed.
+**Minimum validated: 2.1.178.** The 2026-11-15 gap run (section at the end) passed 2.1.178, and the next lower tested release, 2.1.177, failed. The earlier 'none validated' status and the 'untested 2.1.178' notes above are superseded by that section.
 
-- Lowest tested passing release: **2.1.179**. Not a validated minimum, because 2.1.178 is untested.
-- The floor (2.1.322) is above the lowest tested pass, 2.1.179. This lifecycle does not justify the floor.
+- Lowest tested passing release: **2.1.178** (validated minimum; see the gap-run section).
+- The floor (2.1.322) is above the validated minimum 2.1.178. This lifecycle does not justify the floor.
 - Tested releases below 2.1.100 did not pass: 2.0.0 and 1.0.33 failed; 1.0.0 hung with no verdict; the first 2.1.51 run was invalid (nested-session guard) and was not rerun. Releases between 2.1.100 and 2.1.150 were not tested.
 
 ## Lifecycle (exact commands)
@@ -77,3 +77,23 @@ The root filesystem was at 100% use during the sweep (shared with other workload
 - 2.1.101 to 2.1.149 and 2.1.151 to 2.1.173, and every release below 2.1.100 except 2.0.0, 1.0.33, 1.0.0 and the invalid 2.1.51 run.
 - The model/planner path (no login was used).
 - Install from the GitHub marketplace; this run used the local checkout.
+
+## 2026-11-15 gap run: 2.1.178
+
+Gap test for the one release between the passing 2.1.179 and the failing 2.1.177. Runner: `/tmp/ut-min-cc/lifecycle3.sh 2.1.178`, the same steps as the Lifecycle section above. Log: `/tmp/ut-min-cc/2.1.178.log`.
+
+| Version | Install | Marketplace add | Plugin install | Enabled | Invoke (exit; hook output) | Uninstall | Checks line | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| 2.1.178 | 0 | 0 | 0 | 0 | 0; `Prompt Uplift on` present | 0 | `version=1 install=1 enabled_after_install=1 invoke_hook_output=1 uninstall=1 reload_informational=0` | **PASS** |
+| 2.1.177 (boundary, re-read from `/tmp/ut-min-cc/2.1.177.log`) | 0 | 0 | 0 | 0 | 0; **no hook output** | 0 | `invoke_hook_output=0` | FAIL |
+
+Verdict logic: a validated minimum needs a passing lifecycle at that version and a recorded failure at the next lower tested release. Both hold:
+
+- 2.1.178 passes all content checks. Its invoke output includes the full `/ultrathink-status` block with `Prompt Uplift on`.
+- 2.1.177 is the next lower tested release. Its install, marketplace add, plugin install and enable all passed. Only the invoke content check failed: exit 0 with empty output.
+- The 2.1.177 failure is not the disk problem in the Disk note. The run started with 23,022,312 kB free on `/` (per the log), and install succeeded on the first attempt.
+
+**Validated minimum: 2.1.178**, for the lifecycle checked here. The check covers install, enable, and the `UserPromptSubmit` hook output. It does not cover the planner or model path, which needs login (see Limit above). No release between 2.1.177 and 2.1.178 was tested.
+
+Cleanup: `cleanup: iso removed=yes` recorded in the log, and `/tmp/ut-min-cc/2.1.178` confirmed absent after the run. No credential was copied, read, or printed; no login was used. Nothing was committed. The only file changed in this worktree is this record.
+

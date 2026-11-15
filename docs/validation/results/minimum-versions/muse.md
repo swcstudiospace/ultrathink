@@ -5,7 +5,7 @@ Host: Muse Code (`muse`). Floor: 1.4.14 (`adapters/version-floor.ts:15`). Plugin
 
 ## Result
 
-- **Lowest tested release: 1.4.18.** The lifecycle passed on 1.4.18. No release below it could be obtained, so this is not a proven minimum and no lower bound is claimed.
+- **Lowest tested release: 1.4.2-R4684.1 (2026-11-15 gap run).** Gated lifecycle passes. Ungated fails with `plugins are not available in this build`. Ungated 1.4.18 passes. Validated minimum: none; builds between 1.4.2 and 1.4.18 (including 1.4.14 and 1.4.15) are not obtainable. See the 2026-11-15 gap run section.
 - **The 1.4.14 floor is not validated.** No 1.4.14 binary or manifest was reachable, so no lower bound is claimed.
 - Why no lower release: the official channel exposes only the current release, and the release manifest endpoint takes an exact `version-R<build>` string. Build numbers for 1.4.14 and 1.4.15 are not published in any source I could reach (the repo cites them only as earlier observations). See "Version discovery".
 
@@ -62,3 +62,34 @@ This differs from the 2026-11-13 matrix run on 1.4.18, which saw non-gated insta
 - The isolated homes were created fresh. No credential file was copied, and no `auth.json` was read.
 - Not used for the lifecycle. Before the isolated runs, I ran the real launcher `~/.local/bin/muse` for read-only probes: `--version`, `--help`, `update --help`, and `muse-launcher --help`. The launcher can refresh its update-check state (`.muse-update-checked-at`, `.muse-release-info.json`) in `~/.local/bin`. I read `~/.config/muse` only by file name (`ls`), not its contents. No plugin command ran against the real home, and no credentials were read or copied.
 - Worktree `/root/src/worktrees/ut-min-muse`: this file is the only addition. Not committed.
+
+## 2026-11-15 gap run: releases below 1.4.18
+
+Scope: the gap for releases below 1.4.18 only. The real launcher `~/.local/bin/muse` was not run. Manifests came from the official `lookaside.facebook.com` manifest endpoint.
+
+### Builds tried
+
+| Build | Result | Evidence |
+|---|---|---|
+| 1.4.2-R4684.1 | Obtained. Gated lifecycle pass; ungated lifecycle fail | Manifest HTTP 200. `x86_linux` artifact size 344369368 and sha256 `dfb3096c…a1af64` matched the manifest. `muse --version` → `Muse Code 1.4.2 (1.4.2-R4684.1)` |
+| 1.4.14 (any build) | Not obtainable | Bare `version=1.4.14` → 404. `1.4.14-R8587.1` → 404. Build-number guesses in "Version discovery" above → 404 |
+| 1.4.15 (any build) | Not obtainable | Bare `version=1.4.15` → 404 |
+| 1.4.2 variants and 1.4.3 | Not obtainable | `1.4.2`, `1.4.2-R4684`, `1.4.2-R4684.2`, `1.4.3` → 404 |
+
+The build string `1.4.2-R4684.1` comes from `~/.local/bin/.muse-update-notice`, which records a version transition from that build. The file was read as text, not executed. A search of `/` for `muse-bin-*` and `muse-x86-linux` found only `~/.local/bin/muse-bin-1.4.20-R8619.1` (current; not run; not below 1.4.18). Obtainable builds below 1.4.18: one of three allowed attempts used.
+
+### Lifecycle, 1.4.2-R4684.1
+
+- Gated (`MUSE_EXPERIMENTAL_PLUGINS=1`, fresh isolated HOME, raw binary, cwd = worktree): steps 1–7 all exit 0. Install: `installed ultrathink 1.4.0 enabled=true trust=user-local`. Inspect: `skills=5 commands=6 hooks=3`, all three hooks `trusted_enabled`. Exec with the echo provider: exit 0. Session log: `UserPromptSubmit` completed exit 0 and `Stop` completed exit 0.
+- Ungated (flag unset, fresh isolated HOME): steps 1–4, 6, and 7 exit 2 with `plugins are not available in this build`. Step 5 (`muse exec`) exits 0. The plugin commands are dark in ungated mode, which matches the launcher comment that 1.4.2 puts the plugin host behind `MUSE_EXPERIMENTAL_PLUGINS`. No hook records were produced.
+
+### Result
+
+- Gated path: 1.4.2-R4684.1 passes. Nothing below it is obtainable, so no failing lower release exists. Validated minimum: none. The 1.4.14 floor is stricter than this passing observation; this run does not show it to be a boundary.
+- Ungated path (default on): 1.4.2 fails and 1.4.18 passes. The boundary lies in (1.4.2, 1.4.18]. The tested-pair rule applied literally would name 1.4.18, but 1.4.3 through 1.4.17 are untested, including 1.4.14 and 1.4.15, which cannot be obtained. The true boundary is not located. Validated minimum: none. Reason: the builds needed to bracket it are not obtainable from the official channel.
+
+### Cleanup
+
+- Deleted `/tmp/muse-gap` (both isolated homes, the 1.4.2 binary, workspaces, and logs) and the `/tmp/muse-probe-*.json` probe files. Verified absent.
+- No credential file was read or copied. Only file names and the update-notice content were read.
+- The worktree `/root/src/worktrees/ut-gap-muse` has only this file changed. Not committed.

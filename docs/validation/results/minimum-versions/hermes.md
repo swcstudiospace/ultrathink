@@ -7,9 +7,9 @@ Checkout: worktree `/root/src/worktrees/ut-min-hermes`, branch `docs/min-version
 
 ## Result
 
-**None validated.** The lifecycle passed on every tested release from v0.22.0 through v0.23.1. No lower release was tested, so no release was shown to fail, and the lowest passing tested release (v0.22.0) is not a validated minimum. The rule for a validated minimum (the next lower release fails) is not met. The fallback ("lowest tested release if no lower release is installable offline") does not apply: lower official releases are installable from GitHub. The sweep was stopped on the main agent's instruction at v0.22.0.
+**None validated.** The lifecycle passed on every tested release from v0.21.5 through v0.23.1 (v0.21.5, v0.21.6 and v0.21.7 added 2026-11-15; see the dated section below). No tested release has failed, so the rule for a validated minimum (the next lower release fails) is not met, and the lowest passing tested release (v0.21.5, tag `v2026.9.24`) is not a validated minimum. The fallback ("lowest tested release if no lower release is installable offline") does not apply: lower official releases are installable from GitHub. The original sweep was stopped on the main agent's instruction at v0.22.0.
 
-Untested lower releases: v0.21.7, v0.21.6 (`v0.21.x` tags), and the calendar-tagged releases below v0.22.0 (for example `v2026.9.21`, which its release page titles "Hermes Agent v0.21.4").
+Untested lower releases: v0.21.4 (`v2026.9.21`, which its release page titles "Hermes Agent v0.21.4") and earlier calendar tags. No `v0.21.5` git tag exists; the release titled "Hermes Agent v0.21.5" is tag `v2026.9.24`.
 
 ## Sources and method
 
@@ -57,3 +57,33 @@ Observations:
 ## Cleanup
 
 All run directories were removed after the results were recorded: `/tmp/ut-minver-hermes` (checkouts, venvs, python, homes, logs). The worktree `/root/src/worktrees/ut-min-hermes` remains because it holds this file. Nothing was committed.
+
+## 2026-11-15 gap run: v0.21.5, v0.21.6, v0.21.7
+
+Scope: the four unvalidated gaps for hermes, limited to the three versions named in the assignment, in order, stopping at the first failure. Worktree `/root/src/worktrees/ut-gap-hermes` from `origin/docs/min-versions-ac3`. No commit.
+
+Tags tested:
+
+- `v0.21.7` and `v0.21.6`: git tags as named.
+- `v0.21.5`: no git tag `v0.21.5` exists (`git ls-remote --tags` returns nothing for it). The GitHub release titled "Hermes Agent v0.21.5 (v2026.9.24)" is tag `v2026.9.24`, and that tag was tested.
+
+Method: same as the sweep above (per-file symlinks from `hosts/hermes/` at this branch, `hermes plugins enable/list/remove`, pty invoke of `/ultrathink-lessons` expecting `No lessons saved yet.`, isolated `HOME`/`HERMES_HOME`, placeholder `custom` model at `127.0.0.1:9`, telemetry off, `env -i` with PATH, TERM, LANG, HOME, HERMES_HOME only). Each tag: `uv venv --python 3.14.8` and `uv pip install -e <checkout>`.
+
+Caveat: `v2026.9.24` declares `requires-python = ">=3.11,<3.14"`. Its install on Python 3.14.8 exited 0 and the lifecycle passed, but 3.14.8 is outside the declared range and no run on 3.11 to 3.13 was made.
+
+| Tag | `hermes --version` | install | enable | list (load) | pty invoke | remove | Verdict |
+|---|---|---|---|---|---|---|---|
+| v0.21.7 | `Hermes Agent v0.21.7 (2026.9.24) · stable · local 71d34bad1045` | 0 | 0 | 0 | pass | 0 | pass |
+| v0.21.6 | `Hermes Agent v0.21.6 (2026.9.24) · upstream 818c13be` | 0 | 0 | 0 | pass | 0 | pass |
+| v2026.9.24 (titled v0.21.5) | `Hermes Agent v0.21.5 (2026.9.24)` | 0 | 0 | 0 | pass | 0 | pass |
+
+Discarded run (not counted as a release result): the first v0.21.7 pty run sent the command before the TUI accepted input (`pty=1`, `MARKER_MISSING`, the input box still showed its placeholder and no reply). The driver was changed to wait for `Welcome to Hermes Agent`, type the command, then send Enter. v0.21.7 was then rerun from a clean home and passed. The marker was checked only after the command was sent; the screen captured before sending in the discarded run did not contain it.
+
+Observations:
+
+- On v0.21.7, `hermes --version` printed `Could not resolve the stable source release: HTTP Error 403: rate limit exceeded` (the GitHub update check). Exit codes of the lifecycle steps were unaffected.
+- `hermes plugins enable` printed `Takes effect on next session.` on all three tags.
+
+Result: **none validated.** All three gap versions passed, so no tested release has failed and no failure sits at the next lower release. v0.21.4 (`v2026.9.21`) is the next lower release. It was outside this assignment's scope and was not tested. The lowest passing tested release is now v0.21.5 (tag `v2026.9.24`), which is not a validated minimum. The floor in `adapters/version-floor.ts` and the install doc's "not documented" statement are unchanged by this run.
+
+Cleanup: `/tmp/ut-gap-hermes` (checkouts, venvs, Python installs, isolated homes, logs) was removed after the results were recorded. The worktree `/root/src/worktrees/ut-gap-hermes` remains because it holds this file. Nothing was committed.

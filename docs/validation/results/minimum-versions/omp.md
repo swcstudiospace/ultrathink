@@ -1,7 +1,7 @@
 # Omp minimum version validation
 
 Date (YYYY-MM-DD): 2026-11-15
-Result: **None validated.** The lowest tested release that passes the lifecycle is 17.0.0. The minimum is not established: the next lower release, 16.0.0, was not tested (see Stopped sweep). The floor 18.19.0 (`adapters/version-floor.ts:18`) is not the lowest working version.
+Result: **Validated minimum 17.0.0** under this file's lifecycle criteria (2026-11-15 gap run, below). 16.0.0 fails step 5 (the plugin is installed by link and not listed) on 2 of 2 attempts. 15.0.0 was not tested because the run stopped at the first failure. Under a relaxed criterion the minimum is not established. The floor 18.19.0 (`adapters/version-floor.ts:18`) is not the lowest working version.
 
 ## Scope
 
@@ -79,3 +79,39 @@ None established.
 - Leftover RPC processes from the 9.0.0 run were killed.
 - The copied login values were never printed. No credential values appear in this file.
 - Only this file was created in the worktree. Nothing was committed.
+
+## 2026-11-15 gap run: 16.0.0 and 15.0.0
+
+This section supersedes "Validated minimum" above for the lifecycle criteria in this file.
+
+### Method
+
+- Gap versions, in order, stopping at the first failure, 2 attempts max: 16.0.0, then 15.0.0. Procedure, nine steps, pass criteria and isolated environment as in the sweep above, with Bun 1.4.4 in an isolated prefix (`bun@1.4.4` from npm).
+- Plugin source: `origin/main` at `651e9fc`. The worktree `/root/src/worktrees/ut-gap-omp` at `origin/docs/min-versions-ac3` differs from `651e9fc` only under `docs/`.
+- Attempt 2 added a read-only `omp plugin list --json` capture (step 5b) to show the link state. It does not change the pass criteria.
+
+### Results
+
+| Version | Attempt | Exit codes (steps 1-9) | Step 5 lists `ultrathink@` | Step 6 invoke | Verdict |
+|---|---|---|---|---|---|
+| 16.0.0 | 1 | all 0 | No | 2× `success:true`, `Prompt Uplift` | FAIL at step 5 |
+| 16.0.0 | 2 | all 0 (5b also 0) | No (5b: no ultrathink entry) | 2× `success:true`, `Prompt Uplift` | FAIL at step 5 |
+| 15.0.0 | — | not run | — | — | Not tested (stopped at first failure) |
+
+- At 16.0.0, `plugin install --dry-run .` prints `[dry-run] Would link .`, and `plugin install .` prints `✔ Linked ultrathink from .`. `omp plugin list` (text and `--json`) shows no ultrathink entry before or after install. The 17.0.0 row in the sweep above lists `ultrathink@` after install.
+- The rest of the lifecycle passes at 16.0.0. The plugin is active at step 6 (the status notify contains `Prompt Uplift`), and step 8 prints `✔ Uninstalled ultrathink`. The failure is limited to the step 5 listing criterion.
+- Attempt 2 reproduced attempt 1 in a fresh home, so the result is not flaky.
+- The `omp-polyglot@polyglot` marketplace entry appeared in every list. It is unrelated.
+
+### Validated minimum
+
+- Under the criteria in this file: **17.0.0**. 17.0.0 passes (sweep row), and the next lower tested release, 16.0.0, fails step 5 on 2 of 2 attempts.
+- The failure is narrow. If the step 5 listing criterion were dropped, 16.0.0 would pass the functional lifecycle (link install, invoke, uninstall). The minimum would then lie below 16.0.0, which needs 15.0.0 and possibly lower. 15.0.0 was not tested because the stop rule ended the run at the first failure, so the relaxed-criterion minimum is not established.
+- The floor 18.19.0 (`adapters/version-floor.ts:18`) is not enforced at runtime (see the sweep above) and is conservative for this lifecycle.
+
+### Cleanup
+
+- Login files (`agent.db`, `agent.db-wal`, `agent.db-shm`, `config.yml`, `models.yml`, mode 600) were copied into each isolated home. Each home was deleted at the end of its run. No credential values were printed or written here.
+- The isolated directory `/tmp/ut-gap-omp` (Bun prefix, npm prefix, logs) was removed after this section was written.
+- The real `~/.omp` plugin registry (`installed_plugins.json`, `plugins/`) was not modified after the run began (mtime check). Other sessions were writing to `~/.omp` (agent DB, logs, token-opt) during the window; those changes are not attributed here.
+- Only this file was edited in the worktree. Nothing was committed.
