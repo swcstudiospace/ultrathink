@@ -478,7 +478,7 @@ Engine request: auto (config) · concurrency 3
 State: /tmp/omp-headless-G5YS/home/.omp/agent/ultrathink
 ```
 
-Matches Run 1 line for line except the state path, which is the isolated path. Line 1 shows `(skipping next prompt)`, as in Run 1. Run 1's text says "21 lines", but its block has 20. This record counts 20.
+Matches Run 1's block line for line except the state path, which is the isolated path. Line 1 shows `(skipping next prompt)`, as in Run 1. Run 1's text says "21 lines", but its block has 20; this record does not rely on the count, and Run 1 is not corrected here.
 
 ### Real home (stat only)
 
@@ -488,7 +488,7 @@ Matches Run 1 line for line except the state path, which is the isolated path. L
 ### Verdict
 
 - Step 6: `pass` (headless RPC). All eight commands registered and responded. `/ultrathink-ui` returns the text snapshot, not the TUI overlay.
-- Step 7: `pass`. Reply matches Run 1.
+- Step 7: `pass`. Reply matches Run 1's block. Caveat: `last-skip.json` in the real home was written at 00:21:20, before this run's first isolated command. This run did not write it, and its writer is still unidentified. The verdict is not a clean pass with respect to the real home until that is resolved.
 - Print mode (`omp -p`) cannot show command output. Use `omp --mode rpc` for headless runs.
 
 ### Cleanup
