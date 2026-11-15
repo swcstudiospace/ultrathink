@@ -3,7 +3,7 @@
 > **Isolation caveat.** The sweep and the 2026-11-15 gap run, which precede the "Clean-home boundary rerun" section, were not isolated. The copied login config and agent DB named the real-home extension `/root/.omp/extensions/agent-swarm`, and Omp attempted to load it. Those runs are not evidence for the boundary, and the "Validated minimum" sections before the clean-home section are superseded by the Result above. The clean-home section is the stated basis. Its 17.0.0 PASS is attempt 2 only; attempt 1 is excluded as invalid.
 
 Date (YYYY-MM-DD): 2026-11-15
-Result: **Lowest passing release tested under the step 5 listing criterion: 17.0.0.** 16.0.0 passes every lifecycle step (link install, invoke, uninstall) and fails only the step 5 `plugin list` listing check, on 2 of 2 clean-home attempts. Basis: the "2026-11-15 clean-home boundary rerun" section at the end of this file. Releases below 16.0.0 were not tested under a clean home (15.0.0 was not run; 9.0.0 fails at install), so no lower boundary is established, and 17.0.0 is not shown to be a minimum under a relaxed criterion. The floor 18.19.0 (`adapters/version-floor.ts:18`) is not the lowest working version.
+Result: **Lowest passing release tested under the step 5 listing criterion: 17.0.0.** 16.0.0 passes every lifecycle step (link install, invoke, uninstall) and fails only the step 5 `plugin list` listing check, on 2 of 2 clean-home attempts. Basis: the "2026-11-15 clean-home boundary rerun" section at the end of this file. Releases below 16.0.0 were not tested under a clean home, so no lower boundary is established, and 17.0.0 is not shown to be a minimum under a relaxed criterion. The floor 18.19.0 (`adapters/version-floor.ts:18`) is not the lowest working version.
 
 ## Scope
 
@@ -77,14 +77,14 @@ None established.
 
 ## Cleanup
 
-- The isolated directory `/tmp/ut-min-omp` (npm prefixes, isolated homes with copied login files, Bun 1.4.4, logs) is recorded as removed, but it was already missing at cleanup time. Its removal was confirmed only by a missing-path check, not by a deletion step in this run. The cause of its disappearance is unidentified.
+- The isolated directory `/tmp/ut-min-omp` (npm prefixes, isolated homes with copied login files, Bun 1.4.4, logs) was already missing at cleanup time, and no deletion step in this run removed it. Its removal is not verified: the only check was that the path was absent, which does not show that this run removed it. The cause of its disappearance is unidentified.
 - Leftover RPC processes from the 9.0.0 run were killed.
 - The copied login values were never printed. No credential values appear in this file.
 - Only this file was created in the worktree. Nothing was committed.
 
 ## 2026-11-15 gap run: 16.0.0 and 15.0.0
 
-This section supersedes "Validated minimum" above for the lifecycle criteria in this file.
+This gap run is not evidence for the boundary (see the caveat at the top). Its 16.0.0 result is superseded by the clean-home rerun below and is not used. The record below is kept as a log of what was run.
 
 ### Method
 
@@ -100,21 +100,21 @@ This section supersedes "Validated minimum" above for the lifecycle criteria in 
 | 16.0.0 | 2 | all 0 (5b also 0) | No (5b: no ultrathink entry) | 2× `success:true`, `Prompt Uplift` | FAIL at step 5 |
 | 15.0.0 | — | not run | — | — | Not tested (stopped at first failure) |
 
-- At 16.0.0, `plugin install --dry-run .` prints `[dry-run] Would link .`, and `plugin install .` prints `✔ Linked ultrathink from .`. `omp plugin list` (text and `--json`) shows no ultrathink entry before or after install. The 17.0.0 row in the sweep above lists `ultrathink@` after install.
+- At 16.0.0, `plugin install --dry-run .` prints `[dry-run] Would link .`, and `plugin install .` prints `✔ Linked ultrathink from .`. `omp plugin list` (text and `--json`) shows no ultrathink entry before or after install.
 - The rest of the lifecycle passes at 16.0.0. The plugin is active at step 6 (the status notify contains `Prompt Uplift`), and step 8 prints `✔ Uninstalled ultrathink`. The failure is limited to the step 5 listing criterion.
-- Attempt 2 reproduced attempt 1 in a fresh home, so the result is not flaky.
+- The clean-home rerun's two 16.0.0 attempts give the same result.
 - The `omp-polyglot@polyglot` marketplace entry appeared in every list. It is unrelated.
 
 ### Lowest passing release under the listing criterion
 
-- Under the listing criterion, confirmed by the clean-home rerun: **17.0.0** is the lowest passing release tested. The sweep row for 17.0.0 is not isolated; the clean-home attempt 2 is the pass. 16.0.0 fails step 5 on 2 of 2 attempts in the gap run and on 2 of 2 clean-home attempts.
-- The failure is narrow. If the step 5 listing criterion were dropped, 16.0.0 would pass the functional lifecycle (link install, invoke, uninstall). The minimum would then lie below 16.0.0, which needs 15.0.0 and possibly lower. 15.0.0 was not tested because the stop rule ended the run at the first failure, so the relaxed-criterion minimum is not established.
-- The floor 18.19.0 (`adapters/version-floor.ts:18`) is not enforced at runtime (see the sweep above) and is conservative for this lifecycle.
+- Under the listing criterion, per the clean-home rerun: **17.0.0** is the lowest passing release tested (attempt 2 is the pass). 16.0.0 fails step 5 on 2 of 2 clean-home attempts.
+- The failure is narrow. If the step 5 listing criterion were dropped, 16.0.0 would pass the functional lifecycle (link install, invoke, uninstall), per the clean-home attempts. The minimum would then lie below 16.0.0, which needs 15.0.0 and possibly lower. 15.0.0 was not tested under a clean home, so the relaxed-criterion minimum is not established.
+- The floor 18.19.0 (`adapters/version-floor.ts:18`) is not enforced at runtime (see `docs/validation/results/minimum-host-versions.md`) and is conservative for this lifecycle.
 
 ### Cleanup
 
 - Login files (`agent.db`, `agent.db-wal`, `agent.db-shm`, `config.yml`, `models.yml`, mode 600) were copied into each isolated home. Each home was deleted at the end of its run. No credential values were printed or written here.
-- The isolated directory `/tmp/ut-gap-omp` (Bun prefix, npm prefix, logs) was removed after this section was written.
+- The isolated directory `/tmp/ut-gap-omp` (Bun prefix, npm prefix, logs) is not verified as removed: this file records no deletion step or missing-path check for it.
 - The real `~/.omp` plugin registry (`installed_plugins.json`, `plugins/`) was not modified after the run began (mtime check). Other sessions were writing to `~/.omp` (agent DB, logs, token-opt) during the window; those changes are not attributed here.
 - Only this file was edited in the worktree. Nothing was committed.
 
@@ -159,5 +159,5 @@ Scope: 17.0.0 and 16.0.0 only, rerun with every Omp home, config and extension d
 ### Cleanup
 
 - Login copies (`agent.db`, `agent.db-wal`, `agent.db-shm`, `config.yml`, `models.yml`) were deleted from every isolated agent directory, along with the inspection copy of `agent.db` used to locate the real-home cache rows.
-- The isolated tree `/tmp/ut-clean-omp.4hw4LX` (Bun and npm prefixes, npm and Puppeteer caches, homes, logs) was removed. Deletion was confirmed by a missing-path check, and no other `/tmp/ut-clean-omp.*` directory remains.
+- The isolated tree `/tmp/ut-clean-omp.4hw4LX` (Bun and npm prefixes, npm and Puppeteer caches, homes, logs) was removed. Deletion was confirmed by a missing-path check.
 - The real-home `~/.omp` was not modified. Only this file was edited in the worktree. Nothing was committed.

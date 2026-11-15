@@ -8,6 +8,7 @@ Host: Muse Code (`muse`). Floor: 1.4.14 (`adapters/version-floor.ts:15`). Plugin
 - **Lowest tested release: 1.4.2-R4684.1 (2026-11-15 gap run).** Gated lifecycle passes (all steps exit 0). Ungated fails: steps 1–4, 6 and 7 exit 2 with `plugins are not available in this build`; step 5 exec exits 0. Ungated 1.4.18-R8587.1 passes. Validated minimum: none. The ungated boundary lies in (1.4.2, 1.4.18] and is not located. 1.4.14 and 1.4.15 returned no manifest for the probed build strings (see the gap section).
 - **The 1.4.14 floor is not validated.** No 1.4.14 binary or manifest was reachable, so no lower bound is claimed.
 - Why no validated minimum: the channel endpoints expose only the current release (`1.4.20-R8619.1`), and the manifest endpoint takes an exact `version-R<build>` string. Before the gap run, no release below 1.4.18 had been found. The gap run obtained 1.4.2-R4684.1; the probed strings for 1.4.3, 1.4.14 and 1.4.15 returned no manifest. Build numbers for 1.4.14 and 1.4.15 are not published in any source I could reach (the repo cites them only as earlier observations). See "Version discovery" and the gap section.
+- **Real-home limit:** the real launcher `~/.local/bin/muse` was run for probes that can write `.muse-update-checked-at` and `.muse-release-info.json` in `~/.local/bin`. The state of those files before and after the probes was not checked, and the probes were not confirmed harmless. The isolated lifecycle runs used the raw binary and fresh homes, not the launcher. See Cleanup.
 
 ## Versions tested
 
@@ -62,7 +63,7 @@ This differs from the 2026-11-13 matrix run on 1.4.18, which saw non-gated insta
 
 - Deleted `/tmp/muse-min` (both homes, the 1.4.18 binary, workspace, logs) and `/tmp/muse-scan`. Verified both absent.
 - The isolated homes were created fresh. No credential file was copied, and no `auth.json` was read.
-- Before the isolated runs, I ran the real launcher `~/.local/bin/muse` for probes: `--version`, `--help`, `update --help`, and `muse-launcher --help`. The launcher can write its update-check state, `.muse-update-checked-at` and `.muse-release-info.json`, in `~/.local/bin`. Whether these probes changed those files was not checked. I read `~/.config/muse` only by file name (`ls`), not its contents. No plugin command ran against the real home, and no credentials were read or copied.
+- Before the isolated runs, I ran the real launcher `~/.local/bin/muse` for probes: `--version`, `--help`, `update --help`, and `muse-launcher --help`. The probes can write the launcher's update-check state, `.muse-update-checked-at` and `.muse-release-info.json`, in `~/.local/bin`. The state of those two files before and after the probes was not checked, and the probes were not confirmed harmless. I read `~/.config/muse` only by file name (`ls`), not its contents. No plugin command ran against the real home, and no credentials were read or copied.
 - Worktree `/root/src/worktrees/ut-min-muse`: this file is the only addition. Not committed.
 
 ## 2026-11-15 gap run: releases below 1.4.18

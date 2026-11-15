@@ -7,7 +7,7 @@ Tester: MinVersionClaudeCode.
 
 ## Result
 
-**Boundary observation at 2.1.178 (one completed run; not a validated minimum).** The 2026-11-15 gap run (section at the end) passed 2.1.178, and the next lower tested release, 2.1.177, failed in one run with no hook output. The 2.1.177 failure mode has no isolated cause. The earlier 'none validated' status and the 'untested 2.1.178' notes above are superseded by that section.
+**Boundary observation at 2.1.178 (one completed run; not a validated minimum).** The 2026-11-15 gap run (section at the end) passed 2.1.178, and the next lower tested release, 2.1.177, failed in one run with no hook output. The 2.1.177 failure mode has no isolated cause.
 
 - Lowest tested passing release: **2.1.178** (one completed run), scoped to install, enable, and the `UserPromptSubmit` hook path. The planner and model path are not covered.
 - The floor (2.1.322) is above the 2.1.178 boundary observation. One passing run does not validate a minimum, so this record does not justify changing the floor.
@@ -74,6 +74,7 @@ The root filesystem was at 100% use during the sweep (shared with other workload
 
 - The floor 2.1.322 was not rerun in this pass.
 - 2.1.178 beyond its single completed gap run (no repeat run).
+- 2.1.175: no run is recorded in this file (it sits between the tested 2.1.174 and 2.1.176). Its status is not recorded here.
 - 2.1.101 to 2.1.149 and 2.1.151 to 2.1.173, and every release below 2.1.100 except 2.0.0, 1.0.33, 1.0.0 and the invalid 2.1.51 run.
 - The model/planner path (no login was used).
 - Install from the GitHub marketplace; this run used the local checkout.

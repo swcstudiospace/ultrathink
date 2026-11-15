@@ -8,7 +8,12 @@ Checkout: `origin/main` (worktree `docs/min-version-prime-agent`), files copied 
 
 **Validated minimum: `0.3.1`.** It is the lowest passing tested release. Its invoke (step 5) ran on a local stub provider, so this is not a live-model result. Its immediate predecessor `0.3.0` was tested and fails at the install step.
 
-Versions below `0.3.1` tested so far: `0.3.0`, `0.2.0`, `0.2.1`, `0.1.1`, `0.1.0` all fail at `package install`, with `Error: Unknown option: --local` (exit 1). The `package` subcommand and `--local` flag are not present in those releases.
+Versions below `0.3.1` tested so far fail at `package install` (step 2) with the error the table records for each:
+
+- `0.3.0`, `0.2.1`, `0.2.0`, `0.1.1`: `Unknown option: --local` (exit 1).
+- `0.1.0`: `Unknown option: --` (exit 1). The table does not name the flag for this release.
+
+`0.2.1`, `0.2.0`, `0.1.1` also fail at step 5 with `Unknown option: --`; `0.1.0` fails at steps 4 and 5 with `Unknown option: --`. In `0.3.0`, `package list` is treated as a prompt (see the caveat below the table).
 
 The floor `0.10.2` passes. The tested passing releases are exactly: `0.10.2`, `0.10.1`, `0.10.0`, `0.9.8`, `0.9.7`, `0.9.6`, `0.9.5`, `0.9.4` (postinstall not run), `0.9.3`, `0.9.0`, `0.8.1`, `0.7.1`, `0.6.1`, `0.5.1`, `0.4.0`, `0.3.1`. No other release is claimed to pass; releases not listed here are failed, untested, or have no artifact (see the table and Not tested). The floor is well above the validated minimum. Floor values were not changed.
 

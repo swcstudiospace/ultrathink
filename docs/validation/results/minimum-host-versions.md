@@ -8,7 +8,7 @@ Checkout: each per-host record names its own checkout; see the record. This summ
 - No host documents a minimum supported version. Five contracts say "not documented" (`docs/plugin-research/host-contracts.md:89` Omp, `:115` Hermes, `:138` Prime-Agent, `:194` Grok Build, `:226` Muse). The Claude Code contract gives feature minimums only, with no base version (`:163`).
 - The floors in `adapters/version-floor.ts:13-18` are the versions observed while writing those contracts (`host-contracts.md:65`). They are not tested minimums.
 - Lower bounds were tested per host in `docs/validation/results/minimum-versions/`. Grok Build: plugin lifecycle from 1.0.42 (host invoke from 1.0.13). Prime-Agent: lowest passing tested release 0.3.1, with its invoke on a stub provider, not a live model. Omp: 17.0.0 is the lowest passing release under the step-5 listing criterion, confirmed in clean homes; 16.0.0 fails only that check. Claude Code: 2.1.178 is one boundary observation for install, enable, and the UserPromptSubmit hook path (not a validated minimum; the planner is not covered). Hermes and Muse: no validated minimum; each record gives the reason.
-- Live status is per host below. Muse's floor has no live run at all. Prime-Agent's load and invoke pass on the login (2026-11-15), and its lower bound is from a stub-provider run.
+- Live status is per host below. Muse's floor has no live run at all. Prime-Agent's login load and invoke (2026-11-15) are on branch `docs/prime-agent-load`, not yet merged to `main`; its lower bound is from a stub-provider run.
 
 Status terms:
 
@@ -25,7 +25,7 @@ Status terms:
 | grok-build | 1.0.77 | `adapters/version-floor.ts:14` | `1.0.77` | Yes | Install, inventory, disable/enable, uninstall pass. Load not run (interactive only). Headless invoke under `--always-approve` replies `OK` (2026-11-15); the model's tool-call behaviour is not verified, and refresh-token rotation is unverified. | Partially verified at floor. |
 | hermes | v0.23.1 | `adapters/version-floor.ts:16` | `v0.23.1` | Yes | Per-file install: enable, `/ultrathink-lessons`, disable, and `plugins remove` (exit 0) pass (2026-11-15). A directory-link install fails `plugins remove` with exit 1. | Partially verified at floor. |
 | muse | 1.4.14 | `adapters/version-floor.ts:15` | `1.4.18` | No | Live runs were on 1.4.18, above the floor. The floor 1.4.14 is the earlier runbook observation. Install without the experimental gate exited non-zero on 3 of 3 attempts; a later retry in a fresh home exited 0 without it. | Unverified at floor. |
-| prime-agent | 0.10.2 | `adapters/version-floor.ts:17` | `0.10.2` (via `prime-agent -v`; the adapter CLI runs `--version`, which was not run live) | Version only | Step 1 (list) only. Blocked at step 2; no install performed. | Version observed live with `-v`. Lifecycle unverified. |
+| prime-agent | 0.10.2 | `adapters/version-floor.ts:17` | `0.10.2` (via `prime-agent -v`; the adapter CLI runs `--version`, which was not run live) | Version only on `main`; a later login run is on `docs/prime-agent-load` (unmerged) | On `main`: step 1 (list) only; blocked at step 2; no install performed. On `docs/prime-agent-load`: load and invoke pass on the login (2026-11-15), not yet merged. | Version observed live with `-v`. Lifecycle is not on `main`. |
 
 ## Evidence per host
 
@@ -73,13 +73,14 @@ Status terms:
 - Floor: `adapters/version-floor.ts:17`. Contract: `host-contracts.md:138` (current public repo is Rust). Adapter recorded constant: `adapters/prime-agent/index.ts:57`.
 - Runtime read: `adapters/cli.ts` HOSTS, `versionCommand: "prime-agent"`, which runs `prime-agent --version`. The live run read the version with `-v`; `--version` was not observed on this host.
 - Live version: `docs/validation/results/prime-agent.md:5` (`prime-agent -v` → `0.10.2`).
-- Live result: `Fail (blocked at step 2: install source syntax UNVERIFIED; no install performed)` (`prime-agent.md:8`). Only step 1 (`package list`, `No packages installed.`) ran.
+- Live result on `main`: `Fail (blocked at step 2: install source syntax UNVERIFIED; no install performed)` (`prime-agent.md:8`). Only step 1 (`package list`, `No packages installed.`) ran.
+- Login result on `docs/prime-agent-load` (unmerged): load and invoke pass on the login (2026-11-15). That record is not on `main`.
 
 ## Gaps
 
 1. Lower bounds are tested for four hosts, each with its stated scope: Grok Build (from 1.0.42); Prime-Agent (from 0.3.1, stub provider); Omp (17.0.0 under the listing criterion, clean-home confirmed); Claude Code (2.1.178, a single boundary observation). Hermes and Muse have no validated minimum. Any new "minimum" statement needs a run below the floor.
 2. Muse: no live run on the 1.4.14 floor. The 2026-11-15 gap run tested 1.4.2-R4684.1 (gated pass, ungated fail). No build between 1.4.2 and 1.4.18 was obtainable, so the boundary is open in (1.4.2, 1.4.18].
-3. Prime-Agent: load and invoke pass on the login (2026-11-15, `docs/validation/results/prime-agent.md`); the 0.10.2 floor's install and remove pass on a local path. The lower-bound invoke used a stub provider.
+3. Prime-Agent: on `docs/prime-agent-load` (not merged to `main`), load and invoke pass on the login (2026-11-15, `docs/validation/results/prime-agent.md` on that branch). The 0.10.2 floor's install and remove pass on a local path. The lower-bound invoke used a stub provider.
 4. Prime-Agent: `prime-agent --version` (the form the CLI calls) is not recorded live; the run used `-v`.
 5. Hermes: a directory-link install (a symlinked plugin directory) cannot be removed with `hermes plugins remove` (exit 1). The documented per-file install removes cleanly (2026-11-15).
 6. Omp: the floor is not enforced in production at `611e926` (see omp evidence).
