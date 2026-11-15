@@ -426,7 +426,7 @@ Host: `omp/18.20.0` (`omp --version`). Checkout: `d455baf` (branch `plugin-core-
 ### Isolation
 
 - `ISO=/tmp/omp-headless-G5YS`; `HOME=$ISO/home`; `PI_CODING_AGENT_DIR=$ISO/home/.omp/agent`. Headless invocations ran from `$ISO/work`, never from the repo.
-- Credentials: copied only after the no-credential attempt failed (step 1 below). Copied `agent.db` (login store, `auth_credentials` table) via `sqlite3 .backup`, and `config.yml` (holds `modelRoles`). `models.yml` and `.env` were not copied. No credential value was printed or written to the repo. `rm -rf` of `$ISO` removed the copies; confirmed absent.
+- Credentials: copied only after the no-credential attempt failed (step 1 below). Copied `agent.db` (login store, `auth_credentials` table) via `sqlite3 .backup`, and `config.yml` (holds `modelRoles`). `models.yml` and `.env` were not copied. No credential value was printed or written to the repo. The copies sat in `$ISO` under `/tmp` for the length of the run; their owner-only mode was not checked. `rm -rf` of `$ISO` removed them; confirmed absent.
 - Plugin registry resolved under `$HOME/.omp/plugins`, not under `PI_CODING_AGENT_DIR`.
 - The copied `config.yml` has an `extensions` entry for `agent-swarm`. Every run printed `Failed to load extension /root/.omp/extensions/agent-swarm` to stderr. Stdout was unaffected.
 
