@@ -1,6 +1,6 @@
 # Minimum host versions (AC3)
 
-Date: 2026-11-14 for the per-host table and the credential scan. The per-host evidence sections and the minimum-version sweeps are dated 2026-11-15, as cited in each section.
+Date: 2026-11-15 for the per-host table and the credential scan, which cite 2026-11-15 runs. The 2026-11-14 date applies only to the credential scan, if cited separately.
 Checkout: each per-host record names its own checkout; see the record. This summary cites the version-floor commit #91 as its reference.
 
 ## Summary
