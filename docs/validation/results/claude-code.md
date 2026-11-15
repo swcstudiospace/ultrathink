@@ -249,7 +249,7 @@ Original prompt: /ultrathink-status
 
 **Deletion (step 7).** `rm -rf /tmp/cc-live-tXkn` run. Verified: the directory is absent, `find /tmp -maxdepth 1 -name 'cc-live-*'` returns 0 entries, and `.credentials.json` is gone with it. The real home was not written: every `claude` call used the isolated `HOME`.
 
-**Verdict.** Claude Code invoke (login, isolated home): partial. Exit 0, the reply text is recorded above, and the invoke ran with the copied login. Only the hook-answered status path ran; no model turn and no planner ran, so the graph-stage check (reply `ok`, graph not degraded) is still open.
+**Verdict.** Claude Code invoke (login, isolated home): partial. Exit 0 and the reply text is recorded above. The copied login was in place, but the hook answered before any model call, so the login was not exercised by a model turn. Only the hook-answered status path ran; the graph-stage check (reply `ok`, graph not degraded) is recorded in its own section below.
 
 ## Graph-stage check (login, isolated home): 2026-11-15
 
