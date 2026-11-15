@@ -3,7 +3,7 @@
 > **Isolation caveat.** The sweep and the 2026-11-15 gap run, which precede the "Clean-home boundary rerun" section, were not isolated. The copied login config and agent DB named the real-home extension `/root/.omp/extensions/agent-swarm`, and Omp attempted to load it. Those runs are not evidence for the boundary, and the "Validated minimum" sections before the clean-home section are superseded by the Result above. The clean-home section is the stated basis. Its 17.0.0 PASS is attempt 2 only; attempt 1 is excluded as invalid.
 
 Date (YYYY-MM-DD): 2026-11-15
-Result: **Lowest passing release tested under the step 5 listing criterion: 17.0.0.** 16.0.0 passes every lifecycle step (link install, invoke, uninstall) and fails only the step 5 `plugin list` listing check, on 2 of 2 clean-home attempts. Basis: the "2026-11-15 clean-home boundary rerun" section at the end of this file. Releases below 16.0.0 were not tested under a clean home, so no lower boundary is established, and 17.0.0 is not shown to be a minimum under a relaxed criterion. The floor 18.19.0 (`adapters/version-floor.ts:18`) is not the lowest working version.
+Result: **Lowest passing release tested under the step 5 listing criterion: 17.0.0.** 16.0.0 passes every lifecycle step (link install, invoke, uninstall) and fails only the step 5 `plugin list` listing check, on 2 of 2 clean-home attempts. Basis: the "2026-11-15 clean-home boundary rerun" section at the end of this file, whose isolation also depends on copied login files; whether the runs modified those copies is not checked (see that section's Method). Releases below 16.0.0 were not tested under a clean home, so no lower boundary is established, and 17.0.0 is not shown to be a minimum under a relaxed criterion. The floor 18.19.0 (`adapters/version-floor.ts:18`) is not the lowest working version.
 
 ## Scope
 
@@ -36,7 +36,7 @@ Pass: every step exits 0; step 5 lists `ultrathink@`; step 6 returns two `"succe
 Notes on the method:
 
 - **Bun runtime.** `omp` 18.19.0 refuses to start on Bun 1.4.0 with `error: Bun runtime must be >= 1.4.4 (found v1.4.0)`. That is the Bun on this machine's PATH. All runs used Bun 1.4.4, installed into an isolated prefix (`bun@1.4.4` from npm). The Omp install doc does not state this requirement; it is enforced by the host itself.
-- **Credentials.** Without a login, step 6 exits 1 before any slash command runs: `No default model selected. Use /login, set an API key environment variable, or select a local model`. For the passing runs, the login files `agent.db` (with `-wal` and `-shm`), `config.yml` and `models.yml` were copied from the real `~/.omp/agent` into the isolated agent directory, mode 600. Values were never printed. The copies were deleted at the end of each run.
+- **Credentials.** Without a login, step 6 exits 1 before any slash command runs: `No default model selected. Use /login, set an API key environment variable, or select a local model`. For the passing runs, the login files `agent.db` (with `-wal` and `-shm`), `config.yml` and `models.yml` were copied from the real `~/.omp/agent` into the isolated agent directory, mode 600. Values were never printed. The record does not verify that the copies were deleted at the end of each run: the sweep's Cleanup reports that the isolated directory holding them was already missing, and its removal is unverified. Whether the runs modified the copies is not checked.
 - **Real-home extension.** Omp loads the real-home extension directory `/root/.omp/extensions/agent-swarm` in addition to the isolated home when the run's copied config or cache names it. In the sweep, the load failed on 17.4.2, 18.0.0, 18.18.9 and 18.19.0 (`Failed to load extension /root/.omp/extensions/agent-swarm`). The sweep's 17.0.0 run showed no such line, but that run was not isolated (see the caveat above), so it does not show the extension was absent. The clean-home 17.0.0 attempt 1 did attempt the load (`Cannot find module`); that attempt is INVALID and excluded from every result in this file. The clean-home 17.0.0 attempt 2 and both clean-home 16.0.0 attempts show no real-home extension load. The ultrathink status notify appeared on every valid run with credentials that completed step 6, so the agent-swarm load failures did not block the plugin.
 
 ## Results
@@ -113,9 +113,9 @@ This gap run is not evidence for the boundary (see the caveat at the top). Its 1
 
 ### Cleanup
 
-- Login files (`agent.db`, `agent.db-wal`, `agent.db-shm`, `config.yml`, `models.yml`, mode 600) were copied into each isolated home. Each home was deleted at the end of its run. No credential values were printed or written here.
+- Login files (`agent.db`, `agent.db-wal`, `agent.db-shm`, `config.yml`, `models.yml`, mode 600) were copied into each isolated home. The record states each home was deleted at the end of its run, but records no check of that deletion. Whether the runs modified the copies is not checked. No credential values were printed or written here.
 - The isolated directory `/tmp/ut-gap-omp` (Bun prefix, npm prefix, logs) is not verified as removed: this file records no deletion step or missing-path check for it.
-- The real `~/.omp` plugin registry (`installed_plugins.json`, `plugins/`) was not modified after the run began (mtime check). Other sessions were writing to `~/.omp` (agent DB, logs, token-opt) during the window; those changes are not attributed here.
+- The only real-home check recorded for this run is an mtime check of the real `~/.omp` plugin registry (`installed_plugins.json`) after the run began. The real home's wider state, including `plugins/`, was not checked. Other sessions were writing to `~/.omp` (agent DB, logs, token-opt) during the window; those changes are not attributed here.
 - Only this file was edited in the worktree. Nothing was committed.
 
 ## 2026-11-15 clean-home boundary rerun: 17.0.0 and 16.0.0
@@ -128,15 +128,15 @@ Scope: 17.0.0 and 16.0.0 only, rerun with every Omp home, config and extension d
 - Environment per run: `env -i HOME=<tree>/runs/<v>/home PI_CODING_AGENT_DIR=<home>/.omp/agent XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, XDG_STATE_HOME` all under `<home>`, `PATH=<bun-1.4.4>/bin:<omp-prefix>/bin:/usr/bin:/bin LANG=C.UTF-8 TERM=dumb`.
 - Deviation from the sweep: the plugin is passed as the absolute worktree path instead of `.`, and the process cwd is an empty directory inside the temp tree, not the worktree. Reason: the project-config lookup (`findAllNearestProjectConfigDirs`, `src/config.ts:213-235` in `@oh-my-pi/pi-coding-agent` 17.0.0) walks from cwd to `/` without stopping at the isolated home. From the worktree path, which sits under `/root`, it finds `/root/.omp/extensions` as a project extension directory. That is the real-home directory the isolation rule forbids.
 - Lifecycle, same nine steps as the sweep, with step 5b added (`omp plugin list --json`, read-only): 1 `--version`; 2 `plugin install --dry-run <wt>`; 3 `plugin list`; 4 `plugin install <wt>`; 5 `plugin list`; 5b `plugin list --json`; 6 `timeout 90 omp --mode rpc` with `get_state` and `/ultrathink-status`; 7 `plugin uninstall ultrathink --dry-run`; 8 `plugin uninstall ultrathink`; 9 `plugin list`. Pass criteria as in the sweep.
-- Login files: `agent.db` (with `-wal` and `-shm`), `config.yml` and `models.yml` were copied into each isolated agent directory, mode 600, because step 6 needs a default model. Values were never printed or written to this file.
-- Isolated copies were sanitized before each run; the real home was not modified. (a) The copied `config.yml` had an `extensions:` setting listing `/root/.omp/extensions/agent-swarm`; that key and item were removed. (b) The copied `agent.db` `cache` table held 21 `extension_startup:v1|v2:/root/.omp/...` rows, including `agent-swarm`; those rows were deleted, followed by a WAL checkpoint and VACUUM. After sanitizing, real-home references were 0 in both files.
+- Login files: `agent.db` (with `-wal` and `-shm`), `config.yml` and `models.yml` were copied into each isolated agent directory, mode 600, because step 6 needs a default model. Values were never printed or written to this file. Whether the runs modified these copies (for example, writes to the copied `agent.db`) is not checked. The only post-run check of the copies is the `/root/.omp` reference grep under Extension-loaded check.
+- Isolated copies were sanitized before each run. (a) The copied `config.yml` had an `extensions:` setting listing `/root/.omp/extensions/agent-swarm`; that key and item were removed. (b) The copied `agent.db` `cache` table held 21 `extension_startup:v1|v2:/root/.omp/...` rows, including `agent-swarm`; those rows were deleted, followed by a WAL checkpoint and VACUUM. After sanitizing, real-home references were 0 in both copies. The real home's state is covered only by the mtime check under Extension-loaded check; its wider state was not checked.
 
 ### Extension-loaded check
 
 - Before each run: no `.omp` directory among the ancestors of the run cwd, and the isolated `extensions` directory was empty.
-- After each run: a grep for `/root/.omp` across the run's stdout, stderr, step logs and the isolated Omp log directory returned 0 hits for the valid runs. `agent.db` returned 0 references. Stderr was 0 bytes. No `Failed to load extension` line appeared.
+- After each run: a grep for `/root/.omp` across the run's stdout, stderr, step logs and the isolated Omp log directory returned 0 hits for the valid runs. The copied `agent.db` returned 0 references to `/root/.omp`; that grep is the only post-run check of the copy's content and does not show whether the copy was otherwise modified. Stderr was 0 bytes. No `Failed to load extension` line appeared.
 - The step 6 `get_state` output lists extension-sourced commands (ultrathink and others) but contains no real-home path.
-- The real-home plugin registry (`~/.omp/plugins/installed_plugins.json`) had the same mtime before and after every run.
+- The real-home plugin registry (`~/.omp/plugins/installed_plugins.json`) had the same mtime before and after every run. This is the only real-home check recorded for this section; the rest of the real home was not checked.
 
 ### Results
 
@@ -158,6 +158,6 @@ Scope: 17.0.0 and 16.0.0 only, rerun with every Omp home, config and extension d
 
 ### Cleanup
 
-- Login copies (`agent.db`, `agent.db-wal`, `agent.db-shm`, `config.yml`, `models.yml`) were deleted from every isolated agent directory, along with the inspection copy of `agent.db` used to locate the real-home cache rows.
+- Login copies (`agent.db`, `agent.db-wal`, `agent.db-shm`, `config.yml`, `models.yml`) were deleted from every isolated agent directory, along with the inspection copy of `agent.db` used to locate the real-home cache rows. Their removal is confirmed only through the tree-removal check on the next line. Whether the runs modified the copies is not checked.
 - The isolated tree `/tmp/ut-clean-omp.4hw4LX` (Bun and npm prefixes, npm and Puppeteer caches, homes, logs) was removed. Deletion was confirmed by a missing-path check.
-- The real-home `~/.omp` was not modified. Only this file was edited in the worktree. Nothing was committed.
+- The only real-home check recorded for this section is the mtime of `installed_plugins.json` before and after every run. The real home's wider state was not checked. Only this file was edited in the worktree. Nothing was committed.

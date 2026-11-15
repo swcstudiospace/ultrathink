@@ -13,7 +13,7 @@ Versions below `0.3.1` tested so far fail at `package install` (step 2) with the
 - `0.3.0`, `0.2.1`, `0.2.0`, `0.1.1`: `Unknown option: --local` (exit 1).
 - `0.1.0`: `Unknown option: --` (exit 1). The table does not name the flag for this release.
 
-`0.2.1`, `0.2.0`, `0.1.1` also fail at step 5 with `Unknown option: --`; `0.1.0` fails at steps 4 and 5 with `Unknown option: --`. In `0.3.0`, `package list` is treated as a prompt (see the caveat below the table).
+`0.2.1`, `0.2.0`, `0.1.1` also fail at step 5 with `Unknown option: --`. `0.1.0` fails at steps 2 and 5, both with exit 1 (step 5 with `Unknown option: --`), and step 6 also exits 1. Its step 4 exits 0, but the load check lists no skill. In `0.3.0`, `package list` is treated as a prompt (see the caveat below the table).
 
 The floor `0.10.2` passes. The tested passing releases are exactly: `0.10.2`, `0.10.1`, `0.10.0`, `0.9.8`, `0.9.7`, `0.9.6`, `0.9.5`, `0.9.4` (postinstall not run), `0.9.3`, `0.9.0`, `0.8.1`, `0.7.1`, `0.6.1`, `0.5.1`, `0.4.0`, `0.3.1`. No other release is claimed to pass; releases not listed here are failed, untested, or have no artifact (see the table and Not tested). The floor is well above the validated minimum. Floor values were not changed.
 
@@ -75,7 +75,7 @@ Note on `0.3.0`: step 5 exit 0 and `MOCK-OK` are stub artifacts, not evidence of
 ## Environment problems hit during the run
 
 - Host root filesystem reached 100% full twice. Four npm installs (`0.4.0`, `0.3.0`, `0.2.1`, `0.1.0`) first failed with `ENOSPC`. They were retried after the run freed space, and the results above are from those retries.
-- An early run's daemon (`daemon-catalog-entry.js`) was still alive after I killed the run. It owned the shared socket `/tmp/prime-agent-0/daemon.sock`, which is not isolated by `HOME`. I stopped that process and removed only the `daemon.sock` and `daemon.sock.lock` it created. Other entries in `/tmp/prime-agent-0` predate this run and were left unchanged.
+- An early run's daemon (`daemon-catalog-entry.js`) was still alive after I killed the run. It owned the shared socket `/tmp/prime-agent-0/daemon.sock`. That directory is not isolated by `HOME`, so this run did not isolate its shared-directory paths. I stopped that process and deleted two entries from `/tmp/prime-agent-0`: `daemon.sock` and `daemon.sock.lock`. Those are the only deletions the record shows. The record does not show whether this run created those two files; that this run created them is an inference from the daemon owning them [INFERENCE]. The record says other entries in `/tmp/prime-agent-0` predate this run and were left unchanged.
 - Earlier, while setting up the run, I accidentally used a 0.10.1 lifecycle pass without the stub provider. RPC then exited 1 with `No authenticated models`, while 0.10.0 listed skills without a provider. Not part of the table above.
 
 ## Cleanup
