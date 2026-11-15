@@ -112,7 +112,7 @@ Verified form on 0.10.2: `prime-agent package install <absolute-path>`. The publ
 
 Host: Prime Agent `0.10.2`. Checkout: worktree `/root/src/worktrees/ut-prime`, branch `docs/prime-agent-load`, commit `9feb75f` (origin/main). Tester: PrimeAgentLoadInvoke. Isolated root `/tmp/prime-live-19dR` (`HOME` and `PRIME_AGENT_CODING_AGENT_DIR` inside it; the real home was not used).
 
-**Verdict: pass.** Install, load (package list, RPC `get_commands`, kernel-venv import) and invoke of `/ultrathink-status` all exit 0 with the expected output.
+**Verdict: pass with caveats.** Install and load exit 0 with the expected output. The invoke exits 0, but its stdout is model-generated text. It shows the skill ran and the engine responded; it does not show the status block is deterministic, and this run does not establish which model served it. A shell-inherited `ANTHROPIC_API_KEY` was also sent to the Anthropic API once, outside approved use (see Attempts item 2).
 
 ### Install (staging block from docs/install/prime-agent.md)
 
@@ -139,7 +139,7 @@ Python entry: `kernel-venv/bin/python -c "import ultrathink; print(ultrathink.st
 cd "$PROJECT" && prime-agent -p --no-session --cwd "$PROJECT" --provider anthropic --model claude-haiku-4-5 -- "/skill:ultrathink" "/ultrathink-status"
 ```
 
-Exit 0, wall time 10.29 s. stdout, verbatim:
+Exit 0, wall time 10.29 s. stdout, verbatim (model-generated):
 
 ```text
 **ultrathink status:**
