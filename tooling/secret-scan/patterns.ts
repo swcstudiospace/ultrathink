@@ -6,6 +6,31 @@ export interface SecretPattern {
 	readonly pattern: RegExp;
 	/** Index of the capture group that holds the secret value. */
 	readonly valueGroup: number;
+	/** Returns true when the captured value is a placeholder, so the match is not a finding. */
+	readonly isPlaceholder?: (value: string) => boolean;
+}
+
+const PLACEHOLDER_WORDS: Record<string, true> = {
+	changeme: true,
+	"change-me": true,
+	placeholder: true,
+	redacted: true,
+	dummy: true,
+	example: true,
+	none: true,
+	null: true,
+};
+
+/** True for an empty value, a reference, an angle-bracket or x/asterisk-only value, or an obvious fake. */
+export function isPlaceholderValue(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed === "") return true;
+	if (/^<.*>$/.test(trimmed)) return true;
+	if (trimmed.startsWith("$")) return true;
+	if (/^(?:process\.env|Bun\.env|import\.meta)\b/.test(trimmed)) return true;
+	if (/^[x*._-]+$/i.test(trimmed)) return true;
+	if (/^your[-_]/i.test(trimmed)) return true;
+	return PLACEHOLDER_WORDS[trimmed.toLowerCase()] === true;
 }
 
 /**
@@ -35,5 +60,15 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
 		pattern:
 			/\b[A-Za-z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD)[A-Za-z0-9_]*\b["']?\s*[:=]\s*(["'`])(?!<[^>\n]*>|\$\{|process\.env|Bun\.env|import\.meta)([^"'`\n]{8,})\1/i,
 		valueGroup: 2,
+	},
+	{
+		// Unquoted .env-style assignment, optionally `export`ed, of an uppercase NAME containing a
+		// secret word. Group 1: the name. Group 2: the value, which ends at whitespace.
+		// Quoted values are left to secret-assignment.
+		name: "secret-env-assignment",
+		pattern:
+			/^\s*(?:export\s+)?([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)[A-Z0-9_]*)\s*=\s*([^\s"'`#]\S*)/,
+		valueGroup: 2,
+		isPlaceholder: isPlaceholderValue,
 	},
 ];

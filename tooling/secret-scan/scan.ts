@@ -45,13 +45,14 @@ export function scanText(
 	const findings: SecretFinding[] = [];
 	const lines = text.split(/\r?\n/);
 	lines.forEach((line, index) => {
-		for (const { name, pattern, valueGroup } of patterns) {
+		for (const { name, pattern, valueGroup, isPlaceholder } of patterns) {
 			const match = pattern.exec(line);
 			if (match === null) continue;
 			const value = match[valueGroup];
 			if (value === undefined) {
 				throw new Error(`pattern ${name} has no capture group ${valueGroup}`);
 			}
+			if (isPlaceholder?.(value)) continue;
 			findings.push({
 				file,
 				line: index + 1,
