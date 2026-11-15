@@ -26,6 +26,12 @@ describe("credential scan unquoted assignments", () => {
 		expect(findingsOf("MAX_TOKENS=40960000\n")).toEqual([]);
 	});
 
+	test("flags a secret word in the middle of a name", () => {
+		expect(findingsOf("SECRET_KEY_BASE=abc123def456\n")).toEqual([
+			{ line: 1, pattern: "secret-env-assignment", preview: "abc1****" },
+		]);
+	});
+
 	test("flags an exported unquoted private key assignment", () => {
 		expect(findingsOf("export MY_PRIVATE_KEY=zq9pLx2wVb7r\n")).toEqual([
 			{ line: 1, pattern: "secret-env-assignment", preview: "zq9p****" },
