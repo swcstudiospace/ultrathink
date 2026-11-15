@@ -184,6 +184,28 @@ describe("createMuseAdapter capability gate", () => {
 		expect(argvs).toEqual([["on"]]);
 	});
 
+	test("an unset slash-command flag is treated as disabled and returns its fallback", async () => {
+		const { runner, argvs } = fakeRunner({ exitCode: 0, stdout: "ran off" });
+		const { entry } = fakeEntry(true);
+		const port = createMuseAdapter({
+			runner,
+			entry,
+			entryPath: ENTRY_PATH,
+			declared: { ...MUSE_DECLARED_CAPABILITIES, supports_slash_commands: undefined },
+		});
+
+		const result = await port.invoke("ultrathink-off", {}, CONTEXT);
+
+		expect(result).toEqual({
+			ok: true,
+			value: {
+				stdout: "ran off",
+				fallbacks: [CAPABILITY_FALLBACKS.supports_slash_commands],
+			},
+		});
+		expect(argvs).toEqual([["off"]]);
+	});
+
 	test("a false flag the adapter does not request leaves the result unchanged", async () => {
 		const { runner } = fakeRunner({ exitCode: 0, stdout: "ran quick" });
 		const { entry } = fakeEntry(true);

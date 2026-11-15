@@ -26,7 +26,7 @@ export interface ClaudeCodeAdapterOptions {
 	readonly runner: AdapterRunner;
 	readonly entry: AdapterEntry;
 	readonly entryPath: string;
-	/** Declared host flags. Defaults to the Claude Code subject's declarations (DECLARED_FLAGS). */
+	/** Declared host flags. Defaults to CLAUDE_CODE_DECLARED_FLAGS, the Claude Code subject's declarations. */
 	readonly declared?: DeclaredCapabilities;
 	/** Observed host version. Defaults to the version recorded in host-contracts.md (RECORDED_VERSION). */
 	readonly observedVersion?: string | null;
@@ -55,7 +55,7 @@ const REQUESTED_FLAGS: readonly CapabilityFlag[] = ["supports_slash_commands", "
  * Flags conformance/claude-code-subject.ts declares. Mirrored here because the subject reads the commands
  * directory when it is created; keep the two in step.
  */
-const DECLARED_FLAGS: DeclaredCapabilities = {
+export const CLAUDE_CODE_DECLARED_FLAGS: DeclaredCapabilities = {
 	supports_skills: true,
 	supports_slash_commands: true,
 	supports_subagents: false,
@@ -90,12 +90,9 @@ export function createClaudeCodeAdapter(options: ClaudeCodeAdapterOptions): Comm
 		runner,
 		entry,
 		entryPath,
-		declared = DECLARED_FLAGS,
+		declared = CLAUDE_CODE_DECLARED_FLAGS,
 		observedVersion = RECORDED_VERSION,
 	} = options;
-	const [fallback] = gateCapabilities(REQUESTED_FLAGS, declared).flatMap((capability) =>
-		capability.fallback === null ? [] : [capability.fallback],
-	);
 	const refusal = versionRefusal(observedVersion);
 
 	return {
@@ -116,6 +113,10 @@ export function createClaudeCodeAdapter(options: ClaudeCodeAdapterOptions): Comm
 					ok: false,
 					error: { category: "invalid_input", message: `unknown command: ${name}` },
 				};
+			// Running the verb with a disabled flag would silently ignore that capability, so return its fallback.
+			const [fallback] = gateCapabilities(REQUESTED_FLAGS, declared).flatMap((capability) =>
+				capability.fallback === null ? [] : [capability.fallback],
+			);
 			if (fallback !== undefined)
 				return { ok: false, error: { category: "capability_missing", message: fallback } };
 			if (refusal !== undefined)

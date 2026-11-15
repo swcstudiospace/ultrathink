@@ -2,8 +2,10 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { createOmpConformanceSubject } from "../../conformance/omp-subject.ts";
+import { CAPABILITY_FALLBACKS } from "../../core/src/capabilities/manifest.ts";
 import { HOST_VERSION_FLOORS } from "../version-floor.ts";
-import { type OmpCommandHandler, createOmpCommandPort } from "./commands.ts";
+import { OMP_DECLARED_FLAGS, type OmpCommandHandler, createOmpCommandPort } from "./commands.ts";
 
 /** Omp version recorded in docs/plugin-research/host-contracts.md ("Host versions used"). The live version is not read. */
 const RECORDED_OMP_VERSION = "18.19.0";
@@ -104,5 +106,97 @@ describe("createOmpCommandPort version floor", () => {
 			});
 		}
 		expect(calls).toEqual([]);
+	});
+});
+
+describe("createOmpCommandPort declared capabilities", () => {
+	test("OMP_DECLARED_FLAGS matches conformance/omp-subject.ts", () => {
+		expect(OMP_DECLARED_FLAGS).toEqual(createOmpConformanceSubject().capabilities);
+	});
+
+	test("supports_slash_commands: declared true routes the handler natively", async () => {
+		const calls: string[] = [];
+		const port = createOmpCommandPort(recordingHandlers(calls), {
+			declared: { ...OMP_DECLARED_FLAGS, supports_slash_commands: true },
+		});
+
+		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
+			ok: true,
+			value: "status",
+		});
+		expect(calls).toEqual(["now"]);
+	});
+
+	test("supports_slash_commands: declared false returns its fallback and never runs the handler", async () => {
+		const calls: string[] = [];
+		const port = createOmpCommandPort(recordingHandlers(calls), {
+			declared: { ...OMP_DECLARED_FLAGS, supports_slash_commands: false },
+		});
+
+		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
+			ok: true,
+			value: CAPABILITY_FALLBACKS.supports_slash_commands,
+		});
+		expect(calls).toEqual([]);
+	});
+
+	test("supports_hooks: declared true routes the handler natively", async () => {
+		const calls: string[] = [];
+		const port = createOmpCommandPort(recordingHandlers(calls), {
+			declared: { ...OMP_DECLARED_FLAGS, supports_hooks: true },
+		});
+
+		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
+			ok: true,
+			value: "status",
+		});
+		expect(calls).toEqual(["now"]);
+	});
+
+	test("supports_hooks: declared false returns its fallback and never runs the handler", async () => {
+		const calls: string[] = [];
+		const port = createOmpCommandPort(recordingHandlers(calls), {
+			declared: { ...OMP_DECLARED_FLAGS, supports_hooks: false },
+		});
+
+		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
+			ok: true,
+			value: CAPABILITY_FALLBACKS.supports_hooks,
+		});
+		expect(calls).toEqual([]);
+	});
+
+	test("both gated flags false return both fallbacks, one per line", async () => {
+		const calls: string[] = [];
+		const port = createOmpCommandPort(recordingHandlers(calls), {
+			declared: {
+				...OMP_DECLARED_FLAGS,
+				supports_slash_commands: false,
+				supports_hooks: false,
+			},
+		});
+
+		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
+			ok: true,
+			value: `${CAPABILITY_FALLBACKS.supports_slash_commands}\n${CAPABILITY_FALLBACKS.supports_hooks}`,
+		});
+		expect(calls).toEqual([]);
+	});
+
+	test("flags the port does not request leave routing unchanged", async () => {
+		const calls: string[] = [];
+		const port = createOmpCommandPort(recordingHandlers(calls), {
+			declared: {
+				...OMP_DECLARED_FLAGS,
+				supports_persistent_state: false,
+				supports_subagents: true,
+			},
+		});
+
+		expect(await port.invoke("ultrathink-status", input, context)).toEqual({
+			ok: true,
+			value: "status",
+		});
+		expect(calls).toEqual(["now"]);
 	});
 });
