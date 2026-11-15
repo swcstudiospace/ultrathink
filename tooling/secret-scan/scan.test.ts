@@ -18,6 +18,14 @@ describe("credential scan unquoted assignments", () => {
 		expect(findingsOf("DB_TOKEN=abc12\n")).toEqual([]);
 	});
 
+	test("does not apply the unquoted env rule to a non-.env source file", () => {
+		expect(scanText("src/app.ts", "API_TOKEN=abc123def456\n")).toEqual([]);
+	});
+
+	test("does not flag a count-like name that only contains a secret word", () => {
+		expect(findingsOf("MAX_TOKENS=40960000\n")).toEqual([]);
+	});
+
 	test("flags an exported unquoted private key assignment", () => {
 		expect(findingsOf("export MY_PRIVATE_KEY=zq9pLx2wVb7r\n")).toEqual([
 			{ line: 1, pattern: "secret-env-assignment", preview: "zq9p****" },

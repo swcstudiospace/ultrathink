@@ -8,6 +8,8 @@ export interface SecretPattern {
 	readonly valueGroup: number;
 	/** Returns true when the captured value is a placeholder, so the match is not a finding. */
 	readonly isPlaceholder?: (value: string) => boolean;
+	/** When set, the pattern runs only on files for which this returns true. */
+	readonly appliesTo?: (file: string) => boolean;
 }
 
 const PLACEHOLDER_WORDS: Record<string, true> = {
@@ -67,8 +69,9 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
 		// Quoted values are left to secret-assignment.
 		name: "secret-env-assignment",
 		pattern:
-			/^\s*(?:export\s+)?([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)[A-Z0-9_]*)\s*=\s*([^\s"'`#]\S{7,})/,
+			/^\s*(?:export\s+)?([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY))\s*=\s*([^\s"'`#]\S{7,})/,
 		valueGroup: 2,
 		isPlaceholder: isPlaceholderValue,
+		appliesTo: (file) => /(?:^|\/)\.env(?:\.[^/]*)?$/.test(file),
 	},
 ];

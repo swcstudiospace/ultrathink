@@ -45,7 +45,8 @@ export function scanText(
 	const findings: SecretFinding[] = [];
 	const lines = text.split(/\r?\n/);
 	lines.forEach((line, index) => {
-		for (const { name, pattern, valueGroup, isPlaceholder } of patterns) {
+		for (const { name, pattern, valueGroup, isPlaceholder, appliesTo } of patterns) {
+			if (appliesTo !== undefined && !appliesTo(file)) continue;
 			const match = pattern.exec(line);
 			if (match === null) continue;
 			const value = match[valueGroup];
