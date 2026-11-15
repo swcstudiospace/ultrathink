@@ -5,7 +5,7 @@ Host: Muse Code (`muse`). Floor: 1.4.14 (`adapters/version-floor.ts:15`). Plugin
 
 ## Result
 
-- **Lowest tested release: 1.4.2-R4684.1 (2026-11-15 gap run).** Gated lifecycle passes (all steps exit 0). Ungated fails: steps 1–4, 6 and 7 exit 2 with `plugins are not available in this build`; step 5 exec exits 0. Ungated 1.4.18-R8587.1 passes. Validated minimum: none. The ungated boundary lies in (1.4.2, 1.4.18] and is not located. 1.4.14 and 1.4.15 returned no manifest for the probed build strings (see the gap section).
+- **Lowest tested release: 1.4.2-R4684.1 (2026-11-15 gap runs).** Gated lifecycle passes (all steps exit 0), so the gated path has no failing lower release and no validated minimum. Ungated fails: steps 1–4, 6 and 7 exit 2 with `plugins are not available in this build`; step 5 exec exits 0. Ungated 1.4.18-R8587.1 passes. Validated minimum: none. The ungated boundary lies in (1.4.2, 1.4.18]; 1.4.18 is an upper bound on the minimum, not the minimum, because 1.4.3–1.4.17 are untested. 1.4.14 and 1.4.15 returned no manifest for the probed build strings. A second gap run on the same date probed six more strings (1.4.3, 1.4.8, 1.4.12–1.4.15): all 404, no new build obtained (see its section at the end).
 - **The 1.4.14 floor is not validated.** No 1.4.14 binary or manifest was reachable, so no lower bound is claimed.
 - Why no validated minimum: the channel endpoints expose only the current release (`1.4.20-R8619.1`), and the manifest endpoint takes an exact `version-R<build>` string. Before the gap run, no release below 1.4.18 had been found. The gap run obtained 1.4.2-R4684.1; the probed strings for 1.4.3, 1.4.14 and 1.4.15 returned no manifest. Build numbers for 1.4.14 and 1.4.15 are not published in any source I could reach (the repo cites them only as earlier observations). See "Version discovery" and the gap section.
 - **Real-home limit:** the real launcher `~/.local/bin/muse` was run for probes that can write `.muse-update-checked-at` and `.muse-release-info.json` in `~/.local/bin`. The state of those files before and after the probes was not checked, and the probes were not confirmed harmless. The isolated lifecycle runs used the raw binary and fresh homes, not the launcher. See Cleanup.
@@ -96,3 +96,34 @@ The build string `1.4.2-R4684.1` comes from `~/.local/bin/.muse-update-notice`, 
 - Deleted `/tmp/muse-gap` (both isolated homes, the 1.4.2 binary, workspaces, and logs) and the `/tmp/muse-probe-*.json` probe files. Verified absent.
 - No credential file was read or copied. Only file names and the update-notice content were read.
 - The worktree `/root/src/worktrees/ut-gap-muse` has only this file changed. Not committed.
+
+## 2026-11-15 second gap run: six more probe strings
+
+Scope: releases between 1.4.2 and 1.4.15, same manifest endpoint (`https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=<V>&file=manifest.json`). The real launcher was not run. Every probe string is new; none repeats a string in "Version discovery" or the first gap section.
+
+Endpoint control, same run: `1.4.2-R4684.1` → HTTP 200 (1852 bytes); `1.4.18-R8587.1` → HTTP 200 (1860 bytes). The endpoint was live, so the 404s below are meaningful for those strings only.
+
+### Probes
+
+| Probe string (`version=`) | HTTP status | Body bytes | Lifecycle |
+|---|---|---|---|
+| 1.4.3-R4928.1 | 404 | 0 | not run (no manifest) |
+| 1.4.8-R6148.1 | 404 | 0 | not run |
+| 1.4.12-R7124.1 | 404 | 0 | not run |
+| 1.4.13-R7369.1 | 404 | 0 | not run |
+| 1.4.14-R7613.1 | 404 | 0 | not run |
+| 1.4.15-R7857.1 | 404 | 0 | not run |
+
+Build numbers were chosen by rounded linear interpolation between the known pairs 1.4.2-R4684 and 1.4.18-R8587 (about 244 builds per patch release), suffix `.1`. They are guesses; no source lists them. A 404 shows only that the string is not on the endpoint. The probe budget for this pass (6) is used up.
+
+### Result
+
+- Obtainable builds below 1.4.18: still only 1.4.2-R4684.1. No new build was obtained, so this pass ran no new lifecycle; the results in the first gap section are the only ones for 1.4.2.
+- Gated path: 1.4.2-R4684.1 passes and no lower release has been tested. Validated minimum: none.
+- Ungated path: the boundary lies in (1.4.2, 1.4.18]. The literal tested-pair rule names 1.4.18 (it passes, and 1.4.2 fails below it), but that makes 1.4.18 an upper bound on the minimum, not the minimum: 1.4.3–1.4.17 are untested, so a lower passing release is possible and not excluded. Validated minimum: none.
+
+### Cleanup
+
+- Probe output files in `/tmp` were removed (`/tmp/muse-probe-*.json`, `/tmp/muse-control-*.json`); the 404 probes wrote no body. Verified: zero matches remain.
+- No credential file was read or copied. The real launcher `~/.local/bin/muse` was not run in this pass.
+- Worktree `/root/src/worktrees/ut-v-muse`: this file is the only change. Not committed.

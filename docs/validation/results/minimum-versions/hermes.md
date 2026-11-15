@@ -7,9 +7,11 @@ Checkout: worktree `/root/src/worktrees/ut-min-hermes`, branch `docs/min-version
 
 ## Result
 
+**Latest (2026-11-15, Python 3.12): none validated. v0.23.1 (the floor) fails on Python 3.12 because the packaged install omits every core dependency there (all 45 are gated to `python_version >= '3.14'`). The chain stopped at v0.23.1. See the dated section at the end.**
+
 **None validated.** The lifecycle passed on every tested release from v0.21.5 through v0.23.1 (v0.21.5, v0.21.6 and v0.21.7 added 2026-11-15; see the dated section below). No tested release has failed, so the rule for a validated minimum (the next lower release fails) is not met, and the lowest passing tested release (v0.21.5, tag `v2026.9.24`) is not a validated minimum. The fallback ("lowest tested release if no lower release is installable offline") does not apply: lower official releases are installable from GitHub. The original sweep was stopped on the main agent's instruction at v0.22.0.
 
-Python: every run in this file used Python 3.14.8 (see "Python per run" under Sources and method). The file records a declared range only for v2026.9.24 (`>=3.11,<3.14`); 3.14.8 is outside it, so that tag was not run on a declared-range Python. The declared range is not recorded in this file for the other tags (v0.21.6, v0.21.7, v0.22.0 to v0.23.1), so their range status is unverified.
+Python: every run before the 2026-11-15 Python 3.12 section used Python 3.14.8 (see "Python per run" under Sources and method). The only Python 3.12 run is the dated section at the end, which covers v0.23.1 only. The file records a declared range only for v2026.9.24 (`>=3.11,<3.14`); 3.14.8 is outside it, so that tag was not run on a declared-range Python. The declared range is not recorded in this file for the other tags (v0.21.6, v0.21.7, v0.22.0 to v0.23.1), so their range status is unverified.
 
 Untested lower releases: v0.21.4 (`v2026.9.21`, which its release page titles "Hermes Agent v0.21.4") and earlier calendar tags. No `v0.21.5` git tag exists; the release titled "Hermes Agent v0.21.5" is tag `v2026.9.24`.
 
@@ -20,7 +22,7 @@ Untested lower releases: v0.21.4 (`v2026.9.21`, which its release page titles "H
 - Python per run (from each section's `uv venv --python` line):
   - Sweep, v0.22.0 to v0.23.1 (the ten rows in the results table): `3.14.8` for every tag. The file does not record a declared `requires-python` for these tags, so their range status is unrecorded.
   - Gap run, v0.21.7, v0.21.6, and v2026.9.24 (titled v0.21.5): `3.14.8` for every tag (gap run method). For v2026.9.24 the declared range is `>=3.11,<3.14`, so 3.14.8 is outside it. The file does not record the declared range for v0.21.6 or v0.21.7.
-  - No run in this file used Python 3.11, 3.12, or 3.13.
+  - Python 3.12 was used only in the 2026-11-15 dated section at the end of this file (v0.23.1). No other run used 3.11 to 3.13.
 - Isolation: each run used `HOME=<prefix>/home/<tag>` and `HERMES_HOME=<that>/.hermes`, and every `hermes` command ran under `env -i PATH TERM LANG HOME HERMES_HOME`. No credential was copied or inherited. The real `/root/.hermes` was not touched.
 - Model setup (placeholder, no model call can succeed): `model.provider=custom`, `model.base_url=http://127.0.0.1:9/v1`, `model.default=ut-minver-placeholder`, `telemetry.enabled=false`.
 - Lifecycle per tag:
@@ -93,3 +95,23 @@ Observations:
 Result: **none validated.** All three gap versions passed, so no tested release has failed and no failure sits at the next lower release. v0.21.4 (`v2026.9.21`) is the next lower release. It was outside this assignment's scope and was not tested. The lowest passing tested release is now v0.21.5 (tag `v2026.9.24`), which is not a validated minimum. The floor in `adapters/version-floor.ts` and the install doc's "not documented" statement are unchanged by this run.
 
 Cleanup: `/tmp/ut-gap-hermes` (checkouts, venvs, Python installs, isolated homes, logs) was removed after the results were recorded. The worktree `/root/src/worktrees/ut-gap-hermes` remains because it holds this file. Nothing was committed.
+
+## 2026-11-15 Python 3.12 run: v0.23.1 (floor), stopped at first failure
+
+Scope: the in-range re-run requested by the main agent, on Python 3.12 for every run: v0.23.1 first, then v0.22.0, v0.21.7, v0.21.4 (`v2026.9.21`), and v0.21.3 only if v0.21.4 passed. Stop at the first failure. The first step failed, so the chain stopped there.
+
+Method: `git clone --depth 1 --branch v0.23.1` (commit `3b421578`); `uv venv --python 3.12` (CPython 3.12.3); `uv pip install -e <checkout>` (exit 0); per-file symlinks from `hosts/hermes/*.py` (minus `*_test.py`) and `plugin.yaml` at the worktree's `origin/main`; placeholder `custom` model at `127.0.0.1:9`, telemetry off; `env -i` with PATH, TERM, LANG, HOME, HERMES_HOME only. Lifecycle as in the sweep: `hermes plugins enable ultrathink`, `hermes plugins list --plain`, pty `/ultrathink-lessons` expecting `No lessons saved yet.`, `hermes plugins remove ultrathink`. The sweep's `lifecycle.sh` was no longer on disk, so the harness was rewritten; its setup-prompt answers were never exercised because the TUI never started.
+
+| Tag | Python | install | version | enable | list | pty invoke | remove | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| v0.23.1 (floor) | 3.12.3 | 0 | 0 | 1 | 1 | not reached (no setup prompt seen, command never sent) | 1 | fail |
+| v0.22.0, v0.21.7, v2026.9.21, v0.21.3 | 3.12 | not run | - | - | - | - | - | not run (chain stopped) |
+
+Cause: `pyproject.toml` declares `requires-python = ">=3.11,<3.15"`, but all 45 entries in `[project].dependencies` carry the marker `; python_version >= '3.14'`. On 3.12 the editable install therefore brings in no dependencies (the venv holds only `hermes-agent`). Every subcommand that imports `hermes_cli.main` then crashes with `ModuleNotFoundError: No module named 'ruamel'` (`hermes --version` still printed `Hermes Agent v0.23.1 (2026.9.24)`, exit 0). The plugin was never reached. This is a host install-metadata defect for Python 3.11 to 3.13, not a plugin result.
+
+Diagnostic, not counted: I tried to install the 45 pins with markers stripped into the 3.12 venv, to see whether the plugin passes once dependencies are present. The pin set does not resolve on 3.12 (`uv pip install` and `uv pip compile` report unsatisfiable requirements, e.g. a git-URL `psutil` pin and `pillow` 12.3.0 against 13.0.0), so no lifecycle result with dependencies was obtained.
+
+Verdict: v0.23.1 fails on Python 3.12, which is inside its declared range. No minimum is validated by this run. The 3.14.8 results above are unchanged, and the floor in `adapters/version-floor.ts` is not changed by this run.
+
+Cleanup: `/tmp/ut-v-hermes` (checkouts, venvs, homes, logs) was removed, and `pkill` found no leftover processes. The worktree `/root/src/worktrees/ut-v-hermes` holds this file. Nothing was committed.
+
