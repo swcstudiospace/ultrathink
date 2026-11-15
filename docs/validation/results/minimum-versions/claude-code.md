@@ -7,10 +7,10 @@ Tester: MinVersionClaudeCode.
 
 ## Result
 
-**Minimum validated: 2.1.178.** The 2026-11-15 gap run (section at the end) passed 2.1.178, and the next lower tested release, 2.1.177, failed. The earlier 'none validated' status and the 'untested 2.1.178' notes above are superseded by that section.
+**Boundary observation at 2.1.178 (one completed run; not a validated minimum).** The 2026-11-15 gap run (section at the end) passed 2.1.178, and the next lower tested release, 2.1.177, failed in one run with no hook output. The 2.1.177 failure mode has no isolated cause. The earlier 'none validated' status and the 'untested 2.1.178' notes above are superseded by that section.
 
-- Lowest tested passing release: **2.1.178** (validated minimum; see the gap-run section).
-- The floor (2.1.322) is above the validated minimum 2.1.178. This lifecycle does not justify the floor.
+- Lowest tested passing release: **2.1.178** (one completed run), scoped to install, enable, and the `UserPromptSubmit` hook path. The planner and model path are not covered.
+- The floor (2.1.322) is above the 2.1.178 boundary observation. One passing run does not validate a minimum, so this record does not justify changing the floor.
 - Tested releases below 2.1.100 did not pass: 2.0.0 and 1.0.33 failed; 1.0.0 hung with no verdict; the first 2.1.51 run was invalid (nested-session guard) and was not rerun. Releases between 2.1.100 and 2.1.150 were not tested.
 
 ## Lifecycle (exact commands)
@@ -43,8 +43,8 @@ Verdicts come from the per-run logs in `/tmp/ut-min-cc/<V>.log`. "Content-checke
 | 2.1.200 | lifecycle3.sh | 0 | 0 | 0 | 0 | 0; present | 0 | PASS (content-checked; first run invalid, see disk note) |
 | 2.1.186 | lifecycle3.sh | 0 | 0 | 0 | 0 | 0; present | 0 | PASS (content-checked) |
 | 2.1.179 | lifecycle3.sh | 0 | 0 | 0 | 0 | 0; present | 0 | PASS (content-checked) |
-| 2.1.178 | not completed | — | — | — | — | — | — | **UNTESTED**: run stopped at wrap-up before a verdict |
-| 2.1.177 | lifecycle3.sh | 0 | 0 | 0 | 0 | 0; **no hook output** | 0 | FAIL |
+| 2.1.178 | lifecycle3.sh (gap run) | 0 | 0 | 0 | 0 | 0; `Prompt Uplift on` present | 0 | PASS (one completed run; see gap-run section). The earlier killed run gave no verdict |
+| 2.1.177 | lifecycle3.sh | 0 | 0 | 0 | 0 | 0; **no hook output** | 0 | FAIL (cause unexplained) |
 | 2.1.176 | lifecycle3.sh | 0 | 0 | 0 | 0 | 0; **no hook output** | 0 | FAIL |
 | 2.1.174 | lifecycle3.sh | 0 | 0 | 0 | 0 | 0; **no hook output** | 0 | FAIL |
 | 2.1.150 | lifecycle3.sh | 0 | 0 | 0 | 0 | 0; **no hook output** | 0 | FAIL |
@@ -73,7 +73,7 @@ The root filesystem was at 100% use during the sweep (shared with other workload
 ## Not tested
 
 - The floor 2.1.322 was not rerun in this pass.
-- 2.1.178 (the one release that decides the boundary).
+- 2.1.178 beyond its single completed gap run (no repeat run).
 - 2.1.101 to 2.1.149 and 2.1.151 to 2.1.173, and every release below 2.1.100 except 2.0.0, 1.0.33, 1.0.0 and the invalid 2.1.51 run.
 - The model/planner path (no login was used).
 - Install from the GitHub marketplace; this run used the local checkout.
@@ -87,13 +87,14 @@ Gap test for the one release between the passing 2.1.179 and the failing 2.1.177
 | 2.1.178 | 0 | 0 | 0 | 0 | 0; `Prompt Uplift on` present | 0 | `version=1 install=1 enabled_after_install=1 invoke_hook_output=1 uninstall=1 reload_informational=0` | **PASS** |
 | 2.1.177 (boundary, re-read from `/tmp/ut-min-cc/2.1.177.log`) | 0 | 0 | 0 | 0 | 0; **no hook output** | 0 | `invoke_hook_output=0` | FAIL |
 
-Verdict logic: a validated minimum needs a passing lifecycle at that version and a recorded failure at the next lower tested release. Both hold:
+Boundary check, one run at each version: a passing lifecycle at that version and a recorded failure at the next lower tested release. Both hold:
 
 - 2.1.178 passes all content checks. Its invoke output includes the full `/ultrathink-status` block with `Prompt Uplift on`.
 - 2.1.177 is the next lower tested release. Its install, marketplace add, plugin install and enable all passed. Only the invoke content check failed: exit 0 with empty output.
 - The 2.1.177 failure is not the disk problem in the Disk note. The run started with 23,022,312 kB free on `/` (per the log), and install succeeded on the first attempt.
+- The 2.1.177 failure mode (exit 0, no hook output) has no isolated cause. The same mode appears in the tested releases 2.1.100, 2.1.150, 2.1.174, and 2.1.176, so it is recorded as a limit, not explained.
 
-**Validated minimum: 2.1.178**, for the lifecycle checked here. The check covers install, enable, and the `UserPromptSubmit` hook output. It does not cover the planner or model path, which needs login (see Limit above). No release between 2.1.177 and 2.1.178 was tested.
+**Boundary observation: 2.1.178 (one completed run; not a validated minimum).** Scope: install, marketplace add, plugin install, enable, and the `UserPromptSubmit` hook output for `/ultrathink-status`. Not covered: the planner or model path (needs login, not used), other releases, and repeat runs. The boundary rests on one pass at 2.1.178 and one fail at 2.1.177, whose failure mode is unexplained. No release between 2.1.177 and 2.1.178 was tested.
 
 Cleanup: `cleanup: iso removed=yes` recorded in the log, and `/tmp/ut-min-cc/2.1.178` confirmed absent after the run. No credential was copied, read, or printed; no login was used. Nothing was committed. The only file changed in this worktree is this record.
 

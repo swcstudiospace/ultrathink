@@ -9,12 +9,18 @@ Checkout: worktree `/root/src/worktrees/ut-min-hermes`, branch `docs/min-version
 
 **None validated.** The lifecycle passed on every tested release from v0.21.5 through v0.23.1 (v0.21.5, v0.21.6 and v0.21.7 added 2026-11-15; see the dated section below). No tested release has failed, so the rule for a validated minimum (the next lower release fails) is not met, and the lowest passing tested release (v0.21.5, tag `v2026.9.24`) is not a validated minimum. The fallback ("lowest tested release if no lower release is installable offline") does not apply: lower official releases are installable from GitHub. The original sweep was stopped on the main agent's instruction at v0.22.0.
 
+Python: every run in this file used Python 3.14.8 (see "Python per run" under Sources and method). The declared range for v2026.9.24 is `>=3.11,<3.14`, so that tag was not run on a declared-range Python. The declared range is not recorded for the other tags, so their range status is unverified.
+
 Untested lower releases: v0.21.4 (`v2026.9.21`, which its release page titles "Hermes Agent v0.21.4") and earlier calendar tags. No `v0.21.5` git tag exists; the release titled "Hermes Agent v0.21.5" is tag `v2026.9.24`.
 
 ## Sources and method
 
 - Releases: official tags of `github.com/NousResearch/hermes-agent`, cloned with `git clone --depth 1 --branch <tag>`. The npm `hermes-agent` and PyPI `hermes-agent` packages are third-party bridges and were not used.
 - Install per tag: `uv venv --python 3.14.8` (Python fetched into the prefix), then `uv pip install -e <checkout>`. The non-editable install refuses to build, so the editable install was used. The operator's install uses Python 3.14.9; this run used 3.14.8.
+- Python per run (from each section's `uv venv --python` line):
+  - Sweep, v0.22.0 to v0.23.1 (the ten rows in the results table): `3.14.8` for every tag. The file does not record a declared `requires-python` for these tags, so their range status is unrecorded.
+  - Gap run, v0.21.7, v0.21.6, and v2026.9.24 (titled v0.21.5): `3.14.8` for every tag (gap run method). For v2026.9.24 the declared range is `>=3.11,<3.14`, so 3.14.8 is outside it. The file does not record the declared range for v0.21.6 or v0.21.7.
+  - No run in this file used Python 3.11, 3.12, or 3.13.
 - Isolation: each run used `HOME=<prefix>/home/<tag>` and `HERMES_HOME=<that>/.hermes`, and every `hermes` command ran under `env -i PATH TERM LANG HOME HERMES_HOME`. No credential was copied or inherited. The real `/root/.hermes` was not touched.
 - Model setup (placeholder, no model call can succeed): `model.provider=custom`, `model.base_url=http://127.0.0.1:9/v1`, `model.default=ut-minver-placeholder`, `telemetry.enabled=false`.
 - Lifecycle per tag:

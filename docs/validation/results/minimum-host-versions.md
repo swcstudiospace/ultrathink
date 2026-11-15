@@ -1,12 +1,13 @@
 # Minimum host versions (AC3)
 
-Date: 2026-11-14 (the per-host results and the credential scan). Checkout: `611e926` (origin/main, the version-floor commit #91).
+Date: 2026-11-14 for the per-host table and the credential scan. The per-host evidence sections and the minimum-version sweeps are dated 2026-11-15, as cited in each section.
+Checkout: `611e926` (origin/main, the version-floor commit #91).
 
 ## Summary
 
 - No host documents a minimum supported version. Five contracts say "not documented" (`docs/plugin-research/host-contracts.md:89` Omp, `:115` Hermes, `:138` Prime-Agent, `:194` Grok Build, `:226` Muse). The Claude Code contract gives feature minimums only, with no base version (`:163`).
 - The floors in `adapters/version-floor.ts:13-18` are the versions observed while writing those contracts (`host-contracts.md:65`). They are not tested minimums.
-- Lower bounds were tested per host in `docs/validation/results/minimum-versions/`. Grok Build: plugin lifecycle from 1.0.42 (host invoke from 1.0.13). Prime-Agent: lifecycle from 0.3.1 with a stub provider, not a live model. Claude Code: 2.1.178 for install, enable, and the UserPromptSubmit hook path; the planner is not covered. Omp: 17.0.0 under the record's listing criterion. Hermes and Muse: no validated minimum; each record gives the reason.
+- Lower bounds were tested per host in `docs/validation/results/minimum-versions/`. Grok Build: plugin lifecycle from 1.0.42 (host invoke from 1.0.13). Prime-Agent: lifecycle from 0.3.1 with a stub provider, not a live model. Omp: 17.0.0 is the lowest passing release under the step-5 listing criterion, confirmed in clean homes; 16.0.0 fails only that check. Claude Code: 2.1.178 is one boundary observation for install, enable, and the UserPromptSubmit hook path (not a validated minimum; the planner is not covered). Hermes and Muse: no validated minimum; each record gives the reason.
 - Live status is per host below. Muse's floor has no live run at all. Prime-Agent's load and invoke pass on the login (2026-11-15), and its lower bound is from a stub-provider run.
 
 Status terms:
@@ -19,7 +20,7 @@ Status terms:
 
 | Host | Floor | Floor source | Version read live | Live run on floor | Live outcome | Status |
 |---|---|---|---|---|---|---|
-| omp | 18.19.0 | `adapters/version-floor.ts:18` | `omp/18.19.0` | Yes | Pass: interactive steps 1-10 (install through uninstall). Headless steps 6-7 ran through `omp --mode rpc`, not print mode (2026-11-15, older checkout). | Partially verified at floor. Minimum not verified. |
+| omp | 18.19.0 | `adapters/version-floor.ts:18` | `omp/18.19.0` | Yes | Pass: interactive steps 1-10 (install through uninstall). Headless steps 6-7 ran through `omp --mode rpc`, not print mode (2026-11-15, older checkout). | Partially verified at floor. Minimum 17.0.0 under the listing criterion; the earlier sweep runs were not isolated (see omp record). |
 | claude-code | 2.1.322 | `adapters/version-floor.ts:13` | `2.1.322` | Yes | Install, load, uninstall pass. First invoke blocked by login and API credit. Invoke passed only after a rerun with a copied login: reply `ok`, graph not degraded. | Partially verified at floor. The file's top-line verdict is Fail, from the first invoke. |
 | grok-build | 1.0.77 | `adapters/version-floor.ts:14` | `1.0.77` | Yes | Install, inventory, disable/enable, uninstall pass. Load not run (interactive only). Headless invoke under `--always-approve` replies `OK` (2026-11-15); the model's tool-call behaviour and token rotation are not verified. | Partially verified at floor. |
 | hermes | v0.23.1 | `adapters/version-floor.ts:16` | `v0.23.1` | Yes | Per-file install: enable, `/ultrathink-lessons`, disable, and `plugins remove` (exit 0) pass (2026-11-15). A directory-link install fails `plugins remove` with exit 1. | Partially verified at floor. |
@@ -57,6 +58,7 @@ Status terms:
 - Runtime read: `adapters/cli.ts` HOSTS, `versionCommand: "hermes"`. The `v` prefix is ignored by the parser.
 - Live version: `docs/validation/results/hermes.md:5` (`Hermes Agent v0.23.1 (2026.9.24)`).
 - Live result: the 2026-11-13 run failed step 10 for a directory-link install (exit 1; `hermes.md:147-152` records the plugin entry as a symlink to `hosts/hermes`). The 2026-11-15 run passed `plugins remove` for the documented per-file install (exit 0) and reproduced the directory-link failure (`hermes.md`, 2026-11-15 section).
+- Python: the 2026-11-15 sweep and gap runs used `uv venv --python 3.14.8`. The declared range `>=3.11,<3.14` is recorded only for v2026.9.24, so those runs are outside it. No run used 3.11 to 3.13. See `minimum-versions/hermes.md`.
 
 ### muse (floor 1.4.14)
 
@@ -75,11 +77,11 @@ Status terms:
 
 ## Gaps
 
-1. Lower bounds are tested for four hosts with stated scope (Grok Build from 1.0.42; Prime-Agent from 0.3.1, stub provider; Claude Code 2.1.178, scoped; Omp 17.0.0, listing criterion). Hermes and Muse have no validated minimum. Any new "minimum" statement needs a run below the floor.
-2. Muse: no live run on the 1.4.14 floor. The 1.4.18 runs are above it.
+1. Lower bounds are tested for four hosts, each with its stated scope: Grok Build (from 1.0.42); Prime-Agent (from 0.3.1, stub provider); Omp (17.0.0 under the listing criterion, clean-home confirmed); Claude Code (2.1.178, a single boundary observation). Hermes and Muse have no validated minimum. Any new "minimum" statement needs a run below the floor.
+2. Muse: no live run on the 1.4.14 floor. The 2026-11-15 gap run tested 1.4.2-R4684.1 (gated pass, ungated fail). No build between 1.4.2 and 1.4.18 was obtainable, so the boundary is open in (1.4.2, 1.4.18].
 3. Prime-Agent: load and invoke pass on the login (2026-11-15, `docs/validation/results/prime-agent.md`); the 0.10.2 floor's install and remove pass on a local path. The lower-bound invoke used a stub provider.
 4. Prime-Agent: `prime-agent --version` (the form the CLI calls) is not recorded live; the run used `-v`.
 5. Hermes: a directory-link install (a symlinked plugin directory) cannot be removed with `hermes plugins remove` (exit 1). The documented per-file install removes cleanly (2026-11-15).
 6. Omp: the floor is not enforced in production at `611e926` (see omp evidence).
 
-AC3 status: **Partial**. Floors are recorded and each host's live status is stated above. Lower bounds, each with its scope: Grok Build (plugin lifecycle from 1.0.42); Prime-Agent (lifecycle from 0.3.1, stub provider); Claude Code (2.1.178, install, enable, and the UserPromptSubmit hook path; planner not covered); Omp (17.0.0 under the record's listing criterion; 16.0.0 fails only that criterion). No validated minimum for Hermes (no failure found down to v0.21.5, one run on Python 3.14.8, outside its declared range) or Muse (no lower build obtainable). Each record gives the detail.
+AC3 status: **Partial**. Floors are recorded and each host's live status is stated above. Lower bounds, each with its scope: Grok Build (plugin lifecycle from 1.0.42); Prime-Agent (lifecycle from 0.3.1, stub provider); Omp (17.0.0 under the step-5 listing criterion, confirmed in clean homes; 16.0.0 fails only that check); Claude Code (2.1.178, one boundary observation for install, enable, and the hook path). No validated minimum for Hermes (all sweep and gap runs used Python 3.14.8, outside the declared range recorded for v2026.9.24) or Muse (no build between 1.4.2 and 1.4.18 obtainable). Each record gives the detail.

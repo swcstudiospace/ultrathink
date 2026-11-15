@@ -1,7 +1,9 @@
 # Omp minimum version validation
 
+> **Isolation caveat.** The sweep and the 2026-11-15 gap run, which precede the "Clean-home boundary rerun" section, were not isolated. The copied login config and agent DB named the real-home extension `/root/.omp/extensions/agent-swarm`, and Omp attempted to load it. Those runs are not evidence for the boundary, and the "Validated minimum" sections before the clean-home section are superseded by the Result above. The clean-home section is the stated basis. Its 17.0.0 PASS is attempt 2 only; attempt 1 is excluded as invalid.
+
 Date (YYYY-MM-DD): 2026-11-15
-Result: **Validated minimum 17.0.0** under this file's lifecycle criteria (2026-11-15 gap run, below). 16.0.0 fails step 5 (the plugin is installed by link and not listed) on 2 of 2 attempts. 15.0.0 was not tested because the run stopped at the first failure. Under a relaxed criterion the minimum is not established. The floor 18.19.0 (`adapters/version-floor.ts:18`) is not the lowest working version.
+Result: **Lowest passing release tested under the step 5 listing criterion: 17.0.0.** 16.0.0 passes every lifecycle step (link install, invoke, uninstall) and fails only the step 5 `plugin list` listing check, on 2 of 2 clean-home attempts. Basis: the "2026-11-15 clean-home boundary rerun" section at the end of this file. Releases below 16.0.0 were not tested under a clean home (15.0.0 was not run; 9.0.0 fails at install), so no lower boundary is established, and 17.0.0 is not shown to be a minimum under a relaxed criterion. The floor 18.19.0 (`adapters/version-floor.ts:18`) is not the lowest working version.
 
 ## Scope
 
@@ -103,9 +105,9 @@ This section supersedes "Validated minimum" above for the lifecycle criteria in 
 - Attempt 2 reproduced attempt 1 in a fresh home, so the result is not flaky.
 - The `omp-polyglot@polyglot` marketplace entry appeared in every list. It is unrelated.
 
-### Validated minimum
+### Lowest passing release under the listing criterion
 
-- Under the criteria in this file: **17.0.0**. 17.0.0 passes (sweep row), and the next lower tested release, 16.0.0, fails step 5 on 2 of 2 attempts.
+- Under the listing criterion, confirmed by the clean-home rerun: **17.0.0** is the lowest passing release tested. The sweep row for 17.0.0 is not isolated; the clean-home attempt 2 is the pass. 16.0.0 fails step 5 on 2 of 2 attempts in the gap run and on 2 of 2 clean-home attempts.
 - The failure is narrow. If the step 5 listing criterion were dropped, 16.0.0 would pass the functional lifecycle (link install, invoke, uninstall). The minimum would then lie below 16.0.0, which needs 15.0.0 and possibly lower. 15.0.0 was not tested because the stop rule ended the run at the first failure, so the relaxed-criterion minimum is not established.
 - The floor 18.19.0 (`adapters/version-floor.ts:18`) is not enforced at runtime (see the sweep above) and is conservative for this lifecycle.
 
@@ -115,3 +117,47 @@ This section supersedes "Validated minimum" above for the lifecycle criteria in 
 - The isolated directory `/tmp/ut-gap-omp` (Bun prefix, npm prefix, logs) was removed after this section was written.
 - The real `~/.omp` plugin registry (`installed_plugins.json`, `plugins/`) was not modified after the run began (mtime check). Other sessions were writing to `~/.omp` (agent DB, logs, token-opt) during the window; those changes are not attributed here.
 - Only this file was edited in the worktree. Nothing was committed.
+
+## 2026-11-15 clean-home boundary rerun: 17.0.0 and 16.0.0
+
+Scope: 17.0.0 and 16.0.0 only, rerun with every Omp home, config and extension directory inside a fresh temp tree. Plugin: `origin/main` at `651e9fc`, checked out in worktree `/root/src/worktrees/ut-omp-clean` (`origin/docs/min-versions-ac3`, which differs only under `docs/`). This section is the basis for the Result at the top of this file.
+
+### Method (clean-home)
+
+- Installs: `bun@1.4.4` and `@oh-my-pi/pi-coding-agent@<v>` each in its own npm prefix under a fresh temp tree. The npm cache and Puppeteer cache were also kept inside that tree.
+- Environment per run: `env -i HOME=<tree>/runs/<v>/home PI_CODING_AGENT_DIR=<home>/.omp/agent XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, XDG_STATE_HOME` all under `<home>`, `PATH=<bun-1.4.4>/bin:<omp-prefix>/bin:/usr/bin:/bin LANG=C.UTF-8 TERM=dumb`.
+- Deviation from the sweep: the plugin is passed as the absolute worktree path instead of `.`, and the process cwd is an empty directory inside the temp tree, not the worktree. Reason: the project-config lookup (`findAllNearestProjectConfigDirs`, `src/config.ts:213-235` in `@oh-my-pi/pi-coding-agent` 17.0.0) walks from cwd to `/` without stopping at the isolated home. From the worktree path, which sits under `/root`, it finds `/root/.omp/extensions` as a project extension directory. That is the real-home directory the isolation rule forbids.
+- Lifecycle, same nine steps as the sweep, with step 5b added (`omp plugin list --json`, read-only): 1 `--version`; 2 `plugin install --dry-run <wt>`; 3 `plugin list`; 4 `plugin install <wt>`; 5 `plugin list`; 5b `plugin list --json`; 6 `timeout 90 omp --mode rpc` with `get_state` and `/ultrathink-status`; 7 `plugin uninstall ultrathink --dry-run`; 8 `plugin uninstall ultrathink`; 9 `plugin list`. Pass criteria as in the sweep.
+- Login files: `agent.db` (with `-wal` and `-shm`), `config.yml` and `models.yml` were copied into each isolated agent directory, mode 600, because step 6 needs a default model. Values were never printed or written to this file.
+- Isolated copies were sanitized before each run; the real home was not modified. (a) The copied `config.yml` had an `extensions:` setting listing `/root/.omp/extensions/agent-swarm`; that key and item were removed. (b) The copied `agent.db` `cache` table held 21 `extension_startup:v1|v2:/root/.omp/...` rows, including `agent-swarm`; those rows were deleted, followed by a WAL checkpoint and VACUUM. After sanitizing, real-home references were 0 in both files.
+
+### Extension-loaded check
+
+- Before each run: no `.omp` directory among the ancestors of the run cwd, and the isolated `extensions` directory was empty.
+- After each run: a grep for `/root/.omp` across the run's stdout, stderr, step logs and the isolated Omp log directory returned 0 hits for the valid runs. `agent.db` returned 0 references. Stderr was 0 bytes. No `Failed to load extension` line appeared.
+- The step 6 `get_state` output lists extension-sourced commands (ultrathink and others) but contains no real-home path.
+- The real-home plugin registry (`~/.omp/plugins/installed_plugins.json`) had the same mtime before and after every run.
+
+### Results
+
+| Version | Attempt | Isolation | Exit codes steps 1-9 | Step 5 lists `ultrathink@` | Step 6 (rpc) | Real-home extension loaded | Verdict |
+|---|---|---|---|---|---|---|---|
+| 17.0.0 | 1 | Not clean: copied `config.yml` and `agent.db` cache named `/root/.omp/extensions/agent-swarm` | all 0 | yes | 2× `success:true`, `Prompt Uplift` | No: load attempted and failed (`Cannot find module`) | INVALID, not counted |
+| 17.0.0 | 2 | Clean (sanitized copies) | all 0 | yes | 2× `success:true`, `Prompt Uplift` | No | PASS |
+| 16.0.0 | 1 | Clean (sanitized copies) | all 0 | no | 2× `success:true`, `Prompt Uplift` | No | FAIL at step 5 |
+| 16.0.0 | 2 | Clean (sanitized copies) | all 0 | no | 2× `success:true`, `Prompt Uplift` | No | FAIL at step 5 |
+
+- 17.0.0 attempt 2: step 2 `[dry-run] Would link <wt>`; step 4 `✔ Linked ultrathink from <wt>`; step 5b includes an ultrathink entry; step 7 and step 8 `✔ Uninstalled ultrathink`; step 9 no longer lists ultrathink.
+- 16.0.0 (both attempts): step 2 and step 4 print the same link messages; step 5 and step 5b list no ultrathink entry; steps 7-9 pass; the plugin is active at step 6.
+- 17.0.0 attempt 1 is recorded as invalid. Its lifecycle exit codes were all 0. Its isolation was breached: the copied config named the real-home `agent-swarm` extension, and the run attempted to load it (`Failed to load extension /root/.omp/extensions/agent-swarm`, `Cannot find module`). The load failed, so the extension did not run, but the run is excluded under the isolation rule. The 17.0.0 result above comes from attempt 2 only.
+
+### Boundary result
+
+- Under clean homes, 17.0.0 passes and 16.0.0 fails step 5 on 2 of 2 attempts, with all other steps passing. This matches the real-home gap run above, so the boundary is unchanged: the lowest tested release passing this file's lifecycle criteria is 17.0.0, and 16.0.0 fails only the step 5 listing check.
+- 15.0.0 was not run in this rerun, which covered 17.0.0 and 16.0.0 only.
+
+### Cleanup
+
+- Login copies (`agent.db`, `agent.db-wal`, `agent.db-shm`, `config.yml`, `models.yml`) were deleted from every isolated agent directory, along with the inspection copy of `agent.db` used to locate the real-home cache rows.
+- The isolated tree `/tmp/ut-clean-omp.4hw4LX` (Bun and npm prefixes, npm and Puppeteer caches, homes, logs) was removed. Deletion was confirmed by a missing-path check, and no other `/tmp/ut-clean-omp.*` directory remains.
+- The real-home `~/.omp` was not modified. Only this file was edited in the worktree. Nothing was committed.
