@@ -192,3 +192,61 @@ Stop says: Ultrathink · this turn tracked a task (graphId=ut-6fc5b4a73f-a910f9c
 
 **Verdict (invoke step, this checkout): pass.** The UserPromptSubmit hook fired, the Claude graph stage was not degraded, and the reply came back as `ok`. Not exercised: `awaiting_user_decision`.
 
+
+## Live invoke (login, isolated home): 2026-11-15
+
+Scope: one headless invoke of `/ultrathink-status` on this checkout (HEAD `1f55393`; the only untracked item was a pre-existing `.gsd-run/`). Host: Claude Code 2.1.322. Tester: ClaudeCodeLiveInvoke.
+
+**Isolation.** `ISO=$(mktemp -d /tmp/cc-live-XXXX)` → `/tmp/cc-live-tXkn`, `HOME=$ISO/home`. Copied only `/root/.claude/.credentials.json` (mode 600) and the `oauthAccount` key of `/root/.claude.json` into a new isolated `.claude.json`. Contents were not printed.
+
+**Auth.** The process environment had `ANTHROPIC_API_KEY` set. It was unset for every command (`env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN`) so the copied login was the auth source. The earlier run recorded that this inherited key returned `Credit balance is too low`.
+
+**Plugin install (from checkout).**
+
+- `claude plugin marketplace add /root/src/repos/claude-ultrathink` → exit 0, `✔ Successfully added marketplace: ultrathink`.
+- `claude plugin install ultrathink@ultrathink --scope user` → exit 0, `✔ Successfully installed plugin: ultrathink@ultrathink (scope: user)`.
+- `claude plugin list` → exit 0, `Version: 1.4.0`, `Read from: /root/src/repos/claude-ultrathink`, `Status: ✔ enabled`. The manifest version does not identify the build; the build is the checkout at `1f55393`.
+
+**Invoke.** Run from a scratch directory under `$ISO/work`, not the repo.
+
+```
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN HOME=$ISO/home timeout 600 claude -p "/ultrathink-status" --model claude-haiku-5-5
+```
+
+Exit status: **0**. Wall time 4.43 s. stderr: empty.
+
+Reply (stdout, verbatim):
+
+```
+UserPromptSubmit operation blocked by hook:
+Prompt Uplift on
+Engine: claude:claude-haiku-5-5
+Claude: claude-haiku-5-5 · auth plan · fallback to Grok off
+Grok: grok-build-0.1 · transport http
+SuperGrok OAuth: not logged in (run grok login)
+Graph of Thought on
+HITL clarifications on · max 4
+Tracking: on (not configured: set notion.dataSourceUrl / linear.team)
+Notion: not configured
+Linear team: not configured
+Substrate: http://127.0.0.1:7410 (SUBSTRATE_URL)
+Ship: off (opt-in: set ship.enabled)
+Knowledge base: off (opt-in: set hitl.knowledgeBase)
+Decisions: on · no Jev key (bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)
+Hindsight: off (opt-in: set hindsight.enabled)
+RAGFlow: off (opt-in: set ragflow.enabled)
+Teach: on · capture auto · recall on · 0 confirmed, 0 candidate · Hindsight off · outbox 0
+Stack: 2 ready · 1 off · 2 missing (run ultrathink stack)
+Engine request: auto (config) · concurrency 3
+State: /tmp/cc-live-tXkn/home/.claude/ultrathink
+
+Original prompt: /ultrathink-status
+```
+
+**Graph stage.** Not determinable as degraded from this run. The reply lists `Graph of Thought on` and has no `Degraded` marker. No planner ran: `$ISO/home/.claude/ultrathink/` was never created, so no session or `last.json` artifact exists to inspect. This invoke did not exercise the graph stage.
+
+**Observations.** The hook answered the prompt (`operation blocked by hook`) and no model turn ran, so the reply is the hook's status output, not a model answer. `Tracking` is on but reports not configured, and the reply names no Linear or Notion writes. I did not check Linear. Not exercised: model turn, graph planning, `awaiting_user_decision`.
+
+**Deletion (step 7).** `rm -rf /tmp/cc-live-tXkn` run. Verified: the directory is absent, `find /tmp -maxdepth 1 -name 'cc-live-*'` returns 0 entries, and `.credentials.json` is gone with it. The real home was not written: every `claude` call used the isolated `HOME`.
+
+**Verdict.** Claude Code invoke (login, isolated home): partial. Exit 0, the reply text is recorded above, and the invoke ran with the copied login. Only the hook-answered status path ran; no model turn and no planner ran, so the graph-stage check (reply `ok`, graph not degraded) is still open.
