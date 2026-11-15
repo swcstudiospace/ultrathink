@@ -24,7 +24,7 @@ const PLACEHOLDER_WORDS: Record<string, true> = {
 };
 
 /** True for an empty value, a reference, an angle-bracket or x/asterisk-only value, or an obvious fake. */
-export function isPlaceholderValue(value: string): boolean {
+function isPlaceholderValue(value: string): boolean {
 	const trimmed = value.trim();
 	if (trimmed === "") return true;
 	if (/^<.*>$/.test(trimmed)) return true;
