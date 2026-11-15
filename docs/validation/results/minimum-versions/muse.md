@@ -5,7 +5,7 @@ Host: Muse Code (`muse`). Floor: 1.4.14 (`adapters/version-floor.ts:15`). Plugin
 
 ## Result
 
-- **Validated minimum: 1.4.18 (lowest tested release; no lower release was installable).** This is not a proven minimum. The lifecycle passed on 1.4.18, and no release below it could be obtained.
+- **Lowest tested release: 1.4.18.** The lifecycle passed on 1.4.18. No release below it could be obtained, so this is not a proven minimum and no lower bound is claimed.
 - **The 1.4.14 floor is not validated.** No 1.4.14 binary or manifest was reachable, so no lower bound is claimed.
 - Why no lower release: the official channel exposes only the current release, and the release manifest endpoint takes an exact `version-R<build>` string. Build numbers for 1.4.14 and 1.4.15 are not published in any source I could reach (the repo cites them only as earlier observations). See "Version discovery".
 

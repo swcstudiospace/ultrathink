@@ -7,7 +7,7 @@ Date: 2026-11-14 (the per-host results and the credential scan). Checkout: `611e
 - No host documents a minimum supported version. Five contracts say "not documented" (`docs/plugin-research/host-contracts.md:89` Omp, `:115` Hermes, `:138` Prime-Agent, `:194` Grok Build, `:226` Muse). The Claude Code contract gives feature minimums only, with no base version (`:163`).
 - The floors in `adapters/version-floor.ts:13-18` are the versions observed while writing those contracts (`host-contracts.md:65`). They are not tested minimums.
 - Lower bounds were tested per host in `docs/validation/results/minimum-versions/`. Grok Build: plugin lifecycle validated from 1.0.42 (host invoke from 1.0.13). Prime-Agent: lifecycle validated from 0.3.1 with a stub provider, not a live model. Claude Code, Hermes, Muse, and Omp: no validated minimum; the reasons are in each record.
-- Live status is per host below. Muse's floor has no live run at all. Prime-Agent's lifecycle was never exercised.
+- Live status is per host below. Muse's floor has no live run at all. Prime-Agent's load and invoke pass on the login (2026-11-15), and its lower bound is from a stub-provider run.
 
 Status terms:
 

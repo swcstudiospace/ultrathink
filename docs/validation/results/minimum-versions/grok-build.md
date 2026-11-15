@@ -8,9 +8,9 @@ Tester: MinVersionGrokBuild (worker agent).
 
 ## Result
 
-- **Validated minimum (plugin lifecycle): 1.0.42.** The next lower release, 1.0.41, fails (2 of 2 runs). Every stable 1.0.x release below 1.0.42 was tested and none passes.
-- **Host-level invoke minimum: 1.0.13.** Below 1.0.13 the server returns HTTP 426. The plugin hook is still absent at 1.0.13 through 1.0.40, so 1.0.13 does not meet the plugin criterion.
-- **Scope limit:** the 0.x line was not fully validated. See "0.x line" below.
+- **Plugin lifecycle passes from 1.0.42 among the stable 1.0.x releases tested.** The next lower release, 1.0.41, fails (2 of 2 runs), and every stable 1.0.x release below 1.0.42 was tested and fails the hook.
+- **Host-level invoke works from 1.0.13.** Below 1.0.13 the server returns HTTP 426. The plugin hook is still absent at 1.0.13 through 1.0.40, so 1.0.13 does not meet the plugin criterion.
+- **Scope limit:** the 0.x line was not fully validated (15 releases untested, see "0.x line"), so 1.0.42 is the lowest validated plugin-lifecycle release on the 1.0.x line, not a proven global minimum.
 
 ## Criteria
 
