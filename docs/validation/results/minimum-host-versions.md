@@ -22,7 +22,7 @@ Status terms:
 | omp | 18.19.0 | `adapters/version-floor.ts:18` | `omp/18.19.0` | Yes | Pass: interactive steps 1-10 (install through uninstall). Headless steps 6 and 7 not reachable. | Partially verified at floor. Minimum not verified. |
 | claude-code | 2.1.322 | `adapters/version-floor.ts:13` | `2.1.322` | Yes | Install, load, uninstall pass. First invoke blocked by login and API credit. Invoke passed only after a rerun with a copied login: reply `ok`, graph not degraded. | Partially verified at floor. The file's top-line verdict is Fail, from the first invoke. |
 | grok-build | 1.0.77 | `adapters/version-floor.ts:14` | `1.0.77` | Yes | Install, inventory, disable/enable, uninstall pass. Load not run (interactive only). Invoke: hook ran (`success`), but the headless run refused a tool approval; no answer produced. | Partially verified at floor. |
-| hermes | v0.23.1 | `adapters/version-floor.ts:16` | `v0.23.1` | Yes | Install (per-file symlinks into a real plugin directory), validate, enable, disable, `/ultrathink-lessons` pass. `plugins remove` exits 1 for that install. | Partially verified at floor. |
+| hermes | v0.23.1 | `adapters/version-floor.ts:16` | `v0.23.1` | Yes | Per-file install: enable, `/ultrathink-lessons`, disable, and `plugins remove` (exit 0) pass (2026-11-15). A directory-link install fails `plugins remove` with exit 1. | Partially verified at floor. |
 | muse | 1.4.14 | `adapters/version-floor.ts:15` | `1.4.18` | No | Live runs were on 1.4.18, above the floor. The floor 1.4.14 is the earlier runbook observation. Install without the experimental gate exited non-zero on 3 of 3 attempts; a later retry in a fresh home exited 0 without it. | Unverified at floor. |
 | prime-agent | 0.10.2 | `adapters/version-floor.ts:17` | `0.10.2` (via `prime-agent -v`; the adapter CLI runs `--version`, which was not run live) | Version only | Step 1 (list) only. Blocked at step 2; no install performed. | Version observed live with `-v`. Lifecycle unverified. |
 
@@ -56,7 +56,7 @@ Status terms:
 - Floor: `adapters/version-floor.ts:16`. Contract: `host-contracts.md:115`. Adapter recorded constant: `adapters/hermes/index.ts:61`.
 - Runtime read: `adapters/cli.ts` HOSTS, `versionCommand: "hermes"`. The `v` prefix is ignored by the parser.
 - Live version: `docs/validation/results/hermes.md:5` (`Hermes Agent v0.23.1 (2026.9.24)`).
-- Live result: header `FAIL` at line 8. Step 10 (`hermes plugins remove ultrathink`) exits 1 for the symlinked install (`hermes.md:147-152`). Runbook step 11 removed the link by hand.
+- Live result: the 2026-11-13 run failed step 10 for a directory-link install (exit 1). The 2026-11-15 run passed `plugins remove` for the documented per-file install (exit 0) and reproduced the directory-link failure (`hermes.md`, 2026-11-15 section).
 
 ### muse (floor 1.4.14)
 
@@ -79,7 +79,7 @@ Status terms:
 2. Muse: no live run on the 1.4.14 floor. The 1.4.18 runs are above it.
 3. Prime-Agent: the install, load, and invoke lifecycle is unverified. `docs/validation/results/prime-agent.md` says no install was performed. `milestone-audit.md` AC5 is Partial, and Prime-Agent is one of several hosts that keep it there; the earlier unrecorded `/ultrathink-status` check is not evidence.
 4. Prime-Agent: `prime-agent --version` (the form the CLI calls) is not recorded live; the run used `-v`.
-5. Hermes: the per-file symlink install cannot be removed with `hermes plugins remove` (step 10 FAIL); the link was removed by hand.
+5. Hermes: a directory-link install (a symlinked plugin directory) cannot be removed with `hermes plugins remove` (exit 1). The documented per-file install removes cleanly (2026-11-15).
 6. Omp: the floor is not enforced in production at `611e926` (see omp evidence).
 
 AC3 status: **Partial**. Floors are recorded and each host's live status is stated above. No host has a validated minimum version.
