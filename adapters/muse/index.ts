@@ -97,9 +97,6 @@ export function createMuseAdapter(options: MuseAdapterOptions): CommandPort {
 		observedVersion = MUSE_RECORDED_VERSION,
 	} = options;
 	const version = checkVersionFloor("muse", observedVersion);
-	const fallbacks: readonly string[] = gateCapabilities(REQUESTED_CAPABILITIES, declared).flatMap(
-		(capability) => (capability.fallback === null ? [] : [capability.fallback]),
-	);
 	return {
 		list(): readonly CommandDefinition<unknown, unknown>[] {
 			return [...COMMANDS.keys()].map((name) => ({
@@ -135,6 +132,9 @@ export function createMuseAdapter(options: MuseAdapterOptions): CommandPort {
 					error: { category: "capability_missing", message: "host entry point missing" },
 				};
 			try {
+				const fallbacks = gateCapabilities(REQUESTED_CAPABILITIES, declared).flatMap(
+					(capability) => (capability.fallback === null ? [] : [capability.fallback]),
+				);
 				const result = await runner.run([verb]);
 				if (result.exitCode !== 0) return internalFailure();
 				const value =

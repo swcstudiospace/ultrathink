@@ -2,8 +2,14 @@
 // Copyright (C) 2026 SWC Studio
 
 import { describe, expect, test } from "bun:test";
+import { createClaudeCodeSubject } from "../../conformance/claude-code-subject.ts";
 import { CAPABILITY_FALLBACKS } from "../../core/src/capabilities/manifest.ts";
-import { type AdapterEntry, type AdapterRunner, createClaudeCodeAdapter } from "./index.ts";
+import {
+	type AdapterEntry,
+	type AdapterRunner,
+	CLAUDE_CODE_DECLARED_FLAGS,
+	createClaudeCodeAdapter,
+} from "./index.ts";
 
 const ENTRY_PATH = "hooks/hooks.json";
 const CONTEXT = { correlationId: "test" };
@@ -235,4 +241,43 @@ describe("createClaudeCodeAdapter", () => {
 			expect(runner.calls).toEqual([]);
 		}
 	});
+
+	test("declared flags match conformance/claude-code-subject.ts", () => {
+		expect(CLAUDE_CODE_DECLARED_FLAGS).toEqual(createClaudeCodeSubject().capabilities);
+	});
+
+	for (const flag of ["supports_slash_commands", "supports_hooks"] as const) {
+		test(`capability: ${flag} true runs the verb natively`, async () => {
+			const runner = fakeRunner({ exitCode: 0, stdout: "native\n" });
+			const adapter = createClaudeCodeAdapter({
+				runner,
+				entry: fakeEntry(true),
+				entryPath: ENTRY_PATH,
+				declared: { ...CLAUDE_CODE_DECLARED_FLAGS, [flag]: true },
+			});
+
+			const result = await adapter.invoke("ultrathink-status", {}, CONTEXT);
+
+			expect(result).toEqual({ ok: true, value: { stdout: "native\n" } });
+			expect(runner.calls).toEqual([["status"]]);
+		});
+
+		test(`capability: ${flag} false returns its fallback without running`, async () => {
+			const runner = fakeRunner({ exitCode: 0, stdout: "native\n" });
+			const adapter = createClaudeCodeAdapter({
+				runner,
+				entry: fakeEntry(true),
+				entryPath: ENTRY_PATH,
+				declared: { ...CLAUDE_CODE_DECLARED_FLAGS, [flag]: false },
+			});
+
+			const result = await adapter.invoke("ultrathink-status", {}, CONTEXT);
+
+			expect(result).toEqual({
+				ok: false,
+				error: { category: "capability_missing", message: CAPABILITY_FALLBACKS[flag] },
+			});
+			expect(runner.calls).toEqual([]);
+		});
+	}
 });

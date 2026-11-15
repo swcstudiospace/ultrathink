@@ -205,6 +205,65 @@ describe("createHermesAdapter", () => {
 		expect(result).toEqual({ ok: true, value: { stdout: "engine output" } });
 	});
 
+	test("a true supports_persistent_state flag runs the state-writing verbs unchanged", async () => {
+		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "engine output" }));
+		const adapter = createHermesAdapter({
+			runner: fake.runner,
+			entry: presentEntry,
+			entryPath: HERMES_ENTRY_PATH,
+			capabilities: { supports_slash_commands: true, supports_persistent_state: true },
+		});
+
+		for (const name of ["ultrathink-on", "ultrathink-off", "ultrathink-skip"]) {
+			const result = await adapter.invoke(name, {}, context);
+			expect(result).toEqual({ ok: true, value: { stdout: "engine output" } });
+		}
+		expect(fake.calls).toEqual([["on"], ["off"], ["skip"]]);
+	});
+
+	test("a false supports_persistent_state flag returns its fallback for state-writing verbs and never runs the engine", async () => {
+		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "" }));
+		for (const capabilities of [
+			{ supports_slash_commands: true, supports_persistent_state: false },
+			{ supports_slash_commands: true },
+		]) {
+			const adapter = createHermesAdapter({
+				runner: fake.runner,
+				entry: presentEntry,
+				entryPath: HERMES_ENTRY_PATH,
+				capabilities,
+			});
+
+			for (const name of ["ultrathink-on", "ultrathink-off", "ultrathink-skip"]) {
+				const result = await adapter.invoke(name, {}, context);
+				expect(result).toEqual({
+					ok: false,
+					error: {
+						category: "capability_missing",
+						message: CAPABILITY_FALLBACKS.supports_persistent_state,
+					},
+				});
+			}
+		}
+		expect(fake.calls).toEqual([]);
+	});
+
+	test("quick, status and track run without supports_persistent_state", async () => {
+		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "engine output" }));
+		const adapter = createHermesAdapter({
+			runner: fake.runner,
+			entry: presentEntry,
+			entryPath: HERMES_ENTRY_PATH,
+			capabilities: { supports_slash_commands: true, supports_persistent_state: false },
+		});
+
+		for (const name of ["ultrathink-quick", "ultrathink-status", "ultrathink-track"]) {
+			const result = await adapter.invoke(name, {}, context);
+			expect(result).toEqual({ ok: true, value: { stdout: "engine output" } });
+		}
+		expect(fake.calls).toEqual([["quick"], ["status"], ["track"]]);
+	});
+
 	test("a host version below the floor is refused and never runs the engine", async () => {
 		const fake = fakeRunner(async () => ({ exitCode: 0, stdout: "" }));
 		for (const hostVersion of ["v0.23.0", "0.9.0"]) {

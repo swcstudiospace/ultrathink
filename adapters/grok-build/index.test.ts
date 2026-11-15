@@ -189,6 +189,38 @@ describe("grok-build adapter", () => {
 		expect(calls).toEqual([]);
 	});
 
+	test("capability: a true slash-command flag runs every verb natively", async () => {
+		for (const name of COMMAND_NAMES) {
+			const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+			const port = createGrokBuildAdapter({
+				runner,
+				entry: presentEntry,
+				entryPath: ENTRY_PATH,
+				declared: { ...GROK_BUILD_DECLARED_FLAGS, supports_slash_commands: true },
+			});
+
+			const result = await port.invoke(name, undefined, CONTEXT);
+
+			expect(calls).toHaveLength(1);
+			expect(result).toEqual({ ok: true, value: { stdout: "ran" } });
+		}
+	});
+
+	test("capability: an undeclared hooks flag resolves disabled and returns its fallback", async () => {
+		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
+		const port = createGrokBuildAdapter({
+			runner,
+			entry: presentEntry,
+			entryPath: ENTRY_PATH,
+			declared: { supports_slash_commands: true },
+		});
+
+		const result = await port.invoke("ultrathink-skip", undefined, CONTEXT);
+
+		expect(result).toEqual({ ok: true, value: { stdout: CAPABILITY_FALLBACKS.supports_hooks } });
+		expect(calls).toEqual([]);
+	});
+
 	test("version: a version below the floor is refused and never runs", async () => {
 		const { runner, calls } = fakeRunner({ exitCode: 0, stdout: "ran" });
 		const port = createGrokBuildAdapter({

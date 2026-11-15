@@ -92,9 +92,6 @@ export function createGrokBuildAdapter(options: GrokBuildAdapterOptions): Comman
 		"grok-build",
 		options.observedVersion === undefined ? RECORDED_GROK_BUILD_VERSION : options.observedVersion,
 	);
-	const disabledFallbacks = gateCapabilities(COMMAND_FLAGS, declared).flatMap((capability) =>
-		capability.enabled || capability.fallback === null ? [] : [capability.fallback],
-	);
 
 	return {
 		list(): readonly CommandDefinition<unknown, unknown>[] {
@@ -122,6 +119,9 @@ export function createGrokBuildAdapter(options: GrokBuildAdapterOptions): Comman
 				);
 			}
 			// Running the verb with a disabled flag would silently ignore that capability, so return its fallback.
+			const disabledFallbacks = gateCapabilities(COMMAND_FLAGS, declared).flatMap((capability) =>
+				capability.enabled || capability.fallback === null ? [] : [capability.fallback],
+			);
 			if (disabledFallbacks.length > 0) {
 				return { ok: true, value: { stdout: disabledFallbacks.join("\n") } };
 			}

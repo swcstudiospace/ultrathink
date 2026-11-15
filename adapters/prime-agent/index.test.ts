@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { createPrimeAgentSkillSubject } from "../../conformance/prime-agent-subject.ts";
 import { CAPABILITY_FALLBACKS } from "../../core/src/capabilities/manifest.ts";
+import { gateCapabilities } from "../capability-gate.ts";
 import {
 	type AdapterEntry,
 	type AdapterRunner,
@@ -149,6 +150,40 @@ describe("createPrimeAgentAdapter", () => {
 			error: { category: "capability_missing", message: CAPABILITY_FALLBACKS.supports_skills },
 		});
 		expect(calls).toEqual([]);
+	});
+
+	test("gate: supports_skills runs natively when declared and falls back when not", async () => {
+		const native = fakeRunner({ exitCode: 0, stdout: "ok\n" });
+		const nativeAdapter = createPrimeAgentAdapter({
+			runner: native.runner,
+			entry: presentEntry,
+			entryPath: PRIME_AGENT_ENTRY_PATH,
+			declared: { ...PRIME_AGENT_DECLARED_CAPABILITIES, supports_skills: true },
+		});
+		expect(await nativeAdapter.invoke("ultrathink-on", {}, context)).toEqual({
+			ok: true,
+			value: { stdout: "ok\n" },
+		});
+		expect(native.calls).toEqual([["on"]]);
+
+		const degraded = fakeRunner({ exitCode: 0, stdout: "ok\n" });
+		const degradedAdapter = createPrimeAgentAdapter({
+			runner: degraded.runner,
+			entry: presentEntry,
+			entryPath: PRIME_AGENT_ENTRY_PATH,
+			declared: { ...PRIME_AGENT_DECLARED_CAPABILITIES, supports_skills: false },
+		});
+		const [gated] = gateCapabilities(["supports_skills"], { supports_skills: false });
+		expect(gated).toEqual({
+			flag: "supports_skills",
+			enabled: false,
+			fallback: CAPABILITY_FALLBACKS.supports_skills,
+		});
+		expect(await degradedAdapter.invoke("ultrathink-on", {}, context)).toEqual({
+			ok: false,
+			error: { category: "capability_missing", message: CAPABILITY_FALLBACKS.supports_skills },
+		});
+		expect(degraded.calls).toEqual([]);
 	});
 
 	test("valid: a skills-only request runs when no other flag is declared", async () => {

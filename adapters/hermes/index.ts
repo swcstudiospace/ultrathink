@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
+import type { CapabilityFlag } from "../../core/src/capabilities/manifest.ts";
 import type {
 	CommandDefinition,
 	CommandPort,
@@ -63,6 +64,21 @@ const HERMES_RECORDED_VERSION = "v0.23.1";
 /** Verbs accepted by `bin/ultrathink`. Each one is exposed to Hermes as `ultrathink-<verb>`. */
 const VERBS = ["quick", "skip", "off", "on", "track", "status"] as const;
 
+type HermesVerb = (typeof VERBS)[number];
+
+/**
+ * Flags each verb relies on. Every verb is a slash command. `on`, `off` and `skip` write state in the host state
+ * dir when run bare, so they also need `supports_persistent_state`. `quick`, `status` and `track` run without it.
+ */
+const VERB_CAPABILITIES: Readonly<Record<HermesVerb, readonly CapabilityFlag[]>> = {
+	quick: ["supports_slash_commands"],
+	status: ["supports_slash_commands"],
+	track: ["supports_slash_commands"],
+	on: ["supports_slash_commands", "supports_persistent_state"],
+	off: ["supports_slash_commands", "supports_persistent_state"],
+	skip: ["supports_slash_commands", "supports_persistent_state"],
+};
+
 const COMMAND_ERRORS: readonly ErrorCategory[] = [
 	"invalid_input",
 	"capability_missing",
@@ -84,9 +100,9 @@ function failure(category: ErrorCategory, message: string): CommandResult<unknow
 /**
  * CommandPort over the Hermes host. Each command runs `bin/ultrathink <verb>` once. The adapter holds no
  * engine logic. Runner failures and non-zero exits both return `internal` with a fixed message, because the
- * thrown text may carry secrets. Every command is a slash command, so a disabled `supports_slash_commands`
- * flag returns its documented fallback text. A host version below the floor, or unknown, is refused with
- * `version_mismatch` before the engine runs.
+ * thrown text may carry secrets. Each verb is gated on the flags it relies on (`VERB_CAPABILITIES`). A disabled flag
+ * returns its documented fallback text and the engine does not run. A host version below the floor, or unknown, is
+ * refused with `version_mismatch` before the engine runs.
  */
 export function createHermesAdapter(options: HermesAdapterOptions): CommandPort {
 	const {
@@ -96,9 +112,14 @@ export function createHermesAdapter(options: HermesAdapterOptions): CommandPort 
 		capabilities = HERMES_DECLARED_CAPABILITIES,
 		hostVersion = HERMES_RECORDED_VERSION,
 	} = options;
-	const commandsFallback = gateCapabilities(["supports_slash_commands"], capabilities).find(
-		(gate) => !gate.enabled,
-	)?.fallback;
+	const verbFallbacks = new Map<string, string>();
+	for (const verb of VERBS) {
+		const blocked = gateCapabilities(VERB_CAPABILITIES[verb], capabilities).find(
+			(gate) => !gate.enabled,
+		);
+		if (blocked !== undefined && blocked.fallback !== null)
+			verbFallbacks.set(verb, blocked.fallback);
+	}
 	const version = checkVersionFloor("hermes", hostVersion);
 	const versionRefusal: CommandResult<unknown> | null = version.ok
 		? null
@@ -123,8 +144,8 @@ export function createHermesAdapter(options: HermesAdapterOptions): CommandPort 
 			const verb = COMMAND_VERBS.get(name);
 			if (verb === undefined) return failure("invalid_input", `unknown command: ${name}`);
 			if (versionRefusal !== null) return versionRefusal;
-			if (typeof commandsFallback === "string")
-				return failure("capability_missing", commandsFallback);
+			const fallback = verbFallbacks.get(verb);
+			if (fallback !== undefined) return failure("capability_missing", fallback);
 			if (!entry.exists(entryPath))
 				return failure("capability_missing", "host entry point missing");
 			let outcome: AdapterOutcome;
