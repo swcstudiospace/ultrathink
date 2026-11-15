@@ -196,3 +196,42 @@ Hermes' data dir for ultrathink resolves to `$HERMES_HOME/ultrathink` (`bridge.p
 - Operator's real install at `/root/.hermes/plugins/ultrathink` was untouched. It remains in place.
 - Telegram incident (see Isolation): an isolated gateway polled Telegram with an inherited bot token for about 35 s. Recommend the operator check `TELEGRAM_*` handling if isolated runs are repeated; use `env -i`.
 - `hosts/hermes/__pycache__/` created by validate (gitignored). Not removed.
+
+## Removal-path validation, per-file install (2026-11-15)
+
+Date (YYYY-MM-DD): 2026-11-15
+Host: Hermes Agent v0.23.1 (2026.9.24). `hermes --version` → `Hermes Agent v0.23.1 (2026.9.24) · stable · local 3b4215785882`. Python 3.14.9.
+Checkout: `/root/src/repos/claude-ultrathink`, HEAD `66f5c7f` (the 2026-11-13 run recorded `d455baf`). No code changed. Nothing committed.
+Tester: HermesRemovalPath (worker agent).
+Verdict: **pass** for the per-file install in `docs/install/hermes.md`. `hermes plugins remove ultrathink` exits 0 and removes the plugin directory, with or without a prior `disable`. The directory-link install still fails with the step-10 error (contrast below), so the install doc's "link the files, not the directory" guidance holds.
+
+Isolation: `ISO=/tmp/hermes-rm-z5BG`, `HOME=$ISO/home`, `HERMES_HOME=$ISO/home/.hermes`. Every hermes command ran under `env -i PATH TERM LANG HOME HERMES_HOME`, so no keys or tokens were inherited. No credential files were copied. The real `/root/.hermes/plugins/ultrathink` was only checked with a read-only `ls -ld` after cleanup; it is still a symlink to `hosts/hermes`. `plugins enable` reported `No running gateway answered`, so no gateway was involved.
+
+Install (doc "Install", per-file): `mkdir -p "$PLUGIN_DIR"`, then `ln -sf` for each `hosts/hermes/*.py` (skipping `*_test.py`) and `plugin.yaml`. Result: `$PLUGIN_DIR` is a real directory holding three links (`__init__.py`, `bridge.py`, `plugin.yaml`), each resolving into `hosts/hermes/`.
+- `hermes plugins enable ultrathink` → exit 0, `✓ Plugin ultrathink enabled.`
+- `hermes plugins list --plain` → exit 0, `enabled      user     1.4.0    ultrathink`.
+
+Removal attempt A (enabled, no prior disable): `hermes plugins remove ultrathink` → **exit 0**
+```
+
+✗ Plugin ultrathink removed from /tmp/hermes-rm-z5BG/home/.hermes/plugins
+```
+The `✗` glyph appears on the success path. The exit status and filesystem state are the evidence. After: `ls` of `plugins/ultrathink` → No such file (exit 2); `plugins/` is empty; `plugins list --plain | grep -i ultrathink` → no match; the three `hosts/hermes` files are intact.
+
+Removal attempt B (doc "Uninstall" sequence, fresh per-file install, enabled):
+- `hermes plugins disable ultrathink` → exit 0, `⊘ Plugin ultrathink disabled.` followed by `No running gateway answered`.
+- `hermes plugins remove ultrathink` → exit 0, same output as A.
+- `ls -l ~/.hermes/plugins/ultrathink` → exit 2, `No such file or directory`. This is the doc's expected "nothing left".
+- After: no ultrathink row in `plugins list --plain`. `$HERMES_HOME/ultrathink` does not exist. Install, enable and remove never created it, so the doc's "Hermes keeps plugin data directories on remove" is still not confirmed.
+
+Contrast, directory-link install (`ln -s "$PWD/hosts/hermes" "$PLUGIN_DIR"`): `enable` → exit 0. `hermes plugins remove ultrathink` → **exit 1**
+```
+Error: Invalid plugin name 'ultrathink': resolves outside the plugins directory.
+```
+The link remained. This reproduces the 2026-11-13 step-10 failure on the same Hermes version.
+
+Other removal paths: `hermes plugins --help` (exit 0) lists `remove (rm, uninstall)` as the only removal verb. `disable` keeps files. No other supported removal path exists.
+
+Lifecycle: per-file install → enabled → (optionally disabled) → removed. Remove works from either enabled or disabled.
+
+Cleanup: `rm -rf "$ISO"`, then `ls -d "$ISO"` → No such file (exit 2). `git status --short` shows only the pre-existing `?? .gsd-run/`.
