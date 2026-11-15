@@ -32,6 +32,16 @@ describe("credential scan unquoted assignments", () => {
 		]);
 	});
 
+	test("does not flag a count-suffixed name such as MAX_TOKEN_COUNT", () => {
+		expect(findingsOf("MAX_TOKEN_COUNT=40960000\n")).toEqual([]);
+	});
+
+	test("flags a secret value that starts with a dollar sign", () => {
+		expect(findingsOf("API_KEY=$ecretPassw0rd\n")).toEqual([
+			{ line: 1, pattern: "secret-env-assignment", preview: "$ecr****" },
+		]);
+	});
+
 	test("flags an exported unquoted private key assignment", () => {
 		expect(findingsOf("export MY_PRIVATE_KEY=zq9pLx2wVb7r\n")).toEqual([
 			{ line: 1, pattern: "secret-env-assignment", preview: "zq9p****" },

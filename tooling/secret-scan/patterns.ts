@@ -28,7 +28,7 @@ export function isPlaceholderValue(value: string): boolean {
 	const trimmed = value.trim();
 	if (trimmed === "") return true;
 	if (/^<.*>$/.test(trimmed)) return true;
-	if (trimmed.startsWith("$")) return true;
+	if (/^\$\{?[A-Z_][A-Z0-9_]*\}?$/.test(trimmed)) return true;
 	if (/^(?:process\.env|Bun\.env|import\.meta)\b/.test(trimmed)) return true;
 	if (/^[x*._-]+$/i.test(trimmed)) return true;
 	if (/^your[-_]/i.test(trimmed)) return true;
@@ -69,7 +69,7 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
 		// Quoted values are left to secret-assignment.
 		name: "secret-env-assignment",
 		pattern:
-			/^\s*(?:export\s+)?([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)(?!S(?![A-Z0-9_]))[A-Z0-9_]*)\s*=\s*([^\s"'`#]\S{7,})/,
+			/^\s*(?:export\s+)?(?![A-Z0-9_]*_(?:COUNT|LIMIT|MAX|MIN|NUM|TTL|TIMEOUT)\s*=)([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)(?!S(?![A-Z0-9_]))[A-Z0-9_]*)\s*=\s*([^\s"'`#]\S{7,})/,
 		valueGroup: 2,
 		isPlaceholder: isPlaceholderValue,
 		appliesTo: (file) => /(?:^|\/)\.env(?:\.[^/]*)?$/.test(file),
