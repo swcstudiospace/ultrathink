@@ -19,7 +19,7 @@ Status terms:
 
 | Host | Floor | Floor source | Version read live | Live run on floor | Live outcome | Status |
 |---|---|---|---|---|---|---|
-| omp | 18.19.0 | `adapters/version-floor.ts:18` | `omp/18.19.0` | Yes | Pass: interactive steps 1-10 (install through uninstall). Headless steps 6-7 pass through `omp --mode rpc` on an older checkout (2026-11-15). | Partially verified at floor. Minimum not verified. |
+| omp | 18.19.0 | `adapters/version-floor.ts:18` | `omp/18.19.0` | Yes | Pass: interactive steps 1-10 (install through uninstall). Headless steps 6-7 ran through `omp --mode rpc`, not print mode (2026-11-15, older checkout). | Partially verified at floor. Minimum not verified. |
 | claude-code | 2.1.322 | `adapters/version-floor.ts:13` | `2.1.322` | Yes | Install, load, uninstall pass. First invoke blocked by login and API credit. Invoke passed only after a rerun with a copied login: reply `ok`, graph not degraded. | Partially verified at floor. The file's top-line verdict is Fail, from the first invoke. |
 | grok-build | 1.0.77 | `adapters/version-floor.ts:14` | `1.0.77` | Yes | Install, inventory, disable/enable, uninstall pass. Load not run (interactive only). Headless invoke under `--always-approve` replies `OK` (2026-11-15); the model's tool-call behaviour and token rotation are not verified. | Partially verified at floor. |
 | hermes | v0.23.1 | `adapters/version-floor.ts:16` | `v0.23.1` | Yes | Per-file install: enable, `/ultrathink-lessons`, disable, and `plugins remove` (exit 0) pass (2026-11-15). A directory-link install fails `plugins remove` with exit 1. | Partially verified at floor. |
@@ -56,7 +56,7 @@ Status terms:
 - Floor: `adapters/version-floor.ts:16`. Contract: `host-contracts.md:115`. Adapter recorded constant: `adapters/hermes/index.ts:61`.
 - Runtime read: `adapters/cli.ts` HOSTS, `versionCommand: "hermes"`. The `v` prefix is ignored by the parser.
 - Live version: `docs/validation/results/hermes.md:5` (`Hermes Agent v0.23.1 (2026.9.24)`).
-- Live result: the 2026-11-13 run failed step 10 for a directory-link install (exit 1). The 2026-11-15 run passed `plugins remove` for the documented per-file install (exit 0) and reproduced the directory-link failure (`hermes.md`, 2026-11-15 section).
+- Live result: the 2026-11-13 run failed step 10 for a directory-link install (exit 1; `hermes.md:147-152` records the plugin entry as a symlink to `hosts/hermes`). The 2026-11-15 run passed `plugins remove` for the documented per-file install (exit 0) and reproduced the directory-link failure (`hermes.md`, 2026-11-15 section).
 
 ### muse (floor 1.4.14)
 
