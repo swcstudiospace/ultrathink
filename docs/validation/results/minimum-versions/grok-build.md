@@ -11,13 +11,14 @@ Tester: MinVersionGrokBuild (worker agent).
 - **Plugin lifecycle passes from 1.0.42 among the stable 1.0.x releases tested.** The next lower release, 1.0.41, fails (2 of 2 runs), and every stable 1.0.x release below 1.0.42 was tested and fails the hook.
 - **Host-level invoke works from 1.0.13.** Below 1.0.13 the server returns HTTP 426. The plugin hook is still absent at 1.0.13 through 1.0.40, so 1.0.13 does not meet the plugin criterion.
 - **Scope limit:** the 0.x line was not fully validated (15 releases untested, see "0.x line"), so 1.0.42 is the lowest validated plugin-lifecycle release on the 1.0.x line, not a proven global minimum.
+- **Credential scope (unverified):** every invoke ran with a copy of the live `/root/.grok/auth.json`. Refresh-token rotation was not verified, so these runs may have rotated a token that the real login still relies on. The real home is not shown to be unaffected; see Login.
 
 ## Criteria
 
 - Install: `grok plugin install /root/src/worktrees/ut-min-grok-build --trust`, exit 0, then `grok plugin list` and `grok plugin details ultrathink`, exit 0.
 - Load: `plugin details` inventory only. Interactive load was not run.
 - Invoke: `grok -p "Say OK in one word." --always-approve`, run from an isolated work dir with `HOME` and `GROK_HOME` set to the run's isolated home, and `env -u ANTHROPIC_API_KEY -u XAI_API_KEY`. The invoke passes only if exit 0, stdout is `OK`, and `sessions/*/updates.jsonl` shows `hook_execution` with `event_name: user_prompt_submit` and `status: success`. Host-only invokes without the hook event are recorded as "no hook".
-- Login: `/root/.grok/auth.json` was copied (`cp -p`) into each isolated `GROK_HOME` for the invoke step and removed right after. Contents were never printed. The real file's mtime was unchanged (`2026-11-14 23:49:12 UTC`).
+- Login: `/root/.grok/auth.json` was copied (`cp -p`) into each isolated `GROK_HOME` for the invoke step and removed right after. Contents were never printed. The real file's mtime was unchanged (`2026-11-14 23:49:12 UTC`). Refresh-token rotation was not verified. If an isolated invoke rotated the token server-side, the real `/root/.grok/auth.json` may hold a token the server no longer accepts. The unchanged mtime does not rule this out. This is an unverified risk, not an observed effect.
 - Exit codes: `npm` = `npm install --prefix`; `inst` = `grok plugin install`; `inv` = `grok -p` invoke.
 
 ## Tested versions (stable npm releases)
@@ -63,4 +64,4 @@ The 1.0.77 run here matches the floor observation already recorded in `docs/vali
 - Isolated install prefixes, homes, and copied login files were under `/tmp/ut-min-grok-build` and were removed after this record was written.
 - Each run removed its copied `auth.json` immediately after invoke.
 - No credential value was printed, written, or committed.
-- Real `~/.grok` was not modified: `auth.json` and `bin` mtimes were unchanged after the runs.
+- Real `~/.grok` mtimes were unchanged after the runs: `auth.json` and `bin`. Refresh-token state was not checked, so this does not show the real login was unaffected (see Login).

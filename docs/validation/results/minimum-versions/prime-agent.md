@@ -6,7 +6,7 @@ Checkout: `origin/main` (worktree `docs/min-version-prime-agent`), files copied 
 
 ## Result
 
-**Validated minimum: `0.3.1`.** It is the lowest tested release that passes the full lifecycle, and its immediate predecessor `0.3.0` was tested and fails at the install step.
+**Validated minimum: `0.3.1`.** It is the lowest passing tested release. Its invoke (step 5) ran on a local stub provider, so this is not a live-model result. Its immediate predecessor `0.3.0` was tested and fails at the install step.
 
 Versions below `0.3.1` tested so far: `0.3.0`, `0.2.0`, `0.2.1`, `0.1.1`, `0.1.0` all fail at `package install`, with `Error: Unknown option: --local` (exit 1). The `package` subcommand and `--local` flag are not present in those releases.
 
@@ -19,7 +19,8 @@ The floor `0.10.2` passes. The tested passing releases are exactly: `0.10.2`, `0
 3. `prime-agent package list` (expect `Project packages:`)
 4. Load: `prime-agent --mode rpc --cwd <project> --no-session`, then stdin `{"id":"1","type":"get_commands"}`. Expect `skill:ultrathink`.
 5. Invoke: `prime-agent -p --no-session --cwd <project> --provider ut-mock --model ut-mock-model -- "/skill:ultrathink" "/ultrathink-status"`
-6. `prime-agent package remove <stage> --local`, then `package list` (expect `No packages installed.`)
+6. `prime-agent package remove <stage> --local`
+7. `prime-agent package list` (expect `No packages installed.`)
 
 Each release ran with its own `HOME`, `XDG_*`, and `PRIME_AGENT_CODING_AGENT_DIR`, with `PRIME_AGENT_TELEMETRY=0` and `DO_NOT_TRACK=1`.
 

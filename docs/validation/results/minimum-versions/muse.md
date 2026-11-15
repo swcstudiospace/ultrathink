@@ -62,7 +62,7 @@ This differs from the 2026-11-13 matrix run on 1.4.18, which saw non-gated insta
 
 - Deleted `/tmp/muse-min` (both homes, the 1.4.18 binary, workspace, logs) and `/tmp/muse-scan`. Verified both absent.
 - The isolated homes were created fresh. No credential file was copied, and no `auth.json` was read.
-- Not used for the lifecycle. Before the isolated runs, I ran the real launcher `~/.local/bin/muse` for read-only probes: `--version`, `--help`, `update --help`, and `muse-launcher --help`. The launcher can refresh its update-check state (`.muse-update-checked-at`, `.muse-release-info.json`) in `~/.local/bin`. I read `~/.config/muse` only by file name (`ls`), not its contents. No plugin command ran against the real home, and no credentials were read or copied.
+- Before the isolated runs, I ran the real launcher `~/.local/bin/muse` for probes: `--version`, `--help`, `update --help`, and `muse-launcher --help`. The launcher can write its update-check state, `.muse-update-checked-at` and `.muse-release-info.json`, in `~/.local/bin`. Whether these probes changed those files was not checked. I read `~/.config/muse` only by file name (`ls`), not its contents. No plugin command ran against the real home, and no credentials were read or copied.
 - Worktree `/root/src/worktrees/ut-min-muse`: this file is the only addition. Not committed.
 
 ## 2026-11-15 gap run: releases below 1.4.18

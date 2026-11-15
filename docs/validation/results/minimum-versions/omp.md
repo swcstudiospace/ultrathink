@@ -37,7 +37,7 @@ Notes on the method:
 
 - **Bun runtime.** `omp` 18.19.0 refuses to start on Bun 1.4.0 with `error: Bun runtime must be >= 1.4.4 (found v1.4.0)`. That is the Bun on this machine's PATH. All runs used Bun 1.4.4, installed into an isolated prefix (`bun@1.4.4` from npm). The Omp install doc does not state this requirement; it is enforced by the host itself.
 - **Credentials.** Without a login, step 6 exits 1 before any slash command runs: `No default model selected. Use /login, set an API key environment variable, or select a local model`. For the passing runs, the login files `agent.db` (with `-wal` and `-shm`), `config.yml` and `models.yml` were copied from the real `~/.omp/agent` into the isolated agent directory, mode 600. Values were never printed. The copies were deleted at the end of each run.
-- **Real-home extension.** Omp loaded the real-home extension directory `/root/.omp/extensions/agent-swarm` in addition to the isolated home. It failed to load on 17.4.2, 18.0.0, 18.18.9 and 18.19.0 (`Failed to load extension /root/.omp/extensions/agent-swarm`), and did not appear in the 17.0.0 run. The ultrathink status notify appeared in every run, so this did not block the plugin.
+- **Real-home extension.** Omp loads the real-home extension directory `/root/.omp/extensions/agent-swarm` in addition to the isolated home when the run's copied config or cache names it. In the sweep, the load failed on 17.4.2, 18.0.0, 18.18.9 and 18.19.0 (`Failed to load extension /root/.omp/extensions/agent-swarm`). The sweep's 17.0.0 run showed no such line, but that run was not isolated (see the caveat above), so it does not show the extension was absent. The clean-home 17.0.0 attempt 1 did attempt the load (`Cannot find module`); that attempt is INVALID and excluded from every result in this file. The clean-home 17.0.0 attempt 2 and both clean-home 16.0.0 attempts show no real-home extension load. The ultrathink status notify appeared on every valid run with credentials that completed step 6, so the agent-swarm load failures did not block the plugin.
 
 ## Results
 
@@ -77,7 +77,7 @@ None established.
 
 ## Cleanup
 
-- The isolated directory `/tmp/ut-min-omp` (npm prefixes, isolated homes with copied login files, Bun 1.4.4, logs) was removed. At cleanup time it no longer existed, so its removal was confirmed by a missing path, not by a deletion step in this run. The cause was not identified.
+- The isolated directory `/tmp/ut-min-omp` (npm prefixes, isolated homes with copied login files, Bun 1.4.4, logs) is recorded as removed, but it was already missing at cleanup time. Its removal was confirmed only by a missing-path check, not by a deletion step in this run. The cause of its disappearance is unidentified.
 - Leftover RPC processes from the 9.0.0 run were killed.
 - The copied login values were never printed. No credential values appear in this file.
 - Only this file was created in the worktree. Nothing was committed.

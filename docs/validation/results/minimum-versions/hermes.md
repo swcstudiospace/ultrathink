@@ -9,7 +9,7 @@ Checkout: worktree `/root/src/worktrees/ut-min-hermes`, branch `docs/min-version
 
 **None validated.** The lifecycle passed on every tested release from v0.21.5 through v0.23.1 (v0.21.5, v0.21.6 and v0.21.7 added 2026-11-15; see the dated section below). No tested release has failed, so the rule for a validated minimum (the next lower release fails) is not met, and the lowest passing tested release (v0.21.5, tag `v2026.9.24`) is not a validated minimum. The fallback ("lowest tested release if no lower release is installable offline") does not apply: lower official releases are installable from GitHub. The original sweep was stopped on the main agent's instruction at v0.22.0.
 
-Python: every run in this file used Python 3.14.8 (see "Python per run" under Sources and method). The declared range for v2026.9.24 is `>=3.11,<3.14`, so that tag was not run on a declared-range Python. The declared range is not recorded for the other tags, so their range status is unverified.
+Python: every run in this file used Python 3.14.8 (see "Python per run" under Sources and method). The file records a declared range only for v2026.9.24 (`>=3.11,<3.14`); 3.14.8 is outside it, so that tag was not run on a declared-range Python. The declared range is not recorded in this file for the other tags (v0.21.6, v0.21.7, v0.22.0 to v0.23.1), so their range status is unverified.
 
 Untested lower releases: v0.21.4 (`v2026.9.21`, which its release page titles "Hermes Agent v0.21.4") and earlier calendar tags. No `v0.21.5` git tag exists; the release titled "Hermes Agent v0.21.5" is tag `v2026.9.24`.
 
