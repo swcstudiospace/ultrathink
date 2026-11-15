@@ -418,3 +418,80 @@ Invoke:
 - No command was run against the real home. The isolated `ultrathink/` dir had no `last-skip.json` when listed before Run 1 step 10, and it did not exist during Run 2. Nothing links these writes to the isolated runs.
 - The real `control.json` mtime stayed `2026-11-10 12:13:14` across the run.
 - [INFERENCE] The writer is probably another live omp session on this machine that consumed a skip-once flag. The session running this agent is one candidate. Not identified. The operator should check.
+
+## Run 3 (headless, isolated, 2026-11-15)
+
+Host: `omp/18.20.0` (`omp --version`). Checkout: `d455baf` (branch `plugin-core-slice`); no commits made. Plugin: `ultrathink@1.4.0` linked from the checkout with `omp plugin install .` (cwd repo root).
+
+### Isolation
+
+- `ISO=/tmp/omp-headless-G5YS`; `HOME=$ISO/home`; `PI_CODING_AGENT_DIR=$ISO/home/.omp/agent`. Headless invocations ran from `$ISO/work`, never from the repo.
+- Credentials: copied only after the no-credential attempt failed (step 1 below). Copied `agent.db` (login store, `auth_credentials` table) via `sqlite3 .backup`, and `config.yml` (holds `modelRoles`). `models.yml` and `.env` were not copied. No credential value was printed or written to the repo. `rm -rf` of `$ISO` removed the copies; confirmed absent.
+- Plugin registry resolved under `$HOME/.omp/plugins`, not under `PI_CODING_AGENT_DIR`.
+- The copied `config.yml` has an `extensions` entry for `agent-swarm`. Every run printed `Failed to load extension /root/.omp/extensions/agent-swarm` to stderr. Stdout was unaffected.
+
+### Headless paths tried
+
+1. No credentials: `omp -p "/ultrathink-<name>"` for all eight commands, and `omp --mode rpc` for `/ultrathink-status`. Exit 1 each, with `No default model selected. Use /login, set an API key environment variable, ...`. Same gate as Run 2.
+2. With copied credentials, `omp -p "/ultrathink-status"` (text and `--mode json`): exit 0, stdout empty. Print mode does not show command output.
+3. With copied credentials, `omp --mode rpc`: exit 0. Each `prompt` response has `success: true`. Command output arrives as `extension_ui_request` `notify` events, or as `message_end` custom messages for `/ultrathink-ui` and `/ultrathink-swarm`. This is the working headless path.
+
+Steps 6 and 7 ran in one RPC session, in Run 1 order: quick, skip, off, on, track, ui, swarm, status. Each prompt was sent after the previous `prompt` response. The skip-once flag is per session (`sessions/<id>.skip`), so `skip` and `status` must share one session. Separate RPC processes do not see it.
+
+### Step 6: registered commands (headless RPC)
+
+All eight responded; RPC process exit 0.
+
+- `/ultrathink-quick` (no text): `Usage: /ultrathink-quick <message>. Sends the message to the agent as typed, without planning.` Matches Run 1.
+- `/ultrathink-skip`: `Prompt Uplift will skip the next prompt in this session`. Matches.
+- `/ultrathink-off`: `Prompt Uplift off`. Matches.
+- `/ultrathink-on`: `Prompt Uplift on`. Matches.
+- `/ultrathink-track`: `Tracking: on (not configured: set notion.dataSourceUrl / linear.team)`, `Notion: not configured`, `Linear team: not configured`. Matches.
+- `/ultrathink-ui`: custom message `Ultrathink snapshot — Project: work | Session: ... | No saved Jev decisions for this session | ...`, ending `Native dashboard unavailable in this host. Showing a local read-only snapshot; use Omp TUI for guarded actions.` Expected difference: no TUI overlay headless. Registration confirmed.
+- `/ultrathink-swarm` (no arg): custom message starting `no lane briefs given. /ultrathink-swarm usage: ...`. Matches Run 1's usage text. No lane started.
+- Extra probe, outside the procedure: `/ultrathink-swarm status` in its own session returned `AgentSwarm lanes unavailable: ULTRATHINK_SWARM_ROOT (or SWARM_ROOT fallback) is not set`. No lane started.
+
+### Step 7: /ultrathink-status (headless RPC, after step 6 in the same session)
+
+RPC exit 0. Reply, verbatim (`notify`, 20 lines):
+
+```
+Prompt Uplift on (skipping next prompt)
+Engine: omp-native:auto (live model not observed)
+Claude: claude-haiku-5-5 · auth plan · fallback to Grok off
+Grok: grok-build-0.1 · transport http
+SuperGrok OAuth: not logged in (run grok login)
+Graph of Thought on
+HITL clarifications on · max 4
+Tracking: on (not configured: set notion.dataSourceUrl / linear.team)
+Notion: not configured
+Linear team: not configured
+Substrate: off (optional: set substrate.url or SUBSTRATE_URL)
+Ship: off (opt-in: set ship.enabled)
+Knowledge base: off (opt-in: set hitl.knowledgeBase)
+Decisions: on · no Jev key (bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)
+Hindsight: off (opt-in: set hindsight.enabled)
+RAGFlow: off (opt-in: set ragflow.enabled)
+Teach: on · capture auto · recall on · 0 confirmed, 0 candidate · Hindsight off · outbox 0
+Stack: 2 off · 3 missing (run ultrathink stack)
+Engine request: auto (config) · concurrency 3
+State: /tmp/omp-headless-G5YS/home/.omp/agent/ultrathink
+```
+
+Matches Run 1 line for line except the state path, which is the isolated path. Line 1 shows `(skipping next prompt)`, as in Run 1. Run 1's text says "21 lines", but its block has 20. This record counts 20.
+
+### Real home (stat only)
+
+- `control.json` mtime `2026-11-10 12:13:14` (unchanged).
+- `last-skip.json` mtime `2026-11-15 00:21:20`, 51 B. This predates the first isolated command (about 00:27 UTC), and this run never wrote to the real home. Writer still unidentified; same open item as above.
+
+### Verdict
+
+- Step 6: `pass` (headless RPC). All eight commands registered and responded. `/ultrathink-ui` returns the text snapshot, not the TUI overlay.
+- Step 7: `pass`. Reply matches Run 1.
+- Print mode (`omp -p`) cannot show command output. Use `omp --mode rpc` for headless runs.
+
+### Cleanup
+
+- `rm -rf -- /tmp/omp-headless-G5YS` and removal of the `/tmp` pointer file. Check: `$ISO` absent, no `/tmp/omp-headless-*` left. The copied login store is gone.
+- Repo `git status --porcelain` afterward: `?? .gsd-run/` only. Nothing committed.
