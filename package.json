@@ -32,6 +32,7 @@
 		"mcp": "bun src/mcp/cli.ts",
 		"chaos": "bun services/ultrathink/chaos/cli.ts",
 		"ship": "bun src/ship/cli.ts",
+		"runtime-install": "bun src/runtime-install/cli.ts",
 		"policy:check": "bash policy/check.sh",
 		"policy:collect": "bun policy/collect.ts",
 		"gen:manifests": "bun tools/gen-manifests/generate.ts",

@@ -2,6 +2,8 @@
 
 ultrathink runs from one checkout of this repository. Each host (the coding agent you type into: Claude Code, Grok Build, Hermes Agent, Muse Code, Omp or Prime Agent) loads it through a small entry point, and every host calls the same TypeScript engine. This page covers installing it on each host and checking that it works. It also covers `scripts/setup.ts`, the shared MCP gateway and choosing the planning engine. To upgrade, move or remove an install, see [Upgrade and move](how-to/upgrade-and-move.md) and [Uninstall](how-to/uninstall.md).
 
+CLI agents with no host adapter (Codex, OpenCode, Copilot, and twelve others) get skills and commands only, through [the runtime installer](runtime-install.md). That path does not load the engine and does not cover the six hosts on this page.
+
 In the commands below, `<clone>` is the absolute path of your checkout. Paths written as `${NAME:-default}` use the environment variable when you set it, and the default otherwise.
 
 - [Platforms](#platforms)
