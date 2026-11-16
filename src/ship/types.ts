@@ -32,6 +32,11 @@ export interface ShipConfig {
 	 * and the merge gate (Greptile >= minScore, no open threads, CI) is unchanged.
 	 */
 	judge: JudgeMode;
+	/**
+	 * Which reviewer the ship review step uses. "greptile": the Greptile review (MCP or CLI, today's behavior).
+	 * "claude": a headless `claude -p` review of the PR diff (see claude-review.ts). Both report the same ReviewResult.
+	 */
+	reviewer: "greptile" | "claude";
 }
 
 /** How the pre-PR LLM done-judge takes part in `assess`; see ShipConfig.judge. */
@@ -57,6 +62,7 @@ export const DEFAULT_SHIP_CONFIG: ShipConfig = {
 	reviewRetries: 3,
 	mergeTimeoutMs: 3_600_000,
 	judge: "gate",
+	reviewer: "greptile",
 };
 
 export interface GitSignals {

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.2] - 2026-11-08
+
+### Changed
+
+- The whole planning pass is bounded by default: `claude.budgetMs` is 900000 ms (15 minutes), was no budget. The same budget applies on Omp; `0` restores the unbounded behaviour.
+- `claude.callTimeoutMs` also bounds each native Omp planning call. The 1.21.1 entry named only the Claude CLI calls.
+
+## [1.21.1] - 2026-11-08
+
 ### Added
 
 - Local, undeployed support for the stateless MCP `2026-07-28` revision adds per-request discovery, version and capability metadata, mirrored routing headers, complete results, and private zero-TTL hints for cacheable operations while retaining legacy negotiation. Unsupported versions deliberately still return HTTP 400 / `-32600`, rather than the modern specification's `-32022`; a modern probe may therefore classify the server as legacy. Deployment and compatibility with hosted clients have not been established.
@@ -51,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gate-mode ship assessment reports a judge that threw or gave an unparseable reply as `judge.error`; before, that was only a prefix in `gaps`. A Jev decision made after a judge failure keeps the field.
 - Explicit-id session tools (`ultrathink_plan` with a `sessionId`, `ultrathink_uplift`, `ultrathink_pending`, `ultrathink_show`, `ultrathink_answer`, `ultrathink_status`, `ultrathink_result`) answer `not_found` for a session that names another principal, matching `ultrathink_graph` and `ultrathink_sessions`. Stdio and the owner are unchanged.
 - The ship judge uses the route of the session's own provider: an xai session judges on Grok, then Claude as the last resort; other sessions keep the host's default auxiliary route. Ship output's `judgedBy` names the provider that answered.
+- The planner's default bounds: a Claude CLI planning call times out after 5 minutes (`claude.callTimeoutMs`, was no limit), and tracker row creation stops after 10 minutes (`track.budgetMs`, was no limit). A timed-out uplift falls back to an unplanned prompt and the prompt still goes ahead; rows not created in time are left for kickoff. Set either key to `0` to restore the unbounded behaviour.
 
 ### Fixed
 

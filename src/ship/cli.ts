@@ -17,6 +17,7 @@ import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
 import { assessDecisionJson, assessDone } from "./assess.ts";
+import { CLAUDE_REVIEW_TIMEOUT_MS, reviewWithClaude, usesClaudeReviewer } from "./claude-review.ts";
 import { createGithub } from "./github.ts";
 import type { Github, ReviewThreadsOptions } from "./github.ts";
 import { openThreadComments, runReview } from "./greptile.ts";
@@ -65,7 +66,7 @@ type Output = Record<string, unknown>;
 type ShipRecord = SessionRecord & { ship?: ShipState };
 
 const USAGE =
-	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd]";
+	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve]";
 const NEXT_FIX =
 	"fix the listed findings, commit only the files you edited, push, then run review again";
 const NEXT_PENDING =
@@ -163,6 +164,8 @@ interface Ctx {
 	cwd: string;
 	/** Leave the repository's GSD roadmap out of the done assessment; the operator decided it is separate work. */
 	ignoreGsd: boolean;
+	/** The operator approved the merge (`--approve`); a passing Claude review merges only with it. */
+	approve: boolean;
 }
 
 /** owner/repo of a recorded PR: its own `repo`, else parsed from a `https://github.com/<owner>/<repo>/pull/<n>` url. */
@@ -332,20 +335,30 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 		failedHere.some((round) => !round.reviewId) && ship.pending?.headSha !== status.headSha;
 	let result: ReviewResult = reusedRound
 		? prior
-		: await deps.review({
-				config: deps.config,
-				client: deps.greptile(),
-				run: deps.run,
-				cwd,
-				repo,
-				base: pr.base,
-				prNumber: pr.number,
-				headSha: status.headSha,
-				reviewThreads: () =>
-					github.reviewThreads(pr.number, { deadlineMs: threadDeadline, now: deps.now }),
-				staleReviewIds,
-				...(restart ? { restart: true } : {}),
-			});
+		: usesClaudeReviewer(deps.config)
+			? await reviewWithClaude({
+					run: deps.run,
+					cwd,
+					repo,
+					prNumber: pr.number,
+					headSha: status.headSha,
+					timeoutMs: CLAUDE_REVIEW_TIMEOUT_MS,
+					now: deps.now,
+				})
+			: await deps.review({
+					config: deps.config,
+					client: deps.greptile(),
+					run: deps.run,
+					cwd,
+					repo,
+					base: pr.base,
+					prNumber: pr.number,
+					headSha: status.headSha,
+					reviewThreads: () =>
+						github.reviewThreads(pr.number, { deadlineMs: threadDeadline, now: deps.now }),
+					staleReviewIds,
+					...(restart ? { restart: true } : {}),
+				});
 	if (reusedRound && result.source === "pr") {
 		// Threads resolved since the round (non-actionable findings) close without a new commit. A failed refresh must not
 		// fall back to the stored snapshot: a finding posted since then would be missed, so report not ready and persist nothing.
@@ -539,7 +552,9 @@ type MergeStep =
 	/** Only a new commit and review fix it: back to the agent. */
 	| { kind: "needs-agent"; reason: string; next: string; headSha: string }
 	/** A human must act; `comment` posts the stopped comment (open PRs only). */
-	| { kind: "blocked"; reason: string; headSha: string; comment: boolean };
+	| { kind: "blocked"; reason: string; headSha: string; comment: boolean }
+	/** A passing Claude review waits for the operator's `--approve`; nothing is merged or recorded. */
+	| { kind: "needs-approval"; headSha: string };
 
 /** A merge-gate refusal after the review passed: pending CI and mergeability are retried, the rest go back to the agent. */
 function classifyGateReason(reason: string, headSha: string): MergeStep {
@@ -597,6 +612,7 @@ function mergeOnce(
 	ship: ShipState,
 	pr: PrRef,
 	threadOpts?: ReviewThreadsOptions,
+	approved = false,
 ): MergeStep {
 	let latest = ship.rounds.at(-1);
 	// After a recorded merge the stored review no longer matters: an unreadable PR is simply retried for the cleanup.
@@ -655,6 +671,8 @@ function mergeOnce(
 			headSha,
 		};
 	if (!gate.ok) return classifyGateReason(gate.reason, headSha);
+	// A passing Claude review never merges on its own: the operator approves the merge with --approve.
+	if (usesClaudeReviewer(config) && !approved) return { kind: "needs-approval", headSha };
 	const allowed = github.mergeMethods();
 	const method =
 		allowed.length > 0 && !allowed.includes(config.mergeMethod)
@@ -789,13 +807,25 @@ async function stepMerge(
 	let waiting = ship.waiting;
 	let delay = config.pollMs;
 	for (let polls = 1; ; polls++) {
-		const step = mergeOnce(config, github, ship, pr, {
-			deadlineMs: started + budgetMs,
-			now: deps.now,
-		});
+		const step = mergeOnce(
+			config,
+			github,
+			ship,
+			pr,
+			{ deadlineMs: started + budgetMs, now: deps.now },
+			ctx.approve,
+		);
 		const now = deps.now();
 		if (step.kind === "merged") return finishMerge(ctx, github, ship, pr, step, now);
 		if (step.kind === "blocked") return blockMerge(ctx, github, ship, pr, step, now);
+		if (step.kind === "needs-approval")
+			return {
+				ok: false,
+				merged: false,
+				reason: "needs human approval",
+				pr,
+				next: `needs human approval: ${pr.url}; review the PR, then run merge with --approve`,
+			};
 		if (step.kind === "needs-agent") {
 			appendAttempts(
 				statePath,
@@ -885,15 +915,17 @@ export async function runShip(
 	let state: string | undefined;
 	let cwd = process.cwd();
 	let ignoreGsd = false;
+	let approve = false;
 	for (let i = 0; i < rest.length; i++) {
 		if (rest[i] === "--state") state = rest[++i];
 		else if (rest[i] === "--cwd") cwd = rest[++i] ?? cwd;
 		else if (rest[i] === "--ignore-gsd") ignoreGsd = true;
+		else if (rest[i] === "--approve") approve = true;
 		else
 			return { code: 2, output: { ok: false, error: `unknown argument ${rest[i]}`, usage: USAGE } };
 	}
 	if (!state) return { code: 2, output: { ok: false, error: "--state is required", usage: USAGE } };
-	const ctx: Ctx = { deps, statePath: resolve(state), cwd: resolve(cwd), ignoreGsd };
+	const ctx: Ctx = { deps, statePath: resolve(state), cwd: resolve(cwd), ignoreGsd, approve };
 	try {
 		switch (command) {
 			case "assess":

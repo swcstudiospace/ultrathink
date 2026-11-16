@@ -254,7 +254,7 @@ Example: on Omp, always plan with a model from one provider. The session's own m
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | The planner creates the Linear and Notion rows before the agent sees the prompt. When `false`, the planner creates none and the `ultrathink-kickoff` skill creates them instead. On Hermes the planner never creates rows, whatever this says; kickoff creates them all. `/ultrathink-track off\|on` overrides this per host. Has no effect when neither tracker is configured. |
-| `budgetMs` | number, >= 0 | `0` | Time limit for the planner's whole row-creation run, including credential lookup. `0` means no limit: no timer is created and the run waits for every row. Rows not created in time are left for kickoff. Each tracker call is retried up to 3 times regardless. |
+| `budgetMs` | number, >= 0 | `600000` | Time limit for the planner's whole row-creation run, including credential lookup. The default is 10 minutes. `0` means no limit: no timer is created and the run waits for every row. Rows not created in time are left for kickoff. Each tracker call is retried up to 3 times regardless. |
 | `concurrency` | number, >= 1 | `6` | Row-creation calls that run in parallel. Rounded down. |
 
 ### `ship`: PR, review and merge
@@ -493,8 +493,8 @@ All keys are optional; write only the ones you change. This file shows every key
     "model": "claude-haiku-5-5",
     "thinking": false,
     "settingSources": "",
-    "callTimeoutMs": 0,
-    "budgetMs": 0,
+    "callTimeoutMs": 300000,
+    "budgetMs": 900000,
     "concurrency": 3,
     "echo": true
   },
@@ -519,7 +519,7 @@ All keys are optional; write only the ones you change. This file shows every key
   "models": { "hosts": {}, "providerDefaults": {} },
   "notion": { "dataSourceUrl": "collection://<data source id>" },
   "linear": { "team": "<your Linear team>" },
-  "track": { "enabled": true, "budgetMs": 0, "concurrency": 6 },
+  "track": { "enabled": true, "budgetMs": 600000, "concurrency": 6 },
   "ship": {
     "enabled": false,
     "autoMerge": false,

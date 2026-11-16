@@ -92,8 +92,8 @@ const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	model: ROUTE_DEFAULT_MODELS.claude,
 	thinking: false,
 	settingSources: "",
-	callTimeoutMs: 0,
-	budgetMs: 0,
+	callTimeoutMs: 300_000,
+	budgetMs: 900_000,
 	concurrency: 3,
 	echo: true,
 };
@@ -127,7 +127,7 @@ interface TrackConfig {
 
 const DEFAULT_TRACK_CONFIG: TrackConfig = {
 	enabled: true,
-	budgetMs: 0,
+	budgetMs: 600_000,
 	concurrency: 6,
 };
 
@@ -635,6 +635,13 @@ function positiveInt(value: unknown, fallback: number): number {
 		: fallback;
 }
 
+/** Absent keeps the lower layer's reviewer; any value other than "greptile" or "claude" is a config error, not a silent fallback. */
+function reviewerField(value: unknown, fallback: ShipConfig["reviewer"]): ShipConfig["reviewer"] {
+	if (value === undefined) return fallback;
+	if (value === "greptile" || value === "claude") return value;
+	throw new Error(`ship.reviewer must be "greptile" or "claude", got ${JSON.stringify(value)}`);
+}
+
 function mergeShip(ship: Record<string, unknown> | undefined, defaults: ShipConfig): ShipConfig {
 	if (!ship) return defaults;
 	const skills =
@@ -679,6 +686,7 @@ function mergeShip(ship: Record<string, unknown> | undefined, defaults: ShipConf
 		judge: JUDGE_MODES.includes(ship.judge as JudgeMode)
 			? (ship.judge as JudgeMode)
 			: defaults.judge,
+		reviewer: reviewerField(ship.reviewer, defaults.reviewer),
 	};
 }
 

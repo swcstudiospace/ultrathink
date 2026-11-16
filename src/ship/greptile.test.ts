@@ -18,6 +18,7 @@ const config: ShipConfig = {
 	enabled: true,
 	autoMerge: true,
 	judge: "gate",
+	reviewer: "greptile",
 	skills: ["gsd-"],
 	minScore: 5,
 	requireNoComments: true,

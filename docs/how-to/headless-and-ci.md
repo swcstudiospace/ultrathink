@@ -25,7 +25,7 @@ Config keys that matter for unattended runs:
 
 | Key | Why |
 |---|---|
-| `claude.budgetMs` | Caps the whole planning run. Without it the only limit is the host's hook timeout, which is 86,400 seconds for Claude Code's prompt hook. |
+| `claude.budgetMs` | Caps the whole planning run (15 minutes by default). Set it to `0` for no cap; then the only limit is the host's hook timeout, which is 86,400 seconds for Claude Code's prompt hook. |
 | `claude.callTimeoutMs`, `grok.callTimeoutMs` | Cap one engine call. |
 | `hitl.enabled: false` | No clarifying questions in the plan (one engine call fewer). |
 | `track.enabled: false` | Same as `ULTRATHINK_TRACK=0`, from a config file. |
