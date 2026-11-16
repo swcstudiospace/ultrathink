@@ -389,13 +389,12 @@ describe("checkInference", () => {
 	});
 
 	describe("inference.grok.login", () => {
-		test("a signed-in session is ok with the account and the time left, never the token", () => {
+		test("a signed-in session reports expiry without exposing account identity or token", () => {
 			grokLogin({ email: "dev@example.com", expires_at: new Date(NOW + 5 * DAY).toISOString() });
 			const finding = byId(checkInference(deps), "inference.grok.login");
-			expect(finding).toMatchObject({
-				level: "ok",
-				title: "Grok login: dev@example.com expires in 5 days",
-			});
+			expect(finding.level).toBe("ok");
+			expect(finding.title).toContain("5 days");
+			expect(JSON.stringify(finding)).not.toContain("dev@example.com");
 			expect(JSON.stringify(finding)).not.toContain(FAKE_SECRET);
 		});
 
@@ -446,9 +445,9 @@ describe("checkInference", () => {
 					join(dir, "home", ".grok", "auth.json"),
 					JSON.stringify({ a: { key: FAKE_SECRET, email: "home@example.com" } }),
 				);
-				expect(byId(checkInference(deps), "inference.grok.login").title).toBe(
-					"Grok login: home@example.com",
-				);
+				const finding = byId(checkInference(deps), "inference.grok.login");
+				expect(finding.level).toBe("ok");
+				expect(JSON.stringify(finding)).not.toContain("home@example.com");
 			} finally {
 				if (realHome === undefined) delete process.env.HOME;
 				else process.env.HOME = realHome;
@@ -483,9 +482,10 @@ describe("checkInference", () => {
 				JSON.stringify({ a: { key: FAKE_SECRET, email: "other@example.com" } }),
 			);
 			userConfig({ grok: { home: other } });
-			expect(byId(checkInference(deps), "inference.grok.login").title).toBe(
-				`Grok login: other@example.com (home ${other})`,
-			);
+			const finding = byId(checkInference(deps), "inference.grok.login");
+			expect(finding.level).toBe("ok");
+			expect(finding.title).toContain(other);
+			expect(JSON.stringify(finding)).not.toContain("other@example.com");
 		});
 
 		test("with grok.home set, a missing login names the lane home and the dedicated-home login", () => {

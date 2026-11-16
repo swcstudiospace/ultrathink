@@ -17,7 +17,7 @@ Set these in the environment of the agent process. They beat the config files an
 | `ULTRATHINK_UPLIFT=0` | No planning at all in this process, on every host. The `uplift:` prefix does not override it. |
 | `ULTRATHINK_TRACK=0` | The planner creates no Linear or Notion rows. Planning continues. If a tracker is configured, the plan still tells the agent to run the `ultrathink-kickoff` skill, which creates the rows in the agent's turn. |
 | `ULTRATHINK_SHIP=0` | No `## Ship` section in the plan and no ship nudge at the end of the run, even with `ship.enabled: true`. |
-| `ULTRATHINK_STATE_DIR` | Use this directory for the session records and control state instead of the host's own. Ignored when it points into a `.planning` directory. |
+| `ULTRATHINK_STATE_DIR` | Use this directory for the session records and control state instead of the host's own. It is honored only when it is an absolute path inside your home directory and not home itself. A relative path, a path outside home, or a path inside a `.planning` tree is ignored, and the host default is used. |
 | `ULTRATHINK_HOST` | Which host's state directory `bin/ultrathink` changes: `claude-code`, `grok-build`, `hermes`, `muse` or `omp`. |
 | `ULTRATHINK_DEBUG=1` | The prompt hook (Claude Code, Grok Build, Muse Code) logs skip reasons and failures to stderr as `[ultrathink] …`. |
 
@@ -49,12 +49,12 @@ ULTRATHINK_TRACK=0 ULTRATHINK_SHIP=0 claude -p "<task>"
 `ULTRATHINK_TRACK=0` only stops the planner's own row creation. Leaving `notion.dataSourceUrl` and `linear.team` out of the runner's user config is not enough when the repository commits them in `<repo>/.claude/ultrathink.json`: that file is read too, and a `""` in another file cannot clear them. To stop the kickoff skill as well, turn tracking off in the state directory the job uses:
 
 ```sh
-export ULTRATHINK_STATE_DIR="$RUNNER_TEMP/ultrathink"   # any writable directory
+export ULTRATHINK_STATE_DIR="$HOME/ultrathink-ci"   # absolute, under $HOME; a path outside home is ignored
 <clone>/bin/ultrathink track off
 ULTRATHINK_SHIP=0 claude -p "<task>"
 ```
 
-`<clone>` is the directory you cloned ultrathink into. `bin/ultrathink` and the hooks read the same `ULTRATHINK_STATE_DIR`, so the job's control state stays out of your personal one.
+`<clone>` is the directory you cloned ultrathink into. `bin/ultrathink` and the hooks read the same `ULTRATHINK_STATE_DIR`, so the job's control state stays out of your personal one. A runner temp directory such as `$RUNNER_TEMP` is accepted only when it is inside your home directory, so the example uses `$HOME` instead.
 
 **Plan with a time limit**, in the config file the job reads (for example `<repo>/.claude/ultrathink.json` or the runner's `~/.config/ultrathink/config.json`):
 

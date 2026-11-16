@@ -30,6 +30,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLARIFY_SYSTEM_PROMPT } from "../hitl/prompts.ts";
 import { normalizeClarifications } from "../hitl/pipeline.ts";
+import { getSecurityLogger } from "../../services/ultrathink/security/events.ts";
 import { readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { DISTILL_SYSTEM } from "../teach/observe.ts";
@@ -187,10 +188,26 @@ function describeRequest(system: string, user: string, now = Date.now()): Pendin
 export function listPending(dir: string): PendingRequest[] {
 	const folder = join(dir, "pending");
 	if (!existsSync(folder)) return [];
-	return readdirSync(folder)
-		.filter((name) => name.endsWith(".json"))
-		.map((name) => JSON.parse(readFileSync(join(folder, name), "utf8")) as PendingRequest)
-		.sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
+	const pending: PendingRequest[] = [];
+	for (const name of readdirSync(folder)) {
+		if (!name.endsWith(".json")) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(readFileSync(join(folder, name), "utf8"));
+		} catch {
+			parsed = undefined;
+		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			getSecurityLogger().logValidationFailure({
+				source: "grokbot",
+				resource: "pending",
+				details: { field: "file", code: "PARSE_ERROR" },
+			});
+			continue;
+		}
+		pending.push(parsed as PendingRequest);
+	}
+	return pending.sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
 }
 
 function readAnswer(dir: string, key: string): string | undefined {

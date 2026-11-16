@@ -1,0 +1,5 @@
+# Map: omp to its native manifest. The generator writes plugin/generated/omp/manifest.json from plugin/source/plugin.source.yaml.
+host: omp
+status: verified
+native_manifest: .omp-plugin/marketplace.json
+generated_manifest: plugin/generated/omp/manifest.json

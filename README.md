@@ -53,7 +53,7 @@ Each host except Cursor was tested live with the version shown, including planni
 |---|---|---|---|
 | Claude Code | 2.1.278 | `.claude-plugin/` marketplace; hooks in `hooks/hooks.json` | `UserPromptSubmit` hook context |
 | Grok Build | 1.0.41 | The plugin directory supplies the skills and commands. Grok does not dispatch plugin hooks, so `bun scripts/setup.ts apply` installs the global hook file `${GROK_HOME:-~/.grok}/hooks/ultrathink.json` | Grok discards hook output, so the plan is written to the session's own `last-plan.<sessionId>.json` and a rule file (`${GROK_HOME:-~/.grok}/rules/ultrathink.md`) tells the model to read it |
-| Hermes Agent | v0.21.4 | Python plugin `hosts/hermes` (Python 3.10 or later), symlinked into `${HERMES_HOME:-~/.hermes}/plugins/ultrathink` | `pre_llm_call` gets the plan from `hooks/engine.ts` and hands the agent a short handoff: the spec path, the state file and the Graph ID |
+| Hermes Agent | v0.21.4 | Python plugin `hosts/hermes` (Python 3.10 or later), each file symlinked into a real `${HERMES_HOME:-~/.hermes}/plugins/ultrathink` directory | `pre_llm_call` gets the plan from `hooks/engine.ts` and hands the agent a short handoff: the spec path, the state file and the Graph ID |
 | Muse Code | 1.4.0 | `.muse-plugin/plugin.json` | `UserPromptSubmit` hook context, same entry as Claude Code |
 | Prime Agent | 0.9.8 | Python-backed kernel skill `hosts/prime-agent`, linked into `${PRIME_AGENT_CODING_AGENT_DIR:-~/.prime/agent}/skills/ultrathink` by `bun scripts/setup.ts apply`; the `ultrathink-*` agent skills are linked into `~/.agents/skills` | Prime Agent has no prompt hook: the agent calls `await ultrathink("<request>")` in its persistent Python kernel, the skill runs `hooks/engine.ts` and returns the plan (`context`, the spec and its path) to the kernel. The agent then runs the waves, with `ultrathink-kickoff` first when tracking is on |
 | Omp | 18.3.1 (native planning: 18.8.0) | `package.json` `omp.extensions` → `src/host/omp.ts` | `before_agent_start` plans inside Omp on the session's own model, with Omp's own provider and login (see [Choose the planning engine](docs/how-to/choose-engine.md#omp-the-sessions-own-model)); the TUI shows a live status bar and plan cards. Omp caps a handler at 30 s, so the extension waits up to 25 s and a slower plan arrives later as an aside |
@@ -144,9 +144,14 @@ grok plugin enable ultrathink
 grok plugin list                 # ultrathink should be listed as enabled
 bun <clone>/scripts/setup.ts apply
 
-# Hermes Agent: the plugin, then the hook cap (required, see below)
-mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins"
-ln -sfn <clone>/hosts/hermes "${HERMES_HOME:-$HOME/.hermes}/plugins/ultrathink"
+# Hermes Agent: from the clone root, link the plugin's files into a real plugin directory, then the hook cap (required, see below)
+PLUGIN_DIR=${HERMES_HOME:-$HOME/.hermes}/plugins/ultrathink
+if [ -L "$PLUGIN_DIR" ]; then rm "$PLUGIN_DIR"; fi
+mkdir -p "$PLUGIN_DIR"
+for f in "$PWD"/hosts/hermes/*.py "$PWD"/hosts/hermes/plugin.yaml; do
+  case "$f" in *_test.py) continue ;; esac
+  ln -sf "$f" "$PLUGIN_DIR/"
+done
 hermes plugins enable ultrathink
 hermes config set plugins.hook_callback_timeout 600
 

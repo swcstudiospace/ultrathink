@@ -13,7 +13,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildReport, formatReport, reportJson } from "./report.ts";
 import { checkState, formatAge } from "./state-check.ts";
@@ -55,10 +55,14 @@ describe("checkState", () => {
 	}
 
 	beforeEach(() => {
-		dir = mkdtempSync(join(tmpdir(), "ut-doctor-state-"));
+		dir = mkdtempSync(join(homedir(), "ut-doctor-state-"));
 		stateDir = join(dir, "state");
 		deps = {
-			env: { HOME: join(dir, "home"), ULTRATHINK_STATE_DIR: stateDir },
+			// deps.env is explicit, so the test-process root is not inherited.
+			env: {
+				HOME: join(dir, "home"),
+				ULTRATHINK_STATE_DIR: stateDir,
+			},
 			cwd: join(dir, "project"),
 			now: () => NOW,
 			which: () => undefined,

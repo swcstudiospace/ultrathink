@@ -254,7 +254,7 @@ def register(ctx: Any) -> None:
 		def handler(raw_args: str = "", **kwargs: Any) -> str | None:
 			try:
 				if verb == "quick":
-					return quick(raw_args or "", inject)
+					return quick(raw_args or "", inject, session_id=_command_session(kwargs))
 				return control([verb, *(raw_args or "").split()], session_id=_command_session(kwargs))[1]
 			except Exception as error:
 				return " ".join(f"Ultrathink {verb} failed: {error}".split())

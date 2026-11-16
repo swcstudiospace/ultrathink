@@ -1,0 +1,46 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "args": "",
+        "command": "/ultrathink-on",
+        "cwd": "<ROOT>/ultrathink-on/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "enable planning",
+      "output": {
+        "notices": [
+          {
+            "level": "info",
+            "text": "Prompt Uplift on"
+          }
+        ],
+        "sentMessages": [],
+        "userMessages": []
+      },
+      "sideEffects": [
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink"
+        },
+        {
+          "change": "created",
+          "content": "{\n\t\"enabled\": true\n}\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/control.json"
+        }
+      ]
+    }
+  ],
+  "entry": "ultrathink-on",
+  "excluded": [],
+  "schema": 1,
+  "source": "registerCommand loop, verb=on"
+}

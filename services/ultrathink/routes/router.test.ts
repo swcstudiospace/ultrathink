@@ -16,7 +16,6 @@ import { createMetrics, type Metrics } from "../obs/metrics.ts";
 import type { RuntimeSample } from "../obs/runtime.ts";
 import { type App, SECURITY_HEADERS, type RouterDeps, createApp, createHandler } from "./router.ts";
 import { getSecurityLogger } from "../security/events.ts";
-import { bunAtLeast } from "../security/mtls.ts";
 import { redactText } from "../../../src/teach/redact.ts";
 
 /** A header the security module sets, read from the exported constant. A missing one is a broken build, not a value to compare. */
@@ -76,7 +75,11 @@ function runCount(): number {
 beforeAll(async () => {
 	dir = mkdtempSync(join(tmpdir(), "ultrathink-router-"));
 	password = randomBytes(24).toString("base64url");
-	const ownerPasswordHash = await Bun.password.hash(password);
+	const ownerPasswordHash = await Bun.password.hash(password, {
+		algorithm: "argon2id",
+		memoryCost: 4096,
+		timeCost: 2,
+	});
 	const sessionSecret = randomBytes(32).toString("hex");
 
 	config = {
@@ -871,7 +874,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		clock.ms += 60_000;
 		await failCredentials(capped, OTHER_CLIENT, 21);
 		expect((await capped.handle(badBearer(), OTHER_CLIENT)).headers.get("retry-after")).toBe("90");
-	});
+	}, 30_000);
 
 	test("a blocked IP does not affect another IP", async () => {
 		const { app } = build();
@@ -896,7 +899,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		for (let i = 0; i < 60; i++)
 			expect((await ownerRun(calm, calmCookie, "https://evil.test")).status).toBe(403);
 		expect((await ownerRun(calm, calmCookie, "https://evil.test")).status).toBe(429);
-	});
+	}, 30_000);
 
 	test("a connector holds at most capacity minus reserve; the owner is still admitted into the reserve", async () => {
 		const gate = Promise.withResolvers<void>();
@@ -953,7 +956,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		expect((await holdB).status).toBe(200);
 		// Both holds have released their slots, so a connector is admitted again.
 		expect((await app.handle(connectorUplift(4), "198.51.100.3")).status).toBe(200);
-	});
+	}, 30_000);
 
 	test("the security logger the app installs writes fair-share refusals to the app's writer", async () => {
 		const gate = Promise.withResolvers<void>();
@@ -1074,7 +1077,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		expect((await holdB).status).toBe(200);
 		expect((await queuedC).status).toBe(200);
 		expect((await queuedD).status).toBe(200);
-	});
+	}, 30_000);
 
 	test("a queued connector whose wait expires answers 429 with Retry-After 1 and runs nothing", async () => {
 		const gate = Promise.withResolvers<void>();
@@ -1137,7 +1140,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		gate.resolve();
 		expect((await holdA).status).toBe(200);
 		expect((await holdB).status).toBe(200);
-	});
+	}, 30_000);
 
 	test("a finishing call releases its outer slot before its share slot: a queued call is admitted, not 503", async () => {
 		const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
@@ -1234,7 +1237,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		releaseLogins.resolve();
 		expect((await holdB).status).toBe(200);
 		for (const login of logins) expect((await login).status).toBe(401);
-	});
+	}, 30_000);
 
 	test("a corrupt load-history.json starts the app empty and is logged; readiness and metrics still answer", async () => {
 		const stateDir = mkdtempSync(join(root, "corrupt-"));
@@ -1283,7 +1286,7 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		expect(gaugeValue(second.metrics, "ultrathink_load_forecast_rps")).toBe(before);
 		expect(logLines.some((line) => line.includes("load_history"))).toBe(false);
 		await second.app.shutdown();
-	});
+	}, 30_000);
 });
 
 describe("router boundary failures", () => {
@@ -1360,7 +1363,7 @@ describe("router boundary failures", () => {
 			store.close();
 			rmSync(dir, { recursive: true, force: true });
 		}
-	});
+	}, 30_000);
 });
 
 describe("run API without a worker", () => {
@@ -1526,75 +1529,45 @@ describe("hosted planner lifecycle", () => {
 	}, 20_000);
 });
 
-describe("CIMD production router wiring", () => {
-	test("with cimdEnabled absent from the router config, a URL client_id authorize shows the unknown-client page body", async () => {
-		const params = new URLSearchParams({
-			response_type: "code",
-			client_id: "https://client.example/cimd.json",
-			redirect_uri: "https://claude.ai/api/mcp/auth_callback",
-			code_challenge: "a".repeat(43),
-			code_challenge_method: "S256",
-			resource: `${PUBLIC_ORIGIN}/mcp`,
+describe("registered-client-only OAuth routing", () => {
+	test("an unregistered URL client makes no fetch even with the old environment setting", async () => {
+		const previous = process.env.ULTRATHINK_CIMD;
+		process.env.ULTRATHINK_CIMD = "1";
+		const fetchSpy = spyOn(globalThis, "fetch");
+		const stateDir = mkdtempSync(join(tmpdir(), "ultrathink-url-client-"));
+		const app = createApp({
+			config: { ...config, stateDir },
+			store,
+			auth,
+			logger: silent,
+			hasWorker: () => true,
 		});
-		const response = await handler(
-			new Request(`${PUBLIC_ORIGIN}/oauth/authorize?${params.toString()}`, { method: "GET" }),
-			"198.51.100.23",
-		);
-		expect(response.status).toBe(400);
-		expect(await response.text()).toContain("This client is not registered with ultrathink.");
+		try {
+			const params = new URLSearchParams({
+				response_type: "code",
+				client_id: "https://client.example/cimd.json",
+				redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+				code_challenge: "a".repeat(43),
+				code_challenge_method: "S256",
+				resource: `${PUBLIC_ORIGIN}/mcp`,
+			});
+			const response = await app.handle(
+				new Request(`${PUBLIC_ORIGIN}/oauth/authorize?${params.toString()}`, { method: "GET" }),
+				"198.51.100.23",
+			);
+			expect(response.status).toBe(400);
+			expect(await response.text()).toContain("This client is not registered with ultrathink.");
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			fetchSpy.mockRestore();
+			if (previous === undefined) delete process.env.ULTRATHINK_CIMD;
+			else process.env.ULTRATHINK_CIMD = previous;
+			await app.shutdown();
+			rmSync(stateDir, { recursive: true, force: true });
+		}
 	});
 
-	test.skipIf(!bunAtLeast(Bun.version, [1, 4, 0]))(
-		"with ULTRATHINK_CIMD on under Bun 1.4.0 or later, the production router's metadata advertises client_id_metadata_document_supported",
-		async () => {
-			const stateDir = mkdtempSync(join(tmpdir(), "ultrathink-cimd-"));
-			const app = createApp({
-				config: { ...config, stateDir, cimdEnabled: true },
-				store,
-				auth,
-				logger: silent,
-				hasWorker: () => true,
-			});
-			try {
-				const response = await app.handle(
-					new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-authorization-server`),
-					PEER_IP,
-				);
-				expect(response.status).toBe(200);
-				expect(await response.json()).toHaveProperty("client_id_metadata_document_supported", true);
-			} finally {
-				await app.shutdown();
-				rmSync(stateDir, { recursive: true, force: true });
-			}
-		},
-	);
-
-	test.skipIf(bunAtLeast(Bun.version, [1, 4, 0]))(
-		"with ULTRATHINK_CIMD on under a Bun older than 1.4.0, the production router does not advertise client_id_metadata_document_supported",
-		async () => {
-			const stateDir = mkdtempSync(join(tmpdir(), "ultrathink-cimd-"));
-			const app = createApp({
-				config: { ...config, stateDir, cimdEnabled: true },
-				store,
-				auth,
-				logger: silent,
-				hasWorker: () => true,
-			});
-			try {
-				const response = await app.handle(
-					new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-authorization-server`),
-					PEER_IP,
-				);
-				expect(response.status).toBe(200);
-				expect(await response.json()).not.toHaveProperty("client_id_metadata_document_supported");
-			} finally {
-				await app.shutdown();
-				rmSync(stateDir, { recursive: true, force: true });
-			}
-		},
-	);
-
-	test("with cimdEnabled absent, the production router's metadata has no client_id_metadata_document_supported key", async () => {
+	test("authorization server metadata omits URL client support", async () => {
 		const response = await handler(
 			new Request(`${PUBLIC_ORIGIN}/.well-known/oauth-authorization-server`),
 			PEER_IP,

@@ -1,0 +1,5 @@
+# Map: hermes to its native manifest. The generator writes plugin/generated/hermes/manifest.json from plugin/source/plugin.source.yaml.
+host: hermes
+status: verified
+native_manifest: hosts/hermes/plugin.yaml
+generated_manifest: plugin/generated/hermes/manifest.json

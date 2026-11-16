@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { resolveStateDir } from "./host/paths.ts";
+import { resolveStateDir, resolveStateDirDetail } from "./host/paths.ts";
 import {
 	removeStaleTestStateDirs,
 	resetTestStateDir,
@@ -33,14 +33,25 @@ afterEach(() => {
 describe("the bunfig preload isolates the state directory", () => {
 	// The runner may call the preload's afterAll once at the end (Bun 1.4) or after every file (Bun 1.2.x), so no
 	// assertion here depends on which file ran before this one.
-	test("ULTRATHINK_STATE_DIR names an existing temp directory outside the operator's state", () => {
+	test("ULTRATHINK_STATE_DIR names an existing directory inside home, never the operator's state", () => {
 		const dir = process.env.ULTRATHINK_STATE_DIR?.trim();
 		expect(dir).toBeTruthy();
 		if (!dir) return;
 		expect(statSync(dir).isDirectory()).toBe(true);
-		expect(relative(tmpdir(), dir).startsWith("..")).toBe(false);
+		expect(dir).not.toBe(homedir());
+		expect(relative(homedir(), dir).startsWith("..")).toBe(false);
 		expect(dir.startsWith(join(homedir(), ".claude"))).toBe(false);
 		expect(resolveStateDir()).toBe(dir);
+	});
+
+	test("a temp directory outside home is refused, and the host default state dir is used", () => {
+		const outside = tempRoot();
+		const detail = resolveStateDirDetail({ ...process.env, ULTRATHINK_STATE_DIR: outside });
+		expect(detail.rejected).toEqual({ value: outside, reason: "outside-home" });
+		expect(detail.dir).toBe(
+			resolveStateDirDetail({ ...process.env, ULTRATHINK_STATE_DIR: undefined }).dir,
+		);
+		expect(detail.dir.startsWith(outside)).toBe(false);
 	});
 
 	test("failover cooldowns of a test process never reach the real state directory", () => {

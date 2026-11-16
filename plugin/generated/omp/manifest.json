@@ -1,0 +1,9 @@
+{
+  "author": {
+    "name": "SWC Studio"
+  },
+  "description": "Shared ultrathink engine for Omp, Claude Code, Grok Build, Hermes Agent, Muse and Prime Agent.",
+  "license": "AGPL-3.0-or-later",
+  "name": "ultrathink",
+  "version": "1.4.0"
+}

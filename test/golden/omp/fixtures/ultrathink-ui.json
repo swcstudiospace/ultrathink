@@ -1,0 +1,146 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "args": "",
+        "command": "/ultrathink-ui",
+        "cwd": "<ROOT>/ultrathink-ui/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "default overview on a non-TUI host",
+      "output": {
+        "notices": [],
+        "sentMessages": [
+          {
+            "message": {
+              "content": "Ultrathink snapshot — Project: workspace | Session: golden-session-1\nNo saved Jev decisions for this session\nAutonomy: teaching on; capture auto; eligible 0; promoted 0\nLessons for workspace (0 of 0 shown):\nNote: Teaching Jev history is not recorded. Lesson state is not a verdict receipt.\nNote: Detached worker outcomes are not recorded. No completion or install result can be inferred.\nNote: No saved Jev decisions for this session (no saved plan was found). This view reads the latest saved plan, not a c…\nGuarded actions require the Omp TUI (/ultrathink-ui).\nNative dashboard unavailable in this host. Showing a local read-only snapshot; use Omp TUI for guarded actions.",
+              "display": true
+            },
+            "options": {
+              "triggerTurn": false
+            }
+          }
+        ],
+        "userMessages": []
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "args": "jev",
+        "command": "/ultrathink-ui jev",
+        "cwd": "<ROOT>/ultrathink-ui/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "jev panel",
+      "output": {
+        "notices": [],
+        "sentMessages": [
+          {
+            "message": {
+              "content": "Ultrathink snapshot — Project: workspace | Session: golden-session-1\nNo saved Jev decisions for this session\nAutonomy: teaching on; capture auto; eligible 0; promoted 0\nLessons for workspace (0 of 0 shown):\nNote: Teaching Jev history is not recorded. Lesson state is not a verdict receipt.\nNote: Detached worker outcomes are not recorded. No completion or install result can be inferred.\nNote: No saved Jev decisions for this session (no saved plan was found). This view reads the latest saved plan, not a c…\nGuarded actions require the Omp TUI (/ultrathink-ui).\nNative dashboard unavailable in this host. Showing a local read-only snapshot; use Omp TUI for guarded actions.",
+              "display": true
+            },
+            "options": {
+              "triggerTurn": false
+            }
+          }
+        ],
+        "userMessages": []
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "args": "card",
+        "command": "/ultrathink-ui card",
+        "cwd": "<ROOT>/ultrathink-ui/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "card publish",
+      "output": {
+        "notices": [],
+        "sentMessages": [
+          {
+            "message": {
+              "content": "Ultrathink insight — workspace · session golden-session-1",
+              "customType": "ultrathink-insight",
+              "details": {
+                "at": "<TS>",
+                "counts": {
+                  "candidate": 0,
+                  "confirmed": 0,
+                  "promoted": 0,
+                  "superseded": 0
+                },
+                "decisions": [],
+                "eligible": 0,
+                "lessons": [],
+                "limitations": [
+                  "Teaching Jev history is not recorded. Lesson state is not a verdict receipt.",
+                  "Detached worker outcomes are not recorded. No completion or install result can be inferred.",
+                  "No saved Jev decisions for this session (no saved plan was found). This view reads the latest saved plan, not a complete history."
+                ],
+                "partial": false,
+                "policy": {
+                  "autoPromote": true,
+                  "capture": "auto",
+                  "enabled": true,
+                  "jevEnabled": true,
+                  "promoteAfter": 3,
+                  "recall": true,
+                  "recallChars": 3000,
+                  "recallLimit": 5
+                },
+                "project": "workspace",
+                "promoted": 0,
+                "session": "golden-session-1"
+              },
+              "display": true
+            },
+            "options": {
+              "triggerTurn": false
+            }
+          }
+        ],
+        "userMessages": []
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "args": "bogus",
+        "command": "/ultrathink-ui bogus",
+        "cwd": "<ROOT>/ultrathink-ui/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "unknown panel falls back to overview",
+      "output": {
+        "notices": [],
+        "sentMessages": [
+          {
+            "message": {
+              "content": "Ultrathink snapshot — Project: workspace | Session: golden-session-1\nNo saved Jev decisions for this session\nAutonomy: teaching on; capture auto; eligible 0; promoted 0\nLessons for workspace (0 of 0 shown):\nNote: Teaching Jev history is not recorded. Lesson state is not a verdict receipt.\nNote: Detached worker outcomes are not recorded. No completion or install result can be inferred.\nNote: No saved Jev decisions for this session (no saved plan was found). This view reads the latest saved plan, not a c…\nGuarded actions require the Omp TUI (/ultrathink-ui).\nNative dashboard unavailable in this host. Showing a local read-only snapshot; use Omp TUI for guarded actions.",
+              "display": true
+            },
+            "options": {
+              "triggerTurn": false
+            }
+          }
+        ],
+        "userMessages": []
+      },
+      "sideEffects": []
+    }
+  ],
+  "entry": "ultrathink-ui",
+  "excluded": [
+    {
+      "reason": "requires live host: needs an interactive TUI session",
+      "variant": "TUI panel mount (ctx.mode=tui with ui.custom)"
+    }
+  ],
+  "schema": 1,
+  "source": "registerCommand('ultrathink-ui') -> openInsightUi (non-TUI host path)"
+}

@@ -262,9 +262,12 @@ describe("Cursor swarm handoff", () => {
 		expect(section4).not.toContain("into the final prompt as a short");
 	});
 
-	test("kickoff does only steps 1 and 4 of section 5 on a Cursor handoff, and section 6 is skipped", () => {
+	test("kickoff does steps 1 and 4 of section 5 on a Cursor handoff, runs step 5.3 after the answer, and section 6 is skipped", () => {
 		const section5 = kickoff.slice(kickoff.indexOf("## 5. "), kickoff.indexOf("## 6. "));
-		expect(section5).toContain("When the plan carries the Cursor swarm note (`## Cursor swarm`), do steps 1 and 4 only, then stop.");
+		expect(section5).toContain("When the plan carries the Cursor swarm note (`## Cursor swarm`), do steps 1 and 4 only, run step 5.3 after your answer text, then stop.");
+		const track = section5.indexOf("3. **Optional: track after the answer.**");
+		expect(track).toBeGreaterThan(-1);
+		expect(section5.slice(track)).toContain("After the answer text in step 5.2 is written");
 		const section6 = kickoff.slice(kickoff.indexOf("## 6. "));
 		expect(section6.startsWith("## 6. Proceed as normal\n\nSkip this section when the plan carries the Cursor swarm note")).toBe(true);
 		// The dispatch sentence still exists for the non-Cursor hosts.

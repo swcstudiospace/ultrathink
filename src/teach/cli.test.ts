@@ -1088,8 +1088,8 @@ describe("promote", () => {
 			const split = line.indexOf(": ");
 			fields[line.slice(0, split)] = line.slice(split + 2);
 		}
-		const name = fields["name"] ?? "";
-		const rawDescription = fields["description"] ?? "";
+		const name = fields.name ?? "";
+		const rawDescription = fields.description ?? "";
 		const description = rawDescription.startsWith('"')
 			? (JSON.parse(rawDescription) as string)
 			: rawDescription;

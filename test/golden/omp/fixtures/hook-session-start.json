@@ -1,0 +1,50 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "setup": null,
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "session_start",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "non-TUI start: no output",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    }
+  ],
+  "entry": "session_start",
+  "excluded": [
+    {
+      "reason": "requires live host: both run only when ctx.mode is 'tui' with ui.setWidget (an interactive Omp TUI)",
+      "variant": "TUI start: activity-receipt poll and status-bar mount"
+    },
+    {
+      "reason": "requires live host: liveSessionId is read only by the TUI bar renderer; no non-TUI output includes it",
+      "variant": "live session id held in the bar store"
+    }
+  ],
+  "kind": "hook",
+  "schema": 1,
+  "source": "src/host/omp.ts pi.on('session_start')"
+}

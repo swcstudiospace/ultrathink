@@ -1,0 +1,113 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "args": "off",
+        "command": "/ultrathink-track off",
+        "cwd": "<ROOT>/ultrathink-track/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "tracking off",
+      "output": {
+        "notices": [
+          {
+            "level": "info",
+            "text": "Tracking: off (Linear/Notion rows)\nNotion: not configured\nLinear team: not configured"
+          }
+        ],
+        "sentMessages": [],
+        "userMessages": []
+      },
+      "sideEffects": [
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink"
+        },
+        {
+          "change": "created",
+          "content": "{\n\t\"trackEnabled\": false\n}\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/control.json"
+        }
+      ]
+    },
+    {
+      "input": {
+        "args": "status",
+        "command": "/ultrathink-track status",
+        "cwd": "<ROOT>/ultrathink-track/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "status after off",
+      "output": {
+        "notices": [
+          {
+            "level": "info",
+            "text": "Tracking: off (Linear/Notion rows)\nNotion: not configured\nLinear team: not configured"
+          }
+        ],
+        "sentMessages": [],
+        "userMessages": []
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "args": "on",
+        "command": "/ultrathink-track on",
+        "cwd": "<ROOT>/ultrathink-track/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "tracking on",
+      "output": {
+        "notices": [
+          {
+            "level": "info",
+            "text": "Tracking: on (not configured: set notion.dataSourceUrl / linear.team)\nNotion: not configured\nLinear team: not configured"
+          }
+        ],
+        "sentMessages": [],
+        "userMessages": []
+      },
+      "sideEffects": [
+        {
+          "change": "modified",
+          "content": "{\n\t\"trackEnabled\": true\n}\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/control.json"
+        }
+      ]
+    },
+    {
+      "input": {
+        "args": "bogus",
+        "command": "/ultrathink-track bogus",
+        "cwd": "<ROOT>/ultrathink-track/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "unknown subcommand",
+      "output": {
+        "notices": [
+          {
+            "level": "info",
+            "text": "Usage: track on|off|status"
+          }
+        ],
+        "sentMessages": [],
+        "userMessages": []
+      },
+      "sideEffects": []
+    }
+  ],
+  "entry": "ultrathink-track",
+  "excluded": [],
+  "schema": 1,
+  "source": "registerCommand loop, verb=track (with getArgumentCompletions)"
+}

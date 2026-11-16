@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
+import { redactSecrets } from "../redact.ts";
 import { decide, type DecideOptions, resolveDecisionsUrl } from "./client.ts";
 import { decisionsKilled, recordHealth, resolveOpenRouterKey, usageListener } from "./gate.ts";
 import { openJevHealth, unavailableMessage } from "./health.ts";
@@ -112,11 +113,11 @@ function requestFor(input: FlowEvalInput, repair: boolean, zdr: boolean): Decisi
 		model: input.model?.trim() || DEFAULT_DECISIONS_MODEL,
 		state: {
 			subject: input.subject,
-			command: input.command ?? "",
+			command: redactSecrets(input.command ?? ""),
 			phase: input.phase ?? "",
 			truncated: input.output.length > FLOW_OUTPUT_MAX,
 			repair,
-			output: `<output>\n${body}\n</output>`,
+			output: `<output>\n${redactSecrets(body)}\n</output>`,
 		},
 		questions: QUESTION,
 		// zdr false: no provider key at all, as buildDecisionsRequest does.

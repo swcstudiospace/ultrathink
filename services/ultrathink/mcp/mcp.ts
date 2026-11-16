@@ -19,6 +19,13 @@ import { isRecord } from "../../../src/shared.ts";
 /** Newest first: initialize answers with the requested version when listed here, otherwise the first. */
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
 
+/** Stateless revision and all revisions accepted by the HTTP transport, separate from legacy initialize. */
+export const MODERN_PROTOCOL_VERSION = "2026-07-28";
+export const TRANSPORT_PROTOCOL_VERSIONS = [
+	MODERN_PROTOCOL_VERSION,
+	...SUPPORTED_PROTOCOL_VERSIONS,
+] as const;
+
 /** Version assumed for a request that names none. It is the newest one that still allows JSON-RPC batches. */
 export const DEFAULT_PROTOCOL_VERSION = "2025-03-26";
 
@@ -73,6 +80,14 @@ const JSONRPC = "2.0";
 const NOTIFICATION_PREFIX = "notifications/";
 const UPLIFT_TOOL = "ultrathink_uplift";
 const UI_EXTENSION = "io.modelcontextprotocol/ui";
+const CACHEABLE_METHODS: Record<string, true> = {
+	"server/discover": true,
+	"tools/list": true,
+	"prompts/list": true,
+	"resources/list": true,
+	"resources/templates/list": true,
+	"resources/read": true,
+};
 
 /** Text an id, a method or a text parameter may carry. Control characters are refused everywhere. */
 const NO_CONTROL = /^[^\x00-\x1f\x7f]*$/;
@@ -326,14 +341,15 @@ export async function handleMcpPayload(
 	payload: unknown,
 	ctx?: McpContext,
 ): Promise<{ body: unknown; status?: number } | null> {
+	const protocolVersion = ctx?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
 	if (!Array.isArray(payload)) {
-		const handled = await handleMessage(host, payload);
+		const handled = await handleMessage(host, payload, protocolVersion);
 		if (handled === null) return null;
 		return handled.status === undefined
 			? { body: handled.reply }
 			: { body: handled.reply, status: handled.status };
 	}
-	if ((ctx?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION) >= BATCH_REMOVED_IN) {
+	if (protocolVersion >= BATCH_REMOVED_IN) {
 		return { body: invalidRequest(), status: 400 };
 	}
 	if (payload.length === 0) return { body: invalidRequest() };
@@ -341,7 +357,7 @@ export async function handleMcpPayload(
 	const replies: RpcResponse[] = [];
 	let status: number | undefined;
 	for (const message of payload) {
-		const handled = await handleMessage(host, message);
+		const handled = await handleMessage(host, message, protocolVersion);
 		if (handled === null) continue;
 		replies.push(handled.reply);
 		if (handled.status !== undefined) status = handled.status;
@@ -350,7 +366,11 @@ export async function handleMcpPayload(
 	return status === undefined ? { body: replies } : { body: replies, status };
 }
 
-async function handleMessage(host: McpToolHost, message: unknown): Promise<Handled | null> {
+async function handleMessage(
+	host: McpToolHost,
+	message: unknown,
+	protocolVersion: string,
+): Promise<Handled | null> {
 	if (!isRecord(message) || message.jsonrpc !== JSONRPC) return { reply: invalidRequest() };
 	const id = message.id;
 	const method = message.method;
@@ -371,15 +391,28 @@ async function handleMessage(host: McpToolHost, message: unknown): Promise<Handl
 		return { reply: invalidRequest(), status: 400 };
 	}
 	// A request cannot be a notification: the client waits for an answer.
-	if (method.startsWith(NOTIFICATION_PREFIX))
-		return { reply: rpcError(id, METHOD_NOT_FOUND, "method not found") };
+	if (method.startsWith(NOTIFICATION_PREFIX)) {
+		const reply = rpcError(id, METHOD_NOT_FOUND, "method not found");
+		return protocolVersion === MODERN_PROTOCOL_VERSION ? { reply, status: 404 } : { reply };
+	}
 	const param = refusedParams(method, message.params);
 	if (param !== null) {
 		refusedRequest(param.field, param.code);
 		return { reply: rpcError(id, INVALID_PARAMS, "invalid params") };
 	}
 	try {
-		return { reply: await dispatch(host, id, method, message.params) };
+		const reply = await dispatch(host, id, method, message.params, protocolVersion);
+		if (protocolVersion !== MODERN_PROTOCOL_VERSION) return { reply };
+		if ("error" in reply) {
+			return reply.error.code === METHOD_NOT_FOUND ? { reply, status: 404 } : { reply };
+		}
+		return {
+			reply: rpcResult(id, {
+				...(reply.result as Record<string, unknown>),
+				resultType: "complete",
+				...(Object.hasOwn(CACHEABLE_METHODS, method) ? { ttlMs: 0, cacheScope: "private" } : {}),
+			}),
+		};
 	} catch {
 		// Host failures are reported without the thrown message or stack.
 		return { reply: rpcError(id, INTERNAL_ERROR, "internal error") };
@@ -419,13 +452,22 @@ async function dispatch(
 	id: unknown,
 	method: string,
 	params: unknown,
+	protocolVersion: string,
 ): Promise<RpcResponse> {
 	const serverPlanning = host.capabilities?.().serverPlanning === true;
 	switch (method) {
+		case "server/discover":
+			return protocolVersion === MODERN_PROTOCOL_VERSION
+				? rpcResult(id, discoveryResult(serverPlanning))
+				: rpcError(id, METHOD_NOT_FOUND, "method not found");
 		case "initialize":
-			return rpcResult(id, initializeResult(params, serverPlanning));
+			return protocolVersion === MODERN_PROTOCOL_VERSION
+				? rpcError(id, METHOD_NOT_FOUND, "method not found")
+				: rpcResult(id, initializeResult(params, serverPlanning));
 		case "ping":
-			return rpcResult(id, {});
+			return protocolVersion === MODERN_PROTOCOL_VERSION
+				? rpcError(id, METHOD_NOT_FOUND, "method not found")
+				: rpcResult(id, {});
 		case "tools/list":
 			return rpcResult(id, { tools: toolDefinitions(serverPlanning) });
 		case "tools/call":
@@ -439,10 +481,24 @@ async function dispatch(
 		case "resources/templates/list":
 			return rpcResult(id, { resourceTemplates: host.resources?.templates() ?? [] });
 		case "resources/read":
-			return readResource(host, id, params);
+			return readResource(host, id, params, protocolVersion);
 		default:
 			return rpcError(id, METHOD_NOT_FOUND, "method not found");
 	}
+}
+
+function discoveryResult(serverPlanning: boolean) {
+	return {
+		supportedVersions: TRANSPORT_PROTOCOL_VERSIONS,
+		capabilities: serverCapabilities(),
+		_meta: { "io.modelcontextprotocol/serverInfo": SERVER_INFO },
+		instructions: serverPlanning ? SERVER_INSTRUCTIONS : CLIENT_INSTRUCTIONS,
+	};
+}
+
+function serverCapabilities() {
+	// claude.ai web renders MCP Apps without sending the extension itself.
+	return { tools: {}, prompts: {}, resources: {}, extensions: { [UI_EXTENSION]: {} } };
 }
 
 function initializeResult(params: unknown, serverPlanning: boolean) {
@@ -452,15 +508,19 @@ function initializeResult(params: unknown, serverPlanning: boolean) {
 		SUPPORTED_PROTOCOL_VERSIONS[0];
 	return {
 		protocolVersion,
-		// The UI extension is announced unconditionally: claude.ai web renders MCP Apps without sending the extension itself.
-		capabilities: { tools: {}, prompts: {}, resources: {}, extensions: { [UI_EXTENSION]: {} } },
+		capabilities: serverCapabilities(),
 		serverInfo: SERVER_INFO,
 		instructions: serverPlanning ? SERVER_INSTRUCTIONS : CLIENT_INSTRUCTIONS,
 	};
 }
 
-/** The 2025-era revisions answer a resource that does not exist with -32002; -32602 is for a malformed uri. */
-function readResource(host: McpToolHost, id: unknown, params: unknown): RpcResponse {
+/** Legacy revisions use -32002 for a missing resource; modern requests use -32602. */
+function readResource(
+	host: McpToolHost,
+	id: unknown,
+	params: unknown,
+	protocolVersion: string,
+): RpcResponse {
 	const uri = isRecord(params) ? params.uri : undefined;
 	const read = host.resources
 		? host.resources.read(uri)
@@ -470,7 +530,11 @@ function readResource(host: McpToolHost, id: unknown, params: unknown): RpcRespo
 			};
 	if (read.ok) return rpcResult(id, { contents: read.contents });
 	return read.code === "not_found"
-		? rpcError(id, RESOURCE_NOT_FOUND, "resource not found")
+		? rpcError(
+				id,
+				protocolVersion === MODERN_PROTOCOL_VERSION ? INVALID_PARAMS : RESOURCE_NOT_FOUND,
+				"resource not found",
+			)
 		: rpcError(id, INVALID_PARAMS, "invalid params: uri must be a ui:// uri");
 }
 

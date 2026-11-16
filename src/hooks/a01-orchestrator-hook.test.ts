@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, type Mock, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+} from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
 	__injectFaultForTest,
@@ -106,7 +115,10 @@ describe("a01 orchestrator hook failure log", () => {
 	test("without opts.stateDir it uses the resolved host state dir, never <cwd>/.planning", async () => {
 		const cwd = tempDir();
 		mkdirSync(join(cwd, ".planning"));
-		const stateDir = join(tempDir(), "resolved-state");
+		// The state resolver accepts only paths inside the home directory, so the scratch state lives under it.
+		const homeScratch = mkdtempSync(join(homedir(), "ultrathink-a01-state-"));
+		dirs.push(homeScratch);
+		const stateDir = join(homeScratch, "resolved-state");
 		process.env.ULTRATHINK_STATE_DIR = stateDir;
 		process.chdir(cwd);
 
@@ -140,4 +152,23 @@ describe("a01 orchestrator hook failure log", () => {
 		expect(out.ok).toBe(false);
 		expect(out.error).toContain("sim-error-in-a01");
 	});
+});
+
+describe("withA01OrchestratorTimeout: the deadline timer", () => {
+	test("a call that finishes early leaves no timer behind, so the process exits without waiting out the deadline", async () => {
+		const dir = tempDir();
+		const hook = join(import.meta.dir, "a01-orchestrator-hook.ts");
+		const script = `import { withA01OrchestratorTimeout } from ${JSON.stringify(hook)};
+const result = await withA01OrchestratorTimeout(async () => "done", { timeoutMs: 15_000, stateDir: ${JSON.stringify(dir)} });
+if (!result.ok) process.exitCode = 3;`;
+		const started = performance.now();
+		const child = Bun.spawn([process.execPath, "-e", script], {
+			env: { ...process.env, A01_ORCHESTRATOR_ENABLED: "true" },
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		const exitCode = await child.exited;
+		expect(exitCode).toBe(0);
+		expect(performance.now() - started).toBeLessThan(10_000);
+	}, 30_000);
 });

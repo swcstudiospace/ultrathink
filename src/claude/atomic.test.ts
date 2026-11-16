@@ -299,6 +299,35 @@ describe("withFileLock", () => {
 		expect(readFileSync(lock, "utf8")).toBe("other-process-token");
 	});
 
+	test("a lock whose parent directory does not exist creates it and is held while the callback runs", () => {
+		const parent = join(dir, "fresh-state");
+		const target = join(parent, "state.json");
+		const lock = `${target}.lock`;
+		expect(existsSync(parent)).toBe(false);
+		let heldInside = false;
+		const result = withFileLock(
+			target,
+			() => {
+				heldInside = existsSync(lock);
+				// A second acquire of the same lock must not succeed while the first is held.
+				expect(() =>
+					withFileLock(target, () => "second", {
+						timeoutMs: 0,
+						onTimeout: "throw",
+					}),
+				).toThrow(LockTimeoutError);
+				return "done";
+			},
+			{ timeoutMs: 0, createParent: true },
+		);
+		expect(result).toBe("done");
+		expect(statSync(parent).isDirectory()).toBe(true);
+		expect(heldInside).toBe(true);
+		// Released after the callback: the lock file is gone and no guard is left behind.
+		expect(existsSync(lock)).toBe(false);
+		expect(leftovers(parent)).toEqual([]);
+	});
+
 	test("a lock released while waiting is taken", () => {
 		const target = join(dir, "state.json");
 		const lock = `${target}.lock`;
@@ -558,12 +587,15 @@ describe("withFileLock", () => {
 	});
 
 	test("a lock that cannot be created degrades to running the callback unlocked", () => {
-		const target = join(dir, "no-such-dir", "state.json");
+		// A regular file where the lock directory should be: no directory can be created there.
+		const blocker = join(dir, "not-a-dir");
+		writeFileSync(blocker, "");
+		const target = join(blocker, "state.json");
 		const logs: string[] = [];
 		const value = withFileLock(target, () => "ran", { log: (message) => logs.push(message) });
 		expect(value).toBe("ran");
 		expect(logs).toHaveLength(1);
-		expect(existsSync(join(dir, "no-such-dir"))).toBe(false);
+		expect(statSync(blocker).isFile()).toBe(true);
 	});
 });
 

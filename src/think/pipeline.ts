@@ -12,7 +12,7 @@ import { abortableSleep } from "../resilience/sleep.ts";
 import type { FlightThrottle } from "../resilience/throttle.ts";
 import { isAbortError } from "../shared.ts";
 import { nodeStepTitles } from "../track/plan.ts";
-import { readReport, type UpliftResult } from "../types.ts";
+import { readReport, TRUNCATED_REPLY, type UpliftResult } from "../types.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import {
 	dependencyLevels,
@@ -53,6 +53,11 @@ export interface ThinkResult extends UpliftResult {
 		 * failure): a redacted single-line cause. The provider is unavailable, so a later stage need not try it again.
 		 */
 		graphFailure?: string;
+		/**
+		 * Present when the graph fell back without a provider failure: the reply held no usable graph JSON, or it was cut
+		 * off at its token limit. A redacted single-line cause. The node fills still ran.
+		 */
+		graphCause?: string;
 	};
 }
 
@@ -100,6 +105,7 @@ const DEFAULT_FILL_RETRIES = 2;
 const FILL_RETRY_BASE_MS = 500;
 const FILL_RETRY_CAP_MS = 8000;
 const CAUSE_MAX_CHARS = 200;
+const GRAPH_REPLY_UNUSABLE = "graph reply held no usable graph JSON";
 
 /** A completion that is not a closed 5-8 step rationale plus a closed conclusion. It retries like a transient failure. */
 class FillRejectedError extends Error {
@@ -153,15 +159,20 @@ function predecessorBlock(graph: ThoughtGraph, node: ThoughtNode): string {
 		.join("\n\n");
 }
 
+/** The uplift XML without its ORIGINAL element: each payload carries the prompt once, as the caller's own copy. */
+function xmlWithoutOriginal(xml: string): string {
+	return xml.replace(/<ORIGINAL>[\s\S]*?<\/ORIGINAL>\n?/g, "");
+}
+
 function graphUserPayload(uplift: UpliftResult): string {
-	return `${uplift.original}\n\n${uplift.xml}`;
+	return `<original>${escapeXml(uplift.original)}</original>\n\n${xmlWithoutOriginal(uplift.xml)}`;
 }
 
 function cotUserPayload(uplift: UpliftResult, graph: ThoughtGraph, node: ThoughtNode): string {
 	return [
 		`<original>${escapeXml(uplift.original)}</original>`,
 		"",
-		uplift.xml,
+		xmlWithoutOriginal(uplift.xml),
 		"",
 		`<graph_goal>${escapeXml(graph.goal)}</graph_goal>`,
 		"<graph>",
@@ -178,11 +189,17 @@ function cotUserPayload(uplift: UpliftResult, graph: ThoughtGraph, node: Thought
 	].join("\n");
 }
 
+/** Whether a graph-call failure says the provider is down: a completer report, unless it reports a reply cut off at its token limit. */
+function isProviderFailure(error: unknown): boolean {
+	const report = readReport(unwrapRetryError(error));
+	return report !== undefined && report.cause !== TRUNCATED_REPLY;
+}
+
 async function buildGraph(
 	opts: RunThinkOptions,
 	minNodes: number,
 	maxNodes: number,
-): Promise<{ graph: ThoughtGraph; fallback: boolean; failure?: string }> {
+): Promise<{ graph: ThoughtGraph; fallback: boolean; failure?: string; cause?: string }> {
 	try {
 		const raw = await opts.complete(
 			GRAPH_SYSTEM_PROMPT,
@@ -190,17 +207,18 @@ async function buildGraph(
 			opts.signal,
 		);
 		const graph = normalizeGraph(extractJsonObject(raw), opts.uplift.original, minNodes, maxNodes);
-		return { graph, fallback: isFallbackGraph(graph) };
+		const fallback = isFallbackGraph(graph);
+		return fallback ? { graph, fallback, cause: GRAPH_REPLY_UNUSABLE } : { graph, fallback };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
 		await ensureLive(opts.signal);
+		const reason = describeCause(error);
 		return {
 			graph: normalizeGraph(null, opts.uplift.original, minNodes, maxNodes),
 			fallback: true,
 			// A report means the completer judged and retried the failure itself: the provider, not the reply, failed.
-			...(readReport(unwrapRetryError(error)) === undefined
-				? {}
-				: { failure: describeCause(error) }),
+			// A reply cut off at its token limit is the reply that failed, so the node fills still run and it is a cause.
+			...(isProviderFailure(error) ? { failure: reason } : { cause: reason }),
 		};
 	}
 }
@@ -354,6 +372,19 @@ function noteRepairSkipped(ctx: FillContext): void {
 }
 
 /**
+ * The graph call failed with a provider report, so the provider is down: a fill per node would only repeat that failure.
+ * Every node is failed at once with the cause, and the repair pass is skipped with the other all-failed runs.
+ */
+function skipFillsAfterGraphFailure(ctx: FillContext, graph: ThoughtGraph, failure: string): void {
+	const cause = clip(`graph call failed: ${failure}`, CAUSE_MAX_CHARS).text;
+	for (const node of graph.nodes) {
+		ctx.failed.add(node.id);
+		ctx.providerFailed.add(node.id);
+		ctx.causes.set(node.id, cause);
+	}
+}
+
+/**
  * One more single attempt, in dependency order, for every still-failed node and for every node downstream of a node
  * the pass just repaired (it was filled while that predecessor was unavailable). A successor whose refill fails keeps
  * its earlier real fill.
@@ -428,7 +459,9 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 
 	const repaired: string[] = [];
 	try {
-		if (concurrency === 1) {
+		if (built.failure !== undefined) {
+			skipFillsAfterGraphFailure(ctx, graph, built.failure);
+		} else if (concurrency === 1) {
 			for (let index = 0; index < graph.nodes.length; index++) {
 				const node = graph.nodes[index]!;
 				ctx.progress(`Node detail n${index + 1}/${graph.nodes.length} · ${node.kind}…`);
@@ -466,6 +499,7 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 		degraded: {
 			graph: built.fallback,
 			...(built.failure === undefined ? {} : { graphFailure: built.failure }),
+			...(built.cause === undefined ? {} : { graphCause: built.cause }),
 			fills,
 			...(fills.length > 0 ? { causes } : {}),
 			...(repaired.length > 0 ? { repaired } : {}),

@@ -93,6 +93,21 @@ describe("pruneSessions", () => {
 		expect(sessionFiles(state)).toEqual(["new.json", "new.xml"]);
 	});
 
+	test("a scheduled run removes at most 50 sessions and the next day's run takes the rest", () => {
+		const state = makeState();
+		for (let i = 0; i < 60; i += 1) seed(state, `s${String(i).padStart(2, "0")}`, 40 + i * 0.01);
+		const first = pruneSessionsBestEffort({ stateDir: state, retentionDays: 30, now });
+		expect(first?.pruned).toHaveLength(50);
+		expect(first?.kept).toBe(10);
+		const nextDay = pruneSessionsBestEffort({
+			stateDir: state,
+			retentionDays: 30,
+			now: () => NOW + DAY,
+		});
+		expect(nextDay?.pruned).toHaveLength(10);
+		expect(sessionFiles(state)).toEqual([]);
+	});
+
 	test("reports bytes as the size of what was removed", () => {
 		const state = makeState();
 		seed(state, "old", 40);

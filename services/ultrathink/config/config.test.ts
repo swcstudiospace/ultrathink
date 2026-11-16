@@ -364,34 +364,6 @@ describe("serverPlanning derivation", () => {
 	});
 });
 
-describe("ULTRATHINK_CIMD strict boolean", () => {
-	test("unset, blank and 0 leave CIMD off", () => {
-		for (const value of [undefined, "", "   ", "0"]) {
-			expect(loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: value }).cimdEnabled).toBe(false);
-		}
-	});
-
-	test("exactly 1 turns CIMD on, and surrounding whitespace is trimmed first", () => {
-		expect(loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: "1" }).cimdEnabled).toBe(true);
-		expect(loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: " 1\t" }).cimdEnabled).toBe(true);
-	});
-
-	test("any other value is rejected by name, never read as on or off", () => {
-		for (const value of ["true", "TRUE", "yes", "on", "01", "2", "1.0"]) {
-			const message = messageOf(() => loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: value }));
-			expect(message).toContain("ULTRATHINK_CIMD must be 0 or 1");
-		}
-	});
-
-	test("a rejected value is never echoed back in the error", () => {
-		const message = messageOf(() =>
-			loadConfig({ ...baseEnv(), ULTRATHINK_CIMD: "CIMD-VALUE-CANARY" }),
-		);
-		expect(message).toContain("ULTRATHINK_CIMD must be 0 or 1");
-		expect(message).not.toContain("CIMD-VALUE-CANARY");
-	});
-});
-
 describe("origin lists", () => {
 	test("trims, skips empty entries, normalizes and de-duplicates", () => {
 		const env = baseEnv();
@@ -1212,20 +1184,15 @@ describe("loadConfig aggregation", () => {
 		]);
 	});
 
-	test("mixed invalid settings are listed in declaration order without echoing the CIMD value", () => {
+	test("invalid planning fallback is reported without echoing its value", () => {
 		const message = messageOf(() =>
-			loadConfig({
-				...baseEnv(),
-				ULTRATHINK_CIMD: "CIMD-VALUE-CANARY",
-				ULTRATHINK_PLANNING_FALLBACK: "sekrit-fallback",
-			}),
+			loadConfig({ ...baseEnv(), ULTRATHINK_PLANNING_FALLBACK: "sekrit-fallback" }),
 		);
 		expect(message.split("\n")).toEqual([
-			"ultrathink: 2 configuration problems",
-			"  ULTRATHINK_CIMD must be 0 or 1",
+			"ultrathink: 1 configuration problems",
 			"  ULTRATHINK_PLANNING_FALLBACK must be none or grok",
 		]);
-		expect(message).not.toContain("CIMD-VALUE-CANARY");
+		expect(message).not.toContain("sekrit-fallback");
 	});
 
 	test("cross-variable checks run next to ordinary ones: partial TLS and a bad port both appear", () => {

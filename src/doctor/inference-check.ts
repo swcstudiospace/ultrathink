@@ -277,7 +277,6 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 	const { laneHome, status } = grokLoginState(deps, config);
 	const laneNote = laneHome ? `Grok lane home: ${laneHome}` : undefined;
 	if (status.loggedIn && !status.expired) {
-		const account = status.email ?? "signed in";
 		const expires = status.expiresAt
 			? ` expires in ${formatAge(Date.parse(status.expiresAt) - now)}`
 			: "";
@@ -285,7 +284,7 @@ function grokFinding(deps: DoctorDeps, config: UltrathinkConfig): Finding {
 			id: "inference.grok.login",
 			section: "inference",
 			level: "ok",
-			title: `Grok login: ${account}${expires}${laneHome ? ` (home ${laneHome})` : ""}`,
+			title: `Grok login: signed in${expires}${laneHome ? ` (home ${laneHome})` : ""}`,
 		};
 	}
 	if (status.loggedIn) {

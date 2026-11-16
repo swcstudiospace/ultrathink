@@ -37,7 +37,7 @@ This is the same browser flow as Notion, with the same flags and the same routes
 
 ## 2. Choose the team
 
-Set `linear.team` in any [config file](../configuration.md#config-files), for example the user config `~/.config/ultrathink/config.json`, or a project's `.claude/ultrathink.json` to send one project's issues to its own team:
+Set `linear.team` in your user config, `~/.config/ultrathink/config.json`. A repository's `.claude/ultrathink.json` cannot set it: the team decides where your issues are created, so only your own config does:
 
 ```json
 { "linear": { "team": "<your Linear team>" } }

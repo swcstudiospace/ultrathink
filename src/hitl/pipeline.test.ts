@@ -808,6 +808,20 @@ function failures(key: string): Failure[] {
 }
 
 describe("runClarify with Jev decisions", () => {
+	test("a settled claim whose cited document has no digest section sends no request and is asked, never settled", async () => {
+		const r = recordingFetch([JEV(0.9, "supported")]);
+		const run = await clarify([kbClaim(SESSIONS_Q)], {
+			knowledge: {
+				digest: "\n\n### docs/other.md\n\nUnrelated.\n\n",
+				docs: ["docs/auth.md", "docs/other.md"],
+			},
+			decisions: jev(r.fetch, ["knowledge"]).decisions,
+		});
+		expect(r.calls).toHaveLength(0);
+		expect(run.list.map((item) => item.question)).toEqual([SESSIONS_Q]);
+		expect(run.list.some((item) => item.source === "knowledge")).toBe(false);
+	});
+
 	const saved: Record<string, string | undefined> = {};
 	beforeEach(() => {
 		for (const name of ENV_NAMES) {
@@ -1046,7 +1060,7 @@ describe("runClarify with Jev decisions", () => {
 			expect(r.calls).toHaveLength(0);
 		});
 
-		test("a claim whose cited document has no section in the digest is not sent and stays settled", async () => {
+		test("a claim whose cited document has no section in the digest is not sent and is asked, never settled unchecked", async () => {
 			const r = recordingFetch([JEV(0.01, "supported")]);
 			const knowledge = {
 				digest: `${KB_HEADER}\n\n### docs/auth.md\n\n${AUTH_DOC}`,
@@ -1057,10 +1071,10 @@ describe("runClarify with Jev decisions", () => {
 				decisions: jev(r.fetch, ["knowledge"]).decisions,
 			});
 			expect(r.calls.map((call) => sent(call).state.question)).toEqual([SESSIONS_Q]);
-			expect(run.list.map((item) => [item.question, item.source])).toEqual([
-				[SESSIONS_Q, undefined],
-				["Where do records live?", "knowledge"],
-			]);
+			expect(run.list.map((item) => item.question).sort()).toEqual(
+				["Where do records live?", SESSIONS_Q].sort(),
+			);
+			expect(run.list.some((item) => item.source === "knowledge")).toBe(false);
 			expect(run.records).toHaveLength(1);
 		});
 

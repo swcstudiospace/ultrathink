@@ -44,6 +44,13 @@ export const SECRET_TOKEN_PATTERNS: readonly RegExp[] = [
 	/\bAIza[0-9A-Za-z_-]{30,}/g,
 	/\blin_api_[A-Za-z0-9]{20,}/g,
 	/\b(?:ntn|secret)_[A-Za-z0-9]{20,}/g,
+	/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/g,
+	/\bglpat-[A-Za-z0-9_-]{20,}/g,
+	/\bnpm_[A-Za-z0-9]{36,}/g,
+	/\bhf_[A-Za-z0-9]{34,}/g,
+	/\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g,
+	/\bpypi-[A-Za-z0-9_-]{50,}/g,
+	/\bya29\.[A-Za-z0-9_-]{20,}/g,
 	/\$argon2(?:id|i|d)\$\S*/g,
 ];
 
@@ -55,6 +62,12 @@ const ASSIGNMENT_HEAD = /(?<![A-Za-z0-9_.-])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1(
 const ASSIGNMENT_VALUE = /(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"',;&|]+))/y;
 const LINE_REST = /[ \t]*(?:\r?\n|$)/y;
 const SECRET_WORDS = ["key", "token", "secret", "password", "passwd"];
+/** A shell reference holds no secret: `$TOKEN` (an uppercase name), `${TOKEN}` or `$(command)`. A `$` before a lowercase or mixed name is a literal. A `${` or `$(` whose closing bracket is more than 256 characters away is a literal too, so each check stays constant. */
+const SHELL_REFERENCE =
+	/\$(?:[A-Z_][A-Z0-9_]*(?![A-Za-z0-9_])|\{[^}\n]{0,256}\}|\([^)\n]{0,256}\))/y;
+/** A template reference holds no secret: a JSX expression `{name}`, a placeholder `<name>` or a Windows variable `%NAME%`. */
+const TEMPLATE_REFERENCE =
+	/\{[A-Za-z_][\w.]{0,128}\}|<[A-Za-z_][\w.-]{0,128}>|%[A-Za-z_][A-Za-z0-9_]{0,128}%/y;
 
 /** Name tokens (split on non-alphanumerics and camelCase) that end in a secret word: API_KEY, apiKey, client-secret. "keyboard" is not. */
 function isSecretName(name: string): boolean {
@@ -83,6 +96,17 @@ function redactBearer(text: string): string {
 	});
 }
 
+/** The shell reference that starts at `at` (`$NAME`, `${NAME}` or `$(command)`), or undefined. */
+function shellReferenceAt(text: string, at: number): string | undefined {
+	SHELL_REFERENCE.lastIndex = at;
+	return SHELL_REFERENCE.exec(text)?.[0];
+}
+
+function isTemplateReference(text: string, at: number): boolean {
+	TEMPLATE_REFERENCE.lastIndex = at;
+	return TEMPLATE_REFERENCE.test(text);
+}
+
 /** The replacement for one `name = value` pair (value starting at `valueStart`), or undefined when it holds no secret. `end` is where the pair ends. */
 function assignmentReplacement(
 	text: string,
@@ -91,9 +115,15 @@ function assignmentReplacement(
 	sep: string,
 	valueStart: number,
 ): { replacement: string | undefined; end: number } | undefined {
-	// Template references and JSX props (`key={id}`, `TOKEN=$TOKEN`) hold no secret; the value is not scanned at all.
-	const first = text[valueStart] ?? "";
-	if (/^[$({<%]/.test(first)) return { replacement: undefined, end: valueStart };
+	// Template references and JSX props (`key={id}`, `<name>`, `%NAME%`, `TOKEN=$TOKEN`) hold no secret; the value is not
+	// scanned at all. A `$` value is a reference only when it is a shell reference whose bare name is not credential-shaped:
+	// `password=$SECRET123` is a literal secret, as are `password=$ecr3t123` and `password=(hunter2)`.
+	const reference = text[valueStart] === "$" ? shellReferenceAt(text, valueStart) : undefined;
+	const isEnvReference =
+		reference !== undefined &&
+		!(/^\$[A-Za-z_]/.test(reference) && isCredentialShaped(reference.slice(1)));
+	if (isTemplateReference(text, valueStart) || isEnvReference)
+		return { replacement: undefined, end: valueStart };
 	ASSIGNMENT_VALUE.lastIndex = valueStart;
 	const value = ASSIGNMENT_VALUE.exec(text);
 	if (value === null) return undefined;

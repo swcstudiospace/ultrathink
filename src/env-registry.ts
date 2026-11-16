@@ -406,7 +406,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"paths",
 		"path",
 		"ULTRATHINK_STATE_DIR",
-		"Directory for control state and session records instead of the host default. The hosted service reads it too and defaults to /var/lib/ultrathink; a path inside .planning is ignored.",
+		"Directory for control state and session records instead of the host default. The host uses it only when it is an absolute path inside your home directory and not home itself; any other value, including a path inside .planning, is ignored. The hosted service and stdio connector read it under their own rules; the hosted service defaults to /var/lib/ultrathink.",
 	),
 	row(
 		"plugin",
@@ -569,14 +569,6 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"bool01",
 		"ULTRATHINK_SERVER_PLANNING",
 		"Set to 1 to let the service plan on the server.",
-		{ default: "0", reader: "trims" },
-	),
-	row(
-		"service",
-		"service-tuning",
-		"bool01",
-		"ULTRATHINK_CIMD",
-		"Set to 1 to allow guarded CIMD client metadata retrieval and advertisement of client_id_metadata_document_supported. Needs Bun 1.4.0 or later: on an older Bun the server neither retrieves nor advertises. Unset or 0 keeps it off. Refuses loopback, private, link-local, multicast, reserved, NAT64, 6to4 and IPv4-translated targets. Each fetch holds one of four in-flight slots until its connection confirms stop; a slot whose stop never confirms is not reclaimed, so restart the service to free it.",
 		{ default: "0", reader: "trims" },
 	),
 	row(

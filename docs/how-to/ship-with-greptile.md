@@ -85,7 +85,7 @@ The three switches are separate, and all default to `false`:
 |---|---|
 | `ship.enabled` | The plan gets a `## Ship` section and the agent is nudged to ship at the end of a matching skill run. Pushing and opening the PR are part of this. |
 | `ship.autoMerge` | `merge` may merge the PR once the gate passes. Off, the flow stops with the PR ready for you. On, in gate mode, the done assessment also needs a usable verdict from the engine judge: neither the rules alone nor a Jev answer stands in for it. |
-| `ship.deleteBranch` | After a confirmed merge, delete the remote branch with an explicit refspec (`git push origin :refs/heads/<branch>`), check out and fast-forward the base branch, then delete the local branch with `git branch -d`. It uses `-D` only when the local branch's tip is exactly the merged head, which is what a squash or rebase merge leaves. When `false`, branches are left alone. |
+| `ship.deleteBranch` | After a confirmed merge, delete the remote branch with an explicit refspec (`git push origin :refs/heads/<branch>`), fast-forward the local base branch when no worktree has it checked out (a checked-out base is left alone), then delete the local branch with `git branch -d` unless it is checked out. It uses `-D` only when the local branch's tip is exactly the merged head, which is what a squash or rebase merge leaves. When `false`, branches are left alone. |
 
 Check it from the project directory:
 

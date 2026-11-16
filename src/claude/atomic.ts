@@ -188,6 +188,11 @@ export interface LockOptions {
 	log?: (message: string) => void;
 	/** Seams for the holder-liveness check (default: the real process table). */
 	liveness?: LockLiveness;
+	/**
+	 * Creates the lock's parent directory first (default false). A fresh state dir has none yet, so a writer that
+	 * creates its own state files passes true; any other writer leaves a missing directory alone and runs unlocked.
+	 */
+	createParent?: boolean;
 }
 
 const SLEEP_WORD = new Int32Array(new SharedArrayBuffer(4));
@@ -430,6 +435,8 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 	for (let attempt = 0; ; attempt++) {
 		let retry: string | boolean | undefined;
 		try {
+			// Only a caller that opts in creates the lock's directory; every other writer keeps the missing-dir failure.
+			if (options.createParent) mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
 			retry = withLockMutation(lockPath, () => {
 				try {
 					const fd = openSync(lockPath, "wx", 0o600);

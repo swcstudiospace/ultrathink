@@ -24,8 +24,9 @@ Every file is optional. `bin/ultrathink-ship` reads them for the directory given
 - Later files win: the project file beats both user files, and `~/.claude/ultrathink.json` beats `~/.config/ultrathink/config.json`.
 - The merge is per key inside each section. A project file with only `{"hitl": {"maxQuestions": 2}}` changes that one key and keeps everything else.
 - A missing file, invalid JSON, or a top level that is not an object is skipped. Unknown keys are ignored. A value of the wrong type or out of range is ignored, and the earlier value stays.
-- `notion.dataSourceUrl` and `linear.team` accept only non-empty strings. A project file cannot clear a Notion database or Linear team that a user file sets; `""` is ignored.
+- `ship.greptileOrganization` is filled from a project file only where no earlier file sets it, so a value you set is never overridden. A project file cannot clear one. `notion.dataSourceUrl` and `linear.team` are read from your own config only: they decide where your tracker writes go, so a repository cannot choose them.
 - The project file can only tighten Jev decisions: `decisions.zdr` only from `false` to `true`, and `decisions.points` only narrowed to the points the user files (or the default) also list. `decisions.enabled` is ignored in every file (Jev is always on). `decisions.model`, `decisions.timeoutMs` and the thresholds merge as usual.
+- A project file can only tighten `ship` (disable `enabled`, `autoMerge` or `deleteBranch`; raise `minScore`), `track` (disable) and `hitl` (enable HITL; turn the knowledge base off). The other `ship` keys (`skills`, `mergeMethod`, `maxRounds`), `think`, and `hitl.maxQuestions` are read from your own files only. Timers can only shorten, and a `0` keeps your value.
 - The per-host control state beats the config for the keys it covers. `/ultrathink-off`, `/ultrathink-track off`, `bin/ultrathink think off`, `bin/ultrathink hitl off` and `bin/ultrathink grok engine …` write it to that host's state directory on that machine. It is never shared.
 - Environment switches beat both: `ULTRATHINK_UPLIFT=0`, `ULTRATHINK_TRACK=0`, `ULTRATHINK_SHIP=0`, `ULTRATHINK_DECISIONS=0`.
 
@@ -43,21 +44,15 @@ Settings that describe the project, and are the same for everyone who works in i
 
 | Key | Why it belongs to the project |
 |---|---|
-| `linear.team` | The Linear team whose issues this project's work creates. See [Set up Linear](set-up-linear.md). |
-| `notion.dataSourceUrl` | The shared Notion "Agent Task Graph" database, `collection://<data source id>`. See [Set up Notion](set-up-notion.md). |
-| `ship` | Whether this repository ships, and how: `enabled`, `autoMerge`, `deleteBranch`, `skills`, `mergeMethod`, `minScore`, `maxRounds`, `greptileOrganization`. See [Ship with Greptile](ship-with-greptile.md). |
-| `think.minNodes`, `think.maxNodes`, `hitl.maxQuestions` | How much planning the project wants. |
+| `ship.greptileOrganization` | The Greptile organization this repository's reviews use. Enabling ship and its merge settings belong in your own config: a project file can only switch them off. See [Ship with Greptile](ship-with-greptile.md). |
+| `think.minNodes`, `think.maxNodes`, `hitl.maxQuestions` | Read from your own config only; a project file's values are ignored. |
 
 Example `<repo>/.claude/ultrathink.json`:
 
 ```json
 {
-  "linear": { "team": "<your Linear team>" },
-  "notion": { "dataSourceUrl": "collection://<data source id>" },
   "ship": {
-    "enabled": true,
     "autoMerge": false,
-    "skills": ["gsd-"],
     "greptileOrganization": "<your Greptile organization>"
   }
 }
@@ -94,15 +89,16 @@ Never copy the credential store into a repository or share it between people.
 
 ## Review a project file before you trust it
 
-The project file wins over your own config and can set any key, except that it can only tighten Jev decisions (see below). A repository you clone can therefore:
+A project file can set some keys and only tighten others. A repository you clone can therefore:
 
-- turn ship on, including `autoMerge` and `deleteBranch`, for your sessions in that repository;
-- point Linear and Notion row creation at its own team and database;
-- choose the binaries ultrathink runs (`claude.bin`, `grok.bin`) and the URLs planning calls go to (`grok.baseUrl`, `substrate.url`);
-- take your Grok login token: with the `http` transport, ultrathink sends that token as `Authorization: Bearer` to `grok.baseUrl`, so a project file that sets `think.engine: "grok"` and its own `grok.baseUrl` receives it;
-- change the model, timeout and thresholds of Jev decisions (for example, so that the plan gate skips more of your prompts), and narrow their points.
+- turn ship off, or make it stricter: `ship.enabled`, `ship.autoMerge` and `ship.deleteBranch` can only go to `false`, and `ship.minScore` can only rise;
+- turn tracking off, turn HITL on, or turn the knowledge base off;
+- set the Linear team or the Notion data source, but only where none of your own config files sets one. With Linear or Notion logged in, that enables row creation in the repository's team or database, so check `bin/ultrathink status` before you trust one;
+- choose the planning model (`models`) and the Jev model (a `typesafe/jev*` id), and set the Jev timeout;
+- move `decisions.planSkipBelow` (more prompts skip planning) and `decisions.teachableBelow`, narrow the Jev points, and set `decisions.zdr` to `true`;
+- shorten the Claude and Grok timers (a `0` keeps your value), and turn Hindsight, RAGFlow or Teachable Moments off or lower their capture.
 
-A project file cannot turn Jev decisions on or off: Jev is always on, `decisions.enabled` is ignored in every file, and only `ULTRATHINK_DECISIONS=0` in the environment turns it off. A project file can narrow `decisions.points`, set `decisions.zdr` to `true` and set the model (a `typesafe/jev*` id only), the timeout and the thresholds, but it cannot add points or turn zero data retention off. So it can never make ultrathink send your prompt, patch or knowledge-base text to OpenRouter unless you stored or set a Jev key yourself. It cannot redirect your OpenRouter key either: there is no config key for the Decisions endpoint, and any other key under `decisions` (a `url` or `endpoint`, for example) is ignored. The key is sent only to `https://openrouter.ai/api/alpha/decisions`, or to the `ULTRATHINK_DECISIONS_URL` environment variable you set yourself, which must be an `https://openrouter.ai/…` or loopback URL.
+A project file cannot turn Jev decisions on or off: Jev is always on, `decisions.enabled` is ignored in every file, and only `ULTRATHINK_DECISIONS=0` in the environment turns it off. A project file can narrow `decisions.points`, set `decisions.zdr` to `true`, set the model (a `typesafe/jev*` id only) and the timeout, and move `planSkipBelow` and `teachableBelow`. Its gating thresholds can only be made stricter: `shipVetoAtOrBelow`, `shipApproveAt`, `groundedAt`, `teachableAutoAt` and `skillworthyAt` can only rise, and `blockingAt` can only fall. It cannot add points or turn zero data retention off. So it can never make ultrathink send your prompt, patch or knowledge-base text to OpenRouter unless you stored or set a Jev key yourself. It cannot redirect your OpenRouter key either: there is no config key for the Decisions endpoint, and any other key under `decisions` (a `url` or `endpoint`, for example) is ignored. The key is sent only to `https://openrouter.ai/api/alpha/decisions`, or to the `ULTRATHINK_DECISIONS_URL` environment variable you set yourself, which must be an `https://openrouter.ai/…` or loopback URL.
 
 On Bun 1.3.3 and later, a repository's `.env*` files do not reach ultrathink at all: it starts Bun with `--no-env-file`. Bun 1.2.x ignores that flag and still loads them into ultrathink's environment, where they can set any variable in [Environment variables](../configuration.md#environment-variables); on Bun 1.2, read them too, or upgrade Bun.
 

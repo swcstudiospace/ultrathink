@@ -396,32 +396,32 @@ export async function runChildLifetimeScenario(scenario: {
 			exited = true;
 			const [out, err] = await Promise.all([outText, errText]);
 			if (timedOut)
-				throw new Error("child lifetime scenario timed out after 90 s: " + err.slice(-2000));
+				throw new Error(`child lifetime scenario timed out after 90 s: ${err.slice(-2000)}`);
 			if (code !== 0)
-				throw new Error("child lifetime scenario exited " + code + ": " + err.slice(-2000));
+				throw new Error(`child lifetime scenario exited ${code}: ${err.slice(-2000)}`);
 			const line = out.split("\n").find((entry) => entry.startsWith("SCENARIO-RESULT "));
-			if (!line) throw new Error("child lifetime scenario printed no result: " + err.slice(-2000));
+			if (!line) throw new Error(`child lifetime scenario printed no result: ${err.slice(-2000)}`);
 			const parsed: unknown = JSON.parse(line.slice("SCENARIO-RESULT ".length));
 			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-				throw new Error("child lifetime scenario result malformed: " + line);
+				throw new Error(`child lifetime scenario result malformed: ${line}`);
 			}
 			if (!("planAsides" in parsed) || !("nativeCalls" in parsed)) {
-				throw new Error("child lifetime scenario result malformed: " + line);
+				throw new Error(`child lifetime scenario result malformed: ${line}`);
 			}
 			const planAsides: unknown = parsed.planAsides;
 			const nativeCalls: unknown = parsed.nativeCalls;
 			if (typeof planAsides !== "number" || typeof nativeCalls !== "number") {
-				throw new Error("child lifetime scenario result malformed: " + line);
+				throw new Error(`child lifetime scenario result malformed: ${line}`);
 			}
 			if (scenario.handoffOrder === undefined) return { planAsides, nativeCalls };
-			if (!("handoff" in parsed)) throw new Error("child handoff proof missing: " + line);
+			if (!("handoff" in parsed)) throw new Error(`child handoff proof missing: ${line}`);
 			const handoffValue: unknown = parsed.handoff;
 			if (
 				typeof handoffValue !== "object" ||
 				handoffValue === null ||
 				Array.isArray(handoffValue)
 			) {
-				throw new Error("child handoff proof missing: " + line);
+				throw new Error(`child handoff proof missing: ${line}`);
 			}
 			if (
 				!("order" in handoffValue) ||
@@ -440,7 +440,7 @@ export async function runChildLifetimeScenario(scenario: {
 				!("asideCustomType" in handoffValue) ||
 				!("asideDeliverAs" in handoffValue)
 			) {
-				throw new Error("child handoff proof malformed: " + line);
+				throw new Error(`child handoff proof malformed: ${line}`);
 			}
 			const order: unknown = handoffValue.order;
 			const dueMs: unknown = handoffValue.dueMs;
@@ -461,7 +461,7 @@ export async function runChildLifetimeScenario(scenario: {
 				(order !== "provider-first" && order !== "race-first") ||
 				order !== scenario.handoffOrder
 			) {
-				throw new Error("child handoff proof order mismatch: " + line);
+				throw new Error(`child handoff proof order mismatch: ${line}`);
 			}
 			if (
 				typeof dueMs !== "number" ||
@@ -480,7 +480,7 @@ export async function runChildLifetimeScenario(scenario: {
 				(asideCustomType !== null && typeof asideCustomType !== "string") ||
 				(asideDeliverAs !== null && typeof asideDeliverAs !== "string")
 			) {
-				throw new Error("child handoff proof malformed: " + line);
+				throw new Error(`child handoff proof malformed: ${line}`);
 			}
 			return {
 				planAsides,
@@ -541,22 +541,22 @@ function childLifetimeSource(
 	const handoffOrder = JSON.stringify(scenario.handoffOrder ?? null);
 	const parentRootPath = JSON.stringify(parentRoot);
 	return [
-		"import { createNativeEngineSelector } from " + ompPath + ";",
+		`import { createNativeEngineSelector } from ${ompPath};`,
 		"import { fakeModel, fakeRuntime, isolatedPlanEnv, quietConfig, recorder, reply, setup, stageAnswer, userText } from " +
 			helpersPath +
 			";",
-		"import { planPrompt } from " + planPath + ";",
-		"import type { UltrathinkConfig } from " + configPath + ";",
-		"import type { OmpPlanner } from " + ompPath + ";",
-		"import type { PlanResponse } from " + planPath + ";",
-		"import type { ProgressEvent } from " + progressPath + ";",
+		`import { planPrompt } from ${planPath};`,
+		`import type { UltrathinkConfig } from ${configPath};`,
+		`import type { OmpPlanner } from ${ompPath};`,
+		`import type { PlanResponse } from ${planPath};`,
+		`import type { ProgressEvent } from ${progressPath};`,
 		"import { existsSync, mkdtempSync, rmSync } from 'node:fs';",
 		"import { join } from 'node:path';",
-		"const PARENT_ROOT: string = " + parentRootPath + ";",
+		`const PARENT_ROOT: string = ${parentRootPath};`,
 		"",
-		"const SCENARIO_MAX_RUN_MS: number | undefined = " + maxRunMs + ";",
-		"const SCENARIO_CANCEL_HUNG: boolean = " + cancelHung + ";",
-		"const SCENARIO_HANDOFF_ORDER: string | null = " + handoffOrder + ";",
+		`const SCENARIO_MAX_RUN_MS: number | undefined = ${maxRunMs};`,
+		`const SCENARIO_CANCEL_HUNG: boolean = ${cancelHung};`,
+		`const SCENARIO_HANDOFF_ORDER: string | null = ${handoffOrder};`,
 		"",
 		"const realSetTimeout: typeof setTimeout = globalThis.setTimeout;",
 		"const realClearTimeout: typeof clearTimeout = globalThis.clearTimeout;",

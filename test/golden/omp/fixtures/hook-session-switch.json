@@ -1,0 +1,186 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "setup": null,
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "session_switch",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "switch with no open dashboard: no output",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "setup": null,
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "command:ultrathink-ui",
+            "sessionId": "golden-session-1"
+          },
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "session_switch",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "switch after /ultrathink-ui: the non-TUI snapshot already closed the dashboard, so no notice",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": "command",
+                "launches": [],
+                "notices": [],
+                "sentMessages": [
+                  {
+                    "message": {
+                      "content": "Ultrathink snapshot — Project: workspace | Session: golden-session-1\nNo saved Jev decisions for this session\nAutonomy: teaching on; capture auto; eligible 0; promoted 0\nLessons for workspace (0 of 0 shown):\nNote: Teaching Jev history is not recorded. Lesson state is not a verdict receipt.\nNote: Detached worker outcomes are not recorded. No completion or install result can be inferred.\nNote: No saved Jev decisions for this session (no saved plan was found). This view reads the latest saved plan, not a c…\nGuarded actions require the Omp TUI (/ultrathink-ui).\nNative dashboard unavailable in this host. Showing a local read-only snapshot; use Omp TUI for guarded actions.",
+                      "display": true
+                    },
+                    "options": {
+                      "triggerTurn": false
+                    }
+                  }
+                ],
+                "userMessages": []
+              }
+            ]
+          },
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "setup": null,
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "command:ultrathink-ui",
+            "sessionId": "golden-session-1"
+          },
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "session_switch",
+            "sessionId": "golden-session-1"
+          },
+          {
+            "args": null,
+            "cwd": ".",
+            "event": null,
+            "on": "session_switch",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "repeated switch: no output",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": "command",
+                "launches": [],
+                "notices": [],
+                "sentMessages": [
+                  {
+                    "message": {
+                      "content": "Ultrathink snapshot — Project: workspace | Session: golden-session-1\nNo saved Jev decisions for this session\nAutonomy: teaching on; capture auto; eligible 0; promoted 0\nLessons for workspace (0 of 0 shown):\nNote: Teaching Jev history is not recorded. Lesson state is not a verdict receipt.\nNote: Detached worker outcomes are not recorded. No completion or install result can be inferred.\nNote: No saved Jev decisions for this session (no saved plan was found). This view reads the latest saved plan, not a c…\nGuarded actions require the Omp TUI (/ultrathink-ui).\nNative dashboard unavailable in this host. Showing a local read-only snapshot; use Omp TUI for guarded actions.",
+                      "display": true
+                    },
+                    "options": {
+                      "triggerTurn": false
+                    }
+                  }
+                ],
+                "userMessages": []
+              }
+            ]
+          },
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          },
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    }
+  ],
+  "entry": "session_switch",
+  "excluded": [
+    {
+      "reason": "requires live host: a planner flight starts in before_agent_start and calls a model provider over the network",
+      "variant": "switch while a planner flight runs (cancelled, delivery suppressed)"
+    },
+    {
+      "reason": "requires live host: the dashboard mounts only with ctx.mode 'tui' and ui.custom",
+      "variant": "switch with a dashboard mounted in the TUI (component disposal)"
+    }
+  ],
+  "kind": "hook",
+  "schema": 1,
+  "source": "src/host/omp.ts pi.on('session_switch')"
+}

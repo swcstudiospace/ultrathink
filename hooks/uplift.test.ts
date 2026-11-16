@@ -2,9 +2,10 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { armSkipOnce, readSkipOnce } from "../src/claude/state.ts";
+import { carrierPathFor, writePlanCarrier } from "../src/host/carrier.ts";
 
 const HOOKS = import.meta.dir;
 const ENTRYPOINTS = ["uplift.ts", "stop.ts", "answers.ts", "flow-eval.ts", "pr-sync.ts"] as const;
@@ -21,7 +22,7 @@ describe("emit", () => {
 				`import { emit } from ${JSON.stringify(join(HOOKS, "uplift.ts"))};\n` +
 					`emit(JSON.stringify({ systemMessage: "x".repeat(400_000) })).finally(() => process.exit(0));\n`,
 			);
-			const proc = Bun.spawn(["bun", "--no-env-file", script], {
+			const proc = Bun.spawn([process.execPath, "--no-env-file", script], {
 				stdout: "pipe",
 				stderr: "pipe",
 				env: { ...process.env, ULTRATHINK_HOST: "claude-code" },
@@ -36,7 +37,7 @@ describe("emit", () => {
 	}, 60_000);
 
 	test("importing uplift.ts runs nothing: the entry only starts as the main module", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-import-"));
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-import-"));
 		try {
 			const script = join(dir, "import.ts");
 			writeFileSync(
@@ -50,7 +51,11 @@ describe("emit", () => {
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
-				env: { ...process.env, HOME: home, ULTRATHINK_STATE_DIR: join(dir, "state") },
+				env: {
+					...process.env,
+					HOME: home,
+					ULTRATHINK_STATE_DIR: join(home, "state"),
+				},
 			});
 			expect(await new Response(proc.stdout).text()).toBe("ok");
 			expect(await proc.exited).toBe(0);
@@ -64,6 +69,9 @@ describe("hook entrypoints", () => {
 	for (const name of ENTRYPOINTS) {
 		const source = readFileSync(join(HOOKS, name), "utf8");
 
+		// Wiring guards, kept on purpose: a console.log or stdout write followed by process.exit truncates output past the
+		// pipe buffer (see the 400,000-byte test above). Only a real envelope reaches each entry's output path, and no
+		// envelope-free behavior test can force that path, so the source shape is pinned here.
 		test(`${name} writes stdout only through an awaited Bun.write`, () => {
 			expect(source).not.toMatch(/console\.log\(/);
 			expect(source).not.toMatch(/process\.stdout\.write\(/);
@@ -73,6 +81,28 @@ describe("hook entrypoints", () => {
 			expect(source).toContain("installChildReaper({ signals: true })");
 			expect(source).toMatch(/\.finally\(\(\) => \{?\s*process\.exit\(0\)/);
 		});
+
+		test(`${name} exits 0 and writes nothing to stdout without an envelope`, async () => {
+			const dir = mkdtempSync(join(homedir(), "ultrathink-entry-"));
+			try {
+				const proc = Bun.spawn([process.execPath, "--no-env-file", join(HOOKS, name)], {
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+					env: {
+						...process.env,
+						HOME: join(dir, "home"),
+						ULTRATHINK_STATE_DIR: join(dir, "home", "state"),
+						ULTRATHINK_HOST: "claude-code",
+					},
+				});
+				const out = await new Response(proc.stdout).text();
+				expect(await proc.exited).toBe(0);
+				expect(out).toBe("");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		}, 60_000);
 	}
 });
 
@@ -81,18 +111,23 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 	async function runGrokHook(
 		prompt: string,
 		arm: boolean,
+		config?: Record<string, unknown>,
 	): Promise<{
 		out: string;
 		err: string;
 		armedAfter: boolean;
 		lastSkip?: { reason?: string; at?: number };
 	}> {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-precheck-"));
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-precheck-"));
 		try {
 			const home = join(dir, "home");
-			const stateDir = join(dir, "state");
+			const stateDir = join(home, "state");
 			mkdirSync(home, { recursive: true });
 			mkdirSync(stateDir, { recursive: true });
+			if (config) {
+				mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
+				writeFileSync(join(home, ".config", "ultrathink", "config.json"), JSON.stringify(config));
+			}
 			if (arm) armSkipOnce(stateDir, "s1");
 			const proc = Bun.spawn(["bun", "--no-env-file", join(HOOKS, "uplift.ts")], {
 				stdin: new Blob([
@@ -133,6 +168,11 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 
 	test("an acknowledgement is skipped before any engine lookup, so no login notice is printed", async () => {
 		const { out } = await runGrokHook("ok", false);
+		expect(out).toBe("");
+	}, 60_000);
+
+	test("a prompt over uplift.maxChars is skipped before any engine lookup, so no login notice is printed", async () => {
+		const { out } = await runGrokHook("x".repeat(200), false, { uplift: { maxChars: 50 } });
 		expect(out).toBe("");
 	}, 60_000);
 
@@ -191,12 +231,55 @@ describe("deterministic skips run before engine selection (G-1)", () => {
 	}, 90_000);
 });
 
-describe("a provider that answers 429 forever, through the real hook entry and the real Claude completer", () => {
-	test("the record says provider_error:429 after 3 attempts, the clarify stage is skipped, and no fill is retried a second time", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-uplift-429-"));
+describe("a turn that plans nothing leaves no carrier behind, on every hook host", () => {
+	test("a Claude Code skip (a trivial acknowledgement) clears the session's carrier", async () => {
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-carrier-"));
 		try {
 			const home = join(dir, "home");
-			const stateDir = join(dir, "state");
+			const stateDir = join(home, "state");
+			mkdirSync(home, { recursive: true });
+			mkdirSync(stateDir, { recursive: true });
+			writePlanCarrier({
+				host: "claude-code",
+				stateDir,
+				sessionId: "s1",
+				context: "plan of the last prompt",
+			});
+			const carrier = carrierPathFor(stateDir, "s1");
+			expect(existsSync(carrier)).toBe(true);
+			const proc = Bun.spawn([process.execPath, "--no-env-file", join(HOOKS, "uplift.ts")], {
+				stdin: new Blob([
+					JSON.stringify({
+						session_id: "s1",
+						hook_event_name: "UserPromptSubmit",
+						cwd: dir,
+						prompt: "ok",
+					}),
+				]),
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					PATH: process.env.PATH ?? "",
+					HOME: home,
+					ULTRATHINK_STATE_DIR: stateDir,
+					ULTRATHINK_HOST: "claude-code",
+				},
+			});
+			await new Response(proc.stdout).text();
+			expect(await proc.exited).toBe(0);
+			expect(existsSync(carrier)).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
+});
+
+describe("a provider that answers 429 forever, through the real hook entry and the real Claude completer", () => {
+	test("the record says provider_error:429 after 3 attempts, the clarify stage is skipped, and no fill is requested after the graph call fails", async () => {
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-429-"));
+		try {
+			const home = join(dir, "home");
+			const stateDir = join(home, "state");
 			const calls = join(dir, "calls.log");
 			const fake = join(dir, "claude-fake");
 			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
@@ -238,9 +321,75 @@ describe("a provider that answers 429 forever, through the real hook entry and t
 			expect(record.result.fallbackReason).toBe("provider_error:429");
 			expect(record.result.attempts).toBe(3);
 			expect(record.degraded).toContain("clarify");
-			// uplift 3 + graph 3 + five fills at 3 attempts each: the fill layer does not retry what the completer retried,
-			// the repair pass does not run against a dead provider and clarify is skipped (39 calls before).
-			expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(21);
+			// uplift 3 + graph 3 and nothing else: after the graph call fails with a provider report, no fill is requested
+			// (every node is marked failed with that cause) and the repair pass does not run against the dead provider.
+			expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(6);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 180_000);
+});
+
+describe("the graph stage's claude child, through the real hook entry", () => {
+	test('the child inherits the hook\'s ANTHROPIC_BASE_URL on every graph call, and a bare "ok" reply degrades the graph stage', async () => {
+		const dir = mkdtempSync(join(homedir(), "ultrathink-uplift-graph-env-"));
+		try {
+			const home = join(dir, "home");
+			const stateDir = join(home, "state");
+			const calls = join(dir, "calls.log");
+			const fake = join(dir, "claude-fake");
+			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
+			mkdirSync(stateDir, { recursive: true });
+			// Every call answers the bare word "ok", the reply the graph stage received in the field. The log records
+			// whether the call is the graph call (its argv carries the graph system prompt) and the base URL it inherited.
+			writeFileSync(
+				fake,
+				[
+					"#!/bin/sh",
+					"cat >/dev/null",
+					`case "$*" in *Graph-of-Thought*) echo "graph \${ANTHROPIC_BASE_URL:-unset}" >> '${calls}';; *) echo "other \${ANTHROPIC_BASE_URL:-unset}" >> '${calls}';; esac`,
+					`echo '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","result":"ok"}'`,
+					"exit 0",
+					"",
+				].join("\n"),
+				{ mode: 0o755 },
+			);
+			writeFileSync(
+				join(home, ".config", "ultrathink", "config.json"),
+				JSON.stringify({ claude: { bin: fake } }),
+			);
+			const proc = Bun.spawn(["bun", "--no-env-file", join(HOOKS, "uplift.ts")], {
+				stdin: new Blob([
+					JSON.stringify({
+						session_id: "s-graph-env",
+						hook_event_name: "UserPromptSubmit",
+						cwd: dir,
+						prompt: "ultrathink invoke rerun: reply with the single word ok",
+					}),
+				]),
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					PATH: process.env.PATH ?? "",
+					HOME: home,
+					ULTRATHINK_STATE_DIR: stateDir,
+					ANTHROPIC_BASE_URL: "http://127.0.0.1:9/v1",
+				},
+			});
+			const [out] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+			]);
+			expect(await proc.exited).toBe(0);
+			expect(out).toContain("additionalContext");
+			const record = JSON.parse(readFileSync(join(stateDir, "last.json"), "utf8"));
+			expect(record.degraded).toContain("graph");
+			const graphCalls = readFileSync(calls, "utf8")
+				.trim()
+				.split("\n")
+				.filter((line) => line.startsWith("graph "));
+			expect(graphCalls.length).toBeGreaterThan(0);
+			expect(graphCalls.every((line) => line === "graph http://127.0.0.1:9/v1")).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

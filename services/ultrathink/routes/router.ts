@@ -23,7 +23,12 @@ import type { JournalOptions } from "../engine/journal.ts";
 import type { PlanBackend } from "../engine/plan.ts";
 import { type SweepResult, createSweeper, sweepStateDir } from "../engine/retention.ts";
 import { defaultGraphResources, loadCatalogWithFallback } from "../mcp/connector-host.ts";
-import { type McpToolHost, type ToolOutcome, handleMcpPayload } from "../mcp/mcp.ts";
+import {
+	MODERN_PROTOCOL_VERSION,
+	type McpToolHost,
+	type ToolOutcome,
+	handleMcpPayload,
+} from "../mcp/mcp.ts";
 import { createToolHost } from "../mcp/tool-host.ts";
 import type { PlanningInfo } from "../mcp/tools-connector.ts";
 import { diskFingerprint } from "../../../src/shared.ts";
@@ -31,6 +36,7 @@ import {
 	DEFAULT_ALLOWED_ORIGINS,
 	originAllowed,
 	resolveProtocolVersion,
+	validateModernRequest,
 } from "../mcp/transport.ts";
 import { type AnomalyAlert, DEFAULT_ANOMALY_RULES, createAnomalyDetector } from "../obs/anomaly.ts";
 import { createAuditWatch } from "../obs/audit-watch.ts";
@@ -68,7 +74,6 @@ import { createSyslogTransport } from "../obs/sinks/syslog.ts";
 import type { SinkTransport } from "../obs/sinks/types.ts";
 import { createSloTracker } from "../obs/slo.ts";
 import { childSpan, formatTraceparent, traceContextFor } from "../obs/trace.ts";
-import { cimdServable, createCimdFetcher } from "../oauth/cimd-fetch.ts";
 import { DEFAULT_REDIRECT_ORIGINS, createOAuth, normalizeOrigins } from "../oauth/oauth.ts";
 import { type RouteGroup, authorize, isEdgeIdentity } from "../security/identity.ts";
 import {
@@ -177,6 +182,8 @@ interface RequestCtx {
 	peerIp: string;
 	endpoint: Endpoint | "not_found";
 	authKind: AuthKind;
+	/** The OAuth client_id of a bearer-authenticated request; absent otherwise. */
+	clientId?: string;
 	rpcMethod?: string;
 	mcpVersion?: string;
 	tool?: string;
@@ -335,6 +342,14 @@ function keyMatches(presented: string | null, expected: string): boolean {
 function bearerFrom(req: Request): string {
 	const match = /^Bearer\s+(\S+)$/i.exec(req.headers.get("authorization") ?? "");
 	return match?.[1] ?? "";
+}
+
+/** The log fields that name a bearer client. The digest covers the full client_id, so IDs that share a long prefix stay distinct after the logger clips strings. */
+export function clientLogFields(clientId: string): { clientId: string; clientIdDigest: string } {
+	return {
+		clientId,
+		clientIdDigest: createHash("sha256").update(clientId).digest("hex").slice(0, 16),
+	};
 }
 
 function rpcError(code: number, message: string): unknown {
@@ -735,7 +750,7 @@ export function createApp(deps: RouterDeps): App {
 		metrics.inc("ultrathink_audit_tamper_alerts_total");
 		streams.alert("audit_tamper_detected", { reason });
 	}
-	// One normalized origin set serves the OAuth redirect check and the CIMD fetcher's redirect check.
+	// Normalize the allowed origins once for OAuth redirect checks.
 	const redirectOrigins = normalizeOrigins([
 		...DEFAULT_REDIRECT_ORIGINS,
 		...config.oauthRedirectOrigins,
@@ -747,8 +762,6 @@ export function createApp(deps: RouterDeps): App {
 		now: deps.now,
 		redirectOrigins,
 		audit: record,
-		cimd: createCimdFetcher(config, new Set(redirectOrigins)),
-		advertiseCimd: cimdServable(config),
 	});
 	const ledger = deps.ledger ?? lazyLedger(store, config, deps.now);
 	// Repeated upstream failures open the breaker; a threshold of 0 turns it off.
@@ -1320,6 +1333,7 @@ export function createApp(deps: RouterDeps): App {
 			principal = "key:connector";
 		} else if (bearer === "valid") {
 			ctx.authKind = "bearer";
+			ctx.clientId = oauth.clientIdForAccessToken(presented);
 			principal = `bearer:${createHash("sha256").update(presented).digest("hex").slice(0, 16)}`;
 		} else {
 			authFailed(
@@ -1358,6 +1372,31 @@ export function createApp(deps: RouterDeps): App {
 		const parsed = await readJson(req, config.maxBodyBytes);
 		if (!parsed.ok) return respond(400, rpcError(-32700, "parse error"));
 		describeRpc(parsed.value, ctx);
+		const requests = Array.isArray(parsed.value) ? parsed.value : [parsed.value];
+		for (const payload of requests) {
+			const params =
+				typeof payload === "object" && payload !== null && !Array.isArray(payload)
+					? (payload as Record<string, unknown>).params
+					: undefined;
+			const meta =
+				typeof params === "object" && params !== null && !Array.isArray(params)
+					? (params as Record<string, unknown>)._meta
+					: undefined;
+			const bodyVersion =
+				typeof meta === "object" && meta !== null && !Array.isArray(meta)
+					? (meta as Record<string, unknown>)["io.modelcontextprotocol/protocolVersion"]
+					: undefined;
+			if (version.version === MODERN_PROTOCOL_VERSION || bodyVersion === MODERN_PROTOCOL_VERSION) {
+				const error = validateModernRequest(payload, req.headers);
+				if (error !== null) {
+					return respond(400, {
+						jsonrpc: "2.0",
+						id: error.id,
+						error: { code: error.code, message: error.message },
+					});
+				}
+			}
+		}
 
 		const answer = async (): Promise<Response> => {
 			const reply = await handleMcpPayload(mcpHost, parsed.value, {
@@ -1548,6 +1587,7 @@ export function createApp(deps: RouterDeps): App {
 					...(ctx.rpcMethod === undefined ? {} : { rpcMethod: ctx.rpcMethod }),
 					...(ctx.mcpVersion === undefined ? {} : { mcpVersion: ctx.mcpVersion }),
 					...(ctx.tool === undefined ? {} : { tool: ctx.tool }),
+					...(ctx.clientId === undefined ? {} : clientLogFields(ctx.clientId)),
 					authKind: ctx.authKind,
 					ip: ctx.ip,
 				};

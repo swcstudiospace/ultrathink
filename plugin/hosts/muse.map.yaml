@@ -1,0 +1,5 @@
+# Map: muse to its native manifest. The generator writes plugin/generated/muse/manifest.json from plugin/source/plugin.source.yaml.
+host: muse
+status: verified
+native_manifest: .muse-plugin/plugin.json
+generated_manifest: plugin/generated/muse/manifest.json

@@ -217,15 +217,15 @@ describe("circuit breaker", () => {
 			url: REFUSED_URL,
 			timeoutMs,
 			breakerThreshold: 1,
-			breakerCooldownMs: 50,
+			breakerCooldownMs: 500,
 		});
 		try {
 			expect(await cache.get("k")).toBeNull();
 			expect(cache.state()).toBe("open");
 
 			// Real-time integration check: the breaker cooldown is a wall-clock window
-			// and has no injectable clock, so the test waits out the 50 ms cooldown.
-			await Bun.sleep(80);
+			// and has no injectable clock, so the test waits out the 500 ms cooldown.
+			await Bun.sleep(600);
 			expect(cache.state()).toBe("closed");
 
 			const started = performance.now();

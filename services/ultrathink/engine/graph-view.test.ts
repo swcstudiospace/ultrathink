@@ -437,7 +437,7 @@ describe("renderMermaid", () => {
 			/^flowchart TD$/,
 			/^ {2}subgraph W\d+\["Wave \d+( - parallel)?"\]$/,
 			/^ {2}end$/,
-			/^ {4}N\d+\["[\p{L}\p{N} .,:+_\/'…-]*"\]$/u,
+			/^ {4}N\d+\["[\p{L}\p{N} .,:+_/'…-]*"\]$/u,
 			/^ {2}N\d+ --> N\d+$/,
 			/^ {2}classDef (understand|decompose|generate|compare|critique|aggregate|refine|synthesize) fill:#[0-9a-f]{6},stroke:#[0-9a-f]{6},color:#0f172a$/,
 			/^ {2}class N\d+(,N\d+)* (understand|decompose|generate|compare|critique|aggregate|refine|synthesize)$/,

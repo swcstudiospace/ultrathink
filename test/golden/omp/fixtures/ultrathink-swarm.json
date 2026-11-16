@@ -1,0 +1,118 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "args": "",
+        "command": "/ultrathink-swarm",
+        "cwd": "<ROOT>/ultrathink-swarm/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "no briefs: usage",
+      "output": {
+        "notices": [],
+        "sentMessages": [
+          {
+            "message": {
+              "content": "no lane briefs given. /ultrathink-swarm usage: `/ultrathink-swarm <brief>|<brief>|…` spawns one AgentSwarm orchestrator lane per brief (up to 6 per command). Swarm drops briefs its classifier does not read as SDLC work, so those are refused up front. `/ultrathink-swarm status` reports each lane as planning, running, skipped, plan-failed, done, attention or not-planned; `/ultrathink-swarm stop [laneId|all]` ends a lane's process group. A lane's real output is autonomous.log, events.jsonl and results/ in its state dir (<state dir>/swarm/<lane>/); run.log there is only the wrapper's own stdout. ULTRATHINK_SWARM_MAX_LANES (default 3, cap 6) bounds live lanes across all commands, and a brief already running in the same repository is refused; two lanes in one repository share one working tree and its branches. Lanes are detached on purpose: ending the Omp session does not stop them. Configuration is env-only: ULTRATHINK_SWARM_ROOT (or SWARM_ROOT) names the absolute agent-swarm checkout (required).",
+              "display": true
+            },
+            "options": {
+              "triggerTurn": false
+            }
+          }
+        ],
+        "userMessages": []
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "args": "status",
+        "command": "/ultrathink-swarm status",
+        "cwd": "<ROOT>/ultrathink-swarm/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "status without a swarm root",
+      "output": {
+        "notices": [],
+        "sentMessages": [
+          {
+            "message": {
+              "content": "AgentSwarm lanes unavailable: ULTRATHINK_SWARM_ROOT (or SWARM_ROOT fallback) is not set — point one of them at an absolute agent-swarm checkout",
+              "display": true
+            },
+            "options": {
+              "triggerTurn": false
+            }
+          }
+        ],
+        "userMessages": []
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "args": "stop",
+        "command": "/ultrathink-swarm stop",
+        "cwd": "<ROOT>/ultrathink-swarm/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "stop with no lanes",
+      "output": {
+        "notices": [],
+        "sentMessages": [
+          {
+            "message": {
+              "content": "no live swarm lanes to stop",
+              "display": true
+            },
+            "options": {
+              "triggerTurn": false
+            }
+          }
+        ],
+        "userMessages": []
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "args": "Brief one | Brief two",
+        "command": "/ultrathink-swarm Brief one | Brief two",
+        "cwd": "<ROOT>/ultrathink-swarm/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "spawn refused without a swarm root",
+      "output": {
+        "notices": [],
+        "sentMessages": [
+          {
+            "message": {
+              "content": "AgentSwarm lanes unavailable: ULTRATHINK_SWARM_ROOT (or SWARM_ROOT fallback) is not set — point one of them at an absolute agent-swarm checkout",
+              "display": true
+            },
+            "options": {
+              "triggerTurn": false
+            }
+          }
+        ],
+        "userMessages": []
+      },
+      "sideEffects": []
+    }
+  ],
+  "entry": "ultrathink-swarm",
+  "excluded": [
+    {
+      "reason": "requires live host: spawns detached AgentSwarm lane processes from a real checkout",
+      "variant": "spawn lanes with ULTRATHINK_SWARM_ROOT set"
+    },
+    {
+      "reason": "requires live host: needs a running lane process to signal",
+      "variant": "stop a running lane"
+    }
+  ],
+  "schema": 1,
+  "source": "registerCommand('ultrathink-swarm') -> parseLaneArgs / resolveSwarmRoot refusal paths"
+}

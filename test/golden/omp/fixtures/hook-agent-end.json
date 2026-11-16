@@ -1,0 +1,934 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "setup": null,
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": {
+              "messages": [
+                {
+                  "content": [
+                    {
+                      "text": "Capture the Omp hook handlers",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "user"
+                },
+                {
+                  "content": [
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "read",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "grep",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "edit",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "bash",
+                      "type": "toolCall"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "toolUse"
+                },
+                {
+                  "content": [
+                    {
+                      "text": "Captured.",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "stop"
+                }
+              ]
+            },
+            "on": "agent_end",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "finished run, default config: teach observe handed off; ship off by default",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [
+                  {
+                    "args": [
+                      "<REPO>/src/teach/launch-supervisor.ts",
+                      "{\"stateDir\":\"<ROOT>/hook-agent-end-0/omp-agent/ultrathink\",\"sessionId\":\"golden-session-1\",\"command\":\"<REPO>/bin/ultrathink\",\"args\":[\"teach\",\"observe\",\"--file\",\"<ROOT>/hook-agent-end-0/omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json\"]}"
+                    ],
+                    "cmd": "<REPO>/bin/run-bun",
+                    "cwd": "<ROOT>/hook-agent-end-0/workspace",
+                    "env": {
+                      "ULTRATHINK_HOST": "omp",
+                      "ULTRATHINK_STATE_DIR": "<ROOT>/hook-agent-end-0/omp-agent/ultrathink"
+                    }
+                  }
+                ],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": [
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/teach"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/teach/inbox"
+        },
+        {
+          "change": "created",
+          "content": "{\"host\":\"omp\",\"sessionId\":\"golden-session-1\",\"cwd\":\"<ROOT>/hook-agent-end-0/workspace\",\"at\":\"<TS>\",\"turns\":[{\"role\":\"user\",\"text\":\"Capture the Omp hook handlers\"},{\"role\":\"assistant\",\"tool\":\"read\",\"text\":\"read: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"grep\",\"text\":\"grep: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"edit\",\"text\":\"edit: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"bash\",\"text\":\"bash: src/host/omp.ts\"},{\"role\":\"assistant\",\"text\":\"Captured.\"}],\"toolCalls\":4,\"outcome\":\"completed\"}",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json"
+        }
+      ]
+    },
+    {
+      "input": {
+        "setup": null,
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": {
+              "messages": [
+                {
+                  "content": [
+                    {
+                      "text": "Capture the Omp hook handlers",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "user"
+                },
+                {
+                  "content": [
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "read",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "grep",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "edit",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "bash",
+                      "type": "toolCall"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "toolUse"
+                },
+                {
+                  "content": [
+                    {
+                      "text": "Captured.",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "aborted"
+                }
+              ]
+            },
+            "on": "agent_end",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "aborted run: not observed",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "setup": {
+          "config": {
+            "teach": {
+              "capture": "explicit"
+            }
+          },
+          "file": "claude/ultrathink.json"
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": ".",
+            "event": {
+              "messages": [
+                {
+                  "content": [
+                    {
+                      "text": "Capture the Omp hook handlers",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "user"
+                },
+                {
+                  "content": [
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "read",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "grep",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "edit",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "bash",
+                      "type": "toolCall"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "toolUse"
+                },
+                {
+                  "content": [
+                    {
+                      "text": "Captured.",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "stop"
+                }
+              ]
+            },
+            "on": "agent_end",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "teach capture explicit: not observed",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": []
+    },
+    {
+      "input": {
+        "setup": {
+          "config": {
+            "config": {
+              "ship": {
+                "enabled": true
+              }
+            },
+            "file": "claude/ultrathink.json"
+          },
+          "repo": {
+            "branch": "feature/golden",
+            "origin": "git@github.com:acme/app.git",
+            "path": "app"
+          },
+          "seeded": {
+            "path": "<ROOT>/hook-agent-end-3/omp-agent/ultrathink/sessions/golden-session-1.json",
+            "record": {
+              "at": 0,
+              "plan": {
+                "graphId": "graph-golden-1",
+                "task": {
+                  "repo": "acme/app",
+                  "title": "golden task"
+                }
+              },
+              "result": {},
+              "sessionId": "golden-session-1",
+              "skill": {
+                "name": "gsd-execute-phase",
+                "source": "user"
+              }
+            }
+          }
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": "app",
+            "event": {
+              "messages": [
+                {
+                  "content": [
+                    {
+                      "text": "Capture the Omp hook handlers",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "user"
+                },
+                {
+                  "content": [
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "read",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "grep",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "edit",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "bash",
+                      "type": "toolCall"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "toolUse"
+                },
+                {
+                  "content": [
+                    {
+                      "text": "Captured.",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "stop"
+                }
+              ]
+            },
+            "on": "agent_end",
+            "sessionId": "golden-session-1"
+          },
+          {
+            "args": null,
+            "cwd": "app",
+            "event": {
+              "messages": [
+                {
+                  "content": [
+                    {
+                      "text": "Capture the Omp hook handlers",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "user"
+                },
+                {
+                  "content": [
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "read",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "grep",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "edit",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "bash",
+                      "type": "toolCall"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "toolUse"
+                },
+                {
+                  "content": [
+                    {
+                      "text": "Captured.",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "stop"
+                }
+              ]
+            },
+            "on": "agent_end",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "GSD run committed on a feature branch: ship nudge once",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [
+                  {
+                    "args": [
+                      "<REPO>/src/teach/launch-supervisor.ts",
+                      "{\"stateDir\":\"<ROOT>/hook-agent-end-3/omp-agent/ultrathink\",\"sessionId\":\"golden-session-1\",\"command\":\"<REPO>/bin/ultrathink\",\"args\":[\"teach\",\"observe\",\"--file\",\"<ROOT>/hook-agent-end-3/omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json\"]}"
+                    ],
+                    "cmd": "<REPO>/bin/run-bun",
+                    "cwd": "<ROOT>/hook-agent-end-3/workspace/app",
+                    "env": {
+                      "ULTRATHINK_HOST": "omp",
+                      "ULTRATHINK_STATE_DIR": "<ROOT>/hook-agent-end-3/omp-agent/ultrathink"
+                    }
+                  }
+                ],
+                "notices": [],
+                "sentMessages": [
+                  {
+                    "message": {
+                      "attribution": "agent",
+                      "content": "Ultrathink: the gsd-execute-phase run looks finished on branch feature/golden (1 commit ahead of main). Invoke the ultrathink-ship skill now with stateFile=<ROOT>/hook-agent-end-3/omp-agent/ultrathink/sessions/golden-session-1.json (CLI: <REPO>/bin/ultrathink-ship): it checks whether the task is done, opens a PR into main, runs the Greptile review until 5/5 and leaves the PR for a manual merge (ship.autoMerge is off).",
+                      "customType": "ultrathink-ship",
+                      "details": {
+                        "ahead": 1,
+                        "base": "main",
+                        "branch": "feature/golden"
+                      },
+                      "display": true
+                    },
+                    "options": {
+                      "deliverAs": "aside"
+                    }
+                  }
+                ],
+                "userMessages": []
+              }
+            ]
+          },
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [
+                  {
+                    "args": [
+                      "<REPO>/src/teach/launch-supervisor.ts",
+                      "{\"stateDir\":\"<ROOT>/hook-agent-end-3/omp-agent/ultrathink\",\"sessionId\":\"golden-session-1\",\"command\":\"<REPO>/bin/ultrathink\",\"args\":[\"teach\",\"observe\",\"--file\",\"<ROOT>/hook-agent-end-3/omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json\"]}"
+                    ],
+                    "cmd": "<REPO>/bin/run-bun",
+                    "cwd": "<ROOT>/hook-agent-end-3/workspace/app",
+                    "env": {
+                      "ULTRATHINK_HOST": "omp",
+                      "ULTRATHINK_STATE_DIR": "<ROOT>/hook-agent-end-3/omp-agent/ultrathink"
+                    }
+                  }
+                ],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": [
+        {
+          "change": "modified",
+          "content": "{\n  \"sessionId\": \"golden-session-1\",\n  \"at\": 0,\n  \"result\": {},\n  \"plan\": {\n    \"graphId\": \"graph-golden-1\",\n    \"task\": {\n      \"title\": \"golden task\",\n      \"repo\": \"acme/app\"\n    }\n  },\n  \"skill\": {\n    \"name\": \"gsd-execute-phase\",\n    \"source\": \"user\"\n  },\n  \"ship\": {\n    \"phase\": \"not-done\",\n    \"rounds\": [],\n    \"nudgedAt\": <TS>,\n    \"updatedAt\": <TS>\n  }\n}\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/sessions/golden-session-1.json"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/teach"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/teach/inbox"
+        },
+        {
+          "change": "created",
+          "content": "{\"host\":\"omp\",\"sessionId\":\"golden-session-1\",\"cwd\":\"<ROOT>/hook-agent-end-3/workspace/app\",\"at\":\"<TS>\",\"turns\":[{\"role\":\"user\",\"text\":\"Capture the Omp hook handlers\"},{\"role\":\"assistant\",\"tool\":\"read\",\"text\":\"read: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"grep\",\"text\":\"grep: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"edit\",\"text\":\"edit: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"bash\",\"text\":\"bash: src/host/omp.ts\"},{\"role\":\"assistant\",\"text\":\"Captured.\"}],\"toolCalls\":4,\"outcome\":\"completed\"}",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json"
+        },
+        {
+          "change": "created",
+          "content": "{\"host\":\"omp\",\"sessionId\":\"golden-session-1\",\"cwd\":\"<ROOT>/hook-agent-end-3/workspace/app\",\"at\":\"<TS>\",\"turns\":[{\"role\":\"user\",\"text\":\"Capture the Omp hook handlers\"},{\"role\":\"assistant\",\"tool\":\"read\",\"text\":\"read: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"grep\",\"text\":\"grep: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"edit\",\"text\":\"edit: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"bash\",\"text\":\"bash: src/host/omp.ts\"},{\"role\":\"assistant\",\"text\":\"Captured.\"}],\"toolCalls\":4,\"outcome\":\"completed\"}",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json"
+        }
+      ]
+    },
+    {
+      "input": {
+        "setup": {
+          "config": {
+            "config": {
+              "ship": {
+                "enabled": true
+              }
+            },
+            "file": "claude/ultrathink.json"
+          },
+          "repo": {
+            "branch": "feature/golden",
+            "origin": "git@github.com:acme/app.git",
+            "path": "app"
+          },
+          "seeded": {
+            "path": "<ROOT>/hook-agent-end-4/omp-agent/ultrathink/sessions/golden-session-1.json",
+            "record": {
+              "at": 0,
+              "plan": {
+                "graphId": "graph-golden-1",
+                "task": {
+                  "repo": "acme/app",
+                  "title": "golden task"
+                }
+              },
+              "result": {},
+              "sessionId": "golden-session-1",
+              "skill": {
+                "name": "custom-skill",
+                "source": "user"
+              }
+            }
+          }
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": "app",
+            "event": {
+              "messages": [
+                {
+                  "content": [
+                    {
+                      "text": "Capture the Omp hook handlers",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "user"
+                },
+                {
+                  "content": [
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "read",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "grep",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "edit",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "bash",
+                      "type": "toolCall"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "toolUse"
+                },
+                {
+                  "content": [
+                    {
+                      "text": "Captured.",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "stop"
+                }
+              ]
+            },
+            "on": "agent_end",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "non-GSD skill on a feature branch: no ship nudge",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [
+                  {
+                    "args": [
+                      "<REPO>/src/teach/launch-supervisor.ts",
+                      "{\"stateDir\":\"<ROOT>/hook-agent-end-4/omp-agent/ultrathink\",\"sessionId\":\"golden-session-1\",\"command\":\"<REPO>/bin/ultrathink\",\"args\":[\"teach\",\"observe\",\"--file\",\"<ROOT>/hook-agent-end-4/omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json\"]}"
+                    ],
+                    "cmd": "<REPO>/bin/run-bun",
+                    "cwd": "<ROOT>/hook-agent-end-4/workspace/app",
+                    "env": {
+                      "ULTRATHINK_HOST": "omp",
+                      "ULTRATHINK_STATE_DIR": "<ROOT>/hook-agent-end-4/omp-agent/ultrathink"
+                    }
+                  }
+                ],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": [
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/teach"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/teach/inbox"
+        },
+        {
+          "change": "created",
+          "content": "{\"host\":\"omp\",\"sessionId\":\"golden-session-1\",\"cwd\":\"<ROOT>/hook-agent-end-4/workspace/app\",\"at\":\"<TS>\",\"turns\":[{\"role\":\"user\",\"text\":\"Capture the Omp hook handlers\"},{\"role\":\"assistant\",\"tool\":\"read\",\"text\":\"read: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"grep\",\"text\":\"grep: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"edit\",\"text\":\"edit: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"bash\",\"text\":\"bash: src/host/omp.ts\"},{\"role\":\"assistant\",\"text\":\"Captured.\"}],\"toolCalls\":4,\"outcome\":\"completed\"}",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json"
+        }
+      ]
+    },
+    {
+      "input": {
+        "setup": {
+          "config": {
+            "config": {
+              "ship": {
+                "enabled": true
+              }
+            },
+            "file": "claude/ultrathink.json"
+          },
+          "repo": {
+            "branch": "feature/golden",
+            "origin": "git@github.com:acme/app.git",
+            "path": "app"
+          },
+          "seeded": null
+        },
+        "steps": [
+          {
+            "args": null,
+            "cwd": "app",
+            "event": {
+              "messages": [
+                {
+                  "content": [
+                    {
+                      "text": "Capture the Omp hook handlers",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "user"
+                },
+                {
+                  "content": [
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "read",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "grep",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "edit",
+                      "type": "toolCall"
+                    },
+                    {
+                      "arguments": {
+                        "path": "src/host/omp.ts"
+                      },
+                      "name": "bash",
+                      "type": "toolCall"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "toolUse"
+                },
+                {
+                  "content": [
+                    {
+                      "text": "Captured.",
+                      "type": "text"
+                    }
+                  ],
+                  "role": "assistant",
+                  "stopReason": "stop"
+                }
+              ]
+            },
+            "on": "agent_end",
+            "sessionId": "golden-session-1"
+          }
+        ]
+      },
+      "name": "ship enabled, no tracked plan: no ship nudge",
+      "output": {
+        "steps": [
+          {
+            "handlers": [
+              {
+                "handler": 0,
+                "launches": [],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              },
+              {
+                "handler": 1,
+                "launches": [
+                  {
+                    "args": [
+                      "<REPO>/src/teach/launch-supervisor.ts",
+                      "{\"stateDir\":\"<ROOT>/hook-agent-end-5/omp-agent/ultrathink\",\"sessionId\":\"golden-session-1\",\"command\":\"<REPO>/bin/ultrathink\",\"args\":[\"teach\",\"observe\",\"--file\",\"<ROOT>/hook-agent-end-5/omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json\"]}"
+                    ],
+                    "cmd": "<REPO>/bin/run-bun",
+                    "cwd": "<ROOT>/hook-agent-end-5/workspace/app",
+                    "env": {
+                      "ULTRATHINK_HOST": "omp",
+                      "ULTRATHINK_STATE_DIR": "<ROOT>/hook-agent-end-5/omp-agent/ultrathink"
+                    }
+                  }
+                ],
+                "notices": [],
+                "sentMessages": [],
+                "userMessages": []
+              }
+            ]
+          }
+        ]
+      },
+      "sideEffects": [
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/teach"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/teach/inbox"
+        },
+        {
+          "change": "created",
+          "content": "{\"host\":\"omp\",\"sessionId\":\"golden-session-1\",\"cwd\":\"<ROOT>/hook-agent-end-5/workspace/app\",\"at\":\"<TS>\",\"turns\":[{\"role\":\"user\",\"text\":\"Capture the Omp hook handlers\"},{\"role\":\"assistant\",\"tool\":\"read\",\"text\":\"read: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"grep\",\"text\":\"grep: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"edit\",\"text\":\"edit: src/host/omp.ts\"},{\"role\":\"assistant\",\"tool\":\"bash\",\"text\":\"bash: src/host/omp.ts\"},{\"role\":\"assistant\",\"text\":\"Captured.\"}],\"toolCalls\":4,\"outcome\":\"completed\"}",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/teach/inbox/<TS>-<RAND>.json"
+        }
+      ]
+    }
+  ],
+  "entry": "agent_end",
+  "excluded": [
+    {
+      "reason": "requires live host: the agent runs the ship skill, which opens a PR and calls Greptile and GitHub over the network",
+      "variant": "ultrathink-ship run after the nudge (PR, Greptile review, merge)"
+    },
+    {
+      "reason": "requires live host: the detached supervisor runs `teach observe` against the Teachable Moments store; the launch is recorded, never started",
+      "variant": "teach observe supervisor actually started"
+    }
+  ],
+  "kind": "hook",
+  "schema": 1,
+  "source": "src/host/omp.ts pi.on('agent_end') x2: handler 0 = observeFlights, handler 1 = teach observe handoff then ship nudge"
+}

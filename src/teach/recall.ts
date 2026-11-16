@@ -9,6 +9,7 @@
 import { hindsightFor, teachEnabled, tryStore } from "./context.ts";
 import { lessonFromHit, projectOf, sanitizeTag } from "./mapping.ts";
 import { redactLine } from "./redact.ts";
+import { newestFirst } from "./store.ts";
 import type {
 	LessonsLookup,
 	RecalledLesson,
@@ -76,25 +77,28 @@ export function tokenOverlap(wanted: readonly string[], text: string): number {
 	return wanted.filter((token) => have.has(token)).length;
 }
 
-/** Local match: weighted overlap of the query's tokens with name (3), description (2) and body (1), plus a small bonus for repeated lessons. */
-function recallLocal(
+/**
+ * Local match: weighted overlap of the query's tokens with name (3), description (2) and body (1), plus a small bonus for
+ * repeated lessons. The scan yields to the event loop before each moment file, so a large store never holds the prompt.
+ */
+async function recallLocal(
 	store: TeachStore,
 	project: string,
 	query: string,
 	limit: number,
-): RecalledLesson[] {
+): Promise<RecalledLesson[]> {
 	const wanted = queryTokens(query);
 	if (wanted.length === 0) return [];
 	const overlap = (text: string): number => tokenOverlap(wanted, text);
 	const scored: { moment: TeachableMoment; score: number }[] = [];
-	for (const moment of store.list()) {
+	for await (const moment of store.scanYielding()) {
 		if (moment.status !== "confirmed" && moment.status !== "promoted") continue;
 		if (project !== "*" && moment.project !== project) continue;
 		const score = 3 * overlap(moment.name) + 2 * overlap(moment.description) + overlap(moment.body);
 		if (score > 0) scored.push({ moment, score: score + 0.1 * Math.log(moment.occurrences) });
 	}
-	// Array.prototype.sort is stable, so equal scores keep the store's newest-first order.
-	scored.sort((a, b) => b.score - a.score);
+	// The scan reads files in directory order, so ties fall back to the store's newest-first order explicitly.
+	scored.sort((a, b) => b.score - a.score || newestFirst(a.moment, b.moment));
 	return scored.slice(0, limit).map(({ moment }) => ({
 		id: moment.id,
 		name: moment.name,
@@ -235,7 +239,7 @@ async function findLessons(
 		}
 	}
 
-	const local = store ? recallLocal(store, project, query, limit) : [];
+	const local = store ? await recallLocal(store, project, query, limit) : [];
 	if (local.length > 0) return { lessons: local, source: "local" };
 	return error === undefined
 		? { lessons: [], source: "none" }

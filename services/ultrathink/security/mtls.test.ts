@@ -307,6 +307,15 @@ test("bunAtLeast compares semantic versions and fails closed on malformed input"
 	expect(bunAtLeast("not-a-version", MTLS_MIN_BUN)).toBe(false);
 });
 
+test("bunAtLeast orders a pre-release below its release and ignores build metadata", () => {
+	expect(bunAtLeast("1.2.23-canary.1", [1, 2, 23])).toBe(false);
+	expect(bunAtLeast("1.2.23", [1, 2, 23])).toBe(true);
+	expect(bunAtLeast("1.2.24-canary.1", [1, 2, 23])).toBe(true);
+	expect(bunAtLeast("1.4.0-beta", MTLS_MIN_BUN)).toBe(false);
+	expect(bunAtLeast("1.4.0", MTLS_MIN_BUN)).toBe(true);
+	expect(bunAtLeast("1.2.23+build.5", [1, 2, 23])).toBe(true);
+});
+
 describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 	beforeAll(async () => {
 		dir = mkdtempSync(join(tmpdir(), "mtls-test-"));

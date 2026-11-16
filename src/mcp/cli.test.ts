@@ -147,6 +147,24 @@ describe("track complete", () => {
 		expect(existsSync(path.replace(/\.json$/, ".xml"))).toBe(false);
 	}, 60_000);
 
+	test("a --state path that does not end in .json is refused, and the file it names keeps its record", async () => {
+		const stateDir = join(root, "state");
+		mkdirSync(join(stateDir, "sessions"), { recursive: true });
+		mkdirSync(join(root, "xdg", "ultrathink"), { recursive: true });
+		writeFileSync(
+			join(root, "xdg", "ultrathink", "config.json"),
+			JSON.stringify({ linear: { team: "Acme" } }),
+		);
+		const path = join(stateDir, "sessions", "s1.txt");
+		writeFileSync(path, JSON.stringify(record));
+		const tracker: Tracker = async () => ({ ...refsFor("n1"), status: "complete" });
+		const { code, stderr } = await inProcess(path, tracker);
+		expect(code).toBe(2);
+		expect(stderr).toContain("--state");
+		expect(readFileSync(path, "utf8")).toBe(JSON.stringify(record));
+		expect(existsSync(join(stateDir, "sessions", "s1.xml"))).toBe(false);
+	}, 60_000);
+
 	test("no linear.team or notion.dataSourceUrl exits 0 and names the config file and notion init", async () => {
 		const path = session(undefined, undefined);
 		const { code, stderr } = await run("track", "complete", "--state", path);

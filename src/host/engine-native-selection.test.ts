@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { afterEach, describe, expect, test } from "bun:test";
 import { defaultConfig, mergeConfig } from "../config.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
@@ -21,7 +22,7 @@ import {
 	resolutionOf,
 	skipOf,
 } from "./engine-test.helpers.ts";
-import { createNativeEngineSelector } from "./omp.ts";
+import { createNativeEngineSelector, type NativeEngineDeps, type OmpPlanRequest } from "./omp.ts";
 import { fakeModel as nativeModel, fakeRuntime, recorder, reply } from "./omp-test.helpers.ts";
 
 const { claudeSpy, cleanup } = createEngineFixtures();
@@ -194,6 +195,176 @@ describe("selectNativeEngine native precedence (D-06, §3.2)", () => {
 		});
 		expect(selected.label).toBe(selected.resolution.label);
 		expect(await selected.complete("system", "user")).toBe("answer from openai-codex/gpt-6.1-sol");
+	});
+
+	test("a native call that outlasts claude.callTimeoutMs fails its attempt and never cancels the flight", async () => {
+		const live = nativeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		// A provider that stays silent until its signal aborts: only the per-call deadline can end it.
+		let calls = 0;
+		const hang: NonNullable<NativeEngineDeps["completeSimple"]> = (_model, _context, options) => {
+			calls += 1;
+			const { promise, reject } = Promise.withResolvers<never>();
+			const signal = options?.signal;
+			signal?.addEventListener("abort", () => reject(signal?.reason), { once: true });
+			return promise;
+		};
+		const flight = new AbortController();
+		const config = defaultConfig();
+		const native = createNativeEngineSelector(
+			{
+				prompt: "add a widget",
+				cwd: "/repo",
+				sessionId: "s1",
+				model: live,
+				modelSource: "ctx.model",
+				native: runtime,
+				config: { ...config, claude: { ...config.claude, callTimeoutMs: 20 } },
+			},
+			flight.signal,
+			{ completeSimple: hang, providerDefaults: {}, sleep: () => Promise.resolve() },
+		);
+		const selected = engineOf(await native(intentWith(), flight.signal));
+		const failure = await selected.complete("system", "user").then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect((failure as Error).name).not.toBe("AbortError");
+		expect(calls).toBe(3);
+	});
+
+	test("a provider that resolves aborted on the per-call deadline fails the attempt, never the flight", async () => {
+		const live = nativeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		// The real completer answers "aborted" when its signal aborts, instead of rejecting.
+		const answersAborted: NonNullable<NativeEngineDeps["completeSimple"]> = (
+			_model,
+			_context,
+			options,
+		) => {
+			const { promise, resolve } = Promise.withResolvers<AssistantMessage>();
+			options?.signal?.addEventListener(
+				"abort",
+				() => resolve({ stopReason: "aborted", content: [] } as unknown as AssistantMessage),
+				{ once: true },
+			);
+			return promise;
+		};
+		const flight = new AbortController();
+		const config = defaultConfig();
+		const native = createNativeEngineSelector(
+			{
+				prompt: "add a widget",
+				cwd: "/repo",
+				sessionId: "s1",
+				model: live,
+				modelSource: "ctx.model",
+				native: runtime,
+				config: { ...config, claude: { ...config.claude, callTimeoutMs: 20 } },
+			},
+			flight.signal,
+			{ completeSimple: answersAborted, providerDefaults: {}, sleep: () => Promise.resolve() },
+		);
+		const selected = engineOf(await native(intentWith(), flight.signal));
+		const failure = await selected.complete("system", "user").then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(failure).toBeInstanceOf(Error);
+		expect((failure as Error).name).not.toBe("AbortError");
+	});
+
+	test("a zero claude.callTimeoutMs sets no per-call timer: a provider that answers after a macrotask is not failed as timed out", async () => {
+		const live = nativeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		// A provider that honours its signal like the real completer: it answers after a macrotask unless the signal aborts first.
+		const answersLater: NonNullable<NativeEngineDeps["completeSimple"]> = (
+			_model,
+			_context,
+			options,
+		) => {
+			const { promise, resolve } = Promise.withResolvers<AssistantMessage>();
+			const timer = setTimeout(
+				() =>
+					resolve({
+						stopReason: "stop",
+						content: [{ type: "text", text: "late answer" }],
+					} as unknown as AssistantMessage),
+				5,
+			);
+			options?.signal?.addEventListener(
+				"abort",
+				() => {
+					clearTimeout(timer);
+					resolve({ stopReason: "aborted", content: [] } as unknown as AssistantMessage);
+				},
+				{ once: true },
+			);
+			return promise;
+		};
+		const flight = new AbortController();
+		const config = defaultConfig();
+		const native = createNativeEngineSelector(
+			{
+				prompt: "add a widget",
+				cwd: "/repo",
+				sessionId: "s1",
+				model: live,
+				modelSource: "ctx.model",
+				native: runtime,
+				config: { ...config, claude: { ...config.claude, callTimeoutMs: 0 } },
+			},
+			flight.signal,
+			{ completeSimple: answersLater, providerDefaults: {}, sleep: () => Promise.resolve() },
+		);
+		const selected = engineOf(await native(intentWith(), flight.signal));
+		expect(await selected.complete("system", "user")).toBe("late answer");
+	});
+
+	test("the configured planning ceiling caps the reasoning a native call sends; inherit passes the session level; off disables it", async () => {
+		const live = nativeModel("acme", "sol-1");
+		const { runtime } = fakeRuntime([live]);
+		const cases: Array<{ ceiling: string; level: string; expected: Record<string, unknown> }> = [
+			{ ceiling: "high", level: "xhigh", expected: { reasoning: "high" } },
+			{ ceiling: "high", level: "medium", expected: { reasoning: "medium" } },
+			{ ceiling: "inherit", level: "xhigh", expected: { reasoning: "xhigh" } },
+			{ ceiling: "low", level: "off", expected: { disableReasoning: true } },
+		];
+		for (const { ceiling, level, expected } of cases) {
+			const sent: Array<Record<string, unknown>> = [];
+			const capture: NonNullable<NativeEngineDeps["completeSimple"]> = (
+				_model,
+				_context,
+				options,
+			) => {
+				sent.push({ reasoning: options?.reasoning, disableReasoning: options?.disableReasoning });
+				return Promise.resolve({
+					role: "assistant",
+					content: [{ type: "text", text: "ok" }],
+					stopReason: "stop",
+				} as unknown as AssistantMessage);
+			};
+			const flight = new AbortController();
+			const native = createNativeEngineSelector(
+				{
+					prompt: "add a widget",
+					cwd: "/repo",
+					sessionId: "s1",
+					model: live,
+					modelSource: "ctx.model",
+					native: runtime,
+					thinkingLevel: level as OmpPlanRequest["thinkingLevel"],
+				},
+				flight.signal,
+				{
+					completeSimple: capture,
+					providerDefaults: {},
+					reasoningCeiling: ceiling as NativeEngineDeps["reasoningCeiling"],
+				},
+			);
+			await engineOf(await native(intentWith(), flight.signal)).complete("system", "user");
+			expect(sent.at(-1)).toMatchObject(expected);
+		}
 	});
 
 	test("ctx.models.current is the observed source when ctx.model is absent", async () => {

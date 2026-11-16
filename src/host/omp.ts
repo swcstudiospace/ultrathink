@@ -23,6 +23,10 @@ import type {
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
 import { resolvePstack } from "../cursor/pstack.ts";
+import type { EnvironmentPort } from "../../core/src/ports/environment.ts";
+import { createOmpCommandPort, type OmpCommandHandler } from "../../adapters/omp/commands.ts";
+import type { ClockPort } from "../../core/src/ports/injection.ts";
+import type { SyncFileSystemPort } from "../../core/src/ports/sync-filesystem.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import {
 	type ControlState,
@@ -37,7 +41,7 @@ import type { LockOptions } from "../claude/atomic.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import type { LegacyModelProvenance, UltrathinkConfig } from "../config.ts";
 import type { CompletionReport } from "../types.ts";
-import { attachReport, readReport } from "../types.ts";
+import { attachReport, readReport, TRUNCATED_REPLY } from "../types.ts";
 import { redactSecrets } from "../redact.ts";
 import {
 	type FailureVerdict,
@@ -115,7 +119,7 @@ import {
 	SYNC_TYPE,
 } from "./omp-render.ts";
 import { resolveStateDir } from "./paths.ts";
-import { planPrompt, type PlanResponse } from "./plan.ts";
+import { planPrompt, wouldSkipPlanning, type PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 import { toActivityNotice } from "./activity-notice.ts";
 import { readActivity } from "../teach/activity.ts";
@@ -263,6 +267,19 @@ type LifecycleEvent =
 /** Omp's public ThinkingLevel shape, using the provider's effort type without loading the agent runtime. */
 type SessionThinkingLevel = Effort | "off" | "inherit";
 
+/** The default ceiling on the provider reasoning of a planning stage call. "inherit" keeps the session's own level, uncapped;
+ * `think.reasoningCeiling` lowers it on purpose, and a lower session level is always kept. */
+export const PLANNING_REASONING_CEILING: Effort | "inherit" = "inherit";
+const EFFORT_ORDER: readonly string[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** The session's effort, lowered to the ceiling when above it; an effort outside the known order is passed through. */
+function cappedEffort(level: Effort, ceiling: Effort | "inherit"): Effort {
+	if (ceiling === "inherit") return level;
+	const have = EFFORT_ORDER.indexOf(level);
+	const cap = EFFORT_ORDER.indexOf(ceiling);
+	return have > cap && cap >= 0 ? ceiling : level;
+}
+
 export interface ExtensionAPI {
 	on(
 		event: "before_agent_start",
@@ -312,6 +329,8 @@ export interface OmpPlanRequest {
 	prompt: string;
 	cwd: string;
 	sessionId: string;
+	/** Receives the uplift-only context once the uplift is final, before the graph; the flight's early delivery uses it. */
+	onUplift?: (handoff: { context: string }) => void;
 	/** The flight's one whole live Model snapshot (D-01); the target every native stage of the flight uses when detected. */
 	model?: Model<Api>;
 	/** Where the live Model was observed: `ctx.model`, else `ctx.models.current()`. */
@@ -368,6 +387,8 @@ export interface NativeEngineDeps {
 	now?: () => number;
 	/** Most concurrent native calls of one flight; never above 3 on Omp. Default 3. */
 	maxConcurrency?: number;
+	/** Highest reasoning effort a planning call uses; default `PLANNING_REASONING_CEILING`. "inherit" leaves the session level alone. */
+	reasoningCeiling?: Effort | "inherit";
 	/**
 	 * The flight's limiter. Absent, the binding creates it and writes it back here; the selection carries it as
 	 * `SelectedEngine.throttle`, which tells the planner this flight already has its one limiter (the think stage builds none).
@@ -382,6 +403,10 @@ export const PENDING =
 
 export const NO_PLAN =
 	"Ultrathink planning produced no plan. Continue with the user's request as written.";
+
+/** Sent after an inline uplift when the rest of the plan could not be built: the uplift stands, so the model goes on with it. */
+export const EARLY_RELEASE =
+	"Planning could not finish the rest of the plan; continue with the uplifted prompt above.";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -586,8 +611,6 @@ function thrownStatus(error: unknown): number | undefined {
 /** Same-model retry of the native completer: three attempts, backoff 2 s then up to 8 s with full jitter and Retry-After. */
 const RETRY_POLICY = { maxAttempts: 3, baseMs: 2000, capMs: 8000 } as const;
 
-const TRUNCATED_REPLY = "truncated_reply";
-
 /** The pi-ai error classifier, loaded lazily with the catalog (D-03); absent means errorId-less classification only. */
 interface ErrorFlags {
 	Flag: Readonly<Record<string, number>>;
@@ -693,7 +716,7 @@ function truncatedFailure(): Error {
  * retriable kind retries, ContentBlocked, ContextOverflow, PayloadRejected and AuthFailed never do. Otherwise the kernel's
  * status-led verdict on the raw fields (a 503 with refusal-sounding text still retries; only a 429 is vetoed by it).
  */
-function classifyNativeFailure(error: unknown, now: number = Date.now()): FailureVerdict {
+function classifyNativeFailure(error: unknown, now: number = SYSTEM_CLOCK.now()): FailureVerdict {
 	if (isAbortError(error)) return { transient: false, reason: "aborted" };
 	if (readReport(error)?.cause === TRUNCATED_REPLY)
 		return { transient: true, reason: TRUNCATED_REPLY };
@@ -764,12 +787,19 @@ export function createNativeEngineSelector(
 ): NativeEngineSelector {
 	// Match Omp's toReasoningEffort/shouldDisableReasoning convention, once for this native binding.
 	const level = request.thinkingLevel;
+	// The chain of thought is written out explicitly, and its depth follows the reasoning level the session chose. A ceiling is
+	// opt-in (think.reasoningCeiling): a lower level makes each of the ~15 stage calls shallower. "inherit" uses the host's default.
+	const ceiling = deps.reasoningCeiling ?? PLANNING_REASONING_CEILING;
+	/** The attempt clock: the injected `deps.now`, else the real clock. */
+	const now = (): number => deps.now?.() ?? SYSTEM_CLOCK.now();
 	const thinking: Pick<SimpleStreamOptions, "reasoning" | "disableReasoning"> =
 		level === "off"
 			? { disableReasoning: true }
 			: level === undefined || level === "inherit"
-				? {}
-				: { reasoning: level };
+				? ceiling === "inherit"
+					? {}
+					: { reasoning: ceiling }
+				: { reasoning: cappedEffort(level, ceiling) };
 	// Backoff and cooldown waits go through the injected seam, or the kernel's real wait that ends at once on abort.
 	const kernelSleep: typeof abortableSleep = deps.sleep
 		? (ms, signal) => deps.sleep!(ms, signal ?? flightSignal)
@@ -818,6 +848,9 @@ export function createNativeEngineSelector(
 			const snapshot = model === request.model ? model : snapshotModel(model);
 			// One auth route per flight: the host resolver for exactly this snapshot and session, passed as the callable key.
 			const apiKey = runtime.modelRegistry.resolver(snapshot, sessionId);
+			// One call's bound: claude.callTimeoutMs when it is above zero. A hung provider then fails this attempt; it never cancels
+			// the flight. The default is 0: no per-call timer, so a call runs until it answers or the flight is cancelled.
+			const callTimeoutMs = request.config?.claude.callTimeoutMs ?? 0;
 			return async (system, user, stageSignal) => {
 				const lifetime =
 					stageSignal && stageSignal !== flightSignal
@@ -826,7 +859,7 @@ export function createNativeEngineSelector(
 				if (lifetime.aborted || deps.isCurrent?.() === false) throw cancelled();
 				const context: Context = {
 					systemPrompt: [system],
-					messages: [{ role: "user", content: user, timestamp: Date.now() }],
+					messages: [{ role: "user", content: user, timestamp: now() }],
 				};
 				let lastError: unknown;
 				/** One attempt: a failed one throws a `NativeCompletionError` carrying the raw fields the classifier reads. */
@@ -838,10 +871,11 @@ export function createNativeEngineSelector(
 					const release = await throttle.acquire(lifetime);
 					try {
 						let result: AssistantMessage;
+						const deadline = callTimeoutMs > 0 ? AbortSignal.timeout(callTimeoutMs) : undefined;
 						try {
 							result = await complete(snapshot, context, {
 								apiKey,
-								signal: lifetime,
+								signal: deadline ? AbortSignal.any([lifetime, deadline]) : lifetime,
 								onResponse: (response) => {
 									hintMs = retryAfterOf(response?.headers);
 								},
@@ -851,10 +885,26 @@ export function createNativeEngineSelector(
 						} catch (error) {
 							// A cancelled flight stays a cancellation. A TimeoutError of a live flight (a hung resolver or
 							// request deadline) is a failed attempt, never a silent cancel.
-							if (lifetime.aborted || deps.isCurrent?.() === false || isAbortError(error))
-								throw cancelled();
+							if (lifetime.aborted || deps.isCurrent?.() === false) throw cancelled();
+							if (deadline?.aborted)
+								throw thrownFailure(
+									new Error(`native call timed out after ${callTimeoutMs} ms`),
+									hintMs,
+								);
+							if (isAbortError(error)) throw cancelled();
 							throw thrownFailure(error, hintMs);
 						}
+						// The per-call deadline ended this call, not the flight: a provider that resolves "aborted" on it is a failed attempt.
+						if (
+							deadline?.aborted &&
+							!lifetime.aborted &&
+							deps.isCurrent?.() !== false &&
+							result?.stopReason === "aborted"
+						)
+							throw thrownFailure(
+								new Error(`native call timed out after ${callTimeoutMs} ms`),
+								hintMs,
+							);
 						// A provider that ignores the signal and still answers never turns a cancelled flight into a plan.
 						if (
 							lifetime.aborted ||
@@ -870,7 +920,7 @@ export function createNativeEngineSelector(
 					} catch (error) {
 						lastError = error;
 						if (!isAbortError(error)) {
-							const verdict = classifyNativeFailure(error, deps.now?.() ?? Date.now());
+							const verdict = classifyNativeFailure(error, now());
 							if (verdict.transient)
 								throttle.noteFailure(
 									verdict.retryAfterMs === undefined ? {} : { retryAfterMs: verdict.retryAfterMs },
@@ -890,7 +940,7 @@ export function createNativeEngineSelector(
 						classify: classifyNativeFailure,
 						onRetry: ({ attempt: made, delayMs }) => {
 							// A retry that would cross the flight's own deadline is not taken: the failure is final.
-							if (request.deadline !== undefined && Date.now() + delayMs > request.deadline)
+							if (request.deadline !== undefined && now() + delayMs > request.deadline)
 								throw new DeadlineStop(made);
 						},
 					});
@@ -954,14 +1004,19 @@ export function createNativeEnginePlanner(
 				3,
 			),
 			...(request.isCurrent ? { isCurrent: request.isCurrent } : {}),
+			// The configured ceiling reaches every native stage of the flight; a dependency value (tests) still wins.
+			...(native.reasoningCeiling === undefined && request.config
+				? { reasoningCeiling: request.config.think.reasoningCeiling as Effort | "inherit" }
+				: {}),
 		};
 		const selector = request.native
 			? createNativeEngineSelector(request, signal, flightDeps)
 			: undefined;
 		const response = await planPrompt(
 			{ host: "omp", session_id: request.sessionId, prompt: request.prompt, cwd: request.cwd },
-			env ?? { ...process.env, ULTRATHINK_HOST: "omp" },
+			env ?? { ...PROCESS_ENV.read(), ULTRATHINK_HOST: "omp" },
 			{
+				...(request.onUplift ? { onUplift: request.onUplift } : {}),
 				...(selector ? { native: selector } : {}),
 				signal,
 				...(onEvent ? { progress: onEvent } : {}),
@@ -1019,7 +1074,7 @@ function timedGitRun(cmd: string[], cwd: string): { stdout: string; code: number
 }
 
 /** Repo slug of the nearest existing directory at or above `file`; undefined outside a git repo with an origin. Cached 5 s per directory, each git call timed out after 2 s. */
-export function repoOfPath(file: string, now: () => number = Date.now): string | undefined {
+export function repoOfPath(file: string, now: () => number = SYSTEM_CLOCK.now): string | undefined {
 	let dir = dirname(file);
 	while (!isDirectory(dir)) {
 		const parent = dirname(dir);
@@ -1110,7 +1165,7 @@ const LEASE_DIR = /^omp-(?:task|eval-agent)-\d+$/;
  */
 export function isSubagentSession(
 	ctx: ExtensionContext | undefined,
-	exists: (path: string) => boolean = existsSync,
+	exists: (path: string) => boolean = SYSTEM_FS.existsSync,
 ): boolean {
 	try {
 		const file = ctx?.sessionManager?.getSessionFile?.();
@@ -1334,12 +1389,30 @@ const platformTimers: TimerPort = {
 	clearTimeout: (handle) => clearTimeout(handle),
 };
 
+/** The real process environment, read on every call so each read sees the live value. */
+const PROCESS_ENV: EnvironmentPort = {
+	read: () => process.env,
+};
+
+/** The real clock: the default for every timestamp and deadline read, so a ClockPort is the only way to change time. */
+const SYSTEM_CLOCK: ClockPort = {
+	now: () => Date.now(),
+};
+
+/** The real filesystem's synchronous reads, for hook paths that cannot await; a SyncFileSystemPort is the only way to change them. */
+const SYSTEM_FS: SyncFileSystemPort = {
+	existsSync: (path) => existsSync(path),
+	readFileSync: (path) => readFileSync(path, "utf8"),
+};
+
 export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
 		raceMs?: number;
 		maxRunMs?: number;
 		now?: () => number;
+		/** Clock port for every timestamp and deadline read; defaults to the real clock. */
+		clock?: ClockPort;
 		/** Timer port for the remount, flight deadline and race timers; defaults to the platform timers. */
 		timers?: TimerPort;
 		ui?: boolean;
@@ -1347,8 +1420,12 @@ export function createOmpExtension(
 		mcp?: () => McpState;
 		/** File existence check for subagent detection; defaults to `existsSync`. */
 		exists?: (path: string) => boolean;
+		/** Synchronous filesystem port for the live token-opt snapshot read; defaults to the real filesystem. */
+		fs?: SyncFileSystemPort;
 		/** Ultrathink state dir holding `sessions/<id>.json`; defaults to the omp host state dir. */
 		stateDir?: string;
+		/** Process environment port for every env read; defaults to the real process environment. */
+		env?: EnvironmentPort;
 		/** The effective config a flight captures for a session cwd; defaults to the layered config files. */
 		config?: (cwd: string) => UltrathinkConfig;
 		/** Local ship precheck (`git` only); defaults to `shipPrecheck`. */
@@ -1370,15 +1447,21 @@ export function createOmpExtension(
 	const raceMs = options.raceMs ?? 25_000;
 	// 0 (the default) means no outer limit: no flight timer and no retry deadline.
 	const maxRunMs = options.maxRunMs ?? 0;
-	const now = options.now ?? Date.now;
+	const clock = options.clock ?? SYSTEM_CLOCK;
+	const now = options.now ?? (() => clock.now());
 	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
 	const readMcp = options.mcp ?? readMcpState;
-	const exists = options.exists ?? existsSync;
+	const exists = options.exists ?? SYSTEM_FS.existsSync;
 	const flightConfig = options.config ?? ((cwd: string) => loadConfig(claudeConfigPaths(cwd)));
+	const environment = options.env ?? PROCESS_ENV;
+	const fsPort = options.fs ?? SYSTEM_FS;
 	// The host state dir for the session cwd, made absolute: planning, carriers and commands share it.
 	const stateDir = (cwd: string) =>
-		resolve(cwd, options.stateDir ?? resolveStateDir({ ...process.env, ULTRATHINK_HOST: "omp" }));
+		resolve(
+			cwd,
+			options.stateDir ?? resolveStateDir({ ...environment.read(), ULTRATHINK_HOST: "omp" }),
+		);
 	// Swarm seams: Swarm's own classifier and the lane spawner; the defaults are the real ones.
 	const classifierFor = options.swarm?.classify ?? swarmClassifier;
 	const spawnLaneSet = options.swarm?.spawn ?? spawnLanes;
@@ -1411,6 +1494,10 @@ export function createOmpExtension(
 			deadlineTimer: NodeJS.Timeout | undefined;
 			/** Pending was returned; the aside is the only delivery. */
 			deferred: boolean;
+			/** The uplift-only context, when it was final before the race ended; the rest of the plan follows as the aside. */
+			early?: { context: string };
+			/** The early context was delivered inline: settle sends the whole final plan as the aside, so the uplift is repeated there. */
+			earlyDelivered?: boolean;
 			/** Start order; only the latest flight writes to the bar store. */
 			generation: number;
 			settled: boolean;
@@ -1450,8 +1537,8 @@ export function createOmpExtension(
 		}
 		try {
 			const live = join(homedir(), ".omp", "agent", "token-opt", "live.json");
-			if (existsSync(live)) {
-				const savings = parseTokenSavings(JSON.parse(readFileSync(live, "utf8")));
+			if (fsPort.existsSync(live)) {
+				const savings = parseTokenSavings(JSON.parse(fsPort.readFileSync(live)));
 				if (savings !== undefined) store.setSavings(savings);
 			}
 		} catch {
@@ -1658,7 +1745,7 @@ export function createOmpExtension(
 		 * No network, model, or store mutation happens here; the read model and action adapter own their boundaries.
 		 */
 		const insightTeachContext = (lifetime: InsightLifetime): TeachContext => {
-			const env = { ...process.env, ULTRATHINK_HOST: "omp" };
+			const env = { ...environment.read(), ULTRATHINK_HOST: "omp" };
 			let config: TeachContext["config"] | undefined;
 			try {
 				const full = flightConfig(lifetime.cwd);
@@ -2160,7 +2247,7 @@ export function createOmpExtension(
 			)
 				return;
 			const cwd = ctx?.cwd || process.cwd();
-			const env = { ...process.env, ULTRATHINK_HOST: "omp" };
+			const env = { ...environment.read(), ULTRATHINK_HOST: "omp" };
 			const teach = (options.teachContext ?? teachContext)({
 				host: "omp",
 				cwd,
@@ -2224,6 +2311,20 @@ export function createOmpExtension(
 		// message queued as a steer never swallows the next one.
 		let quick: { sessionId: string; text: string; submission?: number } | undefined;
 		if (typeof pi.registerCommand === "function") {
+			// Each command's handler is also held in this map; the registered wrapper dispatches through the port.
+			const commandHandlers = new Map<string, OmpCommandHandler>();
+			const commandPort = createOmpCommandPort(commandHandlers);
+			const routed = (
+				name: string,
+				handler: (args: string, ctx: ExtensionContext) => Promise<void>,
+			) => {
+				commandHandlers.set(name, (args, ctx) => handler(args, ctx as ExtensionContext));
+				return async (args: string, ctx: ExtensionContext): Promise<void> => {
+					const correlationId = globalThis.crypto.randomUUID();
+					const result = await commandPort.invoke(name, { args, ctx }, { correlationId });
+					if (!result.ok) throw new Error(result.error.message);
+				};
+			};
 			for (const verb of Object.keys(COMMANDS) as UltrathinkVerb[]) {
 				const name = `ultrathink-${verb}`;
 				guard(() =>
@@ -2235,7 +2336,7 @@ export function createOmpExtension(
 										TRACK_COMPLETIONS.filter((item) => item.value.startsWith(prefix.trim())),
 								}
 							: {}),
-						handler: async (args, ctx) => {
+						handler: routed(name, async (args, ctx) => {
 							try {
 								// Subagents act as before: the typed text goes to the agent unchanged.
 								if (isSubagentSession(ctx, exists)) {
@@ -2273,7 +2374,7 @@ export function createOmpExtension(
 							} catch {
 								// reason: a rejected verb must not throw into the host command runner; the reply is best effort
 							}
-						},
+						}),
 					}),
 				);
 			}
@@ -2291,13 +2392,13 @@ export function createOmpExtension(
 							label: value,
 							description: `Ultrathink dashboard view: ${value}`,
 						})),
-					handler: async (args, ctx) => {
+					handler: routed("ultrathink-ui", async (args, ctx) => {
 						try {
 							await openInsightUi(args, ctx);
 						} catch {
 							// reason: a failed dashboard open must not reject into the host command runner
 						}
-					},
+					}),
 				}),
 			);
 			// `/ultrathink-swarm brief|brief|…` fans out one detached AgentSwarm orchestrator lane per brief; each
@@ -2308,13 +2409,13 @@ export function createOmpExtension(
 				pi.registerCommand?.("ultrathink-swarm", {
 					description:
 						"Fan out AgentSwarm lanes from `|`-separated briefs, show lane status, or `stop [laneId|all]`",
-					handler: async (args, ctx) => {
+					handler: routed("ultrathink-swarm", async (args, ctx) => {
 						try {
 							// The session this command belongs to; replies computed across an await are dropped if it changed.
 							const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
 							const cwd = ctx?.cwd || process.cwd();
 							const dir = stateDir(cwd);
-							const parsed = parseLaneArgs(args ?? "", { maxLanes: maxLanes(process.env) });
+							const parsed = parseLaneArgs(args ?? "", { maxLanes: maxLanes(environment.read()) });
 							if (parsed.kind === "usage")
 								return sendInsightText(`${parsed.reason}. ${TEAMS_USAGE}`);
 							// `stop` never needs a valid swarm root: a user whose config broke must still be able to end lanes.
@@ -2333,14 +2434,14 @@ export function createOmpExtension(
 								});
 								return sendSessionText(sessionId, ctx, lines.join("\n"));
 							}
-							const root = resolveSwarmRoot(process.env);
+							const root = resolveSwarmRoot(environment.read());
 							if ("reason" in root)
 								return sendInsightText(`AgentSwarm lanes unavailable: ${swarmRootMessage(root)}`);
 							if (parsed.kind === "status") {
 								const discovery = laneDirs(dir);
 								const rows = await laneStatus(
 									discovery.lanes,
-									orchStatusRunner({ swarmRoot: root.root, cwd, env: process.env }),
+									orchStatusRunner({ swarmRoot: root.root, cwd, env: environment.read() }),
 								);
 								const full = formatLaneStatusText(rows, discovery.omitted);
 								// The card summarizes; the text listing is the complete enumeration (every reported
@@ -2355,14 +2456,16 @@ export function createOmpExtension(
 									);
 								return sendSessionText(sessionId, ctx, full);
 							}
-							const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
+							const pstack = resolvePstack(
+								join(environment.read().HOME?.trim() || homedir(), ".cursor"),
+							);
 							// The Graph ID of the session's tracked plan (when there is one) becomes the lane brief's first line.
 							const graphId = sessionId ? readSession(dir, sessionId)?.plan?.graphId : undefined;
 							const planned = planLanes(parsed.briefs, {
 								cwd,
 								stateDir: dir,
 								swarmRoot: root.root,
-								env: process.env,
+								env: environment.read(),
 								pstack,
 								graphId,
 							});
@@ -2374,7 +2477,7 @@ export function createOmpExtension(
 							const guarded = spawnGuarded(preflight.spawn, {
 								stateDir: dir,
 								cwd,
-								cap: maxLanes(process.env),
+								cap: maxLanes(environment.read()),
 								isAlive: pidAlive,
 								spawn: spawnLaneSet,
 							});
@@ -2409,7 +2512,7 @@ export function createOmpExtension(
 						} catch {
 							// reason: a failed swarm card must not reject into the host command runner
 						}
-					},
+					}),
 				}),
 			);
 		}
@@ -2427,13 +2530,20 @@ export function createOmpExtension(
 			});
 			barWrite(flight.generation, refreshMcp);
 			if (!flight.deferred) return;
+			// After an inline uplift the model is holding for the rest of the plan, so even an empty final plan sends one aside.
 			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A rejected
 			// send marks the bar aside-failed and keeps `flight.content`, so the plan is not lost.
 			try {
 				await Promise.resolve(
-					pi.sendMessage(planMessage(flight.content || NO_PLAN, flight.view), {
-						deliverAs: "aside",
-					}),
+					pi.sendMessage(
+						planMessage(
+							flight.content || (flight.earlyDelivered ? EARLY_RELEASE : NO_PLAN),
+							flight.view,
+						),
+						{
+							deliverAs: "aside",
+						},
+					),
 				);
 			} catch {
 				// reason: a refused aside must never break the host; it is shown as aside-failed below
@@ -2539,8 +2649,11 @@ export function createOmpExtension(
 				plan(
 					{
 						...request,
-						deadline: maxRunMs > 0 ? Date.now() + maxRunMs : undefined,
+						deadline: maxRunMs > 0 ? clock.now() + maxRunMs : undefined,
 						isCurrent: () => !flight.timedOut && !flight.settled && current(flight),
+						onUplift: (handoff) => {
+							flight.early = handoff;
+						},
 					},
 					flight.controller.signal,
 					onEvent,
@@ -2625,17 +2738,17 @@ export function createOmpExtension(
 			if (!prompt || prompt.startsWith("/") || key === lastLane) return undefined;
 			if (isSubagentSession(ctx, exists)) return undefined;
 			if (flightConfig(cwd).swarm?.autoRun !== true) return undefined;
-			const root = resolveSwarmRoot(process.env);
+			const root = resolveSwarmRoot(environment.read());
 			if ("reason" in root) return undefined;
 			if (!isSdlcPrompt(prompt)) return undefined;
 			if (!sessionId) return undefined;
 			const dir = stateDir(cwd);
-			const pstack = resolvePstack(join(process.env.HOME?.trim() || homedir(), ".cursor"));
+			const pstack = resolvePstack(join(environment.read().HOME?.trim() || homedir(), ".cursor"));
 			const planned = planLanes([prompt.trim()], {
 				cwd,
 				stateDir: dir,
 				swarmRoot: root.root,
-				env: process.env,
+				env: environment.read(),
 				pstack,
 				// No graphId: auto-run returns before this prompt is planned, so the session's tracked plan
 				// belongs to earlier work; Swarm and Substrate mint the lane's own graph.
@@ -2656,7 +2769,7 @@ export function createOmpExtension(
 				const { spawn: plan, handles } = spawnGuarded(preflight.spawn, {
 					stateDir: dir,
 					cwd,
-					cap: maxLanes(process.env),
+					cap: maxLanes(environment.read()),
 					isAlive: pidAlive,
 					spawn: spawnLaneSet,
 				});
@@ -2750,6 +2863,19 @@ export function createOmpExtension(
 				const thinkingLevel = namedEngine ? undefined : pi.getThinkingLevel?.();
 				const live = observeLive(ctx);
 				const existing = flights.get(sessionId);
+				// A follow-up the planner would skip (`continue`, an ack, a command) must not cancel the plan still being
+				// built for the real prompt: starting a flight supersedes the old one, and the skipped one delivers nothing.
+				if (
+					existing &&
+					!existing.settled &&
+					!existing.cancelled &&
+					existing.prompt !== prompt &&
+					wouldSkipPlanning(
+						{ prompt, cwd, host: "omp", session_id: sessionId },
+						{ config: captured.config, control: captured.control, stateDir: dir },
+					)
+				)
+					return;
 				let same =
 					existing?.submission === submission && existing.prompt === prompt && existing.cwd === cwd
 						? existing
@@ -2768,7 +2894,8 @@ export function createOmpExtension(
 						same = undefined;
 					}
 				}
-				if (same?.deferred) return same.settled ? undefined : { message: pendingMessage() };
+				if (same?.deferred)
+					return same.settled || same.earlyDelivered ? undefined : { message: pendingMessage() };
 				if (same?.settled)
 					return same.content ? { message: planMessage(same.content, same.view) } : undefined;
 				// The race is armed before the flight starts: launch() runs the planner's synchronous prefix, which must
@@ -2801,6 +2928,17 @@ export function createOmpExtension(
 				if (result === null) {
 					// Delivery only switches to pending and aside; the flight keeps running under its own lifetime.
 					flight.deferred = true;
+					const early = flight.early;
+					if (early) {
+						// A final uplift goes inline now; the whole final plan follows as the one aside.
+						flight.earlyDelivered = true;
+						barWrite(flight.generation, () => store.pending());
+						return {
+							message: planMessage(
+								`${early.context}\n\nThe rest of the plan follows as an aside when planning finishes; until then, only read and investigate.`,
+							),
+						};
+					}
 					barWrite(flight.generation, () => store.pending());
 					return { message: pendingMessage() };
 				}

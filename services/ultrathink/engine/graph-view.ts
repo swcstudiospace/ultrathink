@@ -81,7 +81,7 @@ const PALETTE: Record<NodeKind, { fill: string; stroke: string }> = {
 const TEXT_COLOR = "#0f172a";
 
 /** Everything but letters, digits, space and `. , : + - _ / '` is replaced inside a Mermaid label. */
-const LABEL_UNSAFE_RE = /[^\p{L}\p{N} .,:+_\/'-]/gu;
+const LABEL_UNSAFE_RE = /[^\p{L}\p{N} .,:+_/'-]/gu;
 const CONTROL_RE = /[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu;
 /** Controls other than line breaks and tabs; used where line structure is kept. */
 const BLOCK_CONTROL_RE = /(?![\n\t])\p{Cc}|[\u202A-\u202E\u2066-\u2069]/gu;

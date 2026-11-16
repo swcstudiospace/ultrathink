@@ -10,3 +10,11 @@ issues/
 docs/superpowers/
 __pycache__/
 .omp/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+ultrathink.env
+*.env
+deploy/docker/compose.yml

@@ -19,5 +19,15 @@
 		"allowImportingTsExtensions": true,
 		"verbatimModuleSyntax": true
 	},
-	"include": ["src/**/*.ts", "hooks/**/*.ts", "scripts/**/*.ts", "policy/**/*.ts"]
+	"include": [
+		"src/**/*.ts",
+		"hooks/**/*.ts",
+		"scripts/**/*.ts",
+		"policy/**/*.ts",
+		"core/**/*.ts",
+		"tools/**/*.ts",
+		"adapters/**/*.ts",
+		"conformance/**/*.ts",
+		"tooling/**/*.ts"
+	]
 }

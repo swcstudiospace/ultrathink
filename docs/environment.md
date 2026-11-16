@@ -52,7 +52,7 @@ Read by the hooks, `bin/ultrathink` and the other plugin commands, on every host
 | `ULTRATHINK_MCP_DEBUG` | — | no | bool1 | — | Set to 1 so ultrathink-mcp serve writes relay log lines to stderr. |
 | `ULTRATHINK_PROGRESS_FD` | — | no | int (at least 3) | — | File descriptor that receives one JSON progress line per event; 3 or higher, else ignored. |
 | `ULTRATHINK_HOST` | — | no | enum (one of claude-code, grok-build, hermes, muse, omp, prime-agent, cursor) | — | Forces the detected host; an unknown value is ignored. |
-| `ULTRATHINK_STATE_DIR` | — | no | path | — | Directory for control state and session records instead of the host default. The hosted service reads it too and defaults to /var/lib/ultrathink; a path inside .planning is ignored. |
+| `ULTRATHINK_STATE_DIR` | — | no | path | — | Directory for control state and session records instead of the host default. The host uses it only when it is an absolute path inside your home directory and not home itself; any other value, including a path inside .planning, is ignored. The hosted service and stdio connector read it under their own rules; the hosted service defaults to /var/lib/ultrathink. |
 | `ULTRATHINK_CONFIG_DIR` | — | no | path | — | Directory holding config.json for the Cursor pstack hook and the doctor pstack section only. |
 | `ULTRATHINK_PSTACK_CURSOR_DIR` | — | no | path | — | Absolute Cursor directory for the pstack hook; it wins over pstack.cursorDir. |
 | `ULTRATHINK_AGENT_SKILLS_DIR` | — | no | path | `~/.agents/skills` | Shared Agent Skills directory that scripts/setup.ts installs into. |
@@ -82,7 +82,6 @@ Read only by the hosted service (`services/ultrathink`) at start. A bad value st
 | `ULTRATHINK_PLANNING_MODEL` | — | no | string | `claude-haiku-5-5` | Claude model id of the hosted planner: 1 to 80 characters from letters, digits, dot, underscore, colon and dash. |
 | `ULTRATHINK_PLANNING_FALLBACK` | — | no | enum (one of none, grok) | `none` | Whether a failed Claude call fails over to Grok. |
 | `ULTRATHINK_SERVER_PLANNING` | — | no | bool01 | `0` | Set to 1 to let the service plan on the server. |
-| `ULTRATHINK_CIMD` | — | no | bool01 | `0` | Set to 1 to allow guarded CIMD client metadata retrieval and advertisement of client_id_metadata_document_supported. Needs Bun 1.4.0 or later: on an older Bun the server neither retrieves nor advertises. Unset or 0 keeps it off. Refuses loopback, private, link-local, multicast, reserved, NAT64, 6to4 and IPv4-translated targets. Each fetch holds one of four in-flight slots until its connection confirms stop; a slot whose stop never confirms is not reclaimed, so restart the service to free it. |
 | `ULTRATHINK_PLAINTEXT_LOOPBACK` | — | no | bool01 | `0` | Set to 1 to run without TLS; for development and local smoke tests only. |
 | `ULTRATHINK_MAX_INPUT_CHARS` | — | no | int (at least 0) | `4000000` | Longest accepted prompt in characters; 0 means no limit, otherwise at least 1. |
 | `ULTRATHINK_MAX_ANSWER_CHARS` | — | no | int (1 to 200000) | `20000` | Longest accepted answer in characters. |

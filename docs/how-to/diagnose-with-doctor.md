@@ -114,7 +114,7 @@ The `inference` section looks at the two coding-plan logins that planning runs o
 | `Claude auth: no plan login` | warn | Run `claude` and sign in with `/login`, or run `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN`. |
 | `Claude auth: API key (claude.auth is api-key)` | info | You opted into the key. A warning follows when neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_AUTH_TOKEN` is set. |
 | `ANTHROPIC_API_KEY is set and ignored for planning (claude.auth is plan)` | info | Planning ignores it, but an interactive `claude` still uses it and bills the API. Unset it where your shell or service sets it. |
-| `Grok login: <account> expires in <age>` | ok | A signed-in, unexpired Grok session. |
+| `Grok login: signed in expires in <age>` | ok | A signed-in, unexpired Grok session; the account identity is not shown. |
 | `Grok login expired` | warn | Fix: `ultrathink grok login`. When `grok.home` is set, the fix names the lane: `GROK_HOME=<dir> grok login --device-auth`. |
 | `Grok login: not signed in` | warn or info | A warning when `claude.fallbackToGrok` is on or the engine resolves to Grok, with the fix `ultrathink grok login` (and `GROK_HOME=<dir> grok login --device-auth` when `grok.home` is set); otherwise info, because the Grok route is not in use. |
 | `Claude to Grok fallback: off` or `on (models …)` | info | The state of `claude.fallbackToGrok` and the Grok models the fallback would walk. |
@@ -158,7 +158,7 @@ inference
   i ANTHROPIC_API_KEY is set and ignored for planning (claude.auth is plan)
       Other tools, including an interactive claude, still use it and bill the API
       fix: Unset it where your shell or service sets it
-  ✓ Grok login: you@example.com expires in 6d
+  ✓ Grok login: signed in expires in 6d
   i Claude to Grok fallback: off (claude.fallbackToGrok is false)
   i Models: claude claude-haiku-5-5, grok grok-build-0.1
   i Memory-bank inference: claude-haiku-5-5 only

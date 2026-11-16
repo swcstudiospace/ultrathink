@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "substrate": {
+      "type": "http",
+      "url": "${env:SUBSTRATE_URL}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:SUBSTRATE_TOKEN}"
+      }
+    }
+  }
+}

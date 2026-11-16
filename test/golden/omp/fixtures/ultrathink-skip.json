@@ -1,0 +1,51 @@
+{
+  "capture": "test/golden/omp/capture.ts",
+  "cases": [
+    {
+      "input": {
+        "args": "",
+        "command": "/ultrathink-skip",
+        "cwd": "<ROOT>/ultrathink-skip/workspace",
+        "sessionId": "golden-session-1"
+      },
+      "name": "arm skip for the session",
+      "output": {
+        "notices": [
+          {
+            "level": "info",
+            "text": "Prompt Uplift will skip the next prompt in this session"
+          }
+        ],
+        "sentMessages": [],
+        "userMessages": []
+      },
+      "sideEffects": [
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink"
+        },
+        {
+          "change": "created",
+          "kind": "dir",
+          "path": "omp-agent/ultrathink/sessions"
+        },
+        {
+          "change": "created",
+          "content": "skip\n",
+          "kind": "file",
+          "path": "omp-agent/ultrathink/sessions/golden-session-1.skip"
+        }
+      ]
+    }
+  ],
+  "entry": "ultrathink-skip",
+  "excluded": [],
+  "schema": 1,
+  "source": "registerCommand loop, verb=skip"
+}

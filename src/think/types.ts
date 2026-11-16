@@ -49,11 +49,25 @@ export const THINK_ENGINES = ["auto", "claude", "grok", "muse"] as const;
 
 export type ThinkEngine = (typeof THINK_ENGINES)[number];
 
+/** Highest provider reasoning effort a native planning call uses; "inherit" leaves the session's own level alone. */
+export const THINK_REASONING_CEILINGS = [
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"inherit",
+] as const;
+export type ThinkReasoningCeiling = (typeof THINK_REASONING_CEILINGS)[number];
+
 export interface ThinkConfig {
 	enabled: boolean;
 	minNodes: number;
 	maxNodes: number;
 	engine: ThinkEngine;
+	/** Highest reasoning effort a planning stage call uses; a lower session level is kept. */
+	reasoningCeiling: ThinkReasoningCeiling;
 	/** Extra attempts per node fill after the first one (kernel backoff between them). */
 	fillRetries: number;
 	/** One dependency-ordered repair pass over failed fills and the successors that read them. */

@@ -16,8 +16,9 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { TEST_STATE_DIR_PREFIX } from "../test.state-dir.ts";
 import type { Api, AssistantMessage, Effort, Model } from "@oh-my-pi/pi-ai";
 import { writeControl, writeSession } from "../claude/state.ts";
 import { Flag } from "@oh-my-pi/pi-ai/error";
@@ -412,6 +413,31 @@ describe("omp extension", () => {
 			{ message: { ...PLAN_MSG, details: VIEW }, options: { deliverAs: "aside" } },
 		]);
 		expect(t.line()).not.toBe(pendingLine);
+	});
+
+	test("an uplift final before the race leaves the status line pending until the whole plan arrives as an aside", async () => {
+		const t = tuiCtx();
+		const gate = Promise.withResolvers<OmpPlan>();
+		const manual = manualTimers();
+		const { run, sent, emit } = setup(
+			(request) => {
+				request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
+				return gate.promise;
+			},
+			1,
+			{ timers: manual.timers },
+			t.ctx,
+		);
+		emit("session_start");
+		const running = run();
+		// The race limit is 1 ms: its timer fires by hand while the final plan is still held.
+		await manual.fire(1);
+		await running;
+		expect(t.line()).toContain("arrives as aside");
+		gate.resolve({ context: "PLAN", view: VIEW });
+		await flush();
+		expect(sent).toHaveLength(1);
+		expect(t.line()).not.toContain("arrives as aside");
 	});
 
 	test("a throwing setWidget does not break planning", async () => {
@@ -2006,13 +2032,13 @@ describe("native planner end to end (D-01, D-02)", () => {
 			expect(output).not.toContain("SECRET");
 	});
 
-	for (const { name, level, capability } of [
-		{ name: "low", level: "low" as Effort, capability: true },
-		{ name: "high", level: "high" as Effort, capability: true },
-		{ name: "off", level: "off", capability: true },
-		{ name: "inherit", level: "inherit", capability: true },
-		{ name: "undefined", level: undefined, capability: true },
-		{ name: "absent capability", level: undefined, capability: false },
+	for (const { name, level, capability, reasoning } of [
+		{ name: "low", level: "low" as Effort, capability: true, reasoning: "low" as Effort },
+		{ name: "high", level: "high" as Effort, capability: true, reasoning: "high" as Effort },
+		{ name: "off", level: "off", capability: true, reasoning: "disabled" as const },
+		{ name: "inherit", level: "inherit", capability: true, reasoning: undefined },
+		{ name: "undefined", level: undefined, capability: true, reasoning: undefined },
+		{ name: "absent capability", level: undefined, capability: false, reasoning: undefined },
 	] as const) {
 		test(`session thinking ${name} is captured once across uplift, Graph, every Chain fill and HITL`, async () => {
 			const live = fakeModel("acme", "sol-1");
@@ -2066,14 +2092,14 @@ describe("native planner end to end (D-01, D-02)", () => {
 			for (const call of rec.calls) {
 				expect(call.model).toBe(resolved.model);
 				expect(call.options?.apiKey).toBe(resolved.key);
-				if (level === "off") {
+				if (reasoning === "disabled") {
 					expect(call.options?.disableReasoning).toBe(true);
 					expect(call.options).not.toHaveProperty("reasoning");
-				} else if (level === undefined || level === "inherit") {
+				} else if (reasoning === undefined) {
 					expect(call.options).not.toHaveProperty("reasoning");
 					expect(call.options).not.toHaveProperty("disableReasoning");
 				} else {
-					expect(call.options?.reasoning).toBe(level);
+					expect(call.options?.reasoning).toBe(reasoning);
 					expect(call.options).not.toHaveProperty("disableReasoning");
 				}
 				expect(call.options).not.toHaveProperty("forceReasoningOff");
@@ -2221,7 +2247,7 @@ describe("swarm auto-run", () => {
 		const root = mkdtempSync(join(tmpdir(), "sw-autorun-root-"));
 		mkdirSync(join(root, "hooks"), { recursive: true });
 		writeFileSync(join(root, "hooks", "autonomous_run.py"), "import sys\nsys.exit(0)\n");
-		const stateDir = mkdtempSync(join(tmpdir(), "sw-autorun-state-"));
+		const stateDir = mkdtempSync(join(homedir(), TEST_STATE_DIR_PREFIX));
 		process.env.ULTRATHINK_SWARM_ROOT = root;
 		process.env.ULTRATHINK_STATE_DIR = stateDir;
 		return {

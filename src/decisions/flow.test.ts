@@ -289,6 +289,23 @@ describe("evaluateFlowOutput key selection", () => {
 		expect(r.calls[1]?.body.provider).toBeUndefined();
 	});
 
+	test("the tool output and the command leave the machine with their secret shapes masked", async () => {
+		const r = recording(() => ok("approve", 0.9));
+		const token = `ghp_${"A".repeat(36)}`;
+		await evaluateFlowOutput({
+			subject: "phase:discuss",
+			output: `deploy used ${token} and password=hunter2-real-secret`,
+			command: `gh auth login --with-token ${token}`,
+			storePath: emptyStore(),
+			fetch: r.fetch,
+			now: () => 1000,
+			env: { ULTRATHINK_OPENROUTER_KEY: OK_KEY },
+		});
+		const sent = JSON.stringify(r.calls[0]?.body);
+		expect(sent).not.toContain(token);
+		expect(sent).not.toContain("hunter2-real-secret");
+	});
+
 	test("the stored OpenRouter key decides and the key never reaches the record", async () => {
 		const store = join(tempDir(), "mcp-credentials.json");
 		const providers = { openrouter: { kind: "api_key", apiKey: OK_KEY, updatedAt: 1 } };

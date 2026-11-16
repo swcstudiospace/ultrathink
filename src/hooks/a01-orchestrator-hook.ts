@@ -89,7 +89,7 @@ export async function withA01OrchestratorTimeout<T>(
 	const { promise: timeoutP, resolve: resolveTimeout } = Promise.withResolvers<{
 		timedOut: true;
 	}>();
-	setTimeout(() => resolveTimeout({ timedOut: true }), timeoutMs);
+	const timer = setTimeout(() => resolveTimeout({ timedOut: true }), timeoutMs);
 	try {
 		const raced = await Promise.race([
 			fn().then((r): A01RunResult<T> => ({ ok: true, result: r })),
@@ -109,6 +109,8 @@ export async function withA01OrchestratorTimeout<T>(
 		console.warn(msg);
 		markA01FailureInState(msg, opts.stateDir);
 		return { ok: false, error: redactForLog(String(err)) };
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
