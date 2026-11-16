@@ -2,6 +2,8 @@
 
 ultrathink runs from one checkout of this repository. Each host (the coding agent you type into: Claude Code, Grok Build, Hermes Agent, Muse Code, Omp or Prime Agent) loads it through a small entry point, and every host calls the same TypeScript engine. This page covers installing it on each host and checking that it works. It also covers `scripts/setup.ts`, the shared MCP gateway and choosing the planning engine. To upgrade, move or remove an install, see [Upgrade and move](how-to/upgrade-and-move.md) and [Uninstall](how-to/uninstall.md).
 
+CLI agents with no host adapter (Codex, OpenCode, Copilot, and twelve others) get skills and commands only, through [the runtime installer](runtime-install.md). That path does not load the engine and does not cover the six hosts on this page.
+
 In the commands below, `<clone>` is the absolute path of your checkout. Paths written as `${NAME:-default}` use the environment variable when you set it, and the default otherwise.
 
 - [Platforms](#platforms)
@@ -266,7 +268,7 @@ Muse runs a copy from its plugin cache, so `git pull` alone does not update it. 
 
 ## Omp
 
-Omp loads the extension listed under `omp.extensions` in `package.json` (`src/host/omp.ts`), plus the skills. With `think.engine: "auto"` the extension plans inside Omp on the session's own model, with Omp's own provider and login, so it needs no `claude`, `grok` or `muse` login (see [Choose the planning engine](how-to/choose-engine.md#omp-the-sessions-own-model)). It plans in `before_agent_start` and waits up to 25 s, because Omp caps a handler at 30 s. A plan that takes longer arrives as an aside message; on reasoning-heavy models that can take several minutes. In the TUI, the extension adds a live `ultrathink` status bar above Omp's status band and renders plans as cards.
+Omp loads the extension listed under `omp.extensions` in `package.json` (`src/host/omp.ts`), plus the skills. With `think.engine: "auto"` the extension plans inside Omp on the session's own model, with Omp's own provider and login, so it needs no `claude`, `grok` or `muse` login (see [Choose the planning engine](how-to/choose-engine.md#omp-the-sessions-own-model)). It plans in `before_agent_start` and races for 25 s, because Omp caps a handler at 30 s and drops a late result. A plan that is whole in time is injected at once. Otherwise the extension holds the session inside a confirm dialog (Omp pauses its cap while a dialog is open) until the whole plan validates, which on reasoning-heavy models can take several minutes. A host with no dialog, such as print mode, gets a STOP hold message and the plan arrives as an aside message. A partial plan never starts the session without your confirmation (reply `proceed`). `ULTRATHINK_GATE=off` restores the old behavior, an inline uplift or pending note and the rest as an aside; see [Omp native planning](architecture.md#omp-native-planning) for the gate and `ULTRATHINK_GATE`, `ULTRATHINK_GATE_INACTIVITY_MS` and `ULTRATHINK_GATE_ALLOW_PARTIAL` in [environment.md](environment.md). In the TUI, the extension adds a live `ultrathink` status bar above Omp's status band and renders plans as cards.
 
 ### Install
 
@@ -283,7 +285,7 @@ omp plugin link <clone>
 
 Verified live on Omp 18.3.1 in the interactive UI: `/ultrathink-status` showed the notification, and `/ultrathink-quick` was answered with no plan. Use the interactive UI for these commands. In `omp -p` print mode, notifications are not shown and a quick message is not processed before Omp exits.
 
-Native planning was verified live on Omp 18.8.0 in print mode, with the session model `openai-codex/gpt-6.1-sol`: the record read `omp-native:openai-codex/gpt-6.1-sol [detected]`, the agent got the pending note after 25 s, and the plan (7 graph nodes, 3 clarifying questions) arrived as an aside about 336 s after the prompt. A print-mode run that exits before the plan arrives cancels it, so the agent must keep working, or the session stay open, until the aside lands.
+Native planning was verified live on Omp 18.8.0 in print mode, before the completion gate existed (the behavior `ULTRATHINK_GATE=off` keeps), with the session model `openai-codex/gpt-6.1-sol`: the record read `omp-native:openai-codex/gpt-6.1-sol [detected]`, the agent got the pending note after 25 s, and the plan (7 graph nodes, 3 clarifying questions) arrived as an aside about 336 s after the prompt. A print-mode run that exits before the plan arrives cancels it, so the agent must keep working, or the session stay open, until the aside lands.
 
 If something looks wrong, `omp plugin doctor` checks the installed plugins.
 

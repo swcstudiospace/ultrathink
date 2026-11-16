@@ -64,6 +64,9 @@ Read by the hooks, `bin/ultrathink` and the other plugin commands, on every host
 | `PI_CODING_AGENT_DIR` | — | no | path | `~/.omp/agent` | Omp agent directory, also the Omp state directory. |
 | `PRIME_AGENT_CODING_AGENT_DIR` | — | no | path | `~/.prime/agent` | Prime Agent directory, also the Prime Agent state directory. |
 | `ULTRATHINK_LOG_LEVEL` | — | no | string | `warn` | Log level of the stdio tool host: info, warn or error, compared without case; anything else means warn. |
+| `ULTRATHINK_GATE` | — | no | string | `on` | Omp completion gate, on by default: the session starts only once the whole plan validated. off, 0, false or no (any case) turns it off and restores the old race, where a plan that is not ready in time arrives later as an aside; any other value leaves it on. |
+| `ULTRATHINK_GATE_INACTIVITY_MS` | — | no | int (0 to 2147483647) | `1800000` | Window of the completion gate watchdog in milliseconds: the gate fails loudly when planning shows no progress for this long. 0 disables the watchdog; a value that is not a number from 0 up means 1800000; larger values are cut to 2147483647. |
+| `ULTRATHINK_GATE_ALLOW_PARTIAL` | — | no | string | — | 1, on, true or yes (any case) lets a partial plan start the Omp session without a confirmation; otherwise a partial plan needs an explicit yes. Off by default. |
 
 ## Hosted service variables
 

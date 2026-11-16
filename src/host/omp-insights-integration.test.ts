@@ -39,7 +39,7 @@ import {
 	type InsightDashboard,
 	type InsightDashboardCallbacks,
 } from "./omp-dashboard.ts";
-import type { OmpPlan, OmpPlanRequest, OmpPlanner } from "./omp.ts";
+import { GATE_HOLD, type OmpPlan, type OmpPlanRequest, type OmpPlanner } from "./omp.ts";
 import { INSIGHT_TYPE } from "./omp-render.ts";
 import {
 	readInsightSnapshot,
@@ -299,7 +299,13 @@ interface Suite {
 }
 
 function buildSuite(
-	options: { ui?: boolean; teach?: (config: UltrathinkConfig) => void; plan?: SuitePlan } = {},
+	options: {
+		ui?: boolean;
+		teach?: (config: UltrathinkConfig) => void;
+		plan?: SuitePlan;
+		/** `false` switches the completion gate off (`ULTRATHINK_GATE=off`): the old inline race applies. */
+		gate?: boolean;
+	} = {},
 ): Suite {
 	const fixture = freshFixture();
 	const teachInputs: Suite["teachInputs"] = [];
@@ -310,6 +316,7 @@ function buildSuite(
 		ui: options.ui ?? true,
 		stateDir: fixture.stateDir,
 		config: () => config,
+		...(options.gate === false ? { gate: { enabled: false } } : {}),
 		teachContext: (input: TeachContextOptions) => {
 			teachInputs.push({
 				sessionId: input.sessionId,
@@ -797,8 +804,10 @@ describe("session switch and shutdown", () => {
 			message?: unknown;
 		};
 		expect(flightSignals).toHaveLength(1);
-		// The pending note is the inline race delivery, not a transcript send.
-		expect(textOf(raced.message)).toContain("still planning");
+		// The gate holds the turn with the stop-and-confirm message (no dialog here): it is the inline race delivery, not a
+		// transcript send, and it starts nothing on a partial plan.
+		expect(propOf(raced.message, "customType")).toBe("ultrathink-pending");
+		expect(textOf(raced.message)).toBe(GATE_HOLD);
 
 		const host = uiHost();
 		const { ctx } = sessionCtx({
@@ -823,6 +832,12 @@ describe("session switch and shutdown", () => {
 				),
 			"in-flight planner delivers its aside after the display closes",
 		);
+		const plans = suite.harness.sent.filter(
+			(entry) => propOf(entry.message, "customType") === "ultrathink-plan",
+		);
+		expect(plans).toHaveLength(1);
+		expect(textOf(plans[0]?.message)).toBe("PLANNED CONTEXT");
+		expect(propOf(plans[0]?.options, "deliverAs")).toBe("aside");
 	});
 });
 
@@ -1172,9 +1187,25 @@ describe("existing behavior preserved", () => {
 		expect(textOf(suite.harness.sent.at(-1)?.message)).toContain("top-level Omp session");
 	});
 
-	test("controlled planner still races and delivers its aside", async () => {
+	test("controlled planner still races: the gate holds the turn and the plan arrives as the one aside", async () => {
 		const flight = controlled();
 		const suite = buildSuite({ plan: flight.plan });
+		const result = (await suite.harness.run("planned prompt")) as { message?: unknown };
+		expect(propOf(result.message, "customType")).toBe("ultrathink-pending");
+		expect(textOf(result.message)).toBe(GATE_HOLD);
+		flight.resolve("ASYNC PLAN");
+		await flush();
+		const plans = suite.harness.sent.filter(
+			(entry) => propOf(entry.message, "customType") === "ultrathink-plan",
+		);
+		expect(plans).toHaveLength(1);
+		expect(textOf(plans[0]?.message)).toBe("ASYNC PLAN");
+		expect(propOf(plans[0]?.options, "deliverAs")).toBe("aside");
+	});
+
+	test("gate off: the old race applies, a pending note now and the plan as an aside later", async () => {
+		const flight = controlled();
+		const suite = buildSuite({ plan: flight.plan, gate: false });
 		const result = (await suite.harness.run("planned prompt")) as { message?: unknown };
 		expect(textOf(result.message)).toContain("still planning");
 		flight.resolve("ASYNC PLAN");

@@ -6,6 +6,7 @@ ultrathink plans every non-trivial prompt into a spec and a Graph of Thought bef
 
 - [Getting started](getting-started.md): from nothing to a first planned prompt, then to a first tracked plan.
 - [Install](install.md): install, verify, update and remove ultrathink on Claude Code, Grok Build, Hermes Agent, Muse Code, Omp and Prime Agent.
+- [Runtime installer](runtime-install.md): copy skills and commands into a CLI agent that has no host adapter. No new host ids; gating unverified.
 - [What leaves your machine](privacy.md): which services ultrathink contacts, what it sends, and what stays local.
 - [FAQ](faq.md): short answers to common questions.
 

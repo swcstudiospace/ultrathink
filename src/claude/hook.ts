@@ -27,6 +27,13 @@ import type { Clarification } from "../hitl/types.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { injectGraphXml, isFallbackGraph } from "../think/graph.ts";
 import { type RunThinkOptions, runThink, type ThinkResult } from "../think/pipeline.ts";
+import {
+	injectPrdXml,
+	type PrdOutcome,
+	runTotStage,
+	type TotSeams,
+	totEnabled,
+} from "../think/tot/stage.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import {
 	type BriefFailure,
@@ -176,6 +183,11 @@ export interface HookDeps {
 	log?: (message: string) => void;
 	/** Creates tracker rows through the MCP gateway before the prompt goes out; fail-open. */
 	track?: Tracker;
+	/**
+	 * Tree-of-Thought PRD stage seams. Present, the stage runs after the tracker rows exist (unless `think.tot.enabled` is
+	 * false): one PRD per Sub Issue, synced into its row. Absent, the plan is as it was before the stage existed.
+	 */
+	tot?: TotSeams;
 	/** Deterministic command the kickoff skill runs to finish missing rows. */
 	trackCommand?: string;
 	/** Tracking is off for this prompt: no tracker call, no kickoff instruction or Linked issues; the plan is still recorded. */
@@ -220,6 +232,8 @@ export interface PromptSubmitResult {
 	notice?: string;
 	/** Every DecisionRecord of this prompt, in call order; absent when none. */
 	decisions?: DecisionRecord[];
+	/** The Tree-of-Thought PRD outcome the completion gate reads; absent when the stage did not run. */
+	prd?: PrdOutcome;
 }
 
 function specFile(stateDir: string, sessionId: string): string {
@@ -1509,6 +1523,65 @@ export async function runPromptSubmit(
 			}
 		}
 
+		// Tree-of-Thought: one PRD per Sub Issue, written after the rows exist and synced into them. Its outcome (never
+		// the PRD text) is what the completion gate reads; the XML only gains counts. The stage is skipped when no row
+		// exists to receive a PRD, and it never throws for a model, tracker or disk failure: that is a partial outcome.
+		let prd: PrdOutcome | undefined;
+		const rowRefs =
+			Object.keys(tracking?.linear.steps ?? {}).length +
+			Object.keys(tracking?.notion.steps ?? {}).length;
+		if (plan && tracking && deps.tot && !deps.trackingOff && totEnabled(deps.config)) {
+			if (rowRefs === 0) log("tot skipped: no Sub Issue rows to attach PRDs to");
+			else {
+				throwIfCancelled(cancellation);
+				stage("tot", "start");
+				try {
+					prd = await runTotStage({
+						plan,
+						tracking,
+						config: deps.config,
+						complete,
+						selected: {
+							modelId: deps.modelResolution?.modelId ?? deps.engine,
+							...(deps.modelResolution?.provider
+								? { provider: deps.modelResolution.provider }
+								: {}),
+						},
+						...(deps.surface !== undefined && isHostId(deps.surface) ? { host: deps.surface } : {}),
+						seams: deps.tot,
+						stateDir: deps.stateDir,
+						cwd,
+						signal: lifetime,
+						log,
+					});
+				} catch (error) {
+					rethrowCancellation(error);
+					const cause = causeText(error);
+					log(`tot failed: ${cause}`);
+					const total = plan.subIssues.length;
+					prd = {
+						manifest: { total, generated: 0, failed: total, fallbacks: 0, records: [] },
+						sync: { total, synced: 0, pending: 0, failed: total },
+						model: { modelId: deps.engine, provider: "unknown", source: "selected", reason: cause },
+						error: cause,
+					};
+				}
+				throwIfCancelled(cancellation);
+				const settled =
+					prd.sync.failed === 0 && prd.sync.pending === 0 && prd.manifest.failed === 0;
+				stage(
+					"tot",
+					"end",
+					settled,
+					`${prd.manifest.generated}/${prd.manifest.total} PRDs · ${prd.sync.synced} synced${
+						prd.manifest.failed > 0 ? ` · ${prd.manifest.failed} failed` : ""
+					}${prd.sync.pending > 0 ? ` · ${prd.sync.pending} pending` : ""}`,
+				);
+				result = { ...result, xml: injectPrdXml(result.xml, prd) };
+				record = buildRecord(result, tracking);
+			}
+		}
+
 		// No spec or session write for a cancelled flight.
 		throwIfCancelled(cancellation);
 		stage("state", "start");
@@ -1614,7 +1687,12 @@ export async function runPromptSubmit(
 			output.systemMessage = briefNotice ? `${summary} · ${briefNotice}` : summary;
 		}
 		outcome = "planned";
-		return { output, record, ...(records.length ? { decisions: records } : {}) };
+		return {
+			output,
+			record,
+			...(records.length ? { decisions: records } : {}),
+			...(prd ? { prd } : {}),
+		};
 	} catch (error) {
 		// A cancelled flight ends skipped, as planPrompt reports it; anything else stays a failure named by its error.
 		if (cancellation.aborted) {

@@ -17,6 +17,38 @@ export const ROUTE_DEFAULT_MODELS: Readonly<Record<LegacyRoute, string>> = Objec
 	muse: "muse-spark-1.3-contributor",
 });
 
+/**
+ * Cheapest-model candidates for the Tree-of-Thought PRD stage (tier "prd"), keyed by credential-provider family and ordered
+ * cheapest first. Data only: `models.tot.candidates` in any config layer replaces a provider's list, a blank list removes it.
+ * UNVERIFIED PLACEHOLDERS: the anthropic and xai ids are the ids this repo already sends on its legacy routes; the openai
+ * and cursor ids are guesses that were not checked against any provider catalog. A wrong id does no harm: the one-time
+ * smoke check drops it and the stage runs on the selected model.
+ */
+export const TOT_PRD_CANDIDATES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+	anthropic: Object.freeze([ROUTE_DEFAULT_MODELS.claude]),
+	openai: Object.freeze(["gpt-5-mini", "gpt-5-nano"]),
+	xai: Object.freeze([ROUTE_DEFAULT_MODELS.grok]),
+	cursor: Object.freeze(["cursor-small"]),
+});
+
+/** Consecutive cheap-model failures after which the whole ToT stage runs on the selected model. */
+export const TOT_BREAKER_THRESHOLD = 3;
+
+/**
+ * Whether a host lets a stage call pick its own model (the wire model rides each call). Cursor, Omp and Prime Agent bind
+ * one session model, so ToT keeps the selected model there unless the caller injects a capability that says otherwise.
+ * Keyed by the host id string so this leaf module needs no import.
+ */
+export const TOT_HOST_PER_CALL_MODEL: Readonly<Record<string, boolean>> = Object.freeze({
+	"claude-code": true,
+	"grok-build": true,
+	hermes: true,
+	muse: true,
+	omp: false,
+	"prime-agent": false,
+	cursor: false,
+});
+
 /** Credential variables no child Ultrathink spawns may inherit. OPENROUTER_API_KEY and AI_GATEWAY_API_KEY are auto-read by SDKs and agents, so they are stripped whether or not Ultrathink reads them. */
 const JEV_KEY_ENV_NAMES: readonly string[] = Object.freeze([
 	"ULTRATHINK_OPENROUTER_KEY",
