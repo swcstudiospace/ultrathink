@@ -541,7 +541,7 @@ function childLifetimeSource(
 	const handoffOrder = JSON.stringify(scenario.handoffOrder ?? null);
 	const parentRootPath = JSON.stringify(parentRoot);
 	return [
-		`import { createNativeEngineSelector } from ${ompPath};`,
+		`import { createNativeEngineSelector, GATE_HOLD } from ${ompPath};`,
 		"import { fakeModel, fakeRuntime, isolatedPlanEnv, quietConfig, recorder, reply, setup, stageAnswer, userText } from " +
 			helpersPath +
 			";",
@@ -745,7 +745,15 @@ function childLifetimeSource(
 		"				signal,",
 		"				native: createNativeEngineSelector(request, signal, { completeSimple: rec.complete, providerDefaults: {}, isCurrent: request.isCurrent }),",
 		"				ground: () => Promise.resolve(emptyGround),",
-		"				createTracker: () => async () => { tracks++; return undefined; },",
+		"				createTracker: () => async (input: { plan: { graphId: string; issues: { nodeId: string }[]; subIssues: { nodeId: string; step: number }[] } }) => {",
+		"					tracks++;",
+		"					const ref = (id: string) => ({ id, identifier: 'T-' + id, url: 'https://linear.app/t/issue/' + id, title: id });",
+		"					const nodes: Record<string, unknown> = {};",
+		"					const steps: Record<string, unknown> = {};",
+		"					for (const issue of input.plan.issues) nodes[issue.nodeId] = ref(issue.nodeId);",
+		"					for (const sub of input.plan.subIssues) steps[sub.nodeId + '.' + sub.step] = ref(sub.nodeId + '-' + sub.step);",
+		"					return { graphId: input.plan.graphId, status: 'complete', linear: { nodes, steps }, notion: { nodes: {}, steps: {} }, errors: [], updatedAt: 1 };",
+		"				},",
 		"				progress: (entry: ProgressEvent) => {",
 		"					events.push(entry);",
 		"					if (onEvent) onEvent(entry);",
@@ -770,6 +778,7 @@ function childLifetimeSource(
 		"	await fireThrough(25000);",
 		"	const pending: unknown = await pendingPromise;",
 		"	check(customTypeOf(pending) === 'ultrathink-pending', 'expected the real pending handoff at 25000ms');",
+		"	check(contentOf(pending) === GATE_HOLD, 'expected the gate stop-and-confirm hold at the handoff, not a turn-starting advisory');",
 		"	check(nativeCalls === 1, 'expected one pending native call at handoff, saw ' + nativeCalls);",
 		"	check(capturedSignal !== undefined && !capturedSignal.aborted, 'flight aborted at the handoff');",
 		"	await fireThrough(600001);",

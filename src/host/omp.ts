@@ -4,10 +4,16 @@
  * Omp extension. Planning runs in-process on the session's own live model: each flight snapshots the whole live Model
  * once, and every stage completes through the host's `completeSimple` with the host registry's auth resolver
  * (UT-Planning-ModelSelection 1.0.0 §7-§8). omp caps every handler at 30s and drops late results, but the planner takes
- * minutes. So `before_agent_start` races the plan: a fast plan is returned inline; otherwise a pending note is injected
- * now and the plan is delivered later via `pi.sendMessage(..., { deliverAs: "aside" })`. The race only changes delivery;
- * each flight owns its own cancellation and outer time limit. A tool result that opens a PR for a planned session gets
- * an ultrathink-sync aside. `/ultrathink-<verb>` commands toggle control state or send one unplanned message.
+ * minutes. The cap (EXTENSION_HANDLER_TIMEOUT_MS = 30000 in the omp runner, omp 18.20.3) is paused while an extension
+ * UI dialog (`ctx.ui.confirm`/`select`/`input`/`editor`/`custom`) is open, and a returned `{message}` only adds to a turn
+ * that then starts: nothing `before_agent_start` returns can hold the turn. So with the CompletionGate on (default;
+ * `ULTRATHINK_GATE=off` opts out) the turn never starts on a partial plan. After `raceMs` the handler holds inside a
+ * confirm dialog, which pauses the cap, until the gate validated the whole plan (XML, graph, issue rows); a partial
+ * plan needs a yes. A host with no dialog (print, json, no UI) cannot hold past the cap, so the turn gets an explicit
+ * stop-and-confirm message and the plan follows as an `aside`. With the gate off the old race applies: a fast plan
+ * inline, otherwise a pending note and a later `aside`. Each flight owns its own cancellation and outer time limit. A
+ * tool result that opens a PR for a planned session gets an ultrathink-sync aside. `/ultrathink-<verb>` commands
+ * toggle control state or send one unplanned message.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -118,7 +124,13 @@ import {
 	SHIP_TYPE,
 	SYNC_TYPE,
 } from "./omp-render.ts";
+import {
+	CompletionGate,
+	DEFAULT_GATE_INACTIVITY_MS,
+	type GateExpected,
+} from "./completion-gate.ts";
 import { resolveStateDir } from "./paths.ts";
+import type { PrdOutcome } from "../think/tot/stage.ts";
 import { planPrompt, wouldSkipPlanning, type PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 import { toActivityNotice } from "./activity-notice.ts";
@@ -178,6 +190,8 @@ interface ExtensionUI {
 		options?: { placement?: "aboveEditor" | "belowEditor" },
 	): void;
 	notify?(message: string, type?: "info" | "warning" | "error"): void;
+	/** Modal yes/no; omp pauses the handler's 30s cap while it is open. The signal dismisses it. */
+	confirm?(title: string, message: string, options?: { signal?: AbortSignal }): Promise<boolean>;
 	/**
 	 * Structural `ui.custom`: public factory order tui/theme/keybindings/done with optional signal.
 	 * Absent on non-TUI/RPC hosts. No host runtime import: the dashboard component shape is structural.
@@ -352,6 +366,8 @@ export interface OmpPlanRequest {
 export interface OmpPlan {
 	context: string;
 	view?: PlanView;
+	/** Tree-of-Thought PRD outcome the completion gate reads; absent when the stage did not run. */
+	prd?: PrdOutcome;
 	/** The safe selection record (§9) for display and `/ultrathink-status`; never the Model. */
 	modelResolution?: ModelResolution;
 	/** Stable skip code when nothing was planned, including an unresolved selection. */
@@ -400,6 +416,18 @@ type McpState = NonNullable<BarState["mcp"]>;
 
 export const PENDING =
 	"Ultrathink is still planning this prompt. If planning finishes while this request is still current, its result arrives as a separate message at a subsequent step boundary. Until then, read and investigate only: no edits and no mutating commands. If a note says planning produced nothing, proceed with the user's request as written.";
+
+/** Gate hold for a host that cannot hold the turn (no dialog): the strongest thing a handler can return is an explicit stop-and-confirm. */
+export const GATE_HOLD =
+	"STOP. Ultrathink has not finished planning this prompt, so this session is on hold. Do not call any tool, edit any file or run any command, and do not act on the request. Tell the user that planning is still running and that the complete plan (uplifted prompt, graph of thought and issues) arrives as a separate message when it is done; they can run /ultrathink-quick <message> to continue without a plan. Then wait for that message.";
+
+/** Gate hold for a finished plan that is incomplete (`usable`) or unusable; `detail` says what is wrong. */
+export const gateHoldPartial = (detail: string, usable: boolean): string =>
+	`STOP. Ultrathink finished planning but the plan is ${usable ? "incomplete" : "unusable"}: ${detail}. Nothing from it was applied. Do not call any tool, edit any file or run any command, and do not act on the request. Ask the user to confirm: replying "proceed" continues ${usable ? "with the incomplete plan" : "without a plan"}, resending the prompt plans again.`;
+
+/** The inactivity watchdog ended planning: shown loudly, and the request continues as written. */
+export const gateStalled = (reason: string): string =>
+	`Ultrathink stopped planning: ${reason}. Continue with the user's request as written.`;
 
 export const NO_PLAN =
 	"Ultrathink planning produced no plan. Continue with the user's request as written.";
@@ -980,6 +1008,7 @@ function toOmpPlan(response: PlanResponse): OmpPlan {
 	return {
 		context: response.context,
 		...(response.view ? { view: response.view } : {}),
+		...(response.prd ? { prd: response.prd } : {}),
 		...(modelResolution ? { modelResolution } : {}),
 		...(response.skipped ? { skipped: response.skipped } : {}),
 		...(response.summary ? { summary: response.summary } : {}),
@@ -1409,6 +1438,14 @@ export function createOmpExtension(
 	options: {
 		plan?: OmpPlanner;
 		raceMs?: number;
+		/** CompletionGate settings. Absent fields read `ULTRATHINK_GATE`, `ULTRATHINK_GATE_INACTIVITY_MS` and `ULTRATHINK_GATE_ALLOW_PARTIAL`. */
+		gate?: {
+			enabled?: boolean;
+			inactivityMs?: number;
+			allowPartialSync?: boolean;
+			/** Watchdog timers; default the platform timers, apart from `timers` so the race and flight-limit timers stay the only ones armed there. */
+			timers?: TimerPort;
+		};
 		maxRunMs?: number;
 		now?: () => number;
 		/** Clock port for every timestamp and deadline read; defaults to the real clock. */
@@ -1445,6 +1482,29 @@ export function createOmpExtension(
 ): (pi: ExtensionAPI) => void {
 	const plan = options.plan ?? nativeEnginePlanner;
 	const raceMs = options.raceMs ?? 25_000;
+	/**
+	 * CompletionGate settings, read when a flight starts. On by default: `ULTRATHINK_GATE=off|0|false|no` opts out, the
+	 * `gate` option wins over the environment. `ULTRATHINK_GATE_INACTIVITY_MS` is the watchdog window (0 disables) and
+	 * `ULTRATHINK_GATE_ALLOW_PARTIAL=1` lets a partial plan start the session without a confirmation.
+	 */
+	const gateSettings = (): {
+		enabled: boolean;
+		inactivityMs: number;
+		allowPartialSync: boolean;
+	} => {
+		const env = environment.read();
+		const window = Number(env.ULTRATHINK_GATE_INACTIVITY_MS?.trim() || Number.NaN);
+		return {
+			enabled:
+				options.gate?.enabled ?? !/^(?:off|0|false|no)$/i.test(env.ULTRATHINK_GATE?.trim() ?? ""),
+			inactivityMs:
+				options.gate?.inactivityMs ??
+				(Number.isFinite(window) && window >= 0 ? window : DEFAULT_GATE_INACTIVITY_MS),
+			allowPartialSync:
+				options.gate?.allowPartialSync ??
+				/^(?:1|on|true|yes)$/i.test(env.ULTRATHINK_GATE_ALLOW_PARTIAL?.trim() ?? ""),
+		};
+	};
 	// 0 (the default) means no outer limit: no flight timer and no retry deadline.
 	const maxRunMs = options.maxRunMs ?? 0;
 	const clock = options.clock ?? SYSTEM_CLOCK;
@@ -1498,6 +1558,18 @@ export function createOmpExtension(
 			early?: { context: string };
 			/** The early context was delivered inline: settle sends the whole final plan as the aside, so the uplift is repeated there. */
 			earlyDelivered?: boolean;
+			/** The completion gate guarding this flight; absent when the gate is off, which keeps the old race. */
+			gate?: CompletionGate;
+			/** Tracker rows are expected in the plan (tracking on and a tracker configured when the flight launched). */
+			tracked?: boolean;
+			/** The no-plan or stalled note was already delivered inline for this flight. */
+			noticed?: boolean;
+			/** The turn was held with a stop-and-confirm message: the next explicit "proceed" releases it. */
+			held?: "partial" | "invalid";
+			/** The Tree-of-Thought PRD outcome of the settled plan; it makes the gate wait for every PRD to be delivered. */
+			prd?: PrdOutcome;
+			/** What the gate released for this flight; kept so a host re-run of the same submission gets the same plan. */
+			releasedText?: string;
 			/** Start order; only the latest flight writes to the bar store. */
 			generation: number;
 			settled: boolean;
@@ -2517,11 +2589,103 @@ export function createOmpExtension(
 			);
 		}
 
+		/** The counts a complete plan must reach, from the plan view the planner returned; none without one. */
+		const gateExpected = (flight: Flight): GateExpected => {
+			const nodes = flight.view?.nodes;
+			const prds = flight.prd ? { prds: flight.prd.manifest.total } : {};
+			if (!nodes || nodes.length === 0) return prds;
+			return {
+				...prds,
+				nodes: nodes.length,
+				...(flight.tracked
+					? {
+							issues: nodes.length,
+							subIssues: nodes.reduce((total, node) => total + node.steps.length, 0),
+						}
+					: {}),
+			};
+		};
+
+		/** Whether this flight's plan is expected to carry tracker rows: tracking on and a tracker configured. */
+		const trackedOf = (
+			config: UltrathinkConfig | undefined,
+			control: ControlState | undefined,
+		): boolean =>
+			config !== undefined &&
+			(control?.trackEnabled ?? config.track.enabled) &&
+			environment.read().ULTRATHINK_TRACK?.trim() !== "0" &&
+			(config.linear.team.trim() !== "" || config.notion.dataSourceUrl.trim() !== "");
+
+		/**
+		 * What a gated flight may put in front of the model right now. `plan`: the gate released the whole plan (once;
+		 * the text is kept so a host re-run of the submission gets the same one). `hold`: a finished plan that is
+		 * incomplete or unusable and waits for a confirmation, with nothing applied. `notice`: planning failed or
+		 * stalled and the request continues as written, loudly. `none`: nothing to inject.
+		 */
+		type GateDelivery =
+			| { kind: "plan"; text: string }
+			| { kind: "hold"; text: string }
+			| { kind: "notice"; text: string }
+			| { kind: "none" };
+		const gateDelivery = (
+			flight: Flight,
+			gate: CompletionGate,
+			confirmed: boolean,
+		): GateDelivery => {
+			if (flight.releasedText !== undefined) return { kind: "plan", text: flight.releasedText };
+			if (gate.state === "failed_or_cancelled") {
+				if (gate.verdict) {
+					// A plan was produced but is unusable (for example cut off): it is never injected. Starting the
+					// session without it needs the user's confirmation.
+					if (confirmed) {
+						flight.held = undefined;
+						return { kind: "none" };
+					}
+					flight.held = "invalid";
+					return { kind: "hold", text: gateHoldPartial(gate.reason, false) };
+				}
+				if (flight.cancelled) return { kind: "none" };
+				if (gate.stalled) return { kind: "notice", text: gateStalled(gate.reason) };
+				return flight.timedOut ? { kind: "notice", text: NO_PLAN } : { kind: "none" };
+			}
+			if (gate.state !== "ready" && gate.state !== "partial_failure") return { kind: "none" };
+			const released = gate.release({ confirmPartial: confirmed });
+			if (released.ok) {
+				flight.held = undefined;
+				flight.releasedText = released.text;
+				return { kind: "plan", text: released.text };
+			}
+			if (released.reason === "needs_confirmation") {
+				flight.held = "partial";
+				return { kind: "hold", text: gateHoldPartial(released.detail, true) };
+			}
+			return { kind: "none" };
+		};
+
 		/** Delivery once the plan settles: only a still-current flight on an unchanged live model shows or sends anything. */
 		const settle = async (flight: Flight, result: OmpPlan): Promise<void> => {
 			flight.settled = true;
 			flight.content = result?.context ?? "";
 			flight.view = result?.view;
+			flight.prd = result?.prd;
+			const gate = flight.gate;
+			if (gate?.state === "generating") {
+				if (flight.content)
+					gate.complete({
+						text: flight.content,
+						expected: gateExpected(flight),
+						...(flight.prd ? { prd: flight.prd.manifest, prdSync: flight.prd.sync } : {}),
+						...(flight.view?.source === "fallback"
+							? { degraded: "the plan fell back to the built-in template instead of the model" }
+							: {}),
+					});
+				else
+					gate.fail(
+						flight.cancelled
+							? "cancelled"
+							: (result?.skipped ?? flight.endDetail ?? "the planner produced no plan"),
+					);
+			}
 			if (!current(flight)) return;
 			if (result?.modelResolution) observe(flight.sessionId, result.modelResolution);
 			barWrite(flight.generation, () => {
@@ -2530,20 +2694,36 @@ export function createOmpExtension(
 			});
 			barWrite(flight.generation, refreshMcp);
 			if (!flight.deferred) return;
-			// After an inline uplift the model is holding for the rest of the plan, so even an empty final plan sends one aside.
+			// With the gate on, the aside carries only what the gate releases: a partial or unusable plan is shown, never sent.
+			let body = flight.content || (flight.earlyDelivered ? EARLY_RELEASE : NO_PLAN);
+			if (gate) {
+				const delivery = gateDelivery(flight, gate, false);
+				if (delivery.kind === "hold") {
+					barWrite(flight.generation, () => store.skipped("plan incomplete", now()));
+					guard(() => flight.ctx?.ui?.notify?.(delivery.text, "warning"));
+					// Display only: the transcript shows the held plan, and no turn starts on it.
+					guard(() =>
+						pi.sendMessage(
+							{
+								customType: PENDING_TYPE,
+								content: delivery.text,
+								display: true,
+								attribution: "agent",
+							},
+							{ triggerTurn: false },
+						),
+					);
+					return;
+				}
+				body = delivery.kind === "none" ? NO_PLAN : delivery.text;
+			}
 			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A rejected
 			// send marks the bar aside-failed and keeps `flight.content`, so the plan is not lost.
 			try {
 				await Promise.resolve(
-					pi.sendMessage(
-						planMessage(
-							flight.content || (flight.earlyDelivered ? EARLY_RELEASE : NO_PLAN),
-							flight.view,
-						),
-						{
-							deliverAs: "aside",
-						},
-					),
+					pi.sendMessage(planMessage(body, flight.view), {
+						deliverAs: "aside",
+					}),
 				);
 			} catch {
 				// reason: a refused aside must never break the host; it is shown as aside-failed below
@@ -2560,7 +2740,12 @@ export function createOmpExtension(
 			request: OmpPlanRequest,
 			submission: number,
 			ctx: ExtensionContext | undefined,
-			identity: { live?: LiveTarget; intent?: FlightIntent; selectors?: TrackedQuery },
+			identity: {
+				live?: LiveTarget;
+				intent?: FlightIntent;
+				selectors?: TrackedQuery;
+				tracked?: boolean;
+			},
 		): Flight => {
 			const previous = flights.get(request.sessionId);
 			const generation = ++latestGeneration;
@@ -2591,6 +2776,27 @@ export function createOmpExtension(
 				timedOut: false,
 				content: "",
 			};
+			const gating = gateSettings();
+			if (gating.enabled) {
+				flight.gate = new CompletionGate({
+					inactivityMs: gating.inactivityMs,
+					allowPartialSync: gating.allowPartialSync,
+					timers: options.gate?.timers ?? platformTimers,
+					// The watchdog is loud: the planner is stopped, the user sees why, and nothing is applied silently.
+					onStall: (reason) => {
+						flight.timedOut = true;
+						guard(() => flight.finishFlight({ context: "" }));
+						guard(() => flight.controller.abort());
+						guard(() => flight.ctx?.ui?.notify?.(gateStalled(reason), "error"));
+						guard(() =>
+							pi.sendMessage(
+								{ content: gateStalled(reason), display: true },
+								{ triggerTurn: false },
+							),
+						);
+					},
+				});
+			}
 			// Subscribed before the callback boundary below: cancelling the previous flight runs its abort
 			// listeners synchronously, and a reentrant cancellation of this flight still settles through the
 			// existing outcome with no second subscription.
@@ -2609,6 +2815,7 @@ export function createOmpExtension(
 			guard(() => store.begin(now()));
 			const onEvent = (event: ProgressEvent) =>
 				guard(() => {
+					flight.gate?.touch();
 					if (flight.timedOut || flight.settled || !owns(flight)) return;
 					if ((event.type === "begin" || event.type === "end") && event.modelResolution)
 						observe(flight.sessionId, event.modelResolution);
@@ -2653,6 +2860,7 @@ export function createOmpExtension(
 						isCurrent: () => !flight.timedOut && !flight.settled && current(flight),
 						onUplift: (handoff) => {
 							flight.early = handoff;
+							flight.gate?.touch();
 						},
 					},
 					flight.controller.signal,
@@ -2698,6 +2906,7 @@ export function createOmpExtension(
 				live: snapshot,
 				intent: captured.intent,
 				selectors,
+				tracked: trackedOf(captured.config, captured.control),
 			});
 		};
 
@@ -2813,6 +3022,98 @@ export function createOmpExtension(
 			return start === undefined ? false : autoRunSpawn(start, prompt, ctx);
 		};
 
+		/** A reply that explicitly confirms a held plan: the user's own word, not a model-classified ack. */
+		const PROCEED_RE = /^(?:proceed|yes|go ahead|continue|confirm)(?: anyway)?\s*[.!]?$/i;
+		/** A dialog that closes sooner than a person could answer is a host with no real dialog, not an answer. */
+		const MIN_DIALOG_MS = 250;
+		const heldMessage = (content: string): CustomMessage => ({
+			customType: PENDING_TYPE,
+			content,
+			display: true,
+			attribution: "agent",
+		});
+		/** Whether this host shows a modal dialog; omp pauses the handler's 30s cap while one is open. */
+		const canDialog = (ctx: ExtensionContext | undefined): boolean =>
+			ctx?.hasUI === true &&
+			(ctx.mode === "tui" || ctx.mode === "rpc") &&
+			typeof ctx.ui?.confirm === "function";
+
+		/**
+		 * Holds the handler for the unfinished plan inside a confirm dialog. The dialog pauses omp's handler cap, so the
+		 * wait can last as long as the planner needs; the plan settling dismisses it. `start`: the user chose to go on
+		 * without the plan. `unsupported`: the dialog closed at once, so this host cannot hold past the cap.
+		 */
+		const waitInDialog = async (
+			flight: Flight,
+			ctx: ExtensionContext,
+		): Promise<"settled" | "start" | "unsupported"> => {
+			for (;;) {
+				const dialog = new AbortController();
+				const shownAt = now();
+				let answer: boolean | undefined;
+				const asked = Promise.resolve(
+					ctx.ui?.confirm?.(
+						"Ultrathink is still planning",
+						"The session starts when the complete plan (prompt, graph of thought, issues) is ready. Start now without it?",
+						{ signal: dialog.signal },
+					),
+				).then(
+					(value) => {
+						answer = value;
+						return "answered" as const;
+					},
+					() => "answered" as const,
+				);
+				const first = await Promise.race([flight.result.then(() => "settled" as const), asked]);
+				if (first === "settled") {
+					dialog.abort();
+					return "settled";
+				}
+				if (answer === true) return "start";
+				if (now() - shownAt < MIN_DIALOG_MS) return "unsupported";
+			}
+		};
+
+		/** What the model sees for a settled gated flight; a plan that is not whole waits for the user's yes. */
+		const deliverGated = async (
+			flight: Flight,
+			gate: CompletionGate,
+			ctx: ExtensionContext,
+		): Promise<BeforeAgentStartResult | undefined> => {
+			let delivery = gateDelivery(flight, gate, false);
+			if (delivery.kind === "hold" && canDialog(ctx)) {
+				const usable = flight.held === "partial";
+				const yes = await Promise.resolve(
+					ctx.ui?.confirm?.(
+						usable ? "Ultrathink plan is incomplete" : "Ultrathink plan is unusable",
+						`${gate.verdict?.problems.map((problem) => problem.detail).join("; ") ?? gate.reason}. ${
+							usable
+								? "Start the session with the incomplete plan?"
+								: "Start the session without a plan?"
+						}`,
+					),
+				).catch(() => false);
+				if (flight.cancelled) return;
+				if (yes === true) delivery = gateDelivery(flight, gate, true);
+			}
+			switch (delivery.kind) {
+				case "plan":
+					barWrite(flight.generation, () => store.delivered("inline", flight.view, now()));
+					return { message: planMessage(delivery.text, flight.view) };
+				case "hold":
+					barWrite(flight.generation, () => store.skipped("plan incomplete", now()));
+					guard(() => ctx.ui?.notify?.(delivery.text, "warning"));
+					return { message: heldMessage(delivery.text) };
+				case "notice":
+					// One loud note per flight: a host re-running the same submission is not told twice.
+					if (flight.noticed) return undefined;
+					flight.noticed = true;
+					return { message: planMessage(delivery.text) };
+				case "none":
+					return undefined;
+			}
+		};
+
 		pi.on("before_agent_start", async (event, ctx) => {
 			scheduleMount();
 			if (isSubagentSession(ctx, exists)) return;
@@ -2876,6 +3177,20 @@ export function createOmpExtension(
 					)
 				)
 					return;
+				// A held plan is released only by the user's explicit word; anything else is a new prompt below.
+				if (
+					existing?.gate &&
+					existing.held &&
+					existing.settled &&
+					!existing.cancelled &&
+					existing.cwd === cwd &&
+					PROCEED_RE.test(prompt.trim())
+				) {
+					const delivery = gateDelivery(existing, existing.gate, true);
+					if (delivery.kind !== "plan") return;
+					barWrite(existing.generation, () => store.delivered("inline", existing.view, now()));
+					return { message: planMessage(delivery.text, existing.view) };
+				}
 				let same =
 					existing?.submission === submission && existing.prompt === prompt && existing.cwd === cwd
 						? existing
@@ -2895,9 +3210,13 @@ export function createOmpExtension(
 					}
 				}
 				if (same?.deferred)
-					return same.settled || same.earlyDelivered ? undefined : { message: pendingMessage() };
-				if (same?.settled)
+					return same.settled || same.earlyDelivered
+						? undefined
+						: { message: same.gate ? heldMessage(GATE_HOLD) : pendingMessage() };
+				if (same?.settled) {
+					if (same.gate) return await deliverGated(same, same.gate, ctx);
 					return same.content ? { message: planMessage(same.content, same.view) } : undefined;
+				}
 				// The race is armed before the flight starts: launch() runs the planner's synchronous prefix, which must
 				// never be able to delay arming the delivery timer.
 				const timeout = Promise.withResolvers<null>();
@@ -2925,6 +3244,25 @@ export function createOmpExtension(
 					timers.clearTimeout(timer);
 				}
 				if (flight.cancelled) return;
+				const gate = flight.gate;
+				if (gate) {
+					// The turn must not start on a partial plan: wait for the whole one (dialog) or hold explicitly.
+					if (result === null && !flight.settled) {
+						const waited = canDialog(ctx) ? await waitInDialog(flight, ctx) : "unsupported";
+						if (flight.cancelled) return;
+						if (waited === "start") {
+							cancel(flight, "cancelled: the user started without the plan");
+							return;
+						}
+						if (waited === "unsupported" && !flight.settled) {
+							// No dialog: the 30s cap cannot be held past. The plan then arrives as the one aside.
+							flight.deferred = true;
+							barWrite(flight.generation, () => store.pending());
+							return { message: heldMessage(GATE_HOLD) };
+						}
+					}
+					return await deliverGated(flight, gate, ctx);
+				}
 				if (result === null) {
 					// Delivery only switches to pending and aside; the flight keeps running under its own lifetime.
 					flight.deferred = true;

@@ -53,7 +53,12 @@ import {
 	type ThinkReasoningCeiling,
 } from "./think/types.ts";
 import { type HostId, isHostId } from "./host/types.ts";
-import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
+import {
+	type LegacyRoute,
+	ROUTE_DEFAULT_MODELS,
+	TOT_BREAKER_THRESHOLD,
+	TOT_PRD_CANDIDATES,
+} from "./route-defaults.ts";
 import { readJson } from "./shared.ts";
 
 interface ClaudeConfig {
@@ -200,6 +205,33 @@ export interface HostModelOverride {
 }
 
 /**
+ * Cheapest-model routing for the Tree-of-Thought PRD stage (`models.tot`). `model` is the user's explicit override ("" =
+ * none). `candidates` maps a provider family to its ordered cheapest-first model ids and doubles as the allowlist; the
+ * built-in lists come from `TOT_PRD_CANDIDATES`. `breakerThreshold` is the number of consecutive cheap-model failures
+ * after which the whole stage runs on the selected model. GoT and CoT never read any of it.
+ */
+interface TotModelsConfig {
+	model: string;
+	candidates: Record<string, readonly string[]>;
+	breakerThreshold: number;
+}
+
+/**
+ * The Tree-of-Thought PRD stage (`think.tot`): one PRD per CoT Sub Issue, written after the tracker rows exist and synced
+ * into them. `enabled` left unset follows tracking (on when tracking produced rows, so off when tracking is off); an
+ * explicit boolean wins. `concurrency` is the PRDs written at once (1-16); `maxPrdChars` and `maxPrdLines` bound one PRD.
+ */
+interface TotConfig {
+	enabled?: boolean;
+	concurrency: number;
+	maxPrdChars: number;
+	maxPrdLines: number;
+}
+
+/** `think` with the Tree-of-Thought stage settings; `ThinkConfig` stays the GoT/CoT part every think stage reads. */
+type ThinkSettings = ThinkConfig & { tot: TotConfig };
+
+/**
  * Planning model selection (`models` in any config layer). `hosts` targets an existing host; `providerDefaults` maps an
  * exact credential provider id to the selector native Omp planning uses when the live model is unusable. Neither can
  * define endpoints, headers or credentials, and no legacy CLI route consumes `providerDefaults` (its eligible set is empty).
@@ -207,6 +239,7 @@ export interface HostModelOverride {
 interface ModelsConfig {
 	hosts: Partial<Record<HostId, HostModelOverride>>;
 	providerDefaults: Record<string, string>;
+	tot: TotModelsConfig;
 }
 
 /** Where an effective legacy route model came from: the route-default map, a nonblank file-layer pin, or a file-layer blank. */
@@ -217,7 +250,7 @@ export interface UltrathinkConfig {
 	claude: ClaudeConfig;
 	grok: GrokConfig;
 	hitl: HitlConfig;
-	think: ThinkConfig;
+	think: ThinkSettings;
 	notion: NotionConfig;
 	linear: LinearConfig;
 	track: TrackConfig;
@@ -255,6 +288,9 @@ const THINK_RESILIENCE_DEFAULTS: Pick<ThinkConfig, "fillRetries" | "repair"> = {
 	repair: true,
 };
 
+/** Defaults for `think.tot`; the limits mirror the PRD template's own (150 lines, 6000 characters) and 4 PRDs at a time. */
+const DEFAULT_TOT_CONFIG: TotConfig = { concurrency: 4, maxPrdChars: 6000, maxPrdLines: 150 };
+
 export function defaultConfig(): UltrathinkConfig {
 	return {
 		uplift: {
@@ -270,6 +306,7 @@ export function defaultConfig(): UltrathinkConfig {
 			engine: "auto",
 			reasoningCeiling: "inherit",
 			...THINK_RESILIENCE_DEFAULTS,
+			tot: { ...DEFAULT_TOT_CONFIG },
 		},
 		claude: { ...DEFAULT_CLAUDE_CONFIG },
 		grok: { ...DEFAULT_GROK_CONFIG, fallbackModels: [...DEFAULT_GROK_CONFIG.fallbackModels] },
@@ -288,7 +325,7 @@ export function defaultConfig(): UltrathinkConfig {
 		state: { ...DEFAULT_STATE_CONFIG },
 		pstack: { ...DEFAULT_PSTACK_CONFIG },
 		swarm: { ...DEFAULT_SWARM_CONFIG },
-		models: { hosts: {}, providerDefaults: providerDictionary({}) },
+		models: { hosts: {}, providerDefaults: providerDictionary({}), tot: defaultTotModels() },
 		modelProvenance: { claude: "route-default", grok: "route-default", muse: "route-default" },
 	};
 }
@@ -319,10 +356,28 @@ function mergeUplift(
 	};
 }
 
+/** A positive integer within [min, max] as written; anything else keeps the lower value. */
+function boundedInt(value: unknown, min: number, max: number, fallback: number): number {
+	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
+		? value
+		: fallback;
+}
+
+function mergeTot(tot: Record<string, unknown> | undefined, defaults: TotConfig): TotConfig {
+	if (!tot) return defaults;
+	const enabled = typeof tot.enabled === "boolean" ? tot.enabled : defaults.enabled;
+	return {
+		...(enabled === undefined ? {} : { enabled }),
+		concurrency: boundedInt(tot.concurrency, 1, 16, defaults.concurrency),
+		maxPrdChars: boundedInt(tot.maxPrdChars, 500, 100_000, defaults.maxPrdChars),
+		maxPrdLines: boundedInt(tot.maxPrdLines, 20, 2000, defaults.maxPrdLines),
+	};
+}
+
 function mergeThink(
 	think: Record<string, unknown> | undefined,
-	defaults: ThinkConfig,
-): ThinkConfig {
+	defaults: ThinkSettings,
+): ThinkSettings {
 	if (!think) return defaults;
 	const minNodes =
 		typeof think.minNodes === "number" && Number.isInteger(think.minNodes) && think.minNodes >= 1
@@ -355,6 +410,7 @@ function mergeThink(
 			: defaults.reasoningCeiling,
 		fillRetries,
 		repair,
+		tot: mergeTot(asRecord(think.tot), defaults.tot),
 	};
 }
 
@@ -513,6 +569,66 @@ function providerDictionary(entries: Readonly<Record<string, string>>): Record<s
 	return out;
 }
 
+/** A prototype-free copy of a ToT candidate map, each list copied so no layer shares a mutable array. */
+function totCandidates(
+	entries: Readonly<Record<string, readonly string[]>>,
+): Record<string, readonly string[]> {
+	const out = Object.create(null) as Record<string, readonly string[]>;
+	for (const [key, value] of Object.entries(entries)) out[key] = [...value];
+	return out;
+}
+
+function defaultTotModels(): TotModelsConfig {
+	return {
+		model: "",
+		candidates: totCandidates(TOT_PRD_CANDIDATES),
+		breakerThreshold: TOT_BREAKER_THRESHOLD,
+	};
+}
+
+/** A candidate list from a string or an array of strings: blanks, controls and repeats dropped; undefined for any other type. */
+function candidateIds(value: unknown): string[] | undefined {
+	const list: unknown[] | undefined =
+		typeof value === "string" ? [value] : Array.isArray(value) ? value : undefined;
+	if (list === undefined) return undefined;
+	const ids: string[] = [];
+	for (const item of list) {
+		const id = selectorField(item);
+		if (id && !hasControlCharacter(id) && !ids.includes(id)) ids.push(id);
+	}
+	return ids;
+}
+
+/**
+ * Per-entry merge of `models.tot`: a wrong type keeps the lower value, a blank `model` clears the override, a provider's
+ * list replaces the lower list and an empty list removes the provider; prototype keys and control characters are ignored.
+ */
+function mergeTotModels(
+	tot: Record<string, unknown> | undefined,
+	defaults: TotModelsConfig,
+): TotModelsConfig {
+	if (!tot) return defaults;
+	const model = selectorField(tot.model);
+	const candidates = totCandidates(defaults.candidates);
+	for (const [provider, list] of Object.entries(asRecord(tot.candidates) ?? {})) {
+		const key = provider.trim().toLowerCase();
+		if (!key || hasControlCharacter(key) || UNSAFE_DICTIONARY_KEYS.includes(key)) continue;
+		const ids = candidateIds(list);
+		if (ids === undefined) continue;
+		if (ids.length === 0) delete candidates[key];
+		else candidates[key] = ids;
+	}
+	const threshold = tot.breakerThreshold;
+	return {
+		model: model === undefined || hasControlCharacter(model) ? defaults.model : model,
+		candidates,
+		breakerThreshold:
+			typeof threshold === "number" && Number.isInteger(threshold) && threshold >= 1
+				? threshold
+				: defaults.breakerThreshold,
+	};
+}
+
 /**
  * Per-entry merge of `models` (D-05): a wrong type keeps the lower value, a blank host field clears it, a blank provider
  * default removes the lower selector (exposing the host-catalog tier), and unknown hosts, prototype keys and inherited fields are ignored.
@@ -542,7 +658,7 @@ function mergeModels(
 		if (value === "") delete providerDefaults[provider];
 		else if (value !== undefined) providerDefaults[provider] = value;
 	}
-	return { hosts, providerDefaults };
+	return { hosts, providerDefaults, tot: mergeTotModels(asRecord(models.tot), defaults.tot) };
 }
 
 /** What a layer leaves on a legacy route model's provenance; a blank clears Claude and Muse, Grok's non-empty merge ignores it. */

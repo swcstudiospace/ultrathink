@@ -16,7 +16,11 @@ import {
 } from "./config.ts";
 import type { DecisionsConfig } from "./decisions/types.ts";
 import { DEFAULT_GROK_CONFIG } from "./grok/types.ts";
-import { ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
+import {
+	ROUTE_DEFAULT_MODELS,
+	TOT_BREAKER_THRESHOLD,
+	TOT_PRD_CANDIDATES,
+} from "./route-defaults.ts";
 
 function tempConfigFile(content: unknown): { path: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-config-"));
@@ -2469,5 +2473,140 @@ describe("project files: tighten, fill and timers", () => {
 		);
 		expect(overridden.linear.team).toBe("User");
 		expect(overridden.notion.dataSourceUrl).toBe("collection://user");
+	});
+});
+
+describe("models.tot (cheapest-model routing for ToT)", () => {
+	test("defaults carry the built-in candidates, no override and the breaker threshold", () => {
+		const { tot } = defaultConfig().models;
+		expect(tot.model).toBe("");
+		expect(tot.breakerThreshold).toBe(TOT_BREAKER_THRESHOLD);
+		expect(Object.keys(tot.candidates).sort()).toEqual(Object.keys(TOT_PRD_CANDIDATES).sort());
+		expect(tot.candidates.anthropic).toEqual([ROUTE_DEFAULT_MODELS.claude]);
+	});
+
+	test("a config without models.tot keeps the defaults and never shares the frozen default arrays", () => {
+		const merged = mergeConfig({ models: { providerDefaults: { xai: "fast" } } }, defaultConfig());
+		expect(merged.models.tot).toEqual(defaultConfig().models.tot);
+		expect(Object.isFrozen(defaultConfig().models.tot.candidates.anthropic)).toBe(false);
+		expect(Object.isFrozen(TOT_PRD_CANDIDATES.anthropic)).toBe(true);
+	});
+
+	test("model is trimmed, a blank clears it, a wrong type or a control character keeps the lower value", () => {
+		const base = defaultConfig();
+		const pinned = mergeConfig({ models: { tot: { model: " cheap-1 " } } }, base);
+		expect(pinned.models.tot.model).toBe("cheap-1");
+		expect(mergeConfig({ models: { tot: { model: 7 } } }, pinned).models.tot.model).toBe("cheap-1");
+		expect(mergeConfig({ models: { tot: { model: "x\u001b" } } }, pinned).models.tot.model).toBe(
+			"cheap-1",
+		);
+		expect(mergeConfig({ models: { tot: { model: " " } } }, pinned).models.tot.model).toBe("");
+	});
+
+	test("a provider's candidates are replaced, deduplicated and cleaned; an empty list removes the provider", () => {
+		const base = defaultConfig();
+		const file: Record<string, unknown> = JSON.parse(
+			'{"models":{"tot":{"candidates":{"Anthropic":[" a-1 ","a-1","",4,"a-2"],"openai":"single","xai":[],"__proto__":["evil"],"cursor":5}}}}',
+		);
+		const merged = mergeConfig(file, base);
+		const { candidates } = merged.models.tot;
+		expect(candidates.anthropic).toEqual(["a-1", "a-2"]);
+		expect(candidates.openai).toEqual(["single"]);
+		expect(Object.hasOwn(candidates, "xai")).toBe(false);
+		expect(candidates.cursor).toEqual([...(TOT_PRD_CANDIDATES.cursor ?? [])]);
+		expect(Object.getPrototypeOf(candidates)).toBeNull();
+		expect(JSON.stringify(merged.models.tot)).not.toContain("evil");
+		expect(base.models.tot.candidates.anthropic).toEqual([ROUTE_DEFAULT_MODELS.claude]);
+	});
+
+	test("breakerThreshold accepts positive integers only", () => {
+		const base = defaultConfig();
+		expect(
+			mergeConfig({ models: { tot: { breakerThreshold: 5 } } }, base).models.tot.breakerThreshold,
+		).toBe(5);
+		for (const bad of [0, -1, 1.5, "3", null]) {
+			expect(
+				mergeConfig({ models: { tot: { breakerThreshold: bad } } }, base).models.tot
+					.breakerThreshold,
+			).toBe(TOT_BREAKER_THRESHOLD);
+		}
+	});
+
+	test("a later layer overrides only the fields it sets", () => {
+		const lower = mergeConfig(
+			{ models: { tot: { model: "lower", candidates: { openai: ["o-1"] } } } },
+			defaultConfig(),
+		);
+		const merged = mergeConfig({ models: { tot: { candidates: { xai: ["x-1"] } } } }, lower);
+		expect(merged.models.tot.model).toBe("lower");
+		expect(merged.models.tot.candidates.openai).toEqual(["o-1"]);
+		expect(merged.models.tot.candidates.xai).toEqual(["x-1"]);
+	});
+
+	test("a non-object models.tot is ignored", () => {
+		for (const tot of [null, [], "x", 1]) {
+			expect(mergeConfig({ models: { tot } }, defaultConfig()).models.tot).toEqual(
+				defaultConfig().models.tot,
+			);
+		}
+	});
+});
+
+describe("think.tot (Tree-of-Thought PRD stage)", () => {
+	test("defaults: follows tracking (no explicit enabled), 4 at a time, the template's own limits", () => {
+		const { tot } = defaultConfig().think;
+		expect(tot).toEqual({ concurrency: 4, maxPrdChars: 6000, maxPrdLines: 150 });
+		expect(Object.hasOwn(tot, "enabled")).toBe(false);
+		expect(defaultConfig().think.tot).not.toBe(defaultConfig().think.tot);
+	});
+
+	test("a config without think.tot keeps every default, and the GoT settings are untouched by it", () => {
+		const merged = mergeConfig({ think: { fillRetries: 4 } }, defaultConfig());
+		expect(merged.think.tot).toEqual(defaultConfig().think.tot);
+		expect(merged.think.fillRetries).toBe(4);
+	});
+
+	test("enabled takes a boolean only; the limits take integers within bounds, anything else keeps the lower value", () => {
+		const base = defaultConfig();
+		const set = mergeConfig(
+			{ think: { tot: { enabled: false, concurrency: 8, maxPrdChars: 9000, maxPrdLines: 200 } } },
+			base,
+		).think.tot;
+		expect(set).toEqual({ enabled: false, concurrency: 8, maxPrdChars: 9000, maxPrdLines: 200 });
+		for (const bad of [0, 17, 1.5, "4", null, Number.NaN]) {
+			expect(
+				mergeConfig({ think: { tot: { concurrency: bad } } }, base).think.tot.concurrency,
+			).toBe(4);
+		}
+		for (const bad of [10, 100_001, "6000", null]) {
+			expect(
+				mergeConfig({ think: { tot: { maxPrdChars: bad } } }, base).think.tot.maxPrdChars,
+			).toBe(6000);
+		}
+		for (const bad of [5, 2001, 0.5, "150"]) {
+			expect(
+				mergeConfig({ think: { tot: { maxPrdLines: bad } } }, base).think.tot.maxPrdLines,
+			).toBe(150);
+		}
+		expect(
+			Object.hasOwn(mergeConfig({ think: { tot: { enabled: "yes" } } }, base).think.tot, "enabled"),
+		).toBe(false);
+	});
+
+	test("a layer keeps what a lower layer set: enabled and limits merge per field", () => {
+		const lower = mergeConfig(
+			{ think: { tot: { enabled: true, concurrency: 2 } } },
+			defaultConfig(),
+		);
+		const merged = mergeConfig({ think: { tot: { maxPrdLines: 90 } } }, lower).think.tot;
+		expect(merged).toEqual({ enabled: true, concurrency: 2, maxPrdChars: 6000, maxPrdLines: 90 });
+	});
+
+	test("a non-object think.tot is ignored", () => {
+		for (const tot of [null, [], "x", 1]) {
+			expect(mergeConfig({ think: { tot } }, defaultConfig()).think.tot).toEqual(
+				defaultConfig().think.tot,
+			);
+		}
 	});
 });

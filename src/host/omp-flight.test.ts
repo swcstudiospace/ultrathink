@@ -7,8 +7,18 @@ import { join } from "node:path";
 import type { AssistantMessage, Effort } from "@oh-my-pi/pi-ai";
 import { readSession } from "../claude/state.ts";
 import type { GroundOutcome } from "../ragflow/types.ts";
-import { createNativeEngineSelector, EARLY_RELEASE, NO_PLAN } from "./omp.ts";
+import {
+	createNativeEngineSelector,
+	EARLY_RELEASE,
+	GATE_HOLD,
+	gateHoldPartial,
+	gateStalled,
+	NO_PLAN,
+	PENDING,
+} from "./omp.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
+import type { PrdOutcome } from "../think/tot/stage.ts";
+import type { PlanView } from "./view.ts";
 import type { ModelResolution } from "./engine.ts";
 import {
 	fakeModel,
@@ -105,12 +115,49 @@ describe("flight lifecycle (D-12)", () => {
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
 	});
 
-	test("an uplift final before the race ends goes inline now; the whole final plan follows as the one aside", async () => {
+	test("gate on: an uplift final before the race ends is NOT delivered early; the turn is held and only the complete plan follows", async () => {
 		const gate = Promise.withResolvers<string>();
 		const { run, sent } = setup((request) => {
 			request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
 			return gate.promise;
 		}, 1);
+		const held = await run();
+		expect(held).toEqual({
+			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
+		});
+		expect(JSON.stringify(held)).not.toContain("<UPLIFT>");
+		const finalPlan =
+			"<UPLIFT>u</UPLIFT>\n<CLARIFICATIONS>q</CLARIFICATIONS>\n<GRAPH_OF_THOUGHT>g</GRAPH_OF_THOUGHT>";
+		gate.resolve(finalPlan);
+		await flush();
+		expect(sent).toEqual([aside(finalPlan)]);
+	});
+
+	test("gate on: an early uplift whose final plan is empty ends with the no-plan note, never the early release", async () => {
+		const gate = Promise.withResolvers<string>();
+		const { run, sent } = setup((request) => {
+			request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
+			return gate.promise;
+		}, 1);
+		expect(await run()).toEqual({
+			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
+		});
+		gate.resolve("");
+		await flush();
+		expect(sent).toEqual([aside(NO_PLAN)]);
+		expect(sent).not.toEqual([aside(EARLY_RELEASE)]);
+	});
+
+	test("gate off: an uplift final before the race ends goes inline now; the whole final plan follows as the one aside", async () => {
+		const gate = Promise.withResolvers<string>();
+		const { run, sent } = setup(
+			(request) => {
+				request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
+				return gate.promise;
+			},
+			1,
+			{ gate: { enabled: false } },
+		);
 		expect(await run()).toEqual({
 			message: expect.objectContaining({
 				customType: "ultrathink-plan",
@@ -124,12 +171,16 @@ describe("flight lifecycle (D-12)", () => {
 		expect(sent).toEqual([aside(finalPlan)]);
 	});
 
-	test("an early uplift whose final plan is empty is released by one aside, never left holding", async () => {
+	test("gate off: an early uplift whose final plan is empty is released by one aside, never left holding", async () => {
 		const gate = Promise.withResolvers<string>();
-		const { run, sent } = setup((request) => {
-			request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
-			return gate.promise;
-		}, 1);
+		const { run, sent } = setup(
+			(request) => {
+				request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
+				return gate.promise;
+			},
+			1,
+			{ gate: { enabled: false } },
+		);
 		expect(await run()).toEqual({
 			message: expect.objectContaining({ customType: "ultrathink-plan" }),
 		});
@@ -137,6 +188,16 @@ describe("flight lifecycle (D-12)", () => {
 		await flush();
 		expect(sent).toEqual([aside(EARLY_RELEASE)]);
 		expect(sent).not.toEqual([aside(NO_PLAN)]);
+	});
+
+	test("ULTRATHINK_GATE=off in the environment restores the advisory race", async () => {
+		const gate = Promise.withResolvers<string>();
+		const { run } = setup(() => gate.promise, 1, {
+			env: { read: () => ({ ...process.env, ULTRATHINK_GATE: "off" }) },
+		});
+		expect(await run()).toEqual({
+			message: expect.objectContaining({ customType: "ultrathink-pending", content: PENDING }),
+		});
 	});
 
 	test("an activity card is delivered nextTurn with triggerTurn false, so it never steers a running turn or starts one; the aside still carries the plan", async () => {
@@ -1680,5 +1741,396 @@ describe("flight lifecycle (D-12)", () => {
 		expect(t.line()).not.toContain("delivered");
 		// The same submission's next before_agent_start still delivers the plan, inline.
 		expect(await run()).toMatchObject({ message: { content: "PLAN" } });
+	});
+});
+
+/** The Omp completion gate: the session never starts on a plan that is still generating, partial or cut off. */
+describe("completion gate (Omp before_agent_start)", () => {
+	const SPEC =
+		"<SYSTEM_ROLE>r</SYSTEM_ROLE><CONTEXT>c</CONTEXT><SCOPE>s</SCOPE><CONSTRAINTS>k</CONSTRAINTS><ACCEPTANCE_CRITERIA>a</ACCEPTANCE_CRITERIA>";
+	/** A complete plan context: a closed spec root with a graph of `nodes` nodes. */
+	const planXml = (nodes: number): string =>
+		`Ultrathink plan\n<BUILD_PROMPT>${SPEC}<GRAPH_OF_THOUGHT>${Array.from(
+			{ length: nodes },
+			(_, i) => `<NODE id="n${i + 1}" kind="task" title="t"></NODE>`,
+		).join("")}</GRAPH_OF_THOUGHT></BUILD_PROMPT>`;
+	const viewOf = (nodes: number): PlanView => ({
+		root: "BUILD_PROMPT",
+		source: "llm",
+		elapsedMs: 1,
+		nodes: Array.from({ length: nodes }, (_, i) => ({
+			id: `n${i + 1}`,
+			title: "t",
+			kind: "task",
+			wave: 0,
+			dependsOn: [],
+			steps: [],
+		})),
+		waves: [Array.from({ length: nodes }, (_, i) => `n${i + 1}`)],
+		clarifications: [],
+	});
+	const planMsg = (content: string, view?: PlanView) => ({
+		message: {
+			customType: "ultrathink-plan",
+			content,
+			display: true,
+			attribution: "agent",
+			...(view ? { details: view } : {}),
+		},
+	});
+	const aside = (content: string) => ({ ...planMsg(content), options: { deliverAs: "aside" } });
+
+	/** A planner whose every flight waits on its own gate and keeps its signal. */
+	function slow() {
+		const runs: Array<{ signal: AbortSignal; gate: PromiseWithResolvers<string | OmpPlan> }> = [];
+		const plan = (_request: OmpPlanRequest, signal: AbortSignal) => {
+			const gate = Promise.withResolvers<string | OmpPlan>();
+			runs.push({ signal, gate });
+			return gate.promise;
+		};
+		return { plan, runs };
+	}
+
+	/** A host with a real modal dialog: each `confirm` stays open until answered or its signal aborts. */
+	function dialogCtx(close: "open" | "at-once" = "open") {
+		const dialogs: Array<{
+			title: string;
+			message: string;
+			signal: AbortSignal | undefined;
+			answer: (value: boolean) => void;
+		}> = [];
+		const notices: Array<{ text: string; level: string | undefined }> = [];
+		const ui = {
+			confirm: (title: string, message: string, options?: { signal?: AbortSignal }) => {
+				if (close === "at-once") return Promise.resolve(false);
+				const { promise, resolve } = Promise.withResolvers<boolean>();
+				dialogs.push({ title, message, signal: options?.signal, answer: resolve });
+				options?.signal?.addEventListener("abort", () => resolve(false), { once: true });
+				return promise;
+			},
+			notify: (text: string, level?: string) => {
+				notices.push({ text, level });
+			},
+		};
+		return { ctx: { hasUI: true, mode: "tui", ui }, dialogs, notices };
+	}
+
+	async function until(condition: () => boolean): Promise<void> {
+		for (let i = 0; i < 500 && !condition(); i++) await Promise.resolve();
+		expect(condition()).toBe(true);
+	}
+
+	test("reproduces the old early start: a plan slower than the race gets an explicit hold, never an advisory, and nothing else until the plan is complete", async () => {
+		const planner = slow();
+		const manual = manualTimers();
+		const { run, sent } = setup(planner.plan, 1, { timers: manual.timers });
+		const running = run();
+		await manual.fire(1);
+		const held = await running;
+		expect(held).toEqual({
+			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
+		});
+		expect(GATE_HOLD).toStartWith("STOP.");
+		expect(GATE_HOLD).not.toContain("read and investigate");
+		expect(sent).toEqual([]);
+		// The planner keeps running; the complete plan is the one aside.
+		expect(planner.runs[0]?.signal.aborted).toBe(false);
+		planner.runs[0]?.gate.resolve(planXml(2));
+		await flush();
+		expect(sent).toEqual([aside(planXml(2))]);
+	});
+
+	test("with a dialog the handler returns nothing while the plan generates, however long that takes, then returns exactly the complete plan", async () => {
+		const planner = slow();
+		const manual = manualTimers();
+		const host = dialogCtx();
+		let clock = 0;
+		const { run, sent } = setup(
+			planner.plan,
+			1,
+			{ timers: manual.timers, now: () => clock },
+			host.ctx,
+		);
+		let returned = false;
+		const running = Promise.resolve(run()).then((value) => {
+			returned = true;
+			return value;
+		});
+		await manual.fire(1);
+		await until(() => host.dialogs.length === 1);
+		expect(host.dialogs[0]?.title).toContain("still planning");
+		// Five minutes of fake clock pass inside the held handler: still nothing returned, nothing sent.
+		clock += 5 * 60_000;
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(returned).toBe(false);
+		expect(sent).toEqual([]);
+		expect(planner.runs[0]?.signal.aborted).toBe(false);
+		clock += 10 * 60_000;
+		planner.runs[0]?.gate.resolve(planXml(2));
+		expect(await running).toEqual(planMsg(planXml(2)));
+		expect(host.dialogs[0]?.signal?.aborted).toBe(true);
+		expect(sent).toEqual([]);
+	});
+
+	test("answering the dialog yes starts without the plan and cancels the flight, which then delivers nothing", async () => {
+		const planner = slow();
+		const manual = manualTimers();
+		const host = dialogCtx();
+		const { run, sent } = setup(planner.plan, 1, { timers: manual.timers }, host.ctx);
+		const running = Promise.resolve(run());
+		await manual.fire(1);
+		await until(() => host.dialogs.length === 1);
+		host.dialogs[0]?.answer(true);
+		expect(await running).toBeUndefined();
+		expect(planner.runs[0]?.signal.aborted).toBe(true);
+		planner.runs[0]?.gate.resolve(planXml(2));
+		await flush();
+		expect(sent).toEqual([]);
+	});
+
+	test("a dialog that closes at once is not a hold: the host falls back to the explicit stop message", async () => {
+		const planner = slow();
+		const manual = manualTimers();
+		const host = dialogCtx("at-once");
+		const { run, sent } = setup(planner.plan, 1, { timers: manual.timers }, host.ctx);
+		const running = Promise.resolve(run());
+		await manual.fire(1);
+		expect(await running).toEqual({
+			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
+		});
+		planner.runs[0]?.gate.resolve(planXml(1));
+		await flush();
+		expect(sent).toEqual([aside(planXml(1))]);
+	});
+
+	test("a newer prompt cancels the held wait: the old handler returns nothing and the old dialog closes", async () => {
+		const planner = slow();
+		const manual = manualTimers();
+		const host = dialogCtx();
+		const h = setup(planner.plan, 1, { timers: manual.timers }, host.ctx);
+		const first = Promise.resolve(h.run("A"));
+		await manual.fire(1);
+		await until(() => host.dialogs.length === 1);
+		h.emit("turn_start");
+		const second = Promise.resolve(h.run("B"));
+		expect(await first).toBeUndefined();
+		expect(planner.runs[0]?.signal.aborted).toBe(true);
+		expect(host.dialogs[0]?.signal?.aborted).toBe(true);
+		await manual.fire(1);
+		await until(() => planner.runs.length === 2);
+		planner.runs[1]?.gate.resolve(planXml(1));
+		expect(await second).toEqual(planMsg(planXml(1)));
+		expect(h.sent).toEqual([]);
+	});
+
+	test("a failed planner fails open: the turn is not held for a plan that will never come", async () => {
+		const { run, sent } = setup(() => Promise.reject(new Error("provider down")), 1_000);
+		expect(await run()).toBeUndefined();
+		expect(sent).toEqual([]);
+	});
+
+	test("a partial plan (fewer nodes than planned) is held with nothing applied until the user answers proceed", async () => {
+		const view = viewOf(2);
+		const { run, sent, emit } = setup(async () => ({ context: planXml(1), view }), 1_000);
+		const held = await run();
+		expect(held).toEqual({
+			message: expect.objectContaining({
+				customType: "ultrathink-pending",
+				content: gateHoldPartial("1 of 2 nodes", true),
+			}),
+		});
+		expect(JSON.stringify(held)).not.toContain("BUILD_PROMPT");
+		// Anything but the explicit word is a new prompt, not a confirmation.
+		emit("turn_start");
+		expect(await run("proceed")).toEqual(planMsg(planXml(1), view));
+		expect(sent).toEqual([]);
+	});
+
+	test("allowPartialSync releases a partial plan without a confirmation", async () => {
+		const view = viewOf(2);
+		const { run } = setup(async () => ({ context: planXml(1), view }), 1_000, {
+			gate: { allowPartialSync: true },
+		});
+		expect(await run()).toEqual(planMsg(planXml(1), view));
+	});
+
+	describe("Tree-of-Thought PRDs feed the gate", () => {
+		const outcome = (
+			generated: number,
+			failed: number,
+			sync: { synced: number; pending: number; failed: number },
+		): PrdOutcome => ({
+			manifest: {
+				total: 3,
+				generated,
+				failed,
+				fallbacks: 0,
+				records: Array.from({ length: generated + failed }, (_, i) => ({
+					key: `n1.${i + 1}`,
+					hash: "h",
+					markdown: i < generated ? "prd" : "",
+					status: i < generated ? ("generated" as const) : ("failed" as const),
+					model: "m",
+					fallback: false,
+					attempts: 1,
+				})),
+			},
+			sync: { total: 3, ...sync },
+			model: { modelId: "m", provider: "p", source: "selected", reason: "test" },
+		});
+
+		test("every PRD generated and delivered: the plan is released", async () => {
+			const view = viewOf(2);
+			const prd = outcome(3, 0, { synced: 3, pending: 0, failed: 0 });
+			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000);
+			expect(await run()).toEqual(planMsg(planXml(2), view));
+		});
+
+		test("a failed PRD holds the session until the user confirms; nothing is applied meanwhile", async () => {
+			const view = viewOf(2);
+			const prd = outcome(2, 1, { synced: 2, pending: 0, failed: 1 });
+			const { run, sent, emit } = setup(async () => ({ context: planXml(2), view, prd }), 1_000);
+			const held = await run();
+			expect(held).toEqual({
+				message: expect.objectContaining({
+					customType: "ultrathink-pending",
+					content: expect.stringContaining("1 PRDs failed"),
+				}),
+			});
+			expect(JSON.stringify(held)).not.toContain("BUILD_PROMPT");
+			emit("turn_start");
+			expect(await run("proceed")).toEqual(planMsg(planXml(2), view));
+			expect(sent).toEqual([]);
+		});
+
+		test("a PRD still pending at the tracker holds the session too", async () => {
+			const view = viewOf(2);
+			const prd = outcome(3, 0, { synced: 2, pending: 1, failed: 0 });
+			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000);
+			expect(await run()).toEqual({
+				message: expect.objectContaining({
+					customType: "ultrathink-pending",
+					content: expect.stringContaining("1 PRDs are still waiting for the tracker"),
+				}),
+			});
+		});
+
+		test("allowPartialSync is the only way a failed PRD starts the session unconfirmed", async () => {
+			const view = viewOf(2);
+			const prd = outcome(2, 1, { synced: 2, pending: 0, failed: 1 });
+			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000, {
+				gate: { allowPartialSync: true },
+			});
+			expect(await run()).toEqual(planMsg(planXml(2), view));
+		});
+
+		test("a PRD outcome that finishes after a no-dialog hold is shown, never sent as a turn-starting aside", async () => {
+			const planner = slow();
+			const { run, sent } = setup(planner.plan, 1);
+			expect(await run()).toEqual({
+				message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
+			});
+			const prd = outcome(2, 1, { synced: 2, pending: 0, failed: 1 });
+			planner.runs[0]?.gate.resolve({ context: planXml(2), view: viewOf(2), prd });
+			await flush();
+			expect(sent).toHaveLength(1);
+			expect(sent[0]?.options).toEqual({ triggerTurn: false });
+			expect(sent[0]?.message).toMatchObject({ customType: "ultrathink-pending" });
+		});
+	});
+
+	test("a cut-off plan is unusable: it is never injected, and proceed starts the session without it", async () => {
+		const cut = planXml(2).replace("</BUILD_PROMPT>", "");
+		const { run, emit } = setup(async () => cut, 1_000, { gate: { allowPartialSync: true } });
+		const held = await run();
+		expect(held).toEqual({
+			message: expect.objectContaining({
+				customType: "ultrathink-pending",
+				content: gateHoldPartial("the uplift XML root is never closed", false),
+			}),
+		});
+		expect(JSON.stringify(held)).not.toContain("SYSTEM_ROLE");
+		emit("turn_start");
+		expect(await run("proceed")).toBeUndefined();
+	});
+
+	test("with a dialog a partial plan asks before it starts: no keeps the hold, yes releases the plan", async () => {
+		const view = viewOf(2);
+		const noHost = dialogCtx();
+		const declined = setup(async () => ({ context: planXml(1), view }), 1_000, {}, noHost.ctx);
+		const pending = Promise.resolve(declined.run());
+		await until(() => noHost.dialogs.length === 1);
+		expect(noHost.dialogs[0]?.title).toContain("incomplete");
+		noHost.dialogs[0]?.answer(false);
+		expect(await pending).toEqual({
+			message: expect.objectContaining({
+				customType: "ultrathink-pending",
+				content: gateHoldPartial("1 of 2 nodes", true),
+			}),
+		});
+
+		const yesHost = dialogCtx();
+		const accepted = setup(async () => ({ context: planXml(1), view }), 1_000, {}, yesHost.ctx);
+		const pendingYes = Promise.resolve(accepted.run());
+		await until(() => yesHost.dialogs.length === 1);
+		yesHost.dialogs[0]?.answer(true);
+		expect(await pendingYes).toEqual(planMsg(planXml(1), view));
+	});
+
+	test("a partial plan that finishes after a no-dialog hold is shown, never sent as a turn-starting aside", async () => {
+		const planner = slow();
+		const { run, sent } = setup(planner.plan, 1);
+		expect(await run()).toEqual({
+			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
+		});
+		planner.runs[0]?.gate.resolve({ context: planXml(1), view: viewOf(2) });
+		await flush();
+		expect(sent).toEqual([
+			{
+				message: {
+					customType: "ultrathink-pending",
+					content: gateHoldPartial("1 of 2 nodes", true),
+					display: true,
+					attribution: "agent",
+				},
+				options: { triggerTurn: false },
+			},
+		]);
+	});
+
+	test("the inactivity watchdog fails loudly: the planner is stopped, the user is told, and the held turn carries the reason", async () => {
+		const planner = slow();
+		const race = manualTimers();
+		const dog = manualTimers();
+		const host = dialogCtx();
+		const { run, sent } = setup(
+			planner.plan,
+			1,
+			{ timers: race.timers, gate: { timers: dog.timers } },
+			host.ctx,
+		);
+		const running = Promise.resolve(run());
+		await race.fire(1);
+		await until(() => host.dialogs.length === 1);
+		// The default window is 30 minutes of silence.
+		await dog.fire(30 * 60_000);
+		const reason = "planning stalled: no progress for 30 min";
+		expect(await running).toEqual(planMsg(gateStalled(reason)));
+		expect(planner.runs[0]?.signal.aborted).toBe(true);
+		expect(host.notices).toEqual([{ text: gateStalled(reason), level: "error" }]);
+		expect(sent).toEqual([
+			{
+				message: { content: gateStalled(reason), display: true },
+				options: { triggerTurn: false },
+			},
+		]);
+	});
+
+	test("a zero window disables the watchdog: no gate timer is armed", async () => {
+		const planner = slow();
+		const dog = manualTimers();
+		const { run } = setup(planner.plan, 1, { gate: { timers: dog.timers, inactivityMs: 0 } });
+		await run();
+		expect(dog.pending()).toBe(0);
 	});
 });

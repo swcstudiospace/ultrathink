@@ -29,6 +29,7 @@ import { planningTarget, type SkillInvocation } from "../uplift/skill.ts";
 import { fetchBrief } from "../substrate/brief.ts";
 import { clearPlanCarrier, writePlanCarrier } from "./carrier.ts";
 import { createGatewayTracker, trackCommand, type Tracker } from "../track/gateway.ts";
+import { createGatewayTot, type PrdOutcome, type TotSeams } from "../think/tot/stage.ts";
 import { detectHost } from "./detect.ts";
 import { type ModelResolution, type NativeEngineSelector, selectEngine } from "./engine.ts";
 import { resolveStateDir } from "./paths.ts";
@@ -64,6 +65,8 @@ export interface PlanResponse {
 	summary?: string;
 	/** Display-only projection for host UIs; the model reads `context`. */
 	view?: PlanView;
+	/** Tree-of-Thought PRD outcome (manifest and tracker sync) for the completion gate; absent when the stage did not run. */
+	prd?: PrdOutcome;
 	/**
 	 * Safe selection record (§6) on a planned prompt, a selection skip (unresolved, with the notice as `summary`) and any
 	 * skip, cancellation or error after selection; absent on deterministic skips decided before an engine was selected.
@@ -94,6 +97,8 @@ export interface PlanOptions {
 		config: UltrathinkConfig,
 		deps?: { log?: (message: string) => void },
 	) => Tracker | undefined;
+	/** Test seam for the Tree-of-Thought PRD stage (see HookDeps); defaults to the credentialed gateway callers when tracking runs on the default tracker. */
+	tot?: TotSeams;
 	/** Test seams for the lessons and RAGFlow lookups (see HookDeps); default to the configured Teachable Moments and RAGFlow. */
 	recall?: HookDeps["recall"];
 	ground?: HookDeps["ground"];
@@ -319,6 +324,12 @@ async function planPromptTurn(
 				summary: engine.notice ?? `Prompt Uplift skipped · ${resolution.label}`,
 			};
 		if (options.signal?.aborted) return skip("aborted", resolution);
+		// The PRD stage writes through the same trackers as the rows: an injected tracker (a test) keeps it off unless a seam is given.
+		const tot =
+			options.tot ??
+			(host !== "hermes" && !options.createTracker && trackingEnabled(config, control, env)
+				? createGatewayTot(config)
+				: undefined);
 		const result = await runPromptSubmit(
 			{
 				session_id: sessionId,
@@ -353,6 +364,7 @@ async function planPromptTurn(
 					host !== "hermes" && trackingEnabled(config, control, env)
 						? (options.createTracker ?? createGatewayTracker)(config, { log })
 						: undefined,
+				...(tot ? { tot } : {}),
 				trackingOff: trackingOff(config, control),
 				trackCommand: trackCommand(),
 				progress: options.progress,
@@ -400,6 +412,7 @@ async function planPromptTurn(
 			summary: result.output.systemMessage,
 			modelResolution: resolution,
 			...(result.record ? { view: buildPlanView(result.record, Date.now() - started) } : {}),
+			...(result.prd ? { prd: result.prd } : {}),
 		};
 	} catch (error) {
 		// Provider cancellation need not abort the caller's signal. Preserve it here with only the safe selection record.

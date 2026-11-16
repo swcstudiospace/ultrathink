@@ -488,6 +488,32 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		{ default: "warn" },
 	),
 
+	// Completion gate: src/host/omp.ts gateSettings (read when a flight starts) and src/host/completion-gate.ts.
+	// Readers trim and compare without case, so the exact-case checks of `enum` would misreport `OFF`: plain strings.
+	row(
+		"plugin",
+		"gate",
+		"string",
+		"ULTRATHINK_GATE",
+		"Omp completion gate, on by default: the session starts only once the whole plan validated. off, 0, false or no (any case) turns it off and restores the old race, where a plan that is not ready in time arrives later as an aside; any other value leaves it on.",
+		{ default: "on" },
+	),
+	row(
+		"plugin",
+		"gate",
+		"int",
+		"ULTRATHINK_GATE_INACTIVITY_MS",
+		"Window of the completion gate watchdog in milliseconds: the gate fails loudly when planning shows no progress for this long. 0 disables the watchdog; a value that is not a number from 0 up means 1800000; larger values are cut to 2147483647.",
+		{ default: "1800000", min: 0, max: 2147483647 },
+	),
+	row(
+		"plugin",
+		"gate",
+		"string",
+		"ULTRATHINK_GATE_ALLOW_PARTIAL",
+		"1, on, true or yes (any case) lets a partial plan start the Omp session without a confirmation; otherwise a partial plan needs an explicit yes. Off by default.",
+	),
+
 	// Hosted service (names and kinds only; the service keeps its own loader, services/ultrathink/config/config.ts).
 	row(
 		"service",

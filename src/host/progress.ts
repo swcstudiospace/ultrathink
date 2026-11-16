@@ -12,6 +12,7 @@ export type StageName =
 	| "clarify"
 	| "plan"
 	| "track"
+	| "tot"
 	| "state";
 
 /**
