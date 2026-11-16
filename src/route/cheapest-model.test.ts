@@ -51,7 +51,9 @@ describe("resolveToTModel: override precedence", () => {
 		const lower = configWith({ model: "pinned" });
 		const cleared = mergeConfig({ models: { tot: { model: "  " } } }, lower);
 		const choice = await resolveToTModel(context({ config: cleared }));
-		expect(choice.source).toBe("mapping");
+		expect(choice.reason.startsWith("blocked:")).toBe(true);
+		expect(choice.modelId).not.toBe("claude-opus-5-5");
+		expect(choice.source).not.toBe("selected");
 	});
 
 	test("an override is ignored, with a warning, on a host that cannot pick a model per call", async () => {
@@ -59,39 +61,38 @@ describe("resolveToTModel: override precedence", () => {
 			context({ host: "omp", config: configWith({ model: "my-cheap-model" }) }),
 		);
 		expect(choice).toMatchObject({ modelId: "claude-opus-5-5", source: "selected" });
+		expect(choice.reason).toContain("host limit");
 		expect(choice.reason).toContain("warning:");
 		expect(choice.reason).toContain("models.tot.model ignored");
 	});
 });
 
 describe("resolveToTModel: per-provider defaults", () => {
-	test("anthropic resolves to the Haiku-class default", async () => {
+	test("a placeholder candidate without prices is blocked, not substituted for the selected model", async () => {
 		const choice = await resolveToTModel(context());
-		expect(choice).toMatchObject({
-			modelId: ROUTE_DEFAULT_MODELS.claude,
-			provider: "anthropic",
-			source: "mapping",
-		});
+		expect(choice.reason.startsWith("blocked:")).toBe(true);
+		expect(choice.modelId).not.toBe("claude-opus-5-5");
+		expect(choice.modelId).not.toBe(ROUTE_DEFAULT_MODELS.claude);
+		expect(choice.source).not.toBe("selected");
 	});
 
-	test("openai, xai and a provider derived from the model id resolve through the mapping", async () => {
+	test("openai, xai and a derived provider are blocked when prices and an official alias are missing", async () => {
 		const openai = await resolveToTModel(
 			context({ selected: { modelId: "gpt-5", provider: "openai-codex" } }),
 		);
-		expect(openai).toMatchObject({ modelId: "gpt-5-mini", provider: "openai", source: "mapping" });
+		expect(openai.reason.startsWith("blocked:")).toBe(true);
+		expect(openai.modelId).not.toBe("gpt-5");
 		const xai = await resolveToTModel(context({ selected: { modelId: "grok-4" } }));
-		expect(xai).toMatchObject({
-			modelId: ROUTE_DEFAULT_MODELS.grok,
-			provider: "xai",
-			source: "mapping",
-		});
+		expect(xai.reason.startsWith("blocked:")).toBe(true);
+		expect(xai.modelId).not.toBe("grok-4");
 		const derived = await resolveToTModel(
 			context({ selected: { modelId: "anthropic/claude-sonnet-5-5" } }),
 		);
-		expect(derived).toMatchObject({ modelId: ROUTE_DEFAULT_MODELS.claude, provider: "anthropic" });
+		expect(derived.reason.startsWith("blocked:")).toBe(true);
+		expect(derived.modelId).not.toBe("anthropic/claude-sonnet-5-5");
 	});
 
-	test("cursor resolves through the mapping only when the injected capability says it can pick a model", async () => {
+	test("a host that can pick still does not guess a cursor placeholder", async () => {
 		const capable = await resolveToTModel(
 			context({
 				host: "cursor",
@@ -99,21 +100,25 @@ describe("resolveToTModel: per-provider defaults", () => {
 				selected: { modelId: "composer-1" },
 			}),
 		);
-		expect(capable).toMatchObject({ provider: "cursor", source: "mapping" });
+		expect(capable.reason.startsWith("blocked:")).toBe(true);
+		expect(capable.modelId).not.toBe("composer-1");
+		expect(capable.source).not.toBe("selected");
 	});
 
-	test("config candidates replace a provider's list and an empty list removes it", async () => {
+	test("a configured id without prices is not an official economy alias, and an empty list blocks", async () => {
 		const replaced = await resolveToTModel(
 			context({
 				config: configWith({ candidates: { anthropic: ["claude-haiku-x", "claude-haiku-y"] } }),
 			}),
 		);
-		expect(replaced.modelId).toBe("claude-haiku-x");
+		expect(replaced.reason.startsWith("blocked:")).toBe(true);
+		expect(replaced.modelId).not.toBe("claude-opus-5-5");
 		const removed = await resolveToTModel(
 			context({ config: configWith({ candidates: { anthropic: [] } }) }),
 		);
-		expect(removed).toMatchObject({ source: "selected", modelId: "claude-opus-5-5" });
-		expect(removed.reason).toContain("warning:");
+		expect(removed.reason.startsWith("blocked:")).toBe(true);
+		expect(removed.modelId).not.toBe("claude-opus-5-5");
+		expect(removed.source).not.toBe("selected");
 	});
 });
 
@@ -153,7 +158,7 @@ describe("resolveToTModel: host list", () => {
 		expect(choice).toMatchObject({ modelId: "claude-haiku-cheap", source: "host-list" });
 	});
 
-	test("a failing or empty host list falls through to the mapping", async () => {
+	test("a failing or empty host list does not guess an unpriced mapping id", async () => {
 		const throwing = await resolveToTModel(
 			context({
 				config: configWith(allow),
@@ -162,11 +167,13 @@ describe("resolveToTModel: host list", () => {
 				},
 			}),
 		);
-		expect(throwing).toMatchObject({ modelId: "claude-haiku-pricey", source: "mapping" });
+		expect(throwing.reason.startsWith("blocked:")).toBe(true);
+		expect(throwing.modelId).not.toBe("claude-opus-5-5");
 		const empty = await resolveToTModel(
 			context({ config: configWith(allow), listModels: async () => [] }),
 		);
-		expect(empty.source).toBe("mapping");
+		expect(empty.reason.startsWith("blocked:")).toBe(true);
+		expect(empty.source).not.toBe("selected");
 	});
 
 	test("a host-listed model that fails the smoke check is skipped for the next one", async () => {
@@ -185,61 +192,68 @@ describe("resolveToTModel: host list", () => {
 });
 
 describe("resolveToTModel: hosts and providers that cannot be routed", () => {
-	test("Cursor and Omp keep the selected model with a warning unless the capability says yes", async () => {
+	test("Cursor and Omp keep the selected model as a host limit unless they can pick per call", async () => {
 		for (const host of ["cursor", "omp"] as const) {
 			const choice = await resolveToTModel(context({ host }));
 			expect(choice).toMatchObject({ modelId: "claude-opus-5-5", source: "selected" });
 			expect(choice.reason).toStartWith("warning:");
+			expect(choice.reason).toContain("host limit");
 		}
 		const allowed = await resolveToTModel(context({ host: "omp", canPickModelPerCall: true }));
-		expect(allowed.source).toBe("mapping");
+		expect(allowed.reason.startsWith("blocked:")).toBe(true);
+		expect(allowed.modelId).not.toBe("claude-opus-5-5");
+		expect(allowed.source).not.toBe("selected");
 	});
-
 	test("a host that is not Cursor or Omp can be denied by the injected capability", async () => {
 		const choice = await resolveToTModel(context({ canPickModelPerCall: false }));
 		expect(choice.source).toBe("selected");
+		expect(choice.reason).toContain("host limit");
 		expect(choice.reason).toContain("cannot pick a model per call");
-	});
-
-	test("an unknown provider keeps the selected model with a warning", async () => {
-		const choice = await resolveToTModel(context({ selected: { modelId: "mystery-model-9" } }));
-		expect(choice).toMatchObject({
-			modelId: "mystery-model-9",
-			provider: "unknown",
-			source: "selected",
-		});
-		expect(choice.reason).toContain("warning:");
 	});
 });
 
 describe("resolveToTModel: suitability filter", () => {
-	test("an unavailable candidate is skipped and the selected model is the last resort", async () => {
+	const priced = {
+		config: configWith({ candidates: { anthropic: ["claude-haiku-cheap"] } }),
+		listModels: () => [
+			{
+				modelId: "claude-haiku-cheap",
+				provider: "anthropic",
+				inputPricePerMTok: 0.25,
+				outputPricePerMTok: 1,
+			},
+		],
+	};
+
+	test("an unavailable placeholder is blocked instead of substituting the selected model", async () => {
 		const choice = await resolveToTModel(context({ isAvailable: () => false }));
-		expect(choice).toMatchObject({ source: "selected", modelId: "claude-opus-5-5" });
-		expect(choice.reason).toContain("warning:");
+		expect(choice.reason.startsWith("blocked:")).toBe(true);
+		expect(choice.modelId).not.toBe("claude-opus-5-5");
+		expect(choice.source).not.toBe("selected");
 	});
 
-	test("the smoke check runs once per model through the shared cache", async () => {
+	test("the smoke check runs once per priced model through the shared cache", async () => {
 		const smokeCache = createSmokeCache();
 		let probes = 0;
 		const complete: CompleteFn = async () => {
 			probes++;
 			return "OK";
 		};
-		await resolveToTModel(context({ smokeCache, complete }));
-		await resolveToTModel(context({ smokeCache, complete }));
+		await resolveToTModel(context({ ...priced, smokeCache, complete }));
+		await resolveToTModel(context({ ...priced, smokeCache, complete }));
 		expect(probes).toBe(1);
 	});
 
-	test("a failed or blank smoke answer rules the candidate out", async () => {
+	test("a failed or blank smoke answer does not substitute the selected model", async () => {
 		for (const complete of [
 			(async () => {
 				throw new Error("401");
 			}) as CompleteFn,
 			(async () => "   ") as CompleteFn,
 		]) {
-			const choice = await resolveToTModel(context({ complete }));
-			expect(choice.source).toBe("selected");
+			const choice = await resolveToTModel(context({ ...priced, complete }));
+			expect(choice.reason.startsWith("blocked:")).toBe(true);
+			expect(choice.modelId).not.toBe("claude-opus-5-5");
 		}
 	});
 
@@ -249,6 +263,7 @@ describe("resolveToTModel: suitability filter", () => {
 		controller.abort();
 		await resolveToTModel(
 			context({
+				...priced,
 				smokeCache,
 				signal: controller.signal,
 				complete: async () => {
@@ -256,8 +271,8 @@ describe("resolveToTModel: suitability filter", () => {
 				},
 			}),
 		);
-		const again = await resolveToTModel(context({ smokeCache, complete: okComplete }));
-		expect(again.source).toBe("mapping");
+		const again = await resolveToTModel(context({ ...priced, smokeCache, complete: okComplete }));
+		expect(again).toMatchObject({ modelId: "claude-haiku-cheap", source: "host-list" });
 	});
 });
 
@@ -274,9 +289,10 @@ describe("decision log", () => {
 			host: "claude-code",
 			provider: "anthropic",
 			selected: "claude-opus-5-5",
-			chosen: ROUTE_DEFAULT_MODELS.claude,
+			chosen: "",
 			source: "mapping",
 		});
+		expect(String(record.reason).startsWith("blocked:")).toBe(true);
 		expect(Object.keys(record).some((key) => /key|token|secret/i.test(key))).toBe(false);
 	});
 
@@ -319,7 +335,7 @@ describe("GoT and CoT bypass guard", () => {
 	});
 });
 
-describe("createToTRouter: per-item fallback and circuit breaker", () => {
+describe("createToTRouter: cheap retry without promotion", () => {
 	const choice = {
 		modelId: "cheap",
 		provider: "anthropic",
@@ -348,64 +364,54 @@ describe("createToTRouter: per-item fallback and circuit breaker", () => {
 		expect(seen).toEqual(["cheap"]);
 	});
 
-	test("one failing item retries on the selected model without tripping the breaker", async () => {
+	test("one cheap failure retries the same model once and does not call the selected model", async () => {
+		const seen: string[] = [];
 		let first = true;
 		const r = router(async ({ modelId }) => {
+			seen.push(modelId);
 			if (modelId === "cheap" && first) {
 				first = false;
 				throw new Error("overloaded");
 			}
 			return modelId;
 		});
-		const failed = await r.complete(input);
-		expect(failed).toEqual({ text: "selected", modelId: "selected", fallback: true, attempts: 2 });
+		const recovered = await r.complete(input);
+		expect(recovered).toEqual({ text: "cheap", modelId: "cheap", fallback: false, attempts: 2 });
+		expect(seen).toEqual(["cheap", "cheap"]);
 		expect(r.tripped()).toBe(false);
-		const healthy = await r.complete(input);
-		expect(healthy.modelId).toBe("cheap");
 	});
 
-	test("N consecutive cheap failures send the whole stage to the selected model", async () => {
+	test("repeated cheap failures throw tot-model-blocked and never call the selected model", async () => {
 		const calls: string[] = [];
 		const lines: string[] = [];
 		const r = router(
 			async ({ modelId }) => {
 				calls.push(modelId);
-				if (modelId === "cheap") throw new Error("down");
-				return "ok";
+				throw new Error("down");
 			},
 			TOT_BREAKER_THRESHOLD,
 			lines,
 		);
-		for (let item = 0; item < TOT_BREAKER_THRESHOLD; item++) await r.complete(input);
-		expect(r.tripped()).toBe(true);
-		calls.length = 0;
-		const after = await r.complete(input);
-		expect(calls).toEqual(["selected"]);
-		expect(after).toMatchObject({ modelId: "selected", fallback: true, attempts: 1 });
-		expect(lines.filter((line) => line.includes('"event":"breaker-open"'))).toHaveLength(1);
-	});
-
-	test("a cheap success resets the consecutive failure count", async () => {
-		let n = 0;
-		const r = router(async ({ modelId }) => {
-			if (modelId !== "cheap") return "ok";
-			n++;
-			if (n % 3 !== 0) throw new Error("flaky");
-			return "ok";
-		}, 3);
-		// failures: 2, then a success, then 2 again: never 3 in a row
-		for (let item = 0; item < 5; item++) await r.complete(input);
+		for (let item = 0; item < TOT_BREAKER_THRESHOLD; item++) {
+			await expect(r.complete(input)).rejects.toThrow("tot-model-blocked");
+		}
 		expect(r.tripped()).toBe(false);
+		expect(calls.every((id) => id === "cheap")).toBe(true);
+		expect(calls).toHaveLength(TOT_BREAKER_THRESHOLD * 2);
+		expect(lines.some((line) => line.includes("breaker-open"))).toBe(false);
 	});
 
-	test("a cancelled call is rethrown and never counts against the cheap model", async () => {
+	test("a cancelled call is rethrown and is not retried as a cheap failure", async () => {
 		const controller = new AbortController();
-		const r = router(async ({ signal }) => {
+		const seen: string[] = [];
+		const r = router(async ({ modelId, signal }) => {
+			seen.push(modelId);
 			controller.abort();
 			if (signal?.aborted) throw new Error("aborted");
 			return "ok";
 		}, 1);
 		await expect(r.complete({ ...input, signal: controller.signal })).rejects.toThrow("aborted");
+		expect(seen).toEqual(["cheap"]);
 		expect(r.tripped()).toBe(false);
 	});
 
@@ -425,10 +431,30 @@ describe("createToTRouter: per-item fallback and circuit breaker", () => {
 		expect(calls).toEqual(["selected"]);
 	});
 
-	test("when the selected model also fails the item's error surfaces", async () => {
-		const r = router(async () => {
-			throw new Error("everything is down");
+	test("a blocked choice throws tot-model-blocked and does not call any model", async () => {
+		const calls: string[] = [];
+		const r = createToTRouter({
+			choice: {
+				modelId: "",
+				provider: "anthropic",
+				source: "mapping",
+				reason: "blocked: no prices and no official economy alias",
+			},
+			selectedModelId: "selected",
+			breakerThreshold: 3,
+			complete: async ({ modelId }) => {
+				calls.push(modelId);
+				return "ok";
+			},
 		});
-		await expect(r.complete(input)).rejects.toThrow("everything is down");
+		await expect(r.complete(input)).rejects.toThrow("tot-model-blocked");
+		expect(calls).toEqual([]);
+	});
+
+	test("a cheap model that keeps failing throws tot-model-blocked, not the selected model's error", async () => {
+		const r = router(async ({ modelId }) => {
+			throw new Error(modelId === "cheap" ? "cheap down" : "everything is down");
+		});
+		await expect(r.complete(input)).rejects.toThrow("tot-model-blocked");
 	});
 });

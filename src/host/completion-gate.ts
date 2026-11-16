@@ -94,8 +94,8 @@ function count(re: RegExp, text: string): number {
 
 /**
  * Validates staged artifacts: the XML must be well formed and closed (`checkUpliftXml`), the graph and issue blocks
- * must be closed, and the counts must match the manifest. A broken structure is fatal; a short count, a pending
- * tracker row, a degraded node or a failed PRD is a partial failure.
+ * must be closed, and the counts must match the manifest. A broken structure is fatal; an unread project review is
+ * fatal; a short count, a pending tracker row, a degraded node or a failed PRD is a partial failure.
  */
 export function validateArtifacts(
 	artifacts: GateArtifacts,
@@ -216,6 +216,12 @@ export function validateArtifacts(
 		});
 	if (artifacts.degraded)
 		problems.push({ severity: "partial", code: "degraded", detail: artifacts.degraded });
+	if (artifacts.prd?.review === "unread")
+		problems.push({
+			severity: "fatal",
+			code: "review_unread",
+			detail: "the project was not read; PRD code blocks are ungrounded",
+		});
 	const state = problems.some((p) => p.severity === "fatal")
 		? "failed_or_cancelled"
 		: problems.length > 0

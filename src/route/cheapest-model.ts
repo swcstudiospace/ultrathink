@@ -6,17 +6,16 @@
  * path (`resolveStageModel` and `assertCheapPathAllowed` are the guard).
  *
  * Resolution order for ToT, first hit wins:
- *   1. the user's override (`models.tot.model`), used as written;
- *   2. the host's own model list and pricing, when the caller injects one: the cheapest allowlisted entry of the selected
- *      model's provider;
- *   3. the configured per-provider candidate list for tier "prd" (`models.tot.candidates`, defaults in `route-defaults.ts`);
- *   4. the selected model.
- * Steps 2 and 3 only offer a model that is on the allowlist (every id in the candidate map), reported available by the
- * host and answered a one-time smoke check. A host that cannot pick a model per call, an unknown provider or a missing
- * candidate resolves to the selected model with a warning in `reason`.
+ *   1. a host that cannot pick a model per call keeps the selected model (a host limit, not a guess);
+ *   2. the user's override (`models.tot.model`), used as written;
+ *   3. the cheapest allowlisted host-list entry of the selected provider that has both an input and an output price;
+ *   4. an official economy alias already listed in `models.tot.candidates` for that provider;
+ *   5. otherwise a blocked choice: reason starts with `blocked:` and the selected model is not substituted.
+ * Steps 3 and 4 only offer a model that is on the allowlist (every id in the candidate map), reported available by the
+ * host and answered a one-time smoke check. Built-in candidate ids are unverified placeholders, not economy aliases.
  *
- * At run time `createToTRouter` falls back to the selected model per item when the cheap model fails, and a circuit
- * breaker moves the whole stage to the selected model after N consecutive cheap failures.
+ * At run time `createToTRouter` retries a cheap-model failure once on that same model, then throws `tot-model-blocked`.
+ * It never promotes the item or the stage onto the selected model.
  *
  * Every decision logs one structured line through the injected `log` (the repo's hook convention: a `(message) => void`
  * sink, silent by default). Lines carry host, provider and model ids only, never keys or prompts.
@@ -181,9 +180,37 @@ function logDecision(
 }
 
 function price(entry: HostModelInfo): number | undefined {
-	if (entry.inputPricePerMTok === undefined && entry.outputPricePerMTok === undefined)
-		return undefined;
+	if (!hasBothPrices(entry)) return undefined;
 	return (entry.inputPricePerMTok ?? 0) + (entry.outputPricePerMTok ?? 0);
+}
+
+/** Both prices are required. A missing side is unknown, not zero, and is not a priced candidate. */
+function hasBothPrices(entry: HostModelInfo): boolean {
+	return (
+		typeof entry.inputPricePerMTok === "number" &&
+		Number.isFinite(entry.inputPricePerMTok) &&
+		typeof entry.outputPricePerMTok === "number" &&
+		Number.isFinite(entry.outputPricePerMTok)
+	);
+}
+
+/**
+ * Provider-published economy aliases. A config candidate is an official alias only when it is in this set.
+ * This repo's built-in ToT candidates are unverified placeholders and are not listed here: do not guess one.
+ */
+const OFFICIAL_ECONOMY_ALIASES: ReadonlySet<string> = new Set<string>();
+
+function officialEconomyAlias(candidates: readonly string[]): string | undefined {
+	for (const id of candidates) {
+		if (OFFICIAL_ECONOMY_ALIASES.has(id)) return id;
+	}
+	return undefined;
+}
+
+function totModelBlocked(detail: string): Error {
+	const error = new Error(`tot-model-blocked: ${detail}`);
+	error.name = "tot-model-blocked";
+	return error;
 }
 
 async function safely<T>(run: () => T | Promise<T>): Promise<T | undefined> {
@@ -229,7 +256,7 @@ async function smokeCheck(
 	return ok;
 }
 
-/** Resolves the model the ToT PRD stage runs on. Never throws for a host or probe failure: it falls back to the selected model. */
+/** Resolves the model the ToT PRD stage runs on. A missing price and a missing official economy alias block the stage; they do not substitute the selected model. */
 export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice> {
 	const host = ctx.host ?? detectHost();
 	const tot = ctx.config.models.tot;
@@ -256,7 +283,7 @@ export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice
 	const override = tot.model.trim();
 	if (!perCall) {
 		return selected(
-			`host ${host} cannot pick a model per call${override ? "; models.tot.model ignored" : ""}, using the selected model`,
+			`host limit: host ${host} cannot pick a model per call${override ? "; models.tot.model ignored" : ""}, using the selected model`,
 			true,
 		);
 	}
@@ -272,14 +299,25 @@ export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice
 			warning: false,
 		});
 	}
+	const blocked = (detail: string, source: ModelChoice["source"]): ModelChoice =>
+		finish({
+			choice: {
+				// Not the selected model: a blocked choice must not be run as a guess.
+				modelId: "",
+				provider,
+				source,
+				reason: `blocked: ${detail}`,
+			},
+			warning: true,
+		});
 
 	if (selectedProvider === undefined) {
-		return selected("provider of the selected model is unknown, using the selected model", true);
+		return blocked(
+			"provider of the selected model is unknown; no candidate has both input and output prices and config has no official economy alias",
+			"mapping",
+		);
 	}
 	const ranked = tot.candidates[selectedProvider] ?? [];
-	if (ranked.length === 0) {
-		return selected(`no tot candidates configured for provider ${selectedProvider}`, true);
-	}
 	const allowlist = new Set<string>();
 	for (const ids of Object.values(tot.candidates)) for (const id of ids) allowlist.add(id);
 
@@ -304,13 +342,13 @@ export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice
 				(entry) =>
 					allowlist.has(entry.modelId) &&
 					entry.available !== false &&
+					hasBothPrices(entry) &&
 					providerFamily(entry.provider, entry.modelId, host) === selectedProvider,
 			)
 			.sort((a, b) => {
-				const pa = price(a);
-				const pb = price(b);
-				if (pa !== undefined && pb !== undefined && pa !== pb) return pa - pb;
-				if ((pa === undefined) !== (pb === undefined)) return pa === undefined ? 1 : -1;
+				const pa = price(a) ?? 0;
+				const pb = price(b) ?? 0;
+				if (pa !== pb) return pa - pb;
 				return rank(a.modelId) - rank(b.modelId);
 			});
 		for (const entry of eligible) {
@@ -322,10 +360,7 @@ export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice
 						modelId: entry.modelId,
 						provider: selectedProvider,
 						source: "host-list",
-						reason:
-							cost === undefined
-								? "cheapest host-listed candidate (unpriced)"
-								: `cheapest host-listed candidate (${cost}/MTok)`,
+						reason: `cheapest host-listed candidate (${cost}/MTok)`,
 					},
 					warning: false,
 				});
@@ -333,21 +368,22 @@ export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice
 		}
 	}
 
-	for (const modelId of ranked) {
-		if (tried.has(modelId)) continue;
-		if (await usable(modelId)) {
-			return finish({
-				choice: {
-					modelId,
-					provider: selectedProvider,
-					source: "mapping",
-					reason: `models.tot.candidates.${selectedProvider}`,
-				},
-				warning: false,
-			});
-		}
+	const alias = officialEconomyAlias(ranked);
+	if (alias !== undefined && !tried.has(alias) && (await usable(alias))) {
+		return finish({
+			choice: {
+				modelId: alias,
+				provider: selectedProvider,
+				source: "mapping",
+				reason: `official economy alias ${alias}`,
+			},
+			warning: false,
+		});
 	}
-	return selected(`no ${selectedProvider} tot candidate passed availability and smoke check`, true);
+	return blocked(
+		"no candidate has both input and output prices and config has no official economy alias",
+		listed ? "host-list" : "mapping",
+	);
 }
 
 interface ToTCompletion {
@@ -363,7 +399,7 @@ interface ToTCompletion {
 export interface ToTRouter {
 	readonly choice: ModelChoice;
 	readonly selectedModelId: string;
-	/** True once the circuit breaker moved the whole stage to the selected model. */
+	/** Always false: a cheap failure is not promoted onto the selected model. */
 	tripped(): boolean;
 	complete(input: {
 		readonly system: string;
@@ -376,22 +412,19 @@ export interface ToTRouterOptions {
 	readonly choice: ModelChoice;
 	readonly selectedModelId: string;
 	readonly complete: CompleteFn;
-	/** Consecutive cheap failures that trip the breaker; at least 1. */
+	/** Kept for callers. Cheap failures are not promoted onto the selected model, so this no longer opens a breaker. */
 	readonly breakerThreshold: number;
 	readonly log?: (line: string) => void;
 }
 
 /**
- * Runs ToT items on the resolved model. A cheap-model failure retries the same item once on the selected model; after
- * `breakerThreshold` consecutive cheap failures every later item goes straight to the selected model. A cheap success
- * resets the count. A cancelled call is rethrown and never counts against the cheap model.
+ * Runs ToT items on the resolved model. A `blocked:` choice throws `tot-model-blocked` and does not call the selected
+ * model. A cheap-model failure retries that same cheap model once, then throws `tot-model-blocked`. A cancelled call
+ * is rethrown and is not a cheap-model failure.
  */
 export function createToTRouter(options: ToTRouterOptions): ToTRouter {
 	const { choice, selectedModelId, complete, log } = options;
-	const threshold = Math.max(1, Math.floor(options.breakerThreshold));
 	const cheap = choice.source !== "selected" && choice.modelId !== selectedModelId;
-	let consecutiveFailures = 0;
-	let open = false;
 
 	const emit = (event: string, extra: Record<string, unknown>): void => {
 		log?.(
@@ -402,31 +435,30 @@ export function createToTRouter(options: ToTRouterOptions): ToTRouter {
 	return {
 		choice,
 		selectedModelId,
-		tripped: () => open,
+		tripped: () => false,
 		async complete(input) {
-			if (!cheap || open) {
-				const text = await complete({ ...input, modelId: selectedModelId });
-				return { text, modelId: selectedModelId, fallback: cheap, attempts: 1 };
+			if (choice.reason.startsWith("blocked:")) {
+				throw totModelBlocked(choice.reason);
 			}
-			try {
-				const text = await complete({ ...input, modelId: choice.modelId });
-				consecutiveFailures = 0;
-				return { text, modelId: choice.modelId, fallback: false, attempts: 1 };
-			} catch (error) {
-				if (input.signal?.aborted) throw error;
-				consecutiveFailures++;
-				const tripping = consecutiveFailures >= threshold;
-				emit("fallback", {
-					consecutiveFailures,
-					error: error instanceof Error ? error.name : "error",
-				});
-				if (tripping && !open) {
-					open = true;
-					emit("breaker-open", { consecutiveFailures, threshold });
+			if (!cheap) {
+				const text = await complete({ ...input, modelId: selectedModelId });
+				return { text, modelId: selectedModelId, fallback: false, attempts: 1 };
+			}
+			let last: unknown;
+			for (let attempt = 1; attempt <= 2; attempt++) {
+				try {
+					const text = await complete({ ...input, modelId: choice.modelId });
+					return { text, modelId: choice.modelId, fallback: false, attempts: attempt };
+				} catch (error) {
+					if (input.signal?.aborted) throw error;
+					last = error;
+					emit("cheap-retry", {
+						attempt,
+						error: error instanceof Error ? error.name : "error",
+					});
 				}
 			}
-			const text = await complete({ ...input, modelId: selectedModelId });
-			return { text, modelId: selectedModelId, fallback: true, attempts: 2 };
+			throw totModelBlocked(last instanceof Error ? last.message : "cheap model failed");
 		},
 	};
 }

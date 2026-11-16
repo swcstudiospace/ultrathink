@@ -152,6 +152,44 @@ const NO_FACTS = (root: string): ProjectFacts => ({
 	denied: 0,
 });
 
+/** Inspection failed or listed no files: nothing in these facts can be tagged verified. */
+function ungrounded(facts: ProjectFacts): ProjectFacts {
+	return {
+		root: facts.root,
+		files: new Set(),
+		dirs: new Set(),
+		symbols: new Map(),
+		truncated: facts.truncated,
+		denied: facts.denied,
+	};
+}
+
+function blockedRecords(requests: readonly PrdRequest[], error: string): TotManifest {
+	return {
+		total: requests.length,
+		generated: 0,
+		failed: requests.length,
+		fallbacks: 0,
+		records: requests.map((request) => ({
+			key: request.key,
+			hash: "",
+			markdown: "",
+			status: "failed",
+			model: "",
+			fallback: false,
+			attempts: 0,
+			error,
+		})),
+	};
+}
+
+function isTotModelBlocked(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		(error.name === "tot-model-blocked" || error.message.includes("tot-model-blocked"))
+	);
+}
+
 /**
  * Writes and syncs the PRDs of one plan. A provider abort is rethrown; every other failure, an aborted `signal` included
  * (PRDs not started are `skipped`, rows not reached stay `pending`), is part of the returned outcome, so a caller that
@@ -199,6 +237,11 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 			log,
 		});
 		model = choice;
+		if (choice.reason.startsWith("blocked:")) {
+			const error = "tot-model-blocked";
+			log(`tot failed: ${error}`);
+			return failedOutcome(error, blockedRecords(requests, error));
+		}
 		const router = createToTRouter({
 			choice,
 			selectedModelId: input.selected.modelId,
@@ -210,9 +253,18 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 			maxLines: config.think.tot.maxPrdLines,
 			maxChars: config.think.tot.maxPrdChars,
 		};
-		const facts =
-			seams.facts ?? (await getProjectFacts(input.cwd).catch(() => NO_FACTS(input.cwd)));
-		const manifest = await runTot({
+		let facts = seams.facts;
+		if (facts === undefined) {
+			try {
+				facts = await getProjectFacts(input.cwd);
+			} catch {
+				// reason: a project that cannot be read still gets one ungrounded PRD per Sub Issue
+				facts = NO_FACTS(input.cwd);
+			}
+		}
+		const review: "read" | "unread" = facts.files.size === 0 ? "unread" : "read";
+		if (review === "unread") facts = ungrounded(facts);
+		const generatedManifest = await runTot({
 			requests,
 			checkpointDir: resolve(input.stateDir, "tot", segment(plan.graphId)),
 			concurrency: config.think.tot.concurrency,
@@ -244,9 +296,15 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 						return renderFallbackPrd(source, url ? { linkUrl: url } : {});
 					},
 					complete: async (call) => {
-						const reply = await router.complete(call);
-						answered = reply.modelId;
-						return reply.text;
+						try {
+							const reply = await router.complete(call);
+							answered = reply.modelId;
+							return reply.text;
+						} catch (error) {
+							// reason: a blocked model must not become a fallback PRD on the selected model
+							if (isTotModelBlocked(error)) throw error;
+							throw error;
+						}
 					},
 				});
 				return answered !== undefined && !generated.fallback
@@ -254,6 +312,7 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 					: generated;
 			},
 		});
+		const manifest: TotManifest = { ...generatedManifest, review };
 		written = manifest;
 		callers = await seams.open();
 		if (callers === undefined || (callers.linear === undefined && callers.notion === undefined)) {
@@ -278,6 +337,11 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 		return { manifest, sync: report.summary, model };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
+		if (isTotModelBlocked(error)) {
+			const cause = "tot-model-blocked";
+			log(`tot failed: ${cause}`);
+			return failedOutcome(cause, blockedRecords(requests, cause));
+		}
 		const cause = causeOf(error);
 		log(`tot failed: ${cause}`);
 		return failedOutcome(cause, written);

@@ -244,6 +244,7 @@ describe("runTotStage", () => {
 		expect(outcome.error).toBeUndefined();
 		expect(outcome.model.source).toBe("selected");
 		expect(outcome.model.reason).toContain("cannot pick a model per call");
+		expect(outcome.manifest.review).toBe("read");
 		for (const id of ["ENG-1", "ENG-2", "ENG-3"]) {
 			expect(linear.descriptions.get(id)).toContain("## PRD");
 		}
@@ -252,7 +253,7 @@ describe("runTotStage", () => {
 		expect(existsSync(join(dir, "prd-sync", "ut-g1", "ledger.json"))).toBe(true);
 	});
 
-	test("a model per call: the override runs the PRDs and the router falls back to the selected model", async () => {
+	test("a cheap-model failure retries that model and does not promote onto the selected model", async () => {
 		const dir = makeDir("ut-tot-stage-");
 		const linear = fakeLinear();
 		const used: string[] = [];
@@ -274,9 +275,60 @@ describe("runTotStage", () => {
 			),
 		);
 		expect(outcome.model).toMatchObject({ modelId: "cheap-1", source: "override" });
-		expect(outcome.manifest).toMatchObject({ generated: 2, failed: 0 });
-		expect(outcome.manifest.records.every((r) => r.model === "claude-sonnet-5-5")).toBe(true);
-		expect(used.filter((id) => id === "claude-sonnet-5-5").length).toBeGreaterThanOrEqual(2);
+		expect(used.every((id) => id === "cheap-1")).toBe(true);
+		expect(used.length).toBeGreaterThanOrEqual(2);
+		expect(outcome.manifest.generated).toBe(0);
+		expect(outcome.manifest.failed).toBe(2);
+		expect(outcome.manifest.records.every((record) => record.fallback === false)).toBe(true);
+		expect(
+			outcome.manifest.records.every((record) => record.error?.includes("tot-model-blocked")),
+		).toBe(true);
+		expect(linear.descriptions.size).toBe(0);
+	});
+
+	test("a blocked model fails every PRD and does not call the selected model", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const used: string[] = [];
+		const outcome = await runTotStage(
+			input(
+				2,
+				seams(linear, {
+					canPickModelPerCall: true,
+					complete: async ({ modelId }) => {
+						used.push(modelId);
+						return draft();
+					},
+				}),
+				dir,
+			),
+		);
+		expect(outcome.model.reason.startsWith("blocked:")).toBe(true);
+		expect(outcome.model.modelId).not.toBe("claude-sonnet-5-5");
+		expect(outcome.error).toContain("tot-model-blocked");
+		expect(outcome.manifest.failed).toBe(2);
+		expect(outcome.manifest.generated).toBe(0);
+		expect(used).toEqual([]);
+		expect(linear.saves).toBe(0);
+	});
+
+	test("an unreadable project still writes one ungrounded PRD per Sub Issue and marks review unread", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const missing = join(homedir(), "ut-tot-stage-missing-root");
+		const outcome = await runTotStage(
+			input(2, seams(linear, { facts: undefined }), dir, { cwd: missing }),
+		);
+		expect(outcome.manifest.review).toBe("unread");
+		expect(outcome.manifest.generated).toBe(2);
+		expect(outcome.manifest.failed).toBe(0);
+		for (const record of outcome.manifest.records) {
+			expect(record.markdown).not.toContain("[verified]");
+			expect(record.markdown).not.toContain("```ts verified");
+			expect(record.markdown).toContain("[assumption]");
+			expect(record.markdown).toContain("illustrative");
+		}
+		expect(linear.saves).toBe(2);
 	});
 
 	test("one failing PRD is a failed record, the others still land", async () => {

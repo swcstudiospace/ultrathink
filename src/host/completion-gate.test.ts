@@ -167,6 +167,46 @@ describe("validateArtifacts", () => {
 		expect(partial.problems.map((problem) => problem.code)).toEqual(["prds_short", "prds_failed"]);
 	});
 
+	test("an unread project review is fatal even when every PRD was generated", () => {
+		const prd: TotManifest = {
+			total: 1,
+			generated: 1,
+			failed: 0,
+			fallbacks: 0,
+			review: "unread",
+			records: [
+				{
+					key: "n1.1",
+					hash: "h",
+					markdown: "m",
+					status: "generated",
+					model: "m",
+					fallback: false,
+					attempts: 1,
+				},
+			],
+		};
+		const verdict = validateArtifacts({ text: plan(), prd });
+		expect(verdict.state).toBe("failed_or_cancelled");
+		expect(verdict.problems).toContainEqual(
+			expect.objectContaining({ severity: "fatal", code: "review_unread" }),
+		);
+		const read = validateArtifacts({ text: plan(), prd: { ...prd, review: "read" } });
+		expect(read.problems.map((problem) => problem.code)).not.toContain("review_unread");
+	});
+
+	test("truncated XML stays fatal when the review is also unread", () => {
+		const cut = plan().slice(0, plan().indexOf("</BUILD_PROMPT>"));
+		const verdict = validateArtifacts({
+			text: cut,
+			prd: { total: 0, generated: 0, failed: 0, fallbacks: 0, review: "unread", records: [] },
+		});
+		expect(verdict.state).toBe("failed_or_cancelled");
+		expect(verdict.problems.map((problem) => problem.code)).toEqual(
+			expect.arrayContaining(["truncated", "review_unread"]),
+		);
+	});
+
 	test("plain text with no spec structure has nothing to count and is ready", () => {
 		expect(validateArtifacts({ text: "PLAN", expected: FULL }).state).toBe("ready");
 	});
@@ -243,6 +283,33 @@ describe("CompletionGate", () => {
 		expect(await gate.settled).toMatchObject({ state: "failed_or_cancelled" });
 		expect(gate.release({ confirmPartial: true })).toMatchObject({ ok: false, reason: "failed" });
 		expect(gate.reason).toContain("never closed");
+	});
+
+	test("an unread review stays failed even when confirmed and partial sync is allowed", () => {
+		const gate = new CompletionGate({ inactivityMs: 0, allowPartialSync: true });
+		const prd: TotManifest = {
+			total: 1,
+			generated: 1,
+			failed: 0,
+			fallbacks: 0,
+			review: "unread",
+			records: [
+				{
+					key: "n1.1",
+					hash: "h",
+					markdown: "m",
+					status: "generated",
+					model: "m",
+					fallback: false,
+					attempts: 1,
+				},
+			],
+		};
+		const outcome = gate.complete({ text: plan(), prd });
+		expect(outcome.state).toBe("failed_or_cancelled");
+		expect(gate.release({ confirmPartial: true })).toMatchObject({ ok: false, reason: "failed" });
+		expect(gate.released).toBe(false);
+		expect(gate.reason).toContain("not read");
 	});
 
 	test("complete with nothing staged fails; cancel drops staged content and settles once", async () => {

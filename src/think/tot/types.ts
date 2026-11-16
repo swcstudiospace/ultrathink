@@ -30,6 +30,11 @@ export interface TotManifest {
 	readonly failed: number;
 	readonly fallbacks: number;
 	readonly records: readonly PrdRecord[];
+	/**
+	 * `read` when project inspection listed files. `unread` when inspection threw or listed none:
+	 * PRDs were still written, but every code block is ungrounded.
+	 */
+	readonly review?: "read" | "unread";
 }
 
 export interface ModelChoice {

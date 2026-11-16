@@ -33,6 +33,31 @@ One descriptor per agent lives in `src/runtime-install/runtimes.ts`. Config root
 
 Gating is `unverified` on all fifteen. Model routing is `per-call` only where the matrix already records a host model mode (OpenCode, pi, Cline), `none` where selection is UI-only (Windsurf, Trae), and `unverified` where the docs do not say (Kilo, ZCode). None of that is proven by a live install in this repository.
 
+## Gap record
+
+Compared with the fifteen ids above, [GSD-Core findings](gsd-core-findings.md) §2 also names `claude`, `cursor`, and `hermes`. Every findings-doc agent below has no delay-or-buffer hook, or the hook cell is unverified. §3 says the shipped hook scripts are advisory or per-tool guards, not a prompt-submit gate. This record is not a live install.
+
+| id | gap | findings |
+|---|---|---|
+| claude | `settings.json` hooks; no delay-or-buffer / prompt-submit gate | §3 |
+| kimi | `[[hooks]]` in `config.toml` (Beta); not a delay-or-buffer hook | §3 |
+| kimi-code | `[[hooks]]` in `config.toml`; not a delay-or-buffer hook | §3 |
+| kilo | no GSD hooks | §3 |
+| opencode | `hooksSurface: none`; plugin bridges tool events only | §3 |
+| pi | no settings hook bus; extension bridges tool/session events only | §3 |
+| codex | `SessionStart` only | §3 |
+| copilot | one advisory `sessionStart` | §3 |
+| antigravity | Gemini-style `settings.json` hooks; not a delay-or-buffer hook | §3 |
+| cursor | `sessionStart` and `postToolUse` monitor; not a delay-or-buffer hook | §3 |
+| windsurf | none | §3 |
+| augment | hook claims conflict; UNVERIFIED | §3, §10 |
+| trae | rule references only | §3 |
+| qwen | settings hooks (tool/session events); not a delay-or-buffer hook | §3 |
+| hermes | "hook entries where supported"; not a named delay-or-buffer hook | §3 |
+| codebuddy | `settings.json` hooks, Claude event dialect; not a delay-or-buffer hook | §3 |
+| cline | `PreToolUse` fails open; not a holding delay | §3 |
+| zcode | hooks not wired | §3 |
+
 ## What this is not
 
 - Not a conformance adapter. Detection, doctor, and the golden Omp fixtures do not know these ids.
