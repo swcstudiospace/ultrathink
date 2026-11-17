@@ -272,7 +272,8 @@ function transition(
 
 /**
  * Attempt one phase. Order only grows as Discuss, Plan, Execute, Verify.
- * A refused attempt leaves state unchanged and returns the current snapshot.
+ * A refused attempt leaves state unchanged; the outcome names each refusal reason
+ * and carries the current snapshot.
  * Refused when the runtime is not connected, the phase is not next in order,
  * or Execute's gates are unmet. Execute needs one complete uplift and zero unanswered
  * blocking clarifications. Ship never starts here; only confirmShip starts it.
@@ -285,9 +286,8 @@ export function attemptPhase(
 	input: PhaseAttemptInput,
 	isConnected: RuntimeConnectedCheck,
 	store?: PhaseLoopStore,
-): PhaseLoopState {
-	return transition(runtimeId, store, (row) => applyAttempt(runtimeId, row, input, isConnected))
-		.state;
+): GateOutcome {
+	return transition(runtimeId, store, (row) => applyAttempt(runtimeId, row, input, isConnected));
 }
 
 /**

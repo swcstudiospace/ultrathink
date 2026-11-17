@@ -47,7 +47,7 @@ function nth(values: readonly string[], index: number): string {
 }
 
 function through(runtimeId: string, phase: PhaseName) {
-	return attemptPhase(runtimeId, { phase, ...READY }, CONNECTED);
+	return attemptPhase(runtimeId, { phase, ...READY }, CONNECTED).state;
 }
 
 describe("phase loop", () => {
@@ -63,7 +63,7 @@ describe("phase loop", () => {
 			runtimeId,
 			{ phase: "Execute", completeUpliftCount: 0, unansweredBlockingClarifications: 0 },
 			CONNECTED,
-		);
+		).state;
 		expect(blocked.executeStarts).toBe(0);
 		expect(blocked.shipStarts).toBe(0);
 		expect(blocked.phaseOrder).toEqual(["Discuss", "Plan"]);
@@ -71,7 +71,7 @@ describe("phase loop", () => {
 		expect(started.executeStarts).toBe(1);
 		expect(started.shipStarts).toBe(0);
 		expect(started.operatorConfirmations).toBe(0);
-		const refusedShip = attemptPhase(runtimeId, { phase: "Ship", ...READY }, CONNECTED);
+		const refusedShip = attemptPhase(runtimeId, { phase: "Ship", ...READY }, CONNECTED).state;
 		expect(refusedShip.shipStarts).toBe(0);
 		expect(refusedShip.phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);
 		expect(confirmShip(runtimeId, { afterVerify: false }, CONNECTED).state.shipStarts).toBe(0);
@@ -85,7 +85,7 @@ describe("phase loop", () => {
 			runtimeId,
 			{ phase: "Execute", completeUpliftCount: 1, unansweredBlockingClarifications: 1 },
 			CONNECTED,
-		);
+		).state;
 		expect(held.executeStarts).toBe(0);
 		expect(held.phaseOrder).toEqual(["Discuss", "Plan"]);
 	});
@@ -100,7 +100,7 @@ describe("phase loop", () => {
 		expect(verified.operatorConfirmations).toBe(0);
 		expect(verified.executeStarts).toBe(1);
 		expect(verified.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify"]);
-		const notYetShipped = attemptPhase(runtimeId, { phase: "Ship", ...READY }, CONNECTED);
+		const notYetShipped = attemptPhase(runtimeId, { phase: "Ship", ...READY }, CONNECTED).state;
 		expect(notYetShipped.shipStarts).toBe(0);
 		expect(notYetShipped.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify"]);
 	});
@@ -125,12 +125,33 @@ describe("phase loop", () => {
 		const runtimeId = "claude";
 		through(runtimeId, "Discuss");
 		through(runtimeId, "Plan");
-		const refused = attemptPhase(runtimeId, { phase: "Execute", ...READY }, DISCONNECTED);
+		const refused = attemptPhase(runtimeId, { phase: "Execute", ...READY }, DISCONNECTED).state;
 		expect(refused.executeStarts).toBe(0);
 		expect(refused.phaseOrder).toEqual(["Discuss", "Plan"]);
-		const started = attemptPhase(runtimeId, { phase: "Execute", ...READY }, CONNECTED);
+		const started = attemptPhase(runtimeId, { phase: "Execute", ...READY }, CONNECTED).state;
 		expect(started.executeStarts).toBe(1);
 		expect(started.phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);
+	});
+
+	test("a refused attempt names each refusal reason and leaves the state unchanged", () => {
+		const runtimeId = "claude";
+		const discussed = attemptPhase(runtimeId, { phase: "Discuss", ...READY }, CONNECTED);
+		expect(discussed).toMatchObject({ accepted: true, refusals: [] });
+		const planned = attemptPhase(runtimeId, { phase: "Plan", ...READY }, CONNECTED);
+		expect(planned.state.phaseOrder).toEqual(["Discuss", "Plan"]);
+		const unmet = attemptPhase(
+			runtimeId,
+			{ phase: "Execute", completeUpliftCount: 0, unansweredBlockingClarifications: 1 },
+			CONNECTED,
+		);
+		expect(unmet.accepted).toBe(false);
+		expect(unmet.refusals).toEqual(["Execute gates are unmet"]);
+		expect(unmet.state.phaseOrder).toEqual(["Discuss", "Plan"]);
+		const disconnected = attemptPhase(runtimeId, { phase: "Execute", ...READY }, DISCONNECTED);
+		expect(disconnected.refusals).toEqual(["runtime is not connected"]);
+		const shipped = attemptPhase(runtimeId, { phase: "Ship", ...READY }, CONNECTED);
+		expect(shipped.refusals).toEqual(["Ship starts only through confirmShip"]);
+		expect(shipped.state.shipStarts).toBe(0);
 	});
 });
 
@@ -172,7 +193,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	}
 
 	function step(runtimeId: string, phase: PhaseName, store: PhaseLoopStore) {
-		return attemptPhase(runtimeId, { phase, ...READY }, CONNECTED, store);
+		return attemptPhase(runtimeId, { phase, ...READY }, CONNECTED, store).state;
 	}
 
 	/** Returns what `run` threw, or undefined when it did not throw. */
