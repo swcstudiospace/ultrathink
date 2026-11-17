@@ -621,7 +621,7 @@ describe("spawnLanes", () => {
 		const { fn } = recordingSpawner(false);
 		const failingFs: TeamsFs = {
 			...realFs,
-			writeFileSync: () => {
+			renameSync: () => {
 				throw new Error("disk full");
 			},
 		};
@@ -630,6 +630,38 @@ describe("spawnLanes", () => {
 		expect(handles[0]!.pid).toBe(1001);
 		expect(handles[0]!.note).toContain("disk full");
 		expect(formatLaneHandles(handles)).toContain("note lane.json not written");
+	});
+
+	test("a lane whose lane.json write failed still counts toward the live cap", () => {
+		const root = tmp("teams-unrecorded-cap-");
+		const { fn } = recordingSpawner(false);
+		const brokenFs: TeamsFs = {
+			...realFs,
+			renameSync: () => {
+				throw new Error("disk full");
+			},
+		};
+		const handles = spawnLanes(planLanes(["write docs"], baseOpts(root)), fn, brokenFs);
+		expect(handles[0]!.pid).toBe(1001);
+		expect(readLaneFile(handles[0]!.stateDir)).toBeUndefined();
+		const live = liveLaneSnapshot(
+			root,
+			() => true,
+			(): LaneVerdict => "match",
+			realFs,
+		);
+		expect(live.map((record) => record.pid)).toEqual([1001]);
+		const next = refuseDuplicatesAndOverCap(
+			planLanes(["add tests"], baseOpts(root)),
+			root,
+			"/repo",
+			1,
+			() => true,
+			(): LaneVerdict => "match",
+			realFs,
+		);
+		expect(next.spawn).toEqual([]);
+		expect(next.refused[0]!.reason).toContain("lane cap reached");
 	});
 
 	test("the lane state dir is created 0700 and run.log 0600, like lane.json", () => {

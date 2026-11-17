@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
 	briefDigest,
 	capRefusal,
@@ -102,7 +102,7 @@ describe("lane.json write and read", () => {
 			["briefDigest", "cwd", "graphId", "laneId", "pid", "startedAt"].sort(),
 		);
 		expect(statSync(path).mode & 0o777).toBe(0o600);
-		expect(readdirSync(dir).filter((name) => name.startsWith("lane.json.tmp-"))).toEqual([]);
+		expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 	});
 
 	test("omits graphId when the lane has none", () => {
@@ -115,26 +115,37 @@ describe("lane.json write and read", () => {
 		expect(readLaneFile(dir)).toEqual(rest);
 	});
 
-	test("never writes lane.json directly: tmp file at 0600 first, then rename onto it", () => {
+	test("writes lane.json through writeFileAtomic: a same-directory temp file, renamed onto it", () => {
 		const dir = tmp();
-		const calls: string[] = [];
+		const renames: string[] = [];
 		const fs: LaneFileFs = {
-			writeFileSync(path, data, options) {
-				const rel = path.slice(dir.length + 1).replace(/\d+$/, "N");
-				calls.push(`write ${rel} ${options.mode.toString(8)}`);
-				writeFileSync(path, data, options);
-			},
+			writeFileSync,
 			renameSync(from, to) {
-				calls.push(
-					`rename ${from.slice(dir.length + 1).replace(/\d+$/, "N")} ${to.slice(dir.length + 1)}`,
-				);
+				renames.push(`${basename(from)} -> ${basename(to)}`);
 				renameSync(from, to);
 			},
 			readFileSync,
 			existsSync,
 		};
 		writeLaneFile(dir, record(), fs);
-		expect(calls).toEqual(["write lane.json.tmp-N 600", "rename lane.json.tmp-N lane.json"]);
+		expect(renames).toHaveLength(1);
+		expect(renames[0]).toMatch(/^\.lane\.json\.\d+\.[0-9a-f]{8}\.tmp -> lane\.json$/);
+		expect(readLaneFile(dir)).toEqual(record());
+	});
+
+	test("a failed write leaves no temp file and no lane.json", () => {
+		const dir = tmp();
+		const fs: LaneFileFs = {
+			writeFileSync,
+			renameSync: () => {
+				throw new Error("EROFS: read-only file system");
+			},
+			readFileSync,
+			existsSync,
+		};
+		expect(() => writeLaneFile(dir, record(), fs)).toThrow("EROFS");
+		expect(readdirSync(dir)).toEqual([]);
+		expect(readLaneFile(dir)).toBeUndefined();
 	});
 
 	test("overwrites a previous lane.json whole", () => {
