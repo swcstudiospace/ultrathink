@@ -6,9 +6,11 @@ import {
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	readlinkSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -920,6 +922,65 @@ describe("installGrokRule", () => {
 			);
 			expect(installed).not.toContain("$GROK_PLUGIN_DATA");
 			expect(installed).not.toContain("${GROK_HOME");
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("user files are written atomically", () => {
+	test("a successful apply writes each file in place, with the expected content and no temporary file", () => {
+		const { env, repo, rulePath, hooksPath, cleanup } = tempSetup();
+		const run = fakeRun(() => ({ stdout: "", stderr: "", code: 0 }));
+		try {
+			apply(repo, run, env);
+			expect(readFileSync(claudeMdPath(env), "utf8")).toContain("<!-- ultrathink:start -->");
+			expect(readFileSync(rulePath, "utf8")).toBe(RULE);
+			expect(JSON.parse(readFileSync(hooksPath, "utf8"))).toEqual(grokHooksConfig(repo));
+			for (const dir of [dirname(claudeMdPath(env)), dirname(rulePath), dirname(hooksPath)]) {
+				expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+			}
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a CLAUDE.md symlink is written through: the link survives and its target gets the block", () => {
+		const { env, repo, cleanup } = tempSetup();
+		try {
+			const real = join(dirname(claudeMdPath(env)), "dotfiles-claude.md");
+			mkdirSync(dirname(real), { recursive: true });
+			writeFileSync(real, "# My rules\n");
+			symlinkSync(real, claudeMdPath(env));
+			apply(
+				repo,
+				fakeRun(() => ({ stdout: "", stderr: "", code: 0 })),
+				env,
+			);
+			expect(lstatSync(claudeMdPath(env)).isSymbolicLink()).toBe(true);
+			expect(readFileSync(real, "utf8")).toStartWith("# My rules\n");
+			expect(readFileSync(real, "utf8")).toContain("<!-- ultrathink:start -->");
+			expect(readdirSync(dirname(real)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a timed-out claude call is a failed command: apply reports it and records no server as added", () => {
+		const { env, repo, cleanup } = tempSetup();
+		const run = fakeRun((cmd) => {
+			if (cmd[2] === "add") return { stdout: "", stderr: "claude timed out after 60s", code: 124 };
+			if (cmd[2] === "get") return { stdout: "", stderr: "", code: 1 };
+			return { stdout: "", stderr: "", code: 0 };
+		});
+		try {
+			const applied = apply(repo, run, env);
+			expect(applied.claude?.notion).toEqual({
+				added: false,
+				message: "notion: failed — claude timed out after 60s",
+			});
+			expect(applied.claude?.linear.added).toBe(false);
+			expect(readSetupState(env)).toEqual({ notionAdded: false, linearAdded: false });
 		} finally {
 			cleanup();
 		}

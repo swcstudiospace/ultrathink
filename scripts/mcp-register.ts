@@ -2,19 +2,11 @@
 // Copyright (C) 2026 SWC Studio
 // Register the central ultrathink MCP gateway (notion, linear, greptile) in every host's user config.
 // Usage: see USAGE below (`bun scripts/mcp-register.ts --help`).
-import {
-	chmodSync,
-	copyFileSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { copyFileSync, existsSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { errorCode, writeFileAtomic } from "../src/claude/atomic.ts";
 import { isRecord } from "../src/shared.ts";
 
 const HOSTS = ["claude", "grok", "hermes", "muse", "omp"] as const;
@@ -69,7 +61,7 @@ interface RunResult {
 	stderr: string;
 }
 
-export type Run = (cmd: string[], options?: { stdin?: string }) => RunResult;
+export type Run = (cmd: string[], options?: { stdin?: string; timeoutMs?: number }) => RunResult;
 
 export type CliHost = "claude" | "grok" | "hermes";
 
@@ -499,9 +491,14 @@ function backup(file: string, stamp: string, dryRun: boolean, log: (line: string
 	if (!dryRun) copyFileSync(file, `${file}${stamp}`);
 }
 
-function readJson(file: string): unknown {
-	if (!existsSync(file)) return undefined;
-	return JSON.parse(readFileSync(file, "utf8"));
+/** The file's text, or undefined when it does not exist; any other read error is rethrown. */
+function readRaw(file: string): string | undefined {
+	try {
+		return readFileSync(file, "utf8");
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return undefined;
+		throw error;
+	}
 }
 
 function readText(file: string): string | undefined {
@@ -512,22 +509,49 @@ function readText(file: string): string | undefined {
 	}
 }
 
-export function writeJson(file: string, value: unknown): void {
-	mkdirSync(dirname(file), { recursive: true });
+/**
+ * Writes `value` as JSON through a same-directory temporary file and a rename. `guard.readBefore` is the file's text as
+ * the caller read it (undefined when it was absent). The file is re-read just before the rename, and when it changed
+ * since, nothing is written and the error says so: a concurrent edit is never overwritten.
+ */
+export function writeJson(
+	file: string,
+	value: unknown,
+	guard?: { readBefore: string | undefined },
+): void {
 	const mode = existsSync(file) ? statSync(file).mode & 0o777 : 0o600;
-	const tmp = `${file}.tmp-${process.pid}`;
-	writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode });
-	chmodSync(tmp, mode);
-	renameSync(tmp, file);
+	writeFileAtomic(file, `${JSON.stringify(value, null, 2)}\n`, {
+		mode,
+		fs: {
+			renameSync: (from, to) => {
+				if (guard !== undefined && readRaw(file) !== guard.readBefore)
+					throw new Error(`${file} changed since it was read; not overwritten, rerun mcp-register`);
+				renameSync(from, to);
+			},
+		},
+	});
 }
 
 function report(host: Host, changes: Change[], log: (line: string) => void): void {
 	for (const c of changes) log(`  ${host}: ${c.id} ${c.action}${c.reason ? `: ${c.reason}` : ""}`);
 }
 
+/** Bounds each host CLI call, so a hung `claude`, `grok` or `hermes` fails its command instead of stalling the run. */
+const HOST_COMMAND_TIMEOUT_MS = 60_000;
+/** The exit code of a timed-out command (as coreutils `timeout` reports it), so it counts as a failed command. */
+const TIMED_OUT_EXIT = 124;
+
 const spawnRun: Run = (cmd, options) => {
 	const stdin = options?.stdin === undefined ? "ignore" : Buffer.from(options.stdin);
-	const proc = Bun.spawnSync(cmd, { stdin, stdout: "pipe", stderr: "pipe" });
+	const timeoutMs = options?.timeoutMs ?? HOST_COMMAND_TIMEOUT_MS;
+	const proc = Bun.spawnSync(cmd, { stdin, stdout: "pipe", stderr: "pipe", timeout: timeoutMs });
+	if (proc.exitedDueToTimeout) {
+		return {
+			code: TIMED_OUT_EXIT,
+			stdout: proc.stdout.toString(),
+			stderr: `${cmd[0]} timed out after ${timeoutMs / 1000}s`,
+		};
+	}
 	return {
 		code: proc.exitCode ?? 1,
 		stdout: proc.stdout.toString(),
@@ -659,7 +683,8 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 				host === "omp"
 					? join(env.PI_CODING_AGENT_DIR?.trim() || join(home, ".omp", "agent"), "mcp.json")
 					: join(config, "muse", "settings.json");
-			const current = readJson(file);
+			const before = readRaw(file);
+			const current = before === undefined ? undefined : JSON.parse(before);
 			const merged =
 				host === "omp"
 					? mergeOmpMcp(current, entries, mode)
@@ -672,7 +697,7 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 			if (!dirty) continue;
 			backup(file, stamp, dryRun, log);
 			log(`  write ${file}`);
-			if (!dryRun) writeJson(file, merged.next);
+			if (!dryRun) writeJson(file, merged.next, { readBefore: before });
 			continue;
 		}
 		if (!Bun.which(host, { PATH: env.PATH })) {
