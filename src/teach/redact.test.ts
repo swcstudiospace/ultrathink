@@ -204,6 +204,11 @@ describe("redactText: paths", () => {
 		expect(redactText("/etc/passwd", { home: "/" })).toBe("/etc/passwd");
 		expect(redactText("/etc/passwd", { home: "" })).toBe("/etc/passwd");
 	});
+
+	test("a long dot run inside a path is redacted in linear time", () => {
+		const dots = ".".repeat(50_000);
+		expect(redactText(`/home/dev/notes/${dots}x end`, { home })).toBe(`~/notes/${dots}x end`);
+	});
 });
 
 describe("redactText: invariants", () => {

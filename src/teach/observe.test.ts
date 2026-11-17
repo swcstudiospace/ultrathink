@@ -389,6 +389,20 @@ describe("parseLessons", () => {
 	])("returns nothing for %s", (_name, text) => {
 		expect(parseLessons(text)).toEqual([]);
 	});
+
+	test("finds the lesson after a long run of unclosed braces", () => {
+		const lessons = parseLessons(`${"{".repeat(100_000)}${lessonJson(GOOD)}`);
+		expect(lessons).toHaveLength(1);
+		expect(lessons[0]?.name).toBe(GOOD.name);
+	});
+
+	test("returns nothing for a long run of unclosed braces", () => {
+		expect(parseLessons("{".repeat(100_000))).toEqual([]);
+	});
+
+	test("a quote in prose before the object does not hide it", () => {
+		expect(parseLessons(`He said "no, ${lessonJson(GOOD)}`)).toHaveLength(1);
+	});
 });
 
 describe("observeDigest capture", () => {

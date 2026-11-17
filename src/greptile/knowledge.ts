@@ -297,7 +297,9 @@ export function routeDocuments(input: {
 		const arrow = line.indexOf("->");
 		if (arrow < 0) continue;
 		arrows++;
-		const match = /`([^`\s]+?\.md)`|\]\(([^()\s]+?\.md)\)|([\w./-]+\.md)/.exec(
+		// reason: the lookbehind lets only a run's first character start the bare-path alternative; unanchored, a
+		// long run with no ".md" is rescanned from every position, which is quadratic.
+		const match = /`([^`\s]+?\.md)`|\]\(([^()\s]+?\.md)\)|(?<![\w./-])([\w./-]+\.md)/.exec(
 			line.slice(arrow + 2),
 		);
 		const path = (match?.[1] ?? match?.[2] ?? match?.[3])?.replace(/^\.\//, "");

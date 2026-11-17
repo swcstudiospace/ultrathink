@@ -78,4 +78,18 @@ describe("credential scan unquoted assignments", () => {
 			{ line: 2, pattern: "secret-assignment", preview: "zyxw****" },
 		]);
 	});
+
+	test("a long word with many keywords is scanned in linear time and still flagged", () => {
+		const name = "TOKEN".repeat(20_000);
+		expect(findingsOf(`${name}="abcdefgh1234"\n`)).toEqual([
+			{ line: 1, pattern: "secret-assignment", preview: "abcd****" },
+		]);
+		expect(findingsOf(`${name}=zq9pLx2wVb7r\n`)).toEqual([
+			{ line: 1, pattern: "secret-env-assignment", preview: "zq9p****" },
+		]);
+	});
+
+	test("a long word with many keywords and no assignment is not flagged", () => {
+		expect(findingsOf(`${"KEY".repeat(20_000)} and more text\n`)).toEqual([]);
+	});
 });
