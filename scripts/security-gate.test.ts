@@ -2,7 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -661,6 +669,19 @@ describe("license tree collection", () => {
 
 	test("a missing node_modules throws rather than reporting an empty pass", () => {
 		expect(() => collectLicenses([tempDir()])).toThrow("bun install --frozen-lockfile");
+	});
+
+	test("a stat error other than ENOENT fails the license gate on that entry instead of skipping it", () => {
+		const root = tempDir();
+		installPackage(root, "alpha", { name: "alpha", version: "1.0.0", license: "MIT" });
+		// A self-referencing link makes stat fail with ELOOP. Root ignores file modes, so EACCES cannot be produced here.
+		symlinkSync("loop", join(root, "node_modules", "loop"));
+		const result = evaluateLicenses(collectLicenses([root]), policyOf(), TODAY);
+		expect(result.status).toBe("fail");
+		expect(result.packageCount).toBe(2);
+		expect(result.failures).toHaveLength(1);
+		expect(result.failures[0]?.file).toBe(join(root, "node_modules", "loop"));
+		expect(result.failures[0]?.reason).toMatch(/^cannot stat: /);
 	});
 
 	test("the licenses CLI writes evidence for a passing tree, a failing tree, and exits 2 without node_modules", () => {

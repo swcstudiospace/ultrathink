@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	existsSync,
 	mkdtempSync,
@@ -215,5 +215,37 @@ describe("appendAttempts", () => {
 			updatedAt: 3,
 		});
 		expect(strayFiles()).toEqual([]);
+	});
+});
+
+describe("unlocked fallback", () => {
+	test("a lock held past its timeout still writes the ship, and says so on stderr, naming the lock", () => {
+		seed();
+		// A live holder with no start identity stays fresh, so the write cannot take the lock and falls back unlocked.
+		writeFileSync(
+			`${statePath}.lock`,
+			JSON.stringify({ pid: process.pid, startTime: "", token: "held" }),
+		);
+		const written: string[] = [];
+		const spy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+			written.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write);
+		let ship: ShipState | undefined;
+		try {
+			ship = writeShip(statePath, { phase: "ready" }, 5, {
+				timeoutMs: 0,
+				staleMs: Number.MAX_SAFE_INTEGER,
+				liveness: { killAlive: () => true },
+			});
+		} finally {
+			spy.mockRestore();
+		}
+		expect(ship?.phase).toBe("ready");
+		expect(readShip(statePath)).toMatchObject({ phase: "ready", updatedAt: 5 });
+		const lockLines = written.filter(
+			(line) => line.includes("s1.json.lock") && line.includes("writing unlocked"),
+		);
+		expect(lockLines).toHaveLength(1);
 	});
 });

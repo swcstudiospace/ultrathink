@@ -320,3 +320,87 @@ describe("createRuntimeProbe", () => {
 		stop();
 	});
 });
+
+interface LoggedEvent {
+	level: string;
+	event: string;
+	fields: Record<string, unknown> | undefined;
+}
+
+function recordingLogger(events: LoggedEvent[]) {
+	const record = (level: string) => (event: string, fields?: Record<string, unknown>) => {
+		events.push({ level, event, fields });
+	};
+	return { info: record("info"), warn: record("warn"), error: record("error") };
+}
+
+describe("sampler failures", () => {
+	test("a throwing sampler logs one error event per failure with its error class, and sampling continues", () => {
+		const events: LoggedEvent[] = [];
+		const samples: RuntimeSample[] = [];
+		let failures = 2;
+		let tick: (() => void) | undefined;
+		const probe = createRuntimeProbe({
+			intervalMs: 10,
+			onSample: (sample) => samples.push(sample),
+			now: () => 0,
+			memory: () => {
+				if (failures > 0) {
+					failures--;
+					throw new RangeError("no memory");
+				}
+				return { rss: 100, heapUsed: 40 };
+			},
+			setTimer: (run) => {
+				tick = run;
+				return {};
+			},
+			clearTimer: () => {
+				// reason: test double, the timer handle is not real so there is nothing to clear
+			},
+			logger: recordingLogger(events),
+		});
+		const stop = probe.start();
+		tick?.();
+		tick?.();
+		tick?.();
+		stop();
+		expect(samples).toHaveLength(1);
+		expect(events).toEqual([
+			{ level: "error", event: "runtime sample failed", fields: { errorClass: "RangeError" } },
+			{ level: "error", event: "runtime sample failed", fields: { errorClass: "RangeError" } },
+		]);
+	});
+
+	test("a throwing onSample logs one error event per call and sampling continues", () => {
+		const events: LoggedEvent[] = [];
+		let calls = 0;
+		let tick: (() => void) | undefined;
+		const probe = createRuntimeProbe({
+			intervalMs: 10,
+			onSample: () => {
+				calls++;
+				throw new TypeError("observer broke");
+			},
+			now: () => 0,
+			memory: () => ({ rss: 100, heapUsed: 40 }),
+			setTimer: (run) => {
+				tick = run;
+				return {};
+			},
+			clearTimer: () => {
+				// reason: test double, the timer handle is not real so there is nothing to clear
+			},
+			logger: recordingLogger(events),
+		});
+		const stop = probe.start();
+		tick?.();
+		tick?.();
+		stop();
+		expect(calls).toBe(2);
+		expect(events).toEqual([
+			{ level: "error", event: "runtime onSample failed", fields: { errorClass: "TypeError" } },
+			{ level: "error", event: "runtime onSample failed", fields: { errorClass: "TypeError" } },
+		]);
+	});
+});
