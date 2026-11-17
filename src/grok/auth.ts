@@ -11,7 +11,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { GROK_CLIENT_VERSION_FALLBACK } from "./types.ts";
-import { dropJevKeys } from "../route-defaults.ts";
 import { readJson } from "../shared.ts";
 
 export interface GrokAuth {
@@ -61,6 +60,50 @@ export function grokHome(
 	env: Record<string, string | undefined> = process.env,
 ): string {
 	return home?.trim() || env.GROK_HOME?.trim() || join(homedir(), ".grok");
+}
+
+/**
+ * The only host variables a Grok CLI child inherits; provider keys and other unrelated secrets are withheld. `XAI_API_KEY`
+ * is the grok product's own key, so the CLI child keeps it.
+ */
+const GROK_CHILD_ENV_NAMES: readonly string[] = [
+	"HOME",
+	"PATH",
+	"USER",
+	"LOGNAME",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"TERM",
+	"TMPDIR",
+	"TZ",
+	"GROK_HOME",
+	"XDG_CONFIG_HOME",
+	"XDG_CACHE_HOME",
+	"XDG_DATA_HOME",
+	"XDG_STATE_HOME",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"NODE_EXTRA_CA_CERTS",
+	"REQUESTS_CA_BUNDLE",
+	"XAI_API_KEY",
+];
+
+/** A child environment holding only the allowlisted variables of `source`; callers add their own overrides. */
+export function grokChildEnv(
+	source: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+	const env: Record<string, string | undefined> = {};
+	for (const name of GROK_CHILD_ENV_NAMES) {
+		if (source[name] !== undefined) env[name] = source[name];
+	}
+	return env;
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -154,7 +197,7 @@ export interface EnsureFreshOptions {
 		env: Record<string, string | undefined>,
 		signal?: AbortSignal,
 	) => Promise<number>;
-	/** Child environment for the CLI; default is the whole `process.env`. Pass an allowlist when the host holds unrelated secrets. */
+	/** Environment the CLI refresh reads from; default `process.env`. Only the Grok CLI allowlist (`grokChildEnv`) reaches the child. */
 	env?: Record<string, string | undefined>;
 }
 
@@ -259,10 +302,9 @@ export async function ensureFreshGrokAuth(
 		const last = refreshedAt.get(key);
 		if (!opts.force && last !== undefined && now >= last && now - last < REFRESH_WINDOW_MS)
 			return auth;
-		const env: Record<string, string | undefined> = { ...(opts.env ?? process.env) };
+		const env: Record<string, string | undefined> = grokChildEnv(opts.env ?? process.env);
 		const home = opts.home?.trim();
 		if (home) env.GROK_HOME = home;
-		dropJevKeys(env);
 		flight = startFlight(key, [opts.bin?.trim() || "grok", "models"], env, opts, now);
 	}
 

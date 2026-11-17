@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { loadConfig, userConfigPath } from "../config.ts";
 import {
@@ -223,5 +231,19 @@ describe("writeNotionConfig", () => {
 		const path = userConfigPath({ XDG_CONFIG_HOME: join(tempDir(), "fresh") });
 		writeNotionConfig(path, `collection://${DS}`);
 		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
+
+	test("a failed rename leaves no temp file in the config directory and the config as it was", () => {
+		const dir = tempDir();
+		const path = join(dir, "config.json");
+		writeFileSync(path, JSON.stringify({ linear: { team: "Acme" } }));
+		const fs = {
+			renameSync: () => {
+				throw new Error("rename refused");
+			},
+		};
+		expect(() => writeNotionConfig(path, `collection://${DS}`, fs)).toThrow("rename refused");
+		expect(readdirSync(dir)).toEqual(["config.json"]);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ linear: { team: "Acme" } });
 	});
 });

@@ -9,8 +9,7 @@
  * out to the Grok Build CLI instead so the same login is reused either way.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type EnsureFreshOptions,
@@ -18,6 +17,7 @@ import {
 	type GrokAuth,
 	GrokAuthError,
 	GrokHttpError,
+	grokChildEnv,
 	grokClientVersion,
 	grokHeaders,
 	isGrokAuthExpired,
@@ -40,7 +40,6 @@ import {
 	withRetry,
 } from "../resilience/retry.ts";
 import type { abortableSleep } from "../resilience/sleep.ts";
-import { dropJevKeys } from "../route-defaults.ts";
 import { isAbortError } from "../shared.ts";
 import { attachReport, readReport } from "../types.ts";
 
@@ -61,7 +60,7 @@ export interface GrokCompleteOptions {
 	fetch?: typeof fetch;
 	transport?: GrokTransport;
 	bin?: string;
-	/** Unused: the CLI transport always runs in a scratch directory (see `scratchDir`) so headless sessions do not litter the project's `~/.grok/sessions`. */
+	/** Unused: the CLI transport always runs in its own temporary directory (see `cliAttempt`) so headless sessions do not litter the project's `~/.grok/sessions`. */
 	cwd?: string;
 	/** Test seam for the CLI-driven token refresh; default `ensureFreshGrokAuth`. */
 	refresh?: (opts: EnsureFreshOptions) => Promise<GrokAuth | undefined>;
@@ -69,7 +68,7 @@ export interface GrokCompleteOptions {
 	onResult?: (info: GrokCallInfo) => void;
 	/** `http` transport: `max_output_tokens` (visible output only; positive integer, floored). The CLI transport ignores it. */
 	maxOutputTokens?: number;
-	/** Child environment for the token refresh and the CLI transport; default is the whole `process.env`. Pass an allowlist when the host holds unrelated secrets. */
+	/** Environment the token refresh and the CLI transport read from; default `process.env`. Only the Grok CLI allowlist (`grokChildEnv`) reaches the child. */
 	env?: Record<string, string | undefined>;
 	/** Budget for the CLI-driven token refresh; default 60 s. */
 	refreshTimeoutMs?: number;
@@ -405,18 +404,6 @@ async function httpAttempt(
 const CLI_DISALLOWED_TOOLS =
 	"run_terminal_cmd,search_replace,write_file,read_file,list_dir,grep,web_search,web_fetch,todo_write,task,Agent";
 
-let scratch: string | undefined;
-
-/** Private working directory for headless CLI calls: created once per process with `mkdtemp`, removed on exit. */
-function scratchDir(): string {
-	if (!scratch) {
-		const dir = mkdtempSync(join(tmpdir(), "ultrathink-grok-"));
-		scratch = dir;
-		process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
-	}
-	return scratch;
-}
-
 /** Extracts `.text` from `grok --output-format json` stdout; a non-`end_turn` stop (e.g. `cancelled`) is an error, not partial text. */
 function parseCliJson(stdout: string): string {
 	const trimmed = stdout.trim();
@@ -427,7 +414,11 @@ function parseCliJson(stdout: string): string {
 	} catch {
 		const start = trimmed.lastIndexOf("\n{");
 		if (start === -1) throw new Error("grok output is not JSON");
-		parsed = JSON.parse(trimmed.slice(start + 1));
+		try {
+			parsed = JSON.parse(trimmed.slice(start + 1));
+		} catch {
+			throw new Error("grok output is not JSON");
+		}
 	}
 	if (!parsed || typeof parsed !== "object") throw new Error("grok output is not an object");
 	const fields = parsed as Record<string, unknown>;
@@ -470,13 +461,12 @@ function cliAttempt(
 		const promptPath = join(dir, "prompt.md");
 		writeFileSync(promptPath, user, "utf8");
 		const env: Record<string, string | undefined> = {
-			...(opts.env ?? process.env),
+			...grokChildEnv(opts.env ?? process.env),
 			GROK_SUBAGENTS: "0",
 			GROK_MEMORY: "0",
 			GROK_WEB_FETCH: "0",
 		};
 		if (opts.home?.trim()) env.GROK_HOME = opts.home.trim();
-		dropJevKeys(env);
 		const timeoutMs = opts.timeoutMs ?? DEFAULT_GROK_CONFIG.callTimeoutMs;
 		const result = await runChild({
 			cmd: [
@@ -509,7 +499,7 @@ function cliAttempt(
 				"--prompt-file",
 				promptPath,
 			],
-			cwd: scratchDir(),
+			cwd: dir,
 			env,
 			timeoutMs,
 			signal: opts.signal,
