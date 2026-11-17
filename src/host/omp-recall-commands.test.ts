@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { KnowledgeLookup } from "../greptile/knowledge.ts";
 import { RECALL_TYPE } from "./omp-render.ts";
 import { RECALL_USAGE } from "./omp.ts";
 import { quietConfig, setup } from "./omp-test.helpers.ts";
@@ -79,5 +80,56 @@ describe("/ultrathink-recall and /ultrathink-skills", () => {
 			details: { lessons: { status: "empty", reason: "gate_off" } },
 		});
 		expect(entry?.options).toEqual({ triggerTurn: false });
+	});
+
+	test("the explicit recall card carries the knowledge lines the reader returned", async () => {
+		const marker = "KB-MARKER-7f3a9c";
+		const lookup: KnowledgeLookup = {
+			outcome: "used",
+			repo: "acme/widgets",
+			docs: [`docs/${marker}.md`],
+			chars: 40,
+			ms: 1,
+		};
+		const reads: string[] = [];
+		const { command, notices, sent } = setup(undefined, 1_000, {
+			stateDir: dir,
+			knowledgeReader: () => ({
+				start: () => ({
+					read: async (topic: string) => {
+						reads.push(topic);
+						return { lookup, digest: `### docs/${marker}.md\n${marker} body` };
+					},
+					close: () => undefined,
+				}),
+			}),
+			config: () =>
+				quietConfig((config) => {
+					// The reader is injected, so no Greptile credential or network is touched. Teachable Moments stays
+					// off, as in the test above, so the lessons source answers with its gate.
+					config.hitl.knowledgeBase = true;
+					config.recallSettings.recall.enabled = true;
+					config.recallSettings.recall.sources.knowledge = true;
+					config.recallSettings.recall.triggers.explicit = true;
+				}),
+		});
+
+		await command("ultrathink-recall", "why does the build fail");
+
+		expect(notices).toEqual([]);
+		expect(reads).toEqual(["why does the build fail"]);
+		expect(sent).toHaveLength(1);
+		// The card lists the lookup's document paths, so the marker is checked on the item title.
+		const [entry] = sent;
+		expect(entry?.message).toMatchObject({
+			customType: RECALL_TYPE,
+			display: true,
+			details: {
+				knowledge: {
+					status: "success",
+					items: [{ title: expect.stringContaining(marker) }],
+				},
+			},
+		});
 	});
 });

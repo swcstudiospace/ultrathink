@@ -68,7 +68,7 @@ import type { ShipConfig } from "../ship/types.ts";
 import { teachContext, teachEnabled } from "../teach/context.ts";
 import { digestFromAgentMessages } from "../teach/digest.ts";
 import { spawnObserveDetached } from "../teach/spawn.ts";
-import { createGreptileKnowledge } from "../greptile/knowledge.ts";
+import { createGreptileKnowledge, type KnowledgeReader } from "../greptile/knowledge.ts";
 import { runExplicitRecall } from "../recall/explicit.ts";
 import { createBudgetState, createCooldownState, createDedupeState } from "../recall/gates.ts";
 import { lessonsLookup, recallLessons } from "../teach/recall.ts";
@@ -1531,6 +1531,11 @@ export function createOmpExtension(
 		shipPrecheck?: (cwd: string) => ShipPrecheck;
 		/** Teachable Moments context source; defaults to the merged config for the session cwd. */
 		teachContext?: typeof teachContext;
+		/**
+		 * Test seam: the knowledge reader the explicit recall reads through. Defaults to the Greptile reader
+		 * (`createGreptileKnowledge`), which is undefined unless `hitl.knowledgeBase` is on.
+		 */
+		knowledgeReader?: (config: UltrathinkConfig) => KnowledgeReader | undefined;
 		/** Detached `teach observe` launcher; defaults to `spawnObserveDetached`. */
 		spawnObserve?: typeof spawnObserveDetached;
 		/** Ship config source; defaults to the merged Claude config files for the session cwd. */
@@ -2472,7 +2477,9 @@ export function createOmpExtension(
 			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
 			const cwd = ctx?.cwd || process.cwd();
 			const config = flightConfig(cwd);
-			const reader = createGreptileKnowledge(config);
+			const reader = (
+				options.knowledgeReader ?? ((c: UltrathinkConfig) => createGreptileKnowledge(c))
+			)(config);
 			const teachCtx = (options.teachContext ?? teachContext)({
 				host: "omp",
 				cwd,
