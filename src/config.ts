@@ -38,6 +38,11 @@ import {
 	type MuseEffort,
 } from "./muse/types.ts";
 import {
+	defaultRecallSettings,
+	parseRecallSettings,
+	type RecallSettings,
+} from "./recall/config.ts";
+import {
 	CAPTURE_MODES,
 	DEFAULT_TEACH_CONFIG,
 	type CaptureMode,
@@ -273,6 +278,8 @@ export interface UltrathinkConfig {
 	pstack: PstackConfig;
 	/** AgentSwarm auto-run (opt-in; user files only — a project layer cannot enable it). */
 	swarm: SwarmConfig;
+	/** Recall, knowledge-probe, skill-authoring and information-panel settings. User files only; a project layer is ignored. */
+	recallSettings: RecallSettings;
 	/** Planning model overrides and exact-provider default selectors; built-in `{ hosts: {}, providerDefaults: {} }`. */
 	models: ModelsConfig;
 	/**
@@ -325,6 +332,7 @@ export function defaultConfig(): UltrathinkConfig {
 		state: { ...DEFAULT_STATE_CONFIG },
 		pstack: { ...DEFAULT_PSTACK_CONFIG },
 		swarm: { ...DEFAULT_SWARM_CONFIG },
+		recallSettings: defaultRecallSettings(),
 		models: { hosts: {}, providerDefaults: providerDictionary({}), tot: defaultTotModels() },
 		modelProvenance: { claude: "route-default", grok: "route-default", muse: "route-default" },
 	};
@@ -1236,6 +1244,10 @@ export function mergeConfig(
 		state: mergeState(asRecord(file.state), base.state, options.project === true),
 		pstack: mergePstack(asRecord(file.pstack), base.pstack, options.project === true),
 		swarm: mergeSwarm(asRecord(file.swarm), base.swarm, options.project === true),
+		recallSettings:
+			options.project === true
+				? base.recallSettings
+				: parseRecallSettings(file, base.recallSettings),
 		models: mergeModels(asRecord(file.models), base.models),
 		modelProvenance: {
 			claude: modelPin(claude, base.modelProvenance.claude, true),
