@@ -16,6 +16,7 @@ import {
 import { dependencyLevels } from "../think/graph.ts";
 import type { ModelResolution } from "./engine.ts";
 import { isRecord } from "../shared.ts";
+import type { TurnPanels } from "../recall/turn-panels.ts";
 
 export interface PlanView {
 	root: string;
@@ -24,6 +25,8 @@ export interface PlanView {
 	engine?: string;
 	/** The selection's safe record, projected for display (§9 path 3): engine request kept apart from model state. */
 	modelResolution?: ModelResolution;
+	/** The information panels of the plan's prompt; absent unless `panels.informationPanels` is on. */
+	panels?: TurnPanels;
 	/** Name of the skill the user invoked, when the plan covers a skill invocation. */
 	skill?: string;
 	graphId?: string;

@@ -56,6 +56,7 @@ import type { CompletionReport, UpliftResult, UpliftState } from "../types.ts";
 import { docsLookup, formatDocsSection, groundDocs } from "../ragflow/ground.ts";
 import { teachContext, teachEnabled } from "../teach/context.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "../teach/recall.ts";
+import { buildTurnPanels, type TurnPanels, withoutRows } from "../recall/turn-panels.ts";
 import type { GroundOutcome, DocsLookup } from "../ragflow/types.ts";
 import { isHostId, type HostId } from "../host/types.ts";
 import { redactSecrets } from "../redact.ts";
@@ -235,6 +236,8 @@ export interface PromptSubmitResult {
 	decisions?: DecisionRecord[];
 	/** The Tree-of-Thought PRD outcome the completion gate reads; absent when the stage did not run. */
 	prd?: PrdOutcome;
+	/** The information panels of this prompt's plan; absent unless `panels.informationPanels` is on and a source was looked up. */
+	panels?: TurnPanels;
 }
 
 function specFile(stateDir: string, sessionId: string): string {
@@ -1422,9 +1425,9 @@ export async function runPromptSubmit(
 			kickedOff: false,
 			synced: false,
 			...(knowledge ? { knowledge } : {}),
-			...(lessons ? { lessons } : {}),
+			...(lessons ? { lessons: withoutRows(lessons) } : {}),
 			...(docs ? { docs } : {}),
-			...(skills ? { skills } : {}),
+			...(skills ? { skills: withoutRows(skills) } : {}),
 			...(records.length ? { decisions: records } : {}),
 		});
 		let record: SessionRecord = buildRecord(result, undefined);
@@ -1716,11 +1719,13 @@ export async function runPromptSubmit(
 			output.systemMessage = briefNotice ? `${summary} · ${briefNotice}` : summary;
 		}
 		outcome = "planned";
+		const panels = buildTurnPanels({ knowledge, lessons, skills }, deps.config.recallSettings);
 		return {
 			output,
 			record,
 			...(records.length ? { decisions: records } : {}),
 			...(prd ? { prd } : {}),
+			...(panels ? { panels } : {}),
 		};
 	} catch (error) {
 		// A cancelled flight ends skipped, as planPrompt reports it; anything else stays a failure named by its error.

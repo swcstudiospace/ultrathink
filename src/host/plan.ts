@@ -411,7 +411,14 @@ async function planPromptTurn(
 			carrierPath: carrier,
 			summary: result.output.systemMessage,
 			modelResolution: resolution,
-			...(result.record ? { view: buildPlanView(result.record, Date.now() - started) } : {}),
+			...(result.record
+				? {
+						view: {
+							...buildPlanView(result.record, Date.now() - started),
+							...(result.panels ? { panels: result.panels } : {}),
+						},
+					}
+				: {}),
 			...(result.prd ? { prd: result.prd } : {}),
 		};
 	} catch (error) {

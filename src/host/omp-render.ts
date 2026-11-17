@@ -14,6 +14,8 @@ import { type ActivityNotice, toActivityNotice } from "./activity-notice.ts";
 import { formatElapsed, type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
 import { type PlanView, projectResolution } from "./view.ts";
 import { isRecord } from "../shared.ts";
+import { renderPanel } from "../recall/panel-render.ts";
+import type { PanelEnvelope } from "../recall/panel-model.ts";
 
 export const PLAN_TYPE = "ultrathink-plan";
 export const PENDING_TYPE = "ultrathink-pending";
@@ -1123,6 +1125,24 @@ function activityRows(details: unknown, p: Paint): string[] {
 	return rows;
 }
 
+/**
+ * The information panels of a plan, drawn under the plan rows. `details` is untrusted session data: an entry without a
+ * string status, or one that fails to render, is not drawn, so a malformed panel never throws into Omp's renderer.
+ */
+function panelSectionRows(panels: unknown, room: number): string[] {
+	if (!isRecord(panels)) return [];
+	const rows: string[] = [];
+	for (const panel of Object.values(panels)) {
+		if (!isRecord(panel) || typeof panel.status !== "string") continue;
+		try {
+			rows.push("", ...renderPanel(panel as unknown as PanelEnvelope, room));
+		} catch {
+			// not drawn: see the comment above
+		}
+	}
+	return rows;
+}
+
 export function registerUltrathinkRenderers(pi: {
 	registerMessageRenderer(type: string, renderer: Renderer): void;
 }): void {
@@ -1134,7 +1154,11 @@ export function registerUltrathinkRenderers(pi: {
 			const p = paint(theme);
 			// built eagerly so malformed nodes fall back to Omp's default card here
 			const graph = planViewToGraph(view);
-			return card((room) => planRows(view, graph, options.expanded, p, theme, room), p, {
+			const rows = (room: number) => [
+				...planRows(view, graph, options.expanded, p, theme, room),
+				...panelSectionRows(view.panels, room),
+			];
+			return card(rows, p, {
 				border: "borderMuted",
 				padY: 1,
 			});
