@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadConfig, userConfigPath } from "../config.ts";
 import {
@@ -208,4 +208,20 @@ describe("writeNotionConfig", () => {
 			expect(readFileSync(path, "utf8")).toBe(content);
 		},
 	);
+
+	test.each([0o600, 0o640])("keeps an existing config's mode of %o", (mode) => {
+		const path = join(tempDir(), "config.json");
+		writeFileSync(path, JSON.stringify({ linear: { team: "Acme" } }), { mode });
+		chmodSync(path, mode);
+		writeNotionConfig(path, `collection://${DS}`);
+		expect(statSync(path).mode & 0o777).toBe(mode);
+		const config = JSON.parse(readFileSync(path, "utf8"));
+		expect(config.notion.dataSourceUrl).toBe(`collection://${DS}`);
+	});
+
+	test("creates a new config owner-only, since it can hold tokens", () => {
+		const path = userConfigPath({ XDG_CONFIG_HOME: join(tempDir(), "fresh") });
+		writeNotionConfig(path, `collection://${DS}`);
+		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
 });

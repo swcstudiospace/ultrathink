@@ -5,7 +5,15 @@
  * (src/track/create.ts) and the ultrathink-kickoff/-sync skills update, through the Notion MCP
  * DDL tools, and records its data source in the user config. Never creates rows.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import type { ToolCaller } from "../track/create.ts";
 
@@ -216,7 +224,10 @@ export function writeNotionConfig(path: string, dataSourceUrl: string): void {
 		},
 	};
 	mkdirSync(dirname(path), { recursive: true });
+	// The config can hold tokens: keep an existing file's mode, and create a new one owner-only.
+	const mode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
 	const tmp = `${path}.${process.pid}.tmp`;
-	writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
+	writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode });
+	chmodSync(tmp, mode);
 	renameSync(tmp, path);
 }
