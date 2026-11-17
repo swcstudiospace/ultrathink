@@ -1,0 +1,192 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`activity card frame and rows (frame, card, activityRows) frame: an activity card at a normal width draws the rounded border around its rows 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**Lesson recalled**</></><bg:customMessageBg>               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>hindsight</></><bg:customMessageBg>                                      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>used</></><bg:customMessageBg>                                           </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>4</></><bg:customMessageBg>                                              </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>Use bun test snapshots</></><bg:customMessageBg>                         </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>Snapshot formatter output</></><bg:customMessageBg>                      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>Keep greps out of tests</></><bg:customMessageBg>                        </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <dim>1 more</></><bg:customMessageBg>                                           </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <dim>2 lessons matched this prompt</></><bg:customMessageBg>                    </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`activity card frame and rows (frame, card, activityRows) frame: row widths of a framed activity card are pinned as observed (base can exceed the requested width) 1`] = `
+[
+  76,
+  138,
+  138,
+  138,
+  138,
+  138,
+  138,
+  138,
+  138,
+  138,
+  76,
+]
+`;
+
+exports[`activity card frame and rows (frame, card, activityRows) frame: below the minimum frame width the rows are unframed and cut to the width 1`] = `
+[
+  "<cust…",
+  "<mute…",
+  "<mute…",
+  "<mute…",
+  "<mute…",
+  "<mute…",
+  "<mute…",
+  "<dim>…",
+  "<dim>…",
+]
+`;
+
+exports[`activity card frame and rows (frame, card, activityRows) activityRows: a recalled-lessons notice draws its header, source, outcome, count, three names, hidden count and detail 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**Lesson recalled**</></><bg:customMessageBg>               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>hindsight</></><bg:customMessageBg>                                      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>used</></><bg:customMessageBg>                                           </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>4</></><bg:customMessageBg>                                              </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>Use bun test snapshots</></><bg:customMessageBg>                         </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>Snapshot formatter output</></><bg:customMessageBg>                      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>Keep greps out of tests</></><bg:customMessageBg>                        </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <dim>1 more</></><bg:customMessageBg>                                           </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <dim>2 lessons matched this prompt</></><bg:customMessageBg>                    </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`activity card frame and rows (frame, card, activityRows) activityRows: details that are not a v1 notice draw the unavailable line 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg> <muted>Activity unavailable.</></><bg:customMessageBg>                          </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`activity header (activityHeader) and fallback line (activityFallbackLine) activityHeader: each activity kind has its fixed header in the plain fallback line 1`] = `
+[
+  "Teachable moment",
+  "Teachable Moments failed · error (hindsight)",
+  "Lesson recalled · 2 (local)",
+  "Skill recalled · 1",
+  "Substrate read · ok (substrate)",
+]
+`;
+
+exports[`insight card rows (insightRows) insightRows: the compact card shows scope, latest decision, lessons, autonomy and counts in its rows 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-insight · captured — not live**</></><bg:customMessageBg>          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Project: ultrathink · Session: sess-1 · Snapshot: 2027-01-15T08:00:00.000Z</><bg:customMessageBg>   </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Latest decision: plan · ok · plan · P 0.97</><bg:customMessageBg>                                   </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Moments: 2 shown · Use bun test snapshots · promoted</><bg:customMessageBg>                         </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Partial snapshot — some reads failed · Autonomy: 1 eligible · 1 promoted · …</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Counts (shown): 1 candidate · 1 promoted · Partial snapshot: could not read…</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`insight card rows (insightRows) insightRows: the expanded card lists Jev decisions, lessons, skills, the policy footer and limitations 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg>                                                                              </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-insight · captured — not live**</></><bg:customMessageBg>          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Project: ultrathink · Session: sess-1 · Snapshot: 2027-01-15T08:00:00.000Z</><bg:customMessageBg>   </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Latest decision: plan · ok · plan · P 0.97</><bg:customMessageBg>                                   </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Moments: 2 shown · Use bun test snapshots · promoted</><bg:customMessageBg>                         </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Jev: plan · ok · plan · omp-native:gpt · P 0.97 · thr 0.50 · 1200ms · 1</><bg:customMessageBg>      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> attempt · Cost 0.002 · Q scope (0.40) +1 more · 2027-01-15T08:00:00.000Z</><bg:customMessageBg>     </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Jev: knowledge · error · fail-open · Not recorded · P Not recorded · thr Not</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> recorded · err auth · latency Not recorded · attempts Not recorded</><bg:customMessageBg>           </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Lesson: Use bun test snapshots · promoted · pattern ×3 · promoted</><bg:customMessageBg>            </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> bun-snapshots (omp)</><bg:customMessageBg>                                                          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Lesson: Avoid grep tests · candidate · pitfall ×1</><bg:customMessageBg>                            </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Skill: Use bun test snapshots · promoted bun-snapshots (omp)</><bg:customMessageBg>                 </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Partial snapshot — some reads failed · Autonomy: 1 eligible · 1 promoted</><bg:customMessageBg>     </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Counts (shown): 1 candidate · 1 promoted</><bg:customMessageBg>                                     </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Effective policy: teaching on · capture explicit · recall on (3/800) ·</><bg:customMessageBg>       </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> auto-promote off after 3 · Jev on</><bg:customMessageBg>                                            </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Limitation: Partial snapshot: could not read 2 lesson files</><bg:customMessageBg>                  </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Limitation: Showing up to 50 lessons</><bg:customMessageBg>                                         </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg>                                                                              </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`insight card rows (insightRows) insightRows: a narrow expanded card wraps its detail lines within the width 1`] = `
+[
+  "<borderMuted>╭────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg>                            </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ult…</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Project: ultrathink ·</><bg:customMessageBg>      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Session: sess-1 ·</><bg:customMessageBg>          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Snapshot:</><bg:customMessageBg>                  </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 2027-01-15T08:00:00.000Z</><bg:customMessageBg>   </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Latest decision: plan · ok</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> · plan · P 0.97</><bg:customMessageBg>            </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Moments: 2 shown · Use bun</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> test snapshots · promoted</><bg:customMessageBg>  </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 21 more detail lines — op…</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Partial snapshot — some</><bg:customMessageBg>    </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> reads failed · Autonomy: 1</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> eligible · 1 promoted</><bg:customMessageBg>      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Counts (shown): 1</><bg:customMessageBg>          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> candidate · 1 promoted</><bg:customMessageBg>     </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Effective policy: teaching</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> on · capture explicit ·</><bg:customMessageBg>    </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> recall on (3/800) ·</><bg:customMessageBg>        </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> auto-promote off after 3 ·</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Jev on</><bg:customMessageBg>                     </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Limitation: Partial</><bg:customMessageBg>        </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> snapshot: could not read 2</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> lesson files</><bg:customMessageBg>               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 2 more policy and limitat…</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg>                            </><borderMuted>│</>",
+  "<borderMuted>╰────────────────────────────╯</>",
+]
+`;
+
+exports[`insight card rows (insightRows) insightRows: an empty snapshot renders the no-history lines in both card sizes 1`] = `
+{
+  "compact": [
+    "<borderMuted>╭──────────────────────────────────────────────────────────────────────────────╮</>",
+    "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-insight · captured — not live**</></><bg:customMessageBg>          </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> Project: ultrathink · Session: sess-1 · Snapshot: 2027-01-15T08:00:00.000Z</><bg:customMessageBg>   </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> No saved Jev decisions for this session</><bg:customMessageBg>                                      </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> No lessons recorded for this project</><bg:customMessageBg>                                         </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> Autonomy: 0 eligible · 0 promoted · capture explicit · recall on (3/800) · …</><bg:customMessageBg> </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> Counts (shown): none recorded</><bg:customMessageBg>                                                </><borderMuted>│</>",
+    "<borderMuted>╰──────────────────────────────────────────────────────────────────────────────╯</>",
+  ],
+  "expanded": [
+    "<borderMuted>╭──────────────────────────────────────────────────────────────────────────────╮</>",
+    "<borderMuted>│</><bg:customMessageBg>                                                                              </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-insight · captured — not live**</></><bg:customMessageBg>          </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> Project: ultrathink · Session: sess-1 · Snapshot: 2027-01-15T08:00:00.000Z</><bg:customMessageBg>   </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> No saved Jev decisions for this session</><bg:customMessageBg>                                      </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> No lessons recorded for this project</><bg:customMessageBg>                                         </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> Autonomy: 0 eligible · 0 promoted</><bg:customMessageBg>                                            </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> Counts (shown): none recorded</><bg:customMessageBg>                                                </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> Effective policy: teaching on · capture explicit · recall on (3/800) ·</><bg:customMessageBg>       </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg> auto-promote off after 3 · Jev on</><bg:customMessageBg>                                            </><borderMuted>│</>",
+    "<borderMuted>│</><bg:customMessageBg>                                                                              </><borderMuted>│</>",
+    "<borderMuted>╰──────────────────────────────────────────────────────────────────────────────╯</>",
+  ],
+}
+`;
+
+exports[`insight card rows (insightRows) insightRows: details that fail validation render the unavailable fallback 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-insight · captured — not live**</></><bg:customMessageBg>          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Insight snapshot unavailable. Open /ultrathink-ui for the live view.</><bg:customMessageBg>         </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────────────────────────╯</>",
+]
+`;
