@@ -36,11 +36,20 @@ export interface A01RunResult<T> {
 	error?: string;
 }
 
+/** Token shapes the failure log masks beyond sk- keys and Bearer tokens: GitHub, Linear and Notion credentials. */
+const TOKEN_FORMS: readonly RegExp[] = [
+	/\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+	/\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+	/\blin_api_[A-Za-z0-9]{20,}/g,
+	/\b(?:ntn|secret)_[A-Za-z0-9]{20,}/g,
+];
+
 /** Simple redaction for logs/state (shared pattern with teachable hooks). */
 function redactForLog(input: string): string {
 	let s = String(input);
 	s = s.replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-REDACTED");
 	s = s.replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer REDACTED");
+	for (const form of TOKEN_FORMS) s = s.replace(form, "REDACTED");
 	// Home paths outside the working tree are redacted; paths inside it stay.
 	const home = process.env.HOME || "/root";
 	const repo = process.cwd();

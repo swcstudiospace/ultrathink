@@ -601,6 +601,22 @@ describe("reviewCli", () => {
 		expect(result.error?.length).toBe(300);
 	});
 
+	test("a credential-bearing URL in the CLI's stderr is masked in the stored failure", async () => {
+		const { run } = fakeRun((argv) =>
+			argv[2] === "status"
+				? notFound
+				: {
+						exitCode: 2,
+						stderr:
+							"fatal: unable to access 'https://bot:hunter2secretvalue@github.com/acme/app.git/': denied",
+					},
+		);
+		const result = await review(run);
+		expect(result.status).toBe("failed");
+		expect(result.error).toContain("https://[redacted]@github.com/acme/app.git/");
+		expect(result.error).not.toContain("hunter2secretvalue");
+	});
+
 	test.each([
 		["status without confidence", () => status({ confidence: null, comments: [] })],
 		["status score out of range", () => status({ confidence: 7, comments: [] })],

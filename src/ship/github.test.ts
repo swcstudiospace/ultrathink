@@ -68,6 +68,19 @@ describe("createGithub", () => {
 		expect(calls[0]?.timeoutMs).toBe(180_000);
 	});
 
+	test("a credential-bearing URL in git stderr is masked in the push error", () => {
+		const { run } = fakeRun(() => ({
+			exitCode: 128,
+			stderr:
+				"fatal: unable to access 'https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r.git/': denied",
+		}));
+		const result = createGithub({ cwd: "/w", run }).push("feat");
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("https://[redacted]@github.com/o/r.git/");
+		expect(result.error).not.toContain("x-access-token");
+		expect(result.error).not.toContain("ghp_");
+	});
+
 	test("push and deleteRemoteBranch refuse a branch name that git would read as an option, without spawning", () => {
 		const { run, calls } = fakeRun(() => ({}));
 		const gh = createGithub({ cwd: "/w", run });
@@ -247,6 +260,26 @@ describe("createGithub", () => {
 				headSha: "x",
 			}).ok,
 		).toBe(true);
+	});
+
+	test("a credential-bearing URL in gh stderr is masked in the merge error", () => {
+		const denied = fakeRun((argv) =>
+			argv[2] === "view"
+				? prView("OPEN")
+				: {
+						exitCode: 1,
+						stderr:
+							"failed to merge: https://bot:hunter2secretvalue@api.github.com/repos/o/r denied",
+					},
+		);
+		const result = createGithub({ cwd: "/w", run: denied.run }).merge({
+			number: 7,
+			method: "squash",
+			headSha: "x",
+		});
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("https://[redacted]@api.github.com/repos/o/r");
+		expect(result.error).not.toContain("hunter2secretvalue");
 	});
 
 	test("deleteRemoteBranch treats an already-deleted ref as ok", () => {

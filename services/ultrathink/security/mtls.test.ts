@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
+import type { Logger } from "../obs/log.ts";
 import { identityFromUriSans, type IdentityResult } from "./identity.ts";
 import {
 	bunAtLeast,
@@ -679,5 +680,38 @@ describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {
 		await expect(
 			startMtlsServer({ ...serverOptions(30), hostname: "0.0.0.0" }, async () => new Response()),
 		).rejects.toThrow(RangeError);
+	});
+
+	test("a handler error is one structured log event: the error class, a redacted message, no stack", async () => {
+		class UpstreamTimeout extends Error {}
+		const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+		const events: { level: string; event: string; fields: Record<string, unknown> }[] = [];
+		const record =
+			(level: string) =>
+			(event: string, fields?: Record<string, unknown>): void => {
+				events.push({ level, event, fields: fields ?? {} });
+			};
+		const logger: Logger = { info: record("info"), warn: record("warn"), error: record("error") };
+		const failing = await startMtlsServer({ ...serverOptions(30), logger }, async () => {
+			throw new UpstreamTimeout(`upstream rejected ${secret}`);
+		});
+		try {
+			const response = await fetchWith(failing.port, {
+				body: "x",
+				tls: { ca, cert: edgeCreds.cert, key: edgeCreds.key },
+			});
+			expect(response.status).toBe(500);
+		} finally {
+			await failing.stop();
+		}
+		expect(events).toHaveLength(1);
+		expect(events[0]?.level).toBe("error");
+		expect(events[0]?.event).toBe("mtls.handler.failed");
+		expect(events[0]?.fields).toEqual({
+			error: "UpstreamTimeout",
+			message: expect.stringContaining("[redacted]"),
+		});
+		expect(JSON.stringify(events)).not.toContain(secret);
+		expect(JSON.stringify(events)).not.toContain("    at ");
 	});
 });

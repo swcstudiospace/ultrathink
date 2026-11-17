@@ -30,11 +30,23 @@ import { readFileSync } from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket as NetSocket } from "node:net";
 import tls, { type TLSSocket } from "node:tls";
+import { redactSecrets } from "../../../src/redact.ts";
+import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { identityFromUriSans, type IdentityResult } from "./identity.ts";
 
 const LOOPBACK = "127.0.0.1";
 const URI_SAN_LABEL = "URI:";
 const SAN_SEPARATOR = ", ";
+
+/** Structured log for listener and handler failures: one JSON line per event on stderr. */
+const defaultLogger = createLogger({ write: (line) => process.stderr.write(`${line}\n`) });
+
+/** Fields for a failure event: the error class and its redacted message. The stack is never logged. */
+function failureFields(error: unknown): Record<string, unknown> {
+	const message = error instanceof Error ? error.message : String(error);
+	return { error: failureLabel(error), message: redactSecrets(message) };
+}
+
 /** Most TLS connections the listener holds at once. Connections beyond this are closed at accept. */
 export const MAX_CONNECTIONS = 256;
 /** Headers that describe the client's connection or body framing, not the request itself. */
@@ -92,6 +104,8 @@ export interface MtlsServerOptions {
 	maxBodyBytes: number;
 	/** Must be 127.0.0.1 (the default). Any other address is refused. */
 	hostname?: string;
+	/** Receives the listener's and the handlers' failure events; defaults to one JSON line per event on stderr. */
+	logger?: Logger;
 }
 
 /** Verified peer of a request. `uriSans` is filled only after the handshake verified the chain. */
@@ -222,6 +236,7 @@ async function serveRequest(
 	res: ServerResponse,
 	maxBodyBytes: number,
 	handle: MtlsHandler,
+	logger: Logger,
 ): Promise<void> {
 	const socket = req.socket as TLSSocket;
 	const body = await readCappedBody(req, maxBodyBytes);
@@ -243,7 +258,7 @@ async function serveRequest(
 	try {
 		response = await handle(request, peer);
 	} catch (error) {
-		console.error("mtls handler failed", error);
+		logger.error("mtls.handler.failed", failureFields(error));
 		res.writeHead(500, { connection: "close" });
 		res.end();
 		return;
@@ -300,6 +315,7 @@ export async function startMtlsServer(
 	}
 	const idleMs = options.idleTimeoutSec * 1000;
 	const maxBodyBytes = options.maxBodyBytes;
+	const logger = options.logger ?? defaultLogger;
 	const timers = options.timers ?? platformTimers;
 	const idleDeadlines = options.idleTimers ?? nativeDeadlines;
 	const handshakeDeadlines = options.handshakeTimers ?? nativeDeadlines;
@@ -309,8 +325,8 @@ export async function startMtlsServer(
 	const httpServer = http.createServer((req, res) => {
 		const socket = req.socket as TLSSocket;
 		res.once("finish", () => disarmDeadline.get(socket)?.());
-		serveRequest(req, res, maxBodyBytes, handle).catch((error: unknown) => {
-			console.error("mtls request failed", error);
+		serveRequest(req, res, maxBodyBytes, handle, logger).catch((error: unknown) => {
+			logger.error("mtls.request.failed", failureFields(error));
 			socket.destroy();
 		});
 	});
@@ -378,7 +394,7 @@ export async function startMtlsServer(
 		}
 		if (!errorLogged) {
 			errorLogged = true;
-			console.error("mtls listener error", error);
+			logger.error("mtls.listener.error", failureFields(error));
 		}
 		stop().catch(() => {
 			// reason: stop after a listener error; that error is logged above and a failed close has nothing further to report
