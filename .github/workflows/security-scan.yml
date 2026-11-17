@@ -27,13 +27,25 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
+      # The gate runs from a worktree of origin/main, so a pull request cannot change the script that judges it.
+      - name: Fetch origin/main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          if ! git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'; then
+            echo "::error::cannot fetch origin/main; security gate refused" >&2
+            exit 1
+          fi
+      - name: Create trusted gate copy
+        run: git worktree add --detach "$RUNNER_TEMP/trusted-main" origin/main
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Install plugin dependencies
         working-directory: plugins/omp-token-opt
         run: bun install --frozen-lockfile
       - name: Audit (high severity gate, both roots)
-        run: bun scripts/security-gate.ts audit --root . --root plugins/omp-token-opt --out security-evidence
+        run: bun "$RUNNER_TEMP/trusted-main/scripts/security-gate.ts" audit --root . --root plugins/omp-token-opt --out security-evidence
   license-policy:
     name: License policy
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -46,13 +58,25 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
+      # The gate runs from a worktree of origin/main, so a pull request cannot change the script that judges it.
+      - name: Fetch origin/main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          if ! git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'; then
+            echo "::error::cannot fetch origin/main; security gate refused" >&2
+            exit 1
+          fi
+      - name: Create trusted gate copy
+        run: git worktree add --detach "$RUNNER_TEMP/trusted-main" origin/main
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Install plugin dependencies
         working-directory: plugins/omp-token-opt
         run: bun install --frozen-lockfile
       - name: License policy (both roots)
-        run: bun scripts/security-gate.ts licenses --root . --root plugins/omp-token-opt --out security-evidence
+        run: bun "$RUNNER_TEMP/trusted-main/scripts/security-gate.ts" licenses --root . --root plugins/omp-token-opt --out security-evidence
   semgrep:
     name: Semgrep
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
