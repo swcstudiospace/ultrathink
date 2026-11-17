@@ -112,7 +112,8 @@ describe("toml form", () => {
 		const out = convert(`---\ndescription: Hello there\n---\n\n${body}`, "toml");
 		const parsed = tomlTable(out);
 		expect(parsed.description).toBe("Hello there");
-		expect(parsed.prompt).toBe(body);
+		// TOML 1.0 trims one newline after a multi-line literal delimiter; Bun 1.2.x keeps it, so compare without it.
+		expect(String(parsed.prompt).replace(/^\n/, "")).toBe(body);
 		const escaped = convert("---\ndescription: d\n---\nit's '''x''' \u0001\n", "toml");
 		expect(tomlTable(escaped).prompt).toBe("it's '''x''' \u0001\n");
 	});

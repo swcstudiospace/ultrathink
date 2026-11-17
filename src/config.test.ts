@@ -2391,9 +2391,11 @@ describe("project files: tighten, fill and timers", () => {
 			budgetMs: base.claude.budgetMs,
 		});
 		// Unlimited (0) is shortened by any project value, and a value over the timer maximum is capped, not rejected.
-		expect(
-			mergeConfig({ claude: { budgetMs: 9_999_999_999 } }, base, { project: true }).claude.budgetMs,
-		).toBe(2_147_483_647);
+		const unlimited = { ...base, claude: { ...base.claude, budgetMs: 0 } };
+		const capped = mergeConfig({ claude: { budgetMs: 9_999_999_999 } }, unlimited, {
+			project: true,
+		});
+		expect(capped.claude.budgetMs).toBe(2_147_483_647);
 	});
 
 	test("a project file can only shorten a timer the user set: a longer project value keeps the user's bound, a shorter one applies", () => {
