@@ -633,6 +633,9 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 	try {
 		const off = offMessage(ctx);
 		if (off) return fail(p.json, 1, off);
+		// Refused from its size before the read: a file over the input cap is never loaded.
+		if (inbox !== undefined && statSync(inbox).size > MAX_INPUT_CHARS)
+			throw new UsageError("input is too large");
 		const text = inbox === undefined ? await readInput(deps) : readFileSync(inbox, "utf8");
 		if (text.length > MAX_INPUT_CHARS) throw new UsageError("input is too large");
 		let raw: unknown;

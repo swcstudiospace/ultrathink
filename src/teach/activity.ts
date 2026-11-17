@@ -5,7 +5,7 @@
  * The Omp session that produced a receipt polls this file and publishes a display-only card. Never throws.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ActivityNotice, toActivityNotice } from "../host/activity-notice.ts";
 import { withFileLock } from "../claude/atomic.ts";
@@ -51,14 +51,14 @@ export function appendActivity(stateDir: string, notice: unknown, sessionId: str
 			const id = randomBytes(4).toString("hex");
 			lines.push(JSON.stringify({ id, sessionId, ...clean }));
 			const tail = lines.slice(-MAX_LINES);
-			const tmp = `${path}.${process.pid}.${id}.tmp`;
-			writeFileSync(tmp, `${tail.join("\n")}\n`, { mode: 0o600 });
+			const tmp = join(dir, `.${FILE_NAME}.${process.pid}.${id}.tmp`);
 			try {
-				chmodSync(tmp, 0o600);
-			} catch {
-				// reason: mode was set at create
+				writeFileSync(tmp, `${tail.join("\n")}\n`, { mode: 0o600 });
+				renameSync(tmp, path);
+			} catch (error) {
+				rmSync(tmp, { force: true });
+				throw error;
 			}
-			renameSync(tmp, path);
 		});
 		try {
 			chmodSync(path, 0o600);

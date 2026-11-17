@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -12,6 +12,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QUESTIONS } from "../decisions/questions.ts";
@@ -31,6 +32,7 @@ import {
 import { openStore, storeDir } from "./store.ts";
 import { DEFAULT_TEACH_CONFIG, MOMENT_KINDS } from "./types.ts";
 import type {
+	InstallOutcome,
 	MomentKind,
 	SkillDraft,
 	TeachableMoment,
@@ -351,6 +353,34 @@ describe("installSkill", () => {
 	function draftOf(f: Fixture, name = "Install me"): SkillDraft {
 		return renderSkillDraft([moment({ name })], f.ctx());
 	}
+
+	test("a failed stage removes its temp file and leaves no skill behind", () => {
+		const f = fixture();
+		const draft = draftOf(f);
+		const original = fs.chmodSync;
+		const failing = spyOn(fs, "chmodSync").mockImplementation(((
+			...args: Parameters<typeof original>
+		) => {
+			if (String(args[0]).endsWith(".tmp")) {
+				throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+			}
+			return (original as (...rest: unknown[]) => unknown)(...args);
+		}) as typeof fs.chmodSync);
+		let outcome: InstallOutcome;
+		try {
+			outcome = installSkill(draft, "drafts", f.ctx());
+		} finally {
+			failing.mockRestore();
+		}
+		const dir = join(f.stateDir, "teach", "skill-drafts", draft.name);
+		expect(outcome).toEqual({
+			target: "drafts",
+			path: join(dir, "SKILL.md"),
+			action: "refused",
+			reason: "could not write the skill (EIO)",
+		});
+		expect(readdirSync(dir)).toEqual([]);
+	});
 
 	test("drafts land under the state directory with private modes and no leftovers", () => {
 		const f = fixture();

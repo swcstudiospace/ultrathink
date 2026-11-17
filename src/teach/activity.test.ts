@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
@@ -125,5 +125,28 @@ describe("activity receipts", () => {
 		}
 		expect(readFileSync(path, "utf8")).toBe(seeded);
 		expect(readActivity(dir).map((row) => row.detail)).toEqual([created.detail]);
+	});
+
+	test("a failed write leaves no temp file and the seeded receipts stay", () => {
+		const dir = stateDir();
+		appendActivity(dir, created, "s1");
+		const path = join(dir, "teach", "activity.ndjson");
+		const seeded = readFileSync(path, "utf8");
+		const original = fs.renameSync;
+		const failing = spyOn(fs, "renameSync").mockImplementation(((
+			...args: Parameters<typeof original>
+		) => {
+			if (String(args[0]).endsWith(".tmp")) {
+				throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+			}
+			return (original as (...rest: unknown[]) => unknown)(...args);
+		}) as typeof fs.renameSync);
+		try {
+			appendActivity(dir, { ...created, detail: "later" }, "s1");
+		} finally {
+			failing.mockRestore();
+		}
+		expect(readdirSync(join(dir, "teach")).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+		expect(readFileSync(path, "utf8")).toBe(seeded);
 	});
 });

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -10,6 +10,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DECISIONS_CONFIG, type DecisionsConfig } from "../decisions/types.ts";
@@ -958,6 +959,29 @@ describe("observe", () => {
 		const result = await run(["observe", "--file", file]);
 		expect(result.code).toBe(2);
 		expect(existsSync(file)).toBe(false);
+	});
+
+	test("an inbox file over the input cap is refused from its size, before it is read", async () => {
+		const file = writeInbox("x".repeat(2_000_001), "big.json");
+		const original = fs.readFileSync;
+		const reads: unknown[] = [];
+		const recording = spyOn(fs, "readFileSync").mockImplementation(((
+			...args: Parameters<typeof original>
+		) => {
+			reads.push(args[0]);
+			return (original as (...rest: unknown[]) => unknown)(...args);
+		}) as typeof fs.readFileSync);
+		let result: CliResult;
+		try {
+			result = await run(["observe", "--file", file, "--json"], {
+				complete: async () => DISTILLED,
+			});
+		} finally {
+			recording.mockRestore();
+		}
+		expect(result.code).toBe(2);
+		expect(json(result)).toEqual({ ok: false, error: "teach: input is too large" });
+		expect(reads.some((path) => String(path).endsWith("big.json"))).toBe(false);
 	});
 
 	test("--file outside the inbox is refused with exit 2 and left alone", async () => {

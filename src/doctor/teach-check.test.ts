@@ -153,6 +153,20 @@ describe("checkTeach", () => {
 		expect(finding.title).toContain("1 Hindsight write pending");
 	});
 
+	test("an oversized outbox file is reported as not read, not counted as a pending write", () => {
+		outbox("big", {
+			op: { op: "tags", documentId: "d", tags: [] },
+			attempts: 0,
+			nextAt: 0,
+			enqueuedAt: NOW - 3 * DAY,
+			lastError: "x".repeat(70 * 1024),
+		});
+		const finding = byId(checkTeach(deps), "memory.outbox");
+		expect(finding.level).toBe("warn");
+		expect(finding.title).toBe("1 oversized Hindsight outbox file not read");
+		expect(finding.detail).toContain(join(teachDir(), "outbox"));
+	});
+
 	test("three failed runs give an error with the detail; two do not", () => {
 		runs([failed(3), failed(2), failed(1)]);
 		const finding = byId(checkTeach(deps), "memory.observe");
