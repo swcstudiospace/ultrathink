@@ -2,7 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileStore, type PhaseLoopRecord } from "./phase-loop-store.ts";
@@ -112,6 +120,26 @@ describe("file phase loop store", () => {
 		expect(first).not.toBe(second);
 		expect(readFileSync(first, "utf8")).toBe("{not json 0");
 		expect(readFileSync(second, "utf8")).toBe("{not json 1");
+	});
+
+	test("two concurrent quarantines of one corrupt record both report the copy that won the rename", () => {
+		const store = fileStore(stateDir);
+		store.save("claude", STATE);
+		const corrupt = join(stateDir, nth(recordFiles(), 0));
+		writeFileSync(corrupt, "{not json");
+		const winner = `${corrupt}.corrupt-winner`;
+		// The other load's rename wins: it moves the record aside, then this load's rename finds nothing at the path.
+		const losing = fileStore(stateDir, {
+			renameSync(from) {
+				renameSync(from, winner);
+				throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${from}'`), {
+					code: "ENOENT",
+				});
+			},
+		});
+		expect(losing.load("claude")).toEqual({ status: "quarantined", quarantinedAs: winner });
+		expect(store.load("claude")).toEqual({ status: "quarantined", quarantinedAs: winner });
+		expect(readFileSync(winner, "utf8")).toBe("{not json");
 	});
 
 	test("valid JSON of the wrong shape is quarantined, including a malformed checkpoint", () => {

@@ -25,7 +25,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { buildBlock, type PstackInput } from "../cursor/pstack.ts";
 import { dropJevKeys } from "../route-defaults.ts";
@@ -449,25 +449,34 @@ function startLaneDetached(
 	return { pid: child.pid };
 }
 
+/**
+ * Lanes that started but whose `lane.json` could not be written, keyed by lane state dir. Each is still running, so
+ * {@link liveLaneSnapshot} keeps counting it toward the live-lane cap until its `lane.json` exists or its pid is gone.
+ * Only this process knows them.
+ */
+const unrecordedLanes = new Map<string, LaneRecord>();
+
 /** Record the lane's identity in `lane.json`; a failure never fails the spawn, it becomes a handle note. */
 function recordLane(lane: LanePlan, pid: number, fs: LaneFileFs): string | undefined {
+	const record: LaneRecord = {
+		laneId: basename(lane.stateDir),
+		pid,
+		graphId: lane.graphId,
+		briefDigest: briefDigest(lane.brief),
+		cwd: lane.cwd,
+		startedAt: new Date().toISOString(),
+	};
 	try {
-		writeLaneFile(
-			lane.stateDir,
-			{
-				laneId: basename(lane.stateDir),
-				pid,
-				graphId: lane.graphId,
-				briefDigest: briefDigest(lane.brief),
-				cwd: lane.cwd,
-				startedAt: new Date().toISOString(),
-			},
-			fs,
-		);
+		writeLaneFile(lane.stateDir, record, fs);
+		unrecordedLanes.delete(lane.stateDir);
 		return undefined;
 	} catch (error) {
+		unrecordedLanes.set(lane.stateDir, record);
 		const why = error instanceof Error ? error.message.slice(0, 120) : "write failed";
-		return `lane.json not written (${why}); status, stop and the live-lane cap cannot see this lane`;
+		return (
+			`lane.json not written (${why}); status and stop cannot see this lane, ` +
+			"and this process still counts it toward the live-lane cap"
+		);
 	}
 }
 
@@ -726,9 +735,10 @@ export async function filterSpawnable(
 
 /**
  * The lanes alive right now: every lane dir under `stateDir` whose `lane.json` parses, whose pid is alive and that
- * `verify` still attributes to the lane. Dead pids, recycled pids and missing or malformed `lane.json` are not
- * counted. A snapshot is only worth anything while the lane lock is held from taking it until the lanes it
- * admitted have written their `lane.json`: take it through {@link spawnGuarded}.
+ * `verify` still attributes to the lane, plus the lanes this process started without a `lane.json` (see
+ * {@link unrecordedLanes}). Dead pids, recycled pids and other missing or malformed `lane.json` files are not counted.
+ * A snapshot is only worth anything while the lane lock is held from taking it until the lanes it admitted have
+ * written their `lane.json`: take it through {@link spawnGuarded}.
  */
 export function liveLaneSnapshot(
 	stateDir: string,
@@ -736,9 +746,22 @@ export function liveLaneSnapshot(
 	verify: LaneVerify = defaultVerify,
 	fs: TeamsFs = defaultFs,
 ): LaneRecord[] {
-	return liveLanes(scanLaneDirs(stateDir, fs), isAlive, fs).filter((record) =>
+	const live = liveLanes(scanLaneDirs(stateDir, fs), isAlive, fs).filter((record) =>
 		isLaneLive(record, isAlive, verify),
 	);
+	const swarmDir = join(stateDir, "swarm");
+	for (const [laneDir, record] of unrecordedLanes) {
+		if (dirname(laneDir) !== swarmDir) continue;
+		if (!isAlive(record.pid)) {
+			unrecordedLanes.delete(laneDir);
+			continue;
+		}
+		// A lane.json that now exists is already counted by the scan above.
+		if (readLaneFile(laneDir, fs) === undefined && isLaneLive(record, isAlive, verify)) {
+			live.push(record);
+		}
+	}
+	return live;
 }
 
 /**

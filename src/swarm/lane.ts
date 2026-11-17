@@ -22,6 +22,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+import { writeFileAtomic } from "../claude/atomic.ts";
 import { isRecord } from "../shared.ts";
 
 /** Facts about one lane, persisted as `<lane state dir>/lane.json`. Never holds env or key material. */
@@ -96,10 +97,10 @@ export function writeLaneFile(
 		cwd: record.cwd,
 		startedAt: record.startedAt,
 	};
-	const target = join(stateDir, LANE_FILE);
-	const tmp = `${target}.tmp-${process.pid}`;
-	fs.writeFileSync(tmp, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
-	fs.renameSync(tmp, target);
+	writeFileAtomic(join(stateDir, LANE_FILE), `${JSON.stringify(body, null, 2)}\n`, {
+		mode: 0o600,
+		fs: { renameSync: fs.renameSync },
+	});
 }
 
 /** Read `<stateDir>/lane.json`; undefined when missing, unparseable or not a lane record. Never authority. */

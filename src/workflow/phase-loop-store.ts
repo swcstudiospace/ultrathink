@@ -130,12 +130,27 @@ function fsyncDirectory(dir: string): void {
 	}
 }
 
+/** The one file call a store makes that a test can race: moving a corrupt record aside. */
+export interface PhaseLoopFs {
+	renameSync(from: string, to: string): void;
+}
+
+const defaultFs: PhaseLoopFs = { renameSync };
+
 /** Moves a corrupt record aside under a unique name. Its bytes are kept and never overwritten. */
-function quarantine(path: string): string {
+function quarantine(path: string, fs: PhaseLoopFs): string {
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 	const target = `${path}.corrupt-${stamp}-${randomBytes(4).toString("hex")}`;
-	renameSync(path, target);
+	fs.renameSync(path, target);
 	return target;
+}
+
+/** The outcome for a record that is not at its name: its latest quarantined copy, or absent when there is none. */
+function outcomeWithoutRecord(path: string): LoadOutcome {
+	const copies = quarantinedCopies(path);
+	const latest = copies[copies.length - 1];
+	if (latest === undefined) return { status: "absent" };
+	return { status: "quarantined", quarantinedAs: latest };
 }
 
 /** Quarantined copies of one record path, oldest first. A missing directory has none. */
@@ -168,7 +183,7 @@ function quarantinedCopies(path: string): string[] {
  * ends it. A missing record with no copy is absent. Any other read failure throws, so a
  * permissions error cannot restart the loop from empty.
  */
-export function fileStore(stateDir: string): PhaseLoopStore {
+export function fileStore(stateDir: string, fs: PhaseLoopFs = defaultFs): PhaseLoopStore {
 	return {
 		load(runtimeId): LoadOutcome {
 			const path = join(stateDir, recordName(runtimeId));
@@ -177,14 +192,17 @@ export function fileStore(stateDir: string): PhaseLoopStore {
 				text = readFileSync(path, "utf8");
 			} catch (error) {
 				if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-				const copies = quarantinedCopies(path);
-				const latest = copies[copies.length - 1];
-				if (latest === undefined) return { status: "absent" };
-				return { status: "quarantined", quarantinedAs: latest };
+				return outcomeWithoutRecord(path);
 			}
 			const record = parseRecord(text, runtimeId);
 			if (record) return { status: "found", record };
-			return { status: "quarantined", quarantinedAs: quarantine(path) };
+			try {
+				return { status: "quarantined", quarantinedAs: quarantine(path, fs) };
+			} catch (error) {
+				// reason: a concurrent load moved the record aside first, so its copy is the one this load reports
+				if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+				return outcomeWithoutRecord(path);
+			}
 		},
 		save(runtimeId, record) {
 			mkdirSync(stateDir, { recursive: true, mode: DIR_MODE });
