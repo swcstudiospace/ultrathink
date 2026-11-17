@@ -18,6 +18,7 @@ import {
 	defaultTokenOptDir,
 	isValidSessionId,
 	type Ledger,
+	type LedgerDrop,
 	type SavingsPoint,
 	type TokenSavingsSnapshot,
 } from "./ledger.ts";
@@ -97,6 +98,23 @@ function notifySafe(ctx: NotifyCtx, message: string, type: "info" | "warning" | 
 		ctx.ui.notify(message, type);
 	} catch {
 		// fail open
+	}
+}
+
+const LEDGER_WARNING_CODE = "TOKEN_OPT_LEDGER";
+
+/** Surfaces dropped ledger writes through Node's warning channel, as remote-sink does. Carries no paths or content. */
+function reportLedgerDrop(drop: LedgerDrop): void {
+	switch (drop.kind) {
+		case "write-failed":
+			process.emitWarning(`ledger snapshot write failed (${drop.errorClass}); the snapshot was not saved`, { code: LEDGER_WARNING_CODE });
+			return;
+		case "overflow":
+			process.emitWarning("ledger dropped a pending snapshot write past the pending-session limit", { code: LEDGER_WARNING_CODE });
+			return;
+		case "flush":
+			process.emitWarning(`ledger dropped ${drop.dropped} snapshot write(s) since the last flush`, { code: LEDGER_WARNING_CODE });
+			return;
 	}
 }
 
@@ -384,7 +402,7 @@ function l2Key(tenant: string, key: string): string {
 export default function tokenOpt(pi: PiLike): void {
 	pi.setLabel("Token opt");
 	const flags = readFlags();
-	const ledger: Ledger = createLedger(flags.asyncLedger ? { asyncWrites: true } : undefined);
+	const ledger: Ledger = createLedger({ asyncWrites: flags.asyncLedger, reporter: reportLedgerDrop });
 	const tenant = process.env.TOKEN_OPT_TENANT || "local";
 	const sink: RemoteSink | null = flags.remoteSink
 		? createRemoteSink({

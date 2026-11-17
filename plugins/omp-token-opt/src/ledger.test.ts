@@ -1,11 +1,21 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { createLedger, isValidSnapshot, LedgerReject, type SavingsPoint } from "./ledger.ts";
+import { createLedger, isValidSnapshot, LedgerReject, type LedgerDrop, type SavingsPoint } from "./ledger.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 function point(at: number, baseline: number, current: number): SavingsPoint {
 	return { at, source: "compress", baseline, current, saved: baseline - current };
+}
+
+/** Class name of the error `fn` throws; the test expects the reporter to name the same class. */
+function thrownClassName(fn: () => void): string {
+	try {
+		fn();
+	} catch (err) {
+		return err instanceof Object ? err.constructor.name : "unknown";
+	}
+	throw new Error("expected fn to throw");
 }
 
 describe("ledger", () => {
@@ -286,6 +296,63 @@ describe("ledger", () => {
 		expect(ledger.droppedWrites()).toBe(1);
 		expect(ledger.writesCompleted()).toBe(0);
 		expect(ledger.snapshot()!.savedTokens).toBe(6);
+	});
+
+	test("async: a failed write reports one event naming the error class, then the flush count", async () => {
+		const root = mkdtempSync(join(tmpdir(), "token-opt-"));
+		// A plain file where the ledger directory should be makes every snapshot write fail.
+		const dir = join(root, "ledger");
+		writeFileSync(dir, "not a directory");
+		const events: LedgerDrop[] = [];
+		const ledger = createLedger({
+			dir,
+			now: () => 1,
+			asyncWrites: true,
+			reporter: (drop) => {
+				events.push(drop);
+			},
+		});
+		ledger.load("sess");
+		await ledger.flush();
+		expect(events).toEqual([
+			{ kind: "write-failed", errorClass: thrownClassName(() => mkdirSync(dir, { recursive: true })) },
+			{ kind: "flush", dropped: 1 },
+		]);
+		expect(ledger.droppedWrites()).toBe(1);
+		expect(ledger.writesCompleted()).toBe(0);
+		await ledger.flush();
+		expect(events).toHaveLength(2);
+		ledger.load("other");
+		await ledger.flush();
+		expect(events.slice(2)).toEqual([
+			{ kind: "write-failed", errorClass: thrownClassName(() => mkdirSync(dir, { recursive: true })) },
+			{ kind: "flush", dropped: 1 },
+		]);
+		expect(ledger.droppedWrites()).toBe(2);
+	});
+
+	test("async: an overflow drop is reported and droppedWrites still counts it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
+		const events: LedgerDrop[] = [];
+		const ledger = createLedger({
+			dir,
+			now: () => 1,
+			asyncWrites: true,
+			maxPendingSessions: 2,
+			reporter: (drop) => {
+				events.push(drop);
+			},
+		});
+		ledger.load("s1");
+		ledger.load("s2");
+		expect(events).toEqual([]);
+		ledger.load("s3");
+		expect(ledger.droppedWrites()).toBe(1);
+		expect(events).toEqual([{ kind: "overflow" }]);
+		await ledger.flush();
+		expect(ledger.droppedWrites()).toBe(1);
+		expect(ledger.writesCompleted()).toBe(2);
+		expect(events).toEqual([{ kind: "overflow" }, { kind: "flush", dropped: 1 }]);
 	});
 
 	test("async: exceeding maxPendingSessions drops the oldest dirty marker and counts it", async () => {

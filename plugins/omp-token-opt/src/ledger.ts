@@ -318,6 +318,18 @@ interface ProviderTotals {
 	output: number;
 }
 
+/** A snapshot write the async ledger gave up on. Carries no paths or content. */
+export type LedgerDrop =
+	| { kind: "write-failed"; errorClass: string }
+	| { kind: "overflow" }
+	| { kind: "flush"; dropped: number };
+export type LedgerReporter = (drop: LedgerDrop) => void;
+
+function errorClassName(err: unknown): string {
+	if (!(err instanceof Object)) return "unknown";
+	return err.constructor.name || "unknown";
+}
+
 export interface Ledger {
 	load(sessionId: string): TokenSavingsSnapshot;
 	record(point: SavingsPoint): TokenSavingsSnapshot;
@@ -339,10 +351,12 @@ export function createLedger(options?: {
 	now?: () => number;
 	asyncWrites?: boolean;
 	maxPendingSessions?: number;
+	reporter?: LedgerReporter;
 }): Ledger {
 	const dir = options?.dir ?? defaultTokenOptDir();
 	const now = options?.now ?? Date.now;
 	const asyncWrites = options?.asyncWrites === true;
+	const reporter = options?.reporter;
 	const maxPendingSessions = options?.maxPendingSessions ?? DEFAULT_MAX_PENDING_SESSIONS;
 	if (!Number.isSafeInteger(maxPendingSessions) || maxPendingSessions <= 0) {
 		throw new LedgerReject("invalid maxPendingSessions");
@@ -353,6 +367,7 @@ export function createLedger(options?: {
 	const dirty = new Map<string, true>();
 	let flushTimer: Timer | null = null;
 	let dropped = 0;
+	let reportedDrops = 0;
 	let completed = 0;
 	let activeId: string | null = null;
 
@@ -361,6 +376,15 @@ export function createLedger(options?: {
 		writeAtomic(join(dir, `${snap.sessionId}.json`), body);
 		writeAtomic(join(dir, "live.json"), body);
 		completed += 1;
+	}
+
+	function report(drop: LedgerDrop): void {
+		if (reporter === undefined) return;
+		try {
+			reporter(drop);
+		} catch {
+			// A failing reporter must not change persistence.
+		}
 	}
 
 	function drainDirty(): void {
@@ -375,8 +399,9 @@ export function createLedger(options?: {
 			if (snap === undefined) continue;
 			try {
 				writeSnapshot(snap);
-			} catch {
+			} catch (err) {
 				dropped += 1;
+				report({ kind: "write-failed", errorClass: errorClassName(err) });
 			}
 		}
 	}
@@ -388,6 +413,7 @@ export function createLedger(options?: {
 			const oldest = dirty.keys().next();
 			if (!oldest.done) dirty.delete(oldest.value);
 			dropped += 1;
+			report({ kind: "overflow" });
 		}
 		if (flushTimer === null) {
 			flushTimer = setTimeout(drainDirty, 0);
@@ -576,7 +602,14 @@ export function createLedger(options?: {
 			return memory.get(activeId) ?? null;
 		},
 		flush(): Promise<void> {
-			if (asyncWrites) drainDirty();
+			if (asyncWrites) {
+				drainDirty();
+				const fresh = dropped - reportedDrops;
+				if (fresh > 0) {
+					reportedDrops = dropped;
+					report({ kind: "flush", dropped: fresh });
+				}
+			}
 			return Promise.resolve();
 		},
 		droppedWrites(): number {
