@@ -117,10 +117,11 @@ Proposed states were **Checkpointed** and **Closed**. HTIL entries are a set att
 - The store validates each entry's shape (`isHtilEntry` in `phase-loop-store.ts`) and quarantines a malformed record like any other (P2a).
 - Not yet wired: the ADR says entries are created on entry to Verify (T4). No caller in `src/` calls `open`, so the running system creates no entry.
 
-### P5. Single writer (LIFE-03) — Proposed (not implemented)
+### P5. Single writer (LIFE-03) — Implemented in-repo (phase 112); gsd-core writer out of repo
 
 - LIFE-03 adds no transition to this machine.
 - Any STATE.md or ROADMAP.md write that records a transition above goes through the one guarded writer. The writer is in gsd-core, out of repo. A concurrent write fails loudly.
+- The reference writer is `src/workflow/guarded-write.ts`: `writeGuarded`, `readGuarded`, `ConcurrentWriteError`, `LockHeldError`. The contract is `docs/architecture/state-writer-contract.md`.
 
 ### 2.1 Open items (not decided here)
 
