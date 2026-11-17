@@ -1037,6 +1037,25 @@ describe("laneStatus", () => {
 			expect(ok.state).toBe("not-planned" satisfies LaneState);
 			expect(ok.summary).toContain("unreadable");
 		});
+
+		test("an oversized autonomous.log is refused unread, so its last duplicate line never reads as skipped", async () => {
+			const lane = fixtureLane(tmp("teams-st-"), "big-log-1", {
+				log: `${"x".repeat(1024 * 1024)}\nskip duplicate abcdef12\n`,
+			});
+			const reads: string[] = [];
+			const fs: TeamsFs = {
+				...realFs,
+				readFileSync: (path: string, encoding: "utf8") => {
+					reads.push(path);
+					return readFileSync(path, encoding);
+				},
+			};
+			const [row] = await laneStatus([lane], failIfProbed, { ...PROBE_DEPS, fs });
+			const ok = okRow(row);
+			expect(ok.state).toBe("not-planned" satisfies LaneState);
+			expect(ok.summary).toContain("was not read");
+			expect(reads.some((path) => path.endsWith("autonomous.log"))).toBe(false);
+		});
 	});
 });
 
@@ -1165,7 +1184,7 @@ describe("laneDirs", () => {
 			statSync: (path: string) => {
 				const entry = entries[basename(path)];
 				if (!entry) throw new Error(`vanished: ${path}`);
-				return entry;
+				return { size: 0, ...entry };
 			},
 			readFileSync,
 			renameSync,
@@ -1208,7 +1227,7 @@ describe("laneDirs", () => {
 			statSync: (path: string) => {
 				const entry = entries[basename(path)];
 				if (!entry) throw new Error(`vanished: ${path}`);
-				return entry;
+				return { size: 0, ...entry };
 			},
 			readFileSync,
 			renameSync,

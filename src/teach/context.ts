@@ -91,7 +91,7 @@ export function teachEnabled(ctx: TeachContext): boolean {
 /** The local store, or undefined when it cannot be opened (an unwritable or `.planning` state directory). */
 export function tryStore(ctx: TeachContext): TeachStore | undefined {
 	try {
-		return openStore(storeDir(ctx.stateDir));
+		return openStore(storeDir(ctx.stateDir), { log: ctx.log });
 	} catch {
 		return undefined;
 	}

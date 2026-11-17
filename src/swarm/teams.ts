@@ -62,6 +62,9 @@ export const LANE_STATUS_CONCURRENCY = 4;
 /** How many historical lanes discovery reports at most (most recent by directory mtime). */
 export const MAX_DISCOVERED_LANES = 24;
 
+/** The largest `autonomous.log` a status probe reads: the log is written once, at the end of a run, so a larger one is refused unread. */
+const LANE_LOG_MAX_BYTES = 64 * 1024;
+
 /** Task states that need a human; any of these in a lane's Task Store makes the lane row `attention`. */
 const ATTENTION_TASK_STATES: Record<string, true> = {
 	FAILED: true,
@@ -100,7 +103,7 @@ export interface TeamsFs extends LaneFileFs {
 	openSync(path: string, flags: string, mode: number): number;
 	closeSync(fd: number): void;
 	readdirSync(path: string): string[];
-	statSync(path: string): { mtimeMs: number };
+	statSync(path: string): { mtimeMs: number; size: number };
 }
 
 const defaultFs = {
@@ -997,7 +1000,8 @@ type LaneLog =
 	| { kind: "duplicate"; digest: string }
 	| { kind: "plan-failed"; code?: string; message?: string }
 	| { kind: "ran"; runRc?: number }
-	| { kind: "unreadable" };
+	| { kind: "unreadable" }
+	| { kind: "oversized" };
 
 /** Parse `autonomous.log`: the plain `skip duplicate <digest>` line, or the JSON record. Never throws. */
 function parseLaneLog(text: string): LaneLog {
@@ -1032,6 +1036,19 @@ function parseLaneLog(text: string): LaneLog {
 function readText(path: string, fs: LaneFileFs): string | undefined {
 	try {
 		return fs.existsSync(path) ? fs.readFileSync(path, "utf8") : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** `autonomous.log` as a lane log: undefined when absent, empty or unreadable; `oversized` (never read) above {@link LANE_LOG_MAX_BYTES}. */
+function readLaneLog(stateDir: string, fs: TeamsFs): LaneLog | undefined {
+	const path = join(stateDir, "autonomous.log");
+	try {
+		if (!fs.existsSync(path)) return undefined;
+		if (fs.statSync(path).size > LANE_LOG_MAX_BYTES) return { kind: "oversized" };
+		const text = fs.readFileSync(path, "utf8");
+		return text.trim() === "" ? undefined : parseLaneLog(text);
 	} catch {
 		return undefined;
 	}
@@ -1104,8 +1121,7 @@ async function probeLane(
 		record !== undefined &&
 		isLaneLive(record, deps.isAlive ?? pidAlive, deps.verify ?? defaultVerify);
 	const correlation = (readText(join(lane.stateDir, "latest_correlation"), fs) ?? "").trim();
-	const logText = readText(join(lane.stateDir, "autonomous.log"), fs);
-	const log = logText === undefined || logText.trim() === "" ? undefined : parseLaneLog(logText);
+	const log = readLaneLog(lane.stateDir, fs);
 	const graphId = record?.graphId === undefined ? undefined : oneLine(record.graphId, 80);
 	const errorRow = (error: string): LaneStatusRow => ({ laneId: lane.laneId, logPath, error });
 	const row = (
@@ -1154,7 +1170,9 @@ async function probeLane(
 			"not-planned",
 			log?.kind === "unreadable"
 				? "no plan and no running process; autonomous.log is unreadable"
-				: "no plan, no running process, no log",
+				: log?.kind === "oversized"
+					? `no plan and no running process; autonomous.log is over ${LANE_LOG_MAX_BYTES} bytes and was not read`
+					: "no plan, no running process, no log",
 		);
 	}
 

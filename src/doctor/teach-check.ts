@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { isObserveFailure, type ObserveRun, readRuns } from "../teach/runlog.ts";
-import { storeDir } from "../teach/store.ts";
+import { OUTBOX_MAX_BYTES, storeDir } from "../teach/store.ts";
 import { type CaptureMode, TEACH_KILL_ENV } from "../teach/types.ts";
 import { formatAge } from "./state-check.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
@@ -22,8 +22,6 @@ const STALE_LESSON_MS = 3 * DAY_MS;
 const ACTIVE_SESSION_MS = DAY_MS;
 /** The store's own cap for one lesson file (`MOMENT_MAX_BYTES` in `teach/skills.ts`). */
 const LESSON_MAX_BYTES = 64 * 1024;
-/** Above any outbox entry (an op names a document id and its tags); a larger file is reported, never read. */
-const OUTBOX_MAX_BYTES = 64 * 1024;
 
 interface OutboxItem {
 	enqueuedAt: number;
