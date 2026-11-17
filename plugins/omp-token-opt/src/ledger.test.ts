@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { createLedger, isValidSnapshot, LedgerReject, type LedgerDrop, type SavingsPoint } from "./ledger.ts";
+import { createLedger, isValidSnapshot, LedgerReject, releaseLock, type LedgerDrop, type SavingsPoint } from "./ledger.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 function point(at: number, baseline: number, current: number): SavingsPoint {
 	return { at, source: "compress", baseline, current, saved: baseline - current };
@@ -199,6 +199,86 @@ describe("ledger", () => {
 		expect(() => ledger.notePerf({ lastQueryMs: 9 })).toThrow();
 		expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 		expect(existsSync(join(dir, ".lock"))).toBe(false);
+	});
+
+	test("a releaser whose lock was replaced by another owner leaves the other owner's lock in place", () => {
+		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
+		const lock = join(dir, ".lock");
+		const other = `${process.pid}:other:x`;
+		writeFileSync(lock, other);
+		releaseLock(lock, `${process.pid}:mine:x`);
+		expect(readFileSync(lock, "utf8")).toBe(other);
+		expect(readdirSync(dir)).toEqual([".lock"]);
+	});
+
+	test("a releaser removes a lock that still carries its token", () => {
+		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
+		const lock = join(dir, ".lock");
+		const token = `${process.pid}:mine:x`;
+		writeFileSync(lock, token);
+		releaseLock(lock, token);
+		expect(readdirSync(dir)).toEqual([]);
+	});
+
+	test("a temp file left by a dead writer is swept on the first write; a live writer's is kept", () => {
+		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
+		// Above any real pid_max, so the writer cannot exist.
+		const orphan = join(dir, ".sess.json.2147483646.5.tmp");
+		const live = join(dir, `.sess.json.${process.pid}.5.tmp`);
+		writeFileSync(orphan, "partial");
+		writeFileSync(live, "partial");
+		const ledger = createLedger({ dir, now: () => 10 });
+		ledger.load("sess");
+		expect(existsSync(orphan)).toBe(false);
+		expect(existsSync(live)).toBe(true);
+	});
+
+	test("a corrupt snapshot is moved aside and reported once, then the session starts empty", () => {
+		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
+		writeFileSync(join(dir, "sess.json"), "{not json");
+		const warn = spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			const snap = createLedger({ dir, now: () => 10 }).load("sess");
+			expect(snap.savedTokens).toBe(0);
+			expect(warn).toHaveBeenCalledTimes(1);
+			const [message, options] = warn.mock.calls[0] as unknown as [string, { code: string }];
+			expect(message).toContain("sess.json is corrupt (SyntaxError)");
+			expect(options.code).toBe("TOKEN_OPT_LEDGER");
+			const aside = readdirSync(dir).filter((name) => name.startsWith("sess.json.corrupt."));
+			expect(aside).toHaveLength(1);
+			expect(readFileSync(join(dir, aside[0]!), "utf8")).toBe("{not json");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("live.json of another session is not corrupt and raises no warning", () => {
+		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
+		const warn = spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			createLedger({ dir, now: () => 10 }).load("a");
+			expect(createLedger({ dir, now: () => 11 }).load("b").sessionId).toBe("b");
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("loaded sessions stay under their bound after many loads", () => {
+		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
+		const ledger = createLedger({ dir, now: () => 1 });
+		for (let i = 0; i < 300; i += 1) ledger.load(`s${i}`);
+		expect(ledger.loadedSessions()).toBe(128);
+		expect(ledger.snapshot()!.sessionId).toBe("s299");
+	});
+
+	test("an evicted session reloads its saved totals from disk", () => {
+		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
+		const ledger = createLedger({ dir, now: () => 10 });
+		ledger.load("s0");
+		ledger.record(point(1, 10, 4));
+		for (let i = 1; i < 300; i += 1) ledger.load(`s${i}`);
+		expect(ledger.load("s0").savedTokens).toBe(6);
 	});
 
 	test("cache hit percent uses lifetime provider totals after the window slides", () => {

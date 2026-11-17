@@ -1,4 +1,4 @@
-import { closeSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -153,12 +153,35 @@ export function isValidSnapshot(value: unknown, sessionId?: string): value is To
 	);
 }
 
-function readJson(path: string): unknown {
+const LEDGER_WARNING_CODE = "TOKEN_OPT_LEDGER";
+let quarantineSeq = 0;
+
+/** Moves a corrupt snapshot aside so the next flush cannot overwrite it, then emits one warning naming it. */
+function quarantine(file: string, errorClass: string): undefined {
+	const aside = `${file}.corrupt.${Date.now()}.${quarantineSeq++}`;
+	let moved = true;
 	try {
-		return JSON.parse(readFileSync(path, "utf8"));
+		renameSync(file, aside);
 	} catch {
-		return undefined;
+		moved = false;
 	}
+	const outcome = moved ? `moved aside as ${basename(aside)}` : "could not be moved aside";
+	process.emitWarning(`ledger snapshot ${basename(file)} is corrupt (${errorClass}); ${outcome}`, { code: LEDGER_WARNING_CODE });
+	return undefined;
+}
+
+/** A missing file is absent. An unreadable or invalid file is corrupt: it is quarantined and read as absent. */
+function readSnapshot(file: string): TokenSavingsSnapshot | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(readFileSync(file, "utf8"));
+	} catch (err) {
+		const code = err !== null && typeof err === "object" && "code" in err ? err.code : undefined;
+		if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+		return quarantine(file, errorClassName(err));
+	}
+	if (isValidSnapshot(value)) return value;
+	return quarantine(file, "InvalidSnapshot");
 }
 const LOCK_WAIT_MS = 500;
 // A write holds the lock for one small file write plus a rename, so a lock older than this belongs to a hung owner.
@@ -183,14 +206,34 @@ function observeLock(lockPath: string): LockObservation | null {
 	}
 }
 
-function ownerIsDead(token: string): boolean {
-	const match = /^(\d+):/.exec(token);
-	if (match === null) return false;
+function pidIsDead(pid: number): boolean {
 	try {
-		process.kill(Number(match[1]), 0);
+		process.kill(pid, 0);
 		return false;
 	} catch (err) {
 		return err !== null && typeof err === "object" && "code" in err && err.code === "ESRCH";
+	}
+}
+
+function ownerIsDead(token: string): boolean {
+	const match = /^(\d+):/.exec(token);
+	return match !== null && pidIsDead(Number(match[1]));
+}
+
+// Temp files are named `.<file>.<pid>.<ms>.tmp`; the pid is the writer that may have died mid-write.
+const TMP_NAME = /^\..+\.(\d+)\.\d+\.tmp$/;
+
+/** Removes temp files whose writer is dead. A crash between writeFileSync and renameSync leaves one behind. */
+function sweepOrphanTemps(dir: string): void {
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return;
+	}
+	for (const name of names) {
+		const match = TMP_NAME.exec(name);
+		if (match !== null && pidIsDead(Number(match[1]))) rmSync(join(dir, name), { force: true });
 	}
 }
 
@@ -269,13 +312,20 @@ function acquireLock(lockPath: string): string {
 	}
 }
 
-/** Removes the lock only while it still carries this writer's token. */
-function releaseLock(lockPath: string, token: string): void {
+/**
+ * Removes the lock only while it still carries this writer's token. The lock is renamed aside first, so the
+ * token is checked on the file that gets removed. A lock another owner put in place is restored. Exported for tests.
+ */
+export function releaseLock(lockPath: string, token: string): void {
+	const claim = `${lockPath}.release.${process.pid}.${lockSeq++}`;
 	try {
-		if (readFileSync(lockPath, "utf8") === token) rmSync(lockPath, { force: true });
+		renameSync(lockPath, claim);
 	} catch {
 		// already reclaimed by a waiter
+		return;
 	}
+	if (observeLock(claim)?.token === token) rmSync(claim, { force: true });
+	else restoreClaim(claim, lockPath);
 }
 
 function writeAtomic(path: string, body: string): void {
@@ -342,9 +392,12 @@ export interface Ledger {
 	droppedWrites(): number;
 	/** Successful snapshot writes to disk, in both modes. */
 	writesCompleted(): number;
+	/** Sessions held in memory. Idle sessions past the bound leave memory; a later load reads them from disk. */
+	loadedSessions(): number;
 }
 
 const DEFAULT_MAX_PENDING_SESSIONS = 64;
+const MAX_LOADED_SESSIONS = 128;
 
 export function createLedger(options?: {
 	dir?: string;
@@ -371,11 +424,31 @@ export function createLedger(options?: {
 	let completed = 0;
 	let activeId: string | null = null;
 
+	let swept = false;
+
 	function writeSnapshot(snap: TokenSavingsSnapshot): void {
+		if (!swept) {
+			swept = true;
+			sweepOrphanTemps(dir);
+		}
 		const body = `${JSON.stringify(snap)}\n`;
 		writeAtomic(join(dir, `${snap.sessionId}.json`), body);
 		writeAtomic(join(dir, "live.json"), body);
 		completed += 1;
+	}
+
+	/** Marks the session most recently used. Past the bound, idle sessions leave memory; the active and dirty ones stay. */
+	function remember(id: string, snap: TokenSavingsSnapshot): void {
+		memory.delete(id);
+		memory.set(id, snap);
+		// maxPendingSessions + 1 always leaves a candidate: dirty sessions and the active one are protected.
+		const bound = Math.max(MAX_LOADED_SESSIONS, maxPendingSessions + 1);
+		for (const idle of memory.keys()) {
+			if (memory.size <= bound) break;
+			if (idle === activeId || dirty.has(idle)) continue;
+			memory.delete(idle);
+			usage.delete(idle);
+		}
 	}
 
 	function report(drop: LedgerDrop): void {
@@ -443,12 +516,12 @@ export function createLedger(options?: {
 
 	function load(sessionId: string): TokenSavingsSnapshot {
 		if (!isValidSessionId(sessionId)) throw new LedgerReject("invalid session id");
-		const fromSession = readJson(join(dir, `${sessionId}.json`));
-		const fromLive = readJson(join(dir, "live.json"));
+		const fromSession = readSnapshot(join(dir, `${sessionId}.json`));
+		const fromLive = readSnapshot(join(dir, "live.json"));
 		let snap: TokenSavingsSnapshot;
-		if (isValidSnapshot(fromSession, sessionId)) {
+		if (fromSession?.sessionId === sessionId) {
 			snap = fromSession;
-		} else if (isValidSnapshot(fromLive, sessionId)) {
+		} else if (fromLive?.sessionId === sessionId) {
 			snap = fromLive;
 		} else {
 			snap = {
@@ -461,9 +534,9 @@ export function createLedger(options?: {
 				points: [],
 			};
 		}
-		memory.set(sessionId, snap);
-		adoptUsage(sessionId, snap);
 		activeId = sessionId;
+		remember(sessionId, snap);
+		adoptUsage(sessionId, snap);
 		if (asyncWrites) markDirty(sessionId);
 		else writeSnapshot(snap);
 		return snap;
@@ -481,12 +554,12 @@ export function createLedger(options?: {
 	function commit(next: TokenSavingsSnapshot, id: string): TokenSavingsSnapshot {
 		if (!isValidSnapshot(next, id)) throw new LedgerReject("snapshot invariant failed");
 		if (asyncWrites) {
-			memory.set(id, next);
+			remember(id, next);
 			markDirty(id);
 			return next;
 		}
 		writeSnapshot(next);
-		memory.set(id, next);
+		remember(id, next);
 		return next;
 	}
 
@@ -617,6 +690,9 @@ export function createLedger(options?: {
 		},
 		writesCompleted(): number {
 			return completed;
+		},
+		loadedSessions(): number {
+			return memory.size;
 		},
 	};
 }
