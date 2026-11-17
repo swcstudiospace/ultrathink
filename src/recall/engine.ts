@@ -87,7 +87,7 @@ type BudgetRefusalReason = Extract<BudgetDecision, { allowed: false }>["reason"]
 /** Why a source was not considered: the master switch, its source flag, or the flag of the trigger. */
 type DisabledReason = "master_off" | "source_off" | "trigger_off";
 
-type RecallAuditEntry = { source: PanelSourceName; trigger: RecallTrigger } & (
+export type RecallAuditEntry = { source: PanelSourceName; trigger: RecallTrigger } & (
 	| { outcome: "fired"; injected: number; deduped: number }
 	| { outcome: "skipped_disabled"; reason: DisabledReason }
 	| { outcome: "skipped_cooldown"; remainingMs: number }
