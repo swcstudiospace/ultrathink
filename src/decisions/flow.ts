@@ -332,18 +332,35 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 	};
 }
 
+/** Per lookup: scans newest to oldest and returns the first success row with this hash. A row that fails to parse is skipped on its own and the scan keeps going, so it cannot hide older valid rows. If rows were skipped before the hit or the start of the file, one event per lookup names the skipped count, never row content. */
 export function lookupFlowScore(path: string, hash: string): FlowRecord | undefined {
+	let lines: string[];
 	try {
-		const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-		for (let i = lines.length - 1; i >= 0; i--) {
-			const row = JSON.parse(lines[i]!) as FlowRecord;
-			if (row.hash === hash && row.state === "success" && typeof row.confidence === "number")
-				return row;
-		}
+		lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
 	} catch {
 		return undefined;
 	}
-	return undefined;
+	let found: FlowRecord | undefined;
+	let skipped = 0;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		let row: FlowRecord | null;
+		try {
+			row = JSON.parse(lines[i]!) as FlowRecord | null;
+		} catch {
+			skipped += 1;
+			continue;
+		}
+		if (row === null || typeof row !== "object") {
+			skipped += 1;
+			continue;
+		}
+		if (row.hash === hash && row.state === "success" && typeof row.confidence === "number") {
+			found = row;
+			break;
+		}
+	}
+	if (skipped > 0) console.warn(`[ultrathink] event=flow_score_rows_skipped count=${skipped}`);
+	return found;
 }
 
 export function appendFlowScore(path: string, record: FlowRecord): void {

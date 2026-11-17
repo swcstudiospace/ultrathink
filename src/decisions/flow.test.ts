@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -153,6 +153,94 @@ describe("evaluateFlowOutput", () => {
 		appendFlowScore(path, record);
 		expect(lookupFlowScore(path, "abc")?.confidence).toBe(0.5);
 		expect(lookupFlowScore(path, "nope")).toBeUndefined();
+	});
+});
+
+describe("lookupFlowScore with corrupt rows", () => {
+	function successRow(hash: string, confidence: number) {
+		return {
+			version: 1 as const,
+			subject: "s",
+			hash,
+			decision: "approve" as const,
+			confidence,
+			rationale: "choice.confidence",
+			model: "m",
+			provider: "OpenRouter" as const,
+			state: "success" as const,
+			retryCount: 0,
+			at: 1,
+			latencyMs: 1,
+			clearsHumanPause: false as const,
+		};
+	}
+
+	test("a corrupt row in the middle does not hide older valid rows", () => {
+		const path = join(tempDir(), "flow-decisions.jsonl");
+		writeFileSync(
+			path,
+			[
+				JSON.stringify(successRow("old", 0.3)),
+				'{"version":1,"hash":"new","rationale":"cut off',
+				JSON.stringify(successRow("new", 0.9)),
+				"",
+			].join("\n"),
+		);
+		const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			expect(lookupFlowScore(path, "old")?.confidence).toBe(0.3);
+			expect(lookupFlowScore(path, "new")?.confidence).toBe(0.9);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("the skipped-row event is emitted once per lookup, with the count of rows scanned and no row content", () => {
+		const path = join(tempDir(), "flow-decisions.jsonl");
+		writeFileSync(
+			path,
+			[
+				JSON.stringify(successRow("old", 0.3)),
+				'{"rationale":"MARKER',
+				"not json MARKER",
+				JSON.stringify(successRow("new", 0.9)),
+				"",
+			].join("\n"),
+		);
+		const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			expect(lookupFlowScore(path, "old")?.confidence).toBe(0.3);
+			expect(warn.mock.calls).toEqual([["[ultrathink] event=flow_score_rows_skipped count=2"]]);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("rows older than the hit are not scanned, so no skipped-row event", () => {
+		const path = join(tempDir(), "flow-decisions.jsonl");
+		writeFileSync(
+			path,
+			['{"rationale":"MARKER', JSON.stringify(successRow("new", 0.9)), ""].join("\n"),
+		);
+		const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			expect(lookupFlowScore(path, "new")?.confidence).toBe(0.9);
+			expect(warn.mock.calls).toEqual([]);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a clean file emits no skipped-row event", () => {
+		const path = join(tempDir(), "flow-decisions.jsonl");
+		appendFlowScore(path, successRow("old", 0.3));
+		const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			expect(lookupFlowScore(path, "old")?.confidence).toBe(0.3);
+			expect(warn.mock.calls).toEqual([]);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 
