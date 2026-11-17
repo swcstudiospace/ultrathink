@@ -18,6 +18,16 @@
     },
     {
       "argumentCompletions": null,
+      "description": "Recall knowledge, lessons and skills for <query> now (needs recall.enabled)",
+      "name": "ultrathink-recall"
+    },
+    {
+      "argumentCompletions": null,
+      "description": "List, disable or delete generated skills (never generates)",
+      "name": "ultrathink-skills"
+    },
+    {
+      "argumentCompletions": null,
       "description": "Do not plan the next message",
       "name": "ultrathink-skip"
     },
@@ -121,6 +131,7 @@
     "ultrathink-insight",
     "ultrathink-pending",
     "ultrathink-plan",
+    "ultrathink-recall",
     "ultrathink-ship",
     "ultrathink-swarm",
     "ultrathink-sync"

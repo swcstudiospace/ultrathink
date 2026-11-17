@@ -40,8 +40,9 @@ Fixture shape:
   "excluded": [ { "variant": "...", "reason": "..." } ] }
 ```
 
-Entry points are the eight registrations in `src/host/omp.ts`: the six verbs from the `COMMANDS` table
-(`quick`, `skip`, `off`, `on`, `track`, `status`), `ultrathink-ui`, and `ultrathink-swarm`.
+Entry points are the ten registrations in `src/host/omp.ts`: the six verbs from the `COMMANDS` table
+(`quick`, `skip`, `off`, `on`, `track`, `status`), `ultrathink-ui`, `ultrathink-swarm`, `ultrathink-recall`, and
+`ultrathink-skills`.
 
 ## Sandbox and environment pinning
 
