@@ -65,9 +65,9 @@ stateDiagram-v2
 
 ### 1.5 Observed gaps in the phase 111 file
 
-- Persistence is opt-in. Without a store, nothing is persisted: the in-memory `loops` map (L120) holds the state, and a restart starts empty. With a store, a restart reads the last committed record (`restorePhaseLoop`, L384-409). Nothing in `src/` outside the phase-loop tests passes a store, so the running system does not persist yet.
-- No caller invokes `checkpointPhaseLoop` (L370-382), so no pause or kill writes a checkpoint yet.
-- No caller in `src/` outside the phase-loop tests invokes `open` (L318) or `resolve` (L341), so no HTIL entry exists in the running system.
+- Persistence is opt-in. Without a store, nothing is persisted: the in-memory `loops` map (L120) holds the state, and a restart starts empty. With a store, a restart reads the last committed record (`restorePhaseLoop`, L389). The running system passes a store: the Omp host (`fileStore`, `src/host/omp-phase.ts:191` and `:219`) and the ship merge (`src/ship/cli.ts:703`).
+- Pause writes a checkpoint: `pauseSessionPhases` (`src/host/omp-phase.ts:242-244`) calls `checkpointPhaseLoop` (L369) with reason `pause`. No caller passes reason `kill`, so a kill writes no checkpoint yet.
+- `open` is called in production: `recordGsdPhase` (`src/host/omp-phase.ts:194`) opens a `verification:<phase>` HTIL entry when verification needs a human. No caller in `src/` invokes `resolve` (L340), so an opened entry blocks merge with no production way to clear it.
 - `closedBy` holds the cited record's kind, id, and time (L241). It does not hold the record body: the audit's content and the owner decision's reason stay with the caller. The loop does not check that the cited id exists in any audit store; it checks only the fields the caller passes (L232-233).
 - `attemptPhase` does not return its refusal reasons (L289-291).
 - `open` and `resolve` do not check the runtime connection. The phase 111 design did not require it.
