@@ -40,12 +40,12 @@ export const REQUIRED_CONNECTION_COUNT = CONNECTION_RUNTIME_IDS.length;
 /** Retired id. A connection request returns GSD_RETIRED_RUNTIME; it never joins the registry. */
 const RETIRED_RUNTIME_ID = "gemini";
 
-export type ConnectionErrorCode = "GSD_RETIRED_RUNTIME" | "PLUGIN_AGENT_MISSING";
+type ConnectionErrorCode = "GSD_RETIRED_RUNTIME" | "PLUGIN_AGENT_MISSING";
 
 /** Loaded Ultrathink entries per runtime id, supplied by the caller. An absent id counts as 0. */
 export type LoadedCounts = Readonly<Record<string, number>>;
 
-export interface ConnectionLine {
+interface ConnectionLine {
 	readonly runtime: ConnectionRuntimeId;
 	readonly status: "connected" | "missing";
 	readonly code?: "PLUGIN_AGENT_MISSING";
@@ -64,12 +64,12 @@ export interface ConnectionRequestResult {
 	readonly code?: ConnectionErrorCode;
 }
 
-export function isRegistryRuntime(runtime: string): runtime is ConnectionRuntimeId {
+function isRegistryRuntime(runtime: string): runtime is ConnectionRuntimeId {
 	return CONNECTION_RUNTIME_IDS.some((id) => id === runtime);
 }
 
 /** The single connected rule: a registry id with at least one loaded entry. */
-export function isConnected(runtime: ConnectionRuntimeId, loaded: LoadedCounts): boolean {
+function isConnected(runtime: ConnectionRuntimeId, loaded: LoadedCounts): boolean {
 	return (loaded[runtime] ?? 0) >= 1;
 }
 
