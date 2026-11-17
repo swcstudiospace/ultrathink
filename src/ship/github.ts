@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import { redactSecrets } from "../redact.ts";
 import { defaultRun } from "./run.ts";
 import type { PrRef, PrStatus, Run, ShipConfig } from "./types.ts";
 
@@ -115,8 +116,10 @@ function str(value: unknown): string | undefined {
 	return typeof value === "string" && value ? value : undefined;
 }
 
+/** First line of git's or gh's stderr (stdout when silent), masked before the cap so no credential reaches a detail. */
 function errorOf(result: { stdout: string; stderr: string; exitCode: number }): string {
-	const text = (result.stderr.trim() || result.stdout.trim()).split("\n")[0] ?? "";
+	const masked = redactSecrets(result.stderr.trim() || result.stdout.trim());
+	const text = masked.split("\n")[0] ?? "";
 	return text.slice(0, 300) || `exit ${result.exitCode}`;
 }
 

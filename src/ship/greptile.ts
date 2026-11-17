@@ -9,6 +9,7 @@ import {
 	type Run,
 	type ShipConfig,
 } from "./types.ts";
+import { redactSecrets } from "../redact.ts";
 import { asObj } from "../shared.ts";
 
 export interface ToolCaller {
@@ -278,12 +279,12 @@ export async function reviewPr(input: {
 		const message = errorText(error);
 		// Without an organization Greptile refuses every call; retrying cannot help, the user must choose one.
 		const reason = tenantReason(message);
-		if (reason) return done({ status: "blocked", error: reason });
+		if (reason) return done({ status: "blocked", error: redactSecrets(reason) });
 		// A thrown tool or transport error says nothing about the review itself (Greptile's own FAILED/ERROR status is
 		// handled above), so it is pending: the next call retries, and ship.reviewTimeoutMs still bounds the wait.
 		return done({
 			status: "pending",
-			error: message.slice(0, 300),
+			error: redactSecrets(message).slice(0, 300),
 			...(pendingId ? { reviewId: pendingId } : {}),
 		});
 	}
@@ -338,7 +339,11 @@ export async function reviewCli(input: {
 		at: now(),
 	});
 	const fail = (error: string, reviewId?: string): ReviewResult =>
-		done({ status: "failed", error: error.slice(0, 300), ...(reviewId ? { reviewId } : {}) });
+		done({
+			status: "failed",
+			error: redactSecrets(error).slice(0, 300),
+			...(reviewId ? { reviewId } : {}),
+		});
 	const complete = (info: Obj): ReviewResult => {
 		const runId = asStr(info.runId);
 		let detail = info;

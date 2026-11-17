@@ -112,6 +112,29 @@ describe("a01 orchestrator hook failure log", () => {
 		expect(log).not.toContain("abc.def-ghi123");
 	});
 
+	test.each([
+		["GitHub personal access token", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"],
+		["GitHub OAuth token", "gho_abcdefghijklmnopqrstuvwxyz0123456789"],
+		["GitHub user-to-server token", "ghu_abcdefghijklmnopqrstuvwxyz0123456789"],
+		["GitHub server-to-server token", "ghs_abcdefghijklmnopqrstuvwxyz0123456789"],
+		["GitHub refresh token", "ghr_abcdefghijklmnopqrstuvwxyz0123456789"],
+		["GitHub fine-grained token", "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz"],
+		["Linear API key", "lin_api_abcdefghijklmnopqrstuvwxyz0123456789"],
+		["Notion integration secret", "secret_abcdefghijklmnopqrstuvwxyz0123456789"],
+		["Notion token", "ntn_abcdefghijklmnopqrstuvwxyz0123456789"],
+	])("%s is masked in the failure log and the returned error", async (_name, token) => {
+		const stateDir = join(tempDir(), "state");
+		const out = await withA01OrchestratorTimeout(
+			() => Promise.reject(new Error(`auth failed with ${token}`)),
+			{ timeoutMs: 5_000, stateDir },
+		);
+		expect(out.ok).toBe(false);
+		expect(out.error).not.toContain(token);
+		expect(out.error).toContain("REDACTED");
+		expect(logOf(stateDir)).not.toContain(token);
+		expect(logOf(stateDir)).toContain("REDACTED");
+	});
+
 	test("without opts.stateDir it uses the resolved host state dir, never <cwd>/.planning", async () => {
 		const cwd = tempDir();
 		mkdirSync(join(cwd, ".planning"));
