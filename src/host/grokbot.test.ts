@@ -209,6 +209,37 @@ async function drive(
 	throw new Error("plan did not converge");
 }
 
+describe("grok-bot answer keys", () => {
+	test("a key that is not a request key is refused before any path is built", () => {
+		const root = tmp();
+		const dir = join(root, "state", "journal", "s1");
+		mkdirSync(join(dir, "pending"), { recursive: true });
+		mkdirSync(join(dir, "answers"), { recursive: true });
+		// From pending/ and answers/, these keys reach files beside the journal's own folder.
+		const traversalKey = "../../../../victim";
+		const pendingFile = join(root, "victim.json");
+		const answerFile = join(root, "victim.txt");
+		writeFileSync(pendingFile, JSON.stringify({ stage: "clarify" }));
+		writeFileSync(answerFile, "keep");
+		const keys = [
+			traversalKey,
+			"ABCDEF0123456789ABCDEF0123456789",
+			"a".repeat(31),
+			"a".repeat(33),
+			`${"a".repeat(31)}-`,
+		];
+		for (const key of keys) {
+			const refused = storeAnswer(dir, key, CLARIFY);
+			expect(refused.ok).toBe(false);
+			expect(refused.errors.join()).toMatch(/32 lowercase hex characters/);
+		}
+		expect(storeAnswer(dir, traversalKey, CLARIFY, { replace: true }).ok).toBe(false);
+		expect(readFileSync(pendingFile, "utf8")).toBe(JSON.stringify({ stage: "clarify" }));
+		expect(readFileSync(answerFile, "utf8")).toBe("keep");
+		expect(readdirSync(join(dir, "answers"))).toEqual([]);
+	});
+});
+
 describe("grok-bot journal driver", () => {
 	test("suspends per stage, collects sibling nodes together, and resumes to a validated plan", async () => {
 		const root = tmp();
@@ -810,6 +841,7 @@ describe("grok-bot review read", () => {
 		expect(read.greptileCheckRuns).toEqual([
 			{ name: "Greptile Review", status: "completed", conclusion: "success" },
 		]);
+		expect(read.checkRunsUnavailable).toBe(false);
 		expect(read.scoreSource).toBe("pr-description");
 	});
 
@@ -917,6 +949,58 @@ describe("grok-bot review read", () => {
 		const newerReview = await reviewRead("o/r", "23", dirFetcher(root));
 		expect(newerReview.score).toBe(4);
 		expect(newerReview.scoreSource).toBe("latest-comment");
+	});
+});
+
+describe("grok-bot prompts build output paths", () => {
+	test("refuses a dispatch file that leaves --out-dir and writes nothing outside it", async () => {
+		const root = tmp();
+		const stateDir = join(root, "state");
+		await drive(stateDir, root, hostModel(5));
+		const env = { ...testEnv(root), ULTRATHINK_STATE_DIR: stateDir } as NodeJS.ProcessEnv;
+		const outDir = join(root, "out");
+		mkdirSync(outDir);
+		const units = join(root, "units.json");
+		const unit = { unit: "n3", mode: "new", repo: "o/r", branch: "b" };
+		writeFileSync(
+			units,
+			JSON.stringify([
+				{ ...unit, file: "../escaped.prompt.xml" },
+				{ ...unit, file: "nested/x.prompt.xml" },
+				{ ...unit, file: "ok.prompt.xml" },
+			]),
+		);
+		const result = await main(
+			["prompts", "build", "--session", "s1", "--units", units, "--out-dir", outDir],
+			env,
+		);
+		expect(result.code).toBe(1);
+		const report = JSON.parse(result.text) as Array<{ ok: boolean; errors: string[] }>;
+		expect(report.map((entry) => entry.ok)).toEqual([false, false, true]);
+		expect(report[0]?.errors.join()).toMatch(/plain name/);
+		expect(existsSync(join(root, "escaped.prompt.xml"))).toBe(false);
+		expect(readdirSync(outDir)).toEqual(["ok.prompt.xml"]);
+	});
+});
+
+describe("grok-bot review read check runs", () => {
+	test("a failed check-runs fetch is reported as unavailable, not as no Greptile check", async () => {
+		const root = tmp();
+		writeFileSync(
+			join(root, "pull.json"),
+			JSON.stringify({ state: "open", draft: true, head: { sha: "abc" }, body: "" }),
+		);
+		writeFileSync(join(root, "issue-comments.json"), "[]");
+		writeFileSync(join(root, "reviews.json"), "[]");
+		writeFileSync(join(root, "review-comments.json"), "[]");
+		const local = dirFetcher(root);
+		const failing = (async (input: Parameters<typeof fetch>[0]) =>
+			String(input).includes("/check-runs")
+				? new Response("upstream error", { status: 500 })
+				: local(input)) as typeof fetch;
+		const read = await reviewRead("o/r", "21", failing);
+		expect(read.checkRunsUnavailable).toBe(true);
+		expect(read.greptileCheckRuns).toEqual([]);
 	});
 });
 

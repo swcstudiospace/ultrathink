@@ -6,7 +6,7 @@
  * off for every invocation (`ULTRATHINK_SHIP=0`); no subcommand merges, pushes, installs skills, or prints a key.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { runDecisionsCommand } from "../decisions/cli.ts";
 import { CLARIFY_SYSTEM_PROMPT } from "../hitl/prompts.ts";
 import { runHindsightCommand } from "../hindsight/cli.ts";
@@ -17,6 +17,7 @@ import { DISTILL_SYSTEM } from "../teach/observe.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../think/prompts.ts";
 import { workflowWaves } from "../think/graph.ts";
 import { readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
+import { writeFileAtomic } from "../claude/atomic.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../uplift/prompt.ts";
 import { runControl, takeSessionFlag, trackingOff } from "../uplift/commands.ts";
 import {
@@ -91,6 +92,29 @@ function readRecord(stateDir: string, sessionId: string): { record: SessionRecor
 }
 
 const json = (value: unknown): string => JSON.stringify(value, null, 2);
+
+/**
+ * The output path for one unit's prompt. The name must be a plain file name (not empty, no path separator, no "..", no
+ * NUL) and the resolved path must stay inside `outDir`; a refused name writes nothing.
+ */
+function promptPath(outDir: string, name: unknown): { path: string } | { error: string } {
+	if (
+		typeof name !== "string" ||
+		name === "" ||
+		name.includes("/") ||
+		name.includes("\\") ||
+		name.includes("..") ||
+		name.includes("\u0000")
+	)
+		return {
+			error: `prompt file name must be a plain name, not a path (got ${JSON.stringify(name)})`,
+		};
+	const path = resolve(outDir, name);
+	const rel = relative(outDir, path);
+	if (rel === "" || rel.startsWith("..") || isAbsolute(rel))
+		return { error: "prompt file must stay inside --out-dir" };
+	return { path };
+}
 
 export function promoteGuard(argv: string[]): string | undefined {
 	if (argv[0] !== "promote") return undefined;
@@ -201,7 +225,7 @@ export async function reviewRead(
 		/greptile/i.test(String((c.user as { login?: string } | undefined)?.login ?? ""));
 	const pull = (await get<Item>(`pulls/${pr}`)).value;
 	const head = String((pull.head as { sha?: string } | undefined)?.sha ?? "");
-	const [issueComments, reviews, reviewComments, checkRuns] = await Promise.all([
+	const [issueComments, reviews, reviewComments, checkRunsFetch] = await Promise.all([
 		getAll<Item>(`issues/${pr}/comments`, (value) =>
 			Array.isArray(value) ? (value as Item[]) : [],
 		),
@@ -216,9 +240,13 @@ export async function reviewRead(
 							? (value as { check_runs?: Item[] }).check_runs
 							: undefined;
 					return runs ?? [];
-				}).catch(() => [])
-			: Promise.resolve([]),
+				}).then(
+					(runs) => ({ runs, unavailable: false }),
+					() => ({ runs: [] as Item[], unavailable: true }),
+				)
+			: Promise.resolve({ runs: [] as Item[], unavailable: false }),
 	]);
+	const checkRuns = checkRunsFetch.runs;
 	const greptileReviews = reviews.filter(isGreptile);
 	const lastReview = greptileReviews[greptileReviews.length - 1];
 	const headReview = [...greptileReviews].reverse().find((review) => review.commit_id === head);
@@ -279,6 +307,7 @@ export async function reviewRead(
 			status: r.status,
 			conclusion: r.conclusion,
 		})),
+		checkRunsUnavailable: checkRunsFetch.unavailable,
 		retrigger: "fallback: post an @greptileai comment (needs approval)",
 	};
 }
@@ -546,16 +575,29 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 				const report: Array<Record<string, unknown>> = [];
 				let failed = 0;
 				for (const dispatch of list) {
+					const target = promptPath(outDir, dispatch.file ?? `${dispatch.unit}.prompt.xml`);
+					if ("error" in target) {
+						failed++;
+						report.push({
+							unit: dispatch.unit,
+							mode: dispatch.mode,
+							agent: dispatch.agentId,
+							path: undefined,
+							ok: false,
+							errors: [target.error],
+							chars: 0,
+						});
+						continue;
+					}
 					const xml = buildCloudPrompt(record, dispatch);
 					const check = validateCloudPrompt(xml, dispatch, record.result.original);
-					const path = join(outDir, dispatch.file ?? `${dispatch.unit}.prompt.xml`);
-					if (check.ok) writeFileSync(path, xml);
+					if (check.ok) writeFileAtomic(target.path, xml);
 					else failed++;
 					report.push({
 						unit: dispatch.unit,
 						mode: dispatch.mode,
 						agent: dispatch.agentId,
-						path: check.ok ? path : undefined,
+						path: check.ok ? target.path : undefined,
 						...check,
 					});
 				}

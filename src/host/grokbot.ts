@@ -123,6 +123,9 @@ export function journalDir(stateDir: string, sessionId: string): string {
 	return join(stateDir, "journal", sanitizeId(sessionId));
 }
 
+/** The request key `requestKey` produces: 32 lowercase hex characters, the only shape a key may take on disk. */
+const REQUEST_KEY_RE = /^[0-9a-f]{32}$/;
+
 function requestKey(system: string, user: string): string {
 	return createHash("sha256")
 		.update(system)
@@ -531,6 +534,11 @@ export function storeAnswer(
 	raw: string,
 	options: { replace?: boolean } = {},
 ): Validation {
+	if (!REQUEST_KEY_RE.test(key))
+		return {
+			ok: false,
+			errors: ["answer key must be 32 lowercase hex characters (a request key)"],
+		};
 	const pendingPath = join(dir, "pending", `${key}.json`);
 	const answerPath = join(dir, "answers", `${key}.txt`);
 	let request: PendingRequest | undefined;
