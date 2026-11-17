@@ -312,11 +312,16 @@ function failure(error: unknown): string {
 	return `could not write the skill (${typeof code === "string" ? code : "error"})`;
 }
 
-/** Writes `content` to a sibling temp file; the caller renames it into place and removes it on failure. */
+/** Writes `content` to a sibling temp file and returns it; a failed write or chmod removes it before rethrowing. */
 function stage(dir: string, content: string, mode: number): string {
 	const tmp = join(dir, `.SKILL.md.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
-	writeFileSync(tmp, content, { flag: "wx", mode });
-	chmodSync(tmp, mode);
+	try {
+		writeFileSync(tmp, content, { flag: "wx", mode });
+		chmodSync(tmp, mode);
+	} catch (error) {
+		rmSync(tmp, { force: true });
+		throw error;
+	}
 	return tmp;
 }
 

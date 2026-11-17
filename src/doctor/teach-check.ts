@@ -22,6 +22,8 @@ const STALE_LESSON_MS = 3 * DAY_MS;
 const ACTIVE_SESSION_MS = DAY_MS;
 /** The store's own cap for one lesson file (`MOMENT_MAX_BYTES` in `teach/skills.ts`). */
 const LESSON_MAX_BYTES = 64 * 1024;
+/** Above any outbox entry (an op names a document id and its tags); a larger file is reported, never read. */
+const OUTBOX_MAX_BYTES = 64 * 1024;
 
 interface OutboxItem {
 	enqueuedAt: number;
@@ -42,11 +44,17 @@ function jsonFiles(dir: string): string[] {
 	}
 }
 
-function readOutbox(dir: string): OutboxItem[] {
+function readOutbox(dir: string): { items: OutboxItem[]; oversized: number } {
 	const items: OutboxItem[] = [];
+	let oversized = 0;
 	for (const name of jsonFiles(join(dir, "outbox"))) {
+		const path = join(dir, "outbox", name);
 		try {
-			const raw: unknown = JSON.parse(readFileSync(join(dir, "outbox", name), "utf8"));
+			if (statSync(path).size > OUTBOX_MAX_BYTES) {
+				oversized += 1;
+				continue;
+			}
+			const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
 			if (typeof raw !== "object" || raw === null) continue;
 			const { enqueuedAt, attempts, lastError } = raw as Record<string, unknown>;
 			if (typeof enqueuedAt !== "number" || !Number.isFinite(enqueuedAt)) continue;
@@ -58,11 +66,10 @@ function readOutbox(dir: string): OutboxItem[] {
 			// reason: one unreadable or malformed entry must not hide the others.
 		}
 	}
-	return items.sort((a, b) => a.enqueuedAt - b.enqueuedAt);
+	return { items: items.sort((a, b) => a.enqueuedAt - b.enqueuedAt), oversized };
 }
 
-function outboxFinding(dir: string, now: number): Finding {
-	const items = readOutbox(dir);
+function pendingFinding(items: OutboxItem[], now: number): Finding {
 	const oldest = items[0];
 	if (!oldest) {
 		return {
@@ -92,6 +99,26 @@ function outboxFinding(dir: string, now: number): Finding {
 		title: `${items.length} Hindsight writes have waited over 24 h (oldest ${formatAge(age)})`,
 		detail: lines.join("\n"),
 		fix: "bin/ultrathink teach sync",
+	};
+}
+
+function outboxFinding(dir: string, now: number): Finding {
+	const { items, oversized } = readOutbox(dir);
+	const finding = pendingFinding(items, now);
+	if (oversized === 0) return finding;
+	return {
+		id: "memory.outbox",
+		section: "memory",
+		level: "warn",
+		title: `${plural(oversized, "oversized Hindsight outbox file")} not read`,
+		detail: [
+			finding.title,
+			finding.detail,
+			`Delete the oversized files from ${join(dir, "outbox")}.`,
+		]
+			.filter(Boolean)
+			.join("\n"),
+		fix: finding.fix,
 	};
 }
 
