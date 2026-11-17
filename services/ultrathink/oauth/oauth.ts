@@ -573,17 +573,17 @@ export function writeFileDurably(
 		io.fchmodSync(fd, 0o600);
 		io.writeFileSync(fd, content);
 		io.fsyncSync(fd);
+		io.renameSync(tmp, path);
 	} catch (error) {
 		try {
-			io.closeSync(fd);
 			io.unlinkSync(tmp);
 		} catch {
 			// reason: Best effort cleanup of the temp file.
 		}
 		throw error;
+	} finally {
+		io.closeSync(fd);
 	}
-	io.closeSync(fd);
-	io.renameSync(tmp, path);
 	let dirFd: number | undefined;
 	try {
 		dirFd = io.openSync(dir, "r");
