@@ -485,6 +485,42 @@ describe("resumePrds", () => {
 		expect(report.keys[0]?.notion.errorClass).toBe("local-missing");
 		expect(report.summary.failed).toBe(1);
 	});
+
+	test("a ledger path outside the PRD root is never read: the key reports local-missing and sends none of it", async () => {
+		const linear = linearMock();
+		linear.fail.set("get_issue", [httpError(503), httpError(503), httpError(503)]);
+		const d = deps({ linear: linear.caller });
+		const first = await syncPrds([prd("public PRD")], d);
+		expect(first.keys[0]?.linear.outcome).toBe("pending");
+		const outside = join(dir, "outside.md");
+		writeFileSync(outside, "PRIVATE FILE CONTENT");
+		const ledger = JSON.parse(readFileSync(first.ledgerPath, "utf8"));
+		ledger.entries[0].localPath = outside;
+		writeFileSync(first.ledgerPath, JSON.stringify(ledger));
+		const fresh = linearMock();
+		const second = await resumePrds(deps({ linear: fresh.caller }));
+		expect(second.keys[0]?.linear.errorClass).toBe("local-missing");
+		expect(second.keys[0]?.linear.error).toContain("not this key's copy under the PRD root");
+		expect(second.summary.failed).toBe(1);
+		expect(fresh.calls).toEqual([]);
+		expect(JSON.stringify(second)).not.toContain("PRIVATE FILE CONTENT");
+	});
+});
+
+describe("heading parsing", () => {
+	test("a long whitespace run before a non-matching character parses to the same heading as a short one", () => {
+		const long = markdownToBlocks(`#${" ".repeat(50_000)}x`);
+		expect(long.map((block) => block.type)).toEqual(["heading_1"]);
+		expect(segmentsOf(long[0], "heading_1").join("")).toBe("x");
+		expect(long).toEqual(markdownToBlocks("# x"));
+	});
+
+	test("a long whitespace run inside a heading keeps the text and drops only the closing sequence", () => {
+		const run = " ".repeat(50_000);
+		const blocks = markdownToBlocks(`## a${run}b${run}##`);
+		expect(blocks.map((block) => block.type)).toEqual(["heading_2"]);
+		expect(segmentsOf(blocks[0], "heading_2").join("")).toBe(`a${run}b`);
+	});
 });
 
 describe("secrets", () => {

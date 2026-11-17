@@ -267,10 +267,27 @@ function textBlocks(
 
 const FENCE = /^\s*(`{3,}|~{3,})\s*([^\s`]*).*$/;
 const FENCE_CLOSE = /^\s*(`{3,}|~{3,})\s*$/;
-const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+const HEADING_OPEN = /^(#{1,6})\s/;
 const DIVIDER = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const BULLET = /^\s*[-*+]\s+(.*)$/;
 const NUMBERED = /^\s*\d+[.)]\s+(.*)$/;
+
+/**
+ * A heading line's level and text, or undefined. The text is the rest of the line without its closing sequence: the
+ * longest trailing run of whitespace, `#`s and whitespace. Each step is one scan, so no whitespace run is re-scanned
+ * per character, unlike a lazy `\s*#*\s*$` tail.
+ */
+function headingOf(line: string): { level: number; text: string } | undefined {
+	const open = HEADING_OPEN.exec(line);
+	if (!open) return undefined;
+	let text = line.slice(open[0].length).trim();
+	let end = text.length;
+	while (end > 0 && text[end - 1] === "#") end--;
+	text = text.slice(0, end).trimEnd();
+	// A heading text never spans a line terminator that `.` does not match.
+	if (/[\u2028\u2029]/.test(text)) return undefined;
+	return { level: (open[1] as string).length, text };
+}
 
 /**
  * The PRD markdown as flat Notion blocks: headings, paragraphs, list items, dividers and code blocks (fence language
@@ -305,11 +322,11 @@ export function markdownToBlocks(markdown: string): NotionBlock[] {
 			flush();
 			continue;
 		}
-		const heading = HEADING.exec(line);
+		const heading = headingOf(line);
 		if (heading) {
 			flush();
-			const level = Math.min((heading[1] as string).length, 3);
-			blocks.push(...textBlocks(`heading_${level}`, heading[2] ?? ""));
+			const level = Math.min(heading.level, 3);
+			blocks.push(...textBlocks(`heading_${level}`, heading.text));
 			continue;
 		}
 		if (DIVIDER.test(line)) {
@@ -1139,8 +1156,8 @@ function finish(
 
 /**
  * Re-sends what the ledger still owes: every key with a configured tracker in `pending` or `failed`, from the local PRD
- * copy written before the first attempt. A synced tracker is never touched. A key whose local copy is gone reports
- * `failed` (`local-missing`).
+ * copy written before the first attempt. A synced tracker is never touched. A key whose local copy is gone, or whose
+ * ledger path is not the copy under the PRD root, reports `failed` (`local-missing`).
  */
 export async function resumePrds(deps: SyncDeps): Promise<SyncReport> {
 	const ctx = makeCtx(deps);
@@ -1150,15 +1167,27 @@ export async function resumePrds(deps: SyncDeps): Promise<SyncReport> {
 	const missing: KeyReport[] = [];
 	for (const entry of ctx.entries.values()) {
 		if (!owes(entry.linear, deps.linear) && !owes(entry.notion, deps.notion)) continue;
-		let markdown: string;
-		try {
-			markdown = readFileSync(entry.localPath, "utf8");
-		} catch {
+		// Only the path this key maps to under the root is read. A stored path that differs (an edited ledger, or a root
+		// that moved) could name any file on disk, so it counts as missing and nothing is read from it.
+		const localPath = join(ctx.root, localName(entry.key));
+		const reason =
+			entry.localPath === localPath
+				? "local PRD copy is missing"
+				: "local PRD copy is missing: the ledger path is not this key's copy under the PRD root";
+		let markdown: string | undefined;
+		if (entry.localPath === localPath) {
+			try {
+				markdown = readFileSync(localPath, "utf8");
+			} catch {
+				markdown = undefined;
+			}
+		}
+		if (markdown === undefined) {
 			const lost: TrackerResult = {
 				outcome: "failed",
 				attempts: 0,
 				errorClass: "local-missing",
-				error: "local PRD copy is missing",
+				error: reason,
 			};
 			missing.push({
 				key: entry.key,
