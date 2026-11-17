@@ -2,13 +2,14 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * ultrathink-ship: assess | pr | review | merge | run | status --state <sessions/<id>.json> [--cwd <dir>].
- * Prints one JSON object; always exits 0 except usage errors (2). Fails open.
+ * Prints one JSON object; always exits 0 except usage errors (2). Fails open; the merge gate on the phase record fails closed.
  */
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { withFileLock } from "../claude/atomic.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import type { SessionRecord } from "../claude/state.ts";
-import { defaultStateDir, readControl } from "../claude/state.ts";
+import { defaultStateDir, HOOK_LOCK, readControl } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { createDecisions } from "../decisions/gate.ts";
 import type { Decisions } from "../decisions/gate.ts";
@@ -16,6 +17,8 @@ import { selectJudgeEngine } from "../host/engine.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
+import { fileStore } from "../workflow/phase-loop-store.ts";
+import { confirmShip } from "../workflow/phase-loop.ts";
 import { assessDecisionJson, assessDone } from "./assess.ts";
 import { CLAUDE_REVIEW_TIMEOUT_MS, reviewWithClaude, usesClaudeReviewer } from "./claude-review.ts";
 import { createGithub } from "./github.ts";
@@ -60,6 +63,8 @@ export interface ShipDeps {
 	sleep: (ms: number) => Promise<void>;
 	/** Jev runtime for the `ship` decision of this session; absent = no Jev (today's assessment). */
 	decisions?: (record: SessionRecord) => Decisions | undefined;
+	/** Directory of the phase loop records; the merge is confirmed against the session's record in it. */
+	phaseLoopDir: string;
 }
 
 type Output = Record<string, unknown>;
@@ -625,6 +630,83 @@ function storedReviewRefusal(
 }
 
 /**
+ * The phase record gates the merge: the session's record confirms a reviewed head once, and a head that moved after that
+ * confirmation is blocked for a human. Only the store is read; the runtime connection is not evaluated here. An unreadable
+ * or unwritable record blocks, so GitHub is never asked to merge on a record the CLI could not read or write.
+ */
+function confirmPhaseMerge(
+	dir: string,
+	sessionId: string,
+	headSha: string,
+	reviewedAt: number,
+): MergeStep | undefined {
+	const blocked = (reason: string): MergeStep => ({
+		kind: "blocked",
+		reason,
+		headSha,
+		comment: false,
+	});
+	if (!sessionId) return blocked("session id missing from the state file");
+	const recordId = `review:${headSha}`;
+	const store = fileStore(dir);
+	let lockNotTaken = false;
+	try {
+		return withFileLock(
+			dir,
+			(): MergeStep | undefined => {
+				// acquire reports through `log` only when it runs the callback unlocked, and it does so before the callback.
+				if (lockNotTaken) return blocked("phase record lock not taken; nothing merged");
+				const stored = store.load(sessionId);
+				if (stored.status === "quarantined")
+					return blocked(`phase record is corrupt; set aside at ${stored.quarantinedAs}`);
+				const record = stored.status === "found" ? stored.record : undefined;
+				const closedBy = record?.closedBy;
+				if (closedBy !== undefined) {
+					if (closedBy.recordId === recordId) return undefined;
+					return blocked(
+						`phase was confirmed for ${closedBy.recordId}; the head moved, so a human must confirm ${recordId}`,
+					);
+				}
+				// The runtime connection is not evaluated here: the CLI checks only the store.
+				const outcome = confirmShip(
+					sessionId,
+					{
+						afterVerify: record?.phaseOrder.at(-1) === "Verify",
+						audit: {
+							id: recordId,
+							kind: "validation",
+							result: "pass",
+							recordedAt: new Date(reviewedAt).toISOString(),
+						},
+						auditId: recordId,
+					},
+					() => true,
+					store,
+				);
+				if (outcome.accepted) return undefined;
+				const reason = outcome.refusals.join("; ");
+				return {
+					kind: "needs-agent",
+					reason,
+					next: `${reason}; resolve it in the phase record, then run merge again`,
+					headSha,
+				};
+			},
+			{
+				...HOOK_LOCK,
+				onTimeout: "throw",
+				log: () => {
+					lockNotTaken = true;
+				},
+			},
+		);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return blocked(`phase record unavailable: ${detail}`);
+	}
+}
+
+/**
  * One merge poll: merges only when the latest review passed for the PR's exact head commit. A closed PR, or one merged
  * outside the flow, blocks; a stored review that does not pass goes back to the agent and never waits, even when the
  * PR cannot be read.
@@ -634,6 +716,7 @@ function mergeOnce(
 	github: Github,
 	ship: ShipState,
 	pr: PrRef,
+	confirm: (headSha: string, reviewedAt: number) => MergeStep | undefined,
 	threadOpts?: ReviewThreadsOptions,
 	approved = false,
 ): MergeStep {
@@ -696,6 +779,9 @@ function mergeOnce(
 	if (!gate.ok) return classifyGateReason(gate.reason, headSha);
 	// A passing Claude review never merges on its own: the operator approves the merge with --approve.
 	if (usesClaudeReviewer(config) && !approved) return { kind: "needs-approval", headSha };
+	// The phase record gates the merge: this head is confirmed there before GitHub is asked to merge.
+	const refused = confirm(headSha, latest.at);
+	if (refused) return refused;
 	const allowed = github.mergeMethods();
 	const method =
 		allowed.length > 0 && !allowed.includes(config.mergeMethod)
@@ -839,6 +925,9 @@ async function stepMerge(
 	if (!pr) return { ok: false, merged: false, reason: "no PR; run pr first" };
 	const github = deps.github(cwd);
 	const started = deps.now();
+	const sessionId = readRecord(statePath)?.sessionId ?? "";
+	const confirm = (headSha: string, reviewedAt: number) =>
+		confirmPhaseMerge(deps.phaseLoopDir, sessionId, headSha, reviewedAt);
 	let waiting = ship.waiting;
 	let delay = config.pollMs;
 	for (let polls = 1; ; polls++) {
@@ -847,6 +936,7 @@ async function stepMerge(
 			github,
 			ship,
 			pr,
+			confirm,
 			{ deadlineMs: started + budgetMs, now: deps.now },
 			ctx.approve,
 		);
@@ -1052,6 +1142,7 @@ async function main(): Promise<number> {
 			return client;
 		},
 		sleep: Bun.sleep,
+		phaseLoopDir: join(stateDir, "phase-loop"),
 		decisions: (record) =>
 			createDecisions({ config: config.decisions, sessionId: record.sessionId, stateDir }),
 	};

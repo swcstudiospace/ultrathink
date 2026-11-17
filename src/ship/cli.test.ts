@@ -10,6 +10,8 @@ import { DEFAULT_DECISIONS_CONFIG } from "../decisions/types.ts";
 import type { DecisionsConfig, DecisionsErrorKind } from "../decisions/types.ts";
 import { engineForSessionModel } from "../host/engine.ts";
 import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
+import { fileStore } from "../workflow/phase-loop-store.ts";
+import { attemptPhase, type PhaseName } from "../workflow/phase-loop.ts";
 import type { Github, LocalBranchDelete, ReviewThreads, ReviewThreadsOptions } from "./github.ts";
 import { assessDone } from "./assess.ts";
 import { judgeSessionModel, runShip } from "./cli.ts";
@@ -108,6 +110,8 @@ interface FakeOpts {
 	threads?: ReviewThreads;
 	/** Local branch deletion after a merge that keeps the remote branch; defaults to deleted. */
 	localBranch?: LocalBranchDelete;
+	/** Phases the session's loop recorded before the merge; defaults to a session that reached Verify. */
+	phases?: PhaseName[];
 }
 
 function deps(o: FakeOpts = {}): ShipDeps {
@@ -153,8 +157,11 @@ function deps(o: FakeOpts = {}): ShipDeps {
 				? { ok: false, error: "review threads scan exceeded its deadline" }
 				: (o.threads ?? { ok: false, error: "no threads" }),
 	};
+	const phaseLoopDir = join(dir, "phase-loop");
+	seedPhases(phaseLoopDir, o.phases ?? ["Discuss", "Plan", "Execute", "Verify"]);
 	return {
 		config: { ...CONFIG, ...o.config },
+		phaseLoopDir,
 		run: (argv) => ({
 			exitCode: 0,
 			stdout: argv.join(" ") === "git rev-parse HEAD" ? `${o.head ?? status.headSha}\n` : "",
@@ -193,6 +200,16 @@ function deps(o: FakeOpts = {}): ShipDeps {
 			clock += ms;
 		},
 	};
+}
+
+/** Records the phases a session reached, as the phase loop does. A session that already has a record keeps it. */
+function seedPhases(phaseLoopDir: string, phases: PhaseName[]): void {
+	const store = fileStore(phaseLoopDir);
+	if (store.load("s").status !== "absent") return;
+	for (const phase of phases) {
+		const input = { phase, completeUpliftCount: 1, unansweredBlockingClarifications: 0 };
+		attemptPhase("s", input, () => true, store);
+	}
 }
 
 const ship = (cmd: string, d: ShipDeps) => runShip([cmd, "--state", statePath, "--cwd", dir], d);
@@ -1857,5 +1874,93 @@ describe("merge approval for the Claude reviewer", () => {
 		const out = await merge(deps({ config: { reviewer: "greptile" } }));
 		expect(out.output).toMatchObject({ ok: true, merged: true });
 		expect(calls).toEqual(["merge:squash:abc", "delete:feat", "sync:master"]);
+	});
+});
+
+describe("merge phase gate", () => {
+	const phaseDir = () => join(dir, "phase-loop");
+	const phaseRecord = () => {
+		const outcome = fileStore(phaseDir()).load("s");
+		return outcome.status === "found" ? outcome.record : undefined;
+	};
+	const mergeCalls = () => calls.filter((call) => call.startsWith("merge:"));
+	/** A merge whose one GitHub call fails transiently, with no poll budget left: confirmed, not merged. */
+	const transientMerge = () =>
+		ship(
+			"merge",
+			deps({
+				config: { waitMs: 0 },
+				merges: [{ ok: false, error: "GraphQL: something went wrong" }],
+			}),
+		);
+
+	beforeEach(() => {
+		writeShip(statePath, { pr: PR, phase: "pr-open", rounds: [PASSED] });
+	});
+
+	test("without a recorded Verify the merge is refused and GitHub is not asked to merge", async () => {
+		const out = await ship("merge", deps({ phases: ["Discuss", "Plan", "Execute"] }));
+		expect(out.output).toMatchObject({ ok: false, merged: false });
+		expect(String(out.output.reason)).toContain("Verify is not the last recorded phase");
+		expect(mergeCalls()).toEqual([]);
+		expect(phaseRecord()?.phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);
+		expect(phaseRecord()?.closedBy).toBeUndefined();
+	});
+
+	test("with a recorded Verify and a passing review the merge closes the phase on the review's head", async () => {
+		const out = await ship("merge", deps());
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
+		expect(phaseRecord()).toMatchObject({
+			phaseOrder: ["Discuss", "Plan", "Execute", "Verify", "Ship"],
+			closedBy: { kind: "validation", recordId: "review:abc" },
+		});
+	});
+
+	test("a rerun after a transient GitHub failure merges without confirming again", async () => {
+		const first = await transientMerge();
+		expect(first.output).toMatchObject({ ok: false, merged: false, waiting: true });
+		const rerun = await ship("merge", deps());
+		expect(rerun.output).toMatchObject({ ok: true, merged: true });
+		expect(mergeCalls()).toEqual(["merge:squash:abc", "merge:squash:abc"]);
+		expect(phaseRecord()).toMatchObject({ shipStarts: 1, operatorConfirmations: 1 });
+	});
+
+	test("a head that moves after the confirmation is blocked for a human and is not merged", async () => {
+		await transientMerge();
+		writeShip(statePath, { rounds: [{ ...PASSED, headSha: "def" }] });
+		const out = await ship("merge", deps({ status: { headSha: "def" } }));
+		expect(out.output).toMatchObject({ ok: false, merged: false, blocked: true });
+		expect(String(out.output.reason)).toContain("a human must confirm review:def");
+		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
+		expect(readShip(statePath)?.phase).toBe("blocked");
+	});
+
+	test("a corrupt phase record refuses the merge and GitHub is not asked to merge", async () => {
+		const fake = deps();
+		const recordName = `${Buffer.from("s", "utf8").toString("hex")}.json`;
+		writeFileSync(join(phaseDir(), recordName), "{not json");
+		const out = await ship("merge", fake);
+		expect(out.output).toMatchObject({ ok: false, merged: false, blocked: true });
+		expect(String(out.output.reason)).toContain("corrupt");
+		expect(mergeCalls()).toEqual([]);
+	});
+
+	test("a phase record lock that cannot be taken refuses the merge: nothing is merged or recorded", async () => {
+		const current = deps();
+		// The lock's parent directory is missing, so the lock cannot be created and the callback would run unlocked.
+		const out = await ship("merge", {
+			...current,
+			phaseLoopDir: join(dir, "missing", "phase-loop"),
+		});
+		expect(out.output).toMatchObject({
+			ok: false,
+			merged: false,
+			blocked: true,
+			reason: "phase record lock not taken; nothing merged",
+		});
+		expect(mergeCalls()).toEqual([]);
+		expect(phaseRecord()?.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify"]);
+		expect(phaseRecord()?.closedBy).toBeUndefined();
 	});
 });
