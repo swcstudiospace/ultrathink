@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	ABSENT,
 	ConcurrentWriteError,
@@ -22,6 +23,30 @@ function thrownBy(call: () => unknown): unknown {
 		return error;
 	}
 	throw new Error("expected the call to throw");
+}
+
+/** The content a race worker writes: its tag repeated, so a torn or interleaved write is visible. */
+function payload(tag: string): string {
+	return `${tag}\n`.repeat(16_384);
+}
+
+/** Reads a worker's stdout to the end. `ready` resolves once the worker prints its ready line, or when stdout closes. */
+function readWorkerOutput(stream: ReadableStream<Uint8Array>): {
+	ready: Promise<void>;
+	output: Promise<string>;
+} {
+	const { promise: ready, resolve: markReady } = Promise.withResolvers<void>();
+	const output = (async () => {
+		const decoder = new TextDecoder();
+		let text = "";
+		for await (const chunk of stream) {
+			text += decoder.decode(chunk, { stream: true });
+			if (text.includes("ready\n")) markReady();
+		}
+		markReady();
+		return text + decoder.decode();
+	})();
+	return { ready, output };
 }
 
 describe("guarded writer", () => {
@@ -103,4 +128,45 @@ describe("guarded writer", () => {
 		expect(readFileSync(path, "utf8")).toBe("same\n");
 		expect(existsSync(`${path}.lock`)).toBe(false);
 	});
+
+	test("simultaneous writers from one base hash: one commits whole content, the rest fail, no lock remains", async () => {
+		// Without the lock, writers that pass the hash check before any rename would all report OK; holding every worker at the same stale base before any write makes those checks overlap.
+		writeGuarded(path, ABSENT, "base\n");
+		const worker = fileURLToPath(new URL("./guarded-write.race-worker.ts", import.meta.url));
+		const attempts = 50;
+		const workers = ["A", "B", "C", "D"].map((tag) => {
+			const proc = Bun.spawn([process.execPath, worker, path, String(attempts), payload(tag)], {
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "inherit",
+			});
+			return { tag, proc, ...readWorkerOutput(proc.stdout) };
+		});
+		await Promise.all(workers.map((w) => w.ready));
+		for (const w of workers) w.proc.stdin.end();
+
+		const runs = await Promise.all(
+			workers.map(async (w) => ({
+				tag: w.tag,
+				exitCode: await w.proc.exited,
+				lines: (await w.output).split("\n").filter((line) => line !== "" && line !== "ready"),
+			})),
+		);
+		for (const run of runs) {
+			expect({ tag: run.tag, exitCode: run.exitCode }).toEqual({ tag: run.tag, exitCode: 0 });
+			expect(run.lines).toHaveLength(attempts);
+		}
+
+		const winners = runs.flatMap((run) =>
+			run.lines.filter((line) => line === "OK").map(() => run.tag),
+		);
+		const failures = runs.flatMap((run) => run.lines.filter((line) => line !== "OK"));
+		expect(failures.length).toBeGreaterThan(0);
+		expect(
+			failures.filter((line) => line !== "ConcurrentWriteError" && line !== "LockHeldError"),
+		).toEqual([]);
+		expect(winners).toHaveLength(1);
+		expect(readFileSync(path, "utf8")).toBe(payload(winners[0] ?? ""));
+		expect(existsSync(`${path}.lock`)).toBe(false);
+	}, 30_000);
 });
