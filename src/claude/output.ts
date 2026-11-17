@@ -200,8 +200,13 @@ function knowledgeBit(lookup: KnowledgeLookup | undefined): string | undefined {
 		const settled = lookup.settled ?? 0;
 		return `Knowledge · ${lookup.docs.length} docs${settled > 0 ? ` · ${settled} settled` : ""}`;
 	}
-	if (lookup.outcome === "off") return "Knowledge · off (no Greptile login)";
-	return `Knowledge · ${lookup.outcome}`;
+	if (lookup.outcome === "off") {
+		if (lookup.reasonCode === "disabled") return "Knowledge · off (hitl.knowledgeBase is false)";
+		if (!lookup.reasonCode) return "Knowledge · off (no Greptile login)";
+		return `Knowledge · off · ${lookup.reasonCode}`;
+	}
+	const reason = lookup.reasonCode ? ` · ${lookup.reasonCode}` : "";
+	return `Knowledge · ${lookup.outcome}${reason}`;
 }
 
 /**

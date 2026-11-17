@@ -3,8 +3,8 @@
 /**
  * Pre-clarify read of a repository's Greptile knowledge base over the Greptile MCP server. Only list and read calls
  * are made; nothing from the prompt or the code is sent. Everything fails open: a lookup that cannot finish reports
- * why and yields no digest. Document text is Greptile-synthesized and untrusted: it is bounded here and handed to
- * the clarifier as evidence, never as instructions.
+ * why (a typed reason and the stage ladder) and yields no digest. Document text is Greptile-synthesized and untrusted:
+ * it is bounded here and handed to the clarifier as evidence, never as instructions.
  */
 import type { UltrathinkConfig } from "../config.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
@@ -12,29 +12,15 @@ import { storePath } from "../mcp/store.ts";
 import { tenantReason } from "../ship/greptile.ts";
 import { asObj } from "../shared.ts";
 import type { ToolCaller } from "../track/create.ts";
+import type {
+	KnowledgeLookup,
+	KnowledgeOutcome,
+	KnowledgeReason,
+	KnowledgeStage,
+	KnowledgeStageName,
+} from "./knowledge-probe.ts";
 
-/** `used`: a digest was built; `none`: nothing to read; `off`: no Greptile credential; `error`: the lookup failed. */
-type KnowledgeOutcome = "used" | "none" | "off" | "error";
-
-/** What one knowledge-base lookup did, for the session record, the summary, and the debug log. */
-export interface KnowledgeLookup {
-	outcome: KnowledgeOutcome;
-	/** owner/repo looked up. */
-	repo?: string;
-	namespaceId?: string;
-	/** sectionVersions.docs of the knowledge base read. */
-	version?: string;
-	/** Paths read, index.md first; [] unless outcome is "used". */
-	docs: string[];
-	/** Digest length. */
-	chars: number;
-	/** Elapsed from start() to read() resolving. */
-	ms: number;
-	/** One line (<= 200 chars), set unless outcome is "used". */
-	reason?: string;
-	/** Set by the planner: questions settled from the knowledge base. */
-	settled?: number;
-}
+export type { KnowledgeLookup } from "./knowledge-probe.ts";
 
 export interface KnowledgeResult {
 	lookup: KnowledgeLookup;
@@ -64,6 +50,12 @@ const KNOWLEDGE_MAX_DOCS = 3;
 const KNOWLEDGE_MAX_CHARS = 24_000;
 /** Budget of each stage: the prefetch from start(), the document reads from read(). */
 const KNOWLEDGE_TIMEOUT_MS = 20_000;
+/** Budget of one Greptile MCP call; the client enforces it, the stage deadline bounds the whole stage. */
+const KNOWLEDGE_CALL_TIMEOUT_MS = 10_000;
+/** Consecutive error outcomes for one repository that open its breaker. */
+export const KNOWLEDGE_BREAKER_THRESHOLD = 2;
+/** How long an open breaker refuses a repository before a lookup may call Greptile again. */
+const KNOWLEDGE_BREAKER_COOLDOWN_MS = 5 * 60_000;
 
 const INDEX = "index.md";
 const NAMESPACE_PAGES = 20;
@@ -76,6 +68,7 @@ const MAX_ID = 200;
 const MAX_REASON = 200;
 const INDEX_MAX_CHARS = 8_000;
 const TRUNCATED = "\n…(truncated)";
+const AUTH_ERROR = /unauthori[sz]ed|\b40[13]\b|needs[_ ]login|log ?in again/i;
 const STOPWORDS = new Set(
 	"any and the for with from into that this change changes docs doc are was its not but all per via when what how why who use used using new".split(
 		" ",
@@ -90,6 +83,8 @@ const asStr = (value: unknown): string | undefined =>
 const asNum = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const asArr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const errorMessage = (error: unknown): string =>
+	error instanceof Error ? error.message : String(error);
 
 /** Collapses whitespace and caps at `max` chars: reasons and header fields are single lines of untrusted text. */
 function oneLine(text: string, max: number): string {
@@ -110,10 +105,19 @@ function words(text: string): string[] {
 	);
 }
 
+/** The typed class of a message: tenant and login failures are named, anything else keeps `fallback`. */
+function messageCode(message: string, fallback: KnowledgeReason): KnowledgeReason {
+	if (tenantReason(message)) return "tenant_required";
+	if (AUTH_ERROR.test(message)) return "needs_login";
+	return fallback;
+}
+
 /** One stage's deadline: the caller signal plus a timeout, raced by a timer so a call that ignores the signal cannot hang. */
 interface Deadline {
 	signal: AbortSignal;
 	race<T>(work: () => Promise<T>): Promise<T>;
+	/** Typed class of an error thrown inside this stage; `fallback` when no more specific class applies. */
+	code(error: unknown, fallback: KnowledgeReason): KnowledgeReason;
 	/** Reason line for an error thrown inside this stage. */
 	reason(error: unknown): string;
 	dispose(): void;
@@ -136,10 +140,15 @@ function deadline(ms: number, caller: AbortSignal): Deadline {
 	return {
 		signal,
 		race: (work) => Promise.race([Promise.resolve().then(work), stop.promise]),
+		code(error, fallback) {
+			if (caller.aborted) return "aborted";
+			if (expired || signal.aborted) return "timeout";
+			return messageCode(errorMessage(error), fallback);
+		},
 		reason(error) {
 			if (caller.aborted) return "aborted";
 			if (expired || signal.aborted) return `timed out after ${ms}ms`;
-			const message = error instanceof Error ? error.message : String(error);
+			const message = errorMessage(error);
 			return oneLine(tenantReason(message) ?? message, MAX_REASON);
 		},
 		dispose() {
@@ -149,10 +158,94 @@ function deadline(ms: number, caller: AbortSignal): Deadline {
 	};
 }
 
+/**
+ * Circuit breaker, keyed by repository and kept at module level: the hook builds a reader per prompt, so state on a
+ * reader would reset every prompt. Only error outcomes count; `none`/`used` close it; `aborted` and `breaker_open`
+ * never count, since neither says anything about Greptile.
+ */
+interface BreakerState {
+	failures: number;
+	/** 0 when closed; otherwise the time the breaker reopens to calls. */
+	openUntil: number;
+}
+const breakers = new Map<string, BreakerState>();
+
+/** Clears every breaker. For tests. */
+export function resetKnowledgeBreakers(): void {
+	breakers.clear();
+}
+
+function breakerIsOpen(key: string, nowMs: number): boolean {
+	const state = breakers.get(key);
+	if (!state || state.openUntil === 0) return false;
+	if (nowMs < state.openUntil) return true;
+	breakers.delete(key);
+	return false;
+}
+
+function recordBreaker(
+	key: string,
+	outcome: KnowledgeOutcome,
+	code: KnowledgeReason | undefined,
+	nowMs: number,
+): void {
+	if (outcome === "used" || outcome === "none") {
+		breakers.delete(key);
+		return;
+	}
+	if (outcome !== "error" || code === "breaker_open" || code === "aborted") return;
+	const state = breakers.get(key) ?? { failures: 0, openUntil: 0 };
+	state.failures += 1;
+	if (state.failures >= KNOWLEDGE_BREAKER_THRESHOLD)
+		state.openUntil = nowMs + KNOWLEDGE_BREAKER_COOLDOWN_MS;
+	breakers.set(key, state);
+}
+
+/** The stage ladder of one lookup: each stage's duration runs from the previous stage's end. */
+function stageLog(now: () => number) {
+	const stages: KnowledgeStage[] = [];
+	let mark = now();
+	return {
+		stages,
+		add(
+			name: KnowledgeStageName,
+			inCount: number,
+			outCount: number,
+			errorClass: KnowledgeReason | null = null,
+			scores?: number[],
+		): void {
+			const at = now();
+			stages.push({
+				name,
+				inCount,
+				outCount,
+				durationMs: Math.max(0, at - mark),
+				errorClass,
+				...(scores ? { scores } : {}),
+			});
+			mark = at;
+		},
+	};
+}
+
+/** The record of a lookup that never ran because `hitl.knowledgeBase` is false. */
+export function disabledKnowledgeLookup(): KnowledgeLookup {
+	return {
+		outcome: "off",
+		reasonCode: "disabled",
+		reason: "hitl.knowledgeBase is false",
+		docs: [],
+		chars: 0,
+		ms: 0,
+		stages: [{ name: "gate", inCount: 1, outCount: 0, durationMs: 0, errorClass: "disabled" }],
+	};
+}
+
 type Prefetch =
 	| {
 			found: false;
 			outcome: Exclude<KnowledgeOutcome, "used">;
+			reasonCode: KnowledgeReason;
 			reason: string;
 			namespaceId?: string;
 			version?: string;
@@ -172,22 +265,38 @@ function documentContent(result: unknown): string | undefined {
 	return asStr(asObj(asObj(result)?.document)?.content);
 }
 
+/** How a lookup routed `topic` through index.md's routing table. */
+export interface Routing {
+	/** Lines carrying a `->` arrow. */
+	arrows: number;
+	/** Routing entries whose path is a listed document. */
+	entries: number;
+	/** Entries whose score is above 0. */
+	overlap: number;
+	/** Top three positive entry scores, highest first, rounded to 3 decimals. */
+	scores: number[];
+	/** Up to `maxDocs` listed paths with a positive score, best first. */
+	selected: string[];
+}
+
 /**
- * Picks up to `maxDocs` documents for `topic` from index.md's routing table (`- <description> -> [\`path\`](path)`), or,
- * without one, from the listed paths' own words. Rare words weigh more: weight = ln(1 + entries / entries with the word).
- * Only listed paths, never index.md.
+ * Routes `topic` through index.md's routing table (`- <description> -> [\`path\`](path)`). Each entry's words are its
+ * description's and its path's; a path scores its best entry. Rare words weigh more: weight = ln(1 + entries / entries
+ * with the word). Only listed paths, never index.md. No routing entry means no route: nothing is guessed from paths.
  */
-export function selectDocuments(input: {
+export function routeDocuments(input: {
 	index?: string;
 	paths: string[];
 	topic: string;
 	maxDocs: number;
-}): string[] {
+}): Routing {
 	const listed = new Set(input.paths.filter((path) => path !== INDEX));
 	const entries: Array<{ path: string; words: Set<string> }> = [];
+	let arrows = 0;
 	for (const line of (input.index ?? "").split("\n")) {
 		const arrow = line.indexOf("->");
 		if (arrow < 0) continue;
+		arrows++;
 		const match = /`([^`\s]+?\.md)`|\]\(([^()\s]+?\.md)\)|([\w./-]+\.md)/.exec(
 			line.slice(arrow + 2),
 		);
@@ -196,26 +305,45 @@ export function selectDocuments(input: {
 		const description = line.slice(0, arrow).replace(/^\s*[-*]\s+/, "");
 		entries.push({ path, words: new Set([...words(description), ...words(path)]) });
 	}
-	if (entries.length === 0)
-		for (const path of listed) entries.push({ path, words: new Set(words(path)) });
-	if (entries.length === 0 || input.maxDocs < 1) return [];
+	if (entries.length === 0 || input.maxDocs < 1)
+		return { arrows, entries: entries.length, overlap: 0, scores: [], selected: [] };
 	const df = new Map<string, number>();
 	for (const entry of entries)
 		for (const word of entry.words) df.set(word, (df.get(word) ?? 0) + 1);
 	const topic = new Set(words(input.topic));
-	const scores = new Map<string, number>();
+	const entryScores: number[] = [];
+	const pathScores = new Map<string, number>();
 	for (const entry of entries) {
 		let score = 0;
 		for (const word of entry.words)
 			if (topic.has(word)) score += Math.log(1 + entries.length / (df.get(word) ?? 1));
-		scores.set(entry.path, Math.max(scores.get(entry.path) ?? 0, score));
+		entryScores.push(score);
+		pathScores.set(entry.path, Math.max(pathScores.get(entry.path) ?? 0, score));
 	}
 	// Map iteration keeps first appearance; the sort is stable, so ties stay in that order.
-	return [...scores]
+	const selected = [...pathScores]
 		.filter(([, score]) => score > 0)
 		.sort((a, b) => b[1] - a[1])
 		.slice(0, input.maxDocs)
 		.map(([path]) => path);
+	const positive = entryScores.filter((score) => score > 0).sort((a, b) => b - a);
+	return {
+		arrows,
+		entries: entries.length,
+		overlap: positive.length,
+		scores: positive.slice(0, 3).map((score) => Math.round(score * 1000) / 1000),
+		selected,
+	};
+}
+
+/** The documents `topic` routes to (see routeDocuments); [] when nothing overlaps. */
+export function selectDocuments(input: {
+	index?: string;
+	paths: string[];
+	topic: string;
+	maxDocs: number;
+}): string[] {
+	return routeDocuments(input).selected;
 }
 
 /** Cuts `text` to `budget` chars, marking the cut. */
@@ -273,46 +401,61 @@ export function createKnowledgeReader(opts: {
 		start(input) {
 			const startedAt = now();
 			const repo = input.repo?.trim() || undefined;
+			const breakerKey = repo?.toLowerCase();
 			const lifetime = new AbortController();
 			const signal = input.signal
 				? AbortSignal.any([input.signal, lifetime.signal])
 				: lifetime.signal;
+			const log = stageLog(now);
+			log.add("gate", 1, 1);
+			// An open breaker means no client and no call: the lookup is refused before anything reaches Greptile.
+			const broken = breakerKey !== undefined && breakerIsOpen(breakerKey, startedAt);
 			let client: Caller | undefined;
 			let clientError: unknown;
-			try {
-				client = opts.client();
-			} catch (error) {
-				// reason: the client error is kept and reported when the call runs
-				clientError = error;
+			if (broken) {
+				log.add("repo", 1, 0, "breaker_open");
+			} else {
+				try {
+					client = opts.client();
+				} catch (error) {
+					// reason: the client error is kept and reported as a credential stage failure
+					clientError = error;
+				}
 			}
 			const call = (dl: Deadline, caller: Caller, name: string, args: Obj) =>
 				dl.race(() => caller.call(name, { ...args, ...org }, dl.signal));
 
 			async function findNamespace(dl: Deadline, caller: Caller, wanted: string) {
 				let offset = 0;
+				let scanned = 0;
+				let capped = false;
 				for (let page = 0; page < NAMESPACE_PAGES; page++) {
 					const result = asObj(
 						await call(dl, caller, "list_knowledge_bases", { limit: PAGE_LIMIT, offset }),
 					);
 					const repositories = asArr(result?.repositories);
+					scanned += repositories.length;
 					for (const entry of repositories) {
 						const item = asObj(entry);
 						const repoName = asId(item?.repoName);
 						const namespaceId = asId(item?.namespaceId);
 						if (repoName && namespaceId && repoName.toLowerCase() === wanted)
-							return { namespaceId, repoName };
+							return { found: { namespaceId, repoName }, scanned, capped: false };
 					}
 					const returned = asNum(result?.returned) ?? repositories.length;
 					const total = asNum(result?.total);
 					offset += returned;
-					if (returned <= 0 || (total !== undefined ? offset >= total : result?.truncated !== true))
-						return undefined;
+					// `truncated` on a page means the listing hit its scan cap: pages past the cap cannot be reached.
+					capped = result?.truncated === true;
+					if (returned <= 0 || (total !== undefined ? offset >= total : !capped))
+						return { found: undefined, scanned, capped };
 				}
-				return undefined;
+				return { found: undefined, scanned, capped: true };
 			}
 
 			async function listDocuments(dl: Deadline, caller: Caller, namespaceId: string) {
 				const paths: string[] = [];
+				let listed = 0;
 				let indexPresent = false;
 				let version: string | undefined;
 				let offset = 0;
@@ -326,8 +469,9 @@ export function createKnowledgeReader(opts: {
 					);
 					if (result?.indexPresent === true) indexPresent = true;
 					version ??= asId(asObj(result?.sectionVersions)?.docs);
-					const listed = asArr(result?.documentPaths);
-					for (const entry of listed) {
+					const pageEntries = asArr(result?.documentPaths);
+					listed += pageEntries.length;
+					for (const entry of pageEntries) {
 						const path = asStr(entry)?.trim();
 						if (
 							path &&
@@ -339,66 +483,117 @@ export function createKnowledgeReader(opts: {
 							paths.push(path);
 						}
 					}
-					const returned = asNum(result?.returned) ?? listed.length;
+					const returned = asNum(result?.returned) ?? pageEntries.length;
 					const total = asNum(result?.total);
 					offset += returned;
 					if (returned <= 0 || (total !== undefined ? offset >= total : result?.truncated !== true))
 						break;
 				}
-				return { paths, indexPresent, version };
+				return { paths, listed, indexPresent, version };
 			}
 
 			async function prefetch(): Promise<Prefetch> {
-				if (clientError !== undefined) {
-					const message = clientError instanceof Error ? clientError.message : String(clientError);
-					return { found: false, outcome: "error", reason: oneLine(message, MAX_REASON) };
+				const fail = (
+					outcome: Exclude<KnowledgeOutcome, "used">,
+					reasonCode: KnowledgeReason,
+					reason: string,
+					extra: { namespaceId?: string; version?: string } = {},
+				): Prefetch => ({ found: false, outcome, reasonCode, reason, ...extra });
+				if (broken) {
+					return fail(
+						"error",
+						"breaker_open",
+						oneLine(`paused after repeated failures for ${repo}`, MAX_REASON),
+					);
 				}
-				if (!client)
-					return { found: false, outcome: "off", reason: "no Greptile credential stored" };
-				if (!repo) return { found: false, outcome: "none", reason: "no git remote to look up" };
+				if (clientError !== undefined) {
+					const message = errorMessage(clientError);
+					const code = messageCode(message, "transport_error");
+					log.add("credential", 1, 0, code);
+					return fail("error", code, oneLine(message, MAX_REASON));
+				}
+				if (!client) {
+					log.add("credential", 1, 0, "no_credential");
+					return fail("off", "no_credential", "no Greptile credential stored");
+				}
+				log.add("credential", 1, 1);
+				if (!repo) {
+					log.add("repo", 0, 0, "repo_unresolved");
+					return fail("none", "repo_unresolved", "no git remote to look up");
+				}
+				log.add("repo", 1, 1);
 				const dl = deadline(timeoutMs, signal);
+				let current: KnowledgeStageName = "namespace";
 				let namespaceId: string | undefined;
 				let version: string | undefined;
 				try {
 					const namespace = await findNamespace(dl, client, repo.toLowerCase());
-					if (!namespace)
-						return {
-							found: false,
-							outcome: "none",
-							reason: oneLine(`no Greptile knowledge base for ${repo}`, MAX_REASON),
-						};
-					namespaceId = namespace.namespaceId;
+					if (!namespace.found) {
+						log.add("namespace", namespace.scanned, 0, "namespace_not_found");
+						return fail(
+							"none",
+							"namespace_not_found",
+							oneLine(
+								`no Greptile knowledge base for ${repo}${namespace.capped ? " (the repository listing hit its scan cap)" : ""}`,
+								MAX_REASON,
+							),
+						);
+					}
+					log.add("namespace", namespace.scanned, 1);
+					namespaceId = namespace.found.namespaceId;
+					current = "document_list";
 					const listed = await listDocuments(dl, client, namespaceId);
 					version = listed.version;
-					if (listed.paths.length === 0) {
-						return {
-							found: false,
-							outcome: "none",
-							reason: "knowledge base has no published documents",
+					log.add(
+						"document_list",
+						listed.listed,
+						listed.paths.length,
+						listed.paths.length === 0 ? "no_documents" : null,
+					);
+					if (listed.paths.length === 0)
+						return fail("none", "no_documents", "knowledge base has no published documents", {
 							namespaceId,
 							version,
+						});
+					current = "index_read";
+					if (listed.paths.includes(INDEX) || listed.indexPresent) {
+						const index = documentContent(
+							await call(dl, client, "get_knowledge_base_document", {
+								namespaceId,
+								path: INDEX,
+							}),
+						);
+						if (index === undefined) {
+							log.add("index_read", 1, 0, "shape_mismatch");
+							return fail("error", "shape_mismatch", `${INDEX}: no document content`, {
+								namespaceId,
+								version,
+							});
+						}
+						log.add("index_read", 1, 1);
+						return {
+							found: true,
+							caller: client,
+							namespaceId,
+							repoName: namespace.found.repoName,
+							version,
+							paths: listed.paths,
+							index,
 						};
 					}
-					const index =
-						listed.paths.includes(INDEX) || listed.indexPresent
-							? documentContent(
-									await call(dl, client, "get_knowledge_base_document", {
-										namespaceId,
-										path: INDEX,
-									}),
-								)
-							: undefined;
+					log.add("index_read", 0, 0);
 					return {
 						found: true,
 						caller: client,
 						namespaceId,
-						repoName: namespace.repoName,
+						repoName: namespace.found.repoName,
 						version,
 						paths: listed.paths,
-						index,
 					};
 				} catch (error) {
-					return { found: false, outcome: "error", reason: dl.reason(error), namespaceId, version };
+					const code = dl.code(error, "transport_error");
+					log.add(current, 1, 0, code);
+					return fail("error", code, dl.reason(error), { namespaceId, version });
 				} finally {
 					dl.dispose();
 				}
@@ -411,77 +606,138 @@ export function createKnowledgeReader(opts: {
 			async function read(topic: string): Promise<KnowledgeResult> {
 				const dl = deadline(timeoutMs, signal);
 				const finish = (
-					lookup: Omit<KnowledgeLookup, "ms" | "repo">,
+					lookup: Omit<KnowledgeLookup, "ms" | "repo" | "stages">,
 					digest = "",
-				): KnowledgeResult => ({
-					lookup: { ...(repo ? { repo } : {}), ...lookup, ms: Math.max(0, now() - startedAt) },
-					digest,
-				});
+				): KnowledgeResult => {
+					if (breakerKey !== undefined)
+						recordBreaker(breakerKey, lookup.outcome, lookup.reasonCode, now());
+					return {
+						lookup: {
+							...(repo ? { repo } : {}),
+							...lookup,
+							stages: [...log.stages],
+							ms: Math.max(0, now() - startedAt),
+						},
+						digest,
+					};
+				};
 				try {
 					const pre = await prefetched;
 					if (!pre.found) {
-						const { outcome, reason, namespaceId, version } = pre;
-						return finish({ outcome, reason, namespaceId, version, docs: [], chars: 0 });
+						const { outcome, reasonCode, reason, namespaceId, version } = pre;
+						return finish({
+							outcome,
+							reasonCode,
+							reason,
+							namespaceId,
+							version,
+							docs: [],
+							chars: 0,
+						});
 					}
-					const selected = selectDocuments({ index: pre.index, paths: pre.paths, topic, maxDocs });
+					const ids = { namespaceId: pre.namespaceId, version: pre.version };
+					const routing = routeDocuments({ index: pre.index, paths: pre.paths, topic, maxDocs });
+					log.add(
+						"routing_entries_parsed",
+						routing.arrows,
+						routing.entries,
+						routing.entries === 0 ? "routing_table_missing" : null,
+					);
+					if (routing.entries === 0) {
+						return finish({
+							outcome: "none",
+							reasonCode: "routing_table_missing",
+							reason:
+								pre.index === undefined
+									? "index.md is not published"
+									: "index.md has no routing entries",
+							...ids,
+							docs: [],
+							chars: 0,
+						});
+					}
+					log.add(
+						"lexical_match",
+						routing.entries,
+						routing.overlap,
+						routing.overlap === 0 ? "no_route_match" : null,
+						routing.scores,
+					);
+					if (routing.selected.length === 0) {
+						return finish({
+							outcome: "none",
+							reasonCode: "no_route_match",
+							reason: `no routing entry overlaps the request (${routing.entries} entries, ${routing.overlap} overlap)`,
+							...ids,
+							docs: [],
+							chars: 0,
+						});
+					}
+					type Failed = { error: KnowledgeReason; reason: string };
+					type Read = { path: string; content: string };
 					// Every selected document is read or the lookup is an error: a partial digest would let the clarifier settle
 					// questions from an incomplete picture, so any failed read falls back to the feature-off path.
 					const fetched = await Promise.all(
-						selected.map(
-							async (path): Promise<{ path: string; content: string } | { error: unknown }> => {
-								try {
-									const content = documentContent(
-										await call(dl, pre.caller, "get_knowledge_base_document", {
-											namespaceId: pre.namespaceId,
-											path,
-										}),
-									);
-									return content === undefined
-										? { error: new Error(`${path}: no document content`) }
-										: { path, content };
-								} catch (error) {
-									return { error };
-								}
-							},
-						),
+						routing.selected.map(async (path): Promise<Read | Failed> => {
+							try {
+								const content = documentContent(
+									await call(dl, pre.caller, "get_knowledge_base_document", {
+										namespaceId: pre.namespaceId,
+										path,
+									}),
+								);
+								return content === undefined
+									? { error: "shape_mismatch", reason: `${path}: no document content` }
+									: { path, content };
+							} catch (error) {
+								return { error: dl.code(error, "document_read_failed"), reason: dl.reason(error) };
+							}
+						}),
 					);
-					const ids = { namespaceId: pre.namespaceId, version: pre.version };
 					if (signal.aborted)
-						return finish({ outcome: "error", ...ids, docs: [], chars: 0, reason: "aborted" });
-					const failed = fetched.find((doc) => "error" in doc);
-					if (failed && "error" in failed)
 						return finish({
 							outcome: "error",
 							...ids,
 							docs: [],
 							chars: 0,
-							reason: dl.reason(failed.error),
+							reasonCode: "aborted",
+							reason: "aborted",
 						});
-					const docs = [
-						...(pre.index !== undefined ? [{ path: INDEX, content: pre.index }] : []),
-						...fetched.filter((doc): doc is { path: string; content: string } => "content" in doc),
-					];
-					if (docs.length === 0) {
+					const failure = fetched.find((doc): doc is Failed => "error" in doc);
+					const reads = fetched.filter((doc): doc is Read => "content" in doc);
+					log.add("document_reads", routing.selected.length, reads.length, failure?.error ?? null);
+					if (failure)
 						return finish({
-							outcome: "none",
+							outcome: "error",
 							...ids,
 							docs: [],
 							chars: 0,
-							reason: "no knowledge-base document matches the request",
+							reasonCode: failure.error,
+							reason: failure.reason,
 						});
-					}
+					const docs = [
+						...(pre.index !== undefined ? [{ path: INDEX, content: pre.index }] : []),
+						...reads,
+					];
 					const digest = buildDigest({
 						repoName: pre.repoName,
 						version: pre.version,
 						docs,
 						maxChars,
 					});
+					log.add("digest", docs.length, digest.length);
 					return finish(
 						{ outcome: "used", ...ids, docs: docs.map((doc) => doc.path), chars: digest.length },
 						digest,
 					);
 				} catch (error) {
-					return finish({ outcome: "error", docs: [], chars: 0, reason: dl.reason(error) });
+					return finish({
+						outcome: "error",
+						docs: [],
+						chars: 0,
+						reasonCode: dl.code(error, "transport_error"),
+						reason: dl.reason(error),
+					});
 				} finally {
 					dl.dispose();
 				}
@@ -514,7 +770,7 @@ export function createGreptileKnowledge(
 			createMcpClientIfCredentialed("greptile", {
 				storePath: deps.storePath ?? storePath(),
 				fetch: deps.fetch,
-				callTimeoutMs: 10_000,
+				callTimeoutMs: KNOWLEDGE_CALL_TIMEOUT_MS,
 			}),
 		organization: config.ship.greptileOrganization || undefined,
 		now: deps.now,
