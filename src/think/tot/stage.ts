@@ -25,9 +25,11 @@ import {
 	assertCheapPathAllowed,
 	createToTRouter,
 	type HostModelInfo,
+	PRD_NO_SELECTED_MODEL,
 	resolveToTModel,
 	type SelectedModel,
 	type SmokeCache,
+	TotRefusal,
 } from "../../route/cheapest-model.ts";
 import { isAbortError } from "../../shared.ts";
 import { type ToolCaller, stepKey } from "../../track/create.ts";
@@ -156,6 +158,9 @@ const NO_FACTS = (root: string): ProjectFacts => ({
  * Writes and syncs the PRDs of one plan. A provider abort is rethrown; every other failure, an aborted `signal` included
  * (PRDs not started are `skipped`, rows not reached stay `pending`), is part of the returned outcome, so a caller that
  * gates on it never sees a half-written result as complete.
+ *
+ * A refusal writes 0 PRDs and reports its code as `error`: `PRD_NO_SELECTED_MODEL` for an empty selected model id, and
+ * `PRD_NO_PRICE` when the host lists callable models of the provider and none publishes an input price.
  */
 export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 	assertCheapPathAllowed("tot");
@@ -183,6 +188,7 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 	let callers: PrdCallers | undefined;
 	let written: TotManifest | undefined;
 	try {
+		if (input.selected.modelId.trim() === "") throw new TotRefusal(PRD_NO_SELECTED_MODEL);
 		const bound: CompleteFn = (call) => input.complete(call.system, call.user, call.signal);
 		const complete = seams.complete ?? bound;
 		const choice = await resolveToTModel({
@@ -278,6 +284,10 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 		return { manifest, sync: report.summary, model };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
+		if (error instanceof TotRefusal) {
+			log(`tot refused: ${error.code}`);
+			return failedOutcome(error.code, written);
+		}
 		const cause = causeOf(error);
 		log(`tot failed: ${cause}`);
 		return failedOutcome(cause, written);

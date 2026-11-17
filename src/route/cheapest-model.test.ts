@@ -182,6 +182,48 @@ describe("resolveToTModel: host list", () => {
 		);
 		expect(choice).toMatchObject({ modelId: "claude-haiku-pricey", source: "host-list" });
 	});
+
+	test("AC-8: alpha at 0.50, beta at 1.00, gamma at 3.00 and delta at 0.50 per MTok input selects alpha", async () => {
+		const callable: HostModelInfo[] = [
+			{ modelId: "delta", provider: "anthropic", inputPricePerMTok: 0.5 },
+			{ modelId: "gamma", provider: "anthropic", inputPricePerMTok: 3 },
+			{ modelId: "beta", provider: "anthropic", inputPricePerMTok: 1 },
+			{ modelId: "alpha", provider: "anthropic", inputPricePerMTok: 0.5 },
+		];
+		const choice = await resolveToTModel(
+			context({
+				config: configWith({ candidates: { anthropic: ["alpha", "beta", "gamma", "delta"] } }),
+				listModels: () => callable,
+			}),
+		);
+		expect(choice).toMatchObject({ modelId: "alpha", provider: "anthropic", source: "host-list" });
+	});
+
+	test("a tie on input price goes to the earlier configured candidate, whatever order the host lists in", async () => {
+		const choice = await resolveToTModel(
+			context({
+				config: configWith({ candidates: { anthropic: ["delta", "alpha"] } }),
+				listModels: () => [
+					{ modelId: "alpha", provider: "anthropic", inputPricePerMTok: 0.5 },
+					{ modelId: "delta", provider: "anthropic", inputPricePerMTok: 0.5 },
+				],
+			}),
+		);
+		expect(choice).toMatchObject({ modelId: "delta", source: "host-list" });
+	});
+
+	test("refuses with PRD_NO_PRICE when the callable models of the provider publish no input price", async () => {
+		await expect(
+			resolveToTModel(
+				context({
+					config: configWith(allow),
+					listModels: () => [
+						{ modelId: "claude-haiku-pricey", provider: "anthropic", outputPricePerMTok: 5 },
+					],
+				}),
+			),
+		).rejects.toMatchObject({ code: "PRD_NO_PRICE" });
+	});
 });
 
 describe("resolveToTModel: hosts and providers that cannot be routed", () => {

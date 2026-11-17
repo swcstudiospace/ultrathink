@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, type UltrathinkConfig } from "../../config.ts";
+import { ROUTE_DEFAULT_MODELS } from "../../route-defaults.ts";
 import type { ToolCaller } from "../../track/create.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "../../track/types.ts";
 import type { PrdRequest, ProjectFacts } from "./index.ts";
@@ -352,5 +353,49 @@ describe("runTotStage", () => {
 		const outcome = await runTotStage(input(2, seams(linear), dir, { signal: controller.signal }));
 		expect(outcome.manifest.generated).toBe(0);
 		expect(linear.saves).toBe(0);
+	});
+
+	test("refuses with PRD_NO_PRICE and writes 0 PRDs when no callable model publishes an input price", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const outcome = await runTotStage(
+			input(
+				3,
+				seams(linear, {
+					complete: async () => draft(),
+					canPickModelPerCall: true,
+					listModels: () => [{ modelId: ROUTE_DEFAULT_MODELS.claude, provider: "anthropic" }],
+				}),
+				dir,
+			),
+		);
+		expect(outcome.error).toBe("PRD_NO_PRICE");
+		expect(outcome.manifest.generated).toBe(0);
+		expect(outcome.sync).toEqual({ total: 3, synced: 0, pending: 0, failed: 3 });
+		expect(linear.saves).toBe(0);
+		expect(existsSync(join(dir, "tot"))).toBe(false);
+	});
+
+	test("refuses with PRD_NO_SELECTED_MODEL and writes 0 PRDs when the selected model id is empty", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const outcome = await runTotStage(input(2, seams(linear), dir, { selected: { modelId: "" } }));
+		expect(outcome.error).toBe("PRD_NO_SELECTED_MODEL");
+		expect(outcome.manifest.generated).toBe(0);
+		expect(outcome.sync).toEqual({ total: 2, synced: 0, pending: 0, failed: 2 });
+		expect(linear.saves).toBe(0);
+		expect(existsSync(join(dir, "tot"))).toBe(false);
+	});
+
+	test("every rendered PRD has the Code Blocked PRD heading, a fenced code block and a Blocked until line", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const outcome = await runTotStage(input(2, seams(linear), dir));
+		expect(outcome.manifest.records).toHaveLength(2);
+		for (const record of outcome.manifest.records) {
+			expect(record.markdown).toMatch(/^## Code Blocked PRD$/m);
+			expect(record.markdown).toMatch(/^```/m);
+			expect(record.markdown).toMatch(/^Blocked until /m);
+		}
 	});
 });
