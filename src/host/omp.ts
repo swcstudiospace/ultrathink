@@ -167,6 +167,12 @@ import { INSIGHT_TYPE, SWARM_TYPE } from "./omp-render.ts";
 import { projectOf } from "../teach/mapping.ts";
 import type { TeachContext } from "../teach/types.ts";
 import { type PlanView, projectResolution } from "./view.ts";
+import {
+	pauseSessionPhases,
+	type PhaseReport,
+	recordGsdPhase,
+	restoreSessionPhases,
+} from "./omp-phase.ts";
 
 interface BeforeAgentStartEvent {
 	type: "before_agent_start";
@@ -2272,6 +2278,25 @@ export function createOmpExtension(
 			timer.unref?.();
 			activityTimer = timer;
 		};
+		/** The phase record's directory and session key at a lifecycle boundary: the session id is the record key. */
+		const phaseSession = (ctx: ExtensionContext | undefined) => ({
+			stateDir: stateDir(ctx?.cwd || process.cwd()),
+			sessionId: ctx?.sessionManager?.getSessionId?.() ?? "",
+		});
+		/** Shows one phase-loop report: a message stays in the transcript without starting a turn; a notice goes to the UI. */
+		const showPhaseReport = (
+			report: PhaseReport | undefined,
+			ctx: ExtensionContext | undefined,
+		): void => {
+			if (report?.kind === "message")
+				guard(() =>
+					pi.sendMessage(
+						{ content: report.text, display: true, attribution: "agent" },
+						{ triggerTurn: false },
+					),
+				);
+			if (report?.kind === "notice") guard(() => ctx?.ui?.notify?.(report.text, "warning"));
+		};
 		pi.on("session_start", (_event, ctx) => {
 			shutDown = false;
 			attach(ctx);
@@ -2279,6 +2304,7 @@ export function createOmpExtension(
 			scheduleMount();
 			// The host already named this session. An invalid id is ignored; a throw must not block startup.
 			guard(() => store.setLiveSession(ctx?.sessionManager?.getSessionId?.()));
+			guard(() => showPhaseReport(restoreSessionPhases(phaseSession(ctx)), ctx));
 		});
 		pi.on("session_switch", (_event, ctx) => {
 			// The old session's flights would deliver into the new one: cancel and suppress them.
@@ -2291,8 +2317,9 @@ export function createOmpExtension(
 			startActivityPoll(ctx);
 			scheduleMount();
 			guard(() => store.setLiveSession(ctx?.sessionManager?.getSessionId?.()));
+			guard(() => showPhaseReport(restoreSessionPhases(phaseSession(ctx)), ctx));
 		});
-		pi.on("session_shutdown", () => {
+		pi.on("session_shutdown", (_event, ctx) => {
 			shutDown = true;
 			stopActivityPoll();
 			guard(endFlights);
@@ -2302,6 +2329,13 @@ export function createOmpExtension(
 			guard(() => {
 				if (activeInsight) teardownInsight(activeInsight);
 			});
+			// A session that recorded a phase is checkpointed as paused; a session with no record writes nothing.
+			guard(() =>
+				showPhaseReport(
+					pauseSessionPhases({ ...phaseSession(ctx), at: new Date(now()).toISOString() }),
+					ctx,
+				),
+			);
 		});
 		for (const event of [
 			"agent_start",
@@ -2934,6 +2968,18 @@ export function createOmpExtension(
 				next.deferred = true;
 				return;
 			}
+			// The GSD phase record, advisory at Omp (the merge enforces it): the current flight records, before delivery.
+			if (flight.content)
+				showPhaseReport(
+					recordGsdPhase({
+						stateDir: stateDir(flight.cwd),
+						cwd: flight.cwd,
+						sessionId: flight.sessionId,
+						prompt: flight.prompt,
+						plan: result,
+					}),
+					flight.ctx,
+				);
 			barWrite(flight.generation, () => {
 				if (!flight.content)
 					store.skipped(flight.timedOut ? "timed out" : (flight.endDetail ?? "no plan"), now());
