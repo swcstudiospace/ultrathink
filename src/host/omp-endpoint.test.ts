@@ -17,6 +17,7 @@ import type { LegacyRoute } from "../route-defaults.ts";
 import type { TrackPlan } from "../track/types.ts";
 import { selectEngine } from "./engine.ts";
 import type { ModelResolution } from "./engine.ts";
+import { planFailedNotice } from "./omp.ts";
 import type { OmpPlanner, OmpPlanRequest } from "./omp.ts";
 import {
 	fakeModel,
@@ -71,6 +72,16 @@ describe("named legacy flight identity (REV15-005)", () => {
 			await planGate({ prompt: "add a widget", text: "add a widget", history: "" }, decisions),
 		).toEqual({ plan: true });
 	});
+
+	/** The no-plan notice of a flight with nothing to plan: explicit, and shown once per flight. */
+	const noPlanNotice = {
+		message: {
+			customType: "ultrathink-plan",
+			content: planFailedNotice("the planner produced no plan"),
+			display: true,
+			attribution: "agent",
+		},
+	};
 
 	function configured(engine: LegacyRoute): UltrathinkConfig {
 		return quietConfig((config) => {
@@ -517,15 +528,18 @@ describe("named legacy flight identity (REV15-005)", () => {
 				config: () => config,
 				stateDir: root,
 			});
+			// hardened: explicit notice instead of silence (omp-delivery.test.ts)
 			const old = await run();
-			expect(await run()).toEqual(old);
-			expect(planner.resolutions).toHaveLength(1);
+			expect(old).toEqual(noPlanNotice);
+			// The noticed flight is reused silently; a no-plan flight is relaunched once before its notice.
+			expect(await run()).toBeUndefined();
+			expect(planner.resolutions).toHaveLength(2);
 			config.grok[endpoint] = "https://SECRET-GATEWAY-B.invalid";
 			const result = await run();
-			expect(await run()).toEqual(result);
-			expect(planner.resolutions).toHaveLength(2);
-			expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, false]);
-			expect(result).toBeUndefined();
+			expect(result).toEqual(noPlanNotice);
+			expect(await run()).toBeUndefined();
+			expect(planner.resolutions).toHaveLength(4);
+			expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, true, true, false]);
 			await command("ultrathink-status");
 			expect(
 				JSON.stringify({ old, result, resolutions: planner.resolutions, sent, notices }),
@@ -543,9 +557,19 @@ describe("named legacy flight identity (REV15-005)", () => {
 			const { run } = setup(planner.plan, 1_000, { config: () => config, stateDir: root });
 			const result = await run();
 			config.grok.baseUrl = mode === "default-http" ? " " : "https://SECRET-UNUSED.invalid";
-			expect(await run()).toEqual(result);
-			expect(planner.resolutions).toHaveLength(1);
-			expect(planner.signals[0]?.aborted).toBe(false);
+			// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+			if (mode === "disabled") {
+				// The Claude route plans, so its settled reentry is reused unchanged.
+				expect(await run()).toEqual(result);
+				expect(planner.resolutions).toHaveLength(1);
+				expect(planner.signals[0]?.aborted).toBe(false);
+			} else {
+				// A grok flight with no login plans nothing: it is relaunched once, then its notice is shown once.
+				expect(result).toEqual(noPlanNotice);
+				expect(await run()).toBeUndefined();
+				expect(planner.resolutions).toHaveLength(2);
+				expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, false]);
+			}
 		}
 	});
 
@@ -571,7 +595,9 @@ describe("named legacy flight identity (REV15-005)", () => {
 			config.grok.transport = "http";
 			const planner = selecting();
 			const { run } = setup(planner.plan, 1_000, { config: () => config, stateDir: root });
-			expect(await run()).toBeUndefined();
+			// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+			// The no-plan flight is relaunched once before its notice.
+			expect(await run()).toEqual(noPlanNotice);
 			expect(planner.resolutions[0]).toMatchObject({
 				state: "unresolved",
 				reason: "grok-unavailable",
@@ -579,27 +605,33 @@ describe("named legacy flight identity (REV15-005)", () => {
 			config.grok[switchName] = switchName === "fallbackToClaude";
 			const defaultModel = config.claude.model;
 			expect(await run()).toMatchObject({ message: { content: defaultModel } });
-			expect(planner.resolutions[1]).toMatchObject({
+			expect(planner.resolutions[2]).toMatchObject({
 				state: "default",
 				source: "configured-fallback",
 				transport: "claude-cli",
 			});
 			config = mergeConfig({ claude: { model: defaultModel } }, config);
 			expect(await run()).toMatchObject({ message: { content: defaultModel } });
-			expect(planner.resolutions[2]).toMatchObject({
+			expect(planner.resolutions[3]).toMatchObject({
 				state: "override",
 				source: "configured-fallback",
 				modelId: defaultModel,
 			});
 			config = mergeConfig({ claude: { model: "FALLBACK_B" } }, config);
 			expect(await run()).toMatchObject({ message: { content: "FALLBACK_B" } });
-			expect(planner.resolutions[3]).toMatchObject({
+			expect(planner.resolutions[4]).toMatchObject({
 				state: "override",
 				source: "configured-fallback",
 				modelId: "FALLBACK_B",
 			});
-			expect(planner.resolutions).toHaveLength(4);
-			expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, true, true, false]);
+			expect(planner.resolutions).toHaveLength(5);
+			expect(planner.signals.map((signal) => signal.aborted)).toEqual([
+				true,
+				true,
+				true,
+				true,
+				false,
+			]);
 		});
 	}
 
@@ -631,11 +663,16 @@ describe("named legacy flight identity (REV15-005)", () => {
 			level = "high" as Effort;
 			await run();
 			expect(reads).toBe(0);
-			expect(requests).toHaveLength(1);
+			// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+			// A grok flight with no login plans nothing: it is relaunched once. Claude and muse plan once.
+			const planned = engine === "grok" ? 2 : 1;
+			expect(requests).toHaveLength(planned);
 			expect(requests[0]).not.toHaveProperty("thinkingLevel");
 			expect(requests[0]?.config).toEqual(before);
-			expect(planner.resolutions).toHaveLength(1);
-			expect(planner.signals[0]?.aborted).toBe(false);
+			expect(planner.resolutions).toHaveLength(planned);
+			expect(planner.signals.map((signal) => signal.aborted)).toEqual(
+				engine === "grok" ? [true, false] : [false],
+			);
 		}
 	});
 

@@ -15,6 +15,7 @@ import {
 	gateStalled,
 	NO_PLAN,
 	PENDING,
+	planFailedNotice,
 } from "./omp.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
 import type { PrdOutcome } from "../think/tot/stage.ts";
@@ -133,7 +134,7 @@ describe("flight lifecycle (D-12)", () => {
 		expect(sent).toEqual([aside(finalPlan)]);
 	});
 
-	test("gate on: an early uplift whose final plan is empty ends with the no-plan note, never the early release", async () => {
+	test("gate on: an early uplift whose final plan is empty ends with the did-not-complete notice, never the early release", async () => {
 		const gate = Promise.withResolvers<string>();
 		const { run, sent } = setup((request) => {
 			request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
@@ -144,7 +145,8 @@ describe("flight lifecycle (D-12)", () => {
 		});
 		gate.resolve("");
 		await flush();
-		expect(sent).toEqual([aside(NO_PLAN)]);
+		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+		expect(sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
 		expect(sent).not.toEqual([aside(EARLY_RELEASE)]);
 	});
 
@@ -584,8 +586,8 @@ describe("flight lifecycle (D-12)", () => {
 		const t = tuiCtx();
 		const { run, emit } = setup(
 			async (_request, _signal, onEvent) => {
-				onEvent?.({ type: "end", at: 1, outcome: "skipped", detail: "sync-detail" });
-				return "";
+				onEvent?.({ type: "end", at: 1, outcome: "skipped", detail: "precheck-trivial" });
+				return { context: "", skipped: "precheck-trivial" };
 			},
 			1_000,
 			{},
@@ -594,7 +596,7 @@ describe("flight lifecycle (D-12)", () => {
 		emit("session_start");
 		expect(await run()).toBeUndefined();
 		await flush();
-		expect(t.line()).toContain("skipped · sync-detail");
+		expect(t.line()).toContain("skipped · precheck-trivial");
 	});
 
 	test("isCurrent is the flight's validity: false once its live model changes or a newer prompt replaces it", async () => {
@@ -1446,7 +1448,7 @@ describe("flight lifecycle (D-12)", () => {
 		}
 	}, 10_000);
 
-	test("cancel-matrix empty results stay quiet before the handoff and send one no-plan aside after", async () => {
+	test("cancel-matrix empty results retry once, stay quiet before the handoff, and send one did-not-complete aside after", async () => {
 		{
 			let calls = 0;
 			const h = setup(
@@ -1457,8 +1459,16 @@ describe("flight lifecycle (D-12)", () => {
 				50,
 				{},
 			);
-			expect(await h.run()).toBeUndefined();
-			expect(calls).toBe(1);
+			// hardened: explicit notice instead of silence; the empty planner was relaunched once (omp-delivery.test.ts)
+			expect(await h.run()).toEqual({
+				message: {
+					customType: "ultrathink-plan",
+					content: planFailedNotice("the planner produced no plan"),
+					display: true,
+					attribution: "agent",
+				},
+			});
+			expect(calls).toBe(2);
 			expect(h.sent).toEqual([]);
 			h.emit("session_shutdown");
 			await flush();
@@ -1469,11 +1479,16 @@ describe("flight lifecycle (D-12)", () => {
 			expect(await h.run()).toEqual(PENDING_RESULT);
 			planner.runs[0]?.gate.resolve("");
 			await flush();
-			expect(h.sent).toEqual([aside(NO_PLAN)]);
-			expect(await h.run()).toBeUndefined();
-			expect(planner.runs).toHaveLength(1);
+			// hardened: a failed planner is relaunched once; the relaunch's empty plan carries the notice (omp-delivery.test.ts)
+			expect(h.sent).toEqual([]);
+			expect(planner.runs).toHaveLength(2);
+			planner.runs[1]?.gate.resolve("");
 			await flush();
-			expect(h.sent).toEqual([aside(NO_PLAN)]);
+			expect(h.sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
+			expect(await h.run()).toBeUndefined();
+			expect(planner.runs).toHaveLength(2);
+			await flush();
+			expect(h.sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
 			h.emit("session_shutdown");
 			await flush();
 		}
@@ -1634,8 +1649,17 @@ describe("flight lifecycle (D-12)", () => {
 			t.ctx,
 		);
 		h.emit("session_start");
-		expect(await h.run()).toBeUndefined();
-		expect(calls).toBe(1);
+		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+		expect(await h.run()).toEqual({
+			message: {
+				customType: "ultrathink-plan",
+				content: planFailedNotice("the planner failed: boom"),
+				display: true,
+				attribution: "agent",
+			},
+		});
+		// hardened: relaunched once before the notice (omp-delivery.test.ts)
+		expect(calls).toBe(2);
 		const line = t.line();
 		// The bar's remount, armed by session_start, is the only timer left: fire it so the count isolates the deadline.
 		await manual.fire(0);
@@ -1645,7 +1669,8 @@ describe("flight lifecycle (D-12)", () => {
 		expect(h.sent).toEqual([]);
 		expect(signal?.aborted).toBe(false);
 		expect(await h.run()).toBeUndefined();
-		expect(calls).toBe(1);
+		// hardened: relaunched once before the notice (omp-delivery.test.ts)
+		expect(calls).toBe(2);
 		h.emit("session_shutdown");
 		await flush();
 	}, 10_000);
@@ -1925,7 +1950,15 @@ describe("completion gate (Omp before_agent_start)", () => {
 
 	test("a failed planner fails open: the turn is not held for a plan that will never come", async () => {
 		const { run, sent } = setup(() => Promise.reject(new Error("provider down")), 1_000);
-		expect(await run()).toBeUndefined();
+		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+		expect(await run()).toEqual({
+			message: {
+				customType: "ultrathink-plan",
+				content: planFailedNotice("the planner failed: provider down"),
+				display: true,
+				attribution: "agent",
+			},
+		});
 		expect(sent).toEqual([]);
 	});
 
@@ -2051,7 +2084,10 @@ describe("completion gate (Omp before_agent_start)", () => {
 		});
 		expect(JSON.stringify(held)).not.toContain("SYSTEM_ROLE");
 		emit("turn_start");
-		expect(await run("proceed")).toBeUndefined();
+		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+		expect(await run("proceed")).toEqual(
+			planMsg(planFailedNotice("the plan was unusable and was not applied")),
+		);
 	});
 
 	test("with a dialog a partial plan asks before it starts: no keeps the hold, yes releases the plan", async () => {
