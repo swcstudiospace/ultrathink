@@ -36,7 +36,7 @@ import type { ModelIntent, ModelResolution, SelectedEngine } from "./engine.ts";
 import {
 	createNativeEnginePlanner,
 	createNativeEngineSelector,
-	NO_PLAN,
+	planFailedNotice,
 	QUICK_USAGE,
 	repoOfPath,
 } from "./omp.ts";
@@ -122,9 +122,17 @@ describe("omp extension", () => {
 		expect(sent).toHaveLength(0);
 	});
 
-	test("empty fast plan injects nothing", async () => {
+	test("empty fast plan injects only the did-not-complete notice", async () => {
 		const { run } = setup(async () => "");
-		expect(await run()).toBeUndefined();
+		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+		expect(await run()).toEqual({
+			message: {
+				customType: "ultrathink-plan",
+				content: planFailedNotice("the planner produced no plan"),
+				display: true,
+				attribution: "agent",
+			},
+		});
 	});
 
 	test("with default options a plan released after the call starts is returned inline, not the fallback", async () => {
@@ -219,14 +227,18 @@ describe("omp extension", () => {
 		]);
 	});
 
-	test("slow empty plan delivers NO_PLAN", async () => {
+	test("slow empty plan delivers the did-not-complete notice after one retry", async () => {
 		const gate = controlled();
 		const { run, sent } = setup(gate.plan, 1);
 		await run();
 		gate.resolve("");
-		await flush();
+		// hardened: the relaunched planner settles after more microtask hops than one flush covers (omp-delivery.test.ts)
+		for (let hop = 0; hop < 50 && sent.length === 0; hop++) await flush();
 		expect(sent).toHaveLength(1);
-		expect((sent[0]!.message as { content: string }).content).toBe(NO_PLAN);
+		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+		expect((sent[0]!.message as { content: string }).content).toBe(
+			planFailedNotice("the planner produced no plan"),
+		);
 	});
 
 	test("re-entry reuses the in-flight plan", async () => {
@@ -2219,7 +2231,15 @@ describe("status and the default planner (§9 paths 5-6)", () => {
 		process.env.PI_CODING_AGENT_DIR = join(stateDir, "agent");
 		try {
 			const { run, command, notices, sent } = setup(undefined, 5_000, { stateDir });
-			expect(await run("add a widget")).toBeUndefined();
+			// hardened: explicit notice instead of silence (omp-delivery.test.ts)
+			expect(await run("add a widget")).toEqual({
+				message: {
+					customType: "ultrathink-plan",
+					content: planFailedNotice("native-unavailable"),
+					display: true,
+					attribution: "agent",
+				},
+			});
 			await flush();
 			expect(sent).toHaveLength(0);
 			await command("ultrathink-status");
