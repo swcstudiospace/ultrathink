@@ -157,7 +157,23 @@ describe("ensureFreshGrokAuth", () => {
 		}
 		expect(calls[0]?.env).toEqual({ PATH: "/usr/bin", GROK_HOME: home });
 		expect(calls[0]?.env.UT_TEST_PLANTED).toBeUndefined();
-		expect(calls[1]?.env.UT_TEST_PLANTED).toBe("planted-secret");
+		expect(calls[1]?.env.UT_TEST_PLANTED).toBeUndefined();
+	});
+
+	test("the refresh child gets HOME and PATH but no unrelated provider key", async () => {
+		const home = tempHome(fixture({ expires_at: PAST }));
+		const { spawn, calls } = fakeSpawn(home);
+		await ensureFreshGrokAuth({
+			home,
+			spawn,
+			env: { HOME: "/home/tester", PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-PLANTEDKEY" },
+		});
+		expect(calls).toEqual([
+			{
+				cmd: ["grok", "models"],
+				env: { HOME: "/home/tester", PATH: "/usr/bin", GROK_HOME: home },
+			},
+		]);
 	});
 
 	test("the refresh child never inherits the Jev key variables, given or ambient", async () => {

@@ -8,7 +8,6 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
-	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -470,7 +469,7 @@ describe("grokComplete (cli)", () => {
 		const argsPath = join(dir, "args.json");
 		writeFileSync(
 			bin,
-			`#!${process.execPath}\nconst args = process.argv.slice(2);\nconst prompt = await Bun.file(args[args.indexOf("--prompt-file") + 1]).text();\nawait Bun.write(${JSON.stringify(argsPath)}, JSON.stringify({ args, prompt, cwd: process.cwd(), env: { GROK_HOME: process.env.GROK_HOME, GROK_SUBAGENTS: process.env.GROK_SUBAGENTS, GROK_MEMORY: process.env.GROK_MEMORY, GROK_WEB_FETCH: process.env.GROK_WEB_FETCH }, leaked: process.env.OPENROUTER_API_KEY }));\nconsole.log(JSON.stringify(${replyJs}));\n`,
+			`#!${process.execPath}\nimport { statSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst prompt = await Bun.file(args[args.indexOf("--prompt-file") + 1]).text();\nawait Bun.write(${JSON.stringify(argsPath)}, JSON.stringify({ args, prompt, cwd: process.cwd(), cwdMode: statSync(process.cwd()).mode & 0o777, env: { GROK_HOME: process.env.GROK_HOME, GROK_SUBAGENTS: process.env.GROK_SUBAGENTS, GROK_MEMORY: process.env.GROK_MEMORY, GROK_WEB_FETCH: process.env.GROK_WEB_FETCH }, leaked: process.env.OPENROUTER_API_KEY }));\nconsole.log(JSON.stringify(${replyJs}));\n`,
 			{ mode: 0o755 },
 		);
 		return { bin, argsPath };
@@ -492,6 +491,7 @@ describe("grokComplete (cli)", () => {
 			args: string[];
 			prompt: string;
 			cwd: string;
+			cwdMode: number;
 			env: Record<string, string | undefined>;
 		};
 		expect(seen.prompt).toBe("USER TEXT");
@@ -503,7 +503,7 @@ describe("grokComplete (cli)", () => {
 		});
 		expect(realpathSync(dirname(seen.cwd))).toBe(realpathSync(tmpdir()));
 		expect(basename(seen.cwd)).toMatch(/^ultrathink-grok-.+$/);
-		expect(statSync(seen.cwd).mode & 0o777).toBe(0o700);
+		expect(seen.cwdMode).toBe(0o700);
 		expect(seen.args.slice(0, 4)).toEqual(["-m", "grok-4.6", "--reasoning-effort", "high"]);
 		const after = (flag: string) => seen.args[seen.args.indexOf(flag) + 1];
 		expect(after("--tools")).toBe("none");
@@ -601,7 +601,15 @@ describe("grokComplete (cli)", () => {
 		expect(seen.args).not.toContain("--reasoning-effort");
 	});
 
-	test("reuses one scratch cwd within the process", async () => {
+	function scriptGrok(body: string): string {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-grok-script-"));
+		dirs.push(dir);
+		const bin = join(dir, "grok");
+		writeFileSync(bin, `#!${process.execPath}\n${body}\n`, { mode: 0o755 });
+		return bin;
+	}
+
+	test("each call runs in its own cwd, removed when the call returns", async () => {
 		const first = fakeGrok('{ text: "a" }');
 		const second = fakeGrok('{ text: "b" }');
 		await grokComplete("SYS", "USER", { transport: "cli", bin: first.bin, home: tempHome() });
@@ -611,8 +619,58 @@ describe("grokComplete (cli)", () => {
 		const firstCwd = firstSeen.cwd;
 		const secondCwd = secondSeen.cwd;
 		expect(basename(firstCwd)).toMatch(/^ultrathink-grok-/);
-		expect(secondCwd).toBe(firstCwd);
-		expect(statSync(firstCwd).isDirectory()).toBe(true);
+		expect(secondCwd).not.toBe(firstCwd);
+		expect(existsSync(firstCwd)).toBe(false);
+		expect(existsSync(secondCwd)).toBe(false);
+	});
+
+	test("a CLI child killed by a signal still has its per-call directory removed", async () => {
+		const { seams } = retrySeams();
+		const where = mkdtempSync(join(tmpdir(), "ultrathink-grok-cwd-"));
+		dirs.push(where);
+		const cwdFile = join(where, "cwd.txt");
+		const bin = scriptGrok(
+			`await Bun.write(${JSON.stringify(cwdFile)}, process.cwd());\nprocess.kill(process.pid, "SIGKILL");`,
+		);
+		await rejection(grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }));
+		const cwd = await Bun.file(cwdFile).text();
+		expect(basename(cwd)).toMatch(/^ultrathink-grok-/);
+		expect(existsSync(cwd)).toBe(false);
+	});
+
+	test("the CLI child inherits only the allowlisted environment, never an unrelated provider key", async () => {
+		const where = mkdtempSync(join(tmpdir(), "ultrathink-grok-env-"));
+		dirs.push(where);
+		const seenPath = join(where, "env.json");
+		const bin = scriptGrok(
+			`await Bun.write(${JSON.stringify(seenPath)}, JSON.stringify(process.env));\nconsole.log(JSON.stringify({ text: "ok" }));`,
+		);
+		await grokComplete("SYS", "USER", {
+			transport: "cli",
+			bin,
+			home: tempHome(),
+			env: {
+				HOME: "/home/tester",
+				PATH: "/usr/bin:/bin",
+				XAI_API_KEY: "xai-PLANTEDKEY",
+				ANTHROPIC_API_KEY: "sk-ant-PLANTEDKEY",
+			},
+		});
+		const seen = JSON.parse(await Bun.file(seenPath).text()) as Record<string, string>;
+		expect(seen.HOME).toBe("/home/tester");
+		expect(seen.PATH).toBe("/usr/bin:/bin");
+		expect(seen.XAI_API_KEY).toBe("xai-PLANTEDKEY");
+		expect(seen).not.toHaveProperty("ANTHROPIC_API_KEY");
+	});
+
+	test("a malformed last JSON line is the same 'not JSON' failure as a malformed single line", async () => {
+		const { seams } = retrySeams();
+		const bin = scriptGrok('console.log("progress\\n{\\"text\\": ");');
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), ...seams }),
+		);
+		expect(error).not.toBeInstanceOf(SyntaxError);
+		expect(error.message).toBe("grok output is not JSON");
 	});
 
 	test("a non-end_turn stopReason is an error even when partial text is present", async () => {

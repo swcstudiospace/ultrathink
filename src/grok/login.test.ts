@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { GrokAuthStatus } from "./auth.ts";
 import type { GrokCheckResult } from "./check.ts";
-import { type GrokLoginDeps, runGrokLogin } from "./login.ts";
+import { type GrokLoginDeps, runGrokLogin, writeGrokHome } from "./login.ts";
 import { DEFAULT_GROK_CONFIG } from "./types.ts";
 
 const dirs: string[] = [];
@@ -96,7 +96,7 @@ describe("runGrokLogin", () => {
 		expect(calls[0]?.cmd).toEqual(["/opt/grok", "login", "--device-auth"]);
 		expect(calls[0]?.env.GROK_HOME).toBe(home);
 		expect(calls[0]?.env).not.toHaveProperty("XAI_API_KEY");
-		expect(calls[0]?.env.KEEP).toBe("1");
+		expect(calls[0]?.env).not.toHaveProperty("KEEP");
 		expect(deps.env).toHaveProperty("XAI_API_KEY");
 	});
 
@@ -113,7 +113,35 @@ describe("runGrokLogin", () => {
 		expect(calls[0]?.env).not.toHaveProperty("ULTRATHINK_OPENROUTER_KEY");
 		expect(calls[0]?.env).not.toHaveProperty("OPENROUTER_API_KEY");
 		expect(calls[0]?.env).not.toHaveProperty("AI_GATEWAY_API_KEY");
-		expect(calls[0]?.env.KEEP).toBe("1");
+		expect(calls[0]?.env).not.toHaveProperty("KEEP");
+	});
+
+	test("the login child keeps HOME and PATH and never an unrelated provider key", async () => {
+		const { deps, calls } = harness();
+		deps.env = {
+			...deps.env,
+			HOME: "/home/tester",
+			PATH: "/usr/bin:/bin",
+			ANTHROPIC_API_KEY: "sk-ant-PLANTEDKEY",
+		};
+		await runGrokLogin(deps, { home: join(tempDir(), "lane") });
+		expect(calls[0]?.env.HOME).toBe("/home/tester");
+		expect(calls[0]?.env.PATH).toBe("/usr/bin:/bin");
+		expect(calls[0]?.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+	});
+
+	test("a failed rename leaves no temp file in the config directory and the config as it was", () => {
+		const { configPath } = harness();
+		mkdirSync(join(configPath, ".."), { recursive: true });
+		writeFileSync(configPath, '{"a":1}\n');
+		const fs = {
+			renameSync: () => {
+				throw new Error("rename refused");
+			},
+		};
+		expect(() => writeGrokHome(configPath, "/lane", fs)).toThrow("rename refused");
+		expect(readdirSync(join(configPath, ".."))).toEqual(["config.json"]);
+		expect(readFileSync(configPath, "utf8")).toBe('{"a":1}\n');
 	});
 
 	test("the default home is <XDG_CONFIG_HOME>/ultrathink/grok", async () => {

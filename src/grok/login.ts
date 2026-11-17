@@ -1,21 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { type AtomicWriteOptions, writeFileAtomic } from "../claude/atomic.ts";
 import { claudeConfigPaths, userConfigPath } from "../config.ts";
 import { redactSecrets } from "../redact.ts";
 import { isRecord } from "../shared.ts";
-import { type GrokAuthStatus, grokAuthStatus } from "./auth.ts";
+import { type GrokAuthStatus, grokAuthStatus, grokChildEnv } from "./auth.ts";
 import { type GrokCheckResult, runGrokCheck } from "./check.ts";
-import { dropJevKeys } from "../route-defaults.ts";
 import type { GrokConfig } from "./types.ts";
 
 export interface GrokLoginOptions {
@@ -65,7 +57,7 @@ function makePrivateDir(path: string): void {
  * and the trailing newline survive, and the write is tmp + rename so a crash cannot truncate
  * the file. Throws (without writing) when the file is not a JSON object.
  */
-function writeGrokHome(path: string, home: string): string {
+export function writeGrokHome(path: string, home: string, fs?: AtomicWriteOptions["fs"]): string {
 	let root: Record<string, unknown> = {};
 	let mode = 0o600;
 	let indent: string | number = 2;
@@ -89,12 +81,10 @@ function writeGrokHome(path: string, home: string): string {
 		throw new Error(`${path}: "grok" is not an object; fix it, then retry`);
 	root.grok = { ...(grok ?? {}), home };
 	mkdirSync(dirname(path), { recursive: true });
-	const tmp = `${path}.${process.pid}.tmp`;
-	writeFileSync(tmp, `${JSON.stringify(root, null, indent)}${trailingNewline ? "\n" : ""}`, {
+	writeFileAtomic(path, `${JSON.stringify(root, null, indent)}${trailingNewline ? "\n" : ""}`, {
 		mode,
+		fs,
 	});
-	chmodSync(tmp, mode);
-	renameSync(tmp, path);
 	return path;
 }
 
@@ -148,10 +138,9 @@ export async function runGrokLogin(
 	const check =
 		deps.check ?? ((lane: string) => runGrokCheck({ grok: { ...deps.grok, home: lane } }));
 
-	const childEnv: Record<string, string | undefined> = { ...env, GROK_HOME: home };
-	// The lane must be the plan login, not a pay-per-token key the CLI would prefer.
+	// The lane must be the plan login, not a pay-per-token key the CLI would prefer, so XAI_API_KEY is withheld here.
+	const childEnv: Record<string, string | undefined> = { ...grokChildEnv(env), GROK_HOME: home };
 	delete childEnv.XAI_API_KEY;
-	dropJevKeys(childEnv);
 
 	let code: number;
 	try {

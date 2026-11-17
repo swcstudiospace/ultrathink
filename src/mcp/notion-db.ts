@@ -5,16 +5,9 @@
  * (src/track/create.ts) and the ultrathink-kickoff/-sync skills update, through the Notion MCP
  * DDL tools, and records its data source in the user config. Never creates rows.
  */
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+import { type AtomicWriteOptions, writeFileAtomic } from "../claude/atomic.ts";
 import type { ToolCaller } from "../track/create.ts";
 
 export const DEFAULT_TASK_GRAPH_TITLE = "Agent Task Graph";
@@ -201,7 +194,11 @@ export async function initTaskGraphDatabase(
  * Sets `notion.dataSourceUrl` in the JSON config at `path`, keeping every other key, as 2-space JSON;
  * creates the file and its directory. Throws, leaving the file untouched, when it is not a JSON object.
  */
-export function writeNotionConfig(path: string, dataSourceUrl: string): void {
+export function writeNotionConfig(
+	path: string,
+	dataSourceUrl: string,
+	fs?: AtomicWriteOptions["fs"],
+): void {
 	const text = existsSync(path) ? readFileSync(path, "utf8") : "";
 	let config: unknown = {};
 	if (text.trim()) {
@@ -226,8 +223,5 @@ export function writeNotionConfig(path: string, dataSourceUrl: string): void {
 	mkdirSync(dirname(path), { recursive: true });
 	// The config can hold tokens: keep an existing file's mode, and create a new one owner-only.
 	const mode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
-	const tmp = `${path}.${process.pid}.tmp`;
-	writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode });
-	chmodSync(tmp, mode);
-	renameSync(tmp, path);
+	writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`, { mode, fs });
 }
