@@ -178,7 +178,12 @@ function remember(key: string, text: string): void {
 
 
 
-async function readCapped(stream: ReadableStream<Uint8Array> | null | undefined, limit: number): Promise<string> {
+/** Reads up to limit bytes, then cancels the stream. onCap runs as soon as the limit is reached, so the child can be stopped. */
+async function readCapped(
+	stream: ReadableStream<Uint8Array> | null | undefined,
+	limit: number,
+	onCap?: () => void,
+): Promise<string> {
 	if (!stream) return "";
 	const reader = stream.getReader();
 	const chunks: Uint8Array[] = [];
@@ -198,6 +203,7 @@ async function readCapped(stream: ReadableStream<Uint8Array> | null | undefined,
 			chunks.push(value);
 			total += value.byteLength;
 		}
+		if (total >= limit) onCap?.();
 	} finally {
 		try {
 			await reader.cancel();
@@ -292,7 +298,10 @@ export async function runGraphify(
 			stdin: "ignore",
 			signal: killer.signal,
 		});
-		const [stdout, stderr] = await Promise.all([readCapped(proc.stdout, CAP), readCapped(proc.stderr, CAP)]);
+		const [stdout, stderr] = await Promise.all([
+			readCapped(proc.stdout, CAP, () => killer.abort()),
+			readCapped(proc.stderr, CAP, () => killer.abort()),
+		]);
 		const exitCode = await proc.exited;
 		const combined = stderr.length > 0 ? `${stdout}${stdout.length > 0 ? "\n" : ""}${stderr}` : stdout;
 		const text = combined.length <= CAP ? combined : combined.slice(0, CAP);
