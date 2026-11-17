@@ -72,11 +72,14 @@ export interface Plan {
 
 export interface PlanOptions {
 	mode?: Mode;
-	/** Reads Hermes' config.yaml (fresh on every call); undefined when it is missing or unreadable. */
+	/** Reads Hermes' config.yaml (fresh on every call); undefined when it is missing. Throws HostConfigError when it is unreadable. */
 	hermesConfig?: () => string | undefined;
 	/** Reads Claude Code's ~/.claude.json (fresh on every call), whose top-level mcpServers is the user scope. */
 	claudeConfig?: () => string | undefined;
 }
+
+/** A host's config file exists but cannot be read: planning for that host stops, and the message is reported. */
+class HostConfigError extends Error {}
 
 /** What a host holds under one server name. `ours` is false whenever ownership cannot be determined. */
 interface Found {
@@ -265,6 +268,11 @@ function planFrom(
 	return plan;
 }
 
+// Reads one `Key: value` field from `claude mcp get` output: the first such line, or undefined when there is none.
+function claudeField(text: string, key: string): string | undefined {
+	return new RegExp(`^[ \\t]*${key}:[ \\t]*(.*?)\\s*$`, "m").exec(text)?.[1];
+}
+
 // add/remove act on the user scope only, so ownership comes from the user-scope entry alone.
 // `claude mcp get <name>` exits non-zero when the name is unknown in every scope; otherwise it prints the entry that
 // wins by precedence (local > project > user) with a `Scope:` line such as "User config (available in all your
@@ -279,11 +287,10 @@ export function planClaude(run: Run, entries: Entry[], options: PlanOptions = {}
 			const text = `${got.stdout}\n${got.stderr}`;
 			const scope = /^\s*Scope:\s*(.+?)\s*$/m.exec(text)?.[1];
 			if (scope === undefined || /^User config\b/i.test(scope)) {
-				const command = /^\s*Command:\s*(.+?)\s*$/m.exec(text)?.[1];
-				const matches =
-					text.includes([entry.command, ...entry.args].join(" ")) ||
-					(text.includes(`Command: ${entry.command}`) &&
-						text.includes(`Args: ${entry.args.join(" ")}`));
+				// Matched on the entry's own Command and Args lines; text elsewhere in the output proves nothing.
+				const command = claudeField(text, "Command");
+				const args = claudeField(text, "Args") ?? "";
+				const matches = command === entry.command && args === entry.args.join(" ");
 				return { present: true, ours: matches || isOurs(command), matches, disabled: false };
 			}
 			const note = `${scope.split(" (")[0]?.toLowerCase()} entry with this name is left alone`;
@@ -509,6 +516,17 @@ function readText(file: string): string | undefined {
 	}
 }
 
+/** Hermes' config.yaml text, or undefined when the file is missing. Any other read failure stops planning for Hermes. */
+function readHostConfig(file: string): string | undefined {
+	try {
+		return readFileSync(file, "utf8");
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return undefined;
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new HostConfigError(`could not read ${file}: ${detail}`);
+	}
+}
+
 /**
  * Writes `value` as JSON through a same-directory temporary file and a rename. `guard.readBefore` is the file's text as
  * the caller read it (undefined when it was absent). The file is re-read just before the rename, and when it changed
@@ -662,7 +680,7 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 	const options: ApplyOptions = {
 		mode,
 		log,
-		hermesConfig: () => (hermesFile === undefined ? undefined : readText(hermesFile)),
+		hermesConfig: () => (hermesFile === undefined ? undefined : readHostConfig(hermesFile)),
 		claudeConfig: () => readText(claudeFile),
 	};
 	let failed = false;
@@ -704,7 +722,15 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 			log(`  ${host}: not on PATH, skipped`);
 			continue;
 		}
-		const plan = PLANNERS[host](run, entries, options);
+		let plan: Plan;
+		try {
+			plan = PLANNERS[host](run, entries, options);
+		} catch (error) {
+			if (!(error instanceof HostConfigError)) throw error;
+			log(`  ${host}: configuration error: ${error.message}; ${host} is not changed`);
+			failed = true;
+			continue;
+		}
 		if (!plan.commands.length || dryRun) report(host, plan.changes, log);
 		if (!plan.commands.length) continue;
 		const configFile =

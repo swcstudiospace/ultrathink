@@ -34,7 +34,8 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeFileAtomic } from "../src/claude/atomic.ts";
+import { errorCode, writeFileAtomic } from "../src/claude/atomic.ts";
+import { isRecord } from "../src/shared.ts";
 
 const START_MARKER = "<!-- ultrathink:start -->";
 const END_MARKER = "<!-- ultrathink:end -->";
@@ -82,14 +83,38 @@ export function setupStatePath(env: Record<string, string | undefined> = process
 	return join(dirname(claudeMdPath(env)), "ultrathink-setup-state.json");
 }
 
-/** Fail-open: a missing/unreadable state file means `apply` never ran (or predates this feature) — treat as "added nothing" so rollback removes nothing rather than guessing. */
+/**
+ * What setup added, from the state file. A missing file means setup recorded no add, so it added nothing. A file that
+ * cannot be read or is not a valid record throws instead: apply and rollback must not guess which servers setup added.
+ */
 export function readSetupState(env: Record<string, string | undefined> = process.env): SetupState {
+	const path = setupStatePath(env);
+	let text: string;
 	try {
-		const raw = JSON.parse(readFileSync(setupStatePath(env), "utf8")) as Partial<SetupState>;
-		return { notionAdded: raw.notionAdded === true, linearAdded: raw.linearAdded === true };
-	} catch {
-		return { notionAdded: false, linearAdded: false };
+		text = readFileSync(path, "utf8");
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return { notionAdded: false, linearAdded: false };
+		throw unusableState(path, error instanceof Error ? error.message : String(error));
 	}
+	let raw: unknown;
+	try {
+		raw = JSON.parse(text);
+	} catch {
+		throw unusableState(path, "not valid JSON");
+	}
+	if (
+		!isRecord(raw) ||
+		typeof raw.notionAdded !== "boolean" ||
+		typeof raw.linearAdded !== "boolean"
+	)
+		throw unusableState(path, "expected notionAdded and linearAdded booleans");
+	return { notionAdded: raw.notionAdded, linearAdded: raw.linearAdded };
+}
+
+function unusableState(path: string, detail: string): Error {
+	return new Error(
+		`setup state file ${path} is unusable (${detail}), so it cannot tell which servers setup added; nothing was changed. Fix the file, or delete it knowing rollback then removes no servers, and rerun.`,
+	);
 }
 
 /**
@@ -451,6 +476,8 @@ export function apply(
 	run: Run = defaultRun,
 	env: Record<string, string | undefined> = process.env,
 ): ApplyResult {
+	// Read before anything changes: an unusable record refuses apply rather than being overwritten and losing its record.
+	const previous = readSetupState(env);
 	const grokDir = grokHome(env);
 	const grok = {
 		rule: installGrokRule(repoRoot, join(grokDir, "rules")),
@@ -471,7 +498,6 @@ export function apply(
 	}
 
 	// A re-run finds the servers it added earlier already present; keep them recorded so rollback still removes them.
-	const previous = readSetupState(env);
 	writeSetupState(
 		{
 			notionAdded: notion.added || previous.notionAdded,
@@ -644,8 +670,9 @@ export function rollback(
 	run: Run = defaultRun,
 	repoRoot: string = repoRootFromModule(import.meta.url),
 ): RollbackResult {
-	const claudeMdChanged = removeBlock(claudeMdPath(env), false);
+	// Read before anything is removed: an unusable record refuses the whole rollback.
 	const state = readSetupState(env);
+	const claudeMdChanged = removeBlock(claudeMdPath(env), false);
 	const claudeJson = claudeJsonPath(env);
 	const notion = removeMcpServer("notion", state.notionAdded, run, claudeJson);
 	const linear = removeMcpServer("linear", state.linearAdded, run, claudeJson);
