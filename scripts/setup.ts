@@ -25,14 +25,16 @@ import {
 	readdirSync,
 	readFileSync,
 	readlinkSync,
+	realpathSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	unlinkSync,
-	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFileAtomic } from "../src/claude/atomic.ts";
 
 const START_MARKER = "<!-- ultrathink:start -->";
 const END_MARKER = "<!-- ultrathink:end -->";
@@ -90,13 +92,22 @@ export function readSetupState(env: Record<string, string | undefined> = process
 	}
 }
 
+/**
+ * Replaces a user or state file atomically (a same-directory temporary file, then a rename), so a crash mid-write cannot
+ * truncate it. A symlink (a dotfiles checkout, say) is written through, so the link survives. An existing file keeps its
+ * mode; a new one is 0644.
+ */
+function writeUserFile(path: string, data: string): void {
+	const target = existsSync(path) ? realpathSync(path) : path;
+	const mode = existsSync(target) ? statSync(target).mode & 0o777 : 0o644;
+	writeFileAtomic(target, data, { mode, dirMode: 0o755 });
+}
+
 export function writeSetupState(
 	state: SetupState,
 	env: Record<string, string | undefined> = process.env,
 ): void {
-	const path = setupStatePath(env);
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, JSON.stringify(state));
+	writeUserFile(setupStatePath(env), JSON.stringify(state));
 }
 
 /** Replaces the marker block in `current` with `block`, keeping the text around it byte-for-byte; appends `block` after a blank line when there is none. */
@@ -107,16 +118,32 @@ export function mergeBlock(current: string, block: string): string {
 	return trimmed ? `${trimmed}\n\n${block}\n` : `${block}\n`;
 }
 
-export type Run = (cmd: string[]) => { stdout: string; stderr: string; code: number };
+/** Bounds each `claude` call: a hung CLI fails its command instead of stalling apply, status or rollback. */
+const CLAUDE_COMMAND_TIMEOUT_MS = 60_000;
+/** The exit code of a timed-out command (as coreutils `timeout` reports it), so it counts as a failed command. */
+const TIMED_OUT_EXIT = 124;
 
-function defaultRun(cmd: string[]): { stdout: string; stderr: string; code: number } {
+export type Run = (
+	cmd: string[],
+	options?: { timeoutMs?: number },
+) => { stdout: string; stderr: string; code: number };
+
+function defaultRun(
+	cmd: string[],
+	options: { timeoutMs?: number } = {},
+): { stdout: string; stderr: string; code: number } {
+	const timeoutMs = options.timeoutMs ?? CLAUDE_COMMAND_TIMEOUT_MS;
 	try {
-		const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
-		return {
-			stdout: proc.stdout?.toString() ?? "",
-			stderr: proc.stderr?.toString() ?? "",
-			code: proc.exitCode ?? 1,
-		};
+		const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: timeoutMs });
+		const stdout = proc.stdout?.toString() ?? "";
+		if (proc.exitedDueToTimeout) {
+			return {
+				stdout,
+				stderr: `${cmd[0]} timed out after ${timeoutMs / 1000}s`,
+				code: TIMED_OUT_EXIT,
+			};
+		}
+		return { stdout, stderr: proc.stderr?.toString() ?? "", code: proc.exitCode ?? 1 };
 	} catch {
 		// Bun.spawnSync throws when the binary is missing; report it the way a shell does.
 		return { stdout: "", stderr: `${cmd[0]}: not found`, code: 127 };
@@ -364,8 +391,7 @@ export function installGrokRule(
 	const before = existsSync(path) ? readFileSync(path, "utf8") : "";
 	const next = mergeBlock(before, block);
 	if (next === before) return { path, changed: false };
-	mkdirSync(rulesDir, { recursive: true });
-	writeFileSync(path, next);
+	writeUserFile(path, next);
 	return { path, changed: true };
 }
 
@@ -416,8 +442,7 @@ export function installGrokHooks(
 	const next = `${JSON.stringify(grokHooksConfig(repoRoot), null, 2)}\n`;
 	const before = existsSync(path) ? readFileSync(path, "utf8") : "";
 	if (next === before) return { path, changed: false };
-	mkdirSync(hooksDir, { recursive: true });
-	writeFileSync(path, next);
+	writeUserFile(path, next);
 	return { path, changed: true };
 }
 
@@ -442,8 +467,7 @@ export function apply(
 	const before = existsSync(path) ? readFileSync(path, "utf8") : "";
 	const after = mergeBlock(before, CLAUDE_MD_BLOCK);
 	if (after !== before) {
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, after);
+		writeUserFile(path, after);
 	}
 
 	// A re-run finds the servers it added earlier already present; keep them recorded so rollback still removes them.
@@ -500,7 +524,7 @@ function removeBlock(path: string, deleteEmpty: boolean): boolean {
 		.replace(/\n{3,}/g, "\n\n")
 		.trimEnd();
 	if (!stripped && deleteEmpty) rmSync(path, { force: true });
-	else writeFileSync(path, stripped ? `${stripped}\n` : "");
+	else writeUserFile(path, stripped ? `${stripped}\n` : "");
 	return true;
 }
 

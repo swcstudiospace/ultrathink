@@ -807,6 +807,17 @@ describe("main", () => {
 			expect(() => main(["--replace", "--remove"], deps())).toThrow("cannot be combined");
 		});
 	});
+
+	test("a host command that times out is a failed command: the CLI reports FAILED and exits 1", () => {
+		const hung: Run = (cmd) =>
+			cmd[2] === "add"
+				? { code: 124, stdout: "", stderr: "claude timed out after 60s" }
+				: { code: 1, stdout: "", stderr: `No MCP server named "${cmd[3]}".` };
+		sandbox(({ lines, deps }) => {
+			expect(main(["--hosts", "claude", "--providers", "notion"], deps())).toBe(1);
+			expect(lines).toContain("  claude: notion FAILED: exit 124: claude timed out after 60s");
+		}, hung);
+	});
 });
 
 describe("API-key providers are never registered", () => {
@@ -913,6 +924,48 @@ describe("writeJson", () => {
 			const fresh = join(dir, "sub", "settings.json");
 			writeJson(fresh, {});
 			expect(statSync(fresh).mode & 0o777).toBe(0o600);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a successful write leaves only the target file behind, holding the new JSON", () => {
+		const dir = mkdtempSync(join(tmpdir(), "mcp-register-"));
+		try {
+			const file = join(dir, "mcp.json");
+			writeFileSync(file, "{}\n");
+			writeJson(file, { mcpServers: { notion: "x" } }, { readBefore: "{}\n" });
+			expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ mcpServers: { notion: "x" } });
+			expect(readdirSync(dir)).toEqual(["mcp.json"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a file changed since it was read is not overwritten, and no temporary file is left", () => {
+		const dir = mkdtempSync(join(tmpdir(), "mcp-register-"));
+		try {
+			const file = join(dir, "mcp.json");
+			writeFileSync(file, '{"edited":"by someone else"}\n');
+			expect(() => writeJson(file, { mcpServers: {} }, { readBefore: "{}\n" })).toThrow(
+				"changed since it was read; not overwritten",
+			);
+			expect(readFileSync(file, "utf8")).toBe('{"edited":"by someone else"}\n');
+			expect(readdirSync(dir)).toEqual(["mcp.json"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a file that appeared after it was read as absent is not overwritten", () => {
+		const dir = mkdtempSync(join(tmpdir(), "mcp-register-"));
+		try {
+			const file = join(dir, "mcp.json");
+			writeFileSync(file, "{}\n");
+			expect(() => writeJson(file, { mcpServers: {} }, { readBefore: undefined })).toThrow(
+				"changed since it was read",
+			);
+			expect(readFileSync(file, "utf8")).toBe("{}\n");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

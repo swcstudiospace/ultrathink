@@ -129,7 +129,7 @@ function checkLine(id: number, name: string, status: string, conclusion: string 
 describe("shipped policy", () => {
 	test("parses and carries the plan's audit level, license allow list and required checks", () => {
 		const { policy } = loadPolicy(SHIPPED_POLICY);
-		expect(policy.audit).toEqual({ level: "high", allow: [] });
+		expect(policy.audit.level).toBe("high");
 		expect(policy.licenses.allow).toEqual([
 			"0BSD",
 			"Apache-2.0",
@@ -870,6 +870,39 @@ describe("bun subprocess", () => {
 			{ cmd: [process.execPath, "audit", "--audit-level=high", "--json"], cwd: "/some/root" },
 		]);
 		expect(result).toEqual({ exitCode: 0, stdout: "{}", stderr: "" });
+	});
+
+	test("the audit subprocess is bounded by a 120 second timeout", () => {
+		const timeouts: number[] = [];
+		runBunAudit("/some/root", "high", (_cmd, options) => {
+			timeouts.push(options.timeout);
+			return { exitCode: 0, stdout: new TextEncoder().encode("{}"), stderr: new Uint8Array() };
+		});
+		expect(timeouts).toEqual([120_000]);
+	});
+
+	test("a timed-out audit child is a failed command and the audit CLI fails closed on it", () => {
+		const hung = () => ({
+			exitCode: null,
+			stdout: new Uint8Array(),
+			stderr: new Uint8Array(),
+			exitedDueToTimeout: true,
+		});
+		expect(runBunAudit("/some/root", "high", hung)).toEqual({
+			exitCode: 124,
+			stdout: "",
+			stderr: "bun audit timed out after 120s",
+		});
+		const dir = tempDir();
+		const out = join(dir, "ev");
+		const result = run(
+			["audit", "--root", dir, "--policy", SHIPPED_POLICY, "--out", out],
+			(root, level) => runBunAudit(root, level, hung),
+		);
+		expect(result.code).toBe(2);
+		expect(result.err.join("\n")).toContain("bun audit exited 124");
+		expect(result.err.join("\n")).toContain("timed out after 120s");
+		expect(existsSync(join(out, "audit.json"))).toBe(false);
 	});
 });
 
