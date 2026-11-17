@@ -8,19 +8,36 @@ import { join } from "node:path";
 import { fileStore, type PhaseLoopRecord, type PhaseLoopStore } from "./phase-loop-store.ts";
 import {
 	attemptPhase,
+	type AuditRecord,
 	checkpointPhaseLoop,
 	confirmShip,
+	open,
+	type OverrideDecision,
 	PhaseLoopCorruptError,
 	type PhaseName,
 	type RuntimeConnectedCheck,
 	resetPhaseLoopStateForTests,
+	resolve,
 	restorePhaseLoop,
+	type ShipConfirmationInput,
 } from "./phase-loop.ts";
 
 const READY = { completeUpliftCount: 1, unansweredBlockingClarifications: 0 };
 const CONNECTED: RuntimeConnectedCheck = () => true;
 const DISCONNECTED: RuntimeConnectedCheck = () => false;
 const AT = "2026-11-17T10:00:00.000Z";
+const PASSING_AUDIT: AuditRecord = { id: "audit-1", kind: "audit", result: "pass", recordedAt: AT };
+const OWNER_OVERRIDE: OverrideDecision = {
+	decisionId: "decision-1",
+	owner: "alice",
+	decidedAt: AT,
+	reason: "ship without a passing audit",
+};
+
+/** A close input that cites the passing audit. */
+function passing(): ShipConfirmationInput {
+	return { afterVerify: true, audit: PASSING_AUDIT, auditId: PASSING_AUDIT.id };
+}
 
 /** Returns values[index]; throws when it is missing, so an indexed read stays a string. */
 function nth(values: readonly string[], index: number): string {
@@ -57,7 +74,7 @@ describe("phase loop", () => {
 		const refusedShip = attemptPhase(runtimeId, { phase: "Ship", ...READY }, CONNECTED);
 		expect(refusedShip.shipStarts).toBe(0);
 		expect(refusedShip.phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);
-		expect(confirmShip(runtimeId, { afterVerify: false }, CONNECTED).shipStarts).toBe(0);
+		expect(confirmShip(runtimeId, { afterVerify: false }, CONNECTED).state.shipStarts).toBe(0);
 	});
 
 	test("AC-18 one unanswered clarification => executeStarts 0", () => {
@@ -88,14 +105,14 @@ describe("phase loop", () => {
 		expect(notYetShipped.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify"]);
 	});
 
-	test("AC-20 one confirmation after Verify => shipStarts 1", () => {
+	test("AC-20 one confirmation after Verify with a passing audit => shipStarts 1", () => {
 		const runtimeId = "hermes";
-		expect(confirmShip(runtimeId, { afterVerify: true }, CONNECTED).shipStarts).toBe(0);
+		expect(confirmShip(runtimeId, passing(), CONNECTED).state.shipStarts).toBe(0);
 		through(runtimeId, "Discuss");
 		through(runtimeId, "Plan");
 		through(runtimeId, "Execute");
 		through(runtimeId, "Verify");
-		const confirmed = confirmShip(runtimeId, { afterVerify: true }, CONNECTED);
+		const confirmed = confirmShip(runtimeId, passing(), CONNECTED).state;
 		expect(confirmed.shipStarts).toBe(1);
 		expect(confirmed.operatorConfirmations).toBe(1);
 		expect(confirmed.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify", "Ship"]);
@@ -117,7 +134,7 @@ describe("phase loop", () => {
 	});
 });
 
-describe("phase loop persistence (LIFE-01, LIFE-04)", () => {
+describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIFE-05)", () => {
 	let root: string;
 	let dir: string;
 
@@ -220,7 +237,7 @@ describe("phase loop persistence (LIFE-01, LIFE-04)", () => {
 		expect(restored.state.executeStarts).toBe(1);
 		expect(restored.state.shipStarts).toBe(0);
 		expect(restored.state.operatorConfirmations).toBe(0);
-		const shipped = confirmShip("claude", { afterVerify: true }, CONNECTED, fileStore(dir));
+		const shipped = confirmShip("claude", passing(), CONNECTED, fileStore(dir)).state;
 		expect(shipped.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify", "Ship"]);
 		expect(shipped.shipStarts).toBe(1);
 		expect(shipped.operatorConfirmations).toBe(1);
@@ -236,6 +253,7 @@ describe("phase loop persistence (LIFE-01, LIFE-04)", () => {
 				executeStarts: 0,
 				shipStarts: 0,
 				operatorConfirmations: 0,
+				humanItems: [],
 			},
 		});
 	});
@@ -319,5 +337,270 @@ describe("phase loop persistence (LIFE-01, LIFE-04)", () => {
 		);
 		expect(saves()).toBe(before);
 		expect(recordFiles()).toEqual([]);
+	});
+
+	/** Runs Discuss through Verify on a store, each as an accepted attempt. */
+	function reachVerify(runtimeId: string, store: PhaseLoopStore): void {
+		for (const phase of ["Discuss", "Plan", "Execute", "Verify"] as const) {
+			step(runtimeId, phase, store);
+		}
+	}
+
+	test("a close without an audit is refused, names the reason, and writes nothing", () => {
+		const { store, saves } = countingStore(dir);
+		reachVerify("claude", store);
+		const before = saves();
+		const refused = confirmShip("claude", { afterVerify: true }, CONNECTED, store);
+		expect(refused.accepted).toBe(false);
+		expect(refused.refusals).toEqual(["no passing audit or override"]);
+		expect(refused.state.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify"]);
+		expect(saves()).toBe(before);
+		expect(storedRecord(dir, "claude")?.phaseOrder).toEqual([
+			"Discuss",
+			"Plan",
+			"Execute",
+			"Verify",
+		]);
+	});
+
+	test("a failed audit refuses the close", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		const failed = confirmShip(
+			"claude",
+			{ afterVerify: true, audit: { ...PASSING_AUDIT, result: "fail" }, auditId: "audit-1" },
+			CONNECTED,
+			store,
+		);
+		expect(failed.accepted).toBe(false);
+		expect(failed.refusals).toEqual(["no passing audit or override", "audit audit-1 did not pass"]);
+		expect(failed.state.phaseOrder).not.toContain("Ship");
+	});
+
+	test("a passing audit with a matching id accepts the close, and a second close is refused", () => {
+		const { store, saves } = countingStore(dir);
+		reachVerify("claude", store);
+		const closed = confirmShip("claude", passing(), CONNECTED, store);
+		expect(closed.accepted).toBe(true);
+		expect(closed.refusals).toEqual([]);
+		expect(closed.state.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify", "Ship"]);
+		expect(closed.state.shipStarts).toBe(1);
+		expect(storedRecord(dir, "claude")).toEqual(closed.state);
+		const before = saves();
+		const again = confirmShip("claude", passing(), CONNECTED, store);
+		expect(again.accepted).toBe(false);
+		expect(again.refusals).toEqual(["Verify is not the last recorded phase"]);
+		expect(saves()).toBe(before);
+	});
+
+	test("a passing audit with a mismatched id refuses the close", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		const mismatched = confirmShip(
+			"claude",
+			{ afterVerify: true, audit: PASSING_AUDIT, auditId: "audit-2" },
+			CONNECTED,
+			store,
+		);
+		expect(mismatched.accepted).toBe(false);
+		expect(mismatched.refusals).toEqual([
+			"no passing audit or override",
+			"audit audit-1 does not match cited audit-2",
+		]);
+	});
+
+	test("an override needs a complete owner decision; a complete one closes without an audit", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		const blankOwner = confirmShip(
+			"claude",
+			{ afterVerify: true, override: { ...OWNER_OVERRIDE, owner: "" } },
+			CONNECTED,
+			store,
+		);
+		expect(blankOwner.accepted).toBe(false);
+		expect(blankOwner.refusals).toEqual([
+			"no passing audit or override",
+			"override is missing an owner decision field",
+		]);
+		const overridden = confirmShip(
+			"claude",
+			{ afterVerify: true, override: OWNER_OVERRIDE },
+			CONNECTED,
+			store,
+		);
+		expect(overridden.accepted).toBe(true);
+		expect(overridden.state.phaseOrder).toContain("Ship");
+	});
+
+	test("an open HTIL entry blocks the close and the refusal names its id", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		expect(open("claude", { id: "h1", owner: "alice" }, store).accepted).toBe(true);
+		const blocked = confirmShip("claude", passing(), CONNECTED, store);
+		expect(blocked.accepted).toBe(false);
+		expect(blocked.refusals).toEqual(["open HTIL entry h1"]);
+		expect(blocked.state.phaseOrder).not.toContain("Ship");
+		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
+			{ id: "h1", owner: "alice", state: "open" },
+		]);
+	});
+
+	test("a duplicate or ownerless HTIL entry is refused and writes nothing", () => {
+		const { store, saves } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		const before = saves();
+		expect(open("claude", { id: "h1", owner: "bob" }, store).refusals).toEqual([
+			"HTIL entry h1 already exists",
+		]);
+		expect(open("claude", { id: "h2", owner: " " }, store).refusals).toEqual([
+			"HTIL entry h2 needs an owner",
+		]);
+		expect(saves()).toBe(before);
+	});
+
+	test("a deferred entry with a decisionId lets the close pass", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		const deferred = resolve(
+			"claude",
+			"h1",
+			{ state: "deferred", decisionId: "decision-2" },
+			store,
+		);
+		expect(deferred.accepted).toBe(true);
+		expect(deferred.state.humanItems).toEqual([
+			{ id: "h1", owner: "alice", state: "deferred", decisionId: "decision-2" },
+		]);
+		const closed = confirmShip("claude", passing(), CONNECTED, store);
+		expect(closed.accepted).toBe(true);
+		expect(closed.state.phaseOrder).toContain("Ship");
+	});
+
+	test("a deferred entry without a decisionId is refused and stays open", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		const refused = resolve("claude", "h1", { state: "deferred", decisionId: "" }, store);
+		expect(refused.accepted).toBe(false);
+		expect(refused.refusals).toEqual(["deferred HTIL entry h1 needs decisionId"]);
+		expect(refused.state.humanItems).toEqual([{ id: "h1", owner: "alice", state: "open" }]);
+		expect(confirmShip("claude", passing(), CONNECTED, store).refusals).toEqual([
+			"open HTIL entry h1",
+		]);
+	});
+
+	test("a done entry needs evidenceId, is resolved only once, and then closes", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		expect(resolve("claude", "h1", { state: "done", evidenceId: " " }, store).refusals).toEqual([
+			"done HTIL entry h1 needs evidenceId",
+		]);
+		expect(resolve("claude", "h9", { state: "done", evidenceId: "e9" }, store).refusals).toEqual([
+			"HTIL entry h9 does not exist",
+		]);
+		const done = resolve("claude", "h1", { state: "done", evidenceId: "e1" }, store);
+		expect(done.accepted).toBe(true);
+		expect(done.state.humanItems).toEqual([
+			{ id: "h1", owner: "alice", state: "done", evidenceId: "e1" },
+		]);
+		expect(resolve("claude", "h1", { state: "done", evidenceId: "e2" }, store).refusals).toEqual([
+			"HTIL entry h1 is already done",
+		]);
+		expect(confirmShip("claude", passing(), CONNECTED, store).accepted).toBe(true);
+	});
+
+	test("humanItems persist across a restart", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		resolve("claude", "h1", { state: "done", evidenceId: "e1" }, store);
+		resetPhaseLoopStateForTests();
+		const restored = restorePhaseLoop(fileStore(dir), "claude");
+		expect(restored.state.humanItems).toEqual([
+			{ id: "h1", owner: "alice", state: "done", evidenceId: "e1" },
+		]);
+		expect(confirmShip("claude", passing(), CONNECTED, fileStore(dir)).accepted).toBe(true);
+	});
+
+	test("an old record without humanItems restores with an empty list", () => {
+		const { store } = countingStore(dir);
+		step("claude", "Discuss", store);
+		writeFileSync(
+			join(dir, nth(recordFiles(), 0)),
+			JSON.stringify({
+				runtimeId: "claude",
+				phaseOrder: ["Discuss"],
+				executeStarts: 0,
+				shipStarts: 0,
+				operatorConfirmations: 0,
+			}),
+		);
+		const restored = restorePhaseLoop(fileStore(dir), "claude");
+		expect(restored.restored).toBe(true);
+		expect(restored.state.humanItems).toEqual([]);
+	});
+
+	test("open and resolve over a corrupt record throw PhaseLoopCorruptError and write nothing", () => {
+		const { store, saves } = countingStore(dir);
+		step("claude", "Discuss", store);
+		writeFileSync(join(dir, nth(recordFiles(), 0)), "{not json");
+		const before = saves();
+		expect(captureError(() => open("claude", { id: "h1", owner: "alice" }, store))).toBeInstanceOf(
+			PhaseLoopCorruptError,
+		);
+		expect(
+			captureError(() => resolve("claude", "h1", { state: "done", evidenceId: "e1" }, store)),
+		).toBeInstanceOf(PhaseLoopCorruptError);
+		expect(saves()).toBe(before);
+		expect(recordFiles()).toEqual([]);
+	});
+
+	test("an accepted audit close sets closedBy with kind audit and the audit's id", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		const closed = confirmShip("claude", passing(), CONNECTED, store);
+		expect(closed.accepted).toBe(true);
+		expect(closed.state.closedBy).toEqual({ kind: "audit", recordId: "audit-1", recordedAt: AT });
+		expect(storedRecord(dir, "claude")?.closedBy).toEqual(closed.state.closedBy);
+	});
+
+	test("an accepted override close sets closedBy with kind override and the decisionId", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		const closed = confirmShip(
+			"claude",
+			{ afterVerify: true, override: OWNER_OVERRIDE },
+			CONNECTED,
+			store,
+		);
+		expect(closed.accepted).toBe(true);
+		expect(closed.state.closedBy).toEqual({
+			kind: "override",
+			recordId: "decision-1",
+			recordedAt: AT,
+		});
+	});
+
+	test("a refused close leaves closedBy undefined", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		const refused = confirmShip("claude", { afterVerify: true }, CONNECTED, store);
+		expect(refused.accepted).toBe(false);
+		expect(refused.state.closedBy).toBeUndefined();
+		expect(storedRecord(dir, "claude")?.closedBy).toBeUndefined();
+	});
+
+	test("closedBy survives a restart", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		confirmShip("claude", passing(), CONNECTED, store);
+		resetPhaseLoopStateForTests();
+		const restored = restorePhaseLoop(fileStore(dir), "claude");
+		expect(restored.restored).toBe(true);
+		expect(restored.state.closedBy).toEqual({ kind: "audit", recordId: "audit-1", recordedAt: AT });
 	});
 });

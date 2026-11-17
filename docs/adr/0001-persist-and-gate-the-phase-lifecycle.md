@@ -13,16 +13,16 @@ Proposed. This ADR changes no code. It is not accepted until the owner approves 
 
 ### Implementation before phase 110
 
-On main, before phase 110, `src/workflow/phase-loop.ts` kept the phase state in memory only. The `loops` map was the sole store, and its comment said nothing is persisted. Phase 110 keeps that map for calls that pass no store (`loops`, L64; comment, L60-63). The state is a prefix of the order Discuss, Plan, Execute, Verify, Ship (`PHASE_ORDER`, L7). Execute is gated on one complete uplift and zero unanswered blocking clarifications (`applyAttempt`, L109-111). Ship starts only through `confirmShip`, which needs one operator confirmation that follows a recorded Verify on a connected runtime (`applyShipConfirmation`, L125-127).
+On main, before phase 110, `src/workflow/phase-loop.ts` kept the phase state in memory only. The `loops` map was the sole store, and its comment said nothing is persisted. Phase 110 keeps that map for calls that pass no store (`loops`, L120; comment, L116-119). The state is a prefix of the order Discuss, Plan, Execute, Verify, Ship (`PHASE_ORDER`, L7). Execute is gated on one complete uplift and zero unanswered blocking clarifications (`applyAttempt`, L170-173). Ship starts only through `confirmShip`, which needs one operator confirmation that follows a recorded Verify on a connected runtime (`applyShipConfirmation`, L227-231).
 
 ### Problems (from SPE-10128 research)
 
-1. **Close without audit.** Milestones have closed through `override_closeout` and `accepted_tech_debt`. The research records phase 108 as closed without VERIFICATION.md. The v1.22 audit recorded `gaps_found` plus tech debt. On main, `confirmShip` checks no audit, and Verify has no guard beyond order and connection (`applyAttempt`, L106-108).
+1. **Close without audit.** Milestones have closed through `override_closeout` and `accepted_tech_debt`. The research records phase 108 as closed without VERIFICATION.md. The v1.22 audit recorded `gaps_found` plus tech debt. On main, `confirmShip` checks no audit, and Verify has no guard beyond order and connection (`applyAttempt`, L165-169).
 2. **Concurrent writers.** Several sessions and worktrees write STATE.md and ROADMAP.md. The research records reconciliation from backups and divergent worktrees.
 3. **No checkpoint on interrupt.** A kill or pause loses phase progress beyond the tracker rows, because the phase state exists only in the `loops` map.
 4. **Human items pass silently.** `human_needed` items (live-infrastructure evidence, human verifiers) stay open with no explicit record. The research records v1.15 as still open for this reason.
 
-The research cites `phase-loop.ts:74-93` and `:100-113`. Those ranges do not match main's 104-line file. Line numbers in this ADR refer to the phase 110 file (247 lines).
+The research cites `phase-loop.ts:74-93` and `:100-113`. Those ranges do not match main's 104-line file. Line numbers in this ADR refer to the phase 111 file (414 lines).
 
 ## Decision
 
@@ -49,8 +49,8 @@ Phase lifecycle state is persisted, gated, and checkpointed. Each part maps to o
 - Phase 110 chose a file-per-runtime JSON store and an optional checkpoint field on each record (see `docs/architecture/phase-lifecycle.md`). The research's candidates (substrate events, a local snapshot cache) were not chosen.
 - A hard kill writes no checkpoint. Work in flight since the last committed transition is lost.
 - Close becomes stricter. Existing override practice needs an owner-decision record. Parked phases (108) and open milestones (v1.15) stay open until their items have records. This ADR changes no existing artifacts; retroactive fixes are out of scope.
-- The `resetPhaseLoopStateForTests` hook (L245-247) and the in-memory tests must change once the store is persistent.
-- Once LIFE-02 lands, `confirmShip` changes behaviour for any flow that relies on Ship without an audit.
+- The `resetPhaseLoopStateForTests` hook (L411-413) and the in-memory tests must change once the store is persistent.
+- Phase 111 landed the change: `confirmShip` now requires a passing audit or an override, and the close is recorded in `closedBy`. See `docs/architecture/phase-lifecycle.md`.
 
 ### Out of this repository
 

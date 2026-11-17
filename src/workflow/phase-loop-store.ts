@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { PhaseLoopState } from "./phase-loop.ts";
+import type { ClosedBy, HtilEntry, PhaseLoopState } from "./phase-loop.ts";
 
 export type CheckpointReason = "pause" | "kill";
 
@@ -29,6 +29,9 @@ export interface Checkpoint {
 export interface PhaseLoopRecord extends PhaseLoopState {
 	checkpoint?: Checkpoint;
 }
+
+/** A record as read from disk. Records written before phase 111 have no humanItems. */
+type StoredRecord = Omit<PhaseLoopRecord, "humanItems"> & { humanItems?: HtilEntry[] };
 
 /**
  * Outcome of reading one record. A quarantined record was unparseable or of the wrong shape; it
@@ -64,7 +67,29 @@ function isCheckpoint(value: unknown): value is Checkpoint {
 	);
 }
 
-function isPhaseLoopRecord(value: unknown): value is PhaseLoopRecord {
+function isHtilEntry(value: unknown): value is HtilEntry {
+	if (typeof value !== "object" || value === null) return false;
+	const entry = value as Record<string, unknown>;
+	return (
+		typeof entry.id === "string" &&
+		typeof entry.owner === "string" &&
+		(entry.state === "open" || entry.state === "done" || entry.state === "deferred") &&
+		(entry.evidenceId === undefined || typeof entry.evidenceId === "string") &&
+		(entry.decisionId === undefined || typeof entry.decisionId === "string")
+	);
+}
+
+function isClosedBy(value: unknown): value is ClosedBy {
+	if (typeof value !== "object" || value === null) return false;
+	const closedBy = value as Record<string, unknown>;
+	return (
+		(closedBy.kind === "audit" || closedBy.kind === "validation" || closedBy.kind === "override") &&
+		typeof closedBy.recordId === "string" &&
+		typeof closedBy.recordedAt === "string"
+	);
+}
+
+function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 	if (typeof value !== "object" || value === null) return false;
 	const row = value as Record<string, unknown>;
 	return (
@@ -74,11 +99,17 @@ function isPhaseLoopRecord(value: unknown): value is PhaseLoopRecord {
 		typeof row.executeStarts === "number" &&
 		typeof row.shipStarts === "number" &&
 		typeof row.operatorConfirmations === "number" &&
-		(row.checkpoint === undefined || isCheckpoint(row.checkpoint))
+		(row.checkpoint === undefined || isCheckpoint(row.checkpoint)) &&
+		(row.humanItems === undefined ||
+			(Array.isArray(row.humanItems) && row.humanItems.every(isHtilEntry))) &&
+		(row.closedBy === undefined || isClosedBy(row.closedBy))
 	);
 }
 
-/** Unparseable, wrong-shape, or mismatched text yields undefined, which means quarantine. */
+/**
+ * Unparseable, wrong-shape, or mismatched text yields undefined, which means quarantine. A record
+ * without humanItems was written before phase 111 and reads with an empty list.
+ */
 function parseRecord(text: string, runtimeId: string): PhaseLoopRecord | undefined {
 	let value: unknown;
 	try {
@@ -86,7 +117,8 @@ function parseRecord(text: string, runtimeId: string): PhaseLoopRecord | undefin
 	} catch {
 		return undefined;
 	}
-	return isPhaseLoopRecord(value) && value.runtimeId === runtimeId ? value : undefined;
+	if (!isPhaseLoopRecord(value) || value.runtimeId !== runtimeId) return undefined;
+	return { ...value, humanItems: value.humanItems ?? [] };
 }
 
 function fsyncDirectory(dir: string): void {

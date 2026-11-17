@@ -13,6 +13,7 @@ const STATE: PhaseLoopRecord = {
 	executeStarts: 1,
 	shipStarts: 0,
 	operatorConfirmations: 0,
+	humanItems: [],
 };
 
 /** Returns values[index]; throws when it is missing, so an indexed read stays a string. */
@@ -153,5 +154,77 @@ describe("file phase loop store", () => {
 		const blocker = join(root, "blocker");
 		writeFileSync(blocker, "a file, not a directory");
 		expect(() => fileStore(join(blocker, "state")).load("claude")).toThrow();
+	});
+
+	test("humanItems round trip in every state", () => {
+		const record: PhaseLoopRecord = {
+			...STATE,
+			humanItems: [
+				{ id: "h1", owner: "alice", state: "open" },
+				{ id: "h2", owner: "bob", state: "done", evidenceId: "e1" },
+				{ id: "h3", owner: "carol", state: "deferred", decisionId: "d1" },
+			],
+		};
+		fileStore(stateDir).save("claude", record);
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record });
+	});
+
+	test("a record without humanItems, written before phase 111, loads with an empty list", () => {
+		fileStore(stateDir).save("claude", STATE);
+		writeFileSync(
+			join(stateDir, nth(recordFiles(), 0)),
+			JSON.stringify({
+				runtimeId: "claude",
+				phaseOrder: ["Discuss", "Plan", "Execute"],
+				executeStarts: 1,
+				shipStarts: 0,
+				operatorConfirmations: 0,
+			}),
+		);
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record: STATE });
+	});
+
+	test("malformed HTIL entries quarantine the record", () => {
+		const store = fileStore(stateDir);
+		const malformed: unknown[] = [
+			"none",
+			[{ id: "h1", owner: "alice", state: "pending" }],
+			[{ id: 3, owner: "alice", state: "open" }],
+			[{ id: "h1", owner: "alice", state: "done", evidenceId: 7 }],
+			[{ id: "h1", owner: "alice", state: "open", decisionId: null }],
+		];
+		for (const humanItems of malformed) {
+			store.save("claude", STATE);
+			writeFileSync(
+				join(stateDir, nth(recordFiles(), 0)),
+				JSON.stringify({ ...STATE, humanItems }),
+			);
+			expect(store.load("claude").status).toBe("quarantined");
+		}
+	});
+
+	test("a closedBy record round trips", () => {
+		const record: PhaseLoopRecord = {
+			...STATE,
+			closedBy: { kind: "override", recordId: "d1", recordedAt: "2026-11-17T10:00:00.000Z" },
+		};
+		fileStore(stateDir).save("claude", record);
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record });
+	});
+
+	test("a malformed closedBy quarantines the record", () => {
+		const store = fileStore(stateDir);
+		const at = "2026-11-17T10:00:00.000Z";
+		const malformed: unknown[] = [
+			null,
+			{ kind: "pass", recordId: "audit-1", recordedAt: at },
+			{ kind: "audit", recordId: 7, recordedAt: at },
+			{ kind: "audit", recordId: "audit-1" },
+		];
+		for (const closedBy of malformed) {
+			store.save("claude", STATE);
+			writeFileSync(join(stateDir, nth(recordFiles(), 0)), JSON.stringify({ ...STATE, closedBy }));
+			expect(store.load("claude").status).toBe("quarantined");
+		}
 	});
 });
