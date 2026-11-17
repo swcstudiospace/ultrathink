@@ -2733,6 +2733,20 @@ describe("headless planner: cancel, queue and drain", () => {
 		expect(rows[0]).toEqual({ status: "failed", reason: "persist_failed" });
 	});
 
+	test("a failed job rename removes its temp file and the start still reports engine_error", async () => {
+		const h = setup();
+		const sessionId = randomUUID();
+		// A directory at the job file's path lets the temp write succeed while the rename onto it fails with EISDIR.
+		mkdirSync(join(h.stateDir, "jobs", `${sessionId}.json`), { recursive: true });
+		expect(await h.planner.start({ prompt: PROMPT, sessionId })).toEqual({
+			ok: false,
+			code: "engine_error",
+		});
+		expect(readdirSync(join(h.stateDir, "jobs")).filter((name) => name.endsWith(".tmp"))).toEqual(
+			[],
+		);
+	});
+
 	test("a plan that throws logs engine_error with a redacted cause", async () => {
 		const events: Array<{ event: string; fields?: Record<string, unknown> }> = [];
 		const logger = {

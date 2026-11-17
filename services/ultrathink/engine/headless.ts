@@ -11,7 +11,7 @@
  * on), each with an allowlisted env.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
 import { OMP_LOCK, readSession } from "../../../src/claude/state.ts";
@@ -462,8 +462,18 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			promptSha256: file.promptSha256,
 			...(file.principal === undefined ? {} : { principal: file.principal }),
 		};
-		writeFileSync(tmp, `${JSON.stringify(body)}\n`, { mode: 0o600 });
-		renameSync(tmp, path);
+		try {
+			writeFileSync(tmp, `${JSON.stringify(body)}\n`, { mode: 0o600 });
+			renameSync(tmp, path);
+		} catch (error) {
+			// reason: a failed write or rename must not leave its temp file behind; no sweep or recovery matches it.
+			try {
+				rmSync(tmp, { force: true });
+			} catch {
+				// reason: the original failure is the one to report; a temp file that cannot be removed stays.
+			}
+			throw error;
+		}
 	}
 
 	function readJobFile(sessionId: string): JobFile | undefined {
