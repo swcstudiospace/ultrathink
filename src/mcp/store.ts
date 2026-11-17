@@ -2,11 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 import {
 	chmodSync,
+	linkSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	type Stats,
 	statSync,
+	unlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -134,9 +138,18 @@ export function writeStore(path: string, store: CredentialStore): void {
 	const dir = dirname(path);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const tmp = join(dir, `.${randomBytes(6).toString("hex")}.tmp`);
-	writeFileSync(tmp, `${JSON.stringify(store, null, "\t")}\n`, { mode: 0o600 });
-	chmodSync(tmp, 0o600);
-	renameSync(tmp, path);
+	try {
+		writeFileSync(tmp, `${JSON.stringify(store, null, "\t")}\n`, { mode: 0o600 });
+		chmodSync(tmp, 0o600);
+		renameSync(tmp, path);
+	} catch (error) {
+		try {
+			rmSync(tmp, { force: true });
+		} catch {
+			// reason: the original failure is the one to report
+		}
+		throw error;
+	}
 }
 
 const OWNER_FILE = "owner";
@@ -198,10 +211,25 @@ function holderGone(owner: LockOwner, seams: HolderLiveness): boolean {
 }
 
 /**
- * Break a lock judged stale. Renaming first makes the takeover atomic: only one waiter wins the
- * rename, and the renamed dir is removed only if it is still the lock that was judged stale. If
- * the holder heartbeated or a new holder took over in between, the renamed dir is abandoned
- * (never moved back) and the caller simply retries acquiring.
+ * Puts a moved lock back at its path without replacing any lock that now exists. A directory cannot be
+ * hard-linked, so the restore takes the path with mkdir (EEXIST when a lock is there), links each file back
+ * (linkSync is no-replace too), and only then removes the moved copy. Any failure throws to the caller.
+ */
+function restoreLock(aside: string, lock: string, moved: Stats): void {
+	mkdirSync(lock);
+	for (const name of readdirSync(aside)) {
+		linkSync(join(aside, name), join(lock, name));
+		unlinkSync(join(aside, name));
+	}
+	utimesSync(lock, moved.atime, moved.mtime);
+	rmSync(aside, { recursive: true, force: true });
+}
+
+/**
+ * Break a lock judged stale. Renaming first makes the takeover atomic: only one waiter wins the rename.
+ * The moved dir is removed only if it is still the lock that was judged stale (same owner, same mtime).
+ * Otherwise a live holder heartbeated or a new holder took over between the judgment and the rename, so the
+ * moved dir is restored to the lock path and the caller retries acquiring.
  */
 function breakStaleLock(lock: string, owner: string | undefined, mtimeMs: number): void {
 	const aside = `${lock}.stale-${randomBytes(6).toString("hex")}`;
@@ -210,13 +238,17 @@ function breakStaleLock(lock: string, owner: string | undefined, mtimeMs: number
 	} catch {
 		return;
 	}
-	try {
-		if (readOwner(aside) === owner && statSync(aside).mtimeMs === mtimeMs) {
+	const moved = statSync(aside, { throwIfNoEntry: false });
+	if (moved === undefined) return;
+	if (readOwner(aside) === owner && moved.mtimeMs === mtimeMs) {
+		try {
 			rmSync(aside, { recursive: true, force: true });
+		} catch {
+			// reason: already gone
 		}
-	} catch {
-		// reason: already gone
+		return;
 	}
+	restoreLock(aside, lock, moved);
 }
 
 /** The interval port the lock heartbeat runs on. */
@@ -264,12 +296,22 @@ export async function withStoreLock<T>(
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	const deadline = now() + waitMs;
 	for (;;) {
+		let created = false;
 		try {
 			mkdirSync(lock);
-			writeFileSync(join(lock, OWNER_FILE), token);
-			break;
+			created = true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+		if (created) {
+			try {
+				writeFileSync(join(lock, OWNER_FILE), token);
+			} catch (error) {
+				// reason: an ownerless lock blocks every acquirer until it ages out, so remove it before rethrowing
+				rmSync(lock, { recursive: true, force: true });
+				throw error;
+			}
+			break;
 		}
 		let judged: { owner: string | undefined; mtimeMs: number } | undefined;
 		try {
