@@ -234,6 +234,16 @@ describe("classifyFailure precedence", () => {
 		expect(classifyFailure(err("connect ETIMEDOUT 1.2.3.4:443"))).toBe("network");
 		expect(classifyFailure(err("request timeout"))).toBe("timeout");
 	});
+
+	test("a long message repeating the plan phrase without 'limit' classifies quickly", () => {
+		const started = performance.now();
+		expect(classifyFailure(err("You've hit your ".repeat(100_000)))).toBe("other");
+		expect(performance.now() - started).toBeLessThan(2000);
+	});
+
+	test("a plan-limit phrase with its limit a few hundred characters later is plan-limit", () => {
+		expect(classifyFailure(err(`You've hit your ${"usage ".repeat(40)}limit`))).toBe("plan-limit");
+	});
 });
 
 const ALL: readonly FailureClass[] = [

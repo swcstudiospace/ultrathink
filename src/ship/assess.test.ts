@@ -611,6 +611,19 @@ describe("assessDone judge", () => {
 		expect(a.judge?.error).toBeDefined();
 	});
 
+	test("a 1 MB reply of unbalanced braces is rejected quickly", async () => {
+		const started = performance.now();
+		const a = await assessDone({
+			record: RECORD,
+			signals: signals(),
+			diff: DIFF,
+			complete: async () => "{".repeat(1_000_000),
+		});
+		expect(performance.now() - started).toBeLessThan(5000);
+		expect(a.done).toBe(false);
+		expect(a.judge?.error).toBe("judge reply was not parseable JSON");
+	});
+
 	test("a successful gate-mode judge carries judgedBy", async () => {
 		const a = await assessDone({
 			record: RECORD,

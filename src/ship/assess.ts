@@ -115,9 +115,14 @@ function judgePrompt(record: SessionRecord, signals: ShipSignals, diff: ShipDiff
 		.join("\n\n");
 }
 
+/** Most "{" positions parseJudge examines; each one scans to its close or the end of the reply, so this caps the work. */
+const MAX_JUDGE_CANDIDATES = 32;
+
 /** Extracts the first balanced JSON object from free text. */
 function parseJudge(text: string): JudgeVerdict | undefined {
+	let candidates = 0;
 	for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+		if (++candidates > MAX_JUDGE_CANDIDATES) break;
 		let depth = 0;
 		let inString = false;
 		for (let i = start; i < text.length; i++) {
