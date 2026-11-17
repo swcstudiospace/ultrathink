@@ -19,6 +19,59 @@ export interface PhaseAttemptInput {
 
 export interface ShipConfirmationInput {
 	afterVerify: boolean;
+	/** The audit or validation record the close presents. Its result must be "pass". */
+	audit?: AuditRecord;
+	/** The id the close cites. The audit passes only when audit.id equals it. */
+	auditId?: string;
+	/** Owner decision that closes the phase without a passing audit. */
+	override?: OverrideDecision;
+}
+
+/** A recorded audit or validation result. The close cites it by id (LIFE-02). */
+export interface AuditRecord {
+	id: string;
+	kind: "audit" | "validation";
+	result: "pass" | "fail";
+	recordedAt: string;
+}
+
+/** A recorded owner decision that closes a phase without a passing audit (LIFE-02). */
+export interface OverrideDecision {
+	decisionId: string;
+	owner: string;
+	decidedAt: string;
+	reason: string;
+}
+
+/** A human-verification or owner-gated item (LIFE-05). An open entry blocks close. */
+export interface HtilEntry {
+	id: string;
+	owner: string;
+	state: "open" | "done" | "deferred";
+	evidenceId?: string;
+	decisionId?: string;
+}
+
+/** How an open HTIL entry leaves the open set. Each resolution needs its record. */
+export type HtilResolution =
+	| { state: "done"; evidenceId: string }
+	| { state: "deferred"; decisionId: string };
+
+/** Outcome of a gated call. A refusal names every reason and changes nothing. */
+export interface GateOutcome {
+	accepted: boolean;
+	state: PhaseLoopState;
+	refusals: readonly string[];
+}
+
+/** Outcome of confirmShip: accepted, or refused with each reason named. */
+export type ShipConfirmation = GateOutcome;
+
+export interface ClosedBy {
+	kind: "audit" | "validation" | "override";
+	/** The audit or validation id, or the override's decision id. */
+	recordId: string;
+	recordedAt: string;
 }
 
 export interface PhaseLoopState {
@@ -27,6 +80,9 @@ export interface PhaseLoopState {
 	executeStarts: number;
 	shipStarts: number;
 	operatorConfirmations: number;
+	humanItems: HtilEntry[];
+	/** The record the accepted close cites (LIFE-02). Absent until a close is accepted. */
+	closedBy?: ClosedBy;
 }
 
 /** Result of a resume (LIFE-04): what was restored, and whether an unreadable record was set aside. */
@@ -41,9 +97,9 @@ export interface RestoreReport {
 }
 
 /**
- * Thrown by attemptPhase, confirmShip, and checkpointPhaseLoop when the stored record is
- * quarantined. Nothing is written and the quarantined copy stays where it is. restorePhaseLoop
- * does not throw; it reports `quarantined` instead.
+ * Thrown by attemptPhase, confirmShip, open, resolve, and checkpointPhaseLoop when the stored
+ * record is quarantined. Nothing is written and the quarantined copy stays where it is.
+ * restorePhaseLoop does not throw; it reports `quarantined` instead.
  */
 export class PhaseLoopCorruptError extends Error {
 	readonly runtimeId: string;
@@ -70,6 +126,7 @@ function emptyState(runtimeId: string): PhaseLoopState {
 		executeStarts: 0,
 		shipStarts: 0,
 		operatorConfirmations: 0,
+		humanItems: [],
 	};
 }
 
@@ -93,68 +150,124 @@ function snapshot(row: PhaseLoopState): PhaseLoopState {
 		executeStarts: row.executeStarts,
 		shipStarts: row.shipStarts,
 		operatorConfirmations: row.operatorConfirmations,
+		humanItems: row.humanItems.map((item) => ({ ...item })),
+		...(row.closedBy === undefined ? {} : { closedBy: { ...row.closedBy } }),
 	};
 }
 
-/** Applies one attempt to row in place and reports whether it changed. */
+/** Applies one attempt to row in place. Returns the refusal reasons; none means it was applied. */
 function applyAttempt(
 	runtimeId: string,
 	row: PhaseLoopState,
 	input: PhaseAttemptInput,
 	isConnected: RuntimeConnectedCheck,
-): boolean {
-	if (!isConnected(runtimeId)) return false;
-	if (input.phase === "Ship") return false;
-	if (input.phase !== PHASE_ORDER[row.phaseOrder.length]) return false;
+): readonly string[] {
+	if (!isConnected(runtimeId)) return ["runtime is not connected"];
+	if (input.phase === "Ship") return ["Ship starts only through confirmShip"];
+	if (input.phase !== PHASE_ORDER[row.phaseOrder.length]) {
+		return [`${input.phase} is not the next phase`];
+	}
 	if (input.phase === "Execute") {
 		const gatesMet = input.completeUpliftCount >= 1 && input.unansweredBlockingClarifications === 0;
-		if (!gatesMet) return false;
+		if (!gatesMet) return ["Execute gates are unmet"];
 	}
 	row.phaseOrder.push(input.phase);
 	if (input.phase === "Execute") row.executeStarts += 1;
-	return true;
+	return [];
 }
 
-/** Applies one operator confirmation to row in place and reports whether it changed. */
+function isBlank(value: string | undefined): boolean {
+	return value === undefined || value.trim() === "";
+}
+
+/** A complete override has every field set. */
+function overrideComplete(override: OverrideDecision): boolean {
+	return ![override.decisionId, override.owner, override.decidedAt, override.reason].some(isBlank);
+}
+
+/**
+ * LIFE-02: the record a close is recorded against: a passing audit whose id the call cites, or a
+ * complete owner override. Undefined when neither holds.
+ */
+function closeRecord(input: ShipConfirmationInput): ClosedBy | undefined {
+	const { audit, auditId, override } = input;
+	if (audit !== undefined && audit.result === "pass" && audit.id === auditId) {
+		return { kind: audit.kind, recordId: audit.id, recordedAt: audit.recordedAt };
+	}
+	if (override !== undefined && overrideComplete(override)) {
+		return { kind: "override", recordId: override.decisionId, recordedAt: override.decidedAt };
+	}
+	return undefined;
+}
+
+/** The reasons a close with no record is refused. Call only when closeRecord is undefined. */
+function closeRefusals(input: ShipConfirmationInput): string[] {
+	const { audit, auditId, override } = input;
+	const refusals = ["no passing audit or override"];
+	if (audit !== undefined && audit.id !== auditId) {
+		refusals.push(`audit ${audit.id} does not match cited ${auditId ?? "(none)"}`);
+	} else if (audit !== undefined && audit.result !== "pass") {
+		refusals.push(`audit ${audit.id} did not pass`);
+	}
+	if (override !== undefined) refusals.push("override is missing an owner decision field");
+	return refusals;
+}
+
+/**
+ * Checks every gate of the close and collects each failing reason. The confirmation is applied
+ * to row in place only when none fails. Returns the reasons; none means it was applied.
+ */
 function applyShipConfirmation(
 	runtimeId: string,
 	row: PhaseLoopState,
 	input: ShipConfirmationInput,
 	isConnected: RuntimeConnectedCheck,
-): boolean {
-	if (!input.afterVerify) return false;
-	if (row.phaseOrder[row.phaseOrder.length - 1] !== "Verify") return false;
-	if (!isConnected(runtimeId)) return false;
+): readonly string[] {
+	const refusals: string[] = [];
+	if (!input.afterVerify) refusals.push("confirmation is not after Verify");
+	if (row.phaseOrder[row.phaseOrder.length - 1] !== "Verify") {
+		refusals.push("Verify is not the last recorded phase");
+	}
+	if (!isConnected(runtimeId)) refusals.push("runtime is not connected");
+	const closedBy = closeRecord(input);
+	if (closedBy === undefined) refusals.push(...closeRefusals(input));
+	for (const item of row.humanItems) {
+		if (item.state === "open") refusals.push(`open HTIL entry ${item.id}`);
+	}
+	if (closedBy === undefined || refusals.length > 0) return refusals;
 	row.phaseOrder.push("Ship");
 	row.shipStarts = 1;
 	row.operatorConfirmations += 1;
-	return true;
+	row.closedBy = closedBy;
+	return [];
 }
 
 /**
- * Runs one transition. With no store, the in-memory row is used. With a store, the row is
- * loaded from it and an accepted transition is saved, as one commit, before this returns. The
- * saved record carries no checkpoint, so an accepted transition clears one. A refused
- * transition calls no save. A quarantined record throws PhaseLoopCorruptError before any gate
- * runs, so nothing is written.
+ * Runs one gated transition. `apply` checks every gate, returns the reason for each failing one,
+ * and changes the row only when there are none. With no store, the in-memory row is used. With a
+ * store, the row is loaded from it and an accepted transition is saved, as one commit, before this
+ * returns. The saved record carries no checkpoint, so an accepted transition clears one. A refused
+ * transition calls no save. A quarantined record throws PhaseLoopCorruptError before any gate runs,
+ * so nothing is written.
  */
 function transition(
 	runtimeId: string,
 	store: PhaseLoopStore | undefined,
-	apply: (row: PhaseLoopState) => boolean,
-): PhaseLoopState {
+	apply: (row: PhaseLoopState) => readonly string[],
+): GateOutcome {
 	if (!store) {
 		const row = rowFor(runtimeId);
-		apply(row);
-		return snapshot(row);
+		const refusals = apply(row);
+		return { accepted: refusals.length === 0, state: snapshot(row), refusals };
 	}
 	const outcome = store.load(runtimeId);
 	if (outcome.status === "quarantined") {
 		throw new PhaseLoopCorruptError(runtimeId, outcome.quarantinedAs);
 	}
 	const row = outcome.status === "found" ? snapshot(outcome.record) : emptyState(runtimeId);
-	if (apply(row)) store.save(runtimeId, row);
-	return snapshot(row);
+	const refusals = apply(row);
+	if (refusals.length === 0) store.save(runtimeId, row);
+	return { accepted: refusals.length === 0, state: snapshot(row), refusals };
 }
 
 /**
@@ -173,13 +286,16 @@ export function attemptPhase(
 	isConnected: RuntimeConnectedCheck,
 	store?: PhaseLoopStore,
 ): PhaseLoopState {
-	return transition(runtimeId, store, (row) => applyAttempt(runtimeId, row, input, isConnected));
+	return transition(runtimeId, store, (row) => applyAttempt(runtimeId, row, input, isConnected))
+		.state;
 }
 
 /**
- * Record the one operator confirmation. Ship starts only when that confirmation
- * follows a recorded Verify on a connected runtime. A confirmation that is not after Verify
- * does not start Ship, and a second confirmation after Ship does not start it again.
+ * Record the one operator confirmation, which closes the phase. Ship starts only when that
+ * confirmation follows a recorded Verify on a connected runtime, cites a passing audit by id or
+ * carries a complete owner override (LIFE-02), and leaves no HTIL entry open (LIFE-05). An
+ * accepted close records that audit or override in `closedBy` in the same save. A refused
+ * confirmation names each reason in `refusals`. A second confirmation after Ship is refused.
  * With a store, state is read from it and an accepted confirmation is committed before return.
  * A quarantined record throws PhaseLoopCorruptError.
  */
@@ -188,10 +304,60 @@ export function confirmShip(
 	input: ShipConfirmationInput,
 	isConnected: RuntimeConnectedCheck,
 	store?: PhaseLoopStore,
-): PhaseLoopState {
+): ShipConfirmation {
 	return transition(runtimeId, store, (row) =>
 		applyShipConfirmation(runtimeId, row, input, isConnected),
 	);
+}
+
+/**
+ * Record an open HTIL entry (LIFE-05). The entry starts in state open and blocks close until it
+ * is resolved. A missing id or owner, or a duplicate id, is refused.
+ */
+export function open(
+	runtimeId: string,
+	entry: Pick<HtilEntry, "id" | "owner">,
+	store?: PhaseLoopStore,
+): GateOutcome {
+	return transition(runtimeId, store, (row) => {
+		const refusals: string[] = [];
+		if (isBlank(entry.id)) refusals.push("HTIL entry needs an id");
+		if (isBlank(entry.owner)) refusals.push(`HTIL entry ${entry.id} needs an owner`);
+		if (row.humanItems.some((item) => item.id === entry.id)) {
+			refusals.push(`HTIL entry ${entry.id} already exists`);
+		}
+		if (refusals.length > 0) return refusals;
+		row.humanItems.push({ id: entry.id, owner: entry.owner, state: "open" });
+		return [];
+	});
+}
+
+/**
+ * Resolve an open HTIL entry (LIFE-05). `done` needs the evidence it was resolved by; `deferred`
+ * needs the recorded owner decision that defers it. A missing record is refused and the entry
+ * stays open.
+ */
+export function resolve(
+	runtimeId: string,
+	entryId: string,
+	resolution: HtilResolution,
+	store?: PhaseLoopStore,
+): GateOutcome {
+	return transition(runtimeId, store, (row) => {
+		const entry = row.humanItems.find((item) => item.id === entryId);
+		if (entry === undefined) return [`HTIL entry ${entryId} does not exist`];
+		if (entry.state !== "open") return [`HTIL entry ${entryId} is already ${entry.state}`];
+		if (resolution.state === "done") {
+			if (isBlank(resolution.evidenceId)) return [`done HTIL entry ${entryId} needs evidenceId`];
+			entry.state = "done";
+			entry.evidenceId = resolution.evidenceId;
+			return [];
+		}
+		if (isBlank(resolution.decisionId)) return [`deferred HTIL entry ${entryId} needs decisionId`];
+		entry.state = "deferred";
+		entry.decisionId = resolution.decisionId;
+		return [];
+	});
 }
 
 /**
