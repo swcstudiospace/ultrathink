@@ -729,3 +729,146 @@ describe("prune crash points and boundaries", () => {
 		expect(createAuditLog({ path, now: clock(), segmentBytes: MIB }).verify().ok).toBe(true);
 	}, 60_000);
 });
+
+describe("audit I/O failures", () => {
+	test("listing an unreadable directory throws, while a missing directory has no segments", () => {
+		const denied = {
+			readdirSync: () => {
+				throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+			},
+		};
+		expect(() => listSegments(auditPath(tempDir()), denied)).toThrow(/EACCES/);
+		expect(listSegments(join(tempDir(), "missing", "audit.jsonl"), nodeFs)).toEqual([]);
+	});
+
+	test("an unreadable audit directory makes verify fail instead of reading as an empty chain", () => {
+		const dir = tempDir();
+		const path = auditPath(dir);
+		let denied = false;
+		const fs: AuditFs = {
+			...NO_FSYNC,
+			readdirSync: ((target: nodeFs.PathLike) => {
+				if (denied) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+				return nodeFs.readdirSync(target);
+			}) as typeof nodeFs.readdirSync,
+		};
+		const log = createAuditLog({ path, now: clock(), fs, segmentBytes: MIB });
+		fill(log, 1, 3);
+		denied = true;
+		const verdict = log.verify();
+		expect(verdict.ok).toBe(false);
+		if (verdict.ok) return;
+		expect(verdict.brokenAt).toBe(0);
+		expect(verdict.reason).toMatch(/cannot list the audit directory: EACCES/);
+	});
+
+	test("an append whose lock cannot be taken is refused with an explicit error and writes nothing", () => {
+		const dir = tempDir();
+		const path = auditPath(dir);
+		const errors: Error[] = [];
+		const log = createAuditLog({
+			path,
+			now: clock(),
+			segmentBytes: MIB,
+			onError: (e) => errors.push(e),
+		});
+		log.record("login_ok", bulk(1));
+		const kept = readFileSync(path, "utf8");
+		// A plain file where the lock's mutation guard directory must go makes the lock unavailable, so no unlocked write happens.
+		writeFileSync(`${path}.lock.guard`, "");
+		log.record("login_ok", bulk(2));
+		expect(errors.map((e) => e.message)).toEqual([
+			expect.stringMatching(/record refused, lock not taken, nothing written/),
+		]);
+		expect(readFileSync(path, "utf8")).toBe(kept);
+		expect(log.head().seq).toBe(1);
+		rmSync(`${path}.lock.guard`);
+		log.record("login_ok", bulk(3));
+		expect(errors).toHaveLength(1);
+		expect(records(path).map((r) => r.seq)).toEqual([1, 2]);
+		expect(verifyAuditFile(path).ok).toBe(true);
+	});
+
+	test("a failed append truncates only its own bytes and leaves the records other appenders wrote", () => {
+		const dir = tempDir();
+		const path = auditPath(dir);
+		const errors: Error[] = [];
+		let failNext = false;
+		const flaky: AuditFs = {
+			...NO_FSYNC,
+			writeSync: ((fd: number, data: Buffer, offset: number, length: number) => {
+				if (!failNext) return nodeFs.writeSync(fd, data, offset, length);
+				failNext = false;
+				// Half of the record reaches the file before the write fails.
+				nodeFs.writeSync(fd, data, offset, Math.floor(length / 2));
+				throw Object.assign(new Error("EIO: input/output error"), { code: "EIO" });
+			}) as typeof nodeFs.writeSync,
+		};
+		const appender = createAuditLog({
+			path,
+			now: clock(),
+			fs: flaky,
+			segmentBytes: MIB,
+			onError: (e) => errors.push(e),
+		});
+		const other = createAuditLog({ path, now: clock(), segmentBytes: MIB });
+		appender.record("login_ok", bulk(1));
+		other.record("login_ok", bulk(2));
+		const kept = readFileSync(path, "utf8");
+		failNext = true;
+		appender.record("login_ok", bulk(3));
+		expect(errors.map((e) => e.message)).toEqual([expect.stringMatching(/record dropped: EIO/)]);
+		expect(readFileSync(path, "utf8")).toBe(kept);
+		appender.record("login_ok", bulk(4));
+		expect(records(path).map((r) => r.seq)).toEqual([1, 2, 3]);
+		expect(verifyAuditFile(path).ok).toBe(true);
+	});
+
+	test("another appender that writes after this appender's check is refused, and the chain never forks", () => {
+		const dir = tempDir();
+		const path = auditPath(dir);
+		const guard = `${path}.lock.guard`;
+		const errors: Error[] = [];
+		const otherErrors: Error[] = [];
+		let armed = false;
+		const checked: AuditFs = {
+			...NO_FSYNC,
+			statSync: ((target: nodeFs.PathLike) => {
+				if (armed) {
+					armed = false;
+					// A plain file where the lock's mutation guard goes makes the other appender's lock unavailable at once,
+					// so it is refused while this appender holds the lock, instead of waiting out the lock timeout.
+					writeFileSync(guard, "");
+					other.record("login_ok", bulk(2));
+					rmSync(guard);
+				}
+				return nodeFs.statSync(target);
+			}) as typeof nodeFs.statSync,
+		};
+		const appender = createAuditLog({
+			path,
+			now: clock(),
+			fs: checked,
+			segmentBytes: MIB,
+			onError: (e) => errors.push(e),
+		});
+		const other = createAuditLog({
+			path,
+			now: clock(),
+			segmentBytes: MIB,
+			onError: (e) => otherErrors.push(e),
+		});
+		appender.record("login_ok", bulk(1));
+		// The hook fires inside this append's check of the file, after its lock is taken.
+		armed = true;
+		appender.record("login_ok", bulk(3));
+		expect(errors).toEqual([]);
+		expect(otherErrors.map((e) => e.message)).toEqual([
+			expect.stringMatching(/record refused, lock not taken, nothing written/),
+		]);
+		expect(records(path).map((r) => r.seq)).toEqual([1, 2]);
+		other.record("login_ok", bulk(4));
+		expect(records(path).map((r) => r.seq)).toEqual([1, 2, 3]);
+		expect(verifyAuditFile(path).ok).toBe(true);
+	});
+});
