@@ -246,4 +246,19 @@ describe("renderPanel rows", () => {
 			"  excluded docs/a [2J [31mb.md · reason: cooldown",
 		]);
 	});
+
+	test("the panel renders no terminal escape sequences in any state", () => {
+		const panels: PanelEnvelope[] = [LOADING, SUCCESS, EMPTY, PARTIAL, ERROR];
+		const violations: string[] = [];
+		for (const panel of panels) {
+			for (const width of [WIDE, 40]) {
+				const rows = renderPanel(panel, width, CTX);
+				expect(rows.length).toBeGreaterThan(0);
+				for (const line of rows) {
+					if (line.includes("\u001b")) violations.push(`${panel.status}@${width}: ${line}`);
+				}
+			}
+		}
+		expect(violations).toEqual([]);
+	});
 });
