@@ -25,8 +25,9 @@ export function sealedName(first: number, last: number): string {
 
 /**
  * Sealed segments next to the active file, sorted by first seq. Only names that `sealedName` produces for their own
- * range are listed, so `.corrupt-*` evidence and stray files are never taken for segments. A directory that cannot
- * be read has no segments.
+ * range are listed, so `.corrupt-*` evidence and stray files are never taken for segments. A missing directory has no
+ * segments; any other failure to read the directory throws, so a caller never mistakes an unreadable chain for an
+ * empty one.
  */
 export function listSegments(
 	activePath: string,
@@ -36,8 +37,9 @@ export function listSegments(
 	let names: readonly string[];
 	try {
 		names = fs.readdirSync(dir);
-	} catch {
-		return [];
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+		throw error;
 	}
 	const segments: SealedSegment[] = [];
 	for (const name of names) {

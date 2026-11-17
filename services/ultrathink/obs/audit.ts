@@ -37,6 +37,7 @@ import { listSegments, sealedName } from "./audit-segments.ts";
 import type { Fingerprint } from "./audit-watch.ts";
 import { redactSecrets } from "../../../src/redact.ts";
 import { isRecord } from "../../../src/shared.ts";
+import { LockTimeoutError, withFileLock } from "../../../src/claude/atomic.ts";
 
 /** Security events the service records. New events append here; verification accepts any string event so old files still verify. */
 export type AuditEvent =
@@ -631,7 +632,14 @@ function resolvePrunedPrefix(
 // Streams each file of the chain in fixed-size chunks and checks each line in turn; memory is bounded by the longest line.
 // I/O failures (cannot open or read) report `brokenAt: 0`; `records` then says how far the scan got.
 function scanChain(path: string, fs: AuditFs, options: ScanOptions = {}): ChainScan {
-	const chainFiles = listSegments(path, fs).map((segment) => segment.path);
+	let chainFiles: string[];
+	let listingError: string | undefined;
+	try {
+		chainFiles = listSegments(path, fs).map((segment) => segment.path);
+	} catch (error) {
+		chainFiles = [];
+		listingError = errorOf(error).message;
+	}
 	if (!options.sealedOnly && fs.existsSync(path)) chainFiles.push(path);
 	const pin: ReadPin | undefined =
 		options.activeBytes === undefined ? undefined : { path, bytes: options.activeBytes };
@@ -664,6 +672,12 @@ function scanChain(path: string, fs: AuditFs, options: ScanOptions = {}): ChainS
 			carriedUsed,
 		};
 	};
+
+	// A directory that cannot be listed is a read failure, not an empty chain: the scan fails closed without reading a file.
+	if (listingError !== undefined) {
+		const reason = `cannot list the audit directory: ${listingError}`;
+		return finish({ ok: false, records: 0, brokenAt: 0, reason }, path);
+	}
 
 	// Checks one line at its place in the chain. Returns the reason it fails, or its seq, timestamp and hash.
 	const acceptLine = (
@@ -894,6 +908,8 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 	const anchorEvery = options.anchorEvery ?? DEFAULT_ANCHOR_EVERY;
 	const segmentBytes = options.segmentBytes ?? DEFAULT_SEGMENT_BYTES;
 	let closed = false;
+	/** How many `underLock` calls this log is inside; a nested call runs under the lock already held. */
+	let lockDepth = 0;
 
 	const report = (error: Error): void => {
 		if (!onError) return;
@@ -1130,29 +1146,86 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 	}
 
 	/**
-	 * Writes one chained line and fsyncs it, then updates the state. Returns the line, or undefined when it was dropped
-	 * (and reported). Anchors and ordinary records both go through here; callers own the anchor counter and streaming.
+	 * Writes one chained line and fsyncs it, then updates the state. The fingerprint check and the chain state it trusts are
+	 * read under the file lock with the write, so no other appender can fork the chain between them. Returns the line, or
+	 * undefined when it was dropped (and reported). Anchors and ordinary records both go through here; callers own the
+	 * anchor counter and streaming.
 	 */
 	function appendLine(
 		event: AuditEvent,
 		fields: Record<string, Primitive>,
 		label: string,
 	): AuditRecord | undefined {
-		if (!ensureDisk()) return undefined;
-		return writeRecord(event, fields, label);
+		return underLock(label, () => {
+			if (!ensureDisk()) return undefined;
+			return writeRecord(event, fields, label);
+		});
 	}
 
-	/** Writes one chained line without checking the disk first; the caller has just adopted the chain it extends. */
+	/**
+	 * Writes one chained line under the file lock. `seq` and `prev` are read under that lock, so a line never extends a
+	 * chain state another appender has already moved past. Recovery reaches this from inside `appendLine`, which holds the lock.
+	 */
 	function writeRecord(
 		event: AuditEvent,
 		fields: Record<string, Primitive>,
 		label: string,
 	): AuditRecord | undefined {
-		const nextSeq = seq + 1;
-		const ts = stamp(now);
-		const hash = hashRecord(nextSeq, ts, event, prev, fields);
-		const line: AuditRecord = { seq: nextSeq, ts, event, prev, hash, fields };
-		const data = Buffer.from(`${JSON.stringify(line)}\n`, "utf8");
+		return underLock(label, () => {
+			const nextSeq = seq + 1;
+			const ts = stamp(now);
+			const hash = hashRecord(nextSeq, ts, event, prev, fields);
+			const line: AuditRecord = { seq: nextSeq, ts, event, prev, hash, fields };
+			const data = Buffer.from(`${JSON.stringify(line)}\n`, "utf8");
+			if (!appendData(data, label)) return undefined;
+			seq = nextSeq;
+			prev = hash;
+			frontier.push(hash);
+			refreshFingerprint();
+			return line;
+		});
+	}
+
+	/**
+	 * Runs `fn` while holding the active file's lock, the one every audit writer takes. A lock that cannot be taken refuses
+	 * `fn` with an explicit error: it is never run unlocked, and nothing is written. Reentrant: a call made while this log
+	 * already holds the lock runs directly, because `fn` must not take the same lock twice.
+	 */
+	function underLock<T>(label: string, fn: () => T | undefined): T | undefined {
+		if (lockDepth > 0) return fn();
+		const lock: { unavailable?: string } = {};
+		const refuse = (reason: string): undefined => {
+			report(new Error(`audit log: ${label} refused, lock not taken, nothing written: ${reason}`));
+			return undefined;
+		};
+		try {
+			return withFileLock(
+				path,
+				() => {
+					if (lock.unavailable !== undefined) return refuse(lock.unavailable);
+					lockDepth += 1;
+					try {
+						return fn();
+					} finally {
+						lockDepth -= 1;
+					}
+				},
+				{
+					onTimeout: "throw",
+					// Reported only when the lock could not be taken and `fn` would run unlocked; the callback refuses then.
+					log: (message) => {
+						lock.unavailable = message;
+					},
+				},
+			);
+		} catch (error) {
+			if (!(error instanceof LockTimeoutError)) throw error;
+			return refuse(error.message);
+		}
+	}
+
+	/** The size, seal and write of one append; the caller holds the file's lock. False when the record did not reach the file. */
+	function appendData(data: Buffer, label: string): boolean {
 		const sizeBefore = sizeOf(path, fs);
 		let before = sizeBefore ?? 0;
 		let created = sizeBefore === undefined;
@@ -1172,6 +1245,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 		} catch (error) {
 			report(new Error(`audit log: ${label} dropped: ${errorOf(error).message}`));
 			// Roll back whatever part of the record reached the file, so the chain on disk still ends at the last acknowledged record.
+			// `before` is the size under the lock, so the truncate cannot remove bytes another appender wrote.
 			let truncated = true;
 			try {
 				fs.truncateSync(path, before);
@@ -1181,7 +1255,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 			}
 			refreshFingerprint();
 			if (!truncated) expected = undefined;
-			return undefined;
+			return false;
 		} finally {
 			if (fd !== undefined) {
 				try {
@@ -1191,11 +1265,7 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 				}
 			}
 		}
-		seq = nextSeq;
-		prev = hash;
-		frontier.push(hash);
-		refreshFingerprint();
-		return line;
+		return true;
 	}
 
 	/** Passes an acknowledged record to the streaming hook. Its exceptions are reported; the record stays in the chain. */
