@@ -1,7 +1,13 @@
 {
   "audit": {
     "level": "high",
-    "allow": []
+    "allow": [
+      {
+        "advisory": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+        "reason": "picomatch ReDoS through single-branch repeated extglobs. Reached only via the root devDependency knip (and tinyglobby); the root package has no runtime dependencies. No patched picomatch is published yet. Remove this entry once a patched picomatch is in the lock.",
+        "expires": "2026-12-17"
+      }
+    ]
   },
   "licenses": {
     "allow": ["0BSD", "Apache-2.0", "BlueOak-1.0.0", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "ISC", "MIT", "MIT-0", "Unlicense"],

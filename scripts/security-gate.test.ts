@@ -129,7 +129,7 @@ function checkLine(id: number, name: string, status: string, conclusion: string 
 describe("shipped policy", () => {
 	test("parses and carries the plan's audit level, license allow list and required checks", () => {
 		const { policy } = loadPolicy(SHIPPED_POLICY);
-		expect(policy.audit).toEqual({ level: "high", allow: [] });
+		expect(policy.audit.level).toBe("high");
 		expect(policy.licenses.allow).toEqual([
 			"0BSD",
 			"Apache-2.0",
