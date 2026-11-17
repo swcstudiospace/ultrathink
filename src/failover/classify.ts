@@ -38,8 +38,9 @@ const MODEL_UNAVAILABLE_RES: readonly RegExp[] = [
 	/may not exist or you may not have access/i,
 ];
 
+// The "limit" must follow within 400 characters: an unbounded span rescans the rest of a long repeated message.
 const PLAN_LIMIT_RES: readonly RegExp[] = [
-	new RegExp(`you${APOSTROPHE}ve hit your\\b[^]*?\\blimit\\b`, "i"),
+	new RegExp(`you${APOSTROPHE}ve hit your\\b[^]{0,400}?\\blimit\\b`, "i"),
 	/spend limit/i,
 ];
 
