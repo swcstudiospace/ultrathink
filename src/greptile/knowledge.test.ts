@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { defaultConfig } from "../config.ts";
+import type { KnowledgeReason } from "./knowledge-probe.ts";
 import {
 	buildDigest,
 	createGreptileKnowledge,
 	createKnowledgeReader,
+	disabledKnowledgeLookup,
+	KNOWLEDGE_BREAKER_THRESHOLD,
+	resetKnowledgeBreakers,
+	routeDocuments,
 	selectDocuments,
 } from "./knowledge.ts";
 
@@ -101,6 +106,11 @@ function happyHandlers(overrides: Record<string, Handler> = {}): Record<string, 
 
 const SHIP_TOPIC = "Make the merge step retry the shipping nudge when the pull request is blocked";
 
+/** The breaker is module state: every test starts with it closed. */
+beforeEach(() => {
+	resetKnowledgeBreakers();
+});
+
 describe("createKnowledgeReader", () => {
 	test("reads index.md and the routed documents, sending the organization on every call", async () => {
 		const fake = fakeClient(happyHandlers());
@@ -108,9 +118,9 @@ describe("createKnowledgeReader", () => {
 		const session = reader.start({ repo: "acme/widgets" });
 		const { lookup, digest } = await session.read(SHIP_TOPIC);
 		session.close();
-		session.close();
 
 		expect(lookup.outcome).toBe("used");
+		expect(lookup.reasonCode).toBeUndefined();
 		expect(lookup.repo).toBe("acme/widgets");
 		expect(lookup.namespaceId).toBe("ns-1");
 		expect(lookup.version).toBe("2026-09-24-a");
@@ -137,25 +147,34 @@ describe("createKnowledgeReader", () => {
 		for (const call of fake.calls) expect("organization" in call.args).toBe(false);
 	});
 
-	test("a repository without a knowledge base is none and reads no documents", async () => {
+	test("a repository without a knowledge base is none with namespace_not_found and reads no documents", async () => {
 		const fake = fakeClient(happyHandlers());
 		const session = createKnowledgeReader({ client: () => fake.client }).start({
 			repo: "acme/unknown",
 		});
 		const { lookup, digest } = await session.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("none");
+		expect(lookup.reasonCode).toBe("namespace_not_found");
 		expect(lookup.reason).toContain("acme/unknown");
 		expect(lookup.docs).toEqual([]);
 		expect(digest).toBe("");
 		expect(fake.calls.map((call) => call.name)).toEqual(["list_knowledge_bases"]);
+		expect(lookup.stages?.map((stage) => stage.name)).toEqual([
+			"gate",
+			"credential",
+			"repo",
+			"namespace",
+		]);
+		expect(lookup.stages?.at(-1)).toMatchObject({ outCount: 0, errorClass: "namespace_not_found" });
 	});
 
-	test("no repo slug is none without any call", async () => {
+	test("no repo slug is none with repo_unresolved and no call", async () => {
 		const fake = fakeClient(happyHandlers());
 		const { lookup } = await createKnowledgeReader({ client: () => fake.client })
 			.start({})
 			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("none");
+		expect(lookup.reasonCode).toBe("repo_unresolved");
 		expect(lookup.reason).toBe("no git remote to look up");
 		expect(fake.calls).toEqual([]);
 	});
@@ -183,6 +202,10 @@ describe("createKnowledgeReader", () => {
 		expect(offsets).toEqual([0, 100]);
 		expect(lookup.outcome).toBe("used");
 		expect(lookup.namespaceId).toBe("ns-found");
+		expect(lookup.stages?.find((stage) => stage.name === "namespace")).toMatchObject({
+			inCount: 101,
+			outCount: 1,
+		});
 	});
 
 	test("malformed payloads never throw", async () => {
@@ -203,24 +226,44 @@ describe("createKnowledgeReader", () => {
 				.start({ repo: "acme/widgets" })
 				.read(SHIP_TOPIC);
 			expect(lookup.outcome).not.toBe("used");
+			expect(lookup.reasonCode).toBeDefined();
 			expect(digest).toBe("");
 		}
 	});
 
+	test("an index.md without string content is an error with shape_mismatch, not a silent fallback", async () => {
+		const fake = fakeClient(
+			happyHandlers({ get_knowledge_base_document: () => ({ document: { content: 42 } }) }),
+		);
+		const { lookup, digest } = await createKnowledgeReader({ client: () => fake.client })
+			.start({ repo: "acme/widgets" })
+			.read(SHIP_TOPIC);
+		expect(lookup.outcome).toBe("error");
+		expect(lookup.reasonCode).toBe("shape_mismatch");
+		expect(lookup.reason).toBe("index.md: no document content");
+		expect(lookup.stages?.at(-1)).toMatchObject({
+			name: "index_read",
+			errorClass: "shape_mismatch",
+		});
+		expect(digest).toBe("");
+	});
+
 	test("any selected document that fails to read makes the whole lookup an error with no digest", async () => {
-		const failures: Array<{ handler: Handler; reason: string }> = [
+		const failures: Array<{ handler: Handler; reason: string; code: KnowledgeReason }> = [
 			{
 				handler: () => {
 					throw new Error("get_knowledge_base_document: not found");
 				},
 				reason: "get_knowledge_base_document: not found",
+				code: "document_read_failed",
 			},
 			{
 				handler: () => ({ document: { content: 42 } }),
 				reason: "docs/shipping-workflow.md: no document content",
+				code: "shape_mismatch",
 			},
 		];
-		for (const { handler, reason } of failures) {
+		for (const { handler, reason, code } of failures) {
 			const fake = fakeClient(
 				happyHandlers({
 					get_knowledge_base_document: (args) =>
@@ -236,7 +279,9 @@ describe("createKnowledgeReader", () => {
 			expect(lookup.docs).toEqual([]);
 			expect(lookup.chars).toBe(0);
 			expect(lookup.reason).toBe(reason);
+			expect(lookup.reasonCode).toBe(code);
 			expect(digest).toBe("");
+			resetKnowledgeBreakers();
 		}
 	});
 
@@ -256,6 +301,7 @@ describe("createKnowledgeReader", () => {
 			.start({ repo: "acme/widgets" })
 			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("error");
+		expect(lookup.reasonCode).toBe("timeout");
 		expect(lookup.reason).toBe("timed out after 50ms");
 		expect(lookup.docs).toEqual([]);
 		expect(digest).toBe("");
@@ -265,6 +311,7 @@ describe("createKnowledgeReader", () => {
 		const fake = fakeClient(
 			happyHandlers({
 				list_knowledge_base_documents: () => ({
+					indexPresent: true,
 					documentPaths: [
 						"docs/billing plan.md",
 						"docs/billing\n.md",
@@ -272,18 +319,26 @@ describe("createKnowledgeReader", () => {
 						"docs/billing.md",
 					],
 				}),
+				get_knowledge_base_document: (args) => ({
+					document: {
+						content:
+							args.path === "index.md"
+								? "- invoice billing -> [`docs/billing.md`](docs/billing.md)"
+								: "Billing body.",
+					},
+				}),
 			}),
 		);
 		const { lookup } = await createKnowledgeReader({ client: () => fake.client })
 			.start({ repo: "acme/widgets" })
 			.read("billing");
 		expect(lookup.outcome).toBe("used");
-		expect(lookup.docs).toEqual(["docs/billing.md"]);
+		expect(lookup.docs).toEqual(["index.md", "docs/billing.md"]);
 		expect(
 			fake.calls
 				.filter((call) => call.name === "get_knowledge_base_document")
 				.map((call) => call.args.path),
-		).toEqual(["docs/billing.md"]);
+		).toEqual(["index.md", "docs/billing.md"]);
 	});
 
 	test("tenant_required is an error naming ship.greptileOrganization", async () => {
@@ -298,6 +353,7 @@ describe("createKnowledgeReader", () => {
 			.start({ repo: "acme/widgets" })
 			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("error");
+		expect(lookup.reasonCode).toBe("tenant_required");
 		expect(lookup.reason).toContain("ship.greptileOrganization");
 		expect(lookup.reason?.length).toBeLessThanOrEqual(200);
 	});
@@ -311,6 +367,7 @@ describe("createKnowledgeReader", () => {
 			.start({ repo: "acme/widgets" })
 			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("error");
+		expect(lookup.reasonCode).toBe("timeout");
 		expect(lookup.reason).toBe("timed out after 50ms");
 		expect(digest).toBe("");
 	});
@@ -321,30 +378,166 @@ describe("createKnowledgeReader", () => {
 			.start({ repo: "acme/widgets", signal: AbortSignal.abort() })
 			.read(SHIP_TOPIC);
 		expect(lookup.outcome).toBe("error");
+		expect(lookup.reasonCode).toBe("aborted");
 		expect(lookup.reason).toBe("aborted");
 	});
 
-	test("no credential is off with zero calls", async () => {
+	test("no credential is off with no_credential and zero calls", async () => {
 		let asked = 0;
-		const ticks = [1_000, 1_250];
 		const reader = createKnowledgeReader({
 			client: () => {
 				asked++;
 				return undefined;
 			},
-			now: () => ticks.shift() ?? 0,
 		});
 		const { lookup, digest } = await reader.start({ repo: "acme/widgets" }).read(SHIP_TOPIC);
 		expect(asked).toBe(1);
-		expect(lookup).toEqual({
+		expect(lookup).toMatchObject({
 			outcome: "off",
+			reasonCode: "no_credential",
 			repo: "acme/widgets",
 			docs: [],
 			chars: 0,
-			ms: 250,
 			reason: "no Greptile credential stored",
 		});
+		expect(lookup.stages?.map((stage) => stage.name)).toEqual(["gate", "credential"]);
+		expect(lookup.stages?.at(-1)).toMatchObject({ errorClass: "no_credential" });
 		expect(digest).toBe("");
+	});
+
+	test("a routing table with zero entries is none with routing_table_missing and the stage counts", async () => {
+		const fake = fakeClient(
+			happyHandlers({
+				get_knowledge_base_document: (args) => ({
+					document: {
+						content: args.path === "index.md" ? "# Knowledge base\n\nNo routes here.\n" : "body",
+					},
+				}),
+			}),
+		);
+		const { lookup, digest } = await createKnowledgeReader({ client: () => fake.client })
+			.start({ repo: "acme/widgets" })
+			.read(SHIP_TOPIC);
+		expect(lookup.outcome).toBe("none");
+		expect(lookup.reasonCode).toBe("routing_table_missing");
+		expect(lookup.docs).toEqual([]);
+		expect(digest).toBe("");
+		expect(lookup.stages?.find((stage) => stage.name === "document_list")).toMatchObject({
+			inCount: 5,
+			outCount: 5,
+			errorClass: null,
+		});
+		expect(lookup.stages?.find((stage) => stage.name === "routing_entries_parsed")).toMatchObject({
+			inCount: 0,
+			outCount: 0,
+			errorClass: "routing_table_missing",
+		});
+		expect(lookup.stages?.map((stage) => stage.name)).not.toContain("document_reads");
+	});
+
+	test("routing entries that overlap nothing are none with no_route_match and the entry and overlap counts", async () => {
+		const fake = fakeClient(happyHandlers());
+		const { lookup, digest } = await createKnowledgeReader({ client: () => fake.client })
+			.start({ repo: "acme/widgets" })
+			.read("gardening roses and fertilizer");
+		expect(lookup.outcome).toBe("none");
+		expect(lookup.reasonCode).toBe("no_route_match");
+		expect(lookup.reason).toBe("no routing entry overlaps the request (4 entries, 0 overlap)");
+		expect(digest).toBe("");
+		expect(lookup.stages?.find((stage) => stage.name === "routing_entries_parsed")).toMatchObject({
+			inCount: 6,
+			outCount: 4,
+			errorClass: null,
+		});
+		expect(lookup.stages?.find((stage) => stage.name === "lexical_match")).toMatchObject({
+			inCount: 4,
+			outCount: 0,
+			errorClass: "no_route_match",
+			scores: [],
+		});
+		expect(lookup.stages?.map((stage) => stage.name)).not.toContain("document_reads");
+	});
+
+	test("a used lookup carries the full stage ladder in order, with lexical scores", async () => {
+		const fake = fakeClient(happyHandlers());
+		const { lookup } = await createKnowledgeReader({ client: () => fake.client })
+			.start({ repo: "acme/widgets" })
+			.read(SHIP_TOPIC);
+		expect(lookup.stages?.map((stage) => stage.name)).toEqual([
+			"gate",
+			"credential",
+			"repo",
+			"namespace",
+			"document_list",
+			"index_read",
+			"routing_entries_parsed",
+			"lexical_match",
+			"document_reads",
+			"digest",
+		]);
+		for (const stage of lookup.stages ?? []) {
+			expect(stage.errorClass).toBeNull();
+			expect(stage.durationMs).toBeGreaterThanOrEqual(0);
+		}
+		const lexical = lookup.stages?.find((stage) => stage.name === "lexical_match");
+		expect(lexical?.outCount).toBeGreaterThanOrEqual(1);
+		expect(lexical?.scores?.length).toBeLessThanOrEqual(3);
+		expect(lookup.stages?.find((stage) => stage.name === "digest")).toMatchObject({
+			outCount: lookup.chars,
+		});
+	});
+
+	describe("circuit breaker", () => {
+		test("two error outcomes open it; the third call makes no client call and returns breaker_open", async () => {
+			const fake = fakeClient({
+				list_knowledge_bases: () => {
+					throw new Error("upstream exploded");
+				},
+			});
+			let clientsMade = 0;
+			const makeReader = () =>
+				createKnowledgeReader({
+					client: () => {
+						clientsMade++;
+						return fake.client;
+					},
+				});
+			expect(KNOWLEDGE_BREAKER_THRESHOLD).toBe(2);
+			const first = await makeReader().start({ repo: "acme/widgets" }).read(SHIP_TOPIC);
+			const second = await makeReader().start({ repo: "acme/widgets" }).read(SHIP_TOPIC);
+			expect(first.lookup).toMatchObject({ outcome: "error", reasonCode: "transport_error" });
+			expect(second.lookup).toMatchObject({ outcome: "error", reasonCode: "transport_error" });
+			const callsBefore = fake.calls.length;
+			const clientsBefore = clientsMade;
+
+			const third = await makeReader().start({ repo: "acme/widgets" }).read(SHIP_TOPIC);
+			expect(third.lookup).toMatchObject({
+				outcome: "error",
+				reasonCode: "breaker_open",
+				docs: [],
+				chars: 0,
+			});
+			expect(third.digest).toBe("");
+			expect(fake.calls.length).toBe(callsBefore);
+			expect(clientsMade).toBe(clientsBefore);
+			expect(third.lookup.stages?.map((stage) => stage.name)).toEqual(["gate", "repo"]);
+		});
+
+		test("the breaker is per repository and resetting it reopens calls", async () => {
+			const fake = fakeClient({
+				list_knowledge_bases: () => {
+					throw new Error("upstream exploded");
+				},
+			});
+			const reader = createKnowledgeReader({ client: () => fake.client });
+			await reader.start({ repo: "acme/widgets" }).read(SHIP_TOPIC);
+			await reader.start({ repo: "acme/widgets" }).read(SHIP_TOPIC);
+			const other = await reader.start({ repo: "acme/gadgets" }).read(SHIP_TOPIC);
+			expect(other.lookup.reasonCode).toBe("transport_error");
+			resetKnowledgeBreakers();
+			const again = await reader.start({ repo: "acme/widgets" }).read(SHIP_TOPIC);
+			expect(again.lookup.reasonCode).toBe("transport_error");
+		});
 	});
 });
 
@@ -373,13 +566,13 @@ describe("selectDocuments", () => {
 		expect(selectDocuments({ index: INDEX, paths: PATHS, topic, maxDocs: 0 })).toEqual([]);
 	});
 
-	test("without a routing table, matches the listed paths' words", () => {
+	test("without a routing table nothing is routed: paths are never matched by their own words", () => {
 		expect(
 			selectDocuments({ paths: PATHS, topic: "rotate the auth credential", maxDocs: 3 }),
-		).toEqual(["docs/auth.md"]);
-		expect(
-			selectDocuments({ paths: PATHS, topic: "unrelated words entirely", maxDocs: 3 }),
 		).toEqual([]);
+		expect(
+			routeDocuments({ paths: PATHS, topic: "rotate the auth credential", maxDocs: 3 }),
+		).toMatchObject({ arrows: 0, entries: 0, overlap: 0, scores: [], selected: [] });
 	});
 
 	test("markup-free request text does not route to an entry about graphs, prompts and workflows", () => {
@@ -418,6 +611,54 @@ describe("buildDigest", () => {
 	});
 });
 
+describe("positive fixture: a routed file relationship is read into the digest", () => {
+	const ROUTED_INDEX = [
+		"# Knowledge base",
+		"",
+		"## Routing table",
+		"",
+		"- greptile knowledge base reader (src/greptile/knowledge.ts) -> [Greptile knowledge reader](docs/greptile-knowledge.md)",
+		"- ship merge retries -> [Ship merge](docs/ship-merge.md)",
+	].join("\n");
+	const RELATIONSHIP =
+		"src/greptile/knowledge.ts imports src/greptile/knowledge-probe.ts for the record types.";
+
+	test("read('knowledge base reader') is used, names the document, and digests the relationship line", async () => {
+		const fake = fakeClient({
+			list_knowledge_bases: () => ({
+				repositories: [{ namespaceId: "ns-1", repoName: "acme/widgets" }],
+				total: 1,
+				returned: 1,
+			}),
+			list_knowledge_base_documents: () => ({
+				indexPresent: true,
+				documentPaths: ["index.md", "docs/greptile-knowledge.md", "docs/ship-merge.md"],
+				total: 3,
+				returned: 3,
+			}),
+			get_knowledge_base_document: (args) => ({
+				document: {
+					path: args.path,
+					content:
+						args.path === "index.md"
+							? ROUTED_INDEX
+							: args.path === "docs/greptile-knowledge.md"
+								? `# Reader\n\n${RELATIONSHIP}\n`
+								: "Unrelated.",
+				},
+			}),
+		});
+		const { lookup, digest } = await createKnowledgeReader({ client: () => fake.client })
+			.start({ repo: "acme/widgets" })
+			.read("knowledge base reader");
+		expect(lookup.outcome).toBe("used");
+		expect(lookup.docs).toContain("docs/greptile-knowledge.md");
+		expect(lookup.docs).not.toContain("docs/ship-merge.md");
+		expect(digest).toContain(RELATIONSHIP);
+		expect(digest).toContain("### docs/greptile-knowledge.md");
+	});
+});
+
 describe("createGreptileKnowledge", () => {
 	test("is undefined unless hitl.knowledgeBase is on", () => {
 		const config = defaultConfig();
@@ -427,5 +668,16 @@ describe("createGreptileKnowledge", () => {
 		).toBeUndefined();
 		config.hitl.knowledgeBase = true;
 		expect(createGreptileKnowledge(config, { storePath: "/nonexistent/creds.json" })).toBeDefined();
+	});
+
+	test("the gate-off record is outcome off with reason disabled and the gate stage", () => {
+		expect(disabledKnowledgeLookup()).toMatchObject({
+			outcome: "off",
+			reasonCode: "disabled",
+			reason: "hitl.knowledgeBase is false",
+			docs: [],
+			chars: 0,
+			stages: [{ name: "gate", errorClass: "disabled" }],
+		});
 	});
 });

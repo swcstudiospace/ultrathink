@@ -223,6 +223,11 @@ export function skillsLookup(outcome: SkillRecallOutcome): SkillsLookup {
 		outcome: outcome.status,
 		count: outcome.skills.length,
 		names: outcome.skills.map((skill) => skill.name),
+		rows: outcome.skills.map((skill) => ({
+			name: skill.name,
+			description: skill.description,
+			target: skill.target,
+		})),
 		chars: outcome.chars,
 		ms: outcome.ms,
 	};

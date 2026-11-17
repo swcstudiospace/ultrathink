@@ -6,11 +6,14 @@
  * Candidates never leave the store: nobody confirmed them. The whole call has the planner's time budget and never
  * throws, because a plan must not wait on, or fail because of, a memory lookup.
  */
+import type { RecallHit } from "../hindsight/types.ts";
+import { PREVIEW_MAX_CHARS } from "../recall/panel-model.ts";
 import { hindsightFor, teachEnabled, tryStore } from "./context.ts";
 import { lessonFromHit, projectOf, sanitizeTag } from "./mapping.ts";
 import { redactLine } from "./redact.ts";
 import { newestFirst } from "./store.ts";
 import type {
+	LessonRow,
 	LessonsLookup,
 	RecalledLesson,
 	RecallOutcome,
@@ -110,6 +113,8 @@ async function recallLocal(
 		occurrences: moment.occurrences,
 		createdAt: moment.createdAt,
 		source: "local",
+		confidence: moment.confidence,
+		matchReason: localMatchReason(wanted, moment),
 	}));
 }
 
@@ -170,9 +175,44 @@ export function lessonsLookup(outcome: RecallOutcome): LessonsLookup {
 		chars: outcome.chars,
 		ms: outcome.ms,
 		source: outcome.source,
+		rows: outcome.lessons.map(lessonRow),
 	};
 	if (outcome.reason !== undefined) lookup.reason = outcome.reason;
 	return lookup;
+}
+
+const HINDSIGHT_MATCH_REASON = "Matched the prompt in Hindsight recall";
+
+/** Names the lesson fields the prompt's terms reached, for the panel. */
+function localMatchReason(wanted: readonly string[], moment: TeachableMoment): string {
+	const fields = (
+		[
+			["name", moment.name],
+			["description", moment.description],
+			["body", moment.body],
+		] as const
+	)
+		.filter(([, text]) => tokenOverlap(wanted, text) > 0)
+		.map(([field]) => field);
+	return `Prompt terms matched the lesson ${fields.join(", ")}`;
+}
+
+/** Hindsight's stored confidence (a metadata string), when it is a finite value in [0, 1]. */
+function hitConfidence(hit: RecallHit): number | undefined {
+	const value = Number.parseFloat(hit.metadata?.confidence ?? "");
+	return Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
+}
+
+function lessonRow(lesson: RecalledLesson): LessonRow {
+	return {
+		id: lesson.id,
+		kind: lesson.kind,
+		title: redactLine(lesson.name),
+		preview: redactLine(lesson.body, PREVIEW_MAX_CHARS),
+		createdAt: lesson.createdAt,
+		matchReason: lesson.matchReason ?? "Matched the prompt",
+		...(lesson.confidence === undefined ? {} : { score: lesson.confidence }),
+	};
 }
 
 interface Found {
@@ -228,9 +268,14 @@ async function findLessons(
 					const lesson = lessonFromHit(hit);
 					if (!lesson || seen.has(lesson.id) || hidden.has(lesson.id)) continue;
 					seen.add(lesson.id);
-					lessons.push(lesson);
+					const confidence = hitConfidence(hit);
+					lessons.push({
+						...lesson,
+						matchReason: HINDSIGHT_MATCH_REASON,
+						...(confidence === undefined ? {} : { confidence }),
+					});
 				}
-				// A hit carries no score, so the server's relevance order is the only ordering there is.
+				// Hits carry the stored confidence when Hindsight has it; the server's relevance order is the only ordering there is.
 				if (lessons.length > 0) return { lessons: lessons.slice(0, limit), source: "hindsight" };
 			}
 		} catch (caught) {

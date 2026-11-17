@@ -16,6 +16,7 @@ import { takeJevWarning } from "../decisions/health.ts";
 import type { DecisionRecord } from "../decisions/types.ts";
 import {
 	createGreptileKnowledge,
+	disabledKnowledgeLookup,
 	type KnowledgeLookup,
 	type KnowledgeReader,
 	type KnowledgeResult,
@@ -55,6 +56,7 @@ import type { CompletionReport, UpliftResult, UpliftState } from "../types.ts";
 import { docsLookup, formatDocsSection, groundDocs } from "../ragflow/ground.ts";
 import { teachContext, teachEnabled } from "../teach/context.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "../teach/recall.ts";
+import { buildTurnPanels, type TurnPanels, withoutRows } from "../recall/turn-panels.ts";
 import type { GroundOutcome, DocsLookup } from "../ragflow/types.ts";
 import { isHostId, type HostId } from "../host/types.ts";
 import { redactSecrets } from "../redact.ts";
@@ -234,6 +236,8 @@ export interface PromptSubmitResult {
 	decisions?: DecisionRecord[];
 	/** The Tree-of-Thought PRD outcome the completion gate reads; absent when the stage did not run. */
 	prd?: PrdOutcome;
+	/** The information panels of this prompt's plan; absent unless `panels.informationPanels` is on and a source was looked up. */
+	panels?: TurnPanels;
 }
 
 function specFile(stateDir: string, sessionId: string): string {
@@ -389,7 +393,17 @@ async function readKnowledge(session: KnowledgeSession, topic: string): Promise<
 		const reason =
 			(error instanceof Error ? error.message : String(error)).split("\n")[0]?.slice(0, 200) ??
 			"error";
-		return { lookup: { outcome: "error", docs: [], chars: 0, ms: 0, reason }, digest: "" };
+		return {
+			lookup: {
+				outcome: "error",
+				reasonCode: "transport_error",
+				docs: [],
+				chars: 0,
+				ms: 0,
+				reason,
+			},
+			digest: "",
+		};
 	}
 }
 
@@ -947,14 +961,16 @@ export async function runPromptSubmit(
 		// The knowledge-base prefetch (find the repo, list documents, read index.md) overlaps the uplift and the
 		// Graph of Thought; the topic-specific documents are read right before clarify.
 		const reader = hitlOn ? (deps.knowledge ?? createGreptileKnowledge(deps.config)) : undefined;
+		// Set when clarify runs with the knowledge base gated off: the record then says so instead of showing nothing.
+		const knowledgeOff = hitlOn && reader === undefined;
+		let startFailure: string | undefined;
 		if (reader) {
 			try {
 				session = reader.start({ repo: git.repo, signal: lifetime });
 				stage("knowledge", "start");
 			} catch (error) {
-				log(
-					`greptile knowledge base: start failed: ${error instanceof Error ? error.message : String(error)}`,
-				);
+				startFailure = error instanceof Error ? error.message : String(error);
+				log(`greptile knowledge base: start failed: ${startFailure}`);
 			}
 		}
 
@@ -1232,20 +1248,33 @@ export async function runPromptSubmit(
 		).filter((c) => c.answer && c.source !== "knowledge");
 
 		// Always awaited once started (it honours the abort signal and never rejects) so the record says what happened.
-		let knowledge: KnowledgeLookup | undefined;
+		let knowledge: KnowledgeLookup | undefined = knowledgeOff
+			? disabledKnowledgeLookup()
+			: startFailure !== undefined
+				? {
+						outcome: "error",
+						reasonCode: "transport_error",
+						reason: startFailure.slice(0, 200),
+						docs: [],
+						chars: 0,
+						ms: 0,
+					}
+				: undefined;
 		let knowledgeInput: { digest: string; docs: string[] } | undefined;
 		if (session) {
 			const read = await readKnowledge(session, knowledgeTopic(result, graph));
 			throwIfCancelled(cancellation);
 			const lookup = read.lookup;
 			log(
-				`greptile knowledge base: ${lookup.outcome}${lookup.docs.length > 0 ? ` · ${lookup.docs.join(", ")}` : ""}${lookup.reason ? ` · ${lookup.reason}` : ""} · ${lookup.ms}ms`,
+				`greptile knowledge base: ${lookup.outcome}${lookup.reasonCode ? ` · ${lookup.reasonCode}` : ""}${lookup.docs.length > 0 ? ` · ${lookup.docs.join(", ")}` : ""}${lookup.reason ? ` · ${lookup.reason}` : ""} · ${lookup.ms}ms`,
 			);
 			stage(
 				"knowledge",
 				"end",
 				lookup.outcome !== "error",
-				lookup.outcome === "used" ? `${lookup.docs.length} docs` : lookup.outcome,
+				lookup.outcome === "used"
+					? `${lookup.docs.length} docs`
+					: `${lookup.outcome}${lookup.reasonCode ? ` · ${lookup.reasonCode}` : ""}`,
 			);
 			knowledge = { ...lookup, settled: 0 };
 			if (lookup.outcome === "used") knowledgeInput = { digest: read.digest, docs: lookup.docs };
@@ -1257,10 +1286,13 @@ export async function runPromptSubmit(
 						title: "Knowledge",
 						source: "greptile",
 						outcome: lookup.outcome,
+						...(lookup.reasonCode ? { detail: lookup.reasonCode } : {}),
 						count: lookup.docs.length,
 					});
-				} catch {
-					// reason: fail-open: the activity card is display only; a failed card never blocks planning
+				} catch (error) {
+					log(
+						`greptile knowledge base: activity card failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
 				}
 			}
 		}
@@ -1393,9 +1425,9 @@ export async function runPromptSubmit(
 			kickedOff: false,
 			synced: false,
 			...(knowledge ? { knowledge } : {}),
-			...(lessons ? { lessons } : {}),
+			...(lessons ? { lessons: withoutRows(lessons) } : {}),
 			...(docs ? { docs } : {}),
-			...(skills ? { skills } : {}),
+			...(skills ? { skills: withoutRows(skills) } : {}),
 			...(records.length ? { decisions: records } : {}),
 		});
 		let record: SessionRecord = buildRecord(result, undefined);
@@ -1687,11 +1719,21 @@ export async function runPromptSubmit(
 			output.systemMessage = briefNotice ? `${summary} · ${briefNotice}` : summary;
 		}
 		outcome = "planned";
+		const panels = buildTurnPanels(
+			{
+				knowledge,
+				lessons,
+				skills,
+				substrate: { text: brief, state: briefResult.state, reason: briefResult.reason },
+			},
+			deps.config.recallSettings,
+		);
 		return {
 			output,
 			record,
 			...(records.length ? { decisions: records } : {}),
 			...(prd ? { prd } : {}),
+			...(panels ? { panels } : {}),
 		};
 	} catch (error) {
 		// A cancelled flight ends skipped, as planPrompt reports it; anything else stays a failure named by its error.

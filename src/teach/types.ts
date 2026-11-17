@@ -213,6 +213,10 @@ export interface RecalledLesson {
 	occurrences: number;
 	createdAt: string;
 	source: "hindsight" | "local";
+	/** The moment's confidence, 0..1. Absent when the source recorded none. */
+	confidence?: number;
+	/** What matched the prompt, as one line for the panel. */
+	matchReason?: string;
 }
 
 type RecallStatus = "used" | "none" | "off" | "error";
@@ -228,7 +232,7 @@ export interface RecallOutcome {
 	reason?: string;
 }
 
-/** The record a session keeps of one lessons lookup (no lesson text), like the Greptile knowledge lookup. */
+/** The record a session keeps of one lessons lookup (ids, counts and capped previews, never a full lesson body). */
 export interface LessonsLookup {
 	outcome: RecallStatus;
 	count: number;
@@ -237,6 +241,20 @@ export interface LessonsLookup {
 	ms: number;
 	source: "hindsight" | "local" | "none";
 	reason?: string;
+	/** One row per returned lesson, in rank order. Absent on records written before rows existed. */
+	rows?: LessonRow[];
+}
+
+/** One lesson of a lessons lookup, as the panel shows it: a capped preview, never the full body. */
+export interface LessonRow {
+	id: string;
+	kind: MomentKind;
+	title: string;
+	preview: string;
+	createdAt: string;
+	matchReason: string;
+	/** The lesson's confidence, 0..1, when the source recorded one. */
+	score?: number;
 }
 
 /** One promoted skill matched to a prompt: a pointer, not the skill body (the lesson text already recalls). */
@@ -261,7 +279,7 @@ export interface SkillRecallOutcome {
 	reason?: string;
 }
 
-/** The record a session keeps of one skills lookup (names only, no skill text). */
+/** The record a session keeps of one skills lookup (names and pointer rows, never a skill body). */
 export interface SkillsLookup {
 	outcome: RecallStatus;
 	count: number;
@@ -269,6 +287,15 @@ export interface SkillsLookup {
 	chars: number;
 	ms: number;
 	reason?: string;
+	/** One row per matched skill, in rank order. Absent on records written before rows existed. */
+	rows?: SkillRow[];
+}
+
+/** One skill of a skills lookup: a pointer and its target, never the skill body. Drafts carry target "drafts". */
+export interface SkillRow {
+	name: string;
+	description: string;
+	target: SkillTarget;
 }
 
 export const DIGEST_MAX_TURNS = 60;
