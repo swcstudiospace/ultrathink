@@ -233,7 +233,7 @@ describe("grok-bot answer keys", () => {
 			expect(refused.ok).toBe(false);
 			expect(refused.errors.join()).toMatch(/32 lowercase hex characters/);
 		}
-		expect(storeAnswer(dir, escape, CLARIFY, { replace: true }).ok).toBe(false);
+		expect(storeAnswer(dir, traversalKey, CLARIFY, { replace: true }).ok).toBe(false);
 		expect(readFileSync(pendingFile, "utf8")).toBe(JSON.stringify({ stage: "clarify" }));
 		expect(readFileSync(answerFile, "utf8")).toBe("keep");
 		expect(readdirSync(join(dir, "answers"))).toEqual([]);
