@@ -3,9 +3,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
+	closeSync,
 	existsSync,
+	fsyncSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
@@ -164,6 +167,50 @@ describe("writeFileAtomic", () => {
 			}),
 		).toThrow("disk full");
 		expect(readdirSync(dir)).toEqual([]);
+	});
+
+	test("a directory that cannot be opened does not fail the write", () => {
+		const target = join(dir, "state.json");
+		writeFileAtomic(target, "previous");
+		writeFileAtomic(target, "replacement", {
+			fs: {
+				openSync: (path, flags, mode) => {
+					if (path === dir) {
+						throw Object.assign(new Error("EINVAL: directory open"), { code: "EINVAL" });
+					}
+					return openSync(path, flags, mode);
+				},
+			},
+		});
+		expect(readFileSync(target, "utf8")).toBe("replacement");
+		expect(readdirSync(dir)).toEqual(["state.json"]);
+	});
+
+	test("a directory fsync refused with EPERM does not fail the write", () => {
+		const target = join(dir, "state.json");
+		writeFileAtomic(target, "previous");
+		const directoryFds = new Set<number>();
+		writeFileAtomic(target, "replacement", {
+			fs: {
+				openSync: (path, flags, mode) => {
+					const fd = openSync(path, flags, mode);
+					if (path === dir) directoryFds.add(fd);
+					return fd;
+				},
+				fsyncSync: (fd) => {
+					if (directoryFds.has(fd)) {
+						throw Object.assign(new Error("EPERM: directory fsync"), { code: "EPERM" });
+					}
+					fsyncSync(fd);
+				},
+				closeSync: (fd) => {
+					directoryFds.delete(fd);
+					closeSync(fd);
+				},
+			},
+		});
+		expect(readFileSync(target, "utf8")).toBe("replacement");
+		expect(readdirSync(dir)).toEqual(["state.json"]);
 	});
 
 	test("a large value replaces a small one entirely", () => {

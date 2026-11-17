@@ -102,9 +102,32 @@ function sweepOrphanTemps(dir: string): void {
 }
 
 /**
+ * Fsyncs `dir` so a completed rename is durable. Best effort: a platform or filesystem that cannot open or fsync a
+ * directory (EINVAL, EPERM, Windows) leaves the write successful.
+ */
+function syncDirectory(fs: AtomicFs, dir: string): void {
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(dir, "r", 0);
+		fs.fsyncSync(fd);
+	} catch {
+		// reason: directory fsync is unsupported here; the rename already happened
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// reason: the directory handle is only used for fsync, so nothing is left to recover
+			}
+		}
+	}
+}
+
+/**
  * Replaces `path` with `data`: a temporary file in the same directory is written and flushed, then renamed over the
  * target, so a reader sees the old file or the new one and never a partial one. On failure the temporary file is
- * removed and the original error is rethrown.
+ * removed and the original error is rethrown. On success the containing directory is fsynced so the rename itself
+ * survives a power loss; where a directory cannot be fsynced that step is skipped.
  */
 export function writeFileAtomic(
 	path: string,
@@ -151,6 +174,7 @@ export function writeFileAtomic(
 		}
 		throw error;
 	}
+	syncDirectory(fs, dir);
 	sweepOrphanTemps(dir);
 }
 
