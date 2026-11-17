@@ -37,6 +37,8 @@ import {
 const ID_PATTERN = /^[A-Za-z0-9_.-]{1,80}$/;
 const BACKOFF_BASE_MS = 60_000;
 const BACKOFF_CAP_MS = 6 * 60 * 60_000;
+/** An outbox file over this is skipped: never parsed, never deleted. An op names a document id and its tags, so no real entry comes near it. */
+export const OUTBOX_MAX_BYTES = 64 * 1024;
 
 export function storeDir(stateDir: string): string {
 	return join(stateDir, "teach");
@@ -154,6 +156,15 @@ function readJson(path: string): unknown {
 	}
 }
 
+/** True when the outbox file at `path` is over `OUTBOX_MAX_BYTES`; false when it is within the bound or cannot be stat'd. */
+function outboxFileOversized(path: string): boolean {
+	try {
+		return statSync(path).size > OUTBOX_MAX_BYTES;
+	} catch {
+		return false;
+	}
+}
+
 /** Temp file in the same directory, then rename: readers see the old or the new record, never half of one. */
 function writeAtomic(dir: string, id: string, value: unknown): void {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -258,7 +269,7 @@ export function newestFirst(a: TeachableMoment, b: TeachableMoment): number {
 	);
 }
 
-export function openStore(dir: string): TeachStore {
+export function openStore(dir: string, options: { log?: (line: string) => void } = {}): TeachStore {
 	if (isPlanningPath(dir)) throw new Error("the teach store must not live under .planning");
 	const momentsDir = join(dir, "moments");
 	const outboxDir = join(dir, "outbox");
@@ -266,8 +277,11 @@ export function openStore(dir: string): TeachStore {
 	const read = (id: string): TeachableMoment | undefined =>
 		isValidId(id) ? parseMoment(readJson(join(momentsDir, `${id}.json`)), id) : undefined;
 
-	const readEntry = (id: string): OutboxEntry | undefined =>
-		isValidId(id) ? parseEntry(readJson(join(outboxDir, `${id}.json`)), id) : undefined;
+	const readEntry = (id: string): OutboxEntry | undefined => {
+		if (!isValidId(id)) return undefined;
+		const path = join(outboxDir, `${id}.json`);
+		return outboxFileOversized(path) ? undefined : parseEntry(readJson(path), id);
+	};
 
 	function list(): TeachableMoment[] {
 		const moments: TeachableMoment[] = [];
@@ -289,10 +303,19 @@ export function openStore(dir: string): TeachStore {
 
 	function outbox(): OutboxEntry[] {
 		const entries: OutboxEntry[] = [];
+		let oversized = 0;
 		for (const id of recordIds(outboxDir)) {
+			if (outboxFileOversized(join(outboxDir, `${id}.json`))) {
+				oversized += 1;
+				continue;
+			}
 			const entry = readEntry(id);
 			if (entry) entries.push(entry);
 		}
+		if (oversized > 0)
+			options.log?.(
+				`teach store: ${oversized} outbox file(s) over ${OUTBOX_MAX_BYTES} bytes skipped, not read or deleted`,
+			);
 		return entries.sort((a, b) => a.enqueuedAt - b.enqueuedAt || (a.id < b.id ? -1 : 1));
 	}
 

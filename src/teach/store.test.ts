@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
-import { isValidId, openStore, storeDir } from "./store.ts";
+import { isValidId, OUTBOX_MAX_BYTES, openStore, storeDir } from "./store.ts";
 import type { TeachableMoment } from "./types.ts";
 
 const dirs: string[] = [];
@@ -164,6 +172,37 @@ describe("corruption tolerance", () => {
 		const empty = openStore(join(tempDir(), "never-created"));
 		expect(empty.list()).toEqual([]);
 		expect(empty.outbox()).toEqual([]);
+	});
+
+	test("an oversized outbox file is skipped and counted, never parsed or deleted; a normal file is still read", () => {
+		const root = tempDir();
+		const dir = storeDir(root);
+		const logged: string[] = [];
+		const store = openStore(dir, { log: (line) => logged.push(line) });
+		const normal = store.enqueue({ op: "delete", documentId: "tm:ok" }, 5);
+		const big = join(dir, "outbox", "big.json");
+		mkdirSync(join(dir, "outbox"), { recursive: true });
+		writeFileSync(
+			big,
+			JSON.stringify({
+				id: "big",
+				op: { op: "delete", documentId: "tm:big" },
+				attempts: 0,
+				nextAt: 0,
+				enqueuedAt: 0,
+				lastError: "x".repeat(OUTBOX_MAX_BYTES),
+			}),
+		);
+		const before = readFileSync(big, "utf8");
+		expect(statSync(big).size).toBeGreaterThan(OUTBOX_MAX_BYTES);
+
+		expect(store.outbox().map((e) => e.id)).toEqual([normal.id]);
+		expect(logged).toEqual([
+			`teach store: 1 outbox file(s) over ${OUTBOX_MAX_BYTES} bytes skipped, not read or deleted`,
+		]);
+		store.fail("big", "still failing", 10);
+		expect(readFileSync(big, "utf8")).toBe(before);
+		expect(existsSync(big)).toBe(true);
 	});
 
 	test("a moment with missing optional fields reads back with safe defaults", () => {
