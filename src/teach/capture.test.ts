@@ -29,6 +29,7 @@ import {
 	type CaptureInput,
 	type TeachContext,
 	type TeachableMoment,
+	type TeachStore,
 } from "./types.ts";
 
 const dirs: string[] = [];
@@ -116,6 +117,23 @@ function lesson(overrides: Partial<CaptureInput> = {}): CaptureInput {
 		body: "Use import type for type-only imports.",
 		...overrides,
 	};
+}
+
+/** Makes the outbox unwritable: a file where its directory belongs, so every enqueue fails. */
+function blockOutbox(ctx: TeachContext): void {
+	mkdirSync(storeDir(ctx.stateDir), { recursive: true });
+	writeFileSync(join(storeDir(ctx.stateDir), "outbox"), "");
+}
+
+/** A client whose retain succeeds while the lesson is removed in flight, as a concurrent forget would do. */
+function forgetDuringRetain(store: TeachStore, deleteDocument: FakeOptions["deleteDocument"]) {
+	return fakeClient({
+		retain: (item) => {
+			store.remove(item.documentId.replace(/^tm:/, ""));
+			return ok({ bankId: "ultrathink", documentId: item.documentId, itemsCount: 1 });
+		},
+		deleteDocument,
+	});
 }
 
 describe("captureMoment: off and validation", () => {
@@ -370,6 +388,31 @@ describe("captureMoment: Hindsight paths", () => {
 		const outcome = await captureMoment(lesson(), ctx);
 		expect(outcome).toMatchObject({ retain: "queued", reason: "retain failed: socket closed" });
 		expect(store.outbox()).toHaveLength(1);
+	});
+
+	test("a lesson forgotten mid-retain whose delete and queue both fail says a remote copy may remain", async () => {
+		const { ctx, store } = setup();
+		const { client, calls } = forgetDuringRetain(store, () => err("server"));
+		ctx.hindsight = client;
+		blockOutbox(ctx);
+		const outcome = await captureMoment(lesson(), ctx);
+		expect(calls.deleteDocument).toEqual([`tm:${outcome.moment.id}`]);
+		expect(outcome).toMatchObject({ retain: "queued" });
+		expect(outcome.reason).toContain("a remote copy may remain");
+		expect(store.get(outcome.moment.id)).toBeUndefined();
+		expect(store.outbox()).toEqual([]);
+	});
+
+	test("a lesson forgotten mid-retain still queues its remote delete when only the delete fails", async () => {
+		const { ctx, store } = setup();
+		const { client, calls } = forgetDuringRetain(store, () => err("server"));
+		ctx.hindsight = client;
+		const outcome = await captureMoment(lesson(), ctx);
+		expect(calls.deleteDocument).toEqual([`tm:${outcome.moment.id}`]);
+		expect(outcome).toMatchObject({ retain: "off" });
+		expect(store.outbox().map((entry) => entry.op)).toEqual([
+			{ op: "delete", documentId: `tm:${outcome.moment.id}` },
+		]);
 	});
 
 	test("with no ready client the moment is local-only with the reason and no outbox entry", async () => {
@@ -694,6 +737,18 @@ describe("forgetMoment", () => {
 		});
 		expect(store.outbox()).toEqual([]);
 		expect(failing.calls.deleteDocument).toEqual([`tm:${pending.moment.id}`]);
+	});
+
+	test("when the delete fails and the queue is unwritable, forgetting reports the remote copy as retained", async () => {
+		const { client } = fakeClient({ deleteDocument: () => err("server") });
+		const { ctx, store } = setup({ hindsight: client });
+		const retained = await captureMoment(lesson(), ctx);
+		blockOutbox(ctx);
+		expect(await forgetMoment(retained.moment.id, ctx)).toEqual({
+			removed: true,
+			remote: "retained",
+		});
+		expect(store.get(retained.moment.id)).toBeUndefined();
 	});
 
 	test("with Teachable Moments off a forget stays local and queues the remote delete", async () => {

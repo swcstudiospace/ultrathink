@@ -275,12 +275,16 @@ async function retainOne(
 		} catch {
 			// reason: a leftover retain entry for a forgotten lesson is acknowledged by the next sync
 		}
-		if (!deleted) {
-			try {
-				store.enqueue({ op: "delete", documentId }, nowOf(ctx));
-			} catch {
-				// reason: the outbox is unwritable; the remote document stays until a later forget
-			}
+		if (deleted) return { ok: true, forgotten: true };
+		try {
+			store.enqueue({ op: "delete", documentId }, nowOf(ctx));
+		} catch {
+			// reason: the remote delete failed and could not be queued, so a remote copy may remain with no retry
+			return {
+				ok: false,
+				message:
+					"the lesson was forgotten while it was being retained; its remote delete failed and could not be queued, so a remote copy may remain",
+			};
 		}
 		return { ok: true, forgotten: true };
 	}
@@ -487,7 +491,7 @@ export async function confirmMoment(
 export async function forgetMoment(
 	id: string,
 	ctx: TeachContext,
-): Promise<{ removed: boolean; remote: "deleted" | "queued" | "none" }> {
+): Promise<{ removed: boolean; remote: "deleted" | "queued" | "retained" | "none" }> {
 	const store = tryStore(ctx);
 	const moment = store?.get(id);
 	if (!store || !moment) return { removed: false, remote: "none" };
@@ -504,7 +508,12 @@ export async function forgetMoment(
 			const op: OutboxEntry["op"] = { op: "delete", documentId };
 			if ((await runOp(op, client, store, ctx)).ok) return { removed, remote: "deleted" };
 		}
-		store.enqueue({ op: "delete", documentId }, nowOf(ctx));
+		try {
+			store.enqueue({ op: "delete", documentId }, nowOf(ctx));
+		} catch {
+			// reason: the delete was not made and could not be queued, so the remote copy may remain
+			return { removed, remote: "retained" };
+		}
 		return { removed, remote: "queued" };
 	} catch {
 		return { removed: store.get(id) === undefined, remote: "none" };
