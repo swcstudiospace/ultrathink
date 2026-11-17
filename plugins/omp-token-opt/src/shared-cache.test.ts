@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { connect, createServer } from "node:net";
@@ -249,6 +249,21 @@ describe("circuit breaker", () => {
 			await expect(cache.set("k", "v")).resolves.toBeUndefined();
 			expect(cache.state()).toBe("open");
 		} finally {
+			await cache.close();
+		}
+	});
+});
+
+describe("failure logging", () => {
+	test("a malformed url logs one event with the error class and falls back to a miss", async () => {
+		const warnings = spyOn(process, "emitWarning").mockImplementation(() => {});
+		const cache = createSharedCache({ url: "://not a valid url" });
+		try {
+			expect(await cache.get("k")).toBeNull();
+			const logged = warnings.mock.calls.filter((call) => (call[1] as { code?: string } | undefined)?.code === "TOKEN_OPT_SHARED_CACHE");
+			expect(logged).toEqual([["shared cache unavailable (TypeError); falling back", { code: "TOKEN_OPT_SHARED_CACHE" }]]);
+		} finally {
+			warnings.mockRestore();
 			await cache.close();
 		}
 	});

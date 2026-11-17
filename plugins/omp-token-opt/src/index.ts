@@ -28,19 +28,14 @@ const RTK_TIMEOUT_MS = 2_000;
 const RTK_REFRESH_MIN_MS = 5_000;
 const DEDUPE_MIN_CHARS = 200;
 const GRAPH_BUDGET_DEFAULT = 2_000;
-const DEDUPE_MAX_ENTRIES = 4_096;
+/** Most recent entries kept per seen-set; older entries are forgotten so a long session cannot grow them without limit. */
+const SEEN_MAX_ENTRIES = 4_096;
 const SHUTDOWN_TIMEOUT_MS = 3_000;
 const SESSION_COSTS_MAX = 64;
 
 /** A tool argument as a string; any other value becomes the empty string. */
 function str(value: unknown): string {
 	return typeof value === "string" ? value : "";
-}
-
-/** Seen-result set. Both Set and BoundedSet satisfy it. */
-interface DedupeSet {
-	has(value: string): boolean;
-	add(value: string): unknown;
 }
 
 interface BudgetState {
@@ -93,11 +88,25 @@ interface NotifyCtx {
 	cwd?: string;
 }
 
+const NOTIFY_WARNING_CODE = "TOKEN_OPT_NOTIFY";
+const STATUS_WARNING_CODE = "TOKEN_OPT_STATUS";
+
+/** Constructor name only: error messages can carry paths. */
+function errorClassName(err: unknown): string {
+	if (!(err instanceof Object)) return "unknown";
+	return err.constructor.name || "unknown";
+}
+
+/** Reports a swallowed failure on Node's warning channel: the operation and error class, never the message. */
+function reportFailure(code: string, what: string, error: unknown): void {
+	process.emitWarning(`token-opt ${what} failed (${errorClassName(error)})`, { code });
+}
+
 function notifySafe(ctx: NotifyCtx, message: string, type: "info" | "warning" | "error"): void {
 	try {
 		ctx.ui.notify(message, type);
-	} catch {
-		// fail open
+	} catch (error) {
+		reportFailure(NOTIFY_WARNING_CODE, "notify", error);
 	}
 }
 
@@ -427,16 +436,16 @@ export default function tokenOpt(pi: PiLike): void {
 	const graphBudget = flags.graphBudget
 		? (parseSessionBudget(process.env.TOKEN_OPT_GRAPH_BUDGET) ?? GRAPH_BUDGET_DEFAULT)
 		: undefined;
-	const seenTiming = new Set<string>();
+	const seenTiming = new BoundedSet(SEEN_MAX_ENTRIES);
 	const seenTimingUnkeyed = new WeakSet<object>();
-	const seenMessages = new Set<string>();
+	const seenMessages = new BoundedSet(SEEN_MAX_ENTRIES);
 	const seenUnkeyed = new WeakSet<object>();
 	let sessionCostUsd = 0;
 	/** Unrounded dollars per session, so switching away and back never falls back to the rounded cents. */
 	const sessionCosts = new Map<string, number>();
 	/** One `rtk gain` at a time; hook-driven calls are rate limited and a skipped one schedules a trailing read, /token-status forces a fresh read. */
 	const refreshRtkDelta = createTrailingRefresh(readRtkDelta, RTK_REFRESH_MIN_MS);
-	const seenResults = new Map<string, DedupeSet>();
+	const seenResults = new Map<string, BoundedSet>();
 	let turnStartedAt: number | null = null;
 	let lastMessageEndAt: number | null = null;
 	let budget: BudgetState | null = null;
@@ -626,7 +635,13 @@ export default function tokenOpt(pi: PiLike): void {
 	async function readRtkDelta(): Promise<void> {
 		try {
 			await rtkBaselineRead;
-			if (rtkBaseline === null) return;
+			if (rtkBaseline === null) {
+				// The session-start read failed or timed out. Retry on each call until a baseline is taken.
+				const epoch = rtkEpoch;
+				const total = await readRtkTotalSaved();
+				if (total === null || epoch !== rtkEpoch) return;
+				rtkBaseline = total;
+			}
 			const latest = await readRtkTotalSaved();
 			if (latest === null) return;
 			const rtkSavedTokens = Math.max(0, latest - rtkBaseline);
@@ -651,8 +666,8 @@ export default function tokenOpt(pi: PiLike): void {
 		handler: async (_args, ctx) => {
 			try {
 				await notifyStatus(ctx);
-			} catch {
-				// fail open
+			} catch (error) {
+				reportFailure(STATUS_WARNING_CODE, "status", error);
 			}
 		},
 	});
@@ -678,6 +693,7 @@ export default function tokenOpt(pi: PiLike): void {
 				await notifyStatus(ctx);
 			} catch (error) {
 				if (sub === "compact") notifySafe(ctx, `compact failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				else reportFailure(STATUS_WARNING_CODE, "status", error);
 			}
 		},
 	});
@@ -754,7 +770,7 @@ export default function tokenOpt(pi: PiLike): void {
 				const sessionId = activeSession();
 				let seen = seenResults.get(sessionId);
 				if (!seen) {
-					seen = flags.boundedDedupe ? new BoundedSet(DEDUPE_MAX_ENTRIES) : new Set<string>();
+					seen = new BoundedSet(SEEN_MAX_ENTRIES);
 					seenResults.set(sessionId, seen);
 				}
 				const hash = createHash("sha256").update(sessionId).update("\0").update(toolName).update("\0").update(joined).digest("hex");

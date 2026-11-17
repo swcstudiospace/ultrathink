@@ -1,8 +1,9 @@
 // Optional Redis-backed L2 cache for keyed graph results.
 //
 // Every operation is fail-open: errors, timeouts and an open breaker all
-// surface as a miss (`null`) or a silent no-op. Nothing here throws after the
-// factory returns, and nothing logs the connection URL.
+// surface as a miss (`null`) or a no-op. Nothing here throws after the
+// factory returns. A failed operation logs one warning with its error class;
+// nothing logs the connection URL.
 
 /**
  * Outcome of a lease attempt. `granted`: this call created the key. `held`: the key
@@ -44,12 +45,24 @@ const DEFAULT_TTL_SECONDS = 300;
 const DEFAULT_TIMEOUT_MS = 300;
 const DEFAULT_BREAKER_THRESHOLD = 3;
 const DEFAULT_BREAKER_COOLDOWN_MS = 30_000;
+const WARNING_CODE = "TOKEN_OPT_SHARED_CACHE";
 
 function requireInteger(name: string, value: number, min: number, max: number): number {
 	if (!Number.isSafeInteger(value) || value < min || value > max) {
 		throw new RangeError(`${name} must be an integer in [${min}, ${max}]`);
 	}
 	return value;
+}
+
+/** Constructor name only: error messages can carry the connection URL. */
+function errorClassName(err: unknown): string {
+	if (!(err instanceof Object)) return "unknown";
+	return err.constructor.name || "unknown";
+}
+
+/** One warning per failed operation. Carries the error class only, never the message or URL. */
+function reportFailure(error: unknown): void {
+	process.emitWarning(`shared cache unavailable (${errorClassName(error)}); falling back`, { code: WARNING_CODE });
 }
 
 function withTimeout<T>(task: () => Promise<T>, ms: number): Promise<T> {
@@ -121,8 +134,9 @@ export function createSharedCache(options: SharedCacheOptions = {}): SharedCache
 			const result = await withTimeout(() => op(redis), timeoutMs);
 			recordSuccess();
 			return result;
-		} catch {
+		} catch (error) {
 			recordFailure();
+			reportFailure(error);
 			return fallback;
 		}
 	}
