@@ -21,6 +21,7 @@
 import { gatewayBrief, gatewayEmit } from "../gateway/substrate.ts";
 import { resolveGateway, serviceBackend } from "../gateway/settings.ts";
 import { SUBSTRATE_BACKEND_ENV, type GatewayConfig } from "../gateway/types.ts";
+import { readBodyPrefix } from "../net/body.ts";
 import { checkServiceUrl, type UrlCheck } from "../net/safe-url.ts";
 import {
 	hostToEventSurface,
@@ -140,6 +141,9 @@ const RETRY_MIN_REMAINING_MS = 300;
 /** The server's refusal of a body that names a surface the bearer is not bound to (mcp.ts `surfaceClaimRefusal`). */
 const SURFACE_MISMATCH = /this token is (.+) and cannot act as (.+)/;
 
+/** A 403 refusal body past this many bytes is unparseable; the refusal is classified without reading the rest. */
+const MAX_REFUSAL_BYTES = 16 * 1024;
+
 function none(reason: BriefFailure, detail?: string): BriefResult {
 	return detail === undefined
 		? { text: "", state: "none", reason }
@@ -158,6 +162,12 @@ function isRedirectRefusal(error: unknown): boolean {
 		code === "UnexpectedRedirect" ||
 		/unexpected redirect|redirect is not allowed|redirect mode is set to error/i.test(error.message)
 	);
+}
+
+/** A 403 body read through the byte cap. Past the cap it is "", which no JSON parse accepts, so the 403 is classified as any other refusal. */
+async function refusalText(response: Response, signal: AbortSignal): Promise<string> {
+	const prefix = await readBodyPrefix(response, MAX_REFUSAL_BYTES, signal);
+	return prefix.complete ? prefix.text : "";
 }
 
 /** One POST. Aborts (the caller's or the budget's) read as `timeout`, a refused redirect as `redirect refused`; every other throw as `unreachable`. */
@@ -184,7 +194,7 @@ async function postBrief(
 			kind: "reply",
 			status: response.status,
 			briefHeader: response.headers.get("x-substrate-brief"),
-			text: await response.text(),
+			text: response.status === 403 ? await refusalText(response, signal) : await response.text(),
 		};
 	} catch (error) {
 		if (signal.aborted) return { kind: "failed", reason: "timeout" };
