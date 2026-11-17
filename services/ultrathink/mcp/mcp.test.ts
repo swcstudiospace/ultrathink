@@ -15,6 +15,7 @@ import {
 	toolDefinitions,
 } from "./mcp.ts";
 import { createResourceRegistry, UI_RESOURCE_MIME_TYPE } from "./resources.ts";
+import type { Logger } from "../obs/log.ts";
 import {
 	getSecurityLogger,
 	setSecurityLogger,
@@ -1474,6 +1475,28 @@ describe("batch", () => {
 	});
 });
 
+/** One log call a recording logger received. */
+interface LogCall {
+	level: "info" | "warn" | "error";
+	event: string;
+	fields?: Record<string, unknown>;
+}
+
+/** Keeps every log call in order, so a test reads the events a module emitted. */
+function recordingLogger(calls: LogCall[]): Logger {
+	return {
+		info(event, fields) {
+			calls.push({ level: "info", event, fields });
+		},
+		warn(event, fields) {
+			calls.push({ level: "warn", event, fields });
+		},
+		error(event, fields) {
+			calls.push({ level: "error", event, fields });
+		},
+	};
+}
+
 describe("host failures", () => {
 	const DETAIL = "postgres://ultrathink:example@10.0.0.5/runs at /srv/ultrathink/stack.ts:12";
 
@@ -1537,6 +1560,27 @@ describe("host failures", () => {
 		])) as RpcReply[];
 		expect(resultOf<ToolResult>(replies[0] as RpcReply).isError).toBe(false);
 		expect(replies[1]).toEqual({ jsonrpc: "2.0", id: "b", error: INTERNAL_ERROR });
+	});
+
+	test("a host exception keeps the reply and logs one error event without the secret", async () => {
+		const calls: LogCall[] = [];
+		const host = fakeHost(() => {
+			throw new TypeError(DETAIL);
+		});
+		const body = await bodyOf(
+			host,
+			toolCall("ultrathink_status", { sessionId: SESSION_ID }, "e-1"),
+			{ logger: recordingLogger(calls) },
+		);
+		expect(body).toEqual({ jsonrpc: "2.0", id: "e-1", error: INTERNAL_ERROR });
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			level: "error",
+			event: "mcp_dispatch_error",
+			fields: { method: "tools/call", error: "TypeError" },
+		});
+		expect(String(calls[0]?.fields?.message)).toContain("[redacted]");
+		expect(JSON.stringify(calls)).not.toContain("example");
 	});
 });
 
