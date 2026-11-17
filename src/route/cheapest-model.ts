@@ -76,7 +76,7 @@ const PROCESS_SMOKE_CACHE = createSmokeCache();
 const SMOKE_TIMEOUT_MS = 20_000;
 
 /** The codes of a ToT refusal: the stage writes no PRD and reports the code as its `error`. */
-export const PRD_NO_PRICE = "PRD_NO_PRICE";
+const PRD_NO_PRICE = "PRD_NO_PRICE";
 export const PRD_NO_SELECTED_MODEL = "PRD_NO_SELECTED_MODEL";
 
 export type TotRefusalCode = typeof PRD_NO_PRICE | typeof PRD_NO_SELECTED_MODEL;
