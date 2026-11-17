@@ -24,6 +24,7 @@ import {
 	writeSession,
 } from "../claude/state.ts";
 import { pruneSessions, pruneSessionsBestEffort } from "./prune.ts";
+import { processIdentity } from "../swarm/lane.ts";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 
 const DAY = 86_400_000;
@@ -542,19 +543,32 @@ describe("pruneSessions", () => {
 		});
 	}
 
-	test("generic aged locks keep their existing orphan rules even when their PID is live", () => {
+	test("an aged lock is removed only when its holder is gone or its pid was reused", () => {
 		const state = makeState();
-		const holder = String(process.pid);
-		put(join(state, "control.json.lock"), holder, 3 * HOUR);
-		put(join(state, "sessions", "last.json.lock"), holder, 3 * HOUR);
+		const self = process.pid;
+		const record = (pid: number, startTime: string): string =>
+			JSON.stringify({ pid, startTime, token: "t" });
+		const gone = record(2147483647, "");
+		const reused = record(self, "a start identity no live process has");
+		put(join(state, "old.json.lock"), "2147483647", 3 * HOUR);
+		put(join(state, "sessions", "gone.json.lock"), gone, 3 * HOUR);
+		put(join(state, "sessions", "reused.json.lock"), reused, 3 * HOUR);
+		put(join(state, "control.json.lock"), String(self), 3 * HOUR);
+		put(
+			join(state, "sessions", "held.json.lock"),
+			record(self, processIdentity(self) ?? ""),
+			3 * HOUR,
+		);
 		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
-		expect(result.orphans.map((orphan) => orphan.name)).toEqual([
-			"control.json.lock",
-			"last.json.lock",
+		expect(result.orphans.map((orphan) => orphan.name).sort()).toEqual([
+			"gone.json.lock",
+			"old.json.lock",
+			"reused.json.lock",
 		]);
-		expect(result.bytes).toBe(2 * holder.length);
-		expect(existsSync(join(state, "control.json.lock"))).toBe(false);
-		expect(sessionFiles(state)).toEqual([]);
+		expect(result.bytes).toBe("2147483647".length + gone.length + reused.length);
+		expect(result.errors).toEqual([]);
+		expect(existsSync(join(state, "control.json.lock"))).toBe(true);
+		expect(existsSync(join(state, "sessions", "held.json.lock"))).toBe(true);
 	});
 
 	test("never follows or removes a strict-last lock symlink", () => {

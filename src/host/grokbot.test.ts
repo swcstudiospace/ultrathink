@@ -29,6 +29,7 @@ import { FIELD_CAPS } from "../resilience/limits.ts";
 import { NODE, UPLIFT } from "../test.helpers.ts";
 import type { TrackingRefs } from "../track/types.ts";
 import { escapeXml } from "../uplift/xml.ts";
+import { processIdentity } from "../swarm/lane.ts";
 import { planPrompt } from "./plan.ts";
 import {
 	checkRecord,
@@ -43,6 +44,7 @@ import {
 	type PendingRequest,
 	runGrokbotPlan,
 	stageOf,
+	type Validation,
 	storeAnswer,
 	validateClarify,
 	validateGraph,
@@ -366,6 +368,89 @@ describe("grok-bot journal driver", () => {
 		expect(bad.ok).toBe(false);
 		expect(existsSync(join(dir, "answers"))).toBe(false);
 		expect(listPending(dir)).toHaveLength(1);
+	});
+
+	test("an answer that waits behind a held session lock is recorded once", async () => {
+		const root = tmp();
+		const stateDir = join(root, "state");
+		await runGrokbotPlan({
+			sessionId: "s1",
+			prompt: PROMPT,
+			cwd: root,
+			stateDir,
+			env: testEnv(root),
+			debounceMs: 5,
+		});
+		const dir = journalDir(stateDir, "s1");
+		const [request] = listPending(dir);
+		const answer = hostModel(5)(request!.system, request!.user);
+		// The session record lock is held by a live process; it is released only once the waiting answer starts to wait.
+		const lock = join(stateDir, "sessions", "s1.json.lock");
+		mkdirSync(join(stateDir, "sessions"), { recursive: true });
+		writeFileSync(lock, JSON.stringify({ pid: process.pid, startTime: "", token: "held" }));
+		let clock = 0;
+		const landed: { result?: Validation } = {};
+		const waited = storeAnswer(dir, request!.key, answer, {
+			lock: {
+				now: () => clock,
+				sleep: (ms) => {
+					// Another answer lands while this one waits: it takes the free lock and records the answer first.
+					if (landed.result === undefined) {
+						rmSync(lock, { force: true });
+						landed.result = storeAnswer(dir, request!.key, answer);
+					}
+					clock += ms;
+				},
+				staleMs: Number.MAX_SAFE_INTEGER,
+				liveness: { killAlive: () => true },
+			},
+		});
+		expect(landed.result?.ok).toBe(true);
+		expect(waited.ok).toBe(false);
+		expect(waited.errors.join()).toMatch(/no pending request/);
+		expect(readFileSync(join(dir, "answers", `${request!.key}.txt`), "utf8")).toBe(answer);
+		expect(listPending(dir)).toEqual([]);
+	});
+
+	test("a plan run keeps the pending requests of a live run and drops the rest", async () => {
+		const root = tmp();
+		const stateDir = join(root, "state");
+		const dir = journalDir(stateDir, "s1");
+		mkdirSync(join(dir, "pending"), { recursive: true });
+		const ownerOf = (pid: number, run: string) => ({
+			pid,
+			startTime: processIdentity(pid) ?? "",
+			run,
+		});
+		const record = (key: string, owner: object): string =>
+			JSON.stringify({ key, stage: "other", system: "s", user: "u", createdAt: 1, owner });
+		const live = "a".repeat(32);
+		const finished = "b".repeat(32);
+		const gone = "c".repeat(32);
+		// A run still going in another process; a run that already finished in this process; a dead process.
+		writeFileSync(
+			join(dir, "pending", `${live}.json`),
+			record(live, ownerOf(process.ppid, "other")),
+		);
+		writeFileSync(
+			join(dir, "pending", `${finished}.json`),
+			record(finished, ownerOf(process.pid, "finished")),
+		);
+		writeFileSync(
+			join(dir, "pending", `${gone}.json`),
+			record(gone, { pid: 2147483647, startTime: "", run: "gone" }),
+		);
+		const result = await runGrokbotPlan({
+			sessionId: "s1",
+			prompt: PROMPT,
+			cwd: root,
+			stateDir,
+			env: testEnv(root),
+			// The planner answers at once with a skip, so the run ends right after its reset of pending requests.
+			plan: (async () => ({ skipped: "no planner in this test" })) as unknown as typeof planPrompt,
+		});
+		expect(result.status).toBe("skipped");
+		expect(listPending(dir).map((request) => request.key)).toEqual([live]);
 	});
 
 	test("a corrupt pending file is skipped and the valid requests still list", async () => {

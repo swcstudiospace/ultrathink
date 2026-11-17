@@ -20,6 +20,7 @@ import {
 import { basename, join } from "node:path";
 import { removeDeadLockCandidate, withFileLock, withLockMutation } from "../claude/atomic.ts";
 import { lastLockHeld, legacySessionPath, sessionPath } from "../claude/state.ts";
+import { processIdentity } from "../swarm/lane.ts";
 
 const DAY_MS = 86_400_000;
 const ORPHAN_AGE_MS = 3_600_000;
@@ -230,8 +231,46 @@ function removeFile(sweep: Sweep, path: string, name: string): boolean {
 	}
 }
 
-/** Removes hour-old atomic-write leftovers and dead prepared guard candidates, never a held strict-last lock. */
-function sweepOrphans(sweep: Sweep, dir: string, names: string[], lastLockPath?: string): void {
+/** The holder record `withFileLock` writes into a lock file (`{"pid", "startTime", "token"}`), or undefined otherwise. */
+function readLockHolder(lockPath: string): { pid: number; startTime: string } | undefined {
+	let parsed: { pid?: unknown; startTime?: unknown } | null;
+	try {
+		parsed = JSON.parse(readFileSync(lockPath, "utf8"));
+	} catch {
+		return undefined;
+	}
+	const pid = parsed?.pid;
+	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return undefined;
+	const startTime = parsed?.startTime;
+	return { pid, startTime: typeof startTime === "string" ? startTime : "" };
+}
+
+/** Whether a process with this pid exists; EPERM means it does, under another user. */
+function pidRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/**
+ * Whether a lock's holder is still running; every lock must pass this before it is removed. A `withFileLock` record is
+ * live while its pid runs and, once its start identity is known, that identity still matches (a reused pid is dead).
+ * Anything else, a bare pid or an empty file, uses the strict-last rule of {@link lastLockHeld}.
+ */
+function lockHolderRunning(lockPath: string): boolean {
+	const holder = readLockHolder(lockPath);
+	if (holder === undefined) return lastLockHeld(lockPath);
+	if (!pidRunning(holder.pid)) return false;
+	if (holder.startTime === "") return true;
+	const identity = processIdentity(holder.pid);
+	return identity === undefined || identity === holder.startTime;
+}
+
+/** Removes hour-old atomic-write leftovers and dead prepared guard candidates, and any lock whose holder is gone. */
+function sweepOrphans(sweep: Sweep, dir: string, names: string[]): void {
 	for (const name of names) {
 		if (!name.endsWith(".tmp") && !name.endsWith(".lock")) continue;
 		const path = join(dir, name);
@@ -252,7 +291,7 @@ function sweepOrphans(sweep: Sweep, dir: string, names: string[], lastLockPath?:
 		const remove = (): void => {
 			const current = statEntry(sweep, path, name);
 			if (!current?.isFile() || sweep.now - current.mtimeMs <= ORPHAN_AGE_MS) return;
-			if (path === lastLockPath && lastLockHeld(path)) return;
+			if (name.endsWith(".lock") && lockHolderRunning(path)) return;
 			if (!removeFile(sweep, path, name)) return;
 			sweep.result.orphans.push({ name, bytes: current.size });
 			sweep.result.bytes += current.size;
@@ -546,12 +585,7 @@ export function pruneSessions(options: PruneOptions): PruneResult {
 			return result;
 		}
 		const sessionsDir = join(options.stateDir, "sessions");
-		sweepOrphans(
-			sweep,
-			options.stateDir,
-			listEntries(sweep, options.stateDir, "state directory"),
-			join(options.stateDir, "last.json.lock"),
-		);
+		sweepOrphans(sweep, options.stateDir, listEntries(sweep, options.stateDir, "state directory"));
 		const bounded = options.limit !== undefined;
 		const names = bounded
 			? listSessionEntries(sweep, sessionsDir, "sessions", readCursor(options.stateDir))

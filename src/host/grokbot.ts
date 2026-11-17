@@ -16,23 +16,17 @@
  * plans under the no-hook `prime-agent` engine family with its own state directory, and labels its resolution
  * `host:grok-bot`.
  */
-import { createHash } from "node:crypto";
-import {
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { CLARIFY_SYSTEM_PROMPT } from "../hitl/prompts.ts";
 import { normalizeClarifications } from "../hitl/pipeline.ts";
 import { getSecurityLogger } from "../../services/ultrathink/security/events.ts";
-import { readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
+import { type LockOptions, withFileLock, writeFileAtomic } from "../claude/atomic.ts";
+import { CLI_LOCK, readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
+import { processIdentity } from "../swarm/lane.ts";
 import { DISTILL_SYSTEM } from "../teach/observe.ts";
 import {
 	extractJsonObject,
@@ -92,6 +86,14 @@ export function hostResolution(): ModelResolution {
 
 export type Stage = "uplift" | "graph" | "cot" | "clarify" | "distill" | "other";
 
+/** Who wrote a pending request. A request whose owner is still running belongs to a run in progress. */
+export interface PendingOwner {
+	pid: number;
+	startTime: string;
+	/** The run that wrote the request: unique per run, so a finished run owns nothing. */
+	run: string;
+}
+
 export interface PendingRequest {
 	key: string;
 	stage: Stage;
@@ -101,6 +103,7 @@ export interface PendingRequest {
 	system: string;
 	user: string;
 	createdAt: number;
+	owner?: PendingOwner;
 }
 
 export interface JournalMeta {
@@ -135,13 +138,6 @@ function requestKey(system: string, user: string): string {
 		.slice(0, 32);
 }
 
-function writeAtomic(path: string, text: string): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const tmp = `${path}.${process.pid}.tmp`;
-	writeFileSync(tmp, text, { mode: 0o600 });
-	renameSync(tmp, path);
-}
-
 export function readMeta(dir: string): JournalMeta | undefined {
 	try {
 		return JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as JournalMeta;
@@ -151,7 +147,7 @@ export function readMeta(dir: string): JournalMeta | undefined {
 }
 
 export function writeMeta(dir: string, meta: JournalMeta): void {
-	writeAtomic(
+	writeFileAtomic(
 		join(dir, "meta.json"),
 		`${JSON.stringify({ ...meta, updatedAt: Date.now() }, null, 2)}\n`,
 	);
@@ -250,6 +246,8 @@ export function createJournalCompleter(opts: {
 	/** Timer port for the debounce; defaults to the platform timers. */
 	timers?: TimerPort;
 	now?: () => number;
+	/** Stamped on every pending request this completer writes; absent for a writer with no run behind it. */
+	owner?: PendingOwner;
 }): JournalCompleter {
 	const missed: PendingRequest[] = [];
 	const timers = opts.timers ?? { setTimeout, clearTimeout };
@@ -262,8 +260,12 @@ export function createJournalCompleter(opts: {
 			replayed++;
 			return answer;
 		}
-		const request = describeRequest(system, user, (opts.now ?? Date.now)());
-		writeAtomic(join(opts.dir, "pending", `${key}.json`), `${JSON.stringify(request, null, 2)}\n`);
+		const described = describeRequest(system, user, (opts.now ?? Date.now)());
+		const request = opts.owner ? { ...described, owner: opts.owner } : described;
+		writeFileAtomic(
+			join(opts.dir, "pending", `${key}.json`),
+			`${JSON.stringify(request, null, 2)}\n`,
+		);
 		missed.push(request);
 		const controller = opts.controller;
 		if (!controller) throw abortError();
@@ -354,7 +356,7 @@ export function installDecisionsJournal(
 		const response = await base(input, init);
 		const text = await response.text();
 		if (response.ok)
-			writeAtomic(
+			writeFileAtomic(
 				path,
 				`${JSON.stringify({ status: response.status, body: text, at: Date.now() })}\n`,
 			);
@@ -532,31 +534,44 @@ export function storeAnswer(
 	dir: string,
 	key: string,
 	raw: string,
-	options: { replace?: boolean } = {},
+	options: { replace?: boolean; lock?: LockOptions } = {},
 ): Validation {
 	if (!REQUEST_KEY_RE.test(key))
 		return {
 			ok: false,
 			errors: ["answer key must be 32 lowercase hex characters (a request key)"],
 		};
-	const pendingPath = join(dir, "pending", `${key}.json`);
-	const answerPath = join(dir, "answers", `${key}.txt`);
-	let request: PendingRequest | undefined;
-	if (existsSync(pendingPath))
-		request = JSON.parse(readFileSync(pendingPath, "utf8")) as PendingRequest;
-	else if (options.replace && existsSync(join(dir, "requests", `${key}.json`)))
-		request = JSON.parse(
-			readFileSync(join(dir, "requests", `${key}.json`), "utf8"),
-		) as PendingRequest;
-	if (!request) return { ok: false, errors: [`no pending request ${key}`] };
-	if (existsSync(answerPath) && !options.replace)
-		return { ok: false, errors: [`request ${key} is already answered (use --replace)`] };
-	const result = validateAnswer(request, raw, readMeta(dir)?.original);
-	if (!result.ok) return result;
-	writeAtomic(answerPath, raw);
-	writeAtomic(join(dir, "requests", `${key}.json`), `${JSON.stringify(request, null, 2)}\n`);
-	rmSync(pendingPath, { force: true });
-	return result;
+	// The journal lives at <stateDir>/journal/<session>. The check and the writes run under the session's record lock,
+	// the one every other writer of that session takes, so two answers to one request cannot both be recorded.
+	const stateDir = dirname(dirname(dir));
+	const sessionId = readMeta(dir)?.sessionId ?? basename(dir);
+	return withFileLock(
+		sessionRecordPath(stateDir, sessionId),
+		(): Validation => {
+			const pendingPath = join(dir, "pending", `${key}.json`);
+			const answerPath = join(dir, "answers", `${key}.txt`);
+			let request: PendingRequest | undefined;
+			if (existsSync(pendingPath))
+				request = JSON.parse(readFileSync(pendingPath, "utf8")) as PendingRequest;
+			else if (options.replace && existsSync(join(dir, "requests", `${key}.json`)))
+				request = JSON.parse(
+					readFileSync(join(dir, "requests", `${key}.json`), "utf8"),
+				) as PendingRequest;
+			if (!request) return { ok: false, errors: [`no pending request ${key}`] };
+			if (existsSync(answerPath) && !options.replace)
+				return { ok: false, errors: [`request ${key} is already answered (use --replace)`] };
+			const result = validateAnswer(request, raw, readMeta(dir)?.original);
+			if (!result.ok) return result;
+			writeFileAtomic(answerPath, raw);
+			writeFileAtomic(
+				join(dir, "requests", `${key}.json`),
+				`${JSON.stringify(request, null, 2)}\n`,
+			);
+			rmSync(pendingPath, { force: true });
+			return result;
+		},
+		{ ...CLI_LOCK, createParent: true, ...options.lock },
+	);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -700,6 +715,53 @@ export interface GrokbotPlanResult {
 	check?: PlanCheck;
 }
 
+/** This process as the owner of the pending requests a run writes: its pid, start identity and the run's own token. */
+function runOwner(run: string): PendingOwner {
+	return { pid: process.pid, startTime: processIdentity(process.pid) ?? "", run };
+}
+
+/** Runs in progress in this process. A run that has finished owns nothing, even in a process that keeps running. */
+const runsInProgress = new Set<string>();
+
+/**
+ * Whether a pending request's run is still going. A run in this process is alive while it is in `runsInProgress`; a run
+ * in another process is alive while that process runs with the same start identity.
+ */
+function ownerAlive(owner: PendingOwner | undefined): boolean {
+	if (owner === undefined || !Number.isInteger(owner.pid) || owner.pid <= 0) return false;
+	if (owner.pid === process.pid) return runsInProgress.has(owner.run);
+	try {
+		process.kill(owner.pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+	if (owner.startTime === "") return true;
+	const identity = processIdentity(owner.pid);
+	return identity === undefined || identity === owner.startTime;
+}
+
+/** The owner a pending file names, or undefined when the file is unreadable or names none. */
+function pendingOwner(path: string): PendingOwner | undefined {
+	try {
+		return (JSON.parse(readFileSync(path, "utf8")) as Partial<PendingRequest>).owner;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Drops the pending requests no live run owns. Callers hold the session lock: a run still in progress keeps the requests
+ * the host has yet to answer, and an answer that lands first is never swept.
+ */
+function clearAbandonedPending(dir: string): void {
+	const folder = join(dir, "pending");
+	if (!existsSync(folder)) return;
+	for (const name of readdirSync(folder)) {
+		const path = join(folder, name);
+		if (!ownerAlive(pendingOwner(path))) rmSync(path, { recursive: true, force: true });
+	}
+}
+
 export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPlanResult> {
 	const env = {
 		...(input.env ?? process.env),
@@ -735,17 +797,23 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 		...(input.transcriptPath ? { transcriptPath: input.transcriptPath } : {}),
 		status: "needs-model",
 	});
-	rmSync(join(dir, "pending"), { recursive: true, force: true });
+	withFileLock(sessionRecordPath(stateDir, input.sessionId), () => clearAbandonedPending(dir), {
+		...CLI_LOCK,
+		createParent: true,
+	});
+	const owner = runOwner(randomUUID());
 	const controller = new AbortController();
 	const journal = createJournalCompleter({
 		dir,
 		controller,
 		debounceMs: input.debounceMs,
 		timers: input.timers,
+		owner,
 	});
 	const restore = installDecisionsJournal(dir);
 	const resolution = hostResolution();
 	let response: PlanResponse;
+	runsInProgress.add(owner.run);
 	try {
 		response = await (input.plan ?? planPrompt)(
 			{
@@ -771,6 +839,7 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 			},
 		);
 	} finally {
+		runsInProgress.delete(owner.run);
 		restore();
 	}
 	const missed = journal.missed();
