@@ -315,10 +315,22 @@ export function evaluateAudit(
 /** The subprocess seam: tests inject a fake so the spawned command can be observed without running bun. */
 export type SpawnSync = (
 	cmd: string[],
-	options: { cwd: string; stdout: "pipe"; stderr: "pipe" },
-) => { exitCode: number | null; stdout: Uint8Array; stderr: Uint8Array };
+	options: { cwd: string; stdout: "pipe"; stderr: "pipe"; timeout: number },
+) => {
+	exitCode: number | null;
+	stdout: Uint8Array;
+	stderr: Uint8Array;
+	exitedDueToTimeout?: boolean;
+};
 
-/** Spawns the running bun by absolute path: a release runs under a minimal PATH where bun is not found by name. */
+/** `bun audit` queries the registry; a hung request must fail the gate rather than stall the release. */
+const BUN_AUDIT_TIMEOUT_MS = 120_000;
+
+/**
+ * Spawns the running bun by absolute path: a release runs under a minimal PATH where bun is not found by name.
+ * A child that outlives {@link BUN_AUDIT_TIMEOUT_MS} is killed and reported as exit 124, which the gate treats as a
+ * tool error (fail closed).
+ */
 export function runBunAudit(
 	root: string,
 	level: Severity,
@@ -328,7 +340,15 @@ export function runBunAudit(
 		cwd: root,
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: BUN_AUDIT_TIMEOUT_MS,
 	});
+	if (proc.exitedDueToTimeout) {
+		return {
+			exitCode: 124,
+			stdout: "",
+			stderr: `bun audit timed out after ${BUN_AUDIT_TIMEOUT_MS / 1000}s`,
+		};
+	}
 	return {
 		exitCode: proc.exitCode ?? -1,
 		stdout: new TextDecoder().decode(proc.stdout),
@@ -654,6 +674,7 @@ export function isOnMain(
 		cwd: root,
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: 60_000,
 	});
 	if (result.exitCode === 0) return true;
 	if (result.exitCode === 1) return false;
