@@ -1195,6 +1195,13 @@ export function createAuditLog(options: AuditLogOptions): AuditLog {
 		if (lockDepth > 0) return fn();
 		const lock: { unavailable?: string } = {};
 		const refuse = (reason: string): undefined => {
+			// The read-only half of `ensureDisk`: an outside change is reported, but nothing is adopted or written.
+			if (expected !== undefined && !sameIdentity(fingerprintOf(path, fs), expected.fp)) {
+				notify(
+					"changed_outside",
+					`audit log: ${path} changed outside the service; the record is refused until the lock is free`,
+				);
+			}
 			report(new Error(`audit log: ${label} refused, lock not taken, nothing written: ${reason}`));
 			return undefined;
 		};
