@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
+import { createLogger, failureLabel, type Logger } from "./log.ts";
+
+const logger = createLogger();
+
 // Load shedding, drain-aware readiness and runtime probes (Refs SPE-17437).
 //
 // Intended wiring:
@@ -14,7 +18,8 @@
 //   integrator forwards each `RuntimeSample` into metrics gauges
 //   (`ultrathink_event_loop_lag_seconds`, `ultrathink_process_rss_bytes`, ...).
 //
-// This module is pure: it never logs and never throws on the request path. Construction
+// This module never throws on the request path; its only output is one log event for each failing
+// sampler or `onSample` call. Construction
 // validates its inputs and throws `RangeError`/`TypeError` for invalid configuration.
 
 /** Bounded in-flight request counter used for load shedding. */
@@ -120,6 +125,8 @@ export interface RuntimeProbeOptions {
 	memory?: () => { rss: number; heapUsed: number };
 	/** Uptime source in seconds. Defaults to `process.uptime()`. */
 	uptime?: () => number;
+	/** Receives one error event per failing sample or `onSample` call. Defaults to the module logger. */
+	logger?: Logger;
 }
 
 export interface RuntimeProbe {
@@ -162,6 +169,7 @@ export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 	const now = options.now ?? (() => performance.now());
 	const memory = options.memory ?? (() => process.memoryUsage());
 	const uptime = options.uptime ?? (() => process.uptime());
+	const log = options.logger ?? logger;
 
 	let lastLagMs = 0;
 	let handle: RuntimeTimerHandle | undefined;
@@ -187,15 +195,17 @@ export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 			let sample: RuntimeSample | undefined;
 			try {
 				sample = sampleOnce();
-			} catch {
+			} catch (error) {
 				// reason: a failing sample is skipped and the timer keeps its schedule; a direct sampleOnce caller gets the error
+				log.error("runtime sample failed", { errorClass: failureLabel(error) });
 				sample = undefined;
 			}
 			if (sample !== undefined) {
 				try {
 					onSample(sample);
-				} catch {
+				} catch (error) {
 					// reason: Observers must never break the sampler.
+					log.error("runtime onSample failed", { errorClass: failureLabel(error) });
 				}
 			}
 			if (gen === generation) schedule(gen);

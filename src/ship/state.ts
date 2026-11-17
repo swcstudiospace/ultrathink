@@ -37,6 +37,11 @@ function priorShip(record: Record<string, unknown>): Partial<ShipState> {
 	return (record.ship && typeof record.ship === "object" ? record.ship : {}) as Partial<ShipState>;
 }
 
+/** The unlocked-fallback line goes to stderr, as the session writers do, so a lock that was not taken is visible. */
+function logUnlockedWrite(message: string): void {
+	process.stderr.write(`[ultrathink] ${message}\n`);
+}
+
 /**
  * The single read-modify-write behind every public writer: under the file's lock, reads the record, builds the new
  * ship from it and writes it back. Takes the lock once, so a writer that needs the old ship never has to call another
@@ -57,7 +62,7 @@ function updateShip(
 			const ship = build(record);
 			return writeRecord(statePath, { ...record, ship }) ? ship : undefined;
 		},
-		lock,
+		{ log: logUnlockedWrite, ...lock },
 	);
 }
 

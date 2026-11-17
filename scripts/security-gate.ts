@@ -34,8 +34,22 @@ import { isPlainObject } from "../src/decisions/client.ts";
 function isDirectory(path: string): boolean {
 	try {
 		return statSync(path).isDirectory();
-	} catch {
-		return false;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+/**
+ * `isDirectory` for the license walk. A stat error other than ENOENT is recorded as a failing entry, never skipped:
+ * true or false for a path that stat answered, undefined when it failed.
+ */
+function probeDirectory(path: string, found: InstalledPackage[]): boolean | undefined {
+	try {
+		return isDirectory(path);
+	} catch (error) {
+		found.push({ file: path, problem: `cannot stat: ${messageOf(error)}` });
+		return undefined;
 	}
 }
 
@@ -485,7 +499,7 @@ function readPackage(file: string): InstalledPackage {
 function visitNodeModules(dir: string, found: InstalledPackage[], seen: Set<string>): void {
 	for (const entry of readdirSync(dir)) {
 		const path = join(dir, entry);
-		if (!isDirectory(path)) continue;
+		if (!probeDirectory(path, found)) continue;
 		// Scope directories and dot-directories (such as Bun's `.bun` store) hold packages one level down.
 		if (entry.startsWith("@") || entry.startsWith(".")) {
 			for (const child of readdirSync(path)) visitCandidate(join(path, child), found, seen);
@@ -496,14 +510,14 @@ function visitNodeModules(dir: string, found: InstalledPackage[], seen: Set<stri
 }
 
 function visitCandidate(dir: string, found: InstalledPackage[], seen: Set<string>): void {
-	if (!isDirectory(dir)) return;
+	if (!probeDirectory(dir, found)) return;
 	const real = realpathSync(dir);
 	if (seen.has(real)) return;
 	seen.add(real);
 	const manifest = join(dir, "package.json");
 	if (existsSync(manifest)) found.push(readPackage(manifest));
 	const nested = join(dir, "node_modules");
-	if (isDirectory(nested)) visitNodeModules(nested, found, seen);
+	if (probeDirectory(nested, found)) visitNodeModules(nested, found, seen);
 }
 
 /**
@@ -515,12 +529,13 @@ export function collectLicenses(roots: readonly string[]): InstalledPackage[] {
 	const seen = new Set<string>();
 	for (const root of roots) {
 		const nodeModules = join(root, "node_modules");
-		if (!isDirectory(nodeModules)) {
+		const present = probeDirectory(nodeModules, found);
+		if (present === false) {
 			throw new Error(
 				`${nodeModules} not found; run bun install --frozen-lockfile in ${root} first`,
 			);
 		}
-		visitNodeModules(nodeModules, found, seen);
+		if (present === true) visitNodeModules(nodeModules, found, seen);
 	}
 	const byKey = new Map<string, InstalledPackage>();
 	for (const pkg of found) {
