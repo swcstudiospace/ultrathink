@@ -8,6 +8,7 @@ import {
 	type DecisionsUrl,
 	decide,
 	estimateTokens,
+	MAX_RESPONSE_BYTES,
 	parseDecisionsResponse,
 	redact,
 	resolveDecisionsUrl,
@@ -352,6 +353,36 @@ describe("decide: strict response validation (D7)", () => {
 		expect(outcome.error.kind).toBe("invalid-response");
 		expect(outcome.attempts).toBe(1);
 		expect(r.calls).toHaveLength(1);
+	});
+
+	test("a 2xx body over the byte cap is refused as invalid-response and the reader stops at the cap", async () => {
+		const chunk = new Uint8Array(64 * 1024).fill(0x20);
+		const total = 16 * chunk.byteLength;
+		let pulled = 0;
+		let cancelled = false;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (pulled >= total) {
+					controller.close();
+					return;
+				}
+				pulled += chunk.byteLength;
+				controller.enqueue(chunk);
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const outcome = await failure(
+			recordingFetch([() => new Response(body, { status: 200 })]).fetch,
+		);
+		expect(outcome.error.kind).toBe("invalid-response");
+		expect(outcome.error.message).toBe(
+			`decisions invalid-response: response body is over ${MAX_RESPONSE_BYTES} bytes`,
+		);
+		expect(outcome.attempts).toBe(1);
+		expect(cancelled).toBe(true);
+		expect(pulled).toBeLessThanOrEqual(MAX_RESPONSE_BYTES + 3 * chunk.byteLength);
 	});
 
 	test("AC-4.8: a missing answer key maps to invalid-response", async () => {

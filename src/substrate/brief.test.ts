@@ -413,6 +413,14 @@ describe("fetchBrief surface-mismatch retry", () => {
 		expect(brief.detail).toContain("omp");
 	});
 
+	test("a 403 body past the byte cap is unparseable: no surface retry, the 403 handling still applies", async () => {
+		const padded = `${JSON.stringify({ error: "this token is claude-code and cannot act as omp" })}${" ".repeat(64 * 1024)}`;
+		const calls = scriptFetch(() => new Response(padded, { status: 403 }));
+		const brief = await fetchBrief({ repo: "a/b", surface: "omp" }, env(), URL_);
+		expect(calls).toHaveLength(1);
+		expect(brief).toEqual({ text: "", state: "none", reason: "http-403" });
+	});
+
 	test("a recovered retry keeps the degraded label and state", async () => {
 		scriptFetch((n) =>
 			n === 0 ? mismatch() : new Response("body", { headers: { "x-substrate-brief": "degraded" } }),

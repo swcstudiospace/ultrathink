@@ -6,6 +6,7 @@
  * Never rejects except with an AbortError when the caller aborts.
  */
 import { USER_AGENT } from "../mcp/providers.ts";
+import { readBodyPrefix } from "../net/body.ts";
 import { redactSecrets } from "../redact.ts";
 import {
 	type DecisionAnswer,
@@ -23,6 +24,9 @@ import {
 } from "./types.ts";
 
 type Env = Record<string, string | undefined>;
+
+/** The most bytes read from one decisions response; a larger body is refused as invalid-response. */
+export const MAX_RESPONSE_BYTES = 256 * 1024;
 
 export interface DecideOptions {
 	apiKey: string;
@@ -465,6 +469,7 @@ async function postDecision(
 		let status: number;
 		let statusText: string;
 		let text: string;
+		let complete: boolean;
 		let retryAfter: string | null;
 		try {
 			// Clamped to the largest delay timers accept; created inside the try so no timer quirk can escape decide().
@@ -484,7 +489,9 @@ async function postDecision(
 			status = response.status;
 			statusText = response.statusText;
 			retryAfter = response.headers.get("retry-after");
-			text = await raceAbort(response.text(), signal);
+			const prefix = await raceAbort(readBodyPrefix(response, MAX_RESPONSE_BYTES, signal), signal);
+			text = prefix.text;
+			complete = prefix.complete;
 		} catch (error) {
 			if (caller?.aborted) throw abortError(caller);
 			if (timeout?.aborted) return timedOut();
@@ -492,6 +499,13 @@ async function postDecision(
 			return { ok: false, error: fail("network", message || "fetch failed"), transient: true };
 		}
 		if (status >= 200 && status < 300) {
+			if (!complete) {
+				return {
+					ok: false,
+					error: fail("invalid-response", `response body is over ${MAX_RESPONSE_BYTES} bytes`),
+					transient: false,
+				};
+			}
 			let json: unknown;
 			try {
 				json = JSON.parse(text);
