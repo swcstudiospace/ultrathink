@@ -12,9 +12,11 @@ import {
 	READ_ONLY,
 } from "./tools-connector.ts";
 import { compileSchema, type Validator } from "./validate.ts";
+import { createLogger, type Logger } from "../obs/log.ts";
 import { getSecurityLogger } from "../security/events.ts";
 import { StringValidator } from "../security/validation.ts";
 import { isRecord } from "../../../src/shared.ts";
+import { redactSecrets } from "../../../src/redact.ts";
 
 /** Newest first: initialize answers with the requested version when listed here, otherwise the first. */
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
@@ -74,6 +76,8 @@ export interface McpToolHost {
 export interface McpContext {
 	/** The negotiated MCP-Protocol-Version of this request. Absent means DEFAULT_PROTOCOL_VERSION. */
 	protocolVersion?: string;
+	/** Receives the error line for a host failure. Absent means the process logger. */
+	logger?: Logger;
 }
 
 const JSONRPC = "2.0";
@@ -343,7 +347,7 @@ export async function handleMcpPayload(
 ): Promise<{ body: unknown; status?: number } | null> {
 	const protocolVersion = ctx?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
 	if (!Array.isArray(payload)) {
-		const handled = await handleMessage(host, payload, protocolVersion);
+		const handled = await handleMessage(host, payload, protocolVersion, ctx?.logger);
 		if (handled === null) return null;
 		return handled.status === undefined
 			? { body: handled.reply }
@@ -357,7 +361,7 @@ export async function handleMcpPayload(
 	const replies: RpcResponse[] = [];
 	let status: number | undefined;
 	for (const message of payload) {
-		const handled = await handleMessage(host, message, protocolVersion);
+		const handled = await handleMessage(host, message, protocolVersion, ctx?.logger);
 		if (handled === null) continue;
 		replies.push(handled.reply);
 		if (handled.status !== undefined) status = handled.status;
@@ -370,6 +374,7 @@ async function handleMessage(
 	host: McpToolHost,
 	message: unknown,
 	protocolVersion: string,
+	logger: Logger | undefined,
 ): Promise<Handled | null> {
 	if (!isRecord(message) || message.jsonrpc !== JSONRPC) return { reply: invalidRequest() };
 	const id = message.id;
@@ -413,8 +418,9 @@ async function handleMessage(
 				...(Object.hasOwn(CACHEABLE_METHODS, method) ? { ttlMs: 0, cacheScope: "private" } : {}),
 			}),
 		};
-	} catch {
-		// Host failures are reported without the thrown message or stack.
+	} catch (error) {
+		// The reply carries no detail. The log keeps the error name and a redacted message, never the request.
+		reportHostFailure(logger, method, error);
 		return { reply: rpcError(id, INTERNAL_ERROR, "internal error") };
 	}
 }
@@ -436,6 +442,19 @@ function refusedRequest(field: string, code: string): void {
 		resource: "mcp",
 		details: { field, code },
 	});
+}
+
+/** Logs one host failure with its method, error name and redacted message. The request body is never logged. */
+function reportHostFailure(logger: Logger | undefined, method: string, error: unknown): void {
+	try {
+		const detail =
+			error instanceof Error
+				? { error: error.name, message: redactSecrets(error.message) }
+				: { error: "non-error value", message: "" };
+		(logger ?? createLogger()).error("mcp_dispatch_error", { method, ...detail });
+	} catch {
+		// reason: Logging must never change the reply the client gets.
+	}
 }
 
 /** The first text parameter a method reads, when it is a string too long or with a control character. Other values keep their existing handling. */

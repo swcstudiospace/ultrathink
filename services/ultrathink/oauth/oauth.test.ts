@@ -1999,6 +1999,47 @@ describe("OAuth state file", () => {
 			expect(savedKeys(h, "clients")).toHaveLength(1);
 		});
 	}
+
+	test("a corrupt store logs one warning naming the store, the aside file and the error", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-warn-"));
+		harnessDirs.push(dir);
+		writeFileSync(join(dir, "oauth.json"), "{not json");
+		const warnings: { event: string; fields?: Record<string, unknown> }[] = [];
+		const logger: Logger = {
+			info() {
+				// reason: info logs are not asserted here
+			},
+			warn(event, fields) {
+				warnings.push({ event, fields });
+			},
+			error() {
+				// reason: error logs are not asserted here
+			},
+		};
+		const h = await makeHarness({ logger }, { dir, clock: { now: HARNESS_START } });
+		const aside = join(dir, `oauth.json.corrupt-${HARNESS_START}`);
+		expect(warnings).toEqual([
+			{
+				event: "loadStore: store moved aside",
+				fields: { path: h.statePath, aside, error: "SyntaxError" },
+			},
+		]);
+		expect(readFileSync(aside, "utf8")).toBe("{not json");
+		expect(existsSync(h.statePath)).toBe(false);
+	});
+
+	test("a read failure other than a parse error is rethrown and leaves the store in place", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-read-"));
+		harnessDirs.push(dir);
+		nodeFs.mkdirSync(join(dir, "oauth.json"));
+		const failure = await makeHarness({}, { dir, clock: { now: HARNESS_START } }).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(failure).toMatchObject({ code: "EISDIR" });
+		expect(readdirSync(dir)).toEqual(["oauth.json"]);
+		expect(statSync(join(dir, "oauth.json")).isDirectory()).toBe(true);
+	});
 });
 
 describe("durable state writes", () => {

@@ -508,10 +508,15 @@ function emptyStore(): StoreShape {
 	return { clients: {}, grants: {}, codes: {}, tokens: {}, pending: {} };
 }
 
+/** A store file that parsed but is not shaped like a store. It is moved aside like unparseable text. */
+class MalformedStoreError extends Error {
+	override name = "MalformedStoreError";
+}
+
 function section<T>(value: unknown): Record<string, T> {
 	if (value === undefined) return {};
 	if (typeof value !== "object" || value === null || Array.isArray(value))
-		throw new Error("section: malformed store section");
+		throw new MalformedStoreError("section: malformed store section");
 	return value as Record<string, T>;
 }
 
@@ -522,10 +527,12 @@ function loadStore(path: string, stamp: number, logger: Logger): StoreShape {
 	} catch {
 		// reason: Not the owner or a read-only mount: reading still works.
 	}
+	// A read failure (EACCES, EIO, EISDIR) is not corruption: it propagates and the file stays in place.
+	const text = readFileSync(path, "utf8");
 	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		const parsed: unknown = JSON.parse(text);
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-			throw new Error("loadStore: malformed store");
+			throw new MalformedStoreError("loadStore: malformed store");
 		const record = parsed as Record<string, unknown>;
 		return {
 			clients: section(record.clients),
@@ -534,14 +541,19 @@ function loadStore(path: string, stamp: number, logger: Logger): StoreShape {
 			tokens: section(record.tokens),
 			pending: section(record.pending),
 		};
-	} catch {
+	} catch (error) {
+		// Only unparseable or misshapen text is moved aside. Any other error is rethrown.
+		if (!(error instanceof SyntaxError || error instanceof MalformedStoreError)) throw error;
 		// Never silently wipe: keep the bad file for the operator and start empty. Users re-consent.
+		const aside = `${path}.corrupt-${stamp}`;
 		try {
-			renameSync(path, `${path}.corrupt-${stamp}`);
-		} catch (error) {
+			renameSync(path, aside);
+		} catch (renameError) {
 			// reason: The move failed; the next save replaces the file.
-			logger.error(`loadStore: ${failureLabel(error)}`);
+			logger.error(`loadStore: ${failureLabel(renameError)}`);
+			return emptyStore();
 		}
+		logger.warn("loadStore: store moved aside", { path, aside, error: error.name });
 		return emptyStore();
 	}
 }
